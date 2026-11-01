@@ -7702,12 +7702,24 @@ fn hashed() -> Sim {
 /// the recording did, frame for frame, and save the same rides.
 #[track_caller]
 fn assert_replays_exactly(
-    mut recorded: Sim,
+    recorded: Sim,
     scenario: fn(&mut Sim),
     bulk: bool,
 ) -> shell_simulator::replay::Capture {
+    assert_replays_exactly_after(recorded, scenario, bulk, |_| {})
+}
+
+/// As `assert_replays_exactly`, replaying the capture as `alter` leaves it.
+#[track_caller]
+fn assert_replays_exactly_after(
+    mut recorded: Sim,
+    scenario: fn(&mut Sim),
+    bulk: bool,
+    alter: fn(&mut shell_simulator::replay::Capture),
+) -> shell_simulator::replay::Capture {
     scenario(&mut recorded);
-    let capture = recorded.capture();
+    let mut capture = recorded.capture();
+    alter(&mut capture);
     println!("{}", trace_size(&capture.trace, recorded.device.now));
     let mut replayed = Sim::replay(&capture);
     assert_eq!(replayed.device.divergence(), None);
@@ -7872,21 +7884,41 @@ fn a_ride_dated_by_wifi_replays_exactly_whatever_the_process_clock_holds() {
     assert!(synced[0].abs_diff(WIFI_UTC_MS / 1000) < 60, "{synced:?}");
 }
 
+fn a_ride_on_new_bulk_media(sim: &mut Sim) {
+    sim.init_bulk();
+    sim.pair(&["HEART RATE", "POWER METER"]);
+    sim.start_ride();
+    sim.ride_at(28.0, 200.0, 140.0, 85.0);
+    sim.advance(minutes(5));
+    sim.pause_ride();
+    sim.advance(minutes(1));
+    sim.resume_ride();
+    sim.advance(minutes(5));
+    sim.stop_ride();
+}
+
 #[test]
 fn a_ride_on_bulk_media_replays_exactly() {
     let mut sim = hashed();
     sim.fit_bulk(Presence::Ready);
-    let ride = |sim: &mut Sim| {
-        sim.init_bulk();
-        sim.pair(&["HEART RATE", "POWER METER"]);
-        sim.start_ride();
-        sim.ride_at(28.0, 200.0, 140.0, 85.0);
-        sim.advance(minutes(5));
-        sim.pause_ride();
-        sim.advance(minutes(1));
-        sim.resume_ride();
-        sim.advance(minutes(5));
-        sim.stop_ride();
-    };
-    assert_replays_exactly(equip(sim.boot()), ride, true);
+    assert_replays_exactly(equip(sim.boot()), a_ride_on_new_bulk_media, true);
+}
+
+/// Initializing the card names its new store from hardware entropy. The
+/// replay's card would give other values; the replay takes the recorded ones.
+#[test]
+fn a_new_store_replays_with_the_entropy_it_was_named_from() {
+    let mut sim = hashed();
+    sim.fit_bulk(Presence::Ready);
+    let capture = assert_replays_exactly_after(
+        equip(sim.boot()),
+        a_ride_on_new_bulk_media,
+        true,
+        |capture| capture.origin.bulk.reseed_entropy(0xdec0de),
+    );
+    let (_, events) = firmware_services::trace::decode(&capture.trace).unwrap();
+    let entropy = events
+        .filter(|event| matches!(event, firmware_services::trace::Event::Entropy(_)))
+        .count();
+    assert!(entropy > 0, "the store's entropy is recorded");
 }

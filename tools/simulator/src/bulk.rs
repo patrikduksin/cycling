@@ -67,6 +67,11 @@ impl SimBulk {
         self.0.borrow_mut().presence = presence;
     }
 
+    /// Another card's entropy source: it gives other values from now on.
+    pub fn reseed_entropy(&self, seed: u64) {
+        self.0.borrow_mut().entropy = seed | 1;
+    }
+
     /// Shrink the region, to reach full media quickly.
     pub fn set_sectors(&self, sectors: u64) {
         self.0.borrow_mut().sectors = sectors;

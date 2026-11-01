@@ -249,6 +249,7 @@ fn sample() -> Vec<Event<'static>> {
             op: StorageOp::Write,
             sector: 1_955_841,
         },
+        Event::Entropy(0x9e37_79b9_7f4a_7c15),
         Event::Page("ride"),
         Event::Toast("LAP 1 05:00"),
         Event::Sound(21),

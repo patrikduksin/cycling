@@ -3,17 +3,23 @@
 //! recorded, and the session runs one pass at each recorded uptime.
 use crate::bulk::SimBulk;
 use crate::devices::InputDevice;
+#[cfg(feature = "cycling")]
+use crate::phone::SimAccessPoint;
 use crate::storage::FileFlash;
 use device_api::ant::{self, Ant, AntOperation, CHANNEL_CAPACITY, DISCOVERY_CAPACITY};
 use device_api::ble_transport::{self, Ble};
+use device_api::bulk::{self, ReadWrite};
 use device_api::input::{InputObservation, InputSnapshot};
 use device_api::observation::{Availability, Error};
 use device_api::positioning::{self, Positioning};
 use device_api::sensors;
+#[cfg(feature = "cycling")]
+use device_api::server::{AccessPoint, AccessPointConfig, AccessPointState, Reach};
 use firmware_services::trace::frozen::{Latest, Sink};
 use firmware_services::trace::{self, Cursor, Event, Events};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 /// Sealed trace blocks, back to back.
 #[derive(Default)]
@@ -29,7 +35,7 @@ impl Sink for Blocks {
 #[derive(Clone)]
 pub struct Origin {
     pub(crate) flash: FileFlash,
-    pub(crate) bulk: SimBulk,
+    pub bulk: SimBulk,
     pub(crate) boot: u32,
 }
 
@@ -53,12 +59,13 @@ pub struct Replay {
 }
 
 impl Replay {
-    pub fn new(bytes: Vec<u8>, input: InputDevice) -> Result<Self, trace::Error> {
+    /// `bulk` shares the replaying device's medium.
+    pub fn new(bytes: Vec<u8>, input: InputDevice, bulk: SimBulk) -> Result<Self, trace::Error> {
         let cursor = trace::decode(&bytes)?.1.cursor();
         Ok(Self {
             bytes,
             cursor,
-            sources: Sources::new(input),
+            sources: Sources::new(input, bulk),
         })
     }
 
@@ -132,6 +139,10 @@ pub struct Sources {
     pub ble: ReplayBle,
     pub position: ReplayPosition,
     pub companion: ReplayCompanion,
+    pub bulk: ReplayBulk,
+    #[cfg(feature = "cycling")]
+    pub access_point: ReplayAccessPoint,
+    entropy: Entropy,
     startup: Latest<sensors::Startup>,
     physical: Latest<sensors::Snapshot>,
     network_time: Latest<firmware_services::network_time::Snapshot>,
@@ -143,12 +154,23 @@ pub struct Sources {
 }
 
 impl Sources {
-    fn new(input: InputDevice) -> Self {
+    fn new(input: InputDevice, media: SimBulk) -> Self {
+        let entropy = Entropy::default();
         Self {
             ant: ReplayAnt::default(),
             ble: ReplayBle::default(),
             position: ReplayPosition::default(),
             companion: ReplayCompanion::default(),
+            bulk: ReplayBulk {
+                media,
+                entropy: entropy.clone(),
+            },
+            #[cfg(feature = "cycling")]
+            access_point: ReplayAccessPoint {
+                inner: SimAccessPoint::default(),
+                entropy: entropy.clone(),
+            },
+            entropy,
             startup: Latest::default(),
             physical: Latest::default(),
             network_time: Latest::default(),
@@ -178,6 +200,8 @@ impl Sources {
             ("ANT admissions", self.ant.admissions.len()),
             ("ANT send states", self.ant.sends.borrow().len()),
             ("ANT requests unanswered", self.ant.unanswered.get()),
+            ("entropy values", self.entropy.0.borrow().len()),
+            ("entropy values unanswered", self.entropy.1.take() as usize),
             ("BLE packets", self.ble.packets.len()),
             ("BLE battery levels", self.ble.battery.len()),
             ("input edges", self.input.replayed.borrow().len()),
@@ -229,6 +253,7 @@ impl Sources {
             Event::Power(snapshot) => self.companion.0.set(snapshot, now),
             Event::NetworkTime(snapshot) => self.network_time.set(snapshot, now),
             Event::Startup(startup) => self.startup.set(startup, now),
+            Event::Entropy(value) => self.entropy.0.borrow_mut().push_back(value),
             event if seen(&event) => {}
             event => self.diverge(format!("{event:?} is not replayed in the simulator")),
         }
@@ -428,5 +453,79 @@ pub struct ReplayCompanion(Latest<Option<InputSnapshot>>);
 impl InputObservation for ReplayCompanion {
     fn snapshot(&self, now: u64) -> Option<InputSnapshot> {
         self.0.at(now).flatten()
+    }
+}
+
+/// Entropy values in the order the recording consumed them, shared by the
+/// medium and the access point, and how many were asked for past the end.
+#[derive(Clone, Default)]
+struct Entropy(Rc<RefCell<VecDeque<u64>>>, Rc<Cell<u32>>);
+
+impl Entropy {
+    fn take(&self) -> Option<u64> {
+        let value = self.0.borrow_mut().pop_front();
+        if value.is_none() {
+            self.1.set(self.1.get() + 1);
+        }
+        value
+    }
+}
+
+/// The replaying device's medium, with the recorded entropy; past the
+/// recording it draws on the medium's own.
+pub struct ReplayBulk {
+    media: SimBulk,
+    entropy: Entropy,
+}
+
+impl ReadWrite for ReplayBulk {
+    fn owned_info(&mut self) -> Result<bulk::OwnedInfo, bulk::Error> {
+        self.media.owned_info()
+    }
+    fn owned_read(
+        &mut self,
+        sector: u64,
+        output: &mut [u8; bulk::SECTOR_SIZE],
+    ) -> Result<(), bulk::Error> {
+        self.media.owned_read(sector, output)
+    }
+    fn owned_write(
+        &mut self,
+        sector: u64,
+        input: &[u8; bulk::SECTOR_SIZE],
+    ) -> Result<(), bulk::Error> {
+        self.media.owned_write(sector, input)
+    }
+    fn entropy(&mut self) -> u64 {
+        self.entropy.take().unwrap_or_else(|| self.media.entropy())
+    }
+}
+
+/// An access point that follows VANA's requests, with the recorded entropy.
+#[cfg(feature = "cycling")]
+pub struct ReplayAccessPoint {
+    inner: SimAccessPoint,
+    entropy: Entropy,
+}
+
+#[cfg(feature = "cycling")]
+impl AccessPoint for ReplayAccessPoint {
+    fn start(&mut self, config: AccessPointConfig) -> Result<(), Error> {
+        self.inner.start(config)
+    }
+    fn stop(&mut self) -> Result<(), Error> {
+        self.inner.stop()
+    }
+    fn state(&self) -> AccessPointState {
+        self.inner.state()
+    }
+    fn reach(&self) -> Reach {
+        self.inner.reach()
+    }
+    fn entropy(&mut self) -> u32 {
+        // The recording's access point gave 32 bits.
+        self.entropy
+            .take()
+            .map_or_else(|| self.inner.entropy(), |value| value as u32)
     }
 }

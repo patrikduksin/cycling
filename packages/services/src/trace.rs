@@ -149,6 +149,8 @@ pub enum Event<'a> {
         op: StorageOp,
         sector: u32,
     },
+    /// A hardware random value VANA consumed, in the order it asked.
+    Entropy(u64),
     /// The page the rider sees, by its wire name.
     Page(&'a str),
     Toast(&'a str),
@@ -184,6 +186,7 @@ mod tag {
     pub const STARTUP: u8 = 17;
     pub const COMMAND: u8 = 18;
     pub const STORAGE_FAULT: u8 = 19;
+    pub const ENTROPY: u8 = 20;
     pub const PAGE: u8 = 64;
     pub const TOAST: u8 = 65;
     pub const SOUND: u8 = 66;
@@ -809,6 +812,7 @@ impl<'a> Event<'a> {
             Self::Startup(_) => tag::STARTUP,
             Self::Command(_) => tag::COMMAND,
             Self::StorageFault { .. } => tag::STORAGE_FAULT,
+            Self::Entropy(_) => tag::ENTROPY,
             Self::Page(_) => tag::PAGE,
             Self::Toast(_) => tag::TOAST,
             Self::Sound(_) => tag::SOUND,
@@ -862,6 +866,7 @@ impl<'a> Event<'a> {
                 sector.put(w);
             }
             Self::Sound(pattern) => pattern.put(w),
+            Self::Entropy(value) => value.put(w),
             Self::Log {
                 level,
                 target,
@@ -909,6 +914,7 @@ impl<'a> Event<'a> {
                 op: Wire::take(r),
                 sector: Wire::take(r),
             },
+            tag::ENTROPY => Self::Entropy(Wire::take(r)),
             tag::PAGE => Self::Page(Wire::take(r)),
             tag::TOAST => Self::Toast(Wire::take(r)),
             tag::SOUND => Self::Sound(Wire::take(r)),

@@ -10,9 +10,11 @@ use super::{AntRadio, Encoder, Event, Full, Header, encode_header};
 use core::cell::RefCell;
 use device_api::ant::{self, Ant, AntOperation};
 use device_api::ble_transport::{self, Ble};
+use device_api::bulk::{self, ReadWrite};
 use device_api::input::{Controls, Edge, InputObservation, InputSnapshot, InputSource};
 use device_api::observation::{Availability, Error};
 use device_api::positioning::{self, Positioning};
+use device_api::server::{AccessPoint, AccessPointConfig, AccessPointState, Reach};
 
 /// Where a pass's events go.
 pub trait Record {
@@ -512,6 +514,79 @@ pub struct CompanionView(pub Option<InputSnapshot>);
 impl InputObservation for CompanionView {
     fn snapshot(&self, _now_ms: u64) -> Option<InputSnapshot> {
         self.0
+    }
+}
+
+/// The bulk medium, recording each entropy value it gives. Sectors pass
+/// through: a replay starts from the media as it stood.
+pub struct RecordedBulk<'a, B: ?Sized, R: ?Sized> {
+    inner: &'a mut B,
+    record: &'a RefCell<R>,
+}
+
+impl<'a, B: ?Sized, R: ?Sized> RecordedBulk<'a, B, R> {
+    pub fn new(inner: &'a mut B, record: &'a RefCell<R>) -> Self {
+        Self { inner, record }
+    }
+}
+
+impl<B: ReadWrite + ?Sized, R: Record + ?Sized> ReadWrite for RecordedBulk<'_, B, R> {
+    fn owned_info(&mut self) -> Result<bulk::OwnedInfo, bulk::Error> {
+        self.inner.owned_info()
+    }
+    fn owned_read(
+        &mut self,
+        sector: u64,
+        output: &mut [u8; bulk::SECTOR_SIZE],
+    ) -> Result<(), bulk::Error> {
+        self.inner.owned_read(sector, output)
+    }
+    fn owned_write(
+        &mut self,
+        sector: u64,
+        input: &[u8; bulk::SECTOR_SIZE],
+    ) -> Result<(), bulk::Error> {
+        self.inner.owned_write(sector, input)
+    }
+    fn entropy(&mut self) -> u64 {
+        let value = self.inner.entropy();
+        self.record.borrow_mut().record(&Event::Entropy(value));
+        value
+    }
+}
+
+/// The phone access point, recording each entropy word it gives; VANA
+/// drives its state and reads it back.
+pub struct RecordedAccessPoint<'a, A: ?Sized, R: ?Sized> {
+    inner: &'a mut A,
+    record: &'a RefCell<R>,
+}
+
+impl<'a, A: ?Sized, R: ?Sized> RecordedAccessPoint<'a, A, R> {
+    pub fn new(inner: &'a mut A, record: &'a RefCell<R>) -> Self {
+        Self { inner, record }
+    }
+}
+
+impl<A: AccessPoint + ?Sized, R: Record + ?Sized> AccessPoint for RecordedAccessPoint<'_, A, R> {
+    fn start(&mut self, config: AccessPointConfig) -> Result<(), Error> {
+        self.inner.start(config)
+    }
+    fn stop(&mut self) -> Result<(), Error> {
+        self.inner.stop()
+    }
+    fn state(&self) -> AccessPointState {
+        self.inner.state()
+    }
+    fn reach(&self) -> Reach {
+        self.inner.reach()
+    }
+    fn entropy(&mut self) -> u32 {
+        let value = self.inner.entropy();
+        self.record
+            .borrow_mut()
+            .record(&Event::Entropy(value.into()));
+        value
     }
 }
 

@@ -13,6 +13,7 @@ use crate::world::World;
 use device_api::ant::Ant;
 use device_api::ant::AntOperation;
 use device_api::ble_transport::Ble;
+use device_api::bulk::ReadWrite;
 use device_api::display::Display;
 use device_api::input::Button;
 use device_api::input::InputObservation;
@@ -22,10 +23,13 @@ use device_api::observation::Error;
 use device_api::observation::Observation;
 use device_api::positioning::Positioning;
 use device_api::sensors::Startup;
+#[cfg(feature = "cycling")]
+use device_api::server::AccessPoint;
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
 use firmware_services::trace::frozen::{
-    CompanionView, FrozenCompanion, FrozenPosition, Latest, Record, RecordedEdges, Recorder,
+    CompanionView, FrozenCompanion, FrozenPosition, Latest, Record, RecordedBulk, RecordedEdges,
+    Recorder,
 };
 use firmware_services::trace::{Event, Header};
 use std::cell::RefCell;
@@ -271,9 +275,11 @@ pub type VirtualShell =
 /// Trace blocks of 4 KiB, a flash sector.
 const TRACE_BLOCK: usize = 4096;
 
+type TraceRecorder = Recorder<Box<[u8]>, Blocks>;
+
 /// What the session read and showed, frozen once a pass and recorded.
 struct Trace {
-    recorder: RefCell<Recorder<Box<[u8]>, Blocks>>,
+    recorder: RefCell<TraceRecorder>,
     #[cfg(feature = "cycling")]
     ant: firmware_services::trace::frozen::FrozenAnt,
     #[cfg(feature = "cycling")]
@@ -347,6 +353,20 @@ fn build_id() -> [u8; 20] {
             .unwrap_or(0);
     }
     id
+}
+
+/// The medium as VANA and the terminal reach it outside a pass's bound
+/// handles: its entropy recorded, and in a replay answered from the trace.
+fn recorded_bulk<'a>(
+    bulk: &'a mut crate::bulk::SimBulk,
+    replay: &'a mut Option<Box<Replay>>,
+    record: &'a RefCell<TraceRecorder>,
+) -> RecordedBulk<'a, dyn ReadWrite + 'a, TraceRecorder> {
+    let bulk: &mut dyn ReadWrite = match replay {
+        Some(replay) => &mut replay.sources.bulk,
+        None => bulk,
+    };
+    RecordedBulk::new(bulk, record)
 }
 
 /// The companion's battery report as the shell's power handle gives it, as
@@ -610,8 +630,12 @@ impl Session {
         })?;
         let mut session = Self::with_media(flash, 240, 320)?;
         session.bulk = origin.bulk.copy();
-        let replay = Replay::new(capture.trace.clone(), session.input.clone())
-            .map_err(|error| io::Error::other(format!("trace: {error:?}")))?;
+        let replay = Replay::new(
+            capture.trace.clone(),
+            session.input.clone(),
+            session.bulk.clone(),
+        )
+        .map_err(|error| io::Error::other(format!("trace: {error:?}")))?;
         session.replay = Some(Box::new(replay));
         Ok(session)
     }
@@ -725,8 +749,11 @@ impl Session {
         // then the backlight stays dark.
         #[cfg(feature = "cycling")]
         if power.state == device_api::power::State::Initializing {
-            self.sdk
-                .prepare(&mut self.shell.data_storage(), &mut self.bulk, now);
+            self.sdk.prepare(
+                &mut self.shell.data_storage(),
+                &mut recorded_bulk(&mut self.bulk, &mut self.replay, &self.trace.recorder),
+                now,
+            );
         }
         if !power.ready {
             return;
@@ -781,12 +808,36 @@ impl Session {
             &self.trace.recorder,
             Event::NetworkTime,
         );
-        let (ant, ble): (&mut dyn Ant, &mut dyn Ble) = match &mut self.replay {
-            Some(replay) => (&mut replay.sources.ant, &mut replay.sources.ble),
-            None => (&mut self.ant, &mut self.ble),
+        type Handles<'a> = (
+            &'a mut dyn Ant,
+            &'a mut dyn Ble,
+            &'a mut dyn ReadWrite,
+            &'a mut dyn AccessPoint,
+        );
+        let (ant, ble, bulk, access_point): Handles = match &mut self.replay {
+            Some(replay) => {
+                let sources = &mut replay.sources;
+                (
+                    &mut sources.ant,
+                    &mut sources.ble,
+                    &mut sources.bulk,
+                    &mut sources.access_point,
+                )
+            }
+            None => (
+                &mut self.ant,
+                &mut self.ble,
+                &mut self.bulk,
+                &mut self.access_point,
+            ),
         };
         let mut ant = self.trace.ant.bind(ant, now, &self.trace.recorder);
         let mut ble = self.trace.ble.bind(ble, now, &self.trace.recorder);
+        let mut bulk = RecordedBulk::new(bulk, &self.trace.recorder);
+        let mut access_point = firmware_services::trace::frozen::RecordedAccessPoint::new(
+            access_point,
+            &self.trace.recorder,
+        );
         self.sdk.set_startup_status(self.startup);
         self.shell.set_app_active(self.sdk.input_active());
         self.shell.tick(now);
@@ -804,7 +855,7 @@ impl Session {
         self.shell.present();
         self.sdk.tick(
             &mut self.shell.data_storage(),
-            &mut self.bulk,
+            &mut bulk,
             now,
             &mut ant,
             &mut ble,
@@ -817,12 +868,12 @@ impl Session {
         );
         // As composition does: one bounded look-ahead step a pass,
         // reading the TERRAIN volume's pack when one is installed.
-        self.sdk.look_ahead(&mut self.bulk, now);
+        self.sdk.look_ahead(&mut bulk, now);
         self.sdk.serve_phone(
             &mut self.phone_server,
-            &mut self.access_point,
+            &mut access_point,
             &mut self.shell.data_storage(),
-            &mut self.bulk,
+            &mut bulk,
             now,
         );
         self.sdk.present(&mut self.shell, now, &ant, &position);
@@ -997,7 +1048,11 @@ impl Session {
                 return "UNSUPPORTED";
             }
             Command::Volume(command) => {
-                return firmware_console::commands::volumes::execute(command, &mut self.bulk, out);
+                return firmware_console::commands::volumes::execute(
+                    command,
+                    &mut recorded_bulk(&mut self.bulk, &mut self.replay, &self.trace.recorder),
+                    out,
+                );
             }
             Command::Info => {
                 let _ = write!(
@@ -1104,7 +1159,7 @@ impl Session {
                 return self.sdk.command(
                     core::str::from_utf8(&bytes[..length]).unwrap_or(""),
                     &mut self.shell.data_storage(),
-                    &mut self.bulk,
+                    &mut recorded_bulk(&mut self.bulk, &mut self.replay, &self.trace.recorder),
                     self.now,
                     out,
                 );

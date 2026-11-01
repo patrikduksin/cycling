@@ -389,7 +389,6 @@ fn mode_name(mode: Mode) -> &'static str {
 
 include!("../build_sources.rs");
 
-/// The suffix `build.rs` puts on a build made with uncommitted changes.
 const DIRTY: &str = "-dirty";
 
 fn pick_mode(

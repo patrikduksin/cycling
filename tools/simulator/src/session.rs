@@ -1071,8 +1071,6 @@ impl Session {
                 of,
             } => notes.push((pattern, cue.to_string(), note, of)),
         });
-        // VANA names the cue of each note it played; any other pattern, such
-        // as a console SOUND PLAY, has none.
         for pattern in self.trace.sound.take_started() {
             let played = notes
                 .iter()

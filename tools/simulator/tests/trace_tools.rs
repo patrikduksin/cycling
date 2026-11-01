@@ -404,10 +404,8 @@ fn each_note_names_the_cue_vana_played_it_for() {
             "pattern 0: lap",
             "pattern 10: pause (1 of 2)",
             "pattern 0: pause (2 of 2)",
-            // Ending the ride cut the reminder short after two notes.
             "pattern 0: still paused (1 of 3)",
             "pattern 0: still paused (2 of 3)",
-            // The trace ends a moment after the first note.
             "pattern 21: saved (1 of 3)",
         ]
     );
@@ -735,8 +733,6 @@ fn the_ride_clock_reads_what_the_rider_saw_after_the_card_fails() {
     );
 }
 
-/// What a pasted stub needs that a fresh test file lacks, and what it
-/// imports without using (clippy -D warnings refuses both).
 fn fresh_file_faults(test: &str) -> Vec<String> {
     let imported: Vec<&str> = test
         .lines()

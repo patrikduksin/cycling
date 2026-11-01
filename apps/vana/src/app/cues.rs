@@ -168,8 +168,6 @@ fn resolve(patterns: &[Pattern], cue: Cue) -> heapless::Vec<u8, 4> {
         .collect()
 }
 
-/// A note of a cue the sound accepted: the pattern, the cue, and the note's
-/// place in it (`note` of `of`, from 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Played {
     pub cue: Cue,
@@ -184,7 +182,6 @@ pub(super) struct Cues {
     pending: Option<(Cue, u64)>,
     playing: Option<Cue>,
     run: Sequence,
-    /// Notes of the playing cue: played so far, and in all.
     note: u8,
     of: u8,
     played: Option<Played>,
@@ -229,7 +226,6 @@ impl Cues {
         }
     }
 
-    /// The note the sound accepted since the last call.
     pub(super) fn take_played(&mut self) -> Option<Played> {
         self.played.take()
     }
@@ -281,7 +277,6 @@ mod tests {
         assert!(resolve(&[], Cue::Start).is_empty());
     }
 
-    /// A buzzer that accepts every pattern.
     struct Open;
 
     impl Sound for Open {
@@ -328,7 +323,6 @@ mod tests {
             cues.play(&mut Open, now);
             heard.extend(cues.take_played());
         }
-        // Saved cut short after its first note by a lap.
         cues.raise(Cue::Saved, false, 1000);
         cues.play(&mut Open, 1000);
         heard.extend(cues.take_played());

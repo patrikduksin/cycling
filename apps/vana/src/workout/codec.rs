@@ -17,8 +17,8 @@
 //! Intensity: 0 warm up, 1 work, 2 recovery, 3 cool down, 4 test. Length
 //! kind: 0 seconds, 1 metres, 2 open. Target kind and its values: 0 free; 1
 //! % FTP low, high; 2 watts low, high; 3 heart zone; 4 % LTHR low, high; 5
-//! cadence low, high; 6 ramp start watts, step watts, step seconds. Unused
-//! values are zero. A decoded workout must also pass `Workout::validate`.
+//! cadence low, high; 6 ramp start watts, step watts, step seconds; 7
+//! the same ramp in % FTP. Unused values are zero. A decoded workout must also pass `Workout::validate`.
 use super::model::{
     Block, Intensity, Length, MAX_BLOCKS, MAX_STEPS, NAME_BYTES, Name, Step, Target, Test, Workout,
 };
@@ -78,6 +78,7 @@ pub fn encode(workout: &Workout) -> heapless::Vec<u8, ENCODED_MAX> {
             Target::Lthr { low, high } => (4, [low.into(), high.into(), 0]),
             Target::Cadence { low, high } => (5, [low.into(), high.into(), 0]),
             Target::Ramp { start, step, every } => (6, [start, step, every]),
+            Target::FtpRamp { start, step, every } => (7, [start.into(), step.into(), every]),
         };
         fixed[6] = kind;
         for (i, value) in values.into_iter().enumerate() {
@@ -161,9 +162,14 @@ pub fn decode(bytes: &[u8]) -> Result<Workout, DecodeError> {
                 step: b,
                 every: c,
             },
+            7 => Target::FtpRamp {
+                start: small(a)?,
+                step: small(b)?,
+                every: c,
+            },
             _ => return Err(DecodeError::Field),
         };
-        if fixed[13] != 0 || (fixed[6] != 6 && c != 0) {
+        if fixed[13] != 0 || (!matches!(fixed[6], 6 | 7) && c != 0) {
             return Err(DecodeError::Field);
         }
         reader.at -= 1;
@@ -271,6 +277,31 @@ mod tests {
         assert_eq!(&bytes[..body.len()], &body);
         assert_eq!(bytes.len(), body.len() + 4);
         assert_eq!(get_u32(&bytes, body.len()), crc32(&body));
+    }
+
+    #[test]
+    fn an_ftp_ramp_percent_wider_than_a_byte_is_refused() {
+        let ramp = Target::FtpRamp {
+            start: 50,
+            step: 6,
+            every: 60,
+        };
+        let workout = Workout::new(
+            "R",
+            &[Step::new(Intensity::Test, Length::Open, ramp)],
+            &[],
+            None,
+        );
+        let bytes = encode(&workout);
+        assert_eq!(decode(&bytes).as_ref(), Ok(&workout));
+        for at in [15, 17] {
+            let mut wide = bytes.clone();
+            put_u16(&mut wide, at, 300);
+            let body = wide.len() - 4;
+            let crc = crc32(&wide[..body]);
+            put_u32(&mut wide, body, crc);
+            assert_eq!(decode(&wide), Err(DecodeError::Field), "value at {at}");
+        }
     }
 
     #[test]

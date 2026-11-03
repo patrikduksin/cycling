@@ -224,18 +224,19 @@ pub const FTP_TWENTY: Workout = Workout::new(
     Some(Test::Twenty),
 );
 
-/// One-minute steps 20 W apart from 100 W until the rider cannot hold one.
-/// FTP is 75 % of the best minute.
+/// An open warm-up, then one-minute steps from 50 % FTP, 6 % more each, from
+/// the lap press until the rider cannot hold one. FTP is 75 % of the best
+/// minute.
 pub const FTP_RAMP: Workout = Workout::new(
     "FTP RAMP TEST",
     &[
-        Step::new(Warmup, min(5), ftp(45, 55)),
+        Step::new(Warmup, Length::Open, ftp(45, 55)),
         Step::new(
             Test,
             Length::Open,
-            Target::Ramp {
-                start: 100,
-                step: 20,
+            Target::FtpRamp {
+                start: 50,
+                step: 6,
                 every: 60,
             },
         )
@@ -692,7 +693,7 @@ pub(crate) mod tests {
                             hard += u32::from(secs);
                         }
                     }
-                    (Length::Open, Target::Ramp { .. }) => {}
+                    (Length::Open, Target::FtpRamp { .. } | Target::Ftp { .. }) => {}
                     other => panic!("{name}: {other:?}"),
                 }
                 if let Target::Ftp { low, high } = step.target {
@@ -709,7 +710,7 @@ pub(crate) mod tests {
                     }
                 } else {
                     assert!(
-                        (matches!(step.target, Target::Free | Target::Ramp { .. })
+                        (matches!(step.target, Target::Free | Target::FtpRamp { .. })
                             && step.intensity == Test)
                             || (step.target == Target::Free
                                 && step.intensity == Work

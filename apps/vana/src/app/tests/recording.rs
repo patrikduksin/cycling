@@ -163,6 +163,29 @@ fn an_update_across_workout_steps_puts_each_part_in_its_steps_lap() {
     assert_eq!(started, 3, "no step event lost");
 }
 
+#[test]
+fn a_finished_workout_leaves_the_workout_page_for_the_main_page() {
+    use crate::workout::model::{Intensity, Length, Step, Target, Workout};
+    use crate::workout::player::{Event, Player};
+    const STEPS: [Step; 1] = [Step::new(Intensity::Work, Length::Open, Target::Free)];
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    on_ride_page(&mut runtime);
+    let mut player = Player::new(Workout::new("D", &STEPS, &[], None));
+    player.skip();
+    runtime.ride.workout = Some(player);
+    for (on, then) in [
+        (RidePage::Workout, RidePage::Main),
+        (RidePage::Stats, RidePage::Stats),
+    ] {
+        runtime.navigation.ride_page = on;
+        let _ = runtime.ride.workout_events.push(Event::Finished);
+        runtime.workout_events(5000);
+        assert_eq!(runtime.navigation.ride_page, then, "from {on:?}");
+    }
+}
+
 /// Press BottomRight on a recording ride and let the pause land.
 fn pause(runtime: &mut Runtime, journal: &mut Journal, radio: &mut Radio, now: u64) {
     assert_eq!(runtime.ride.internal.status(), Status::Recording);

@@ -269,7 +269,9 @@ may not need: STATS, LAP, CLIMB, MAP and BACK TO START. All are ON by default. M
 is always on, and so is the WORKOUT page while a workout is chosen. MOVE and
 swipes step through the pages that are on, wrapping from the last to the
 first, and the page dots count only those. With every optional page off, MOVE
-has only MAIN, and with a workout only WORKOUT and MAIN.
+has only MAIN, and with a workout only WORKOUT and MAIN. When a workout
+ends, a rider on the WORKOUT page moves to MAIN; the FTP ramp test ends with
+its last step, so the NEW FTP sheet shows over MAIN.
 
 CLIMB OFF also ends the climb page's habit of coming up by itself: neither the
 ride's own climb detection nor a climb ahead on the map switches the page. A climb

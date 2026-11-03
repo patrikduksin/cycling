@@ -348,7 +348,14 @@ impl Runtime {
                             let text = step_toast(played);
                             self.navigation.toast(text.as_str(), Tone::Info, now);
                         }
-                        None => self.navigation.toast("WORKOUT DONE", Tone::Good, now),
+                        None => {
+                            // The workout page has nothing left to show.
+                            if self.navigation.ride_page == RidePage::Workout {
+                                self.navigation.ride_page_chosen(RidePage::Main);
+                            }
+                            super::climb_page::workout_finished(&mut self.navigation);
+                            self.navigation.toast("WORKOUT DONE", Tone::Good, now);
+                        }
                     }
                 }
                 Event::Ftp(ftp) => {

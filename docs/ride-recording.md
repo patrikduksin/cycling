@@ -463,7 +463,9 @@ shows the step and its target, the 3 s reading against the band (UNDER, ON
 TARGET, OVER), the time or distance left, the next step and the whole
 workout as a chart. The main page draws the band under its power or heart
 gauge. Three low cues count down a step's last seconds and two high ones mark the
-next; a toast names it (`WORK 2/5 3:00`). Each step closes a lap.
+next; a toast names it (`WORK 2/5 3:00`). Each step closes a lap. When the
+last step ends, the toast says `WORKOUT DONE` and a rider on the workout page
+moves to the main page; one on another page stays there.
 
 | Control | Effect |
 | --- | --- |
@@ -586,14 +588,17 @@ version; a reader takes what it knows from any version at least 1. Firmware
 from before stored turns never opens the file.
 
 FTP tests end on a NEW FTP sheet while the ride keeps recording: ACT saves the
-new FTP to the profile, BACK keeps the old one.
+new FTP to the profile, BACK keeps the old one. The ride is then on the main
+page.
 
 - 20 minutes: FTP is 95% of the test step's average power. Skipping the test
   step gives no result.
 - Ramp: an open warm-up, then one-minute steps from 50% of FTP, 6% of FTP more
   each, from the MARK that ends the warm-up (the page says LAP TO START). The
-  test ends when 3 s power stays under 90% of the step for 10 s, or at MARK.
-  FTP is 75% of the best full minute.
+  test ends when 3 s power stays under 90% of the step for 10 s, or at MARK,
+  and it is the workout's last step, with no cool down. The page says HOLD and
+  the step's watts, and the target band, drawn on the gauge, is 95% to 110% of
+  them. FTP is 75% of the best full minute.
 
 Load a workout from JSON with `cycling workout-load <file> [--name stem]`;
 `--dry-run` prints the file it would put. Examples are in

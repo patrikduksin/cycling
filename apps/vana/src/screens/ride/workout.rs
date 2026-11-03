@@ -4,7 +4,7 @@
 //!
 //! Top to bottom: the workout's name and the step count; the step and its
 //! target band in the target's metric colour; the 3 s power (or heart rate,
-//! or cadence) in its metric colour; a gauge with the band at 25 % and a
+//! or cadence) in its metric colour; a gauge with the band at 73 % and a
 //! white disc for the reading, then UNDER / ON TARGET / OVER; the time or
 //! distance left over the step's progress bar, amber for the last seconds;
 //! the next step; then one bar per played step, its height the target's
@@ -170,10 +170,11 @@ fn length(value: &mut Text<12>, length: Length) {
 
 /// What a target asks for, in words: "265-300 W", "ALL OUT", "HOLD 260 W".
 fn target_text(value: &mut Text<24>, played: Played, now: &Now, test: Option<Test>) {
+    if let Some(watts) = now.ramp_watts {
+        let _ = write!(value, "HOLD {watts} W");
+        return;
+    }
     let _ = match (played.step.target, now.band) {
-        (Target::Ramp { .. } | Target::FtpRamp { .. }, Some(band)) => {
-            write!(value, "HOLD {} W", band.low)
-        }
         (Target::Free, _) if test == Some(Test::Twenty) => value.push_str("ALL OUT"),
         (Target::Free, _) => value.push_str("FREE RIDE"),
         (_, Some(band)) if band.low == band.high => {
@@ -460,7 +461,8 @@ pub(super) fn prepare(view: &View) -> Canvas {
 }
 
 /// The track from 70 % of the band's low end to 130 % of its high end, the
-/// band on it at 25 % of the metric colour, and the reading as a disc.
+/// band on it at 73 % of the metric colour so it reads in sunlight, and the
+/// reading as a disc.
 fn gauge(canvas: &mut Canvas, now: &Now, color: u16) {
     let Some(band) = now.band else {
         return;
@@ -488,7 +490,7 @@ fn gauge(canvas: &mut Canvas, now: &Now, color: u16) {
     canvas.shape(Shape::Bar {
         rect: rect(from, to.min(RIGHT)),
         radius: 4,
-        color: blend(color, BLACK, 6),
+        color: blend(color, BLACK, 11),
     });
     if let Some(reading) = now.reading {
         let cx = x(reading.into()).clamp(LEFT + 5, RIGHT - 5);

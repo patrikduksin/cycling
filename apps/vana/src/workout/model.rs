@@ -194,7 +194,9 @@ impl Target {
     /// The band this target asks for `elapsed_s` into its step; `None` for a
     /// free ride.
     pub fn band(self, profile: &TrainingProfile, elapsed_s: u32) -> Option<Band> {
-        let pct = |base: u16, pct: u8| ((u32::from(base) * u32::from(pct) + 50) / 100) as u16;
+        let pct = |base: u16, pct: u8| {
+            ((u32::from(base) * u32::from(pct) + 50) / 100).min(u32::from(u16::MAX)) as u16
+        };
         let power = |low, high| Band {
             metric: Metric::Power,
             low,
@@ -225,7 +227,7 @@ impl Target {
             },
             Self::Ramp { .. } | Self::FtpRamp { .. } => {
                 let watts = self.ramp(profile)?.watts(elapsed_s);
-                power(watts, watts.saturating_add(watts / 20))
+                power(pct(watts, 95), pct(watts, 110))
             }
         })
     }
@@ -564,7 +566,10 @@ mod tests {
         assert_eq!(watts.watts(0), 100);
         assert_eq!(watts.watts(59), 100);
         assert_eq!(watts.watts(60), 120);
-        assert_eq!(ramp.band(&profile, 600).unwrap().low, 300);
+        let band = ramp.band(&profile, 600).unwrap();
+        assert_eq!((band.low, band.high), (285, 330));
+        let band = ramp.band(&profile, 0).unwrap();
+        assert_eq!((band.low, band.high), (95, 110));
         let of_ftp = Target::FtpRamp {
             start: 50,
             step: 6,
@@ -574,6 +579,8 @@ mod tests {
         assert_eq!((watts.start, watts.step), (125, 15));
         assert_eq!(watts.stage(119), 1);
         assert_eq!(watts.watts(120), 155);
+        let band = of_ftp.band(&profile, 0).unwrap();
+        assert_eq!((band.low, band.high), (119, 138));
         assert_eq!(Target::Free.ramp(&profile), None);
         let steep = Target::Ramp {
             start: 1,

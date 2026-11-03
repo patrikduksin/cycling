@@ -3923,21 +3923,23 @@ fn ramp_test_ends_at_failure_and_keeping_the_old_ftp_changes_nothing() {
     follow(&mut sim, 6 * 60, on_target);
     assert_eq!(
         sim.workout()["step"],
-        "1/3",
+        "1/2",
         "the warm-up waits for the rider"
     );
     sim.expect_text("LAP TO START");
     sim.checkpoint("ramp warm-up waits for lap");
     next_step(&mut sim);
-    assert_eq!(sim.workout()["step"], "2/3");
-    // The rider holds every minute up to 300 W, then fades.
+    assert_eq!(sim.workout()["step"], "2/2");
+    // The rider holds every minute up to 300 W, then fades. The band is
+    // 95-110 % of the stage, so the stage is its top over 1.1.
     let effort = |band: Option<(f64, f64)>| {
-        let low = band.map_or(100.0, |(low, _)| low);
-        if low <= 300.0 { low + 5.0 } else { 250.0 }
+        let stage = band.map_or(100.0, |(_, high)| (high / 1.1).round());
+        if stage <= 300.0 { stage + 5.0 } else { 250.0 }
     };
     follow(&mut sim, 87, effort);
     sim.expect_text("HOLD 121 W");
     sim.expect_text("LAP TO END");
+    assert_eq!(target(&mut sim), Some((115.0, 133.0)), "95-110 % of 121 W");
     sim.checkpoint("ramp early at 121 W");
     follow(&mut sim, 8 * 60 - 87 + 30, effort);
     sim.expect_text("HOLD 212 W");
@@ -3950,7 +3952,7 @@ fn ramp_test_ends_at_failure_and_keeping_the_old_ftp_changes_nothing() {
     let beeps = beeps_since(&sim, before);
     assert!(beeps.contains(&10), "the step cue: {beeps:?}");
     sim.checkpoint("ramp result offered");
-    assert_eq!(sim.workout()["step"], "3/3", "cool down after the ramp");
+    assert_eq!(sim.workout()["done"], "1", "the workout ends with the ramp");
     sim.press(Button::TopLeft);
     sim.expect_text("FTP KEPT 215 W");
     assert_eq!(
@@ -3960,9 +3962,12 @@ fn ramp_test_ends_at_failure_and_keeping_the_old_ftp_changes_nothing() {
     );
     let (_, profile) = sim.command("PROFILE");
     assert!(profile.starts_with("ftp=215 "), "{profile}");
-    ride_step(&mut sim, on_target);
-    sim.expect_text("WORKOUT DONE");
-    sim.checkpoint("workout done after the cool down");
+    assert_eq!(
+        sim.screen().page().as_deref(),
+        Some("2/7"),
+        "the main ride page, not the workout page"
+    );
+    sim.checkpoint("main ride page after keeping the old FTP");
     sim.stop_ride();
 }
 

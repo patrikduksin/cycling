@@ -693,7 +693,8 @@ pub(crate) mod tests {
                             hard += u32::from(secs);
                         }
                     }
-                    (Length::Open, Target::FtpRamp { .. } | Target::Ftp { .. }) => {}
+                    (Length::Open, Target::FtpRamp { .. }) => {}
+                    (Length::Open, Target::Ftp { .. }) if step.intensity == Warmup => {}
                     other => panic!("{name}: {other:?}"),
                 }
                 if let Target::Ftp { low, high } = step.target {

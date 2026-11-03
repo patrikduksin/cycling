@@ -546,7 +546,7 @@ pub fn chart(player: &Player, profile: &TrainingProfile) -> Chart {
     let workout: &Workout = player.workout();
     let done = player.done();
     let now = player.now(profile);
-    let position = now.position;
+    let position = usize::from(now.position);
     let ramp_of = |index: usize, played: &Played| {
         let ramp = played.step.target.ramp(profile)?;
         let current = match now.left {

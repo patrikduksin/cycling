@@ -97,10 +97,13 @@ impl Summary {
 }
 
 /// What a screen needs about the step on now.
+/// Positions are bytes, to keep `View` within its stack budget.
+const _: () = assert!(MAX_PLAYED <= u8::MAX as usize);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Now {
-    pub position: usize,
-    pub steps: usize,
+    pub position: u8,
+    pub steps: u8,
     pub played: Played,
     pub band: Option<Band>,
     /// The watts of the ramp's stage on now; its band is wider than that.
@@ -544,8 +547,8 @@ impl Player {
             })
             .flatten();
         Now {
-            position: self.position.min(self.steps.saturating_sub(1)),
-            steps: self.steps,
+            position: self.position.min(self.steps.saturating_sub(1)) as u8,
+            steps: self.steps as u8,
             played: self.played,
             band,
             ramp_watts: if self.done {

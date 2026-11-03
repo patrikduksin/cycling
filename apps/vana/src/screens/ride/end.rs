@@ -2,25 +2,45 @@
 //!
 //! The question, then the ride it is about. ACT saves and ends it (green
 //! check beside ACT); BACK keeps riding paused (back cue beside BACK). Like
-//! turning off from Home, BACK opens the question and ACT answers it.
+//! turning off from Home, BACK opens the question and ACT answers it. With a
+//! FILES volume to note it on, MOVE (red trash cue) asks DISCARD RIDE? in the
+//! same layout: ACT (red trash cue beside ACT) discards the ride, BACK
+//! returns to END RIDE?.
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::{Align, BODY, CAPTION, LARGE, SECONDARY, TITLE, VALUE, WHITE, WIDTH};
 use crate::screens::cue::{Corner, Cue, Icon};
 use crate::screens::workout::{Text, View};
 
-pub const CUES: [Cue; 2] = [
-    Cue::new(Corner::TopLeft, Icon::Back),
+const BACK: Cue = Cue::new(Corner::TopLeft, Icon::Back);
+
+pub const CUES: [Cue; 2] = [BACK, Cue::new(Corner::BottomRight, Icon::Check)];
+/// END RIDE? when the ride can be discarded.
+pub const DISCARD_CUES: [Cue; 3] = [
+    BACK,
     Cue::new(Corner::BottomRight, Icon::Check),
+    Cue::new(Corner::BottomLeft, Icon::Trash),
 ];
+/// A question whose ACT throws a ride away: DISCARD RIDE?, DELETE RIDE?.
+pub const TRASH_CUES: [Cue; 2] = [BACK, Cue::new(Corner::BottomRight, Icon::Trash)];
 
 const CENTRE: usize = WIDTH / 2;
 const TEXT_WIDTH: usize = WIDTH - 2 * 24;
 
 pub fn prepare(view: &View) -> Canvas {
+    question(view, b"END RIDE?", b"YOUR RIDE WILL BE SAVED")
+}
+
+pub fn discard(view: &View) -> Canvas {
+    question(view, b"DISCARD RIDE?", b"IT WILL NOT BE SAVED")
+}
+
+/// A question about a ride: `title`, the ride time, the distance and a grey
+/// `line` saying what the answer does.
+pub fn question(view: &View, title: &[u8], line: &[u8]) -> Canvas {
     let mut canvas = Canvas::default();
     canvas.fit(
         &[&TITLE, &BODY],
-        b"END RIDE?",
+        title,
         TEXT_WIDTH,
         CENTRE,
         112,
@@ -52,7 +72,7 @@ pub fn prepare(view: &View) -> Canvas {
     );
     canvas.fit(
         &[&CAPTION],
-        b"YOUR RIDE WILL BE SAVED",
+        line,
         WIDTH - 20,
         CENTRE,
         244,
@@ -89,6 +109,16 @@ mod tests {
                 "YOUR RIDE WILL BE SAVED",
             ],
             "end ride",
+        );
+        discard(&view).assert_laid_out(
+            screen,
+            &[
+                "DISCARD RIDE?",
+                "99:59:59",
+                "1000.0 KM",
+                "IT WILL NOT BE SAVED",
+            ],
+            "discard ride",
         );
     }
 }

@@ -142,7 +142,7 @@ impl Runtime {
                 self.timing.press(received);
                 self.next_ride_page();
             }
-            Page::Ready | Page::Ride | Page::EndRide => {
+            Page::Ready | Page::Ride | Page::EndRide | Page::DiscardRide => {
                 self.timing.press(received);
                 self.ride_press(button, held, received, now);
             }
@@ -199,6 +199,7 @@ impl Runtime {
             | Page::Home
             | Page::Ready
             | Page::EndRide
+            | Page::DiscardRide
             | Page::Phone
             | Page::Bests
             | Page::Form

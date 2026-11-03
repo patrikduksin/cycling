@@ -20,7 +20,9 @@
 //!
 //! A saved ride from the ride list shows on the same pages, read back from
 //! its journal: its start replaces RIDE SAVED, BACK returns to the list and
-//! ACT sends it to the phone. Climbs and the heart rate recovery come from
+//! ACT sends it to the phone. With a FILES volume to note it on, one more
+//! page follows them, reached only going forward: DELETE RIDE?, where ACT
+//! (red trash cue) deletes the ride. Climbs and the heart rate recovery come from
 //! the ride's facts on FILES; without them climbs show as --, as do the laps
 //! of a ride recorded before laps were kept, and there is no recovery. Ascent,
 //! descent and the profile come from the recorded altitude; a ride recorded
@@ -87,6 +89,8 @@ pub struct After {
     pub laps: Option<u16>,
     /// A saved ride from the list, titled by `View::past_title`.
     pub past: bool,
+    /// The saved ride's pages end with DELETE RIDE?.
+    pub delete: bool,
     /// The ride has an elevation page.
     pub elevation: bool,
     /// The personal bests this ride set.
@@ -106,6 +110,7 @@ impl After {
         climbs: None,
         laps: None,
         past: false,
+        delete: false,
         elevation: false,
         found: Found::EMPTY,
         offer: None,
@@ -113,14 +118,29 @@ impl After {
     };
 }
 
-/// How many pages the summary has, the FTP offer included.
+/// How many pages the summary has, the FTP offer or DELETE RIDE? included.
 pub fn total_pages(after: &After) -> usize {
-    pages(after.elevation) + usize::from(after.offer.is_some() && !after.past)
+    let last = if after.past {
+        after.delete
+    } else {
+        after.offer.is_some()
+    };
+    pages(after.elevation) + usize::from(last)
 }
 
 /// Whether the FTP offer, the page after the others, is on screen.
 pub fn offer_shown(after: &After) -> bool {
     after.page == pages(after.elevation) && after.offer.is_some() && !after.past
+}
+
+/// Whether DELETE RIDE?, the page after a saved ride's others, is on screen.
+pub fn delete_shown(after: &After) -> bool {
+    after.page == pages(after.elevation) && after.delete && after.past
+}
+
+/// Whether the page is a question with a back cue, shown without the bar.
+pub fn question_shown(after: &After) -> bool {
+    offer_shown(after) || delete_shown(after)
 }
 
 /// "5 S", "1 MIN", "5 MIN" or "20 MIN": the length of best effort `index`.
@@ -226,8 +246,14 @@ fn cells(canvas: &mut Canvas, first: usize, cells: &[Reading]) {
 }
 
 pub fn prepare(view: &View) -> Canvas {
-    let mut canvas = Canvas::default();
     let after = view.after();
+    if delete_shown(after) {
+        let mut canvas = super::end::question(view, b"DELETE RIDE?", b"IT GOES FROM YOUR RIDES");
+        let title = view.past_title().as_bytes();
+        canvas.caption(title, RIGHT - LEFT, CENTRE, 70, Align::Center);
+        return canvas;
+    }
+    let mut canvas = Canvas::default();
     match after.saving {
         Saving::Writing => {
             centred(&mut canvas, &[&TITLE, &BODY], b"SAVING", 150, WHITE);
@@ -577,6 +603,7 @@ mod tests {
                 climbs: Some(999),
                 laps: Some(999),
                 past: false,
+                delete: false,
                 elevation: false,
                 found: Found::default(),
                 offer: None,

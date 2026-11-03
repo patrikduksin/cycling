@@ -248,6 +248,7 @@ impl Runtime {
             Page::Summary if self.summary_offer().is_some() => {
                 summary::pages(self.has_elevation()) + 1
             }
+            Page::PastRide if self.deletable() => summary::pages(self.has_elevation()) + 1,
             _ => summary::pages(self.has_elevation()),
         }
     }

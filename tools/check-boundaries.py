@@ -39,6 +39,7 @@ TEST_SOURCE_SEAMS = {
 
 SINGLE_WRITERS = {
     "Page::EndRide": "apps/vana/src/app/ride_control.rs",
+    "Page::DiscardRide": "apps/vana/src/app/ride_control.rs",
     "Page::Summary": "apps/vana/src/app/ride_control.rs",
     "RideMessage::Clear": "apps/vana/src/app/ride_control.rs",
     "RideMessage::StorageNotReady": "apps/vana/src/app/ride_control.rs",

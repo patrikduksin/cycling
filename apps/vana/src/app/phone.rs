@@ -757,6 +757,9 @@ impl Runtime {
         (medium, start_slot, ride_id): (Medium, usize, u32),
         start: Option<u64>,
     ) {
+        if self.hidden_id(medium, ride_id) {
+            return self.reply(id, 404, Some(r#"{"error":"deleted"}"#));
+        }
         let index = MEDIA.iter().position(|m| *m == medium).unwrap_or(0);
         let Some(ride) = self.phone.w().indexes[index]
             .find(start_slot, ride_id)
@@ -1240,6 +1243,10 @@ impl Runtime {
                 break;
             };
             let Some(ride) = heads[medium] else { break };
+            if self.hidden_id(MEDIA[medium], ride.ride_id) {
+                sent[medium] += 1;
+                continue;
+            }
             let json = Self::activity_json(MEDIA[medium], &ride, first);
             if server.room() < json.len() {
                 self.phone.w().job = Job::Activities { id, sent, first };

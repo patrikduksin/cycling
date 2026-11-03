@@ -220,6 +220,13 @@ impl Navigation {
         self.toast(message, tone, now);
     }
 
+    /// A discarded ride was saved, then hidden or not: `message` instead of
+    /// RIDE SAVED and its chime.
+    pub(super) fn discarded(&mut self, message: &str, tone: Tone, now: u64) {
+        self.announced = Status::Saved;
+        self.toast(message, tone, now);
+    }
+
     /// The toast of new bests belongs to the summary: leaving it takes that
     /// toast away, and only that one.
     pub(super) fn leave_summary(&mut self) {
@@ -380,7 +387,7 @@ impl Runtime {
             || (sheet.is_none() && self.navigation.page == Page::Boot);
         let animated = matches!(
             self.navigation.page,
-            Page::Ride | Page::Ready | Page::EndRide | Page::Summary
+            Page::Ride | Page::Ready | Page::EndRide | Page::DiscardRide | Page::Summary
         ) || sheet.is_some_and(PowerSheet::animated)
             || self.readings.battery.charging();
         *next_frame_ms = now.saturating_add(if motion {
@@ -801,7 +808,15 @@ impl Runtime {
                 view.scroll = offset;
                 view.set_canvas(self.history_canvas(offset, pressed));
             }
-            Page::EndRide => {}
+            Page::EndRide | Page::DiscardRide => {
+                view.discard = if self.ride.discard != super::recording::Discard::Idle {
+                    crate::screens::workout::Discard::Answered
+                } else if self.deleted.writable() {
+                    crate::screens::workout::Discard::Offered
+                } else {
+                    crate::screens::workout::Discard::Unavailable
+                };
+            }
             Page::Ride => {
                 // Keep the screen lit while riding; a finished ride may dim and idle off.
                 if self.recording() {
@@ -1116,6 +1131,7 @@ impl Runtime {
             // The open lap counts: a ride without a lap press is one lap.
             laps: Some(self.ride.laps.count().saturating_add(1)),
             past: false,
+            delete: false,
             elevation: self.has_elevation(),
             found: self.ride.bests_found,
             offer: self.summary_offer(),

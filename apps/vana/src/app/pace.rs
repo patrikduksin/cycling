@@ -66,6 +66,7 @@ fn pace(seen: &Seen) -> Pace {
         | Page::Ready
         | Page::Ride
         | Page::EndRide
+        | Page::DiscardRide
         | Page::Summary
         | Page::Phone
         | Page::Setup => false,
@@ -208,11 +209,12 @@ mod tests {
         Page::History,
         Page::PastRide,
     ];
-    const BUSY_PAGES: [Page; 7] = [
+    const BUSY_PAGES: [Page; 8] = [
         Page::Boot,
         Page::Ready,
         Page::Ride,
         Page::EndRide,
+        Page::DiscardRide,
         Page::Summary,
         Page::Phone,
         Page::Setup,

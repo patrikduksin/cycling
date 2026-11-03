@@ -1,6 +1,6 @@
 use super::Runtime;
 use super::cues::Cue;
-use super::recording::{Request, RideMessage};
+use super::recording::{Discard, Request, RideMessage};
 use crate::ride::auto::{Call, Decision};
 use crate::ride::control::Action;
 use crate::ride::log::{Source, Status};
@@ -11,6 +11,7 @@ use device_api::input::Button;
 
 const ACT: Button = Button::BottomRight;
 const BACK: Button = Button::TopLeft;
+const MOVE: Button = Button::BottomLeft;
 
 impl Runtime {
     pub(super) fn ride_press(&mut self, button: Button, held: bool, pressed_at: u64, now: u64) {
@@ -71,6 +72,9 @@ struct Seen {
     pending: bool,
     auto_paused: bool,
     recording: bool,
+    /// A ride can be discarded: FILES can note it.
+    can_discard: bool,
+    discard: Discard,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,8 +82,11 @@ enum Go {
     OpenRide,
     BackToRide,
     EndRide,
+    DiscardRide,
     Summary,
     Home,
+    /// Home, after a discarded ride was saved.
+    Discarded,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,6 +192,12 @@ fn press(page: Page, seen: Seen, button: Button, held: bool) -> Step {
         (Page::EndRide, ACT) if !seen.pending && seen.ride == Status::Paused => {
             submit(Action::Finish)
         }
+        (Page::EndRide, MOVE) if seen.can_discard => go(Go::DiscardRide),
+        (Page::DiscardRide, _) if seen.pending => STAY,
+        (Page::DiscardRide, BACK) => go(Go::EndRide),
+        (Page::DiscardRide, ACT) if seen.can_discard && seen.ride == Status::Paused => {
+            submit(Action::Finish)
+        }
         (Page::Summary, ACT | BACK) if !held && !saving => go(Go::Home),
         _ => STAY,
     }
@@ -205,7 +218,7 @@ fn answered(page: Page, action: Action, accepted: bool, origin: Origin) -> Step 
             note: Some(RideMessage::Clear),
             ..STAY
         },
-        (Page::EndRide, Action::Finish, false) => Step {
+        (Page::EndRide | Page::DiscardRide, Action::Finish, false) => Step {
             go: Some(Go::BackToRide),
             note: Some(RideMessage::StorageNotReady),
             ..STAY
@@ -220,8 +233,12 @@ fn serviced(page: Page, seen: Seen, before: Status) -> Step {
     let saved = matches!(before, Status::Recording | Status::Paused) && seen.ride == Status::Saved;
     let finish_failed = seen.ride == Status::Paused && !seen.pending;
     let go = match page {
-        Page::Ride | Page::EndRide | Page::Summary if saved => Some(Go::Summary),
-        Page::EndRide if seen.ride != Status::Paused => Some(Go::BackToRide),
+        Page::DiscardRide if matches!(seen.discard, Discard::Saved { .. }) => Some(Go::Discarded),
+        Page::DiscardRide if seen.discard == Discard::Failed => Some(Go::BackToRide),
+        Page::Ride | Page::EndRide | Page::DiscardRide | Page::Summary if saved => {
+            Some(Go::Summary)
+        }
+        Page::EndRide | Page::DiscardRide if seen.ride != Status::Paused => Some(Go::BackToRide),
         Page::Summary if finish_failed => Some(Go::BackToRide),
         Page::Ready | Page::Summary | Page::History | Page::PastRide | Page::Phone
             if seen.ride == Status::Recording =>
@@ -234,6 +251,7 @@ fn serviced(page: Page, seen: Seen, before: Status) -> Step {
         | Page::Ready
         | Page::Ride
         | Page::EndRide
+        | Page::DiscardRide
         | Page::Summary
         | Page::Settings
         | Page::Bests
@@ -274,6 +292,8 @@ impl Runtime {
             pending: self.ride.pending(),
             auto_paused: self.ride.auto.paused(),
             recording: self.recording(),
+            can_discard: self.deleted.writable(),
+            discard: self.ride.discard,
         }
     }
 
@@ -287,11 +307,15 @@ impl Runtime {
                 self.recovery.clear();
                 self.navigation.open_ride();
             }
-            Some(Go::BackToRide) => self.navigation.page = Page::Ride,
+            Some(Go::BackToRide) => {
+                self.ride.discard = Discard::Idle;
+                self.navigation.page = Page::Ride;
+            }
             Some(Go::EndRide) => {
                 self.ride.clear_lap_toast();
                 self.navigation.page = Page::EndRide;
             }
+            Some(Go::DiscardRide) => self.navigation.page = Page::DiscardRide,
             Some(Go::Summary) => {
                 self.navigation.best_news =
                     super::bests::news(&self.ride.bests_found, &self.bests.bests);
@@ -303,12 +327,17 @@ impl Runtime {
                 self.navigation.summary_page = 0;
                 self.navigation.page = Page::Summary;
             }
-            Some(Go::Home) => {
-                self.navigation.leave_summary();
-                self.navigation.ride_page = RidePage::Main;
-                self.navigation.page = Page::Home;
-                self.recovery.clear();
-                self.leave_workout();
+            Some(Go::Home) => self.ride_left(),
+            Some(Go::Discarded) => {
+                let hidden = self.ride.discard == Discard::Saved { hidden: true };
+                self.ride.discard = Discard::Idle;
+                self.ride_left();
+                if hidden {
+                    self.navigation.discarded("RIDE DISCARDED", Tone::Info, now);
+                } else {
+                    self.navigation.discarded("NOT DISCARDED", Tone::Warn, now);
+                }
+                self.display.redraw();
             }
         }
         match step.effect {
@@ -326,12 +355,28 @@ impl Runtime {
         }
     }
 
+    /// Home, done with the ride.
+    fn ride_left(&mut self) {
+        self.navigation.leave_summary();
+        self.navigation.ride_page = RidePage::Main;
+        self.navigation.page = Page::Home;
+        self.recovery.clear();
+        self.leave_workout();
+    }
+
     fn submit_ride(&mut self, action: Action, origin: Origin, now: u64) -> bool {
         self.ride.request = Request::Idle;
         let medium = self.ride.target(action);
         let accepted = self.ride.submit(medium, |recorder, token| {
             recorder.request(action, Source::Live, now, token)
         });
+        if accepted
+            && action == Action::Finish
+            && self.navigation.page == Page::DiscardRide
+            && let Request::Pending(token) = self.ride.request
+        {
+            self.ride.discard = Discard::Asked(token);
+        }
         match (origin, accepted) {
             (Origin::Rider { pressed_at }, true) => {
                 self.ride.auto.manual();
@@ -362,7 +407,6 @@ mod tests {
     use super::*;
     use Status::{Error, Paused, Ready, Recording, Saved, Scanning};
 
-    const MOVE: Button = Button::BottomLeft;
     const RIDER: Origin = Origin::Rider { pressed_at: 0 };
     const AUTO: Origin = Origin::Auto(Decision::Pause);
 
@@ -373,7 +417,98 @@ mod tests {
             pending: false,
             auto_paused: false,
             recording: matches!(ride, Recording | Paused),
+            can_discard: false,
+            discard: Discard::Idle,
         }
+    }
+
+    /// A ride FILES can note as discarded.
+    fn card(ride: Status) -> Seen {
+        Seen {
+            can_discard: true,
+            ..seen(ride)
+        }
+    }
+
+    #[test]
+    fn discard_saves_the_ride_then_goes_home() {
+        let asked = Seen {
+            pending: true,
+            discard: Discard::Asked(7),
+            ..card(Paused)
+        };
+        let saved = |hidden| Seen {
+            discard: Discard::Saved { hidden },
+            ..card(Saved)
+        };
+        let failed = Seen {
+            discard: Discard::Failed,
+            ..card(Paused)
+        };
+        check(&[
+            (
+                Page::EndRide,
+                card(Paused),
+                press(MOVE),
+                go(Go::DiscardRide),
+            ),
+            (Page::EndRide, seen(Paused), press(MOVE), STAY),
+            (
+                Page::DiscardRide,
+                card(Paused),
+                press(BACK),
+                go(Go::EndRide),
+            ),
+            (Page::DiscardRide, card(Paused), press(MOVE), STAY),
+            (
+                Page::DiscardRide,
+                card(Paused),
+                press(ACT),
+                submit(Action::Finish),
+            ),
+            (Page::DiscardRide, seen(Paused), press(ACT), STAY),
+            (Page::DiscardRide, asked, press(BACK), STAY),
+            (Page::DiscardRide, asked, press(ACT), STAY),
+            (
+                Page::DiscardRide,
+                card(Paused),
+                answer(Action::Finish, true, RIDER),
+                note(RideMessage::Clear),
+            ),
+            (
+                Page::DiscardRide,
+                card(Paused),
+                answer(Action::Finish, false, RIDER),
+                both(Go::BackToRide, RideMessage::StorageNotReady),
+            ),
+            (
+                Page::DiscardRide,
+                saved(true),
+                since(Paused),
+                both(Go::Discarded, RideMessage::Clear),
+            ),
+            (
+                Page::DiscardRide,
+                saved(false),
+                since(Paused),
+                both(Go::Discarded, RideMessage::Clear),
+            ),
+            (Page::DiscardRide, failed, since(Paused), go(Go::BackToRide)),
+            (Page::DiscardRide, asked, since(Paused), STAY),
+            // The host saved the ride as any other: its summary.
+            (
+                Page::DiscardRide,
+                card(Saved),
+                since(Paused),
+                both(Go::Summary, RideMessage::Clear),
+            ),
+            (
+                Page::DiscardRide,
+                card(Recording),
+                since(Paused),
+                both(Go::BackToRide, RideMessage::Clear),
+            ),
+        ]);
     }
 
     fn pending(ride: Status) -> Seen {

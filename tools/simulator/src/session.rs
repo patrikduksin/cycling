@@ -898,6 +898,8 @@ impl Session {
             let facts = vec![0u8; vana::ride::facts::SHELF_BYTES].into_boxed_slice();
             if memory.ride_facts {
                 sdk.attach_ride_facts(Box::leak(facts));
+                let deleted = vec![0u8; vana::ride::deleted::SHELF_BYTES].into_boxed_slice();
+                sdk.attach_deleted_rides(Box::leak(deleted));
             }
         }
         #[cfg(feature = "cycling")]

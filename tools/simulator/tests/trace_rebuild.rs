@@ -3,6 +3,7 @@
 //! pulls them through ride export and `files get`.
 #![cfg(feature = "cycling")]
 use device_api::bulk::ReadWrite;
+use device_api::input::Button;
 use device_api::server::Method;
 use firmware_services::trace::origin::{Failure, Journal};
 use shell_simulator::ant::device_type;
@@ -84,6 +85,14 @@ fn recorded_session() -> (Sim, Vec<u8>, Session) {
 /// its trace as the device wrote it to STORE, and what the session left:
 /// the frames the rider saw and the rides on both journals.
 fn recorded_session_after(before: impl FnOnce(&mut Sim)) -> (Sim, Vec<u8>, Session) {
+    recorded_session_around(before, |_| {})
+}
+
+/// The same, with `during` done after the session's ride.
+fn recorded_session_around(
+    before: impl FnOnce(&mut Sim),
+    during: impl FnOnce(&mut Sim),
+) -> (Sim, Vec<u8>, Session) {
     let mut sim = Sim::new();
     sim.hash_frames();
     sim.fit_bulk(Presence::Ready);
@@ -121,6 +130,7 @@ fn recorded_session_after(before: impl FnOnce(&mut Sim)) -> (Sim, Vec<u8>, Sessi
     // VANA rewrites only the ride facts table, which the rebuild rewinds.
     sim.ride_route(g21());
     ride(&mut sim, 30, 150.0);
+    during(&mut sim);
     assert!(sim.device.sync_trace(), "the session's trace is open");
     let name = sim.device.trace_file().expect("the trace file");
     let trace = sim.store_file(&name).expect("the trace reads back whole");
@@ -564,6 +574,40 @@ fn a_ride_saved_again_since_leaves_the_facts_table_out() {
         matches!(&gaps[..], [Gap::File { name, now: Some(_), .. }] if name == facts::TABLE),
         "{gaps:?}"
     );
+}
+
+/// The rider discards a ride before power-on and one in the session: the
+/// hidden rides' table grew at its end, and the rebuild takes it back.
+#[test]
+fn a_ride_discarded_in_the_session_replays_strict() {
+    use vana::ride::deleted;
+    let discard = |sim: &mut Sim| {
+        for _ in 0..4 {
+            if !sim.on_home() {
+                sim.press(Button::TopLeft);
+            }
+        }
+        sim.ride_at(28.0, 150.0, 140.0, 85.0);
+        sim.start_ride();
+        sim.advance(seconds(20));
+        sim.discard_ride();
+    };
+    let (mut sim, trace, session) = recorded_session_around(discard, discard);
+    let table = sim.file(deleted::TABLE).unwrap();
+    assert_eq!(deleted::decode_table(&table).count(), 2);
+    let pulled = through_dir(&pull(&mut sim, &trace));
+    let (origin, gaps) = rebuild::rebuild(&trace, &pulled).unwrap();
+    assert_eq!(gaps, [], "{}", rebuild::report(&gaps));
+
+    let capture = Capture { origin, trace };
+    let mut replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert!(
+        Session::of(&mut replayed) == session,
+        "the same frames, and the same rides on both journals"
+    );
+    assert_eq!(replayed.file(deleted::TABLE), Some(table));
 }
 
 #[test]

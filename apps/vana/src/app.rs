@@ -20,6 +20,7 @@ pub use back::{BACK_CRUMBS, BackToStart, Crumb, MapFrame};
 mod commands;
 mod course;
 mod cues;
+mod deleted;
 mod facts;
 mod form;
 mod history;
@@ -87,6 +88,7 @@ pub struct Runtime {
     preferences: preferences::Preferences,
     bests: bests::Kept,
     facts: facts::Kept,
+    deleted: deleted::Hidden,
     form: form::Kept,
     power: power::Power,
     timing: timing::Timing,
@@ -125,6 +127,7 @@ impl Runtime {
             preferences: preferences::Preferences::default(),
             bests: bests::Kept::default(),
             facts: facts::Kept::default(),
+            deleted: deleted::Hidden::default(),
             form: form::Kept::default(),
             power: power::Power::default(),
             timing: timing::Timing::default(),
@@ -306,6 +309,7 @@ impl Runtime {
         self.service_workouts(bulk);
         self.service_bests(bulk, now);
         self.service_facts(bulk, now);
+        self.service_deleted(bulk, now);
         self.service_course(bulk, now);
         self.directory_step(store, bulk);
         self.service_form();

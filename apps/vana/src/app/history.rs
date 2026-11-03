@@ -51,11 +51,16 @@ pub(super) struct History {
     pub(super) home_last: Option<u64>,
     /// The week totals as of the last time the rides or the minute changed.
     weeks: core::cell::Cell<Option<(WeeksKey, Weeks)>>,
+    /// How many listed rides are hidden, as of the rides it was counted for.
+    hidden: core::cell::Cell<Option<(Rides, usize)>>,
 }
 
-/// The minute, the zone, the FTP, the ride facts kept, and each journal's
-/// rides, last id and how many of them the index has read.
-pub(super) type WeeksKey = (u64, Zone, u16, u32, [(usize, Option<u32>, usize); 2]);
+/// The rides hidden, and each journal's rides, last id and how many of them
+/// the index has read.
+type Rides = (u32, [(usize, Option<u32>, usize); 2]);
+
+/// The minute, the zone, the FTP, the ride facts kept, and the rides.
+pub(super) type WeeksKey = (u64, Zone, u16, u32, Rides);
 
 /// Which journal's newest unlisted ride comes next: 0 INTERNAL, 1 BULK. BULK
 /// only when both start times are known and BULK's is later, so undated rides
@@ -139,17 +144,18 @@ impl Runtime {
             .copied()
     }
 
-    /// The `n`-th newest saved ride of both journals. Each journal's own
-    /// order is certain (oldest first), so the two are merged newest first,
-    /// keeping each journal's order; start times decide between journals
-    /// where both are known.
-    fn listed(&self, n: usize) -> Option<(Medium, Summary)> {
+    /// The `n`-th newest saved ride of both journals that is not hidden.
+    /// Each journal's own order is certain (oldest first), so the two are
+    /// merged newest first, keeping each journal's order; start times decide
+    /// between journals where both are known.
+    pub(super) fn listed(&self, n: usize) -> Option<(Medium, Summary)> {
         let mut left = [
             self.journal_len(Medium::Internal),
             self.journal_len(Medium::Bulk),
         ];
         let media = [Medium::Internal, Medium::Bulk];
-        for taken in 0.. {
+        let mut taken = 0;
+        loop {
             let head = |at: usize| {
                 left[at]
                     .checked_sub(1)
@@ -157,10 +163,32 @@ impl Runtime {
             };
             let (internal, bulk) = (head(0), head(1));
             let pick = newer_head(internal.as_ref(), bulk.as_ref())?;
-            if taken == n {
-                return [internal, bulk][pick].map(|summary| (media[pick], summary));
-            }
             left[pick] -= 1;
+            let Some(ride) = [internal, bulk][pick] else {
+                continue;
+            };
+            if self.hidden(media[pick], &ride) {
+                continue;
+            }
+            if taken == n {
+                return Some((media[pick], ride));
+            }
+            taken += 1;
+        }
+    }
+
+    /// The saved ride `ride_id` of one journal, whose ids rise oldest first.
+    pub(super) fn journal_ride_id(&self, medium: Medium, ride_id: u32) -> Option<Summary> {
+        let split = self.split(medium);
+        let (mut low, mut high) = (0, self.journal_len(medium));
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let ride = self.ride_in(medium, middle, split)?;
+            match ride.ride_id.cmp(&ride_id) {
+                core::cmp::Ordering::Less => low = middle + 1,
+                core::cmp::Ordering::Greater => high = middle,
+                core::cmp::Ordering::Equal => return Some(ride),
+            }
         }
         None
     }
@@ -177,14 +205,44 @@ impl Runtime {
     /// Whether every saved ride is counted: always without an index, else
     /// once its scan has read both journals.
     pub(super) fn counted(&self) -> bool {
-        match self.history.index.as_deref() {
-            None => true,
-            Some(index) => self.history.indexing && self.ride.directory_done(index),
-        }
+        self.deleted.settled()
+            && match self.history.index.as_deref() {
+                None => true,
+                Some(index) => self.history.indexing && self.ride.directory_done(index),
+            }
     }
 
+    /// Saved rides listed: those of both journals the rider kept.
     pub(super) fn history_count(&self) -> usize {
-        self.journal_len(Medium::Internal) + self.journal_len(Medium::Bulk)
+        let all = self.journal_len(Medium::Internal) + self.journal_len(Medium::Bulk);
+        let rides = self.rides();
+        if let Some((counted, hidden)) = self.history.hidden.get()
+            && counted == rides
+        {
+            return all - hidden;
+        }
+        let mut hidden = 0;
+        for medium in [Medium::Internal, Medium::Bulk] {
+            let split = self.split(medium);
+            for index in 0..self.journal_len(medium) {
+                hidden += usize::from(
+                    self.ride_in(medium, index, split)
+                        .is_some_and(|ride| self.hidden(medium, &ride)),
+                );
+            }
+        }
+        self.history.hidden.set(Some((rides, hidden)));
+        all - hidden
+    }
+
+    /// The list after the open ride was deleted: the ride after it takes its
+    /// place under the focus.
+    pub(super) fn history_deleted(&mut self, now: u64) {
+        self.history.open = None;
+        let last = self.history_count().saturating_sub(1);
+        self.history.cursor = self.history.cursor.min(last);
+        self.navigation.page = Page::History;
+        self.show_focus(Scrolling::Rides, now);
     }
 
     /// Index a few more saved rides; the list redraws when one is added.
@@ -267,7 +325,7 @@ impl Runtime {
     }
 
     /// MOVE turns the page, BACK returns to the list, ACT sends the ride to
-    /// the phone.
+    /// the phone, or on the delete page after the others deletes it.
     pub(super) fn past_ride_input(&mut self, button: Button, held: bool) {
         match button {
             Button::BottomLeft => self.next_summary_page(1),
@@ -276,11 +334,27 @@ impl Runtime {
                 let Some((medium, _, summary)) = self.history.open else {
                     return;
                 };
+                if self.delete_shown() {
+                    self.delete_past_ride(medium, summary);
+                    return;
+                }
                 self.history.phone = Some((medium, summary.ride_id));
                 self.enter_phone();
             }
             _ => {}
         }
+    }
+
+    /// Whether a saved ride's pages end with DELETE RIDE?.
+    pub(super) fn deletable(&self) -> bool {
+        self.navigation.page == Page::PastRide && self.deleted.writable()
+    }
+
+    /// Whether DELETE RIDE?, the page after the others, is on screen.
+    pub(super) fn delete_shown(&self) -> bool {
+        self.deletable()
+            && self.navigation.summary_page
+                == crate::screens::ride::summary::pages(self.has_elevation())
     }
 
     /// A new ride takes the sums back; Home shows it as the last ride.
@@ -331,6 +405,16 @@ impl Runtime {
     /// journal's index has read, which together decide every total built
     /// from the saved rides.
     pub(super) fn rides_key(&self, utc_ms: u64) -> WeeksKey {
+        (
+            utc_ms / 60_000,
+            self.preferences.options.zone,
+            self.preferences.profile.ftp_watts,
+            self.facts.revision,
+            self.rides(),
+        )
+    }
+
+    fn rides(&self) -> Rides {
         let ids = |medium| {
             let last = self.journal_len(medium).checked_sub(1);
             (
@@ -341,17 +425,14 @@ impl Runtime {
             )
         };
         (
-            utc_ms / 60_000,
-            self.preferences.options.zone,
-            self.preferences.profile.ftp_watts,
-            self.facts.revision,
+            self.deleted.revision,
             [ids(Medium::Internal), ids(Medium::Bulk)],
         )
     }
 
-    /// Each saved ride of both journals, oldest first within a journal, with
-    /// its training stress if the index has read it and it had power, at the
-    /// FTP its facts kept, else the FTP now.
+    /// Each saved ride of both journals the rider kept, oldest first within a
+    /// journal, with its training stress if the index has read it and it had
+    /// power, at the FTP its facts kept, else the FTP now.
     pub(super) fn each_ride(&self, mut each: impl FnMut(&Summary, Option<u32>)) {
         let ftp = self.preferences.profile.ftp_watts;
         for medium in [Medium::Internal, Medium::Bulk] {
@@ -360,6 +441,9 @@ impl Runtime {
                 let Some(ride) = self.ride_in(medium, index, split) else {
                     continue;
                 };
+                if self.hidden(medium, &ride) {
+                    continue;
+                }
                 let effort = if index < split.0 {
                     self.indexed(medium)
                         .and_then(|journal| journal.effort(index))
@@ -493,6 +577,7 @@ impl Runtime {
                 .map(|climbing| climbing.count),
             laps: replay.laps(),
             past: true,
+            delete: self.deletable(),
             elevation: self.has_elevation(),
             recovery: facts
                 .and_then(|facts| facts.recovery_bpm)

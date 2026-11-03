@@ -173,6 +173,22 @@ pub(super) struct Ride {
     pub(super) workout_events: crate::workout::player::Events,
     /// Where each journal stood when its boot scan ended.
     scanned: Scanned,
+    /// Where the rider's answer to DISCARD RIDE? stands.
+    pub(super) discard: Discard,
+}
+
+/// The rider's answer to DISCARD RIDE?: the ride is saved as any other, then
+/// hidden.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Discard {
+    #[default]
+    Idle,
+    /// The Finish under this token is being written.
+    Asked(u32),
+    /// The ride was saved, and hidden or not.
+    Saved { hidden: bool },
+    /// The Finish failed: the ride is still open.
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -231,6 +247,7 @@ impl Default for Ride {
             workout: None,
             workout_events: crate::workout::player::Events::new(),
             scanned: Scanned::default(),
+            discard: Discard::Idle,
         }
     }
 }
@@ -834,6 +851,7 @@ impl Runtime {
                     log::warn!(target: "sdk.workout", "history_forget_failed error={}", error.name());
                 }
                 self.facts.forget(bulk, medium);
+                self.deleted.forget(bulk, medium, now);
             }
         }
         if let Some(paused) = lost_paused
@@ -899,12 +917,21 @@ impl Runtime {
             ride.settled = Some((sample, step, None));
         }
         let mut finished = None;
+        let mut discarded = None;
         for medium in [Medium::Internal, Medium::Bulk] {
             let Some(result) = ride.recorder_mut(medium).take_result() else {
                 continue;
             };
+            let discard = result.token != 0 && ride.discard == Discard::Asked(result.token);
+            if discard && !result.ok {
+                ride.discard = Discard::Failed;
+            }
             if result.ok && result.action == Some(Action::Finish) {
-                finished = Some(medium);
+                if discard {
+                    discarded = Some(medium);
+                } else {
+                    finished = Some(medium);
+                }
             }
             if result.token != 0 {
                 // A ride the rider or host asked for that failed to start is
@@ -923,6 +950,14 @@ impl Runtime {
                 ride.give_up_continuation();
             }
         }
+        // A discarded ride, once hidden, sets no bests and keeps no facts or
+        // workout record; one that could not be hidden is kept with them.
+        if let Some(medium) = discarded
+            && !self.ride_discarded(bulk, medium)
+        {
+            finished = Some(medium);
+        }
+        let ride = &mut self.ride;
         if let Some(medium) = finished {
             super::bests::settle(
                 ride,

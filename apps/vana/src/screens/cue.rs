@@ -5,8 +5,9 @@
 //! ride (ready, paused, end ride, ride saved), never on live ride pages and
 //! never as words. Their colour follows the palette: `GREEN` disc for the
 //! action that moves forward (start, resume, save, done), a `RAISED` disc for
-//! stepping back or ending. See `docs/ui.md`, "Button cues".
-use super::chrome::{BLACK, GREEN, HEIGHT, RAISED, Row, WHITE, blend, disc, paint_disc_over};
+//! stepping back or ending, a `RED` one for throwing a ride away. See
+//! `docs/ui.md`, "Button cues".
+use super::chrome::{BLACK, GREEN, HEIGHT, RAISED, RED, Row, WHITE, blend, disc, paint_disc_over};
 
 /// Which button a cue sits beside.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +16,8 @@ pub enum Corner {
     TopLeft,
     /// ACT.
     BottomRight,
+    /// MOVE.
+    BottomLeft,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +32,8 @@ pub enum Icon {
     Back,
     /// Send to the phone.
     Send,
+    /// Discard or delete a ride.
+    Trash,
 }
 
 /// The visible quarter disc's radius.
@@ -49,12 +54,13 @@ impl Cue {
         Self { corner, icon }
     }
 
-    /// Forward actions are green with a black icon; others are raised grey
-    /// with a white one.
+    /// Forward actions are green with a black icon, throwing a ride away is
+    /// red with a white one; others are raised grey with a white one.
     pub const fn colors(&self) -> (u16, u16) {
         match self.icon {
             Icon::Play | Icon::Check | Icon::Send => (GREEN, BLACK),
             Icon::Stop | Icon::Back => (RAISED, WHITE),
+            Icon::Trash => (RED, WHITE),
         }
     }
 
@@ -63,6 +69,7 @@ impl Cue {
         match self.corner {
             Corner::TopLeft => (0, 0),
             Corner::BottomRight => (super::chrome::WIDTH as i32, HEIGHT as i32),
+            Corner::BottomLeft => (0, HEIGHT as i32),
         }
     }
 
@@ -73,6 +80,7 @@ impl Cue {
                 super::chrome::WIDTH as i32 - ICON_INSET,
                 HEIGHT as i32 - ICON_INSET,
             ),
+            Corner::BottomLeft => (ICON_INSET, HEIGHT as i32 - ICON_INSET),
         }
     }
 
@@ -80,7 +88,7 @@ impl Cue {
     pub const fn rows(&self) -> core::ops::Range<usize> {
         match self.corner {
             Corner::TopLeft => 0..RADIUS + 1,
-            Corner::BottomRight => HEIGHT - RADIUS - 1..HEIGHT,
+            Corner::BottomRight | Corner::BottomLeft => HEIGHT - RADIUS - 1..HEIGHT,
         }
     }
 
@@ -201,6 +209,10 @@ fn icon(icon: Icon, x: i32, y: i32) -> u8 {
             &[(-18, -2), (0, -22), (18, -2)],
             7,
         )),
+        // A bin: the lid and its handle, then the body narrowing down.
+        Icon::Trash => stroke(x, y, &[(-24, -16), (24, -16)], 5)
+            .max(stroke(x, y, &[(-8, -16), (-8, -24), (8, -24), (8, -16)], 5))
+            .max(stroke(x, y, &[(-16, -8), (-12, 26), (12, 26), (16, -8)], 5)),
     }
 }
 
@@ -296,8 +308,16 @@ mod tests {
 
     #[test]
     fn cues_sit_in_their_corner_and_paint_their_reference() {
-        for corner in [Corner::TopLeft, Corner::BottomRight] {
-            for icon in [Icon::Play, Icon::Stop, Icon::Check, Icon::Back, Icon::Send] {
+        for corner in [Corner::TopLeft, Corner::BottomRight, Corner::BottomLeft] {
+            let icons = [
+                Icon::Play,
+                Icon::Stop,
+                Icon::Check,
+                Icon::Back,
+                Icon::Send,
+                Icon::Trash,
+            ];
+            for icon in icons {
                 let cue = Cue::new(corner, icon);
                 let (fill, ink) = cue.colors();
                 let mut inked = 0;
@@ -313,11 +333,13 @@ mod tests {
                 let (x, y) = match corner {
                     Corner::TopLeft => (2, 2),
                     Corner::BottomRight => (WIDTH - 3, HEIGHT - 3),
+                    Corner::BottomLeft => (2, HEIGHT - 3),
                 };
                 assert_eq!(cue.pixel(x, y, BLACK), fill, "{cue:?} fills its corner");
                 let (far_x, far_y) = match corner {
                     Corner::TopLeft => (RADIUS + 2, 2),
                     Corner::BottomRight => (WIDTH - RADIUS - 3, HEIGHT - 3),
+                    Corner::BottomLeft => (RADIUS + 2, HEIGHT - 3),
                 };
                 assert_eq!(cue.pixel(far_x, far_y, BLACK), BLACK, "{cue:?} stays small");
             }

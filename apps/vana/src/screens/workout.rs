@@ -29,6 +29,8 @@ pub enum Page {
     Ride,
     /// "End ride?" over a paused ride.
     EndRide,
+    /// "Discard ride?", which MOVE opens from "End ride?".
+    DiscardRide,
     /// Saving, then the saved ride's summary.
     Summary,
     Settings,
@@ -57,6 +59,7 @@ impl Page {
             Self::Ready => "ready",
             Self::Ride => "ride",
             Self::EndRide => "end_ride",
+            Self::DiscardRide => "discard_ride",
             Self::Summary => "summary",
             Self::Settings => "settings",
             Self::Bests => "bests",
@@ -334,8 +337,10 @@ pub struct View<'a> {
     pub paused_secs: u32,
     /// The paused ride shows the paused screen rather than a ride page.
     pub pause_screen: bool,
+    /// Whether END RIDE? offers DISCARD RIDE?, and whether that was answered.
+    pub discard: Discard,
     /// Button cues prepared for this frame.
-    pub(super) cues: heapless::Vec<Cue, 2>,
+    pub(super) cues: &'static [Cue],
     pub(super) badge: Option<Badge>,
 }
 
@@ -389,7 +394,8 @@ impl<'a> View<'a> {
             light: false,
             paused_secs: 0,
             pause_screen: false,
-            cues: heapless::Vec::new(),
+            discard: Discard::Unavailable,
+            cues: &[],
             badge: None,
         };
         // The brand flash is painted before anything prepares a frame, as
@@ -667,9 +673,13 @@ impl<'a> View<'a> {
     }
 
     /// The screen takes the whole panel, without the status bar: the brand,
-    /// the paused screen and the end-ride question.
+    /// the paused screen and the questions, whose back cue the bar would cut.
     fn full_screen(&self) -> bool {
-        matches!(self.page, Page::Boot | Page::EndRide) || self.paused_screen_shown()
+        match self.page {
+            Page::Boot | Page::EndRide | Page::DiscardRide => true,
+            Page::Summary | Page::PastRide => summary::question_shown(self.after()),
+            _ => self.paused_screen_shown(),
+        }
     }
 
     /// The scrolling list this page shows, if any.
@@ -738,7 +748,7 @@ impl<'a> View<'a> {
         if let Some(badge) = &self.badge {
             badge.paint(row);
         }
-        for cue in &self.cues {
+        for cue in self.cues {
             cue.paint(row);
         }
         self.paint_toast(row);
@@ -819,7 +829,7 @@ impl<'a> View<'a> {
         if let Some(badge) = &self.badge {
             color = badge.pixel(x, y, color);
         }
-        for cue in &self.cues {
+        for cue in self.cues {
             color = cue.pixel(x, y, color);
         }
         color
@@ -833,9 +843,9 @@ impl<'a> View<'a> {
             _ => Mark::None,
         };
         self.bar = StatusBar::with_battery(&self.time, self.gps, self.battery, mark);
-        self.cues.clear();
+        self.cues = &[];
         self.badge = None;
-        let cues: &[Cue] = match self.page {
+        let cues: &'static [Cue] = match self.page {
             Page::Boot => {
                 fill(self, |view| view.boot_canvas());
                 &[]
@@ -856,7 +866,19 @@ impl<'a> View<'a> {
             }
             Page::EndRide => {
                 fill(self, ride::end::prepare);
-                &ride::end::CUES
+                if self.discard == Discard::Offered {
+                    &ride::end::DISCARD_CUES
+                } else {
+                    &ride::end::CUES
+                }
+            }
+            Page::DiscardRide => {
+                fill(self, ride::end::discard);
+                if self.discard == Discard::Answered {
+                    &[]
+                } else {
+                    &ride::end::TRASH_CUES
+                }
             }
             Page::Summary => {
                 self.bar
@@ -902,10 +924,12 @@ impl<'a> View<'a> {
             Page::History => &[],
             Page::PastRide => {
                 self.bar
-                    .set_pages(self.after().page, summary::pages(self.after().elevation));
+                    .set_pages(self.after().page, summary::total_pages(self.after()));
                 self.marks = ride::marks(self);
                 fill(self, summary::prepare);
-                if self.after().saving == summary::Saving::Reading {
+                if summary::delete_shown(self.after()) {
+                    &ride::end::TRASH_CUES
+                } else if self.after().saving == summary::Saving::Reading {
                     &[]
                 } else {
                     &summary::PAST_CUES
@@ -926,14 +950,25 @@ impl<'a> View<'a> {
             }
             Page::Home | Page::Sensors => &[],
         };
-        self.cues = cues.iter().copied().collect();
+        self.cues = cues;
         // The FTP sheet covers whatever page it shows over.
         if let Some((new, old)) = self.ftp_offer {
             fill(self, |_| super::workouts::ftp_sheet(new, old));
-            self.cues.clear();
+            self.cues = &[];
             self.badge = None;
         }
     }
+}
+
+/// Discarding the ride END RIDE? asks about.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Discard {
+    /// No FILES store to note it on: END RIDE? has no trash cue.
+    #[default]
+    Unavailable,
+    Offered,
+    /// DISCARD RIDE? was answered: the ride is being saved, to be hidden.
+    Answered,
 }
 
 #[derive(Clone)]

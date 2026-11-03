@@ -21,8 +21,8 @@ use std::fmt;
 use std::io;
 use std::path::Path;
 use vana::ride::bulk::{CHECKPOINT_RECORDS, TAG, encode_catalog};
-use vana::ride::facts;
 use vana::ride::log::{Catalog, Kind, SLOT_SIZE, Scanner, Slot, decode};
+use vana::ride::{deleted, facts};
 
 /// What a host pulled from the device after the session, through the
 /// read-only paths: ride export and `files get`.
@@ -486,7 +486,8 @@ fn write_rides(card: &mut SimBulk, log: &Rides, slots: &[u8]) -> Result<(), Stri
 
 /// FILES as the header lists it: each file still at its revision, the ride
 /// facts table taken back to the rides that had ended when that gives the
-/// table of digest `facts`, and nothing else.
+/// table of digest `facts`, the hidden rides' table cut back to its length
+/// at power-on (it only grows at its end), and nothing else.
 fn write_files(
     card: &mut SimBulk,
     listed: &origin::Files<'_>,
@@ -512,6 +513,9 @@ fn write_files(
                     Some((_, bytes)) if entry.name == facts::TABLE => {
                         facts_at_power_on(bytes, ended)
                             .filter(|table| facts.is_some() && facts::table_digest(table) == facts)
+                    }
+                    Some((_, bytes)) if entry.name == deleted::TABLE => {
+                        bytes.get(..entry.length as usize).map(<[u8]>::to_vec)
                     }
                     _ => None,
                 };

@@ -7,6 +7,7 @@ pub mod climb;
 pub mod climb_ahead;
 pub mod control;
 pub mod course;
+pub mod deleted;
 pub mod directory;
 pub mod elevation;
 pub mod facts;

@@ -280,6 +280,22 @@ impl Sim {
         self.wait_for("RIDE SAVED", seconds(5)).unwrap();
     }
 
+    /// Pause if still recording, then TopLeft asks "End ride?", BottomLeft
+    /// "Discard ride?" and BottomRight discards it. Ends on Home.
+    #[track_caller]
+    pub fn discard_ride(&mut self) {
+        if self.ride_state() == "recording" {
+            self.pause_ride();
+        }
+        self.press(Button::TopLeft);
+        self.expect_text("END RIDE?");
+        self.press(Button::BottomLeft);
+        self.expect_text("DISCARD RIDE?");
+        self.press(Button::BottomRight);
+        self.wait_for("RIDE DISCARDED", seconds(5)).unwrap();
+        assert!(self.on_home(), "{}", self.screen().text());
+    }
+
     /// Finish the summary with BottomRight and land on Home.
     #[track_caller]
     pub fn done(&mut self) {

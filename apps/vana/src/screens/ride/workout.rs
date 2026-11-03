@@ -18,7 +18,7 @@ use crate::screens::chrome::{
     Rect, Row, SECONDARY, TERTIARY, VALUE, WHITE, blend, zone_color,
 };
 use crate::screens::workout::View;
-use crate::workout::model::{Length, Metric, Name, Played, Target, Test, Workout};
+use crate::workout::model::{Intensity, Length, Metric, Name, Played, Ramp, Target, Test, Workout};
 use crate::workout::player::{COUNTDOWN_S, Compliance, Left, Now, Player, TestReadout};
 use core::fmt::Write;
 use firmware_shell::rendering::font::SPILL;
@@ -71,6 +71,8 @@ const _: () = assert!(NOW_TOP + NOW_HEIGHT <= BODY.bottom);
 const OPEN_WEIGHT_S: u32 = 120;
 /// A target of this much intensity fills the chart's height.
 const FULL_PCT: u32 = 150;
+/// Most stairs a ramp draws before the one on now.
+const MAX_STAIRS: u32 = 40;
 
 /// The chart's columns, prepared once per frame.
 #[derive(Clone)]
@@ -169,7 +171,9 @@ fn length(value: &mut Text<12>, length: Length) {
 /// What a target asks for, in words: "265-300 W", "ALL OUT", "HOLD 260 W".
 fn target_text(value: &mut Text<24>, played: Played, now: &Now, test: Option<Test>) {
     let _ = match (played.step.target, now.band) {
-        (Target::Ramp { .. }, Some(band)) => write!(value, "HOLD {} W", band.low),
+        (Target::Ramp { .. } | Target::FtpRamp { .. }, Some(band)) => {
+            write!(value, "HOLD {} W", band.low)
+        }
         (Target::Free, _) if test == Some(Test::Twenty) => value.push_str("ALL OUT"),
         (Target::Free, _) => value.push_str("FREE RIDE"),
         (_, Some(band)) if band.low == band.high => {
@@ -257,7 +261,6 @@ pub(super) fn prepare(view: &View) -> Canvas {
     let mut name = Text::<24>::new();
     if training.done {
         let _ = name.push_str("WORKOUT DONE");
-        let _ = target.push_str("FREE RIDE");
     } else {
         step_name(&mut name, now.played, false);
         target_text(&mut target, now.played, now, training.test);
@@ -266,28 +269,31 @@ pub(super) fn prepare(view: &View) -> Canvas {
     let name_room = CAPTION.width(name.as_bytes()) + 8 + 2 * SPILL;
     // The target is never cut: it keeps at least its smallest size.
     let target_floor = CAPTION.width(target.as_bytes()) + SPILL;
-    let target = canvas.fit(
-        &[&BODY_FACE, &CAPTION],
-        target.as_bytes(),
-        (width * 3 / 5)
-            .min(width.saturating_sub(name_room))
-            .max(target_floor),
-        RIGHT - SPILL,
-        STEP_BASE,
-        Align::Right,
-        target_color,
-    );
+    let name_right = if training.done {
+        width
+    } else {
+        let target = canvas.fit(
+            &[&BODY_FACE, &CAPTION],
+            target.as_bytes(),
+            (width * 3 / 5)
+                .min(width.saturating_sub(name_room))
+                .max(target_floor),
+            RIGHT - SPILL,
+            STEP_BASE,
+            Align::Right,
+            target_color,
+        );
+        target.left.saturating_sub(LEFT + 8)
+    };
     let name_color = if training.done { GREEN } else { WHITE };
-    if !training.done
-        && CAPTION.width(name.as_bytes()) + SPILL > target.left.saturating_sub(LEFT + 8)
-    {
+    if !training.done && CAPTION.width(name.as_bytes()) + SPILL > name_right {
         name = Text::new();
         step_name(&mut name, now.played, true);
     }
     canvas.fit(
         &[&BODY_FACE, &CAPTION],
         name.as_bytes(),
-        target.left.saturating_sub(LEFT + 8),
+        name_right,
         LEFT,
         STEP_BASE,
         Align::Left,
@@ -378,7 +384,17 @@ pub(super) fn prepare(view: &View) -> Canvas {
             }
             Left::Open(secs) => {
                 clock(&mut left, secs);
-                (b"LAP TO END", false)
+                let starts_test = now
+                    .next
+                    .is_some_and(|next| next.step.intensity == Intensity::Test);
+                (
+                    if starts_test {
+                        b"LAP TO START"
+                    } else {
+                        b"LAP TO END"
+                    },
+                    false,
+                )
             }
         };
         let value = canvas.fit(
@@ -495,7 +511,7 @@ fn intensity(target: Target, profile: &TrainingProfile) -> Option<u32> {
         Target::HeartZone(zone) => [55, 70, 85, 98, 110][usize::from(zone.clamp(1, 5) - 1)],
         Target::Lthr { low, high } => (u32::from(low) + u32::from(high)) / 2,
         Target::Cadence { .. } => 50,
-        Target::Ramp { .. } => FULL_PCT,
+        Target::Ramp { .. } | Target::FtpRamp { .. } => FULL_PCT,
     })
 }
 
@@ -511,46 +527,88 @@ fn zone(target: Target, profile: &TrainingProfile) -> u16 {
     }
 }
 
+/// Stairs a ramp draws: up to the first stage that reaches the chart's top,
+/// and the stage on now even past it.
+fn stairs(ramp: Ramp, profile: &TrainingProfile, current: u32) -> u32 {
+    let top = u32::from(profile.ftp_watts) * FULL_PCT;
+    let reach = (0..MAX_STAIRS)
+        .find(|&stage| u32::from(ramp.stage_watts(stage)) * 100 >= top)
+        .unwrap_or(MAX_STAIRS);
+    reach.max(current) + 1
+}
+
 /// Lay out the chart: each played step takes width in proportion to its
-/// time, with a one-column gap before it.
+/// time, with a one-column gap before it. A ramp is a stair per stage.
 pub fn chart(player: &Player, profile: &TrainingProfile) -> Chart {
     let mut chart = Chart::default();
-    let weight = |played: &Played| match played.step.length {
-        Length::Time(secs) => u32::from(secs),
-        Length::Distance(m) => (m / 8).max(60),
-        Length::Open => OPEN_WEIGHT_S,
-    };
     let workout: &Workout = player.workout();
     let done = player.done();
+    let now = player.now(profile);
+    let position = now.position;
+    let ramp_of = |index: usize, played: &Played| {
+        let ramp = played.step.target.ramp(profile)?;
+        let current = match now.left {
+            Left::Open(secs) if index == position && !done => ramp.stage(secs),
+            _ => 0,
+        };
+        Some((ramp, stairs(ramp, profile, current), current))
+    };
+    let weight = |index: usize, played: &Played| match (ramp_of(index, played), played.step.length)
+    {
+        (Some((ramp, stairs, _)), _) => stairs * u32::from(ramp.every),
+        (None, Length::Time(secs)) => u32::from(secs),
+        (None, Length::Distance(m)) => (m / 8).max(60),
+        (None, Length::Open) => OPEN_WEIGHT_S,
+    };
     let total = workout
         .played()
-        .map(|p| u64::from(weight(&p)))
+        .enumerate()
+        .map(|(index, p)| u64::from(weight(index, &p)))
         .sum::<u64>()
         .max(1);
     let mut start = 0u64;
-    let position = player.now(profile).position;
     for (index, played) in workout.played().enumerate() {
         let from = (start * CHART_WIDTH as u64 / total) as usize;
-        start += u64::from(weight(&played));
+        start += u64::from(weight(index, &played));
         let to = (start * CHART_WIDTH as u64 / total) as usize;
-        let color = zone(played.step.target, profile);
         let ahead = index > position && !done;
-        let color = if ahead { blend(color, BLACK, 4) } else { color };
-        let pct = intensity(played.step.target, profile).unwrap_or(40);
-        let shade = chart.index(color);
-        for column in (from + 1).min(to)..to.min(CHART_WIDTH) {
-            let pct = if let Target::Ramp { .. } = played.step.target {
-                // A ramp rises across its width.
-                60 + (FULL_PCT - 60) * (column - from) as u32 / (to - from).max(1) as u32
-            } else {
-                pct
+        let first = (from + 1).min(to);
+        let last = to.min(CHART_WIDTH);
+        let ramp = ramp_of(index, &played);
+        let (color, pct) = (
+            zone(played.step.target, profile),
+            intensity(played.step.target, profile).unwrap_or(40),
+        );
+        if index == position && !done {
+            chart.now = (first, last);
+        }
+        let mut stair_now = None::<(usize, usize)>;
+        for column in first..last {
+            let (color, pct, dim) = match ramp {
+                Some((ramp, stairs, current)) => {
+                    let stage =
+                        ((column - first) as u32 * stairs / (last - first) as u32).min(stairs - 1);
+                    let watts = ramp.stage_watts(stage);
+                    if index == position && !done && stage == current {
+                        let (low, _) = stair_now.unwrap_or((column, column));
+                        stair_now = Some((low, column + 1));
+                    }
+                    let dim = ahead || (index == position && !done && stage > current);
+                    (
+                        zone_color(profile.power_zone(watts)),
+                        u32::from(watts) * 100 / u32::from(profile.ftp_watts.max(1)),
+                        dim,
+                    )
+                }
+                None => (color, pct, ahead),
             };
+            let color = if dim { blend(color, BLACK, 4) } else { color };
             let height = (pct.min(FULL_PCT) as usize * CHART_HEIGHT / FULL_PCT as usize).max(3);
             chart.tops[column] = (CHART_HEIGHT - height) as u8;
-            chart.colors[column] = shade;
+            chart.colors[column] = chart.index(color);
         }
-        if index == position && !done {
-            chart.now = ((from + 1).min(to), to.min(CHART_WIDTH));
+        if let Some(stair) = stair_now {
+            chart.now = stair;
         }
     }
     chart
@@ -614,7 +672,6 @@ mod tests {
     use crate::screens::ride::RidePage;
     use crate::screens::workout::Page;
     use crate::workout::library::{BUILT_IN, FTP_RAMP, FTP_TWENTY, VO2_MAX};
-    use crate::workout::model::Intensity;
     use crate::workout::player::Player;
 
     fn page(player: &Player, watts: Option<u16>) -> View<'static> {
@@ -728,12 +785,49 @@ mod tests {
         let view = page(&player, Some(262));
         assert!(view.canvas().shows("ALL OUT") && view.canvas().shows("AVG 262 W"));
         let mut player = Player::new(FTP_RAMP);
+        let view = page(&player, Some(140));
+        assert!(view.canvas().shows("LAP TO START"), "the warm-up waits");
         player.skip();
         ride(&mut player, 130, 140);
         let view = page(&player, Some(140));
-        assert!(view.canvas().shows("HOLD 140 W"), "third minute");
+        assert!(view.canvas().shows("HOLD 134 W"), "third minute");
         assert!(view.canvas().shows("BEST 140 W"), "the best minute");
         assert!(view.canvas().shows("LAP TO END"));
+    }
+
+    #[test]
+    fn a_ramp_is_a_staircase_with_the_bar_under_the_stair_on_now() {
+        let profile = TrainingProfile::default();
+        let mut player = Player::new(FTP_RAMP);
+        player.skip();
+        ride(&mut player, 130, 140);
+        let chart = chart(&player, &profile);
+        let (from, to) = chart.now;
+        assert!(to - from > 3, "a stair, not the whole ramp");
+        assert!((from..to).all(|c| chart.tops[c] == chart.tops[from]));
+        assert!(
+            chart.tops[from - 1] > chart.tops[from],
+            "the stair before is lower"
+        );
+        assert!(
+            chart.tops[to] < chart.tops[from],
+            "the next stair is higher"
+        );
+        let ahead = blend(zone_color(profile.power_zone(147)), BLACK, 4);
+        assert_eq!(chart.color(to), ahead, "stairs ahead are dim");
+        assert_ne!(chart.color(from), chart.color(to));
+    }
+
+    #[test]
+    fn a_finished_workout_says_so_in_full() {
+        let mut player = Player::new(FTP_RAMP);
+        while !player.done() {
+            player.skip();
+        }
+        let view = page(&player, Some(120));
+        assert!(view.canvas().shows("WORKOUT DONE"));
+        view.canvas()
+            .assert_laid_out(PAGE, &["WORKOUT DONE"], "done");
     }
 
     #[test]

@@ -370,7 +370,7 @@ impl Player {
             if self.step_mm >= u64::from(metres) * 1000 {
                 self.next(events, false);
             }
-        } else if self.ramp_failed() {
+        } else if self.ramp_failed(profile) {
             self.next(events, false);
         }
     }
@@ -434,9 +434,10 @@ impl Player {
         }
     }
 
-    fn ramp_failed(&self) -> bool {
-        matches!(self.played.step.target, Target::Ramp { every, .. }
-            if self.step_ms >= u64::from(every) * 1000 && self.ramp_low_ms >= RAMP_FAIL_MS)
+    fn ramp_failed(&self, profile: &TrainingProfile) -> bool {
+        self.played.step.target.ramp(profile).is_some_and(|ramp| {
+            self.step_ms >= u64::from(ramp.every) * 1000 && self.ramp_low_ms >= RAMP_FAIL_MS
+        })
     }
 
     /// The rider ends the step now, as a lap press does.
@@ -712,17 +713,17 @@ mod tests {
     #[test]
     fn ramp_ends_at_failure_and_offers_three_quarters_of_the_best_minute() {
         let mut player = Player::new(FTP_RAMP);
-        let profile = TrainingProfile::default();
+        let profile = TrainingProfile::new(250, 170).unwrap();
         player.skip();
-        // The rider holds each step for 8 minutes: 100..240 W.
+        // The rider holds each step for 8 minutes: 125..230 W at the 250 W FTP of `ride`.
         for stage in 0..8u16 {
-            let events = ride(&mut player, 60, 100 + 20 * stage);
+            let events = ride(&mut player, 60, 125 + 15 * stage);
             assert!(events.is_empty(), "{stage}: {events:?}");
         }
         let now = player.now(&profile);
-        assert_eq!(now.band.map(|b| b.low), Some(260));
-        assert_eq!(now.test, Some(TestReadout::BestMinute(240)));
-        // Then fades: 200 W is under 90 % of 260 W, and the ramp ends 10 s later.
+        assert_eq!(now.band.map(|b| b.low), Some(245));
+        assert_eq!(now.test, Some(TestReadout::BestMinute(230)));
+        // Then fades: 200 W is under 90 % of 245 W, and the ramp ends 10 s later.
         let mut events = std::vec::Vec::new();
         for _ in 0..20 {
             events.extend(ride(&mut player, 1, 200));
@@ -730,8 +731,8 @@ mod tests {
                 break;
             }
         }
-        // 75 % of 240 W.
-        assert_eq!(events, [Event::Ftp(180), Event::Started(2)]);
+        // 75 % of 230 W.
+        assert_eq!(events, [Event::Ftp(173), Event::Started(2)]);
         assert_eq!(
             player.now(&profile).played.step.intensity,
             Intensity::Cooldown
@@ -742,7 +743,7 @@ mod tests {
     fn a_ramp_stopped_by_the_rider_still_counts() {
         let mut player = Player::new(FTP_RAMP);
         player.skip();
-        ride(&mut player, 30, 100);
+        ride(&mut player, 30, 125);
         assert_eq!(
             player.skip().as_slice(),
             [Event::Started(2)],
@@ -751,11 +752,11 @@ mod tests {
         let mut player = Player::new(FTP_RAMP);
         player.skip();
         for stage in 0..10u16 {
-            ride(&mut player, 60, 100 + 20 * stage);
+            ride(&mut player, 60, 125 + 15 * stage);
         }
         assert_eq!(
             player.skip().as_slice(),
-            [Event::Ftp(210), Event::Started(2)]
+            [Event::Ftp(195), Event::Started(2)]
         );
     }
 

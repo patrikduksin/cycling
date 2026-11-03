@@ -143,6 +143,35 @@ pub enum Target {
     /// An FTP ramp: `start` watts for the first `every` seconds, then `step`
     /// watts more each `every` seconds until the rider fails.
     Ramp { start: u16, step: u16, every: u16 },
+    /// The same ramp in percent of FTP, so it fits the rider.
+    FtpRamp { start: u8, step: u8, every: u16 },
+}
+
+/// A ramp in watts: `start` for its first `every` seconds, then `step` more
+/// each `every` seconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ramp {
+    pub start: u16,
+    pub step: u16,
+    pub every: u16,
+}
+
+impl Ramp {
+    /// The stage `elapsed_s` into the ramp, the first being 0.
+    pub fn stage(self, elapsed_s: u32) -> u32 {
+        elapsed_s / u32::from(self.every.max(1))
+    }
+
+    /// The watts of `stage`, topping out instead of overflowing.
+    pub fn stage_watts(self, stage: u32) -> u16 {
+        (u64::from(self.start) + u64::from(stage) * u64::from(self.step)).min(u64::from(u16::MAX))
+            as u16
+    }
+
+    /// The watts `elapsed_s` into the ramp.
+    pub fn watts(self, elapsed_s: u32) -> u16 {
+        self.stage_watts(self.stage(elapsed_s))
+    }
 }
 
 /// What a target measures, once resolved against the profile.
@@ -194,22 +223,25 @@ impl Target {
                 low: u16::from(low),
                 high: u16::from(high),
             },
-            Self::Ramp { .. } => {
-                let watts = self.ramp_watts(elapsed_s)?;
+            Self::Ramp { .. } | Self::FtpRamp { .. } => {
+                let watts = self.ramp(profile)?.watts(elapsed_s);
                 power(watts, watts.saturating_add(watts / 20))
             }
         })
     }
 
-    /// The ramp's watts `elapsed_s` into it.
-    pub fn ramp_watts(self, elapsed_s: u32) -> Option<u16> {
-        let Self::Ramp { start, step, every } = self else {
-            return None;
-        };
-        let stage = elapsed_s / u32::from(every.max(1));
-        Some(
-            (u64::from(start) + u64::from(stage) * u64::from(step)).min(u64::from(u16::MAX)) as u16,
-        )
+    /// The ramp in watts for `profile`; `None` for any other target.
+    pub fn ramp(self, profile: &TrainingProfile) -> Option<Ramp> {
+        let of_ftp = |pct: u8| ((u32::from(profile.ftp_watts) * u32::from(pct) + 50) / 100) as u16;
+        match self {
+            Self::Ramp { start, step, every } => Some(Ramp { start, step, every }),
+            Self::FtpRamp { start, step, every } => Some(Ramp {
+                start: of_ftp(start),
+                step: of_ftp(step).max(1),
+                every,
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -373,6 +405,11 @@ impl Workout {
                     step: rise,
                     every,
                 } => start > 0 && rise > 0 && every > 0 && step_open,
+                Target::FtpRamp {
+                    start,
+                    step: rise,
+                    every,
+                } => start > 0 && rise > 0 && start <= 250 && every > 0 && step_open,
             };
             if !length_ok || !target_ok {
                 return Err(Invalid::Step);
@@ -523,16 +560,27 @@ mod tests {
             step: 20,
             every: 60,
         };
-        assert_eq!(ramp.ramp_watts(0), Some(100));
-        assert_eq!(ramp.ramp_watts(59), Some(100));
-        assert_eq!(ramp.ramp_watts(60), Some(120));
+        let watts = ramp.ramp(&profile).unwrap();
+        assert_eq!(watts.watts(0), 100);
+        assert_eq!(watts.watts(59), 100);
+        assert_eq!(watts.watts(60), 120);
         assert_eq!(ramp.band(&profile, 600).unwrap().low, 300);
+        let of_ftp = Target::FtpRamp {
+            start: 50,
+            step: 6,
+            every: 60,
+        };
+        let watts = of_ftp.ramp(&profile).unwrap();
+        assert_eq!((watts.start, watts.step), (125, 15));
+        assert_eq!(watts.stage(119), 1);
+        assert_eq!(watts.watts(120), 155);
+        assert_eq!(Target::Free.ramp(&profile), None);
         let steep = Target::Ramp {
             start: 1,
             step: u16::MAX,
             every: 1,
         };
-        assert_eq!(steep.ramp_watts(86_400), Some(u16::MAX));
+        assert_eq!(steep.ramp(&profile).unwrap().watts(86_400), u16::MAX);
     }
 
     #[test]
@@ -542,8 +590,9 @@ mod tests {
             step: u16::MAX,
             every: 1,
         };
-        assert_eq!(ramp.ramp_watts(65_537), Some(u16::MAX));
-        assert_eq!(ramp.ramp_watts(u32::MAX), Some(u16::MAX));
+        let ramp = ramp.ramp(&TrainingProfile::default()).unwrap();
+        assert_eq!(ramp.watts(65_537), u16::MAX);
+        assert_eq!(ramp.watts(u32::MAX), u16::MAX);
     }
 
     #[test]

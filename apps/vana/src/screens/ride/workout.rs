@@ -170,10 +170,11 @@ fn length(value: &mut Text<12>, length: Length) {
 
 /// What a target asks for, in words: "265-300 W", "ALL OUT", "HOLD 260 W".
 fn target_text(value: &mut Text<24>, played: Played, now: &Now, test: Option<Test>) {
+    if let Some(watts) = now.ramp_watts {
+        let _ = write!(value, "HOLD {watts} W");
+        return;
+    }
     let _ = match (played.step.target, now.band) {
-        (Target::Ramp { .. } | Target::FtpRamp { .. }, Some(band)) => {
-            write!(value, "HOLD {} W", band.low)
-        }
         (Target::Free, _) if test == Some(Test::Twenty) => value.push_str("ALL OUT"),
         (Target::Free, _) => value.push_str("FREE RIDE"),
         (_, Some(band)) if band.low == band.high => {

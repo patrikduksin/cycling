@@ -103,6 +103,8 @@ pub struct Now {
     pub steps: usize,
     pub played: Played,
     pub band: Option<Band>,
+    /// The watts of the ramp's stage on now; its band is wider than that.
+    pub ramp_watts: Option<u16>,
     /// The reading the band is checked against.
     pub reading: Option<u16>,
     pub compliance: Option<Compliance>,
@@ -252,6 +254,11 @@ impl Player {
             Metric::Heart => self.last_sample.heart_bpm,
             Metric::Cadence => self.last_sample.cadence_tenths.map(|t| (t + 5) / 10),
         }
+    }
+
+    fn ramp_watts(&self, profile: &TrainingProfile) -> Option<u16> {
+        let ramp = self.played.step.target.ramp(profile)?;
+        Some(ramp.watts((self.step_ms / 1000) as u32))
     }
 
     fn band(&self, profile: &TrainingProfile) -> Option<Band> {
@@ -422,7 +429,7 @@ impl Player {
                         self.best_minute = Some(self.best_minute.map_or(mean, |b| b.max(mean)));
                     }
                 }
-                let target = self.band(profile).map_or(0, |b| u32::from(b.low));
+                let target = self.ramp_watts(profile).map_or(0, u32::from);
                 // Without a power reading there is no evidence either way.
                 match self.power.watts() {
                     Some(w) if u32::from(w) * 100 >= target * RAMP_FAIL_PCT => self.ramp_low_ms = 0,
@@ -541,6 +548,11 @@ impl Player {
             steps: self.steps,
             played: self.played,
             band,
+            ramp_watts: if self.done {
+                None
+            } else {
+                self.ramp_watts(profile)
+            },
             reading,
             compliance: band.and_then(|band| self.compliance(band, profile)),
             left,
@@ -721,7 +733,8 @@ mod tests {
             assert!(events.is_empty(), "{stage}: {events:?}");
         }
         let now = player.now(&profile);
-        assert_eq!(now.band.map(|b| b.low), Some(245));
+        assert_eq!(now.ramp_watts, Some(245));
+        assert_eq!(now.band.map(|b| (b.low, b.high)), Some((233, 270)));
         assert_eq!(now.test, Some(TestReadout::BestMinute(230)));
         // Then fades: 200 W is under 90 % of 245 W, and the ramp ends 10 s later.
         let mut events = std::vec::Vec::new();

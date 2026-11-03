@@ -226,7 +226,7 @@ pub const FTP_TWENTY: Workout = Workout::new(
 
 /// An open warm-up, then one-minute steps from 50 % FTP, 6 % more each, from
 /// the lap press until the rider cannot hold one. FTP is 75 % of the best
-/// minute.
+/// minute. It ends with the test, so the ride goes straight to the result.
 pub const FTP_RAMP: Workout = Workout::new(
     "FTP RAMP TEST",
     &[
@@ -241,7 +241,6 @@ pub const FTP_RAMP: Workout = Workout::new(
             },
         )
         .note("HOLD EACH STEP"),
-        Step::new(Cooldown, min(5), ftp(40, 50)),
     ],
     &[],
     Some(Test::Ramp),
@@ -674,11 +673,13 @@ pub(crate) mod tests {
             }
             let steps = workout.steps();
             assert_eq!(steps[0].intensity, Warmup, "{name}: starts warm");
-            assert_eq!(
-                steps[steps.len() - 1].intensity,
-                Cooldown,
-                "{name}: ends cool"
-            );
+            let last = steps[steps.len() - 1].intensity;
+            let ends_cool = if workout.test == Some(Test::Ramp) {
+                Test
+            } else {
+                Cooldown
+            };
+            assert_eq!(last, ends_cool, "{name}: ends cool");
             let measured = if workout.test.is_some() { Test } else { Work };
             let mut hard = 0;
             let mut planned = 0;

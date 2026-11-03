@@ -745,11 +745,8 @@ mod tests {
             }
         }
         // 75 % of 230 W.
-        assert_eq!(events, [Event::Ftp(173), Event::Started(2)]);
-        assert_eq!(
-            player.now(&profile).played.step.intensity,
-            Intensity::Cooldown
-        );
+        assert_eq!(events, [Event::Ftp(173), Event::Finished]);
+        assert!(player.done(), "the workout ends with the ramp");
     }
 
     #[test]
@@ -759,7 +756,7 @@ mod tests {
         ride(&mut player, 30, 125);
         assert_eq!(
             player.skip().as_slice(),
-            [Event::Started(2)],
+            [Event::Finished],
             "no full minute yet"
         );
         let mut player = Player::new(FTP_RAMP);
@@ -767,10 +764,7 @@ mod tests {
         for stage in 0..10u16 {
             ride(&mut player, 60, 125 + 15 * stage);
         }
-        assert_eq!(
-            player.skip().as_slice(),
-            [Event::Ftp(195), Event::Started(2)]
-        );
+        assert_eq!(player.skip().as_slice(), [Event::Ftp(195), Event::Finished]);
     }
 
     #[test]
@@ -849,10 +843,7 @@ mod tests {
             player.now(&profile).test,
             Some(TestReadout::BestMinute(110))
         );
-        assert_eq!(
-            player.skip().as_slice(),
-            [Event::Ftp(83), Event::Started(2)]
-        );
+        assert_eq!(player.skip().as_slice(), [Event::Ftp(83), Event::Finished]);
     }
 
     #[test]

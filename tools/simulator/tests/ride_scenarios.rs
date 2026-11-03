@@ -3920,7 +3920,14 @@ fn ramp_test_ends_at_failure_and_keeping_the_old_ftp_changes_nothing() {
     sim.choose_workout("FTP RAMP TEST");
     sim.press(Button::BottomRight);
     sim.wait_for("RECORDING", seconds(2)).unwrap();
-    follow(&mut sim, 20, on_target);
+    follow(&mut sim, 6 * 60, on_target);
+    assert_eq!(
+        sim.workout()["step"],
+        "1/3",
+        "the warm-up waits for the rider"
+    );
+    sim.expect_text("LAP TO START");
+    sim.checkpoint("ramp warm-up waits for lap");
     next_step(&mut sim);
     assert_eq!(sim.workout()["step"], "2/3");
     // The rider holds every minute up to 300 W, then fades.
@@ -3928,14 +3935,18 @@ fn ramp_test_ends_at_failure_and_keeping_the_old_ftp_changes_nothing() {
         let low = band.map_or(100.0, |(low, _)| low);
         if low <= 300.0 { low + 5.0 } else { 250.0 }
     };
-    follow(&mut sim, 5 * 60 + 30, effort);
-    sim.expect_text("HOLD 200 W");
-    sim.checkpoint("ramp at 200 W");
+    follow(&mut sim, 87, effort);
+    sim.expect_text("HOLD 121 W");
+    sim.expect_text("LAP TO END");
+    sim.checkpoint("ramp early at 121 W");
+    follow(&mut sim, 8 * 60 - 87 + 30, effort);
+    sim.expect_text("HOLD 212 W");
+    sim.checkpoint("ramp at 212 W");
     let before = sim.now();
     ride_step(&mut sim, effort);
-    // 75 % of the best minute, 305 W.
+    // 75 % of the best minute, 295 W.
     sim.wait_for("NEW FTP", seconds(2)).unwrap();
-    sim.expect_text("229");
+    sim.expect_text("221");
     let beeps = beeps_since(&sim, before);
     assert!(beeps.contains(&10), "the step cue: {beeps:?}");
     sim.checkpoint("ramp result offered");
@@ -3949,6 +3960,9 @@ fn ramp_test_ends_at_failure_and_keeping_the_old_ftp_changes_nothing() {
     );
     let (_, profile) = sim.command("PROFILE");
     assert!(profile.starts_with("ftp=215 "), "{profile}");
+    ride_step(&mut sim, on_target);
+    sim.expect_text("WORKOUT DONE");
+    sim.checkpoint("workout done after the cool down");
     sim.stop_ride();
 }
 

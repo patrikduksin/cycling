@@ -158,7 +158,22 @@ fn step(follow: Follow, event: Event) -> Step {
     }
 }
 
-/// The only writer of `Navigation::climb`, and of a ride page the road chose.
+/// A finished workout leaves its page: a climb that covered it goes back to
+/// the main page instead.
+pub(super) fn workout_finished(navigation: &mut Navigation) {
+    if navigation.climb
+        == (Follow::Shown {
+            back_to: RidePage::Workout,
+        })
+    {
+        navigation.climb = Follow::Shown {
+            back_to: RidePage::Main,
+        };
+    }
+}
+
+/// With `workout_finished`, the only writer of `Navigation::climb`, and of a
+/// ride page the road chose.
 fn apply(navigation: &mut Navigation, step: Step) {
     navigation.climb = step.follow;
     if let Some(page) = step.show {
@@ -169,6 +184,26 @@ fn apply(navigation: &mut Navigation, step: Step) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_climb_over_a_finished_workout_goes_back_to_the_main_page() {
+        let mut navigation = Navigation::default();
+        navigation.climb = Follow::Shown {
+            back_to: RidePage::Workout,
+        };
+        workout_finished(&mut navigation);
+        assert_eq!(navigation.climb, Follow::Shown { back_to: Main });
+        navigation.climb = Follow::Shown {
+            back_to: RidePage::Map,
+        };
+        workout_finished(&mut navigation);
+        assert_eq!(
+            navigation.climb,
+            Follow::Shown {
+                back_to: RidePage::Map
+            }
+        );
+    }
     use RidePage::{Climb, Main, Stats};
     use Road::{Ahead, Clear, Climbing};
 

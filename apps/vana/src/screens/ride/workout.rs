@@ -4,7 +4,7 @@
 //!
 //! Top to bottom: the workout's name and the step count; the step and its
 //! target band in the target's metric colour; the 3 s power (or heart rate,
-//! or cadence) in its metric colour; a gauge with the band at 70 % and a
+//! or cadence) in its metric colour; a gauge with the band at 73 % and a
 //! white disc for the reading, then UNDER / ON TARGET / OVER; the time or
 //! distance left over the step's progress bar, amber for the last seconds;
 //! the next step; then one bar per played step, its height the target's
@@ -461,7 +461,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
 }
 
 /// The track from 70 % of the band's low end to 130 % of its high end, the
-/// band on it at 70 % of the metric colour so it reads in sunlight, and the
+/// band on it at 73 % of the metric colour so it reads in sunlight, and the
 /// reading as a disc.
 fn gauge(canvas: &mut Canvas, now: &Now, color: u16) {
     let Some(band) = now.band else {

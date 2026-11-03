@@ -590,9 +590,10 @@ new FTP to the profile, BACK keeps the old one.
 
 - 20 minutes: FTP is 95% of the test step's average power. Skipping the test
   step gives no result.
-- Ramp: one-minute steps 20 W apart from 100 W. The test ends when 3 s power
-  stays under 90% of the step for 10 s, or at MARK. FTP is 75% of the best
-  full minute.
+- Ramp: an open warm-up, then one-minute steps from 50% of FTP, 6% of FTP more
+  each, from the MARK that ends the warm-up (the page says LAP TO START). The
+  test ends when 3 s power stays under 90% of the step for 10 s, or at MARK.
+  FTP is 75% of the best full minute.
 
 Load a workout from JSON with `cycling workout-load <file> [--name stem]`;
 `--dry-run` prints the file it would put. Examples are in

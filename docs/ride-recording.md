@@ -729,6 +729,73 @@ version, a body length `n` (30), the slot's bytes 2..26 above, and the CRC32
 of bytes 0..n. The reader takes up to 259 bytes, as much as a one-byte body
 length allows.
 
+### Discarded and deleted rides
+
+The rider can discard a ride on END RIDE? and delete a saved ride from its
+last page. Neither erases anything. One table on FILES, `rides/deleted.tbl`
+(`apps/vana/src/ride/deleted.rs`), names the hidden rides. The rides list,
+the ride count, the week's distance and TSS, FORM and the phone's
+`/api/activities` leave them out, and a FIT request for one answers 404
+`deleted`. Removing the file shows every ride again. After boot, each time
+the card becomes ready, and when END RIDE? or the list opens without a table
+read, VANA reads the table into PSRAM in one step while no ride is being
+written.
+
+- A discarded ride is saved as any other, with its Finish record, and then
+  hidden. Once hidden, its bests, facts and workout record are never written.
+  If the table write fails, Home says NOT DISCARDED and the ride is kept as
+  any other, with its bests, facts and workout record. A power cut between
+  the Finish and the table leaves a saved ride without them, as a cut at
+  that moment does to any ride. The rider can delete it later.
+- A deleted ride keeps the bests it set: `bests.dat` does not record which
+  ride set a best. CLEAR BESTS starts over.
+- A record hides the ride whose journal, bulk log store id, ride id, start
+  second and ride time all match. An undated ride matches too, as the key
+  needs no clock. A new bulk log on the card has a new store id. Clearing or
+  initializing a journal drops its records once the clear succeeds, as its
+  ride ids start over.
+- The phone knows a ride by its journal and id. It takes the list's ride of
+  that id, or, before the ride index has read it, any record of that id.
+- The table keeps up to 256 rides, 8 KB, and never drops one on its own. A
+  delete past that says NOT DELETED, as does any write the store refuses.
+- A save writes the table again, copy-on-write, its slots byte for byte and
+  in their order with the new one last. A table that only gains rides
+  therefore only grows at its end, and a ride trace's rebuild cuts it back to
+  its length at power-on. A cut leaves the old table or the new one.
+- Without a card, a FILES volume or a store the host formatted, nothing is
+  hidden, END RIDE? has no discard cue and a saved ride has no delete page.
+  Neither shows once the table is full or the card is out or has failed. A
+  failed read hides nothing and is tried again 5 s later; the list and the
+  totals count every ride meanwhile.
+- The records of internal-journal rides are on the card too. Another card
+  shows those rides again. A
+  `rides/deleted.tbl` without the magic, with a damaged header or with
+  another stride is read as hiding nothing and never written over.
+- Firmware from before the table lists only `.workout` and `.facts` files
+  under `rides/`, so it leaves `rides/deleted.tbl` alone and shows every ride
+  again. Updating again hides them.
+
+The table is a header and then one 32-byte slot per hidden ride, each ending
+in the CRC32 of the bytes before it:
+
+| Header bytes | Field |
+| --- | --- |
+| 0..4 | magic `VDEL` |
+| 4 | table version, 1 |
+| 6..8 | stride, 32 |
+
+| Slot bytes | Field |
+| --- | --- |
+| 0 | record version, 1 |
+| 1 | why: 1 discarded at the end, 2 deleted on VANA |
+| 2 | journal: `i` internal, `b` bulk |
+| 4..8 | ride id |
+| 8..12 | ride start, UTC seconds; 0 unknown |
+| 12..16 | ride time, seconds |
+| 16..24 | the bulk log's store id; 0 internal |
+| 24..28 | when it was hidden, UTC seconds; 0 unknown |
+| 28..32 | CRC32 of bytes 0..28 |
+
 ## What this does not prove
 
 - A sudden power loss or reset can lose the uncommitted batch of up to four samples.

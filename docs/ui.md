@@ -173,12 +173,17 @@ does, so the cue reads at a glance.
 | Send | `GREEN`, black icon | Send a saved ride to the phone (ACT) |
 | Stop | `RAISED`, white icon | End the ride: asks first (BACK) |
 | Back | `RAISED`, white icon | No, go back (BACK) |
+| Trash | `RED`, white icon | Throw a ride away: beside MOVE it asks first, beside ACT it answers |
 
 The summary's FTP offer uses two of them at once: Check beside ACT takes the
-suggested FTP, Back beside BACK keeps the one in force.
+suggested FTP, Back beside BACK keeps the one in force. END RIDE? uses three:
+Back, Check and, with a FILES store to note it on, Trash beside MOVE, which
+asks DISCARD RIDE?. DISCARD RIDE? and a saved ride's DELETE RIDE? put Trash
+beside ACT. A question with a back cue (END RIDE?, DISCARD RIDE?, the FTP
+offer, DELETE RIDE?) shows without the status bar, which would cut the cue.
 
-Only Ready, the paused screen, End ride, the summary and a saved ride show
-cues. Ride pages
+Only Ready, the paused screen, End ride, Discard ride, the summary and a
+saved ride show cues. Ride pages
 never do: their buttons keep fixed roles. Content stays clear of the cue
 corners; each screen's layout test checks it.
 

@@ -30,7 +30,10 @@ Home ── RIDE ──> Ready ── ACT or roll off ──> Ride pages (record
                                               │ BACK
                                               v
                                           END RIDE? ── BACK ──> Paused screen
-                                              │ ACT
+                                              │ ACT      │ MOVE
+                                              │          v
+                                              │      DISCARD RIDE? ── ACT ──> Home (RIDE DISCARDED)
+                                              │          │ BACK: END RIDE?
                                               v
                                          Saving ──> Ride saved summary (3 or 4 pages, one more with an FTP offer)
                                                        │ ACT (Done) or BACK
@@ -374,6 +377,18 @@ follows the same pattern as TURN OFF: BACK asks, ACT answers yes, BACK answers
 no. The question never times out. Answering yes finishes the ride, shows
 SAVING (keep VANA on) while the last samples are written, then the summary.
 
+With a card whose FILES store is formatted, a red trash cue sits beside MOVE.
+MOVE asks DISCARD RIDE? with the same time and distance and IT WILL NOT BE
+SAVED. ACT (red trash cue) discards the ride, BACK returns to END RIDE?. A
+discard saves the ride as usual and then hides it (`ride-recording.md`,
+"Discarded and deleted rides"), with no summary: Home shows RIDE DISCARDED,
+and Home's card, the list and the week leave the ride out. It sets no bests
+and keeps no facts. The same sheet follows an auto-pause (BACK took the pause
+over, so rolling on does not resume the ride under it), a lap (the whole ride
+goes, laps and all) and a 0 km test ride. If the ride cannot be hidden once
+saved, Home says NOT DISCARDED and the ride is kept as any other, with its
+bests and facts.
+
 ### Ride saved
 
 The summary opens with a green check and RIDE SAVED, and pages through:
@@ -411,7 +426,8 @@ metric colour.
 **FTP offer.** When the ride's new 20 min best times 0.95 is at least 3% above
 the stored FTP, the summary gets a fourth, last page: `FTP 245 W?`, over the
 20 min best it comes from and `NOW 215 W`. It is a page, not a sheet, so the
-other three pages keep their buttons: ACT and BACK still go Home. On the
+other three pages keep their buttons: ACT and BACK still go Home. Like END
+RIDE?, it shows without the status bar, which would cut its back cue. On the
 offer, ACT (check cue) takes it (`FTP 245 W SAVED`) and BACK (back cue) keeps
 the FTP in force (`FTP KEPT 215 W`); both then go Home. Pressing Done on an
 earlier page declines it, and the offer is never shown again for that ride.
@@ -429,6 +445,9 @@ they can read slightly low but never high.
 ```text
 Home ── RIDES ──> Rides (newest first) ── ACT or tap ──> Saved ride (3 or 4 pages) ── ACT ──> Phone
                    │ BACK: Home                            │ BACK: Rides               │ BACK: the ride
+                   ^                                       │ MOVE past the last page
+                   │                                       v
+                   └──── ACT (RIDE DELETED) ──────────── DELETE RIDE?
 ```
 
 Home's last card, RIDES, names this week's distance (WEEK 84 KM) once the ride
@@ -482,6 +501,18 @@ its ascent from the recorded gradient and shows no profile. MOVE or a swipe turn
 the list, and ACT (an arrow cue) offers the ride to the phone. A ride whose
 record cannot be read says RIDE UNREADABLE.
 
+With a card whose FILES store is formatted, a saved ride gets one more page
+dot. MOVE past its last page shows, without the status bar, the ride's start,
+DELETE RIDE?, its time and distance and IT GOES FROM YOUR RIDES. ACT (red
+trash cue) deletes it and BACK returns to the list, as on every saved-ride
+page. Like the FTP offer it is reached only going forward, so a swipe back
+from the first page never lands on it. The list then says RIDE DELETED with
+the focus on the ride that took its place, and the ride count, the week's
+distance and TSS, FORM, Home's card and the phone's list drop the ride. The
+journal keeps it (`ride-recording.md`, "Discarded and deleted rides"), and
+the bests it set stay. Undated rides newer than it renumber (RIDE n counts
+list places).
+
 A ride's facts are what its journal does not hold: the FTP and LTHR in force
 when it was saved, its HR RECOVERY once measured, and the climbs it finished.
 They are a table on the FILES volume (`ride-recording.md`, "Ride facts"),
@@ -508,7 +539,8 @@ by distance and by time, and the most ascent. Settings, PROFILE, BESTS lists
 each with its value and the day it was set, and each power best also in W/KG
 once Settings, BODY holds a weight; BACK returns to Settings.
 
-- Only a ride recorded live that finishes counts. A demo ride never does.
+- Only a ride recorded live that finishes counts. A demo ride never does,
+  nor a discarded one. Deleting a saved ride keeps the bests it set.
   Rides under 10 minutes can set a power best but not a distance, time or
   ascent one, so a test press is not the longest ride.
 - A best is replaced only by a higher value; a tie keeps the older day.

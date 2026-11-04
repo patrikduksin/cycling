@@ -14,7 +14,7 @@ const HASHES: [(&str, u64); 32] = [
     ("workouts", 0x3fcb_3076_c488_efd3),
     ("ride stats", 0x38c8_5703_1839_7873),
     ("lap", 0x9bef_c4b9_62e2_d112),
-    ("workout", 0x2e30_3946_8091_7417),
+    ("workout", 0xbe12_890e_a181_913f),
     ("map", 0x88cd_b2a3_fd8e_de60),
     ("back to start", 0x1920_6d8e_0f5d_1fe3),
     ("paused", 0x1abb_4ec0_be41_8109),

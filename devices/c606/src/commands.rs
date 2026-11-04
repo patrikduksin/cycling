@@ -149,9 +149,10 @@ pub fn execute(
             }
             let _ = write!(
                 output,
-                "capabilities={:?} status={:?}",
+                "capabilities={:?} status={:?} listen={:?}",
                 power.capabilities(),
-                power.status()
+                power.status(),
+                crate::device::drivers::sleep::listen_summary()
             );
         }
         Command::Volume(command) => {

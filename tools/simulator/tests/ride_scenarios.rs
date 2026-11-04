@@ -7383,7 +7383,7 @@ fn a_hilly_winding_loop_is_learned_just_as_well() {
     let (shown_before, true_before) = distances(&mut sim, start);
     let error_before = (shown_before - true_before) / true_before * 100.0;
     sim.stop_ride();
-    sim.wait_for("WHEEL SET 22", seconds(5)).unwrap();
+    sim.wait_for("WHEEL SET ", seconds(5)).unwrap();
     let fields = wheel_fields(&mut sim);
     let learned: f64 = fields
         .split("stored_mm=")

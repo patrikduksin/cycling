@@ -1588,8 +1588,8 @@ impl Session {
     }
     /// Advance device and world time together in 10 ms slices, with a pass
     /// in each slice where VANA's rest (`Runtime::pass_rest_ms`) is over or
-    /// an input edge arrived, as it wakes the C606 console; the device clock
-    /// then reads the last pass.
+    /// an input edge or a radar page arrived, as they wake the C606 console;
+    /// the device clock then reads the last pass.
     /// Off on USB power, the companion starts the device again for
     /// charging, and the rest of `ms` runs on the new session's clock.
     pub fn step(&mut self, ms: u64) {
@@ -1601,6 +1601,7 @@ impl Session {
             self.unseen_ms += step;
             if self.unseen_ms < self.rest_ms
                 && self.input.edges.borrow().pushed() == self.edges_seen
+                && !self.woken_by_ant()
             {
                 continue;
             }
@@ -1610,6 +1611,16 @@ impl Session {
                 self.start_charging().expect("the media reopens");
             }
         }
+    }
+    #[cfg(feature = "cycling")]
+    fn woken_by_ant(&self) -> bool {
+        let sim = self.sim();
+        sim.ant
+            .page_due(vana::app::WAKING_ANT_TYPE, sim.world.time_ms)
+    }
+    #[cfg(not(feature = "cycling"))]
+    fn woken_by_ant(&self) -> bool {
+        false
     }
     /// The device clock between passes: the last pass's time plus the world
     /// time since, as the C606's input task stamps an edge when it arrives.

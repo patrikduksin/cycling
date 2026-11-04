@@ -1,8 +1,13 @@
 //! How long composition rests after a pass. A pass polls every input and
 //! costs the same few milliseconds whether or not anything changed, so a
-//! still page rests up to `STILL_REST_MS`, bounded by the next frame and
-//! harness deadline; anything that needs passes keeps `BUSY_REST_MS`. On
-//! the C606 a button or touch edge ends a rest at once. Bytes from the
+//! still page rests up to `STILL_REST_MS`, bounded by the next frame, the
+//! harness's deadlines and VANA's own (`Runtime::due_ms`); anything that
+//! needs passes keeps `BUSY_REST_MS`. A recording ride needs none: its
+//! pages draw on their frame deadlines, every `MOTION_FRAME_MS` while
+//! readings glide, and its 1 Hz sample, odometer step and, on the Ride
+//! page, radar repeat beeps are deadlines too.
+//! On the C606 a button or touch edge, or a page from the sensor type
+//! `WAKING_ANT_TYPE` names, ends a rest at once. Bytes from the
 //! terminal's host do not: the console polls USB, so a command sent during
 //! a still rest waits for its end, up to `STILL_REST_MS`.
 use super::Runtime;
@@ -10,6 +15,7 @@ use super::presentation::Display;
 use crate::ride::log::{Commit, Sector, Slot};
 use crate::ride::storage::RideStorage;
 use crate::screens::workout::Page;
+use crate::sensors::ant::device_type;
 use device_api::bulk::{Error, OwnedInfo, ReadWrite, SECTOR_SIZE};
 use device_api::display::Display as Panel;
 use device_api::input::InputSource;
@@ -17,7 +23,7 @@ use device_api::power::{Power, State};
 use device_api::storage::OwnedFlash;
 use firmware_shell::shell::Shell;
 
-/// The pace while something needs passes: a ride, a finger, a host.
+/// The pace while something needs passes: a finger, a sheet, a host.
 pub const BUSY_REST_MS: u64 = 5;
 /// The longest rest on a still page. Anything without a deadline or an
 /// input edge, such as a toast's end or radio data, is this late at most.
@@ -25,6 +31,9 @@ pub const STILL_REST_MS: u64 = 50;
 /// Five passes a second stay under the trace's flag for a task that wakes
 /// ten times a second or more while the screen is dark.
 pub const STANDBY_DARK_PASS_MS: u64 = 200;
+/// The ANT+ device type whose pages end a rest, so a vehicle closing from
+/// behind sounds and shows at once.
+pub const WAKING_ANT_TYPE: u8 = device_type::RADAR;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pace {
@@ -53,6 +62,7 @@ fn pace(seen: &Seen) -> Pace {
         State::Charging if seen.standby_dark => return Pace::Dark,
         _ => return Pace::Busy,
     }
+    // Boot, Phone and Setup are brief, so they keep the busy pace.
     let still = match seen.page {
         Page::Home
         | Page::Sensors
@@ -61,15 +71,13 @@ fn pace(seen: &Seen) -> Pace {
         | Page::Form
         | Page::Workouts
         | Page::History
-        | Page::PastRide => true,
-        Page::Boot
+        | Page::PastRide
         | Page::Ready
         | Page::Ride
         | Page::EndRide
         | Page::DiscardRide
-        | Page::Summary
-        | Page::Phone
-        | Page::Setup => false,
+        | Page::Summary => true,
+        Page::Boot | Page::Phone | Page::Setup => false,
     };
     if still && !seen.busy {
         Pace::Still
@@ -113,8 +121,26 @@ impl Runtime {
             Display::Active { next_frame_ms } => Some(next_frame_ms),
             Display::Suspended => None,
         };
-        let due = frame.into_iter().chain(system.next_due_ms()).min();
+        let due = frame
+            .into_iter()
+            .chain(system.next_due_ms())
+            .chain(self.due_ms())
+            .min();
         rest_ms(pace(&seen), due, now)
+    }
+
+    /// VANA's own next deadline: while a ride records, its next 1 Hz sample
+    /// and odometer step; on the ride page, the radar's next repeat beep.
+    fn due_ms(&self) -> Option<u64> {
+        let recording = [&self.ride.internal, &self.ride.bulk]
+            .into_iter()
+            .filter_map(|recorder| recorder.sample_due_ms())
+            .min()
+            .map(|sample| sample.min(self.readings.odometer.due_ms()));
+        let radar = (self.navigation.page == Page::Ride)
+            .then(|| self.readings.radar_warning.due_ms())
+            .flatten();
+        recording.into_iter().chain(radar).min()
     }
 
     /// Work whose speed is the pass rate, or that waits on a pass soon.
@@ -123,8 +149,7 @@ impl Runtime {
         system: &Shell<D, I, P, B>,
         now: u64,
     ) -> bool {
-        self.recording()
-            || self.navigation.touches.down()
+        self.navigation.touches.down()
             || self
                 .page_list()
                 .is_some_and(|list| self.kinetic(list).moving())
@@ -199,7 +224,7 @@ impl<M: ReadWrite + ?Sized> ReadWrite for Touched<'_, M> {
 mod tests {
     use super::*;
 
-    const STILL_PAGES: [Page; 8] = [
+    const STILL_PAGES: [Page; 13] = [
         Page::Home,
         Page::Sensors,
         Page::Settings,
@@ -208,17 +233,13 @@ mod tests {
         Page::Workouts,
         Page::History,
         Page::PastRide,
-    ];
-    const BUSY_PAGES: [Page; 8] = [
-        Page::Boot,
         Page::Ready,
         Page::Ride,
         Page::EndRide,
         Page::DiscardRide,
         Page::Summary,
-        Page::Phone,
-        Page::Setup,
     ];
+    const BUSY_PAGES: [Page; 3] = [Page::Boot, Page::Phone, Page::Setup];
 
     fn seen(page: Page) -> Seen {
         Seen {

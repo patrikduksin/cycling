@@ -31,7 +31,7 @@ mod motion;
 mod night;
 mod pace;
 pub use lookahead::{TERRAIN_ARENA_BYTES, Terrain};
-pub use pace::STANDBY_DARK_PASS_MS;
+pub use pace::{STANDBY_DARK_PASS_MS, WAKING_ANT_TYPE};
 mod power;
 mod preferences;
 pub use preferences::decode as decode_preferences;

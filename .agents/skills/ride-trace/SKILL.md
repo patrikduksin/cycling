@@ -311,13 +311,15 @@ what that costs in each device state.
    - `counting` is what the hooks themselves cost, estimated from the
      startup log's `hook_cycles=`. Subtract it first.
    - A simulator trace counts its passes as task `console` (every 10 ms
-     while something needs passes, every 50 ms on a still page, every
-     200 ms in dark charging standby) and has no CPU times, memory or
+     while something needs passes, up to 50 ms apart on a still page or a
+     recording ride, every 200 ms in dark charging standby) and has no CPU times, memory or
      signal. Use it to test the tools, never to judge the battery.
    - These tasks wake on a timer: `console` 5 ms after a pass while
-     something needs passes (a ride, a finger, a sheet, storage work, a host
-     on the terminal), up to 50 ms after one on a still page, sooner when a
-     button or touch arrives, and every 200 ms in dark charging standby;
+     something needs passes (a finger, a sheet, a cue, storage work, a host
+     on the terminal), up to 50 ms after one on a still page or a recording
+     ride, sooner for its next frame (40 ms while ride readings glide), a
+     button or touch, or a radar page, and every 200 ms in dark charging
+     standby;
      `io`, `gps` and `power` every 10 ms in every state. `io` reads the
      touch panel only while the panel is lit. `ble` wakes once a second
      while a sensor is connected, and `wifi` every 5 s while the station is

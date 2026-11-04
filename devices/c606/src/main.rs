@@ -303,6 +303,8 @@ async fn console(
     #[cfg(feature = "cycling")]
     let sdk = external(|| vana::app::Runtime::new(profile));
     #[cfg(feature = "cycling")]
+    device::capabilities::ant::wake_on(vana::app::WAKING_ANT_TYPE);
+    #[cfg(feature = "cycling")]
     {
         // Every saved ride of both journals, for ride history: about 20 KB
         // per journal, in PSRAM; VANA keeps only the pointer.

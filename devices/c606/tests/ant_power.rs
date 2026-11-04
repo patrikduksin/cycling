@@ -62,6 +62,20 @@ pub mod sensors {
     }
 }
 
+pub mod io {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static WAKES: AtomicU32 = AtomicU32::new(0);
+
+    pub fn wake() {
+        WAKES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn wakes() -> u32 {
+        WAKES.load(Ordering::Relaxed)
+    }
+}
+
 #[allow(dead_code)]
 #[path = "../src/capabilities/ant.rs"]
 mod adapter;
@@ -112,8 +126,11 @@ fn consumer_scan_receive_send_and_power_failures_preserve_ownership() {
         Ok(Admission::Accepted)
     );
     adapter::tick(14_001);
+    adapter::wake_on(120);
     adapter::receive(1, [0x17, 120, 123, 0, 1, 3, 0, 0], 14_002);
+    assert_eq!(io::wakes(), 0, "a link report leaves the console resting");
     adapter::receive(120, [1; 8], 14_003);
+    assert_eq!(io::wakes(), 1, "a page of the waking type ends its rest");
     let observed = ant.take_diagnostic_packet().unwrap();
     assert_eq!(ant.take_packet(), Some(observed));
     let target = Target {

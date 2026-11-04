@@ -268,6 +268,10 @@ impl Odometer {
     pub fn distance_mm(&self) -> u64 {
         self.distance_mm
     }
+
+    pub fn due_ms(&self) -> u64 {
+        self.last_step_ms.saturating_add(Self::STEP_MS)
+    }
 }
 
 #[derive(Clone, Copy)]

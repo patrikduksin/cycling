@@ -375,6 +375,13 @@ impl Warning {
         }
         beep
     }
+
+    /// When the level's next repeat is due; a rise or a new vehicle comes
+    /// with a radar page instead.
+    pub fn due_ms(&self) -> Option<u64> {
+        let (_, every_ms) = self.level.repeat()?;
+        Some(self.last_ms? + every_ms)
+    }
 }
 
 #[cfg(test)]
@@ -484,8 +491,22 @@ mod warning_tests {
         let mut warning = Warning::default();
         assert_eq!(warning.update(car(10, 500), 0), Some(Beep::Appeared));
         assert_eq!(warning.update(car(10, 500), 500), Some(Beep::Passing));
+        assert_eq!(warning.due_ms(), Some(1_000));
         assert_eq!(warning.update(car(45, 500), 600), None);
+        assert_eq!(warning.due_ms(), Some(2_000), "the next beep is due");
         assert_eq!(warning.update(car(45, 500), 1_900), None);
         assert_eq!(warning.update(car(45, 500), 2_000), Some(Beep::Near));
+    }
+
+    #[test]
+    fn only_a_repeating_level_has_a_due_beep() {
+        let mut warning = Warning::default();
+        assert_eq!(warning.due_ms(), None, "clear");
+        assert_eq!(warning.update(car(10, 0), 0), Some(Beep::Appeared));
+        assert_eq!(warning.due_ms(), None, "a car holding the rider's speed");
+        assert_eq!(warning.update(car(40, 500), 100), None);
+        assert_eq!(warning.due_ms(), Some(1_500));
+        assert_eq!(warning.update(clear(), 200), None);
+        assert_eq!(warning.due_ms(), None, "cleared");
     }
 }

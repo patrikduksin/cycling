@@ -371,6 +371,14 @@ struct CompanionScan {
     reported: Vec<Identity>,
 }
 
+fn heard(open: &[Open], sensor: &AntSensor) -> bool {
+    sensor.present
+        && !sensor.silent
+        && open
+            .iter()
+            .any(|o| o.connected && o.identity == sensor.identity)
+}
+
 pub struct SimulatedAnt {
     pub availability: Availability,
     pub sensors: Vec<AntSensor>,
@@ -675,13 +683,7 @@ impl SimulatedAnt {
             sensor.next_page_ms = world.time_ms + sensor.period_ms();
             let data = sensor.page(world);
             let data = sensor.with_battery(data);
-            let heard = sensor.present
-                && !sensor.silent
-                && self
-                    .open
-                    .iter()
-                    .any(|o| o.connected && o.identity == sensor.identity);
-            if heard {
+            if heard(&self.open, sensor) {
                 self.events.push((
                     now,
                     Event::Data {
@@ -691,6 +693,18 @@ impl SimulatedAnt {
                 ));
             }
         }
+    }
+
+    /// Whether an open channel hears a page of `device_type` that is due by
+    /// world time `time_ms`: the C606 ends a rest as one of
+    /// `vana::app::WAKING_ANT_TYPE` arrives.
+    pub fn page_due(&self, device_type: u8, time_ms: u64) -> bool {
+        self.availability == Availability::Ready
+            && self.sensors.iter().any(|sensor| {
+                sensor.identity.device_type == device_type
+                    && time_ms >= sensor.next_page_ms
+                    && heard(&self.open, sensor)
+            })
     }
 
     fn deliver(&mut self, now: u64) {

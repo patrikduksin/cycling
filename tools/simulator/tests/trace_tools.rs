@@ -1020,9 +1020,9 @@ fn the_summary_splits_activity_by_what_the_device_was_doing() {
             })
             .unwrap_or_else(|| panic!("{state} in {console}"))
     };
-    // A ride keeps the busy pace. Home rests between passes once the
-    // pairing scan is over, as in the last window before the ride.
-    assert!(rate("riding") >= 95 && rate("paused") >= 95, "{console}");
+    // A ride rests between passes on its frame deadlines, as Home does
+    // once the pairing scan is over.
+    assert!(rate("riding") <= 40 && rate("paused") <= 40, "{console}");
     let ride = timeline
         .clock
         .iter()

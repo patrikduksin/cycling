@@ -44,14 +44,17 @@ class FlasherCliTests(unittest.TestCase):
             status = flasher_cli.main(list(argv))
         return status, out.getvalue()
 
-    def test_info_prints_the_description_with_the_mac_as_a_sha256_prefix(self):
+    def test_info_prints_the_description_with_an_opaque_device_id(self):
         status, out = self.run_cli('info')
         self.assertEqual(status, 0)
         self.assertNotIn('02:00:00', out)
+        described = json.loads(out)
+        device_id = described.pop('device_id')
+        self.assertNotEqual(device_id, hashlib.sha256(IDENTITY.encode()).hexdigest()[:12])
+        self.assertEqual(json.loads(self.run_cli('info')[1])['device_id'], device_id)
         self.assertEqual(
-            json.loads(out),
+            described,
             {
-                'mac_sha256': hashlib.sha256(IDENTITY.encode()).hexdigest()[:12],
                 'family': 'ESP32-S3',
                 'model': 'ESP32-S3 (QFN56)',
                 'revision': 'v0.2',
@@ -63,7 +66,7 @@ class FlasherCliTests(unittest.TestCase):
                 'accepts_unsigned': True,
             },
         )
-        self.assertEqual(self.asked, [('/dev/ttyUSB0', self.logs, 'auto')])
+        self.assertEqual(self.asked[0], ('/dev/ttyUSB0', self.logs, 'auto'))
 
     def test_a_rom_without_security_info_says_unknown(self):
         self.flasher.security = None
@@ -73,6 +76,23 @@ class FlasherCliTests(unittest.TestCase):
     def test_every_verb_ends_with_a_reboot(self):
         self.run_cli('info')
         self.assertEqual((self.flasher.enters, self.flasher.reboots), (1, 1))
+
+    def test_a_failed_verb_still_reboots_the_chip(self):
+        image = self.logs / 'image.bin'
+        image.write_bytes(b'x')
+
+        def broken(address, path):
+            raise RuntimeError('digest timed out')
+
+        self.flasher.verify = broken
+        with self.assertRaises(RuntimeError):
+            self.run_cli('verify', '0', str(image))
+        self.assertEqual((self.flasher.enters, self.flasher.reboots), (1, 1))
+
+    def test_reboot_seconds_beyond_what_the_page_accepts_are_refused(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.run_cli('reboot', '--seconds', '61')
+        self.assertEqual(self.flasher.enters, 0)
 
     def test_read_writes_the_region_under_local(self):
         (ROOT / '.local').mkdir(exist_ok=True)

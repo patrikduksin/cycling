@@ -5,7 +5,6 @@ import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import type * as Stream from 'effect/Stream'
 
-import type { FlasherError, Session as FlasherSession } from '@cycling/flasher'
 import type {
   Baud,
   RelayDialError,
@@ -14,8 +13,9 @@ import type {
   UsbDescriptor,
 } from '@cycling/protocol'
 
+import type { OpenFlasher, PageSession } from './adapters/flasher.ts'
 import type { Inbox } from './flasher/inbox.ts'
-import type { Entry, Layout, Session } from './model.ts'
+import type { Layout, Session } from './model.ts'
 
 /**
  * The hardware edge as plain interfaces, so the data plane and the
@@ -100,10 +100,7 @@ export interface SerialAdapter {
 
 /** What the page uses of `@cycling/flasher`; tests and `?fake` bring their own. */
 export interface FlasherAdapter {
-  readonly open: (
-    port: SerialPort,
-    options: { readonly entry: Entry },
-  ) => Effect.Effect<FlasherSession, FlasherError, Scope.Scope>
+  readonly open: OpenFlasher
   readonly md5Hex: (bytes: Uint8Array) => string
 }
 
@@ -116,7 +113,7 @@ export type PortLink =
   | { readonly _tag: 'Console'; readonly link: SerialLink }
   | {
       readonly _tag: 'Flasher'
-      readonly session: FlasherSession
+      readonly session: PageSession
       readonly inbox: Inbox
       readonly layout: Option.Option<Layout>
     }

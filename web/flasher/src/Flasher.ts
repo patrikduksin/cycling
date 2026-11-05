@@ -18,7 +18,8 @@ import { DISABLE_WATCHDOGS, type RegStep, WATCHDOG_RESET } from './watchdog.ts'
  * with a chip that is already in download mode, for the second try after the
  * first entry lost the port to a re-enumeration.
  */
-export type Entry = 'usbReset' | 'noReset'
+export const Entry = Schema.Literals(['usbReset', 'noReset'])
+export type Entry = typeof Entry.Type
 
 export const FlasherFailure = Schema.Literals([
   /** connect, sync, security info, the watchdog writes or the stub failed. */

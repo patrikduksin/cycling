@@ -8,7 +8,7 @@ import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import { ManagedResource, Subscription } from 'foldkit'
 
-import type { Session } from '@cycling/flasher'
+import { Entry } from '@cycling/flasher'
 import {
   Baud,
   type Binary,
@@ -17,10 +17,12 @@ import {
   Lease,
   OP_PROGRESS_MS,
   OwnerKey,
+  type Region,
   RequestId,
   SerialIdentity,
 } from '@cycling/protocol'
 
+import { type PageSession, openPage } from './adapters/flasher.ts'
 import { deviceToRelay, relayToDevice } from './dataplane.ts'
 import { makeInbox } from './flasher/inbox.ts'
 import {
@@ -46,7 +48,6 @@ import {
 } from './links.ts'
 import { Message } from './message.ts'
 import {
-  Entry,
   type Layout,
   type Model,
   Relay,
@@ -204,7 +205,7 @@ export const holdExpiryOf = (
   )
 
 /** Collects one region read from the session. */
-const readAll = (session: Session, region: { address: number; size: number }) =>
+const readAll = (session: PageSession, region: Region) =>
   session.read(region).pipe(
     Stream.runFold(
       () => new Uint8Array(region.size),
@@ -221,7 +222,9 @@ const readAll = (session: Session, region: { address: number; size: number }) =>
  * The device's own partition table and otadata, to name regions for the
  * visitor. A device without them, or a read that fails, is shown by address.
  */
-const readLayout = (session: Session): Effect.Effect<Option.Option<Layout>> =>
+const readLayout = (
+  session: PageSession,
+): Effect.Effect<Option.Option<Layout>> =>
   readAll(session, PARTITION_TABLE).pipe(
     Effect.map(parsePartitions),
     Effect.flatMap(partitions =>
@@ -289,7 +292,9 @@ export const managedResources = (adapters: Adapters) => {
                     }),
                 ),
               )
-            const session = yield* adapters.flasher.open(port, { entry }).pipe(
+            const session = yield* openPage(adapters.flasher.open)(port, {
+              entry,
+            }).pipe(
               Effect.mapError(
                 ({ reason, detail }) =>
                   new EntryFailed({

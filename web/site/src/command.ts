@@ -6,7 +6,6 @@ import { Command } from 'foldkit'
 
 import {
   BrowserMsg,
-  Chip,
   type OpOutcome,
   RequestId,
   mintCode,
@@ -110,21 +109,10 @@ export const SendControl = Command.define('SendControl', {
     ),
 })
 
-const decodeChip = Schema.decodeUnknownOption(Chip)
-
-const enteredOutcome = (port: Option.Option<PortLink>): OpOutcome => {
-  if (Option.isNone(port) || port.value._tag !== 'Flasher') {
-    return { _tag: 'Failed', reason: 'portLost', detail: '' }
-  }
-  return Option.match(decodeChip(port.value.session.chip), {
-    onSome: (chip): OpOutcome => ({ _tag: 'Entered', chip }),
-    onNone: (): OpOutcome => ({
-      _tag: 'Failed',
-      reason: 'chipError',
-      detail: 'The chip facts did not parse.',
-    }),
-  })
-}
+const enteredOutcome = (port: Option.Option<PortLink>): OpOutcome =>
+  Option.isSome(port) && port.value._tag === 'Flasher'
+    ? { _tag: 'Entered', chip: port.value.session.chip }
+    : { _tag: 'Failed', reason: 'portLost', detail: '' }
 
 /**
  * Answers an Enter from the held session. The chip facts, the MAC among

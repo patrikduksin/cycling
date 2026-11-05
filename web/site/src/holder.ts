@@ -5,7 +5,6 @@ import { modifyFields } from 'foldkit/struct'
 import {
   type BrowserMsg,
   type Lease,
-  MAX_DETAIL_CHARS,
   type Op,
   type OpFailure,
   type OpOutcome,
@@ -100,11 +99,7 @@ const answer = (id: RequestId, outcome: OpOutcome): BrowserMsg => ({
 })
 
 const refusal = (id: RequestId, reason: OpFailure, detail = ''): BrowserMsg =>
-  answer(id, {
-    _tag: 'Failed',
-    reason,
-    detail: detail.slice(0, MAX_DETAIL_CHARS),
-  })
+  answer(id, { _tag: 'Failed', reason, detail })
 
 export const isHold = (phase: PortPhase): phase is Hold =>
   phase._tag === 'Entering' || phase._tag === 'Flashing'

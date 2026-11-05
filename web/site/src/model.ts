@@ -2,6 +2,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import { defineTaggedUnion } from 'foldkit/schema'
 
+import { Entry } from '@cycling/flasher'
 import {
   Baud,
   Code,
@@ -83,14 +84,6 @@ export const Relay = defineTaggedUnion({
   Leaving: { attempt: Schema.Int },
 })
 export type Relay = typeof Relay.Type
-
-/**
- * How the flasher reaches the ROM. `noReset` is the one retry after a
- * `usbReset` entry lost the port to a re-enumeration: the chip is already in
- * download mode by then.
- */
-export const Entry = Schema.Literals(['usbReset', 'noReset'])
-export type Entry = typeof Entry.Type
 
 /**
  * How an op ended on the page, as `update` may see it: the wire's

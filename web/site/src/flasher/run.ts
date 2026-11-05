@@ -4,21 +4,20 @@ import * as Match from 'effect/Match'
 import * as Option from 'effect/Option'
 import * as Queue from 'effect/Queue'
 import * as Ref from 'effect/Ref'
-import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
-import { FlasherError, type Session } from '@cycling/flasher'
+import { FlasherError } from '@cycling/flasher'
 import {
   type Binary,
   type BrowserMsg,
-  MAX_DETAIL_CHARS,
-  Md5,
+  type Md5,
   OP_PROGRESS_MS,
   type Op,
   type RequestId,
   opDataFrames,
 } from '@cycling/protocol'
 
+import type { PageSession } from '../adapters/flasher.ts'
 import { Message } from '../message.ts'
 import type { Finished, RunnableOp } from '../model.ts'
 import type { Inbox, PayloadRefused } from './inbox.ts'
@@ -32,7 +31,7 @@ export interface RunOptions<R> {
   readonly attempt: number
   readonly id: RequestId
   readonly op: RunnableOp
-  readonly session: Session
+  readonly session: PageSession
   readonly inbox: Inbox
   readonly send: Send<R>
 }
@@ -44,26 +43,10 @@ export const totalOf = (op: Op): number =>
     Match.orElse(() => 0),
   )
 
-const clip = (detail: string): string => detail.slice(0, MAX_DETAIL_CHARS)
-
-const decodeMd5 = (hex: string) =>
-  Schema.decodeEffect(Md5)(hex).pipe(
-    Effect.mapError(
-      () =>
-        new FlasherError({
-          reason: 'chipError',
-          detail: 'The chip sent a malformed digest.',
-        }),
-    ),
-  )
-
-const failed =
-  (reason: Extract<Finished, { _tag: 'Failed' }>['reason']) =>
-  (detail: string): Finished => ({
-    _tag: 'Failed',
-    reason,
-    detail: clip(detail),
-  })
+const failed = (
+  reason: Extract<Finished, { _tag: 'Failed' }>['reason'],
+  detail = '',
+): Finished => ({ _tag: 'Failed', reason, detail })
 
 const perform = <R>(
   options: RunOptions<R>,
@@ -79,7 +62,7 @@ const perform = <R>(
       Read: ({ region }) =>
         session.read(region).pipe(
           Stream.runFoldEffect(
-            () => Option.none<string>(),
+            () => Option.none<Md5>(),
             (md5, event) =>
               Match.value(event).pipe(
                 Match.tagsExhaustive({
@@ -94,8 +77,18 @@ const perform = <R>(
                 }),
               ),
           ),
-          Effect.flatMap(md5 => decodeMd5(Option.getOrElse(md5, () => ''))),
-          Effect.map((md5): Finished => ({ _tag: 'Read', md5 })),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.fail(
+                  new FlasherError({
+                    reason: 'chipError',
+                    detail: 'The read ended without its digest.',
+                  }),
+                ),
+              onSome: md5 => Effect.succeed<Finished>({ _tag: 'Read', md5 }),
+            }),
+          ),
         ),
       Write: ({ region, md5 }) =>
         options.inbox.take(id, region.size, md5).pipe(
@@ -107,16 +100,15 @@ const perform = <R>(
           Effect.as<Finished>({ _tag: 'Written', md5 }),
         ),
       Digest: ({ region }) =>
-        session.digest(region).pipe(
-          Effect.flatMap(decodeMd5),
-          Effect.map((md5): Finished => ({ _tag: 'Digest', md5 })),
-        ),
+        session
+          .digest(region)
+          .pipe(Effect.map((md5): Finished => ({ _tag: 'Digest', md5 }))),
       Reboot: () =>
         session.reboot.pipe(Effect.as<Finished>({ _tag: 'Rebooting' })),
     }),
     Effect.catchTags({
-      FlasherError: error => Effect.succeed(failed(error.reason)(error.detail)),
-      PayloadRefused: ({ reason }) => Effect.succeed(failed(reason)('')),
+      FlasherError: error => Effect.succeed(failed(error.reason, error.detail)),
+      PayloadRefused: ({ reason }) => Effect.succeed(failed(reason)),
     }),
   )
 }

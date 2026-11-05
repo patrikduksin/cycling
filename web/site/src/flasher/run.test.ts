@@ -15,6 +15,7 @@ import {
   opDataFrames,
 } from '@cycling/protocol'
 
+import { pageSession } from '../adapters/flasher.ts'
 import { demoFlash } from '../dev/image.ts'
 import { fakeMd5Hex, memorySession } from '../dev/memorySession.ts'
 import type { Message } from '../message.ts'
@@ -44,6 +45,7 @@ const setup = (options: {
       digestMs: options.digestMs ?? 0,
       pieceBytes: 64 * 1024,
     })
+    const session = yield* pageSession(memory.session).pipe(Effect.orDie)
     const inbox = yield* makeInbox(fakeMd5Hex)
     const sent: Array<Binary | BrowserMsg> = []
     const start = (op: RunnableOp) =>
@@ -51,7 +53,7 @@ const setup = (options: {
         attempt: 3,
         id,
         op,
-        session: memory.session,
+        session,
         inbox,
         send: item =>
           Effect.sync(() => {

@@ -39,6 +39,7 @@ pkgs.mkShell {
     cargo-nextest
     python
     uv
+    bun
     cycling
     espflash
     sccache

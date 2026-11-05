@@ -16,6 +16,7 @@ PRs own requirements, decisions and history. Read
 | `packages/console` | Device command sessions |
 | `tools/simulator` | Host simulation |
 | `tools/devtools` | Host device workflows |
+| `web` | cycling.computer: relay, site and the `cycling remote` USB bridge ([README](web/README.md)) |
 | `flake.nix`, `nix/` | Development environment and tool versions |
 
 Keep package interfaces small and internals private. Split packages by

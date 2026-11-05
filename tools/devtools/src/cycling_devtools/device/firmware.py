@@ -237,6 +237,12 @@ def console_info(resolve, seconds, log, maintenance=False):
     return None
 
 
+def esptool_port(port, environ):
+    # A pty has no DTR/RTS lines, so esptool reaches a bridged device through its rfc2217 URL.
+    bridged, url = environ.get('CYCLING_PORT'), environ.get('CYCLING_ESPTOOL_PORT')
+    return url if bridged and url and port == bridged else port
+
+
 class Device:
     def __init__(self, port):
         self.port = port
@@ -246,6 +252,7 @@ class Device:
 
     def run(self, *args, before='no-reset', after='no-reset'):
         self.count += 1
+        port = esptool_port(self.port, os.environ)
         command = [
             sys.executable,
             '-m',
@@ -253,7 +260,7 @@ class Device:
             '--chip',
             'esp32s3',
             '--port',
-            self.port,
+            port,
             '--before',
             before,
             '--after',

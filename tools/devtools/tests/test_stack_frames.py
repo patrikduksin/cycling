@@ -5,7 +5,7 @@ from cycling_devtools import stack_frames
 # Captured from `xtensa-esp32s3-elf-objdump -d -C --no-show-raw-insn` of a
 # release cycling-os ELF, trimmed to each function's first instructions.
 FIRMWARE = """
-/home/patrik/cycling/.local/elf/e28aae10feb5-h1.elf:     file format elf32-xtensa-le
+/home/patrik/cycling/.local/elf/e28aae10feb5.elf:     file format elf32-xtensa-le
 
 
 Disassembly of section .rwtext:
@@ -130,11 +130,10 @@ def run(tmp_path, objdump, budgets, *extra):
     path.write_text(budgets)
     elf = tmp_path / 'cycling-os'
     elf.write_bytes(b'')
-    return stack_frames.main([str(elf), '--variant', 'h1', '--budgets', str(path), '--objdump', str(objdump), *extra])
+    return stack_frames.main([str(elf), '--budgets', str(path), '--objdump', str(objdump), *extra])
 
 
 BUDGETS = """
-[h1]
 "<vana::screens::workout::View>::prepare" = 1296
 "vana::screens::workout::fill::<*>" = 8192
 "*" = 12000
@@ -146,7 +145,7 @@ def test_frames_within_budget_pass_and_write_the_top_table(tmp_path, objdump, ca
     assert run(tmp_path, objdump, BUDGETS, '--report', str(report), '--top', '2') == 0
     table = report.read_text()
     assert table == capsys.readouterr().out
-    assert table.splitlines()[0] == '#### Largest stack frames, h1'
+    assert table.splitlines()[0] == '#### Largest stack frames'
     assert '| `<vana::screens::workout::View>::new` | 10,992 | 12,000 | `*` |' in table
     assert 'reset_card' not in table
 
@@ -155,7 +154,7 @@ def test_a_frame_over_budget_fails_naming_it_and_the_command_for_new_budgets(tmp
     assert run(tmp_path, objdump, BUDGETS.replace('= 1296', '= 200')) == 1
     err = capsys.readouterr().err
     assert 'Stack frame over budget: <vana::screens::workout::View>::prepare is 272 B, budget 200 B' in err
-    assert f'cycling stack-frames {tmp_path / "cycling-os"} --variant h1 --suggest' in err
+    assert f'cycling stack-frames {tmp_path / "cycling-os"} --suggest' in err
 
 
 def test_an_unnamed_frame_over_the_catch_all_fails(tmp_path, objdump, capsys):
@@ -175,7 +174,6 @@ def test_suggest_resets_named_budgets_and_never_raises_the_catch_all(tmp_path, o
     assert run(tmp_path, objdump, budgets, '--suggest') == 0
     out, err = capsys.readouterr()
     assert out == (
-        '[h1]\n'
         f'"vana::screens::workout::fill::<*>" = {0x1C20 + 1024}\n'
         f'"<vana::screens::workout::View>::new" = {0x2AF0 + 1100}\n'
         '"*" = 4000\n'

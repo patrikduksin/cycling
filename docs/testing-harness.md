@@ -2,8 +2,7 @@
 
 `cycling harness` runs named recipes or JSON scenarios against the C606 or the
 virtual backend and prints compact JSON. Real runs follow the
-[C606 skill](../.agents/skills/c606/SKILL.md), including port selection and
-leaving a harness-enabled build running afterward.
+[C606 skill](../.agents/skills/c606/SKILL.md), including port selection.
 
 ```sh
 cycling harness recipes                      # List recipes and their steps
@@ -202,7 +201,7 @@ HARNESS SESSION CLOSE
 - A capture triggers a real submission of the current fill or shell renderer and
   stores the pixels evaluated for it: identity, RGB565LE geometry, start/end time
   and submission result.
-- C606 capture storage uses external RAM; harness-disabled builds reserve none.
+- C606 capture storage uses external RAM; without PSRAM, capture is unavailable.
   Frames stay bounded without a reader, slow readers cannot grow memory or block
   acquisition, and a new capture replaces the retained sequence.
 - Chunks carry frame identity, decoded offset/length, encoding and CRC32 of the

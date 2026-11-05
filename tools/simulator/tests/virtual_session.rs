@@ -74,7 +74,6 @@ fn deterministic_observations_use_production_freshness_loss_and_missing() {
     assert_eq!(command(&mut s, "POSITION").0, "UNAVAILABLE");
     assert_eq!(command(&mut s, "WIFI RECONNECT").0, "UNSUPPORTED");
 }
-#[cfg(feature = "debug-harness")]
 #[test]
 fn display_pattern_capture_is_current_submission_and_restart_invalidates_session() {
     let t = Temp::new();
@@ -95,17 +94,6 @@ fn display_pattern_capture_is_current_submission_and_restart_invalidates_session
         command(&mut s, &format!("HARNESS {id} PING")).0,
         "STALE_SESSION"
     );
-}
-#[cfg(not(feature = "debug-harness"))]
-#[test]
-fn disabled_discovery_keeps_ordinary_commands_and_no_instrumentation() {
-    let t = Temp::new();
-    let mut s = Session::new(&t.0, 32, 24).unwrap();
-    let caps = command(&mut s, "HARNESS CAPS");
-    assert_eq!(caps.0, "OK");
-    assert!(caps.1.contains("input=unsupported capture=unsupported"));
-    assert_eq!(command(&mut s, "HARNESS OPEN 1 1000").0, "UNSUPPORTED");
-    assert_eq!(command(&mut s, "DISPLAY f800").0, "OK");
 }
 #[test]
 fn sdk_production_handlers_record_recover_export_with_persistent_media() {

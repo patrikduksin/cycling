@@ -1,4 +1,4 @@
-"""Bounded ordinary-terminal progress checks, valid with either harness mode."""
+"""Bounded ordinary-terminal progress checks."""
 
 import argparse
 import json

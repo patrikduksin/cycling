@@ -147,9 +147,8 @@ class Real(UsbConnection):
 class Virtual:
     virtual = True
 
-    def __init__(self, directory, state_dir=None, harness=True):
+    def __init__(self, directory, state_dir=None):
         self.directory, self.state_dir = Path(directory), Path(state_dir or Path(directory) / 'state')
-        self.features = 'debug-harness' if harness else ''
         self.request_id = secrets.randbelow(1 << 30) + 1
         self.boot, self.pending = [None], bytearray()
         self.process = self.log = self.errors = None
@@ -197,8 +196,6 @@ class Virtual:
                 'shell-simulator',
                 '--locked',
                 '--no-default-features',
-                '--features',
-                self.features,
                 '--bin',
                 'shell-simulator',
                 '--message-format=json-render-diagnostics',

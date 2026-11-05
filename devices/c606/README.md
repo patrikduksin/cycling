@@ -16,9 +16,9 @@ binary can depend on applications; that does not make application imports suitab
 inside drivers. Preserve DMA ownership, interrupt behavior, memory placement and
 power sequencing when changing hardware code.
 
-`build.sh` (run by `cycling build`) selects features from `CYCLING_HARNESS`
-and `CYCLING_BULK_MAINTENANCE` (the MMC maintenance image; see
-[storage research](research/storage.md)) and writes `.local/cycling.bin`
+`build.sh` (run by `cycling build`) builds the firmware, or with
+`CYCLING_BULK_MAINTENANCE=1` the MMC maintenance image (see
+[storage research](research/storage.md)), and writes `.local/cycling.bin`
 for either application slot; `cycling flash` picks the slot that is not
 selected. `partitions.csv` matches the device layout; never flash it
 or a generated bootloader.

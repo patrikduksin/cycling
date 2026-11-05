@@ -17,8 +17,7 @@ from starting a press until it is due and its frame drawn. VANA ignores a
 press within 350 ms of another, so a physical input during the timed presses
 fails the run: a press it hides is timed to an unrelated frame. The default
 button, bottom-left, moves the focus on Home; top-left there opens Turn off.
-Requires a CYCLING_HARNESS=1 C606 build; the simulator has no wall clock to
-time.
+C606 only; the simulator has no wall clock to time.
 """
 
 import argparse
@@ -81,9 +80,6 @@ def press_once(runner, index, phase_ms, timeout_s=5):
 
 
 def measure(runner, index, count, setup=(), idle_s=5, seed=None):
-    caps = runner.command('HARNESS CAPS')
-    if caps.get('input') != 'supported':
-        raise RuntimeError(f'synthetic input is {caps.get("input", "unsupported")}; flash a CYCLING_HARNESS=1 build')
     status = runner.command('STATUS')
     if 'press_frames' not in status or 'display_ms' not in status:
         raise RuntimeError('firmware does not report press_frame_ms and display_ms')

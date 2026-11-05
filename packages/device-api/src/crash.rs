@@ -174,38 +174,35 @@ impl Marker {
 pub struct Build {
     /// Built from a checkout with uncommitted changes.
     pub dirty: bool,
-    /// With the diagnostic harness (`CYCLING_HARNESS=1`).
-    pub harness: bool,
     /// The bulk-maintenance image (`CYCLING_BULK_MAINTENANCE=1`).
     pub maintenance: bool,
 }
 
 impl Build {
     const fn bits(self) -> u32 {
-        self.dirty as u32 | (self.harness as u32) << 2 | (self.maintenance as u32) << 3
+        self.dirty as u32 | (self.maintenance as u32) << 3
     }
 
     const fn from_bits(bits: u32) -> Option<Self> {
-        // Bit 1 marked VANA builds before every build had VANA; ignore it so
-        // records written by older firmware still read.
+        // Bits 1 and 2 marked VANA and harness builds before every build had
+        // both; ignore them so records written by older firmware still read.
         if bits & !0xf != 0 {
             return None;
         }
         Some(Self {
             dirty: bits & 1 != 0,
-            harness: bits & 4 != 0,
             maintenance: bits & 8 != 0,
         })
     }
 
-    /// The variant part of the archived ELF's name, as build.sh writes it:
-    /// `h1`, with `-maint` for a maintenance image.
-    pub const fn variant(self) -> &'static str {
-        match (self.harness, self.maintenance) {
-            (false, false) => "h0",
-            (true, false) => "h1",
-            (false, true) => "h0-maint",
-            (true, true) => "h1-maint",
+    /// The archived ELF's name after its commit, as build.sh writes it:
+    /// `-dirty` for uncommitted changes, then `-maint` for a maintenance image.
+    pub const fn suffix(self) -> &'static str {
+        match (self.dirty, self.maintenance) {
+            (false, false) => "",
+            (true, false) => "-dirty",
+            (false, true) => "-maint",
+            (true, true) => "-dirty-maint",
         }
     }
 }
@@ -431,7 +428,6 @@ mod tests {
             kind: Kind::Panic,
             build: Build {
                 dirty: true,
-                harness: false,
                 maintenance: false,
             },
             version: "0.1.0",
@@ -449,7 +445,7 @@ mod tests {
         let words = encode(&panic());
         let record = record(&words).expect("valid record");
         assert_eq!(record.kind, Kind::Panic);
-        assert_eq!(record.build.variant(), "h0");
+        assert_eq!(record.build.suffix(), "-dirty");
         assert!(record.build.dirty);
         assert!(!record.reported);
         assert_eq!(record.version(), "0.1.0");
@@ -467,9 +463,9 @@ mod tests {
     }
 
     #[test]
-    fn a_record_from_firmware_that_marked_vana_still_reads() {
+    fn a_record_from_firmware_that_marked_vana_and_harness_still_reads() {
         let mut words = encode(&panic());
-        words[LENGTHS] |= 1 << 25;
+        words[LENGTHS] |= 0b11 << 25;
         words[CHECKSUM] = checksum(&words[..CHECKSUM]);
         assert!(matches!(inspect(&words), Marker::Valid(_)));
     }

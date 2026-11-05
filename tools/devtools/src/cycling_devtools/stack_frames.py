@@ -92,12 +92,9 @@ def parse(disassembly):
     return sizes
 
 
-def load_rules(path, variant):
-    """The variant's rules in file order, or None when the file has no table for it."""
-    table = tomllib.loads(Path(path).read_text()).get(variant)
-    if table is None:
-        return None
-    return [Rule(pattern, budget) for pattern, budget in table.items()]
+def load_rules(path):
+    """The rules in file order."""
+    return [Rule(pattern, budget) for pattern, budget in tomllib.loads(Path(path).read_text()).items()]
 
 
 def assess(sizes, rules):
@@ -112,17 +109,16 @@ def unused(frames, rules):
     return [rule for rule in rules if rule not in used]
 
 
-def warnings(frames, rules, budgets, variant):
+def warnings(frames, rules, budgets):
     return [
-        f'WARNING: stack frame rule "{rule.pattern}" in {budgets.name} [{variant}] matches no function; '
-        'update or delete it.'
+        f'WARNING: stack frame rule "{rule.pattern}" in {budgets.name} matches no function; update or delete it.'
         for rule in unused(frames, rules)
     ]
 
 
-def report(frames, variant, top, notes=()):
+def report(frames, top, notes=()):
     rows = [
-        f'#### Largest stack frames, {variant}',
+        '#### Largest stack frames',
         '',
         '| frame | bytes | budget | rule |',
         '| --- | ---: | ---: | --- |',
@@ -137,8 +133,8 @@ def report(frames, variant, top, notes=()):
     return '\n'.join(rows) + '\n'
 
 
-def suggest(frames, rules, variant):
-    """The variant's table with each named budget reset to its largest frame plus its margin.
+def suggest(frames, rules):
+    """The table with each named budget reset to its largest frame plus its margin.
 
     The catch-all keeps its budget: a frame over it gets its own exact rule, so
     no unnamed frame can grow unseen. Rules that match nothing are dropped.
@@ -147,7 +143,7 @@ def suggest(frames, rules, variant):
     for frame in frames:
         if frame.rule is not None:
             largest[frame.rule] = max(largest.get(frame.rule, 0), frame.size)
-    lines = [f'[{variant}]']
+    lines = []
     for rule in rules:
         if rule.pattern == CATCH_ALL:
             lines += [f'"{f.name}" = {f.size + margin(f.size)}' for f in frames if f.rule == rule and f.over]
@@ -172,7 +168,6 @@ def disassemble(elf, objdump):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('elf', type=Path)
-    parser.add_argument('--variant', required=True, help='budget table to apply, such as h1')
     parser.add_argument('--budgets', type=Path, default=BUDGETS)
     parser.add_argument('--objdump', default=default_objdump())
     parser.add_argument('--top', type=int, default=10)
@@ -187,25 +182,22 @@ def main(argv=None):
     if not args.elf.is_file():
         parser.error(f'no ELF at {args.elf}')
     sizes = parse(disassemble(args.elf, args.objdump))
-    rules = load_rules(args.budgets, args.variant)
-    if rules is None:
-        print(f'{args.budgets.name} has no [{args.variant}] table; frame sizes are not checked.', file=sys.stderr)
-        rules = []
+    rules = load_rules(args.budgets)
     frames = assess(sizes, rules)
-    notes = warnings(frames, rules, args.budgets, args.variant)
+    notes = warnings(frames, rules, args.budgets)
     if args.suggest:
         for note in notes:
             print(f'Dropped: {note.removeprefix("WARNING: ")}', file=sys.stderr)
-        print(suggest(frames, rules, args.variant), end='')
+        print(suggest(frames, rules), end='')
         return 0
 
-    table = report(frames, args.variant, args.top, notes)
+    table = report(frames, args.top, notes)
     print(table, end='', flush=True)
     if args.report:
         args.report.write_text(table)
     failures = [
         f'Stack frame over budget: {frame.name} is {frame.size:,} B, budget {frame.rule.budget:,} B '
-        f'(rule "{frame.rule.pattern}" in {args.budgets.name} [{args.variant}]).'
+        f'(rule "{frame.rule.pattern}" in {args.budgets.name}).'
         for frame in frames
         if frame.over
     ]
@@ -215,7 +207,7 @@ def main(argv=None):
         print(
             'Keep big temporaries out of stack frames, as 40aa736 (#205) did. For a deliberate change, '
             "print this build's table with each budget at its frame + max(1 KiB, 10%):\n"
-            f'  cycling stack-frames {args.elf.resolve()} --variant {args.variant} --suggest',
+            f'  cycling stack-frames {args.elf.resolve()} --suggest',
             file=sys.stderr,
         )
     return 1 if failures else 0

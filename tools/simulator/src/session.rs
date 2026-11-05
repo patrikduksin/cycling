@@ -310,12 +310,9 @@ impl Staging for Staged {
 }
 
 fn record_synthetic(shell: &mut VirtualShell, recorder: &RefCell<TraceRecorder>) {
-    #[cfg(feature = "debug-harness")]
     for input in shell.take_synthetic() {
         recorder.borrow_mut().record(&Event::Synthetic(input));
     }
-    #[cfg(not(feature = "debug-harness"))]
-    let _ = (shell, recorder);
 }
 
 struct Trace {
@@ -829,7 +826,6 @@ impl Session {
             0,
         )
         .map_err(|_| io::Error::other("shell unavailable"))?;
-        #[cfg(feature = "debug-harness")]
         {
             shell.harness = firmware_shell::harness::State::new(boot);
             shell.harness.buffer = Some(firmware_shell::harness::CaptureBuffer::Owned(
@@ -1699,9 +1695,8 @@ impl Session {
             Command::Info => {
                 let _ = write!(
                     out,
-                    "board=virtual commit={} harness={} protocol=1 boot={} physical_evidence=unsupported",
+                    "board=virtual commit={} protocol=1 boot={} physical_evidence=unsupported",
                     option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
-                    cfg!(feature = "debug-harness"),
                     self.boot
                 );
             }

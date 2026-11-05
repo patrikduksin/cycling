@@ -1,37 +1,20 @@
-# The largest stack frame, in bytes, each firmware function may open, per
-# build variant (h<CYCLING_HARNESS>). build.sh reads the frames from the
-# release ELF's `entry a1, N` prologues and fails on a frame over its
-# budget. The first rule that matches a demangled name applies; `*` matches
-# any text, and the last rule bounds every frame not named above it. Each
-# budget is the measured frame plus max(1 KiB, 10%). Inlining differs by
-# variant, so a function inlined away in one variant has no rule there; a
-# rule that matches nothing prints a warning. View::prepare, smooth and
+# The largest stack frame, in bytes, each firmware function may open.
+# build.sh reads the frames from the release ELF's `entry a1, N` prologues
+# and fails on a frame over its budget. The first rule that matches a
+# demangled name applies; `*` matches any text, and the last rule bounds
+# every frame not named above it. Each budget is the measured frame plus
+# max(1 KiB, 10%). A rule that matches nothing prints a warning: inlining
+# can remove a function after unrelated edits. View::prepare, smooth and
 # climb_frame sit under every frame VANA prepares, so their budgets are
 # tighter than the catch-all on purpose. A failed build prints the command
 # that suggests new budgets for its ELF.
 
-[h1]
 "cycling_os::external::<*>" = 21402
 "<embassy_executor::raw::util::UninitCell<cycling_os::__console_task::__console_task_inner_function::{closure#0}>>::write_in_place::<*>" = 17864
 "<embassy_executor::raw::TaskStorage<cycling_os::__main::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}>>::poll" = 17812
 "cycling_os::__console_task::__console_task_inner_function::{closure#0}" = 13676
 "<vana::app::Runtime>::workout_display::<*>" = 12021
 "<vana::app::Runtime>::draw_boot::<*>" = 7712
-"<vana::app::Runtime>::record::<*>" = 5680
-"<vana::screens::workout::View>::new" = 5040
-"vana::screens::workout::fill::<*>" = 8912
-"vana::screens::ride::climb_frame" = 4208
-"vana::screens::ride::smooth" = 3024
-"<vana::app::Runtime>::history_canvas" = 5424
-"<firmware_shell::storage::Store<*>>::load" = 5792
-"*" = 5520
-
-[h0]
-"cycling_os::external::<*>" = 21402
-"<embassy_executor::raw::util::UninitCell<cycling_os::__console_task::__console_task_inner_function::{closure#0}>>::write_in_place::<*>" = 15436
-"<embassy_executor::raw::TaskStorage<cycling_os::__main::____embassy_main_task::____embassy_main_task_inner_function::{closure#0}>>::poll" = 17389
-"cycling_os::__console_task::__console_task_inner_function::{closure#0}" = 15488
-"<vana::app::Runtime>::draw_boot::<*>" = 7680
 "<vana::app::Runtime>::record::<*>" = 5680
 "<vana::screens::workout::View>::new" = 5040
 "vana::screens::workout::fill::<*>" = 8912

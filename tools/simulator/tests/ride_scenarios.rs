@@ -9437,7 +9437,6 @@ fn every_power_input_mutated_shows_in_its_replay() {
 
 /// A ride whose page turns on a press the harness sent over the terminal,
 /// mid-ride, as a host test drives a C606.
-#[cfg(feature = "debug-harness")]
 fn a_ride_paged_by_the_harness(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
     sim.start_ride();
@@ -9464,7 +9463,6 @@ fn a_ride_paged_by_the_harness(sim: &mut Sim) {
     sim.done();
 }
 
-#[cfg(feature = "debug-harness")]
 #[test]
 fn a_ride_paged_by_the_harness_replays_exactly() {
     use firmware_services::trace::Event;

@@ -350,4 +350,4 @@ wakes it.
   `otlpjsonfile` receiver reads it.
 - Simulator fixtures come from scenarios in `tools/simulator/tests/trace_tools.rs`;
   refresh them after VANA changes what it reads or shows:
-  `cargo test -p shell-simulator --features debug-harness --test trace_tools -- --ignored`.
+  `cargo test -p shell-simulator --test trace_tools -- --ignored`.

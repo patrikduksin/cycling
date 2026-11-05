@@ -69,13 +69,10 @@ pub enum Screen {
 /// A pass's first synthetic inputs, at most 4: the shell sits in the console
 /// task's future, so the rest of a crowded pass go unrecorded rather than
 /// take its RAM.
-#[cfg(feature = "debug-harness")]
 pub type Synthetic = heapless::Vec<Input, 4>;
 
 pub struct Shell<D, I, P, B> {
-    #[cfg(feature = "debug-harness")]
     pub harness: crate::harness::State,
-    #[cfg(feature = "debug-harness")]
     synthetic: Synthetic,
     pub boot_id: u32,
     pub synthetic_events: u32,
@@ -175,9 +172,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         };
         log::info!(target:"settings", "loaded source={} failed={}", source,error);
         Ok(Self {
-            #[cfg(feature = "debug-harness")]
             harness: crate::harness::State::default(),
-            #[cfg(feature = "debug-harness")]
             synthetic: Synthetic::new(),
             boot_id: 0,
             synthetic_events: 0,
@@ -246,7 +241,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     }
     /// The harness's synthetic inputs handed on like physical ones since the
     /// last call, in order.
-    #[cfg(feature = "debug-harness")]
     pub fn take_synthetic(&mut self) -> Synthetic {
         core::mem::take(&mut self.synthetic)
     }
@@ -283,25 +277,15 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     /// Something waits for the next frame even if it shows nothing new: a
     /// routed press waits for its answer, or a harness capture is due.
     pub fn frame_wanted(&self, now: u64) -> bool {
-        #[cfg(feature = "debug-harness")]
         if self.harness.capture_due(now) {
             return true;
         }
-        #[cfg(not(feature = "debug-harness"))]
-        let _ = now;
         self.pressed_at.is_some()
     }
     /// When the shell next acts without an input: the harness's next
     /// scheduled input or capture frame.
     pub fn next_due_ms(&self) -> Option<u64> {
-        #[cfg(feature = "debug-harness")]
-        {
-            self.harness.next_due()
-        }
-        #[cfg(not(feature = "debug-harness"))]
-        {
-            None
-        }
+        self.harness.next_due()
     }
     /// Time since the last input or reported activity. The shell owns this
     /// inactivity clock; applications combine it with their own work state.
@@ -338,7 +322,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                 break;
             };
             self.input_events = self.input_events.saturating_add(1);
-            #[cfg(feature = "debug-harness")]
             if edge.input == Input::Cancel {
                 self.harness
                     .stop_input(crate::harness::InputState::PhysicalLoss);
@@ -347,7 +330,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         }
         // Physical events already queued win ties; synthetic events use the same
         // consumer and wake gate without incrementing physical observations.
-        #[cfg(feature = "debug-harness")]
         {
             self.harness.expire(now);
             for _ in 0..crate::harness::EVENTS + 1 {
@@ -437,7 +419,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         now: u64,
         out: &mut impl core::fmt::Write,
     ) -> &'static str {
-        #[cfg(feature = "debug-harness")]
         {
             let status = self.harness.command(
                 command,
@@ -452,20 +433,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                 self.consume(Input::Cancel, now, now);
             }
             status
-        }
-        #[cfg(not(feature = "debug-harness"))]
-        {
-            let _ = now;
-            let _ = write!(
-                out,
-                "version=1 input=unsupported capture=unsupported harness=false boot={} session=0",
-                self.boot_id
-            );
-            if command.operation == crate::harness::Operation::Caps {
-                "OK"
-            } else {
-                "UNSUPPORTED"
-            }
         }
     }
 
@@ -522,7 +489,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             row(y, pixels);
             frame = digest(frame, pixels);
         };
-        #[cfg(feature = "debug-harness")]
         {
             if self.harness.begin_frame(self.display.geometry()) {
                 let mut row = row;
@@ -538,10 +504,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             } else {
                 self.display_error = self.display.submit(row).is_err();
             }
-        }
-        #[cfg(not(feature = "debug-harness"))]
-        {
-            self.display_error = self.display.submit(row).is_err();
         }
         if !self.display_error {
             self.panel = Some(frame);

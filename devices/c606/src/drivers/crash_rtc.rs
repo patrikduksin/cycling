@@ -148,7 +148,6 @@ pub fn reset() -> Reset {
     }
 }
 
-#[cfg(feature = "debug-harness")]
 pub fn controlled_panic() -> ! {
     CONTROLLED.store(true, Ordering::Release);
     panic!("controlled crash test")
@@ -201,7 +200,6 @@ const fn is_one(value: Option<&str>) -> bool {
 /// How this image was built, for finding its symbols.
 const BUILD: device_api::crash::Build = device_api::crash::Build {
     dirty: is_one(option_env!("CYCLING_BUILD_DIRTY")),
-    harness: cfg!(feature = "debug-harness"),
     maintenance: cfg!(feature = "bulk-maintenance"),
 };
 

@@ -178,10 +178,10 @@ pub fn take() -> Option<Line> {
 }
 
 pub fn metadata(recording: bool) {
-    log::info!(target: "build", "commit={} dirty={} harness={} recording={} level=INFO slots=8 bytes=384",
+    log::info!(target: "build", "commit={} dirty={} recording={} level=INFO slots=8 bytes=384",
         option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
         option_env!("CYCLING_BUILD_DIRTY").unwrap_or("unknown"),
-        cfg!(feature="debug-harness"), recording);
+        recording);
 }
 
 pub fn stats() -> (u32, u32, u32, u32, usize, usize) {

@@ -7,7 +7,7 @@ A panic prints its message and `0x42xxxxxx` return addresses on the USB
 console, and keeps them in the device's crash record, which `CRASH` reads
 back after the reset. Each line that holds code addresses is followed by what
 they are in the ELF the image came from. build.sh keeps the newest builds'
-ELFs in the primary checkout as .local/elf/<commit>[-dirty]-<variant>.elf and
+ELFs in the primary checkout as .local/elf/<commit>[-dirty][-maint].elf and
 the last one as .local/cycling.elf. An `elf=` in the input (a CRASH reply)
 picks its own; a `commit=` must match the ELF used, or decoding stops rather
 than name the wrong functions. Decode on the machine that built the image.
@@ -74,7 +74,7 @@ def decode(lines, elf):
 
 
 COMMIT = re.compile(r'\bcommit=([0-9a-f]{7,40})\b')
-ELF = re.compile(r'\belf=([0-9a-f]{7,40}(?:-dirty)?-h[01](?:-maint)?)\b')
+ELF = re.compile(r'\belf=([0-9a-f]{7,40}(?:-dirty)?(?:-maint)?)\b')
 
 
 def choose_elf(lines, archive):

@@ -256,7 +256,6 @@ pub fn state() -> WifiState {
         Link::Failed => WifiState::Failed,
     }
 }
-#[cfg(feature = "debug-harness")]
 pub fn set_fault(fault: u8) {
     FAULT.store(fault, Ordering::Relaxed);
 }
@@ -884,8 +883,7 @@ async fn verify(stack: Stack<'static>) {
 
 /// Returns the failure kind logged by `verify`.
 async fn probe(stack: Stack<'static>) -> Result<(), &'static str> {
-    // Harness-only fault injection; FAULT stays zero without debug-harness.
-    #[cfg(feature = "debug-harness")]
+    // `TEST n` injects these failures through FAULT.
     if FAULT.load(Ordering::Relaxed) == 1 {
         return Err("injected_dns");
     }
@@ -893,7 +891,6 @@ async fn probe(stack: Stack<'static>) -> Result<(), &'static str> {
         .dns_query(firmware_services::network::PROBE_HOST, DnsQueryType::A)
         .await
         .map_err(|_| "dns")?;
-    #[cfg(feature = "debug-harness")]
     if FAULT.load(Ordering::Relaxed) == 2 {
         return Err("injected_request");
     }

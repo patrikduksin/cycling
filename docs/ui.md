@@ -39,7 +39,7 @@ not jitter as they change.
 | --- | --- | --- | --- |
 | `CAPTION` | 800, 13 px | 14 px, caps 11 | Units, labels, the status bar, chart annotations |
 | `BODY` | 800, 18 px | 19 px, caps 14 | Card titles, toasts, sensor names, the clock |
-| `TITLE` | 900, 34 px | 37 px, caps 26 | One headline per screen (RIDE, MY SENSORS) |
+| `TITLE` | 900, 34 px | 37 px, caps 26 | One headline per screen (RIDE, SENSORS) |
 | `VALUE` | 700, 34 px | 29 px, digits 26 | Secondary readings: elapsed time, cadence, distance, grade |
 | `LARGE` | 700, 50 px | 42 px, digits 37 | Primary readings beside others: power, heart rate |
 | `HERO` | 700, 78 px | digits only | The one reading a page is about: speed on the main page |
@@ -152,7 +152,7 @@ the summary's elevation page:
 | Pill (toasts, chips) | Radius = half its height |
 | Gauge segment | 5 px tall, 3 px gaps, radius 2 |
 | Dot | 6 px page dots; an 8 px tone dot in toasts |
-| Icons | Drawn in one colour on a card. A state badge (a green check) sits at the top-right. |
+| Icons | Anti-aliased, in one colour, blended over what lies behind like text (`screens::icons`). A sensor's icon takes its metric's colour where it names a saved sensor (`HEART`, `POWER`, `SPEED` for speed and speed/cadence, `CADENCE`) and `WHITE` for any other; Home draws them `WHITE` with a status dot at the top-right, and ADD SENSOR draws nearby ones in `SECONDARY`. The SVGs in `apps/vana/icons` are the source; see Icons below. |
 | Ring | An arc of a ring with round ends (`chrome::Ring`), running clockwise from 12 o'clock. VANA's one shape for progress, charge and time left: the brand mark, the turn-off countdown, the charge and the power symbol. A ring that shows a share stands on a 25% track of its own colour. |
 
 Shapes are coverage functions (`disc`, `rounded`), blended over what lies
@@ -173,7 +173,8 @@ does, so the cue reads at a glance.
 | Send | `GREEN`, black icon | Send a saved ride to the phone (ACT) |
 | Stop | `RAISED`, white icon | End the ride: asks first (BACK) |
 | Back | `RAISED`, white icon | No, go back (BACK) |
-| Trash | `RED`, white icon | Throw a ride away: beside MOVE it asks first, beside ACT it answers |
+| Trash | `RED`, white icon | Throw a ride away or forget a sensor: beside MOVE it asks first, beside ACT it answers (or asks, on a sensor's page) |
+| Target | `GREEN`, black icon | Zero a power meter (ACT) |
 
 The summary's FTP offer uses two of them at once: Check beside ACT takes the
 suggested FTP, Back beside BACK keeps the one in force. END RIDE? uses three:
@@ -182,8 +183,9 @@ asks DISCARD RIDE?. DISCARD RIDE? and a saved ride's DELETE RIDE? put Trash
 beside ACT. A question with a back cue (END RIDE?, DISCARD RIDE?, the FTP
 offer, DELETE RIDE?) shows without the status bar, which would cut the cue.
 
-Only Ready, the paused screen, End ride, Discard ride, the summary and a
-saved ride show cues. Ride pages
+Only Ready, the paused screen, End ride, Discard ride, the summary, a
+saved ride and a sensor's pages (its detail, FORGET SENSOR? and REPLACE
+SENSOR) show cues. Ride pages
 never do: their buttons keep fixed roles. Content stays clear of the cue
 corners; each screen's layout test checks it.
 
@@ -206,6 +208,47 @@ number, `LAP 4`, as its toast named it.
 A difference carries its sign: `GREEN` with "+" for a gain, `SECONDARY` with
 "-" for a loss or no change. An easier lap is not a failure, so it is never
 `RED`; red stays for warnings.
+
+## Icons
+
+Sensor icons are drawn on a 24-unit square with round caps and 2.4-unit
+strokes, one SVG each in `apps/vana/icons`. To change one, edit its SVG and
+run `uv run apps/vana/icons/generate.py`, which rewrites
+`apps/vana/src/screens/icons/art.rs`. The script renders each whole icon at
+every size a screen draws it, 22 px (Home, ADD SENSOR), 26 px (SENSORS) and
+34 px (a sensor's pages), plus the 18 px refresh and plus marks and the
+28 px replacement arrow, into 4-bit coverage cropped to the ink, about 7.8 KB
+in all. It stops if two parts that do not touch in the drawing come within a
+pixel of each other at any size; `--zoom DIR` writes 8x sheets to review.
+
+## Sensors
+
+Sensors has two lists and the pages of one sensor, in the same rows and
+cards as everywhere else (`screens::sensors`).
+
+- SENSORS lists the saved sensors under its `TITLE`: an icon in its metric
+  colour, the name in `BODY`, and a `CAPTION` state under it in its state
+  colour (LIVE `GREEN`, SEARCHING `ACCENT`, NOT FOUND YET `AMBER`). A battery
+  report follows a dot: the voltage in `SECONDARY`, or BATTERY LOW in `AMBER`
+  and BATTERY CRITICAL in `RED`, which turn a live sensor's whole line their
+  colour and take its place where both do not fit. ADD SENSOR, a card with a
+  green plus, is the last row. Rows have no card until focused. A save or
+  radio problem replaces the title in `AMBER`.
+- ADD SENSOR is the only page that searches: it asks for a search as it
+  opens, and leaving it stops the search. Its title falls back to `BODY`,
+  as the `TITLE` face is too wide for it. A `CAPTION` line says how the
+  search goes (SEARCHING... in `ACCENT`, SCAN DONE - PICK, NO SENSORS FOUND,
+  or a problem in `AMBER`) beside the refresh mark, which a tap uses to
+  search again. Each nearby sensor not saved yet is a card: its icon in
+  `SECONDARY`, the name, `ID 4321`, and a green plus.
+- Both lists scroll with their focus: the page moves only as far as keeps
+  the focused row above the bottom 8 px, so the title scrolls away under
+  the status bar on a long list.
+- A sensor's page, FORGET SENSOR? and REPLACE SENSOR take the whole screen
+  with button cues. The sensor's page centres its icon on a `CARD` square,
+  the name, its state, BATTERY and ID cells (a `CAPTION` over the value;
+  the voltage in the colour of its urgency) and, on a power meter, the
+  calibration result with a grey hint under a failure.
 
 ## Spacing and regions
 
@@ -560,9 +603,9 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 
 | Button | Home | Sensors | Settings | Workouts | Ride |
 | --- | --- | --- | --- | --- | --- |
-| BottomRight (ACT) | Open the focused card | Act on the focused tile | Act on the row (edit, step a choice, open); while editing, raise it | Choose the focused workout, then Ready | Pause, resume; on the NEW FTP sheet, save it |
-| BottomLeft (MOVE) | Focus the next card | Focus the next tile | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages |
-| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back to the tiles, then Home | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
+| BottomRight (ACT) | Open the focused card | Open the focused row; on a sensor's page, zero a power meter or ask FORGET SENSOR?; answer a question | Act on the row (edit, step a choice, open); while editing, raise it | Choose the focused workout, then Ready | Pause, resume; on the NEW FTP sheet, save it |
+| BottomLeft (MOVE) | Focus the next card | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages |
+| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back a page: SENSORS, then where Sensors opened from | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
 
 | Button | Ready | End ride? | Summary | Rides | Saved ride |
 | --- | --- | --- | --- | --- | --- |
@@ -572,7 +615,7 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
-| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card or tile on Home and Sensors, or the ride on Rides; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does; on the back-to-start page, the pad starts or stops following the track back. Tiles own their bounds; the search button's wider touch margin takes only spare space. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
+| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card on Home, the row on Sensors, or the ride on Rides; a cue acts as its button; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does; on the back-to-start page, the pad starts or stops following the track back. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
 | Drag | 10 px of mostly vertical travel on a list | The list follows the finger and coasts on when it lifts (see Lists that scroll); the card it landed on is never activated |
 | Swipe | 10 px of mostly sideways travel, then at least 48 px and twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings, out of the number editor too |
 | Long press | Still for 1 s, then lifted | On the map, stops following the course |
@@ -638,7 +681,7 @@ a button can do too.
 
 A contact belongs to the screen it began on. Every touch edge reaches the
 arbiter, even while a sheet owns the buttons. If the page, its subview (ride
-page, sensor detail or replacement page, Settings edit mode) or a sheet changes
+page, a Sensors page, Settings edit mode) or a sheet changes
 before the finger lifts, that contact gives nothing. A `Cancel` during a contact
 drops the rest of it, however long the finger keeps sliding. A `Cancel` with no
 finger down changes nothing for touch, so the next tap still counts. On Sensors

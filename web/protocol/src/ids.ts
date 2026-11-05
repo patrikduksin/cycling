@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 
-/** Wire major version. It is the URL prefix and the `cycling.v2` subprotocol; any wire change bumps it. */
-export const PROTOCOL_VERSION = 2
+/** Wire major version. It is the URL prefix and the `cycling.v<N>` subprotocol; any wire change bumps it. */
+export const PROTOCOL_VERSION = 3
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
 

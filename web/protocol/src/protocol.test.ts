@@ -392,24 +392,24 @@ describe('codes and keys', () => {
   test('offered subprotocols parse back to their credentials', () => {
     const agent = parseOffered(agentProtocols('abc123').join(', '))
     expect(agent).toEqual({
-      entries: ['cycling.v2', 'auth.abc123'],
+      entries: ['cycling.v3', 'auth.abc123'],
       version: true,
       token: Option.some('abc123'),
       ownerKey: Option.none(),
-      selected: Option.some('cycling.v2'),
+      selected: Option.some('cycling.v3'),
     })
     const browser = parseOffered(browserProtocols(key).join(','))
     expect(browser.ownerKey).toEqual(Option.some(key))
-    expect(parseOffered('cycling.v3').version).toBe(false)
+    expect(parseOffered('cycling.v4').version).toBe(false)
     expect(parseOffered(null).version).toBe(false)
-    expect(parseOffered('cycling.v2, own.short').ownerKey).toEqual(
+    expect(parseOffered('cycling.v3, own.short').ownerKey).toEqual(
       Option.none(),
     )
   })
 
   test('the echo is the version token, else the first non-credential, never a credential', () => {
     const echo = (header: string | null) => parseOffered(header).selected
-    expect(echo('auth.secret, cycling.v2')).toEqual(Option.some('cycling.v2'))
+    expect(echo('auth.secret, cycling.v3')).toEqual(Option.some('cycling.v3'))
     expect(echo('auth.secret, cycling.v0')).toEqual(Option.some('cycling.v0'))
     expect(echo('auth.secret, own.key')).toEqual(Option.none())
     expect(echo(null)).toEqual(Option.none())

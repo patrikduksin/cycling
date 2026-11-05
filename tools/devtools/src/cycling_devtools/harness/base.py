@@ -227,7 +227,7 @@ def apply(connection, settings):
 def transport_recovery(connection, result):
     """One controlled stall, no retry. Loss counters are evidence, not a target."""
     ride = read(connection, 'RIDE STATUS')
-    if ride['state'] != 'ready' or ride['page'] != 'home':
+    if ride['state'] in {'recording', 'paused'} or ride['page'] != 'home':
         raise ValueError('transport recovery needs VANA idle on Home with no ride recording')
     result.update(recovered=False, recording=False)
     before_position = read(connection, 'POSITION')

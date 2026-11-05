@@ -120,6 +120,13 @@ class BacktraceTests(unittest.TestCase):
                 list(backtrace.decode(reply, Path('cycling.elf')))
         self.assertEqual(run.call_args.args[0][-2:], ['0x42001234', '0x42005678'])
 
+    def test_a_crash_record_from_a_variant_build_still_finds_its_elf(self):
+        reply = ['{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-sdk1-h1 pcs=0x42001234"}\n']
+        with tempfile.TemporaryDirectory() as directory:
+            named = Path(directory) / '15178ed1119a-sdk1-h1.elf'
+            named.write_bytes(b'15178ed1119a')
+            self.assertEqual(backtrace.choose_elf(reply, Path(directory)), (named, '15178ed1119a'))
+
 
 class VerifyTests(unittest.TestCase):
     def test_a_failed_step_stops_its_lane_only(self):

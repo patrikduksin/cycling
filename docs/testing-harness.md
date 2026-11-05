@@ -58,8 +58,8 @@ cycling startup-timing                          # Prompts to turn the C606 on, t
 cycling startup-timing --restart --ride      # Main-CPU restart; then start, pause and save a short ride
 ```
 
-The table and evidence go to `.local/timing/`. `--ride` records one short ride and
-needs a harness build; `--gnss` also waits for a fix. `--ride` and `--restart`
+The table and evidence go to `.local/timing/`. `--ride` records one short ride;
+`--gnss` also waits for a fix. `--ride` and `--restart`
 refuse while a ride is open. `--ride` presses only from Home, checks `RIDE STATUS`
 (`page`, `state`) after every press, and fails unless the ride ends saved.
 `cycling startup-timing --summarize .local/timing/<run>...` prints the median

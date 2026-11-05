@@ -143,7 +143,7 @@ class Workspace(unittest.TestCase):
         settings = device.SLOTS[1] + device.APP_SIZE + device.RIDE_SIZE
         self.fake.memory[settings : settings + 0x1000] = b'\x22' * 0x1000
         self.rides = self.fake.owned()
-        self.booting = lambda slot: {'slot': device.NAMES[slot], 'commit': 'abc', 'cycling': 'true'}
+        self.booting = lambda slot: {'slot': device.NAMES[slot], 'commit': 'abc'}
         self.consoles = 0
 
         self.protocols = []

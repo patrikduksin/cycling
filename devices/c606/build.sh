@@ -6,6 +6,12 @@ if [[ -z "${CYCLING_ESP_TOOLCHAIN:-}" ]]; then
   echo "Enter the dev shell first: nix develop (docs/dev-setup.md)." >&2
   exit 1
 fi
+for retired in CYCLING_SDK CYCLING_HARNESS CYCLING_BULK_MAINTENANCE; do
+  if [[ -n "${!retired:-}" ]]; then
+    echo "$retired is retired: every build has VANA and the harness; cycling build-maintenance builds the maintenance image." >&2
+    exit 1
+  fi
+done
 # Target dirs default to this checkout; point the root elsewhere to share them.
 target_root="${CYCLING_FW_TARGET_ROOT:-$PWD/.local}"
 # The image and its ELF land in .local, where flash and backtrace read them;

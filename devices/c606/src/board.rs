@@ -68,9 +68,8 @@ fn init() -> Resources {
     let mut crash_flash = RegionAccess::new(&mut storage, Region::Crash);
     let crash = crash_rtc::take(&mut crash_flash);
     println!(
-        "CYCLING_BOOT version={} board=magene-c606 harness={}",
-        env!("CARGO_PKG_VERSION"),
-        cfg!(feature = "debug-harness")
+        "CYCLING_BOOT version={} board=magene-c606",
+        env!("CARGO_PKG_VERSION")
     );
     match crash {
         device_api::crash::Marker::Valid(report) => println!(
@@ -89,11 +88,10 @@ fn init() -> Resources {
         (crash, crash_rtc::last(&mut crash_flash))
     {
         println!(
-            "CYCLING_CRASH commit={} elf={}{}-{} uptime_ms={} location={}:{} message={}",
+            "CYCLING_CRASH commit={} elf={}{} uptime_ms={} location={}:{} message={}",
             record.commit(),
             record.commit(),
-            if record.build.dirty { "-dirty" } else { "" },
-            record.build.variant(),
+            record.build.suffix(),
             record.uptime_ms,
             record.file(),
             record.line,

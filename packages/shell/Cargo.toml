@@ -9,7 +9,6 @@ publish = false
 
 [features]
 default = []
-debug-harness = []
 std = []
 # Count painter work for the host render benchmark (`rendering::work`).
 work-counters = ["std"]

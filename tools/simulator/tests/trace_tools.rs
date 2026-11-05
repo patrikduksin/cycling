@@ -386,7 +386,6 @@ fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
     );
 }
 
-#[cfg(feature = "debug-harness")]
 #[test]
 fn a_page_a_harness_press_brought_up_names_the_press() {
     let mut sim = Sim::new().boot();
@@ -893,8 +892,6 @@ fn the_build_stamp_and_replay_watch_every_checkout_path_cargo_builds_from() {
             "--locked",
             "--offline",
             "--no-default-features",
-            "--features",
-            "debug-harness",
             "--prefix",
             "none",
             "-e",

@@ -11,21 +11,14 @@ target_root="${CYCLING_FW_TARGET_ROOT:-$PWD/.local}"
 # The image and its ELF land in .local, where flash and backtrace read them;
 # parallel builds of different variants each need their own directory.
 image_dir="${CYCLING_IMAGE_DIR:-.local}"
-case "${CYCLING_HARNESS:-1}" in
-  1) firmware_features="hardware,debug-harness"; firmware_target="$target_root/firmware" ;;
-  0) firmware_features="hardware"; firmware_target="$target_root/firmware-no-harness" ;;
-  *) echo "CYCLING_HARNESS must be 0 or 1." >&2; exit 1 ;;
-esac
+firmware_features="hardware"
+firmware_target="$target_root/firmware"
+variant=""
 case "${CYCLING_BULK_MAINTENANCE:-0}" in
   0) ;;
-  1) firmware_features="$firmware_features,bulk-maintenance"; firmware_target="$firmware_target-maintenance" ;;
+  1) firmware_features="$firmware_features,bulk-maintenance"; firmware_target="$firmware_target-maintenance"; variant="-maint" ;;
   *) echo "CYCLING_BULK_MAINTENANCE must be 0 or 1." >&2; exit 1 ;;
 esac
-echo "Building with USB test harness=${CYCLING_HARNESS:-1}"
-variant="h${CYCLING_HARNESS:-1}"
-if [[ "${CYCLING_BULK_MAINTENANCE:-0}" == 1 ]]; then
-  variant="$variant-maint"
-fi
 mkdir -p .local "$image_dir"
 export PATH="$CYCLING_ESP_TOOLCHAIN/bin:$CYCLING_ESP_TOOLCHAIN/xtensa-esp-elf/bin:$PATH"
 CYCLING_BUILD_COMMIT="$(git rev-parse --short=12 HEAD)"
@@ -56,8 +49,11 @@ fi
 # The region's size says nothing of what one frame takes from it (#205 found
 # a 30 KB console frame). Each heavy frame has a budget in stack-frames.toml;
 # a frame past its budget fails the build, naming the function.
-uv run --project tools/devtools --locked python -m cycling_devtools.stack_frames "$elf" \
-  --variant "$variant" --report "$image_dir/stack-frames.md"
+# The maintenance image runs no VANA frames and has no budgets.
+if [[ -z "$variant" ]]; then
+  uv run --project tools/devtools --locked python -m cycling_devtools.stack_frames "$elf" \
+    --report "$image_dir/stack-frames.md"
+fi
 espflash save-image --chip esp32s3 --flash-mode dio --flash-freq 80mhz --flash-size 16mb \
   --partition-table devices/c606/partitions.csv --target-app-partition ota_1 \
   "$elf" "$image_dir/cycling.bin"
@@ -73,8 +69,8 @@ if [[ "$CYCLING_BUILD_DIRTY" == 1 ]]; then
 fi
 archive="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.local/elf"
 mkdir -p "$archive"
-cp "$elf" "$archive/.$CYCLING_BUILD_COMMIT$suffix-$variant.elf.$$"
-mv -f "$archive/.$CYCLING_BUILD_COMMIT$suffix-$variant.elf.$$" "$archive/$CYCLING_BUILD_COMMIT$suffix-$variant.elf"
+cp "$elf" "$archive/.$CYCLING_BUILD_COMMIT$suffix$variant.elf.$$"
+mv -f "$archive/.$CYCLING_BUILD_COMMIT$suffix$variant.elf.$$" "$archive/$CYCLING_BUILD_COMMIT$suffix$variant.elf"
 # Best effort: a concurrent build in another worktree may prune a file between
 # the glob and ls, which must not fail this build.
 { ls -1t "$archive"/*.elf 2>/dev/null | tail -n +25 | xargs -r rm -f; } || true

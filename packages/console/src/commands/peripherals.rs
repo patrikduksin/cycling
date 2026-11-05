@@ -17,7 +17,6 @@ pub enum Command {
         offset: u16,
         length: u16,
     },
-    #[cfg(feature = "debug-harness")]
     MmcOwnedTest {
         sector: u64,
         expected_crc: u32,
@@ -65,7 +64,6 @@ pub fn parse(name: &str, words: &mut core::str::SplitAsciiWhitespace<'_>) -> Opt
                         length,
                     }
                 }
-                #[cfg(feature = "debug-harness")]
                 Some("TEST") => Command::MmcOwnedTest {
                     sector: words.next()?.parse().ok()?,
                     expected_crc: u32::from_str_radix(words.next()?, 16).ok()?,
@@ -211,7 +209,6 @@ pub fn execute(
                 Err(e) => status = media_error(e),
             }
         }
-        #[cfg(feature = "debug-harness")]
         Command::MmcOwnedTest {
             sector,
             expected_crc,

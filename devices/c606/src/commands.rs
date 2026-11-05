@@ -230,7 +230,6 @@ pub fn execute(
                 .unwrap_or("UNSUPPORTED");
         }
         Command::Help => {
-            #[cfg(feature = "debug-harness")]
             let _ = write!(
                 output,
                 "MMC OWNED TEST relative_sector expected_crc_hex fill_hex; "
@@ -249,11 +248,10 @@ pub fn execute(
             crate::logging::metadata(recording);
             let _ = write!(
                 output,
-                "board={} slot={} commit={} harness={} logging=INFO recording={} protocol=1 max_line=256 log_slots=8 log_bytes=384",
+                "board={} slot={} commit={} logging=INFO recording={} protocol=1 max_line=256 log_slots=8 log_bytes=384",
                 diagnostics.board(),
                 diagnostics.slot(),
                 option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
-                cfg!(feature = "debug-harness"),
                 recording
             );
         }
@@ -522,7 +520,7 @@ pub fn execute(
                 Ok(Some((record, source))) => {
                     let _ = write!(
                         output,
-                        "kind={} this_boot={} source={} version={} commit={} elf={}{}-{} uptime_ms={} location={}:{} frames={} pcs=",
+                        "kind={} this_boot={} source={} version={} commit={} elf={}{} uptime_ms={} location={}:{} frames={} pcs=",
                         record.kind.name(),
                         // Boot marks the record reported, so ask what this boot's
                         // reset was blamed on.
@@ -536,8 +534,7 @@ pub fn execute(
                         },
                         // The archived ELF's name, for `cycling backtrace`.
                         record.commit(),
-                        if record.build.dirty { "-dirty" } else { "" },
-                        record.build.variant(),
+                        record.build.suffix(),
                         record.uptime_ms,
                         record.file(),
                         record.line,
@@ -558,39 +555,29 @@ pub fn execute(
                 Err(_) => "FAILED",
             };
         }
-        Command::Test(n) => {
-            #[cfg(feature = "debug-harness")]
-            {
-                match n {
-                    0..=4 => {
-                        diagnostics.set_fault(n);
-                        status = "ACCEPTED";
-                    }
-                    20 => {
-                        log::warn!(target:"diagnostic","controlled executor stall ms=6000");
-                        diagnostics.stall();
-                        log::info!(target:"diagnostic","executor stall ended");
-                        status = "ACCEPTED";
-                    }
-                    11 => {
-                        terminal.schedule_reboot(now, true);
-                        status = "ACCEPTED";
-                    }
-                    10 => {
-                        for _ in 0..64 {
-                            log::warn!(target:"diagnostic","controlled log saturation");
-                        }
-                        status = "ACCEPTED";
-                    }
-                    _ => status = "UNSUPPORTED",
+        Command::Test(n) => match n {
+            0..=4 => {
+                diagnostics.set_fault(n);
+                status = "ACCEPTED";
+            }
+            20 => {
+                log::warn!(target:"diagnostic","controlled executor stall ms=6000");
+                diagnostics.stall();
+                log::info!(target:"diagnostic","executor stall ended");
+                status = "ACCEPTED";
+            }
+            11 => {
+                terminal.schedule_reboot(now, true);
+                status = "ACCEPTED";
+            }
+            10 => {
+                for _ in 0..64 {
+                    log::warn!(target:"diagnostic","controlled log saturation");
                 }
+                status = "ACCEPTED";
             }
-            #[cfg(not(feature = "debug-harness"))]
-            {
-                let _ = n;
-                status = "UNSUPPORTED";
-            }
-        }
+            _ => status = "UNSUPPORTED",
+        },
     }
     terminal.reply(request.id, status, output.as_str(), now);
     terminal.command_completed();

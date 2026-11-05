@@ -1,4 +1,3 @@
-#![cfg(feature = "debug-harness")]
 use device_api::input::Button;
 use device_api::input::Input;
 use device_api::observation::Availability;

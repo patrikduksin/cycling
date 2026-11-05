@@ -125,7 +125,7 @@ class HarnessTests(unittest.TestCase):
                 dict(op='mmc', action='read', sector=0),
             ],
         }
-        args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None, no_harness=False)
+        args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None)
         actions = []
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
@@ -202,7 +202,7 @@ class HarnessTests(unittest.TestCase):
             'connectivity_restore': {'ble': {'mode': 'none', 'connected': False}},
             'steps': [dict(op='command', command='BRIGHTNESS 20'), dict(op='ble', action='connect')],
         }
-        args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None, no_harness=False)
+        args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             with (
@@ -265,7 +265,7 @@ class HarnessTests(unittest.TestCase):
             ],
             'captures': [{'kind': capture.kind} for capture in captures],
         }
-        args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None, no_harness=False)
+        args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             with (

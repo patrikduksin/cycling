@@ -91,14 +91,14 @@ class BacktraceTests(unittest.TestCase):
         )
 
     def test_a_crash_record_picks_the_elf_it_names_and_checks_its_commit(self):
-        reply = ['{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-dirty-h1 pcs=0x42001234,0x42005678"}\n']
+        reply = ['{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-dirty pcs=0x42001234,0x42005678"}\n']
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory)
             self.assertEqual(
                 backtrace.choose_elf(reply, archive), (backtrace.ROOT / '.local/cycling.elf', '15178ed1119a')
             )
-            (archive / '15178ed1119a-h1.elf').write_bytes(b'15178ed1119a')
-            named = archive / '15178ed1119a-dirty-h1.elf'
+            (archive / '15178ed1119a.elf').write_bytes(b'15178ed1119a')
+            named = archive / '15178ed1119a-dirty.elf'
             named.write_bytes(b'\0commit 15178ed1119a\0')
             self.assertEqual(backtrace.choose_elf(reply, archive), (named, '15178ed1119a'))
             self.assertTrue(backtrace.holds_commit(named, '15178ed1119a'))
@@ -118,16 +118,10 @@ class VerifyTests(unittest.TestCase):
             self.assertEqual([(r.step.name, r.ok) for r in results], [('first', False)])
             self.assertIn('$ exit 3', results[0].log.read_text())
 
-    def test_gate_builds_never_share_an_image(self):
-        builds = [step for lane in verify.LANES['full'] for step in lane if step.name.startswith('build-')]
-        envs = [dict(step.env) for step in builds]
-        self.assertEqual(len({env['CYCLING_IMAGE_DIR'] for env in envs}), 2)
-        self.assertNotIn('.local', {env['CYCLING_IMAGE_DIR'] for env in envs})
-
-    def test_every_firmware_variant_is_in_the_full_gate(self):
+    def test_the_full_gate_builds_the_firmware_beside_the_flashed_image(self):
         names = {step.name for lane in verify.LANES['full'] for step in lane}
-        self.assertTrue({'build-h0', 'build-h1'} <= names)
-        self.assertTrue({'test', 'check', 'simulate'} <= names)
+        self.assertTrue({'build', 'test', 'check', 'simulate'} <= names)
+        self.assertNotEqual(dict(verify.BUILD.env)['CYCLING_IMAGE_DIR'], '.local')
 
 
 if __name__ == '__main__':

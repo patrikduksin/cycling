@@ -76,7 +76,6 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         )
         .unwrap()
     };
-    #[cfg(feature = "debug-harness")]
     {
         system.harness = firmware_shell::harness::State::new(boot);
         system.harness.clock = Some(|| embassy_time::Instant::now().as_millis());
@@ -572,7 +571,6 @@ fn vana_pass(
         system.set_app_active(sdk.input_active());
         system.tick(now);
         system.input_source().0.record(&mut *record.borrow_mut());
-        #[cfg(feature = "debug-harness")]
         for input in system.take_synthetic() {
             firmware_services::trace::frozen::Record::record(
                 &mut *record.borrow_mut(),
@@ -696,7 +694,6 @@ impl commands::Diagnostics for FirmwareDiagnostics {
         device::drivers::psram::external_free()
     }
     fn restart(&self, panic: bool) -> ! {
-        #[cfg(feature = "debug-harness")]
         if panic {
             device::drivers::crash_rtc::controlled_panic();
         }
@@ -704,9 +701,7 @@ impl commands::Diagnostics for FirmwareDiagnostics {
         esp_hal::system::software_reset()
     }
     fn set_fault(&self, fault: u8) {
-        #[cfg(feature = "debug-harness")]
         device::drivers::wifi::set_fault(fault);
-        let _ = fault;
     }
     fn stall(&self) {
         esp_hal::delay::Delay::new().delay_millis(6000);

@@ -154,7 +154,6 @@ fn a_full_battery_on_usb_leaves_home_still() {
     );
 }
 
-#[cfg(feature = "debug-harness")]
 #[test]
 fn a_capture_on_a_still_home_gets_a_frame() {
     let mut sim = device();

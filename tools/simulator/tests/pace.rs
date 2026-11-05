@@ -303,7 +303,6 @@ fn a_press_wakes_a_resting_home() {
     assert_eq!(pressed(true), (true, Page::Ready), "taken in its own slice");
 }
 
-#[cfg(feature = "debug-harness")]
 #[test]
 fn a_harness_press_runs_when_it_is_due() {
     let mut sim = device();

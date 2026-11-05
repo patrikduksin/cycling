@@ -9,7 +9,6 @@ publish = false
 
 [features]
 default = []
-debug-harness = ["firmware-shell/debug-harness", "firmware-console/debug-harness"]
 live = ["dep:minifb"]
 
 [dependencies]

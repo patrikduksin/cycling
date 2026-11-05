@@ -33,8 +33,6 @@ COMMAND = [
     'shell-simulator',
     '--locked',
     '--no-default-features',
-    '--features',
-    'debug-harness',
     '--test',
     'ride_scenarios',
 ]

@@ -1,8 +1,8 @@
 """Local replacement for CI: every gate in parallel lanes, one pass/fail table.
 
 Lanes that share a cargo target dir would only queue on its lock, so clippy
-gets its own dir and each firmware variant already has one; sccache shares the
-dependency builds between them. harness-virtual has real-time reply timeouts,
+gets its own dir and the firmware has one; sccache shares the dependency
+builds between them. harness-virtual has real-time reply timeouts,
 so it runs alone after the loaded phase.
 """
 
@@ -26,14 +26,8 @@ class Step:
     env: tuple[tuple[str, str], ...] = ()
 
 
-def build(harness):
-    """One variant; its image stays apart from .local/cycling.bin and the other lanes."""
-    name = f'build-h{harness}'
-    env = (
-        ('CYCLING_HARNESS', harness),
-        ('CYCLING_IMAGE_DIR', f'.local/verify/images/{name}'),
-    )
-    return Step(name, 'cycling build', env)
+# Its image stays apart from .local/cycling.bin, which flash writes.
+BUILD = Step('build', 'cycling build', (('CYCLING_IMAGE_DIR', '.local/verify/images/build'),))
 
 
 def frame_report(step):
@@ -46,13 +40,13 @@ LANES = {
     'full': [
         [Step('test', 'cycling test'), Step('simulate', 'cycling simulate')],
         [Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
-        *[[build(harness)] for harness in '01'],
+        [BUILD],
     ],
-    # The inner loop before pushing: everything except the no-harness build.
+    # The inner loop before pushing: everything except simulate and harness-virtual.
     'fast': [
         [Step('test', 'cycling test')],
         [Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
-        [build('1')],
+        [BUILD],
     ],
 }
 ALONE = {'full': [Step('harness-virtual', 'cycling harness-virtual')], 'fast': []}
@@ -119,7 +113,7 @@ def failure_tail(results, lines=30):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('--fast', action='store_true', help='test, check and the HARNESS=1 build only')
+    parser.add_argument('--fast', action='store_true', help='test, check and build only')
     parser.add_argument('--pr', type=int, help='post the result table on this pull request')
     args = parser.parse_args(argv)
     warn_if_low_disk()

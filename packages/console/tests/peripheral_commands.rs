@@ -335,9 +335,6 @@ fn owned_commands_parse_and_test_requires_harness() {
         "MMC",
         &mut "OWNED TEST 1 deadbeef a5".split_ascii_whitespace(),
     );
-    #[cfg(not(feature = "debug-harness"))]
-    assert_eq!(parsed, None);
-    #[cfg(feature = "debug-harness")]
     assert_eq!(
         parsed,
         Some(Command::MmcOwnedTest {
@@ -348,7 +345,6 @@ fn owned_commands_parse_and_test_requires_harness() {
     );
 }
 
-#[cfg(feature = "debug-harness")]
 #[test]
 fn owned_test_conflict_never_writes() {
     let mut media = OwnedMedia::new();
@@ -373,7 +369,6 @@ fn owned_test_conflict_never_writes() {
     assert!(output.is_empty());
 }
 
-#[cfg(feature = "debug-harness")]
 #[test]
 fn owned_test_writes_one_requested_relative_sector_with_requested_fill() {
     let mut media = OwnedMedia::new();
@@ -404,7 +399,6 @@ fn owned_test_writes_one_requested_relative_sector_with_requested_fill() {
     );
 }
 
-#[cfg(feature = "debug-harness")]
 #[test]
 fn owned_test_failed_read_cannot_mutate() {
     let mut media = OwnedMedia::new();
@@ -430,7 +424,6 @@ fn owned_test_failed_read_cannot_mutate() {
     assert_eq!(output, "existing reply prefix ");
 }
 
-#[cfg(feature = "debug-harness")]
 #[test]
 fn owned_test_ambiguous_write_is_not_retried_or_reported_successful() {
     let mut media = OwnedMedia::new();

@@ -101,7 +101,7 @@ pub fn to_fixture(path: &Path, capture: &Capture, media: &Media) -> Option<Strin
              // To make it a fixture, from the checkout root:\n\
              //   cp {} {FIXTURES}/{name}.trace\n\
              //   cp {} {FIXTURES}/{name}.origin\n\
-             //   cargo test -p shell-simulator --features debug-harness --test trace_tools no_committed_fixture",
+             //   cargo test -p shell-simulator --test trace_tools no_committed_fixture",
             source.display(),
             origin_path(&source).display()
         );

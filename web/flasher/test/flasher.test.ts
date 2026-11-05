@@ -368,6 +368,41 @@ describe('reboot and close', () => {
   })
 })
 
+describe('which chips and regions', () => {
+  test('a chip that is not an ESP32-S3 is refused before any register write', async () => {
+    const device = sim({ chipId: 5 })
+    const exit = await session(device, () => Effect.void)
+    expect(reasonOf(exit)).toBe('unsupportedChip')
+    expect(device.commands()).not.toContain(OP.WRITE_REG)
+  })
+
+  test('a 4 MiB chip refuses regions past its flash and leaves flash untouched', async () => {
+    const flash = new Uint8Array(4 * 1024 * 1024).fill(0xff)
+    const device = sim({ flash })
+    const pastEnd = { address: 0x3f0000, size: 0x20000 }
+    const reasons = valueOf(
+      await session(device, s =>
+        Effect.forEach(
+          [
+            Stream.runDrain(s.write(pastEnd.address, noise(pastEnd.size, 12))),
+            Stream.runDrain(s.read(pastEnd)),
+            s.digest(pastEnd),
+            s.digest({ address: 0x3f0000, size: 0x10000 }),
+          ],
+          effect =>
+            effect.pipe(
+              Effect.flip,
+              Effect.map(error => error.reason),
+              Effect.orElseSucceed(() => 'ok'),
+            ),
+        ),
+      ),
+    )
+    expect(reasons).toEqual(['pastFlash', 'pastFlash', 'pastFlash', 'ok'])
+    expect(flash.every(byte => byte === 0xff)).toBe(true)
+  })
+})
+
 describe('an abandoned write', () => {
   test('stops at a block boundary before the recovery reset, which never interleaves with it', async () => {
     const device = sim({ replyDelayMs: 30 })

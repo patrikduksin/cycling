@@ -49,11 +49,18 @@ export class ChooserFailed extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()('ChooserFailed', { reason: Schema.String }) {}
 
-/** The flasher could not take the port; `lostPort` when the device went away during entry. */
+/** Why the flasher could not take the port; `portLost` when the device went away during entry, as a re-enumeration does. */
+export const EntryFailure = Schema.Literals([
+  'portLost',
+  'entryFailed',
+  'unsupportedChip',
+])
+export type EntryFailure = typeof EntryFailure.Type
+
 export class EntryFailed extends Schema.TaggedError<
   EntryFailed,
   { readonly brand: unique symbol }
->()('EntryFailed', { lostPort: Schema.Boolean, detail: Schema.String }) {}
+>()('EntryFailed', { reason: EntryFailure, detail: Schema.String }) {}
 
 export interface SerialLink {
   /** Chunks as the device sends them; fails with `SerialLinkLost` on unplug or reset. */

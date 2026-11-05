@@ -108,7 +108,6 @@ export const PortPhase = Schema.Union([
   Schema.TaggedStruct('Entering', {
     lease: Lease,
     entry: Entry,
-    retried: Schema.Boolean,
     departures: Schema.Int,
   }),
   Schema.TaggedStruct('Flashing', {

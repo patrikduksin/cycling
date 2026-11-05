@@ -21,6 +21,8 @@ export interface SimOptions {
   readonly flashCryptCnt?: number
   /** Every reply reaches the host this much later. */
   readonly replyDelayMs?: number
+  /** GET_SECURITY_INFO's chip id: 9 is the ESP32-S3, 5 the C3, 13 the C6. */
+  readonly chipId?: number
   /** How fast the stub streams READ_FLASH packets; the C606 manages about 140 KB/s. Unlimited by default. */
   readonly readBytesPerSecond?: number
 }
@@ -79,7 +81,13 @@ const REG = {
   RTC_WDT_WPROTECT: 0x600080b0,
   SWD_CONF: 0x600080b4,
   SWD_WPROTECT: 0x600080b8,
+  SPI_CMD: 0x60002000,
+  SPI_USER2: 0x60002020,
+  SPI_W0: 0x60002058,
 } as const
+/** SPI_CMD's USR bit starts a user command; RDID answers the JEDEC id in W0. */
+const SPI_CMD_USR = 1 << 18
+const SPIFLASH_RDID = 0x9f
 const RTC_WDT_KEY = 0x50d83aa1
 const SWD_KEY = 0x8f1d312a
 const ENABLE = 0x80000000
@@ -215,6 +223,7 @@ export class SimDevice implements Wire, Enumeration {
       flashCryptCnt: options.flashCryptCnt ?? 0,
       replyDelayMs: options.replyDelayMs ?? 0,
       readBytesPerSecond: options.readBytesPerSecond ?? Infinity,
+      chipId: options.chipId ?? 9,
     }
     this.attach()
     this.bootApp('0x1 (POWERON)')
@@ -615,7 +624,7 @@ export class SimDevice implements Wire, Enumeration {
             ...le32(this.options.secureBoot ? 1 : 0),
             this.options.flashCryptCnt,
             ...Array.from({ length: 7 }, () => 0),
-            ...le32(9),
+            ...le32(this.options.chipId),
             ...le32(0),
           ]),
         })
@@ -668,6 +677,9 @@ export class SimDevice implements Wire, Enumeration {
     if (!unlocked) {
       return
     }
+    if (address === REG.SPI_CMD && (value & SPI_CMD_USR) !== 0) {
+      return this.spiCommand()
+    }
     const old = this.registers.get(address) ?? 0
     const next = ((old & ~mask) | (value & mask)) >>> 0
     this.registers.set(address, next)
@@ -680,6 +692,14 @@ export class SimDevice implements Wire, Enumeration {
     if (this.rtcWdtOff && this.swdFed && this.watchdog !== undefined) {
       this.clearLater(this.watchdog)
       this.watchdog = undefined
+    }
+  }
+
+  /** The flash answers RDID with a JEDEC id whose capacity byte is log2 of its size, and the command is done at once. */
+  private spiCommand(): void {
+    if (((this.registers.get(REG.SPI_USER2) ?? 0) & 0xff) === SPIFLASH_RDID) {
+      const capacity = Math.log2(this.flash.length)
+      this.registers.set(REG.SPI_W0, (capacity << 16) | (0x40 << 8) | 0x20)
     }
   }
 

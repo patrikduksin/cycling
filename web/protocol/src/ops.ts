@@ -95,6 +95,10 @@ export const OpFailure = Schema.Literals([
   'digestMismatch',
   /** The USB device vanished mid-op: unplug, panic or an unexpected reset. */
   'portLost',
+  /** Not an ESP32-S3, or its flash did not report its size; nothing was written to it. */
+  'unsupportedChip',
+  /** The region ends past the flash the chip reported (a 4 or 8 MiB part); flash untouched. */
+  'pastFlash',
   /** A Release, the visitor or the end of the hold stopped the op. */
   'stopped',
 ])

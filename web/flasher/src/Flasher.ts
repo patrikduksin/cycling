@@ -29,6 +29,10 @@ export const FlasherFailure = Schema.Literals([
   'digestMismatch',
   /** The USB device went away. */
   'portLost',
+  /** Not an ESP32-S3, or its flash did not say its size: nothing was written to it. */
+  'unsupportedChip',
+  /** The region ends past the flash this chip reported; flash untouched. */
+  'pastFlash',
 ])
 export type FlasherFailure = typeof FlasherFailure.Type
 
@@ -121,6 +125,7 @@ const MD5_BYTES = 16
 const SETTLE_MS = 30_000
 const RECOVERY_MS = 2000
 const DISCONNECT_MS = 2000
+const S3 = 'ESP32-S3'
 const ESPRESSIF_VID = 0x303a
 const USB_JTAG_SERIAL_PID = 0x1001
 
@@ -395,6 +400,12 @@ export const open = (
     yield* call('entryFailed', () =>
       loader.connect(options.entry === 'usbReset' ? 'usb_reset' : 'no_reset'),
     )
+    if (loader.chip.CHIP_NAME !== S3) {
+      return yield* new FlasherError({
+        reason: 'unsupportedChip',
+        detail: `${redact(loader.chip.CHIP_NAME)} is not an ${S3}.`,
+      })
+    }
     yield* Ref.set(standing, 'talking')
     const usb = port.getInfo()
     if (
@@ -410,6 +421,28 @@ export const open = (
     )
     const mac = yield* call('entryFailed', () => loader.chip.readMac(loader))
     yield* call('entryFailed', () => loader.runStub())
+    const flashSize = yield* call('entryFailed', () => loader.detectFlashSize())
+    if (flashSize === undefined) {
+      return yield* new FlasherError({
+        reason: 'unsupportedChip',
+        detail: 'The flash did not report its size.',
+      })
+    }
+    /** esptool-js names sizes like "16MB" and "512KB". */
+    const flashBytes =
+      Number.parseInt(flashSize, 10) *
+      (flashSize.endsWith('KB') ? 1024 : 1024 * 1024)
+
+    /** python esptool refuses an image that does not fit the detected flash; a write past the end wraps to the bootloader. */
+    const within = (region: Region): Effect.Effect<void, FlasherError> =>
+      region.address + region.size <= flashBytes
+        ? Effect.void
+        : Effect.fail(
+            new FlasherError({
+              reason: 'pastFlash',
+              detail: `${hex(region.address)}+${hex(region.size)} ends past this chip's ${hex(flashBytes)} bytes of flash.`,
+            }),
+          )
 
     const chip: Chip = {
       mac: mac.replaceAll(':', '').toLowerCase(),
@@ -418,7 +451,13 @@ export const open = (
     }
 
     const digest = (region: Region) =>
-      call('chipError', () => loader.flashMd5sum(region.address, region.size))
+      within(region).pipe(
+        Effect.andThen(
+          call('chipError', () =>
+            loader.flashMd5sum(region.address, region.size),
+          ),
+        ),
+      )
 
     const readPiece = (region: Region) =>
       call('chipError', () =>
@@ -441,7 +480,7 @@ export const open = (
 
     const read = (region: Region): Stream.Stream<ReadEvent, FlasherError> =>
       Stream.unwrap(
-        Effect.sync(() => {
+        Effect.map(within(region), () => {
           const whole = new SparkMD5.ArrayBuffer()
           return Stream.fromIterable(piecesOf(region)).pipe(
             Stream.mapEffect(piece =>
@@ -475,6 +514,7 @@ export const open = (
     ): Stream.Stream<number, FlasherError> =>
       Stream.callback<number, FlasherError>(progress =>
         Effect.gen(function* () {
+          yield* within({ address, size: data.length })
           yield* call('chipError', () =>
             loader.writeFlash({
               fileArray: [{ data, address }],

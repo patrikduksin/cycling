@@ -15,6 +15,7 @@ import {
 
 import { labelOf } from './flasher/partitions.ts'
 import { totalOf } from './flasher/run.ts'
+import type { EntryFailure } from './links.ts'
 import { portChanged, reacquire } from './live.ts'
 import type { Finished } from './message.ts'
 import type {
@@ -52,9 +53,9 @@ import { ACTIVITY_ROWS, OP_QUEUE } from './policy.ts'
  *  any           an op past OP_QUEUE            -                                  busy
  *  held          Op X                           ops+=[X]                           -
  *  Entering      EnteredFlasher                 Flashing                           PortChanged Flashing
- *  Entering      FailedEntry lostPort, once     Entering{noReset, retried}         -
- *  Entering      FailedEntry otherwise          console Reacquiring                head entryFailed, rest
- *                                                                                  notEntered
+ *  Entering      FailedEntry portLost, usbReset Entering{noReset}                  -
+ *  Entering      FailedEntry otherwise          console Reacquiring                head entryFailed (or
+ *                                                                                  unsupportedChip), rest notEntered
  *  Flashing      FinishedOp Entered|Read|...    ops=tail                           the outcome
  *  Flashing      FinishedOp Rebooting           console Reacquiring; queued        Rebooting; the rest notEntered
  *                                               Enters wait for the console
@@ -175,7 +176,6 @@ const entering = (lease: Lease): Entering => ({
   _tag: 'Entering',
   lease,
   entry: 'usbReset',
-  retried: false,
   departures: 0,
 })
 
@@ -293,16 +293,14 @@ export const onEnteredFlasher = (
 
 export const onFailedEntry = (
   port: Port,
-  failure: { readonly lostPort: boolean; readonly detail: string },
+  failure: { readonly reason: EntryFailure; readonly detail: string },
 ): Option.Option<Step> => {
   const phase = port.state
   if (phase._tag !== 'Entering') {
     return Option.none()
   }
-  if (failure.lostPort && !phase.retried) {
-    return Option.some(
-      step(withState(port, { ...phase, entry: 'noReset', retried: true })),
-    )
+  if (failure.reason === 'portLost' && phase.entry === 'usbReset') {
+    return Option.some(step(withState(port, { ...phase, entry: 'noReset' })))
   }
   const [head, ...rest] = port.ops
   const settled = head === undefined ? port : recordOp(port, head, 'failed')
@@ -313,7 +311,15 @@ export const onFailedEntry = (
       [
         ...(head === undefined
           ? []
-          : [refusal(head.id, 'entryFailed', failure.detail)]),
+          : [
+              refusal(
+                head.id,
+                failure.reason === 'unsupportedChip'
+                  ? 'unsupportedChip'
+                  : 'entryFailed',
+                failure.detail,
+              ),
+            ]),
         ...rest.map(op => refusal(op.id, 'notEntered')),
       ],
     ),

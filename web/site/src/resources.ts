@@ -246,7 +246,7 @@ export const managedResources = (adapters: Adapters) => {
                 Effect.mapError(
                   () =>
                     new EntryFailed({
-                      lostPort: false,
+                      reason: 'entryFailed',
                       detail: 'The device did not come back.',
                     }),
                 ),
@@ -255,7 +255,10 @@ export const managedResources = (adapters: Adapters) => {
               Effect.mapError(
                 ({ reason, detail }) =>
                   new EntryFailed({
-                    lostPort: reason === 'portLost',
+                    reason:
+                      reason === 'portLost' || reason === 'unsupportedChip'
+                        ? reason
+                        : 'entryFailed',
                     detail,
                   }),
               ),
@@ -285,10 +288,7 @@ export const managedResources = (adapters: Adapters) => {
       onReleased: () => Message.ReleasedSerial(),
       onAcquireError: error =>
         error instanceof EntryFailed
-          ? Message.FailedEntry({
-              lostPort: error.lostPort,
-              detail: error.detail,
-            })
+          ? Message.FailedEntry({ reason: error.reason, detail: error.detail })
           : Message.FailedPort({
               reason: Predicate.isTagged(error, 'ReacquireTimeout')
                 ? 'reacquireTimeout'

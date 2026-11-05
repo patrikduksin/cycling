@@ -275,7 +275,7 @@ describe('entering update mode', () => {
     const entering = step(serialLive(), opMessage(1, enter)).model
     const retry = step(
       entering,
-      Message.FailedEntry({ lostPort: true, detail: 'gone' }),
+      Message.FailedEntry({ reason: 'portLost', detail: 'gone' }),
     )
     expect(commandsOf(retry)).toEqual([])
     expect(portRequirement(retry.model)).toMatchObject(
@@ -283,7 +283,7 @@ describe('entering update mode', () => {
     )
     const gave = step(
       retry.model,
-      Message.FailedEntry({ lostPort: true, detail: 'gone again' }),
+      Message.FailedEntry({ reason: 'portLost', detail: 'gone again' }),
     )
     expect(commandsOf(gave)).toEqual([
       sent(refused(1, 'entryFailed', 'gone again'), ...backToConsole),
@@ -302,10 +302,27 @@ describe('entering update mode', () => {
     const entering = step(serialLive(), opMessage(1, enter)).model
     const failed = step(
       entering,
-      Message.FailedEntry({ lostPort: false, detail: 'no sync' }),
+      Message.FailedEntry({ reason: 'entryFailed', detail: 'no sync' }),
     )
     expect(commandsOf(failed)).toEqual([
       sent(refused(1, 'entryFailed', 'no sync'), ...backToConsole),
+    ])
+  })
+
+  test('a chip that is not an ESP32-S3 is unsupportedChip, not retried', () => {
+    const entering = step(serialLive(), opMessage(1, enter)).model
+    const refusedChip = step(
+      entering,
+      Message.FailedEntry({
+        reason: 'unsupportedChip',
+        detail: 'ESP32-C3 is not an ESP32-S3.',
+      }),
+    )
+    expect(commandsOf(refusedChip)).toEqual([
+      sent(
+        refused(1, 'unsupportedChip', 'ESP32-C3 is not an ESP32-S3.'),
+        ...backToConsole,
+      ),
     ])
   })
 })

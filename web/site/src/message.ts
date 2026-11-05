@@ -13,6 +13,7 @@ import {
   UsbDescriptor,
 } from '@cycling/protocol'
 
+import { EntryFailure } from './links.ts'
 import { Direction, Layout, Session } from './model.ts'
 
 /**
@@ -72,8 +73,7 @@ export const Message = defineMessageUnion({
 
   /** The flasher holds the port; `layout` is what the device's own tables say. */
   EnteredFlasher: { layout: Schema.Option(Layout) },
-  /** `lostPort`: the device went away during entry, which a re-enumeration does. */
-  FailedEntry: { lostPort: Schema.Boolean, detail: Schema.String },
+  FailedEntry: { reason: EntryFailure, detail: Schema.String },
   ProgressedOp: {
     attempt: Schema.Int,
     id: RequestId,

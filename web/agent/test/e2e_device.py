@@ -1,4 +1,4 @@
-"""Device(flasher_for(...)) through the visitor's page, as a firmware task runs it.
+"""Device(firmware.flasher_for(...)) through the visitor's page, as a firmware task runs it.
 
 Run by e2e-page.ts under `cycling remote CODE --`. Private state goes to a
 scratch directory, never to the checkout's .local/device. Prints one JSON
@@ -17,7 +17,6 @@ import time
 from pathlib import Path
 
 from cycling_devtools.device import firmware
-from cycling_devtools.device.flasher import flasher_for
 
 SCRATCH_REGION = 0xF00000
 SCRATCH_BYTES = 0x40000
@@ -30,7 +29,7 @@ def step(name, **facts):
 def main(mode, scratch):
     firmware.LOCAL = Path(scratch)
     port = os.environ['CYCLING_PORT']
-    device = firmware.Device(flasher_for(port, lambda: port, firmware.LOCAL))
+    device = firmware.Device(firmware.flasher_for(port, lambda: port, firmware.LOCAL))
     started = time.monotonic()
     metadata, identity = device.connect(strict=True)
     step('enter', seconds=round(time.monotonic() - started, 2), identity_length=len(identity))

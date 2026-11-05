@@ -19,7 +19,8 @@ import zlib
 from pathlib import Path
 
 from cycling_devtools.device import mmc_maintenance
-from cycling_devtools.device.flasher import Flasher, flasher_for, monitor
+from cycling_devtools.device.flasher import EsptoolFlasher, Flasher, monitor
+from cycling_devtools.device.page_flasher import PageFlasher
 from cycling_devtools.device.port import add_port_argument, select_port, selected_port
 from cycling_devtools.terminal.usb import UsbConnection, acquire_lock, open_no_reset, reply_fields
 from cycling_devtools.workspace import DEVICE_LOCAL, ROOT
@@ -235,6 +236,14 @@ def console_info(resolve, seconds, log, maintenance=False):
                 os.close(fd)
         time.sleep(0.5)
     return None
+
+
+def flasher_for(port, resolve, log_dir, environ=os.environ) -> Flasher:
+    """The one backend choice. The visitor's page only for the bridged port, so a second, local device in a bridged command stays local."""
+    bridged, door = environ.get('CYCLING_PORT'), environ.get('CYCLING_FLASHER')
+    if bridged and door and port == bridged:
+        return PageFlasher(Path(door), log_dir)
+    return EsptoolFlasher(port, resolve, log_dir)
 
 
 class Device:

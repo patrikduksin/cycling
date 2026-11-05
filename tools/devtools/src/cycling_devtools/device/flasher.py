@@ -7,12 +7,11 @@ what it moves, as esptool does locally.
 """
 
 import io
-import os
 import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -44,18 +43,6 @@ class Flasher(Protocol):
 
 class FlasherError(RuntimeError):
     """Messages carry no device identity."""
-
-
-def flasher_for(
-    port: str, resolve: Callable[[], str], log_dir: Path, environ: Mapping[str, str] = os.environ
-) -> Flasher:
-    """The one backend choice. The visitor's page only for the bridged port, so a second, local device in a bridged command stays local."""
-    bridged, door = environ.get('CYCLING_PORT'), environ.get('CYCLING_FLASHER')
-    if bridged and door and port == bridged:
-        from cycling_devtools.device.page_flasher import PageFlasher
-
-        return PageFlasher(Path(door), log_dir)
-    return EsptoolFlasher(port, resolve, log_dir)
 
 
 def chip_from(output):

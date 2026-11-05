@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import cycling_devtools.device.flasher as flasher
+from cycling_devtools.device import firmware
 
 # A made-up address; recorded transcripts never leave the private logs.
 MAC = '02:00:00:00:00:01'
@@ -210,5 +211,5 @@ class EsptoolFlasherTests(unittest.TestCase):
         self.assertEqual((self.resolved, self.arguments()[3]), (['/dev/ttyACM1'], '/dev/ttyACM1'))
 
     def test_flasher_for_builds_the_esptool_backend(self):
-        chosen = flasher.flasher_for('/dev/ttyACM0', lambda: '/dev/ttyACM0', self.logs, {})
+        chosen = firmware.flasher_for('/dev/ttyACM0', lambda: '/dev/ttyACM0', self.logs, {})
         self.assertIsInstance(chosen, flasher.EsptoolFlasher)

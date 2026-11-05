@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cycling_devtools.device import browser_bridge, flasher, remote
+from cycling_devtools.device import browser_bridge, firmware, flasher, remote
 from cycling_devtools.device.page_flasher import PageFlasher
 
 
@@ -60,7 +60,7 @@ class Paths(unittest.TestCase):
 
 class BackendChoice(unittest.TestCase):
     def chosen(self, environ):
-        return flasher.flasher_for('/dev/pts/9', lambda: '/dev/pts/9', Path('/tmp'), environ)
+        return firmware.flasher_for('/dev/pts/9', lambda: '/dev/pts/9', Path('/tmp'), environ)
 
     def test_the_bridged_port_goes_through_the_visitors_page(self):
         bridge = {'CYCLING_PORT': '/dev/pts/9', 'CYCLING_FLASHER': '/x/device.sock'}

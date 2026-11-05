@@ -1,11 +1,7 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "extends": [
-    "./node_modules/@foldkit/oxlint-plugin/recommended.json"
-  ],
-  "plugins": [
-    "typescript"
-  ],
+  "extends": ["./node_modules/@foldkit/oxlint-plugin/recommended.json"],
+  "plugins": ["typescript"],
   "categories": {
     "correctness": "error"
   },
@@ -22,9 +18,7 @@
     "typescript/no-explicit-any": "error",
     "typescript/consistent-type-assertions": [
       "error",
-      {
-        "assertionStyle": "never"
-      }
+      { "assertionStyle": "never" }
     ],
     "typescript/no-non-null-assertion": "error",
     "no-restricted-imports": [
@@ -66,9 +60,7 @@
   ],
   "overrides": [
     {
-      "files": [
-        "web/site/**"
-      ],
+      "files": ["web/site/**"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -101,9 +93,7 @@
       }
     },
     {
-      "files": [
-        "web/flasher/**"
-      ],
+      "files": ["web/flasher/**"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -116,9 +106,7 @@
             ],
             "patterns": [
               {
-                "group": [
-                  "@cycling/*"
-                ],
+                "group": ["@cycling/*"],
                 "message": "@cycling/flasher knows nothing of the relay or the wire, so a page without them can use it."
               }
             ]

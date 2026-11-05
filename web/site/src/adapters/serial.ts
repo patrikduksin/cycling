@@ -175,13 +175,37 @@ export const makeWebSerial = (): SerialAdapter => {
       ),
     )
 
-  const waitForPort = (
-    identity: SerialIdentity,
-    baud: number,
-  ): Effect.Effect<SerialLink, never, Scope.Scope> =>
-    openGranted(identity, baud).pipe(
+  /** Tries `attempt` again on every chance until it stops failing PortNotReady. */
+  const retried = <A, R>(
+    attempt: Effect.Effect<A, PortNotReady, R>,
+  ): Effect.Effect<A, never, R> =>
+    attempt.pipe(
       Effect.catchTag('PortNotReady', () =>
-        nextChance.pipe(Effect.andThen(() => waitForPort(identity, baud))),
+        nextChance.pipe(Effect.andThen(() => retried(attempt))),
+      ),
+    )
+
+  const within = <A, R>(
+    waiting: Effect.Effect<A, never, R>,
+    waitMs: number,
+  ): Effect.Effect<A, ReacquireTimeout, R> =>
+    waiting.pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.millis(waitMs),
+        orElse: () => Effect.fail(new ReacquireTimeout()),
+      }),
+    )
+
+  /** The best granted port for `identity` that nobody has open, unopened. */
+  const findGranted = (identity: SerialIdentity) =>
+    Effect.all({ ports: getPorts, picked: Ref.get(picked) }).pipe(
+      Effect.map(found => candidates({ ...found, identity })),
+      Effect.flatMap(ports =>
+        Effect.fromOption(Option.fromNullishOr(ports[0])).pipe(
+          Effect.mapError(
+            () => new PortNotReady({ reason: 'The device is not connected.' }),
+          ),
+        ),
       ),
     )
 
@@ -205,11 +229,8 @@ export const makeWebSerial = (): SerialAdapter => {
         ? openGranted(identity, baud).pipe(
             Effect.mapError(({ reason }) => new SerialOpenRefused({ reason })),
           )
-        : waitForPort(identity, baud).pipe(
-            Effect.timeoutOrElse({
-              duration: Duration.millis(waitMs),
-              orElse: () => Effect.fail(new ReacquireTimeout()),
-            }),
-          ),
+        : within(retried(openGranted(identity, baud)), waitMs),
+    granted: ({ identity, waitMs }) =>
+      within(retried(findGranted(identity)), waitMs),
   }
 }

@@ -38,6 +38,8 @@ export const newPort = (identity: Port['identity']): Port => ({
   attempt: 0,
   epoch: firstEpoch,
   state: OPENING,
+  ops: [],
+  activity: [],
 })
 
 /** A port recovered after a reload: the granted port is probably there already, but may still be resetting. */
@@ -47,13 +49,20 @@ export const recoveredPort = (stored: StoredSession): Port => ({
   attempt: 1,
   epoch: stored.epoch,
   state: REACQUIRING,
+  ops: [],
+  activity: [],
 })
 
-export const storedOf = (session: Session, port: Port): StoredSession => ({
+export const storedOf = (
+  session: Session,
+  port: Port,
+  writesAllowed: boolean,
+): StoredSession => ({
   session,
   identity: port.identity,
   baud: port.baud,
   epoch: port.epoch,
+  writesAllowed,
 })
 
 const portChangedTo = (port: Port, state: PortState): BrowserMsg => ({
@@ -61,8 +70,14 @@ const portChangedTo = (port: Port, state: PortState): BrowserMsg => ({
   status: { epoch: port.epoch, state },
 })
 
+/** A hold is `Flashing` on the wire from the moment the console lets go. */
+const wireState = (phase: PortPhase): PortState =>
+  phase._tag === 'Entering' || phase._tag === 'Flashing'
+    ? { _tag: 'Flashing' }
+    : phase
+
 export const portChanged = (port: Port): BrowserMsg =>
-  portChangedTo(port, port.state)
+  portChangedTo(port, wireState(port.state))
 
 export const announcement = (source: Source): ReadonlyArray<BrowserMsg> =>
   Source.match<ReadonlyArray<BrowserMsg>>(source, {

@@ -333,6 +333,84 @@ h1 {
   font-weight: 700;
 }
 
+/* Update mode takes the monitor's place; it is words, not a box. */
+.update {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.update-lead {
+  font-size: 1.375rem;
+  font-weight: 900;
+}
+
+.update-now {
+  font-size: 1.125rem;
+  font-weight: 800;
+}
+
+.update-now.writing {
+  color: var(--accent);
+}
+
+.update .actions,
+.update .ask {
+  margin-top: var(--space-2);
+}
+
+/* A question the visitor answers: the consent card and the guarded Disconnect. */
+.ask {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  text-align: center;
+}
+
+.question {
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+.activity-block {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.activity {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-row {
+  display: grid;
+  grid-template-columns: 7ch 1fr auto 9ch;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--secondary);
+}
+
+.activity-row.write {
+  color: var(--accent);
+}
+
+.activity-row .kind {
+  font-size: 0.8125rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.activity-row .result {
+  text-align: right;
+}
+
+.activity-row .result.plain {
+  color: inherit;
+}
+
 @media (min-width: 40rem) {
   .monitor {
     --bytes: 16;

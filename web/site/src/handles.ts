@@ -1,10 +1,10 @@
 import { ManagedResource } from 'foldkit'
 
-import type { RelayLink, SerialLink } from './links.ts'
+import type { PortLink, RelayLink } from './links.ts'
 
-export const SerialHandle = ManagedResource.tag<SerialLink>()('SerialHandle')
+export const PortHandle = ManagedResource.tag<PortLink>()('PortHandle')
 export const RelayHandle = ManagedResource.tag<RelayLink>()('RelayHandle')
 
 export type HandleServices =
-  | ManagedResource.ServiceOf<typeof SerialHandle>
+  | ManagedResource.ServiceOf<typeof PortHandle>
   | ManagedResource.ServiceOf<typeof RelayHandle>

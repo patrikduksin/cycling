@@ -9,6 +9,7 @@ import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
 import {
+  type OpData,
   type RelayEvent,
   type ToBrowser,
   coalesceBytes,
@@ -175,13 +176,15 @@ const makeWritePath = <R>(
 
 /**
  * Relay frames in arrival order: console bytes go to the port's write queue
- * (counted as dropped when it is down or full), control becomes a Message,
- * and a close ends the stream with its code, abandoning the bytes still
- * waiting for the port. Control keeps flowing while the port is gone or stuck.
+ * (counted as dropped when it is down, full or held by the flasher), write
+ * payloads go to the flasher's inbox, control becomes a Message, and a close
+ * ends the stream with its code, abandoning the bytes still waiting for the
+ * port. Control keeps flowing while the port is gone or stuck.
  */
 export const relayToDevice = <R>(options: {
   readonly events: Stream.Stream<RelayEvent<ToBrowser>>
   readonly write: (bytes: Uint8Array) => Effect.Effect<boolean, never, R>
+  readonly deliver: (frame: OpData) => Effect.Effect<void, never, R>
   readonly attempt: number
 }): Stream.Stream<Message, never, R> =>
   withTraffic(
@@ -199,7 +202,7 @@ export const relayToDevice = <R>(options: {
                 >(),
                 Match.tagsExhaustive({
                   Console: ({ bytes }) => path.offer(bytes).pipe(Effect.as([])),
-                  OpData: () => Effect.succeed([]),
+                  OpData: frame => options.deliver(frame).pipe(Effect.as([])),
                   Control: ({ message }) =>
                     Effect.succeed([Message.ReceivedFromRelay({ message })]),
                   Pong: () => Effect.succeed([]),

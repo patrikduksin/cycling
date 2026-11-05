@@ -115,6 +115,7 @@ describe('relayToDevice', () => {
               written.push(Array.from(bytes))
               return true
             }),
+          deliver: () => Effect.void,
           attempt: 2,
         }).pipe(Stream.runCollect, Effect.forkChild)
 
@@ -149,6 +150,40 @@ describe('relayToDevice', () => {
       }),
     ))
 
+  test('write payloads go to the inbox in order and never reach update', () =>
+    run(
+      Effect.gen(function* () {
+        const delivered: Array<number> = []
+        const queue = yield* Queue.unbounded<
+          RelayEvent<ToBrowser>,
+          Cause.Done
+        >()
+        const fiber = yield* relayToDevice({
+          events: Stream.fromQueue(queue),
+          write: () => Effect.succeed(false),
+          deliver: frame =>
+            Effect.sync(() => {
+              delivered.push(frame.offset)
+            }),
+          attempt: 1,
+        }).pipe(Stream.runCollect, Effect.forkChild)
+
+        for (const offset of [0, 15_360, 30_720]) {
+          yield* Queue.offer(queue, {
+            _tag: 'OpData',
+            id,
+            offset,
+            bytes: new Uint8Array(4),
+          })
+        }
+        yield* Queue.end(queue)
+        const messages = yield* Fiber.join(fiber)
+
+        expect(delivered).toEqual([0, 15_360, 30_720])
+        expect(messages).toEqual([])
+      }),
+    ))
+
   test('control still flows while the port drops bytes', () =>
     run(
       Effect.gen(function* () {
@@ -159,6 +194,7 @@ describe('relayToDevice', () => {
         const fiber = yield* relayToDevice({
           events: Stream.fromQueue(queue),
           write: () => Effect.succeed(false),
+          deliver: () => Effect.void,
           attempt: 1,
         }).pipe(Stream.runCollect, Effect.forkChild)
 
@@ -202,6 +238,7 @@ describe('relayToDevice', () => {
                     return true
                   })
             }),
+          deliver: () => Effect.void,
           attempt: 4,
         }).pipe(Stream.runCollect, Effect.forkChild)
 

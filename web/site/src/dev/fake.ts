@@ -8,12 +8,19 @@ import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
+import type { Session } from '@cycling/flasher'
 import {
+  type BrowserMsg,
   CloseCode,
+  Lease,
+  Md5,
+  type Op,
   type RelayEvent,
+  RequestId,
   SerialIdentity,
   type ToBrowser,
   UsbDescriptor,
+  opDataFrames,
 } from '@cycling/protocol'
 
 import {
@@ -24,6 +31,8 @@ import {
   SerialLinkLost,
   type SerialLink,
 } from '../links.ts'
+import { demoFlash } from './image.ts'
+import { fakeMd5Hex, memorySession } from './memorySession.ts'
 
 /**
  * A device and a relay that exist only in the dev server (`?fake`), so the
@@ -34,6 +43,9 @@ import {
  * shows the failed port and "Choose device again". Disconnect closes the
  * fake socket the way the relay does, with `visitorDisconnected`.
  * `?fake=refuse` has the chooser fail, so Idle shows its notice.
+ * `?fake=flash` has a pretend developer put the device into update mode and
+ * run Enter, two Reads, a Write (which asks the visitor), a Digest and a
+ * Reboot against an in-memory flash, so every update-mode panel can be seen.
  */
 
 const text = new TextEncoder()
@@ -103,9 +115,97 @@ const control = (message: ToBrowser): RelayEvent<ToBrowser> => ({
   message,
 })
 
-const fakeRelayLink = (): Effect.Effect<RelayLink, never, Scope.Scope> =>
+/** Stands in for the closed SerialPort `granted` hands the flasher; the fake flasher never opens it. */
+class GrantedPort extends EventTarget implements SerialPort {
+  onconnect = null
+  ondisconnect = null
+  readonly connected = true
+  readonly readable = null
+  readonly writable = null
+  open() {
+    return Promise.resolve()
+  }
+  setSignals() {
+    return Promise.resolve()
+  }
+  getSignals() {
+    return Promise.resolve({
+      dataCarrierDetect: false,
+      clearToSend: false,
+      ringIndicator: false,
+      dataSetReady: false,
+    })
+  }
+  getInfo() {
+    return { usbVendorId: identity.vendorId, usbProductId: identity.productId }
+  }
+  close() {
+    return Promise.resolve()
+  }
+  forget() {
+    return Promise.resolve()
+  }
+}
+
+const lease = Lease.make('fakeDeveloper001')
+
+const PAYLOAD = { address: 0x760000, size: 0x1e0000 }
+
+const payload = (): Uint8Array =>
+  new Uint8Array(PAYLOAD.size).map((_, index) => (index * 7) & 0xff)
+
+/** The ops `cycling flash` would send, roughly: enter, look, write the other slot, check it, restart. */
+const developerScript = (bytes: Uint8Array): ReadonlyArray<Op> => [
+  { _tag: 'Enter', lease },
+  { _tag: 'Read', lease, region: { address: 0x8000, size: 0x8000 } },
+  { _tag: 'Read', lease, region: { address: 0x10000, size: 0x200000 } },
+  { _tag: 'Write', lease, region: PAYLOAD, md5: Md5.make(fakeMd5Hex(bytes)) },
+  { _tag: 'Digest', lease, region: PAYLOAD },
+  { _tag: 'Reboot', lease },
+]
+
+/** Plays the developer: one op at a time, each sent once the last is answered. */
+const playDeveloper = (
+  inbound: Queue.Queue<RelayEvent<ToBrowser>, Cause.Done>,
+  results: Queue.Queue<BrowserMsg>,
+) => {
+  const bytes = payload()
+  const answered = (id: RequestId): Effect.Effect<void> =>
+    Queue.take(results).pipe(
+      Effect.flatMap(message =>
+        message._tag === 'OpResult' && message.id === id
+          ? Effect.void
+          : answered(id),
+      ),
+    )
+  return Effect.forEach(
+    developerScript(bytes),
+    (op, index) => {
+      const id = RequestId.make(index + 1)
+      return Queue.offer(inbound, control({ _tag: 'Op', id, op })).pipe(
+        Effect.andThen(
+          op._tag === 'Write'
+            ? Effect.forEach(
+                opDataFrames(id, bytes),
+                frame => Queue.offer(inbound, frame),
+                { discard: true },
+              )
+            : Effect.void,
+        ),
+        Effect.andThen(answered(id)),
+        Effect.andThen(Effect.sleep(Duration.millis(1500))),
+      )
+    },
+    { discard: true },
+  )
+}
+
+const fakeRelayLink = (
+  developer: boolean,
+): Effect.Effect<RelayLink, never, Scope.Scope> =>
   Effect.gen(function* () {
     const inbound = yield* Queue.unbounded<RelayEvent<ToBrowser>, Cause.Done>()
+    const results = yield* Queue.unbounded<BrowserMsg>()
     yield* Effect.forkScoped(
       Effect.gen(function* () {
         yield* Queue.offer(inbound, control(welcome(false)))
@@ -114,6 +214,10 @@ const fakeRelayLink = (): Effect.Effect<RelayLink, never, Scope.Scope> =>
           inbound,
           control({ _tag: 'PeerPresence', role: 'agent', present: true }),
         )
+        if (developer) {
+          yield* Effect.sleep(Duration.millis(1500))
+          return yield* playDeveloper(inbound, results)
+        }
         yield* Effect.forEach(
           Array.from({ length: 10_000 }, (_, count) => count),
           count =>
@@ -132,14 +236,37 @@ const fakeRelayLink = (): Effect.Effect<RelayLink, never, Scope.Scope> =>
     return {
       events: Stream.fromQueue(inbound),
       send: item =>
-        item._tag !== 'Bye'
-          ? Effect.succeed(true)
-          : Queue.offer(inbound, {
+        item._tag === 'Bye'
+          ? Queue.offer(inbound, {
               _tag: 'Closed',
               code: CloseCode.visitorDisconnected,
-            }).pipe(Effect.andThen(Queue.end(inbound))),
+            }).pipe(Effect.andThen(Queue.end(inbound)))
+          : item._tag === 'OpResult'
+            ? Queue.offer(results, item)
+            : Effect.succeed(true),
     }
   })
+
+const fakeFlasher = (flash: Uint8Array) => ({
+  open: (): Effect.Effect<Session> =>
+    Effect.sleep(Duration.millis(1500)).pipe(
+      Effect.andThen(
+        memorySession({
+          flash,
+          chip: {
+            mac: '020000000001',
+            secureBoot: false,
+            flashEncryption: false,
+          },
+          bytesPerSecond: 128 * 1024,
+          digestMs: 1200,
+          pieceBytes: 16 * 1024,
+        }),
+      ),
+      Effect.map(({ session }) => session),
+    ),
+  md5Hex: fakeMd5Hex,
+})
 
 export const fakeAdapters: Adapters = (() => {
   const mode = new URLSearchParams(location.search).get('fake')
@@ -169,8 +296,13 @@ export const fakeAdapters: Adapters = (() => {
               : fakeSerialLink(withReset),
           ),
         ),
+      granted: () =>
+        Effect.sleep(Duration.millis(300)).pipe(
+          Effect.as<SerialPort>(new GrantedPort()),
+        ),
     },
+    flasher: fakeFlasher(demoFlash()),
     usb: { request: Effect.succeed(descriptor) },
-    relay: Option.some({ dial: fakeRelayLink }),
+    relay: Option.some({ dial: () => fakeRelayLink(mode === 'flash') }),
   }
 })()

@@ -5,6 +5,7 @@ import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import type * as Stream from 'effect/Stream'
 
+import type { FlasherError, Session as FlasherSession } from '@cycling/flasher'
 import type {
   Baud,
   RelayDialError,
@@ -13,7 +14,8 @@ import type {
   UsbDescriptor,
 } from '@cycling/protocol'
 
-import type { Session } from './model.ts'
+import type { Inbox } from './flasher/inbox.ts'
+import type { Entry, Layout, Session } from './model.ts'
 
 /**
  * The hardware edge as plain interfaces, so the data plane and the
@@ -47,6 +49,12 @@ export class ChooserFailed extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()('ChooserFailed', { reason: Schema.String }) {}
 
+/** The flasher could not take the port; `lostPort` when the device went away during entry. */
+export class EntryFailed extends Schema.TaggedError<
+  EntryFailed,
+  { readonly brand: unique symbol }
+>()('EntryFailed', { lostPort: Schema.Boolean, detail: Schema.String }) {}
+
 export interface SerialLink {
   /** Chunks as the device sends them; fails with `SerialLinkLost` on unplug or reset. */
   readonly input: Stream.Stream<Uint8Array, SerialLinkLost>
@@ -73,7 +81,38 @@ export interface SerialAdapter {
     SerialOpenRefused | ReacquireTimeout,
     Scope.Scope
   >
+  /**
+   * The granted port with this identity, closed, for the flasher to open
+   * itself; waits up to `waitMs` for it to come back like `acquire`.
+   */
+  readonly granted: (options: {
+    readonly identity: SerialIdentity
+    readonly waitMs: number
+  }) => Effect.Effect<SerialPort, ReacquireTimeout>
 }
+
+/** What the page uses of `@cycling/flasher`; tests and `?fake` bring their own. */
+export interface FlasherAdapter {
+  readonly open: (
+    port: SerialPort,
+    options: { readonly entry: Entry },
+  ) => Effect.Effect<FlasherSession, FlasherError, Scope.Scope>
+  readonly md5Hex: (bytes: Uint8Array) => string
+}
+
+/**
+ * The one owner of the SerialPort: the console's byte link, or a flasher
+ * session with the inbox its write payloads land in. Switching between them
+ * is a re-key, so the old one is closed before the new one opens.
+ */
+export type PortLink =
+  | { readonly _tag: 'Console'; readonly link: SerialLink }
+  | {
+      readonly _tag: 'Flasher'
+      readonly session: FlasherSession
+      readonly inbox: Inbox
+      readonly layout: Option.Option<Layout>
+    }
 
 export interface UsbAdapter {
   readonly request: Effect.Effect<
@@ -93,6 +132,7 @@ export interface RelayAdapter {
 
 export interface Adapters {
   readonly serial: SerialAdapter
+  readonly flasher: FlasherAdapter
   readonly usb: UsbAdapter
   /** None when the build has no relay address; the page then stops at its configuration screen. */
   readonly relay: Option.Option<RelayAdapter>

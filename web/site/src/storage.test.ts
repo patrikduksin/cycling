@@ -32,7 +32,13 @@ afterEach(() => {
   }
 })
 
-const stored = { session, identity, baud: baud(921_600), epoch: epoch(3) }
+const stored = {
+  session,
+  identity,
+  baud: baud(921_600),
+  epoch: epoch(3),
+  writesAllowed: true,
+}
 
 describe('stored session', () => {
   test('survives a write and a read', async () => {
@@ -50,6 +56,7 @@ describe('stored session', () => {
       identity: { vendorId: 0x303a, productId: 0x1001 },
       baud: 921_600,
       epoch: 3,
+      writesAllowed: true,
     })
   })
 

@@ -109,10 +109,10 @@ describe('region names', () => {
       Option.some('the bootloader'),
     )
     expect(labelOf(esp32, { address: 0, size: 0x1000 })).toEqual(Option.none())
-    expect(stakeOf(esp32, { address: 0, size: 0x1000 })._tag).toBe('Elsewhere')
-    expect(stakeOf(esp32, { address: 0, size: 0x1001 })._tag).toBe('Bootloader')
+    expect(stakeOf(esp32, { address: 0, size: 0x1000 })._tag).toBe('Bootloader')
     const p4 = layout('ota_0', 0x2000)
     expect(labelOf(p4, { address: 0x1000, size: 0x10 })).toEqual(Option.none())
+    expect(stakeOf(p4, { address: 0x1000, size: 0x10 })._tag).toBe('Bootloader')
     expect(labelOf(p4, { address: 0x2000, size: 0x10 })).toEqual(
       Option.some('the bootloader'),
     )

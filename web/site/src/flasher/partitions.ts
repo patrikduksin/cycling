@@ -10,6 +10,9 @@ export const PARTITION_TABLE: Region = { address: 0x8000, size: 0xc00 }
 
 const TABLE_SECTOR = { start: 0x8000, end: 0x9000 }
 
+/** Everything below the table boots the chip, whatever offset the family's bootloader starts at. */
+const BOOT_SECTORS = { start: 0, end: TABLE_SECTOR.start }
+
 /**
  * From where the chip's family keeps its bootloader (0 on the S3 and C3,
  * 0x1000 on the ESP32 and S2, 0x2000 on the C5 and P4) up to the table;
@@ -212,7 +215,7 @@ export const stakeOf = (
   layout: Option.Option<Layout>,
   region: Region,
 ): Stake => {
-  if (overlaps(bootloaderOf(layout), region)) {
+  if (overlaps(BOOT_SECTORS, region)) {
     return { _tag: 'Bootloader' }
   }
   if (overlaps(TABLE_SECTOR, region)) {

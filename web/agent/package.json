@@ -1,0 +1,13 @@
+{
+  "name": "@cycling/agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "effect-tsgo tsc -p ."
+  },
+  "dependencies": {
+    "@cycling/protocol": "workspace:*",
+    "@effect/platform-bun": "catalog:",
+    "effect": "catalog:"
+  }
+}

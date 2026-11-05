@@ -1,0 +1,26 @@
+{
+  "description": "esptool chip-id with --before usb-reset against the door; sync fails on the fake device after the reset",
+  "command": [
+    "uv",
+    "run",
+    "--project",
+    "tools/devtools",
+    "--locked",
+    "python",
+    "-m",
+    "esptool",
+    "--chip",
+    "esp32s3",
+    "--port",
+    "{url}",
+    "--before",
+    "usb-reset",
+    "--after",
+    "no-reset",
+    "--connect-attempts",
+    "1",
+    "chip-id"
+  ],
+  "tools": "esptool 5.4.0, pyserial 3.5 (tools/devtools uv.lock)",
+  "controls": "D1 R1 P P P R0 D1 D0 D1 R0 D1 R1 D1 D0 R1 D0 D0 R0 D0 P P P P P P P P P P"
+}

@@ -1,0 +1,16 @@
+{
+  "description": "esptool's HardReset (its --after hard-reset) after a plain pyserial open",
+  "command": [
+    "uv",
+    "run",
+    "--project",
+    "tools/devtools",
+    "--locked",
+    "python",
+    "-c",
+    "import sys, serial, esptool.reset; port = serial.serial_for_url(sys.argv[1], do_not_open=True); port.open(); esptool.reset.HardReset(port)(); port.close()",
+    "{url}"
+  ],
+  "tools": "esptool 5.4.0, pyserial 3.5 (tools/devtools uv.lock)",
+  "controls": "D1 R1 P P R1 D1 R0 D1"
+}

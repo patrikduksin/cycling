@@ -201,7 +201,7 @@ Where the code differs from the sketch, and why.
 - **Paths.** The launcher (`device/browser_bridge.py`) passes
   `CYCLING_REMOTE_DIR` = the main checkout's `.local/bridge` (token at
   `.local/bridge/token`); a session lives
-  in `<dir>/<CODE>/` (`port` symlink, `control.sock`). `Device.run` gives
+  in `<dir>/<CODE>/` (`port` symlink, `control.sock`). `EsptoolFlasher` gives
   esptool `CYCLING_ESPTOOL_PORT` only when its port is the bridge's
   `CYCLING_PORT`, so a second, local device in a bridged command is not
   redirected. Checks run inside

@@ -11,8 +11,7 @@ description: Deliver an authorized cycling repository issue or queue through imp
 2. **Implement.** Carry the authorized scope through completion. Delegate bounded
    independent work when useful, with explicit file ownership; one coordinator
    owns all device access, following the [C606 skill](../c606/SKILL.md).
-3. **Check.** Run the checks in [AGENTS.md](../../../AGENTS.md), including
-   both harness modes for boundary changes. Validate changed
+3. **Check.** Run the checks in [AGENTS.md](../../../AGENTS.md). Validate changed
    hardware access and display timing on the authorized device. Reuse valid
    evidence for unchanged paths, stating its revision and limits, and report fresh
    observations separately. When simplifying owners, keep their recovery,

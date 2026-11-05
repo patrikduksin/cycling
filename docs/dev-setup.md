@@ -56,7 +56,7 @@ pin at once and belongs in its own PR with `cycling verify` results.
 - Firmware always builds release (fat LTO). A lighter profile was measured and
   dropped: Xtensa runtime assembly needs one codegen unit and LTO, and thin
   LTO saved nothing over warm release rebuilds (about 20 s).
-- `cycling verify` runs test, check, simulate and both firmware builds in
+- `cycling verify` runs test, check, simulate and the firmware build in
   parallel, then harness-virtual alone, and prints one table; `--fast` is the
   inner-loop subset, `--pr N` posts the table on a PR. Logs go to
   `.local/verify/<commit>/`.

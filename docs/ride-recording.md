@@ -1,7 +1,7 @@
 # Ride recording and export
 
-Rides belong to the VANA application and work in both harness modes through
-the ordinary USB terminal. Use device `HELP` for commands and the
+Rides belong to the VANA application and work through the ordinary USB
+terminal. Use device `HELP` for commands and the
 [C606 skill](../.agents/skills/c606/SKILL.md) for device access.
 
 ## Mutations

@@ -6,7 +6,7 @@ Firmware images contain no credentials or target identifiers.
 
 ## Commands
 
-The commands work with the debug harness enabled or disabled; `HELP` lists them.
+`HELP` lists the commands.
 
 - Requests are at most 256 ASCII bytes, including `CMD` and the request ID.
 - SSIDs, passwords and BLE names are UTF-8 bytes encoded as hex, so spaces and
@@ -92,7 +92,7 @@ cycling harness run --scenario .local/foundation/scenarios/connectivity-ble.json
 ```
 
 Device access and port selection follow the [C606 skill](../.agents/skills/c606/SKILL.md).
-Stop the BLE fixture afterward and leave a harness-enabled build running.
+Stop the BLE fixture afterward.
 
 | Scenario | Covers |
 | --- | --- |

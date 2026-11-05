@@ -8,6 +8,7 @@
     "typecheck": "effect-tsgo tsc -p ."
   },
   "dependencies": {
+    "@cycling/flasher": "workspace:*",
     "@cycling/protocol": "workspace:*",
     "@effect/platform-browser": "catalog:",
     "effect": "catalog:",

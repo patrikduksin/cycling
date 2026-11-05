@@ -14,15 +14,13 @@ import {
   mintCode,
   mintOwnerKey,
   relaySocket,
-  type ResetKind,
   sessionPath,
 } from '@cycling/protocol'
 
 /**
  * The whole chain against a running relay, with no device and no Chrome:
  * a fake browser (scripted C606 behind it) holds a session, and the real
- * `cycling remote` launcher runs a devtools-shaped tty client and real
- * esptool through it.
+ * `cycling remote` launcher runs a devtools-shaped tty client through it.
  *
  *   bun web/agent/test/e2e-relay.ts <relay-url>
  *
@@ -65,7 +63,7 @@ const encoder = new TextEncoder()
 const reply = (id: string) =>
   `${JSON.stringify({ type: 'reply', id: Number(id), status: 'OK', data: 'device=fake-c606' })}\n`
 
-/** Answers `CMD <id> INFO` with one reply line, echoes any other line, and runs resets instantly. */
+/** Answers `CMD <id> INFO` with one reply line and echoes any other line. */
 const fakeBrowser = Effect.gen(function* () {
   const random = yield* Effect.forEach(Array.from({ length: 21 }), () =>
     Random.nextIntBetween(0, 256),
@@ -86,7 +84,6 @@ const fakeBrowser = Effect.gen(function* () {
         }),
     ),
   )
-  const resets = yield* Ref.make<ReadonlyArray<ResetKind>>([])
   const fromAgent = yield* Ref.make(0)
   const toDevice = yield* Queue.unbounded<Uint8Array>()
   yield* Effect.forkScoped(
@@ -97,26 +94,7 @@ const fakeBrowser = Effect.gen(function* () {
             Effect.andThen(Queue.offer(toDevice, event.bytes)),
           )
         }
-        if (event._tag !== 'Control') return Effect.void
-        const message = event.message
-        if (message._tag === 'Reset') {
-          return Ref.update(resets, all => [...all, message.kind]).pipe(
-            Effect.andThen(
-              socket.send({
-                _tag: 'ResetResult',
-                id: message.id,
-                outcome: 'done',
-              }),
-            ),
-          )
-        }
-        return message._tag === 'SetLineCoding'
-          ? socket.send({
-              _tag: 'LineCodingResult',
-              id: message.id,
-              outcome: 'done',
-            })
-          : Effect.void
+        return Effect.void
       }),
     ),
   )
@@ -145,7 +123,6 @@ const fakeBrowser = Effect.gen(function* () {
   })
   return {
     code,
-    resets: Ref.get(resets),
     fromAgent: Ref.get(fromAgent),
   }
 })
@@ -223,51 +200,6 @@ const ttyThroughPty = Effect.scoped(
       run.exitCode === 0,
       run,
     )
-    const resets = yield* browser.resets
-    yield* check('no reset reached the browser', resets.length === 0, resets)
-  }),
-)
-
-const esptoolThroughRfc2217 = Effect.scoped(
-  Effect.gen(function* () {
-    const browser = yield* fakeBrowser
-    yield* say(`rfc2217: session ${browser.code}`)
-    const run = yield* cyclingRemote(browser.code, [
-      'sh',
-      '-c',
-      'exec python -m esptool --chip esp32s3 --port "$CYCLING_ESPTOOL_PORT" --before usb-reset --after no-reset --connect-attempts 1 chip-id',
-    ])
-    const output = `${run.stdout}${run.stderr}`
-    for (const line of output
-      .split('\n')
-      .filter(line => /Connecting|ERROR|RFC2217|rfc2217/.test(line))) {
-      yield* say(`  esptool: ${line.trim()}`)
-    }
-    yield* check(
-      'esptool negotiated RFC 2217 (no option or parameter complaints)',
-      output.includes('Connecting') &&
-        !/does not seem to support RFC2217|does not accept parameter|timeout/i.test(
-          output,
-        ),
-      output,
-    )
-    const resets = yield* browser.resets
-    yield* check(
-      'exactly one usbJtagBootloader reset reached the browser',
-      resets.length === 1 && resets[0] === 'usbJtagBootloader',
-      resets,
-    )
-    const fromAgent = yield* browser.fromAgent
-    yield* check(
-      "esptool's sync bytes reached the device",
-      fromAgent > 0,
-      fromAgent,
-    )
-    yield* check(
-      "esptool's exit code (2: no chip behind the fake) is mirrored",
-      run.exitCode === 2,
-      run.exitCode,
-    )
   }),
 )
 
@@ -281,7 +213,6 @@ const program = Effect.gen(function* () {
     )
   }
   yield* ttyThroughPty
-  yield* esptoolThroughRfc2217
   yield* say('all steps held')
 })
 

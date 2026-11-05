@@ -1,22 +1,14 @@
 import * as Context from 'effect/Context'
-import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Match from 'effect/Match'
 import * as Option from 'effect/Option'
 import * as PubSub from 'effect/PubSub'
-import * as Ref from 'effect/Ref'
 import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 
-import {
-  type AgentMsg,
-  type Code,
-  RequestId,
-  type RequestOutcome,
-  type ToAgent,
-} from '@cycling/protocol'
+import type { Code, ToAgent } from '@cycling/protocol'
 
 import { type Inbound, RelayClient } from './RelayClient.ts'
 import {
@@ -28,17 +20,7 @@ import {
   type RemoteStatus,
   type Traffic,
 } from './RemotePort.ts'
-import {
-  type AdmissionError,
-  PortNotOpen,
-  RelayDown,
-  RequestFailed,
-  type RequestError,
-  RequestTimedOut,
-} from './errors.ts'
-
-/** A reset or a reopen finishes in well under a second at the browser; this is the "browser is gone" bound. */
-export const REQUEST_TIMEOUT_MS = 10_000
+import type { AdmissionError } from './errors.ts'
 
 export class Remote extends Context.Service<
   Remote,
@@ -57,45 +39,6 @@ const initialStatus: RemoteStatus = {
   expiresAt: 0,
   traffic: { fromDevice: 0, toDevice: 0, dropped: 0 },
 }
-
-type Answer = Deferred.Deferred<RequestOutcome, RelayDown>
-
-/** Requests waiting for the browser's result, by id; ids are unique per connection. */
-const pendingRequests = Effect.gen(function* () {
-  const nextId = yield* Ref.make(1)
-  const waiting = yield* Ref.make<ReadonlyMap<RequestId, Answer>>(new Map())
-  const take = (id: RequestId) =>
-    Ref.modify(waiting, all => {
-      const rest = new Map(all)
-      rest.delete(id)
-      return [Option.fromNullishOr(all.get(id)), rest]
-    })
-  return {
-    open: Effect.gen(function* () {
-      const id = RequestId.make(yield* Ref.getAndUpdate(nextId, n => n + 1))
-      const answer = yield* Deferred.make<RequestOutcome, RelayDown>()
-      yield* Ref.update(waiting, all => new Map(all).set(id, answer))
-      return { id, answer }
-    }),
-    settle: (id: RequestId, outcome: RequestOutcome) =>
-      take(id).pipe(
-        Effect.flatMap(
-          Option.match({
-            onNone: () => Effect.void,
-            onSome: answer => Deferred.succeed(answer, outcome),
-          }),
-        ),
-      ),
-    forget: (id: RequestId) => Effect.asVoid(take(id)),
-    failAll: Ref.getAndSet(waiting, new Map()).pipe(
-      Effect.flatMap(all =>
-        Effect.forEach(all.values(), answer =>
-          Deferred.fail(answer, new RelayDown()),
-        ),
-      ),
-    ),
-  }
-})
 
 const count = (
   status: SubscriptionRef.SubscriptionRef<RemoteStatus>,
@@ -116,18 +59,10 @@ export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
       const link = yield* relay.connect(code)
       const status = yield* SubscriptionRef.make(initialStatus)
       const output = yield* PubSub.unbounded<Uint8Array>()
-      const pending = yield* pendingRequests
 
       const onControl = (message: ToAgent) =>
         SubscriptionRef.update(status, current =>
           applyMessage(current, message),
-        ).pipe(
-          Effect.andThen(
-            message._tag === 'ResetResult' ||
-              message._tag === 'LineCodingResult'
-              ? pending.settle(message.id, message.outcome)
-              : Effect.void,
-          ),
         )
 
       const setLink = (next: Link) =>
@@ -141,44 +76,14 @@ export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
             ),
           Control: ({ message }) => onControl(message),
           Pong: () => Effect.void,
-          Down: () =>
-            setLink({ _tag: 'Redialing' }).pipe(
-              Effect.andThen(pending.failAll),
-            ),
-          Stopped: ({ ending }) =>
-            setLink({ _tag: 'Over', ending }).pipe(
-              Effect.andThen(pending.failAll),
-            ),
+          Down: () => setLink({ _tag: 'Redialing' }),
+          Stopped: ({ ending }) => setLink({ _tag: 'Over', ending }),
         })
 
       yield* Effect.forkScoped(link.inbound.pipe(Stream.runForEach(onInbound)))
       yield* firstMatch(status, current =>
         current.link._tag === 'Connecting' ? Option.none() : Option.some(true),
       )
-
-      const request = (
-        message: (id: RequestId) => AgentMsg,
-      ): Effect.Effect<void, RequestError> =>
-        Effect.gen(function* () {
-          if ((yield* SubscriptionRef.get(status)).link._tag !== 'Joined') {
-            return yield* new RelayDown()
-          }
-          const { id, answer } = yield* pending.open
-          const outcome = yield* Effect.gen(function* () {
-            if (!(yield* link.send(message(id)))) {
-              return yield* new RelayDown()
-            }
-            return yield* Deferred.await(answer).pipe(
-              Effect.timeoutOrElse({
-                duration: REQUEST_TIMEOUT_MS,
-                orElse: () =>
-                  Effect.fail(new RequestTimedOut({ ms: REQUEST_TIMEOUT_MS })),
-              }),
-            )
-          }).pipe(Effect.ensuring(pending.forget(id)))
-          if (outcome === 'portNotOpen') return yield* new PortNotOpen()
-          if (outcome === 'failed') return yield* new RequestFailed()
-        })
 
       const write = (bytes: Uint8Array) =>
         Effect.gen(function* () {
@@ -193,8 +98,6 @@ export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
         output: Stream.fromPubSub(output),
         write,
         status,
-        reset: kind => request(id => ({ _tag: 'Reset', id, kind })),
-        setBaud: baud => request(id => ({ _tag: 'SetLineCoding', id, baud })),
       } satisfies RemotePort
     })
 

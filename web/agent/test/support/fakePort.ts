@@ -9,7 +9,6 @@ import {
   Baud,
   type Device,
   Epoch,
-  type ResetKind,
   type SerialIdentity,
 } from '@cycling/protocol'
 
@@ -31,11 +30,9 @@ export const openStatus = (epoch: Epoch, baud: Baud): RemoteStatus => ({
   traffic: { fromDevice: 0, toDevice: 0, dropped: 0 },
 })
 
-/** A RemotePort with no relay behind it: records what the doors asked of the device. */
+/** A RemotePort with no relay behind it: counts what was written to the device. */
 export const fakePort = (status: RemoteStatus) =>
   Effect.gen(function* () {
-    const resets = yield* Ref.make<ReadonlyArray<ResetKind>>([])
-    const bauds = yield* Ref.make<ReadonlyArray<Baud>>([])
     const written = yield* Ref.make(0)
     const port: RemotePort = {
       device: Effect.succeed(C606),
@@ -43,13 +40,6 @@ export const fakePort = (status: RemoteStatus) =>
       write: bytes =>
         Ref.update(written, n => n + bytes.length).pipe(Effect.as(true)),
       status: yield* SubscriptionRef.make(status),
-      reset: kind => Ref.update(resets, all => [...all, kind]),
-      setBaud: baud => Ref.update(bauds, all => [...all, baud]),
     }
-    return {
-      port,
-      resets: Ref.get(resets),
-      bauds: Ref.get(bauds),
-      written: Ref.get(written),
-    }
+    return { port, written: Ref.get(written) }
   })

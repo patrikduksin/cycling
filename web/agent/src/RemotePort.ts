@@ -5,15 +5,9 @@ import * as Option from 'effect/Option'
 import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 
-import type {
-  Baud,
-  Device,
-  PortStatus,
-  ResetKind,
-  ToAgent,
-} from '@cycling/protocol'
+import type { Device, PortStatus, ToAgent } from '@cycling/protocol'
 
-import type { Ending, RequestError } from './errors.ts'
+import type { Ending } from './errors.ts'
 
 export type Link =
   | { readonly _tag: 'Connecting' }
@@ -38,7 +32,7 @@ export interface RemoteStatus {
 
 /**
  * The agent's whole view of a visitor's device. Redial, request
- * correlation, epochs and the relay's framing live behind these six members;
+ * epochs and the relay's framing live behind these four members;
  * nothing that uses a port sees a wire message.
  */
 export interface RemotePort {
@@ -49,10 +43,6 @@ export interface RemotePort {
   /** Agent to device bytes. False when they were dropped because the relay or the port is down. */
   readonly write: (bytes: Uint8Array) => Effect.Effect<boolean>
   readonly status: SubscriptionRef.SubscriptionRef<RemoteStatus>
-  /** The browser runs the plan locally; resolves when its signals are done, not when the device re-enumerates. */
-  readonly reset: (kind: ResetKind) => Effect.Effect<void, RequestError>
-  /** The browser reopens its port at the new baud (Web Serial has no setBaud), a short Lost/Open gap. */
-  readonly setBaud: (baud: Baud) => Effect.Effect<void, RequestError>
 }
 
 export const isPortOpen = (status: RemoteStatus): boolean =>

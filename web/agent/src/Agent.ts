@@ -6,21 +6,14 @@ import * as Match from 'effect/Match'
 import * as Option from 'effect/Option'
 import * as Redacted from 'effect/Redacted'
 import * as Ref from 'effect/Ref'
-import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 import * as ChildProcess from 'effect/process/ChildProcess'
 import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 
-import {
-  type Code,
-  type Device,
-  parseCode,
-  type ResetKind,
-} from '@cycling/protocol'
+import { type Code, type Device, parseCode } from '@cycling/protocol'
 
 import { AgentConfig } from './AgentConfig.ts'
 import * as Bridge from './Bridge.ts'
-import { requestReset } from './Control.ts'
 import type { PtyHost } from './PtyHost.ts'
 import { Remote } from './Remote.ts'
 import { firstMatch, isPortOpen, over, type RemotePort } from './RemotePort.ts'
@@ -28,16 +21,13 @@ import {
   cannotRun,
   childStopped,
   describeEnding,
-  describeNotice,
   endpointBlock,
-  resetDone,
   statusLine,
   statusState,
   WAITING_FOR_DEVICE,
 } from './Status.ts'
 import {
   BadCode,
-  type ControlRefused,
   type Ending,
   PortNeverOpened,
   type SessionError,
@@ -60,7 +50,7 @@ const REDRAW = '250 millis'
 const CHILD_GRACE = '3 seconds'
 const TOKEN_VARIABLE = 'CYCLING_REMOTE_TOKEN'
 
-export const exitCodeOf = (error: SessionError | ControlRefused): number =>
+export const exitCodeOf = (error: SessionError): number =>
   Match.valueTags(error, {
     Unauthorized: () => EXIT.badCodeOrToken,
     SessionNotFound: () => EXIT.badCodeOrToken,
@@ -69,7 +59,6 @@ export const exitCodeOf = (error: SessionError | ControlRefused): number =>
     RelayUnreachable: () => EXIT.relayUnreachable,
     LocalResourceError: () => EXIT.local,
     PortNeverOpened: () => EXIT.portNeverOpened,
-    ControlRefused: () => EXIT.local,
   })
 
 const exitOf = (ending: Ending): number =>
@@ -108,14 +97,13 @@ const watch = (port: RemotePort, endpoints: Bridge.Endpoints) =>
     const printed = yield* Ref.make('')
     const draw = Effect.gen(function* () {
       const status = yield* SubscriptionRef.get(port.status)
-      const doors = yield* SubscriptionRef.get(endpoints.doors)
       const ptyDropped = yield* endpoints.ptyDropped
-      const line = statusLine({ status, doors, ptyDropped })
+      const line = statusLine({ status, ptyDropped })
       if (tty) {
         process.stdout.write(`\r\u001b[K${line}`)
         return
       }
-      const state = statusState(status, doors)
+      const state = statusState(status)
       if ((yield* Ref.getAndSet(printed, state)) !== state) {
         yield* Console.log(line)
       }
@@ -167,7 +155,7 @@ const runCommand = (
       )
   })
 
-/** `-- <cmd>` mode: the same bridge, one command with both env vars, its exit code mirrored. */
+/** `-- <cmd>` mode: the same bridge, one command with the endpoints in its environment, its exit code mirrored. */
 const runChild = (options: {
   readonly port: RemotePort
   readonly endpoints: Bridge.Endpoints
@@ -184,10 +172,9 @@ const runChild = (options: {
         orElse: () =>
           Effect.gen(function* () {
             const status = yield* SubscriptionRef.get(port.status)
-            const doors = yield* SubscriptionRef.get(endpoints.doors)
             return yield* new PortNeverOpened({
               seconds: PORT_OPEN_WAIT_SECONDS,
-              state: statusState(status, doors),
+              state: statusState(status),
             })
           }),
       }),
@@ -197,10 +184,7 @@ const runChild = (options: {
       childEnvironment({
         parent: process.env,
         token: options.token,
-        endpoints: {
-          CYCLING_PORT: endpoints.pty,
-          CYCLING_ESPTOOL_PORT: endpoints.rfc2217,
-        },
+        endpoints: { CYCLING_PORT: endpoints.pty },
       }),
     )
   })
@@ -247,30 +231,14 @@ export const runSession = (input: {
           yield* Console.log(JSON.stringify(device.descriptor, null, 2))
           return EXIT.ended
         }
-        const endpoints = yield* Bridge.open({
-          port,
-          identity: device.identity,
-          dir: config.dir,
-          code,
-        })
+        const endpoints = yield* Bridge.open({ port, dir: config.dir, code })
         yield* print(
           endpointBlock({
             code,
             relay: config.relay,
             device,
             pty: endpoints.pty,
-            rfc2217: endpoints.rfc2217,
           }),
-        )
-        yield* Effect.forkScoped(
-          endpoints.notices.pipe(
-            Stream.runForEach(event =>
-              Option.match(describeNotice(event), {
-                onNone: () => Effect.void,
-                onSome: Console.error,
-              }),
-            ),
-          ),
         )
         return Arr.isReadonlyArrayNonEmpty(command)
           ? yield* runChild({
@@ -295,20 +263,3 @@ export const runSession = (input: {
       return exitOf(outcome.ending)
     }),
   )
-
-/** `reset <code> <kind>`: ask the running agent for this code to reset through its control socket. */
-export const runReset = (input: {
-  readonly code: string
-  readonly kind: ResetKind
-}): Effect.Effect<number, BadCode | ControlRefused, AgentConfig> =>
-  Effect.gen(function* () {
-    const config = yield* AgentConfig
-    const code = yield* decodeCode(input.code)
-    yield* requestReset({
-      path: Bridge.sessionPaths(config.dir, code).control,
-      code,
-      kind: input.kind,
-    })
-    yield* Console.log(resetDone(input.kind))
-    return EXIT.ended
-  })

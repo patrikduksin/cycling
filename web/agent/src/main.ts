@@ -8,17 +8,16 @@ import * as Runtime from 'effect/Runtime'
 import * as Argument from 'effect/cli/Argument'
 import * as Command from 'effect/cli/Command'
 
-import { ResetKind } from '@cycling/protocol'
 import * as BunRuntime from '@effect/platform-bun/BunRuntime'
 import * as BunServices from '@effect/platform-bun/BunServices'
 
-import { EXIT, exitCodeOf, runReset, runSession } from './Agent.ts'
+import { EXIT, exitCodeOf, runSession } from './Agent.ts'
 import * as AgentConfig from './AgentConfig.ts'
 import { BunTerminalPtyHost } from './PtyHost.ts'
 import * as RelayClient from './RelayClient.ts'
 import * as Remote from './Remote.ts'
 import { describeConfig, describeError } from './Status.ts'
-import type { ControlRefused, SessionError } from './errors.ts'
+import type { SessionError } from './errors.ts'
 
 /** The handlers' exit code; effect/cli handlers return void, so it is carried out here. */
 class Exited extends Context.Service<Exited, Ref.Ref<number>>()(
@@ -39,7 +38,7 @@ const live = Layer.mergeAll(
 const report = (
   program: Effect.Effect<
     number,
-    SessionError | ControlRefused,
+    SessionError,
     Layer.Success<typeof live> | BunServices.BunServices
   >,
 ) =>
@@ -65,16 +64,7 @@ const remote = Command.make(
   input => report(runSession(input)),
 )
 
-const reset = Command.make(
-  'reset',
-  {
-    code: Argument.String('code'),
-    kind: Argument.Literals('kind', ResetKind.literals),
-  },
-  input => report(runReset(input)),
-)
-
-const cli = remote.pipe(Command.withSubcommands([reset]))
+const cli = remote
 
 const program = Effect.gen(function* () {
   yield* Command.run(cli, { version: '1' })

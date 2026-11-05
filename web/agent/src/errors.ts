@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import { Code, type EndReason, ResetKind } from '@cycling/protocol'
+import type { EndReason } from '@cycling/protocol'
 
 export class Unauthorized extends Schema.TaggedError<
   Unauthorized,
@@ -46,38 +46,11 @@ export type Ending =
   | { readonly _tag: 'Replaced' }
   | { readonly _tag: 'Rejected'; readonly error: AdmissionError }
 
-export class PortNotOpen extends Schema.TaggedError<
-  PortNotOpen,
-  { readonly brand: unique symbol }
->()('PortNotOpen', {}) {}
-
-export class RequestFailed extends Schema.TaggedError<
-  RequestFailed,
-  { readonly brand: unique symbol }
->()('RequestFailed', {}) {}
-
-export class RequestTimedOut extends Schema.TaggedError<
-  RequestTimedOut,
-  { readonly brand: unique symbol }
->()('RequestTimedOut', { ms: Schema.Int }) {}
-
-export class RelayDown extends Schema.TaggedError<
-  RelayDown,
-  { readonly brand: unique symbol }
->()('RelayDown', {}) {}
-
-/** Why a reset or line-coding request did not complete. */
-export type RequestError =
-  | PortNotOpen
-  | RequestFailed
-  | RequestTimedOut
-  | RelayDown
-
 export class LocalResourceError extends Schema.TaggedError<
   LocalResourceError,
   { readonly brand: unique symbol }
 >()('LocalResourceError', {
-  resource: Schema.Literals(['pty', 'rfc2217', 'control', 'sessionDir']),
+  resource: Schema.Literals(['pty', 'sessionDir']),
   detail: Schema.String,
 }) {}
 
@@ -90,18 +63,6 @@ export class PortNeverOpened extends Schema.TaggedError<
   PortNeverOpened,
   { readonly brand: unique symbol }
 >()('PortNeverOpened', { seconds: Schema.Int, state: Schema.String }) {}
-
-export class ControlRefused extends Schema.TaggedError<
-  ControlRefused,
-  { readonly brand: unique symbol }
->()('ControlRefused', {
-  kind: ResetKind,
-  why: Schema.Union([
-    Schema.TaggedStruct('NoAgent', { code: Code }),
-    /** The running agent's own words; empty when it closed without one. */
-    Schema.TaggedStruct('Answered', { reply: Schema.String }),
-  ]),
-}) {}
 
 /** Everything that stops `cycling remote <code>` before or instead of a session ending. */
 export type SessionError =

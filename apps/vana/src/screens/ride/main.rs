@@ -274,7 +274,7 @@ pub(super) fn paint(view: &View, row: &mut Row) {
     for (i, &top) in GAUGES.iter().enumerate() {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
             let mark = [view.marks.power, view.marks.heart][i].unwrap_or_default();
-            paint_gauge(row, mark.zone, mark.fill, SEGMENTS[i], top);
+            paint_gauge(row, mark.zone, mark.fill.into(), SEGMENTS[i], top);
             return;
         }
     }
@@ -296,7 +296,7 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     for (i, &top) in GAUGES.iter().enumerate() {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
             let mark = [view.marks.power, view.marks.heart][i].unwrap_or_default();
-            return gauge(mark.zone, mark.fill, SEGMENTS[i], x, y, top);
+            return gauge(mark.zone, mark.fill.into(), SEGMENTS[i], x, y, top);
         }
     }
     for label in &smooth.labels {
@@ -311,7 +311,8 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
 pub(super) fn gauge_end(i: usize, mark: Mark) -> usize {
     let pitch = (RIGHT - LEFT + GAUGE_GAP) / SEGMENTS[i];
     let width = pitch - GAUGE_GAP;
-    LEFT + usize::from(mark.zone.saturating_sub(1)) * pitch + width * mark.fill / GAUGE_WIDTH
+    LEFT + usize::from(mark.zone.saturating_sub(1)) * pitch
+        + width * usize::from(mark.fill) / GAUGE_WIDTH
 }
 
 /// `gauge` as spans: each segment lit up to its split, then the dim track,

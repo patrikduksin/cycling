@@ -1,6 +1,6 @@
-//! Each sensor page laid out once per change as a canvas of runs, shapes and
-//! cues, with the boxes taps land on, so painting a row never searches the
-//! menu state.
+//! Each sensor page placed once per change, with the boxes taps land on,
+//! and drawn from that onto a canvas of runs, shapes and cues for each
+//! frame.
 use super::kind;
 use super::menu::{Mine, State, View};
 use super::slot::{LinkStatus, Selected};
@@ -86,245 +86,292 @@ pub(super) enum Target {
     Cue(Corner),
 }
 
+/// Where the shown page's rows and cues are, worked out after every change:
+/// small enough to keep, unlike the canvas, which each frame draws afresh
+/// from it.
 pub(super) struct Layout {
-    pub(super) canvas: Canvas,
+    /// How far the list has scrolled up to keep its focus in view.
+    scroll: usize,
     /// Painted over the canvas.
     pub(super) cues: &'static [Cue],
-    /// Shown without the status bar, whose rows a back cue needs.
-    pub(super) full_screen: bool,
+    /// The shown rows and cues, with the boxes taps land on.
     targets: Vec<(Rect, Target), 12>,
 }
 
 impl Layout {
     pub(super) const fn new() -> Self {
         Self {
-            canvas: Canvas::EMPTY,
+            scroll: 0,
             cues: &[],
-            full_screen: false,
             targets: Vec::new(),
         }
     }
 
-    /// The target under a point; rows and cues own their bounds.
+    /// The target under a point; rows and cues own their bounds. Rows under
+    /// the status bar take no taps.
     pub(super) fn target(&self, x: usize, y: usize) -> Option<Target> {
+        if y < CONTENT.top && !super::full_screen(self.cues) {
+            return None;
+        }
         self.targets
             .iter()
             .find(|(rect, _)| rect.contains(x, y))
             .map(|&(_, target)| target)
     }
 
-    /// Lay out the shown page, in place: the canvas is too large to build
-    /// on the stack and move.
+    /// Place the shown page: its scroll, rows and cues.
     pub(super) fn prepare(&mut self, state: &State) {
-        self.canvas.shapes.clear();
-        self.canvas.runs.clear();
         self.targets.clear();
+        self.scroll = 0;
         self.cues = &[];
-        self.full_screen = false;
         match state.view {
-            View::Mine(focus) => self.mine(state, focus),
-            View::Add(focus) => self.add(state, focus),
+            View::Mine(focus) => {
+                let index = state.rows().position(|row| row == focus).unwrap_or(0);
+                self.scroll_to(MINE_TOP + index * MINE_PITCH);
+                for (index, row) in state.rows().enumerate() {
+                    self.row(MINE_TOP + index * MINE_PITCH, Target::Mine(row));
+                }
+            }
+            View::Add(focus) => {
+                let index = focus
+                    .and_then(|focus| state.nearby().position(|index| index == focus))
+                    .unwrap_or(0);
+                self.scroll_to(ADD_TOP + index * ADD_PITCH);
+                if let Some(base) = self.search_base() {
+                    let bounds = Rect {
+                        left: REFRESH_LEFT - 14,
+                        top: base - 24,
+                        right: crate::screens::chrome::WIDTH,
+                        bottom: base + 10,
+                    };
+                    let _ = self.targets.push((bounds, Target::Refresh));
+                }
+                for (row, index) in state.nearby().enumerate() {
+                    self.row(ADD_TOP + row * ADD_PITCH, Target::Nearby(index));
+                }
+            }
+            View::Detail(slot) if state.calibratable(slot) => self.cues = &POWER_CUES,
+            View::Detail(_) | View::Forget(_) => self.cues = &FORGET_CUES,
+            View::Replace(_) => self.cues = &REPLACE_CUES,
+        }
+        for cue in self.cues {
+            let _ = self
+                .targets
+                .push((cue_box(cue.corner), Target::Cue(cue.corner)));
+        }
+    }
+
+    /// Scroll so the row at `top` of the whole list ends above
+    /// `FOCUS_BOTTOM`.
+    fn scroll_to(&mut self, top: usize) {
+        self.scroll = (top + ROW_HEIGHT).saturating_sub(FOCUS_BOTTOM);
+    }
+
+    /// The row at `top` of the whole list, where it shows whole on the
+    /// screen or runs under the status bar.
+    fn row(&mut self, top: usize, target: Target) {
+        let Some(top) = top.checked_sub(self.scroll) else {
+            return;
+        };
+        if top + ROW_HEIGHT > HEIGHT {
+            return;
+        }
+        let rect = Rect {
+            left: ROW_LEFT,
+            top,
+            right: ROW_RIGHT,
+            bottom: top + ROW_HEIGHT,
+        };
+        let _ = self.targets.push((rect, target));
+    }
+
+    /// The search line's baseline on ADD SENSOR, until it scrolls under the
+    /// status bar.
+    fn search_base(&self) -> Option<usize> {
+        SEARCH_BASE
+            .checked_sub(self.scroll)
+            .filter(|&base| base >= CONTENT.top + 12)
+    }
+
+    /// Draw the page as placed: the same state and layout always draw the
+    /// same canvas.
+    pub(super) fn draw(&self, state: &State, canvas: &mut Canvas) {
+        let mut page = Drawing { state, canvas };
+        match state.view {
+            View::Mine(focus) => {
+                let problem = state.notice.or(state.message.filter(|m| m.on_sensors()));
+                let (title, color): (&[u8], u16) = match problem {
+                    Some(problem) => (problem.short().as_bytes(), AMBER),
+                    None => (b"SENSORS", WHITE),
+                };
+                page.title(title, color, self.scroll);
+                for &(rect, target) in &self.targets {
+                    if let Target::Mine(row) = target {
+                        page.mine(row, rect, row == focus);
+                    }
+                }
+            }
+            View::Add(focus) => {
+                page.title(b"ADD SENSOR", WHITE, self.scroll);
+                if let Some(base) = self.search_base() {
+                    page.search_line(base);
+                }
+                for &(rect, target) in &self.targets {
+                    if let Target::Nearby(index) = target {
+                        page.nearby(index, rect, focus == Some(index));
+                    }
+                }
+            }
             View::Detail(slot) => {
                 if let Some(selected) = state.selected[slot] {
-                    self.detail(state, selected, state.calibratable(slot));
+                    page.detail(selected, state.calibratable(slot));
                 }
             }
             View::Forget(slot) => {
                 if let Some(selected) = state.selected[slot] {
-                    self.forget(state, selected);
+                    page.forget(selected);
                 }
             }
-            View::Replace(identity) => self.replace(state, identity),
+            View::Replace(identity) => page.replace(identity),
         }
-        for cue in self.cues {
-            let bounds = cue_box(cue.corner);
-            let _ = self.targets.push((bounds, Target::Cue(cue.corner)));
+    }
+}
+
+/// One page drawn onto a canvas.
+struct Drawing<'a> {
+    state: &'a State,
+    canvas: &'a mut Canvas,
+}
+
+impl Drawing<'_> {
+    /// A row of SENSORS: a saved sensor, or ADD SENSOR.
+    fn mine(&mut self, row: Mine, rect: Rect, focused: bool) {
+        let top = rect.top;
+        match row {
+            Mine::Saved(slot) => {
+                let Some(selected) = self.state.selected[slot] else {
+                    return;
+                };
+                if focused {
+                    self.focus_card(rect);
+                }
+                let sensor = Sensor::of(selected.identity.device_type);
+                self.icon(
+                    sensor.icon(Size::Row),
+                    ROW_LEFT + 10,
+                    top + 11,
+                    sensor.tint(),
+                );
+                let name = kind(selected.identity.device_type);
+                let width = TEXT_RIGHT - MINE_TEXT;
+                self.canvas.fit(
+                    &[&BODY, &CAPTION],
+                    name,
+                    width,
+                    MINE_TEXT,
+                    top + 23,
+                    Align::Left,
+                    WHITE,
+                );
+                let (text, color) = link(selected);
+                let note = battery_note(selected);
+                let note = note.as_ref().map(|(text, color)| (text.as_bytes(), *color));
+                // A live sensor with a weak battery needs a look too; a
+                // sensor that is not live is missing, not low.
+                let live = selected.link_status() == LinkStatus::Live;
+                let warning = note.filter(|&(_, color)| live && color != SECONDARY);
+                let base = top + 39;
+                match warning {
+                    Some(warning) if !fits(text, warning.0, width) => {
+                        self.status(MINE_TEXT, base, width, warning, None);
+                    }
+                    _ => {
+                        let state = (text, warning.map_or(color, |(_, color)| color));
+                        self.status(MINE_TEXT, base, width, state, note);
+                    }
+                }
+            }
+            Mine::Add => {
+                let card = Rect {
+                    top: top + 4,
+                    bottom: top + 44,
+                    ..rect
+                };
+                if focused {
+                    self.focus_card(card);
+                } else {
+                    self.panel(card, RADIUS, CARD);
+                }
+                self.icon(&PLUS, ROW_LEFT + 10, top + 15, GREEN);
+                self.canvas.fit(
+                    &[&BODY],
+                    b"ADD SENSOR",
+                    TEXT_RIGHT - 48,
+                    48,
+                    top + 31,
+                    Align::Left,
+                    WHITE,
+                );
+            }
         }
     }
 
-    fn mine(&mut self, state: &State, focus: Mine) {
-        let rows = || state.rows().enumerate();
-        let index = rows().find(|&(_, row)| row == focus).map_or(0, |(i, _)| i);
-        let scroll = (MINE_TOP + index * MINE_PITCH + ROW_HEIGHT).saturating_sub(FOCUS_BOTTOM);
-        let problem = state.notice.or(state.message.filter(|m| m.on_sensors()));
-        let (title, color): (&[u8], u16) = match problem {
-            Some(problem) => (problem.short().as_bytes(), AMBER),
-            None => (b"SENSORS", WHITE),
+    /// ADD SENSOR's line under its title, and the refresh mark at its end.
+    fn search_line(&mut self, base: usize) {
+        let (line, color) = self.state.search_line();
+        self.canvas.fit(
+            &[&CAPTION],
+            line,
+            REFRESH_LEFT - 8 - MARGIN,
+            MARGIN,
+            base,
+            Align::Left,
+            color,
+        );
+        let mark = if self.state.scanning { ACCENT } else { WHITE };
+        self.icon(&REFRESH, REFRESH_LEFT, base - 14, mark);
+    }
+
+    /// A nearby sensor's card, by discovery slot.
+    fn nearby(&mut self, index: usize, rect: Rect, focused: bool) {
+        let state = self.state;
+        let Some(discovery) = state.discoveries[index] else {
+            return;
         };
-        self.title(title, color, scroll);
-        for (index, row) in rows() {
-            let Some(top) = (MINE_TOP + index * MINE_PITCH).checked_sub(scroll) else {
-                continue;
-            };
-            if top + ROW_HEIGHT > HEIGHT {
-                break;
-            }
-            let rect = Rect {
-                left: ROW_LEFT,
-                top,
-                right: ROW_RIGHT,
-                bottom: top + ROW_HEIGHT,
-            };
-            let focused = row == focus;
-            match row {
-                Mine::Saved(slot) => {
-                    let Some(selected) = state.selected[slot] else {
-                        continue;
-                    };
-                    if focused {
-                        self.focus_card(rect);
-                    }
-                    let sensor = Sensor::of(selected.identity.device_type);
-                    self.icon(
-                        sensor.icon(Size::Row),
-                        ROW_LEFT + 10,
-                        top + 11,
-                        sensor.tint(),
-                    );
-                    let name = kind(selected.identity.device_type);
-                    let width = TEXT_RIGHT - MINE_TEXT;
-                    self.canvas.fit(
-                        &[&BODY, &CAPTION],
-                        name,
-                        width,
-                        MINE_TEXT,
-                        top + 23,
-                        Align::Left,
-                        WHITE,
-                    );
-                    let (text, color) = link(selected);
-                    let note = battery_note(selected);
-                    let note = note.as_ref().map(|(text, color)| (text.as_bytes(), *color));
-                    // A live sensor with a weak battery needs a look too; a
-                    // sensor that is not live is missing, not low.
-                    let live = selected.link_status() == LinkStatus::Live;
-                    let warning = note.filter(|&(_, color)| live && color != SECONDARY);
-                    let base = top + 39;
-                    match warning {
-                        Some(warning) if !fits(text, warning.0, width) => {
-                            self.status(MINE_TEXT, base, width, warning, None);
-                        }
-                        _ => {
-                            let state = (text, warning.map_or(color, |(_, color)| color));
-                            self.status(MINE_TEXT, base, width, state, note);
-                        }
-                    }
-                }
-                Mine::Add => {
-                    let card = Rect {
-                        top: top + 4,
-                        bottom: top + 44,
-                        ..rect
-                    };
-                    if focused {
-                        self.focus_card(card);
-                    } else {
-                        self.panel(card, RADIUS, CARD);
-                    }
-                    self.icon(&PLUS, ROW_LEFT + 10, top + 15, GREEN);
-                    let base = top + 31;
-                    self.canvas.fit(
-                        &[&BODY],
-                        b"ADD SENSOR",
-                        TEXT_RIGHT - 48,
-                        48,
-                        base,
-                        Align::Left,
-                        WHITE,
-                    );
-                }
-            }
-            self.row_target(rect, Target::Mine(row));
-        }
-    }
-
-    fn add(&mut self, state: &State, focus: Option<usize>) {
-        let index = focus
-            .and_then(|focus| state.nearby().position(|index| index == focus))
-            .unwrap_or(0);
-        let scroll = (ADD_TOP + index * ADD_PITCH + ROW_HEIGHT).saturating_sub(FOCUS_BOTTOM);
-        self.title(b"ADD SENSOR", WHITE, scroll);
-        let (line, color) = state.search_line();
-        if let Some(base) = SEARCH_BASE
-            .checked_sub(scroll)
-            .filter(|&b| b >= CONTENT.top + 12)
-        {
-            self.canvas.fit(
-                &[&CAPTION],
-                line,
-                REFRESH_LEFT - 8 - MARGIN,
-                MARGIN,
-                base,
-                Align::Left,
-                color,
-            );
-            let mark = if state.scanning { ACCENT } else { WHITE };
-            self.icon(&REFRESH, REFRESH_LEFT, base - 14, mark);
-            let bounds = Rect {
-                left: REFRESH_LEFT - 14,
-                top: (base - 24).max(CONTENT.top),
-                right: crate::screens::chrome::WIDTH,
-                bottom: base + 10,
-            };
-            let _ = self.targets.push((bounds, Target::Refresh));
-        }
-        for (row, index) in state.nearby().enumerate() {
-            let Some(discovery) = state.discoveries[index] else {
-                continue;
-            };
-            let Some(top) = (ADD_TOP + row * ADD_PITCH).checked_sub(scroll) else {
-                continue;
-            };
-            if top + ROW_HEIGHT > HEIGHT {
-                break;
-            }
-            let rect = Rect {
-                left: ROW_LEFT,
-                top,
-                right: ROW_RIGHT,
-                bottom: top + ROW_HEIGHT,
-            };
-            if focus == Some(index) {
-                self.focus_card(rect);
-            } else {
-                self.panel(rect, RADIUS, CARD);
-            }
-            let identity = discovery.identity;
-            let icon = Sensor::of(identity.device_type).icon(Size::Small);
-            self.icon(icon, ROW_LEFT + 10, top + 13, SECONDARY);
-            self.icon(&PLUS, PLUS_LEFT, top + 15, GREEN);
-            let width = PLUS_LEFT - 8 - ADD_TEXT;
-            let name = kind(identity.device_type);
-            let base = top + 23;
-            self.canvas.fit(
-                &[&BODY, &CAPTION],
-                name,
-                width,
-                ADD_TEXT,
-                base,
-                Align::Left,
-                WHITE,
-            );
-            let mut caption = Text::<24>::new();
-            if state.present[index] {
-                let _ = write!(caption, "ID {}", state.identity_label(identity).as_str());
-            } else {
-                let _ = caption.push_str("NOT SEEN");
-            }
-            let caption = caption.as_bytes();
-            self.canvas
-                .caption(caption, width, ADD_TEXT, top + 39, Align::Left);
-            self.row_target(rect, Target::Nearby(index));
-        }
-    }
-
-    fn detail(&mut self, state: &State, selected: Selected, calibratable: bool) {
-        self.full_screen = true;
-        self.cues = if calibratable {
-            &POWER_CUES
+        let top = rect.top;
+        if focused {
+            self.focus_card(rect);
         } else {
-            &FORGET_CUES
-        };
+            self.panel(rect, RADIUS, CARD);
+        }
+        let identity = discovery.identity;
+        let icon = Sensor::of(identity.device_type).icon(Size::Small);
+        self.icon(icon, ROW_LEFT + 10, top + 13, SECONDARY);
+        self.icon(&PLUS, PLUS_LEFT, top + 15, GREEN);
+        let width = PLUS_LEFT - 8 - ADD_TEXT;
+        let name = kind(identity.device_type);
+        self.canvas.fit(
+            &[&BODY, &CAPTION],
+            name,
+            width,
+            ADD_TEXT,
+            top + 23,
+            Align::Left,
+            WHITE,
+        );
+        let mut caption = Text::<24>::new();
+        if state.present[index] {
+            let _ = write!(caption, "ID {}", state.identity_label(identity).as_str());
+        } else {
+            let _ = caption.push_str("NOT SEEN");
+        }
+        let caption = caption.as_bytes();
+        self.canvas
+            .caption(caption, width, ADD_TEXT, top + 39, Align::Left);
+    }
+
+    fn detail(&mut self, selected: Selected, calibratable: bool) {
+        let state = self.state;
         let identity = selected.identity;
         self.icon_card(identity, DETAIL_CARD_TOP);
         let width = 2 * (MID - MARGIN);
@@ -352,8 +399,8 @@ impl Layout {
                 Align::Left,
             );
         };
-        caption(&mut self.canvas, b"BATTERY", BATTERY_LEFT);
-        caption(&mut self.canvas, b"ID", ID_LEFT);
+        caption(self.canvas, b"BATTERY", BATTERY_LEFT);
+        caption(self.canvas, b"ID", ID_LEFT);
         self.battery_value(selected);
         let number = state.identity_label(identity);
         let id_width = crate::screens::chrome::WIDTH - MARGIN - ID_LEFT;
@@ -437,9 +484,8 @@ impl Layout {
         ));
     }
 
-    fn forget(&mut self, state: &State, selected: Selected) {
-        self.full_screen = true;
-        self.cues = &FORGET_CUES;
+    fn forget(&mut self, selected: Selected) {
+        let state = self.state;
         let identity = selected.identity;
         self.icon_card(identity, FORGET_CARD_TOP);
         let width = 2 * (MID - MARGIN);
@@ -464,9 +510,8 @@ impl Layout {
 
     /// The saved sensor on the left, the one that would replace it on the
     /// right.
-    fn replace(&mut self, state: &State, identity: Identity) {
-        self.full_screen = true;
-        self.cues = &REPLACE_CUES;
+    fn replace(&mut self, identity: Identity) {
+        let state = self.state;
         self.icon_card(identity, REPLACE_CARD_TOP);
         let width = 2 * (MID - MARGIN);
         let name = kind(identity.device_type);
@@ -553,15 +598,6 @@ impl Layout {
             Align::Left,
             color,
         ));
-    }
-
-    /// A row takes taps where it shows: not under the status bar.
-    fn row_target(&mut self, rect: Rect, target: Target) {
-        let shown = Rect {
-            top: rect.top.max(CONTENT.top),
-            ..rect
-        };
-        let _ = self.targets.push((shown, target));
     }
 
     fn focus_card(&mut self, rect: Rect) {

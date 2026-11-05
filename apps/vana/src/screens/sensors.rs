@@ -1,7 +1,8 @@
 //! Sensor selection and physical-button navigation, independent of radio scheduling.
 //!
-//! `menu` owns the pages, their focus and input, `layout` lays the shown
-//! page out after each change, and `render` paints that layout row by row.
+//! `menu` owns the pages, their focus and input, `layout` places the shown
+//! page after each change and draws it onto the frame's canvas, and
+//! `render` holds its colours.
 mod layout;
 mod menu;
 mod message;
@@ -15,7 +16,14 @@ pub use message::{CalibrationNote, MenuMessage};
 
 pub use slot::{Connection, Selected};
 
+use crate::screens::cue::{Corner, Cue};
 use crate::sensors::ant::device_type;
+
+/// A sensor page with a back cue takes the whole panel: the status bar
+/// would cut the cue.
+pub fn full_screen(cues: &[Cue]) -> bool {
+    cues.iter().any(|cue| cue.corner == Corner::TopLeft)
+}
 
 fn kind(kind: u8) -> &'static [u8] {
     match kind {

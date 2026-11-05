@@ -9,7 +9,6 @@ use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
 use crate::ride::turn_back::Turn;
-use crate::screens::chrome::CONTENT;
 use crate::screens::chrome::{AMBER, Battery, CHARGE_STEPS, Gps, RED, Toast, Tone};
 use crate::screens::home::Home;
 use crate::screens::kinetic::Kinetic;
@@ -814,11 +813,13 @@ impl Runtime {
                     system.activity(now);
                 }
             }
-            Page::Home | Page::Sensors => {
+            Page::Home => {
                 self.refresh_sensor_menu(ant, now);
-                if page == Page::Home {
-                    view.set_home(self.home(gps_fix, now));
-                }
+                view.set_home(self.home(gps_fix, now));
+            }
+            Page::Sensors => {
+                self.refresh_sensor_menu(ant, now);
+                view.show_sensors(self.menu.canvas(), self.menu.cues());
             }
             Page::Settings => {
                 view.scroll = self.list_offset(List::Settings, now);
@@ -855,17 +856,8 @@ impl Runtime {
         if home.is_some() && home == self.home_on_panel && !system.frame_wanted(now) {
             return;
         }
-        let menu = &self.menu;
-        // The FTP sheet covers the Sensors menu too, as it takes the buttons.
-        let sheet = view.ftp_offer;
         system.draw_canvas(240, 320, |row| {
-            let menu_rows = menu.full_screen() || row.y() >= CONTENT.top;
-            if page == Page::Sensors && sheet.is_none() && menu_rows {
-                menu.paint(row);
-                view.paint_toast(row);
-            } else {
-                view.paint(row)
-            }
+            view.paint(row);
             if light {
                 look::apply(row.pixels_mut());
             }

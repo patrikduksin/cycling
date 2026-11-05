@@ -177,10 +177,11 @@ fn focus(menu: &mut Menu, kind: Option<u8>, now: &mut u64) {
 }
 
 fn render(menu: &Menu, output: &str, name: &str) {
+    let frame = menu.frame();
     let mut bytes = b"P6\n240 320\n255\n".to_vec();
     for y in 0..320 {
         for x in 0..240 {
-            let p = menu.pixel(x, y);
+            let p = frame.pixel(x, y);
             bytes.extend_from_slice(&[
                 (((p >> 11) & 31) as u32 * 255 / 31) as u8,
                 (((p >> 5) & 63) as u32 * 255 / 63) as u8,

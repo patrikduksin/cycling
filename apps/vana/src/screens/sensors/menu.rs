@@ -2,7 +2,8 @@
 use super::layout::{Layout, Target};
 use super::slot::{LinkStatus, Selected};
 use super::{CalibrationNote, MenuMessage};
-use crate::screens::cue::Corner;
+use crate::screens::canvas::Canvas;
+use crate::screens::cue::{Corner, Cue};
 use crate::sensors::ant::{BatteryStatus, device_type};
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
 use device_api::input::{Button, Input};
@@ -114,8 +115,8 @@ pub(super) enum View {
     Replace(Identity),
 }
 
-/// The sensor pages: what they show and focus, and the layout prepared
-/// from that after every change, so painting a row never searches the state.
+/// The sensor pages: what they show and focus, and where that places their
+/// rows and cues after every change.
 pub struct Menu {
     pub(super) state: State,
     pub(super) layout: Layout,
@@ -236,10 +237,18 @@ impl Menu {
         }
     }
 
-    /// The page takes the whole panel, without the status bar: those with
-    /// a back cue, which the bar would cut.
-    pub fn full_screen(&self) -> bool {
-        self.layout.full_screen
+    /// Draw the shown page for a frame. Only the frame keeps the canvas: it
+    /// is too large to keep in the runtime, so each frame draws it afresh.
+    #[inline(never)]
+    pub fn canvas(&self) -> Canvas {
+        let mut canvas = Canvas::EMPTY;
+        self.layout.draw(&self.state, &mut canvas);
+        canvas
+    }
+
+    /// The button cues painted over the shown page.
+    pub fn cues(&self) -> &'static [Cue] {
+        self.layout.cues
     }
 
     pub fn input(&mut self, input: Input, now: u64) -> Option<Action> {

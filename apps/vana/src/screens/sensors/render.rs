@@ -1,12 +1,10 @@
-//! Row painting of the prepared sensor page on the 240 × 320 canvas.
-//!
-//! Each row paints the canvas the layout prepared, then the page's cues;
-//! the canvas's per-pixel original stays the test reference painted rows
-//! must match.
+//! The sensor pages' colours, and the page in a frame of its own. A frame
+//! paints the page as the workout `View`'s canvas body, with its cues.
 use super::CalibrationNote;
 use super::menu::Menu;
 use super::slot::LinkStatus;
-use crate::screens::chrome::{self, BLACK, CONTENT, HEIGHT, Row, WIDTH};
+use crate::screens::chrome;
+use crate::screens::workout::{Page as Screen, View};
 
 /// Waiting and information.
 pub(super) const CYAN: u16 = chrome::ACCENT;
@@ -35,38 +33,12 @@ impl LinkStatus {
 }
 
 impl Menu {
-    /// One pixel of the painted page; tests and previews only, as it paints
-    /// a whole row.
-    pub fn pixel(&self, x: usize, y: usize) -> u16 {
-        let mut pixels = [BLACK; WIDTH];
-        self.paint(&mut Row::new(y, &mut pixels));
-        pixels.get(x).copied().unwrap_or(BLACK)
-    }
-
-    /// Paint one row of the shown page. Pages with the status bar leave its
-    /// rows black.
-    pub fn paint(&self, row: &mut Row) {
-        row.fill(BLACK);
-        let y = row.y();
-        if y >= HEIGHT || (!self.layout.full_screen && y < CONTENT.top) {
-            return;
-        }
-        self.layout.canvas.paint(row);
-        for cue in self.layout.cues {
-            cue.paint(row);
-        }
-    }
-
-    /// The per-pixel original of `paint`, kept as the reference it must match.
-    #[cfg(test)]
-    pub(super) fn reference_pixel(&self, x: usize, y: usize) -> u16 {
-        if x >= WIDTH || y >= HEIGHT || (!self.layout.full_screen && y < CONTENT.top) {
-            return BLACK;
-        }
-        let under = self.layout.canvas.pixel(x, y, BLACK);
-        self.layout
-            .cues
-            .iter()
-            .fold(under, |under, cue| cue.pixel(x, y, under))
+    /// The shown page in a frame of its own, as the runtime prepares it;
+    /// tests and previews.
+    pub fn frame(&self) -> View<'static> {
+        let mut view = View::new(Screen::Sensors, 0, None);
+        view.show_sensors(self.canvas(), self.cues());
+        view.prepare();
+        view
     }
 }

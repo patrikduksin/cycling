@@ -96,7 +96,7 @@ fn page(menu: &Menu) -> Page {
 
 /// The run reading exactly `text`, if the page shows it.
 fn run(menu: &Menu, text: &str) -> Option<crate::screens::canvas::Run> {
-    menu.layout.canvas.find(text).copied()
+    menu.canvas().find(text).copied()
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn opening_with_nothing_saved_goes_straight_to_add_sensor_and_searches() {
     menu.refresh(nearby(&[peer(10)]), [None; CHANNEL_CAPACITY], false);
     assert_eq!(menu.open(), Some(Action::Scan));
     assert_eq!(page(&menu), Page::AddSensor);
-    assert!(menu.layout.canvas.shows("ADD SENSOR"));
+    assert!(menu.canvas().shows("ADD SENSOR"));
     // With a sensor saved, SENSORS opens on its first row and nothing searches.
     let mut menu = Menu::new();
     menu.refresh(
@@ -116,9 +116,9 @@ fn opening_with_nothing_saved_goes_straight_to_add_sensor_and_searches() {
     assert_eq!(menu.open(), None);
     assert_eq!(page(&menu), Page::Sensors);
     assert_eq!(menu.diagnostics().focus, Some(strap(1)));
-    assert!(menu.layout.canvas.shows("SENSORS"));
-    assert!(menu.layout.canvas.shows("HEART RATE"));
-    assert!(menu.layout.canvas.shows("ADD SENSOR"));
+    assert!(menu.canvas().shows("SENSORS"));
+    assert!(menu.canvas().shows("HEART RATE"));
+    assert!(menu.canvas().shows("ADD SENSOR"));
 }
 
 #[test]
@@ -165,8 +165,7 @@ fn only_add_sensor_searches() {
         Some(Action::Scan)
     );
     let refresh = menu
-        .layout
-        .canvas
+        .canvas()
         .shapes
         .iter()
         .find_map(|shape| match *shape {
@@ -281,8 +280,8 @@ fn a_sensor_of_a_saved_type_asks_before_it_replaces() {
     rider.press(&mut menu, Button::BottomRight);
     assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
     assert_eq!(page(&menu), Page::Replace);
-    assert!(menu.layout.canvas.shows("REPLACE SENSOR"));
-    assert!(menu.layout.canvas.shows("1") && menu.layout.canvas.shows("20"));
+    assert!(menu.canvas().shows("REPLACE SENSOR"));
+    assert!(menu.canvas().shows("1") && menu.canvas().shows("20"));
     // MOVE does nothing; BACK keeps the saved one.
     assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
     assert_eq!(page(&menu), Page::Replace);
@@ -310,7 +309,7 @@ fn full_slots_and_stale_discoveries_say_why_nothing_connects() {
     // A sensor the latest search no longer reports is listed, not connected.
     let mut menu = opened(&[peer(10)], &[]);
     menu.refresh([None; DISCOVERY_CAPACITY], [None; CHANNEL_CAPACITY], false);
-    assert!(menu.layout.canvas.shows("NOT SEEN"));
+    assert!(menu.canvas().shows("NOT SEEN"));
     assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
     assert_eq!(menu.diagnostics().message, Some(MenuMessage::NotSeen));
 }
@@ -414,7 +413,8 @@ fn rows_name_each_state_in_its_colour_with_the_battery_after_it() {
         assert_eq!(battery.color, color, "{text}");
         let state = run(&menu, "LIVE");
         assert_eq!(state.map(|state| state.color), live, "{text}");
-        let dots = menu.layout.canvas.shapes.iter();
+        let canvas = menu.canvas();
+        let dots = canvas.shapes.iter();
         let dots = dots.filter(|s| matches!(s, Shape::Disc { color: c, .. } if *c == color));
         if let Some(state) = state {
             assert!(battery.left > state.right(), "{text} follows the state");
@@ -475,7 +475,7 @@ fn ten_saved_sensors_scroll_so_the_focus_stays_in_view() {
             "step {step}: {rect:?}"
         );
         assert_eq!(
-            menu.pixel(rect.left + 1, rect.top + 24),
+            menu.frame().pixel(rect.left + 1, rect.top + 24),
             ACCENT,
             "step {step}: ring"
         );
@@ -483,9 +483,9 @@ fn ten_saved_sensors_scroll_so_the_focus_stays_in_view() {
     }
     // The last row scrolled the title away; wrapping brings it back.
     rider.focus(&mut menu, None);
-    assert!(!menu.layout.canvas.shows("SENSORS"));
+    assert!(!menu.canvas().shows("SENSORS"));
     rider.press(&mut menu, Button::BottomLeft);
-    assert!(menu.layout.canvas.shows("SENSORS"));
+    assert!(menu.canvas().shows("SENSORS"));
     // A tap lands on the row where it is drawn, scrolled or not.
     rider.focus(&mut menu, None);
     let add = focused_rect(&menu);
@@ -548,8 +548,8 @@ fn a_power_meter_detail_waits_a_moment_then_act_zeroes_and_move_asks_to_forget()
     };
     assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
     assert_eq!(page(&menu), Page::Forget);
-    assert!(menu.layout.canvas.shows("FORGET") && menu.layout.canvas.shows("SENSOR?"));
-    assert!(menu.layout.canvas.shows("POWER METER 5512"));
+    assert!(menu.canvas().shows("FORGET") && menu.canvas().shows("SENSOR?"));
+    assert!(menu.canvas().shows("POWER METER 5512"));
     // MOVE does nothing here; BACK returns to the detail page.
     assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
     assert_eq!(rider.press(&mut menu, Button::TopLeft), None);
@@ -568,7 +568,7 @@ fn any_other_sensor_detail_forgets_on_act_and_ignores_move() {
     let mut rider = Rider::new();
     rider.press(&mut menu, Button::BottomRight);
     assert_eq!(page(&menu), Page::Detail);
-    let corners: std::vec::Vec<_> = menu.layout.cues.iter().map(|c| c.corner).collect();
+    let corners: std::vec::Vec<_> = menu.cues().iter().map(|c| c.corner).collect();
     assert_eq!(corners, [Corner::TopLeft, Corner::BottomRight]);
     // ACT straight after opening waits, as on a power meter.
     assert_eq!(
@@ -580,7 +580,7 @@ fn any_other_sensor_detail_forgets_on_act_and_ignores_move() {
     assert_eq!(page(&menu), Page::Detail);
     assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
     assert_eq!(page(&menu), Page::Forget);
-    assert!(menu.layout.canvas.shows("HEART RATE 100"));
+    assert!(menu.canvas().shows("HEART RATE 100"));
     assert_eq!(
         rider.press(&mut menu, Button::BottomRight),
         Some(Action::Disconnect(device_type::HEART_RATE))
@@ -672,12 +672,12 @@ fn cancel_holds_act_until_move_and_debounce_drops_repeats() {
     }
     assert_eq!(page(&menu), Page::Sensors);
     menu.input(Input::Cancel, 400);
-    assert!(menu.layout.canvas.shows("MOVE FOCUS FIRST"));
+    assert!(menu.canvas().shows("MOVE FOCUS FIRST"));
     assert_eq!(menu.input(press(Button::BottomRight), 800), None);
     assert_eq!(page(&menu), Page::Sensors);
     // MOVE confirms the focus; ACT within the debounce is dropped.
     menu.input(press(Button::BottomLeft), 1_200);
-    assert!(menu.layout.canvas.shows("SENSORS"));
+    assert!(menu.canvas().shows("SENSORS"));
     assert_eq!(menu.input(press(Button::BottomRight), 1_549), None);
     assert_eq!(page(&menu), Page::Sensors);
     // Back stays usable after input loss.
@@ -693,8 +693,8 @@ fn equal_device_numbers_show_their_transmission_type() {
     let mut second = peer(10);
     second.identity.transmission_type = 2;
     let menu = opened(&[peer(10), second], &[]);
-    assert!(menu.layout.canvas.shows("ID 10.1"));
-    assert!(menu.layout.canvas.shows("ID 10.2"));
+    assert!(menu.canvas().shows("ID 10.1"));
+    assert!(menu.canvas().shows("ID 10.2"));
 }
 
 #[test]
@@ -712,7 +712,7 @@ fn replacement_tells_maximum_identities_apart_without_overlap() {
     rider.press(&mut menu, Button::BottomRight);
     rider.press(&mut menu, Button::BottomRight);
     assert_eq!(page(&menu), Page::Replace);
-    let canvas = &menu.layout.canvas;
+    let canvas = menu.canvas();
     canvas.assert_laid_out(
         SCREEN,
         &["65535", "T254", "T255", "CURRENT", "NEW"],
@@ -760,7 +760,7 @@ fn the_detail_page_shows_the_battery_in_the_colour_of_its_urgency() {
         assert_eq!(page(&menu), Page::Detail);
         assert_eq!(run(&menu, text).map(|r| r.color), Some(color), "{text}");
         assert_eq!(run(&menu, "V").is_some(), millivolts.is_some(), "{text}");
-        assert!(menu.layout.canvas.shows("BATTERY") && menu.layout.canvas.shows("100"));
+        assert!(menu.canvas().shows("BATTERY") && menu.canvas().shows("100"));
     }
 }
 
@@ -800,19 +800,19 @@ fn calibration_notes_show_in_their_colour_only_on_a_power_meter() {
                 HINT_BASE
             );
         }
-        menu.layout.canvas.assert_laid_out(SCREEN, &[text], text);
+        menu.canvas().assert_laid_out(SCREEN, &[text], text);
         assert_clear_of_cues(&menu, text);
     }
     let mut strap_menu = opened(&[], &[(strap(1), Connection::Live)]);
     Rider::new().press(&mut strap_menu, Button::BottomRight);
     strap_menu.set_calibration(Some(CalibrationNote::Calibrating));
-    assert!(!strap_menu.layout.canvas.shows("CALIBRATING..."));
+    assert!(!strap_menu.canvas().shows("CALIBRATING..."));
 }
 
 /// Nothing a page shows comes within reach of a cue's quarter disc.
 #[track_caller]
 fn assert_clear_of_cues(menu: &Menu, what: &str) {
-    let canvas = &menu.layout.canvas;
+    let canvas = menu.canvas();
     let texts = canvas
         .runs
         .iter()
@@ -821,7 +821,7 @@ fn assert_clear_of_cues(menu: &Menu, what: &str) {
     let boxes: std::vec::Vec<Rect> = texts
         .chain(canvas.shapes.iter().map(Shape::bounds))
         .collect();
-    for cue in menu.layout.cues {
+    for cue in menu.cues() {
         let (cx, cy) = match cue.corner {
             Corner::TopLeft => (0, 0),
             Corner::BottomLeft => (0, HEIGHT),
@@ -959,7 +959,7 @@ fn menu_copy(menu: &Menu) -> Menu {
 #[test]
 fn crowded_sensor_pages_never_overlap_clip_or_drop_anything() {
     for (what, menu) in crowded() {
-        let canvas = &menu.layout.canvas;
+        let canvas = menu.canvas();
         assert!(
             canvas.runs.len() < 28 && canvas.shapes.len() < 24,
             "{what}: canvas full"
@@ -974,7 +974,7 @@ fn crowded_sensor_pages_never_overlap_clip_or_drop_anything() {
             _ => &[],
         };
         canvas.assert_laid_out(SCREEN, want, &what);
-        if menu.layout.full_screen {
+        if full_screen(menu.cues()) {
             assert_clear_of_cues(&menu, &what);
         } else {
             let rect = focused_rect(&menu);
@@ -989,9 +989,10 @@ fn crowded_sensor_pages_never_overlap_clip_or_drop_anything() {
 #[test]
 fn painted_rows_match_the_per_pixel_reference() {
     for (what, menu) in crowded() {
+        let frame = menu.frame();
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
-                let (got, want) = (menu.pixel(x, y), menu.reference_pixel(x, y));
+                let (got, want) = (frame.pixel(x, y), frame.reference_pixel(x, y));
                 assert_eq!(got, want, "{what} at {x},{y}: {got:#06x} != {want:#06x}");
             }
         }

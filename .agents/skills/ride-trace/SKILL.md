@@ -166,9 +166,9 @@ Two checks before you trust a reading or a page change:
 - **Could the rider see it?** VANA emits a `shown` line once a second on
   every ride page (main, climb, map, back, stats, lap and paused), and it
   always holds the main page's readings, whatever page was up. Its values are
-  the ones the page glides to, before the glide, with power as the 3 s
-  average: the number on screen can trail a change for a moment, so confirm
-  a borderline reading in `screens.txt`. A page line's `shows` lists what that page
+  the readings the page's numbers show, never glided, with power as the 3 s
+  average. A reading reaches the screen on the next frame, so confirm a
+  borderline one in `screens.txt`. A page line's `shows` lists what that page
   draws (`ride/climb` power,hr,grade; `ride/map` dist; `ride/back` none), so
   `hr=--` while the rider was on `ride/back` is a gap in the data the rider
   never saw. The main page's lower pair is the rider's choice; the tool
@@ -317,7 +317,8 @@ what that costs in each device state.
    - These tasks wake on a timer: `console` 5 ms after a pass while
      something needs passes (a finger, a sheet, a cue, storage work, a host
      on the terminal), up to 50 ms after one on a still page or a recording
-     ride, sooner for its next frame (40 ms while ride readings glide), a
+     ride, sooner for its next frame (a new ride number, or a gauge or radar
+     marker gliding onto another pixel, at most every 40 ms), a
      button or touch, or a radar page, and every 200 ms in dark charging
      standby;
      `io`, `gps` and `power` every 10 ms in every state. `io` reads the

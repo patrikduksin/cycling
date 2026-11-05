@@ -971,8 +971,8 @@ fn the_ride_trace_skill_matches_where_traces_come_from_and_what_shown_holds() {
         );
     }
     assert!(
-        skill.contains("before the glide"),
-        "shown holds pre-glide values"
+        skill.contains("never glided"),
+        "shown holds the numbers as the page draws them"
     );
 }
 

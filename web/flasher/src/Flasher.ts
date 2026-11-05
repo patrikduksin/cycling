@@ -2,6 +2,7 @@ import type * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Match from 'effect/Match'
+import * as Option from 'effect/Option'
 import * as Queue from 'effect/Queue'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
@@ -112,8 +113,12 @@ const READ_PACKET_BYTES = 0x1000
 const READ_IN_FLIGHT = 64
 const MD5_BYTES = 16
 
-/** How long the closing scope waits for an abandoned esptool-js call, then for the recovery reset, then for disconnect. */
-const SETTLE_MS = 4000
+/**
+ * How long the closing scope waits for an abandoned esptool-js call, then for
+ * the recovery reset, then for disconnect. A write stops at its next block
+ * and a read piece takes about 2 s, so only a long digest comes near it.
+ */
+const SETTLE_MS = 30_000
 const RECOVERY_MS = 2000
 const DISCONNECT_MS = 2000
 const ESPRESSIF_VID = 0x303a
@@ -228,6 +233,18 @@ export const open = (
      * every packet.
      */
     class PageLoader extends esptool.ESPLoader {
+      /** A write the session abandoned stops before its next block, so the recovery reset never interleaves with it. */
+      override async flashDeflBlock(
+        data: Uint8Array,
+        seq: number,
+        timeout: number,
+      ): Promise<void> {
+        if (closing) {
+          throw new esptool.ESPError('The write was abandoned.')
+        }
+        return super.flashDeflBlock(data, seq, timeout)
+      }
+
       async readChecked(
         address: number,
         size: number,
@@ -279,21 +296,40 @@ export const open = (
       enableTracing: false,
     })
 
-    /** The esptool-js promise last started; an interrupted one keeps running and owns the wire until it settles. */
-    let inflight: Promise<unknown> = Promise.resolve()
+    /**
+     * esptool-js flushes input before every command, so two calls at once eat
+     * each other's replies. Each call starts once the one before it settled,
+     * even when the fiber that made that one was interrupted; a call whose
+     * fiber is interrupted before its turn never starts.
+     */
+    let tail: Promise<unknown> = Promise.resolve()
+    /** Set when the scope closes: an abandoned write stops at its next block. */
+    let closing = false
 
     const call = <A>(
       reason: FlasherFailure,
       run: () => Promise<A>,
     ): Effect.Effect<A, FlasherError> =>
-      Effect.tryPromise({
-        try: () => {
-          const promise = run()
-          inflight = promise
-          return promise
-        },
-        catch: error =>
-          new FlasherError({ reason, detail: redact(messageOf(error)) }),
+      Effect.suspend(() => {
+        let skipped = false
+        const mine = tail.then(noop, noop).then(() => {
+          if (skipped) {
+            throw new Error('skipped')
+          }
+          return run()
+        })
+        tail = mine
+        return Effect.tryPromise({
+          try: () => mine,
+          catch: error =>
+            new FlasherError({ reason, detail: redact(messageOf(error)) }),
+        }).pipe(
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              skipped = true
+            }),
+          ),
+        )
       }).pipe(
         Effect.catch(error =>
           Effect.flatMap(Deferred.isDone(gone), isGone =>
@@ -336,15 +372,17 @@ export const open = (
     )
 
     const close = Effect.gen(function* () {
+      closing = true
       const owed =
         (yield* Ref.get(standing)) === 'talking' &&
         !(yield* Deferred.isDone(gone))
       if (owed) {
-        yield* Effect.promise(() => inflight.then(noop, noop)).pipe(
-          Effect.timeout(SETTLE_MS),
-          Effect.andThen(watchdogReset.pipe(Effect.timeout(RECOVERY_MS))),
-          Effect.ignore,
+        const settled = yield* Effect.promise(() => tail.then(noop, noop)).pipe(
+          Effect.timeoutOption(SETTLE_MS),
         )
+        if (Option.isSome(settled)) {
+          yield* watchdogReset.pipe(Effect.timeout(RECOVERY_MS), Effect.ignore)
+        }
       }
       yield* Effect.promise(() => transport.disconnect().then(noop, noop)).pipe(
         Effect.timeout(DISCONNECT_MS),

@@ -38,7 +38,7 @@ export interface SimState {
   readonly enumerations: number
 }
 
-const OP = {
+export const OP = {
   SYNC: 0x08,
   WRITE_REG: 0x09,
   READ_REG: 0x0a,
@@ -198,6 +198,7 @@ export class SimDevice implements Wire, Enumeration {
   private pending: Array<Uint8Array> = []
   private pendingBytes = 0
   private readonly faults: Array<ReadFault> = []
+  private readonly received: Array<number> = []
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
   private readonly attachListeners: Array<Listener> = []
   private readonly detachListeners: Array<Listener> = []
@@ -257,6 +258,11 @@ export class SimDevice implements Wire, Enumeration {
 
   flashMd5(address: number, size: number): string {
     return md5(this.flash.subarray(address, address + size))
+  }
+
+  /** Every loader command the chip took, by op code, in order. */
+  commands(): ReadonlyArray<number> {
+    return this.received
   }
 
   /** The next `times` READ_FLASH commands overlapping the range carry one flipped byte. */
@@ -578,6 +584,7 @@ export class SimDevice implements Wire, Enumeration {
 
   private command(op: number, check: number, data: Uint8Array): void {
     const stub = this.mode === 'stub'
+    this.received.push(op)
     switch (op) {
       case OP.SYNC:
         for (let i = 0; i < (stub ? 1 : 8); i++) {

@@ -14,7 +14,7 @@ import {
   redact,
   type Session,
 } from '../src/index.ts'
-import { FLASH_BYTES, SimDevice, type SimOptions } from './sim/device.ts'
+import { FLASH_BYTES, OP, SimDevice, type SimOptions } from './sim/device.ts'
 import type { FakeSerialPort } from './sim/port.ts'
 
 // The simulator runs on the same event loop as esptool-js, so a loaded machine (cycling test runs
@@ -364,6 +364,34 @@ describe('reboot and close', () => {
       ),
     )
     valueOf(exit)
+    expect(device.state()).toMatchObject({ mode: 'app', resets: 1 })
+  })
+})
+
+describe('an abandoned write', () => {
+  test('stops at a block boundary before the recovery reset, which never interleaves with it', async () => {
+    const device = sim({ replyDelayMs: 30 })
+    const data = noise(4 * 1024 * 1024, 11)
+    const closed = await Effect.runPromiseExit(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const s = yield* open(portOf(device), { entry: 'usbReset' })
+          const writing = yield* Effect.forkChild(
+            Stream.runDrain(s.write(0x400000, data)),
+          )
+          yield* Effect.sleep(300)
+          yield* Fiber.interrupt(writing)
+          return Date.now()
+        }),
+      ),
+    )
+    const closedAfter = Date.now() - valueOf(closed)
+    const commands = device.commands()
+    const afterWrite = commands.slice(commands.lastIndexOf(OP.FLASH_DEFL_BEGIN))
+    const recovery = afterWrite.indexOf(OP.WRITE_REG)
+    expect(recovery).toBeGreaterThan(0)
+    expect(afterWrite.slice(recovery)).not.toContain(OP.FLASH_DEFL_DATA)
+    expect(closedAfter).toBeLessThan(2000)
     expect(device.state()).toMatchObject({ mode: 'app', resets: 1 })
   })
 })

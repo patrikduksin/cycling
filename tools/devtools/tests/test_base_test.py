@@ -66,13 +66,10 @@ class BaseTests(unittest.TestCase):
             crash_record(connection)
         self.assertEqual(connection.terminal_command.call_count, 2)
 
-    def test_base_firmware_draws_nothing_while_idle(self):
-        self.assertEqual(idle_frames_allowed(dict(cycling='false'), 60_000), 0)
-
     def test_vana_may_draw_twice_a_second_while_idle(self):
-        self.assertEqual(idle_frames_allowed(dict(cycling='true'), 5_400), 12)
-        self.assertEqual(idle_frames_allowed(dict(cycling='true'), 10_900), 23)
-        self.assertLess(idle_frames_allowed(dict(cycling='true'), 10_900), 26)
+        self.assertEqual(idle_frames_allowed(5_400), 12)
+        self.assertEqual(idle_frames_allowed(10_900), 23)
+        self.assertLess(idle_frames_allowed(10_900), 26)
 
     def test_ambiguous_save_is_not_replayed(self):
         connection = Connection()
@@ -497,6 +494,8 @@ class TransportRecoveryTests(unittest.TestCase):
             )
         if command == 'SETTINGS':
             return dict(brightness='50', dim_timeout='30', dim_brightness='20', timezone='-180')
+        if command == 'RIDE STATUS':
+            return dict(state='ready', page='home')
         return dict(ms=now, storage_ops='0')
 
     def test_stalls_once_and_records_loss_without_requiring_an_indoor_fix(self):
@@ -506,7 +505,7 @@ class TransportRecoveryTests(unittest.TestCase):
             patch('cycling_devtools.harness.base.read', side_effect=self.read),
             patch('cycling_devtools.harness.base.time.sleep'),
         ):
-            transport_recovery(connection, dict(cycling='false', harness='true'), report)
+            transport_recovery(connection, dict(harness='true'), report)
         self.assertEqual(connection.commands, [('TEST 20', 12)])
         self.assertTrue(report['recovered'])
         self.assertEqual(report['position_delta']['dma_losses'], 1)
@@ -517,16 +516,21 @@ class TransportRecoveryTests(unittest.TestCase):
         connection = StallConnection(timeout=True)
         report = {}
         with patch('cycling_devtools.harness.base.read', side_effect=self.read), self.assertRaises(TimeoutError):
-            transport_recovery(connection, dict(cycling='false', harness='true'), report)
+            transport_recovery(connection, dict(harness='true'), report)
         self.assertEqual(connection.commands, [('TEST 20', 12)])
         self.assertIn('before_position', report)
         self.assertFalse(report['recovered'])
 
-    def test_sdk_build_is_rejected_before_any_command(self):
-        connection = StallConnection()
-        with self.assertRaises(ValueError):
-            transport_recovery(connection, dict(cycling='true', harness='true'), {})
-        self.assertEqual(connection.commands, [])
+    def test_a_ride_or_another_page_is_rejected_before_the_stall(self):
+        for ride in (dict(state='recording', page='ride'), dict(state='ready', page='history')):
+            connection = StallConnection()
+            with (
+                self.subTest(**ride),
+                patch('cycling_devtools.harness.base.read', return_value=ride),
+                self.assertRaises(ValueError),
+            ):
+                transport_recovery(connection, dict(harness='true'), {})
+            self.assertEqual(connection.commands, [])
 
     def test_persistent_failure_is_not_treated_as_recovery(self):
         def failed(connection, command):
@@ -541,7 +545,7 @@ class TransportRecoveryTests(unittest.TestCase):
             patch('cycling_devtools.harness.base.time.monotonic', side_effect=[0, 16]),
             self.assertRaises(TimeoutError),
         ):
-            transport_recovery(StallConnection(), dict(cycling='false', harness='true'), report)
+            transport_recovery(StallConnection(), dict(harness='true'), report)
         self.assertFalse(report['recovered'])
 
 

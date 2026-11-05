@@ -20,20 +20,15 @@ use device_api::input::InputObservation;
 use device_api::input::InputSnapshot;
 use device_api::observation::Availability;
 use device_api::observation::Error;
-#[cfg(feature = "cycling")]
 use device_api::observation::Observation;
 use device_api::positioning::Positioning;
 use device_api::sensors::Startup;
-#[cfg(feature = "cycling")]
 use device_api::server::AccessPoint;
-#[cfg(feature = "cycling")]
 use device_api::{power::PowerControl, server::Server, sound::Sound};
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
-#[cfg(feature = "cycling")]
 use firmware_services::trace::frozen::CompanionView;
 use firmware_services::trace::frozen::Sink;
-#[cfg(feature = "cycling")]
 use firmware_services::trace::frozen::{FrozenAccessPoint, FrozenServer, FrozenSound};
 use firmware_services::trace::frozen::{
     FrozenCompanion, FrozenPosition, FrozenPowerControl, Latest, Record, RecordedBulk,
@@ -273,7 +268,6 @@ impl InputObservation for NoInputObservation {
         None
     }
 }
-#[cfg(feature = "cycling")]
 const ASSUMED_BAROMETER_MS: u64 = 100;
 /// Uptime before a powered-on companion reports ready. Modelled on C606
 /// startup: three seconds of passive observation before the startup
@@ -326,24 +320,17 @@ fn record_synthetic(shell: &mut VirtualShell, recorder: &RefCell<TraceRecorder>)
 
 struct Trace {
     recorder: RefCell<TraceRecorder>,
-    #[cfg(feature = "cycling")]
     ant: firmware_services::trace::frozen::FrozenAnt,
-    #[cfg(feature = "cycling")]
     ble: firmware_services::trace::frozen::FrozenBle,
     position: FrozenPosition,
     companion: FrozenCompanion,
     startup: Latest<Startup>,
-    #[cfg(feature = "cycling")]
     physical: Latest<device_api::sensors::Snapshot>,
-    #[cfg(feature = "cycling")]
     network_time: Latest<firmware_services::network_time::Snapshot>,
     power: FrozenPowerControl,
     backlight: Latest<Availability>,
-    #[cfg(feature = "cycling")]
     sound: FrozenSound,
-    #[cfg(feature = "cycling")]
     access_point: FrozenAccessPoint,
-    #[cfg(feature = "cycling")]
     server: FrozenServer,
     start: Start,
     file: spool::File<Vec<u8>>,
@@ -389,10 +376,7 @@ impl Start {
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
         let (files, terrain) = origin::volumes(&mut bulk.host(), &mut entries, &mut sector);
         let files = files.map(|files| (files.store, files.generation, files.entries.to_vec()));
-        #[cfg(feature = "cycling")]
         let facts = vana::ride::facts::digest(&mut bulk.host()).ok().flatten();
-        #[cfg(not(feature = "cycling"))]
-        let facts = None;
         self.volumes = Some(Volumes {
             files,
             facts,
@@ -469,24 +453,17 @@ impl Trace {
             spooling: false,
             vitals: Vitals::default(),
             window: Window::default(),
-            #[cfg(feature = "cycling")]
             ant: Default::default(),
-            #[cfg(feature = "cycling")]
             ble: Default::default(),
             position: FrozenPosition::default(),
             companion: FrozenCompanion::default(),
             startup: Latest::default(),
-            #[cfg(feature = "cycling")]
             physical: Latest::default(),
-            #[cfg(feature = "cycling")]
             network_time: Latest::default(),
             power: FrozenPowerControl::default(),
             backlight: Latest::default(),
-            #[cfg(feature = "cycling")]
             sound: FrozenSound::default(),
-            #[cfg(feature = "cycling")]
             access_point: FrozenAccessPoint::default(),
-            #[cfg(feature = "cycling")]
             server: FrozenServer::default(),
         }
     }
@@ -595,12 +572,10 @@ fn observe_startup(switch: &mut PowerSwitch, now: u64, startup: Startup) {
 /// Look-ahead blocks of ended sessions. VANA holds its block as `&'static mut`,
 /// as on the device, so each block is leaked once and then handed from one
 /// session or boot to the next instead of leaking one per boot.
-#[cfg(feature = "cycling")]
 static TERRAIN_BLOCKS: std::sync::Mutex<Vec<&'static mut vana::app::Terrain>> =
     std::sync::Mutex::new(Vec::new());
 
 /// A look-ahead block as new: a reused one, reset, or a fresh one.
-#[cfg(feature = "cycling")]
 fn terrain_block() -> &'static mut vana::app::Terrain {
     let reused = TERRAIN_BLOCKS
         .lock()
@@ -618,7 +593,6 @@ fn terrain_block() -> &'static mut vana::app::Terrain {
     }
 }
 
-#[cfg(feature = "cycling")]
 impl Drop for Session {
     fn drop(&mut self) {
         if let Some(terrain) = self.sdk.detach_terrain() {
@@ -655,13 +629,10 @@ pub struct Simulated {
     restart_probe: Option<(u64, Startup)>,
     /// Coordinated shutdown and work readiness, as composition reads them.
     pub switch: PowerSwitch,
-    #[cfg(feature = "cycling")]
     barometer: Option<(u64, u32)>,
     wifi_control: device_api::connectivity::ControlStatus,
     ble_control: device_api::connectivity::ControlStatus,
-    #[cfg(feature = "cycling")]
     pub phone_server: crate::phone::SimServer,
-    #[cfg(feature = "cycling")]
     pub access_point: crate::phone::SimAccessPoint,
 }
 
@@ -682,13 +653,10 @@ impl Simulated {
             restart_probe_ms: 0,
             restart_probe: None,
             switch: PowerSwitch::default(),
-            #[cfg(feature = "cycling")]
             barometer: None,
             wifi_control: device_api::connectivity::ControlStatus::new(),
             ble_control: device_api::connectivity::ControlStatus::new(),
-            #[cfg(feature = "cycling")]
             phone_server: Default::default(),
-            #[cfg(feature = "cycling")]
             access_point: Default::default(),
         }
     }
@@ -744,7 +712,6 @@ impl Simulated {
         }
     }
 
-    #[cfg(feature = "cycling")]
     fn physical(&mut self, now: u64) -> device_api::sensors::Snapshot {
         let slot = now - now % ASSUMED_BAROMETER_MS;
         self.barometer = match (self.world.pressure_centi_pa(), self.barometer) {
@@ -792,7 +759,6 @@ pub struct Session {
     pub media: FileFlash,
     /// The owned MMC region; absent unless a scenario fits one.
     pub bulk: crate::bulk::SimBulk,
-    #[cfg(feature = "cycling")]
     pub sdk: vana::app::Runtime,
     trace: Trace,
     origin: Option<Origin>,
@@ -803,7 +769,6 @@ pub struct Session {
     edges_seen: u32,
     /// A terminal request ran since the last pass, as the C606's terminal
     /// reports traffic.
-    #[cfg(feature = "cycling")]
     host: bool,
     devices: Devices,
 }
@@ -873,22 +838,18 @@ impl Session {
         }
         shell.boot_id = boot;
         shell.present();
-        #[cfg(feature = "cycling")]
         let profile = if shell.settings.ble.is_some() {
             vana::sensors::ble_profile::Profile::from_u8(shell.settings.ble_profile)
         } else {
             vana::sensors::ble_profile::Profile::HeartRate
         };
-        #[cfg(feature = "cycling")]
         {
             let view =
                 vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
             shell.draw_canvas(240, 320, |row| view.paint(row));
         }
         shell.forget_frame();
-        #[cfg(feature = "cycling")]
         let mut sdk = vana::app::Runtime::new(profile);
-        #[cfg(feature = "cycling")]
         {
             use vana::ride::directory::{ENTRY, RIDES, RideIndex};
             let bytes = || Box::leak(vec![0u8; RIDES * ENTRY].into_boxed_slice());
@@ -902,21 +863,17 @@ impl Session {
                 sdk.attach_deleted_rides(Box::leak(deleted));
             }
         }
-        #[cfg(feature = "cycling")]
         sdk.load_preferences(&shell.settings.app);
         // The look-ahead and its tile cache, which the device keeps in PSRAM;
         // each boot starts them over, as device memory does.
-        #[cfg(feature = "cycling")]
         if memory.terrain {
             sdk.attach_terrain(terrain_block());
         }
-        #[cfg(feature = "cycling")]
         if memory.phone {
             sdk.attach_phone(Box::leak(Box::new(vana::app::PhoneWork::new())));
         }
         // Back to start's breadcrumb, which the device keeps in PSRAM; each
         // boot gets a fresh one, as device memory starts over.
-        #[cfg(feature = "cycling")]
         if memory.back_to_start {
             let crumbs = Vec::leak(vec![vana::app::Crumb::default(); vana::app::BACK_CRUMBS]);
             let map = Box::leak(Box::new(vana::app::MapFrame::default()));
@@ -948,7 +905,6 @@ impl Session {
             display,
             media,
             bulk: crate::bulk::SimBulk::default(),
-            #[cfg(feature = "cycling")]
             sdk,
             trace,
             origin: None,
@@ -956,7 +912,6 @@ impl Session {
             unseen_ms: 0,
             rest_ms: 0,
             edges_seen: 0,
-            #[cfg(feature = "cycling")]
             host: false,
             devices: Devices::Simulated(Box::new(Simulated::new())),
         })
@@ -1050,7 +1005,6 @@ impl Session {
     /// after every restart; see `firmware_services::trace::redact`.
     pub fn redact_secrets(&mut self) {
         self.trace.start.redacted = true;
-        #[cfg(feature = "cycling")]
         self.trace.access_point.redact();
     }
     /// The trace of this power-on session so far.
@@ -1091,7 +1045,6 @@ impl Session {
         self.media.fault.borrow_mut().begin_pass();
         self.bulk.begin_pass();
         let stayed_quiet = self.pass(quiet);
-        #[cfg(feature = "cycling")]
         {
             let power = self.trace.power.frozen().state;
             let host = core::mem::take(&mut self.host);
@@ -1109,13 +1062,10 @@ impl Session {
             return;
         }
         if self.trace.start.journals.is_none() {
-            #[cfg(feature = "cycling")]
             let journals = self
                 .sdk
                 .journals_at_boot()
                 .map(|journals| (Some(journals.internal), Some(journals.bulk)));
-            #[cfg(not(feature = "cycling"))]
-            let journals = Some((None, None));
             self.trace.start.journals = journals;
         }
         self.record_faults();
@@ -1123,14 +1073,11 @@ impl Session {
         if let Devices::Replayed(replay) = &mut self.devices {
             replay.saw(&seen);
         }
-        #[cfg(feature = "cycling")]
         let card = spool::Card::of(
             self.card_admits(),
             self.sdk.recording(),
             self.sdk.shutdown_due(),
         );
-        #[cfg(not(feature = "cycling"))]
-        let card = spool::Card::of(self.card_admits(), false, false);
         self.trace.drain(&self.bulk, card, self.now);
     }
     /// Whether the card admits work after this pass, as the C606's power
@@ -1214,10 +1161,7 @@ impl Session {
             .flatten()
             .filter(|channel| channel.link == device_api::ant::LinkState::Connected)
             .count();
-        #[cfg(feature = "cycling")]
         let access_point = AccessPoint::state(&sim.access_point);
-        #[cfg(not(feature = "cycling"))]
-        let access_point = device_api::server::AccessPointState::Unsupported;
         let activity = Activity {
             simulated: true,
             window_ms: u32::try_from(now - window.start_ms).unwrap_or(u32::MAX),
@@ -1272,14 +1216,9 @@ impl Session {
     }
     /// A pass in dark charging standby, as the C606 runs it: only the
     /// startup and power status are read, and only a change records it.
-    #[cfg(feature = "cycling")]
     fn quiet(&self) -> bool {
         self.trace.power.frozen().state == device_api::power::State::Charging
             && self.sdk.standby_dark()
-    }
-    #[cfg(not(feature = "cycling"))]
-    fn quiet(&self) -> bool {
-        false
     }
     /// One pass; true when it stayed quiet.
     fn pass(&mut self, quiet: bool) -> bool {
@@ -1330,7 +1269,6 @@ impl Session {
         // C606 composition scans the ride journal while the companion starts
         // and runs the shell and VANA only once power work is ready; until
         // then the backlight stays dark.
-        #[cfg(feature = "cycling")]
         if power.state == device_api::power::State::Initializing {
             self.sdk.prepare(
                 &mut self.shell.data_storage(),
@@ -1338,7 +1276,6 @@ impl Session {
                 now,
             );
         }
-        #[cfg(feature = "cycling")]
         if power.state == device_api::power::State::Charging {
             self.standby(companion);
         }
@@ -1360,21 +1297,9 @@ impl Session {
             }
             Devices::Simulated(sim) => self.trace.position.freeze(&sim.position, now, record),
         };
-        #[cfg(feature = "cycling")]
         self.vana_pass(companion, position, startup);
-        #[cfg(not(feature = "cycling"))]
-        {
-            self.shell.tick(now);
-            self.shell
-                .input_source()
-                .record(&mut *self.trace.recorder.borrow_mut());
-            record_synthetic(&mut self.shell, &self.trace.recorder);
-            self.shell.observe_position(&position, now);
-            self.shell.present();
-        }
         false
     }
-    #[cfg(feature = "cycling")]
     fn vana_pass(
         &mut self,
         companion: CompanionView,
@@ -1490,7 +1415,6 @@ impl Session {
         self.sdk.alert(&mut sound, now);
         self.sdk.power(&mut self.shell, &mut control, now);
     }
-    #[cfg(feature = "cycling")]
     fn record_seen(&mut self) -> Vec<Seen> {
         let mut seen = Vec::new();
         let mut notes = Vec::new();
@@ -1537,11 +1461,6 @@ impl Session {
         });
         seen
     }
-    #[cfg(not(feature = "cycling"))]
-    fn record_seen(&mut self) -> Vec<Seen> {
-        Vec::new()
-    }
-    #[cfg(feature = "cycling")]
     fn standby(&mut self, companion: CompanionView) {
         let lit = self.sdk.standby(&mut self.shell, &companion, self.now);
         self.power.0.borrow_mut().brightness = if lit {
@@ -1612,15 +1531,10 @@ impl Session {
             }
         }
     }
-    #[cfg(feature = "cycling")]
     fn woken_by_ant(&self) -> bool {
         let sim = self.sim();
         sim.ant
             .page_due(vana::app::WAKING_ANT_TYPE, sim.world.time_ms)
-    }
-    #[cfg(not(feature = "cycling"))]
-    fn woken_by_ant(&self) -> bool {
-        false
     }
     /// The device clock between passes: the last pass's time plus the world
     /// time since, as the C606's input task stamps an edge when it arrives.
@@ -1694,7 +1608,6 @@ impl Session {
     ) -> &'static str {
         // A host talking on the terminal keeps the usual pace.
         self.rest_ms = 0;
-        #[cfg(feature = "cycling")]
         {
             self.host = true;
         }
@@ -1741,7 +1654,6 @@ impl Session {
             self.now,
             out,
         ) {
-            #[cfg(feature = "cycling")]
             if matches!(request.command, Command::Display(_)) {
                 self.sdk.suspend_display();
             }
@@ -1753,7 +1665,6 @@ impl Session {
                 })
             ) {
                 out.push_str(" ordinary=HELP,INFO,STATUS,POSITION,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,STORAGE,DISPLAY,WIFI,BLE,RESTART");
-                #[cfg(feature = "cycling")]
                 out.push_str(",RIDE,EXPORT,RADAR,PROFILE,WORKOUT");
             }
             return status;
@@ -1788,10 +1699,9 @@ impl Session {
             Command::Info => {
                 let _ = write!(
                     out,
-                    "board=virtual commit={} harness={} cycling={} protocol=1 boot={} physical_evidence=unsupported",
+                    "board=virtual commit={} harness={} protocol=1 boot={} physical_evidence=unsupported",
                     option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
                     cfg!(feature = "debug-harness"),
-                    cfg!(feature = "cycling"),
                     self.boot
                 );
             }
@@ -1845,14 +1755,12 @@ impl Session {
                     sim.ble_control.sequence = sim.ble_control.sequence.wrapping_add(1);
                     sim.ble_control.operation = device_api::connectivity::Operation::Completed;
                 }
-                #[cfg(feature = "cycling")]
                 self.sdk.select_profile(
                     vana::sensors::ble_profile::Profile::Echo,
                     self.trace.ble.snapshot().connections,
                 );
                 return "ACCEPTED";
             }
-            #[cfg(feature = "cycling")]
             Command::BleSelect(peer, profile) => {
                 let profile = vana::sensors::ble_profile::Profile::from_u8(profile);
                 let previous = self.shell.settings;
@@ -1876,10 +1784,7 @@ impl Session {
             Command::Ble => {
                 let s = match &self.devices {
                     Devices::Simulated(sim) => sim.ble.snapshot(),
-                    #[cfg(feature = "cycling")]
                     Devices::Replayed(_) => self.trace.ble.snapshot(),
-                    #[cfg(not(feature = "cycling"))]
-                    Devices::Replayed(_) => Default::default(),
                 };
                 let _ = write!(
                     out,
@@ -1897,7 +1802,6 @@ impl Session {
                     ble_control.error_name()
                 );
             }
-            #[cfg(feature = "cycling")]
             Command::Domain { bytes, length } => {
                 return self.sdk.command(
                     core::str::from_utf8(&bytes[..length]).unwrap_or(""),

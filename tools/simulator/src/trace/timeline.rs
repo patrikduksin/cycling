@@ -619,7 +619,6 @@ impl Reader {
             self.paged = true;
             for page in pass.iter_mut().filter(|e| e.kind == Kind::Page) {
                 page.cause = Some(cause.clone());
-                #[cfg(feature = "cycling")]
                 {
                     page.shows = readings(&page.text);
                 }
@@ -1032,7 +1031,6 @@ impl Reader {
 
 /// Which shown readings a ride page draws, from VANA's own pages; the main
 /// page's lower line as the rider left it by default.
-#[cfg(feature = "cycling")]
 fn readings(page: &str) -> Option<String> {
     use vana::screens::ride::{PAUSED_READINGS, RidePage, slots::Slots};
     let readings = match page {

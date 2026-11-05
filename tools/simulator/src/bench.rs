@@ -105,10 +105,8 @@ fn cpu_ns() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_nanos() as u64
 }
 
-#[cfg(feature = "cycling")]
 pub use scenes::{SCENES, Scene, measure};
 
-#[cfg(feature = "cycling")]
 mod scenes {
     use super::Request;
     use crate::ant::device_type;

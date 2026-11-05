@@ -12,7 +12,7 @@ description: Deliver an authorized cycling repository issue or queue through imp
    independent work when useful, with explicit file ownership; one coordinator
    owns all device access, following the [C606 skill](../c606/SKILL.md).
 3. **Check.** Run the checks in [AGENTS.md](../../../AGENTS.md), including
-   base/SDK and harness combinations for boundary changes. Validate changed
+   both harness modes for boundary changes. Validate changed
    hardware access and display timing on the authorized device. Reuse valid
    evidence for unchanged paths, stating its revision and limits, and report fresh
    observations separately. When simplifying owners, keep their recovery,

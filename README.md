@@ -69,7 +69,7 @@ you want.
 git clone https://github.com/patrikduksin/cycling && cd cycling
 nix develop                               # sets up every tool (needs Nix: https://nixos.org/download)
 CYCLING_PORT=/dev/ttyACM0 cycling backup  # one-time full backup (your port may differ)
-CYCLING_SDK=1 cycling flash               # install cycling
+cycling flash                             # install cycling
 cycling stock                             # anytime: back to the manufacturer's firmware
 ```
 

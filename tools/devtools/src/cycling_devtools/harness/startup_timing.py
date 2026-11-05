@@ -6,7 +6,7 @@ main-CPU reset; the top-left hold before the companion powers the CPU is not
 observable from here.
 
   --sim      run the simulator scenario `startup_timing` (modelled timings)
-  default    wait for the C606 to be turned on, then poll it (CYCLING_SDK=1 build)
+  default    wait for the C606 to be turned on, then poll it
   --restart  send RESTART first: a main-CPU restart, the companion keeps running
   --ride     also start a ride with harness presses, pause/resume it and save it
              (records one short ride; needs CYCLING_HARNESS=1). Starts only
@@ -162,7 +162,7 @@ def simulate(directory):
         '--locked',
         '--no-default-features',
         '--features',
-        'cycling,debug-harness',
+        'debug-harness',
         '--test',
         'ride_scenarios',
         'startup_timing',

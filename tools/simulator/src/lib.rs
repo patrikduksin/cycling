@@ -3,17 +3,13 @@ pub mod artifacts;
 pub mod bench;
 pub mod bulk;
 pub mod devices;
-#[cfg(feature = "cycling")]
 mod flows;
 pub mod gps;
-#[cfg(feature = "cycling")]
 pub mod live;
 pub mod logs;
-#[cfg(feature = "cycling")]
 pub mod phone;
 pub mod recording;
 pub mod replay;
-#[cfg(feature = "cycling")]
 pub mod rides;
 pub mod route;
 pub mod screen;

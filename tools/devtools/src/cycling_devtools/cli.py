@@ -21,8 +21,10 @@ TERRAIN = 'uv run --project tools/terrain --locked'
 # BlueZ tools need the distribution's D-Bus and GLib bindings, which only the
 # system Python provides; they use the source tree instead of the uv environment.
 SYSTEM_PYTHON = 'PYTHONPATH=tools/devtools/src /usr/bin/python3 -m cycling_devtools.'
-SIM_SCENARIOS = 'cargo test -p shell-simulator --locked --no-default-features --features cycling,debug-harness --test ride_scenarios'
-TRACE = 'cargo run -q -p shell-simulator --locked --no-default-features --features cycling,debug-harness --bin trace --'
+SIM_SCENARIOS = (
+    'cargo test -p shell-simulator --locked --no-default-features --features debug-harness --test ride_scenarios'
+)
+TRACE = 'cargo run -q -p shell-simulator --locked --no-default-features --features debug-harness --bin trace --'
 
 
 @dataclass(frozen=True)
@@ -46,10 +48,8 @@ TASKS = [
         'Rust host tests (one target dir, so the passes run in turn); nextest runs every test binary of a pass at once',
         'cargo nextest run --workspace --locked --no-default-features',
         'cargo test --workspace --locked --no-default-features --doc',
-        'cargo nextest run -p shell-simulator --locked --no-default-features --features debug-harness',
-        'cargo test -p shell-simulator --locked --no-default-features --features debug-harness --doc',
-        'cargo nextest run --workspace --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling',
-        'cargo test --workspace --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling --doc',
+        'cargo nextest run --workspace --locked --no-default-features --features shell-simulator/debug-harness',
+        'cargo test --workspace --locked --no-default-features --features shell-simulator/debug-harness --doc',
     ),
     task(
         'test-trouble-host',
@@ -69,7 +69,7 @@ TASKS = [
     ),
     task(
         'verify',
-        'Run every PR gate in parallel (test, check, simulate, 4 builds, harness-virtual); --fast for the inner loop, --pr N to post results',
+        'Run every PR gate in parallel (test, check, simulate, 2 builds, harness-virtual); --fast for the inner loop, --pr N to post results',
         f'{DEV}verify',
     ),
     task(
@@ -95,7 +95,7 @@ TASKS = [
         f'{TERRAIN} ruff check tools/terrain',
         'cargo check -p device-api --locked --features network-stack',
         'cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings',
-        'cargo clippy --workspace --all-targets --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/cycling,shell-simulator/live -- -D warnings',
+        'cargo clippy --workspace --all-targets --locked --no-default-features --features shell-simulator/debug-harness,shell-simulator/live -- -D warnings',
         'cargo fmt --all -- --check',
     ),
     task('terrain', 'Build, validate or trace offline terrain packs (docs/terrain.md)', f'{TERRAIN} cycling-terrain'),
@@ -241,7 +241,7 @@ TASKS = [
     task(
         'sim-live',
         'Open a window onto the simulated device; the session is recorded to .local/sim/live',
-        'SIM_ARTIFACTS=$PWD/.local/sim/live cargo run -p shell-simulator --locked --no-default-features --features cycling,debug-harness,live --bin sim-live',
+        'SIM_ARTIFACTS=$PWD/.local/sim/live cargo run -p shell-simulator --locked --no-default-features --features debug-harness,live --bin sim-live',
     ),
     task(
         'trace',
@@ -280,7 +280,7 @@ TASKS = [
         'Run shared deterministic input, capture and restart scenarios',
         f'{DEV}harness.runner run shared --backend virtual',
         f'{DEV}harness.runner run virtual-foundation --backend virtual',
-        f'{DEV}harness.runner run virtual-sdk --backend virtual --sdk',
+        f'{DEV}harness.runner run virtual-sdk --backend virtual',
     ),
     task(
         'mmc-inspect',

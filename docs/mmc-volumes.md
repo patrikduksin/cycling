@@ -123,7 +123,7 @@ the session's trace file is open.
 
 ### Ride traces
 
-The C606 (cycling builds) records each power-on session into
+The C606 records each power-on session into
 `traces/<sequence>-<boot id>.trace`, the sequence one past the highest in
 `traces/`. Blocks wait in a PSRAM spool from the first pass. The power
 owner closes the card from the moment it accepts a power request until

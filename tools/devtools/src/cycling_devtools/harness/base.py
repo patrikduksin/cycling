@@ -13,17 +13,14 @@ from cycling_devtools.terminal.usb import UsbConnection, reply_fields
 from cycling_devtools.workspace import private_directory
 
 
-def idle_frames_allowed(build, elapsed_ms):
+def idle_frames_allowed(elapsed_ms):
     """Frames an idle device may submit in `elapsed_ms`.
 
-    Base firmware draws only on change. VANA keeps drawing while awake: once a
-    second on still pages other than Home, which draws only on change, and
-    twice while something animates, as the battery does on USB. A state change
-    pulls one frame forward, and the window may start just before a frame is
-    due.
+    VANA keeps drawing while awake: once a second on still pages other than
+    Home, which draws only on change, and twice while something animates, as
+    the battery does on USB. A state change pulls one frame forward, and the
+    window may start just before a frame is due.
     """
-    if build.get('cycling') == 'false':
-        return 0
     return int(elapsed_ms) * 2 // 1000 + 2
 
 
@@ -229,8 +226,9 @@ def apply(connection, settings):
 
 def transport_recovery(connection, build, result):
     """One controlled stall, no retry. Loss counters are evidence, not a target."""
-    if build.get('cycling') != 'false':
-        raise ValueError('transport recovery is restricted to base firmware without rides')
+    ride = read(connection, 'RIDE STATUS')
+    if ride['state'] != 'ready' or ride['page'] != 'home':
+        raise ValueError('transport recovery needs VANA idle on Home with no ride recording')
     if build.get('harness') != 'true':
         expect(connection, 'TEST 20', 'UNSUPPORTED')
         result.update(supported=False)
@@ -308,7 +306,7 @@ def run(args):
         report['input_delta'] = validate('INPUT', inputs, read(connection, 'INPUT'))
         after = read(connection, 'STATUS')
         submitted = int(after['display_submissions']) - int(baseline['display_submissions'])
-        allowed = idle_frames_allowed(build, int(after['uptime_ms']) - int(baseline['uptime_ms']))
+        allowed = idle_frames_allowed(int(after['uptime_ms']) - int(baseline['uptime_ms']))
         report['idle_frames'] = dict(submitted=submitted, allowed=allowed)
         if submitted > allowed:
             raise AssertionError(
@@ -459,7 +457,7 @@ def main():
     parser.add_argument(
         '--transport-recovery',
         action='store_true',
-        help='Base firmware only: one six-second executor stall and bounded recovery check',
+        help='VANA idle on Home only: one six-second executor stall and bounded recovery check',
     )
     args = parser.parse_args()
     if not 2 <= args.seconds <= 120:

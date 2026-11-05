@@ -34,7 +34,7 @@ COMMAND = [
     '--locked',
     '--no-default-features',
     '--features',
-    'cycling,debug-harness',
+    'debug-harness',
     '--test',
     'ride_scenarios',
 ]

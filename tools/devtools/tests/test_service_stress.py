@@ -69,6 +69,7 @@ class ServiceStressTests(unittest.TestCase):
     def test_failed_run_retains_summary_and_raw_before_raising(self):
         settings = dict(brightness='50', dim_timeout='30', dim_brightness='20', timezone='0')
         system = dict(heap_free='1000', storage_ops='0')
+        inventory = dict(slot='0', rides='0', samples='0', pending='0')
         before = self.position()
         after = self.position(ms=2, bytes='20', valid='2', dma_losses='1')
         with tempfile.TemporaryDirectory() as temporary:
@@ -80,7 +81,7 @@ class ServiceStressTests(unittest.TestCase):
                 patch('cycling_devtools.harness.stress.UsbConnection'),
                 patch(
                     'cycling_devtools.harness.stress.read',
-                    side_effect=[dict(cycling='false'), settings, system, before, after, settings, system],
+                    side_effect=[{}, settings, system, inventory, before, after, settings, system, inventory],
                 ),
                 patch('cycling_devtools.harness.stress.time.monotonic', side_effect=[0, 0, 0, 3]),
                 patch('cycling_devtools.harness.stress.time.sleep'),

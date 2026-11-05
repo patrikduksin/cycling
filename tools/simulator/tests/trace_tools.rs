@@ -1,4 +1,3 @@
-#![cfg(feature = "cycling")]
 use device_api::input::Button;
 use shell_simulator::ant::device_type;
 use shell_simulator::recording;
@@ -834,9 +833,6 @@ fn fresh_file_faults(test: &str) -> Vec<String> {
             faults.push(format!("uses {name} without importing it"));
         }
     }
-    if !test.contains("#[cfg(feature = \"cycling\")]\n#[test]") {
-        faults.push("runs in builds without VANA".into());
-    }
     faults
 }
 
@@ -898,7 +894,7 @@ fn the_build_stamp_and_replay_watch_every_checkout_path_cargo_builds_from() {
             "--offline",
             "--no-default-features",
             "--features",
-            "cycling,debug-harness",
+            "debug-harness",
             "--prefix",
             "none",
             "-e",

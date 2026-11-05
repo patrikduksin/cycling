@@ -26,11 +26,10 @@ class Step:
     env: tuple[tuple[str, str], ...] = ()
 
 
-def build(sdk, harness):
+def build(harness):
     """One variant; its image stays apart from .local/cycling.bin and the other lanes."""
-    name = f'build-sdk{sdk}-h{harness}'
+    name = f'build-h{harness}'
     env = (
-        ('CYCLING_SDK', sdk),
         ('CYCLING_HARNESS', harness),
         ('CYCLING_IMAGE_DIR', f'.local/verify/images/{name}'),
     )
@@ -47,13 +46,13 @@ LANES = {
     'full': [
         [Step('test', 'cycling test'), Step('simulate', 'cycling simulate')],
         [Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
-        *[[build(sdk, harness)] for sdk in '01' for harness in '01'],
+        *[[build(harness)] for harness in '01'],
     ],
-    # The inner loop before pushing: everything except three of the four builds.
+    # The inner loop before pushing: everything except the no-harness build.
     'fast': [
         [Step('test', 'cycling test')],
         [Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
-        [build('1', '1')],
+        [build('1')],
     ],
 }
 ALONE = {'full': [Step('harness-virtual', 'cycling harness-virtual')], 'fast': []}
@@ -120,7 +119,7 @@ def failure_tail(results, lines=30):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('--fast', action='store_true', help='test, check and the SDK=1 HARNESS=1 build only')
+    parser.add_argument('--fast', action='store_true', help='test, check and the HARNESS=1 build only')
     parser.add_argument('--pr', type=int, help='post the result table on this pull request')
     args = parser.parse_args(argv)
     warn_if_low_disk()

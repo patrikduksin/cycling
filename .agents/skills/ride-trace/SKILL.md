@@ -5,7 +5,7 @@ description: Turn a rider's account of a ride problem into the moment in the rid
 
 # Ride trace
 
-The C606 (cycling builds) and the simulator record every power-on session as a
+The C606 and the simulator record every power-on session as a
 trace: each input VANA read (buttons, ANT and BLE sensors, GPS, barometer,
 battery, commands, the phone server, the buzzer and power control) and a thin
 **seen** layer, what the rider saw and heard (page, toast, ride state, the
@@ -350,4 +350,4 @@ wakes it.
   `otlpjsonfile` receiver reads it.
 - Simulator fixtures come from scenarios in `tools/simulator/tests/trace_tools.rs`;
   refresh them after VANA changes what it reads or shows:
-  `cargo test -p shell-simulator --features cycling,debug-harness --test trace_tools -- --ignored`.
+  `cargo test -p shell-simulator --features debug-harness --test trace_tools -- --ignored`.

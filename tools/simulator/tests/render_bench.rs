@@ -2,7 +2,6 @@
 //! pixels: a faster painter must not change a frame. Hashes are from
 //! `sim-bench`, which prints them. A change that means to alter one of these
 //! screens updates its hash here and shows the new screen in its sim-compare.
-#![cfg(feature = "cycling")]
 use shell_simulator::bench::{SCENES, hash, measure};
 
 const HASHES: [(&str, u64); 32] = [

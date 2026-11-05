@@ -148,7 +148,6 @@ impl Screen {
     }
 
     /// The status bar's page dots as "2/3": the lit dot and the count.
-    #[cfg(feature = "cycling")]
     pub fn page(&self) -> Option<String> {
         use vana::screens::chrome::{DOT_SIZE, DOTS_Y, TERTIARY, WHITE};
         let row = self
@@ -219,7 +218,6 @@ impl Sim {
     /// A fresh device starts with first-run setup: skip it, as a rider who
     /// knows VANA would. Does nothing on Home.
     pub fn skip_setup(&mut self) {
-        #[cfg(feature = "cycling")]
         if self.device.sdk.page() == vana::screens::workout::Page::Setup {
             self.press(device_api::input::Button::BottomLeft);
             self.expect_text("SKIP SETUP");
@@ -228,7 +226,7 @@ impl Sim {
         }
     }
 
-    /// Advance until the panel is lit and, with VANA, Home is open. Returns
+    /// Advance until the panel is lit and Home is open. Returns
     /// the time waited.
     #[track_caller]
     pub fn wait_usable(&mut self) -> u64 {
@@ -245,13 +243,10 @@ impl Sim {
     }
 
     fn usable(&self) -> bool {
-        #[cfg(feature = "cycling")]
         let home = matches!(
             self.device.sdk.page(),
             vana::screens::workout::Page::Home | vana::screens::workout::Page::Setup
         );
-        #[cfg(not(feature = "cycling"))]
-        let home = true;
         self.device.lit() && home
     }
 
@@ -486,16 +481,10 @@ impl Sim {
 
     /// VANA paints every frame dark and maps it through the light look when
     /// that is in force.
-    #[cfg(feature = "cycling")]
     fn look(&self) -> Option<&'static Look> {
         static LIGHT: std::sync::LazyLock<Look> =
             std::sync::LazyLock::new(|| Look::new(vana::screens::look::light));
         self.device.sdk.light().then(|| &*LIGHT)
-    }
-
-    #[cfg(not(feature = "cycling"))]
-    fn look(&self) -> Option<&'static Look> {
-        None
     }
 
     /// Advance until `needle` is on screen. Returns the waiting time, or the
@@ -732,7 +721,6 @@ impl Sim {
 
     /// Store a BLE heart-rate strap as the selected peer, as the companion
     /// app does; the client then scans for it and connects.
-    #[cfg(feature = "cycling")]
     pub fn select_ble_heart_strap(&mut self) {
         self.note(NoteKind::Input, "select BLE heart strap");
         // "STRAP" in hex, matched by name.
@@ -929,7 +917,6 @@ impl Sim {
     }
 
     /// Explicitly format the bulk ride log, as a host would, and wait for it.
-    #[cfg(feature = "cycling")]
     #[track_caller]
     pub fn init_bulk(&mut self) {
         let (status, out) = self.command("RIDE BULK INIT");
@@ -1062,7 +1049,6 @@ impl Sim {
     }
 
     /// Rides on the bulk log, read through `EXPORT BULK` as a host would.
-    #[cfg(feature = "cycling")]
     pub fn bulk_rides(&mut self) -> Vec<crate::rides::Ride> {
         let (status, info) = self.command("EXPORT BULK INFO");
         assert_eq!(status, "OK", "EXPORT BULK INFO: {info}");
@@ -1086,7 +1072,6 @@ impl Sim {
     }
 
     /// Rides committed to media, decoded by VANA's journal format.
-    #[cfg(feature = "cycling")]
     pub fn rides(&mut self) -> Vec<crate::rides::Ride> {
         crate::rides::read(&self.ride_media())
     }
@@ -1113,10 +1098,7 @@ impl Drop for Sim {
         // A second panic while a failed scenario unwinds would abort the whole
         // test binary, so artifact work never unwinds out of here.
         let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            #[cfg(feature = "cycling")]
             let rides = self.rides().iter().map(crate::rides::summary).collect();
-            #[cfg(not(feature = "cycling"))]
-            let rides = Vec::new();
             recording.write(Outcome {
                 notes: &self.notes,
                 end_ms: self.now(),

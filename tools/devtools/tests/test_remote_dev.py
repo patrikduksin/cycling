@@ -49,14 +49,14 @@ class SnapshotTests(unittest.TestCase):
 class RemoteScriptTests(unittest.TestCase):
     def test_task_settings_travel_but_machine_settings_do_not(self):
         env = {
-            'CYCLING_SDK': '1',
+            'CYCLING_PORT': '/dev/ttyACM0',
             'CYCLING_DEVICE_HOST': 'c606-host',
             'CYCLING_ESP_TOOLCHAIN': '/nix/store/x',
             'HOME': '/home/me',
         }
         with patch.dict(remote.os.environ, env, clear=True):
             script = remote.run('.local/remote/a', 'logs', ['STATUS', 'a b'])
-        self.assertIn("env CYCLING_SDK=1 cycling logs STATUS 'a b'", script)
+        self.assertIn("env CYCLING_PORT=/dev/ttyACM0 cycling logs STATUS 'a b'", script)
         self.assertNotIn('CYCLING_DEVICE_HOST', script)
         self.assertNotIn('/nix/store', script)
 
@@ -91,16 +91,14 @@ class BacktraceTests(unittest.TestCase):
         )
 
     def test_a_crash_record_picks_the_elf_it_names_and_checks_its_commit(self):
-        reply = [
-            '{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-dirty-sdk1-h1 pcs=0x42001234,0x42005678"}\n'
-        ]
+        reply = ['{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-dirty-h1 pcs=0x42001234,0x42005678"}\n']
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory)
             self.assertEqual(
                 backtrace.choose_elf(reply, archive), (backtrace.ROOT / '.local/cycling.elf', '15178ed1119a')
             )
-            (archive / '15178ed1119a-sdk1-h1.elf').write_bytes(b'15178ed1119a')
-            named = archive / '15178ed1119a-dirty-sdk1-h1.elf'
+            (archive / '15178ed1119a-h1.elf').write_bytes(b'15178ed1119a')
+            named = archive / '15178ed1119a-dirty-h1.elf'
             named.write_bytes(b'\0commit 15178ed1119a\0')
             self.assertEqual(backtrace.choose_elf(reply, archive), (named, '15178ed1119a'))
             self.assertTrue(backtrace.holds_commit(named, '15178ed1119a'))
@@ -123,12 +121,12 @@ class VerifyTests(unittest.TestCase):
     def test_gate_builds_never_share_an_image(self):
         builds = [step for lane in verify.LANES['full'] for step in lane if step.name.startswith('build-')]
         envs = [dict(step.env) for step in builds]
-        self.assertEqual(len({env['CYCLING_IMAGE_DIR'] for env in envs}), 4)
+        self.assertEqual(len({env['CYCLING_IMAGE_DIR'] for env in envs}), 2)
         self.assertNotIn('.local', {env['CYCLING_IMAGE_DIR'] for env in envs})
 
     def test_every_firmware_variant_is_in_the_full_gate(self):
         names = {step.name for lane in verify.LANES['full'] for step in lane}
-        self.assertTrue({'build-sdk0-h0', 'build-sdk0-h1', 'build-sdk1-h0', 'build-sdk1-h1'} <= names)
+        self.assertTrue({'build-h0', 'build-h1'} <= names)
         self.assertTrue({'test', 'check', 'simulate'} <= names)
 
 

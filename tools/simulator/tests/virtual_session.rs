@@ -107,7 +107,6 @@ fn disabled_discovery_keeps_ordinary_commands_and_no_instrumentation() {
     assert_eq!(command(&mut s, "HARNESS OPEN 1 1000").0, "UNSUPPORTED");
     assert_eq!(command(&mut s, "DISPLAY f800").0, "OK");
 }
-#[cfg(feature = "cycling")]
 #[test]
 fn sdk_production_handlers_record_recover_export_with_persistent_media() {
     let t = Temp::new();
@@ -174,7 +173,6 @@ fn connectivity_updates_preserve_persisted_preferences_and_existing_data() {
     assert_eq!(std::fs::read(t.0.join("data.bin")).unwrap(), existing);
 }
 
-#[cfg(feature = "cycling")]
 #[test]
 fn runtime_sensor_change_clears_old_readings_and_survives_restart() {
     let t = Temp::new();
@@ -245,7 +243,6 @@ fn foreground_app_receives_only_forwarded_edges_and_transitions_clear_queue() {
     assert!(shell.take_app_input().is_none());
 }
 
-#[cfg(feature = "cycling")]
 #[test]
 fn sdk_boot_exposes_physical_menu_without_a_usb_command() {
     let t = Temp::new();
@@ -255,7 +252,6 @@ fn sdk_boot_exposes_physical_menu_without_a_usb_command() {
         "SDK boot must accept physical menu input before any USB command"
     );
 }
-#[cfg(feature = "cycling")]
 #[test]
 fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     use device_api::input::Button;

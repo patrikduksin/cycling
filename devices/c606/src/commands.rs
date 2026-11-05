@@ -67,8 +67,8 @@ pub fn execute(
     now: u64,
     devices: &mut Devices,
     diagnostics: &impl Diagnostics,
-    #[cfg(feature = "cycling")] sdk: &mut vana::app::Runtime,
-    #[cfg(feature = "cycling")] trace: &mut crate::trace::Trace,
+    sdk: &mut vana::app::Runtime,
+    trace: &mut crate::trace::Trace,
 ) {
     let Devices {
         ant,
@@ -111,7 +111,6 @@ pub fn execute(
                 output,
                 " ordinary=HELP,INFO,STATUS,POWER,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,MMC,VOLUME,TERRAIN,FILES,STORE,SOUND,GNSS,PRESSURE,MOTION,COMPANION,STORAGE,DISPLAY,RESTART,TEST"
             );
-            #[cfg(feature = "cycling")]
             {
                 let _ = write!(output, ",RIDE,EXPORT,RADAR,PROFILE,WORKOUT,PHONE");
             }
@@ -121,7 +120,6 @@ pub fn execute(
                 system.storage_max_ms = system.storage_max_ms.max(started.elapsed().as_millis())
             }
             Command::Display(_) => {
-                #[cfg(feature = "cycling")]
                 sdk.suspend_display();
                 system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis())
             }
@@ -140,12 +138,10 @@ pub fn execute(
                 _ => unreachable!(),
             };
             if let Some(operation) = operation {
-                #[cfg(feature = "cycling")]
                 if sdk.recording() {
                     terminal.reply(request.id, "BUSY", "active work", now);
                     return;
                 }
-                #[cfg(feature = "cycling")]
                 trace.sync(&mut *bulk, now);
                 status = firmware_console::protocol::request_status(
                     power.request_after(operation, delay_ms),
@@ -163,7 +159,6 @@ pub fn execute(
             // A transfer pauses the app, and a STORE format erases every
             // file in STORE; refuse both while a ride records. Other volume
             // writes never reach RIDES or STORE.
-            #[cfg(feature = "cycling")]
             if matches!(
                 command,
                 volumes::Command::Transfer | volumes::Command::StoreFormat
@@ -173,12 +168,10 @@ pub fn execute(
                 return;
             }
             // The session's trace is open in STORE: a format would erase it.
-            #[cfg(feature = "cycling")]
             if command == volumes::Command::StoreFormat && trace.open() {
                 terminal.reply(request.id, "BUSY", "trace open", now);
                 return;
             }
-            #[cfg(feature = "cycling")]
             {
                 let mut recorded = firmware_services::trace::frozen::RecordedBulk::counted(
                     &mut *bulk,
@@ -192,10 +185,6 @@ pub fn execute(
                 if command != volumes::Command::Transfer {
                     trace.after_host(bulk, false, now);
                 }
-            }
-            #[cfg(not(feature = "cycling"))]
-            {
-                status = volumes::execute(command, bulk, &mut output);
             }
             if command == volumes::Command::Transfer && status == "ACCEPTED" {
                 terminal.schedule_transfer();
@@ -212,7 +201,6 @@ pub fn execute(
                 &mut output,
             );
         }
-        #[cfg(feature = "cycling")]
         Command::Domain { bytes, length } => {
             status = sdk.command(
                 core::str::from_utf8(&bytes[..length]).unwrap_or(""),
@@ -257,19 +245,15 @@ pub fn execute(
             );
         }
         Command::Info => {
-            #[cfg(feature = "cycling")]
             let recording = sdk.recording();
-            #[cfg(not(feature = "cycling"))]
-            let recording = false;
             crate::logging::metadata(recording);
             let _ = write!(
                 output,
-                "board={} slot={} commit={} harness={} cycling={} logging=INFO recording={} protocol=1 max_line=256 log_slots=8 log_bytes=384",
+                "board={} slot={} commit={} harness={} logging=INFO recording={} protocol=1 max_line=256 log_slots=8 log_bytes=384",
                 diagnostics.board(),
                 diagnostics.slot(),
                 option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
                 cfg!(feature = "debug-harness"),
-                cfg!(feature = "cycling"),
                 recording
             );
         }
@@ -466,7 +450,6 @@ pub fn execute(
                     system.settings = previous;
                     status = "FAILED";
                 } else {
-                    #[cfg(feature = "cycling")]
                     sdk.select_profile(
                         vana::sensors::ble_profile::Profile::Echo,
                         ble.snapshot().connections,
@@ -478,18 +461,11 @@ pub fn execute(
             }
         }
         Command::BleSelect(_, _) => {
-            #[cfg(not(feature = "cycling"))]
-            {
-                status = "UNSUPPORTED";
-            }
-            #[cfg(feature = "cycling")]
-            {
-                if ble.control().operation == device_api::connectivity::Operation::Pending {
-                    status = "UNAVAILABLE";
-                } else {
-                    let (selection, profile) = if let Command::BleSelect(peer, profile) =
-                        request.command
-                    {
+            if ble.control().operation == device_api::connectivity::Operation::Pending {
+                status = "UNAVAILABLE";
+            } else {
+                let (selection, profile) =
+                    if let Command::BleSelect(peer, profile) = request.command {
                         let profile = vana::sensors::ble_profile::Profile::from_u8(profile);
                         (
                             vana::sensors::ble::selection(profile, peer.name.bytes(), peer.address),
@@ -498,18 +474,17 @@ pub fn execute(
                     } else {
                         (None, vana::sensors::ble_profile::Profile::Echo)
                     };
-                    let previous = system.settings;
-                    system.settings.ble = selection;
-                    system.settings.ble_profile = profile as u8;
-                    if !system.save_connectivity() {
-                        system.settings = previous;
-                        status = "FAILED";
-                    } else {
-                        sdk.select_profile(profile, ble.snapshot().connections);
-                        status = firmware_console::protocol::request_status(
-                            ble.request(device_api::ble_transport::Operation::Select(selection)),
-                        );
-                    }
+                let previous = system.settings;
+                system.settings.ble = selection;
+                system.settings.ble_profile = profile as u8;
+                if !system.save_connectivity() {
+                    system.settings = previous;
+                    status = "FAILED";
+                } else {
+                    sdk.select_profile(profile, ble.snapshot().connections);
+                    status = firmware_console::protocol::request_status(
+                        ble.request(device_api::ble_transport::Operation::Select(selection)),
+                    );
                 }
             }
         }

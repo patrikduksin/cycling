@@ -55,7 +55,6 @@ impl log::Log for Logger {
             truncated: false,
         };
         let _ = write!(msg, "{}", r.args());
-        #[cfg(feature = "cycling")]
         if r.level() <= log::Level::Warn {
             let level = match r.level() {
                 log::Level::Error => firmware_services::trace::Level::Error,
@@ -109,16 +108,13 @@ pub fn event(level: &str, component: &str, event: &str, message: &str) {
     });
     MAX_ENQUEUE_US.fetch_max(elapsed, Ordering::Relaxed);
 }
-#[cfg(feature = "cycling")]
 struct Kept {
     bytes: &'static mut [u8],
     len: usize,
 }
 
-#[cfg(feature = "cycling")]
 static KEPT: Mutex<RefCell<Option<Kept>>> = Mutex::new(RefCell::new(None));
 
-#[cfg(feature = "cycling")]
 impl Kept {
     fn push(&mut self, level: firmware_services::trace::Level, target: &str, text: &str) {
         let (target, text) = (
@@ -157,7 +153,6 @@ impl Kept {
 }
 
 /// Keep warnings and errors in `bytes` for the trace from now on.
-#[cfg(feature = "cycling")]
 pub fn keep_warnings(bytes: &'static mut [u8]) {
     critical_section::with(|cs| *KEPT.borrow_ref_mut(cs) = Some(Kept { bytes, len: 0 }));
 }
@@ -165,7 +160,6 @@ pub fn keep_warnings(bytes: &'static mut [u8]) {
 /// Hand over the warnings and errors kept since the last call, oldest
 /// first. The buffer leaves the lock while they are recorded; a warning
 /// logged meanwhile is dropped.
-#[cfg(feature = "cycling")]
 pub fn drain_warnings(mut each: impl FnMut(firmware_services::trace::Level, &str, &str)) {
     let Some(kept) = critical_section::with(|cs| KEPT.borrow_ref_mut(cs).take()) else {
         return;
@@ -184,10 +178,10 @@ pub fn take() -> Option<Line> {
 }
 
 pub fn metadata(recording: bool) {
-    log::info!(target: "build", "commit={} dirty={} harness={} cycling={} recording={} level=INFO slots=8 bytes=384",
+    log::info!(target: "build", "commit={} dirty={} harness={} recording={} level=INFO slots=8 bytes=384",
         option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
         option_env!("CYCLING_BUILD_DIRTY").unwrap_or("unknown"),
-        cfg!(feature="debug-harness"), cfg!(feature="cycling"), recording);
+        cfg!(feature="debug-harness"), recording);
 }
 
 pub fn stats() -> (u32, u32, u32, u32, usize, usize) {

@@ -3,13 +3,13 @@
 `cycling harness` runs named recipes or JSON scenarios against the C606 or the
 virtual backend and prints compact JSON. Real runs follow the
 [C606 skill](../.agents/skills/c606/SKILL.md), including port selection and
-restoring a harness-enabled base afterward.
+leaving a harness-enabled build running afterward.
 
 ```sh
 cycling harness recipes                      # List recipes and their steps
 cycling harness run input-screen             # Real device; --port is optional
 cycling harness run shared --backend virtual
-cycling harness run virtual-sdk --backend virtual --sdk
+cycling harness run virtual-sdk --backend virtual
 cycling harness-virtual                         # shared, virtual-foundation and virtual-sdk
 ```
 
@@ -20,7 +20,7 @@ and USB log stay in `.local/screenshots/`.
 ```sh
 cycling screenshot shot.png --scale 2        # Nearest-neighbour 2x upscale
 cycling screenshot shot.png --press bottom-left --press bottom-right
-cycling screenshot --backend virtual --sdk   # Simulator; default path in .local/screenshots
+cycling screenshot --backend virtual         # Simulator; default path in .local/screenshots
 ```
 
 `--press` wakes a dimmed screen first, then sends the listed synthetic button
@@ -55,7 +55,7 @@ main-CPU reset, not at the top-left press.
 
 ```sh
 cycling startup-timing --sim                 # Simulator scenario `startup_timing`; modelled timings
-cycling startup-timing                          # Prompts to turn the C606 on, then polls it (SDK build)
+cycling startup-timing                          # Prompts to turn the C606 on, then polls it
 cycling startup-timing --restart --ride      # Main-CPU restart; then start, pause and save a short ride
 ```
 

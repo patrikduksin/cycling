@@ -113,7 +113,6 @@ impl Sim {
     }
 
     /// The page VANA shows, such as "summary".
-    #[cfg(feature = "cycling")]
     pub fn vana_page(&self) -> &'static str {
         self.device.sdk.page().name()
     }
@@ -257,7 +256,6 @@ impl Sim {
     }
 
     /// `WORKOUT STATUS` as fields, such as `step` = "3/12".
-    #[cfg(feature = "cycling")]
     pub fn workout(&mut self) -> std::collections::HashMap<String, String> {
         let (status, out) = self.command("WORKOUT STATUS");
         assert_eq!(status, "OK", "WORKOUT STATUS: {out}");
@@ -325,7 +323,6 @@ impl Sim {
     }
 
     /// BottomLeft until the status bar's page dots read `indicator`, such as "2/3".
-    #[cfg(feature = "cycling")]
     #[track_caller]
     pub fn ride_page(&mut self, indicator: &str) {
         for _ in 0..8 {
@@ -342,7 +339,6 @@ impl Sim {
 
     /// From Home, open Connect phone (Settings, PHONE) and let a phone join
     /// the access point, as the rider and their phone would.
-    #[cfg(feature = "cycling")]
     #[track_caller]
     pub fn connect_phone(&mut self) {
         self.home("SETTINGS");
@@ -362,7 +358,6 @@ impl Sim {
 
     /// A request from the phone that joined, with the session's token as its
     /// page sends it, answered by the device: the status and the body.
-    #[cfg(feature = "cycling")]
     #[track_caller]
     pub fn phone_request(
         &mut self,

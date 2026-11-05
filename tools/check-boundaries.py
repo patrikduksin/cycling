@@ -96,7 +96,7 @@ def without_comments(text):
     return ''.join(result)
 
 
-def violations(text, forbidden, portable=False, hardware=False, allowed_paths=()):
+def violations(text, forbidden, portable=False, allowed_paths=()):
     comments_removed = without_comments(text)
     code = STRING.sub(lambda match: blank(match.group()), comments_removed)
     code = code.replace('r#', '  ')
@@ -130,8 +130,6 @@ def violations(text, forbidden, portable=False, hardware=False, allowed_paths=()
         condition = comments_removed[match.start():end]
         if portable and re.search(r'c606|esp32|magene', condition, re.I):
             report(match.start(), 'board-specific condition in portable code')
-        if hardware and re.search(r'feature\s*=\s*"cycling"', condition):
-            report(match.start(), 'application feature in hardware implementation')
     return sorted(findings)
 
 
@@ -174,17 +172,17 @@ def source_rules(owner, relative, aliases):
     if owner == 'c606-firmware':
         composition = relative.as_posix() in DEVICE_COMPOSITION or relative.parts[0] == 'tests'
         forbidden = set() if composition else CONSUMERS | {'main', 'commands', 'logging', 'trace'}
-        portable, hardware = False, not composition
+        portable = False
     elif owner == 'shell-simulator':
-        forbidden, portable, hardware = {'c606_firmware'}, False, False
+        forbidden, portable = {'c606_firmware'}, False
     else:
         allowed = OWNERS[owner][1]
         forbidden = HARDWARE | {name.replace('-', '_') for name in OWNERS
                                 if name != owner and name not in allowed}
-        portable, hardware = True, False
+        portable = True
     forbidden |= {alias.replace('-', '_') for alias, package in aliases
                   if package.replace('-', '_') in forbidden}
-    return forbidden, portable, hardware
+    return forbidden, portable
 
 
 def self_test():
@@ -211,7 +209,6 @@ log::debug!("read failed");
                    'cfg!(all(feature = "other", feature = "esp32s3"))',
                    '#[cfg_attr(any(feature = "x", feature = "magene"), inline)] fn f() {}']:
         assert violations(source, HARDWARE, portable=True), source
-    assert violations('#[cfg(feature = "cycling")] fn f() {}', CONSUMERS, hardware=True)
     assert not violations('#[path = "owner.rs"] mod owner;', CONSUMERS, allowed_paths={'owner.rs'})
     assert violations('#[path = "other.rs"] mod owner;', CONSUMERS, allowed_paths={'owner.rs'})
     assert violations('include!("owner.rs");', CONSUMERS, allowed_paths={'owner.rs'})

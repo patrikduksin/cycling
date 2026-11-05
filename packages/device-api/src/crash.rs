@@ -174,8 +174,6 @@ impl Marker {
 pub struct Build {
     /// Built from a checkout with uncommitted changes.
     pub dirty: bool,
-    /// With VANA (`CYCLING_SDK=1`).
-    pub cycling: bool,
     /// With the diagnostic harness (`CYCLING_HARNESS=1`).
     pub harness: bool,
     /// The bulk-maintenance image (`CYCLING_BULK_MAINTENANCE=1`).
@@ -184,36 +182,30 @@ pub struct Build {
 
 impl Build {
     const fn bits(self) -> u32 {
-        self.dirty as u32
-            | (self.cycling as u32) << 1
-            | (self.harness as u32) << 2
-            | (self.maintenance as u32) << 3
+        self.dirty as u32 | (self.harness as u32) << 2 | (self.maintenance as u32) << 3
     }
 
     const fn from_bits(bits: u32) -> Option<Self> {
+        // Bit 1 marked VANA builds before every build had VANA; ignore it so
+        // records written by older firmware still read.
         if bits & !0xf != 0 {
             return None;
         }
         Some(Self {
             dirty: bits & 1 != 0,
-            cycling: bits & 2 != 0,
             harness: bits & 4 != 0,
             maintenance: bits & 8 != 0,
         })
     }
 
     /// The variant part of the archived ELF's name, as build.sh writes it:
-    /// `sdk1-h1`, with `-maint` for a maintenance image.
+    /// `h1`, with `-maint` for a maintenance image.
     pub const fn variant(self) -> &'static str {
-        match (self.cycling, self.harness, self.maintenance) {
-            (false, false, false) => "sdk0-h0",
-            (false, true, false) => "sdk0-h1",
-            (true, false, false) => "sdk1-h0",
-            (true, true, false) => "sdk1-h1",
-            (false, false, true) => "sdk0-h0-maint",
-            (false, true, true) => "sdk0-h1-maint",
-            (true, false, true) => "sdk1-h0-maint",
-            (true, true, true) => "sdk1-h1-maint",
+        match (self.harness, self.maintenance) {
+            (false, false) => "h0",
+            (true, false) => "h1",
+            (false, true) => "h0-maint",
+            (true, true) => "h1-maint",
         }
     }
 }
@@ -439,7 +431,6 @@ mod tests {
             kind: Kind::Panic,
             build: Build {
                 dirty: true,
-                cycling: true,
                 harness: false,
                 maintenance: false,
             },
@@ -458,7 +449,7 @@ mod tests {
         let words = encode(&panic());
         let record = record(&words).expect("valid record");
         assert_eq!(record.kind, Kind::Panic);
-        assert_eq!(record.build.variant(), "sdk1-h0");
+        assert_eq!(record.build.variant(), "h0");
         assert!(record.build.dirty);
         assert!(!record.reported);
         assert_eq!(record.version(), "0.1.0");
@@ -473,6 +464,14 @@ mod tests {
         };
         assert_eq!(report.kind, Kind::Panic);
         assert_eq!(report.version(), "0.1.0");
+    }
+
+    #[test]
+    fn a_record_from_firmware_that_marked_vana_still_reads() {
+        let mut words = encode(&panic());
+        words[LENGTHS] |= 1 << 25;
+        words[CHECKSUM] = checksum(&words[..CHECKSUM]);
+        assert!(matches!(inspect(&words), Marker::Valid(_)));
     }
 
     #[test]

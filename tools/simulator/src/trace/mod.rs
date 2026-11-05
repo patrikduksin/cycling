@@ -3,14 +3,11 @@
 //! test that replays it. `src/bin/trace.rs` is the command line.
 pub mod ant_page;
 pub mod battery;
-#[cfg(feature = "cycling")]
 pub mod divergence;
 pub mod file;
 pub mod find;
-#[cfg(feature = "cycling")]
 pub mod origin;
 pub mod otlp;
-#[cfg(feature = "cycling")]
 pub mod rebuild;
 pub mod secret;
 pub mod story;

@@ -1,7 +1,7 @@
 //! Host render benchmark (#167): paint representative VANA screens many
 //! times and print host CPU microseconds per frame with the painters' work.
 //!
-//! `cargo run -p shell-simulator --release --features cycling --bin sim-bench -- [frames] [scene filter]`
+//! `cargo run -p shell-simulator --release --bin sim-bench -- [frames] [scene filter]`
 //! A filter that is a scene's whole name picks only that scene.
 //!
 //! Host time is a proxy only; on the device the frame time is STATUS

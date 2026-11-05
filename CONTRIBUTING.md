@@ -48,8 +48,7 @@ nix develop                         # dev shell with every pinned tool
 cycling test
 cycling check
 cycling simulate                    # run the firmware on your computer
-cycling build                       # base firmware
-CYCLING_SDK=1 cycling build         # with the VANA cycling app
+cycling build                       # firmware with the VANA cycling app
 cycling verify                      # every check in parallel
 ```
 

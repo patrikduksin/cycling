@@ -48,7 +48,7 @@ flash, uncertain writes, backup verification and ride export/reclaim.
 | --- | --- |
 | `ANT CAPABILITIES` | Implemented limits and discovery state |
 | `ANT CHANNEL <type>` | Existing snapshot text |
-| `ANT READ` | Drains an independent, bounded diagnostic queue in base and cycling builds; cannot remove pages from the application queue. `loss_count` includes diagnostic overflow. |
+| `ANT READ` | Drains an independent, bounded diagnostic queue; cannot remove pages from the application queue. `loss_count` includes diagnostic overflow. |
 | `ANT SEND <type> <number> <transmission> <generation> <hex16>` | Sends exactly eight bytes to the selected connection generation. `ACCEPTED operation=<id>` means queued locally. No automatic retry. |
 | `ANT OPERATION <id>` | UART submission or bridge reply for the most recent operation only |
 

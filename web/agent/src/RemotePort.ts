@@ -11,6 +11,7 @@ import type {
   Op,
   OpOutcome,
   PortStatus,
+  RequestId,
   ToAgent,
 } from '@cycling/protocol'
 
@@ -47,6 +48,14 @@ export type OpEvent =
   | { readonly _tag: 'Progress'; readonly done: number; readonly total: number }
   | { readonly _tag: 'Result'; readonly outcome: OpOutcome }
 
+/** An op as the agent sends it: a Write carries its payload, nothing else has one. */
+export type OpRequest =
+  | { readonly op: Exclude<Op, { readonly _tag: 'Write' }> }
+  | {
+      readonly op: Extract<Op, { readonly _tag: 'Write' }>
+      readonly payload: Uint8Array
+    }
+
 /**
  * The agent's whole view of a visitor's device. Redial, request
  * epochs and the relay's framing live behind these four members;
@@ -62,14 +71,18 @@ export interface RemotePort {
   /** Agent to device bytes. False when they were dropped because the relay or the port is down. */
   readonly write: (bytes: Uint8Array) => Effect.Effect<boolean>
   readonly status: SubscriptionRef.SubscriptionRef<RemoteStatus>
+  /** A request id no op of this session has used. */
+  readonly nextId: Effect.Effect<RequestId>
   /**
-   * Sends one op and then `upload` as its data frames, and streams what the
-   * page answers. Fails `RelayDown` when the relay drops or is down, and
-   * `OpStalled` after `OP_STALL_MS` with neither progress nor a result.
+   * Sends one op under `id`, then a Write's payload as its data frames, and
+   * streams what the page answers. Sending the same id again is a resend:
+   * the page joins the op still running under it, or answers it again.
+   * Fails `RelayDown` when the relay drops or is down, and `OpStalled` after
+   * `OP_STALL_MS` with neither progress nor a result.
    */
   readonly op: (
-    op: Op,
-    upload?: Uint8Array,
+    id: RequestId,
+    request: OpRequest,
   ) => Stream.Stream<OpEvent, OpTransportError>
 }
 

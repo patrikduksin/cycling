@@ -9,6 +9,7 @@ import {
   Baud,
   type Device,
   Epoch,
+  RequestId,
   type SerialIdentity,
 } from '@cycling/protocol'
 
@@ -41,6 +42,7 @@ export const fakePort = (status: RemoteStatus) =>
       write: bytes =>
         Ref.update(written, n => n + bytes.length).pipe(Effect.as(true)),
       status: yield* SubscriptionRef.make(status),
+      nextId: Effect.succeed(RequestId.make(1)),
       op: () => Stream.never,
     }
     return { port, written: Ref.get(written) }

@@ -24,6 +24,7 @@ import {
   Mac,
   Md5,
   type Op,
+  type OpFailure,
   type OpOutcome,
   opDataFrames,
   type RequestId,
@@ -53,22 +54,39 @@ const md5 = (bytes: Uint8Array) =>
 
 /**
  * Plays the visitor's page behind the fake relay: a 1 MiB flash in memory,
- * answering every op the agent sends. `drops` closes the agent's socket on
- * the first op of that kind, so the agent has to redial and resend.
+ * answering every op the agent sends, and answering a resent id again as the
+ * page does. On the first op of its kind, `drops` closes the agent's socket
+ * before the op runs, `losesAnswerOf` runs the op and closes the socket in
+ * place of its answer, and `refuses` answers Failed with that reason.
  */
 const fakePage = (
   relay: FakeRelay,
-  options: { readonly drops?: Op['_tag'] } = {},
+  options: {
+    readonly drops?: Op['_tag']
+    readonly losesAnswerOf?: Op['_tag']
+    readonly refuses?: { readonly op: Op['_tag']; readonly reason: OpFailure }
+  } = {},
 ) =>
   Effect.gen(function* () {
     const flash = new Uint8Array(FLASH_BYTES).map((_, i) => (i * 31) & 0xff)
     const ops = yield* Ref.make<ReadonlyArray<Op>>([])
     const uploads = new Map<RequestId, ReturnType<typeof emptyAssembly>>()
     const pending = new Map<RequestId, Extract<Op, { _tag: 'Write' }>>()
-    const dropped = yield* Ref.make(false)
+    const kinds = new Map<RequestId, Op['_tag']>()
+    const answered = new Map<RequestId, OpOutcome>()
+    const firsts = new Set<string>()
+    let writes = 0
+
+    const first = (option: string) =>
+      !firsts.has(option) && !!firsts.add(option)
 
     const answer = (id: RequestId, outcome: OpOutcome) =>
-      relay.browser({ _tag: 'OpResult', id, outcome })
+      Effect.suspend(() => {
+        answered.set(id, outcome)
+        return kinds.get(id) === options.losesAnswerOf && first('losesAnswerOf')
+          ? relay.closeAgent(1011)
+          : relay.browser({ _tag: 'OpResult', id, outcome })
+      })
 
     const finishWrite = (id: RequestId) =>
       Effect.gen(function* () {
@@ -78,6 +96,7 @@ const fakePage = (
         if (upload.received < op.region.size) return
         const bytes = assembled(upload)
         flash.set(bytes, op.region.address)
+        writes += 1
         pending.delete(id)
         yield* answer(id, { _tag: 'Written', md5: md5(bytes) })
       })
@@ -85,11 +104,28 @@ const fakePage = (
     const onOp = (id: RequestId, op: Op) =>
       Effect.gen(function* () {
         yield* Ref.update(ops, all => [...all, op])
-        if (
-          op._tag === options.drops &&
-          !(yield* Ref.getAndSet(dropped, true))
-        ) {
+        kinds.set(id, op._tag)
+        const already = answered.get(id)
+        if (already !== undefined) {
+          return yield* relay.browser({
+            _tag: 'OpResult',
+            id,
+            outcome: already,
+          })
+        }
+        if (op._tag === options.drops && first('drops')) {
           return yield* relay.closeAgent(1011)
+        }
+        if (op._tag === options.refuses?.op && first('refuses')) {
+          return yield* relay.browser({
+            _tag: 'OpResult',
+            id,
+            outcome: {
+              _tag: 'Failed',
+              reason: options.refuses.reason,
+              detail: '',
+            },
+          })
         }
         return yield* Match.value(op).pipe(
           Match.tagsExhaustive({
@@ -173,6 +209,7 @@ const fakePage = (
     return {
       flash,
       ops: Ref.get(ops),
+      writes: () => writes,
       /** Waits for the agent to give the lease back, as it does when its client goes. */
       released: Ref.get(ops).pipe(
         Effect.repeat({
@@ -371,6 +408,44 @@ describe('device socket', () => {
         const ops = yield* page.ops
         expect(ops.map(op => op._tag)).toEqual(['Enter', 'Read', 'Read'])
         expect(new Set(ops.map(op => op.lease)).size).toBe(1)
+        door.socket.end()
+        yield* page.released
+      }),
+    ))
+
+  test('an answer lost to a relay drop is asked for again under its id, and the page writes once', () =>
+    withBridge((relay, endpoints, dir) =>
+      Effect.gen(function* () {
+        const page = yield* fakePage(relay, { losesAnswerOf: 'Write' })
+        const door = yield* doorClient(endpoints.flasher)
+        yield* door.ask({ op: 'enter' })
+        const image = new Uint8Array(0x8000).map((_, i) => (i * 5) & 0xff)
+        const imagePath = join(dir, 'image.bin')
+        yield* Effect.promise(() => writeFile(imagePath, image))
+        expect(
+          yield* door.ask({ op: 'write', address: 0x20000, path: imagePath }),
+        ).toEqual({ ok: { md5: md5(image) } })
+        expect(page.writes()).toBe(1)
+        door.socket.end()
+        yield* page.released
+      }),
+    ))
+
+  test('a write the page refuses transferGap is sent again and lands', () =>
+    withBridge((relay, endpoints, dir) =>
+      Effect.gen(function* () {
+        const page = yield* fakePage(relay, {
+          refuses: { op: 'Write', reason: 'transferGap' },
+        })
+        const door = yield* doorClient(endpoints.flasher)
+        yield* door.ask({ op: 'enter' })
+        const image = new Uint8Array(0x4000).fill(0x5a)
+        const imagePath = join(dir, 'image.bin')
+        yield* Effect.promise(() => writeFile(imagePath, image))
+        expect(
+          yield* door.ask({ op: 'write', address: 0x30000, path: imagePath }),
+        ).toEqual({ ok: { md5: md5(image) } })
+        expect(page.flash.slice(0x30000, 0x34000)).toEqual(image)
         door.socket.end()
         yield* page.released
       }),

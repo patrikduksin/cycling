@@ -9,16 +9,22 @@ import * as Stream from 'effect/Stream'
 import { createHash, randomBytes } from 'node:crypto'
 
 import {
+  type Assembly,
   type Chip,
   Lease,
+  MAX_FLASH_BYTES,
   type Mac,
   Md5,
-  type Op,
+  type OpFailure,
   type OpOutcome,
   Region,
+  type RequestId,
+  assemble,
+  assembled,
+  emptyAssembly,
 } from '@cycling/protocol'
 
-import { firstMatch, type RemotePort } from './RemotePort.ts'
+import { firstMatch, type OpRequest, type RemotePort } from './RemotePort.ts'
 import {
   BadRequest,
   type FlashError,
@@ -32,8 +38,8 @@ import {
 export const REBOOT_REAPPEAR_MS = 10_000
 /** How long an op waits for a dropped relay or an absent visitor before it gives up. */
 export const LINK_WAIT_MS = 30_000
-/** Resends of an idempotent op after a relay drop or a broken transfer. */
-export const OP_RETRIES = 2
+/** Resends of an idempotent op: after a relay drop, a stall, broken read data or a refusal in `RESENT`. */
+export const OP_RETRIES = 3
 const RELEASE_WAIT_MS = 3000
 
 export interface EnteredChip {
@@ -92,14 +98,10 @@ const regionOf = (address: number, size: number) =>
     ),
   )
 
+/** What the page answered to one op, with the read data that came before the answer. */
 interface Answer {
   readonly outcome: OpOutcome
-  readonly data: ReadonlyArray<Uint8Array>
-  readonly received: number
-}
-
-interface Collected extends Omit<Answer, 'outcome'> {
-  readonly outcome: Option.Option<OpOutcome>
+  readonly data: Assembly
 }
 
 const unexpected = (outcome: OpOutcome) =>
@@ -116,15 +118,14 @@ const settled = (answer: Answer): Effect.Effect<Answer, OpFailed> =>
       )
     : Effect.succeed(answer)
 
-const concat = (chunks: ReadonlyArray<Uint8Array>, size: number) => {
-  const out = new Uint8Array(size)
-  let offset = 0
-  for (const chunk of chunks) {
-    out.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return out
-}
+/** Refusals the page makes before flash changed, or after its own retries: another try may pass. */
+const RESENT: ReadonlySet<OpFailure> = new Set([
+  'transferGap',
+  'payloadMismatch',
+  'digestMismatch',
+])
+
+type OpError = OpTransportError | TransferBroken | OpFailed | BadRequest
 
 /** Released when the scope closes: a Python process that exits, crashes or is interrupted gives the device back. */
 export const leaseFlasher = (
@@ -136,14 +137,20 @@ export const leaseFlasher = (
 
     /** Collects one op's answer; read data must arrive in order with no hole. */
     const once = (
-      op: Op,
-      upload?: Uint8Array,
+      id: RequestId,
+      request: OpRequest,
     ): Effect.Effect<Answer, OpTransportError | TransferBroken | OpFailed> =>
-      port.op(op, upload).pipe(
+      port.op(id, request).pipe(
         Stream.runFoldEffect(
-          (): Collected => ({ outcome: Option.none(), data: [], received: 0 }),
-          (collected, event): Effect.Effect<Collected, TransferBroken> =>
+          () => ({
+            outcome: Option.none<OpOutcome>(),
+            data: emptyAssembly(MAX_FLASH_BYTES),
+          }),
+          (collected, event) =>
             Match.value(event).pipe(
+              Match.withReturnType<
+                Effect.Effect<typeof collected, TransferBroken>
+              >(),
               Match.tagsExhaustive({
                 Progress: () => Effect.succeed(collected),
                 Result: ({ outcome }) =>
@@ -151,18 +158,16 @@ export const leaseFlasher = (
                     ...collected,
                     outcome: Option.some(outcome),
                   }),
-                Data: ({ offset, bytes }) =>
-                  offset === collected.received
-                    ? Effect.succeed({
-                        ...collected,
-                        data: [...collected.data, bytes],
-                        received: collected.received + bytes.byteLength,
-                      })
-                    : Effect.fail(
+                Data: frame =>
+                  Option.match(assemble(collected.data, frame), {
+                    onNone: () =>
+                      Effect.fail(
                         new TransferBroken({
-                          detail: `read data jumped from ${collected.received} to ${offset}`,
+                          detail: `read data jumped from ${collected.data.received} to ${frame.offset}`,
                         }),
                       ),
+                    onSome: data => Effect.succeed({ ...collected, data }),
+                  }),
               }),
             ),
         ),
@@ -170,11 +175,12 @@ export const leaseFlasher = (
           ({
             outcome,
             data,
-            received,
           }): Effect.Effect<Answer, TransferBroken | OpFailed> =>
-            Option.isNone(outcome)
-              ? Effect.fail(new TransferBroken({ detail: 'no answer' }))
-              : settled({ outcome: outcome.value, data, received }),
+            Option.match(outcome, {
+              onNone: () =>
+                Effect.fail(new TransferBroken({ detail: 'no answer' })),
+              onSome: outcome => settled({ outcome, data }),
+            }),
         ),
       )
 
@@ -197,28 +203,44 @@ export const leaseFlasher = (
     )
 
     /**
-     * Every op but Reboot is idempotent under one lease, so a relay drop or
-     * a broken transfer resends it once the visitor is reachable again.
+     * Every op but Reboot is idempotent under one lease. One whose answer
+     * never came (a relay drop, 20 s of silence) is resent under its own id,
+     * so the page joins it while it runs or answers it again; one whose
+     * answer was unusable (broken read data, a refusal in `RESENT`) is tried
+     * again under a new id. Each waits for the visitor to be reachable.
      */
     const retried = <A>(
-      run: Effect.Effect<
-        A,
-        OpTransportError | TransferBroken | OpFailed | BadRequest
-      >,
-      retries = OP_RETRIES,
-    ): Effect.Effect<A, FlashError> =>
-      run.pipe(
-        Effect.catchTags({
-          RelayDown: () =>
-            retries > 0
-              ? joined.pipe(Effect.andThen(retried(run, retries - 1)))
-              : Effect.fail(new Unreachable({ seconds: LINK_WAIT_MS / 1000 })),
-          TransferBroken: error =>
-            retries > 0
-              ? joined.pipe(Effect.andThen(retried(run, retries - 1)))
-              : Effect.fail(error),
-        }),
-      )
+      run: (id: RequestId) => Effect.Effect<A, OpError>,
+    ): Effect.Effect<A, FlashError> => {
+      const attempt = (
+        id: RequestId,
+        left: number,
+      ): Effect.Effect<A, FlashError> => {
+        const again = <E>(error: E, next: Effect.Effect<RequestId>) =>
+          left > 0
+            ? joined.pipe(
+                Effect.andThen(next),
+                Effect.flatMap(nextId => attempt(nextId, left - 1)),
+              )
+            : Effect.fail(error)
+        return run(id).pipe(
+          Effect.catchTags({
+            RelayDown: () =>
+              again(
+                new Unreachable({ seconds: LINK_WAIT_MS / 1000 }),
+                Effect.succeed(id),
+              ),
+            OpStalled: error => again(error, Effect.succeed(id)),
+            TransferBroken: error => again(error, port.nextId),
+            OpFailed: error =>
+              RESENT.has(error.reason)
+                ? again(error, port.nextId)
+                : Effect.fail(error),
+          }),
+        )
+      }
+      return Effect.flatMap(port.nextId, id => attempt(id, OP_RETRIES))
+    }
 
     const readFile = (path: string) =>
       fs.readFile(path).pipe(
@@ -240,24 +262,16 @@ export const leaseFlasher = (
         ),
       )
 
-    const digest = (region: Region) =>
-      once({ _tag: 'Digest', lease, region }).pipe(
-        Effect.flatMap(({ outcome }) =>
-          outcome._tag === 'Digest'
-            ? Effect.succeed(outcome.md5)
-            : Effect.fail(unexpected(outcome)),
-        ),
-      )
-
     yield* Effect.addFinalizer(() =>
-      once({ _tag: 'Release', lease }).pipe(
+      port.nextId.pipe(
+        Effect.flatMap(id => once(id, { op: { _tag: 'Release', lease } })),
         Effect.timeout(RELEASE_WAIT_MS),
         Effect.ignore,
       ),
     )
 
-    const enter = retried(
-      once({ _tag: 'Enter', lease }).pipe(
+    const enter = retried(id =>
+      once(id, { op: { _tag: 'Enter', lease } }).pipe(
         Effect.flatMap(({ outcome }) =>
           outcome._tag === 'Entered'
             ? Effect.succeed(chipOf(outcome.chip))
@@ -267,62 +281,76 @@ export const leaseFlasher = (
     )
 
     const read = (region: Region, path: string) =>
-      retried(
+      retried(id =>
         Effect.gen(function* () {
-          const answer = yield* once({ _tag: 'Read', lease, region })
-          if (answer.outcome._tag !== 'Read') {
-            return yield* unexpected(answer.outcome)
+          const { outcome, data } = yield* once(id, {
+            op: { _tag: 'Read', lease, region },
+          })
+          if (outcome._tag !== 'Read') {
+            return yield* unexpected(outcome)
           }
-          if (answer.received !== region.size) {
+          if (data.received !== region.size) {
             return yield* new TransferBroken({
-              detail: `read ${answer.received} of ${region.size} bytes`,
+              detail: `read ${data.received} of ${region.size} bytes`,
             })
           }
-          const bytes = concat(answer.data, answer.received)
-          if (md5Of(bytes) !== answer.outcome.md5) {
+          const bytes = assembled(data)
+          if (md5Of(bytes) !== outcome.md5) {
             return yield* new TransferBroken({
               detail: "the read bytes are not the chip's",
             })
           }
           yield* writeFile(path, bytes)
-          return answer.outcome.md5
+          return outcome.md5
         }),
       )
 
     const write = (address: number, path: string) =>
-      retried(
-        Effect.gen(function* () {
-          const bytes = yield* readFile(path)
-          const region = yield* regionOf(address, bytes.byteLength)
-          const md5 = md5Of(bytes)
-          const { outcome } = yield* once(
-            { _tag: 'Write', lease, region, md5 },
-            bytes,
-          )
-          if (outcome._tag !== 'Written') return yield* unexpected(outcome)
-          if (outcome.md5 !== md5) {
-            return yield* new TransferBroken({
-              detail: "the chip's digest after the write is not the file's",
-            })
-          }
-          return md5
-        }),
-      )
+      Effect.gen(function* () {
+        const payload = yield* readFile(path)
+        const region = yield* regionOf(address, payload.byteLength)
+        const md5 = md5Of(payload)
+        return yield* retried(id =>
+          once(id, { op: { _tag: 'Write', lease, region, md5 }, payload }).pipe(
+            Effect.flatMap(({ outcome }) =>
+              outcome._tag !== 'Written'
+                ? Effect.fail(unexpected(outcome))
+                : outcome.md5 !== md5
+                  ? Effect.fail(
+                      new TransferBroken({
+                        detail:
+                          "the chip's digest after the write is not the file's",
+                      }),
+                    )
+                  : Effect.succeed(md5),
+            ),
+          ),
+        )
+      })
 
     const verify = (address: number, path: string) =>
-      retried(
-        Effect.gen(function* () {
-          const bytes = yield* readFile(path)
-          const region = yield* regionOf(address, bytes.byteLength)
-          return (yield* digest(region)) === md5Of(bytes)
-        }),
-      )
+      Effect.gen(function* () {
+        const bytes = yield* readFile(path)
+        const region = yield* regionOf(address, bytes.byteLength)
+        const chip = yield* retried(id =>
+          once(id, { op: { _tag: 'Digest', lease, region } }).pipe(
+            Effect.flatMap(({ outcome }) =>
+              outcome._tag === 'Digest'
+                ? Effect.succeed(outcome.md5)
+                : Effect.fail(unexpected(outcome)),
+            ),
+          ),
+        )
+        return chip === md5Of(bytes)
+      })
 
     const reboot = (seconds: number, path: string) =>
       Effect.scoped(
         Effect.gen(function* () {
           const console = yield* port.listen
-          const { outcome } = yield* once({ _tag: 'Reboot', lease })
+          const { outcome } = yield* once(yield* port.nextId, {
+            op: { _tag: 'Reboot', lease },
+          })
           if (outcome._tag !== 'Rebooting') return yield* unexpected(outcome)
           const back = yield* firstMatch(port.status, status =>
             Option.exists(status.port, ({ state }) => state._tag === 'Open')
@@ -339,8 +367,7 @@ export const leaseFlasher = (
             Stream.interruptWhen(Effect.sleep(seconds * 1000)),
             Stream.runCollect,
           )
-          const size = chunks.reduce((n, chunk) => n + chunk.byteLength, 0)
-          yield* writeFile(path, concat(chunks, size))
+          yield* writeFile(path, Buffer.concat(chunks))
           return true
         }),
       ).pipe(

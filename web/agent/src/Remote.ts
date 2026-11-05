@@ -13,7 +13,6 @@ import * as SubscriptionRef from 'effect/SubscriptionRef'
 
 import {
   type Code,
-  type Op,
   OP_STALL_MS,
   opDataFrames,
   RequestId,
@@ -27,6 +26,7 @@ import {
   isPortOpen,
   type Link,
   type OpEvent,
+  type OpRequest,
   type RemotePort,
   type RemoteStatus,
   type Traffic,
@@ -69,8 +69,9 @@ const count = (
 type OpQueue = Queue.Queue<OpEvent, OpTransportError | Cause.Done>
 
 /**
- * Ops waiting for the page, by id. Ids are unique per connection; an event
- * for an id nobody waits on (an op given up on, then resent) is dropped.
+ * Ops waiting for the page, by id. Ids are unique per session; an event
+ * for an id nobody waits on (an op given up on) is dropped, and a resend
+ * under the same id waits on it afresh.
  */
 const pendingOps = Effect.gen(function* () {
   const nextId = yield* Ref.make(1)
@@ -78,15 +79,18 @@ const pendingOps = Effect.gen(function* () {
   const find = (id: RequestId) =>
     Ref.get(waiting).pipe(Effect.map(all => Option.fromNullishOr(all.get(id))))
   return {
-    open: Effect.gen(function* () {
-      const id = RequestId.make(yield* Ref.getAndUpdate(nextId, n => n + 1))
-      const queue: OpQueue = yield* Queue.unbounded<
-        OpEvent,
-        OpTransportError | Cause.Done
-      >()
-      yield* Ref.update(waiting, all => new Map(all).set(id, queue))
-      return { id, queue }
-    }),
+    nextId: Ref.getAndUpdate(nextId, n => n + 1).pipe(
+      Effect.map(n => RequestId.make(n)),
+    ),
+    open: (id: RequestId) =>
+      Effect.gen(function* () {
+        const queue: OpQueue = yield* Queue.unbounded<
+          OpEvent,
+          OpTransportError | Cause.Done
+        >()
+        yield* Ref.update(waiting, all => new Map(all).set(id, queue))
+        return queue
+      }),
     forget: (id: RequestId) =>
       Ref.update(waiting, all => {
         const rest = new Map(all)
@@ -181,19 +185,23 @@ export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
           return sent
         })
 
-      const op = (request: Op, upload?: Uint8Array) =>
+      const op = (id: RequestId, request: OpRequest) =>
         Stream.unwrap(
           Effect.gen(function* () {
             if ((yield* SubscriptionRef.get(status)).link._tag !== 'Joined') {
               return yield* new RelayDown()
             }
-            const { id, queue } = yield* pending.open
-            if (!(yield* link.send({ _tag: 'Op', id, op: request }))) {
-              yield* pending.forget(id)
-              return yield* new RelayDown()
-            }
-            for (const frame of opDataFrames(id, upload ?? new Uint8Array())) {
-              yield* link.send(frame)
+            const queue = yield* pending.open(id)
+            const frames =
+              'payload' in request ? opDataFrames(id, request.payload) : []
+            for (const item of [
+              { _tag: 'Op' as const, id, op: request.op },
+              ...frames,
+            ]) {
+              if (!(yield* link.send(item))) {
+                yield* pending.forget(id)
+                return yield* new RelayDown()
+              }
             }
             return Stream.fromQueue(queue).pipe(
               Stream.timeoutOrElse({
@@ -213,6 +221,7 @@ export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
         ),
         write,
         status,
+        nextId: pending.nextId,
         op,
       } satisfies RemotePort
     })

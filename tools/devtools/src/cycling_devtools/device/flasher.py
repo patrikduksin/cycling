@@ -49,14 +49,13 @@ class FlasherError(RuntimeError):
 def flasher_for(
     port: str, resolve: Callable[[], str], log_dir: Path, environ: Mapping[str, str] = os.environ
 ) -> Flasher:
-    """The one backend choice."""
-    return EsptoolFlasher(port, resolve, log_dir, environ)
+    """The one backend choice. The visitor's page only for the bridged port, so a second, local device in a bridged command stays local."""
+    bridged, door = environ.get('CYCLING_PORT'), environ.get('CYCLING_FLASHER')
+    if bridged and door and port == bridged:
+        from cycling_devtools.device.page_flasher import PageFlasher
 
-
-def esptool_port(port, environ):
-    # A pty has no DTR/RTS lines, so esptool reaches a bridged device through its rfc2217 URL.
-    bridged, url = environ.get('CYCLING_PORT'), environ.get('CYCLING_ESPTOOL_PORT')
-    return url if bridged and url and port == bridged else port
+        return PageFlasher(Path(door), log_dir)
+    return EsptoolFlasher(port, resolve, log_dir)
 
 
 def chip_from(output):
@@ -75,8 +74,8 @@ def chip_from(output):
 class EsptoolFlasher:
     """One esptool process per verb, on a local tty."""
 
-    def __init__(self, port: str, resolve: Callable[[], str], log_dir: Path, environ: Mapping[str, str] = os.environ):
-        self.port, self.resolve, self.log_dir, self.environ = port, resolve, log_dir, environ
+    def __init__(self, port: str, resolve: Callable[[], str], log_dir: Path):
+        self.port, self.resolve, self.log_dir = port, resolve, log_dir
         self.count = 0
 
     def _run(self, *args, before='no-reset', after='no-reset'):
@@ -88,7 +87,7 @@ class EsptoolFlasher:
             '--chip',
             'esp32s3',
             '--port',
-            esptool_port(self.port, self.environ),
+            self.port,
             '--before',
             before,
             '--after',

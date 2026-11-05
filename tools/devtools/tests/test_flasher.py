@@ -78,12 +78,12 @@ class EsptoolFlasherTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def flasher(self, environ=None):
+    def flasher(self):
         def resolve():
             self.resolved.append('/dev/ttyACM1')
             return '/dev/ttyACM1'
 
-        return flasher.EsptoolFlasher('/dev/ttyACM0', resolve, self.logs, {} if environ is None else environ)
+        return flasher.EsptoolFlasher('/dev/ttyACM0', resolve, self.logs)
 
     def arguments(self, index=-1):
         """The esptool arguments after `-m esptool`."""
@@ -208,13 +208,6 @@ class EsptoolFlasherTests(unittest.TestCase):
         self.assertEqual((self.resolved, self.arguments()[3]), ([], '/dev/ttyACM0'))
         target.enter()
         self.assertEqual((self.resolved, self.arguments()[3]), (['/dev/ttyACM1'], '/dev/ttyACM1'))
-
-    def test_bridged_port_reaches_esptool_through_its_rfc2217_url(self):
-        bridged = {'CYCLING_PORT': '/dev/ttyACM0', 'CYCLING_ESPTOOL_PORT': 'rfc2217://127.0.0.1:4000'}
-        self.flasher(bridged).read(0, 1, Path('x'))
-        self.assertEqual(self.arguments()[3], 'rfc2217://127.0.0.1:4000')
-        self.flasher({**bridged, 'CYCLING_PORT': '/dev/other'}).read(0, 1, Path('x'))
-        self.assertEqual(self.arguments()[3], '/dev/ttyACM0')
 
     def test_flasher_for_builds_the_esptool_backend(self):
         chosen = flasher.flasher_for('/dev/ttyACM0', lambda: '/dev/ttyACM0', self.logs, {})

@@ -2,12 +2,12 @@
 
     cycling remote <code>                    # bridge until the visitor disconnects
     cycling remote <code> -- <command...>    # run one command against the device, then tear down
-    cycling remote reset <code> <kind>       # usbJtagBootloader | hardReset on a running bridge
 
 The bridge (web/agent, run with bun) exports CYCLING_PORT, a pty every
-os.open-based tool can use, and CYCLING_ESPTOOL_PORT, an rfc2217:// URL for
-esptool. This module owns paths and the token; the bridge owns the protocol
-and learns nothing about the repository but these environment variables.
+os.open-based tool can use, and CYCLING_FLASHER, the device socket the
+firmware tasks reach the chip's ROM through (device/page_flasher.py). This
+module owns paths and the token; the bridge owns the protocol and learns
+nothing about the repository but these environment variables.
 """
 
 import os

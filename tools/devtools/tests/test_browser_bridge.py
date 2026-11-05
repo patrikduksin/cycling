@@ -1,12 +1,12 @@
-"""cycling remote: the launcher's token and paths, and how bridged ports reach esptool and ssh; never opens USB."""
+"""cycling remote: the launcher's token and paths, and which backend a bridged port gets; never opens USB."""
 
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from cycling_devtools.device import browser_bridge, flasher, remote
+from cycling_devtools.device.page_flasher import PageFlasher
 
 
 class Launcher(unittest.TestCase):
@@ -58,33 +58,27 @@ class Paths(unittest.TestCase):
         self.assertEqual(browser_bridge.TOKEN, browser_bridge.DEVICE_LOCAL / 'bridge' / 'token')
 
 
-class EsptoolPort(unittest.TestCase):
-    def run_esptool(self, environ):
-        completed = subprocess.CompletedProcess([], 0, '', '')
-        with (
-            tempfile.TemporaryDirectory() as temp,
-            patch.dict('os.environ', environ, clear=False),
-            patch('subprocess.run', Mock(return_value=completed)) as run,
-        ):
-            flasher.flasher_for('/dev/pts/9', lambda: '/dev/pts/9', Path(temp)).read(0, 1, Path(temp) / 'out.bin')
-        command = run.call_args.args[0]
-        return command[command.index('--port') + 1]
+class BackendChoice(unittest.TestCase):
+    def chosen(self, environ):
+        return flasher.flasher_for('/dev/pts/9', lambda: '/dev/pts/9', Path('/tmp'), environ)
 
-    def test_rfc2217_url_replaces_the_bridge_pty_for_esptool(self):
-        bridge = {'CYCLING_PORT': '/dev/pts/9', 'CYCLING_ESPTOOL_PORT': 'rfc2217://127.0.0.1:4100'}
-        self.assertEqual(self.run_esptool(bridge), 'rfc2217://127.0.0.1:4100')
+    def test_the_bridged_port_goes_through_the_visitors_page(self):
+        bridge = {'CYCLING_PORT': '/dev/pts/9', 'CYCLING_FLASHER': '/x/device.sock'}
+        chosen = self.chosen(bridge)
+        self.assertIsInstance(chosen, PageFlasher)
+        self.assertEqual(chosen.door, Path('/x/device.sock'))
 
-    def test_another_port_inside_a_bridge_keeps_its_own_path(self):
-        bridge = {'CYCLING_PORT': '/dev/pts/4', 'CYCLING_ESPTOOL_PORT': 'rfc2217://127.0.0.1:4100'}
-        self.assertEqual(self.run_esptool(bridge), '/dev/pts/9')
+    def test_another_port_inside_a_bridge_stays_local(self):
+        bridge = {'CYCLING_PORT': '/dev/pts/4', 'CYCLING_FLASHER': '/x/device.sock'}
+        self.assertIsInstance(self.chosen(bridge), flasher.EsptoolFlasher)
 
-    def test_a_stray_esptool_url_without_its_pty_is_ignored(self):
-        self.assertEqual(
-            self.run_esptool({'CYCLING_PORT': '', 'CYCLING_ESPTOOL_PORT': 'rfc2217://127.0.0.1:1'}), '/dev/pts/9'
+    def test_a_stray_device_socket_without_its_pty_is_ignored(self):
+        self.assertIsInstance(
+            self.chosen({'CYCLING_PORT': '', 'CYCLING_FLASHER': '/x/device.sock'}), flasher.EsptoolFlasher
         )
 
     def test_without_a_bridge_esptool_uses_the_selected_port(self):
-        self.assertEqual(self.run_esptool({'CYCLING_PORT': '', 'CYCLING_ESPTOOL_PORT': ''}), '/dev/pts/9')
+        self.assertIsInstance(self.chosen({}), flasher.EsptoolFlasher)
 
 
 class Ssh(unittest.TestCase):
@@ -93,7 +87,7 @@ class Ssh(unittest.TestCase):
             'CYCLING_REMOTE_TOKEN': 'secret',
             'CYCLING_REMOTE_DIR': '/x',
             'CYCLING_REMOTE_RELAY': 'ws://localhost',
-            'CYCLING_ESPTOOL_PORT': 'rfc2217://127.0.0.1:1',
+            'CYCLING_FLASHER': '/x/device.sock',
             'CYCLING_FORWARDED': '1',
         }
         with patch.dict('os.environ', environ, clear=True):

@@ -66,6 +66,8 @@ bun run check                                  # typecheck, both lints, format c
 sh web/relay/test/offline-smoke.sh             # relay under `alchemy dev`, no network, smoke test
 sh web/relay/test/offline-smoke.sh web/agent/test/e2e-relay.ts   # cycling remote end to end, fake browser
 sh web/agent/test/e2e-page.sh [shots-dir]      # the page flasher end to end: Chromium, ROM simulator, Device
+E2E_BENCH_MIB=4 sh web/agent/test/e2e-page.sh  # time one 4 MiB read through all of it at the C606's 140 KB/s
+bun web/flasher/test/read-bench.ts [MiB] [KB/s] # time one read through the flasher alone; 0 KB/s: no chip limit
 VITE_RELAY_URL=ws://localhost:1337 bun run --cwd web/site dev    # the page; ?fake shows a fake device
 ```
 

@@ -78,7 +78,9 @@ pinned through one bun catalog entry at `~4.1.2` (Foldkit's peer range).
   `Enter`, `Read{region}`, `Write{region, md5}`, `Digest{region}`, `Reboot`,
   `Release`. There is no eFuse op, no erase, no register access and no line
   toggling, so none can be asked of a visitor's device. `Region` is checked
-  against the 16 MiB flash at decode on every end. Outcomes: `Entered{chip}`,
+  against the 16 MiB flash at decode on every end, and on the page against the
+  flash size the chip reports (`pastFlash`); a chip other than the ESP32-S3 is
+  refused at entry (`unsupportedChip`). Outcomes: `Entered{chip}`,
   `Read{md5}`, `Written{md5}`, `Digest{md5}`, `Rebooting`, `Released`,
   `Failed{reason, detail}`; `detail` is esptool-js's words with MAC-shaped text
   redacted, at most 200 characters. `PortState` gains `Flashing`: the page's
@@ -137,9 +139,14 @@ RelayClient (socket, token, capped redial)
 - `leaseFlasher` owns integrity and retries. A write announces the file's MD5
   before its bytes and accepts only the chip's matching digest; a read is
   accepted only when its frames are contiguous and the file's MD5 is the
-  chip's. A relay drop or a broken transfer resends the op (every op but
-  Reboot is idempotent under one lease) once the visitor is reachable again,
-  waiting at most 30 s. One stderr line per op, never the MAC.
+  chip's. Every op but Reboot is idempotent under one lease and is tried up
+  to three more times, each once the visitor is reachable again (at most
+  30 s). An op whose answer never came (a relay drop, 20 s of silence) is
+  resent under its own request id, which the page joins while the op runs or
+  answers again once it is done, so a long write is never run twice or
+  queued behind itself. One whose answer was unusable (broken read data,
+  `transferGap`, `payloadMismatch`, `digestMismatch`) is tried again under a
+  new id. One stderr line per op, never the MAC.
 - Reboot subscribes to the console before it asks, waits up to 10 s for the
   port to be Open again, then copies `seconds` of console output into the
   file Python named, which is how `Device.reboot`'s boot capture works here.
@@ -166,17 +173,25 @@ RelayClient (socket, token, capped redial)
   `serial.granted` (the picked SerialPort, closed, waiting like reacquire)
   then `flasher.open`, then the device's own partition table and otadata.
 - The hold is a port phase: `Entering{lease, entry}` and `Flashing{lease,
-  layout}` sit beside `Open`, `Reacquiring` and `Failed`, so a hold on a
-  failed port cannot be represented. `holder.ts` is the op table as pure
-  functions, and it is the only place that answers an op, so every op gets
-  exactly one `OpResult`. The table is its doc comment.
+  entry, layout, answered}` sit beside `Open`, `Reacquiring` and `Failed`, so
+  a hold on a failed port cannot be represented. `holder.ts` is the op table
+  as pure functions, and it is the only place that answers an op, so every op
+  gets exactly one `OpResult` (a resend of it joins it or gets that answer
+  again from `answered`). The table is its doc comment. `headState` is the one
+  reading of the hold (Entering, Running, AwaitingConsent, Idle) for the
+  runner, the heartbeats, the hold's expiry, the update panel and the
+  visitor's buttons.
 - One exit path. The flasher session's scope finalizer (in
   `@cycling/flasher`) is the only way from the flasher back to the console:
-  unless a Reboot already reset the chip it waits for an abandoned esptool-js
-  call to settle, sends python esptool's watchdog reset, and closes the port.
-  Release, the visitor's Restart device, a failed op and the agent-away
-  timeout are all "back to the console" in the Model; the re-key does the
-  rest, so a stranger's device is not left in download mode.
+  unless a Reboot already reset the chip, it waits for the abandoned
+  esptool-js call to settle (a write stops at its next block, a read piece
+  takes about 2 s), then sends python esptool's watchdog reset, and closes
+  the port. The session runs one esptool-js call at a time, so the reset
+  never interleaves with the abandoned call; if that call has not settled in
+  30 s the reset is skipped, not raced. Release, the visitor's Restart
+  device, a failed op and an expired hold are all "back to the console" in
+  the Model; the re-key does the rest, so a stranger's device is not left in
+  download mode.
 - The op runner (`flasher/run.ts`) is a Subscription keyed on the head op. It
   puts `OpData` and progress on the relay itself and hands `update` redacted
   Messages. `Entered{chip}` is sent by a Command that reads `session.chip`
@@ -184,9 +199,11 @@ RelayClient (socket, token, capped redial)
   Model. Write payloads wait in an inbox outside `update`, checked for holes
   (`transferGap`) and against the announced MD5 (`payloadMismatch`) before
   flash is touched.
-- The agent leaving mid-hold changes nothing for 30 s: a running op
-  finishes, and an `Enter` with the same lease re-answers without a reset.
-  After 30 s with no agent the page goes back to the console.
+- A hold never ends under a running op. `holdExpiry` gives the device back
+  30 s after the agent left (or the page lost the relay) once nothing runs,
+  and after 2 min of an idle hold with the agent present, which is how a
+  Release lost on the way still returns the device to its app. Meanwhile an
+  `Enter` with the same lease re-answers without a reset.
 - The visitor sees an update-mode panel in the device's own partition names,
   the last 20 ops, Restart device while update mode is idle, a Disconnect
   that asks first during a write (worded by what the write overlaps), and one
@@ -270,7 +287,7 @@ Where the code differs from the sketch, and why.
 - **Paths.** The launcher (`device/browser_bridge.py`) passes
   `CYCLING_REMOTE_DIR` = the main checkout's `.local/bridge` (token at
   `.local/bridge/token`); a session lives
-  in `<dir>/<CODE>/` (`port` symlink, `device.sock`). `flasher_for` picks
+  in `<dir>/<CODE>/` (`port` symlink, `device.sock`). `firmware.flasher_for` picks
   `PageFlasher` only when the selected port is the bridge's `CYCLING_PORT`
   and `CYCLING_FLASHER` is set, so a second, local device in a bridged
   command stays on `EsptoolFlasher`. Checks run inside
@@ -315,7 +332,15 @@ grafts), and why.
   changed literal.
 - **Write check.** `write` does not hand esptool-js a `calculateMD5Hash`;
   esptool-js reports its own mismatch only as a generic message. The flasher
-  compares the chip's MD5 of the written range itself (`digestMismatch`).
+  compares the chip's MD5 of the written range itself (`digestMismatch`), so
+  the page answers `Written` with the announced MD5 its inbox already checked
+  and runs no second digest.
+- **Reads check the stub's own digest.** esptool-js 0.7.1's `readFlash`
+  drops the MD5 the stub sends after the data and copies its whole buffer per
+  packet. The session reads with python esptool's framing (4 KiB packets, 64
+  in flight), checks each piece against that digest, and ends a read with the
+  region's MD5 of verified pieces. No SPI_FLASH_MD5 runs per piece or over
+  the whole region, which saves the chip two hashing passes per read.
 - **Errors by phase.** esptool-js has no error class worth telling apart, so
   a failure during `open` is `entryFailed`, later `chipError`, and anything
   once the port's `disconnect` event fired is `portLost`. esptool-js 0.7.1's
@@ -323,9 +348,40 @@ grafts), and why.
   before `DOMException`), so port loss comes from the port's own event, and
   every esptool-js call is raced against it.
 - **Read pieces are 256 KiB**, not 1 MiB: about 2 s of the chip's ~140 KB/s,
-  so an abandoned piece settles inside the finalizer's 4 s wait and a Release
-  mid-read still gets its recovery reset. In the simulator a 16 MiB read
-  takes about 7 s, bounded by esptool-js re-copying its buffer per packet.
+  so an abandoned piece settles quickly and a Release mid-read still gets its
+  recovery reset.
+- **Read throughput, measured device-free.** The simulator hands the page
+  Chrome's 255-byte reads and paces READ_FLASH (`readBytesPerSecond`). At the
+  C606's 140 KB/s a read runs at 98-99% of it, both through
+  `web/flasher/test/read-bench.ts` and end to end in headless Chromium with
+  the relay, agent and devtools (`E2E_BENCH_MIB=4 sh
+  web/agent/test/e2e-page.sh`: 4 MiB in 30.6 s, 137 KB/s). With no chip
+  limit the host side alone moves 2.4 MB/s in the flasher and 750 KB/s end
+  to end (16 MiB in 22.4 s), so the chip binds, not esptool-js's buffer
+  copies, the relay or the agent. A real 16 MiB read through the page that
+  ran for 10 min is not explained by anything the simulator models; the
+  untested suspects are a hidden or occluded tab (esptool-js waits with
+  `sleep(1)` timers, which Chrome throttles to 1 s and then to 1 min) and
+  the chip's own hashing, which the two digest passes above added.
+- **Chip family and flash size.** C3 and C6 boards enumerate as 303a:1001
+  too. Entry checks the chip is an ESP32-S3 before any register write and
+  refuses another `unsupportedChip` with no recovery reset (the S3's reset
+  registers mean nothing there). It reads the flash's JEDEC size, as python
+  esptool does before a write, and refuses any region past it `pastFlash`.
+- **A resend joins the op.** The agent resends an unanswered op under its
+  own id; the page joins it while it is queued or running, and answers the
+  last finished one again from `Flashing.answered`. Every queued op that is
+  not running gets the once-a-second heartbeat, so nothing stalls behind a
+  long op.
+- **One esptool-js call at a time.** esptool-js flushes input per command,
+  so the session chains its calls: each starts once the one before it
+  settled, even when the fiber that started that one was interrupted.
+- **The hold's expiry is a subscription.** `holdExpiry` replaces the
+  departures counter, a WaitForAgent command and its message: 30 s after the
+  agent left once nothing runs, 2 min of an idle hold with the agent here.
+- **One flasher adapter.** `site/src/adapters/flasher.ts` turns a session
+  into wire types once: the chip as the protocol's `Chip`, digests as `Md5`,
+  details cut to 200 characters.
 - **The hold is a port phase, not `Port.holder`.** `Entering` and `Flashing`
   phases replace C2's separate holder, which ruled out a hold on a failed
   port.
@@ -333,8 +389,9 @@ grafts), and why.
   reads the chip from the handle, not from the runner, so a Release racing a
   running op cannot produce a second answer.
 - **Which failures end a hold.** `chipError`, `portLost` and `entryFailed`
-  end it; `payloadMismatch`, `transferGap`, `digestMismatch` and `notAllowed`
-  keep it, because the agent resends those.
+  end it; `payloadMismatch`, `transferGap`, `digestMismatch`, `pastFlash`
+  and `notAllowed` keep it. The agent tries the first three again; it does
+  not ask the visitor again after Not now.
 - **A port lost during a Reboot is the reboot.** The watchdog reset can drop
   the port before the op's own result arrives; the page answers `Rebooting`
   then, not `portLost` (found by the end-to-end run).
@@ -343,7 +400,7 @@ grafts), and why.
   A second heartbeat covers a head op that waits (entering, consent, console),
   so a slow visitor does not trip the agent's 20 s stall.
 - **The agent sends one op at a time** per lease (the device socket is
-  sequential), so its stall clock never runs for an op queued behind another.
+  sequential); only its own resend can queue behind a running op.
 - **`detail` is redacted text, not "no text".** Failed outcomes keep a
   200-character, MAC-redacted detail for the agent's private log and the
   Python error; it never reaches the page's Model or view.
@@ -361,7 +418,13 @@ Chromium with the simulator as its Web Serial port, the offline relay, the
 real `cycling remote` and devtools' `Device` through `PageFlasher` (enter,
 read 0x8000, write and verify a scratch region, read it back, reboot with the
 boot capture), plus killing the device task mid-read (Release, back to the
-console, chip in its app).
+console, chip in its app). The flasher's tests also cover a write abandoned
+mid-way (it stops at a block, then the reset, never interleaved), a C3
+refused before any register write, and a 4 MiB chip refusing regions past
+its flash; the site's, a resend joining a running write and an idle or
+unattended hold expiring only once nothing runs; the agent's, a lost answer
+asked for again under its id (the page writes once) and a `transferGap`
+write sent again.
 
 Open risks for hardware, cheapest experiment first:
 
@@ -370,15 +433,17 @@ Open risks for hardware, cheapest experiment first:
   Chrome hands back the same `SerialPort` object after a watchdog reset is
   also unmeasured; the page reopens the picked object when it reappears, else
   the first unopened match.
-- **Background tabs.** esptool-js polls with `sleep(1)`; Chrome throttles
-  timers in hidden tabs. The page asks the visitor to keep it in front; a
-  hidden-tab 16 MiB read is the experiment.
-- **Relay throughput for 16 MiB.** About 1,100 OpData frames each way per full
-  read; the chip's ~140 KB/s should bind, not the relay or the visitor's
-  uplink, but this is inferred, not measured.
+- **Background tabs, and the slow real read.** esptool-js polls with
+  `sleep(1)`; Chrome throttles timers in hidden tabs. The page asks the
+  visitor to keep it in front. The experiment: one 16 MiB read on the C606
+  with the tab in front, one hidden, timed against the simulator's 137 KB/s.
+- **Relay throughput over the internet.** Device-free, the local relay
+  carries 750 KB/s end to end; the real edge and a visitor's uplink are
+  unmeasured.
 - **Boot capture.** It starts after re-enumeration, Chrome's reacquire and the
   relay, so the first ROM lines are likelier to be missed than locally.
-- **Recovery after an interrupted op** waits at most 4 s for the abandoned
-  esptool-js call; a slower chip leaves the device in the stub until a replug.
+- **Recovery after an interrupted op** waits up to 30 s for the abandoned
+  esptool-js call; a call that never settles skips the reset rather than race
+  it, and leaves the device in the stub until a replug.
 - **A stranger's device** still cannot run `cycling backup` or `flash`:
   `.local/device` holds one device's private state (follow-up).

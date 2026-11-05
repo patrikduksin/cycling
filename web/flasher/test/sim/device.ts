@@ -21,6 +21,8 @@ export interface SimOptions {
   readonly flashCryptCnt?: number
   /** Every reply reaches the host this much later. */
   readonly replyDelayMs?: number
+  /** How fast the stub streams READ_FLASH packets; the C606 manages about 140 KB/s. Unlimited by default. */
+  readonly readBytesPerSecond?: number
 }
 
 export type Mode = 'app' | 'held' | 'rom' | 'stub' | 'unplugged'
@@ -139,6 +141,8 @@ interface Reading {
   readonly corruptAt: number | undefined
   sent: number
   acked: number
+  /** The next packet is still leaving the chip. */
+  busy: boolean
 }
 
 interface Writing {
@@ -209,6 +213,7 @@ export class SimDevice implements Wire, Enumeration {
       secureBoot: options.secureBoot ?? false,
       flashCryptCnt: options.flashCryptCnt ?? 0,
       replyDelayMs: options.replyDelayMs ?? 0,
+      readBytesPerSecond: options.readBytesPerSecond ?? Infinity,
     }
     this.attach()
     this.bootApp('0x1 (POWERON)')
@@ -791,33 +796,56 @@ export class SimDevice implements Wire, Enumeration {
         fault === undefined ? undefined : Math.max(fault.address, address),
       sent: 0,
       acked: 0,
+      busy: false,
     }
     this.pump()
   }
 
-  /** The stub keeps `window` packets unacknowledged, then sends the MD5 of the range once all are acked. */
+  /**
+   * The stub keeps `window` packets unacknowledged, each taking its share of
+   * `readBytesPerSecond` to leave the chip, then sends the MD5 of the range
+   * once all are acked.
+   */
   private pump(): void {
     const reading = this.reading
-    if (reading === undefined) {
+    if (reading === undefined || reading.busy) {
       return
     }
+    const rate = this.options.readBytesPerSecond
     while (
       reading.sent < reading.size &&
       reading.sent < reading.acked + reading.window * reading.packet
     ) {
-      const from = reading.address + reading.sent
-      const length = Math.min(reading.packet, reading.size - reading.sent)
-      const packet = this.flash.slice(from, from + length)
-      const corrupt = reading.corruptAt
-      if (corrupt !== undefined && corrupt >= from && corrupt < from + length) {
-        packet[corrupt - from] = (packet[corrupt - from] ?? 0) ^ 0x01
+      if (!Number.isFinite(rate)) {
+        this.sendPacket(reading)
+        continue
       }
-      this.sendFrame(packet)
-      reading.sent += length
+      reading.busy = true
+      const length = Math.min(reading.packet, reading.size - reading.sent)
+      this.later((length * 1000) / rate, () => {
+        reading.busy = false
+        if (this.reading === reading) {
+          this.sendPacket(reading)
+          this.pump()
+        }
+      })
+      return
     }
     if (reading.acked >= reading.size) {
       this.reading = undefined
       this.sendFrame(hexBytes(this.flashMd5(reading.address, reading.size)))
     }
+  }
+
+  private sendPacket(reading: Reading): void {
+    const from = reading.address + reading.sent
+    const length = Math.min(reading.packet, reading.size - reading.sent)
+    const packet = this.flash.slice(from, from + length)
+    const corrupt = reading.corruptAt
+    if (corrupt !== undefined && corrupt >= from && corrupt < from + length) {
+      packet[corrupt - from] = (packet[corrupt - from] ?? 0) ^ 0x01
+    }
+    this.sendFrame(packet)
+    reading.sent += length
   }
 }

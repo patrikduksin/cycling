@@ -7,6 +7,7 @@ export interface Wire {
 }
 
 const ESPRESSIF_USB_JTAG = { usbVendorId: 0x303a, usbProductId: 0x1001 }
+const CHROME_BUFFER_SIZE = 255
 
 type PortState = 'closed' | 'open' | 'lost'
 
@@ -22,6 +23,8 @@ export class FakeSerialPort extends EventTarget implements SerialPort {
   writable: WritableStream<Uint8Array> | null = null
   private state: PortState = 'closed'
   private incoming: ReadableStreamDefaultController<Uint8Array> | undefined
+  /** Chrome hands the page at most `bufferSize` bytes per read, 255 unless the opener asked for more. */
+  private readSize = CHROME_BUFFER_SIZE
 
   constructor(private readonly wire: Wire) {
     super()
@@ -39,7 +42,7 @@ export class FakeSerialPort extends EventTarget implements SerialPort {
     return ESPRESSIF_USB_JTAG
   }
 
-  open(_options: SerialOptions): Promise<void> {
+  open(options: SerialOptions): Promise<void> {
     if (this.state === 'lost') {
       return Promise.reject(
         new DOMException('The device has been lost.', 'NetworkError'),
@@ -51,6 +54,7 @@ export class FakeSerialPort extends EventTarget implements SerialPort {
       )
     }
     this.state = 'open'
+    this.readSize = options.bufferSize ?? CHROME_BUFFER_SIZE
     this.readable = new ReadableStream<Uint8Array>({
       start: controller => {
         this.incoming = controller
@@ -109,7 +113,9 @@ export class FakeSerialPort extends EventTarget implements SerialPort {
 
   /** Device output; dropped unless the host has the port open. */
   deliver(bytes: Uint8Array): void {
-    this.incoming?.enqueue(bytes)
+    for (let at = 0; at < bytes.length; at += this.readSize) {
+      this.incoming?.enqueue(bytes.slice(at, at + this.readSize))
+    }
   }
 
   /** The device left the bus: reads fail, the streams go away, `disconnect` fires. */

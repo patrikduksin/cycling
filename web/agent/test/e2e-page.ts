@@ -26,6 +26,10 @@ const AGENT_TOKEN = process.env['AGENT_TOKEN'] ?? ''
 const DIST = process.env['E2E_DIST'] ?? ''
 const SIM = process.env['E2E_SIM'] ?? ''
 const SHOTS = process.env['E2E_SHOTS'] ?? ''
+/** Set to a MiB count to time one read of that size instead of the flow and chaos runs. */
+const BENCH_MIB = process.env['E2E_BENCH_MIB'] ?? ''
+/** The simulated chip's READ_FLASH rate for the bench; the C606 manages about 140. */
+const BENCH_KBPS = process.env['E2E_BENCH_KBPS'] ?? '140'
 const ROOT = new URL('../../..', import.meta.url).pathname
 const DEVICE_SCRIPT = new URL('./e2e_device.py', import.meta.url).pathname
 const SITE_PORT = 5173
@@ -175,12 +179,12 @@ const simState = (page: Page) =>
     .evaluate('globalThis.__sim.state()')
     .pipe(Effect.flatMap(Schema.decodeUnknownEffect(SimState)), Effect.orDie)
 
-const connect = (page: Page) =>
+const connect = (page: Page, query = '') =>
   Effect.gen(function* () {
-    yield* page.navigate(`http://localhost:${SITE_PORT}/`)
+    yield* page.navigate(`http://localhost:${SITE_PORT}/${query}`)
     yield* until(page, 'the page', text => text.length > 0)
     yield* page.evaluate('sessionStorage.clear()')
-    yield* page.navigate(`http://localhost:${SITE_PORT}/`)
+    yield* page.navigate(`http://localhost:${SITE_PORT}/${query}`)
     yield* until(page, 'the idle page', text => /connect device/i.test(text))
     yield* clickButton(page, 'Connect device')
     const text = yield* until(page, 'a session code', text =>
@@ -273,6 +277,21 @@ const chaos = (page: Page) =>
     }),
   )
 
+const bench = (page: Page) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* say(
+        `bench: read ${BENCH_MIB} MiB from a chip at ${BENCH_KBPS} KB/s`,
+      )
+      const code = yield* connect(page, `?sim-read-kbps=${BENCH_KBPS}`)
+      const scratch = yield* scratchDir
+      const run = yield* remoteRun(code, 'bench', scratch)
+      const result = yield* run.done
+      yield* say(result.stdout.trim().replace(/^/gm, '  py   '))
+      yield* check('the bench read finished', result.exit === 0, result)
+    }),
+  )
+
 const program = Effect.scoped(
   Effect.gen(function* () {
     if (RELAY === '' || DIST === '' || SIM === '' || SHOTS === '') {
@@ -287,6 +306,9 @@ const program = Effect.scoped(
       height: 900,
       dark: true,
     })
+    if (BENCH_MIB !== '') {
+      return yield* bench(page)
+    }
     yield* flow(page)
     yield* chaos(page)
     yield* say('all steps held')

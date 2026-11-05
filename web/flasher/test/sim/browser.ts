@@ -6,9 +6,14 @@ import { FakeSerial } from './port.ts'
  * Load before the page: a simulated C606 on a stock layout becomes
  * `navigator.serial`, and `globalThis.__sim` drives chaos runs. Slot A's
  * image lands a moment later (WebCrypto's SHA-256 is async), long before a
- * visitor can pick the port.
+ * visitor can pick the port. `?sim-read-kbps=140` paces READ_FLASH like the
+ * C606.
  */
-const device = new SimDevice({ flash: stockLayout() })
+const kbps = Number(new URLSearchParams(location.search).get('sim-read-kbps'))
+const device = new SimDevice({
+  flash: stockLayout(),
+  readBytesPerSecond: kbps > 0 ? kbps * 1000 : Infinity,
+})
 void stockImage().then(image => device.flash.set(image, SLOT_A))
 
 Object.defineProperty(navigator, 'serial', {

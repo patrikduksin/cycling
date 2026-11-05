@@ -6,6 +6,7 @@ line per step; the exit code says whether every step held.
 
     python e2e_device.py flow <scratch>      enter, read 0x8000, write+verify a scratch region, reboot
     python e2e_device.py long-read <scratch> a 16 MiB read, for the chaos run to kill midway
+    python e2e_device.py bench <scratch>     one timed read of E2E_BENCH_MIB MiB
 """
 
 import hashlib
@@ -34,6 +35,13 @@ def main(mode, scratch):
     metadata, identity = device.connect(strict=True)
     step('enter', seconds=round(time.monotonic() - started, 2), identity_length=len(identity))
     step('read 0x8000', bytes=len(metadata), sha256=hashlib.sha256(metadata).hexdigest())
+    if mode == 'bench':
+        size = int(os.environ['E2E_BENCH_MIB']) * 1024 * 1024
+        started = time.monotonic()
+        device.read(0, size, 'bench.bin')
+        seconds = time.monotonic() - started
+        step('bench read', bytes=size, seconds=round(seconds, 1), kb_per_s=round(size / seconds / 1000))
+        return
     if mode == 'long-read':
         (Path(scratch) / 'pid').write_text(str(os.getpid()))
         device.read(0, firmware.FLASH_SIZE, 'flash.bin')

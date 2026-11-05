@@ -13,7 +13,8 @@ use super::chrome::{
 const fn ring(focused: bool) -> usize {
     if focused { 3 } else { 0 }
 }
-use super::sensors::{Glance, icon_row};
+use super::icons::{Sensor, Size};
+use super::sensors::Glance;
 use super::workout::Text;
 use firmware_shell::rendering::font::{Face, SPILL};
 use heapless::Vec;
@@ -79,6 +80,8 @@ const ICON_PITCH: usize = 52;
 const ICON_TOP: usize = SENSORS_TILE.top + 36;
 /// The top line of the short names under the icons.
 const NAME_TOP: usize = ICON_TOP + 22;
+/// The top of each icon's 22 px square, one row above the status dot's.
+const ICON_SQUARE_TOP: usize = ICON_TOP - 1;
 
 type Small = Label<20>;
 
@@ -299,7 +302,7 @@ impl Home {
             }
             if let Some(none) = &self.none {
                 none.paint(row);
-            } else if y >= ICON_TOP {
+            } else if y >= ICON_SQUARE_TOP {
                 self.paint_icons(row, focused);
                 for name in &self.names {
                     name.paint(row);
@@ -337,7 +340,8 @@ impl Home {
                 let fill = Self::surface(focused, SENSORS_TILE, x, y)?;
                 Some(blend(glance.color, fill, dot))
             });
-            row.bits(slot_left, icon_row(glance.kind, y - ICON_TOP), WHITE);
+            let icon = Sensor::of(glance.kind).icon(Size::Small);
+            icon.paint(row, slot_left, ICON_SQUARE_TOP, WHITE);
         }
     }
 
@@ -436,21 +440,21 @@ impl Home {
             }
         }
         let left = SENSORS_TILE.left + INSET;
-        if y < ICON_TOP || x < left {
+        if y < ICON_SQUARE_TOP || x < left {
             return fill;
         }
         let slot = (x - left) / ICON_PITCH;
         let Some(glance) = self.sensors.get(slot) else {
             return fill;
         };
-        let (ix, iy) = ((x - left) % ICON_PITCH, y - ICON_TOP);
-        if ix < 22 && icon_row(glance.kind, iy) & (1 << ix) != 0 {
-            return WHITE;
-        }
-        // A status dot at the icon's top right.
-        let cx = 4 * (left + slot * ICON_PITCH + 25) as i32;
+        // A status dot at the icon's top right, under the icon.
+        let slot_left = left + slot * ICON_PITCH;
+        let cx = 4 * (slot_left + 25) as i32;
         let dot = super::chrome::disc(x, y, cx, 4 * ICON_TOP as i32 + 2, 10);
-        blend(glance.color, fill, dot)
+        let under = blend(glance.color, fill, dot);
+        let icon = Sensor::of(glance.kind).icon(Size::Small);
+        icon.pixel(x, y, slot_left, ICON_SQUARE_TOP, WHITE, under)
+            .unwrap_or(under)
     }
 }
 
@@ -614,11 +618,14 @@ mod tests {
             .collect();
         for slot in 0..home.sensors.len() {
             let left = SENSORS_TILE.left + INSET + slot * ICON_PITCH;
+            let ink = Sensor::of(home.sensors[slot].kind)
+                .icon(Size::Small)
+                .ink(left, ICON_SQUARE_TOP);
+            // The status dot sits at the icon's top right.
             let icon = Rect {
-                left,
-                top: ICON_TOP - 1,
+                top: ink.top.min(ICON_TOP - 1),
                 right: left + 28,
-                bottom: ICON_TOP + 20,
+                ..ink
             };
             sensors.push((std::format!("icon {slot}"), icon));
         }

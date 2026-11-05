@@ -11,7 +11,6 @@ mod slot;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use icons::row as icon_row;
 pub use menu::{Action, Diagnostics, GLANCES, Glance, Menu};
 pub use message::{CalibrationNote, MenuMessage};
 

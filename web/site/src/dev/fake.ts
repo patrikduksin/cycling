@@ -8,7 +8,7 @@ import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
-import type { Session } from '@cycling/flasher'
+import { type Session, md5Hex } from '@cycling/flasher'
 import {
   type BrowserMsg,
   CloseCode,
@@ -32,7 +32,7 @@ import {
   type SerialLink,
 } from '../links.ts'
 import { demoFlash } from './image.ts'
-import { fakeMd5Hex, memorySession } from './memorySession.ts'
+import { memorySession } from './memorySession.ts'
 
 /**
  * A device and a relay that exist only in the dev server (`?fake`), so the
@@ -159,7 +159,7 @@ const developerScript = (bytes: Uint8Array): ReadonlyArray<Op> => [
   { _tag: 'Enter', lease },
   { _tag: 'Read', lease, region: { address: 0x8000, size: 0x8000 } },
   { _tag: 'Read', lease, region: { address: 0x10000, size: 0x200000 } },
-  { _tag: 'Write', lease, region: PAYLOAD, md5: Md5.make(fakeMd5Hex(bytes)) },
+  { _tag: 'Write', lease, region: PAYLOAD, md5: Md5.make(md5Hex(bytes)) },
   { _tag: 'Digest', lease, region: PAYLOAD },
   { _tag: 'Reboot', lease },
 ]
@@ -265,7 +265,6 @@ const fakeFlasher = (flash: Uint8Array) => ({
       ),
       Effect.map(({ session }) => session),
     ),
-  md5Hex: fakeMd5Hex,
 })
 
 export const fakeAdapters: Adapters = (() => {

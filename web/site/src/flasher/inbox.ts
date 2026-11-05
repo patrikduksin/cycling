@@ -5,6 +5,7 @@ import * as Queue from 'effect/Queue'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 
+import { md5Hex } from '@cycling/flasher'
 import {
   type Assembly,
   MAX_FLASH_BYTES,
@@ -65,76 +66,73 @@ const fed = (slot: Option.Option<Slot>, frame: OpData): Slot => ({
         ),
 })
 
-export const makeInbox = (
-  md5Hex: (bytes: Uint8Array) => string,
-): Effect.Effect<Inbox> =>
-  Effect.gen(function* () {
-    const slots = yield* Ref.make<ReadonlyArray<Slot>>([])
-    const doorbell = yield* Queue.sliding<true>(1)
+export const makeInbox: Effect.Effect<Inbox> = Effect.gen(function* () {
+  const slots = yield* Ref.make<ReadonlyArray<Slot>>([])
+  const doorbell = yield* Queue.sliding<true>(1)
 
-    const offer = (frame: OpData) =>
-      Ref.update(slots, current =>
-        [
-          ...current.filter(slot => slot.id !== frame.id),
-          fed(
-            Option.fromNullishOr(current.find(slot => slot.id === frame.id)),
-            frame,
-          ),
-        ].slice(-KEPT_PAYLOADS),
-      ).pipe(Effect.andThen(Queue.offer(doorbell, true)), Effect.asVoid)
-
-    const refused = (reason: PayloadRefused['reason']) =>
-      Effect.fail(new PayloadRefused({ reason }))
-
-    const ready = (id: RequestId, size: number) =>
-      Ref.get(slots).pipe(
-        Effect.flatMap(current =>
-          Option.match(
-            Option.fromNullishOr(current.find(slot => slot.id === id)),
-            {
-              onNone: () => Effect.succeed(Option.none<Uint8Array>()),
-              onSome: ({ assembly }) =>
-                Option.match(assembly, {
-                  onNone: () => refused('transferGap'),
-                  onSome: progress =>
-                    progress.received > size
-                      ? refused('transferGap')
-                      : Effect.succeed(
-                          progress.received === size
-                            ? Option.some(assembled(progress))
-                            : Option.none(),
-                        ),
-                }),
-            },
-          ),
+  const offer = (frame: OpData) =>
+    Ref.update(slots, current =>
+      [
+        ...current.filter(slot => slot.id !== frame.id),
+        fed(
+          Option.fromNullishOr(current.find(slot => slot.id === frame.id)),
+          frame,
         ),
-      )
+      ].slice(-KEPT_PAYLOADS),
+    ).pipe(Effect.andThen(Queue.offer(doorbell, true)), Effect.asVoid)
 
-    const nextFrame = Queue.take(doorbell).pipe(
-      Effect.timeoutOrElse({
-        duration: Duration.millis(OP_STALL_MS),
-        orElse: () => refused('transferGap'),
-      }),
+  const refused = (reason: PayloadRefused['reason']) =>
+    Effect.fail(new PayloadRefused({ reason }))
+
+  const ready = (id: RequestId, size: number) =>
+    Ref.get(slots).pipe(
+      Effect.flatMap(current =>
+        Option.match(
+          Option.fromNullishOr(current.find(slot => slot.id === id)),
+          {
+            onNone: () => Effect.succeed(Option.none<Uint8Array>()),
+            onSome: ({ assembly }) =>
+              Option.match(assembly, {
+                onNone: () => refused('transferGap'),
+                onSome: progress =>
+                  progress.received > size
+                    ? refused('transferGap')
+                    : Effect.succeed(
+                        progress.received === size
+                          ? Option.some(assembled(progress))
+                          : Option.none(),
+                      ),
+              }),
+          },
+        ),
+      ),
     )
 
-    const take = (id: RequestId, size: number, md5: string) =>
-      Effect.gen(function* () {
-        while (true) {
-          const payload = yield* ready(id, size)
-          if (Option.isSome(payload)) {
-            return payload.value
-          }
-          yield* nextFrame
-        }
-      }).pipe(
-        Effect.ensuring(
-          Ref.update(slots, current => current.filter(slot => slot.id !== id)),
-        ),
-        Effect.filterOrElse(
-          payload => md5Hex(payload) === md5,
-          () => refused('payloadMismatch'),
-        ),
-      )
+  const nextFrame = Queue.take(doorbell).pipe(
+    Effect.timeoutOrElse({
+      duration: Duration.millis(OP_STALL_MS),
+      orElse: () => refused('transferGap'),
+    }),
+  )
 
-    return { offer, take }
-  })
+  const take = (id: RequestId, size: number, md5: string) =>
+    Effect.gen(function* () {
+      while (true) {
+        const payload = yield* ready(id, size)
+        if (Option.isSome(payload)) {
+          return payload.value
+        }
+        yield* nextFrame
+      }
+    }).pipe(
+      Effect.ensuring(
+        Ref.update(slots, current => current.filter(slot => slot.id !== id)),
+      ),
+      Effect.filterOrElse(
+        payload => md5Hex(payload) === md5,
+        () => refused('payloadMismatch'),
+      ),
+    )
+
+  return { offer, take }
+})

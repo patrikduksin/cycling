@@ -4,23 +4,7 @@ import * as Effect from 'effect/Effect'
 import * as Ref from 'effect/Ref'
 import * as Stream from 'effect/Stream'
 
-import type { Chip, Region, Session } from '@cycling/flasher'
-
-/**
- * Not MD5: four FNV-1a lanes printed as 32 hex digits. Tests and `?fake`
- * need a digest that is cheap and deterministic; the real one is
- * `md5Hex` from `@cycling/flasher`.
- */
-export const fakeMd5Hex = (bytes: Uint8Array): string =>
-  [0x811c_9dc5, 0x0100_0193, 0xdead_beef, 0x1234_5678]
-    .map(seed => {
-      let hash = seed
-      for (const byte of bytes) {
-        hash = Math.imul(hash ^ byte, 0x0100_0193) >>> 0
-      }
-      return hash.toString(16).padStart(8, '0')
-    })
-    .join('')
+import { type Chip, type Region, type Session, md5Hex } from '@cycling/flasher'
 
 export interface MemorySession {
   readonly session: Session
@@ -80,7 +64,7 @@ export const memorySession = (options: {
           Stream.concat(
             Stream.sync(() => ({
               _tag: 'Read' as const,
-              md5: fakeMd5Hex(
+              md5: md5Hex(
                 flash.subarray(region.address, region.address + region.size),
               ),
             })),
@@ -111,7 +95,7 @@ export const memorySession = (options: {
         wait(options.digestMs).pipe(
           Effect.andThen(
             Effect.sync(() =>
-              fakeMd5Hex(
+              md5Hex(
                 flash.subarray(region.address, region.address + region.size),
               ),
             ),

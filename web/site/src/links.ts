@@ -101,7 +101,6 @@ export interface SerialAdapter {
 /** What the page uses of `@cycling/flasher`; tests and `?fake` bring their own. */
 export interface FlasherAdapter {
   readonly open: OpenFlasher
-  readonly md5Hex: (bytes: Uint8Array) => string
 }
 
 /**

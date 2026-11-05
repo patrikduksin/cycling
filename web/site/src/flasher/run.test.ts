@@ -5,6 +5,7 @@ import * as Ref from 'effect/Ref'
 import * as Stream from 'effect/Stream'
 import { TestClock } from 'effect/testing'
 
+import { md5Hex } from '@cycling/flasher'
 import {
   type Binary,
   type BrowserMsg,
@@ -17,7 +18,7 @@ import {
 
 import { pageSession } from '../adapters/flasher.ts'
 import { demoFlash } from '../dev/image.ts'
-import { fakeMd5Hex, memorySession } from '../dev/memorySession.ts'
+import { memorySession } from '../dev/memorySession.ts'
 import type { Message } from '../message.ts'
 import type { RunnableOp } from '../model.ts'
 import { makeInbox } from './inbox.ts'
@@ -46,7 +47,7 @@ const setup = (options: {
       pieceBytes: 64 * 1024,
     })
     const session = yield* pageSession(memory.session).pipe(Effect.orDie)
-    const inbox = yield* makeInbox(fakeMd5Hex)
+    const inbox = yield* makeInbox
     const sent: Array<Binary | BrowserMsg> = []
     const start = (op: RunnableOp) =>
       runOp({
@@ -66,7 +67,7 @@ const setup = (options: {
 
 const finishedOf = (messages: ReadonlyArray<Message>) => messages.at(-1)
 
-const md5 = (bytes: Uint8Array) => Md5.make(fakeMd5Hex(bytes))
+const md5 = (bytes: Uint8Array) => Md5.make(md5Hex(bytes))
 
 const nth = <A>(items: ReadonlyArray<A>, index: number): A => {
   const item = items[index]

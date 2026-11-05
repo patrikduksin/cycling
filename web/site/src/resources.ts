@@ -306,7 +306,7 @@ export const managedResources = (adapters: Adapters) => {
                   }),
               ),
             )
-            const inbox = yield* makeInbox(adapters.flasher.md5Hex)
+            const inbox = yield* makeInbox
             const layout = yield* readLayout(session)
             return {
               _tag: 'Flasher',

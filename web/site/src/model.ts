@@ -9,6 +9,7 @@ import {
   Epoch,
   Lease,
   Op,
+  OpOutcome,
   OwnerKey,
   PortFailureReason,
   Region,
@@ -92,29 +93,46 @@ export const Entry = Schema.Literals(['usbReset', 'noReset'])
 export type Entry = typeof Entry.Type
 
 /**
+ * How an op ended on the page, as `update` may see it: the wire's
+ * `OpOutcome` without the chip facts or `Released`. `Entered` is answered
+ * from the session itself, so the MAC never reaches `update`.
+ */
+export const Finished = OpOutcome.mapMembers(
+  ([, read, written, digest, rebooting, , failed]) =>
+    [
+      Schema.TaggedStruct('Entered', {}),
+      read,
+      written,
+      digest,
+      rebooting,
+      failed,
+    ] as const,
+)
+export type Finished = typeof Finished.Type
+
+/** The last op the hold answered, so a resend of it is answered again rather than run again. */
+export const Answered = Schema.Struct({ id: RequestId, finished: Finished })
+export type Answered = typeof Answered.Type
+
+/**
  * Who holds the port and how far along it is. The first four are the
  * console, the protocol's `PortState` minus `Lost` (the page never rests
  * there; it goes straight to `Reacquiring` and reports both on the wire).
  * `Entering` and `Flashing` are a hold: the agent's `lease` owns the device
  * from an `Enter` until a Reboot, a Release, a lost port, a failed op, the
- * visitor's Restart or the agent staying away. `departures` counts the
- * agent leaving during the hold, so only the latest absence can end it.
+ * visitor's Restart, or an idle hold expiring (`holdExpiry`).
  */
 export const PortPhase = Schema.Union([
   Schema.TaggedStruct('Opening', {}),
   Schema.TaggedStruct('Open', { baud: Baud }),
   Schema.TaggedStruct('Reacquiring', {}),
   Schema.TaggedStruct('Failed', { reason: PortFailureReason }),
-  Schema.TaggedStruct('Entering', {
-    lease: Lease,
-    entry: Entry,
-    departures: Schema.Int,
-  }),
+  Schema.TaggedStruct('Entering', { lease: Lease, entry: Entry }),
   Schema.TaggedStruct('Flashing', {
     lease: Lease,
     entry: Entry,
     layout: Schema.Option(Layout),
-    departures: Schema.Int,
+    answered: Schema.Option(Answered),
   }),
 ])
 export type PortPhase = typeof PortPhase.Type
@@ -260,6 +278,10 @@ export type Model = typeof Model.Type
 
 export const livePage = (model: Model): Option.Option<Live> =>
   Option.some(model.page).pipe(Option.filter(Page.guards.Live))
+
+/** The agent is on the relay with the page; a page that lost the relay cannot tell, and counts it gone. */
+export const agentHere = (live: Live): boolean =>
+  Relay.guards.Joined(live.relay) && live.relay.agentPresent
 
 export const livePort = (model: Model): Option.Option<Port> =>
   livePage(model).pipe(

@@ -17,10 +17,10 @@ import { labelOf } from './flasher/partitions.ts'
 import { totalOf } from './flasher/run.ts'
 import type { EntryFailure } from './links.ts'
 import { portChanged, reacquire } from './live.ts'
-import type { Finished } from './message.ts'
 import type {
   Activity,
   ActivityKind,
+  Finished,
   Hold,
   Layout,
   Port,
@@ -28,7 +28,12 @@ import type {
   QueuedOp,
   RunnableOp,
 } from './model.ts'
-import { ACTIVITY_ROWS, OP_QUEUE } from './policy.ts'
+import {
+  ACTIVITY_ROWS,
+  AGENT_GRACE_MS,
+  IDLE_HOLD_MS,
+  OP_QUEUE,
+} from './policy.ts'
 
 /**
  * Who holds the SerialPort, as one table over `Port`. The console holds it
@@ -36,12 +41,15 @@ import { ACTIVITY_ROWS, OP_QUEUE } from './policy.ts'
  * `Flashing` once the flasher has it). Every way back to the console is
  * `endHold`: the port re-keys to a console requirement, which closes the
  * flasher session, and its finalizer resets the chip unless a Reboot already
- * did. Each op is answered exactly once, by this table, never by the runner.
+ * did. Each op is answered exactly once, by this table, never by the runner;
+ * the agent's resend of an op (same id, same lease) joins it instead.
  *
  *  state         event                          next                               answers
  *  ------------  -----------------------------  ---------------------------------  ------------------------------
  *  any           Op Release                     console Reacquiring if held        Released; head stopped,
  *                                                                                  queued notEntered
+ *  any           Op X{lease, id} already queued -                                  - (its answer will come)
+ *  Flashing      Op X{lease, id} last answered  -                                  that answer again
  *  Open          Op Enter                       Entering{usbReset}, ops=[Enter]    -
  *  Opening,      Op Enter                       ops+=[Enter]; it enters once the   -
  *  Reacquiring                                  console is Open again
@@ -56,17 +64,17 @@ import { ACTIVITY_ROWS, OP_QUEUE } from './policy.ts'
  *  Entering      FailedEntry portLost, usbReset Entering{noReset}                  -
  *  Entering      FailedEntry otherwise          console Reacquiring                head entryFailed (or
  *                                                                                  unsupportedChip), rest notEntered
- *  Flashing      FinishedOp Entered|Read|...    ops=tail                           the outcome
+ *  Flashing      FinishedOp Entered|Read|...    ops=tail, answered=it              the outcome
  *  Flashing      FinishedOp Rebooting           console Reacquiring; queued        Rebooting; the rest notEntered
  *                                               Enters wait for the console
  *  Flashing      FinishedOp Failed chipError,   console Reacquiring                Failed; rest notEntered
  *                portLost or entryFailed
- *  Flashing      FinishedOp Failed otherwise    ops=tail (flash untouched)         Failed
+ *  Flashing      FinishedOp Failed otherwise    ops=tail, answered=it              Failed
  *  Flashing      LostPort                       console Reacquiring                head portLost, rest notEntered
  *                (head Reboot: as FinishedOp Rebooting)
- *  Flashing      Restart (visitor), ops empty   console Reacquiring                -
- *  Flashing      Not now (visitor), head Write  ops=tail                           notAllowed
- *  held          agent away AGENT_GRACE_MS      console Reacquiring                head stopped, rest notEntered
+ *  Flashing      Restart (visitor), Idle        console Reacquiring                -
+ *  Flashing      Not now (visitor), consent     ops=tail, answered=it              notAllowed
+ *  held          ExpiredHold, nothing running   console Reacquiring                head stopped, rest notEntered
  *  Reacquiring   OpenedPort, head Enter         Open, then Entering                -
  *  starting      FailedPort                     Failed                             queued Enters entryFailed
  */
@@ -77,23 +85,13 @@ export interface Step {
   readonly messages: ReadonlyArray<BrowserMsg>
   /** An Enter to answer from the held session, so the MAC skips `update`. */
   readonly entered: Option.Option<RequestId>
-  /** The agent left the hold; start the wait for it. */
-  readonly awaitAgent: Option.Option<{
-    readonly lease: Lease
-    readonly departures: number
-  }>
 }
 
-const step = (
+export const step = (
   port: Port,
   messages: ReadonlyArray<BrowserMsg> = [],
-  extra: Partial<Pick<Step, 'entered' | 'awaitAgent'>> = {},
-): Step => ({
-  port,
-  messages,
-  entered: extra.entered ?? Option.none(),
-  awaitAgent: extra.awaitAgent ?? Option.none(),
-})
+  entered: Option.Option<RequestId> = Option.none(),
+): Step => ({ port, messages, entered })
 
 const answer = (id: RequestId, outcome: OpOutcome): BrowserMsg => ({
   _tag: 'OpResult',
@@ -120,15 +118,104 @@ const isFlashing = (phase: PortPhase): phase is Flashing =>
 export const layoutOf = (port: Port): Option.Option<Layout> =>
   isFlashing(port.state) ? port.state.layout : Option.none()
 
+/**
+ * What the hold is doing, the one reading of it for the op runner, the
+ * heartbeats, the hold's expiry, the update panel and the visitor's buttons.
+ */
+export type HeadState =
+  | { readonly _tag: 'Console' }
+  | { readonly _tag: 'Entering'; readonly head: Option.Option<QueuedOp> }
+  /** In update mode with nothing queued: Restart is offered, and the hold expires. */
+  | { readonly _tag: 'Idle' }
+  | { readonly _tag: 'Running'; readonly head: QueuedOp }
+  /** The head Write waits for the visitor's Allow. */
+  | {
+      readonly _tag: 'AwaitingConsent'
+      readonly head: QueuedOp
+      readonly region: Region
+    }
+
+export const headState = (port: Port, writesAllowed: boolean): HeadState => {
+  const head = port.ops[0]
+  return Match.value(port.state).pipe(
+    Match.withReturnType<HeadState>(),
+    Match.tag('Entering', () => ({
+      _tag: 'Entering',
+      head: Option.fromNullishOr(head),
+    })),
+    Match.tag('Flashing', () =>
+      head === undefined
+        ? { _tag: 'Idle' }
+        : head.op._tag === 'Write' && !writesAllowed
+          ? { _tag: 'AwaitingConsent', head, region: head.op.region }
+          : { _tag: 'Running', head },
+    ),
+    Match.orElse(() => ({ _tag: 'Console' })),
+  )
+}
+
+/** A write is running: what Disconnect asks about. */
+export const runningWrite = (
+  port: Port,
+  writesAllowed: boolean,
+): Option.Option<Extract<RunnableOp, { readonly _tag: 'Write' }>> => {
+  const state = headState(port, writesAllowed)
+  return state._tag === 'Running' && state.head.op._tag === 'Write'
+    ? Option.some(state.head.op)
+    : Option.none()
+}
+
+/** Every queued op the runner is not running: each still tells the agent it is alive. */
+export const waitingOps = (
+  port: Port,
+  writesAllowed: boolean,
+): ReadonlyArray<QueuedOp> => {
+  const state = headState(port, writesAllowed)
+  return state._tag === 'Running' ? port.ops.slice(1) : port.ops
+}
+
+/**
+ * When an unattended hold gives the device back: never while an op runs or
+ * the flasher is entering; `AGENT_GRACE_MS` after the agent left (or the
+ * page lost the relay); `IDLE_HOLD_MS` of nothing while the agent is here,
+ * which is how a Release lost on the way still ends the hold.
+ */
+export const holdExpiry = (
+  port: Port,
+  writesAllowed: boolean,
+  agentHere: boolean,
+): Option.Option<{
+  readonly attempt: number
+  readonly lease: Lease
+  readonly after: number
+}> => {
+  const phase = port.state
+  const state = headState(port, writesAllowed)
+  if (!isFlashing(phase)) {
+    return Option.none()
+  }
+  const after = Match.value(state).pipe(
+    Match.withReturnType<Option.Option<number>>(),
+    Match.tag('Idle', () =>
+      Option.some(agentHere ? IDLE_HOLD_MS : AGENT_GRACE_MS),
+    ),
+    Match.tag('AwaitingConsent', () =>
+      agentHere ? Option.none() : Option.some(AGENT_GRACE_MS),
+    ),
+    Match.orElse(() => Option.none()),
+  )
+  return Option.map(after, ms => ({
+    attempt: port.attempt,
+    lease: phase.lease,
+    after: ms,
+  }))
+}
+
 const regionOf = (op: Op): Option.Option<Region> =>
   Match.value(op).pipe(
     Match.tag('Read', 'Write', 'Digest', ({ region }) => Option.some(region)),
     Match.orElse(() => Option.none()),
   )
-
-/** The head while the flasher holds the port: the op that is running, or waiting for the visitor. */
-export const headOf = (port: Port): Option.Option<QueuedOp> =>
-  isFlashing(port.state) ? Option.fromNullishOr(port.ops[0]) : Option.none()
 
 const record = (
   port: Port,
@@ -176,8 +263,38 @@ const entering = (lease: Lease): Entering => ({
   _tag: 'Entering',
   lease,
   entry: 'usbReset',
-  departures: 0,
 })
+
+/** The wire's answer to a finished op; None for Entered, which the session answers. */
+const outcomeOf = (finished: Finished): Option.Option<OpOutcome> =>
+  finished._tag === 'Entered' ? Option.none() : Option.some(finished)
+
+const answerStep = (port: Port, id: RequestId, finished: Finished): Step =>
+  Option.match(outcomeOf(finished), {
+    onNone: () => step(port, [], Option.some(id)),
+    onSome: outcome => step(port, [answer(id, outcome)]),
+  })
+
+/** The head is done and stays answerable: it leaves the queue and becomes the hold's last answer. */
+const settleHead = (
+  port: Port,
+  head: QueuedOp,
+  result: Activity['result'],
+  finished: Finished,
+): Step => {
+  const phase = port.state
+  const settled = withOps(recordOp(port, head, result), port.ops.slice(1))
+  return answerStep(
+    isFlashing(phase)
+      ? withState(settled, {
+          ...phase,
+          answered: Option.some({ id: head.id, finished }),
+        })
+      : settled,
+    head.id,
+    finished,
+  )
+}
 
 /**
  * Back to the console. Bumping `attempt` and leaving the hold re-keys the
@@ -259,19 +376,38 @@ const holdOp = (
     : step(enqueue(port, id, op))
 }
 
-/** An Op from the agent. Always a step: every op is answered. */
+/**
+ * The agent resends an op it heard no answer to under the same id: a relay
+ * drop, or 20 s of silence. One still queued or running is joined, so a
+ * running write is never run twice or queued behind itself; the last one
+ * answered is answered again.
+ */
+const resent = (
+  port: Port,
+  id: RequestId,
+  lease: Lease,
+): Option.Option<Step> => {
+  if (port.ops.some(op => op.id === id && op.op.lease === lease)) {
+    return Option.some(step(port))
+  }
+  const phase = port.state
+  return isFlashing(phase) && phase.lease === lease
+    ? phase.answered.pipe(
+        Option.filter(answered => answered.id === id),
+        Option.map(answered => answerStep(port, id, answered.finished)),
+      )
+    : Option.none()
+}
+
+/** An Op from the agent. Always a step: every op is answered once. */
 export const onOp = (port: Port, id: RequestId, op: Op): Step =>
-  Match.value(op).pipe(
-    Match.withReturnType<Step>(),
-    Match.tagsExhaustive({
-      Release: () => release(port, id),
-      Enter: entry => enter(port, id, entry, entry.lease),
-      Read: read => holdOp(port, id, read, read.lease),
-      Write: write => holdOp(port, id, write, write.lease),
-      Digest: digest => holdOp(port, id, digest, digest.lease),
-      Reboot: reboot => holdOp(port, id, reboot, reboot.lease),
-    }),
-  )
+  op._tag === 'Release'
+    ? release(port, id)
+    : Option.getOrElse(resent(port, id, op.lease), () =>
+        op._tag === 'Enter'
+          ? enter(port, id, op, op.lease)
+          : holdOp(port, id, op, op.lease),
+      )
 
 export const onEnteredFlasher = (
   port: Port,
@@ -286,7 +422,7 @@ export const onEnteredFlasher = (
     lease: phase.lease,
     entry: phase.entry,
     layout,
-    departures: phase.departures,
+    answered: Option.none(),
   })
   return Option.some(step(next, [portChanged(next)]))
 }
@@ -332,8 +468,11 @@ const currentHead = (
   attempt: number,
   id: RequestId,
 ): Option.Option<QueuedOp> =>
-  headOf(port).pipe(
-    Option.filter(head => port.attempt === attempt && head.id === id),
+  Option.fromNullishOr(port.ops[0]).pipe(
+    Option.filter(
+      head =>
+        isFlashing(port.state) && port.attempt === attempt && head.id === id,
+    ),
   )
 
 export const onProgressedOp = (
@@ -374,23 +513,7 @@ export const onFinishedOp = (
       const rest = port.ops.slice(1)
       return Match.value(finished).pipe(
         Match.withReturnType<Step>(),
-        Match.tagsExhaustive({
-          Entered: () =>
-            step(withOps(recordOp(port, head, 'done'), rest), [], {
-              entered: Option.some(id),
-            }),
-          Read: outcome =>
-            step(withOps(recordOp(port, head, 'done'), rest), [
-              answer(id, outcome),
-            ]),
-          Written: outcome =>
-            step(withOps(recordOp(port, head, 'done'), rest), [
-              answer(id, outcome),
-            ]),
-          Digest: outcome =>
-            step(withOps(recordOp(port, head, 'done'), rest), [
-              answer(id, outcome),
-            ]),
+        Match.tags({
           Rebooting: outcome =>
             endHold(
               recordOp(port, head, 'done'),
@@ -412,10 +535,9 @@ export const onFinishedOp = (
                     ...rest.map(op => refusal(op.id, 'notEntered')),
                   ],
                 )
-              : step(withOps(recordOp(port, head, 'failed'), rest), [
-                  answer(id, outcome),
-                ]),
+              : settleHead(port, head, 'failed', outcome),
         }),
+        Match.orElse(done => settleHead(port, head, 'done', done)),
       )
     }),
   )
@@ -431,7 +553,7 @@ export const onLostFlasher = (
   if (!isFlashing(port.state) || port.attempt !== attempt) {
     return Option.none()
   }
-  return headOf(port).pipe(
+  return Option.fromNullishOr(port.ops[0]).pipe(
     Option.filter(head => head.op._tag === 'Reboot'),
     Option.flatMap(head =>
       onFinishedOp(port, attempt, head.id, { _tag: 'Rebooting' }),
@@ -441,51 +563,46 @@ export const onLostFlasher = (
 }
 
 /** The visitor's way back to a normal device, offered while update mode is idle. */
-export const onRestartDevice = (port: Port): Option.Option<Step> =>
-  isFlashing(port.state) && port.ops.length === 0
+export const onRestartDevice = (
+  port: Port,
+  writesAllowed: boolean,
+): Option.Option<Step> =>
+  headState(port, writesAllowed)._tag === 'Idle'
     ? Option.some(
         endHold(record(port, 'Restart', Option.none(), 'done'), [], []),
       )
     : Option.none()
 
 /** The head Write waits for the visitor; Not now refuses it and the hold goes on. */
-export const onDeclineWrite = (port: Port): Option.Option<Step> =>
-  headOf(port).pipe(
-    Option.filter(head => head.op._tag === 'Write'),
-    Option.map(head =>
-      step(withOps(recordOp(port, head, 'declined'), port.ops.slice(1)), [
-        refusal(head.id, 'notAllowed'),
-      ]),
-    ),
-  )
-
-export const onAgentLeft = (port: Port): Option.Option<Step> => {
-  const phase = port.state
-  if (!isHold(phase)) {
-    return Option.none()
-  }
-  const departures = phase.departures + 1
-  return Option.some(
-    step(withState(port, { ...phase, departures }), [], {
-      awaitAgent: Option.some({ lease: phase.lease, departures }),
-    }),
-  )
-}
-
-/** Only the latest absence counts, and only if the agent is still gone. */
-export const onAgentAwayElapsed = (
+export const onDeclineWrite = (
   port: Port,
-  away: { readonly lease: Lease; readonly departures: number },
-  agentPresent: boolean,
+  writesAllowed: boolean,
 ): Option.Option<Step> => {
-  const phase = port.state
-  return isHold(phase) &&
-    !agentPresent &&
-    phase.lease === away.lease &&
-    phase.departures === away.departures
-    ? Option.some(abandonHold(port, 'stopped'))
+  const state = headState(port, writesAllowed)
+  return state._tag === 'AwaitingConsent'
+    ? Option.some(
+        settleHead(port, state.head, 'declined', {
+          _tag: 'Failed',
+          reason: 'notAllowed',
+          detail: '',
+        }),
+      )
     : Option.none()
 }
+
+/** `holdExpiry` ran out; a hold that has an op running again since is kept. */
+export const onExpiredHold = (
+  port: Port,
+  expired: { readonly attempt: number; readonly lease: Lease },
+  writesAllowed: boolean,
+  agentHere: boolean,
+): Option.Option<Step> =>
+  holdExpiry(port, writesAllowed, agentHere).pipe(
+    Option.filter(
+      due => due.attempt === expired.attempt && due.lease === expired.lease,
+    ),
+    Option.map(() => abandonHold(port, 'stopped')),
+  )
 
 /** The console is back; an Enter that waited behind a Reboot (or arrived meanwhile) starts now. */
 export const startQueuedEntry = (port: Port): Port => {
@@ -502,17 +619,4 @@ export const failQueued = (port: Port): Step =>
   step(
     withOps(port, []),
     port.ops.map(op => refusal(op.id, 'entryFailed')),
-  )
-
-/** A write is running: what Disconnect asks about. */
-export const runningWrite = (
-  port: Port,
-  writesAllowed: boolean,
-): Option.Option<Extract<RunnableOp, { readonly _tag: 'Write' }>> =>
-  headOf(port).pipe(
-    Option.map(head => head.op),
-    Option.filter(
-      (op): op is Extract<RunnableOp, { readonly _tag: 'Write' }> =>
-        op._tag === 'Write' && writesAllowed,
-    ),
   )

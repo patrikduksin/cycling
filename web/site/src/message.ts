@@ -3,9 +3,6 @@ import { defineMessageUnion } from 'foldkit/message'
 
 import {
   Lease,
-  MAX_DETAIL_CHARS,
-  Md5,
-  OpFailure,
   PortFailureReason,
   RequestId,
   SerialIdentity,
@@ -14,25 +11,7 @@ import {
 } from '@cycling/protocol'
 
 import { EntryFailure } from './links.ts'
-import { Direction, Layout, Session } from './model.ts'
-
-/**
- * How an op ended on the page, as `update` may see it: the wire's
- * `OpOutcome` without the chip facts. `Entered` is answered from the session
- * itself, so the MAC never reaches `update`.
- */
-export const Finished = Schema.Union([
-  Schema.TaggedStruct('Entered', {}),
-  Schema.TaggedStruct('Read', { md5: Md5 }),
-  Schema.TaggedStruct('Written', { md5: Md5 }),
-  Schema.TaggedStruct('Digest', { md5: Md5 }),
-  Schema.TaggedStruct('Rebooting', {}),
-  Schema.TaggedStruct('Failed', {
-    reason: OpFailure,
-    detail: Schema.String.check(Schema.isMaxLength(MAX_DETAIL_CHARS)),
-  }),
-])
-export type Finished = typeof Finished.Type
+import { Direction, Finished, Layout, Session } from './model.ts'
 
 /**
  * Facts, not commands. Device bytes reach `update` only as `Traffic`, one
@@ -81,7 +60,8 @@ export const Message = defineMessageUnion({
     total: Schema.Int,
   },
   FinishedOp: { attempt: Schema.Int, id: RequestId, finished: Finished },
-  AgentAwayElapsed: { lease: Lease, departures: Schema.Int },
+  /** The hold sat with no op running for its expiry (`holdExpiry`). */
+  ExpiredHold: { attempt: Schema.Int, lease: Lease },
 
   Traffic: {
     direction: Direction,

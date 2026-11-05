@@ -18,12 +18,12 @@ import {
   SayBye,
   SendControl,
   SendEntered,
-  WaitForAgent,
 } from './command.ts'
 import { DEMO_PARTITIONS } from './dev/image.ts'
 import { totalOf } from './flasher/run.ts'
-import { type Finished, Message } from './message.ts'
+import { Message } from './message.ts'
 import {
+  type Finished,
   type Live,
   type Model,
   type Port,
@@ -34,7 +34,13 @@ import {
   type RunnableOp,
   Source,
 } from './model.ts'
-import { portRequirement, runningOp, waitingOp } from './resources.ts'
+import { AGENT_GRACE_MS, IDLE_HOLD_MS } from './policy.ts'
+import {
+  holdExpiryOf,
+  portRequirement,
+  runningOp,
+  waitingOps,
+} from './resources.ts'
 import { epoch, requestId, serialLive } from './test/fixtures.ts'
 import { update } from './update.ts'
 
@@ -122,14 +128,12 @@ const layout = Option.some({
   bootSlot: Option.some('ota_0'),
 })
 
-const flashing = (
-  patch: { readonly lease?: Lease; readonly departures?: number } = {},
-): PortPhase => ({
+const flashing = (patch: { readonly lease?: Lease } = {}): PortPhase => ({
   _tag: 'Flashing',
   lease: patch.lease ?? lease,
   entry: 'usbReset',
   layout,
-  departures: patch.departures ?? 0,
+  answered: Option.none(),
 })
 
 const held = (
@@ -194,9 +198,7 @@ describe('entering update mode', () => {
           Option.some({ _tag: 'Flasher', attempt: 0, entry: 'usbReset' }),
         )
         expect(runningOp(next)).toEqual(Option.none())
-        expect(waitingOp(next)).toEqual(
-          Option.some({ id: requestId(1), total: 0 }),
-        )
+        expect(waitingOps(next)).toEqual([{ id: requestId(1), total: 0 }])
       }),
       message(Message.EnteredFlasher({ layout })),
       Command.resolve(
@@ -544,22 +546,78 @@ describe('leaving update mode', () => {
   })
 })
 
-describe('the agent going away', () => {
-  test('after 30 s without the agent the hold is released', () => {
+const presence = (present: boolean) =>
+  Message.ReceivedFromRelay({
+    message: { _tag: 'PeerPresence', role: 'agent', present },
+  })
+
+describe('the agent resending', () => {
+  test('a resend of the running op joins it: no second run, no answer until it finishes', () => {
+    const running = held({ ops: [queued(5, write)], writesAllowed: true })
+    const resend = step(running, opMessage(5, write))
+    expect(commandsOf(resend)).toEqual([])
+    expect(portOf(resend.model).ops).toEqual([queued(5, write)])
+    expect(runningOp(resend.model)).toEqual(runningOp(running))
+    expect(
+      commandsOf(step(resend.model, finish(5, { _tag: 'Written', md5 }))),
+    ).toEqual([sent(result(5, { _tag: 'Written', md5 }))])
+  })
+
+  test('an op queued behind the running one hears heartbeats, so it never stalls behind it', () => {
+    const behind = held({ ops: [queued(5, read), queued(6, digest)] })
+    expect(waitingOps(behind)).toEqual([
+      { id: requestId(6), total: totalOf(digest) },
+    ])
+    const resend = step(behind, opMessage(6, digest))
+    expect(commandsOf(resend)).toEqual([])
+    expect(portOf(resend.model).ops).toHaveLength(2)
+  })
+
+  test('a resend of an op answered while its answer was lost is answered again, not run again', () => {
+    const answered = step(
+      held({ ops: [queued(5, digest)] }),
+      finish(5, { _tag: 'Digest', md5 }),
+    ).model
+    const resend = step(answered, opMessage(5, digest))
+    expect(commandsOf(resend)).toEqual([
+      sent(result(5, { _tag: 'Digest', md5 })),
+    ])
+    expect(portOf(resend.model).ops).toEqual([])
+
+    const entered = step(
+      held({ ops: [queued(7, enter)] }),
+      finish(7, { _tag: 'Entered' }),
+    ).model
+    expect(commandsOf(step(entered, opMessage(7, enter)))).toEqual([
+      { name: SendEntered.name, args: { id: requestId(7) } },
+    ])
+  })
+
+  test('the same id under another lease is a new op', () => {
+    const before = held({ ops: [queued(5, read)] })
+    expect(
+      commandsOf(step(before, opMessage(5, { ...read, lease: otherLease }))),
+    ).toEqual([sent(refused(5, 'notEntered'))])
+  })
+})
+
+describe('an unattended hold', () => {
+  test('the agent leaving never stops a running op; the hold ends 30 s after it finished', () => {
+    const away = step(held({ ops: [queued(1, read)] }), presence(false)).model
+    expect(holdExpiryOf(away)).toEqual(Option.none())
+    expect(step(away, Message.ExpiredHold({ attempt: 0, lease })).model).toBe(
+      away,
+    )
+    const done = step(away, finish(1, { _tag: 'Read', md5 })).model
+    expect(holdExpiryOf(done)).toEqual(
+      Option.some({ attempt: 0, lease, after: AGENT_GRACE_MS }),
+    )
     story(
       step,
-      given(held({ ops: [queued(1, read)] })),
-      message(
-        Message.ReceivedFromRelay({
-          message: { _tag: 'PeerPresence', role: 'agent', present: false },
-        }),
-      ),
+      given(done),
+      message(Message.ExpiredHold({ attempt: 0, lease })),
       Command.resolve(
-        WaitForAgent({ lease, departures: 1 }),
-        Message.AgentAwayElapsed({ lease, departures: 1 }),
-      ),
-      Command.resolve(
-        SendControl({ messages: [refused(1, 'stopped'), ...backToConsole] }),
+        SendControl({ messages: backToConsole }),
         Message.CompletedSendControl(),
       ),
       model(next => {
@@ -568,37 +626,29 @@ describe('the agent going away', () => {
     )
   })
 
-  test('an agent back within 30 s keeps the hold, and only its latest absence counts', () => {
-    const left = step(
-      held(),
-      Message.ReceivedFromRelay({
-        message: { _tag: 'PeerPresence', role: 'agent', present: false },
-      }),
-    )
-    const back = step(
-      left.model,
-      Message.ReceivedFromRelay({
-        message: { _tag: 'PeerPresence', role: 'agent', present: true },
-      }),
+  test('an idle hold whose Release was lost gives the device back after IDLE_HOLD_MS', () => {
+    const idle = held()
+    expect(holdExpiryOf(idle)).toEqual(
+      Option.some({ attempt: 0, lease, after: IDLE_HOLD_MS }),
     )
     expect(
-      step(back.model, Message.AgentAwayElapsed({ lease, departures: 1 }))
-        .model,
-    ).toBe(back.model)
+      commandsOf(step(idle, Message.ExpiredHold({ attempt: 0, lease }))),
+    ).toEqual([sent(...backToConsole)])
+  })
 
-    const leftAgain = step(
-      back.model,
-      Message.ReceivedFromRelay({
-        message: { _tag: 'PeerPresence', role: 'agent', present: false },
-      }),
+  test('a write waiting for the visitor waits as long as the agent is here', () => {
+    const asking = held({ ops: [queued(1, write)] })
+    expect(holdExpiryOf(asking)).toEqual(Option.none())
+    expect(holdExpiryOf(step(asking, presence(false)).model)).toEqual(
+      Option.some({ attempt: 0, lease, after: AGENT_GRACE_MS }),
     )
-    expect(commandsOf(leftAgain)).toEqual([
-      { name: WaitForAgent.name, args: { lease, departures: 2 } },
-    ])
+  })
+
+  test('an expiry from before the hold changed is ignored', () => {
+    const idle = held()
     expect(
-      step(leftAgain.model, Message.AgentAwayElapsed({ lease, departures: 1 }))
-        .model,
-    ).toBe(leftAgain.model)
+      step(idle, Message.ExpiredHold({ attempt: 0, lease: otherLease })).model,
+    ).toBe(idle)
   })
 })
 
@@ -606,9 +656,7 @@ describe('the visitor allowing writes', () => {
   test('the first Write waits for the visitor; Allow runs it and lasts the session', () => {
     const asking = held({ ops: [queued(1, write)] })
     expect(runningOp(asking)).toEqual(Option.none())
-    expect(waitingOp(asking)).toEqual(
-      Option.some({ id: requestId(1), total: 0x1e0000 }),
-    )
+    expect(waitingOps(asking)).toEqual([{ id: requestId(1), total: 0x1e0000 }])
     const allowed = step(asking, Message.ClickedAllowWrites())
     expect(liveOf(allowed.model).writesAllowed).toBe(true)
     expect(commandsOf(allowed)).toEqual([

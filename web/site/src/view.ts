@@ -12,7 +12,7 @@ import {
 
 import { usbClassName } from './adapters/usb.ts'
 import { labelOf, stakeOf } from './flasher/partitions.ts'
-import { headOf, isHold, layoutOf, runningWrite } from './holder.ts'
+import { headState, isHold, layoutOf, runningWrite } from './holder.ts'
 import { Message } from './message.ts'
 import {
   type Activity,
@@ -358,15 +358,13 @@ const consentCard = (port: Port, region: Region, h: H): Html =>
   )
 
 const updatePanel = (live: Live, port: Port, h: H): Html => {
-  const head = headOf(port)
+  const state = headState(port, live.writesAllowed)
   const writing = Option.isSome(runningWrite(port, live.writesAllowed))
-  const asking = head.pipe(
-    Option.filter(() => !live.writesAllowed),
-    Option.flatMap(({ op }) =>
-      op._tag === 'Write' ? Option.some(op.region) : Option.none(),
-    ),
+  const head = Match.value(state).pipe(
+    Match.tag('Entering', ({ head }) => head),
+    Match.tag('Running', 'AwaitingConsent', ({ head }) => Option.some(head)),
+    Match.orElse(() => Option.none<QueuedOp>()),
   )
-  const idle = port.state._tag === 'Flashing' && port.ops.length === 0
   return h.div(
     [h.Class('update'), h.AriaLive('polite')],
     [
@@ -381,22 +379,13 @@ const updatePanel = (live: Live, port: Port, h: H): Html => {
       ),
       h.p(
         [h.Class(writing ? 'update-now writing' : 'update-now')],
-        [
-          nowDoing(
-            port,
-            port.state._tag === 'Entering'
-              ? Option.fromNullishOr(port.ops[0])
-              : head,
-            live.writesAllowed,
-          ),
-        ],
+        [nowDoing(port, head, live.writesAllowed)],
       ),
       h.p([h.Class('sent')], ['Keep this tab open and in front.']),
-      Option.match(asking, {
-        onNone: () => null,
-        onSome: region => consentCard(port, region, h),
-      }),
-      idle
+      state._tag === 'AwaitingConsent'
+        ? consentCard(port, state.region, h)
+        : null,
+      state._tag === 'Idle'
         ? h.div(
             [h.Class('actions')],
             [

@@ -19,8 +19,8 @@ import {
   opDataFrames,
 } from '@cycling/protocol'
 
-import { type Finished, Message } from '../message.ts'
-import type { RunnableOp } from '../model.ts'
+import { Message } from '../message.ts'
+import type { Finished, RunnableOp } from '../model.ts'
 import type { Inbox, PayloadRefused } from './inbox.ts'
 
 export type Send<R> = (

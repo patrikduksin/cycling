@@ -10,9 +10,9 @@ import {
   SaveSession,
 } from './command.ts'
 import {
-  onAgentAwayElapsed,
   onDeclineWrite,
   onEnteredFlasher,
+  onExpiredHold,
   onFailedEntry,
   onFinishedOp,
   onProgressedOp,
@@ -20,7 +20,14 @@ import {
 } from './holder.ts'
 import { newPort, recoveredPort, storedOf } from './live.ts'
 import { Message } from './message.ts'
-import { type Flags, type Model, Page, Relay, Source } from './model.ts'
+import {
+  type Flags,
+  type Model,
+  Page,
+  Relay,
+  Source,
+  agentHere,
+} from './model.ts'
 import { emptyMonitor, record } from './monitor.ts'
 import { detectMissing } from './policy.ts'
 import {
@@ -88,7 +95,11 @@ export const update = (model: Model, message: Message): UpdateReturn =>
       })),
 
     ClickedRestartDevice: () =>
-      whenPage(model, 'Live', live => withHold(model, live, onRestartDevice)),
+      whenPage(model, 'Live', live =>
+        withHold(model, live, port =>
+          onRestartDevice(port, live.writesAllowed),
+        ),
+      ),
 
     ClickedAllowWrites: () =>
       whenPage(model, 'Live', live =>
@@ -102,9 +113,7 @@ export const update = (model: Model, message: Message): UpdateReturn =>
 
     ClickedDeclineWrite: () =>
       whenPage(model, 'Live', live =>
-        live.writesAllowed
-          ? ignore(model)
-          : withHold(model, live, onDeclineWrite),
+        withHold(model, live, port => onDeclineWrite(port, live.writesAllowed)),
       ),
 
     ClickedStartOver: () =>
@@ -193,14 +202,10 @@ export const update = (model: Model, message: Message): UpdateReturn =>
           onFinishedOp(port, attempt, id, finished),
         ),
       ),
-    AgentAwayElapsed: away =>
+    ExpiredHold: expired =>
       whenPage(model, 'Live', live =>
         withHold(model, live, port =>
-          onAgentAwayElapsed(
-            port,
-            away,
-            Relay.guards.Joined(live.relay) && live.relay.agentPresent,
-          ),
+          onExpiredHold(port, expired, live.writesAllowed, agentHere(live)),
         ),
       ),
 

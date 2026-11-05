@@ -14,6 +14,7 @@ import {
   type Binary,
   type BrowserMsg,
   Code,
+  Lease,
   OP_PROGRESS_MS,
   OwnerKey,
   RequestId,
@@ -30,7 +31,12 @@ import {
 } from './flasher/partitions.ts'
 import { runOp } from './flasher/run.ts'
 import { type HandleServices, PortHandle, RelayHandle } from './handles.ts'
-import { headOf, isHold } from './holder.ts'
+import {
+  headState,
+  holdExpiry,
+  isHold,
+  waitingOps as waitingOpsOf,
+} from './holder.ts'
 import {
   type Adapters,
   EntryFailed,
@@ -45,6 +51,7 @@ import {
   type Model,
   Relay,
   RunnableOp,
+  agentHere,
   livePage,
   livePort,
 } from './model.ts'
@@ -138,14 +145,16 @@ export const runningOp = (model: Model): Option.Option<typeof RunningOp.Type> =>
   livePage(model).pipe(
     Option.flatMap(live =>
       livePort(model).pipe(
-        Option.flatMap(port =>
-          headOf(port).pipe(
-            Option.filter(
-              head => head.op._tag !== 'Write' || live.writesAllowed,
-            ),
-            Option.map(({ id, op }) => ({ attempt: port.attempt, id, op })),
-          ),
-        ),
+        Option.flatMap(port => {
+          const state = headState(port, live.writesAllowed)
+          return state._tag === 'Running'
+            ? Option.some({
+                attempt: port.attempt,
+                id: state.head.id,
+                op: state.head.op,
+              })
+            : Option.none()
+        }),
       ),
     ),
   )
@@ -153,17 +162,46 @@ export const runningOp = (model: Model): Option.Option<typeof RunningOp.Type> =>
 const WaitingOp = Schema.Struct({ id: RequestId, total: Schema.Int })
 
 /**
- * The head of the queue while it waits: for the flasher to enter, for the
- * console to come back, or for the visitor's Allow. The agent still hears
- * it is alive.
+ * Every queued op that is not running: waiting for the flasher to enter,
+ * for the console to come back, for the visitor's Allow, or behind the
+ * running op. The agent still hears each is alive.
  */
-export const waitingOp = (model: Model): Option.Option<typeof WaitingOp.Type> =>
-  Option.isSome(runningOp(model))
-    ? Option.none()
-    : livePort(model).pipe(
-        Option.flatMap(port => Option.fromNullishOr(port.ops[0])),
-        Option.map(({ id, total }) => ({ id, total })),
-      )
+export const waitingOps = (
+  model: Model,
+): ReadonlyArray<typeof WaitingOp.Type> =>
+  livePage(model).pipe(
+    Option.flatMap(live =>
+      livePort(model).pipe(
+        Option.map(port =>
+          waitingOpsOf(port, live.writesAllowed).map(({ id, total }) => ({
+            id,
+            total,
+          })),
+        ),
+      ),
+    ),
+    Option.getOrElse(() => []),
+  )
+
+const HoldExpiry = Schema.Struct({
+  attempt: Schema.Int,
+  lease: Lease,
+  after: Schema.Int,
+})
+
+/** When an unattended hold gives the device back, if it does; see `holdExpiry`. */
+export const holdExpiryOf = (
+  model: Model,
+): Option.Option<typeof HoldExpiry.Type> =>
+  livePage(model).pipe(
+    Option.flatMap(live =>
+      livePort(model).pipe(
+        Option.flatMap(port =>
+          holdExpiry(port, live.writesAllowed, agentHere(live)),
+        ),
+      ),
+    ),
+  )
 
 /** Collects one region read from the session. */
 const readAll = (session: Session, region: { address: number; size: number }) =>
@@ -348,7 +386,8 @@ const whenHeld = <T extends PortLink['_tag'], A>(
  *   relayToDevice  relay joined     console frames to the port, write payloads to
  *                                   the flasher's inbox, control to update
  *   opRunner       Flashing, head   the head op against the session
- *   opWaiting      a head waits     OpProgress for it once a second
+ *   opWaiting      ops wait         OpProgress for each once a second
+ *   holdExpiry     unattended hold  ExpiredHold once its time is up
  *   flasherLost    Flashing         LostPort when the device goes away
  */
 export const subscriptions = Subscription.make<
@@ -433,18 +472,37 @@ export const subscriptions = Subscription.make<
     },
   ),
   opWaiting: entry(
-    { waiting: Schema.Option(WaitingOp) },
+    { waiting: Schema.Array(WaitingOp) },
     {
-      modelToDependencies: model => ({ waiting: waitingOp(model) }),
+      modelToDependencies: model => ({ waiting: waitingOps(model) }),
       dependenciesToStream: ({ waiting }) =>
-        Option.match(waiting, {
-          onNone: () => Stream.empty,
-          onSome: ({ id, total }) =>
-            Stream.tick(Duration.millis(OP_PROGRESS_MS)).pipe(
+        waiting.length === 0
+          ? Stream.empty
+          : Stream.tick(Duration.millis(OP_PROGRESS_MS)).pipe(
               Stream.mapEffect(() =>
-                sendToRelay({ _tag: 'OpProgress', id, done: 0, total }),
+                Effect.forEach(
+                  waiting,
+                  ({ id, total }) =>
+                    sendToRelay({ _tag: 'OpProgress', id, done: 0, total }),
+                  { discard: true },
+                ),
               ),
               Stream.drain,
+            ),
+    },
+  ),
+  holdExpiry: entry(
+    { expiry: Schema.Option(HoldExpiry) },
+    {
+      modelToDependencies: model => ({ expiry: holdExpiryOf(model) }),
+      dependenciesToStream: ({ expiry }) =>
+        Option.match(expiry, {
+          onNone: () => Stream.empty,
+          onSome: ({ attempt, lease, after }) =>
+            Stream.fromEffect(
+              Effect.sleep(Duration.millis(after)).pipe(
+                Effect.as(Message.ExpiredHold({ attempt, lease })),
+              ),
             ),
         }),
     },

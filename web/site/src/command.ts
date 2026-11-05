@@ -7,7 +7,6 @@ import { Command } from 'foldkit'
 import {
   BrowserMsg,
   Chip,
-  Lease,
   type OpOutcome,
   RequestId,
   mintCode,
@@ -23,7 +22,6 @@ import {
 } from './links.ts'
 import { Message } from './message.ts'
 import { StoredSession } from './model.ts'
-import { AGENT_GRACE_MS } from './policy.ts'
 import { clearStoredSession, writeStoredSession } from './storage.ts'
 
 const mintSession = Effect.sync(() => ({
@@ -147,16 +145,6 @@ export const SendEntered = Command.define('SendEntered', {
       ),
       Effect.ignore,
       Effect.as(Message.CompletedSendControl()),
-    ),
-})
-
-/** The agent left during a hold; past this it is not coming back for it. */
-export const WaitForAgent = Command.define('WaitForAgent', {
-  args: { lease: Lease, departures: Schema.Int },
-  messages: [Message.AgentAwayElapsed],
-  execute: ({ lease, departures }) =>
-    Effect.sleep(Duration.millis(AGENT_GRACE_MS)).pipe(
-      Effect.as(Message.AgentAwayElapsed({ lease, departures })),
     ),
 })
 

@@ -20,14 +20,12 @@ import {
   SayBye,
   SendControl,
   SendEntered,
-  WaitForAgent,
   WaitRelayRetry,
 } from './command.ts'
 import type { HandleServices } from './handles.ts'
 import {
   type Step,
   failQueued,
-  onAgentLeft,
   onLostFlasher,
   onOp,
   runningWrite,
@@ -103,8 +101,8 @@ const savePort = (live: Live, port: Port) =>
 
 /**
  * Applies a step of the holder table: the port's next value, its OpResults
- * and PortChanged in order, an Enter to answer from the session, and the wait
- * for an agent that left. `save` writes the new epoch as well.
+ * and PortChanged in order, and an Enter to answer from the session. `save`
+ * writes the new epoch as well.
  */
 export const holdStep = (
   model: Model,
@@ -121,7 +119,6 @@ export const holdStep = (
       ? []
       : [SendControl({ messages: next.messages })]),
     ...Option.toArray(Option.map(next.entered, id => SendEntered({ id }))),
-    ...Option.toArray(Option.map(next.awaitAgent, away => WaitForAgent(away))),
     ...(save && isPage('Live')(page) ? [savePort(page, next.port)] : []),
   ]
   return commands.length === 0
@@ -289,7 +286,7 @@ export const onMintedSession = (
     () => ignore(model),
   )
 
-/** An agent that leaves during a hold starts the wait for it to come back. */
+/** Whether the agent is here feeds `holdExpiry`; nothing else changes. */
 const onPeerPresence = (
   model: Model,
   live: Live,
@@ -298,14 +295,11 @@ const onPeerPresence = (
   Relay.matchOrElse(
     live.relay,
     {
-      Joined: ({ attempt }) => {
-        const joined = {
-          ...live,
+      Joined: ({ attempt }) => ({
+        model: withLive(model, live, {
           relay: Relay.Joined({ attempt, agentPresent: present }),
-        }
-        const next = withPage(model, joined)
-        return present ? { model: next } : withHold(next, joined, onAgentLeft)
-      },
+        }),
+      }),
     },
     () => ignore(model),
   )
@@ -392,7 +386,6 @@ export const onOpenedPort = (model: Model, live: Live): UpdateReturn =>
         port: startQueuedEntry(step.port),
         messages: step.messages,
         entered: Option.none(),
-        awaitAgent: Option.none(),
       },
       true,
     )

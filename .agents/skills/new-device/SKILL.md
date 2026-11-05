@@ -33,7 +33,8 @@ checkout's.
 1. **Join and listen.** `cycling remote <CODE> -- cycling monitor --seconds 10 > .local/survey/<CODE>/console.log`.
    The bridge prints the device's USB VID:PID on stderr, waits for the
    visitor's port, then the monitor captures what the stock firmware prints
-   into the file. Send nothing to firmware you don't know. Done when it exits
+   into the file (create `.local/survey/<CODE>/` first). Send nothing to
+   firmware you don't know. Done when it exits
    0, even with an empty capture.
 2. **Enter the ROM.** `cycling remote <CODE> -- cycling flasher info` puts the
    chip in download mode, prints its description as JSON and reboots it into

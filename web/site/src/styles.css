@@ -1,0 +1,341 @@
+@font-face {
+  font-family: Nunito;
+  src: url('../../../packages/shell/fonts/Nunito[wght].ttf') format('truetype');
+  font-weight: 200 1000;
+  font-display: swap;
+}
+
+/* Palette from apps/vana/src/screens/chrome.rs. */
+:root {
+  color-scheme: dark;
+  --black: #000000;
+  --white: #ffffff;
+  --secondary: #8e8e93;
+  --tertiary: #48484a;
+  --raised: #2c2c2e;
+  --pressed: #3a3a3c;
+  --accent: #0a84ff;
+  --green: #30d158;
+  --amber: #ff9f0a;
+  --red: #ff453a;
+  --mono:
+    ui-monospace, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+
+  --space-1: 0.5rem;
+  --space-2: 1rem;
+  --space-3: 1.5rem;
+  --space-4: 2.5rem;
+  --space-5: 4rem;
+  --column: 38rem;
+  --target: 2.75rem;
+
+  font-family: Nunito, system-ui, sans-serif;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+/* The same values through screens::look::light (luminance inverted, hue kept). */
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --black: #ffffff;
+    --white: #000000;
+    --secondary: #717176;
+    --tertiary: #b6b6b8;
+    --raised: #d2d2d4;
+    --pressed: #c4c4c6;
+    --accent: #006ae5;
+    --green: #009219;
+    --amber: #b55500;
+    --red: #e72d22;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--black);
+  color: var(--white);
+}
+
+h1,
+p,
+dl,
+dd {
+  margin: 0;
+}
+
+h1,
+p {
+  text-wrap: balance;
+}
+
+.shell {
+  min-height: 100dvh;
+  display: grid;
+  justify-items: center;
+  align-items: center;
+  padding: clamp(var(--space-3), 6vh, var(--space-5))
+    clamp(var(--space-2), 5vw, var(--space-4));
+}
+
+.screen {
+  width: min(100%, var(--column));
+  display: grid;
+  gap: var(--space-4);
+}
+
+.screen.short {
+  justify-items: center;
+  text-align: center;
+}
+
+.screen.live {
+  align-self: start;
+}
+
+.heading {
+  display: grid;
+  gap: var(--space-2);
+}
+
+h1 {
+  font-size: clamp(2rem, 9vw, 2.75rem);
+  font-weight: 900;
+  line-height: 1.05;
+  text-transform: uppercase;
+}
+
+.lede {
+  color: var(--secondary);
+  font-size: 1.125rem;
+}
+
+.eyebrow,
+.caption,
+.status-line dt,
+.dir {
+  color: var(--secondary);
+  font-family: Nunito, system-ui, sans-serif;
+  font-size: 0.8125rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.notice {
+  color: var(--amber);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.button {
+  min-height: 3rem;
+  min-width: var(--target);
+  padding: 0 var(--space-4);
+  border: 0;
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--white);
+  font: inherit;
+  font-size: 1.0625rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--pressed);
+}
+
+.button:active:not(:disabled) {
+  background: var(--tertiary);
+}
+
+.button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.button.danger {
+  color: var(--red);
+}
+
+.button.quiet {
+  padding: 0 var(--space-2);
+  background: none;
+  color: var(--accent);
+  font-size: 0.9375rem;
+}
+
+.button.quiet:hover:not(:disabled) {
+  background: var(--raised);
+}
+
+.button.quiet:active:not(:disabled) {
+  background: var(--pressed);
+}
+
+.hero {
+  container-type: inline-size;
+  display: grid;
+  justify-items: center;
+  gap: var(--space-1);
+  text-align: center;
+}
+
+/* 9.6em is the widest code (WWWW-WWWW) in Nunito 800, so every code fits the
+   column on one line at any width, at one size for every code. */
+.code {
+  width: 100%;
+  font-size: clamp(1.5rem, 100cqi / 9.6, 5.75rem);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.status {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.status-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.status-line dd {
+  font-size: 1.125rem;
+  font-weight: 800;
+  text-align: right;
+}
+
+.plain {
+  color: var(--white);
+}
+
+.good {
+  color: var(--green);
+}
+
+.attention {
+  color: var(--amber);
+}
+
+.bad {
+  color: var(--red);
+}
+
+.sent {
+  color: var(--secondary);
+  font-size: 1.125rem;
+}
+
+.monitor-block {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.counts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.count {
+  display: grid;
+}
+
+.count .number {
+  color: var(--white);
+  font-size: 1.75rem;
+}
+
+.count.to-device .number {
+  color: var(--accent);
+}
+
+.count.dropped .number {
+  color: var(--amber);
+}
+
+/* Fixed height so Disconnect never moves as rows arrive. */
+.monitor {
+  --bytes: 8;
+  height: 18rem;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.row {
+  display: grid;
+  align-items: baseline;
+  grid-template-columns: 4ch calc(var(--bytes) * 3ch) calc(var(--bytes) * 1ch);
+  justify-content: space-between;
+}
+
+.dir {
+  font-size: 0.6875rem;
+}
+
+.hex,
+.text {
+  white-space: break-spaces;
+  word-break: break-all;
+}
+
+.hex {
+  color: var(--white);
+}
+
+.text {
+  color: var(--secondary);
+}
+
+.row.to-device .hex,
+.row.to-device .text {
+  color: var(--accent);
+}
+
+.more {
+  grid-column: 2 / -1;
+  color: var(--secondary);
+}
+
+.empty {
+  color: var(--tertiary);
+  font-family: Nunito, system-ui, sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+@media (min-width: 40rem) {
+  .monitor {
+    --bytes: 16;
+    font-size: 0.8125rem;
+  }
+}

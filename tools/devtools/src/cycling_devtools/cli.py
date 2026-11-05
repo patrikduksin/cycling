@@ -40,6 +40,11 @@ def task(name, help, *steps, needs=(), alias=None):
 
 TASKS = [
     task('build', 'Build C606 firmware and its application image', 'bash devices/c606/build.sh'),
+    task(
+        'build-maintenance',
+        'Build the MMC maintenance image (binary USB protocol, no console) into .local/cycling.bin',
+        'bash devices/c606/build.sh maintenance',
+    ),
     task('test', 'Test host firmware logic and device tools', needs=['test-rust', 'test-trouble-host', 'test-python']),
     task(
         'test-rust',
@@ -103,6 +108,12 @@ TASKS = [
         'Flash cycling into the inactive A/B slot, boot it, and reselect the old slot if its console stays silent',
         f'{DEV}device.firmware flash',
         needs=['build'],
+    ),
+    task(
+        'flash-maintenance',
+        'Build the MMC maintenance image and flash it into the inactive slot as flash does',
+        f'{DEV}device.firmware flash',
+        needs=['build-maintenance'],
     ),
     task(
         'flash-image',

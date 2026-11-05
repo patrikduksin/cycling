@@ -5,8 +5,8 @@
 CYCLING_DEVICE_HOST names that machine's ssh alias. This checkout, including
 uncommitted and untracked files, is snapshotted as a commit and pushed into a
 worktree of the device host's primary checkout, so its lock, backup and safety
-rules are the ones that guard the device. `flash` builds here and sends only the
-image; every other task sends nothing but the source. Afterwards the host's
+rules are the ones that guard the device. `flash` and `flash-maintenance` build
+here and send only the image; every other task sends nothing but the source. Afterwards the host's
 .local evidence (logs, test reports, exports) is copied back to the same paths
 here. Only the image and text cross the network: no USB forwarding.
 """
@@ -89,12 +89,12 @@ def main(argv=None):
     if not host:
         sys.exit('CYCLING_DEVICE_HOST is not set: run the task directly on the machine with the device.')
     task, args = argv[0], argv[1:]
-    if task in {'build', 'flash-image'}:
+    if task in {'build', 'build-maintenance', 'flash-image'}:
         sys.exit(f'run `cycling device flash`: it builds here and flashes there; {task} is not a device task.')
 
-    if task == 'flash':
+    if task in {'flash', 'flash-maintenance'}:
         # Build here, where the toolchain and caches are; the host only writes the image.
-        subprocess.run(['cycling', 'build'], cwd=ROOT, check=True)
+        subprocess.run(['cycling', 'build' if task == 'flash' else 'build-maintenance'], cwd=ROOT, check=True)
         task = 'flash-image'
     sha = snapshot()
     name = slot()

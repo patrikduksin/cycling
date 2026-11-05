@@ -9,15 +9,14 @@ fi
 # Target dirs default to this checkout; point the root elsewhere to share them.
 target_root="${CYCLING_FW_TARGET_ROOT:-$PWD/.local}"
 # The image and its ELF land in .local, where flash and backtrace read them;
-# parallel builds of different variants each need their own directory.
+# a build beside another (verify) needs its own directory.
 image_dir="${CYCLING_IMAGE_DIR:-.local}"
-firmware_features="hardware"
-firmware_target="$target_root/firmware"
-variant=""
-case "${CYCLING_BULK_MAINTENANCE:-0}" in
-  0) ;;
-  1) firmware_features="$firmware_features,bulk-maintenance"; firmware_target="$firmware_target-maintenance"; variant="-maint" ;;
-  *) echo "CYCLING_BULK_MAINTENANCE must be 0 or 1." >&2; exit 1 ;;
+# `build.sh maintenance` (cycling build-maintenance) builds the MMC
+# maintenance image instead of the firmware.
+case "${1:-}" in
+  "") firmware_features="hardware"; firmware_target="$target_root/firmware"; variant="" ;;
+  maintenance) firmware_features="hardware,bulk-maintenance"; firmware_target="$target_root/firmware-maintenance"; variant="-maint" ;;
+  *) echo "usage: build.sh [maintenance]" >&2; exit 2 ;;
 esac
 mkdir -p .local "$image_dir"
 export PATH="$CYCLING_ESP_TOOLCHAIN/bin:$CYCLING_ESP_TOOLCHAIN/xtensa-esp-elf/bin:$PATH"
@@ -59,7 +58,7 @@ espflash save-image --chip esp32s3 --flash-mode dio --flash-freq 80mhz --flash-s
   "$elf" "$image_dir/cycling.bin"
 # Keep the matching ELF beside the image: crash decoding needs its symbols.
 cp "$elf" "$image_dir/cycling.elf"
-# And one per commit and variant, named as the panic record's elf= says, in
+# And one per commit and image, named as the panic record's elf= says, in
 # the primary checkout's .local so every worktree's builds are found
 # (cycling backtrace). Written under a temporary name, then moved, so
 # parallel builds never leave a torn file; the newest 24 are kept.

@@ -494,10 +494,8 @@ class ReviewFixTests(Workspace):
         self.main('flash')
         self.assertEqual(self.fake.selected(), 1)
         self.assertEqual(self.protocols, [True])
-        # The stored image decides, never a leftover environment flag.
         self.candidate(image())
-        with patch.dict(os.environ, {'CYCLING_BULK_MAINTENANCE': '1'}):
-            self.main('flash')
+        self.main('flash')
         self.assertEqual(self.protocols, [True, False])
 
     def test_rollback_probes_the_protocol_of_the_target_image(self):
@@ -506,12 +504,10 @@ class ReviewFixTests(Workspace):
         self.candidate(image())
         self.main('flash')
         self.protocols.clear()
-        with patch.dict(os.environ, {}, clear=False) as environment:
-            environment.pop('CYCLING_BULK_MAINTENANCE', None)
-            self.main('rollback')
-            self.assertEqual((self.fake.selected(), self.protocols), (1, [True]))
-            self.main('rollback')
-            self.assertEqual((self.fake.selected(), self.protocols), (0, [True, False]))
+        self.main('rollback')
+        self.assertEqual((self.fake.selected(), self.protocols), (1, [True]))
+        self.main('rollback')
+        self.assertEqual((self.fake.selected(), self.protocols), (0, [True, False]))
 
     def test_switch_back_probes_the_previous_image_with_its_own_protocol(self):
         self.candidate(image(version=b'0.1.0+maintenance'))

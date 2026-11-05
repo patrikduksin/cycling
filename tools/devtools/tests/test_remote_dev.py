@@ -65,6 +65,17 @@ class RemoteScriptTests(unittest.TestCase):
             remote.main(['flash-image'])
         self.assertIn('cycling device flash', str(raised.exception))
 
+    def test_each_flash_task_builds_its_own_image_here_first(self):
+        for task, build in (('flash', 'build'), ('flash-maintenance', 'build-maintenance')):
+            with (
+                self.subTest(task=task),
+                patch.dict(remote.os.environ, {'CYCLING_DEVICE_HOST': 'h'}),
+                patch.object(remote.subprocess, 'run', side_effect=RuntimeError('stop')) as run,
+                self.assertRaises(RuntimeError),
+            ):
+                remote.main([task])
+            self.assertEqual(run.call_args.args[0], ['cycling', build])
+
 
 class BacktraceTests(unittest.TestCase):
     def test_code_addresses_are_annotated_and_data_addresses_ignored(self):

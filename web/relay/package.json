@@ -1,0 +1,20 @@
+{
+  "name": "@cycling/relay",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "effect-tsgo tsc -p . && effect-tsgo tsc -p test"
+  },
+  "dependencies": {
+    "@alchemy.run/cloudflare": "catalog:",
+    "@cycling/protocol": "workspace:*",
+    "alchemy": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261104.1"
+  }
+}

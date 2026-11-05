@@ -23,6 +23,18 @@
         "effect": "catalog:",
       },
     },
+    "web/relay": {
+      "name": "@cycling/relay",
+      "dependencies": {
+        "@alchemy.run/cloudflare": "catalog:",
+        "@cycling/protocol": "workspace:*",
+        "alchemy": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "5.20261104.1",
+      },
+    },
   },
   "catalog": {
     "@alchemy.run/cloudflare": "2.0.0-beta.85",
@@ -62,6 +74,8 @@
     "@cloudflare/workers-types": ["@cloudflare/workers-types@5.20261104.1", "", {}, "sha512-XSPcK88JXnW/oC82wuXvaP7vgyk2myydugbgOd/RcLKwqkwW0cP09Ozp9ItACa4IAZ7uKtMIfxZpUTXajYVd1Q=="],
 
     "@cycling/protocol": ["@cycling/protocol@workspace:web/protocol"],
+
+    "@cycling/relay": ["@cycling/relay@workspace:web/relay"],
 
     "@distilled.cloud/acme": ["@distilled.cloud/acme@1.0.0-rc.18", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.18" }, "peerDependencies": { "effect": "^4.0.5" } }, "sha512-OWO6NG9IcpDqZCzlrN5T4MIQqSbpZ5cw61Ru/dYn1vr3AIyx3Vlg+Ew8NhlunpURr4wqDUW2/7QW3fKbrmfwLg=="],
 

@@ -74,7 +74,7 @@ def decode(lines, elf):
 
 
 COMMIT = re.compile(r'\bcommit=([0-9a-f]{7,40})\b')
-ELF = re.compile(r'\belf=([0-9a-f]{7,40}(?:-dirty)?-sdk[01]-h[01](?:-maint)?)\b')
+ELF = re.compile(r'\belf=([0-9a-f]{7,40}(?:-dirty)?-h[01](?:-maint)?)\b')
 
 
 def choose_elf(lines, archive):

@@ -21,7 +21,6 @@ pub enum Command {
     Peripheral(crate::commands::peripherals::Command),
     Volume(crate::commands::volumes::Command),
     Harness(firmware_shell::harness::Command),
-    #[cfg(feature = "cycling")]
     Domain {
         bytes: [u8; 128],
         length: usize,
@@ -161,7 +160,6 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
         "HARNESS" => {
             Command::Harness(firmware_shell::harness::parse(&mut words).ok_or(Error::Invalid)?)
         }
-        #[cfg(feature = "cycling")]
         "RIDE" | "EXPORT" | "RADAR" | "PROFILE" | "WORKOUT" | "PHONE" => {
             let text = &line[line.find(verb).ok_or(Error::Invalid)?..];
             let mut bytes = [0; 128];

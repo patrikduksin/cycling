@@ -147,9 +147,9 @@ class Real(UsbConnection):
 class Virtual:
     virtual = True
 
-    def __init__(self, directory, state_dir=None, sdk=False, harness=True):
+    def __init__(self, directory, state_dir=None, harness=True):
         self.directory, self.state_dir = Path(directory), Path(state_dir or Path(directory) / 'state')
-        self.features = ','.join(name for name, enabled in (('debug-harness', harness), ('cycling', sdk)) if enabled)
+        self.features = 'debug-harness' if harness else ''
         self.request_id = secrets.randbelow(1 << 30) + 1
         self.boot, self.pending = [None], bytearray()
         self.process = self.log = self.errors = None

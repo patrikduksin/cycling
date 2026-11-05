@@ -99,7 +99,6 @@ def main():
     )
     parser.add_argument('--settle-ms', type=int, default=500, help='wait after each press (VANA debounces 350 ms)')
     parser.add_argument('--backend', choices=['real', 'virtual'], default='real')
-    parser.add_argument('--sdk', action='store_true', help='virtual backend: include VANA cycling workflows')
     add_port_argument(parser)
     args = parser.parse_args()
     stamp = time.strftime('%Y%m%d-%H%M%S')
@@ -107,7 +106,7 @@ def main():
     output = (args.output or evidence.with_suffix('.png')).resolve()
     evidence.mkdir(parents=True, mode=0o700)
     if args.backend == 'virtual':
-        transport = Virtual(evidence, sdk=args.sdk)
+        transport = Virtual(evidence)
     else:
         transport = Real(selected_port(parser, args.port), evidence / 'usb.log')
     try:

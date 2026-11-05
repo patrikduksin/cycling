@@ -1,6 +1,6 @@
 name: check
 
-# PRs are verified locally (test, check, simulate, harness-virtual and the four
+# PRs are verified locally (test, check, simulate, harness-virtual and the two
 # firmware builds) with the results posted on the PR. CI runs once per push to
 # main as a backstop, or on demand.
 on:
@@ -31,7 +31,6 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        sdk: ['0', '1']
         harness: ['0', '1']
     steps:
       - uses: actions/checkout@v7.0.1
@@ -40,5 +39,4 @@ jobs:
       - uses: cachix/install-nix-action@v31.11.2
       - run: nix develop -c cycling build
         env:
-          CYCLING_SDK: ${{ matrix.sdk }}
           CYCLING_HARNESS: ${{ matrix.harness }}

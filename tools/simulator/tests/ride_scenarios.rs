@@ -1,5 +1,4 @@
 //! VANA behaviour in a simulated world: sensors, rides, losses and recovery.
-#![cfg(feature = "cycling")]
 use device_api::ant::{LinkState, Request};
 use device_api::ble_transport::Link;
 use device_api::gps::FixState;

@@ -37,7 +37,7 @@ class CleanupTransport:
         self.commands.append(command)
         self.request_id += 1
         if command == 'INFO':
-            data = 'cycling=false recording=false'
+            data = 'recording=false'
         elif command == 'HARNESS CAPS':
             data = 'input=supported capture=supported boot=1 ordinary=INFO,STATUS,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE'
         elif command.startswith('HARNESS OPEN '):
@@ -125,9 +125,7 @@ class HarnessTests(unittest.TestCase):
                 dict(op='mmc', action='read', sector=0),
             ],
         }
-        args = SimpleNamespace(
-            run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None, sdk=False, no_harness=False
-        )
+        args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None, no_harness=False)
         actions = []
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
@@ -204,9 +202,7 @@ class HarnessTests(unittest.TestCase):
             'connectivity_restore': {'ble': {'mode': 'none', 'connected': False}},
             'steps': [dict(op='command', command='BRIGHTNESS 20'), dict(op='ble', action='connect')],
         }
-        args = SimpleNamespace(
-            run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None, sdk=True, no_harness=False
-        )
+        args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None, no_harness=False)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             with (
@@ -269,9 +265,7 @@ class HarnessTests(unittest.TestCase):
             ],
             'captures': [{'kind': capture.kind} for capture in captures],
         }
-        args = SimpleNamespace(
-            run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None, sdk=False, no_harness=False
-        )
+        args = SimpleNamespace(run_id=None, agent_tool_calls=None, backend='virtual', state_dir=None, no_harness=False)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             with (

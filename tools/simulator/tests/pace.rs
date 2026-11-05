@@ -5,7 +5,6 @@
 //! them (`vana::app::pace`). A press or a radar page ends a rest at once, a
 //! harness press runs when it is due, and a strict replay of a resting
 //! session is exact.
-#![cfg(feature = "cycling")]
 use device_api::input::{Button, Input, Point};
 use firmware_services::trace::{Event, decode};
 use shell_simulator::ant::device_type;

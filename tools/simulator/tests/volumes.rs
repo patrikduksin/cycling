@@ -1,6 +1,5 @@
 //! The owned MMC region's volumes: migration from the whole-region ride log,
 //! and terrain and files installed by the host beside the rides.
-#![cfg(feature = "cycling")]
 use shell_simulator::bulk::Presence;
 use shell_simulator::sim::{Sim, seconds};
 

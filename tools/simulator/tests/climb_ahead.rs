@@ -1,6 +1,5 @@
 //! CLIMB AHEAD: VANA reads the road ahead from an offline terrain pack in the
 //! MMC TERRAIN volume and shows its climbs before and while riding them.
-#![cfg(feature = "cycling")]
 use shell_simulator::ant::device_type;
 use shell_simulator::bulk::Presence;
 use shell_simulator::route::{Point, Route, to_gpx};

@@ -201,9 +201,6 @@ const fn is_one(value: Option<&str>) -> bool {
 /// How this image was built, for finding its symbols.
 const BUILD: device_api::crash::Build = device_api::crash::Build {
     dirty: is_one(option_env!("CYCLING_BUILD_DIRTY")),
-    // The SDK is application composition, which hardware code may not test
-    // for; build.sh's CYCLING_SDK names it for the ELF archive just the same.
-    cycling: is_one(option_env!("CYCLING_SDK")),
     harness: cfg!(feature = "debug-harness"),
     maintenance: cfg!(feature = "bulk-maintenance"),
 };

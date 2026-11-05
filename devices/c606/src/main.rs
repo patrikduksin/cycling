@@ -1,12 +1,14 @@
 #![no_std]
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![no_main]
+// The maintenance image runs only its binary protocol; the console it
+// replaces is still compiled.
+#![cfg_attr(feature = "bulk-maintenance", allow(dead_code, unused_variables))]
 use c606_firmware as device;
 use device::activity::{Stage, stage_ended};
 mod bringup;
 mod commands;
 mod logging;
-#[cfg(feature = "cycling")]
 mod trace;
 use esp_backtrace as _;
 #[cfg(not(feature = "bulk-maintenance"))]
@@ -26,15 +28,6 @@ esp_bootloader_esp_idf::esp_app_desc!(
     esp_bootloader_esp_idf::SECURE_VERSION
 );
 
-#[cfg(not(feature = "cycling"))]
-type FirmwareShell = firmware_shell::shell::Shell<
-    device::drivers::display::Display<'static>,
-    device::board::Input,
-    device::board::Power,
-    device::drivers::storage::Backend<'static>,
->;
-
-#[cfg(feature = "cycling")]
 type FirmwareShell = firmware_shell::shell::Shell<
     firmware_services::trace::shell::ShellDisplay<device::drivers::display::Display<'static>>,
     ShellInput,
@@ -44,13 +37,11 @@ type FirmwareShell = firmware_shell::shell::Shell<
 
 /// The edges the shell takes, kept for the trace until the pass records
 /// them, in PSRAM: the shell lives in the console task's future, where 16
-/// edges would take main stack. Base builds record no trace.
-#[cfg(feature = "cycling")]
+/// edges would take main stack.
 struct ShellInput(
     &'static mut firmware_services::trace::frozen::RecordedEdges<device::board::Input>,
 );
 
-#[cfg(feature = "cycling")]
 impl device_api::input::InputSource for ShellInput {
     fn controls(&self) -> device_api::input::Controls {
         self.0.controls()
@@ -70,9 +61,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     logging::init(boot);
     logging::metadata(false);
     device::activity::calibrate();
-    #[cfg(feature = "cycling")]
     let pass_log: &'static firmware_services::trace::shell::PassLog = external(Default::default);
-    #[cfg(feature = "cycling")]
     let mut system = {
         use firmware_services::trace::shell::{ShellDisplay, ShellFlash, ShellPower};
         let input = ShellInput(external(|| {
@@ -87,15 +76,6 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         )
         .unwrap()
     };
-    #[cfg(not(feature = "cycling"))]
-    let mut system = firmware_shell::shell::Shell::new(
-        board.display,
-        board.input,
-        board.power,
-        board.storage,
-        embassy_time::Instant::now().as_millis(),
-    )
-    .unwrap();
     #[cfg(feature = "debug-harness")]
     {
         system.harness = firmware_shell::harness::State::new(boot);
@@ -129,7 +109,6 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     system.reset = board.reset;
     system.crash = board.crash;
     system.heap_min_sampled = esp_alloc::HEAP.free();
-    #[cfg(feature = "cycling")]
     let profile = vana::sensors::ble_profile::Profile::from_u8(system.settings.ble_profile);
     #[cfg(feature = "bulk-maintenance")]
     {
@@ -167,9 +146,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 input: board.input_observation,
                 power: board.power_control,
             },
-            #[cfg(feature = "cycling")]
             profile,
-            #[cfg(feature = "cycling")]
             pass_log,
         )
         .unwrap(),
@@ -179,7 +156,6 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
 /// A block of PSRAM for `layout`, zeroed in chunks with a yield between
 /// them, as for the harness capture, so the companion UART is never starved.
 /// Null without PSRAM or for an empty layout; the block is never freed.
-#[cfg(feature = "cycling")]
 async fn zeroed_external(layout: core::alloc::Layout) -> *mut u8 {
     if layout.size() == 0 {
         return core::ptr::null_mut();
@@ -205,7 +181,6 @@ async fn zeroed_external(layout: core::alloc::Layout) -> *mut u8 {
 /// stack shares DRAM with `Runtime`'s static future and cannot spare them.
 /// Without PSRAM the back-to-start page says NO TRACK and no course loads;
 /// false then.
-#[cfg(feature = "cycling")]
 async fn attach_back(sdk: &mut vana::app::Runtime) -> bool {
     use vana::app::{
         BACK_CRUMBS, BackToStart, COURSE_POINTS, COURSE_TURNS, Course, CourseFinder, Crumb,
@@ -295,16 +270,13 @@ async fn console(
     usb: device::drivers::usb::Usb,
     mut system: FirmwareShell,
     mut devices: commands::Devices,
-    #[cfg(feature = "cycling")] profile: vana::sensors::ble_profile::Profile,
-    #[cfg(feature = "cycling")] pass_log: &'static firmware_services::trace::shell::PassLog,
+    profile: vana::sensors::ble_profile::Profile,
+    pass_log: &'static firmware_services::trace::shell::PassLog,
 ) {
     let mut terminal = firmware_console::session::Terminal::new(usb);
     let mut next_health = 0;
-    #[cfg(feature = "cycling")]
     let sdk = external(|| vana::app::Runtime::new(profile));
-    #[cfg(feature = "cycling")]
     device::capabilities::ant::wake_on(vana::app::WAKING_ANT_TYPE);
-    #[cfg(feature = "cycling")]
     {
         // Every saved ride of both journals, for ride history: about 20 KB
         // per journal, in PSRAM; VANA keeps only the pointer.
@@ -318,13 +290,11 @@ async fn console(
         // The rides the rider discarded or deleted, 8 KB in PSRAM.
         sdk.attach_deleted_rides(external_bytes(vana::ride::deleted::SHELF_BYTES));
     }
-    #[cfg(feature = "cycling")]
     let mut memory = firmware_services::trace::origin::Memory {
         ride_index: true,
         ride_facts: true,
         ..Default::default()
     };
-    #[cfg(feature = "cycling")]
     {
         sdk.load_preferences(&system.settings.app);
         sdk.set_latency_clock(|| embassy_time::Instant::now().as_millis());
@@ -383,12 +353,8 @@ async fn console(
     }
     // This session's trace, staged in PSRAM from the first pass; it takes
     // what PSRAM VANA left.
-    #[cfg(feature = "cycling")]
     let trace = external(|| trace::Trace::start(system.boot_id, system.settings, memory, pass_log));
-    #[cfg(feature = "cycling")]
     let mut terrain_step_max_us = 0u64;
-    // Only VANA selects a saved BLE peer at startup.
-    #[cfg(feature = "cycling")]
     let ble_selection = system.settings.ble.and_then(|saved| {
         vana::sensors::ble::selection(
             vana::sensors::ble_profile::Profile::from_u8(system.settings.ble_profile),
@@ -396,8 +362,6 @@ async fn console(
             saved.address,
         )
     });
-    #[cfg(not(feature = "cycling"))]
-    let ble_selection = None;
     let mut bringup = bringup::Bringup::start(
         embassy_time::Instant::now().as_millis(),
         system.settings.wifi,
@@ -405,7 +369,6 @@ async fn console(
         ble_selection,
         &mut devices.ble,
     );
-    #[cfg(feature = "cycling")]
     system.set_app_active(sdk.input_active());
     let started = embassy_time::Instant::now();
     system.present();
@@ -418,7 +381,6 @@ async fn console(
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
         bringup.poll(now, &mut devices.network, &mut devices.ble);
         stage_ended(Stage::Bringup);
-        #[cfg(feature = "cycling")]
         {
             let quiet = vana_pass(
                 sdk,
@@ -431,30 +393,18 @@ async fn console(
             trace.vitals(&devices, system.heap_min_sampled, now, quiet);
             stage_ended(Stage::Vitals);
         }
-        #[cfg(not(feature = "cycling"))]
-        let power = device_api::power::PowerControl::status(&devices.power);
         // Diagnostic power requests enter only with no active domain work.
         // Keep USB observations alive while device owners complete the transition.
-        #[cfg(not(feature = "cycling"))]
-        if power.ready {
-            system.tick(now);
-            system.observe_position(&devices.position, now);
-            let started = embassy_time::Instant::now();
-            system.present();
-            system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
-        }
         terminal.pump(logging::take, || embassy_time::Instant::now().as_micros());
         if terminal.transfer_due() {
             let handing = embassy_time::Instant::now();
             // The trace is whole on the card before the host can read it.
-            #[cfg(feature = "cycling")]
             trace.before_host(&mut devices.bulk, now);
             // The ACCEPTED reply went out; the host now speaks binary frames.
             let handover_us = handing.elapsed().as_micros();
             commands::transfer(terminal.transport(), &mut devices.bulk, handover_us).await;
             terminal.end_transfer();
             device::activity::pass_began();
-            #[cfg(feature = "cycling")]
             trace.after_host(
                 &mut devices.bulk,
                 true,
@@ -462,7 +412,6 @@ async fn console(
             );
         }
         if let Some(panic) = terminal.reboot_due(now) {
-            #[cfg(feature = "cycling")]
             trace.sync(&mut devices.bulk, now);
             commands::Diagnostics::restart(&FirmwareDiagnostics, panic);
         }
@@ -471,7 +420,6 @@ async fn console(
         if let Some(request) = request {
             // The trace holds the line and the power status the command's
             // gate reads, as the simulator records them.
-            #[cfg(feature = "cycling")]
             {
                 trace.command(terminal.line());
                 trace.power.freeze(&devices.power, now, &trace.record);
@@ -483,12 +431,9 @@ async fn console(
                 now,
                 &mut devices,
                 &FirmwareDiagnostics,
-                #[cfg(feature = "cycling")]
                 sdk,
-                #[cfg(feature = "cycling")]
                 trace,
             );
-            #[cfg(feature = "cycling")]
             trace.log.record(&trace.record);
             stage_ended(Stage::Command);
         }
@@ -512,7 +457,6 @@ async fn console(
                 system.heap_min_sampled,
                 terminal.sent()
             );
-            #[cfg(feature = "cycling")]
             {
                 log::info!(target: "terrain",
                     "status={:?} step_max_us={}",
@@ -524,15 +468,12 @@ async fn console(
             stage_ended(Stage::Log);
         }
         device::activity::pass_ended();
-        #[cfg(feature = "cycling")]
         let rest_ms = sdk.pass_rest_ms(
             &system,
             trace.power.frozen().state,
             terminal.take_traffic(),
             embassy_time::Instant::now().as_millis(),
         );
-        #[cfg(not(feature = "cycling"))]
-        let rest_ms = 5;
         device::capabilities::io::rest(rest_ms).await;
     }
 }
@@ -543,7 +484,6 @@ async fn console(
 /// pass's share of the trace to the card. Inlined, as the pass was before
 /// it had a name: a frame of its own would sit under every frame VANA
 /// prepares. True for a pass in dark charging standby.
-#[cfg(feature = "cycling")]
 #[inline(always)]
 fn vana_pass(
     sdk: &mut vana::app::Runtime,
@@ -710,7 +650,6 @@ fn vana_pass(
 /// out of the main stack (#167). Not inlined, so the value is built in this
 /// frame, which is gone before the task's loop, rather than in the console
 /// task's poll frame, which stays under every frame VANA prepares.
-#[cfg(feature = "cycling")]
 #[inline(never)]
 fn external<T>(make: impl FnOnce() -> T) -> &'static mut T {
     let value = make();
@@ -729,7 +668,6 @@ fn external<T>(make: impl FnOnce() -> T) -> &'static mut T {
 }
 
 /// `len` zeroed bytes of PSRAM, never freed.
-#[cfg(feature = "cycling")]
 fn external_bytes(len: usize) -> &'static mut [u8] {
     let layout = core::alloc::Layout::from_size_align(len, 4).expect("byte layout");
     // SAFETY: callers pass a non-zero length; the block is never freed.

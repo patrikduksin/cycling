@@ -883,7 +883,7 @@ def check_backend(args, scenario):
 
 def open_transport(args, output):
     if args.backend == 'virtual':
-        return Virtual(output, args.state_dir, args.sdk, not args.no_harness)
+        return Virtual(output, args.state_dir, not args.no_harness)
     return Real(args.port, output / 'usb.log')
 
 
@@ -1170,7 +1170,6 @@ def main():
     parser.add_argument('--backend', choices=['real', 'virtual'], default='real')
     add_port_argument(parser)
     parser.add_argument('--state-dir', type=Path)
-    parser.add_argument('--sdk', action='store_true')
     parser.add_argument('--no-harness', action='store_true')
     parser.add_argument('--seconds', type=float, default=30, help='bounded wait duration, at most 60 seconds')
     parser.add_argument(
@@ -1232,9 +1231,8 @@ def main():
         ]
         if args.port:
             cmd += ['--port', args.port]
-        for flag in ('sdk', 'no_harness'):
-            if getattr(args, flag):
-                cmd.append('--' + flag.replace('_', '-'))
+        if args.no_harness:
+            cmd.append('--no-harness')
         if args.state_dir:
             cmd += ['--state-dir', str(args.state_dir)]
         if args.agent_tool_calls is not None:

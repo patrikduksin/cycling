@@ -101,7 +101,7 @@ pub fn to_fixture(path: &Path, capture: &Capture, media: &Media) -> Option<Strin
              // To make it a fixture, from the checkout root:\n\
              //   cp {} {FIXTURES}/{name}.trace\n\
              //   cp {} {FIXTURES}/{name}.origin\n\
-             //   cargo test -p shell-simulator --features cycling,debug-harness --test trace_tools no_committed_fixture",
+             //   cargo test -p shell-simulator --features debug-harness --test trace_tools no_committed_fixture",
             source.display(),
             origin_path(&source).display()
         );
@@ -285,9 +285,7 @@ pub fn stub(
     for line in &expectation {
         let _ = writeln!(body, "{line}");
     }
-    Ok(format!(
-        "{doc}#[cfg(feature = \"cycling\")]\n#[test]\nfn {name}() {{\n{body}}}\n"
-    ))
+    Ok(format!("{doc}#[test]\nfn {name}() {{\n{body}}}\n"))
 }
 
 fn sensors(timeline: &Timeline, at_ms: u64) -> Vec<String> {

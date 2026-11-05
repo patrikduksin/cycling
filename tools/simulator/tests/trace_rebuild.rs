@@ -1,7 +1,6 @@
 //! A device trace replays from the media it started on, rebuilt from its
 //! header and the media pulled after the session, as `cycling trace pull`
 //! pulls them through ride export and `files get`.
-#![cfg(feature = "cycling")]
 use device_api::bulk::ReadWrite;
 use device_api::input::Button;
 use device_api::server::Method;

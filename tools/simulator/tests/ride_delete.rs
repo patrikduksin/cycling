@@ -1,7 +1,6 @@
 //! Discarding a ride at its end and deleting a saved ride: the journals keep
 //! every ride, and `rides/deleted.tbl` on FILES hides it from the list, the
 //! ride count, the week's totals and the phone.
-#![cfg(feature = "cycling")]
 use device_api::input::Button;
 use device_api::server::Method;
 use shell_simulator::ant::device_type;

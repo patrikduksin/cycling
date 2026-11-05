@@ -1,6 +1,5 @@
 //! The light look maps every painted pixel on its way to the panel (#219);
 //! the screen reader reads what that shows (#295).
-#![cfg(feature = "cycling")]
 use device_api::input::Button;
 use shell_simulator::bench::SCENES;
 use shell_simulator::screen::Look;

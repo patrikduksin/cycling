@@ -172,7 +172,7 @@ def disassemble(elf, objdump):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('elf', type=Path)
-    parser.add_argument('--variant', required=True, help='budget table to apply, such as sdk1-h1')
+    parser.add_argument('--variant', required=True, help='budget table to apply, such as h1')
     parser.add_argument('--budgets', type=Path, default=BUDGETS)
     parser.add_argument('--objdump', default=default_objdump())
     parser.add_argument('--top', type=int, default=10)

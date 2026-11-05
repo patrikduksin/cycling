@@ -1,6 +1,5 @@
 //! An idle screen draws at its page's pace and no faster: once a second for
 //! still pages, twice while something animates, such as the charging battery.
-#![cfg(feature = "cycling")]
 use device_api::input::Button;
 use shell_simulator::ant::device_type;
 use shell_simulator::sim::{Sim, seconds};

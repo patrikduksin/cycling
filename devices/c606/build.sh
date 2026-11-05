@@ -16,18 +16,13 @@ case "${CYCLING_HARNESS:-1}" in
   0) firmware_features="hardware"; firmware_target="$target_root/firmware-no-harness" ;;
   *) echo "CYCLING_HARNESS must be 0 or 1." >&2; exit 1 ;;
 esac
-case "${CYCLING_SDK:-0}" in
-  0) ;;
-  1) firmware_features="$firmware_features,cycling"; firmware_target="$firmware_target-sdk" ;;
-  *) echo "CYCLING_SDK must be 0 or 1." >&2; exit 1 ;;
-esac
 case "${CYCLING_BULK_MAINTENANCE:-0}" in
   0) ;;
   1) firmware_features="$firmware_features,bulk-maintenance"; firmware_target="$firmware_target-maintenance" ;;
   *) echo "CYCLING_BULK_MAINTENANCE must be 0 or 1." >&2; exit 1 ;;
 esac
 echo "Building with USB test harness=${CYCLING_HARNESS:-1}"
-variant="sdk${CYCLING_SDK:-0}-h${CYCLING_HARNESS:-1}"
+variant="h${CYCLING_HARNESS:-1}"
 if [[ "${CYCLING_BULK_MAINTENANCE:-0}" == 1 ]]; then
   variant="$variant-maint"
 fi

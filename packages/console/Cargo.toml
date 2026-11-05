@@ -9,7 +9,6 @@ publish = false
 
 [features]
 default = []
-cycling = []
 debug-harness = ["firmware-shell/debug-harness"]
 
 [dependencies]

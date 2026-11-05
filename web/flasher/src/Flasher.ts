@@ -62,6 +62,8 @@ export type ReadEvent =
       readonly offset: number
       readonly bytes: Uint8Array
     }
+  /** Last: the MD5 of the whole region, of pieces each the chip vouched for. */
+  | { readonly _tag: 'Read'; readonly md5: string }
 
 /**
  * One ROM-and-stub session on a SerialPort, driven by one fiber at a time:
@@ -72,14 +74,14 @@ export interface Session {
   readonly chip: Chip
   /**
    * Stub reads in pieces of at most `READ_PIECE_BYTES`. Each piece is checked
-   * against the chip's MD5 of the same range and retried up to
-   * `PIECE_RETRIES` times before `digestMismatch`.
+   * against the MD5 the stub sends after it, as python esptool does, and
+   * retried up to `PIECE_RETRIES` times before `digestMismatch`.
    */
   readonly read: (region: Region) => Stream.Stream<ReadEvent, FlasherError>
   /**
    * write-flash keep/keep/keep, compressed, then the chip's MD5 of the
-   * written range against the data's (`digestMismatch`). Emits bytes
-   * written so far.
+   * written range against the data's (`digestMismatch`), so a write that
+   * succeeds left exactly `data` in flash. Emits bytes written so far.
    */
   readonly write: (
     address: number,
@@ -105,6 +107,10 @@ export interface Session {
  */
 export const READ_PIECE_BYTES = 256 * 1024
 export const PIECE_RETRIES = 2
+/** READ_FLASH's packet and how many may be unacknowledged, python esptool's values. */
+const READ_PACKET_BYTES = 0x1000
+const READ_IN_FLIGHT = 64
+const MD5_BYTES = 16
 
 /** How long the closing scope waits for an abandoned esptool-js call, then for the recovery reset, then for disconnect. */
 const SETTLE_MS = 4000
@@ -216,8 +222,56 @@ export const open = (
         say(message)
       }
     }
+    /**
+     * esptool-js 0.7.1's readFlash never reads the MD5 the stub sends after
+     * the data (python checks it), and copies everything received so far on
+     * every packet.
+     */
+    class PageLoader extends esptool.ESPLoader {
+      async readChecked(
+        address: number,
+        size: number,
+      ): Promise<{
+        readonly bytes: Uint8Array<ArrayBuffer>
+        readonly md5: string
+      }> {
+        const params = new Uint8Array(16)
+        const view = new DataView(params.buffer)
+        view.setUint32(0, address, true)
+        view.setUint32(4, size, true)
+        view.setUint32(8, READ_PACKET_BYTES, true)
+        view.setUint32(12, READ_IN_FLIGHT, true)
+        const status = await this.checkCommand(
+          'read flash',
+          this.ESP_READ_FLASH,
+          params,
+        )
+        if (status !== 0) {
+          throw new esptool.ESPError(`Failed to read memory: ${String(status)}`)
+        }
+        const bytes = new Uint8Array(size)
+        let received = 0
+        while (received < size) {
+          const packet = await this.transport.read(this.FLASH_READ_TIMEOUT)
+          if (received + packet.length > size) {
+            throw new esptool.ESPError('The stub sent more than was asked for.')
+          }
+          bytes.set(packet, received)
+          received += packet.length
+          if (packet.length > 0) {
+            await this.transport.write(this._intToByteArray(received))
+          }
+        }
+        const digest = await this.transport.read(this.FLASH_READ_TIMEOUT)
+        if (digest.length !== MD5_BYTES) {
+          throw new esptool.ESPError('The stub sent no digest after the data.')
+        }
+        return { bytes, md5: this.toHex(digest) }
+      }
+    }
+
     const transport = new LoggedTransport(port, false)
-    const loader = new esptool.ESPLoader({
+    const loader = new PageLoader({
       transport,
       baudrate: 115200,
       romBaudrate: 115200,
@@ -329,39 +383,52 @@ export const open = (
       call('chipError', () => loader.flashMd5sum(region.address, region.size))
 
     const readPiece = (region: Region) =>
-      Effect.gen(function* () {
-        const bytes = yield* call('chipError', () =>
-          loader.readFlash(region.address, region.size),
-        )
-        const expected = yield* digest(region)
-        if (md5Hex(bytes) !== expected) {
-          return yield* new FlasherError({
-            reason: 'digestMismatch',
-            detail: `The read of ${hex(region.address)}+${hex(region.size)} disagrees with the chip's MD5.`,
-          })
-        }
-        return bytes
-      }).pipe(
+      call('chipError', () =>
+        loader.readChecked(region.address, region.size),
+      ).pipe(
+        Effect.filterOrFail(
+          ({ bytes, md5 }) => md5Hex(bytes) === md5,
+          () =>
+            new FlasherError({
+              reason: 'digestMismatch',
+              detail: `The read of ${hex(region.address)}+${hex(region.size)} disagrees with the chip's MD5.`,
+            }),
+        ),
         Effect.retry({
           times: PIECE_RETRIES,
           while: error => error.reason === 'digestMismatch',
         }),
+        Effect.map(({ bytes }) => bytes),
       )
 
     const read = (region: Region): Stream.Stream<ReadEvent, FlasherError> =>
-      Stream.fromIterable(piecesOf(region)).pipe(
-        Stream.mapEffect(piece =>
-          readPiece({
-            address: region.address + piece.address,
-            size: piece.size,
-          }).pipe(
-            Effect.map((bytes): ReadonlyArray<ReadEvent> => [
-              { _tag: 'Piece', offset: piece.address, bytes },
-              { _tag: 'Progress', done: piece.address + piece.size },
-            ]),
-          ),
-        ),
-        Stream.flattenIterable,
+      Stream.unwrap(
+        Effect.sync(() => {
+          const whole = new SparkMD5.ArrayBuffer()
+          return Stream.fromIterable(piecesOf(region)).pipe(
+            Stream.mapEffect(piece =>
+              readPiece({
+                address: region.address + piece.address,
+                size: piece.size,
+              }).pipe(
+                Effect.map((bytes): ReadonlyArray<ReadEvent> => {
+                  whole.append(bytes.buffer)
+                  return [
+                    { _tag: 'Piece', offset: piece.address, bytes },
+                    { _tag: 'Progress', done: piece.address + piece.size },
+                  ]
+                }),
+              ),
+            ),
+            Stream.flattenIterable,
+            Stream.concat(
+              Stream.sync((): ReadEvent => ({
+                _tag: 'Read',
+                md5: whole.end(),
+              })),
+            ),
+          )
+        }),
       )
 
     const write = (

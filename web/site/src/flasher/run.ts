@@ -1,6 +1,7 @@
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Match from 'effect/Match'
+import * as Option from 'effect/Option'
 import * as Queue from 'effect/Queue'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
@@ -14,7 +15,6 @@ import {
   Md5,
   OP_PROGRESS_MS,
   type Op,
-  type Region,
   type RequestId,
   opDataFrames,
 } from '@cycling/protocol'
@@ -46,20 +46,14 @@ export const totalOf = (op: Op): number =>
 
 const clip = (detail: string): string => detail.slice(0, MAX_DETAIL_CHARS)
 
-const decodeMd5 = Schema.decodeUnknownEffect(Md5)
-
-const digestOf = (session: Session, region: Region) =>
-  session.digest(region).pipe(
-    Effect.flatMap(hex =>
-      decodeMd5(hex).pipe(
-        Effect.mapError(
-          () =>
-            new FlasherError({
-              reason: 'chipError',
-              detail: 'The chip sent a malformed digest.',
-            }),
-        ),
-      ),
+const decodeMd5 = (hex: string) =>
+  Schema.decodeEffect(Md5)(hex).pipe(
+    Effect.mapError(
+      () =>
+        new FlasherError({
+          reason: 'chipError',
+          detail: 'The chip sent a malformed digest.',
+        }),
     ),
   )
 
@@ -84,16 +78,23 @@ const perform = <R>(
       Enter: () => Effect.succeed({ _tag: 'Entered' }),
       Read: ({ region }) =>
         session.read(region).pipe(
-          Stream.runForEach(event =>
-            event._tag === 'Progress'
-              ? progress(event.done)
-              : Effect.forEach(
-                  opDataFrames(id, event.bytes, event.offset),
-                  frame => options.send(frame),
-                  { discard: true },
-                ),
+          Stream.runFoldEffect(
+            () => Option.none<string>(),
+            (md5, event) =>
+              Match.value(event).pipe(
+                Match.tagsExhaustive({
+                  Progress: ({ done }) => progress(done).pipe(Effect.as(md5)),
+                  Piece: ({ offset, bytes }) =>
+                    Effect.forEach(
+                      opDataFrames(id, bytes, offset),
+                      frame => options.send(frame),
+                      { discard: true },
+                    ).pipe(Effect.as(md5)),
+                  Read: read => Effect.succeedSome(read.md5),
+                }),
+              ),
           ),
-          Effect.andThen(digestOf(session, region)),
+          Effect.flatMap(md5 => decodeMd5(Option.getOrElse(md5, () => ''))),
           Effect.map((md5): Finished => ({ _tag: 'Read', md5 })),
         ),
       Write: ({ region, md5 }) =>
@@ -103,14 +104,11 @@ const perform = <R>(
               .write(region.address, payload)
               .pipe(Stream.runForEach(progress)),
           ),
-          Effect.andThen(digestOf(session, region)),
-          Effect.map((written): Finished => ({
-            _tag: 'Written',
-            md5: written,
-          })),
+          Effect.as<Finished>({ _tag: 'Written', md5 }),
         ),
       Digest: ({ region }) =>
-        digestOf(session, region).pipe(
+        session.digest(region).pipe(
+          Effect.flatMap(decodeMd5),
           Effect.map((md5): Finished => ({ _tag: 'Digest', md5 })),
         ),
       Reboot: () =>

@@ -77,6 +77,14 @@ export const memorySession = (options: {
             ),
           ),
           Stream.flattenIterable,
+          Stream.concat(
+            Stream.sync(() => ({
+              _tag: 'Read' as const,
+              md5: fakeMd5Hex(
+                flash.subarray(region.address, region.address + region.size),
+              ),
+            })),
+          ),
         ),
       write: (address, data) =>
         Stream.fromEffect(Ref.update(writes, n => n + 1)).pipe(

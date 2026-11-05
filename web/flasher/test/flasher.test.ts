@@ -203,7 +203,9 @@ describe('read', () => {
       events.map(event =>
         event._tag === 'Piece'
           ? `piece ${event.offset} ${event.bytes.length}`
-          : `progress ${event.done}`,
+          : event._tag === 'Progress'
+            ? `progress ${event.done}`
+            : `read ${event.md5}`,
       ),
     ).toEqual([
       `piece 0 ${READ_PIECE_BYTES}`,
@@ -212,6 +214,7 @@ describe('read', () => {
       `progress ${READ_PIECE_BYTES * 2}`,
       `piece ${READ_PIECE_BYTES * 2} 100`,
       `progress ${size}`,
+      `read ${device.flashMd5(0x1000, size)}`,
     ])
   })
 

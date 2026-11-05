@@ -131,7 +131,7 @@ const layout = Option.some({
 const flashing = (patch: { readonly lease?: Lease } = {}): PortPhase => ({
   _tag: 'Flashing',
   lease: patch.lease ?? lease,
-  entry: 'usbReset',
+  entry: 'reset',
   layout,
   answered: Option.none(),
 })
@@ -192,10 +192,10 @@ describe('entering update mode', () => {
         expect(portOf(next).state).toMatchObject({
           _tag: 'Entering',
           lease,
-          entry: 'usbReset',
+          entry: 'reset',
         })
         expect(portRequirement(next)).toMatchObject(
-          Option.some({ _tag: 'Flasher', attempt: 0, entry: 'usbReset' }),
+          Option.some({ _tag: 'Flasher', attempt: 0, entry: 'reset' }),
         )
         expect(runningOp(next)).toEqual(Option.none())
         expect(waitingOps(next)).toEqual([{ id: requestId(1), total: 0 }])

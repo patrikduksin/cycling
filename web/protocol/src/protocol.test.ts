@@ -87,8 +87,32 @@ const browserMessages: ReadonlyArray<BrowserMsg> = [
       _tag: 'Entered',
       chip: {
         mac: Schema.decodeSync(ops.Mac)('020000000001'),
-        secureBoot: false,
-        flashEncryption: false,
+        family: 'ESP32-S3',
+        model: 'ESP32-S3 (QFN56)',
+        revision: 'v0.2',
+        features: ['Wi-Fi', 'BLE'],
+        crystalMhz: 40,
+        flash: { manufacturer: 0x20, device: 0x4018, bytes: 16 * 1024 * 1024 },
+        usb: { vendorId: 0x303a, productId: 0x1001 },
+        security: { _tag: 'Known', secureBoot: false, flashEncryption: false },
+      },
+    },
+  },
+  {
+    _tag: 'OpResult',
+    id,
+    outcome: {
+      _tag: 'Entered',
+      chip: {
+        mac: Schema.decodeSync(ops.Mac)('020000000002'),
+        family: 'ESP32',
+        model: 'ESP32-D0WD-V3',
+        revision: '3',
+        features: ['Wi-Fi', 'BT', 'Dual Core'],
+        crystalMhz: 40,
+        flash: { manufacturer: 0xc8, device: 0x4016, bytes: 4 * 1024 * 1024 },
+        usb: null,
+        security: { _tag: 'Unknown' },
       },
     },
   },
@@ -195,6 +219,45 @@ describe('frames', () => {
       },
     })
     expect(Exit.isFailure(run(decodeFromBrowser(usb)))).toBe(true)
+  })
+
+  test('an Entered chip outside the schema is refused, not stripped', () => {
+    const entered = (chip: object) =>
+      JSON.stringify({
+        _tag: 'OpResult',
+        id: 1,
+        outcome: {
+          _tag: 'Entered',
+          chip: {
+            mac: '020000000001',
+            family: 'ESP32-C3',
+            model: 'ESP32-C3 (QFN32)',
+            revision: 'v0.4',
+            features: ['Wi-Fi', 'BLE'],
+            crystalMhz: 40,
+            flash: { manufacturer: 0x20, device: 0x4016, bytes: 0x400000 },
+            usb: { vendorId: 0x303a, productId: 0x1001 },
+            security: { _tag: 'Unknown' },
+            ...chip,
+          },
+        },
+      })
+    expect(Exit.isSuccess(run(decodeToAgent(entered({}))))).toBe(true)
+    expect(
+      Exit.isFailure(run(decodeToAgent(entered({ family: 'ESP31' })))),
+    ).toBe(true)
+    expect(
+      Exit.isFailure(run(decodeToAgent(entered({ serial: 'AA:BB' })))),
+    ).toBe(true)
+    expect(
+      Exit.isFailure(
+        run(
+          decodeToAgent(
+            entered({ security: { _tag: 'Unknown', secureBoot: false } }),
+          ),
+        ),
+      ),
+    ).toBe(true)
   })
 
   test('an op cannot smuggle a MAC, or name flash past the chip', () => {

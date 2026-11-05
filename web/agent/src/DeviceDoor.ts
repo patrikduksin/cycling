@@ -10,7 +10,7 @@ import * as Stream from 'effect/Stream'
 
 import type { Md5 } from '@cycling/protocol'
 
-import { leaseFlasher, type Flasher } from './Flasher.ts'
+import { type EnteredChip, leaseFlasher, type Flasher } from './Flasher.ts'
 import type { RemotePort } from './RemotePort.ts'
 import { describeDoorOp, describeFlashError } from './Status.ts'
 import type { FlashError, LocalResourceError } from './errors.ts'
@@ -55,14 +55,56 @@ const decodeRequest = Schema.decodeUnknownEffect(
   { onExcessProperty: 'error' },
 )
 
+/** The chip as python's `Chip.from_door` reads it: snake case, nulls where the page knows nothing. */
+interface DoorChip {
+  readonly mac: string
+  readonly family: string
+  readonly model: string
+  readonly revision: string
+  readonly features: ReadonlyArray<string>
+  readonly crystal_mhz: number
+  readonly flash: {
+    readonly manufacturer: number
+    readonly device: number
+    readonly size: number
+  }
+  readonly usb: {
+    readonly vendor_id: number
+    readonly product_id: number
+  } | null
+  readonly security: {
+    readonly secure_boot: boolean
+    readonly flash_encryption: boolean
+  } | null
+}
+
+const doorChip = (chip: EnteredChip): DoorChip => ({
+  mac: Redacted.value(chip.mac),
+  family: chip.family,
+  model: chip.model,
+  revision: chip.revision,
+  features: chip.features,
+  crystal_mhz: chip.crystalMhz,
+  flash: {
+    manufacturer: chip.flash.manufacturer,
+    device: chip.flash.device,
+    size: chip.flash.bytes,
+  },
+  usb:
+    chip.usb === null
+      ? null
+      : { vendor_id: chip.usb.vendorId, product_id: chip.usb.productId },
+  security:
+    chip.security._tag === 'Known'
+      ? {
+          secure_boot: chip.security.secureBoot,
+          flash_encryption: chip.security.flashEncryption,
+        }
+      : null,
+})
+
 type Reply =
-  | {
-      readonly ok: {
-        readonly mac: string
-        readonly secure_boot: boolean
-        readonly flash_encryption: boolean
-      }
-    }
+  | { readonly ok: DoorChip }
   | { readonly ok: { readonly md5: Md5 } }
   | { readonly ok: { readonly matched: boolean } }
   | { readonly ok: { readonly captured: boolean } }
@@ -92,15 +134,7 @@ const answer = (
     Match.withReturnType<Effect.Effect<Reply, FlashError>>(),
     Match.discriminatorsExhaustive('op')({
       enter: () =>
-        flasher.enter.pipe(
-          Effect.map(chip => ({
-            ok: {
-              mac: Redacted.value(chip.mac),
-              secure_boot: chip.secureBoot,
-              flash_encryption: chip.flashEncryption,
-            },
-          })),
-        ),
+        flasher.enter.pipe(Effect.map(chip => ({ ok: doorChip(chip) }))),
       read: ({ address, size, path }) =>
         flasher
           .read(address, size, path)

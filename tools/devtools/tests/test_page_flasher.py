@@ -7,11 +7,22 @@ import threading
 import unittest
 from pathlib import Path
 
-from cycling_devtools.device.flasher import Chip, FlasherError
+from cycling_devtools.device.flasher import Chip, Flash, FlasherError, Security, Usb
 from cycling_devtools.device.page_flasher import PageFlasher
 
 # A made-up address.
 MAC = '020000a1b2c3'
+# The agent's enter reply (web/agent DeviceDoor's doorChip) for a C3 on USB-Serial-JTAG.
+DOOR_CHIP = {
+    'family': 'ESP32-C3',
+    'model': 'ESP32-C3 (QFN32)',
+    'revision': 'v0.4',
+    'features': ['Wi-Fi', 'BLE'],
+    'crystal_mhz': 40,
+    'flash': {'manufacturer': 0x20, 'device': 0x4016, 'size': 0x400000},
+    'usb': {'vendor_id': 0x303A, 'product_id': 0x1001},
+    'security': {'secure_boot': False, 'flash_encryption': True},
+}
 
 
 class Door:
@@ -62,13 +73,26 @@ class PageFlasherTests(unittest.TestCase):
     def test_every_verb_is_one_request_on_one_connection(self):
         def answer(request):
             if request['op'] == 'enter':
-                return {'ok': {'mac': MAC, 'secure_boot': False, 'flash_encryption': True}}
+                return {'ok': {**DOOR_CHIP, 'mac': MAC}}
             if request['op'] == 'verify':
                 return {'ok': {'matched': request['address'] == 0x10000}}
             return {'ok': {'md5': '0' * 32}}
 
         door, page = self.door(answer)
-        self.assertEqual(page.enter(), Chip('02:00:00:a1:b2:c3', secure_boot=False, flash_encryption=True))
+        self.assertEqual(
+            page.enter(),
+            Chip(
+                identity='02:00:00:a1:b2:c3',
+                family='ESP32-C3',
+                model='ESP32-C3 (QFN32)',
+                revision='v0.4',
+                features=('Wi-Fi', 'BLE'),
+                crystal_mhz=40,
+                flash=Flash(manufacturer=0x20, device=0x4016, size=0x400000),
+                usb=Usb(vendor_id=0x303A, product_id=0x1001),
+                security=Security(secure_boot=False, flash_encryption=True),
+            ),
+        )
         page.read(0x8000, 0x1000, Path('relative.bin'))
         page.write(0x10000, self.dir / 'image.bin')
         self.assertTrue(page.verify(0x10000, self.dir / 'image.bin'))
@@ -81,6 +105,11 @@ class PageFlasherTests(unittest.TestCase):
             ],
         )
         self.assertEqual(door.connections, 1)
+
+    def test_a_port_without_usb_ids_and_a_rom_without_security_info_enter_as_unknown(self):
+        _, page = self.door(lambda request: {'ok': {**DOOR_CHIP, 'mac': MAC, 'usb': None, 'security': None}})
+        chip = page.enter()
+        self.assertEqual((chip.usb, chip.security, chip.accepts_unsigned), (None, None, None))
 
     def test_reboot_returns_the_capture_the_agent_wrote(self):
         def answer(request):

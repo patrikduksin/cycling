@@ -46,12 +46,70 @@ export const Mac = Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/)).pipe(
 )
 export type Mac = typeof Mac.Type
 
+/** esptool-js 0.7.1's `CHIP_NAME` for every family it supports, which is python esptool's too. */
+export const ChipFamily = Schema.Literals([
+  'ESP8266',
+  'ESP32',
+  'ESP32-S2',
+  'ESP32-S3',
+  'ESP32-S31',
+  'ESP32-C2',
+  'ESP32-C3',
+  'ESP32-C5',
+  'ESP32-C6',
+  'ESP32-C61',
+  'ESP32-E22',
+  'ESP32-H2',
+  'ESP32-H21',
+  'ESP32-H4',
+  'ESP32-P4',
+])
+export type ChipFamily = typeof ChipFamily.Type
+
+/** What the ROM says about firmware it will run. */
+export const Security = Schema.Union([
+  Schema.TaggedStruct('Known', {
+    /** GET_SECURITY_INFO's SECURE_BOOT_EN flag. */
+    secureBoot: Schema.Boolean,
+    /** Odd popcount of flash_crypt_cnt, as esptool computes it. */
+    flashEncryption: Schema.Boolean,
+  }),
+  /** The ROM has no GET_SECURITY_INFO (ESP8266, ESP32); devtools treats such a device as not writable. */
+  Schema.TaggedStruct('Unknown', {}),
+])
+export type Security = typeof Security.Type
+
+const Word = (maximum: number) =>
+  Schema.Int.check(Schema.isBetween({ minimum: 0, maximum }))
+const Words = (maxLength: number) =>
+  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maxLength))
+
+/**
+ * The chip as the page found it at entry, in esptool-js's words. Only the
+ * authenticated agent gets it; the page's Model and view never hold it.
+ */
 export const Chip = Schema.Struct({
   mac: Mac,
-  /** GET_SECURITY_INFO's SECURE_BOOT_EN flag. */
-  secureBoot: Schema.Boolean,
-  /** Odd popcount of flash_crypt_cnt, as esptool computes it. */
-  flashEncryption: Schema.Boolean,
+  family: ChipFamily,
+  /** The description less its revision, such as `ESP32-S3 (QFN56)`. */
+  model: Words(64),
+  /** As the description words it: `v0.2`, or `1` on the ESP32. */
+  revision: Words(16),
+  features: Schema.Array(Words(64)).check(Schema.isMaxLength(16)),
+  crystalMhz: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })),
+  /** The JEDEC id as python esptool's flash-id splits it, and the size its capacity byte names. */
+  flash: Schema.Struct({
+    manufacturer: Word(0xff),
+    device: Word(0xffff),
+    bytes: Schema.Int.check(
+      Schema.isBetween({ minimum: 1, maximum: 0x8000_0000 }),
+    ),
+  }),
+  /** The port's USB ids as the browser reports them; null when it reports none. */
+  usb: Schema.NullOr(
+    Schema.Struct({ vendorId: Word(0xffff), productId: Word(0xffff) }),
+  ),
+  security: Security,
 })
 export type Chip = typeof Chip.Type
 
@@ -95,7 +153,7 @@ export const OpFailure = Schema.Literals([
   'digestMismatch',
   /** The USB device vanished mid-op: unplug, panic or an unexpected reset. */
   'portLost',
-  /** Not an ESP32-S3, or its flash did not report its size; nothing was written to it. */
+  /** A family the page has no table for, or a flash that did not report its size; nothing was written to it. */
   'unsupportedChip',
   /** The region ends past the flash the chip reported (a 4 or 8 MiB part); flash untouched. */
   'pastFlash',

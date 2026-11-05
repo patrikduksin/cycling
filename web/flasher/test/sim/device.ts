@@ -1,6 +1,7 @@
 import { Inflate } from 'pako'
 import SparkMD5 from 'spark-md5'
 
+import { PROFILES, type Profile, type SimChip } from './chips.ts'
 import { FakeSerialPort, type Enumeration, type Wire } from './port.ts'
 import { SlipDecoder, slipEncode } from './slip.ts'
 
@@ -21,8 +22,8 @@ export interface SimOptions {
   readonly flashCryptCnt?: number
   /** Every reply reaches the host this much later. */
   readonly replyDelayMs?: number
-  /** GET_SECURITY_INFO's chip id: 9 is the ESP32-S3, 5 the C3, 13 the C6. */
-  readonly chipId?: number
+  /** Which chip, on the link its boards use; the C606's ESP32-S3 by default. */
+  readonly chip?: SimChip
   /** How fast the stub streams READ_FLASH packets; the C606 manages about 140 KB/s. Unlimited by default. */
   readonly readBytesPerSecond?: number
 }
@@ -69,41 +70,17 @@ const STUB_BAD_CHECKSUM = 0xc1
 const STUB_INVALID_COMMAND = 0xc5
 const STUB_INFLATE_ERROR = 0xc6
 
-/**
- * The sim's own register map, written from the ESP32-S3 TRM names rather than
- * imported from the flasher, so a wrong table in the flasher fails here.
- */
-const REG = {
-  MAC0: 0x60007044,
-  MAC1: 0x60007048,
-  RTC_WDT_CONFIG0: 0x60008098,
-  RTC_WDT_CONFIG1: 0x6000809c,
-  RTC_WDT_WPROTECT: 0x600080b0,
-  SWD_CONF: 0x600080b4,
-  SWD_WPROTECT: 0x600080b8,
-  SPI_CMD: 0x60002000,
-  SPI_USER2: 0x60002020,
-  SPI_W0: 0x60002058,
-} as const
+const CHIP_DETECT_MAGIC_REG = 0x40001000
 /** SPI_CMD's USR bit starts a user command; RDID answers the JEDEC id in W0. */
 const SPI_CMD_USR = 1 << 18
 const SPIFLASH_RDID = 0x9f
 const RTC_WDT_KEY = 0x50d83aa1
 const SWD_KEY = 0x8f1d312a
 const ENABLE = 0x80000000
-const SWD_AUTO_FEED = 0x80000000
 /** Stage 0 of the armed RTC WDT at 2000 slow-clock cycles. */
 const WATCHDOG_ARM_MS = 15
 const CHECKSUM_SEED = 0xef
 const PENDING_LIMIT = 4096
-
-const ROM_BANNER = 'ESP-ROM:esp32s3-20210327\r\nBuild:Mar 27 2021\r\n'
-
-const downloadBanner = (cause: string): string =>
-  `${ROM_BANNER}rst:${cause},boot:0x0 (DOWNLOAD(USB/UART0))\r\nSaved PC:0x40048036\r\nwaiting for download\r\n`
-
-const appBanner = (cause: string): string =>
-  `${ROM_BANNER}rst:${cause},boot:0x8 (SPI_FAST_FLASH_BOOT)\r\nSaved PC:0x403cd8c2\r\nSPIWP:0xee\r\nmode:DIO, clock div:1\r\nload:0x3fce2810,len:0x178c\r\nentry 0x403c8b28\r\nI (27) boot: ESP-IDF v5.1.2 2nd stage bootloader\r\nI (31) boot: Loaded app from partition at offset 0x20000\r\nI (240) app: sim-c606 up\r\n`
 
 const text = new TextEncoder()
 
@@ -175,13 +152,15 @@ interface ReadFault {
 type Listener = (port: FakeSerialPort) => void
 
 /**
- * A fake ESP32-S3 on USB-Serial-JTAG: the app console, the ROM loader, the
- * flasher stub and the RTC watchdog, speaking exactly what esptool-js 0.7.1
- * sends. Everything runs on real timers, so dispose() it after a test.
+ * A fake chip on its board's link (by default the C606's ESP32-S3 on
+ * USB-Serial-JTAG): the app console, the ROM loader, the flasher stub and
+ * the RTC watchdog, speaking exactly what esptool-js 0.7.1 sends.
+ * Everything runs on real timers, so dispose() it after a test.
  */
 export class SimDevice implements Wire, Enumeration {
   readonly flash: Uint8Array
-  private readonly options: Required<Omit<SimOptions, 'flash'>>
+  private readonly options: Required<Omit<SimOptions, 'flash' | 'chip'>>
+  private readonly profile: Profile
   private mode: Mode = 'app'
   /** What the chip ran before RTS held it in reset. */
   private heldFrom: Mode = 'app'
@@ -223,8 +202,8 @@ export class SimDevice implements Wire, Enumeration {
       flashCryptCnt: options.flashCryptCnt ?? 0,
       replyDelayMs: options.replyDelayMs ?? 0,
       readBytesPerSecond: options.readBytesPerSecond ?? Infinity,
-      chipId: options.chipId ?? 9,
     }
+    this.profile = PROFILES[options.chip ?? 'ESP32-S3']
     this.attach()
     this.bootApp('0x1 (POWERON)')
   }
@@ -325,9 +304,10 @@ export class SimDevice implements Wire, Enumeration {
   }
 
   /**
-   * USB-Serial-JTAG maps RTS to chip reset and DTR to the boot strap: the
-   * chip is held in reset while RTS is set and DTR clear, and leaves reset
-   * into download mode when DTR was set (with RTS clear) since the last boot.
+   * USB-Serial-JTAG maps RTS to chip reset and DTR to the boot strap, as a
+   * UART board's two-transistor auto-reset circuit does: the chip is held in
+   * reset while RTS is set and DTR clear, and leaves reset into download
+   * mode when DTR was set (with RTS clear) since the last boot.
    */
   signals(signals: SerialOutputSignals): void {
     if (this.mode === 'unplugged') {
@@ -354,17 +334,17 @@ export class SimDevice implements Wire, Enumeration {
   private releaseReset(): void {
     const download = this.downloadStrap
     const fromApp = this.heldFrom === 'app'
-    if (this.options.reenumerateOnEntry) {
+    if (this.options.reenumerateOnEntry && this.profile.reenumerates) {
       this.detach()
       this.later(this.options.reenumerateMs, () => this.attach())
     }
     if (download) {
-      this.bootDownload('0x15 (USB_UART_CHIP_RESET)')
-      if (fromApp) {
+      this.bootDownload(this.profile.pinReset)
+      if (fromApp && this.profile.watchdogs !== undefined) {
         this.setWatchdog(this.options.watchdogMs)
       }
     } else {
-      this.bootApp('0x15 (USB_UART_CHIP_RESET)')
+      this.bootApp(this.profile.pinReset)
     }
   }
 
@@ -414,9 +394,13 @@ export class SimDevice implements Wire, Enumeration {
     this.uptimeMs = 0
     this.rtcWdtOff = false
     this.swdFed = false
+    const [mac0, mac1] = this.profile.macWords
+    const words = macWords(this.options.mac)
     this.registers = new Map([
-      [REG.MAC0, macWords(this.options.mac).mac0],
-      [REG.MAC1, macWords(this.options.mac).mac1],
+      ...this.profile.fixed,
+      [CHIP_DETECT_MAGIC_REG, this.profile.magic],
+      [mac0, words.mac0],
+      [mac1, words.mac1],
     ])
   }
 
@@ -424,7 +408,7 @@ export class SimDevice implements Wire, Enumeration {
     this.boot()
     this.mode = 'app'
     this.lastReset = cause
-    this.emit(text.encode(appBanner(cause)))
+    this.emit(text.encode(this.profile.appBanner(cause)))
     this.uptime = setInterval(() => {
       this.uptimeMs += 500
       this.emit(text.encode(`{"uptime_ms":${this.uptimeMs}}\r\n`))
@@ -435,7 +419,7 @@ export class SimDevice implements Wire, Enumeration {
     this.boot()
     this.mode = 'rom'
     this.lastReset = cause
-    this.emit(text.encode(downloadBanner(cause)))
+    this.emit(text.encode(this.profile.downloadBanner(cause)))
   }
 
   private attach(): void {
@@ -443,7 +427,7 @@ export class SimDevice implements Wire, Enumeration {
       return
     }
     this.enumerations += 1
-    this.port = new FakeSerialPort(this)
+    this.port = new FakeSerialPort(this, this.profile.usb)
     const port = this.port
     for (const listener of this.attachListeners.slice()) {
       listener(port)
@@ -607,12 +591,15 @@ export class SimDevice implements Wire, Enumeration {
         }
         return
       case OP.GET_SECURITY_INFO:
+        if (this.profile.chipId === undefined) {
+          return this.reply(op, { error: ROM_INVALID_MESSAGE })
+        }
         return this.reply(op, {
           data: Uint8Array.from([
             ...le32(this.options.secureBoot ? 1 : 0),
             this.options.flashCryptCnt,
             ...Array.from({ length: 7 }, () => 0),
-            ...le32(this.options.chipId),
+            ...le32(this.profile.chipId),
             ...le32(0),
           ]),
         })
@@ -656,25 +643,28 @@ export class SimDevice implements Wire, Enumeration {
   }
 
   private writeRegister(address: number, value: number, mask: number): void {
+    const dog = this.profile.watchdogs
     const unlocked =
-      address === REG.RTC_WDT_CONFIG0 || address === REG.RTC_WDT_CONFIG1
-        ? this.registers.get(REG.RTC_WDT_WPROTECT) === RTC_WDT_KEY
-        : address === REG.SWD_CONF
-          ? this.registers.get(REG.SWD_WPROTECT) === SWD_KEY
-          : true
+      dog === undefined
+        ? true
+        : address === dog.config0 || address === dog.config1
+          ? this.registers.get(dog.wprotect) === RTC_WDT_KEY
+          : address === dog.swdConf
+            ? this.registers.get(dog.swdWprotect) === SWD_KEY
+            : true
     if (!unlocked) {
       return
     }
-    if (address === REG.SPI_CMD && (value & SPI_CMD_USR) !== 0) {
+    if (address === this.profile.spi.cmd && (value & SPI_CMD_USR) !== 0) {
       return this.spiCommand()
     }
     const old = this.registers.get(address) ?? 0
     const next = ((old & ~mask) | (value & mask)) >>> 0
     this.registers.set(address, next)
-    if (address === REG.RTC_WDT_CONFIG0) {
+    if (address === dog?.config0) {
       this.rtcWdtOff = (next & ENABLE) === 0
     }
-    if (address === REG.SWD_CONF && (next & SWD_AUTO_FEED) !== 0) {
+    if (address === dog?.swdConf && (next & dog.swdAutoFeed) !== 0) {
       this.swdFed = true
     }
     if (this.rtcWdtOff && this.swdFed && this.watchdog !== undefined) {
@@ -685,14 +675,19 @@ export class SimDevice implements Wire, Enumeration {
 
   /** The flash answers RDID with a JEDEC id whose capacity byte is log2 of its size, and the command is done at once. */
   private spiCommand(): void {
-    if (((this.registers.get(REG.SPI_USER2) ?? 0) & 0xff) === SPIFLASH_RDID) {
+    const { user2, w0 } = this.profile.spi
+    if (((this.registers.get(user2) ?? 0) & 0xff) === SPIFLASH_RDID) {
       const capacity = Math.log2(this.flash.length)
-      this.registers.set(REG.SPI_W0, (capacity << 16) | (0x40 << 8) | 0x20)
+      this.registers.set(w0, (capacity << 16) | (0x40 << 8) | 0x20)
     }
   }
 
   private armed(): boolean {
-    return ((this.registers.get(REG.RTC_WDT_CONFIG0) ?? 0) & ENABLE) !== 0
+    const dog = this.profile.watchdogs
+    return (
+      dog !== undefined &&
+      ((this.registers.get(dog.config0) ?? 0) & ENABLE) !== 0
+    )
   }
 
   private memory(op: number, check: number, data: Uint8Array): void {

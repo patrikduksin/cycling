@@ -49,7 +49,7 @@ import {
  *                                                                                  queued notEntered
  *  any           Op X{lease, id} already queued -                                  - (its answer will come)
  *  Flashing      Op X{lease, id} last answered  -                                  that answer again
- *  Open          Op Enter                       Entering{usbReset}, ops=[Enter]    -
+ *  Open          Op Enter                       Entering{reset}, ops=[Enter]       -
  *  Opening,      Op Enter                       ops+=[Enter]; it enters once the   -
  *  Reacquiring                                  console is Open again
  *  Failed        Op Enter                       -                                  entryFailed
@@ -60,7 +60,7 @@ import {
  *  any           an op past OP_QUEUE            -                                  busy
  *  held          Op X                           ops+=[X]                           -
  *  Entering      EnteredFlasher                 Flashing                           PortChanged Flashing
- *  Entering      FailedEntry portLost, usbReset Entering{noReset}                  -
+ *  Entering      FailedEntry portLost, reset    Entering{noReset}                  -
  *  Entering      FailedEntry otherwise          console Reacquiring                head entryFailed (or
  *                                                                                  unsupportedChip), rest notEntered
  *  Flashing      FinishedOp Entered|Read|...    ops=tail, answered=it              the outcome
@@ -243,7 +243,7 @@ const enqueue = (port: Port, id: RequestId, op: RunnableOp): Port =>
 const entering = (lease: Lease): Entering => ({
   _tag: 'Entering',
   lease,
-  entry: 'usbReset',
+  entry: 'reset',
 })
 
 /** The wire's answer to a finished op; None for Entered, which the session answers. */
@@ -416,7 +416,7 @@ export const onFailedEntry = (
   if (phase._tag !== 'Entering') {
     return Option.none()
   }
-  if (failure.reason === 'portLost' && phase.entry === 'usbReset') {
+  if (failure.reason === 'portLost' && phase.entry === 'reset') {
     return Option.some(step(withState(port, { ...phase, entry: 'noReset' })))
   }
   const [head, ...rest] = port.ops

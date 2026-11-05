@@ -18,7 +18,7 @@ import {
 
 import { pageSession } from '../adapters/flasher.ts'
 import { demoFlash } from '../dev/image.ts'
-import { memorySession } from '../dev/memorySession.ts'
+import { DEMO_CHIP, memorySession } from '../dev/memorySession.ts'
 import type { Message } from '../message.ts'
 import type { RunnableOp } from '../model.ts'
 import { makeInbox } from './inbox.ts'
@@ -31,7 +31,6 @@ const settle = Effect.replicateEffect(Effect.yieldNow, 50, { discard: true })
 
 const lease = Lease.make('0123456789abcdef')
 const id = RequestId.make(9)
-const chip = { mac: '020000000001', secureBoot: false, flashEncryption: false }
 
 const setup = (options: {
   readonly bytesPerSecond?: number
@@ -41,7 +40,7 @@ const setup = (options: {
     const flash = demoFlash()
     const memory = yield* memorySession({
       flash,
-      chip,
+      chip: DEMO_CHIP,
       bytesPerSecond: options.bytesPerSecond ?? Infinity,
       digestMs: options.digestMs ?? 0,
       pieceBytes: 64 * 1024,

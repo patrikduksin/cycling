@@ -43,10 +43,9 @@ export const OP_RETRIES = 3
 const RELEASE_WAIT_MS = 3000
 const AWAY = `the visitor's page was unreachable for ${LINK_WAIT_MS / 1000} s`
 
-export interface EnteredChip {
+/** The page's chip description with the MAC kept out of logs and traces. */
+export interface EnteredChip extends Omit<Chip, 'mac'> {
   readonly mac: Redacted.Redacted<Mac>
-  readonly secureBoot: boolean
-  readonly flashEncryption: boolean
 }
 
 /**
@@ -383,7 +382,6 @@ export const leaseFlasher = (
   })
 
 const chipOf = (chip: Chip): EnteredChip => ({
+  ...chip,
   mac: Redacted.make(chip.mac),
-  secureBoot: chip.secureBoot,
-  flashEncryption: chip.flashEncryption,
 })

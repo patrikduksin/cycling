@@ -32,7 +32,7 @@ import {
   type SerialLink,
 } from '../links.ts'
 import { demoFlash } from './image.ts'
-import { memorySession } from './memorySession.ts'
+import { DEMO_CHIP, memorySession } from './memorySession.ts'
 
 /**
  * A device and a relay that exist only in the dev server (`?fake`), so the
@@ -253,11 +253,7 @@ const fakeFlasher = (flash: Uint8Array) => ({
       Effect.andThen(
         memorySession({
           flash,
-          chip: {
-            mac: '020000000001',
-            secureBoot: false,
-            flashEncryption: false,
-          },
+          chip: DEMO_CHIP,
           bytesPerSecond: 128 * 1024,
           digestMs: 1200,
           pieceBytes: 16 * 1024,

@@ -2,13 +2,32 @@
 
 from pathlib import Path
 
-from cycling_devtools.device.flasher import Chip, FlasherError
+from cycling_devtools.device.flasher import Chip, Flash, FlasherError, Security, Usb
+
+UNSIGNED = Security(secure_boot=False, flash_encryption=False)
+
+
+def c606(identity, security=UNSIGNED):
+    """The C606's ESP32-S3 as esptool describes it."""
+    return Chip(
+        identity=identity,
+        family='ESP32-S3',
+        model='ESP32-S3 (QFN56)',
+        revision='v0.2',
+        features=('Wi-Fi', 'BT 5 (LE)', 'Dual Core + LP Core', '240MHz'),
+        crystal_mhz=40,
+        flash=Flash(manufacturer=0x20, device=0x4018, size=0x1000000),
+        usb=Usb(vendor_id=0x303A, product_id=0x1001),
+        security=security,
+    )
 
 
 class MemoryFlasher:
-    def __init__(self, memory, identity, secure_boot=False, flash_encryption=False):
+    def __init__(self, memory, identity):
         self.memory = bytearray(memory)
-        self.identity, self.secure_boot, self.flash_encryption = identity, secure_boot, flash_encryption
+        self.identity = identity
+        # None: a ROM without security info, as on the ESP32.
+        self.security: Security | None = UNSIGNED
         self.writes, self.enters, self.reboots = [], 0, 0
         self.boot_output: bytes | None = b''
 
@@ -19,7 +38,7 @@ class MemoryFlasher:
 
     def enter(self):
         self.enters += 1
-        return Chip(self.identity, self.secure_boot, self.flash_encryption)
+        return c606(self.identity, self.security)
 
     def read(self, address, size, path: Path):
         path.write_bytes(self.memory[self._span(address, size)])

@@ -6,7 +6,6 @@ export interface Wire {
   readonly signals: (signals: SerialOutputSignals) => void
 }
 
-const ESPRESSIF_USB_JTAG = { usbVendorId: 0x303a, usbProductId: 0x1001 }
 const CHROME_BUFFER_SIZE = 255
 
 type PortState = 'closed' | 'open' | 'lost'
@@ -26,7 +25,10 @@ export class FakeSerialPort extends EventTarget implements SerialPort {
   /** Chrome hands the page at most `bufferSize` bytes per read, 255 unless the opener asked for more. */
   private readSize = CHROME_BUFFER_SIZE
 
-  constructor(private readonly wire: Wire) {
+  constructor(
+    private readonly wire: Wire,
+    private readonly info: SerialPortInfo,
+  ) {
     super()
   }
 
@@ -39,7 +41,7 @@ export class FakeSerialPort extends EventTarget implements SerialPort {
   }
 
   getInfo(): SerialPortInfo {
-    return ESPRESSIF_USB_JTAG
+    return this.info
   }
 
   open(options: SerialOptions): Promise<void> {

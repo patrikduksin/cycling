@@ -111,3 +111,6 @@ export const PROFILES: Readonly<Record<SimChip, Profile>> = {
     appBanner: cause => idfApp(ESP32_ROM, cause, '0x13 (SPI_FAST_FLASH_BOOT)'),
   },
 }
+
+export const isSimChip = (name: string): name is SimChip =>
+  Object.hasOwn(PROFILES, name)

@@ -198,7 +198,9 @@ const connect = (page: Page, query = '') =>
 const flow = (page: Page) =>
   Effect.scoped(
     Effect.gen(function* () {
-      yield* say('flow: enter, read 0x8000, write+verify, readback, reboot')
+      yield* say(
+        'flow: cycling flasher info, read, verify; then enter, read 0x8000, write+verify, readback, reboot',
+      )
       const code = yield* connect(page)
       const scratch = yield* scratchDir
       const run = yield* remoteRun(code, 'flow', scratch)
@@ -277,6 +279,41 @@ const chaos = (page: Page) =>
     }),
   )
 
+const uartChip = (page: Page) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* say(
+        'uart: a classic ESP32 behind a CP2102N, through cycling flasher',
+      )
+      const code = yield* connect(page, '?sim-chip=ESP32')
+      const scratch = yield* scratchDir
+      const run = yield* remoteRun(code, 'cli', scratch)
+      const result = yield* run.done
+      yield* say(result.stdout.trim().replace(/^/gm, '  py   '))
+      yield* check('the device task exited 0', result.exit === 0, result)
+      yield* check(
+        'info names the family and leaves security unknown',
+        /"family": "ESP32".*"security": null.*"accepts_unsigned": null/.test(
+          result.stdout,
+        ),
+        result.stdout,
+      )
+      yield* check(
+        'Device refuses to work on it',
+        result.stdout.includes('cannot report secure boot or flash encryption'),
+        result.stdout,
+      )
+      yield* until(
+        page,
+        'the console back after an RTS reboot',
+        consoleBack,
+        30,
+      )
+      const state = yield* simState(page)
+      yield* check('the ESP32 runs its app', state.mode === 'app', state)
+    }),
+  )
+
 const bench = (page: Page) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -311,6 +348,7 @@ const program = Effect.scoped(
     }
     yield* flow(page)
     yield* chaos(page)
+    yield* uartChip(page)
     yield* say('all steps held')
   }),
 )

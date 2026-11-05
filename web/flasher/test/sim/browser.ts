@@ -1,3 +1,4 @@
+import { isSimChip } from './chips.ts'
 import { SimDevice } from './device.ts'
 import { SLOT_A, stockImage, stockLayout } from './image.ts'
 import { FakeSerial } from './port.ts'
@@ -7,10 +8,13 @@ import { FakeSerial } from './port.ts'
  * `navigator.serial`, and `globalThis.__sim` drives chaos runs. Slot A's
  * image lands a moment later (WebCrypto's SHA-256 is async), long before a
  * visitor can pick the port. `?sim-read-kbps=140` paces READ_FLASH like the
- * C606.
+ * C606; `?sim-chip=ESP32` makes it another chip the simulator knows.
  */
-const kbps = Number(new URLSearchParams(location.search).get('sim-read-kbps'))
+const query = new URLSearchParams(location.search)
+const kbps = Number(query.get('sim-read-kbps'))
+const chip = query.get('sim-chip') ?? 'ESP32-S3'
 const device = new SimDevice({
+  chip: isSimChip(chip) ? chip : 'ESP32-S3',
   flash: stockLayout(),
   readBytesPerSecond: kbps > 0 ? kbps * 1000 : Infinity,
 })

@@ -6,6 +6,7 @@ pub mod cue;
 pub mod form;
 pub mod history;
 pub mod home;
+pub mod icons;
 pub mod kinetic;
 pub mod look;
 pub mod phone;

@@ -104,7 +104,7 @@ const statusUntil = (
 const nextBytes = (relay: FakeRelay) =>
   Queue.take(relay.received).pipe(
     Effect.flatMap(frame =>
-      frame._tag === 'Bytes'
+      frame._tag === 'Console'
         ? Effect.succeed([...frame.bytes])
         : Effect.die(frame),
     ),
@@ -119,12 +119,12 @@ const attachAndOpen = Effect.gen(function* () {
 })
 
 describe('agent against a fake relay', () => {
-  test('R2: the agent offers cycling.v1 and its token as subprotocols on /v1/agent/<code>', () =>
+  test('R2: the agent offers cycling.v2 and its token as subprotocols on /v2/agent/<code>', () =>
     withAgent(relay =>
       Effect.gen(function* () {
         yield* (yield* Remote).attach(CODE)
-        expect(yield* relay.offered).toEqual([`cycling.v1, auth.${TOKEN}`])
-        expect(yield* relay.paths).toEqual([`/v1/agent/${CODE}`])
+        expect(yield* relay.offered).toEqual([`cycling.v2, auth.${TOKEN}`])
+        expect(yield* relay.paths).toEqual([`/v2/agent/${CODE}`])
       }),
     ))
 

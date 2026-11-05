@@ -78,8 +78,8 @@ export const applyMessage = (
       ...status,
       port: Option.some(port),
     }),
-    ResetResult: () => status,
-    LineCodingResult: () => status,
+    OpProgress: () => status,
+    OpResult: () => status,
     Bye: () => status,
   })
 

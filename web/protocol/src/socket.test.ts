@@ -4,10 +4,12 @@ import * as Stream from 'effect/Stream'
 import * as Socket from 'effect/socket/Socket'
 
 import {
+  type Binary,
   CloseCode,
   RequestId,
   encodeRelayMsg,
   KEEPALIVE,
+  Lease,
   relaySocket,
   SUBPROTOCOL,
 } from './index.ts'
@@ -45,14 +47,14 @@ const server = Bun.serve<Seen>({
         }),
       )
       ws.send('{"_tag":"Nonsense"}')
-      ws.send(new Uint8Array([1, 2, 3]))
+      ws.send(new Uint8Array([0, 1, 2, 3]))
       ws.send(KEEPALIVE.pong)
     },
     message(ws, message) {
       ws.data.received.push(
         typeof message === 'string' ? message : new Uint8Array(message),
       )
-      if (typeof message !== 'string' && message[0] === 0xff) {
+      if (typeof message !== 'string' && message[1] === 0xff) {
         ws.close(CloseCode.replaced, 'replaced')
       }
     },
@@ -61,6 +63,10 @@ const server = Bun.serve<Seen>({
 afterAll(() => server.stop(true))
 
 const base = `ws://127.0.0.1:${server.port}/`
+const consoleBytes = (bytes: ReadonlyArray<number>): Binary => ({
+  _tag: 'Console',
+  bytes: Uint8Array.from(bytes),
+})
 
 const run = <A, E>(
   effect: Effect.Effect<
@@ -87,21 +93,21 @@ describe('relaySocket', () => {
         })
         expect(
           yield* socket.send({
-            _tag: 'SetLineCoding',
+            _tag: 'Op',
             id: RequestId.make(1),
-            baud: 115200,
+            op: { _tag: 'Release', lease: Lease.make('0123456789abcdef') },
           }),
         ).toBe(true)
-        expect(yield* socket.send(new Uint8Array([9]))).toBe(true)
-        expect(yield* socket.send(new Uint8Array([0xff]))).toBe(true)
+        expect(yield* socket.send(consoleBytes([9]))).toBe(true)
+        expect(yield* socket.send(consoleBytes([0xff]))).toBe(true)
         const events = yield* Stream.runCollect(socket.events)
-        expect(yield* socket.send(new Uint8Array([9]))).toBe(false)
+        expect(yield* socket.send(consoleBytes([9]))).toBe(false)
         return events
       }),
     )
     expect(events.map(event => event._tag)).toEqual([
       'Control',
-      'Bytes',
+      'Console',
       'Pong',
       'Closed',
     ])

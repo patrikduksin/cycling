@@ -55,7 +55,7 @@ describe('relay address', () => {
 
   test('the browser endpoint is the versioned path under the base', () => {
     expect(relayEndpoint('wss://relay.test', session.code)).toBe(
-      'wss://relay.test/v1/browser/7KQM4XP2',
+      'wss://relay.test/v2/browser/7KQM4XP2',
     )
   })
 })

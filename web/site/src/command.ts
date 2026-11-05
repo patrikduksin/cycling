@@ -3,16 +3,9 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { Command } from 'foldkit'
 
-import {
-  BrowserMsg,
-  RESET_PLANS,
-  RequestId,
-  ResetKind,
-  mintCode,
-  mintOwnerKey,
-} from '@cycling/protocol'
+import { BrowserMsg, mintCode, mintOwnerKey } from '@cycling/protocol'
 
-import { RelayHandle, SerialHandle } from './handles.ts'
+import { RelayHandle } from './handles.ts'
 import { type ChooserCancelled, type ChooserFailed, Chooser } from './links.ts'
 import { Message } from './message.ts'
 import { StoredSession } from './model.ts'
@@ -112,22 +105,6 @@ export const SayBye = Command.define('SayBye', {
     Effect.ignore,
     Effect.as(Message.SaidBye()),
   ),
-})
-
-export const RunReset = Command.define('RunReset', {
-  args: { id: RequestId, kind: ResetKind },
-  messages: [Message.FinishedReset],
-  execute: ({ id, kind }) =>
-    SerialHandle.get.pipe(
-      Effect.flatMap(link => link.runSignals(RESET_PLANS[kind])),
-      Effect.map(() => Message.FinishedReset({ id, outcome: 'done' })),
-      Effect.catchTags({
-        ResourceNotAvailable: () =>
-          Effect.succeed(Message.FinishedReset({ id, outcome: 'portNotOpen' })),
-        SerialLinkLost: () =>
-          Effect.succeed(Message.FinishedReset({ id, outcome: 'failed' })),
-      }),
-    ),
 })
 
 export const WaitRelayRetry = Command.define('WaitRelayRetry', {

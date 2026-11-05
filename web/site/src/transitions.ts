@@ -1,9 +1,9 @@
 import * as Match from 'effect/Match'
-import * as Option from 'effect/Option'
 import type { Update } from 'foldkit'
 import { modifyFields } from 'foldkit/struct'
 
 import {
+  type Op,
   type PortFailureReason,
   type RequestId,
   type ToBrowser,
@@ -14,7 +14,6 @@ import {
 import {
   ClearSession,
   MintSession,
-  RunReset,
   SaveSession,
   SayBye,
   SendControl,
@@ -246,34 +245,27 @@ const onPeerPresence = (
     () => ignore(model),
   )
 
-const refuse = (
-  model: Model,
-  id: RequestId,
-  tag: 'ResetResult' | 'LineCodingResult',
-): UpdateReturn => ({
+/**
+ * Every op is refused until the page's flasher can hold the port; a Release
+ * is answered as the protocol promises, whatever is held.
+ */
+const answerOp = (model: Model, id: RequestId, op: Op): UpdateReturn => ({
   model,
   commands: [
-    SendControl({ messages: [{ _tag: tag, id, outcome: 'portNotOpen' }] }),
+    SendControl({
+      messages: [
+        {
+          _tag: 'OpResult',
+          id,
+          outcome:
+            op._tag === 'Release'
+              ? { _tag: 'Released' }
+              : { _tag: 'Failed', reason: 'notEntered', detail: '' },
+        },
+      ],
+    }),
   ],
 })
-
-/** The agent's requests need an open serial port; anything else is refused with portNotOpen. */
-const withOpenPort = (
-  model: Model,
-  live: Live,
-  request: { readonly id: RequestId },
-  tag: 'ResetResult' | 'LineCodingResult',
-  handle: (port: Port) => UpdateReturn,
-): UpdateReturn =>
-  Option.some(live.source).pipe(
-    Option.filter(Source.guards.Serial),
-    Option.map(source => source.port),
-    Option.filter(port => port.state._tag === 'Open'),
-    Option.match({
-      onNone: () => refuse(model, request.id, tag),
-      onSome: handle,
-    }),
-  )
 
 export const onRelayMessage = (
   model: Model,
@@ -287,23 +279,7 @@ export const onRelayMessage = (
         onPeerPresence(model, live, snapshot.agentPresent),
       PeerPresence: ({ role, present }) =>
         role === 'agent' ? onPeerPresence(model, live, present) : ignore(model),
-      Reset: request =>
-        withOpenPort(model, live, request, 'ResetResult', () => ({
-          model,
-          commands: [RunReset({ id: request.id, kind: request.kind })],
-        })),
-      SetLineCoding: request =>
-        withOpenPort(model, live, request, 'LineCodingResult', port =>
-          portStep(
-            model,
-            live,
-            reacquire(port, {
-              baud: request.baud,
-              lineCodingId: Option.some(request.id),
-            }),
-            true,
-          ),
-        ),
+      Op: ({ id, op }) => answerOp(model, id, op),
     }),
   )
 
@@ -336,12 +312,7 @@ export const onLostPort = (
 ): UpdateReturn =>
   withSerial(model, live, port =>
     port.attempt === attempt && port.state._tag === 'Open'
-      ? portStep(
-          model,
-          live,
-          reacquire(port, { baud: port.baud, lineCodingId: Option.none() }),
-          false,
-        )
+      ? portStep(model, live, reacquire(port), false)
       : ignore(model),
   )
 

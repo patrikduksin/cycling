@@ -3,8 +3,6 @@ import { defineMessageUnion } from 'foldkit/message'
 
 import {
   PortFailureReason,
-  RequestId,
-  RequestOutcome,
   SerialIdentity,
   ToBrowser,
   UsbDescriptor,
@@ -50,7 +48,6 @@ export const Message = defineMessageUnion({
     dropped: Schema.Int,
   },
 
-  FinishedReset: { id: RequestId, outcome: RequestOutcome },
   CompletedSendControl: {},
   CompletedSaveSession: {},
   CompletedClearSession: {},

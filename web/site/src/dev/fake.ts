@@ -11,7 +11,6 @@ import * as Stream from 'effect/Stream'
 import {
   CloseCode,
   type RelayEvent,
-  RequestId,
   SerialIdentity,
   type ToBrowser,
   UsbDescriptor,
@@ -29,8 +28,8 @@ import {
 /**
  * A device and a relay that exist only in the dev server (`?fake`), so the
  * Live screen and the byte monitor can be seen without hardware or a Worker.
- * `?fake=reset` also has the "developer" request a bootloader reset after
- * five seconds, which walks the port through Lost and Reacquiring.
+ * `?fake=reset` also has the device reset itself after about five seconds,
+ * which walks the port through Lost and Reacquiring.
  * `?fake=fail` does the same, but the device never comes back, so the page
  * shows the failed port and "Choose device again". Disconnect closes the
  * fake socket the way the relay does, with `visitorDisconnected`.
@@ -38,8 +37,6 @@ import {
  */
 
 const text = new TextEncoder()
-
-const resetId = Schema.decodeSync(RequestId)(1)
 
 const identity = Schema.decodeSync(SerialIdentity)({
   vendorId: 0x303a,
@@ -59,7 +56,7 @@ const descriptor = Schema.decodeSync(UsbDescriptor)({
 })
 
 const fakeSerialLink = (
-  resetRequested: boolean,
+  resets: boolean,
 ): Effect.Effect<SerialLink, never, Scope.Scope> =>
   Effect.gen(function* () {
     const output = yield* Queue.unbounded<
@@ -72,10 +69,12 @@ const fakeSerialLink = (
         count =>
           Effect.sleep(Duration.millis(450)).pipe(
             Effect.andThen(
-              Queue.offer(
-                output,
-                text.encode(`{"uptime_ms":${count * 450},"battery":87}\n`),
-              ),
+              resets && count === 11
+                ? Queue.fail(output, new SerialLinkLost())
+                : Queue.offer(
+                    output,
+                    text.encode(`{"uptime_ms":${count * 450},"battery":87}\n`),
+                  ),
             ),
           ),
         { discard: true },
@@ -84,18 +83,6 @@ const fakeSerialLink = (
     return {
       input: Stream.fromQueue(output),
       write: bytes => Queue.offer(output, bytes).pipe(Effect.asVoid),
-      runSignals: steps =>
-        Effect.sleep(
-          Duration.millis(
-            steps.reduce((total, step) => total + step.holdMs, 0),
-          ),
-        ).pipe(
-          Effect.andThen(
-            resetRequested
-              ? Queue.fail(output, new SerialLinkLost()).pipe(Effect.asVoid)
-              : Effect.void,
-          ),
-        ),
     }
   })
 
@@ -116,9 +103,7 @@ const control = (message: ToBrowser): RelayEvent<ToBrowser> => ({
   message,
 })
 
-const fakeRelayLink = (
-  withReset: boolean,
-): Effect.Effect<RelayLink, never, Scope.Scope> =>
+const fakeRelayLink = (): Effect.Effect<RelayLink, never, Scope.Scope> =>
   Effect.gen(function* () {
     const inbound = yield* Queue.unbounded<RelayEvent<ToBrowser>, Cause.Done>()
     yield* Effect.forkScoped(
@@ -135,21 +120,9 @@ const fakeRelayLink = (
             Effect.sleep(Duration.millis(1200)).pipe(
               Effect.andThen(
                 Queue.offer(inbound, {
-                  _tag: 'Bytes',
-                  bytes: text.encode('INFO\n'),
+                  _tag: 'Console',
+                  bytes: text.encode(`INFO ${count}\n`),
                 }),
-              ),
-              Effect.andThen(
-                withReset && count === 3
-                  ? Queue.offer(
-                      inbound,
-                      control({
-                        _tag: 'Reset',
-                        id: resetId,
-                        kind: 'usbJtagBootloader',
-                      }),
-                    )
-                  : Effect.void,
               ),
             ),
           { discard: true },
@@ -159,7 +132,7 @@ const fakeRelayLink = (
     return {
       events: Stream.fromQueue(inbound),
       send: item =>
-        item instanceof Uint8Array || item._tag !== 'Bye'
+        item._tag !== 'Bye'
           ? Effect.succeed(true)
           : Queue.offer(inbound, {
               _tag: 'Closed',
@@ -198,6 +171,6 @@ export const fakeAdapters: Adapters = (() => {
         ),
     },
     usb: { request: Effect.succeed(descriptor) },
-    relay: Option.some({ dial: () => fakeRelayLink(withReset) }),
+    relay: Option.some({ dial: fakeRelayLink }),
   }
 })()

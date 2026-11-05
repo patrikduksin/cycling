@@ -8,7 +8,6 @@ import {
   ChooseUsb,
   CopyCode,
   SaveSession,
-  SendControl,
 } from './command.ts'
 import { newPort, recoveredPort, storedOf } from './live.ts'
 import { Message } from './message.ts'
@@ -141,13 +140,6 @@ export const update = (model: Model, message: Message): UpdateReturn =>
       whenPage(model, 'Live', live => ({
         model: withLive(model, live, { monitor: record(live.monitor, sample) }),
       })),
-
-    FinishedReset: ({ id, outcome }) => ({
-      model,
-      commands: [
-        SendControl({ messages: [{ _tag: 'ResetResult', id, outcome }] }),
-      ],
-    }),
 
     CompletedSendControl: () => ignore(model),
     CompletedSaveSession: () => ignore(model),

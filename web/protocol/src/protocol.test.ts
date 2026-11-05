@@ -7,6 +7,8 @@ import * as Schema from 'effect/Schema'
 import {
   type AgentMsg,
   agentProtocols,
+  assemble,
+  assembled,
   type BrowserMsg,
   browserProtocols,
   Code,
@@ -14,28 +16,35 @@ import {
   decodeFromBrowser,
   decodeToAgent,
   decodeToBrowser,
+  emptyAssembly,
   encodeAgentMsg,
+  encodeBinary,
   encodeBrowserMsg,
   encodeRelayMsg,
   Epoch,
   formatCode,
+  Lease,
+  MAX_FLASH_BYTES,
   type Frame,
   MAX_FRAME_BYTES,
   mintCode,
   mintOwnerKey,
+  OP_CHUNK_BYTES,
+  opDataFrames,
   parseCode,
   parseOffered,
   type ProtocolViolation,
-  recognitionOf,
   RequestId,
-  RESET_PLANS,
   type RelayMsg,
 } from './index.ts'
+import * as ops from './ops.ts'
 
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runSyncExit(effect)
 const key = mintOwnerKey(new Uint8Array(16).fill(7))
 const id = Schema.decodeSync(RequestId)(3)
 const epoch = Schema.decodeSync(Epoch)(1)
+const lease = Lease.make('pQ3-abcdefgh_123')
+const md5 = '9e107d9d372bb6826bd81d3542a419d6'
 
 const browserMessages: ReadonlyArray<BrowserMsg> = [
   {
@@ -69,14 +78,43 @@ const browserMessages: ReadonlyArray<BrowserMsg> = [
     _tag: 'PortChanged',
     status: { epoch, state: { _tag: 'Failed', reason: 'reacquireTimeout' } },
   },
-  { _tag: 'ResetResult', id, outcome: 'done' },
-  { _tag: 'LineCodingResult', id, outcome: 'portNotOpen' },
+  { _tag: 'PortChanged', status: { epoch, state: { _tag: 'Flashing' } } },
+  { _tag: 'OpProgress', id, done: 524288, total: 1966080 },
+  {
+    _tag: 'OpResult',
+    id,
+    outcome: {
+      _tag: 'Entered',
+      chip: {
+        mac: Schema.decodeSync(ops.Mac)('020000000001'),
+        secureBoot: false,
+        flashEncryption: false,
+      },
+    },
+  },
+  {
+    _tag: 'OpResult',
+    id,
+    outcome: { _tag: 'Written', md5: Schema.decodeSync(ops.Md5)(md5) },
+  },
+  {
+    _tag: 'OpResult',
+    id,
+    outcome: { _tag: 'Failed', reason: 'transferGap', detail: '' },
+  },
   { _tag: 'Bye' },
 ]
+const region = { address: 0x760000, size: 0x1e0000 }
 const agentMessages: ReadonlyArray<AgentMsg> = [
-  { _tag: 'Reset', id, kind: 'usbJtagBootloader' },
-  { _tag: 'Reset', id, kind: 'hardReset' },
-  { _tag: 'SetLineCoding', id, baud: 921600 },
+  { _tag: 'Op', id, op: { _tag: 'Enter', lease } },
+  { _tag: 'Op', id, op: { _tag: 'Read', lease, region } },
+  {
+    _tag: 'Op',
+    id,
+    op: { _tag: 'Write', lease, region, md5: Schema.decodeSync(ops.Md5)(md5) },
+  },
+  { _tag: 'Op', id, op: { _tag: 'Reboot', lease } },
+  { _tag: 'Op', id, op: { _tag: 'Release', lease } },
 ]
 const relayMessages: ReadonlyArray<RelayMsg> = [
   {
@@ -116,9 +154,13 @@ describe('frames', () => {
   })
 
   test('a wrong-direction message fails at the boundary', () => {
-    const reset = encodeAgentMsg({ _tag: 'Reset', id, kind: 'hardReset' })
-    expect(Exit.isFailure(run(decodeFromBrowser(reset)))).toBe(true)
-    expect(Exit.isFailure(run(decodeToAgent(reset)))).toBe(true)
+    const enter = encodeAgentMsg({
+      _tag: 'Op',
+      id,
+      op: { _tag: 'Enter', lease },
+    })
+    expect(Exit.isFailure(run(decodeFromBrowser(enter)))).toBe(true)
+    expect(Exit.isFailure(run(decodeToAgent(enter)))).toBe(true)
     const presence = encodeRelayMsg({
       _tag: 'PeerPresence',
       role: 'agent',
@@ -155,13 +197,107 @@ describe('frames', () => {
     expect(Exit.isFailure(run(decodeFromBrowser(usb)))).toBe(true)
   })
 
-  test('binary is bytes untouched, capped at MAX_FRAME_BYTES', () => {
+  test('an op cannot smuggle a MAC, or name flash past the chip', () => {
+    const op = (extra: object) =>
+      JSON.stringify({
+        _tag: 'Op',
+        id: 1,
+        op: { _tag: 'Read', lease, ...extra },
+      })
+    expect(
+      Exit.isSuccess(
+        run(
+          decodeFromAgent(
+            op({ region: { address: 0, size: MAX_FLASH_BYTES } }),
+          ),
+        ),
+      ),
+    ).toBe(true)
+    expect(
+      Exit.isFailure(
+        run(
+          decodeFromAgent(
+            op({ region: { address: 1, size: MAX_FLASH_BYTES } }),
+          ),
+        ),
+      ),
+    ).toBe(true)
+    expect(
+      Exit.isFailure(
+        run(
+          decodeFromAgent(
+            op({ region: { address: 0, size: 16 }, mac: '020000000001' }),
+          ),
+        ),
+      ),
+    ).toBe(true)
+  })
+
+  test('console binary is bytes untouched behind channel 0, capped at MAX_FRAME_BYTES', () => {
     const bytes = new Uint8Array([0, 0xff, 0x11, 0x13, 0xc0])
-    expect(run(decodeToAgent(bytes.buffer))).toEqual(
-      Exit.succeed({ _tag: 'Bytes', bytes }),
+    const frame = encodeBinary({ _tag: 'Console', bytes })
+    expect(frame[0]).toBe(0)
+    expect(run(decodeToAgent(frame.slice().buffer))).toEqual(
+      Exit.succeed({ _tag: 'Console', bytes }),
     )
     const big = new Uint8Array(MAX_FRAME_BYTES + 1)
     expect(Exit.isFailure(run(decodeFromBrowser(big)))).toBe(true)
+  })
+
+  test('op data carries its id and offset, and an unknown channel or short header is malformed', () => {
+    const bytes = new Uint8Array([1, 2, 3])
+    const frame = encodeBinary({ _tag: 'OpData', id, offset: 0xabcdef, bytes })
+    expect(run(decodeToBrowser(frame))).toEqual(
+      Exit.succeed({ _tag: 'OpData', id, offset: 0xabcdef, bytes }),
+    )
+    expect(Exit.isFailure(run(decodeToBrowser(new Uint8Array([2, 0]))))).toBe(
+      true,
+    )
+    expect(Exit.isFailure(run(decodeToBrowser(frame.subarray(0, 8))))).toBe(
+      true,
+    )
+    expect(Exit.isFailure(run(decodeToBrowser(new Uint8Array(0))))).toBe(true)
+  })
+})
+
+describe('op data', () => {
+  const payload = new Uint8Array(OP_CHUNK_BYTES * 2 + 7).map((_, i) => i * 7)
+  const frames = [...opDataFrames(id, payload)]
+
+  test('every frame fits under the relay limit, and offsets run in order', () => {
+    expect(frames.map(frame => frame.offset)).toEqual([
+      0,
+      OP_CHUNK_BYTES,
+      OP_CHUNK_BYTES * 2,
+    ])
+    expect(
+      frames.every(frame => encodeBinary(frame).byteLength <= MAX_FRAME_BYTES),
+    ).toBe(true)
+  })
+
+  test('assembly puts the payload back together', () => {
+    const whole = frames.reduce(
+      (assembly, frame) => Option.getOrThrow(assemble(assembly, frame)),
+      emptyAssembly(payload.byteLength),
+    )
+    expect(whole.received).toBe(payload.byteLength)
+    expect(assembled(whole)).toEqual(payload)
+  })
+
+  test('assembly refuses a hole, an overlap and an overrun', () => {
+    const [first, second, third] = frames
+    if (first === undefined || second === undefined || third === undefined) {
+      throw new Error('three frames expected')
+    }
+    const one = Option.getOrThrow(
+      assemble(emptyAssembly(payload.length), first),
+    )
+    expect(Option.isNone(assemble(one, third))).toBe(true)
+    expect(Option.isNone(assemble(one, first))).toBe(true)
+    expect(
+      Option.isNone(assemble(emptyAssembly(first.bytes.length - 1), first)),
+    ).toBe(true)
+    expect(Option.isSome(assemble(one, second))).toBe(true)
   })
 
   test('pong is keepalive, other text that is not JSON is malformed', () => {
@@ -193,48 +329,26 @@ describe('codes and keys', () => {
   test('offered subprotocols parse back to their credentials', () => {
     const agent = parseOffered(agentProtocols('abc123').join(', '))
     expect(agent).toEqual({
-      entries: ['cycling.v1', 'auth.abc123'],
+      entries: ['cycling.v2', 'auth.abc123'],
       version: true,
       token: Option.some('abc123'),
       ownerKey: Option.none(),
-      selected: Option.some('cycling.v1'),
+      selected: Option.some('cycling.v2'),
     })
     const browser = parseOffered(browserProtocols(key).join(','))
     expect(browser.ownerKey).toEqual(Option.some(key))
-    expect(parseOffered('cycling.v2').version).toBe(false)
+    expect(parseOffered('cycling.v3').version).toBe(false)
     expect(parseOffered(null).version).toBe(false)
-    expect(parseOffered('cycling.v1, own.short').ownerKey).toEqual(
+    expect(parseOffered('cycling.v2, own.short').ownerKey).toEqual(
       Option.none(),
     )
   })
 
   test('the echo is the version token, else the first non-credential, never a credential', () => {
     const echo = (header: string | null) => parseOffered(header).selected
-    expect(echo('auth.secret, cycling.v1')).toEqual(Option.some('cycling.v1'))
+    expect(echo('auth.secret, cycling.v2')).toEqual(Option.some('cycling.v2'))
     expect(echo('auth.secret, cycling.v0')).toEqual(Option.some('cycling.v0'))
     expect(echo('auth.secret, own.key')).toEqual(Option.none())
     expect(echo(null)).toEqual(Option.none())
-  })
-})
-
-describe('reset plans', () => {
-  test('the bootloader plan is a level sequence the recognizer can match', () => {
-    expect(recognitionOf('usbJtagBootloader')).toEqual({
-      _tag: 'Levels',
-      levels: [
-        [false, false],
-        [true, false],
-        [true, true],
-        [false, true],
-        [false, false],
-      ],
-    })
-  })
-
-  test('the hard reset plan only moves RTS', () => {
-    expect(recognitionOf('hardReset')).toEqual({ _tag: 'RtsPulse' })
-    expect(
-      RESET_PLANS.hardReset.every(step => step.dataTerminalReady === undefined),
-    ).toBe(true)
   })
 })

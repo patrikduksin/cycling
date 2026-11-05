@@ -137,7 +137,9 @@ export const subscriptions = Subscription.make<
                     attempt,
                     send: bytes =>
                       RelayHandle.get.pipe(
-                        Effect.flatMap(relay => relay.send(bytes)),
+                        Effect.flatMap(relay =>
+                          relay.send({ _tag: 'Console', bytes }),
+                        ),
                         Effect.orElseSucceed(() => false),
                       ),
                   }),

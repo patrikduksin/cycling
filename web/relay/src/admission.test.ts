@@ -141,14 +141,14 @@ describe('admit', () => {
   })
 
   test('refuses an agent with no token', async () => {
-    expect(await run('agent', ['cycling.v1'], undefined)).toEqual(
+    expect(await run('agent', ['cycling.v2'], undefined)).toEqual(
       refusal(CloseCode.unauthorized),
     )
   })
 
   test('refuses a browser with no owner key', async () => {
     expect(
-      await run('browser', ['cycling.v1'], 'https://cycling.computer'),
+      await run('browser', ['cycling.v2'], 'https://cycling.computer'),
     ).toEqual(refusal(CloseCode.unauthorized))
   })
 
@@ -184,10 +184,10 @@ describe('admit', () => {
     )
   })
 
-  test('refuses a path version this relay does not speak', async () => {
+  test('refuses a path version this relay does not speak, v1 included', async () => {
     expect(
       await run('agent', agentProtocols(TOKEN), undefined, {
-        pathname: `/v2/agent/${code}`,
+        pathname: `/v1/agent/${code}`,
       }),
     ).toEqual(refusal(CloseCode.unsupportedVersion))
   })
@@ -195,7 +195,7 @@ describe('admit', () => {
   test('refuses a code that is not a code', async () => {
     expect(
       await run('agent', agentProtocols(TOKEN), undefined, {
-        pathname: '/v1/agent/lowercase',
+        pathname: '/v2/agent/lowercase',
       }),
     ).toEqual(refusal(CloseCode.notFound))
   })
@@ -205,7 +205,7 @@ describe('admit', () => {
     expect(result).toEqual({
       _tag: 'Refuse',
       close: CloseCode.unauthorized,
-      echo: Option.some('cycling.v1'),
+      echo: Option.some('cycling.v2'),
     })
   })
 
@@ -232,7 +232,7 @@ describe('admit', () => {
       for (const offered of [
         agentProtocols(TOKEN),
         agentProtocols(agentToken.pipe(Option.getOrElse(() => ''))),
-        ['cycling.v1', 'auth.'],
+        ['cycling.v2', 'auth.'],
       ]) {
         expect(await run('agent', offered, undefined, { agentToken })).toEqual(
           refusal(CloseCode.unauthorized),

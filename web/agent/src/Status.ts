@@ -36,6 +36,7 @@ const describePort = (state: PortState): string =>
   Match.valueTags(state, {
     Opening: () => 'port opening',
     Open: ({ baud }) => `port open ${baud}`,
+    Flashing: () => 'port in update mode',
     Lost: () => 'port lost',
     Reacquiring: () => 'port reconnecting',
     Failed: ({ reason }) =>

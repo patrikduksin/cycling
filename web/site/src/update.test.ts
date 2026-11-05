@@ -9,7 +9,7 @@ import {
   story,
 } from 'foldkit/story'
 
-import type { BrowserMsg } from '@cycling/protocol'
+import { type BrowserMsg, Lease, type Op } from '@cycling/protocol'
 
 import {
   ChooseSerial,
@@ -17,7 +17,6 @@ import {
   ChooseUsb,
   ClearSession,
   MintSession,
-  RunReset,
   SaveSession,
   SayBye,
   SendControl,
@@ -434,119 +433,31 @@ describe('relay lifecycle', () => {
   })
 })
 
-describe('agent requests', () => {
-  const resetRequest = (kind: 'hardReset' | 'usbJtagBootloader') =>
+describe('agent ops', () => {
+  const lease = Lease.make('0123456789abcdef')
+  const op = (body: Op) =>
     Message.ReceivedFromRelay({
-      message: { _tag: 'Reset', id: requestId(5), kind },
+      message: { _tag: 'Op', id: requestId(5), op: body },
     })
 
-  test('a reset runs on the open port and its result goes back', () => {
-    story(
-      update,
-      given(serialLive()),
-      message(resetRequest('usbJtagBootloader')),
-      Command.expectExact(
-        RunReset({ id: requestId(5), kind: 'usbJtagBootloader' }),
-      ),
-      Command.resolve(
-        RunReset({ id: requestId(5), kind: 'usbJtagBootloader' }),
-        Message.FinishedReset({ id: requestId(5), outcome: 'done' }),
-      ),
-      Command.resolve(
-        SendControl({
-          messages: [
-            { _tag: 'ResetResult', id: requestId(5), outcome: 'done' },
-          ],
-        }),
-        Message.CompletedSendControl(),
-      ),
-    )
-  })
-
-  test('a reset while the port is not open answers portNotOpen without running', () => {
-    const refused = update(
-      serialLive({ state: { _tag: 'Reacquiring' } }),
-      resetRequest('hardReset'),
-    )
-    expect(commandsOf(refused)).toEqual([
+  test('an op the page cannot run is refused notEntered, and a Release is always answered', () => {
+    expect(
+      commandsOf(update(serialLive(), op({ _tag: 'Enter', lease }))),
+    ).toEqual([
       control({
-        _tag: 'ResetResult',
+        _tag: 'OpResult',
         id: requestId(5),
-        outcome: 'portNotOpen',
+        outcome: { _tag: 'Failed', reason: 'notEntered', detail: '' },
       }),
     ])
-  })
-
-  test('a reset on a describe-only device answers portNotOpen', () => {
-    expect(commandsOf(update(usbLive(), resetRequest('hardReset')))).toEqual([
+    expect(
+      commandsOf(update(usbLive(), op({ _tag: 'Release', lease }))),
+    ).toEqual([
       control({
-        _tag: 'ResetResult',
+        _tag: 'OpResult',
         id: requestId(5),
-        outcome: 'portNotOpen',
+        outcome: { _tag: 'Released' },
       }),
-    ])
-  })
-
-  test('a new line coding reopens the port at that baud and answers once it is open', () => {
-    const asked = update(
-      serialLive(),
-      Message.ReceivedFromRelay({
-        message: { _tag: 'SetLineCoding', id: requestId(9), baud: 921_600 },
-      }),
-    )
-    expect(portOf(asked.model)).toMatchObject({
-      baud: 921_600,
-      attempt: 1,
-      state: { _tag: 'Reacquiring' },
-      pendingLineCoding: Option.some(requestId(9)),
-    })
-    expect(commandsOf(asked).map(({ name }) => name)).toEqual([
-      'SendControl',
-      'SaveSession',
-    ])
-    expect(serialRequirement(asked.model)).toEqual(
-      Option.some({ identity, baud: 921_600, attempt: 1 }),
-    )
-
-    const opened = update(asked.model, Message.OpenedPort())
-    expect(commandsOf(opened).map(({ name }) => name)).toEqual([
-      'SendControl',
-      'SaveSession',
-    ])
-    expect(commandsOf(opened)[0]).toEqual(
-      control(
-        {
-          _tag: 'PortChanged',
-          status: { epoch: epoch(2), state: { _tag: 'Open', baud: 921_600 } },
-        },
-        { _tag: 'LineCodingResult', id: requestId(9), outcome: 'done' },
-      ),
-    )
-    expect(portOf(opened.model).pendingLineCoding).toEqual(Option.none())
-  })
-
-  test('a line coding whose reopen fails answers failed', () => {
-    const asked = update(
-      serialLive(),
-      Message.ReceivedFromRelay({
-        message: { _tag: 'SetLineCoding', id: requestId(9), baud: 921_600 },
-      }),
-    )
-    const failed = update(
-      asked.model,
-      Message.FailedPort({ reason: 'reacquireTimeout' }),
-    )
-    expect(commandsOf(failed)).toEqual([
-      control(
-        {
-          _tag: 'PortChanged',
-          status: {
-            epoch: epoch(1),
-            state: { _tag: 'Failed', reason: 'reacquireTimeout' },
-          },
-        },
-        { _tag: 'LineCodingResult', id: requestId(9), outcome: 'failed' },
-      ),
     ])
   })
 })

@@ -174,9 +174,9 @@ const makeWritePath = <R>(
   })
 
 /**
- * Relay frames in arrival order: bytes go to the port's write queue (counted
- * as dropped when it is down or full), control becomes a Message, and a close
- * ends the stream with its code. A Reset or a close abandons the bytes still
+ * Relay frames in arrival order: console bytes go to the port's write queue
+ * (counted as dropped when it is down or full), control becomes a Message,
+ * and a close ends the stream with its code, abandoning the bytes still
  * waiting for the port. Control keeps flowing while the port is gone or stuck.
  */
 export const relayToDevice = <R>(options: {
@@ -198,12 +198,10 @@ export const relayToDevice = <R>(options: {
                   Effect.Effect<ReadonlyArray<Message>, never, R>
                 >(),
                 Match.tagsExhaustive({
-                  Bytes: ({ bytes }) => path.offer(bytes).pipe(Effect.as([])),
+                  Console: ({ bytes }) => path.offer(bytes).pipe(Effect.as([])),
+                  OpData: () => Effect.succeed([]),
                   Control: ({ message }) =>
-                    (message._tag === 'Reset'
-                      ? path.abandon
-                      : Effect.void
-                    ).pipe(Effect.as([Message.ReceivedFromRelay({ message })])),
+                    Effect.succeed([Message.ReceivedFromRelay({ message })]),
                   Pong: () => Effect.succeed([]),
                   Closed: ({ code }) =>
                     path.abandon.pipe(

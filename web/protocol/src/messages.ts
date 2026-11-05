@@ -2,7 +2,7 @@ import * as Schema from 'effect/Schema'
 
 import { Device } from './device.ts'
 import { Baud, Epoch, RequestId, Role } from './ids.ts'
-import { ResetKind } from './reset.ts'
+import { Op, OpOutcome } from './ops.ts'
 
 export const PortFailureReason = Schema.Literals([
   'openRefused',
@@ -10,10 +10,15 @@ export const PortFailureReason = Schema.Literals([
 ])
 export type PortFailureReason = typeof PortFailureReason.Type
 
-/** Browser-side port lifecycle. Every USB reset walks Open, Lost, Reacquiring, Open with a new epoch. */
+/**
+ * Browser-side port lifecycle. Every USB reset walks Open, Lost, Reacquiring,
+ * Open with a new epoch. `Flashing`: the page's flasher holds the port, so no
+ * console bytes flow either way.
+ */
 export const PortState = Schema.Union([
   Schema.TaggedStruct('Opening', {}),
   Schema.TaggedStruct('Open', { baud: Baud }),
+  Schema.TaggedStruct('Flashing', {}),
   Schema.TaggedStruct('Lost', {}),
   Schema.TaggedStruct('Reacquiring', {}),
   Schema.TaggedStruct('Failed', { reason: PortFailureReason }),
@@ -22,9 +27,6 @@ export type PortState = typeof PortState.Type
 
 export const PortStatus = Schema.Struct({ epoch: Epoch, state: PortState })
 export type PortStatus = typeof PortStatus.Type
-
-export const RequestOutcome = Schema.Literals(['done', 'portNotOpen', 'failed'])
-export type RequestOutcome = typeof RequestOutcome.Type
 
 /** Why a session ended; each is also the name of the close code both sockets get. */
 export const EndReason = Schema.Literals([
@@ -38,22 +40,21 @@ export type EndReason = typeof EndReason.Type
 export const BrowserMsg = Schema.Union([
   Schema.TaggedStruct('DeviceAnnounced', { device: Device }),
   Schema.TaggedStruct('PortChanged', { status: PortStatus }),
-  Schema.TaggedStruct('ResetResult', {
+  /** At least every `OP_PROGRESS_MS` while op `id` runs. */
+  Schema.TaggedStruct('OpProgress', {
     id: RequestId,
-    outcome: RequestOutcome,
+    done: Schema.Int,
+    total: Schema.Int,
   }),
-  Schema.TaggedStruct('LineCodingResult', {
-    id: RequestId,
-    outcome: RequestOutcome,
-  }),
+  /** Exactly one per op the page accepted or refused. */
+  Schema.TaggedStruct('OpResult', { id: RequestId, outcome: OpOutcome }),
   Schema.TaggedStruct('Bye', {}),
 ])
 export type BrowserMsg = typeof BrowserMsg.Type
 
 /** Text frames the agent sends. An agent leaving is a socket close, never the end of the session. */
 export const AgentMsg = Schema.Union([
-  Schema.TaggedStruct('Reset', { id: RequestId, kind: ResetKind }),
-  Schema.TaggedStruct('SetLineCoding', { id: RequestId, baud: Baud }),
+  Schema.TaggedStruct('Op', { id: RequestId, op: Op }),
 ])
 export type AgentMsg = typeof AgentMsg.Type
 

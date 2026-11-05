@@ -69,7 +69,6 @@ export const serialLive = (
     readonly epoch?: number
     readonly baud?: number
     readonly relay?: Relay
-    readonly pendingLineCoding?: number
   } = {},
 ): Model => ({
   canDescribeUsb: true,
@@ -85,9 +84,6 @@ export const serialLive = (
           _tag: 'Open',
           baud: patch.baud ?? DEFAULT_BAUD,
         },
-        pendingLineCoding: Option.fromNullishOr(patch.pendingLineCoding).pipe(
-          Option.map(requestId),
-        ),
       },
     }),
     relay:

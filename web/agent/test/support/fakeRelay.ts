@@ -5,8 +5,10 @@ import * as Ref from 'effect/Ref'
 
 import {
   type AgentMsg,
+  type Binary,
   type BrowserMsg,
   decodeFromAgent,
+  encodeBinary,
   encodeBrowserMsg,
   encodeRelayMsg,
   type Frame,
@@ -32,12 +34,12 @@ export type Admission = (connection: number) => 'welcome' | number
 /**
  * Plays the relay and the visitor's browser on loopback: welcomes the agent
  * with a snapshot, answers `ping`, records every frame the agent sends, and
- * lets a test send device bytes and browser messages.
+ * lets a test send console bytes, op data and browser messages.
  */
 export const fakeRelay = (options: {
   readonly snapshot: Snapshot
   readonly admit?: Admission
-  /** What the 101 selects; a real relay always echoes cycling.v1. */
+  /** What the 101 selects; a real relay always echoes cycling.v2. */
   readonly subprotocol?: string
 }) =>
   Effect.gen(function* () {
@@ -127,7 +129,10 @@ export const fakeRelay = (options: {
       offered: Ref.get(offered),
       paths: Ref.get(paths),
       connections: Ref.get(connections),
-      sendBytes: (bytes: Uint8Array) => withAgent(ws => ws.send(bytes)),
+      sendBytes: (bytes: Uint8Array) =>
+        withAgent(ws => ws.send(encodeBinary({ _tag: 'Console', bytes }))),
+      sendBinary: (binary: Binary) =>
+        withAgent(ws => ws.send(encodeBinary(binary))),
       browser: (message: BrowserMsg) =>
         withAgent(ws => ws.send(encodeBrowserMsg(message))),
       relay: (message: RelayMsg) =>

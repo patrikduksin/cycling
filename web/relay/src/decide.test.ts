@@ -10,6 +10,7 @@ import {
   encodeAgentMsg,
   encodeBrowserMsg,
   Epoch,
+  Lease,
   type PortStatus,
   RequestId,
 } from '@cycling/protocol'
@@ -263,14 +264,14 @@ describe('frames', () => {
   })
 
   test('other browser results and every agent request are forwarded and renew', () => {
-    const reset: AgentMsg = {
-      _tag: 'Reset',
+    const enter: AgentMsg = {
+      _tag: 'Op',
       id: Schema.decodeSync(RequestId)(1),
-      kind: 'hardReset',
+      op: { _tag: 'Enter', lease: Lease.make('0123456789abcdef') },
     }
-    const request = run(state(paired(), both), agentSays(reset), T0 + MINUTE)
+    const request = run(state(paired(), both), agentSays(enter), T0 + MINUTE)
     expect(request.actions).toEqual([
-      forwarded('browser', encodeAgentMsg(reset)),
+      forwarded('browser', encodeAgentMsg(enter)),
     ])
     expect(request.record?.expiresAt).toBe(T0 + MINUTE + Policy.pairedTtlMs)
   })
@@ -318,9 +319,9 @@ describe('frames', () => {
     const result = run(
       state(null, onlyAgent),
       agentSays({
-        _tag: 'SetLineCoding',
+        _tag: 'Op',
         id: Schema.decodeSync(RequestId)(2),
-        baud: 9600,
+        op: { _tag: 'Release', lease: Lease.make('0123456789abcdef') },
       }),
     )
     expect(result.record).toBeNull()
@@ -449,7 +450,11 @@ describe('classify', () => {
   })
 
   test('decodes an agent control message and keeps its text to forward', () => {
-    const text = JSON.stringify({ _tag: 'Reset', id: 1, kind: 'hardReset' })
+    const text = JSON.stringify({
+      _tag: 'Op',
+      id: 1,
+      op: { _tag: 'Enter', lease: '0123456789abcdef' },
+    })
     expect(run1('agent', text)).toMatchObject({ _tag: 'AgentText', text })
   })
 
@@ -474,7 +479,10 @@ describe('classify', () => {
   })
 
   test.each([
-    ['browser', { _tag: 'Reset', id: 1, kind: 'hardReset' }],
+    [
+      'browser',
+      { _tag: 'Op', id: 1, op: { _tag: 'Enter', lease: '0123456789abcdef' } },
+    ],
     ['agent', { _tag: 'Bye' }],
     ['agent', { _tag: 'Welcome' }],
   ] as const)('refuses a wrong-direction message from the %s', (from, body) => {

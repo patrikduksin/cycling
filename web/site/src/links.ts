@@ -10,7 +10,6 @@ import type {
   RelayDialError,
   RelaySocket,
   SerialIdentity,
-  SignalStep,
   UsbDescriptor,
 } from '@cycling/protocol'
 
@@ -52,10 +51,6 @@ export interface SerialLink {
   /** Chunks as the device sends them; fails with `SerialLinkLost` on unplug or reset. */
   readonly input: Stream.Stream<Uint8Array, SerialLinkLost>
   readonly write: (bytes: Uint8Array) => Effect.Effect<void, SerialLinkLost>
-  /** Runs the steps in order, holding each, with one owner of the signal lines. */
-  readonly runSignals: (
-    steps: ReadonlyArray<SignalStep>,
-  ) => Effect.Effect<void, SerialLinkLost>
 }
 
 export interface SerialAdapter {

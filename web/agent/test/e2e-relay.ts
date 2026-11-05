@@ -89,7 +89,7 @@ const fakeBrowser = Effect.gen(function* () {
   yield* Effect.forkScoped(
     socket.events.pipe(
       Stream.runForEach(event => {
-        if (event._tag === 'Bytes') {
+        if (event._tag === 'Console') {
           return Ref.update(fromAgent, n => n + event.bytes.byteLength).pipe(
             Effect.andThen(Queue.offer(toDevice, event.bytes)),
           )
@@ -104,9 +104,12 @@ const fakeBrowser = Effect.gen(function* () {
       Stream.splitLines,
       Stream.runForEach(line => {
         const info = /^CMD (\d+) INFO$/.exec(line.trim())
-        return socket.send(
-          encoder.encode(info ? reply(info[1] ?? '0') : `${line.trim()}\n`),
-        )
+        return socket.send({
+          _tag: 'Console',
+          bytes: encoder.encode(
+            info ? reply(info[1] ?? '0') : `${line.trim()}\n`,
+          ),
+        })
       }),
     ),
   )

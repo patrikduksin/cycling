@@ -212,8 +212,8 @@ const browserText = (
   return Match.valueTags(message, {
     DeviceAnnounced: ({ device }) => pass({ device }),
     PortChanged: ({ status }) => pass({ port: status }),
-    ResetResult: () => pass(),
-    LineCodingResult: () => pass(),
+    OpProgress: () => pass(),
+    OpResult: () => pass(),
     Bye: () => end('visitorDisconnected'),
   })
 }

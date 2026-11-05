@@ -70,10 +70,11 @@ export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
 
       const onInbound = (event: Inbound) =>
         Match.valueTags(event, {
-          Bytes: ({ bytes }) =>
+          Console: ({ bytes }) =>
             PubSub.publish(output, bytes).pipe(
               Effect.andThen(count(status, 'fromDevice', bytes.length)),
             ),
+          OpData: () => Effect.void,
           Control: ({ message }) => onControl(message),
           Pong: () => Effect.void,
           Down: () => setLink({ _tag: 'Redialing' }),

@@ -6,7 +6,7 @@ import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
-import { SerialIdentity, type SignalStep } from '@cycling/protocol'
+import { SerialIdentity } from '@cycling/protocol'
 
 import {
   ChooserCancelled,
@@ -60,31 +60,7 @@ const requestPort: Effect.Effect<SerialPort, ChooserCancelled | ChooserFailed> =
 const ignoreFailure = (attempt: () => Promise<unknown>): Effect.Effect<void> =>
   Effect.tryPromise(attempt).pipe(Effect.ignore)
 
-const setSignals = (
-  port: SerialPort,
-  step: SignalStep,
-): Effect.Effect<void, SerialLinkLost> =>
-  Effect.tryPromise({
-    try: () =>
-      port.setSignals({
-        ...(step.dataTerminalReady === undefined
-          ? {}
-          : { dataTerminalReady: step.dataTerminalReady }),
-        ...(step.requestToSend === undefined
-          ? {}
-          : { requestToSend: step.requestToSend }),
-      }),
-    catch: () => new SerialLinkLost(),
-  }).pipe(
-    Effect.andThen(
-      step.holdMs > 0
-        ? Effect.sleep(Duration.millis(step.holdMs))
-        : Effect.void,
-    ),
-  )
-
 const linkOf = (
-  port: SerialPort,
   reader: ReadableStreamDefaultReader<Uint8Array>,
   writer: WritableStreamDefaultWriter<Uint8Array>,
 ): SerialLink => ({
@@ -103,8 +79,6 @@ const linkOf = (
       try: () => writer.write(bytes),
       catch: () => new SerialLinkLost(),
     }),
-  runSignals: steps =>
-    Effect.forEach(steps, step => setSignals(port, step), { discard: true }),
 })
 
 class PortNotReady extends Schema.TaggedError<
@@ -141,7 +115,7 @@ const open = (
         yield* Effect.ignore(Effect.try(() => writer.releaseLock()))
         yield* ignoreFailure(() => port.close())
       }),
-  ).pipe(Effect.map(({ reader, writer }) => linkOf(port, reader, writer)))
+  ).pipe(Effect.map(({ reader, writer }) => linkOf(reader, writer)))
 
 const getPorts = Effect.tryPromise({
   try: () => navigator.serial.getPorts(),

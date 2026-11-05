@@ -1,4 +1,3 @@
-import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import { modifyFields } from 'foldkit/struct'
 
@@ -7,8 +6,6 @@ import {
   Epoch,
   type PortFailureReason,
   type PortState,
-  type RequestId,
-  type RequestOutcome,
 } from '@cycling/protocol'
 
 import {
@@ -41,7 +38,6 @@ export const newPort = (identity: Port['identity']): Port => ({
   attempt: 0,
   epoch: firstEpoch,
   state: OPENING,
-  pendingLineCoding: Option.none(),
 })
 
 /** A port recovered after a reload: the granted port is probably there already, but may still be resetting. */
@@ -51,7 +47,6 @@ export const recoveredPort = (stored: StoredSession): Port => ({
   attempt: 1,
   epoch: stored.epoch,
   state: REACQUIRING,
-  pendingLineCoding: Option.none(),
 })
 
 export const storedOf = (session: Session, port: Port): StoredSession => ({
@@ -88,18 +83,10 @@ export const announcement = (source: Source): ReadonlyArray<BrowserMsg> =>
  * and rests in Reacquiring, and bumping `attempt` makes the runtime close the
  * dead port and wait for the granted one to return.
  */
-export const reacquire = (
-  port: Port,
-  options: {
-    readonly baud: number
-    readonly lineCodingId: Port['pendingLineCoding']
-  },
-): PortStep => ({
+export const reacquire = (port: Port): PortStep => ({
   port: modifyFields(port, {
-    baud: () => options.baud,
     attempt: attempt => attempt + 1,
     state: () => REACQUIRING,
-    pendingLineCoding: () => options.lineCodingId,
   }),
   messages: [portChangedTo(port, LOST), portChangedTo(port, REACQUIRING)],
 })
@@ -108,41 +95,16 @@ export const opened = (port: Port): PortStep => {
   const next = modifyFields(port, {
     epoch: nextEpoch,
     state: () => ({ _tag: 'Open', baud: port.baud }),
-    pendingLineCoding: () => Option.none(),
   })
-  return {
-    port: next,
-    messages: [
-      portChanged(next),
-      ...Option.match(port.pendingLineCoding, {
-        onNone: () => [],
-        onSome: id => [lineCodingResult(id, 'done')],
-      }),
-    ],
-  }
+  return { port: next, messages: [portChanged(next)] }
 }
 
 export const failed = (port: Port, reason: PortFailureReason): PortStep => {
   const next = modifyFields(port, {
     state: () => ({ _tag: 'Failed', reason }),
-    pendingLineCoding: () => Option.none(),
   })
-  return {
-    port: next,
-    messages: [
-      portChanged(next),
-      ...Option.match(port.pendingLineCoding, {
-        onNone: () => [],
-        onSome: id => [lineCodingResult(id, 'failed')],
-      }),
-    ],
-  }
+  return { port: next, messages: [portChanged(next)] }
 }
-
-const lineCodingResult = (
-  id: RequestId,
-  outcome: RequestOutcome,
-): BrowserMsg => ({ _tag: 'LineCodingResult', id, outcome })
 
 /** Reopening the port in place of a chooser click: the chosen port replaces the failed one. */
 export const replaced = (port: Port, identity: Port['identity']): PortStep => {
@@ -150,7 +112,6 @@ export const replaced = (port: Port, identity: Port['identity']): PortStep => {
     identity: () => identity,
     attempt: attempt => attempt + 1,
     state: () => OPENING,
-    pendingLineCoding: () => Option.none(),
   })
   return {
     port: next,

@@ -9,7 +9,6 @@ import {
   Epoch,
   OwnerKey,
   PortFailureReason,
-  RequestId,
   SerialIdentity,
   UsbDescriptor,
 } from '@cycling/protocol'
@@ -78,7 +77,6 @@ export const Port = Schema.Struct({
   attempt: Schema.Int,
   epoch: Epoch,
   state: PortPhase,
-  pendingLineCoding: Schema.Option(RequestId),
 })
 export type Port = typeof Port.Type
 

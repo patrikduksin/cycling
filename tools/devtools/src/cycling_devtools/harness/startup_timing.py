@@ -9,8 +9,8 @@ observable from here.
   default    wait for the C606 to be turned on, then poll it
   --restart  send RESTART first: a main-CPU restart, the companion keeps running
   --ride     also start a ride with harness presses, pause/resume it and save it
-             (records one short ride; needs CYCLING_HARNESS=1). Starts only
-             from Home, checks every step and requires the ride to end saved
+             (records one short ride). Starts only from Home, checks every
+             step and requires the ride to end saved
 
 --restart and --ride refuse while a ride is open on the device.
 
@@ -161,8 +161,6 @@ def simulate(directory):
         'shell-simulator',
         '--locked',
         '--no-default-features',
-        '--features',
-        'debug-harness',
         '--test',
         'ride_scenarios',
         'startup_timing',

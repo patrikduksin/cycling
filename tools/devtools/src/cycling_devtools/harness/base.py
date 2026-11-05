@@ -224,16 +224,12 @@ def apply(connection, settings):
     expect(connection, 'SAVE', 'OK')
 
 
-def transport_recovery(connection, build, result):
+def transport_recovery(connection, result):
     """One controlled stall, no retry. Loss counters are evidence, not a target."""
     ride = read(connection, 'RIDE STATUS')
     if ride['state'] != 'ready' or ride['page'] != 'home':
         raise ValueError('transport recovery needs VANA idle on Home with no ride recording')
-    if build.get('harness') != 'true':
-        expect(connection, 'TEST 20', 'UNSUPPORTED')
-        result.update(supported=False)
-        return
-    result.update(supported=True, recovered=False, recording=False)
+    result.update(recovered=False, recording=False)
     before_position = read(connection, 'POSITION')
     before_input = read(connection, 'INPUT')
     settings = read(connection, 'SETTINGS')
@@ -328,76 +324,70 @@ def run(args):
         connection = reopen(args.port, directory, 'options')
         if args.transport_recovery:
             report['transport_recovery'] = {}
-            transport_recovery(connection, build, report['transport_recovery'])
+            transport_recovery(connection, report['transport_recovery'])
         if args.wifi_recovery:
-            if build.get('harness') != 'true':
-                expect(connection, 'TEST 2', 'UNSUPPORTED')
-            else:
-                failures_before = wifi_failures(connection)
-                expect(connection, 'TEST 2', 'ACCEPTED')
-                try:
-                    expect(connection, 'WIFI RECONNECT', 'ACCEPTED')
-                    deadline = time.monotonic() + 60
-                    while wifi_failures(connection) <= failures_before:
-                        if time.monotonic() >= deadline:
-                            raise TimeoutError('injected Wi-Fi failure was not observed')
-                        time.sleep(0.5)
-                finally:
-                    expect(connection, 'TEST 0', 'ACCEPTED')
+            failures_before = wifi_failures(connection)
+            expect(connection, 'TEST 2', 'ACCEPTED')
+            try:
                 expect(connection, 'WIFI RECONNECT', 'ACCEPTED')
-                deadline = time.monotonic() + 90
-                while read(connection, 'WIFI')['state'] != '4':
+                deadline = time.monotonic() + 60
+                while wifi_failures(connection) <= failures_before:
                     if time.monotonic() >= deadline:
-                        raise TimeoutError('Wi-Fi public probe did not recover')
+                        raise TimeoutError('injected Wi-Fi failure was not observed')
                     time.sleep(0.5)
+            finally:
+                expect(connection, 'TEST 0', 'ACCEPTED')
+            expect(connection, 'WIFI RECONNECT', 'ACCEPTED')
+            deadline = time.monotonic() + 90
+            while read(connection, 'WIFI')['state'] != '4':
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('Wi-Fi public probe did not recover')
+                time.sleep(0.5)
         if args.panic:
-            if build.get('harness') != 'true':
-                expect(connection, 'TEST 11', 'UNSUPPORTED')
-            else:
-                expect(connection, 'TEST 11', 'ACCEPTED')
+            expect(connection, 'TEST 11', 'ACCEPTED')
+            connection.__exit__(None, None, None)
+            connection = None
+            time.sleep(2)
+            connection = reopen(args.port, directory, 'panic', 30)
+            crash = read(connection, 'STATUS')
+            if crash['crash'] != 'controlled' or crash['reset'] != 'software':
+                raise AssertionError('controlled crash marker not observed')
+            record = crash_record(connection)
+            if (
+                record.get('kind') != 'controlled'
+                or record.get('this_boot') != 'true'
+                or record.get('source') != 'rtc'
+                or 'src/drivers/crash_rtc.rs:' not in record.get('location', '')
+                or int(record.get('frames', '0')) == 0
+                or record.get('message') != 'controlled crash test'
+            ):
+                raise AssertionError(f'controlled crash record incomplete: {record}')
+            expect(connection, 'RESTART', 'ACCEPTED')
+            connection.__exit__(None, None, None)
+            connection = None
+            time.sleep(2)
+            connection = reopen(args.port, directory, 'panic-clean', 30)
+            if read(connection, 'STATUS')['crash'] != 'none':
+                raise AssertionError('crash marker replayed after clean restart')
+            kept = crash_record(connection)
+            if kept.get('this_boot') != 'false' or kept.get('location') != record['location']:
+                raise AssertionError(f'crash record not kept across a clean restart: {kept}')
+            if args.power_off:
                 connection.__exit__(None, None, None)
                 connection = None
-                time.sleep(2)
-                connection = reopen(args.port, directory, 'panic', 30)
-                crash = read(connection, 'STATUS')
-                if crash['crash'] != 'controlled' or crash['reset'] != 'software':
-                    raise AssertionError('controlled crash marker not observed')
-                record = crash_record(connection)
+                connection = power_cycle(args.port, directory)
+                flashed = crash_record(connection)
                 if (
-                    record.get('kind') != 'controlled'
-                    or record.get('this_boot') != 'true'
-                    or record.get('source') != 'rtc'
-                    or 'src/drivers/crash_rtc.rs:' not in record.get('location', '')
-                    or int(record.get('frames', '0')) == 0
-                    or record.get('message') != 'controlled crash test'
+                    flashed.get('source') != 'flash'
+                    or flashed.get('this_boot') != 'false'
+                    or flashed.get('location') != record['location']
+                    or flashed.get('message') != record['message']
                 ):
-                    raise AssertionError(f'controlled crash record incomplete: {record}')
-                expect(connection, 'RESTART', 'ACCEPTED')
-                connection.__exit__(None, None, None)
-                connection = None
-                time.sleep(2)
-                connection = reopen(args.port, directory, 'panic-clean', 30)
-                if read(connection, 'STATUS')['crash'] != 'none':
-                    raise AssertionError('crash marker replayed after clean restart')
-                kept = crash_record(connection)
-                if kept.get('this_boot') != 'false' or kept.get('location') != record['location']:
-                    raise AssertionError(f'crash record not kept across a clean restart: {kept}')
-                if args.power_off:
-                    connection.__exit__(None, None, None)
-                    connection = None
-                    connection = power_cycle(args.port, directory)
-                    flashed = crash_record(connection)
-                    if (
-                        flashed.get('source') != 'flash'
-                        or flashed.get('this_boot') != 'false'
-                        or flashed.get('location') != record['location']
-                        or flashed.get('message') != record['message']
-                    ):
-                        raise AssertionError(f'crash record not kept across power-off: {flashed}')
-                expect(connection, 'CRASH CLEAR', 'OK')
-                if connection.terminal_command('CRASH').get('data') != 'none':
-                    raise AssertionError('CRASH CLEAR left a record')
-                preserved(original, read(connection, 'SETTINGS'))
+                    raise AssertionError(f'crash record not kept across power-off: {flashed}')
+            expect(connection, 'CRASH CLEAR', 'OK')
+            if connection.terminal_command('CRASH').get('data') != 'none':
+                raise AssertionError('CRASH CLEAR left a record')
+            preserved(original, read(connection, 'SETTINGS'))
         if args.write_settings:
             changed = True
             temporary = dict(original, brightness='5' if original['brightness'] != '5' else '10')

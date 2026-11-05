@@ -137,9 +137,9 @@ class ScreenshotTests(unittest.TestCase):
         last_input = max(i for i, c in enumerate(fake.commands) if ' INPUT ' in c)
         self.assertLess(last_input, first_capture)
 
-    def test_refuses_builds_without_capture(self):
-        fake = FakeHarness(capture='unsupported')
-        with self.assertRaisesRegex(RuntimeError, 'CYCLING_HARNESS=1'):
+    def test_refuses_when_capture_is_unavailable(self):
+        fake = FakeHarness(capture='unavailable')
+        with self.assertRaisesRegex(RuntimeError, 'no PSRAM'):
             self.run_tool(fake)
         self.assertNotIn('OPEN', ' '.join(fake.commands))
 

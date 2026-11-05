@@ -4,7 +4,7 @@ The harness copies every pixel the shell hands to the display driver, after
 scaling, into composition-owned capture memory while the frame renders. This
 tool reads that frame back in bounded, CRC-checked chunks; it never re-renders.
 Optional button presses use the harness's synthetic input before the capture.
-Requires a CYCLING_HARNESS=1 build. Evidence (command trace, USB log) stays in .local/.
+Evidence (command trace, USB log) stays in .local/.
 """
 
 import argparse
@@ -35,7 +35,7 @@ def screenshot(runner, output, scale=1, presses=(), settle_ms=500):
     runner.await_ready()
     caps = runner.command('HARNESS CAPS')
     if caps.get('capture') != 'supported':
-        raise RuntimeError(f'frame capture is {caps.get("capture", "unsupported")}; flash a CYCLING_HARNESS=1 build')
+        raise RuntimeError(f'frame capture is {caps.get("capture", "unsupported")}: the firmware has no PSRAM for it')
     runner.open_session()
     try:
         if presses:

@@ -505,7 +505,7 @@ class TransportRecoveryTests(unittest.TestCase):
             patch('cycling_devtools.harness.base.read', side_effect=self.read),
             patch('cycling_devtools.harness.base.time.sleep'),
         ):
-            transport_recovery(connection, dict(harness='true'), report)
+            transport_recovery(connection, report)
         self.assertEqual(connection.commands, [('TEST 20', 12)])
         self.assertTrue(report['recovered'])
         self.assertEqual(report['position_delta']['dma_losses'], 1)
@@ -516,7 +516,7 @@ class TransportRecoveryTests(unittest.TestCase):
         connection = StallConnection(timeout=True)
         report = {}
         with patch('cycling_devtools.harness.base.read', side_effect=self.read), self.assertRaises(TimeoutError):
-            transport_recovery(connection, dict(harness='true'), report)
+            transport_recovery(connection, report)
         self.assertEqual(connection.commands, [('TEST 20', 12)])
         self.assertIn('before_position', report)
         self.assertFalse(report['recovered'])
@@ -529,7 +529,7 @@ class TransportRecoveryTests(unittest.TestCase):
                 patch('cycling_devtools.harness.base.read', return_value=ride),
                 self.assertRaises(ValueError),
             ):
-                transport_recovery(connection, dict(harness='true'), {})
+                transport_recovery(connection, {})
             self.assertEqual(connection.commands, [])
 
     def test_persistent_failure_is_not_treated_as_recovery(self):
@@ -545,7 +545,7 @@ class TransportRecoveryTests(unittest.TestCase):
             patch('cycling_devtools.harness.base.time.monotonic', side_effect=[0, 16]),
             self.assertRaises(TimeoutError),
         ):
-            transport_recovery(StallConnection(), dict(harness='true'), report)
+            transport_recovery(StallConnection(), report)
         self.assertFalse(report['recovered'])
 
 

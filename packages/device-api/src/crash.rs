@@ -186,7 +186,9 @@ impl Build {
     }
 
     const fn from_bits(bits: u32) -> Option<Self> {
-        if bits & !0xd != 0 {
+        // Bit 1 marked VANA builds before every build had VANA; ignore it so
+        // records written by older firmware still read.
+        if bits & !0xf != 0 {
             return None;
         }
         Some(Self {
@@ -462,6 +464,14 @@ mod tests {
         };
         assert_eq!(report.kind, Kind::Panic);
         assert_eq!(report.version(), "0.1.0");
+    }
+
+    #[test]
+    fn a_record_from_firmware_that_marked_vana_still_reads() {
+        let mut words = encode(&panic());
+        words[LENGTHS] |= 1 << 25;
+        words[CHECKSUM] = checksum(&words[..CHECKSUM]);
+        assert!(matches!(inspect(&words), Marker::Valid(_)));
     }
 
     #[test]

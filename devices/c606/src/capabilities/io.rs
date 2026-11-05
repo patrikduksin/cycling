@@ -25,10 +25,10 @@ static EDGES: Mutex<CriticalSectionRawMutex, RefCell<Edges>> =
 static LATEST: Mutex<CriticalSectionRawMutex, RefCell<Option<State>>> =
     Mutex::new(RefCell::new(None));
 static SLEEP_BOUNDARY: AtomicBool = AtomicBool::new(false);
-/// Raised when an edge is queued and reset as a pass begins, so a rest
-/// ends for an edge that pass has not taken. One queued while the pass
-/// takes edges costs one early pass.
-static EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// Raised when an edge is queued or a page `ant` wakes on arrives, and
+/// reset as a pass begins, so a rest ends for what that pass has not taken.
+/// One raised while the pass runs costs one early pass.
+static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 #[derive(Clone, Copy)]
 struct State {
@@ -64,13 +64,18 @@ pub fn take_edge() -> Option<Edge> {
     EDGES.lock(|edges| edges.borrow_mut().pop())
 }
 /// The edges' consumer begins a pass and takes the edges queued so far:
-/// only one queued after this ends the rest after the pass.
+/// only an edge queued, or a `wake`, after this ends the rest after the pass.
 pub fn pass_began() {
-    EDGE.reset();
+    WAKE.reset();
 }
-/// Wait `ms`, or less if an edge is queued first, for the edges' consumer.
+/// Wait `ms`, or less if an edge is queued or `wake` is called first, for
+/// the edges' consumer.
 pub async fn rest(ms: u64) {
-    embassy_futures::select::select(Timer::after_millis(ms), EDGE.wait()).await;
+    embassy_futures::select::select(Timer::after_millis(ms), WAKE.wait()).await;
+}
+/// End the edges' consumer's rest, as an edge does.
+pub fn wake() {
+    WAKE.signal(());
 }
 /// Queue an edge; returns whether the queue overflowed and sent a Cancel,
 /// so the touch contact in progress must be cancelled too.
@@ -95,7 +100,7 @@ fn queue(edges: &mut Edges, now: u64, input: Input) -> bool {
     let before = edges.pushed();
     let overflowed = edges.push(now, input);
     if edges.pushed() != before {
-        EDGE.signal(());
+        wake();
     }
     overflowed
 }

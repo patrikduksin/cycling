@@ -1,5 +1,6 @@
 //! ANT state shared with the console; the existing IO task owns all UART work.
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicU8, Ordering};
 use device_api::ant::Discovery;
 use device_api::ant::Identity;
 use device_api::ant::LinkState;
@@ -358,8 +359,19 @@ pub fn request(operation: Operation, now: u64) -> Result<Admission, AntError> {
         }
     })
 }
+/// The device type whose pages end the console's rest; zero, a control
+/// group that carries no data, wakes on none.
+static WAKING_TYPE: AtomicU8 = AtomicU8::new(0);
+pub fn wake_on(device_type: u8) {
+    WAKING_TYPE.store(device_type, Ordering::Relaxed);
+}
 pub fn receive(group: u8, payload: [u8; 8], now: u64) {
     if let Some(event) = crate::drivers::ant_protocol::decode(group, payload) {
+        if let device_api::ant::Event::Data { device_type, .. } = event
+            && device_type == WAKING_TYPE.load(Ordering::Relaxed)
+        {
+            super::io::wake();
+        }
         SHARED.lock(|s| {
             let mut shared = s.borrow_mut();
             shared.startup_activity = true;

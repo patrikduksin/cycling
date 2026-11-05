@@ -306,6 +306,11 @@ impl Recorder {
         self.status == Status::Recording && self.stop_at.is_some()
     }
 
+    /// When the next 1 Hz sample is due, while one is.
+    pub fn sample_due_ms(&self) -> Option<u64> {
+        (self.status == Status::Recording && self.stop_at.is_none()).then_some(self.next_sample)
+    }
+
     pub fn active_ms(&self, now: u64) -> u64 {
         if self.status == Status::Recording {
             crate::ride::log::active_at(self.accumulated_ms, self.running_since, self.stop_at, now)

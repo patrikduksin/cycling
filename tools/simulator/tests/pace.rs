@@ -1,9 +1,10 @@
 //! The console rests between passes while nothing needs one: about 20
-//! passes a second on a still page, lit, dimmed or charging, and 100 while a
-//! ride, a finger, a sheet, a coasting list, a press awaiting its frame, the
-//! look-ahead or storage work needs them (`vana::app::pace`). A press ends a
-//! rest at once, a harness press runs when it is due, and a strict replay of
-//! a resting session is exact.
+//! passes a second on a still page, lit, dimmed or charging, about as many
+//! as a recording ride draws, and 100 while a finger, a sheet, a coasting
+//! list, a press awaiting its frame, the look-ahead or storage work needs
+//! them (`vana::app::pace`). A press or a radar page ends a rest at once, a
+//! harness press runs when it is due, and a strict replay of a resting
+//! session is exact.
 #![cfg(feature = "cycling")]
 use device_api::input::{Button, Input, Point};
 use firmware_services::trace::{Event, decode};
@@ -125,19 +126,83 @@ fn work_on_a_page_keeps_the_busy_pace() {
     sim.press(Button::TopLeft);
     sim.expect_text("TURN OFF");
     expect_busy(&mut sim, seconds(2), "the turn-off sheet");
-    sim.press(Button::TopLeft);
-    sim.start_ride();
-    expect_busy(&mut sim, seconds(10), "a ride");
 }
 
 #[test]
-fn recording_on_a_still_page_keeps_the_busy_pace() {
+fn a_ride_recording_on_a_still_page_rests() {
     let mut sim = saved_rides(&[]);
     expect_still(&mut sim, "home");
     let (status, out) = sim.command("RIDE INTERNAL START");
     assert_eq!(status, "ACCEPTED", "{out}");
-    expect_busy(&mut sim, seconds(2), "a ride recording on Home");
+    sim.advance(seconds(1));
+    expect_still(&mut sim, "a ride recording on Home");
     assert_eq!(sim.device.sdk.page(), Page::Home);
+}
+
+fn frames(sim: &Sim) -> u32 {
+    sim.device.shell.display_submissions
+}
+
+/// Passes and frames a second over `seconds` of a ride on the Ride page
+/// with ANT+ power, heart rate and speed and cadence, each about four times
+/// a second, and readings that move with every sample, as a rider's do.
+fn riding_pace(seconds: u64) -> (u64, u64) {
+    let mut sim = device();
+    sim.ant_sensor(device_type::HEART_RATE, 1);
+    sim.ant_sensor(device_type::POWER, 2);
+    sim.ant_sensor(device_type::SPEED_CADENCE, 3);
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+    sim.ride_at(25.0, 180.0, 140.0, 85.0);
+    sim.start_ride();
+    sim.advance(5_000);
+    assert_eq!(sim.device.sdk.page(), Page::Ride);
+    let (passes_before, frames_before) = (passes(&sim), frames(&sim));
+    for quarter in 0..seconds * 4 {
+        let swing = [0.0, 1.0, 2.0, 1.0, 0.0, -1.0, -2.0, -1.0][quarter as usize % 8];
+        sim.ride_at(
+            25.0 + swing,
+            180.0 + 15.0 * swing,
+            140.0 + swing,
+            85.0 + 2.0 * swing,
+        );
+        sim.advance(250);
+    }
+    let passes = (passes(&sim) - passes_before) / seconds;
+    let frames = u64::from(frames(&sim) - frames_before) / seconds;
+    (passes, frames)
+}
+
+#[test]
+fn a_recording_ride_passes_about_as_often_as_it_draws() {
+    let (passes, frames) = riding_pace(60);
+    println!("a ride: {passes} passes/s, {frames} frames/s");
+    assert!(frames >= 15, "the readings glide: {frames} frames/s");
+    assert!(
+        passes <= frames + 10,
+        "{passes} passes/s for {frames} frames/s"
+    );
+}
+
+#[test]
+fn a_radar_page_wakes_a_resting_ride() {
+    let mut sim = device();
+    sim.ant_sensor(device_type::RADAR, 4);
+    sim.pair(&["RADAR"]);
+    sim.start_ride();
+    sim.advance(seconds(3));
+    let mut woken = 0;
+    for _ in 0..300 {
+        let rested = sim.device.now;
+        let resting = sim.device.clock_ms() > rested;
+        let world_ms = sim.device.sim().world.time_ms + 10;
+        let due = sim.device.sim().ant.page_due(device_type::RADAR, world_ms);
+        sim.advance(10);
+        if resting && due {
+            assert!(sim.device.now > rested, "a radar page at {world_ms} ms");
+            woken += 1;
+        }
+    }
+    assert!(woken >= 4, "{woken} radar pages ended a rest");
 }
 
 /// A press the page does not answer, the second report of a hold, still

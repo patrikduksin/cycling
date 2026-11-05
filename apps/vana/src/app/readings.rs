@@ -85,7 +85,7 @@ pub(super) struct Readings {
     gps: GpsSpeed,
     /// What the speed sources said at the last sample, for auto-pause.
     pub(super) motion: Motion,
-    odometer: Odometer,
+    pub(super) odometer: Odometer,
     gradient: Gradient,
     pub(super) heart: Option<Timed<HeartRate>>,
     pub(super) power: Option<Timed<Power>>,

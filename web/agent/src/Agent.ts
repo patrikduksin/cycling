@@ -184,7 +184,10 @@ const runChild = (options: {
       childEnvironment({
         parent: process.env,
         token: options.token,
-        endpoints: { CYCLING_PORT: endpoints.pty },
+        endpoints: {
+          CYCLING_PORT: endpoints.pty,
+          CYCLING_FLASHER: endpoints.flasher,
+        },
       }),
     )
   })
@@ -231,13 +234,19 @@ export const runSession = (input: {
           yield* Console.log(JSON.stringify(device.descriptor, null, 2))
           return EXIT.ended
         }
-        const endpoints = yield* Bridge.open({ port, dir: config.dir, code })
+        const endpoints = yield* Bridge.open({
+          port,
+          dir: config.dir,
+          code,
+          notice: Console.error,
+        })
         yield* print(
           endpointBlock({
             code,
             relay: config.relay,
             device,
             pty: endpoints.pty,
+            flasher: endpoints.flasher,
           }),
         )
         return Arr.isReadonlyArrayNonEmpty(command)

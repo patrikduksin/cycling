@@ -12,8 +12,14 @@ import {
   type PortState,
 } from '@cycling/protocol'
 
+import type { DoorRequest } from './DeviceDoor.ts'
 import type { Link, RemoteStatus } from './RemotePort.ts'
-import type { AdmissionError, Ending, SessionError } from './errors.ts'
+import type {
+  AdmissionError,
+  Ending,
+  FlashError,
+  SessionError,
+} from './errors.ts'
 
 export const TOKEN_TOO_SHORT =
   'CYCLING_REMOTE_TOKEN must be the AGENT_TOKEN the relay was deployed with (at least 32 characters)'
@@ -95,6 +101,38 @@ export const describeError = (error: SessionError): string =>
       `the visitor's port did not open within ${seconds} s (${state})`,
   })
 
+const hex = (n: number) => `0x${n.toString(16)}`
+
+const whatOf = (request: DoorRequest): string =>
+  Match.value(request).pipe(
+    Match.discriminatorsExhaustive('op')({
+      enter: () => 'enter',
+      read: ({ address, size }) =>
+        `read ${formatBytes(size)} at ${hex(address)}`,
+      write: ({ address }) => `write at ${hex(address)}`,
+      verify: ({ address }) => `verify at ${hex(address)}`,
+      reboot: () => 'reboot',
+    }),
+  )
+
+/** One line per device op on stderr; the MAC is never in it. */
+export const describeDoorOp = (request: DoorRequest, ms: number): string =>
+  `flasher: ${whatOf(request)} in ${(ms / 1000).toFixed(1)} s`
+
+export const describeFlashError = (
+  request: DoorRequest,
+  error: FlashError,
+): string =>
+  `flasher: ${whatOf(request)} failed: ${Match.valueTags(error, {
+    OpFailed: ({ reason, detail }) =>
+      detail === '' ? reason : `${reason}, ${detail}`,
+    TransferBroken: ({ detail }) => detail,
+    Unreachable: ({ seconds }) =>
+      `the visitor's page was unreachable for ${seconds} s`,
+    OpStalled: ({ ms }) => `no progress for ${ms / 1000} s`,
+    BadRequest: ({ detail }) => detail,
+  })}`
+
 export const cannotRun = (command: string, detail: string): string =>
   `cannot run ${command}: ${detail}`
 
@@ -135,9 +173,11 @@ export const endpointBlock = (options: {
   readonly relay: string
   readonly device: Device
   readonly pty: string
+  readonly flasher: string
 }): string =>
   [
     `joined ${formatCode(options.code)} via ${options.relay}`,
     `device   ${describeDevice(options.device)}`,
     `  CYCLING_PORT=${options.pty}`,
+    `  CYCLING_FLASHER=${options.flasher}`,
   ].join('\n')

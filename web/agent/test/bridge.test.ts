@@ -114,7 +114,12 @@ const nextBytes = (relay: FakeRelay) =>
 const attachAndOpen = Effect.gen(function* () {
   const port = yield* (yield* Remote).attach(CODE)
   const config = yield* AgentConfig
-  const endpoints = yield* Bridge.open({ port, dir: config.dir, code: CODE })
+  const endpoints = yield* Bridge.open({
+    port,
+    dir: config.dir,
+    code: CODE,
+    notice: () => Effect.void,
+  })
   return { port, endpoints }
 })
 
@@ -288,7 +293,7 @@ const runCli = <A, E>(program: Effect.Effect<A, E, Scope.Scope>) =>
   Effect.runPromise(Effect.scoped(program))
 
 describe('main.ts', () => {
-  test('the child sees the pty and its exit code is mirrored', () =>
+  test('the child sees the pty and the device socket, and its exit code is mirrored', () =>
     runCli(
       Effect.gen(function* () {
         const relay = yield* fakeRelay({ snapshot: OPEN_SNAPSHOT })
@@ -299,7 +304,7 @@ describe('main.ts', () => {
             '--',
             'sh',
             '-c',
-            'test -L "$CYCLING_PORT" && exit 7; exit 1',
+            'test -L "$CYCLING_PORT" && test -S "$CYCLING_FLASHER" && exit 7; exit 1',
           ],
         })
         const { code, stderr } = yield* agent.exit(10)

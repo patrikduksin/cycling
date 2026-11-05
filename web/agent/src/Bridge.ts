@@ -6,6 +6,7 @@ import { join } from 'node:path'
 
 import type { Code } from '@cycling/protocol'
 
+import { serveDeviceDoor } from './DeviceDoor.ts'
 import { PtyHost } from './PtyHost.ts'
 import type { RemotePort } from './RemotePort.ts'
 import { LocalResourceError } from './errors.ts'
@@ -16,25 +17,30 @@ export const sessionPaths = (dir: string, code: Code) => {
   return {
     session,
     port: join(session, 'port'),
+    flasher: join(session, 'device.sock'),
   }
 }
 
 export interface Endpoints {
   /** `CYCLING_PORT`. */
   readonly pty: string
+  /** `CYCLING_FLASHER`: the device socket. */
+  readonly flasher: string
   /** Device bytes dropped because nothing read the pty. */
   readonly ptyDropped: Effect.Effect<number>
 }
 
 /**
- * The visitor's port as a local pty. Every OS resource it opens (the session
- * directory, the pty and its symlink) belongs to the caller's scope and is
- * removed in reverse order when it closes.
+ * The visitor's port as two local doors: a pty for console tools and the
+ * device socket for flasher ops. Every OS resource it opens (the session
+ * directory, the pty and its symlink, the socket) belongs to the caller's
+ * scope and is removed in reverse order when it closes.
  */
 export const open = (options: {
   readonly port: RemotePort
   readonly dir: string
   readonly code: Code
+  readonly notice: (text: string) => Effect.Effect<void>
 }): Effect.Effect<
   Endpoints,
   LocalResourceError,
@@ -67,5 +73,10 @@ export const open = (options: {
     const pty = yield* (yield* PtyHost).open(paths.port)
     yield* Effect.forkScoped(port.output.pipe(Stream.runForEach(pty.write)))
     yield* Effect.forkScoped(pty.input.pipe(Stream.runForEach(port.write)))
-    return { pty: pty.path, ptyDropped: pty.dropped }
+    yield* serveDeviceDoor({
+      path: paths.flasher,
+      port,
+      notice: options.notice,
+    })
+    return { pty: pty.path, flasher: paths.flasher, ptyDropped: pty.dropped }
   })

@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import type { EndReason } from '@cycling/protocol'
+import { type EndReason, OpFailure } from '@cycling/protocol'
 
 export class Unauthorized extends Schema.TaggedError<
   Unauthorized,
@@ -46,11 +46,55 @@ export type Ending =
   | { readonly _tag: 'Replaced' }
   | { readonly _tag: 'Rejected'; readonly error: AdmissionError }
 
+export class RelayDown extends Schema.TaggedError<
+  RelayDown,
+  { readonly brand: unique symbol }
+>()('RelayDown', {}) {}
+
+export class OpStalled extends Schema.TaggedError<
+  OpStalled,
+  { readonly brand: unique symbol }
+>()('OpStalled', { ms: Schema.Int }) {}
+
+/** Why an op's answer did not arrive. */
+export type OpTransportError = RelayDown | OpStalled
+
+export class OpFailed extends Schema.TaggedError<
+  OpFailed,
+  { readonly brand: unique symbol }
+>()('OpFailed', { reason: OpFailure, detail: Schema.String }) {}
+
+/** Read data with a hole, or bytes whose MD5 is not the chip's, after the retries. */
+export class TransferBroken extends Schema.TaggedError<
+  TransferBroken,
+  { readonly brand: unique symbol }
+>()('TransferBroken', { detail: Schema.String }) {}
+
+/** The relay or the visitor stayed away longer than an op can wait, or the session is over. */
+export class Unreachable extends Schema.TaggedError<
+  Unreachable,
+  { readonly brand: unique symbol }
+>()('Unreachable', { seconds: Schema.Int }) {}
+
+/** A file the caller named could not be read or written, or names flash past the chip. */
+export class BadRequest extends Schema.TaggedError<
+  BadRequest,
+  { readonly brand: unique symbol }
+>()('BadRequest', { detail: Schema.String }) {}
+
+/** Why a device op did not complete; each is one error reply on the device socket. */
+export type FlashError =
+  | OpFailed
+  | TransferBroken
+  | Unreachable
+  | OpStalled
+  | BadRequest
+
 export class LocalResourceError extends Schema.TaggedError<
   LocalResourceError,
   { readonly brand: unique symbol }
 >()('LocalResourceError', {
-  resource: Schema.Literals(['pty', 'sessionDir']),
+  resource: Schema.Literals(['pty', 'deviceDoor', 'sessionDir']),
   detail: Schema.String,
 }) {}
 

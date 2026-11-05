@@ -236,7 +236,6 @@ fn disconnect_removes_closes_and_late_events_cannot_resurrect_it() {
     let mut radio = Radio::quiet();
     advance(&mut runtime, &mut radio, 0);
     assert_eq!(link(&radio, HEART, 0), Some(LinkState::Connecting));
-    // Forget it while the connection is still pending.
     let forgot = forget_sensor(&mut runtime, &mut radio, HEART, 1000);
     assert_eq!(runtime.links.saved.of_type(HEART), None);
     assert_eq!(runtime.preferences.sensors.of_type(HEART), None);
@@ -246,7 +245,6 @@ fn disconnect_removes_closes_and_late_events_cannot_resurrect_it() {
             .iter()
             .all(Option::is_none)
     );
-    // Once the radio has served the close, the pending session closes.
     run(&mut runtime, &mut radio, forgot, 6000);
     assert!(
         radio
@@ -376,7 +374,6 @@ fn discovery_waits_for_a_search_in_progress_and_reconnects_after_it() {
     let mut runtime = restored(&[heart]);
     let mut radio = Radio::quiet();
     run(&mut runtime, &mut radio, 0, 15_000);
-    // The rider opens NEARBY while the sensor is still missing.
     runtime.navigation.page = Page::Home;
     runtime.navigation.home_cursor = 1;
     runtime.input(press(Button::BottomRight), 15_000, &mut radio);
@@ -503,14 +500,11 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     use crate::screens::sensors::Page as SensorPage;
     let heart = peer(HEART, 4242);
     let touch = |runtime: &mut Runtime, radio: &mut Radio, now| {
-        // The trash cue beside ACT on a strap's detail page and on FORGET SENSOR?.
         let point = device_api::input::Point { x: 232, y: 312 };
         runtime.input(Input::Touch(point), now, radio)
     };
     let saved = |runtime: &Runtime| runtime.preferences.sensors.of_type(HEART).is_some();
 
-    // Down on SENSORS, ACT opens the detail page, lift over the trash cue
-    // within a tap's time: the detail page never saw the contact begin.
     let mut runtime = restored(&[heart]);
     let mut radio = Radio::quiet();
     advance(&mut runtime, &mut radio, 0);
@@ -520,8 +514,6 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
     runtime.input(Input::Release, 1500, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
-    // A contact that begins on the detail page does act, once the page has
-    // settled: the cue asks FORGET SENSOR?, whose own cue forgets it.
     touch(&mut runtime, &mut radio, 2500);
     runtime.input(Input::Release, 2600, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Forget);

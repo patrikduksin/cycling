@@ -966,7 +966,6 @@ impl<'a> View<'a> {
                 ride::prepare(self);
                 &[]
             }
-            // The runtime prepares the menu and its cues with `show_sensors`.
             Page::Sensors => shown,
             Page::Home => &[],
         };

@@ -215,7 +215,6 @@ fn icon(icon: Icon, x: i32, y: i32) -> u8 {
         Icon::Trash => stroke(x, y, &[(-24, -16), (24, -16)], 5)
             .max(stroke(x, y, &[(-8, -16), (-8, -24), (8, -24), (8, -16)], 5))
             .max(stroke(x, y, &[(-16, -8), (-12, 26), (12, 26), (16, -8)], 5)),
-        // A ring of radius 19 and a dot in its middle.
         Icon::Calibrate => {
             let distance = ((x * x + y * y) as u32).isqrt() as i32;
             edge((9 - 2 * (distance - 19).abs()) / 2).max(edge(7 - distance))

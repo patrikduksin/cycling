@@ -61,7 +61,6 @@ fn workout_scan_keeps_existing_channels_receiving() {
         device_api::ant::LinkState::Connected
     );
 
-    // Forgetting must survive later foreground scans.
     forget_sensor(&mut runtime, &mut radio, 120, 12000);
     assert!(runtime.links.saved.of_type(120).is_none());
     assert!(runtime.preferences.sensors.of_type(120).is_none());
@@ -306,12 +305,10 @@ fn only_nearby_searches_from_the_sensor_pages() {
     runtime.navigation.home_cursor = 1;
     runtime.input(press(Button::BottomRight), 1000, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Sensors);
-    // Its detail page and back again search nothing.
     runtime.input(press(Button::BottomRight), 1400, &mut radio);
     runtime.input(press(Button::TopLeft), 1800, &mut radio);
     advance(&mut runtime, &mut radio, 2000);
     assert_eq!(scans(&radio), 0);
-    // MOVE to the ADD SENSOR row, ACT: NEARBY searches.
     runtime.input(press(Button::BottomLeft), 2200, &mut radio);
     runtime.input(press(Button::BottomRight), 2600, &mut radio);
     advance(&mut runtime, &mut radio, 2700);
@@ -429,7 +426,6 @@ fn busy_connection_continues_after_leaving_and_waits_for_observed_success() {
     };
     choose_sensor(&mut runtime, &mut radio, peer);
     assert!(radio.channel(120, 1000).is_none());
-    // BACK leaves NEARBY for SENSORS, and SENSORS for Home.
     for now in [1400, 1800] {
         let back = Input::Button {
             button: Button::TopLeft,

@@ -78,8 +78,7 @@ impl Sim {
     #[track_caller]
     pub fn disconnect_sensor(&mut self, kind: &str) {
         self.open_sensor_detail(kind);
-        // ACT waits a moment after the page opens.
-        self.advance(1_000);
+        self.advance(vana::screens::sensors::SETTLE_MS);
         self.press(if kind == "POWER METER" {
             Button::BottomLeft
         } else {

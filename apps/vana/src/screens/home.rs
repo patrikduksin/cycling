@@ -447,7 +447,6 @@ impl Home {
         let Some(glance) = self.sensors.get(slot) else {
             return fill;
         };
-        // A status dot at the icon's top right, under the icon.
         let slot_left = left + slot * ICON_PITCH;
         let cx = 4 * (slot_left + 25) as i32;
         let dot = super::chrome::disc(x, y, cx, 4 * ICON_TOP as i32 + 2, 10);
@@ -621,7 +620,6 @@ mod tests {
             let ink = Sensor::of(home.sensors[slot].kind)
                 .icon(Size::Small)
                 .ink(left, ICON_SQUARE_TOP);
-            // The status dot sits at the icon's top right.
             let icon = Rect {
                 top: ink.top.min(ICON_TOP - 1),
                 right: left + 28,

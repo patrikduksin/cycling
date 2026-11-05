@@ -383,8 +383,7 @@ fn forget_sensor(runtime: &mut Runtime, radio: &mut Radio, kind: u8, mut now: u6
     now += 400;
     runtime.input(press(Button::BottomRight), now, radio);
     assert_eq!(runtime.menu.diagnostics().page, Page::Detail);
-    // ACT waits a moment after the page opens.
-    now += 1_000;
+    now += crate::screens::sensors::SETTLE_MS;
     let trash = if kind == crate::sensors::ant::device_type::POWER {
         Button::BottomLeft
     } else {

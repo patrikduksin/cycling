@@ -28,7 +28,6 @@ from PIL import Image
 HERE = Path(__file__).resolve().parent
 OUTPUT = HERE.parent / "src/screens/icons/art.rs"
 
-# Sensor icons, in `Sensor` order.
 SENSORS = [
     "heart",
     "power",
@@ -41,11 +40,7 @@ SENSORS = [
     "lights",
     "generic",
 ]
-# Pixel sizes each sensor icon is drawn at: Home and ADD SENSOR rows, SENSORS
-# rows, and the detail page.
 SENSOR_SIZES = [22, 26, 34]
-# Marks drawn at one size: name, pixel size. The arrow points from a
-# replaced sensor to its replacement.
 MARKS = [("refresh", 18), ("plus", 18), ("arrow", 28)]
 
 
@@ -55,8 +50,7 @@ def quantize(alpha: int) -> int:
 
 SVG = "http://www.w3.org/2000/svg"
 ZOOM = 8
-# Coverage from here up counts as ink; fainter edge pixels read as black.
-INK = 3
+MIN_INK = 3
 
 
 def render(svg: str, size: int) -> list[int]:
@@ -114,14 +108,14 @@ def check_gaps(name: str, sizes: list[int]) -> None:
                     continue
                 for y in range(size):
                     for x in range(size):
-                        if masks[i][y * size + x] < INK:
+                        if masks[i][y * size + x] < MIN_INK:
                             continue
                         near = [
                             masks[j][ny * size + nx]
                             for ny in range(max(y - 1, 0), min(y + 2, size))
                             for nx in range(max(x - 1, 0), min(x + 2, size))
                         ]
-                        assert max(near) < INK, f"{name} at {size} px: parts {i} and {j} touch at {x},{y}"
+                        assert max(near) < MIN_INK, f"{name} at {size} px: parts {i} and {j} touch at {x},{y}"
 
 
 def rasterize(name: str, size: int) -> dict:

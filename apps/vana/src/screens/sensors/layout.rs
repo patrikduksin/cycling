@@ -23,7 +23,6 @@ const MARGIN: usize = 10;
 const ROW_LEFT: usize = 8;
 const ROW_RIGHT: usize = 232;
 const RADIUS: usize = 12;
-/// The focus ring's width.
 const RING: usize = 3;
 pub(super) const TITLE_BASE: usize = 62;
 /// SENSORS: a row per saved sensor, then ADD SENSOR.
@@ -75,7 +74,6 @@ pub(super) const POWER_CUES: [Cue; 3] = [
 pub(super) const FORGET_CUES: [Cue; 2] = [BACK, Cue::new(Corner::BottomRight, CueIcon::Trash)];
 pub(super) const REPLACE_CUES: [Cue; 2] = [BACK, Cue::new(Corner::BottomRight, CueIcon::Check)];
 
-/// What a tap lands on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Target {
     Mine(Mine),
@@ -92,7 +90,6 @@ pub(super) enum Target {
 pub(super) struct Layout {
     /// How far the list has scrolled up to keep its focus in view.
     scroll: usize,
-    /// Painted over the canvas.
     pub(super) cues: &'static [Cue],
     /// The shown rows and cues, with the boxes taps land on.
     targets: Vec<(Rect, Target), 12>,
@@ -237,14 +234,12 @@ impl Layout {
     }
 }
 
-/// One page drawn onto a canvas.
 struct Drawing<'a> {
     state: &'a State,
     canvas: &'a mut Canvas,
 }
 
 impl Drawing<'_> {
-    /// A row of SENSORS: a saved sensor, or ADD SENSOR.
     fn mine(&mut self, row: Mine, rect: Rect, focused: bool) {
         let top = rect.top;
         match row {
@@ -278,7 +273,6 @@ impl Drawing<'_> {
                 let live = selected.link_status() == LinkStatus::Live;
                 let base = top + 39;
                 match warning {
-                    // A live sensor with a weak battery needs a look too.
                     Some(warning) if live && !fits(text, warning.0, width) => {
                         self.status(MINE_TEXT, base, width, warning, None);
                     }
@@ -286,7 +280,6 @@ impl Drawing<'_> {
                         let state = (text, warning.1);
                         self.status(MINE_TEXT, base, width, state, Some(warning));
                     }
-                    // A sensor that is not live is missing, not low.
                     _ => self.status(MINE_TEXT, base, width, (text, color), warning),
                 }
             }
@@ -378,7 +371,6 @@ impl Drawing<'_> {
         let faces: [&'static Face; 2] = [&BODY, &CAPTION];
         self.canvas
             .fit(&faces, name, width, MID, NAME_BASE, Align::Center, WHITE);
-        // The battery has its own cell here.
         let (status, color) = link(selected);
         self.canvas.fit(
             &[&CAPTION],

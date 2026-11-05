@@ -68,7 +68,6 @@ impl Glance {
         self.battery.is_some_and(BatteryStatus::is_low)
     }
 }
-/// The sensor page on screen.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Page {
     Sensors,
@@ -141,7 +140,6 @@ impl Menu {
     }
 
     pub fn set_message(&mut self, message: MenuMessage) {
-        // An add stops the search; its progress would hide the news.
         let added = matches!(self.state.message, Some(MenuMessage::Added(_)));
         if added && message.routine() {
             return;
@@ -250,7 +248,6 @@ impl Menu {
         canvas
     }
 
-    /// The button cues painted over the shown page.
     pub fn cues(&self) -> &'static [Cue] {
         self.layout.cues
     }
@@ -299,7 +296,7 @@ pub(super) struct State {
 
 /// ACT does nothing this long after a detail page opens, so the second of
 /// two quick presses never zeroes a meter or asks to forget a sensor.
-pub(super) const SETTLE_MS: u64 = 1_000;
+pub const SETTLE_MS: u64 = 1_000;
 
 /// A button, or the cue beside it, as the page acts on it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -351,7 +348,7 @@ impl State {
     }
 
     fn open(&mut self) -> Option<Action> {
-        if self.selected_peers().next().is_none() {
+        if self.nothing_saved() {
             return self.open_nearby();
         }
         let first = self.rows().next().unwrap_or(Mine::Add);
@@ -476,10 +473,7 @@ impl State {
                 None
             }
             (View::Mine(Mine::Add), Press::Act) => self.open_nearby(),
-            // With nothing saved, SENSORS would show only ADD SENSOR.
-            (View::Nearby(_), Press::Back) if self.selected_peers().next().is_none() => {
-                Some(Action::Ride)
-            }
+            (View::Nearby(_), Press::Back) if self.nothing_saved() => Some(Action::Ride),
             (View::Nearby(_), Press::Back) => {
                 let added = self.added.and_then(|peer| self.slot_of(peer));
                 self.view = View::Mine(added.map_or(Mine::Add, Mine::Saved));
@@ -607,11 +601,14 @@ impl State {
             .or_else(|| self.nearby().next())
     }
 
-    /// The slot a saved sensor is in.
     fn slot_of(&self, peer: Identity) -> Option<usize> {
         self.selected
             .iter()
             .position(|s| s.is_some_and(|s| s.identity == peer))
+    }
+
+    fn nothing_saved(&self) -> bool {
+        self.selected_peers().next().is_none()
     }
 
     pub(super) fn selected_peers(&self) -> impl Iterator<Item = &Selected> {

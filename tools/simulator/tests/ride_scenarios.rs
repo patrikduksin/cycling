@@ -2181,7 +2181,6 @@ fn disconnect_is_remembered_across_reboot() {
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.home("SENSORS");
     sim.disconnect_sensor("HEART RATE");
-    // The row goes at once; its pages are ignored from now on.
     assert!(
         sim.device
             .sdk
@@ -2198,8 +2197,6 @@ fn disconnect_is_remembered_across_reboot() {
         sim.advance(100);
         waited += 100;
     }
-    // NEARBY's search offers the strap, still nearby, for explicit
-    // selection again.
     sim.nearby_page();
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
     sim.expect_text("HEART RATE");
@@ -3558,15 +3555,12 @@ fn home_shows_ride_sensors_and_the_last_ride_at_a_glance() {
 #[test]
 fn tapping_home_and_sensor_tiles_pairs_a_sensor() {
     let mut sim = rider();
-    // The SENSORS tile opens NEARBY, with nothing saved yet; then the
-    // first nearby sensor once the search is done.
     sim.tap(120, 210);
     sim.expect_text("NEARBY");
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
     sim.expect_no_text("NEXT");
     sim.checkpoint("sensors menu");
     sim.tap(120, 118);
-    // NEARBY stays, naming the sensor added, with the others still listed.
     sim.expect_text("HEART RATE ADDED");
     sim.expect_text("POWER METER");
     sim.checkpoint("sensor connected by tap");

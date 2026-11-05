@@ -110,19 +110,16 @@ impl Icon {
     }
 }
 
-/// The pixel sizes a sensor icon is drawn at.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Size {
     /// Home's sensor card and NEARBY's rows.
     Small,
-    /// A SENSORS row.
     Row,
     /// A sensor's detail and replacement pages.
     Large,
 }
 
 impl Sensor {
-    /// The icon for an ANT+ device type.
     pub const fn of(device_type: u8) -> Self {
         match device_type {
             device_type::HEART_RATE => Self::Heart,
@@ -219,7 +216,6 @@ mod tests {
         ];
         assert_eq!(kinds.map(Sensor::of), ALL);
         assert_eq!(Sensor::of(SHIFTING_DI2), Sensor::Shifting);
-        // Every icon is drawn differently.
         for (i, a) in ALL.iter().enumerate() {
             for b in &ALL[i + 1..] {
                 assert_ne!(a.icon(Size::Row).bits, b.icon(Size::Row).bits);

@@ -86,7 +86,6 @@ fn main() {
     focus(&mut ten, None, &mut now);
     render(&ten, &output, "sensors-ten-add-row");
 
-    // NEARBY searches as it opens; the runtime reports the search.
     focus(&mut menu, None, &mut now);
     press(&mut menu, Button::BottomRight, &mut now);
     menu.search_started();
@@ -109,7 +108,6 @@ fn main() {
     eight.set_message(MenuMessage::ScanDone);
     focus(&mut eight, Some(SHIFTING), &mut now);
     render(&eight, &output, "nearby-eight-scrolled");
-    // A sensor picked there is saved; NEARBY stays on the others found.
     let mut first = Menu::new();
     first.refresh(nearby, tiles(0), false);
     first.open();
@@ -140,7 +138,6 @@ fn main() {
     empty.set_message(MenuMessage::RadioUnavailable);
     render(&empty, &output, "nearby-radio-unavailable");
 
-    // A nearby heart strap of the saved type asks to replace it.
     focus(&mut menu, Some(HEART_RATE), &mut now);
     press(&mut menu, Button::BottomRight, &mut now);
     assert_eq!(menu.diagnostics().page, Page::Replace);

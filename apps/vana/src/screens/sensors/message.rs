@@ -120,7 +120,6 @@ pub enum CalibrationNote {
 }
 
 impl CalibrationNote {
-    /// The wording fits `CALIBRATED OFFSET -32768` on one caption line.
     pub fn text(self) -> heapless::String<28> {
         use core::fmt::Write;
         let mut text = heapless::String::new();

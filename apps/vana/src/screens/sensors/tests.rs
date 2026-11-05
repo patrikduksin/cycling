@@ -94,7 +94,6 @@ fn page(menu: &Menu) -> Page {
     menu.diagnostics().page
 }
 
-/// The run reading exactly `text`, if the page shows it.
 fn run(menu: &Menu, text: &str) -> Option<crate::screens::canvas::Run> {
     menu.canvas().find(text).copied()
 }
@@ -105,11 +104,9 @@ fn opening_with_nothing_saved_goes_straight_to_nearby_and_searches() {
     menu.refresh(nearby(&[peer(10)]), [None; CHANNEL_CAPACITY], false);
     assert_eq!(menu.open(), Some(Action::Scan));
     assert_eq!(page(&menu), Page::Nearby);
-    // NEARBY takes the TITLE face SENSORS has, in its place.
     let title = run(&menu, "NEARBY").expect("NEARBY titles the page");
     assert!(core::ptr::eq(title.line.face(), &TITLE));
     assert!(!menu.canvas().shows("ADD SENSOR"));
-    // With a sensor saved, SENSORS opens on its first row and nothing searches.
     let mut menu = Menu::new();
     menu.refresh(
         nearby(&[peer(10)]),
@@ -134,7 +131,6 @@ fn only_nearby_searches() {
     ];
     let mut menu = opened(&[peer(10)], &tiles);
     let mut rider = Rider::new();
-    // Walking SENSORS, opening and leaving its detail pages never searches.
     for _ in 0..6 {
         assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
     }
@@ -148,11 +144,9 @@ fn only_nearby_searches() {
         Some(Action::Scan)
     );
     assert_eq!(page(&menu), Page::Nearby);
-    // On the page, a search in progress is not asked for twice.
     menu.search_started();
     menu.refresh([None; DISCOVERY_CAPACITY], saved(&tiles), true);
     assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
-    // Leaving stops it; coming back asks again, even before it has stopped.
     assert_eq!(
         rider.press(&mut menu, Button::TopLeft),
         Some(Action::StopScan)
@@ -161,7 +155,6 @@ fn only_nearby_searches() {
         rider.press(&mut menu, Button::BottomRight),
         Some(Action::Scan)
     );
-    // Once it ends, ACT on an empty list or the refresh mark searches again.
     menu.search_started();
     menu.refresh([None; DISCOVERY_CAPACITY], saved(&tiles), false);
     assert_eq!(menu.diagnostics().focus, None);
@@ -209,7 +202,6 @@ fn move_walks_the_rows_and_wraps_and_back_leaves() {
         Some(HEART_RATE),
     ];
     assert_eq!(seen, walk);
-    // A detail page returns to its own row.
     rider.focus(&mut menu, Some(POWER));
     rider.press(&mut menu, Button::BottomRight);
     assert_eq!(page(&menu), Page::Detail);
@@ -245,7 +237,6 @@ fn nearby_stays_open_after_an_add_so_more_sensors_pair_from_one_search() {
     );
     menu.search_started();
     menu.refresh(nearby(&found), saved(&tiles), true);
-    // The first sensor found takes the focus; MOVE steps through and wraps.
     assert_eq!(menu.diagnostics().focus, Some(speed));
     for want in [cadence, radar, speed] {
         rider.press(&mut menu, Button::BottomLeft);
@@ -255,14 +246,12 @@ fn nearby_stays_open_after_an_add_so_more_sensors_pair_from_one_search() {
         rider.press(&mut menu, Button::BottomRight),
         Some(Action::Connect(speed))
     );
-    // The runtime saves it, which stops the search, and says it did.
     tiles.push((speed, Connection::WaitingForRadio));
     menu.refresh(nearby(&found), saved(&tiles), false);
     menu.added(speed);
     menu.set_message(MenuMessage::ScanCancelled);
     assert_eq!(page(&menu), Page::Nearby);
     assert_eq!(search_line(&menu), ("SPEED ADDED".into(), GREEN));
-    // It leaves the list; the others stay and connect without a new search.
     assert!(!menu.canvas().shows("ID 10"));
     assert_eq!(menu.diagnostics().focus, Some(cadence));
     assert_eq!(
@@ -274,19 +263,16 @@ fn nearby_stays_open_after_an_add_so_more_sensors_pair_from_one_search() {
     menu.added(cadence);
     assert_eq!(search_line(&menu), ("CADENCE ADDED".into(), GREEN));
     assert_eq!(menu.diagnostics().focus, Some(radar));
-    // A sensor that could not be saved is no news; a problem replaces it.
     menu.added(radar);
     assert_eq!(search_line(&menu), ("CADENCE ADDED".into(), GREEN));
     menu.set_message(MenuMessage::ScanFailed);
     assert_eq!(search_line(&menu).1, AMBER);
-    // BACK shows SENSORS on the sensor added last.
     assert_eq!(
         rider.press(&mut menu, Button::TopLeft),
         Some(Action::StopScan)
     );
     assert_eq!(page(&menu), Page::Sensors);
     assert_eq!(menu.diagnostics().focus, Some(cadence));
-    // A fresh visit forgets it: BACK returns to the ADD SENSOR row.
     rider.focus(&mut menu, None);
     assert_eq!(
         rider.press(&mut menu, Button::BottomRight),
@@ -325,7 +311,6 @@ fn a_sensor_of_a_saved_type_asks_before_it_replaces() {
     assert_eq!(page(&menu), Page::Replace);
     assert!(menu.canvas().shows("REPLACE SENSOR"));
     assert!(menu.canvas().shows("1") && menu.canvas().shows("20"));
-    // MOVE does nothing; BACK keeps the saved one.
     assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
     assert_eq!(page(&menu), Page::Replace);
     assert_eq!(rider.press(&mut menu, Button::TopLeft), None);
@@ -349,7 +334,6 @@ fn full_slots_and_stale_discoveries_say_why_nothing_connects() {
     assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
     assert_eq!(menu.diagnostics().message, Some(MenuMessage::SlotsFull));
     assert_eq!(search_line(&menu), ("SENSOR SLOTS FULL".into(), AMBER));
-    // A sensor the latest search no longer reports is listed, not connected.
     let mut menu = opened(&[peer(10)], &[]);
     menu.refresh([None; DISCOVERY_CAPACITY], [None; CHANNEL_CAPACITY], false);
     assert!(menu.canvas().shows("NOT SEEN"));
@@ -375,7 +359,6 @@ fn the_search_line_says_how_the_search_goes() {
     assert_eq!(line(&menu), (b"SCAN DONE - PICK".to_vec(), SECONDARY));
     menu.set_message(MenuMessage::ScanFailed);
     assert_eq!(line(&menu), (b"SCAN FAILED - RETRY".to_vec(), AMBER));
-    // Save trouble outlasts discovery messages.
     menu.set_notice(Some(MenuMessage::SavedUnreadable));
     menu.set_message(MenuMessage::Scanning);
     assert_eq!(line(&menu), (b"NOT SAVED".to_vec(), AMBER));
@@ -384,7 +367,6 @@ fn the_search_line_says_how_the_search_goes() {
 #[test]
 fn sensors_names_trouble_with_the_radio_or_saving_in_its_title() {
     let mut menu = opened(&[], &[(strap(1), Connection::Live)]);
-    // Search progress belongs to NEARBY.
     menu.set_message(MenuMessage::ScanFailed);
     assert_eq!(run(&menu, "SENSORS").map(|r| r.color), Some(WHITE));
     menu.set_message(MenuMessage::RadioUnavailable);
@@ -413,9 +395,6 @@ fn rows_name_each_state_in_its_colour_and_a_battery_to_change_after_it() {
         let menu = opened(&[], &[(strap(1), connection)]);
         assert_eq!(run(&menu, text).map(|r| r.color), Some(color), "{text}");
     }
-    // Only a battery that needs changing shows, after a dot, and turns a
-    // live sensor's whole line its colour; one too long to sit beside LIVE
-    // takes its place.
     let batteries = [
         (BatteryStatus::New, Some(3_100), None, Some(GREEN)),
         (BatteryStatus::Good, Some(2_949), None, Some(GREEN)),
@@ -462,7 +441,6 @@ fn rows_name_each_state_in_its_colour_and_a_battery_to_change_after_it() {
             assert_eq!(dots, 1, "a dot between them");
         }
     }
-    // A state too long for the battery leaves it out rather than cut it.
     let mut tiles = saved(&[(strap(1), Connection::WaitingForRadio)]);
     tiles[0].as_mut().unwrap().battery = Some(Battery {
         status: BatteryStatus::Critical,
@@ -522,12 +500,10 @@ fn ten_saved_sensors_scroll_so_the_focus_stays_in_view() {
         );
         rider.press(&mut menu, Button::BottomLeft);
     }
-    // The last row scrolled the title away; wrapping brings it back.
     rider.focus(&mut menu, None);
     assert!(!menu.canvas().shows("SENSORS"));
     rider.press(&mut menu, Button::BottomLeft);
     assert!(menu.canvas().shows("SENSORS"));
-    // A tap lands on the row where it is drawn, scrolled or not.
     rider.focus(&mut menu, None);
     let add = focused_rect(&menu);
     assert_eq!(menu.tap(120, add.top + 20, rider.now), Some(Action::Scan));
@@ -570,7 +546,6 @@ fn a_power_meter_detail_waits_a_moment_then_act_zeroes_and_move_asks_to_forget()
             (Corner::BottomRight, Icon::Calibrate)
         ]
     );
-    // The second of two quick ACT presses never zeroes the meter.
     assert_eq!(
         menu.input(press(Button::BottomRight), opened_at + 400),
         None
@@ -591,7 +566,6 @@ fn a_power_meter_detail_waits_a_moment_then_act_zeroes_and_move_asks_to_forget()
     assert_eq!(page(&menu), Page::Forget);
     assert!(menu.canvas().shows("FORGET") && menu.canvas().shows("SENSOR?"));
     assert!(menu.canvas().shows("POWER METER 5512"));
-    // MOVE does nothing here; BACK returns to the detail page.
     assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
     assert_eq!(rider.press(&mut menu, Button::TopLeft), None);
     assert_eq!(page(&menu), Page::Detail);
@@ -611,7 +585,6 @@ fn any_other_sensor_detail_forgets_on_act_and_ignores_move() {
     assert_eq!(page(&menu), Page::Detail);
     let corners: std::vec::Vec<_> = menu.cues().iter().map(|c| c.corner).collect();
     assert_eq!(corners, [Corner::TopLeft, Corner::BottomRight]);
-    // ACT straight after opening waits, as on a power meter.
     assert_eq!(
         menu.input(press(Button::BottomRight), rider.now + 400),
         None
@@ -626,7 +599,6 @@ fn any_other_sensor_detail_forgets_on_act_and_ignores_move() {
         rider.press(&mut menu, Button::BottomRight),
         Some(Action::Disconnect(device_type::HEART_RATE))
     );
-    // The runtime removed it: the next row takes the focus.
     menu.refresh([None; DISCOVERY_CAPACITY], [None; CHANNEL_CAPACITY], false);
     assert_eq!(page(&menu), Page::Sensors);
     assert_eq!(menu.diagnostics().focus, None);
@@ -663,7 +635,6 @@ fn taps_act_on_rows_and_cues_as_their_buttons_do() {
     assert_eq!(page(&menu), Page::Detail);
     assert_eq!(menu.diagnostics().focus, Some(meter));
     let view = menu.touch_view();
-    // The calibrate cue waits as ACT does, then zeroes.
     let act = (WIDTH - 8, HEIGHT - 8);
     assert_eq!(menu.tap(act.0, act.1, now + 200), None);
     assert_eq!(
@@ -686,7 +657,6 @@ fn taps_act_on_rows_and_cues_as_their_buttons_do() {
     assert_eq!(page(&menu), Page::Detail);
     assert_eq!(menu.tap(8, 8, now + SETTLE_MS), None);
     assert_eq!(page(&menu), Page::Sensors);
-    // ADD SENSOR's row opens it, and a nearby card asks to replace the meter.
     let add_row = MINE_ROW_MIDDLE + 2 * super::layout::MINE_PITCH;
     assert_eq!(menu.tap(120, add_row, now), Some(Action::Scan));
     assert_eq!(page(&menu), Page::Nearby);
@@ -716,12 +686,10 @@ fn cancel_holds_act_until_move_and_debounce_drops_repeats() {
     assert!(menu.canvas().shows("MOVE FOCUS FIRST"));
     assert_eq!(menu.input(press(Button::BottomRight), 800), None);
     assert_eq!(page(&menu), Page::Sensors);
-    // MOVE confirms the focus; ACT within the debounce is dropped.
     menu.input(press(Button::BottomLeft), 1_200);
     assert!(menu.canvas().shows("SENSORS"));
     assert_eq!(menu.input(press(Button::BottomRight), 1_549), None);
     assert_eq!(page(&menu), Page::Sensors);
-    // Back stays usable after input loss.
     menu.input(Input::Cancel, 2_000);
     assert_eq!(
         menu.input(press(Button::TopLeft), 2_400),
@@ -850,7 +818,6 @@ fn calibration_notes_show_in_their_colour_only_on_a_power_meter() {
     assert!(!strap_menu.canvas().shows("CALIBRATING..."));
 }
 
-/// Nothing a page shows comes within reach of a cue's quarter disc.
 #[track_caller]
 fn assert_clear_of_cues(menu: &Menu, what: &str) {
     let canvas = menu.canvas();
@@ -952,7 +919,6 @@ fn crowded() -> std::vec::Vec<(std::string::String, Menu)> {
         }
         rider.press(&mut menu, Button::BottomLeft);
     }
-    // NEARBY lists only sensors not saved, so give it eight new ones.
     let mut add = Menu::new();
     let fresh: [_; DISCOVERY_CAPACITY] = core::array::from_fn(|n| {
         let mut discovery = peer(u16::MAX - n as u16);
@@ -1005,7 +971,6 @@ fn crowded_sensor_pages_never_overlap_clip_or_drop_anything() {
             canvas.runs.len() < 28 && canvas.shapes.len() < 24,
             "{what}: canvas full"
         );
-        // The longest names and states show whole where their rows are in view.
         let want: &[&str] = match (what.as_str(), menu.state.view) {
             ("sensors 0", _) => &["POWER METER", "BIKE LIGHTS", "RADIO UNAVAILABLE"],
             ("add 0", _) => &["NOT SAVED", "POWER METER", "BIKE LIGHTS", "ID 65535"],

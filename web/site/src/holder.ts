@@ -73,7 +73,7 @@ import {
  *                (head Reboot: as FinishedOp Rebooting)
  *  Flashing      Restart (visitor), Idle        console Reacquiring                -
  *  Flashing      Not now (visitor), consent     ops=tail, answered=it              notAllowed
- *  held          ExpiredHold, nothing running   console Reacquiring                head stopped, rest notEntered
+ *  Flashing      ExpiredHold, nothing running   console Reacquiring                head stopped, rest notEntered
  *  Reacquiring   OpenedPort, head Enter         Open, then Entering                -
  *  starting      FailedPort                     Failed                             queued Enters entryFailed
  */
@@ -571,16 +571,23 @@ export const onDeclineWrite = (
     : Option.none()
 }
 
-/** `holdExpiry` ran out; a hold that has an op running again since is kept. */
+/** `holdExpiry` ran out; a hold whose expiry changed since (an op ran, the agent came back) is kept. */
 export const onExpiredHold = (
   port: Port,
-  expired: { readonly attempt: number; readonly lease: Lease },
+  expired: {
+    readonly attempt: number
+    readonly lease: Lease
+    readonly after: number
+  },
   writesAllowed: boolean,
   agentHere: boolean,
 ): Option.Option<Step> =>
   holdExpiry(port, writesAllowed, agentHere).pipe(
     Option.filter(
-      due => due.attempt === expired.attempt && due.lease === expired.lease,
+      due =>
+        due.attempt === expired.attempt &&
+        due.lease === expired.lease &&
+        due.after === expired.after,
     ),
     Option.map(() => abandonHold(port, 'stopped')),
   )

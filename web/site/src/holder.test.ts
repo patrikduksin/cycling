@@ -605,9 +605,12 @@ describe('an unattended hold', () => {
   test('the agent leaving never stops a running op; the hold ends 30 s after it finished', () => {
     const away = step(held({ ops: [queued(1, read)] }), presence(false)).model
     expect(holdExpiryOf(away)).toEqual(Option.none())
-    expect(step(away, Message.ExpiredHold({ attempt: 0, lease })).model).toBe(
-      away,
-    )
+    expect(
+      step(
+        away,
+        Message.ExpiredHold({ attempt: 0, lease, after: AGENT_GRACE_MS }),
+      ).model,
+    ).toBe(away)
     const done = step(away, finish(1, { _tag: 'Read', md5 })).model
     expect(holdExpiryOf(done)).toEqual(
       Option.some({ attempt: 0, lease, after: AGENT_GRACE_MS }),
@@ -615,7 +618,9 @@ describe('an unattended hold', () => {
     story(
       step,
       given(done),
-      message(Message.ExpiredHold({ attempt: 0, lease })),
+      message(
+        Message.ExpiredHold({ attempt: 0, lease, after: AGENT_GRACE_MS }),
+      ),
       Command.resolve(
         SendControl({ messages: backToConsole }),
         Message.CompletedSendControl(),
@@ -632,7 +637,12 @@ describe('an unattended hold', () => {
       Option.some({ attempt: 0, lease, after: IDLE_HOLD_MS }),
     )
     expect(
-      commandsOf(step(idle, Message.ExpiredHold({ attempt: 0, lease }))),
+      commandsOf(
+        step(
+          idle,
+          Message.ExpiredHold({ attempt: 0, lease, after: IDLE_HOLD_MS }),
+        ),
+      ),
     ).toEqual([sent(...backToConsole)])
   })
 
@@ -647,7 +657,24 @@ describe('an unattended hold', () => {
   test('an expiry from before the hold changed is ignored', () => {
     const idle = held()
     expect(
-      step(idle, Message.ExpiredHold({ attempt: 0, lease: otherLease })).model,
+      step(
+        idle,
+        Message.ExpiredHold({
+          attempt: 0,
+          lease: otherLease,
+          after: IDLE_HOLD_MS,
+        }),
+      ).model,
+    ).toBe(idle)
+  })
+
+  test('a 30 s expiry that lands as the agent returns keeps the hold for IDLE_HOLD_MS', () => {
+    const idle = held()
+    expect(
+      step(
+        idle,
+        Message.ExpiredHold({ attempt: 0, lease, after: AGENT_GRACE_MS }),
+      ).model,
     ).toBe(idle)
   })
 })

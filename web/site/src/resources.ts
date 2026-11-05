@@ -422,7 +422,7 @@ export const subscriptions = Subscription.make<
           onSome: ({ attempt, lease, after }) =>
             Stream.fromEffect(
               Effect.sleep(Duration.millis(after)).pipe(
-                Effect.as(Message.ExpiredHold({ attempt, lease })),
+                Effect.as(Message.ExpiredHold({ attempt, lease, after })),
               ),
             ),
         }),

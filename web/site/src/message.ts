@@ -61,7 +61,7 @@ export const Message = defineMessageUnion({
   },
   FinishedOp: { attempt: Schema.Int, id: RequestId, finished: Finished },
   /** The hold sat with no op running for its expiry (`holdExpiry`). */
-  ExpiredHold: { attempt: Schema.Int, lease: Lease },
+  ExpiredHold: { attempt: Schema.Int, lease: Lease, after: Schema.Int },
 
   Traffic: {
     direction: Direction,

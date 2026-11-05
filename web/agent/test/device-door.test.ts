@@ -411,6 +411,22 @@ describe('device socket', () => {
       }),
     ))
 
+  test('a connection right after one closed waits for its Release, then enters under its own lease', () =>
+    withBridge((relay, endpoints) =>
+      Effect.gen(function* () {
+        const page = yield* fakePage(relay)
+        const first = yield* doorClient(endpoints.flasher)
+        yield* first.ask({ op: 'enter' })
+        first.socket.terminate()
+        const second = yield* doorClient(endpoints.flasher)
+        expect(yield* second.ask({ op: 'enter' })).toHaveProperty('ok')
+        const ops = yield* page.ops
+        expect(ops.map(op => op._tag)).toEqual(['Enter', 'Release', 'Enter'])
+        expect(new Set(ops.map(op => op.lease)).size).toBe(2)
+        second.socket.end()
+      }),
+    ))
+
   test('a relay drop mid-read is redialed and the read resent under the same lease', () =>
     withBridge((relay, endpoints, dir) =>
       Effect.gen(function* () {

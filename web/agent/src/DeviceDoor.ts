@@ -1,4 +1,5 @@
 import * as Clock from 'effect/Clock'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Match from 'effect/Match'
@@ -112,6 +113,21 @@ type Reply =
       readonly error: { readonly reason: string; readonly detail: string }
     }
 
+/**
+ * Who has the device: nobody, a connection, or a closed connection whose
+ * lease is still being released. A device task that starts right after
+ * another exits waits for that release instead of being told busy.
+ */
+type Hold =
+  | { readonly _tag: 'Free' }
+  | { readonly _tag: 'Held' }
+  | {
+      readonly _tag: 'Releasing'
+      readonly released: Deferred.Deferred<void>
+    }
+
+const FREE: Hold = { _tag: 'Free' }
+
 const errorReply = (reason: string, detail: string): Reply => ({
   error: { reason, detail },
 })
@@ -176,7 +192,26 @@ export const serveDeviceDoor = (options: {
     const fs = yield* FileSystem.FileSystem
     const remove = Effect.ignore(fs.remove(path, { force: true }))
     yield* Effect.acquireRelease(remove, () => remove)
-    const held = yield* Ref.make(false)
+    const hold = yield* Ref.make<Hold>(FREE)
+    /** The device, or false while another connection holds it; one that is still giving it back is waited for. */
+    const take: Effect.Effect<boolean> = Effect.flatten(
+      Ref.modify(hold, (current): [Effect.Effect<boolean>, Hold] =>
+        Match.valueTags(current, {
+          Free: (): [Effect.Effect<boolean>, Hold] => [
+            Effect.succeed(true),
+            { _tag: 'Held' },
+          ],
+          Held: (): [Effect.Effect<boolean>, Hold] => [
+            Effect.succeed(false),
+            current,
+          ],
+          Releasing: ({ released }): [Effect.Effect<boolean>, Hold] => [
+            Deferred.await(released).pipe(Effect.andThen(() => take)),
+            current,
+          ],
+        }),
+      ),
+    )
 
     const timed = (request: DoorRequest, flasher: Flasher) =>
       Effect.gen(function* () {
@@ -200,14 +235,22 @@ export const serveDeviceDoor = (options: {
       resource: 'deviceDoor',
       handle: client =>
         Effect.gen(function* () {
-          if (yield* Ref.getAndSet(held, true)) {
+          if (!(yield* take)) {
             yield* client.write(
               line(errorReply('busy', 'another device task holds the device')),
             )
             return
           }
-          yield* Effect.addFinalizer(() => Ref.set(held, false))
+          const released = yield* Deferred.make<void>()
+          yield* Effect.addFinalizer(() =>
+            Ref.set(hold, FREE).pipe(
+              Effect.andThen(Deferred.succeed(released, undefined)),
+            ),
+          )
           const flasher = yield* leaseFlasher(port)
+          yield* Effect.addFinalizer(() =>
+            Ref.set(hold, { _tag: 'Releasing', released }),
+          )
           yield* client.incoming.pipe(
             Stream.decodeText,
             Stream.splitLines,

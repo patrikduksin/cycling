@@ -49,8 +49,8 @@ pinned through one bun catalog entry at `~4.1.2` (Foldkit's peer range).
 
 ## Wire protocol (web/protocol)
 
-- One WebSocket per role: `/v2/browser/<code>` and `/v2/agent/<code>`. The path
-  and the `cycling.v2` subprotocol carry the major version; v1 clients are
+- One WebSocket per role: `/v3/browser/<code>` and `/v3/agent/<code>`. The path
+  and the `cycling.v3` subprotocol carry the major version; older clients are
   refused with `unsupportedVersion`.
 - Binary message: a channel byte, then its payload, at most 16 KiB in all.
   `0x00 | device bytes` is the console (what the pty sees). `0x01 | id u32 LE |
@@ -65,8 +65,8 @@ pinned through one bun catalog entry at `~4.1.2` (Foldkit's peer range).
 - Keepalive: clients send `ping`; the relay answers `pong` by auto-response
   without waking the Durable Object.
 - Credentials ride in `Sec-WebSocket-Protocol`, because browsers cannot set
-  headers: `cycling.v2, auth.<token>` for the agent and `cycling.v2, own.<key>`
-  for the browser. The relay echoes only `cycling.v2`.
+  headers: `cycling.v3, auth.<token>` for the agent and `cycling.v3, own.<key>`
+  for the browser. The relay echoes only `cycling.v3`.
 - Admission failures are delivered as accept-then-close with an application
   close code (`CloseCode`), because a browser cannot read the HTTP status of a
   refused upgrade.
@@ -260,7 +260,7 @@ Where the code differs from the sketch, and why.
   redial stays with each client, on the shared `BACKOFF` curve.
 - **Admission.** Refusals are accept-then-close with a close code, since a
   browser cannot see a refused upgrade's status. Alchemy's `upgrade` sets no
-  `Sec-WebSocket-Protocol`; the relay sets `cycling.v2` on the 101 itself
+  `Sec-WebSocket-Protocol`; the relay sets `cycling.v3` on the 101 itself
   (checked on local workerd only). The Worker hashes the owner key and strips
   the subprotocol header, so the Durable Object never sees a credential.
   The relay Worker runs with observability and invocation logs off, because
@@ -285,7 +285,7 @@ Where the code differs from the sketch, and why.
 - **Agent sockets.** The relay socket is the protocol's `relaySocket`; the
   device socket is an `@effect/platform-bun` socket server, its `-- <cmd>`
   child is an Effect `ChildProcess`. The agent refuses
-  a relay that does not select `cycling.v2`, a token shorter than 32
+  a relay that does not select `cycling.v3`, a token shorter than 32
   characters, and `ws://` to anything but loopback. The child never sees the
   token. Extra exit codes: 5 port did not open in 30 s, 1 local resource
   failure, 127 the command did not start; a session that ends while waiting
@@ -407,11 +407,12 @@ grafts), and why.
 - **`cycling flasher`.** `info|read|verify|reboot`, built on `flasher_for`,
   so the same verbs run on a local tty (EsptoolFlasher with `--chip auto`:
   `flash-id`, then `get-security-info` where the family has it) and through
-  the page. `info` prints the description as JSON with a 12-digit sha256
-  prefix of the MAC, which tells devices apart but is not anonymous (a known
-  vendor prefix leaves 2^24 MACs to try). `read` writes only under `.local`.
-  There is no write verb. Every verb ends with a reboot, so the device is back
-  in its app. EsptoolFlasher's reboot now runs `read-mac`, which every family
+  the page. `info` prints the description as JSON with `device_id`, an HMAC
+  of the MAC under a key kept in `.local`, in place of the MAC: a plain hash
+  is reversible from the vendor prefix in seconds. `read` writes only under
+  `.local`. There is no write verb. Every verb ends with a reboot, also when
+  it fails, so a local chip is back in its app. Protocol v3: the chip
+  description changed `Entered`. EsptoolFlasher's reboot now runs `read-mac`, which every family
   answers, under `--after watchdog-reset`.
 - **A resend joins the op.** The agent resends an unanswered op under its
   own id; the page joins it while it is queued or running, and answers the

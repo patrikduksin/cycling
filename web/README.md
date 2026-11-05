@@ -51,7 +51,7 @@ $ cycling remote 7KQM-4XP2 -- cycling flasher info
 - `cycling flasher info|read ADDR SIZE PATH|verify ADDR PATH|reboot` runs the
   same verbs on any such chip, here (esptool, `--chip auto`, `--port` for a
   device other than the C606) or through the page. `info` prints the chip as
-  JSON with a sha256 prefix in place of the MAC; `read` writes only under
+  JSON with an opaque `device_id` (a keyed hash) in place of the MAC; `read` writes only under
   `.local`; there is no write verb. Each verb ends with a reboot into the app.
 - A stranger's device cannot be backed up or flashed by the `cycling` flows
   yet: `.local/device` holds one device's private state. Per-device state is

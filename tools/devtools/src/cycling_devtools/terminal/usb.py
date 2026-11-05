@@ -17,6 +17,11 @@ from pathlib import Path
 
 from cycling_devtools.workspace import DEVICE_LOCAL
 
+# Longer than the console's 256-byte line (MAX_LINE in packages/console), so the line it ends is
+# always rejected as overlong, together with any partial line the device already held.
+RESYNC = b'#' * 257 + b'\n'
+RESYNC_REJECTION = 'line exceeds 256 bytes'
+
 
 def acquire_lock():
     # One lock for the device across all checkouts, including linked worktrees.
@@ -54,12 +59,14 @@ class UsbConnection:
         # process cannot be mistaken for this process's reply.
         self.request_id = secrets.randbelow(1 << 30) + 1
         self.boot = [None]
+        self.resync = False
 
     def __enter__(self):
         try:
             self.lock = acquire_lock()
             self.fd = open_no_reset(self.port)
             self.log = self.log_path.open('wb')
+            self.resync = True
             return self
         except BaseException:
             self.__exit__(None, None, None)
@@ -83,6 +90,13 @@ class UsbConnection:
         """Send once. The caller decides how to handle an uncertain mutation."""
         self.request_id += 1
         request = f'CMD {self.request_id} {command}\n'.encode()
+        # A fresh attachment can hold device output nobody read yet (a bridged port keeps it) and
+        # the device can hold a partial line nobody here wrote (opening the port in a visitor's
+        # browser leaves one). The first request is led by RESYNC; everything up to its rejection
+        # predates it.
+        resync = self.resync
+        if resync:
+            request = RESYNC + request
         deadline = time.monotonic() + timeout
         while True:
             try:
@@ -99,6 +113,7 @@ class UsbConnection:
                     raise TimeoutError('USB not writable; command was not submitted') from None
         if written != len(request):
             raise RuntimeError('short USB command write; outcome may be uncertain')
+        self.resync = False
         while time.monotonic() < deadline:
             if not select.select([self.fd], [], [], min(0.2, max(0, deadline - time.monotonic())))[0]:
                 continue
@@ -111,10 +126,30 @@ class UsbConnection:
                 raise RuntimeError('device disconnected; command outcome may be uncertain')
             self.log.write(data)
             self.log.flush()
+            if resync:
+                resync = not skip_to_resync(self.pending, data)
+                if resync:
+                    continue
+                data = b''
             reply = terminal_reply(self.pending, data, self.request_id, self.boot)
             if reply is not None:
                 return reply
         raise TimeoutError('terminal response timed out; command outcome may be uncertain')
+
+
+def skip_to_resync(pending, data):
+    """Drop complete lines through the rejection of RESYNC; True once it has been seen."""
+    pending.extend(data)
+    while b'\n' in pending:
+        line, _, remainder = pending.partition(b'\n')
+        pending[:] = remainder
+        try:
+            reply = json.loads(line)
+        except UnicodeDecodeError, ValueError:
+            continue
+        if isinstance(reply, dict) and reply.get('type') == 'reply' and reply.get('data') == RESYNC_REJECTION:
+            return True
+    return False
 
 
 def terminal_reply(pending, data, expected_id, boot=None):

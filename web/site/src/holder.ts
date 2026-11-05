@@ -15,7 +15,7 @@ import {
 import { labelOf } from './flasher/partitions.ts'
 import { totalOf } from './flasher/run.ts'
 import type { EntryFailure } from './links.ts'
-import { portChanged, reacquire } from './live.ts'
+import { type Step, portChanged, reacquire, step } from './live.ts'
 import type {
   Activity,
   ActivityKind,
@@ -77,20 +77,6 @@ import {
  *  Reacquiring   OpenedPort, head Enter         Open, then Entering                -
  *  starting      FailedPort                     Failed                             queued Enters entryFailed
  */
-
-export interface Step {
-  readonly port: Port
-  /** OpResults and PortChanged, in wire order. */
-  readonly messages: ReadonlyArray<BrowserMsg>
-  /** An Enter to answer from the held session, so the MAC skips `update`. */
-  readonly entered: Option.Option<RequestId>
-}
-
-export const step = (
-  port: Port,
-  messages: ReadonlyArray<BrowserMsg> = [],
-  entered: Option.Option<RequestId> = Option.none(),
-): Step => ({ port, messages, entered })
 
 const answer = (id: RequestId, outcome: OpOutcome): BrowserMsg => ({
   _tag: 'OpResult',

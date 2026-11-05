@@ -24,7 +24,6 @@ import {
 } from './command.ts'
 import type { HandleServices } from './handles.ts'
 import {
-  type Step,
   failQueued,
   onLostFlasher,
   onOp,
@@ -33,12 +32,13 @@ import {
 } from './holder.ts'
 import type { Chooser } from './links.ts'
 import {
-  type PortStep,
   announcement,
   failed,
   opened,
   reacquire,
   replaced,
+  type Step,
+  step,
   storedOf,
 } from './live.ts'
 import type { Message } from './message.ts'
@@ -138,20 +138,6 @@ export const withHold = (
       onSome: next => holdStep(model, live, next),
     }),
   )
-
-/** `save` writes the port's new baud or epoch to sessionStorage as well. */
-const portStep = (
-  model: Model,
-  live: Live,
-  step: PortStep,
-  save: boolean,
-): UpdateReturn => ({
-  model: withLive(model, live, { source: Source.Serial({ port: step.port }) }),
-  commands: [
-    SendControl({ messages: step.messages }),
-    ...(save ? [savePort(live, step.port)] : []),
-  ],
-})
 
 export const startLive = (
   model: Model,
@@ -378,15 +364,11 @@ export const onOpenedPort = (model: Model, live: Live): UpdateReturn =>
     if (!isStarting(port)) {
       return ignore(model)
     }
-    const step = opened(port)
+    const open = opened(port)
     return holdStep(
       model,
       live,
-      {
-        port: startQueuedEntry(step.port),
-        messages: step.messages,
-        entered: Option.none(),
-      },
+      { ...open, port: startQueuedEntry(open.port) },
       true,
     )
   })
@@ -402,7 +384,7 @@ export const onLostPort = (
 ): UpdateReturn =>
   withSerial(model, live, port =>
     port.attempt === attempt && port.state._tag === 'Open'
-      ? portStep(model, live, reacquire(port), false)
+      ? holdStep(model, live, reacquire(port))
       : withHold(model, live, held => onLostFlasher(held, attempt)),
   )
 
@@ -415,12 +397,13 @@ export const onFailedPort = (
     if (!isStarting(port)) {
       return ignore(model)
     }
-    const step = failed(port, reason)
-    const refused = failQueued(step.port)
-    return holdStep(model, live, {
-      ...refused,
-      messages: [...step.messages, ...refused.messages],
-    })
+    const failure = failed(port, reason)
+    const refused = failQueued(failure.port)
+    return holdStep(
+      model,
+      live,
+      step(refused.port, [...failure.messages, ...refused.messages]),
+    )
   })
 
 export const onChoseSerialAgain = (
@@ -430,6 +413,6 @@ export const onChoseSerialAgain = (
 ): UpdateReturn =>
   withSerial(model, live, port =>
     port.state._tag === 'Failed'
-      ? portStep(model, live, replaced(port, identity), true)
+      ? holdStep(model, live, replaced(port, identity), true)
       : ignore(model),
   )

@@ -1,0 +1,14 @@
+{
+  "name": "@cycling/protocol",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "effect-tsgo tsc -p ."
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  }
+}

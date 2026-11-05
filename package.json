@@ -1,0 +1,38 @@
+{
+  "name": "cycling-web",
+  "private": true,
+  "type": "module",
+  "workspaces": {
+    "packages": ["web/*"],
+    "catalog": {
+      "effect": "~4.1.2",
+      "@effect/platform-browser": "~4.1.2",
+      "@effect/platform-bun": "~4.1.2",
+      "alchemy": "2.0.0-beta.85",
+      "@alchemy.run/cloudflare": "2.0.0-beta.85",
+      "foldkit": "0.170.0"
+    }
+  },
+  "scripts": {
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun run test",
+    "typecheck": "bun run --filter '*' typecheck",
+    "lint": "oxlint --type-aware --deny-warnings web && effect-tsgo oxlint --type-aware -c .oxlintrc.effect.json --deny-warnings web",
+    "format": "oxfmt web alchemy.run.ts",
+    "format:check": "oxfmt --check web alchemy.run.ts",
+    "test": "bun test web",
+    "dev": "alchemy dev --stage dev_${USER}_$(basename \"$(git rev-parse --show-toplevel)\")",
+    "deploy": "alchemy deploy --stage prod"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.67.1",
+    "@foldkit/oxlint-plugin": "0.15.4",
+    "@types/bun": "1.4.4",
+    "alchemy": "catalog:",
+    "@alchemy.run/cloudflare": "catalog:",
+    "effect": "catalog:",
+    "oxfmt": "0.76.0",
+    "oxlint": "1.91.0",
+    "oxlint-tsgolint": "7.0.2005",
+    "typescript": "7.0.2"
+  }
+}

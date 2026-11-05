@@ -859,7 +859,8 @@ impl Runtime {
         // The FTP sheet covers the Sensors menu too, as it takes the buttons.
         let sheet = view.ftp_offer;
         system.draw_canvas(240, 320, |row| {
-            if page == Page::Sensors && sheet.is_none() && row.y() >= CONTENT.top {
+            let menu_rows = menu.full_screen() || row.y() >= CONTENT.top;
+            if page == Page::Sensors && sheet.is_none() && menu_rows {
                 menu.paint(row);
                 view.paint_toast(row);
             } else {

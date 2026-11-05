@@ -55,7 +55,7 @@ fn a_zero_request_is_sent_once_and_the_offset_is_shown() {
     run(&mut runtime, &mut radio, 400, 500);
     let done = note(&runtime).unwrap();
     assert_eq!(done, CalibrationNote::Done(512));
-    assert_eq!(done.text().as_str(), "CALIBRATED  OFFSET 512");
+    assert_eq!(done.text().as_str(), "CALIBRATED OFFSET 512");
 }
 
 #[test]

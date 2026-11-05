@@ -106,9 +106,7 @@ impl Runtime {
                 // The sensor menu's way out returns to the last page.
                 self.set_setup(Some(Step::Done), now);
                 self.navigation.sensors_return = true;
-                self.navigation.page = Page::Sensors;
-                self.navigation.page_since = now;
-                self.request_search(ant, now);
+                self.open_sensors(ant, now);
             }
             Choice::Ride => {
                 self.set_setup(None, now);

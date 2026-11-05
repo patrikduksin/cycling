@@ -1,8 +1,7 @@
 //! Sensor selection and physical-button navigation, independent of radio scheduling.
 //!
-//! `menu` owns selection state and input, `layout` derives text and tile
-//! placement after each change, and `render` paints that layout row by row.
-mod icons;
+//! `menu` owns the pages, their focus and input, `layout` lays the shown
+//! page out after each change, and `render` paints that layout row by row.
 mod layout;
 mod menu;
 mod message;
@@ -11,7 +10,7 @@ mod slot;
 #[cfg(test)]
 mod tests;
 
-pub use menu::{Action, Diagnostics, GLANCES, Glance, Menu};
+pub use menu::{Action, Diagnostics, GLANCES, Glance, Menu, Page};
 pub use message::{CalibrationNote, MenuMessage};
 
 pub use slot::{Connection, Selected};
@@ -25,9 +24,9 @@ fn kind(kind: u8) -> &'static [u8] {
         device_type::HEART_RATE => b"HEART RATE",
         device_type::SPEED_CADENCE => b"SPEED/CAD",
         device_type::CADENCE => b"CADENCE",
-        device_type::SPEED => b"SPEED SENSOR",
+        device_type::SPEED => b"SPEED",
         device_type::SHIFTING | device_type::SHIFTING_DI2 => b"SHIFTING",
-        device_type::FITNESS_EQUIPMENT => b"FITNESS",
+        device_type::FITNESS_EQUIPMENT => b"TRAINER",
         device_type::BIKE_LIGHTS => b"BIKE LIGHTS",
         _ => b"ANT SENSOR",
     }

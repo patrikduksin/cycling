@@ -14,7 +14,7 @@ use vana::ride::fit::Refusal;
 use vana::ride::log::{
     Entry, Kind, LapStart, SLOT_SIZE, SLOTS, Sample, Slot, Source, commit_word, decode, encode,
 };
-use vana::screens::chrome::{AMBER, GREEN, RED, SECONDARY, ZONES};
+use vana::screens::chrome::{AMBER, GREEN, RED, SECONDARY, WHITE, ZONES};
 
 const HEART: u16 = 4242;
 const POWER: u16 = 1234;
@@ -487,7 +487,7 @@ fn shows(sim: &Sim, color: u16) -> bool {
 /// these screens; the checks are on the colours the light look must produce.
 #[test]
 fn the_light_theme_turns_every_screen_white_and_keeps_its_colours() {
-    use vana::screens::chrome::{POWER, SPEED, WHITE};
+    use vana::screens::chrome::{POWER, SPEED};
     use vana::screens::look::light;
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
@@ -1395,8 +1395,9 @@ fn manual_laps(sim: &mut Sim) {
         "{toast}"
     );
     sim.checkpoint("lap toast after the first lap");
+    // The toast lasts 2 s; the ride page shows it gone on its next frame.
     sim.advance(seconds(2));
-    sim.expect_no_text("LAP 1 0");
+    sim.wait_gone("LAP 1 0", seconds(1)).unwrap();
     assert!(sim.screen().run("REC").is_some(), "{}", sim.screen().text());
 
     // A harder, faster second lap shows green with a plus.
@@ -2122,8 +2123,7 @@ fn paired_sensors_reconnect_after_power_loss_without_visiting_sensors() {
     assert_eq!(connects(&sim, device_type::POWER), [POWER]);
 
     sim.home("SENSORS");
-    sim.press(Button::BottomLeft);
-    sim.expect_text("LIVE DATA");
+    sim.expect_text("LIVE");
     sim.checkpoint("sensors after reboot");
     go_home(&mut sim);
 
@@ -2152,7 +2152,6 @@ fn sensor_that_wakes_late_connects_after_boot() {
         Some(LinkState::Connected)
     );
     sim.home("SENSORS");
-    sim.press(Button::BottomLeft);
     let screen = sim.screen();
     assert!(
         screen.contains("SEARCHING")
@@ -2183,7 +2182,7 @@ fn disconnect_is_remembered_across_reboot() {
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.home("SENSORS");
     sim.disconnect_sensor("HEART RATE");
-    // The tile goes at once; its pages are ignored from now on.
+    // The row goes at once; its pages are ignored from now on.
     assert!(
         sim.device
             .sdk
@@ -2191,7 +2190,7 @@ fn disconnect_is_remembered_across_reboot() {
             .of_type(device_type::HEART_RATE)
             .is_none()
     );
-    sim.expect_no_text("LIVE / ");
+    sim.expect_no_text("HEART RATE");
     sim.checkpoint("heart rate disconnected");
     // The channel closes once the cancelled discovery has released the radio.
     let mut waited = 0;
@@ -2200,20 +2199,11 @@ fn disconnect_is_remembered_across_reboot() {
         sim.advance(100);
         waited += 100;
     }
-    // Disconnect cancelled the search. A new one offers the strap, still
-    // nearby, for explicit selection again.
-    sim.press(Button::BottomRight);
+    // ADD SENSOR's search offers the strap, still nearby, for explicit
+    // selection again.
+    sim.add_sensor_page();
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
-    let mut offered = false;
-    for _ in 0..12 {
-        let screen = sim.screen();
-        if screen.run("HEART RATE").is_some() && screen.contains("READY TO CONNECT") {
-            offered = true;
-            break;
-        }
-        sim.press(Button::BottomLeft);
-    }
-    assert!(offered, "{}", sim.screen().text());
+    sim.expect_text("HEART RATE");
     sim.checkpoint("heart rate offered as nearby");
     go_home(&mut sim);
 
@@ -3569,14 +3559,15 @@ fn home_shows_ride_sensors_and_the_last_ride_at_a_glance() {
 #[test]
 fn tapping_home_and_sensor_tiles_pairs_a_sensor() {
     let mut sim = rider();
-    // The SENSORS tile, then the first nearby sensor once the scan is done.
+    // The SENSORS tile opens ADD SENSOR, with nothing saved yet; then the
+    // first nearby sensor once the search is done.
     sim.tap(120, 210);
-    sim.expect_text("MY SENSORS");
+    sim.expect_text("ADD SENSOR");
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
     sim.expect_no_text("NEXT");
     sim.checkpoint("sensors menu");
-    sim.tap(36, 172);
-    sim.wait_for("LIVE DATA", seconds(15)).unwrap();
+    sim.tap(120, 118);
+    sim.wait_for("LIVE", seconds(15)).unwrap();
     sim.checkpoint("sensor connected by tap");
     sim.press(Button::TopLeft);
     assert!(sim.on_home(), "{}", sim.screen().text());
@@ -4850,8 +4841,10 @@ fn saved_rides_list_newest_first_and_read_back_onto_the_summary() {
     sim.press(Button::TopLeft);
     sim.press(Button::TopLeft);
     assert!(sim.on_home());
-    // Home still names the last ride, not the one read back.
-    assert_eq!(sim.screen().text(), last);
+    // Home still names the last ride, not the one read back. The clock may
+    // have turned a minute meanwhile.
+    let below_clock = |text: &str| text.split_once('\n').map(|(_, rest)| rest.to_owned());
+    assert_eq!(below_clock(&sim.screen().text()), below_clock(&last));
 
     // A new ride takes over: its own totals, from zero.
     sim.start_ride();
@@ -7211,7 +7204,7 @@ fn no_turn_back_when_stopping_on_the_way_home() {
 /// by colour and by the screenshots).
 #[test]
 fn the_sunset_caption_shows_in_the_light_theme() {
-    use vana::screens::chrome::{SECONDARY, WHITE};
+    use vana::screens::chrome::SECONDARY;
     use vana::screens::look::light;
     for (utc, colour, name) in [
         (22 * 3600 + 10 * 60, SECONDARY, "light theme before sunset"),
@@ -7517,13 +7510,13 @@ fn a_low_battery_turns_sensors_amber_on_home_and_ready() {
 
     sim.home("SENSORS");
     sim.open_sensor_detail("HEART RATE");
-    sim.expect_text("LOW BATTERY  2.4 V");
-    assert_eq!(run_color(&sim, "LOW BATTERY  2.4 V"), AMBER);
+    sim.expect_text("2.4");
+    assert_eq!(run_color(&sim, "2.4"), AMBER);
     sim.checkpoint("heart rate detail with a low battery");
     sim.press(Button::TopLeft);
     sim.open_sensor_detail("POWER METER");
-    sim.expect_text("GOOD BATTERY  2.9 V");
-    assert_eq!(run_color(&sim, "GOOD BATTERY  2.9 V"), SECONDARY);
+    sim.expect_text("2.9");
+    assert_eq!(run_color(&sim, "2.9"), WHITE);
     sim.checkpoint("power meter detail with a good battery");
 }
 
@@ -7731,45 +7724,37 @@ fn a_failed_ble_link_is_left_off_home_and_ready() {
     sim.expect_text("NO SENSORS");
 }
 
-/// Open the power meter's detail page. Opening Sensors starts a search, and
-/// the radio takes no message until its window closes, so `settled` waits that
-/// out; otherwise the request is made while the radio is still held.
-fn calibrate_power_meter(sim: &mut Sim, reply: ZeroReply, settled: bool) {
+/// Open the power meter's detail page and wait out the moment ACT ignores
+/// after it opens, so the next ACT, on the calibrate cue, zeroes it.
+fn calibrate_power_meter(sim: &mut Sim, reply: ZeroReply) {
     sim.ant_sensor(device_type::POWER, POWER).zero = reply;
     sim.pair(&["POWER METER"]);
     sim.advance(seconds(3));
     sim.home("SENSORS");
     sim.open_sensor_detail("POWER METER");
-    sim.expect_text("CALIBRATE");
-    sim.checkpoint("power meter detail opens on back");
-    sim.press(Button::BottomLeft);
-    sim.checkpoint("power meter detail with calibrate focused");
-    if settled {
-        sim.advance(seconds(16));
-    }
+    sim.checkpoint("power meter detail");
+    sim.advance(seconds(1));
 }
 
 #[test]
 fn calibrating_a_power_meter_shows_the_offset_it_reports() {
     let mut sim = rider();
-    calibrate_power_meter(&mut sim, ZeroReply::Offset(-37), false);
+    calibrate_power_meter(&mut sim, ZeroReply::Offset(-37));
     sim.press(Button::BottomRight);
-    sim.wait_for("WAITING FOR RADIO", seconds(1)).unwrap();
-    sim.checkpoint("power meter waiting for the radio");
     sim.wait_for("CALIBRATING", seconds(20)).unwrap();
     sim.checkpoint("power meter calibrating");
     sim.wait_for("CALIBRATED", seconds(5)).unwrap();
     sim.expect_text("OFFSET -37");
-    assert_eq!(run_color(&sim, "CALIBRATED  OFFSET -37"), GREEN);
+    assert_eq!(run_color(&sim, "CALIBRATED OFFSET -37"), GREEN);
     sim.checkpoint("power meter calibrated with its offset");
-    sim.expect_text("DISCONNECT");
+    sim.expect_text("BATTERY");
     sim.wait_gone("CALIBRATED", seconds(12)).unwrap();
 }
 
 #[test]
 fn a_power_meter_that_refuses_to_zero_ends_in_calibration_failed() {
     let mut sim = rider();
-    calibrate_power_meter(&mut sim, ZeroReply::Failure, true);
+    calibrate_power_meter(&mut sim, ZeroReply::Failure);
     sim.press(Button::BottomRight);
     sim.wait_for("CALIBRATION FAILED", seconds(5)).unwrap();
     assert_eq!(run_color(&sim, "CALIBRATION FAILED"), AMBER);
@@ -7783,7 +7768,7 @@ fn a_power_meter_that_refuses_to_zero_ends_in_calibration_failed() {
 #[test]
 fn a_silent_power_meter_times_out_in_calibration_failed() {
     let mut sim = rider();
-    calibrate_power_meter(&mut sim, ZeroReply::Silence, true);
+    calibrate_power_meter(&mut sim, ZeroReply::Silence);
     sim.press(Button::BottomRight);
     sim.wait_for("CALIBRATING", seconds(1)).unwrap();
     sim.advance(seconds(8));
@@ -7796,7 +7781,7 @@ fn a_silent_power_meter_times_out_in_calibration_failed() {
 #[test]
 fn calibrating_a_power_meter_never_disturbs_a_later_ride() {
     let mut sim = rider();
-    calibrate_power_meter(&mut sim, ZeroReply::Offset(512), true);
+    calibrate_power_meter(&mut sim, ZeroReply::Offset(512));
     sim.press(Button::BottomRight);
     sim.wait_for("CALIBRATED", seconds(5)).unwrap();
     sim.press(Button::TopLeft);
@@ -8641,7 +8626,9 @@ fn a_panel_and_backlight_that_refuse_replay_exactly() {
 }
 
 fn a_ride_then_turned_off(sim: &mut Sim) {
-    sim.pair(&["HEART RATE", "POWER METER"]);
+    // One sensor pairs in one search, which keeps the shutdown request clear
+    // of the power status poll that would carry it again if it were lost.
+    sim.pair(&["HEART RATE"]);
     sim.ride_at(28.0, 200.0, 140.0, 85.0);
     sim.start_ride();
     sim.advance(minutes(1));
@@ -9303,7 +9290,7 @@ fn every_sensor_input_mutated_shows_in_its_replay() {
 }
 
 fn a_power_meter_calibrated(sim: &mut Sim) {
-    calibrate_power_meter(sim, ZeroReply::Offset(-37), true);
+    calibrate_power_meter(sim, ZeroReply::Offset(-37));
     sim.press(Button::BottomRight);
     sim.wait_for("CALIBRATED", seconds(25)).unwrap();
 }
@@ -9313,11 +9300,18 @@ fn every_ant_send_mutated_shows_in_its_replay() {
     let recording = mutations::record(equip(hashed().boot()), a_power_meter_calibrated);
     let rows = rows(
         &["AntSend", "AntRequest"],
-        &[heals(
-            "AntSend",
-            mutations::Mutation::Alter,
-            "the next status poll reports the send again",
-        )],
+        &[
+            heals(
+                "AntSend",
+                mutations::Mutation::Alter,
+                "the next status poll reports the send again",
+            ),
+            heals(
+                "AntRequest",
+                mutations::Mutation::Alter,
+                "the middle request is the power meter's connection, asked for again once refused",
+            ),
+        ],
     );
     mutations::assert_every_mutation_shows(&recording, &rows);
 }

@@ -327,10 +327,7 @@ impl Runtime {
                 self.navigation.page = Page::Workouts;
                 self.show_focus(List::Workouts, now);
             }
-            Control::ReadySensors => {
-                self.navigation.page = Page::Sensors;
-                self.request_search(ant, now);
-            }
+            Control::ReadySensors => self.open_sensors(ant, now),
             Control::Phone => self.phone_touch(),
             Control::Ride(index) => self.open_past_ride(index),
             Control::Workout(index) => self.choose_workout(index, now),
@@ -343,7 +340,8 @@ impl Runtime {
             Control::ExtendStep => self.extend_step(now),
             Control::Menu(point) => {
                 self.refresh_sensor_menu(ant, now);
-                let action = self.menu.tap(usize::from(point.x), usize::from(point.y));
+                let (x, y) = (usize::from(point.x), usize::from(point.y));
+                let action = self.menu.tap(x, y, now);
                 self.sensors_action(action, now, ant);
             }
             Control::Lower | Control::Raise | Control::Map => {}
@@ -382,9 +380,20 @@ impl Runtime {
         self.sensors_action(action, now, ant);
     }
 
+    /// Show the sensor pages. With nothing saved they open on ADD SENSOR,
+    /// which searches.
+    pub(super) fn open_sensors(&mut self, ant: &mut impl Ant, now: u64) {
+        self.navigation.page = Page::Sensors;
+        self.navigation.page_since = now;
+        self.refresh_sensor_menu(ant, now);
+        let action = self.menu.open();
+        self.sensors_action(action, now, ant);
+    }
+
     fn sensors_action(&mut self, action: Option<Action>, now: u64, ant: &mut impl Ant) {
         match action {
             Some(Action::Scan) => self.request_search(ant, now),
+            Some(Action::StopScan) => self.cancel_search(ant, now),
             Some(action @ (Action::Connect(_) | Action::Disconnect(_))) => {
                 self.request_sensor(action, ant, now)
             }
@@ -426,10 +435,7 @@ impl Runtime {
         self.navigation.page_since = now;
         match self.navigation.home_cursor {
             0 => self.navigation.page = Page::Ready,
-            1 => {
-                self.navigation.page = Page::Sensors;
-                self.request_search(ant, now);
-            }
+            1 => self.open_sensors(ant, now),
             2 => {
                 self.navigation.page = Page::Workouts;
                 self.show_focus(List::Workouts, now);
@@ -479,11 +485,7 @@ impl Runtime {
                 self.navigation.wheel_edit = Some(self.preferences.options.wheel);
             }
             (Kind::Choice, _) => self.next_choice(row, now),
-            (_, Some(SettingsAction::Sensors)) => {
-                self.navigation.page = Page::Sensors;
-                self.navigation.page_since = now;
-                self.request_search(ant, now);
-            }
+            (_, Some(SettingsAction::Sensors)) => self.open_sensors(ant, now),
             (_, Some(SettingsAction::Bests)) => self.open_bests(now),
             (_, Some(SettingsAction::Form)) => self.open_form(now),
             (_, Some(SettingsAction::ConnectPhone)) => {

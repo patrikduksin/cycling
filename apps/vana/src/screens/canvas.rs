@@ -12,6 +12,7 @@ use super::chrome::{
     Align, CAPTION, Label, Line, Rect, Ring, Row, SECONDARY, blend, paint_disc_over,
     paint_rounded_over, rounded,
 };
+use super::icons::Icon;
 use firmware_shell::rendering::font::{Face, SPILL};
 use heapless::Vec;
 
@@ -49,6 +50,14 @@ pub enum Shape {
         ends: [(i32, i32); 2],
         color: u16,
     },
+    /// An icon in one colour with its square's top-left corner at
+    /// (`left`, `top`): a mark of its own, like a bar.
+    Icon {
+        icon: &'static Icon,
+        left: usize,
+        top: usize,
+        color: u16,
+    },
 }
 
 impl Shape {
@@ -63,6 +72,9 @@ impl Shape {
                 bottom: ((cy + radius + 2) / 4 + 1) as usize,
             },
             Self::Ring { ring, .. } => ring.bounds(),
+            Self::Icon {
+                icon, left, top, ..
+            } => icon.ink(left, top),
         }
     }
 
@@ -102,6 +114,12 @@ impl Shape {
                 Some(blend(color, under, coverage))
             }),
             Self::Ring { ring, ends, color } => ring.paint(row, &ends, color),
+            Self::Icon {
+                icon,
+                left,
+                top,
+                color,
+            } => icon.paint(row, left, top, color),
         }
     }
 
@@ -125,6 +143,12 @@ impl Shape {
                 color,
             } => (disc(x, y, cx, cy, radius), color),
             Self::Ring { ring, ends, color } => (ring.coverage(x, y, &ends), color),
+            Self::Icon {
+                icon,
+                left,
+                top,
+                color,
+            } => return icon.pixel(x, y, left, top, color, under),
         };
         (coverage > 0).then(|| blend(color, under, coverage))
     }
@@ -254,7 +278,7 @@ impl Canvas {
                 && b.right <= bounds.right
                 && b.bottom <= bounds.bottom;
             assert!(inside, "{what}: {shape:?} leaves {bounds:?}");
-            if matches!(shape, Shape::Bar { .. }) {
+            if matches!(shape, Shape::Bar { .. } | Shape::Icon { .. }) {
                 // A label on a bar, such as a zone chip's, sits wholly inside it.
                 let on = |r: &Rect| {
                     r.left > b.left && r.right < b.right && r.top > b.top && r.bottom < b.bottom
@@ -326,7 +350,7 @@ mod tests {
                         Shape::Bar { rect, radius, .. } => {
                             rounded(rect, fitted(rect, radius), x, y)
                         }
-                        Shape::Panel { .. } | Shape::Ring { .. } => 0,
+                        Shape::Panel { .. } | Shape::Ring { .. } | Shape::Icon { .. } => 0,
                     })
                     .max()
                     .unwrap_or(0);

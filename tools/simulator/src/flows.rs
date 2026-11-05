@@ -18,69 +18,112 @@ impl Sim {
         panic!("no Home tile {label:?}; screen:\n{}", self.screen().text());
     }
 
-    /// Step through Sensors tiles to a sensor kind and connect it.
+    /// On SENSORS, MOVE to ADD SENSOR's row and open it: the page that
+    /// searches. Nothing to do when it shows already.
+    #[track_caller]
+    pub fn add_sensor_page(&mut self) {
+        for _ in 0..14 {
+            if on_add_sensor(&self.screen()) {
+                return;
+            }
+            let screen = self.screen();
+            let row = screen.run("ADD SENSOR");
+            let act = row.is_some_and(|row| focused(&screen, &row));
+            self.press(if act {
+                Button::BottomRight
+            } else {
+                Button::BottomLeft
+            });
+        }
+        panic!(
+            "ADD SENSOR does not open; screen:\n{}",
+            self.screen().text()
+        );
+    }
+
+    /// Open ADD SENSOR, let its search finish, MOVE to a sensor kind and
+    /// connect it; SENSORS then shows it LIVE. A rider may pick a sensor
+    /// mid-search too, but the radio connects only once the search has let
+    /// it go, so waiting first keeps the radio's requests to a search and a
+    /// connection.
+    #[track_caller]
     pub fn connect_sensor(&mut self, kind: &str) {
-        for _ in 0..12 {
-            let screen = self.screen();
-            if screen.run(kind).is_some() && focused_nearby(&screen) {
-                self.press(Button::BottomRight);
-                self.wait_for("LIVE", seconds(15)).unwrap();
-                return;
-            }
-            self.press(Button::BottomLeft);
-        }
-        panic!(
-            "no {kind} tile to connect; screen:\n{}",
-            self.screen().text()
-        );
+        self.add_sensor_page();
+        self.wait_for("SCAN DONE", seconds(20)).unwrap();
+        self.focus_row(kind);
+        self.press(Button::BottomRight);
+        self.wait_live(kind);
     }
 
-    /// Step through Sensors tiles to a nearby sensor of an already saved
-    /// kind and confirm it replaces the saved one.
+    /// Open ADD SENSOR, MOVE to a nearby sensor of an already saved kind and
+    /// confirm, with the check cue, that it replaces the saved one.
+    #[track_caller]
     pub fn replace_sensor(&mut self, kind: &str) {
-        for _ in 0..20 {
-            let screen = self.screen();
-            // A nearby sensor of a saved kind shows its number to tell them apart.
-            if screen.run(kind).is_some() && screen.contains("SENSOR / ") {
-                self.press(Button::BottomRight);
-                self.expect_text("REPLACE SENSOR");
-                self.press(Button::BottomRight);
-                self.wait_for("LIVE", seconds(15)).unwrap();
-                return;
-            }
-            self.press(Button::BottomLeft);
-        }
-        panic!(
-            "no {kind} tile to replace; screen:\n{}",
-            self.screen().text()
-        );
+        self.add_sensor_page();
+        self.wait_for(kind, seconds(20)).unwrap();
+        self.focus_row(kind);
+        self.press(Button::BottomRight);
+        self.expect_text("REPLACE SENSOR");
+        self.press(Button::BottomRight);
+        self.wait_live(kind);
     }
 
-    /// Step through Sensors tiles to a saved sensor and open its detail page.
+    /// On SENSORS, MOVE to a saved sensor and open its detail page.
+    #[track_caller]
     pub fn open_sensor_detail(&mut self, kind: &str) {
-        for _ in 0..20 {
-            let screen = self.screen();
-            if screen.run(kind).is_some() && !focused_nearby(&screen) {
-                self.press(Button::BottomRight);
-                self.expect_text("DISCONNECT");
-                return;
-            }
-            self.press(Button::BottomLeft);
+        if on_add_sensor(&self.screen()) {
+            self.press(Button::TopLeft);
         }
-        panic!("no saved {kind} tile; screen:\n{}", self.screen().text());
+        self.focus_row(kind);
+        self.press(Button::BottomRight);
+        self.expect_text("BATTERY");
     }
 
-    /// Step through Sensors tiles to a saved sensor and disconnect it, which
-    /// removes it from the saved sensors.
+    /// Open a saved sensor's detail page and forget it with the trash cue,
+    /// beside MOVE on a power meter and beside ACT on any other sensor, then
+    /// confirm FORGET SENSOR? with the trash cue beside ACT.
+    #[track_caller]
     pub fn disconnect_sensor(&mut self, kind: &str) {
         self.open_sensor_detail(kind);
+        // ACT waits a moment after the page opens.
+        self.advance(1_000);
+        self.press(if kind == "POWER METER" {
+            Button::BottomLeft
+        } else {
+            Button::BottomRight
+        });
+        self.expect_text("FORGET");
         self.press(Button::BottomRight);
+    }
+
+    /// Wait until SENSORS shows `kind`'s row LIVE.
+    #[track_caller]
+    fn wait_live(&mut self, kind: &str) {
+        for _ in 0..150 {
+            if row_live(&self.screen(), kind) {
+                return;
+            }
+            self.advance(100);
+        }
+        panic!("{kind} is not LIVE; screen:\n{}", self.screen().text());
+    }
+
+    /// MOVE until the row naming `kind` has the focus ring.
+    #[track_caller]
+    fn focus_row(&mut self, kind: &str) {
+        for _ in 0..14 {
+            let screen = self.screen();
+            if screen.run(kind).is_some_and(|run| focused(&screen, &run)) {
+                return;
+            }
+            self.press(Button::BottomLeft);
+        }
+        panic!("no {kind} row to focus; screen:\n{}", self.screen().text());
     }
 
     /// Pair sensors from the Sensors page, then return Home.
     pub fn pair(&mut self, kinds: &[&str]) {
         self.home("SENSORS");
-        self.wait_for("SCAN DONE", seconds(20)).unwrap();
         for kind in kinds {
             self.connect_sensor(kind);
         }
@@ -396,15 +439,29 @@ impl Sim {
     }
 }
 
-/// The Sensors status line names a nearby sensor, not a saved one.
-fn focused_nearby(screen: &crate::sim::Screen) -> bool {
-    [
-        "READY TO CONNECT",
-        "VEHICLES BEHIND",
-        "SENSOR / ",
-        "NOT SEEN",
-        "GONE / ",
-    ]
-    .iter()
-    .any(|status| screen.contains(status))
+/// ADD SENSOR names itself in its title at the left margin; on SENSORS the
+/// same words are a row's, right of its plus.
+fn on_add_sensor(screen: &crate::sim::Screen) -> bool {
+    screen.run("ADD SENSOR").is_some_and(|run| run.x < 30)
+}
+
+/// The state line under `kind`'s name reads LIVE.
+fn row_live(screen: &crate::sim::Screen, kind: &str) -> bool {
+    let runs = screen.frame().read();
+    let Some(name) = runs.iter().find(|run| run.text == kind) else {
+        return false;
+    };
+    runs.iter().any(|run| {
+        run.text == "LIVE"
+            && run.x.abs_diff(name.x) < 4
+            && (name.y + 8..name.y + 30).contains(&run.y)
+    })
+}
+
+/// A sensor row has the focus: the accent ring runs down its left edge.
+fn focused(screen: &crate::sim::Screen, run: &crate::screen::TextRun) -> bool {
+    let accent = vana::screens::chrome::ACCENT;
+    let accent = screen.look.map_or(accent, |look| look.shown(accent));
+    let y = run.y + 8;
+    screen.pixels.get(y * screen.width + 9) == Some(&accent)
 }

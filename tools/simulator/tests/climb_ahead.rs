@@ -6,7 +6,6 @@ use shell_simulator::route::{Point, Route, to_gpx};
 use shell_simulator::sim::{NoteKind, Sim, seconds};
 
 const SPEED: u16 = 777;
-const POWER: u16 = 1234;
 
 fn data(name: &str) -> String {
     format!(
@@ -49,10 +48,11 @@ fn rider() -> Sim {
     let pack = std::fs::read(data("farellones.terrain")).unwrap();
     sim.install_terrain(b"CHILE-TERRAIN-V1", &pack);
     sim.ant_sensor(device_type::SPEED_CADENCE, SPEED);
-    sim.ant_sensor(device_type::POWER, POWER);
     sim.ride_route(g21());
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
-    sim.pair(&["SPEED/CAD", "POWER METER"]);
+    // One sensor: each takes a search of its own to pair, and the page's
+    // timing below was measured with the rider off the foot this soon.
+    sim.pair(&["SPEED/CAD"]);
     sim
 }
 

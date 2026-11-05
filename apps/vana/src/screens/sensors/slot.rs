@@ -69,19 +69,6 @@ pub(super) enum LinkStatus {
     Check,
 }
 
-impl LinkStatus {
-    /// Prefix used when the status line also needs the peer's identity.
-    pub(super) const fn prefix(self) -> &'static [u8] {
-        match self {
-            Self::Live => b"LIVE / ",
-            Self::Waiting => b"WAIT / ",
-            Self::Missing => b"NOT FOUND / ",
-            Self::Failed => b"FAILED / ",
-            Self::Check => b"CHECK / ",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Selected {
     pub identity: Identity,
@@ -91,15 +78,12 @@ pub struct Selected {
 }
 
 impl Selected {
-    /// The caption for the detail page, such as "LOW BATTERY  2.7 V".
-    pub(super) fn battery_text(self) -> Option<Text<24>> {
-        let battery = self.battery?;
-        let mut text = Text::<24>::new();
-        let _ = write!(text, "{} BATTERY", battery.status.text());
-        if let Some(millivolts) = battery.millivolts {
-            let tenths = (millivolts + 50) / 100;
-            let _ = write!(text, "  {}.{} V", tenths / 10, tenths % 10);
-        }
+    /// The battery's voltage to a tenth, such as "2.7", when it reported one.
+    pub(super) fn volts(self) -> Option<Text<8>> {
+        let millivolts = self.battery?.millivolts?;
+        let tenths = (millivolts + 50) / 100;
+        let mut text = Text::new();
+        let _ = write!(text, "{}.{}", tenths / 10, tenths % 10);
         Some(text)
     }
 

@@ -29,7 +29,7 @@ fn reads_home_settings_and_a_ride_page_in_the_light_look() {
     sim.advance(seconds(20));
     assert_eq!(
         sim.screen().text(),
-        "7:00\nREC\nGPS\n0:00:20\n2.4%\n27.9\nKM/H\n230\nZ5\nW\n142\nZ1\nBPM\n88\n0.15\nRPM\nKM"
+        "7:01\nREC\nGPS\n0:00:19\n2.4%\n27.9\nKM/H\n230\nZ5\nW\n142\nZ1\nBPM\n88\n0.14\nRPM\nKM"
     );
 }
 

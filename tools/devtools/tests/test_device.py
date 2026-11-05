@@ -16,6 +16,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import cycling_devtools.device.firmware as device
+from cycling_devtools.device.flasher import FlasherError
+from memory_flasher import MemoryFlasher
 
 IDENTITY = 'aa:bb:cc:dd:ee:ff'
 # Workspace tests patch console_info; attachment tests call the real one.
@@ -74,49 +76,6 @@ def stock_flash():
     return bytes(flash), stock
 
 
-class Flash(device.Device):
-    """In-memory device: esptool reads, writes and digests act on a 16 MiB bytearray."""
-
-    def __init__(self, memory, identity=IDENTITY):
-        self.memory, self.identity = bytearray(memory), identity
-        self.port, self.count = '/dev/fake', 0
-        self.writes, self.reboots, self.connects = [], 0, 0
-
-    def run(self, *args, **kwargs):
-        raise AssertionError('tests never run esptool')
-
-    def connect(self, strict=True):
-        self.connects += 1
-        data = bytes(self.memory[0x8000:0x10000])
-        if strict:
-            device.partitions(data)
-            device.records(data)
-        return data, self.identity
-
-    def read(self, address, size, name):
-        data = bytes(self.memory[address : address + size])
-        (device.LOCAL / name).write_bytes(data)
-        return data, ''
-
-    def write(self, address, path):
-        data = path.read_bytes()
-        self.writes.append((address, len(data)))
-        self.memory[address : address + len(data)] = data
-
-    def verify(self, address, path):
-        data = path.read_bytes()
-        device.require(self.memory[address : address + len(data)] == data, 'Device digest mismatch')
-
-    def reboot(self):
-        self.reboots += 1
-
-    def selected(self):
-        return device.selected_slot(bytes(self.memory[0x8000:0x10000]))
-
-    def owned(self):
-        return bytes(self.memory[device.OWNED[0] : device.OWNED[0] + device.OWNED[1]])
-
-
 class Workspace(unittest.TestCase):
     """A private .local with a verified backup and an in-memory device that boots what is selected."""
 
@@ -137,12 +96,13 @@ class Workspace(unittest.TestCase):
             'bootloader_region_sha256': device.sha(self.backup[:0x8000]),
         }
         (self.local / 'manifest.json').write_text(json.dumps(self.manifest))
-        self.fake = Flash(self.backup)
+        self.flasher = MemoryFlasher(self.backup, IDENTITY)
+        self.target = device.Device(self.flasher)
         # Cycling data recorded since the backup: rides and settings at the end of slot B.
-        self.fake.memory[device.OWNED[0] : device.OWNED[0] + 0x2000] = b'\x11' * 0x2000
+        self.flasher.memory[device.OWNED[0] : device.OWNED[0] + 0x2000] = b'\x11' * 0x2000
         settings = device.SLOTS[1] + device.APP_SIZE + device.RIDE_SIZE
-        self.fake.memory[settings : settings + 0x1000] = b'\x22' * 0x1000
-        self.rides = self.fake.owned()
+        self.flasher.memory[settings : settings + 0x1000] = b'\x22' * 0x1000
+        self.rides = self.owned()
         self.booting = lambda slot: {'slot': device.NAMES[slot], 'commit': 'abc'}
         self.consoles = 0
 
@@ -151,12 +111,12 @@ class Workspace(unittest.TestCase):
         def console(resolve, seconds, log, maintenance=False):
             self.consoles += 1
             self.protocols.append(maintenance)
-            return self.booting(self.fake.selected())
+            return self.booting(self.selected())
 
         for target, value in (
             ('ROOT', self.root),
             ('LOCAL', self.local),
-            ('Device', lambda port: self.fake),
+            ('flasher_for', lambda port, resolve, log_dir: self.flasher),
             ('console_info', console),
         ):
             patcher = patch.object(device, target, value)
@@ -174,36 +134,71 @@ class Workspace(unittest.TestCase):
         return output.getvalue()
 
     def slot(self, slot, length):
-        return bytes(self.fake.memory[device.SLOTS[slot] : device.SLOTS[slot] + length])
+        return bytes(self.flasher.memory[device.SLOTS[slot] : device.SLOTS[slot] + length])
+
+    def selected(self):
+        return device.selected_slot(bytes(self.flasher.memory[0x8000:0x10000]))
+
+    def owned(self):
+        return bytes(self.flasher.memory[device.OWNED[0] : device.OWNED[0] + device.OWNED[1]])
 
 
 class Formats(unittest.TestCase):
-    def test_reboot_uses_watchdog_to_leave_usb_download_mode(self):
-        with tempfile.TemporaryDirectory() as temp, patch.object(device, 'LOCAL', Path(temp)):
-            target = device.Device('unused')
-            target.run = Mock()
-            with patch.object(device, 'monitor'):
-                target.reboot()
-            target.run.assert_called_once_with('get-security-info', after='watchdog-reset')
+    def rebooting(self, boot_output):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        patcher = patch.object(device, 'LOCAL', Path(temporary.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        flasher = MemoryFlasher(b'', IDENTITY)
+        flasher.boot_output = boot_output
+        return flasher, device.Device(flasher), Path(temporary.name)
+
+    def test_reboot_resets_and_keeps_the_boot_capture_privately(self):
+        flasher, target, local = self.rebooting(b'boot: ota_1\r\n')
+        target.reboot()
+        self.assertEqual(flasher.reboots, 1)
+        (log,) = local.glob('*-boot.log')
+        self.assertEqual(log.read_bytes(), b'boot: ota_1\r\n')
 
     def test_reboot_rejects_rom_download_capture(self):
-        def capture(port, seconds, output):
-            output.write(b'rst:0x15 (USB_UART_CHIP_RESET),boot:0x0 (DOWNLOAD(USB/UART0))\r\nwaiting for download\r\n')
-
-        with tempfile.TemporaryDirectory() as temp, patch.object(device, 'LOCAL', Path(temp)):
-            target = device.Device('unused')
-            target.run = Mock()
-            with patch.object(device, 'monitor', side_effect=capture):
+        for capture in (
+            b'rst:0x15 (USB_UART_CHIP_RESET),boot:0x0 (DOWNLOAD(USB/UART0))\r\n',
+            b'waiting for download\r\n',
+        ):
+            with self.subTest(capture=capture):
+                _, target, _ = self.rebooting(capture)
                 with self.assertRaisesRegex(RuntimeError, 'download mode'):
                     target.reboot()
 
     def test_reboot_reports_usb_disappearance_without_claiming_capture(self):
-        with tempfile.TemporaryDirectory() as temp, patch.object(device, 'LOCAL', Path(temp)):
-            target = device.Device('unused')
-            target.run = Mock()
-            with patch.object(device, 'monitor', side_effect=FileNotFoundError), patch('builtins.print') as output:
-                target.reboot()
-            self.assertIn('USB boot capture unavailable', output.call_args.args[0])
+        _, target, local = self.rebooting(None)
+        with patch('builtins.print') as output:
+            target.reboot()
+        self.assertIn('USB boot capture unavailable', output.call_args.args[0])
+        self.assertEqual(list(local.glob('*-boot.log')), [])
+
+    def test_secure_boot_or_flash_encryption_refuses_before_any_read(self):
+        for secure_boot, flash_encryption in ((True, False), (False, True)):
+            with self.subTest(secure_boot=secure_boot, flash_encryption=flash_encryption):
+                flasher, target, _ = self.rebooting(b'')
+                flasher.secure_boot, flasher.flash_encryption = secure_boot, flash_encryption
+                with self.assertRaisesRegex(RuntimeError, 'requires secure boot and flash encryption disabled'):
+                    target.connect()
+                self.assertEqual(flasher.enters, 1)
+
+    def test_short_flash_read_refuses(self):
+        flasher, target, _ = self.rebooting(b'')
+        flasher.read = lambda address, size, path: path.write_bytes(b'\0' * (size - 1))
+        with self.assertRaisesRegex(RuntimeError, 'Short flash read'):
+            target.read(0, 16, 'short.bin')
+
+    def test_digest_mismatch_refuses(self):
+        flasher, target, local = self.rebooting(b'')
+        flasher.memory = bytearray(16)
+        (local / 'wanted.bin').write_bytes(b'\x01' * 16)
+        with self.assertRaisesRegex(RuntimeError, 'Device digest mismatch'):
+            target.verify(0, local / 'wanted.bin')
 
     def test_valid_image_and_extent(self):
         good = image()
@@ -268,37 +263,23 @@ class Formats(unittest.TestCase):
         self.assertEqual(device.selected_slot(metadata(((0x5000, 3), (0x6000, 4)))), 1)
 
     def test_selection_changes_only_one_sector_and_alternates(self):
-        class Fake(device.Device):
-            def __init__(self):
-                self.memory = metadata()
-                self.writes = []
-                self.reboots = 0
-
-            def write(self, address, path):
-                self.writes.append(address)
-                block = path.read_bytes()
-                self.memory = self.memory[: address - 0x8000] + block + self.memory[address - 0x8000 + len(block) :]
-
-            def read(self, address, size, name):
-                return self.memory, ''
-
-            def reboot(self):
-                self.reboots += 1
-
-        fake = Fake()
-        original = fake.memory
+        flash, _ = stock_flash()
+        flasher = MemoryFlasher(flash, IDENTITY)
         with (
             tempfile.TemporaryDirectory() as temp,
             patch.object(device, 'LOCAL', Path(temp)),
             contextlib.redirect_stdout(io.StringIO()),
         ):
-            for target in [1, 0, 1, 1, 0]:
-                self.assertEqual(fake.select(fake.memory, target), fake.memory)
-                self.assertEqual(device.selected_slot(fake.memory), target)
-                self.assertEqual(fake.memory[:0x5000], original[:0x5000])
-                self.assertEqual(fake.memory[0x7000:], original[0x7000:])
-        self.assertEqual(fake.reboots, 5)
-        self.assertTrue(all(address in (0xD000, 0xE000) for address in fake.writes))
+            target = device.Device(flasher)
+            current = metadata()
+            for slot in [1, 0, 1, 1, 0]:
+                current = target.select(current, slot)
+                self.assertEqual(device.selected_slot(current), slot)
+                self.assertEqual(bytes(flasher.memory[0x8000:0x10000]), current)
+                self.assertEqual(bytes(flasher.memory[:0xD000]), flash[:0xD000])
+                self.assertEqual(bytes(flasher.memory[0xF000:]), flash[0xF000:])
+        self.assertEqual(flasher.reboots, 5)
+        self.assertTrue(all(address in (0xD000, 0xE000) for address, _ in flasher.writes))
 
 
 class RestorePlanTests(unittest.TestCase):
@@ -377,31 +358,31 @@ class BaselineTests(Workspace):
     """Device.baseline must prove device, backup and protected boot regions before any write."""
 
     def test_matching_device_passes_without_requiring_stock_in_slot_a(self):
-        self.fake.memory[device.SLOTS[0] : device.SLOTS[0] + 0x1000] = b'\0' * 0x1000
-        self.fake.baseline(IDENTITY, metadata())
+        self.flasher.memory[device.SLOTS[0] : device.SLOTS[0] + 0x1000] = b'\0' * 0x1000
+        self.target.baseline(IDENTITY, metadata())
 
     def test_missing_backup_manifest_refuses_before_device_access(self):
         (self.local / 'manifest.json').unlink()
         with self.assertRaisesRegex(RuntimeError, 'Run cycling backup'):
-            self.fake.baseline(IDENTITY, metadata())
+            self.target.baseline(IDENTITY, metadata())
 
     def test_each_mismatch_refuses(self):
         cases = {
-            'does not match the backup': lambda: self.fake.baseline('11:22:33:44:55:66', metadata()),
+            'does not match the backup': lambda: self.target.baseline('11:22:33:44:55:66', metadata()),
             'Backup integrity': lambda: (
                 (self.local / 'flash.bin').write_bytes(b'x' + self.backup[1:]),
-                self.fake.baseline(IDENTITY, metadata()),
+                self.target.baseline(IDENTITY, metadata()),
             ),
-            'Partition table changed': lambda: self.fake.baseline(IDENTITY, b'\0' * 0x8000),
+            'Partition table changed': lambda: self.target.baseline(IDENTITY, b'\0' * 0x8000),
             'Bootloader changed': lambda: (
-                self.fake.memory.__setitem__(0, 0xAA),
-                self.fake.baseline(IDENTITY, metadata()),
+                self.flasher.memory.__setitem__(0, 0xAA),
+                self.target.baseline(IDENTITY, metadata()),
             ),
         }
         for message, run in cases.items():
             with self.subTest(message=message):
                 (self.local / 'flash.bin').write_bytes(self.backup)
-                self.fake.memory[:0x8000] = self.backup[:0x8000]
+                self.flasher.memory[:0x8000] = self.backup[:0x8000]
                 with self.assertRaisesRegex(RuntimeError, message):
                     run()
 
@@ -410,7 +391,7 @@ class AbFlashTests(Workspace):
     def test_flash_alternates_slots_and_preserves_rides_settings_and_boot_metadata(self):
         first = self.candidate(image(marker=1))
         output = self.main('flash')
-        self.assertEqual(self.fake.selected(), 1)
+        self.assertEqual(self.selected(), 1)
         self.assertEqual(self.slot(1, len(first)), first)
         self.assertEqual(self.slot(0, len(self.stock)), self.stock)
         self.assertIn('Slot A (stock) is selected; writing slot B', output)
@@ -418,21 +399,21 @@ class AbFlashTests(Workspace):
 
         second = self.candidate(image(marker=2))
         output = self.main('flash')
-        self.assertEqual(self.fake.selected(), 0)
+        self.assertEqual(self.selected(), 0)
         self.assertEqual(self.slot(0, len(second)), second)
         self.assertEqual(self.slot(1, len(first)), first)
         self.assertIn('writing slot A (held stock; stock stays in the verified backup)', output)
 
         third = self.candidate(image(marker=3))
         self.main('flash')
-        self.assertEqual(self.fake.selected(), 1)
+        self.assertEqual(self.selected(), 1)
         self.assertEqual(self.slot(1, len(third)), third)
         self.assertEqual(self.slot(0, len(second)), second)
 
-        self.assertEqual(self.fake.owned(), self.rides)
-        self.assertEqual(bytes(self.fake.memory[:0xD000]), self.backup[:0xD000])
-        self.assertEqual(bytes(self.fake.memory[0xF000 : device.SLOTS[0]]), self.backup[0xF000 : device.SLOTS[0]])
-        for address, length in self.fake.writes:
+        self.assertEqual(self.owned(), self.rides)
+        self.assertEqual(bytes(self.flasher.memory[:0xD000]), self.backup[:0xD000])
+        self.assertEqual(bytes(self.flasher.memory[0xF000 : device.SLOTS[0]]), self.backup[0xF000 : device.SLOTS[0]])
+        for address, length in self.flasher.writes:
             end = address + length
             self.assertTrue(end <= device.OWNED[0] or address >= device.OWNED[0] + device.OWNED[1])
             self.assertTrue(address >= device.SLOTS[0] or address in (0xD000, 0xE000))
@@ -447,7 +428,7 @@ class AbFlashTests(Workspace):
         (self.root / '.local/cycling.bin').unlink()
         with self.assertRaises(FileNotFoundError):
             self.main('flash')
-        self.assertEqual(self.fake.connects, 0)
+        self.assertEqual(self.flasher.enters, 0)
 
     def test_silent_console_switches_back_to_previous_cycling_slot(self):
         old = self.candidate(image(marker=1))
@@ -456,17 +437,17 @@ class AbFlashTests(Workspace):
         self.booting = lambda slot: None if slot == 0 else {'slot': 'B'}
         with self.assertRaisesRegex(RuntimeError, 'Slot A did not answer INFO.*Reselected slot B; slot B answers'):
             self.main('flash')
-        self.assertEqual(self.fake.selected(), 1)
+        self.assertEqual(self.selected(), 1)
         self.assertEqual(self.slot(1, len(old)), old)
         self.assertEqual(self.slot(0, len(new)), new)
-        self.assertEqual(self.fake.owned(), self.rides)
+        self.assertEqual(self.owned(), self.rides)
 
     def test_bootloader_fallback_is_a_failed_boot(self):
         self.candidate(image())
         self.booting = lambda slot: {'slot': 'A'}
         with self.assertRaisesRegex(RuntimeError, 'INFO reports slot A.*Reselected slot A; it holds stock'):
             self.main('flash')
-        self.assertEqual(self.fake.selected(), 0)
+        self.assertEqual(self.selected(), 0)
         self.assertEqual(self.consoles, 1)
 
     def test_older_firmware_without_slot_field_counts_as_booted(self):
@@ -476,11 +457,11 @@ class AbFlashTests(Workspace):
 
     def test_large_image_is_read_back_in_steps(self):
         large = image(extra=0x180000)
-        self.fake.memory[device.SLOTS[0] : device.SLOTS[0] + len(large)] = large
+        self.flasher.memory[device.SLOTS[0] : device.SLOTS[0] + len(large)] = large
         reads = []
-        original = self.fake.read
-        self.fake.read = lambda address, size, name: (reads.append(size), original(address, size, name))[1]
-        self.assertEqual(self.fake.read_image(0), large)
+        original = self.flasher.read
+        self.flasher.read = lambda address, size, path: (reads.append(size), original(address, size, path))[1]
+        self.assertEqual(self.target.read_image(0), large)
         self.assertEqual(reads, [0x100000, 0x200000])
 
 
@@ -492,7 +473,7 @@ class ReviewFixTests(Workspace):
         self.assertFalse(device.speaks_maintenance(stock_image()))
         self.candidate(maintenance)
         self.main('flash')
-        self.assertEqual(self.fake.selected(), 1)
+        self.assertEqual(self.selected(), 1)
         self.assertEqual(self.protocols, [True])
         self.candidate(image())
         self.main('flash')
@@ -505,9 +486,9 @@ class ReviewFixTests(Workspace):
         self.main('flash')
         self.protocols.clear()
         self.main('rollback')
-        self.assertEqual((self.fake.selected(), self.protocols), (1, [True]))
+        self.assertEqual((self.selected(), self.protocols), (1, [True]))
         self.main('rollback')
-        self.assertEqual((self.fake.selected(), self.protocols), (0, [True, False]))
+        self.assertEqual((self.selected(), self.protocols), (0, [True, False]))
 
     def test_switch_back_probes_the_previous_image_with_its_own_protocol(self):
         self.candidate(image(version=b'0.1.0+maintenance'))
@@ -526,7 +507,7 @@ class ReviewFixTests(Workspace):
         for name in ('manifest.json', 'flash.bin', 'stock.bin'):
             (self.local / name).unlink()
         # Slot A now holds cycling; pretend it is selected so only the image check can refuse.
-        self.fake.memory[0x8000:0x10000] = metadata()
+        self.flasher.memory[0x8000:0x10000] = metadata()
         with self.assertRaisesRegex(
             RuntimeError, 'Slot A holds cycling firmware, so it cannot become the stock baseline'
         ):
@@ -538,8 +519,7 @@ class ReviewFixTests(Workspace):
     def test_backup_of_stock_slot_a_still_works(self):
         for name in ('manifest.json', 'flash.bin', 'stock.bin'):
             (self.local / name).unlink()
-        with patch.object(Flash, 'reboot'):
-            self.main('backup')
+        self.main('backup')
         manifest = json.loads((self.local / 'manifest.json').read_text())
         self.assertEqual((self.local / 'stock.bin').read_bytes(), self.stock)
         self.assertEqual(manifest['stock_sha256'], device.sha(self.stock))
@@ -548,36 +528,34 @@ class ReviewFixTests(Workspace):
         self.candidate(image(marker=1))
         self.main('flash')
         self.candidate(image(marker=2))
-        reboot, failures = self.fake.reboot, []
+        reboot, failures = self.flasher.reboot, []
 
-        def download_mode_once():
+        def download_mode_once(seconds):
             if not failures:
-                failures.append(self.fake.selected())
-                raise RuntimeError('Device is still in ROM download mode')
-            reboot()
+                failures.append(self.selected())
+                return b'rst:0x15 (USB_UART_CHIP_RESET),boot:0x0 (DOWNLOAD(USB/UART0))\r\nwaiting for download\r\n'
+            return reboot(seconds)
 
-        self.fake.reboot = download_mode_once
-        connects = self.fake.connects
+        self.flasher.reboot = download_mode_once
+        connects = self.flasher.enters
         with self.assertRaisesRegex(RuntimeError, 'Slot A failed after selection.*download mode.*Reselected slot B'):
             self.main('flash')
         self.assertEqual(failures, [0])
-        self.assertEqual(self.fake.selected(), 1)
-        self.assertEqual(self.fake.connects, connects + 2)
+        self.assertEqual(self.selected(), 1)
+        self.assertEqual(self.flasher.enters, connects + 2)
         self.assertEqual(self.consoles, 2)
 
     def test_failed_switch_back_names_the_recovery_commands(self):
         self.candidate(image())
         self.booting = lambda slot: None
-        connect = self.fake.connect
-        calls = []
+        enter = self.flasher.enter
 
-        def once(strict=True):
-            calls.append(strict)
-            if len(calls) > 1:
-                raise RuntimeError('esptool failed')
-            return connect(strict)
+        def once():
+            if self.flasher.enters:
+                raise FlasherError('esptool failed')
+            return enter()
 
-        self.fake.connect = once
+        self.flasher.enter = once
         with self.assertRaisesRegex(RuntimeError, 'switching back to slot A failed: esptool failed.*cycling rollback'):
             self.main('flash')
 
@@ -593,16 +571,16 @@ class ReviewFixTests(Workspace):
     def test_restore_owned_puts_a_restore_snapshot_back_under_cycling(self):
         self.main('stock', '--confirm-restore')
         (snapshot,) = self.local.glob('owned-pre-restore-*.bin')
-        self.assertNotEqual(self.fake.owned(), self.rides)
+        self.assertNotEqual(self.owned(), self.rides)
         with self.assertRaisesRegex(RuntimeError, 'does not hold cycling firmware'):
             self.main('restore-owned', str(snapshot))
         self.candidate(image())
         self.main('flash')
-        newer = self.fake.owned()
-        writes = len(self.fake.writes)
+        newer = self.owned()
+        writes = len(self.flasher.writes)
         output = self.main('restore-owned', str(snapshot))
-        self.assertEqual(self.fake.owned(), self.rides)
-        self.assertEqual(self.fake.writes[writes:], [device.OWNED])
+        self.assertEqual(self.owned(), self.rides)
+        self.assertEqual(self.flasher.writes[writes:], [device.OWNED])
         (before,) = self.local.glob('owned-before-restore-*.bin')
         self.assertEqual(before.read_bytes(), newer)
         self.assertIn('Rides and settings restored', output)
@@ -625,17 +603,17 @@ class ReviewFixTests(Workspace):
 class CrashJournalTests(Workspace):
     def test_a_written_crash_journal_never_blocks_or_meets_flash_rollback_and_stock(self):
         journal = b'CRJ1' + bytes(range(256)) * 31 + b'\xa5' * 0x1000
-        self.fake.memory[0x1E000:0x20000] = journal[:0x2000]
+        self.flasher.memory[0x1E000:0x20000] = journal[:0x2000]
         self.candidate(image(marker=1))
         self.main('flash')
         self.candidate(image(marker=2))
         self.main('flash')
         self.main('rollback')
-        self.assertEqual(bytes(self.fake.memory[0x1E000:0x20000]), journal[:0x2000])
-        for address, length in self.fake.writes:
+        self.assertEqual(bytes(self.flasher.memory[0x1E000:0x20000]), journal[:0x2000])
+        for address, length in self.flasher.writes:
             self.assertTrue(address + length <= 0x1E000 or address >= 0x20000)
         self.main('stock', '--confirm-restore')
-        self.assertEqual(bytes(self.fake.memory), self.backup)
+        self.assertEqual(bytes(self.flasher.memory), self.backup)
 
 
 class RollbackTests(Workspace):
@@ -644,23 +622,23 @@ class RollbackTests(Workspace):
         self.main('flash')
         new = self.candidate(image(marker=2))
         self.main('flash')
-        writes = len(self.fake.writes)
+        writes = len(self.flasher.writes)
         output = self.main('rollback')
-        self.assertEqual(self.fake.selected(), 1)
+        self.assertEqual(self.selected(), 1)
         self.assertIn('Running slot B', output)
         self.assertEqual(self.slot(1, len(old)), old)
         self.assertEqual(self.slot(0, len(new)), new)
-        self.assertTrue(all(address in (0xD000, 0xE000) for address, _ in self.fake.writes[writes:]))
-        self.assertEqual(self.fake.owned(), self.rides)
+        self.assertTrue(all(address in (0xD000, 0xE000) for address, _ in self.flasher.writes[writes:]))
+        self.assertEqual(self.owned(), self.rides)
 
     def test_rollback_refuses_when_the_other_slot_holds_stock(self):
         self.candidate(image())
         self.main('flash')
-        writes = len(self.fake.writes)
+        writes = len(self.flasher.writes)
         with self.assertRaisesRegex(RuntimeError, 'Slot A does not hold a valid cycling image'):
             self.main('rollback')
-        self.assertEqual(self.fake.selected(), 1)
-        self.assertEqual(len(self.fake.writes), writes)
+        self.assertEqual(self.selected(), 1)
+        self.assertEqual(len(self.flasher.writes), writes)
 
 
 class StockTests(Workspace):
@@ -669,10 +647,10 @@ class StockTests(Workspace):
         self.main('flash')
         self.candidate(image(marker=2))
         self.main('flash')
-        reboots = self.fake.reboots
+        reboots = self.flasher.reboots
         output = self.main('stock', '--confirm-restore')
-        self.assertEqual(bytes(self.fake.memory), self.backup)
-        self.assertEqual(self.fake.reboots, reboots + 1)
+        self.assertEqual(bytes(self.flasher.memory), self.backup)
+        self.assertEqual(self.flasher.reboots, reboots + 1)
         snapshots = list(self.local.glob('owned-pre-restore-*.bin'))
         self.assertEqual(len(snapshots), 1)
         self.assertEqual(snapshots[0].read_bytes(), self.rides)
@@ -680,27 +658,27 @@ class StockTests(Workspace):
         self.assertFalse((self.local / 'restore-before.bin').exists())
         self.assertFalse((self.local / 'restore-after.bin').exists())
         # Bootloader sectors were identical, so they were never rewritten.
-        self.assertTrue(all(address >= 0x8000 for address, _ in self.fake.writes))
+        self.assertTrue(all(address >= 0x8000 for address, _ in self.flasher.writes))
 
     def test_restore_refuses_a_mismatched_backup_before_device_access(self):
         (self.local / 'flash.bin').write_bytes(b'\x01' + self.backup[1:])
         with self.assertRaisesRegex(RuntimeError, 'hash mismatch'):
             self.main('stock', '--confirm-restore')
-        self.assertEqual(self.fake.connects, 0)
+        self.assertEqual(self.flasher.enters, 0)
 
     def test_restore_refuses_another_device(self):
-        self.fake.identity = '11:22:33:44:55:66'
+        self.flasher.identity = '11:22:33:44:55:66'
         with self.assertRaisesRegex(RuntimeError, 'does not match the backup'):
             self.main('stock', '--confirm-restore')
-        self.assertEqual(self.fake.writes, [])
+        self.assertEqual(self.flasher.writes, [])
 
     def test_restore_readback_mismatch_fails_without_reset(self):
-        write = self.fake.write
-        self.fake.memory[device.SLOTS[1]] ^= 1
-        self.fake.write = lambda address, path: (write(address, path), self.fake.memory.__setitem__(address, 0))
+        write = self.flasher.write
+        self.flasher.memory[device.SLOTS[1]] ^= 1
+        self.flasher.write = lambda address, path: (write(address, path), self.flasher.memory.__setitem__(address, 0))
         with self.assertRaisesRegex(RuntimeError, r'sectors differ from the backup, first at 0x760000'):
             self.main('stock', '--confirm-restore')
-        self.assertEqual(self.fake.reboots, 0)
+        self.assertEqual(self.flasher.reboots, 0)
 
     def test_restore_requires_confirmation(self):
         with self.assertRaisesRegex(RuntimeError, 'pass --confirm-restore'):
@@ -717,27 +695,27 @@ class StockTests(Workspace):
         device.confirm_restore(True, stdin=io.StringIO())
         with patch('sys.stdin', io.StringIO()), self.assertRaisesRegex(RuntimeError, 'pass --confirm-restore'):
             self.main('stock')
-        self.assertEqual(self.fake.connects, 0)
+        self.assertEqual(self.flasher.enters, 0)
 
     def test_stock_select_boots_slot_a_only_while_it_holds_stock(self):
         self.candidate(image())
         self.main('flash')
         self.main('stock-select')
-        self.assertEqual(self.fake.selected(), 0)
+        self.assertEqual(self.selected(), 0)
         self.main('flash')
-        self.assertEqual(self.fake.selected(), 1)
+        self.assertEqual(self.selected(), 1)
         self.main('flash')
         with self.assertRaisesRegex(RuntimeError, 'Slot A no longer holds stock'):
             self.main('stock-select')
-        self.assertEqual(self.fake.selected(), 0)
+        self.assertEqual(self.selected(), 0)
 
     def test_backup_never_checks_baseline_or_writes(self):
         backup = Mock()
-        with patch.object(Flash, 'backup', backup), patch.object(Flash, 'baseline') as baseline:
+        with patch.object(device.Device, 'backup', backup), patch.object(device.Device, 'baseline') as baseline:
             self.main('backup')
         backup.assert_called_once()
         baseline.assert_not_called()
-        self.assertEqual(self.fake.writes, [])
+        self.assertEqual(self.flasher.writes, [])
 
 
 class ConsoleTests(unittest.TestCase):

@@ -41,6 +41,7 @@ export const LINK_WAIT_MS = 30_000
 /** Resends of an idempotent op: after a relay drop, a stall, broken read data or a refusal in `RESENT`. */
 export const OP_RETRIES = 3
 const RELEASE_WAIT_MS = 3000
+const AWAY = `the visitor's page was unreachable for ${LINK_WAIT_MS / 1000} s`
 
 export interface EnteredChip {
   readonly mac: Redacted.Redacted<Mac>
@@ -55,9 +56,10 @@ export interface EnteredChip {
  */
 export interface Flasher {
   readonly enter: Effect.Effect<EnteredChip, FlashError>
-  /** `path` holds exactly `region.size` bytes whose MD5 is the chip's own. */
+  /** `path` holds exactly `size` bytes whose MD5 is the chip's own. */
   readonly read: (
-    region: Region,
+    address: number,
+    size: number,
     path: string,
   ) => Effect.Effect<Md5, FlashError>
   /** Written, and the chip's digest of the region equals the file's. */
@@ -196,9 +198,7 @@ export const leaseFlasher = (
         orElse: () => Effect.succeed(false),
       }),
       Effect.flatMap(back =>
-        back
-          ? Effect.void
-          : Effect.fail(new Unreachable({ seconds: LINK_WAIT_MS / 1000 })),
+        back ? Effect.void : Effect.fail(new Unreachable({ detail: AWAY })),
       ),
     )
 
@@ -226,10 +226,7 @@ export const leaseFlasher = (
         return run(id).pipe(
           Effect.catchTags({
             RelayDown: () =>
-              again(
-                new Unreachable({ seconds: LINK_WAIT_MS / 1000 }),
-                Effect.succeed(id),
-              ),
+              again(new Unreachable({ detail: AWAY }), Effect.succeed(id)),
             OpStalled: error => again(error, Effect.succeed(id)),
             TransferBroken: error => again(error, port.nextId),
             OpFailed: error =>
@@ -280,29 +277,31 @@ export const leaseFlasher = (
       ),
     )
 
-    const read = (region: Region, path: string) =>
-      retried(id =>
-        Effect.gen(function* () {
-          const { outcome, data } = yield* once(id, {
-            op: { _tag: 'Read', lease, region },
-          })
-          if (outcome._tag !== 'Read') {
-            return yield* unexpected(outcome)
-          }
-          if (data.received !== region.size) {
-            return yield* new TransferBroken({
-              detail: `read ${data.received} of ${region.size} bytes`,
+    const read = (address: number, size: number, path: string) =>
+      Effect.flatMap(regionOf(address, size), region =>
+        retried(id =>
+          Effect.gen(function* () {
+            const { outcome, data } = yield* once(id, {
+              op: { _tag: 'Read', lease, region },
             })
-          }
-          const bytes = assembled(data)
-          if (md5Of(bytes) !== outcome.md5) {
-            return yield* new TransferBroken({
-              detail: "the read bytes are not the chip's",
-            })
-          }
-          yield* writeFile(path, bytes)
-          return outcome.md5
-        }),
+            if (outcome._tag !== 'Read') {
+              return yield* unexpected(outcome)
+            }
+            if (data.received !== region.size) {
+              return yield* new TransferBroken({
+                detail: `read ${data.received} of ${region.size} bytes`,
+              })
+            }
+            const bytes = assembled(data)
+            if (md5Of(bytes) !== outcome.md5) {
+              return yield* new TransferBroken({
+                detail: "the read bytes are not the chip's",
+              })
+            }
+            yield* writeFile(path, bytes)
+            return outcome.md5
+          }),
+        ),
       )
 
     const write = (address: number, path: string) =>
@@ -372,7 +371,11 @@ export const leaseFlasher = (
         }),
       ).pipe(
         Effect.catchTag('RelayDown', () =>
-          Effect.fail(new Unreachable({ seconds: 0 })),
+          Effect.fail(
+            new Unreachable({
+              detail: 'the relay dropped while the device was asked to reboot',
+            }),
+          ),
         ),
       )
 

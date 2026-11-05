@@ -8,7 +8,7 @@ import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
-import { Region } from '@cycling/protocol'
+import type { Md5 } from '@cycling/protocol'
 
 import { leaseFlasher, type Flasher } from './Flasher.ts'
 import type { RemotePort } from './RemotePort.ts'
@@ -54,10 +54,19 @@ const decodeRequest = Schema.decodeUnknownEffect(
   Schema.fromJsonString(DoorRequest),
   { onExcessProperty: 'error' },
 )
-const decodeRegion = Schema.decodeUnknownEffect(Region)
 
+/** One reply line: each op's own `ok` fields, or an error. */
 type Reply =
-  | { readonly ok: Readonly<Record<string, unknown>> }
+  | {
+      readonly ok: {
+        readonly mac: string
+        readonly secure_boot: boolean
+        readonly flash_encryption: boolean
+      }
+    }
+  | { readonly ok: { readonly md5: Md5 } }
+  | { readonly ok: { readonly matched: boolean } }
+  | { readonly ok: { readonly captured: boolean } }
   | {
       readonly error: { readonly reason: string; readonly detail: string }
     }
@@ -94,18 +103,9 @@ const answer = (
           })),
         ),
       read: ({ address, size, path }) =>
-        decodeRegion({ address, size }).pipe(
-          Effect.matchEffect({
-            onFailure: () =>
-              Effect.succeed(
-                errorReply('badRequest', 'not a region of the 16 MiB flash'),
-              ),
-            onSuccess: region =>
-              flasher
-                .read(region, path)
-                .pipe(Effect.map(md5 => ({ ok: { md5 } }))),
-          }),
-        ),
+        flasher
+          .read(address, size, path)
+          .pipe(Effect.map(md5 => ({ ok: { md5 } }))),
       write: ({ address, path }) =>
         flasher.write(address, path).pipe(Effect.map(md5 => ({ ok: { md5 } }))),
       verify: ({ address, path }) =>
@@ -200,8 +200,7 @@ const errorDetail = (error: FlashError): string =>
   Match.valueTags(error, {
     OpFailed: ({ detail }) => detail,
     TransferBroken: ({ detail }) => detail,
-    Unreachable: ({ seconds }) =>
-      `the visitor's page was unreachable for ${seconds} s`,
+    Unreachable: ({ detail }) => detail,
     OpStalled: ({ ms }) => `no progress from the page for ${ms / 1000} s`,
     BadRequest: ({ detail }) => detail,
   })

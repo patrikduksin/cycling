@@ -127,8 +127,7 @@ export const describeFlashError = (
     OpFailed: ({ reason, detail }) =>
       detail === '' ? reason : `${reason}, ${detail}`,
     TransferBroken: ({ detail }) => detail,
-    Unreachable: ({ seconds }) =>
-      `the visitor's page was unreachable for ${seconds} s`,
+    Unreachable: ({ detail }) => detail,
     OpStalled: ({ ms }) => `no progress for ${ms / 1000} s`,
     BadRequest: ({ detail }) => detail,
   })}`

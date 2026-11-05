@@ -70,11 +70,11 @@ export class TransferBroken extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()('TransferBroken', { detail: Schema.String }) {}
 
-/** The relay or the visitor stayed away longer than an op can wait, or the session is over. */
+/** The relay or the visitor stayed away longer than an op can wait, the session is over, or the relay dropped mid-reboot. */
 export class Unreachable extends Schema.TaggedError<
   Unreachable,
   { readonly brand: unique symbol }
->()('Unreachable', { seconds: Schema.Int }) {}
+>()('Unreachable', { detail: Schema.String }) {}
 
 /** A file the caller named could not be read or written, or names flash past the chip. */
 export class BadRequest extends Schema.TaggedError<

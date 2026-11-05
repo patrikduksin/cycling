@@ -596,6 +596,11 @@ fn any_other_sensor_detail_forgets_on_act_and_ignores_move() {
     assert_eq!(page(&menu), Page::Forget);
     assert!(menu.canvas().shows("HEART RATE 100"));
     assert_eq!(
+        menu.input(press(Button::BottomRight), rider.now + 400),
+        None
+    );
+    assert_eq!(page(&menu), Page::Forget);
+    assert_eq!(
         rider.press(&mut menu, Button::BottomRight),
         Some(Action::Disconnect(device_type::HEART_RATE))
     );

@@ -85,6 +85,7 @@ impl Sim {
             Button::BottomRight
         });
         self.expect_text("FORGET");
+        self.advance(vana::screens::sensors::SETTLE_MS);
         self.press(Button::BottomRight);
     }
 

@@ -281,7 +281,7 @@ pub(super) struct State {
     pub(super) view: View,
     /// The sensor added last on this visit to NEARBY, which BACK focuses.
     added: Option<Identity>,
-    /// When a detail page last opened: ACT waits a moment after it.
+    /// When a detail page or FORGET SENSOR? last opened: ACT waits a moment after it.
     opened: u64,
     last_press: Option<u64>,
     pub(super) scanning: bool,
@@ -294,8 +294,8 @@ pub(super) struct State {
     pub(super) calibration: Option<CalibrationNote>,
 }
 
-/// ACT does nothing this long after a detail page opens, so the second of
-/// two quick presses never zeroes a meter or asks to forget a sensor.
+/// ACT does nothing this long after a detail page or FORGET SENSOR? opens,
+/// so the second of two quick presses never zeroes a meter or forgets a sensor.
 pub const SETTLE_MS: u64 = 1_000;
 
 /// A button, or the cue beside it, as the page acts on it.
@@ -494,10 +494,12 @@ impl State {
             }
             (View::Detail(slot), Press::Move) if self.calibratable(slot) => {
                 self.view = View::Forget(slot);
+                self.opened = now;
                 None
             }
             (View::Detail(slot), Press::Act) if settled && !self.calibratable(slot) => {
                 self.view = View::Forget(slot);
+                self.opened = now;
                 None
             }
             (View::Forget(slot), Press::Back) => {
@@ -505,7 +507,7 @@ impl State {
                 self.opened = now;
                 None
             }
-            (View::Forget(slot), Press::Act) => {
+            (View::Forget(slot), Press::Act) if settled => {
                 let kind = self.selected[slot]?.identity.device_type;
                 self.view = View::Mine(Mine::Saved(slot));
                 Some(Action::Disconnect(kind))

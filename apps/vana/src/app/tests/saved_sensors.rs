@@ -518,8 +518,8 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     runtime.input(Input::Release, 2600, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Forget);
     assert!(saved(&runtime));
-    touch(&mut runtime, &mut radio, 3000);
-    runtime.input(Input::Release, 3100, &mut radio);
+    touch(&mut runtime, &mut radio, 3600);
+    runtime.input(Input::Release, 3700, &mut radio);
     assert!(!saved(&runtime));
 
     // A Cancel reaches the menu: ACT then waits for MOVE to reconfirm.

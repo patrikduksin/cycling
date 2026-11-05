@@ -391,7 +391,7 @@ fn forget_sensor(runtime: &mut Runtime, radio: &mut Radio, kind: u8, mut now: u6
     };
     runtime.input(press(trash), now, radio);
     assert_eq!(runtime.menu.diagnostics().page, Page::Forget);
-    now += 400;
+    now += crate::screens::sensors::SETTLE_MS;
     runtime.input(press(Button::BottomRight), now, radio);
     now
 }

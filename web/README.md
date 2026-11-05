@@ -25,6 +25,7 @@ $ cycling remote 7KQM-4XP2
 $ cycling remote 7KQM-4XP2 -- cycling terminal INFO
 $ cycling remote 7KQM-4XP2 -- cycling backup
 $ cycling remote 7KQM-4XP2 -- cycling flash
+$ cycling remote 7KQM-4XP2 -- cycling flasher info
 ```
 
 - Without `--`, the bridge prints `CYCLING_PORT` (a pty) and
@@ -43,6 +44,15 @@ $ cycling remote 7KQM-4XP2 -- cycling flash
   `python -m esptool` commands do not work through the page. None of this has
   run against a real device yet: the first hardware session needs Patrik
   present.
+- The page takes any chip family esptool-js detects (ESP8266, ESP32 and every
+  ESP32-S, -C, -H, -P and -E part it names), on its own USB or behind a
+  USB-UART bridge (CP210x, CH340, FTDI), and reboots it the way python esptool
+  does for that family and port.
+- `cycling flasher info|read ADDR SIZE PATH|verify ADDR PATH|reboot` runs the
+  same verbs on any such chip, here (esptool, `--chip auto`, `--port` for a
+  device other than the C606) or through the page. `info` prints the chip as
+  JSON with an opaque `device_id` (a keyed hash) in place of the MAC; `read` writes only under
+  `.local`; there is no write verb. Each verb ends with a reboot into the app.
 - A stranger's device cannot be backed up or flashed by the `cycling` flows
   yet: `.local/device` holds one device's private state. Per-device state is
   its own follow-up.

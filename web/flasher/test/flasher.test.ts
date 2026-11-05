@@ -2,6 +2,7 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as Schedule from 'effect/Schedule'
 import * as Stream from 'effect/Stream'
 import { ESPLoader, Transport } from 'esptool-js'
 
@@ -63,7 +64,7 @@ const session = <A, E>(
 ): Promise<Exit.Exit<A, E | FlasherError>> =>
   Effect.runPromiseExit(
     Effect.scoped(
-      open(portOf(device), { entry: 'usbReset' }).pipe(Effect.flatMap(use)),
+      open(portOf(device), { entry: 'reset' }).pipe(Effect.flatMap(use)),
     ),
   )
 
@@ -131,21 +132,37 @@ const consoleText = async (
 }
 
 describe('open', () => {
-  test('enters the stub and reads the chip facts', async () => {
+  test('enters the stub and describes the chip', async () => {
     const device = sim({ secureBoot: true, flashCryptCnt: 0b111 })
-    const chip = valueOf(await session(device, s => Effect.succeed(s.chip)))
-    expect(chip).toEqual({
-      mac: '020000123456',
-      secureBoot: true,
-      flashEncryption: true,
+    const entered = valueOf(
+      await session(device, s =>
+        Effect.succeed({ chip: s.chip, bootloader: s.bootloaderOffset }),
+      ),
+    )
+    expect(entered).toEqual({
+      chip: {
+        mac: '020000123456',
+        family: 'ESP32-S3',
+        model: 'ESP32-S3 (QFN56)',
+        revision: 'v0.0',
+        features: ['Wi-Fi', 'BLE'],
+        crystalMhz: 40,
+        flash: { manufacturer: 0x20, device: 0x4018, bytes: FLASH_BYTES },
+        usb: { vendorId: 0x303a, productId: 0x1001 },
+        security: { _tag: 'Known', secureBoot: true, flashEncryption: true },
+      },
+      bootloader: 0,
     })
   })
 
   test('an even flash_crypt_cnt means flash encryption is off', async () => {
     const device = sim({ flashCryptCnt: 0b11 })
     const chip = valueOf(await session(device, s => Effect.succeed(s.chip)))
-    expect(chip.flashEncryption).toBe(false)
-    expect(chip.secureBoot).toBe(false)
+    expect(chip.security).toEqual({
+      _tag: 'Known',
+      secureBoot: false,
+      flashEncryption: false,
+    })
   })
 
   test('an entry that re-enumerates fails portLost, and noReset enters on the new port', async () => {
@@ -360,7 +377,7 @@ describe('reboot and close', () => {
     const exit = await Effect.runPromiseExit(
       Effect.scoped(
         Effect.gen(function* () {
-          const s = yield* open(portOf(device), { entry: 'usbReset' })
+          const s = yield* open(portOf(device), { entry: 'reset' })
           const reading = yield* Effect.forkChild(
             Stream.runDrain(s.read({ address: 0, size: FLASH_BYTES })),
           )
@@ -374,14 +391,132 @@ describe('reboot and close', () => {
   })
 })
 
-describe('which chips and regions', () => {
-  test('a chip that is not an ESP32-S3 is refused before any register write', async () => {
-    const device = sim({ chipId: 5 })
-    const exit = await session(device, () => Effect.void)
-    expect(reasonOf(exit)).toBe('unsupportedChip')
-    expect(device.commands()).not.toContain(OP.WRITE_REG)
+/** Each family on the link its boards use, entered, described, read and rebooted as the S3 is above. */
+const OTHER_CHIPS = [
+  {
+    chip: 'ESP32-C3',
+    link: 'USB-Serial-JTAG',
+    described: {
+      family: 'ESP32-C3',
+      model: 'ESP32-C3 (QFN32)',
+      revision: 'v0.0',
+      features: ['Wi-Fi', 'BLE'],
+      usb: { vendorId: 0x303a, productId: 0x1001 },
+      security: { _tag: 'Known', secureBoot: false, flashEncryption: false },
+    },
+    bootloader: 0,
+    rebootCause: '0x10 (RTCWDT_RTC_RST)',
+    enumerations: 2,
+  },
+  {
+    chip: 'ESP32',
+    link: 'a CP2102N UART bridge',
+    described: {
+      family: 'ESP32',
+      model: 'ESP32-D0WDQ6',
+      revision: '0',
+      features: ['Wi-Fi', 'BT', 'Dual Core', 'Coding Scheme None'],
+      usb: { vendorId: 0x10c4, productId: 0xea60 },
+      security: { _tag: 'Unknown' },
+    },
+    bootloader: 0x1000,
+    rebootCause: '0x1 (POWERON_RESET)',
+    enumerations: 1,
+  },
+] as const
+
+describe.each(OTHER_CHIPS)('an $chip on $link', expected => {
+  const chipSim = (options: SimOptions = {}) =>
+    sim({ chip: expected.chip, ...options })
+
+  test('enters and describes itself, with its bootloader offset', async () => {
+    const device = chipSim()
+    const entered = valueOf(
+      await session(device, s =>
+        Effect.succeed({ chip: s.chip, bootloader: s.bootloaderOffset }),
+      ),
+    )
+    expect(entered).toEqual({
+      chip: {
+        ...expected.described,
+        mac: '020000123456',
+        crystalMhz: 40,
+        flash: { manufacturer: 0x20, device: 0x4018, bytes: FLASH_BYTES },
+      },
+      bootloader: expected.bootloader,
+    })
   })
 
+  test('reads a region that assembles to its flash and digests to the same MD5', async () => {
+    const device = chipSim({ flash: noise(FLASH_BYTES, 20) })
+    const size = READ_PIECE_BYTES + 0x1000
+    const { assembled, digest } = valueOf(
+      await session(device, s =>
+        Effect.all({
+          assembled: readAll(s, 0x8000, size),
+          digest: s.digest({ address: 0x8000, size }),
+        }),
+      ),
+    )
+    expect(md5Hex(assembled)).toBe(device.flashMd5(0x8000, size))
+    expect(digest).toBe(device.flashMd5(0x8000, size))
+  })
+
+  test('outlasts the RTC WDT a USB reset arms, or has none', async () => {
+    const device = chipSim({ watchdogMs: WATCHDOG_MS })
+    const exit = await session(device, s =>
+      Effect.gen(function* () {
+        const until = Date.now() + 2 * WATCHDOG_MS
+        while (Date.now() < until) {
+          yield* s.digest({ address: 0, size: 0x1000 })
+        }
+        return device.state()
+      }),
+    )
+    expect(valueOf(exit)).toMatchObject({ mode: 'stub', resets: 0 })
+  })
+
+  test('reboots into the app the way python esptool does for its family and link', async () => {
+    const device = chipSim()
+    const rebooted =
+      expected.enumerations === 1
+        ? Promise.resolve(portOf(device))
+        : device.nextPort()
+    valueOf(
+      await session(device, s =>
+        s.reboot.pipe(
+          Effect.andThen(
+            Effect.repeat(
+              Effect.sync(() => device.state().mode),
+              {
+                until: mode => mode === 'app',
+                schedule: Schedule.spaced(20),
+              },
+            ),
+          ),
+        ),
+      ),
+    )
+    const text = await consoleText(await rebooted, /uptime_ms/, 2000)
+    expect(text).toContain('"uptime_ms"')
+    expect(device.state()).toMatchObject({
+      mode: 'app',
+      lastReset: expected.rebootCause,
+      enumerations: expected.enumerations,
+    })
+  })
+
+  test('closing without a reboot still leaves the chip in its app', async () => {
+    const device = chipSim()
+    valueOf(await session(device, s => s.digest({ address: 0, size: 0x1000 })))
+    expect(device.state()).toMatchObject({
+      mode: 'app',
+      lastReset: expected.rebootCause,
+    })
+  })
+})
+
+describe('regions', () => {
   test('a 4 MiB chip refuses regions past its flash and leaves flash untouched', async () => {
     const flash = new Uint8Array(4 * 1024 * 1024).fill(0xff)
     const device = sim({ flash })
@@ -416,7 +551,7 @@ describe('an abandoned write', () => {
     const closed = await Effect.runPromiseExit(
       Effect.scoped(
         Effect.gen(function* () {
-          const s = yield* open(portOf(device), { entry: 'usbReset' })
+          const s = yield* open(portOf(device), { entry: 'reset' })
           const writing = yield* Effect.forkChild(
             Stream.runDrain(s.write(0x400000, data)),
           )
@@ -454,7 +589,7 @@ describe('redaction', () => {
       Effect.gen(function* () {
         const lines = yield* Effect.scoped(
           Effect.gen(function* () {
-            const s = yield* open(portOf(device), { entry: 'usbReset' })
+            const s = yield* open(portOf(device), { entry: 'reset' })
             yield* Stream.runDrain(s.write(0x10000, noise(0x8000, 9)))
             yield* readAll(s, 0, 0x2000)
             return s.log

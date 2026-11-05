@@ -49,7 +49,7 @@ import {
  *                                                                                  queued notEntered
  *  any           Op X{lease, id} already queued -                                  - (its answer will come)
  *  Flashing      Op X{lease, id} last answered  -                                  that answer again
- *  Open          Op Enter                       Entering{usbReset}, ops=[Enter]    -
+ *  Open          Op Enter                       Entering{reset}, ops=[Enter]       -
  *  Opening,      Op Enter                       ops+=[Enter]; it enters once the   -
  *  Reacquiring                                  console is Open again
  *  Failed        Op Enter                       -                                  entryFailed
@@ -60,7 +60,7 @@ import {
  *  any           an op past OP_QUEUE            -                                  busy
  *  held          Op X                           ops+=[X]                           -
  *  Entering      EnteredFlasher                 Flashing                           PortChanged Flashing
- *  Entering      FailedEntry portLost, usbReset Entering{noReset}                  -
+ *  Entering      FailedEntry portLost, reset    Entering{noReset}                  -
  *  Entering      FailedEntry otherwise          console Reacquiring                head entryFailed (or
  *                                                                                  unsupportedChip), rest notEntered
  *  Flashing      FinishedOp Entered|Read|...    ops=tail, answered=it              the outcome
@@ -97,7 +97,7 @@ const isFlashing = (phase: PortPhase): phase is Flashing =>
   phase._tag === 'Flashing'
 
 export const layoutOf = (port: Port): Option.Option<Layout> =>
-  isFlashing(port.state) ? port.state.layout : Option.none()
+  isFlashing(port.state) ? Option.some(port.state.layout) : Option.none()
 
 /**
  * What the hold is doing, the one reading of it for the op runner, the
@@ -243,7 +243,7 @@ const enqueue = (port: Port, id: RequestId, op: RunnableOp): Port =>
 const entering = (lease: Lease): Entering => ({
   _tag: 'Entering',
   lease,
-  entry: 'usbReset',
+  entry: 'reset',
 })
 
 /** The wire's answer to a finished op; None for Entered, which the session answers. */
@@ -392,7 +392,7 @@ export const onOp = (port: Port, id: RequestId, op: Op): Step =>
 
 export const onEnteredFlasher = (
   port: Port,
-  layout: Option.Option<Layout>,
+  layout: Layout,
 ): Option.Option<Step> => {
   const phase = port.state
   if (phase._tag !== 'Entering') {
@@ -416,7 +416,7 @@ export const onFailedEntry = (
   if (phase._tag !== 'Entering') {
     return Option.none()
   }
-  if (failure.reason === 'portLost' && phase.entry === 'usbReset') {
+  if (failure.reason === 'portLost' && phase.entry === 'reset') {
     return Option.some(step(withState(port, { ...phase, entry: 'noReset' })))
   }
   const [head, ...rest] = port.ops

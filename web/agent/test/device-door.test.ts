@@ -134,8 +134,18 @@ const fakePage = (
                 _tag: 'Entered',
                 chip: {
                   mac: FAKE_MAC,
-                  secureBoot: false,
-                  flashEncryption: false,
+                  family: 'ESP32',
+                  model: 'ESP32-D0WD-V3',
+                  revision: '3',
+                  features: ['Wi-Fi', 'BT', 'Dual Core'],
+                  crystalMhz: 40,
+                  flash: {
+                    manufacturer: 0xc8,
+                    device: 0x4016,
+                    bytes: 0x400000,
+                  },
+                  usb: { vendorId: 0x1a86, productId: 0x7523 },
+                  security: { _tag: 'Unknown' },
                 },
               }),
             Read: ({ region: { address, size } }) =>
@@ -320,7 +330,17 @@ describe('device socket', () => {
         const door = yield* doorClient(endpoints.flasher)
 
         expect(yield* door.ask({ op: 'enter' })).toEqual({
-          ok: { mac: FAKE_MAC, secure_boot: false, flash_encryption: false },
+          ok: {
+            mac: FAKE_MAC,
+            family: 'ESP32',
+            model: 'ESP32-D0WD-V3',
+            revision: '3',
+            features: ['Wi-Fi', 'BT', 'Dual Core'],
+            crystal_mhz: 40,
+            flash: { manufacturer: 0xc8, device: 0x4016, size: 0x400000 },
+            usb: { vendor_id: 0x1a86, product_id: 0x7523 },
+            security: null,
+          },
         })
 
         const readPath = join(dir, 'read.bin')
@@ -388,6 +408,22 @@ describe('device socket', () => {
         const ops = yield* page.ops
         expect(ops.map(op => op._tag)).toEqual(['Enter', 'Release'])
         expect(new Set(ops.map(op => op.lease)).size).toBe(1)
+      }),
+    ))
+
+  test('a connection right after one closed waits for its Release, then enters under its own lease', () =>
+    withBridge((relay, endpoints) =>
+      Effect.gen(function* () {
+        const page = yield* fakePage(relay)
+        const first = yield* doorClient(endpoints.flasher)
+        yield* first.ask({ op: 'enter' })
+        first.socket.terminate()
+        const second = yield* doorClient(endpoints.flasher)
+        expect(yield* second.ask({ op: 'enter' })).toHaveProperty('ok')
+        const ops = yield* page.ops
+        expect(ops.map(op => op._tag)).toEqual(['Enter', 'Release', 'Enter'])
+        expect(new Set(ops.map(op => op.lease)).size).toBe(2)
+        second.socket.end()
       }),
     ))
 

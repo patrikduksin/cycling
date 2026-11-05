@@ -238,12 +238,15 @@ def console_info(resolve, seconds, log, maintenance=False):
     return None
 
 
-def flasher_for(port, resolve, log_dir, environ=os.environ) -> Flasher:
-    """The visitor's page only for the bridged port, so a second, local device in a bridged command stays local."""
+def flasher_for(port, resolve, log_dir, environ=os.environ, chip='esp32s3') -> Flasher:
+    """The visitor's page only for the bridged port, so a second, local device in a bridged command stays local.
+
+    `chip` reaches esptool only: the page detects the family itself.
+    """
     bridged, door = environ.get('CYCLING_PORT'), environ.get('CYCLING_FLASHER')
     if bridged and door and port == bridged:
         return PageFlasher(Path(door), log_dir)
-    return EsptoolFlasher(port, resolve, log_dir)
+    return EsptoolFlasher(port, resolve, log_dir, chip)
 
 
 class Device:
@@ -263,9 +266,10 @@ class Device:
         """Enter download mode and identify the device; strict also requires the known boot layout."""
         chip = self.flasher.enter()
         require(
-            not chip.secure_boot and not chip.flash_encryption,
-            'This procedure requires secure boot and flash encryption disabled',
+            chip.accepts_unsigned is not None,
+            f'This {chip.family} cannot report secure boot or flash encryption, so it is treated as not writable',
         )
+        require(chip.accepts_unsigned, 'This procedure requires secure boot and flash encryption disabled')
         metadata = self.read(0x8000, 0x8000, 'before.bin')
         if strict:
             partitions(metadata)

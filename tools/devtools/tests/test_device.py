@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import cycling_devtools.device.firmware as device
-from cycling_devtools.device.flasher import FlasherError
+from cycling_devtools.device.flasher import FlasherError, Security
 from memory_flasher import MemoryFlasher
 
 IDENTITY = 'aa:bb:cc:dd:ee:ff'
@@ -182,10 +182,17 @@ class Formats(unittest.TestCase):
         for secure_boot, flash_encryption in ((True, False), (False, True)):
             with self.subTest(secure_boot=secure_boot, flash_encryption=flash_encryption):
                 flasher, target, _ = self.rebooting(b'')
-                flasher.secure_boot, flasher.flash_encryption = secure_boot, flash_encryption
+                flasher.security = Security(secure_boot, flash_encryption)
                 with self.assertRaisesRegex(RuntimeError, 'requires secure boot and flash encryption disabled'):
                     target.connect()
                 self.assertEqual(flasher.enters, 1)
+
+    def test_a_rom_that_cannot_report_security_refuses_before_any_read(self):
+        flasher, target, _ = self.rebooting(b'')
+        flasher.security = None
+        with self.assertRaisesRegex(RuntimeError, 'cannot report secure boot or flash encryption'):
+            target.connect()
+        self.assertEqual(flasher.enters, 1)
 
     def test_short_flash_read_refuses(self):
         flasher, target, _ = self.rebooting(b'')

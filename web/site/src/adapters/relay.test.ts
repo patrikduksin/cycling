@@ -20,7 +20,7 @@ import { browserRelay } from './relay.ts'
 type Listener = (event: Socket.WebSocketEvent) => void
 type EventName = 'open' | 'message' | 'error' | 'close'
 
-/** A browser WebSocket as `effect/socket` sees it; `accept` echoes `cycling.v2` like the relay. */
+/** A browser WebSocket as `effect/socket` sees it; `accept` echoes `cycling.v3` like the relay. */
 class FakeWebSocket implements Socket.WebSocketLike {
   readyState = 0
   protocol = ''
@@ -127,9 +127,9 @@ describe('browser relay adapter', () => {
       Effect.gen(function* () {
         const { socket } = yield* harness().open
 
-        expect(socket.url).toBe('wss://relay.test/v2/browser/7KQM4XP2')
+        expect(socket.url).toBe('wss://relay.test/v3/browser/7KQM4XP2')
         expect(socket.protocols).toEqual([
-          'cycling.v2',
+          'cycling.v3',
           `own.${session.ownerKey}`,
         ])
         expect(socket.binaryType).toBe('arraybuffer')

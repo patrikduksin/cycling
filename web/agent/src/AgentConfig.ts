@@ -9,7 +9,7 @@ import { RELAY_NOT_TLS, TOKEN_TOO_SHORT } from './Status.ts'
 
 /**
  * `wss://relay.cycling.computer`: a scheme and a host, no path; the agent
- * appends `/v2/agent/<code>`. Plain `ws://` would send the token in the
+ * appends `/v3/agent/<code>`. Plain `ws://` would send the token in the
  * clear, so it is only for a relay on this machine.
  */
 export const RelayUrl = Schema.String.check(

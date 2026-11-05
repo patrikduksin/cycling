@@ -12,7 +12,7 @@ import socket
 import time
 from pathlib import Path
 
-from cycling_devtools.device.flasher import Chip, FlasherError
+from cycling_devtools.device.flasher import Chip, Flash, FlasherError, Security, Usb
 
 
 class PageFlasher:
@@ -46,11 +46,17 @@ class PageFlasher:
 
     def enter(self):
         chip = self._ask({'op': 'enter'})
-        mac = chip['mac']
+        mac, flash, usb, security = chip['mac'], chip['flash'], chip['usb'], chip['security']
         return Chip(
             identity=':'.join(mac[index : index + 2] for index in range(0, 12, 2)),
-            secure_boot=chip['secure_boot'],
-            flash_encryption=chip['flash_encryption'],
+            family=chip['family'],
+            model=chip['model'],
+            revision=chip['revision'],
+            features=tuple(chip['features']),
+            crystal_mhz=chip['crystal_mhz'],
+            flash=Flash(flash['manufacturer'], flash['device'], flash['size']),
+            usb=None if usb is None else Usb(usb['vendor_id'], usb['product_id']),
+            security=None if security is None else Security(security['secure_boot'], security['flash_encryption']),
         )
 
     def read(self, address, size, path):

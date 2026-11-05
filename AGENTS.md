@@ -70,6 +70,8 @@ access or device tests. It owns the procedure; these rules always apply:
 
 ## Workflows
 
+- A cycling.computer connect code, or a new device to check for cycling
+  firmware: [new-device](.agents/skills/new-device/SKILL.md).
 - Autonomous issue or queue delivery: [deliver](.agents/skills/deliver/SKILL.md).
 - A rider's account of a ride problem, a battery that drains too fast, or a
   `.trace` file: [ride-trace](.agents/skills/ride-trace/SKILL.md).

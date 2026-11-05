@@ -1,4 +1,5 @@
 import * as Clock from 'effect/Clock'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Match from 'effect/Match'
@@ -10,7 +11,7 @@ import * as Stream from 'effect/Stream'
 
 import type { Md5 } from '@cycling/protocol'
 
-import { leaseFlasher, type Flasher } from './Flasher.ts'
+import { type EnteredChip, leaseFlasher, type Flasher } from './Flasher.ts'
 import type { RemotePort } from './RemotePort.ts'
 import { describeDoorOp, describeFlashError } from './Status.ts'
 import type { FlashError, LocalResourceError } from './errors.ts'
@@ -55,20 +56,77 @@ const decodeRequest = Schema.decodeUnknownEffect(
   { onExcessProperty: 'error' },
 )
 
+/** The chip as python's `PageFlasher.enter` reads it: snake case, nulls where the page knows nothing. */
+interface DoorChip {
+  readonly mac: string
+  readonly family: string
+  readonly model: string
+  readonly revision: string
+  readonly features: ReadonlyArray<string>
+  readonly crystal_mhz: number
+  readonly flash: {
+    readonly manufacturer: number
+    readonly device: number
+    readonly size: number
+  }
+  readonly usb: {
+    readonly vendor_id: number
+    readonly product_id: number
+  } | null
+  readonly security: {
+    readonly secure_boot: boolean
+    readonly flash_encryption: boolean
+  } | null
+}
+
+const doorChip = (chip: EnteredChip): DoorChip => ({
+  mac: Redacted.value(chip.mac),
+  family: chip.family,
+  model: chip.model,
+  revision: chip.revision,
+  features: chip.features,
+  crystal_mhz: chip.crystalMhz,
+  flash: {
+    manufacturer: chip.flash.manufacturer,
+    device: chip.flash.device,
+    size: chip.flash.bytes,
+  },
+  usb:
+    chip.usb === null
+      ? null
+      : { vendor_id: chip.usb.vendorId, product_id: chip.usb.productId },
+  security:
+    chip.security._tag === 'Known'
+      ? {
+          secure_boot: chip.security.secureBoot,
+          flash_encryption: chip.security.flashEncryption,
+        }
+      : null,
+})
+
 type Reply =
-  | {
-      readonly ok: {
-        readonly mac: string
-        readonly secure_boot: boolean
-        readonly flash_encryption: boolean
-      }
-    }
+  | { readonly ok: DoorChip }
   | { readonly ok: { readonly md5: Md5 } }
   | { readonly ok: { readonly matched: boolean } }
   | { readonly ok: { readonly captured: boolean } }
   | {
       readonly error: { readonly reason: string; readonly detail: string }
     }
+
+/**
+ * Who has the device: nobody, a connection, or a closed connection whose
+ * lease is still being released. A device task that starts right after
+ * another exits waits for that release instead of being told busy.
+ */
+type Hold =
+  | { readonly _tag: 'Free' }
+  | { readonly _tag: 'Held' }
+  | {
+      readonly _tag: 'Releasing'
+      readonly released: Deferred.Deferred<void>
+    }
+
+const FREE: Hold = { _tag: 'Free' }
 
 const errorReply = (reason: string, detail: string): Reply => ({
   error: { reason, detail },
@@ -92,15 +150,7 @@ const answer = (
     Match.withReturnType<Effect.Effect<Reply, FlashError>>(),
     Match.discriminatorsExhaustive('op')({
       enter: () =>
-        flasher.enter.pipe(
-          Effect.map(chip => ({
-            ok: {
-              mac: Redacted.value(chip.mac),
-              secure_boot: chip.secureBoot,
-              flash_encryption: chip.flashEncryption,
-            },
-          })),
-        ),
+        flasher.enter.pipe(Effect.map(chip => ({ ok: doorChip(chip) }))),
       read: ({ address, size, path }) =>
         flasher
           .read(address, size, path)
@@ -142,7 +192,26 @@ export const serveDeviceDoor = (options: {
     const fs = yield* FileSystem.FileSystem
     const remove = Effect.ignore(fs.remove(path, { force: true }))
     yield* Effect.acquireRelease(remove, () => remove)
-    const held = yield* Ref.make(false)
+    const hold = yield* Ref.make<Hold>(FREE)
+    /** The device, or false while another connection holds it; one that is still giving it back is waited for. */
+    const take: Effect.Effect<boolean> = Effect.flatten(
+      Ref.modify(hold, (current): [Effect.Effect<boolean>, Hold] =>
+        Match.valueTags(current, {
+          Free: (): [Effect.Effect<boolean>, Hold] => [
+            Effect.succeed(true),
+            { _tag: 'Held' },
+          ],
+          Held: (): [Effect.Effect<boolean>, Hold] => [
+            Effect.succeed(false),
+            current,
+          ],
+          Releasing: ({ released }): [Effect.Effect<boolean>, Hold] => [
+            Deferred.await(released).pipe(Effect.andThen(() => take)),
+            current,
+          ],
+        }),
+      ),
+    )
 
     const timed = (request: DoorRequest, flasher: Flasher) =>
       Effect.gen(function* () {
@@ -166,14 +235,22 @@ export const serveDeviceDoor = (options: {
       resource: 'deviceDoor',
       handle: client =>
         Effect.gen(function* () {
-          if (yield* Ref.getAndSet(held, true)) {
+          if (!(yield* take)) {
             yield* client.write(
               line(errorReply('busy', 'another device task holds the device')),
             )
             return
           }
-          yield* Effect.addFinalizer(() => Ref.set(held, false))
+          const released = yield* Deferred.make<void>()
+          yield* Effect.addFinalizer(() =>
+            Ref.set(hold, FREE).pipe(
+              Effect.andThen(Deferred.succeed(released, undefined)),
+            ),
+          )
           const flasher = yield* leaseFlasher(port)
+          yield* Effect.addFinalizer(() =>
+            Ref.set(hold, { _tag: 'Releasing', released }),
+          )
           yield* client.incoming.pipe(
             Stream.decodeText,
             Stream.splitLines,

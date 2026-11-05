@@ -124,12 +124,12 @@ const attachAndOpen = Effect.gen(function* () {
 })
 
 describe('agent against a fake relay', () => {
-  test('R2: the agent offers cycling.v2 and its token as subprotocols on /v2/agent/<code>', () =>
+  test('R2: the agent offers cycling.v3 and its token as subprotocols on /v3/agent/<code>', () =>
     withAgent(relay =>
       Effect.gen(function* () {
         yield* (yield* Remote).attach(CODE)
-        expect(yield* relay.offered).toEqual([`cycling.v2, auth.${TOKEN}`])
-        expect(yield* relay.paths).toEqual([`/v2/agent/${CODE}`])
+        expect(yield* relay.offered).toEqual([`cycling.v3, auth.${TOKEN}`])
+        expect(yield* relay.paths).toEqual([`/v3/agent/${CODE}`])
       }),
     ))
 

@@ -39,7 +39,7 @@ export type Admission = (connection: number) => 'welcome' | number
 export const fakeRelay = (options: {
   readonly snapshot: Snapshot
   readonly admit?: Admission
-  /** What the 101 selects; a real relay always echoes cycling.v2. */
+  /** What the 101 selects; a real relay always echoes cycling.v3. */
   readonly subprotocol?: string
 }) =>
   Effect.gen(function* () {

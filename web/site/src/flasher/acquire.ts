@@ -34,11 +34,10 @@ const readAll = (session: PageSession, region: Region) =>
 
 /**
  * The device's own partition table and otadata, to name regions for the
- * visitor. A device without them, or a read that fails, is shown by address.
+ * visitor, and where its family keeps the bootloader. A device without a
+ * table, or a read that fails, has its other regions shown by address.
  */
-const readLayout = (
-  session: PageSession,
-): Effect.Effect<Option.Option<Layout>> =>
+const readLayout = (session: PageSession): Effect.Effect<Layout> =>
   readAll(session, PARTITION_TABLE).pipe(
     Effect.map(parsePartitions),
     Effect.flatMap(partitions =>
@@ -48,15 +47,13 @@ const readLayout = (
           readAll(session, region).pipe(
             Effect.map(otadata => bootSlotOf(partitions, otadata)),
           ),
-      }).pipe(
-        Effect.map(bootSlot =>
-          partitions.length === 0
-            ? Option.none()
-            : Option.some({ partitions, bootSlot }),
-        ),
-      ),
+      }).pipe(Effect.map(bootSlot => ({ partitions, bootSlot }))),
     ),
-    Effect.orElseSucceed(() => Option.none()),
+    Effect.orElseSucceed(() => ({
+      partitions: [],
+      bootSlot: Option.none<string>(),
+    })),
+    Effect.map(found => ({ bootloader: session.bootloaderOffset, ...found })),
   )
 
 /**

@@ -14,6 +14,19 @@ export interface MemorySession {
   readonly unplug: Effect.Effect<void>
 }
 
+/** A C606's ESP32-S3 as the flasher describes it, for the fake page and tests. */
+export const DEMO_CHIP: Chip = {
+  mac: '020000000001',
+  family: 'ESP32-S3',
+  model: 'ESP32-S3 (QFN56)',
+  revision: 'v0.2',
+  features: ['Wi-Fi', 'BLE'],
+  crystalMhz: 40,
+  flash: { manufacturer: 0x20, device: 0x4018, bytes: 16 * 1024 * 1024 },
+  usb: { vendorId: 0x303a, productId: 0x1001 },
+  security: { _tag: 'Known', secureBoot: false, flashEncryption: false },
+}
+
 /**
  * A session over a Uint8Array that takes the time a chip would: reads and
  * writes move `bytesPerSecond` (Infinity: no wait), a digest takes `digestMs`.
@@ -43,6 +56,7 @@ export const memorySession = (options: {
 
     const session: Session = {
       chip: options.chip,
+      bootloaderOffset: 0,
       read: region =>
         pieces(region).pipe(
           Stream.mapEffect(({ offset, size }) =>

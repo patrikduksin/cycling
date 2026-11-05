@@ -51,7 +51,7 @@ export const Message = defineMessageUnion({
   ReleasedSerial: {},
 
   /** The flasher holds the port; `layout` is what the device's own tables say. */
-  EnteredFlasher: { layout: Schema.Option(Layout) },
+  EnteredFlasher: { layout: Layout },
   FailedEntry: { reason: EntryFailure, detail: Schema.String },
   ProgressedOp: {
     attempt: Schema.Int,

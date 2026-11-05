@@ -11,14 +11,23 @@ import * as Stream from 'effect/Stream'
 import type { IEspLoaderTerminal } from 'esptool-js'
 import SparkMD5 from 'spark-md5'
 
-import { DISABLE_WATCHDOGS, type RegStep, WATCHDOG_RESET } from './watchdog.ts'
+import {
+  type ChipFamily,
+  FAMILIES,
+  FLOW_CONTROL_BRIDGES,
+  isChipFamily,
+  RTS_PULSE,
+  RTS_PULSE_FLOW_CONTROL,
+  type Step,
+} from './families.ts'
 
 /**
- * `usbReset` runs the USB-Serial-JTAG reset into the ROM. `noReset` syncs
- * with a chip that is already in download mode, for the second try after the
- * first entry lost the port to a re-enumeration.
+ * `reset` resets into the ROM the way esptool-js's `default_reset` picks:
+ * the USB-Serial-JTAG sequence on 303a:1001, its ClassicReset on anything
+ * else. `noReset` syncs with a chip that is already in download mode, for
+ * the second try after the first entry lost the port to a re-enumeration.
  */
-export const Entry = Schema.Literals(['usbReset', 'noReset'])
+export const Entry = Schema.Literals(['reset', 'noReset'])
 export type Entry = typeof Entry.Type
 
 export const FlasherFailure = Schema.Literals([
@@ -29,7 +38,7 @@ export const FlasherFailure = Schema.Literals([
   /** A read piece kept disagreeing with the chip's own MD5, or a write's did. */
   'digestMismatch',
   'portLost',
-  /** Not an ESP32-S3, or its flash did not say its size: nothing was written to it. */
+  /** A chip esptool-js names but this flasher has no table for, or a flash that did not say its size: nothing was written to it. */
   'unsupportedChip',
   /** The region ends past the flash this chip reported; flash untouched. */
   'pastFlash',
@@ -45,12 +54,40 @@ export class FlasherError extends Schema.TaggedError<
   detail: Schema.String,
 }) {}
 
+export type Security =
+  | {
+      readonly _tag: 'Known'
+      /** GET_SECURITY_INFO's SECURE_BOOT_EN flag. */
+      readonly secureBoot: boolean
+      /** Odd popcount of flash_crypt_cnt, as python esptool computes it. */
+      readonly flashEncryption: boolean
+    }
+  /** The ROM has no GET_SECURITY_INFO (ESP8266, ESP32). */
+  | { readonly _tag: 'Unknown' }
+
+/** What the chip says about itself at entry, in esptool-js's words. */
 export interface Chip {
   /** The eFuse MAC as 12 lowercase hex. Never logged, never shown. */
   readonly mac: string
-  readonly secureBoot: boolean
-  /** Odd popcount of flash_crypt_cnt, as python esptool computes it. */
-  readonly flashEncryption: boolean
+  readonly family: ChipFamily
+  /** The chip description less its revision, such as `ESP32-S3 (QFN56)`. */
+  readonly model: string
+  /** As the description words it: `v0.2`, or `1` on the ESP32. */
+  readonly revision: string
+  readonly features: ReadonlyArray<string>
+  readonly crystalMhz: number
+  /** The JEDEC id as python esptool's flash-id splits it, and the size its capacity byte names. */
+  readonly flash: {
+    readonly manufacturer: number
+    readonly device: number
+    readonly bytes: number
+  }
+  /** The port's USB ids, as the browser reports them; null when it reports none. */
+  readonly usb: {
+    readonly vendorId: number
+    readonly productId: number
+  } | null
+  readonly security: Security
 }
 
 export interface Region {
@@ -77,6 +114,8 @@ export type ReadEvent =
  */
 export interface Session {
   readonly chip: Chip
+  /** Where this family's second-stage bootloader starts in flash. */
+  readonly bootloaderOffset: number
   /**
    * Stub reads in pieces of at most `READ_PIECE_BYTES`. Each piece is checked
    * against the MD5 the stub sends after it, as python esptool does, and
@@ -95,8 +134,10 @@ export interface Session {
   /** The stub's SPI_FLASH_MD5 of the region, lowercase hex. */
   readonly digest: (region: Region) => Effect.Effect<string, FlasherError>
   /**
-   * python esptool's S3 `watchdog_reset`. The reply to the last write may
-   * never come; that is success. The port is lost next.
+   * python esptool's reboot for the family and the port: `watchdog_reset`
+   * on the chip's own USB, `hard_reset`'s RTS pulse on a USB-UART bridge.
+   * The reply to the last register write may never come; that is success.
+   * On USB the port is lost next.
    */
   readonly reboot: Effect.Effect<void, FlasherError>
   /** What esptool-js says, line by line, MAC-shaped text redacted. Ends when the scope closes. */
@@ -125,9 +166,45 @@ const MD5_BYTES = 16
 const SETTLE_MS = 30_000
 const RECOVERY_MS = 2000
 const DISCONNECT_MS = 2000
-const S3 = 'ESP32-S3'
 const ESPRESSIF_VID = 0x303a
 const USB_JTAG_SERIAL_PID = 0x1001
+
+/**
+ * How the host reaches the chip, python esptool's `uses_usb_jtag_serial`
+ * and `uses_usb_otg` asked of the port's ids: Espressif's VID with 0x1001,
+ * or with the family's image chip id; anything else is a USB-UART bridge.
+ */
+type Link = 'usbJtagSerial' | 'usbOtg' | 'uart'
+
+const linkOf = (info: SerialPortInfo, imageChipId: number | undefined): Link =>
+  info.usbVendorId !== ESPRESSIF_VID
+    ? 'uart'
+    : info.usbProductId === USB_JTAG_SERIAL_PID
+      ? 'usbJtagSerial'
+      : imageChipId !== undefined && info.usbProductId === imageChipId
+        ? 'usbOtg'
+        : 'uart'
+
+const rebootSteps = (
+  family: ChipFamily,
+  link: Link,
+  info: SerialPortInfo,
+): ReadonlyArray<Step> =>
+  link === 'uart'
+    ? [
+        ...FAMILIES[family].hardReset,
+        ...(FLOW_CONTROL_BRIDGES.some(
+          bridge =>
+            bridge.vendorId === info.usbVendorId &&
+            bridge.productId === info.usbProductId,
+        )
+          ? RTS_PULSE_FLOW_CONTROL
+          : RTS_PULSE),
+      ]
+    : FAMILIES[family].usbReboot
+
+/** `ESP32-S3 (QFN56) (revision v0.2)` is the model, then the revision. */
+const REVISION = /^(.*\S)\s*\(revision ([^)]+)\)$/
 
 /** Where the session stands, which decides what closing it owes the chip. */
 type Standing = 'connecting' | 'talking' | 'rebooted'
@@ -147,6 +224,25 @@ const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
 
 const hex = (value: number): string => `0x${value.toString(16)}`
+
+/** python esptool's flash-id: manufacturer is the first byte, device the next two swapped. */
+const flashOf = (
+  id: number,
+  sizes: Readonly<Record<number, string>>,
+): Chip['flash'] | undefined => {
+  const capacity = (id >> 16) & 0xff
+  const named = sizes[capacity]
+  return named === undefined
+    ? undefined
+    : {
+        manufacturer: id & 0xff,
+        device: (((id >> 8) & 0xff) << 8) | capacity,
+        /** esptool-js names sizes like "16MB" and "512KB". */
+        bytes:
+          Number.parseInt(named, 10) *
+          (named.endsWith('KB') ? 1024 : 1024 * 1024),
+      }
+}
 
 const popcount = (value: number): number =>
   value.toString(2).replaceAll('0', '').length
@@ -183,15 +279,13 @@ const lineTerminal = (say: (line: string) => void): IEspLoaderTerminal => {
 
 /**
  * Opens the port (esptool-js's Transport does the `open`, so the caller must
- * have closed it), enters download mode, disables the S3 RTC and super
- * watchdogs when the port is USB-Serial-JTAG (303a:1001, the same test as
- * python esptool's `uses_usb_jtag_serial`), reads the security
- * facts and the MAC, and starts the stub.
+ * have closed it), enters download mode, takes any family esptool-js
+ * detects, disables the watchdogs python esptool disables on
+ * USB-Serial-JTAG, describes the chip, and starts the stub.
  *
  * Closing the scope is the only way out. Unless `reboot` succeeded or the
- * device is gone, it makes one best-effort watchdog reset, so a stranger's
- * device is not left in download mode; then it disconnects, which closes the
- * port.
+ * device is gone, it makes one best-effort reboot, so a stranger's device is
+ * not left in download mode; then it disconnects, which closes the port.
  */
 export const open = (
   port: SerialPort,
@@ -346,12 +440,18 @@ export const open = (
         ),
       )
 
+    const signal = (
+      reason: FlasherFailure,
+      signals: SerialOutputSignals,
+    ): Effect.Effect<void, FlasherError> =>
+      call(reason, () => port.setSignals(signals))
+
     const step =
       (reason: FlasherFailure) =>
-      (regStep: RegStep): Effect.Effect<void, FlasherError> =>
+      (regStep: Step): Effect.Effect<void, FlasherError> =>
         Match.valueTags(regStep, {
-          Write: ({ address, value }) =>
-            call(reason, () => loader.writeReg(address, value)),
+          Write: ({ address, value, mask }) =>
+            call(reason, () => loader.writeReg(address, value, mask)),
           SetBits: ({ address, bits }) =>
             call(reason, () => loader.readReg(address)).pipe(
               Effect.flatMap(value =>
@@ -361,20 +461,28 @@ export const open = (
               ),
             ),
           Hold: ({ ms }) => Effect.sleep(ms),
+          Rts: ({ asserted }) => signal(reason, { requestToSend: asserted }),
+          Dtr: ({ asserted }) =>
+            signal(reason, { dataTerminalReady: asserted }),
         })
 
-    const watchdogResetLastWrite = WATCHDOG_RESET.reduce(
-      (last, regStep, index) => (regStep._tag === 'Write' ? index : last),
-      -1,
-    )
-    const watchdogReset = Effect.forEach(
-      WATCHDOG_RESET,
-      (regStep, index) =>
-        index === watchdogResetLastWrite
-          ? Effect.ignore(step('chipError')(regStep))
-          : step('chipError')(regStep),
-      { discard: true },
-    )
+    /** Set once the chip is known; until then closing owes it nothing. */
+    let rebootPlan: ReadonlyArray<Step> = []
+    const rebootNow = Effect.suspend(() => {
+      const plan = rebootPlan
+      const lastWrite = plan.reduce(
+        (last, regStep, index) => (regStep._tag === 'Write' ? index : last),
+        -1,
+      )
+      return Effect.forEach(
+        plan,
+        (regStep, index) =>
+          index === lastWrite
+            ? Effect.ignore(step('chipError')(regStep))
+            : step('chipError')(regStep),
+        { discard: true },
+      )
+    })
 
     const close = Effect.gen(function* () {
       closing = true
@@ -386,7 +494,7 @@ export const open = (
           Effect.timeoutOption(SETTLE_MS),
         )
         if (Option.isSome(settled)) {
-          yield* watchdogReset.pipe(Effect.timeout(RECOVERY_MS), Effect.ignore)
+          yield* rebootNow.pipe(Effect.timeout(RECOVERY_MS), Effect.ignore)
         }
       }
       yield* Effect.promise(() => transport.disconnect().then(noop, noop)).pipe(
@@ -398,56 +506,84 @@ export const open = (
     yield* Effect.addFinalizer(() => close)
 
     yield* call('entryFailed', () =>
-      loader.connect(options.entry === 'usbReset' ? 'usb_reset' : 'no_reset'),
+      loader.connect(options.entry === 'reset' ? 'default_reset' : 'no_reset'),
     )
-    if (loader.chip.CHIP_NAME !== S3) {
+    const rom = loader.chip
+    const name = rom.CHIP_NAME
+    if (!isChipFamily(name)) {
       return yield* new FlasherError({
         reason: 'unsupportedChip',
-        detail: `${redact(loader.chip.CHIP_NAME)} is not an ${S3}.`,
+        detail: `This flasher has no table for ${redact(name)}.`,
       })
     }
-    yield* Ref.set(standing, 'talking')
+    const family = FAMILIES[name]
     const usb = port.getInfo()
-    if (
-      usb.usbVendorId === ESPRESSIF_VID &&
-      usb.usbProductId === USB_JTAG_SERIAL_PID
-    ) {
-      yield* Effect.forEach(DISABLE_WATCHDOGS, step('entryFailed'), {
+    const link = linkOf(usb, rom.IMAGE_CHIP_ID)
+    rebootPlan = rebootSteps(name, link, usb)
+    yield* Ref.set(standing, 'talking')
+    /** What esptool-js's own `main` runs after connecting: the USB-OTG RAM block, and the P4's flash power. */
+    yield* call('entryFailed', async () => rom.postConnect?.(loader))
+    if (link === 'usbJtagSerial') {
+      yield* Effect.forEach(family.disableWatchdogs, step('entryFailed'), {
         discard: true,
       })
     }
-    const security = yield* call('entryFailed', () =>
-      loader.getSecurityInfo(false),
+    const description = yield* call('entryFailed', () =>
+      rom.getChipDescription(loader),
     )
-    const mac = yield* call('entryFailed', () => loader.chip.readMac(loader))
+    const features = yield* call('entryFailed', () =>
+      rom.getChipFeatures(loader),
+    )
+    const crystalMhz = yield* call('entryFailed', () =>
+      rom.getCrystalFreq(loader),
+    )
+    const mac = yield* call('entryFailed', () => rom.readMac(loader))
+    const security: Security = family.securityInfo
+      ? yield* call('entryFailed', () => loader.getSecurityInfo(false)).pipe(
+          Effect.map((info): Security => ({
+            _tag: 'Known',
+            secureBoot: info.parsedFlags.SECURE_BOOT_EN,
+            flashEncryption: popcount(info.flashCryptCnt) % 2 === 1,
+          })),
+        )
+      : { _tag: 'Unknown' }
     yield* call('entryFailed', () => loader.runStub())
-    const flashSize = yield* call('entryFailed', () => loader.detectFlashSize())
-    if (flashSize === undefined) {
+    const flashId = yield* call('entryFailed', () => loader.readFlashId())
+    const flash = flashOf(flashId, loader.DETECTED_FLASH_SIZES)
+    if (flash === undefined) {
       return yield* new FlasherError({
         reason: 'unsupportedChip',
         detail: 'The flash did not report its size.',
       })
     }
-    /** esptool-js names sizes like "16MB" and "512KB". */
-    const flashBytes =
-      Number.parseInt(flashSize, 10) *
-      (flashSize.endsWith('KB') ? 1024 : 1024 * 1024)
 
     /** python esptool refuses an image that does not fit the detected flash; a write past the end wraps to the bootloader. */
     const within = (region: Region): Effect.Effect<void, FlasherError> =>
-      region.address + region.size <= flashBytes
+      region.address + region.size <= flash.bytes
         ? Effect.void
         : Effect.fail(
             new FlasherError({
               reason: 'pastFlash',
-              detail: `${hex(region.address)}+${hex(region.size)} ends past this chip's ${hex(flashBytes)} bytes of flash.`,
+              detail: `${hex(region.address)}+${hex(region.size)} ends past this chip's ${hex(flash.bytes)} bytes of flash.`,
             }),
           )
 
+    const revised = REVISION.exec(description.trim())
     const chip: Chip = {
       mac: mac.replaceAll(':', '').toLowerCase(),
-      secureBoot: security.parsedFlags.SECURE_BOOT_EN,
-      flashEncryption: popcount(security.flashCryptCnt) % 2 === 1,
+      family: name,
+      model: redact(revised?.[1] ?? description.trim()),
+      revision: redact(revised?.[2] ?? 'unknown'),
+      features: features
+        .map(feature => redact(feature.trim()))
+        .filter(feature => feature !== ''),
+      crystalMhz: Math.round(crystalMhz),
+      flash,
+      usb:
+        usb.usbVendorId === undefined || usb.usbProductId === undefined
+          ? null
+          : { vendorId: usb.usbVendorId, productId: usb.usbProductId },
+      security,
     }
 
     const digest = (region: Region) =>
@@ -544,12 +680,11 @@ export const open = (
         }),
       )
 
-    const reboot = watchdogReset.pipe(
-      Effect.andThen(Ref.set(standing, 'rebooted')),
-    )
+    const reboot = rebootNow.pipe(Effect.andThen(Ref.set(standing, 'rebooted')))
 
     return {
       chip,
+      bootloaderOffset: rom.BOOTLOADER_FLASH_OFFSET,
       read,
       write,
       digest,

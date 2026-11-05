@@ -66,7 +66,7 @@ describe('close codes', () => {
 describe('session paths', () => {
   test('a built path parses back to its role, version and code', () => {
     expect(parseSessionPath(sessionPath('agent', code))).toEqual(
-      Option.some({ role: 'agent', version: 2, code: Option.some(code) }),
+      Option.some({ role: 'agent', version: 3, code: Option.some(code) }),
     )
     expect(parseSessionPath('/v1/browser/7KQM4XP2')).toEqual(
       Option.some({ role: 'browser', version: 1, code: Option.some(code) }),

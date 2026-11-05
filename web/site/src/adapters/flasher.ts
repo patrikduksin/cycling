@@ -22,6 +22,7 @@ export type PageReadEvent =
 
 export interface PageSession {
   readonly chip: Chip
+  readonly bootloaderOffset: Session['bootloaderOffset']
   readonly read: (region: Region) => Stream.Stream<PageReadEvent, FlasherError>
   readonly write: Session['write']
   readonly digest: (region: Region) => Effect.Effect<Md5, FlasherError>
@@ -69,6 +70,7 @@ export const pageSession = (
     ),
     Effect.map((chip): PageSession => ({
       chip,
+      bootloaderOffset: session.bootloaderOffset,
       read: region =>
         session.read(region).pipe(
           Stream.mapEffect(

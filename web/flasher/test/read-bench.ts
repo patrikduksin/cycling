@@ -35,7 +35,7 @@ const assembled = new Uint8Array(size)
 const ms = await Effect.runPromise(
   Effect.scoped(
     Effect.gen(function* () {
-      const session = yield* open(port, { entry: 'usbReset' })
+      const session = yield* open(port, { entry: 'reset' })
       const started = performance.now()
       yield* Stream.runForEach(session.read({ address: 0, size }), event =>
         Effect.sync(() => {

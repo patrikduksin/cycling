@@ -49,8 +49,8 @@ pinned through one bun catalog entry at `~4.1.2` (Foldkit's peer range).
 
 ## Wire protocol (web/protocol)
 
-- One WebSocket per role: `/v2/browser/<code>` and `/v2/agent/<code>`. The path
-  and the `cycling.v2` subprotocol carry the major version; v1 clients are
+- One WebSocket per role: `/v3/browser/<code>` and `/v3/agent/<code>`. The path
+  and the `cycling.v3` subprotocol carry the major version; older clients are
   refused with `unsupportedVersion`.
 - Binary message: a channel byte, then its payload, at most 16 KiB in all.
   `0x00 | device bytes` is the console (what the pty sees). `0x01 | id u32 LE |
@@ -65,8 +65,8 @@ pinned through one bun catalog entry at `~4.1.2` (Foldkit's peer range).
 - Keepalive: clients send `ping`; the relay answers `pong` by auto-response
   without waking the Durable Object.
 - Credentials ride in `Sec-WebSocket-Protocol`, because browsers cannot set
-  headers: `cycling.v2, auth.<token>` for the agent and `cycling.v2, own.<key>`
-  for the browser. The relay echoes only `cycling.v2`.
+  headers: `cycling.v3, auth.<token>` for the agent and `cycling.v3, own.<key>`
+  for the browser. The relay echoes only `cycling.v3`.
 - Admission failures are delivered as accept-then-close with an application
   close code (`CloseCode`), because a browser cannot read the HTTP status of a
   refused upgrade.
@@ -79,11 +79,16 @@ pinned through one bun catalog entry at `~4.1.2` (Foldkit's peer range).
   `Release`. There is no eFuse op, no erase, no register access and no line
   toggling, so none can be asked of a visitor's device. `Region` is checked
   against the 16 MiB flash at decode on every end, and on the page against the
-  flash size the chip reports (`pastFlash`); a chip other than the ESP32-S3 is
-  refused at entry (`unsupportedChip`). Outcomes: `Entered{chip}`,
-  `Read{md5}`, `Written{md5}`, `Digest{md5}`, `Rebooting`, `Released`,
-  `Failed{reason, detail}`; `detail` is esptool-js's words with MAC-shaped text
-  redacted, at most 200 characters. `PortState` gains `Flashing`: the page's
+  flash size the chip reports (`pastFlash`). Any family esptool-js detects is
+  entered; `unsupportedChip` is left for a flash that does not report its
+  size. Outcomes: `Entered{chip}`, `Read{md5}`, `Written{md5}`,
+  `Digest{md5}`, `Rebooting`, `Released`, `Failed{reason, detail}`; `detail`
+  is esptool-js's words with MAC-shaped text redacted, at most 200
+  characters. `chip` is the MAC, the family (`ChipFamily`, esptool-js's
+  `CHIP_NAME`s), model, revision, features, crystal MHz, the flash's JEDEC
+  manufacturer, device and size, the port's USB ids (or null), and
+  `security`: `Known{secureBoot, flashEncryption}` or `Unknown` where the ROM
+  has no GET_SECURITY_INFO (ESP8266, ESP32). `PortState` gains `Flashing`: the page's
   flasher holds the port and no console bytes flow.
 - Liveness instead of timeouts: the page sends `OpProgress` at least once a
   second while an op runs; the agent fails an op `stalled` after 20 s with
@@ -135,7 +140,8 @@ RelayClient (socket, token, capped redial)
   on this machine; the socket lives in the 0700 session directory. One
   connection is one lease, released (`Op Release`) when the connection closes,
   so a Python process that exits, crashes or is killed gives the device back.
-  A second connection meanwhile is answered `busy`.
+  A second connection while one is open is answered `busy`; one that arrives
+  while a closed connection's lease is still being released waits for it.
 - `leaseFlasher` owns integrity and retries. A write announces the file's MD5
   before its bytes and accepts only the chip's matching digest; a read is
   accepted only when its frames are contiguous and the file's MD5 is the
@@ -254,7 +260,7 @@ Where the code differs from the sketch, and why.
   redial stays with each client, on the shared `BACKOFF` curve.
 - **Admission.** Refusals are accept-then-close with a close code, since a
   browser cannot see a refused upgrade's status. Alchemy's `upgrade` sets no
-  `Sec-WebSocket-Protocol`; the relay sets `cycling.v2` on the 101 itself
+  `Sec-WebSocket-Protocol`; the relay sets `cycling.v3` on the 101 itself
   (checked on local workerd only). The Worker hashes the owner key and strips
   the subprotocol header, so the Durable Object never sees a credential.
   The relay Worker runs with observability and invocation logs off, because
@@ -279,7 +285,7 @@ Where the code differs from the sketch, and why.
 - **Agent sockets.** The relay socket is the protocol's `relaySocket`; the
   device socket is an `@effect/platform-bun` socket server, its `-- <cmd>`
   child is an Effect `ChildProcess`. The agent refuses
-  a relay that does not select `cycling.v2`, a token shorter than 32
+  a relay that does not select `cycling.v3`, a token shorter than 32
   characters, and `ws://` to anything but loopback. The child never sees the
   token. Extra exit codes: 5 port did not open in 30 s, 1 local resource
   failure, 127 the command did not start; a session that ends while waiting
@@ -322,14 +328,36 @@ the end of its reconciliation below.
 Where the code differs from the bakeoff's synthesis (candidate 2 with its
 grafts), and why.
 
-- **Watchdog decision by VID/PID.** Python esptool 5.4.0 disables the S3
+- **Watchdog decision by VID/PID.** Python esptool 5.4.0 disables the
   watchdogs when `uses_usb_jtag_serial()`, which is the host's view of the
   port (303a:1001), not the `UARTDEV_BUF_NO` register the research notes
-  quoted. The flasher asks `port.getInfo()` the same question. A devtools
-  test (`tests/test_flasher_watchdog_tables.py`) runs esptool's own
-  `disable_watchdogs` and `watchdog_reset` against a recording chip and
-  compares the writes with `web/flasher/src/watchdog.ts`; it fails on any
-  changed literal.
+  quoted. The flasher asks `port.getInfo()` the same question, and
+  `uses_usb_otg()`'s (Espressif's VID with the family's image chip id);
+  any other port is a USB-UART bridge.
+- **Per-family tables, checked against python.** `web/flasher/src/families.ts`
+  holds, for each of the 15 families esptool-js 0.7.1 detects, what python
+  esptool does and esptool-js does not: the writes `_post_connect` makes on
+  USB-Serial-JTAG, the `watchdog_reset` `--after watchdog-reset` runs on the
+  chip's own USB (python falls back to `hard_reset` where a family has none:
+  ESP8266, ESP32, C6, H2, H21, H4, E22), and what `hard_reset` writes before
+  its RTS pulse on a bridge (only the S3 clears its force-download bit). A
+  devtools test (`tests/test_flasher_watchdog_tables.py`) runs python's own
+  methods for every family against a chip whose registers read 0 and a
+  recording port, and fails on any changed literal, a missing family, or a
+  change to esp_pylib's flow-control bridge list.
+- **UART bridges.** On a CP210x, CH340 or FTDI board entry is esptool-js's
+  ClassicReset (its `default_reset` picks it for anything but 303a:1001), and
+  a reboot or the recovery reset is python's `hard_reset`: RTS held 100 ms,
+  DTR re-sent after each RTS change as python does for Windows. A CP2102C
+  (10c4:ea64), whose CTS follows RTS, gets python's flow-control pulse as it
+  runs where HUPCL cannot be cleared, which is the browser's case. The port
+  never leaves the bus, and the console reopens the same SerialPort.
+- **Two deviations from python.** On an E22 over USB-OTG python's
+  `watchdog_reset` and `hard_reset` call each other while GPIO0 reads low;
+  the page uses the USB-Serial-JTAG sequence there. The page also runs
+  esptool-js's own `postConnect` (the OTG RAM block, the P4's flash power),
+  so on a P4 over USB-Serial-JTAG the watchdog writes happen twice; they are
+  idempotent.
 - **Write check.** `write` does not hand esptool-js a `calculateMD5Hash`;
   esptool-js reports its own mismatch only as a generic message. The flasher
   compares the chip's MD5 of the written range itself (`digestMismatch`), so
@@ -363,11 +391,29 @@ grafts), and why.
   untested suspects are a hidden or occluded tab (esptool-js waits with
   `sleep(1)` timers, which Chrome throttles to 1 s and then to 1 min) and
   the chip's own hashing, which the two digest passes above added.
-- **Chip family and flash size.** C3 and C6 boards enumerate as 303a:1001
-  too. Entry checks the chip is an ESP32-S3 before any register write and
-  refuses another `unsupportedChip` with no recovery reset (the S3's reset
-  registers mean nothing there). It reads the flash's JEDEC size, as python
-  esptool does before a write, and refuses any region past it `pastFlash`.
+- **Chip description and flash size.** Entry describes the chip from
+  esptool-js (`getChipDescription`, split into model and revision,
+  `getChipFeatures`, `getCrystalFreq`, `readMac`), GET_SECURITY_INFO where
+  the ROM has it, and one RDID: manufacturer, device and the size its
+  capacity byte names, as python's flash-id splits them. Regions past that
+  size are refused `pastFlash`. Python's `Chip` carries the same typed
+  fields and `accepts_unsigned` (None when security is unknown); `Device`
+  refuses a chip whose ROM cannot say, before any read.
+- **Bootloader offset.** The session reports its family's
+  `BOOTLOADER_FLASH_OFFSET` (0, 0x1000 on the ESP32 and S2, 0x2000 on the C5,
+  H4, P4 and S31); the page's layout carries it, so "the bootloader" and the
+  Disconnect warning start there. The layout is always present while
+  flashing; a device without a readable table has no partitions in it.
+- **`cycling flasher`.** `info|read|verify|reboot`, built on `flasher_for`,
+  so the same verbs run on a local tty (EsptoolFlasher with `--chip auto`:
+  `flash-id`, then `get-security-info` where the family has it) and through
+  the page. `info` prints the description as JSON with `device_id`, an HMAC
+  of the MAC under a key kept in `.local`, in place of the MAC: a plain hash
+  is reversible from the vendor prefix in seconds. `read` writes only under
+  `.local`. There is no write verb. Every verb ends with a reboot, also when
+  it fails, so a local chip is back in its app. Protocol v3: the chip
+  description changed `Entered`. EsptoolFlasher's reboot now runs `read-mac`, which every family
+  answers, under `--after watchdog-reset`.
 - **A resend joins the op.** The agent resends an unanswered op under its
   own id; the page joins it while it is queued or running, and answers the
   last finished one again from `Flashing.answered`. Every queued op that is
@@ -415,13 +461,17 @@ against the simulator, including a 16 MiB read, a write and its digest, and a
 watchdog model that resets a chip whose watchdogs were not disabled),
 devtools' pytest, and `web/agent/test/e2e-page.sh`: the built site in headless
 Chromium with the simulator as its Web Serial port, the offline relay, the
-real `cycling remote` and devtools' `Device` through `PageFlasher` (enter,
-read 0x8000, write and verify a scratch region, read it back, reboot with the
-boot capture), plus killing the device task mid-read (Release, back to the
-console, chip in its app). The flasher's tests also cover a write abandoned
-mid-way (it stops at a block, then the reset, never interleaved), a C3
-refused before any register write, and a 4 MiB chip refusing regions past
-its flash; the site's, a resend joining a running write and an idle or
+real `cycling remote`, `cycling flasher info`, `read` and `verify`, then
+devtools' `Device` through `PageFlasher` (enter, read 0x8000, write and
+verify a scratch region, read it back, reboot with the boot capture), plus
+killing the device task mid-read (Release, back to the console, chip in its
+app), plus a classic ESP32 behind a CP2102N (info with security unknown,
+Device's refusal, the console back after the RTS reboot). The simulator is an
+ESP32-S3 or ESP32-C3 on USB-Serial-JTAG or an ESP32 on a UART bridge, each
+with its own register map written from the TRMs; the flasher's tests enter,
+describe, read, digest, outlast the watchdog and reboot each, and cover a
+write abandoned mid-way (it stops at a block, then the reset, never
+interleaved) and a 4 MiB chip refusing regions past its flash; the site's, a resend joining a running write and an idle or
 unattended hold expiring only once nothing runs; the agent's, a lost answer
 asked for again under its id (the page writes once) and a `transferGap`
 write sent again.
@@ -446,4 +496,8 @@ Open risks for hardware, cheapest experiment first:
   esptool-js call; a call that never settles skips the reset rather than race
   it, and leaves the device in the stub until a replug.
 - **A stranger's device** still cannot run `cycling backup` or `flash`:
-  `.local/device` holds one device's private state (follow-up).
+  `.local/device` holds one device's private state (follow-up). `cycling
+  flasher` works on any family.
+- **Families beyond the simulator.** Only the S3, C3 and ESP32 run against
+  the simulator; the other twelve families' tables are checked against
+  python esptool but have not met a chip, through the page or here.

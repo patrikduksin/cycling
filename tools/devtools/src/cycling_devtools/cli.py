@@ -164,6 +164,11 @@ TASKS = [
     ),
     task('monitor', 'Read USB logs without resetting the device', f'{DEV}device.firmware monitor'),
     task(
+        'flasher',
+        "Ask any ESP32 esptool detects, here or through a visitor's page: flasher info|read ADDR SIZE PATH|verify ADDR PATH|reboot",
+        f'{DEV}device.flasher_cli',
+    ),
+    task(
         'remote',
         "Use a device plugged into a visitor's browser at cycling.computer as a local port: remote <code> [-- <cmd>]",
         f'{DEV}device.browser_bridge',

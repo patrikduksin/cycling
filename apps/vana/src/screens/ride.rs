@@ -19,9 +19,10 @@
 //! `app::climb_page`).
 use super::canvas::Canvas;
 use super::chrome::{self, Align, CONTENT, Rect};
-use super::workout::{Text, View};
+use super::workout::{Graphics, Text, View};
 use crate::ride::course::turns::{Kind, Side, Warning};
 use crate::ride::laps::Lap;
+use crate::ride::zones::TrainingProfile;
 use crate::sensors::radar::{self, close};
 use core::fmt::Write;
 
@@ -298,7 +299,6 @@ pub(super) type Labels = heapless::Vec<chrome::Label<12>, 14>;
 #[derive(Default)]
 pub struct Smooth {
     pub(super) labels: Labels,
-    pub(super) zones: [u8; 2],
     /// A workout target under a gauge: which gauge and its columns.
     pub(super) band: Option<(usize, core::ops::Range<usize>)>,
 }
@@ -306,7 +306,6 @@ pub struct Smooth {
 impl Smooth {
     pub const EMPTY: Self = Self {
         labels: heapless::Vec::new(),
-        zones: [0; 2],
         band: None,
     };
 }
@@ -376,7 +375,7 @@ pub(super) fn cell(
 /// while a radar is paired, and the page in the body, centred without a radar.
 pub(super) fn paint(view: &View, row: &mut Row) {
     if view.radar_paired {
-        paint_radar(view.radar, &mut row.within(0..RADAR_WIDTH - 2));
+        paint_radar(view.graphics.radar, &mut row.within(0..RADAR_WIDTH - 2));
         paint_page(view, &mut row.within(BODY.left..BODY.right));
         return;
     }
@@ -429,6 +428,29 @@ const TARGET_RADIUS: usize = 5;
 const ARROW_TOP: usize = BODY.top + 8;
 const RANGE_MM: u32 = 200_000;
 
+/// Where the gliding graphics land: the end of each zone gauge's lit run,
+/// and each radar marker's row and whether it is red. A glide needs a frame
+/// only when this changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pixels {
+    gauges: [Option<usize>; 2],
+    markers: [Option<(i32, bool)>; 8],
+}
+
+pub fn pixels(graphics: &Graphics, profile: &TrainingProfile) -> Pixels {
+    let [power, heart] = zones::gauges(graphics, profile);
+    Pixels {
+        gauges: [
+            power.map(|mark| main::gauge_end(0, mark)),
+            heart.map(|mark| main::gauge_end(1, mark)),
+        ],
+        markers: graphics
+            .radar
+            .targets
+            .map(|target| target.map(|target| (target_y(target), close(target)))),
+    }
+}
+
 fn target_y(target: radar::Target) -> i32 {
     let span = (TRACK_BOTTOM - TRACK_TOP) as u32;
     (TRACK_TOP as u32 + target.range_mm.min(RANGE_MM) * span / RANGE_MM) as i32
@@ -471,7 +493,7 @@ fn paint_radar(radar: radar::Snapshot, row: &mut Row) {
 pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     let x = if view.radar_paired {
         if x < RADAR_WIDTH - 2 {
-            return reference_radar_pixel(view.radar, x, y);
+            return reference_radar_pixel(view.graphics.radar, x, y);
         }
         x
     } else {

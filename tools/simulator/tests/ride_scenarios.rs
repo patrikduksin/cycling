@@ -9,7 +9,7 @@ use firmware_services::gps::unix_seconds;
 use shell_simulator::ant::{BatteryReport, ZeroReply, device_type};
 use shell_simulator::bulk::Presence;
 use shell_simulator::route::{Point, Route};
-use shell_simulator::sim::{NoteKind, Sim, minutes, seconds};
+use shell_simulator::sim::{NoteKind, Screen, Sim, minutes, seconds};
 use shell_simulator::world::{Side, Vehicle};
 use vana::ride::fit::Refusal;
 use vana::ride::log::{
@@ -5372,42 +5372,53 @@ fn the_clock_reads_santiago_summer_time_in_december() {
     clock_reads((21, 12, 26), "1:00", "DEC 21");
 }
 
-/// Numbers glide between quarter-second ANT+ samples: a step in power is
-/// drawn through values in between, never past the new reading, and lands on
-/// it exactly.
+/// Numbers never glide: a rider glancing down mid-glide could not read one.
+/// A step in heart rate shows as the new reading on the first frame that
+/// changes the number, while the heart-rate gauge under it glides through
+/// columns in between and lands on the reading.
 #[test]
-fn readings_glide_between_samples_and_settle_on_the_reading() {
+fn numbers_jump_to_each_reading_while_the_gauges_glide() {
+    // The heart-rate gauge's rows on the main page.
+    const HEART_GAUGE: std::ops::Range<usize> = 237..242;
+    let lit = |screen: &Screen| {
+        HEART_GAUGE
+            .flat_map(|y| screen.pixels[y * screen.width..(y + 1) * screen.width].iter())
+            .filter(|pixel| ZONES.contains(pixel))
+            .count()
+    };
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
-    sim.ride_at(28.0, 200.0, 142.0, 88.0);
+    sim.ride_at(28.0, 200.0, 130.0, 88.0);
     sim.start_ride();
     sim.advance(seconds(10));
-    sim.expect_field("W", "200");
-    sim.ride_at(28.0, 300.0, 142.0, 88.0);
-    let mut drawn = Vec::new();
+    sim.expect_field("BPM", "130");
+    let before = lit(&sim.screen());
+    sim.ride_at(28.0, 200.0, 170.0, 88.0);
+    let mut numbers = vec![String::from("130")];
+    let mut gauge = vec![before];
     let mut captured = false;
-    // Long enough for the 3 s power to take in only the new reading.
-    for _ in 0..200 {
-        sim.advance(20);
-        let watts: u32 = sim.screen().field("W").unwrap().parse().unwrap();
-        if drawn.last() != Some(&watts) {
-            drawn.push(watts);
+    for _ in 0..100 {
+        sim.advance(10);
+        let screen = sim.screen();
+        let bpm = screen.field("BPM").unwrap();
+        if numbers.last() != Some(&bpm) {
+            numbers.push(bpm);
         }
-        if !captured && (240..=260).contains(&watts) {
-            sim.checkpoint("power gliding to a new reading");
+        let lit = lit(&screen);
+        if gauge.last() != Some(&lit) {
+            gauge.push(lit);
+        }
+        if !captured && gauge.len() == 3 {
+            sim.checkpoint("the gauge gliding under the new number");
             captured = true;
         }
     }
+    assert_eq!(numbers, ["130", "170"], "the number jumps");
     assert!(
-        drawn.windows(2).all(|w| w[0] <= w[1]) && drawn.iter().all(|w| (200..=300).contains(w)),
-        "{drawn:?}"
+        gauge.windows(2).all(|w| w[0] < w[1]) && gauge.len() >= 4,
+        "the gauge glides: {gauge:?}"
     );
-    assert!(
-        drawn.iter().filter(|&&w| w > 200 && w < 300).count() >= 3,
-        "glides through values between samples: {drawn:?}"
-    );
-    assert_eq!(drawn.last(), Some(&300), "{drawn:?}");
-    sim.checkpoint("power settled on the reading");
+    sim.checkpoint("the gauge settled on the reading");
 }
 
 /// A new rider's device: nothing saved, so it opens first-run setup.

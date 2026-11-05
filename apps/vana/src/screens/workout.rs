@@ -281,15 +281,27 @@ static NO_TITLE: Text<20> = Text::new();
 static NO_BESTS: Bests = Bests::EMPTY;
 static NO_AFTER: After = After::EMPTY;
 
+/// What glides between sensor samples, for graphics only: the main page's
+/// zone gauges and the radar markers. Numbers never glide; they read
+/// `View::sample` and `View::power_3s`, which hold each reading as it came.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Graphics {
+    /// The power gauge's 3 s power.
+    pub power_3s: Option<u16>,
+    pub heart_bpm: Option<u16>,
+    /// The radar strip, its markers at their drawn ranges.
+    pub radar: radar::Snapshot,
+}
+
 pub struct View<'a> {
     pub now_ms: u64,
     pub sample: Sample,
     /// Power over the last 3 s, which the ride page shows instead of the
     /// jumpy one-second reading.
     pub power_3s: Option<u16>,
+    pub graphics: Graphics,
     pub active_secs: u64,
     pub state: Status,
-    pub radar: radar::Snapshot,
     /// A radar is paired, so the ride screen keeps its strip.
     pub radar_paired: bool,
     /// The pause came from auto-pause, not the rider.
@@ -364,9 +376,9 @@ impl<'a> View<'a> {
             now_ms: 0,
             sample: Sample::default(),
             power_3s: None,
+            graphics: Graphics::default(),
             active_secs: 0,
             state: Status::Ready,
-            radar: radar::Snapshot::default(),
             radar_paired: false,
             auto_paused: false,
             gps: Gps::Off,
@@ -1119,6 +1131,7 @@ mod tests {
             ..Sample::default()
         };
         view.power_3s = Some(250);
+        view.graphics.power_3s = Some(250);
         view.totals.add(1000, 12_345, &view.sample, None);
         view.active_secs = 3725;
         view.state = Status::Recording;
@@ -1272,6 +1285,9 @@ mod tests {
                 view.ride_page = page;
                 view.radar_paired = radar_paired;
                 view.sample = sample;
+                // Gliding behind the numbers, so the gauges are drawn too.
+                view.graphics.power_3s = Some(255);
+                view.graphics.heart_bpm = Some(148);
                 view.state = Status::Recording;
                 view.active_secs = 3725;
                 view.battery = Some(Battery {
@@ -1292,14 +1308,14 @@ mod tests {
                 .into_iter()
                 .enumerate()
                 {
-                    view.radar.targets[slot] = Some(radar::Target {
+                    view.graphics.radar.targets[slot] = Some(radar::Target {
                         threat,
                         side: radar::Side::Behind,
                         range_mm,
                         closing_speed_cm_s: 900,
                     });
                 }
-                view.radar.status = radar::Status::Ready;
+                view.graphics.radar.status = radar::Status::Ready;
                 view.toast = radar_paired.then(|| Toast::new("LAP 1 05:00 200W", Tone::Info));
                 // The back-to-start arrow at an angle, its edges blended.
                 let back = ride::Back::Guide(crate::ride::homing::Guide {

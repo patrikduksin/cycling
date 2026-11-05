@@ -1,19 +1,24 @@
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import { Command } from 'foldkit'
 
 import {
   BrowserMsg,
-  RESET_PLANS,
+  type OpOutcome,
   RequestId,
-  ResetKind,
   mintCode,
   mintOwnerKey,
 } from '@cycling/protocol'
 
-import { RelayHandle, SerialHandle } from './handles.ts'
-import { type ChooserCancelled, type ChooserFailed, Chooser } from './links.ts'
+import { PortHandle, RelayHandle } from './handles.ts'
+import {
+  type ChooserCancelled,
+  type ChooserFailed,
+  Chooser,
+  type PortLink,
+} from './links.ts'
 import { Message } from './message.ts'
 import { StoredSession } from './model.ts'
 import { clearStoredSession, writeStoredSession } from './storage.ts'
@@ -104,6 +109,33 @@ export const SendControl = Command.define('SendControl', {
     ),
 })
 
+const enteredOutcome = (port: Option.Option<PortLink>): OpOutcome =>
+  Option.isSome(port) && port.value._tag === 'Flasher'
+    ? { _tag: 'Entered', chip: port.value.session.chip }
+    : { _tag: 'Failed', reason: 'portLost', detail: '' }
+
+/**
+ * Answers an Enter from the held session. The chip facts, the MAC among
+ * them, go from the session to the relay here and never through `update`.
+ */
+export const SendEntered = Command.define('SendEntered', {
+  args: { id: RequestId },
+  messages: [Message.CompletedSendControl],
+  execute: ({ id }) =>
+    PortHandle.get.pipe(
+      Effect.option,
+      Effect.flatMap(port =>
+        RelayHandle.get.pipe(
+          Effect.flatMap(link =>
+            link.send({ _tag: 'OpResult', id, outcome: enteredOutcome(port) }),
+          ),
+        ),
+      ),
+      Effect.ignore,
+      Effect.as(Message.CompletedSendControl()),
+    ),
+})
+
 /** Said while the relay handle is still held, so `Bye` is on the wire before the socket closes. */
 export const SayBye = Command.define('SayBye', {
   messages: [Message.SaidBye],
@@ -112,22 +144,6 @@ export const SayBye = Command.define('SayBye', {
     Effect.ignore,
     Effect.as(Message.SaidBye()),
   ),
-})
-
-export const RunReset = Command.define('RunReset', {
-  args: { id: RequestId, kind: ResetKind },
-  messages: [Message.FinishedReset],
-  execute: ({ id, kind }) =>
-    SerialHandle.get.pipe(
-      Effect.flatMap(link => link.runSignals(RESET_PLANS[kind])),
-      Effect.map(() => Message.FinishedReset({ id, outcome: 'done' })),
-      Effect.catchTags({
-        ResourceNotAvailable: () =>
-          Effect.succeed(Message.FinishedReset({ id, outcome: 'portNotOpen' })),
-        SerialLinkLost: () =>
-          Effect.succeed(Message.FinishedReset({ id, outcome: 'failed' })),
-      }),
-    ),
 })
 
 export const WaitRelayRetry = Command.define('WaitRelayRetry', {

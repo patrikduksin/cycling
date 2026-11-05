@@ -4,6 +4,8 @@ import * as Option from 'effect/Option'
 import * as Socket from 'effect/socket/Socket'
 import { Runtime } from 'foldkit'
 
+import { open } from '@cycling/flasher'
+
 import { browserRelay } from './adapters/relay.ts'
 import { makeWebSerial } from './adapters/serial.ts'
 import { webUsb } from './adapters/usb.ts'
@@ -26,6 +28,7 @@ const devQuery = import.meta.env.DEV
 
 const realAdapters: Adapters = {
   serial: makeWebSerial(),
+  flasher: { open },
   usb: webUsb,
   relay: Option.map(relayBase, base =>
     browserRelay({

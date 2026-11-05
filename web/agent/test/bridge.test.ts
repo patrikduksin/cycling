@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test'
 import * as Effect from 'effect/Effect'
-import * as Exit from 'effect/Exit'
 import type * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
@@ -8,29 +7,20 @@ import * as Queue from 'effect/Queue'
 import * as Redacted from 'effect/Redacted'
 import * as Schedule from 'effect/Schedule'
 import type * as Scope from 'effect/Scope'
-import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import {
-  type AgentMsg,
-  Code,
-  Epoch,
-  type Frame,
-  type ResetKind,
-} from '@cycling/protocol'
+import { Code, Epoch } from '@cycling/protocol'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 
 import { AgentConfig } from '../src/AgentConfig.ts'
 import * as Bridge from '../src/Bridge.ts'
-import { requestReset } from '../src/Control.ts'
 import { BunTerminalPtyHost, PtyHost } from '../src/PtyHost.ts'
 import * as RelayClient from '../src/RelayClient.ts'
 import { Remote, layer as RemoteLayer } from '../src/Remote.ts'
 import { isPortOpen, type RemoteStatus } from '../src/RemotePort.ts'
-import { C606_IDENTITY } from './support/fakePort.ts'
 import {
   type Admission,
   fakeRelay,
@@ -38,7 +28,6 @@ import {
   OPEN_SNAPSHOT,
 } from './support/fakeRelay.ts'
 import { ptyClient } from './support/ptyClient.ts'
-import { rfcClient } from './support/rfcClient.ts'
 
 const TOKEN = 'test-token-0123456789abcdef-0123456789'
 const CODE = Code.make('7KQM4XP2')
@@ -112,23 +101,10 @@ const statusUntil = (
   ok: (status: RemoteStatus) => boolean,
 ) => eventually(SubscriptionRef.get(status), ok)
 
-const nextControl = (relay: FakeRelay) =>
-  Queue.take(relay.received).pipe(
-    Effect.repeat({
-      until: (frame: Frame<AgentMsg>) => frame._tag === 'Control',
-    }),
-    Effect.flatMap(frame =>
-      frame._tag === 'Control'
-        ? Effect.succeed(frame.message)
-        : Effect.die(frame),
-    ),
-    Effect.timeout('5 seconds'),
-  )
-
 const nextBytes = (relay: FakeRelay) =>
   Queue.take(relay.received).pipe(
     Effect.flatMap(frame =>
-      frame._tag === 'Bytes'
+      frame._tag === 'Console'
         ? Effect.succeed([...frame.bytes])
         : Effect.die(frame),
     ),
@@ -140,20 +116,20 @@ const attachAndOpen = Effect.gen(function* () {
   const config = yield* AgentConfig
   const endpoints = yield* Bridge.open({
     port,
-    identity: C606_IDENTITY,
     dir: config.dir,
     code: CODE,
+    notice: () => Effect.void,
   })
   return { port, endpoints }
 })
 
 describe('agent against a fake relay', () => {
-  test('R2: the agent offers cycling.v1 and its token as subprotocols on /v1/agent/<code>', () =>
+  test('R2: the agent offers cycling.v2 and its token as subprotocols on /v2/agent/<code>', () =>
     withAgent(relay =>
       Effect.gen(function* () {
         yield* (yield* Remote).attach(CODE)
-        expect(yield* relay.offered).toEqual([`cycling.v1, auth.${TOKEN}`])
-        expect(yield* relay.paths).toEqual([`/v1/agent/${CODE}`])
+        expect(yield* relay.offered).toEqual([`cycling.v2, auth.${TOKEN}`])
+        expect(yield* relay.paths).toEqual([`/v2/agent/${CODE}`])
       }),
     ))
 
@@ -171,86 +147,6 @@ describe('agent against a fake relay', () => {
         const command = text('CMD 7 INFO\n')
         yield* client.write(command)
         expect(yield* nextBytes(relay)).toEqual([...command])
-      }),
-    ))
-
-  test('the RFC 2217 client takes the door and gives it back to the pty', () =>
-    withAgent(relay =>
-      Effect.gen(function* () {
-        const { endpoints } = yield* attachAndOpen
-        const pty = yield* ptyClient(endpoints.pty)
-        yield* pty.open
-        const esptool = yield* rfcClient(endpoints.rfc2217)
-        yield* eventually(
-          SubscriptionRef.get(endpoints.doors),
-          doors => doors.active === 'rfc2217',
-        )
-        const slip = Uint8Array.of(0xc0, 0x01, 0xff, 0xc0)
-        yield* relay.sendBytes(slip)
-        expect(
-          yield* eventually(esptool.data, data => data.length >= slip.length),
-        ).toEqual([...slip])
-        expect([...(yield* pty.read(1, 0.3))]).toEqual([])
-        yield* esptool.send([0x07, 0xff, 0xff])
-        expect(yield* nextBytes(relay)).toEqual([0x07, 0xff])
-        yield* esptool.end
-        yield* eventually(
-          SubscriptionRef.get(endpoints.doors),
-          doors => doors.active === 'pty',
-        )
-        const back = text('back on the pty\n')
-        yield* relay.sendBytes(back)
-        expect([...(yield* pty.read(back.length, 3))]).toEqual([...back])
-      }),
-    ))
-
-  test('a second RFC 2217 client is refused while one holds the door', () =>
-    withAgent(relay =>
-      Effect.gen(function* () {
-        const { endpoints } = yield* attachAndOpen
-        yield* rfcClient(endpoints.rfc2217)
-        yield* eventually(
-          SubscriptionRef.get(endpoints.doors),
-          doors => doors.active === 'rfc2217',
-        )
-        const second = yield* rfcClient(endpoints.rfc2217)
-        expect(yield* eventually(second.closed, closed => closed)).toBe(true)
-        expect(yield* relay.connections).toBe(1)
-      }),
-    ))
-
-  test('a recognized reset sends exactly one Reset, resolved by the browser ResetResult', () =>
-    withAgent(relay =>
-      Effect.gen(function* () {
-        const { endpoints } = yield* attachAndOpen
-        const notices = yield* Queue.unbounded<string>()
-        yield* Effect.forkScoped(
-          endpoints.notices.pipe(
-            Stream.runForEach(event =>
-              event._tag === 'Reset'
-                ? Queue.offer(
-                    notices,
-                    `${event.kind} ${Option.isNone(event.result) ? 'done' : 'failed'}`,
-                  )
-                : Effect.void,
-            ),
-          ),
-        )
-        const esptool = yield* rfcClient(endpoints.rfc2217)
-        yield* esptool.replay('D1 R1 P P R1 D1 R0 D1')
-        const reset = yield* nextControl(relay)
-        expect(reset).toMatchObject({ _tag: 'Reset', kind: 'hardReset' })
-        if (reset._tag !== 'Reset') return
-        yield* relay.browser({
-          _tag: 'ResetResult',
-          id: reset.id,
-          outcome: 'done',
-        })
-        expect(
-          yield* Queue.take(notices).pipe(Effect.timeout('5 seconds')),
-        ).toBe('hardReset done')
-        yield* Effect.sleep('200 millis')
-        expect(yield* Queue.size(relay.received)).toBe(0)
       }),
     ))
 
@@ -282,35 +178,6 @@ describe('agent against a fake relay', () => {
         expect(reopened.traffic.dropped).toBe(12)
         expect(yield* port.write(text('after'))).toBe(true)
         expect(yield* nextBytes(relay)).toEqual([...text('after')])
-      }),
-    ))
-
-  test('the control socket verb resets through the browser and reports its refusal', () =>
-    withAgent((relay, dir) =>
-      Effect.gen(function* () {
-        yield* attachAndOpen
-        const control = Bridge.sessionPaths(dir, CODE).control
-        const answered = Effect.gen(function* () {
-          const reset = yield* nextControl(relay)
-          if (reset._tag !== 'Reset') return yield* Effect.die(reset)
-          yield* relay.browser({
-            _tag: 'ResetResult',
-            id: reset.id,
-            outcome:
-              reset.kind === 'usbJtagBootloader' ? 'done' : 'portNotOpen',
-          })
-        })
-        yield* Effect.forkScoped(Effect.forever(answered))
-        const reset = (kind: ResetKind) =>
-          requestReset({ path: control, code: CODE, kind })
-        expect(
-          Exit.isSuccess(yield* Effect.exit(reset('usbJtagBootloader'))),
-        ).toBe(true)
-        const refused = yield* Effect.flip(reset('hardReset'))
-        expect(refused).toMatchObject({
-          _tag: 'ControlRefused',
-          why: { _tag: 'Answered', reply: 'the browser port is not open' },
-        })
       }),
     ))
 
@@ -369,21 +236,7 @@ describe('agent against a fake relay', () => {
       { subprotocol: `auth.${TOKEN}` },
     ))
 
-  test('a reset with no agent behind the control socket says so', () =>
-    withAgent((_relay, dir) =>
-      Effect.gen(function* () {
-        const refused = yield* Effect.flip(
-          requestReset({
-            path: Bridge.sessionPaths(dir, CODE).control,
-            code: CODE,
-            kind: 'hardReset',
-          }),
-        )
-        expect(refused.why).toEqual({ _tag: 'NoAgent', code: CODE })
-      }),
-    ))
-
-  test('closing the scope removes the symlink, the control socket and the session dir', async () => {
+  test('closing the scope removes the symlink and the session dir', async () => {
     const dir = await withAgent((_relay, dir) =>
       attachAndOpen.pipe(Effect.as(dir)),
     )
@@ -440,7 +293,7 @@ const runCli = <A, E>(program: Effect.Effect<A, E, Scope.Scope>) =>
   Effect.runPromise(Effect.scoped(program))
 
 describe('main.ts', () => {
-  test('the child sees both endpoints and its exit code is mirrored', () =>
+  test('the child sees the pty and the device socket, and its exit code is mirrored', () =>
     runCli(
       Effect.gen(function* () {
         const relay = yield* fakeRelay({ snapshot: OPEN_SNAPSHOT })
@@ -451,7 +304,7 @@ describe('main.ts', () => {
             '--',
             'sh',
             '-c',
-            'test -L "$CYCLING_PORT" || exit 1; case "$CYCLING_ESPTOOL_PORT" in rfc2217://127.0.0.1:*) exit 7;; esac; exit 1',
+            'test -L "$CYCLING_PORT" && test -S "$CYCLING_FLASHER" && exit 7; exit 1',
           ],
         })
         const { code, stderr } = yield* agent.exit(10)

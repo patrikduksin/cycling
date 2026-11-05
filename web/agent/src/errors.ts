@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import { Code, type EndReason, ResetKind } from '@cycling/protocol'
+import { type EndReason, OpFailure } from '@cycling/protocol'
 
 export class Unauthorized extends Schema.TaggedError<
   Unauthorized,
@@ -46,38 +46,55 @@ export type Ending =
   | { readonly _tag: 'Replaced' }
   | { readonly _tag: 'Rejected'; readonly error: AdmissionError }
 
-export class PortNotOpen extends Schema.TaggedError<
-  PortNotOpen,
-  { readonly brand: unique symbol }
->()('PortNotOpen', {}) {}
-
-export class RequestFailed extends Schema.TaggedError<
-  RequestFailed,
-  { readonly brand: unique symbol }
->()('RequestFailed', {}) {}
-
-export class RequestTimedOut extends Schema.TaggedError<
-  RequestTimedOut,
-  { readonly brand: unique symbol }
->()('RequestTimedOut', { ms: Schema.Int }) {}
-
 export class RelayDown extends Schema.TaggedError<
   RelayDown,
   { readonly brand: unique symbol }
 >()('RelayDown', {}) {}
 
-/** Why a reset or line-coding request did not complete. */
-export type RequestError =
-  | PortNotOpen
-  | RequestFailed
-  | RequestTimedOut
-  | RelayDown
+export class OpStalled extends Schema.TaggedError<
+  OpStalled,
+  { readonly brand: unique symbol }
+>()('OpStalled', { ms: Schema.Int }) {}
+
+/** Why an op's answer did not arrive. */
+export type OpTransportError = RelayDown | OpStalled
+
+export class OpFailed extends Schema.TaggedError<
+  OpFailed,
+  { readonly brand: unique symbol }
+>()('OpFailed', { reason: OpFailure, detail: Schema.String }) {}
+
+/** Read data with a hole, or bytes whose MD5 is not the chip's, after the retries. */
+export class TransferBroken extends Schema.TaggedError<
+  TransferBroken,
+  { readonly brand: unique symbol }
+>()('TransferBroken', { detail: Schema.String }) {}
+
+/** The relay or the visitor stayed away longer than an op can wait, the session is over, or the relay dropped mid-reboot. */
+export class Unreachable extends Schema.TaggedError<
+  Unreachable,
+  { readonly brand: unique symbol }
+>()('Unreachable', { detail: Schema.String }) {}
+
+/** A file the caller named could not be read or written, or names flash past the chip. */
+export class BadRequest extends Schema.TaggedError<
+  BadRequest,
+  { readonly brand: unique symbol }
+>()('BadRequest', { detail: Schema.String }) {}
+
+/** Why a device op did not complete; each is one error reply on the device socket. */
+export type FlashError =
+  | OpFailed
+  | TransferBroken
+  | Unreachable
+  | OpStalled
+  | BadRequest
 
 export class LocalResourceError extends Schema.TaggedError<
   LocalResourceError,
   { readonly brand: unique symbol }
 >()('LocalResourceError', {
-  resource: Schema.Literals(['pty', 'rfc2217', 'control', 'sessionDir']),
+  resource: Schema.Literals(['pty', 'deviceDoor', 'sessionDir']),
   detail: Schema.String,
 }) {}
 
@@ -90,18 +107,6 @@ export class PortNeverOpened extends Schema.TaggedError<
   PortNeverOpened,
   { readonly brand: unique symbol }
 >()('PortNeverOpened', { seconds: Schema.Int, state: Schema.String }) {}
-
-export class ControlRefused extends Schema.TaggedError<
-  ControlRefused,
-  { readonly brand: unique symbol }
->()('ControlRefused', {
-  kind: ResetKind,
-  why: Schema.Union([
-    Schema.TaggedStruct('NoAgent', { code: Code }),
-    /** The running agent's own words; empty when it closed without one. */
-    Schema.TaggedStruct('Answered', { reply: Schema.String }),
-  ]),
-}) {}
 
 /** Everything that stops `cycling remote <code>` before or instead of a session ending. */
 export type SessionError =

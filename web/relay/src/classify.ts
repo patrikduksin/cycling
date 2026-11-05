@@ -29,7 +29,8 @@ const sender = <M>(
           Match.valueTags(frame, {
             Control: ({ message }): Event => textEvent(message, text),
             Pong: (): Event => ({ _tag: 'Pong' }),
-            Bytes: (): Event => malformed,
+            Console: (): Event => malformed,
+            OpData: (): Event => malformed,
           }),
         onFailure: () => malformed,
       }),

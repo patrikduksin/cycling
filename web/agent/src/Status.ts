@@ -10,19 +10,16 @@ import {
   formatCode,
   formatUsbId,
   type PortState,
-  ResetKind,
 } from '@cycling/protocol'
 
-import type { Doors } from './Doors.ts'
+import type { DoorRequest } from './DeviceDoor.ts'
 import type { Link, RemoteStatus } from './RemotePort.ts'
 import type {
   AdmissionError,
-  ControlRefused,
   Ending,
-  RequestError,
+  FlashError,
   SessionError,
 } from './errors.ts'
-import type { Rfc2217Event } from './rfc2217/Rfc2217Door.ts'
 
 export const TOKEN_TOO_SHORT =
   'CYCLING_REMOTE_TOKEN must be the AGENT_TOKEN the relay was deployed with (at least 32 characters)'
@@ -35,8 +32,6 @@ export const describeConfig = (message: string): string =>
 
 export const WAITING_FOR_DEVICE = 'waiting for the visitor to choose a device'
 
-export const controlUsage = `expected "reset <${ResetKind.literals.join('|')}>"`
-
 export const describeDevice = (device: Device): string =>
   Match.valueTags(device, {
     serial: ({ identity }) => `usb-serial ${formatUsbId(identity)}`,
@@ -47,6 +42,7 @@ const describePort = (state: PortState): string =>
   Match.valueTags(state, {
     Opening: () => 'port opening',
     Open: ({ baud }) => `port open ${baud}`,
+    Flashing: () => 'port in update mode',
     Lost: () => 'port lost',
     Reacquiring: () => 'port reconnecting',
     Failed: ({ reason }) =>
@@ -91,15 +87,7 @@ export const describeEnding = (ending: Ending): string =>
     Rejected: ({ error }) => describeAdmission(error),
   })
 
-export const describeRequestError = (error: RequestError): string =>
-  Match.valueTags(error, {
-    PortNotOpen: () => 'the browser port is not open',
-    RequestFailed: () => 'the browser could not perform it',
-    RequestTimedOut: ({ ms }) => `no answer from the browser within ${ms} ms`,
-    RelayDown: () => 'the relay is reconnecting',
-  })
-
-export const describeError = (error: SessionError | ControlRefused): string =>
+export const describeError = (error: SessionError): string =>
   Match.valueTags(error, {
     Unauthorized: describeAdmission,
     SessionNotFound: describeAdmission,
@@ -111,34 +99,44 @@ export const describeError = (error: SessionError | ControlRefused): string =>
       `could not set up the ${resource}: ${detail}`,
     PortNeverOpened: ({ seconds, state }) =>
       `the visitor's port did not open within ${seconds} s (${state})`,
-    ControlRefused: ({ kind, why }) =>
-      `reset ${kind} failed: ${Match.valueTags(why, {
-        NoAgent: ({ code }) => `no agent is running for ${formatCode(code)}`,
-        Answered: ({ reply }) => (reply === '' ? 'no answer' : reply),
-      })}`,
   })
 
-export const resetDone = (kind: ResetKind): string => `reset ${kind}: ok`
+const hex = (n: number) => `0x${n.toString(16)}`
+
+const whatOf = (request: DoorRequest): string =>
+  Match.value(request).pipe(
+    Match.discriminatorsExhaustive('op')({
+      enter: () => 'enter',
+      read: ({ address, size }) =>
+        `read ${formatBytes(size)} at ${hex(address)}`,
+      write: ({ address }) => `write at ${hex(address)}`,
+      verify: ({ address }) => `verify at ${hex(address)}`,
+      reboot: () => 'reboot',
+    }),
+  )
+
+/** One line per device op on stderr; the MAC is never in it. */
+export const describeDoorOp = (request: DoorRequest, ms: number): string =>
+  `flasher: ${whatOf(request)} in ${(ms / 1000).toFixed(1)} s`
+
+export const describeFlashError = (
+  request: DoorRequest,
+  error: FlashError,
+): string =>
+  `flasher: ${whatOf(request)} failed: ${Match.valueTags(error, {
+    OpFailed: ({ reason, detail }) =>
+      detail === '' ? reason : `${reason}, ${detail}`,
+    TransferBroken: ({ detail }) => detail,
+    Unreachable: ({ detail }) => detail,
+    OpStalled: ({ ms }) => `no progress for ${ms / 1000} s`,
+    BadRequest: ({ detail }) => detail,
+  })}`
 
 export const cannotRun = (command: string, detail: string): string =>
   `cannot run ${command}: ${detail}`
 
 export const childStopped = (command: string, detail: string): string =>
   `${command} stopped without an exit code: ${detail}`
-
-export const describeNotice = (event: Rfc2217Event): Option.Option<string> => {
-  if (event._tag === 'Refused') {
-    return Option.some('rfc2217: refused a second client (one at a time)')
-  }
-  if (event._tag !== 'Reset') return Option.none()
-  return Option.some(
-    Option.match(event.result, {
-      onNone: () => `rfc2217: ${event.kind} done`,
-      onSome: error =>
-        `rfc2217: ${event.kind} failed, ${describeRequestError(error)}`,
-    }),
-  )
-}
 
 const describeLink = (link: Link): string =>
   Match.valueTags(link, {
@@ -149,25 +147,24 @@ const describeLink = (link: Link): string =>
   })
 
 /** The part of the status line that changes rarely: printed as a new line when it changes and stdout is not a TTY. */
-export const statusState = (status: RemoteStatus, doors: Doors): string => {
+export const statusState = (status: RemoteStatus): string => {
   const port = Option.match(status.port, {
     onNone: () => 'no port yet',
     onSome: ({ epoch, state }) => `epoch ${epoch}  ${describePort(state)}`,
   })
-  return `${describeLink(status.link)}  ${port}  door ${doors.active}`
+  return `${describeLink(status.link)}  ${port}`
 }
 
-/** `dropped` counts bytes written while the relay or the port was down, strays from the inactive door, and device bytes no pty reader took. */
+/** `dropped` counts bytes written while the relay or the port was down, and device bytes no pty reader took. */
 export const statusLine = (options: {
   readonly status: RemoteStatus
-  readonly doors: Doors
   readonly ptyDropped: number
 }): string => {
-  const { status, doors, ptyDropped } = options
+  const { status, ptyDropped } = options
   const { fromDevice, toDevice, dropped } = status.traffic
-  const lost = doors.dropped.pty + doors.dropped.rfc2217 + dropped + ptyDropped
+  const lost = dropped + ptyDropped
   const drops = lost > 0 ? `  dropped ${formatBytes(lost)}` : ''
-  return `[ ${statusState(status, doors)}  from device ${formatBytes(fromDevice)}  to device ${formatBytes(toDevice)}${drops} ]`
+  return `[ ${statusState(status)}  from device ${formatBytes(fromDevice)}  to device ${formatBytes(toDevice)}${drops} ]`
 }
 
 export const endpointBlock = (options: {
@@ -175,11 +172,11 @@ export const endpointBlock = (options: {
   readonly relay: string
   readonly device: Device
   readonly pty: string
-  readonly rfc2217: string
+  readonly flasher: string
 }): string =>
   [
     `joined ${formatCode(options.code)} via ${options.relay}`,
     `device   ${describeDevice(options.device)}`,
     `  CYCLING_PORT=${options.pty}`,
-    `  CYCLING_ESPTOOL_PORT=${options.rfc2217}`,
+    `  CYCLING_FLASHER=${options.flasher}`,
   ].join('\n')

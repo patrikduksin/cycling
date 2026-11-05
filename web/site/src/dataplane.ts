@@ -9,6 +9,7 @@ import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
 import {
+  type OpData,
   type RelayEvent,
   type ToBrowser,
   coalesceBytes,
@@ -174,14 +175,16 @@ const makeWritePath = <R>(
   })
 
 /**
- * Relay frames in arrival order: bytes go to the port's write queue (counted
- * as dropped when it is down or full), control becomes a Message, and a close
- * ends the stream with its code. A Reset or a close abandons the bytes still
- * waiting for the port. Control keeps flowing while the port is gone or stuck.
+ * Relay frames in arrival order: console bytes go to the port's write queue
+ * (counted as dropped when it is down, full or held by the flasher), write
+ * payloads go to the flasher's inbox, control becomes a Message, and a close
+ * ends the stream with its code, abandoning the bytes still waiting for the
+ * port. Control keeps flowing while the port is gone or stuck.
  */
 export const relayToDevice = <R>(options: {
   readonly events: Stream.Stream<RelayEvent<ToBrowser>>
   readonly write: (bytes: Uint8Array) => Effect.Effect<boolean, never, R>
+  readonly deliver: (frame: OpData) => Effect.Effect<void, never, R>
   readonly attempt: number
 }): Stream.Stream<Message, never, R> =>
   withTraffic(
@@ -198,12 +201,10 @@ export const relayToDevice = <R>(options: {
                   Effect.Effect<ReadonlyArray<Message>, never, R>
                 >(),
                 Match.tagsExhaustive({
-                  Bytes: ({ bytes }) => path.offer(bytes).pipe(Effect.as([])),
+                  Console: ({ bytes }) => path.offer(bytes).pipe(Effect.as([])),
+                  OpData: frame => options.deliver(frame).pipe(Effect.as([])),
                   Control: ({ message }) =>
-                    (message._tag === 'Reset'
-                      ? path.abandon
-                      : Effect.void
-                    ).pipe(Effect.as([Message.ReceivedFromRelay({ message })])),
+                    Effect.succeed([Message.ReceivedFromRelay({ message })]),
                   Pong: () => Effect.succeed([]),
                   Closed: ({ code }) =>
                     path.abandon.pipe(

@@ -20,6 +20,9 @@ import * as Socket from 'effect/socket/Socket'
  */
 import {
   agentProtocols,
+  type Binary,
+  Lease,
+  type OpOutcome,
   type BrowserMsg,
   browserProtocols,
   CloseCode,
@@ -97,7 +100,7 @@ interface Listener {
 }
 
 interface Peer<R extends Role> extends Listener {
-  readonly send: (item: Uint8Array | Sends<R>) => Effect.Effect<boolean>
+  readonly send: (item: Binary | Sends<R>) => Effect.Effect<boolean>
   readonly next: Effect.Effect<Heard<R>, SmokeFailure>
   readonly leave: Effect.Effect<void>
 }
@@ -242,7 +245,7 @@ const check = (label: string, ok: boolean, detail?: unknown) =>
 const expectBytes = (peer: Listener, label: string, sent: Uint8Array) =>
   peer.next.pipe(
     Effect.flatMap(event =>
-      event._tag === 'Bytes' &&
+      event._tag === 'Console' &&
       event.bytes.length === sent.length &&
       event.bytes.every((byte, index) => byte === sent[index])
         ? say(`  ok   ${label} (${sent.length} bytes, byte-exact)`)
@@ -258,6 +261,8 @@ const device: BrowserMsg & { readonly _tag: 'DeviceAnnounced' } = {
   },
 }
 const requestId = Schema.decodeSync(RequestId)(7)
+const lease = Lease.make('0123456789abcdef')
+const released: OpOutcome = { _tag: 'Released' }
 
 interface Session {
   readonly code: Code
@@ -336,9 +341,9 @@ const happyPath = Effect.gen(function* () {
   yield* expectMessage(g, 'agent A receives the live DeviceAnnounced', device)
 
   const bytes = Uint8Array.from({ length: 256 }, (_, index) => index)
-  yield* a.send(bytes)
+  yield* a.send({ _tag: 'Console', bytes })
   yield* expectBytes(g, 'browser to agent', bytes)
-  yield* g.send(bytes)
+  yield* g.send({ _tag: 'Console', bytes })
   yield* expectBytes(a, 'agent to browser', bytes)
 
   const b = yield* browser('browser B (same key)', s)
@@ -353,11 +358,11 @@ const happyPath = Effect.gen(function* () {
     role: 'browser',
     present: true,
   })
-  yield* b.send({ _tag: 'ResetResult', id: requestId, outcome: 'done' })
+  yield* b.send({ _tag: 'OpResult', id: requestId, outcome: released })
   yield* expectMessage(
     g,
     'the replaced socket closing did not announce the browser gone',
-    { _tag: 'ResetResult', outcome: 'done' },
+    { _tag: 'OpResult', outcome: released },
   )
 
   const h = yield* agent('agent B (replaces A)', s)
@@ -371,10 +376,10 @@ const happyPath = Effect.gen(function* () {
     role: 'agent',
     present: true,
   })
-  yield* h.send({ _tag: 'Reset', id: requestId, kind: 'hardReset' })
+  yield* h.send({ _tag: 'Op', id: requestId, op: { _tag: 'Enter', lease } })
   yield* expectMessage(b, 'agent request reaches the browser', {
-    _tag: 'Reset',
-    kind: 'hardReset',
+    _tag: 'Op',
+    op: { _tag: 'Enter', lease },
   })
 
   yield* h.leave
@@ -438,7 +443,11 @@ const violations = Effect.gen(function* () {
     {
       label: 'browser sends an agent message',
       sender: 'browser',
-      payload: JSON.stringify({ _tag: 'Reset', id: 1, kind: 'hardReset' }),
+      payload: JSON.stringify({
+        _tag: 'Op',
+        id: 1,
+        op: { _tag: 'Enter', lease: '0123456789abcdef' },
+      }),
     },
     {
       label: 'agent sends a browser message',

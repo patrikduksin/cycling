@@ -2,18 +2,20 @@ import * as Effect from 'effect/Effect'
 import * as Filter from 'effect/Filter'
 import * as Match from 'effect/Match'
 import * as Option from 'effect/Option'
+import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 
 import type {
-  Baud,
   Device,
+  Op,
+  OpOutcome,
   PortStatus,
-  ResetKind,
+  RequestId,
   ToAgent,
 } from '@cycling/protocol'
 
-import type { Ending, RequestError } from './errors.ts'
+import type { Ending, OpTransportError } from './errors.ts'
 
 export type Link =
   | { readonly _tag: 'Connecting' }
@@ -36,23 +38,50 @@ export interface RemoteStatus {
   readonly traffic: Traffic
 }
 
+/** What one op produces, in the order the page sent it; `Result` is last. */
+export type OpEvent =
+  | {
+      readonly _tag: 'Data'
+      readonly offset: number
+      readonly bytes: Uint8Array
+    }
+  | { readonly _tag: 'Progress'; readonly done: number; readonly total: number }
+  | { readonly _tag: 'Result'; readonly outcome: OpOutcome }
+
+/** An op as the agent sends it: a Write carries its payload, nothing else has one. */
+export type OpRequest =
+  | { readonly op: Exclude<Op, { readonly _tag: 'Write' }> }
+  | {
+      readonly op: Extract<Op, { readonly _tag: 'Write' }>
+      readonly payload: Uint8Array
+    }
+
 /**
  * The agent's whole view of a visitor's device. Redial, request
- * correlation, epochs and the relay's framing live behind these six members;
+ * epochs and the relay's framing live behind these members;
  * nothing that uses a port sees a wire message.
  */
 export interface RemotePort {
   /** The announced device; waits for the browser to announce one. */
   readonly device: Effect.Effect<Device>
-  /** Device to agent bytes. Hot: bytes nobody is reading are gone. */
-  readonly output: Stream.Stream<Uint8Array>
+  /** Device bytes from the moment this runs, kept for the stream while the scope lives. */
+  readonly listen: Effect.Effect<Stream.Stream<Uint8Array>, never, Scope.Scope>
   /** Agent to device bytes. False when they were dropped because the relay or the port is down. */
   readonly write: (bytes: Uint8Array) => Effect.Effect<boolean>
   readonly status: SubscriptionRef.SubscriptionRef<RemoteStatus>
-  /** The browser runs the plan locally; resolves when its signals are done, not when the device re-enumerates. */
-  readonly reset: (kind: ResetKind) => Effect.Effect<void, RequestError>
-  /** The browser reopens its port at the new baud (Web Serial has no setBaud), a short Lost/Open gap. */
-  readonly setBaud: (baud: Baud) => Effect.Effect<void, RequestError>
+  /** A request id no op of this session has used. */
+  readonly nextId: Effect.Effect<RequestId>
+  /**
+   * Sends one op under `id`, then a Write's payload as its data frames, and
+   * streams what the page answers. Sending the same id again is a resend:
+   * the page joins the op still running under it, or answers it again.
+   * Fails `RelayDown` when the relay drops or is down, and `OpStalled` after
+   * `OP_STALL_MS` with neither progress nor a result.
+   */
+  readonly op: (
+    id: RequestId,
+    request: OpRequest,
+  ) => Stream.Stream<OpEvent, OpTransportError>
 }
 
 export const isPortOpen = (status: RemoteStatus): boolean =>
@@ -88,8 +117,8 @@ export const applyMessage = (
       ...status,
       port: Option.some(port),
     }),
-    ResetResult: () => status,
-    LineCodingResult: () => status,
+    OpProgress: () => status,
+    OpResult: () => status,
     Bye: () => status,
   })
 

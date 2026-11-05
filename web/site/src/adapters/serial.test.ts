@@ -4,8 +4,6 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Stream from 'effect/Stream'
 
-import { RESET_PLANS } from '@cycling/protocol'
-
 import {
   ReacquireTimeout,
   SerialLinkLost,
@@ -261,22 +259,6 @@ describe('serial link', () => {
         const link = yield* acquire(0)
         yield* link.write(Uint8Array.of(0, 255, 17, 19))
         expect(device.written).toEqual([[0, 255, 17, 19]])
-      }).pipe(Effect.scoped),
-    ))
-
-  test('runs a reset plan as setSignals steps, leaving unnamed lines alone', () =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const device = makePort(c606)
-        granted = [device]
-        const link = yield* acquire(0)
-        yield* link.runSignals(RESET_PLANS.hardReset)
-        expect(device.calls.filter(call => call.name === 'setSignals')).toEqual(
-          [
-            { name: 'setSignals', detail: { requestToSend: true } },
-            { name: 'setSignals', detail: { requestToSend: false } },
-          ],
-        )
       }).pipe(Effect.scoped),
     ))
 

@@ -16,6 +16,7 @@ import {
   type Model,
   Page,
   type PortPhase,
+  type QueuedOp,
   type Relay,
   Relay as RelayStates,
   type Session,
@@ -69,7 +70,8 @@ export const serialLive = (
     readonly epoch?: number
     readonly baud?: number
     readonly relay?: Relay
-    readonly pendingLineCoding?: number
+    readonly ops?: ReadonlyArray<QueuedOp>
+    readonly writesAllowed?: boolean
   } = {},
 ): Model => ({
   canDescribeUsb: true,
@@ -85,15 +87,16 @@ export const serialLive = (
           _tag: 'Open',
           baud: patch.baud ?? DEFAULT_BAUD,
         },
-        pendingLineCoding: Option.fromNullishOr(patch.pendingLineCoding).pipe(
-          Option.map(requestId),
-        ),
+        ops: patch.ops ?? [],
+        activity: [],
       },
     }),
     relay:
       patch.relay ?? RelayStates.Joined({ attempt: 0, agentPresent: true }),
     monitor: emptyMonitor,
     copied: false,
+    writesAllowed: patch.writesAllowed ?? false,
+    confirmingStop: false,
   }),
 })
 
@@ -105,5 +108,7 @@ export const usbLive = (relay?: Relay): Model => ({
     relay: relay ?? RelayStates.Joined({ attempt: 0, agentPresent: false }),
     monitor: emptyMonitor,
     copied: false,
+    writesAllowed: false,
+    confirmingStop: false,
   }),
 })

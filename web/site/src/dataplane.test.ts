@@ -7,7 +7,12 @@ import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import { TestClock } from 'effect/testing'
 
-import { type RelayEvent, RequestId, type ToBrowser } from '@cycling/protocol'
+import {
+  Lease,
+  type RelayEvent,
+  RequestId,
+  type ToBrowser,
+} from '@cycling/protocol'
 
 import { MONITOR_WINDOW_MS, deviceToRelay, relayToDevice } from './dataplane.ts'
 import { SerialLinkLost } from './links.ts'
@@ -93,6 +98,7 @@ describe('deviceToRelay', () => {
 
 describe('relayToDevice', () => {
   const id = Schema.decodeSync(RequestId)(7)
+  const lease = Lease.make('0123456789abcdef')
 
   test('writes bytes to the port, passes control through and ends on close', () =>
     run(
@@ -109,17 +115,21 @@ describe('relayToDevice', () => {
               written.push(Array.from(bytes))
               return true
             }),
+          deliver: () => Effect.void,
           attempt: 2,
         }).pipe(Stream.runCollect, Effect.forkChild)
 
-        yield* Queue.offer(queue, { _tag: 'Bytes', bytes: Uint8Array.of(1, 2) })
+        yield* Queue.offer(queue, {
+          _tag: 'Console',
+          bytes: Uint8Array.of(1, 2),
+        })
         yield* settle
         yield* Queue.offer(queue, {
           _tag: 'Control',
-          message: { _tag: 'Reset', id, kind: 'hardReset' },
+          message: { _tag: 'Op', id, op: { _tag: 'Release', lease } },
         })
         yield* Queue.offer(queue, { _tag: 'Pong' })
-        yield* Queue.offer(queue, { _tag: 'Bytes', bytes: Uint8Array.of(3) })
+        yield* Queue.offer(queue, { _tag: 'Console', bytes: Uint8Array.of(3) })
         yield* settle
         yield* Queue.offer(queue, { _tag: 'Closed', code: 4410 })
         yield* Queue.end(queue)
@@ -140,6 +150,40 @@ describe('relayToDevice', () => {
       }),
     ))
 
+  test('write payloads go to the inbox in order and never reach update', () =>
+    run(
+      Effect.gen(function* () {
+        const delivered: Array<number> = []
+        const queue = yield* Queue.unbounded<
+          RelayEvent<ToBrowser>,
+          Cause.Done
+        >()
+        const fiber = yield* relayToDevice({
+          events: Stream.fromQueue(queue),
+          write: () => Effect.succeed(false),
+          deliver: frame =>
+            Effect.sync(() => {
+              delivered.push(frame.offset)
+            }),
+          attempt: 1,
+        }).pipe(Stream.runCollect, Effect.forkChild)
+
+        for (const offset of [0, 15_360, 30_720]) {
+          yield* Queue.offer(queue, {
+            _tag: 'OpData',
+            id,
+            offset,
+            bytes: new Uint8Array(4),
+          })
+        }
+        yield* Queue.end(queue)
+        const messages = yield* Fiber.join(fiber)
+
+        expect(delivered).toEqual([0, 15_360, 30_720])
+        expect(messages).toEqual([])
+      }),
+    ))
+
   test('control still flows while the port drops bytes', () =>
     run(
       Effect.gen(function* () {
@@ -150,13 +194,17 @@ describe('relayToDevice', () => {
         const fiber = yield* relayToDevice({
           events: Stream.fromQueue(queue),
           write: () => Effect.succeed(false),
+          deliver: () => Effect.void,
           attempt: 1,
         }).pipe(Stream.runCollect, Effect.forkChild)
 
-        yield* Queue.offer(queue, { _tag: 'Bytes', bytes: Uint8Array.of(5, 5) })
+        yield* Queue.offer(queue, {
+          _tag: 'Console',
+          bytes: Uint8Array.of(5, 5),
+        })
         yield* Queue.offer(queue, {
           _tag: 'Control',
-          message: { _tag: 'SetLineCoding', id, baud: 921_600 },
+          message: { _tag: 'Op', id, op: { _tag: 'Enter', lease } },
         })
         yield* Queue.end(queue)
         const messages = yield* Fiber.join(fiber)
@@ -169,7 +217,7 @@ describe('relayToDevice', () => {
       }),
     ))
 
-  test('a stuck port write never holds up a Reset or a close, and the byte queue stays bounded', () =>
+  test('a stuck port write never holds up control or a close, and the byte queue stays bounded', () =>
     run(
       Effect.gen(function* () {
         const written: Array<ReadonlyArray<number>> = []
@@ -190,13 +238,14 @@ describe('relayToDevice', () => {
                     return true
                   })
             }),
+          deliver: () => Effect.void,
           attempt: 4,
         }).pipe(Stream.runCollect, Effect.forkChild)
 
         const sent = WRITE_QUEUE_FRAMES + 5
         for (let frame = 0; frame < sent; frame++) {
           yield* Queue.offer(queue, {
-            _tag: 'Bytes',
+            _tag: 'Console',
             bytes: Uint8Array.of(frame),
           })
           if (frame === 0) {
@@ -208,9 +257,12 @@ describe('relayToDevice', () => {
         yield* settle
         yield* Queue.offer(queue, {
           _tag: 'Control',
-          message: { _tag: 'Reset', id, kind: 'usbJtagBootloader' },
+          message: { _tag: 'Op', id, op: { _tag: 'Enter', lease } },
         })
-        yield* Queue.offer(queue, { _tag: 'Bytes', bytes: Uint8Array.of(0xaa) })
+        yield* Queue.offer(queue, {
+          _tag: 'Console',
+          bytes: Uint8Array.of(0xaa),
+        })
         yield* settle
         yield* Queue.offer(queue, { _tag: 'Closed', code: 4000 })
         yield* Queue.end(queue)
@@ -229,9 +281,9 @@ describe('relayToDevice', () => {
         })
         expect(messages[3]).toMatchObject({
           direction: 'toDevice',
-          dropped: inFlight + WRITE_QUEUE_FRAMES,
+          dropped: 1 + inFlight + WRITE_QUEUE_FRAMES,
         })
-        expect(written).toEqual([[0xaa]])
+        expect(written).toEqual([])
       }),
     ))
 })

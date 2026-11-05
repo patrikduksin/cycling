@@ -32,12 +32,20 @@
         ],
         "patterns": [
           {
-            "group": ["@cycling/relay", "@cycling/site", "@cycling/agent"],
-            "message": "Leaf packages import only @cycling/protocol; alchemy.run.ts is the one composition root."
+            "group": [
+              "@cycling/relay",
+              "@cycling/site",
+              "@cycling/agent",
+              "@cycling/flasher"
+            ],
+            "message": "Leaf packages import only @cycling/protocol (the site also @cycling/flasher); alchemy.run.ts is the one composition root."
           },
           {
-            "group": ["@cycling/protocol/*"],
-            "message": "Import @cycling/protocol itself; its index is the public surface."
+            "group": [
+              "@cycling/protocol/*",
+              "@cycling/flasher/*"
+            ],
+            "message": "Import a package itself; its index is the public surface."
           }
         ]
       }
@@ -49,5 +57,62 @@
     "**/*.d.ts",
     "**/vite.config.ts",
     ".alchemy/"
+  ],
+  "overrides": [
+    {
+      "files": ["web/site/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect",
+                "message": "Import each module by path: import * as Effect from 'effect/Effect'."
+              }
+            ],
+            "patterns": [
+              {
+                "group": [
+                  "@cycling/relay",
+                  "@cycling/site",
+                  "@cycling/agent"
+                ],
+                "message": "The site imports only @cycling/protocol and @cycling/flasher."
+              },
+              {
+                "group": [
+                  "@cycling/protocol/*",
+                  "@cycling/flasher/*"
+                ],
+                "message": "Import a package itself; its index is the public surface."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["web/flasher/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect",
+                "message": "Import each module by path: import * as Effect from 'effect/Effect'."
+              }
+            ],
+            "patterns": [
+              {
+                "group": ["@cycling/*"],
+                "message": "@cycling/flasher knows nothing of the relay or the wire, so a page without them can use it."
+              }
+            ]
+          }
+        ]
+      }
+    }
   ]
 }

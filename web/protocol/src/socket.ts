@@ -6,9 +6,11 @@ import * as Stream from 'effect/Stream'
 import * as Socket from 'effect/socket/Socket'
 
 import {
+  type Binary,
   decodeToAgent,
   decodeToBrowser,
   encodeAgentMsg,
+  encodeBinary,
   encodeBrowserMsg,
   type Frame,
   type ProtocolViolation,
@@ -52,7 +54,7 @@ export interface RelaySocket<R extends Role> {
    */
   readonly events: Stream.Stream<RelayEvent<Receives<R>>>
   /** False once the socket is closing: nothing is queued for a later connection. */
-  readonly send: (item: Uint8Array | Sends<R>) => Effect.Effect<boolean>
+  readonly send: (item: Binary | Sends<R>) => Effect.Effect<boolean>
 }
 
 export class RelayDialError extends Schema.TaggedError<
@@ -73,7 +75,7 @@ const selectedProtocol = (ws: Socket.WebSocketLike): string =>
 
 /**
  * One WebSocket to the relay for either role, on `effect/socket`. It is open
- * (and the relay chose `cycling.v1`) when this succeeds, pings every
+ * (and the relay chose `SUBPROTOCOL`) when this succeeds, pings every
  * `KEEPALIVE.intervalMs` while it lives, and closes with the scope. There is
  * no redial here: what a close means is `closeMeaning`'s, and each client
  * decides.
@@ -155,6 +157,10 @@ export const relaySocket = <R extends Role>(options: {
     return {
       events,
       send: item =>
-        write(item instanceof Uint8Array ? item : side.encode(item)),
+        write(
+          item._tag === 'Console' || item._tag === 'OpData'
+            ? encodeBinary(item)
+            : side.encode(item),
+        ),
     }
   })

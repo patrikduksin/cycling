@@ -6,6 +6,22 @@ import type { Environment, Missing } from './model.ts'
 
 export const REACQUIRE = { timeoutMs: 60_000, pollMs: 250 } as const
 
+/** How long the page keeps an unattended hold for an agent that went away, so it can come back to the same lease. */
+export const AGENT_GRACE_MS = 30_000
+
+/**
+ * How long a hold may sit with nothing queued while the agent is here. A
+ * device task asks its next op within seconds; this ends a hold whose
+ * Release was lost on the way, and gives the device back to its app.
+ */
+export const IDLE_HOLD_MS = 120_000
+
+/** The running op and one behind it; the agent sends one at a time, so a third is `busy`. */
+export const OP_QUEUE = 2
+
+/** Lines in the visitor's activity list. */
+export const ACTIVITY_ROWS = 20
+
 /** Relay bytes waiting for the port, in frames; more than this while a write is stuck are dropped. */
 export const WRITE_QUEUE_FRAMES = 32
 

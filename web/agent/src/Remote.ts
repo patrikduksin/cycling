@@ -1,20 +1,21 @@
+import type * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
-import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Match from 'effect/Match'
 import * as Option from 'effect/Option'
 import * as PubSub from 'effect/PubSub'
+import * as Queue from 'effect/Queue'
 import * as Ref from 'effect/Ref'
 import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 
 import {
-  type AgentMsg,
   type Code,
+  OP_STALL_MS,
+  opDataFrames,
   RequestId,
-  type RequestOutcome,
   type ToAgent,
 } from '@cycling/protocol'
 
@@ -24,21 +25,18 @@ import {
   firstMatch,
   isPortOpen,
   type Link,
+  type OpEvent,
+  type OpRequest,
   type RemotePort,
   type RemoteStatus,
   type Traffic,
 } from './RemotePort.ts'
 import {
   type AdmissionError,
-  PortNotOpen,
+  OpStalled,
+  type OpTransportError,
   RelayDown,
-  RequestFailed,
-  type RequestError,
-  RequestTimedOut,
 } from './errors.ts'
-
-/** A reset or a reopen finishes in well under a second at the browser; this is the "browser is gone" bound. */
-export const REQUEST_TIMEOUT_MS = 10_000
 
 export class Remote extends Context.Service<
   Remote,
@@ -58,45 +56,6 @@ const initialStatus: RemoteStatus = {
   traffic: { fromDevice: 0, toDevice: 0, dropped: 0 },
 }
 
-type Answer = Deferred.Deferred<RequestOutcome, RelayDown>
-
-/** Requests waiting for the browser's result, by id; ids are unique per connection. */
-const pendingRequests = Effect.gen(function* () {
-  const nextId = yield* Ref.make(1)
-  const waiting = yield* Ref.make<ReadonlyMap<RequestId, Answer>>(new Map())
-  const take = (id: RequestId) =>
-    Ref.modify(waiting, all => {
-      const rest = new Map(all)
-      rest.delete(id)
-      return [Option.fromNullishOr(all.get(id)), rest]
-    })
-  return {
-    open: Effect.gen(function* () {
-      const id = RequestId.make(yield* Ref.getAndUpdate(nextId, n => n + 1))
-      const answer = yield* Deferred.make<RequestOutcome, RelayDown>()
-      yield* Ref.update(waiting, all => new Map(all).set(id, answer))
-      return { id, answer }
-    }),
-    settle: (id: RequestId, outcome: RequestOutcome) =>
-      take(id).pipe(
-        Effect.flatMap(
-          Option.match({
-            onNone: () => Effect.void,
-            onSome: answer => Deferred.succeed(answer, outcome),
-          }),
-        ),
-      ),
-    forget: (id: RequestId) => Effect.asVoid(take(id)),
-    failAll: Ref.getAndSet(waiting, new Map()).pipe(
-      Effect.flatMap(all =>
-        Effect.forEach(all.values(), answer =>
-          Deferred.fail(answer, new RelayDown()),
-        ),
-      ),
-    ),
-  }
-})
-
 const count = (
   status: SubscriptionRef.SubscriptionRef<RemoteStatus>,
   field: keyof Traffic,
@@ -107,6 +66,61 @@ const count = (
     traffic: { ...current.traffic, [field]: current.traffic[field] + bytes },
   }))
 
+type OpQueue = Queue.Queue<OpEvent, OpTransportError | Cause.Done>
+
+/**
+ * Ops waiting for the page, by id. Ids are unique per session; an event
+ * for an id nobody waits on (an op given up on) is dropped, and a resend
+ * under the same id waits on it afresh.
+ */
+const pendingOps = Effect.gen(function* () {
+  const nextId = yield* Ref.make(1)
+  const waiting = yield* Ref.make<ReadonlyMap<RequestId, OpQueue>>(new Map())
+  const find = (id: RequestId) =>
+    Ref.get(waiting).pipe(Effect.map(all => Option.fromNullishOr(all.get(id))))
+  return {
+    nextId: Ref.getAndUpdate(nextId, n => n + 1).pipe(
+      Effect.map(n => RequestId.make(n)),
+    ),
+    open: (id: RequestId) =>
+      Effect.gen(function* () {
+        const queue: OpQueue = yield* Queue.unbounded<
+          OpEvent,
+          OpTransportError | Cause.Done
+        >()
+        yield* Ref.update(waiting, all => new Map(all).set(id, queue))
+        return queue
+      }),
+    forget: (id: RequestId) =>
+      Ref.update(waiting, all => {
+        const rest = new Map(all)
+        rest.delete(id)
+        return rest
+      }),
+    deliver: (id: RequestId, event: OpEvent) =>
+      find(id).pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.void,
+            onSome: queue =>
+              Queue.offer(queue, event).pipe(
+                Effect.andThen(
+                  event._tag === 'Result' ? Queue.end(queue) : Effect.void,
+                ),
+              ),
+          }),
+        ),
+      ),
+    failAll: Ref.getAndSet(waiting, new Map()).pipe(
+      Effect.flatMap(all =>
+        Effect.forEach(all.values(), queue =>
+          Queue.fail(queue, new RelayDown()),
+        ),
+      ),
+    ),
+  }
+})
+
 export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
   Remote,
   Effect.gen(function* () {
@@ -116,17 +130,22 @@ export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
       const link = yield* relay.connect(code)
       const status = yield* SubscriptionRef.make(initialStatus)
       const output = yield* PubSub.unbounded<Uint8Array>()
-      const pending = yield* pendingRequests
+      const pending = yield* pendingOps
 
       const onControl = (message: ToAgent) =>
         SubscriptionRef.update(status, current =>
           applyMessage(current, message),
         ).pipe(
           Effect.andThen(
-            message._tag === 'ResetResult' ||
-              message._tag === 'LineCodingResult'
-              ? pending.settle(message.id, message.outcome)
-              : Effect.void,
+            Match.value(message).pipe(
+              Match.tag('OpProgress', ({ id, done, total }) =>
+                pending.deliver(id, { _tag: 'Progress', done, total }),
+              ),
+              Match.tag('OpResult', ({ id, outcome }) =>
+                pending.deliver(id, { _tag: 'Result', outcome }),
+              ),
+              Match.orElse(() => Effect.void),
+            ),
           ),
         )
 
@@ -135,10 +154,12 @@ export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
 
       const onInbound = (event: Inbound) =>
         Match.valueTags(event, {
-          Bytes: ({ bytes }) =>
+          Console: ({ bytes }) =>
             PubSub.publish(output, bytes).pipe(
               Effect.andThen(count(status, 'fromDevice', bytes.length)),
             ),
+          OpData: ({ id, offset, bytes }) =>
+            pending.deliver(id, { _tag: 'Data', offset, bytes }),
           Control: ({ message }) => onControl(message),
           Pong: () => Effect.void,
           Down: () =>
@@ -156,30 +177,6 @@ export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
         current.link._tag === 'Connecting' ? Option.none() : Option.some(true),
       )
 
-      const request = (
-        message: (id: RequestId) => AgentMsg,
-      ): Effect.Effect<void, RequestError> =>
-        Effect.gen(function* () {
-          if ((yield* SubscriptionRef.get(status)).link._tag !== 'Joined') {
-            return yield* new RelayDown()
-          }
-          const { id, answer } = yield* pending.open
-          const outcome = yield* Effect.gen(function* () {
-            if (!(yield* link.send(message(id)))) {
-              return yield* new RelayDown()
-            }
-            return yield* Deferred.await(answer).pipe(
-              Effect.timeoutOrElse({
-                duration: REQUEST_TIMEOUT_MS,
-                orElse: () =>
-                  Effect.fail(new RequestTimedOut({ ms: REQUEST_TIMEOUT_MS })),
-              }),
-            )
-          }).pipe(Effect.ensuring(pending.forget(id)))
-          if (outcome === 'portNotOpen') return yield* new PortNotOpen()
-          if (outcome === 'failed') return yield* new RequestFailed()
-        })
-
       const write = (bytes: Uint8Array) =>
         Effect.gen(function* () {
           const open = isPortOpen(yield* SubscriptionRef.get(status))
@@ -188,13 +185,43 @@ export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
           return sent
         })
 
+      const op = (id: RequestId, request: OpRequest) =>
+        Stream.unwrap(
+          Effect.gen(function* () {
+            if ((yield* SubscriptionRef.get(status)).link._tag !== 'Joined') {
+              return yield* new RelayDown()
+            }
+            const queue = yield* pending.open(id)
+            const frames =
+              'payload' in request ? opDataFrames(id, request.payload) : []
+            for (const item of [
+              { _tag: 'Op' as const, id, op: request.op },
+              ...frames,
+            ]) {
+              if (!(yield* link.send(item))) {
+                yield* pending.forget(id)
+                return yield* new RelayDown()
+              }
+            }
+            return Stream.fromQueue(queue).pipe(
+              Stream.timeoutOrElse({
+                duration: OP_STALL_MS,
+                orElse: () => Stream.fail(new OpStalled({ ms: OP_STALL_MS })),
+              }),
+              Stream.ensuring(pending.forget(id)),
+            )
+          }),
+        )
+
       return {
         device: firstMatch(status, current => current.device),
-        output: Stream.fromPubSub(output),
+        listen: PubSub.subscribe(output).pipe(
+          Effect.map(Stream.fromSubscription),
+        ),
         write,
         status,
-        reset: kind => request(id => ({ _tag: 'Reset', id, kind })),
-        setBaud: baud => request(id => ({ _tag: 'SetLineCoding', id, baud })),
+        nextId: pending.nextId,
+        op,
       } satisfies RemotePort
     })
 

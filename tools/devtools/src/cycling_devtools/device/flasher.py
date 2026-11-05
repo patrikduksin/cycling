@@ -7,12 +7,11 @@ what it moves, as esptool does locally.
 """
 
 import io
-import os
 import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -46,21 +45,7 @@ class FlasherError(RuntimeError):
     """Messages carry no device identity."""
 
 
-def flasher_for(
-    port: str, resolve: Callable[[], str], log_dir: Path, environ: Mapping[str, str] = os.environ
-) -> Flasher:
-    """The one backend choice."""
-    return EsptoolFlasher(port, resolve, log_dir, environ)
-
-
-def esptool_port(port, environ):
-    # A pty has no DTR/RTS lines, so esptool reaches a bridged device through its rfc2217 URL.
-    bridged, url = environ.get('CYCLING_PORT'), environ.get('CYCLING_ESPTOOL_PORT')
-    return url if bridged and url and port == bridged else port
-
-
 def chip_from(output):
-    """Chip facts from esptool's get-security-info text."""
     mac = re.search(r'MAC:\s*([0-9a-f:]{17})', output, re.I)
     if mac is None:
         raise FlasherError('Could not establish device identity')
@@ -75,8 +60,8 @@ def chip_from(output):
 class EsptoolFlasher:
     """One esptool process per verb, on a local tty."""
 
-    def __init__(self, port: str, resolve: Callable[[], str], log_dir: Path, environ: Mapping[str, str] = os.environ):
-        self.port, self.resolve, self.log_dir, self.environ = port, resolve, log_dir, environ
+    def __init__(self, port: str, resolve: Callable[[], str], log_dir: Path):
+        self.port, self.resolve, self.log_dir = port, resolve, log_dir
         self.count = 0
 
     def _run(self, *args, before='no-reset', after='no-reset'):
@@ -88,7 +73,7 @@ class EsptoolFlasher:
             '--chip',
             'esp32s3',
             '--port',
-            esptool_port(self.port, self.environ),
+            self.port,
             '--before',
             before,
             '--after',

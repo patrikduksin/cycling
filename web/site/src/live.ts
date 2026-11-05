@@ -8,7 +8,6 @@ import {
   type PortFailureReason,
   type PortState,
   type RequestId,
-  type RequestOutcome,
 } from '@cycling/protocol'
 
 import {
@@ -20,11 +19,20 @@ import {
   type StoredSession,
 } from './model.ts'
 
-/** The port's next value and what the agent hears about it, in order. */
-export interface PortStep {
+/** The port's next value and what the agent hears about it. */
+export interface Step {
   readonly port: Port
+  /** OpResults and PortChanged, in wire order. */
   readonly messages: ReadonlyArray<BrowserMsg>
+  /** An Enter to answer from the held session, so the MAC skips `update`. */
+  readonly entered: Option.Option<RequestId>
 }
+
+export const step = (
+  port: Port,
+  messages: ReadonlyArray<BrowserMsg> = [],
+  entered: Option.Option<RequestId> = Option.none(),
+): Step => ({ port, messages, entered })
 
 const decodeEpoch = Schema.decodeSync(Epoch)
 
@@ -41,7 +49,8 @@ export const newPort = (identity: Port['identity']): Port => ({
   attempt: 0,
   epoch: firstEpoch,
   state: OPENING,
-  pendingLineCoding: Option.none(),
+  ops: [],
+  activity: [],
 })
 
 /** A port recovered after a reload: the granted port is probably there already, but may still be resetting. */
@@ -51,14 +60,20 @@ export const recoveredPort = (stored: StoredSession): Port => ({
   attempt: 1,
   epoch: stored.epoch,
   state: REACQUIRING,
-  pendingLineCoding: Option.none(),
+  ops: [],
+  activity: [],
 })
 
-export const storedOf = (session: Session, port: Port): StoredSession => ({
+export const storedOf = (
+  session: Session,
+  port: Port,
+  writesAllowed: boolean,
+): StoredSession => ({
   session,
   identity: port.identity,
   baud: port.baud,
   epoch: port.epoch,
+  writesAllowed,
 })
 
 const portChangedTo = (port: Port, state: PortState): BrowserMsg => ({
@@ -66,8 +81,14 @@ const portChangedTo = (port: Port, state: PortState): BrowserMsg => ({
   status: { epoch: port.epoch, state },
 })
 
+/** A hold is `Flashing` on the wire from the moment the console lets go. */
+const wireState = (phase: PortPhase): PortState =>
+  phase._tag === 'Entering' || phase._tag === 'Flashing'
+    ? { _tag: 'Flashing' }
+    : phase
+
 export const portChanged = (port: Port): BrowserMsg =>
-  portChangedTo(port, port.state)
+  portChangedTo(port, wireState(port.state))
 
 export const announcement = (source: Source): ReadonlyArray<BrowserMsg> =>
   Source.match<ReadonlyArray<BrowserMsg>>(source, {
@@ -88,78 +109,39 @@ export const announcement = (source: Source): ReadonlyArray<BrowserMsg> =>
  * and rests in Reacquiring, and bumping `attempt` makes the runtime close the
  * dead port and wait for the granted one to return.
  */
-export const reacquire = (
-  port: Port,
-  options: {
-    readonly baud: number
-    readonly lineCodingId: Port['pendingLineCoding']
-  },
-): PortStep => ({
-  port: modifyFields(port, {
-    baud: () => options.baud,
-    attempt: attempt => attempt + 1,
-    state: () => REACQUIRING,
-    pendingLineCoding: () => options.lineCodingId,
-  }),
-  messages: [portChangedTo(port, LOST), portChangedTo(port, REACQUIRING)],
-})
+export const reacquire = (port: Port): Step =>
+  step(
+    modifyFields(port, {
+      attempt: attempt => attempt + 1,
+      state: () => REACQUIRING,
+    }),
+    [portChangedTo(port, LOST), portChangedTo(port, REACQUIRING)],
+  )
 
-export const opened = (port: Port): PortStep => {
+export const opened = (port: Port): Step => {
   const next = modifyFields(port, {
     epoch: nextEpoch,
     state: () => ({ _tag: 'Open', baud: port.baud }),
-    pendingLineCoding: () => Option.none(),
   })
-  return {
-    port: next,
-    messages: [
-      portChanged(next),
-      ...Option.match(port.pendingLineCoding, {
-        onNone: () => [],
-        onSome: id => [lineCodingResult(id, 'done')],
-      }),
-    ],
-  }
+  return step(next, [portChanged(next)])
 }
 
-export const failed = (port: Port, reason: PortFailureReason): PortStep => {
+export const failed = (port: Port, reason: PortFailureReason): Step => {
   const next = modifyFields(port, {
     state: () => ({ _tag: 'Failed', reason }),
-    pendingLineCoding: () => Option.none(),
   })
-  return {
-    port: next,
-    messages: [
-      portChanged(next),
-      ...Option.match(port.pendingLineCoding, {
-        onNone: () => [],
-        onSome: id => [lineCodingResult(id, 'failed')],
-      }),
-    ],
-  }
+  return step(next, [portChanged(next)])
 }
 
-const lineCodingResult = (
-  id: RequestId,
-  outcome: RequestOutcome,
-): BrowserMsg => ({ _tag: 'LineCodingResult', id, outcome })
-
 /** Reopening the port in place of a chooser click: the chosen port replaces the failed one. */
-export const replaced = (port: Port, identity: Port['identity']): PortStep => {
+export const replaced = (port: Port, identity: Port['identity']): Step => {
   const next = modifyFields(port, {
     identity: () => identity,
     attempt: attempt => attempt + 1,
     state: () => OPENING,
-    pendingLineCoding: () => Option.none(),
   })
-  return {
-    port: next,
-    messages: [
-      {
-        _tag: 'DeviceAnnounced',
-        device: { _tag: 'serial', identity },
-      },
-      portChanged(next),
-    ],
-  }
+  return step(next, [
+    { _tag: 'DeviceAnnounced', device: { _tag: 'serial', identity } },
+    portChanged(next),
+  ])
 }

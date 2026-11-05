@@ -2,15 +2,16 @@ import * as Schema from 'effect/Schema'
 import { defineMessageUnion } from 'foldkit/message'
 
 import {
+  Lease,
   PortFailureReason,
   RequestId,
-  RequestOutcome,
   SerialIdentity,
   ToBrowser,
   UsbDescriptor,
 } from '@cycling/protocol'
 
-import { Direction, Session } from './model.ts'
+import { EntryFailure } from './links.ts'
+import { Direction, Finished, Layout, Session } from './model.ts'
 
 /**
  * Facts, not commands. Device bytes reach `update` only as `Traffic`, one
@@ -23,6 +24,11 @@ export const Message = defineMessageUnion({
   ClickedCopyCode: {},
   ClickedDisconnect: {},
   ClickedStartOver: {},
+  ClickedRestartDevice: {},
+  ClickedAllowWrites: {},
+  ClickedDeclineWrite: {},
+  ClickedStopAndDisconnect: {},
+  ClickedKeepGoing: {},
 
   ChoseSerial: { identity: SerialIdentity, session: Session },
   ChoseUsb: { descriptor: UsbDescriptor, session: Session },
@@ -44,13 +50,25 @@ export const Message = defineMessageUnion({
   FailedPort: { reason: PortFailureReason },
   ReleasedSerial: {},
 
+  /** The flasher holds the port; `layout` is what the device's own tables say. */
+  EnteredFlasher: { layout: Schema.Option(Layout) },
+  FailedEntry: { reason: EntryFailure, detail: Schema.String },
+  ProgressedOp: {
+    attempt: Schema.Int,
+    id: RequestId,
+    done: Schema.Int,
+    total: Schema.Int,
+  },
+  FinishedOp: { attempt: Schema.Int, id: RequestId, finished: Finished },
+  /** The hold sat with no op running for its expiry (`holdExpiry`). */
+  ExpiredHold: { attempt: Schema.Int, lease: Lease, after: Schema.Int },
+
   Traffic: {
     direction: Direction,
     bytes: Schema.Uint8Array,
     dropped: Schema.Int,
   },
 
-  FinishedReset: { id: RequestId, outcome: RequestOutcome },
   CompletedSendControl: {},
   CompletedSaveSession: {},
   CompletedClearSession: {},

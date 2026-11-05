@@ -1,6 +1,6 @@
 import * as Match from 'effect/Match'
 import * as Option from 'effect/Option'
-import type { Document, Html, HtmlBuilder } from 'foldkit/html'
+import type { Document, Html } from 'foldkit/html'
 
 import {
   type UsbDescriptor,
@@ -10,6 +10,7 @@ import {
 } from '@cycling/protocol'
 
 import { usbClassName } from './adapters/usb.ts'
+import { isHold, runningWrite } from './holder.ts'
 import { Message } from './message.ts'
 import {
   type Ending,
@@ -22,27 +23,8 @@ import {
   Relay,
   Source,
 } from './model.ts'
-
-type H = HtmlBuilder<Message>
-
-const button = (
-  h: H,
-  options: {
-    readonly label: string
-    readonly onClick: Message
-    readonly tone?: 'primary' | 'danger' | 'quiet'
-    readonly disabled?: boolean
-  },
-): Html =>
-  h.button(
-    [
-      h.Class(`button ${options.tone ?? 'primary'}`),
-      h.Type('button'),
-      h.Disabled(options.disabled ?? false),
-      h.OnClick(options.onClick),
-    ],
-    [options.label],
-  )
+import { type H, type Tone, button } from './parts.ts'
+import { activityView, stopGuard, updatePanel } from './updateView.ts'
 
 const shortScreen = (
   h: H,
@@ -140,8 +122,6 @@ const endedView = (reason: Ending, h: H): Html =>
     ],
   })
 
-type Tone = 'good' | 'attention' | 'bad' | 'plain'
-
 interface Status {
   readonly label: string
   readonly value: string
@@ -175,6 +155,8 @@ const portStatus = (port: Port): Status => ({
       Open: ({ baud }) => ({ value: `open at ${baud}`, tone: 'good' }),
       Opening: () => ({ value: 'opening', tone: 'attention' }),
       Reacquiring: () => ({ value: 'reconnecting', tone: 'attention' }),
+      Entering: () => ({ value: 'entering update mode', tone: 'attention' }),
+      Flashing: () => ({ value: 'update mode', tone: 'attention' }),
       Failed: ({ reason }) => ({
         value:
           reason === 'reacquireTimeout'
@@ -285,8 +267,11 @@ const disconnect = (live: Live, h: H): Html =>
     ],
   )
 
-const serialLiveView = (live: Live, port: Port, h: H): Html =>
-  h.section(
+const serialLiveView = (live: Live, port: Port, h: H): Html => {
+  const guarded = runningWrite(port, live.writesAllowed).pipe(
+    Option.filter(() => live.confirmingStop),
+  )
+  return h.section(
     [h.Class('screen live')],
     [
       hero(live, h),
@@ -314,10 +299,17 @@ const serialLiveView = (live: Live, port: Port, h: H): Html =>
             ],
           )
         : null,
-      monitorView(live.monitor, h),
-      disconnect(live, h),
+      isHold(port.state)
+        ? updatePanel(live, port, h)
+        : monitorView(live.monitor, h),
+      port.activity.length === 0 ? null : activityView(port.activity, h),
+      Option.match(guarded, {
+        onNone: () => disconnect(live, h),
+        onSome: ({ region }) => stopGuard(port, region, h),
+      }),
     ],
   )
+}
 
 const usbDevice = (descriptor: UsbDescriptor): string =>
   `${formatUsbId(descriptor)}, ${usbClassName(descriptor.deviceClass)}`

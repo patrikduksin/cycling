@@ -58,8 +58,8 @@ const refused = (
 /**
  * The public edge of the relay.
  *
- *   GET /v1/browser/:code   subprotocols: cycling.v1, own.<ownerKey>
- *   GET /v1/agent/:code     subprotocols: cycling.v1, auth.<token>
+ *   GET /v2/browser/:code   subprotocols: cycling.v2, own.<ownerKey>
+ *   GET /v2/agent/:code     subprotocols: cycling.v2, auth.<token>
  *
  * Everything that can be decided without the Session is decided here, so a
  * stranger's request never wakes a Durable Object: version, code shape,

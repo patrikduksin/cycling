@@ -4,6 +4,8 @@ import type { Update } from 'foldkit'
 import { modifyFields } from 'foldkit/struct'
 
 import {
+  type Op,
+  type OpOutcome,
   type PortFailureReason,
   type RequestId,
   type ToBrowser,
@@ -14,21 +16,29 @@ import {
 import {
   ClearSession,
   MintSession,
-  RunReset,
   SaveSession,
   SayBye,
   SendControl,
+  SendEntered,
   WaitRelayRetry,
 } from './command.ts'
 import type { HandleServices } from './handles.ts'
+import {
+  failQueued,
+  onLostFlasher,
+  onOp,
+  runningWrite,
+  startQueuedEntry,
+} from './holder.ts'
 import type { Chooser } from './links.ts'
 import {
-  type PortStep,
   announcement,
   failed,
   opened,
   reacquire,
   replaced,
+  type Step,
+  step,
   storedOf,
 } from './live.ts'
 import type { Message } from './message.ts'
@@ -86,22 +96,48 @@ export const ended = (model: Model, reason: Ending): UpdateReturn => ({
   commands: [ClearSession()],
 })
 
-const savePort = (session: Session, port: Port) =>
-  SaveSession({ stored: storedOf(session, port) })
+const savePort = (live: Live, port: Port) =>
+  SaveSession({ stored: storedOf(live.session, port, live.writesAllowed) })
 
-/** `save` writes the port's new baud or epoch to sessionStorage as well. */
-const portStep = (
+/**
+ * Applies a step of the holder table: the port's next value, its OpResults
+ * and PortChanged in order, and an Enter to answer from the session. `save`
+ * writes the new epoch as well.
+ */
+export const holdStep = (
   model: Model,
   live: Live,
-  step: PortStep,
-  save: boolean,
-): UpdateReturn => ({
-  model: withLive(model, live, { source: Source.Serial({ port: step.port }) }),
-  commands: [
-    SendControl({ messages: step.messages }),
-    ...(save ? [savePort(live.session, step.port)] : []),
-  ],
-})
+  next: Step,
+  save = false,
+): UpdateReturn => {
+  const nextModel = withLive(model, live, {
+    source: Source.Serial({ port: next.port }),
+  })
+  const page = nextModel.page
+  const commands = [
+    ...(next.messages.length === 0
+      ? []
+      : [SendControl({ messages: next.messages })]),
+    ...Option.toArray(Option.map(next.entered, id => SendEntered({ id }))),
+    ...(save && isPage('Live')(page) ? [savePort(page, next.port)] : []),
+  ]
+  return commands.length === 0
+    ? { model: nextModel }
+    : { model: nextModel, commands }
+}
+
+/** A holder transition on the serial port, or nothing when it does not apply. */
+export const withHold = (
+  model: Model,
+  live: Live,
+  transition: (port: Port) => Option.Option<Step>,
+): UpdateReturn =>
+  withSerial(model, live, port =>
+    Option.match(transition(port), {
+      onNone: () => ignore(model),
+      onSome: next => holdStep(model, live, next),
+    }),
+  )
 
 export const startLive = (
   model: Model,
@@ -114,6 +150,8 @@ export const startLive = (
       relay: Relay.Dialing({ attempt: 0, failures: 0 }),
       monitor: emptyMonitor,
       copied: false,
+      writesAllowed: false,
+      confirmingStop: false,
     }),
   )
 
@@ -214,21 +252,27 @@ export const onMintedSession = (
   Relay.matchOrElse(
     live.relay,
     {
-      Backoff: ({ attempt }) => ({
-        model: withLive(model, live, {
+      Backoff: ({ attempt }) => {
+        const minted = {
+          ...live,
           session,
           relay: Relay.Dialing({ attempt: attempt + 1, failures: 0 }),
           copied: false,
-        }),
-        commands: Source.match(live.source, {
-          Serial: ({ port }) => [savePort(session, port)],
-          Usb: () => [],
-        }),
-      }),
+          writesAllowed: false,
+        }
+        return {
+          model: withPage(model, minted),
+          commands: Source.match(live.source, {
+            Serial: ({ port }) => [savePort(minted, port)],
+            Usb: () => [],
+          }),
+        }
+      },
     },
     () => ignore(model),
   )
 
+/** Whether the agent is here feeds `holdExpiry`; nothing else changes. */
 const onPeerPresence = (
   model: Model,
   live: Live,
@@ -246,34 +290,29 @@ const onPeerPresence = (
     () => ignore(model),
   )
 
-const refuse = (
-  model: Model,
-  id: RequestId,
-  tag: 'ResetResult' | 'LineCodingResult',
-): UpdateReturn => ({
-  model,
-  commands: [
-    SendControl({ messages: [{ _tag: tag, id, outcome: 'portNotOpen' }] }),
-  ],
-})
+/** A described USB device holds no port: only Release has an answer. */
+const answerWithoutPort = (op: Op): OpOutcome =>
+  op._tag === 'Release'
+    ? { _tag: 'Released' }
+    : { _tag: 'Failed', reason: 'notEntered', detail: '' }
 
-/** The agent's requests need an open serial port; anything else is refused with portNotOpen. */
-const withOpenPort = (
+const onOpMessage = (
   model: Model,
   live: Live,
-  request: { readonly id: RequestId },
-  tag: 'ResetResult' | 'LineCodingResult',
-  handle: (port: Port) => UpdateReturn,
+  id: RequestId,
+  op: Op,
 ): UpdateReturn =>
-  Option.some(live.source).pipe(
-    Option.filter(Source.guards.Serial),
-    Option.map(source => source.port),
-    Option.filter(port => port.state._tag === 'Open'),
-    Option.match({
-      onNone: () => refuse(model, request.id, tag),
-      onSome: handle,
+  Source.match(live.source, {
+    Serial: ({ port }) => holdStep(model, live, onOp(port, id, op)),
+    Usb: () => ({
+      model,
+      commands: [
+        SendControl({
+          messages: [{ _tag: 'OpResult', id, outcome: answerWithoutPort(op) }],
+        }),
+      ],
     }),
-  )
+  })
 
 export const onRelayMessage = (
   model: Model,
@@ -287,23 +326,7 @@ export const onRelayMessage = (
         onPeerPresence(model, live, snapshot.agentPresent),
       PeerPresence: ({ role, present }) =>
         role === 'agent' ? onPeerPresence(model, live, present) : ignore(model),
-      Reset: request =>
-        withOpenPort(model, live, request, 'ResetResult', () => ({
-          model,
-          commands: [RunReset({ id: request.id, kind: request.kind })],
-        })),
-      SetLineCoding: request =>
-        withOpenPort(model, live, request, 'LineCodingResult', port =>
-          portStep(
-            model,
-            live,
-            reacquire(port, {
-              baud: request.baud,
-              lineCodingId: Option.some(request.id),
-            }),
-            true,
-          ),
-        ),
+      Op: ({ id, op }) => onOpMessage(model, live, id, op),
     }),
   )
 
@@ -321,14 +344,39 @@ export const onDisconnect = (model: Model, live: Live): UpdateReturn =>
 const isStarting = (port: Port): boolean =>
   port.state._tag === 'Opening' || port.state._tag === 'Reacquiring'
 
-export const onOpenedPort = (model: Model, live: Live): UpdateReturn =>
-  withSerial(model, live, port =>
-    isStarting(port)
-      ? portStep(model, live, opened(port), true)
-      : ignore(model),
-  )
+/**
+ * During a write, Disconnect first asks; a second answer
+ * (`ClickedStopAndDisconnect`) stops it.
+ */
+export const onClickedDisconnect = (model: Model, live: Live): UpdateReturn =>
+  Source.match(live.source, {
+    Serial: ({ port }) =>
+      Option.isSome(runningWrite(port, live.writesAllowed)) &&
+      !live.confirmingStop
+        ? { model: withLive(model, live, { confirmingStop: true }) }
+        : onDisconnect(model, live),
+    Usb: () => onDisconnect(model, live),
+  })
 
-/** `attempt` tells a stream that ended on its own from one the runtime already replaced. */
+/** An Enter that waited for the console starts as soon as it is open. */
+export const onOpenedPort = (model: Model, live: Live): UpdateReturn =>
+  withSerial(model, live, port => {
+    if (!isStarting(port)) {
+      return ignore(model)
+    }
+    const open = opened(port)
+    return holdStep(
+      model,
+      live,
+      { ...open, port: startQueuedEntry(open.port) },
+      true,
+    )
+  })
+
+/**
+ * `attempt` tells a stream that ended on its own from one the runtime
+ * already replaced. A lost flasher ends its hold.
+ */
 export const onLostPort = (
   model: Model,
   live: Live,
@@ -336,13 +384,8 @@ export const onLostPort = (
 ): UpdateReturn =>
   withSerial(model, live, port =>
     port.attempt === attempt && port.state._tag === 'Open'
-      ? portStep(
-          model,
-          live,
-          reacquire(port, { baud: port.baud, lineCodingId: Option.none() }),
-          false,
-        )
-      : ignore(model),
+      ? holdStep(model, live, reacquire(port))
+      : withHold(model, live, held => onLostFlasher(held, attempt)),
   )
 
 export const onFailedPort = (
@@ -350,11 +393,18 @@ export const onFailedPort = (
   live: Live,
   reason: PortFailureReason,
 ): UpdateReturn =>
-  withSerial(model, live, port =>
-    isStarting(port)
-      ? portStep(model, live, failed(port, reason), false)
-      : ignore(model),
-  )
+  withSerial(model, live, port => {
+    if (!isStarting(port)) {
+      return ignore(model)
+    }
+    const failure = failed(port, reason)
+    const refused = failQueued(failure.port)
+    return holdStep(
+      model,
+      live,
+      step(refused.port, [...failure.messages, ...refused.messages]),
+    )
+  })
 
 export const onChoseSerialAgain = (
   model: Model,
@@ -363,6 +413,6 @@ export const onChoseSerialAgain = (
 ): UpdateReturn =>
   withSerial(model, live, port =>
     port.state._tag === 'Failed'
-      ? portStep(model, live, replaced(port, identity), true)
+      ? holdStep(model, live, replaced(port, identity), true)
       : ignore(model),
   )

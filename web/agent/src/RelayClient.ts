@@ -22,6 +22,7 @@ import {
   coalesceBytes,
   type Code,
   type Frame,
+  type OpData,
   type Refusal,
   relaySocket,
   type RelaySocket,
@@ -45,10 +46,13 @@ export type Inbound =
   | { readonly _tag: 'Down' }
   | { readonly _tag: 'Stopped'; readonly ending: Ending }
 
+/** Console bytes, one op's data frame, or a control message, in the order they are to reach the browser. */
+export type Outbound = Uint8Array | OpData | AgentMsg
+
 export interface RelayLink {
   readonly inbound: Stream.Stream<Inbound>
-  /** False when the socket is down: bytes sent while redialing are dropped, never queued. */
-  readonly send: (item: Uint8Array | AgentMsg) => Effect.Effect<boolean>
+  /** False when the socket is down: anything sent while redialing is dropped, never queued. */
+  readonly send: (item: Outbound) => Effect.Effect<boolean>
 }
 
 /**
@@ -133,7 +137,7 @@ export const layer: Layer.Layer<RelayClient, never, AgentConfig> = Layer.effect(
     const connect = Effect.fn('RelayClient.connect')(function* (code: Code) {
       const url = `${config.relay}${sessionPath('agent', code)}`
       const inbound = yield* Queue.unbounded<Inbound>()
-      const outbound = yield* Queue.unbounded<Uint8Array | AgentMsg>()
+      const outbound = yield* Queue.unbounded<Outbound>()
       const current = yield* Ref.make(Option.none<RelaySocket<'agent'>>())
       const joined = yield* Deferred.make<void, AdmissionError>()
 
@@ -212,7 +216,12 @@ export const layer: Layer.Layer<RelayClient, never, AgentConfig> = Layer.effect(
             Effect.flatMap(
               Option.match({
                 onNone: () => Effect.void,
-                onSome: socket => socket.send(item),
+                onSome: socket =>
+                  socket.send(
+                    item instanceof Uint8Array
+                      ? { _tag: 'Console', bytes: item }
+                      : item,
+                  ),
               }),
             ),
           ),
@@ -224,7 +233,7 @@ export const layer: Layer.Layer<RelayClient, never, AgentConfig> = Layer.effect(
       yield* Deferred.await(joined)
       return {
         inbound: Stream.fromQueue(inbound),
-        send: (item: Uint8Array | AgentMsg) =>
+        send: (item: Outbound) =>
           Ref.get(current).pipe(
             Effect.flatMap(socket =>
               Option.isSome(socket)

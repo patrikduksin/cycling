@@ -20,7 +20,7 @@ import { browserRelay } from './relay.ts'
 type Listener = (event: Socket.WebSocketEvent) => void
 type EventName = 'open' | 'message' | 'error' | 'close'
 
-/** A browser WebSocket as `effect/socket` sees it; `accept` echoes `cycling.v1` like the relay. */
+/** A browser WebSocket as `effect/socket` sees it; `accept` echoes `cycling.v2` like the relay. */
 class FakeWebSocket implements Socket.WebSocketLike {
   readyState = 0
   protocol = ''
@@ -127,9 +127,9 @@ describe('browser relay adapter', () => {
       Effect.gen(function* () {
         const { socket } = yield* harness().open
 
-        expect(socket.url).toBe('wss://relay.test/v1/browser/7KQM4XP2')
+        expect(socket.url).toBe('wss://relay.test/v2/browser/7KQM4XP2')
         expect(socket.protocols).toEqual([
-          'cycling.v1',
+          'cycling.v2',
           `own.${session.ownerKey}`,
         ])
         expect(socket.binaryType).toBe('arraybuffer')
@@ -141,7 +141,7 @@ describe('browser relay adapter', () => {
       Effect.gen(function* () {
         const { link, socket } = yield* harness().open
         socket.receive(welcome)
-        socket.receive(Uint8Array.of(1, 2, 3).buffer)
+        socket.receive(Uint8Array.of(0, 1, 2, 3).buffer)
         socket.receive('pong')
         socket.receive('{"_tag":"Welcome","extra":1}')
         socket.drop(CloseCode.expired)
@@ -149,7 +149,7 @@ describe('browser relay adapter', () => {
         const events = yield* Stream.runCollect(link.events)
         expect(events.map(event => event._tag)).toEqual([
           'Control',
-          'Bytes',
+          'Console',
           'Pong',
           'Closed',
         ])
@@ -157,21 +157,25 @@ describe('browser relay adapter', () => {
       }),
     ))
 
-  test('sends bytes as binary and control as JSON, and reports a closed socket', () =>
+  test('sends console bytes as channel-0 binary and control as JSON, and reports a closed socket', () =>
     run(
       Effect.gen(function* () {
         const { link, socket } = yield* harness().open
 
-        expect(yield* link.send(Uint8Array.of(7, 8))).toBe(true)
+        expect(
+          yield* link.send({ _tag: 'Console', bytes: Uint8Array.of(7, 8) }),
+        ).toBe(true)
         expect(yield* link.send({ _tag: 'Bye' })).toBe(true)
         const [binary, text] = socket.sent
         expect(
           typeof binary === 'string' ? binary : Array.from(binary ?? []),
-        ).toEqual([7, 8])
+        ).toEqual([0, 7, 8])
         expect(text).toBe('{"_tag":"Bye"}')
 
         socket.drop(CloseCode.visitorDisconnected)
-        expect(yield* link.send(Uint8Array.of(9))).toBe(false)
+        expect(
+          yield* link.send({ _tag: 'Console', bytes: Uint8Array.of(9) }),
+        ).toBe(false)
         expect(socket.sent).toHaveLength(2)
       }),
     ))

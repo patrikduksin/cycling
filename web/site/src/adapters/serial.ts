@@ -6,7 +6,7 @@ import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
-import { SerialIdentity, type SignalStep } from '@cycling/protocol'
+import { SerialIdentity } from '@cycling/protocol'
 
 import {
   ChooserCancelled,
@@ -60,31 +60,7 @@ const requestPort: Effect.Effect<SerialPort, ChooserCancelled | ChooserFailed> =
 const ignoreFailure = (attempt: () => Promise<unknown>): Effect.Effect<void> =>
   Effect.tryPromise(attempt).pipe(Effect.ignore)
 
-const setSignals = (
-  port: SerialPort,
-  step: SignalStep,
-): Effect.Effect<void, SerialLinkLost> =>
-  Effect.tryPromise({
-    try: () =>
-      port.setSignals({
-        ...(step.dataTerminalReady === undefined
-          ? {}
-          : { dataTerminalReady: step.dataTerminalReady }),
-        ...(step.requestToSend === undefined
-          ? {}
-          : { requestToSend: step.requestToSend }),
-      }),
-    catch: () => new SerialLinkLost(),
-  }).pipe(
-    Effect.andThen(
-      step.holdMs > 0
-        ? Effect.sleep(Duration.millis(step.holdMs))
-        : Effect.void,
-    ),
-  )
-
 const linkOf = (
-  port: SerialPort,
   reader: ReadableStreamDefaultReader<Uint8Array>,
   writer: WritableStreamDefaultWriter<Uint8Array>,
 ): SerialLink => ({
@@ -103,8 +79,6 @@ const linkOf = (
       try: () => writer.write(bytes),
       catch: () => new SerialLinkLost(),
     }),
-  runSignals: steps =>
-    Effect.forEach(steps, step => setSignals(port, step), { discard: true }),
 })
 
 class PortNotReady extends Schema.TaggedError<
@@ -141,7 +115,7 @@ const open = (
         yield* Effect.ignore(Effect.try(() => writer.releaseLock()))
         yield* ignoreFailure(() => port.close())
       }),
-  ).pipe(Effect.map(({ reader, writer }) => linkOf(port, reader, writer)))
+  ).pipe(Effect.map(({ reader, writer }) => linkOf(reader, writer)))
 
 const getPorts = Effect.tryPromise({
   try: () => navigator.serial.getPorts(),
@@ -201,13 +175,37 @@ export const makeWebSerial = (): SerialAdapter => {
       ),
     )
 
-  const waitForPort = (
-    identity: SerialIdentity,
-    baud: number,
-  ): Effect.Effect<SerialLink, never, Scope.Scope> =>
-    openGranted(identity, baud).pipe(
+  /** Tries `attempt` again on every chance until it stops failing PortNotReady. */
+  const retried = <A, R>(
+    attempt: Effect.Effect<A, PortNotReady, R>,
+  ): Effect.Effect<A, never, R> =>
+    attempt.pipe(
       Effect.catchTag('PortNotReady', () =>
-        nextChance.pipe(Effect.andThen(() => waitForPort(identity, baud))),
+        nextChance.pipe(Effect.andThen(() => retried(attempt))),
+      ),
+    )
+
+  const within = <A, R>(
+    waiting: Effect.Effect<A, never, R>,
+    waitMs: number,
+  ): Effect.Effect<A, ReacquireTimeout, R> =>
+    waiting.pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.millis(waitMs),
+        orElse: () => Effect.fail(new ReacquireTimeout()),
+      }),
+    )
+
+  /** The best granted port for `identity` that nobody has open, unopened. */
+  const findGranted = (identity: SerialIdentity) =>
+    Effect.all({ ports: getPorts, picked: Ref.get(picked) }).pipe(
+      Effect.map(found => candidates({ ...found, identity })),
+      Effect.flatMap(ports =>
+        Effect.fromOption(Option.fromNullishOr(ports[0])).pipe(
+          Effect.mapError(
+            () => new PortNotReady({ reason: 'The device is not connected.' }),
+          ),
+        ),
       ),
     )
 
@@ -231,11 +229,8 @@ export const makeWebSerial = (): SerialAdapter => {
         ? openGranted(identity, baud).pipe(
             Effect.mapError(({ reason }) => new SerialOpenRefused({ reason })),
           )
-        : waitForPort(identity, baud).pipe(
-            Effect.timeoutOrElse({
-              duration: Duration.millis(waitMs),
-              orElse: () => Effect.fail(new ReacquireTimeout()),
-            }),
-          ),
+        : within(retried(openGranted(identity, baud)), waitMs),
+    granted: ({ identity, waitMs }) =>
+      within(retried(findGranted(identity)), waitMs),
   }
 }

@@ -8,11 +8,26 @@ import {
   ChooseUsb,
   CopyCode,
   SaveSession,
-  SendControl,
 } from './command.ts'
+import {
+  onDeclineWrite,
+  onEnteredFlasher,
+  onExpiredHold,
+  onFailedEntry,
+  onFinishedOp,
+  onProgressedOp,
+  onRestartDevice,
+} from './holder.ts'
 import { newPort, recoveredPort, storedOf } from './live.ts'
 import { Message } from './message.ts'
-import { type Flags, type Model, Page, Relay, Source } from './model.ts'
+import {
+  type Flags,
+  type Model,
+  Page,
+  Relay,
+  Source,
+  agentHere,
+} from './model.ts'
 import { emptyMonitor, record } from './monitor.ts'
 import { detectMissing } from './policy.ts'
 import {
@@ -20,6 +35,7 @@ import {
   ended,
   ignore,
   onChoseSerialAgain,
+  onClickedDisconnect,
   onClosedRelay,
   onDisconnect,
   onFailedDial,
@@ -32,6 +48,7 @@ import {
   onRetryDue,
   startLive,
   whenPage,
+  withHold,
   withLive,
   withPage,
   withSerial,
@@ -67,7 +84,37 @@ export const update = (model: Model, message: Message): UpdateReturn =>
       })),
 
     ClickedDisconnect: () =>
+      whenPage(model, 'Live', live => onClickedDisconnect(model, live)),
+
+    ClickedStopAndDisconnect: () =>
       whenPage(model, 'Live', live => onDisconnect(model, live)),
+
+    ClickedKeepGoing: () =>
+      whenPage(model, 'Live', live => ({
+        model: withLive(model, live, { confirmingStop: false }),
+      })),
+
+    ClickedRestartDevice: () =>
+      whenPage(model, 'Live', live =>
+        withHold(model, live, port =>
+          onRestartDevice(port, live.writesAllowed),
+        ),
+      ),
+
+    ClickedAllowWrites: () =>
+      whenPage(model, 'Live', live =>
+        withSerial(model, live, port => ({
+          model: withLive(model, live, { writesAllowed: true }),
+          commands: [
+            SaveSession({ stored: storedOf(live.session, port, true) }),
+          ],
+        })),
+      ),
+
+    ClickedDeclineWrite: () =>
+      whenPage(model, 'Live', live =>
+        withHold(model, live, port => onDeclineWrite(port, live.writesAllowed)),
+      ),
 
     ClickedStartOver: () =>
       whenPage(model, 'Ended', () => ({
@@ -79,7 +126,7 @@ export const update = (model: Model, message: Message): UpdateReturn =>
         const port = newPort(identity)
         return {
           model: startLive(model, { session, source: Source.Serial({ port }) }),
-          commands: [SaveSession({ stored: storedOf(session, port) })],
+          commands: [SaveSession({ stored: storedOf(session, port, false) })],
         }
       }),
 
@@ -137,17 +184,35 @@ export const update = (model: Model, message: Message): UpdateReturn =>
 
     ReleasedSerial: () => ignore(model),
 
+    EnteredFlasher: ({ layout }) =>
+      whenPage(model, 'Live', live =>
+        withHold(model, live, port => onEnteredFlasher(port, layout)),
+      ),
+    FailedEntry: failure =>
+      whenPage(model, 'Live', live =>
+        withHold(model, live, port => onFailedEntry(port, failure)),
+      ),
+    ProgressedOp: progress =>
+      whenPage(model, 'Live', live =>
+        withHold(model, live, port => onProgressedOp(port, progress)),
+      ),
+    FinishedOp: ({ attempt, id, finished }) =>
+      whenPage(model, 'Live', live =>
+        withHold(model, live, port =>
+          onFinishedOp(port, attempt, id, finished),
+        ),
+      ),
+    ExpiredHold: expired =>
+      whenPage(model, 'Live', live =>
+        withHold(model, live, port =>
+          onExpiredHold(port, expired, live.writesAllowed, agentHere(live)),
+        ),
+      ),
+
     Traffic: sample =>
       whenPage(model, 'Live', live => ({
         model: withLive(model, live, { monitor: record(live.monitor, sample) }),
       })),
-
-    FinishedReset: ({ id, outcome }) => ({
-      model,
-      commands: [
-        SendControl({ messages: [{ _tag: 'ResetResult', id, outcome }] }),
-      ],
-    }),
 
     CompletedSendControl: () => ignore(model),
     CompletedSaveSession: () => ignore(model),
@@ -173,6 +238,8 @@ const startPage = (flags: Flags): Page =>
             relay: Relay.Dialing({ attempt: 1, failures: 0 }),
             monitor: emptyMonitor,
             copied: false,
+            writesAllowed: stored.writesAllowed,
+            confirmingStop: false,
           }),
       }),
   })

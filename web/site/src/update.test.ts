@@ -9,7 +9,7 @@ import {
   story,
 } from 'foldkit/story'
 
-import type { BrowserMsg } from '@cycling/protocol'
+import { type BrowserMsg, Lease, type Op } from '@cycling/protocol'
 
 import {
   ChooseSerial,
@@ -17,7 +17,6 @@ import {
   ChooseUsb,
   ClearSession,
   MintSession,
-  RunReset,
   SaveSession,
   SayBye,
   SendControl,
@@ -33,7 +32,7 @@ import {
   Relay,
   Source,
 } from './model.ts'
-import { relayRequirement, serialRequirement } from './resources.ts'
+import { relayRequirement, portRequirement } from './resources.ts'
 import {
   baud,
   descriptor,
@@ -86,7 +85,13 @@ const welcomeFlags = (patch: Partial<Flags['environment']> = {}): Flags => ({
 
 describe('connect flow', () => {
   test('Idle to a joined, open port, command by command', () => {
-    const stored = { session, identity, baud: baud(115_200), epoch: epoch(0) }
+    const stored = {
+      session,
+      identity,
+      baud: baud(115_200),
+      epoch: epoch(0),
+      writesAllowed: false,
+    }
     story(
       update,
       given(idle),
@@ -183,7 +188,7 @@ describe('connect flow', () => {
       Command.resolve(ChooseUsb, Message.ChoseUsb({ descriptor, session })),
       model(next => {
         expect(Source.guards.Usb(liveOf(next).source)).toBe(true)
-        expect(serialRequirement(next)).toEqual(Option.none())
+        expect(portRequirement(next)).toEqual(Option.none())
         expect(Option.isSome(relayRequirement(next))).toBe(true)
       }),
       message(Message.JoinedRelay()),
@@ -222,8 +227,8 @@ describe('port lifecycle', () => {
         },
       ),
     ])
-    expect(serialRequirement(lost.model)).toEqual(
-      Option.some({ identity, baud: 115_200, attempt: 1 }),
+    expect(portRequirement(lost.model)).toEqual(
+      Option.some({ _tag: 'Console', identity, baud: 115_200, attempt: 1 }),
     )
 
     const reopened = update(lost.model, Message.OpenedPort())
@@ -239,7 +244,13 @@ describe('port lifecycle', () => {
       {
         name: SaveSession.name,
         args: {
-          stored: { session, identity, baud: 115_200, epoch: epoch(2) },
+          stored: {
+            session,
+            identity,
+            baud: 115_200,
+            epoch: epoch(2),
+            writesAllowed: false,
+          },
         },
       },
     ])
@@ -261,7 +272,7 @@ describe('port lifecycle', () => {
       _tag: 'Failed',
       reason: 'reacquireTimeout',
     })
-    expect(serialRequirement(failed.model)).toEqual(Option.none())
+    expect(portRequirement(failed.model)).toEqual(Option.none())
 
     const chooser = update(failed.model, Message.ClickedChooseAgain())
     expect(commandsOf(chooser)).toEqual([
@@ -359,6 +370,7 @@ describe('relay lifecycle', () => {
             identity,
             baud: 115_200,
             epoch: epoch(1),
+            writesAllowed: false,
           },
         },
       },
@@ -374,7 +386,7 @@ describe('relay lifecycle', () => {
     expect(commandsOf(replaced)).toEqual([
       { name: ClearSession.name, args: undefined },
     ])
-    expect(serialRequirement(replaced.model)).toEqual(Option.none())
+    expect(portRequirement(replaced.model)).toEqual(Option.none())
     expect(relayRequirement(replaced.model)).toEqual(Option.none())
   })
 
@@ -434,119 +446,31 @@ describe('relay lifecycle', () => {
   })
 })
 
-describe('agent requests', () => {
-  const resetRequest = (kind: 'hardReset' | 'usbJtagBootloader') =>
+describe('agent ops on a described USB device', () => {
+  const lease = Lease.make('0123456789abcdef')
+  const op = (body: Op) =>
     Message.ReceivedFromRelay({
-      message: { _tag: 'Reset', id: requestId(5), kind },
+      message: { _tag: 'Op', id: requestId(5), op: body },
     })
 
-  test('a reset runs on the open port and its result goes back', () => {
-    story(
-      update,
-      given(serialLive()),
-      message(resetRequest('usbJtagBootloader')),
-      Command.expectExact(
-        RunReset({ id: requestId(5), kind: 'usbJtagBootloader' }),
-      ),
-      Command.resolve(
-        RunReset({ id: requestId(5), kind: 'usbJtagBootloader' }),
-        Message.FinishedReset({ id: requestId(5), outcome: 'done' }),
-      ),
-      Command.resolve(
-        SendControl({
-          messages: [
-            { _tag: 'ResetResult', id: requestId(5), outcome: 'done' },
-          ],
+  test('there is no port to enter, and a Release is always answered', () => {
+    expect(commandsOf(update(usbLive(), op({ _tag: 'Enter', lease })))).toEqual(
+      [
+        control({
+          _tag: 'OpResult',
+          id: requestId(5),
+          outcome: { _tag: 'Failed', reason: 'notEntered', detail: '' },
         }),
-        Message.CompletedSendControl(),
-      ),
+      ],
     )
-  })
-
-  test('a reset while the port is not open answers portNotOpen without running', () => {
-    const refused = update(
-      serialLive({ state: { _tag: 'Reacquiring' } }),
-      resetRequest('hardReset'),
-    )
-    expect(commandsOf(refused)).toEqual([
+    expect(
+      commandsOf(update(usbLive(), op({ _tag: 'Release', lease }))),
+    ).toEqual([
       control({
-        _tag: 'ResetResult',
+        _tag: 'OpResult',
         id: requestId(5),
-        outcome: 'portNotOpen',
+        outcome: { _tag: 'Released' },
       }),
-    ])
-  })
-
-  test('a reset on a describe-only device answers portNotOpen', () => {
-    expect(commandsOf(update(usbLive(), resetRequest('hardReset')))).toEqual([
-      control({
-        _tag: 'ResetResult',
-        id: requestId(5),
-        outcome: 'portNotOpen',
-      }),
-    ])
-  })
-
-  test('a new line coding reopens the port at that baud and answers once it is open', () => {
-    const asked = update(
-      serialLive(),
-      Message.ReceivedFromRelay({
-        message: { _tag: 'SetLineCoding', id: requestId(9), baud: 921_600 },
-      }),
-    )
-    expect(portOf(asked.model)).toMatchObject({
-      baud: 921_600,
-      attempt: 1,
-      state: { _tag: 'Reacquiring' },
-      pendingLineCoding: Option.some(requestId(9)),
-    })
-    expect(commandsOf(asked).map(({ name }) => name)).toEqual([
-      'SendControl',
-      'SaveSession',
-    ])
-    expect(serialRequirement(asked.model)).toEqual(
-      Option.some({ identity, baud: 921_600, attempt: 1 }),
-    )
-
-    const opened = update(asked.model, Message.OpenedPort())
-    expect(commandsOf(opened).map(({ name }) => name)).toEqual([
-      'SendControl',
-      'SaveSession',
-    ])
-    expect(commandsOf(opened)[0]).toEqual(
-      control(
-        {
-          _tag: 'PortChanged',
-          status: { epoch: epoch(2), state: { _tag: 'Open', baud: 921_600 } },
-        },
-        { _tag: 'LineCodingResult', id: requestId(9), outcome: 'done' },
-      ),
-    )
-    expect(portOf(opened.model).pendingLineCoding).toEqual(Option.none())
-  })
-
-  test('a line coding whose reopen fails answers failed', () => {
-    const asked = update(
-      serialLive(),
-      Message.ReceivedFromRelay({
-        message: { _tag: 'SetLineCoding', id: requestId(9), baud: 921_600 },
-      }),
-    )
-    const failed = update(
-      asked.model,
-      Message.FailedPort({ reason: 'reacquireTimeout' }),
-    )
-    expect(commandsOf(failed)).toEqual([
-      control(
-        {
-          _tag: 'PortChanged',
-          status: {
-            epoch: epoch(1),
-            state: { _tag: 'Failed', reason: 'reacquireTimeout' },
-          },
-        },
-        { _tag: 'LineCodingResult', id: requestId(9), outcome: 'failed' },
-      ),
     ])
   })
 })
@@ -558,7 +482,7 @@ describe('disconnect', () => {
     expect(commandsOf(leaving)).toEqual([
       { name: SayBye.name, args: undefined },
     ])
-    expect(Option.isSome(serialRequirement(leaving.model))).toBe(true)
+    expect(Option.isSome(portRequirement(leaving.model))).toBe(true)
     expect(Option.isSome(relayRequirement(leaving.model))).toBe(true)
 
     const done = update(leaving.model, Message.SaidBye())
@@ -568,7 +492,7 @@ describe('disconnect', () => {
     expect(commandsOf(done)).toEqual([
       { name: ClearSession.name, args: undefined },
     ])
-    expect(serialRequirement(done.model)).toEqual(Option.none())
+    expect(portRequirement(done.model)).toEqual(Option.none())
     expect(relayRequirement(done.model)).toEqual(Option.none())
   })
 
@@ -602,6 +526,7 @@ describe('init', () => {
         identity,
         baud: baud(921_600),
         epoch: epoch(4),
+        writesAllowed: false,
       }),
     })
     expect(liveOf(resumed.model).session).toEqual(session)
@@ -618,8 +543,8 @@ describe('init', () => {
     expect(liveOf(resumed.model).relay).toEqual(
       Relay.Dialing({ attempt: 1, failures: 0 }),
     )
-    expect(serialRequirement(resumed.model)).toEqual(
-      Option.some({ identity, baud: 921_600, attempt: 1 }),
+    expect(portRequirement(resumed.model)).toEqual(
+      Option.some({ _tag: 'Console', identity, baud: 921_600, attempt: 1 }),
     )
     expect(commandsOf(resumed)).toEqual([])
   })
@@ -644,6 +569,7 @@ describe('init', () => {
           identity,
           baud: baud(115_200),
           epoch: epoch(0),
+          writesAllowed: false,
         }),
       }
       expect(init(flags).model.page).toEqual(Page.Unsupported({ missing }))

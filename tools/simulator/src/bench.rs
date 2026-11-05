@@ -362,8 +362,8 @@ mod scenes {
     fn sensors() -> Sim {
         let mut sim = rider(false);
         sim.home("SENSORS");
-        sim.wait_for("LIVE DATA", seconds(20)).unwrap();
-        sim.expect_text("MY SENSORS");
+        sim.wait_for("LIVE", seconds(20)).unwrap();
+        sim.expect_text("SENSORS");
         sim
     }
 
@@ -544,7 +544,7 @@ mod scenes {
     fn sensor_detail() -> Sim {
         let mut sim = rider(false);
         sim.home("SENSORS");
-        sim.wait_for("LIVE DATA", seconds(20)).unwrap();
+        sim.wait_for("LIVE", seconds(20)).unwrap();
         sim.open_sensor_detail("POWER METER");
         sim
     }

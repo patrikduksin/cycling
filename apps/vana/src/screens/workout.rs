@@ -82,7 +82,7 @@ pub const HOME: [&[u8]; 5] = [b"RIDE", b"SENSORS", b"TRAIN", b"SETTINGS", b"RIDE
 // boxing would allocate every frame.
 #[allow(clippy::large_enum_variant)]
 pub(super) enum Body {
-    /// Nothing prepared: the Sensors menu paints itself.
+    /// Nothing prepared.
     Blank,
     /// Every page that prepares a Canvas, and the sheet over any page.
     Canvas(Canvas),
@@ -423,6 +423,12 @@ impl<'a> View<'a> {
         self.body = Body::Canvas(canvas);
     }
 
+    /// Show the sensor page the menu drew, with its cues.
+    pub fn show_sensors(&mut self, canvas: Canvas, cues: &'static [Cue]) {
+        self.body = Body::Canvas(canvas);
+        self.cues = cues;
+    }
+
     /// Show a prepared Home.
     pub fn set_home(&mut self, home: Home) {
         self.body = Body::Home(home);
@@ -690,6 +696,7 @@ impl<'a> View<'a> {
         match self.page {
             Page::Boot | Page::EndRide | Page::DiscardRide => true,
             Page::Summary | Page::PastRide => summary::question_shown(self.after()),
+            Page::Sensors => super::sensors::full_screen(self.cues),
             _ => self.paused_screen_shown(),
         }
     }
@@ -733,7 +740,7 @@ impl<'a> View<'a> {
         }
         match self.page {
             Page::Ride if !self.pause_screen => ride::paint(self, row),
-            Page::Home | Page::Sensors => {}
+            Page::Home => {}
             Page::Phone => {
                 self.canvas().paint(row);
                 super::phone::paint(self, row);
@@ -819,7 +826,6 @@ impl<'a> View<'a> {
         let mut color = match self.page {
             Page::Ride if !self.pause_screen => ride::reference_pixel(self, x, y),
             Page::Home => self.home().map_or(BLACK, |home| home.pixel(x, y)),
-            Page::Sensors => BLACK,
             Page::Phone => {
                 super::phone::pixel(self, x, y).unwrap_or_else(|| self.canvas().pixel(x, y, BLACK))
             }
@@ -855,7 +861,7 @@ impl<'a> View<'a> {
             _ => Mark::None,
         };
         self.bar = StatusBar::with_battery(&self.time, self.gps, self.battery, mark);
-        self.cues = &[];
+        let shown = core::mem::take(&mut self.cues);
         self.badge = None;
         let cues: &'static [Cue] = match self.page {
             Page::Boot => {
@@ -960,7 +966,8 @@ impl<'a> View<'a> {
                 ride::prepare(self);
                 &[]
             }
-            Page::Home | Page::Sensors => &[],
+            Page::Sensors => shown,
+            Page::Home => &[],
         };
         self.cues = cues;
         // The FTP sheet covers whatever page it shows over.
@@ -1360,6 +1367,12 @@ mod tests {
                 }
                 Page::Form => {
                     view.show_form(crate::screens::form::Mode::Reading);
+                    None
+                }
+                Page::Sensors => {
+                    let mut menu = crate::screens::sensors::Menu::new();
+                    menu.open();
+                    view.show_sensors(menu.canvas(), menu.cues());
                     None
                 }
                 _ => None,

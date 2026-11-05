@@ -62,14 +62,15 @@ FREE RIDE, or the chosen workout's name.
 ACT starts the ride (the green play cue points at it); there is no
 countdown, because a countdown delays the start at a light, and rolling off
 starts the ride from Ready anyway (auto-start). BACK returns Home. Tapping
-the sensors line opens Sensors and starts a search. A ride that started a
+the sensors line opens Sensors. A ride that started a
 moment before the press (rolling off) is only shown, never paused, by ACT.
 
 A live saved ANT+ sensor that reports a low or critical battery turns the
 sensors line amber (red when critical), Home's count and that sensor's dot
 amber, and Home's status line names it, such as HR LOW BATTERY. A sensor that
-is not live is named first: a dead strap is missing, not low. The detail page
-shows the status and, when known, the voltage, such as LOW BATTERY 2.4 V. A
+is not live is named first: a dead strap is missing, not low. Its row on
+SENSORS says BATTERY LOW, and its page shows the voltage, such as 2.4 V, in
+amber (red when critical). A
 sensor with several batteries counts as its weakest. Levels are read from the
 sensor's battery page as it sends it, kept only while VANA runs, and never
 stored.
@@ -86,12 +87,13 @@ Level, read when it connects and every minute after: under 20 % is low and under
 needs 2 % more to clear, and a value over 100 or a sensor without the Battery
 Service says nothing. There is no detail page for it.
 
-A saved power meter's detail page adds CALIBRATE above DISCONNECT and BACK. It
-opens on BACK, so two quick ACT presses never zero a meter under a foot. ACT on
-CALIBRATE sends the power meter a manual zero request. WAITING FOR RADIO shows
+A saved power meter's page puts a green target cue beside ACT and the trash
+cue beside MOVE. ACT does nothing for a second after the page opens, so two
+quick ACT presses never zero a meter under a foot. ACT then sends the power
+meter a manual zero request. WAITING FOR RADIO shows
 while a search still holds the radio (up to twenty seconds), then CALIBRATING...
 while the power meter answers (up to ten). The result is CALIBRATED with the
-offset the power meter reported (OFFSET 512, in its own units), or CALIBRATION
+offset the power meter reported (CALIBRATED OFFSET 512, in its own units), or CALIBRATION
 FAILED with a grey line, CRANKS STILL, TRY AGAIN, when it refuses, stays silent
 or cannot be reached. NOT CONNECTED says the power meter is not live, NOT DURING
 A RIDE says a recording is open (a request still waiting for the radio when a
@@ -597,6 +599,41 @@ Settings.
   RIDES and NEEDS A POWER METER.
 - Nothing is saved: the page is rebuilt from the ride index and the facts
   after every boot.
+
+## Sensors
+
+```text
+Home, Ready, Settings or setup ──> SENSORS ── ACT on ADD SENSOR ──> NEARBY (searches)
+   (straight to NEARBY              │ ACT on a sensor     ^          │ ACT on a sensor: connect it and
+    when nothing is saved)          v                     │ BACK     │ stay; BACK: SENSORS, on it
+                               Sensor's page ─────────────┘          v
+                                 │ trash cue                  REPLACE SENSOR? (a saved type)
+                                 v                              check cue: replace; back cue: keep
+                               FORGET SENSOR?
+                                 trash cue: forget; back cue: the sensor's page
+```
+
+SENSORS lists the saved sensors, each with its state, then ADD SENSOR. MOVE
+walks the rows and wraps; ACT opens the focused one; BACK leaves for where
+Sensors opened from. With nothing saved, Sensors opens straight on NEARBY,
+and BACK there leaves too.
+
+NEARBY searches as it opens, and only there: leaving it stops the
+search. It lists each nearby sensor not saved yet. ACT on one connects it:
+NEARBY stays open, says HEART RATE ADDED (the sensor's name) in green until
+the next message, and keeps listing the other sensors found, so several pair
+from one search. BACK then returns to SENSORS with the sensor added last
+focused. One of a type already saved asks REPLACE SENSOR first. A sensor the search no longer reports says NOT SEEN - SEARCH
+AGAIN, and with all ten slots used, SENSOR SLOTS FULL. Once the search is
+over, ACT with nothing listed, or a tap on the refresh mark, searches again;
+with sensors listed, BACK and ADD SENSOR again does.
+
+A sensor's page shows its state, battery and number with button cues: back
+beside BACK, and the trash beside ACT, or beside MOVE on a power meter, whose
+ACT zeroes it (see Ready). The trash asks FORGET SENSOR? with the sensor's
+name and number; ACT forgets it and returns to SENSORS, BACK returns to its
+page. MOVE does nothing on these pages but a power meter's. A forgotten
+sensor is never connected again until it is chosen on NEARBY.
 
 ## Other routes
 

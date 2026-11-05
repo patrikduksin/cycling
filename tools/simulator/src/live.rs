@@ -453,7 +453,7 @@ mod tests {
         live.pointer(x, y, false);
         run(&mut live, 1_500);
         assert!(
-            live.sim.screen().contains("MY SENSORS"),
+            live.sim.screen().contains("NEARBY"),
             "{}",
             live.sim.screen().text()
         );
@@ -483,7 +483,7 @@ mod tests {
             live.speed = 1;
             run(&mut live, 1_500);
             assert!(
-                live.sim.screen().contains("MY SENSORS"),
+                live.sim.screen().contains("NEARBY"),
                 "{speed}x: the click was not a tap:\n{}",
                 live.sim.screen().text()
             );

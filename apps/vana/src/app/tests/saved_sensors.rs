@@ -236,22 +236,16 @@ fn disconnect_removes_closes_and_late_events_cannot_resurrect_it() {
     let mut radio = Radio::quiet();
     advance(&mut runtime, &mut radio, 0);
     assert_eq!(link(&radio, HEART, 0), Some(LinkState::Connecting));
-    // Disconnect while the connection is still pending.
-    runtime.navigation.page = Page::Sensors;
-    runtime.input(press(Button::BottomLeft), 1000, &mut radio);
-    runtime.input(press(Button::BottomRight), 1400, &mut radio);
-    runtime.input(press(Button::BottomRight), 1800, &mut radio);
+    let forgot = forget_sensor(&mut runtime, &mut radio, HEART, 1000);
     assert_eq!(runtime.links.saved.of_type(HEART), None);
     assert_eq!(runtime.preferences.sensors.of_type(HEART), None);
     assert!(
         runtime
-            .sensor_tiles(&radio, 1800)
+            .sensor_tiles(&radio, forgot)
             .iter()
             .all(Option::is_none)
     );
-    // The scan the page started was cancelled for the close; once it stops,
-    // the pending session closes.
-    run(&mut runtime, &mut radio, 1800, 6000);
+    run(&mut runtime, &mut radio, forgot, 6000);
     assert!(
         radio
             .requests
@@ -380,11 +374,12 @@ fn discovery_waits_for_a_search_in_progress_and_reconnects_after_it() {
     let mut runtime = restored(&[heart]);
     let mut radio = Radio::quiet();
     run(&mut runtime, &mut radio, 0, 15_000);
-    // The rider opens Sensors while the sensor is still missing.
     runtime.navigation.page = Page::Home;
     runtime.navigation.home_cursor = 1;
     runtime.input(press(Button::BottomRight), 15_000, &mut radio);
-    run(&mut runtime, &mut radio, 15_000, 26_000);
+    runtime.input(press(Button::BottomLeft), 15_400, &mut radio);
+    runtime.input(press(Button::BottomRight), 15_800, &mut radio);
+    run(&mut runtime, &mut radio, 15_800, 26_000);
     let scan = radio
         .requests
         .iter()
@@ -502,46 +497,49 @@ fn replacement_backs_off_when_the_old_channel_keeps_failing_to_close() {
 /// began on, and a Cancel reaches the menu so ACT waits for MOVE.
 #[test]
 fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
+    use crate::screens::sensors::Page as SensorPage;
     let heart = peer(HEART, 4242);
     let touch = |runtime: &mut Runtime, radio: &mut Radio, now| {
-        // Where the detail page's DISCONNECT button sits.
-        let point = device_api::input::Point { x: 120, y: 237 };
+        let point = device_api::input::Point { x: 232, y: 312 };
         runtime.input(Input::Touch(point), now, radio)
     };
     let saved = |runtime: &Runtime| runtime.preferences.sensors.of_type(HEART).is_some();
 
-    // Down on the tiles, ACT opens the detail page, lift over DISCONNECT
-    // within a tap's time: the detail page never saw the contact begin.
     let mut runtime = restored(&[heart]);
     let mut radio = Radio::quiet();
     advance(&mut runtime, &mut radio, 0);
-    runtime.navigation.page = Page::Sensors;
-    runtime.input(press(Button::BottomLeft), 1000, &mut radio);
+    runtime.open_sensors(&mut radio, 1000);
     touch(&mut runtime, &mut radio, 1300);
     runtime.input(press(Button::BottomRight), 1400, &mut radio);
-    assert_ne!(runtime.menu.touch_view(), 0, "detail page open");
+    assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
     runtime.input(Input::Release, 1500, &mut radio);
-    assert!(saved(&runtime), "a lift after ACT must not disconnect");
-    // A contact that begins on the detail page does act.
-    touch(&mut runtime, &mut radio, 2000);
-    runtime.input(Input::Release, 2100, &mut radio);
+    assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
+    touch(&mut runtime, &mut radio, 2500);
+    runtime.input(Input::Release, 2600, &mut radio);
+    assert_eq!(runtime.menu.diagnostics().page, SensorPage::Forget);
+    assert!(saved(&runtime));
+    touch(&mut runtime, &mut radio, 3600);
+    runtime.input(Input::Release, 3700, &mut radio);
     assert!(!saved(&runtime));
 
     // A Cancel reaches the menu: ACT then waits for MOVE to reconfirm.
     let mut runtime = restored(&[heart]);
     let mut radio = Radio::quiet();
     advance(&mut runtime, &mut radio, 0);
-    runtime.navigation.page = Page::Sensors;
-    runtime.input(press(Button::BottomLeft), 1000, &mut radio);
+    runtime.open_sensors(&mut radio, 1000);
     runtime.input(press(Button::BottomRight), 1400, &mut radio);
-    assert_ne!(runtime.menu.touch_view(), 0, "detail page open");
+    assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
     runtime.input(Input::Cancel, 1600, &mut radio);
     assert_eq!(
         runtime.menu.diagnostics().message,
         Some(MenuMessage::InputLost)
     );
-    runtime.input(press(Button::BottomRight), 2000, &mut radio);
-    assert!(saved(&runtime), "ACT after lost input changes nothing");
+    runtime.input(press(Button::BottomRight), 3000, &mut radio);
+    assert_eq!(
+        runtime.menu.diagnostics().page,
+        SensorPage::Detail,
+        "ACT after lost input changes nothing"
+    );
 }
 
 fn battery_page(identity: Identity, data: [u8; 8]) -> device_api::ant::Packet {

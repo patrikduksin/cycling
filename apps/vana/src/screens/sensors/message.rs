@@ -26,6 +26,9 @@ pub enum MenuMessage {
     NotSaved,
     /// Saved sensors could not be read, so changes are kept until restart only.
     SavedUnreadable,
+    /// The sensor of this device type, picked on NEARBY, is saved; NEARBY's
+    /// line names it.
+    Added(u8),
 }
 
 impl MenuMessage {
@@ -35,7 +38,7 @@ impl MenuMessage {
             Self::PickSensor => "PICK SENSOR",
             Self::SearchPending => "SEARCH PENDING",
             Self::StartingScan => "STARTING SCAN",
-            Self::Scanning => "SCANNING...",
+            Self::Scanning => "SEARCHING...",
             Self::StoppingScan => "STOPPING SCAN",
             Self::ScanCancelled => "SCAN CANCELLED",
             Self::FinishingScan => "FINISHING SCAN",
@@ -53,6 +56,7 @@ impl MenuMessage {
             Self::SlotsFull => "ALL TEN SENSOR SLOTS ARE IN USE",
             Self::NotSaved => "NOT SAVED - RETRYING",
             Self::SavedUnreadable => "SAVED SENSORS UNREADABLE",
+            Self::Added(_) => "SENSOR ADDED",
         }
     }
 
@@ -67,6 +71,15 @@ impl MenuMessage {
             Self::SavedUnreadable => "NOT SAVED",
             message => message.text(),
         }
+    }
+
+    /// A problem SENSORS names in its title: the search belongs to ADD
+    /// SENSOR, so only trouble with the buttons or the radio shows here.
+    pub const fn on_sensors(self) -> bool {
+        matches!(
+            self,
+            Self::InputLost | Self::RadioLost | Self::RadioUnavailable | Self::StartupFailed
+        )
     }
 
     /// Ordinary discovery and startup progress, as opposed to a problem the
@@ -85,6 +98,7 @@ impl MenuMessage {
                 | Self::StartingSensors
                 | Self::WaitingForCompanion
                 | Self::ScanThenPick
+                | Self::Added(_)
         )
     }
 }
@@ -106,7 +120,6 @@ pub enum CalibrationNote {
 }
 
 impl CalibrationNote {
-    /// The wording fits `CALIBRATED  OFFSET -32768` on one caption line.
     pub fn text(self) -> heapless::String<28> {
         use core::fmt::Write;
         let mut text = heapless::String::new();
@@ -114,7 +127,7 @@ impl CalibrationNote {
             Self::Calibrating => text.write_str("CALIBRATING..."),
             Self::WaitingForRadio => text.write_str("WAITING FOR RADIO"),
             Self::NeedsRestart => text.write_str("RESTART TO CALIBRATE"),
-            Self::Done(offset) => write!(text, "CALIBRATED  OFFSET {offset}"),
+            Self::Done(offset) => write!(text, "CALIBRATED OFFSET {offset}"),
             Self::Failed => text.write_str("CALIBRATION FAILED"),
             Self::NotConnected => text.write_str("NOT CONNECTED"),
             Self::WhileRiding => text.write_str("NOT DURING A RIDE"),

@@ -329,7 +329,10 @@ fn ready_runtime(journal: &mut Journal, radio: &mut Radio) -> Runtime {
     runtime
 }
 
+/// Connect `peer` from NEARBY as the rider does: MOVE to it, ACT, and
+/// ACT again on the check cue when it replaces a saved sensor.
 fn choose_sensor(runtime: &mut Runtime, radio: &mut Radio, peer: device_api::ant::Identity) {
+    use crate::screens::sensors::Page;
     radio.channels.begin_scan(0, 1).unwrap();
     radio.channels.receive(
         device_api::ant::Event::Discovery {
@@ -340,14 +343,55 @@ fn choose_sensor(runtime: &mut Runtime, radio: &mut Radio, peer: device_api::ant
     );
     radio.channels.tick(1);
     runtime.navigation.page = crate::screens::workout::Page::Sensors;
-    let selected = radio.channels(1).iter().flatten().count();
-    let mut now = if selected == 0 { 600 } else { 0 };
-    for _ in 0..=selected {
-        runtime.input(press(Button::BottomLeft), now, radio);
+    let mut now = 600;
+    let mut step = |runtime: &mut Runtime, radio: &mut Radio, button| {
+        runtime.input(press(button), now, radio);
         now += 400;
+    };
+    runtime.refresh_sensor_menu(radio, 1);
+    runtime.menu.show_found();
+    for _ in 0..12 {
+        if runtime.menu.diagnostics().focus == Some(peer) {
+            break;
+        }
+        step(runtime, radio, Button::BottomLeft);
     }
+    assert_eq!(
+        runtime.menu.diagnostics().focus,
+        Some(peer),
+        "{peer:?} is listed"
+    );
+    step(runtime, radio, Button::BottomRight);
+    if runtime.menu.diagnostics().page == Page::Replace {
+        step(runtime, radio, Button::BottomRight);
+    }
+}
+
+/// Forget the saved sensor of `kind` as the rider does from `now`: its
+/// row, its detail page, the trash cue, then the trash cue on FORGET
+/// SENSOR?. Returns when it pressed last.
+fn forget_sensor(runtime: &mut Runtime, radio: &mut Radio, kind: u8, mut now: u64) -> u64 {
+    use crate::screens::sensors::Page;
+    runtime.open_sensors(radio, now);
+    for _ in 0..12 {
+        if runtime.menu.diagnostics().focus.map(|f| f.device_type) == Some(kind) {
+            break;
+        }
+        now += 400;
+        runtime.input(press(Button::BottomLeft), now, radio);
+    }
+    now += 400;
     runtime.input(press(Button::BottomRight), now, radio);
-    if selected > 0 {
-        runtime.input(press(Button::BottomRight), now + 400, radio);
-    }
+    assert_eq!(runtime.menu.diagnostics().page, Page::Detail);
+    now += crate::screens::sensors::SETTLE_MS;
+    let trash = if kind == crate::sensors::ant::device_type::POWER {
+        Button::BottomLeft
+    } else {
+        Button::BottomRight
+    };
+    runtime.input(press(trash), now, radio);
+    assert_eq!(runtime.menu.diagnostics().page, Page::Forget);
+    now += crate::screens::sensors::SETTLE_MS;
+    runtime.input(press(Button::BottomRight), now, radio);
+    now
 }

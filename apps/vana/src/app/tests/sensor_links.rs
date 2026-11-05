@@ -61,32 +61,7 @@ fn workout_scan_keeps_existing_channels_receiving() {
         device_api::ant::LinkState::Connected
     );
 
-    // Disconnect must survive later foreground scans. Select the saved tile
-    // (there are no discovery rows in this radio fixture).
-    runtime.input(
-        Input::Button {
-            button: Button::BottomLeft,
-            code: 1,
-        },
-        12000,
-        &mut radio,
-    );
-    runtime.input(
-        Input::Button {
-            button: Button::BottomRight,
-            code: 1,
-        },
-        12500,
-        &mut radio,
-    );
-    runtime.input(
-        Input::Button {
-            button: Button::BottomRight,
-            code: 1,
-        },
-        12900,
-        &mut radio,
-    );
+    forget_sensor(&mut runtime, &mut radio, 120, 12000);
     assert!(runtime.links.saved.of_type(120).is_none());
     assert!(runtime.preferences.sensors.of_type(120).is_none());
     assert_eq!(
@@ -121,29 +96,14 @@ fn workout_scan_keeps_existing_channels_receiving() {
     );
     radio.channels.tick(24900);
     runtime.menu = crate::screens::sensors::Menu::new();
-
-    runtime.input(
-        Input::Button {
-            button: Button::BottomLeft,
-            code: 1,
-        },
-        24500,
-        &mut radio,
-    );
+    runtime.refresh_sensor_menu(&radio, 24_900);
+    runtime.menu.show_found();
     runtime.input(
         Input::Button {
             button: Button::BottomRight,
             code: 1,
         },
         25000,
-        &mut radio,
-    );
-    runtime.input(
-        Input::Button {
-            button: Button::BottomRight,
-            code: 1,
-        },
-        25400,
         &mut radio,
     );
     assert_eq!(runtime.links.saved.of_type(120), Some((0, peer)));
@@ -322,8 +282,48 @@ fn normal_scan_settling_reports_completion_not_cancellation() {
     assert_eq!(runtime.discovery.scan.message(), MenuMessage::ScanDone);
 }
 
+/// With a sensor saved, Sensors opens on SENSORS and searches only once
+/// the rider opens NEARBY; leaving that page stops the search.
 #[test]
-fn opening_sensors_starts_discovery_without_a_scan_press() {
+fn only_nearby_searches_from_the_sensor_pages() {
+    use crate::screens::sensors::Page as SensorPage;
+    let heart = device_api::ant::Identity {
+        device_type: 120,
+        device_number: 1,
+        transmission_type: 1,
+    };
+    let mut runtime = restored(&[heart]);
+    let mut radio = Radio::new();
+    advance(&mut runtime, &mut radio, 0);
+    let scans = |radio: &Radio| {
+        let scans = radio.requests.iter();
+        scans
+            .filter(|op| matches!(op, AntOperation::Scan(_)))
+            .count()
+    };
+    runtime.navigation.page = crate::screens::workout::Page::Home;
+    runtime.navigation.home_cursor = 1;
+    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    assert_eq!(runtime.menu.diagnostics().page, SensorPage::Sensors);
+    runtime.input(press(Button::BottomRight), 1400, &mut radio);
+    runtime.input(press(Button::TopLeft), 1800, &mut radio);
+    advance(&mut runtime, &mut radio, 2000);
+    assert_eq!(scans(&radio), 0);
+    runtime.input(press(Button::BottomLeft), 2200, &mut radio);
+    runtime.input(press(Button::BottomRight), 2600, &mut radio);
+    advance(&mut runtime, &mut radio, 2700);
+    assert_eq!(runtime.menu.diagnostics().page, SensorPage::Nearby);
+    assert_eq!(scans(&radio), 1);
+    runtime.input(press(Button::TopLeft), 3000, &mut radio);
+    assert_eq!(runtime.menu.diagnostics().page, SensorPage::Sensors);
+    assert!(matches!(
+        radio.requests.last(),
+        Some(AntOperation::StopScan)
+    ));
+}
+
+#[test]
+fn opening_sensors_with_nothing_saved_opens_nearby_and_searches() {
     let mut radio = Radio {
         channels: firmware_services::ant::Channels::new(),
         requests: std::vec::Vec::new(),
@@ -426,24 +426,23 @@ fn busy_connection_continues_after_leaving_and_waits_for_observed_success() {
     };
     choose_sensor(&mut runtime, &mut radio, peer);
     assert!(radio.channel(120, 1000).is_none());
-    runtime.input(
-        Input::Button {
+    for now in [1400, 1800] {
+        let back = Input::Button {
             button: Button::TopLeft,
             code: 1,
-        },
-        1400,
-        &mut radio,
-    );
+        };
+        runtime.input(back, now, &mut radio);
+    }
     assert!(runtime.navigation.page == crate::screens::workout::Page::Home);
     radio.reject = None;
-    advance(&mut runtime, &mut radio, 1400);
-    assert_eq!(radio.channel(120, 1400).unwrap().selected, Some(peer));
+    advance(&mut runtime, &mut radio, 1800);
+    assert_eq!(radio.channel(120, 1800).unwrap().selected, Some(peer));
     assert_eq!(
-        radio.channel(120, 1400).unwrap().link,
+        radio.channel(120, 1800).unwrap().link,
         device_api::ant::LinkState::Connecting
     );
     let count = radio.requests.len();
-    advance(&mut runtime, &mut radio, 1800);
+    advance(&mut runtime, &mut radio, 2200);
     assert_eq!(radio.requests.len(), count);
 }
 

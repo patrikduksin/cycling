@@ -539,7 +539,7 @@ impl Runtime {
                 selected
             }
             Action::Disconnect(kind) => self.links.remove(kind),
-            Action::Scan | Action::Calibrate | Action::Ride => false,
+            Action::Scan | Action::StopScan | Action::Calibrate | Action::Ride => false,
         };
         if changed {
             self.preferences.set_sensors(self.links.saved, now);

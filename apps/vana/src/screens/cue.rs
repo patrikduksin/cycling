@@ -32,8 +32,10 @@ pub enum Icon {
     Back,
     /// Send to the phone.
     Send,
-    /// Discard or delete a ride.
+    /// Discard or delete a ride, or forget a sensor.
     Trash,
+    /// Zero a power meter: a target.
+    Calibrate,
 }
 
 /// The visible quarter disc's radius.
@@ -58,7 +60,7 @@ impl Cue {
     /// red with a white one; others are raised grey with a white one.
     pub const fn colors(&self) -> (u16, u16) {
         match self.icon {
-            Icon::Play | Icon::Check | Icon::Send => (GREEN, BLACK),
+            Icon::Play | Icon::Check | Icon::Send | Icon::Calibrate => (GREEN, BLACK),
             Icon::Stop | Icon::Back => (RAISED, WHITE),
             Icon::Trash => (RED, WHITE),
         }
@@ -213,6 +215,10 @@ fn icon(icon: Icon, x: i32, y: i32) -> u8 {
         Icon::Trash => stroke(x, y, &[(-24, -16), (24, -16)], 5)
             .max(stroke(x, y, &[(-8, -16), (-8, -24), (8, -24), (8, -16)], 5))
             .max(stroke(x, y, &[(-16, -8), (-12, 26), (12, 26), (16, -8)], 5)),
+        Icon::Calibrate => {
+            let distance = ((x * x + y * y) as u32).isqrt() as i32;
+            edge((9 - 2 * (distance - 19).abs()) / 2).max(edge(7 - distance))
+        }
     }
 }
 
@@ -307,6 +313,17 @@ mod tests {
     }
 
     #[test]
+    fn the_calibrate_target_is_a_ring_around_a_dot() {
+        let target = |x, y| icon(Icon::Calibrate, x, y);
+        assert_eq!(target(0, 0), 15, "the dot");
+        assert_eq!(target(12, 0), 0, "the gap");
+        assert_eq!(target(19, 0), 15, "the ring");
+        assert_eq!(target(0, -19), 15);
+        assert_eq!(target(-14, 13), 15);
+        assert_eq!(target(26, 0), 0, "nothing outside");
+    }
+
+    #[test]
     fn cues_sit_in_their_corner_and_paint_their_reference() {
         for corner in [Corner::TopLeft, Corner::BottomRight, Corner::BottomLeft] {
             let icons = [
@@ -316,6 +333,7 @@ mod tests {
                 Icon::Back,
                 Icon::Send,
                 Icon::Trash,
+                Icon::Calibrate,
             ];
             for icon in icons {
                 let cue = Cue::new(corner, icon);

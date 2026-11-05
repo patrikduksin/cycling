@@ -23,6 +23,7 @@ from pathlib import Path
 
 from cycling_devtools.device.firmware import flasher_for
 from cycling_devtools.device.flasher import Chip, FlasherError
+from cycling_devtools.device.page_flasher import PageFlasher
 from cycling_devtools.device.port import add_port_argument, select_port, selected_port
 from cycling_devtools.terminal.usb import acquire_lock
 from cycling_devtools.workspace import DEVICE_LOCAL, private_path
@@ -125,9 +126,11 @@ def main(argv=None):
             print(f'{args.path} {"matches" if matched else "differs from"} flash at {args.address:#x}')
             status = 0 if matched else 1
     except BaseException:
-        # A local chip stays in download mode until something resets it; the page path resets on release anyway.
-        with contextlib.suppress(FlasherError, OSError):
-            flasher.reboot(0)
+        # A local chip stays in download mode until something resets it. The page resets on release, and its
+        # door answers one request at a time, so asking it to reboot mid-read would wait out the read.
+        if not isinstance(flasher, PageFlasher):
+            with contextlib.suppress(FlasherError, OSError):
+                flasher.reboot(0)
         raise
     captured = flasher.reboot(args.seconds if args.verb == 'reboot' else 0)
     if args.verb == 'reboot':

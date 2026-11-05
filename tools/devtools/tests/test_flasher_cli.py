@@ -89,6 +89,16 @@ class FlasherCliTests(unittest.TestCase):
             self.run_cli('verify', '0', str(image))
         self.assertEqual((self.flasher.enters, self.flasher.reboots), (1, 1))
 
+    def test_a_failed_verb_through_the_page_leaves_the_reset_to_the_page(self):
+        page = flasher_cli.PageFlasher(self.logs / 'door.sock', self.logs)
+        page.enter = lambda: (_ for _ in ()).throw(KeyboardInterrupt())
+        rebooted = []
+        page.reboot = lambda seconds: rebooted.append(seconds)
+        self.flasher = page
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_cli('info')
+        self.assertEqual(rebooted, [])
+
     def test_reboot_seconds_beyond_what_the_page_accepts_are_refused(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             self.run_cli('reboot', '--seconds', '61')

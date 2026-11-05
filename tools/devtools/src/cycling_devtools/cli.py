@@ -45,7 +45,11 @@ TASKS = [
         'Build the MMC maintenance image (binary USB protocol, no console) into .local/cycling.bin',
         'bash devices/c606/build.sh maintenance',
     ),
-    task('test', 'Test host firmware logic and device tools', needs=['test-rust', 'test-trouble-host', 'test-python']),
+    task(
+        'test',
+        'Test host firmware logic, device tools and the web packages',
+        needs=['test-rust', 'test-trouble-host', 'test-python', 'test-web'],
+    ),
     task(
         'test-rust',
         'Rust host tests: nextest runs every test binary at once, then the doc tests',
@@ -64,6 +68,12 @@ TASKS = [
         f'{TERRAIN} pytest -q tools/terrain',
     ),
     task(
+        'test-web',
+        'Relay, site, bridge and protocol tests (web/; bun)',
+        'bun install --frozen-lockfile --silent',
+        'bun test web',
+    ),
+    task(
         'stack-frames',
         "Report a firmware ELF's largest stack frames against devices/c606/stack-frames.toml; --suggest prints new budgets",
         f'{DEV}stack_frames',
@@ -80,10 +90,12 @@ TASKS = [
     ),
     task(
         'fmt',
-        'Format Rust and Python code',
+        'Format Rust, Python and web code',
         'cargo fmt --all',
         'ruff format tools/devtools',
         f'{TERRAIN} ruff format tools/terrain',
+        'bun install --frozen-lockfile --silent',
+        'bun run format',
     ),
     task(
         'check',
@@ -97,6 +109,10 @@ TASKS = [
         'cargo check -p device-api --locked --features network-stack',
         'cargo clippy --workspace --all-targets --locked --no-default-features --features shell-simulator/live -- -D warnings',
         'cargo fmt --all -- --check',
+        'bun install --frozen-lockfile --silent',
+        'bun run typecheck',
+        'bun run lint',
+        'bun run format:check',
     ),
     task('terrain', 'Build, validate or trace offline terrain packs (docs/terrain.md)', f'{TERRAIN} cycling-terrain'),
     task(
@@ -147,6 +163,11 @@ TASKS = [
         alias='boot-stock',
     ),
     task('monitor', 'Read USB logs without resetting the device', f'{DEV}device.firmware monitor'),
+    task(
+        'remote',
+        "Use a device plugged into a visitor's browser at cycling.computer as a local port: remote <code> [-- <cmd>]",
+        f'{DEV}device.browser_bridge',
+    ),
     task('wifi-setup', 'Save current NetworkManager Wi-Fi credentials privately', f'{DEV}connectivity.wifi setup'),
     task(
         'ride-export',

@@ -25,3 +25,5 @@ __pycache__/
 
 # Left in older checkouts by the direnv setup this repo used to have.
 .direnv/
+node_modules/
+.alchemy/

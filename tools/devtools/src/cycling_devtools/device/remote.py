@@ -30,6 +30,10 @@ LOCAL_ONLY = {
     'CYCLING_ESP_TOOLCHAIN',
     'CYCLING_FW_TARGET_ROOT',
     'CYCLING_IMAGE_DIR',
+    'CYCLING_ESPTOOL_PORT',
+    'CYCLING_REMOTE_TOKEN',
+    'CYCLING_REMOTE_DIR',
+    'CYCLING_REMOTE_RELAY',
 }
 # Build products stay where they were built; the host keeps its own private state.
 NOT_RETURNED = ['/cycling.bin', '/cycling.elf', '/firmware*/', '/remote/', '/verify/', '/sim/', '/usb.lock']

@@ -120,6 +120,7 @@ class Real(UsbConnection):
             try:
                 self.port = rediscover(self.identity)
                 self.fd = open_no_reset(self.port)
+                self.resync = True
                 self.boot = [None]
                 reply = self.terminal_command('INFO', timeout=min(3, max(0.1, stop - time.monotonic())))
                 if reply['status'] != 'OK':

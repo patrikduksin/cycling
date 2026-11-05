@@ -1,0 +1,26 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["bun"],
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnostics": true,
+        "ignoreEffectWarningsInTscExitCode": false,
+        "diagnosticSeverity": { "floatingEffect": "error" },
+        "allowedUnstableApis": [
+          "effect/http",
+          "effect/socket",
+          "effect/cli",
+          "effect/net",
+          "effect/process",
+          "effect/FileSystem",
+          "effect/PlatformError",
+          "@effect/platform-bun",
+          "@effect/platform-node-shared"
+        ]
+      }
+    ]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

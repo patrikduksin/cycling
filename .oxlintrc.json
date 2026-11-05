@@ -1,0 +1,53 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "extends": ["./node_modules/@foldkit/oxlint-plugin/recommended.json"],
+  "plugins": ["typescript"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_",
+        "destructuredArrayIgnorePattern": "^_"
+      }
+    ],
+    "typescript/no-explicit-any": "error",
+    "typescript/consistent-type-assertions": [
+      "error",
+      { "assertionStyle": "never" }
+    ],
+    "typescript/no-non-null-assertion": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "effect",
+            "message": "Import each module by path: import * as Effect from 'effect/Effect'."
+          }
+        ],
+        "patterns": [
+          {
+            "group": ["@cycling/relay", "@cycling/site", "@cycling/agent"],
+            "message": "Leaf packages import only @cycling/protocol; alchemy.run.ts is the one composition root."
+          },
+          {
+            "group": ["@cycling/protocol/*"],
+            "message": "Import @cycling/protocol itself; its index is the public surface."
+          }
+        ]
+      }
+    ]
+  },
+  "ignorePatterns": [
+    "dist/",
+    "node_modules/",
+    "**/*.d.ts",
+    "**/vite.config.ts",
+    ".alchemy/"
+  ]
+}

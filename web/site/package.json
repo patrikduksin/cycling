@@ -1,0 +1,22 @@
+{
+  "name": "@cycling/site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "effect-tsgo tsc -p ."
+  },
+  "dependencies": {
+    "@cycling/protocol": "workspace:*",
+    "@effect/platform-browser": "catalog:",
+    "effect": "catalog:",
+    "foldkit": "catalog:"
+  },
+  "devDependencies": {
+    "@foldkit/vite-plugin": "0.29.0",
+    "@types/w3c-web-serial": "1.0.9",
+    "@types/w3c-web-usb": "1.0.14",
+    "vite": "8.3.5"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
+  "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
+  "rules": {
+    "effecttsgo/unstable-api-usage": "off"
+  },
+  "ignorePatterns": [
+    "dist/",
+    "node_modules/",
+    "**/*.d.ts",
+    "**/vite.config.ts",
+    ".alchemy/"
+  ]
+}

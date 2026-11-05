@@ -380,7 +380,7 @@ impl Runtime {
         self.sensors_action(action, now, ant);
     }
 
-    /// Show the sensor pages. With nothing saved they open on ADD SENSOR,
+    /// Show the sensor pages. With nothing saved they open on NEARBY,
     /// which searches.
     pub(super) fn open_sensors(&mut self, ant: &mut impl Ant, now: u64) {
         self.navigation.page = Page::Sensors;

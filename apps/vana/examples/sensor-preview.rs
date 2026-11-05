@@ -86,7 +86,7 @@ fn main() {
     focus(&mut ten, None, &mut now);
     render(&ten, &output, "sensors-ten-add-row");
 
-    // ADD SENSOR searches as it opens; the runtime reports the search.
+    // NEARBY searches as it opens; the runtime reports the search.
     focus(&mut menu, None, &mut now);
     press(&mut menu, Button::BottomRight, &mut now);
     menu.search_started();
@@ -165,7 +165,7 @@ fn press(menu: &mut Menu, button: Button, now: &mut u64) {
     menu.input(Input::Button { button, code: 1 }, *now);
 }
 
-/// MOVE until the sensor of this type is focused, or ADD SENSOR's row for `None`.
+/// MOVE until the sensor of this type is focused, or the ADD SENSOR row for `None`.
 fn focus(menu: &mut Menu, kind: Option<u8>, now: &mut u64) {
     for _ in 0..20 {
         if menu.diagnostics().focus.map(|f| f.device_type) == kind {

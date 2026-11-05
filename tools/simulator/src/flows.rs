@@ -18,12 +18,12 @@ impl Sim {
         panic!("no Home tile {label:?}; screen:\n{}", self.screen().text());
     }
 
-    /// On SENSORS, MOVE to ADD SENSOR's row and open it: the page that
-    /// searches. Nothing to do when it shows already.
+    /// On SENSORS, MOVE to the ADD SENSOR row and open NEARBY, the page
+    /// that searches. Nothing to do when it shows already.
     #[track_caller]
-    pub fn add_sensor_page(&mut self) {
+    pub fn nearby_page(&mut self) {
         for _ in 0..14 {
-            if on_add_sensor(&self.screen()) {
+            if on_nearby(&self.screen()) {
                 return;
             }
             let screen = self.screen();
@@ -35,31 +35,28 @@ impl Sim {
                 Button::BottomLeft
             });
         }
-        panic!(
-            "ADD SENSOR does not open; screen:\n{}",
-            self.screen().text()
-        );
+        panic!("NEARBY does not open; screen:\n{}", self.screen().text());
     }
 
-    /// Open ADD SENSOR, let its search finish, MOVE to a sensor kind and
+    /// Open NEARBY, let its search finish, MOVE to a sensor kind and
     /// connect it; SENSORS then shows it LIVE. A rider may pick a sensor
     /// mid-search too, but the radio connects only once the search has let
     /// it go, so waiting first keeps the radio's requests to a search and a
     /// connection.
     #[track_caller]
     pub fn connect_sensor(&mut self, kind: &str) {
-        self.add_sensor_page();
+        self.nearby_page();
         self.wait_for("SCAN DONE", seconds(20)).unwrap();
         self.focus_row(kind);
         self.press(Button::BottomRight);
         self.wait_live(kind);
     }
 
-    /// Open ADD SENSOR, MOVE to a nearby sensor of an already saved kind and
+    /// Open NEARBY, MOVE to a nearby sensor of an already saved kind and
     /// confirm, with the check cue, that it replaces the saved one.
     #[track_caller]
     pub fn replace_sensor(&mut self, kind: &str) {
-        self.add_sensor_page();
+        self.nearby_page();
         self.wait_for(kind, seconds(20)).unwrap();
         self.focus_row(kind);
         self.press(Button::BottomRight);
@@ -71,7 +68,7 @@ impl Sim {
     /// On SENSORS, MOVE to a saved sensor and open its detail page.
     #[track_caller]
     pub fn open_sensor_detail(&mut self, kind: &str) {
-        if on_add_sensor(&self.screen()) {
+        if on_nearby(&self.screen()) {
             self.press(Button::TopLeft);
         }
         self.focus_row(kind);
@@ -439,10 +436,9 @@ impl Sim {
     }
 }
 
-/// ADD SENSOR names itself in its title at the left margin; on SENSORS the
-/// same words are a row's, right of its plus.
-fn on_add_sensor(screen: &crate::sim::Screen) -> bool {
-    screen.run("ADD SENSOR").is_some_and(|run| run.x < 30)
+/// NEARBY names itself in its title.
+fn on_nearby(screen: &crate::sim::Screen) -> bool {
+    screen.run("NEARBY").is_some()
 }
 
 /// The state line under `kind`'s name reads LIVE.

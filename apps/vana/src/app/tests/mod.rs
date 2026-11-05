@@ -329,7 +329,7 @@ fn ready_runtime(journal: &mut Journal, radio: &mut Radio) -> Runtime {
     runtime
 }
 
-/// Connect `peer` from ADD SENSOR as the rider does: MOVE to it, ACT, and
+/// Connect `peer` from NEARBY as the rider does: MOVE to it, ACT, and
 /// ACT again on the check cue when it replaces a saved sensor.
 fn choose_sensor(runtime: &mut Runtime, radio: &mut Radio, peer: device_api::ant::Identity) {
     use crate::screens::sensors::Page;

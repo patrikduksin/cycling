@@ -13,7 +13,7 @@ const DEBOUNCE_MS: u64 = 350;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
     Scan,
-    /// ADD SENSOR closed, so nothing needs the search any more.
+    /// NEARBY closed, so nothing needs the search any more.
     StopScan,
     Connect(Identity),
     Disconnect(u8),
@@ -72,7 +72,7 @@ impl Glance {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Page {
     Sensors,
-    AddSensor,
+    Nearby,
     Detail,
     Forget,
     Replace,
@@ -81,7 +81,7 @@ pub enum Page {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Diagnostics {
     pub page: Page,
-    /// The focused sensor, saved or nearby; `None` on ADD SENSOR's row or
+    /// The focused sensor, saved or nearby; `None` on the ADD SENSOR row or
     /// an empty list.
     pub focus: Option<Identity>,
     pub last_press: Option<u64>,
@@ -95,7 +95,7 @@ pub struct Diagnostics {
 pub(super) enum Mine {
     /// The saved sensor in this slot.
     Saved(usize),
-    /// ADD SENSOR, the last row.
+    /// The ADD SENSOR row, the last, which opens NEARBY.
     Add,
 }
 
@@ -104,9 +104,9 @@ pub(super) enum Mine {
 pub(super) enum View {
     /// The saved sensors, then ADD SENSOR.
     Mine(Mine),
-    /// Nearby sensors not saved yet, by discovery slot; `None` while there
+    /// NEARBY: sensors not saved yet, by discovery slot; `None` while there
     /// are none.
-    Add(Option<usize>),
+    Nearby(Option<usize>),
     /// A saved sensor's page, by slot.
     Detail(usize),
     /// FORGET SENSOR? for a saved sensor, by slot.
@@ -158,8 +158,8 @@ impl Menu {
         }
     }
 
-    /// Open the sensor pages: SENSORS on its first row, or straight to ADD
-    /// SENSOR, which searches, when nothing is saved yet.
+    /// Open the sensor pages: SENSORS on its first row, or straight to
+    /// NEARBY, which searches, when nothing is saved yet.
     pub fn open(&mut self) -> Option<Action> {
         let action = self.state.open();
         self.prepare_layout();
@@ -230,7 +230,7 @@ impl Menu {
     pub fn touch_view(&self) -> u8 {
         match self.state.view {
             View::Mine(_) => 0,
-            View::Add(_) => 1,
+            View::Nearby(_) => 1,
             View::Detail(slot) => 2 + slot.min(0x3f) as u8,
             View::Forget(slot) => 0x80 + slot.min(0x3f) as u8,
             View::Replace(_) => 0xff,
@@ -261,11 +261,11 @@ impl Menu {
         self.layout.prepare(&self.state);
     }
 
-    /// ADD SENSOR over the sensors already found, for runtime tests whose
+    /// NEARBY over the sensors already found, for runtime tests whose
     /// radio fixture would lose them to the search opening it starts.
     #[cfg(test)]
     pub(crate) fn show_found(&mut self) {
-        self.state.view = View::Add(None);
+        self.state.view = View::Nearby(None);
         self.state.settle();
         self.prepare_layout();
     }
@@ -325,8 +325,8 @@ impl State {
         let (page, focus) = match self.view {
             View::Mine(Mine::Saved(slot)) => (Page::Sensors, saved(slot)),
             View::Mine(Mine::Add) => (Page::Sensors, None),
-            View::Add(index) => (
-                Page::AddSensor,
+            View::Nearby(index) => (
+                Page::Nearby,
                 index.and_then(|i| self.discoveries[i]).map(|d| d.identity),
             ),
             View::Detail(slot) => (Page::Detail, saved(slot)),
@@ -345,7 +345,7 @@ impl State {
 
     fn open(&mut self) -> Option<Action> {
         if self.selected_peers().next().is_none() {
-            return self.add_sensor();
+            return self.open_nearby();
         }
         let first = self.rows().next().unwrap_or(Mine::Add);
         self.view = View::Mine(first);
@@ -390,8 +390,8 @@ impl State {
             {
                 View::Mine(self.row_from(slot))
             }
-            View::Add(focus) if focus.is_none_or(|index| !self.listed(index)) => {
-                View::Add(self.nearby().next())
+            View::Nearby(focus) if focus.is_none_or(|index| !self.listed(index)) => {
+                View::Nearby(self.nearby().next())
             }
             view => view,
         };
@@ -408,7 +408,7 @@ impl State {
         self.confirm_focus();
         match target {
             Target::Mine(row) => self.view = View::Mine(row),
-            Target::Nearby(index) => self.view = View::Add(Some(index)),
+            Target::Nearby(index) => self.view = View::Nearby(Some(index)),
             Target::Refresh => return self.search_again(),
             Target::Cue(Corner::TopLeft) => return self.press(Press::Back, now),
             Target::Cue(Corner::BottomLeft) => return self.press(Press::Move, now),
@@ -468,21 +468,21 @@ impl State {
                 self.opened = now;
                 None
             }
-            (View::Mine(Mine::Add), Press::Act) => self.add_sensor(),
+            (View::Mine(Mine::Add), Press::Act) => self.open_nearby(),
             // With nothing saved, SENSORS would show only ADD SENSOR.
-            (View::Add(_), Press::Back) if self.selected_peers().next().is_none() => {
+            (View::Nearby(_), Press::Back) if self.selected_peers().next().is_none() => {
                 Some(Action::Ride)
             }
-            (View::Add(_), Press::Back) => {
+            (View::Nearby(_), Press::Back) => {
                 self.view = View::Mine(Mine::Add);
                 Some(Action::StopScan)
             }
-            (View::Add(focus), Press::Move) => {
-                self.view = View::Add(self.next_nearby(focus));
+            (View::Nearby(focus), Press::Move) => {
+                self.view = View::Nearby(self.next_nearby(focus));
                 None
             }
-            (View::Add(Some(index)), Press::Act) => self.choose_nearby(index),
-            (View::Add(None), Press::Act) => self.search_again(),
+            (View::Nearby(Some(index)), Press::Act) => self.choose_nearby(index),
+            (View::Nearby(None), Press::Act) => self.search_again(),
             (View::Detail(slot), Press::Back) => {
                 self.view = View::Mine(Mine::Saved(slot));
                 None
@@ -509,21 +509,21 @@ impl State {
                 Some(Action::Disconnect(kind))
             }
             (View::Replace(identity), Press::Back) => {
-                self.view = View::Add(self.index_of(identity));
+                self.view = View::Nearby(self.index_of(identity));
                 None
             }
             (View::Replace(identity), Press::Act) => {
-                self.view = View::Add(self.index_of(identity));
+                self.view = View::Nearby(self.index_of(identity));
                 Some(Action::Connect(identity))
             }
             (View::Detail(_) | View::Forget(_) | View::Replace(_), _) => None,
         }
     }
 
-    /// Open ADD SENSOR, the only page that searches. It asks for a fresh
+    /// Open NEARBY, the only page that searches. It asks for a fresh
     /// search even while one stops, which the runtime then waits for.
-    fn add_sensor(&mut self) -> Option<Action> {
-        self.view = View::Add(None);
+    fn open_nearby(&mut self) -> Option<Action> {
+        self.view = View::Nearby(None);
         self.settle();
         self.message = None;
         Some(Action::Scan)
@@ -577,7 +577,7 @@ impl State {
             .unwrap_or(Mine::Add)
     }
 
-    /// Discovery slots ADD SENSOR lists: nearby sensors not saved already.
+    /// Discovery slots NEARBY lists: nearby sensors not saved already.
     pub(super) fn nearby(&self) -> impl Iterator<Item = usize> + '_ {
         (0..DISCOVERY_CAPACITY).filter(|&index| self.listed(index))
     }

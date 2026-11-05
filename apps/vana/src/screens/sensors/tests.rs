@@ -3,7 +3,7 @@ use super::menu::{Mine, SETTLE_MS, View};
 use super::render::{AMBER, CYAN, GREEN};
 use super::*;
 use crate::screens::canvas::Shape;
-use crate::screens::chrome::{ACCENT, CONTENT, HEIGHT, RED, Rect, SECONDARY, WHITE, WIDTH};
+use crate::screens::chrome::{ACCENT, CONTENT, HEIGHT, RED, Rect, SECONDARY, TITLE, WHITE, WIDTH};
 use crate::screens::cue::{Corner, RADIUS};
 use crate::sensors::ant::{Battery, BatteryStatus, device_type};
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
@@ -100,12 +100,15 @@ fn run(menu: &Menu, text: &str) -> Option<crate::screens::canvas::Run> {
 }
 
 #[test]
-fn opening_with_nothing_saved_goes_straight_to_add_sensor_and_searches() {
+fn opening_with_nothing_saved_goes_straight_to_nearby_and_searches() {
     let mut menu = Menu::new();
     menu.refresh(nearby(&[peer(10)]), [None; CHANNEL_CAPACITY], false);
     assert_eq!(menu.open(), Some(Action::Scan));
-    assert_eq!(page(&menu), Page::AddSensor);
-    assert!(menu.canvas().shows("ADD SENSOR"));
+    assert_eq!(page(&menu), Page::Nearby);
+    // NEARBY takes the TITLE face SENSORS has, in its place.
+    let title = run(&menu, "NEARBY").expect("NEARBY titles the page");
+    assert!(core::ptr::eq(title.line.face(), &TITLE));
+    assert!(!menu.canvas().shows("ADD SENSOR"));
     // With a sensor saved, SENSORS opens on its first row and nothing searches.
     let mut menu = Menu::new();
     menu.refresh(
@@ -116,13 +119,15 @@ fn opening_with_nothing_saved_goes_straight_to_add_sensor_and_searches() {
     assert_eq!(menu.open(), None);
     assert_eq!(page(&menu), Page::Sensors);
     assert_eq!(menu.diagnostics().focus, Some(strap(1)));
-    assert!(menu.canvas().shows("SENSORS"));
+    let sensors = run(&menu, "SENSORS").expect("SENSORS titles the page");
+    assert_eq!((sensors.left, sensors.top), (title.left, title.top));
+    assert!(core::ptr::eq(sensors.line.face(), &TITLE));
     assert!(menu.canvas().shows("HEART RATE"));
     assert!(menu.canvas().shows("ADD SENSOR"));
 }
 
 #[test]
-fn only_add_sensor_searches() {
+fn only_nearby_searches() {
     let tiles = [
         (strap(1), Connection::Live),
         (identity(device_type::POWER, 2), Connection::Searching),
@@ -142,7 +147,7 @@ fn only_add_sensor_searches() {
         rider.press(&mut menu, Button::BottomRight),
         Some(Action::Scan)
     );
-    assert_eq!(page(&menu), Page::AddSensor);
+    assert_eq!(page(&menu), Page::Nearby);
     // On the page, a search in progress is not asked for twice.
     menu.search_started();
     menu.refresh([None; DISCOVERY_CAPACITY], saved(&tiles), true);
@@ -255,7 +260,7 @@ fn add_sensor_connects_and_shows_the_new_sensor_focused_on_sensors() {
 }
 
 #[test]
-fn back_from_add_sensor_returns_to_sensors_or_leaves_when_nothing_is_saved() {
+fn back_from_nearby_returns_to_sensors_or_leaves_when_nothing_is_saved() {
     let mut rider = Rider::new();
     let mut menu = opened(&[peer(10)], &[(strap(1), Connection::Live)]);
     rider.focus(&mut menu, None);
@@ -267,7 +272,7 @@ fn back_from_add_sensor_returns_to_sensors_or_leaves_when_nothing_is_saved() {
     assert_eq!(page(&menu), Page::Sensors);
     assert_eq!(menu.diagnostics().focus, None, "back on ADD SENSOR's row");
     let mut empty = opened(&[peer(10)], &[]);
-    assert_eq!(page(&empty), Page::AddSensor);
+    assert_eq!(page(&empty), Page::Nearby);
     assert_eq!(rider.press(&mut empty, Button::TopLeft), Some(Action::Ride));
 }
 
@@ -286,7 +291,7 @@ fn a_sensor_of_a_saved_type_asks_before_it_replaces() {
     assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
     assert_eq!(page(&menu), Page::Replace);
     assert_eq!(rider.press(&mut menu, Button::TopLeft), None);
-    assert_eq!(page(&menu), Page::AddSensor);
+    assert_eq!(page(&menu), Page::Nearby);
     assert_eq!(menu.selected_identity(device_type::POWER), Some(current));
     rider.press(&mut menu, Button::BottomRight);
     assert_eq!(
@@ -338,7 +343,7 @@ fn the_search_line_says_how_the_search_goes() {
 #[test]
 fn sensors_names_trouble_with_the_radio_or_saving_in_its_title() {
     let mut menu = opened(&[], &[(strap(1), Connection::Live)]);
-    // Search progress belongs to ADD SENSOR.
+    // Search progress belongs to NEARBY.
     menu.set_message(MenuMessage::ScanFailed);
     assert_eq!(run(&menu, "SENSORS").map(|r| r.color), Some(WHITE));
     menu.set_message(MenuMessage::RadioUnavailable);
@@ -439,7 +444,7 @@ fn rows_name_each_state_in_its_colour_with_the_battery_after_it() {
 fn focused_rect(menu: &Menu) -> Rect {
     let focus = match menu.state.view {
         View::Mine(row) => Target::Mine(row),
-        View::Add(Some(index)) => Target::Nearby(index),
+        View::Nearby(Some(index)) => Target::Nearby(index),
         view => panic!("{view:?} has no rows"),
     };
     (0..HEIGHT)
@@ -648,8 +653,8 @@ fn taps_act_on_rows_and_cues_as_their_buttons_do() {
     // ADD SENSOR's row opens it, and a nearby card asks to replace the meter.
     let add_row = MINE_ROW_MIDDLE + 2 * super::layout::MINE_PITCH;
     assert_eq!(menu.tap(120, add_row, now), Some(Action::Scan));
-    assert_eq!(page(&menu), Page::AddSensor);
-    let first = super::layout::ADD_TOP + 24;
+    assert_eq!(page(&menu), Page::Nearby);
+    let first = super::layout::NEARBY_TOP + 24;
     assert_eq!(menu.tap(120, first, now), None);
     assert_eq!(page(&menu), Page::Replace);
     assert_eq!(
@@ -911,7 +916,7 @@ fn crowded() -> std::vec::Vec<(std::string::String, Menu)> {
         }
         rider.press(&mut menu, Button::BottomLeft);
     }
-    // ADD SENSOR lists only sensors not saved, so give it eight new ones.
+    // NEARBY lists only sensors not saved, so give it eight new ones.
     let mut add = Menu::new();
     let fresh: [_; DISCOVERY_CAPACITY] = core::array::from_fn(|n| {
         let mut discovery = peer(u16::MAX - n as u16);

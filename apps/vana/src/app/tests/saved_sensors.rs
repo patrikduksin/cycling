@@ -376,7 +376,7 @@ fn discovery_waits_for_a_search_in_progress_and_reconnects_after_it() {
     let mut runtime = restored(&[heart]);
     let mut radio = Radio::quiet();
     run(&mut runtime, &mut radio, 0, 15_000);
-    // The rider opens ADD SENSOR while the sensor is still missing.
+    // The rider opens NEARBY while the sensor is still missing.
     runtime.navigation.page = Page::Home;
     runtime.navigation.home_cursor = 1;
     runtime.input(press(Button::BottomRight), 15_000, &mut radio);

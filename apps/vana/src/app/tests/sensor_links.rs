@@ -284,9 +284,9 @@ fn normal_scan_settling_reports_completion_not_cancellation() {
 }
 
 /// With a sensor saved, Sensors opens on SENSORS and searches only once
-/// the rider opens ADD SENSOR; leaving that page stops the search.
+/// the rider opens NEARBY; leaving that page stops the search.
 #[test]
-fn only_add_sensor_searches_from_the_sensor_pages() {
+fn only_nearby_searches_from_the_sensor_pages() {
     use crate::screens::sensors::Page as SensorPage;
     let heart = device_api::ant::Identity {
         device_type: 120,
@@ -311,11 +311,11 @@ fn only_add_sensor_searches_from_the_sensor_pages() {
     runtime.input(press(Button::TopLeft), 1800, &mut radio);
     advance(&mut runtime, &mut radio, 2000);
     assert_eq!(scans(&radio), 0);
-    // MOVE to ADD SENSOR, ACT: the search starts.
+    // MOVE to the ADD SENSOR row, ACT: NEARBY searches.
     runtime.input(press(Button::BottomLeft), 2200, &mut radio);
     runtime.input(press(Button::BottomRight), 2600, &mut radio);
     advance(&mut runtime, &mut radio, 2700);
-    assert_eq!(runtime.menu.diagnostics().page, SensorPage::AddSensor);
+    assert_eq!(runtime.menu.diagnostics().page, SensorPage::Nearby);
     assert_eq!(scans(&radio), 1);
     runtime.input(press(Button::TopLeft), 3000, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Sensors);
@@ -326,7 +326,7 @@ fn only_add_sensor_searches_from_the_sensor_pages() {
 }
 
 #[test]
-fn opening_sensors_with_nothing_saved_opens_add_sensor_and_searches() {
+fn opening_sensors_with_nothing_saved_opens_nearby_and_searches() {
     let mut radio = Radio {
         channels: firmware_services::ant::Channels::new(),
         requests: std::vec::Vec::new(),

@@ -30,15 +30,15 @@ pub(super) const TITLE_BASE: usize = 62;
 pub(super) const MINE_TOP: usize = 72;
 pub(super) const MINE_PITCH: usize = 50;
 pub(super) const ROW_HEIGHT: usize = 48;
-/// ADD SENSOR: the search line under the title, then a card per sensor.
+/// NEARBY: the search line under the title, then a card per sensor.
 pub(super) const SEARCH_BASE: usize = 84;
-pub(super) const ADD_TOP: usize = 94;
-pub(super) const ADD_PITCH: usize = 52;
+pub(super) const NEARBY_TOP: usize = 94;
+pub(super) const NEARBY_PITCH: usize = 52;
 /// The list scrolls so the focused row ends above this line.
 pub(super) const FOCUS_BOTTOM: usize = HEIGHT - 8;
 /// Text in a row starts right of its icon.
 const MINE_TEXT: usize = 56;
-const ADD_TEXT: usize = 52;
+const NEARBY_TEXT: usize = 52;
 const TEXT_RIGHT: usize = ROW_RIGHT - 10;
 /// The plus at a nearby sensor's right, and the refresh mark on the
 /// search line.
@@ -132,11 +132,11 @@ impl Layout {
                     self.row(MINE_TOP + index * MINE_PITCH, Target::Mine(row));
                 }
             }
-            View::Add(focus) => {
+            View::Nearby(focus) => {
                 let index = focus
                     .and_then(|focus| state.nearby().position(|index| index == focus))
                     .unwrap_or(0);
-                self.scroll_to(ADD_TOP + index * ADD_PITCH);
+                self.scroll_to(NEARBY_TOP + index * NEARBY_PITCH);
                 if let Some(base) = self.search_base() {
                     let bounds = Rect {
                         left: REFRESH_LEFT - 14,
@@ -147,7 +147,7 @@ impl Layout {
                     let _ = self.targets.push((bounds, Target::Refresh));
                 }
                 for (row, index) in state.nearby().enumerate() {
-                    self.row(ADD_TOP + row * ADD_PITCH, Target::Nearby(index));
+                    self.row(NEARBY_TOP + row * NEARBY_PITCH, Target::Nearby(index));
                 }
             }
             View::Detail(slot) if state.calibratable(slot) => self.cues = &POWER_CUES,
@@ -185,7 +185,7 @@ impl Layout {
         let _ = self.targets.push((rect, target));
     }
 
-    /// The search line's baseline on ADD SENSOR, until it scrolls under the
+    /// The search line's baseline on NEARBY, until it scrolls under the
     /// status bar.
     fn search_base(&self) -> Option<usize> {
         SEARCH_BASE
@@ -211,8 +211,8 @@ impl Layout {
                     }
                 }
             }
-            View::Add(focus) => {
-                page.title(b"ADD SENSOR", WHITE, self.scroll);
+            View::Nearby(focus) => {
+                page.title(b"NEARBY", WHITE, self.scroll);
                 if let Some(base) = self.search_base() {
                     page.search_line(base);
                 }
@@ -316,7 +316,7 @@ impl Drawing<'_> {
         }
     }
 
-    /// ADD SENSOR's line under its title, and the refresh mark at its end.
+    /// NEARBY's line under its title, and the refresh mark at its end.
     fn search_line(&mut self, base: usize) {
         let (line, color) = self.state.search_line();
         self.canvas.fit(
@@ -348,13 +348,13 @@ impl Drawing<'_> {
         let icon = Sensor::of(identity.device_type).icon(Size::Small);
         self.icon(icon, ROW_LEFT + 10, top + 13, SECONDARY);
         self.icon(&PLUS, PLUS_LEFT, top + 15, GREEN);
-        let width = PLUS_LEFT - 8 - ADD_TEXT;
+        let width = PLUS_LEFT - 8 - NEARBY_TEXT;
         let name = kind(identity.device_type);
         self.canvas.fit(
             &[&BODY, &CAPTION],
             name,
             width,
-            ADD_TEXT,
+            NEARBY_TEXT,
             top + 23,
             Align::Left,
             WHITE,
@@ -367,7 +367,7 @@ impl Drawing<'_> {
         }
         let caption = caption.as_bytes();
         self.canvas
-            .caption(caption, width, ADD_TEXT, top + 39, Align::Left);
+            .caption(caption, width, NEARBY_TEXT, top + 39, Align::Left);
     }
 
     fn detail(&mut self, selected: Selected, calibratable: bool) {
@@ -695,7 +695,7 @@ const fn cue_box(corner: Corner) -> Rect {
 }
 
 impl State {
-    /// ADD SENSOR's line under its title: a problem in amber, else how the
+    /// NEARBY's line under its title: a problem in amber, else how the
     /// search goes.
     pub(super) fn search_line(&self) -> (&'static [u8], u16) {
         use super::MenuMessage;

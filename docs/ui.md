@@ -152,7 +152,7 @@ the summary's elevation page:
 | Pill (toasts, chips) | Radius = half its height |
 | Gauge segment | 5 px tall, 3 px gaps, radius 2 |
 | Dot | 6 px page dots; an 8 px tone dot in toasts |
-| Icons | Anti-aliased, in one colour, blended over what lies behind like text (`screens::icons`). A sensor's icon takes its metric's colour where it names a saved sensor (`HEART`, `POWER`, `SPEED` for speed and speed/cadence, `CADENCE`) and `WHITE` for any other; Home draws them `WHITE` with a status dot at the top-right, and ADD SENSOR draws nearby ones in `SECONDARY`. The SVGs in `apps/vana/icons` are the source; see Icons below. |
+| Icons | Anti-aliased, in one colour, blended over what lies behind like text (`screens::icons`). A sensor's icon takes its metric's colour where it names a saved sensor (`HEART`, `POWER`, `SPEED` for speed and speed/cadence, `CADENCE`) and `WHITE` for any other; Home draws them `WHITE` with a status dot at the top-right, and NEARBY draws the sensors it lists in `SECONDARY`. The SVGs in `apps/vana/icons` are the source; see Icons below. |
 | Ring | An arc of a ring with round ends (`chrome::Ring`), running clockwise from 12 o'clock. VANA's one shape for progress, charge and time left: the brand mark, the turn-off countdown, the charge and the power symbol. A ring that shows a share stands on a 25% track of its own colour. |
 
 Shapes are coverage functions (`disc`, `rounded`), blended over what lies
@@ -215,7 +215,7 @@ Sensor icons are drawn on a 24-unit square with round caps and 2.4-unit
 strokes, one SVG each in `apps/vana/icons`. To change one, edit its SVG and
 run `uv run apps/vana/icons/generate.py`, which rewrites
 `apps/vana/src/screens/icons/art.rs`. The script renders each whole icon at
-every size a screen draws it, 22 px (Home, ADD SENSOR), 26 px (SENSORS) and
+every size a screen draws it, 22 px (Home, NEARBY), 26 px (SENSORS) and
 34 px (a sensor's pages), plus the 18 px refresh and plus marks and the
 28 px replacement arrow, into 4-bit coverage cropped to the ink, about 7.8 KB
 in all. It stops if two parts that do not touch in the drawing come within a
@@ -232,15 +232,15 @@ cards as everywhere else (`screens::sensors`).
   report follows a dot: the voltage in `SECONDARY`, or BATTERY LOW in `AMBER`
   and BATTERY CRITICAL in `RED`, which turn a live sensor's whole line their
   colour and take its place where both do not fit. ADD SENSOR, a card with a
-  green plus, is the last row. Rows have no card until focused. A save or
+  green plus, is the last row and opens NEARBY. Rows have no card until focused. A save or
   radio problem replaces the title in `AMBER`.
-- ADD SENSOR is the only page that searches: it asks for a search as it
-  opens, and leaving it stops the search. Its title falls back to `BODY`,
-  as the `TITLE` face is too wide for it. A `CAPTION` line says how the
-  search goes (SEARCHING... in `ACCENT`, SCAN DONE - PICK, NO SENSORS FOUND,
-  or a problem in `AMBER`) beside the refresh mark, which a tap uses to
-  search again. Each nearby sensor not saved yet is a card: its icon in
-  `SECONDARY`, the name, `ID 4321`, and a green plus.
+- NEARBY is the only page that searches: it asks for a search as it
+  opens, and leaving it stops the search. Its title is in `TITLE` where
+  SENSORS has its own. A `CAPTION` line under it says how the search goes
+  (SEARCHING... in `ACCENT`, SCAN DONE - PICK, NO SENSORS FOUND, or a
+  problem in `AMBER`) beside the refresh mark, which a tap uses to search
+  again. Each nearby sensor not saved yet is a card under that line: its
+  icon in `SECONDARY`, the name, `ID 4321`, and a green plus.
 - Both lists scroll with their focus: the page moves only as far as keeps
   the focused row above the bottom 8 px, so the title scrolls away under
   the status bar on a long list.

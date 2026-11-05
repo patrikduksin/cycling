@@ -603,8 +603,8 @@ Settings.
 ## Sensors
 
 ```text
-Home, Ready, Settings or setup ──> SENSORS ── ACT on ADD SENSOR ──> ADD SENSOR (searches)
-   (straight to ADD SENSOR          │ ACT on a sensor     ^          │ ACT on a sensor: connect,
+Home, Ready, Settings or setup ──> SENSORS ── ACT on ADD SENSOR ──> NEARBY (searches)
+   (straight to NEARBY              │ ACT on a sensor     ^          │ ACT on a sensor: connect,
     when nothing is saved)          v                     │ BACK     │ then SENSORS with it focused
                                Sensor's page ─────────────┘          v
                                  │ trash cue                  REPLACE SENSOR? (a saved type)
@@ -615,10 +615,10 @@ Home, Ready, Settings or setup ──> SENSORS ── ACT on ADD SENSOR ──> 
 
 SENSORS lists the saved sensors, each with its state, then ADD SENSOR. MOVE
 walks the rows and wraps; ACT opens the focused one; BACK leaves for where
-Sensors opened from. With nothing saved, Sensors opens straight on ADD
-SENSOR, and BACK there leaves too.
+Sensors opened from. With nothing saved, Sensors opens straight on NEARBY,
+and BACK there leaves too.
 
-ADD SENSOR searches as it opens, and only there: leaving it stops the
+NEARBY searches as it opens, and only there: leaving it stops the
 search. It lists each nearby sensor not saved yet. ACT on one connects it and
 returns to SENSORS with it focused. One of a type already saved asks REPLACE
 SENSOR first. A sensor the search no longer reports says NOT SEEN - SEARCH
@@ -631,7 +631,7 @@ beside BACK, and the trash beside ACT, or beside MOVE on a power meter, whose
 ACT zeroes it (see Ready). The trash asks FORGET SENSOR? with the sensor's
 name and number; ACT forgets it and returns to SENSORS, BACK returns to its
 page. MOVE does nothing on these pages but a power meter's. A forgotten
-sensor is never connected again until it is chosen on ADD SENSOR.
+sensor is never connected again until it is chosen on NEARBY.
 
 ## Other routes
 

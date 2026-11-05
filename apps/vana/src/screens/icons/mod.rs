@@ -113,7 +113,7 @@ impl Icon {
 /// The pixel sizes a sensor icon is drawn at.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Size {
-    /// Home's sensor card and ADD SENSOR's rows.
+    /// Home's sensor card and NEARBY's rows.
     Small,
     /// A SENSORS row.
     Row,

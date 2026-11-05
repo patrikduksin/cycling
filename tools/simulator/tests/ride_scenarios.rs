@@ -2199,9 +2199,9 @@ fn disconnect_is_remembered_across_reboot() {
         sim.advance(100);
         waited += 100;
     }
-    // ADD SENSOR's search offers the strap, still nearby, for explicit
+    // NEARBY's search offers the strap, still nearby, for explicit
     // selection again.
-    sim.add_sensor_page();
+    sim.nearby_page();
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
     sim.expect_text("HEART RATE");
     sim.checkpoint("heart rate offered as nearby");
@@ -3559,10 +3559,10 @@ fn home_shows_ride_sensors_and_the_last_ride_at_a_glance() {
 #[test]
 fn tapping_home_and_sensor_tiles_pairs_a_sensor() {
     let mut sim = rider();
-    // The SENSORS tile opens ADD SENSOR, with nothing saved yet; then the
+    // The SENSORS tile opens NEARBY, with nothing saved yet; then the
     // first nearby sensor once the search is done.
     sim.tap(120, 210);
-    sim.expect_text("ADD SENSOR");
+    sim.expect_text("NEARBY");
     sim.wait_for("SCAN DONE", seconds(20)).unwrap();
     sim.expect_no_text("NEXT");
     sim.checkpoint("sensors menu");

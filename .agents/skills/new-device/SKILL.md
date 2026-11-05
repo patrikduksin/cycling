@@ -19,6 +19,8 @@ The device-safety rules in [AGENTS.md](../../../AGENTS.md) apply. In addition:
   attached device, which may be Patrik's C606.
 - Never print the MAC or a serial number. `cycling flasher info` prints
   `device_id` (a keyed hash) in its place; use that as the device's name.
+  Console and boot logs can hold both: keep them in files, describe them,
+  and never quote MAC- or serial-shaped strings from them.
 - A flash dump holds the owner's data (settings, Wi-Fi credentials). Keep it
   under `.local/`, never commit, upload or quote it.
 - Leave the device as you found it: running its own app.
@@ -28,13 +30,16 @@ The device-safety rules in [AGENTS.md](../../../AGENTS.md) apply. In addition:
 Run every command from the repository root; `.local/` below is that
 checkout's.
 
-1. **Join and listen.** `cycling remote <CODE> -- cycling monitor --seconds 10`.
-   The bridge prints the device's USB VID:PID, waits for the visitor's port,
-   then the monitor captures what the stock firmware prints. Send nothing to
-   firmware you don't know. Done when it exits 0, even with an empty capture.
+1. **Join and listen.** `cycling remote <CODE> -- cycling monitor --seconds 10 > .local/survey/<CODE>/console.log`.
+   The bridge prints the device's USB VID:PID on stderr, waits for the
+   visitor's port, then the monitor captures what the stock firmware prints
+   into the file. Send nothing to firmware you don't know. Done when it exits
+   0, even with an empty capture.
 2. **Enter the ROM.** `cycling remote <CODE> -- cycling flasher info` puts the
    chip in download mode, prints its description as JSON and reboots it into
-   its app. Check that its `usb` ids match the VID:PID from step 1. Success
+   its app. Check that its `usb` ids match the VID:PID from step 1. Output
+   without a `device_id` means the visitor shared the device only as a USB
+   descriptor: the bootloader is not reachable from the browser. Success
    means the ROM bootloader is reachable from the browser. On failure, keep
    the error: it names the reason (`unsupportedChip`, `entryFailed`,
    `portLost`). Every `cycling flasher` verb enters and reboots the same way.
@@ -51,8 +56,8 @@ checkout's.
    explicit "unknown":
    - Partition table at `0x8000`: 32-byte entries starting `AA 50`, ending at
      `EB EB` or `FF FF`. List label, type, subtype, offset, size. If `0x8000`
-     holds no entry, search the first 64 KiB for an `AA 50` record before
-     calling the table missing.
+     holds no entry, search up to the first app image (`E9` at a 64 KiB
+     boundary) for an `AA 50` record before calling the table missing.
    - Each app partition: an image starts with `E9`. Run `python -m esptool
      image-info` on the extracted image for chip, entry point and segments.
      The ESP-IDF app description sits at image offset 32 (magic

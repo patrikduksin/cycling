@@ -232,10 +232,25 @@ Hysteresis keeps the match steady:
 The match's confidence combines nearness, the margin over the runner-up and
 steadiness.
 
+The match also measures how far the rider has ridden along the matched edge
+in the matched direction. The count starts at 0 when the match comes onto an
+edge: the first match after power-on or a lost fix, a junction, or another
+road taking over. It also starts at 0 when the direction flips, as at a
+U-turn. The flip comes once the heading has turned, 20 to 25 m after the turn
+at 18 km/h, so those metres are not counted. Riding back the other way
+without a flip, as when wheeling the bike, lowers the count.
+
 ### Path prediction
 
 From the matched point the predictor walks the graph and samples elevation
-every 20 m, up to 10 km. At each junction it scores every way on:
+every 20 m, up to 10 km. It also samples the road just ridden, back along the
+matched edge as far as the match has ridden it in this direction, up to
+200 m. That walk stops at the edge's end, because the way the rider came from
+a junction is a choice. Its last sample is where the road ridden ends, which
+can be less than 20 m past the one before. After a U-turn, or when the first
+match comes partway along an edge, the road behind the rider was not ridden
+in this direction, so it is never sampled. At each junction ahead it
+scores every way on:
 
 - the turn angle (1 per 30°, capped at 4, so a hairpin is just a turn);
 - staying on the same road group (−3);
@@ -303,7 +318,16 @@ the same as gain (m) × 100:
 
 The forecast is usable only when the match is on a road and the prediction's
 confidence is at least 50%. Otherwise the climb page draws from the barometer
-alone.
+alone. An unusable forecast decides nothing. It shows no climb, and the next
+forecast does not inherit its climbs.
+
+The detector runs from the rider, so it measures only the gain left ahead. On
+the first metres of a climb that may be under the 20 m that confirms one.
+Each forecast therefore also runs the detector over its own road just ridden
+and then the road ahead. When a confirmed climb starts behind the rider and
+tops out ahead, the rider is on it, and the rest of it is the climb under way.
+A climb that a previous usable forecast found under way also stays under way,
+for as long as the road ahead still rises at 1% over 200 m.
 
 A climb under way or within 500 m is pinned to the ride's odometer
 (`climb_ahead::Pinned`, about 1.2 KB in the look-ahead's PSRAM block). Its

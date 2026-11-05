@@ -10,7 +10,7 @@ use crate::cache::Cache;
 use crate::geo::{self, Point};
 use crate::matcher::{Matched, Matcher};
 use crate::pack::{Error, HEADER_BYTES, Header, Source, TileKey};
-pub use crate::predict::{End, MAX_SAMPLES, SAMPLE_M};
+pub use crate::predict::{BEHIND_SAMPLES, End, MAX_SAMPLES, SAMPLE_M};
 use crate::predict::{Need, Prediction, predict};
 
 /// Movement that sets a new heading: under it, GPS noise dominates.
@@ -61,6 +61,13 @@ pub struct Ahead {
     /// Elevation every `SAMPLE_M` from the rider, relative to `start_z_dm`.
     pub samples: [i16; MAX_SAMPLES],
     pub len: usize,
+    /// Elevation every `SAMPLE_M` back from the rider along the matched
+    /// road, relative to `start_z_dm`, and the last one at `behind_m`: the
+    /// road ridden on it in this direction (`Matched::ridden_m`), as far as
+    /// the matched edge goes, up to 200 m.
+    pub behind: [i16; BEHIND_SAMPLES],
+    pub behind_len: usize,
+    pub behind_m: f32,
     pub end: End,
     pub end_m: f32,
     /// 0..100: the match and every decision along the way.
@@ -76,6 +83,9 @@ impl Default for Ahead {
             start_z_dm: 0,
             samples: [0; MAX_SAMPLES],
             len: 0,
+            behind: [0; BEHIND_SAMPLES],
+            behind_len: 0,
+            behind_m: 0.0,
             end: End::Uncertain,
             end_m: 0.0,
             confidence: 0,
@@ -349,7 +359,15 @@ impl<'a> Lookahead<'a> {
                 return Status::Idle;
             };
             let mut samples = [0i16; MAX_SAMPLES];
-            match predict(&self.cache, &header, &matched, self.horizon_m, &mut samples) {
+            let mut behind = [0i16; BEHIND_SAMPLES];
+            match predict(
+                &self.cache,
+                &header,
+                &matched,
+                self.horizon_m,
+                &mut samples,
+                &mut behind,
+            ) {
                 Err(Need::Match) => {
                     self.matcher.reset();
                     self.match_due = true;
@@ -374,6 +392,7 @@ impl<'a> Lookahead<'a> {
                     self.predict_due = false;
                     self.last_predict_ms = Some(fix.at_ms);
                     self.ahead.samples = samples;
+                    self.ahead.behind = behind;
                     self.publish(fix, Some(matched), prediction, prediction.end);
                     return Status::Working;
                 }
@@ -400,6 +419,11 @@ impl<'a> Lookahead<'a> {
         self.ahead.matched = matched;
         self.ahead.start_z_dm = matched.map_or(0, |m| m.z_dm);
         self.ahead.len = if matched.is_some() { prediction.len } else { 0 };
+        (self.ahead.behind_len, self.ahead.behind_m) = if matched.is_some() {
+            (prediction.behind, prediction.behind_m)
+        } else {
+            (0, 0.0)
+        };
         self.ahead.end = end;
         self.ahead.end_m = prediction.end_m;
         self.ahead.confidence = matched.map_or(0, |_| prediction.confidence);

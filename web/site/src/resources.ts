@@ -17,20 +17,12 @@ import {
   Lease,
   OP_PROGRESS_MS,
   OwnerKey,
-  type Region,
   RequestId,
   SerialIdentity,
 } from '@cycling/protocol'
 
-import { type PageSession, openPage } from './adapters/flasher.ts'
 import { deviceToRelay, relayToDevice } from './dataplane.ts'
-import { makeInbox } from './flasher/inbox.ts'
-import {
-  PARTITION_TABLE,
-  bootSlotOf,
-  otadataOf,
-  parsePartitions,
-} from './flasher/partitions.ts'
+import { acquireFlasher } from './flasher/acquire.ts'
 import { runOp } from './flasher/run.ts'
 import { type HandleServices, PortHandle, RelayHandle } from './handles.ts'
 import {
@@ -48,7 +40,6 @@ import {
 } from './links.ts'
 import { Message } from './message.ts'
 import {
-  type Layout,
   type Model,
   Relay,
   RunnableOp,
@@ -204,47 +195,6 @@ export const holdExpiryOf = (
     ),
   )
 
-/** Collects one region read from the session. */
-const readAll = (session: PageSession, region: Region) =>
-  session.read(region).pipe(
-    Stream.runFold(
-      () => new Uint8Array(region.size),
-      (bytes, event) => {
-        if (event._tag === 'Piece') {
-          bytes.set(event.bytes, event.offset)
-        }
-        return bytes
-      },
-    ),
-  )
-
-/**
- * The device's own partition table and otadata, to name regions for the
- * visitor. A device without them, or a read that fails, is shown by address.
- */
-const readLayout = (
-  session: PageSession,
-): Effect.Effect<Option.Option<Layout>> =>
-  readAll(session, PARTITION_TABLE).pipe(
-    Effect.map(parsePartitions),
-    Effect.flatMap(partitions =>
-      Option.match(otadataOf(partitions), {
-        onNone: () => Effect.succeed(Option.none<string>()),
-        onSome: region =>
-          readAll(session, region).pipe(
-            Effect.map(otadata => bootSlotOf(partitions, otadata)),
-          ),
-      }).pipe(
-        Effect.map(bootSlot =>
-          partitions.length === 0
-            ? Option.none()
-            : Option.some({ partitions, bootSlot }),
-        ),
-      ),
-    ),
-    Effect.orElseSucceed(() => Option.none()),
-  )
-
 /**
  * Both handles follow the Model: bumping `attempt` re-keys the requirement,
  * which is how a USB re-enumeration and a relay redial both become "acquire
@@ -280,41 +230,7 @@ export const managedResources = (adapters: Adapters) => {
             })
             .pipe(Effect.map((link): PortLink => ({ _tag: 'Console', link }))),
         Flasher: ({ identity, entry }) =>
-          Effect.gen(function* () {
-            const port = yield* adapters.serial
-              .granted({ identity, waitMs: REACQUIRE.timeoutMs })
-              .pipe(
-                Effect.mapError(
-                  () =>
-                    new EntryFailed({
-                      reason: 'entryFailed',
-                      detail: 'The device did not come back.',
-                    }),
-                ),
-              )
-            const session = yield* openPage(adapters.flasher.open)(port, {
-              entry,
-            }).pipe(
-              Effect.mapError(
-                ({ reason, detail }) =>
-                  new EntryFailed({
-                    reason:
-                      reason === 'portLost' || reason === 'unsupportedChip'
-                        ? reason
-                        : 'entryFailed',
-                    detail,
-                  }),
-              ),
-            )
-            const inbox = yield* makeInbox
-            const layout = yield* readLayout(session)
-            return {
-              _tag: 'Flasher',
-              session,
-              inbox,
-              layout,
-            } satisfies PortLink
-          }),
+          acquireFlasher(adapters, { identity, entry }),
       }),
     )
 

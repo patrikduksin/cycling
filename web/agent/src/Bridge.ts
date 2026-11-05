@@ -71,7 +71,8 @@ export const open = (options: {
         ),
     )
     const pty = yield* (yield* PtyHost).open(paths.port)
-    yield* Effect.forkScoped(port.output.pipe(Stream.runForEach(pty.write)))
+    const output = yield* port.listen
+    yield* Effect.forkScoped(output.pipe(Stream.runForEach(pty.write)))
     yield* Effect.forkScoped(pty.input.pipe(Stream.runForEach(port.write)))
     yield* serveDeviceDoor({
       path: paths.flasher,

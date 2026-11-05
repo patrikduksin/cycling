@@ -64,8 +64,6 @@ export type OpRequest =
 export interface RemotePort {
   /** The announced device; waits for the browser to announce one. */
   readonly device: Effect.Effect<Device>
-  /** Device to agent bytes. Hot: bytes nobody is reading are gone. */
-  readonly output: Stream.Stream<Uint8Array>
   /** Device bytes from the moment this runs, kept for the stream while the scope lives. */
   readonly listen: Effect.Effect<Stream.Stream<Uint8Array>, never, Scope.Scope>
   /** Agent to device bytes. False when they were dropped because the relay or the port is down. */

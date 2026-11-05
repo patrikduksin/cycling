@@ -37,7 +37,6 @@ export const fakePort = (status: RemoteStatus) =>
     const written = yield* Ref.make(0)
     const port: RemotePort = {
       device: Effect.succeed(C606),
-      output: Stream.never,
       listen: Effect.succeed(Stream.never),
       write: bytes =>
         Ref.update(written, n => n + bytes.length).pipe(Effect.as(true)),

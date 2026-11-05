@@ -215,7 +215,6 @@ export const layer: Layer.Layer<Remote, never, RelayClient> = Layer.effect(
 
       return {
         device: firstMatch(status, current => current.device),
-        output: Stream.fromPubSub(output),
         listen: PubSub.subscribe(output).pipe(
           Effect.map(Stream.fromSubscription),
         ),

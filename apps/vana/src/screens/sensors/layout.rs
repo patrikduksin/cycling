@@ -320,7 +320,7 @@ impl Drawing<'_> {
         let (line, color) = self.state.search_line();
         self.canvas.fit(
             &[&CAPTION],
-            line,
+            line.as_bytes(),
             REFRESH_LEFT - 8 - MARGIN,
             MARGIN,
             base,
@@ -687,20 +687,28 @@ const fn cue_box(corner: Corner) -> Rect {
 }
 
 impl State {
-    /// NEARBY's line under its title: a problem in amber, else how the
-    /// search goes.
-    pub(super) fn search_line(&self) -> (&'static [u8], u16) {
+    /// NEARBY's line under its title: a problem in amber, the sensor just
+    /// added in green, else how the search goes.
+    pub(super) fn search_line(&self) -> (Text<24>, u16) {
         use super::MenuMessage;
         let routine = if self.scanning { ACCENT } else { SECONDARY };
-        match self.notice.or(self.message) {
-            Some(message) if !message.routine() => (message.short().as_bytes(), AMBER),
-            Some(MenuMessage::ScanDone) if self.nearby().next().is_none() => {
-                (b"NO SENSORS FOUND", routine)
+        let mut line = Text::new();
+        let (text, color) = match self.notice.or(self.message) {
+            Some(message) if !message.routine() => (message.short(), AMBER),
+            Some(MenuMessage::Added(device_type)) => {
+                let name = core::str::from_utf8(kind(device_type)).unwrap_or("");
+                let _ = write!(line, "{name} ADDED");
+                return (line, GREEN);
             }
-            Some(message) => (message.short().as_bytes(), routine),
-            None if self.scanning => (MenuMessage::Scanning.short().as_bytes(), routine),
-            None => (b"FIND NEARBY", routine),
-        }
+            Some(MenuMessage::ScanDone) if self.nearby().next().is_none() => {
+                ("NO SENSORS FOUND", routine)
+            }
+            Some(message) => (message.short(), routine),
+            None if self.scanning => (MenuMessage::Scanning.short(), routine),
+            None => ("FIND NEARBY", routine),
+        };
+        let _ = line.push_str(text);
+        (line, color)
     }
 
     /// The device number, with the transmission type when another known peer

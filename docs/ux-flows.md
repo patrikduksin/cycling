@@ -604,8 +604,8 @@ Settings.
 
 ```text
 Home, Ready, Settings or setup ──> SENSORS ── ACT on ADD SENSOR ──> NEARBY (searches)
-   (straight to NEARBY              │ ACT on a sensor     ^          │ ACT on a sensor: connect,
-    when nothing is saved)          v                     │ BACK     │ then SENSORS with it focused
+   (straight to NEARBY              │ ACT on a sensor     ^          │ ACT on a sensor: connect it and
+    when nothing is saved)          v                     │ BACK     │ stay; BACK: SENSORS, on it
                                Sensor's page ─────────────┘          v
                                  │ trash cue                  REPLACE SENSOR? (a saved type)
                                  v                              check cue: replace; back cue: keep
@@ -619,9 +619,11 @@ Sensors opened from. With nothing saved, Sensors opens straight on NEARBY,
 and BACK there leaves too.
 
 NEARBY searches as it opens, and only there: leaving it stops the
-search. It lists each nearby sensor not saved yet. ACT on one connects it and
-returns to SENSORS with it focused. One of a type already saved asks REPLACE
-SENSOR first. A sensor the search no longer reports says NOT SEEN - SEARCH
+search. It lists each nearby sensor not saved yet. ACT on one connects it:
+NEARBY stays open, says HEART RATE ADDED (the sensor's name) in green until
+the next message, and keeps listing the other sensors found, so several pair
+from one search. BACK then returns to SENSORS with the sensor added last
+focused. One of a type already saved asks REPLACE SENSOR first. A sensor the search no longer reports says NOT SEEN - SEARCH
 AGAIN, and with all ten slots used, SENSOR SLOTS FULL. Once the search is
 over, ACT with nothing listed, or a tap on the refresh mark, searches again;
 with sensors listed, BACK and ADD SENSOR again does.

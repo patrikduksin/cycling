@@ -238,8 +238,9 @@ cards as everywhere else (`screens::sensors`).
 - NEARBY is the only page that searches: it asks for a search as it
   opens, and leaving it stops the search. Its title is in `TITLE` where
   SENSORS has its own. A `CAPTION` line under it says how the search goes
-  (SEARCHING... in `ACCENT`, SCAN DONE - PICK, NO SENSORS FOUND, or a
-  problem in `AMBER`) beside the refresh mark, which a tap uses to search
+  (SEARCHING... in `ACCENT`, SCAN DONE - PICK, NO SENSORS FOUND, a sensor
+  just connected such as HEART RATE ADDED in `GREEN`, or a problem in
+  `AMBER`) beside the refresh mark, which a tap uses to search
   again. Each nearby sensor not saved yet is a card under that line: its
   icon in `SECONDARY`, the name, `ID 4321`, and a green plus.
 - Both lists scroll with their focus: the page moves only as far as keeps

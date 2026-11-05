@@ -1395,9 +1395,8 @@ fn manual_laps(sim: &mut Sim) {
         "{toast}"
     );
     sim.checkpoint("lap toast after the first lap");
-    // The toast lasts 2 s; the ride page shows it gone on its next frame.
     sim.advance(seconds(2));
-    sim.wait_gone("LAP 1 0", seconds(1)).unwrap();
+    sim.expect_no_text("LAP 1 0");
     assert!(sim.screen().run("REC").is_some(), "{}", sim.screen().text());
 
     // A harder, faster second lap shows green with a plus.
@@ -3567,8 +3566,12 @@ fn tapping_home_and_sensor_tiles_pairs_a_sensor() {
     sim.expect_no_text("NEXT");
     sim.checkpoint("sensors menu");
     sim.tap(120, 118);
-    sim.wait_for("LIVE", seconds(15)).unwrap();
+    // NEARBY stays, naming the sensor added, with the others still listed.
+    sim.expect_text("HEART RATE ADDED");
+    sim.expect_text("POWER METER");
     sim.checkpoint("sensor connected by tap");
+    sim.press(Button::TopLeft);
+    sim.wait_for("LIVE", seconds(15)).unwrap();
     sim.press(Button::TopLeft);
     assert!(sim.on_home(), "{}", sim.screen().text());
     sim.expect_text("1/1 LIVE");
@@ -4841,10 +4844,8 @@ fn saved_rides_list_newest_first_and_read_back_onto_the_summary() {
     sim.press(Button::TopLeft);
     sim.press(Button::TopLeft);
     assert!(sim.on_home());
-    // Home still names the last ride, not the one read back. The clock may
-    // have turned a minute meanwhile.
-    let below_clock = |text: &str| text.split_once('\n').map(|(_, rest)| rest.to_owned());
-    assert_eq!(below_clock(&sim.screen().text()), below_clock(&last));
+    // Home still names the last ride, not the one read back.
+    assert_eq!(sim.screen().text(), last);
 
     // A new ride takes over: its own totals, from zero.
     sim.start_ride();
@@ -8257,7 +8258,7 @@ fn a_ride_replays_against_a_build_that_connects_the_power_meter_first() {
     assert_eq!(order, [power, heart, speed]);
     let report = replayed.device.report().unwrap();
     println!("{report:#?}");
-    assert!(report.count(Kind::NotRequested) >= 1, "{report:?}");
+    assert!(report.count(Kind::Refused) >= 1, "{report:?}");
     assert!(report.count(Kind::Modelled) >= 1, "{report:?}");
     assert!(report.count(Kind::NotHeard) > 0, "{report:?}");
     assert_eq!(sensor_data(&mut replayed), sensor_data(&mut recorded));
@@ -8626,9 +8627,7 @@ fn a_panel_and_backlight_that_refuse_replay_exactly() {
 }
 
 fn a_ride_then_turned_off(sim: &mut Sim) {
-    // One sensor pairs in one search, which keeps the shutdown request clear
-    // of the power status poll that would carry it again if it were lost.
-    sim.pair(&["HEART RATE"]);
+    sim.pair(&["HEART RATE", "POWER METER"]);
     sim.ride_at(28.0, 200.0, 140.0, 85.0);
     sim.start_ride();
     sim.advance(minutes(1));
@@ -9309,7 +9308,7 @@ fn every_ant_send_mutated_shows_in_its_replay() {
             heals(
                 "AntRequest",
                 mutations::Mutation::Alter,
-                "the middle request is the power meter's connection, asked for again once refused",
+                "the middle request is the power meter's connection, asked for again once refused; SENSORS no longer searches as it opens",
             ),
         ],
     );

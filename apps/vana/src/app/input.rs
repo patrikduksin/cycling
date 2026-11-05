@@ -406,7 +406,7 @@ impl Runtime {
         }
         self.refresh_sensor_menu(ant, now);
         if let Some(Action::Connect(peer)) = action {
-            self.menu.focus_type(peer.device_type);
+            self.menu.added(peer);
         }
         self.display.redraw();
     }

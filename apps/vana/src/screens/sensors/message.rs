@@ -26,6 +26,9 @@ pub enum MenuMessage {
     NotSaved,
     /// Saved sensors could not be read, so changes are kept until restart only.
     SavedUnreadable,
+    /// The sensor of this device type, picked on NEARBY, is saved; NEARBY's
+    /// line names it.
+    Added(u8),
 }
 
 impl MenuMessage {
@@ -53,6 +56,7 @@ impl MenuMessage {
             Self::SlotsFull => "ALL TEN SENSOR SLOTS ARE IN USE",
             Self::NotSaved => "NOT SAVED - RETRYING",
             Self::SavedUnreadable => "SAVED SENSORS UNREADABLE",
+            Self::Added(_) => "SENSOR ADDED",
         }
     }
 
@@ -94,6 +98,7 @@ impl MenuMessage {
                 | Self::StartingSensors
                 | Self::WaitingForCompanion
                 | Self::ScanThenPick
+                | Self::Added(_)
         )
     }
 }

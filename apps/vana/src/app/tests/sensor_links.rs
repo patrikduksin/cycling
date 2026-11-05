@@ -429,24 +429,24 @@ fn busy_connection_continues_after_leaving_and_waits_for_observed_success() {
     };
     choose_sensor(&mut runtime, &mut radio, peer);
     assert!(radio.channel(120, 1000).is_none());
-    runtime.input(
-        Input::Button {
+    // BACK leaves NEARBY for SENSORS, and SENSORS for Home.
+    for now in [1400, 1800] {
+        let back = Input::Button {
             button: Button::TopLeft,
             code: 1,
-        },
-        1400,
-        &mut radio,
-    );
+        };
+        runtime.input(back, now, &mut radio);
+    }
     assert!(runtime.navigation.page == crate::screens::workout::Page::Home);
     radio.reject = None;
-    advance(&mut runtime, &mut radio, 1400);
-    assert_eq!(radio.channel(120, 1400).unwrap().selected, Some(peer));
+    advance(&mut runtime, &mut radio, 1800);
+    assert_eq!(radio.channel(120, 1800).unwrap().selected, Some(peer));
     assert_eq!(
-        radio.channel(120, 1400).unwrap().link,
+        radio.channel(120, 1800).unwrap().link,
         device_api::ant::LinkState::Connecting
     );
     let count = radio.requests.len();
-    advance(&mut runtime, &mut radio, 1800);
+    advance(&mut runtime, &mut radio, 2200);
     assert_eq!(radio.requests.len(), count);
 }
 

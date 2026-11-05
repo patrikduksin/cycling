@@ -141,6 +141,11 @@ impl Menu {
     }
 
     pub fn set_message(&mut self, message: MenuMessage) {
+        // An add stops the search; its progress would hide the news.
+        let added = matches!(self.state.message, Some(MenuMessage::Added(_)));
+        if added && message.routine() {
+            return;
+        }
         self.state.message = Some(message);
         self.prepare_layout();
     }
@@ -179,18 +184,17 @@ impl Menu {
         self.state.selected_identity(kind)
     }
 
-    /// Show SENSORS with the saved sensor of this device type focused, such
-    /// as one just connected.
-    pub fn focus_type(&mut self, kind: u8) {
+    /// The sensor the rider picked on NEARBY is saved now: NEARBY stays
+    /// open on the sensors still found and says so, and BACK focuses it on
+    /// SENSORS. Nothing changes if it could not be saved.
+    pub fn added(&mut self, peer: Identity) {
         let state = &mut self.state;
-        if let Some(slot) = state
-            .selected
-            .iter()
-            .position(|s| s.is_some_and(|s| s.identity.device_type == kind))
-        {
-            state.view = View::Mine(Mine::Saved(slot));
-            self.prepare_layout();
+        if state.slot_of(peer).is_none() {
+            return;
         }
+        state.added = Some(peer);
+        state.message = Some(MenuMessage::Added(peer.device_type));
+        self.prepare_layout();
     }
 
     /// Show the saved sensors in their slots, and nearby discoveries.
@@ -278,6 +282,8 @@ pub(super) struct State {
     pub(super) present: [bool; DISCOVERY_CAPACITY],
     pub(super) selected: [Option<Selected>; CHANNEL_CAPACITY],
     pub(super) view: View,
+    /// The sensor added last on this visit to NEARBY, which BACK focuses.
+    added: Option<Identity>,
     /// When a detail page last opened: ACT waits a moment after it.
     opened: u64,
     last_press: Option<u64>,
@@ -310,6 +316,7 @@ impl State {
             present: [false; DISCOVERY_CAPACITY],
             selected: [None; CHANNEL_CAPACITY],
             view: View::Mine(Mine::Add),
+            added: None,
             opened: 0,
             last_press: None,
             scanning: false,
@@ -474,7 +481,8 @@ impl State {
                 Some(Action::Ride)
             }
             (View::Nearby(_), Press::Back) => {
-                self.view = View::Mine(Mine::Add);
+                let added = self.added.and_then(|peer| self.slot_of(peer));
+                self.view = View::Mine(added.map_or(Mine::Add, Mine::Saved));
                 Some(Action::StopScan)
             }
             (View::Nearby(focus), Press::Move) => {
@@ -525,6 +533,7 @@ impl State {
     fn open_nearby(&mut self) -> Option<Action> {
         self.view = View::Nearby(None);
         self.settle();
+        self.added = None;
         self.message = None;
         Some(Action::Scan)
     }
@@ -596,6 +605,13 @@ impl State {
         self.nearby()
             .find(|&index| self.discoveries[index].is_some_and(|d| d.identity == identity))
             .or_else(|| self.nearby().next())
+    }
+
+    /// The slot a saved sensor is in.
+    fn slot_of(&self, peer: Identity) -> Option<usize> {
+        self.selected
+            .iter()
+            .position(|s| s.is_some_and(|s| s.identity == peer))
     }
 
     pub(super) fn selected_peers(&self) -> impl Iterator<Item = &Selected> {

@@ -38,31 +38,27 @@ impl Sim {
         panic!("NEARBY does not open; screen:\n{}", self.screen().text());
     }
 
-    /// Open NEARBY, let its search finish, MOVE to a sensor kind and
-    /// connect it; SENSORS then shows it LIVE. A rider may pick a sensor
-    /// mid-search too, but the radio connects only once the search has let
-    /// it go, so waiting first keeps the radio's requests to a search and a
-    /// connection.
+    /// On NEARBY, MOVE to a sensor kind and connect it: NEARBY stays, says
+    /// it was added and keeps the other sensors found, so more pair from
+    /// the same search.
     #[track_caller]
     pub fn connect_sensor(&mut self, kind: &str) {
         self.nearby_page();
-        self.wait_for("SCAN DONE", seconds(20)).unwrap();
         self.focus_row(kind);
         self.press(Button::BottomRight);
-        self.wait_live(kind);
+        self.expect_text(&format!("{kind} ADDED"));
     }
 
-    /// Open NEARBY, MOVE to a nearby sensor of an already saved kind and
-    /// confirm, with the check cue, that it replaces the saved one.
+    /// On NEARBY, MOVE to a sensor of an already saved kind and confirm,
+    /// with the check cue, that it replaces the saved one.
     #[track_caller]
     pub fn replace_sensor(&mut self, kind: &str) {
         self.nearby_page();
-        self.wait_for(kind, seconds(20)).unwrap();
         self.focus_row(kind);
         self.press(Button::BottomRight);
         self.expect_text("REPLACE SENSOR");
         self.press(Button::BottomRight);
-        self.wait_live(kind);
+        self.expect_text(&format!("{kind} ADDED"));
     }
 
     /// On SENSORS, MOVE to a saved sensor and open its detail page.
@@ -118,11 +114,18 @@ impl Sim {
         panic!("no {kind} row to focus; screen:\n{}", self.screen().text());
     }
 
-    /// Pair sensors from the Sensors page, then return Home.
+    /// Pair sensors from one search on NEARBY, see them LIVE on SENSORS,
+    /// then return Home.
     pub fn pair(&mut self, kinds: &[&str]) {
         self.home("SENSORS");
+        self.nearby_page();
+        self.wait_for("SCAN DONE", seconds(20)).unwrap();
         for kind in kinds {
             self.connect_sensor(kind);
+        }
+        self.press(Button::TopLeft);
+        for kind in kinds {
+            self.wait_live(kind);
         }
         for _ in 0..3 {
             if self.on_home() {

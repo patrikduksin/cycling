@@ -219,9 +219,24 @@ fn move_walks_the_rows_and_wraps_and_back_leaves() {
     assert_eq!(rider.press(&mut menu, Button::TopLeft), Some(Action::Ride));
 }
 
+/// NEARBY's line under its title, as text.
+fn search_line(menu: &Menu) -> (std::string::String, u16) {
+    let (text, color) = menu.state.search_line();
+    (text.as_str().into(), color)
+}
+
 #[test]
-fn add_sensor_connects_and_shows_the_new_sensor_focused_on_sensors() {
-    let mut menu = opened(&[peer(10), peer(20)], &[(strap(1), Connection::Live)]);
+fn nearby_stays_open_after_an_add_so_more_sensors_pair_from_one_search() {
+    let speed = identity(device_type::SPEED, 10);
+    let cadence = identity(device_type::CADENCE, 20);
+    let radar = identity(device_type::RADAR, 30);
+    let found = [speed, cadence, radar].map(|identity| Discovery {
+        identity,
+        rssi: -40,
+        seen_ms: 0,
+    });
+    let mut tiles = std::vec![(strap(1), Connection::Live)];
+    let mut menu = opened(&found, &tiles);
     let mut rider = Rider::new();
     rider.focus(&mut menu, None);
     assert_eq!(
@@ -229,34 +244,57 @@ fn add_sensor_connects_and_shows_the_new_sensor_focused_on_sensors() {
         Some(Action::Scan)
     );
     menu.search_started();
-    menu.refresh(
-        nearby(&[peer(10), peer(20)]),
-        saved(&[(strap(1), Connection::Live)]),
-        true,
-    );
+    menu.refresh(nearby(&found), saved(&tiles), true);
     // The first sensor found takes the focus; MOVE steps through and wraps.
-    assert_eq!(menu.diagnostics().focus, Some(peer(10).identity));
-    rider.press(&mut menu, Button::BottomLeft);
-    assert_eq!(menu.diagnostics().focus, Some(peer(20).identity));
-    rider.press(&mut menu, Button::BottomLeft);
-    assert_eq!(menu.diagnostics().focus, Some(peer(10).identity));
+    assert_eq!(menu.diagnostics().focus, Some(speed));
+    for want in [cadence, radar, speed] {
+        rider.press(&mut menu, Button::BottomLeft);
+        assert_eq!(menu.diagnostics().focus, Some(want));
+    }
     assert_eq!(
         rider.press(&mut menu, Button::BottomRight),
-        Some(Action::Connect(peer(10).identity))
+        Some(Action::Connect(speed))
     );
-    // The runtime saves it; the app focuses it.
-    let tiles = [
-        (strap(1), Connection::Live),
-        (peer(10).identity, Connection::WaitingForRadio),
-    ];
-    menu.refresh(nearby(&[peer(10), peer(20)]), saved(&tiles), false);
-    menu.focus_type(device_type::POWER);
+    // The runtime saves it, which stops the search, and says it did.
+    tiles.push((speed, Connection::WaitingForRadio));
+    menu.refresh(nearby(&found), saved(&tiles), false);
+    menu.added(speed);
+    menu.set_message(MenuMessage::ScanCancelled);
+    assert_eq!(page(&menu), Page::Nearby);
+    assert_eq!(search_line(&menu), ("SPEED ADDED".into(), GREEN));
+    // It leaves the list; the others stay and connect without a new search.
+    assert!(!menu.canvas().shows("ID 10"));
+    assert_eq!(menu.diagnostics().focus, Some(cadence));
+    assert_eq!(
+        rider.press(&mut menu, Button::BottomRight),
+        Some(Action::Connect(cadence))
+    );
+    tiles.push((cadence, Connection::WaitingForRadio));
+    menu.refresh(nearby(&found), saved(&tiles), false);
+    menu.added(cadence);
+    assert_eq!(search_line(&menu), ("CADENCE ADDED".into(), GREEN));
+    assert_eq!(menu.diagnostics().focus, Some(radar));
+    // A sensor that could not be saved is no news; a problem replaces it.
+    menu.added(radar);
+    assert_eq!(search_line(&menu), ("CADENCE ADDED".into(), GREEN));
+    menu.set_message(MenuMessage::ScanFailed);
+    assert_eq!(search_line(&menu).1, AMBER);
+    // BACK shows SENSORS on the sensor added last.
+    assert_eq!(
+        rider.press(&mut menu, Button::TopLeft),
+        Some(Action::StopScan)
+    );
     assert_eq!(page(&menu), Page::Sensors);
-    assert_eq!(menu.diagnostics().focus, Some(peer(10).identity));
-    // A saved sensor is no longer listed as nearby.
+    assert_eq!(menu.diagnostics().focus, Some(cadence));
+    // A fresh visit forgets it: BACK returns to the ADD SENSOR row.
     rider.focus(&mut menu, None);
-    rider.press(&mut menu, Button::BottomRight);
-    assert_eq!(menu.diagnostics().focus, Some(peer(20).identity));
+    assert_eq!(
+        rider.press(&mut menu, Button::BottomRight),
+        Some(Action::Scan)
+    );
+    assert_eq!(search_line(&menu).0, "FIND NEARBY");
+    rider.press(&mut menu, Button::TopLeft);
+    assert_eq!(menu.diagnostics().focus, None);
 }
 
 #[test]
@@ -310,7 +348,7 @@ fn full_slots_and_stale_discoveries_say_why_nothing_connects() {
     rider.press(&mut menu, Button::BottomRight);
     assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
     assert_eq!(menu.diagnostics().message, Some(MenuMessage::SlotsFull));
-    assert_eq!(menu.state.search_line(), (&b"SENSOR SLOTS FULL"[..], AMBER));
+    assert_eq!(search_line(&menu), ("SENSOR SLOTS FULL".into(), AMBER));
     // A sensor the latest search no longer reports is listed, not connected.
     let mut menu = opened(&[peer(10)], &[]);
     menu.refresh([None; DISCOVERY_CAPACITY], [None; CHANNEL_CAPACITY], false);
@@ -322,22 +360,25 @@ fn full_slots_and_stale_discoveries_say_why_nothing_connects() {
 #[test]
 fn the_search_line_says_how_the_search_goes() {
     let mut menu = opened(&[], &[]);
-    let line = |menu: &Menu| menu.state.search_line();
-    assert_eq!(line(&menu), (&b"FIND NEARBY"[..], SECONDARY));
+    let line = |menu: &Menu| {
+        let (text, color) = menu.state.search_line();
+        (text.as_bytes().to_vec(), color)
+    };
+    assert_eq!(line(&menu), (b"FIND NEARBY".to_vec(), SECONDARY));
     menu.refresh([None; DISCOVERY_CAPACITY], [None; CHANNEL_CAPACITY], true);
     menu.set_message(MenuMessage::Scanning);
-    assert_eq!(line(&menu), (&b"SEARCHING..."[..], ACCENT));
+    assert_eq!(line(&menu), (b"SEARCHING...".to_vec(), ACCENT));
     menu.refresh([None; DISCOVERY_CAPACITY], [None; CHANNEL_CAPACITY], false);
     menu.set_message(MenuMessage::ScanDone);
-    assert_eq!(line(&menu), (&b"NO SENSORS FOUND"[..], SECONDARY));
+    assert_eq!(line(&menu), (b"NO SENSORS FOUND".to_vec(), SECONDARY));
     menu.refresh(nearby(&[peer(1)]), [None; CHANNEL_CAPACITY], false);
-    assert_eq!(line(&menu), (&b"SCAN DONE - PICK"[..], SECONDARY));
+    assert_eq!(line(&menu), (b"SCAN DONE - PICK".to_vec(), SECONDARY));
     menu.set_message(MenuMessage::ScanFailed);
-    assert_eq!(line(&menu), (&b"SCAN FAILED - RETRY"[..], AMBER));
+    assert_eq!(line(&menu), (b"SCAN FAILED - RETRY".to_vec(), AMBER));
     // Save trouble outlasts discovery messages.
     menu.set_notice(Some(MenuMessage::SavedUnreadable));
     menu.set_message(MenuMessage::Scanning);
-    assert_eq!(line(&menu), (&b"NOT SAVED"[..], AMBER));
+    assert_eq!(line(&menu), (b"NOT SAVED".to_vec(), AMBER));
 }
 
 #[test]

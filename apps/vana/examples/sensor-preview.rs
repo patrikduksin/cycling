@@ -92,7 +92,7 @@ fn main() {
     menu.search_started();
     menu.refresh(nearby, tiles(1), true);
     menu.set_message(MenuMessage::Scanning);
-    render(&menu, &output, "add-searching");
+    render(&menu, &output, "nearby-searching");
     let mut eight = Menu::new();
     let many = [
         (HEART_RATE, 4321),
@@ -108,18 +108,37 @@ fn main() {
     eight.open();
     eight.set_message(MenuMessage::ScanDone);
     focus(&mut eight, Some(SHIFTING), &mut now);
-    render(&eight, &output, "add-eight-scrolled");
+    render(&eight, &output, "nearby-eight-scrolled");
+    // A sensor picked there is saved; NEARBY stays on the others found.
+    let mut first = Menu::new();
+    first.refresh(nearby, tiles(0), false);
+    first.open();
+    first.set_message(MenuMessage::ScanDone);
+    focus(&mut first, Some(HEART_RATE), &mut now);
+    press(&mut first, Button::BottomRight, &mut now);
+    let strap = identity(HEART_RATE, 4321);
+    let mut with_strap = tiles(0);
+    with_strap[0] = Some(Selected {
+        identity: strap,
+        connection: Connection::WaitingForRadio,
+        battery: None,
+    });
+    first.refresh(nearby, with_strap, false);
+    first.added(strap);
+    first.set_message(MenuMessage::ScanCancelled);
+    assert_eq!(first.diagnostics().page, Page::Nearby);
+    render(&first, &output, "nearby-added");
     let mut empty = Menu::new();
     empty.refresh([None; 8], tiles(0), false);
     empty.open();
     empty.refresh([None; 8], tiles(0), true);
     empty.set_message(MenuMessage::Scanning);
-    render(&empty, &output, "add-empty-searching");
+    render(&empty, &output, "nearby-empty-searching");
     empty.refresh([None; 8], tiles(0), false);
     empty.set_message(MenuMessage::ScanDone);
-    render(&empty, &output, "add-none-found");
+    render(&empty, &output, "nearby-none-found");
     empty.set_message(MenuMessage::RadioUnavailable);
-    render(&empty, &output, "add-radio-unavailable");
+    render(&empty, &output, "nearby-radio-unavailable");
 
     // A nearby heart strap of the saved type asks to replace it.
     focus(&mut menu, Some(HEART_RATE), &mut now);

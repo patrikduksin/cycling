@@ -53,6 +53,10 @@ pub struct Matched {
     pub flags: u8,
     /// 0..100.
     pub confidence: u8,
+    /// Distance ridden along this edge in direction `forward` since the match
+    /// came onto the edge or its direction last reversed; 0 while the
+    /// direction is unknown.
+    pub ridden_m: f32,
 }
 
 /// The closest segment of one edge: its points in metres from the fix.
@@ -74,6 +78,8 @@ struct Candidate {
     /// Its nearest point is one of its end nodes: the rider is near where it
     /// starts, not beside it.
     at_node: bool,
+    /// Distance along the edge from its `from` node to the projected fix.
+    along_m: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -81,6 +87,9 @@ pub struct Matcher {
     current: Option<Matched>,
     challenger: Option<(TileId, u16, u8)>,
     misses: u8,
+    /// Where along the matched edge the rider's run in its direction began:
+    /// the `along_m` of the match onto the edge or of the reversal.
+    run_from_m: f32,
 }
 
 /// The tiles a search around `fix` needs: its own, and each neighbour
@@ -227,6 +236,20 @@ impl Matcher {
         {
             found.forward = previous.forward;
         }
+        let same_run = previous.is_some_and(|p| {
+            p.tile == found.tile
+                && p.edge == found.edge
+                && (p.forward.is_none() || p.forward == found.forward)
+        });
+        if !same_run {
+            self.run_from_m = chosen.along_m;
+        }
+        let ridden = match found.forward {
+            Some(true) => chosen.along_m - self.run_from_m,
+            Some(false) => self.run_from_m - chosen.along_m,
+            None => 0.0,
+        };
+        found.ridden_m = ridden.max(0.0);
         found.confidence = (near * clear * steady * 100.0) as u8;
         self.current = Some(found);
         Ok(self.current)
@@ -282,6 +305,14 @@ impl Matcher {
             else {
                 continue;
             };
+            let mut along_m = fraction * geo::length(sb.0 - sa.0, sb.1 - sa.1);
+            let mut a = geo::edge_point(header, tile, &edge, 0).0;
+            for index in 1..=usize::from(segment) {
+                let b = geo::edge_point(header, tile, &edge, index).0;
+                let (east, north) = b.metres_from(a, lon_um);
+                along_m += geo::length(east, north);
+                a = b;
+            }
             let at_node = (segment == 0 && fraction <= 0.0)
                 || (usize::from(segment) + 2 == points && fraction >= 1.0);
             let along = geo::bearing(sb.0 - sa.0, sb.1 - sa.1);
@@ -352,6 +383,7 @@ impl Matcher {
                 class: edge.class,
                 flags: edge.flags,
                 confidence: 0,
+                ridden_m: 0.0,
             };
             insert(
                 best,
@@ -360,6 +392,7 @@ impl Matcher {
                     cost,
                     joined,
                     at_node,
+                    along_m,
                 },
             );
         }

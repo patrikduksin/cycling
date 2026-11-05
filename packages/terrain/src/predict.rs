@@ -26,6 +26,8 @@ use crate::tile::{Tile, class, flag};
 pub const SAMPLE_M: f32 = 20.0;
 /// Samples for 10 km, both ends included.
 pub const MAX_SAMPLES: usize = 501;
+/// Samples for the 200 m behind the rider, both ends included.
+pub const BEHIND_SAMPLES: usize = 11;
 pub const FORK_MARGIN: f32 = 1.0;
 const MIN_CONFIDENCE: f32 = 0.3;
 const HEADING_SPAN_M: f32 = 25.0;
@@ -59,6 +61,10 @@ pub enum End {
 pub struct Prediction {
     /// Samples written, from the rider (sample 0) on.
     pub len: usize,
+    /// Samples written behind the rider, from the rider (sample 0) back.
+    pub behind: usize,
+    /// Distance from the rider to the last of them.
+    pub behind_m: f32,
     pub end: End,
     /// Distance followed.
     pub end_m: f32,
@@ -69,14 +75,14 @@ pub struct Prediction {
 /// Writes an elevation every `SAMPLE_M` of distance, interpolating
 /// between road points.
 struct Sampler<'s> {
-    out: &'s mut [i16; MAX_SAMPLES],
+    out: &'s mut [i16],
     len: usize,
     last: (f32, i32),
 }
 
 impl Sampler<'_> {
     fn push(&mut self, distance: f32, z: i32) {
-        while self.len < MAX_SAMPLES {
+        while self.len < self.out.len() {
             let at = self.len as f32 * SAMPLE_M;
             if at > distance {
                 break;
@@ -124,13 +130,15 @@ struct Choice {
 }
 
 /// Follow the road from `start` for up to `horizon_m`, writing elevations
-/// relative to the rider into `samples`.
+/// relative to the rider into `samples`, and those of the road just ridden
+/// along the matched edge into `behind`.
 pub fn predict(
     cache: &Cache<'_>,
     header: &Header,
     start: &Matched,
     horizon_m: f32,
     samples: &mut [i16; MAX_SAMPLES],
+    behind: &mut [i16; BEHIND_SAMPLES],
 ) -> Result<Prediction, Need> {
     let Some(forward) = start.forward else {
         return Ok(Prediction {
@@ -156,6 +164,7 @@ pub fn predict(
         lat: a.lat + ((b.lat - a.lat) as f32 * start.fraction) as i32,
         lon: a.lon + ((b.lon - a.lon) as f32 * start.fraction) as i32,
     };
+    let (behind, behind_m) = ridden(header, &tile, &edge, start, forward, here, behind);
     let mut distance = 0.0f32;
     let mut history = [(here, 0.0f32); HISTORY];
     let mut history_len = 1usize;
@@ -185,6 +194,8 @@ pub fn predict(
 
     let finish = |sampler: &Sampler<'_>, end: End, distance: f32, confidence: f32| Prediction {
         len: sampler.len,
+        behind,
+        behind_m,
         end,
         end_m: distance,
         confidence: (confidence * 100.0).clamp(0.0, 100.0) as u8,
@@ -410,6 +421,67 @@ pub fn predict(
         first_index = if way.forward { 1 } else { last - 1 };
     }
     Ok(finish(&sampler, End::Uncertain, distance, confidence))
+}
+
+/// The road the rider rode to `here` in this direction: back along the
+/// matched edge for `start.ridden_m`, at most 200 m, and never past the
+/// edge's end node, without a decision at any junction. Elevations relative
+/// to the rider every `SAMPLE_M`, sample 0 the rider, and one more where the
+/// road ridden ends between two of them. Returns the samples written and
+/// the distance to the last.
+fn ridden(
+    header: &Header,
+    tile: &Tile<'_>,
+    edge: &crate::tile::Edge,
+    start: &Matched,
+    forward: bool,
+    mut here: Point,
+    out: &mut [i16; BEHIND_SAMPLES],
+) -> (usize, f32) {
+    let reach = start.ridden_m.min((BEHIND_SAMPLES - 1) as f32 * SAMPLE_M);
+    let z0 = start.z_dm;
+    let mut sampler = Sampler {
+        out,
+        len: 0,
+        last: (0.0, 0),
+    };
+    sampler.push(0.0, 0);
+    let segment = usize::from(start.segment);
+    let last = Tile::points(edge) - 1;
+    let mut distance = 0.0f32;
+    let mut index = if forward { segment } else { segment + 1 };
+    while distance < reach {
+        let (point, z) = geo::edge_point(header, tile, edge, index);
+        let (east, north) = point.metres_from(here, tile.lon_um);
+        let step = geo::length(east, north);
+        if distance + step >= reach {
+            let (d0, z_before) = sampler.last;
+            let z_reach = z_before as f32 + (z - z0 - z_before) as f32 * (reach - d0) / step;
+            distance = reach;
+            sampler.push(distance, z_reach as i32);
+            break;
+        }
+        distance += step;
+        here = point;
+        sampler.push(distance, z - z0);
+        if forward {
+            let Some(before) = index.checked_sub(1) else {
+                break;
+            };
+            index = before;
+        } else if index == last {
+            break;
+        } else {
+            index += 1;
+        }
+    }
+    let sampled = (sampler.len - 1) as f32 * SAMPLE_M;
+    if distance - sampled >= 1.0 && sampler.len < BEHIND_SAMPLES {
+        sampler.out[sampler.len] = sampler.last.1 as i16;
+        sampler.len += 1;
+        return (sampler.len, distance);
+    }
+    (sampler.len, sampled)
 }
 
 fn ready<'c>(cache: &'c Cache<'_>, key: TileKey) -> Result<Option<Tile<'c>>, TileKey> {

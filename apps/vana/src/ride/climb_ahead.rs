@@ -150,8 +150,8 @@ impl Forecast {
             });
         }
         let starts_here = self.climbs().any(|c| c.summary.start_mm <= ON_CLIMB_MM);
-        if was_on
-            && !starts_here
+        if !starts_here
+            && (was_on || climbed_onto(ahead))
             && let Some(rest) = self.remainder()
         {
             // The climb under way comes first; a later one may drop off.
@@ -254,6 +254,35 @@ impl Forecast {
         let rise = i32::from(self.samples[to]) - i32::from(self.samples[from]);
         Steepness::of(rise * 5 / (to - from) as i32)
     }
+}
+
+/// The road the rider just rode, as the same look-ahead has it, starts a
+/// climb that tops out ahead: the rider is on its first metres, where the
+/// gain left ahead may be too little for the detector to start a climb.
+fn climbed_onto(ahead: &Ahead) -> bool {
+    let behind = &ahead.behind[..ahead.behind_len];
+    let Some(back) = behind.len().checked_sub(1).filter(|&back| back > 0) else {
+        return false;
+    };
+    // Every 20 m but the farthest sample, where the road ridden ends.
+    let rider_mm = (ahead.behind_m * 1000.0) as u64;
+    let farthest_mm = rider_mm.saturating_sub((back as u64 - 1) * STEP_MM);
+    let road = behind[1..].iter().rev().chain(&ahead.samples[..ahead.len]);
+    let mut climbs = Climbs::default();
+    let on = |summary: Summary| {
+        summary.start_mm <= rider_mm && summary.start_mm + summary.length_mm > rider_mm
+    };
+    for (index, sample) in road.enumerate() {
+        let step = match index {
+            0 => 0,
+            1 => farthest_mm,
+            _ => STEP_MM,
+        };
+        if let Some(Event::Finished(summary)) = climbs.add(0, step, Some(i32::from(*sample))) {
+            return on(summary);
+        }
+    }
+    climbs.climbing().is_some_and(on)
 }
 
 /// A climb from the map, pinned to the ride's odometer: its foot and top,
@@ -462,6 +491,7 @@ pub(crate) mod tests {
             class: 3,
             flags: 0,
             confidence: 90,
+            ridden_m: 0.0,
         });
         ahead
     }
@@ -567,6 +597,92 @@ pub(crate) mod tests {
             forecast.current().is_none(),
             "a new ramp is not the old climb"
         );
+    }
+
+    #[test]
+    fn a_climb_found_only_by_an_unsure_forecast_is_never_the_climb_under_way() {
+        // Unsure of the road at a fork: it may be the 4% branch, 600 m long.
+        for confidence in [0, 10, 30, MIN_CONFIDENCE - 1] {
+            let mut forecast = Forecast::default();
+            let mut unsure = ahead(1, 5, |m: f64| m.min(600.0) * 0.04);
+            unsure.confidence = confidence;
+            forecast.update(&unsure);
+            assert!(forecast.current().is_none());
+            // Sure of it now: the rider took a steady 1.2% drag, no climb.
+            forecast.update(&ahead(2, 5, |m: f64| m * 0.012));
+            assert_eq!(forecast.current(), None, "at confidence {confidence}");
+            let mut pinned = None;
+            follow(&mut pinned, Some(&forecast), 0);
+            assert_eq!(pinned, None, "at confidence {confidence}");
+        }
+    }
+
+    #[test]
+    fn the_road_just_ridden_counts_toward_the_climb_under_way() {
+        // A 5% climb of 20 m that started 20 m behind the rider: 19 m is
+        // left, too little for the detector to start a climb from here.
+        let road = |m: f64| m.min(380.0) * 0.05;
+        let mut forecast = Forecast::default();
+        forecast.update(&ahead(1, 5, road));
+        assert_eq!(forecast.current(), None);
+        let mut ridden = ahead(2, 5, road);
+        ridden.behind[1] = -10;
+        ridden.behind_len = 2;
+        ridden.behind_m = 20.0;
+        forecast.update(&ridden);
+        let rest = forecast.current().expect("the climb under way");
+        assert_eq!(rest.summary.length_mm, 380_000);
+        assert_eq!(rest.summary.gain_dm, 190);
+        // The road behind is as sure as the forecast: unsure, it says nothing.
+        let mut forecast = Forecast::default();
+        ridden.confidence = MIN_CONFIDENCE - 1;
+        forecast.update(&ridden);
+        forecast.update(&ahead(3, 5, road));
+        assert_eq!(forecast.current(), None);
+    }
+
+    /// The rider `at` metres up a 1.2% drag that starts at the top of a
+    /// 140 m ramp at 5%, having ridden `ridden` metres of it all.
+    fn on_the_drag(generation: u32, at: f64, ridden: f64) -> Ahead {
+        let road = |m: f64| {
+            if m < 0.0 {
+                m.max(-140.0) * 0.05
+            } else {
+                m * 0.012
+            }
+        };
+        let mut ahead = ahead(generation, 5, |m: f64| road(at + m) - road(at));
+        let reach = ridden.min(200.0);
+        for index in 0..terrain::BEHIND_SAMPLES {
+            let back = (index as f64 * 20.0).min(reach);
+            ahead.behind[index] = ((road(at - back) - road(at)) * 10.0).round() as i16;
+            ahead.behind_len = index + 1;
+            if back >= reach {
+                break;
+            }
+        }
+        ahead.behind_m = reach as f32;
+        ahead
+    }
+
+    #[test]
+    fn a_ramp_behind_a_u_turn_is_not_ridden_and_starts_no_climb() {
+        // A U-turn at the top of the ramp, onto the drag: the road just
+        // ridden is the drag since the turn, never the ramp.
+        let mut forecast = Forecast::default();
+        let mut pinned = None;
+        for step in 0..=25 {
+            let at = f64::from(step) * 8.0;
+            forecast.update(&on_the_drag(step + 1, at, at));
+            assert_eq!(forecast.current(), None, "{at} m past the turn");
+            follow(&mut pinned, Some(&forecast), at as u64 * 1000);
+            assert_eq!(pinned, None, "{at} m past the turn");
+        }
+        // Ridden up from the ramp's foot, the same road is a climb under way.
+        let mut forecast = Forecast::default();
+        forecast.update(&on_the_drag(1, 0.0, 140.0));
+        let rest = forecast.current().expect("the climb under way");
+        assert!(rest.open);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::geo::Point;
 use crate::matcher::Matcher;
 use crate::pack::{HEADER_BYTES, Header, MAGIC, TileKey};
 use crate::tile::{class, crc32, flag};
-use crate::{End, Fix, Lookahead, PAGE_BYTES, Status};
+use crate::{BEHIND_SAMPLES, End, Fix, Lookahead, PAGE_BYTES, Status};
 use std::vec;
 use std::vec::Vec;
 
@@ -159,17 +159,33 @@ fn ride(pack: &[u8], path: &[(f64, f64)]) -> crate::Ahead {
 
 /// `ride`, looking `horizon_m` ahead.
 fn ride_to(pack: &[u8], path: &[(f64, f64)], horizon_m: f32) -> crate::Ahead {
+    let mut last = None;
+    ride_each(pack, path, horizon_m, |_, ahead| last = Some(ahead.clone()));
+    last.unwrap()
+}
+
+/// `ride`, calling `look` after each fix with the rider's position (metres)
+/// when the result's fix was taken.
+fn ride_each(
+    pack: &[u8],
+    path: &[(f64, f64)],
+    horizon_m: f32,
+    mut look: impl FnMut((f64, f64), &crate::Ahead),
+) {
     let mut arena = vec![0u8; 4 * PAGE_BYTES];
     let mut ahead = Lookahead::new(&mut arena, horizon_m);
     let mut source: &[u8] = pack;
     let mut second = 0;
+    let mut positions = Vec::new();
     for pair in path.windows(2) {
         let (a, b) = (pair[0], pair[1]);
         let length = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
         let mut at = 0.0;
         while at < length {
             let t = at / length;
-            let (x, y) = local(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+            let position = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+            positions.push(position);
+            let (x, y) = local(position.0, position.1);
             ahead.fix(Fix {
                 lat: SOUTH + i32::from(y),
                 lon: WEST + i32::from(x),
@@ -180,11 +196,37 @@ fn ride_to(pack: &[u8], path: &[(f64, f64)], horizon_m: f32) -> crate::Ahead {
                 steps += 1;
                 assert!(steps < 500);
             }
+            let result = ahead.ahead();
+            look(positions[(result.at_ms / 1000) as usize], result);
             second += 1;
             at += 5.0;
         }
     }
-    ahead.ahead().clone()
+}
+
+/// A road north from 400 m south of the tile middle to `end` metres north
+/// of it, one edge rising at 5%.
+fn straight_road(end: f64) -> Vec<u8> {
+    pack(&[road(
+        &[(0.0, -400.0, 100.0), (0.0, end, 120.0 + end * 0.05)],
+        class::SECONDARY,
+        7,
+    )])
+}
+
+/// The road just ridden on a `straight_road`, from a rider at `north` metres:
+/// where it ends, checked against its 5% slope.
+fn ridden_to(ahead: &crate::Ahead, north: f64) -> f64 {
+    let Some(forward) = ahead.matched.and_then(|m| m.forward) else {
+        return north;
+    };
+    let way = if forward { -1.0 } else { 1.0 };
+    for (index, z) in ahead.behind[..ahead.behind_len].iter().enumerate() {
+        let back = (index as f64 * 20.0).min(f64::from(ahead.behind_m));
+        let expected = way * back * 0.5;
+        assert!((f64::from(*z) - expected).abs() <= 2.0, "{ahead:?}");
+    }
+    north + way * f64::from(ahead.behind_m)
 }
 
 /// The `n`th sample, in metres.
@@ -228,6 +270,100 @@ fn a_straight_road_through_a_crossing_is_followed_to_its_end() {
     assert!((metres_at(&ahead, 200) - 10.0).abs() < 0.6);
     assert!((metres_at(&ahead, 880) - 44.0).abs() < 0.6);
     assert!(ahead.confidence > 80, "{}", ahead.confidence);
+}
+
+#[test]
+fn the_road_just_ridden_goes_back_along_the_matched_road_to_a_junction() {
+    // North at 5%, through a crossing 300 m in.
+    let roads = [
+        road(
+            &[(0.0, -400.0, 100.0), (0.0, -100.0, 115.0)],
+            class::SECONDARY,
+            7,
+        ),
+        road(
+            &[(0.0, -100.0, 115.0), (0.0, 600.0, 150.0)],
+            class::SECONDARY,
+            7,
+        ),
+        road(
+            &[(-300.0, -100.0, 115.0), (300.0, -100.0, 115.0)],
+            class::RESIDENTIAL,
+            0,
+        ),
+    ];
+    let pack = pack(&roads);
+    let falls_back_at_5_percent = |ahead: &crate::Ahead| {
+        for (index, z) in ahead.behind[..ahead.behind_len].iter().enumerate() {
+            let back = (index as f32 * 20.0).min(ahead.behind_m);
+            assert!((f32::from(*z) + back / 2.0).abs() <= 2.0, "{ahead:?}");
+        }
+    };
+    // 55 m past the crossing: the way back is a choice there, so the road
+    // just ridden stops at it.
+    let ahead = ride(&pack, &[(0.0, -400.0), (0.0, -40.0)]);
+    assert!((45.0..=56.0).contains(&ahead.behind_m), "{ahead:?}");
+    assert_eq!(ahead.behind_len, 4, "{:?}", ahead.behind);
+    falls_back_at_5_percent(&ahead);
+    // Far from it: 200 m back.
+    let ahead = ride(&pack, &[(0.0, -400.0), (0.0, 300.0)]);
+    assert_eq!(ahead.behind_len, BEHIND_SAMPLES);
+    assert_eq!(ahead.behind_m, 200.0);
+    falls_back_at_5_percent(&ahead);
+}
+
+#[test]
+fn a_ride_that_starts_partway_along_a_road_has_ridden_none_of_it_behind() {
+    let pack = straight_road(600.0);
+    let mut last = 0.0f32;
+    let mut seen = 0;
+    ride_each(
+        &pack,
+        &[(0.0, 0.0), (0.0, 300.0)],
+        10_000.0,
+        |(_, north), ahead| {
+            if ahead.matched.and_then(|m| m.forward).is_none() {
+                assert_eq!(ahead.behind_len, 0, "no direction, no road ridden");
+                return;
+            }
+            let reaches = ridden_to(ahead, north);
+            assert!(reaches >= -0.5, "reads {reaches} m: south of the start");
+            assert!(ahead.behind_m >= last, "{} after {last}", ahead.behind_m);
+            assert!(ahead.behind_m as f64 >= north - 1.0 || ahead.behind_m == 200.0);
+            last = ahead.behind_m;
+            seen += 1;
+        },
+    );
+    assert!(seen > 40, "{seen}");
+    assert_eq!(last, 200.0);
+}
+
+#[test]
+fn after_a_u_turn_the_road_just_ridden_starts_at_the_turn() {
+    // South from the road's north end, a U-turn 250 m on, then north.
+    let pack = straight_road(100.0);
+    let mut north_since_turn = 0.0f32;
+    ride_each(
+        &pack,
+        &[(0.0, 100.0), (0.0, -150.0), (0.0, 0.0)],
+        10_000.0,
+        |(_, north), ahead| {
+            let reaches = ridden_to(ahead, north);
+            match ahead.matched.and_then(|m| m.forward) {
+                Some(false) => assert!(reaches <= 100.5, "reads {reaches} m: past the road's end"),
+                Some(true) => {
+                    assert!(reaches >= -150.5, "reads {reaches} m: south of the turn");
+                    north_since_turn = ahead.behind_m;
+                }
+                None => {}
+            }
+        },
+    );
+    // The match turns north once the heading has, 20 to 25 m after the turn.
+    assert!(
+        (115.0..=150.0).contains(&north_since_turn),
+        "{north_since_turn}"
+    );
 }
 
 #[test]

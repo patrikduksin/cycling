@@ -6,8 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import cycling_devtools.device.firmware as firmware
-from cycling_devtools.device import browser_bridge, remote
+from cycling_devtools.device import browser_bridge, flasher, remote
 
 
 class Launcher(unittest.TestCase):
@@ -64,11 +63,10 @@ class EsptoolPort(unittest.TestCase):
         completed = subprocess.CompletedProcess([], 0, '', '')
         with (
             tempfile.TemporaryDirectory() as temp,
-            patch.object(firmware, 'LOCAL', Path(temp)),
             patch.dict('os.environ', environ, clear=False),
             patch('subprocess.run', Mock(return_value=completed)) as run,
         ):
-            firmware.Device('/dev/pts/9').run('chip-id')
+            flasher.flasher_for('/dev/pts/9', lambda: '/dev/pts/9', Path(temp)).read(0, 1, Path(temp) / 'out.bin')
         command = run.call_args.args[0]
         return command[command.index('--port') + 1]
 

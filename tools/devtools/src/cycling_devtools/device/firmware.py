@@ -10,10 +10,8 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import secrets
 import struct
-import subprocess
 import sys
 import termios
 import time
@@ -21,6 +19,7 @@ import zlib
 from pathlib import Path
 
 from cycling_devtools.device import mmc_maintenance
+from cycling_devtools.device.flasher import Flasher, flasher_for, monitor
 from cycling_devtools.device.port import add_port_argument, select_port, selected_port
 from cycling_devtools.terminal.usb import UsbConnection, acquire_lock, open_no_reset, reply_fields
 from cycling_devtools.workspace import DEVICE_LOCAL, ROOT
@@ -45,6 +44,7 @@ OWNED = (SLOTS[1] + APP_SIZE, RIDE_SIZE + SETTINGS_SIZE)
 BOOT_ZONE = SLOTS[0]
 # Matches the harness reconnect bound for a restarted console.
 CONSOLE_SECONDS = 25
+BOOT_CAPTURE_SECONDS = 3
 APP_DESC_MAGIC = 0xABCD5432
 PROJECT = b'c606-firmware'
 # Descriptor version suffix of bulk-maintenance builds, which speak only the binary maintenance protocol.
@@ -237,84 +237,44 @@ def console_info(resolve, seconds, log, maintenance=False):
     return None
 
 
-def esptool_port(port, environ):
-    # A pty has no DTR/RTS lines, so esptool reaches a bridged device through its rfc2217 URL.
-    bridged, url = environ.get('CYCLING_PORT'), environ.get('CYCLING_ESPTOOL_PORT')
-    return url if bridged and url and port == bridged else port
-
-
 class Device:
-    def __init__(self, port):
-        self.port = port
-        self.count = 0
+    def __init__(self, flasher: Flasher):
+        self.flasher = flasher
         LOCAL.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(LOCAL, 0o700)
 
-    def run(self, *args, before='no-reset', after='no-reset'):
-        self.count += 1
-        port = esptool_port(self.port, os.environ)
-        command = [
-            sys.executable,
-            '-m',
-            'esptool',
-            '--chip',
-            'esp32s3',
-            '--port',
-            port,
-            '--before',
-            before,
-            '--after',
-            after,
-            *map(str, args),
-        ]
-        result = subprocess.run(command, capture_output=True, text=True)
-        output = result.stdout + result.stderr
-        (LOCAL / f'{time.time_ns()}-{self.count}.log').write_text(output)
-        require(result.returncode == 0, f'esptool failed; inspect private logs in {LOCAL}')
-        return output
-
     def read(self, address, size, name):
         path = LOCAL / name
-        output = self.run('read-flash', hex(address), hex(size), path)
+        self.flasher.read(address, size, path)
         data = path.read_bytes()
         require(len(data) == size, 'Short flash read')
-        return data, output
+        return data
 
     def connect(self, strict=True):
         """Enter download mode and identify the device; strict also requires the known boot layout."""
-        output = self.run('--no-stub', 'get-security-info', before='usb-reset')
+        chip = self.flasher.enter()
         require(
-            'Secure Boot: Disabled' in output and 'Flash Encryption: Disabled' in output,
+            not chip.secure_boot and not chip.flash_encryption,
             'This procedure requires secure boot and flash encryption disabled',
         )
-        metadata, output = self.read(0x8000, 0x8000, 'before.bin')
-        mac = re.search(r'MAC:\s*([0-9a-f:]{17})', output, re.I)
-        require(mac is not None, 'Could not establish device identity')
+        metadata = self.read(0x8000, 0x8000, 'before.bin')
         if strict:
             partitions(metadata)
             records(metadata)
-        return metadata, mac[1].lower()
+        return metadata, chip.identity
 
     def verify(self, address, path):
-        output = self.run('verify-flash', hex(address), path)
-        require('Verification successful (digest matched).' in output, 'Device digest mismatch')
+        require(self.flasher.verify(address, Path(path)), 'Device digest mismatch')
 
     def write(self, address, path):
-        self.run(
-            'write-flash', '--flash-mode', 'keep', '--flash-freq', 'keep', '--flash-size', 'keep', hex(address), path
-        )
+        self.flasher.write(address, Path(path))
 
     def reboot(self):
-        # RTS hard-reset left this C606 in ROM download mode. The watchdog
-        # reset boots the selected app, and stock can then remove the USB port.
-        self.run('get-security-info', after='watchdog-reset')
-        path = LOCAL / f'{time.time_ns()}-boot.log'
-        with path.open('wb') as output:
-            try:
-                monitor(self.port, 3, output=output)
-            except OSError:
-                print('USB boot capture unavailable after reset.')
-        captured = path.read_bytes()
+        captured = self.flasher.reboot(BOOT_CAPTURE_SECONDS)
+        if captured is None:
+            print('USB boot capture unavailable after reset.')
+            return
+        (LOCAL / f'{time.time_ns()}-boot.log').write_bytes(captured)
         require(
             b'waiting for download' not in captured and b'DOWNLOAD(USB/UART0)' not in captured,
             f'Device is still in ROM download mode; inspect private boot logs in {LOCAL}',
@@ -330,7 +290,7 @@ class Device:
         )
         require(not is_cycling(self.header(0)), refusal)
         print('Reading the full 16 MiB flash. This takes about two minutes.', flush=True)
-        backup, _ = self.read(0, FLASH_SIZE, 'flash.bin')
+        backup = self.read(0, FLASH_SIZE, 'flash.bin')
         self.verify(0, LOCAL / 'flash.bin')
         stock = backup[SLOTS[0] : SLOTS[0] + SLOT_SIZE]
         stock = stock[: image_length(stock)]
@@ -359,7 +319,7 @@ class Device:
             'Backup integrity check failed',
         )
         require(metadata[:0x1000] == backup[0x8000:0x9000], 'Partition table changed since backup')
-        boot, _ = self.read(0, 0x8000, 'bootloader-check.bin')
+        boot = self.read(0, 0x8000, 'bootloader-check.bin')
         require(sha(boot) == manifest['bootloader_region_sha256'], 'Bootloader changed since backup')
 
     def snapshot_owned(self, prefix='owned-before'):
@@ -369,7 +329,7 @@ class Device:
         return OWNED[0], LOCAL / name
 
     def header(self, slot):
-        header, _ = self.read(SLOTS[slot], SECTOR, f'slot-{NAMES[slot].lower()}-header.bin')
+        header = self.read(SLOTS[slot], SECTOR, f'slot-{NAMES[slot].lower()}-header.bin')
         return header
 
     def contents(self, slot):
@@ -380,7 +340,7 @@ class Device:
         """Read only as much of a slot as its image occupies, then require a valid cycling image."""
         size = 0x100000
         while True:
-            data, _ = self.read(SLOTS[slot], size, f'slot-{NAMES[slot].lower()}.bin')
+            data = self.read(SLOTS[slot], size, f'slot-{NAMES[slot].lower()}.bin')
             try:
                 span = image_span(data)
                 if span is not None and span <= len(data):
@@ -407,7 +367,7 @@ class Device:
         expected = bytearray(metadata)
         expected[offset : offset + 0x1000] = sector
         self.write(0x8000 + offset, path)
-        actual, _ = self.read(0x8000, 0x8000, 'after.bin')
+        actual = self.read(0x8000, 0x8000, 'after.bin')
         require(actual == expected, 'Boot selection readback does not match the planned change')
         self.reboot()
         print(f'Slot {NAMES[slot]} selected; watchdog reset sent.', flush=True)
@@ -454,7 +414,6 @@ class Device:
         """Reselect the previous slot from freshly read metadata, then fail with what happened."""
         print(f'Slot {NAMES[slot]} {problem}; switching back to slot {NAMES[previous]}.', flush=True)
         try:
-            self.port = resolve()
             current, _ = self.connect()
             self.select(current, previous)
         except (RuntimeError, OSError, ValueError) as error:
@@ -481,7 +440,7 @@ class Device:
         print(f'Saved the current reservations to {before}; writing {snapshot}.', flush=True)
         self.write(OWNED[0], Path(snapshot))
         self.verify(OWNED[0], Path(snapshot))
-        after, _ = self.read(*OWNED, 'owned-after-restore.bin')
+        after = self.read(*OWNED, 'owned-after-restore.bin')
         require(after == data, 'Ride/settings readback does not match the snapshot')
         (LOCAL / 'owned-after-restore.bin').unlink(missing_ok=True)
         self.reboot()
@@ -490,7 +449,7 @@ class Device:
     def restore(self, backup):
         """Write the verified backup over every differing sector, then read the whole flash back."""
         print('Reading the full 16 MiB flash before restore. This takes about two minutes.', flush=True)
-        current, _ = self.read(0, FLASH_SIZE, 'restore-before.bin')
+        current = self.read(0, FLASH_SIZE, 'restore-before.bin')
         snapshot = LOCAL / f'owned-pre-restore-{time.time_ns()}.bin'
         snapshot.write_bytes(current[OWNED[0] : OWNED[0] + OWNED[1]])
         print(
@@ -511,7 +470,7 @@ class Device:
             run.write_bytes(backup[address : address + length])
             self.write(address, run)
         print('Reading the full flash back for sector-wise verification.', flush=True)
-        after, _ = self.read(0, FLASH_SIZE, 'restore-after.bin')
+        after = self.read(0, FLASH_SIZE, 'restore-after.bin')
         bad = sectors_differing(after, backup)
         if bad:
             raise RuntimeError(f'{len(bad)} sectors differ from the backup, first at {bad[0]:#x}; rerun cycling stock')
@@ -529,22 +488,6 @@ class Device:
             raise RuntimeError('Slot A no longer holds stock; use cycling stock for the full restore') from None
         self.select(metadata, 0)
         print('Stock can remove USB: confirm the screen.')
-
-
-def monitor(port, seconds, output=None):
-    import serial
-
-    connection = serial.Serial()
-    connection.port, connection.baudrate, connection.timeout = port, 115200, 0.2
-    connection.dtr = connection.rts = False
-    connection.open()
-    output = sys.stdout.buffer if output is None else output
-    deadline = time.monotonic() + seconds
-    with connection:
-        while time.monotonic() < deadline:
-            data = connection.read(4096)
-            output.write(data)
-            output.flush()
 
 
 def confirm_restore(confirmed, stdin=None):
@@ -594,7 +537,7 @@ def main():
     if args.action == 'stock':
         confirm_restore(args.confirm_restore)
         manifest, backup = verified_backup()
-    device = Device(port)
+    device = Device(flasher_for(port, resolve, LOCAL))
     if args.action == 'stock':
         _, identity = device.connect(strict=False)
         require(identity == manifest['identity'], 'Connected device does not match the backup')

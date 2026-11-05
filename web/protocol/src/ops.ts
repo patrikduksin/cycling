@@ -126,7 +126,7 @@ export const Op = Schema.Union([
   /** `region.size` bytes follow as OpData frames toward the page; `md5` is theirs. */
   Schema.TaggedStruct('Write', { lease: Lease, region: Region, md5: Md5 }),
   Schema.TaggedStruct('Digest', { lease: Lease, region: Region }),
-  /** Watchdog reset into the selected app; ends the hold. */
+  /** Reboot into the selected app as python esptool does for the family and port; ends the hold. */
   Schema.TaggedStruct('Reboot', { lease: Lease }),
   /** Ends the hold. Any lease, any state: always answered Released. */
   Schema.TaggedStruct('Release', { lease: Lease }),
@@ -172,7 +172,7 @@ export const OpOutcome = Schema.Union([
   /** The chip's digest of the region after writing it. */
   Schema.TaggedStruct('Written', { md5: Md5 }),
   Schema.TaggedStruct('Digest', { md5: Md5 }),
-  /** Watchdog armed. The port is lost next and comes back as the console. */
+  /** Reset under way. On the chip's own USB the port is lost next; either way it comes back as the console. */
   Schema.TaggedStruct('Rebooting', {}),
   Schema.TaggedStruct('Released', {}),
   Schema.TaggedStruct('Failed', {

@@ -56,7 +56,7 @@ const decodeRequest = Schema.decodeUnknownEffect(
   { onExcessProperty: 'error' },
 )
 
-/** The chip as python's `Chip.from_door` reads it: snake case, nulls where the page knows nothing. */
+/** The chip as python's `PageFlasher.enter` reads it: snake case, nulls where the page knows nothing. */
 interface DoorChip {
   readonly mac: string
   readonly family: string

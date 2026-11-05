@@ -73,7 +73,8 @@ class Flasher(Protocol):
         """Whether the chip's MD5 of len(file) bytes at address equals the file's."""
 
     def reboot(self, seconds: float) -> bytes | None:
-        """Watchdog reset into the selected app; then up to seconds of boot output, or None if USB never came back."""
+        """Reboot into the selected app (python esptool's watchdog reset, or RTS where the family or port has none);
+        then up to seconds of boot output, or None if USB never came back."""
 
 
 class FlasherError(RuntimeError):

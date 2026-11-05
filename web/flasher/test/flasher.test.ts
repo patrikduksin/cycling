@@ -279,12 +279,18 @@ describe('write', () => {
   })
 })
 
+/** A short RTC WDT, so the watchdog cases take about a second of wall clock. */
+const WATCHDOG_MS = 500
+
 describe('the watchdog', () => {
   test('a session longer than the RTC WDT survives because open disabled it', async () => {
-    const device = sim({ watchdogMs: 1500, flash: noise(FLASH_BYTES, 7) })
+    const device = sim({
+      watchdogMs: WATCHDOG_MS,
+      flash: noise(FLASH_BYTES, 7),
+    })
     const exit = await session(device, s =>
       Effect.gen(function* () {
-        const until = Date.now() + 2500
+        const until = Date.now() + 2 * WATCHDOG_MS
         while (Date.now() < until) {
           yield* readAll(s, 0, READ_PIECE_BYTES)
         }
@@ -295,7 +301,7 @@ describe('the watchdog', () => {
   })
 
   test('control: plain esptool-js without the disable writes is reset mid-session', async () => {
-    const device = sim({ watchdogMs: 1500 })
+    const device = sim({ watchdogMs: WATCHDOG_MS })
     const port = portOf(device)
     const lost = new Promise<'lost'>(resolve =>
       port.addEventListener('disconnect', () => resolve('lost')),
@@ -311,7 +317,7 @@ describe('the watchdog', () => {
     await loader.connect('usb_reset')
     await loader.runStub()
     const reads = (async () => {
-      const until = Date.now() + 3000
+      const until = Date.now() + 2 * WATCHDOG_MS
       while (Date.now() < until) {
         await loader.readReg(0x60008098)
       }

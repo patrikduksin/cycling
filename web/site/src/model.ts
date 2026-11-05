@@ -33,9 +33,13 @@ export type Partition = typeof Partition.Type
 
 /**
  * What the page read from the device at entry, so it can name regions in the
- * visitor's words. `bootSlot` is the app partition otadata selects.
+ * visitor's words. `bootloader` is where the chip's family keeps its
+ * second-stage bootloader; `partitions` is empty when the device has no
+ * table the page could read; `bootSlot` is the app partition otadata
+ * selects.
  */
 export const Layout = Schema.Struct({
+  bootloader: Schema.Int,
   partitions: Schema.Array(Partition),
   bootSlot: Schema.Option(Schema.String),
 })
@@ -124,7 +128,7 @@ export const PortPhase = Schema.Union([
   Schema.TaggedStruct('Flashing', {
     lease: Lease,
     entry: Entry,
-    layout: Schema.Option(Layout),
+    layout: Layout,
     answered: Schema.Option(Answered),
   }),
 ])

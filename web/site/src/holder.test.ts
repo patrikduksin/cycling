@@ -123,10 +123,11 @@ const backToConsole = [
   changed(1, { _tag: 'Reacquiring' }),
 ]
 
-const layout = Option.some({
+const layout = {
+  bootloader: 0,
   partitions: DEMO_PARTITIONS,
   bootSlot: Option.some('ota_0'),
-})
+}
 
 const flashing = (patch: { readonly lease?: Lease } = {}): PortPhase => ({
   _tag: 'Flashing',

@@ -114,7 +114,7 @@ export type PortLink =
       readonly _tag: 'Flasher'
       readonly session: PageSession
       readonly inbox: Inbox
-      readonly layout: Option.Option<Layout>
+      readonly layout: Layout
     }
 
 export interface UsbAdapter {

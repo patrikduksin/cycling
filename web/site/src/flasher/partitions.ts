@@ -8,8 +8,20 @@ import type { Layout, Partition } from '../model.ts'
 /** Where ESP-IDF puts the table, and the most of it there can be. */
 export const PARTITION_TABLE: Region = { address: 0x8000, size: 0xc00 }
 
-const BOOTLOADER = { start: 0, end: 0x8000 }
 const TABLE_SECTOR = { start: 0x8000, end: 0x9000 }
+
+/**
+ * From where the chip's family keeps its bootloader (0 on the S3 and C3,
+ * 0x1000 on the ESP32 and S2, 0x2000 on the C5 and P4) up to the table;
+ * without a layout, from 0.
+ */
+const bootloaderOf = (layout: Option.Option<Layout>) => ({
+  start: Option.match(layout, {
+    onNone: () => 0,
+    onSome: ({ bootloader }) => bootloader,
+  }),
+  end: TABLE_SECTOR.start,
+})
 
 const ENTRY_BYTES = 32
 const LABEL_BYTES = 16
@@ -170,7 +182,7 @@ export const labelOf = (
   if (region.address === 0 && region.size === MAX_FLASH_BYTES) {
     return Option.some('the whole flash')
   }
-  if (contains(BOOTLOADER, region)) {
+  if (contains(bootloaderOf(layout), region)) {
     return Option.some('the bootloader')
   }
   if (contains(TABLE_SECTOR, region)) {
@@ -200,7 +212,7 @@ export const stakeOf = (
   layout: Option.Option<Layout>,
   region: Region,
 ): Stake => {
-  if (overlaps(BOOTLOADER, region)) {
+  if (overlaps(bootloaderOf(layout), region)) {
     return { _tag: 'Bootloader' }
   }
   if (overlaps(TABLE_SECTOR, region)) {

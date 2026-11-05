@@ -97,7 +97,7 @@ const isFlashing = (phase: PortPhase): phase is Flashing =>
   phase._tag === 'Flashing'
 
 export const layoutOf = (port: Port): Option.Option<Layout> =>
-  isFlashing(port.state) ? port.state.layout : Option.none()
+  isFlashing(port.state) ? Option.some(port.state.layout) : Option.none()
 
 /**
  * What the hold is doing, the one reading of it for the op runner, the
@@ -392,7 +392,7 @@ export const onOp = (port: Port, id: RequestId, op: Op): Step =>
 
 export const onEnteredFlasher = (
   port: Port,
-  layout: Option.Option<Layout>,
+  layout: Layout,
 ): Option.Option<Step> => {
   const phase = port.state
   if (phase._tag !== 'Entering') {

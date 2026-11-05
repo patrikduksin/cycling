@@ -16,8 +16,12 @@ import {
   stakeOf,
 } from './partitions.ts'
 
-const layout = (bootSlot: string): Option.Option<Layout> =>
-  Option.some({ partitions: DEMO_PARTITIONS, bootSlot: Option.some(bootSlot) })
+const layout = (bootSlot: string, bootloader = 0): Option.Option<Layout> =>
+  Option.some({
+    bootloader,
+    partitions: DEMO_PARTITIONS,
+    bootSlot: Option.some(bootSlot),
+  })
 
 describe('partition table', () => {
   test('reads every 0xAA50 entry and stops at erased flash', () => {
@@ -97,6 +101,21 @@ describe('region names', () => {
     [{ address: 0, size: 16 * 1024 * 1024 }, 'the whole flash'],
   ])('%o is %s', (region, label) => {
     expect(labelOf(layout('ota_0'), region)).toEqual(Option.some(label))
+  })
+
+  test("the bootloader starts where the chip's family keeps it", () => {
+    const esp32 = layout('ota_0', 0x1000)
+    expect(labelOf(esp32, { address: 0x1000, size: 0x7000 })).toEqual(
+      Option.some('the bootloader'),
+    )
+    expect(labelOf(esp32, { address: 0, size: 0x1000 })).toEqual(Option.none())
+    expect(stakeOf(esp32, { address: 0, size: 0x1000 })._tag).toBe('Elsewhere')
+    expect(stakeOf(esp32, { address: 0, size: 0x1001 })._tag).toBe('Bootloader')
+    const p4 = layout('ota_0', 0x2000)
+    expect(labelOf(p4, { address: 0x1000, size: 0x10 })).toEqual(Option.none())
+    expect(labelOf(p4, { address: 0x2000, size: 0x10 })).toEqual(
+      Option.some('the bootloader'),
+    )
   })
 
   test('a region no partition holds has no name', () => {

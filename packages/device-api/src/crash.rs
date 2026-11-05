@@ -463,9 +463,9 @@ mod tests {
     }
 
     #[test]
-    fn a_record_from_firmware_that_marked_vana_still_reads() {
+    fn a_record_from_firmware_that_marked_vana_and_harness_still_reads() {
         let mut words = encode(&panic());
-        words[LENGTHS] |= 1 << 25;
+        words[LENGTHS] |= 0b11 << 25;
         words[CHECKSUM] = checksum(&words[..CHECKSUM]);
         assert!(matches!(inspect(&words), Marker::Valid(_)));
     }

@@ -29,7 +29,7 @@ volumes.
 ## Creating the table, and regions from before volumes
 
 Only an explicit initialize writes the table: `RIDE BULK INIT`, or
-`VOLUME INIT` / `cycling volumes init` on builds without VANA. It writes
+`VOLUME INIT` / `cycling volumes init`. It writes
 two sectors, and then `RIDE BULK INIT` formats the log inside `RIDES`.
 
 Before volumes, the ride log owned the whole region, starting at relative

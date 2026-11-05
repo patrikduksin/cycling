@@ -31,7 +31,7 @@ shell provides every tool and the `cycling` command; see
   about 20 s once sccache is warm.
 - Before opening or updating a PR: `cycling verify --pr <n>` (all gates in
   parallel, results posted on the PR).
-- Disk: every worktree carries about 4.5 GB of `.local` build targets. Run
+- Disk: a worktree that builds firmware carries 1 to 2.5 GB of `.local` build targets. Run
   `cycling clean` for a dry-run table of what it would free; `--apply` removes
   merged, clean, quiet worktrees nobody is working in, and idle build dirs.
   Verify and sim-compare warn when the disk runs low.

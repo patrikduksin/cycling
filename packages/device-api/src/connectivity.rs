@@ -194,7 +194,7 @@ pub struct WifiStats {
     pub associations: u32,
     pub probe_successes: u32,
     pub probe_failures: u32,
-    /// Debug-harness fault injection selector; zero when none is armed.
+    /// Harness fault injection selector; zero when none is armed.
     pub fault: u8,
 }
 impl core::fmt::Debug for WifiStats {

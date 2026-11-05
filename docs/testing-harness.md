@@ -79,8 +79,7 @@ and nearest-rank p90 of each milestone and step over repeated runs.
 Real runs:
 
 - `HARNESS CAPS` reports supported commands, input controls, geometry and transfer
-  limits before a session opens. Harness-disabled builds keep ordinary commands,
-  logs and recovery, and report injection and capture as unsupported.
+  limits before a session opens. Capture reports unsupported without PSRAM.
 - Restart and bus-reset recipes require an explicitly idle recording state, rechecked
   immediately before the disruptive step. Terminal reopen works during acquisition.
 - `acceptance` needs access to the selected USB device node.

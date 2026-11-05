@@ -274,21 +274,20 @@ impl Drawing<'_> {
                     WHITE,
                 );
                 let (text, color) = link(selected);
-                let note = battery_note(selected);
-                let note = note.as_ref().map(|(text, color)| (text.as_bytes(), *color));
-                // A live sensor with a weak battery needs a look too; a
-                // sensor that is not live is missing, not low.
+                let warning = battery_warning(selected);
                 let live = selected.link_status() == LinkStatus::Live;
-                let warning = note.filter(|&(_, color)| live && color != SECONDARY);
                 let base = top + 39;
                 match warning {
-                    Some(warning) if !fits(text, warning.0, width) => {
+                    // A live sensor with a weak battery needs a look too.
+                    Some(warning) if live && !fits(text, warning.0, width) => {
                         self.status(MINE_TEXT, base, width, warning, None);
                     }
-                    _ => {
-                        let state = (text, warning.map_or(color, |(_, color)| color));
-                        self.status(MINE_TEXT, base, width, state, note);
+                    Some(warning) if live => {
+                        let state = (text, warning.1);
+                        self.status(MINE_TEXT, base, width, state, Some(warning));
                     }
+                    // A sensor that is not live is missing, not low.
+                    _ => self.status(MINE_TEXT, base, width, (text, color), warning),
                 }
             }
             Mine::Add => {
@@ -660,21 +659,14 @@ fn link(selected: Selected) -> (&'static [u8], u16) {
     (text, status.color())
 }
 
-/// What a saved sensor's battery last said, if anything: a warning in its
-/// colour, else the voltage or the plain status in grey.
-fn battery_note(selected: Selected) -> Option<(Text<20>, u16)> {
-    let battery = selected.battery?;
-    let mut text = Text::<20>::new();
-    let color = match battery.status {
-        BatteryStatus::Critical => RED,
-        status if status.is_low() => AMBER,
-        _ => SECONDARY,
-    };
-    let _ = match selected.volts().filter(|_| color == SECONDARY) {
-        Some(volts) => write!(text, "{} V", volts.as_str()),
-        None => write!(text, "BATTERY {}", battery.status.text()),
-    };
-    Some((text, color))
+/// A saved sensor's battery on its row, only once it needs changing; the
+/// sensor's page has the voltage.
+fn battery_warning(selected: Selected) -> Option<(&'static [u8], u16)> {
+    match selected.battery?.status {
+        BatteryStatus::Critical => Some((b"BATTERY CRITICAL", RED)),
+        BatteryStatus::Low => Some((b"BATTERY LOW", AMBER)),
+        BatteryStatus::New | BatteryStatus::Good | BatteryStatus::Ok => None,
+    }
 }
 
 /// The box a cue's quarter disc fills, which its taps own.

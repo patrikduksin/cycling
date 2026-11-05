@@ -229,9 +229,10 @@ cards as everywhere else (`screens::sensors`).
 - SENSORS lists the saved sensors under its `TITLE`: an icon in its metric
   colour, the name in `BODY`, and a `CAPTION` state under it in its state
   colour (LIVE `GREEN`, SEARCHING `ACCENT`, NOT FOUND YET `AMBER`). A battery
-  report follows a dot: the voltage in `SECONDARY`, or BATTERY LOW in `AMBER`
-  and BATTERY CRITICAL in `RED`, which turn a live sensor's whole line their
-  colour and take its place where both do not fit. ADD SENSOR, a card with a
+  that needs changing follows a dot: BATTERY LOW in `AMBER` or BATTERY
+  CRITICAL in `RED`, which turn a live sensor's whole line their colour and
+  take its place where both do not fit. Any other battery says nothing on
+  the row; the sensor's page has it. ADD SENSOR, a card with a
   green plus, is the last row and opens NEARBY. Rows have no card until focused. A save or
   radio problem replaces the title in `AMBER`.
 - NEARBY is the only page that searches: it asks for a search as it

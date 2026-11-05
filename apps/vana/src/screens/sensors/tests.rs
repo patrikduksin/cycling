@@ -356,7 +356,7 @@ fn sensors_names_trouble_with_the_radio_or_saving_in_its_title() {
 }
 
 #[test]
-fn rows_name_each_state_in_its_colour_with_the_battery_after_it() {
+fn rows_name_each_state_in_its_colour_and_a_battery_to_change_after_it() {
     let cases = [
         (Connection::Live, "LIVE", GREEN),
         (Connection::Searching, "SEARCHING", CYAN),
@@ -372,39 +372,27 @@ fn rows_name_each_state_in_its_colour_with_the_battery_after_it() {
         let menu = opened(&[], &[(strap(1), connection)]);
         assert_eq!(run(&menu, text).map(|r| r.color), Some(color), "{text}");
     }
-    // A weak battery turns the whole line its colour; one too long to sit
-    // beside LIVE takes its place.
+    // Only a battery that needs changing shows, after a dot, and turns a
+    // live sensor's whole line its colour; one too long to sit beside LIVE
+    // takes its place.
     let batteries = [
-        (
-            BatteryStatus::Good,
-            Some(2_949),
-            "2.9 V",
-            SECONDARY,
-            Some(GREEN),
-        ),
-        (
-            BatteryStatus::Ok,
-            None,
-            "BATTERY OK",
-            SECONDARY,
-            Some(GREEN),
-        ),
+        (BatteryStatus::New, Some(3_100), None, Some(GREEN)),
+        (BatteryStatus::Good, Some(2_949), None, Some(GREEN)),
+        (BatteryStatus::Ok, None, None, Some(GREEN)),
         (
             BatteryStatus::Low,
             Some(2_400),
-            "BATTERY LOW",
-            AMBER,
+            Some(("BATTERY LOW", AMBER)),
             Some(AMBER),
         ),
         (
             BatteryStatus::Critical,
             Some(2_100),
-            "BATTERY CRITICAL",
-            RED,
+            Some(("BATTERY CRITICAL", RED)),
             None,
         ),
     ];
-    for (status, millivolts, text, color, live) in batteries {
+    for (status, millivolts, warning, live) in batteries {
         let mut tiles = saved(&[(strap(1), Connection::Live)]);
         tiles[0].as_mut().unwrap().battery = Some(Battery {
             status,
@@ -414,16 +402,23 @@ fn rows_name_each_state_in_its_colour_with_the_battery_after_it() {
         let mut menu = Menu::new();
         menu.refresh([None; DISCOVERY_CAPACITY], tiles, false);
         menu.open();
-        let battery = run(&menu, text).unwrap_or_else(|| panic!("{text}"));
-        assert_eq!(battery.color, color, "{text}");
         let state = run(&menu, "LIVE");
-        assert_eq!(state.map(|state| state.color), live, "{text}");
+        assert_eq!(state.map(|state| state.color), live, "{status:?}");
         let canvas = menu.canvas();
         let dots = canvas.shapes.iter();
-        let dots = dots.filter(|s| matches!(s, Shape::Disc { color: c, .. } if *c == color));
+        let dots = dots.filter(|s| matches!(s, Shape::Disc { .. })).count();
+        let Some((text, color)) = warning else {
+            assert_eq!(dots, 0, "{status:?} adds no dot");
+            let texts = canvas.runs.iter().map(|run| run.line.text());
+            let names = [&b"SENSORS"[..], b"HEART RATE", b"LIVE", b"ADD SENSOR"];
+            assert!(texts.eq(names), "{status:?} adds nothing");
+            continue;
+        };
+        let battery = run(&menu, text).unwrap_or_else(|| panic!("{text}"));
+        assert_eq!(battery.color, color, "{text}");
         if let Some(state) = state {
             assert!(battery.left > state.right(), "{text} follows the state");
-            assert_eq!(dots.count(), 1, "a dot between them");
+            assert_eq!(dots, 1, "a dot between them");
         }
     }
     // A state too long for the battery leaves it out rather than cut it.

@@ -359,7 +359,7 @@ const holdOp = (
 
 /**
  * The agent resends an op it heard no answer to under the same id: a relay
- * drop, or 20 s of silence. One still queued or running is joined, so a
+ * drop, or `OP_STALL_MS` of silence. One still queued or running is joined, so a
  * running write is never run twice or queued behind itself; the last one
  * answered is answered again.
  */

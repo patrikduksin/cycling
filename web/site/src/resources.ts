@@ -307,7 +307,7 @@ const whenHeld = <T extends PortLink['_tag'], A>(
  *   relayToDevice  relay joined     console frames to the port, write payloads to
  *                                   the flasher's inbox, control to update
  *   opRunner       Flashing, head   the head op against the session
- *   opWaiting      ops wait         OpProgress for each once a second
+ *   opWaiting      ops wait         OpProgress for each every OP_PROGRESS_MS
  *   holdExpiry     unattended hold  ExpiredHold once its time is up
  *   flasherLost    Flashing         LostPort when the device goes away
  */

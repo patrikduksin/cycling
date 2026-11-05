@@ -239,7 +239,7 @@ def console_info(resolve, seconds, log, maintenance=False):
 
 
 def flasher_for(port, resolve, log_dir, environ=os.environ) -> Flasher:
-    """The one backend choice. The visitor's page only for the bridged port, so a second, local device in a bridged command stays local."""
+    """The visitor's page only for the bridged port, so a second, local device in a bridged command stays local."""
     bridged, door = environ.get('CYCLING_PORT'), environ.get('CYCLING_FLASHER')
     if bridged and door and port == bridged:
         return PageFlasher(Path(door), log_dir)

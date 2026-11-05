@@ -204,7 +204,7 @@ export const leaseFlasher = (
 
     /**
      * Every op but Reboot is idempotent under one lease. One whose answer
-     * never came (a relay drop, 20 s of silence) is resent under its own id,
+     * never came (a relay drop, `OP_STALL_MS` of silence) is resent under its own id,
      * so the page joins it while it runs or answers it again; one whose
      * answer was unusable (broken read data, a refusal in `RESENT`) is tried
      * again under a new id. Each waits for the visitor to be reachable.

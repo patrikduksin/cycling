@@ -58,7 +58,7 @@ export type OpRequest =
 
 /**
  * The agent's whole view of a visitor's device. Redial, request
- * epochs and the relay's framing live behind these four members;
+ * epochs and the relay's framing live behind these members;
  * nothing that uses a port sees a wire message.
  */
 export interface RemotePort {

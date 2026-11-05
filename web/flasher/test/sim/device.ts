@@ -229,8 +229,6 @@ export class SimDevice implements Wire, Enumeration {
     this.bootApp('0x1 (POWERON)')
   }
 
-  // ------------------------------------------------------------ test surface
-
   current(): FakeSerialPort | undefined {
     return this.port
   }
@@ -294,8 +292,6 @@ export class SimDevice implements Wire, Enumeration {
     this.timers.clear()
   }
 
-  // -------------------------------------------------------------------- Wire
-
   opened(port: FakeSerialPort): void {
     if (port !== this.port) {
       return
@@ -354,8 +350,6 @@ export class SimDevice implements Wire, Enumeration {
       this.releaseReset()
     }
   }
-
-  // ------------------------------------------------------- resets and boots
 
   private releaseReset(): void {
     const download = this.downloadStrap
@@ -468,8 +462,6 @@ export class SimDevice implements Wire, Enumeration {
     }
   }
 
-  // ------------------------------------------------------------------ output
-
   /**
    * Output leaves in a later macrotask, as USB transfers do; answering
    * inside the host's write would run esptool-js and the sim as one
@@ -538,8 +530,6 @@ export class SimDevice implements Wire, Enumeration {
     )
   }
 
-  // ----------------------------------------------------------------- the app
-
   private consoleInput(bytes: Uint8Array): void {
     for (const byte of bytes) {
       if (byte === 0x0a) {
@@ -567,8 +557,6 @@ export class SimDevice implements Wire, Enumeration {
       ),
     )
   }
-
-  // ------------------------------------------------------- the loader wire
 
   private frame(frame: Uint8Array): void {
     if (this.silent) {

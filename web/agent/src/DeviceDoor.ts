@@ -55,7 +55,6 @@ const decodeRequest = Schema.decodeUnknownEffect(
   { onExcessProperty: 'error' },
 )
 
-/** One reply line: each op's own `ok` fields, or an error. */
 type Reply =
   | {
       readonly ok: {

@@ -115,7 +115,7 @@ const perform = <R>(
 
 /**
  * One op against the held session. OpData and OpProgress go to the relay
- * from here; `update` hears `ProgressedOp` once a second and one
+ * from here; `update` hears `ProgressedOp` every `OP_PROGRESS_MS` and one
  * `FinishedOp`, and answers the op itself. The progress beat runs while the
  * chip reports nothing too (an erase, a digest), so the agent never mistakes
  * a slow op for a stalled one, and it stops before `FinishedOp` is emitted.

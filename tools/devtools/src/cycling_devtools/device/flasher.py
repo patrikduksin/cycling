@@ -46,7 +46,6 @@ class FlasherError(RuntimeError):
 
 
 def chip_from(output):
-    """Chip facts from esptool's get-security-info text."""
     mac = re.search(r'MAC:\s*([0-9a-f:]{17})', output, re.I)
     if mac is None:
         raise FlasherError('Could not establish device identity')

@@ -28,7 +28,6 @@ export const FlasherFailure = Schema.Literals([
   'chipError',
   /** A read piece kept disagreeing with the chip's own MD5, or a write's did. */
   'digestMismatch',
-  /** The USB device went away. */
   'portLost',
   /** Not an ESP32-S3, or its flash did not say its size: nothing was written to it. */
   'unsupportedChip',

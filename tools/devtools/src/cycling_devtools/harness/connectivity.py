@@ -120,9 +120,9 @@ def main():
     args = parser.parse_args()
     baseline = json.loads(private_path(args.baseline).read_text())
     original_ble = reply_fields(baseline['BLE']['data'])
-    if original_ble.get('link') != 'advertising' or reply_fields(baseline['INFO']['data']).get('cycling') != 'false':
+    if original_ble.get('link') != 'advertising':
         raise ValueError(
-            'generator requires the captured original idle base echo composition; supply a deliberate restoration plan for other originals'
+            'generator requires an original capture with BLE advertising; supply a deliberate restoration plan for other originals'
         )
     original_wifi = reply_fields(baseline['WIFI']['data'])
     output = private_path(args.output)

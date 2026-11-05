@@ -59,7 +59,7 @@ def run(port, directory, seconds=20, command='POSITION', interval=0.05, allow_lo
         build = read(connection, 'INFO')
         settings = read(connection, 'SETTINGS')
         system = read(connection, 'STATUS')
-        inventory = read(connection, 'RIDE STATUS') if build.get('cycling') == 'true' else None
+        inventory = read(connection, 'RIDE STATUS')
         before = read(connection, command)
         deadline = time.monotonic() + seconds
         samples = 0
@@ -106,12 +106,11 @@ def run(port, directory, seconds=20, command='POSITION', interval=0.05, allow_lo
                     raise AssertionError(f'preference changed: {key}')
             if final_system['storage_ops'] != system['storage_ops']:
                 raise AssertionError('storage operations occurred during read-only stress')
-            if inventory is not None:
-                final_inventory = read(connection, 'RIDE STATUS')
-                result['inventory_after'] = final_inventory
-                for key in ('slot', 'rides', 'samples', 'pending'):
-                    if inventory[key] != final_inventory[key]:
-                        raise AssertionError(f'ride inventory changed: {key}')
+            final_inventory = read(connection, 'RIDE STATUS')
+            result['inventory_after'] = final_inventory
+            for key in ('slot', 'rides', 'samples', 'pending'):
+                if inventory[key] != final_inventory[key]:
+                    raise AssertionError(f'ride inventory changed: {key}')
             validate(command, before, after, allow_loss)
             result['ok'] = True
         except Exception as error:

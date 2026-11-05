@@ -22,6 +22,9 @@ The device-safety rules in [AGENTS.md](../../../AGENTS.md) apply. In addition:
 
 ## Steps
 
+Run every command from the repository root; `.local/` below is that
+checkout's.
+
 1. **Join.** Run `cycling remote <CODE>` in the background. It prints
    `CYCLING_PORT` (the device's serial console) and `CYCLING_FLASHER`, then a
    status line with the USB VID:PID. Export both variables for the commands
@@ -38,16 +41,18 @@ The device-safety rules in [AGENTS.md](../../../AGENTS.md) apply. In addition:
    The chip checks every piece against its own digest. Expect about 2 minutes
    per 16 MiB. Done when the command exits 0 and the file has the full size.
 5. **Boot log.** `cycling flasher reboot --seconds 5` saves the boot output
-   under `.local/device/flasher/`. The ROM and bootloader lines name the chip
-   revision, flash mode and the partition the bootloader picks.
+   and prints its path. Chrome reopens the port only after the chip
+   re-enumerates, so the first ROM and bootloader lines are usually missing;
+   expect the app's own start-up output.
 6. **Read the dump offline.** Every question below has an answer or an
    explicit "unknown":
    - Partition table at `0x8000`: 32-byte entries starting `AA 50`, ending at
      `EB EB` or `FF FF`. List label, type, subtype, offset, size.
-   - Each app partition: extract it and run `python -m esptool image-info`
-     on it for chip, entry point and segments. The ESP-IDF app description
-     (magic `0xABCD5432` in the first segment) gives project name, version,
-     IDF version and build date.
+   - Each app partition: an image starts with `E9`. Run `python -m esptool
+     image-info` on the extracted image for chip, entry point and segments.
+     The ESP-IDF app description sits at image offset 32 (magic
+     `0xABCD5432`): version at +16, project at +48, time at +80, date at +96,
+     IDF version at +112, each a NUL-padded string.
    - Hardware hints: `strings -n 6` over the apps for display, touch, GNSS,
      ANT+/BLE, sensor and PMIC part numbers and board names.
    - OTA layout: whether two app slots exist and how large they are, against

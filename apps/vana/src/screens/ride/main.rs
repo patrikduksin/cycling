@@ -4,7 +4,7 @@
 //! small unit beside it; there are no boxes or dividers. During a workout a
 //! white bar under the power (or heart-rate) gauge spans the step's target.
 use super::slots::Reading;
-use super::zones::GAUGE_WIDTH;
+use super::zones::{GAUGE_WIDTH, Mark};
 use super::{BODY, Labels, Smooth, Text, elapsed, speed, whole};
 use crate::screens::chrome::{
     Align, BLACK, BODY as BODY_FACE, CAPTION, GRADE, HEART, HERO, LARGE, Label, Line, POWER, Rect,
@@ -150,7 +150,7 @@ pub(super) fn prepare(view: &View) -> Smooth {
         SPEED,
     );
 
-    smooth.zones = [
+    let zones = [
         view.power_3s
             .map_or(0, |watts| view.profile.power_zone(watts)),
         sample
@@ -164,7 +164,7 @@ pub(super) fn prepare(view: &View) -> Smooth {
         (watts, &b"W"[..], POWER_TOP, POWER),
         (bpm, &b"BPM"[..], HEART_TOP, HEART),
     ];
-    for ((text, unit, top, color), zone) in rows.into_iter().zip(smooth.zones) {
+    for ((text, unit, top, color), zone) in rows.into_iter().zip(zones) {
         let mut name = Text::<12>::new();
         let _ = match zone {
             0 => name.push_str("Z-"),
@@ -273,9 +273,8 @@ pub(super) fn paint(view: &View, row: &mut Row) {
     }
     for (i, &top) in GAUGES.iter().enumerate() {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
-            let mark = [view.marks.power, view.marks.heart][i];
-            let fill = mark.map_or(0, |mark| mark.fill);
-            paint_gauge(row, smooth.zones[i], fill, SEGMENTS[i], top);
+            let mark = [view.marks.power, view.marks.heart][i].unwrap_or_default();
+            paint_gauge(row, mark.zone, mark.fill.into(), SEGMENTS[i], top);
             return;
         }
     }
@@ -296,9 +295,8 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     }
     for (i, &top) in GAUGES.iter().enumerate() {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
-            let mark = [view.marks.power, view.marks.heart][i];
-            let fill = mark.map_or(0, |mark| mark.fill);
-            return gauge(smooth.zones[i], fill, SEGMENTS[i], x, y, top);
+            let mark = [view.marks.power, view.marks.heart][i].unwrap_or_default();
+            return gauge(mark.zone, mark.fill.into(), SEGMENTS[i], x, y, top);
         }
     }
     for label in &smooth.labels {
@@ -307,6 +305,14 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
         }
     }
     BLACK
+}
+
+/// The column where gauge `i`'s lit run ends for `mark`.
+pub(super) fn gauge_end(i: usize, mark: Mark) -> usize {
+    let pitch = (RIGHT - LEFT + GAUGE_GAP) / SEGMENTS[i];
+    let width = pitch - GAUGE_GAP;
+    LEFT + usize::from(mark.zone.saturating_sub(1)) * pitch
+        + width * usize::from(mark.fill) / GAUGE_WIDTH
 }
 
 /// `gauge` as spans: each segment lit up to its split, then the dim track,
@@ -425,6 +431,8 @@ mod tests {
         view.totals.add(1000, case.distance_mm, &sample, None);
         view.sample = sample;
         view.power_3s = case.watts;
+        view.graphics.power_3s = case.watts;
+        view.graphics.heart_bpm = case.bpm;
         view.prepare();
         view
     }

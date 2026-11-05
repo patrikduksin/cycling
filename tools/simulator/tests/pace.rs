@@ -176,7 +176,10 @@ fn riding_pace(seconds: u64) -> (u64, u64) {
 fn a_recording_ride_passes_about_as_often_as_it_draws() {
     let (passes, frames) = riding_pace(60);
     println!("a ride: {passes} passes/s, {frames} frames/s");
-    assert!(frames >= 15, "the readings glide: {frames} frames/s");
+    assert!(
+        frames >= 12,
+        "each of three 4 Hz sensors' new readings draws: {frames} frames/s"
+    );
     assert!(
         passes <= frames + 10,
         "{passes} passes/s for {frames} frames/s"

@@ -3,8 +3,9 @@
 //! still page rests up to `STILL_REST_MS`, bounded by the next frame, the
 //! harness's deadlines and VANA's own (`Runtime::due_ms`); anything that
 //! needs passes keeps `BUSY_REST_MS`. A recording ride needs none: its
-//! pages draw on their frame deadlines, every `MOTION_FRAME_MS` while
-//! readings glide, and its 1 Hz sample, odometer step and, on the Ride
+//! pages draw on their frame deadlines, for a new number and whenever a
+//! glide moves a gauge or radar marker onto another pixel, at most every
+//! `MOTION_FRAME_MS`, and its 1 Hz sample, odometer step and, on the Ride
 //! page, radar repeat beeps are deadlines too.
 //! On the C606 a button or touch edge, or a page from the sensor type
 //! `WAKING_ANT_TYPE` names, ends a rest at once. Bytes from the

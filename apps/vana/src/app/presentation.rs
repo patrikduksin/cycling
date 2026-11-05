@@ -353,18 +353,16 @@ impl Runtime {
         if system.foreground == Screen::Blank || self.turning_off() {
             return;
         }
-        let visible = self.motion_visible();
+        let shown = shown_sample(&self.readings);
+        self.motion
+            .take(&shown, &radar_reports(&self.readings, now), now);
+        // A new number, or a glide that moves a graphic, draws rather than
+        // waiting for the page's usual pace.
+        let due = self.motion_due(&shown, now);
         let Display::Active { next_frame_ms } = &mut self.display else {
             return;
         };
-        // A new sample starts its glide on the next motion frame rather than
-        // waiting for the page's usual pace.
-        if let Some(due) = self.motion.due(
-            visible,
-            &shown_sample(&self.readings),
-            &radar_reports(&self.readings, now),
-            MOTION_FRAME_MS,
-        ) {
+        if let Some(due) = due {
             *next_frame_ms = (*next_frame_ms).min(due);
         }
         if now < *next_frame_ms {
@@ -413,13 +411,12 @@ impl Runtime {
                 *next_frame_ms = (*next_frame_ms).min(due);
             }
         }
-        let visible = self.motion_visible();
+        let due = self.motion_due(&shown, now);
         if self.navigation.page == Page::Ride
             && let Display::Active { next_frame_ms } = &mut self.display
         {
-            // Readings gliding to their latest sample draw as motion does.
-            if self.motion.moving(visible, now) {
-                *next_frame_ms = (*next_frame_ms).min(now + MOTION_FRAME_MS);
+            if let Some(due) = due {
+                *next_frame_ms = (*next_frame_ms).min(due);
             }
             // Motion frames shift the frame phase, so the ride clock asks for
             // a frame when its next second turns rather than up to a frame late.
@@ -700,15 +697,9 @@ impl Runtime {
         view.now_ms = now;
         view.active_secs = self.ride.active_ms(now) / 1000;
         view.state = self.ride.active().status();
-        let mut radar = radar_reports(&self.readings, now);
-        let mut sample = shown_sample(&self.readings);
-        self.motion.show(&mut sample, &mut radar, now);
+        let sample = shown_sample(&self.readings);
         view.power_3s = sample.power_watts;
-        view.sample = crate::ride::log::Sample {
-            power_watts: self.readings.live.power_watts,
-            ..sample
-        };
-        view.radar = radar.snapshot;
+        view.sample = self.readings.live;
         view.radar_paired = ant.channel(device_type::RADAR, now).is_some();
         view.auto_paused = self.ride.auto.paused();
         view.ride_page = navigation.ride_page;
@@ -855,6 +846,7 @@ impl Runtime {
         if page == Page::Ride && view.ride_page == RidePage::Map {
             view.show_map(super::back::map_of(&self.back));
         }
+        view.graphics = self.motion.graphics(self.motion_visible(), now);
         view.prepare();
         let home = view.home_digest().map(|digest| HomeOnPanel {
             digest,
@@ -877,6 +869,8 @@ impl Runtime {
                 look::apply(row.pixels_mut());
             }
         });
+        let pixels = crate::screens::ride::pixels(&view.graphics, &view.profile);
+        self.motion.drew(&sample, pixels, now);
         self.home_on_panel = home
             .filter(|_| !system.display_error)
             .map(|home| HomeOnPanel {
@@ -1516,20 +1510,34 @@ impl Runtime {
 }
 
 impl Runtime {
-    /// What the next frame shows of gliding values: none of them on other
-    /// pages or the paused screen, readings only on the main ride page.
+    /// What the next frame shows of readings and gliding graphics: none of
+    /// them on other pages, the paused screen or a power sheet, the numbers
+    /// and gauges only on the main ride page.
     fn motion_visible(&self) -> super::motion::Visible {
         let navigation = &self.navigation;
         let riding = navigation.page == Page::Ride
-            && !(self.ride.active().status() == Status::Paused && !navigation.pause_hidden);
+            && !(self.ride.active().status() == Status::Paused && !navigation.pause_hidden)
+            && self.power.view().is_none();
         super::motion::Visible {
-            readings: riding && navigation.ride_page == RidePage::Main,
+            main: riding && navigation.ride_page == RidePage::Main,
             radar: riding,
         }
     }
+
+    /// When the readings `shown` or a glide next need a frame.
+    fn motion_due(&self, shown: &crate::ride::log::Sample, now: u64) -> Option<u64> {
+        let profile = self.preferences.profile;
+        self.motion.due(
+            self.motion_visible(),
+            shown,
+            MOTION_FRAME_MS,
+            now,
+            |graphics| crate::screens::ride::pixels(graphics, &profile),
+        )
+    }
 }
 
-/// The readings the ride page shows, to glide: power is its 3 s average.
+/// The readings the ride page's numbers show: power is its 3 s average.
 pub(super) fn shown_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
     crate::ride::log::Sample {
         power_watts: readings.power_3s_watts,

@@ -390,14 +390,17 @@ charging icon and sheets step every 500 ms; still pages redraw once a second.
 Home draws only when what it shows changes, such as the clock's minute, the
 battery or a sensor, or when a press or a test capture waits for a frame.
 
-Readings glide; nothing else about them moves. Sensors report about four
-times a second. On the ride screen, speed, power, heart rate and cadence, and
-the zone gauges that follow them, ease from the drawn value to each new
-reading over 200 ms. They move fast at first, never pass the reading and land
-on it exactly. Between reports, radar targets keep closing at their reported
-speed for at most 300 ms, then glide to the next report. The ride screen
-draws every 40 ms while something glides. Only drawing glides: recording,
-totals and alerts use readings as they arrive. The mechanism is
+Numbers never glide. A rider glancing down mid-glide could not read one, so
+every number and word on the ride screen jumps to each reading as it
+arrives, and the main page draws a new speed, power, heart rate or cadence
+on the next frame. Only graphics glide. Sensors report about four times a
+second; the power and heart-rate zone gauges ease from the drawn mark to
+each new reading over 200 ms. They move fast at first, never pass the
+reading and land on it exactly. Between reports, radar markers keep closing
+at their reported speed for at most 300 ms, then glide to the next report.
+A glide draws a frame only when it moves a gauge or marker onto another
+pixel, at most every 40 ms. Only drawing glides: recording, totals and
+alerts use readings as they arrive. The mechanism is
 `firmware_shell::rendering::glide`; VANA's use of it is in `app/motion.rs`.
 
 | Moment | Motion | Duration |

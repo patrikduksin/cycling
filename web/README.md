@@ -3,38 +3,49 @@
 cycling.computer and the `cycling remote` USB bridge. A visitor plugs a device
 into Chrome or Edge at https://cycling.computer and reads a code to a
 developer. The developer's agent runs `cycling remote <code>` and gets that
-device as a local serial port, so `cycling terminal`, `cycling logs` and
-esptool work as if it were plugged in here. The design and its decisions are
-in [DESIGN.md](DESIGN.md).
+device as a local serial port for console tools and as a flasher for the
+firmware tasks, so `cycling terminal`, `cycling logs`, `cycling backup` and
+`cycling flash` run as if it were plugged in here. The page runs the chip's
+ROM conversation itself (esptool-js), one relay round trip per device verb.
+The design and its decisions are in [DESIGN.md](DESIGN.md).
 
-| Path                | Owns                                                                     |
-| ------------------- | ------------------------------------------------------------------------ |
-| `protocol`          | The wire contract: codes, keys, messages, frame codecs, the reset table  |
-| `relay`             | Cloudflare Worker and Session Durable Object at relay.cycling.computer   |
-| `site`              | The visitor page (Foldkit): Web Serial bridge, WebUSB describe-only      |
-| `agent`             | The bridge `cycling remote` runs: pty, RFC 2217 server, reset recognizer |
-| `../alchemy.run.ts` | The one Alchemy stack that deploys relay and site                        |
+| Path                | Owns                                                                             |
+| ------------------- | -------------------------------------------------------------------------------- |
+| `protocol`          | The wire contract: codes, keys, messages, device ops, frame codecs               |
+| `relay`             | Cloudflare Worker and Session Durable Object at relay.cycling.computer           |
+| `site`              | The visitor page (Foldkit): Web Serial bridge, update mode, WebUSB describe-only |
+| `flasher`           | esptool-js as Effect, and the ROM simulator its tests and the e2e run against    |
+| `agent`             | The bridge `cycling remote` runs: pty, device socket, lease flasher              |
+| `../alchemy.run.ts` | The one Alchemy stack that deploys relay and site                                |
 
 ## Use a visitor's device
 
 ```console
 $ cycling remote 7KQM-4XP2
 $ cycling remote 7KQM-4XP2 -- cycling terminal INFO
-$ cycling remote 7KQM-4XP2 -- sh -c 'python -m esptool --port "$CYCLING_ESPTOOL_PORT" --before usb-reset chip-id'
-$ cycling remote reset 7KQM-4XP2 usbJtagBootloader
+$ cycling remote 7KQM-4XP2 -- cycling backup
+$ cycling remote 7KQM-4XP2 -- cycling flash
 ```
 
 - Without `--`, the bridge prints `CYCLING_PORT` (a pty) and
-  `CYCLING_ESPTOOL_PORT` (an `rfc2217://` URL) and stays up until the visitor
+  `CYCLING_FLASHER` (the device socket) and stays up until the visitor
   disconnects. Export both in another shell and use any device task.
 - With `-- <command>`, it waits for the visitor's port to open, runs the
   command with both variables set, mirrors its exit code and tears down. This
   is the form for agents.
-- The esptool tasks (`cycling flash`, `backup` and the rest) pass
-  `CYCLING_ESPTOOL_PORT` to esptool when it is set. esptool's
-  `--before usb-reset` is recognized on the RFC 2217 side and runs in the
-  visitor's browser as one reset. None of this has run against a real device
-  yet: the first hardware session needs Patrik present.
+- The firmware tasks (`cycling backup`, `flash`, `rollback`, `stock` and the
+  rest) reach the chip through `CYCLING_FLASHER` when their port is the
+  bridged `CYCLING_PORT`: devtools' `PageFlasher` asks the agent, the agent
+  asks the page, and the page runs the op in esptool-js next to the chip. The
+  page shows the visitor that their device is in update mode, what is being
+  read or written, and asks once per session before the first write. Only
+  Device's verbs exist (enter, read, write, verify, reboot); arbitrary
+  `python -m esptool` commands do not work through the page. None of this has
+  run against a real device yet: the first hardware session needs Patrik
+  present.
+- A stranger's device cannot be backed up or flashed by the `cycling` flows
+  yet: `.local/device` holds one device's private state. Per-device state is
+  its own follow-up.
 - Exit codes: 0 the session ended, 2 bad code or token, 3 relay unreachable,
   4 unsupported protocol version, 5 the visitor's port did not open; in `--`
   mode, the command's own code.
@@ -54,6 +65,7 @@ bun install --frozen-lockfile
 bun run check                                  # typecheck, both lints, format check, tests
 sh web/relay/test/offline-smoke.sh             # relay under `alchemy dev`, no network, smoke test
 sh web/relay/test/offline-smoke.sh web/agent/test/e2e-relay.ts   # cycling remote end to end, fake browser
+sh web/agent/test/e2e-page.sh [shots-dir]      # the page flasher end to end: Chromium, ROM simulator, Device
 VITE_RELAY_URL=ws://localhost:1337 bun run --cwd web/site dev    # the page; ?fake shows a fake device
 ```
 

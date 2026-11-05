@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
@@ -16,6 +16,10 @@ import {
 } from '../src/index.ts'
 import { FLASH_BYTES, SimDevice, type SimOptions } from './sim/device.ts'
 import type { FakeSerialPort } from './sim/port.ts'
+
+// The simulator runs on the same event loop as esptool-js, so a loaded machine (cycling test runs
+// the Rust and Python suites beside this one) stretches every case well past bun's 5 s default.
+setDefaultTimeout(30_000)
 
 const MAC = '02:00:00:12:34:56'
 

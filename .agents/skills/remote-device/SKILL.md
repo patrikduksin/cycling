@@ -28,7 +28,7 @@ hand.
 | --- | --- |
 | Is the device there? | `cycling device device-port` |
 | One command | `cycling device terminal STATUS` (or `INFO`) |
-| Flash this checkout | `CYCLING_SDK=1 cycling device flash` (builds here, then the host's A/B flash) |
+| Flash this checkout | `cycling device flash` (builds here, then the host's A/B flash) |
 | Logs | `cycling device logs --seconds 30` |
 | Base, persistence, crash tests | `cycling device e2e`, `persistence-test`, `crash-test` |
 | Back to the previous slot | `cycling device rollback` |
@@ -38,11 +38,11 @@ hand.
 - Evidence (logs, reports, exports) comes back to the same `.local/` path the
   task printed. Read it here.
 - `CYCLING_*` task settings travel with the command; `device flash` builds
-  the `CYCLING_SDK`/`CYCLING_HARNESS` variant they name.
+  the `CYCLING_HARNESS` variant they name.
 - `stock`, `stock-select`, `backup` and `restore-owned` need the owner's
   go-ahead in the task; ask rather than run them.
-- After device tests, leave a harness-enabled cycling build running
-  (`CYCLING_SDK=1 CYCLING_HARNESS=1 cycling device flash`), as the C606 skill
+- After device tests, leave a harness-enabled build running
+  (`CYCLING_HARNESS=1 cycling device flash`), as the C606 skill
   requires, and report what you observed.
 
 ## Crashes
@@ -64,7 +64,7 @@ test (on USB the C606 comes back in charging standby; off USB, switch it on).
 
 Decode with `cycling device terminal CRASH | cycling backtrace`, or
 `cycling backtrace <log>` for a captured panic print. `build.sh` keeps the
-newest 24 builds' ELFs as `.local/elf/<commit>[-dirty]-sdkX-hY.elf` in the
+newest 24 builds' ELFs as `.local/elf/<commit>[-dirty]-hY.elf` in the
 primary checkout (and the last as `.local/cycling.elf`); the record's `elf=`
 picks its own, and decoding refuses an ELF without the record's commit. Post the decoded frames, not raw addresses,
 in the issue or PR. Watchdog and brownout resets leave no record.

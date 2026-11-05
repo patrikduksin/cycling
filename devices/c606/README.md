@@ -4,7 +4,7 @@ The `c606-firmware` package owns the Magene C606 hardware implementation and the
 firmware assembled for it. Its executable retains the name `cycling-os` so build
 artifacts and flashing workflows keep a stable name.
 
-- `src/main.rs` composes device handles, the shell, console and optional VANA runtime.
+- `src/main.rs` composes device handles, the shell, console and VANA runtime.
 - `src/board.rs` allocates hardware resources and starts device tasks.
 - `src/capabilities/` implements the shared device contracts.
 - `src/drivers/` owns component protocols, HAL access and hardware quirks.
@@ -16,8 +16,8 @@ binary can depend on applications; that does not make application imports suitab
 inside drivers. Preserve DMA ownership, interrupt behavior, memory placement and
 power sequencing when changing hardware code.
 
-`build.sh` (run by `cycling build`) selects features from `CYCLING_SDK`,
-`CYCLING_HARNESS` and `CYCLING_BULK_MAINTENANCE` (the MMC maintenance image; see
+`build.sh` (run by `cycling build`) selects features from `CYCLING_HARNESS`
+and `CYCLING_BULK_MAINTENANCE` (the MMC maintenance image; see
 [storage research](research/storage.md)) and writes `.local/cycling.bin`
 for either application slot; `cycling flash` picks the slot that is not
 selected. `partitions.csv` matches the device layout; never flash it

@@ -15,7 +15,7 @@ through the [remote device skill](../remote-device/SKILL.md).
 | Task | Does |
 | --- | --- |
 | `cycling backup` | One-time full-flash backup into private `.local/device`. Refuses to overwrite an existing backup. |
-| `cycling flash` | Rebuilds for the given `CYCLING_SDK`/`CYCLING_HARNESS`, writes the slot that is not selected, verifies it and the reservations, selects and boots it, and requires its console. |
+| `cycling flash` | Rebuilds for the given `CYCLING_HARNESS`, writes the slot that is not selected, verifies it and the reservations, selects and boots it, and requires its console. |
 | `cycling rollback` | Validates the cycling image in the other slot and boots it. No slot writes. |
 | `cycling stock` | Full restore of the verified 16 MiB backup. Asks for confirmation (`-- --confirm-restore` skips it). |
 | `cycling restore-owned <snapshot>` | Writes a saved `.local/device/owned-*.bin` back into the ride/settings reservations while cycling is selected, after saving the current ones; verified readback, then reset. |
@@ -114,14 +114,13 @@ its `manifest.json`; keep the separate copy too.
 
 | Variable | `0` | `1` |
 | --- | --- | --- |
-| `CYCLING_SDK` | Base (default) | Adds VANA cycling workflows |
 | `CYCLING_HARNESS` | Removes diagnostic fault controls; keeps terminal, logs, Wi-Fi and the bring-up probe | Diagnostic controls (default) |
 
-- Pass both values to `cycling flash`.
-- Record firmware revision, both modes, device timestamps, collection state and
+- Pass the value to `cycling flash`.
+- Record firmware revision, harness mode, device timestamps, collection state and
   traffic with results.
 - Use harness-disabled builds for performance and power baselines.
-- After testing, restore a harness-enabled base with ordinary terminal and logs
+- After testing, leave a harness-enabled build with ordinary terminal and logs
   available, and stop readers and owned BLE fixtures.
 
 ## Test rules
@@ -132,8 +131,8 @@ its `manifest.json`; keep the separate copy too.
 - Preserve existing rides. Never run mutation tests against a ride that must stay
   active. Reclaim only explicitly identified disposable data, after the export
   verification in [ride recording](../../../docs/ride-recording.md).
-- Transport starvation (`cycling e2e --transport-recovery`) requires base with
-  harness enabled and no ride consumer. It sends a six-second executor stall once;
+- Transport starvation (`cycling e2e --transport-recovery`) requires the harness
+  and VANA idle on Home with no ride recording; it refuses otherwise. It sends a six-second executor stall once;
   allow more than six seconds for acknowledgment. The reply timestamp precedes the
   stall, so judge recovery from later POSITION/INPUT timestamps. Loss is expected
   only when the test establishes it and then observes resumed parser/companion progress.

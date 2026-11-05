@@ -1,6 +1,6 @@
 # Shell simulator
 
-The `shell-simulator` package runs the shared shell and optional VANA application
+The `shell-simulator` package runs the shared shell and the VANA application
 on a host, composed like C606 firmware, inside a simulated world. It owns its fake
 devices because they serve simulation and test control rather than physical hardware.
 
@@ -55,7 +55,7 @@ Each session is written as `live_session-<unix time>` under `.local/sim/live`
 when the window closes or on `Esc`; Ctrl-C in the terminal discards it. `sim-live --frames N --screenshot out.png` renders N
 frames at 30 fps without a window.
 
-`cycling simulate` runs the base demonstration and `cycling harness-virtual`
+`cycling simulate` runs the shell alone on two display geometries and `cycling harness-virtual`
 the shared terminal scenarios. Terminal mode (`--terminal`) requires an explicit
 disposable `--state-dir` and prints a `ready` line once booted; the harness builds
 the simulator first and starts its reply timeouts only after that line.

@@ -1,8 +1,7 @@
 # Runtime connectivity
 
-Firmware starts Wi-Fi without credentials and base BLE in echo mode. Saved Wi-Fi
-configuration is restored after restart; SDK builds also restore the saved HRS/CSC
-peer. Base keeps that saved selection but does not interpret sensor profiles.
+Firmware starts Wi-Fi without credentials and BLE in echo mode. Saved Wi-Fi
+configuration is restored after restart, and VANA restores the saved HRS/CSC peer.
 Firmware images contain no credentials or target identifiers.
 
 ## Commands
@@ -40,8 +39,7 @@ CMD 20 BLE ECHO
 ```
 
 The Wi-Fi example encodes a test network `Test` with a test password; use
-`cycling wifi-setup` for real credentials. `BLE SELECT` requires an SDK build;
-base supports discovery, echo, disconnect and forgetting a saved selection.
+`cycling wifi-setup` for real credentials.
 
 ## Completion and reconnection
 
@@ -84,7 +82,7 @@ base supports discovery, echo, disconnect and forgetting a saved selection.
 `cycling wifi-setup` saves the current authorized NetworkManager profile to
 `.local/wifi/config.json`. The [connectivity generator](../tools/devtools/src/cycling_devtools/harness/connectivity.py)
 writes Wi-Fi and BLE scenarios to `.local/foundation/scenarios/` from the captured
-original idle base state in `.local/foundation/original/state.json`, without device access.
+original idle state in `.local/foundation/original/state.json`, without device access.
 
 ```sh
 uv run --project tools/devtools --locked python -m cycling_devtools.harness.connectivity
@@ -94,7 +92,7 @@ cycling harness run --scenario .local/foundation/scenarios/connectivity-ble.json
 ```
 
 Device access and port selection follow the [C606 skill](../.agents/skills/c606/SKILL.md).
-Stop the BLE fixture afterward and restore the harness-enabled base.
+Stop the BLE fixture afterward and leave a harness-enabled build running.
 
 | Scenario | Covers |
 | --- | --- |
@@ -125,9 +123,9 @@ checks completion. The device does not export stored credentials.
 - A null Wi-Fi profile means originally unconfigured.
 - BLE modes are `none`, `echo`, `sim-heart`, `sim-csc` or `authorized-heart`; the
   last reads an explicit private authorization record.
-- `echo_after` returns runtime BLE to echo while keeping the saved SDK selection.
-- The generator only handles its recorded original case: base echo plus the
-  authorized compiled SDK selection, which it migrates to owned settings before
+- `echo_after` returns runtime BLE to echo while keeping the saved selection.
+- The generator only handles its recorded original case: echo plus the
+  authorized compiled selection, which it migrates to owned settings before
   restoring echo. Restoring another owner's configuration needs a deliberate plan.
 
 The virtual backend covers parsing, settings migration and persistence, selection

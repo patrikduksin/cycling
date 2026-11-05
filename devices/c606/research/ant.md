@@ -20,8 +20,8 @@ The bridge forwards a device type and eight data bytes, without a device number
 or channel index. This implementation therefore selects up to four sensors of different device types.
 It cannot prove the sender of a data page independently of the matching connection
 report. Additional profile decoders can consume `ant::Packet` through the same
-queue. The SDK composition is its sole consumer when enabled; the base console
-can drain it with `ANT READ`. Queue overflow drops the oldest packet and stamps
+queue. VANA is its sole consumer; `ANT READ` drains a separate diagnostic
+queue. Queue overflow drops the oldest packet and stamps
 loss on subsequent packets. Acquisition continues without a USB host.
 
 Raw ANT channel assignment, RF/period configuration, network keys, transmit roles,
@@ -88,7 +88,7 @@ uncertain and is not automatically replayed. Explicit reconnection uses
 `ANT CONNECT` without restarting the C606. Discovery is bounded to eight identities
 and scanning to 1–60 seconds. Keep terminal outputs containing identities private.
 
-With the cycling SDK enabled, use `RADAR` to inspect interpreted reports. Type 40
+Use `RADAR` to inspect interpreted reports. Type 40
 is the radar profile. The decoder retains eight wire slots, not stable vehicle
 identities. Distances are integer millimetres and closing speeds centimetres per
 second. Each four-target page expires independently after two seconds; background

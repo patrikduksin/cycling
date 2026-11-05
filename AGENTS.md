@@ -37,11 +37,11 @@ shell provides every tool and the `cycling` command; see
   Verify and sim-compare warn when the disk runs low.
 
 - Firmware changes: `cycling test`, `cycling check` (includes boundary checks
-  and ruff) and `cycling build`. Host tasks cover base and cycling builds.
-- Feature-boundary changes: also build base and cycling with both harness modes
-  (`CYCLING_SDK=0|1`, `CYCLING_HARNESS=0|1`).
+  and ruff) and `cycling build`. Host tasks cover both harness modes.
+- Feature-boundary changes: also build both harness modes
+  (`CYCLING_HARNESS=0|1`).
 - PRs are verified locally, not by GitHub CI: run test, check, simulate,
-  harness-virtual and all four builds, and post the results on the PR. CI runs
+  harness-virtual and both builds, and post the results on the PR. CI runs
   only on pushes to main.
 - Preserve the licensed [Trouble Host patch](vendor/trouble-host/CYCLING-PATCH.md)
   and its minimum-MTU (ATT MTU 23) regression coverage.
@@ -65,7 +65,7 @@ access or device tests. It owns the procedure; these rules always apply:
   [remote device skill](.agents/skills/remote-device/SKILL.md).
 - Validate changed hardware access or display timing on hardware, and report
   what was actually observed.
-- Restore a harness-enabled base on the development device after tests.
+- Leave a harness-enabled build on the development device after tests.
 - Publish code, tools and sanitized findings. Keep vendor firmware, disassembly,
   flash dumps, credentials, identifiers and raw captures in ignored `.local/`.
 

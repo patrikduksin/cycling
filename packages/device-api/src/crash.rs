@@ -174,7 +174,7 @@ impl Marker {
 pub struct Build {
     /// Built from a checkout with uncommitted changes.
     pub dirty: bool,
-    /// The bulk-maintenance image (`CYCLING_BULK_MAINTENANCE=1`).
+    /// The bulk-maintenance image (`cycling build-maintenance`).
     pub maintenance: bool,
 }
 

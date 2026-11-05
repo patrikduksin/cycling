@@ -1,4 +1,4 @@
-"""Measure button-press-to-frame latency and idle frames on a C606 harness build.
+"""Measure button-press-to-frame latency and idle frames on the C606.
 
 Each trial schedules one synthetic press at a random offset. The harness keeps
 the console's rest to the press's due time, so on a still page the pass that

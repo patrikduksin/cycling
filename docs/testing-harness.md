@@ -58,8 +58,8 @@ cycling startup-timing                          # Prompts to turn the C606 on, t
 cycling startup-timing --restart --ride      # Main-CPU restart; then start, pause and save a short ride
 ```
 
-The table and evidence go to `.local/timing/`. `--ride` records one short ride and
-needs a harness build; `--gnss` also waits for a fix. `--ride` and `--restart`
+The table and evidence go to `.local/timing/`. `--ride` records one short ride;
+`--gnss` also waits for a fix. `--ride` and `--restart`
 refuse while a ride is open. `--ride` presses only from Home, checks `RIDE STATUS`
 (`page`, `state`) after every press, and fails unless the ride ends saved.
 `cycling startup-timing --summarize .local/timing/<run>...` prints the median
@@ -79,8 +79,7 @@ and nearest-rank p90 of each milestone and step over repeated runs.
 Real runs:
 
 - `HARNESS CAPS` reports supported commands, input controls, geometry and transfer
-  limits before a session opens. Harness-disabled builds keep ordinary commands,
-  logs and recovery, and report injection and capture as unsupported.
+  limits before a session opens. Capture reports unsupported without PSRAM.
 - Restart and bus-reset recipes require an explicitly idle recording state, rechecked
   immediately before the disruptive step. Terminal reopen works during acquisition.
 - `acceptance` needs access to the selected USB device node.

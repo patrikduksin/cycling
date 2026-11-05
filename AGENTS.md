@@ -31,7 +31,7 @@ shell provides every tool and the `cycling` command; see
   about 20 s once sccache is warm.
 - Before opening or updating a PR: `cycling verify --pr <n>` (all gates in
   parallel, results posted on the PR).
-- Disk: every worktree carries about 4.5 GB of `.local` build targets. Run
+- Disk: a worktree that builds firmware carries 1 to 2.5 GB of `.local` build targets. Run
   `cycling clean` for a dry-run table of what it would free; `--apply` removes
   merged, clean, quiet worktrees nobody is working in, and idle build dirs.
   Verify and sim-compare warn when the disk runs low.
@@ -50,8 +50,8 @@ Read the [C606 skill](.agents/skills/c606/SKILL.md) before flashing, serial
 access or device tests. It owns the procedure; these rules always apply:
 
 - Change device firmware only through `cycling backup`, `cycling flash`,
-  `cycling rollback`, `cycling stock`, `cycling stock-select` and
-  `cycling restore-owned`.
+  `cycling flash-maintenance`, `cycling rollback`, `cycling stock`,
+  `cycling stock-select` and `cycling restore-owned`.
 - Stock lives in the verified private backup, not on the device (owner
   decision, 2026-10-17): cycling may occupy both A/B application slots, and
   `cycling stock` restores the complete backup. Never touch eFuses. Preserve

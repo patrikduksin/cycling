@@ -20,6 +20,7 @@ through the [remote device skill](../remote-device/SKILL.md).
 | `cycling stock` | Full restore of the verified 16 MiB backup. Asks for confirmation (`-- --confirm-restore` skips it). |
 | `cycling restore-owned <snapshot>` | Writes a saved `.local/device/owned-*.bin` back into the ride/settings reservations while cycling is selected, after saving the current ones; verified readback, then reset. |
 | `cycling stock-select` (alias `boot-stock`) | Boots slot A without rewriting flash, only while it still holds the verified stock image. |
+| `cycling flash-maintenance` | `flash` with the MMC maintenance image (`cycling build-maintenance`) instead of the firmware; `cycling flash` returns to the firmware. |
 | `cycling flash-image` | `flash` for an image built elsewhere: writes the existing `.local/cycling.bin` without building. |
 | `cycling monitor` | Reads USB logs without resetting. |
 
@@ -40,7 +41,7 @@ its `manifest.json`; keep the separate copy too.
   console to answer `INFO`, whose `slot=` field reports the booted slot. Silence
   or a different slot reselects the previous slot and fails with the reason.
   Firmware without the `slot=` field is reported by OTA selection only.
-  `CYCLING_BULK_MAINTENANCE=1` builds mark their descriptor version
+  The maintenance image (`cycling flash-maintenance`) marks its descriptor version
   `+maintenance`; for such an image (new, rollback target or previous slot) the
   check uses the maintenance protocol's INFO frame instead (that build has no
   JSON console and needs working MMC). Maintenance images built before the

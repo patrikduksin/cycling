@@ -522,7 +522,12 @@ class TransportRecoveryTests(unittest.TestCase):
         self.assertFalse(report['recovered'])
 
     def test_a_ride_or_another_page_is_rejected_before_the_stall(self):
-        for ride in (dict(state='recording', page='ride'), dict(state='ready', page='history')):
+        rides = (
+            dict(state='recording', page='ride'),
+            dict(state='paused', page='home'),
+            dict(state='ready', page='history'),
+        )
+        for ride in rides:
             connection = StallConnection()
             with (
                 self.subTest(**ride),

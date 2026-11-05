@@ -196,9 +196,10 @@ separate work in [#105](https://github.com/patrikduksin/cycling/issues/105).
 
 ## Backup, offline planning and maintenance
 
-`CYCLING_BULK_MAINTENANCE=1` selects a dedicated image whose binary USB protocol
-replaces the normal console. Install it through the existing protected
-`cycling flash` workflow. The host [mmc_maintenance.py](../../../tools/devtools/src/cycling_devtools/device/mmc_maintenance.py)
+`cycling build-maintenance` builds a dedicated image whose binary USB protocol
+replaces the normal console. `cycling flash-maintenance` builds and installs it
+through the protected flash workflow, and `cycling flash` puts the firmware
+back. The host [mmc_maintenance.py](../../../tools/devtools/src/cycling_devtools/device/mmc_maintenance.py)
 uses the shared USB lock and opens without reset. `cycling mmc-maintenance --help`
 and subcommand help own the current CLI syntax.
 

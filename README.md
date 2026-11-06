@@ -20,6 +20,27 @@ annoys you about your current computer, report a bug, or just say hi.
 **[Open an issue](https://github.com/patrikduksin/cycling/issues/new/choose)** ·
 **[Email me](mailto:patrikduksin@gmail.com)**
 
+## What it looks like
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/home.png" width="180" alt="Home: a big Ride button, three live sensors, Train, Settings and this week's rides"><br>Home</td>
+    <td align="center"><img src="docs/screenshots/ride.png" width="180" alt="Ride page: time, gradient, speed, power and heart rate with their zones, cadence and distance"><br>Riding</td>
+    <td align="center"><img src="docs/screenshots/map.png" width="180" alt="Map page following a course, with the road ahead in grey"><br>Following a course</td>
+    <td align="center"><img src="docs/screenshots/climb.png" width="180" alt="Climb page at 6 percent, with distance and gain so far and the climb's profile"><br>Climbing</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/radar.png" width="180" alt="Ride page with the radar track on the left edge showing six vehicles behind"><br>Radar</td>
+    <td align="center"><img src="docs/screenshots/workout.png" width="180" alt="Workout interval on target at 243 watts, 2:40 left, next step a 3 minute recovery"><br>Workout</td>
+    <td align="center"><img src="docs/screenshots/summary.png" width="180" alt="Ride saved summary with time, distance, speed, ascent and power"><br>Ride saved</td>
+    <td align="center"><img src="docs/screenshots/light.png" width="180" alt="The ride page in the light theme"><br>Light theme</td>
+  </tr>
+</table>
+
+These are the firmware's own screens at 2× the C606's 240×320 panel. The
+simulator renders them by running the firmware's UI code against simulated hardware, and
+`cycling readme-screenshots` renders them again after a UI change.
+
 ## Supported devices
 
 | Device | Status |

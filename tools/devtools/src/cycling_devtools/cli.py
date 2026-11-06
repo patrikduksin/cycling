@@ -271,6 +271,11 @@ TASKS = [
         f'{DEV}sim.compare',
     ),
     task(
+        'readme-screenshots',
+        'Render the README device screenshots in docs/screenshots from simulator checkpoints',
+        f'{DEV}sim.readme',
+    ),
+    task(
         'sim-live',
         'Open a window onto the simulated device; the session is recorded to .local/sim/live',
         'SIM_ARTIFACTS=$PWD/.local/sim/live cargo run -p shell-simulator --locked --no-default-features --features live --bin sim-live',

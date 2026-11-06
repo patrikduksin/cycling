@@ -721,3 +721,7 @@ ambiguous, rename one rather than weakening the reader.
 `cycling sim` writes screenshots and videos to `.local/sim/latest`.
 `cycling sim-compare --pr <n>` renders the same scenarios on main and on a PR,
 side by side.
+
+`cycling readme-screenshots` cuts the panel out of the checkpoints shown in the
+README and writes them to `docs/screenshots`. Run it after changing one of those
+screens.

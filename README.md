@@ -30,7 +30,7 @@ annoys you about your current computer, report a bug, or just say hi.
     <td align="center"><img src="docs/screenshots/climb.png" width="180" alt="Climb page at 6 percent, with distance and gain so far and the climb's profile"><br>Climbing</td>
   </tr>
   <tr>
-    <td align="center"><img src="docs/screenshots/radar.png" width="180" alt="Ride page with the radar track on the left edge showing six cars behind"><br>Radar</td>
+    <td align="center"><img src="docs/screenshots/radar.png" width="180" alt="Ride page with the radar track on the left edge showing six vehicles behind"><br>Radar</td>
     <td align="center"><img src="docs/screenshots/workout.png" width="180" alt="Workout interval on target at 243 watts, 2:40 left, next step a 3 minute recovery"><br>Workout</td>
     <td align="center"><img src="docs/screenshots/summary.png" width="180" alt="Ride saved summary with time, distance, speed, ascent and power"><br>Ride saved</td>
     <td align="center"><img src="docs/screenshots/light.png" width="180" alt="The ride page in the light theme"><br>Light theme</td>
@@ -38,7 +38,7 @@ annoys you about your current computer, report a bug, or just say hi.
 </table>
 
 These are the firmware's own screens at 2× the C606's 240×320 panel. The
-simulator renders them by running the same code the device runs, and
+simulator renders them by running the firmware's UI code against simulated hardware, and
 `cycling readme-screenshots` renders them again after a UI change.
 
 ## Supported devices

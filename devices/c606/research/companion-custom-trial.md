@@ -41,13 +41,42 @@ SHA-512 or BLAKE2s. Ranges tried: the whole image; from `0x400`, `0x408`,
 descriptor skipped; padded to 1 KiB/4 KiB; and the encoded container payload.
 The earlier CRC-16 search against the container header found nothing either.
 
+### Stock ESP32 firmware does not use the field
+
+The N21 1.956 main firmware was read where it handles this package format
+(private disassembly, addresses only):
+
+- The companion sender's `UpdateInit` (`0x421b2568`) checks the container
+  CRC-16/XMODEM, finds the decoded magic, copies header bytes 4..127 into its
+  module (+32..), and derives the payload XOR key from header bytes 6..7
+  (`0x421b2970..299f`). Nothing reads module +32/+33, header bytes 4..5, in
+  the updater region (`0x421b2400..4200`).
+- The ESP's own self-update (`0x421b3488`, "Start Master Update") runs the
+  same `UpdateInit`, then `esp_ota_begin/write/end/set_boot_partition`. Its
+  integrity check is ESP-IDF's image check, not this field.
+
+So header bytes 4..5 are written by the vendor's packaging tool, and only the
+companion loader can consume them. They are not **any** CRC-16 (all 32,768
+odd polynomials; init 0/`ffff`; both bit orders; xorout 0/`ffff`) of either
+N21 payload, decoded, fixed-key-only or as stored, nor of either N22 image
+from 0, `0x408` or `0x480` with the field kept, zeroed or `ff`-filled. They are
+not a catalogue CRC-16/32 or sum over header-plus-payload with the field
+blanked. With four samples, a plain checksum is ruled out: the field is either
+a random nonce (bytes 6..7 beside it are the XOR key) or a keyed value.
+
 ### Next evidence needed
 
-The algorithm is in the loader, which we cannot read with the case closed. Two
-routes remain: the stock ESP32 main firmware (N21), which stages companion
-packages and may verify the word before sending, or SWD on the internal pads.
-Until the word can be produced, no custom companion code can run; the guarded
-restore path is proven three times over.
+The algorithm, if any, is in the loader, which we cannot read with the case
+closed. Two device experiments would narrow it without new tooling:
+
+1. Install unmodified N22 **1.638** (positive control). Acceptance shows the
+   loader takes any intact vendor image, including an older one.
+2. Install 1.902 with one byte changed in cosmetic data (the descriptor's build
+   date). Rejection there means an integrity check covers the whole image, not
+   only code.
+
+If both point to a whole-image keyed check, custom companion code needs the
+loader's key or algorithm, so SWD on the internal pads is the remaining route.
 
 Evidence: private `.local/companion-trial/1794010608897906019` and
 `1794010825912652651` in the owner's checkout.

@@ -89,7 +89,7 @@ pub fn execute(
     if crate::device::drivers::companion_uart::updating()
         && !matches!(
             request.command,
-            Command::Test(41 | 43) | Command::Info | Command::Status
+            Command::Test(41 | 43 | 45) | Command::Info | Command::Status
         )
     {
         terminal.reply(request.id, "BUSY", "companion update owns the device", now);
@@ -158,10 +158,9 @@ pub fn execute(
             }
             let _ = write!(
                 output,
-                "capabilities={:?} status={:?} listen={:?}",
+                "capabilities={:?} status={:?}",
                 power.capabilities(),
-                power.status(),
-                crate::device::drivers::sleep::listen_summary()
+                power.status()
             );
         }
         Command::Volume(command) => {
@@ -609,6 +608,14 @@ pub fn execute(
                     && power.operation.is_none()
                     && crate::device::drivers::companion_uart::start_trial()
                 {
+                    "ACCEPTED"
+                } else {
+                    "BUSY"
+                };
+            }
+            #[cfg(companion_trial)]
+            45 => {
+                status = if crate::device::drivers::companion_uart::acknowledge_trial() {
                     "ACCEPTED"
                 } else {
                     "BUSY"

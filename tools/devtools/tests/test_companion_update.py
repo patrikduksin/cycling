@@ -118,20 +118,25 @@ def test_stale_bootloader_or_short_answer_cannot_start_dfu(monkeypatch, tmp_path
     assert 'TEST 42' not in connection.commands
 
 
-TRIAL_READY = 'phase=Ready trial=Ready custom_seen=false stock_seen=true target=stock'
-TRIAL_CUSTOM = 'phase=Complete trial=Soak custom_seen=true stock_seen=false target=trial'
-TRIAL_RESTORE = 'phase=Data(100) trial=Restoring custom_seen=true stock_seen=false target=stock'
-TRIAL_STOCK = 'phase=Ready trial=Ready custom_seen=false stock_seen=true target=stock'
+TRIAL_READY = 'phase=Ready trial=Ready custom_seen=false custom_at=-1 stock_seen=true target=stock'
+TRIAL_CUSTOM = 'phase=Complete trial=Soak custom_seen=true custom_at=4210 stock_seen=false target=trial'
+# The observer records the probe, then acknowledges: TEST 41, TEST 45.
+RECORD = ['total=1 4210ms/18:custom identity', '']
+TRIAL_RESTORE = 'phase=Data(100) trial=Restoring custom_seen=true custom_at=4210 stock_seen=false target=stock'
+TRIAL_STOCK = 'phase=Ready trial=Ready custom_seen=false custom_at=-1 stock_seen=true target=stock'
 
 
-def test_trial_observes_custom_and_autonomous_restore(monkeypatch, tmp_path):
-    connection = Connection([TRIAL_READY, 'settings ready', '', TRIAL_CUSTOM, TRIAL_RESTORE, TRIAL_STOCK])
+def test_trial_records_custom_identity_before_acknowledging_restore(monkeypatch, tmp_path):
+    connection = Connection([TRIAL_READY, 'settings ready', '', TRIAL_CUSTOM, *RECORD, TRIAL_RESTORE, TRIAL_STOCK])
     monkeypatch.setattr(update, 'ROOT', tmp_path)
     monkeypatch.setattr(update, 'UsbConnection', lambda *_: connection)
     monkeypatch.setattr(update.time, 'sleep', lambda _: None)
     update.run_trial('unused')
     assert connection.commands.count('TEST 44') == 1
     assert 'TEST 42' not in connection.commands
+    assert connection.commands[-4:-1] == ['TEST 41', 'TEST 45', 'TEST 43']
+    custom = next((tmp_path / '.local/companion-trial').glob('*/custom.txt')).read_text()
+    assert 'custom_at=4210' in custom and 'custom identity' in custom
     assert (
         next((tmp_path / '.local/companion-trial').glob('*/result.txt'))
         .read_text()
@@ -143,7 +148,7 @@ def test_trial_never_replays_uncertain_start_across_reconnect(monkeypatch, tmp_p
     from cycling_devtools.device import port
 
     first = Connection([TRIAL_READY, 'settings ready', TimeoutError('uncertain start')])
-    second = Connection([TRIAL_CUSTOM, TRIAL_RESTORE, TRIAL_STOCK])
+    second = Connection([TRIAL_CUSTOM, *RECORD, TRIAL_RESTORE, TRIAL_STOCK])
     connections = iter([first, second])
     monkeypatch.setattr(update, 'ROOT', tmp_path)
     monkeypatch.setattr(update, 'UsbConnection', lambda *_: next(connections))
@@ -151,7 +156,7 @@ def test_trial_never_replays_uncertain_start_across_reconnect(monkeypatch, tmp_p
     monkeypatch.setattr(update.time, 'sleep', lambda _: None)
     update.run_trial('unused')
     assert first.commands.count('TEST 44') == 1
-    assert second.commands == ['TEST 43', 'TEST 43', 'TEST 43']
+    assert second.commands == ['TEST 43', 'TEST 41', 'TEST 45', 'TEST 43', 'TEST 43']
 
 
 def test_trial_rejects_stock_without_custom_execution_evidence(monkeypatch, tmp_path):
@@ -174,6 +179,7 @@ def test_trial_retries_rejected_status_without_replaying_start(monkeypatch, tmp_
             '',
             {'status': 'INVALID', 'data': 'malformed command', 'ms': 1727},
             TRIAL_CUSTOM,
+            *RECORD,
             TRIAL_RESTORE,
             TRIAL_STOCK,
         ]
@@ -183,4 +189,4 @@ def test_trial_retries_rejected_status_without_replaying_start(monkeypatch, tmp_
     monkeypatch.setattr(update.time, 'sleep', lambda _: None)
     update.run_trial('unused')
     assert connection.commands.count('TEST 44') == 1
-    assert connection.commands[3:] == ['TEST 43'] * 4
+    assert connection.commands[3:] == ['TEST 43', 'TEST 43', 'TEST 41', 'TEST 45', 'TEST 43', 'TEST 43']

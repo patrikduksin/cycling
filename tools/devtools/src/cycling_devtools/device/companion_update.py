@@ -94,10 +94,11 @@ def run_trial(port):
     output.mkdir(parents=True, mode=0o700)
     print(f'Companion trial evidence: {output}', flush=True)
     attempted = False
+    acknowledged = False
     custom_seen = False
     restore_seen = False
     previous = None
-    deadline = time.monotonic() + 240
+    deadline = time.monotonic() + 600
     attach = 0
     while time.monotonic() < deadline:
         try:
@@ -127,6 +128,15 @@ def run_trial(port):
                         previous = status
                     custom_seen |= 'custom_seen=true' in status
                     restore_seen |= 'trial=Restoring ' in status
+                    if attempted and not acknowledged and 'trial=Soak custom_seen=true ' in status:
+                        # The guard holds the custom image until this record is
+                        # written; the ESP32 RAM that saw it is wiped by restore.
+                        probe = connection.terminal_command('TEST 41')
+                        (output / 'custom.txt').write_text(f'{status}\n{probe}\n')
+                        print(f'Custom identity recorded: {output / "custom.txt"}', flush=True)
+                        acknowledged = True  # Before sending, like the start.
+                        require_reply(connection, 'TEST 45')
+                        print('Stock restore requested.', flush=True)
                     if 'trial=Failed ' in status:
                         raise ValueError(
                             'Automatic stock restore failed; keep this recovery-enabled main image installed'

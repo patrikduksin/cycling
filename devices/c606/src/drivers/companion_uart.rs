@@ -178,6 +178,12 @@ pub fn start_trial() -> bool {
     })
 }
 
+/// The host recorded the custom identity; restore stock now.
+#[cfg(companion_trial)]
+pub fn acknowledge_trial() -> bool {
+    critical_section::with(|cs| STATE.borrow_ref_mut(cs).update.trial.acknowledge())
+}
+
 #[cfg(companion_update)]
 pub fn update_status(output: &mut impl core::fmt::Write) {
     critical_section::with(|cs| {
@@ -195,9 +201,10 @@ pub fn update_status(output: &mut impl core::fmt::Write) {
         #[cfg(companion_trial)]
         let _ = write!(
             output,
-            " trial={:?} custom_seen={} stock_seen={} target={}",
+            " trial={:?} custom_seen={} custom_at={} stock_seen={} target={}",
             update.trial.phase,
             update.trial.custom_seen,
+            update.trial.custom_at.map_or(-1, |at| at as i64),
             update.trial.stock_seen,
             if update.trial_image { "trial" } else { "stock" }
         );

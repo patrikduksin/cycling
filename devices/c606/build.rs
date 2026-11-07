@@ -17,10 +17,6 @@ fn main() {
     if let Ok(path) = std::env::var("CYCLING_COMPANION_STOCK") {
         // This experiment can only reinstall the independently identified 1.902
         // package. Vendor bytes stay in ignored local storage and build output.
-        assert!(
-            std::env::var_os("CARGO_FEATURE_DEBUG_HARNESS").is_some(),
-            "companion update needs the harness"
-        );
         let path = std::fs::canonicalize(path).expect("private stock container");
         println!("cargo:rerun-if-changed={}", path.display());
         let hash = std::process::Command::new("sha256sum")

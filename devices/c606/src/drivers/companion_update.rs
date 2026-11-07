@@ -192,6 +192,11 @@ impl Default for Session {
     }
 }
 
+/// How long a custom identity is kept before the guard restores stock without a
+/// host. Long enough for a USB observer to reconnect after the companion's own
+/// startup power-cycles the ESP32, which wipes this RAM record.
+const SOAK_FALLBACK_MS: u64 = 300_000;
+
 /// Fixed, stock-derived marker trial. This is a best-effort ESP-side restore,
 /// not an nRF bootloader rollback: a dead application may ignore DFU entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,6 +219,8 @@ pub enum TrialAction {
 pub struct Trial {
     pub phase: TrialPhase,
     pub custom_seen: bool,
+    /// Main uptime of the first custom identity answer in this boot.
+    pub custom_at: Option<u64>,
     pub stock_seen: bool,
     began: Option<u64>,
     deadline: u64,
@@ -226,6 +233,7 @@ impl Trial {
         Self {
             phase: TrialPhase::Probing,
             custom_seen: false,
+            custom_at: None,
             stock_seen: false,
             began: None,
             deadline: 0,
@@ -244,6 +252,16 @@ impl Trial {
         }
         self.phase = TrialPhase::Uploading;
         self.probe_sent = None;
+        true
+    }
+
+    /// The host has recorded the custom identity: restore stock on the next tick
+    /// instead of waiting out the fallback.
+    pub fn acknowledge(&mut self) -> bool {
+        if self.phase != TrialPhase::Soak || !self.custom_seen {
+            return false;
+        }
+        self.deadline = 0;
         true
     }
 
@@ -267,9 +285,10 @@ impl Trial {
         let version = &frame[14..16];
         if version == [2, 0xa3] {
             self.custom_seen = true;
+            self.custom_at.get_or_insert(now);
             if self.phase == TrialPhase::Probing {
                 self.phase = TrialPhase::Soak;
-                self.deadline = now.saturating_add(30_000);
+                self.deadline = now.saturating_add(SOAK_FALLBACK_MS);
             }
         } else if version == [2, 0x13] {
             self.stock_seen = true;
@@ -295,7 +314,7 @@ impl Trial {
             TrialPhase::Uploading => match transfer {
                 Phase::Complete => {
                     self.phase = TrialPhase::Soak;
-                    self.deadline = now.saturating_add(30_000);
+                    self.deadline = now.saturating_add(SOAK_FALLBACK_MS);
                     self.last_probe = None;
                 }
                 Phase::Failed => {
@@ -430,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn companion_trial_requires_fresh_identity_and_restores_after_thirty_seconds() {
+    fn companion_trial_requires_fresh_identity_and_restores_after_the_fallback() {
         let mut t = Trial::new();
         assert!(t.exclusive());
         assert!(!t.start());
@@ -451,13 +470,14 @@ mod tests {
         t.probe_sent(20_000);
         t.reply(&identity(0xa3), 20_010);
         assert!(t.custom_seen);
-        t.tick(49_999, Phase::Complete);
+        assert_eq!(t.custom_at, Some(20_010));
+        t.tick(319_999, Phase::Complete);
         assert_eq!(t.phase, TrialPhase::Soak);
-        assert_eq!(t.tick(50_000, Phase::Complete), Some(TrialAction::Restore));
-        assert_eq!(t.tick(50_001, Phase::Enter), None);
-        assert_eq!(t.tick(70_000, Phase::Complete), Some(TrialAction::Probe));
-        t.probe_sent(70_000);
-        t.reply(&identity(0x13), 70_010);
+        assert_eq!(t.tick(320_000, Phase::Complete), Some(TrialAction::Restore));
+        assert_eq!(t.tick(320_001, Phase::Enter), None);
+        assert_eq!(t.tick(340_000, Phase::Complete), Some(TrialAction::Probe));
+        t.probe_sent(340_000);
+        t.reply(&identity(0x13), 340_010);
         assert_eq!(t.phase, TrialPhase::Restored);
         assert!(!t.exclusive());
         assert_eq!(t.tick(1_000_000, Phase::Complete), None);
@@ -472,11 +492,11 @@ mod tests {
         assert!(rebooted.custom_seen);
         assert_eq!(rebooted.phase, TrialPhase::Soak);
         assert_eq!(
-            rebooted.tick(30_110, Phase::Ready),
+            rebooted.tick(300_110, Phase::Ready),
             Some(TrialAction::Restore)
         );
-        assert_eq!(rebooted.tick(30_111, Phase::Enter), None);
-        assert_eq!(rebooted.tick(40_000, Phase::Failed), None);
+        assert_eq!(rebooted.tick(300_111, Phase::Enter), None);
+        assert_eq!(rebooted.tick(310_000, Phase::Failed), None);
         assert_eq!(rebooted.phase, TrialPhase::Failed);
         assert_eq!(rebooted.tick(1_000_000, Phase::Failed), None);
 
@@ -492,6 +512,25 @@ mod tests {
         );
         assert_eq!(missing.tick(40_000, Phase::Complete), None);
         assert_eq!(missing.phase, TrialPhase::Failed);
+    }
+
+    #[test]
+    fn companion_trial_host_acknowledgment_restores_only_an_observed_custom_image() {
+        let mut t = Trial::new();
+        assert!(!t.acknowledge());
+        assert_eq!(t.tick(0, Phase::Ready), Some(TrialAction::Probe));
+        t.probe_sent(0);
+        t.reply(&identity(0x13), 10);
+        assert!(!t.acknowledge()); // Stock: nothing to restore.
+
+        let mut rebooted = Trial::new();
+        assert_eq!(rebooted.tick(0, Phase::Ready), Some(TrialAction::Probe));
+        rebooted.probe_sent(0);
+        rebooted.reply(&identity(0xa3), 10);
+        assert_eq!(rebooted.tick(5_000, Phase::Ready), Some(TrialAction::Probe));
+        assert!(rebooted.acknowledge());
+        assert_eq!(rebooted.tick(5_001, Phase::Ready), Some(TrialAction::Restore));
+        assert!(!rebooted.acknowledge());
     }
 
     #[test]

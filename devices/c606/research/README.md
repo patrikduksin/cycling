@@ -8,7 +8,7 @@ ignored `.local/` (see [AGENTS.md](../../../AGENTS.md)).
 - [Companion wire protocol](companion.md)
 - [Motion wake feasibility and listening-sleep observations](motion-wake.md)
 - [Companion update experiment](companion-update.md)
-- [Guarded custom companion trial and observed limits](companion-custom-trial.md)
+- [Guarded custom companion trial: the loader rejects a modified image](companion-custom-trial.md)
 - [Companion recovery sources and closed-case limits](companion-recovery-sources.md)
 - [Companion bootloader acquisition attempts](companion-bootloader-search.md)
 - [Companion foundation research](foundation-research.md)

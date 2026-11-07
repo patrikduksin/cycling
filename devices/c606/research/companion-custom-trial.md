@@ -1,5 +1,57 @@
 # Guarded companion marker trial
 
+## Outcome, 2026-11-07: the loader does not start a modified image
+
+The fixed one-byte candidate (identity minor `0x13` -> `0xa3`) was submitted
+twice more, from a guard that holds a custom identity until the host records
+it. Both runs gave the same answer:
+
+| Boot | Companion traffic | Outcome |
+| --- | --- | --- |
+| Before (stock) | 10 frames by 2 s; identity at 4.9 s | Trial submitted once |
+| 1, during transfer | 614 packets, zero retries | ESP32 power-cycled near the last packet |
+| 2, after the custom image | **Zero bytes for 30 s** (5 s in the first run) | Guard restored stock |
+| 3, after restore | 10 frames by 2 s; stock identity at 4.9 s | Healthy |
+
+A running N22 application sends reports unprompted within two seconds of every
+boot. Silence while the loader still accepts DFU entry and a full stock image
+means the **loader kept itself in DFU and did not start the patched
+application**. The patch touches no startup code, so a crash-before-UART is
+much less likely than rejection; a crash loop would also keep cycling ESP32
+power, which boot 2 did not show.
+
+The first 2026-11-07 run used the earlier 5 s identity deadline, which stock
+itself barely meets (4.9 s), so the guard now waits 30 s. The 2026-11-06 run
+below lost its evidence the same way.
+
+### The likely check
+
+Every N22 image carries a descriptor at offset `0x400`: magic `a5 5a 55 aa`,
+a 32-bit word that differs per build (`0x7a116739` in 1.638, `0x622cc565`
+in 1.902), then flash start `0x12000` and the image size. The vendor container
+header is a copy of this descriptor, and its XOR key is derived from that
+word. The application never references its own descriptor (no literal
+`0x12400`), so the loader is its consumer. Our patch left the word unchanged.
+
+The word is not, for both builds at once: CRC-32 (IEEE, Castagnoli, BZIP2,
+MPEG-2, POSIX, JAMCRC; every refin/refout/xorout combination), 32-bit or
+byte sums, XOR32, Adler-32, or the first/any 4 bytes of MD5, SHA-1, SHA-256,
+SHA-512 or BLAKE2s. Ranges tried: the whole image; from `0x400`, `0x408`,
+`0x420`, `0x480`, `0x1000`; the field zeroed, `ff`-filled or skipped; the
+descriptor skipped; padded to 1 KiB/4 KiB; and the encoded container payload.
+The earlier CRC-16 search against the container header found nothing either.
+
+### Next evidence needed
+
+The algorithm is in the loader, which we cannot read with the case closed. Two
+routes remain: the stock ESP32 main firmware (N21), which stages companion
+packages and may verify the word before sending, or SWD on the internal pads.
+Until the word can be produced, no custom companion code can run; the guarded
+restore path is proven three times over.
+
+Evidence: private `.local/companion-trial/1794010608897906019` and
+`1794010825912652651` in the owner's checkout.
+
 ## Outcome, 2026-11-06
 
 One stock-derived custom application was submitted to the connected companion.

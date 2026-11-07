@@ -511,7 +511,10 @@ mod tests {
         missing.tick(10_000, Phase::Ready); // Later than stock's own first answer.
         missing.tick(30_000, Phase::Ready);
         assert_eq!(missing.phase, TrialPhase::Probing);
-        assert_eq!(missing.tick(30_001, Phase::Ready), Some(TrialAction::Restore));
+        assert_eq!(
+            missing.tick(30_001, Phase::Ready),
+            Some(TrialAction::Restore)
+        );
         assert_eq!(missing.tick(30_002, Phase::Enter), None);
         assert_eq!(
             missing.tick(60_000, Phase::Complete),
@@ -536,7 +539,10 @@ mod tests {
         rebooted.reply(&identity(0xa3), 10);
         assert_eq!(rebooted.tick(5_000, Phase::Ready), Some(TrialAction::Probe));
         assert!(rebooted.acknowledge());
-        assert_eq!(rebooted.tick(5_001, Phase::Ready), Some(TrialAction::Restore));
+        assert_eq!(
+            rebooted.tick(5_001, Phase::Ready),
+            Some(TrialAction::Restore)
+        );
         assert!(!rebooted.acknowledge());
     }
 

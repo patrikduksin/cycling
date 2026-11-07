@@ -86,18 +86,20 @@ pub fn execute(
     } = devices;
     let mut output = Text::new();
     let mut status = "OK";
-    if crate::device::drivers::companion_uart::updating()
-        && !matches!(
-            request.command,
-            Command::Test(41 | 43 | 45) | Command::Info | Command::Status
-        )
-    {
+    let updating = crate::device::drivers::companion_uart::updating();
+    // The guard's status stays readable through startup: a companion that never
+    // answers holds startup at "probing" for the guard's whole deadline.
+    let trial_read = updating && matches!(request.command, Command::Test(41 | 43 | 45));
+    if updating && !trial_read && !matches!(request.command, Command::Info | Command::Status) {
         terminal.reply(request.id, "BUSY", "companion update owns the device", now);
         return;
     }
     let started = embassy_time::Instant::now();
     let readiness = power.status();
-    if !readiness.ready && !firmware_console::protocol::admitted_while_not_ready(request.command) {
+    if !readiness.ready
+        && !trial_read
+        && !firmware_console::protocol::admitted_while_not_ready(request.command)
+    {
         firmware_console::protocol::write_not_ready(
             &mut output,
             readiness.state,

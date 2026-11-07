@@ -97,6 +97,7 @@ def run_trial(port):
     acknowledged = False
     custom_seen = False
     restore_seen = False
+    probing_seen = False
     previous = None
     deadline = time.monotonic() + 600
     attach = 0
@@ -128,6 +129,7 @@ def run_trial(port):
                         previous = status
                     custom_seen |= 'custom_seen=true' in status
                     restore_seen |= 'trial=Restoring ' in status
+                    probing_seen |= attempted and 'trial=Probing ' in status
                     if attempted and not acknowledged and 'trial=Soak custom_seen=true ' in status:
                         # The guard holds the custom image until this record is
                         # written; the ESP32 RAM that saw it is wiped by restore.
@@ -144,6 +146,10 @@ def run_trial(port):
                     if attempted and ('trial=Restored ' in status or 'trial=Ready ' in status):
                         if custom_seen and not restore_seen:
                             raise ValueError('Custom identity seen, but the stock restore was not observed')
+                        if not (custom_seen or restore_seen or probing_seen):
+                            raise ValueError(
+                                'Post-transfer boot was not observed; the outcome is unknown. Inspect the USB logs.'
+                            )
                         outcome = {
                             (True, True): 'candidate answered; stock restored',
                             (False, True): 'candidate never answered; guard restored stock',

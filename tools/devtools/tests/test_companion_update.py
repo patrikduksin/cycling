@@ -172,8 +172,20 @@ def test_trial_reports_a_candidate_that_never_answered(monkeypatch, tmp_path):
     assert result.startswith("outcome='candidate never answered; guard restored stock'")
 
 
-def test_trial_reports_a_candidate_running_with_the_stock_identity(monkeypatch, tmp_path):
+TRIAL_PROBING = 'phase=Ready trial=Probing custom_seen=false custom_at=-1 stock_seen=false target=stock'
+
+
+def test_trial_without_the_post_transfer_probe_is_unknown(monkeypatch, tmp_path):
     connection = Connection([TRIAL_READY, 'settings ready', '', TRIAL_STOCK])
+    monkeypatch.setattr(update, 'ROOT', tmp_path)
+    monkeypatch.setattr(update, 'UsbConnection', lambda *_: connection)
+    monkeypatch.setattr(update.time, 'sleep', lambda _: None)
+    with pytest.raises(ValueError, match='outcome is unknown'):
+        update.run_trial('unused')
+
+
+def test_trial_reports_a_candidate_running_with_the_stock_identity(monkeypatch, tmp_path):
+    connection = Connection([TRIAL_READY, 'settings ready', '', TRIAL_PROBING, TRIAL_STOCK])
     monkeypatch.setattr(update, 'ROOT', tmp_path)
     monkeypatch.setattr(update, 'UsbConnection', lambda *_: connection)
     monkeypatch.setattr(update.time, 'sleep', lambda _: None)

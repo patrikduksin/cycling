@@ -84,16 +84,39 @@ answered BUSY to `TEST 43` during the silent boot, hiding the restore. Trial
 reads are now admitted during startup, and "runs as stock" requires having
 watched the post-transfer probe. The boot logs show the rejection plainly.
 
+### Polynomial search for a CRC
+
+A CRC is the remainder of the covered bytes, as a GF(2) polynomial, divided by
+a generator P. For a candidate variant (coverage, bit order, byte order in
+32-bit words, init, final XOR, stored byte order), `F = M·x^w + I·x^(8n) + V`
+is divisible by P for both accepted images, so P divides
+`gcd(F(1.638), F(1.902))`. FLINT's half-GCD makes each test about a second.
+The scripts are in [loader-crc](loader-crc/); they read the two decoded images
+from paths given on the command line.
+
+| Search | Variants | Result |
+| --- | --- | --- |
+| CRC-32, any polynomial, stored value at `0x404` | 256 (8 coverages) | No common factor of degree 32 |
+| Positive control: zlib CRC-32 planted in the field | 2 | Recovers `0x04c11db7` exactly; the wrong bit order finds nothing |
+| CRC-16, any polynomial, `0x404` or `0x406` | 352 (11 coverages) | No common factor of degree 16 or more |
+| CRC-32 residue: whole image, field included, equals an unknown constant | 8 | One degree-32 factor (`0x6939cabd`, reflected, word-swapped, init 0, constant `0x4921af60`) |
+
+The residue candidate was tested on the device: the date-patched image with
+the descriptor word re-solved to keep that constant (`88 54 e7 59`) was
+rejected like the plain date patch, so the factor was a coincidence (about a
+1-in-4 chance across 8 variants).
+
 ### Next evidence needed
 
-Custom companion code needs the loader's integrity algorithm. Remaining routes:
-an algebraic search for an arbitrary-polynomial CRC-32 at `0x404` (two images
-constrain the polynomial through a GF(2) GCD), or reading the loader over SWD.
-If the word is a keyed MAC, only the loader (SWD) reveals the key.
+The integrity value is not a CRC-16 or CRC-32 of the image under any
+polynomial with standard init and final values. It is most likely a keyed MAC
+or a hash we have not guessed. The loader holds the answer: read it over SWD
+on the internal pads (case open). If its read protection is set, replacing the
+loader over SWD is the remaining route to custom companion code.
 
 Evidence: private `.local/companion-trial/1794010608897906019`,
 `1794010825912652651`, `1794012484401439188` (date) and `1794012725493810399`
-(1.638) in the owner's checkout.
+(1.638) and `1794014463174464930` (residue candidate) in the owner's checkout.
 
 ## Outcome, 2026-11-06
 

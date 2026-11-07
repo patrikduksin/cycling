@@ -64,22 +64,36 @@ not a catalogue CRC-16/32 or sum over header-plus-payload with the field
 blanked. With four samples, a plain checksum is ruled out: the field is either
 a random nonce (bytes 6..7 beside it are the XOR key) or a keyed value.
 
+### Control trials, 2026-11-07
+
+Two more guarded runs settle what the loader accepts:
+
+| Candidate | After transfer | Verdict |
+| --- | --- | --- |
+| 1.902 with one build-date character changed (`0x47b`, `4` -> `5`) | Zero companion bytes for 30 s; guard restored stock | **Rejected** |
+| Unmodified vendor N22 **1.638** (older) | 10 frames by 2 s, GNSS flowing, identity reply at 1.7 s in its own format (`... 26 10`) | **Accepted and ran**; restored to 1.902 on acknowledgment |
+
+The date string is data no code reads, so the loader checks the **whole
+image** against something carried inside it, and an intact older vendor image
+passes (downgrades are allowed). The check is self-contained in the image the
+ESP sends; the per-build descriptor word at `0x404` is the only candidate
+found, and its algorithm is not a plain CRC-16 or a catalogue CRC-32/sum/hash.
+
+The first date run was misread by the observer as accepted: startup readiness
+answered BUSY to `TEST 43` during the silent boot, hiding the restore. Trial
+reads are now admitted during startup, and "runs as stock" requires having
+watched the post-transfer probe. The boot logs show the rejection plainly.
+
 ### Next evidence needed
 
-The algorithm, if any, is in the loader, which we cannot read with the case
-closed. Two device experiments would narrow it without new tooling:
+Custom companion code needs the loader's integrity algorithm. Remaining routes:
+an algebraic search for an arbitrary-polynomial CRC-32 at `0x404` (two images
+constrain the polynomial through a GF(2) GCD), or reading the loader over SWD.
+If the word is a keyed MAC, only the loader (SWD) reveals the key.
 
-1. Install unmodified N22 **1.638** (positive control). Acceptance shows the
-   loader takes any intact vendor image, including an older one.
-2. Install 1.902 with one byte changed in cosmetic data (the descriptor's build
-   date). Rejection there means an integrity check covers the whole image, not
-   only code.
-
-If both point to a whole-image keyed check, custom companion code needs the
-loader's key or algorithm, so SWD on the internal pads is the remaining route.
-
-Evidence: private `.local/companion-trial/1794010608897906019` and
-`1794010825912652651` in the owner's checkout.
+Evidence: private `.local/companion-trial/1794010608897906019`,
+`1794010825912652651`, `1794012484401439188` (date) and `1794012725493810399`
+(1.638) in the owner's checkout.
 
 ## Outcome, 2026-11-06
 

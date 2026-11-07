@@ -197,6 +197,12 @@ impl Default for Session {
 /// startup power-cycles the ESP32, which wipes this RAM record.
 const SOAK_FALLBACK_MS: u64 = 300_000;
 
+/// How long a fresh boot waits for any identity before restoring stock. Stock
+/// 1.902 itself first answers about 4.9 s after the ESP32 boots, and the first
+/// boot after an update can be slower; 5 s restored stock over a patched image
+/// that may simply have been late.
+const PROBE_DEADLINE_MS: u64 = 30_000;
+
 /// Fixed, stock-derived marker trial. This is a best-effort ESP-side restore,
 /// not an nRF bootloader rollback: a dead application may ignore DFU entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -304,7 +310,7 @@ impl Trial {
     pub fn tick(&mut self, now: u64, transfer: Phase) -> Option<TrialAction> {
         let began = *self.began.get_or_insert(now);
         match self.phase {
-            TrialPhase::Probing if now.saturating_sub(began) >= 5000 => {
+            TrialPhase::Probing if now.saturating_sub(began) >= PROBE_DEADLINE_MS => {
                 // After any main power cycle this build independently checks the
                 // companion again. Missing identity also gets one stock attempt.
                 self.phase = TrialPhase::Restoring;
@@ -502,15 +508,16 @@ mod tests {
 
         let mut missing = Trial::new();
         assert_eq!(missing.tick(1, Phase::Ready), Some(TrialAction::Probe));
-        missing.tick(5000, Phase::Ready);
+        missing.tick(10_000, Phase::Ready); // Later than stock's own first answer.
+        missing.tick(30_000, Phase::Ready);
         assert_eq!(missing.phase, TrialPhase::Probing);
-        assert_eq!(missing.tick(5001, Phase::Ready), Some(TrialAction::Restore));
-        assert_eq!(missing.tick(5002, Phase::Enter), None);
+        assert_eq!(missing.tick(30_001, Phase::Ready), Some(TrialAction::Restore));
+        assert_eq!(missing.tick(30_002, Phase::Enter), None);
         assert_eq!(
-            missing.tick(30_000, Phase::Complete),
+            missing.tick(60_000, Phase::Complete),
             Some(TrialAction::Probe)
         );
-        assert_eq!(missing.tick(40_000, Phase::Complete), None);
+        assert_eq!(missing.tick(70_000, Phase::Complete), None);
         assert_eq!(missing.phase, TrialPhase::Failed);
     }
 

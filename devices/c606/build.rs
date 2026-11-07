@@ -37,6 +37,16 @@ fn main() {
         // One character of the descriptor's build date ("...14:38:24" -> 25):
         // data no code reads, so only a whole-image integrity check can object.
         Some("date") => Some(patched(&image, 0x47b, b'4', b'5')),
+        // The date patch with the descriptor word re-solved so a reflected,
+        // word-swapped CRC-32 (poly 0x6939cabd, init 0) over the whole image
+        // stays 0x4921af60, the value both vendor images share. Tests the
+        // one residue-scheme candidate the polynomial GCD search produced.
+        Some("residue") => {
+            let mut candidate = patched(&image, 0x47b, b'4', b'5');
+            assert_eq!(&candidate[0x404..0x408], &[0x65, 0xc5, 0x2c, 0x62]);
+            candidate[0x404..0x408].copy_from_slice(&[0x88, 0x54, 0xe7, 0x59]);
+            Some(candidate)
+        }
         // Unmodified older vendor release: does the loader take any intact
         // vendor image, including a downgrade?
         Some("old") => Some(decode(
@@ -45,7 +55,9 @@ fn main() {
             "756c7f25a0fbfe908a4ce52ed16d409807cd4dcb6915ee6b1be8e1e5ba313b6b",
             "",
         )),
-        Some(other) => panic!("unknown CYCLING_COMPANION_TRIAL={other}: identity, date or old"),
+        Some(other) => {
+            panic!("unknown CYCLING_COMPANION_TRIAL={other}: identity, date, residue or old")
+        }
     };
     if let Some(candidate) = candidate {
         std::fs::write(output.join("companion-trial.bin"), candidate).unwrap();

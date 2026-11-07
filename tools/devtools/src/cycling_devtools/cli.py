@@ -41,6 +41,12 @@ def task(name, help, *steps, needs=(), alias=None):
 TASKS = [
     task('build', 'Build C606 firmware and its application image', 'bash devices/c606/build.sh'),
     task(
+        'companion-update-check',
+        'Compare the companion sender against private stock frames (CYCLING_COMPANION_DECODED and CYCLING_COMPANION_VECTORS)',
+        'cargo test -p c606-firmware --locked --no-default-features companion -- --include-ignored --nocapture',
+        'python -m pytest -q tools/devtools/tests/test_companion_update.py',
+    ),
+    task(
         'build-maintenance',
         'Build the MMC maintenance image (binary USB protocol, no console) into .local/cycling.bin',
         'bash devices/c606/build.sh maintenance',

@@ -71,3 +71,7 @@ Long presses, other event words, combinations and power control remain unverifie
 
 Host regression tests retain CRC, fragmented/corrupted-frame and resynchronization
 coverage. Raw captures and physiological observations stay private.
+
+The subsequent [companion update experiment](companion-update.md) records the
+stock update protocol, a same-version hardware transfer, its automatic main
+power cycle, and the remaining limits on custom-firmware recovery.

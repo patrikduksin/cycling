@@ -98,6 +98,7 @@ pub struct Decoder {
     len: usize,
     pub valid_frames: u32,
     pub bad_crc: u32,
+    update_replies: bool,
 }
 impl Default for Decoder {
     fn default() -> Self {
@@ -106,10 +107,19 @@ impl Default for Decoder {
             len: 0,
             valid_frames: 0,
             bad_crc: 0,
+            update_replies: false,
         }
     }
 }
 impl Decoder {
+    /// Stock's updater does not constrain envelope byte 3. Limit that
+    /// compatibility to the exclusive companion update session.
+    pub fn set_update_replies(&mut self, enabled: bool) {
+        if self.update_replies != enabled {
+            self.reset();
+        }
+        self.update_replies = enabled;
+    }
     pub fn reset(&mut self) {
         self.len = 0;
     }
@@ -139,7 +149,10 @@ impl Decoder {
             if self.len < 4 {
                 return None;
             }
-            if !(4..=252).contains(&self.bytes[1]) || self.bytes[2..4] != [0x6f, 0xf1] {
+            if !(4..=252).contains(&self.bytes[1])
+                || self.bytes[2] != 0x6f
+                || (!self.update_replies && self.bytes[3] != 0xf1)
+            {
                 self.discard(1);
                 continue;
             }
@@ -298,6 +311,24 @@ mod tests {
     #[test]
     fn standard_crc_vector() {
         assert_eq!(crc16(b"123456789"), 0x31c3);
+    }
+    #[test]
+    fn bootloader_reply_direction_is_relaxed_only_during_update() {
+        let mut reply = command(1, [0x24, 1, 0xff, 0, 0, 0, 0xff, 0xff]);
+        reply[3] = 0x6f;
+        reply[4] = 5;
+        let crc = crc16(&reply[..14]);
+        reply[14..].copy_from_slice(&crc.to_le_bytes());
+        let mut decoder = Decoder::default();
+        assert!(reply.iter().all(|b| decoder.push_frame(*b).is_none()));
+        decoder.set_update_replies(true);
+        assert!(reply.iter().find_map(|b| decoder.push_frame(*b)).is_some());
+        reply[11] ^= 1;
+        assert!(reply.iter().all(|b| decoder.push_frame(*b).is_none()));
+        assert_eq!(decoder.bad_crc, 1);
+        decoder.set_update_replies(false);
+        reply[11] ^= 1;
+        assert!(reply.iter().all(|b| decoder.push_frame(*b).is_none()));
     }
     #[test]
     fn unknown_button_codes_remain_counted_for_investigation() {

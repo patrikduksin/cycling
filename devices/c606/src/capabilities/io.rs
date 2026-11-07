@@ -159,6 +159,7 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
             last_rx = now;
         }
         let errors = counters.errors();
+        decoder.set_update_replies(crate::drivers::companion_uart::updating());
         if errors != state.uart_errors {
             let _ = edge(now, Input::Cancel);
             contact.cancel(now);
@@ -177,6 +178,14 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
                     contact.cancel(now);
                     return;
                 };
+                super::probe::observe(frame.as_bytes(), now);
+                #[cfg(companion_update)]
+                {
+                    crate::drivers::companion_uart::update_reply(frame.as_bytes(), now);
+                    if crate::drivers::companion_uart::updating() {
+                        return;
+                    }
+                }
                 if let Some(payload) = frame.identity_reply() {
                     super::sensors::identity_reply(payload, now);
                 }
@@ -213,10 +222,14 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
         );
         // Startup compares fault counts between ticks: give it this tick's,
         // counted together with the framing losses decoded above.
-        super::sensors::tick(now, state.uart_errors.saturating_add(decoder.bad_crc));
-        super::ant::tick(now);
-        super::sound::tick(now);
-        super::position_control::tick(now);
+        #[cfg(companion_update)]
+        crate::drivers::companion_uart::update_tick(now);
+        if !crate::drivers::companion_uart::updating() {
+            super::sensors::tick(now, state.uart_errors.saturating_add(decoder.bad_crc));
+            super::ant::tick(now);
+            super::sound::tick(now);
+            super::position_control::tick(now);
+        }
         state.companion_valid = decoder.valid_frames;
         state.companion_bad_crc = decoder.bad_crc;
         let was_available = state.touch_available;

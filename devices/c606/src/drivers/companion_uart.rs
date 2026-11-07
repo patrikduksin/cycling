@@ -41,7 +41,38 @@ struct State {
     uart: Option<Uart<'static, Blocking>>,
     ring: LossRing<CAPACITY, 0xa5>,
     counters: Counters,
+    #[cfg(companion_update)]
+    update: Update,
 }
+
+#[cfg(companion_update)]
+struct Update {
+    session: super::companion_update::Session,
+    pending: Option<(super::companion_update::Packet, usize, u64)>,
+    #[cfg(companion_trial)]
+    trial: super::companion_update::Trial,
+    #[cfg(companion_trial)]
+    trial_image: bool,
+    #[cfg(companion_trial)]
+    probe_packet: bool,
+}
+
+#[cfg(companion_update)]
+#[cfg(companion_trial)]
+static TRIAL_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/companion-trial.bin"));
+
+#[cfg(companion_update)]
+impl Update {
+    fn exclusive(&self) -> bool {
+        #[cfg(companion_trial)]
+        return self.trial.exclusive();
+        #[cfg(not(companion_trial))]
+        return self.session.phase != super::companion_update::Phase::Ready;
+    }
+}
+
+#[cfg(companion_update)]
+static STOCK_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/companion-stock.bin"));
 
 static STATE: Mutex<RefCell<State>> = Mutex::new(RefCell::new(State {
     uart: None,
@@ -53,6 +84,17 @@ static STATE: Mutex<RefCell<State>> = Mutex::new(RefCell::new(State {
         frame_errors: 0,
         parity_errors: 0,
         other_errors: 0,
+    },
+    #[cfg(companion_update)]
+    update: Update {
+        session: super::companion_update::Session::new(),
+        pending: None,
+        #[cfg(companion_trial)]
+        trial: super::companion_update::Trial::new(),
+        #[cfg(companion_trial)]
+        trial_image: false,
+        #[cfg(companion_trial)]
+        probe_packet: false,
     },
 }));
 
@@ -85,6 +127,10 @@ pub fn init(uart: UART2<'static>, rx: GPIO41<'static>, tx: GPIO42<'static>) -> R
 pub fn send(frame: &[u8; 16]) -> Result<(), ()> {
     critical_section::with(|cs| {
         let mut state = STATE.borrow_ref_mut(cs);
+        #[cfg(companion_update)]
+        if state.update.exclusive() {
+            return Err(());
+        }
         let uart = state.uart.as_mut().ok_or(())?;
         if !uart.write_ready() {
             return Err(());
@@ -94,6 +140,151 @@ pub fn send(frame: &[u8; 16]) -> Result<(), ()> {
             _ => Err(()),
         }
     })
+}
+
+/// Exclusive ownership persists through success or failure, until the main CPU
+/// is deliberately restored/rebooted. Normal traffic cannot reach the loader.
+pub fn updating() -> bool {
+    #[cfg(companion_update)]
+    return critical_section::with(|cs| STATE.borrow_ref(cs).update.exclusive());
+    #[cfg(not(companion_update))]
+    false
+}
+
+#[cfg(companion_update)]
+pub fn start_update() -> bool {
+    #[cfg(companion_trial)]
+    return false;
+    #[cfg(not(companion_trial))]
+    critical_section::with(|cs| {
+        let mut state = STATE.borrow_ref_mut(cs);
+        state.uart.is_some() && state.update.session.start(STOCK_IMAGE.len())
+    })
+}
+
+#[cfg(companion_trial)]
+pub fn start_trial() -> bool {
+    critical_section::with(|cs| {
+        let mut state = STATE.borrow_ref_mut(cs);
+        if state.uart.is_none()
+            || state.update.pending.is_some()
+            || state.update.session.phase != super::companion_update::Phase::Ready
+            || !state.update.trial.start()
+        {
+            return false;
+        }
+        state.update.trial_image = true;
+        state.update.session.start(TRIAL_IMAGE.len())
+    })
+}
+
+#[cfg(companion_update)]
+pub fn update_status(output: &mut impl core::fmt::Write) {
+    critical_section::with(|cs| {
+        let state = STATE.borrow_ref(cs);
+        let update = &state.update;
+        let _ = write!(
+            output,
+            "phase={:?} retries={} packets={} tx_pending={} image=1.902 bytes={}",
+            update.session.phase,
+            update.session.retries,
+            update.session.count(),
+            update.pending.is_some(),
+            STOCK_IMAGE.len()
+        );
+        #[cfg(companion_trial)]
+        let _ = write!(
+            output,
+            " trial={:?} custom_seen={} stock_seen={} target={}",
+            update.trial.phase,
+            update.trial.custom_seen,
+            update.trial.stock_seen,
+            if update.trial_image { "trial" } else { "stock" }
+        );
+    });
+}
+
+#[cfg(companion_update)]
+pub fn update_reply(frame: &[u8], _now: u64) {
+    critical_section::with(|cs| {
+        let mut state = STATE.borrow_ref_mut(cs);
+        if state.update.pending.is_none() {
+            #[cfg(companion_trial)]
+            state.update.trial.reply(frame, _now);
+            state.update.session.reply(frame);
+        }
+    });
+}
+
+#[cfg(companion_update)]
+pub fn update_tick(now: u64) {
+    critical_section::with(|cs| {
+        let mut state = STATE.borrow_ref_mut(cs);
+        let State { uart, update, .. } = &mut *state;
+        #[cfg(companion_trial)]
+        if update.pending.is_none() {
+            use super::companion_update::{Packet, Session, TrialAction};
+            match update.trial.tick(now, update.session.phase) {
+                Some(TrialAction::Restore) => {
+                    update.trial_image = false;
+                    update.probe_packet = false;
+                    update.session = Session::new();
+                    let _ = update.session.start(STOCK_IMAGE.len());
+                }
+                Some(TrialAction::Probe) => {
+                    update.probe_packet = true;
+                    update.pending = Some((Packet::identity(), 0, now));
+                }
+                None => {}
+            }
+        }
+        if update.pending.is_none() && update.session.due(now) {
+            #[cfg(companion_trial)]
+            let image = if update.trial_image {
+                TRIAL_IMAGE
+            } else {
+                STOCK_IMAGE
+            };
+            #[cfg(not(companion_trial))]
+            let image = STOCK_IMAGE;
+            update.pending = update.session.packet(image).map(|p| (p, 0, now));
+            #[cfg(companion_trial)]
+            {
+                update.probe_packet = false;
+            }
+        }
+        if let Some((packet, offset, began)) = &mut update.pending {
+            let Some(uart) = uart.as_mut() else {
+                update.session.fail();
+                update.pending = None;
+                return;
+            };
+            // HAL write is partial; never wait inside the critical section for
+            // the 141-byte packet to fit the 128-byte FIFO.
+            if now.saturating_sub(*began) >= 1000 {
+                update.session.fail();
+                update.pending = None;
+            } else if uart.write_ready() {
+                match uart.write(&packet.as_bytes()[*offset..]) {
+                    Ok(n) if n > 0 => {
+                        *offset += n;
+                        if *offset == packet.as_bytes().len() {
+                            update.pending = None;
+                            #[cfg(companion_trial)]
+                            if update.probe_packet {
+                                update.trial.probe_sent(now);
+                                update.probe_packet = false;
+                            }
+                        }
+                    }
+                    _ => {
+                        update.session.fail();
+                        update.pending = None;
+                    }
+                }
+            }
+        }
+    });
 }
 
 pub fn drain(output: &mut [u8]) -> (usize, Counters) {

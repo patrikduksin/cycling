@@ -86,6 +86,15 @@ pub fn execute(
     } = devices;
     let mut output = Text::new();
     let mut status = "OK";
+    if crate::device::drivers::companion_uart::updating()
+        && !matches!(
+            request.command,
+            Command::Test(41 | 43) | Command::Info | Command::Status
+        )
+    {
+        terminal.reply(request.id, "BUSY", "companion update owns the device", now);
+        return;
+    }
     let started = embassy_time::Instant::now();
     let readiness = power.status();
     if !readiness.ready && !firmware_console::protocol::admitted_while_not_ready(request.command) {
@@ -566,6 +575,44 @@ pub fn execute(
                 diagnostics.stall();
                 log::info!(target:"diagnostic","executor stall ended");
                 status = "ACCEPTED";
+            }
+            40 => {
+                let frame = crate::device::drivers::companion::command(
+                    1,
+                    [0x24, 0x01, 0xff, 0xff, 0x00, 0xff, 0xff, 0xff],
+                );
+                status = if crate::device::drivers::companion_uart::send(&frame).is_ok() {
+                    "ACCEPTED"
+                } else {
+                    "FAILED"
+                };
+            }
+            41 => crate::device::capabilities::probe::write(&mut output),
+            #[cfg(companion_update)]
+            42 => {
+                let power = crate::device::capabilities::power::status();
+                status = if power.ready
+                    && power.operation.is_none()
+                    && crate::device::drivers::companion_uart::start_update()
+                {
+                    "ACCEPTED"
+                } else {
+                    "BUSY"
+                };
+            }
+            #[cfg(companion_update)]
+            43 => crate::device::drivers::companion_uart::update_status(&mut output),
+            #[cfg(companion_trial)]
+            44 => {
+                let power = crate::device::capabilities::power::status();
+                status = if power.ready
+                    && power.operation.is_none()
+                    && crate::device::drivers::companion_uart::start_trial()
+                {
+                    "ACCEPTED"
+                } else {
+                    "BUSY"
+                };
             }
             11 => {
                 terminal.schedule_reboot(now, true);

@@ -117,6 +117,9 @@ pub fn request(operation: Operation, now: u64) -> Result<(), Error> {
     request_after(operation, 0, now)
 }
 pub fn request_after(operation: Operation, delay_ms: u32, now: u64) -> Result<(), Error> {
+    if crate::drivers::companion_uart::updating() {
+        return Err(Error::Unavailable);
+    }
     if delay_ms > device_api::power::MAX_DELAY_MS
         || (delay_ms != 0 && operation != Operation::Shutdown)
     {

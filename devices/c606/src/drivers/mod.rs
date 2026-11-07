@@ -9,6 +9,7 @@ pub mod companion_sensors;
 pub mod companion_startup;
 #[cfg(feature = "hardware")]
 pub mod companion_uart;
+pub mod companion_update;
 #[cfg(feature = "hardware")]
 pub mod crash_rtc;
 #[cfg(feature = "hardware")]

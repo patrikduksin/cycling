@@ -86,9 +86,20 @@ pub struct Listen {
 }
 
 static LISTEN: Mutex<RefCell<Listen>> = Mutex::new(RefCell::new(Listen {
-    sleeps: 0, gpio_wakes: 0, timer_wakes: 0, other_wakes: 0, rejected: 0, timed_out: 0,
-    immediate_low: 0, slept_us: 0, wall_us: 0, longest_sleep_us: 0,
-    bytes: 0, valid_frames: 0, bad_crc: 0, uart_errors: 0,
+    sleeps: 0,
+    gpio_wakes: 0,
+    timer_wakes: 0,
+    other_wakes: 0,
+    rejected: 0,
+    timed_out: 0,
+    immediate_low: 0,
+    slept_us: 0,
+    wall_us: 0,
+    longest_sleep_us: 0,
+    bytes: 0,
+    valid_frames: 0,
+    bad_crc: 0,
+    uart_errors: 0,
 }));
 
 pub fn listen_summary() -> Listen {
@@ -127,10 +138,8 @@ pub fn enter(after_wake: impl FnOnce()) -> Result<Observation, Error> {
             let timer = TimerWakeupSource::new(step);
             let gpio = esp_hal::rtc_cntl::sleep::GpioWakeupSource::new();
             rx_wake(true);
-            let status = rtc.sleep_light_with_status(
-                &[&timer, &gpio],
-                Duration::from_secs(LISTEN_SECONDS + 2),
-            );
+            let status = rtc
+                .sleep_light_with_status(&[&timer, &gpio], Duration::from_secs(LISTEN_SECONDS + 2));
             rx_wake(false);
             Ok::<_, Error>(status)
         })?;
@@ -169,12 +178,19 @@ pub fn enter(after_wake: impl FnOnce()) -> Result<Observation, Error> {
     listen.valid_frames = decoder.valid_frames;
     listen.bad_crc = decoder.bad_crc;
     listen.uart_errors = crate::drivers::companion_uart::drain(&mut []).1.errors() - errors_before;
-    SLEPT_US.fetch_add(listen.slept_us.min(u64::from(u32::MAX)) as u32, Ordering::Relaxed);
+    SLEPT_US.fetch_add(
+        listen.slept_us.min(u64::from(u32::MAX)) as u32,
+        Ordering::Relaxed,
+    );
     critical_section::with(|cs| *LISTEN.borrow_ref_mut(cs) = listen);
     after_wake();
     log::info!(target: "power", "sleep listen {:?}", listen);
     Ok(Observation {
-        outcome: if listen.timed_out == 0 { Outcome::TimerWake } else { Outcome::TimedOut },
+        outcome: if listen.timed_out == 0 {
+            Outcome::TimerWake
+        } else {
+            Outcome::TimedOut
+        },
         rtc_elapsed_us: listen.wall_us,
         uptime_elapsed_us: listen.wall_us,
         wake_bits: last_cause,

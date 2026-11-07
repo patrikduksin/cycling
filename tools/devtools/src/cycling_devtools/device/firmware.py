@@ -527,7 +527,20 @@ def main():
     )
     parser.add_argument('snapshot', nargs='?', type=Path, help='restore-owned: a saved owned-*.bin snapshot')
     parser.add_argument('--confirm-restore', action='store_true', help='stock: skip the interactive confirmation')
+    parser.add_argument(
+        '--companion-update',
+        action='store_true',
+        help='flash: after boot, run the embedded same-version companion update experiment',
+    )
+    parser.add_argument(
+        '--companion-trial',
+        action='store_true',
+        help='flash: run the fixed companion marker trial with timed stock restoration',
+    )
     args = parser.parse_args()
+    require(not args.companion_trial or args.action == 'flash', '--companion-trial requires flash')
+    require(not (args.companion_trial and args.companion_update), 'choose one companion experiment')
+    require(not args.companion_update or args.action == 'flash', '--companion-update requires flash')
     port = selected_port(parser, args.port)
 
     def resolve():
@@ -599,6 +612,8 @@ def main():
         maintenance=speaks_maintenance(image),
         previous_maintenance=speaks_maintenance(running_header),
     )
+    if args.companion_update or args.companion_trial:
+        return resolve(), args.companion_trial
 
 
 def run_locked():
@@ -608,7 +623,12 @@ def run_locked():
     except BlockingIOError:
         raise RuntimeError('Another cycling device task is using USB; wait until it finishes') from None
     with lock:
-        main()
+        companion_port = main()
+    if companion_port:
+        from cycling_devtools.device.companion_update import run, run_trial
+
+        port, trial = companion_port
+        (run_trial if trial else run)(port)
 
 
 if __name__ == '__main__':

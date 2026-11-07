@@ -6,6 +6,7 @@ ignored `.local/` (see [AGENTS.md](../../../AGENTS.md)).
 
 - [Hardware and fitted-part uncertainty](hardware.md)
 - [Companion wire protocol](companion.md)
+- [Motion wake feasibility and listening-sleep observations](motion-wake.md)
 - [Companion update experiment](companion-update.md)
 - [Guarded custom companion trial and observed limits](companion-custom-trial.md)
 - [Companion recovery sources and closed-case limits](companion-recovery-sources.md)

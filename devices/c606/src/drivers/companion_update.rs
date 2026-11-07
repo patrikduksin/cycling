@@ -227,6 +227,8 @@ pub struct Trial {
     pub custom_seen: bool,
     /// Main uptime of the first custom identity answer in this boot.
     pub custom_at: Option<u64>,
+    /// Version bytes of that answer.
+    pub custom_version: [u8; 2],
     pub stock_seen: bool,
     began: Option<u64>,
     deadline: u64,
@@ -240,6 +242,7 @@ impl Trial {
             phase: TrialPhase::Probing,
             custom_seen: false,
             custom_at: None,
+            custom_version: [0; 2],
             stock_seen: false,
             began: None,
             deadline: 0,
@@ -288,20 +291,25 @@ impl Trial {
         {
             return;
         }
-        let version = &frame[14..16];
-        if version == [2, 0xa3] {
-            self.custom_seen = true;
-            self.custom_at.get_or_insert(now);
-            if self.phase == TrialPhase::Probing {
-                self.phase = TrialPhase::Soak;
-                self.deadline = now.saturating_add(SOAK_FALLBACK_MS);
-            }
-        } else if version == [2, 0x13] {
+        let version = [frame[14], frame[15]];
+        if version == [2, 0x13] {
             self.stock_seen = true;
             if self.phase == TrialPhase::Probing {
                 self.phase = TrialPhase::Ready;
             } else if self.phase == TrialPhase::Restoring {
                 self.phase = TrialPhase::Restored;
+            }
+        } else {
+            // Any other answer is the candidate running: the marker patch, or
+            // an older vendor release with its own version.
+            self.custom_seen = true;
+            if self.custom_at.is_none() {
+                self.custom_at = Some(now);
+                self.custom_version = version;
+            }
+            if self.phase == TrialPhase::Probing {
+                self.phase = TrialPhase::Soak;
+                self.deadline = now.saturating_add(SOAK_FALLBACK_MS);
             }
         }
         self.probe_sent = None;
@@ -477,6 +485,7 @@ mod tests {
         t.reply(&identity(0xa3), 20_010);
         assert!(t.custom_seen);
         assert_eq!(t.custom_at, Some(20_010));
+        assert_eq!(t.custom_version, [2, 0xa3]);
         t.tick(319_999, Phase::Complete);
         assert_eq!(t.phase, TrialPhase::Soak);
         assert_eq!(t.tick(320_000, Phase::Complete), Some(TrialAction::Restore));
@@ -544,6 +553,17 @@ mod tests {
             Some(TrialAction::Restore)
         );
         assert!(!rebooted.acknowledge());
+    }
+
+    #[test]
+    fn companion_trial_counts_any_non_stock_version_as_the_candidate() {
+        let mut t = Trial::new();
+        assert_eq!(t.tick(0, Phase::Ready), Some(TrialAction::Probe));
+        t.probe_sent(0);
+        t.reply(&identity(0x0c), 10);
+        assert!(t.custom_seen);
+        assert_eq!(t.custom_version, [2, 0x0c]);
+        assert_eq!(t.phase, TrialPhase::Soak);
     }
 
     #[test]

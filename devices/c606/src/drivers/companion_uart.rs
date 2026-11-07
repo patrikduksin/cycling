@@ -201,10 +201,12 @@ pub fn update_status(output: &mut impl core::fmt::Write) {
         #[cfg(companion_trial)]
         let _ = write!(
             output,
-            " trial={:?} custom_seen={} custom_at={} stock_seen={} target={}",
+            " trial={:?} custom_seen={} custom_at={} custom_version={}.{} stock_seen={} target={}",
             update.trial.phase,
             update.trial.custom_seen,
             update.trial.custom_at.map_or(-1, |at| at as i64),
+            update.trial.custom_version[0],
+            update.trial.custom_version[1],
             update.trial.stock_seen,
             if update.trial_image { "trial" } else { "stock" }
         );

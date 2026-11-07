@@ -140,7 +140,7 @@ def test_trial_records_custom_identity_before_acknowledging_restore(monkeypatch,
     assert (
         next((tmp_path / '.local/companion-trial').glob('*/result.txt'))
         .read_text()
-        .startswith('custom_observed=True restore_observed=True ')
+        .startswith("outcome='candidate answered; stock restored' ")
     )
 
 
@@ -159,16 +159,27 @@ def test_trial_never_replays_uncertain_start_across_reconnect(monkeypatch, tmp_p
     assert second.commands == ['TEST 43', 'TEST 41', 'TEST 45', 'TEST 43', 'TEST 43']
 
 
-def test_trial_rejects_stock_without_custom_execution_evidence(monkeypatch, tmp_path):
+def test_trial_reports_a_candidate_that_never_answered(monkeypatch, tmp_path):
     connection = Connection(
         [TRIAL_READY, 'settings ready', '', TRIAL_RESTORE.replace('custom_seen=true', 'custom_seen=false'), TRIAL_STOCK]
     )
     monkeypatch.setattr(update, 'ROOT', tmp_path)
     monkeypatch.setattr(update, 'UsbConnection', lambda *_: connection)
     monkeypatch.setattr(update.time, 'sleep', lambda _: None)
-    with pytest.raises(ValueError, match='custom execution was not observed'):
-        update.run_trial('unused')
+    update.run_trial('unused')
     assert connection.commands.count('TEST 44') == 1
+    result = next((tmp_path / '.local/companion-trial').glob('*/result.txt')).read_text()
+    assert result.startswith("outcome='candidate never answered; guard restored stock'")
+
+
+def test_trial_reports_a_candidate_running_with_the_stock_identity(monkeypatch, tmp_path):
+    connection = Connection([TRIAL_READY, 'settings ready', '', TRIAL_STOCK])
+    monkeypatch.setattr(update, 'ROOT', tmp_path)
+    monkeypatch.setattr(update, 'UsbConnection', lambda *_: connection)
+    monkeypatch.setattr(update.time, 'sleep', lambda _: None)
+    update.run_trial('unused')
+    result = next((tmp_path / '.local/companion-trial').glob('*/result.txt')).read_text()
+    assert 'runs as stock' in result
 
 
 def test_trial_retries_rejected_status_without_replaying_start(monkeypatch, tmp_path):

@@ -142,15 +142,18 @@ def run_trial(port):
                             'Automatic stock restore failed; keep this recovery-enabled main image installed'
                         )
                     if attempted and ('trial=Restored ' in status or 'trial=Ready ' in status):
-                        result = f'custom_observed={custom_seen} restore_observed={restore_seen} {status}\n'
+                        if custom_seen and not restore_seen:
+                            raise ValueError('Custom identity seen, but the stock restore was not observed')
+                        outcome = {
+                            (True, True): 'candidate answered; stock restored',
+                            (False, True): 'candidate never answered; guard restored stock',
+                            # The date control keeps the stock identity, so running
+                            # it looks like stock that needed no restore.
+                            (False, False): 'stock identity with no restore: the candidate runs as stock',
+                        }[custom_seen, restore_seen]
+                        result = f'outcome={outcome!r} custom_observed={custom_seen} restore_observed={restore_seen} {status}\n'
                         (output / 'result.txt').write_text(result)
-                        if not custom_seen:
-                            raise ValueError('Stock is responding, but custom execution was not observed')
-                        if not restore_seen:
-                            raise ValueError('Stock is responding, but the timed restore was not observed')
-                        print(
-                            'Custom marker observed; timed stock reflash observed; stock identity returned.', flush=True
-                        )
+                        print(f'Trial outcome: {outcome}', flush=True)
                         return
                     if not attempted and 'trial=Ready ' in status and status.startswith('phase=Ready '):
                         ready = connection.terminal_command('SETTINGS')

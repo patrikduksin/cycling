@@ -4,7 +4,7 @@ Any x86_64 or aarch64 Linux machine with Nix becomes a cycling development
 machine. [flake.nix](../flake.nix) and its lock own every tool version, and the
 dev shell's `cycling` command runs every task
 ([cli.py](../tools/devtools/src/cycling_devtools/cli.py); `cycling` alone lists
-them). Agents work on a fast remote machine (omni-devbox) while the C606 stays
+them). Agents work on a fast remote machine (fleet-hub) while the C606 stays
 plugged into another one; only the image and text cross the network.
 
 ## Set up a machine
@@ -25,7 +25,7 @@ which also keeps it from Nix garbage collection (`.local/dev-shell`).
 
 What differs between machines belongs to the machine, not the repository: set
 it in the environment, from the machine's own configuration. When the C606 is
-on another machine, `CYCLING_DEVICE_HOST` names its ssh alias; omni-devbox sets
+on another machine, `CYCLING_DEVICE_HOST` names its ssh alias; fleet-hub sets
 `CYCLING_DEVICE_HOST=c606-host` in its NixOS configuration.
 
 Claude Code installs the pstack plugin the first time it opens a trusted
@@ -78,7 +78,7 @@ browser re-check of the default `check` rule:
 ]
 ```
 
-omni-devbox's `~/.ssh/config` names the laptop `c606-host` (its MagicDNS
+fleet-hub's `~/.ssh/config` names the laptop `c606-host` (its MagicDNS
 name and user, no keys).
 
 `cycling device <task> [args]` snapshots this checkout (uncommitted and

@@ -50,8 +50,16 @@ pin at once and belongs in its own PR with `cycling verify` results.
 ## Fast builds
 
 - `RUSTC_WRAPPER=sccache` with one cache per machine (`~/.cache/sccache`,
-  50 GB), shared by every worktree: a new worktree compiles dependencies from
-  cache. Override `SCCACHE_DIR` or `SCCACHE_CACHE_SIZE` in the environment.
+  50 GB), shared by every worktree. Override `SCCACHE_DIR` or
+  `SCCACHE_CACHE_SIZE` in the environment. It caches library dependencies
+  only. A new worktree still compiles every workspace crate, build script,
+  proc macro and test binary. It also compiles crates that `include!` a build
+  script's output (serde, esp-hal) and the crates above them, because the
+  worktree's `OUT_DIR` path is part of their key. The first `cycling verify`
+  in a new worktree takes about 130 s, against about 80 s warm.
+- sccache keys each compile on the working directory and on every `CARGO_*`
+  variable. Pass `--target-dir` to cargo: an exported absolute
+  `CARGO_TARGET_DIR` stops every other worktree from reusing those builds.
 - Target dirs stay per worktree, so parallel agents never queue on one cargo
   lock. `CYCLING_FW_TARGET_ROOT` moves the firmware target dirs elsewhere.
 - Firmware always builds release (fat LTO). A lighter profile was measured and

@@ -6,7 +6,7 @@
   esp-rust,
 }:
 let
-  rust = pkgs.rust-bin.stable."1.98.1".default.override {
+  rust = pkgs.rust-bin.stable."1.100.0".default.override {
     extensions = [
       "rust-src"
       "clippy"

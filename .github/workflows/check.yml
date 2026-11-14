@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: cachix/install-nix-action@v31.11.2
+      - uses: cachix/install-nix-action@v31.11.5
       - run: nix develop -c cycling test
       - run: nix develop -c cycling check
       - run: nix develop -c cycling simulate
@@ -33,5 +33,5 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: cachix/install-nix-action@v31.11.2
+      - uses: cachix/install-nix-action@v31.11.5
       - run: nix develop -c cycling build

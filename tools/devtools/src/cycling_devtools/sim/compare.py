@@ -6,13 +6,7 @@ cargo reuse the base's test binary for the current checkout afterwards, because
 workspace artifacts are keyed by package, not by checkout path, and freshness by
 file times. The separate directory stays incremental from run to run. Checkpoint
 screenshots are paired by scenario and checkpoint name and compared by pixels,
-so a reviewer sees Before | After only for screens that changed. Both sides run
-without video; afterwards only the scenarios worth watching run again with it,
-by exact test name: new ones, and with `--video` those whose screens changed.
-
-A complete base run is kept in the primary checkout's `.local/sim/base-cache`,
-keyed by base commit and filter, so later comparisons against the same commit
-from any worktree skip the base checkout and build.
+so a reviewer sees Before | After only for screens that changed.
 """
 
 import argparse
@@ -41,11 +35,9 @@ from cycling_devtools.workspace import ROOT, main_checkout
 
 OUT = ROOT / '.local/sim/compare'
 CACHE = main_checkout() / '.local/sim/base-cache'
-# About 70 MB each.
 CACHE_ENTRIES = 4
 STAGING = '.staging-'
-# A staging directory this old belongs to a run that was killed.
-STALE_S = 3600
+ABANDONED_STAGING_S = 3600
 COMMAND = [
     'cargo',
     'test',
@@ -254,9 +246,6 @@ def base_target(target):
 
 @dataclass(frozen=True)
 class Run:
-    """The scenarios of the checkout at `source`, recorded into `artifacts`.
-    `tests` are the cargo test arguments that select them."""
-
     source: Path
     artifacts: Path
     target: Path
@@ -268,32 +257,34 @@ def selection(name_filter):
     return (name_filter,) if name_filter else ()
 
 
+def test_of_session(name):
+    return re.sub(r'-\d+$', '', name)
+
+
 def exact(run_dir, names):
-    """cargo test arguments that run only the tests that recorded `names` in
-    `run_dir`. Some tests sit in modules, and a test that records more than one
-    session names the others `<test>-<n>`."""
     log = (run_dir / 'cargo.log').read_text(errors='replace')
     paths = {path.rsplit('::', 1)[-1]: path for path in TEST.findall(log)}
-    tests = (re.sub(r'-\d+$', '', name) for name in names)
+    tests = (test_of_session(name) for name in names)
     return ('--', '--exact', *dict.fromkeys(paths.get(test, test) for test in tests))
 
 
 def scenarios(*runs):
-    """Run each of `runs` into its artifacts at the same time, keeping cargo's
-    log, and return cargo's exit statuses. cargo and its tests never outlive the
-    call, so they cannot write into a worktree that is being removed."""
     processes, pumps, done = [], [], queue.Queue()
     try:
         for run in runs:
             shutil.rmtree(run.artifacts, ignore_errors=True)
             run.artifacts.mkdir(parents=True)
-            env = {**os.environ, 'SIM_ARTIFACTS': str(run.artifacts), 'CARGO_TARGET_DIR': str(run.target)}
+            # Not CARGO_TARGET_DIR: sccache keys on every CARGO_* variable, so an
+            # absolute path there would keep each worktree's dependency builds apart.
+            env = {k: v for k, v in os.environ.items() if k != 'CARGO_TARGET_DIR'} | {
+                'SIM_ARTIFACTS': str(run.artifacts)
+            }
             env.pop('SIM_VIDEO', None)
             if run.video:
                 env['SIM_VIDEO'] = '1'
             processes.append(
                 subprocess.Popen(
-                    [*COMMAND, *run.tests],
+                    [*COMMAND, '--target-dir', str(run.target), *run.tests],
                     cwd=run.source,
                     env=env,
                     stdout=subprocess.PIPE,
@@ -317,7 +308,6 @@ def scenarios(*runs):
 
 
 def echo(process, artifacts, prefix, done):
-    """Copy cargo's output to its log and to stdout, then report how that went."""
     try:
         with (artifacts / 'cargo.log').open('w') as log:
             for line in process.stdout:
@@ -356,20 +346,16 @@ def incomplete(directory, status):
     return None
 
 
-def without_videos(results):
-    """Drop videos a base recorder from before SIM_VIDEO wrote anyway, so only
-    re-run scenarios show one."""
+def drop_unrequested_videos(results):
     for result in results:
         result['files'] = [f for f in result['files'] if not f.startswith('video.')]
     return results
 
 
-def video_scenarios(pairs, before, after, changed):
-    """(after, before) scenarios to re-run with video: new ones on the after
-    side, and with `changed` those whose screens changed, on both sides."""
+def video_scenarios(pairs, before, after, with_changed):
     old, current = {r['name'] for r in before}, {r['name'] for r in after}
     new = [r['name'] for r in after if r['name'] not in old]
-    if not changed:
+    if not with_changed:
         return new, []
     both = old & current
     differ = list(dict.fromkeys(p.scenario for p in pairs if p.scenario in both and p.state != 'unchanged'))
@@ -377,8 +363,6 @@ def video_scenarios(pairs, before, after, changed):
 
 
 def record_videos(videos):
-    """Run each (run, results, names) at once and move the videos it recorded
-    for `names` beside their screens in `results`."""
     if not videos:
         return
     for (run, results, names), status in zip(videos, scenarios(*(run for run, _, _ in videos)), strict=True):
@@ -399,8 +383,6 @@ def cache_key(commit, name_filter):
 
 @contextmanager
 def cache_lock(kind):
-    """Readers share the lock; storing and evicting take it alone, so an entry
-    is never removed while another sim-compare copies it."""
     CACHE.mkdir(parents=True, exist_ok=True)
     with (CACHE / '.lock').open('a') as lock:
         fcntl.flock(lock, kind)
@@ -412,7 +394,6 @@ def copy_run(source, destination):
 
 
 def restore(key, directory):
-    """Replace `directory` with the cached base run for `key`, if there is one."""
     with cache_lock(fcntl.LOCK_SH):
         entry = CACHE / key
         if not entry.is_dir():
@@ -424,8 +405,6 @@ def restore(key, directory):
 
 
 def store(key, directory):
-    """Cache a complete base run. It is copied aside and renamed into place, so
-    an interrupted or concurrent run never leaves half an entry."""
     CACHE.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=STAGING, dir=CACHE))
     try:
@@ -441,15 +420,13 @@ def store(key, directory):
 
 
 def evict():
-    """Keep the most recently used entries; drop staging left by killed runs."""
     entries = [p for p in CACHE.iterdir() if p.is_dir() and not p.name.startswith('.')]
     entries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     for entry in entries[CACHE_ENTRIES:]:
         shutil.rmtree(entry, ignore_errors=True)
     for staging in CACHE.glob(f'{STAGING}*'):
-        # A live run removes its own staging without the lock.
         with suppress(FileNotFoundError):
-            if time.time() - staging.stat().st_mtime > STALE_S:
+            if time.time() - staging.stat().st_mtime > ABANDONED_STAGING_S:
                 shutil.rmtree(staging, ignore_errors=True)
 
 
@@ -498,7 +475,6 @@ def fetch_origin_main():
 
 
 def resolve_base(base):
-    """(ref, sha, subject) of the base. Without an explicit base, origin/main is fetched first."""
     if base is None:
         fetch_origin_main()
         base = DEFAULT_BASE
@@ -567,7 +543,10 @@ def main(argv=None):
             for problem in problems:
                 print(f'  {problem}', file=sys.stderr)
             return 1
-        before, after = without_videos(report.load(before_dir)), without_videos(report.load(after_dir))
+        before, after = (
+            drop_unrequested_videos(report.load(before_dir)),
+            drop_unrequested_videos(report.load(after_dir)),
+        )
         pairs = pair(before, after)
         after_videos, before_videos = video_scenarios(pairs, before, after, args.video)
         videos = []

@@ -184,7 +184,7 @@ impl Track<'_> {
 
 /// What a frame was filled from: refill it only when this changes, about
 /// once a second, not on every radar redraw.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Key {
     available: bool,
     crumbs: usize,
@@ -1462,7 +1462,7 @@ mod tests {
         }
     }
 
-    fn page<'a>(frame: Option<&'a Frame>) -> View<'a> {
+    fn page<'a>(frame: Option<(&'a Frame, Key)>) -> View<'a> {
         let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Map;
         view.radar_paired = true;
@@ -1476,7 +1476,7 @@ mod tests {
     fn every_state_lays_out_its_text() {
         let check = |track: &Track, want: &[&str], what: &str| {
             let frame = filled(track);
-            page(Some(&frame))
+            page(Some((&frame, track.key())))
                 .canvas()
                 .assert_laid_out(PAGE, want, what);
         };

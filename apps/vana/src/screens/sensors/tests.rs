@@ -1003,7 +1003,7 @@ fn painted_rows_match_the_per_pixel_reference() {
         let frame = menu.frame();
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
-                let (got, want) = (frame.pixel(x, y), frame.reference_pixel(x, y));
+                let (got, want) = (frame.pixel(x, y), frame.scene().reference_pixel(x, y));
                 assert_eq!(got, want, "{what} at {x},{y}: {got:#06x} != {want:#06x}");
             }
         }

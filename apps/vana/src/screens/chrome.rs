@@ -473,7 +473,7 @@ pub fn on_circle(cx: i32, cy: i32, radius: i32, turn: u16) -> (i32, i32) {
 /// An arc of a ring with round ends: VANA's shape for progress, charge and
 /// countdowns. Lengths are quarter pixels; the arc runs clockwise `sweep`
 /// `TURN`ths from `start`. A full sweep is a closed ring.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Ring {
     pub cx: i32,
     pub cy: i32,

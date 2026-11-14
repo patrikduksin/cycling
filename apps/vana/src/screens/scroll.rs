@@ -21,7 +21,7 @@ use core::ops::Range;
 pub const PAGE: usize = 1024;
 
 /// A column of equal cards: where each slot sits and which one a touch hits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Column {
     pub left: usize,
     pub right: usize,
@@ -59,7 +59,7 @@ impl Column {
 
 /// A band pinned at the viewport's top once the page has scrolled past
 /// `after`, as iOS folds a large title into its navigation bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Pin {
     pub after: i32,
     pub height: usize,
@@ -77,7 +77,7 @@ pub enum Press {
 }
 
 /// A page of cards seen through the screen rows `top..bottom`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Layout {
     pub top: usize,
     pub bottom: usize,

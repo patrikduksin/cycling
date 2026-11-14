@@ -5,10 +5,17 @@ fn case(name: &str) -> &'static shell_simulator::probe::Case {
 }
 
 #[test]
-fn a_still_page_submits_almost_only_identical_frames() {
+fn no_page_submits_a_frame_the_panel_already_shows() {
+    for case in &CASES {
+        let result = run(case, 10);
+        assert_eq!(result.identical(), 0, "{}", case.name);
+    }
+}
+
+#[test]
+fn a_still_page_submits_no_frame() {
     let result = run(case("settings (still)"), 30);
-    assert!(result.changes.len() >= 25, "{}", result.changes.len());
-    assert!(result.identical() + 1 >= result.changes.len());
+    assert!(result.changes.len() <= 1, "{}", result.changes.len());
 }
 
 #[test]

@@ -143,7 +143,7 @@ fn situation<'a>(view: &View<'a>) -> Situation<'a> {
 }
 
 /// What the climb page precomputes for one frame.
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 pub struct Frame {
     /// The chart's baseline row: `CHART_BOTTOM`, or `BARRED_BOTTOM` over a
     /// progress bar.
@@ -733,9 +733,10 @@ mod tests {
     fn assert_paints_reference(view: &View) {
         for y in 0..320 {
             let mut pixels = [0x5555; crate::screens::chrome::WIDTH];
-            view.paint(&mut Row::new(y, &mut pixels));
+            let scene = view.scene();
+            firmware_shell::shell::Picture::paint(&scene, &mut Row::new(y, &mut pixels));
             for (x, &pixel) in pixels.iter().enumerate() {
-                assert_eq!(pixel, view.reference_pixel(x, y), "{x},{y}");
+                assert_eq!(pixel, scene.reference_pixel(x, y), "{x},{y}");
             }
         }
     }

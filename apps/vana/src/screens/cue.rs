@@ -10,7 +10,7 @@
 use super::chrome::{BLACK, GREEN, HEIGHT, RAISED, RED, Row, WHITE, blend, disc, paint_disc_over};
 
 /// Which button a cue sits beside.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Corner {
     /// BACK / MARK.
     TopLeft,
@@ -20,7 +20,7 @@ pub enum Corner {
     BottomLeft,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
     /// Start or resume the ride.
     Play,
@@ -45,7 +45,7 @@ const ICON_INSET: i32 = 17;
 /// The box around the icon centre that the icon can touch, in pixels.
 const ICON_REACH: i32 = 9;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Cue {
     pub corner: Corner,
     pub icon: Icon,
@@ -140,7 +140,7 @@ impl Cue {
 
 /// A green disc with a black icon inside, such as the check over RIDE SAVED.
 /// The same drawing as a cue, placed anywhere.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Badge {
     pub cx: usize,
     pub cy: usize,

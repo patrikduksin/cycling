@@ -686,6 +686,9 @@ impl device_api::sensors::Sensors for Sensors {
     fn snapshot(&self, now: u64) -> device_api::sensors::Snapshot {
         crate::capabilities::sensors::snapshot(now)
     }
+    fn light(&self, now: u64) -> device_api::observation::Observation<device_api::sensors::Light> {
+        crate::capabilities::sensors::light(now)
+    }
     fn identity_status(&self) -> device_api::sensors::IdentityQuery {
         crate::capabilities::sensors::query_status()
     }

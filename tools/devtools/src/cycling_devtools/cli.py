@@ -267,6 +267,11 @@ TASKS = [
         f'{DEV}sim.report .local/sim/pr --pr "$1"',
     ),
     task(
+        'redraw-probe',
+        'Report how much of the screen each page changes from frame to frame under a sensor feed: redraw-probe [seconds] [case filter]',
+        'cargo run -q -p shell-simulator --locked --no-default-features --bin redraw-probe --',
+    ),
+    task(
         'sim-compare',
         'Run simulator scenarios here and on a base ref; report changed screens Before | After '
         '(--base REF, --pr N, --filter NAME, --video for before/after videos of changed scenarios)',

@@ -31,6 +31,8 @@ pub struct Frame {
     pub bench: Option<crate::bench::Request>,
     /// A hash of every frame shown since this was set, in order.
     pub hashes: Option<Vec<u64>>,
+    /// The `redraw-probe` comparing each frame shown with the one before.
+    pub probe: Option<crate::probe::Probe>,
 }
 impl Frame {
     /// A new frame is on the panel.
@@ -38,6 +40,9 @@ impl Frame {
         self.submissions += 1;
         if let Some(hashes) = &mut self.hashes {
             hashes.push(hash(&self.pixels));
+        }
+        if let Some(probe) = &mut self.probe {
+            probe.observe(&self.pixels);
         }
     }
 }
@@ -56,6 +61,7 @@ impl DisplayDevice {
             refusals: Refusals::default(),
             bench: None,
             hashes: None,
+            probe: None,
         })))
     }
 }

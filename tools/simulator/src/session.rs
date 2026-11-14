@@ -269,6 +269,8 @@ impl InputObservation for NoInputObservation {
     }
 }
 const ASSUMED_BAROMETER_MS: u64 = 100;
+/// The companion sends ambient light about three times a second.
+const ASSUMED_LIGHT_MS: u64 = 333;
 /// Uptime before a powered-on companion reports ready. Modelled on C606
 /// startup: three seconds of passive observation before the startup
 /// acknowledgment, then an operating reason and two advancing sensor samples.
@@ -323,6 +325,7 @@ struct Trace {
     companion: FrozenCompanion,
     startup: Latest<Startup>,
     physical: Latest<device_api::sensors::Snapshot>,
+    light: Latest<Observation<device_api::sensors::Light>>,
     network_time: Latest<firmware_services::network_time::Snapshot>,
     power: FrozenPowerControl,
     backlight: Latest<Availability>,
@@ -456,6 +459,7 @@ impl Trace {
             companion: FrozenCompanion::default(),
             startup: Latest::default(),
             physical: Latest::default(),
+            light: Latest::assumed(Observation::Unavailable),
             network_time: Latest::default(),
             power: FrozenPowerControl::default(),
             backlight: Latest::default(),
@@ -706,6 +710,16 @@ impl Simulated {
         }
         if let Some(gps) = &mut self.gps {
             gps.tick(&self.world, now, &mut self.position.acquisition);
+        }
+    }
+
+    fn light(&self, now: u64) -> Observation<device_api::sensors::Light> {
+        match self.world.ambient_light {
+            Some(raw) => Observation::Fresh {
+                value: device_api::sensors::Light(raw),
+                received_ms: now - now % ASSUMED_LIGHT_MS,
+            },
+            None => Observation::Unavailable,
         }
     }
 
@@ -1303,10 +1317,15 @@ impl Session {
         startup: Startup,
     ) {
         let now = self.now;
-        let (physical, network_time) = match &mut self.devices {
-            Devices::Replayed(replay) => (replay.sources.physical(), replay.sources.network_time()),
+        let (physical, light, network_time) = match &mut self.devices {
+            Devices::Replayed(replay) => (
+                replay.sources.physical(),
+                replay.sources.light(),
+                replay.sources.network_time(),
+            ),
             Devices::Simulated(sim) => (
                 sim.physical(now),
+                sim.light(now),
                 sim.network_time
                     .map_or_else(Default::default, |anchor| anchor.snapshot(now, 0, true)),
             ),
@@ -1316,6 +1335,7 @@ impl Session {
             .trace
             .physical
             .observe(physical, now, record, Event::Physical);
+        self.trace.light.observe(light, now, record, Event::Light);
         let network_time =
             self.trace
                 .network_time

@@ -439,6 +439,9 @@ pub enum Event<'a> {
         snapshot: Option<positioning::Snapshot>,
     },
     Physical(sensors::Snapshot),
+    /// The ambient light reading, recorded with every report so a replay
+    /// ages it as the ride did. Roughly 3 reports a second.
+    Light(Observation<sensors::Light>),
     Power(Option<InputSnapshot>),
     /// UTC from Wi-Fi synchronization, recorded when it no longer reads as
     /// the last recorded value advanced to this pass.
@@ -608,6 +611,7 @@ mod tag {
     pub const REFUSED: u8 = 35;
     pub const LOST: u8 = 36;
     pub const HOST_WROTE: u8 = 37;
+    pub const LIGHT: u8 = 38;
     pub const PAGE: u8 = 64;
     pub const TOAST: u8 = 65;
     pub const SOUND: u8 = 66;
@@ -1097,6 +1101,15 @@ record! {
     }
 }
 
+impl Wire<'_> for sensors::Light {
+    fn put(&self, w: &mut Writer) {
+        self.0.put(w);
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        Self(u16::take(r))
+    }
+}
+
 impl Wire<'_> for Input {
     fn put(&self, w: &mut Writer) {
         match self {
@@ -1359,6 +1372,7 @@ impl<'a> Event<'a> {
             Self::BleBattery(_) => tag::BLE_BATTERY,
             Self::Position { .. } => tag::POSITION,
             Self::Physical(_) => tag::PHYSICAL,
+            Self::Light(_) => tag::LIGHT,
             Self::Power(_) => tag::POWER,
             Self::NetworkTime(_) => tag::NETWORK_TIME,
             Self::Startup(_) => tag::STARTUP,
@@ -1431,6 +1445,7 @@ impl<'a> Event<'a> {
                 snapshot.put(w);
             }
             Self::Physical(snapshot) => snapshot.put(w),
+            Self::Light(light) => light.put(w),
             Self::Power(snapshot) => snapshot.put(w),
             Self::NetworkTime(snapshot) => snapshot.put(w),
             Self::Startup(startup) => startup.put(w),
@@ -1568,6 +1583,7 @@ impl<'a> Event<'a> {
                 snapshot: Wire::take(r),
             },
             tag::PHYSICAL => Self::Physical(Wire::take(r)),
+            tag::LIGHT => Self::Light(Wire::take(r)),
             tag::POWER => Self::Power(Wire::take(r)),
             tag::NETWORK_TIME => Self::NetworkTime(Wire::take(r)),
             tag::STARTUP => Self::Startup(Wire::take(r)),

@@ -1,12 +1,11 @@
 //! C606 companion sensor page decoding and observation state.
-#[cfg(test)]
-use device_api::observation::Observation;
-use device_api::observation::observation;
+use device_api::observation::{Observation, observation};
 use device_api::sensors::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Report {
     Pressure(Pressure),
     Motion { subtype: u8, value: Motion },
+    Light(Light),
     Identity(Identity),
 }
 
@@ -33,13 +32,17 @@ pub fn decode(group: u8, payload: &[u8]) -> Decode {
             let Some(&subtype) = payload.get(1) else {
                 return Decode::Invalid;
             };
-            if !matches!(subtype, 1..=3) {
+            if !matches!(subtype, 1..=4) {
                 return Decode::Unrelated;
             }
             if payload.len() != 8 {
                 return Decode::Invalid;
             }
-            if subtype == 3 {
+            if subtype == 4 {
+                Decode::Report(Report::Light(Light(u16::from_le_bytes([
+                    payload[6], payload[7],
+                ]))))
+            } else if subtype == 3 {
                 let temperature_centi_c = i16::from_le_bytes([payload[2], payload[3]]);
                 let pressure_centi_pa =
                     u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
@@ -76,6 +79,7 @@ pub struct State {
     pressure: Option<(Pressure, u64)>,
     motion: [Option<(Motion, u64)>; 2],
     identity: Option<(Identity, u64)>,
+    light: Option<(Light, u64)>,
     reports: u32,
     invalid_reports: u32,
     losses: u32,
@@ -92,6 +96,7 @@ impl State {
                 match (group, payload.first(), payload.get(1)) {
                     (1, Some(1), _) => self.identity = None,
                     (0x10, Some(0xf1), Some(3)) => self.pressure = None,
+                    (0x10, Some(0xf1), Some(4)) => self.light = None,
                     (0x10, Some(0xf1), Some(subtype @ 1..=2)) => {
                         self.motion[usize::from(*subtype - 1)] = None;
                     }
@@ -99,13 +104,18 @@ impl State {
                 }
             }
             Decode::Report(report) => {
-                self.reports = self.reports.saturating_add(1);
+                // Light is not counted: the snapshot is traced whenever it changes,
+                // so counting light would trace the whole snapshot at the light rate.
+                if !matches!(report, Report::Light(_)) {
+                    self.reports = self.reports.saturating_add(1);
+                }
                 match report {
                     Report::Pressure(value) => self.pressure = Some((value, now_ms)),
                     Report::Motion { subtype, value } => {
                         self.motion[usize::from(subtype - 1)] = Some((value, now_ms));
                     }
                     Report::Identity(value) => self.identity = Some((value, now_ms)),
+                    Report::Light(value) => self.light = Some((value, now_ms)),
                 }
             }
         }
@@ -116,7 +126,12 @@ impl State {
         self.pressure = None;
         self.motion = [None; 2];
         self.identity = None;
+        self.light = None;
         self.losses = self.losses.saturating_add(1);
+    }
+
+    pub fn light(&self, now_ms: u64, stale_ms: u64) -> Observation<Light> {
+        observation(self.light, now_ms, stale_ms)
     }
 
     /// The consumer chooses freshness; transport timestamps are receive uptime.
@@ -194,10 +209,55 @@ mod tests {
     }
 
     #[test]
+    fn light_keeps_the_smooth_value_and_ignores_the_coarse_step() {
+        let frame = |coarse: u32, smooth: u16| {
+            let mut payload = [0xf1, 4, 0, 0, 0, 0, 0, 0];
+            payload[2..6].copy_from_slice(&coarse.to_le_bytes());
+            payload[6..8].copy_from_slice(&smooth.to_le_bytes());
+            payload
+        };
+        assert_eq!(
+            decode(16, &frame(600, 1557)),
+            Decode::Report(Report::Light(Light(1557)))
+        );
+        assert_eq!(
+            decode(16, &frame(30, 0xfffe)),
+            Decode::Report(Report::Light(Light(0xfffe)))
+        );
+        assert_eq!(decode(16, &frame(30, 65)[..7]), Decode::Invalid);
+    }
+
+    #[test]
+    fn light_ages_without_counting_as_a_snapshot_report() {
+        let mut state = State::default();
+        state.receive(16, &[0xf1, 4, 30, 0, 0, 0, 68, 0], 10);
+        assert!(matches!(
+            state.light(12, 5),
+            Observation::Fresh {
+                value: Light(68),
+                received_ms: 10
+            }
+        ));
+        assert!(matches!(
+            state.light(100, 5),
+            Observation::Stale {
+                value: Light(68),
+                ..
+            }
+        ));
+        assert_eq!(state.snapshot(12, 5).reports, 0);
+        state.receive(16, &[0xf1, 4, 1], 20);
+        assert!(matches!(state.light(20, 5), Observation::Unavailable));
+        state.receive(16, &[0xf1, 4, 30, 0, 0, 0, 65, 0], 30);
+        state.loss();
+        assert!(matches!(state.light(30, 5), Observation::Unavailable));
+    }
+
+    #[test]
     fn unknown_traffic_does_not_refresh_and_loss_requires_new_reports() {
         let mut state = State::default();
         state.receive(16, &pressure(2500, 10_000_000), 10);
-        state.receive(16, &[0xf1, 4, 0, 0, 0, 0, 0, 0], 99);
+        state.receive(16, &[0xf1, 5, 0, 0, 0, 0, 0, 0], 99);
         state.receive(120, &[0; 8], 99);
         assert!(matches!(
             state.snapshot(100, 50).pressure,

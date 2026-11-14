@@ -31,6 +31,10 @@ name = "sim-bench"
 path = "src/bin/sim-bench.rs"
 
 [[bin]]
+name = "redraw-probe"
+path = "src/bin/redraw-probe.rs"
+
+[[bin]]
 name = "trace"
 path = "src/bin/trace.rs"
 

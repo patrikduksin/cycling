@@ -1,8 +1,8 @@
 //! Passive companion sensors and a single bounded read-only identity request.
 use crate::drivers::companion_sensors::State;
 use core::cell::RefCell;
-use device_api::observation::Error;
-use device_api::sensors::{IdentityQuery, Snapshot, Startup};
+use device_api::observation::{Error, Observation};
+use device_api::sensors::{IdentityQuery, Light, Snapshot, Startup};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 struct Shared {
@@ -41,6 +41,9 @@ pub fn ant_allowed() -> bool {
 }
 pub fn snapshot(now: u64) -> Snapshot {
     SHARED.lock(|s| s.borrow().state.unwrap_or_default().snapshot(now, 5000))
+}
+pub fn light(now: u64) -> Observation<Light> {
+    SHARED.lock(|s| s.borrow().state.unwrap_or_default().light(now, 5000))
 }
 pub fn query_status() -> IdentityQuery {
     SHARED.lock(|s| s.borrow().query)

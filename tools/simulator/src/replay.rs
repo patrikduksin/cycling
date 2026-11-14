@@ -18,7 +18,7 @@ use device_api::ant::{
 use device_api::ble_transport::{self, Ble};
 use device_api::bulk::{self, ReadWrite};
 use device_api::input::{InputObservation, InputSnapshot};
-use device_api::observation::{Availability, Error};
+use device_api::observation::{Availability, Error, Observation};
 use device_api::positioning::{self, Positioning};
 use device_api::power::{self, PowerControl};
 use device_api::sensors;
@@ -654,6 +654,7 @@ pub struct Sources {
     entropy: Entropy,
     startup: Served<sensors::Startup>,
     physical: Served<sensors::Snapshot>,
+    light: Served<Observation<sensors::Light>>,
     network_time: Served<firmware_services::network_time::Snapshot>,
     backlight: Served<Availability>,
     shelled: Shelled,
@@ -698,6 +699,7 @@ impl Sources {
             entropy,
             startup: Served::new("companion startup", &ledger),
             physical: Served::new("barometer and motion", &ledger),
+            light: Served::new("ambient light", &ledger),
             network_time: Served::new("network time", &ledger),
             backlight: Served::new("backlight", &ledger),
             shelled,
@@ -833,6 +835,7 @@ impl Sources {
                 snapshot,
             } => self.position.0.set((availability, snapshot)),
             Event::Physical(snapshot) => self.physical.set(snapshot),
+            Event::Light(light) => self.light.set(light),
             Event::Power(snapshot) => self.companion.0.set(snapshot),
             Event::NetworkTime(snapshot) => self.network_time.set(snapshot),
             Event::Startup(startup) => self.startup.set(startup),
@@ -961,6 +964,15 @@ impl Sources {
             invalid_reports: 0,
             losses: 0,
         })
+    }
+
+    /// A trace recorded before ambient light was traced holds none, and reads
+    /// as no reading rather than as a missing input.
+    pub fn light(&self) -> Observation<sensors::Light> {
+        self.light
+            .latest
+            .at(self.light.ledger.now())
+            .unwrap_or(Observation::Unavailable)
     }
 
     pub fn network_time(&self) -> firmware_services::network_time::Snapshot {

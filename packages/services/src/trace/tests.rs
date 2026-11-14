@@ -242,6 +242,15 @@ fn sample() -> Vec<Event<'static>> {
             invalid_reports: 1,
             losses: 0,
         }),
+        Event::Light(Observation::Unavailable),
+        Event::Light(Observation::Fresh {
+            value: sensors::Light(1_557),
+            received_ms: 3_330,
+        }),
+        Event::Light(Observation::Stale {
+            value: sensors::Light(65),
+            received_ms: 3_330,
+        }),
         Event::Power(Some(InputSnapshot {
             battery: Observation::Fresh {
                 value: (80, 4020),
@@ -732,6 +741,28 @@ fn a_pass_ten_milliseconds_on_is_one_byte() {
     let header = block(&bytes, 0).unwrap().1;
     let opening = 2 + 4 + 1 + 1 + 1;
     assert_eq!(bytes.len() - header, 1000 + opening);
+}
+
+#[test]
+fn an_ambient_light_reading_costs_a_few_bytes() {
+    let readings: Vec<_> = (1..=300u64)
+        .flat_map(|i| {
+            [
+                Event::Pass { now_ms: i * 333 },
+                Event::Light(Observation::Fresh {
+                    value: sensors::Light(1_000 + (i % 40) as u16),
+                    received_ms: i * 333,
+                }),
+            ]
+        })
+        .collect();
+    let bytes = encode(&readings, 4096);
+    let header = block(&bytes, 0).unwrap().1;
+    let per_reading = (bytes.len() - header) as f64 / 300.0;
+    assert!(
+        per_reading < 12.0,
+        "{per_reading} bytes a reading with its pass"
+    );
 }
 
 #[test]

@@ -69,9 +69,9 @@ TASKS = [
     ),
     task(
         'test-web',
-        'Relay, site, bridge and protocol tests (web/; bun)',
+        'Relay, site, bridge, protocol and flasher tests (web/; bun, files spread over worker processes)',
         'bun install --frozen-lockfile --silent',
-        'bun test web',
+        'bun test --parallel=8 web',
     ),
     task(
         'stack-frames',

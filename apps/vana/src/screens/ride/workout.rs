@@ -9,7 +9,7 @@
 //! distance left over the step's progress bar, amber for the last seconds;
 //! the next step; then one bar per played step, its height the target's
 //! intensity and its colour the target's zone. Past and current steps are
-//! full colour, the rest 25 %, and a white bar marks the step on now.
+//! full colour, the rest 25 %.
 use super::{BODY, LEFT, RIGHT, Text};
 use crate::ride::zones::TrainingProfile;
 use crate::screens::canvas::{Canvas, Shape};
@@ -62,14 +62,8 @@ pub const EXTEND_ROWS: core::ops::Range<usize> =
 pub(super) const CHART_TOP: usize = NEXT_BASE + 10;
 pub(super) const CHART_BOTTOM: usize = BODY.bottom;
 const CHART_HEIGHT: usize = CHART_BOTTOM - CHART_TOP;
-/// The white bar over the step on now, this many rows clear of its bar.
-const NOW_HEIGHT: usize = 3;
-const NOW_GAP: usize = 2;
-/// The tallest bar stops this far down, so the bar over it fits.
-const NOW_ROOM: usize = NOW_HEIGHT + NOW_GAP;
-const BAR_HEIGHT: usize = CHART_HEIGHT - NOW_ROOM;
 pub(super) const CHART_WIDTH: usize = RIGHT - LEFT;
-const _: () = assert!(BAR_HEIGHT >= 20, "the workout chart needs some height");
+const _: () = assert!(CHART_HEIGHT >= 20, "the workout chart needs some height");
 /// Untimed steps take this much chart width, as if they lasted this long.
 const OPEN_WEIGHT_S: u32 = 120;
 /// A target of this much intensity fills the chart's height.
@@ -85,10 +79,6 @@ pub struct Chart {
     /// Each column's colour as an index into `palette`, to keep the view small.
     colors: [u8; CHART_WIDTH],
     palette: heapless::Vec<u16, PALETTE>,
-    /// The columns of the step on now.
-    now: (usize, usize),
-    /// The rows of the white bar over it, from `CHART_TOP`.
-    now_rows: (usize, usize),
 }
 
 /// Colours a chart can use: each zone, cadence and none, lit and at 25 %.
@@ -120,8 +110,6 @@ impl Chart {
         tops: [EMPTY; CHART_WIDTH],
         colors: [0; CHART_WIDTH],
         palette: heapless::Vec::new(),
-        now: (0, 0),
-        now_rows: (0, 0),
     };
 }
 
@@ -587,20 +575,12 @@ pub fn chart(player: &Player, profile: &TrainingProfile) -> Chart {
             zone(played.step.target, profile),
             intensity(played.step.target, profile).unwrap_or(40),
         );
-        if index == position && !done {
-            chart.now = (first, last);
-        }
-        let mut stair_now = None::<(usize, usize)>;
         for column in first..last {
             let (color, pct, dim) = match ramp {
                 Some((ramp, stairs, current)) => {
                     let stage =
                         ((column - first) as u32 * stairs / (last - first) as u32).min(stairs - 1);
                     let watts = ramp.stage_watts(stage);
-                    if index == position && !done && stage == current {
-                        let (low, _) = stair_now.unwrap_or((column, column));
-                        stair_now = Some((low, column + 1));
-                    }
                     let dim = ahead || (index == position && !done && stage > current);
                     (
                         zone_color(profile.power_zone(watts)),
@@ -611,29 +591,17 @@ pub fn chart(player: &Player, profile: &TrainingProfile) -> Chart {
                 None => (color, pct, ahead),
             };
             let color = if dim { blend(color, BLACK, 4) } else { color };
-            let height = (pct.min(FULL_PCT) as usize * BAR_HEIGHT / FULL_PCT as usize).max(3);
+            let height = (pct.min(FULL_PCT) as usize * CHART_HEIGHT / FULL_PCT as usize).max(3);
             chart.tops[column] = (CHART_HEIGHT - height) as u8;
             chart.colors[column] = chart.index(color);
         }
-        if let Some(stair) = stair_now {
-            chart.now = stair;
-        }
-    }
-    if let Some(&top) = chart.tops[chart.now.0..chart.now.1].iter().min() {
-        let bottom = usize::from(top) - NOW_GAP;
-        chart.now_rows = (bottom - NOW_HEIGHT, bottom);
     }
     chart
 }
 
-/// Paint the chart's row: the white bar over the step on now, then the bars.
+/// Paint the chart's row of bars.
 pub(super) fn paint_chart(chart: &Chart, row: &mut Row) {
     let y = row.y();
-    let (low, high) = chart.now_rows;
-    if (CHART_TOP + low..CHART_TOP + high).contains(&y) {
-        row.span(LEFT + chart.now.0..LEFT + chart.now.1, WHITE);
-        return;
-    }
     if !(CHART_TOP..CHART_BOTTOM).contains(&y) {
         return;
     }
@@ -661,12 +629,6 @@ pub(super) fn chart_pixel(chart: &Chart, x: usize, y: usize) -> u16 {
         return BLACK;
     }
     let column = x - LEFT;
-    let (low, high) = chart.now_rows;
-    if (CHART_TOP + low..CHART_TOP + high).contains(&y)
-        && (chart.now.0..chart.now.1).contains(&column)
-    {
-        return WHITE;
-    }
     if (CHART_TOP..CHART_BOTTOM).contains(&y)
         && chart.tops[column] != EMPTY
         && (y - CHART_TOP) as u8 >= chart.tops[column]
@@ -744,7 +706,7 @@ mod tests {
         );
         assert_eq!(workout.validate(), Ok(()));
         let chart = chart(&Player::new(workout), &TrainingProfile::default());
-        assert!(chart.now.1 > chart.now.0);
+        assert!(chart.tops.iter().any(|&top| top != EMPTY));
     }
 
     #[test]
@@ -755,7 +717,7 @@ mod tests {
         assert_eq!(workout.validate(), Ok(()));
         let player = Player::new(workout);
         let chart = chart(&player, &TrainingProfile::default());
-        assert!(chart.now.1 > chart.now.0);
+        assert!(chart.tops.iter().any(|&top| top != EMPTY));
     }
 
     #[test]
@@ -773,8 +735,6 @@ mod tests {
         assert!(canvas.shows("2:30") && canvas.shows("NEXT"));
         assert!(canvas.shows("3:00 RECOVER"));
         canvas.assert_laid_out(PAGE, &["VO2 MAX 5X3", "228-258 W", "240"], "interval");
-        // The step on now is marked under its bar, and past bars are lit.
-        assert!(view.chart().now.1 > view.chart().now.0);
     }
 
     #[test]
@@ -808,13 +768,21 @@ mod tests {
     }
 
     #[test]
-    fn a_ramp_is_a_staircase_with_the_bar_under_the_stair_on_now() {
+    fn a_ramp_is_a_staircase_lit_up_to_the_stair_on_now() {
         let profile = TrainingProfile::default();
         let mut player = Player::new(FTP_RAMP);
         player.skip();
         ride(&mut player, 130, 140);
         let chart = chart(&player, &profile);
-        let (from, to) = chart.now;
+        let ahead = blend(zone_color(profile.power_zone(147)), BLACK, 4);
+        let to = (0..CHART_WIDTH)
+            .position(|c| chart.tops[c] != EMPTY && chart.color(c) == ahead)
+            .expect("a dim stair ahead");
+        let from = (0..to)
+            .rev()
+            .take_while(|&c| chart.tops[c] == chart.tops[to - 1])
+            .last()
+            .unwrap();
         assert!(to - from > 3, "a stair, not the whole ramp");
         assert!((from..to).all(|c| chart.tops[c] == chart.tops[from]));
         assert!(
@@ -825,8 +793,6 @@ mod tests {
             chart.tops[to] < chart.tops[from],
             "the next stair is higher"
         );
-        let ahead = blend(zone_color(profile.power_zone(147)), BLACK, 4);
-        assert_eq!(chart.color(to), ahead, "stairs ahead are dim");
         assert_ne!(chart.color(from), chart.color(to));
     }
 
@@ -897,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn bars_reach_the_bottom_with_the_now_bar_over_the_step_on_now() {
+    fn bars_reach_the_bottom_with_nothing_under_them() {
         let mut player = Player::new(VO2_MAX);
         player.skip();
         ride(&mut player, 30, 240);
@@ -913,12 +879,10 @@ mod tests {
                 .all(|c| last[c] != BLACK),
             "every step's bar reaches the screen's last row"
         );
-        let (from, to) = chart.now;
-        let white = |y: usize| row(y)[from..to].iter().all(|&pixel| pixel == WHITE);
-        let top = CHART_TOP + usize::from(chart.tops[from]);
-        assert!(white(top - NOW_GAP - 1), "the now bar sits over its step");
-        assert!(!white(top), "the now bar leaves the step's bar visible");
-        assert!((BODY.bottom - 6..BODY.bottom).all(|y| !row(y).contains(&WHITE)));
+        assert!(
+            (CHART_TOP..BODY.bottom).all(|y| !row(y).contains(&WHITE)),
+            "no white marker in the chart"
+        );
     }
 
     #[test]

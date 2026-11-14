@@ -704,7 +704,7 @@ impl Reader {
             Event::Synthetic(pressed) => {
                 self.push(Kind::Input, format!("synthetic {}", input(pressed)))
             }
-            Event::Frame(_) => {}
+            Event::Frame(_) | Event::Panel(_) => {}
             Event::Command(line) => self.push(Kind::Command, super::secret::shown_command(line)),
             Event::Startup(startup) => {
                 self.push(Kind::Startup, format!("companion {}", startup.name()))

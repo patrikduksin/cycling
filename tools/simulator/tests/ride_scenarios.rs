@@ -8968,6 +8968,7 @@ mod mutations {
             },
             Event::Page(_) => Event::Page("bests"),
             Event::Frame(digest) => Event::Frame(digest ^ 1),
+            Event::Panel(digest) => Event::Panel(digest ^ 1),
             Event::Sound {
                 pattern,
                 cue,
@@ -9202,7 +9203,7 @@ fn every_sensor_input_mutated_shows_in_its_replay() {
             "StorageFault",
             "Page",
             "Sound",
-            "Frame",
+            "Panel",
         ],
         &[
             heals(

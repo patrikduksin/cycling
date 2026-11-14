@@ -6,6 +6,7 @@ use crate::idle::Idle;
 use crate::preferences::Settings;
 use crate::rendering::row::Row;
 use crate::storage::Store;
+use device_api::display::BAND_ROWS;
 use device_api::display::Display;
 use device_api::display::Rows;
 use device_api::input::Button;
@@ -29,6 +30,9 @@ pub enum BrightnessChoice {
 pub const MIN_WIDTH: usize = 16;
 pub const MIN_HEIGHT: usize = 16;
 pub const CANVAS_MAX_WIDTH: usize = 320;
+/// The tallest panel: the shell keeps a digest of each of its bands.
+pub const MAX_HEIGHT: usize = 320;
+const BANDS: usize = MAX_HEIGHT / BAND_ROWS;
 const FNV_OFFSET: u32 = 0x811c_9dc5;
 const FNV_PRIME: u32 = 0x0100_0193;
 const _: () = assert!(
@@ -71,6 +75,13 @@ fn digest_pairs(hash: u32, pixels: &[u16]) -> u32 {
     });
     last.iter()
         .fold(hash, |hash, &pixel| step(hash, u32::from(pixel)))
+}
+/// The digest an [`Event::Frame`] of an older trace holds: every row of the
+/// frame in turn.
+///
+/// [`Event::Frame`]: firmware_services::trace::Event::Frame
+pub fn frame_digest(pixels: &[u16], width: usize) -> u32 {
+    pixels.chunks(width).fold(FNV_OFFSET, digest)
 }
 /// A frame an application draws through `Shell::draw`: a logical canvas
 /// whose pixels follow from its `Hash` alone, so equal pictures paint alike.
@@ -139,7 +150,10 @@ pub struct Shell<D, I, P, B> {
     pub operations: u32,
     pub storage_max_ms: u64,
     pub display_submissions: u32,
-    /// A digest of the pixels on the panel.
+    /// Each band's pixel digest as the panel last took it.
+    sent: [u32; BANDS],
+    /// The bands' digests folded top to bottom, after the last frame the
+    /// panel took.
     panel: Option<u32>,
     /// The key of the picture on the panel, until anything else is submitted.
     picture: Option<u64>,
@@ -194,7 +208,10 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             _ => return Err(Error::Unavailable),
         }
         let geometry = display.geometry();
-        if geometry.width < MIN_WIDTH || geometry.height < MIN_HEIGHT {
+        if geometry.width < MIN_WIDTH
+            || geometry.height < MIN_HEIGHT
+            || geometry.height > MAX_HEIGHT
+        {
             return Err(Error::Invalid);
         }
         let controls = input.controls();
@@ -236,6 +253,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             synthetic: Synthetic::new(),
             boot_id: 0,
             synthetic_events: 0,
+            sent: [FNV_OFFSET; BANDS],
             panel: None,
             picture: None,
             taken: None,
@@ -594,18 +612,28 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         self.picture = None;
     }
     /// Submit a frame row by row; `row(y, pixels)` must fill every physical pixel.
-    pub fn draw_rows(&mut self, mut row: impl FnMut(usize, &mut [u16])) {
+    pub fn draw_rows(&mut self, row: impl FnMut(usize, &mut [u16])) {
         self.picture = None;
+        self.send(Rows::all(self.display.geometry().height), row);
+    }
+    /// Submit `rows` of a frame; a capture takes every row.
+    fn send(&mut self, rows: Rows, mut row: impl FnMut(usize, &mut [u16])) {
         let started = self.clock.map(|clock| clock());
-        let mut frame = FNV_OFFSET;
+        let sent = &mut self.sent;
         let row = |y: usize, pixels: &mut [u16]| {
             row(y, pixels);
-            frame = digest(frame, pixels);
+            let band = &mut sent[y / BAND_ROWS];
+            let from = if y.is_multiple_of(BAND_ROWS) {
+                FNV_OFFSET
+            } else {
+                *band
+            };
+            *band = digest(from, pixels);
         };
         {
             let geometry = self.display.geometry();
-            let rows = Rows::all(geometry.height);
             if self.harness.begin_frame(geometry) {
+                let rows = Rows::all(geometry.height);
                 let mut row = row;
                 let harness = &mut self.harness;
                 self.display_error = self
@@ -621,7 +649,12 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             }
         }
         if !self.display_error {
-            self.panel = Some(frame);
+            let bands = self.display.geometry().height.div_ceil(BAND_ROWS);
+            self.panel = Some(
+                self.sent[..bands]
+                    .iter()
+                    .fold(FNV_OFFSET, |hash, &band| step(hash, band)),
+            );
         }
         self.display_submissions = self.display_submissions.saturating_add(1);
         if let (Some(clock), Some(started)) = (self.clock, started) {

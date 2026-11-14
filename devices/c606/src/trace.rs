@@ -251,7 +251,7 @@ impl Trace {
             });
         }
         if let Some(digest) = frame {
-            self.record(&Event::Frame(digest));
+            self.record(&Event::Panel(digest));
         }
         crate::logging::drain_warnings(|level, target, text| {
             self.record(&Event::Log {

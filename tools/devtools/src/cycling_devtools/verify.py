@@ -35,20 +35,24 @@ def frame_report(step):
     return ROOT / image_dir / 'stack-frames.md' if image_dir else None
 
 
-# Each inner list runs in order; the lists run in parallel.
-LANES = {
-    'full': [
-        [Step('test', 'cycling test'), Step('simulate', 'cycling simulate')],
-        [Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
+CHECK = Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))
+
+
+def lanes(mode, pr=None, video=False):
+    if mode == 'fast':
+        return [[Step('test', 'cycling test')], [CHECK], [BUILD]]
+    screens = 'cycling sim-compare' + (f' --pr {pr}' if pr else '') + (' --video' if video else '')
+    return [
+        [
+            Step('test', 'cycling test', (('NEXTEST_PROFILE', 'without-ride-scenarios'),)),
+            Step('simulate', 'cycling simulate'),
+        ],
+        [CHECK],
         [BUILD],
-    ],
-    # The inner loop before pushing: everything except simulate and harness-virtual.
-    'fast': [
-        [Step('test', 'cycling test')],
-        [Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
-        [BUILD],
-    ],
-}
+        [Step('screens', screens)],
+    ]
+
+
 ALONE = {'full': [Step('harness-virtual', 'cycling harness-virtual')], 'fast': []}
 
 
@@ -114,7 +118,12 @@ def failure_tail(results, lines=30):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--fast', action='store_true', help='test, check and build only')
-    parser.add_argument('--pr', type=int, help='post the result table on this pull request')
+    parser.add_argument('--pr', type=int, help='post the result table and the changed screens on this pull request')
+    parser.add_argument(
+        '--video',
+        action='store_true',
+        help='with the screens, before and after videos of scenarios whose screens changed',
+    )
     args = parser.parse_args(argv)
     warn_if_low_disk()
     mode = 'fast' if args.fast else 'full'
@@ -127,8 +136,9 @@ def main(argv=None):
     logs.mkdir(parents=True, exist_ok=True)
 
     started = time.monotonic()
-    with ThreadPoolExecutor(len(LANES[mode])) as pool:
-        results = [r for lane in pool.map(lambda lane: run_lane(lane, logs), LANES[mode]) for r in lane]
+    parallel = lanes(mode, args.pr, args.video)
+    with ThreadPoolExecutor(len(parallel)) as pool:
+        results = [r for lane in pool.map(lambda lane: run_lane(lane, logs), parallel) for r in lane]
     if all(r.ok for r in results):
         results += run_lane(ALONE[mode], logs)
     total = time.monotonic() - started

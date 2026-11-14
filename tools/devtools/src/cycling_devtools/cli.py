@@ -80,7 +80,8 @@ TASKS = [
     ),
     task(
         'verify',
-        'Run every PR gate in parallel (test, check, simulate, build, harness-virtual); --fast for the inner loop, --pr N to post results',
+        'Run every PR gate in parallel (test, check, simulate, build, screens, harness-virtual); --fast for the inner loop, '
+        '--pr N to post results and changed screens, --video for before/after videos of changed scenarios',
         f'{DEV}verify',
     ),
     task(

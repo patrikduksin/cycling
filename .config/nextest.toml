@@ -1,6 +1,3 @@
-# Start the longest tests first, so a run ends when its work does rather
-# than on one long test started late. A renamed test only loses its place.
-
 [[profile.default.overrides]]
 filter = """
 test(=ride::course::turns::tests::corners_of_either_way_close_together_are_named_the_way_they_go)
@@ -27,3 +24,6 @@ test(=ride::course::turns::tests::a_thinned_course_names_its_roundabouts_and_hai
 | test(=pause_excludes_time_and_two_hour_ride_keeps_every_sample)
 """
 priority = 50
+
+[profile.without-ride-scenarios]
+default-filter = "not binary(ride_scenarios)"

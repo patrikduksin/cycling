@@ -721,7 +721,7 @@ ambiguous, rename one rather than weakening the reader.
 `cycling sim` writes screenshots to `.local/sim/latest`; with `SIM_VIDEO=1` it
 writes videos too.
 `cycling sim-compare --pr <n>` renders the same scenarios on main and on a PR,
-side by side.
+side by side; `cycling verify --pr <n>` runs it as its screens lane.
 
 `cycling readme-screenshots` cuts the panel out of the checkpoints shown in the
 README and writes them to `docs/screenshots`. Run it after changing one of those

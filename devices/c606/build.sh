@@ -33,9 +33,11 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
 else
   export CYCLING_BUILD_DIRTY=0
 fi
-export CARGO_TARGET_DIR="$firmware_target"
-elf="$CARGO_TARGET_DIR/xtensa-esp32s3-none-elf/release/cycling-os"
-cargo build -p c606-firmware --bin cycling-os --release --locked --no-default-features --features "$firmware_features" --target xtensa-esp32s3-none-elf
+# sccache keys every rustc call on all CARGO_* variables: an exported
+# per-worktree CARGO_TARGET_DIR would keep every worktree's builds apart.
+unset CARGO_TARGET_DIR
+elf="$firmware_target/xtensa-esp32s3-none-elf/release/cycling-os"
+cargo build --target-dir "$firmware_target" -p c606-firmware --bin cycling-os --release --locked --no-default-features --features "$firmware_features" --target xtensa-esp32s3-none-elf
 # The main stack is the internal DRAM that statics and the heap leave. Each
 # task and VANA's frame preparation run on it, so growing statics silently
 # shrinks it until boot overflows the stack guard (#167). Fail the build

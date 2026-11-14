@@ -43,7 +43,6 @@ def png(rgb, width, filter_type=0, level=6):
 
 @pytest.fixture(autouse=True)
 def cache(tmp_path, monkeypatch):
-    """Keep tests out of the primary checkout's base cache."""
     monkeypatch.setattr(compare, 'CACHE', tmp_path / 'cache')
     return tmp_path / 'cache'
 
@@ -276,14 +275,10 @@ SCREENS = {
     'before': {'steady': png(IMAGE, 4), 'ride': png(IMAGE, 4)},
     'after': {'steady': png(IMAGE, 4), 'ride': png(OTHER, 4), 'fresh': png(IMAGE, 4)},
 }
-# Where each scenario's test sits; a test in a module needs its path for --exact.
 TESTS = {'steady': 'steady', 'ride': 'ride', 'fresh': 'mutations::fresh'}
 
 
 def simulate(runs):
-    """A fake `scenarios` that records the run and writes the SCREENS of its side.
-    The base records video unasked, as recorders from before SIM_VIDEO do."""
-
     def one(run):
         runs.append(run)
         side = 'before' if run.target.name == 'sim-compare-base' else 'after'
@@ -300,8 +295,6 @@ def simulate(runs):
 
 
 def fake_main(tmp_path, monkeypatch, runs, checkouts):
-    """compare.main over `simulate`, counting base checkouts."""
-
     @contextlib.contextmanager
     def checkout(commit, path):
         checkouts.append(commit)
@@ -328,7 +321,6 @@ def test_main_records_video_only_for_new_scenarios_and_asked_for_changes(tmp_pat
         *([('before-video', ('--', '--exact', 'ride'), True)] if video else []),
     ]
     summary = (out / 'summary.md').read_text()
-    # Re-running for video does not change what was compared.
     assert summary.startswith('## ✅ Simulator before/after: 1 changed · 1 new · 0 removed · 1 unchanged')
     assert 'out/after/fresh/video.mp4' in summary
     assert ('out/after/ride/video.mp4' in summary) == video
@@ -342,7 +334,6 @@ def test_a_complete_base_is_cached_by_commit_and_filter(tmp_path, monkeypatch, c
     assert main() == 0
     first = (tmp_path / 'out/summary.md').read_text()
     assert [r.artifacts.name for r in runs] == ['after', 'before', 'after-video']
-    # Only the base's screens are kept, not the video its recorder wrote.
     assert (cache / 'abc1234/ride/final.png').exists()
     assert not list(cache.glob('abc1234/*/video.*'))
     runs.clear()
@@ -350,7 +341,6 @@ def test_a_complete_base_is_cached_by_commit_and_filter(tmp_path, monkeypatch, c
     assert [r.artifacts.name for r in runs] == ['after', 'after-video']
     assert checkouts == ['abc1234']
     assert (tmp_path / 'out/summary.md').read_text() == first
-    # Another filter is another base run.
     assert main('--filter', 'ride') == 0
     assert [r.artifacts.name for r in runs][-2] == 'before'
     assert len([p for p in cache.iterdir() if not p.name.startswith('.')]) == 2
@@ -473,10 +463,13 @@ def test_failed_fetch_warns_and_keeps_existing_origin_main(monkeypatch, capsys):
 def test_runs_go_at_once_each_into_its_own_log(tmp_path, monkeypatch, capsys):
     script = (
         'import os, sys, time; print(time.time(), flush=True); time.sleep(0.5); print(os.environ.get("SIM_VIDEO"));'
-        'sys.exit(int(sys.argv[1]))'
+        'print(sys.argv[1:3] == ["--target-dir", os.environ.get("TARGET_SEEN")] and "CARGO_TARGET_DIR" not in os.environ);'
+        'sys.exit(int(sys.argv[-1]))'
     )
     monkeypatch.setattr(compare, 'COMMAND', [sys.executable, '-c', script])
     monkeypatch.setenv('SIM_VIDEO', '1')
+    monkeypatch.setenv('CARGO_TARGET_DIR', '/elsewhere')
+    monkeypatch.setenv('TARGET_SEEN', str(tmp_path / 'target'))
     runs = [
         compare.Run(tmp_path, tmp_path / 'after', tmp_path / 'target', ('3',)),
         compare.Run(tmp_path, tmp_path / 'before', tmp_path / 'target', ('0',), video=True),
@@ -484,8 +477,9 @@ def test_runs_go_at_once_each_into_its_own_log(tmp_path, monkeypatch, capsys):
     assert compare.scenarios(*runs) == [3, 0]
     after, before = ((tmp_path / side / 'cargo.log').read_text().split() for side in ('after', 'before'))
     assert abs(float(after[0]) - float(before[0])) < 0.4
-    # Video only where the run asks for it, whatever the caller's environment says.
     assert (after[1], before[1]) == ('None', '1')
+    # The target goes on the command line: sccache keys on every CARGO_* variable.
+    assert (after[2], before[2]) == ('True', 'True')
     printed = capsys.readouterr().out
     assert 'after | None' in printed and 'before | 1' in printed
 

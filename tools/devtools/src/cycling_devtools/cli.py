@@ -252,7 +252,7 @@ TASKS = [
     ),
     task(
         'sim',
-        'Run VANA scenarios in the simulated world; report and artifacts go to .local/sim/latest',
+        'Run VANA scenarios in the simulated world; report and screenshots go to .local/sim/latest (SIM_VIDEO=1 adds videos)',
         'rm -rf .local/sim/latest && mkdir -p .local/sim/latest',
         f'SIM_ARTIFACTS=$PWD/.local/sim/latest {SIM_SCENARIOS} 2>&1 | tee .local/sim/latest/cargo.log || true',
         f'{DEV}sim.report .local/sim/latest',
@@ -262,12 +262,13 @@ TASKS = [
         'Run simulator scenarios and post their videos and screenshots inline on a pull request: sim-pr <pr>',
         'test -n "${1:-}" || { echo "usage: cycling sim-pr <pr>" >&2; exit 2; }',
         'rm -rf .local/sim/pr && mkdir -p .local/sim/pr',
-        f'SIM_ARTIFACTS=$PWD/.local/sim/pr {SIM_SCENARIOS} 2>&1 | tee .local/sim/pr/cargo.log || true',
+        f'SIM_ARTIFACTS=$PWD/.local/sim/pr SIM_VIDEO=1 {SIM_SCENARIOS} 2>&1 | tee .local/sim/pr/cargo.log || true',
         f'{DEV}sim.report .local/sim/pr --pr "$1"',
     ),
     task(
         'sim-compare',
-        'Run simulator scenarios here and on a base ref; report changed screens Before | After (--base REF, --pr N, --filter NAME)',
+        'Run simulator scenarios here and on a base ref; report changed screens Before | After '
+        '(--base REF, --pr N, --filter NAME, --video for before/after videos of changed scenarios)',
         f'{DEV}sim.compare',
     ),
     task(
@@ -278,7 +279,7 @@ TASKS = [
     task(
         'sim-live',
         'Open a window onto the simulated device; the session is recorded to .local/sim/live',
-        'SIM_ARTIFACTS=$PWD/.local/sim/live cargo run -p shell-simulator --locked --no-default-features --features live --bin sim-live',
+        'SIM_ARTIFACTS=$PWD/.local/sim/live SIM_VIDEO=1 cargo run -p shell-simulator --locked --no-default-features --features live --bin sim-live',
     ),
     task(
         'trace',

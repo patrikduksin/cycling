@@ -718,7 +718,8 @@ matched against glyph templates rendered from the same faces. The reader
 tolerates glyphs that touch, as in `TT`. If a new layout makes two labels
 ambiguous, rename one rather than weakening the reader.
 
-`cycling sim` writes screenshots and videos to `.local/sim/latest`.
+`cycling sim` writes screenshots to `.local/sim/latest`; with `SIM_VIDEO=1` it
+writes videos too.
 `cycling sim-compare --pr <n>` renders the same scenarios on main and on a PR,
 side by side.
 

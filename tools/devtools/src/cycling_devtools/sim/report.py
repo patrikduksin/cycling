@@ -101,17 +101,20 @@ def rides_text(result):
     return ', '.join(f'#{r["id"]}: {r["samples"]} samples, {r["track_m"] / 1000:.2f} km' for r in rides)
 
 
+def video(result):
+    return next((f for f in result['files'] if f.startswith('video.')), None)
+
+
 def media(result):
     """Video first, then checkpoints and the chart, in the order a reviewer reads."""
     files = result['files']
-    video = next((f for f in files if f.startswith('video.')), None)
     checkpoints = [f for f in files if f[:2].isdigit() and f.endswith('.png')]
     if len(checkpoints) > CHECKPOINT_LIMIT:
         checkpoints = [*checkpoints[: CHECKPOINT_LIMIT - 1], checkpoints[-1]]
     if result['status'] != 'pass' or not checkpoints:
         checkpoints.append('final.png')
     chart = 'chart.png' if 'chart.png' in files else None
-    return video, checkpoints, chart
+    return video(result), checkpoints, chart
 
 
 def summary(results, base, heading, commit):

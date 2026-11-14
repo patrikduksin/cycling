@@ -1783,13 +1783,13 @@ pub struct Cursor {
     now: u64,
     later: bool,
     end: Option<End>,
+    checked: Option<(usize, [u8; 4])>,
 }
 
 /// The trace's events in order, ending before a torn tail.
 pub struct Events<'a> {
     bytes: &'a [u8],
     cursor: Cursor,
-    payload: Option<&'a [u8]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1836,6 +1836,7 @@ pub fn decode(bytes: &[u8]) -> Result<(Header<'_>, Events<'_>), Error> {
         now: 0,
         later,
         end: None,
+        checked: None,
     };
     Ok((header, Events::resume(bytes, cursor)))
 }
@@ -1853,12 +1854,17 @@ fn failed(bytes: &[u8], start: usize) -> End {
 }
 
 fn block(bytes: &[u8], start: usize) -> Option<(&[u8], usize)> {
+    let (payload, crc) = unchecked_block(bytes, start)?;
+    (crc32(payload).to_le_bytes() == crc).then_some((payload, start + FRAME + payload.len()))
+}
+
+fn unchecked_block(bytes: &[u8], start: usize) -> Option<(&[u8], [u8; 4])> {
     let len = usize::from(u16::from_le_bytes(
         bytes.get(start..start.checked_add(2)?)?.try_into().ok()?,
     ));
     let payload = bytes.get(start + 2..start + 2 + len)?;
     let crc = bytes.get(start + 2 + len..start + FRAME + len)?;
-    (crc32(payload).to_le_bytes() == crc).then_some((payload, start + FRAME + len))
+    Some((payload, crc.try_into().ok()?))
 }
 
 impl<'a> Events<'a> {
@@ -1871,7 +1877,6 @@ impl<'a> Events<'a> {
                 end: None,
                 ..cursor
             },
-            payload: None,
         }
     }
 
@@ -1886,17 +1891,17 @@ impl<'a> Events<'a> {
 
     fn step(&mut self) -> Result<Option<Event<'a>>, End> {
         let c = &mut self.cursor;
-        let payload = match self.payload {
-            Some(payload) => payload,
-            None if c.block >= self.bytes.len() && c.at == 0 => return Err(End::Complete),
-            None => {
-                let (payload, _) =
-                    block(self.bytes, c.block).ok_or_else(|| failed(self.bytes, c.block))?;
+        let payload = match unchecked_block(self.bytes, c.block) {
+            Some((payload, crc)) if c.checked == Some((payload.len(), crc)) => payload,
+            _ if c.block >= self.bytes.len() && c.at == 0 => return Err(End::Complete),
+            Some((payload, crc)) if crc32(payload).to_le_bytes() == crc => {
                 if c.at > payload.len() {
                     return Err(End::Torn);
                 }
-                *self.payload.insert(payload)
+                c.checked = Some((payload.len(), crc));
+                payload
             }
+            _ => return Err(failed(self.bytes, c.block)),
         };
         let Some(&first) = payload.get(c.at) else {
             let next = c.block + FRAME + payload.len();
@@ -1905,7 +1910,7 @@ impl<'a> Events<'a> {
             }
             c.block = next;
             c.at = 0;
-            self.payload = None;
+            c.checked = None;
             return Ok(None);
         };
         if first & SHORT_PASS != 0 {

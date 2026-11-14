@@ -162,8 +162,8 @@ impl<'a> Cache<'a> {
                     ready: false,
                     part_of: None,
                 };
-                for page in slot + 1..slot + pages {
-                    self.slots[page].part_of = Some(slot);
+                for part in &mut self.slots[slot + 1..slot + pages] {
+                    part.part_of = Some(slot);
                 }
                 let loading = Loading {
                     key,
@@ -260,8 +260,8 @@ mod tests {
             ready: true,
             part_of: None,
         };
-        for page in first + 1..first + span(len) {
-            cache.slots[page].part_of = Some(first);
+        for part in &mut cache.slots[first + 1..first + span(len)] {
+            part.part_of = Some(first);
         }
         cache.used[first].set(when);
     }

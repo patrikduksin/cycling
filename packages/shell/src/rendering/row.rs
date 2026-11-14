@@ -112,9 +112,9 @@ impl<'a> Row<'a> {
         let start = x.start.max(self.start);
         let end = x.end.min(self.pixels.len());
         work::add(|work| work.evaluations += end.saturating_sub(start) as u64);
-        for x in start..end {
+        for (x, out) in self.pixels.iter_mut().enumerate().take(end).skip(start) {
             if let Some(color) = pixel(x) {
-                self.pixels[x] = color;
+                *out = color;
             }
         }
     }
@@ -124,9 +124,9 @@ impl<'a> Row<'a> {
         let start = x.start.max(self.start);
         let end = x.end.min(self.pixels.len());
         work::add(|work| work.evaluations += end.saturating_sub(start) as u64);
-        for x in start..end {
-            if let Some(color) = pixel(x, self.pixels[x]) {
-                self.pixels[x] = color;
+        for (x, out) in self.pixels.iter_mut().enumerate().take(end).skip(start) {
+            if let Some(color) = pixel(x, *out) {
+                *out = color;
             }
         }
     }

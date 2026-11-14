@@ -18,6 +18,21 @@ fn a_still_page_submits_no_frame() {
     assert!(result.changes.len() <= 1, "{}", result.changes.len());
 }
 
+/// The first frame shows the battery charging; a minute may turn too.
+#[test]
+fn home_on_usb_draws_only_while_its_battery_fill_visibly_climbs() {
+    let climbing = run(case("home, charging at 50%"), 30);
+    assert!(climbing.fps() >= 1.9, "{}", climbing.fps());
+    for full in ["home, charging at 99%", "home, charging at 100%"] {
+        let result = run(case(full), 30);
+        assert!(
+            result.changes.len() <= 2,
+            "{full}: {}",
+            result.changes.len()
+        );
+    }
+}
+
 #[test]
 fn a_noisy_ride_changes_a_few_strips_a_frame() {
     let result = run(case("ride main, noisy, radar"), 10);

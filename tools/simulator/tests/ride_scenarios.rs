@@ -9495,7 +9495,7 @@ fn frames_drawn(sim: &mut Sim, secs: u64, mut feed: impl FnMut(&mut Sim, u64)) -
     let (mut frames, mut last, mut shown) = (Vec::new(), 0, 0);
     let start = sim.now();
     while sim.now() - start < seconds(secs) {
-        if (sim.now() - start) % 250 == 0 {
+        if (sim.now() - start).is_multiple_of(250) {
             feed(sim, sim.now() - start);
         }
         sim.advance(10);

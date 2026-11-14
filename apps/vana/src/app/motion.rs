@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn without_glides_gauges_and_markers_jump_when_a_reading_or_report_arrives() {
         let mut motion = Motion::default();
-        let mut jumpy = |motion: &mut Motion, sample: &Sample, radar: &Reports, now| {
+        let jumpy = |motion: &mut Motion, sample: &Sample, radar: &Reports, now| {
             motion.take(sample, radar, false, now);
             let graphics = motion.graphics(ALL, now);
             motion.drew(sample, on_screen(&graphics), now);

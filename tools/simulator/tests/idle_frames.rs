@@ -147,10 +147,10 @@ fn a_full_battery_on_usb_leaves_home_still() {
     sim.sync_network_time(next_minute_ms - seconds(50));
     sim.advance(seconds(5));
     assert_eq!(frames_over(&mut sim, seconds(30)), 0, "no fill to animate");
-    sim.set_battery(90, true);
+    sim.set_battery(50, true);
     assert!(
         frames_over(&mut sim, seconds(5)) >= 8,
-        "a fill climbing from 90% animates"
+        "a fill climbing from 50% animates"
     );
 }
 

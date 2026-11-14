@@ -595,6 +595,8 @@ const EDGE: usize = 8;
 const MARK_ICON: usize = 10;
 /// Battery icon: a 19 × 10 pill with a nub.
 const BATTERY_WIDTH: usize = 19;
+/// The widest fill: the icon's body, less its outline and gap.
+const FILL_WIDTH: usize = BATTERY_WIDTH - 6;
 /// Below this the percentage shows in place of the icon.
 pub const LOW_BATTERY: u8 = 20;
 /// At or below this the battery's fill turns amber.
@@ -625,7 +627,7 @@ pub const fn bolt(left: usize, top: usize, x: usize, y: usize) -> u8 {
 }
 
 /// What the status bar knows about the battery.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Battery {
     /// Charge, 0 to 100, as the device reports it.
     pub percent: u8,
@@ -660,6 +662,11 @@ impl Battery {
         (level as u16 + rise) as u8
     }
 
+    /// Columns of the icon's fill, of `FILL_WIDTH`.
+    const fn fill_columns(self) -> usize {
+        (self.fill() as usize * FILL_WIDTH).div_ceil(100)
+    }
+
     /// The fill's colour: green while charging, red once low, amber at 30%
     /// or less, white otherwise.
     pub const fn color(self) -> u16 {
@@ -674,6 +681,14 @@ impl Battery {
         }
     }
 }
+/// The icon as drawn, not the reading: a charge or an animation step that
+/// moves the fill by less than a column changes no pixel.
+impl core::hash::Hash for Battery {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        (self.fill_columns(), self.color(), self.charging).hash(state);
+    }
+}
+
 /// The least space between two status bar items.
 const GAP: usize = 6;
 /// Anti-aliased text may cover this many columns past its advance width.
@@ -951,7 +966,6 @@ impl StatusBar {
             let coverage = bolt(left - BOLT_GAP - BOLT_WIDTH, top, x, y);
             return blend(GREEN, BLACK, coverage);
         }
-        let percent = usize::from(battery.fill());
         let body = Rect {
             left,
             top: MIDDLE - 5,
@@ -971,7 +985,7 @@ impl StatusBar {
         let fill = Rect {
             left: body.left + 2,
             top: body.top + 2,
-            right: body.left + 2 + (percent * (body.width() - 4)).div_ceil(100),
+            right: body.left + 2 + battery.fill_columns(),
             bottom: body.bottom - 2,
         };
         if fill.contains(x, y) {

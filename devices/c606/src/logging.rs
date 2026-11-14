@@ -103,7 +103,7 @@ pub fn event(level: &str, component: &str, event: &str, message: &str) {
     critical_section::with(|cs| QUEUE.borrow(cs).borrow_mut().push(record));
     let elapsed = started.elapsed().as_micros().min(u64::from(u32::MAX)) as u32;
     ENQUEUES.fetch_add(1, Ordering::Relaxed);
-    let _ = ENQUEUE_US.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+    let _ = ENQUEUE_US.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
         Some(v.saturating_add(elapsed))
     });
     MAX_ENQUEUE_US.fetch_max(elapsed, Ordering::Relaxed);

@@ -900,7 +900,7 @@ dependencies = [
 [[package]]
 name = "esp-hal"
 version = "1.2.2"
-source = "git+https://github.com/patrikduksin/esp-hal.git?rev=22a9b7dac5a2d02646f5b84ee7aae9357afa7451#22a9b7dac5a2d02646f5b84ee7aae9357afa7451"
+source = "git+https://github.com/patrikduksin/esp-hal.git?rev=3dc1a1d25071acb0993a79cd4d1083e1253cdea0#3dc1a1d25071acb0993a79cd4d1083e1253cdea0"
 dependencies = [
  "bitfield",
  "bytemuck",
@@ -3066,8 +3066,7 @@ dependencies = [
 [[package]]
 name = "xtensa-lx-rt"
 version = "0.23.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07933551193a68b5b0a94a7c428e9626adb559661e0f4b048ac5ec1fa4bed334"
+source = "git+https://github.com/patrikduksin/esp-hal.git?rev=3dc1a1d25071acb0993a79cd4d1083e1253cdea0#3dc1a1d25071acb0993a79cd4d1083e1253cdea0"
 dependencies = [
  "document-features",
  "xtensa-lx",

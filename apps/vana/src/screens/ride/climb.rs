@@ -63,9 +63,9 @@ const CHART_RIGHT: usize = BODY.right - 6;
 const CHART_LEFT: usize = CHART_RIGHT - PROFILE_LEN;
 const _: () = assert!(CHART_LEFT >= BODY.left, "the profile needs 200 columns");
 const CHART_TOP: usize = CELLS + CELL_PITCH - 4;
-/// The baseline row without a progress bar; the fill ends above it. The
-/// chart runs into the toast band, where a toast covers it for a moment.
-const CHART_BOTTOM: usize = BODY.bottom - 8;
+/// Without a progress bar the fill runs to the screen's edge, into the toast
+/// band, where a toast covers it for a moment.
+const CHART_BOTTOM: usize = BODY.bottom;
 /// With a progress bar under the chart, and FOOT, the share and TOP under it.
 const BAR_LABELS: usize = BODY.bottom - 3;
 const BAR_BOTTOM: usize = BAR_LABELS - CAPTION.cap as usize - 4;

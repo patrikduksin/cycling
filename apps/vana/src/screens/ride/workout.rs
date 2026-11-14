@@ -57,16 +57,19 @@ const NEXT_BASE: usize = PROGRESS_TOP + PROGRESS_HEIGHT + 22;
 /// Rows where a tap adds to the step: the time left and its progress.
 pub const EXTEND_ROWS: core::ops::Range<usize> =
     VERDICT_BASE + 4..PROGRESS_TOP + PROGRESS_HEIGHT + 8;
-/// The chart reaches into the toast band, as the other charts do.
+/// The chart runs down to the screen's edge, into the toast band, as the
+/// other charts do.
 pub(super) const CHART_TOP: usize = NEXT_BASE + 10;
-pub(super) const CHART_BOTTOM: usize = BODY.bottom - 12;
+pub(super) const CHART_BOTTOM: usize = BODY.bottom;
 const CHART_HEIGHT: usize = CHART_BOTTOM - CHART_TOP;
-/// The white bar under the step on now.
-const NOW_TOP: usize = CHART_BOTTOM + 3;
+/// The white bar over the step on now, this many rows clear of its bar.
 const NOW_HEIGHT: usize = 3;
+const NOW_GAP: usize = 2;
+/// The tallest bar stops this far down, so the bar over it fits.
+const NOW_ROOM: usize = NOW_HEIGHT + NOW_GAP;
+const BAR_HEIGHT: usize = CHART_HEIGHT - NOW_ROOM;
 pub(super) const CHART_WIDTH: usize = RIGHT - LEFT;
-const _: () = assert!(CHART_HEIGHT >= 20, "the workout chart needs some height");
-const _: () = assert!(NOW_TOP + NOW_HEIGHT <= BODY.bottom);
+const _: () = assert!(BAR_HEIGHT >= 20, "the workout chart needs some height");
 /// Untimed steps take this much chart width, as if they lasted this long.
 const OPEN_WEIGHT_S: u32 = 120;
 /// A target of this much intensity fills the chart's height.
@@ -84,6 +87,8 @@ pub struct Chart {
     palette: heapless::Vec<u16, PALETTE>,
     /// The columns of the step on now.
     now: (usize, usize),
+    /// The rows of the white bar over it, from `CHART_TOP`.
+    now_rows: (usize, usize),
 }
 
 /// Colours a chart can use: each zone, cadence and none, lit and at 25 %.
@@ -116,6 +121,7 @@ impl Chart {
         colors: [0; CHART_WIDTH],
         palette: heapless::Vec::new(),
         now: (0, 0),
+        now_rows: (0, 0),
     };
 }
 
@@ -605,7 +611,7 @@ pub fn chart(player: &Player, profile: &TrainingProfile) -> Chart {
                 None => (color, pct, ahead),
             };
             let color = if dim { blend(color, BLACK, 4) } else { color };
-            let height = (pct.min(FULL_PCT) as usize * CHART_HEIGHT / FULL_PCT as usize).max(3);
+            let height = (pct.min(FULL_PCT) as usize * BAR_HEIGHT / FULL_PCT as usize).max(3);
             chart.tops[column] = (CHART_HEIGHT - height) as u8;
             chart.colors[column] = chart.index(color);
         }
@@ -613,13 +619,18 @@ pub fn chart(player: &Player, profile: &TrainingProfile) -> Chart {
             chart.now = stair;
         }
     }
+    if let Some(&top) = chart.tops[chart.now.0..chart.now.1].iter().min() {
+        let bottom = usize::from(top) - NOW_GAP;
+        chart.now_rows = (bottom - NOW_HEIGHT, bottom);
+    }
     chart
 }
 
-/// Paint the chart's row: its bars, then the white bar under the step on now.
+/// Paint the chart's row: the white bar over the step on now, then the bars.
 pub(super) fn paint_chart(chart: &Chart, row: &mut Row) {
     let y = row.y();
-    if (NOW_TOP..NOW_TOP + NOW_HEIGHT).contains(&y) && chart.now.1 > chart.now.0 {
+    let (low, high) = chart.now_rows;
+    if (CHART_TOP + low..CHART_TOP + high).contains(&y) {
         row.span(LEFT + chart.now.0..LEFT + chart.now.1, WHITE);
         return;
     }
@@ -650,12 +661,11 @@ pub(super) fn chart_pixel(chart: &Chart, x: usize, y: usize) -> u16 {
         return BLACK;
     }
     let column = x - LEFT;
-    if (NOW_TOP..NOW_TOP + NOW_HEIGHT).contains(&y) {
-        return if (chart.now.0..chart.now.1).contains(&column) {
-            WHITE
-        } else {
-            BLACK
-        };
+    let (low, high) = chart.now_rows;
+    if (CHART_TOP + low..CHART_TOP + high).contains(&y)
+        && (chart.now.0..chart.now.1).contains(&column)
+    {
+        return WHITE;
     }
     if (CHART_TOP..CHART_BOTTOM).contains(&y)
         && chart.tops[column] != EMPTY
@@ -884,6 +894,31 @@ mod tests {
                 player.skip();
             }
         }
+    }
+
+    #[test]
+    fn bars_reach_the_bottom_with_the_now_bar_over_the_step_on_now() {
+        let mut player = Player::new(VO2_MAX);
+        player.skip();
+        ride(&mut player, 30, 240);
+        let view = page(&player, Some(240));
+        let chart = view.chart();
+        let row = |y: usize| -> std::vec::Vec<u16> {
+            (LEFT..RIGHT).map(|x| chart_pixel(chart, x, y)).collect()
+        };
+        let last = row(BODY.bottom - 1);
+        assert!(
+            (0..CHART_WIDTH)
+                .filter(|&c| chart.tops[c] != EMPTY)
+                .all(|c| last[c] != BLACK),
+            "every step's bar reaches the screen's last row"
+        );
+        let (from, to) = chart.now;
+        let white = |y: usize| row(y)[from..to].iter().all(|&pixel| pixel == WHITE);
+        let top = CHART_TOP + usize::from(chart.tops[from]);
+        assert!(white(top - NOW_GAP - 1), "the now bar sits over its step");
+        assert!(!white(top), "the now bar leaves the step's bar visible");
+        assert!((BODY.bottom - 6..BODY.bottom).all(|y| !row(y).contains(&WHITE)));
     }
 
     #[test]

@@ -14,9 +14,8 @@
     "spark-md5": "3.0.2"
   },
   "devDependencies": {
-    "@types/pako": "2.0.4",
     "@types/spark-md5": "3.0.5",
     "@types/w3c-web-serial": "1.0.9",
-    "pako": "2.2.0"
+    "pako": "3.0.3"
   }
 }

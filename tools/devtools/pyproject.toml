@@ -4,19 +4,19 @@ version = "0.1.0"
 description = "Host tools for cycling firmware development"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = ["esptool==5.4.0"]
+dependencies = ["esptool==5.6.0"]
 
 [dependency-groups]
 dev = [
     "fitdecode==0.11.0",
-    "garmin-fit-sdk==21.218.0",
-    "pytest==9.1.1",
+    "garmin-fit-sdk==21.221.0",
+    "pytest==9.2.0",
     "pytest-xdist==3.8.0",
-    "ruff==0.17.0",
+    "ruff==0.17.5",
 ]
 
 [build-system]
-requires = ["uv_build>=0.13.1,<0.14"]
+requires = ["uv_build>=0.13.8,<0.14"]
 build-backend = "uv_build"
 
 [tool.pytest]

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pillow==11.3.0", "resvg-py==0.2.1"]
+# dependencies = ["pillow==13.0.0", "resvg-py==0.5.0"]
 # ///
 """Rasterize VANA's icons into 4-bit coverage for `screens::icons`.
 

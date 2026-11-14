@@ -14,7 +14,7 @@ explains the mechanism.
 
 Most behavior needs no hardware. Reproduce in a host test, `cycling sim`
 (report and screenshots in `.local/sim/latest`) or `cycling harness-virtual`
-first; `cycling sim-compare --pr N` attaches before and after screens. Go to
+first; `cycling verify --pr N` attaches before and after screens. Go to
 the device for what the simulator cannot show: drivers, timing, radio, power,
 storage and real sensors.
 

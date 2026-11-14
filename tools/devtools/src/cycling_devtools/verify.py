@@ -3,10 +3,7 @@
 Lanes that share a cargo target dir would only queue on its lock, so clippy
 gets its own dir and the firmware has one; sccache shares the dependency
 builds between them. harness-virtual has real-time reply timeouts,
-so it runs alone after the loaded phase. The full gate runs the ride
-scenarios once, in the screens lane: sim-compare records them, fails on a
-failing scenario and pairs their screens with the base's, so the test lane's
-nextest profile leaves them out.
+so it runs alone after the loaded phase.
 """
 
 import argparse
@@ -41,14 +38,15 @@ def frame_report(step):
 CHECK = Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))
 
 
-def lanes(mode, pr=None):
-    """Each inner list runs in order; the lists run in parallel."""
+def lanes(mode, pr=None, video=False):
     if mode == 'fast':
-        # The inner loop before pushing: everything except simulate, screens and harness-virtual.
         return [[Step('test', 'cycling test')], [CHECK], [BUILD]]
-    screens = 'cycling sim-compare' + (f' --pr {pr}' if pr else '')
+    screens = 'cycling sim-compare' + (f' --pr {pr}' if pr else '') + (' --video' if video else '')
     return [
-        [Step('test', 'cycling test', (('NEXTEST_PROFILE', 'verify'),)), Step('simulate', 'cycling simulate')],
+        [
+            Step('test', 'cycling test', (('NEXTEST_PROFILE', 'without-ride-scenarios'),)),
+            Step('simulate', 'cycling simulate'),
+        ],
         [CHECK],
         [BUILD],
         [Step('screens', screens)],
@@ -120,7 +118,12 @@ def failure_tail(results, lines=30):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--fast', action='store_true', help='test, check and build only')
-    parser.add_argument('--pr', type=int, help='post the result table on this pull request')
+    parser.add_argument('--pr', type=int, help='post the result table and the changed screens on this pull request')
+    parser.add_argument(
+        '--video',
+        action='store_true',
+        help='with the screens, before and after videos of scenarios whose screens changed',
+    )
     args = parser.parse_args(argv)
     warn_if_low_disk()
     mode = 'fast' if args.fast else 'full'
@@ -133,7 +136,7 @@ def main(argv=None):
     logs.mkdir(parents=True, exist_ok=True)
 
     started = time.monotonic()
-    parallel = lanes(mode, args.pr)
+    parallel = lanes(mode, args.pr, args.video)
     with ThreadPoolExecutor(len(parallel)) as pool:
         results = [r for lane in pool.map(lambda lane: run_lane(lane, logs), parallel) for r in lane]
     if all(r.ok for r in results):

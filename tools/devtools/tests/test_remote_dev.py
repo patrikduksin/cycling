@@ -144,7 +144,9 @@ class VerifyTests(unittest.TestCase):
     def test_the_full_gate_runs_the_scenarios_once_and_posts_their_screens(self):
         steps = {step.name: step for lane in verify.lanes('full', 7) for step in lane}
         self.assertEqual(steps['screens'].command, 'cycling sim-compare --pr 7')
-        self.assertEqual(dict(steps['test'].env)['NEXTEST_PROFILE'], 'verify')
+        videos = {step.name: step for lane in verify.lanes('full', 7, video=True) for step in lane}
+        self.assertEqual(videos['screens'].command, 'cycling sim-compare --pr 7 --video')
+        self.assertEqual(dict(steps['test'].env)['NEXTEST_PROFILE'], 'without-ride-scenarios')
         fast = {step.name: step for lane in verify.lanes('fast', 7) for step in lane}
         self.assertNotIn('screens', fast)
         self.assertNotIn('NEXTEST_PROFILE', dict(fast['test'].env))

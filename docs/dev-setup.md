@@ -70,9 +70,13 @@ pin at once and belongs in its own PR with `cycling verify` results.
 - The firmware compiles with a placeholder commit, which `build.sh` replaces
   in the linked ELF, so a commit that changes no firmware input rebuilds
   nothing (about 2 s).
-- `cycling verify` runs test, check, simulate and the firmware build in
-  parallel, then harness-virtual alone, and prints one table; `--fast` is the
-  inner-loop subset, `--pr N` posts the table on a PR. Logs go to
+- `cycling verify` runs test, check, simulate, the firmware build and the
+  screens in parallel, then harness-virtual alone, and prints one table. The
+  screens lane is `cycling sim-compare`: it runs the ride scenarios once,
+  recorded, and the test lane's nextest profile (`without-ride-scenarios`, in
+  `.config/nextest.toml`) leaves them out. `--fast` is the inner-loop subset
+  without screens; `--pr N` posts the table and the changed screens on a PR;
+  `--video` adds before and after videos of changed scenarios. Logs go to
   `.local/verify/<commit>/`.
 
 ## A device on another machine

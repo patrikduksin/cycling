@@ -543,6 +543,16 @@ pub(crate) fn heard(
     }
 }
 
+fn heard_each(drawn: &[(f32, f32)], after: f32, to: f32) -> [Vec<(u32, Warning)>; 2] {
+    let positions = || (0..=(to / 7.0) as usize).map(|k| k as f32 * 7.0);
+    let (course, turns) = crate::ride::course::stored::tests::uploaded(&extended(drawn, after));
+    let scanned = match after > 0.0 {
+        true => ride_through(&line_of(&course), positions()),
+        false => ride_through(drawn, positions()),
+    };
+    [scanned, ride_with(&turns, positions())]
+}
+
 /// Ride `line` from its start to `to` metres, a fix every 7 m.
 fn ride_to(line: &[(f32, f32)], to: f32) -> Vec<(u32, Warning)> {
     ride_through(line, (0..=(to / 7.0) as usize).map(|k| k as f32 * 7.0))
@@ -581,37 +591,42 @@ pub(crate) fn judge(said: &[(u32, Warning)], degrees: f32) -> Verdict {
 /// hairpin a U-turn.
 #[test]
 fn a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all() {
-    for found in FOUND {
-        let (mut silent, mut runs, mut u_turns, mut hairpins) = (Vec::new(), 0, 0, 0);
-        // 0 m on is the course as drawn; after 12 or 150 km it is thinned.
-        for after in [0.0, 12_000.0, 150_000.0] {
-            for spacing in [3.0, 5.0, 8.0] {
-                for curved in [false, true] {
-                    for radius in [15.0, 20.0, 25.0, 30.0, 35.0, 40.0] {
-                        for sweep in (3..=22).map(|k| k as f32 * 15.0) {
-                            let drawn = match curved {
-                                true => curved_ring(radius, sweep, spacing),
-                                false => ring(radius, sweep, spacing),
-                            };
-                            let degrees = swing(0.0, 180.0 - sweep);
-                            let said = heard(&drawn, after, found, 900.0);
-                            let verdict = judge(&said, degrees);
+    let mut silent = [Vec::new(), Vec::new()];
+    let (mut runs, mut u_turns, mut hairpins) = (0, [0; 2], 0);
+    // 0 m on is the course as drawn; after 12 or 150 km it is thinned.
+    for after in [0.0, 12_000.0, 150_000.0] {
+        for spacing in [3.0, 5.0, 8.0] {
+            for curved in [false, true] {
+                for radius in [15.0, 20.0, 25.0, 30.0, 35.0, 40.0] {
+                    for sweep in (3..=22).map(|k| k as f32 * 15.0) {
+                        let drawn = match curved {
+                            true => curved_ring(radius, sweep, spacing),
+                            false => ring(radius, sweep, spacing),
+                        };
+                        let degrees = swing(0.0, 180.0 - sweep);
+                        runs += 1;
+                        for (k, said) in heard_each(&drawn, after, 900.0).iter().enumerate() {
+                            let found = FOUND[k];
+                            let verdict = judge(said, degrees);
                             assert!(
                                 verdict != Verdict::Wrong,
                                 "{found:?}: r{radius} exit {sweep} ({degrees}), {spacing} m, curved {curved}, after {after}: {said:?}"
                             );
-                            runs += 1;
                             if verdict == Verdict::Silent && fabsf(degrees) >= 75.0 {
-                                silent.push((after, spacing, curved, radius, sweep));
+                                silent[k].push((after, spacing, curved, radius, sweep));
                             }
                         }
                     }
                 }
-                if after == 0.0 {
-                    continue;
-                }
-                for radius in [20.0, 25.0, 30.0, 35.0, 40.0] {
-                    let said = kinds(&heard(&hairpin(radius, spacing), after, found, 1_200.0));
+            }
+            if after == 0.0 {
+                continue;
+            }
+            for radius in [20.0, 25.0, 30.0, 35.0, 40.0] {
+                hairpins += 1;
+                let each = heard_each(&hairpin(radius, spacing), after, 1_200.0);
+                for (k, said) in each.iter().enumerate() {
+                    let (found, said) = (FOUND[k], kinds(said));
                     let twice = [
                         ahead(LEFT),
                         Warning::Now {
@@ -624,10 +639,13 @@ fn a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all() {
                         u_turn || (said == twice && found == Found::Scanned),
                         "{found:?}: hairpin r{radius}, {spacing} m, after {after}: {said:?}"
                     );
-                    (hairpins, u_turns) = (hairpins + 1, u_turns + usize::from(u_turn));
+                    u_turns[k] += usize::from(u_turn);
                 }
             }
         }
+    }
+    for (k, found) in FOUND.into_iter().enumerate() {
+        let (silent, u_turns) = (&silent[k], u_turns[k]);
         std::println!(
             "{found:?}: {} of {runs} silent where a turn of 75 degrees or more was due; {u_turns} of {hairpins} thinned hairpins U-TURN",
             silent.len()
@@ -884,25 +902,25 @@ pub(crate) fn block(spacing: f32, apart: f32, kerb: f32, right: bool) -> Vec<(f3
 /// way out, where the rider is still on the course.
 #[test]
 fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
-    for found in FOUND {
-        let (mut runs, mut silent) = (0, 0);
-        // 0 km on is the course as drawn; after 12 or 150 km it is thinned.
-        for after in [0.0, 12_000.0, 150_000.0] {
-            for right in [true, false] {
-                for spacing in [3.0, 5.0, 8.0] {
-                    for kerb in [0.0, 2.0, 4.0, 6.0, 8.0] {
-                        for apart in [
-                            15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0, 70.0, 80.0,
-                        ] {
-                            let said =
-                                heard(&block(spacing, apart, kerb, right), after, found, 700.0);
-                            runs += 1;
-                            silent += usize::from(said.is_empty());
-                            let side = if right { Side::Right } else { Side::Left };
-                            let fits = |kind: Kind| match kind {
-                                Kind::UTurn => apart <= 25.0,
-                                Kind::Turn(s) | Kind::Sharp(s) => s == side,
-                            };
+    let (mut runs, mut silent) = (0, [0; 2]);
+    // 0 km on is the course as drawn; after 12 or 150 km it is thinned.
+    for after in [0.0, 12_000.0, 150_000.0] {
+        for right in [true, false] {
+            for spacing in [3.0, 5.0, 8.0] {
+                for kerb in [0.0, 2.0, 4.0, 6.0, 8.0] {
+                    for apart in [
+                        15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0, 70.0, 80.0,
+                    ] {
+                        runs += 1;
+                        let side = if right { Side::Right } else { Side::Left };
+                        let fits = |kind: Kind| match kind {
+                            Kind::UTurn => apart <= 25.0,
+                            Kind::Turn(s) | Kind::Sharp(s) => s == side,
+                        };
+                        let each = heard_each(&block(spacing, apart, kerb, right), after, 700.0);
+                        for (k, said) in each.iter().enumerate() {
+                            let found = FOUND[k];
+                            silent[k] += usize::from(said.is_empty());
                             let wrong = said.iter().any(|&(_, warning)| match warning {
                                 Warning::Ahead { kind, .. } | Warning::Now { kind, then: None } => {
                                     !fits(kind)
@@ -921,7 +939,9 @@ fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
                 }
             }
         }
-        std::println!("{found:?}: 0 of {runs} wrong, {silent} silent");
+    }
+    for (k, found) in FOUND.into_iter().enumerate() {
+        std::println!("{found:?}: 0 of {runs} wrong, {} silent", silent[k]);
     }
 }
 
@@ -979,31 +999,30 @@ pub(crate) fn bends(spacing: f32, turns: &[(f32, f32)]) -> Vec<(f32, f32)> {
     path(&points, spacing)
 }
 
-/// Whether each course of `turns` (metres along, degrees), drawn every
-/// `spacings` metres, as drawn and thinned 12 and 150 km on, names its
-/// corners rightly: the wrong runs, and how many were silent, of how many.
 fn ride_corners(
     courses: &[Vec<(f32, f32)>],
     spacings: &[f32],
-    found: Found,
-) -> (Vec<std::string::String>, usize, usize) {
-    let (mut runs, mut silent, mut wrong) = (0, 0, Vec::new());
+) -> [(Vec<std::string::String>, usize, usize); 2] {
+    let mut each = [(Vec::new(), 0, 0), (Vec::new(), 0, 0)];
     for turns in courses {
         for &spacing in spacings {
             let full = bends(spacing, turns);
             for after in [0.0, 12_000.0, 150_000.0] {
-                let said = heard(&full, after, found, 800.0);
-                if !names_next_corners(&said, turns) {
-                    wrong.push(std::format!(
-                        "{found:?}: {turns:?}, {spacing} m, {after} m on: {said:?}"
-                    ));
+                for (k, said) in heard_each(&full, after, 800.0).iter().enumerate() {
+                    let (wrong, silent, runs) = &mut each[k];
+                    if !names_next_corners(said, turns) {
+                        wrong.push(std::format!(
+                            "{:?}: {turns:?}, {spacing} m, {after} m on: {said:?}",
+                            FOUND[k]
+                        ));
+                    }
+                    *runs += 1;
+                    *silent += usize::from(said.is_empty());
                 }
-                runs += 1;
-                silent += usize::from(said.is_empty());
             }
         }
     }
-    (wrong, silent, runs)
+    each
 }
 
 /// Two to four street corners of either way, 15 to 80 m apart, drawn every
@@ -1026,8 +1045,8 @@ fn corners_of_either_way_close_together_are_named_the_way_they_go() {
             }
         }
     }
-    for found in FOUND {
-        let (wrong, silent, runs) = ride_corners(&courses, &[3.0, 5.0, 8.0, 1_000.0], found);
+    let each = ride_corners(&courses, &[3.0, 5.0, 8.0, 1_000.0]);
+    for (found, (wrong, silent, runs)) in FOUND.into_iter().zip(each) {
         std::println!(
             "{found:?}: {} of {runs} wrong, {silent} silent",
             wrong.len()
@@ -1068,8 +1087,8 @@ fn staggered_junctions_and_chicanes_are_named_rightly_or_not_at_all() {
                 .collect(),
         );
     }
-    for found in FOUND {
-        let (wrong, silent, runs) = ride_corners(&courses, &[3.0, 5.0, 8.0, 1_000.0], found);
+    let each = ride_corners(&courses, &[3.0, 5.0, 8.0, 1_000.0]);
+    for (found, (wrong, silent, runs)) in FOUND.into_iter().zip(each) {
         std::println!(
             "{found:?}: {} of {runs} wrong, {silent} silent",
             wrong.len()

@@ -39,3 +39,6 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.terrain]
 opt-level = 2
+# Every distance the ride code weighs takes a libm square root.
+[profile.dev.package.libm]
+opt-level = 2

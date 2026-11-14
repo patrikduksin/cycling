@@ -9481,3 +9481,186 @@ fn expect_page(sim: &Sim, page: &str) {
 fn a_ride_paged_by_a_press_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), a_ride_paged_by_a_press, false);
 }
+
+/// One frame a ride drew, with the four numbers on its main page.
+struct Drawn {
+    at: u64,
+    numbers: [Option<String>; 4],
+}
+
+/// Ride `secs` seconds, calling `feed` with the elapsed ms every 250 ms as
+/// a sensor reports, and list the frames that drew something new.
+fn frames_drawn(sim: &mut Sim, secs: u64, mut feed: impl FnMut(&mut Sim, u64)) -> Vec<Drawn> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let (mut frames, mut last, mut shown) = (Vec::new(), 0, 0);
+    let start = sim.now();
+    while sim.now() - start < seconds(secs) {
+        if (sim.now() - start) % 250 == 0 {
+            feed(sim, sim.now() - start);
+        }
+        sim.advance(10);
+        let submissions = sim.device.shell.display_submissions;
+        if submissions == shown {
+            continue;
+        }
+        shown = submissions;
+        let screen = sim.screen();
+        let mut hasher = DefaultHasher::new();
+        screen.pixels.hash(&mut hasher);
+        let pixels = hasher.finish();
+        if pixels == last {
+            continue;
+        }
+        last = pixels;
+        frames.push(Drawn {
+            at: sim.now() - start,
+            numbers: ["KM/H", "W", "BPM", "RPM"].map(|label| screen.field(label)),
+        });
+    }
+    frames
+}
+
+/// A noisy feed: every reading wobbles at each report.
+fn wobbling() -> impl FnMut(&mut Sim, u64) {
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    move |sim, _| {
+        let mut wobble = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 2001) as f64 / 1000.0 - 1.0
+        };
+        sim.ride_at(
+            28.0 + wobble(),
+            230.0 + 35.0 * wobble(),
+            142.0 + 2.0 * wobble(),
+            88.0 + 3.0 * wobble(),
+        );
+    }
+}
+
+/// Open Settings, DISPLAY, and step to its fifth row, MODE.
+fn open_mode_row(sim: &mut Sim) {
+    sim.home("SETTINGS");
+    sim.swipe_next();
+    sim.swipe_next();
+    for _ in 0..4 {
+        sim.press(Button::BottomLeft);
+    }
+    sim.expect_text("DISPLAY");
+}
+
+/// What a ride in a display mode drew.
+struct Rides {
+    /// When the main page's numbers changed, ms into a noisy minute's first 10 s.
+    number_changes: Vec<u64>,
+    /// Longest run of frames each at most 50 ms after the one before, after
+    /// power steps up: a glide draws one every 40 ms.
+    longest_burst: usize,
+    /// Frames drawn in 6 s while a car closes from behind.
+    car_frames: usize,
+}
+
+fn measure(sim: &mut Sim) -> Rides {
+    sim.start_ride();
+    sim.ride_at(28.0, 230.0, 142.0, 88.0);
+    sim.advance(seconds(10));
+    let noisy = frames_drawn(sim, 10, wobbling());
+    let number_changes = noisy
+        .windows(2)
+        .filter(|pair| pair[0].numbers != pair[1].numbers)
+        .map(|pair| pair[1].at)
+        .collect();
+    sim.ride_at(28.0, 230.0, 142.0, 88.0);
+    sim.advance(seconds(5));
+    let step = frames_drawn(sim, 6, |sim, at| {
+        if at == 1_000 {
+            sim.ride_at(28.0, 330.0, 142.0, 88.0);
+        }
+    });
+    let (mut longest_burst, mut run) = (0, 0);
+    for pair in step.windows(2) {
+        run = if pair[1].at - pair[0].at <= 50 {
+            run + 1
+        } else {
+            0
+        };
+        longest_burst = longest_burst.max(run + 1);
+    }
+    sim.vehicle(Vehicle {
+        range_m: 150.0,
+        closing_kmh: 25.0,
+        fast: false,
+        side: Side::Behind,
+    });
+    let car_frames = frames_drawn(sim, 6, |_, _| {}).len();
+    Rides {
+        number_changes,
+        longest_burst,
+        car_frames,
+    }
+}
+
+#[test]
+fn saver_mode_is_chosen_in_settings_kept_over_a_restart_and_draws_only_what_arrives() {
+    let mut sim = rider();
+    sim.ant_sensor(device_type::RADAR, RADAR);
+    sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD", "RADAR"]);
+
+    let mut normal = rider();
+    normal.ant_sensor(device_type::RADAR, RADAR);
+    normal.pair(&["HEART RATE", "POWER METER", "SPEED/CAD", "RADAR"]);
+    let smooth = measure(&mut normal);
+    assert!(
+        smooth
+            .number_changes
+            .windows(2)
+            .any(|pair| pair[1] - pair[0] < 300),
+        "{:?}",
+        smooth.number_changes
+    );
+    assert!(smooth.longest_burst >= 4, "{}", smooth.longest_burst);
+
+    open_mode_row(&mut sim);
+    sim.expect_field("MODE", "NORMAL");
+    sim.expect_text("SMOOTH");
+    sim.checkpoint("settings: the display mode starts NORMAL");
+    sim.press(Button::BottomRight);
+    sim.expect_field("MODE", "SAVER");
+    sim.expect_text("NO GLIDES");
+    sim.checkpoint("settings: the display mode SAVER");
+    sim.wait_for("SAVED", seconds(5)).unwrap();
+    go_home(&mut sim);
+
+    sim.power_loss();
+    assert!(sim.command("PROFILE").1.contains("stored=current"));
+    open_mode_row(&mut sim);
+    sim.expect_field("MODE", "SAVER");
+    sim.checkpoint("settings: SAVER after a restart");
+    go_home(&mut sim);
+
+    let saver = measure(&mut sim);
+    sim.checkpoint("main page in SAVER");
+    assert!(
+        saver.number_changes.len() >= 8
+            && saver
+                .number_changes
+                .windows(2)
+                .all(|pair| pair[1] - pair[0] >= 900),
+        "numbers change once a second at most: {:?}",
+        saver.number_changes
+    );
+    assert!(
+        saver.longest_burst <= 2,
+        "no glide frames: {}",
+        saver.longest_burst
+    );
+    // A radar reports four times a second, so a marker moves at most that
+    // often, and the numbers add one frame a second.
+    assert!(
+        saver.car_frames <= 6 * 4 + 6 && saver.car_frames * 2 < smooth.car_frames,
+        "{} frames in SAVER, {} in NORMAL",
+        saver.car_frames,
+        smooth.car_frames
+    );
+}

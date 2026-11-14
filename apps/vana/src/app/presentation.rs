@@ -352,9 +352,14 @@ impl Runtime {
         if system.foreground == Screen::Blank || self.turning_off() {
             return;
         }
-        let shown = shown_sample(&self.readings);
-        self.motion
-            .take(&shown, &radar_reports(&self.readings, now), now);
+        self.latch_numbers(now);
+        let shown = self.shown.sample();
+        self.motion.take(
+            &arrived_sample(&self.readings),
+            &radar_reports(&self.readings, now),
+            self.policy().glides,
+            now,
+        );
         // A new number, or a glide that moves a graphic, draws rather than
         // waiting for the page's usual pace.
         let due = self.motion_due(&shown, now);
@@ -696,9 +701,9 @@ impl Runtime {
         view.now_ms = now;
         view.active_secs = self.ride.active_ms(now) / 1000;
         view.state = self.ride.active().status();
-        let sample = shown_sample(&self.readings);
+        let sample = self.shown.sample();
         view.power_3s = sample.power_watts;
-        view.sample = self.readings.live;
+        view.sample = self.shown.live();
         view.radar_paired = ant.channel(device_type::RADAR, now).is_some();
         view.auto_paused = self.ride.auto.paused();
         view.ride_page = navigation.ride_page;
@@ -1381,11 +1386,7 @@ impl Runtime {
                 let _ = write!(
                     note,
                     "{}",
-                    if policy.glides {
-                        "SMOOTH GAUGES"
-                    } else {
-                        "NUMBERS EVERY SECOND"
-                    }
+                    if policy.glides { "SMOOTH" } else { "NO GLIDES" }
                 );
                 write!(value, "{}", policy.name)
             }
@@ -1530,24 +1531,78 @@ impl Runtime {
         }
     }
 
+    fn policy(&self) -> &'static super::mode::Policy {
+        self.preferences.options.mode.policy()
+    }
+
+    /// Take the readings the numbers show, as the mode says: each pass, or
+    /// once the ride clock's second turns (the wall clock's while no ride
+    /// records).
+    fn latch_numbers(&mut self, now: u64) {
+        let second = if self.ride.active().status() == Status::Recording {
+            (true, self.ride.active_ms(now) / 1000)
+        } else {
+            (false, now / 1000)
+        };
+        self.shown
+            .take(&self.readings, self.policy().numbers, second);
+    }
+
     /// When the readings `shown` or a glide next need a frame.
     fn motion_due(&self, shown: &crate::ride::log::Sample, now: u64) -> Option<u64> {
         let profile = self.preferences.profile;
         self.motion.due(
             self.motion_visible(),
             shown,
-            MOTION_FRAME_MS,
+            self.policy().motion_frame_ms,
             now,
             |graphics| crate::screens::ride::pixels(graphics, &profile),
         )
     }
 }
 
-/// The readings the ride page's numbers show: power is its 3 s average.
-pub(super) fn shown_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
+/// The newest readings as the gauges take them: power is its 3 s average.
+fn arrived_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
     crate::ride::log::Sample {
         power_watts: readings.power_3s_watts,
         ..readings.live
+    }
+}
+
+/// The readings the ride page's numbers show: the newest ones, or those of
+/// the second's start when the mode latches numbers.
+#[derive(Default)]
+pub(super) struct Shown {
+    /// The clock second the readings were taken at, and whose clock it is.
+    second: Option<(bool, u64)>,
+    live: crate::ride::log::Sample,
+    power_3s_watts: Option<u16>,
+}
+
+impl Shown {
+    fn take(
+        &mut self,
+        readings: &super::readings::Readings,
+        numbers: super::mode::Numbers,
+        second: (bool, u64),
+    ) {
+        if numbers == super::mode::Numbers::OnArrival || self.second != Some(second) {
+            self.live = readings.live;
+            self.power_3s_watts = readings.power_3s_watts;
+        }
+        self.second = Some(second);
+    }
+
+    pub(super) fn live(&self) -> crate::ride::log::Sample {
+        self.live
+    }
+
+    /// The numbers' sample: power is its 3 s average.
+    pub(super) fn sample(&self) -> crate::ride::log::Sample {
+        crate::ride::log::Sample {
+            power_watts: self.power_3s_watts,
+            ..self.live
+        }
     }
 }
 
@@ -1616,6 +1671,47 @@ mod tests {
     use super::*;
     use crate::daylight::sun_state;
     use firmware_services::gps::unix_seconds;
+
+    fn readings_at(watts: u16) -> super::super::readings::Readings {
+        let mut readings = super::super::readings::Readings::default();
+        readings.live.power_watts = Some(watts);
+        readings.power_3s_watts = Some(watts);
+        readings
+    }
+
+    #[test]
+    fn numbers_on_arrival_follow_every_reading_and_every_second_hold_until_it_turns() {
+        use super::super::mode::Numbers;
+        let mut shown = Shown::default();
+        shown.take(&readings_at(200), Numbers::EverySecond, (true, 5));
+        shown.take(&readings_at(300), Numbers::EverySecond, (true, 5));
+        assert_eq!(
+            shown.sample().power_watts,
+            Some(200),
+            "held within the second"
+        );
+        assert_eq!(shown.live().power_watts, Some(200));
+        shown.take(&readings_at(400), Numbers::EverySecond, (true, 6));
+        assert_eq!(
+            shown.sample().power_watts,
+            Some(400),
+            "retaken as the second turns"
+        );
+        shown.take(&readings_at(500), Numbers::OnArrival, (true, 6));
+        assert_eq!(shown.sample().power_watts, Some(500));
+        shown.take(&readings_at(600), Numbers::EverySecond, (true, 6));
+        assert_eq!(
+            shown.sample().power_watts,
+            Some(500),
+            "a mode change keeps the second"
+        );
+        shown.take(&readings_at(700), Numbers::EverySecond, (false, 6));
+        assert_eq!(
+            shown.sample().power_watts,
+            Some(700),
+            "the wall clock is another clock"
+        );
+    }
 
     /// The sun sets near 17:42 in a Santiago winter and 20:55 in summer.
     #[test]

@@ -100,6 +100,7 @@ pub struct Runtime {
     /// The look-ahead's state lives in the block composition gives it.
     lookahead: Option<&'static mut lookahead::Terrain>,
     motion: motion::Motion,
+    shown: presentation::Shown,
     alerts: crate::ride::alerts::Alerts,
     /// Back to start's breadcrumb lives in the block composition gives it.
     back: Option<&'static mut back::BackToStart>,
@@ -138,6 +139,7 @@ impl Runtime {
             night: night::Night::default(),
             lookahead: None,
             motion: motion::Motion::default(),
+            shown: presentation::Shown::default(),
             alerts: crate::ride::alerts::Alerts::default(),
             back: None,
             reported: seen::Reported::default(),

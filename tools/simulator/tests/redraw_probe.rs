@@ -19,3 +19,15 @@ fn a_noisy_ride_changes_a_few_strips_a_frame() {
     assert!((1..result.strips).contains(&median), "{median}");
     assert!(p90 < result.strips, "{p90}");
 }
+
+#[test]
+fn saver_submits_a_fraction_of_the_frames_a_noisy_ride_does_in_normal() {
+    let normal = run(case("ride main, noisy, radar"), 20);
+    let saver = run(case("ride main, noisy, radar, saver"), 20);
+    assert!(
+        saver.fps() * 3.0 < normal.fps(),
+        "{} fps in saver, {} in normal",
+        saver.fps(),
+        normal.fps()
+    );
+}

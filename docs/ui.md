@@ -435,6 +435,18 @@ charging icon and sheets step every 500 ms; still pages redraw once a second.
 Home draws only when what it shows changes, such as the clock's minute, the
 battery or a sensor, or when a press or a test capture waits for a frame.
 
+MODE in Settings → Display chooses NORMAL or SAVER, the rider's call, never
+automatic. NORMAL is everything described here. SAVER draws less: gauges and
+radar markers jump to each reading or report instead of gliding, radar
+markers stop closing between reports, and the main page's numbers change
+once a second, when the ride clock's second turns (the wall clock's while no
+ride records). Gauges and markers still show every reading as it arrives, so
+SAVER draws a frame for each report, about four a second, and one for the
+numbers. `app/mode.rs` holds one table row per mode; the rest of VANA reads
+its fields and never asks which mode is on. The choice is stored in VANA's
+record, so it survives a restart, and a record saved before it loads as
+NORMAL.
+
 Numbers never glide. A rider glancing down mid-glide could not read one, so
 every number and word on the ride screen jumps to each reading as it
 arrives, and the main page draws a new speed, power, heart rate or cadence

@@ -25,9 +25,8 @@ which also keeps it from Nix garbage collection (`.local/dev-shell`).
 
 What differs between machines belongs to the machine, not the repository: set
 it in the environment, from the machine's own configuration. When the C606 is
-on another machine, `CYCLING_DEVICE_HOST` names it as `user@<tailnet name>`;
-fleet-hub sets `CYCLING_DEVICE_HOST=patrikduksin@patrikduksin` in its NixOS
-configuration.
+on another machine, `CYCLING_DEVICE_HOST` is its tailnet name; fleet-hub sets
+`CYCLING_DEVICE_HOST=patrikduksin` in its NixOS configuration.
 
 Claude Code installs the pstack plugin the first time it opens a trusted
 checkout: [.claude/settings.json](../.claude/settings.json) names its
@@ -66,7 +65,7 @@ pin at once and belongs in its own PR with `cycling verify` results.
 
 The device host needs this repository's primary checkout at
 `~/projects/cycling` (override with `CYCLING_DEVICE_CHECKOUT`), set up as above,
-and `ssh <user>@<tailnet name>` working without prompts. Machines reach each
+and `ssh <tailnet name>` working without prompts. Machines reach each
 other over Tailscale SSH, set up fleet-wide in
 [fleet-nix](https://github.com/patrikduksin/fleet-nix): no keys, no ssh aliases.
 

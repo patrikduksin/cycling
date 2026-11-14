@@ -1,6 +1,6 @@
-[target.xtensa-esp32s3-none-elf]
-# The linker script is added by devices/c606/build.rs; repeated flags here break nested checkouts.
-rustflags = ["-C", "force-frame-pointers=yes"]
+# No target rustflags: devices/c606/build.rs adds the linker script, and repeated
+# flags here break nested checkouts. esp-backtrace needs no frame pointers on
+# Xtensa; it walks the windowed-ABI save areas.
 
 [unstable]
 build-std = ["core", "alloc"]

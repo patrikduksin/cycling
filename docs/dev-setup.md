@@ -37,7 +37,7 @@ marketplace and enables it.
 
 - Host Rust 1.100.0 with clippy, rustfmt and rust-src (rust-overlay).
 - The Xtensa toolchain ([nix/esp-rust.nix](../nix/esp-rust.nix)): esp-rs Rust
-  1.98.0.0 with rust-src and Espressif's xtensa-esp-elf GCC, pinned by upstream
+  1.100.0.0 with rust-src and Espressif's xtensa-esp-elf GCC, pinned by upstream
   release digests in place of espup. `CYCLING_ESP_TOOLCHAIN` points at it;
   `build.sh` puts it first on `PATH` for the firmware build only.
 - Python 3.14 for uv (`UV_PYTHON`, downloads off), espflash, sccache, cargo-nextest, ffmpeg,

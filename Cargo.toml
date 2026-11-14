@@ -26,7 +26,8 @@ overflow-checks = true
 [patch.crates-io]
 trouble-host = { path = "vendor/trouble-host" }
 
-esp-hal = { git = "https://github.com/patrikduksin/esp-hal.git", rev = "22a9b7dac5a2d02646f5b84ee7aae9357afa7451" }
+esp-hal = { git = "https://github.com/patrikduksin/esp-hal.git", rev = "3dc1a1d25071acb0993a79cd4d1083e1253cdea0" }
+xtensa-lx-rt = { git = "https://github.com/patrikduksin/esp-hal.git", rev = "3dc1a1d25071acb0993a79cd4d1083e1253cdea0" }
 
 # Simulated scenarios run hours of firmware passes; keep host tests fast.
 [profile.dev.package.shell-simulator]

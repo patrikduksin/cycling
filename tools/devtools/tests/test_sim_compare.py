@@ -43,12 +43,14 @@ IMAGE = bytes(range(48))
 OTHER = bytes([*range(47), 0])
 
 
-def scenario(run, name, screens, status='pass'):
+def scenario(run, name, screens, status='pass', video=False):
     """A scenario whose checkpoint screens are {caption: png bytes}."""
     directory = run / name
     directory.mkdir(parents=True)
-    files = ['video.mp4']
-    (directory / 'video.mp4').write_bytes(b'v')
+    files = []
+    if video:
+        files.append('video.mp4')
+        (directory / 'video.mp4').write_bytes(b'v')
     for i, (caption, data) in enumerate(screens.items()):
         file = 'final.png' if caption == 'final screen' else f'{i + 1:02}-{caption.replace(" ", "-")}.png'
         (directory / file).write_bytes(data)
@@ -111,7 +113,7 @@ def test_comparison_shows_only_differences_side_by_side(tmp_path):
     scenario(before, 'steady', {'home': png(IMAGE, 4)})
     scenario(before, 'ride', {'riding': png(IMAGE, 4), 'old view': png(IMAGE, 4)})
     scenario(after, 'steady', {'home': png(IMAGE, 4)})
-    scenario(after, 'ride', {'riding': png(OTHER, 4), 'new view': png(IMAGE, 4)})
+    scenario(after, 'ride', {'riding': png(OTHER, 4), 'new view': png(IMAGE, 4)}, video=True)
     old, new = report.load(before), report.load(after)
     markdown, attachments = compare.comparison(
         compare.pair(old, new), old, new, tmp_path, ('origin/main', 'aaa', 'Base subject', 'bbb')
@@ -133,6 +135,18 @@ def test_comparison_shows_only_differences_side_by_side(tmp_path):
     for path in attachments:
         assert path in markdown
     assert all(len(files) <= report.ATTACHMENT_LIMIT for _, files in report.comments(markdown, attachments))
+
+
+def test_videos_on_both_sides_show_as_before_and_after(tmp_path):
+    before, after = tmp_path / 'before', tmp_path / 'after'
+    scenario(before, 'ride', {'riding': png(IMAGE, 4)}, video=True)
+    scenario(after, 'ride', {'riding': png(OTHER, 4)}, video=True)
+    old, new = report.load(before), report.load(after)
+    markdown, attachments = compare.comparison(
+        compare.pair(old, new), old, new, tmp_path, ('origin/main', 'aaa', 'Base subject', 'bbb')
+    )
+    assert '**Before**\n\n./before/ride/video.mp4\n\n**After**\n\n./after/ride/video.mp4' in markdown
+    assert attachments[:2] == ['./before/ride/video.mp4', './after/ride/video.mp4']
 
 
 def test_unchanged_run_says_so_and_failures_still_show(tmp_path):
@@ -168,7 +182,7 @@ def test_one_scenario_with_many_changes_splits_within_the_attachment_limit(tmp_p
     before, after = tmp_path / 'before', tmp_path / 'after'
     many = 30
     scenario(before, 'busy', {f'screen {i}': png(IMAGE, 4) for i in range(many)})
-    scenario(after, 'busy', {f'screen {i}': png(OTHER, 4) for i in range(many)})
+    scenario(after, 'busy', {f'screen {i}': png(OTHER, 4) for i in range(many)}, video=True)
     old, new = report.load(before), report.load(after)
     markdown, attachments = compare.comparison(
         compare.pair(old, new), old, new, tmp_path, ('origin/main', 'aaa', 'Base subject', 'bbb')
@@ -197,11 +211,11 @@ def test_a_build_failure_or_empty_run_is_incomplete(tmp_path):
 def test_base_and_current_never_share_a_target_directory(tmp_path, monkeypatch):
     targets = {}
 
-    def fake(source, artifacts, target, name_filter):
-        targets[artifacts.name] = target
-        artifacts.mkdir(parents=True, exist_ok=True)
-        scenario(artifacts, 'ride', {'riding': png(IMAGE, 4)})
-        (artifacts / 'cargo.log').write_text('test ride ... ok\ntest result: ok. 1 passed\n')
+    def fake(run):
+        targets[run.artifacts.name] = run.target
+        run.artifacts.mkdir(parents=True, exist_ok=True)
+        scenario(run.artifacts, 'ride', {'riding': png(IMAGE, 4)})
+        (run.artifacts / 'cargo.log').write_text('test ride ... ok\ntest result: ok. 1 passed\n')
         return 0
 
     @contextlib.contextmanager
@@ -219,14 +233,14 @@ def test_base_and_current_never_share_a_target_directory(tmp_path, monkeypatch):
 
 
 def test_main_refuses_an_incomplete_baseline_before_reporting(tmp_path, monkeypatch):
-    def fake(source, artifacts, target, name_filter):
-        assert artifacts.is_absolute() and target.is_absolute()
-        artifacts.mkdir(parents=True, exist_ok=True)
-        if artifacts.name == 'after':
-            scenario(artifacts, 'ride', {'riding': png(IMAGE, 4)})
-            (artifacts / 'cargo.log').write_text('test ride ... ok\ntest result: ok. 1 passed\n')
+    def fake(run):
+        assert run.artifacts.is_absolute() and run.target.is_absolute()
+        run.artifacts.mkdir(parents=True, exist_ok=True)
+        if run.artifacts.name == 'after':
+            scenario(run.artifacts, 'ride', {'riding': png(IMAGE, 4)})
+            (run.artifacts / 'cargo.log').write_text('test ride ... ok\ntest result: ok. 1 passed\n')
             return 0
-        (artifacts / 'cargo.log').write_text('error: could not compile\n')
+        (run.artifacts / 'cargo.log').write_text('error: could not compile\n')
         return 101
 
     @contextlib.contextmanager
@@ -243,6 +257,61 @@ def test_main_refuses_an_incomplete_baseline_before_reporting(tmp_path, monkeypa
     assert compare.main(['--out', 'relative', '--pr', '1']) == 1
     assert posted == []
     assert not (tmp_path / 'relative/summary.md').exists()
+
+
+SCREENS = {
+    'before': {'steady': png(IMAGE, 4), 'ride': png(IMAGE, 4)},
+    'after': {'steady': png(IMAGE, 4), 'ride': png(OTHER, 4), 'fresh': png(IMAGE, 4)},
+}
+# Where each scenario's test sits; a test in a module needs its path for --exact.
+TESTS = {'steady': 'steady', 'ride': 'ride', 'fresh': 'mutations::fresh'}
+
+
+def simulate(runs):
+    """A fake `scenarios` that records the run and writes the SCREENS of its side.
+    The base records video unasked, as recorders from before SIM_VIDEO do."""
+
+    def fake(run):
+        runs.append(run)
+        side = 'before' if run.target.name == 'sim-compare-base' else 'after'
+        names = [n for n in SCREENS[side] if run.tests[2:] == () or TESTS[n] in run.tests[2:]]
+        run.artifacts.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            scenario(run.artifacts, name, {'final screen': SCREENS[side][name]}, video=run.video or side == 'before')
+        log = ''.join(f'test {TESTS[n]} ... ok\n' for n in names)
+        (run.artifacts / 'cargo.log').write_text(f'{log}test result: ok. {len(names)} passed\n')
+        return 0
+
+    return fake
+
+
+@pytest.mark.parametrize('video', [False, True])
+def test_main_records_video_only_for_new_scenarios_and_asked_for_changes(tmp_path, monkeypatch, video):
+    @contextlib.contextmanager
+    def checkout(commit, path):
+        yield path
+
+    runs = []
+    monkeypatch.setattr(compare, 'scenarios', simulate(runs))
+    monkeypatch.setattr(compare, 'checkout', checkout)
+    monkeypatch.setattr(compare, 'git', lambda *args: 'abc1234 Base subject')
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
+    monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
+    out = tmp_path / 'out'
+    assert compare.main(['--out', str(out), *(['--video'] if video else [])]) == 0
+    assert [(r.artifacts.name, r.tests, r.video) for r in runs] == [
+        ('after', (), False),
+        ('before', (), False),
+        ('after-video', ('--', '--exact', 'mutations::fresh', *(['ride'] if video else [])), True),
+        *([('before-video', ('--', '--exact', 'ride'), True)] if video else []),
+    ]
+    summary = (out / 'summary.md').read_text()
+    # Re-running for video does not change what was compared.
+    assert summary.startswith('## ✅ Simulator before/after: 1 changed · 1 new · 0 removed · 1 unchanged')
+    assert 'out/after/fresh/video.mp4' in summary
+    assert ('out/after/ride/video.mp4' in summary) == video
+    assert ('out/before/ride/video.mp4' in summary) == video
+    assert 'steady/video.mp4' not in summary
 
 
 def fake_git(monkeypatch, calls):
@@ -328,7 +397,7 @@ def test_streaming_errors_stop_cargo_and_its_children(tmp_path, monkeypatch):
     monkeypatch.setattr(compare.subprocess, 'Popen', popen)
     monkeypatch.setattr(compare.sys, 'stdout', Broken())
     with pytest.raises(BrokenPipeError):
-        compare.scenarios(tmp_path, tmp_path / 'run', tmp_path / 'target', None)
+        compare.scenarios(compare.Run(tmp_path, tmp_path / 'run', tmp_path / 'target'))
     assert started[0].poll() is not None
     # The whole group is gone, grandchildren included, once init reaps them.
     deadline = time.monotonic() + 5

@@ -31,9 +31,11 @@ including failed ones. `SIM_VIDEO=1` adds a captioned video; encoding it is most
 of a run's time, so only `cycling sim-pr` and `cycling sim-live` set it. `artifacts/` holds the PNG, GIF, MP4 (through `ffmpeg`)
 and chart encoders. `cycling sim-pr <number>` posts the run inline on a pull
 request through `cycling_devtools.sim.report`. `cycling sim-compare [--base <ref>]
-[--filter <test name>] [--pr <number>]` also runs the base ref (default `origin/main`, fetched first) in a temporary
+[--filter <test name>] [--pr <number>] [--video]` also runs the base ref (default `origin/main`, fetched first) in a temporary
 worktree and reports only screens whose pixels changed, Before | After
-(`cycling_devtools.sim.compare`).
+(`cycling_devtools.sim.compare`). Both sides run without video; only scenarios
+new in the PR run again for a video, and with `--video` the scenarios whose
+screens changed too, on both sides.
 
 `cycling sim-live` opens a window (`src/bin/sim-live.rs`, behind the `live`
 feature) onto `live.rs`: the device powers on beside a rider at 25 km/h on a

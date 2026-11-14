@@ -267,7 +267,8 @@ TASKS = [
     ),
     task(
         'sim-compare',
-        'Run simulator scenarios here and on a base ref; report changed screens Before | After (--base REF, --pr N, --filter NAME)',
+        'Run simulator scenarios here and on a base ref; report changed screens Before | After '
+        '(--base REF, --pr N, --filter NAME, --video for before/after videos of changed scenarios)',
         f'{DEV}sim.compare',
     ),
     task(

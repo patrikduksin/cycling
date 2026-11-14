@@ -6,11 +6,15 @@ cargo reuse the base's test binary for the current checkout afterwards, because
 workspace artifacts are keyed by package, not by checkout path, and freshness by
 file times. The separate directory stays incremental from run to run. Checkpoint
 screenshots are paired by scenario and checkpoint name and compared by pixels,
-so a reviewer sees Before | After only for screens that changed.
+so a reviewer sees Before | After only for screens that changed. Both sides run
+without video; afterwards only the scenarios worth watching run again with it,
+by exact test name: new ones, and with `--video` those whose screens changed.
 """
 
 import argparse
+import functools
 import os
+import re
 import shutil
 import signal
 import struct
@@ -44,6 +48,7 @@ DECODED = {b'IHDR', b'IDAT', b'IEND'}
 GRACE_S = 5
 TABLE = ['| Screen | Before | After |', '|---|---|---|']
 DEFAULT_BASE = 'origin/main'
+TEST = re.compile(r'^test (\S+) \.\.\. ', re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -53,7 +58,7 @@ class Pair:
     before: Path | None
     after: Path | None
 
-    @property
+    @functools.cached_property
     def state(self):
         if self.before is None:
             return 'new'
@@ -179,7 +184,7 @@ def comparison(pairs, before, after, base, refs):
         lines += ['', 'No screen changed.']
 
     results = {r['name']: r for r in after}
-    old = {r['name'] for r in before}
+    previous = {r['name']: r for r in before}
     attachments = []
     for scenario in dict.fromkeys([*(p.scenario for p in pairs), *results]):
         shown = [(p, state) for p, state in states if p.scenario == scenario and state != 'unchanged']
@@ -188,16 +193,22 @@ def comparison(pairs, before, after, base, refs):
         if not shown and not failed:
             continue
         mark = '❌' if failed else '✅' if result else '⚪'
-        suffix = ' (new scenario)' if scenario not in old else ' (removed scenario)' if result is None else ''
+        suffix = ' (new scenario)' if scenario not in previous else ' (removed scenario)' if result is None else ''
         lines += ['', f'### {mark} {report.title(scenario)}{suffix}', '']
         if failed and result['failure']:
             lines += [*report.fenced(result['failure']), '']
-        video = result and next((f for f in result['files'] if f.startswith('video.')), None)
         section = 0
-        if video and shown:
-            path = report.reference(result['dir'] / video, base)
+        videos = [
+            (label, r, video)
+            for label, r in (('Before', previous.get(scenario)), ('After', result))
+            if shown and r and (video := report.video(r))
+        ]
+        for label, r, video in videos:
+            path = report.reference(r['dir'] / video, base)
             attachments.append(path)
             section += 1
+            if len(videos) > 1:
+                lines += [f'**{label}**', '']
             lines += [path if video.endswith('.mp4') else f'![video]({path})', '']
         if shown:
             lines += TABLE
@@ -225,19 +236,46 @@ def base_target(target):
     return target / 'sim-compare-base'
 
 
-def scenarios(source, artifacts, target, name_filter):
-    """Run the scenarios of `source` into `artifacts`, keeping cargo's log, and
-    return cargo's exit status. cargo and its tests never outlive the call, so
-    they cannot write into a worktree that is being removed."""
-    shutil.rmtree(artifacts, ignore_errors=True)
-    artifacts.mkdir(parents=True)
-    command = [*COMMAND, *([name_filter] if name_filter else [])]
-    env = {**os.environ, 'SIM_ARTIFACTS': str(artifacts), 'CARGO_TARGET_DIR': str(target)}
+@dataclass(frozen=True)
+class Run:
+    """The scenarios of the checkout at `source`, recorded into `artifacts`.
+    `tests` are the cargo test arguments that select them."""
+
+    source: Path
+    artifacts: Path
+    target: Path
+    tests: tuple[str, ...] = ()
+    video: bool = False
+
+
+def selection(name_filter):
+    return (name_filter,) if name_filter else ()
+
+
+def exact(run_dir, names):
+    """cargo test arguments that run only the tests that recorded `names` in
+    `run_dir`. Some tests sit in modules, and a test that records more than one
+    session names the others `<test>-<n>`."""
+    log = (run_dir / 'cargo.log').read_text(errors='replace')
+    paths = {path.rsplit('::', 1)[-1]: path for path in TEST.findall(log)}
+    tests = (re.sub(r'-\d+$', '', name) for name in names)
+    return ('--', '--exact', *dict.fromkeys(paths.get(test, test) for test in tests))
+
+
+def scenarios(run):
+    """Run `run` into its artifacts, keeping cargo's log, and return cargo's
+    exit status. cargo and its tests never outlive the call, so they cannot
+    write into a worktree that is being removed."""
+    shutil.rmtree(run.artifacts, ignore_errors=True)
+    run.artifacts.mkdir(parents=True)
+    env = {**os.environ, 'SIM_ARTIFACTS': str(run.artifacts), 'CARGO_TARGET_DIR': str(run.target)}
     env.pop('SIM_VIDEO', None)
-    with (artifacts / 'cargo.log').open('w') as log:
+    if run.video:
+        env['SIM_VIDEO'] = '1'
+    with (run.artifacts / 'cargo.log').open('w') as log:
         process = subprocess.Popen(
-            command,
-            cwd=source,
+            [*COMMAND, *run.tests],
+            cwd=run.source,
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -279,6 +317,36 @@ def incomplete(directory, status):
     if not any(directory.glob('*/result.json')):
         return 'no scenario ran; check --filter'
     return None
+
+
+def without_videos(results):
+    """Drop videos a base recorder from before SIM_VIDEO wrote anyway, so only
+    re-run scenarios show one."""
+    for result in results:
+        result['files'] = [f for f in result['files'] if not f.startswith('video.')]
+    return results
+
+
+def video_scenarios(pairs, before, after, changed):
+    """(after, before) scenarios to re-run with video: new ones on the after
+    side, and with `changed` those whose screens changed, on both sides."""
+    old, current = {r['name'] for r in before}, {r['name'] for r in after}
+    new = [r['name'] for r in after if r['name'] not in old]
+    if not changed:
+        return new, []
+    both = old & current
+    differ = list(dict.fromkeys(p.scenario for p in pairs if p.scenario in both and p.state != 'unchanged'))
+    return [*new, *differ], differ
+
+
+def attach_videos(results, run_dir, names):
+    """Move the videos `run_dir` recorded for `names` beside their screens."""
+    by_name = {r['name']: r for r in results}
+    for name in names:
+        for video in sorted((run_dir / name).glob('video.*')):
+            result = by_name[name]
+            video.rename(result['dir'] / video.name)
+            result['files'].append(video.name)
 
 
 @contextmanager
@@ -343,6 +411,9 @@ def main(argv=None):
     )
     parser.add_argument('--pr', help='pull request to comment on with the comparison')
     parser.add_argument('--filter', help='cargo test name filter, applied to both runs')
+    parser.add_argument(
+        '--video', action='store_true', help='also show before and after videos of scenarios whose screens changed'
+    )
     parser.add_argument('--out', type=Path, default=OUT)
     args = parser.parse_args(argv)
     warn_if_low_disk()
@@ -357,27 +428,44 @@ def main(argv=None):
     target = Path(os.environ.get('CARGO_TARGET_DIR') or ROOT / 'target').resolve()
     after_dir, before_dir = out / 'after', out / 'before'
     (out / 'summary.md').unlink(missing_ok=True)
-    after_status = scenarios(ROOT, after_dir, target, args.filter)
+    tests = selection(args.filter)
+    after_status = scenarios(Run(ROOT, after_dir, target, tests))
     with checkout(base_commit, out / 'base-src') as source:
-        before_status = scenarios(source, before_dir, base_target(target), args.filter)
-    problems = [
-        f'{side}: {problem}'
-        for side, directory, status in (
-            ('after (this checkout)', after_dir, after_status),
-            (f'before ({base})', before_dir, before_status),
-        )
-        if (problem := incomplete(directory, status))
-    ]
-    if problems:
-        sys.stdout.flush()
-        print('\nsim-compare: refusing to compare an incomplete run; nothing was reported or posted.', file=sys.stderr)
-        for problem in problems:
-            print(f'  {problem}', file=sys.stderr)
-        return 1
-    before, after = report.load(before_dir), report.load(after_dir)
+        before_status = scenarios(Run(source, before_dir, base_target(target), tests))
+        problems = [
+            f'{side}: {problem}'
+            for side, directory, status in (
+                ('after (this checkout)', after_dir, after_status),
+                (f'before ({base})', before_dir, before_status),
+            )
+            if (problem := incomplete(directory, status))
+        ]
+        if problems:
+            sys.stdout.flush()
+            print(
+                '\nsim-compare: refusing to compare an incomplete run; nothing was reported or posted.', file=sys.stderr
+            )
+            for problem in problems:
+                print(f'  {problem}', file=sys.stderr)
+            return 1
+        before, after = without_videos(report.load(before_dir)), without_videos(report.load(after_dir))
+        pairs = pair(before, after)
+        after_videos, before_videos = video_scenarios(pairs, before, after, args.video)
+        for run, results, names in (
+            (Run(ROOT, out / 'after-video', target, exact(after_dir, after_videos), True), after, after_videos),
+            (
+                Run(source, out / 'before-video', base_target(target), exact(before_dir, before_videos), True),
+                before,
+                before_videos,
+            ),
+        ):
+            if not names:
+                continue
+            if problem := incomplete(run.artifacts, scenarios(run)):
+                print(f'sim-compare: warning: some videos are missing: {problem}', file=sys.stderr)
+            attach_videos(results, run.artifacts, names)
     for directory, results in ((before_dir, before), (after_dir, after)):
         (directory / 'index.html').write_text(report.page(results, f'Simulator scenarios ({directory.name})'))
-    pairs = pair(before, after)
     markdown, attachments = comparison(pairs, before, after, ROOT, (base, base_commit, base_subject, report.commit()))
     (out / 'summary.md').write_text(markdown)
     print(markdown.split('\n\n', 1)[0].removeprefix('## '))

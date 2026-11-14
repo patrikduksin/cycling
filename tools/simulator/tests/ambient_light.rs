@@ -1,4 +1,4 @@
-use shell_simulator::replay::first_difference;
+use shell_simulator::replay::{Mode, first_difference};
 use shell_simulator::sim::{Sim, seconds};
 use shell_simulator::trace::file;
 use shell_simulator::trace::timeline::{Kind, read};
@@ -57,4 +57,47 @@ fn a_trace_recorded_before_ambient_light_was_traced_still_replays_exactly() {
     let report = replayed.device.report().unwrap();
     assert_eq!(report.first, None, "{:?}", report.counts);
     assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+}
+
+/// The levels the backlight passed through, in order.
+fn levels(mut samples: Vec<u8>) -> Vec<u8> {
+    samples.dedup();
+    samples
+}
+
+#[test]
+fn a_ride_with_a_light_feed_replays_to_the_same_backlight() {
+    let mut sim = Sim::new().boot();
+    sim.discard_recording();
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.set_ambient_light(Some(68));
+    sim.advance(seconds(5));
+    let start = sim.now();
+    let mut seen = vec![sim.device.shell.effective()];
+    for (light, seconds) in [
+        (Some(68), 10),
+        (Some(1_557), 10),
+        (Some(300), 30),
+        (None, 10),
+    ] {
+        sim.set_ambient_light(light);
+        for _ in 0..seconds * 100 {
+            sim.advance(10);
+            seen.push(sim.device.shell.effective());
+        }
+    }
+    let seen = levels(seen);
+    assert!(seen.len() > 20, "the backlight moved through {seen:?}");
+    let capture = sim.capture();
+
+    let mut replayed = Sim::replaying(&capture, Mode::Strict, None);
+    replayed.replay_until(start);
+    let mut again = vec![replayed.device.shell.effective()];
+    while replayed.replay_until(replayed.device.now + 1) {
+        again.push(replayed.device.shell.effective());
+    }
+    assert_eq!(levels(again), seen);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
 }

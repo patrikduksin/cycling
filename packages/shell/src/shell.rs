@@ -1,4 +1,5 @@
 //! Portable foreground presentation and preferences. Acquisition lives independently.
+use crate::backlight::{Backlight, Curve};
 use crate::idle::Config;
 use crate::idle::Gate;
 use crate::idle::Idle;
@@ -11,7 +12,9 @@ use device_api::input::Input;
 use device_api::input::InputSource;
 use device_api::observation::Availability;
 use device_api::observation::Error;
+use device_api::observation::Observation;
 use device_api::power::Power;
+use device_api::sensors::Light;
 
 /// Required display/input, with power and persistent settings independently optional.
 /// Constant working memory; rendering borrows no frame buffer across submission.
@@ -148,9 +151,11 @@ pub struct Shell<D, I, P, B> {
     pub clock: Option<fn() -> u64>,
     idle: Idle,
     effective: u8,
-    /// The most backlight the application allows now, such as at night.
-    /// It is never stored.
-    ceiling: u8,
+    /// The curve the application wants the backlight to follow, or none for
+    /// the stored brightness.
+    curve: Option<&'static Curve>,
+    backlight: Backlight,
+    light: Observation<Light>,
     power: P,
     display: D,
     input: I,
@@ -243,7 +248,9 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             clock: None,
             idle: Idle::new(now),
             effective: 0,
-            ceiling: 100,
+            curve: None,
+            backlight: Backlight::default(),
+            light: Observation::Unavailable,
             power,
             display,
             input,
@@ -308,13 +315,18 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     pub fn effective(&self) -> u8 {
         self.effective
     }
-    /// Cap the backlight at `percent` from the next tick, without changing
-    /// the stored brightness.
-    pub fn set_ceiling(&mut self, percent: u8) {
-        self.ceiling = percent.min(100);
+    /// Follow the ambient light along `curve` from the next tick, or show the
+    /// stored brightness with none. The shell does not know why the
+    /// application chose it.
+    pub fn set_curve(&mut self, curve: Option<&'static Curve>) {
+        self.curve = curve;
     }
-    pub fn ceiling(&self) -> u8 {
-        self.ceiling
+    /// Whether the backlight follows the ambient light.
+    pub fn auto(&self) -> bool {
+        self.curve.is_some()
+    }
+    pub fn observe_light(&mut self, light: Observation<Light>) {
+        self.light = light;
     }
     pub fn dimmed(&self) -> bool {
         self.idle.dimmed()
@@ -401,9 +413,17 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             0
         } else {
             self.idle.tick(now, config);
-            self.idle
-                .effective(self.settings.brightness, config)
-                .min(self.ceiling)
+            let selected = match self.curve {
+                Some(curve) => {
+                    self.backlight
+                        .step(self.light, curve, self.settings.brightness, now)
+                }
+                None => {
+                    self.backlight = Backlight::default();
+                    self.settings.brightness
+                }
+            };
+            self.idle.effective(selected, config)
         };
         self.power_error = self.power.availability() == Availability::Failed;
         if self.power.availability() == Availability::Ready && self.effective != effective {

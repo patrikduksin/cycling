@@ -1,7 +1,6 @@
 //! Foreground scheduling, view preparation and radar alerts.
 use super::Runtime;
 use super::cues::Cue;
-use super::night::NIGHT_PERCENT;
 use super::recording::{Medium, Request, RideMessage};
 use crate::clock::Zone;
 use crate::daylight::Sun;
@@ -335,7 +334,13 @@ impl Runtime {
         ant: &impl Ant,
         position: &impl Positioning,
     ) {
-        self.follow_daylight(system, now, position);
+        self.follow_daylight(now, position);
+        system.set_curve(
+            self.preferences
+                .options
+                .auto_brightness
+                .then_some(self.policy().light_curve),
+        );
         // Once the device accepted turning off, the last frame stays.
         if system.foreground == Screen::Blank || self.turning_off() {
             return;
@@ -1299,10 +1304,11 @@ impl Runtime {
                 write!(value, "{}", profile.lthr_bpm)
             }
             Row::Brightness => {
-                if self.night.is_night() && display.brightness > NIGHT_PERCENT {
-                    let _ = write!(note, "NIGHT {NIGHT_PERCENT}%");
+                if options.auto_brightness {
+                    write!(value, "AUTO")
+                } else {
+                    write!(value, "{}%", display.brightness)
                 }
-                write!(value, "{}%", display.brightness)
             }
             Row::Daylight => {
                 use super::preferences::Daylight;

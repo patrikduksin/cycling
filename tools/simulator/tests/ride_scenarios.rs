@@ -4631,13 +4631,17 @@ fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
         sim.press(Button::BottomLeft);
     }
     sim.expect_text("DISPLAY");
-    sim.expect_field("BRIGHTNESS", "50%");
+    sim.expect_field("BRIGHTNESS", "AUTO");
     sim.expect_field("DIM AFTER", "30 S");
     sim.checkpoint("display section");
-    // ACT steps a choice; the backlight follows at once.
+    // ACT steps a choice: AUTO, then 25, 50 and 75%; the backlight follows at once.
+    sim.press(Button::BottomRight);
+    sim.expect_field("BRIGHTNESS", "25%");
+    sim.press(Button::BottomRight);
     sim.press(Button::BottomRight);
     sim.expect_field("BRIGHTNESS", "75%");
     assert_eq!(sim.device.shell.settings.brightness, 75);
+    assert!(!sim.device.shell.auto());
     sim.set_option("DIM AFTER", "1 MIN");
     assert_eq!(sim.device.shell.settings.dim_timeout_secs, 60);
     sim.checkpoint("brighter, dims after a minute");
@@ -4782,6 +4786,8 @@ fn an_unsaved_brightness_change_is_reported_before_turning_off() {
     let mut sim = rider();
     sim.home("SETTINGS");
     show_setting(&mut sim, "BRIGHTNESS");
+    sim.set_option("BRIGHTNESS", "25%");
+    sim.advance(seconds(5));
     sim.fail_storage(0, 0);
     sim.set_option("BRIGHTNESS", "75%");
     sim.expect_text("SAVING");
@@ -5135,7 +5141,7 @@ fn a_saved_ride_on_a_failed_card_says_so_and_rides_list_newest_first() {
 }
 
 #[test]
-fn riding_through_sunset_dims_the_backlight_smoothly_and_settings_can_hold_day() {
+fn riding_through_sunset_turns_the_day_night_decision_and_leaves_the_backlight_alone() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
     // Santiago on 14 October 2026: the sun sets at 22:51 UTC (19:51 local)
@@ -5146,44 +5152,26 @@ fn riding_through_sunset_dims_the_backlight_smoothly_and_settings_can_hold_day()
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.start_ride();
     sim.checkpoint("riding before sunset");
-    sim.advance(minutes(30));
-    assert_eq!(sim.device.shell.effective(), 50, "still light at 23:10");
-    // Sample the backlight through the change: it only steps down, a few
-    // percent at a time, and settles at the night level.
-    let mut levels = vec![sim.device.shell.effective()];
-    for _ in 0..(4 * 60 * 10) {
-        sim.advance(100);
-        levels.push(sim.device.shell.effective());
-    }
-    assert!(
-        levels.windows(2).all(|w| w[1] <= w[0] && w[0] - w[1] <= 4),
-        "{levels:?}"
-    );
-    assert_eq!(levels.last(), Some(&20), "night level");
-    let ramp = levels
-        .iter()
-        .filter(|level| (21..50).contains(*level))
-        .count();
-    assert!(
-        (5..=10).contains(&ramp),
-        "a ramp of about a second: {ramp} steps"
+    sim.advance(minutes(40));
+    assert_eq!(
+        sim.device.shell.effective(),
+        50,
+        "no light reading, no change"
     );
     assert!(recording(&mut sim));
-    sim.checkpoint("after dark, the backlight is down");
+    sim.checkpoint("riding after dark");
     sim.stop_ride();
     go_home(&mut sim);
 
-    // Settings says why, and DAY holds the full backlight.
+    // Settings says it is night, and DAY holds the day look.
     sim.home("SETTINGS");
     show_setting(&mut sim, "DAY / NIGHT");
     sim.expect_field("DAY / NIGHT", "AUTO");
     sim.expect_text("NIGHT NOW");
-    sim.expect_text("NIGHT 20%");
     sim.checkpoint("settings in auto, at night");
     sim.set_option("DAY / NIGHT", "DAY");
-    sim.advance(seconds(2));
+    sim.expect_text("DAY");
     assert_eq!(sim.device.shell.effective(), 50);
-    assert_eq!(sim.device.shell.settings.brightness, 50, "never stored");
     sim.checkpoint("held at day");
 }
 
@@ -5195,15 +5183,20 @@ fn night_comes_on_time_after_the_gps_fix_is_lost() {
     sim.pair(&["SPEED/CAD"]);
     sim.set_gps_clock(22 * 3600 + 40 * 60, (14, 10, 26));
     sim.advance(seconds(15));
-    assert_eq!(sim.device.shell.effective(), 50, "day");
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "DAY / NIGHT");
+    sim.expect_text("DAY NOW");
+    go_home(&mut sim);
     // A ride keeps the screen awake.
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.start_ride();
     sim.set_gps_fix(false);
-    sim.advance(minutes(30));
-    assert_eq!(sim.device.shell.effective(), 50, "still light at 23:10");
-    sim.advance(minutes(8));
-    assert_eq!(sim.device.shell.effective(), 20, "dark by 23:18");
+    sim.advance(minutes(38));
+    sim.stop_ride();
+    go_home(&mut sim);
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "DAY / NIGHT");
+    sim.expect_text("NIGHT NOW");
     sim.checkpoint("night without a fix");
 }
 
@@ -9750,4 +9743,57 @@ fn saver_mode_is_chosen_in_settings_kept_over_a_restart_and_draws_only_what_arri
         saver.car_frames,
         smooth.car_frames
     );
+}
+
+/// Let the light settle for a minute and read the backlight.
+fn backlight_in(sim: &mut Sim, light: Option<u16>) -> u8 {
+    sim.set_ambient_light(light);
+    sim.advance(seconds(60));
+    sim.device.shell.effective()
+}
+
+#[test]
+fn auto_brightness_follows_the_light_saver_sits_lower_and_a_percent_ignores_it() {
+    let mut sim = rider();
+    sim.home("SETTINGS");
+    show_setting(&mut sim, "DIM AFTER");
+    sim.set_option("DIM AFTER", "NEVER");
+    sim.expect_field("BRIGHTNESS", "AUTO");
+    assert!(sim.device.shell.auto());
+    assert_eq!(
+        backlight_in(&mut sim, None),
+        50,
+        "no reading: the stored 50%"
+    );
+
+    let bright = backlight_in(&mut sim, Some(1_500));
+    let dim = backlight_in(&mut sim, Some(68));
+    assert!((82..=88).contains(&bright), "{bright}");
+    assert!((21..=27).contains(&dim), "{dim}");
+    sim.checkpoint("settings: brightness AUTO in a dim room");
+    assert_eq!(
+        backlight_in(&mut sim, None),
+        50,
+        "reading lost: back to 50%"
+    );
+
+    go_home(&mut sim);
+    open_mode_row(&mut sim);
+    sim.press(Button::BottomRight);
+    sim.expect_field("MODE", "SAVER");
+    let saver_bright = backlight_in(&mut sim, Some(1_500));
+    let saver_dim = backlight_in(&mut sim, Some(68));
+    assert!(
+        saver_bright < bright && saver_dim < dim,
+        "{saver_bright} {saver_dim}"
+    );
+    assert!(saver_bright <= 60 && saver_dim <= 18);
+
+    show_setting(&mut sim, "BRIGHTNESS");
+    sim.set_option("BRIGHTNESS", "50%");
+    assert!(!sim.device.shell.auto());
+    for light in [Some(40), Some(4_000), None] {
+        assert_eq!(backlight_in(&mut sim, light), 50, "{light:?}");
+    }
+    sim.checkpoint("settings: brightness fixed at 50% ignores the light");
 }

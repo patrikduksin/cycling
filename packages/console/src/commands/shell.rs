@@ -19,8 +19,9 @@ pub fn execute<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
             let s = system.settings;
             let _ = write!(
                 out,
-                "brightness={} dim_timeout={} dim_brightness={} timezone={} effective={} dimmed={} source={} persistence_error={}",
+                "brightness={} auto={} dim_timeout={} dim_brightness={} timezone={} effective={} dimmed={} source={} persistence_error={}",
                 s.brightness,
+                system.auto(),
                 s.dim_timeout_secs,
                 s.dim_brightness,
                 s.timezone_minutes,

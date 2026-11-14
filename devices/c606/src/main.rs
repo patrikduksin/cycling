@@ -547,7 +547,7 @@ fn vana_pass(
         let physical = trace
             .physical
             .observe(physical, now, record, Event::Physical);
-        trace
+        let light = trace
             .light
             .observe(devices.sensors.light(now), now, record, Event::Light);
         let online = device_api::network::Network::online(&devices.network);
@@ -572,6 +572,7 @@ fn vana_pass(
         stage_ended(Stage::Observe);
         sdk.set_startup_status(startup);
         system.set_app_active(sdk.input_active());
+        system.observe_light(light);
         system.tick(now);
         system.input_source().0.record(&mut *record.borrow_mut());
         for input in system.take_synthetic() {

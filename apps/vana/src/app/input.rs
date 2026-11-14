@@ -508,11 +508,18 @@ impl Runtime {
         let mut display = self.preferences.display;
         match row {
             Row::Brightness => {
-                // The next step up, so a level set elsewhere moves on too.
-                display.brightness = BRIGHTNESS_STEPS
+                // AUTO, then each step up; a level set elsewhere moves on too.
+                let next = BRIGHTNESS_STEPS
                     .into_iter()
-                    .find(|step| *step > display.brightness)
-                    .unwrap_or(BRIGHTNESS_STEPS[0]);
+                    .find(|step| *step > display.brightness);
+                match (options.auto_brightness, next) {
+                    (true, _) => {
+                        options.auto_brightness = false;
+                        display.brightness = BRIGHTNESS_STEPS[0];
+                    }
+                    (false, Some(step)) => display.brightness = step,
+                    (false, None) => options.auto_brightness = true,
+                }
             }
             Row::AutoDim => display.dim_secs = after(&DIM_AFTER_SECS, display.dim_secs),
             Row::AutoPause => options.auto_pause = !options.auto_pause,

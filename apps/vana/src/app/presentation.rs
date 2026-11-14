@@ -1725,11 +1725,31 @@ mod tests {
     fn take(
         shown: &mut Shown,
         numbers: super::super::mode::Numbers,
-        second: (bool, u64),
+        (recording, second): (bool, u64),
         readout: Readout,
     ) {
-        if shown.stale(numbers, second) {
-            shown.set(readout, second);
+        take_at(shown, numbers, at(recording, second), readout);
+    }
+
+    fn at(recording: bool, second: u64) -> Moment {
+        Moment {
+            recording,
+            second,
+            page: Page::Ride,
+            ride_page: RidePage::Main,
+            lap: 1,
+            climbing: false,
+        }
+    }
+
+    fn take_at(
+        shown: &mut Shown,
+        numbers: super::super::mode::Numbers,
+        moment: Moment,
+        readout: Readout,
+    ) {
+        if shown.stale(numbers, moment) {
+            shown.set(readout, moment);
         }
     }
 
@@ -1778,6 +1798,43 @@ mod tests {
             Some(700),
             "the wall clock is another clock"
         );
+    }
+
+    #[test]
+    fn a_new_page_lap_or_climb_retakes_the_numbers_within_the_second() {
+        use super::super::mode::Numbers;
+        let mut shown = Shown::default();
+        let main = at(true, 5);
+        take_at(&mut shown, Numbers::EverySecond, main, readout_at(200));
+        for (moment, watts) in [
+            (
+                Moment {
+                    ride_page: RidePage::Climb,
+                    ..main
+                },
+                300,
+            ),
+            (
+                Moment {
+                    ride_page: RidePage::Climb,
+                    lap: 2,
+                    ..main
+                },
+                400,
+            ),
+            (
+                Moment {
+                    ride_page: RidePage::Climb,
+                    lap: 2,
+                    climbing: true,
+                    ..main
+                },
+                500,
+            ),
+        ] {
+            take_at(&mut shown, Numbers::EverySecond, moment, readout_at(watts));
+            assert_eq!(shown.sample().power_watts, Some(watts));
+        }
     }
 
     /// The sun sets near 17:42 in a Santiago winter and 20:55 in summer.

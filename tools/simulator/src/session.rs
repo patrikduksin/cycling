@@ -1503,7 +1503,8 @@ impl Session {
         self.shell.forget_panel();
         let mut frame = self.display.0.borrow_mut();
         frame.pixels.fill(0);
-        frame.shown();
+        let height = frame.geometry.height;
+        frame.shown(height, &firmware_shell::rendering::work::Work::default());
     }
     /// Whether the panel is lit: the shell set a brightness since power-on.
     pub fn lit(&self) -> bool {

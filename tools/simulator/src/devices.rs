@@ -13,6 +13,7 @@ use device_api::power::Power;
 use device_api::storage::OwnedFlash;
 use device_api::storage::Region;
 use firmware_services::input::Edges;
+use firmware_shell::rendering::work::{self, Work};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -39,14 +40,14 @@ pub struct Frame {
     pub check: bool,
 }
 impl Frame {
-    /// A new frame is on the panel.
-    pub fn shown(&mut self) {
+    /// A new frame is on the panel: `rows` of it painted, with `work`.
+    pub fn shown(&mut self, rows: usize, work: &Work) {
         self.submissions += 1;
         if let Some(hashes) = &mut self.hashes {
             hashes.push(hash(&self.pixels));
         }
         if let Some(probe) = &mut self.probe {
-            probe.observe(&self.pixels);
+            probe.observe(&self.pixels, rows, work);
         }
     }
 }
@@ -84,10 +85,22 @@ impl Display for DisplayDevice {
         if let Some(request) = &mut frame.bench {
             request.run((width, height), &mut row);
         }
-        for (y, pixels) in frame.pixels.chunks_exact_mut(width).enumerate() {
-            row(y, pixels);
-        }
-        frame.shown();
+        let counted = frame.probe.is_some();
+        let mut rows = 0;
+        let pixels = &mut frame.pixels;
+        let mut paint = || {
+            for (y, pixels) in pixels.chunks_exact_mut(width).enumerate() {
+                row(y, pixels);
+                rows += 1;
+            }
+        };
+        let work = if counted {
+            work::count(paint)
+        } else {
+            paint();
+            Work::default()
+        };
+        frame.shown(rows, &work);
         Ok(())
     }
     fn check(&mut self, mut row: impl FnMut(usize, &mut [u16])) {

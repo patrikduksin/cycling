@@ -73,14 +73,12 @@ async fn gatt_client_server() {
     let peripheral = local.spawn_local(async move {
         let controller_peripheral = common::create_controller(&peripheral).await;
 
-        let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> = HostResources::new();
+        let mut resources: HostResources<_, DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> = HostResources::new();
         let stack = trouble_host::new(controller_peripheral, &mut resources)
-            .set_random_address(peripheral_address);
-        let Host {
-            mut peripheral,
-            mut runner,
-            ..
-        } = stack.build();
+            .set_random_address(peripheral_address)
+            .build();
+        let mut runner = stack.runner();
+        let mut peripheral = stack.peripheral();
 
         let gap = GapConfig::Peripheral(PeripheralConfig {
             name: &name,
@@ -135,7 +133,7 @@ async fn gatt_client_server() {
                                     writes += 1;
                                 } else {
                                     let characteristic = server.table().find_characteristic_by_value_handle(event.handle()).unwrap();
-                                    let value: u8 = server.table().get(&characteristic).unwrap();
+                                    let value: u8 = conn.get(&characteristic).unwrap();
                                     assert_eq!(expected, value);
                                     expected = expected.wrapping_add(2);
                                     writes += 1;
@@ -163,13 +161,10 @@ async fn gatt_client_server() {
     // Spawn central
     let central = local.spawn_local(async move {
         let controller_central = common::create_controller(&central).await;
-        let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> = HostResources::new();
-        let stack = trouble_host::new(controller_central, &mut resources);
-        let Host {
-            mut central,
-            mut runner,
-            ..
-        } = stack.build();
+        let mut resources: HostResources<_, DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> = HostResources::new();
+        let stack = trouble_host::new(controller_central, &mut resources).build();
+        let mut runner = stack.runner();
+        let mut central = stack.central();
 
         select! {
             r = runner.run() => {
@@ -180,7 +175,7 @@ async fn gatt_client_server() {
                     connect_params: Default::default(),
                     scan_config: ScanConfig {
                         active: true,
-                        filter_accept_list: &[(peripheral_address.kind, &peripheral_address.addr)],
+                        filter_accept_list: &[peripheral_address],
                         ..Default::default()
                     },
                 };

@@ -1,7 +1,7 @@
 //! Bounded nonblocking terminal transport; device owns USB HAL halves.
 pub struct Usb {
-    rx: esp_hal::usb_serial_jtag::UsbSerialJtagRx<'static, esp_hal::Blocking>,
-    tx: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, esp_hal::Blocking>,
+    rx: esp_hal::usb::usb_serial_jtag::UsbSerialJtagRx<'static, esp_hal::Blocking>,
+    tx: esp_hal::usb::usb_serial_jtag::UsbSerialJtagTx<'static, esp_hal::Blocking>,
 }
 impl Usb {
     pub fn tx_ready(&self) -> bool {
@@ -16,7 +16,9 @@ impl Usb {
             .bit_is_set()
     }
 
-    pub fn new(usb: esp_hal::usb_serial_jtag::UsbSerialJtag<'static, esp_hal::Blocking>) -> Self {
+    pub fn new(
+        usb: esp_hal::usb::usb_serial_jtag::UsbSerialJtag<'static, esp_hal::Blocking>,
+    ) -> Self {
         let (rx, tx) = usb.split();
         Self { rx, tx }
     }

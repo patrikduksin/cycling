@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "trouble-host"
-version = "0.6.0"
+version = "0.7.0"
 build = "build.rs"
 autolib = false
 autobins = false
@@ -43,12 +43,36 @@ features = [
     "gatt",
     "scan",
     "derive",
+    "security",
 ]
 target = "thumbv7em-none-eabi"
 
+[package.metadata.docs.rs]
+features = [
+    "defmt",
+    "peripheral",
+    "central",
+    "gatt",
+    "scan",
+    "derive",
+    "security",
+]
+targets = ["thumbv7em-none-eabi"]
+
 [features]
+allow-reserved-l2cap-psu = []
+att-queued-writes = ["gatt"]
 central = []
 channel-metrics = []
+client-att-table-size-1024 = []
+client-att-table-size-128 = []
+client-att-table-size-16 = []
+client-att-table-size-2 = []
+client-att-table-size-256 = []
+client-att-table-size-32 = []
+client-att-table-size-512 = []
+client-att-table-size-64 = []
+client-att-table-size-8 = []
 connection-event-queue-size-1 = []
 connection-event-queue-size-16 = []
 connection-event-queue-size-2 = []
@@ -89,7 +113,6 @@ defmt = [
     "bt-hci/defmt",
 ]
 derive = ["trouble-host-macros"]
-dev-disable-csprng-seed-requirement = []
 gatt = []
 gatt-client-notification-max-subscribers-1 = []
 gatt-client-notification-max-subscribers-128 = []
@@ -126,16 +149,26 @@ l2cap-tx-queue-size-32 = []
 l2cap-tx-queue-size-4 = []
 l2cap-tx-queue-size-64 = []
 l2cap-tx-queue-size-8 = []
+legacy-pairing = ["security"]
 log = ["dep:log"]
 peripheral = []
+prepare-write-buffer-size-1024 = []
+prepare-write-buffer-size-128 = []
+prepare-write-buffer-size-256 = []
+prepare-write-buffer-size-512 = []
+prepare-write-buffer-size-64 = []
 scan = ["central"]
 security = [
     "dep:p256",
     "dep:aes",
     "dep:cmac",
+    "dep:rand_core",
     "dep:rand_chacha",
-    "gatt",
     "dep:rand",
+]
+serde = [
+    "dep:serde",
+    "bt-hci/serde",
 ]
 
 [lib]
@@ -167,7 +200,7 @@ version = "0.8.2"
 optional = true
 
 [dependencies.bt-hci]
-version = "0.8"
+version = "0.9"
 features = ["uuid"]
 
 [dependencies.cmac]
@@ -182,10 +215,10 @@ optional = true
 version = "0.1"
 
 [dependencies.embassy-sync]
-version = "0.7"
+version = "0.8"
 
 [dependencies.embassy-time]
-version = "0.5"
+version = "0.5.1"
 
 [dependencies.embedded-io]
 version = "0.7"
@@ -222,12 +255,19 @@ default-features = false
 
 [dependencies.rand_core]
 version = "0.6"
+optional = true
+
+[dependencies.serde]
+version = "1.0.228"
+features = ["derive"]
+optional = true
+default-features = false
 
 [dependencies.static_cell]
 version = "2.1.0"
 
 [dependencies.trouble-host-macros]
-version = "0.4.0"
+version = "0.5.0"
 optional = true
 
 [dependencies.zerocopy]
@@ -238,14 +278,14 @@ version = "1"
 features = ["std"]
 
 [dev-dependencies.embassy-executor]
-version = "0.9"
+version = "0.10"
 features = [
-    "arch-std",
+    "platform-std",
     "executor-thread",
 ]
 
 [dev-dependencies.embassy-time]
-version = "0.5"
+version = "0.5.1"
 features = [
     "std",
     "generic-queue-8",

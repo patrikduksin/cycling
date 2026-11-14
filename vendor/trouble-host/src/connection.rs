@@ -1,10 +1,14 @@
 //! BLE connection.
 
-use bt_hci::cmd::le::{LeConnUpdate, LeReadLocalSupportedFeatures, LeReadPhy, LeSetDataLength, LeSetPhy};
+use bt_hci::cmd::le::{
+    LeConnUpdate, LeConnectionRateRequest, LeFrameSpaceUpdate, LeReadLocalSupportedFeatures, LeReadPhy,
+    LeSetDataLength, LeSetPhy,
+};
 use bt_hci::cmd::status::ReadRssi;
 use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use bt_hci::param::{
-    AddrKind, AllPhys, BdAddr, ConnHandle, DisconnectReason, LeConnRole, PhyKind, PhyMask, PhyOptions, Status,
+    AllPhys, ConnHandle, DisconnectReason, FilterDuplicates, FrameSpaceInitiator, LeConnRole, PhyKind, PhyMask,
+    PhyOptions, SpacingTypes, Status,
 };
 #[cfg(feature = "connection-params-update")]
 use bt_hci::{
@@ -24,12 +28,13 @@ use crate::prelude::{AttributeServer, GattConnection};
 #[cfg(feature = "security")]
 use crate::security_manager::{BondInformation, PassKey};
 use crate::types::l2cap::ConnParamUpdateRes;
-use crate::{bt_hci_duration, BleHostError, Error, Identity, PacketPool, Stack};
+use crate::{bt_hci_duration, Address, BleHostError, Error, Identity, PacketPool, Stack};
 
 /// Security level of a connection
 ///
 /// This describes the various security levels that are supported.
 ///
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SecurityLevel {
@@ -66,7 +71,7 @@ pub struct ScanConfig<'d> {
     /// Active scanning.
     pub active: bool,
     /// List of addresses to accept.
-    pub filter_accept_list: &'d [(AddrKind, &'d BdAddr)],
+    pub filter_accept_list: &'d [Address],
     /// PHYs to scan on.
     pub phys: PhySet,
     /// Scan interval.
@@ -75,6 +80,8 @@ pub struct ScanConfig<'d> {
     pub window: Duration,
     /// Scan timeout.
     pub timeout: Duration,
+    /// Duplicate advertising filtering.
+    pub filter_duplicates: FilterDuplicates,
 }
 
 impl Default for ScanConfig<'_> {
@@ -86,6 +93,7 @@ impl Default for ScanConfig<'_> {
             interval: Duration::from_secs(1),
             window: Duration::from_secs(1),
             timeout: Duration::from_secs(0),
+            filter_duplicates: FilterDuplicates::Disabled,
         }
     }
 }
@@ -156,6 +164,30 @@ pub struct ConnParams {
     pub supervision_timeout: Duration,
 }
 
+/// Connection rate parameters.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ConnectRateParams {
+    /// Minimum connection interval.
+    pub min_connection_interval: Duration,
+    /// Maximum connection interval.
+    pub max_connection_interval: Duration,
+    /// Minimum subrate factor.
+    pub subrate_min: u16,
+    /// Maximum subrate factor.
+    pub subrate_max: u16,
+    /// Maximum slave latency.
+    pub max_latency: u16,
+    /// Number of continuation events allowed for subrate processing.
+    pub continuation_number: u16,
+    /// Supervision timeout.
+    pub supervision_timeout: Duration,
+    /// Minimum connection event length.
+    pub min_ce_length: Duration,
+    /// Maximum connection event length.
+    pub max_ce_length: Duration,
+}
+
 /// A connection event.
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -192,6 +224,30 @@ pub enum ConnectionEvent {
         /// Max RX time.
         max_rx_time: u16,
     },
+    /// The frame space was updated for this connection.
+    FrameSpaceUpdated {
+        /// The negotiated frame space value.
+        frame_space: Duration,
+        /// Who initiated the frame space update.
+        initiator: FrameSpaceInitiator,
+        /// PHYs affected.
+        phys: PhyMask,
+        /// Spacing types affected.
+        spacing_types: SpacingTypes,
+    },
+    /// Connection rate has been changed.
+    ConnectionRateChanged {
+        /// Connection interval.
+        conn_interval: Duration,
+        /// Subrate factor.
+        subrate_factor: u16,
+        /// Peripheral latency.
+        peripheral_latency: u16,
+        /// Continuation number.
+        continuation_number: u16,
+        /// Supervision timeout.
+        supervision_timeout: Duration,
+    },
     /// A request to change the connection parameters.
     ///
     /// [`ConnectionParamsRequest::accept()`] or [`ConnectionParamsRequest::reject()`]
@@ -217,6 +273,22 @@ pub enum ConnectionEvent {
     #[cfg(feature = "security")]
     /// Pairing completed
     PairingFailed(Error),
+    #[cfg(feature = "security")]
+    /// The peer has lost its bond (received pairing request for a bonded peer).
+    BondLost,
+    #[cfg(feature = "security")]
+    /// The link is now encrypted. Fires once per encryption-enable transition,
+    /// for both fresh pairings and resumed bonded sessions. For pairings, this
+    /// fires alongside `PairingComplete`.
+    Encrypted {
+        /// Security level achieved by the encryption.
+        security_level: SecurityLevel,
+        /// Bond information if encryption was achieved using a stored bond.
+        bond: Option<BondInformation>,
+    },
+    #[cfg(feature = "security")]
+    /// OOB data is requested during pairing. Respond with [`Connection::provide_oob_data()`].
+    OobRequest,
 }
 
 /// A connection parameters update request
@@ -445,6 +517,10 @@ impl<'stack, P: PacketPool> Connection<'stack, P> {
         self.manager.get_att_mtu(self.index)
     }
 
+    pub(crate) fn set_l2cap_listening(&self, listening: bool) {
+        self.manager.set_l2cap_listening(self.index, listening);
+    }
+
     pub(crate) async fn send(&self, pdu: Pdu<P::Packet>) {
         self.manager.send(self.index, pdu).await
     }
@@ -468,8 +544,23 @@ impl<'stack, P: PacketPool> Connection<'stack, P> {
     }
 
     #[cfg(feature = "gatt")]
-    pub(crate) async fn next_gatt_client(&self) -> Pdu<P::Packet> {
+    pub(crate) async fn next_gatt_client(&self) -> Option<Pdu<P::Packet>> {
         self.manager.next_gatt_client(self.index).await
+    }
+
+    #[cfg(feature = "gatt")]
+    pub(crate) async fn acquire_indication_slot(&self) -> Result<(), Error> {
+        self.manager.acquire_indication_slot(self.index).await
+    }
+
+    #[cfg(feature = "gatt")]
+    pub(crate) fn release_indication_slot(&self) {
+        self.manager.release_indication_slot(self.index)
+    }
+
+    #[cfg(feature = "gatt")]
+    pub(crate) async fn wait_indication_confirmation(&self) -> Result<(), Error> {
+        self.manager.wait_indication_confirmation(self.index).await
     }
 
     /// Check if still connected
@@ -492,13 +583,8 @@ impl<'stack, P: PacketPool> Connection<'stack, P> {
         self.manager.role(self.index)
     }
 
-    /// The peer address kind for this connection.
-    pub fn peer_addr_kind(&self) -> AddrKind {
-        self.manager.peer_addr_kind(self.index)
-    }
-
     /// The peer address for this connection.
-    pub fn peer_address(&self) -> BdAddr {
+    pub fn peer_address(&self) -> Address {
         self.manager.peer_address(self.index)
     }
 
@@ -520,12 +606,30 @@ impl<'stack, P: PacketPool> Connection<'stack, P> {
     /// If the link is already encrypted then this will always generate an error.
     ///
     pub fn request_security(&self) -> Result<(), Error> {
-        self.manager.request_security(self.index)
+        self.manager.request_security(self.index, true)
+    }
+
+    /// Check if the peer is a bonded device.
+    #[cfg(feature = "security")]
+    pub fn is_bonded_peer(&self) -> bool {
+        self.manager.is_bonded_peer(self.index)
+    }
+
+    /// Try to enable encryption with a bonded peer if it is not yet established
+    #[cfg(feature = "security")]
+    pub(crate) async fn try_enable_encryption(&self) -> Result<(), Error> {
+        self.manager.try_enable_encryption(self.index).await
     }
 
     /// Get the encrypted state of the connection
     pub fn security_level(&self) -> Result<SecurityLevel, Error> {
         self.manager.get_security_level(self.index)
+    }
+
+    /// Get the negotiated encryption key length for this connection
+    #[cfg(feature = "legacy-pairing")]
+    pub fn encryption_key_len(&self) -> Result<u8, Error> {
+        self.manager.get_encryption_key_len(self.index)
     }
 
     /// Get whether the connection is set as bondable or not.
@@ -568,6 +672,30 @@ impl<'stack, P: PacketPool> Connection<'stack, P> {
         self.manager.pass_key_input(self.index, pass_key)
     }
 
+    /// Set whether OOB data is available for this connection.
+    ///
+    /// When set to `true`, the pairing procedure will use out-of-band authentication
+    /// if the peer also supports it (LESC) or if both sides have OOB (legacy).
+    ///
+    /// This must be set before pairing is initiated.
+    #[cfg(feature = "security")]
+    pub fn set_oob_available(&self, available: bool) -> Result<(), Error> {
+        self.manager.set_oob_available(self.index, available)
+    }
+
+    /// Provide OOB data during pairing.
+    ///
+    /// Call this when [`ConnectionEvent::OobRequest`] is received. Both the local
+    /// and peer OOB data must be provided.
+    #[cfg(feature = "security")]
+    pub fn provide_oob_data(
+        &self,
+        local_oob: crate::security_manager::OobData,
+        peer_oob: crate::security_manager::OobData,
+    ) -> Result<(), Error> {
+        self.manager.provide_oob_data(self.index, local_oob, peer_oob)
+    }
+
     /// Request connection to be disconnected.
     pub fn disconnect(&self) {
         self.manager
@@ -578,6 +706,24 @@ impl<'stack, P: PacketPool> Connection<'stack, P> {
     #[cfg(feature = "connection-metrics")]
     pub fn metrics<F: FnOnce(&ConnectionMetrics) -> R, R>(&self, f: F) -> R {
         self.manager.metrics(self.index, f)
+    }
+
+    #[cfg(feature = "att-queued-writes")]
+    pub(crate) fn prepare_write(&self, handle: u16, offset: u16, value: &[u8]) -> Result<(), crate::att::AttErrorCode> {
+        self.manager.prepare_write(self.index, handle, offset, value)
+    }
+
+    #[cfg(feature = "att-queued-writes")]
+    pub(crate) fn with_prepare_write<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&crate::connection_manager::PrepareWriteState) -> R,
+    {
+        self.manager.with_prepare_write(self.index, f)
+    }
+
+    #[cfg(feature = "att-queued-writes")]
+    pub(crate) fn clear_prepare_write(&self) {
+        self.manager.clear_prepare_write(self.index)
     }
 
     /// The RSSI value for this connection.
@@ -712,18 +858,84 @@ impl<'stack, P: PacketPool> Connection<'stack, P> {
         Ok(())
     }
 
+    /// Update frame space for this connection.
+    pub async fn update_frame_space<T>(
+        &self,
+        stack: &Stack<'_, T, P>,
+        frame_space_min: Duration,
+        frame_space_max: Duration,
+        phys: PhyMask,
+        spacing_types: SpacingTypes,
+    ) -> Result<(), BleHostError<T::Error>>
+    where
+        T: ControllerCmdSync<LeFrameSpaceUpdate>,
+    {
+        let handle = self.handle();
+        let frame_space_min_dur = bt_hci_duration(frame_space_min);
+        let frame_space_max_dur = bt_hci_duration(frame_space_max);
+        match stack
+            .host
+            .command(LeFrameSpaceUpdate::new(
+                handle,
+                frame_space_min_dur,
+                frame_space_max_dur,
+                phys,
+                spacing_types,
+            ))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(BleHostError::BleHost(crate::Error::Hci(bt_hci::param::Error::UNKNOWN_CONN_IDENTIFIER))) => {
+                Err(crate::Error::Disconnected.into())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Request a change in connection rate (interval and subrate) for this connection.
+    pub async fn request_connection_rate<T>(
+        &self,
+        stack: &Stack<'_, T, P>,
+        conn_rate_params: &ConnectRateParams,
+    ) -> Result<(), BleHostError<T::Error>>
+    where
+        T: ControllerCmdSync<LeConnectionRateRequest>,
+    {
+        let handle = self.handle();
+        let min_interval = bt_hci_duration(conn_rate_params.min_connection_interval);
+        let max_interval = bt_hci_duration(conn_rate_params.max_connection_interval);
+        let timeout = bt_hci_duration(conn_rate_params.supervision_timeout);
+        let min_ce = bt_hci_duration(conn_rate_params.min_ce_length);
+        let max_ce = bt_hci_duration(conn_rate_params.max_ce_length);
+        match stack
+            .host
+            .command(LeConnectionRateRequest::new(
+                handle,
+                min_interval,
+                max_interval,
+                conn_rate_params.subrate_min,
+                conn_rate_params.subrate_max,
+                conn_rate_params.max_latency,
+                conn_rate_params.continuation_number,
+                timeout,
+                min_ce,
+                max_ce,
+            ))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(BleHostError::BleHost(crate::Error::Hci(bt_hci::param::Error::UNKNOWN_CONN_IDENTIFIER))) => {
+                Err(crate::Error::Disconnected.into())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Transform BLE connection into a `GattConnection`
     #[cfg(feature = "gatt")]
-    pub fn with_attribute_server<
-        'values,
-        'server,
-        M: RawMutex,
-        const ATT_MAX: usize,
-        const CCCD_MAX: usize,
-        const CONN_MAX: usize,
-    >(
+    pub fn with_attribute_server<'values, 'server, M: RawMutex, const ATT_MAX: usize, const CONN_MAX: usize>(
         self,
-        server: &'server AttributeServer<'values, M, P, ATT_MAX, CCCD_MAX, CONN_MAX>,
+        server: &'server AttributeServer<'values, M, P, ATT_MAX, CONN_MAX>,
     ) -> Result<GattConnection<'stack, 'server, P>, Error> {
         GattConnection::try_new(self, server)
     }

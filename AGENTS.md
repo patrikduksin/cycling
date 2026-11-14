@@ -28,8 +28,9 @@ Run tasks through `cycling <task>` and commit `Cargo.lock`. The flake dev
 shell provides every tool and the `cycling` command; see
 [dev-setup](docs/dev-setup.md).
 
-- Inner loop: targeted host tests and the simulator; firmware rebuilds take
-  about 20 s once sccache is warm.
+- Inner loop: targeted host tests and the simulator; a firmware rebuild after
+  a VANA edit takes about 45 s (the fat-LTO link is 30 s of it), and one after
+  a commit that changes no firmware input about 2 s.
 - Before opening or updating a PR: `cycling verify --pr <n>` (all gates in
   parallel, results posted on the PR).
 - Disk: a worktree that builds firmware carries 1 to 2.5 GB of `.local` build targets. Run

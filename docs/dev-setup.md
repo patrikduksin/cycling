@@ -64,7 +64,12 @@ pin at once and belongs in its own PR with `cycling verify` results.
   lock. `CYCLING_FW_TARGET_ROOT` moves the firmware target dirs elsewhere.
 - Firmware always builds release (fat LTO). A lighter profile was measured and
   dropped: Xtensa runtime assembly needs one codegen unit and LTO, and thin
-  LTO saved nothing over warm release rebuilds (about 20 s).
+  LTO saved nothing over warm release rebuilds. After a VANA edit a warm
+  rebuild compiles vana (9 s), the c606-firmware lib (6 s) and the fat-LTO bin
+  (30 s) one after another; packaging and the stack checks take 1 s.
+- The firmware compiles with a placeholder commit, which `build.sh` replaces
+  in the linked ELF, so a commit that changes no firmware input rebuilds
+  nothing (about 2 s).
 - `cycling verify` runs test, check, simulate and the firmware build in
   parallel, then harness-virtual alone, and prints one table; `--fast` is the
   inner-loop subset, `--pr N` posts the table on a PR. Logs go to

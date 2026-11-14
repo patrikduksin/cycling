@@ -18,7 +18,9 @@ def test_an_elf_without_the_placeholder_fails_the_build(tmp_path, capsys):
     elf = tmp_path / 'cycling-os'
     elf.write_bytes(b'\x7fELF..commit=unknown\x00')
 
-    assert stamp.main([str(elf), str(tmp_path / 'out'), '--placeholder', 'zcyclingzcom', '--commit', '374401daa44d']) == 1
+    assert (
+        stamp.main([str(elf), str(tmp_path / 'out'), '--placeholder', 'zcyclingzcom', '--commit', '374401daa44d']) == 1
+    )
 
     assert 'no longer embeds CYCLING_BUILD_COMMIT' in capsys.readouterr().err
     assert not (tmp_path / 'out').exists()

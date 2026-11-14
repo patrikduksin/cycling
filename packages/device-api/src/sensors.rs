@@ -14,6 +14,12 @@ pub struct Motion {
     pub axes: [i16; 3],
 }
 
+/// Ambient light as the companion reports it, in the companion's own unit.
+/// Larger is brighter. The report also carries a coarse step count; it is
+/// dropped because the smooth value tells the same story.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Light(pub u16);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Identity {
     /// Opaque report fields, not a chip ID or an established firmware version.
@@ -120,6 +126,8 @@ pub trait Sensors {
         None
     }
     fn snapshot(&self, now: u64) -> crate::sensors::Snapshot;
+    /// The latest ambient light reading. The device owns no brightness policy.
+    fn light(&self, now: u64) -> Observation<Light>;
     fn identity_status(&self) -> IdentityQuery;
     fn query_identity(&mut self, now: u64) -> Result<(), Error>;
 }

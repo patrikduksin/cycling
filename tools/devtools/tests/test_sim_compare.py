@@ -220,12 +220,13 @@ def test_a_build_failure_or_empty_run_is_incomplete(tmp_path):
 def test_base_and_current_never_share_a_target_directory(tmp_path, monkeypatch):
     targets = {}
 
-    def fake(run):
-        targets[run.artifacts.name] = run.target
-        run.artifacts.mkdir(parents=True, exist_ok=True)
-        scenario(run.artifacts, 'ride', {'riding': png(IMAGE, 4)})
-        (run.artifacts / 'cargo.log').write_text('test ride ... ok\ntest result: ok. 1 passed\n')
-        return 0
+    def fake(*runs):
+        for run in runs:
+            targets[run.artifacts.name] = run.target
+            run.artifacts.mkdir(parents=True, exist_ok=True)
+            scenario(run.artifacts, 'ride', {'riding': png(IMAGE, 4)})
+            (run.artifacts / 'cargo.log').write_text('test ride ... ok\ntest result: ok. 1 passed\n')
+        return [0] * len(runs)
 
     @contextlib.contextmanager
     def checkout(commit, path):
@@ -242,7 +243,7 @@ def test_base_and_current_never_share_a_target_directory(tmp_path, monkeypatch):
 
 
 def test_main_refuses_an_incomplete_baseline_before_reporting(tmp_path, monkeypatch):
-    def fake(run):
+    def one(run):
         assert run.artifacts.is_absolute() and run.target.is_absolute()
         run.artifacts.mkdir(parents=True, exist_ok=True)
         if run.artifacts.name == 'after':
@@ -251,6 +252,9 @@ def test_main_refuses_an_incomplete_baseline_before_reporting(tmp_path, monkeypa
             return 0
         (run.artifacts / 'cargo.log').write_text('error: could not compile\n')
         return 101
+
+    def fake(*runs):
+        return [one(run) for run in runs]
 
     @contextlib.contextmanager
     def checkout(commit, path):
@@ -280,7 +284,7 @@ def simulate(runs):
     """A fake `scenarios` that records the run and writes the SCREENS of its side.
     The base records video unasked, as recorders from before SIM_VIDEO do."""
 
-    def fake(run):
+    def one(run):
         runs.append(run)
         side = 'before' if run.target.name == 'sim-compare-base' else 'after'
         names = [n for n in SCREENS[side] if run.tests[2:] == () or TESTS[n] in run.tests[2:]]
@@ -292,7 +296,7 @@ def simulate(runs):
         (run.artifacts / 'cargo.log').write_text(f'{log}test result: ok. {len(names)} passed\n')
         return 0
 
-    return fake
+    return lambda *runs: [one(run) for run in runs]
 
 
 def fake_main(tmp_path, monkeypatch, runs, checkouts):
@@ -356,12 +360,13 @@ def test_an_incomplete_base_is_not_cached(tmp_path, monkeypatch, cache):
     main = fake_main(tmp_path, monkeypatch, [], [])
     real = compare.scenarios
 
-    def broken(run):
-        status = real(run)
-        if run.artifacts.name == 'before':
-            (run.artifacts / 'cargo.log').write_text('error: could not compile\n')
-            return 101
-        return status
+    def broken(*runs):
+        statuses = real(*runs)
+        for i, run in enumerate(runs):
+            if run.artifacts.name == 'before':
+                (run.artifacts / 'cargo.log').write_text('error: could not compile\n')
+                statuses[i] = 101
+        return statuses
 
     monkeypatch.setattr(compare, 'scenarios', broken)
     assert main() == 1
@@ -463,6 +468,26 @@ def test_failed_fetch_warns_and_keeps_existing_origin_main(monkeypatch, capsys):
     assert seen['env']['GIT_TERMINAL_PROMPT'] == '0'
     err = capsys.readouterr().err
     assert 'could not fetch origin/main' in err and 'could not resolve host' in err and 'existing origin/main' in err
+
+
+def test_runs_go_at_once_each_into_its_own_log(tmp_path, monkeypatch, capsys):
+    script = (
+        'import os, sys, time; print(time.time(), flush=True); time.sleep(0.5); print(os.environ.get("SIM_VIDEO"));'
+        'sys.exit(int(sys.argv[1]))'
+    )
+    monkeypatch.setattr(compare, 'COMMAND', [sys.executable, '-c', script])
+    monkeypatch.setenv('SIM_VIDEO', '1')
+    runs = [
+        compare.Run(tmp_path, tmp_path / 'after', tmp_path / 'target', ('3',)),
+        compare.Run(tmp_path, tmp_path / 'before', tmp_path / 'target', ('0',), video=True),
+    ]
+    assert compare.scenarios(*runs) == [3, 0]
+    after, before = ((tmp_path / side / 'cargo.log').read_text().split() for side in ('after', 'before'))
+    assert abs(float(after[0]) - float(before[0])) < 0.4
+    # Video only where the run asks for it, whatever the caller's environment says.
+    assert (after[1], before[1]) == ('None', '1')
+    printed = capsys.readouterr().out
+    assert 'after | None' in printed and 'before | 1' in printed
 
 
 def test_streaming_errors_stop_cargo_and_its_children(tmp_path, monkeypatch):

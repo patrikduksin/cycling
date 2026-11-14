@@ -20,6 +20,7 @@ import fcntl
 import functools
 import hashlib
 import os
+import queue
 import re
 import shutil
 import signal
@@ -27,6 +28,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zlib
 from contextlib import ExitStack, contextmanager, suppress
@@ -276,33 +278,54 @@ def exact(run_dir, names):
     return ('--', '--exact', *dict.fromkeys(paths.get(test, test) for test in tests))
 
 
-def scenarios(run):
-    """Run `run` into its artifacts, keeping cargo's log, and return cargo's
-    exit status. cargo and its tests never outlive the call, so they cannot
-    write into a worktree that is being removed."""
-    shutil.rmtree(run.artifacts, ignore_errors=True)
-    run.artifacts.mkdir(parents=True)
-    env = {**os.environ, 'SIM_ARTIFACTS': str(run.artifacts), 'CARGO_TARGET_DIR': str(run.target)}
-    env.pop('SIM_VIDEO', None)
-    if run.video:
-        env['SIM_VIDEO'] = '1'
-    with (run.artifacts / 'cargo.log').open('w') as log:
-        process = subprocess.Popen(
-            [*COMMAND, *run.tests],
-            cwd=run.source,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-        )
-        try:
-            for line in process.stdout:
-                sys.stdout.write(line)
-                log.write(line)
-            return process.wait()
-        finally:
+def scenarios(*runs):
+    """Run each of `runs` into its artifacts at the same time, keeping cargo's
+    log, and return cargo's exit statuses. cargo and its tests never outlive the
+    call, so they cannot write into a worktree that is being removed."""
+    processes, pumps, done = [], [], queue.Queue()
+    try:
+        for run in runs:
+            shutil.rmtree(run.artifacts, ignore_errors=True)
+            run.artifacts.mkdir(parents=True)
+            env = {**os.environ, 'SIM_ARTIFACTS': str(run.artifacts), 'CARGO_TARGET_DIR': str(run.target)}
+            env.pop('SIM_VIDEO', None)
+            if run.video:
+                env['SIM_VIDEO'] = '1'
+            processes.append(
+                subprocess.Popen(
+                    [*COMMAND, *run.tests],
+                    cwd=run.source,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    start_new_session=True,
+                )
+            )
+            prefix = f'{run.artifacts.name} | ' if len(runs) > 1 else ''
+            pumps.append(threading.Thread(target=echo, args=(processes[-1], run.artifacts, prefix, done)))
+            pumps[-1].start()
+        for _ in pumps:
+            if error := done.get():
+                raise error
+        return [process.wait() for process in processes]
+    finally:
+        for process in processes:
             stop(process)
+        for pump in pumps:
+            pump.join()
+
+
+def echo(process, artifacts, prefix, done):
+    """Copy cargo's output to its log and to stdout, then report how that went."""
+    try:
+        with (artifacts / 'cargo.log').open('w') as log:
+            for line in process.stdout:
+                sys.stdout.write(prefix + line)
+                log.write(line)
+        done.put(None)
+    except BaseException as error:
+        done.put(error)
 
 
 def stop(process):
@@ -353,16 +376,19 @@ def video_scenarios(pairs, before, after, changed):
     return [*new, *differ], differ
 
 
-def record_videos(run, results, names):
-    """Run `run` and move the videos it recorded for `names` beside their screens."""
-    if problem := incomplete(run.artifacts, scenarios(run)):
-        print(f'sim-compare: warning: some videos are missing: {problem}', file=sys.stderr)
-    by_name = {r['name']: r for r in results}
-    for name in names:
-        for video in sorted((run.artifacts / name).glob('video.*')):
-            result = by_name[name]
-            video.rename(result['dir'] / video.name)
-            result['files'].append(video.name)
+def record_videos(videos):
+    """Run each (run, results, names) at once and move the videos it recorded
+    for `names` beside their screens in `results`."""
+    if not videos:
+        return
+    for (run, results, names), status in zip(videos, scenarios(*(run for run, _, _ in videos)), strict=True):
+        if problem := incomplete(run.artifacts, status):
+            print(f'sim-compare: warning: some videos are missing: {problem}', file=sys.stderr)
+        by_name = {r['name']: r for r in results}
+        for name in names:
+            for video in sorted((run.artifacts / name).glob('video.*')):
+                video.rename(by_name[name]['dir'] / video.name)
+                by_name[name]['files'].append(video.name)
 
 
 def cache_key(commit, name_filter):
@@ -515,13 +541,13 @@ def main(argv=None):
         def base_source():
             return stack.enter_context(checkout(base_commit, out / 'base-src'))
 
-        after_status = scenarios(Run(ROOT, after_dir, target, tests))
+        current = Run(ROOT, after_dir, target, tests)
         cached = restore(key, before_dir)
         if cached:
             print(f'sim-compare: base screens from {CACHE / key}', flush=True)
-            before_status = 0
+            [after_status], before_status = scenarios(current), 0
         else:
-            before_status = scenarios(Run(base_source(), before_dir, base_target(target), tests))
+            after_status, before_status = scenarios(current, Run(base_source(), before_dir, base_target(target), tests))
         before_problem = incomplete(before_dir, before_status)
         if not cached and before_problem is None:
             store(key, before_dir)
@@ -544,13 +570,14 @@ def main(argv=None):
         before, after = without_videos(report.load(before_dir)), without_videos(report.load(after_dir))
         pairs = pair(before, after)
         after_videos, before_videos = video_scenarios(pairs, before, after, args.video)
+        videos = []
         if after_videos:
-            record_videos(
-                Run(ROOT, out / 'after-video', target, exact(after_dir, after_videos), True), after, after_videos
-            )
+            run = Run(ROOT, out / 'after-video', target, exact(after_dir, after_videos), True)
+            videos.append((run, after, after_videos))
         if before_videos:
             run = Run(base_source(), out / 'before-video', base_target(target), exact(before_dir, before_videos), True)
-            record_videos(run, before, before_videos)
+            videos.append((run, before, before_videos))
+        record_videos(videos)
     for directory, results in ((before_dir, before), (after_dir, after)):
         (directory / 'index.html').write_text(report.page(results, f'Simulator scenarios ({directory.name})'))
     markdown, attachments = comparison(pairs, before, after, ROOT, (base, short, base_subject, report.commit()))

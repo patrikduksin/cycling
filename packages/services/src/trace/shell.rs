@@ -10,7 +10,7 @@ use super::frozen::{CompanionView, Record};
 use super::{Event, Output, StorageError, StorageFault, StorageOp};
 use core::cell::{Cell, RefCell};
 use device_api::bulk;
-use device_api::display::{Display, Format, Geometry};
+use device_api::display::{Display, Format, Geometry, Rows};
 use device_api::observation::{Availability, Error};
 use device_api::power::Power;
 use device_api::storage::{AccessError, OwnedFlash, Region};
@@ -147,8 +147,8 @@ impl<D: Display> Display for ShellDisplay<D> {
     fn format(&self) -> Format {
         self.inner.format()
     }
-    fn submit(&mut self, row: impl FnMut(usize, &mut [u16])) -> Result<(), Error> {
-        let result = self.inner.submit(row);
+    fn submit(&mut self, rows: Rows, row: impl FnMut(usize, &mut [u16])) -> Result<(), Error> {
+        let result = self.inner.submit(rows, row);
         let mut panel = self.log.panel.get();
         panel.attempt(result.is_err());
         self.log.panel.set(panel);

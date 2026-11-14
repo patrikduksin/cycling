@@ -2,6 +2,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 use device_api::display::Display as DisplayCapability;
 use device_api::display::Geometry;
+use device_api::display::Rows;
 use device_api::observation::Error;
 use embassy_time::Instant;
 use esp_hal::Blocking;
@@ -16,11 +17,10 @@ const PANEL_HEIGHT: usize = 320;
 /// commands and DMA restarts; two strips must still fit internal DMA RAM.
 const STRIP_ROWS: usize = 16;
 pub const STRIP_BYTES: usize = PANEL_WIDTH * STRIP_ROWS * 2;
-const _: () = assert!(PANEL_HEIGHT % STRIP_ROWS == 0);
 
-/// Fill a strip of `STRIP_ROWS` rows starting at panel row `top`. Rows render
-/// in place when the DMA buffer is 2-byte aligned (it is word-aligned), else
-/// through a line buffer.
+/// Fill a strip from panel row `top`, as many rows as `bytes` holds. Rows
+/// render in place when the DMA buffer is 2-byte aligned (it is
+/// word-aligned), else through a line buffer.
 fn render(bytes: &mut [u8], top: usize, row: &mut impl FnMut(usize, &mut [u16])) {
     // SAFETY: every bit pattern is a valid u16, and `align_to_mut` keeps the
     // middle slice inside `bytes` with u16 alignment.
@@ -135,14 +135,15 @@ impl<'d> Display<'d> {
     }
 
     /// Render each strip straight into `next` while the previous strip
-    /// transfers. The panel window covers all rows once, so the first strip
-    /// starts a memory write (RAMWR) and every later one continues it
-    /// (RAMWRC) with no per-strip addressing. Returns the bus and both
-    /// buffers in every case.
+    /// transfers. The panel window spans the full width; each run of rows
+    /// sets its rows (RASET), its first strip starts a memory write (RAMWR)
+    /// and every later one continues it (RAMWRC) with no per-strip
+    /// addressing. Returns the bus and both buffers in every case.
     fn frame(
         bus: Bus<'d>,
         buffer: DmaTxBuf,
         mut next: DmaTxBuf,
+        rows: Rows,
         row: &mut impl FnMut(usize, &mut [u16]),
     ) -> (Result<(), Error>, Bus<'d>, DmaTxBuf, DmaTxBuf) {
         let started = Instant::now();
@@ -152,29 +153,42 @@ impl<'d> Display<'d> {
         if result.is_err() {
             return (result, bus, buffer, next);
         }
-        let bottom = PANEL_HEIGHT - 1;
-        let window = [0, 0, (bottom >> 8) as u8, bottom as u8];
-        let (result, bus, buffer) = Self::command(bus, buffer, 0x2b, &window);
-        if result.is_err() {
-            return (result, bus, buffer, next);
-        }
         let mut link = Link::Idle(bus, buffer);
-        for top in (0..PANEL_HEIGHT).step_by(STRIP_ROWS) {
-            next.set_length(STRIP_BYTES);
-            render(&mut next.as_mut_slice()[..STRIP_BYTES], top, row);
-            let blocked = Instant::now();
-            let (result, bus, free) = link.settle();
-            waited += blocked.elapsed().as_micros();
-            if result.is_err() {
-                return (result, bus, free, next);
-            }
-            let command: u16 = if top == 0 { 0x2c } else { 0x3c };
-            match bus.send(command, 0, next) {
-                Ok(transfer) => {
-                    link = Link::Busy(transfer);
-                    next = free;
+        for run in rows.runs(PANEL_HEIGHT) {
+            for top in run.clone().step_by(STRIP_ROWS) {
+                let bytes = PANEL_WIDTH * 2 * (run.end - top).min(STRIP_ROWS);
+                next.set_length(bytes);
+                render(&mut next.as_mut_slice()[..bytes], top, row);
+                let blocked = Instant::now();
+                let (result, mut bus, mut free) = link.settle();
+                waited += blocked.elapsed().as_micros();
+                if result.is_err() {
+                    return (result, bus, free, next);
                 }
-                Err((_, bus, strip)) => return (Err(Error::Failed), bus, free, strip),
+                let command: u16 = if top == run.start {
+                    let bottom = run.end - 1;
+                    let window = [
+                        (top >> 8) as u8,
+                        top as u8,
+                        (bottom >> 8) as u8,
+                        bottom as u8,
+                    ];
+                    let result;
+                    (result, bus, free) = Self::command(bus, free, 0x2b, &window);
+                    if result.is_err() {
+                        return (result, bus, free, next);
+                    }
+                    0x2c
+                } else {
+                    0x3c
+                };
+                match bus.send(command, 0, next) {
+                    Ok(transfer) => {
+                        link = Link::Busy(transfer);
+                        next = free;
+                    }
+                    Err((_, bus, strip)) => return (Err(Error::Failed), bus, free, strip),
+                }
             }
         }
         let blocked = Instant::now();
@@ -248,7 +262,7 @@ impl DisplayCapability for Display<'_> {
             height: PANEL_HEIGHT,
         }
     }
-    fn submit(&mut self, mut row: impl FnMut(usize, &mut [u16])) -> Result<(), Error> {
+    fn submit(&mut self, rows: Rows, mut row: impl FnMut(usize, &mut [u16])) -> Result<(), Error> {
         // Charging standby closes work admission but keeps the panel open,
         // so the application can show the charge; nothing waits on it.
         let _access = match crate::capabilities::power::ACCESS.enter() {
@@ -266,7 +280,7 @@ impl DisplayCapability for Display<'_> {
             .spare
             .take()
             .expect("display strip buffer is returned after each frame");
-        let (result, bus, buffer, spare) = Self::frame(bus, buffer, spare, &mut row);
+        let (result, bus, buffer, spare) = Self::frame(bus, buffer, spare, rows, &mut row);
         self.resources = Some((bus, buffer));
         self.spare = Some(spare);
         result

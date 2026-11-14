@@ -7,6 +7,7 @@ use crate::preferences::Settings;
 use crate::rendering::row::Row;
 use crate::storage::Store;
 use device_api::display::Display;
+use device_api::display::Rows;
 use device_api::input::Button;
 use device_api::input::Input;
 use device_api::input::InputSource;
@@ -602,19 +603,21 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             frame = digest(frame, pixels);
         };
         {
-            if self.harness.begin_frame(self.display.geometry()) {
+            let geometry = self.display.geometry();
+            let rows = Rows::all(geometry.height);
+            if self.harness.begin_frame(geometry) {
                 let mut row = row;
                 let harness = &mut self.harness;
                 self.display_error = self
                     .display
-                    .submit(|y, pixels| {
+                    .submit(rows, |y, pixels| {
                         row(y, pixels);
                         harness.row(y, pixels);
                     })
                     .is_err();
                 self.harness.finish_frame(!self.display_error);
             } else {
-                self.display_error = self.display.submit(row).is_err();
+                self.display_error = self.display.submit(rows, row).is_err();
             }
         }
         if !self.display_error {

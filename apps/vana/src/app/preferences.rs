@@ -75,7 +75,7 @@ use device_api::input::InputSource;
 use device_api::power::Power;
 use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::AppPreferences;
-use firmware_shell::shell::Shell;
+use firmware_shell::shell::{BrightnessChoice, Shell};
 
 const VERSION: u8 = 10;
 /// The circumference assumed until one is set or learned.
@@ -770,10 +770,25 @@ impl Runtime {
         system: &mut Shell<D, I, P, B>,
         now: u64,
     ) {
+        self.adopt_brightness_choice(system, now);
         if self.preferences.due(now) {
             self.write_preferences(system, now);
         }
         self.save_display(system, now, false);
+    }
+
+    /// The terminal's `BRIGHTNESS` means what a rider's choice in Settings
+    /// means: a percent holds, AUTO follows the light.
+    fn adopt_brightness_choice<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
+        &mut self,
+        system: &mut Shell<D, I, P, B>,
+        now: u64,
+    ) {
+        if let Some(choice) = system.take_brightness_choice() {
+            let mut options = self.preferences.options;
+            options.auto_brightness = choice == BrightnessChoice::Auto;
+            self.set_options(options, now);
+        }
     }
 
     /// Apply a backlight edit, and store it once settled or when `flush`.

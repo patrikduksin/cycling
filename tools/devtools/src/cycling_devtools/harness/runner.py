@@ -289,7 +289,7 @@ def preflight(scenario):
             )
             permitted = read_only
             permitted |= bool(re.fullmatch(r'DISPLAY [0-9a-fA-F]{1,4}', command))
-            permitted |= bool(re.fullmatch(r'BRIGHTNESS (?:100|[0-9]{1,2})', command))
+            permitted |= bool(re.fullmatch(r'BRIGHTNESS (?:AUTO|100|[0-9]{1,2})', command))
             if not permitted or (op == 'wait' and not read_only):
                 raise ValueError(
                     'scenario command is not a supported read or temporary display/brightness operation; persistence mutations require dedicated protected workflows'
@@ -1049,8 +1049,14 @@ def radio_restorer(radio):
 def restore_preferences(runner, state, _scenario):
     original = state.original_settings
     actual = runner.await_ready()
-    if actual.get('brightness') != original.get('brightness'):
+    if actual.get('brightness') != original.get('brightness') or actual.get('auto') != original.get('auto'):
         runner.command(f'BRIGHTNESS {original["brightness"]}')
+        if original.get('auto') == 'true':
+            runner.command('BRIGHTNESS AUTO')
+        for _ in range(20 if 'auto' in original else 0):
+            if runner.command('SETTINGS').get('auto') == original.get('auto'):
+                break
+            time.sleep(0.1)
     if actual.get('timezone') != original.get('timezone'):
         runner.command(f'TIMEZONE {original["timezone"]}')
     if any(actual.get(key) != original.get(key) for key in ('dim_timeout', 'dim_brightness')):

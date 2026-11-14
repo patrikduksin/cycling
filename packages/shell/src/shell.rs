@@ -1,5 +1,12 @@
 //! Portable foreground presentation and preferences. Acquisition lives independently.
 use crate::backlight::{Backlight, Curve};
+
+/// Whether the backlight holds a percent or follows the ambient light.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrightnessChoice {
+    Percent,
+    Auto,
+}
 use crate::idle::Config;
 use crate::idle::Gate;
 use crate::idle::Idle;
@@ -156,6 +163,9 @@ pub struct Shell<D, I, P, B> {
     curve: Option<&'static Curve>,
     backlight: Backlight,
     light: Observation<Light>,
+    /// A brightness choice made at the terminal that the application has
+    /// not yet adopted. The application owns whether AUTO is on.
+    brightness_choice: Option<BrightnessChoice>,
     power: P,
     display: D,
     input: I,
@@ -251,6 +261,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             curve: None,
             backlight: Backlight::default(),
             light: Observation::Unavailable,
+            brightness_choice: None,
             power,
             display,
             input,
@@ -324,6 +335,14 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     /// Whether the backlight follows the ambient light.
     pub fn auto(&self) -> bool {
         self.curve.is_some()
+    }
+    /// Offer the application a brightness choice made outside its Settings.
+    pub fn offer_brightness_choice(&mut self, choice: BrightnessChoice) {
+        self.brightness_choice = Some(choice);
+    }
+    /// The choice offered since the last call, once.
+    pub fn take_brightness_choice(&mut self) -> Option<BrightnessChoice> {
+        self.brightness_choice.take()
     }
     pub fn observe_light(&mut self, light: Observation<Light>) {
         self.light = light;

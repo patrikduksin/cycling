@@ -85,6 +85,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_curve_in_the_table_rises_so_the_backlight_cannot_underflow() {
+        for policy in &TABLE {
+            assert!(policy.light_curve.rises(), "{}", policy.name);
+        }
+    }
+
+    #[test]
     fn a_new_rider_gets_the_first_row_and_next_walks_the_table_and_wraps() {
         let normal = DisplayMode::default();
         assert_eq!(normal.policy().name, "NORMAL");

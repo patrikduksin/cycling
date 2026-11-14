@@ -359,3 +359,25 @@ fn an_ant_sensor_stands_for_the_ble_role_in_the_order_the_ride_prefers() {
     assert!(stands(HEART_RATE, true, false, &[ant(HEART_RATE, true)]));
     assert!(!stands(HEART_RATE, false, true, &[ant(CADENCE, true)]));
 }
+
+/// The terminal's `BRIGHTNESS n` and `BRIGHTNESS AUTO` mean what a rider's
+/// choice in Settings means.
+#[test]
+fn a_brightness_choice_from_the_terminal_holds_a_percent_or_follows_the_light() {
+    use firmware_shell::shell::BrightnessChoice;
+    let mut screen = Screen::new();
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let radio = Radio::new();
+    screen.present(&mut runtime, &radio, 3000);
+    assert!(screen.shell.auto(), "a new rider starts on AUTO");
+    for (choice, auto) in [
+        (BrightnessChoice::Percent, false),
+        (BrightnessChoice::Auto, true),
+    ] {
+        screen.shell.offer_brightness_choice(choice);
+        runtime.save_preferences(&mut screen.shell, 3100);
+        screen.present(&mut runtime, &radio, 3100);
+        assert_eq!(runtime.preferences.options.auto_brightness, auto);
+        assert_eq!(screen.shell.auto(), auto);
+    }
+}

@@ -92,14 +92,18 @@ stays. Night decides only the THEME's AUTO and the DAY / NIGHT note.
 BRIGHTNESS in Settings → Display steps through AUTO, 25, 50, 75 and 100%. A
 percent is a fixed brightness. AUTO follows the ambient light sensor along
 the curve of the display mode (`app::mode::TABLE`): SAVER is lower than
-NORMAL at every light. The backlight brightens within a second or two, dims
-over several seconds, ignores a change smaller than 3 points and moves at
-most 4 points every 100 ms. The curves are provisional: no daylight reading
+NORMAL at every light. A change in the light must last before the backlight follows: a
+darker one for more than 6 s, a brighter one for more than 2 s, so a tunnel,
+a shadow or a street lamp never moves it. It then rises at most 8 points every
+100 ms (a full brightening takes about a second) and falls at most 1 point
+every 100 ms (100% to 10% takes 9 s). A change smaller than 3 points is
+ignored. The curves are provisional: no daylight reading
 is known yet, so NORMAL reaches 100% at a reading of 4,000. Without a fresh
 reading AUTO shows the stored percent, and so does charging standby. Dimming
 after inactivity keeps its own level on top of either. A record saved before
-AUTO loads as AUTO. The terminal's `BRIGHTNESS n` sets the stored percent;
-`SETTINGS` reports `auto` and the `effective` level.
+AUTO loads as AUTO. The terminal's `BRIGHTNESS n` is a rider's percent, a fixed brightness, and
+`BRIGHTNESS AUTO` returns to AUTO; VANA adopts either on its next pass and
+stores it. `SETTINGS` reports `auto` and the `effective` level.
 
 ### Light
 
@@ -481,7 +485,7 @@ alerts use readings as they arrive. The mechanism is
 | Turn off | The ring's tail chases its head round until it is gone, while the wordmark and TURNING OFF fade to black. VANA asks the device to turn off once the black frame is on the panel. | 480 ms |
 | Idle warning | An `AMBER` ring round the seconds empties with them. | 30 s |
 | Charging while off | A `GREEN` ring shows the charge with its percentage inside, and a 50% green arc climbs from the charge to full as the status bar's icon does. CHARGED at 100%. The screen goes dark after 20 s; holding top left starts VANA as always. | 20 s |
-| Light changes | In AUTO the backlight ramps 4% every 100 ms towards the level for the new light. Nothing is redrawn. | Under 3 s across the range |
+| Light changes | In AUTO the backlight follows a light that has changed for 2 s (brighter) or 6 s (darker), then ramps up 8% or down 1% every 100 ms. Nothing is redrawn. | Up: from 2 s, a full step in about 1 s more. Down: from 6 s, 100% to 10% in 9 s |
 
 ## Settings
 

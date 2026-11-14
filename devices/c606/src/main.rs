@@ -547,6 +547,9 @@ fn vana_pass(
         let physical = trace
             .physical
             .observe(physical, now, record, Event::Physical);
+        trace
+            .light
+            .observe(devices.sensors.light(now), now, record, Event::Light);
         let online = device_api::network::Network::online(&devices.network);
         let network_time = firmware_services::network_time::snapshot(now, 0, online);
         let network_time =

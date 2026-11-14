@@ -791,6 +791,16 @@ impl Reader {
                     Observation::Stale { .. } => "barometer stale".into(),
                 },
             ),
+            Event::Light(light) => self.push(
+                Kind::Sensors,
+                match light {
+                    Observation::Unavailable => "ambient light unavailable".into(),
+                    Observation::Fresh { value, .. } => format!("ambient light {}", value.0),
+                    Observation::Stale { value, .. } => {
+                        format!("ambient light {} stale", value.0)
+                    }
+                },
+            ),
             Event::Power(snapshot) => self.push(Kind::Battery, battery(snapshot)),
             Event::NetworkTime(snapshot) => {
                 if let Some(unix) = snapshot.unix_seconds {

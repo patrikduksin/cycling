@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import cycling_devtools.device.port as device_port
 from cycling_devtools.device.port import resolve_port
 from cycling_devtools.harness.base import (
+    answer,
     apply,
     check_overlong,
     crash_record,
@@ -64,6 +65,16 @@ class BaseTests(unittest.TestCase):
             self.assertRaises(AssertionError),
         ):
             crash_record(connection)
+        self.assertEqual(connection.terminal_command.call_count, 2)
+
+    def test_settings_after_a_restart_waits_out_startup_busy(self):
+        replies = [
+            dict(status='BUSY', data='starting companion=probing'),
+            dict(status='OK', data='brightness=5'),
+        ]
+        connection = Mock(terminal_command=Mock(side_effect=replies))
+        with patch('cycling_devtools.harness.base.time.sleep'):
+            self.assertEqual(answer(connection, 'SETTINGS')['data'], 'brightness=5')
         self.assertEqual(connection.terminal_command.call_count, 2)
 
     def test_vana_may_draw_twice_a_second_while_idle(self):

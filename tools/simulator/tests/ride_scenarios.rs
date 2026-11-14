@@ -9778,7 +9778,7 @@ fn auto_brightness_follows_the_light_saver_sits_lower_and_a_percent_ignores_it()
     );
 
     go_home(&mut sim);
-    open_mode_row(&mut sim);
+    sim.open_mode_row();
     sim.press(Button::BottomRight);
     sim.expect_field("MODE", "SAVER");
     let saver_bright = backlight_in(&mut sim, Some(1_500));

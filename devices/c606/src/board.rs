@@ -44,7 +44,7 @@ struct Resources {
     pub storage: crate::drivers::storage::Backend<'static>,
     pub wifi: esp_hal::peripherals::WIFI<'static>,
     pub bluetooth: esp_hal::peripherals::BT<'static>,
-    pub usb: esp_hal::usb_serial_jtag::UsbSerialJtag<'static, esp_hal::Blocking>,
+    pub usb: esp_hal::usb::usb_serial_jtag::UsbSerialJtag<'static, esp_hal::Blocking>,
     pub screen: display::Display<'static>,
     pub touch: touch::Touch<'static>,
     pub touch_available: bool,
@@ -62,7 +62,7 @@ fn init() -> Resources {
     // Rendering is CPU-bound (#167): 240 MHz takes a Home frame from about
     // 15 to 10 ms. Peripheral clocks come from APB and do not change.
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::_240MHz));
-    crate::drivers::sleep::initialize(p.LPWR);
+    crate::drivers::sleep::initialize(p.LPWR, p.RTC_TIMER);
     let reset = crash_rtc::reset();
     let mut storage = crate::drivers::storage::Backend::new(p.FLASH);
     let mut crash_flash = RegionAccess::new(&mut storage, Region::Crash);
@@ -165,8 +165,7 @@ fn init() -> Resources {
         }
     };
     let timg0 = esp_hal::timer::timg::TimerGroup::new(p.TIMG0);
-    let interrupts = esp_hal::interrupt::software::SoftwareInterruptControl::new(p.SW_INTERRUPT);
-    esp_rtos::start(timg0.timer0, interrupts.software_interrupt0);
+    esp_rtos::start(timg0.timer0, p.FROM_CPU_INTR0);
     let lcd_read_strobe = Output::new(p.GPIO39, Level::High, OutputConfig::default());
     let lcd = LcdCam::new(p.LCD_CAM);
     let bus = I8080::new(
@@ -250,7 +249,7 @@ fn init() -> Resources {
         storage,
         wifi: p.WIFI,
         bluetooth: p.BT,
-        usb: esp_hal::usb_serial_jtag::UsbSerialJtag::new(p.USB_DEVICE),
+        usb: esp_hal::usb::usb_serial_jtag::UsbSerialJtag::new(p.USB_DEVICE),
         screen,
         touch,
         touch_available,

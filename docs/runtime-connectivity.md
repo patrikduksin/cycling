@@ -12,7 +12,9 @@ Firmware images contain no credentials or target identifiers.
 - SSIDs, passwords and BLE names are UTF-8 bytes encoded as hex, so spaces and
   line breaks cannot break framing. Use `-` for an absent BLE name or address.
 - Limits: 32 bytes for SSIDs and names, 8..63 bytes for passwords. WPA2 and WPA3
-  personal authentication are supported.
+  personal networks are joined. `WPA3` is a stored preference only: esp-radio
+  has no WPA3 threshold, so the station also joins a WPA2-only network of the
+  same name (owner decision, 2026-11-14).
 - BLE addresses use the little-endian byte order returned by `BLE PEERS`.
 
 ```text

@@ -26,7 +26,7 @@ overflow-checks = true
 [patch.crates-io]
 trouble-host = { path = "vendor/trouble-host" }
 
-esp-hal = { git = "https://github.com/patrikduksin/esp-hal.git", rev = "0cf3835559c18f03d75190b332316ba85b68b8ed" }
+esp-hal = { git = "https://github.com/patrikduksin/esp-hal.git", rev = "22a9b7dac5a2d02646f5b84ee7aae9357afa7451" }
 
 # Simulated scenarios run hours of firmware passes; keep host tests fast.
 [profile.dev.package.shell-simulator]

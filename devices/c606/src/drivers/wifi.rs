@@ -27,10 +27,12 @@ use embassy_time::Timer;
 use embassy_time::with_timeout;
 use esp_hal::peripherals::WIFI;
 use esp_hal::rng::Rng;
-use esp_radio::wifi::AuthenticationMethod;
+use esp_radio::wifi::AuthenticationMethodConfig;
 use esp_radio::wifi::Config;
 use esp_radio::wifi::ControllerConfig;
 use esp_radio::wifi::Interface;
+use esp_radio::wifi::Password;
+use esp_radio::wifi::Ssid;
 use esp_radio::wifi::WifiController;
 use esp_radio::wifi::ap::AccessPointConfig as RadioAccessPoint;
 use esp_radio::wifi::scan::ScanConfig;
@@ -448,16 +450,24 @@ fn ap_active() -> bool {
 
 fn station_config(config: Option<WifiConfig>) -> StationConfig {
     match config {
+        // esp-radio offers no WPA3 threshold. WPA2 Personal still joins a WPA3
+        // network through SAE, but `wpa3` no longer refuses a WPA2-only one.
         Some(config) => StationConfig::default()
-            .with_ssid(config.ssid.text())
-            .with_password(config.password.text().into())
-            .with_auth_method(if config.wpa3 {
-                AuthenticationMethod::Wpa3Personal
-            } else {
-                AuthenticationMethod::Wpa2Personal
-            }),
+            .with_ssid(ssid(config.ssid.text()))
+            .with_authentication(AuthenticationMethodConfig::Wpa2Personal(password(
+                config.password.text(),
+            ))),
         None => StationConfig::default(),
     }
+}
+
+// `Text` bounds SSIDs to 32 bytes and passwords to 63, within esp-radio's limits.
+fn ssid(text: &str) -> Ssid {
+    Ssid::try_from(text).unwrap_or_default()
+}
+
+fn password(text: &str) -> Password {
+    Password::try_from(text).unwrap_or_default()
 }
 
 /// Leave any association and turn the radio into a WPA2 access point.
@@ -484,9 +494,10 @@ async fn start_access_point(
     Link::Unconfigured.store();
     AP_CLIENTS.store(0, Ordering::Relaxed);
     let access_point = RadioAccessPoint::default()
-        .with_ssid(config.ssid.text())
-        .with_password(config.password.text().into())
-        .with_auth_method(AuthenticationMethod::Wpa2Personal)
+        .with_ssid(ssid(config.ssid.text()))
+        .with_authentication(AuthenticationMethodConfig::Wpa2Personal(password(
+            config.password.text(),
+        )))
         .with_channel(6)
         .with_max_connections(4);
     match controller.set_config(&Config::AccessPoint(access_point)) {

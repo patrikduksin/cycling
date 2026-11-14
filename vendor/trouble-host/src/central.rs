@@ -1,20 +1,23 @@
 //! Functionality for the BLE central role.
-use bt_hci::cmd::le::{LeAddDeviceToFilterAcceptList, LeClearFilterAcceptList, LeCreateConn, LeExtCreateConn};
+use bt_hci::cmd::le::{
+    LeAddDeviceToFilterAcceptList, LeClearFilterAcceptList, LeCreateConn, LeExtCreateConn, LeSetDefaultRateParameters,
+};
 use bt_hci::controller::{Controller, ControllerCmdAsync, ControllerCmdSync};
 use bt_hci::param::{AddrKind, BdAddr, InitiatingPhy, LeConnRole, PhyParams};
 use embassy_futures::select::{select, Either};
 
-use crate::connection::{ConnectConfig, Connection, PhySet};
-use crate::{bt_hci_duration, BleHostError, Error, PacketPool, Stack};
+use crate::connection::{ConnectConfig, ConnectRateParams, Connection, PhySet};
+use crate::host::BleHost;
+use crate::{bt_hci_duration, Address, BleHostError, Error, PacketPool};
 
 /// A type implementing the BLE central role.
 pub struct Central<'stack, C, P: PacketPool> {
-    pub(crate) stack: &'stack Stack<'stack, C, P>,
+    pub(crate) host: &'stack BleHost<'stack, C, P>,
 }
 
 impl<'stack, C: Controller, P: PacketPool> Central<'stack, C, P> {
-    pub(crate) fn new(stack: &'stack Stack<'stack, C, P>) -> Self {
-        Self { stack }
+    pub(crate) fn new(host: &'stack BleHost<'stack, C, P>) -> Self {
+        Self { host }
     }
 
     /// Attempt to create a connection with the provided config.
@@ -28,7 +31,7 @@ impl<'stack, C: Controller, P: PacketPool> Central<'stack, C, P> {
             return Err(Error::ConfigFilterAcceptListIsEmpty.into());
         }
 
-        let host = &self.stack.host;
+        let host = self.host;
         let _drop = crate::host::OnDrop::new(|| {
             host.connect_command_state.cancel(true);
         });
@@ -42,7 +45,7 @@ impl<'stack, C: Controller, P: PacketPool> Central<'stack, C, P> {
             true,
             AddrKind::PUBLIC,
             BdAddr::default(),
-            host.address.map(|a| a.kind).unwrap_or(AddrKind::PUBLIC),
+            host.own_addr_kind(),
             bt_hci_duration(config.connect_params.min_connection_interval),
             bt_hci_duration(config.connect_params.max_connection_interval),
             config.connect_params.max_latency,
@@ -81,7 +84,7 @@ impl<'stack, C: Controller, P: PacketPool> Central<'stack, C, P> {
             return Err(Error::ConfigFilterAcceptListIsEmpty.into());
         }
 
-        let host = &self.stack.host;
+        let host = self.host;
         // Ensure no other connect ongoing.
         let _drop = crate::host::OnDrop::new(|| {
             host.connect_command_state.cancel(true);
@@ -104,7 +107,7 @@ impl<'stack, C: Controller, P: PacketPool> Central<'stack, C, P> {
 
         host.async_command(LeExtCreateConn::new(
             true,
-            host.address.map(|a| a.kind).unwrap_or(AddrKind::PUBLIC),
+            host.own_addr_kind(),
             AddrKind::PUBLIC,
             BdAddr::default(),
             phy_params,
@@ -129,18 +132,62 @@ impl<'stack, C: Controller, P: PacketPool> Central<'stack, C, P> {
 
     pub(crate) async fn set_accept_filter(
         &mut self,
-        filter_accept_list: &[(AddrKind, &BdAddr)],
+        filter_accept_list: &[Address],
     ) -> Result<(), BleHostError<C::Error>>
     where
         C: ControllerCmdSync<LeClearFilterAcceptList> + ControllerCmdSync<LeAddDeviceToFilterAcceptList>,
     {
-        let host = &self.stack.host;
+        let host = self.host;
         host.command(LeClearFilterAcceptList::new()).await?;
         for entry in filter_accept_list {
-            host.command(LeAddDeviceToFilterAcceptList::new(entry.0, *entry.1))
+            // Resolve RPAs to identity addresses using bond information so the controller
+            // can match new RPAs via the resolving list.
+            #[cfg(feature = "security")]
+            let addr = host
+                .connections
+                .security_manager
+                .get_peer_bond_information(&(*entry).into())
+                .map(|bond| bond.identity.addr)
+                .unwrap_or(*entry);
+            #[cfg(not(feature = "security"))]
+            let addr = *entry;
+            host.command(LeAddDeviceToFilterAcceptList::new(addr.kind, addr.addr))
                 .await?;
         }
         Ok(())
+    }
+
+    /// Set default connection rate parameters for all future ACL connections.
+    pub async fn set_default_connection_rate_parameters(
+        &self,
+        conn_rate_params: &ConnectRateParams,
+    ) -> Result<(), BleHostError<C::Error>>
+    where
+        C: ControllerCmdSync<LeSetDefaultRateParameters>,
+    {
+        let min_interval = bt_hci_duration(conn_rate_params.min_connection_interval);
+        let max_interval = bt_hci_duration(conn_rate_params.max_connection_interval);
+        let timeout = bt_hci_duration(conn_rate_params.supervision_timeout);
+        let min_ce = bt_hci_duration(conn_rate_params.min_ce_length);
+        let max_ce = bt_hci_duration(conn_rate_params.max_ce_length);
+        match self
+            .host
+            .command(LeSetDefaultRateParameters::new(
+                min_interval,
+                max_interval,
+                conn_rate_params.subrate_min,
+                conn_rate_params.subrate_max,
+                conn_rate_params.max_latency,
+                conn_rate_params.continuation_number,
+                timeout,
+                min_ce,
+                max_ce,
+            ))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 }
 

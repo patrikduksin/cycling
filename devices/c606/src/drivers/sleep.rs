@@ -9,17 +9,21 @@ use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 use critical_section::Mutex;
 use device_api::observation::Error;
-use esp_hal::peripherals::LPWR;
-use esp_hal::rtc_cntl::Rtc;
-use esp_hal::rtc_cntl::sleep::TimerWakeupSource;
+use esp_hal::peripherals::{LPWR, RTC_TIMER};
+use esp_hal::rtc_cntl::sleep::{LightSleepOutcome, LowPower, RtcSleepConfig};
+use esp_hal::rtc_cntl::{Rtc, WakeupReason, WakeupSource, wakeup_cause};
 use esp_hal::time::Duration;
 use esp_hal::time::Instant;
 
 const SLEEP_SECONDS: u64 = 10;
 const ENTRY_DEADLINE_SECONDS: u64 = 12;
-const TIMER_WAKE_BIT: u32 = 1 << 3;
 
-static RTC: Mutex<RefCell<Option<Rtc<'static>>>> = Mutex::new(RefCell::new(None));
+struct Sleeper {
+    low_power: LowPower<'static>,
+    rtc: Rtc<'static>,
+}
+
+static SLEEPER: Mutex<RefCell<Option<Sleeper>>> = Mutex::new(RefCell::new(None));
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -38,12 +42,12 @@ pub enum Outcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Observation {
     pub outcome: Outcome,
+    /// RTC time across the call, including entry overhead.
     pub rtc_elapsed_us: u64,
     /// Observed uptime across the call; retention determines whether it advances.
     pub uptime_elapsed_us: u64,
-    pub wake_bits: u32,
-    pub rejected: bool,
-    pub woke: bool,
+    pub hardware: LightSleepOutcome,
+    pub cause: WakeupReason,
 }
 
 /// Light sleep since the trace last took it, as the RTC measured it.
@@ -53,10 +57,37 @@ pub fn take_slept_ms() -> u32 {
     SLEPT_US.swap(0, Ordering::Relaxed) / 1000
 }
 
-pub fn initialize(peripheral: LPWR<'static>) {
+pub fn initialize(lpwr: LPWR<'static>, rtc_timer: RTC_TIMER<'static>) {
     critical_section::with(|cs| {
-        *RTC.borrow_ref_mut(cs) = Some(Rtc::new(peripheral));
+        *SLEEPER.borrow_ref_mut(cs) = Some(Sleeper {
+            low_power: LowPower::new(lpwr),
+            rtc: Rtc::new(rtc_timer),
+        });
     });
+}
+
+/// Light sleep that keeps the CPU, digital peripherals, RTC memory and
+/// peripherals, main RAM, the flash/PSRAM supply, the modem domain, the XTAL
+/// and the PLL powered. Neither cache suspension nor a CPU clock change is
+/// performed. The XTAL stays up, so the regulator and bias keep their XTAL-up
+/// settings rather than the XTAL-down ones of the HAL's light-sleep default.
+fn retained_light_sleep() -> RtcSleepConfig {
+    let mut config = RtcSleepConfig::default();
+    config.set_rtc_regulator_fpu(false);
+    config.set_bias_sleep_monitor(false);
+    config.set_pd_cur_monitor(false);
+    config.set_bias_sleep_slp(false);
+    config.set_pd_cur_slp(false);
+    config.set_xtal_fpu(true);
+    config.set_lslp_mem_inf_fpu(true);
+    config.set_cpu_pd_en(false);
+    config.set_dig_peri_pd_en(false);
+    config.set_rtc_fastmem_pd_en(false);
+    config.set_rtc_slowmem_pd_en(false);
+    config.set_rtc_peri_pd_en(false);
+    config.set_vddsdio_pd_en(false);
+    config.set_modem_pd_en(false);
+    config
 }
 
 /// This blocks until wake/rejection or the RTC deadline. A successful function
@@ -64,40 +95,44 @@ pub fn initialize(peripheral: LPWR<'static>) {
 /// hardware cycle. Peripheral recovery must complete separately.
 pub fn enter(after_wake: impl FnOnce()) -> Result<Observation, Error> {
     critical_section::with(|cs| {
-        let mut owner = RTC.borrow_ref_mut(cs);
-        let rtc = owner.as_mut().ok_or(Error::Unavailable)?;
-        let timer = TimerWakeupSource::new(core::time::Duration::from_secs(SLEEP_SECONDS));
+        let mut owner = SLEEPER.borrow_ref_mut(cs);
+        let Sleeper { low_power, rtc } = owner.as_mut().ok_or(Error::Unavailable)?;
         let uptime_before = Instant::now();
-        // The patched HAL keeps CPU/digital/RAM/flash/PSRAM domains and XTAL/PLL
-        // powered. Neither cache suspension nor a CPU clock change is performed.
-        let status =
-            rtc.sleep_light_with_status(&[&timer], Duration::from_secs(ENTRY_DEADLINE_SECONDS));
+        let rtc_before = rtc.time_since_power_up();
+        // The timer is the only armed wake source, and only for this call.
+        low_power.set_wakeup_deadline(uptime_before + Duration::from_secs(SLEEP_SECONDS));
+        let hardware = low_power.sleep_light_with_status(
+            retained_light_sleep(),
+            Duration::from_secs(ENTRY_DEADLINE_SECONDS),
+        );
+        let rtc_elapsed_us = (rtc.time_since_power_up() - rtc_before).as_micros();
+        low_power.clear_wakeup_deadline();
         let uptime_elapsed_us = uptime_before.elapsed().as_micros();
+        let cause = wakeup_cause();
         SLEPT_US.fetch_add(
-            status.elapsed_us.min(u64::from(u32::MAX)) as u32,
+            rtc_elapsed_us.min(u64::from(u32::MAX)) as u32,
             Ordering::Relaxed,
         );
         after_wake();
-        let outcome = if status.timed_out {
-            Outcome::TimedOut
-        } else if status.rejected {
-            Outcome::Rejected
-        } else if !status.woke || status.wakeup_cause != TIMER_WAKE_BIT {
-            Outcome::UnexpectedWake
-        } else if status.elapsed_us < (SLEEP_SECONDS - 1) * 1_000_000 {
+        let only_timer = cause.contains(WakeupSource::Timer) && cause.iter().count() == 1;
+        let outcome = match hardware {
+            LightSleepOutcome::TimedOut => Outcome::TimedOut,
+            LightSleepOutcome::Rejected => Outcome::Rejected,
+            LightSleepOutcome::NoWakeupSource => Outcome::UnexpectedWake,
+            LightSleepOutcome::Woke if !only_timer => Outcome::UnexpectedWake,
             // Entry overhead is included, so even an acknowledged early return
             // cannot be reported as the requested timer sleep.
-            Outcome::Immediate
-        } else {
-            Outcome::TimerWake
+            LightSleepOutcome::Woke if rtc_elapsed_us < (SLEEP_SECONDS - 1) * 1_000_000 => {
+                Outcome::Immediate
+            }
+            LightSleepOutcome::Woke => Outcome::TimerWake,
         };
         Ok(Observation {
             outcome,
-            rtc_elapsed_us: status.elapsed_us,
+            rtc_elapsed_us,
             uptime_elapsed_us,
-            wake_bits: status.wakeup_cause,
-            rejected: status.rejected,
-            woke: status.woke,
+            hardware,
+            cause,
         })
     })
 }

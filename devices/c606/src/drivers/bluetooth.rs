@@ -218,16 +218,14 @@ pub async fn start(bt: BT<'static>) {
         }
     };
     let controller: BleController = ExternalController::new(connector);
-    let mut resources: HostResources<DefaultPacketPool, CONNECTIONS, CHANNELS> =
+    let mut resources: HostResources<BleController, DefaultPacketPool, CONNECTIONS, CHANNELS> =
         HostResources::new();
     let stack = trouble_host::new(controller, &mut resources)
-        .set_random_address(Address::random([0x15, 0xc6, 0x06, 0x00, 0x00, 0xc0]));
-    let Host {
-        central,
-        peripheral,
-        mut runner,
-        ..
-    } = stack.build();
+        .set_random_address(Address::random([0x15, 0xc6, 0x06, 0x00, 0x00, 0xc0]))
+        .build();
+    let central = stack.central();
+    let peripheral = stack.peripheral();
+    let mut runner = stack.runner();
     let server = match Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
         name: "Cycling Echo",
         appearance: &appearance::computer::GENERIC_COMPUTER,
@@ -272,10 +270,10 @@ struct Session {
 
 /// Owner loop: power transitions first, then one command or automatic
 /// reconnect, then the idle activity until new work arrives.
-async fn application<'s>(
-    stack: &'s BleStack<'s>,
-    mut central: BleCentral<'s>,
-    mut peripheral: BlePeripheral<'s>,
+async fn application<'a>(
+    stack: &'a BleStack<'_>,
+    mut central: BleCentral<'a>,
+    mut peripheral: BlePeripheral<'a>,
     server: &Server<'_>,
 ) {
     let mut session = Session {
@@ -352,14 +350,14 @@ async fn quiesce(stack: &BleStack<'_>, peripheral: &mut BlePeripheral<'_>) {
     CONTROL.power_complete(true, state);
 }
 
-async fn perform<'s>(
+async fn perform<'a>(
     operation: BleOperation,
     automatic: bool,
     session: &mut Session,
-    stack: &'s BleStack<'s>,
-    central: BleCentral<'s>,
+    stack: &'a BleStack<'_>,
+    central: BleCentral<'a>,
     server: &Server<'_>,
-) -> BleCentral<'s> {
+) -> BleCentral<'a> {
     match operation {
         BleOperation::Select(selection) => {
             session.retry.disconnect();
@@ -397,13 +395,13 @@ async fn perform<'s>(
     }
 }
 
-async fn connect<'s>(
+async fn connect<'a>(
     automatic: bool,
     session: &mut Session,
-    stack: &'s BleStack<'s>,
-    central: BleCentral<'s>,
+    stack: &'a BleStack<'_>,
+    central: BleCentral<'a>,
     server: &Server<'_>,
-) -> BleCentral<'s> {
+) -> BleCentral<'a> {
     if !automatic {
         session.retry.connect();
     }
@@ -515,9 +513,9 @@ where
     (scanner.into_inner(), target, success)
 }
 
-async fn client_attempt<'stack, C>(
-    stack: &'stack Stack<'stack, C, DefaultPacketPool>,
-    central: &mut Central<'stack, C, DefaultPacketPool>,
+async fn client_attempt<'a, C>(
+    stack: &'a Stack<'_, C, DefaultPacketPool>,
+    central: &mut Central<'a, C, DefaultPacketPool>,
     server: &Server<'_>,
     target: Address,
     selection: Selection,
@@ -526,7 +524,7 @@ async fn client_attempt<'stack, C>(
 where
     C: Controller,
 {
-    let filter = [(target.kind, &target.addr)];
+    let filter = [target];
     let connect_config = ConnectConfig {
         connect_params: Default::default(),
         scan_config: ScanConfig {
@@ -802,7 +800,7 @@ where
                 if let GattEvent::Write(write) = event {
                     if write.handle() != server.echo.value.handle {
                         write.accept()?.send().await;
-                    } else if write.data().len() != 8 {
+                    } else if write.with_data(|_, data| data.len()) != 8 {
                         write
                             .reject(AttErrorCode::INVALID_ATTRIBUTE_VALUE_LENGTH)?
                             .send()
@@ -814,7 +812,13 @@ where
                         update_state(|state| {
                             state.notifications = state.notifications.saturating_add(1)
                         });
-                        if server.echo.value.notify(&connection, &value).await.is_err() {
+                        if server
+                            .echo
+                            .value
+                            .notify(&connection, &value, true)
+                            .await
+                            .is_err()
+                        {
                             log::info!(target: "ble", "CYCLING_BLE notify_failed");
                         }
                     }

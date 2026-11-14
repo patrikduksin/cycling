@@ -1,15 +1,19 @@
-use core::cell::RefCell;
 use core::marker::PhantomData;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embassy_sync::blocking_mutex::Mutex;
 
+use self::client_att_table::ClientAttTables;
+pub use self::client_att_table::{ClientAttTable, ClientAttTableBuilder, ClientAttTableView};
 use crate::att::{self, AttClient, AttCmd, AttErrorCode, AttReq};
 use crate::attribute::{Attribute, AttributeData, AttributeTable, CCCD};
+use crate::connection::Connection;
 use crate::cursor::WriteCursor;
-use crate::prelude::Connection;
+#[cfg(feature = "gatt")]
+use crate::types::gatt_traits::AsGatt;
 use crate::types::uuid::Uuid;
 use crate::{codec, Error, Identity, PacketPool};
+
+mod client_att_table;
 
 #[derive(Default)]
 struct Client {
@@ -23,278 +27,10 @@ impl Client {
     }
 }
 
-/// A table of CCCD values.
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Clone, Debug)]
-pub struct CccdTable<const ENTRIES: usize> {
-    inner: [(u16, CCCD); ENTRIES],
-}
-
-impl<const ENTRIES: usize> Default for CccdTable<ENTRIES> {
-    fn default() -> Self {
-        Self {
-            inner: [(0, CCCD(0)); ENTRIES],
-        }
-    }
-}
-
-impl<const ENTRIES: usize> CccdTable<ENTRIES> {
-    /// Create a new CCCD table from an array of (handle, cccd) pairs.
-    pub fn new(cccd_values: [(u16, CCCD); ENTRIES]) -> Self {
-        Self { inner: cccd_values }
-    }
-
-    /// Get the inner array of (handle, cccd) pairs.
-    pub fn inner(&self) -> &[(u16, CCCD); ENTRIES] {
-        &self.inner
-    }
-
-    fn add_handle(&mut self, cccd_handle: u16) {
-        for (handle, _) in self.inner.iter_mut() {
-            if *handle == 0 {
-                *handle = cccd_handle;
-                break;
-            }
-        }
-    }
-
-    fn disable_all(&mut self) {
-        for (_, value) in self.inner.iter_mut() {
-            value.disable();
-        }
-    }
-
-    fn get_raw(&self, cccd_handle: u16) -> Option<[u8; 2]> {
-        for (handle, value) in self.inner.iter() {
-            if *handle == cccd_handle {
-                return Some(value.raw().to_le_bytes());
-            }
-        }
-        None
-    }
-
-    fn set_notify(&mut self, cccd_handle: u16, is_enabled: bool) {
-        for (handle, value) in self.inner.iter_mut() {
-            if *handle == cccd_handle {
-                trace!("[cccd] set_notify({}) = {}", cccd_handle, is_enabled);
-                value.set_notify(is_enabled);
-                break;
-            }
-        }
-    }
-
-    fn should_notify(&self, cccd_handle: u16) -> bool {
-        for (handle, value) in self.inner.iter() {
-            if *handle == cccd_handle {
-                return value.should_notify();
-            }
-        }
-        false
-    }
-
-    fn set_indicate(&mut self, cccd_handle: u16, is_enabled: bool) {
-        for (handle, value) in self.inner.iter_mut() {
-            if *handle == cccd_handle {
-                trace!("\n\n\n[cccd] set_indicate({}) = {}", cccd_handle, is_enabled);
-                value.set_indicate(is_enabled);
-                break;
-            }
-        }
-    }
-    fn should_indicate(&self, cccd_handle: u16) -> bool {
-        for (handle, value) in self.inner.iter() {
-            if *handle == cccd_handle {
-                return value.should_indicate();
-            }
-        }
-        false
-    }
-}
-
-/// A table of CCCD values for each connected client.
-struct CccdTables<M: RawMutex, const CCCD_MAX: usize, const CONN_MAX: usize> {
-    state: Mutex<M, RefCell<[(Client, CccdTable<CCCD_MAX>); CONN_MAX]>>,
-}
-
-impl<M: RawMutex, const CCCD_MAX: usize, const CONN_MAX: usize> CccdTables<M, CCCD_MAX, CONN_MAX> {
-    fn new<const ATT_MAX: usize>(att_table: &AttributeTable<'_, M, ATT_MAX>) -> Self {
-        let mut values: [(Client, CccdTable<CCCD_MAX>); CONN_MAX] =
-            core::array::from_fn(|_| (Client::default(), CccdTable::default()));
-        let mut base_cccd_table = CccdTable::default();
-        att_table.iterate(|mut at| {
-            while let Some((handle, att)) = at.next() {
-                if let AttributeData::Cccd { .. } = att.data {
-                    base_cccd_table.add_handle(handle);
-                }
-            }
-        });
-        // add the base CCCD table for each potential connected client
-        for (_, table) in values.iter_mut() {
-            *table = base_cccd_table.clone();
-        }
-        Self {
-            state: Mutex::new(RefCell::new(values)),
-        }
-    }
-
-    fn connect(&self, peer_identity: &Identity) -> Result<(), Error> {
-        self.state.lock(|n| {
-            trace!("[server] searching for peer {:?}", peer_identity);
-            let mut n = n.borrow_mut();
-            let empty_slot = Identity::default();
-            for (client, table) in n.iter_mut() {
-                if client.identity.match_identity(peer_identity) {
-                    // trace!("[server] found! table = {:?}", *table);
-                    client.is_connected = true;
-                    return Ok(());
-                } else if client.identity == empty_slot {
-                    //  trace!("[server] empty slot: connecting");
-                    client.is_connected = true;
-                    client.set_identity(*peer_identity);
-                    return Ok(());
-                }
-            }
-            trace!("[server] all slots full...");
-            // if we got here all slots are full; replace the first disconnected client
-            for (client, table) in n.iter_mut() {
-                if !client.is_connected {
-                    trace!("[server] booting disconnected peer {:?}", client.identity);
-                    client.is_connected = true;
-                    client.set_identity(*peer_identity);
-                    // erase the previous client's config
-                    table.disable_all();
-                    return Ok(());
-                }
-            }
-            // Should be unreachable if the max connections (CONN_MAX) matches that defined
-            // in HostResources...
-            warn!("[server] unable to obtain CCCD slot");
-            Err(Error::ConnectionLimitReached)
-        })
-    }
-
-    fn disconnect(&self, peer_identity: &Identity) {
-        self.state.lock(|n| {
-            let mut n = n.borrow_mut();
-            for (client, _) in n.iter_mut() {
-                if client.identity.match_identity(peer_identity) {
-                    client.is_connected = false;
-                    break;
-                }
-            }
-        })
-    }
-
-    fn get_value(&self, peer_identity: &Identity, cccd_handle: u16) -> Option<[u8; 2]> {
-        self.state.lock(|n| {
-            let n = n.borrow();
-            for (client, table) in n.iter() {
-                if client.identity.match_identity(peer_identity) {
-                    return table.get_raw(cccd_handle);
-                }
-            }
-            None
-        })
-    }
-
-    fn set_notify(&self, peer_identity: &Identity, cccd_handle: u16, is_enabled: bool) {
-        self.state.lock(|n| {
-            let mut n = n.borrow_mut();
-            for (client, table) in n.iter_mut() {
-                if client.identity.match_identity(peer_identity) {
-                    table.set_notify(cccd_handle, is_enabled);
-                    break;
-                }
-            }
-        })
-    }
-
-    fn should_notify(&self, peer_identity: &Identity, cccd_handle: u16) -> bool {
-        self.state.lock(|n| {
-            let n = n.borrow();
-            for (client, table) in n.iter() {
-                if client.identity.match_identity(peer_identity) {
-                    return table.should_notify(cccd_handle);
-                }
-            }
-            false
-        })
-    }
-
-    fn set_indicate(&self, peer_identity: &Identity, cccd_handle: u16, is_enabled: bool) {
-        self.state.lock(|n| {
-            let mut n = n.borrow_mut();
-            for (client, table) in n.iter_mut() {
-                if client.identity.match_identity(peer_identity) {
-                    table.set_indicate(cccd_handle, is_enabled);
-                    break;
-                }
-            }
-        })
-    }
-
-    fn should_indicate(&self, peer_identity: &Identity, cccd_handle: u16) -> bool {
-        self.state.lock(|n| {
-            let n = n.borrow();
-            for (client, table) in n.iter() {
-                if client.identity.match_identity(peer_identity) {
-                    return table.should_indicate(cccd_handle);
-                }
-            }
-            false
-        })
-    }
-
-    fn get_cccd_table(&self, peer_identity: &Identity) -> Option<CccdTable<CCCD_MAX>> {
-        self.state.lock(|n| {
-            let n = n.borrow();
-            for (client, table) in n.iter() {
-                if client.identity.match_identity(peer_identity) {
-                    return Some(table.clone());
-                }
-            }
-            None
-        })
-    }
-
-    fn set_cccd_table(&self, peer_identity: &Identity, table: CccdTable<CCCD_MAX>) {
-        self.state.lock(|n| {
-            let mut n = n.borrow_mut();
-            for (client, t) in n.iter_mut() {
-                if client.identity.match_identity(peer_identity) {
-                    trace!("Setting cccd table {:?} for {:?}", table, peer_identity);
-                    *t = table;
-                    break;
-                }
-            }
-        })
-    }
-
-    fn update_identity(&self, identity: Identity) -> Result<(), Error> {
-        self.state.lock(|n| {
-            let mut n = n.borrow_mut();
-            for (client, _) in n.iter_mut() {
-                if identity.match_identity(&client.identity) {
-                    client.set_identity(identity);
-                    return Ok(());
-                }
-            }
-            Err(Error::NotFound)
-        })
-    }
-}
-
 /// A GATT server capable of processing the GATT protocol using the provided table of attributes.
-pub struct AttributeServer<
-    'values,
-    M: RawMutex,
-    P: PacketPool,
-    const ATT_MAX: usize,
-    const CCCD_MAX: usize,
-    const CONN_MAX: usize,
-> {
+pub struct AttributeServer<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CONN_MAX: usize> {
     att_table: AttributeTable<'values, M, ATT_MAX>,
-    cccd_tables: CccdTables<M, CCCD_MAX, CONN_MAX>,
+    client_att_tables: ClientAttTables<M, CONN_MAX>,
     _p: PhantomData<P>,
 }
 
@@ -312,7 +48,8 @@ pub(crate) mod sealed {
         ) -> Result<Option<usize>, Error>;
         fn should_notify(&self, connection: &Connection<'_, P>, cccd_handle: u16) -> bool;
         fn should_indicate(&self, connection: &Connection<'_, P>, cccd_handle: u16) -> bool;
-        fn set(&self, characteristic: u16, input: &[u8]) -> Result<(), Error>;
+        fn set(&self, connection: &Connection<'_, P>, att_handle: u16, input: &[u8]) -> Result<(), Error>;
+        fn get(&self, connection: &Connection<'_, P>, att_handle: u16, buf: &mut [u8]) -> Result<usize, Error>;
         fn update_identity(&self, identity: Identity) -> Result<(), Error>;
 
         fn can_read(&self, connection: &Connection<'_, P>, handle: u16) -> Result<(), AttErrorCode>;
@@ -323,19 +60,24 @@ pub(crate) mod sealed {
 /// Type erased attribute server
 pub trait DynamicAttributeServer<P: PacketPool>: sealed::DynamicAttributeServer<P> {}
 
-impl<M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: usize, const CONN_MAX: usize>
-    DynamicAttributeServer<P> for AttributeServer<'_, M, P, ATT_MAX, CCCD_MAX, CONN_MAX>
+impl<M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CONN_MAX: usize> DynamicAttributeServer<P>
+    for AttributeServer<'_, M, P, ATT_MAX, CONN_MAX>
 {
 }
-impl<M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: usize, const CONN_MAX: usize>
-    sealed::DynamicAttributeServer<P> for AttributeServer<'_, M, P, ATT_MAX, CCCD_MAX, CONN_MAX>
+impl<M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CONN_MAX: usize> sealed::DynamicAttributeServer<P>
+    for AttributeServer<'_, M, P, ATT_MAX, CONN_MAX>
 {
     fn connect(&self, connection: &Connection<'_, P>) -> Result<(), Error> {
         AttributeServer::connect(self, connection)
     }
 
     fn disconnect(&self, connection: &Connection<'_, P>) {
-        self.cccd_tables.disconnect(&connection.peer_identity());
+        #[cfg(feature = "security")]
+        let bonded = connection.is_bonded_peer();
+        #[cfg(not(feature = "security"))]
+        let bonded = false;
+
+        self.client_att_tables.disconnect(&connection.peer_identity(), bonded);
     }
 
     fn process(
@@ -355,12 +97,41 @@ impl<M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: usize, co
         AttributeServer::should_indicate(self, connection, cccd_handle)
     }
 
-    fn set(&self, characteristic: u16, input: &[u8]) -> Result<(), Error> {
-        self.att_table.set_raw(characteristic, input)
+    fn get(&self, connection: &Connection<'_, P>, att_handle: u16, buf: &mut [u8]) -> Result<usize, Error> {
+        self.att_table
+            .with_attribute(att_handle, |att| {
+                if matches!(att.data, AttributeData::ClientSpecific { .. }) {
+                    self.client_att_tables
+                        .read(&connection.peer_identity(), att_handle, 0, buf)
+                } else {
+                    att.read(0, buf)
+                }
+                .map_err(Into::into)
+            })
+            .unwrap_or(Err(Error::NotFound))
+    }
+
+    fn set(&self, connection: &Connection<'_, P>, att_handle: u16, input: &[u8]) -> Result<(), Error> {
+        self.att_table
+            .with_attribute_mut(att_handle, |att| {
+                if !att.data.is_variable_len() && att.data.capacity() != input.len() {
+                    Err(Error::UnexpectedDataLength {
+                        expected: att.data.capacity(),
+                        actual: input.len(),
+                    })
+                } else if matches!(att.data, AttributeData::ClientSpecific { .. }) {
+                    self.client_att_tables
+                        .write(&connection.peer_identity(), att_handle, 0, input)
+                        .map_err(Into::into)
+                } else {
+                    att.write(0, input).map_err(Into::into)
+                }
+            })
+            .unwrap_or(Err(Error::NotFound))
     }
 
     fn update_identity(&self, identity: Identity) -> Result<(), Error> {
-        self.cccd_tables.update_identity(identity)
+        self.client_att_tables.update_identity(identity)
     }
 
     fn can_read(&self, connection: &Connection<'_, P>, handle: u16) -> Result<(), AttErrorCode> {
@@ -376,44 +147,80 @@ impl<M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: usize, co
     }
 }
 
-impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: usize, const CONN_MAX: usize>
-    AttributeServer<'values, M, P, ATT_MAX, CCCD_MAX, CONN_MAX>
+impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CONN_MAX: usize>
+    AttributeServer<'values, M, P, ATT_MAX, CONN_MAX>
 {
     /// Create a new instance of the AttributeServer
-    pub fn new(
-        att_table: AttributeTable<'values, M, ATT_MAX>,
-    ) -> AttributeServer<'values, M, P, ATT_MAX, CCCD_MAX, CONN_MAX> {
-        let cccd_tables = CccdTables::new(&att_table);
+    pub fn new(att_table: AttributeTable<'values, M, ATT_MAX>) -> AttributeServer<'values, M, P, ATT_MAX, CONN_MAX> {
+        let cccd_tables = ClientAttTables::new(&att_table);
         AttributeServer {
             att_table,
-            cccd_tables,
+            client_att_tables: cccd_tables,
             _p: PhantomData,
         }
     }
 
+    /// Read an attribute value with permission checks for the given connection.
+    pub fn read(
+        &self,
+        connection: &Connection<'_, P>,
+        handle: u16,
+        offset: usize,
+        data: &mut [u8],
+    ) -> Result<usize, AttErrorCode> {
+        self.att_table
+            .with_attribute(handle, |att| {
+                self.read_attribute_data(connection, handle, offset, att, data)
+            })
+            .unwrap_or(Err(AttErrorCode::ATTRIBUTE_NOT_FOUND))
+    }
+
     pub(crate) fn connect(&self, connection: &Connection<'_, P>) -> Result<(), Error> {
-        self.cccd_tables.connect(&connection.peer_identity())
+        self.client_att_tables.connect(&connection.peer_identity())
     }
 
     pub(crate) fn should_notify(&self, connection: &Connection<'_, P>, cccd_handle: u16) -> bool {
-        self.cccd_tables.should_notify(&connection.peer_identity(), cccd_handle)
+        self.client_att_tables
+            .with_value(&connection.peer_identity(), cccd_handle, |value| {
+                if let Ok(value) = value.try_into() {
+                    CCCD(u16::from_le_bytes(value)).should_notify()
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false)
     }
 
     pub(crate) fn should_indicate(&self, connection: &Connection<'_, P>, cccd_handle: u16) -> bool {
-        self.cccd_tables
-            .should_indicate(&connection.peer_identity(), cccd_handle)
+        self.client_att_tables
+            .with_value(&connection.peer_identity(), cccd_handle, |value| {
+                if let Ok(value) = value.try_into() {
+                    CCCD(u16::from_le_bytes(value)).should_indicate()
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false)
     }
 
     fn can_read(&self, connection: &Connection<'_, P>, att: &Attribute<'_>) -> Result<(), AttErrorCode> {
         match connection.security_level() {
-            Ok(level) => att.permissions().can_read(level),
+            Ok(level) => att.permissions().can_read(
+                level,
+                #[cfg(feature = "legacy-pairing")]
+                connection.encryption_key_len().unwrap_or(0),
+            ),
             Err(_) => Err(AttErrorCode::INVALID_HANDLE),
         }
     }
 
     fn can_write(&self, connection: &Connection<'_, P>, att: &Attribute<'_>) -> Result<(), AttErrorCode> {
         match connection.security_level() {
-            Ok(level) => att.permissions().can_write(level),
+            Ok(level) => att.permissions().can_write(
+                level,
+                #[cfg(feature = "legacy-pairing")]
+                connection.encryption_key_len().unwrap_or(0),
+            ),
             Err(_) => Err(AttErrorCode::INVALID_HANDLE),
         }
     }
@@ -423,19 +230,26 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
         connection: &Connection<'_, P>,
         handle: u16,
         offset: usize,
-        att: &mut Attribute<'values>,
+        att: &Attribute<'values>,
         data: &mut [u8],
     ) -> Result<usize, AttErrorCode> {
         self.can_read(connection, att)?;
-        if let AttributeData::Cccd { .. } = att.data {
-            // CCCD values for each connected client are held in the CCCD tables:
-            // the value is written back into att.data so att.read() has the final
-            // say when parsing at the requested offset.
-            if let Some(value) = self.cccd_tables.get_value(&connection.peer_identity(), handle) {
-                let _ = att.write(0, value.as_slice());
-            }
+        if matches!(att.data, AttributeData::ClientSpecific { .. }) {
+            return self
+                .client_att_tables
+                .read(&connection.peer_identity(), handle, offset, data);
         }
         att.read(offset, data)
+    }
+
+    /// The complete length of an attribute value, before a response buffer truncates it.
+    fn full_value_len(&self, connection: &Connection<'_, P>, handle: u16, att: &Attribute<'values>) -> Option<usize> {
+        if matches!(att.data, AttributeData::ClientSpecific { .. }) {
+            return self
+                .client_att_tables
+                .with_value(&connection.peer_identity(), handle, <[u8]>::len);
+        }
+        att.data.value().map(<[u8]>::len)
     }
 
     fn write_attribute_data(
@@ -447,21 +261,12 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
         data: &[u8],
     ) -> Result<(), AttErrorCode> {
         self.can_write(connection, att)?;
-        let err = att.write(offset, data);
-        if err.is_ok() {
-            if let AttributeData::Cccd {
-                notifications,
-                indications,
-                ..
-            } = att.data
-            {
-                self.cccd_tables
-                    .set_notify(&connection.peer_identity(), handle, notifications);
-                self.cccd_tables
-                    .set_indicate(&connection.peer_identity(), handle, indications);
-            }
+        if matches!(att.data, AttributeData::ClientSpecific { .. }) {
+            return self
+                .client_att_tables
+                .write(&connection.peer_identity(), handle, offset, data);
         }
-        err
+        att.write(offset, data)
     }
 
     fn handle_read_by_type_req(
@@ -480,15 +285,15 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
         }
 
         let (mut header, mut body) = data.split(2)?;
-        let err = self.att_table.iterate_from(start, |mut it| {
+        let err = self.att_table.iterate_from(start, |it| {
             let mut ret = Err(AttErrorCode::ATTRIBUTE_NOT_FOUND);
             let mut complete_length = None;
-            while let Some((att_handle, att)) = it.next() {
+            for (att_handle, att) in it {
                 // trace!("[read_by_type] Check attribute {:?} {}", att.uuid, att.handle);
                 if &att.uuid == attribute_type && att_handle <= end {
-                    let full_length = att.data.value_len();
+                    let full_length = self.full_value_len(connection, att_handle, att);
                     if let Some(previous_length) = complete_length {
-                        if previous_length != full_length || body.available() < full_length + 2 {
+                        if full_length != Some(previous_length) || body.available() < previous_length + 2 {
                             break;
                         }
                     }
@@ -501,7 +306,7 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
                             // First successful read, store this length, all subsequent ones must match it.
                             // debug!("[read_by_type] found first entry {:x?}, handle {}", att.uuid, handle);
                             ret = new_ret;
-                            complete_length = Some(full_length);
+                            complete_length = full_length;
                             body.commit(first_length)?;
                         }
                         (Ok(new_length), Ok(old_length)) => {
@@ -579,18 +384,11 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
                 if &att.uuid == group_type && att_handle <= end {
                     // debug!("[read_by_group] found! {:x?} handle: {}", att.uuid, att.handle);
                     handle = att_handle;
+                    let last_handle_in_group = it.service_group_end();
 
-                    let AttributeData::Service {
-                        last_handle_in_group, ..
-                    } = att.data
-                    else {
-                        ret = Err(AttErrorCode::UNSUPPORTED_GROUP_TYPE);
-                        break;
-                    };
-
-                    let full_length = att.data.value_len();
+                    let full_length = self.full_value_len(connection, att_handle, att);
                     if let Some(previous_length) = complete_length {
-                        if previous_length != full_length || body.available() < full_length + 4 {
+                        if full_length != Some(previous_length) || body.available() < previous_length + 4 {
                             break;
                         }
                     }
@@ -603,7 +401,7 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
                             // First successful read, store this length, all subsequent ones must match it.
                             // debug!("[read_by_group] found first entry {:x?}, handle {}", att.uuid, handle);
                             ret = new_ret;
-                            complete_length = Some(full_length);
+                            complete_length = full_length;
                             body.commit(first_length)?;
                         }
                         (Ok(new_length), Ok(old_length)) => {
@@ -687,7 +485,7 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
         handle: u16,
         data: &[u8],
     ) -> Result<usize, codec::Error> {
-        self.att_table.with_attribute(handle, |att| {
+        self.att_table.with_attribute_mut(handle, |att| {
             // Write commands can't respond with an error.
             let _ = self.write_attribute_data(connection, handle, 0, att, data);
         });
@@ -703,7 +501,7 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
     ) -> Result<usize, codec::Error> {
         let err = self
             .att_table
-            .with_attribute(handle, |att| {
+            .with_attribute_mut(handle, |att| {
                 self.write_attribute_data(connection, handle, 0, att, data)
             })
             .unwrap_or(Err(AttErrorCode::ATTRIBUTE_NOT_FOUND));
@@ -737,18 +535,13 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
         self.att_table.iterate_from(start, |mut it| {
             while let Some((handle, att)) = it.next() {
                 if handle <= end && att.uuid == attr_type {
-                    if let AttributeData::Service {
-                        uuid,
-                        last_handle_in_group,
-                    } = &att.data
-                    {
-                        if uuid.as_raw() == attr_value {
-                            if w.available() < 4 + uuid.as_raw().len() {
-                                break;
-                            }
-                            w.write(handle)?;
-                            w.write(*last_handle_in_group)?;
+                    let value = att.data.value();
+                    if value == Some(attr_value) {
+                        if w.available() < 4 {
+                            break;
                         }
+                        w.write(handle)?;
+                        w.write(it.service_group_end())?;
                     }
                 }
             }
@@ -778,12 +571,15 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
         header.write(att::ATT_FIND_INFORMATION_RSP)?;
         let mut t = 0;
 
-        self.att_table.iterate_from(start, |mut it| {
-            while let Some((handle, att)) = it.next() {
+        self.att_table.iterate_from(start, |it| {
+            for (handle, att) in it {
                 if handle <= end {
                     if t == 0 {
                         t = att.uuid.get_type();
                     } else if t != att.uuid.get_type() {
+                        break;
+                    }
+                    if body.available() < 2 + att.uuid.as_raw().len() {
                         break;
                     }
                     body.write(handle)?;
@@ -820,6 +616,7 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
         Ok(w.len())
     }
 
+    #[cfg(feature = "att-queued-writes")]
     fn handle_prepare_write(
         &self,
         connection: &Connection<'_, P>,
@@ -829,29 +626,77 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
         value: &[u8],
     ) -> Result<usize, codec::Error> {
         let mut w = WriteCursor::new(buf);
-        w.write(att::ATT_PREPARE_WRITE_RSP)?;
-        w.write(handle)?;
-        w.write(offset)?;
 
-        let err = self
-            .att_table
-            .with_attribute(handle, |att| {
-                let err = self.write_attribute_data(connection, handle, 0, att, value);
-                w.append(value)?;
-                err
-            })
-            .unwrap_or(Err(AttErrorCode::ATTRIBUTE_NOT_FOUND));
-
+        let err = connection.prepare_write(handle, offset, value);
         match err {
-            Ok(()) => Ok(w.len()),
+            Ok(()) => {
+                w.write(att::ATT_PREPARE_WRITE_RSP)?;
+                w.write(handle)?;
+                w.write(offset)?;
+                w.append(value)?;
+                Ok(w.len())
+            }
             Err(e) => Ok(Self::error_response(w, att::ATT_PREPARE_WRITE_REQ, handle, e)?),
         }
     }
 
-    fn handle_execute_write(&self, buf: &mut [u8], _flags: u8) -> Result<usize, codec::Error> {
+    #[cfg(not(feature = "att-queued-writes"))]
+    fn handle_prepare_write(
+        &self,
+        _connection: &Connection<'_, P>,
+        buf: &mut [u8],
+        handle: u16,
+        _offset: u16,
+        _value: &[u8],
+    ) -> Result<usize, codec::Error> {
+        let w = WriteCursor::new(buf);
+        Self::error_response(w, att::ATT_PREPARE_WRITE_REQ, 0, AttErrorCode::REQUEST_NOT_SUPPORTED)
+    }
+
+    #[cfg(feature = "att-queued-writes")]
+    fn handle_execute_write(
+        &self,
+        connection: &Connection<'_, P>,
+        buf: &mut [u8],
+        flags: u8,
+    ) -> Result<usize, codec::Error> {
         let mut w = WriteCursor::new(buf);
-        w.write(att::ATT_EXECUTE_WRITE_RSP)?;
-        Ok(w.len())
+        if flags == 0x01 {
+            let err = connection.with_prepare_write(|pw| {
+                if pw.handle == 0 {
+                    return Ok(());
+                }
+                let data = &pw.buf[..pw.len as usize];
+                self.att_table
+                    .with_attribute_mut(pw.handle, |att| {
+                        self.write_attribute_data(connection, pw.handle, pw.offset as usize, att, data)
+                    })
+                    .unwrap_or(Err(AttErrorCode::ATTRIBUTE_NOT_FOUND))
+            });
+            connection.clear_prepare_write();
+            match err {
+                Ok(()) => {
+                    w.write(att::ATT_EXECUTE_WRITE_RSP)?;
+                    Ok(w.len())
+                }
+                Err(e) => Ok(Self::error_response(w, att::ATT_EXECUTE_WRITE_REQ, 0, e)?),
+            }
+        } else {
+            connection.clear_prepare_write();
+            w.write(att::ATT_EXECUTE_WRITE_RSP)?;
+            Ok(w.len())
+        }
+    }
+
+    #[cfg(not(feature = "att-queued-writes"))]
+    fn handle_execute_write(
+        &self,
+        _connection: &Connection<'_, P>,
+        buf: &mut [u8],
+        _flags: u8,
+    ) -> Result<usize, codec::Error> {
+        let w = WriteCursor::new(buf);
+        Self::error_response(w, att::ATT_EXECUTE_WRITE_REQ, 0, AttErrorCode::REQUEST_NOT_SUPPORTED)
     }
 
     fn handle_read_blob(
@@ -935,7 +780,7 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
                 self.handle_prepare_write(connection, rx, *handle, *offset, value)?
             }
 
-            AttClient::Request(AttReq::ExecuteWrite { flags }) => self.handle_execute_write(rx, *flags)?,
+            AttClient::Request(AttReq::ExecuteWrite { flags }) => self.handle_execute_write(connection, rx, *flags)?,
 
             AttClient::Request(AttReq::ReadBlob { handle, offset }) => {
                 self.handle_read_blob(connection, rx, *handle, *offset)?
@@ -957,14 +802,85 @@ impl<'values, M: RawMutex, P: PacketPool, const ATT_MAX: usize, const CCCD_MAX: 
         &self.att_table
     }
 
-    /// Get the CCCD table for a connection
-    pub fn get_cccd_table(&self, connection: &Connection<'_, P>) -> Option<CccdTable<CCCD_MAX>> {
-        self.cccd_tables.get_cccd_table(&connection.peer_identity())
+    /// Write a value to the attribute table and send notifications/indications
+    /// to all connected peers that have subscribed via the CCCD.
+    ///
+    /// If the attribute at `value_handle + 1` is a CCCD (UUID 0x2902), each
+    /// connection is checked for notification/indication subscriptions and
+    /// sent the appropriate PDU.
+    #[cfg(feature = "gatt")]
+    pub async fn write_and_notify<C: crate::Controller, T: AsGatt + ?Sized>(
+        &self,
+        stack: &crate::Stack<'_, C, P>,
+        value_handle: u16,
+        data: &T,
+    ) -> Result<(), Error> {
+        self.att_table.write(value_handle, 0, data.as_gatt())?;
+
+        // Check if the next handle is a CCCD
+        let cccd_handle = value_handle + 1;
+        if self.att_table.uuid(cccd_handle)
+            != Some(bt_hci::uuid::descriptors::CLIENT_CHARACTERISTIC_CONFIGURATION.into())
+        {
+            return Ok(());
+        }
+
+        self.notify(stack, value_handle, data).await
     }
 
-    /// Set the CCCD table for a connection
-    pub fn set_cccd_table(&self, connection: &Connection<'_, P>, table: CccdTable<CCCD_MAX>) {
-        self.cccd_tables.set_cccd_table(&connection.peer_identity(), table);
+    /// Send notifications/indications to all connected peers that have subscribed
+    /// via the CCCD without updating the value stored in the attribute table.
+    ///
+    /// If the attribute at `value_handle + 1` is not a CCCD (UUID 0x2902), an error
+    /// is returned. Each connection is checked for notification/indication
+    /// subscriptions and sent the appropriate PDU.
+    #[cfg(feature = "gatt")]
+    pub async fn notify<C: crate::Controller, T: AsGatt + ?Sized>(
+        &self,
+        stack: &crate::Stack<'_, C, P>,
+        value_handle: u16,
+        data: &T,
+    ) -> Result<(), Error> {
+        // Check if the next handle is a CCCD
+        let cccd_handle = value_handle + 1;
+        if self.att_table.uuid(cccd_handle)
+            != Some(bt_hci::uuid::descriptors::CLIENT_CHARACTERISTIC_CONFIGURATION.into())
+        {
+            return Err(Error::InvalidValue);
+        }
+
+        let data = data.as_gatt();
+        for conn in stack.connections() {
+            if self.should_indicate(&conn, cccd_handle) {
+                let uns = att::AttUns::Indicate {
+                    handle: value_handle,
+                    data,
+                };
+                if let Ok(pdu) = crate::gatt::assemble(&conn, att::AttServer::Unsolicited(uns)) {
+                    conn.send(pdu).await;
+                }
+            } else if self.should_notify(&conn, cccd_handle) {
+                let uns = att::AttUns::Notify {
+                    handle: value_handle,
+                    data,
+                };
+                if let Ok(pdu) = crate::gatt::assemble(&conn, att::AttServer::Unsolicited(uns)) {
+                    conn.send(pdu).await;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Get the client-specific attribute table for a connection
+    pub fn get_client_att_table(&self, connection: &Connection<'_, P>) -> Option<ClientAttTable> {
+        self.client_att_tables.get_client_att_table(&connection.peer_identity())
+    }
+
+    /// Set the client-specific attribute table for a connection
+    pub fn set_client_att_table(&self, connection: &Connection<'_, P>, table: &ClientAttTableView<'_>) {
+        self.client_att_tables
+            .set_client_att_table(&connection.peer_identity(), table);
     }
 }
 
@@ -973,11 +889,13 @@ mod tests {
     use core::task::Poll;
 
     use bt_hci::param::{AddrKind, BdAddr, ConnHandle, LeConnRole};
+    use bt_hci::uuid::declarations::{PRIMARY_SERVICE, SECONDARY_SERVICE};
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 
     use super::*;
     use crate::connection_manager::tests::{setup, ADDR_1};
     use crate::prelude::*;
+    use crate::Address;
 
     #[test]
     fn mtu23_mixed_declarations_do_not_emit_a_truncated_uuid() {
@@ -996,46 +914,29 @@ mod tests {
                 .add_characteristic_ro::<[u8; 2], _>(Uuid::new_long([0x56; 16]), &[0, 0])
                 .build();
         }
-        let server = AttributeServer::<_, DefaultPacketPool, 16, 4, 3>::new(table);
+        let server = AttributeServer::<_, DefaultPacketPool, 16, 3>::new(table);
         let manager = setup();
-        assert!(manager
-            .poll_accept(LeConnRole::Peripheral, &[], None)
-            .is_pending());
+        assert!(manager.poll_accept(LeConnRole::Peripheral, &[], None).is_pending());
         unwrap!(manager.connect(
             ConnHandle::new(0),
-            AddrKind::RANDOM,
-            BdAddr::new(ADDR_1),
+            Address::new(AddrKind::RANDOM, BdAddr::new(ADDR_1)),
             LeConnRole::Peripheral,
             ConnParams::new(),
         ));
-        let Poll::Ready(connection) =
-            manager.poll_accept(LeConnRole::Peripheral, &[], None)
-        else {
+        let Poll::Ready(connection) = manager.poll_accept(LeConnRole::Peripheral, &[], None) else {
             panic!("connection not accepted");
         };
 
         let mut response = [0u8; 23];
         let len = server
-            .handle_read_by_type_req(
-                &connection,
-                &mut response,
-                1,
-                u16::MAX,
-                &Uuid::new_short(0x2803),
-            )
+            .handle_read_by_type_req(&connection, &mut response, 1, u16::MAX, &Uuid::new_short(0x2803))
             .unwrap();
         assert_eq!(&response[..2], &[att::ATT_READ_BY_TYPE_RSP, 7]);
         assert_eq!(len, 16);
 
         let next = u16::from_le_bytes([response[len - 7], response[len - 6]]) + 1;
         let len = server
-            .handle_read_by_type_req(
-                &connection,
-                &mut response,
-                next,
-                u16::MAX,
-                &Uuid::new_short(0x2803),
-            )
+            .handle_read_by_type_req(&connection, &mut response, next, u16::MAX, &Uuid::new_short(0x2803))
             .unwrap();
         assert_eq!(&response[..2], &[att::ATT_READ_BY_TYPE_RSP, 21]);
         assert_eq!(len, 23);
@@ -1051,15 +952,12 @@ mod tests {
         table.add_service(Service {
             uuid: Uuid::new_long([0x67; 16]),
         });
-        let server = AttributeServer::<_, DefaultPacketPool, 8, 2, 3>::new(table);
+        let server = AttributeServer::<_, DefaultPacketPool, 8, 3>::new(table);
         let manager = setup();
-        assert!(manager
-            .poll_accept(LeConnRole::Peripheral, &[], None)
-            .is_pending());
+        assert!(manager.poll_accept(LeConnRole::Peripheral, &[], None).is_pending());
         unwrap!(manager.connect(
             ConnHandle::new(0),
-            AddrKind::RANDOM,
-            BdAddr::new(ADDR_1),
+            Address::new(AddrKind::RANDOM, BdAddr::new(ADDR_1)),
             LeConnRole::Peripheral,
             ConnParams::new(),
         ));
@@ -1069,26 +967,14 @@ mod tests {
 
         let mut response = [0u8; 23];
         let len = server
-            .handle_read_by_group_type_req(
-                &connection,
-                &mut response,
-                1,
-                u16::MAX,
-                &Uuid::new_short(0x2800),
-            )
+            .handle_read_by_group_type_req(&connection, &mut response, 1, u16::MAX, &Uuid::new_short(0x2800))
             .unwrap();
         assert_eq!(&response[..2], &[att::ATT_READ_BY_GROUP_TYPE_RSP, 6]);
         assert_eq!(len, 8);
 
         let next = u16::from_le_bytes([response[4], response[5]]) + 1;
         let len = server
-            .handle_read_by_group_type_req(
-                &connection,
-                &mut response,
-                next,
-                u16::MAX,
-                &Uuid::new_short(0x2800),
-            )
+            .handle_read_by_group_type_req(&connection, &mut response, next, u16::MAX, &Uuid::new_short(0x2800))
             .unwrap();
         assert_eq!(&response[..2], &[att::ATT_READ_BY_GROUP_TYPE_RSP, 20]);
         assert_eq!(len, 22);
@@ -1123,7 +1009,6 @@ mod tests {
         let _ = env_logger::try_init();
         const MAX_ATTRIBUTES: usize = 1024;
         const CONNECTIONS_MAX: usize = 3;
-        const CCCD_MAX: usize = 1024;
         const L2CAP_CHANNELS_MAX: usize = 5;
         type FacadeDummyType = [u8; 0];
 
@@ -1162,20 +1047,11 @@ mod tests {
             }
 
             // Print the table for debugging.
-            table.iterate(|mut it| {
-                while let Some((handle, att)) = it.next() {
+            table.iterate(|it| {
+                for (handle, att) in it {
                     let uuid = &att.uuid;
-                    if let AttributeData::Service {
-                        uuid,
-                        last_handle_in_group,
-                    } = &att.data
-                    {
-                        trace!(
-                            "last_handle_in_group for 0x{:0>4x?}, 0x{:0>2x?} 0x{:0>2x?}",
-                            handle,
-                            uuid,
-                            last_handle_in_group
-                        );
+                    if *uuid == PRIMARY_SERVICE.into() || *uuid == SECONDARY_SERVICE.into() {
+                        trace!("service 0x{:0>4x?}, 0x{:0>2x?}", handle, uuid,);
                     } else {
                         trace!("  0x{:0>4x?}, 0x{:0>2x?}", handle, uuid,);
                     }
@@ -1183,7 +1059,7 @@ mod tests {
             });
 
             // Create a server.
-            let server = AttributeServer::<_, DefaultPacketPool, MAX_ATTRIBUTES, CCCD_MAX, CONNECTIONS_MAX>::new(table);
+            let server = AttributeServer::<_, DefaultPacketPool, MAX_ATTRIBUTES, CONNECTIONS_MAX>::new(table);
 
             // Create the connection manager.
             let mgr = setup();
@@ -1192,8 +1068,7 @@ mod tests {
             assert!(mgr.poll_accept(LeConnRole::Peripheral, &[], None).is_pending());
             unwrap!(mgr.connect(
                 ConnHandle::new(0),
-                AddrKind::RANDOM,
-                BdAddr::new(ADDR_1),
+                Address::new(AddrKind::RANDOM, BdAddr::new(ADDR_1)),
                 LeConnRole::Peripheral,
                 ConnParams::new(),
             ));

@@ -1,5 +1,5 @@
 //! Advertisement config.
-use bt_hci::param::AdvEventProps;
+use bt_hci::param::{AddrKind, AdvEventProps, BdAddr};
 pub use bt_hci::param::{AdvChannelMap, AdvFilterPolicy, AdvHandle, AdvSet, PhyKind};
 use embassy_time::Duration;
 
@@ -43,6 +43,9 @@ pub struct AdvertisementSet<'d> {
     pub params: AdvertisementParameters,
     /// Advertisement data.
     pub data: Advertisement<'d>,
+    /// Override the random address for this advertising set.
+    /// `None` = use host default address.
+    pub address: Option<BdAddr>,
 }
 
 impl<'d> AdvertisementSet<'d> {
@@ -97,6 +100,10 @@ pub struct AdvertisementParameters {
 
     /// Fragmentation preference
     pub fragment: bool,
+
+    /// Override the own address type for this advertising set.
+    /// `None` = use host default (derived from host address + privacy state).
+    pub own_addr_kind: Option<AddrKind>,
 }
 
 impl Default for AdvertisementParameters {
@@ -112,6 +119,7 @@ impl Default for AdvertisementParameters {
             filter_policy: AdvFilterPolicy::default(),
             channel_map: None,
             fragment: false,
+            own_addr_kind: None,
         }
     }
 }
@@ -373,13 +381,32 @@ pub enum AdStructure<'a> {
     /// Must not be used in scan response data.
     Flags(u8),
 
-    /// List of 16-bit service UUIDs.
+    /// Incomplete List of 16-bit service UUIDs.
     /// The UUID data matches the ble network's endian order (should be little endian).
-    ServiceUuids16(&'a [[u8; 2]]),
+    IncompleteServiceUuids16(&'a [[u8; 2]]),
 
-    /// List of 128-bit service UUIDs.
+    /// Complete List of 16-bit service UUIDs.
     /// The UUID data matches the ble network's endian order (should be little endian).
-    ServiceUuids128(&'a [[u8; 16]]),
+    CompleteServiceUuids16(&'a [[u8; 2]]),
+
+    /// Incomplete List of 32-bit service UUIDs.
+    /// The UUID data matches the ble network's endian order (should be little endian).
+    IncompleteServiceUuids32(&'a [[u8; 4]]),
+
+    /// Complete List of 32-bit service UUIDs.
+    /// The UUID data matches the ble network's endian order (should be little endian).
+    CompleteServiceUuids32(&'a [[u8; 4]]),
+
+    /// Incomplete List of 128-bit service UUIDs.
+    /// The UUID data matches the ble network's endian order (should be little endian).
+    IncompleteServiceUuids128(&'a [[u8; 16]]),
+
+    /// Complete List of 128-bit service UUIDs.
+    /// The UUID data matches the ble network's endian order (should be little endian).
+    CompleteServiceUuids128(&'a [[u8; 16]]),
+
+    /// Sets the Tx Power Level in dBm.
+    TxPowerLevel(i8),
 
     /// Service data with 16-bit service UUID.
     /// The UUID data matches the ble network's endian order (should be little endian).
@@ -430,13 +457,37 @@ impl AdStructure<'_> {
             AdStructure::Flags(flags) => {
                 w.append(&[0x02, 0x01, *flags])?;
             }
-            AdStructure::ServiceUuids16(uuids) => {
+            AdStructure::IncompleteServiceUuids16(uuids) => {
                 w.append(&[(uuids.len() * 2 + 1) as u8, 0x02])?;
                 for uuid in uuids.iter() {
                     w.write_ref(&Uuid::Uuid16(*uuid))?;
                 }
             }
-            AdStructure::ServiceUuids128(uuids) => {
+            AdStructure::CompleteServiceUuids16(uuids) => {
+                w.append(&[(uuids.len() * 2 + 1) as u8, 0x03])?;
+                for uuid in uuids.iter() {
+                    w.write_ref(&Uuid::Uuid16(*uuid))?;
+                }
+            }
+            AdStructure::IncompleteServiceUuids32(uuids) => {
+                w.append(&[(uuids.len() * 4 + 1) as u8, 0x04])?;
+                for uuid in uuids.iter() {
+                    w.write_ref(&Uuid::Uuid32(*uuid))?;
+                }
+            }
+            AdStructure::CompleteServiceUuids32(uuids) => {
+                w.append(&[(uuids.len() * 4 + 1) as u8, 0x05])?;
+                for uuid in uuids.iter() {
+                    w.write_ref(&Uuid::Uuid32(*uuid))?;
+                }
+            }
+            AdStructure::IncompleteServiceUuids128(uuids) => {
+                w.append(&[(uuids.len() * 16 + 1) as u8, 0x06])?;
+                for uuid in uuids.iter() {
+                    w.write_ref(&Uuid::Uuid128(*uuid))?;
+                }
+            }
+            AdStructure::CompleteServiceUuids128(uuids) => {
                 w.append(&[(uuids.len() * 16 + 1) as u8, 0x07])?;
                 for uuid in uuids.iter() {
                     w.write_ref(&Uuid::Uuid128(*uuid))?;
@@ -449,6 +500,9 @@ impl AdStructure<'_> {
             AdStructure::CompleteLocalName(name) => {
                 w.append(&[(name.len() + 1) as u8, 0x09])?;
                 w.append(name)?;
+            }
+            AdStructure::TxPowerLevel(power) => {
+                w.append(&[0x02, 0x0a, *power as u8])?;
             }
             AdStructure::ServiceData16 { uuid, data } => {
                 w.append(&[(data.len() + 3) as u8, 0x16])?;
@@ -498,24 +552,48 @@ impl<'d> AdStructureIter<'d> {
             // Flags
             0x01 => Ok(AdStructure::Flags(data[0])),
             // Incomplete List of 16-bit Service or Service Class UUIDs
-            // 0x02 =>
+            0x02 => match zerocopy::FromBytes::ref_from_bytes(data) {
+                Ok(x) => Ok(AdStructure::IncompleteServiceUuids16(x)),
+                Err(e) => {
+                    let _ = zerocopy::SizeError::from(e);
+                    Err(codec::Error::InvalidValue)
+                }
+            },
             // Complete List of 16-bit Service or Service Class UUIDs
             0x03 => match zerocopy::FromBytes::ref_from_bytes(data) {
-                Ok(x) => Ok(AdStructure::ServiceUuids16(x)),
+                Ok(x) => Ok(AdStructure::CompleteServiceUuids16(x)),
                 Err(e) => {
                     let _ = zerocopy::SizeError::from(e);
                     Err(codec::Error::InvalidValue)
                 }
             },
             // Incomplete List of 32-bit Service or Service Class UUIDs
-            // 0x04 =>
+            0x04 => match zerocopy::FromBytes::ref_from_bytes(data) {
+                Ok(x) => Ok(AdStructure::IncompleteServiceUuids32(x)),
+                Err(e) => {
+                    let _ = zerocopy::SizeError::from(e);
+                    Err(codec::Error::InvalidValue)
+                }
+            },
             // Complete List of 32-bit Service or Service Class UUIDs
-            // 0x05
+            0x05 => match zerocopy::FromBytes::ref_from_bytes(data) {
+                Ok(x) => Ok(AdStructure::CompleteServiceUuids32(x)),
+                Err(e) => {
+                    let _ = zerocopy::SizeError::from(e);
+                    Err(codec::Error::InvalidValue)
+                }
+            },
             // Incomplete List of 128-bit Service or Service Class UUIDs
-            // 0x06
+            0x06 => match zerocopy::FromBytes::ref_from_bytes(data) {
+                Ok(x) => Ok(AdStructure::IncompleteServiceUuids128(x)),
+                Err(e) => {
+                    let _ = zerocopy::SizeError::from(e);
+                    Err(codec::Error::InvalidValue)
+                }
+            },
             // Complete List of 128-bit Service or Service Class UUIDs
             0x07 => match zerocopy::FromBytes::ref_from_bytes(data) {
-                Ok(x) => Ok(AdStructure::ServiceUuids128(x)),
+                Ok(x) => Ok(AdStructure::CompleteServiceUuids128(x)),
                 Err(e) => {
                     let _ = zerocopy::SizeError::from(e);
                     Err(codec::Error::InvalidValue)
@@ -525,8 +603,9 @@ impl<'d> AdStructureIter<'d> {
             0x08 => Ok(AdStructure::ShortenedLocalName(data)),
             // Complete Local Name
             0x09 => Ok(AdStructure::CompleteLocalName(data)),
+            // Tx Power Level
+            0x0a => Ok(AdStructure::TxPowerLevel(data[0] as i8)),
             /*
-            0x0A Tx Power Level
             0x0D Class of Device
             0x0E Simple Pairing Hash C-192
             0x0F Simple Pairing Randomizer R-192
@@ -607,7 +686,7 @@ mod tests {
         assert!(AdStructure::encode_slice(
             &[
                 AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-                AdStructure::ServiceUuids16(&[[0x0f, 0x18]]),
+                AdStructure::IncompleteServiceUuids16(&[[0x0f, 0x18]]),
                 AdStructure::CompleteLocalName(b"12345678901234567890123"),
             ],
             &mut adv_data[..],

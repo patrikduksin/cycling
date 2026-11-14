@@ -11,7 +11,7 @@ const MAX_SIZE: usize = MAX_VERSION as usize * 4 + 17;
 /// Light modules around the code, as the standard asks.
 pub const QUIET: usize = 2;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Qr {
     size: u8,
     /// One bit per module, bit `x` of row `y`.
@@ -73,7 +73,7 @@ impl Qr {
 
 /// A code placed on the screen: `module` pixels per module, its modules
 /// starting at (`left`, `top`) inside a light panel `QUIET` modules wider.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Placed {
     pub qr: Qr,
     pub left: usize,

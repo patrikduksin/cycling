@@ -856,7 +856,10 @@ impl Session {
         {
             let view =
                 vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
-            shell.draw_canvas(240, 320, |row| view.paint(row));
+            let scene = view.scene();
+            shell.draw_canvas(240, 320, |row| {
+                firmware_shell::shell::Picture::paint(&scene, row);
+            });
         }
         shell.forget_frame();
         let mut sdk = vana::app::Runtime::new(profile);
@@ -1496,6 +1499,7 @@ impl Session {
     fn turn_off(&mut self) {
         self.off = true;
         self.power.0.borrow_mut().brightness = 0;
+        self.shell.forget_panel();
         let mut frame = self.display.0.borrow_mut();
         frame.pixels.fill(0);
         frame.shown();

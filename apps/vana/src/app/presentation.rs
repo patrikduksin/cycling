@@ -34,7 +34,7 @@ use device_api::power::Power;
 use device_api::sensors::Startup;
 use device_api::sound::Sound;
 use device_api::storage::OwnedFlash;
-use firmware_shell::shell::{Screen, Shell};
+use firmware_shell::shell::{Drawn, Picture, Screen, Shell};
 
 /// Sensors whose battery wants changing, as Ready and Home name them. While
 /// any sensor is not live it is missing first and no battery is news.
@@ -300,14 +300,6 @@ impl Default for Display {
     }
 }
 
-/// A Home frame on the panel: what it shows, and the panel's submission
-/// count once it was drawn, which any later frame raises.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct HomeOnPanel {
-    digest: u64,
-    submissions: u32,
-}
-
 impl Display {
     pub(super) fn is_active(self) -> bool {
         matches!(self, Self::Active { .. })
@@ -330,14 +322,10 @@ impl Runtime {
         &self,
         system: &mut Shell<D, I, P, B>,
     ) {
-        let view = View::new(Page::Boot, 0, None);
-        let light = self.light();
-        system.draw_canvas(240, 320, |row| {
-            view.paint(row);
-            if light {
-                look::apply(row.pixels_mut());
-            }
-        });
+        let mut view = View::new(Page::Boot, 0, None);
+        view.light = self.light();
+        let scene = view.scene();
+        system.draw_canvas(240, 320, |row| scene.paint(row));
     }
 
     pub fn present<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
@@ -578,12 +566,6 @@ impl Runtime {
             .latency_clock
             .map_or(now, |clock| clock())
             .max(now)
-    }
-
-    /// Home draws its next frame at its usual pace even if nothing on it
-    /// changed, for a tool that measures a frame.
-    pub fn invalidate_home(&mut self) {
-        self.home_on_panel = None;
     }
 
     pub fn suspend_display(&mut self) {
@@ -851,30 +833,14 @@ impl Runtime {
         }
         view.graphics = self.motion.graphics(self.motion_visible(), now);
         view.prepare();
-        let home = view.home_digest().map(|digest| HomeOnPanel {
-            digest,
-            submissions: system.display_submissions,
-        });
-        if home.is_some() && home == self.home_on_panel && !system.frame_wanted(now) {
-            return;
-        }
-        system.draw_canvas(240, 320, |row| {
-            view.paint(row);
-            if light {
-                look::apply(row.pixels_mut());
-            }
-        });
+        let drawn = system.draw(&view.scene(), now);
+        // A frame the panel already showed still counts as drawn, so a glide
+        // that lands on the same pixels asks for no more frames.
         let pixels = crate::screens::ride::pixels(&view.graphics, &view.profile);
         self.motion.drew(&sample, pixels, now);
-        self.home_on_panel = home
-            .filter(|_| !system.display_error)
-            .map(|home| HomeOnPanel {
-                submissions: system.display_submissions,
-                ..home
-            });
         // Only a frame the panel accepted is a milestone or answers a press;
         // a pending press waits for the next frame that reaches the panel.
-        if system.display_error {
+        if drawn != Drawn::Sent {
             return;
         }
         let drawn = self.drawn_at(now);

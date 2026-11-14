@@ -61,6 +61,48 @@ fn digest_pairs(hash: u32, pixels: &[u16]) -> u32 {
     last.iter()
         .fold(hash, |hash, &pixel| step(hash, u32::from(pixel)))
 }
+/// A frame an application draws through `Shell::draw`: a logical canvas
+/// whose pixels follow from its `Hash` alone, so equal pictures paint alike.
+pub trait Picture: core::hash::Hash {
+    /// The canvas's width and height, fitted to the panel as `draw_canvas`
+    /// fits them.
+    const SIZE: (usize, usize);
+    /// Paint every pixel of `row`'s clip.
+    fn paint(&self, row: &mut Row);
+}
+
+/// What `Shell::draw` did with a picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drawn {
+    /// The panel already showed it, and nothing waited for a frame.
+    Unchanged,
+    Sent,
+    Failed,
+}
+
+/// FNV-1a over 64 bits, a picture's key: a collision would skip a changed
+/// frame.
+struct Fnv1a(u64);
+
+impl core::hash::Hasher for Fnv1a {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+}
+
+fn key(picture: &impl Picture) -> u64 {
+    use core::hash::Hasher;
+    let mut fnv = Fnv1a(0xcbf2_9ce4_8422_2325);
+    picture.hash(&mut fnv);
+    fnv.finish()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Status,
@@ -88,6 +130,8 @@ pub struct Shell<D, I, P, B> {
     pub display_submissions: u32,
     /// A digest of the pixels on the panel.
     panel: Option<u32>,
+    /// The key of the picture on the panel, until anything else is submitted.
+    picture: Option<u64>,
     /// The digest `take_frame` last handed out.
     taken: Option<u32>,
     /// The latest submission, rendering included; measured when `clock` is set.
@@ -177,6 +221,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             boot_id: 0,
             synthetic_events: 0,
             panel: None,
+            picture: None,
             taken: None,
             store,
             settings,
@@ -481,8 +526,36 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         }
         result.is_ok()
     }
+    /// Bring the panel to `picture`: send it, unless the panel already shows
+    /// it and nothing waits for a frame (`frame_wanted`).
+    pub fn draw<F: Picture>(&mut self, picture: &F, now: u64) -> Drawn {
+        let key = key(picture);
+        let drawn = if self.picture == Some(key) && !self.frame_wanted(now) {
+            Drawn::Unchanged
+        } else {
+            let (width, height) = F::SIZE;
+            self.draw_canvas(width, height, |row| picture.paint(row));
+            if self.display_error {
+                return Drawn::Failed;
+            }
+            self.picture = Some(key);
+            Drawn::Sent
+        };
+        // Only an unscaled panel holds the picture's own rows to compare.
+        let geometry = self.display.geometry();
+        if (geometry.width, geometry.height) == F::SIZE {
+            self.display
+                .check(|y, pixels| picture.paint(&mut Row::new(y, pixels)));
+        }
+        drawn
+    }
+    /// The next `draw` sends its picture whatever the panel showed.
+    pub fn forget_panel(&mut self) {
+        self.picture = None;
+    }
     /// Submit a frame row by row; `row(y, pixels)` must fill every physical pixel.
     pub fn draw_rows(&mut self, mut row: impl FnMut(usize, &mut [u16])) {
+        self.picture = None;
         let started = self.clock.map(|clock| clock());
         let mut frame = FNV_OFFSET;
         let row = |y: usize, pixels: &mut [u16]| {
@@ -541,6 +614,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             return;
         }
         if width == 0 || width > CANVAS_MAX_WIDTH {
+            self.picture = None;
             self.display_error = true;
             return;
         }

@@ -27,4 +27,8 @@ pub trait Display {
     /// requested in order so a device can transfer earlier rows while later ones
     /// render.
     fn submit(&mut self, row: impl FnMut(usize, &mut [u16])) -> Result<(), Error>;
+    /// Called with the frame the shell believes the panel shows, rows as
+    /// `submit` asks for them. A display that keeps its pixels, such as a
+    /// simulator, can check that they match; a panel has nothing to compare.
+    fn check(&mut self, _row: impl FnMut(usize, &mut [u16])) {}
 }

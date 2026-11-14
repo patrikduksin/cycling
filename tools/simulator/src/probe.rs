@@ -64,6 +64,8 @@ pub enum Feed {
     Steady { cars: bool },
     /// Power within 35 W, and heart rate, speed and cadence, change every 250 ms.
     Noisy { cars: bool },
+    /// The readings hold and the battery charges at `percent`, as on USB.
+    Charging { percent: u8 },
 }
 
 pub struct Case {
@@ -76,7 +78,7 @@ pub struct Case {
     pub saver: bool,
 }
 
-pub static CASES: [Case; 9] = [
+pub static CASES: [Case; 12] = [
     Case {
         name: "ride main, noisy, radar",
         scene: "ride main + radar",
@@ -129,6 +131,24 @@ pub static CASES: [Case; 9] = [
         name: "home",
         scene: "home",
         feed: Feed::Steady { cars: false },
+        saver: false,
+    },
+    Case {
+        name: "home, charging at 50%",
+        scene: "home",
+        feed: Feed::Charging { percent: 50 },
+        saver: false,
+    },
+    Case {
+        name: "home, charging at 99%",
+        scene: "home",
+        feed: Feed::Charging { percent: 99 },
+        saver: false,
+    },
+    Case {
+        name: "home, charging at 100%",
+        scene: "home",
+        feed: Feed::Charging { percent: 100 },
         saver: false,
     },
 ];
@@ -206,6 +226,7 @@ pub fn run(case: &Case, seconds: u64) -> Result {
     let display = sim.device.display.clone();
     {
         let mut frame = display.0.borrow_mut();
+        frame.check = false;
         frame.probe = Some(Probe::new(frame.geometry.width, &frame.pixels));
     }
     feed(&mut sim, case.feed, seconds);
@@ -227,6 +248,9 @@ fn feed(sim: &mut Sim, feed: Feed, seconds: u64) {
         world.heart_bpm,
         world.cadence_rpm,
     );
+    if let Feed::Charging { percent } = feed {
+        sim.set_battery(percent, true);
+    }
     let mut noise = Noise(0x9e37_79b9_7f4a_7c15);
     let mut cars = 0u64;
     for tick in 0..seconds * 1_000 / TICK_MS {

@@ -7858,7 +7858,7 @@ fn assert_replays_exactly_after(
         panic!("the replay read or showed something else: {difference}");
     }
     let (frames, replayed_frames) = (recorded.frame_hashes(), replayed.frame_hashes());
-    assert!(frames.len() > 100, "{} frames", frames.len());
+    assert!(frames.len() > 50, "{} frames", frames.len());
     let first = frames
         .iter()
         .zip(&replayed_frames)

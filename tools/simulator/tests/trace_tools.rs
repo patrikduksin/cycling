@@ -581,6 +581,14 @@ fn a_stimulus_replay_of_a_fixture_shows_what_the_recording_showed() {
     );
 }
 
+#[test]
+fn a_strict_replay_of_a_fixture_shows_the_recorded_frames() {
+    let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
+    let sim = Sim::replay(&capture);
+    let report = sim.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+}
+
 fn cycling_replay(cwd: &Path, out: Option<&Path>) -> std::process::Output {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_trace"));
     command

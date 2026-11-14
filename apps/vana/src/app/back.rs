@@ -401,6 +401,9 @@ pub(super) fn refresh_map(back: &mut Option<&'static mut BackToStart>) {
 }
 
 /// What the map page draws: borrows `Runtime::back`'s frame.
-pub(super) fn map_of<'a>(back: &'a Option<&'static mut BackToStart>) -> Option<&'a MapFrame> {
-    back.as_deref().map(|state| &*state.map)
+pub(super) fn map_of<'a>(
+    back: &'a Option<&'static mut BackToStart>,
+) -> Option<(&'a MapFrame, MapKey)> {
+    let state = back.as_deref()?;
+    Some((&*state.map, state.map_key?))
 }

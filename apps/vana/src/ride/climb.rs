@@ -41,7 +41,7 @@ const VAM_LEN: usize = 60;
 const VAM_MIN_DS: u16 = 300;
 
 /// How steep a grade is, in the bands the climb page colours.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Steepness {
     /// Down by 1.5% or more.
     Descent,

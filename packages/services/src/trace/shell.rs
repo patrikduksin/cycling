@@ -154,6 +154,9 @@ impl<D: Display> Display for ShellDisplay<D> {
         self.log.panel.set(panel);
         result
     }
+    fn check(&mut self, row: impl FnMut(usize, &mut [u16])) {
+        self.inner.check(row);
+    }
 }
 
 /// The backlight: its availability and the battery as the pass froze them,

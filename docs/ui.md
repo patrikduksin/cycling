@@ -431,9 +431,11 @@ a moment only.
 Motion marks the device's own moments. Each is a ring that moves and text
 that fades, prepared like any other frame, so a motion frame costs what a
 still one does (about 10 ms on the C606). Motion frames draw every 40 ms; the
-charging icon and sheets step every 500 ms; still pages redraw once a second.
-Home draws only when what it shows changes, such as the clock's minute, the
-battery or a sensor, or when a press or a test capture waits for a frame.
+charging icon and sheets step every 500 ms; other pages look again once a
+second. A page sends a frame only when what it shows changes, such as the
+clock's minute, a reading, a glide that reaches the next pixel, the battery
+or a sensor, or when a press or a test capture waits for a frame. A charging
+battery that is almost full climbs by less than a pixel, so it sends nothing.
 
 MODE in Settings → Display chooses NORMAL or SAVER, the rider's call, never
 automatic. NORMAL is everything described here. SAVER draws less: gauges and

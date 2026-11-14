@@ -479,7 +479,7 @@ Acting on a row does one of three things:
   `VALUE` and the note it anchors (a zone, or AUTO or MANUAL for the wheel), over
   minus and plus pads. Editing WHEEL steps by 5 mm and makes the size MANUAL;
 - a choice steps to its next value at once (brightness 25/50/75/100%, dim
-  after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
+  after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, mode normal/saver, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
   km/at start, wheel mode auto/manual, the main page's two lower readings (cycling through the list below), ride pages (STATS, LAP, CLIMB, MAP, BACK TO START) on/off, sounds on/off);
 - an action opens a page (SENSORS, BESTS, FORM) or a flow (PHONE, a placeholder until the
   phone companion lands).

@@ -1376,6 +1376,19 @@ impl Runtime {
                     }
                 )
             }
+            Row::Mode => {
+                let policy = options.mode.policy();
+                let _ = write!(
+                    note,
+                    "{}",
+                    if policy.glides {
+                        "SMOOTH GAUGES"
+                    } else {
+                        "NUMBERS EVERY SECOND"
+                    }
+                );
+                write!(value, "{}", policy.name)
+            }
             Row::TimeZone => match options.zone {
                 Zone::Chile => {
                     if let Some(ms) = self.readings.live.utc_ms {

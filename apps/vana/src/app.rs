@@ -27,6 +27,7 @@ mod history;
 mod input;
 mod lists;
 mod lookahead;
+mod mode;
 mod motion;
 mod night;
 mod pace;

@@ -540,6 +540,7 @@ impl Runtime {
                 use super::preferences::Theme;
                 options.theme = after(&[Theme::Dark, Theme::Light, Theme::Auto], options.theme)
             }
+            Row::Mode => options.mode = options.mode.next(),
             Row::RadarAlerts
             | Row::FuelAlert
             | Row::CadenceLow

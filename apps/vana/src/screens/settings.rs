@@ -33,6 +33,7 @@ pub enum Row {
     AutoDim,
     Daylight,
     Theme,
+    Mode,
     TimeZone,
     AutoPause,
     AutoLap,
@@ -95,7 +96,13 @@ pub const SECTIONS: [(&str, &[Row]); 11] = [
     ("BODY", &[Row::Weight, Row::Age, Row::Sex]),
     (
         "DISPLAY",
-        &[Row::Brightness, Row::AutoDim, Row::Daylight, Row::Theme],
+        &[
+            Row::Brightness,
+            Row::AutoDim,
+            Row::Daylight,
+            Row::Theme,
+            Row::Mode,
+        ],
     ),
     ("CLOCK", &[Row::TimeZone]),
     (
@@ -191,6 +198,7 @@ impl Row {
             Self::AutoDim => "DIM AFTER",
             Self::Daylight => "DAY / NIGHT",
             Self::Theme => "THEME",
+            Self::Mode => "MODE",
             Self::TimeZone => "TIME ZONE",
             Self::AutoPause => "AUTO PAUSE",
             Self::AutoLap => "AUTO LAP",
@@ -248,6 +256,7 @@ impl Row {
             | Self::AutoDim
             | Self::Daylight
             | Self::Theme
+            | Self::Mode
             | Self::TimeZone
             | Self::AutoPause
             | Self::AutoLap
@@ -631,7 +640,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 36);
+        assert_eq!(ROWS, 37);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);

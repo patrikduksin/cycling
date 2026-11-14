@@ -1532,12 +1532,20 @@ impl Runtime {
     /// once the ride clock's second turns (the wall clock's while no ride
     /// records).
     fn latch_numbers(&mut self, now: u64) {
-        let second = if self.ride.active().status() == Status::Recording {
+        let (recording, second) = if self.ride.active().status() == Status::Recording {
             (true, self.ride.active_ms(now) / 1000)
         } else {
             (false, now / 1000)
         };
-        if self.shown.stale(self.policy().numbers, second) {
+        let moment = Moment {
+            recording,
+            second,
+            page: self.navigation.page,
+            ride_page: self.navigation.ride_page,
+            lap: self.ride.laps.current().number,
+            climbing: self.ride.climbs.climbing().is_some(),
+        };
+        if self.shown.stale(self.policy().numbers, moment) {
             let ride = &self.ride;
             let readout = Readout {
                 live: self.readings.live,
@@ -1553,7 +1561,7 @@ impl Runtime {
                     (now.saturating_sub(since) / 1000).min(u64::from(u32::MAX)) as u32
                 }),
             };
-            self.shown.set(readout, second);
+            self.shown.set(readout, moment);
         }
     }
 
@@ -1597,23 +1605,34 @@ pub(super) struct Readout {
 /// The readout the ride pages' numbers show: the newest one, or the one of
 /// the second's start when the mode latches numbers. The one place numbers
 /// are chosen, so no page asks which mode it is in.
+/// When a readout was taken. Besides the second turning, a new page, a new
+/// lap or a climb starting or ending changes what a page says at once, so
+/// any of them makes the readout due: a page never opens on stale words.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Moment {
+    recording: bool,
+    second: u64,
+    page: Page,
+    ride_page: RidePage,
+    lap: u16,
+    climbing: bool,
+}
+
 #[derive(Default)]
 pub(super) struct Shown {
-    /// The clock second the readout was taken at, and whose clock it is.
-    second: Option<(bool, u64)>,
+    taken: Option<Moment>,
     readout: Readout,
 }
 
 impl Shown {
-    /// Whether the readout is due: always on arrival, else when the second
-    /// turns.
-    fn stale(&self, numbers: super::mode::Numbers, second: (bool, u64)) -> bool {
-        numbers == super::mode::Numbers::OnArrival || self.second != Some(second)
+    /// Whether the readout is due: always on arrival, else at a new moment.
+    fn stale(&self, numbers: super::mode::Numbers, moment: Moment) -> bool {
+        numbers == super::mode::Numbers::OnArrival || self.taken != Some(moment)
     }
 
-    fn set(&mut self, readout: Readout, second: (bool, u64)) {
+    fn set(&mut self, readout: Readout, moment: Moment) {
         self.readout = readout;
-        self.second = Some(second);
+        self.taken = Some(moment);
     }
 
     pub(super) fn live(&self) -> crate::ride::log::Sample {

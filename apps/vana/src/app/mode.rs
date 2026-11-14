@@ -3,12 +3,13 @@
 //! what each mode does. A mode has no variants to match on: code reads the
 //! fields of `policy()`, so a new mode is a new row, not a new branch.
 
-/// When the main page's numbers change.
+/// When the ride pages' numbers change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Numbers {
     /// As each reading arrives.
     OnArrival,
-    /// Once a second, when the ride clock's second turns.
+    /// Once a second, when the ride clock's second turns, and at once when
+    /// the page, the lap or a climb changes.
     EverySecond,
 }
 

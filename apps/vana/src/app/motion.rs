@@ -1,8 +1,8 @@
 //! Graphics drawn between sensor samples. ANT+ sensors report about four
 //! times a second, so the main page's zone gauges and the radar markers
 //! glide from one sample to the next instead of jumping. Numbers never
-//! glide: a rider glancing down mid-glide could not read one, so they show
-//! each reading as it arrives. Recording, totals and radar alerts use the
+//! glide: a rider glancing down mid-glide could not read one, so they jump
+//! to each reading, or once a second when the mode latches them. Recording, totals and radar alerts use the
 //! readings as they arrive too. A mode that does not glide (`mode::Policy`)
 //! has every gauge and marker jump to each reading or report instead.
 use crate::ride::log::Sample;

@@ -1860,6 +1860,34 @@ fn climb_page_measures_a_six_percent_climb_over_the_top() {
 }
 
 #[test]
+fn in_saver_the_climb_page_comes_up_already_climbing() {
+    let mut sim = hill_rider();
+    sim.open_mode_row();
+    sim.press(Button::BottomRight);
+    sim.expect_field("MODE", "SAVER");
+    go_home(&mut sim);
+    sim.start_ride();
+    sim.ride_at(30.0, 180.0, 0.0, 85.0);
+    ride_to(&mut sim, 500.0);
+    // A pause shifts the ride clock's second off the wall clock's.
+    sim.pause_ride();
+    sim.advance(370);
+    sim.resume_ride();
+    ride_to(&mut sim, 1000.0);
+    sim.ride_at(14.0, 260.0, 0.0, 75.0);
+    while sim.screen().page().as_deref() != Some("4/6") {
+        assert!(
+            sim.world().distance_m < 1600.0,
+            "no climb page; screen:\n{}",
+            sim.screen().text()
+        );
+        sim.advance(50);
+    }
+    sim.expect_text("CLIMBING");
+    sim.checkpoint("saver: climb page brought up by the climb");
+}
+
+#[test]
 fn a_climb_brings_up_the_climb_page_and_hands_back_the_main_page() {
     let mut sim = hill_rider();
     sim.start_ride();

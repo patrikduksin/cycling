@@ -25,8 +25,9 @@ which also keeps it from Nix garbage collection (`.local/dev-shell`).
 
 What differs between machines belongs to the machine, not the repository: set
 it in the environment, from the machine's own configuration. When the C606 is
-on another machine, `CYCLING_DEVICE_HOST` names its ssh alias; omni-devbox sets
-`CYCLING_DEVICE_HOST=c606-host` in its NixOS configuration.
+on another machine, `CYCLING_DEVICE_HOST` names it as `user@<tailnet name>`;
+fleet-hub sets `CYCLING_DEVICE_HOST=patrikduksin@patrikduksin` in its NixOS
+configuration.
 
 Claude Code installs the pstack plugin the first time it opens a trusted
 checkout: [.claude/settings.json](../.claude/settings.json) names its
@@ -65,21 +66,9 @@ pin at once and belongs in its own PR with `cycling verify` results.
 
 The device host needs this repository's primary checkout at
 `~/projects/cycling` (override with `CYCLING_DEVICE_CHECKOUT`), set up as above,
-and the ssh alias reachable without prompts. Machines reach each other over
-Tailscale SSH: run `tailscale set --ssh` on the device host, and give the
-tailnet policy an `accept` rule for your own devices, so agents never face the
-browser re-check of the default `check` rule:
-
-```jsonc
-"ssh": [
-  { "action": "accept", "src": ["autogroup:member"], "dst": ["autogroup:self"],
-    "users": ["<device host user>", "<agent machine user>"] },
-  // the default check rule, which still covers root
-]
-```
-
-omni-devbox's `~/.ssh/config` names the laptop `c606-host` (its MagicDNS
-name and user, no keys).
+and `ssh <user>@<tailnet name>` working without prompts. Machines reach each
+other over Tailscale SSH, set up fleet-wide in
+[fleet-nix](https://github.com/patrikduksin/fleet-nix): no keys, no ssh aliases.
 
 `cycling device <task> [args]` snapshots this checkout (uncommitted and
 untracked files included) into a worktree of the host's primary checkout under

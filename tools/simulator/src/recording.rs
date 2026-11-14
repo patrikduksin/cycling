@@ -3,8 +3,7 @@
 //!
 //! Recording is enabled by `SIM_ARTIFACTS=<directory>`; each scenario writes
 //! `<directory>/<scenario>/` when its `Sim` is dropped, including on failure.
-//! Encoding the video is most of a scenario's cost, so it is written only with
-//! `SIM_VIDEO=1`.
+//! The video is written only with `SIM_VIDEO=1`.
 use crate::artifacts::{Canvas, Series, Still, chart_png, chart_svg, gif, mp4};
 use crate::sim::{Note, NoteKind};
 use crate::world::World;
@@ -160,6 +159,7 @@ pub struct Checkpoint {
     pub name: String,
     pub at_ms: u64,
     frame: usize,
+    pixels: Vec<u16>,
     /// Notes taken before this moment; later notes at the same time are not shown.
     notes: usize,
 }
@@ -170,6 +170,8 @@ pub struct Recording {
     width: usize,
     height: usize,
     frames: Vec<Frame>,
+    last: Vec<u16>,
+    kept: usize,
     checkpoints: Vec<Checkpoint>,
     truth: Vec<Truth>,
     submissions: u32,
@@ -223,6 +225,8 @@ impl Recording {
             width,
             height,
             frames: Vec::new(),
+            last: Vec::new(),
+            kept: 0,
             checkpoints: Vec::new(),
             truth: Vec::new(),
             submissions: u32::MAX,
@@ -242,13 +246,8 @@ impl Recording {
     pub fn observe(&mut self, at_ms: u64, submissions: u32, pixels: &[u16], world: Option<&World>) {
         if submissions != self.submissions {
             self.submissions = submissions;
-            let frame = Frame::new(at_ms, pixels);
-            if self
-                .frames
-                .last()
-                .is_none_or(|last| last.runs != frame.runs)
-            {
-                self.frames.push(frame);
+            if pixels != self.last {
+                self.keep(at_ms, pixels);
             }
         }
         if let Some(world) = world
@@ -271,13 +270,23 @@ impl Recording {
     }
 
     pub fn checkpoint(&mut self, name: &str, at_ms: u64, pixels: &[u16], notes: usize) {
-        self.frames.push(Frame::new(at_ms, pixels));
+        self.keep(at_ms, pixels);
         self.checkpoints.push(Checkpoint {
             name: name.to_string(),
             at_ms,
-            frame: self.frames.len() - 1,
+            frame: self.kept - 1,
+            pixels: pixels.to_vec(),
             notes,
         });
+    }
+
+    fn keep(&mut self, at_ms: u64, pixels: &[u16]) {
+        self.last.clear();
+        self.last.extend_from_slice(pixels);
+        self.kept += 1;
+        if self.video {
+            self.frames.push(Frame::new(at_ms, pixels));
+        }
     }
 
     /// Write every artifact; failures to write are reported, never hidden.
@@ -302,7 +311,7 @@ impl Recording {
         }
         for (index, checkpoint) in self.checkpoints.iter().enumerate() {
             let canvas = self.compose(
-                checkpoint.frame,
+                &checkpoint.pixels,
                 checkpoint.at_ms,
                 &outcome.notes[..checkpoint.notes.min(outcome.notes.len())],
                 failure.as_deref(),
@@ -312,9 +321,9 @@ impl Recording {
             fs::write(self.dir.join(&file), canvas.png())?;
             files.push(file);
         }
-        if let Some(index) = self.frames.len().checked_sub(1) {
+        if self.kept > 0 {
             let canvas = self.compose(
-                index,
+                &self.last,
                 outcome.end_ms,
                 outcome.notes,
                 failure.as_deref(),
@@ -416,7 +425,13 @@ impl Recording {
                 .find(|c| c.frame == index)
                 .map(|c| c.name.as_str());
             stills.push(Still {
-                canvas: self.compose(index, at, outcome.notes, failure, caption),
+                canvas: self.compose(
+                    &self.frames[index].pixels(),
+                    at,
+                    outcome.notes,
+                    failure,
+                    caption,
+                ),
                 hold_ms: shown as u32,
             });
         }
@@ -426,7 +441,7 @@ impl Recording {
     /// The device screen with a panel of time, scenario and recent events.
     fn compose(
         &self,
-        index: usize,
+        pixels: &[u16],
         at_ms: u64,
         notes: &[Note],
         failure: Option<&str>,
@@ -438,14 +453,7 @@ impl Recording {
         let height = MARGIN * 2 + screen_h + 40;
         let mut canvas = Canvas::new(width, height, BACKGROUND);
         canvas.fill_rect(MARGIN - 6, MARGIN - 6, screen_w + 12, screen_h + 12, BEZEL);
-        canvas.blit565(
-            MARGIN,
-            MARGIN,
-            self.width,
-            self.height,
-            &self.frames[index].pixels(),
-            SCALE,
-        );
+        canvas.blit565(MARGIN, MARGIN, self.width, self.height, pixels, SCALE);
         let x = MARGIN * 2 + screen_w;
         let mut y = MARGIN;
         y += wrap(&mut canvas, x, y, 2, INK, &title(&self.name), PANEL_WIDTH) + 10;
@@ -544,7 +552,7 @@ impl Recording {
             if failure.is_some() { "fail" } else { "pass" },
             failure.map_or("null".to_string(), json),
             outcome.end_ms,
-            self.frames.len(),
+            self.kept,
             files.iter().map(|f| json(f)).collect::<Vec<_>>().join(", "),
             self.checkpoints
                 .iter()

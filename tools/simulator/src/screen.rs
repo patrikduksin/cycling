@@ -57,9 +57,56 @@ const GLYPHS: [(u8, [u8; 7]); 44] = [
 
 const MAX_SCALE: usize = 8;
 
-/// Dot indices (row * 5 + column) where every glyph has both lit and unlit dots,
-/// so a cell uniform across them cannot hold a glyph.
-const PROBES: [usize; 5] = [0, 7, 5, 28, 17];
+const KEYS: [usize; 16] = [0, 7, 5, 28, 17, 18, 14, 34, 20, 33, 1, 2, 3, 4, 6, 8];
+const PROBES: usize = 5;
+
+struct Lookup {
+    masks: Vec<(u64, u8)>,
+    keys: Vec<u64>,
+    first_dots: Vec<(usize, usize)>,
+}
+
+impl Lookup {
+    fn get() -> &'static Self {
+        static LOOKUP: OnceLock<Lookup> = OnceLock::new();
+        LOOKUP.get_or_init(|| {
+            let mut masks: Vec<(u64, u8)> = GLYPHS
+                .iter()
+                .map(|&(character, rows)| (mask(&rows), character))
+                .collect();
+            masks.sort_unstable();
+            let mut keys = vec![0_u64; (1 << KEYS.len()) / 64];
+            for &(bits, _) in &masks {
+                let key = KEYS
+                    .iter()
+                    .enumerate()
+                    .fold(0, |key, (i, &index)| key | (bits >> index & 1) << i);
+                keys[key as usize / 64] |= 1 << (key % 64);
+            }
+            let mut first_dots: Vec<_> = masks
+                .iter()
+                .map(|&(bits, _)| bits.trailing_zeros() as usize)
+                .map(|dot| (dot / 5, dot % 5))
+                .collect();
+            first_dots.sort_unstable();
+            first_dots.dedup();
+            Self {
+                masks,
+                keys,
+                first_dots,
+            }
+        })
+    }
+
+    fn keyed(&self, key: usize) -> bool {
+        self.keys[key / 64] >> (key % 64) & 1 == 1
+    }
+
+    fn character(&self, bits: u64) -> Option<u8> {
+        let found = self.masks.binary_search_by_key(&bits, |&(mask, _)| mask);
+        found.ok().map(|found| self.masks[found].1)
+    }
+}
 
 pub struct Frame<'a> {
     pub width: usize,
@@ -291,16 +338,14 @@ impl Frame<'_> {
     }
 
     fn glyphs(&self) -> Vec<Glyph> {
-        let mut lookup: Vec<(u64, u8)> = GLYPHS
-            .iter()
-            .map(|&(character, rows)| (mask(&rows), character))
-            .collect();
-        lookup.sort_unstable();
+        let lookup = Lookup::get();
         let scales: Vec<usize> = (1..=MAX_SCALE)
             .rev()
             .filter(|&scale| self.width >= 5 * scale && self.height >= 7 * scale)
             .collect();
         let pixels = &self.pixels[..self.width * self.height];
+        let corners = Corners::new(self);
+        let corners = &corners;
         let previous = LAST_SCAN
             .with(|last| last.borrow_mut().take())
             .filter(|scan| (scan.width, scan.height) == (self.width, self.height));
@@ -311,7 +356,7 @@ impl Frame<'_> {
                 scales
                     .iter()
                     .zip(&scan.candidates)
-                    .map(|(&scale, old)| self.rescan(&lookup, scale, &changed, old))
+                    .map(|(&scale, old)| self.rescan(lookup, corners, scale, &changed, old))
                     .collect()
             }
             // Scanning every position at every scale is the slow part; the
@@ -319,10 +364,7 @@ impl Frame<'_> {
             None => std::thread::scope(|threads| {
                 let scans: Vec<_> = scales
                     .iter()
-                    .map(|&scale| {
-                        let lookup = &lookup;
-                        threads.spawn(move || self.candidates(lookup, scale))
-                    })
+                    .map(|&scale| threads.spawn(move || self.candidates(lookup, corners, scale)))
                     .collect();
                 scans
                     .into_iter()
@@ -366,11 +408,12 @@ impl Frame<'_> {
     }
 
     /// Every position where a 5x7 glyph of `scale` matches, claimed or not.
-    fn candidates(&self, lookup: &[(u64, u8)], scale: usize) -> Vec<Glyph> {
+    fn candidates(&self, lookup: &Lookup, corners: &Corners, scale: usize) -> Vec<Glyph> {
         let dots = Dots::new(self.width, scale);
+        let mut starts = Starts::new(corners);
         let mut candidates = Vec::new();
         for y in 0..=self.height - 7 * scale {
-            for x in 0..=self.width - 5 * scale {
+            for &x in starts.row(lookup, scale, y, 0, self.width - 5 * scale) {
                 candidates.extend(self.glyph_at(lookup, &dots, x, y));
             }
         }
@@ -383,7 +426,8 @@ impl Frame<'_> {
     /// below: columns `x - s .. x + 6s` and rows `y - 1 ..= y + 7s`.
     fn rescan(
         &self,
-        lookup: &[(u64, u8)],
+        lookup: &Lookup,
+        corners: &Corners,
         s: usize,
         changed: &[Option<(usize, usize)>],
         old: &[Glyph],
@@ -411,9 +455,10 @@ impl Frame<'_> {
             .filter(|g| !is_stale(g.x, g.y))
             .collect();
         let dots = Dots::new(self.width, s);
+        let mut starts = Starts::new(corners);
         for (y, span) in stale.iter().enumerate() {
             if let Some((from, to)) = *span {
-                for x in from..=to {
+                for &x in starts.row(lookup, s, y, from, to) {
                     candidates.extend(self.glyph_at(lookup, &dots, x, y));
                 }
             }
@@ -589,7 +634,7 @@ impl Frame<'_> {
         })
     }
 
-    fn glyph_at(&self, lookup: &[(u64, u8)], dots: &Dots, x: usize, y: usize) -> Option<Glyph> {
+    fn glyph_at(&self, lookup: &Lookup, dots: &Dots, x: usize, y: usize) -> Option<Glyph> {
         let s = dots.scale;
         let base = y * self.width + x;
         let sample = |index: usize| self.pixels[base + dots.dots[index]];
@@ -602,31 +647,54 @@ impl Frame<'_> {
         {
             return None;
         }
-        if PROBES.iter().all(|&index| sample(index) == first) {
+        let mut keyed = [first; KEYS.len()];
+        for i in 1..PROBES {
+            keyed[i] = sample(KEYS[i]);
+        }
+        if keyed[..PROBES].iter().all(|&color| color == first) {
+            return None;
+        }
+        for i in PROBES..KEYS.len() {
+            keyed[i] = sample(KEYS[i]);
+        }
+        let mut inks = [(0_u64, 0_u16, 0_u8); PROBES];
+        let mut count = 0;
+        for (i, &color) in keyed[..PROBES].iter().enumerate() {
+            if keyed[..i].contains(&color) {
+                continue;
+            }
+            let key = keyed
+                .iter()
+                .enumerate()
+                .fold(0, |key, (i, &c)| key | usize::from(c == color) << i);
+            if !lookup.keyed(key) {
+                continue;
+            }
+            let bits = (0..35).fold(0_u64, |bits, i| bits | u64::from(sample(i) == color) << i);
+            if let Some(character) = lookup.character(bits) {
+                inks[count] = (bits, color, character);
+                count += 1;
+            }
+        }
+        if count == 0 {
             return None;
         }
         // Ink plus at most three distinct off colours; busier cells are not text.
         let mut colors = [first; 4];
-        let mut masks = [0_u64; 4];
-        let mut count = 1;
-        for index in 0..35 {
+        let mut distinct = 1;
+        for index in 1..35 {
             let color = sample(index);
-            let slot = match colors[..count].iter().position(|&c| c == color) {
-                Some(slot) => slot,
-                None if count < 4 => {
-                    colors[count] = color;
-                    count += 1;
-                    count - 1
+            if !colors[..distinct].contains(&color) {
+                if distinct == colors.len() {
+                    return None;
                 }
-                None => return None,
-            };
-            masks[slot] |= 1 << index;
+                colors[distinct] = color;
+                distinct += 1;
+            }
         }
-        for (&color, &bits) in colors[..count].iter().zip(&masks) {
-            let Ok(found) = lookup.binary_search_by_key(&bits, |&(mask, _)| mask) else {
-                continue;
-            };
-            let character = lookup[found].1;
+        let inks = &mut inks[..count];
+        inks.sort_unstable_by_key(|&(bits, ..)| bits.trailing_zeros());
+        for &(bits, color, character) in inks.iter() {
             if self.verify(x, y, s, color, bits) {
                 return Some(Glyph {
                     character,
@@ -745,6 +813,83 @@ impl Dots {
             dots: std::array::from_fn(|index| (index / 5) * scale * width + (index % 5) * scale),
             corners: [edge, edge * width, edge * width + edge],
         }
+    }
+}
+
+struct Corners {
+    words: usize,
+    bits: Vec<u64>,
+}
+
+impl Corners {
+    fn new(frame: &Frame) -> Self {
+        let (width, height) = (frame.width, frame.height);
+        let words = width.div_ceil(64);
+        let mut bits = vec![0_u64; words * height];
+        for y in 0..height {
+            let row = &frame.pixels[y * width..(y + 1) * width];
+            let above = y
+                .checked_sub(1)
+                .map(|y| &frame.pixels[y * width..(y + 1) * width]);
+            for x in 0..width {
+                let color = row[x];
+                let left = x == 0 || row[x - 1] != color;
+                let up = above.is_none_or(|above| above[x] != color);
+                if left && up {
+                    bits[y * words + x / 64] |= 1 << (x % 64);
+                }
+            }
+        }
+        Self { words, bits }
+    }
+}
+
+struct Starts<'a> {
+    corners: &'a Corners,
+    mask: Vec<u64>,
+    columns: Vec<usize>,
+}
+
+impl<'a> Starts<'a> {
+    fn new(corners: &'a Corners) -> Self {
+        Self {
+            corners,
+            mask: vec![0; corners.words],
+            columns: Vec::new(),
+        }
+    }
+
+    fn row(&mut self, lookup: &Lookup, s: usize, y: usize, from: usize, to: usize) -> &[usize] {
+        let words = self.corners.words;
+        self.mask.fill(0);
+        for &(row, column) in &lookup.first_dots {
+            let start = (y + row * s) * words;
+            let source = &self.corners.bits[start..start + words];
+            let (skip, shift) = (column * s / 64, column * s % 64);
+            for (i, word) in self.mask.iter_mut().enumerate() {
+                let low = source.get(i + skip).map_or(0, |&w| w >> shift);
+                let high = match shift {
+                    0 => 0,
+                    _ => source.get(i + skip + 1).map_or(0, |&w| w << (64 - shift)),
+                };
+                *word |= low | high;
+            }
+        }
+        for x in 0..s {
+            self.mask[x / 64] |= 1 << (x % 64);
+        }
+        self.columns.clear();
+        for i in from / 64..=to / 64 {
+            let mut word = self.mask[i];
+            while word != 0 {
+                let x = i * 64 + word.trailing_zeros() as usize;
+                word &= word - 1;
+                if (from..=to).contains(&x) {
+                    self.columns.push(x);
+                }
+            }
+        }
+        &self.columns
     }
 }
 
@@ -975,11 +1120,52 @@ mod tests {
     fn probes_separate_every_glyph_from_blank() {
         for &(character, rows) in &GLYPHS {
             let bits = mask(&rows);
-            let lit = PROBES
+            let lit = KEYS[..PROBES]
                 .iter()
                 .filter(|&&index| bits >> index & 1 == 1)
                 .count();
-            assert!(0 < lit && lit < PROBES.len(), "{}", character as char);
+            assert!(0 < lit && lit < PROBES, "{}", character as char);
+        }
+    }
+
+    #[test]
+    fn corner_starts_keep_every_position_a_glyph_matches() {
+        let mut p = canvas(BG);
+        let mut seed = 7_u32;
+        for py in 200..H {
+            for px in 0..W {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                p[py * W + px] = [BG, WHITE, CYAN][(seed >> 16) as usize % 3];
+            }
+        }
+        draw(&mut p, 0, 0, 1, WHITE, "AJ1:4/-,.+Q");
+        fill(&mut p, 0, 12, 1, 14, WHITE);
+        draw(&mut p, 1, 12, 2, WHITE, "-T,");
+        draw(&mut p, 0, 30, 3, CYAN, "B.7");
+        draw(&mut p, 60, 30, 3, WHITE, "OK");
+        draw(&mut p, 0, 60, 4, GREEN, "+4");
+        draw(&mut p, 3, 100, 8, RED, "J");
+        for (i, scale) in [1, 2, 3].into_iter().enumerate() {
+            draw(&mut p, 10 + i * 70, 210 + i * 30, scale, RED, "M:/.");
+        }
+        let frame = frame(&p);
+        let lookup = Lookup::get();
+        let corners = Corners::new(&frame);
+        for scale in 1..=MAX_SCALE {
+            let dots = Dots::new(W, scale);
+            let every: Vec<_> = (0..=H - 7 * scale)
+                .flat_map(|y| (0..=W - 5 * scale).map(move |x| (x, y)))
+                .filter(|&(x, y)| frame.glyph_at(lookup, &dots, x, y).is_some())
+                .collect();
+            let started: Vec<_> = frame
+                .candidates(lookup, &corners, scale)
+                .iter()
+                .map(|glyph| (glyph.x, glyph.y))
+                .collect();
+            assert_eq!(started, every, "scale {scale}");
+            if [1, 2, 3, 4, 8].contains(&scale) {
+                assert!(!every.is_empty(), "scale {scale}");
+            }
         }
     }
 

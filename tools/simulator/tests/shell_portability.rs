@@ -6,6 +6,9 @@ mod tests {
     use device_api::observation::Availability;
     use device_api::observation::Observation;
     use device_api::positioning::Positioning;
+    use firmware_shell::rendering::row::Row;
+    use firmware_shell::shell::Drawn;
+    use firmware_shell::shell::Picture;
     use firmware_shell::shell::Screen;
     use firmware_shell::shell::Shell;
     use shell_simulator::devices::*;
@@ -250,5 +253,96 @@ mod tests {
             other,
             "a change once forgotten"
         );
+    }
+
+    /// One colour over the whole canvas; a dishonest one hashes nothing, so
+    /// every colour looks like the one on the panel.
+    struct Solid {
+        color: u16,
+        honest: bool,
+    }
+    impl core::hash::Hash for Solid {
+        fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+            if self.honest {
+                self.color.hash(state);
+            }
+        }
+    }
+    impl Picture for Solid {
+        const SIZE: (usize, usize) = (240, 320);
+        fn paint(&self, row: &mut Row) {
+            row.fill(self.color);
+        }
+    }
+    fn solid(color: u16) -> Solid {
+        Solid {
+            color,
+            honest: true,
+        }
+    }
+
+    #[test]
+    fn a_picture_on_the_panel_is_sent_again_only_when_something_else_drew() {
+        let display = DisplayDevice::new(240, 320);
+        let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+        let power = PowerDevice::new(Availability::Ready);
+        let mut shell =
+            Shell::new(display.clone(), input.clone(), power, Memory::default(), 0).unwrap();
+        shell.set_app_active(true);
+        let submissions = || display.0.borrow().submissions;
+        assert_eq!(shell.draw(&solid(1), 0), Drawn::Sent, "the first picture");
+        assert_eq!(
+            shell.draw(&solid(1), 10),
+            Drawn::Unchanged,
+            "the same again"
+        );
+        assert_eq!(shell.draw(&solid(2), 20), Drawn::Sent, "another picture");
+        shell.fill(7);
+        assert_eq!(
+            shell.draw(&solid(2), 30),
+            Drawn::Sent,
+            "after another frame"
+        );
+        shell.forget_panel();
+        assert_eq!(shell.draw(&solid(2), 40), Drawn::Sent, "once forgotten");
+        display.0.borrow_mut().fail_next = true;
+        assert_eq!(shell.draw(&solid(3), 50), Drawn::Failed);
+        assert_eq!(
+            shell.draw(&solid(3), 60),
+            Drawn::Sent,
+            "after a failed frame"
+        );
+        input.push(
+            70,
+            Input::Button {
+                button: Button::TopLeft,
+                code: 1,
+            },
+        );
+        shell.tick(70);
+        let before = submissions();
+        assert_eq!(
+            shell.draw(&solid(3), 70),
+            Drawn::Sent,
+            "a press waits for a frame"
+        );
+        assert_eq!(shell.draw(&solid(3), 80), Drawn::Unchanged, "once answered");
+        assert_eq!(submissions(), before + 1);
+        assert!(display.0.borrow().pixels.iter().all(|&pixel| pixel == 3));
+    }
+
+    #[test]
+    #[should_panic(expected = "a skipped frame hid a change")]
+    fn the_simulated_panel_catches_a_picture_whose_key_misses_what_it_paints() {
+        let display = DisplayDevice::new(240, 320);
+        let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+        let power = PowerDevice::new(Availability::Ready);
+        let mut shell = Shell::new(display, input, power, Memory::default(), 0).unwrap();
+        let lying = |color| Solid {
+            color,
+            honest: false,
+        };
+        assert_eq!(shell.draw(&lying(1), 0), Drawn::Sent);
+        shell.draw(&lying(2), 10);
     }
 }

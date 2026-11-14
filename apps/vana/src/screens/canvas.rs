@@ -22,7 +22,7 @@ pub type Run = Label<24>;
 /// Columns kept clear between neighbouring runs, their spill included.
 pub const GAP: usize = 8 + SPILL;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub enum Shape {
     /// A surface text may sit on: a field, a pad, a selected card.
     Panel {
@@ -163,7 +163,7 @@ const fn fitted(rect: Rect, radius: usize) -> usize {
 }
 
 /// Runs and shapes in paint order: shapes first, then text over them.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Hash)]
 pub struct Canvas {
     pub shapes: Vec<Shape, 24>,
     pub runs: Vec<Run, 28>,

@@ -14,7 +14,7 @@ pub(super) const GAUGE_WIDTH: usize = 56;
 pub(super) const BAR_WIDTH: usize = 148;
 
 /// A gliding reading's position on its zone gauge.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Hash)]
 pub(in crate::screens) struct Mark {
     /// The zone it is in, from 1.
     pub(super) zone: u8,
@@ -31,6 +31,13 @@ pub(in crate::screens) struct Marks {
     pub(super) heart: Option<Mark>,
     pub(super) power_time: Bar<POWER_ZONES>,
     pub(super) heart_time: Bar<HEART_ZONES>,
+}
+
+impl Marks {
+    /// The power and heart-rate gauges.
+    pub(in crate::screens) fn gauges(&self) -> [Option<Mark>; 2] {
+        [self.power, self.heart]
+    }
 }
 
 pub(in crate::screens) fn marks(view: &View) -> Marks {

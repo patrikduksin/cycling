@@ -134,11 +134,7 @@ fn recorded_session_around(
     let name = sim.device.trace_file().expect("the trace file");
     let trace = sim.store_file(&name).expect("the trace reads back whole");
     let session = Session::of(&mut sim);
-    assert!(
-        session.frames.len() > 100,
-        "{} frames",
-        session.frames.len()
-    );
+    assert!(session.frames.len() > 50, "{} frames", session.frames.len());
     (sim, trace, session)
 }
 

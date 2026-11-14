@@ -128,7 +128,7 @@ pub struct Crumb {
     pub along: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mode {
     /// Straight to the start.
     Direct,

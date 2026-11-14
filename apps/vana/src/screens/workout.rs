@@ -1,6 +1,6 @@
 //! VANA workout rendering: the chrome around whichever screen is shown.
 use super::canvas::Canvas;
-use super::chrome::{BLACK, Battery, CONTENT, Gps, Mark, Row, StatusBar, Toast, WIDTH};
+use super::chrome::{BLACK, Battery, CONTENT, Gps, HEIGHT, Mark, Row, StatusBar, Toast, WIDTH};
 use super::cue::{Badge, Cue};
 use super::home::Home;
 use super::ready::Readiness;
@@ -81,6 +81,7 @@ pub const HOME: [&[u8]; 5] = [b"RIDE", b"SENSORS", b"TRAIN", b"SETTINGS", b"RIDE
 // Exactly one body lives in View and its variants share one slot on purpose;
 // boxing would allocate every frame.
 #[allow(clippy::large_enum_variant)]
+#[derive(Hash)]
 pub(super) enum Body {
     /// Nothing prepared.
     Blank,
@@ -144,7 +145,7 @@ pub(super) enum Extra<'a> {
         sunset: ride::Light,
     },
     /// The track, projected and kept beside the breadcrumb.
-    Map(Option<&'a ride::MapFrame>),
+    Map(Option<(&'a ride::MapFrame, ride::MapKey)>),
     /// Settings' lines, and the row under a resting finger.
     Settings {
         lines: SettingsLines,
@@ -209,7 +210,7 @@ impl<'a> Extra<'a> {
         lap_bars -> &ride::LapBars = Self::Lap { bars, .. } => bars;
         back -> ride::Back = Self::Back { back, .. } => *back;
         sunset -> ride::Light = Self::Back { sunset, .. } => *sunset;
-        map -> Option<&'a ride::MapFrame> = Self::Map(frame) => *frame;
+        map -> Option<&'a ride::MapFrame> = Self::Map(frame) => frame.map(|(frame, _)| frame);
         settings_lines -> &SettingsLines = Self::Settings { lines, .. } => lines;
         settings_pressed -> Option<u16> = Self::Settings { pressed, .. } => *pressed;
         lines -> &Lines = Self::Phone { lines, .. } | Self::Setup { lines, .. } => lines;
@@ -226,46 +227,236 @@ impl<'a> Extra<'a> {
     }
 }
 
-/// Everything a Home frame draws: `View::paint` draws Home from it alone,
-/// and `View::home_digest` hashes it.
+/// What a frame shows, borrowed from a prepared `View`: the only input to
+/// painting, so two equal scenes paint the same pixels and the shell can skip
+/// a frame whose scene it already shows.
 #[derive(Hash)]
-struct HomeScene<'v> {
-    bar: &'v StatusBar,
-    home: &'v Home,
-    toast: Option<&'v Toast>,
+pub struct Scene<'v> {
+    kind: Kind,
+    /// The light look, applied to each painted row.
     light: bool,
+    /// None when the screen takes the whole panel.
+    bar: Option<&'v StatusBar>,
+    body: &'v Body,
+    extra: &'v Extra<'v>,
+    /// The main page's power and heart-rate gauges.
+    pub(super) gauges: [Option<ride::Mark>; 2],
+    /// The radar strip as drawn, while a radar is paired on a ride page.
+    pub(super) radar: Option<ride::Radar>,
+    cues: &'static [Cue],
+    badge: Option<&'v Badge>,
+    toast: Option<&'v Toast>,
 }
 
-impl HomeScene<'_> {
+/// Which painter a scene runs: what `View::scene` decided once from the
+/// page, its sheet, the pause, the layout and the scroll.
+#[derive(Clone, Copy, Debug, Hash)]
+enum Kind {
+    /// The canvas: the brand, a sheet over any page, the paused screen and
+    /// every page that only prepares a canvas.
+    Canvas,
+    Home,
+    Ride(RidePage),
+    Phone,
+    Summary {
+        elevation: bool,
+    },
+    /// A list that scrolls: this many pixels down its canvas.
+    List {
+        layout: &'static super::scroll::Layout,
+        scroll: i32,
+    },
+}
+
+/// Only what painting reads: the rest went into the canvas in `prepare`.
+impl core::hash::Hash for Extra<'_> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            Self::None => {}
+            Self::Climb { lent: _, frame } => frame.hash(state),
+            Self::Workout(chart) => chart.hash(state),
+            Self::Lap {
+                bars: _,
+                lap: _,
+                previous: _,
+            } => {}
+            Self::Back { back, sunset: _ } => ride::back::arrow(*back).hash(state),
+            // The frame is filled from its key, and only when the key changes.
+            Self::Map(frame) => frame.map(|(_, key)| key).hash(state),
+            Self::Settings {
+                lines: _,
+                pressed: _,
+            } => {}
+            Self::Phone { qr, lines: _ } => qr.hash(state),
+            Self::Setup { step: _, lines: _ } => {}
+            Self::Ready(_) | Self::Workouts(_) | Self::Form(_) => {}
+            Self::Bests { bests: _, mode: _ } => {}
+            Self::Summary {
+                after: _,
+                past_title: _,
+                elevation,
+            } => elevation.hash(state),
+        }
+    }
+}
+
+impl firmware_shell::shell::Picture for Scene<'_> {
+    const SIZE: (usize, usize) = (WIDTH, HEIGHT);
+
+    /// One row of the 240 × 320 canvas: the status bar, the shown screen,
+    /// its button cues, then the toast over it.
     fn paint(&self, row: &mut Row) {
-        if row.y() < CONTENT.top {
-            self.bar.paint(row);
+        row.fill(BLACK);
+        self.paint_content(row);
+        if self.light {
+            super::look::apply(row.pixels_mut());
+        }
+    }
+}
+
+impl<'v> Scene<'v> {
+    fn paint_content(&self, row: &mut Row) {
+        let y = row.y();
+        if let Some(bar) = self.bar
+            && y < CONTENT.top
+        {
+            bar.paint(row);
             return;
         }
-        self.home.paint(row);
+        match self.kind {
+            Kind::Canvas => self.canvas().paint(row),
+            Kind::Home => {
+                if let Some(home) = self.home() {
+                    home.paint(row);
+                }
+            }
+            Kind::Ride(page) => ride::paint(self, page, row),
+            Kind::Phone => {
+                self.canvas().paint(row);
+                super::phone::paint(self, row);
+            }
+            Kind::Summary { elevation } => {
+                if let Some(chart) = self.elevation_chart().filter(|_| elevation) {
+                    ride::elevation::paint(chart, row);
+                }
+                self.canvas().paint(row);
+            }
+            // This row may show a row of the list.
+            Kind::List { layout, scroll } => {
+                if let Some(at) = layout.canvas_row(y, scroll) {
+                    self.canvas().paint(&mut row.at(at));
+                }
+            }
+        }
+        if let Some(badge) = self.badge {
+            badge.paint(row);
+        }
+        for cue in self.cues {
+            cue.paint(row);
+        }
         if let Some(toast) = self.toast {
             toast.paint(row);
         }
     }
-}
 
-struct Fnv1a(u64);
-
-impl Fnv1a {
-    const fn new() -> Self {
-        Self(0xcbf2_9ce4_8422_2325)
-    }
-}
-
-impl core::hash::Hasher for Fnv1a {
-    fn finish(&self) -> u64 {
-        self.0
+    /// The light look is in force.
+    pub(super) fn light(&self) -> bool {
+        self.light
     }
 
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+    /// What the scene finds in its body or extra: the value, or for a wrong
+    /// variant a blank, after a debug assertion, as `View`'s accessors do.
+    fn shown<T>(&self, found: Option<T>, what: &str, blank: T) -> T {
+        debug_assert!(found.is_some(), "{:?} has no {what}", self.kind);
+        found.unwrap_or(blank)
+    }
+
+    pub(super) fn canvas(&self) -> &'v Canvas {
+        self.shown(self.body.canvas(), "canvas", &NO_CANVAS)
+    }
+
+    pub(super) fn smooth(&self) -> &'v Smooth {
+        self.shown(self.body.smooth(), "main page body", &NO_SMOOTH)
+    }
+
+    fn home(&self) -> Option<&'v Home> {
+        let home = self.body.home();
+        debug_assert!(home.is_some(), "{:?} has no home body", self.kind);
+        home
+    }
+
+    pub(super) fn climb(&self) -> &'v ClimbFrame {
+        self.shown(self.extra.climb_frame(), "climb chart", &NO_CLIMB_FRAME)
+    }
+
+    pub(super) fn chart(&self) -> &'v ride::WorkoutChart {
+        self.shown(self.extra.chart(), "workout chart", &NO_CHART)
+    }
+
+    pub(super) fn back(&self) -> ride::Back {
+        self.shown(self.extra.back(), "way back", ride::Back::default())
+    }
+
+    pub(super) fn map(&self) -> Option<&'v ride::MapFrame> {
+        self.shown(self.extra.map(), "map", None)
+    }
+
+    pub(super) fn qr(&self) -> Option<&'v super::qr::Placed> {
+        self.shown(self.extra.qr(), "code", None)
+    }
+
+    fn elevation_chart(&self) -> Option<&'v ride::ElevationChart> {
+        self.shown(self.extra.elevation(), "summary", None)
+    }
+
+    /// The per-pixel original of `paint`, kept as the reference it must match.
+    #[cfg(test)]
+    pub(super) fn reference_pixel(&self, x: usize, y: usize) -> u16 {
+        let color = self.reference_content(x, y);
+        if self.light {
+            super::look::light(color)
+        } else {
+            color
         }
+    }
+
+    #[cfg(test)]
+    fn reference_content(&self, x: usize, y: usize) -> u16 {
+        if let Some(bar) = self.bar
+            && y < CONTENT.top
+        {
+            return bar.pixel(x, y);
+        }
+        if let Some(color) = self.toast.and_then(|toast| toast.pixel(x, y)) {
+            return color;
+        }
+        let mut color = match self.kind {
+            Kind::Canvas => self.canvas().pixel(x, y, BLACK),
+            Kind::Home => self.home().map_or(BLACK, |home| home.pixel(x, y)),
+            Kind::Ride(page) => ride::reference_pixel(self, page, x, y),
+            Kind::Phone => {
+                super::phone::pixel(self, x, y).unwrap_or_else(|| self.canvas().pixel(x, y, BLACK))
+            }
+            Kind::Summary { elevation } => {
+                let under = self
+                    .elevation_chart()
+                    .filter(|_| elevation)
+                    .and_then(|chart| ride::elevation::pixel(chart, x, y))
+                    .unwrap_or(BLACK);
+                self.canvas().pixel(x, y, under)
+            }
+            Kind::List { layout, scroll } => layout
+                .canvas_row(y, scroll)
+                .map_or(BLACK, |at| self.canvas().pixel(x, at, BLACK)),
+        };
+        if let Some(badge) = self.badge {
+            color = badge.pixel(x, y, color);
+        }
+        for cue in self.cues {
+            color = cue.pixel(x, y, color);
+        }
+        color
     }
 }
 
@@ -441,18 +632,14 @@ impl<'a> View<'a> {
         found.unwrap_or(blank)
     }
 
+    #[cfg(test)]
     pub(super) fn canvas(&self) -> &Canvas {
         self.shown(self.body.canvas(), "canvas", &NO_CANVAS)
     }
 
+    #[cfg(test)]
     pub(super) fn smooth(&self) -> &Smooth {
         self.shown(self.body.smooth(), "main page body", &NO_SMOOTH)
-    }
-
-    fn home(&self) -> Option<&Home> {
-        let home = self.body.home();
-        debug_assert!(home.is_some(), "{:?} has no home body", self.page);
-        home
     }
 
     /// What the climb page draws from.
@@ -464,6 +651,7 @@ impl<'a> View<'a> {
         self.shown(self.extra.climb_frame(), "climb chart", &NO_CLIMB_FRAME)
     }
 
+    #[cfg(test)]
     pub(super) fn chart(&self) -> &ride::WorkoutChart {
         self.shown(self.extra.chart(), "workout chart", &NO_CHART)
     }
@@ -583,7 +771,7 @@ impl<'a> View<'a> {
     }
 
     #[inline(never)]
-    pub fn show_map(&mut self, frame: Option<&'a ride::MapFrame>) {
+    pub fn show_map(&mut self, frame: Option<(&'a ride::MapFrame, ride::MapKey)>) {
         self.extra = Extra::Map(frame);
     }
 
@@ -685,8 +873,9 @@ impl<'a> View<'a> {
 
     /// One pixel of the painted canvas; tests and previews only, as it paints a whole row.
     pub fn pixel(&self, x: usize, y: usize) -> u16 {
+        use firmware_shell::shell::Picture;
         let mut pixels = [0u16; WIDTH];
-        self.paint(&mut Row::new(y, &mut pixels));
+        self.scene().paint(&mut Row::new(y, &mut pixels));
         pixels.get(x).copied().unwrap_or(0)
     }
 
@@ -721,84 +910,47 @@ impl<'a> View<'a> {
         self.page == Page::Ride && self.pause_screen
     }
 
-    /// Paint one row of the 240 × 320 canvas: the status bar, the shown
-    /// screen, its button cues, then the toast over it.
-    pub fn paint(&self, row: &mut Row) {
-        let y = row.y();
-        row.fill(BLACK);
-        if let Some(scene) = self.home_scene() {
-            scene.paint(row);
-            return;
-        }
-        if self.page == Page::Boot || self.ftp_offer.is_some() {
-            self.canvas().paint(row);
-            return;
-        }
-        if y < CONTENT.top && !self.full_screen() {
-            self.bar.paint(row);
-            return;
-        }
-        match self.page {
-            Page::Ride if !self.pause_screen => ride::paint(self, row),
-            Page::Home => {}
-            Page::Phone => {
-                self.canvas().paint(row);
-                super::phone::paint(self, row);
-            }
-            Page::Summary | Page::PastRide => {
-                if let Some(chart) = self
-                    .elevation_chart()
-                    .filter(|_| summary::shows_elevation(self))
-                {
-                    ride::elevation::paint(chart, row);
-                }
-                self.canvas().paint(row);
-            }
-            // A list's page scrolls: this row may show a row of it.
-            _ => match self.layout() {
-                Some(layout) => {
-                    if let Some(at) = layout.canvas_row(y, self.scroll) {
-                        self.canvas().paint(&mut row.at(at));
-                    }
-                }
-                None => self.canvas().paint(row),
+    /// What this frame shows; call after `prepare`.
+    pub fn scene(&self) -> Scene<'_> {
+        let sheet = self.page == Page::Boot || self.ftp_offer.is_some();
+        let kind = match self.page {
+            _ if sheet => Kind::Canvas,
+            Page::Home => Kind::Home,
+            Page::Ride if !self.pause_screen => Kind::Ride(self.ride_page),
+            Page::Phone => Kind::Phone,
+            Page::Summary | Page::PastRide => Kind::Summary {
+                elevation: summary::shows_elevation(self),
             },
-        }
-        if let Some(badge) = &self.badge {
-            badge.paint(row);
-        }
-        for cue in self.cues {
-            cue.paint(row);
-        }
-        self.paint_toast(row);
-    }
-
-    /// Home with no sheet over it.
-    fn home_scene(&self) -> Option<HomeScene<'_>> {
-        if self.page != Page::Home || self.ftp_offer.is_some() {
-            return None;
-        }
-        Some(HomeScene {
-            bar: &self.bar,
-            home: self.home()?,
-            toast: self.toast.as_ref(),
+            _ => match self.layout() {
+                Some(layout) => Kind::List {
+                    layout,
+                    scroll: self.scroll,
+                },
+                None => Kind::Canvas,
+            },
+        };
+        let (gauges, radar) = match kind {
+            Kind::Ride(page) => (
+                if page == RidePage::Main {
+                    self.marks.gauges()
+                } else {
+                    [None; 2]
+                },
+                self.radar_paired.then(|| ride::radar(&self.graphics.radar)),
+            ),
+            _ => ([None; 2], None),
+        };
+        Scene {
+            kind,
             light: self.light,
-        })
-    }
-
-    /// A digest of what Home draws; `None` on any other page or under a
-    /// sheet.
-    pub fn home_digest(&self) -> Option<u64> {
-        use core::hash::{Hash, Hasher};
-        let mut fnv = Fnv1a::new();
-        self.home_scene()?.hash(&mut fnv);
-        Some(fnv.finish())
-    }
-
-    /// The toast over the content, if one is shown.
-    pub fn paint_toast(&self, row: &mut Row) {
-        if let Some(toast) = &self.toast {
-            toast.paint(row);
+            bar: (!sheet && !self.full_screen()).then_some(&self.bar),
+            body: &self.body,
+            extra: &self.extra,
+            gauges,
+            radar,
+            cues: if sheet { &[] } else { self.cues },
+            badge: self.badge.as_ref().filter(|_| !sheet),
+            toast: self.toast.as_ref().filter(|_| !sheet),
         }
     }
 
@@ -809,48 +961,6 @@ impl<'a> View<'a> {
         let mut canvas = Canvas::default();
         super::brand::reveal(&mut canvas, self.reveal);
         canvas
-    }
-
-    /// The per-pixel original of `paint`, kept as the reference it must match.
-    #[cfg(test)]
-    pub(super) fn reference_pixel(&self, x: usize, y: usize) -> u16 {
-        if self.page == Page::Boot || self.ftp_offer.is_some() {
-            return self.canvas().pixel(x, y, BLACK);
-        }
-        if y < CONTENT.top && !self.full_screen() {
-            return self.bar.pixel(x, y);
-        }
-        if let Some(color) = self.toast.as_ref().and_then(|toast| toast.pixel(x, y)) {
-            return color;
-        }
-        let mut color = match self.page {
-            Page::Ride if !self.pause_screen => ride::reference_pixel(self, x, y),
-            Page::Home => self.home().map_or(BLACK, |home| home.pixel(x, y)),
-            Page::Phone => {
-                super::phone::pixel(self, x, y).unwrap_or_else(|| self.canvas().pixel(x, y, BLACK))
-            }
-            Page::Summary | Page::PastRide => {
-                let under = self
-                    .elevation_chart()
-                    .filter(|_| summary::shows_elevation(self))
-                    .and_then(|chart| ride::elevation::pixel(chart, x, y))
-                    .unwrap_or(BLACK);
-                self.canvas().pixel(x, y, under)
-            }
-            _ => match self.layout() {
-                Some(layout) => layout
-                    .canvas_row(y, self.scroll)
-                    .map_or(BLACK, |at| self.canvas().pixel(x, at, BLACK)),
-                None => self.canvas().pixel(x, y, BLACK),
-            },
-        };
-        if let Some(badge) = &self.badge {
-            color = badge.pixel(x, y, color);
-        }
-        for cue in self.cues {
-            color = cue.pixel(x, y, color);
-        }
-        color
     }
 
     pub fn prepare(&mut self) {
@@ -1233,9 +1343,10 @@ mod tests {
     fn assert_paints_reference(view: &View, what: &str) {
         for y in 0..320 {
             let mut pixels = [0x5555; WIDTH];
-            view.paint(&mut Row::new(y, &mut pixels));
+            let scene = view.scene();
+            firmware_shell::shell::Picture::paint(&scene, &mut Row::new(y, &mut pixels));
             for (x, &pixel) in pixels.iter().enumerate() {
-                let want = view.reference_pixel(x, y);
+                let want = scene.reference_pixel(x, y);
                 assert_eq!(
                     pixel, want,
                     "{what} at {x},{y}: {pixel:#06x} != {want:#06x}"

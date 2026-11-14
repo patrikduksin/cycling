@@ -5,10 +5,32 @@ fn case(name: &str) -> &'static shell_simulator::probe::Case {
 }
 
 #[test]
-fn a_still_page_submits_almost_only_identical_frames() {
+fn no_page_submits_a_frame_the_panel_already_shows() {
+    for case in &CASES {
+        let result = run(case, 10);
+        assert_eq!(result.identical(), 0, "{}", case.name);
+    }
+}
+
+#[test]
+fn a_still_page_submits_no_frame() {
     let result = run(case("settings (still)"), 30);
-    assert!(result.changes.len() >= 25, "{}", result.changes.len());
-    assert!(result.identical() + 1 >= result.changes.len());
+    assert!(result.changes.len() <= 1, "{}", result.changes.len());
+}
+
+/// The first frame shows the battery charging; a minute may turn too.
+#[test]
+fn home_on_usb_draws_only_while_its_battery_fill_visibly_climbs() {
+    let climbing = run(case("home, charging at 50%"), 30);
+    assert!(climbing.fps() >= 1.9, "{}", climbing.fps());
+    for full in ["home, charging at 99%", "home, charging at 100%"] {
+        let result = run(case(full), 30);
+        assert!(
+            result.changes.len() <= 2,
+            "{full}: {}",
+            result.changes.len()
+        );
+    }
 }
 
 #[test]

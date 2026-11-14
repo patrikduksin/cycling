@@ -72,7 +72,7 @@ const FULL_PCT: u32 = 150;
 const MAX_STAIRS: u32 = 40;
 
 /// The chart's columns, prepared once per frame.
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 pub struct Chart {
     /// Rows below `CHART_TOP` where each column's bar starts; `EMPTY` for a gap.
     tops: [u8; CHART_WIDTH],

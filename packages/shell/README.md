@@ -9,6 +9,13 @@ and wake behavior, `rendering/` owns shared drawing, `preferences.rs` owns the
 persisted settings format, and `storage.rs` connects settings to the journal
 mechanism. `harness.rs` provides the shell's diagnostic state and controls.
 
+The shell alone knows what the panel shows. `Shell::draw` takes a `Picture`,
+whose pixels follow from its hash, and skips it when the panel already shows
+it and no press or capture waits for a frame. Any other submission, and a
+failed one, makes the next picture go out whole. The simulator's display
+repaints every picture the shell believes is shown and fails the test on any
+pixel that differs.
+
 The application runtime remains in VANA. Composition coordinates it with the
 shell; there is no generic application framework. Keep device imports and cycling
 profile interpretation out of this crate.

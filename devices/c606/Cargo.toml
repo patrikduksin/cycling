@@ -16,7 +16,7 @@ hardware = ["device-api/network-stack","dep:esp-hal", "dep:esp32s3", "dep:esp-ba
 [dependencies]
 log = { version = "=0.4.35", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive"] }
-serde-json-core = { version = "=0.6.0", default-features = false }
+serde-json-core = { version = "=0.7.0", default-features = false }
 libm = "0.2.16"
 esp-hal = { version = "=1.1.2", features = ["esp32s3", "unstable"], optional = true }
 esp32s3 = { version = "=0.35.2", optional = true }

@@ -72,12 +72,12 @@ white on its way to the panel; no screen paints a second palette.
 
 ### Night
 
-At night VANA keeps the same palette and lowers the backlight to at most 20%
-(`app::night::NIGHT_PERCENT`). The background is already black, so the
-backlight is what glares in the dark. A dimmer palette would make the panel
-darker still but would also shrink the gap between `WHITE` readings and
-`SECONDARY` labels, and between `AMBER` and `RED` alerts and everything else,
-so it is not used: alerts keep their full contrast at night.
+At night VANA keeps the same palette. The backlight does not follow the sun:
+with Brightness on AUTO the ambient light sensor lowers it in the dark (see
+Brightness below). A dimmer palette would make the panel darker still but
+would also shrink the gap between `WHITE` readings and `SECONDARY` labels, and
+between `AMBER` and `RED` alerts and everything else, so it is not used:
+alerts keep their full contrast at night.
 
 DAY / NIGHT in Settings → Display chooses AUTO, DAY or NIGHT. In AUTO the sun
 decides: night begins once it is 4° below the horizon at the last fixed
@@ -85,9 +85,21 @@ position (mid civil twilight) and ends once it is back above 2° below, so a
 reading near the line cannot flicker. The time is the recorded UTC: network
 time, else the GPS receiver's clock. Without a position, the local clock
 decides (night from 20:00 to 7:00); with no clock at all, the last answer
-stays. The night cap goes through the shell's backlight ceiling
-(`Shell::set_ceiling`), which is never stored, so the rider's chosen
-brightness is unchanged.
+stays. Night decides only the THEME's AUTO and the DAY / NIGHT note.
+
+### Brightness
+
+BRIGHTNESS in Settings → Display steps through AUTO, 25, 50, 75 and 100%. A
+percent is a fixed brightness. AUTO follows the ambient light sensor along
+the curve of the display mode (`app::mode::TABLE`): SAVER is lower than
+NORMAL at every light. The backlight brightens within a second or two, dims
+over several seconds, ignores a change smaller than 3 points and moves at
+most 4 points every 100 ms. The curves are provisional: no daylight reading
+is known yet, so NORMAL reaches 100% at a reading of 4,000. Without a fresh
+reading AUTO shows the stored percent, and so does charging standby. Dimming
+after inactivity keeps its own level on top of either. A record saved before
+AUTO loads as AUTO. The terminal's `BRIGHTNESS n` sets the stored percent;
+`SETTINGS` reports `auto` and the `effective` level.
 
 ### Light
 
@@ -469,7 +481,7 @@ alerts use readings as they arrive. The mechanism is
 | Turn off | The ring's tail chases its head round until it is gone, while the wordmark and TURNING OFF fade to black. VANA asks the device to turn off once the black frame is on the panel. | 480 ms |
 | Idle warning | An `AMBER` ring round the seconds empties with them. | 30 s |
 | Charging while off | A `GREEN` ring shows the charge with its percentage inside, and a 50% green arc climbs from the charge to full as the status bar's icon does. CHARGED at 100%. The screen goes dark after 20 s; holding top left starts VANA as always. | 20 s |
-| Day to night | The backlight steps 4% every 100 ms from the rider's brightness down to the night level, and back up in the morning. Nothing is redrawn. | About 1 s at 50% |
+| Light changes | In AUTO the backlight ramps 4% every 100 ms towards the level for the new light. Nothing is redrawn. | Under 3 s across the range |
 
 ## Settings
 
@@ -493,7 +505,7 @@ Acting on a row does one of three things:
 - a number (FTP, LTHR, WHEEL) opens the editor: one `ACCENT` field with the value in
   `VALUE` and the note it anchors (a zone, or AUTO or MANUAL for the wheel), over
   minus and plus pads. Editing WHEEL steps by 5 mm and makes the size MANUAL;
-- a choice steps to its next value at once (brightness 25/50/75/100%, dim
+- a choice steps to its next value at once (brightness auto/25/50/75/100%, dim
   after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, mode normal/saver, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
   km/at start, wheel mode auto/manual, the main page's two lower readings (cycling through the list below), ride pages (STATS, LAP, CLIMB, MAP, BACK TO START) on/off, sounds on/off);
 - an action opens a page (SENSORS, BESTS, FORM) or a flow (PHONE, a placeholder until the
@@ -501,8 +513,9 @@ Acting on a row does one of three things:
 
 Storage and firmware rows only show facts. The save status sits in the
 bottom band, under any toast. Brightness and dimming belong to the shell, so
-VANA asks it to apply them at once and store them; the other choices are
-stored in VANA's preference record.
+VANA asks it to apply them at once and store them; the other choices, AUTO
+among them, are stored in VANA's preference record and VANA hands the shell
+the display mode's curve.
 
 TIME ZONE sets the clock on the status bar, ride start times and night by the
 clock (`clock::Zone`). CHILE, the default, follows mainland Chile's summer

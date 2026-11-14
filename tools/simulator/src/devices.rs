@@ -33,6 +33,10 @@ pub struct Frame {
     pub hashes: Option<Vec<u64>>,
     /// The `redraw-probe` comparing each frame shown with the one before.
     pub probe: Option<crate::probe::Probe>,
+    /// Repaint the frame the shell believes is shown and panic on any pixel
+    /// that differs, so a skipped frame never hides a change. The bench and
+    /// the probe turn it off to keep their long runs fast.
+    pub check: bool,
 }
 impl Frame {
     /// A new frame is on the panel.
@@ -62,6 +66,7 @@ impl DisplayDevice {
             bench: None,
             hashes: None,
             probe: None,
+            check: true,
         })))
     }
 }
@@ -84,6 +89,23 @@ impl Display for DisplayDevice {
         }
         frame.shown();
         Ok(())
+    }
+    fn check(&mut self, mut row: impl FnMut(usize, &mut [u16])) {
+        let frame = self.0.borrow();
+        if !frame.check {
+            return;
+        }
+        let mut painted = vec![0; frame.geometry.width];
+        for (y, shown) in frame.pixels.chunks_exact(painted.len()).enumerate() {
+            row(y, &mut painted);
+            if let Some(x) = (0..shown.len()).find(|&x| shown[x] != painted[x]) {
+                panic!(
+                    "the panel shows {:#06x} at {x},{y} but the frame paints {:#06x}: \
+                     a skipped frame hid a change",
+                    shown[x], painted[x]
+                );
+            }
+        }
     }
 }
 #[derive(Clone)]

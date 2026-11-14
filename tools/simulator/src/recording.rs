@@ -3,6 +3,8 @@
 //!
 //! Recording is enabled by `SIM_ARTIFACTS=<directory>`; each scenario writes
 //! `<directory>/<scenario>/` when its `Sim` is dropped, including on failure.
+//! Encoding the video is most of a scenario's cost, so it is written only with
+//! `SIM_VIDEO=1`.
 use crate::artifacts::{Canvas, Series, Still, chart_png, chart_svg, gif, mp4};
 use crate::sim::{Note, NoteKind};
 use crate::world::World;
@@ -207,8 +209,9 @@ impl Recording {
     /// A recording called `name`, when artifacts are requested.
     pub fn named(name: &str, width: usize, height: usize) -> Option<Self> {
         let root = std::env::var_os("SIM_ARTIFACTS")?;
+        let video = std::env::var_os("SIM_VIDEO").is_some_and(|v| v == "1");
         let name = claim(name.to_string());
-        Some(Self::at(Path::new(&root).join(&name), &name, width, height))
+        Some(Self::at(Path::new(&root).join(&name), &name, width, height).with_video(video))
     }
 
     pub fn at(dir: PathBuf, name: &str, width: usize, height: usize) -> Self {
@@ -224,13 +227,13 @@ impl Recording {
             truth: Vec::new(),
             submissions: u32::MAX,
             next_truth_ms: 0,
-            video: true,
+            video: false,
         }
     }
 
-    /// Write screenshots and the report, but no video.
-    pub fn without_video(mut self) -> Self {
-        self.video = false;
+    /// Also write the captioned video.
+    pub fn with_video(mut self, video: bool) -> Self {
+        self.video = video;
         self
     }
 

@@ -24,10 +24,11 @@ loop's order and serves the terminal backend. The world and its observers:
 - `rides.rs`: reads recorded rides back with VANA's journal decoder.
 
 Scenarios live in `tests/ride_scenarios.rs`. `cycling sim` runs them with
-`SIM_ARTIFACTS` set: `recording.rs` writes a captioned video, checkpoint
+`SIM_ARTIFACTS` set: `recording.rs` writes checkpoint
 screenshots (`sim.checkpoint(..)`), a chart of the world, recorded rides as GPX
 and JSON, a timeline and `result.json` for each scenario under `.local/sim/latest`,
-including failed ones. `artifacts/` holds the PNG, GIF, MP4 (through `ffmpeg`)
+including failed ones. `SIM_VIDEO=1` adds a captioned video; encoding it is most
+of a run's time, so only `cycling sim-pr` and `cycling sim-live` set it. `artifacts/` holds the PNG, GIF, MP4 (through `ffmpeg`)
 and chart encoders. `cycling sim-pr <number>` posts the run inline on a pull
 request through `cycling_devtools.sim.report`. `cycling sim-compare [--base <ref>]
 [--filter <test name>] [--pr <number>]` also runs the base ref (default `origin/main`, fetched first) in a temporary

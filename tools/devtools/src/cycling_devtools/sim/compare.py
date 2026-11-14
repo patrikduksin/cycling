@@ -233,6 +233,7 @@ def scenarios(source, artifacts, target, name_filter):
     artifacts.mkdir(parents=True)
     command = [*COMMAND, *([name_filter] if name_filter else [])]
     env = {**os.environ, 'SIM_ARTIFACTS': str(artifacts), 'CARGO_TARGET_DIR': str(target)}
+    env.pop('SIM_VIDEO', None)
     with (artifacts / 'cargo.log').open('w') as log:
         process = subprocess.Popen(
             command,

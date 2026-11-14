@@ -9482,10 +9482,48 @@ fn a_ride_paged_by_a_press_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), a_ride_paged_by_a_press, false);
 }
 
-/// One frame a ride drew, with the four numbers on its main page.
+/// One frame a ride drew: the four numbers on its main page, the ride clock,
+/// every text on the page and when the frame was drawn on the sim's clock.
 struct Drawn {
     at: u64,
+    drawn_ms: u64,
     numbers: [Option<String>; 4],
+    clock: Option<String>,
+    texts: Vec<String>,
+}
+
+/// The ride clock reads `H:MM:SS`.
+fn is_ride_clock(text: &str) -> bool {
+    let parts: Vec<&str> = text.split(':').collect();
+    parts.len() == 3
+        && parts[0].chars().all(|c| c.is_ascii_digit())
+        && parts[1..]
+            .iter()
+            .all(|part| part.len() == 2 && part.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// How late after a ride-clock second a frame may draw and still count as
+/// the second's own.
+const TICK_SLACK_MS: u64 = 60;
+
+/// Where the ride clock's second turns on the sim's clock, mod a second: the
+/// first frame whose ride clock text changed.
+fn tick_phase(frames: &[Drawn]) -> u64 {
+    frames
+        .windows(2)
+        .find(|pair| pair[0].clock != pair[1].clock)
+        .map(|pair| pair[1].drawn_ms % 1000)
+        .expect("the ride clock turned over")
+}
+
+/// When a frame's text changed away from the ride clock's second turning.
+fn off_tick_in(frames: &[Drawn], phase: u64) -> Vec<u64> {
+    frames
+        .windows(2)
+        .filter(|pair| pair[0].texts != pair[1].texts)
+        .filter(|pair| (pair[1].drawn_ms + 1000 - phase) % 1000 > TICK_SLACK_MS)
+        .map(|pair| pair[1].at)
+        .collect()
 }
 
 /// Ride `secs` seconds, calling `feed` with the elapsed ms every 250 ms as
@@ -9512,9 +9550,19 @@ fn frames_drawn(sim: &mut Sim, secs: u64, mut feed: impl FnMut(&mut Sim, u64)) -
             continue;
         }
         last = pixels;
+        let texts: Vec<String> = screen
+            .frame()
+            .read()
+            .into_iter()
+            .map(|run| run.text)
+            .collect();
+        let clock = texts.iter().find(|text| is_ride_clock(text)).cloned();
         frames.push(Drawn {
             at: sim.now() - start,
+            drawn_ms: sim.now(),
             numbers: ["KM/H", "W", "BPM", "RPM"].map(|label| screen.field(label)),
+            clock,
+            texts,
         });
     }
     frames
@@ -9539,17 +9587,6 @@ fn wobbling() -> impl FnMut(&mut Sim, u64) {
     }
 }
 
-/// Open Settings, DISPLAY, and step to its fifth row, MODE.
-fn open_mode_row(sim: &mut Sim) {
-    sim.home("SETTINGS");
-    sim.swipe_next();
-    sim.swipe_next();
-    for _ in 0..4 {
-        sim.press(Button::BottomLeft);
-    }
-    sim.expect_text("DISPLAY");
-}
-
 /// What a ride in a display mode drew.
 struct Rides {
     /// When the main page's numbers changed, ms into a noisy minute's first 10 s.
@@ -9559,9 +9596,15 @@ struct Rides {
     longest_burst: usize,
     /// Frames drawn in 6 s while a car closes from behind.
     car_frames: usize,
+    /// When any ride page's text changed between ride-clock seconds, ms into
+    /// 5 s windows on the main page and each page after it.
+    off_tick: Vec<u64>,
 }
 
 fn measure(sim: &mut Sim) -> Rides {
+    // The ride clock starts off the wall clock's second, so a latch on the
+    // wrong clock shows.
+    sim.advance(370);
     sim.start_ride();
     sim.ride_at(28.0, 230.0, 142.0, 88.0);
     sim.advance(seconds(10));
@@ -9571,6 +9614,16 @@ fn measure(sim: &mut Sim) -> Rides {
         .filter(|pair| pair[0].numbers != pair[1].numbers)
         .map(|pair| pair[1].at)
         .collect();
+    let phase = tick_phase(&noisy);
+    let mut off_tick = off_tick_in(&noisy, phase);
+    for _ in 0..8 {
+        sim.press(Button::BottomLeft);
+        sim.advance(seconds(1));
+        if sim.seen().page.is_some_and(|(_, page)| page == "ride/main") {
+            break;
+        }
+        off_tick.extend(off_tick_in(&frames_drawn(sim, 5, wobbling()), phase));
+    }
     sim.ride_at(28.0, 230.0, 142.0, 88.0);
     sim.advance(seconds(5));
     let step = frames_drawn(sim, 6, |sim, at| {
@@ -9598,6 +9651,7 @@ fn measure(sim: &mut Sim) -> Rides {
         number_changes,
         longest_burst,
         car_frames,
+        off_tick,
     }
 }
 
@@ -9621,7 +9675,7 @@ fn saver_mode_is_chosen_in_settings_kept_over_a_restart_and_draws_only_what_arri
     );
     assert!(smooth.longest_burst >= 4, "{}", smooth.longest_burst);
 
-    open_mode_row(&mut sim);
+    sim.open_mode_row();
     sim.expect_field("MODE", "NORMAL");
     sim.expect_text("SMOOTH");
     sim.checkpoint("settings: the display mode starts NORMAL");
@@ -9634,7 +9688,7 @@ fn saver_mode_is_chosen_in_settings_kept_over_a_restart_and_draws_only_what_arri
 
     sim.power_loss();
     assert!(sim.command("PROFILE").1.contains("stored=current"));
-    open_mode_row(&mut sim);
+    sim.open_mode_row();
     sim.expect_field("MODE", "SAVER");
     sim.checkpoint("settings: SAVER after a restart");
     go_home(&mut sim);
@@ -9649,6 +9703,11 @@ fn saver_mode_is_chosen_in_settings_kept_over_a_restart_and_draws_only_what_arri
                 .all(|pair| pair[1] - pair[0] >= 900),
         "numbers change once a second at most: {:?}",
         saver.number_changes
+    );
+    assert!(
+        saver.off_tick.is_empty(),
+        "text changed between ride-clock seconds at {:?} ms",
+        saver.off_tick
     );
     assert!(
         saver.longest_burst <= 2,

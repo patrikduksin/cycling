@@ -19,6 +19,8 @@ pub struct Policy {
     /// Gauges and radar markers glide to each reading, or jump to it.
     pub glides: bool,
     pub numbers: Numbers,
+    /// What the Mode row says under its name.
+    pub note: &'static str,
     /// The least time between two frames a glide asks for.
     pub motion_frame_ms: u64,
 }
@@ -28,12 +30,14 @@ static TABLE: [Policy; 2] = [
         name: "NORMAL",
         glides: true,
         numbers: Numbers::OnArrival,
+        note: "SMOOTH",
         motion_frame_ms: 40,
     },
     Policy {
         name: "SAVER",
         glides: false,
         numbers: Numbers::EverySecond,
+        note: "NO GLIDES",
         motion_frame_ms: 40,
     },
 ];

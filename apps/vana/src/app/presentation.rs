@@ -657,10 +657,6 @@ impl Runtime {
             self.history_ride_started();
         }
         let pages = self.ride_pages();
-        let shown = match self.navigation.page {
-            Page::Ride => self.shown_workout(&self.preferences.profile),
-            _ => None,
-        };
         let ftp_offer = self.ftp_sheet();
         let picker_offset = self.list_offset(List::Workouts, now);
         let picker = (self.navigation.page == Page::Workouts).then(|| {
@@ -679,7 +675,7 @@ impl Runtime {
         let page = navigation.page;
         let gps = position.snapshot(now);
         let zone = self.preferences.options.zone;
-        let local = match self.readings.live.utc_ms {
+        let local = match self.shown.live().utc_ms {
             Some(ms) => Some(zone.local(ms / 1000)),
             None => gps.and_then(|p| p.gps.utc).map(|v| {
                 zone.local_of_day(
@@ -709,7 +705,9 @@ impl Runtime {
         view.ride_page = navigation.ride_page;
         view.ride_pages = self.preferences.options.ride_pages;
         view.main_slots = self.preferences.options.main_slots;
-        view.totals = self.ride.totals;
+        let readout = self.shown.readout();
+        let (climbing, paused_secs) = (readout.climbing, readout.paused_secs);
+        view.totals = readout.totals;
         if page == Page::Ride && view.ride_page == RidePage::Lap {
             let laps = &self.ride.laps;
             let kept = (0..crate::ride::laps::HISTORY).rev();
@@ -717,13 +715,13 @@ impl Runtime {
                 .filter_map(|back| laps.finished(back))
                 .map(Into::into)
                 .collect();
-            view.show_laps(bars, laps.current(), laps.previous());
+            view.show_laps(bars, readout.lap, readout.previous_lap);
         }
-        view.zone_time = self.ride.zone_time;
+        view.zone_time = readout.zone_time;
         view.profile = self.preferences.profile;
         view.rider = self.preferences.options.rider;
         if page == Page::Ride {
-            view.training = shown;
+            view.training = readout.training;
             if view.ride_page == RidePage::Workout {
                 view.show_workout(match &self.ride.workout {
                     Some(player) => crate::screens::ride::workout_chart(player, &view.profile),
@@ -743,7 +741,7 @@ impl Runtime {
                 self.night.sun(now).map(|(sun, _)| sun),
                 self.preferences.options.zone,
             );
-            view.show_back(super::back::view_of(&self.back), sunset);
+            view.show_back(readout.back, sunset);
         }
         let gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         view.gps = match gps {
@@ -765,9 +763,7 @@ impl Runtime {
             }),
             Observation::Unavailable => None,
         };
-        view.paused_secs = navigation.paused_since.map_or(0, |since| {
-            (now.saturating_sub(since) / 1000).min(u64::from(u32::MAX)) as u32
-        });
+        view.paused_secs = paused_secs;
         view.pause_screen =
             page == Page::Ride && view.state == Status::Paused && !navigation.pause_hidden;
         view.toast = self.toast(now);
@@ -842,6 +838,7 @@ impl Runtime {
             // Borrowed from the ride and the look-ahead's own block, not copied.
             view.show_climb(crate::screens::ride::ClimbLent {
                 climbs: &self.ride.climbs,
+                climbing,
                 trace: &self.ride.trace,
                 forecast: super::lookahead::forecast_of(&self.lookahead),
                 pinned: super::lookahead::pinned_of(&self.lookahead),
@@ -1383,11 +1380,7 @@ impl Runtime {
             }
             Row::Mode => {
                 let policy = options.mode.policy();
-                let _ = write!(
-                    note,
-                    "{}",
-                    if policy.glides { "SMOOTH" } else { "NO GLIDES" }
-                );
+                let _ = write!(note, "{}", policy.note);
                 write!(value, "{}", policy.name)
             }
             Row::TimeZone => match options.zone {
@@ -1544,8 +1537,24 @@ impl Runtime {
         } else {
             (false, now / 1000)
         };
-        self.shown
-            .take(&self.readings, self.policy().numbers, second);
+        if self.shown.stale(self.policy().numbers, second) {
+            let ride = &self.ride;
+            let readout = Readout {
+                live: self.readings.live,
+                power_3s_watts: self.readings.power_3s_watts,
+                totals: ride.totals,
+                zone_time: ride.zone_time,
+                lap: ride.laps.current(),
+                previous_lap: ride.laps.previous(),
+                climbing: ride.climbs.climbing(),
+                training: self.shown_workout(&self.preferences.profile),
+                back: super::back::view_of(&self.back),
+                paused_secs: self.navigation.paused_since.map_or(0, |since| {
+                    (now.saturating_sub(since) / 1000).min(u64::from(u32::MAX)) as u32
+                }),
+            };
+            self.shown.set(readout, second);
+        }
     }
 
     /// When the readings `shown` or a glide next need a frame.
@@ -1569,40 +1578,62 @@ fn arrived_sample(readings: &super::readings::Readings) -> crate::ride::log::Sam
     }
 }
 
-/// The readings the ride page's numbers show: the newest ones, or those of
-/// the second's start when the mode latches numbers.
-#[derive(Default)]
-pub(super) struct Shown {
-    /// The clock second the readings were taken at, and whose clock it is.
-    second: Option<(bool, u64)>,
+/// Everything a ride page prints as a number, as one moment's copy. Gauges
+/// and radar markers are not here: they keep the live readings.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Readout {
     live: crate::ride::log::Sample,
     power_3s_watts: Option<u16>,
+    totals: crate::ride::totals::Totals,
+    zone_time: crate::ride::zones::ZoneTime,
+    lap: crate::ride::laps::Lap,
+    previous_lap: Option<crate::ride::laps::Lap>,
+    climbing: Option<crate::ride::climb::Summary>,
+    training: Option<ride::Training>,
+    back: ride::Back,
+    paused_secs: u32,
+}
+
+/// The readout the ride pages' numbers show: the newest one, or the one of
+/// the second's start when the mode latches numbers. The one place numbers
+/// are chosen, so no page asks which mode it is in.
+#[derive(Default)]
+pub(super) struct Shown {
+    /// The clock second the readout was taken at, and whose clock it is.
+    second: Option<(bool, u64)>,
+    readout: Readout,
 }
 
 impl Shown {
-    fn take(
-        &mut self,
-        readings: &super::readings::Readings,
-        numbers: super::mode::Numbers,
-        second: (bool, u64),
-    ) {
-        if numbers == super::mode::Numbers::OnArrival || self.second != Some(second) {
-            self.live = readings.live;
-            self.power_3s_watts = readings.power_3s_watts;
-        }
+    /// Whether the readout is due: always on arrival, else when the second
+    /// turns.
+    fn stale(&self, numbers: super::mode::Numbers, second: (bool, u64)) -> bool {
+        numbers == super::mode::Numbers::OnArrival || self.second != Some(second)
+    }
+
+    fn set(&mut self, readout: Readout, second: (bool, u64)) {
+        self.readout = readout;
         self.second = Some(second);
     }
 
     pub(super) fn live(&self) -> crate::ride::log::Sample {
-        self.live
+        self.readout.live
     }
 
     /// The numbers' sample: power is its 3 s average.
     pub(super) fn sample(&self) -> crate::ride::log::Sample {
         crate::ride::log::Sample {
-            power_watts: self.power_3s_watts,
-            ..self.live
+            power_watts: self.readout.power_3s_watts,
+            ..self.readout.live
         }
+    }
+
+    pub(super) fn readout(&self) -> &Readout {
+        &self.readout
+    }
+
+    pub(super) fn distance_mm(&self) -> u64 {
+        self.readout.totals.distance_mm()
     }
 }
 
@@ -1672,40 +1703,57 @@ mod tests {
     use crate::daylight::sun_state;
     use firmware_services::gps::unix_seconds;
 
-    fn readings_at(watts: u16) -> super::super::readings::Readings {
-        let mut readings = super::super::readings::Readings::default();
-        readings.live.power_watts = Some(watts);
-        readings.power_3s_watts = Some(watts);
-        readings
+    fn take(
+        shown: &mut Shown,
+        numbers: super::super::mode::Numbers,
+        second: (bool, u64),
+        readout: Readout,
+    ) {
+        if shown.stale(numbers, second) {
+            shown.set(readout, second);
+        }
+    }
+
+    fn readout_at(watts: u16) -> Readout {
+        let mut readout = Readout::default();
+        readout.live.power_watts = Some(watts);
+        readout.power_3s_watts = Some(watts);
+        readout.paused_secs = u32::from(watts);
+        readout
     }
 
     #[test]
     fn numbers_on_arrival_follow_every_reading_and_every_second_hold_until_it_turns() {
         use super::super::mode::Numbers;
         let mut shown = Shown::default();
-        shown.take(&readings_at(200), Numbers::EverySecond, (true, 5));
-        shown.take(&readings_at(300), Numbers::EverySecond, (true, 5));
+        take(&mut shown, Numbers::EverySecond, (true, 5), readout_at(200));
+        take(&mut shown, Numbers::EverySecond, (true, 5), readout_at(300));
         assert_eq!(
             shown.sample().power_watts,
             Some(200),
             "held within the second"
         );
         assert_eq!(shown.live().power_watts, Some(200));
-        shown.take(&readings_at(400), Numbers::EverySecond, (true, 6));
+        take(&mut shown, Numbers::EverySecond, (true, 6), readout_at(400));
         assert_eq!(
             shown.sample().power_watts,
             Some(400),
             "retaken as the second turns"
         );
-        shown.take(&readings_at(500), Numbers::OnArrival, (true, 6));
+        take(&mut shown, Numbers::OnArrival, (true, 6), readout_at(500));
         assert_eq!(shown.sample().power_watts, Some(500));
-        shown.take(&readings_at(600), Numbers::EverySecond, (true, 6));
+        take(&mut shown, Numbers::EverySecond, (true, 6), readout_at(600));
         assert_eq!(
             shown.sample().power_watts,
             Some(500),
             "a mode change keeps the second"
         );
-        shown.take(&readings_at(700), Numbers::EverySecond, (false, 6));
+        take(
+            &mut shown,
+            Numbers::EverySecond,
+            (false, 6),
+            readout_at(700),
+        );
         assert_eq!(
             shown.sample().power_watts,
             Some(700),

@@ -69,7 +69,7 @@ impl super::Runtime {
                 &mut shown,
                 self.ride.active_ms(now) / 1000,
                 &self.shown.sample(),
-                self.ride.totals.distance_mm(),
+                self.shown.distance_mm(),
             );
             if self.reported.shown != shown {
                 sink(Seen::Shown(shown.as_str()));

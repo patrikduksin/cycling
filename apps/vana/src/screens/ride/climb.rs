@@ -98,6 +98,8 @@ pub(super) const fn color(steepness: Steepness) -> u16 {
 #[derive(Clone, Copy)]
 pub struct Lent<'a> {
     pub climbs: &'a Climbs,
+    /// The climb under way, as the page's numbers show it.
+    pub climbing: Option<crate::ride::climb::Summary>,
     /// The whole ride's elevation.
     pub trace: &'a Trace,
     pub forecast: &'a Forecast,
@@ -109,6 +111,7 @@ impl Lent<'static> {
     /// Nothing ridden and no map.
     pub const NONE: Self = Self {
         climbs: &Climbs::NONE,
+        climbing: None,
         trace: &Trace::EMPTY,
         forecast: &Forecast::NONE,
         pinned: None,
@@ -131,7 +134,7 @@ enum Situation<'a> {
 fn situation<'a>(view: &View<'a>) -> Situation<'a> {
     let lent = view.climb_lent();
     let odometer = view.totals.distance_mm();
-    match (lent.pinned, lent.climbs.climbing()) {
+    match (lent.pinned, lent.climbing) {
         (Some(pin), _) if odometer < pin.foot_mm => Situation::Ahead(pin),
         (Some(pin), _) => Situation::OnMap(pin),
         (None, Some(climb)) => Situation::OnClimb {
@@ -721,6 +724,7 @@ mod tests {
                 .add(1000, ride.odometer_mm, &sample, Some(95_000));
             view.show_climb(Lent {
                 climbs: &ride.climbs,
+                climbing: ride.climbs.climbing(),
                 trace: &ride.trace,
                 forecast: &ride.forecast,
                 pinned: ride.pinned.as_ref(),

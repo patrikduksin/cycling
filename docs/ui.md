@@ -438,9 +438,10 @@ battery or a sensor, or when a press or a test capture waits for a frame.
 MODE in Settings → Display chooses NORMAL or SAVER, the rider's call, never
 automatic. NORMAL is everything described here. SAVER draws less: gauges and
 radar markers jump to each reading or report instead of gliding, radar
-markers stop closing between reports, and the main page's numbers change
+markers stop closing between reports, and every number on the ride pages changes
 once a second, when the ride clock's second turns (the wall clock's while no
-ride records). Gauges and markers still show every reading as it arrives, so
+ride records): speed, power, heart rate, cadence, the distance and totals on
+the lower line and the stats, lap, climb, workout and way-back figures. Gauges and markers still show every reading as it arrives, so
 SAVER draws a frame for each report, about four a second, and one for the
 numbers. `app/mode.rs` holds one table row per mode; the rest of VANA reads
 its fields and never asks which mode is on. The choice is stored in VANA's
@@ -551,9 +552,9 @@ The unit beside the value names the reading: RPM, KM, NP, KCAL, KJ or M. The
 three averages share the unit AVG, because the half-width slot has no room for
 more, and their colour tells them apart (`POWER`, `HEART`, `SPEED`). A count
 past 9999 KCAL reads in thousands ("10K"), so a number is never cut off. A
-reading with no data yet shows `--`. The choice is the last two bytes of VANA's
-preference record from version 8 (`app::preferences`); older records load with
-the defaults.
+reading with no data yet shows `--`. The choice is two bytes of VANA's preference
+record from version 8, and the display mode's byte follows them from version 9
+(`app::preferences`); older records load with the defaults.
 
 RIDE PAGES (STATS, LAP, CLIMB, MAP, BACK TO START) lists one row per optional ride page, five rows that scroll. The ride screen's page dots
 count the pages that are on, and a page that is off never takes a dot, a MOVE

@@ -1,6 +1,8 @@
+import concurrent.futures
 import contextlib
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -37,6 +39,13 @@ def png(rgb, width, filter_type=0, level=6):
         + chunk(b'IDAT', zlib.compress(b''.join(rows), level))
         + chunk(b'IEND', b'')
     )
+
+
+@pytest.fixture(autouse=True)
+def cache(tmp_path, monkeypatch):
+    """Keep tests out of the primary checkout's base cache."""
+    monkeypatch.setattr(compare, 'CACHE', tmp_path / 'cache')
+    return tmp_path / 'cache'
 
 
 IMAGE = bytes(range(48))
@@ -275,7 +284,8 @@ def simulate(runs):
         runs.append(run)
         side = 'before' if run.target.name == 'sim-compare-base' else 'after'
         names = [n for n in SCREENS[side] if run.tests[2:] == () or TESTS[n] in run.tests[2:]]
-        run.artifacts.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(run.artifacts, ignore_errors=True)
+        run.artifacts.mkdir(parents=True)
         for name in names:
             scenario(run.artifacts, name, {'final screen': SCREENS[side][name]}, video=run.video or side == 'before')
         log = ''.join(f'test {TESTS[n]} ... ok\n' for n in names)
@@ -285,20 +295,28 @@ def simulate(runs):
     return fake
 
 
-@pytest.mark.parametrize('video', [False, True])
-def test_main_records_video_only_for_new_scenarios_and_asked_for_changes(tmp_path, monkeypatch, video):
+def fake_main(tmp_path, monkeypatch, runs, checkouts):
+    """compare.main over `simulate`, counting base checkouts."""
+
     @contextlib.contextmanager
     def checkout(commit, path):
+        checkouts.append(commit)
         yield path
 
-    runs = []
     monkeypatch.setattr(compare, 'scenarios', simulate(runs))
     monkeypatch.setattr(compare, 'checkout', checkout)
-    monkeypatch.setattr(compare, 'git', lambda *args: 'abc1234 Base subject')
+    monkeypatch.setattr(compare, 'git', lambda *args: 'abc1234' if args[0] == 'rev-parse' else 'Base subject')
     monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
     monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
+    return lambda *args: compare.main(['--out', str(tmp_path / 'out'), *args])
+
+
+@pytest.mark.parametrize('video', [False, True])
+def test_main_records_video_only_for_new_scenarios_and_asked_for_changes(tmp_path, monkeypatch, video):
+    runs = []
+    main = fake_main(tmp_path, monkeypatch, runs, [])
     out = tmp_path / 'out'
-    assert compare.main(['--out', str(out), *(['--video'] if video else [])]) == 0
+    assert main(*(['--video'] if video else [])) == 0
     assert [(r.artifacts.name, r.tests, r.video) for r in runs] == [
         ('after', (), False),
         ('before', (), False),
@@ -312,6 +330,77 @@ def test_main_records_video_only_for_new_scenarios_and_asked_for_changes(tmp_pat
     assert ('out/after/ride/video.mp4' in summary) == video
     assert ('out/before/ride/video.mp4' in summary) == video
     assert 'steady/video.mp4' not in summary
+
+
+def test_a_complete_base_is_cached_by_commit_and_filter(tmp_path, monkeypatch, cache):
+    runs, checkouts = [], []
+    main = fake_main(tmp_path, monkeypatch, runs, checkouts)
+    assert main() == 0
+    first = (tmp_path / 'out/summary.md').read_text()
+    assert [r.artifacts.name for r in runs] == ['after', 'before', 'after-video']
+    # Only the base's screens are kept, not the video its recorder wrote.
+    assert (cache / 'abc1234/ride/final.png').exists()
+    assert not list(cache.glob('abc1234/*/video.*'))
+    runs.clear()
+    assert main() == 0
+    assert [r.artifacts.name for r in runs] == ['after', 'after-video']
+    assert checkouts == ['abc1234']
+    assert (tmp_path / 'out/summary.md').read_text() == first
+    # Another filter is another base run.
+    assert main('--filter', 'ride') == 0
+    assert [r.artifacts.name for r in runs][-2] == 'before'
+    assert len([p for p in cache.iterdir() if not p.name.startswith('.')]) == 2
+
+
+def test_an_incomplete_base_is_not_cached(tmp_path, monkeypatch, cache):
+    main = fake_main(tmp_path, monkeypatch, [], [])
+    real = compare.scenarios
+
+    def broken(run):
+        status = real(run)
+        if run.artifacts.name == 'before':
+            (run.artifacts / 'cargo.log').write_text('error: could not compile\n')
+            return 101
+        return status
+
+    monkeypatch.setattr(compare, 'scenarios', broken)
+    assert main() == 1
+    assert not (cache / 'abc1234').exists()
+
+
+def run_dir(path, marker):
+    scenario(path, 'ride', {'riding': png(IMAGE, 4)}, video=True)
+    (path / 'cargo.log').write_text(f'{marker}\ntest ride ... ok\ntest result: ok. 1 passed\n')
+    return path
+
+
+def test_concurrent_stores_leave_one_whole_entry(tmp_path, cache):
+    runs = [run_dir(tmp_path / f'run{i}', f'run {i}') for i in range(4)]
+    with concurrent.futures.ThreadPoolExecutor(4) as pool:
+        list(pool.map(lambda run: compare.store('abc', run), runs))
+    assert [p.name for p in cache.iterdir() if not p.name.startswith('.')] == ['abc']
+    assert not list(cache.glob(f'{compare.STAGING}*'))
+    restored = tmp_path / 'restored'
+    assert compare.restore('abc', restored)
+    assert compare.incomplete(restored, 0) is None
+    assert sorted(p.name for p in (restored / 'ride').iterdir()) == ['01-riding.png', 'result.json']
+
+
+def test_cache_keeps_the_most_recently_used_entries(tmp_path, monkeypatch, cache):
+    monkeypatch.setattr(compare, 'CACHE_ENTRIES', 2)
+    run = run_dir(tmp_path / 'run', 'run')
+    compare.store('old', run)
+    compare.store('used', run)
+    os.utime(cache / 'old', (0, 0))
+    os.utime(cache / 'used', (0, 0))
+    assert compare.restore('used', tmp_path / 'restored')
+    stale = cache / f'{compare.STAGING}killed'
+    stale.mkdir()
+    os.utime(stale, (0, 0))
+    compare.store('new', run)
+    assert sorted(p.name for p in cache.iterdir() if not p.name.startswith('.')) == ['new', 'used']
+    assert not stale.exists()
+    assert not compare.restore('old', tmp_path / 'restored')
 
 
 def fake_git(monkeypatch, calls):
@@ -333,7 +422,7 @@ def test_default_base_is_origin_main_fetched_before_resolving(monkeypatch):
     fake_git(monkeypatch, calls)
     assert compare.resolve_base(None) == ('origin/main', 'abc1234', 'Base subject')
     assert calls[0] == 'fetch'
-    assert calls[1] == ('rev-parse', '--short', '--verify', 'origin/main^{commit}')
+    assert calls[1] == ('rev-parse', '--verify', 'origin/main^{commit}')
     assert calls[2] == ('log', '-1', '--no-show-signature', '--format=%s', 'abc1234')
 
 
@@ -343,7 +432,7 @@ def test_explicit_base_is_resolved_without_fetching(monkeypatch):
     fake_git(monkeypatch, calls)
     assert compare.resolve_base('main') == ('main', 'abc1234', 'Base subject')
     assert 'fetch' not in calls
-    assert calls[0] == ('rev-parse', '--short', '--verify', 'main^{commit}')
+    assert calls[0] == ('rev-parse', '--verify', 'main^{commit}')
 
 
 def test_signed_base_under_show_signature_is_not_parsed_as_sha(monkeypatch):

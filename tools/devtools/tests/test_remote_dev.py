@@ -137,9 +137,17 @@ class VerifyTests(unittest.TestCase):
             self.assertIn('$ exit 3', results[0].log.read_text())
 
     def test_the_full_gate_builds_the_firmware_beside_the_flashed_image(self):
-        names = {step.name for lane in verify.LANES['full'] for step in lane}
-        self.assertTrue({'build', 'test', 'check', 'simulate'} <= names)
+        names = {step.name for lane in verify.lanes('full') for step in lane}
+        self.assertTrue({'build', 'test', 'check', 'simulate', 'screens'} <= names)
         self.assertNotEqual(dict(verify.BUILD.env)['CYCLING_IMAGE_DIR'], '.local')
+
+    def test_the_full_gate_runs_the_scenarios_once_and_posts_their_screens(self):
+        steps = {step.name: step for lane in verify.lanes('full', 7) for step in lane}
+        self.assertEqual(steps['screens'].command, 'cycling sim-compare --pr 7')
+        self.assertEqual(dict(steps['test'].env)['NEXTEST_PROFILE'], 'verify')
+        fast = {step.name: step for lane in verify.lanes('fast', 7) for step in lane}
+        self.assertNotIn('screens', fast)
+        self.assertNotIn('NEXTEST_PROFILE', dict(fast['test'].env))
 
 
 if __name__ == '__main__':

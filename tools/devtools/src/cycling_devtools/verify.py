@@ -3,7 +3,10 @@
 Lanes that share a cargo target dir would only queue on its lock, so clippy
 gets its own dir and the firmware has one; sccache shares the dependency
 builds between them. harness-virtual has real-time reply timeouts,
-so it runs alone after the loaded phase.
+so it runs alone after the loaded phase. The full gate runs the ride
+scenarios once, in the screens lane: sim-compare records them, fails on a
+failing scenario and pairs their screens with the base's, so the test lane's
+nextest profile leaves them out.
 """
 
 import argparse
@@ -35,20 +38,23 @@ def frame_report(step):
     return ROOT / image_dir / 'stack-frames.md' if image_dir else None
 
 
-# Each inner list runs in order; the lists run in parallel.
-LANES = {
-    'full': [
-        [Step('test', 'cycling test'), Step('simulate', 'cycling simulate')],
-        [Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
+CHECK = Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))
+
+
+def lanes(mode, pr=None):
+    """Each inner list runs in order; the lists run in parallel."""
+    if mode == 'fast':
+        # The inner loop before pushing: everything except simulate, screens and harness-virtual.
+        return [[Step('test', 'cycling test')], [CHECK], [BUILD]]
+    screens = 'cycling sim-compare' + (f' --pr {pr}' if pr else '')
+    return [
+        [Step('test', 'cycling test', (('NEXTEST_PROFILE', 'verify'),)), Step('simulate', 'cycling simulate')],
+        [CHECK],
         [BUILD],
-    ],
-    # The inner loop before pushing: everything except simulate and harness-virtual.
-    'fast': [
-        [Step('test', 'cycling test')],
-        [Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))],
-        [BUILD],
-    ],
-}
+        [Step('screens', screens)],
+    ]
+
+
 ALONE = {'full': [Step('harness-virtual', 'cycling harness-virtual')], 'fast': []}
 
 
@@ -127,8 +133,9 @@ def main(argv=None):
     logs.mkdir(parents=True, exist_ok=True)
 
     started = time.monotonic()
-    with ThreadPoolExecutor(len(LANES[mode])) as pool:
-        results = [r for lane in pool.map(lambda lane: run_lane(lane, logs), LANES[mode]) for r in lane]
+    parallel = lanes(mode, args.pr)
+    with ThreadPoolExecutor(len(parallel)) as pool:
+        results = [r for lane in pool.map(lambda lane: run_lane(lane, logs), parallel) for r in lane]
     if all(r.ok for r in results):
         results += run_lane(ALONE[mode], logs)
     total = time.monotonic() - started

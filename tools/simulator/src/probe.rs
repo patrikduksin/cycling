@@ -36,14 +36,13 @@ impl Probe {
     }
 
     pub fn observe(&mut self, pixels: &[u16]) {
-        let rows = |pixels: &'_ [u16]| {
-            pixels
-                .chunks(self.width * STRIP_ROWS)
-                .map(<[u16]>::to_vec)
-                .collect::<Vec<_>>()
-        };
-        let (before, after) = (rows(&self.previous), rows(pixels));
-        let strips = before.iter().zip(&after).filter(|(a, b)| a != b).count();
+        let strip = self.width * STRIP_ROWS;
+        let strips = self
+            .previous
+            .chunks(strip)
+            .zip(pixels.chunks(strip))
+            .filter(|(a, b)| a != b)
+            .count();
         let pixel_count = self
             .previous
             .iter()
@@ -61,8 +60,6 @@ impl Probe {
 /// What the sensors do while the page is watched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feed {
-    /// Nothing moves.
-    Still,
     /// The scene's readings hold; with `cars`, a vehicle appears about every 7 s.
     Steady { cars: bool },
     /// Power within 35 W, and heart rate, speed and cadence, change every 250 ms.
@@ -110,12 +107,12 @@ pub static CASES: [Case; 8] = [
     Case {
         name: "settings (still)",
         scene: "settings",
-        feed: Feed::Still,
+        feed: Feed::Steady { cars: false },
     },
     Case {
         name: "home",
         scene: "home",
-        feed: Feed::Still,
+        feed: Feed::Steady { cars: false },
     },
 ];
 
@@ -156,10 +153,10 @@ impl Result {
 fn percentiles(mut values: Vec<usize>) -> (usize, usize) {
     values.sort_unstable();
     let at = |per_cent: usize| {
-        values
-            .len()
+        (values.len() * per_cent)
+            .div_ceil(100)
             .checked_sub(1)
-            .map_or(0, |last| values[(last * per_cent).div_ceil(100)])
+            .map_or(0, |rank| values[rank])
     };
     (at(50), at(90))
 }
@@ -266,7 +263,8 @@ mod tests {
 
     #[test]
     fn percentiles_pick_the_median_and_the_ninetieth() {
-        assert_eq!(percentiles((1..=10).collect()), (6, 10));
+        assert_eq!(percentiles((1..=10).collect()), (5, 9));
+        assert_eq!(percentiles([0, 0, 3, 3].into()), (0, 3));
         assert_eq!(percentiles(Vec::new()), (0, 0));
     }
 }

@@ -39,7 +39,6 @@ pub fn decode(group: u8, payload: &[u8]) -> Decode {
                 return Decode::Invalid;
             }
             if subtype == 4 {
-                // Bytes 2 to 5 are a coarse step count; only the smooth value is kept.
                 Decode::Report(Report::Light(Light(u16::from_le_bytes([
                     payload[6], payload[7],
                 ]))))
@@ -104,18 +103,19 @@ impl State {
                     _ => {}
                 }
             }
-            // Light is not counted: the snapshot is traced whenever it changes,
-            // so counting light would trace the whole snapshot at the light rate.
-            Decode::Report(Report::Light(value)) => self.light = Some((value, now_ms)),
             Decode::Report(report) => {
-                self.reports = self.reports.saturating_add(1);
+                // Light is not counted: the snapshot is traced whenever it changes,
+                // so counting light would trace the whole snapshot at the light rate.
+                if !matches!(report, Report::Light(_)) {
+                    self.reports = self.reports.saturating_add(1);
+                }
                 match report {
                     Report::Pressure(value) => self.pressure = Some((value, now_ms)),
                     Report::Motion { subtype, value } => {
                         self.motion[usize::from(subtype - 1)] = Some((value, now_ms));
                     }
                     Report::Identity(value) => self.identity = Some((value, now_ms)),
-                    Report::Light(_) => {}
+                    Report::Light(value) => self.light = Some((value, now_ms)),
                 }
             }
         }

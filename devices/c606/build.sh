@@ -27,7 +27,8 @@ esac
 mkdir -p .local "$image_dir"
 export PATH="$CYCLING_ESP_TOOLCHAIN/bin:$CYCLING_ESP_TOOLCHAIN/xtensa-esp-elf/bin:$PATH"
 CYCLING_BUILD_COMMIT="$(git rev-parse --short=12 HEAD)"
-export CYCLING_BUILD_COMMIT
+placeholder_source="zcyclingzcommitzplaceholderzzzzzzzzzzzzzzzzzzzzzzzzz"
+commit_placeholder="${placeholder_source:0:${#CYCLING_BUILD_COMMIT}}"
 if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   export CYCLING_BUILD_DIRTY=1
 else
@@ -36,8 +37,13 @@ fi
 # sccache keys every rustc call on all CARGO_* variables: an exported
 # per-worktree CARGO_TARGET_DIR would keep every worktree's builds apart.
 unset CARGO_TARGET_DIR
-elf="$firmware_target/xtensa-esp32s3-none-elf/release/cycling-os"
-cargo build --target-dir "$firmware_target" -p c606-firmware --bin cycling-os --release --locked --no-default-features --features "$firmware_features" --target xtensa-esp32s3-none-elf
+CYCLING_BUILD_COMMIT="$commit_placeholder" cargo build --target-dir "$firmware_target" -p c606-firmware \
+  --bin cycling-os --release --locked --no-default-features --features "$firmware_features" \
+  --target xtensa-esp32s3-none-elf
+elf="$image_dir/cycling.elf"
+uv run --project tools/devtools --locked python -m cycling_devtools.stamp \
+  "$firmware_target/xtensa-esp32s3-none-elf/release/cycling-os" "$elf" \
+  --placeholder "$commit_placeholder" --commit "$CYCLING_BUILD_COMMIT"
 # The main stack is the internal DRAM that statics and the heap leave. Each
 # task and VANA's frame preparation run on it, so growing statics silently
 # shrinks it until boot overflows the stack guard (#167). Fail the build
@@ -64,8 +70,6 @@ fi
 espflash save-image --chip esp32s3 --flash-mode dio --flash-freq 80mhz --flash-size 16mb \
   --partition-table devices/c606/partitions.csv --target-app-partition ota_1 \
   "$elf" "$image_dir/cycling.bin"
-# Keep the matching ELF beside the image: crash decoding needs its symbols.
-cp "$elf" "$image_dir/cycling.elf"
 # And one per commit and image, named as the panic record's elf= says, in
 # the primary checkout's .local so every worktree's builds are found
 # (cycling backtrace). Written under a temporary name, then moved, so

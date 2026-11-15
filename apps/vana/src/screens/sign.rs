@@ -111,6 +111,11 @@ pub fn form(page: RidePage, sign: Sign) -> Option<SignForm> {
     }
 }
 
+/// `sign` laid out as `page` shows it, if it does.
+pub fn on_page(page: RidePage, sign: Sign, radar: bool) -> Option<Placed> {
+    place(sign, form(page, sign)?, radar)
+}
+
 /// A sign laid out for one frame.
 #[derive(Clone, Hash)]
 pub struct Placed {

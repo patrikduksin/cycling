@@ -36,7 +36,7 @@ const SEGMENTS: [usize; 2] = [7, 5];
 struct Rows {
     time: usize,
     speed: usize,
-    speed_faces: [&'static Face; 3],
+    speed_faces: &'static [&'static Face],
     power: usize,
     heart: usize,
     lower: usize,
@@ -50,12 +50,15 @@ struct Rows {
     lower_right: usize,
 }
 
+static HERO_SPEED: [&Face; 3] = [&HERO, &LARGE, &VALUE];
+static COURSE_SPEED: [&Face; 2] = [&LARGE, &VALUE];
+
 fn rows(course: bool) -> Rows {
     if course {
         return Rows {
             time: 59,
             speed: 150,
-            speed_faces: [&LARGE, &VALUE, &VALUE],
+            speed_faces: &COURSE_SPEED,
             power: 200,
             heart: 256,
             lower: 304,
@@ -68,7 +71,7 @@ fn rows(course: bool) -> Rows {
     Rows {
         time: baseline(&VALUE, BODY.top + 4),
         speed: baseline(&HERO, BODY.top + 38),
-        speed_faces: [&HERO, &LARGE, &VALUE],
+        speed_faces: &HERO_SPEED,
         power: baseline(&LARGE, power),
         heart: baseline(&LARGE, heart),
         lower: baseline(&VALUE, BODY.top + 228),
@@ -279,7 +282,7 @@ fn readings(smooth: &mut Smooth, view: &View, rows: &Rows) {
     let kmh = value(&|v| speed(v, sample.speed_mm_s));
     reading(
         labels,
-        &rows.speed_faces,
+        rows.speed_faces,
         &kmh,
         b"KM/H",
         (LEFT, RIGHT),

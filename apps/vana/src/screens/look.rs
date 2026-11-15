@@ -59,17 +59,28 @@ const fn clamp(channel: i32) -> u8 {
 }
 
 /// Map a painted row to the light look. Rows are long runs of one colour, so
-/// the last answer is reused while the pixel repeats.
+/// the last answer is reused while the pixel repeats; a row that keeps
+/// changing between a few colours, as a map's roads and their edges do,
+/// finds each in a small cache.
 pub fn apply(pixels: &mut [u16]) {
-    let (mut from, mut to) = (BLACK, light(BLACK));
+    let mut known = [(BLACK, LIGHT_BLACK); KNOWN];
+    let (mut from, mut to) = known[0];
     for pixel in pixels {
         if *pixel != from {
             from = *pixel;
-            to = light(from);
+            let slot = &mut known[usize::from(from ^ from >> 5 ^ from >> 11) % KNOWN];
+            if slot.0 != from {
+                *slot = (from, light(from));
+            }
+            to = slot.1;
         }
         *pixel = to;
     }
 }
+
+/// Colours a row's mapping remembers.
+const KNOWN: usize = 32;
+const LIGHT_BLACK: u16 = light(BLACK);
 
 #[cfg(test)]
 mod tests {

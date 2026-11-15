@@ -283,6 +283,12 @@ TASKS = [
         f'{DEV}sim.compare',
     ),
     task(
+        'mockup-compare',
+        'Check sim checkpoints named after the course navigation mockups (.local/sim/latest/*/NN-<screen>.png) '
+        'against docs/design/course-navigation; sheets in .local/mockup ([SCREEN ...] [--checkpoint PNG|SVG])',
+        f'{DEV}sim.mockup',
+    ),
+    task(
         'readme-screenshots',
         'Render the README device screenshots in docs/screenshots from simulator checkpoints',
         f'{DEV}sim.readme',

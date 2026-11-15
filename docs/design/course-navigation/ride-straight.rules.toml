@@ -1,0 +1,39 @@
+# The status bar. The clock shows the scenario's time; the page dots match
+# the code (five pages on a free ride after #388), not the six drawn here.
+[[mask]]
+region = [189, 0, 240, 22]
+why = "the status clock, whose width changes with the time"
+
+[[mask]]
+region = [55, 4, 124, 18]
+why = "page dots: the code's count and current page"
+
+# REC and GPS are drawn 800 at 12 px; the screen draws them in CAPTION (800/13).
+[[text]]
+match = 'font-size="12"'
+why = "REC and GPS in CAPTION"
+
+# Readings change with the ride: their digits and width are free, their rows
+# and anchored edge are not.
+[[text]]
+match = 'font-weight="700"'
+why = "speed, power, heart rate, cadence and elapsed readings"
+
+[[text]]
+match = 'font-weight="800" font-size="18"'
+why = "the distance and grade on BODY"
+
+# Units are 800 at 13 px with no letter-spacing; CAPTION tracks them by 1 px.
+[[text]]
+match = 'font-weight="800" font-size="13"'
+why = "units in CAPTION"
+
+# Zones are 900 at 17 px; the screen draws them in BODY (800/18).
+[[text]]
+match = 'font-size="17" text-anchor="end">Z'
+why = "zone labels in BODY"
+
+# The chip's unit is 900 at 13 px; the screen draws it in CAPTION (800/13).
+[[text]]
+match = 'fill="#aeaeb2"'
+why = "the chip's KM in CAPTION"

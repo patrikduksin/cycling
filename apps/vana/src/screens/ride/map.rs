@@ -10,14 +10,10 @@ use crate::screens::chrome::{
     blend, paint_disc_over, rgb,
 };
 use crate::screens::icons::PUCK;
-use crate::screens::sign::BADGE_RADIUS;
 use crate::screens::workout::{Text, View};
 use firmware_shell::rendering::font::FOOT_20;
-pub use pose::GROUND;
-use pose::{
-    ARROW_OUTLINE_PX, ARROW_SHAFT_HALF_PX, ARROW_STROKES, Aim, Keepout, Pose, Projection, Target,
-    arrow_shape, choose_pose,
-};
+use pose::{ARROW_OUTLINE_PX, ARROW_SHAFT_HALF_PX, ARROW_STROKES, Pose, Projection, arrow_shape};
+pub use pose::{GROUND, Reach, Zoom};
 use raster::{Cover, Stroke, Triangle};
 
 type Point = (f32, f32);
@@ -41,8 +37,7 @@ pub struct Track<'a> {
     pub guidance: Option<Guidance>,
     /// Metres left to the course's end, while following it.
     pub left_m: Option<u32>,
-    /// The badge's box, which the route, the turn and the rider keep clear of.
-    pub badge: Option<Rect>,
+    pub reach: Reach,
     /// A radar's strip takes the screen's left edge.
     pub radar: bool,
 }
@@ -63,7 +58,7 @@ pub struct Key {
     turn: Option<u32>,
     junction: Option<u32>,
     left_m: Option<u32>,
-    badge: Option<Rect>,
+    reach: Reach,
     radar: bool,
 }
 
@@ -85,7 +80,7 @@ impl Track<'_> {
             turn: self.turn_on_course().map(|(spot, _)| spot.along_mm),
             junction: self.junction().map(|j| j.along_mm),
             left_m: self.left_m,
-            badge: self.badge,
+            reach: self.reach,
             radar: self.radar,
         }
     }
@@ -145,19 +140,6 @@ impl Track<'_> {
                 .take_while(move |c| near - c.along <= LOOKAHEAD_M)
                 .map(move |c| ((c.east, c.north), turn.is_none_or(|t| c.along > t))),
         )
-    }
-
-    fn target(&self) -> Target {
-        if let Some(junction) = self.junction() {
-            return Target::Junction(junction.at);
-        }
-        if let Some((spot, glyph)) = self.turn_on_course() {
-            return Target::Turn(spot.at, glyph);
-        }
-        match self.course.first() {
-            Some(end) if self.following() => Target::Finish((end.east, end.north)),
-            _ => Target::Free,
-        }
     }
 
     fn behind_points(&self, (end, at): (usize, Point)) -> impl Iterator<Item = Point> + '_ {
@@ -342,7 +324,6 @@ struct Arrow {
 pub struct Frame {
     show: Show,
     last_pose: Pose,
-    has_pose: bool,
     strokes: [Stroke; STROKES],
     counts: [usize; 2],
     band_offsets: [[u16; BAND_COUNT + 1]; 2],
@@ -361,7 +342,6 @@ impl Default for Frame {
         Self {
             show: Show::Unavailable,
             last_pose: Pose::default(),
-            has_pose: false,
             strokes: [Stroke::default(); STROKES],
             counts: [0; 2],
             band_offsets: [[0; BAND_COUNT + 1]; 2],
@@ -441,38 +421,16 @@ fn fill(frame: &mut Frame, track: &Track) {
         .rider_or_last_crumb()
         .filter(|_| frame.show == Show::Map)
     else {
-        frame.has_pose = false;
         frame.band_offsets = [[0; BAND_COUNT + 1]; 2];
         return;
     };
-    let split = track.split();
-    let aim = Aim {
-        here: centre,
-        heading: track.heading.unwrap_or(frame.last_pose.heading),
-        target: track.target(),
-        left: map_left(track.radar) as f32,
-        badge: track.badge.map(|rect| Keepout {
-            left: rect.left as f32,
-            top: rect.top as f32,
-            right: rect.right as f32,
-            bottom: rect.bottom as f32,
-            radius: BADGE_RADIUS as f32,
-        }),
-    };
-    let route = |visit: &mut dyn FnMut(Point, bool)| {
-        if let Some(split) = split {
-            track
-                .ahead_points(split)
-                .for_each(|(p, before)| visit(p, before));
-        }
-    };
-    let pose = choose_pose(frame.has_pose.then_some(frame.last_pose), &aim, route);
+    let heading = track.heading.unwrap_or(frame.last_pose.heading);
+    let pose = Pose::new(track.reach, map_left(track.radar), heading);
     draw(frame, track, centre, pose);
 }
 
 fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
     frame.last_pose = pose;
-    frame.has_pose = true;
     let split = track.split();
     let at = pose.projection(centre);
     match split {
@@ -496,13 +454,15 @@ fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
     let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
     if let Some(junction) = track.junction() {
         let junction = at.at(junction.at);
+        let reach = JUNCTION_RINGS_QUARTER_PX[0].0 as f32 / 4.0 + 1.0;
+        frame.junction_quarter_px = visible(junction, junction, reach).then(|| quarter(junction));
+        let ring = frame.junction_quarter_px.is_some();
         chevrons(
             frame,
             rider,
             clipped(rider, junction, map_left(track.radar)),
+            ring,
         );
-        let reach = JUNCTION_RINGS_QUARTER_PX[0].0 as f32 / 4.0 + 1.0;
-        frame.junction_quarter_px = visible(junction, junction, reach).then(|| quarter(junction));
     }
     let tint = match (track.here, track.junction()) {
         (None, _) => SECONDARY,
@@ -545,31 +505,36 @@ fn clipped(from: Point, to: Point, left: usize) -> Point {
     (from.0 + t * (to.0 - from.0), from.1 + t * (to.1 - from.1))
 }
 
-fn chevrons(frame: &mut Frame, rider: Point, junction: Point) {
+fn chevrons(frame: &mut Frame, rider: Point, junction: Point, ring: bool) {
     frame.chevron_count = 0;
-    for (wing, tip) in chevron_wings(rider, junction) {
+    for (wing, tip) in chevron_wings(rider, junction, ring) {
         frame.chevrons[frame.chevron_count] = Stroke::new(wing, tip);
         frame.chevron_count += 1;
     }
 }
 
-fn chevron_wings(rider: Point, junction: Point) -> heapless::Vec<(Point, Point), { CHEVRONS * 2 }> {
+/// Chevrons from the rider towards `towards`, centred on the way there but
+/// pushed out from under the puck, and short of the junction's ring.
+fn chevron_wings(
+    rider: Point,
+    towards: Point,
+    ring: bool,
+) -> heapless::Vec<(Point, Point), { CHEVRONS * 2 }> {
     let mut wings = heapless::Vec::new();
-    let (dx, dy) = (junction.0 - rider.0, junction.1 - rider.1);
+    let (dx, dy) = (towards.0 - rider.0, towards.1 - rider.1);
     let length = libm::sqrtf(dx * dx + dy * dy);
     if length < 1.0 {
         return wings;
     }
     let (ux, uy) = (dx / length, dy / length);
-    let middle = ((rider.0 + junction.0) / 2.0, (rider.1 + junction.1) / 2.0);
-    let half = length / 2.0;
+    let nearest = (length / 2.0 - CHEVRON_PITCH).max(PUCK_CLEAR + CHEVRON_STROKE + CHEVRON_DEPTH);
+    let furthest = length - CHEVRON_STROKE - if ring { JUNCTION_CLEAR } else { 0.0 };
     for k in 0..CHEVRONS {
-        let offset = (k as f32 - 1.0) * CHEVRON_PITCH;
-        let (tail, tip) = (half + offset - CHEVRON_DEPTH, half + offset);
-        if tail - CHEVRON_STROKE < PUCK_CLEAR || length - tip - CHEVRON_STROKE < JUNCTION_CLEAR {
-            continue;
+        let along = nearest + k as f32 * CHEVRON_PITCH;
+        if along > furthest {
+            break;
         }
-        let tip = (middle.0 + ux * offset, middle.1 + uy * offset);
+        let tip = (rider.0 + ux * along, rider.1 + uy * along);
         for side in [-1.0, 1.0] {
             let wing = (
                 tip.0 - ux * CHEVRON_DEPTH - uy * CHEVRON_HALF * side,
@@ -788,7 +753,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
         let below = usize::try_from(frame.last_pose.rider.1).unwrap_or(MID_Y) - 36;
         canvas.caption(b"DRAWS AS YOU RIDE", width, cx, below, Align::Center);
     }
-    let (bar, label) = frame.last_pose.step.bar();
+    let (bar, label) = frame.last_pose.reach.bar();
     canvas.shape(Shape::Bar {
         rect: Rect {
             left: BAR_LEFT,

@@ -4,7 +4,7 @@
 
 **Nav band.** Rows 22 to 104 belong to navigation. Readings below never move or resize. At rest it shows elapsed time, grade and a chip: white arrow on a blue square, then the next turn's distance. The banner covers only elapsed time and grade.
 
-**Banner timing.** It appears when the turn is 30 s away, clamped to 150 to 400 m. It leaves 40 m past the turn, unless the next turn is inside its window.
+**Banner timing.** It appears when the turn is 300 m away, at any speed. It leaves 40 m past the turn, unless the next turn is inside its window.
 
 **Dense turns.** Turns under 300 m or 25 s apart are dense; the sign stays up through the cluster. It always shows one turn, the next one, and switches as the rider passes each.
 
@@ -16,7 +16,7 @@
 
 **Map badge.** 60 rows tall, top-left, 8 px from status bar and edge, as wide as its content.
 
-**Map.** Heading-up, rider low. Zoom steps, never glides: 300 m, 400 m, 1 km or 3 km across. It takes the widest step showing the next turn; within 100 m, 300 m. It pans sideways so route, turns and rider clear the badge and the route ahead keeps a margin to the screen edge. Off course, amber chevrons lead to the missed junction.
+**Map.** Heading-up. The rider stays at one spot, centred and three quarters of the way down, so the route runs up the middle. The scale follows the speed, never the route: about 40 s of riding from the rider to the top edge, 150 m to 1 km, eased over several seconds and held when stopped. The badge may cover the route, never the rider. Off course, amber chevrons lead to the missed junction, at the same scale. (Patrik, after the 2026-11-15 ride; this replaces the zoom steps and the panning around the badge.)
 
 **Sounds.**
 

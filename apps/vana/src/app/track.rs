@@ -11,8 +11,7 @@ use crate::ride::log::{Slot, Status, decode};
 use crate::ride::turn_back::Leg;
 use crate::screens::chrome::{Toast, Tone};
 pub use crate::screens::ride::MapFrame;
-use crate::screens::ride::{FilledMap, MapCache, RidePage, Track};
-use crate::screens::sign;
+use crate::screens::ride::{FilledMap, MapCache, MapZoom, Track};
 use device_api::bulk::ReadWrite;
 
 pub use crate::ride::homing::Crumb;
@@ -66,6 +65,7 @@ pub struct RideTrack {
     follower: Follower<'static>,
     outing: Option<Outing>,
     map: MapCache<'static>,
+    zoom: MapZoom,
     /// The loaded course and whether it matches the stored one.
     pub(super) course: &'static mut Course,
     /// Finds the turns of a course while it uploads.
@@ -90,6 +90,7 @@ impl RideTrack {
             follower: Follower::new(line, turns),
             outing: None,
             map: MapCache::new(map),
+            zoom: MapZoom::default(),
             course,
             finder,
             kept: super::course::Kept::default(),
@@ -201,6 +202,7 @@ impl Runtime {
         if riding && outing != state.outing {
             state.homing.reset();
             state.follower.reset();
+            state.zoom = MapZoom::default();
             state.resume = match state.resume {
                 Resume::Waiting { medium, ride_id } if medium == self.ride.shown() => {
                     let upper = self.ride.recorder(medium).next_slot();
@@ -258,9 +260,12 @@ impl Runtime {
             state.resume = Resume::None;
         }
         let fix = state.homing.observe(self.readings.reported, now);
-        let event = state
-            .follower
-            .observe(fix, now, self.readings.live.speed_mm_s);
+        let speed = self.readings.live.speed_mm_s;
+        if let Some(fix) = fix {
+            let riding = fix.moved && self.ride.active().status() != Status::Paused;
+            state.zoom.observe(speed.filter(|_| riding));
+        }
+        let event = state.follower.observe(fix, now, speed);
         state.place_course(bulk);
         if state.homing.take_pass() {
             self.ride.passed_start(now);
@@ -298,8 +303,6 @@ pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>, now: u64, 
     let Some(state) = track.as_deref_mut() else {
         return;
     };
-    let sign = state.follower.sign(now);
-    let badge = sign::on_page(RidePage::Map, sign, radar).map(|placed| placed.rect());
     let drawn = Track {
         available: true,
         crumbs: state.homing.crumbs(),
@@ -309,7 +312,7 @@ pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>, now: u64, 
         ahead: state.follower.ahead(),
         guidance: state.follower.guidance(now),
         left_m: state.follower.to_end_m(),
-        badge,
+        reach: state.zoom.reach(),
         radar,
     };
     state.map.update(&drawn);

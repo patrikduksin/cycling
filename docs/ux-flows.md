@@ -167,42 +167,36 @@ The last ride page is the map. It fills the screen between the status bar
 and a black footer, heading up: the way the rider is heading is always up,
 and when the rider stands still the last heading holds.
 
-Following a course, the rider's puck sits low on the screen. The course ahead
-is a wide blue route on a dark casing, the ridden part a thinner, dimmer
-blue, and a white arrow on the route marks the next turn's corner. The badge
-in the top-left corner shows the next turn and how far it is, at rest too;
-with a radar paired it sits 8 px right of the radar strip. The zoom steps
-between 300 m, 400 m, 1 km and 3 km across, never gliding, and is 300 m
-within 100 m of the turn. The map keeps the rider, the next turn and its arrow (on
-the last leg, the finish) and the route up to it clear of the badge, and only
-these choose the zoom: the closest step at which some rider column keeps them
-clear. The rider first moves sideways away from the side the turn's sign
-points to, then the map zooms out, and only then does the rider move towards
-that side. The side comes from the turn's sign, not the route past it; a turn
-more beside the rider than ahead, as just after the last one, the finish and
-a junction take the side the route up to them goes to. Within that step the rider's column also keeps the route past the turn
-clear when one can, as near as its blue line, as in the map-approach mockup;
-when none can, the route past the turn runs under the badge, and it never
-changes the zoom. When the turn is too far even for 3 km across, the rider
-and the route in view stay clear. Among equal choices on one side of the
-route the rider's column stays put, and the route keeps clear of the screen's
-edges; a rider moved towards the route's side moves back once a column away
-from it keeps as much clear. The map steps out at once and back in only once
-the turn fits with room to spare.
-Off course, the badge turns amber, the puck's arrow turns amber, and up to
-three amber chevrons lead back in a straight line to a ringed junction, where
-the course left off; the route goes on from there. When the junction is too
-far behind for the rider and its ring to fit 3 km across, the rider sits at
-the top of the map right of the badge, radar paired or not, and the chevrons still point down the straight line to
-the junction, midway to where that line leaves the map; the ring sinks off the
-bottom edge. Arrived, the badge is green.
+The rider's puck sits in one place on every fix: centred across the map and
+three quarters of the way down it, so most of the map is the road ahead and,
+while following, the blue route runs up through the middle. The course
+ahead is a wide blue route on a dark casing, the ridden part a thinner,
+dimmer blue, and a white arrow on the route marks the next turn's corner.
+The badge in the top-left corner shows the next turn and how far it is, at
+rest too; with a radar paired it sits 8 px right of the radar strip. It may
+cover the route, never the puck.
 
-Without a course to follow, the map is 1 km across with the rider in the
-middle and the ride's own track behind in the ridden blue. A loaded course
+The map never pans or zooms to fit a turn or the route: its scale follows
+the speed. From the puck to the top edge it shows about 40 s of riding,
+never less than 150 m nor more than 1 km, so at 25 km/h it shows about
+280 m and a turn comes into view about when its warning sounds. A ride
+starts at 300 m. A change of speed eases the scale in over several seconds,
+never back and forth; stopped, slower than about 5 km/h, or paused, it holds.
+
+Off course, the badge turns amber, the puck's arrow turns amber, and up to
+three amber chevrons lead back in a straight line towards the junction where
+the course left off, at the same scale and with the puck in the same place.
+When the junction is off the map the chevrons point to where that line
+leaves it, clear of the puck, the badge and a radar strip whichever way it
+lies; the ringed junction shows once it is on the map, and the route goes on
+from there. Arrived, the badge is green.
+
+Without a course to follow, the map draws the ride's own track behind the
+rider in the ridden blue. A loaded course
 not being followed is drawn in the route's blue, both ways from its point
 nearest the rider.
 
-The footer holds the scale bar (100 M, 250 M or 1 KM) and, while following,
+The footer holds the scale bar (50 M, 100 M or 250 M) and, while following,
 the distance left on the course; otherwise the ride's distance. Without a fix
 the page says NO GPS YET and MAP STARTS WITH GPS; once a fix is lost the map
 stays where it was and the puck's arrow turns grey. A device with no memory
@@ -237,10 +231,10 @@ course is not followed again for the rest of the ride; the next ride follows
 it again.
 
 While following, each turn on the course sounds twice: two rising beeps when
-it comes 30 s ahead at the ride's speed (never nearer than 150 m nor farther
-than 400 m), and one beep 30 m before it. Turns under 300 m or 25 s apart
-are one run: the rising beeps sound for the first only, and each turn of the
-run beeps 30 m before it. A turn first met nearer than 30 s ahead sounds its
+it comes 300 m ahead, at any speed, and one beep 30 m before it. Turns whose
+next one is within 300 m when the first's 40 m past it ends, or under 25 s
+apart, are one run: the rising beeps sound for the first only, and each turn
+of the run beeps 30 m before it. A turn first met nearer than 300 m sounds its
 rising beeps at once, and one the rider is already in sounds nothing. At most
 one navigation sound plays per fix: another due on the same fix waits for the
 next, and is dropped if it no longer holds, so a turn beeping 30 m ahead

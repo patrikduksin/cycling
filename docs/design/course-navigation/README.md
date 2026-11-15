@@ -39,6 +39,16 @@ The typeface is Nunito at weights 800 and 900, as everywhere else in VANA.
 
 ## Checking a screen against its mockup
 
+The three map mockups were drawn with the rider low and to the left, at the
+stepped zoom. After the 2026-11-15 ride Patrik fixed the rider at x 120,
+row 223, so their map layer (everything between the ground and the footer)
+was moved to put the puck there: map-approach by (+40, -43), map-close by
+(+56, -43) and map-offcourse by (+40, +65). Off course the junction now lies
+below the map, so its three chevrons were redrawn as the map draws them, from
+the puck down towards the bottom edge, and the route past the junction was
+extended up to the status bar. The scales are as drawn; the scenario rides at
+the speeds that give them.
+
 `cycling mockup-compare` compares each mockup with the simulator checkpoint a
 scenario names after it (`.local/sim/latest/<scenario>/NN-ride-turns.png`, run
 `cycling sim` first). Each element's interior must be its token exactly in

@@ -147,7 +147,7 @@ pub(crate) fn hairpin(radius: f32, spacing: f32) -> Vec<(f32, f32)> {
 }
 
 #[test]
-fn a_corner_is_warned_of_150_m_before_and_again_at_it() {
+fn a_corner_is_warned_of_300_m_before_and_again_at_it() {
     for spacing in [3.0, 5.0, 8.0, 50.0] {
         let said = ride(&corners(spacing, &[(400.0, true)]), 7.0);
         assert_eq!(
@@ -155,7 +155,7 @@ fn a_corner_is_warned_of_150_m_before_and_again_at_it() {
             [ahead(RIGHT), now(RIGHT)],
             "{spacing} m: {said:?}"
         );
-        assert!((235..=255).contains(&said[0].0), "{said:?}");
+        assert!((85..=105).contains(&said[0].0), "{said:?}");
         assert!((355..=380).contains(&said[1].0), "{said:?}");
         let left = ride(&corners(spacing, &[(400.0, false)]), 7.0);
         assert_eq!(kinds(&left), [ahead(LEFT), now(LEFT)], "{spacing} m");

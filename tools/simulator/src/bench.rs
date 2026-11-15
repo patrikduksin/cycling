@@ -433,7 +433,7 @@ pub(crate) mod scenes {
     pub(crate) fn map_page() -> Sim {
         let mut sim = riding(90);
         sim.ride_page("5/5");
-        sim.expect_text("250 M");
+        sim.expect_text("100 M");
         sim
     }
 

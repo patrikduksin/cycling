@@ -35,7 +35,7 @@ match = 'font-weight="800" font-size="13"'
 why = "KM and the scale label in CAPTION"
 
 [[mask]]
-match = 'x="62.0" y="266.0"'
+match = 'x="102.0" y="331.0"'
 why = "the road ref box: pack v2 stores no ref text, so it is not drawn"
 
 [[mask]]

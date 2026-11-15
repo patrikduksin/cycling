@@ -3,7 +3,7 @@
 //!
 //! `Navigator` sees one `Observed` per fix and the course's turns, in
 //! millimetres along from its start, and keeps the latches the sign needs.
-//! The banner opens `window_mm` before the next turn, and stays open once
+//! The banner opens `WINDOW_MM` before the next turn, and stays open once
 //! open. After a turn it shows the next one at once, and stays up for
 //! `GRACE_MM` past the turn, or longer while the turns are `dense`. Its
 //! sound plays only when it opens, and the beep `BEEP_MM` before each
@@ -23,11 +23,8 @@ pub const ON_M: f32 = 25.0;
 const CONFIRM_MS: u64 = 5_000;
 pub const LOST_MS: u64 = 5_000;
 const REMIND_MS: u64 = 15_000;
-const WINDOW_S: u32 = 30;
-const WINDOW_MIN_MM: u32 = 150_000;
-const WINDOW_MAX_MM: u32 = 400_000;
+const WINDOW_MM: u32 = 300_000;
 const GRACE_MM: u32 = 40_000;
-const DENSE_MM: u32 = 300_000;
 const DENSE_S: u32 = 25;
 const BEEP_MM: u32 = 30_000;
 const REWIND_MM: u32 = 30_000;
@@ -425,8 +422,7 @@ impl Navigator {
         let next = self.next(turns);
         let speed = fix.speed_mm_s;
         let ahead = |next: &Next| next.turn.start_mm.checked_sub(here);
-        let opens =
-            |next: &Next| next.unblocked && ahead(next).is_some_and(|mm| mm <= window_mm(speed));
+        let opens = |next: &Next| next.unblocked && ahead(next).is_some_and(|mm| mm <= WINDOW_MM);
         let was_open = self.banner.is_some();
         self.banner = match (self.banner, next) {
             (Some(k), Some(next)) if k == next.index => Some(k),
@@ -579,15 +575,9 @@ fn corner(turn: &Turn) -> u32 {
     turn.start_mm / 2 + turn.end_mm / 2
 }
 
-fn window_mm(speed_mm_s: Option<u32>) -> u32 {
-    speed_mm_s
-        .map_or(WINDOW_MIN_MM, |v| v.saturating_mul(WINDOW_S))
-        .clamp(WINDOW_MIN_MM, WINDOW_MAX_MM)
-}
-
 fn dense(turn: &Turn, next: &Turn, speed_mm_s: Option<u32>) -> bool {
     let gap = next.start_mm.saturating_sub(turn.end_mm);
-    gap < DENSE_MM || speed_mm_s.is_some_and(|v| gap < v.saturating_mul(DENSE_S))
+    speed_mm_s.is_some_and(|v| gap < v.saturating_mul(DENSE_S))
 }
 
 #[cfg(test)]

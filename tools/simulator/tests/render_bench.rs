@@ -4,7 +4,7 @@
 //! screens updates its hash here and shows the new screen in its sim-compare.
 use shell_simulator::bench::{SCENES, hash, measure};
 
-const HASHES: [(&str, u64); 33] = [
+const HASHES: [(&str, u64); 37] = [
     ("home", 0x5dea_9846_5bc7_40a5),
     ("ride main + radar", 0x3437_7b1e_d009_bc6d),
     ("climb", 0x32a9_3676_5104_5d86),
@@ -17,6 +17,10 @@ const HASHES: [(&str, u64); 33] = [
     ("map", 0x461a_f018_c884_7685),
     ("map course", 0x8228_70e0_04bb_66cd),
     ("map off course", 0x4c59_39f1_3224_6a84),
+    ("map santiago 300 m", 0xb486_7a5c_c58f_7d9a),
+    ("map santiago 400 m", 0x8798_78db_a628_c896),
+    ("map santiago 1 km", 0x57d6_1a4b_9098_3c75),
+    ("map santiago 3 km", 0x5cdc_ca49_69a0_bbe9),
     ("paused", 0x1abb_4ec0_be41_8109),
     ("end ride", 0x45ab_e5fa_c73d_1778),
     ("ready", 0x3dc6_4149_a715_c58c),

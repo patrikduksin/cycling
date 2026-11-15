@@ -163,24 +163,22 @@ enum Target {
     Junction(Point),
 }
 
-/// The columns the rider may take: `start`, then along the grid to one
-/// side, or with `both` the other side too.
-fn columns(start: i16, left: bool, both: bool) -> heapless::Vec<i16, 16> {
+/// The columns the rider may take: `start`, those left of it nearest
+/// first, then those right of it; and how many are left of it.
+fn columns(start: i16) -> (heapless::Vec<i16, 16>, usize) {
     let (low, high) = (EDGE as i16, WIDTH as i16 - EDGE as i16);
     let down = (1..).map(|k| start - k * GRID).take_while(|&x| x >= low);
     let up = (1..).map(|k| start + k * GRID).take_while(|&x| x <= high);
     let mut all = heapless::Vec::new();
     let _ = all.push(start);
-    match (left, both) {
-        (true, false) => all.extend(down),
-        (false, false) => all.extend(up),
-        _ => all.extend(down.chain(up)),
-    }
-    all
+    all.extend(down);
+    let left = all.len() - 1;
+    all.extend(up);
+    (all, left)
 }
 
 /// A step tried for the pose: the rider's row, and per column of
-/// `columns(start, true, true)` whether the badge stays clear (`clear`) and the
+/// `columns(start)` whether the badge stays clear (`clear`) and the
 /// route in view also keeps its margin (`roomy`).
 struct Trial {
     y: i16,
@@ -217,26 +215,21 @@ pub fn choose_pose(
         Target::Junction(_) => &Step::ALL[1..],
         Target::Turn(_) => &Step::ALL,
     };
-    let canonical = columns(start, true, true);
+    let (columns, left) = columns(start);
     for &step in steps {
         let spare = !close && prev.is_some_and(|prev| prev.step > step);
-        let Some(trial) = try_step(step, target, &canonical, spare, &rel, &route, keepout) else {
+        let Some(trial) = try_step(step, target, &columns, spare, &rel, &route, keepout) else {
             continue;
         };
         let kept = prev
             .filter(|prev| prev.step == step)
-            .map(|prev| prev.rider.0)
-            .filter(|x| canonical.contains(x));
-        let preferred = columns(start, trial.left_first, false);
-        let ordered = kept
-            .into_iter()
-            .chain(preferred.into_iter().filter(|&x| Some(x) != kept));
+            .and_then(|prev| columns.iter().position(|&x| x == prev.rider.0));
+        let away = (0..columns.len()).filter(|&k| k == 0 || (k <= left) == trial.left_first);
         let mut clear = None;
-        for x in ordered {
-            let k = canonical.iter().position(|&c| c == x).unwrap_or(0);
+        for k in kept.into_iter().chain(away.filter(|&k| Some(k) != kept)) {
             let pose = Pose {
                 step,
-                rider: (x, trial.y),
+                rider: (columns[k], trial.y),
                 heading: aim.heading,
             };
             if trial.roomy >> k & 1 == 1 {

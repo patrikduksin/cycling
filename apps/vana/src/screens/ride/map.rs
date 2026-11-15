@@ -518,7 +518,6 @@ fn arrow<I: Iterator<Item = (Point, bool)>>(
     turn: Point,
 ) {
     let screen = || points().map(|(p, before)| (at.at(p), before));
-    // How far along the route the turn is.
     let (mut walked, mut last, mut base) = (0.0, None, None);
     for (p, before) in screen() {
         if let Some(last) = last {
@@ -558,7 +557,6 @@ fn arrow<I: Iterator<Item = (Point, bool)>>(
         }
         walked += length;
     }
-    // The head points the way the shaft's last stretch goes.
     let Some(&tip) = shaft.last() else {
         return;
     };
@@ -720,10 +718,7 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
 /// The puck icon's square, centred on the puck.
 fn puck_corner((cx, cy): (i32, i32)) -> (usize, usize) {
     let half = i32::from(PUCK.size) * 2;
-    (
-        ((cx - half) / 4).max(0) as usize,
-        ((cy - half) / 4).max(0) as usize,
-    )
+    (((cx - half) / 4) as usize, ((cy - half) / 4) as usize)
 }
 
 /// The per-pixel original of `paint`: every stroke, no buckets.

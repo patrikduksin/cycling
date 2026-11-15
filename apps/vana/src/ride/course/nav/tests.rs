@@ -402,8 +402,11 @@ fn the_way_back_leads_to_the_missed_turn_and_never_moves() {
         rider.step(Observed::Fix(fixed));
     }
     let guidance = rider.nav.guidance(&turns, rider.now_ms, locate).unwrap();
-    // The corner, midway through the turn's 10 m.
-    assert_eq!(guidance.junction.map(|spot| spot.at), Some((0.0, 1005.0)));
+    assert_eq!(
+        guidance.junction.map(|spot| spot.at),
+        Some((0.0, 1005.0)),
+        "the corner, midway through the turn's 10 m"
+    );
     let back = libm::sqrtf(90.0 * 90.0 + 31.0 * 31.0);
     assert_eq!(
         guidance.sign,

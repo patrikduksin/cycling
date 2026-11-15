@@ -248,7 +248,7 @@ impl Cover {
     /// Paint `color` where the row is covered: solid runs as spans, edges
     /// blended over what the row holds. Then start over for the next colour.
     pub fn paint(&mut self, row: &mut Row, color: u16) {
-        let (first, end) = (self.first.max(0) as usize, self.end.max(0) as usize);
+        let (first, end) = (self.first as usize, self.end as usize);
         let cells = &self.cells;
         let mut x = first;
         while x < end {

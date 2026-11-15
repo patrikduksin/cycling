@@ -5,7 +5,7 @@ It accepts independent display, input, power and owned-storage implementations,
 so its source can run on C606 and in host simulation.
 
 Start with `src/shell.rs` for `Shell` and input routing. `idle.rs` owns inactivity
-and wake behavior, `rendering/` owns shared drawing, `preferences.rs` owns the
+and wake behavior, `backlight.rs` owns following the ambient light, `rendering/` owns shared drawing, `preferences.rs` owns the
 persisted settings format, and `storage.rs` connects settings to the journal
 mechanism. `harness.rs` provides the shell's diagnostic state and controls.
 

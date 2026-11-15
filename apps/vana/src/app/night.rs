@@ -1,41 +1,27 @@
-//! Night: after dark the backlight steps down to `NIGHT_PERCENT`, so the
-//! screen does not glare, and steps back up in the morning.
+//! Night: whether it is dark, for the Theme's AUTO and the Settings notes.
+//! The backlight does not follow it; the ambient light sensor does.
 //!
 //! In automatic mode the sun decides: its altitude at the last fixed position
 //! and the recorded UTC (network time, else the receiver's clock).
 //! Without a position it falls back to the local clock, and without any clock
-//! it keeps what it had. The change ramps over about two seconds through the
-//! shell's backlight ceiling, which is never stored, so the rider's chosen
-//! brightness stays as it was.
+//! it keeps what it had.
 use super::Runtime;
 use super::preferences::Daylight;
 use crate::clock::Local;
 use crate::daylight::{Sun, night_at, night_by_clock, sun_altitude, sun_state};
-use device_api::display::Display;
 use device_api::gps::FixState;
-use device_api::input::InputSource;
 use device_api::positioning::Positioning;
-use device_api::power::Power;
-use device_api::storage::OwnedFlash;
-use firmware_shell::shell::Shell;
 
-/// The most backlight at night.
-pub const NIGHT_PERCENT: u8 = 20;
-/// The ceiling moves this much per step, every `STEP_MS`.
-const STEP_PERCENT: u8 = 4;
-const STEP_MS: u64 = 100;
 /// How often automatic mode looks at the sun again.
 const CHECK_MS: u64 = 10_000;
 /// How often the sunset is worked out again (about sixty sun altitudes).
 const SUN_MS: u64 = 60_000;
 
+#[derive(Default)]
 pub(super) struct Night {
     night: bool,
-    /// The backlight ceiling being ramped, in percent.
-    ceiling: u8,
     mode: Option<Daylight>,
     next_check_ms: u64,
-    next_step_ms: u64,
     /// The last fixed position, in degrees.
     place: Option<(f64, f64)>,
     /// The time of day of the last fresh fix, carried on by uptime: the
@@ -57,22 +43,6 @@ struct Clock {
 impl Clock {
     fn at(self, now: u64) -> i64 {
         self.seconds + (now.saturating_sub(self.at_ms) / 1000) as i64
-    }
-}
-
-impl Default for Night {
-    fn default() -> Self {
-        Self {
-            night: false,
-            ceiling: 100,
-            mode: None,
-            next_check_ms: 0,
-            next_step_ms: 0,
-            place: None,
-            clock: None,
-            sun: None,
-            next_sun_ms: 0,
-        }
     }
 }
 
@@ -137,31 +107,6 @@ impl Night {
             },
         };
     }
-
-    /// Step the ceiling towards day or night under the rider's
-    /// `brightness`; returns the ceiling to apply, 100 once fully day.
-    pub(super) fn step(&mut self, brightness: u8, now: u64) -> Option<u8> {
-        if now < self.next_step_ms {
-            return None;
-        }
-        self.next_step_ms = now.saturating_add(STEP_MS);
-        // Ramp from what shows: a ceiling above the brightness changes
-        // nothing, so start from the brightness itself.
-        let top = brightness.max(NIGHT_PERCENT);
-        let target = if self.night { NIGHT_PERCENT } else { top };
-        let from = self.ceiling.min(top);
-        self.ceiling = if from > target {
-            from.saturating_sub(STEP_PERCENT).max(target)
-        } else {
-            from.saturating_add(STEP_PERCENT).min(target)
-        };
-        Some(if !self.night && self.ceiling >= top {
-            self.ceiling = 100;
-            100
-        } else {
-            self.ceiling
-        })
-    }
 }
 
 impl Runtime {
@@ -173,13 +118,8 @@ impl Runtime {
             .is_light(self.night.is_night())
     }
 
-    /// Follow day and night with the backlight. Call once per loop.
-    pub(super) fn follow_daylight<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
-        &mut self,
-        system: &mut Shell<D, I, P, B>,
-        now: u64,
-        position: &impl Positioning,
-    ) {
+    /// Decide day or night. Call once per loop.
+    pub(super) fn follow_daylight(&mut self, now: u64, position: &impl Positioning) {
         let gps = position.snapshot(now).map(|snapshot| snapshot.gps);
         let fresh = gps.filter(|gps| gps.state == FixState::Fresh);
         let place = fresh.and_then(|gps| {
@@ -222,9 +162,6 @@ impl Runtime {
         if was != self.night.is_night() {
             self.display.redraw();
         }
-        if let Some(ceiling) = self.night.step(system.settings.brightness, now) {
-            system.set_ceiling(ceiling);
-        }
     }
 }
 
@@ -232,28 +169,6 @@ impl Runtime {
 mod tests {
     use super::*;
     use firmware_services::gps::unix_seconds;
-
-    #[test]
-    fn night_ramps_the_ceiling_down_from_what_shows_and_back_up() {
-        let mut night = Night::default();
-        night.decide(Daylight::Night, Sky::default(), 0);
-        let steps: std::vec::Vec<u8> = (0..12)
-            .filter_map(|i| night.step(50, i * STEP_MS))
-            .collect();
-        assert_eq!(steps[0], 46, "starts from the brightness, not 100");
-        assert!(
-            steps
-                .windows(2)
-                .all(|w| w[1] <= w[0] && w[0] - w[1] <= STEP_PERCENT)
-        );
-        assert_eq!(*steps.last().unwrap(), NIGHT_PERCENT);
-        night.decide(Daylight::Day, Sky::default(), 2_000);
-        let back: std::vec::Vec<u8> = (20..40)
-            .filter_map(|i| night.step(50, i * STEP_MS))
-            .collect();
-        assert_eq!(back[0], 24);
-        assert_eq!(*back.last().unwrap(), 100, "day lifts the ceiling");
-    }
 
     #[test]
     fn automatic_mode_follows_the_sun_then_the_clock() {

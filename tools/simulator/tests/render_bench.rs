@@ -35,7 +35,7 @@ const HASHES: [(&str, u64); 32] = [
     ("form no power", 0x5ed1_0eab_524c_8dc5),
     ("phone from saved ride", 0xffb0_a2fb_7c21_fe75),
     ("main with workout band", 0x98ed_6b1c_e526_7bcc),
-    ("settings light", 0xe03f_791c_1357_4c20),
+    ("settings light", 0x5b8f_741b_699d_2bea),
     ("home light", 0x09fb_425c_a4c6_e514),
 ];
 

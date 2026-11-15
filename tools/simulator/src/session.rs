@@ -1338,7 +1338,7 @@ impl Session {
             .trace
             .physical
             .observe(physical, now, record, Event::Physical);
-        self.trace.light.observe(light, now, record, Event::Light);
+        let light = self.trace.light.observe(light, now, record, Event::Light);
         let network_time =
             self.trace
                 .network_time
@@ -1394,6 +1394,7 @@ impl Session {
         let mut control = self.trace.power.bind(control, now, record);
         self.sdk.set_startup_status(startup);
         self.shell.set_app_active(self.sdk.input_active());
+        self.shell.observe_light(light);
         self.shell.tick(now);
         self.shell
             .input_source()

@@ -238,6 +238,27 @@ mod tests {
         high - low
     }
 
+    fn moves(shown: &[(u64, u8)]) -> usize {
+        let mut moves = 0;
+        let mut heading = Ordering::Equal;
+        for pair in shown.windows(2) {
+            let step = pair[1].1.cmp(&pair[0].1);
+            if step != Ordering::Equal && step != heading {
+                moves += 1;
+                heading = step;
+            }
+        }
+        moves
+    }
+
+    fn pools(base: u16, peak: u16, every_ms: u64, for_ms: u64) -> impl Fn(u64) -> u16 {
+        move |ms| {
+            let into = (ms % every_ms).saturating_sub(every_ms - for_ms);
+            let from_edge = into.min(for_ms - into);
+            base + ((peak - base) as u64 * 2 * from_edge / for_ms) as u16
+        }
+    }
+
     fn pulses(base: u16, dip: u16, every_ms: u64, for_ms: u64) -> impl Fn(u64) -> u16 {
         move |ms| {
             if ms % every_ms >= every_ms - for_ms {
@@ -306,6 +327,20 @@ mod tests {
     fn street_lamps_every_four_seconds_at_night_never_move_the_screen() {
         let shown = feed(pulses(40, 300, 4_000, 1_200), 40, 120);
         assert!(swing(&shown) <= 2, "{}", swing(&shown));
+    }
+
+    #[test]
+    fn wide_light_pools_every_five_seconds_never_pump_the_screen() {
+        for pass_ms in [10, 40, 70] {
+            let shown = feed(pools(40, 300, 5_000, 3_750), pass_ms, 600);
+            let low = shown.iter().map(|&(_, percent)| percent).min().unwrap();
+            let high = shown.iter().map(|&(_, percent)| percent).max().unwrap();
+            assert!(
+                moves(&shown) <= 1,
+                "{pass_ms} ms passes: {} moves between {low}% and {high}% in 10 min",
+                moves(&shown)
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,35 @@
+# The mockup's streets are illustrative. They are masked, so the ground is
+# checked only between them, and the screen's real roads may be drawn anywhere.
+ignore = ["#2a2a2d", "#444448"]
+
+# The status bar. The clock shows the scenario's time; the page dots match
+# the code (five pages on a free ride after #388), not the six drawn here.
+[[mask]]
+region = [189, 0, 240, 22]
+why = "the status clock, whose width changes with the time"
+
+[[mask]]
+region = [55, 4, 124, 18]
+why = "page dots: the code's count and current page"
+
+# REC and GPS are drawn 800 at 12 px; the screen draws them in CAPTION (800/13).
+[[text]]
+match = 'font-size="12"'
+why = "REC and GPS in CAPTION"
+
+[[mask]]
+match = 'stroke="#2a2a2d"'
+why = "illustrative minor roads"
+
+[[mask]]
+match = 'stroke="#444448"'
+why = "illustrative major roads"
+
+# The footer: distance left and the scale bar's label change with the ride.
+[[text]]
+match = 'font-weight="700" font-size="20"'
+why = "distance left in FOOT_20"
+
+[[text]]
+match = 'font-weight="800" font-size="13"'
+why = "KM and the scale label in CAPTION"

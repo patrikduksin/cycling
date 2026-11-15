@@ -15,8 +15,8 @@ use crate::screens::workout::{Text, View};
 use firmware_shell::rendering::font::FOOT_20;
 pub use pose::GROUND;
 use pose::{
-    ARROW_BEFORE_TURN_PX, ARROW_HEAD_HALF_WIDTH_PX, ARROW_HEAD_LENGTH_PX, ARROW_OUTLINE_PX,
-    ARROW_SHAFT_PX, Aim, Keepout, Pose, Projection, Target, choose_pose,
+    ARROW_OUTLINE_PX, ARROW_SHAFT_HALF_PX, ARROW_STROKES, Aim, Keepout, Pose, Projection, Target,
+    arrow_shape, choose_pose,
 };
 use raster::{Cover, Stroke, Triangle};
 
@@ -242,7 +242,6 @@ const ROUTE_SEGMENTS: usize = 160;
 const STROKES: usize = RIDDEN_SEGMENTS + ROUTE_SEGMENTS;
 const BAND_ENTRIES: usize = 2048;
 const LOOKAHEAD_M: f32 = 4_000.0;
-const ARROW_STROKES: usize = 24;
 struct ArrowLayer {
     shaft_half: f32,
     head_outline: f32,
@@ -250,7 +249,7 @@ struct ArrowLayer {
 }
 const ARROW_LAYERS: [ArrowLayer; 2] = [
     ArrowLayer {
-        shaft_half: 4.25,
+        shaft_half: ARROW_SHAFT_HALF_PX,
         head_outline: ARROW_OUTLINE_PX,
         color: CASING,
     },
@@ -487,7 +486,7 @@ fn fill(frame: &mut Frame, track: &Track) {
     }
     frame.has_track = track.crumbs.len() >= 2 || split.is_some();
     if let (Some(split), Some((turn, _))) = (split, track.turn_on_course()) {
-        arrow(frame, &at, || track.ahead_points(split), at.at(turn.at));
+        arrow(frame, &at, track, split, at.at(turn.at));
     }
     let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
     if let Some(junction) = track.junction() {
@@ -512,82 +511,18 @@ fn fill(frame: &mut Frame, track: &Track) {
     bucket(frame);
 }
 
-fn arrow<I: Iterator<Item = (Point, bool)>>(
-    frame: &mut Frame,
-    at: &Projection,
-    points: impl Fn() -> I,
-    turn: Point,
-) {
-    let screen = || points().map(|(p, before)| (at.at(p), before));
-    let (mut walked, mut last, mut base) = (0.0, None, None);
-    for (p, before) in screen() {
-        if let Some(last) = last {
-            if !before {
-                base = Some(walked + distance(last, turn));
-                break;
-            }
-            walked += distance(last, p);
-        }
-        last = Some(p);
-    }
-    let Some(((rider, _), base)) = screen().next().zip(base) else {
+fn arrow(frame: &mut Frame, at: &Projection, track: &Track, split: (usize, Point), turn: Point) {
+    let route = |visit: &mut dyn FnMut(Point, bool)| {
+        track
+            .ahead_points(split)
+            .for_each(|(p, before)| visit(at.at(p), before));
+    };
+    let Some(shape) = arrow_shape(&route, turn) else {
         return;
     };
-    let start = (base - ARROW_BEFORE_TURN_PX.min(distance(rider, turn) / 4.0)).max(0.0);
-    let end = start + ARROW_SHAFT_PX;
-    let mut shaft: heapless::Vec<Point, { ARROW_STROKES + 1 }> = heapless::Vec::new();
-    let (mut walked, mut last) = (0.0, None::<Point>);
-    for (p, _) in screen() {
-        let Some(from) = last.replace(p) else {
-            continue;
-        };
-        let length = distance(from, p);
-        let point = |s: f32| {
-            let t = ((s - walked) / length.max(1e-3)).clamp(0.0, 1.0);
-            (from.0 + t * (p.0 - from.0), from.1 + t * (p.1 - from.1))
-        };
-        if shaft.is_empty() && walked + length >= start {
-            let _ = shaft.push(point(start));
-        }
-        if walked + length >= end {
-            let _ = shaft.push(point(end));
-            break;
-        }
-        if !shaft.is_empty() && shaft.push(p).is_err() {
-            break;
-        }
-        walked += length;
-    }
-    let Some(&tip) = shaft.last() else {
-        return;
-    };
-    let Some((ux, uy)) = shaft.windows(2).rev().find_map(|pair| {
-        let length = distance(pair[0], pair[1]);
-        (length >= 0.5).then(|| {
-            (
-                (pair[1].0 - pair[0].0) / length,
-                (pair[1].1 - pair[0].1) / length,
-            )
-        })
-    }) else {
-        return;
-    };
-    frame.arrow.head = Triangle([
-        (
-            tip.0 + ux * ARROW_HEAD_LENGTH_PX,
-            tip.1 + uy * ARROW_HEAD_LENGTH_PX,
-        ),
-        (
-            tip.0 - uy * ARROW_HEAD_HALF_WIDTH_PX,
-            tip.1 + ux * ARROW_HEAD_HALF_WIDTH_PX,
-        ),
-        (
-            tip.0 + uy * ARROW_HEAD_HALF_WIDTH_PX,
-            tip.1 - ux * ARROW_HEAD_HALF_WIDTH_PX,
-        ),
-    ]);
+    frame.arrow.head = Triangle(shape.head);
     frame.arrow.strokes = 0;
-    for pair in shaft.windows(2) {
+    for pair in shape.shaft.windows(2) {
         frame.arrow.shaft[frame.arrow.strokes] = Stroke::new(pair[0], pair[1]);
         frame.arrow.strokes += 1;
     }

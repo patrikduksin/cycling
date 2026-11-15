@@ -624,6 +624,15 @@ const TWO_150_LEFT_THEN_RIGHT: [Point; 6] = [
     (0.0, 1_650.0),
     (0.0, 4_000.0),
 ];
+const BENT_EXIT: [Point; 4] = [
+    (0.0, 0.0),
+    (0.0, 1_500.0),
+    (-4.0, 1_506.93),
+    (-2_004.0, 1_506.93),
+];
+const SHORT_JOG: [Point; 4] = [(0.0, 0.0), (0.0, 600.0), (5.0, 600.0), (5.0, 700.0)];
+const HALF_METRE_THEN_NORTH: [Point; 4] = [(0.0, 0.0), (0.0, 620.0), (0.5, 620.0), (0.5, 1_120.0)];
+const HALF_METRE_THEN_EAST: [Point; 4] = [(0.0, 0.0), (0.0, 620.0), (0.5, 620.0), (500.5, 620.0)];
 
 fn gap_to(badge: Rect, frame: &Frame) -> Option<(usize, (usize, usize))> {
     GROUND
@@ -648,6 +657,10 @@ fn on_the_way_to_a_turn_nothing_up_to_it_comes_near_the_badge() {
     for (name, course) in [
         ("long left", &LONG_LEFT[..]),
         ("two150lr", &TWO_150_LEFT_THEN_RIGHT[..]),
+        ("bent exit", &BENT_EXIT[..]),
+        ("short jog", &SHORT_JOG[..]),
+        ("half metre then north", &HALF_METRE_THEN_NORTH[..]),
+        ("half metre then east", &HALF_METRE_THEN_EAST[..]),
     ] {
         let near: std::vec::Vec<_> = ride_to_the_last_turn(course)
             .iter()

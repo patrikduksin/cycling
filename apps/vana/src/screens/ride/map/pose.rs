@@ -1,5 +1,5 @@
 use crate::ride::course::nav::Glyph;
-use crate::ride::homing::TURN;
+use crate::ride::homing::{TURN, distance};
 use core::f32::consts::TAU;
 use core::ops::Range;
 use libm::{cosf, sinf, sqrtf};
@@ -26,7 +26,9 @@ pub(super) const ARROW_BEFORE_TURN_PX: f32 = 10.0;
 pub(super) const ARROW_HEAD_LENGTH_PX: f32 = 10.5;
 pub(super) const ARROW_HEAD_HALF_WIDTH_PX: f32 = 7.9;
 pub(super) const ARROW_OUTLINE_PX: f32 = 1.75;
+pub(super) const ARROW_SHAFT_HALF_PX: f32 = 4.25;
 const ARROW_HALF_PX: f32 = ARROW_HEAD_HALF_WIDTH_PX + ARROW_OUTLINE_PX;
+pub(super) const ARROW_STROKES: usize = 24;
 
 /// The zoom steps, by metres across the screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -466,14 +468,21 @@ fn try_step(
         }
         Target::Junction(at) => Some((screen(at), margin + CLEARANCE + JUNCTION_RADIUS_PX)),
     };
-    let arrow_past = match (target, goal) {
-        (Target::Turn(..), Some((at, _))) => {
-            let d = sqrtf(at.0 * at.0 + (at.1 - f32::from(y)) * (at.1 - f32::from(y)));
-            ARROW_SHAFT_PX - ARROW_BEFORE_TURN_PX.min(d / 4.0) + ARROW_HEAD_LENGTH_PX
+    let mut arrow = all;
+    if let (Target::Turn(..), Some((corner, _))) = (target, goal) {
+        let on_screen = |visit: &mut dyn FnMut(Point, bool)| {
+            route(&mut |p, before| visit(screen(aim.relative(p)), before));
+        };
+        if let Some(shape) = arrow_shape(&on_screen, corner) {
+            let pad = margin + CLEARANCE;
+            for pair in shape.shaft.windows(2) {
+                block(pair[0], pair[1], pad + ARROW_SHAFT_HALF_PX, &mut arrow);
+            }
+            if let Some(&tip) = shape.shaft.last() {
+                block(tip, shape.head[0], pad + ARROW_HALF_PX, &mut arrow);
+            }
         }
-        _ => 0.0,
-    };
-    let (mut arrow, mut arrow_from) = (all, None);
+    }
     let mut shown = if holds { all } else { 0 };
     if let Some((at, pad)) = goal {
         block(at, at, pad, &mut shown);
@@ -506,19 +515,6 @@ fn try_step(
                     &mut to_goal,
                 );
             }
-            if let (true, false, Some((corner, _))) = (was_before, before, goal) {
-                arrow_from = Some(corner);
-            }
-            if let Some(corner) = arrow_from {
-                let (dx, dy) = (p.0 - corner.0, p.1 - corner.1);
-                let length = sqrtf(dx * dx + dy * dy);
-                if length >= 1.0 {
-                    let t = arrow_past / length;
-                    let tip = (corner.0 + t * dx, corner.1 + t * dy);
-                    block(corner, tip, CLEARANCE + ARROW_HALF_PX, &mut arrow);
-                    arrow_from = None;
-                }
-            }
         }
         last = Some((p, before));
     });
@@ -546,6 +542,90 @@ fn try_step(
         past_clear,
         roomy,
     })
+}
+
+pub(super) struct ArrowShape {
+    pub(super) shaft: heapless::Vec<Point, { ARROW_STROKES + 1 }>,
+    pub(super) head: [Point; 3],
+}
+
+/// The turn arrow on the route, which calls back with screen points from
+/// the rider on, each with whether it is before `turn`.
+pub(super) fn arrow_shape(
+    route: &impl Fn(&mut dyn FnMut(Point, bool)),
+    turn: Point,
+) -> Option<ArrowShape> {
+    let (mut walked, mut last, mut base, mut rider) = (0.0, None::<Point>, None, None);
+    route(&mut |p, before| {
+        if base.is_some() {
+            return;
+        }
+        rider.get_or_insert(p);
+        if let Some(last) = last {
+            if !before {
+                base = Some(walked + distance(last, turn));
+                return;
+            }
+            walked += distance(last, p);
+        }
+        last = Some(p);
+    });
+    let (rider, base) = rider.zip(base)?;
+    let start = (base - ARROW_BEFORE_TURN_PX.min(distance(rider, turn) / 4.0)).max(0.0);
+    let end = start + ARROW_SHAFT_PX;
+    let mut shaft: heapless::Vec<Point, { ARROW_STROKES + 1 }> = heapless::Vec::new();
+    let (mut walked, mut last, mut done) = (0.0, None::<Point>, false);
+    route(&mut |p, _| {
+        if done {
+            return;
+        }
+        let Some(from) = last.replace(p) else {
+            return;
+        };
+        let length = distance(from, p);
+        let point = |s: f32| {
+            let t = ((s - walked) / length.max(1e-3)).clamp(0.0, 1.0);
+            (from.0 + t * (p.0 - from.0), from.1 + t * (p.1 - from.1))
+        };
+        if shaft.is_empty() && walked + length >= start {
+            let _ = shaft.push(point(start));
+        }
+        if walked + length >= end {
+            let _ = shaft.push(point(end));
+            done = true;
+            return;
+        }
+        if !shaft.is_empty() && shaft.push(p).is_err() {
+            done = true;
+            return;
+        }
+        walked += length;
+    });
+    let &tip = shaft.last()?;
+    let (ux, uy) = shaft.windows(2).rev().find_map(|pair| {
+        let length = distance(pair[0], pair[1]);
+        (length >= 0.5).then(|| {
+            (
+                (pair[1].0 - pair[0].0) / length,
+                (pair[1].1 - pair[0].1) / length,
+            )
+        })
+    })?;
+    let head = [
+        (
+            tip.0 + ux * ARROW_HEAD_LENGTH_PX,
+            tip.1 + uy * ARROW_HEAD_LENGTH_PX,
+        ),
+        (
+            tip.0 - uy * ARROW_HEAD_HALF_WIDTH_PX,
+            tip.1 + ux * ARROW_HEAD_HALF_WIDTH_PX,
+        ),
+        (
+            tip.0 + uy * ARROW_HEAD_HALF_WIDTH_PX,
+            tip.1 - ux * ARROW_HEAD_HALF_WIDTH_PX,
+        ),
+    ];
+    Some(ArrowShape { shaft, head })
 }
 
 #[cfg(test)]
@@ -683,7 +763,11 @@ mod tests {
             mockup_route(250.0),
             badge(137.0),
         );
-        assert_eq!(arriving.step, Step::M400);
+        assert_eq!(
+            arriving.step,
+            Step::Km1,
+            "zooming in waits for room past the arrow too"
+        );
         let close = posed(
             Some(wide),
             on_course(90.0),
@@ -799,6 +883,53 @@ mod tests {
 
     fn route(points: &[(Point, bool)]) -> impl Fn(&mut dyn FnMut(Point, bool)) + '_ {
         move |visit| points.iter().for_each(|&(p, before)| visit(p, before))
+    }
+
+    #[test]
+    fn a_rider_jittering_half_a_metre_on_a_diagonal_approach_holds_the_step() {
+        let mut flapping = std::vec::Vec::new();
+        for radar in [false, true] {
+            for glyph in [Glyph::Left, Glyph::Right] {
+                for sign in [-1.0, 1.0] {
+                    for width in [118.0, 137.0, 152.0] {
+                        for d in (75..=600).step_by(5) {
+                            let d = d as f32;
+                            let left = if radar { 28.0 } else { 0.0 };
+                            let turn = (sign * d, d);
+                            let mut prev = None;
+                            let steps: std::vec::Vec<Step> = [-0.5, 0.5, -0.5, 0.5, -0.5, 0.5]
+                                .iter()
+                                .map(|&north| {
+                                    let aim = Aim {
+                                        here: (0.0, north),
+                                        heading: 0,
+                                        target: Target::Turn(turn, glyph),
+                                        left,
+                                        badge: Some(Keepout {
+                                            left: left + 8.0,
+                                            right: left + 8.0 + width,
+                                            ..BADGE
+                                        }),
+                                    };
+                                    let points = [
+                                        (aim.here, true),
+                                        (turn, false),
+                                        ((turn.0, d + 200.0), false),
+                                    ];
+                                    let pose = choose_pose(prev, &aim, route(&points));
+                                    prev = Some(pose);
+                                    pose.step
+                                })
+                                .collect();
+                            if steps[2..].windows(2).all(|w| w[0] != w[1]) {
+                                flapping.push((radar, glyph, turn, width, steps));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(flapping.is_empty(), "{} flap: {flapping:?}", flapping.len());
     }
 
     fn casing_gap_to_badge(pose: Pose, points: &[Point], badge: Keepout) -> f32 {
@@ -1011,28 +1142,39 @@ mod tests {
             .collect()
     }
 
+    fn with_a_point_at(course: &[Point], turn: usize, past: f32) -> (std::vec::Vec<Point>, usize) {
+        let mut walked = 0.0;
+        for i in turn..course.len() - 1 {
+            let length = distance(course[i], course[i + 1]);
+            if walked + length >= past {
+                let t = (past - walked) / length;
+                let (a, b) = (course[i], course[i + 1]);
+                let mut split = course.to_vec();
+                split.insert(i + 1, (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1)));
+                return (split, i + 1);
+            }
+            walked += length;
+        }
+        unreachable!("the course ends {walked} m past the turn");
+    }
+
     #[test]
-    fn the_route_past_the_turn_never_changes_the_step() {
-        let mockup: std::vec::Vec<Point> = MOCKUP_COURSE.to_vec();
+    fn the_route_past_the_arrow_never_changes_the_step() {
+        let reach = (ARROW_SHAFT_PX + ARROW_HEAD_LENGTH_PX) / Step::Km3.px_per_m();
         let courses = [
-            (mockup, 1, Glyph::Right, badge(137.0).unwrap()),
-            (LEFT_COURSE.to_vec(), 1, Glyph::Left, BADGE),
+            (&MOCKUP_COURSE[..], 1, Glyph::Right, badge(137.0).unwrap()),
+            (&LEFT_COURSE[..], 1, Glyph::Left, BADGE),
         ];
         for (course, turn, glyph, badge) in courses {
+            let (course, kept) = with_a_point_at(course, turn, reach);
             let along = steps_on_the_way(&course, turn, glyph, badge);
-            let tx = course[turn].0;
+            let kx = course[kept].0;
             let mirrored: std::vec::Vec<Point> = course
                 .iter()
                 .enumerate()
-                .map(|(i, &(x, y))| {
-                    if i > turn + 1 {
-                        (2.0 * tx - x, y)
-                    } else {
-                        (x, y)
-                    }
-                })
+                .map(|(i, &(x, y))| if i > kept { (2.0 * kx - x, y) } else { (x, y) })
                 .collect();
-            let truncated = &course[..turn + 2];
+            let truncated = &course[..=kept];
             for (tail, other) in [("mirrored", &mirrored[..]), ("truncated", truncated)] {
                 let steps = steps_on_the_way(other, turn, glyph, badge);
                 let differ: std::vec::Vec<usize> = (0..steps.len())

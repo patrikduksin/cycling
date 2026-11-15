@@ -620,18 +620,18 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     pub fn draw<F: Picture>(&mut self, picture: &F, now: u64) -> Drawn {
         let parts = Parts::of(picture);
         let geometry = self.display.geometry();
-        let fits = (geometry.width, geometry.height) == F::SIZE;
+        let unscaled = (geometry.width, geometry.height) == F::SIZE;
         let changed = self.shown.map(|shown| shown.changed(&parts));
         let rows = match changed {
             _ if self.frame_wanted(now) => Rows::all(geometry.height),
             Some(changed) if changed.is_empty() => Rows::NONE,
-            Some(changed) if fits => changed,
+            Some(changed) if unscaled => changed,
             _ => Rows::all(geometry.height),
         };
         let drawn = if rows.is_empty() {
             Drawn::Unchanged
         } else {
-            if fits {
+            if unscaled {
                 self.send(rows, |y, pixels| picture.paint(&mut Row::new(y, pixels)));
             } else {
                 let (width, height) = F::SIZE;
@@ -644,8 +644,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             self.shown = Some(parts);
             Drawn::Sent
         };
-        // Only an unscaled panel holds the picture's own rows to compare.
-        if fits {
+        if unscaled {
             self.display
                 .check(|y, pixels| picture.paint(&mut Row::new(y, pixels)));
         }
@@ -676,12 +675,12 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         {
             let geometry = self.display.geometry();
             if self.harness.begin_frame(geometry) {
-                let rows = Rows::all(geometry.height);
+                let every_row = Rows::all(geometry.height);
                 let mut row = row;
                 let harness = &mut self.harness;
                 self.display_error = self
                     .display
-                    .submit(rows, |y, pixels| {
+                    .submit(every_row, |y, pixels| {
                         row(y, pixels);
                         harness.row(y, pixels);
                     })

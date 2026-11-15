@@ -6496,29 +6496,96 @@ fn course_pixels(sim: &Sim) -> usize {
         .count()
 }
 
+/// The notes of each navigation cue.
+const TURN_SOON: [u8; 2] = [21, 0];
+const TURN_NOW: [u8; 1] = [10];
 const OFF_COURSE: [u8; 2] = [10, 21];
-const ON_COURSE: [u8; 2] = [21, 0];
-const ARRIVED: [u8; 4] = [21, 0, 10, 10];
+const ON_COURSE: [u8; 2] = [21, 10];
+const ARRIVED: [u8; 2] = [0, 10];
 
+/// The cues begun since the speaker's `from`th note, by their names in the
+/// session's trace, each with its notes.
+fn cues_since(sim: &Sim, from: usize) -> Vec<(String, Vec<u8>)> {
+    use firmware_services::trace::{Event, decode};
+    let trace = sim.trace();
+    let (_, events) = decode(&trace).unwrap();
+    let sounds: Vec<(String, u8, u8)> = events
+        .filter_map(|event| match event {
+            Event::Sound {
+                pattern, cue, note, ..
+            } => Some((cue.to_string(), pattern, note)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sounds.len(),
+        sim.device.sim().speaker.played.len(),
+        "the trace has every note the speaker played"
+    );
+    let mut cues: Vec<(String, Vec<u8>)> = Vec::new();
+    for (cue, pattern, note) in sounds.into_iter().skip(from) {
+        match cues.last_mut() {
+            Some(last) if note > 1 => last.1.push(pattern),
+            _ => cues.push((cue, vec![pattern])),
+        }
+    }
+    cues
+}
+
+/// The rider rides on until a `cue` cue begins, checking `each` second of
+/// the way, and says where.
 #[track_caller]
-fn ride_until_cue(sim: &mut Sim, notes: &[u8], what: &str, before_m: f64) -> f64 {
+fn ride_until_cue_checking(
+    sim: &mut Sim,
+    cue: &str,
+    before_m: f64,
+    each: impl Fn(&Sim),
+) -> f64 {
     let from = sim.device.sim().speaker.played.len();
-    while !played_since(sim, from)
-        .windows(notes.len())
-        .any(|played| played == notes)
-    {
+    let mut heard = from;
+    loop {
         assert!(
             sim.world().distance_m < before_m,
-            "no {what} cue by {before_m} m; screen:\n{}",
+            "no {cue} cue by {before_m} m; cues {:?}; screen:\n{}",
+            cues_since(sim, from),
             sim.screen().text()
         );
         sim.advance(seconds(1));
+        each(sim);
+        let played = sim.device.sim().speaker.played.len();
+        if played > heard {
+            heard = played;
+            if cues_since(sim, from).iter().any(|(name, _)| name == cue) {
+                break;
+            }
+        }
     }
     let at = sim.world().distance_m;
-    sim.note(NoteKind::Check, format!("{what} cue at {at:.0} m"));
+    sim.note(NoteKind::Check, format!("{cue} cue at {at:.0} m"));
     at
 }
 
+#[track_caller]
+fn ride_until_cue(sim: &mut Sim, cue: &str, before_m: f64) -> f64 {
+    ride_until_cue_checking(sim, cue, before_m, |_| {})
+}
+
+/// The rider rides on until the next navigation cue, which must be `cue`
+/// with `notes` and nothing else, and says where.
+#[track_caller]
+fn ride_until_only(sim: &mut Sim, cue: &str, notes: &[u8], before_m: f64) -> f64 {
+    let from = sim.device.sim().speaker.played.len();
+    let at = ride_until_cue(sim, cue, before_m);
+    sim.advance(seconds(1));
+    assert_eq!(played_since(sim, from), notes, "{cue} at {at:.0} m");
+    at
+}
+
+/// A loop course loaded from the phone is followed from the ride's start:
+/// MAP draws the course ahead in grey under the ride's track, a wrong turn
+/// sounds off course once confirmed and again 15 s later, riding back onto
+/// the course sounds back on it, and the course's end plays the ride-start
+/// chime and ends following it.
 #[test]
 fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
     use device_api::server::Method;
@@ -6552,17 +6619,21 @@ fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
     assert!(grey > 100, "the course ahead is drawn: {grey} pixels");
     sim.checkpoint("the map with the course ahead in grey");
 
-    // The wrong turn: more than 50 m off the course.
-    let off = ride_until_cue(&mut sim, &OFF_COURSE, "off course", 2_150.0);
-    assert!((1_960.0..2_060.0).contains(&off), "{off}");
+    // The wrong turn: more than 40 m off the course for 5 s.
+    let off = ride_until_only(&mut sim, "off_course", &OFF_COURSE, 2_150.0);
+    assert!((1_990.0..2_090.0).contains(&off), "{off}");
     sim.checkpoint("off the course on the map");
-    // Back onto the course, within 25 m of it.
-    let on = ride_until_cue(&mut sim, &ON_COURSE, "on course", 2_400.0);
+    let again = ride_until_only(&mut sim, "off_course", &OFF_COURSE, 2_250.0);
+    assert!((100.0..112.0).contains(&(again - off)), "{off} then {again}");
+    // Back onto the course, within 25 m of it, riding its way.
+    let on = ride_until_only(&mut sim, "on_course", &ON_COURSE, 2_400.0);
     assert!((2_200.0..2_340.0).contains(&on), "{on}");
     sim.checkpoint("back on the course on the map");
 
-    let end = ride_until_cue(&mut sim, &ARRIVED, "arrived", 5_800.0);
+    let end = ride_until_cue(&mut sim, "start", 5_800.0);
     assert!((5_500.0..5_700.0).contains(&end), "{end}");
+    sim.advance(seconds(1));
+    assert_eq!(cues_since(&sim, 0).last().unwrap().1, ARRIVED);
     sim.expect_no_text("FOLLOWING");
     sim.checkpoint("the end of the course");
     // On up the course's first leg again: the course is done for this ride.
@@ -6598,33 +6669,12 @@ fn turns_course_gpx() -> String {
     gpx_through("turns", &legs)
 }
 
-/// The rider rides on until `needle` is the toast, and says where.
-#[track_caller]
-fn ride_until_toast(sim: &mut Sim, needle: &str, before_m: f64) -> f64 {
-    let shown = |sim: &Sim| {
-        sim.screen()
-            .find(needle)
-            .iter()
-            .any(|run| run.text == needle)
-    };
-    while !shown(sim) {
-        assert!(
-            sim.world().distance_m < before_m,
-            "no {needle} by {before_m} m; screen:\n{}",
-            sim.screen().text()
-        );
-        sim.advance(seconds(1));
-    }
-    let at = sim.world().distance_m;
-    sim.note(NoteKind::Check, format!("{needle} at {at:.0} m"));
-    at
-}
-
-/// Following a course warns of each turn: 150 m before it with a toast and
-/// a soft cue, and at it with a brighter one. The right-angle turn says
-/// RIGHT and the hairpin U-TURN; the gentle bend between says nothing.
+/// Following a course sounds each turn twice: two rising beeps when its
+/// banner opens, 30 s ahead at 25 km/h (208 m), and one beep 30 m before
+/// it. The right-angle turn and the hairpin each sound so; the gentle bend
+/// between sounds nothing.
 #[test]
-fn a_followed_course_warns_of_its_turns_and_not_of_a_gentle_bend() {
+fn a_followed_course_sounds_its_turns_and_not_a_gentle_bend() {
     use device_api::server::Method;
     let mut sim = Sim::new();
     sim.fit_bulk(Presence::Ready);
@@ -6648,33 +6698,18 @@ fn a_followed_course_warns_of_its_turns_and_not_of_a_gentle_bend() {
     }
     sim.expect_text("MAP");
 
-    let from = sim.device.sim_mut().speaker.played.len();
-    let ahead = ride_until_toast(&mut sim, "RIGHT IN 150 M", 500.0);
-    assert!((435.0..465.0).contains(&ahead), "{ahead}");
-    sim.checkpoint("the right turn 150 m ahead on the map");
-    sim.advance(seconds(1));
-    assert_eq!(played_since(&sim, from), [0, 21], "the soft cue");
-    let from = sim.device.sim_mut().speaker.played.len();
-    let at = ride_until_toast(&mut sim, "RIGHT", 620.0);
-    assert!((560.0..600.0).contains(&at), "{at}");
-    sim.checkpoint("at the right turn");
-    sim.advance(seconds(1));
-    assert_eq!(played_since(&sim, from), [10, 0, 10], "the bright cue");
+    let soon = ride_until_only(&mut sim, "turn_soon", &TURN_SOON, 500.0);
+    assert!((380.0..400.0).contains(&soon), "{soon}");
+    sim.checkpoint("the right turn's banner opens");
+    let now = ride_until_only(&mut sim, "turn_now", &TURN_NOW, 620.0);
+    assert!((560.0..580.0).contains(&now), "{now}");
+    sim.checkpoint("30 m before the right turn");
 
     // Round the gentle bend and on: silence until the hairpin is near.
     ride_to(&mut sim, 700.0);
     let from = sim.device.sim_mut().speaker.played.len();
-    while sim.world().distance_m < 1_400.0 {
+    while sim.world().distance_m < 1_380.0 {
         sim.advance(seconds(1));
-        let screen = sim.screen();
-        let word = ["LEFT", "RIGHT", "U-TURN"]
-            .into_iter()
-            .find(|w| screen.contains(w));
-        assert!(
-            word.is_none(),
-            "{word:?} on the bend; screen:\n{}",
-            screen.text()
-        );
     }
     assert_eq!(
         played_since(&sim, from),
@@ -6682,13 +6717,13 @@ fn a_followed_course_warns_of_its_turns_and_not_of_a_gentle_bend() {
         "no cue on the bend"
     );
 
-    let ahead = ride_until_toast(&mut sim, "U-TURN IN 150 M", 1_500.0);
-    assert!((1_440.0..1_470.0).contains(&ahead), "{ahead}");
-    sim.checkpoint("the hairpin 150 m ahead");
-    let at = ride_until_toast(&mut sim, "U-TURN", 1_620.0);
-    assert!((1_565.0..1_605.0).contains(&at), "{at}");
-    sim.checkpoint("at the hairpin");
-    let end = ride_until_cue(&mut sim, &ARRIVED, "arrived", 2_100.0);
+    let soon = ride_until_only(&mut sim, "turn_soon", &TURN_SOON, 1_500.0);
+    assert!((1_385.0..1_405.0).contains(&soon), "{soon}");
+    sim.checkpoint("the hairpin's banner opens");
+    let now = ride_until_only(&mut sim, "turn_now", &TURN_NOW, 1_620.0);
+    assert!((1_565.0..1_585.0).contains(&now), "{now}");
+    sim.checkpoint("30 m before the hairpin");
+    let end = ride_until_cue(&mut sim, "start", 2_100.0);
     assert!(end > 1_950.0, "{end}");
     sim.stop_ride();
 }
@@ -6719,30 +6754,16 @@ fn a_course_is_still_followed_after_the_ride_moves_to_internal_memory() {
     assert_eq!(status_field(&status, "moved"), "1", "{status}");
     sim.checkpoint("the ride moved to internal memory mid-course");
 
-    let ride_on_until = |sim: &mut Sim, notes: &[u8], what: &str, before_m: f64| {
-        let from = sim.device.sim().speaker.played.len();
-        while !played_since(sim, from)
-            .windows(notes.len())
-            .any(|played| played == notes)
-        {
-            assert!(
-                sim.world().distance_m < before_m,
-                "no {what} cue by {before_m} m; screen:\n{}",
-                sim.screen().text()
-            );
-            sim.expect_no_text("FOLLOWING COURSE");
-            sim.advance(seconds(1));
-        }
-        let at = sim.world().distance_m;
-        sim.note(NoteKind::Check, format!("{what} cue at {at:.0} m"));
-        at
+    let no_second_join = |sim: &Sim| {
+        let text = sim.screen().text();
+        assert!(!text.contains("FOLLOWING COURSE"), "joined again:\n{text}");
     };
-    let off = ride_on_until(&mut sim, &OFF_COURSE, "off course", 2_150.0);
-    assert!((1_960.0..2_060.0).contains(&off), "{off}");
+    let off = ride_until_cue_checking(&mut sim, "off_course", 2_150.0, no_second_join);
+    assert!((1_990.0..2_090.0).contains(&off), "{off}");
     sim.checkpoint("off the course after the move");
-    let on = ride_on_until(&mut sim, &ON_COURSE, "on course", 2_400.0);
+    let on = ride_until_cue_checking(&mut sim, "on_course", 2_400.0, no_second_join);
     assert!((2_200.0..2_340.0).contains(&on), "{on}");
-    let end = ride_on_until(&mut sim, &ARRIVED, "arrived", 5_800.0);
+    let end = ride_until_cue_checking(&mut sim, "start", 5_800.0, no_second_join);
     assert!((5_500.0..5_700.0).contains(&end), "{end}");
     sim.checkpoint("the end of the course after the move");
     sim.stop_ride();

@@ -199,42 +199,48 @@ keeps on its memory card until the next one replaces it or the page clears
 it. Riding along the course in its direction, within 25 m of it for a few
 fixes, follows it: FOLLOWING COURSE and the rising cue.
 Crossing it, or riding it the wrong way, follows nothing, and a course far
-from the ride says nothing. While following, more than 50 m off the course
-sounds a falling cue once, and within 25 m again a rising one; there are no
-minute reminders. 500 m off, following stops. Near its end, along it,
-following ends with the end cue. After either, or after the rider stops it
-on MAP, the course is not followed again for the rest of the ride; the next
-ride follows it again.
+from the ride says nothing. While following, the rider is off course once
+they are more than 40 m from it on two fixes at least 5 s apart, with no
+fix nearer between: two falling tones, and once more 15 s later. A fix lost
+for 5 s starts that count again. However far off they ride, the course stays
+followed and off course until they are back within 25 m of it, riding its
+way: one rising pair of tones. Near its end, along it, following ends with
+the ride-start chime. After that, or after the rider stops it on MAP, the
+course is not followed again for the rest of the ride; the next ride follows
+it again.
 
-While following, each turn on the course is warned of twice: about 150 m
-before it, RIGHT IN 150 M with a soft falling cue, and about 30 m before it,
-RIGHT with a brighter one. A turn first seen nearer than 150 m says its real
-distance (RIGHT IN 90 M), and one nearer than 60 m is warned of only at it. A
-turn is where the course turns by 60 degrees or more, turning at least as
+While following, each turn on the course sounds twice: two rising beeps when
+it comes 30 s ahead at the ride's speed (never nearer than 150 m nor farther
+than 400 m), and one beep 30 m before it. Turns under 300 m or 25 s apart
+are one run: the rising beeps sound for the first only, and each turn of the
+run beeps 30 m before it. A turn first met nearer than 30 s ahead sounds its
+rising beeps at once, and one the rider is already in sounds nothing. At most
+one navigation sound plays per fix: another due on the same fix waits for the
+next, and is dropped if it no longer holds, so a turn beeping 30 m ahead
+right after rejoining the course drops its rising beeps.
+A turn is where the course turns by 60 degrees or more, turning at least as
 sharply as 60 degrees in 50 m: LEFT or RIGHT, SHARP LEFT or SHARP RIGHT past
-120 degrees, and U-TURN past 150. A bend gentler than that says nothing.
-Each street corner is a turn of its own, warned of in order, and two turns
-starting within 35 m of each other are warned of together: LEFT THEN RIGHT, or
-RIGHT THEN RIGHT round a city block. A U-TURN is only where the way back is
-within about 20 m of the way out, or the road curves round all the way, as a
-hairpin does. A roundabout of up to about 40 m radius
-is one turn, named by the way it leaves, and straight over one says nothing.
+120 degrees, and U-TURN past 150. A bend gentler than that sounds nothing.
+Each street corner is a turn of its own, sounded in order. Round a city
+block, two corners the same way within a few tens of metres are one turn, the
+way they go. A U-TURN is only where the way back is within about 20 m of the
+way out, or the road curves round all the way, as a hairpin does. A
+roundabout of up to about 40 m radius is one turn, named by the way it
+leaves, and straight over one sounds nothing.
 A course's turns are found once, as it loads from the phone, from every
 point of the file, so a long course thinned to fit names them as drawn.
 Where the course is drawn coarsely, as a planner's route is, or it was loaded
 before turns were found this way, a turn of several corners is named only
 roughly: LEFT or RIGHT from about 80 degrees, U-TURN from about 160, never
 SHARP, and otherwise nothing; a roundabout there may say nothing but never a
-wrong way. Wherever
-which way comes first is not clear, as when corners come within a few metres
-of each other, or a turn's first bend goes against where it leads, nothing
-is said, and nothing after it either until the rider is there. A warning
-that comes just after FOLLOWING COURSE waits a second. Off the course, riding it
-the wrong way, standing still, or once it is stopped or ended, no turn is
-warned of; riding back past a turn and on again warns of it again. Where
-the course runs the same road twice, as a figure of eight or an out-and-back
-does, the warnings are those of the pass the rider is on. A course with more
-than 1,024 turns is warned of to its end.
+wrong way. Wherever which way comes first is not clear, as when corners come
+within a few metres of each other, or a turn's first bend goes against where
+it leads, nothing sounds, and nothing after it either until the rider is
+there. Off the course, riding it the wrong way, or once it is stopped or
+ended, no turn sounds; riding back 30 m or more past a turn and on again
+sounds it again. Where the course runs the same road twice, as a figure of
+eight or an out-and-back does, the turns are those of the pass the rider is
+on. A course with more than 1,024 turns sounds them to its end.
 
 ### Workouts from the phone
 

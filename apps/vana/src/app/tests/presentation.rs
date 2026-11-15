@@ -24,6 +24,7 @@ impl device_api::display::Display for Panel {
     }
     fn submit(
         &mut self,
+        rows: device_api::display::Rows,
         mut row: impl FnMut(usize, &mut [u16]),
     ) -> Result<(), device_api::observation::Error> {
         if self.1.get() > 0 {
@@ -31,8 +32,9 @@ impl device_api::display::Display for Panel {
             return Err(device_api::observation::Error::Unavailable);
         }
         let mut frame = self.0.borrow_mut();
-        for (y, pixels) in frame.as_chunks_mut::<WIDTH>().0.iter_mut().enumerate() {
-            row(y, pixels);
+        let lines = frame.as_chunks_mut::<WIDTH>().0;
+        for y in rows.runs(HEIGHT).flatten() {
+            row(y, &mut lines[y]);
         }
         Ok(())
     }
@@ -358,4 +360,24 @@ fn an_ant_sensor_stands_for_the_ble_role_in_the_order_the_ride_prefers() {
     assert!(!stands(CADENCE, false, true, &[]));
     assert!(stands(HEART_RATE, true, false, &[ant(HEART_RATE, true)]));
     assert!(!stands(HEART_RATE, false, true, &[ant(CADENCE, true)]));
+}
+
+#[test]
+fn a_brightness_choice_from_the_terminal_holds_a_percent_or_follows_the_light() {
+    use firmware_shell::shell::BrightnessChoice;
+    let mut screen = Screen::new();
+    let mut runtime = Runtime::new(Profile::HeartRate);
+    let radio = Radio::new();
+    screen.present(&mut runtime, &radio, 3000);
+    assert!(screen.shell.auto(), "a new rider starts on AUTO");
+    for (choice, auto) in [
+        (BrightnessChoice::Percent, false),
+        (BrightnessChoice::Auto, true),
+    ] {
+        screen.shell.offer_brightness_choice(choice);
+        runtime.save_preferences(&mut screen.shell, 3100);
+        screen.present(&mut runtime, &radio, 3100);
+        assert_eq!(runtime.preferences.options.auto_brightness, auto);
+        assert_eq!(screen.shell.auto(), auto);
+    }
 }

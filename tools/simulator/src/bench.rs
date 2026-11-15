@@ -107,7 +107,7 @@ fn cpu_ns() -> u64 {
 
 pub use scenes::{SCENES, Scene, measure};
 
-mod scenes {
+pub(crate) mod scenes {
     use super::Request;
     use crate::ant::device_type;
     use crate::bulk::Presence;
@@ -256,8 +256,9 @@ mod scenes {
     /// Paint the next frame `frames` times, plus once counted.
     #[track_caller]
     pub fn measure(sim: &mut Sim, frames: u32) -> Request {
-        sim.device.sdk.invalidate_home();
+        sim.device.shell.forget_panel();
         let display = sim.device.display.clone();
+        display.0.borrow_mut().check_skipped_rows = false;
         display.0.borrow_mut().bench = Some(Request::new(frames));
         let submitted = display.0.borrow().submissions;
         for _ in 0..500 {
@@ -295,15 +296,29 @@ mod scenes {
         sim
     }
 
-    fn home() -> Sim {
+    pub(crate) fn home() -> Sim {
         let mut sim = rider(false);
         sim.advance(seconds(2));
         assert!(sim.on_home(), "{}", sim.screen().text());
         sim
     }
 
-    fn ride_main() -> Sim {
+    pub(crate) fn ride_main_radar_saver() -> Sim {
         let mut sim = rider(true);
+        sim.open_mode_row();
+        sim.expect_field("MODE", "NORMAL");
+        sim.press(Button::BottomRight);
+        sim.expect_field("MODE", "SAVER");
+        sim.press(Button::TopLeft);
+        sim.expect_text("READY TO RIDE");
+        ride_main_from(sim)
+    }
+
+    pub(crate) fn ride_main() -> Sim {
+        ride_main_from(rider(true))
+    }
+
+    fn ride_main_from(mut sim: Sim) -> Sim {
         sim.start_ride();
         sim.ride_at(28.0, 230.0, 142.0, 88.0);
         sim.advance(seconds(20));
@@ -319,7 +334,7 @@ mod scenes {
         sim
     }
 
-    fn climb() -> Sim {
+    pub(crate) fn climb() -> Sim {
         let mut sim = Sim::new().boot();
         sim.discard_recording();
         sim.ant_sensor(device_type::SPEED_CADENCE, 777);
@@ -383,7 +398,7 @@ mod scenes {
         sim
     }
 
-    fn stats() -> Sim {
+    pub(crate) fn stats() -> Sim {
         let mut sim = riding(120);
         sim.ride_page("2/6");
         sim.expect_text("AVG W");
@@ -399,7 +414,7 @@ mod scenes {
         sim
     }
 
-    fn workout_page() -> Sim {
+    pub(crate) fn workout_page() -> Sim {
         let mut sim = rider(false);
         sim.choose_workout("VO2 MAX 5X3");
         sim.press(Button::BottomRight);
@@ -411,7 +426,7 @@ mod scenes {
         sim
     }
 
-    fn map_page() -> Sim {
+    pub(crate) fn map_page() -> Sim {
         let mut sim = riding(90);
         sim.ride_page("5/6");
         sim.expect_text("MAP");
@@ -446,7 +461,7 @@ mod scenes {
         sim
     }
 
-    fn settings() -> Sim {
+    pub(crate) fn settings() -> Sim {
         let mut sim = rider(false);
         sim.home("SETTINGS");
         sim.expect_text("PROFILE");

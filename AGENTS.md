@@ -28,10 +28,15 @@ Run tasks through `cycling <task>` and commit `Cargo.lock`. The flake dev
 shell provides every tool and the `cycling` command; see
 [dev-setup](docs/dev-setup.md).
 
-- Inner loop: targeted host tests and the simulator; firmware rebuilds take
-  about 20 s once sccache is warm.
-- Before opening or updating a PR: `cycling verify --pr <n>` (all gates in
-  parallel, results posted on the PR).
+- Inner loop: targeted host tests and the simulator; a firmware rebuild after
+  a VANA edit takes about 45 s (the fat-LTO link is 30 s of it), and one after
+  a commit that changes no firmware input about 2 s.
+- Before opening or updating a PR: follow the
+  [verify skill](.agents/skills/verify/SKILL.md): `/deslop`, `/no-comments`,
+  then `cycling verify --pr <n>`. Verify runs every
+  gate in parallel and posts the results and the screens that changed against
+  main, with a video of each new scenario. Add `--video` for before and after
+  videos of changed scenarios, for a bug fix a reviewer should watch.
 - Disk: a worktree that builds firmware carries 1 to 2.5 GB of `.local` build targets. Run
   `cycling clean` for a dry-run table of what it would free; `--apply` removes
   merged, clean, quiet worktrees nobody is working in, and idle build dirs.
@@ -39,9 +44,9 @@ shell provides every tool and the `cycling` command; see
 
 - Firmware changes: `cycling test`, `cycling check` (includes boundary checks
   and ruff) and `cycling build`.
-- PRs are verified locally, not by GitHub CI: run test, check, simulate,
-  harness-virtual and the firmware build, and post the results on the PR. CI runs
-  only on pushes to main.
+- PRs are verified locally, not by GitHub CI: `cycling verify --pr <n>` runs
+  test, check, simulate, the firmware build, the screens and harness-virtual,
+  and posts the results on the PR. CI runs only on pushes to main.
 - Preserve the licensed [Trouble Host patch](vendor/trouble-host/CYCLING-PATCH.md)
   and its minimum-MTU (ATT MTU 23) regression coverage.
 

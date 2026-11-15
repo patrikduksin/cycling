@@ -8,6 +8,7 @@ pub mod gps;
 pub mod live;
 pub mod logs;
 pub mod phone;
+pub mod probe;
 pub mod recording;
 pub mod replay;
 pub mod rides;

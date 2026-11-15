@@ -5,8 +5,6 @@ use device_api::storage::AccessError;
 use device_api::storage::Geometry;
 use device_api::storage::OwnedFlash;
 use device_api::storage::Region;
-use embedded_storage::nor_flash::NorFlash;
-use embedded_storage::nor_flash::ReadNorFlash;
 use esp_storage::FlashStorage;
 use esp_storage::FlashStorageError;
 
@@ -87,7 +85,7 @@ impl OwnedFlash for Backend<'_> {
         let head = address as usize % 4;
         if head != 0 {
             self.flash
-                .read(address - head as u32, &mut word.0)
+                .read_nor(address - head as u32, &mut word.0)
                 .map_err(AccessError::Device)?;
             let count = output.len().min(4 - head);
             output[..count].copy_from_slice(&word.0[head..head + count]);
@@ -97,14 +95,14 @@ impl OwnedFlash for Backend<'_> {
         let middle = output.len() / 4 * 4;
         if middle != 0 {
             self.flash
-                .read(address, &mut output[..middle])
+                .read_nor(address, &mut output[..middle])
                 .map_err(AccessError::Device)?;
             address += middle as u32;
             output = &mut output[middle..];
         }
         if !output.is_empty() {
             self.flash
-                .read(address, &mut word.0)
+                .read_nor(address, &mut word.0)
                 .map_err(AccessError::Device)?;
             output.copy_from_slice(&word.0[..output.len()]);
         }
@@ -123,7 +121,7 @@ impl OwnedFlash for Backend<'_> {
             FlashStorage::WRITE_SIZE,
         )?;
         self.flash
-            .write(address, bytes)
+            .write_nor(address, bytes)
             .map_err(AccessError::Device)
     }
     fn erase(&mut self, region: Region, offset: usize, length: usize) -> Result<(), Error> {

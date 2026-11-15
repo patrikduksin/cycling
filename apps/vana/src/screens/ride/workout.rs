@@ -9,7 +9,7 @@
 //! distance left over the step's progress bar, amber for the last seconds;
 //! the next step; then one bar per played step, its height the target's
 //! intensity and its colour the target's zone. Past and current steps are
-//! full colour, the rest 25 %, and a white bar marks the step on now.
+//! full colour, the rest 25 %.
 use super::{BODY, LEFT, RIGHT, Text};
 use crate::ride::zones::TrainingProfile;
 use crate::screens::canvas::{Canvas, Shape};
@@ -57,16 +57,13 @@ const NEXT_BASE: usize = PROGRESS_TOP + PROGRESS_HEIGHT + 22;
 /// Rows where a tap adds to the step: the time left and its progress.
 pub const EXTEND_ROWS: core::ops::Range<usize> =
     VERDICT_BASE + 4..PROGRESS_TOP + PROGRESS_HEIGHT + 8;
-/// The chart reaches into the toast band, as the other charts do.
+/// The chart runs down to the screen's edge, into the toast band, as the
+/// other charts do.
 pub(super) const CHART_TOP: usize = NEXT_BASE + 10;
-pub(super) const CHART_BOTTOM: usize = BODY.bottom - 12;
+pub(super) const CHART_BOTTOM: usize = BODY.bottom;
 const CHART_HEIGHT: usize = CHART_BOTTOM - CHART_TOP;
-/// The white bar under the step on now.
-const NOW_TOP: usize = CHART_BOTTOM + 3;
-const NOW_HEIGHT: usize = 3;
 pub(super) const CHART_WIDTH: usize = RIGHT - LEFT;
 const _: () = assert!(CHART_HEIGHT >= 20, "the workout chart needs some height");
-const _: () = assert!(NOW_TOP + NOW_HEIGHT <= BODY.bottom);
 /// Untimed steps take this much chart width, as if they lasted this long.
 const OPEN_WEIGHT_S: u32 = 120;
 /// A target of this much intensity fills the chart's height.
@@ -75,15 +72,13 @@ const FULL_PCT: u32 = 150;
 const MAX_STAIRS: u32 = 40;
 
 /// The chart's columns, prepared once per frame.
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 pub struct Chart {
     /// Rows below `CHART_TOP` where each column's bar starts; `EMPTY` for a gap.
     tops: [u8; CHART_WIDTH],
     /// Each column's colour as an index into `palette`, to keep the view small.
     colors: [u8; CHART_WIDTH],
     palette: heapless::Vec<u16, PALETTE>,
-    /// The columns of the step on now.
-    now: (usize, usize),
 }
 
 /// Colours a chart can use: each zone, cadence and none, lit and at 25 %.
@@ -115,7 +110,6 @@ impl Chart {
         tops: [EMPTY; CHART_WIDTH],
         colors: [0; CHART_WIDTH],
         palette: heapless::Vec::new(),
-        now: (0, 0),
     };
 }
 
@@ -581,20 +575,12 @@ pub fn chart(player: &Player, profile: &TrainingProfile) -> Chart {
             zone(played.step.target, profile),
             intensity(played.step.target, profile).unwrap_or(40),
         );
-        if index == position && !done {
-            chart.now = (first, last);
-        }
-        let mut stair_now = None::<(usize, usize)>;
         for column in first..last {
             let (color, pct, dim) = match ramp {
                 Some((ramp, stairs, current)) => {
                     let stage =
                         ((column - first) as u32 * stairs / (last - first) as u32).min(stairs - 1);
                     let watts = ramp.stage_watts(stage);
-                    if index == position && !done && stage == current {
-                        let (low, _) = stair_now.unwrap_or((column, column));
-                        stair_now = Some((low, column + 1));
-                    }
                     let dim = ahead || (index == position && !done && stage > current);
                     (
                         zone_color(profile.power_zone(watts)),
@@ -609,20 +595,16 @@ pub fn chart(player: &Player, profile: &TrainingProfile) -> Chart {
             chart.tops[column] = (CHART_HEIGHT - height) as u8;
             chart.colors[column] = chart.index(color);
         }
-        if let Some(stair) = stair_now {
-            chart.now = stair;
-        }
     }
     chart
 }
 
-/// Paint the chart's row: its bars, then the white bar under the step on now.
+pub(super) fn chart_parts(chart: &Chart, parts: &mut firmware_shell::shell::Parts) {
+    parts.add(CHART_TOP..CHART_BOTTOM, chart);
+}
+
 pub(super) fn paint_chart(chart: &Chart, row: &mut Row) {
     let y = row.y();
-    if (NOW_TOP..NOW_TOP + NOW_HEIGHT).contains(&y) && chart.now.1 > chart.now.0 {
-        row.span(LEFT + chart.now.0..LEFT + chart.now.1, WHITE);
-        return;
-    }
     if !(CHART_TOP..CHART_BOTTOM).contains(&y) {
         return;
     }
@@ -650,13 +632,6 @@ pub(super) fn chart_pixel(chart: &Chart, x: usize, y: usize) -> u16 {
         return BLACK;
     }
     let column = x - LEFT;
-    if (NOW_TOP..NOW_TOP + NOW_HEIGHT).contains(&y) {
-        return if (chart.now.0..chart.now.1).contains(&column) {
-            WHITE
-        } else {
-            BLACK
-        };
-    }
     if (CHART_TOP..CHART_BOTTOM).contains(&y)
         && chart.tops[column] != EMPTY
         && (y - CHART_TOP) as u8 >= chart.tops[column]
@@ -734,7 +709,7 @@ mod tests {
         );
         assert_eq!(workout.validate(), Ok(()));
         let chart = chart(&Player::new(workout), &TrainingProfile::default());
-        assert!(chart.now.1 > chart.now.0);
+        assert!(chart.tops.iter().any(|&top| top != EMPTY));
     }
 
     #[test]
@@ -745,7 +720,7 @@ mod tests {
         assert_eq!(workout.validate(), Ok(()));
         let player = Player::new(workout);
         let chart = chart(&player, &TrainingProfile::default());
-        assert!(chart.now.1 > chart.now.0);
+        assert!(chart.tops.iter().any(|&top| top != EMPTY));
     }
 
     #[test]
@@ -763,8 +738,6 @@ mod tests {
         assert!(canvas.shows("2:30") && canvas.shows("NEXT"));
         assert!(canvas.shows("3:00 RECOVER"));
         canvas.assert_laid_out(PAGE, &["VO2 MAX 5X3", "228-258 W", "240"], "interval");
-        // The step on now is marked under its bar, and past bars are lit.
-        assert!(view.chart().now.1 > view.chart().now.0);
     }
 
     #[test]
@@ -798,13 +771,21 @@ mod tests {
     }
 
     #[test]
-    fn a_ramp_is_a_staircase_with_the_bar_under_the_stair_on_now() {
+    fn a_ramp_is_a_staircase_lit_up_to_the_stair_on_now() {
         let profile = TrainingProfile::default();
         let mut player = Player::new(FTP_RAMP);
         player.skip();
         ride(&mut player, 130, 140);
         let chart = chart(&player, &profile);
-        let (from, to) = chart.now;
+        let ahead = blend(zone_color(profile.power_zone(147)), BLACK, 4);
+        let to = (0..CHART_WIDTH)
+            .position(|c| chart.tops[c] != EMPTY && chart.color(c) == ahead)
+            .expect("a dim stair ahead");
+        let from = (0..to)
+            .rev()
+            .take_while(|&c| chart.tops[c] == chart.tops[to - 1])
+            .last()
+            .unwrap();
         assert!(to - from > 3, "a stair, not the whole ramp");
         assert!((from..to).all(|c| chart.tops[c] == chart.tops[from]));
         assert!(
@@ -815,8 +796,6 @@ mod tests {
             chart.tops[to] < chart.tops[from],
             "the next stair is higher"
         );
-        let ahead = blend(zone_color(profile.power_zone(147)), BLACK, 4);
-        assert_eq!(chart.color(to), ahead, "stairs ahead are dim");
         assert_ne!(chart.color(from), chart.color(to));
     }
 
@@ -884,6 +863,29 @@ mod tests {
                 player.skip();
             }
         }
+    }
+
+    #[test]
+    fn bars_reach_the_bottom_with_nothing_under_them() {
+        let mut player = Player::new(VO2_MAX);
+        player.skip();
+        ride(&mut player, 30, 240);
+        let view = page(&player, Some(240));
+        let chart = view.chart();
+        let row = |y: usize| -> std::vec::Vec<u16> {
+            (LEFT..RIGHT).map(|x| chart_pixel(chart, x, y)).collect()
+        };
+        let last = row(BODY.bottom - 1);
+        assert!(
+            (0..CHART_WIDTH)
+                .filter(|&c| chart.tops[c] != EMPTY)
+                .all(|c| last[c] != BLACK),
+            "every step's bar reaches the screen's last row"
+        );
+        assert!(
+            (CHART_TOP..BODY.bottom).all(|y| !row(y).contains(&WHITE)),
+            "no white marker in the chart"
+        );
     }
 
     #[test]

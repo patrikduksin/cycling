@@ -72,7 +72,7 @@ and nearest-rank p90 of each milestone and step over repeated runs.
 | `recovery` | Terminal reopen and firmware restart |
 | `shared` | Settings, input, capture and restart; runs on both backends |
 | `av` | Short camera and microphone fixture with screenshots |
-| `acceptance` | Camera, microphone and speaker fixture; display, brightness and acquisition progress during input/capture; terminal reopen, Linux USB bus reset and restart |
+| `acceptance` | Camera, microphone and speaker fixture; display, brightness (fixed percents 100, 20, 100, each a manual choice that stops AUTO following the light; the run's restore returns the original choice) and acquisition progress during input/capture; terminal reopen, Linux USB bus reset and restart |
 | `virtual-foundation` | Settings persistence, storage failure, positioning freshness and BLE loss fixtures |
 | `virtual-sdk` | Ride start, BLE heart rate, restart recovery and export info |
 
@@ -107,7 +107,7 @@ completion and verifies transfer chunks.
 
 | Step | Fields and behavior |
 | --- | --- |
-| `command` | `command`, optional `expect` key/value assertions. Real devices allow read-only foundation commands and temporary `DISPLAY` and `BRIGHTNESS`. |
+| `command` | `command`, optional `expect` key/value assertions. Real devices allow read-only foundation commands, temporary `DISPLAY`, and `BRIGHTNESS n` or `BRIGHTNESS AUTO`. A brightness choice is saved after 2 s like a rider's; the runner restores the original percent and AUTO at the end, so only an aborted run leaves a fixed brightness. |
 | `wait` | Read-only `command`, `equals` conditions, bounded `timeout_s`. Polling stays inside the runner. |
 | `input` | `gesture`: `tap`, `hold`, `swipe`, `drag` or `button`, with coordinates, `duration_ms`, destination, or button index and `repeat`. Or ordered `events` with `at_ms` and `event`. |
 | `capture` | `count`, `interval_ms`; writes verified, ordered PNGs with actual frame timestamps. `expected_crc32` asserts a frame; `checksum_only` skips the transfer. Mismatches retain an image. |

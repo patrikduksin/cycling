@@ -184,7 +184,7 @@ impl Track<'_> {
 
 /// What a frame was filled from: refill it only when this changes, about
 /// once a second, not on every radar redraw.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Key {
     available: bool,
     crumbs: usize,
@@ -218,12 +218,51 @@ impl Track<'_> {
     }
 }
 
-/// Refill `frame` from `track` unless `held` says it already shows it.
-pub fn update(frame: &mut Frame, held: &mut Option<Key>, track: &Track) {
-    let key = track.key();
-    if *held != Some(key) {
-        fill(frame, track);
-        *held = Some(key);
+pub struct Cache<'a> {
+    frame: &'a mut Frame,
+    held: Option<Key>,
+}
+
+impl<'a> Cache<'a> {
+    pub fn new(frame: &'a mut Frame) -> Self {
+        Self { frame, held: None }
+    }
+
+    pub fn update(&mut self, track: &Track) {
+        let key = track.key();
+        if self.held != Some(key) {
+            fill(self.frame, track);
+            self.held = Some(key);
+        }
+    }
+
+    pub fn filled(&self) -> Option<Filled<'_>> {
+        let key = self.held?;
+        Some(Filled {
+            frame: self.frame,
+            key,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Filled<'a> {
+    frame: &'a Frame,
+    key: Key,
+}
+
+impl<'a> Filled<'a> {
+    pub(in crate::screens) fn frame(&self) -> &'a Frame {
+        self.frame
+    }
+}
+
+impl core::hash::Hash for Filled<'_> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+        self.frame.zoom_held.hash(state);
+        self.frame.rider_at.0.to_bits().hash(state);
+        self.frame.rider_at.1.to_bits().hash(state);
     }
 }
 
@@ -1387,19 +1426,78 @@ mod tests {
     fn the_frame_is_refilled_only_when_the_track_changes() {
         let c = crumbs(&[(0.0, 0.0), (0.0, 300.0), (200.0, 500.0)]);
         let mut frame = Frame::default();
-        let mut held = None;
+        let mut cache = Cache::new(&mut frame);
         let t = track(&c);
-        update(&mut frame, &mut held, &t);
-        let drawn = frame.count;
+        cache.update(&t);
+        let drawn = cache.frame.count;
         assert!(drawn > 0);
         // The same track again is left alone, even if the frame was spoiled.
-        frame.count = 0;
-        update(&mut frame, &mut held, &t);
-        assert_eq!(frame.count, 0);
+        cache.frame.count = 0;
+        cache.update(&t);
+        assert_eq!(cache.frame.count, 0);
         let mut moved = t;
         moved.heading = Some(100);
-        update(&mut frame, &mut held, &moved);
-        assert_eq!(frame.count, drawn);
+        cache.update(&moved);
+        assert_eq!(cache.frame.count, drawn);
+    }
+
+    #[test]
+    fn fills_of_one_track_that_paint_apart_hash_apart() {
+        use core::hash::{Hash, Hasher};
+        let near = crumbs(&[(0.0, 0.0), (1_000.0, 0.0)]);
+        let far = crumbs(&[(0.0, 0.0), (1_100.0, 0.0)]);
+        let (mut fresh_frame, mut after_far_frame) = (Frame::default(), Frame::default());
+        let mut fresh = Cache::new(&mut fresh_frame);
+        fresh.update(&track(&near));
+        let mut after_far = Cache::new(&mut after_far_frame);
+        after_far.update(&track(&far));
+        after_far.update(&track(&near));
+        let (fresh, after_far) = (fresh.filled().unwrap(), after_far.filled().unwrap());
+        let apart = (PAGE.top..PAGE.bottom)
+            .flat_map(|y| (PAGE.left..PAGE.right).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixel(fresh.frame, x, y, 0) != pixel(after_far.frame, x, y, 0))
+            .count();
+        assert!(apart > 0, "the far track's zoom is held");
+        let hash = |filled: &Filled| {
+            let mut hasher = std::hash::DefaultHasher::new();
+            filled.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_ne!(
+            hash(&fresh),
+            hash(&after_far),
+            "a skipped band keeps the old map"
+        );
+    }
+
+    #[test]
+    fn fills_at_one_zoom_that_hold_the_rider_apart_hash_apart() {
+        use core::hash::{Hash, Hasher};
+        let shorter = crumbs(&[(0.0, 0.0), (250.0, 0.0)]);
+        let longer = crumbs(&[(0.0, 0.0), (300.0, 0.0)]);
+        let (mut fresh_frame, mut held_frame) = (Frame::default(), Frame::default());
+        let mut fresh = Cache::new(&mut fresh_frame);
+        fresh.update(&track(&shorter));
+        let mut held = Cache::new(&mut held_frame);
+        held.update(&track(&longer));
+        held.update(&track(&shorter));
+        let (fresh, held) = (fresh.filled().unwrap(), held.filled().unwrap());
+        assert_eq!(fresh.frame.zoom_held, held.frame.zoom_held);
+        let apart = (PAGE.top..PAGE.bottom)
+            .flat_map(|y| (PAGE.left..PAGE.right).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixel(fresh.frame, x, y, 0) != pixel(held.frame, x, y, 0))
+            .count();
+        assert!(apart > 0, "the longer track's rider position is held");
+        let hash = |filled: &Filled| {
+            let mut hasher = std::hash::DefaultHasher::new();
+            filled.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_ne!(
+            hash(&fresh),
+            hash(&held),
+            "a skipped band keeps the old map"
+        );
     }
 
     #[test]
@@ -1462,11 +1560,11 @@ mod tests {
         }
     }
 
-    fn page<'a>(frame: Option<&'a Frame>) -> View<'a> {
+    fn page<'a>(map: Option<Filled<'a>>) -> View<'a> {
         let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Map;
         view.radar_paired = true;
-        view.show_map(frame);
+        view.show_map(map);
         view.totals.add(1000, 8333, &Default::default(), None);
         view.prepare();
         view
@@ -1475,8 +1573,10 @@ mod tests {
     #[test]
     fn every_state_lays_out_its_text() {
         let check = |track: &Track, want: &[&str], what: &str| {
-            let frame = filled(track);
-            page(Some(&frame))
+            let mut frame = Frame::default();
+            let mut cache = Cache::new(&mut frame);
+            cache.update(track);
+            page(cache.filled())
                 .canvas()
                 .assert_laid_out(PAGE, want, what);
         };

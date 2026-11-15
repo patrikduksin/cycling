@@ -581,6 +581,55 @@ fn a_stimulus_replay_of_a_fixture_shows_what_the_recording_showed() {
     );
 }
 
+#[test]
+fn a_strict_replay_of_a_fixture_shows_the_recorded_frames() {
+    let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
+    let sim = Sim::replay(&capture);
+    let report = sim.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+}
+
+#[test]
+fn a_strict_replay_holds_a_trace_from_before_panel_digests_to_its_frames() {
+    use firmware_services::trace::frozen::{Record, Recorder};
+    use firmware_services::trace::{Event, decode, encode_header};
+    let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
+    let (header, events) = decode(&capture.trace).unwrap();
+    let mut events: Vec<Event<'_>> = events.collect();
+    assert!(!events.iter().any(|event| matches!(event, Event::Panel(_))));
+    let frames: Vec<usize> = (0..events.len())
+        .filter(|&at| matches!(events[at], Event::Frame(_)))
+        .collect();
+    assert!(frames.len() > 10, "{}", frames.len());
+    let at = frames[frames.len() / 2];
+    if let Event::Frame(digest) = events[at] {
+        events[at] = Event::Frame(digest ^ 1);
+    }
+    let mut trace = vec![0u8; 4096];
+    let len = encode_header(&header, &mut trace).unwrap();
+    trace.truncate(len);
+    let mut recorder = Recorder::new(
+        vec![0u8; 4096].into_boxed_slice(),
+        shell_simulator::replay::Blocks(trace),
+    );
+    for event in &events {
+        recorder.record(event);
+    }
+    let mut trace = recorder.sink().0.clone();
+    trace.extend_from_slice(recorder.open_block());
+    let altered = shell_simulator::replay::Capture {
+        origin: capture.origin.clone(),
+        trace,
+    };
+    let report = Sim::replay(&altered).device.report().unwrap();
+    assert_eq!(
+        report.count(shell_simulator::replay::Kind::Seen),
+        1,
+        "{:?}",
+        report.first
+    );
+}
+
 fn cycling_replay(cwd: &Path, out: Option<&Path>) -> std::process::Output {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_trace"));
     command

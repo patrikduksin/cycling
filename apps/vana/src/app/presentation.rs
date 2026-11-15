@@ -1,7 +1,6 @@
 //! Foreground scheduling, view preparation and radar alerts.
 use super::Runtime;
 use super::cues::Cue;
-use super::night::NIGHT_PERCENT;
 use super::recording::{Medium, Request, RideMessage};
 use crate::clock::Zone;
 use crate::daylight::Sun;
@@ -34,7 +33,7 @@ use device_api::power::Power;
 use device_api::sensors::Startup;
 use device_api::sound::Sound;
 use device_api::storage::OwnedFlash;
-use firmware_shell::shell::{Screen, Shell};
+use firmware_shell::shell::{Drawn, Picture, Screen, Shell};
 
 /// Sensors whose battery wants changing, as Ready and Home name them. While
 /// any sensor is not live it is missing first and no battery is news.
@@ -300,14 +299,6 @@ impl Default for Display {
     }
 }
 
-/// A Home frame on the panel: what it shows, and the panel's submission
-/// count once it was drawn, which any later frame raises.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct HomeOnPanel {
-    digest: u64,
-    submissions: u32,
-}
-
 impl Display {
     pub(super) fn is_active(self) -> bool {
         matches!(self, Self::Active { .. })
@@ -330,14 +321,10 @@ impl Runtime {
         &self,
         system: &mut Shell<D, I, P, B>,
     ) {
-        let view = View::new(Page::Boot, 0, None);
-        let light = self.light();
-        system.draw_canvas(240, 320, |row| {
-            view.paint(row);
-            if light {
-                look::apply(row.pixels_mut());
-            }
-        });
+        let mut view = View::new(Page::Boot, 0, None);
+        view.light = self.light();
+        let scene = view.prepare();
+        system.draw_canvas(240, 320, |row| scene.paint(row));
     }
 
     pub fn present<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
@@ -347,14 +334,25 @@ impl Runtime {
         ant: &impl Ant,
         position: &impl Positioning,
     ) {
-        self.follow_daylight(system, now, position);
+        self.follow_daylight(now, position);
+        system.set_curve(
+            self.preferences
+                .options
+                .auto_brightness
+                .then_some(self.policy().light_curve),
+        );
         // Once the device accepted turning off, the last frame stays.
         if system.foreground == Screen::Blank || self.turning_off() {
             return;
         }
-        let shown = shown_sample(&self.readings);
-        self.motion
-            .take(&shown, &radar_reports(&self.readings, now), now);
+        self.latch_numbers(now);
+        let shown = self.shown.sample();
+        self.motion.take(
+            &arrived_sample(&self.readings),
+            &radar_reports(&self.readings, now),
+            self.policy().glides,
+            now,
+        );
         // A new number, or a glide that moves a graphic, draws rather than
         // waiting for the page's usual pace.
         let due = self.motion_due(&shown, now);
@@ -575,12 +573,6 @@ impl Runtime {
             .max(now)
     }
 
-    /// Home draws its next frame at its usual pace even if nothing on it
-    /// changed, for a tool that measures a frame.
-    pub fn invalidate_home(&mut self) {
-        self.home_on_panel = None;
-    }
-
     pub fn suspend_display(&mut self) {
         self.display = Display::Suspended;
     }
@@ -652,10 +644,6 @@ impl Runtime {
             self.history_ride_started();
         }
         let pages = self.ride_pages();
-        let shown = match self.navigation.page {
-            Page::Ride => self.shown_workout(&self.preferences.profile),
-            _ => None,
-        };
         let ftp_offer = self.ftp_sheet();
         let picker_offset = self.list_offset(List::Workouts, now);
         let picker = (self.navigation.page == Page::Workouts).then(|| {
@@ -674,7 +662,7 @@ impl Runtime {
         let page = navigation.page;
         let gps = position.snapshot(now);
         let zone = self.preferences.options.zone;
-        let local = match self.readings.live.utc_ms {
+        let local = match self.shown.live().utc_ms {
             Some(ms) => Some(zone.local(ms / 1000)),
             None => gps.and_then(|p| p.gps.utc).map(|v| {
                 zone.local_of_day(
@@ -696,15 +684,17 @@ impl Runtime {
         view.now_ms = now;
         view.active_secs = self.ride.active_ms(now) / 1000;
         view.state = self.ride.active().status();
-        let sample = shown_sample(&self.readings);
+        let sample = self.shown.sample();
         view.power_3s = sample.power_watts;
-        view.sample = self.readings.live;
+        view.sample = self.shown.live();
         view.radar_paired = ant.channel(device_type::RADAR, now).is_some();
         view.auto_paused = self.ride.auto.paused();
         view.ride_page = navigation.ride_page;
         view.ride_pages = self.preferences.options.ride_pages;
         view.main_slots = self.preferences.options.main_slots;
-        view.totals = self.ride.totals;
+        let readout = self.shown.readout();
+        let (climbing, paused_secs) = (readout.climbing, readout.paused_secs);
+        view.totals = readout.totals;
         if page == Page::Ride && view.ride_page == RidePage::Lap {
             let laps = &self.ride.laps;
             let kept = (0..crate::ride::laps::HISTORY).rev();
@@ -712,13 +702,13 @@ impl Runtime {
                 .filter_map(|back| laps.finished(back))
                 .map(Into::into)
                 .collect();
-            view.show_laps(bars, laps.current(), laps.previous());
+            view.show_laps(bars, readout.lap, readout.previous_lap);
         }
-        view.zone_time = self.ride.zone_time;
+        view.zone_time = readout.zone_time;
         view.profile = self.preferences.profile;
         view.rider = self.preferences.options.rider;
         if page == Page::Ride {
-            view.training = shown;
+            view.training = readout.training;
             if view.ride_page == RidePage::Workout {
                 view.show_workout(match &self.ride.workout {
                     Some(player) => crate::screens::ride::workout_chart(player, &view.profile),
@@ -738,7 +728,7 @@ impl Runtime {
                 self.night.sun(now).map(|(sun, _)| sun),
                 self.preferences.options.zone,
             );
-            view.show_back(super::back::view_of(&self.back), sunset);
+            view.show_back(readout.back, sunset);
         }
         let gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         view.gps = match gps {
@@ -760,9 +750,7 @@ impl Runtime {
             }),
             Observation::Unavailable => None,
         };
-        view.paused_secs = navigation.paused_since.map_or(0, |since| {
-            (now.saturating_sub(since) / 1000).min(u64::from(u32::MAX)) as u32
-        });
+        view.paused_secs = paused_secs;
         view.pause_screen =
             page == Page::Ride && view.state == Status::Paused && !navigation.pause_hidden;
         view.toast = self.toast(now);
@@ -837,6 +825,7 @@ impl Runtime {
             // Borrowed from the ride and the look-ahead's own block, not copied.
             view.show_climb(crate::screens::ride::ClimbLent {
                 climbs: &self.ride.climbs,
+                climbing,
                 trace: &self.ride.trace,
                 forecast: super::lookahead::forecast_of(&self.lookahead),
                 pinned: super::lookahead::pinned_of(&self.lookahead),
@@ -848,40 +837,19 @@ impl Runtime {
             view.show_map(super::back::map_of(&self.back));
         }
         view.graphics = self.motion.graphics(self.motion_visible(), now);
-        view.prepare();
-        let home = view.home_digest().map(|digest| HomeOnPanel {
-            digest,
-            submissions: system.display_submissions,
-        });
-        if home.is_some() && home == self.home_on_panel && !system.frame_wanted(now) {
-            return;
-        }
-        system.draw_canvas(240, 320, |row| {
-            view.paint(row);
-            if light {
-                look::apply(row.pixels_mut());
-            }
-        });
+        let drawn = system.draw(&view.prepare(), now);
         let pixels = crate::screens::ride::pixels(&view.graphics, &view.profile);
         self.motion.drew(&sample, pixels, now);
-        self.home_on_panel = home
-            .filter(|_| !system.display_error)
-            .map(|home| HomeOnPanel {
-                submissions: system.display_submissions,
-                ..home
-            });
         // Only a frame the panel accepted is a milestone or answers a press;
         // a pending press waits for the next frame that reaches the panel.
-        if system.display_error {
-            return;
+        if drawn == Drawn::Sent {
+            let drawn = self.drawn_at(now);
+            self.timing.first_frame(drawn);
+            if matches!(page, Page::Home | Page::Setup) {
+                self.timing.first_ready(drawn);
+            }
+            self.timing.frame(drawn);
         }
-        let drawn = self.drawn_at(now);
-        self.timing.first_frame(drawn);
-        // Setup on a first start is as ready as Home.
-        if matches!(page, Page::Home | Page::Setup) {
-            self.timing.home(drawn);
-        }
-        self.timing.frame(drawn);
     }
 
     /// Home says what is still starting, or why turning off did not happen;
@@ -1331,10 +1299,11 @@ impl Runtime {
                 write!(value, "{}", profile.lthr_bpm)
             }
             Row::Brightness => {
-                if self.night.is_night() && display.brightness > NIGHT_PERCENT {
-                    let _ = write!(note, "NIGHT {NIGHT_PERCENT}%");
+                if options.auto_brightness {
+                    write!(value, "AUTO")
+                } else {
+                    write!(value, "{}%", display.brightness)
                 }
-                write!(value, "{}%", display.brightness)
             }
             Row::Daylight => {
                 use super::preferences::Daylight;
@@ -1375,6 +1344,11 @@ impl Runtime {
                         Theme::Auto => "AUTO",
                     }
                 )
+            }
+            Row::Mode => {
+                let policy = options.mode.policy();
+                let _ = write!(note, "{}", policy.note);
+                write!(value, "{}", policy.name)
             }
             Row::TimeZone => match options.zone {
                 Zone::Chile => {
@@ -1517,24 +1491,121 @@ impl Runtime {
         }
     }
 
+    fn policy(&self) -> &'static super::mode::Policy {
+        self.preferences.options.mode.policy()
+    }
+
+    fn latch_numbers(&mut self, now: u64) {
+        let (recording, second) = if self.ride.active().status() == Status::Recording {
+            (true, self.ride.active_ms(now) / 1000)
+        } else {
+            (false, now / 1000)
+        };
+        let moment = Moment {
+            recording,
+            second,
+            page: self.navigation.page,
+            ride_page: self.navigation.ride_page,
+            lap: self.ride.laps.current().number,
+            climbing: self.ride.climbs.climbing().is_some(),
+        };
+        if self.shown.stale(self.policy().numbers, moment) {
+            let ride = &self.ride;
+            let readout = Readout {
+                live: self.readings.live,
+                power_3s_watts: self.readings.power_3s_watts,
+                totals: ride.totals,
+                zone_time: ride.zone_time,
+                lap: ride.laps.current(),
+                previous_lap: ride.laps.previous(),
+                climbing: ride.climbs.climbing(),
+                training: self.shown_workout(&self.preferences.profile),
+                back: super::back::view_of(&self.back),
+                paused_secs: self.navigation.paused_since.map_or(0, |since| {
+                    (now.saturating_sub(since) / 1000).min(u64::from(u32::MAX)) as u32
+                }),
+            };
+            self.shown.set(readout, moment);
+        }
+    }
+
     /// When the readings `shown` or a glide next need a frame.
     fn motion_due(&self, shown: &crate::ride::log::Sample, now: u64) -> Option<u64> {
         let profile = self.preferences.profile;
         self.motion.due(
             self.motion_visible(),
             shown,
-            MOTION_FRAME_MS,
+            self.policy().min_motion_frame_gap_ms,
             now,
             |graphics| crate::screens::ride::pixels(graphics, &profile),
         )
     }
 }
 
-/// The readings the ride page's numbers show: power is its 3 s average.
-pub(super) fn shown_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
+fn arrived_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
     crate::ride::log::Sample {
         power_watts: readings.power_3s_watts,
         ..readings.live
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct Readout {
+    live: crate::ride::log::Sample,
+    power_3s_watts: Option<u16>,
+    totals: crate::ride::totals::Totals,
+    zone_time: crate::ride::zones::ZoneTime,
+    lap: crate::ride::laps::Lap,
+    previous_lap: Option<crate::ride::laps::Lap>,
+    climbing: Option<crate::ride::climb::Summary>,
+    training: Option<ride::Training>,
+    back: ride::Back,
+    paused_secs: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Moment {
+    recording: bool,
+    second: u64,
+    page: Page,
+    ride_page: RidePage,
+    lap: u16,
+    climbing: bool,
+}
+
+#[derive(Default)]
+pub(super) struct Shown {
+    taken: Option<Moment>,
+    readout: Readout,
+}
+
+impl Shown {
+    fn stale(&self, numbers: super::mode::Numbers, moment: Moment) -> bool {
+        numbers == super::mode::Numbers::OnArrival || self.taken != Some(moment)
+    }
+
+    fn set(&mut self, readout: Readout, moment: Moment) {
+        self.readout = readout;
+        self.taken = Some(moment);
+    }
+
+    pub(super) fn live(&self) -> crate::ride::log::Sample {
+        self.readout.live
+    }
+
+    pub(super) fn sample(&self) -> crate::ride::log::Sample {
+        crate::ride::log::Sample {
+            power_watts: self.readout.power_3s_watts,
+            ..self.readout.live
+        }
+    }
+
+    pub(super) fn readout(&self) -> &Readout {
+        &self.readout
+    }
+
+    pub(super) fn distance_mm(&self) -> u64 {
+        self.readout.totals.distance_mm()
     }
 }
 
@@ -1603,6 +1674,121 @@ mod tests {
     use super::*;
     use crate::daylight::sun_state;
     use firmware_services::gps::unix_seconds;
+
+    fn take(
+        shown: &mut Shown,
+        numbers: super::super::mode::Numbers,
+        (recording, second): (bool, u64),
+        readout: Readout,
+    ) {
+        take_at(shown, numbers, at(recording, second), readout);
+    }
+
+    fn at(recording: bool, second: u64) -> Moment {
+        Moment {
+            recording,
+            second,
+            page: Page::Ride,
+            ride_page: RidePage::Main,
+            lap: 1,
+            climbing: false,
+        }
+    }
+
+    fn take_at(
+        shown: &mut Shown,
+        numbers: super::super::mode::Numbers,
+        moment: Moment,
+        readout: Readout,
+    ) {
+        if shown.stale(numbers, moment) {
+            shown.set(readout, moment);
+        }
+    }
+
+    fn readout_at(watts: u16) -> Readout {
+        let mut readout = Readout::default();
+        readout.live.power_watts = Some(watts);
+        readout.power_3s_watts = Some(watts);
+        readout.paused_secs = u32::from(watts);
+        readout
+    }
+
+    #[test]
+    fn numbers_on_arrival_follow_every_reading_and_every_second_hold_until_it_turns() {
+        use super::super::mode::Numbers;
+        let mut shown = Shown::default();
+        take(&mut shown, Numbers::EverySecond, (true, 5), readout_at(200));
+        take(&mut shown, Numbers::EverySecond, (true, 5), readout_at(300));
+        assert_eq!(
+            shown.sample().power_watts,
+            Some(200),
+            "held within the second"
+        );
+        assert_eq!(shown.live().power_watts, Some(200));
+        take(&mut shown, Numbers::EverySecond, (true, 6), readout_at(400));
+        assert_eq!(
+            shown.sample().power_watts,
+            Some(400),
+            "retaken as the second turns"
+        );
+        take(&mut shown, Numbers::OnArrival, (true, 6), readout_at(500));
+        assert_eq!(shown.sample().power_watts, Some(500));
+        take(&mut shown, Numbers::EverySecond, (true, 6), readout_at(600));
+        assert_eq!(
+            shown.sample().power_watts,
+            Some(500),
+            "a mode change keeps the second"
+        );
+        take(
+            &mut shown,
+            Numbers::EverySecond,
+            (false, 6),
+            readout_at(700),
+        );
+        assert_eq!(
+            shown.sample().power_watts,
+            Some(700),
+            "the wall clock is another clock"
+        );
+    }
+
+    #[test]
+    fn a_new_page_lap_or_climb_retakes_the_numbers_within_the_second() {
+        use super::super::mode::Numbers;
+        let mut shown = Shown::default();
+        let main = at(true, 5);
+        take_at(&mut shown, Numbers::EverySecond, main, readout_at(200));
+        for (moment, watts) in [
+            (
+                Moment {
+                    ride_page: RidePage::Climb,
+                    ..main
+                },
+                300,
+            ),
+            (
+                Moment {
+                    ride_page: RidePage::Climb,
+                    lap: 2,
+                    ..main
+                },
+                400,
+            ),
+            (
+                Moment {
+                    ride_page: RidePage::Climb,
+                    lap: 2,
+                    climbing: true,
+                    ..main
+                },
+                500,
+            ),
+        ] {
+            take_at(&mut shown, Numbers::EverySecond, moment, readout_at(watts));
+            assert_eq!(shown.sample().power_watts, Some(watts));
+        }
+    }
 
     /// The sun sets near 17:42 in a Santiago winter and 20:55 in summer.
     #[test]

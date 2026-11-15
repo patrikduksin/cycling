@@ -10,10 +10,10 @@ dependencies = ["osmium>=4.1", "numpy>=2.3", "tifffile>=2025.6", "imagecodecs>=2
 cycling-terrain = "cycling_terrain.cli:main"
 
 [dependency-groups]
-dev = ["pytest==9.1.1", "ruff==0.17.0"]
+dev = ["pytest==9.2.0", "ruff==0.17.5"]
 
 [build-system]
-requires = ["uv_build>=0.13.1,<0.14"]
+requires = ["uv_build>=0.13.8,<0.14"]
 build-backend = "uv_build"
 
 [tool.pytest]

@@ -72,12 +72,12 @@ white on its way to the panel; no screen paints a second palette.
 
 ### Night
 
-At night VANA keeps the same palette and lowers the backlight to at most 20%
-(`app::night::NIGHT_PERCENT`). The background is already black, so the
-backlight is what glares in the dark. A dimmer palette would make the panel
-darker still but would also shrink the gap between `WHITE` readings and
-`SECONDARY` labels, and between `AMBER` and `RED` alerts and everything else,
-so it is not used: alerts keep their full contrast at night.
+At night VANA keeps the same palette. The backlight does not follow the sun:
+with Brightness on AUTO the ambient light sensor lowers it in the dark (see
+Brightness below). A dimmer palette would make the panel darker still but
+would also shrink the gap between `WHITE` readings and `SECONDARY` labels, and
+between `AMBER` and `RED` alerts and everything else, so it is not used:
+alerts keep their full contrast at night.
 
 DAY / NIGHT in Settings → Display chooses AUTO, DAY or NIGHT. In AUTO the sun
 decides: night begins once it is 4° below the horizon at the last fixed
@@ -85,9 +85,28 @@ position (mid civil twilight) and ends once it is back above 2° below, so a
 reading near the line cannot flicker. The time is the recorded UTC: network
 time, else the GPS receiver's clock. Without a position, the local clock
 decides (night from 20:00 to 7:00); with no clock at all, the last answer
-stays. The night cap goes through the shell's backlight ceiling
-(`Shell::set_ceiling`), which is never stored, so the rider's chosen
-brightness is unchanged.
+stays. Night decides only the THEME's AUTO and the DAY / NIGHT note.
+
+### Brightness
+
+BRIGHTNESS in Settings → Display steps through AUTO, 25, 50, 75 and 100%. A
+percent is a fixed brightness. AUTO follows the ambient light sensor along
+the curve of the display mode (`app::mode::TABLE`): SAVER is lower than
+NORMAL at every light. A change in the light must last before the backlight follows: a
+darker one for more than 6 s, a brighter one for more than 2 s, so a tunnel,
+a passing shadow or lamps close together never move it. Light that repeats
+slower than that, bright for over 2 s and dark for over 6 s, can still move it
+(street lamps far apart at a slow pace); a ride trace will show whether real
+lamps reach the sensor that strongly. It then rises at most 8 points every
+100 ms (a full brightening takes about a second) and falls at most 1 point
+every 100 ms (100% to 10% takes 9 s). A change smaller than 3 points is
+ignored. The curves are provisional: no daylight reading
+is known yet, so NORMAL reaches 100% at a reading of 4,000. Without a fresh
+reading AUTO shows the stored percent, and so does charging standby. Dimming
+after inactivity keeps its own level on top of either. A record saved before
+AUTO loads as AUTO. The terminal's `BRIGHTNESS n` is a rider's percent, a fixed brightness, and
+`BRIGHTNESS AUTO` returns to AUTO; VANA adopts either on its next pass and
+stores it. `SETTINGS` reports `auto` and the `effective` level.
 
 ### Light
 
@@ -431,9 +450,24 @@ a moment only.
 Motion marks the device's own moments. Each is a ring that moves and text
 that fades, prepared like any other frame, so a motion frame costs what a
 still one does (about 10 ms on the C606). Motion frames draw every 40 ms; the
-charging icon and sheets step every 500 ms; still pages redraw once a second.
-Home draws only when what it shows changes, such as the clock's minute, the
-battery or a sensor, or when a press or a test capture waits for a frame.
+charging icon and sheets step every 500 ms; other pages look again once a
+second. A page sends a frame only when what it shows changes, such as the
+clock's minute, a reading, a glide that reaches the next pixel, the battery
+or a sensor, or when a press or a test capture waits for a frame. A charging
+battery that is almost full climbs by less than a pixel, so it sends nothing.
+
+MODE in Settings → Display chooses NORMAL or SAVER, the rider's call, never
+automatic. NORMAL is everything described here. SAVER draws less: gauges and
+radar markers jump to each reading or report instead of gliding, radar
+markers stop closing between reports, and every number on the ride pages changes
+once a second, when the ride clock's second turns (the wall clock's while no
+ride records): speed, power, heart rate, cadence, the distance and totals on
+the lower line and the stats, lap, climb, workout and way-back figures. Gauges and markers still show every reading as it arrives, so
+SAVER draws a frame for each report, about four a second, and one for the
+numbers. `app/mode.rs` holds one table row per mode; the rest of VANA reads
+its fields and never asks which mode is on. The choice is stored in VANA's
+record, so it survives a restart, and a record saved before it loads as
+NORMAL.
 
 Numbers never glide. A rider glancing down mid-glide could not read one, so
 every number and word on the ride screen jumps to each reading as it
@@ -454,7 +488,7 @@ alerts use readings as they arrive. The mechanism is
 | Turn off | The ring's tail chases its head round until it is gone, while the wordmark and TURNING OFF fade to black. VANA asks the device to turn off once the black frame is on the panel. | 480 ms |
 | Idle warning | An `AMBER` ring round the seconds empties with them. | 30 s |
 | Charging while off | A `GREEN` ring shows the charge with its percentage inside, and a 50% green arc climbs from the charge to full as the status bar's icon does. CHARGED at 100%. The screen goes dark after 20 s; holding top left starts VANA as always. | 20 s |
-| Day to night | The backlight steps 4% every 100 ms from the rider's brightness down to the night level, and back up in the morning. Nothing is redrawn. | About 1 s at 50% |
+| Light changes | In AUTO the backlight follows a light that has changed for 2 s (brighter) or 6 s (darker), then ramps up 8% or down 1% every 100 ms. Nothing is redrawn. | Up: from 2 s, a full step in about 1 s more. Down: from 6 s, 100% to 10% in 9 s |
 
 ## Settings
 
@@ -478,16 +512,17 @@ Acting on a row does one of three things:
 - a number (FTP, LTHR, WHEEL) opens the editor: one `ACCENT` field with the value in
   `VALUE` and the note it anchors (a zone, or AUTO or MANUAL for the wheel), over
   minus and plus pads. Editing WHEEL steps by 5 mm and makes the size MANUAL;
-- a choice steps to its next value at once (brightness 25/50/75/100%, dim
-  after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
+- a choice steps to its next value at once (brightness auto/25/50/75/100%, dim
+  after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, mode normal/saver, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
   km/at start, wheel mode auto/manual, the main page's two lower readings (cycling through the list below), ride pages (STATS, LAP, CLIMB, MAP, BACK TO START) on/off, sounds on/off);
 - an action opens a page (SENSORS, BESTS, FORM) or a flow (PHONE, a placeholder until the
   phone companion lands).
 
 Storage and firmware rows only show facts. The save status sits in the
 bottom band, under any toast. Brightness and dimming belong to the shell, so
-VANA asks it to apply them at once and store them; the other choices are
-stored in VANA's preference record.
+VANA asks it to apply them at once and store them; the other choices, AUTO
+among them, are stored in VANA's preference record and VANA hands the shell
+the display mode's curve.
 
 TIME ZONE sets the clock on the status bar, ride start times and night by the
 clock (`clock::Zone`). CHILE, the default, follows mainland Chile's summer
@@ -539,9 +574,9 @@ The unit beside the value names the reading: RPM, KM, NP, KCAL, KJ or M. The
 three averages share the unit AVG, because the half-width slot has no room for
 more, and their colour tells them apart (`POWER`, `HEART`, `SPEED`). A count
 past 9999 KCAL reads in thousands ("10K"), so a number is never cut off. A
-reading with no data yet shows `--`. The choice is the last two bytes of VANA's
-preference record from version 8 (`app::preferences`); older records load with
-the defaults.
+reading with no data yet shows `--`. The choice is two bytes of VANA's preference
+record from version 8, and the display mode's byte follows them from version 9
+(`app::preferences`); older records load with the defaults.
 
 RIDE PAGES (STATS, LAP, CLIMB, MAP, BACK TO START) lists one row per optional ride page, five rows that scroll. The ride screen's page dots
 count the pages that are on, and a page that is off never takes a dot, a MOVE
@@ -718,9 +753,10 @@ matched against glyph templates rendered from the same faces. The reader
 tolerates glyphs that touch, as in `TT`. If a new layout makes two labels
 ambiguous, rename one rather than weakening the reader.
 
-`cycling sim` writes screenshots and videos to `.local/sim/latest`.
+`cycling sim` writes screenshots to `.local/sim/latest`; with `SIM_VIDEO=1` it
+writes videos too.
 `cycling sim-compare --pr <n>` renders the same scenarios on main and on a PR,
-side by side.
+side by side; `cycling verify --pr <n>` runs it as its screens lane.
 
 `cycling readme-screenshots` cuts the panel out of the checkpoints shown in the
 README and writes them to `docs/screenshots`. Run it after changing one of those

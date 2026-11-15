@@ -23,7 +23,7 @@ use crate::ride::log::{Slot, Status, decode};
 use crate::ride::turn_back::Leg;
 use crate::screens::chrome::Tone;
 pub use crate::screens::ride::MapFrame;
-use crate::screens::ride::{Back, MapKey, RidePage, Track, update_map};
+use crate::screens::ride::{Back, FilledMap, MapCache, RidePage, Track};
 use device_api::bulk::ReadWrite;
 
 pub use crate::ride::homing::Crumb;
@@ -78,9 +78,7 @@ impl Resume {
 pub struct BackToStart {
     homing: Homing<'static>,
     outing: Option<Outing>,
-    /// The map page's track, which `map_of` keeps up to date.
-    map: &'static mut MapFrame,
-    map_key: Option<MapKey>,
+    map: MapCache<'static>,
     /// The loaded course and whether it matches the stored one.
     pub(super) course: &'static mut Course,
     /// Finds the turns of a course while it uploads.
@@ -106,8 +104,7 @@ impl BackToStart {
         Self {
             homing: Homing::new(crumbs).with_line(line).with_turns(turns),
             outing: None,
-            map,
-            map_key: None,
+            map: MapCache::new(map),
             course,
             finder,
             kept: super::course::Kept::default(),
@@ -397,10 +394,10 @@ pub(super) fn refresh_map(back: &mut Option<&'static mut BackToStart>) {
         course: state.homing.course(),
         ahead: state.homing.course_ahead(),
     };
-    update_map(state.map, &mut state.map_key, &track);
+    state.map.update(&track);
 }
 
 /// What the map page draws: borrows `Runtime::back`'s frame.
-pub(super) fn map_of<'a>(back: &'a Option<&'static mut BackToStart>) -> Option<&'a MapFrame> {
-    back.as_deref().map(|state| &*state.map)
+pub(super) fn map_of<'a>(back: &'a Option<&'static mut BackToStart>) -> Option<FilledMap<'a>> {
+    back.as_deref()?.map.filled()
 }

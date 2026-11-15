@@ -11,8 +11,8 @@
   zlib,
 }:
 let
-  version = "1.97.0.0";
-  gcc = "15.2.0_20250920";
+  version = "1.100.0.0";
+  gcc = "16.1.0_20260609";
   arch =
     {
       x86_64-linux = "x86_64";
@@ -23,21 +23,21 @@ let
     url = "https://github.com/esp-rs/rust-build/releases/download/v${version}/rust-${version}-${arch}-unknown-linux-gnu.tar.xz";
     sha256 =
       {
-        x86_64 = "a99bfee69221e9ff6d86388f6811ee688cd405e6a0400a3cd1784e8d463e9d99";
-        aarch64 = "dc6efa8906849608497c2ffb3d6a9466588835a79b5e8886c229de133640945c";
+        x86_64 = "c2bc32282bebe7140d283348d6f8b16174b44f5652fb77dab1ad780f7fdad877";
+        aarch64 = "a2f6c066ba7ec80f7532038743dfc844312b7f35956fb332c572b5f8dfb9f8b5";
       }
       .${arch};
   };
   rustSrc = fetchurl {
     url = "https://github.com/esp-rs/rust-build/releases/download/v${version}/rust-src-${version}.tar.xz";
-    sha256 = "568d688b9f8f332ec4d04657544fad23e99ce11e9e6cf5835979e68a28c68b73";
+    sha256 = "cb34abdb668ce567b209af5d31159d5e453fe18dd15d873e6719453d261b13de";
   };
   xtensaGcc = fetchurl {
     url = "https://github.com/espressif/crosstool-NG/releases/download/esp-${gcc}/xtensa-esp-elf-${gcc}-${arch}-linux-gnu.tar.xz";
     sha256 =
       {
-        x86_64 = "e3d77ad14544814527bbe7a2d0f79ec4592a4e23392c51c7388c0e686b6a6977";
-        aarch64 = "66ae567726b9d7ab234b16dfebbe5a7ba8891463bfb3e28cc4a45c509c9b0b7b";
+        x86_64 = "f708752ebb35cab21f184b2574114ed1187619db0edb8a4ba913c06ca2fa675e";
+        aarch64 = "785ee242bfbdb3ac4e764e85d2f87109c7c5f3da57d742da9a7c58c0d0906149";
       }
       .${arch};
   };

@@ -1,9 +1,8 @@
 //! Graphics drawn between sensor samples. ANT+ sensors report about four
 //! times a second, so the main page's zone gauges and the radar markers
 //! glide from one sample to the next instead of jumping. Numbers never
-//! glide: a rider glancing down mid-glide could not read one, so they show
-//! each reading as it arrives. Recording, totals and radar alerts use the
-//! readings as they arrive too.
+//! glide: a rider glancing down mid-glide could not read one. Recording,
+//! totals and radar alerts use the readings as they arrive.
 use crate::ride::log::Sample;
 use crate::screens::ride::Pixels;
 use crate::screens::workout::Graphics;
@@ -30,6 +29,7 @@ pub(super) struct Motion {
     drawn_ms: u64,
     numbers: Numbers,
     pixels: Pixels,
+    glides: bool,
     power: Glide,
     heart: Glide,
     radar: radar::Status,
@@ -38,16 +38,12 @@ pub(super) struct Motion {
 
 impl Default for Motion {
     fn default() -> Self {
-        Self {
-            drawn_ms: 0,
-            numbers: Numbers::default(),
-            pixels: Pixels::default(),
-            power: Glide::new(READING_MS),
-            heart: Glide::new(READING_MS),
-            radar: radar::Status::default(),
-            targets: Default::default(),
-        }
+        Self::new(true)
     }
+}
+
+const fn glide(glides: bool, ms: u32) -> Glide {
+    Glide::new(if glides { ms } else { 0 })
 }
 
 /// The readings the main page writes as numbers.
@@ -73,24 +69,27 @@ impl From<&Sample> for Numbers {
 /// One radar slot: the report it last saw and where its marker glides.
 struct Track {
     glide: Glide,
+    extrapolates: bool,
     seen: Option<radar::Target>,
     /// When the radar sent the report the marker moves on from.
     reported_ms: u64,
 }
 
-impl Default for Track {
-    fn default() -> Self {
+impl Track {
+    fn new(glides: bool) -> Self {
         Self {
-            glide: Glide::new(TARGET_MS),
+            glide: glide(glides, TARGET_MS),
+            extrapolates: glides,
             seen: None,
             reported_ms: 0,
         }
     }
-}
 
-impl Track {
     /// How far a target closes from its report to `now`, in mm.
-    fn closed(target: radar::Target, reported_ms: u64, now: u64) -> i32 {
+    fn closed(&self, target: radar::Target, reported_ms: u64, now: u64) -> i32 {
+        if !self.extrapolates {
+            return 0;
+        }
         let closing_mm_s = i64::from(target.closing_speed_cm_s) * 10;
         let since = now.saturating_sub(reported_ms).min(EXTRAPOLATE_MS) as i64;
         (closing_mm_s * since / 1000) as i32
@@ -100,7 +99,7 @@ impl Track {
     /// since the last report.
     fn range(&self, now: u64) -> Option<i32> {
         let target = self.seen?;
-        let closed = Self::closed(target, self.reported_ms, now);
+        let closed = self.closed(target, self.reported_ms, now);
         Some(self.glide.at(now)?.saturating_sub(closed).max(0))
     }
 
@@ -123,7 +122,7 @@ impl Track {
         let reported_ms = received_ms.unwrap_or(now).min(now);
         // The marker stays where it is drawn and moves on from the new
         // report: the glide starts that much further out.
-        let lead = Self::closed(target, reported_ms, now);
+        let lead = self.closed(target, reported_ms, now);
         match self.range(now) {
             Some(drawn) if (drawn - reported).abs() < NEW_VEHICLE_MM => {
                 self.glide.restart(drawn + lead, reported, now)
@@ -158,10 +157,11 @@ impl Track {
 
     fn moving(&self, now: u64) -> bool {
         self.glide.moving(now)
-            || self.seen.is_some_and(|target| {
-                target.closing_speed_cm_s > 0
-                    && now.saturating_sub(self.reported_ms) < EXTRAPOLATE_MS
-            })
+            || self.extrapolates
+                && self.seen.is_some_and(|target| {
+                    target.closing_speed_cm_s > 0
+                        && now.saturating_sub(self.reported_ms) < EXTRAPOLATE_MS
+                })
     }
 }
 
@@ -188,9 +188,30 @@ pub(super) struct Visible {
 }
 
 impl Motion {
+    fn new(glides: bool) -> Self {
+        Self {
+            drawn_ms: 0,
+            numbers: Numbers::default(),
+            pixels: Pixels::default(),
+            glides,
+            power: glide(glides, READING_MS),
+            heart: glide(glides, READING_MS),
+            radar: radar::Status::default(),
+            targets: core::array::from_fn(|_| Track::new(glides)),
+        }
+    }
+
     /// Take the latest readings, `sample` with power as its 3 s average:
     /// a changed one starts its glide at `now`.
-    pub(super) fn take(&mut self, sample: &Sample, radar: &Reports, now: u64) {
+    pub(super) fn take(&mut self, sample: &Sample, radar: &Reports, glides: bool, now: u64) {
+        if glides != self.glides {
+            *self = Self {
+                drawn_ms: self.drawn_ms,
+                numbers: self.numbers,
+                pixels: self.pixels,
+                ..Self::new(glides)
+            };
+        }
         self.power.set(sample.power_watts.map(i32::from), now);
         self.heart.set(sample.heart_bpm.map(i32::from), now);
         self.radar = radar.snapshot.status;
@@ -232,15 +253,11 @@ impl Motion {
         self.pixels = pixels;
     }
 
-    /// When the next frame should draw what changed since the last one,
-    /// at most one every `frame_ms`: a new number as it comes, a glide
-    /// once a graphic it moves would land on another pixel. None while
-    /// neither.
     pub(super) fn due(
         &self,
         visible: Visible,
         sample: &Sample,
-        frame_ms: u64,
+        min_gap_ms: u64,
         now: u64,
         pixels: impl Fn(&Graphics) -> Pixels,
     ) -> Option<u64> {
@@ -248,7 +265,7 @@ impl Motion {
         if visible == Visible::default() {
             return None;
         }
-        let mut at = now.max(self.drawn_ms + frame_ms);
+        let mut at = now.max(self.drawn_ms + min_gap_ms);
         if visible.main && Numbers::from(sample) != self.numbers {
             return Some(at);
         }
@@ -305,7 +322,7 @@ mod tests {
     /// Take `sample` and `radar` and draw a frame at `now`, as the runtime
     /// does.
     fn draw(motion: &mut Motion, sample: &Sample, radar: &Reports, now: u64) -> Graphics {
-        motion.take(sample, radar, now);
+        motion.take(sample, radar, true, now);
         let graphics = motion.graphics(ALL, now);
         motion.drew(sample, on_screen(&graphics), now);
         graphics
@@ -334,7 +351,7 @@ mod tests {
         let first = draw(&mut motion, &sample(8_000, 200), &quiet(), 0);
         assert_eq!(first.power_3s, Some(200), "the first sample shows at once");
         assert_eq!(first.heart_bpm, Some(140));
-        motion.take(&sample(9_000, 300), &quiet(), 250);
+        motion.take(&sample(9_000, 300), &quiet(), true, 250);
         let drawn: std::vec::Vec<_> = (250..=500)
             .step_by(40)
             .map(|now| motion.graphics(ALL, now).power_3s.unwrap())
@@ -444,7 +461,7 @@ mod tests {
         // The next report, received at 245 ms and taken at 250 ms, starts
         // from the marker rather than from its own range.
         let next = report(96_875, 1_216, 245);
-        motion.take(&sample, &next, 250);
+        motion.take(&sample, &next, true, 250);
         let drawn = motion.graphics(ALL, 250);
         assert!(
             range(&drawn).abs_diff(last) < 200,
@@ -469,9 +486,60 @@ mod tests {
         let drawn = draw(&mut motion, &sample, &report(190_000, 0, 3_000), 3_040);
         assert_eq!(range(&drawn), 190_000);
         // A cleared slot clears its marker, on the next frame.
-        motion.take(&sample, &quiet(), 3_080);
+        motion.take(&sample, &quiet(), true, 3_080);
         assert_eq!(due(&motion, ALL, &sample, 3_090), Some(3_090));
         assert_eq!(motion.graphics(ALL, 3_090).radar.targets[0], None);
+    }
+
+    #[test]
+    fn without_glides_gauges_and_markers_jump_when_a_reading_or_report_arrives() {
+        let mut motion = Motion::default();
+        let jumpy = |motion: &mut Motion, sample: &Sample, radar: &Reports, now| {
+            motion.take(sample, radar, false, now);
+            let graphics = motion.graphics(ALL, now);
+            motion.drew(sample, on_screen(&graphics), now);
+            graphics
+        };
+        let first = jumpy(
+            &mut motion,
+            &sample(8_000, 200),
+            &report(100_000, 1_216, 0),
+            0,
+        );
+        assert_eq!(first.power_3s, Some(200));
+        assert_eq!(range(&first), 100_000);
+        for now in [40, 120, 240] {
+            let held = motion.graphics(ALL, now);
+            assert_eq!(held.power_3s, Some(200), "{now}");
+            assert_eq!(range(&held), 100_000, "no closing at {now}");
+            assert_eq!(due(&motion, ALL, &sample(8_000, 200), now), None, "{now}");
+        }
+        let next = sample(8_000, 300);
+        let report = report(96_875, 1_216, 245);
+        motion.take(&next, &report, false, 250);
+        let at_once = motion.graphics(ALL, 250);
+        assert_eq!(at_once.power_3s, Some(300), "the new reading shows at once");
+        assert_eq!(range(&at_once), 96_875, "the new report shows at once");
+        assert_eq!(due(&motion, ALL, &next, 250), Some(250), "one frame for it");
+        motion.drew(&next, on_screen(&at_once), 250);
+        assert_eq!(due(&motion, ALL, &next, 260), None);
+        assert_eq!(due(&motion, ALL, &next, 3_000), None, "nor a quiet radar");
+    }
+
+    #[test]
+    fn changing_the_mode_restarts_the_glides_at_their_readings() {
+        let mut motion = Motion::default();
+        draw(&mut motion, &sample(8_000, 200), &quiet(), 0);
+        motion.take(&sample(8_000, 300), &quiet(), true, 1_000);
+        assert!(motion.graphics(ALL, 1_050).power_3s.unwrap() < 300);
+        motion.take(&sample(8_000, 300), &quiet(), false, 1_050);
+        assert_eq!(motion.graphics(ALL, 1_050).power_3s, Some(300));
+        motion.take(&sample(8_000, 100), &quiet(), false, 1_100);
+        assert_eq!(motion.graphics(ALL, 1_100).power_3s, Some(100));
+        motion.take(&sample(8_000, 100), &quiet(), true, 1_150);
+        motion.take(&sample(8_000, 200), &quiet(), true, 1_200);
+        let mid = motion.graphics(ALL, 1_250).power_3s.unwrap();
+        assert!(mid > 100 && mid < 200, "{mid}");
     }
 
     #[test]
@@ -491,7 +559,7 @@ mod tests {
             range_mm,
             closing_speed_cm_s,
         };
-        let mut track = Track::default();
+        let mut track = Track::new(true);
         // Not close: 40.625 m at 3.04 m/s, whose glide would cross 40 m.
         let far = target(40_625, 304);
         assert!(!radar::close(far));

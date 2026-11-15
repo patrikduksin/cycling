@@ -7,13 +7,13 @@ use shell_simulator::bench::{SCENES, hash, measure};
 const HASHES: [(&str, u64); 32] = [
     ("home", 0x5dea_9846_5bc7_40a5),
     ("ride main + radar", 0xf365_f621_41fa_2a0d),
-    ("climb", 0x9329_f06e_2631_606d),
+    ("climb", 0xf04e_a2e3_fb4e_82f6),
     ("summary", 0x6404_f2e0_1f19_a7b9),
     ("sensors list", 0x0f56_378e_4d72_916a),
     ("workouts", 0x3fcb_3076_c488_efd3),
     ("ride stats", 0x38c8_5703_1839_7873),
-    ("lap", 0x9bef_c4b9_62e2_d112),
-    ("workout", 0x75b3_e80b_c86a_0848),
+    ("lap", 0x1865_f901_76e6_b43e),
+    ("workout", 0xcce5_4cc7_16cc_65be),
     ("map", 0x19c2_6ffd_d6ac_5393),
     ("back to start", 0x1920_6d8e_0f5d_1fe3),
     ("paused", 0x1abb_4ec0_be41_8109),
@@ -35,7 +35,7 @@ const HASHES: [(&str, u64); 32] = [
     ("form no power", 0x5ed1_0eab_524c_8dc5),
     ("phone from saved ride", 0xffb0_a2fb_7c21_fe75),
     ("main with workout band", 0x98ed_6b1c_e526_7bcc),
-    ("settings light", 0x59c2_096e_5dc3_6e44),
+    ("settings light", 0x5b8f_741b_699d_2bea),
     ("home light", 0x09fb_425c_a4c6_e514),
 ];
 

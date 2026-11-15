@@ -2,9 +2,9 @@
 use core::task::Poll;
 
 use bt_hci::cmd::le::{
-    LeClearAdvSets, LeReadNumberOfSupportedAdvSets, LeSetAdvData, LeSetAdvEnable, LeSetAdvParams,
-    LeSetAdvSetRandomAddr, LeSetExtAdvData, LeSetExtAdvEnable, LeSetExtAdvParams, LeSetExtScanResponseData,
-    LeSetScanResponseData,
+    LeAddDeviceToFilterAcceptList, LeClearAdvSets, LeClearFilterAcceptList, LeReadNumberOfSupportedAdvSets,
+    LeSetAdvData, LeSetAdvEnable, LeSetAdvParams, LeSetAdvSetRandomAddr, LeSetExtAdvData, LeSetExtAdvEnable,
+    LeSetExtAdvParams, LeSetExtScanResponseData, LeSetScanResponseData,
 };
 use bt_hci::controller::{Controller, ControllerCmdSync};
 use bt_hci::param::{AddrKind, AdvChannelMap, AdvHandle, AdvKind, AdvSet, BdAddr, LeConnRole, Operation};
@@ -12,16 +12,34 @@ use embassy_futures::select::{select, Either};
 
 use crate::advertise::{Advertisement, AdvertisementParameters, AdvertisementSet, RawAdvertisement};
 use crate::connection::Connection;
-use crate::{bt_hci_duration, bt_hci_ext_duration, Address, BleHostError, Error, PacketPool, Stack};
+use crate::host::BleHost;
+use crate::{bt_hci_duration, bt_hci_ext_duration, Address, BleHostError, Error, PacketPool};
 
 /// Type which implements the BLE peripheral role.
 pub struct Peripheral<'d, C, P: PacketPool> {
-    stack: &'d Stack<'d, C, P>,
+    host: &'d BleHost<'d, C, P>,
 }
 
 impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
-    pub(crate) fn new(stack: &'d Stack<'d, C, P>) -> Self {
-        Self { stack }
+    pub(crate) fn new(host: &'d BleHost<'d, C, P>) -> Self {
+        Self { host }
+    }
+
+    /// Set the filter accept list for advertising.
+    ///
+    /// This clears the existing filter accept list on the controller and adds the provided entries.
+    /// Must be called before starting advertising (not while advertising is active).
+    pub async fn set_filter_accept_list(&mut self, filter_accept_list: &[Address]) -> Result<(), BleHostError<C::Error>>
+    where
+        C: ControllerCmdSync<LeClearFilterAcceptList> + ControllerCmdSync<LeAddDeviceToFilterAcceptList>,
+    {
+        let host = &self.host;
+        host.command(LeClearFilterAcceptList::new()).await?;
+        for entry in filter_accept_list {
+            host.command(LeAddDeviceToFilterAcceptList::new(entry.kind, entry.addr))
+                .await?;
+        }
+        Ok(())
     }
 
     /// Start advertising with the provided parameters and return a handle to accept connections.
@@ -36,7 +54,7 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
             + for<'t> ControllerCmdSync<LeSetAdvEnable>
             + for<'t> ControllerCmdSync<LeSetScanResponseData>,
     {
-        let host = &self.stack.host;
+        let host = &self.host;
 
         if !data.is_valid() {
             return Err(BleHostError::BleHost(Error::InvalidValue));
@@ -67,16 +85,13 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
             (false, true, _) => AdvKind::AdvScanInd,
             (false, false, _) => AdvKind::AdvNonconnInd,
         };
-        let peer = data.peer.unwrap_or(Address {
-            kind: AddrKind::PUBLIC,
-            addr: BdAddr::default(),
-        });
+        let peer = data.peer.unwrap_or(Address::new(AddrKind::PUBLIC, BdAddr::default()));
 
         host.command(LeSetAdvParams::new(
             bt_hci_duration(params.interval_min),
             bt_hci_duration(params.interval_max),
             kind,
-            host.address.map(|a| a.kind).unwrap_or(AddrKind::PUBLIC),
+            params.own_addr_kind.unwrap_or_else(|| host.own_addr_kind()),
             peer.kind,
             peer.addr,
             params.channel_map.unwrap_or(AdvChannelMap::ALL),
@@ -109,7 +124,7 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
         host.command(LeSetAdvEnable::new(true)).await?;
         drop.defuse();
         Ok(Advertiser {
-            stack: self.stack,
+            host: self.host,
             extended: false,
             done: false,
         })
@@ -124,7 +139,7 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
     where
         C: for<'t> ControllerCmdSync<LeSetAdvData> + for<'t> ControllerCmdSync<LeSetScanResponseData>,
     {
-        let host = &self.stack.host;
+        let host = &self.host;
 
         if !data.is_valid() {
             return Err(BleHostError::BleHost(Error::InvalidValue));
@@ -173,7 +188,7 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
             + for<'t> ControllerCmdSync<LeSetExtScanResponseData<'t>>,
     {
         assert_eq!(sets.len(), handles.len());
-        let host = &self.stack.host;
+        let host = &self.host;
 
         // Check all sets are valid
         for set in sets.iter() {
@@ -203,17 +218,21 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
             let handle = AdvHandle::new(i as u8);
             let data: RawAdvertisement<'k> = set.data.into();
             let params = set.params;
-            let peer = data.peer.unwrap_or(Address {
-                kind: AddrKind::PUBLIC,
-                addr: BdAddr::default(),
-            });
+            let peer = data.peer.unwrap_or(Address::new(AddrKind::PUBLIC, BdAddr::default()));
+            let own_addr_kind = params.own_addr_kind.unwrap_or_else(|| host.own_addr_kind());
+            let random_addr = if let Some(addr) = set.address {
+                Some(addr)
+            } else {
+                host.address.as_ref().map(|a| a.addr)
+            };
+
             host.command(LeSetExtAdvParams::new(
                 handle,
                 data.props,
                 bt_hci_ext_duration(params.interval_min),
                 bt_hci_ext_duration(params.interval_max),
                 params.channel_map.unwrap_or(AdvChannelMap::ALL),
-                host.address.map(|a| a.kind).unwrap_or(AddrKind::PUBLIC),
+                own_addr_kind,
                 peer.kind,
                 peer.addr,
                 params.filter_policy,
@@ -226,8 +245,8 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
             ))
             .await?;
 
-            if let Some(address) = host.address.as_ref() {
-                host.command(LeSetAdvSetRandomAddr::new(handle, address.addr)).await?;
+            if let Some(addr) = random_addr {
+                host.command(LeSetAdvSetRandomAddr::new(handle, addr)).await?;
             }
 
             if !data.adv_data.is_empty() {
@@ -259,7 +278,7 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
         host.command(LeSetExtAdvEnable::new(true, handles)).await?;
         drop.defuse();
         Ok(Advertiser {
-            stack: self.stack,
+            host: self.host,
             extended: true,
             done: false,
         })
@@ -279,7 +298,7 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
         C: for<'t> ControllerCmdSync<LeSetExtAdvData<'t>> + for<'t> ControllerCmdSync<LeSetExtScanResponseData<'t>>,
     {
         assert_eq!(sets.len(), handles.len());
-        let host = &self.stack.host;
+        let host = &self.host;
         for (i, set) in sets.iter().enumerate() {
             if !set.data.is_valid() {
                 return Err(BleHostError::BleHost(Error::InvalidValue));
@@ -313,12 +332,7 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
     ///
     /// Accepts the next pending connection if there are any.
     pub fn try_accept(&mut self) -> Option<Connection<'d, P>> {
-        if let Poll::Ready(conn) = self
-            .stack
-            .host
-            .connections
-            .poll_accept(LeConnRole::Peripheral, &[], None)
-        {
+        if let Poll::Ready(conn) = self.host.connections.poll_accept(LeConnRole::Peripheral, &[], None) {
             Some(conn)
         } else {
             None
@@ -328,7 +342,7 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
 
 /// Handle to an active advertiser which can accept connections.
 pub struct Advertiser<'d, C, P: PacketPool> {
-    stack: &'d Stack<'d, C, P>,
+    host: &'d BleHost<'d, C, P>,
     extended: bool,
     done: bool,
 }
@@ -339,8 +353,8 @@ impl<'d, C: Controller, P: PacketPool> Advertiser<'d, C, P> {
     /// Returns Error::Timeout if advertiser stopped.
     pub async fn accept(mut self) -> Result<Connection<'d, P>, Error> {
         let result = match select(
-            self.stack.host.connections.accept(LeConnRole::Peripheral, &[]),
-            self.stack.host.advertise_state.wait(),
+            self.host.connections.accept(LeConnRole::Peripheral, &[]),
+            self.host.advertise_state.wait(),
         )
         .await
         {
@@ -355,9 +369,9 @@ impl<'d, C: Controller, P: PacketPool> Advertiser<'d, C, P> {
 impl<C, P: PacketPool> Drop for Advertiser<'_, C, P> {
     fn drop(&mut self) {
         if !self.done {
-            self.stack.host.advertise_command_state.cancel(self.extended);
+            self.host.advertise_command_state.cancel(self.extended);
         } else {
-            self.stack.host.advertise_command_state.canceled();
+            self.host.advertise_command_state.canceled();
         }
     }
 }

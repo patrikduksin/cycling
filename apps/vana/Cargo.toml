@@ -18,7 +18,7 @@ terrain = { path = "../../packages/terrain" }
 heapless.workspace = true
 libm = "0.2.16"
 qrcodegen-no-heap = "=1.8.1"
-log = { version = "=0.4.34", default-features = false }
+log = { version = "=0.4.35", default-features = false }
 
 [dev-dependencies]
 firmware-services = { path = "../../packages/services", features = ["testing"] }

@@ -35,9 +35,6 @@ type FirmwareShell = firmware_shell::shell::Shell<
     firmware_services::trace::shell::ShellFlash<device::drivers::storage::Backend<'static>>,
 >;
 
-/// The edges the shell takes, kept for the trace until the pass records
-/// them, in PSRAM: the shell lives in the console task's future, where 16
-/// edges would take main stack.
 struct ShellInput(
     &'static mut firmware_services::trace::frozen::RecordedEdges<device::board::Input>,
 );
@@ -62,7 +59,11 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     logging::metadata(false);
     device::activity::calibrate();
     let pass_log: &'static firmware_services::trace::shell::PassLog = external(Default::default);
-    let mut system = {
+    // Passed by value, the shell would sit in internal RAM three times:
+    // twice in the console task's future (rust-lang/rust#62958) and once
+    // in main's (#375).
+    static SHELL: static_cell::StaticCell<FirmwareShell> = static_cell::StaticCell::new();
+    let system = SHELL.init_with(|| {
         use firmware_services::trace::shell::{ShellDisplay, ShellFlash, ShellPower};
         let input = ShellInput(external(|| {
             firmware_services::trace::frozen::RecordedEdges::new(board.input)
@@ -75,7 +76,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             embassy_time::Instant::now().as_millis(),
         )
         .unwrap()
-    };
+    });
     {
         system.harness = firmware_shell::harness::State::new(boot);
         system.harness.clock = Some(|| embassy_time::Instant::now().as_millis());
@@ -267,7 +268,7 @@ async fn attach_back(sdk: &mut vana::app::Runtime) -> bool {
 #[embassy_executor::task]
 async fn console(
     usb: device::drivers::usb::Usb,
-    mut system: FirmwareShell,
+    system: &'static mut FirmwareShell,
     mut devices: commands::Devices,
     profile: vana::sensors::ble_profile::Profile,
     pass_log: &'static firmware_services::trace::shell::PassLog,
@@ -297,7 +298,7 @@ async fn console(
     {
         sdk.load_preferences(&system.settings.app);
         sdk.set_latency_clock(|| embassy_time::Instant::now().as_millis());
-        sdk.draw_boot(&mut system);
+        sdk.draw_boot(system);
         // The terrain look-ahead's tile cache lives in PSRAM. Without it
         // the climb page says "NO MAP" and keeps to the barometer.
         let layout =
@@ -348,7 +349,7 @@ async fn console(
             sdk.attach_phone(work);
             memory.phone = true;
         }
-        sdk.draw_boot(&mut system);
+        sdk.draw_boot(system);
     }
     // This session's trace, staged in PSRAM from the first pass; it takes
     // what PSRAM VANA left.
@@ -384,7 +385,7 @@ async fn console(
             let quiet = vana_pass(
                 sdk,
                 trace,
-                &mut system,
+                system,
                 &mut devices,
                 now,
                 &mut terrain_step_max_us,
@@ -426,7 +427,7 @@ async fn console(
             commands::execute(
                 &mut terminal,
                 request,
-                &mut system,
+                system,
                 now,
                 &mut devices,
                 &FirmwareDiagnostics,
@@ -468,7 +469,7 @@ async fn console(
         }
         device::activity::pass_ended();
         let rest_ms = sdk.pass_rest_ms(
-            &system,
+            system,
             trace.power.frozen().state,
             terminal.take_traffic(),
             embassy_time::Instant::now().as_millis(),
@@ -547,6 +548,9 @@ fn vana_pass(
         let physical = trace
             .physical
             .observe(physical, now, record, Event::Physical);
+        let light = trace
+            .light
+            .observe(devices.sensors.light(now), now, record, Event::Light);
         let online = device_api::network::Network::online(&devices.network);
         let network_time = firmware_services::network_time::snapshot(now, 0, online);
         let network_time =
@@ -569,6 +573,7 @@ fn vana_pass(
         stage_ended(Stage::Observe);
         sdk.set_startup_status(startup);
         system.set_app_active(sdk.input_active());
+        system.observe_light(light);
         system.tick(now);
         system.input_source().0.record(&mut *record.borrow_mut());
         for input in system.take_synthetic() {

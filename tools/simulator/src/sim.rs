@@ -787,6 +787,11 @@ impl Sim {
         self.device.sim_mut().world.barometer_lost = !present;
     }
 
+    pub fn set_ambient_light(&mut self, light: Option<u16>) {
+        self.note(NoteKind::World, format!("ambient light {light:?}"));
+        self.device.sim_mut().world.ambient_light = light;
+    }
+
     pub fn set_gps_fix(&mut self, fix: bool) {
         self.note(
             NoteKind::World,

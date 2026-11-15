@@ -24,24 +24,30 @@ def idle_frames_allowed(elapsed_ms):
     return int(elapsed_ms) * 2 // 1000 + 2
 
 
-CRASH_READY_TIMEOUT_S = 30
+STARTUP_TIMEOUT_S = 30
 
 
-def crash_record(connection):
-    """CRASH's fields; the message is the rest of the reply and may hold spaces.
+def answer(connection, command):
+    """The reply to a read-only `command`, asked again while the device starts.
 
     Right after a reset the device answers BUSY until its companion has
-    started. CRASH only reads, so asking again is safe.
+    started. The command only reads, so asking again is safe.
     """
-    stop = time.monotonic() + CRASH_READY_TIMEOUT_S
-    while (reply := connection.terminal_command('CRASH')).get('status') == 'BUSY':
+    stop = time.monotonic() + STARTUP_TIMEOUT_S
+    while (reply := connection.terminal_command(command)).get('status') == 'BUSY':
         detail = reply.get('data', '')
         stopped = any(word in STARTUP_STOPPED for word in detail.split())
         if stopped or time.monotonic() >= stop:
-            raise AssertionError(f'terminal rejected CRASH: BUSY {detail}')
+            raise AssertionError(f'terminal rejected {command}: BUSY {detail}')
         time.sleep(0.5)
     if reply.get('status') != 'OK':
-        raise AssertionError(f'terminal rejected CRASH: {reply.get("status")}')
+        raise AssertionError(f'terminal rejected {command}: {reply.get("status")}')
+    return reply
+
+
+def crash_record(connection):
+    """CRASH's fields; the message is the rest of the reply and may hold spaces."""
+    reply = answer(connection, 'CRASH')
     head, _, message = reply['data'].partition(' message=')
     return dict(reply_fields(head), message=message)
 
@@ -218,6 +224,8 @@ def preserved(expected, actual):
 
 def apply(connection, settings):
     expect(connection, f'BRIGHTNESS {settings["brightness"]}', 'OK')
+    if settings.get('auto') == 'true':
+        expect(connection, 'BRIGHTNESS AUTO', 'OK')
     expect(connection, f'IDLE {settings["dim_timeout"]} {settings["dim_brightness"]}', 'OK')
     expect(connection, f'TIMEZONE {settings["timezone"]}', 'OK')
     # A timeout here has unknown completion. Caller must not retry this save.
@@ -400,7 +408,7 @@ def run(args):
             connection = None
             time.sleep(2)
             connection = reopen(args.port, directory, 'restart', 30)
-            preserved(temporary, read(connection, 'SETTINGS'))
+            preserved(temporary, fields(answer(connection, 'SETTINGS')))
             restarted = read(connection, 'STATUS')
             if restarted['reset'] != 'software':
                 raise AssertionError('expected software reset')
@@ -413,7 +421,7 @@ def run(args):
                 try:
                     if connection is None:
                         connection = reopen(args.port, directory, 'restore', 30)
-                    read(connection, 'SETTINGS')
+                    fields(answer(connection, 'SETTINGS'))
                     apply(connection, original)
                     preserved(original, read(connection, 'SETTINGS'))
                 except BaseException:

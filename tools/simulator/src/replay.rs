@@ -18,7 +18,7 @@ use device_api::ant::{
 use device_api::ble_transport::{self, Ble};
 use device_api::bulk::{self, ReadWrite};
 use device_api::input::{InputObservation, InputSnapshot};
-use device_api::observation::{Availability, Error};
+use device_api::observation::{Availability, Error, Observation};
 use device_api::positioning::{self, Positioning};
 use device_api::power::{self, PowerControl};
 use device_api::sensors;
@@ -340,6 +340,7 @@ pub enum Seen {
         of: u8,
     },
     Frame(u32),
+    Panel(u32),
 }
 
 /// The shell's own devices, which a replay scripts from the trace: the
@@ -361,6 +362,7 @@ pub struct Replay {
     page: String,
     /// The trace replaced secrets as it recorded them.
     redacted: bool,
+    digests: Digests,
 }
 
 impl Replay {
@@ -372,6 +374,7 @@ impl Replay {
         build: [u8; 20],
     ) -> Result<Self, trace::Error> {
         let (header, events) = trace::decode(&bytes)?;
+        let digests = Digests::of(&bytes);
         let redacted =
             trace::origin::Config::decode(header.config).is_some_and(|config| config.redacted);
         let cursor = events.cursor();
@@ -397,6 +400,7 @@ impl Replay {
             seen: Vec::new(),
             page: String::new(),
             redacted,
+            digests,
         })
     }
 
@@ -483,8 +487,19 @@ impl Replay {
     /// What the rider saw in the pass just run, against the recording. A
     /// stimulus replay can run another build, which may draw the same
     /// things in other pixels, so it leaves the frames out.
-    pub fn saw(&mut self, seen: &[Seen]) {
+    pub fn saw(&mut self, seen: &[Seen], frame: impl FnOnce() -> u32) {
         let recorded = core::mem::take(&mut self.seen);
+        let mut frame = Some(frame);
+        let seen: Vec<Seen> = seen
+            .iter()
+            .map(|seen| match seen {
+                Seen::Panel(_) if self.digests == Digests::LegacyFrames => {
+                    Seen::Frame(frame.take().map_or(0, |frame| frame()))
+                }
+                seen => seen.clone(),
+            })
+            .collect();
+        let seen = &seen[..];
         if let Some(page) = recorded.iter().rev().find_map(|seen| match seen {
             Seen::Page(page) => Some(page),
             _ => None,
@@ -492,7 +507,7 @@ impl Replay {
             self.page.clone_from(page);
         }
         let strict = self.sources.ledger.mode() == Mode::Strict;
-        let frame = |seen: &&Seen| matches!(seen, Seen::Frame(_));
+        let frame = |seen: &&Seen| matches!(seen, Seen::Frame(_) | Seen::Panel(_));
         let (kind, how) = if !seen
             .iter()
             .filter(|s| !frame(s))
@@ -532,7 +547,9 @@ impl Replay {
         if self.sources.ledger.mode() != Mode::Strict {
             return;
         }
-        let compared = |event: &Event<'_>| !measured(event) && !matches!(event, Event::Frame(_));
+        let compared = |event: &Event<'_>| {
+            !measured(event) && !matches!(event, Event::Frame(_) | Event::Panel(_))
+        };
         if let Some(difference) = first_difference_of(&self.bytes, trace, compared) {
             self.sources.ledger.note(Kind::Rerecorded, 1, || difference);
         }
@@ -547,7 +564,28 @@ impl Replay {
 /// The first event where two traces part, with the pass it belongs to.
 /// What [`measured`] holds is left out.
 pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
-    first_difference_of(recorded, replayed, |event| !measured(event))
+    let frames = Digests::of(recorded) == Digests::LegacyFrames;
+    first_difference_of(recorded, replayed, |event| {
+        !measured(event) && !(frames && matches!(event, Event::Frame(_) | Event::Panel(_)))
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Digests {
+    LegacyFrames,
+    Panel,
+}
+
+impl Digests {
+    fn of(trace: &[u8]) -> Self {
+        let frames = trace::decode(trace)
+            .is_ok_and(|(_, mut events)| events.any(|event| matches!(event, Event::Frame(_))));
+        if frames {
+            Self::LegacyFrames
+        } else {
+            Self::Panel
+        }
+    }
 }
 
 /// The first `compared` event where two traces part.
@@ -620,6 +658,7 @@ pub(crate) fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
             of: *of,
         })),
         Event::Frame(digest) => Some(Some(Seen::Frame(*digest))),
+        Event::Panel(digest) => Some(Some(Seen::Panel(*digest))),
         event if measured(event) => Some(None),
         _ => None,
     }
@@ -632,6 +671,7 @@ pub(crate) fn measured(event: &Event<'_>) -> bool {
     matches!(
         event,
         Event::Log { .. }
+            | Event::FrameTime(_)
             | Event::Health(_)
             | Event::Activity(_)
             | Event::Task { .. }
@@ -654,6 +694,7 @@ pub struct Sources {
     entropy: Entropy,
     startup: Served<sensors::Startup>,
     physical: Served<sensors::Snapshot>,
+    light: Served<Observation<sensors::Light>>,
     network_time: Served<firmware_services::network_time::Snapshot>,
     backlight: Served<Availability>,
     shelled: Shelled,
@@ -698,6 +739,7 @@ impl Sources {
             entropy,
             startup: Served::new("companion startup", &ledger),
             physical: Served::new("barometer and motion", &ledger),
+            light: Served::new("ambient light", &ledger),
             network_time: Served::new("network time", &ledger),
             backlight: Served::new("backlight", &ledger),
             shelled,
@@ -833,6 +875,7 @@ impl Sources {
                 snapshot,
             } => self.position.0.set((availability, snapshot)),
             Event::Physical(snapshot) => self.physical.set(snapshot),
+            Event::Light(light) => self.light.set(light),
             Event::Power(snapshot) => self.companion.0.set(snapshot),
             Event::NetworkTime(snapshot) => self.network_time.set(snapshot),
             Event::Startup(startup) => self.startup.set(startup),
@@ -937,7 +980,9 @@ impl Sources {
             | Event::RideState(_)
             | Event::Shown(_)
             | Event::Frame(_)
+            | Event::Panel(_)
             | Event::Log { .. }
+            | Event::FrameTime(_)
             | Event::Health(_)
             | Event::Activity(_)
             | Event::Task { .. }
@@ -961,6 +1006,13 @@ impl Sources {
             invalid_reports: 0,
             losses: 0,
         })
+    }
+
+    pub fn light(&self) -> Observation<sensors::Light> {
+        self.light
+            .latest
+            .at(self.light.ledger.now())
+            .unwrap_or(Observation::Unavailable)
     }
 
     pub fn network_time(&self) -> firmware_services::network_time::Snapshot {

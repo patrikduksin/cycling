@@ -19,12 +19,13 @@
 //! `app::climb_page`).
 use super::canvas::Canvas;
 use super::chrome::{self, Align, CONTENT, Rect};
-use super::workout::{Graphics, Text, View};
+use super::workout::{Graphics, Scene, Text, View};
 use crate::ride::course::turns::{Kind, Side, Warning};
 use crate::ride::laps::Lap;
 use crate::ride::zones::TrainingProfile;
 use crate::sensors::radar::{self, close};
 use core::fmt::Write;
+use firmware_shell::shell::Parts;
 
 pub mod back;
 mod climb;
@@ -41,13 +42,13 @@ pub mod summary;
 mod workout;
 mod zones;
 
-pub(super) use zones::{Marks, marks};
+pub(super) use zones::{Mark, Marks, marks};
 
 pub use back::{Arrow, Back, Light};
 pub use climb::{Frame as ClimbFrame, Lent as ClimbLent};
 pub use elevation::Chart as ElevationChart;
 pub use lap::{LapBar, LapBars};
-pub use map::{Frame as MapFrame, Key as MapKey, Track, update as update_map};
+pub use map::{Cache as MapCache, Filled as FilledMap, Frame as MapFrame, Track};
 pub use workout::{Chart as WorkoutChart, EXTEND_ROWS, Training, chart as workout_chart};
 
 use chrome::{ACCENT, AMBER, BLACK, BODY as BODY_FACE, POWER, Row, VALUE};
@@ -82,7 +83,7 @@ const _: () = assert!(
 const CENTRE_SHIFT: usize = RADAR_WIDTH / 2;
 
 /// A ride page, in MOVE order.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum RidePage {
     /// Live speed, power, heart rate, cadence, distance, time and grade.
     #[default]
@@ -296,7 +297,7 @@ impl Pages {
 /// and the zones its gauges show.
 pub(super) type Labels = heapless::Vec<chrome::Label<12>, 14>;
 
-#[derive(Default)]
+#[derive(Default, Hash)]
 pub struct Smooth {
     pub(super) labels: Labels,
     /// A workout target under a gauge: which gauge and its columns.
@@ -371,50 +372,72 @@ pub(super) fn cell(
     );
 }
 
-/// Paint a content row over the black `View::paint` laid: the radar strip
+/// Paint a content row over the black the scene laid: the radar strip
 /// while a radar is paired, and the page in the body, centred without a radar.
-pub(super) fn paint(view: &View, row: &mut Row) {
-    if view.radar_paired {
-        paint_radar(view.graphics.radar, &mut row.within(0..RADAR_WIDTH - 2));
-        paint_page(view, &mut row.within(BODY.left..BODY.right));
+pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
+    if let Some(radar) = &scene.radar {
+        paint_radar(radar, &mut row.within(0..RADAR_WIDTH - 2));
+        paint_page(scene, page, &mut row.within(BODY.left..BODY.right));
         return;
     }
     // Paint the page where it sits beside a radar, then move it to the centre.
-    let mut page = [BLACK; chrome::WIDTH];
+    let mut body = [BLACK; chrome::WIDTH];
     paint_page(
-        view,
-        &mut Row::new(row.y(), &mut page).within(BODY.left..BODY.right),
+        scene,
+        page,
+        &mut Row::new(row.y(), &mut body).within(BODY.left..BODY.right),
     );
     let clip = row.clip();
     let start = (BODY.left - CENTRE_SHIFT).max(clip.start);
     let end = (BODY.right - CENTRE_SHIFT).min(clip.end);
     if start < end {
         row.pixels_mut()[start..end]
-            .copy_from_slice(&page[start + CENTRE_SHIFT..end + CENTRE_SHIFT]);
+            .copy_from_slice(&body[start + CENTRE_SHIFT..end + CENTRE_SHIFT]);
     }
 }
 
-fn paint_page(view: &View, row: &mut Row) {
-    match view.ride_page {
-        RidePage::Main => main::paint(view, row),
-        RidePage::Stats | RidePage::Lap => view.canvas().paint(row),
+pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
+    if let Some(radar) = &scene.radar {
+        parts.add(TRACK_TOP..TRACK_BOTTOM + 1, &radar.track);
+        for marker in radar.markers.iter().flatten() {
+            let y = usize::from(marker.0);
+            parts.add(y - TARGET_RADIUS..y + TARGET_RADIUS + 1, marker);
+        }
+    }
+    match page {
+        RidePage::Main => main::parts(scene, parts),
+        RidePage::Stats | RidePage::Lap => {}
+        RidePage::Workout => workout::chart_parts(scene.chart(), parts),
+        RidePage::Climb => climb::chart_parts(scene.climb(), parts),
+        RidePage::Map => parts.add(BODY.top..BODY.bottom, &scene.map()),
+        RidePage::Back => back::parts(scene.arrow(), parts),
+    }
+    if page != RidePage::Main {
+        scene.canvas().parts(parts);
+    }
+}
+
+fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
+    match page {
+        RidePage::Main => main::paint(scene, row),
+        RidePage::Stats | RidePage::Lap => scene.canvas().paint(row),
         RidePage::Workout => {
-            workout::paint_chart(view.chart(), row);
-            view.canvas().paint(row);
+            workout::paint_chart(scene.chart(), row);
+            scene.canvas().paint(row);
         }
         RidePage::Climb => {
-            climb::paint_chart(view.climb(), row);
-            view.canvas().paint(row);
+            climb::paint_chart(scene.climb(), row);
+            scene.canvas().paint(row);
         }
         RidePage::Map => {
-            if let Some(frame) = view.map() {
-                map::paint(frame, row);
+            if let Some(map) = scene.map() {
+                map::paint(map.frame(), row);
             }
-            view.canvas().paint(row);
+            scene.canvas().paint(row);
         }
         RidePage::Back => {
-            view.canvas().paint(row);
-            back::paint(view, row);
+            scene.canvas().paint(row);
+            back::paint(scene.arrow(), row);
         }
     }
 }
@@ -434,7 +457,7 @@ const RANGE_MM: u32 = 200_000;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pixels {
     gauges: [Option<usize>; 2],
-    markers: [Option<(i32, bool)>; 8],
+    markers: [Option<(u16, bool)>; 8],
 }
 
 pub fn pixels(graphics: &Graphics, profile: &TrainingProfile) -> Pixels {
@@ -444,16 +467,28 @@ pub fn pixels(graphics: &Graphics, profile: &TrainingProfile) -> Pixels {
             power.map(|mark| main::gauge_end(0, mark)),
             heart.map(|mark| main::gauge_end(1, mark)),
         ],
-        markers: graphics
-            .radar
+        markers: radar(&graphics.radar).markers,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Hash)]
+pub struct Radar {
+    track: u16,
+    markers: [Option<(u16, bool)>; 8],
+}
+
+pub(super) fn radar(snapshot: &radar::Snapshot) -> Radar {
+    Radar {
+        track: track_color(snapshot.status),
+        markers: snapshot
             .targets
             .map(|target| target.map(|target| (target_y(target), close(target)))),
     }
 }
 
-fn target_y(target: radar::Target) -> i32 {
+fn target_y(target: radar::Target) -> u16 {
     let span = (TRACK_BOTTOM - TRACK_TOP) as u32;
-    (TRACK_TOP as u32 + target.range_mm.min(RANGE_MM) * span / RANGE_MM) as i32
+    (TRACK_TOP as u32 + target.range_mm.min(RANGE_MM) * span / RANGE_MM) as u16
 }
 
 fn track_color(status: radar::Status) -> u16 {
@@ -465,17 +500,17 @@ fn track_color(status: radar::Status) -> u16 {
 }
 
 /// The radar strip: the arrow, the track, then targets, the first on top.
-fn paint_radar(radar: radar::Snapshot, row: &mut Row) {
+fn paint_radar(radar: &Radar, row: &mut Row) {
     let y = row.y();
     if (ARROW_TOP..ARROW_TOP + 11).contains(&y) {
         let half = (y - ARROW_TOP) / 2;
         row.span(12 - half..13 + half, WHITE);
     }
     if (TRACK_TOP..=TRACK_BOTTOM).contains(&y) {
-        row.span(11..14, track_color(radar.status));
+        row.span(11..14, radar.track);
     }
-    for target in radar.targets.iter().rev().flatten() {
-        let dy = y as i32 - target_y(*target);
+    for &(target_y, close) in radar.markers.iter().rev().flatten() {
+        let dy = y as i32 - i32::from(target_y);
         if dy * dy > (TARGET_RADIUS * TARGET_RADIUS) as i32 {
             continue;
         }
@@ -483,17 +518,17 @@ fn paint_radar(radar: radar::Snapshot, row: &mut Row) {
         while (half + 1) * (half + 1) + dy * dy <= (TARGET_RADIUS * TARGET_RADIUS) as i32 {
             half += 1;
         }
-        let color = if close(*target) { RED } else { POWER };
+        let color = if close { RED } else { POWER };
         row.span((12 - half) as usize..(13 + half) as usize, color);
     }
 }
 
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
-pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
-    let x = if view.radar_paired {
+pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize) -> u16 {
+    let x = if let Some(radar) = &scene.radar {
         if x < RADAR_WIDTH - 2 {
-            return reference_radar_pixel(view.graphics.radar, x, y);
+            return reference_radar_pixel(radar, x, y);
         }
         x
     } else {
@@ -502,38 +537,42 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     if !(BODY.left..BODY.right).contains(&x) {
         return BLACK;
     }
-    match view.ride_page {
-        RidePage::Main => main::reference_pixel(view, x, y),
-        RidePage::Stats | RidePage::Lap => view.canvas().pixel(x, y, BLACK),
-        RidePage::Workout => view
+    match page {
+        RidePage::Main => main::reference_pixel(scene, x, y),
+        RidePage::Stats | RidePage::Lap => scene.canvas().pixel(x, y, BLACK),
+        RidePage::Workout => scene
             .canvas()
-            .pixel(x, y, workout::chart_pixel(view.chart(), x, y)),
-        RidePage::Climb => view
+            .pixel(x, y, workout::chart_pixel(scene.chart(), x, y)),
+        RidePage::Climb => scene
             .canvas()
-            .pixel(x, y, climb::chart_pixel(view.climb(), x, y)),
-        RidePage::Map => view.canvas().pixel(
+            .pixel(x, y, climb::chart_pixel(scene.climb(), x, y)),
+        RidePage::Map => scene.canvas().pixel(
             x,
             y,
-            view.map()
-                .map_or(BLACK, |frame| map::pixel(frame, x, y, BLACK)),
+            scene
+                .map()
+                .map_or(BLACK, |map| map::pixel(map.frame(), x, y, BLACK)),
         ),
-        RidePage::Back => {
-            back::arrow_pixel(&back::frame(view), x, y, view.canvas().pixel(x, y, BLACK))
-        }
+        RidePage::Back => back::arrow_pixel(
+            &back::frame(scene.arrow()),
+            x,
+            y,
+            scene.canvas().pixel(x, y, BLACK),
+        ),
     }
 }
 
 #[cfg(test)]
-fn reference_radar_pixel(radar: radar::Snapshot, x: usize, y: usize) -> u16 {
-    for target in radar.targets.into_iter().flatten() {
+fn reference_radar_pixel(radar: &Radar, x: usize, y: usize) -> u16 {
+    for &(target_y, close) in radar.markers.iter().flatten() {
         let dx = x as i32 - 12;
-        let dy = y as i32 - target_y(target);
+        let dy = y as i32 - i32::from(target_y);
         if dx * dx + dy * dy <= (TARGET_RADIUS * TARGET_RADIUS) as i32 {
-            return if close(target) { RED } else { POWER };
+            return if close { RED } else { POWER };
         }
     }
     if (11..=13).contains(&x) && (TRACK_TOP..=TRACK_BOTTOM).contains(&y) {
-        return track_color(radar.status);
+        return radar.track;
     }
     let top = ARROW_TOP;
     if (top..top + 11).contains(&y) && (x as i32 - 12).abs() <= (y - top) as i32 / 2 {
@@ -719,16 +758,18 @@ mod tests {
             ahead: None,
         };
         let frame = Box::leak(Box::default());
-        update_map(frame, &mut None, &track);
+        let mut map = MapCache::new(frame);
+        map.update(&track);
         match page {
             Some(RidePage::Lap) => view.show_laps(heapless::Vec::new(), Lap::default(), None),
             Some(RidePage::Climb) => view.show_climb(ClimbLent {
                 climbs: Box::leak(Box::default()),
+                climbing: None,
                 trace: Box::leak(Box::default()),
                 forecast: &crate::ride::climb_ahead::Forecast::NONE,
                 pinned: None,
             }),
-            Some(RidePage::Map) => view.show_map(Some(frame)),
+            Some(RidePage::Map) => view.show_map(map.filled()),
             Some(RidePage::Back) => view.show_back(Back::default(), Light::default()),
             _ => {}
         }
@@ -949,13 +990,17 @@ mod tests {
                 range_mm,
                 closing_speed_cm_s: 0,
             };
-            let bottom = target_y(target) + TARGET_RADIUS as i32;
-            assert!(bottom < chrome::TOAST.top as i32, "{range_mm} mm");
+            let bottom = usize::from(target_y(target)) + TARGET_RADIUS;
+            assert!(bottom < chrome::TOAST.top, "{range_mm} mm");
             let mut snapshot = radar::Snapshot::default();
             snapshot.targets[0] = Some(target);
             for y in chrome::TOAST.top..chrome::HEIGHT {
                 for x in 0..RADAR_WIDTH {
-                    assert_eq!(reference_radar_pixel(snapshot, x, y), BLACK, "({x}, {y})");
+                    assert_eq!(
+                        reference_radar_pixel(&radar(&snapshot), x, y),
+                        BLACK,
+                        "({x}, {y})"
+                    );
                 }
             }
         }

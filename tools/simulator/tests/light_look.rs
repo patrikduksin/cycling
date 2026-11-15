@@ -17,7 +17,7 @@ fn reads_home_settings_and_a_ride_page_in_the_light_look() {
     let mut sim = reach("settings light");
     assert_eq!(
         sim.screen().text(),
-        "7:00\nGPS\nDISPLAY\nBRIGHTNESS\n50%\nDIM AFTER\n30 S\nDAY / NIGHT\nAUTO\nDAY NOW\nTHEME\nLIGHT\nSAVING"
+        "7:00\nGPS\nDISPLAY\nBRIGHTNESS\nAUTO\nDIM AFTER\n30 S\nDAY / NIGHT\nAUTO\nDAY NOW\nTHEME\nLIGHT\nSAVING"
     );
     sim.press(Button::TopLeft);
     assert_eq!(

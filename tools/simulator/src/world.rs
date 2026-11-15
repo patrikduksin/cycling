@@ -33,6 +33,7 @@ pub struct World {
     pub elevation_m: Option<f64>,
     /// The barometer stops reporting while set.
     pub barometer_lost: bool,
+    pub ambient_light: Option<u16>,
     /// Where the rider is, by distance along this route.
     pub route: Option<Route>,
 }

@@ -15,6 +15,12 @@ pub fn request_status(result: Result<(), device_api::observation::Error>) -> &'s
 pub const MAX_LINE: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Brightness {
+    Percent(u8),
+    Auto,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
     Power(Option<device_api::power::Operation>),
     PowerShutdownAfter(u32),
@@ -48,7 +54,7 @@ pub enum Command {
     Battery,
     Time,
     Settings,
-    SetBrightness(u8),
+    SetBrightness(Brightness),
     SetTimezone(i16),
     SetIdle(u16, u8),
     Save,
@@ -373,15 +379,16 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
             _ => return Err(Error::Invalid),
         },
         "BRIGHTNESS" => {
-            let value: u8 = words
-                .next()
-                .ok_or(Error::Invalid)?
-                .parse()
-                .map_err(|_| Error::Invalid)?;
-            if value > 100 {
-                return Err(Error::Invalid);
+            let word = words.next().ok_or(Error::Invalid)?;
+            if word == "AUTO" {
+                Command::SetBrightness(Brightness::Auto)
+            } else {
+                let value: u8 = word.parse().map_err(|_| Error::Invalid)?;
+                if value > 100 {
+                    return Err(Error::Invalid);
+                }
+                Command::SetBrightness(Brightness::Percent(value))
             }
-            Command::SetBrightness(value)
         }
         "TIMEZONE" => {
             let value: i16 = words
@@ -554,6 +561,24 @@ mod tests {
             b"CMD 7 ANT SEND 120 1234 1 9 0102030405060708 extra",
         ] {
             assert_eq!(parse(line), Err(Error::Invalid));
+        }
+    }
+    #[test]
+    fn brightness_takes_a_percent_or_auto_and_nothing_else() {
+        assert_eq!(
+            parse(b"CMD 1 BRIGHTNESS 20").unwrap().command,
+            Command::SetBrightness(Brightness::Percent(20))
+        );
+        assert_eq!(
+            parse(b"CMD 1 BRIGHTNESS AUTO").unwrap().command,
+            Command::SetBrightness(Brightness::Auto)
+        );
+        for line in [
+            "CMD 1 BRIGHTNESS",
+            "CMD 1 BRIGHTNESS auto",
+            "CMD 1 BRIGHTNESS AUTO 5",
+        ] {
+            assert!(parse(line.as_bytes()).is_err(), "{line}");
         }
     }
     #[test]

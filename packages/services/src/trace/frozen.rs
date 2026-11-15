@@ -152,6 +152,7 @@ impl Aging for bool {}
 impl Aging for Availability {}
 impl Aging for device_api::sensors::Startup {}
 impl Aging for device_api::sensors::Snapshot {}
+impl Aging for device_api::observation::Observation<device_api::sensors::Light> {}
 impl Aging for InputSnapshot {}
 impl Aging for ble_transport::Snapshot {}
 impl Aging for ant::Capabilities {}
@@ -233,6 +234,15 @@ impl<T> Default for Latest<T> {
 }
 
 impl<T: Aging> Latest<T> {
+    /// A value a replay assumes until the trace says otherwise, so that
+    /// it is not recorded first. A trace written before an input existed
+    /// then replays to the same events.
+    pub fn assumed(value: T) -> Self {
+        Self {
+            recorded: Some((value, 0)),
+        }
+    }
+
     /// Whether `value`, read at `now`, differs from the recorded value aged
     /// to `now`. A different value becomes the recorded one.
     pub fn changed(&mut self, value: T, now: u64) -> bool {

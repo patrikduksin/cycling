@@ -4,7 +4,7 @@ use bt_hci::cmd::le::{
     LeSetScanParams,
 };
 use bt_hci::controller::{Controller, ControllerCmdSync};
-use bt_hci::param::{AddrKind, FilterDuplicates, ScanningPhy};
+use bt_hci::param::{FilterDuplicates, ScanningPhy};
 pub use bt_hci::param::{LeAdvReportsIter, LeExtAdvReportsIter};
 use embassy_time::Instant;
 
@@ -42,7 +42,7 @@ impl<'d, C: Controller, P: PacketPool> Scanner<'d, C, P> {
             + ControllerCmdSync<LeClearFilterAcceptList>
             + ControllerCmdSync<LeAddDeviceToFilterAcceptList>,
     {
-        let host = &self.central.stack.host;
+        let host = &self.central.host;
         let drop = crate::host::OnDrop::new(|| {
             host.scan_command_state.cancel(true);
         });
@@ -55,9 +55,9 @@ impl<'d, C: Controller, P: PacketPool> Scanner<'d, C, P> {
             scan_window: bt_hci_duration(config.window),
         };
         let phy_params = crate::central::create_phy_params(scanning, config.phys);
-        let host = &self.central.stack.host;
+        let host = &self.central.host;
         host.command(LeSetExtScanParams::new(
-            host.address.map(|s| s.kind).unwrap_or(AddrKind::PUBLIC),
+            host.own_addr_kind(),
             if config.filter_accept_list.is_empty() {
                 bt_hci::param::ScanningFilterPolicy::BasicUnfiltered
             } else {
@@ -69,14 +69,14 @@ impl<'d, C: Controller, P: PacketPool> Scanner<'d, C, P> {
 
         host.command(LeSetExtScanEnable::new(
             true,
-            FilterDuplicates::Disabled,
+            config.filter_duplicates,
             bt_hci_duration(config.timeout),
             bt_hci::param::Duration::from_secs(0),
         ))
         .await?;
         drop.defuse();
         Ok(ScanSession {
-            command_state: &self.central.stack.host.scan_command_state,
+            command_state: &self.central.host.scan_command_state,
             deadline: if config.timeout.as_ticks() == 0 {
                 None
             } else {
@@ -96,7 +96,7 @@ impl<'d, C: Controller, P: PacketPool> Scanner<'d, C, P> {
             + ControllerCmdSync<LeClearFilterAcceptList>
             + ControllerCmdSync<LeAddDeviceToFilterAcceptList>,
     {
-        let host = &self.central.stack.host;
+        let host = self.central.host;
         let drop = crate::host::OnDrop::new(|| {
             host.scan_command_state.cancel(false);
         });
@@ -112,7 +112,7 @@ impl<'d, C: Controller, P: PacketPool> Scanner<'d, C, P> {
             },
             bt_hci_duration(config.interval),
             bt_hci_duration(config.window),
-            host.address.map(|a| a.kind).unwrap_or(AddrKind::PUBLIC),
+            host.own_addr_kind(),
             if config.filter_accept_list.is_empty() {
                 bt_hci::param::ScanningFilterPolicy::BasicUnfiltered
             } else {
@@ -121,10 +121,11 @@ impl<'d, C: Controller, P: PacketPool> Scanner<'d, C, P> {
         );
         host.command(params).await?;
 
-        host.command(LeSetScanEnable::new(true, true)).await?;
+        let filter_duplicates = !matches!(config.filter_duplicates, FilterDuplicates::Disabled);
+        host.command(LeSetScanEnable::new(true, filter_duplicates)).await?;
         drop.defuse();
         Ok(ScanSession {
-            command_state: &self.central.stack.host.scan_command_state,
+            command_state: &self.central.host.scan_command_state,
             deadline: if config.timeout.as_ticks() == 0 {
                 None
             } else {

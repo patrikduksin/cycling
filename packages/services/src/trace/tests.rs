@@ -242,6 +242,15 @@ fn sample() -> Vec<Event<'static>> {
             invalid_reports: 1,
             losses: 0,
         }),
+        Event::Light(Observation::Unavailable),
+        Event::Light(Observation::Fresh {
+            value: sensors::Light(1_557),
+            received_ms: 3_330,
+        }),
+        Event::Light(Observation::Stale {
+            value: sensors::Light(65),
+            received_ms: 3_330,
+        }),
         Event::Power(Some(InputSnapshot {
             battery: Observation::Fresh {
                 value: (80, 4020),
@@ -382,6 +391,7 @@ fn sample() -> Vec<Event<'static>> {
         Event::RideState("recording"),
         Event::Shown("W=210 BPM=142 KM/H=28.0"),
         Event::Frame(0xdead_beef),
+        Event::Panel(0x0bad_f00d),
         Event::Synthetic(Input::Button {
             button: Button::BottomLeft,
             code: 1,
@@ -391,6 +401,10 @@ fn sample() -> Vec<Event<'static>> {
             target: "terrain",
             text: "no PSRAM for the tile cache",
         },
+        Event::FrameTime(FrameTime {
+            frames: 52,
+            mean_us: 1_380,
+        }),
         Event::Health(Health {
             simulated: false,
             heap_free: Some(61_234),
@@ -602,6 +616,20 @@ fn a_cursor_past_the_bytes_ends_torn_without_panicking() {
 }
 
 #[test]
+fn a_window_of_known_frames_has_their_mean() {
+    let times_us = [1_000u32, 2_000, 6_000];
+    let total_us = times_us.iter().map(|&us| u64::from(us)).sum();
+    assert_eq!(
+        FrameTime::of_window(3, total_us),
+        Some(FrameTime {
+            frames: 3,
+            mean_us: 3_000
+        })
+    );
+    assert_eq!(FrameTime::of_window(0, 0), None);
+}
+
+#[test]
 fn fields_a_later_version_appends_are_skipped() {
     let later = Header {
         version: VERSION + 1,
@@ -735,6 +763,28 @@ fn a_pass_ten_milliseconds_on_is_one_byte() {
 }
 
 #[test]
+fn an_ambient_light_reading_costs_a_few_bytes() {
+    let readings: Vec<_> = (1..=300u64)
+        .flat_map(|i| {
+            [
+                Event::Pass { now_ms: i * 333 },
+                Event::Light(Observation::Fresh {
+                    value: sensors::Light(1_000 + (i % 40) as u16),
+                    received_ms: i * 333,
+                }),
+            ]
+        })
+        .collect();
+    let bytes = encode(&readings, 4096);
+    let header = block(&bytes, 0).unwrap().1;
+    let per_reading = (bytes.len() - header) as f64 / 300.0;
+    assert!(
+        per_reading < 12.0,
+        "{per_reading} bytes a reading with its pass"
+    );
+}
+
+#[test]
 fn a_record_larger_than_a_block_is_refused() {
     let mut encoder = Encoder::new(std::vec![0u8; 64]);
     let text = core::str::from_utf8(&[b'x'; 80]).unwrap();
@@ -754,4 +804,48 @@ fn vitals_are_due_every_five_seconds_and_every_minute_in_dark_standby() {
     assert_eq!(due(&mut vitals, 0, 15_001, false), [5_000, 10_000, 15_000]);
     assert_eq!(due(&mut vitals, 15_010, 140_000, true), [75_000, 135_000]);
     assert_eq!(due(&mut vitals, 140_000, 141_000, false), [140_000]);
+}
+
+#[test]
+fn records_keep_their_fields() {
+    let fields: Vec<String> = RECORD_FIELDS
+        .iter()
+        .map(|(record, fields)| std::format!("{record}: {}", fields.join(" ")))
+        .collect();
+    let pinned = "\
+Point: x y
+Edge: sequence received_ms input
+ant::Identity: device_type device_number transmission_type
+ant::Packet: identity data received_ms generation loss_count
+ant::Snapshot: scanning link selected generation packets dropped_packets discovery_overflows transport_losses tx_failures age_ms stale
+ant::Discovery: identity rssi seen_ms
+ant::ScanSnapshot: state generation discovery_overflows
+ant::Target: identity generation
+ant::SendObservation: id target stage
+ble_transport::Snapshot: link connections disconnections notifications dropped scan_reports
+ble_transport::BatteryLevel: connection raw received_ms
+device_api::gps::Snapshot: state identity latitude_e7 longitude_e7 satellites hdop_tenths speed_mm_s epoch_ms utc utc_ms age_ms bytes valid_sentences checksum_errors parse_errors overflows line_overflows long_proprietary uart_errors binary_bytes non_nmea_frames
+positioning::Snapshot: gps transport sequence received_at_ms fault_at_ms
+sensors::Pressure: pressure_centi_pa temperature_centi_c
+sensors::Motion: axes
+sensors::Identity: fields
+sensors::Snapshot: pressure motion identity reports invalid_reports losses
+InputSnapshot: battery power button_counts touch_available touch_errors companion_valid companion_bad_crc uart_errors input_lost
+crate::network_time::Snapshot: unix_seconds millis local_minutes age_ms status
+AntRadio<'a>: availability capabilities scanning scan
+ServerRequest<'a>: id method path query session gzip body
+Reach: access_point station
+sound::Snapshot: state pattern requested_ms submitted_ms until_ms
+power::Status: sequence operation state at_ms prepare_at_ms failure ready
+StorageFault: medium attempt op at landed error
+AntCapabilities<'a>: supported_types connection_capacity one_peer_per_type concurrent_scan acknowledged_send radio_delivery_feedback burst max_pending_sends
+FrameTime: frames mean_us
+Health: simulated heap_free heap_min psram_free frame_max_us pass_max_us gps_sentences gps_overflows gps_uart_errors companion_errors card_write_max_us card_recoveries spool_used spool_size wifi wifi_rssi ble_rssi
+Consumers: cpu_mhz backlight frames gnss wifi access_point ble ant ant_scanning ant_channels slept_ms
+Activity: simulated window_ms wakes awake_us main_us radio_us idle_us switches ticks hooks_us consumers";
+    assert_eq!(
+        fields.join("\n"),
+        pinned,
+        "a record grew or changed: give new fields a new tag"
+    );
 }

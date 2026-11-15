@@ -201,7 +201,7 @@ def plan_differences(baseline, targets, output, total, max_sectors=MAX_EXTENT_SE
     return extents, target_records
 
 
-def prepare(backup_manifest, stock, output, layout=Layout(), single_read_copy=None):  # noqa: B008 - frozen
+def prepare(backup_manifest, stock, output, layout=Layout(), single_read_copy=None):
     layout.validate()
     method = validate_backup(backup_manifest, layout.total, single_read_copy=single_read_copy)
     baseline_manifest = json.loads(backup_manifest.read_text())

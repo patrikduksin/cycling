@@ -8,8 +8,8 @@ use super::{CELL_PITCH, LEFT, RIGHT, cell, kilometres, lap_time, speed, whole};
 use crate::ride::laps::{HISTORY, Lap};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
-    ACCENT, Align, BLACK, BODY, GREEN, HEART, LARGE, POWER, Rect, SECONDARY, SPEED, TERTIARY,
-    VALUE, WHITE, blend,
+    ACCENT, Align, BLACK, BODY, GREEN, HEART, LARGE, POWER, Rect, SECONDARY, SPEED, VALUE, WHITE,
+    blend,
 };
 use crate::screens::workout::{Text, View};
 use core::fmt::Write;
@@ -20,9 +20,9 @@ const HEAD: usize = 40;
 const TIME: usize = HEAD + 4 + LARGE.cap as usize;
 /// The first band of cells; four follow.
 const FIRST: usize = TIME + 9;
-/// Lap bars stand on a `TERTIARY` baseline across the page's width, in the
-/// toast band: a toast covers them for a moment.
-const CHART_BOTTOM: usize = 312;
+/// Lap bars stand on the screen's edge, in the toast band: a toast covers
+/// them for a moment.
+const CHART_BOTTOM: usize = super::BODY.bottom;
 const CHART_TOP: usize = FIRST + 3 * CELL_PITCH + 41 + 8;
 const CHART_HEIGHT: usize = CHART_BOTTOM - CHART_TOP;
 /// Each lap gets an equal slot of the width; its bar is centred in it.
@@ -174,16 +174,6 @@ fn chart(canvas: &mut Canvas, finished: &[LapBar], open: LapBar) {
     if best == 0 {
         return;
     }
-    canvas.shape(Shape::Bar {
-        rect: Rect {
-            left: LEFT,
-            top: CHART_BOTTOM,
-            right: RIGHT,
-            bottom: CHART_BOTTOM + 1,
-        },
-        radius: 0,
-        color: TERTIARY,
-    });
     let count = finished.len() + 1;
     let mut capped = false;
     for (index, bar) in bars.enumerate() {
@@ -321,7 +311,14 @@ mod tests {
             .shapes
             .iter()
             .filter_map(|shape| match shape {
-                Shape::Bar { rect, color, .. } if *color != TERTIARY => {
+                Shape::Bar { rect, color, .. } => {
+                    if *color != WHITE {
+                        assert_eq!(
+                            rect.bottom,
+                            super::super::BODY.bottom,
+                            "bars stand on the edge"
+                        );
+                    }
                     Some((rect.left, rect.height(), *color))
                 }
                 _ => None,
@@ -383,14 +380,10 @@ mod tests {
                 (lefts(3), CHART_HEIGHT * 240 / 300, POWER),
             ]
         );
-        // The bars span the page's width, a baseline under them.
         assert!(
-            lefts(0) - LEFT < MAX_BAR_WIDTH && RIGHT - (lefts(3) + MAX_BAR_WIDTH) < MAX_BAR_WIDTH
+            lefts(0) - LEFT < MAX_BAR_WIDTH && RIGHT - (lefts(3) + MAX_BAR_WIDTH) < MAX_BAR_WIDTH,
+            "the bars span the page's width"
         );
-        assert!(view.canvas().shapes.iter().any(|shape| matches!(
-            shape,
-            Shape::Bar { rect, color: TERTIARY, .. } if rect.left == LEFT && rect.right == RIGHT
-        )));
         // Seventeen bars still keep their gaps and stay inside the margins.
         for count in 1..=BARS {
             let mut right = LEFT;

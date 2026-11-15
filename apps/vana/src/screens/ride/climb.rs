@@ -63,9 +63,9 @@ const CHART_RIGHT: usize = BODY.right - 6;
 const CHART_LEFT: usize = CHART_RIGHT - PROFILE_LEN;
 const _: () = assert!(CHART_LEFT >= BODY.left, "the profile needs 200 columns");
 const CHART_TOP: usize = CELLS + CELL_PITCH - 4;
-/// The baseline row without a progress bar; the fill ends above it. The
-/// chart runs into the toast band, where a toast covers it for a moment.
-const CHART_BOTTOM: usize = BODY.bottom - 8;
+/// Without a progress bar the fill runs to the screen's edge, into the toast
+/// band, where a toast covers it for a moment.
+const CHART_BOTTOM: usize = BODY.bottom;
 /// With a progress bar under the chart, and FOOT, the share and TOP under it.
 const BAR_LABELS: usize = BODY.bottom - 3;
 const BAR_BOTTOM: usize = BAR_LABELS - CAPTION.cap as usize - 4;
@@ -98,6 +98,7 @@ pub(super) const fn color(steepness: Steepness) -> u16 {
 #[derive(Clone, Copy)]
 pub struct Lent<'a> {
     pub climbs: &'a Climbs,
+    pub climbing: Option<crate::ride::climb::Summary>,
     /// The whole ride's elevation.
     pub trace: &'a Trace,
     pub forecast: &'a Forecast,
@@ -109,6 +110,7 @@ impl Lent<'static> {
     /// Nothing ridden and no map.
     pub const NONE: Self = Self {
         climbs: &Climbs::NONE,
+        climbing: None,
         trace: &Trace::EMPTY,
         forecast: &Forecast::NONE,
         pinned: None,
@@ -131,7 +133,7 @@ enum Situation<'a> {
 fn situation<'a>(view: &View<'a>) -> Situation<'a> {
     let lent = view.climb_lent();
     let odometer = view.totals.distance_mm();
-    match (lent.pinned, lent.climbs.climbing()) {
+    match (lent.pinned, lent.climbing) {
         (Some(pin), _) if odometer < pin.foot_mm => Situation::Ahead(pin),
         (Some(pin), _) => Situation::OnMap(pin),
         (None, Some(climb)) => Situation::OnClimb {
@@ -143,7 +145,7 @@ fn situation<'a>(view: &View<'a>) -> Situation<'a> {
 }
 
 /// What the climb page precomputes for one frame.
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 pub struct Frame {
     /// The chart's baseline row: `CHART_BOTTOM`, or `BARRED_BOTTOM` over a
     /// progress bar.
@@ -610,7 +612,10 @@ pub(super) fn frame(view: &View) -> Frame {
     frame
 }
 
-/// The profile fill and its baseline.
+pub(super) fn chart_parts(frame: &Frame, parts: &mut firmware_shell::shell::Parts) {
+    parts.add(CHART_TOP..frame.bottom + 1, frame);
+}
+
 pub(super) fn paint_chart(frame: &Frame, row: &mut Row) {
     let y = row.y();
     if y == frame.bottom {
@@ -721,6 +726,7 @@ mod tests {
                 .add(1000, ride.odometer_mm, &sample, Some(95_000));
             view.show_climb(Lent {
                 climbs: &ride.climbs,
+                climbing: ride.climbs.climbing(),
                 trace: &ride.trace,
                 forecast: &ride.forecast,
                 pinned: ride.pinned.as_ref(),
@@ -730,12 +736,13 @@ mod tests {
     }
 
     /// Every painted row equals the per-pixel reference.
-    fn assert_paints_reference(view: &View) {
+    fn assert_paints_reference(view: &mut View) {
+        let scene = view.prepare();
         for y in 0..320 {
             let mut pixels = [0x5555; crate::screens::chrome::WIDTH];
-            view.paint(&mut Row::new(y, &mut pixels));
+            firmware_shell::shell::Picture::paint(&scene, &mut Row::new(y, &mut pixels));
             for (x, &pixel) in pixels.iter().enumerate() {
-                assert_eq!(pixel, view.reference_pixel(x, y), "{x},{y}");
+                assert_eq!(pixel, scene.reference_pixel(x, y), "{x},{y}");
             }
         }
     }
@@ -813,7 +820,7 @@ mod tests {
         assert!(frame.bands[10..50].iter().all(|&b| b == Steepness::Easy));
         assert!(frame.bands[125..165].iter().all(|&b| b == Steepness::Hard));
         assert!(frame.bands[185..].iter().all(|&b| b == Steepness::Descent));
-        assert_paints_reference(&view);
+        assert_paints_reference(&mut view);
     }
 
     #[test]
@@ -831,7 +838,7 @@ mod tests {
         let first = PROFILE_LEN - 130;
         assert!(frame.dim[first..first + 40].iter().all(|&d| d));
         assert!(frame.dim[PROFILE_LEN - 60..].iter().all(|&d| !d));
-        assert_paints_reference(&view);
+        assert_paints_reference(&mut view);
     }
 
     #[test]
@@ -870,7 +877,7 @@ mod tests {
                 .iter()
                 .all(|&b| b == Steepness::Steep)
         );
-        assert_paints_reference(&view);
+        assert_paints_reference(&mut view);
     }
 
     #[test]
@@ -880,8 +887,8 @@ mod tests {
         // 600 m up, 400 m to go: the map sees the rest from here.
         let ride = ride.mapped(2, 5, |m: f64| m.min(400.0) * 0.08);
         let mut view = ride.view();
-        view.prepare();
-        let canvas = view.canvas();
+        let scene = view.prepare();
+        let canvas = scene.canvas();
         for text in [
             "CLIMBING",
             "CAT 4",
@@ -893,7 +900,7 @@ mod tests {
         ] {
             assert!(canvas.shows(text), "{text}");
         }
-        let frame = view.climb();
+        let frame = scene.climb();
         // The chart starts at the foot: the rider is 600 m into 1.2 km of it.
         let rider = usize::from(frame.rider);
         assert!((95..=105).contains(&rider), "{rider}");
@@ -906,7 +913,7 @@ mod tests {
         // The rider's disc sits on the profile at the rider's column.
         let x = CHART_LEFT + rider;
         assert_eq!(
-            view.pixel(x, CHART_TOP + usize::from(frame.tops[rider])),
+            scene.pixel(x, CHART_TOP + usize::from(frame.tops[rider])),
             WHITE
         );
         // The bar is filled to the share climbed.
@@ -921,7 +928,7 @@ mod tests {
             (CHART_RIGHT - CHART_LEFT) * 600 / 1000
         );
         assert!(canvas.shows("FOOT") && canvas.shows("TOP"));
-        assert_paints_reference(&view);
+        assert_paints_reference(&mut view);
     }
 
     /// Every road, with the widest values, lays out whole.
@@ -964,7 +971,7 @@ mod tests {
                     &["POWER 3S", "HEART"],
                     &std::format!("{what} {tenths:?}"),
                 );
-                assert_paints_reference(&view);
+                assert_paints_reference(&mut view);
             }
         }
     }

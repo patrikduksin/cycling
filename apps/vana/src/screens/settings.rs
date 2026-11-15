@@ -33,6 +33,7 @@ pub enum Row {
     AutoDim,
     Daylight,
     Theme,
+    Mode,
     TimeZone,
     AutoPause,
     AutoLap,
@@ -95,7 +96,13 @@ pub const SECTIONS: [(&str, &[Row]); 11] = [
     ("BODY", &[Row::Weight, Row::Age, Row::Sex]),
     (
         "DISPLAY",
-        &[Row::Brightness, Row::AutoDim, Row::Daylight, Row::Theme],
+        &[
+            Row::Brightness,
+            Row::AutoDim,
+            Row::Daylight,
+            Row::Theme,
+            Row::Mode,
+        ],
     ),
     ("CLOCK", &[Row::TimeZone]),
     (
@@ -191,6 +198,7 @@ impl Row {
             Self::AutoDim => "DIM AFTER",
             Self::Daylight => "DAY / NIGHT",
             Self::Theme => "THEME",
+            Self::Mode => "MODE",
             Self::TimeZone => "TIME ZONE",
             Self::AutoPause => "AUTO PAUSE",
             Self::AutoLap => "AUTO LAP",
@@ -248,6 +256,7 @@ impl Row {
             | Self::AutoDim
             | Self::Daylight
             | Self::Theme
+            | Self::Mode
             | Self::TimeZone
             | Self::AutoPause
             | Self::AutoLap
@@ -631,7 +640,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 36);
+        assert_eq!(ROWS, 37);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);
@@ -651,7 +660,7 @@ mod tests {
 
     #[test]
     fn rings_the_focused_row_and_fills_the_edited_number() {
-        let moving = profile(1, false);
+        let mut moving = profile(1, false);
         let colors: std::vec::Vec<_> = panels(&moving).iter().map(|(_, c)| *c).collect();
         assert_eq!(colors, [CARD, ACCENT, RAISED, CARD, CARD], "no pads");
         assert_eq!(moving.pixel(LEFT, ROW_TOP), 0, "rounded corner");
@@ -671,7 +680,7 @@ mod tests {
         // No permanent button labels.
         assert!((0..240).all(|x| (306..320).all(|y| moving.pixel(x, y) == 0)));
 
-        let editing = profile(0, true);
+        let mut editing = profile(0, true);
         let colors: std::vec::Vec<_> = panels(&editing).iter().map(|(_, c)| *c).collect();
         assert_eq!(colors, [ACCENT, RAISED, RAISED]);
         assert!(editing.canvas().find("215").unwrap().line.face().cap == VALUE.cap);
@@ -764,7 +773,7 @@ mod tests {
     #[test]
     fn a_long_section_scrolls_and_shows_where_it_is() {
         let stats = Row::PageStats.index();
-        let bar = |view: &View, y| view.pixel(BAR_LEFT + 1, y);
+        let bar = |view: &mut View, y| view.pixel(BAR_LEFT + 1, y);
         let scrolled = |offset| {
             let mut view = View::new(Page::Settings, stats, None);
             view.scroll = offset;
@@ -775,17 +784,17 @@ mod tests {
         let rows = SECTIONS[6].1.len();
         assert_eq!(rows, 5);
         // From the top: the thumb at the top of the track.
-        let top = scrolled(0);
+        let mut top = scrolled(0);
         assert!(top.canvas().shows("RIDE PAGES"));
-        assert_eq!(bar(&top, LAYOUT.top + 2), SECONDARY);
-        assert_eq!(bar(&top, LAYOUT.bottom - 2), CARD);
+        assert_eq!(bar(&mut top, LAYOUT.top + 2), SECONDARY);
+        assert_eq!(bar(&mut top, LAYOUT.bottom - 2), CARD);
         // Scrolled to the end: the thumb at the bottom, the fifth row whole
         // and under a tap.
         let end = LAYOUT.content(rows) as i32 - LAYOUT.viewport() as i32;
         assert!(end > 0);
-        let bottom = scrolled(end);
-        assert_eq!(bar(&bottom, LAYOUT.top + 2), CARD);
-        assert_eq!(bar(&bottom, LAYOUT.bottom - 2), SECONDARY);
+        let mut bottom = scrolled(end);
+        assert_eq!(bar(&mut bottom, LAYOUT.top + 2), CARD);
+        assert_eq!(bar(&mut bottom, LAYOUT.bottom - 2), SECONDARY);
         assert!(LAYOUT.whole(4, end));
         let fifth = (LAYOUT.top as i32 + LAYOUT.span(4).0 - end + 10) as usize;
         assert_eq!(
@@ -793,7 +802,7 @@ mod tests {
             Some(Target::Row(stats + 4))
         );
         // A short section has no bar.
-        assert_eq!(bar(&view(0, false, &[], "SAVED"), LAYOUT.top + 2), 0);
+        assert_eq!(bar(&mut view(0, false, &[], "SAVED"), LAYOUT.top + 2), 0);
     }
 
     #[test]

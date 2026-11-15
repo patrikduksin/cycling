@@ -24,7 +24,7 @@ pub const TOP: usize = BOTTOM - HEIGHT;
 const REACH_MM: u64 = 100_000;
 
 /// The chart's columns, and the altitudes the captions name.
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 pub struct Chart {
     /// The lowest and highest altitude in decimetres, none without a trace.
     range_dm: Option<(i32, i32)>,

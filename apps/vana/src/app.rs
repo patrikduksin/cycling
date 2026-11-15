@@ -27,6 +27,7 @@ mod history;
 mod input;
 mod lists;
 mod lookahead;
+mod mode;
 mod motion;
 mod night;
 mod pace;
@@ -72,7 +73,6 @@ pub struct Runtime {
     navigation: presentation::Navigation,
     phone: phone::Phone,
     display: presentation::Display,
-    home_on_panel: Option<presentation::HomeOnPanel>,
     startup_status: &'static str,
     startup: device_api::sensors::Startup,
     menu: Menu,
@@ -99,6 +99,7 @@ pub struct Runtime {
     /// The look-ahead's state lives in the block composition gives it.
     lookahead: Option<&'static mut lookahead::Terrain>,
     motion: motion::Motion,
+    shown: presentation::Shown,
     alerts: crate::ride::alerts::Alerts,
     /// Back to start's breadcrumb lives in the block composition gives it.
     back: Option<&'static mut back::BackToStart>,
@@ -113,7 +114,6 @@ impl Runtime {
             navigation: presentation::Navigation::default(),
             phone: phone::Phone::default(),
             display: presentation::Display::default(),
-            home_on_panel: None,
             startup_status: "unknown",
             startup: device_api::sensors::Startup::Unsupported,
             menu: Menu::new(),
@@ -137,6 +137,7 @@ impl Runtime {
             night: night::Night::default(),
             lookahead: None,
             motion: motion::Motion::default(),
+            shown: presentation::Shown::default(),
             alerts: crate::ride::alerts::Alerts::default(),
             back: None,
             reported: seen::Reported::default(),

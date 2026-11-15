@@ -21,6 +21,23 @@ pub struct Icon {
     bits: &'static [u8],
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct StaticIcon(pub &'static Icon);
+
+impl core::hash::Hash for StaticIcon {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::ptr::hash(self.0, state);
+    }
+}
+
+impl core::ops::Deref for StaticIcon {
+    type Target = Icon;
+
+    fn deref(&self) -> &Icon {
+        self.0
+    }
+}
+
 impl Icon {
     /// Coverage 0..=15 at (`x`, `y`) of the icon's square.
     pub fn coverage(&self, x: usize, y: usize) -> u8 {

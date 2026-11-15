@@ -333,6 +333,24 @@ pub struct Health {
     pub ble_rssi: Option<i8>,
 }
 
+/// The frames the panel took in the window of the [`Event::Health`] that
+/// follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameTime {
+    pub frames: u32,
+    pub mean_us: u32,
+}
+
+impl FrameTime {
+    pub fn of_window(frames: u32, total_us: u64) -> Option<Self> {
+        let mean_us = total_us.checked_div(u64::from(frames))?;
+        Some(Self {
+            frames,
+            mean_us: u32::try_from(mean_us).unwrap_or(u32::MAX),
+        })
+    }
+}
+
 /// Where the CPU's time went since the record before, and what drew power
 /// as the window ended. Not an input. Its executor tasks follow it as
 /// [`Event::Task`] records, then the main-loop pass's stages as
@@ -439,6 +457,7 @@ pub enum Event<'a> {
         snapshot: Option<positioning::Snapshot>,
     },
     Physical(sensors::Snapshot),
+    Light(Observation<sensors::Light>),
     Power(Option<InputSnapshot>),
     /// UTC from Wi-Fi synchronization, recorded when it no longer reads as
     /// the last recorded value advanced to this pass.
@@ -539,8 +558,15 @@ pub enum Event<'a> {
     /// The displayed fields, about once a second.
     Shown(&'a str),
     /// A digest of the pixels on the panel at the end of a pass, when they
-    /// changed since the last.
+    /// changed since the last: every row of the frame in turn. Traces
+    /// recorded before the shell sent only the rows that changed hold it;
+    /// newer ones hold [`Event::Panel`].
     Frame(u32),
+    /// A digest of the pixels on the panel at the end of a pass, when they
+    /// changed since the last: each 4-row band digested as the shell last
+    /// sent it, then the bands top to bottom. It does not depend on which
+    /// rows a frame sent.
+    Panel(u32),
     /// A diagnostic harness's synthetic press or touch the shell handed on
     /// like a physical one. A replay runs the harness command that
     /// scheduled it, so this is never replayed as an input.
@@ -550,6 +576,7 @@ pub enum Event<'a> {
         target: &'a str,
         text: &'a str,
     },
+    FrameTime(FrameTime),
     Health(Health),
     Activity(Activity),
     /// One executor task's share of the [`Event::Activity`] window before
@@ -608,6 +635,7 @@ mod tag {
     pub const REFUSED: u8 = 35;
     pub const LOST: u8 = 36;
     pub const HOST_WROTE: u8 = 37;
+    pub const LIGHT: u8 = 38;
     pub const PAGE: u8 = 64;
     pub const TOAST: u8 = 65;
     pub const SOUND: u8 = 66;
@@ -616,10 +644,12 @@ mod tag {
     pub const SYNTHETIC: u8 = 70;
     pub const LOG: u8 = 69;
     pub const FRAME: u8 = 71;
+    pub const PANEL: u8 = 72;
     pub const HEALTH: u8 = 80;
     pub const ACTIVITY: u8 = 81;
     pub const TASK: u8 = 82;
     pub const STAGE: u8 = 83;
+    pub const FRAME_TIME: u8 = 84;
 }
 
 const SHORT_PASS: u8 = 0x80;
@@ -948,16 +978,19 @@ impl<'a, T: Wire<'a>> Wire<'a> for Observation<T> {
 }
 
 macro_rules! record {
-    ($($ty:path { $($field:ident $(: $kind:ident)?),* $(,)? })*) => {$(
-        impl<'a> Wire<'a> for $ty {
+    ($($ty:path { $($field:ident $(: $kind:ident)?),* $(,)? })*) => {
+        $(impl<'a> Wire<'a> for $ty {
             fn put(&self, w: &mut Writer) {
                 $(record!(@put w, self.$field $(, $kind)?);)*
             }
             fn take(r: &mut Reader<'a>) -> Self {
                 Self { $($field: record!(@take r $(, $kind)?),)* }
             }
-        }
-    )*};
+        })*
+        #[cfg(test)]
+        const RECORD_FIELDS: &[(&str, &[&str])] =
+            &[$((stringify!($ty), &[$(stringify!($field)),*])),*];
+    };
     (@put $w:ident, $value:expr) => { Wire::put(&$value, $w) };
     (@put $w:ident, $value:expr, time) => { $w.time($value) };
     (@put $w:ident, $value:expr, times) => { $w.times($value) };
@@ -1082,6 +1115,7 @@ record! {
         supported_types, connection_capacity, one_peer_per_type, concurrent_scan,
         acknowledged_send, radio_delivery_feedback, burst, max_pending_sends,
     }
+    FrameTime { frames, mean_us }
     Health {
         simulated, heap_free, heap_min, psram_free, frame_max_us, pass_max_us, gps_sentences,
         gps_overflows, gps_uart_errors, companion_errors, card_write_max_us, card_recoveries,
@@ -1094,6 +1128,15 @@ record! {
     Activity {
         simulated, window_ms, wakes, awake_us, main_us, radio_us, idle_us, switches, ticks,
         hooks_us, consumers,
+    }
+}
+
+impl Wire<'_> for sensors::Light {
+    fn put(&self, w: &mut Writer) {
+        self.0.put(w);
+    }
+    fn take(r: &mut Reader<'_>) -> Self {
+        Self(u16::take(r))
     }
 }
 
@@ -1359,6 +1402,7 @@ impl<'a> Event<'a> {
             Self::BleBattery(_) => tag::BLE_BATTERY,
             Self::Position { .. } => tag::POSITION,
             Self::Physical(_) => tag::PHYSICAL,
+            Self::Light(_) => tag::LIGHT,
             Self::Power(_) => tag::POWER,
             Self::NetworkTime(_) => tag::NETWORK_TIME,
             Self::Startup(_) => tag::STARTUP,
@@ -1390,7 +1434,9 @@ impl<'a> Event<'a> {
             Self::Shown(_) => tag::SHOWN,
             Self::Synthetic(_) => tag::SYNTHETIC,
             Self::Frame(_) => tag::FRAME,
+            Self::Panel(_) => tag::PANEL,
             Self::Log { .. } => tag::LOG,
+            Self::FrameTime(_) => tag::FRAME_TIME,
             Self::Health(_) => tag::HEALTH,
             Self::Activity(_) => tag::ACTIVITY,
             Self::Task { .. } => tag::TASK,
@@ -1431,6 +1477,7 @@ impl<'a> Event<'a> {
                 snapshot.put(w);
             }
             Self::Physical(snapshot) => snapshot.put(w),
+            Self::Light(light) => light.put(w),
             Self::Power(snapshot) => snapshot.put(w),
             Self::NetworkTime(snapshot) => snapshot.put(w),
             Self::Startup(startup) => startup.put(w),
@@ -1513,7 +1560,8 @@ impl<'a> Event<'a> {
                 text.put(w);
             }
             Self::Synthetic(input) => input.put(w),
-            Self::Frame(digest) => digest.put(w),
+            Self::Frame(digest) | Self::Panel(digest) => digest.put(w),
+            Self::FrameTime(frame_time) => frame_time.put(w),
             Self::Health(health) => health.put(w),
             Self::Activity(activity) => activity.put(w),
             Self::Task {
@@ -1568,6 +1616,7 @@ impl<'a> Event<'a> {
                 snapshot: Wire::take(r),
             },
             tag::PHYSICAL => Self::Physical(Wire::take(r)),
+            tag::LIGHT => Self::Light(Wire::take(r)),
             tag::POWER => Self::Power(Wire::take(r)),
             tag::NETWORK_TIME => Self::NetworkTime(Wire::take(r)),
             tag::STARTUP => Self::Startup(Wire::take(r)),
@@ -1632,11 +1681,13 @@ impl<'a> Event<'a> {
             tag::SHOWN => Self::Shown(Wire::take(r)),
             tag::SYNTHETIC => Self::Synthetic(Wire::take(r)),
             tag::FRAME => Self::Frame(Wire::take(r)),
+            tag::PANEL => Self::Panel(Wire::take(r)),
             tag::LOG => Self::Log {
                 level: Wire::take(r),
                 target: Wire::take(r),
                 text: Wire::take(r),
             },
+            tag::FRAME_TIME => Self::FrameTime(Wire::take(r)),
             tag::HEALTH => Self::Health(Wire::take(r)),
             tag::ACTIVITY => Self::Activity(Wire::take(r)),
             tag::TASK => Self::Task {
@@ -1783,13 +1834,13 @@ pub struct Cursor {
     now: u64,
     later: bool,
     end: Option<End>,
+    checked: Option<(usize, [u8; 4])>,
 }
 
 /// The trace's events in order, ending before a torn tail.
 pub struct Events<'a> {
     bytes: &'a [u8],
     cursor: Cursor,
-    payload: Option<&'a [u8]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1836,6 +1887,7 @@ pub fn decode(bytes: &[u8]) -> Result<(Header<'_>, Events<'_>), Error> {
         now: 0,
         later,
         end: None,
+        checked: None,
     };
     Ok((header, Events::resume(bytes, cursor)))
 }
@@ -1853,12 +1905,17 @@ fn failed(bytes: &[u8], start: usize) -> End {
 }
 
 fn block(bytes: &[u8], start: usize) -> Option<(&[u8], usize)> {
+    let (payload, crc) = unchecked_block(bytes, start)?;
+    (crc32(payload).to_le_bytes() == crc).then_some((payload, start + FRAME + payload.len()))
+}
+
+fn unchecked_block(bytes: &[u8], start: usize) -> Option<(&[u8], [u8; 4])> {
     let len = usize::from(u16::from_le_bytes(
         bytes.get(start..start.checked_add(2)?)?.try_into().ok()?,
     ));
     let payload = bytes.get(start + 2..start + 2 + len)?;
     let crc = bytes.get(start + 2 + len..start + FRAME + len)?;
-    (crc32(payload).to_le_bytes() == crc).then_some((payload, start + FRAME + len))
+    Some((payload, crc.try_into().ok()?))
 }
 
 impl<'a> Events<'a> {
@@ -1871,7 +1928,6 @@ impl<'a> Events<'a> {
                 end: None,
                 ..cursor
             },
-            payload: None,
         }
     }
 
@@ -1886,17 +1942,17 @@ impl<'a> Events<'a> {
 
     fn step(&mut self) -> Result<Option<Event<'a>>, End> {
         let c = &mut self.cursor;
-        let payload = match self.payload {
-            Some(payload) => payload,
-            None if c.block >= self.bytes.len() && c.at == 0 => return Err(End::Complete),
-            None => {
-                let (payload, _) =
-                    block(self.bytes, c.block).ok_or_else(|| failed(self.bytes, c.block))?;
+        let payload = match unchecked_block(self.bytes, c.block) {
+            Some((payload, crc)) if c.checked == Some((payload.len(), crc)) => payload,
+            _ if c.block >= self.bytes.len() && c.at == 0 => return Err(End::Complete),
+            Some((payload, crc)) if crc32(payload).to_le_bytes() == crc => {
                 if c.at > payload.len() {
                     return Err(End::Torn);
                 }
-                *self.payload.insert(payload)
+                c.checked = Some((payload.len(), crc));
+                payload
             }
+            _ => return Err(failed(self.bytes, c.block)),
         };
         let Some(&first) = payload.get(c.at) else {
             let next = c.block + FRAME + payload.len();
@@ -1905,7 +1961,7 @@ impl<'a> Events<'a> {
             }
             c.block = next;
             c.at = 0;
-            self.payload = None;
+            c.checked = None;
             return Ok(None);
         };
         if first & SHORT_PASS != 0 {

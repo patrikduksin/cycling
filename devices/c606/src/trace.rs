@@ -24,7 +24,9 @@ use firmware_services::trace::frozen::{
 };
 use firmware_services::trace::origin::{self, Config, Files, Found, Media, Memory, Terrain};
 use firmware_services::trace::spool::{self, Card, File, Spool, Spooled};
-use firmware_services::trace::{Activity, Consumers, Event, Gnss, Health, Vitals, redact};
+use firmware_services::trace::{
+    Activity, Consumers, Event, FrameTime, Gnss, Health, Vitals, redact,
+};
 
 type Bytes = &'static mut [u8];
 pub type Recording = Option<Spooled<Owned, Owned>>;
@@ -74,6 +76,7 @@ pub struct Trace {
     pub companion: FrozenCompanion,
     pub startup: Latest<Startup>,
     pub physical: Latest<device_api::sensors::Snapshot>,
+    pub light: Latest<device_api::observation::Observation<device_api::sensors::Light>>,
     pub network_time: Latest<firmware_services::network_time::Snapshot>,
     pub power: FrozenPowerControl,
     pub backlight: Latest<Availability>,
@@ -108,6 +111,7 @@ impl Trace {
             companion: FrozenCompanion::default(),
             startup: Latest::default(),
             physical: Latest::default(),
+            light: Latest::assumed(device_api::observation::Observation::Unavailable),
             network_time: Latest::default(),
             power: FrozenPowerControl::default(),
             backlight: Latest::default(),
@@ -249,7 +253,7 @@ impl Trace {
             });
         }
         if let Some(digest) = frame {
-            self.record(&Event::Frame(digest));
+            self.record(&Event::Panel(digest));
         }
         crate::logging::drain_warnings(|level, target, text| {
             self.record(&Event::Log {
@@ -284,6 +288,7 @@ impl Trace {
         let (spool_used, spool_size) = self.record.get_mut().as_ref().map_or((0, 0), |recorder| {
             (recorder.sink().len(), recorder.sink().capacity())
         });
+        let (window_frames, window_total_us) = device::drivers::display::TIMING.take_window_total();
         let health = Health {
             simulated: false,
             heap_free: Some(count(esp_alloc::HEAP.free())),
@@ -356,6 +361,9 @@ impl Trace {
             },
         };
         let record = self.record.get_mut();
+        if let Some(frame_time) = FrameTime::of_window(window_frames, u64::from(window_total_us)) {
+            record.record(&Event::FrameTime(frame_time));
+        }
         record.record(&Event::Health(health));
         record.record(&Event::Activity(activity));
         for task in taken.tasks.iter().flatten() {
@@ -522,7 +530,7 @@ impl Start {
         let (scratch, out) = self.header.split_at_mut(HEADER / 2);
         let commit = match option_env!("CYCLING_BUILD_DIRTY") {
             Some("1") => "",
-            _ => option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""),
+            _ => core::hint::black_box(option_env!("CYCLING_BUILD_COMMIT").unwrap_or("")),
         };
         let profile = self.settings.ble_profile;
         let len = origin::header(commit, self.boot, profile, &config, &media, scratch, out)?;

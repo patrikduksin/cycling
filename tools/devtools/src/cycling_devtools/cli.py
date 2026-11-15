@@ -69,9 +69,9 @@ TASKS = [
     ),
     task(
         'test-web',
-        'Relay, site, bridge and protocol tests (web/; bun)',
+        'Relay, site, bridge, protocol and flasher tests (web/; bun, files spread over worker processes)',
         'bun install --frozen-lockfile --silent',
-        'bun test web',
+        'bun test --parallel=8 web',
     ),
     task(
         'stack-frames',
@@ -80,8 +80,14 @@ TASKS = [
     ),
     task(
         'verify',
-        'Run every PR gate in parallel (test, check, simulate, build, harness-virtual); --fast for the inner loop, --pr N to post results',
+        'Run every PR gate in parallel (test, check, simulate, build, screens, harness-virtual); --fast for the inner loop, '
+        '--pr N to post results and changed screens, --video for before/after videos of changed scenarios',
         f'{DEV}verify',
+    ),
+    task(
+        'playbook-audit',
+        "Print a session transcript's digest for the auditor in docs/agents/playbook-auditor.md, --session ID",
+        f'{DEV}playbook_audit',
     ),
     task(
         'clean',
@@ -252,7 +258,7 @@ TASKS = [
     ),
     task(
         'sim',
-        'Run VANA scenarios in the simulated world; report and artifacts go to .local/sim/latest',
+        'Run VANA scenarios in the simulated world; report and screenshots go to .local/sim/latest (SIM_VIDEO=1 adds videos)',
         'rm -rf .local/sim/latest && mkdir -p .local/sim/latest',
         f'SIM_ARTIFACTS=$PWD/.local/sim/latest {SIM_SCENARIOS} 2>&1 | tee .local/sim/latest/cargo.log || true',
         f'{DEV}sim.report .local/sim/latest',
@@ -262,12 +268,18 @@ TASKS = [
         'Run simulator scenarios and post their videos and screenshots inline on a pull request: sim-pr <pr>',
         'test -n "${1:-}" || { echo "usage: cycling sim-pr <pr>" >&2; exit 2; }',
         'rm -rf .local/sim/pr && mkdir -p .local/sim/pr',
-        f'SIM_ARTIFACTS=$PWD/.local/sim/pr {SIM_SCENARIOS} 2>&1 | tee .local/sim/pr/cargo.log || true',
+        f'SIM_ARTIFACTS=$PWD/.local/sim/pr SIM_VIDEO=1 {SIM_SCENARIOS} 2>&1 | tee .local/sim/pr/cargo.log || true',
         f'{DEV}sim.report .local/sim/pr --pr "$1"',
     ),
     task(
+        'redraw-probe',
+        'Report how much of the screen each page changes from frame to frame under a sensor feed: redraw-probe [seconds] [case filter]',
+        'cargo run -q -p shell-simulator --locked --no-default-features --bin redraw-probe --',
+    ),
+    task(
         'sim-compare',
-        'Run simulator scenarios here and on a base ref; report changed screens Before | After (--base REF, --pr N, --filter NAME)',
+        'Run simulator scenarios here and on a base ref; report changed screens Before | After '
+        '(--base REF, --pr N, --filter NAME, --video for before/after videos of changed scenarios)',
         f'{DEV}sim.compare',
     ),
     task(
@@ -278,7 +290,7 @@ TASKS = [
     task(
         'sim-live',
         'Open a window onto the simulated device; the session is recorded to .local/sim/live',
-        'SIM_ARTIFACTS=$PWD/.local/sim/live cargo run -p shell-simulator --locked --no-default-features --features live --bin sim-live',
+        'SIM_ARTIFACTS=$PWD/.local/sim/live SIM_VIDEO=1 cargo run -p shell-simulator --locked --no-default-features --features live --bin sim-live',
     ),
     task(
         'trace',

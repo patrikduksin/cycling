@@ -376,6 +376,8 @@ pub struct Timeline {
     pub power: Vec<(u64, device_api::power::State)>,
     /// Each health record, with the session time it was recorded at.
     pub health: Vec<(u64, trace::Health)>,
+    /// The frame time of each health window that reported one.
+    pub frame_times: Vec<(u64, trace::FrameTime)>,
     /// Each activity window, in order.
     pub activity: Vec<Window>,
 }
@@ -544,6 +546,7 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         silences: reader.silences,
         power: reader.power,
         health: reader.health,
+        frame_times: reader.frame_times,
         activity: reader.activity,
     })
 }
@@ -567,6 +570,8 @@ struct Reader {
     paged: bool,
     power: Vec<(u64, device_api::power::State)>,
     health: Vec<(u64, trace::Health)>,
+    frame_times: Vec<(u64, trace::FrameTime)>,
+    frame_time_awaiting_health: Option<trace::FrameTime>,
     activity: Vec<Window>,
     /// The activity window of this pass, while its tasks are read.
     window: Option<Window>,
@@ -683,6 +688,9 @@ impl Reader {
     }
 
     fn event(&mut self, event: &Event<'_>) {
+        if !matches!(event, Event::FrameTime(_) | Event::Health(_)) {
+            self.frame_time_awaiting_health = None;
+        }
         match *event {
             Event::Pass { now_ms } => {
                 self.end_pass();
@@ -704,7 +712,7 @@ impl Reader {
             Event::Synthetic(pressed) => {
                 self.push(Kind::Input, format!("synthetic {}", input(pressed)))
             }
-            Event::Frame(_) => {}
+            Event::Frame(_) | Event::Panel(_) => {}
             Event::Command(line) => self.push(Kind::Command, super::secret::shown_command(line)),
             Event::Startup(startup) => {
                 self.push(Kind::Startup, format!("companion {}", startup.name()))
@@ -789,6 +797,16 @@ impl Reader {
                     Observation::Unavailable => "barometer unavailable".into(),
                     Observation::Fresh { .. } => "barometer fresh".into(),
                     Observation::Stale { .. } => "barometer stale".into(),
+                },
+            ),
+            Event::Light(light) => self.push(
+                Kind::Sensors,
+                match light {
+                    Observation::Unavailable => "ambient light unavailable".into(),
+                    Observation::Fresh { value, .. } => format!("ambient light {}", value.0),
+                    Observation::Stale { value, .. } => {
+                        format!("ambient light {} stale", value.0)
+                    }
                 },
             ),
             Event::Power(snapshot) => self.push(Kind::Battery, battery(snapshot)),
@@ -984,9 +1002,12 @@ impl Reader {
                     body.len()
                 ),
             ),
+            Event::FrameTime(frame_time) => self.frame_time_awaiting_health = Some(frame_time),
             Event::Health(health) => {
-                self.push(Kind::Health, self::health(&health));
+                let frame_time = self.frame_time_awaiting_health.take();
+                self.push(Kind::Health, self::health(&health, frame_time));
                 self.health.push((self.now, health));
+                self.frame_times.extend(frame_time.map(|f| (self.now, f)));
             }
             Event::Activity(activity) => {
                 self.close_window();
@@ -1197,7 +1218,7 @@ pub fn percent(share: f64) -> String {
 }
 
 /// A health record as one timeline line.
-fn health(h: &trace::Health) -> String {
+fn health(h: &trace::Health, frame_time: Option<trace::FrameTime>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if h.simulated {
         parts.push("simulated".into());
@@ -1211,8 +1232,14 @@ fn health(h: &trace::Health) -> String {
     if let Some(free) = h.psram_free {
         parts.push(format!("psram {}", bytes(u64::from(free))));
     }
-    if let Some(us) = h.frame_max_us {
-        parts.push(format!("frame {}", millis(us)));
+    match (frame_time, h.frame_max_us) {
+        (Some(frame), Some(max_us)) => parts.push(format!(
+            "frame mean {:.2} ms, max {}",
+            f64::from(frame.mean_us) / 1000.0,
+            millis(max_us)
+        )),
+        (_, Some(max_us)) => parts.push(format!("frame {}", millis(max_us))),
+        _ => {}
     }
     if let Some(us) = h.pass_max_us {
         parts.push(format!("pass {}", millis(us)));

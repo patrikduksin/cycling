@@ -10,9 +10,10 @@ use crate::screens::chrome::{
     Align, BLACK, BODY as BODY_FACE, CAPTION, GRADE, HEART, HERO, LARGE, Label, Line, POWER, Rect,
     Row, SECONDARY, SPEED, TERTIARY, VALUE, WHITE, blend, rounded, zone_color,
 };
-use crate::screens::workout::View;
+use crate::screens::workout::{Scene, View};
 use core::fmt::Write;
 use firmware_shell::rendering::font::{Face, SPILL};
+use firmware_shell::shell::Parts;
 
 const LEFT: usize = BODY.left + 10;
 const RIGHT: usize = BODY.right - 8;
@@ -262,10 +263,23 @@ fn band_rows(i: usize) -> core::ops::Range<usize> {
     top..top + BAND_HEIGHT
 }
 
+pub(super) fn parts(scene: &Scene, parts: &mut Parts) {
+    let smooth = scene.smooth();
+    for i in 0..GAUGES.len() {
+        parts.add(band_rows(i), &smooth.band);
+    }
+    for (&top, mark) in GAUGES.iter().zip(&scene.gauges) {
+        parts.add(top..top + GAUGE_HEIGHT, mark);
+    }
+    for label in &smooth.labels {
+        parts.add(label.top..label.bottom(), label);
+    }
+}
+
 /// Paint a body row: a gauge row, or the labels that cover it.
-pub(super) fn paint(view: &View, row: &mut Row) {
+pub(super) fn paint(scene: &Scene, row: &mut Row) {
     let y = row.y();
-    let smooth = view.smooth();
+    let smooth = scene.smooth();
     if let Some((i, columns)) = &smooth.band
         && band_rows(*i).contains(&y)
     {
@@ -273,7 +287,7 @@ pub(super) fn paint(view: &View, row: &mut Row) {
     }
     for (i, &top) in GAUGES.iter().enumerate() {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
-            let mark = [view.marks.power, view.marks.heart][i].unwrap_or_default();
+            let mark = scene.gauges[i].unwrap_or_default();
             paint_gauge(row, mark.zone, mark.fill.into(), SEGMENTS[i], top);
             return;
         }
@@ -285,8 +299,8 @@ pub(super) fn paint(view: &View, row: &mut Row) {
 
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
-pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
-    let smooth = view.smooth();
+pub(super) fn reference_pixel(scene: &Scene, x: usize, y: usize) -> u16 {
+    let smooth = scene.smooth();
     if let Some((i, columns)) = &smooth.band
         && band_rows(*i).contains(&y)
         && columns.contains(&x)
@@ -295,7 +309,7 @@ pub(super) fn reference_pixel(view: &View, x: usize, y: usize) -> u16 {
     }
     for (i, &top) in GAUGES.iter().enumerate() {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
-            let mark = [view.marks.power, view.marks.heart][i].unwrap_or_default();
+            let mark = scene.gauges[i].unwrap_or_default();
             return gauge(mark.zone, mark.fill.into(), SEGMENTS[i], x, y, top);
         }
     }

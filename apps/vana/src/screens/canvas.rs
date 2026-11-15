@@ -12,8 +12,9 @@ use super::chrome::{
     Align, CAPTION, Label, Line, Rect, Ring, Row, SECONDARY, blend, paint_disc_over,
     paint_rounded_over, rounded,
 };
-use super::icons::Icon;
+use super::icons::StaticIcon;
 use firmware_shell::rendering::font::{Face, SPILL};
+use firmware_shell::shell::Parts;
 use heapless::Vec;
 
 /// Text on a canvas: up to 24 characters.
@@ -22,7 +23,7 @@ pub type Run = Label<24>;
 /// Columns kept clear between neighbouring runs, their spill included.
 pub const GAP: usize = 8 + SPILL;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub enum Shape {
     /// A surface text may sit on: a field, a pad, a selected card.
     Panel {
@@ -53,7 +54,7 @@ pub enum Shape {
     /// An icon in one colour with its square's top-left corner at
     /// (`left`, `top`): a mark of its own, like a bar.
     Icon {
-        icon: &'static Icon,
+        icon: StaticIcon,
         left: usize,
         top: usize,
         color: u16,
@@ -163,7 +164,7 @@ const fn fitted(rect: Rect, radius: usize) -> usize {
 }
 
 /// Runs and shapes in paint order: shapes first, then text over them.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Hash)]
 pub struct Canvas {
     pub shapes: Vec<Shape, 24>,
     pub runs: Vec<Run, 28>,
@@ -225,6 +226,16 @@ impl Canvas {
         }
         for run in &self.runs {
             run.paint(row);
+        }
+    }
+
+    pub fn parts(&self, parts: &mut Parts) {
+        for shape in &self.shapes {
+            let bounds = shape.bounds();
+            parts.add(bounds.top..bounds.bottom, shape);
+        }
+        for run in &self.runs {
+            parts.add(run.top..run.bottom(), run);
         }
     }
 

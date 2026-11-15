@@ -1,6 +1,8 @@
 //! Render each sensor page with deterministic fixtures into PPM previews.
 use device_api::ant::{Discovery, Identity};
 use device_api::input::{Button, Input};
+use firmware_shell::rendering::row::Row;
+use firmware_shell::shell::Picture;
 use vana::screens::sensors::{CalibrationNote, Connection, Menu, MenuMessage, Page, Selected};
 use vana::sensors::ant::{Battery, BatteryStatus, device_type::*};
 
@@ -193,11 +195,13 @@ fn focus(menu: &mut Menu, kind: Option<u8>, now: &mut u64) {
 }
 
 fn render(menu: &Menu, output: &str, name: &str) {
-    let frame = menu.frame();
+    let mut frame = menu.frame();
+    let scene = frame.prepare();
     let mut bytes = b"P6\n240 320\n255\n".to_vec();
+    let mut row = [0u16; 240];
     for y in 0..320 {
-        for x in 0..240 {
-            let p = frame.pixel(x, y);
+        scene.paint(&mut Row::new(y, &mut row));
+        for p in row {
             bytes.extend_from_slice(&[
                 (((p >> 11) & 31) as u32 * 255 / 31) as u8,
                 (((p >> 5) & 63) as u32 * 255 / 63) as u8,

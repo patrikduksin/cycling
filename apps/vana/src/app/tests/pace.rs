@@ -7,8 +7,9 @@ use crate::app::cues::Cue;
 use crate::app::pace::{BUSY_REST_MS, STILL_REST_MS};
 use crate::app::presentation::MOTION_FRAME_MS;
 use crate::ride::log::Status;
+use crate::screens::ride::slots::{Reading, Slots};
 use crate::screens::workout::Page;
-use crate::sensors::ant::device_type::HEART_RATE;
+use crate::sensors::ant::device_type::{HEART_RATE, POWER};
 use device_api::input::Point;
 use device_api::power::State;
 
@@ -122,6 +123,36 @@ fn readings_gliding_on_the_ride_page_rest_until_the_next_glide_frame() {
         rest(&runtime, &screen, glide),
         MOTION_FRAME_MS,
         "the heart rate glides to its sample"
+    );
+}
+
+#[test]
+fn a_new_number_the_page_does_not_show_asks_for_no_more_frames() {
+    let (mut journal, mut radio, mut screen) = (Journal::erased(), Radio::new(), Screen::new());
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    radio.connected(POWER, NOW - 1000);
+    runtime.preferences.options.main_slots = Slots {
+        left: Reading::Distance,
+        right: Reading::Kcal,
+    };
+    runtime.navigation.page = Page::Ride;
+    let mut power = |runtime: &mut Runtime, screen: &mut Screen, event, rpm, now| {
+        radio.data(POWER, [0x10, event, 0xff, rpm, 0, 0, 200, 0], now);
+        tick(runtime, &mut journal, &mut radio, now);
+        screen.present(runtime, &radio, now)
+    };
+    for (event, now) in (1..).zip([NOW, NOW + 250, NOW + 500, NOW + 750]) {
+        power(&mut runtime, &mut screen, event, 80, now);
+    }
+    assert_eq!(rest(&runtime, &screen, NOW + 750), STILL_REST_MS);
+    assert!(
+        !power(&mut runtime, &mut screen, 5, 90, NOW + 1000),
+        "the cadence is not on the page"
+    );
+    assert_eq!(
+        rest(&runtime, &screen, NOW + 1000),
+        STILL_REST_MS,
+        "the frame the panel already shows is drawn"
     );
 }
 

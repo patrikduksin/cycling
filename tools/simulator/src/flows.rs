@@ -179,6 +179,17 @@ impl Sim {
         );
     }
 
+    #[track_caller]
+    pub fn open_mode_row(&mut self) {
+        self.home("SETTINGS");
+        self.swipe_next();
+        self.swipe_next();
+        for _ in 0..4 {
+            self.press(Button::BottomLeft);
+        }
+        self.expect_text("DISPLAY");
+    }
+
     pub fn resume_ride(&mut self) {
         self.press(Button::BottomRight);
         self.wait_for("RESUMED", seconds(3)).unwrap();

@@ -269,6 +269,8 @@ impl InputObservation for NoInputObservation {
     }
 }
 const ASSUMED_BAROMETER_MS: u64 = 100;
+/// The companion sends ambient light about three times a second.
+const ASSUMED_LIGHT_MS: u64 = 333;
 /// Uptime before a powered-on companion reports ready. Modelled on C606
 /// startup: three seconds of passive observation before the startup
 /// acknowledgment, then an operating reason and two advancing sensor samples.
@@ -323,6 +325,7 @@ struct Trace {
     companion: FrozenCompanion,
     startup: Latest<Startup>,
     physical: Latest<device_api::sensors::Snapshot>,
+    light: Latest<Observation<device_api::sensors::Light>>,
     network_time: Latest<firmware_services::network_time::Snapshot>,
     power: FrozenPowerControl,
     backlight: Latest<Availability>,
@@ -456,6 +459,7 @@ impl Trace {
             companion: FrozenCompanion::default(),
             startup: Latest::default(),
             physical: Latest::default(),
+            light: Latest::assumed(Observation::Unavailable),
             network_time: Latest::default(),
             power: FrozenPowerControl::default(),
             backlight: Latest::default(),
@@ -709,6 +713,16 @@ impl Simulated {
         }
     }
 
+    fn light(&self, now: u64) -> Observation<device_api::sensors::Light> {
+        match self.world.ambient_light {
+            Some(raw) => Observation::Fresh {
+                value: device_api::sensors::Light(raw),
+                received_ms: now - now % ASSUMED_LIGHT_MS,
+            },
+            None => Observation::Unavailable,
+        }
+    }
+
     fn physical(&mut self, now: u64) -> device_api::sensors::Snapshot {
         let slot = now - now % ASSUMED_BAROMETER_MS;
         self.barometer = match (self.world.pressure_centi_pa(), self.barometer) {
@@ -840,9 +854,12 @@ impl Session {
             vana::sensors::ble_profile::Profile::HeartRate
         };
         {
-            let view =
+            let mut view =
                 vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
-            shell.draw_canvas(240, 320, |row| view.paint(row));
+            let scene = view.prepare();
+            shell.draw_canvas(240, 320, |row| {
+                firmware_shell::shell::Picture::paint(&scene, row);
+            });
         }
         shell.forget_frame();
         let mut sdk = vana::app::Runtime::new(profile);
@@ -1067,7 +1084,10 @@ impl Session {
         self.record_faults();
         let seen = self.record_seen();
         if let Devices::Replayed(replay) = &mut self.devices {
-            replay.saw(&seen);
+            let frame = self.display.0.borrow();
+            replay.saw(&seen, || {
+                firmware_shell::shell::frame_digest(&frame.pixels, frame.geometry.width)
+            });
         }
         let card = spool::Card::of(
             self.card_admits(),
@@ -1303,10 +1323,15 @@ impl Session {
         startup: Startup,
     ) {
         let now = self.now;
-        let (physical, network_time) = match &mut self.devices {
-            Devices::Replayed(replay) => (replay.sources.physical(), replay.sources.network_time()),
+        let (physical, light, network_time) = match &mut self.devices {
+            Devices::Replayed(replay) => (
+                replay.sources.physical(),
+                replay.sources.light(),
+                replay.sources.network_time(),
+            ),
             Devices::Simulated(sim) => (
                 sim.physical(now),
+                sim.light(now),
                 sim.network_time
                     .map_or_else(Default::default, |anchor| anchor.snapshot(now, 0, true)),
             ),
@@ -1316,6 +1341,7 @@ impl Session {
             .trace
             .physical
             .observe(physical, now, record, Event::Physical);
+        let light = self.trace.light.observe(light, now, record, Event::Light);
         let network_time =
             self.trace
                 .network_time
@@ -1371,6 +1397,7 @@ impl Session {
         let mut control = self.trace.power.bind(control, now, record);
         self.sdk.set_startup_status(startup);
         self.shell.set_app_active(self.sdk.input_active());
+        self.shell.observe_light(light);
         self.shell.tick(now);
         self.shell
             .input_source()
@@ -1446,7 +1473,7 @@ impl Session {
             });
         }
         if let Some(digest) = self.shell.take_frame() {
-            record(Event::Frame(digest));
+            record(Event::Panel(digest));
         }
         crate::logs::drain(|level, target, text| {
             recorder.record(&Event::Log {
@@ -1476,9 +1503,11 @@ impl Session {
     fn turn_off(&mut self) {
         self.off = true;
         self.power.0.borrow_mut().brightness = 0;
+        self.shell.forget_panel();
         let mut frame = self.display.0.borrow_mut();
         frame.pixels.fill(0);
-        frame.shown();
+        let height = frame.geometry.height;
+        frame.shown(height, &firmware_shell::rendering::work::Work::default());
     }
     /// Whether the panel is lit: the shell set a brightness since power-on.
     pub fn lit(&self) -> bool {

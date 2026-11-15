@@ -1,0 +1,29 @@
+[[profile.default.overrides]]
+filter = """
+test(=ride::course::turns::tests::corners_of_either_way_close_together_are_named_the_way_they_go)
+| test(=a_two_hour_ride_with_a_pause_replays_exactly)
+| test(=no_turn_back_when_riding_home_in_the_dark_or_with_sunset_off)
+| test(=every_dark_screen_reads_the_same_through_the_light_look)
+| test(=benchmark_screens_paint_their_recorded_pixels)
+| test(=riding_out_toward_dusk_says_when_to_turn_back)
+"""
+priority = 100
+
+[[profile.default.overrides]]
+filter = """
+test(=ride::course::turns::tests::a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all)
+| test(=ride::course::turns::tests::a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn)
+| test(=the_battery_estimate_shows_on_ready_and_warns_during_a_fast_drain)
+| test(=riding_into_dusk_warns_before_sunset_and_again_at_sunset)
+| test(=riding_round_a_loop_never_says_turn_back_on_the_last_leg)
+| test(=a_five_hour_track_on_the_card_reads_back_after_a_restart)
+| test(=no_turn_back_when_stopping_on_the_way_home)
+| test(=bulk_media_keeps_a_long_ride_through_power_loss)
+| test(=every_sensor_input_mutated_shows_in_its_replay)
+| test(=heart_rate_band_and_eat_and_drink_alerts_sound_and_show)
+| test(=pause_excludes_time_and_two_hour_ride_keeps_every_sample)
+"""
+priority = 50
+
+[profile.without-ride-scenarios]
+default-filter = "not binary(ride_scenarios)"

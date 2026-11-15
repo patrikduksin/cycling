@@ -1,5 +1,6 @@
 use super::*;
 use crate::ride::course::nav::Distance;
+use crate::ride::homing::TURN;
 use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
 use pose::Step;
@@ -500,6 +501,214 @@ fn on_the_last_leg_the_route_and_the_finish_clear_the_badge() {
             frame.last_pose,
             covered.len(),
             covered.first()
+        );
+    }
+}
+
+struct Approach {
+    along_m: f32,
+    frame: Frame,
+    up_to_turn: Frame,
+    past_turn: Frame,
+    badge: Rect,
+}
+
+fn ride_to_the_last_turn(points: &[Point]) -> std::vec::Vec<Approach> {
+    let course = follower_course(points);
+    let total = course.last().unwrap().along;
+    let corners = track_crumbs(points);
+    let mut frame = Frame::default();
+    let mut fixes = std::vec::Vec::new();
+    let last_turn = corners[corners.len() - 2].along;
+    for k in 1.. {
+        let along_m = 10.0 * k as f32;
+        if along_m >= last_turn {
+            return fixes;
+        }
+        let leg = corners.partition_point(|c| c.along <= along_m);
+        let (from, to) = (corners[leg - 1], corners[leg]);
+        let t = (along_m - from.along) / (to.along - from.along);
+        let here = (
+            from.east + t * (to.east - from.east),
+            from.north + t * (to.north - from.north),
+        );
+        let bearing = |a: Crumb, b: Crumb| libm::atan2f(b.east - a.east, b.north - a.north);
+        let heading = bearing(from, to) / core::f32::consts::TAU * f32::from(TURN);
+        let after = corners[leg + 1];
+        let cross = (to.east - from.east) * (after.north - to.north)
+            - (to.north - from.north) * (after.east - to.east);
+        let glyph = if cross > 0.0 {
+            Glyph::Left
+        } else {
+            Glyph::Right
+        };
+        let sign = Sign::Chip {
+            glyph,
+            distance: Distance::from_mm(((to.along - along_m) * 1000.0) as u32),
+        };
+        let badge = crate::screens::sign::on_page(RidePage::Map, sign, false)
+            .unwrap()
+            .rect();
+        let turn = Spot {
+            along_mm: (to.along * 1000.0) as u32,
+            at: (to.east, to.north),
+        };
+        let end = course
+            .partition_point(|c| c.along < total - along_m)
+            .clamp(1, course.len() - 1);
+        let track = Track {
+            available: true,
+            crumbs: &[],
+            here: Some(here),
+            heading: Some(libm::roundf(heading.rem_euclid(f32::from(TURN))) as u16),
+            course: &course,
+            ahead: Some((end, Some(here))),
+            guidance: Some(Guidance {
+                sign,
+                turn: Some((turn, glyph)),
+                junction: None,
+            }),
+            left_m: Some(1_000),
+            badge: Some(badge),
+            radar: false,
+        };
+        fill(&mut frame, &track);
+        let at = frame.last_pose.projection(here);
+        let split = track.split().unwrap();
+        let only = |route: &mut dyn Iterator<Item = Point>, keep_marks: bool| {
+            let mut alone = frame.clone();
+            alone.counts[Line::Route as usize] = 0;
+            alone.add(Line::Route, &at, route);
+            if !keep_marks {
+                alone.counts[Line::Ridden as usize] = 0;
+                alone.arrow.strokes = 0;
+                alone.puck = None;
+            }
+            bucket(&mut alone);
+            alone
+        };
+        let ahead = || track.ahead_points(split);
+        let up_to_turn = only(
+            &mut ahead()
+                .take_while(|&(_, before)| before)
+                .map(|(p, _)| p)
+                .chain([turn.at]),
+            true,
+        );
+        let past_turn = only(
+            &mut [turn.at]
+                .into_iter()
+                .chain(ahead().skip_while(|&(_, before)| before).map(|(p, _)| p)),
+            false,
+        );
+        fixes.push(Approach {
+            along_m,
+            frame: frame.clone(),
+            up_to_turn,
+            past_turn,
+            badge,
+        });
+    }
+    unreachable!()
+}
+
+const LONG_LEFT: [Point; 4] = [
+    (0.0, 0.0),
+    (0.0, 4_200.0),
+    (-700.0, 4_200.0),
+    (-700.0, 8_000.0),
+];
+const TWO_150_LEFT_THEN_RIGHT: [Point; 6] = [
+    (0.0, 0.0),
+    (0.0, 1_500.0),
+    (-150.0, 1_500.0),
+    (-150.0, 1_650.0),
+    (0.0, 1_650.0),
+    (0.0, 4_000.0),
+];
+
+fn gap_to(badge: Rect, frame: &Frame) -> Option<(usize, (usize, usize))> {
+    GROUND
+        .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(frame, x, y, BLACK) != GROUND_COLOR)
+        .map(|(x, y)| {
+            let dx = badge
+                .left
+                .saturating_sub(x)
+                .max((x + 1).saturating_sub(badge.right));
+            let dy = badge
+                .top
+                .saturating_sub(y)
+                .max((y + 1).saturating_sub(badge.bottom));
+            (dx.max(dy), (x, y))
+        })
+        .min()
+}
+
+#[test]
+fn on_the_way_to_a_turn_nothing_up_to_it_comes_near_the_badge() {
+    for (name, course) in [
+        ("long left", &LONG_LEFT[..]),
+        ("two150lr", &TWO_150_LEFT_THEN_RIGHT[..]),
+    ] {
+        let near: std::vec::Vec<(f32, Pose, (usize, (usize, usize)))> =
+            ride_to_the_last_turn(course)
+                .iter()
+                .filter_map(|fix| {
+                    let gap = gap_to(fix.badge, &fix.up_to_turn)?;
+                    (gap.0 + 1 < pose::CLEARANCE as usize).then_some((
+                        fix.along_m,
+                        fix.frame.last_pose,
+                        gap,
+                    ))
+                })
+                .collect();
+        assert!(
+            near.is_empty(),
+            "{name}: {} fixes come within {} px of the badge, e.g. (m, pose, (gap, px)) {:?}",
+            near.len(),
+            pose::CLEARANCE,
+            &near
+        );
+    }
+}
+
+fn under_the_rounded_badge(badge: Rect, (x, y): (usize, usize)) -> bool {
+    let r = BADGE_RADIUS as f32;
+    let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+    let nearest_x = cx.clamp(badge.left as f32 + r, badge.right as f32 - r);
+    let nearest_y = cy.clamp(badge.top as f32 + r, badge.bottom as f32 - r);
+    let (dx, dy) = (cx - nearest_x, cy - nearest_y);
+    badge.contains(x, y) && dx * dx + dy * dy <= r * r
+}
+
+#[test]
+fn on_a_long_left_approach_the_line_past_the_turn_is_under_the_badge_on_one_stretch_a_step() {
+    let is_line = |c: u16| {
+        let (r, b) = (u32::from(c >> 11) << 3, u32::from(c & 31) << 3);
+        r < 0x60 && b >= 0x90
+    };
+    let covered: std::vec::Vec<(usize, Step, f32)> = ride_to_the_last_turn(&LONG_LEFT)
+        .iter()
+        .enumerate()
+        .filter(|(_, fix)| {
+            GROUND
+                .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+                .filter(|&p| under_the_rounded_badge(fix.badge, p))
+                .any(|(x, y)| is_line(pixel(&fix.past_turn, x, y, BLACK)))
+        })
+        .map(|(k, fix)| (k, fix.frame.last_pose.step, fix.along_m))
+        .collect();
+    assert!(covered.len() <= 34, "{} fixes: {covered:?}", covered.len());
+    for step in Step::ALL {
+        let fixes: std::vec::Vec<usize> = covered
+            .iter()
+            .filter(|c| c.1 == step)
+            .map(|c| c.0)
+            .collect();
+        assert!(
+            fixes.windows(2).all(|w| w[1] == w[0] + 1),
+            "at {step:?} the column flickers on the line past the turn: {covered:?}"
         );
     }
 }

@@ -14,7 +14,10 @@ use crate::screens::sign::BADGE_RADIUS;
 use crate::screens::workout::{Text, View};
 use firmware_shell::rendering::font::FOOT_20;
 pub use pose::GROUND;
-use pose::{Aim, Keepout, Pose, Projection, Target, choose_pose};
+use pose::{
+    ARROW_BEFORE_TURN_PX, ARROW_HEAD_HALF_WIDTH_PX, ARROW_HEAD_LENGTH_PX, ARROW_OUTLINE_PX,
+    ARROW_SHAFT_PX, Aim, Keepout, Pose, Projection, Target, choose_pose,
+};
 use raster::{Cover, Stroke, Triangle};
 
 type Point = (f32, f32);
@@ -239,10 +242,6 @@ const ROUTE_SEGMENTS: usize = 160;
 const STROKES: usize = RIDDEN_SEGMENTS + ROUTE_SEGMENTS;
 const BAND_ENTRIES: usize = 2048;
 const LOOKAHEAD_M: f32 = 4_000.0;
-const ARROW_SHAFT_PX: f32 = 26.0;
-const ARROW_BEFORE_TURN_PX: f32 = 10.0;
-const ARROW_HEAD_LENGTH_PX: f32 = 10.5;
-const ARROW_HEAD_HALF_WIDTH_PX: f32 = 7.9;
 const ARROW_STROKES: usize = 24;
 struct ArrowLayer {
     shaft_half: f32,
@@ -252,7 +251,7 @@ struct ArrowLayer {
 const ARROW_LAYERS: [ArrowLayer; 2] = [
     ArrowLayer {
         shaft_half: 4.25,
-        head_outline: 1.75,
+        head_outline: ARROW_OUTLINE_PX,
         color: CASING,
     },
     ArrowLayer {

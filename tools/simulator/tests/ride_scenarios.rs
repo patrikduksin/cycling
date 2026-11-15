@@ -10084,7 +10084,17 @@ mod course_map {
     #[test]
     fn the_zoom_never_steps_back_and_forth_on_the_way_to_one_turn() {
         type Ride<'a> = (&'a str, &'a [(f64, f64)], f64);
-        let rides: [Ride; 2] = [
+        let rides: [Ride; 3] = [
+            (
+                "a long left turn",
+                &[
+                    (0.0, 0.0),
+                    (0.0, 4_200.0),
+                    (-700.0, 4_200.0),
+                    (-700.0, 8_000.0),
+                ],
+                4_300.0,
+            ),
             (
                 "an S-bend",
                 &[
@@ -10159,6 +10169,21 @@ mod course_map {
             assert!(
                 back_and_forth.is_empty(),
                 "{name}: the zoom steps away and back, from and to metres {back_and_forth:?}"
+            );
+            let widest_first = [(80, "1 KM"), (60, "250 M"), (60, "100 M"), (80, "100 M")];
+            let zoom = |run: &Run| {
+                widest_first
+                    .iter()
+                    .position(|&(bar, label)| run.scale == (bar, label.to_string()))
+            };
+            let way_in: Vec<(i64, Option<usize>)> = runs
+                .iter()
+                .filter(|run| run.first_turn == Some(0))
+                .map(|run| (run.from_m, zoom(run)))
+                .collect();
+            assert!(
+                way_in.windows(2).all(|w| w[0].1 < w[1].1),
+                "{name}: on the way in to the first turn the zoom widens, {way_in:?}"
             );
         }
     }

@@ -173,12 +173,14 @@ blue, and a white arrow on the route marks the next turn's corner. The badge
 in the top-left corner shows the next turn and how far it is, at rest too;
 with a radar paired it sits 8 px right of the radar strip. The zoom steps
 between 300 m, 400 m, 1 km and 3 km across, never gliding, and is 300 m
-within 100 m of the turn. The map keeps the rider, the next turn (on the last
-leg, the finish) and the route up to it clear of the badge, and only these
-choose the zoom: the closest step at which some rider column keeps them
-clear. The rider first moves sideways away from where the route goes, then
-the map zooms out, and only then does the rider move towards the route's
-side. Within that step the rider's column also keeps the route past the turn
+within 100 m of the turn. The map keeps the rider, the next turn and its arrow (on
+the last leg, the finish) and the route up to it clear of the badge, and only
+these choose the zoom: the closest step at which some rider column keeps them
+clear. The rider first moves sideways away from the side the turn's sign
+points to, then the map zooms out, and only then does the rider move towards
+that side. The side comes from the turn's sign, not the route past it; a turn
+more beside the rider than ahead, as just after the last one, the finish and
+a junction take the side the route up to them goes to. Within that step the rider's column also keeps the route past the turn
 clear when one can, as near as its blue line, as in the map-approach mockup;
 when none can, the route past the turn runs under the badge, and it never
 changes the zoom. When the turn is too far even for 3 km across, the rider
@@ -191,7 +193,7 @@ Off course, the badge turns amber, the puck's arrow turns amber, and up to
 three amber chevrons lead back in a straight line to a ringed junction, where
 the course left off; the route goes on from there. When the junction is too
 far behind for the rider and its ring to fit 3 km across, the rider sits at
-the top of the map and the chevrons still point down the straight line to
+the top of the map right of the badge, radar paired or not, and the chevrons still point down the straight line to
 the junction, midway to where that line leaves the map; the ring sinks off the
 bottom edge. Arrived, the badge is green.
 

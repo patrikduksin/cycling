@@ -14,13 +14,19 @@ pub const JUNCTION_Y: i16 = 242;
 const FREE_RIDER_Y: i16 = ((GROUND.start + GROUND.end) / 2) as i16;
 const GRID: i16 = 16;
 const EDGE: f32 = 24.0;
-const CLEARANCE: f32 = 8.0;
+pub(super) const CLEARANCE: f32 = 8.0;
 const SPARE_PX: f32 = 6.0;
 const CLOSE_M: f32 = 100.0;
 const ROUTE_CASING_HALF_PX: f32 = 9.0;
 const ROUTE_LINE_HALF_PX: f32 = 6.0;
 const PUCK_RADIUS_PX: f32 = 14.5;
 const JUNCTION_RADIUS_PX: f32 = 12.0;
+pub(super) const ARROW_SHAFT_PX: f32 = 26.0;
+pub(super) const ARROW_BEFORE_TURN_PX: f32 = 10.0;
+pub(super) const ARROW_HEAD_LENGTH_PX: f32 = 10.5;
+pub(super) const ARROW_HEAD_HALF_WIDTH_PX: f32 = 7.9;
+pub(super) const ARROW_OUTLINE_PX: f32 = 1.75;
+const ARROW_HALF_PX: f32 = ARROW_HEAD_HALF_WIDTH_PX + ARROW_OUTLINE_PX;
 
 /// The zoom steps, by metres across the screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -233,7 +239,15 @@ enum Clear {
 
 const COLUMNS: usize = 16;
 
-fn columns(start: i16, left: f32) -> (heapless::Vec<i16, COLUMNS>, usize) {
+/// The rider's columns for `target`: the start column, those left of it
+/// (counted) and those right of it, ending at the map's edge.
+fn columns(target: Target, left: f32) -> (heapless::Vec<i16, COLUMNS>, usize) {
+    let start = ((left + WIDTH) / 2.0) as i16
+        + match target {
+            Target::Turn(_, Glyph::Left | Glyph::SharpLeft) => 40,
+            Target::Turn(_, Glyph::UTurn) | Target::Free | Target::Finish(_) => 0,
+            Target::Turn(..) | Target::Junction(_) => -40,
+        };
     let (low, high) = ((left + EDGE) as i16, WIDTH as i16 - EDGE as i16);
     let down = (1..).map(|k| start - k * GRID).take_while(|&x| x >= low);
     let up = (1..)
@@ -253,7 +267,45 @@ struct Trial {
     clear: [Clear; COLUMNS],
     past_clear: u16,
     roomy: u16,
-    left_first: bool,
+}
+
+/// The side the route goes to from the rider: columns on the other side are
+/// tried first.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
+}
+
+/// A turn ahead names its side by its sign. A turn more beside the rider
+/// than ahead, as just after the last one, and any other target, take the
+/// side the route up to the target and the target reach further to, the
+/// right on a tie.
+fn route_side(target: Target, aim: &Aim, route: &impl Fn(&mut dyn FnMut(Point, bool))) -> Side {
+    let at = match target {
+        Target::Turn((right, ahead), glyph) if right.abs() <= ahead => match glyph {
+            Glyph::Left | Glyph::SharpLeft => return Side::Left,
+            Glyph::Right | Glyph::SharpRight => return Side::Right,
+            Glyph::UTurn | Glyph::Finish => Some((right, ahead)),
+        },
+        Target::Free => None,
+        Target::Turn(at, _) | Target::Finish(at) | Target::Junction(at) => Some(at),
+    };
+    let (mut least, mut most) = at.map_or((0.0f32, 0.0f32), |(right, _)| {
+        (right.min(0.0), right.max(0.0))
+    });
+    route(&mut |p, before| {
+        if before {
+            let right = aim.relative(p).0;
+            least = least.min(right);
+            most = most.max(right);
+        }
+    });
+    if most >= -least {
+        Side::Right
+    } else {
+        Side::Left
+    }
 }
 
 /// The pose for this fix. `route` calls back with the route ahead in order,
@@ -265,13 +317,6 @@ pub fn choose_pose(
     route: impl Fn(&mut dyn FnMut(Point, bool)),
 ) -> Pose {
     let target = aim.target.moved(|p| aim.relative(p));
-    let centre = ((aim.left + WIDTH) / 2.0) as i16;
-    let start = centre
-        + match target {
-            Target::Turn(_, Glyph::Left | Glyph::SharpLeft) => 40,
-            Target::Turn(_, Glyph::UTurn) | Target::Free | Target::Finish(_) => 0,
-            Target::Turn(..) | Target::Junction(_) => -40,
-        };
     let close = matches!(target, Target::Turn((r, a), _) if sqrtf(r * r + a * a) <= CLOSE_M);
     let steps: &[Step] = match target {
         Target::Free => &[Step::Km1],
@@ -280,7 +325,8 @@ pub fn choose_pose(
         Target::Turn(..) | Target::Finish(_) => &Step::ALL,
     };
     let last = steps.len() - 1;
-    let (columns, left_count) = columns(start, aim.left);
+    let (columns, left_count) = columns(target, aim.left);
+    let side = route_side(target, aim, &route);
     let trials: heapless::Vec<Option<Trial>, 4> = steps
         .iter()
         .enumerate()
@@ -294,7 +340,7 @@ pub fn choose_pose(
         prev.filter(|prev| prev.step == step)
             .and_then(|prev| columns.iter().position(|&x| x == prev.rider.0))
     };
-    let on_toward_side = |trial: &Trial, k: usize| k != 0 && (k <= left_count) != trial.left_first;
+    let on_toward_side = |k: usize| k != 0 && (k <= left_count) == (side == Side::Left);
     let mut best: Option<(Clear, usize)> = None;
     'steps: for toward in [false, true] {
         for (i, trial) in trials.iter().enumerate() {
@@ -302,8 +348,8 @@ pub fn choose_pose(
                 continue;
             };
             let kept = kept_at(steps[i]);
-            let side = (0..columns.len())
-                .filter(|&k| (on_toward_side(trial, k) && Some(k) != kept) == toward);
+            let side =
+                (0..columns.len()).filter(|&k| (on_toward_side(k) && Some(k) != kept) == toward);
             for k in side {
                 let clear = trial.clear[k];
                 if best.is_none_or(|(most, _)| clear > most) {
@@ -326,7 +372,7 @@ pub fn choose_pose(
                 .min_by_key(|&k| {
                     (
                         !bit(trial.past_clear, k),
-                        on_toward_side(trial, k),
+                        on_toward_side(k),
                         Some(k) != kept,
                         !bit(trial.roomy, k),
                         k,
@@ -341,7 +387,7 @@ pub fn choose_pose(
     chosen.unwrap_or(Pose {
         step: steps[last],
         rider: (
-            start,
+            columns[0],
             if matches!(target, Target::Free) {
                 FREE_RIDER_Y
             } else {
@@ -423,6 +469,14 @@ fn try_step(
         }
         Target::Junction(at) => Some((screen(at), margin + CLEARANCE + JUNCTION_RADIUS_PX)),
     };
+    let arrow_past = match (target, goal) {
+        (Target::Turn(..), Some((at, _))) => {
+            let d = sqrtf(at.0 * at.0 + (at.1 - f32::from(y)) * (at.1 - f32::from(y)));
+            ARROW_SHAFT_PX - ARROW_BEFORE_TURN_PX.min(d / 4.0) + ARROW_HEAD_LENGTH_PX
+        }
+        _ => 0.0,
+    };
+    let (mut arrow, mut arrow_from) = (all, None);
     let mut shown = if holds { all } else { 0 };
     if let Some((at, pad)) = goal {
         block(at, at, pad, &mut shown);
@@ -455,9 +509,24 @@ fn try_step(
                     &mut to_goal,
                 );
             }
+            if let (true, false, Some((corner, _))) = (was_before, before, goal) {
+                arrow_from = Some(corner);
+            }
+            if let Some(corner) = arrow_from {
+                let (dx, dy) = (p.0 - corner.0, p.1 - corner.1);
+                let length = sqrtf(dx * dx + dy * dy);
+                if length >= 1.0 {
+                    let t = arrow_past / length;
+                    let tip = (corner.0 + t * dx, corner.1 + t * dy);
+                    block(corner, tip, CLEARANCE + ARROW_HALF_PX, &mut arrow);
+                    arrow_from = None;
+                }
+            }
         }
         last = Some((p, before));
     });
+    shown &= arrow;
+    to_goal &= arrow;
     let bit = |mask: u16, k: usize| mask >> k & 1 == 1;
     let mut clear = [Clear::Nothing; COLUMNS];
     let mut roomy = 0;
@@ -479,7 +548,6 @@ fn try_step(
         clear,
         past_clear,
         roomy,
-        left_first: most >= -least,
     })
 }
 
@@ -841,6 +909,198 @@ mod tests {
             casing_gap_to_badge(pose, &[(0.0, 0.0), corner], BADGE) >= CLEARANCE,
             "{pose:?} covers the turn or the way to it"
         );
+    }
+
+    #[test]
+    fn more_points_on_the_same_route_past_the_turn_change_nothing() {
+        let sparse = [
+            ((0.0, 0.0), true),
+            ((0.0, 220.0), false),
+            ((60.0, 220.0), false),
+            ((-240.0, 350.0), false),
+            ((-240.0, 1_000.0), false),
+        ];
+        let mut sampled = sparse.to_vec();
+        sampled.insert(3, ((-120.0, 298.0), false));
+        let aim = toward((0.0, 220.0), Glyph::Right);
+        let held = |step| Pose {
+            step,
+            rider: (80, 266),
+            heading: 0,
+        };
+        for prev in [None, Some(held(Step::Km3)), Some(held(Step::M400))] {
+            assert_eq!(
+                posed(prev, aim, route(&sampled), Some(BADGE)),
+                posed(prev, aim, route(&sparse), Some(BADGE)),
+                "after {prev:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_turn_beside_the_rider_just_after_the_last_one_keeps_the_closest_step() {
+        let turn = (120.0, 1_560.0);
+        let here = (17.9, 1_508.9);
+        let aim = Aim {
+            here,
+            heading: 0,
+            target: Target::Turn(turn, Glyph::Left),
+            left: 0.0,
+            badge: badge(118.0),
+        };
+        let points = [
+            (here, true),
+            (turn, false),
+            ((120.0, 1_700.0), false),
+            ((0.0, 1_760.0), false),
+        ];
+        let held = Pose {
+            step: Step::M300,
+            rider: (160, 266),
+            heading: 0,
+        };
+        let pose = choose_pose(Some(held), &aim, route(&points));
+        assert_eq!(
+            pose.step,
+            Step::M300,
+            "{pose:?}: the left turn lies to the right while the heading catches up"
+        );
+    }
+
+    const LEFT_COURSE: [Point; 5] = [
+        (0.0, 0.0),
+        (0.0, 2_000.0),
+        (-300.0, 2_000.0),
+        (-300.0, 2_400.0),
+        (200.0, 3_000.0),
+    ];
+
+    fn ahead_of(course: &[Point], turn: usize, before: f32) -> std::vec::Vec<(Point, bool)> {
+        let here = (0.0, course[turn].1 - before);
+        core::iter::once((here, true))
+            .chain(
+                course
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, p)| i > turn || p.1 > here.1)
+                    .map(|(i, &p)| (p, i <= turn)),
+            )
+            .collect()
+    }
+
+    fn steps_on_the_way(
+        course: &[Point],
+        turn: usize,
+        glyph: Glyph,
+        badge: Keepout,
+    ) -> std::vec::Vec<Step> {
+        let mut prev = None;
+        (1..=200)
+            .rev()
+            .map(|k| {
+                let before = 10.0 * k as f32;
+                let aim = Aim {
+                    here: (0.0, course[turn].1 - before),
+                    heading: 0,
+                    target: Target::Turn(course[turn], glyph),
+                    left: 0.0,
+                    badge: Some(badge),
+                };
+                let points = ahead_of(course, turn, before);
+                let pose = choose_pose(prev, &aim, route(&points));
+                prev = Some(pose);
+                pose.step
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_route_past_the_turn_never_changes_the_step() {
+        let mockup: std::vec::Vec<Point> = MOCKUP_COURSE.to_vec();
+        let courses = [
+            (mockup, 1, Glyph::Right, badge(137.0).unwrap()),
+            (LEFT_COURSE.to_vec(), 1, Glyph::Left, BADGE),
+        ];
+        for (course, turn, glyph, badge) in courses {
+            let along = steps_on_the_way(&course, turn, glyph, badge);
+            let tx = course[turn].0;
+            let mirrored: std::vec::Vec<Point> = course
+                .iter()
+                .enumerate()
+                .map(|(i, &(x, y))| {
+                    if i > turn + 1 {
+                        (2.0 * tx - x, y)
+                    } else {
+                        (x, y)
+                    }
+                })
+                .collect();
+            let truncated = &course[..turn + 2];
+            for (tail, other) in [("mirrored", &mirrored[..]), ("truncated", truncated)] {
+                let steps = steps_on_the_way(other, turn, glyph, badge);
+                let differ: std::vec::Vec<usize> = (0..steps.len())
+                    .filter(|&k| steps[k] != along[k])
+                    .map(|k| 10 * (200 - k))
+                    .collect();
+                assert!(
+                    differ.is_empty(),
+                    "{glyph:?} turn, {tail} tail: another step at {differ:?} m out"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_route_past_the_turn_is_kept_clear_whenever_the_chosen_step_and_rank_can() {
+        let mockup: std::vec::Vec<Point> = MOCKUP_COURSE.to_vec();
+        let mirrored_left: std::vec::Vec<Point> =
+            LEFT_COURSE.iter().map(|&(x, y)| (-x, y)).collect();
+        let courses = [
+            (mockup, Glyph::Right, badge(137.0).unwrap()),
+            (LEFT_COURSE.to_vec(), Glyph::Left, BADGE),
+            (mirrored_left, Glyph::Right, BADGE),
+        ];
+        for (course, glyph, badge) in courses {
+            let mut prev: Option<Pose> = None;
+            for k in (1..=200).rev() {
+                let before = 10.0 * k as f32;
+                let aim = Aim {
+                    here: (0.0, course[1].1 - before),
+                    heading: 0,
+                    target: Target::Turn(course[1], glyph),
+                    left: 0.0,
+                    badge: Some(badge),
+                };
+                let points = ahead_of(&course, 1, before);
+                let pose = choose_pose(prev, &aim, route(&points));
+                let target = aim.target.moved(|p| aim.relative(p));
+                let close = before <= CLOSE_M;
+                let spare = !close && prev.is_some_and(|prev| prev.step > pose.step);
+                let margin = if spare { SPARE_PX } else { 0.0 };
+                let (columns, _) = columns(target, aim.left);
+                let trial = try_step(
+                    pose.step,
+                    target,
+                    &columns,
+                    margin,
+                    true,
+                    &aim,
+                    &route(&points),
+                )
+                .unwrap();
+                let chosen = columns.iter().position(|&x| x == pose.rider.0).unwrap();
+                let clear_past = |k: usize| trial.past_clear >> k & 1 == 1;
+                let could = (0..columns.len())
+                    .filter(|&k| trial.clear[k] == trial.clear[chosen])
+                    .find(|&k| clear_past(k));
+                assert!(
+                    could.is_none() || clear_past(chosen),
+                    "{glyph:?} turn {before} m out: {pose:?} runs the route past the turn under the badge, x {} would not",
+                    columns[could.unwrap()]
+                );
+                prev = Some(pose);
+            }
+        }
     }
 
     #[test]

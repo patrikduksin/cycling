@@ -5,13 +5,15 @@ use device_api::sensors::Light;
 const TICK_MS: u64 = 100;
 const BRIGHTEN_HOLD_TICKS: u16 = 20;
 const DIM_HOLD_TICKS: u16 = 60;
-/// Shorter than the brighten hold, so light that leaves the darker side
-/// without brightening the held level cannot brighten the dimmer one either.
 const PULSE_TICKS: u16 = 15;
 const RISE_PERCENT: u8 = 8;
 const FALL_PERCENT: u8 = 1;
 const BAND_PERCENT: u8 = 3;
 const CATCH_UP_TICKS: u64 = 50;
+const _: () = assert!(
+    PULSE_TICKS < BRIGHTEN_HOLD_TICKS,
+    "a lamp the dim count keeps must be too short to brighten the screen"
+);
 
 /// Light to duty percent, as knots with rising light. Light below the first
 /// knot shows its percent and light above the last shows the last. The duty
@@ -55,14 +57,18 @@ struct Pull {
     darker: Option<Darker>,
 }
 
-/// Lamps on a dark road must not start a dimming over (#379), but light back
-/// at the held level must, or dappled shade would pump the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Darker {
     ticks: u16,
     lead: u16,
-    away: u16,
-    pulse: bool,
+    spell: Spell,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spell {
+    Below,
+    Level(u16),
+    Lamp(u16),
 }
 
 impl Pull {
@@ -72,28 +78,44 @@ impl Pull {
         } else {
             0
         };
-        let darker = match (want, self.darker) {
-            (Ordering::Less, Some(pull)) if pull.away == 0 || pull.pulse => Some(Darker {
-                ticks: pull.ticks + 1,
-                lead: pull.lead + 1,
-                away: 0,
-                pulse: false,
-            }),
-            (Ordering::Less, _) => Some(Darker {
-                ticks: 1,
-                lead: 1,
-                away: 0,
-                pulse: false,
-            }),
-            (_, None) => None,
-            (want, Some(pull)) => (pull.lead > 1 && pull.away < PULSE_TICKS).then_some(Darker {
-                ticks: pull.ticks + 1,
-                lead: pull.lead - 1,
-                away: pull.away + 1,
-                pulse: pull.pulse || want == Ordering::Greater,
-            }),
+        let darker = match self.darker {
+            Some(pull) => pull.next(want),
+            None => (want == Ordering::Less).then_some(Darker::START),
         };
         Self { brighter, darker }
+    }
+}
+
+impl Darker {
+    const START: Self = Self {
+        ticks: 1,
+        lead: 1,
+        spell: Spell::Below,
+    };
+
+    fn next(self, want: Ordering) -> Option<Self> {
+        let spell = match (want, self.spell) {
+            (Ordering::Less, Spell::Level(_)) => return Some(Self::START),
+            (Ordering::Less, _) => Spell::Below,
+            _ if self.lead <= 1 => return None,
+            (_, Spell::Level(PULSE_TICKS..) | Spell::Lamp(PULSE_TICKS..)) => return None,
+            (Ordering::Greater, Spell::Below) => Spell::Lamp(1),
+            (_, Spell::Below) => Spell::Level(1),
+            (Ordering::Greater, Spell::Level(away)) | (_, Spell::Lamp(away)) => {
+                Spell::Lamp(away + 1)
+            }
+            (_, Spell::Level(away)) => Spell::Level(away + 1),
+        };
+        let lead = if spell == Spell::Below {
+            self.lead + 1
+        } else {
+            self.lead - 1
+        };
+        Some(Self {
+            ticks: self.ticks + 1,
+            lead,
+            spell,
+        })
     }
 }
 
@@ -159,11 +181,10 @@ impl Backlight {
         };
         self.pull = self.pull.next(want);
         let lasted = self.pull.brighter > BRIGHTEN_HOLD_TICKS
-            || (want == Ordering::Less
-                && self
-                    .pull
-                    .darker
-                    .is_some_and(|pull| pull.ticks > DIM_HOLD_TICKS));
+            || matches!(
+                self.pull.darker,
+                Some(Darker { ticks, spell: Spell::Below, .. }) if ticks > DIM_HOLD_TICKS
+            );
         if lasted {
             self.pull = Pull::default();
             target

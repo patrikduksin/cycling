@@ -71,9 +71,6 @@ mod tests {
     use firmware_shell::backlight::Backlight;
     use std::vec::Vec;
 
-    /// From 69:43 the road is dark and street lamps flash past for about a
-    /// second each, every 3 to 4 s. On the device Saver sat at 11% through
-    /// it, against 5% on its curve (#379).
     const NIGHT_RIDE: &str = include_str!("mode/night-ride.csv");
 
     fn at(minutes: u64, seconds: u64) -> u64 {
@@ -124,7 +121,7 @@ mod tests {
     fn street_lamps_on_a_dark_road_neither_raise_saver_nor_hold_it_above_its_curve() {
         let readings: Vec<(u64, u16)> = NIGHT_RIDE
             .lines()
-            .filter(|line| !line.starts_with('#'))
+            .skip(1)
             .map(|line| {
                 let (ms, light) = line.split_once(',').unwrap();
                 (ms.parse().unwrap(), light.parse().unwrap())

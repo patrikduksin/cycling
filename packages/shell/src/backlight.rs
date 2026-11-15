@@ -1,9 +1,13 @@
+use core::cmp::Ordering;
 use device_api::observation::Observation;
 use device_api::sensors::Light;
 
 const TICK_MS: u64 = 100;
 const BRIGHTEN_HOLD_TICKS: u16 = 20;
 const DIM_HOLD_TICKS: u16 = 60;
+/// Shorter than the brighten hold, so light that leaves the darker side
+/// without brightening the held level cannot brighten the dimmer one either.
+const PULSE_TICKS: u16 = 15;
 const RISE_PERCENT: u8 = 8;
 const FALL_PERCENT: u8 = 1;
 const BAND_PERCENT: u8 = 3;
@@ -46,11 +50,51 @@ impl Curve {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Pull {
-    #[default]
-    Settled,
-    Brighter(u16),
-    Darker(u16),
+struct Pull {
+    brighter: u16,
+    darker: Option<Darker>,
+}
+
+/// Lamps on a dark road must not start a dimming over (#379), but light back
+/// at the held level must, or dappled shade would pump the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Darker {
+    ticks: u16,
+    lead: u16,
+    away: u16,
+    pulse: bool,
+}
+
+impl Pull {
+    fn next(self, want: Ordering) -> Self {
+        let brighter = if want == Ordering::Greater {
+            self.brighter + 1
+        } else {
+            0
+        };
+        let darker = match (want, self.darker) {
+            (Ordering::Less, Some(pull)) if pull.away == 0 || pull.pulse => Some(Darker {
+                ticks: pull.ticks + 1,
+                lead: pull.lead + 1,
+                away: 0,
+                pulse: false,
+            }),
+            (Ordering::Less, _) => Some(Darker {
+                ticks: 1,
+                lead: 1,
+                away: 0,
+                pulse: false,
+            }),
+            (_, None) => None,
+            (want, Some(pull)) => (pull.lead > 1 && pull.away < PULSE_TICKS).then_some(Darker {
+                ticks: pull.ticks + 1,
+                lead: pull.lead - 1,
+                away: pull.away + 1,
+                pulse: pull.pulse || want == Ordering::Greater,
+            }),
+        };
+        Self { brighter, darker }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -90,7 +134,7 @@ impl Backlight {
     fn tick(&mut self, reading: Option<u16>, curve: &Curve, fallback: u8) {
         let held = match (reading, self.held) {
             (None, _) => {
-                self.pull = Pull::Settled;
+                self.pull = Pull::default();
                 fallback
             }
             (Some(reading), None) => curve.percent(reading),
@@ -108,20 +152,20 @@ impl Backlight {
     fn follow(&mut self, target: u8, held: u8, curve: &Curve) -> u8 {
         let outside =
             target.abs_diff(held) > BAND_PERCENT || (target != held && curve.is_end(target));
-        self.pull = match (outside, target > held, self.pull) {
-            (false, _, _) => Pull::Settled,
-            (true, true, Pull::Brighter(ticks)) => Pull::Brighter(ticks.saturating_add(1)),
-            (true, true, _) => Pull::Brighter(1),
-            (true, false, Pull::Darker(ticks)) => Pull::Darker(ticks.saturating_add(1)),
-            (true, false, _) => Pull::Darker(1),
+        let want = if outside {
+            target.cmp(&held)
+        } else {
+            Ordering::Equal
         };
-        let lasted = match self.pull {
-            Pull::Brighter(ticks) => ticks > BRIGHTEN_HOLD_TICKS,
-            Pull::Darker(ticks) => ticks > DIM_HOLD_TICKS,
-            Pull::Settled => false,
-        };
+        self.pull = self.pull.next(want);
+        let lasted = self.pull.brighter > BRIGHTEN_HOLD_TICKS
+            || (want == Ordering::Less
+                && self
+                    .pull
+                    .darker
+                    .is_some_and(|pull| pull.ticks > DIM_HOLD_TICKS));
         if lasted {
-            self.pull = Pull::Settled;
+            self.pull = Pull::default();
             target
         } else {
             held

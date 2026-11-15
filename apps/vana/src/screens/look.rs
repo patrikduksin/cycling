@@ -59,9 +59,7 @@ const fn clamp(channel: i32) -> u8 {
 }
 
 /// Map a painted row to the light look. Rows are long runs of one colour, so
-/// the last answer is reused while the pixel repeats; a row that keeps
-/// changing between a few colours, as a map's roads and their edges do,
-/// finds each in a small cache.
+/// the last answer is reused while the pixel repeats.
 pub fn apply(pixels: &mut [u16]) {
     let mut known = [(BLACK, LIGHT_BLACK); KNOWN];
     let (mut from, mut to) = known[0];
@@ -78,7 +76,6 @@ pub fn apply(pixels: &mut [u16]) {
     }
 }
 
-/// Colours a row's mapping remembers.
 const KNOWN: usize = 32;
 const LIGHT_BLACK: u16 = light(BLACK);
 

@@ -230,8 +230,7 @@ impl<'a> Tile<'a> {
         }
     }
 
-    /// Every point of an edge in order, `point(edge, 0..points(edge))`, with
-    /// its interior read as one slice.
+    /// Every point of an edge in order, `point(edge, 0..points(edge))`.
     pub fn shape(&self, edge: &Edge) -> impl Iterator<Item = Node> + use<'a> {
         let start = self.vertex_base() + edge.first_vertex as usize * VERTEX;
         let bytes: &'a [u8] = self.bytes;

@@ -193,7 +193,7 @@ impl Runtime {
             None => terrain::Status::NoPack,
         };
         if let Some(track) = self.track.as_deref_mut() {
-            track.fetch_roads(engine, self.micros);
+            track.fetch_roads(engine, self.micros_clock);
         }
         state.status = Some(status);
         state.forecast.map = status != terrain::Status::NoPack;

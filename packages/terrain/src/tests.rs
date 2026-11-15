@@ -938,7 +938,6 @@ fn a_match_on_a_rewritten_tile_is_not_read_from_the_new_one() {
     assert_eq!(matched, [Some((2, 106)), Some((0, 303))]);
 }
 
-/// Step `engine` until it has nothing left to do.
 fn settle(engine: &mut Lookahead<'_>, source: &mut &[u8]) {
     let mut steps = 0;
     while engine.step(source) == Status::Working {
@@ -1075,8 +1074,6 @@ fn a_tile_the_map_wants_never_delays_the_forecast() {
 fn tiles_under_a_rotated_view_are_the_tiles_it_covers() {
     use std::collections::BTreeSet;
     let grid = Header::parse(&header(TILE as u32, SOUTH, WEST, 6, 6)).unwrap();
-    // A 3 x 4 km view turned 30° from north, its middle one tile in from the
-    // grid's west edge, so part of it is off the grid.
     let middle = (
         f64::from(SOUTH) + 2.6 * f64::from(TILE),
         f64::from(WEST) + 1.2 * f64::from(TILE),

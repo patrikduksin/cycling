@@ -33,7 +33,7 @@ fn main() {
             "{}: passes painted different pixels",
             scene.name
         );
-        if let Some(work) = sim.device.sdk.map_work_since_boot()
+        if let Some(work) = sim.device.sdk.map_work_since_attached()
             && work.fill.runs > 0
         {
             map_work.push((scene.name, work));

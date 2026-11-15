@@ -692,7 +692,7 @@ impl Runtime {
                 now,
                 speed_mm_s,
                 view.radar_paired,
-                self.micros,
+                self.micros_clock,
             );
         }
         view.auto_paused = self.ride.auto.paused();

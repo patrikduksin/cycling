@@ -10,7 +10,6 @@ pub struct Stroke {
     pub a: Point,
     pub b: Point,
     length: f32,
-    /// The unit direction, its reciprocals, and the inverse squared length.
     along: Point,
     per_along: Point,
     per_length_squared: f32,
@@ -89,7 +88,7 @@ fn solve_interval(k: f32, per_k: f32, c: f32, low: f32, high: f32) -> Option<(f3
 
 /// The square root by multiplies only: a reciprocal-root estimate from the
 /// float's bits refined by three Newton steps, within a few ulps of
-/// `sqrtf`, which on the device is a slow bit-by-bit loop.
+/// `sqrtf`.
 fn root(x: f32) -> f32 {
     if x <= 0.0 {
         return 0.0;
@@ -176,9 +175,7 @@ impl Triangle {
 }
 
 /// A segment with square ends: every point within `half` of its line and
-/// at most `half` past either end. On a row it is the overlap of two slabs,
-/// each an interval that moves linearly down the rows, so a row costs a few
-/// multiply-adds and no square root.
+/// at most `half` past either end.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bar {
     top: f32,
@@ -264,9 +261,7 @@ fn quarter_steps(share: f32) -> u8 {
 /// The roads of a fill, rasterised once and painted from a table each
 /// frame. Every pixel of `ROWS` rows from `top` holds a nibble: two bits of
 /// how much a minor road covers it and two of a major road, the largest of
-/// each class's bars, so a frame costs one lookup per pixel whatever the
-/// roads, and each bar is worked out once a fill instead of every frame.
-/// All zero bytes are an empty layer.
+/// each class's bars. All zero bytes are an empty layer.
 #[derive(Clone)]
 pub struct Layer<const ROWS: usize> {
     top: usize,
@@ -359,7 +354,7 @@ impl<const ROWS: usize> Layer<ROWS> {
     }
 
     /// Paint `row` from `pairs`: every pixel in the layer's rows, the
-    /// ground too, two at a time.
+    /// ground too.
     pub fn paint(&self, row: &mut Row, pairs: &[[u16; 2]; 256]) {
         let Some(bytes) = row
             .y()

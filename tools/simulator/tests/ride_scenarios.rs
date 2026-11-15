@@ -9759,7 +9759,6 @@ mod course_map {
     use vana::screens::chrome::BLACK;
 
     const MOCKUP: &str = include_str!("../../../docs/design/course-navigation/map-approach.svg");
-    /// The 3 x 3 tiles around Plaza de Armas; see its folder's README.
     const SANTIAGO: &[u8] =
         include_bytes!("../../../packages/terrain/tests/data/santiago-centro.terrain");
     const PX_PER_M: f64 = 240.0 / 400.0;
@@ -9851,8 +9850,7 @@ mod course_map {
 
     /// A rider with every sensor and the central Santiago pack, who loaded
     /// `course` from the phone and rides `route` at 36 km/h, 10 m a fix, on
-    /// the map page. The mockups' ride starts inside the pack, so the map
-    /// draws real streets where the mockups draw illustrative ones.
+    /// the map page.
     fn on_the_map(course: &[(f64, f64)], route: &[(f64, f64)]) -> Sim {
         on_the_map_with(course, route, &EVERY_SENSOR)
     }
@@ -9896,7 +9894,6 @@ mod course_map {
             .collect()
     }
 
-    /// A synthetic course along the pack's streets from Plaza de Armas.
     const SANTIAGO_COURSE: &str =
         include_str!("../../../packages/terrain/tests/data/santiago-centro-course.gpx");
     const MINOR_ROAD: u16 = vana::screens::chrome::rgb(0x2a, 0x2a, 0x2d);

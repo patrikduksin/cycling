@@ -17,8 +17,6 @@ from dataclasses import dataclass
 from . import pack
 from .osm import ONEWAY, RESIDENTIAL
 
-# How far along a road its direction is read, so a kink at a junction does
-# not count as a turn.
 BEARING_M = 20.0
 STRAIGHT_DEG = 40.0
 TURN_DEG = (50.0, 130.0)

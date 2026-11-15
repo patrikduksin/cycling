@@ -273,7 +273,7 @@ pub fn execute(
                 "display_frame_us={frame_us} display_wait_us={wait_us} display_frame_max_us={frame_max_us} stack_untouched={} ",
                 crate::device::stack::untouched()
             );
-            if let Some(work) = sdk.map_work_since_boot() {
+            if let Some(work) = sdk.map_work_since_attached() {
                 let _ = write!(
                     output,
                     "map_fills={} map_fill_max_us={} map_extracts={} map_extract_max_us={} ",

@@ -177,7 +177,6 @@ def test_a_course_stops_rather_than_ride_a_street_twice_or_a_oneway_backwards():
 
 
 def test_a_course_follows_streets_and_turns_where_it_could_go_straight_on():
-    # A 5 x 5 lattice of streets about 400 m apart, across tile boundaries.
     grid = Grid.around(-33.4, -70.5, -33.37, -70.47, TILE)
     south, west = grid.south + 2_000, grid.west + 2_000
     step_lat, step_lon = 3_600, 4_300

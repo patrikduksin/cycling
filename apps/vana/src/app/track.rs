@@ -97,8 +97,6 @@ pub struct RideTrack {
     finder: &'static mut Finder,
     pub(super) kept: super::course::Kept,
     resume: Resume,
-    /// The map's work since the last `take_map_work`, and since the track
-    /// was attached.
     pub(super) work: MapWork,
     pub(super) since_attached: MapWork,
 }
@@ -129,7 +127,6 @@ impl RideTrack {
         }
     }
 
-    /// One pass of fetching the map's roads from the terrain cache.
     pub(super) fn fetch_roads(
         &mut self,
         engine: &mut terrain::Lookahead,

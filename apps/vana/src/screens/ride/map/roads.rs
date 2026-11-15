@@ -406,7 +406,6 @@ impl Room<'_> {
     }
 }
 
-/// Whether `p` is more than `tolerance` from the segment `a`-`b`.
 fn strays_from(p: (f32, f32), a: (f32, f32), b: (f32, f32), tolerance: f32) -> bool {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let length = dx * dx + dy * dy;

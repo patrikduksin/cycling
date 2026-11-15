@@ -18,7 +18,6 @@ const ON_COURSE_M: f64 = 3_500.0;
 const OFF_COURSE_M: f64 = 1_600.0;
 const M_PER_DEGREE: f64 = 111_195.0;
 
-/// Where the script is: the last fix it sent and when.
 pub struct Script {
     started_ms: u64,
     sent_s: Option<u64>,

@@ -382,11 +382,11 @@ impl Trace {
                 max_us: stage.max_us,
             });
         }
-        // The map's fills run inside `vana.present` and its road
-        // extractions inside `look_ahead`; they are recorded as stages of
-        // their own so a trace shows what the roads cost.
         if let Some(work) = map_work() {
-            for (name, timed) in [("map.fill", work.fill), ("map.extract", work.extract)] {
+            for (name, timed) in [
+                ("vana.present.map_fill", work.fill),
+                ("look_ahead.map_extract", work.extract),
+            ] {
                 if timed.runs > 0 {
                     record.record(&Event::Stage {
                         name,

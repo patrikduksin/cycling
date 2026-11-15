@@ -515,7 +515,6 @@ pub(crate) mod scenes {
         sim
     }
 
-    /// The 3 x 3 tiles around Plaza de Armas, the densest roads a map draws.
     const SANTIAGO: &[u8] =
         include_bytes!("../../../packages/terrain/tests/data/santiago-centro.terrain");
     const PLAZA: (f64, f64) = (-33.4378, -70.6505);

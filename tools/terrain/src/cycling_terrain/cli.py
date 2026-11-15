@@ -109,7 +109,7 @@ def point(text: str) -> tuple[float, float]:
     values = tuple(float(v) for v in text.split(','))
     if len(values) != 2:
         raise argparse.ArgumentTypeError('a point is lat,lon')
-    return values  # type: ignore[return-value]
+    return values
 
 
 def validate(args) -> int:

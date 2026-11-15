@@ -840,22 +840,18 @@ impl Runtime {
         view.prepare();
         let drawn = system.draw(&view.scene(), now);
         let pixels = crate::screens::ride::pixels(&view.graphics, &view.profile);
-        // Before the return below: a frame the panel already showed still
-        // counts as drawn, so a glide that lands on the same pixels asks for
-        // no more frames.
         self.motion.drew(&sample, pixels, now);
         // Only a frame the panel accepted is a milestone or answers a press;
         // a pending press waits for the next frame that reaches the panel.
-        if drawn != Drawn::Sent {
-            return;
+        if drawn == Drawn::Sent {
+            let drawn = self.drawn_at(now);
+            self.timing.first_frame(drawn);
+            // Setup on a first start is as ready as Home.
+            if matches!(page, Page::Home | Page::Setup) {
+                self.timing.home(drawn);
+            }
+            self.timing.frame(drawn);
         }
-        let drawn = self.drawn_at(now);
-        self.timing.first_frame(drawn);
-        // Setup on a first start is as ready as Home.
-        if matches!(page, Page::Home | Page::Setup) {
-            self.timing.home(drawn);
-        }
-        self.timing.frame(drawn);
     }
 
     /// Home says what is still starting, or why turning off did not happen;

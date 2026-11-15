@@ -9,5 +9,7 @@ pub mod board;
 #[cfg(feature = "hardware")]
 pub mod capabilities;
 pub mod drivers;
+#[cfg(any(feature = "scripted-gnss", test))]
+mod scripted;
 #[cfg(feature = "hardware")]
 pub mod stack;

@@ -43,6 +43,8 @@ pub async fn run(mut receiver: crate::drivers::gps_uart::Receiver) {
     LATEST.lock(|latest| *latest.borrow_mut() = Some(published));
     log::info!(target: "position", "acquisition started poll_ms=10 batch=2048 state_bytes={}", core::mem::size_of::<Acquisition>());
     let mut previous = state.snapshot(Instant::now().as_millis());
+    #[cfg(feature = "scripted-gnss")]
+    let mut script = crate::scripted::Script::new(Instant::now().as_millis());
     loop {
         let now = Instant::now().as_millis();
         if SLEEP_BOUNDARY.swap(false, core::sync::atomic::Ordering::AcqRel) {
@@ -54,7 +56,10 @@ pub async fn run(mut receiver: crate::drivers::gps_uart::Receiver) {
             LATEST.lock(|latest| *latest.borrow_mut() = Some(published));
         }
         let mut bytes = [0u8; 2048];
-        let (count, dma_losses, uart_errors) = receiver.drain(&mut bytes);
+        let drained = receiver.drain(&mut bytes);
+        #[cfg(feature = "scripted-gnss")]
+        let drained = (script.sentences(now, &mut bytes), 0, 0);
+        let (count, dma_losses, uart_errors) = drained;
         if state.ingest(now, &bytes[..count], dma_losses, uart_errors) {
             // Parsing stays outside the lock. Copy the bounded parser state only
             // on received bytes or changed fault counters, never on idle polls.

@@ -331,6 +331,75 @@ mod tests {
         assert!(display.0.borrow().pixels.iter().all(|&pixel| pixel == 3));
     }
 
+    /// Rows above `split` in one colour, the rest in another, each a part.
+    #[derive(Hash)]
+    struct Split {
+        top: u16,
+        bottom: u16,
+        split: usize,
+    }
+    impl Picture for Split {
+        const SIZE: (usize, usize) = (240, 320);
+        fn paint(&self, row: &mut Row) {
+            row.fill(if row.y() < self.split {
+                self.top
+            } else {
+                self.bottom
+            });
+        }
+        fn parts(&self, parts: &mut firmware_shell::shell::Parts) {
+            parts.add(0..self.split, &self.top);
+            parts.add(self.split..320, &self.bottom);
+        }
+    }
+
+    #[test]
+    fn a_frame_sends_the_bands_whose_parts_changed_and_digests_the_whole_panel() {
+        let shell = |display: &DisplayDevice| {
+            let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+            let power = PowerDevice::new(Availability::Ready);
+            let mut shell =
+                Shell::new(display.clone(), input, power, Memory::default(), 0).unwrap();
+            shell.set_app_active(true);
+            shell
+        };
+        let display = DisplayDevice::new(240, 320);
+        let mut panel = shell(&display);
+        let split = |top, bottom, split| Split { top, bottom, split };
+        assert_eq!(panel.draw(&split(1, 2, 10), 0), Drawn::Sent);
+        {
+            let mut frame = display.0.borrow_mut();
+            frame.probe = Some(shell_simulator::probe::Probe::new(240, &frame.pixels));
+        }
+        assert_eq!(panel.draw(&split(3, 2, 10), 10), Drawn::Sent);
+        assert_eq!(panel.draw(&split(3, 2, 10), 20), Drawn::Unchanged);
+        assert_eq!(panel.draw(&split(3, 2, 14), 30), Drawn::Sent);
+        assert_eq!(panel.draw(&split(3, 4, 14), 40), Drawn::Sent);
+        let rows: Vec<usize> = display
+            .0
+            .borrow_mut()
+            .probe
+            .take()
+            .unwrap()
+            .changes
+            .iter()
+            .map(|change| change.rows)
+            .collect();
+        assert_eq!(
+            rows,
+            [12, 8, 308],
+            "the bands the top touches; the moved split's; the bottom's"
+        );
+        let whole = DisplayDevice::new(240, 320);
+        let mut fresh = shell(&whole);
+        assert_eq!(fresh.draw(&split(3, 4, 14), 0), Drawn::Sent);
+        assert_eq!(
+            panel.take_frame(),
+            fresh.take_frame(),
+            "the panel's digest, whichever rows were sent"
+        );
+    }
+
     #[test]
     #[should_panic(expected = "a skipped frame hid a change")]
     fn the_simulated_panel_catches_a_picture_whose_key_misses_what_it_paints() {

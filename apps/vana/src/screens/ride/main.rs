@@ -40,10 +40,8 @@ struct Rows {
     lower_right: usize,
 }
 
-/// ride-straight.svg sets units after proportional digits, further out than
-/// these tabular ones' ink, and inks its lower line's KM to x 216.
-const MOCKUP_UNIT_GAP: usize = 6;
-const MOCKUP_LOWER_RIGHT: usize = RIGHT + 1;
+const COURSE_UNIT_INK_GAP: usize = 6;
+const COURSE_LOWER_UNIT_RIGHT: usize = RIGHT + 1;
 
 static HERO_SPEED: [&Face; 3] = [&HERO, &LARGE, &VALUE];
 static COURSE_SPEED: [&Face; 2] = [&LARGE, &VALUE];
@@ -58,8 +56,8 @@ fn rows(course: bool) -> Rows {
             heart: baseline_under_mockup(255),
             lower: baseline_under_mockup(303),
             gauges: [208, 266],
-            unit_gap: MOCKUP_UNIT_GAP,
-            lower_right: MOCKUP_LOWER_RIGHT,
+            unit_gap: COURSE_UNIT_INK_GAP,
+            lower_right: COURSE_LOWER_UNIT_RIGHT,
         };
     }
     let (power, heart) = (BODY.top + 108, BODY.top + 166);
@@ -99,9 +97,6 @@ const GAP: usize = 8;
 /// Space between a value and its unit.
 const UNIT_GAP: usize = 4;
 
-/// A value and its unit just after it on baseline `base`, both inside
-/// `left..right`, `gap` apart: the value takes the largest of `faces` that
-/// leaves room.
 #[allow(clippy::too_many_arguments)]
 fn reading(
     labels: &mut Labels,

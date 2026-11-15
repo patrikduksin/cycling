@@ -1,30 +1,5 @@
 """Compare simulator checkpoints with the course navigation mockups.
 
-Every check is derived from the SVG itself. Each top-level element of a
-mockup (a rect, circle, polyline, polygon, text or group) is rendered alone
-to get its mask, and what later elements paint over it is taken away. Then,
-in RGB565 as the panel shows it:
-
-- interior: every pixel the element covers fully, one pixel in from its
-  edge, is exactly the element's colour;
-- envelope: no block of a mockup colour (a pixel whose neighbours share its
-  colour) reaches more than one pixel outside the elements painted in it;
-  a single pixel can be an edge blend that happens to equal a token;
-- bounds: a rect whose colour no earlier element uses (a sign's fill, the
-  chip) fills exactly the mockup's box, which pins its padding.
-
-The checkpoint is the one a scenario names after the screen
-(`.local/sim/latest/<scenario>/NN-<screen>.png`). The rules file beside each
-mockup (`<screen>.rules.toml`) names the elements a screen draws differently
-on purpose. `[[mask]]` excuses an element, or a region, from every check, and
-the elements under it there; `[[text]]` checks only a text's anchored edge and
-rows, for readings whose digits and width differ, and excuses those rows
-from the elements under it; `ignore` lists
-colours the screen may draw anywhere (real roads), each excused with a pixel
-around it. An element is chosen by `text` (its text), `match` (a substring
-of its source) or `region` ([x0, y0, x1, y1), screen pixels). Every element
-must be checked or named: one with several paints and no rule is an error.
-
     cycling mockup-compare [SCREEN ...] [--checkpoint PNG|SVG] [--out DIR]
 
 With no screen it compares all seven. A checkpoint is a simulator frame, a
@@ -51,8 +26,6 @@ FONT = ROOT / 'packages/shell/fonts/Nunito[wght].ttf'
 SIM = ROOT / '.local/sim/latest'
 OUT = ROOT / '.local/mockup'
 SIZE = (240, 320)
-# The panel sits at MARGIN in a checkpoint frame, drawn at SCALE
-# (tools/simulator/src/recording.rs).
 MARGIN, SCALE = 20, 2
 
 ELEMENT = re.compile(
@@ -102,7 +75,6 @@ def hex_colour(value):
 
 
 def rgb565(image):
-    """The image as the panel holds it: 5, 6 and 5 bits, as `chrome::rgb` keeps them."""
     r, g, b = image.convert('RGB').split()
     return Image.merge('RGB', (r.point(lambda v: v >> 3), g.point(lambda v: v >> 2), b.point(lambda v: v >> 3)))
 
@@ -113,7 +85,6 @@ def quantised(paint):
 
 
 def equal(panel, paint):
-    """Mask of the pixels of `panel` (RGB565 channels) that are `paint` exactly."""
     target = quantised(paint)
     channels = [c.point(lambda v, t=t: 255 if v == t else 0) for c, t in zip(panel.split(), target, strict=True)]
     return ImageChops.darker(ImageChops.darker(channels[0], channels[1]), channels[2])
@@ -155,7 +126,6 @@ def selects(rule, element):
 
 
 def load(mockup, rules):
-    """The mockup's elements with their rules, and what is excused where."""
     source = mockup.read_text()
     inner = source[source.index('>') + 1 : source.rindex('</svg>')]
     elements = []
@@ -163,11 +133,13 @@ def load(mockup, rules):
         paints = {p.lower() for p in PAINT.findall(found)}
         paint = hex_colour(paints.pop()) if len(paints) == 1 else None
         elements.append(Element(found, render(wrap(found)).getchannel('A'), paint))
-    excused = Image.new('L', SIZE, 0)
+    interior_and_envelope_exclusions = Image.new('L', SIZE, 0)
     for kind in ('text', 'mask'):
         for rule in rules.get(kind, []):
             if 'region' in rule:
-                excused = ImageChops.lighter(excused, region(rule['region']))
+                interior_and_envelope_exclusions = ImageChops.lighter(
+                    interior_and_envelope_exclusions, region(rule['region'])
+                )
                 continue
             chosen = [e for e in elements if selects(rule, e)]
             if not chosen:
@@ -178,15 +150,18 @@ def load(mockup, rules):
     for element in reversed(elements):
         element.visible = ImageChops.subtract(element.mask, over)
         if element.rule == 'mask':
-            excused = ImageChops.lighter(excused, covered(element.visible))
+            interior_and_envelope_exclusions = ImageChops.lighter(
+                interior_and_envelope_exclusions, covered(element.visible)
+            )
         elif element.rule == 'text':
-            excused = ImageChops.lighter(excused, text_band(element))
+            interior_and_envelope_exclusions = ImageChops.lighter(
+                interior_and_envelope_exclusions, expanded_text_region(element)
+            )
         over = ImageChops.lighter(over, covered(element.mask))
-    return elements, excused
+    return elements, interior_and_envelope_exclusions
 
 
 def checkpoint_image(path):
-    """A checkpoint as a 240 x 320 RGB image."""
     if path.suffix == '.svg':
         return render(path.read_text()).convert('RGB')
     image = Image.open(path).convert('RGB')
@@ -197,12 +172,13 @@ def checkpoint_image(path):
 
 
 def compare(screen, actual, rules):
-    """Check `actual` against the mockup `screen`; the report and its diff mask."""
-    elements, excused = load(MOCKUPS / f'{screen}.svg', rules)
+    elements, interior_and_envelope_exclusions = load(MOCKUPS / f'{screen}.svg', rules)
     panel = rgb565(actual)
     for colour in rules.get('ignore', []):
-        excused = ImageChops.lighter(excused, grow(equal(panel, hex_colour(colour))))
-    allowed = ImageChops.invert(excused)
+        interior_and_envelope_exclusions = ImageChops.lighter(
+            interior_and_envelope_exclusions, grow(equal(panel, hex_colour(colour)))
+        )
+    interior_and_envelope_allowed = ImageChops.invert(interior_and_envelope_exclusions)
     report, diff = Report(), Image.new('L', SIZE, 0)
 
     def fail(message, pixels):
@@ -222,7 +198,7 @@ def compare(screen, actual, rules):
         if element.rule == 'text':
             check_text(element, here, fail)
         else:
-            interior = ImageChops.darker(shrink(solid(element.visible)), allowed)
+            interior = ImageChops.darker(shrink(solid(element.visible)), interior_and_envelope_allowed)
             wrong = ImageChops.subtract(interior, here)
             if bad := points(wrong):
                 share = len(bad) / max(len(points(interior)), 1)
@@ -236,9 +212,11 @@ def compare(screen, actual, rules):
         drawn = Image.new('L', SIZE, 0)
         for element in elements:
             if element.paint == paint and element.rule != 'mask':
-                own = covered(element.visible) if element.rule == 'exact' else text_band(element)
+                own = covered(element.visible) if element.rule == 'exact' else expanded_text_region(element)
                 drawn = ImageChops.lighter(drawn, own)
-        outside = ImageChops.darker(ImageChops.subtract(shrink(equal(panel, paint)), drawn), allowed)
+        outside = ImageChops.darker(
+            ImageChops.subtract(shrink(equal(panel, paint)), drawn), interior_and_envelope_allowed
+        )
         if bad := points(outside):
             x, y = bad[0]
             fail(f'{hex_of(paint)}: {len(bad)} px drawn where the mockup has none, first at ({x}, {y})', outside)
@@ -246,10 +224,8 @@ def compare(screen, actual, rules):
 
 
 def check_text(element, here, fail):
-    """Ink spans the mockup's rows and holds its anchored edge (left, right
-    or centre, as `text-anchor` says); the width is free."""
     want = ink_box(element)
-    band = text_band(element)
+    band = expanded_text_region(element)
     found = ImageChops.darker(here, band).getbbox()
     if found is None:
         fail(f'{element.name}: no ink in {hex_of(element.paint)} near ({want[0]}, {want[1]})', band)
@@ -275,23 +251,18 @@ def anchored(element, rect):
     return {'start': rect[0], 'middle': (rect[0] + rect[2]) / 2, 'end': rect[2]}[anchor(element)]
 
 
-def text_band(element):
-    """Where a free-width text's ink may lie: its rows, and up to half as
-    wide again as the mockup's text from its anchored edge, short of a
-    neighbour on the same row."""
+def expanded_text_region(element):
     left, top, right, bottom = ink_box(element)
-    reach = (right - left) * 3 // 2 + 2
+    expanded_width = (right - left) * 3 // 2 + 2
     columns = {
-        'start': (left - 2, left + reach),
-        'middle': ((left + right) // 2 - reach // 2, (left + right) // 2 + reach // 2),
-        'end': (right - reach, right + 2),
+        'start': (left - 2, left + expanded_width),
+        'middle': ((left + right) // 2 - expanded_width // 2, (left + right) // 2 + expanded_width // 2),
+        'end': (right - expanded_width, right + 2),
     }[anchor(element)]
     return region((max(columns[0], 0), max(top - 2, 0), min(columns[1], SIZE[0]), min(bottom + 2, SIZE[1])))
 
 
 def check_bounds(element, here, others, fail):
-    """The rect's colour fills exactly the mockup's box, nothing wider, away
-    from other elements painted in it."""
     for other in others:
         here = ImageChops.subtract(here, grow(covered(other.mask)))
     want = solid(element.visible).getbbox()
@@ -313,8 +284,6 @@ def rules_of(screen):
 
 
 def checkpoint_of(screen, sim):
-    """The scenario checkpoint named after the screen, such as
-    `<scenario>/02-ride-turns.png`."""
     found = sorted(sim.glob(f'*/[0-9][0-9]-{screen}.png'))
     if len(found) != 1:
         raise LookupError(f'{len(found)} checkpoints named {screen} under {sim}')

@@ -1,6 +1,5 @@
 //! The course sign in three forms: a banner across a data page, a badge on
-//! the map and a chip on the main page. Paint it after the light look, so its
-//! white ink on its fill reads the same in both looks.
+//! the map and a chip on the main page.
 use super::chrome::{self, MUTED, RAISED, Rect, Row, WHITE, blend, paint_rounded_over, rounded};
 use super::icons::{SignForm, SignGlyph, StaticIcon};
 use super::ride::RidePage;
@@ -19,8 +18,6 @@ const INK_TO_EDGE: f32 = 8.25;
 const RADAR: usize = super::ride::RADAR_WIDTH;
 const RADAR_SHIFT: usize = super::ride::CENTRE_SHIFT;
 
-/// The row a face's capitals end on for a mockup baseline: a face's ink ends
-/// the row above its own baseline.
 pub(crate) const fn baseline_under_mockup(mockup: usize) -> usize {
     mockup + 1
 }
@@ -28,8 +25,7 @@ pub(crate) const fn baseline_under_mockup(mockup: usize) -> usize {
 const BADGE_TOP: usize = 30;
 const BADGE_HEIGHT: usize = 60;
 
-/// A banner's baseline on the badge, which is the banner at 60 / 82.
-const fn on_badge(banner_baseline: f32) -> f32 {
+const fn badge_baseline_from_banner(banner_baseline: f32) -> f32 {
     BADGE_TOP as f32
         + (banner_baseline - BANNER.top as f32) * BADGE_HEIGHT as f32 / BANNER.height as f32
 }
@@ -85,7 +81,7 @@ const BADGE: Geometry = Geometry {
         back: 60.56,
         turn_back_line: 82.0,
         turn_back: &SIGN_14,
-        arrived: (&SIGN_20, on_badge(BANNER_ARRIVED)),
+        arrived: (&SIGN_20, badge_baseline_from_banner(BANNER_ARRIVED)),
     }),
 };
 
@@ -265,7 +261,6 @@ impl Placed {
         }
     }
 
-    /// The per-pixel original of `paint` over `under`; none outside the sign.
     #[cfg(test)]
     pub fn pixel(&self, x: usize, y: usize, under: u16) -> Option<u16> {
         if !self.bounds.contains(x, y) {
@@ -290,7 +285,6 @@ impl Placed {
         Some(color)
     }
 
-    /// The whole sign.
     pub fn rect(&self) -> Rect {
         self.bounds
     }

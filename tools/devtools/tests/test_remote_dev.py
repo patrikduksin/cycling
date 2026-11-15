@@ -137,6 +137,14 @@ class BacktraceTests(unittest.TestCase):
             named.write_bytes(b'15178ed1119a')
             self.assertEqual(backtrace.choose_elf(reply, Path(directory)), (named, '15178ed1119a'))
 
+    def test_a_crash_record_from_the_scripted_gnss_build_picks_its_elf_not_the_riders(self):
+        reply = ['{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-gnss pcs=0x42001234"}\n']
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / '15178ed1119a.elf').write_bytes(b'15178ed1119a')
+            named = Path(directory) / '15178ed1119a-gnss.elf'
+            named.write_bytes(b'15178ed1119a')
+            self.assertEqual(backtrace.choose_elf(reply, Path(directory)), (named, '15178ed1119a'))
+
 
 class VerifyTests(unittest.TestCase):
     def test_a_failed_step_stops_its_lane_only(self):

@@ -634,6 +634,26 @@ mod tests {
     }
 
     #[test]
+    fn a_clip_of_any_width_and_parity_paints_just_its_columns() {
+        let mut layer = std::boxed::Box::new(Layer::<1>::new(0));
+        layer.add(&Bar::new((4.0, -5.0), (4.0, 5.0), 1.2), Class::Major);
+        let pairs = pairs(0x1082, 0x2945, 0x4229);
+        let mut whole = [0x1234u16; WIDTH];
+        layer.paint(&mut Row::new(0, &mut whole), &pairs);
+        for start in 0..6 {
+            for width in 1..4 {
+                let clip = start..start + width;
+                let mut pixels = [0x1234u16; WIDTH];
+                layer.paint(&mut Row::new(0, &mut pixels).within(clip.clone()), &pairs);
+                for x in 0..WIDTH {
+                    let expected = if clip.contains(&x) { whole[x] } else { 0x1234 };
+                    assert_eq!(pixels[x], expected, "column {x} of clip {clip:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_layer_paints_its_ground_and_roads_from_the_palette() {
         let mut layer = std::boxed::Box::new(Layer::<20>::new(20));
         layer.add(&Bar::new((50.0, 0.0), (50.0, 40.0), 2.5), Class::Minor);

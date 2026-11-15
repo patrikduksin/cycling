@@ -1232,10 +1232,11 @@ fn a_course_replaced_by_the_same_one_1_m_east_forgets_the_leg_it_held() {
 mod santiago {
     use super::*;
     use crate::ride::homing::TURN;
-    use crate::screens::ride::map::roads::tests::{PLAZA, cached};
+    use crate::screens::ride::map::roads::tests::{PLAZA, SANTIAGO, cached, header};
     use std::time::Instant;
     use std::{boxed::Box, println, string::String, vec::Vec};
-    use terrain::PAGE_BYTES;
+    use terrain::pack::HEADER_BYTES;
+    use terrain::{PAGE_BYTES, TileKey};
 
     /// A course through `here` heading `heading`: straight on for `turn_m`,
     /// then right, with the turn shown on the map's badge.
@@ -1384,6 +1385,122 @@ mod santiago {
         let screen = painted(cache.frame);
         assert!(!screen.iter().any(|&p| p == MINOR_ROAD || p == MAJOR_ROAD));
         assert!(screen.iter().filter(|&&p| p == ACCENT).count() > 1_000);
+    }
+
+    #[test]
+    fn the_margin_never_crowds_a_tile_on_the_screen_out_of_the_fetch() {
+        let chile = terrain::Header {
+            tile: 15_625,
+            south: -56_000_000,
+            west: -76_000_000,
+            rows: 2_471,
+            cols: 640,
+            ..header()
+        };
+        let ride = RideFrame::at((-531_600_000, -709_000_000));
+        let leg = 2_000.0 / core::f32::consts::SQRT_2;
+        let course = [
+            Crumb {
+                east: leg,
+                north: leg,
+                along: 0.0,
+            },
+            Crumb {
+                east: 0.0,
+                north: 0.0,
+                along: 2_000.0,
+            },
+        ];
+        let track = Track {
+            available: true,
+            here: Some((0.0, 0.0)),
+            heading: Some(TURN / 8),
+            course: &course,
+            ahead: Some((1, Some((0.0, 0.0)))),
+            ..Track::default()
+        };
+        let mut frame = Box::new(Frame::default());
+        fill(&mut frame, &track);
+        assert_eq!(frame.last_pose.step, Step::Km3);
+        let under = |margin: f32| -> Vec<TileKey> {
+            let corners = frame.view(margin).unwrap().map(|p| ride.locate(p));
+            chile.tiles_under(&corners).collect()
+        };
+        assert!(
+            under(ROAD_FETCH_MARGIN).len() > roads::TILES,
+            "the view and its margin touch more tiles than are held"
+        );
+        let fetched = frame.road_tiles(&chile, ride).unwrap();
+        for key in under(0.0) {
+            assert!(fetched.contains(&key), "{key:?} is on the screen");
+        }
+    }
+
+    /// The fixture as a newer pack on the same grid with no roads at all.
+    fn without_roads() -> Vec<u8> {
+        let header = header();
+        let mut pack = SANTIAGO.to_vec();
+        pack[header.directory as usize..header.data as usize].fill(0);
+        pack[52] += 1;
+        let crc = terrain::tile::crc32(&pack[..HEADER_BYTES - 4]);
+        pack[HEADER_BYTES - 4..HEADER_BYTES].copy_from_slice(&crc.to_le_bytes());
+        pack
+    }
+
+    /// Run the look-ahead on `pack`, if there is one, and fill and fetch
+    /// as the app does each pass.
+    fn ride_on(
+        cache: &mut Cache,
+        engine: &mut terrain::Lookahead,
+        mut pack: Option<&[u8]>,
+        ride: RideFrame,
+        track: &Track,
+    ) {
+        for _ in 0..400 {
+            cache.update(track);
+            if let Some(source) = pack.as_mut() {
+                engine.step(source);
+            }
+            cache.fetch_roads(engine, ride);
+        }
+        cache.update(track);
+    }
+
+    fn road_pixels(frame: &Frame) -> usize {
+        painted(frame)
+            .iter()
+            .filter(|&&p| p == MINOR_ROAD || p == MAJOR_ROAD)
+            .count()
+    }
+
+    #[test]
+    fn a_replaced_or_removed_pack_takes_its_roads_off_the_map() {
+        let mut arena = std::vec![0u8; 64 * PAGE_BYTES];
+        let mut engine = cached(&mut arena);
+        let ride = RideFrame::at(PLAZA);
+        let approach = Approach::new((0.0, -150.0), 0, 250.0);
+        let track = approach.track();
+        let mut frame = Box::new(Frame::default());
+        let mut cache = Cache::new(&mut frame);
+        settle(&mut cache, &mut engine, ride, &track);
+        assert!(road_pixels(cache.frame) > 1_000);
+        let empty = without_roads();
+        engine.reset();
+        ride_on(&mut cache, &mut engine, Some(&empty), ride, &track);
+        assert_eq!(
+            road_pixels(cache.frame),
+            0,
+            "a newer pack without roads here draws none"
+        );
+        engine.reset();
+        ride_on(&mut cache, &mut engine, Some(SANTIAGO), ride, &track);
+        assert!(
+            road_pixels(cache.frame) > 1_000,
+            "the pack's roads are back"
+        );
+        engine.reset();
+        ride_on(&mut cache, &mut engine, None, ride, &track);
+        assert_eq!(road_pixels(cache.frame), 0, "with no pack, bare ground");
     }
 
     /// Prints how much road each scale's view of central Santiago draws,

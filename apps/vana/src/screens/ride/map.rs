@@ -381,16 +381,13 @@ impl<'a> Cache<'a> {
     /// cache, in the ride's `frame`: ask for the tiles the view lacks and
     /// copy one that is cached. Whether it copied one.
     pub fn fetch_roads(&mut self, engine: &mut terrain::Lookahead, frame: RideFrame) -> bool {
-        let Some(view) = self.frame.view() else {
-            engine.want([]);
-            return false;
-        };
         let Some(header) = engine.header().copied() else {
             return false;
         };
-        let corners = view.map(|p| frame.locate(p));
-        let keys: heapless::Vec<_, { roads::TILES }> =
-            header.tiles_under(&corners).take(roads::TILES).collect();
+        let Some(keys) = self.frame.road_tiles(&header, frame) else {
+            engine.want([]);
+            return false;
+        };
         let detail = Detail::of(self.frame.last_pose.step);
         let roads = &mut self.frame.roads;
         engine.want(roads.lacking(&keys, detail, frame));
@@ -634,17 +631,29 @@ impl Frame {
         });
     }
 
-    /// The ground the last fill drew, a margin wider, in the ride's frame.
-    fn view(&self) -> Option<[Point; 4]> {
+    /// The ground the last fill drew, `margin` of it wider each way, in
+    /// the ride's frame.
+    fn view(&self, margin: f32) -> Option<[Point; 4]> {
         if !self.has_pose || self.show != Show::Map {
             return None;
         }
         let at = self.last_pose.projection(self.last_centre);
         let (wide, high) = (WIDTH as f32, (GROUND.end - GROUND.start) as f32);
-        let (dx, dy) = (wide * ROAD_FETCH_MARGIN, high * ROAD_FETCH_MARGIN);
+        let (dx, dy) = (wide * margin, high * margin);
         let (left, right) = (-dx, wide + dx);
         let (top, bottom) = (GROUND.start as f32 - dy, GROUND.end as f32 + dy);
         Some([(left, top), (right, top), (right, bottom), (left, bottom)].map(|p| at.back(p)))
+    }
+
+    /// The tiles of `header` the roads are fetched from, in the ride's
+    /// frame `ride`.
+    fn road_tiles(
+        &self,
+        header: &terrain::Header,
+        ride: RideFrame,
+    ) -> Option<heapless::Vec<terrain::TileKey, { roads::TILES }>> {
+        let corners = self.view(ROAD_FETCH_MARGIN)?.map(|p| ride.locate(p));
+        Some(header.tiles_under(&corners).take(roads::TILES).collect())
     }
 }
 

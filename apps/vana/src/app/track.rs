@@ -100,7 +100,7 @@ pub struct RideTrack {
     /// The map's work since the last `take_map_work`, and since the track
     /// was attached.
     pub(super) work: MapWork,
-    pub(super) slowest: MapWork,
+    pub(super) since_attached: MapWork,
 }
 
 impl RideTrack {
@@ -124,7 +124,7 @@ impl RideTrack {
             kept: super::course::Kept::default(),
             resume: Resume::None,
             work: MapWork::default(),
-            slowest: MapWork::default(),
+            since_attached: MapWork::default(),
         }
     }
 
@@ -152,7 +152,7 @@ impl RideTrack {
         if let (Some(started), Some(clock)) = (started, clock) {
             let us = clock().saturating_sub(started);
             which(&mut self.work).add(us);
-            which(&mut self.slowest).add(us);
+            which(&mut self.since_attached).add(us);
         }
     }
 

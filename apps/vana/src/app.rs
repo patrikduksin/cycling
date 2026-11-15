@@ -190,7 +190,7 @@ impl Runtime {
 
     /// The map's work since the track was attached.
     pub fn map_work_since_boot(&self) -> Option<MapWork> {
-        Some(self.track.as_deref()?.slowest)
+        Some(self.track.as_deref()?.since_attached)
     }
 
     /// Scan both ride journals ahead of the first `tick`, while the device

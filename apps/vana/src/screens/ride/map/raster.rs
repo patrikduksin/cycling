@@ -273,7 +273,6 @@ pub struct Layer<const ROWS: usize> {
     pairs: [[u8; WIDTH / 2]; ROWS],
 }
 
-/// A road's class on the layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     Minor,

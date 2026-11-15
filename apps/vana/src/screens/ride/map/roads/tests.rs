@@ -40,13 +40,14 @@ fn corner(header: &Header, key: TileKey) -> (i32, i32) {
     (south * 10, west * 10)
 }
 
-fn extract_all(roads: &mut Roads, engine: &Lookahead, frame: RideFrame, detail: Detail) {
+/// Hold every tile of the fixture; whether each fit whole.
+fn extract_all(roads: &mut Roads, engine: &Lookahead, frame: RideFrame, detail: Detail) -> bool {
     let header = header();
     let keys = every_tile(&header);
-    for &key in &keys {
+    keys.iter().fold(true, |whole, &key| {
         let tile = engine.roads(key).expect("cached");
-        roads.extract(frame, &keys, key, detail, corner(&header, key), tile);
-    }
+        roads.extract(frame, &keys, key, detail, corner(&header, key), tile) && whole
+    })
 }
 
 fn plaza_frame() -> RideFrame {
@@ -196,13 +197,14 @@ fn central_santiago_fits_at_every_detail() {
     let frame = plaza_frame();
     for detail in [Detail::Streets, Detail::Town, Detail::Arteries] {
         let mut roads = Box::new(Roads::default());
-        extract_all(&mut roads, &engine, frame, detail);
+        let whole = extract_all(&mut roads, &engine, frame, detail);
         let (runs, points) = roads.ends();
         println!("{detail:?}: 9 tiles, {runs} roads, {points} points");
         assert_eq!(roads.tiles, 9);
-        if detail != Detail::Streets {
-            assert_eq!(roads.cut, 0, "{detail:?} holds the 3 x 3 tiles whole");
-        }
+        assert!(
+            whole || detail == Detail::Streets,
+            "{detail:?} holds the 3 x 3 tiles whole"
+        );
     }
 }
 

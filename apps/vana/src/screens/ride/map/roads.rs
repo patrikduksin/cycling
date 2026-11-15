@@ -107,8 +107,6 @@ pub struct Roads {
     points: [(u16, u16); POINTS],
     /// Changes whenever what is held changes, so the map fills again.
     generation: u32,
-    /// Tiles whose roads did not all fit since boot, minor roads first.
-    pub(super) cut: u32,
 }
 
 impl Default for Roads {
@@ -120,7 +118,6 @@ impl Default for Roads {
             runs: [Run::default(); RUNS],
             points: [(0, 0); POINTS],
             generation: 0,
-            cut: 0,
         }
     }
 }
@@ -172,7 +169,7 @@ impl Roads {
     /// Hold the roads of tile `key` at `detail`, its corner `corner` as
     /// `(lat_e7, lon_e7)`, in place of any other copy of it. Tiles not in
     /// `view` make room first; when even so the roads do not fit, the
-    /// minor ones are left out.
+    /// minor ones are left out. Whether every road fit.
     pub fn extract<'t>(
         &mut self,
         frame: RideFrame,
@@ -181,14 +178,14 @@ impl Roads {
         detail: Detail,
         corner: (i32, i32),
         roads: impl Iterator<Item = Road<'t>> + Clone,
-    ) {
+    ) -> bool {
         if self.frame != Some(frame) {
             self.tiles = 0;
             self.frame = Some(frame);
         }
         self.keep(|held| held.key != Some(key) && held.key.is_some_and(|k| view.contains(&k)));
         if self.tiles == TILES {
-            return;
+            return false;
         }
         let (runs, points) = self.ends();
         let scale = frame.metres_per_e7();
@@ -213,9 +210,7 @@ impl Roads {
             }
         }
         room.close();
-        let full = room.full;
-        let end = room.runs;
-        self.cut += u32::from(full);
+        let (full, end) = (room.full, room.runs);
         let place = frame.place(corner.0, corner.1);
         self.held[self.tiles] = Held {
             key: Some(key),
@@ -226,6 +221,7 @@ impl Roads {
         };
         self.tiles += 1;
         self.generation = self.generation.wrapping_add(1);
+        !full
     }
 
     /// Where the next tile's runs and points start.

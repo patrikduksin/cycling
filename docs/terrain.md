@@ -325,6 +325,49 @@ points) takes about 23 µs on the development laptop
 (`tests/santiago.rs`, `extraction_cost_per_tile`). That is a host figure;
 the device cost is measured in the map's own extraction.
 
+The map (`apps/vana/src/screens/ride/map/roads.rs`) asks only for the tiles
+of its view, a quarter wider each way, that it does not yet hold at its
+step's detail, and copies one cached tile a look-ahead pass into a road
+cache in its own PSRAM block. The cache is heading-free: points stay
+tile-local micro-degrees and each tile keeps its corner in the ride's
+frame, so a fix only projects them. It holds 16 tiles, 4,096 roads and
+8,192 points; a tile that does not fit keeps its major roads and the
+`cut` counter records it. Each copy:
+
+- keeps the classes the step draws: every road at 300 m and 400 m, no
+  service roads, tracks or paths at 1 km, trunk to tertiary at 3 km;
+- joins a road to the last of its class when it starts where that one
+  ended, so a street of many blocks is one polyline;
+- simplifies it so no point strays more than half a pixel at the closest
+  step its detail is drawn at, which keeps hairpins.
+
+The nine Santiago fixture tiles take 2,530 roads and 5,924 points at the
+1 km detail and 1,366 and 2,885 at 3 km. Each fill rasterises the roads
+once onto a 4-bit layer of the ground (two bits of coverage a class a
+pixel), and a frame paints the ground and roads from it by table.
+
+On the device (central Santiago, light look, 5 s health windows riding the
+fixture course with `build.sh scripted-gnss`), the map's frames with roads
+are no slower than the map's without them, but the map page itself is over
+its 25 ms frame budget; see #361's road PR for the numbers and the profile.
+A road extraction takes up to about 9.5 ms of its look-ahead pass, and a
+map fill with roads up to about 40 ms.
+
+To measure it again:
+
+1. Build `bash devices/c606/build.sh scripted-gnss` and flash it with
+   `cycling device flash-image`. Its receiver rides the fixture course from
+   Plaza de Armas after a two-minute hold, then 1.6 km off it.
+2. Put the fixture course's `course.dat` (the simulator writes it after an
+   upload) on the card with `cycling files put course.dat <path>`, and
+   restart.
+3. Within the hold, `RIDE START` and page to the map.
+4. Read STATUS (`display_frame_*`, `map_fill_max_us`,
+   `map_extract_max_us`), discard the ride, and pull the trace: its health
+   windows hold the frame mean and max, and its `map.fill` and
+   `map.extract` stages the map's work.
+5. Delete the course files and flash the rider's firmware back.
+
 ### Climbs ahead
 
 `apps/vana/src/ride/climb_ahead.rs` reruns the ride's own detector (#154

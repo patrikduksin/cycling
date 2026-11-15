@@ -322,6 +322,16 @@ impl Extra<'_> {
     }
 }
 
+/// What a ride scene lays over every row: a change here repaints the page.
+#[derive(Hash)]
+struct WholePage<'v> {
+    kind: Kind,
+    light: bool,
+    radar: bool,
+    cues: &'static [Cue],
+    badge: Option<&'v Badge>,
+}
+
 impl firmware_shell::shell::Picture for Scene<'_> {
     const SIZE: (usize, usize) = (WIDTH, HEIGHT);
 
@@ -340,13 +350,13 @@ impl firmware_shell::shell::Picture for Scene<'_> {
         };
         parts.add(
             0..HEIGHT,
-            &(
-                self.kind,
-                self.light,
-                self.radar.is_some(),
-                self.cues,
-                self.badge,
-            ),
+            &WholePage {
+                kind: self.kind,
+                light: self.light,
+                radar: self.radar.is_some(),
+                cues: self.cues,
+                badge: self.badge,
+            },
         );
         parts.add(0..CONTENT.top, &self.bar);
         parts.add(TOAST.top..TOAST.bottom, &self.toast);

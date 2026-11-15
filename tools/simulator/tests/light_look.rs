@@ -42,7 +42,7 @@ fn every_dark_screen_reads_the_same_through_the_light_look() {
         let dark = (scene.reach)().screen();
         assert!(dark.look.is_none(), "{}", scene.name);
         let mut shown = dark.clone();
-        look::apply(&mut shown.pixels);
+        look::Look::default().apply(&mut shown.pixels);
         shown.look = Some(&LIGHT);
         let expected: Vec<_> = dark
             .frame()

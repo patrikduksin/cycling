@@ -467,10 +467,11 @@ impl Runtime {
         };
         let canvas = sheet.canvas();
         let light = self.light();
+        let look = crate::screens::look::Look::default();
         system.draw_canvas(240, 320, |row| {
             View::paint(&canvas, row);
             if light {
-                crate::screens::look::apply(row.pixels_mut());
+                look.apply(row.pixels_mut());
             }
         });
         true

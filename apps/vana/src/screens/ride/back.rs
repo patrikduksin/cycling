@@ -103,8 +103,8 @@ pub(in crate::screens) fn arrow(back: Back) -> Option<(u16, Mode)> {
 }
 
 /// The arrow for this frame, if the page shows one.
-pub(super) fn frame(back: Back) -> Arrow {
-    let Some((angle, mode)) = arrow(back) else {
+pub(super) fn frame(arrow: Option<(u16, Mode)>) -> Arrow {
+    let Some((angle, mode)) = arrow else {
         return Arrow::default();
     };
     // Rotate by the arrow's angle with the ring's own sine, clockwise.
@@ -166,16 +166,16 @@ fn coverage(spans: &Spans, x: usize) -> u8 {
 /// The columns the arrow can touch.
 const REACH: usize = ARROW_RADIUS as usize + 2;
 
-pub(super) fn parts(back: Back, parts: &mut firmware_shell::shell::Parts) {
-    parts.add(CY - REACH..CY + REACH + 1, &arrow(back));
+pub(super) fn parts(arrow: Option<(u16, Mode)>, parts: &mut firmware_shell::shell::Parts) {
+    parts.add(CY - REACH..CY + REACH + 1, &arrow);
 }
 
 /// The arrow's rows of the page, placed from the guide as they paint: the
 /// view keeps no arrow, so the frame costs no stack for it.
-pub(super) fn paint(back: Back, row: &mut Row) {
+pub(super) fn paint(arrow: Option<(u16, Mode)>, row: &mut Row) {
     let y = row.y();
     if y + REACH >= CY && y <= CY + REACH {
-        paint_arrow(&frame(back), row);
+        paint_arrow(&frame(arrow), row);
     }
 }
 
@@ -468,26 +468,26 @@ mod tests {
     fn the_arrow_turns_with_the_heading() {
         // The start due east, riding north: the arrow points right.
         let view = page(Back::Guide(guide(Mode::Track, Some(0), 1024)));
-        let tip = frame(view.back()).parts[0][0];
+        let tip = frame(arrow(view.back())).parts[0][0];
         assert!((tip.0 - (CX as f32 + ARROW_RADIUS)).abs() < 0.5, "{tip:?}");
         assert!((tip.1 - CY as f32).abs() < 0.5, "{tip:?}");
         // Riding east too: straight up.
         let view = page(Back::Guide(guide(Mode::Track, Some(1024), 1024)));
-        let tip = frame(view.back()).parts[0][0];
+        let tip = frame(arrow(view.back())).parts[0][0];
         assert!((tip.0 - CX as f32).abs() < 0.5, "{tip:?}");
         assert!((tip.1 - (CY as f32 - ARROW_RADIUS)).abs() < 0.5, "{tip:?}");
-        assert_eq!(frame(view.back()).color, GREEN);
+        assert_eq!(frame(arrow(view.back())).color, GREEN);
         // The arrow is solid inside and soft at its edges.
-        let spans = spans(&frame(view.back()), CY);
+        let spans = spans(&frame(arrow(view.back())), CY);
         assert_eq!(coverage(&spans, CX), 15);
         assert_eq!(coverage(&spans, CX + REACH - 1), 0);
         // No arrow at the start, or without a fix.
-        assert!(!frame(Back::Guide(guide(Mode::Arrived, None, 0))).shown);
+        assert!(!frame(arrow(Back::Guide(guide(Mode::Arrived, None, 0)))).shown);
         assert!(
-            !frame(Back::Waiting {
+            !frame(arrow(Back::Waiting {
                 following: true,
                 course: false
-            })
+            }))
             .shown
         );
     }

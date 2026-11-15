@@ -80,7 +80,7 @@ pub struct State {
     motion: [Option<(Motion, u64)>; 2],
     identity: Option<(Identity, u64)>,
     light: Option<(Light, u64)>,
-    reports: u32,
+    snapshot_reports: u32,
     invalid_reports: u32,
     losses: u32,
 }
@@ -105,7 +105,7 @@ impl State {
             }
             Decode::Report(report) => {
                 if !matches!(report, Report::Light(_)) {
-                    self.reports = self.reports.saturating_add(1);
+                    self.snapshot_reports = self.snapshot_reports.saturating_add(1);
                 }
                 match report {
                     Report::Pressure(value) => self.pressure = Some((value, now_ms)),
@@ -140,7 +140,7 @@ impl State {
                 .motion
                 .map(|value| observation(value, now_ms, stale_ms)),
             identity: observation(self.identity, now_ms, stale_ms),
-            reports: self.reports,
+            reports: self.snapshot_reports,
             invalid_reports: self.invalid_reports,
             losses: self.losses,
         }
@@ -243,7 +243,11 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(state.snapshot(12, 5).reports, 0);
+        assert_eq!(
+            state.snapshot(12, 5).reports,
+            0,
+            "a changed snapshot is traced, so light would trace it at the light rate"
+        );
         state.receive(16, &[0xf1, 4, 1], 20);
         assert!(matches!(state.light(20, 5), Observation::Unavailable));
         state.receive(16, &[0xf1, 4, 30, 0, 0, 0, 65, 0], 30);

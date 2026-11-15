@@ -11,19 +11,20 @@ fn main() {
     println!("|---|---:|---:|---:|---:|---:|---:|---:|");
     for case in CASES.iter().filter(|case| case.name.contains(&filter)) {
         let result = run(case, seconds);
-        let (strips_median, strips_p90) = result.strips();
-        let (pixels_median, pixels_p90) = result.pixels();
-        let (rows_median, rows_p90) = result.rows();
+        let (strips, pixels, rows) = (result.strips(), result.pixel_share(), result.rows());
         println!(
-            "| {} | {:.1} | {strips_median} / {strips_p90} (of {}) | {:.2}% / {:.2}% | {} of {} \
-             | {rows_median} / {rows_p90} | {:.0} | {:.0} |",
+            "| {} | {:.1} | {} / {} (of {}) | {:.2}% / {:.2}% | {} of {} | {} / {} | {:.0} | {:.0} |",
             case.name,
             result.fps(),
+            strips.median,
+            strips.p90,
             result.strips,
-            pixels_median * 100.0,
-            pixels_p90 * 100.0,
+            pixels.median * 100.0,
+            pixels.p90 * 100.0,
             result.identical(),
             result.changes.len(),
+            rows.median,
+            rows.p90,
             result.rows_per_second(),
             result.work_per_second() / 1000.0,
         );

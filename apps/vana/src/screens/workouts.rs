@@ -334,7 +334,7 @@ mod tests {
         // The pinned title paints on its own rows, over the page.
         let title = view.canvas().find("WORKOUTS").unwrap();
         assert!(title.bottom() <= CONTENT.top + PIN);
-        let short = picker(2, 1);
+        let mut short = picker(2, 1);
         // The focused card is raised and ringed where it shows.
         let top = LAYOUT.top + LAYOUT.column.rect(1).top;
         assert_eq!(short.pixel(100, top + 30), RAISED);

@@ -165,14 +165,15 @@ mod tests {
 
     #[test]
     fn the_code_sits_on_a_light_panel_with_everything_on_screen() {
-        let view = view(Some("WIFI:T:WPA;S:VANA-3F2A;P:ABCDEFGHJKMN;;"), false);
-        let code = view.qr().unwrap();
+        let mut view = view(Some("WIFI:T:WPA;S:VANA-3F2A;P:ABCDEFGHJKMN;;"), false);
+        let scene = view.prepare();
+        let code = scene.qr().unwrap();
         let panel = code.panel();
         assert!(panel.top >= CONTENT.top && panel.right - panel.left <= CODE_WIDTH);
         // Quiet zone is light, the top-left finder is dark.
-        assert_eq!(view.pixel(panel.left + 4, panel.top + 4 + RADIUS), PAPER);
-        assert_eq!(view.pixel(code.left + 1, code.top + 1), INK);
-        view.canvas().assert_laid_out(
+        assert_eq!(scene.pixel(panel.left + 4, panel.top + 4 + RADIUS), PAPER);
+        assert_eq!(scene.pixel(code.left + 1, code.top + 1), INK);
+        scene.canvas().assert_laid_out(
             Rect {
                 left: 0,
                 top: CONTENT.top,
@@ -195,10 +196,10 @@ mod tests {
     fn the_light_look_keeps_dark_modules_on_a_light_panel() {
         let mut view = view(Some("WIFI:T:WPA;S:VANA-3F2A;P:ABCDEFGHJKMN;;"), false);
         view.light = true;
-        view.prepare();
-        let code = view.qr().unwrap();
+        let scene = view.prepare();
+        let code = scene.qr().unwrap();
         let panel = code.panel();
-        let shown = |x: usize, y: usize| view.pixel(x, y);
+        let shown = |x: usize, y: usize| scene.pixel(x, y);
         // The quiet zone, the panel's corner and the page around it are
         // light; the top-left finder's corner module is dark.
         assert_eq!(shown(panel.left + 4, panel.top + 4 + RADIUS), WHITE);

@@ -105,8 +105,7 @@ pub struct Runtime {
     reported: seen::Reported,
     /// This pass's `tick` or `look_ahead` read or wrote storage.
     storage_worked: bool,
-    /// Microseconds, for timing the map's work.
-    micros: Option<fn() -> u64>,
+    micros_clock: Option<fn() -> u64>,
 }
 
 impl Runtime {
@@ -143,7 +142,7 @@ impl Runtime {
             track: None,
             reported: seen::Reported::default(),
             storage_worked: false,
-            micros: None,
+            micros_clock: None,
         }
     }
 
@@ -180,7 +179,7 @@ impl Runtime {
     /// Supply a monotonic microsecond clock that times the map's fills and
     /// road extractions (`take_map_work`).
     pub fn set_micros_clock(&mut self, clock: fn() -> u64) {
-        self.micros = Some(clock);
+        self.micros_clock = Some(clock);
     }
 
     /// The map's work since the last take; none without a track.
@@ -189,7 +188,7 @@ impl Runtime {
     }
 
     /// The map's work since the track was attached.
-    pub fn map_work_since_boot(&self) -> Option<MapWork> {
+    pub fn map_work_since_attached(&self) -> Option<MapWork> {
         Some(self.track.as_deref()?.since_attached)
     }
 

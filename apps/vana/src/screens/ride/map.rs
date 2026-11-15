@@ -382,7 +382,6 @@ struct Arrow {
     shaft: [Stroke; ARROW_STROKES],
     strokes: usize,
     head: Triangle,
-    /// The rows it reaches, so the rest skip it.
     rows: (f32, f32),
 }
 
@@ -395,10 +394,8 @@ pub struct Frame {
     last_pose: Pose,
     has_pose: bool,
     last_centre: Point,
-    /// The ground and its roads, and the two pixels of each layer byte.
     layer: Layer<GROUND_ROWS>,
     pairs: [[u16; 2]; 256],
-    /// Road segments drawn this fill, minor and major.
     roads_drawn: [usize; 2],
     strokes: [Stroke; STROKES],
     counts: [usize; 2],
@@ -481,8 +478,7 @@ impl Frame {
 /// Project `points` as one polyline `reach` wide and hand each segment on
 /// the screen to `put` while it says there is room for more. A point is
 /// dropped while a straight segment past it strays less than `STRAY_PX`
-/// from it: a course comes a point every few metres, and each segment a
-/// row crosses costs that row, so a straight street is one segment.
+/// from it.
 fn project(
     at: &Projection,
     reach: f32,

@@ -22,8 +22,6 @@ image_dir="${CYCLING_IMAGE_DIR:-.local}"
 case "${1:-}" in
   "") firmware_features="hardware"; firmware_target="$target_root/firmware"; variant="" ;;
   maintenance) firmware_features="hardware,bulk-maintenance"; firmware_target="$target_root/firmware-maintenance"; variant="-maint" ;;
-  # A measurement build that rides central Santiago on scripted fixes
-  # (devices/c606/src/capabilities/scripted.rs); never for riders.
   scripted-gnss) firmware_features="hardware,scripted-gnss"; firmware_target="$target_root/firmware-gnss"; variant="-gnss" ;;
   *) echo "usage: build.sh [maintenance|scripted-gnss]" >&2; exit 2 ;;
 esac

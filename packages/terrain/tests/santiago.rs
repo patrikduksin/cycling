@@ -70,7 +70,6 @@ fn every_tile_of_central_santiago_draws_its_roads_inside_it() {
         }
     }
     println!("segments by class: {by_class:?}");
-    // `cycling terrain validate` counts 6,482 edges and 1,385 shape vertices.
     assert_eq!((edges, segments), (6_482, 6_482 + 1_385));
     assert!(nearest_to_plaza < 80.0, "{nearest_to_plaza:.0} m");
 }

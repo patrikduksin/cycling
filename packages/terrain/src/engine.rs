@@ -133,7 +133,6 @@ pub struct Lookahead<'a> {
     predict_due: bool,
     last_predict_ms: Option<u64>,
     need: Option<TileKey>,
-    /// Tiles the map asked for, loaded when nothing else is due.
     wanted: [Option<TileKey>; WANTED],
     /// Tiles requested by the current match or prediction attempt.
     reloads: u16,

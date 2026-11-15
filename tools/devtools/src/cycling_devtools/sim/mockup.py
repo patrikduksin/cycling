@@ -26,7 +26,6 @@ FONT = ROOT / 'packages/shell/fonts/Nunito[wght].ttf'
 SIM = ROOT / '.local/sim/latest'
 OUT = ROOT / '.local/mockup'
 SIZE = (240, 320)
-# The map's ground, which ignored road colours blend over at their edges.
 GROUND = (0x10, 0x10, 0x12)
 MARGIN, SCALE = 20, 2
 
@@ -186,8 +185,6 @@ def checkpoint_image(path):
 def compare(screen, actual, rules):
     elements, interior_and_envelope_exclusions = load(MOCKUPS / f'{screen}.svg', rules)
     panel = rgb565(actual)
-    # An ignored colour's edge over the ground is ignored too: a road just
-    # past the screen's edge leaves only its blended edge on the panel.
     for colour in rules.get('ignore', []):
         for mix in mixes(hex_colour(colour), GROUND):
             interior_and_envelope_exclusions = ImageChops.lighter(

@@ -88,8 +88,6 @@ impl<'t> Road<'t> {
     }
 }
 
-/// Micro-degrees to 1e-7 degrees. A grid may reach 360°, past what e7
-/// holds in i32; no real road is there.
 fn e7(micro: i32) -> i32 {
     micro.saturating_mul(10)
 }

@@ -127,11 +127,9 @@ impl Parts {
 
     /// `key` must cover everything paint draws in `rows` for this part.
     pub fn add(&mut self, rows: core::ops::Range<usize>, key: &(impl core::hash::Hash + ?Sized)) {
-        use core::hash::Hasher;
-        let mut fnv = Fnv1a(0xcbf2_9ce4_8422_2325);
+        let mut fnv = Fnv1a(FNV_OFFSET);
         key.hash(&mut fnv);
-        let key = fnv.finish();
-        let key = (key ^ key >> 32) as u32;
+        let key = fnv.0;
         let end = rows.end.min(MAX_HEIGHT).div_ceil(BAND_ROWS);
         for band in self
             .keys
@@ -151,16 +149,16 @@ pub enum Drawn {
     Failed,
 }
 
-struct Fnv1a(u64);
+struct Fnv1a(u32);
 
 impl core::hash::Hasher for Fnv1a {
     fn finish(&self) -> u64 {
-        self.0
+        u64::from(self.0)
     }
 
     fn write(&mut self, bytes: &[u8]) {
         for &byte in bytes {
-            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+            self.0 = (self.0 ^ u32::from(byte)).wrapping_mul(FNV_PRIME);
         }
     }
 }

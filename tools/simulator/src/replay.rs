@@ -658,6 +658,7 @@ pub(crate) fn measured(event: &Event<'_>) -> bool {
     matches!(
         event,
         Event::Log { .. }
+            | Event::FrameTime(_)
             | Event::Health(_)
             | Event::Activity(_)
             | Event::Task { .. }
@@ -968,6 +969,7 @@ impl Sources {
             | Event::Frame(_)
             | Event::Panel(_)
             | Event::Log { .. }
+            | Event::FrameTime(_)
             | Event::Health(_)
             | Event::Activity(_)
             | Event::Task { .. }

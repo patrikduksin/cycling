@@ -333,6 +333,26 @@ pub struct Health {
     pub ble_rssi: Option<i8>,
 }
 
+/// The frames the panel took in the window of the [`Event::Health`] that
+/// follows. A new record rather than a field of `Health`, since a reader
+/// takes a record that ends early as corrupt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameTime {
+    pub frames: u32,
+    pub mean_us: u32,
+}
+
+impl FrameTime {
+    /// The window's frames: how many, and the microseconds they took in all.
+    pub fn of_window(frames: u32, total_us: u64) -> Option<Self> {
+        let mean_us = total_us.checked_div(u64::from(frames))?;
+        Some(Self {
+            frames,
+            mean_us: u32::try_from(mean_us).unwrap_or(u32::MAX),
+        })
+    }
+}
+
 /// Where the CPU's time went since the record before, and what drew power
 /// as the window ended. Not an input. Its executor tasks follow it as
 /// [`Event::Task`] records, then the main-loop pass's stages as
@@ -558,6 +578,7 @@ pub enum Event<'a> {
         target: &'a str,
         text: &'a str,
     },
+    FrameTime(FrameTime),
     Health(Health),
     Activity(Activity),
     /// One executor task's share of the [`Event::Activity`] window before
@@ -630,6 +651,7 @@ mod tag {
     pub const ACTIVITY: u8 = 81;
     pub const TASK: u8 = 82;
     pub const STAGE: u8 = 83;
+    pub const FRAME_TIME: u8 = 84;
 }
 
 const SHORT_PASS: u8 = 0x80;
@@ -1092,6 +1114,7 @@ record! {
         supported_types, connection_capacity, one_peer_per_type, concurrent_scan,
         acknowledged_send, radio_delivery_feedback, burst, max_pending_sends,
     }
+    FrameTime { frames, mean_us }
     Health {
         simulated, heap_free, heap_min, psram_free, frame_max_us, pass_max_us, gps_sentences,
         gps_overflows, gps_uart_errors, companion_errors, card_write_max_us, card_recoveries,
@@ -1412,6 +1435,7 @@ impl<'a> Event<'a> {
             Self::Frame(_) => tag::FRAME,
             Self::Panel(_) => tag::PANEL,
             Self::Log { .. } => tag::LOG,
+            Self::FrameTime(_) => tag::FRAME_TIME,
             Self::Health(_) => tag::HEALTH,
             Self::Activity(_) => tag::ACTIVITY,
             Self::Task { .. } => tag::TASK,
@@ -1536,6 +1560,7 @@ impl<'a> Event<'a> {
             }
             Self::Synthetic(input) => input.put(w),
             Self::Frame(digest) | Self::Panel(digest) => digest.put(w),
+            Self::FrameTime(frame_time) => frame_time.put(w),
             Self::Health(health) => health.put(w),
             Self::Activity(activity) => activity.put(w),
             Self::Task {
@@ -1661,6 +1686,7 @@ impl<'a> Event<'a> {
                 target: Wire::take(r),
                 text: Wire::take(r),
             },
+            tag::FRAME_TIME => Self::FrameTime(Wire::take(r)),
             tag::HEALTH => Self::Health(Wire::take(r)),
             tag::ACTIVITY => Self::Activity(Wire::take(r)),
             tag::TASK => Self::Task {

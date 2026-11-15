@@ -24,7 +24,9 @@ use firmware_services::trace::frozen::{
 };
 use firmware_services::trace::origin::{self, Config, Files, Found, Media, Memory, Terrain};
 use firmware_services::trace::spool::{self, Card, File, Spool, Spooled};
-use firmware_services::trace::{Activity, Consumers, Event, Gnss, Health, Vitals, redact};
+use firmware_services::trace::{
+    Activity, Consumers, Event, FrameTime, Gnss, Health, Vitals, redact,
+};
 
 type Bytes = &'static mut [u8];
 pub type Recording = Option<Spooled<Owned, Owned>>;
@@ -286,6 +288,7 @@ impl Trace {
         let (spool_used, spool_size) = self.record.get_mut().as_ref().map_or((0, 0), |recorder| {
             (recorder.sink().len(), recorder.sink().capacity())
         });
+        let (window_frames, window_total_us) = device::drivers::display::TIMING.take_window_total();
         let health = Health {
             simulated: false,
             heap_free: Some(count(esp_alloc::HEAP.free())),
@@ -358,6 +361,9 @@ impl Trace {
             },
         };
         let record = self.record.get_mut();
+        if let Some(frame_time) = FrameTime::of_window(window_frames, u64::from(window_total_us)) {
+            record.record(&Event::FrameTime(frame_time));
+        }
         record.record(&Event::Health(health));
         record.record(&Event::Activity(activity));
         for task in taken.tasks.iter().flatten() {

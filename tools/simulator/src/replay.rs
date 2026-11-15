@@ -362,7 +362,7 @@ pub struct Replay {
     page: String,
     /// The trace replaced secrets as it recorded them.
     redacted: bool,
-    frames: bool,
+    digests: Digests,
 }
 
 impl Replay {
@@ -374,7 +374,7 @@ impl Replay {
         build: [u8; 20],
     ) -> Result<Self, trace::Error> {
         let (header, events) = trace::decode(&bytes)?;
-        let frames = whole_frames(&bytes);
+        let digests = Digests::of(&bytes);
         let redacted =
             trace::origin::Config::decode(header.config).is_some_and(|config| config.redacted);
         let cursor = events.cursor();
@@ -400,7 +400,7 @@ impl Replay {
             seen: Vec::new(),
             page: String::new(),
             redacted,
-            frames,
+            digests,
         })
     }
 
@@ -493,7 +493,7 @@ impl Replay {
         let seen: Vec<Seen> = seen
             .iter()
             .map(|seen| match seen {
-                Seen::Panel(_) if self.frames => {
+                Seen::Panel(_) if self.digests == Digests::Frames => {
                     Seen::Frame(frame.take().map_or(0, |frame| frame()))
                 }
                 seen => seen.clone(),
@@ -564,15 +564,26 @@ impl Replay {
 /// The first event where two traces part, with the pass it belongs to.
 /// What [`measured`] holds is left out.
 pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
-    let frames = whole_frames(recorded);
+    let frames = Digests::of(recorded) == Digests::Frames;
     first_difference_of(recorded, replayed, |event| {
         !measured(event) && !(frames && matches!(event, Event::Frame(_) | Event::Panel(_)))
     })
 }
 
-fn whole_frames(trace: &[u8]) -> bool {
-    trace::decode(trace)
-        .is_ok_and(|(_, mut events)| events.any(|event| matches!(event, Event::Frame(_))))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Digests {
+    /// An older trace's [`Event::Frame`]: every row of the frame.
+    Frames,
+    /// [`Event::Panel`]: each band as the shell last sent it.
+    Panel,
+}
+
+impl Digests {
+    fn of(trace: &[u8]) -> Self {
+        let frames = trace::decode(trace)
+            .is_ok_and(|(_, mut events)| events.any(|event| matches!(event, Event::Frame(_))));
+        if frames { Self::Frames } else { Self::Panel }
+    }
 }
 
 /// The first `compared` event where two traces part.

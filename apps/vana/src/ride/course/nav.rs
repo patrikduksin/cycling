@@ -48,7 +48,8 @@ pub enum Observed {
 
 #[derive(Clone, Copy, Debug)]
 pub struct MatchedFix {
-    pub now_ms: u64,
+    /// When the receiver took the fix.
+    pub taken_ms: u64,
     /// The matched point, millimetres along from the course's start.
     pub along_mm: u32,
     pub to_end_mm: u32,
@@ -73,19 +74,6 @@ pub enum Event {
     StillOff,
     OnCourse,
     Arrived,
-}
-
-impl Event {
-    const fn rank(self) -> u8 {
-        match self {
-            Self::Arrived => 5,
-            Self::OffCourse => 4,
-            Self::Following | Self::OnCourse => 3,
-            Self::StillOff => 2,
-            Self::TurnNow => 1,
-            Self::TurnSoon => 0,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -227,24 +215,59 @@ struct Next<'t> {
     unblocked: bool,
 }
 
+/// An event due on a fix. A turn's sound names its turn by where it
+/// starts, which forgetting passed turns leaves as it was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Raised {
+    Following,
+    TurnSoon { start_mm: u32 },
+    TurnNow { start_mm: u32 },
+    OffCourse,
+    StillOff,
+    OnCourse,
+}
+
+impl Raised {
+    const fn event(self) -> Event {
+        match self {
+            Self::Following => Event::Following,
+            Self::TurnSoon { .. } => Event::TurnSoon,
+            Self::TurnNow { .. } => Event::TurnNow,
+            Self::OffCourse => Event::OffCourse,
+            Self::StillOff => Event::StillOff,
+            Self::OnCourse => Event::OnCourse,
+        }
+    }
+
+    const fn rank(self) -> u8 {
+        match self {
+            Self::OffCourse => 4,
+            Self::Following | Self::OnCourse => 3,
+            Self::StillOff => 2,
+            Self::TurnNow { .. } => 1,
+            Self::TurnSoon { .. } => 0,
+        }
+    }
+}
+
 #[derive(Default)]
 struct Due {
-    first: Option<Event>,
-    second: Option<Event>,
+    first: Option<Raised>,
+    second: Option<Raised>,
 }
 
 impl Due {
-    fn raise(&mut self, event: Event) {
+    fn raise(&mut self, raised: Raised) {
         match self.first {
-            Some(first) if first.rank() >= event.rank() => {
+            Some(first) if first.rank() >= raised.rank() => {
                 if self
                     .second
-                    .is_none_or(|second| second.rank() < event.rank())
+                    .is_none_or(|second| second.rank() < raised.rank())
                 {
-                    self.second = Some(event);
+                    self.second = Some(raised);
                 }
             }
-            first => (self.first, self.second) = (Some(event), first),
+            first => (self.first, self.second) = (Some(raised), first),
         }
     }
 }
@@ -260,7 +283,7 @@ pub struct Navigator {
     last: Option<MatchedFix>,
     arrived_ms: Option<u64>,
     lost: bool,
-    pending: Option<Event>,
+    pending: Option<Raised>,
 }
 
 impl Navigator {
@@ -291,16 +314,16 @@ impl Navigator {
             }
             Observed::Joined(fix) => {
                 *self = Self::default();
-                due.raise(Event::Following);
+                due.raise(Raised::Following);
                 self.fix(fix, turns, &locate, &mut due);
             }
             Observed::Fix(fix) => self.fix(fix, turns, &locate, &mut due),
         }
-        if let Some(parked) = parked.filter(|&event| self.holds(event, turns)) {
+        if let Some(parked) = parked.filter(|&raised| self.holds(raised, turns)) {
             due.raise(parked);
         }
         self.pending = due.second;
-        due.first
+        due.first.map(Raised::event)
     }
 
     fn fix(
@@ -313,8 +336,8 @@ impl Navigator {
         self.lost = false;
         let gap = self
             .last
-            .is_some_and(|last| fix.now_ms.saturating_sub(last.now_ms) > LOST_MS);
-        let now = fix.now_ms;
+            .is_some_and(|last| fix.taken_ms.saturating_sub(last.taken_ms) > LOST_MS);
+        let now = fix.taken_ms;
         self.place = match self.place {
             Place::On if fix.off_m > OFF_M => Place::Leaving {
                 since_ms: now,
@@ -326,7 +349,7 @@ impl Navigator {
                 junction,
             },
             Place::Leaving { since_ms, junction } if now.saturating_sub(since_ms) >= CONFIRM_MS => {
-                due.raise(Event::OffCourse);
+                due.raise(Raised::OffCourse);
                 Place::Off {
                     since_ms: now,
                     junction,
@@ -334,7 +357,7 @@ impl Navigator {
                 }
             }
             Place::Off { .. } if fix.off_m <= ON_M && fix.forward => {
-                due.raise(Event::OnCourse);
+                due.raise(Raised::OnCourse);
                 Place::On
             }
             Place::Off {
@@ -342,7 +365,7 @@ impl Navigator {
                 junction,
                 reminded: false,
             } if now.saturating_sub(since_ms) >= REMIND_MS => {
-                due.raise(Event::StillOff);
+                due.raise(Raised::StillOff);
                 Place::Off {
                     since_ms,
                     junction,
@@ -416,7 +439,9 @@ impl Navigator {
         };
         if let Some(k) = self.banner {
             if !was_open && self.last_sounded < Some(k) {
-                due.raise(Event::TurnSoon);
+                due.raise(Raised::TurnSoon {
+                    start_mm: turns[k].start_mm,
+                });
             }
             self.last_sounded = self.last_sounded.max(Some(k));
         }
@@ -428,7 +453,9 @@ impl Navigator {
         });
         if let Some(next) = beep {
             self.last_beeped = Some(next.index);
-            due.raise(Event::TurnNow);
+            due.raise(Raised::TurnNow {
+                start_mm: next.turn.start_mm,
+            });
         }
     }
 
@@ -451,14 +478,20 @@ impl Navigator {
         None
     }
 
-    fn holds(&self, event: Event, turns: &[Turn]) -> bool {
-        let next = self.next(turns).map(|next| next.index);
-        match event {
-            Event::Following | Event::OnCourse => self.place == Place::On,
-            Event::OffCourse | Event::StillOff => matches!(self.place, Place::Off { .. }),
-            Event::TurnSoon => self.banner.is_some() && self.last_beeped < next,
-            Event::TurnNow => self.banner.is_some() && next.is_some() && self.last_beeped == next,
-            Event::Arrived => true,
+    fn holds(&self, raised: Raised, turns: &[Turn]) -> bool {
+        let starts = |k: usize, start_mm: u32| turns.get(k).is_some_and(|t| t.start_mm == start_mm);
+        match raised {
+            Raised::Following | Raised::OnCourse => self.place == Place::On,
+            Raised::OffCourse | Raised::StillOff => matches!(self.place, Place::Off { .. }),
+            Raised::TurnSoon { start_mm } => self
+                .banner
+                .is_some_and(|k| starts(k, start_mm) && self.last_beeped < Some(k)),
+            Raised::TurnNow { start_mm } => {
+                let next = self.next(turns).map(|next| next.index);
+                self.banner.is_some()
+                    && next.is_some_and(|k| starts(k, start_mm))
+                    && self.last_beeped == next
+            }
         }
     }
 

@@ -50,7 +50,7 @@ impl<'t> Rider<'t> {
     fn fixed(&self, along_m: f32, off_m: f32, forward: bool) -> MatchedFix {
         let along_mm = (along_m * 1000.0) as u32;
         MatchedFix {
-            now_ms: self.now_ms,
+            taken_ms: self.now_ms,
             along_mm,
             to_end_mm: LENGTH_MM.saturating_sub(along_mm),
             off_m,
@@ -480,7 +480,10 @@ fn of_two_sounds_due_on_one_fix_the_second_waits_a_fix_while_it_holds() {
 
 #[test]
 fn a_beep_put_off_a_fix_is_dropped_once_its_turn_is_passed() {
-    let turns = [turn(700.0, 710.0, Some(RIGHT)), turn(720.0, 730.0, Some(LEFT))];
+    let turns = [
+        turn(700.0, 710.0, Some(RIGHT)),
+        turn(720.0, 730.0, Some(LEFT)),
+    ];
     let mut rider = Rider::new(&turns, Some(7_000));
     assert_eq!(
         rider.ride(697.0, 760.0, 7.0),

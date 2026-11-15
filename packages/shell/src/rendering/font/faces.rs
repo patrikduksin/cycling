@@ -522,7 +522,7 @@ static CAPTION_GLYPHS: [Glyph; 64] = [
         y: 11,
         w: 7,
         h: 2,
-        advance: 8,
+        advance: 7,
     }, // '_'
 ];
 static CAPTION_BITS: [u8; 2541] = [

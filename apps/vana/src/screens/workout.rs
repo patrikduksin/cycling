@@ -474,7 +474,8 @@ static NO_AFTER: After = After::EMPTY;
 
 /// What glides between sensor samples, for graphics only: the main page's
 /// zone gauges and the radar markers. Numbers never glide; they read
-/// `View::sample` and `View::power_3s`, which hold each reading as it came.
+/// `View::sample` and `View::power_3s`, which hold the readings the display
+/// mode lets the numbers show: each as it came, or those of the second's start.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Graphics {
     /// The power gauge's 3 s power.

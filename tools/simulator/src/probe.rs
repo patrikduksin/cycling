@@ -73,63 +73,83 @@ pub struct Case {
     /// A scene of `bench::SCENES`.
     pub scene: &'static str,
     pub feed: Feed,
+    /// The rider chose the display mode SAVER first. Only "ride main + radar"
+    /// can be reached that way.
+    pub saver: bool,
 }
 
-pub static CASES: [Case; 11] = [
+pub static CASES: [Case; 12] = [
     Case {
         name: "ride main, noisy, radar",
         scene: "ride main + radar",
         feed: Feed::Noisy { cars: true },
+        saver: false,
+    },
+    Case {
+        name: "ride main, noisy, radar, saver",
+        scene: "ride main + radar",
+        feed: Feed::Noisy { cars: true },
+        saver: true,
     },
     Case {
         name: "ride main, steady, radar",
         scene: "ride main + radar",
         feed: Feed::Steady { cars: true },
+        saver: false,
     },
     Case {
         name: "climb",
         scene: "climb",
         feed: Feed::Steady { cars: false },
+        saver: false,
     },
     Case {
         name: "workout",
         scene: "workout",
         feed: Feed::Steady { cars: false },
+        saver: false,
     },
     Case {
         name: "stats",
         scene: "ride stats",
         feed: Feed::Steady { cars: false },
+        saver: false,
     },
     Case {
         name: "map",
         scene: "map",
         feed: Feed::Steady { cars: false },
+        saver: false,
     },
     Case {
         name: "settings (still)",
         scene: "settings",
         feed: Feed::Steady { cars: false },
+        saver: false,
     },
     Case {
         name: "home",
         scene: "home",
         feed: Feed::Steady { cars: false },
+        saver: false,
     },
     Case {
         name: "home, charging at 50%",
         scene: "home",
         feed: Feed::Charging { percent: 50 },
+        saver: false,
     },
     Case {
         name: "home, charging at 99%",
         scene: "home",
         feed: Feed::Charging { percent: 99 },
+        saver: false,
     },
     Case {
         name: "home, charging at 100%",
         scene: "home",
         feed: Feed::Charging { percent: 100 },
+        saver: false,
     },
 ];
 
@@ -197,7 +217,12 @@ pub fn run(case: &Case, seconds: u64) -> Result {
         .iter()
         .find(|scene| scene.name == case.scene)
         .unwrap_or_else(|| panic!("no scene {}", case.scene));
-    let mut sim = (scene.reach)();
+    let mut sim = if case.saver {
+        assert_eq!(case.scene, "ride main + radar", "{}", case.name);
+        crate::bench::ride_main_saver()
+    } else {
+        (scene.reach)()
+    };
     let display = sim.device.display.clone();
     {
         let mut frame = display.0.borrow_mut();

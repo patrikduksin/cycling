@@ -745,6 +745,7 @@ mod tests {
             Some(RidePage::Lap) => view.show_laps(heapless::Vec::new(), Lap::default(), None),
             Some(RidePage::Climb) => view.show_climb(ClimbLent {
                 climbs: Box::leak(Box::default()),
+                climbing: None,
                 trace: Box::leak(Box::default()),
                 forecast: &crate::ride::climb_ahead::Forecast::NONE,
                 pinned: None,

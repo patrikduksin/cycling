@@ -105,7 +105,7 @@ fn cpu_ns() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_nanos() as u64
 }
 
-pub use scenes::{SCENES, Scene, measure};
+pub use scenes::{SCENES, Scene, measure, ride_main_saver};
 
 mod scenes {
     use super::Request;
@@ -303,8 +303,23 @@ mod scenes {
         sim
     }
 
-    fn ride_main() -> Sim {
+    /// The main ride page with a radar, in the display mode SAVER.
+    pub fn ride_main_saver() -> Sim {
         let mut sim = rider(true);
+        sim.open_mode_row();
+        sim.expect_field("MODE", "NORMAL");
+        sim.press(Button::BottomRight);
+        sim.expect_field("MODE", "SAVER");
+        sim.press(Button::TopLeft);
+        sim.expect_text("READY TO RIDE");
+        ride_main_from(sim)
+    }
+
+    fn ride_main() -> Sim {
+        ride_main_from(rider(true))
+    }
+
+    fn ride_main_from(mut sim: Sim) -> Sim {
         sim.start_ride();
         sim.ride_at(28.0, 230.0, 142.0, 88.0);
         sim.advance(seconds(20));

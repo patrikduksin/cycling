@@ -7,7 +7,7 @@
 //!
 //! | Byte | Field | Since |
 //! | --- | --- | --- |
-//! | 0 | Record version, 8 | 1 |
+//! | 0 | Record version, 9 | 1 |
 //! | 1..3 | FTP in watts, little-endian | 1 |
 //! | 3..5 | LTHR in bpm, little-endian | 1 |
 //! | 5 | Saved ANT sensor count, at most 10 | 2 |
@@ -25,10 +25,11 @@
 //! | then | Rider age in years, 0 for unset, else 10 to 99 | 7 |
 //! | then | Rider sex: 0 unset, 1 male, 2 female | 7 |
 //! | then | Main page lower line: reading id of the left slot, then of the right (`screens::ride::slots`), 0 and 1 (cadence, distance) by default; an id the firmware does not know reads as a damaged record, so a new reading id needs a record version bump: firmware from before it would read the record as malformed, not unsupported | 8 |
+//! | then | Display mode: the row of `mode::TABLE`, 0 normal and 1 saver; a row the firmware does not know reads as a damaged record | 9 |
 //!
 //! Version 1 is exactly five bytes and version 2 is `6 + 4 * count` bytes.
 //! Both load with the default options and setup done, since a rider already
-//! used them, and the next save rewrites them as version 8. A version 3
+//! used them, and the next save rewrites them as version 9. A version 3
 //! record is `19 + 4 * count` bytes and loads with the dark theme; a version 4
 //! record is `20 + 4 * count` bytes. Both load with the Chile time zone, the
 //! zone the clock meant before it had a choice. A version 5 record is
@@ -36,10 +37,11 @@
 //! learned automatically. A version 6 record is `25 + 4 * count` bytes. Versions 3
 //! to 6 load with the rider's weight, age and sex unset. A version 7 record is
 //! `28 + 4 * count` bytes. Versions 3 to 7 load with the main page's default
-//! lower line. A version 8 record is `30 + 4 * count` bytes, at most 70 of
-//! the shell's 96. Firmware that predates version 8 reads it as a version it
-//! does not know: it keeps the record untouched and runs on the defaults until
-//! the rider overwrites it. The wheel size is global, not per sensor: the saved
+//! lower line. A version 8 record is `30 + 4 * count` bytes. Versions 3 to 8
+//! load with the normal display mode. A version 9 record is `31 + 4 * count`
+//! bytes, at most 71 of the shell's 96. Firmware that predates version 9 reads
+//! it as a version it does not know: it keeps the record untouched and runs
+//! on the defaults until the rider overwrites it. The wheel size is global, not per sensor: the saved
 //! ANT sensors are one per kind and VANA rides one bike's wheel; a sensor moved
 //! to another wheel is relearned on the next ride.
 //!
@@ -55,6 +57,7 @@
 //! but stays stored untouched until the rider explicitly overwrites it
 //! (`PROFILE OVERWRITE`).
 use super::Runtime;
+use super::mode::DisplayMode;
 use crate::clock::Zone;
 use crate::ride::laps::AutoLap;
 use crate::ride::rider::{self, Rider};
@@ -70,13 +73,15 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::AppPreferences;
 use firmware_shell::shell::Shell;
 
-const VERSION: u8 = 8;
+const VERSION: u8 = 9;
 /// The circumference assumed until one is set or learned.
 pub const DEFAULT_WHEEL_MM: u16 = crate::ride::metrics::WHEEL_MM as u16;
 const PROFILE_LENGTH: usize = 5;
 const ALERTS_LENGTH: usize = 9;
 const WHEEL_LENGTH: usize = 3;
-const OPTIONS_LENGTH: usize = OPTIONS_LENGTH_V7 + slots::LENGTH;
+const OPTIONS_LENGTH: usize = OPTIONS_LENGTH_V8 + 1;
+/// Options as version 8 stored them, without the display mode.
+const OPTIONS_LENGTH_V8: usize = OPTIONS_LENGTH_V7 + slots::LENGTH;
 /// Options as version 7 stored them, without the main page's readings.
 const OPTIONS_LENGTH_V7: usize = OPTIONS_LENGTH_V6 + rider::LENGTH;
 /// Options as version 6 stored them, without the rider's body.
@@ -256,6 +261,7 @@ pub struct Options {
     pub ride_pages: PageChoice,
     /// The readings on the main page's lower line.
     pub main_slots: Slots,
+    pub mode: DisplayMode,
 }
 
 impl Default for Options {
@@ -274,6 +280,7 @@ impl Default for Options {
             sunset_alert: true,
             ride_pages: PageChoice::default(),
             main_slots: Slots::default(),
+            mode: DisplayMode::default(),
         }
     }
 }
@@ -306,51 +313,60 @@ impl Options {
         bytes[OPTIONS_LENGTH_V4..OPTIONS_LENGTH_V5].copy_from_slice(&self.zone.encode());
         bytes[OPTIONS_LENGTH_V5..OPTIONS_LENGTH_V6].copy_from_slice(&self.wheel.encode());
         bytes[OPTIONS_LENGTH_V6..OPTIONS_LENGTH_V7].copy_from_slice(&self.rider.encode());
-        bytes[OPTIONS_LENGTH_V7..].copy_from_slice(&self.main_slots.encode());
+        bytes[OPTIONS_LENGTH_V7..OPTIONS_LENGTH_V8].copy_from_slice(&self.main_slots.encode());
+        bytes[OPTIONS_LENGTH_V8] = self.mode.byte();
         bytes
     }
 
     /// Decode the options of record `version`.
     fn decode(bytes: &[u8], version: u8) -> Option<Self> {
+        let (bytes, mode) = match version {
+            3..=8 => (bytes, DisplayMode::default()),
+            9 => {
+                let (&mode, bytes) = bytes.split_last()?;
+                (bytes, DisplayMode::from_byte(mode)?)
+            }
+            0..=2 | 10..=u8::MAX => return None,
+        };
         let (bytes, main_slots) = match version {
             3..=7 => (bytes, Slots::default()),
-            8 => {
+            8 | 9 => {
                 let (bytes, slots) = bytes.split_last_chunk::<{ slots::LENGTH }>()?;
                 (bytes, Slots::decode(*slots)?)
             }
-            0..=2 | 9..=u8::MAX => return None,
+            0..=2 | 10..=u8::MAX => return None,
         };
         let (bytes, rider) = match version {
             3..=6 => (bytes, Rider::default()),
-            7 | 8 => {
+            7..=9 => {
                 let (bytes, rider) = bytes.split_last_chunk::<{ rider::LENGTH }>()?;
                 (bytes, Rider::decode(*rider)?)
             }
-            0..=2 | 9..=u8::MAX => return None,
+            0..=2 | 10..=u8::MAX => return None,
         };
         let (bytes, wheel) = match version {
             3..=5 => (bytes, Wheel::default()),
-            6..=8 => {
+            6..=9 => {
                 let (bytes, wheel) = bytes.split_last_chunk::<WHEEL_LENGTH>()?;
                 (bytes, Wheel::decode(*wheel)?)
             }
-            0..=2 | 9..=u8::MAX => return None,
+            0..=2 | 10..=u8::MAX => return None,
         };
         let (bytes, zone) = match version {
             3 | 4 => (bytes, Zone::Chile),
-            5..=8 => {
+            5..=9 => {
                 let (bytes, zone) = bytes.split_last_chunk()?;
                 (bytes, Zone::decode(*zone)?)
             }
-            0..=2 | 9..=u8::MAX => return None,
+            0..=2 | 10..=u8::MAX => return None,
         };
         let (bytes, theme) = match version {
             3 => (bytes, Theme::Dark),
-            4..=8 => {
+            4..=9 => {
                 let (&theme, bytes) = bytes.split_last()?;
                 (bytes, Theme::from_byte(theme)?)
             }
-            0..=2 | 9..=u8::MAX => return None,
+            0..=2 | 10..=u8::MAX => return None,
         };
         let (&[flags, auto_lap, daylight, setup], alerts) = bytes.split_first_chunk()?;
         let alerts = <[u8; ALERTS_LENGTH]>::try_from(alerts).ok()?;
@@ -358,8 +374,8 @@ impl Options {
         let ride_pages = match version {
             3..=5 if flags >> PAGES_SHIFT != 0 => return None,
             3..=5 => PageChoice::default(),
-            6..=8 => PageChoice::from_bits(flags >> PAGES_SHIFT)?,
-            0..=2 | 9..=u8::MAX => return None,
+            6..=9 => PageChoice::from_bits(flags >> PAGES_SHIFT)?,
+            0..=2 | 10..=u8::MAX => return None,
         };
         Some(Self {
             auto_pause: flags & AUTO_PAUSE != 0,
@@ -375,6 +391,7 @@ impl Options {
             sunset_alert: flags & SUNSET_OFF == 0,
             ride_pages,
             main_slots,
+            mode,
         })
     }
 }
@@ -471,7 +488,7 @@ pub fn decode(bytes: &[u8]) -> (Record, Stored) {
         _ => return (Record::default(), Stored::Unsupported),
     };
     let fields = match version {
-        0 | 9..=u8::MAX => return (Record::default(), Stored::Malformed),
+        0 | 10..=u8::MAX => return (Record::default(), Stored::Malformed),
         1 => rest
             .is_empty()
             .then(|| (Saved::default(), Options::default())),
@@ -840,15 +857,15 @@ mod tests {
     }
 
     #[test]
-    fn version_eight_layout_is_pinned() {
+    fn version_nine_layout_is_pinned() {
         let profile = TrainingProfile::new(0x0102, 170).unwrap();
         let none = Saved::default();
         let defaults = record(profile, none, Options::default());
         assert_eq!(
             encode(&defaults).as_slice(),
             [
-                8, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 1
+                9, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1, 0
             ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
@@ -879,14 +896,15 @@ mod tests {
                 left: Reading::Kcal,
                 right: Reading::NormalizedPower,
             },
+            mode: DisplayMode::default().next(),
         };
         let chosen = record(profile, sensors, options);
         let bytes = encode(&chosen);
         assert_eq!(
             bytes.as_slice(),
             [
-                8, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
-                0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6, 2
+                9, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
+                0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6, 2, 1
             ]
         );
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
@@ -897,7 +915,7 @@ mod tests {
         }
         let full = record(profile, full, options);
         let bytes = encode(&full);
-        assert_eq!(bytes.len(), 70);
+        assert_eq!(bytes.len(), 71);
         assert!(AppPreferences::new(&bytes).is_some());
         assert_eq!(decode(&bytes), (full, Stored::Current));
         // A later version may place its fields differently: never guess.
@@ -923,9 +941,9 @@ mod tests {
         assert_eq!(migrated.sensors.peers().count(), 2);
         assert_eq!(migrated.profile, TrainingProfile::new(0x0102, 170).unwrap());
         let rewritten = encode(&migrated);
-        assert_eq!(rewritten[0], 8);
+        assert_eq!(rewritten[0], 9);
         assert_eq!(rewritten[1..bytes.len()], bytes[1..]);
-        assert_eq!(rewritten[bytes.len()..], [0, 0, 0, 0, 1]);
+        assert_eq!(rewritten[bytes.len()..], [0, 0, 0, 0, 1, 0]);
         assert_eq!(decode(&rewritten), (migrated, Stored::Current));
     }
 
@@ -973,14 +991,14 @@ mod tests {
         assert_eq!(migrated.options.rider, Rider::default());
         assert_eq!(migrated.options.wheel.mm, Some(2105));
         let rewritten = encode(&migrated);
-        assert_eq!(rewritten[0], 8);
+        assert_eq!(rewritten[0], 9);
         assert_eq!(rewritten[1..bytes.len()], bytes[1..]);
-        assert_eq!(rewritten[bytes.len()..], [0, 0, 0, 0, 1]);
+        assert_eq!(rewritten[bytes.len()..], [0, 0, 0, 0, 1, 0]);
         assert_eq!(decode(&rewritten), (migrated, Stored::Current));
     }
 
     /// A version 7 record keeps every field it had, with the default lower
-    /// line, and its rewrite as version 8 only appends the two slots.
+    /// line, and its rewrite as version 9 only appends the two slots and the mode.
     #[test]
     fn a_version_seven_record_decodes_unchanged_with_the_default_main_page() {
         let bytes = [
@@ -1003,10 +1021,50 @@ mod tests {
                 .toggled(RidePage::Lap)
         );
         let rewritten = encode(&migrated);
-        assert_eq!(rewritten[0], 8);
+        assert_eq!(rewritten[0], 9);
         assert_eq!(rewritten[1..bytes.len()], bytes[1..]);
-        assert_eq!(rewritten[bytes.len()..], [0, 1]);
+        assert_eq!(rewritten[bytes.len()..], [0, 1, 0]);
         assert_eq!(decode(&rewritten), (migrated, Stored::Current));
+    }
+
+    /// A version 8 record keeps every field it had and loads in the normal
+    /// display mode, so a rider's screen does not change on the update.
+    #[test]
+    fn a_version_eight_record_decodes_unchanged_in_the_normal_mode() {
+        let bytes = [
+            8, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100, 0,
+            0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6, 2,
+        ];
+        let (migrated, stored) = decode(&bytes);
+        assert_eq!(stored, Stored::Migrated);
+        assert_eq!(migrated.options.mode, DisplayMode::default());
+        assert_eq!(migrated.options.mode.policy().name, "NORMAL");
+        assert_eq!(migrated.options.main_slots.left, Reading::Kcal);
+        assert_eq!(migrated.options.theme, Theme::Auto);
+        let rewritten = encode(&migrated);
+        assert_eq!(rewritten[0], 9);
+        assert_eq!(rewritten[1..bytes.len()], bytes[1..]);
+        assert_eq!(rewritten[bytes.len()..], [0]);
+        assert_eq!(decode(&rewritten), (migrated, Stored::Current));
+    }
+
+    /// The mode is stored as its table row; a row no firmware wrote is damage.
+    #[test]
+    fn a_stored_mode_round_trips_and_an_unknown_row_is_damage() {
+        let mut chosen = Record::default();
+        chosen.options.mode = DisplayMode::default().next();
+        let bytes = encode(&chosen);
+        assert_eq!(bytes[bytes.len() - 1], 1);
+        assert_eq!(decode(&bytes), (chosen, Stored::Current));
+        for row in [2, 9, 255] {
+            let mut damaged = bytes.to_vec();
+            *damaged.last_mut().unwrap() = row;
+            assert_eq!(
+                decode(&damaged),
+                (Record::default(), Stored::Malformed),
+                "{row}"
+            );
+        }
     }
 
     /// The slots are stored as ids; an id no firmware wrote is damage, in
@@ -1019,12 +1077,12 @@ mod tests {
             right: Reading::NormalizedPower,
         };
         let bytes = encode(&chosen);
-        assert_eq!(bytes[bytes.len() - 2..], [6, 2]);
+        assert_eq!(bytes[bytes.len() - 3..bytes.len() - 1], [6, 2]);
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
         for tail in [[9, 1], [0, 9], [255, 1], [0, 255]] {
             let mut damaged = bytes.to_vec();
-            let at = damaged.len() - 2;
-            damaged[at..].copy_from_slice(&tail);
+            let at = damaged.len() - 3;
+            damaged[at..at + 2].copy_from_slice(&tail);
             assert_eq!(
                 decode(&damaged),
                 (Record::default(), Stored::Malformed),
@@ -1034,7 +1092,7 @@ mod tests {
     }
 
     /// Every older version loads with the body unset and its other fields
-    /// unchanged, and its rewrite as version 8 only appends the body and slots.
+    /// unchanged, and its rewrite as version 9 only appends the body, slots and mode.
     #[test]
     fn every_older_record_decodes_unchanged_with_the_rider_unset() {
         let sensors = [1, 120, 0x34, 0x12, 1];
@@ -1065,7 +1123,7 @@ mod tests {
             assert_eq!(migrated.sensors.peers().count(), 1, "version {version}");
             let rewritten = encode(&migrated);
             assert_eq!(decode(&rewritten), (migrated, Stored::Current));
-            assert_eq!(rewritten[rewritten.len() - 5..], [0, 0, 0, 0, 1]);
+            assert_eq!(rewritten[rewritten.len() - 6..], [0, 0, 0, 0, 1, 0]);
         }
     }
 
@@ -1075,7 +1133,7 @@ mod tests {
         let mut chosen = Record::default();
         chosen.options.rider = Rider::decode([72, 41, 2]).unwrap();
         let bytes = encode(&chosen);
-        assert_eq!(bytes[bytes.len() - 5..bytes.len() - 2], [72, 41, 2]);
+        assert_eq!(bytes[bytes.len() - 6..bytes.len() - 3], [72, 41, 2]);
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
         for tail in [
             [29, 41, 2],
@@ -1085,7 +1143,7 @@ mod tests {
             [72, 41, 3],
         ] {
             let mut damaged = bytes.to_vec();
-            let at = damaged.len() - 5;
+            let at = damaged.len() - 6;
             damaged[at..at + 3].copy_from_slice(&tail);
             assert_eq!(
                 decode(&damaged),
@@ -1123,7 +1181,7 @@ mod tests {
             manual: false,
         };
         let bytes = encode(&learned);
-        let wheel_at = bytes.len() - 8;
+        let wheel_at = bytes.len() - 9;
         assert_eq!(&bytes[wheel_at..wheel_at + 3], [0x98, 0x08, 0]);
         assert_eq!(decode(&bytes), (learned, Stored::Current));
         assert_eq!(learned.options.wheel.size_mm(), 2200);
@@ -1225,7 +1283,7 @@ mod tests {
     }
 
     /// Records older firmware wrote carry their auto lap byte (0 to 100)
-    /// unchanged under versions 3 to 8, and AT START composes with each.
+    /// unchanged under versions 3 to 9, and AT START composes with each.
     #[test]
     fn records_from_older_firmware_keep_their_auto_lap() {
         let profile = TrainingProfile::new(250, 170).unwrap();
@@ -1235,7 +1293,8 @@ mod tests {
             (5, OPTIONS_LENGTH_V5),
             (6, OPTIONS_LENGTH_V6),
             (7, OPTIONS_LENGTH_V7),
-            (8, OPTIONS_LENGTH),
+            (8, OPTIONS_LENGTH_V8),
+            (9, OPTIONS_LENGTH),
         ] {
             for (byte, auto_lap) in [
                 (0, AutoLap::Off),
@@ -1288,7 +1347,7 @@ mod tests {
             )
         );
         assert_eq!(Options::default().setup, 0);
-        // The next save writes version 8 with the same profile and sensors.
+        // The next save writes version 9 with the same profile and sensors.
         let migrated = decode(&[2, 2, 1, 170, 0, 1, 120, 0x34, 0x12, 1]).0;
         assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
     }
@@ -1301,7 +1360,7 @@ mod tests {
         assert_eq!(decode(&[]), (first_run, Stored::Missing));
         // A newer version, even one that appended fields.
         assert_eq!(
-            decode(&[9, 250, 0, 170, 0, 0, 3, 5, 0, 0, 9]),
+            decode(&[10, 250, 0, 170, 0, 0, 3, 5, 0, 0, 9]),
             (defaults, Stored::Unsupported)
         );
         assert_eq!(decode(&[0xff]), (defaults, Stored::Unsupported));
@@ -1450,7 +1509,7 @@ mod tests {
         assert!(!preferences.due(2_999));
         assert!(preferences.due(3_000));
 
-        let mut locked = Preferences::load(&[9, 9]);
+        let mut locked = Preferences::load(&[10, 9]);
         assert_eq!(locked.stored, Stored::Unsupported);
         assert_eq!(locked.persistence(), Persistence::Locked);
         locked.set(stronger, 1_000);
@@ -1514,6 +1573,7 @@ mod tests {
                 left: rng.pick(&Reading::ALL),
                 right: rng.pick(&Reading::ALL),
             },
+            mode: DisplayMode::from_byte(rng.below(2) as u8).unwrap(),
             rider: Rider::decode([
                 rng.pick(&[0, 30, 72, 200]),
                 rng.pick(&[0, 10, 41, 99]),

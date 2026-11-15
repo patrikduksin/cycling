@@ -68,8 +68,8 @@ impl super::Runtime {
             let _ = crate::screens::ride::shown(
                 &mut shown,
                 self.ride.active_ms(now) / 1000,
-                &super::presentation::shown_sample(&self.readings),
-                self.ride.totals.distance_mm(),
+                &self.shown.sample(),
+                self.shown.distance_mm(),
             );
             if self.reported.shown != shown {
                 sink(Seen::Shown(shown.as_str()));

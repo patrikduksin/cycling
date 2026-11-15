@@ -437,9 +437,7 @@ pub(crate) mod scenes {
         sim
     }
 
-    /// A GPX through points given in metres east and north of `origin`,
-    /// one every 10 m or so.
-    fn gpx_through(origin: Point, legs: &[(f64, f64)]) -> String {
+    fn gpx_every_ten_metres(origin: Point, legs: &[(f64, f64)]) -> String {
         let at = |(east, north): (f64, f64)| {
             let lat = origin.lat + north / 111_195.0;
             let lon = origin.lon + east / (111_195.0 * origin.lat.to_radians().cos());
@@ -459,10 +457,6 @@ pub(crate) mod scenes {
         crate::route::to_gpx("bench", &points)
     }
 
-    /// Following a course on the map page `metres` along a straight ridden
-    /// north, which the course leaves at 1 km for a right turn as the map
-    /// mockups draw it: 400 m across with the turn arrow 250 m before it,
-    /// the way back to it 140 m past.
     fn following_on_the_map(metres: f64) -> Sim {
         let origin = Point::new(-33.45, -70.66);
         let mut sim = Sim::new();
@@ -472,7 +466,7 @@ pub(crate) mod scenes {
         sim.init_bulk();
         sim.format_files();
         sim.connect_phone();
-        let course = gpx_through(
+        let course = gpx_every_ten_metres(
             origin,
             &[
                 (0.0, 0.0),
@@ -491,7 +485,7 @@ pub(crate) mod scenes {
         assert_eq!(status, 200);
         sim.press(Button::TopLeft);
         sim.advance(seconds(1));
-        let route = gpx_through(origin, &[(0.0, 0.0), (0.0, 2_000.0)]);
+        let route = gpx_every_ten_metres(origin, &[(0.0, 0.0), (0.0, 2_000.0)]);
         sim.ride_route(Route::from_gpx(&route).unwrap());
         sim.ant_sensor(device_type::POWER, 1234);
         sim.ant_sensor(device_type::SPEED_CADENCE, 777);

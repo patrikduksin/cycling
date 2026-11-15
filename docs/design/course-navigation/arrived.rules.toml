@@ -18,8 +18,6 @@ why = "REC and GPS in CAPTION"
 match = 'font-weight="700"'
 why = "distance, ride time and averages"
 
-# Captions are TOTAL_11 (900/11), whose glyph advances round the 0.6 px
-# letter-spacing to whole pixels, so a caption runs up to 3 px wider.
 [[text]]
 match = 'font-size="11"'
 why = "captions' letter-spacing rounded per glyph"

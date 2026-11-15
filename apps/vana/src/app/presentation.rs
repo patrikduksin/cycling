@@ -643,7 +643,7 @@ impl Runtime {
             self.history_ride_started();
         }
         let pages = self.ride_pages();
-        let (choice, course) = (self.page_choice(), self.course().is_some());
+        let (choice, course) = (self.page_choice_with_course_map(), self.course().is_some());
         let ftp_offer = self.ftp_sheet();
         let picker_offset = self.list_offset(List::Workouts, now);
         let picker = (self.navigation.page == Page::Workouts).then(|| {

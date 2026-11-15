@@ -10,8 +10,7 @@ rounded sans under the SIL Open Font License (see OFL.txt beside this file).
 
 Each face is one weight at one pixel size and holds printable ASCII from space
 to underscore (uppercase only; the UI writes capitals), or only the characters
-it names. Digits share one
-advance so numbers do not jitter as they change. A glyph box starts at the
+it names. Digits share one advance so numbers do not jitter as they change. A glyph box starts at the
 face's cap line, so a line of text is `height` pixels tall from its top.
 """
 
@@ -28,9 +27,7 @@ DIGITS = "0123456789"
 TEXT = "".join(chr(c) for c in range(FIRST, LAST + 1))
 NUMBERS = " +-./0123456789:%"
 
-# name, weight, em size in pixels, characters, extra tracking in pixels, doc.
-# The SIGN, TOTAL and FOOT faces are drawn at the sizes the course navigation
-# mockups give (docs/design/course-navigation), with their letter-spacing.
+# name, weight, em size in pixels, characters, extra tracking in pixels, doc
 FACES = [
     ("CAPTION", 800, 13, TEXT, 1, "Small capitals for labels, units and the status bar."),
     ("BODY", 800, 18, TEXT, 0, "Titles inside cards, toasts and sensor names."),

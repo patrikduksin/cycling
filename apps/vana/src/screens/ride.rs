@@ -54,7 +54,7 @@ pub(super) use chrome::{RED, WHITE};
 pub(super) const GRID: u16 = chrome::TERTIARY;
 
 /// The radar strip and its divider.
-const RADAR_WIDTH: usize = 28;
+pub(super) const RADAR_WIDTH: usize = 28;
 /// What a page draws into, beside the radar strip.
 pub(super) const BODY: Rect = Rect {
     left: CONTENT.left + RADAR_WIDTH,
@@ -77,7 +77,7 @@ const _: () = assert!(
     "a caption needs 6 clear rows over the value above it"
 );
 /// Without a radar the body moves left by this much, to the centre.
-const CENTRE_SHIFT: usize = RADAR_WIDTH / 2;
+pub(super) const CENTRE_SHIFT: usize = RADAR_WIDTH / 2;
 
 /// A ride page, in MOVE order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -293,8 +293,6 @@ pub(super) type Labels = heapless::Vec<chrome::Label<12>, 14>;
 #[derive(Default, Hash)]
 pub struct Smooth {
     pub(super) labels: Labels,
-    /// The top rows of the power and heart-rate gauges; none while the ride
-    /// totals show.
     pub(super) gauges: Option<[usize; 2]>,
     /// A workout target under a gauge: which gauge and its columns.
     pub(super) band: Option<(usize, core::ops::Range<usize>)>,
@@ -408,7 +406,9 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
         RidePage::Map => parts.add(BODY.top..BODY.bottom, &scene.map()),
     }
     if page != RidePage::Main {
-        scene.canvas().parts(parts, scene.banner_rows());
+        scene
+            .canvas()
+            .parts(parts, scene.banner_rows().unwrap_or(0..0));
     }
 }
 

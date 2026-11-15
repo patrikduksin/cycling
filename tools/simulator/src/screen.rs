@@ -1093,9 +1093,6 @@ mod tests {
         );
     }
 
-    /// Every course-navigation face reads back on the fill it is drawn on,
-    /// and its glyphs are its own: SIGN_32 sits 2 px from TITLE and SIGN_20
-    /// 2 px from BODY.
     #[test]
     fn reads_each_sign_and_totals_face_as_itself() {
         use firmware_shell::rendering::font::{

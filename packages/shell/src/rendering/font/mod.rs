@@ -501,8 +501,6 @@ mod tests {
         }
     }
 
-    /// The navigation faces carry only the characters their signs and totals
-    /// draw, and every one of those.
     #[test]
     fn each_sign_and_totals_face_draws_its_texts() {
         let draws: [(&Face, &[u8]); 11] = [

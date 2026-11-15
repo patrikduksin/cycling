@@ -978,16 +978,19 @@ impl<'a, T: Wire<'a>> Wire<'a> for Observation<T> {
 }
 
 macro_rules! record {
-    ($($ty:path { $($field:ident $(: $kind:ident)?),* $(,)? })*) => {$(
-        impl<'a> Wire<'a> for $ty {
+    ($($ty:path { $($field:ident $(: $kind:ident)?),* $(,)? })*) => {
+        $(impl<'a> Wire<'a> for $ty {
             fn put(&self, w: &mut Writer) {
                 $(record!(@put w, self.$field $(, $kind)?);)*
             }
             fn take(r: &mut Reader<'a>) -> Self {
                 Self { $($field: record!(@take r $(, $kind)?),)* }
             }
-        }
-    )*};
+        })*
+        #[cfg(test)]
+        const RECORD_FIELDS: &[(&str, &[&str])] =
+            &[$((stringify!($ty), &[$(stringify!($field)),*])),*];
+    };
     (@put $w:ident, $value:expr) => { Wire::put(&$value, $w) };
     (@put $w:ident, $value:expr, time) => { $w.time($value) };
     (@put $w:ident, $value:expr, times) => { $w.times($value) };

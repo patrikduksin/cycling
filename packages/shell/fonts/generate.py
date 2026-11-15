@@ -42,6 +42,7 @@ FACES = [
     ("TOTAL_11", 900, 11, "ABCDEGHIKMNPRSTVW /", 0.6, "The captions over those totals."),
     ("FOOT_20", 700, 20, NUMBERS, 0, "The distance left in the map's footer."),
 ]
+SHIPPED_ADVANCES = {"CAPTION": {"_": 7}}
 
 
 def quantize(alpha: int) -> int:
@@ -107,6 +108,8 @@ def emit() -> str:
     total = 0
     for name, weight, size, chars, tracking, doc in FACES:
         glyphs, height, lift = rasterize(weight, size, chars, tracking)
+        for char, advance in SHIPPED_ADVANCES.get(name, {}).items():
+            glyphs[char]["advance"] = advance
         bits = bytearray()
         entries = []
         for code in range(FIRST, LAST + 1):

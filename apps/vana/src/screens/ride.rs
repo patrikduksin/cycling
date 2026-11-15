@@ -374,14 +374,10 @@ pub(super) fn cell(
 /// while a radar is paired, and the page in the body, centred without a radar.
 pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
     if page == RidePage::Map {
-        let left = match &scene.radar {
-            Some(radar) => {
-                paint_radar(radar, &mut row.within(0..RADAR_WIDTH - 2));
-                BODY.left
-            }
-            None => 0,
-        };
-        paint_map(scene, &mut row.within(left..chrome::WIDTH));
+        if let Some(radar) = &scene.radar {
+            paint_radar(radar, &mut row.within(0..RADAR_WIDTH - 2));
+        }
+        paint_map(scene, row);
         return;
     }
     if let Some(radar) = &scene.radar {
@@ -441,9 +437,12 @@ fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
     }
 }
 
+/// The footer below the map keeps the whole width: the radar's strip
+/// ends above it.
 fn paint_map(scene: &Scene, row: &mut Row) {
     if let Some(map) = scene.map() {
-        map::paint(map.frame(), row);
+        let left = if scene.radar.is_some() { BODY.left } else { 0 };
+        map::paint(map.frame(), &mut row.within(left..chrome::WIDTH));
     }
     scene.canvas().paint(row);
 }
@@ -534,8 +533,12 @@ fn paint_radar(radar: &Radar, row: &mut Row) {
 pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize) -> u16 {
     if page == RidePage::Map {
         return match &scene.radar {
-            Some(radar) if x < RADAR_WIDTH - 2 => reference_radar_pixel(radar, x, y),
-            Some(_) if x < BODY.left => BLACK,
+            Some(radar) if x < RADAR_WIDTH - 2 => {
+                scene
+                    .canvas()
+                    .pixel(x, y, reference_radar_pixel(radar, x, y))
+            }
+            Some(_) if x < BODY.left => scene.canvas().pixel(x, y, BLACK),
             _ => reference_map_pixel(scene, x, y),
         };
     }

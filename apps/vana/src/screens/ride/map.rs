@@ -830,15 +830,15 @@ pub(super) fn prepare(view: &View) -> Canvas {
     let (bar, label) = frame.last_pose.step.bar();
     canvas.shape(Shape::Bar {
         rect: Rect {
-            left: edge + BAR_LEFT,
+            left: BAR_LEFT,
             top: BAR_TOP,
-            right: edge + BAR_LEFT + bar,
+            right: BAR_LEFT + bar,
             bottom: BAR_TOP + BAR_THICKNESS,
         },
         radius: 1,
         color: SECONDARY,
     });
-    let left = edge + BAR_LEFT + bar + BAR_GAP;
+    let left = BAR_LEFT + bar + BAR_GAP;
     canvas.caption(label, DISTANCE_RIGHT - left, left, FOOT_BASE, Align::Left);
     let mut distance = Text::<12>::new();
     let mm = frame

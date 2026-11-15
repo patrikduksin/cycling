@@ -42,7 +42,13 @@ not jitter as they change.
 | `TITLE` | 900, 34 px | 37 px, caps 26 | One headline per screen (RIDE, SENSORS) |
 | `VALUE` | 700, 34 px | 29 px, digits 26 | Secondary readings: elapsed time, cadence, distance, grade |
 | `LARGE` | 700, 50 px | 42 px, digits 37 | Primary readings beside others: power, heart rate |
-| `HERO` | 700, 78 px | digits only | The one reading a page is about: speed on the main page |
+| `HERO` | 700, 78 px | digits only | The one reading a page is about: speed on the main page of a ride without a course |
+
+The course sign and the arrived totals have faces of their own, each at the
+size and weight the mockups in `design/course-navigation` draw and holding
+only the characters it shows: `SIGN_50`, `SIGN_32`, `SIGN_27`, `SIGN_20`,
+`SIGN_18`, `SIGN_14` and `SIGN_13` (Nunito 900), and `TOTAL_60`, `TOTAL_30`
+(700) and `TOTAL_11` (900) for the totals. See Course sign below.
 
 `VALUE`, `LARGE` and `HERO` hold only ` +-./0123456789:%`. Units are a
 `CAPTION` in `SECONDARY`, bottom-aligned with the number and 6 px to its
@@ -383,6 +389,37 @@ alert's, and an alert always wins over a chime.
 | Lap | The shortest pattern |
 | Ride saved | The highest pattern |
 
+## Course sign
+
+While a course is followed, one sign tells the rider the next turn
+(`screens::sign`). Its geometry is the mockups' in
+`docs/design/course-navigation`, laid out from their fractional positions;
+`cycling mockup-compare` checks the data-page screens against them. Every
+fill takes white ink, digits and units alike, and the sign paints after the
+light look, so it is the same in both looks. Its digits jump to each new
+distance: 10 m steps under 1 km, then 0.1 km, then whole km.
+
+| Form | Where | Box | Content |
+| --- | --- | --- | --- |
+| Banner | Main, stats and climb, while a turn is near, off course or arrived | Rows 22 to 104, full width, square corners | The glyph, then the distance in `SIGN_50` with its unit in `SIGN_20`; off course a second line TURN BACK in `SIGN_18`; arrived ARRIVED in `SIGN_27` |
+| Chip | Main, at rest | `RAISED` at (24, 72), 28 tall, radius 8, as wide as its text; the glyph on a 28 × 28 turn-fill square | The distance in `SIGN_20`, its unit in `SIGN_13` `MUTED` |
+| Badge | The map (drawn there in a later change) | At (8, 30), 60 tall, radius 12, as wide as its text | The banner at 60/82 of its size |
+
+Fills are `#0a6fe0` for a turn, `#d67400` off course and `#1b9a45` arrived. A
+unit sits 4 px after its digits' ink, and a fitted chip or badge ends 8.25 px
+past its furthest ink, both in the mockups' fractional pixels; tests lock the
+widths the mockups draw. With a radar paired the banner starts at x 28 and its
+contents, like the chip, move 14 px right, as the page body does.
+
+While a course is loaded the main page takes the course layout the mockups
+draw: elapsed time and grade on baseline 58, the chip, speed in `LARGE` on
+149, power on 199 with its gauge at 208, heart rate on 255 with its gauge at
+266, and the lower line on 303, under the toast band. Units sit 6 px after the
+digits' ink there, as the mockups set them. Without a course the page keeps the
+`HERO` speed. For the 60 s after arriving, main is the ride's totals instead:
+captions in `TOTAL_11`, distance in `TOTAL_60`, ride time in `VALUE` and the
+three averages in `TOTAL_30` at left, centre and right.
+
 ## Charts
 
 Charts follow the same rules as the rest of the screen. VANA charts have no
@@ -654,6 +691,7 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 | Drag | 10 px of mostly vertical travel on a list | The list follows the finger and coasts on when it lifts (see Lists that scroll); the card it landed on is never activated |
 | Swipe | 10 px of mostly sideways travel, then at least 48 px and twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings, out of the number editor too |
 | Long press | Still for 1 s, then lifted | On the map, stops following the course |
+| Tap on the course sign | As a tap, on the banner or the chip | Opens the map page (see [UX flows](ux-flows.md), Course) |
 | Settings pads | Act on contact | Step the edited value |
 
 ### How touch is routed

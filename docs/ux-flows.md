@@ -242,6 +242,37 @@ sounds it again. Where the course runs the same road twice, as a figure of
 eight or an out-and-back does, the turns are those of the pass the rider is
 on. A course with more than 1,024 turns sounds them to its end.
 
+While a course is loaded, the data pages show one sign for it, as the mockups
+in `design/course-navigation` draw it. Main takes their layout: elapsed time
+and grade on top, then a smaller speed, and power, heart rate and the lower
+line further down. Rows 22 to 104 belong to the sign, so it comes and goes
+without moving or resizing a reading. A ride without a course keeps the page
+it had, with the large speed.
+
+- **At rest** (following, no turn near), main shows a chip under the time: the
+  next turn's arrow on a blue square and how far it is (`6.4 KM`), or a flag
+  and the distance to the end after the last turn. Stats and climb show
+  nothing.
+- **Turn ahead.** When the rising beeps sound, a blue banner covers rows 22
+  to 104 on main, stats and climb: the turn's arrow and its distance in large
+  digits (`120 M`). The time and grade under it are hidden, and on stats and
+  climb so are the readings it covers; nothing moves. The banner always shows
+  the next turn: past a turn it shows the one after, and it stays up for 40 m
+  past the turn before the next turn's own distance decides.
+- **Off course**, the banner turns amber with a U-turn arrow, the straight-line
+  distance back to where the rider left the course, and TURN BACK. Rejoining
+  clears it.
+- **Arrived.** For 60 s after the end, the banner is green with a flag and
+  ARRIVED, and main shows the ride's totals instead of live readings:
+  DISTANCE, RIDE TIME, then AVG KM/H, AVG W and AVG BPM. Then the sign is
+  gone.
+
+Tapping the banner or the chip opens the map page. While a course is loaded,
+the map page is in the MOVE cycle even if the rider turned it off, so the tap
+always has a page to open and the page dots stay true. With a radar paired
+the banner starts right of the radar strip and its contents move with the
+page body; the radar always keeps its columns.
+
 ### Workouts from the phone
 
 The phone page has a Workouts card beside the Course card: the workouts added
@@ -275,7 +306,8 @@ Settings has a RIDE PAGES section with an ON or OFF row for each page a rider
 may not need: STATS, LAP, CLIMB and MAP. All are ON by default. MAIN
 is always on, and so is the WORKOUT page while a workout is chosen. MOVE and
 swipes step through the pages that are on, wrapping from the last to the
-first, and the page dots count only those. With every optional page off, MOVE
+first, and the page dots count only those. While a course is loaded, MAP is
+on whatever its row says (see Course). With every optional page off, MOVE
 has only MAIN, and with a workout only WORKOUT and MAIN. When a workout
 ends, a rider on the WORKOUT page moves to MAIN; the FTP ramp test ends with
 its last step, so the NEW FTP sheet shows over MAIN.

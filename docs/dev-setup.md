@@ -4,7 +4,7 @@ Any x86_64 or aarch64 Linux machine with Nix becomes a cycling development
 machine. [flake.nix](../flake.nix) and its lock own every tool version, and the
 dev shell's `cycling` command runs every task
 ([cli.py](../tools/devtools/src/cycling_devtools/cli.py); `cycling` alone lists
-them). Agents work on a fast remote machine (omni-devbox) while the C606 stays
+them). Agents work on a fast remote machine (fleet-hub) while the C606 stays
 plugged into another one; only the image and text cross the network.
 
 ## Set up a machine

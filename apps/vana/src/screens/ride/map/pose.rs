@@ -17,8 +17,6 @@ const EDGE: f32 = 24.0;
 const CLEARANCE: f32 = 8.0;
 const SPARE_PX: f32 = 6.0;
 const CLOSE_M: f32 = 100.0;
-/// Past the turn only the route's blue line must, since map-approach
-/// draws its casing under the badge's corner.
 const ROUTE_CASING_HALF_PX: f32 = 9.0;
 const ROUTE_LINE_HALF_PX: f32 = 6.0;
 const PUCK_RADIUS_PX: f32 = 14.5;
@@ -124,10 +122,7 @@ pub struct Keepout {
 }
 
 impl Keepout {
-    /// The rider's columns, an open range, at which the segment from `a`
-    /// to `b` comes within `pad` of the box. `a` and `b` are pixels right
-    /// of the rider's column, and screen rows.
-    fn blocked(&self, a: Point, b: Point, pad: f32) -> Option<(f32, f32)> {
+    fn blocked_rider_columns(&self, a: Point, b: Point, pad: f32) -> Option<(f32, f32)> {
         let (top, bottom) = (self.top - pad, self.bottom + pad);
         let rise = b.1 - a.1;
         let (from, to) = if rise.abs() < 1e-6 {
@@ -154,7 +149,7 @@ impl Keepout {
             radius: 0.0,
         };
         if inner
-            .blocked(a, b, 0.0)
+            .blocked_rider_columns(a, b, 0.0)
             .is_some_and(|(low, high)| low <= 0.0 && 0.0 <= high)
         {
             return true;
@@ -201,7 +196,6 @@ pub struct Aim {
     pub badge: Option<Keepout>,
 }
 
-/// What the map holds in view besides the rider.
 #[derive(Clone, Copy, Debug)]
 pub enum Target {
     Free,
@@ -227,18 +221,14 @@ impl Target {
     }
 }
 
-/// How much of the map a pose keeps clear of the badge, least first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 enum Clear {
     #[default]
     Nothing,
     Rider,
-    /// The rider and the route in view, with the target off the screen.
-    RiderAndRoute,
-    /// The rider and the target, on the screen.
-    Target,
-    /// Those and the route up to the target.
-    UpToTarget,
+    RiderAndRouteToOffscreenTarget,
+    RiderAndTarget,
+    RiderTargetAndRouteToIt,
 }
 
 const COLUMNS: usize = 16;
@@ -316,7 +306,7 @@ pub fn choose_pose(
                 if best.is_none_or(|(most, _)| clear > most) {
                     best = Some((clear, i));
                 }
-                if clear == Clear::UpToTarget {
+                if clear == Clear::RiderTargetAndRouteToIt {
                     break 'steps;
                 }
             }
@@ -392,7 +382,7 @@ fn try_step(
     let screen = |(right, ahead): Point| (right * s, f32::from(y) - ahead * s);
     let all = (1u16 << columns.len()) - 1;
     let block = |a: Point, b: Point, pad: f32, mask: &mut u16| {
-        let Some((low, high)) = keepout.and_then(|k| k.blocked(a, b, pad)) else {
+        let Some((low, high)) = keepout.and_then(|k| k.blocked_rider_columns(a, b, pad)) else {
             return;
         };
         for (k, &x) in columns.iter().enumerate() {
@@ -405,7 +395,7 @@ fn try_step(
         let Some(keep) = keepout else {
             return;
         };
-        let Some((low, high)) = keep.blocked(a, b, ROUTE_LINE_HALF_PX) else {
+        let Some((low, high)) = keep.blocked_rider_columns(a, b, ROUTE_LINE_HALF_PX) else {
             return;
         };
         for (k, &x) in columns.iter().enumerate() {
@@ -439,7 +429,7 @@ fn try_step(
             }
         }
     }
-    let (mut to_goal, mut whole) = (all, all);
+    let (mut to_goal, mut past_clear) = (all, all);
     let (mut least, mut most) = (0.0f32, 0.0f32);
     let mut last: Option<(Point, bool)> = None;
     route(&mut |p, before| {
@@ -449,7 +439,7 @@ fn try_step(
             most = most.max(p.0);
         }
         if let Some((from, was_before)) = last {
-            past_the_turn(from, p, &mut whole);
+            past_the_turn(from, p, &mut past_clear);
             if was_before {
                 let to = match (before, goal) {
                     (false, Some((corner, _))) => corner,
@@ -471,9 +461,9 @@ fn try_step(
     for (k, &x) in columns.iter().enumerate() {
         clear[k] = match (bit(rider, k), bit(shown, k), bit(to_goal, k)) {
             (false, ..) => Clear::Nothing,
-            (true, true, true) => Clear::UpToTarget,
-            (true, true, false) => Clear::Target,
-            (true, false, true) => Clear::RiderAndRoute,
+            (true, true, true) => Clear::RiderTargetAndRouteToIt,
+            (true, true, false) => Clear::RiderAndTarget,
+            (true, false, true) => Clear::RiderAndRouteToOffscreenTarget,
             (true, false, false) => Clear::Rider,
         };
         let x = f32::from(x);
@@ -484,7 +474,7 @@ fn try_step(
     Some(Trial {
         y,
         clear,
-        past_clear: whole,
+        past_clear,
         roomy,
         left_first: most >= -least,
     })
@@ -739,15 +729,11 @@ mod tests {
         }
     }
 
-    /// Calls back with `points`, each marked before the turn until the
-    /// first that is not.
     fn route(points: &[(Point, bool)]) -> impl Fn(&mut dyn FnMut(Point, bool)) + '_ {
         move |visit| points.iter().for_each(|&(p, before)| visit(p, before))
     }
 
-    /// How near the badge the route's casing comes, in pixels past its
-    /// edge, sampled every quarter pixel along each segment on the ground.
-    fn nearest_to_badge(pose: Pose, points: &[Point], badge: Keepout) -> f32 {
+    fn casing_gap_to_badge(pose: Pose, points: &[Point], badge: Keepout) -> f32 {
         let at = pose.projection((0.0, 0.0));
         let gap = |(x, y): Point| {
             let dx = (badge.left - x).max(x - badge.right).max(0.0);
@@ -802,7 +788,7 @@ mod tests {
         let aim = toward(corner, Glyph::Right);
         let pose = posed(None, aim, route(&marked), Some(BADGE));
         assert!(
-            nearest_to_badge(pose, &points[..3], BADGE) >= CLEARANCE,
+            casing_gap_to_badge(pose, &points[..3], BADGE) >= CLEARANCE,
             "{pose:?} runs the route to the turn under the badge"
         );
     }
@@ -825,7 +811,7 @@ mod tests {
             let aim = toward(points[1], Glyph::Right);
             let pose = posed(None, aim, route(&marked), Some(BADGE));
             assert!(
-                nearest_to_badge(pose, &points, BADGE) >= CLEARANCE,
+                casing_gap_to_badge(pose, &points, BADGE) >= CLEARANCE,
                 "{ahead} m: {pose:?} runs the route under the badge"
             );
         }
@@ -849,7 +835,7 @@ mod tests {
         let pose = posed(None, aim, route(&marked), Some(BADGE));
         assert_eq!(pose.step, Step::M300, "zooming out clears nothing more");
         assert!(
-            nearest_to_badge(pose, &[(0.0, 0.0), corner], BADGE) >= CLEARANCE,
+            casing_gap_to_badge(pose, &[(0.0, 0.0), corner], BADGE) >= CLEARANCE,
             "{pose:?} covers the turn or the way to it"
         );
     }

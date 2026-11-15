@@ -878,6 +878,7 @@ impl Session {
             }
         }
         sdk.load_preferences(&shell.settings.app);
+        sdk.set_micros_clock(host_micros);
         // The look-ahead and its tile cache, which the device keeps in PSRAM;
         // each boot starts them over, as device memory does.
         if memory.terrain {
@@ -2146,4 +2147,13 @@ pub fn terminal(root: &Path, width: usize, height: usize, restart_probe_ms: u64)
         }
     }
     Ok(())
+}
+
+/// Microseconds of host time, for VANA's map work counters (`sim-bench`).
+fn host_micros() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_micros() as u64
 }

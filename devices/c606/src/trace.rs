@@ -274,6 +274,7 @@ impl Trace {
         heap_min: usize,
         now: u64,
         quiet: bool,
+        map_work: impl FnOnce() -> Option<vana::app::MapWork>,
     ) {
         use device_api::ant::Ant as _;
         use device_api::ble_transport::Ble as _;
@@ -380,6 +381,21 @@ impl Trace {
                 busy_us: stage.busy_us,
                 max_us: stage.max_us,
             });
+        }
+        // The map's fills run inside `vana.present` and its road
+        // extractions inside `look_ahead`; they are recorded as stages of
+        // their own so a trace shows what the roads cost.
+        if let Some(work) = map_work() {
+            for (name, timed) in [("map.fill", work.fill), ("map.extract", work.extract)] {
+                if timed.runs > 0 {
+                    record.record(&Event::Stage {
+                        name,
+                        runs: timed.runs,
+                        busy_us: timed.busy_us,
+                        max_us: timed.max_us,
+                    });
+                }
+            }
         }
     }
 

@@ -297,6 +297,7 @@ async fn console(
     {
         sdk.load_preferences(&system.settings.app);
         sdk.set_latency_clock(|| embassy_time::Instant::now().as_millis());
+        sdk.set_micros_clock(|| embassy_time::Instant::now().as_micros());
         sdk.draw_boot(system);
         // The terrain look-ahead's tile cache lives in PSRAM. Without it
         // the climb page says "NO MAP" and keeps to the barometer.
@@ -389,7 +390,9 @@ async fn console(
                 now,
                 &mut terrain_step_max_us,
             );
-            trace.vitals(&devices, system.heap_min_sampled, now, quiet);
+            trace.vitals(&devices, system.heap_min_sampled, now, quiet, || {
+                sdk.take_map_work()
+            });
             stage_ended(Stage::Vitals);
         }
         // Diagnostic power requests enter only with no active domain work.

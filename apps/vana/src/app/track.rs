@@ -18,8 +18,7 @@ pub use crate::ride::homing::Crumb;
 
 /// Points the breadcrumb keeps: 48 KiB, thinned to fit a ride of any length.
 pub const TRACK_CRUMBS: usize = 4096;
-/// The nudge stays a little longer than a confirmation.
-const NUDGE_MS: u64 = 4_000;
+const NUDGE_MS: u64 = 2 * super::presentation::TOAST_MS;
 /// Slots the rebuild reads per tick, as the history replay does.
 const REBUILD_INTERNAL: usize = 32;
 const REBUILD_BULK: usize = 8;

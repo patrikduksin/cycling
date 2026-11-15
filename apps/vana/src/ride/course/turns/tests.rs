@@ -72,10 +72,7 @@ pub(crate) fn turns_of(line: &[(f32, f32)]) -> Vec<Turn> {
 /// Ride `line` through `positions`, metres from its start, and say where
 /// each warning came. Riding back is not riding the course its way, which
 /// warns of nothing (`Homing`), so only the way on is asked.
-fn ride_through(
-    line: &[(f32, f32)],
-    positions: impl IntoIterator<Item = f32>,
-) -> Vec<(u32, Said)> {
+fn ride_through(line: &[(f32, f32)], positions: impl IntoIterator<Item = f32>) -> Vec<(u32, Said)> {
     ride_with(&turns_of(line), positions)
 }
 
@@ -232,7 +229,6 @@ fn a_roundabout_of_any_size_is_one_turn_the_way_it_leaves() {
 #[test]
 fn corners_close_together_are_named_one_by_one() {
     for spacing in [3.0, 5.0, 8.0] {
-        // 20 to 32 m apart: each beeps at it, the way it goes.
         for across in [20.0, 25.0, 32.0] {
             let pair = ride(
                 &corners(spacing, &[(400.0, false), (400.0 + across, true)]),
@@ -265,7 +261,6 @@ fn corners_close_together_are_named_one_by_one() {
         let mut want = vec![ahead(RIGHT)];
         want.extend([RIGHT, LEFT, RIGHT, LEFT, RIGHT, LEFT].map(now));
         assert_eq!(kinds(&said), want, "{spacing} m: {said:?}");
-        // Two 400 m apart: each its banner and its beep.
         let block = ride(&corners(spacing, &[(400.0, false), (800.0, true)]), 7.0);
         assert_eq!(
             kinds(&block),
@@ -375,7 +370,6 @@ fn a_long_course_thinned_to_fit_warns_of_its_hairpins_as_drawn() {
     );
     assert!(thinned.len() * 20 < full.len(), "{} points", thinned.len());
 
-    // Under 300 m apart, the banner stays up through them.
     let mut want = vec![ahead(U_TURN)];
     want.extend([now(U_TURN)].repeat(10));
     let full_said = ride(&full, 7.0);
@@ -503,12 +497,7 @@ pub(crate) const FOUND: [Found; 2] = [Found::Scanned, Found::Uploaded];
 /// What a rider hears on `drawn`, then `after` metres on, uploaded and
 /// kept as `built` keeps it, ridden from its start to `to` metres with a
 /// fix every 7 m. A course `after` 0 m on is scanned as drawn.
-pub(crate) fn heard(
-    drawn: &[(f32, f32)],
-    after: f32,
-    found: Found,
-    to: f32,
-) -> Vec<(u32, Said)> {
+pub(crate) fn heard(drawn: &[(f32, f32)], after: f32, found: Found, to: f32) -> Vec<(u32, Said)> {
     let positions = (0..=(to / 7.0) as usize).map(|k| k as f32 * 7.0);
     match found {
         Found::Scanned if after > 0.0 => ride_through(&thinned(drawn, after).0, positions),
@@ -650,7 +639,6 @@ pub(crate) fn curved_ring(radius: f32, sweep: f32, spacing: f32) -> Vec<(f32, f3
     ])
 }
 
-/// What `said` names, shortly: R ahead, R.
 fn words(said: &[(u32, Said)]) -> std::string::String {
     let word = |kind: Kind| match kind {
         Kind::Turn(Side::Left) => "L",
@@ -863,9 +851,6 @@ pub(crate) fn block(spacing: f32, apart: f32, kerb: f32, right: bool) -> Vec<(f3
     }
 }
 
-/// A city block's two corners are named one by one or as one turn, the way
-/// they go, and never a U-TURN unless the way back is within 25 m of the
-/// way out, where the rider is still on the course.
 #[test]
 fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
     let (mut runs, mut silent) = (0, [0; 2]);
@@ -888,7 +873,7 @@ fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
                             let found = FOUND[k];
                             silent[k] += usize::from(said.is_empty());
                             let wrong = said.iter().any(|&(_, warning)| match warning {
-                                Said::Soon(kind) | Said::Now(kind) => !fits(kind)
+                                Said::Soon(kind) | Said::Now(kind) => !fits(kind),
                             });
                             assert!(
                                 !wrong,
@@ -905,10 +890,6 @@ fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
     }
 }
 
-/// Whether each warning in `said` names the corners of `turns` (metres
-/// along, right) the rider has yet to reach, more than 5 m on (nearer, they
-/// are turning it already, and no beep comes once a turn has begun): the
-/// next one; a U-TURN only for two the same way within 25 m.
 fn names_next_corners(said: &[(u32, Said)], turns: &[(f32, f32)]) -> bool {
     let side = |degrees: f32| {
         if degrees > 0.0 {
@@ -1267,7 +1248,7 @@ fn corners_drawn_every_3_to_4_5_m_are_never_cut() {
                         Kind::Turn(s) | Kind::Sharp(s) => s == side,
                     };
                     let bad = said.iter().any(|&(_, warning)| match warning {
-                        Said::Soon(kind) | Said::Now(kind) => !fits(kind)
+                        Said::Soon(kind) | Said::Now(kind) => !fits(kind),
                     });
                     if bad {
                         wrong.push(std::format!(

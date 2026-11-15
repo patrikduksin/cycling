@@ -51,9 +51,7 @@ pub enum Cue {
     OffCourse,
     /// Back on it, or following it began.
     OnCourse,
-    /// The course's next turn is coming up.
     TurnSoon,
-    /// The turn is here.
     TurnNow,
 }
 

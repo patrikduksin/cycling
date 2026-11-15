@@ -21,9 +21,22 @@ pub struct Icon {
     bits: &'static [u8],
 }
 
-impl core::hash::Hash for Icon {
+/// A shape's icon. A static icon never changes and keeps its address, so
+/// the address names its art.
+#[derive(Clone, Copy, Debug)]
+pub struct StaticIcon(pub &'static Icon);
+
+impl core::hash::Hash for StaticIcon {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        core::ptr::hash(self, state);
+        core::ptr::hash(self.0, state);
+    }
+}
+
+impl core::ops::Deref for StaticIcon {
+    type Target = Icon;
+
+    fn deref(&self) -> &Icon {
+        self.0
     }
 }
 

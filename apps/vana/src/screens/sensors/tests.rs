@@ -169,7 +169,9 @@ fn only_nearby_searches() {
         .find_map(|shape| match *shape {
             Shape::Icon {
                 icon, left, top, ..
-            } if core::ptr::eq(icon, &crate::screens::icons::REFRESH) => Some((left + 9, top + 9)),
+            } if core::ptr::eq(icon.0, &crate::screens::icons::REFRESH) => {
+                Some((left + 9, top + 9))
+            }
             _ => None,
         })
         .expect("the refresh mark");

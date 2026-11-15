@@ -12,7 +12,7 @@ use super::chrome::{
     Align, CAPTION, Label, Line, Rect, Ring, Row, SECONDARY, blend, paint_disc_over,
     paint_rounded_over, rounded,
 };
-use super::icons::Icon;
+use super::icons::StaticIcon;
 use firmware_shell::rendering::font::{Face, SPILL};
 use firmware_shell::shell::Parts;
 use heapless::Vec;
@@ -54,7 +54,7 @@ pub enum Shape {
     /// An icon in one colour with its square's top-left corner at
     /// (`left`, `top`): a mark of its own, like a bar.
     Icon {
-        icon: &'static Icon,
+        icon: StaticIcon,
         left: usize,
         top: usize,
         color: u16,

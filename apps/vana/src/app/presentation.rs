@@ -840,6 +840,9 @@ impl Runtime {
         view.prepare();
         let drawn = system.draw(&view.scene(), now);
         let pixels = crate::screens::ride::pixels(&view.graphics, &view.profile);
+        // Before the return below: a frame the panel already showed still
+        // counts as drawn, so a glide that lands on the same pixels asks for
+        // no more frames.
         self.motion.drew(&sample, pixels, now);
         // Only a frame the panel accepted is a milestone or answers a press;
         // a pending press waits for the next frame that reaches the panel.

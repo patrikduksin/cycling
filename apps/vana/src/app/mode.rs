@@ -18,6 +18,8 @@ pub struct Policy {
 
 /// Readings are the companion's raw units: about 36 to 41 in a dark room at
 /// night, 65 covered, 68 in a dim room, 470 to 1,557 under a phone torch.
+/// No daylight reading is known yet, so the 4,000 knot is a guess until a
+/// ride trace records one.
 static NORMAL: Curve = Curve([(40, 10), (70, 25), (300, 55), (1_500, 85), (4_000, 100)]);
 static SAVER: Curve = Curve([(40, 5), (70, 15), (300, 35), (1_500, 55), (4_000, 70)]);
 

@@ -10,7 +10,8 @@ const BAND_PERCENT: u8 = 3;
 const CATCH_UP_TICKS: u64 = 50;
 
 /// Light to duty percent, as knots with rising light. Light below the first
-/// knot shows its percent and light above the last shows the last.
+/// knot shows its percent and light above the last shows the last. The duty
+/// is linear in power, so the knots carry the perceptual shape.
 #[derive(Debug)]
 pub struct Curve(pub [(u16, u8); 5]);
 

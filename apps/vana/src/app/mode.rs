@@ -66,6 +66,19 @@ impl DisplayMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use device_api::observation::Observation;
+    use device_api::sensors::Light;
+    use firmware_shell::backlight::Backlight;
+    use std::vec::Vec;
+
+    /// From 69:43 the road is dark and street lamps flash past for about a
+    /// second each, every 3 to 4 s. On the device Saver sat at 11% through
+    /// it, against 5% on its curve (#379).
+    const NIGHT_RIDE: &str = include_str!("mode/night-ride.csv");
+
+    fn at(minutes: u64, seconds: u64) -> u64 {
+        (minutes * 60 + seconds) * 1_000
+    }
 
     #[test]
     fn every_curve_in_the_table_rises_so_the_backlight_cannot_underflow() {
@@ -105,6 +118,64 @@ mod tests {
             );
         }
         assert_eq!(normal.light_curve.percent(u16::MAX), 100);
+    }
+
+    #[test]
+    fn street_lamps_on_a_dark_road_neither_raise_saver_nor_hold_it_above_its_curve() {
+        let readings: Vec<(u64, u16)> = NIGHT_RIDE
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .map(|line| {
+                let (ms, light) = line.split_once(',').unwrap();
+                (ms.parse().unwrap(), light.parse().unwrap())
+            })
+            .collect();
+        let lamps = at(69, 43)..at(70, 55);
+        let mut lights: Vec<u16> = readings
+            .iter()
+            .filter(|(ms, _)| lamps.contains(ms))
+            .map(|&(_, light)| light)
+            .collect();
+        lights.sort_unstable();
+        let curve = TABLE[1].light_curve;
+        let median = curve.percent(lights[lights.len() / 2]);
+        for pass_ms in [10, 33, 70] {
+            let mut backlight = Backlight::default();
+            let mut latest = 0;
+            let shown: Vec<(u64, u8)> = (readings[0].0..at(70, 55))
+                .step_by(pass_ms)
+                .map(|now| {
+                    while readings.get(latest + 1).is_some_and(|&(ms, _)| ms <= now) {
+                        latest += 1;
+                    }
+                    let (received_ms, light) = readings[latest];
+                    let light = Observation::Fresh {
+                        value: Light(light),
+                        received_ms,
+                    };
+                    (now, backlight.step(light, curve, 50, now))
+                })
+                .collect();
+            let under_lamps: Vec<u8> = shown
+                .iter()
+                .filter(|(ms, _)| lamps.contains(ms))
+                .map(|&(_, percent)| percent)
+                .collect();
+            assert!(
+                under_lamps.windows(2).all(|pair| pair[1] <= pair[0]),
+                "{pass_ms} ms passes: a lamp raised the backlight"
+            );
+            let settled = shown
+                .iter()
+                .filter(|&&(ms, _)| ms >= at(70, 0))
+                .map(|&(_, percent)| percent)
+                .max()
+                .unwrap();
+            assert!(
+                settled <= median + 1,
+                "{pass_ms} ms passes: {settled}% from 70:00 against {median}% on the curve"
+            );
+        }
     }
 
     #[test]

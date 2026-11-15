@@ -725,8 +725,11 @@ fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point) {
     layer.clear(GROUND.start);
     *pairs = raster::pairs(GROUND_COLOR, MINOR_ROAD, MAJOR_ROAD);
     *roads_drawn = [0; 2];
-    let mut drawn = 0;
+    let room = |drawn: &[usize; 2]| drawn[0] + drawn[1] < ROAD_SEGMENTS;
     for road in roads.each(Detail::of(last_pose.step), centre) {
+        if !room(roads_drawn) {
+            break;
+        }
         let (class, half) = if road.class.major() {
             (Class::Major, MAJOR_ROAD_HALF_PX)
         } else {
@@ -735,16 +738,11 @@ fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point) {
         project(at, half, road.points(), |a, b| {
             layer.add(&Bar::new(a, b, half), class);
             roads_drawn[class as usize] += 1;
-            drawn += 1;
-            drawn < ROAD_SEGMENTS
+            room(roads_drawn)
         });
-        if drawn == ROAD_SEGMENTS {
-            break;
-        }
     }
 }
 
-/// Project the track through this fix's pose and bucket it.
 fn fill(frame: &mut Frame, track: &Track) {
     frame.show = if !track.available {
         Show::Unavailable

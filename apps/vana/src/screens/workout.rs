@@ -995,8 +995,7 @@ impl<'a> View<'a> {
             badge: self.badge.as_ref().filter(|_| !sheet),
             toast: self.toast.as_ref().filter(|_| !sheet),
             sign: match kind {
-                Kind::Ride(page) => sign::form(page, self.nav)
-                    .and_then(|form| sign::place(self.nav, form, self.radar_paired)),
+                Kind::Ride(page) => sign::on_page(page, self.nav, self.radar_paired),
                 _ => None,
             },
         }

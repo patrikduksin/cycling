@@ -122,7 +122,7 @@ pub(crate) mod scenes {
         pub reach: fn() -> Sim,
     }
 
-    pub static SCENES: [Scene; 33] = [
+    pub static SCENES: [Scene; 37] = [
         Scene {
             name: "home",
             reach: home,
@@ -170,6 +170,22 @@ pub(crate) mod scenes {
         Scene {
             name: "map off course",
             reach: map_off_course,
+        },
+        Scene {
+            name: "map santiago 300 m",
+            reach: || santiago((1_200.0, 0.0), 45.0, 60.0, "100 M"),
+        },
+        Scene {
+            name: "map santiago 400 m",
+            reach: || santiago((1_200.0, 0.0), 45.0, 250.0, "100 M"),
+        },
+        Scene {
+            name: "map santiago 1 km",
+            reach: || santiago((-800.0, 1_200.0), 135.0, 500.0, "250 M"),
+        },
+        Scene {
+            name: "map santiago 3 km",
+            reach: || santiago((-1_600.0, -1_200.0), 45.0, 1_500.0, "1 KM"),
         },
         Scene {
             name: "paused",
@@ -496,6 +512,61 @@ pub(crate) mod scenes {
             sim.advance(seconds(1));
         }
         sim.ride_page("5/5");
+        sim
+    }
+
+    /// The 3 x 3 tiles around Plaza de Armas, the densest roads a map draws.
+    const SANTIAGO: &[u8] =
+        include_bytes!("../../../packages/terrain/tests/data/santiago-centro.terrain");
+    const PLAZA: (f64, f64) = (-33.4378, -70.6505);
+
+    /// On the map page at `at`, metres east and north of Plaza de
+    /// Armas, following a course on bearing `bearing` (degrees) that turns
+    /// right `turn_m` ahead, with the pack's roads under it. The places are
+    /// where `map::tests::santiago`'s probe found each step's view of the
+    /// pack densest; `scale` is the step's scale bar.
+    fn santiago(at: (f64, f64), bearing: f64, turn_m: f64, scale: &str) -> Sim {
+        let (sin, cos) = bearing.to_radians().sin_cos();
+        let to = |right: f64, ahead: f64| {
+            (
+                at.0 + right * cos + ahead * sin,
+                at.1 - right * sin + ahead * cos,
+            )
+        };
+        let origin = Point::new(PLAZA.0, PLAZA.1);
+        let mut sim = Sim::new();
+        sim.fit_bulk(Presence::Ready);
+        let mut sim = sim.boot();
+        sim.discard_recording();
+        sim.init_bulk();
+        sim.format_files();
+        sim.install_terrain(b"CHILE-TERRAIN-V1", SANTIAGO);
+        sim.connect_phone();
+        let course = gpx_every_ten_metres(
+            origin,
+            &[to(0.0, -600.0), to(0.0, turn_m), to(1_000.0, turn_m)],
+        );
+        let (status, _) = sim.phone_request(
+            device_api::server::Method::Put,
+            "/api/course",
+            course.as_bytes(),
+        );
+        assert_eq!(status, 200);
+        sim.press(Button::TopLeft);
+        sim.advance(seconds(1));
+        let route = gpx_every_ten_metres(origin, &[to(0.0, -600.0), to(0.0, turn_m)]);
+        sim.ride_route(Route::from_gpx(&route).unwrap());
+        sim.ant_sensor(device_type::POWER, 1234);
+        sim.ant_sensor(device_type::SPEED_CADENCE, 777);
+        sim.pair(&["POWER METER", "SPEED/CAD"]);
+        sim.ride_at(36.0, 210.0, 0.0, 88.0);
+        sim.start_ride();
+        while sim.world().distance_m < 570.0 {
+            sim.advance(seconds(1));
+        }
+        sim.ride_page("5/5");
+        sim.advance(seconds(2));
+        sim.expect_text(scale);
         sim
     }
 

@@ -310,8 +310,10 @@ impl Frame<'_> {
         let mut runs = self.group(glyphs);
         // A lone mark is likelier a stray edge than text: the edge rows of a
         // large glyph can be one flat colour shaped like "_" or "=", more often
-        // under a look, which maps nearby edge colours to one.
+        // under a look, which maps nearby edge colours to one. So are bars
+        // that read only as underscores, as a map's line edges do over roads.
         runs.retain(|run| !(run.text.len() == 1 && b"-.,:/_=".contains(&run.text.as_bytes()[0])));
+        runs.retain(|run| !run.text.bytes().all(|b| b == b'_' || b == b' '));
         runs.sort_by_key(|run| (run.y, run.x));
         runs
     }

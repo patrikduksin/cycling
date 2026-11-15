@@ -26,6 +26,8 @@ FONT = ROOT / 'packages/shell/fonts/Nunito[wght].ttf'
 SIM = ROOT / '.local/sim/latest'
 OUT = ROOT / '.local/mockup'
 SIZE = (240, 320)
+# The map's ground, which ignored road colours blend over at their edges.
+GROUND = (0x10, 0x10, 0x12)
 MARGIN, SCALE = 20, 2
 
 ELEMENT = re.compile(
@@ -85,9 +87,19 @@ def quantised(paint):
 
 
 def equal(panel, paint):
-    target = quantised(paint)
+    return matching(panel, quantised(paint))
+
+
+def matching(panel, target):
     channels = [c.point(lambda v, t=t: 255 if v == t else 0) for c, t in zip(panel.split(), target, strict=True)]
     return ImageChops.darker(ImageChops.darker(channels[0], channels[1]), channels[2])
+
+
+def mixes(paint, under):
+    """The RGB565 colours the firmware's 4-bit blend makes of `paint` over
+    `under`, from a sliver to solid."""
+    fg, bg = quantised(paint), quantised(under)
+    return {tuple((f * a + b * (15 - a) + 7) // 15 for f, b in zip(fg, bg, strict=True)) for a in range(1, 16)}
 
 
 def solid(mask):
@@ -174,10 +186,13 @@ def checkpoint_image(path):
 def compare(screen, actual, rules):
     elements, interior_and_envelope_exclusions = load(MOCKUPS / f'{screen}.svg', rules)
     panel = rgb565(actual)
+    # An ignored colour's edge over the ground is ignored too: a road just
+    # past the screen's edge leaves only its blended edge on the panel.
     for colour in rules.get('ignore', []):
-        interior_and_envelope_exclusions = ImageChops.lighter(
-            interior_and_envelope_exclusions, grow(equal(panel, hex_colour(colour)))
-        )
+        for mix in mixes(hex_colour(colour), GROUND):
+            interior_and_envelope_exclusions = ImageChops.lighter(
+                interior_and_envelope_exclusions, grow(matching(panel, mix))
+            )
     interior_and_envelope_allowed = ImageChops.invert(interior_and_envelope_exclusions)
     report, diff = Report(), Image.new('L', SIZE, 0)
 

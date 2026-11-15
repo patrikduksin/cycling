@@ -571,7 +571,7 @@ struct Reader {
     power: Vec<(u64, device_api::power::State)>,
     health: Vec<(u64, trace::Health)>,
     frame_times: Vec<(u64, trace::FrameTime)>,
-    frame_time: Option<trace::FrameTime>,
+    frame_time_awaiting_health: Option<trace::FrameTime>,
     activity: Vec<Window>,
     /// The activity window of this pass, while its tasks are read.
     window: Option<Window>,
@@ -999,9 +999,9 @@ impl Reader {
                     body.len()
                 ),
             ),
-            Event::FrameTime(frame_time) => self.frame_time = Some(frame_time),
+            Event::FrameTime(frame_time) => self.frame_time_awaiting_health = Some(frame_time),
             Event::Health(health) => {
-                let frame_time = self.frame_time.take();
+                let frame_time = self.frame_time_awaiting_health.take();
                 self.push(Kind::Health, self::health(&health, frame_time));
                 self.health.push((self.now, health));
                 self.frame_times.extend(frame_time.map(|f| (self.now, f)));

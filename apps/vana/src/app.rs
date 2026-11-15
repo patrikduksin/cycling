@@ -15,7 +15,7 @@ mod climb_page;
 pub use crate::ride::course::stored::Finder as CourseFinder;
 pub use crate::ride::course::turns::{TURNS as COURSE_TURNS, Turn};
 pub use crate::ride::course::{Course, POINTS as COURSE_POINTS};
-pub use track::{Crumb, MapFrame, RideTrack, TRACK_CRUMBS};
+pub use track::{Crumb, MapFrame, MapWork, RideTrack, TRACK_CRUMBS, Timed};
 mod commands;
 mod course;
 mod cues;
@@ -105,6 +105,8 @@ pub struct Runtime {
     reported: seen::Reported,
     /// This pass's `tick` or `look_ahead` read or wrote storage.
     storage_worked: bool,
+    /// Microseconds, for timing the map's work.
+    micros: Option<fn() -> u64>,
 }
 
 impl Runtime {
@@ -141,6 +143,7 @@ impl Runtime {
             track: None,
             reported: seen::Reported::default(),
             storage_worked: false,
+            micros: None,
         }
     }
 
@@ -172,6 +175,22 @@ impl Runtime {
     /// rider sees or the journal holds reads it, so a replay need not.
     pub fn set_latency_clock(&mut self, clock: fn() -> u64) {
         self.ride.latency_clock = Some(clock);
+    }
+
+    /// Supply a monotonic microsecond clock that times the map's fills and
+    /// road extractions (`take_map_work`).
+    pub fn set_micros_clock(&mut self, clock: fn() -> u64) {
+        self.micros = Some(clock);
+    }
+
+    /// The map's work since the last take; none without a track.
+    pub fn take_map_work(&mut self) -> Option<MapWork> {
+        Some(core::mem::take(&mut self.track.as_deref_mut()?.work))
+    }
+
+    /// The map's work since the track was attached.
+    pub fn map_work_since_boot(&self) -> Option<MapWork> {
+        Some(self.track.as_deref()?.slowest)
     }
 
     /// Scan both ride journals ahead of the first `tick`, while the device

@@ -135,6 +135,16 @@ impl Projection {
             self.rider.1 - ahead * self.scale,
         )
     }
+
+    /// The ride's point that `at` puts at screen point `p`.
+    pub fn back(&self, p: Point) -> Point {
+        let right = (p.0 - self.rider.0) / self.scale;
+        let ahead = (self.rider.1 - p.1) / self.scale;
+        (
+            self.here.0 + right * self.cos + ahead * self.sin,
+            self.here.1 - right * self.sin + ahead * self.cos,
+        )
+    }
 }
 
 pub fn rotation(heading: u16) -> (f32, f32) {

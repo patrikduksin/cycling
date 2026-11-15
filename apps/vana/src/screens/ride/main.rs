@@ -12,7 +12,7 @@ use crate::screens::chrome::{
     Row, SECONDARY, SPEED, TERTIARY, VALUE, WHITE, blend, rounded, zone_color,
 };
 use crate::screens::icons::SignForm;
-use crate::screens::sign;
+use crate::screens::sign::{self, baseline_under_mockup};
 use crate::screens::workout::{Scene, View};
 use core::fmt::Write;
 use firmware_shell::rendering::font::{Face, SPILL, TOTAL_11, TOTAL_30, TOTAL_60};
@@ -28,11 +28,6 @@ const BAND_HEIGHT: usize = 2;
 /// Power has seven zones, heart rate five.
 const SEGMENTS: [usize; 2] = [7, 5];
 
-/// Where the readings sit, by baseline. A ride without a course keeps the
-/// hero speed; while a course is loaded the page is ride-straight.svg's,
-/// whose rows 22 to 104 belong to the course sign, so the sign coming and
-/// going never moves a reading. A face's ink ends the row above `baseline`,
-/// so each is one below the mockup's.
 struct Rows {
     time: usize,
     speed: usize,
@@ -40,15 +35,15 @@ struct Rows {
     power: usize,
     heart: usize,
     lower: usize,
-    /// The power and heart-rate gauges' top rows.
     gauges: [usize; 2],
-    /// From a value's ink to its unit: the mockup sets units after
-    /// proportional digits, further out than these tabular ones' ink.
     unit_gap: usize,
-    /// Where the lower line's right reading ends: ride-straight inks its KM
-    /// to x 216, where CAPTION's tracking leaves a column.
     lower_right: usize,
 }
+
+/// ride-straight.svg sets units after proportional digits, further out than
+/// these tabular ones' ink, and inks its lower line's KM to x 216.
+const MOCKUP_UNIT_GAP: usize = 6;
+const MOCKUP_LOWER_RIGHT: usize = RIGHT + 1;
 
 static HERO_SPEED: [&Face; 3] = [&HERO, &LARGE, &VALUE];
 static COURSE_SPEED: [&Face; 2] = [&LARGE, &VALUE];
@@ -56,15 +51,15 @@ static COURSE_SPEED: [&Face; 2] = [&LARGE, &VALUE];
 fn rows(course: bool) -> Rows {
     if course {
         return Rows {
-            time: 59,
-            speed: 150,
+            time: baseline_under_mockup(58),
+            speed: baseline_under_mockup(149),
             speed_faces: &COURSE_SPEED,
-            power: 200,
-            heart: 256,
-            lower: 304,
+            power: baseline_under_mockup(199),
+            heart: baseline_under_mockup(255),
+            lower: baseline_under_mockup(303),
             gauges: [208, 266],
-            unit_gap: 6,
-            lower_right: RIGHT + 1,
+            unit_gap: MOCKUP_UNIT_GAP,
+            lower_right: MOCKUP_LOWER_RIGHT,
         };
     }
     let (power, heart) = (BODY.top + 108, BODY.top + 166);
@@ -75,7 +70,6 @@ fn rows(course: bool) -> Rows {
         power: baseline(&LARGE, power),
         heart: baseline(&LARGE, heart),
         lower: baseline(&VALUE, BODY.top + 228),
-        // Zone gauges sit just under the power and heart-rate numbers.
         gauges: [power + 47, heart + 47],
         unit_gap: UNIT_GAP,
         lower_right: RIGHT,
@@ -160,17 +154,15 @@ pub(super) fn prepare(view: &View) -> Smooth {
         gauges: Some(rows.gauges),
         ..Smooth::default()
     };
-    // The banner covers the time and grade: leaving them out keeps the
-    // clock's tick from sending the banner's rows.
-    if sign::form(RidePage::Main, view.nav) != Some(SignForm::Banner) {
+    let banner_covers_time_and_grade =
+        sign::form(RidePage::Main, view.nav) == Some(SignForm::Banner);
+    if !banner_covers_time_and_grade {
         time_and_grade(&mut smooth.labels, view, rows.time);
     }
     readings(&mut smooth, view, &rows);
     smooth
 }
 
-/// The course is done: the ride's totals under the arrived banner, distance
-/// first, as arrived.svg draws them. No gauges.
 fn arrived(view: &View) -> Smooth {
     let totals = &view.totals;
     let mut smooth = Smooth::default();
@@ -178,7 +170,13 @@ fn arrived(view: &View) -> Smooth {
     let caption = |labels: &mut Labels, text: &[u8], x, base, align| {
         let _ = labels.push(on_baseline(&TOTAL_11, text, x, base, align, SECONDARY));
     };
-    caption(labels, b"DISTANCE", LEFT, 133, Align::Left);
+    caption(
+        labels,
+        b"DISTANCE",
+        LEFT,
+        baseline_under_mockup(132),
+        Align::Left,
+    );
     let distance = value(&|v| kilometres(v, totals.distance_mm()));
     let faces: [&Face; 2] = [&TOTAL_60, &LARGE];
     reading(
@@ -187,17 +185,23 @@ fn arrived(view: &View) -> Smooth {
         &distance,
         b"KM",
         (LEFT, RIGHT),
-        185,
+        baseline_under_mockup(184),
         (Align::Left, rows(true).unit_gap),
         WHITE,
     );
-    caption(labels, b"RIDE TIME", LEFT, 211, Align::Left);
+    caption(
+        labels,
+        b"RIDE TIME",
+        LEFT,
+        baseline_under_mockup(210),
+        Align::Left,
+    );
     let time = value(&|v| elapsed(v, view.active_secs));
     let _ = labels.push(on_baseline(
         &VALUE,
         time.as_bytes(),
         LEFT,
-        244,
+        baseline_under_mockup(243),
         Align::Left,
         WHITE,
     ));
@@ -226,12 +230,12 @@ fn arrived(view: &View) -> Smooth {
         ),
     ];
     for (name, x, align, average, color) in averages {
-        caption(labels, name, x, 271, align);
+        caption(labels, name, x, baseline_under_mockup(270), align);
         let _ = labels.push(on_baseline(
             &TOTAL_30,
             average.as_bytes(),
             x,
-            301,
+            baseline_under_mockup(300),
             align,
             color,
         ));
@@ -239,8 +243,6 @@ fn arrived(view: &View) -> Smooth {
     smooth
 }
 
-/// Time and grade share a line; the grade keeps its size and the clock
-/// steps down when hours of riding make it long.
 fn time_and_grade(labels: &mut Labels, view: &View, base: usize) {
     let sample = view.sample;
     let grade = value(&|v| {
@@ -274,8 +276,6 @@ fn time_and_grade(labels: &mut Labels, view: &View, base: usize) {
     let _ = labels.push(grade);
 }
 
-/// Speed, power, heart rate and the lower line: the same labels in every
-/// state of the course sign.
 fn readings(smooth: &mut Smooth, view: &View, rows: &Rows) {
     let sample = view.sample;
     let labels = &mut smooth.labels;
@@ -397,13 +397,11 @@ fn target_band(view: &View) -> Option<(usize, core::ops::Range<usize>)> {
     Some((i, from..to))
 }
 
-/// The workout target's rows under the gauge whose top row is `gauge`.
 fn band_rows(gauge: usize) -> core::ops::Range<usize> {
     let top = gauge + GAUGE_HEIGHT + BAND_GAP;
     top..top + BAND_HEIGHT
 }
 
-/// The workout target's rows and columns, while one shows.
 fn band(smooth: &Smooth) -> Option<(core::ops::Range<usize>, core::ops::Range<usize>)> {
     let (i, columns) = smooth.band.clone()?;
     Some((band_rows(smooth.gauges?[i]), columns))
@@ -577,7 +575,6 @@ mod tests {
         on_course(case, None)
     }
 
-    /// `case` with a course loaded and showing `nav`, or without a course.
     fn on_course(case: Case, nav: Option<Sign>) -> View<'static> {
         let mut view = View::new(Page::Ride, 0, Some(crate::clock::Local(86_399)));
         view.course = nav.is_some();
@@ -819,8 +816,6 @@ mod tests {
         ]
     }
 
-    /// Speed, power, heart rate, cadence and distance keep their rects as
-    /// the sign comes and goes, all of them under its band.
     #[test]
     fn the_course_sign_never_moves_or_resizes_a_reading() {
         let readings = |nav| {
@@ -842,8 +837,6 @@ mod tests {
         }
     }
 
-    /// The banner covers the time and grade, which then send nothing; the
-    /// chip leaves them showing.
     #[test]
     fn the_banner_hides_the_time_and_grade_and_the_chip_does_not() {
         for nav in signs() {
@@ -855,14 +848,12 @@ mod tests {
         }
     }
 
-    /// For 60 s after the end the page is the ride's totals, distance first.
     #[test]
     fn arrived_shows_the_ride_totals_without_gauges() {
         let mut view = View::new(Page::Ride, 0, Some(crate::clock::Local(86_399)));
         view.course = true;
         view.nav = Sign::Arrived;
         view.active_secs = WIDEST.secs;
-        // The widest averages a ride can have: no ride averages 1000 W.
         let sample = Sample {
             speed_mm_s: Some(27_750),
             power_watts: Some(999),

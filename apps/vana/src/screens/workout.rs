@@ -238,7 +238,6 @@ pub struct Scene<'v> {
     cues: &'static [Cue],
     badge: Option<&'v Badge>,
     toast: Option<&'v Toast>,
-    /// Painted after the look, so its white ink and fills hold in both.
     sign: Option<sign::Placed>,
 }
 
@@ -411,12 +410,12 @@ impl<'v> Scene<'v> {
         self.light
     }
 
-    /// The rows a banner covers right across; none without one.
-    pub(super) fn banner_rows(&self) -> core::ops::Range<usize> {
-        match &self.sign {
-            Some(sign) if sign.form() == SignForm::Banner => sign.rect().top..sign.rect().bottom,
-            _ => 0..0,
-        }
+    pub(super) fn banner_rows(&self) -> Option<core::ops::Range<usize>> {
+        let sign = self
+            .sign
+            .as_ref()
+            .filter(|sign| sign.form() == SignForm::Banner)?;
+        Some(sign.rect().top..sign.rect().bottom)
     }
 
     #[cfg(test)]
@@ -605,7 +604,6 @@ pub struct View<'a> {
     /// Button cues prepared for this frame.
     pub(super) cues: &'static [Cue],
     pub(super) badge: Option<Badge>,
-    /// The course sign this frame.
     pub nav: Sign,
     /// A course is loaded, so the main page keeps room for its sign.
     pub course: bool,
@@ -1399,8 +1397,6 @@ mod tests {
         assert!(changed > 0, "{what} changes no pixel");
     }
 
-    /// The banner's digits stepping send its rows and no others, and the
-    /// clock ticking under it sends nothing.
     #[test]
     fn under_a_banner_only_its_digits_send() {
         use crate::ride::course::nav::{Distance, Glyph};

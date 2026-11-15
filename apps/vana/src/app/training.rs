@@ -388,12 +388,10 @@ impl Runtime {
 
     /// The pages MOVE steps through: the workout's, the rider's choice.
     pub(super) fn ride_pages(&self) -> Pages {
-        Pages::new(self.workout_pages(), self.page_choice())
+        Pages::new(self.workout_pages(), self.page_choice_with_course_map())
     }
 
-    /// The pages the rider left on, and the map while a course is loaded,
-    /// which a tap on the course sign opens.
-    pub(super) fn page_choice(&self) -> PageChoice {
+    pub(super) fn page_choice_with_course_map(&self) -> PageChoice {
         let choice = self.preferences.options.ride_pages;
         match self.course() {
             Some(_) => choice.showing(RidePage::Map),

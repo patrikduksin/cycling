@@ -131,11 +131,11 @@ impl Icon {
 /// `docs/design/course-navigation` draw them.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SignForm {
-    /// Full width on a data page, rows 22 to 104.
+    /// Full width on a data page.
     Banner,
-    /// The map's floating badge, 60 px tall at (8, 30).
+    /// Floating on the map.
     Badge,
-    /// The 28 px square at the left of a data page's chip at (24, 72).
+    /// The square at the left of the main page's chip.
     Chip,
 }
 
@@ -245,14 +245,11 @@ mod tests {
     ];
     const FORMS: [SignForm; 3] = [SignForm::Banner, SignForm::Badge, SignForm::Chip];
 
-    /// A sign glyph's ink, from the top-left corner of its form's fill.
     fn ink(glyph: SignGlyph, form: SignForm) -> Rect {
         let art = glyph.art(form);
         art.icon.ink(usize::from(art.left), usize::from(art.top))
     }
 
-    /// The mockups' fills: the banner is 240 x 82, the badge 60 tall and at
-    /// least 118 wide, the chip's square 28 x 28.
     #[test]
     fn every_sign_glyph_sits_inside_its_fill() {
         for glyph in SIGN_GLYPHS {
@@ -271,9 +268,6 @@ mod tests {
         }
     }
 
-    /// A left glyph is its right twin drawn mirrored about the mockup's
-    /// centre, which sits at a fraction of a pixel: (52.75, 63) on the
-    /// banner, (34.33, 60) on the badge and (37.44, 86) on the chip.
     #[test]
     fn left_glyphs_mirror_their_right_twins_about_the_mockup_centre() {
         let centres = [

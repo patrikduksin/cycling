@@ -1,9 +1,6 @@
-//! The course sign: one block in three forms, as the mockups in
-//! `docs/design/course-navigation` draw it. The banner spans a data page's
-//! rows 22 to 104, the badge floats on the map and the chip rests on the
-//! main page. Every form is laid out from the mockup's own fractional
-//! positions and paints white ink on its fill after the light look, so it
-//! reads the same in both looks.
+//! The course sign in three forms: a banner across a data page, a badge on
+//! the map and a chip on the main page. Paint it after the light look, so its
+//! white ink on its fill reads the same in both looks.
 use super::chrome::{self, MUTED, RAISED, Rect, Row, WHITE, blend, paint_rounded_over, rounded};
 use super::icons::{SignForm, SignGlyph, StaticIcon};
 use super::ride::RidePage;
@@ -17,19 +14,26 @@ pub const TURN_FILL: u16 = chrome::rgb(0x0a, 0x6f, 0xe0);
 pub const OFF_FILL: u16 = chrome::rgb(0xd6, 0x74, 0x00);
 pub const ARRIVED_FILL: u16 = chrome::rgb(0x1b, 0x9a, 0x45);
 
-/// From the digits' ink to their unit's pen, and from the furthest ink to
-/// a fitted fill's right edge. Pens keep the mockups' fractions until a
-/// label is placed; tests lock both against the mockups' badge and chip
-/// widths.
 const UNIT_GAP: f32 = 4.0;
-const PAD: f32 = 8.25;
-/// With a radar paired the radar strip keeps its columns: the banner starts
-/// here and every form's content moves right by half of it, as the page
-/// body does.
-const RADAR: usize = 28;
-const RADAR_SHIFT: usize = RADAR / 2;
+const INK_TO_EDGE: f32 = 8.25;
+const RADAR: usize = super::ride::RADAR_WIDTH;
+const RADAR_SHIFT: usize = super::ride::CENTRE_SHIFT;
 
-/// A form as its mockup draws it without a radar, in screen pixels.
+/// The row a face's capitals end on for a mockup baseline: a face's ink ends
+/// the row above its own baseline.
+pub(crate) const fn baseline_under_mockup(mockup: usize) -> usize {
+    mockup + 1
+}
+
+const BADGE_TOP: usize = 30;
+const BADGE_HEIGHT: usize = 60;
+
+/// A banner's baseline on the badge, which is the banner at 60 / 82.
+const fn on_badge(banner_baseline: f32) -> f32 {
+    BADGE_TOP as f32
+        + (banner_baseline - BANNER.top as f32) * BADGE_HEIGHT as f32 / BANNER.height as f32
+}
+
 struct Geometry {
     left: usize,
     top: usize,
@@ -42,13 +46,14 @@ struct Geometry {
     notices: Option<Notices>,
 }
 
-/// Off course and arrived, which the chip never shows.
 struct Notices {
-    /// The distance back and TURN BACK under it.
-    baselines: (f32, f32),
+    back: f32,
+    turn_back_line: f32,
     turn_back: &'static Face,
     arrived: (&'static Face, f32),
 }
+
+const BANNER_ARRIVED: f32 = 72.5175;
 
 const BANNER: Geometry = Geometry {
     left: 0,
@@ -60,27 +65,27 @@ const BANNER: Geometry = Geometry {
     digits: &SIGN_50,
     unit: (&SIGN_20, WHITE),
     notices: Some(Notices {
-        baselines: (68.25, 93.0),
+        back: 68.25,
+        turn_back_line: 93.0,
         turn_back: &SIGN_18,
-        arrived: (&SIGN_27, 72.5175),
+        arrived: (&SIGN_27, BANNER_ARRIVED),
     }),
 };
 
-/// The banner at 60 / 82 of its size. No mockup draws an arrived badge: its
-/// baseline is the banner's, scaled.
 const BADGE: Geometry = Geometry {
     left: 8,
-    top: 30,
-    height: 60,
+    top: BADGE_TOP,
+    height: BADGE_HEIGHT,
     radius: 12,
     text_left: 63.4167,
     baseline: 71.28,
     digits: &SIGN_32,
     unit: (&SIGN_14, WHITE),
     notices: Some(Notices {
-        baselines: (60.56, 82.0),
+        back: 60.56,
+        turn_back_line: 82.0,
         turn_back: &SIGN_14,
-        arrived: (&SIGN_20, 66.97),
+        arrived: (&SIGN_20, on_badge(BANNER_ARRIVED)),
     }),
 };
 
@@ -96,7 +101,6 @@ const CHIP: Geometry = Geometry {
     notices: None,
 };
 
-/// The chip's turn-fill square.
 const CHIP_SQUARE: usize = 28;
 
 /// The form `page` shows `sign` in: a banner on the data pages, the chip
@@ -120,11 +124,9 @@ pub fn on_page(page: RidePage, sign: Sign, radar: bool) -> Option<Placed> {
 #[derive(Clone, Hash)]
 pub struct Placed {
     form: SignForm,
-    /// The whole sign: the banner or badge fill, or the chip's plate.
     bounds: Rect,
     fill: u16,
     glyph: StaticIcon,
-    /// The glyph icon square's top-left corner.
     glyph_at: (usize, usize),
     lines: heapless::Vec<Label<9>, 3>,
 }
@@ -145,14 +147,13 @@ pub fn place(sign: Sign, form: SignForm, radar: bool) -> Option<Placed> {
             (TURN_FILL, art(glyph), ink)
         }
         (Sign::OffCourse { back }, Some(notices)) => {
-            let (first, second) = notices.baselines;
-            let ink = distance_line(&mut lines, geometry, back, text_left, first);
+            let ink = distance_line(&mut lines, geometry, back, text_left, notices.back);
             let words = push(
                 &mut lines,
                 notices.turn_back,
                 b"TURN BACK",
                 text_left,
-                second,
+                notices.turn_back_line,
                 WHITE,
             );
             (OFF_FILL, SignGlyph::Back, ink.max(words))
@@ -167,7 +168,7 @@ pub fn place(sign: Sign, form: SignForm, radar: bool) -> Option<Placed> {
     let left = geometry.left + shift;
     let right = match form {
         SignForm::Banner => chrome::WIDTH,
-        SignForm::Badge | SignForm::Chip => round(ink + PAD),
+        SignForm::Badge | SignForm::Chip => round(ink + INK_TO_EDGE),
     };
     let art = glyph.art(form);
     Some(Placed {
@@ -192,7 +193,6 @@ pub fn place(sign: Sign, form: SignForm, radar: bool) -> Option<Placed> {
     })
 }
 
-/// A turn's glyph; left turns have their own art, drawn mirrored.
 fn art(glyph: Glyph) -> SignGlyph {
     match glyph {
         Glyph::Left => SignGlyph::Left,
@@ -204,8 +204,6 @@ fn art(glyph: Glyph) -> SignGlyph {
     }
 }
 
-/// The distance in the form's digits, then its unit after their ink; where
-/// the unit's ink ends.
 fn distance_line(
     lines: &mut heapless::Vec<Label<9>, 3>,
     geometry: &Geometry,
@@ -224,10 +222,6 @@ fn distance_line(
     push(lines, face, unit, at, base, color)
 }
 
-/// A line from pen `left` with its capitals on `base`; where its ink ends.
-/// The pen falls on the pixel the mockup's fraction starts in, and a face's
-/// ink ends the row above its `baseline`, which is the row below the
-/// mockup's.
 fn push(
     lines: &mut heapless::Vec<Label<9>, 3>,
     face: &'static Face,
@@ -236,7 +230,7 @@ fn push(
     base: f32,
     color: u16,
 ) -> f32 {
-    let top = base as usize + 1 - usize::from(face.top) - usize::from(face.cap);
+    let top = baseline_under_mockup(base as usize) - usize::from(face.top) - usize::from(face.cap);
     let label = Label::new(
         Line::new(face, text),
         left as usize,
@@ -253,8 +247,7 @@ fn round(value: f32) -> usize {
 }
 
 impl Placed {
-    /// Paint the sign over the row: its fills, the glyph, then the text.
-    /// Writes every pixel of `bounds` it covers.
+    /// Paint the sign over the row, writing every pixel of `bounds` it covers.
     pub fn paint(&self, row: &mut Row) {
         let y = row.y();
         if y < self.bounds.top || y >= self.bounds.bottom {
@@ -297,7 +290,7 @@ impl Placed {
         Some(color)
     }
 
-    /// The whole sign, for the hit test and the rows it sends.
+    /// The whole sign.
     pub fn rect(&self) -> Rect {
         self.bounds
     }
@@ -306,8 +299,6 @@ impl Placed {
         self.form
     }
 
-    /// The coloured block and its corner radius: all of a banner or badge,
-    /// the chip's square.
     fn fill_rect(&self) -> (Rect, usize) {
         match self.form {
             SignForm::Banner => (self.bounds, BANNER.radius),

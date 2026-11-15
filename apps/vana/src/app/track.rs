@@ -308,7 +308,6 @@ pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>) {
     state.map.update(&drawn);
 }
 
-/// The course sign now; none without a track or a course being followed.
 pub(super) fn sign_of(track: &Option<&'static mut RideTrack>, now: u64) -> Sign {
     track
         .as_deref()

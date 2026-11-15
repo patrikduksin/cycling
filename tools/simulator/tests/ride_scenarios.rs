@@ -6238,7 +6238,6 @@ fn gpx_through(name: &str, legs: &[(f64, f64)]) -> String {
     gpx_spaced(name, legs, 10.0)
 }
 
-/// `gpx_through` with a point every `spacing` metres or so.
 fn gpx_spaced(name: &str, legs: &[(f64, f64)], spacing: f64) -> String {
     let start = Point::new(-33.45, -70.66);
     let metres = |(east, north): (f64, f64)| {
@@ -9546,29 +9545,18 @@ fn auto_brightness_follows_the_light_saver_sits_lower_and_a_percent_ignores_it()
     sim.checkpoint("settings: brightness fixed at 50% ignores the light");
 }
 
-/// The course sign on the data pages. Each design scenario ends on a
-/// checkpoint named after its mockup in `docs/design/course-navigation`, for
-/// `cycling mockup-compare`, ridden at the mockup's readings. One profile
-/// draws all three mockups' zone gauges; ride-straight's 236 W and 148 bpm
-/// fit none with the others, so it rides at 220 W and 145 bpm, the same
-/// digits' widths in the same zones.
 mod navigation {
     use super::*;
     use device_api::server::Method;
 
-    /// North 7 km, then a turn and 1 km east or west.
     fn straight_then(east: f64) -> Vec<(f64, f64)> {
         vec![(0.0, 0.0), (0.0, 7_000.0), (east, 7_000.0)]
     }
 
-    /// A rider with every sensor and the mockups' profile, who loaded `course`
-    /// from the phone and rides `route`.
     fn on_course(course: &[(f64, f64)], route: &[(f64, f64)]) -> Sim {
         on_course_spaced(course, route, 10.0)
     }
 
-    /// `on_course` with GPX points `spacing` metres apart, for a course too
-    /// long for a point every 10 m.
     fn on_course_spaced(course: &[(f64, f64)], route: &[(f64, f64)], spacing: f64) -> Sim {
         let mut sim = Sim::new();
         sim.fit_bulk(Presence::Ready);
@@ -9594,11 +9582,9 @@ mod navigation {
         ride_until_shown(sim, "FOLLOWING COURSE", 150.0);
     }
 
-    /// Rows the at-rest chip and the banner take.
     const CHIP: core::ops::Range<usize> = 72..100;
     const BANNER: core::ops::Range<usize> = 22..104;
 
-    /// What the sign in `rows` reads.
     fn sign_text(sim: &Sim, rows: core::ops::Range<usize>) -> Vec<String> {
         sim.screen()
             .frame()
@@ -9609,8 +9595,6 @@ mod navigation {
             .collect()
     }
 
-    /// Ride on until the sign in `rows` reads `words`, returning where along
-    /// the route.
     #[track_caller]
     fn ride_until_sign(
         sim: &mut Sim,
@@ -9631,16 +9615,14 @@ mod navigation {
         at
     }
 
-    /// Where speed, power, heart rate and cadence start, and where the
-    /// distance's unit, which it ends against, starts.
     fn readings_at(sim: &Sim) -> Vec<(u16, usize, usize)> {
-        use vana::screens::chrome::{HEART, POWER, SPEED};
+        use vana::screens::chrome::{CADENCE, HEART, POWER, SPEED};
         sim.screen()
             .frame()
             .read()
             .into_iter()
             .filter(|run| run.y >= BANNER.end)
-            .filter(|run| [SPEED, POWER, HEART, GREEN].contains(&run.color) || run.text == "KM")
+            .filter(|run| [SPEED, POWER, HEART, CADENCE].contains(&run.color) || run.text == "KM")
             .map(|run| (run.color, run.x, run.y))
             .collect()
     }
@@ -9718,7 +9700,6 @@ mod navigation {
 
     #[test]
     fn arriving_shows_the_ride_totals_for_a_minute() {
-        // arrived.svg's ride: 56.2 km in a little over two hours.
         let course = [(0.0, 0.0), (0.0, 50_000.0), (-6_200.0, 50_000.0)];
         let mut route = course.to_vec();
         route.push((-7_000.0, 50_000.0));

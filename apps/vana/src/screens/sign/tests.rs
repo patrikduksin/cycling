@@ -26,8 +26,6 @@ fn width(sign: Sign, form: SignForm) -> usize {
     place(sign, form, false).unwrap().rect().width()
 }
 
-/// map-approach, map-close and map-offcourse draw these badges, and
-/// ride-straight this chip; one padding fits them all.
 #[test]
 fn fitted_signs_are_as_wide_as_their_mockups() {
     assert_eq!(width(turn(Glyph::Right, 250), SignForm::Badge), 137);
@@ -56,7 +54,6 @@ fn each_form_sits_where_its_mockup_draws_it() {
     assert_eq!((chip.left, chip.top, chip.bottom), (24, 72, 100));
 }
 
-/// With a radar paired the content moves as the page body does.
 #[test]
 fn a_paired_radar_moves_the_content_by_half_its_strip() {
     for sign in [turn(Glyph::Left, 120), off(140), Sign::Arrived] {
@@ -103,8 +100,6 @@ fn the_data_pages_show_a_banner_and_only_main_the_chip() {
     assert_eq!(form(RidePage::Lap, banner), None);
 }
 
-/// Every sign in every form, over a striped page, painted by spans and by
-/// the per-pixel twin.
 #[test]
 fn painted_signs_match_the_per_pixel_reference() {
     let signs = [

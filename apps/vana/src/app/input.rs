@@ -284,7 +284,6 @@ impl Runtime {
         hit
     }
 
-    /// Whether the course sign the shown ride page draws is under (`x`, `y`).
     fn sign_at(&self, x: usize, y: usize, now: u64, radar: bool) -> bool {
         let sign = super::track::sign_of(&self.track, now);
         crate::screens::sign::on_page(self.navigation.ride_page, sign, radar)

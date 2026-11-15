@@ -346,12 +346,13 @@ The nine Santiago fixture tiles take 2,530 roads and 5,924 points at the
 once onto a 4-bit layer of the ground (two bits of coverage a class a
 pixel), and a frame paints the ground and roads from it by table.
 
-On the device (central Santiago, light look, 5 s health windows riding the
-fixture course with `build.sh scripted-gnss`), the map's frames with roads
-are no slower than the map's without them, but the map page itself is over
-its 25 ms frame budget; see #361's road PR for the numbers and the profile.
-A road extraction takes up to about 9.5 ms of its look-ahead pass, and a
-map fill with roads up to about 40 ms.
+On the device, riding the fixture course in the light look (5 s health
+windows with `build.sh scripted-gnss`), the map with roads sends a frame in
+31 ms at the median window's slowest (p95 44 ms) against 35 ms (p95 54 ms)
+for the map before roads: the roads cost less than the map work this
+change sped up, but the map page is still over its 25 ms frame budget. A
+road extraction takes up to 10 ms of its look-ahead pass, and a map fill
+with roads up to 48 ms.
 
 To measure it again:
 
@@ -364,8 +365,8 @@ To measure it again:
 3. Within the hold, `RIDE START` and page to the map.
 4. Read STATUS (`display_frame_*`, `map_fill_max_us`,
    `map_extract_max_us`), discard the ride, and pull the trace: its health
-   windows hold the frame mean and max, and its `map.fill` and
-   `map.extract` stages the map's work.
+   windows hold the frame mean and max, and its `vana.present.map_fill`
+   and `look_ahead.map_extract` stages the map's work.
 5. Delete the course files and flash the rider's firmware back.
 
 ### Climbs ahead

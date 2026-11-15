@@ -2,7 +2,7 @@ use super::*;
 use crate::ride::course::nav::tests::{Said, said};
 use crate::ride::course::turns;
 use crate::ride::homing::Homing;
-use crate::ride::homing::tests::{at, path};
+use crate::ride::homing::tests::{at, path, taken};
 extern crate std;
 use std::vec;
 use std::vec::Vec;
@@ -29,7 +29,9 @@ impl<'a> Rider<'a> {
     }
 
     fn observe(&mut self, location_e7: Option<(i32, i32)>, now: u64) -> Option<Event> {
-        let fix = self.homing.observe(location_e7, now);
+        let fix = self
+            .homing
+            .observe(location_e7.and_then(|e7| taken(e7, now)), now);
         self.follower.observe(fix, now, None)
     }
 

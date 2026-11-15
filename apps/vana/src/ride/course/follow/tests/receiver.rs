@@ -1,5 +1,6 @@
 use super::*;
-use device_api::gps::{FixState, Snapshot};
+use crate::ride::homing::Reported;
+use device_api::gps::Snapshot;
 use firmware_services::gps::Parser;
 use std::format;
 use std::string::String;
@@ -41,10 +42,8 @@ fn angle(e7: i32, degrees: usize, [positive, negative]: [char; 2]) -> String {
 
 impl Rider<'_> {
     fn hear(&mut self, gps: &Snapshot, now: u64) -> Option<Event> {
-        let location_e7 = (gps.state == FixState::Fresh)
-            .then(|| gps.latitude_e7.zip(gps.longitude_e7))
-            .flatten();
-        self.observe(location_e7, now)
+        let fix = self.homing.observe(Reported::fresh(gps, now), now);
+        self.follower.observe(fix, now, None)
     }
 }
 
@@ -84,7 +83,10 @@ fn events(heard: &[(u64, Option<Event>, Sign)]) -> Vec<(u64, Event)> {
 #[test]
 fn off_course_is_confirmed_by_a_receiver_fix_5_s_later_never_by_its_last_position_again() {
     let heard = off_at(&[11_000, 13_000]);
-    assert_eq!(events(&heard)[1..], [], "two fixes 2 s apart");
+    assert!(
+        matches!(events(&heard)[..], [(_, Event::Following)]),
+        "two fixes 2 s apart"
+    );
     let gone = heard
         .iter()
         .find(|&&(now, _, sign)| now > 13_000 && sign == Sign::None)
@@ -101,5 +103,4 @@ fn off_course_is_confirmed_by_a_receiver_fix_5_s_later_never_by_its_last_positio
         [(16_000, Event::OffCourse)],
         "standing still off it"
     );
-    assert!(matches!(events(&heard)[0], (_, Event::Following)));
 }

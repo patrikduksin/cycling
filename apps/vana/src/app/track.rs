@@ -256,9 +256,10 @@ impl Runtime {
             state.homing.end_replay();
             state.resume = Resume::None;
         }
-        let live = &self.readings.live;
-        let fix = state.homing.observe(live.location_e7, now);
-        let event = state.follower.observe(fix, now, live.speed_mm_s);
+        let fix = state.homing.observe(self.readings.reported, now);
+        let event = state
+            .follower
+            .observe(fix, now, self.readings.live.speed_mm_s);
         state.place_course(bulk);
         if state.homing.take_pass() {
             self.ride.passed_start(now);

@@ -97,7 +97,7 @@ pub struct Follower<'a> {
     matched_fix: Option<Point>,
     search_whole_course: bool,
     heading: Option<u16>,
-    fix_ms: u64,
+    taken_ms: u64,
     turns: &'a mut [Turn],
     turn_count: usize,
     scan: Scan,
@@ -123,7 +123,7 @@ impl<'a> Follower<'a> {
             matched_fix: None,
             search_whole_course: false,
             heading: None,
-            fix_ms: 0,
+            taken_ms: 0,
             turns,
             turn_count: 0,
             scan: Scan::default(),
@@ -304,13 +304,13 @@ impl<'a> Follower<'a> {
     ) -> Option<Event> {
         self.scan_turns();
         let Some(fix) = fix else {
-            let lost = self.following && now.saturating_sub(self.fix_ms) > nav::LOST_MS;
+            let lost = self.following && now.saturating_sub(self.taken_ms) > nav::LOST_MS;
             return lost.then(|| self.navigate(Observed::Lost)).flatten();
         };
-        if now.saturating_sub(self.fix_ms) > GAP_MS {
+        if fix.taken_ms.saturating_sub(self.taken_ms) > GAP_MS {
             self.matched_fix = None;
         }
-        self.fix_ms = now;
+        self.taken_ms = fix.taken_ms;
         self.heading = fix.heading;
         let joined = !self.following && fix.moved && self.joining(fix.at);
         if joined {
@@ -324,7 +324,7 @@ impl<'a> Follower<'a> {
             Matched::On(near) => {
                 let line = self.course();
                 let fixed = MatchedFix {
-                    now_ms: now,
+                    taken_ms: fix.taken_ms,
                     // A float cast saturates, so no position overflows.
                     along_mm: ((line[self.len - 1].along - near.to_end_m) * 1000.0) as u32,
                     to_end_mm: (near.to_end_m * 1000.0) as u32,

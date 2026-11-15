@@ -9,6 +9,7 @@
 //! hysteresis jitter near the start cannot cross. Waiting at the start, however
 //! long, delays the pass until the rider rides on.
 use crate::ride::thin::{self, off_segment};
+use device_api::gps::{FixState, Snapshot};
 use libm::{atan2f, cosf, sqrtf};
 
 pub mod rebuild;
@@ -65,6 +66,27 @@ pub struct Guide {
     pub heading: Option<u16>,
 }
 
+/// A position as the receiver reported it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reported {
+    pub location_e7: (i32, i32),
+    /// When the receiver took it, by the main loop's clock.
+    pub taken_ms: u64,
+}
+
+impl Reported {
+    /// The receiver's position while its fix is fresh.
+    pub fn fresh(gps: &Snapshot, now: u64) -> Option<Self> {
+        if gps.state != FixState::Fresh {
+            return None;
+        }
+        Some(Self {
+            location_e7: (gps.latitude_e7?, gps.longitude_e7?),
+            taken_ms: now.saturating_sub(gps.age_ms?),
+        })
+    }
+}
+
 /// A fresh position, for what follows the rider (`course::follow`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Fix {
@@ -73,6 +95,9 @@ pub struct Fix {
     pub heading: Option<u16>,
     /// A new position; else the rider stands still, a second on.
     pub moved: bool,
+    /// When the receiver took the position: handed on again, it is as old
+    /// as it was.
+    pub taken_ms: u64,
 }
 
 /// Where a ride's positions are measured from: its first fix.
@@ -290,8 +315,12 @@ impl<'a> Homing<'a> {
     /// The ride's position, if fresh, once per main-loop pass. A receiver
     /// reports about once a second, so only a new position is a new fix;
     /// standing still, the same one is handed on once a second.
-    pub fn observe(&mut self, location_e7: Option<(i32, i32)>, now: u64) -> Option<Fix> {
-        let Some((lat, lon)) = location_e7 else {
+    pub fn observe(&mut self, reported: Option<Reported>, now: u64) -> Option<Fix> {
+        let Some(Reported {
+            location_e7: (lat, lon),
+            taken_ms,
+        }) = reported
+        else {
             if self.here.is_some() && now.saturating_sub(self.here_ms) > FIX_LOST_MS {
                 self.here = None;
                 self.fed = None;
@@ -299,7 +328,7 @@ impl<'a> Homing<'a> {
             }
             return None;
         };
-        self.here_ms = now;
+        self.here_ms = taken_ms;
         let moved = self.fed != Some((lat, lon));
         let p = if moved {
             self.fed = Some((lat, lon));
@@ -322,6 +351,7 @@ impl<'a> Homing<'a> {
             at: p,
             heading: self.heading,
             moved,
+            taken_ms,
         })
     }
 
@@ -474,6 +504,14 @@ pub(crate) mod tests {
     const LAT: i32 = -334_500_000;
     const LON: i32 = -706_600_000;
 
+    /// The receiver's fix of `location_e7`, taken `now`.
+    pub(crate) fn taken(location_e7: (i32, i32), now: u64) -> Option<Reported> {
+        Some(Reported {
+            location_e7,
+            taken_ms: now,
+        })
+    }
+
     /// A position `east` and `north` metres from (LAT, LON).
     pub(crate) fn at(east: f32, north: f32) -> (i32, i32) {
         let cos = cosf(LAT as f32 * 1e-7 * core::f32::consts::PI / 180.0);
@@ -503,7 +541,7 @@ pub(crate) mod tests {
     fn ride(homing: &mut Homing, points: &[(f32, f32)], now: &mut u64) {
         for &(east, north) in points {
             *now += 1_000;
-            homing.observe(Some(at(east, north)), *now);
+            homing.observe(taken(at(east, north), *now), *now);
         }
     }
 
@@ -622,7 +660,7 @@ pub(crate) mod tests {
             let mut now = 0;
             for &fix in &fixes {
                 now += 1_000;
-                homing.observe(Some(fix), now);
+                homing.observe(taken(fix, now), now);
             }
             let worst = deviation(&homing, &road, &fixes);
             std::eprintln!(
@@ -650,8 +688,8 @@ pub(crate) mod tests {
         );
         assert!(homing.guide().unwrap().heading.is_some());
         // Standing still: the same position, then a new one nearby.
-        homing.observe(Some(at(0.0, 100.0)), now + 20_000);
-        homing.observe(Some(at(1.0, 101.0)), now + 21_000);
+        homing.observe(taken(at(0.0, 100.0), now + 20_000), now + 20_000);
+        homing.observe(taken(at(1.0, 101.0), now + 21_000), now + 21_000);
         let guide = homing.guide().unwrap();
         assert_eq!(guide.heading, None);
         assert!(near(guide.bearing, 180.0, 2.0), "{guide:?}");
@@ -674,7 +712,7 @@ pub(crate) mod tests {
         let mut still = Vec::new();
         for _ in 0..40 {
             now += 500;
-            still.extend(homing.observe(Some(at(0.0, 600.0)), now));
+            still.extend(homing.observe(taken(at(0.0, 600.0), now), now));
         }
         assert_eq!(still.len(), 20, "{still:?}");
         assert!(still.iter().all(|fix| !fix.moved));
@@ -686,8 +724,8 @@ pub(crate) mod tests {
     fn a_ride_across_the_antimeridian_measures_the_short_way() {
         let mut crumbs = vec![Crumb::default(); 16];
         let mut homing = Homing::new(&mut crumbs);
-        homing.observe(Some((0, 1_799_998_000)), 1_000);
-        homing.observe(Some((0, -1_799_998_000)), 2_000);
+        homing.observe(taken((0, 1_799_998_000), 1_000), 1_000);
+        homing.observe(taken((0, -1_799_998_000), 2_000), 2_000);
         let (direct_m, _) = homing.way_back().unwrap();
         assert!((40..=50).contains(&direct_m), "{direct_m}");
     }
@@ -740,7 +778,7 @@ pub(crate) mod tests {
         for (index, &(east, north)) in points.iter().enumerate() {
             *now += 1_000;
             let fix = at(east + next() * jitter, north + next() * jitter);
-            homing.observe(Some(fix), *now);
+            homing.observe(taken(fix, *now), *now);
             if homing.take_pass() {
                 found.push(index);
             }
@@ -958,7 +996,8 @@ pub(crate) mod tests {
                 east + noise.bias * libm::sinf(w * t + phase_e) + next() * noise.white,
                 north + noise.bias * libm::sinf(w * t + phase_n) + next() * noise.white,
             );
-            homing.observe(Some(fix), (index as u64 + 1) * 1_000);
+            let now = (index as u64 + 1) * 1_000;
+            homing.observe(taken(fix, now), now);
             count += usize::from(homing.take_pass());
         }
         count

@@ -2,6 +2,7 @@
 use super::{Observations, Runtime};
 use crate::ride::auto::{Motion, Source};
 use crate::ride::gps_speed::{GpsSpeed, Ground};
+use crate::ride::homing::Reported;
 use crate::ride::log::{Sample, Status};
 use crate::ride::metrics::{Cadence, Gradient, Odometer, Power3s, Speed};
 use crate::ride::wheel_size::{self, Calibrator};
@@ -69,6 +70,8 @@ impl Decoded {
 pub(super) struct Readings {
     /// The sample most recently offered to the recorder.
     pub(super) live: Sample,
+    /// The receiver's position in `live`, and when it took it.
+    pub(super) reported: Option<Reported>,
     speed: Speed,
     /// Learns the wheel's circumference from GPS while riding.
     wheel_size: Calibrator,
@@ -208,6 +211,7 @@ impl Default for Readings {
     fn default() -> Self {
         Self {
             live: Sample::default(),
+            reported: None,
             speed: Speed::default(),
             wheel_size: Calibrator::default(),
             wheel_epoch: None,
@@ -494,11 +498,7 @@ impl Runtime {
         let (ble_heart_bpm, cadence_tenths) =
             ble_profile::ride_fields(ble, self.ride.active().source());
         let position = observations.position.snapshot(now);
-        let location_e7 = position.and_then(|snapshot| {
-            (snapshot.gps.state == FixState::Fresh)
-                .then(|| Some((snapshot.gps.latitude_e7?, snapshot.gps.longitude_e7?)))
-                .flatten()
-        });
+        let reported = position.and_then(|snapshot| Reported::fresh(&snapshot.gps, now));
         let utc_ms = utc_ms(
             observations.network_time,
             position.and_then(|snapshot| snapshot.gps.utc_ms),
@@ -558,7 +558,7 @@ impl Runtime {
         let mut sample = Sample {
             active_ms: 0,
             utc_ms,
-            location_e7,
+            location_e7: reported.map(|reported| reported.location_e7),
             demo_speed_mm_s: None,
             heart_bpm: readings
                 .heart
@@ -593,6 +593,7 @@ impl Runtime {
         sample.altitude = self.ride.recorded_altitude(pressure);
         self.readings.power_3s_watts = self.readings.power_3s.update(now, sample.power_watts);
         self.readings.live = sample;
+        self.readings.reported = reported;
         sample
     }
 }

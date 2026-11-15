@@ -126,6 +126,7 @@ mod tests {
     use crate::ride::course::follow::Follower;
     use crate::ride::course::nav::Event;
     use crate::ride::homing::Crumb;
+    use crate::ride::homing::tests::taken;
     use crate::ride::log::{Sample, Source};
     extern crate std;
     use std::vec;
@@ -225,7 +226,7 @@ mod tests {
     fn live(homing: &mut Homing, fixes: &[(i32, i32)], now: &mut u64) {
         for &fix in fixes {
             *now += 1_000;
-            homing.observe(Some(fix), *now);
+            homing.observe(taken(fix, *now), *now);
         }
     }
 
@@ -423,7 +424,7 @@ mod tests {
         let mut events = Vec::new();
         for (i, &fix) in square(3)[0..40].iter().enumerate() {
             let now = (i as u64 + 1) * 1_000;
-            events.extend(follower.observe(homing.observe(Some(fix), now), now, None));
+            events.extend(follower.observe(homing.observe(taken(fix, now), now), now, None));
         }
         assert!(events.contains(&Event::Following), "{events:?}");
         assert!(follower.following());

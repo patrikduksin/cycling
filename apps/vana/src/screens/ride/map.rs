@@ -646,14 +646,22 @@ impl Frame {
     }
 
     /// The tiles of `header` the roads are fetched from, in the ride's
-    /// frame `ride`.
+    /// frame `ride`: those under the screen, then the margin's while there
+    /// is room.
     fn road_tiles(
         &self,
         header: &terrain::Header,
         ride: RideFrame,
     ) -> Option<heapless::Vec<terrain::TileKey, { roads::TILES }>> {
-        let corners = self.view(ROAD_FETCH_MARGIN)?.map(|p| ride.locate(p));
-        Some(header.tiles_under(&corners).take(roads::TILES).collect())
+        let screen = self.view(0.0)?.map(|p| ride.locate(p));
+        let margin = self.view(ROAD_FETCH_MARGIN)?.map(|p| ride.locate(p));
+        let mut keys = heapless::Vec::new();
+        for key in header.tiles_under(&screen).chain(header.tiles_under(&margin)) {
+            if !keys.contains(&key) && keys.push(key).is_err() {
+                break;
+            }
+        }
+        Some(keys)
     }
 }
 

@@ -177,9 +177,10 @@ const _: () = assert!(core::mem::size_of::<Sign>() == 4, "View has no spare byte
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Guidance {
     pub sign: Sign,
-    /// The next turn: where it starts and its glyph.
+    /// The next turn: its corner and its glyph.
     pub turn: Option<(Spot, Glyph)>,
-    /// Off course: where the rider left it, which the way back leads to.
+    /// Off course: where the rider left it, which the way back leads to;
+    /// a missed turn's corner.
     pub junction: Option<Spot>,
 }
 
@@ -394,7 +395,7 @@ impl Navigator {
             .flatten()
             .filter(|turn| turn.start_mm.abs_diff(left_mm) <= MISSED_MM)
             .min_by_key(|turn| turn.start_mm.abs_diff(left_mm));
-        let along_mm = missed.map_or(left_mm, |turn| turn.start_mm);
+        let along_mm = missed.map_or(left_mm, corner);
         Spot {
             along_mm,
             at: locate(along_mm),
@@ -548,7 +549,7 @@ impl Navigator {
         Some(Guidance {
             sign: self.sign(turns, now_ms),
             turn: self.next(turns).map(|next| {
-                let along_mm = next.turn.start_mm;
+                let along_mm = corner(next.turn);
                 let at = locate(along_mm);
                 (Spot { along_mm, at }, next.glyph)
             }),
@@ -572,6 +573,11 @@ impl Navigator {
         self.last_sounded = shift(self.last_sounded);
         self.last_beeped = shift(self.last_beeped);
     }
+}
+
+/// Where a turn bends: midway from where it starts to where it ends.
+fn corner(turn: &Turn) -> u32 {
+    turn.start_mm / 2 + turn.end_mm / 2
 }
 
 fn window_mm(speed_mm_s: Option<u32>) -> u32 {

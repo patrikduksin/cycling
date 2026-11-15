@@ -257,7 +257,7 @@ const SHAFT: f32 = 26.0;
 const BEFORE: f32 = 10.0;
 const HEAD_LENGTH: f32 = 10.5;
 const HEAD_HALF: f32 = 7.9;
-const ARROW_STROKES: usize = 12;
+const ARROW_STROKES: usize = 24;
 /// The arrow's casing, then its white: shaft half width and head outline.
 const ARROW_LAYERS: [(f32, f32, u16); 2] = [(4.25, 1.75, CASING), (2.5, 0.5, WHITE)];
 /// Chevrons back to the junction: pitch, depth and half span, in px.
@@ -269,6 +269,8 @@ const CHEVRON_STROKE: f32 = 1.75;
 /// The puck's black ring and white disc, and the junction's rings, in
 /// quarter pixels.
 const PUCK_RINGS: [(i32, u16); 2] = [(58, BLACK), (50, WHITE)];
+const PUCK_CLEAR: f32 = 14.5;
+const JUNCTION_CLEAR: f32 = 12.0;
 const JUNCTION_RINGS: [(i32, u16); 4] = [(48, GROUND_COLOR), (40, AMBER), (22, BLACK), (14, WHITE)];
 const _: () = assert!(ITEMS <= u16::MAX as usize, "strokes are bucketed as u16");
 
@@ -278,7 +280,7 @@ const BAR_LEFT: usize = 12;
 const BAR_TOP: usize = 303;
 const BAR_THICKNESS: usize = 3;
 const BAR_GAP: usize = 6;
-const DISTANCE_RIGHT: usize = 202;
+const DISTANCE_RIGHT: usize = 203;
 const UNIT_RIGHT: usize = 228;
 const CX: usize = WIDTH / 2;
 const MID_Y: usize = (GROUND.start + GROUND.end) / 2;
@@ -489,7 +491,7 @@ fn fill(frame: &mut Frame, track: &Track) {
     }
     frame.has_track = track.crumbs.len() >= 2 || split.is_some();
     if let (Some(split), Some((turn, _))) = (split, track.turn()) {
-        arrow(frame, &at, track.ahead_points(split), at.at(turn.at));
+        arrow(frame, &at, || track.ahead_points(split), at.at(turn.at));
     }
     let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
     if let Some(junction) = track.junction() {
@@ -507,46 +509,70 @@ fn fill(frame: &mut Frame, track: &Track) {
 }
 
 /// The turn arrow: the route from just before the turn at `turn`, along it,
-/// and a head.
-fn arrow(
+/// and a head. `points` walks the route ahead from the rider, each point
+/// with whether it is before the turn.
+fn arrow<I: Iterator<Item = (Point, bool)>>(
     frame: &mut Frame,
     at: &Projection,
-    points: impl Iterator<Item = (Point, bool)>,
+    points: impl Fn() -> I,
     turn: Point,
 ) {
-    // The route on screen, each point with its distance along it.
-    let mut route: heapless::Vec<(Point, f32), 64> = heapless::Vec::new();
-    let mut base = None;
-    let mut walked = 0.0;
-    for (p, before) in points.map(|(p, before)| (at.at(p), before)) {
-        if let Some(&(last, _)) = route.last() {
-            if base.is_none() && !before {
+    let screen = || points().map(|(p, before)| (at.at(p), before));
+    // How far along the route the turn is.
+    let (mut walked, mut last, mut base) = (0.0, None, None);
+    for (p, before) in screen() {
+        if let Some(last) = last {
+            if !before {
                 base = Some(walked + distance(last, turn));
+                break;
             }
             walked += distance(last, p);
         }
-        if route.push((p, walked)).is_err() || base.is_some_and(|base| walked > base + SHAFT) {
-            break;
-        }
+        last = Some(p);
     }
-    let (Some(base), Some(&(rider, _))) = (base, route.first()) else {
+    let Some(((rider, _), base)) = screen().next().zip(base) else {
         return;
     };
     let start = (base - BEFORE.min(distance(rider, turn) / 4.0)).max(0.0);
     let end = start + SHAFT;
     let mut shaft: heapless::Vec<Point, { ARROW_STROKES + 1 }> = heapless::Vec::new();
-    let _ = shaft.push(along(&route, start));
-    for &(p, s) in &route {
-        if s > start && s < end && shaft.len() < ARROW_STROKES {
-            let _ = shaft.push(p);
+    let (mut walked, mut last) = (0.0, None::<Point>);
+    for (p, _) in screen() {
+        let Some(from) = last.replace(p) else {
+            continue;
+        };
+        let length = distance(from, p);
+        let point = |s: f32| {
+            let t = ((s - walked) / length.max(1e-3)).clamp(0.0, 1.0);
+            (from.0 + t * (p.0 - from.0), from.1 + t * (p.1 - from.1))
+        };
+        if shaft.is_empty() && walked + length >= start {
+            let _ = shaft.push(point(start));
         }
+        if walked + length >= end {
+            let _ = shaft.push(point(end));
+            break;
+        }
+        if !shaft.is_empty() && shaft.push(p).is_err() {
+            break;
+        }
+        walked += length;
     }
-    let tip = along(&route, end);
-    let _ = shaft.push(tip);
-    let back = along(&route, (end - 3.0).max(start));
-    let (dx, dy) = (tip.0 - back.0, tip.1 - back.1);
-    let length = libm::sqrtf(dx * dx + dy * dy).max(1e-3);
-    let (ux, uy) = (dx / length, dy / length);
+    // The head points the way the shaft's last stretch goes.
+    let Some(&tip) = shaft.last() else {
+        return;
+    };
+    let Some((ux, uy)) = shaft.windows(2).rev().find_map(|pair| {
+        let length = distance(pair[0], pair[1]);
+        (length >= 0.5).then(|| {
+            (
+                (pair[1].0 - pair[0].0) / length,
+                (pair[1].1 - pair[0].1) / length,
+            )
+        })
+    }) else {
+        return;
+    };
     frame.arrow.head = Triangle([
         (tip.0 + ux * HEAD_LENGTH, tip.1 + uy * HEAD_LENGTH),
         (tip.0 - uy * HEAD_HALF, tip.1 + ux * HEAD_HALF),
@@ -559,22 +585,6 @@ fn arrow(
     }
 }
 
-/// The point `s` px along a route that holds each point's distance.
-fn along(route: &[(Point, f32)], s: f32) -> Point {
-    for pair in route.windows(2) {
-        let ((a, sa), (b, sb)) = (pair[0], pair[1]);
-        if s <= sb {
-            let t = if sb > sa {
-                ((s - sa) / (sb - sa)).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            return (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
-        }
-    }
-    route.last().map_or((0.0, 0.0), |&(p, _)| p)
-}
-
 /// Three chevrons between the rider and the junction, pointing to it.
 fn chevrons(frame: &mut Frame, rider: Point, junction: Point) {
     let (dx, dy) = (junction.0 - rider.0, junction.1 - rider.1);
@@ -585,8 +595,14 @@ fn chevrons(frame: &mut Frame, rider: Point, junction: Point) {
     let (ux, uy) = (dx / length, dy / length);
     let middle = ((rider.0 + junction.0) / 2.0, (rider.1 + junction.1) / 2.0);
     frame.chevron_count = 0;
+    let half = length / 2.0;
     for k in 0..CHEVRONS {
         let offset = (k as f32 - 1.0) * CHEVRON_PITCH;
+        // Only chevrons clear of the puck and the junction's ring.
+        let (tail, tip) = (half + offset - CHEVRON_DEPTH, half + offset);
+        if tail - CHEVRON_STROKE < PUCK_CLEAR || length - tip - CHEVRON_STROKE < JUNCTION_CLEAR {
+            continue;
+        }
         let tip = (middle.0 + ux * offset, middle.1 + uy * offset);
         for side in [-1.0, 1.0] {
             let wing = (

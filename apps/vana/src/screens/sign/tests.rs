@@ -89,15 +89,14 @@ fn the_data_pages_show_a_banner_and_only_main_the_chip() {
         );
         assert_eq!(form(page, Sign::None), None, "{page:?}");
     }
-    for page in [
-        RidePage::Stats,
-        RidePage::Climb,
-        RidePage::Lap,
-        RidePage::Map,
-    ] {
+    for page in [RidePage::Stats, RidePage::Climb, RidePage::Lap] {
         assert_eq!(form(page, at_rest), None, "{page:?}");
     }
     assert_eq!(form(RidePage::Lap, banner), None);
+    for sign in [at_rest, banner, off(80), Sign::Arrived] {
+        assert_eq!(form(RidePage::Map, sign), Some(SignForm::Badge), "{sign:?}");
+    }
+    assert_eq!(form(RidePage::Map, Sign::None), None);
 }
 
 #[test]

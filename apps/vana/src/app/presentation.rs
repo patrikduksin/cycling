@@ -676,9 +676,6 @@ impl Runtime {
             Page::Setup => navigation.setup_cursor,
             _ => navigation.home_cursor,
         };
-        if page == Page::Ride && navigation.ride_page == RidePage::Map {
-            super::track::refresh_map(&mut self.track, now);
-        }
         let mut view = View::new(page, cursor, local);
         view.editing = page == Page::Settings && navigation.settings_editing;
         view.now_ms = now;
@@ -688,6 +685,9 @@ impl Runtime {
         view.power_3s = sample.power_watts;
         view.sample = self.shown.live();
         view.radar_paired = ant.channel(device_type::RADAR, now).is_some();
+        if page == Page::Ride && navigation.ride_page == RidePage::Map {
+            super::track::refresh_map(&mut self.track, now, view.radar_paired);
+        }
         view.auto_paused = self.ride.auto.paused();
         view.ride_page = navigation.ride_page;
         view.ride_pages = choice;

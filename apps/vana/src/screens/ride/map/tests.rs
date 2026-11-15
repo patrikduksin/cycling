@@ -4,13 +4,6 @@ use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
 use pose::Step;
 
-const SCREEN: Rect = Rect {
-    left: 0,
-    top: 0,
-    right: WIDTH,
-    bottom: HEIGHT,
-};
-
 /// The course the map mockups draw, start first, in metres from where
 /// map-approach's rider is: 250 m north to a right turn that bends 183 m
 /// east and 66 m north, then north again.
@@ -168,12 +161,23 @@ fn off_course_chevrons_lead_back_to_the_junction_and_the_puck_turns_amber() {
 }
 
 #[test]
-fn without_a_course_the_ride_is_drawn_ridden_a_kilometre_across() {
+fn chevrons_that_would_sit_under_the_puck_or_the_ring_are_left_out() {
+    let mut frame = Frame::default();
+    chevrons(&mut frame, (80.0, 158.0), (80.0, 242.0));
+    assert_eq!(frame.chevron_count, 6, "three, two strokes each");
+    chevrons(&mut frame, (80.0, 192.0), (80.0, 242.0));
+    assert_eq!(frame.chevron_count, 2, "only the middle one fits 50 px");
+    chevrons(&mut frame, (80.0, 200.0), (80.0, 242.0));
+    assert_eq!(frame.chevron_count, 0, "none fits 42 px");
+}
+
+#[test]
+fn without_a_course_the_ride_is_drawn_ridden_behind_the_rider_mid_map() {
     let c = track_crumbs(&[(0.0, 0.0), (0.0, 300.0), (0.0, 500.0)]);
     let frame = filled(&free(&c));
-    assert_eq!((frame.pose.step, frame.pose.rider), (Step::Km1, (120, 266)));
-    assert_eq!(pixel(&frame, 120, 285, BLACK), RIDDEN);
-    assert_eq!(pixel(&frame, 120, 266, BLACK), ACCENT, "the puck");
+    assert_eq!((frame.pose.step, frame.pose.rider), (Step::Km1, (120, 156)));
+    assert_eq!(pixel(&frame, 120, 240, BLACK), RIDDEN, "350 m behind");
+    assert_eq!(pixel(&frame, 120, 156, BLACK), ACCENT, "the puck");
 }
 
 #[test]
@@ -254,7 +258,7 @@ fn the_frame_is_refilled_only_when_the_track_changes() {
 fn fills_of_one_track_held_at_another_step_hash_apart() {
     use core::hash::{Hash, Hasher};
     let c = course(&COURSE);
-    let nearer = following(&c, (0.0, 60.0), 460.0, None);
+    let nearer = following(&c, (0.0, 55.0), 455.0, None);
     let (mut fresh_frame, mut held_frame) = (Frame::default(), Frame::default());
     let mut fresh = Cache::new(&mut fresh_frame);
     fresh.update(&nearer);
@@ -278,6 +282,21 @@ fn fills_of_one_track_held_at_another_step_hash_apart() {
     );
 }
 
+/// Each text in `want` shows whole, on the screen. The distance and its
+/// unit sit closer than two words would: they read as one.
+#[track_caller]
+fn assert_shows(canvas: &Canvas, want: &[&str], what: &str) {
+    use crate::screens::chrome::layout::{assert_shown, text};
+    let texts: std::vec::Vec<_> = canvas.runs.iter().filter_map(text).collect();
+    for (name, rect) in &texts {
+        assert!(
+            rect.right <= WIDTH && rect.bottom <= HEIGHT,
+            "{what}: {name}"
+        );
+    }
+    assert_shown(&texts, want, what);
+}
+
 fn page<'a>(map: Option<Filled<'a>>) -> View<'a> {
     let mut view = View::new(Page::Ride, 0, None);
     view.ride_page = RidePage::Map;
@@ -293,13 +312,9 @@ fn every_state_lays_out_its_text() {
         let mut frame = Frame::default();
         let mut cache = Cache::new(&mut frame);
         cache.update(track);
-        page(cache.filled())
-            .canvas()
-            .assert_laid_out(SCREEN, want, what);
+        assert_shows(page(cache.filled()).canvas(), want, what);
     };
-    page(None)
-        .canvas()
-        .assert_laid_out(SCREEN, &["NO TRACK"], "unavailable");
+    assert_shows(page(None).canvas(), &["NO TRACK"], "unavailable");
     check(&Track::default(), &["NO TRACK"], "no memory");
     let waiting = Track {
         available: true,

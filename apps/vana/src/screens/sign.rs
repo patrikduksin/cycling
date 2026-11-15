@@ -100,14 +100,15 @@ const CHIP: Geometry = Geometry {
 const CHIP_SQUARE: usize = 28;
 
 /// The form `page` shows `sign` in: a banner on the data pages, the chip
-/// only on main.
+/// only on main, and on the map the badge, at rest too.
 pub fn form(page: RidePage, sign: Sign) -> Option<SignForm> {
     match (page, sign) {
         (_, Sign::None) => None,
+        (RidePage::Map, _) => Some(SignForm::Badge),
         (RidePage::Main, Sign::Chip { .. }) => Some(SignForm::Chip),
         (RidePage::Stats | RidePage::Climb, Sign::Chip { .. }) => None,
         (RidePage::Main | RidePage::Stats | RidePage::Climb, _) => Some(SignForm::Banner),
-        (RidePage::Lap | RidePage::Workout | RidePage::Map, _) => None,
+        (RidePage::Lap | RidePage::Workout, _) => None,
     }
 }
 

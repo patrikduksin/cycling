@@ -41,3 +41,9 @@ why = "the road ref box: pack v2 stores no ref text, so it is not drawn"
 [[mask]]
 text = "G-21"
 why = "the road ref label, not drawn"
+
+# SIGN_14 places each letter on a whole pixel; the mockup's 0.5 px
+# letter-spacing puts the gap between A and C one column over.
+[[text]]
+text = "TURN BACK"
+why = "whole-pixel letter pens against the mockup's half-pixel spacing"

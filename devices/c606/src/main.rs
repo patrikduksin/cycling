@@ -60,7 +60,8 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     device::activity::calibrate();
     let pass_log: &'static firmware_services::trace::shell::PassLog = external(Default::default);
     // Passed by value, the shell would sit in internal RAM three times:
-    // twice in the console task's future and once in main's (#375).
+    // twice in the console task's future (rust-lang/rust#62958) and once
+    // in main's (#375).
     static SHELL: static_cell::StaticCell<FirmwareShell> = static_cell::StaticCell::new();
     let system = SHELL.init_with(|| {
         use firmware_services::trace::shell::{ShellDisplay, ShellFlash, ShellPower};

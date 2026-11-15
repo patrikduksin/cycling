@@ -35,9 +35,6 @@ type FirmwareShell = firmware_shell::shell::Shell<
     firmware_services::trace::shell::ShellFlash<device::drivers::storage::Backend<'static>>,
 >;
 
-/// The edges the shell takes, kept for the trace until the pass records
-/// them, in PSRAM: the shell lives in internal RAM, where 16 edges would
-/// take main stack.
 struct ShellInput(
     &'static mut firmware_services::trace::frozen::RecordedEdges<device::board::Input>,
 );

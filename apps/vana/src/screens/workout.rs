@@ -5,7 +5,6 @@ use super::chrome::{
 };
 use super::cue::{Badge, Cue};
 use super::home::Home;
-use super::icons::SignForm;
 use super::ready::Readiness;
 use super::ride::summary::{self, After};
 use super::ride::{self, ClimbFrame, ClimbLent, Marks, RidePage, Smooth};
@@ -408,14 +407,6 @@ impl<'v> Scene<'v> {
 
     pub(super) fn light(&self) -> bool {
         self.light
-    }
-
-    pub(super) fn banner_rows(&self) -> Option<core::ops::Range<usize>> {
-        let sign = self
-            .sign
-            .as_ref()
-            .filter(|sign| sign.form() == SignForm::Banner)?;
-        Some(sign.rect().top..sign.rect().bottom)
     }
 
     #[cfg(test)]
@@ -1435,6 +1426,124 @@ mod tests {
             &view(RidePage::Main, 120, 61),
         );
         assert_eq!(ticked, std::vec::Vec::<usize>::new());
+    }
+
+    fn rows(view: &View) -> std::vec::Vec<[u16; WIDTH]> {
+        let scene = view.scene();
+        (0..HEIGHT)
+            .map(|y| {
+                let mut pixels = [0; WIDTH];
+                firmware_shell::shell::Picture::paint(&scene, &mut Row::new(y, &mut pixels));
+                pixels
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_banner_hides_what_it_partly_covers_and_moves_nothing_else() {
+        use crate::ride::course::nav::{Distance, Glyph};
+        use firmware_shell::rendering::font::SPILL;
+        use firmware_shell::shell::Parts;
+        let turn = Sign::Turn {
+            glyph: Glyph::Left,
+            distance: Distance::from_mm(120_000),
+        };
+        let view = |page, nav, radar_paired| {
+            let mut view = View::new(Page::Ride, 0, None);
+            view.ride_page = page;
+            view.radar_paired = radar_paired;
+            view.course = true;
+            view.nav = nav;
+            if page == RidePage::Climb {
+                view.show_climb(ClimbLent::NONE);
+            }
+            view.prepare();
+            view
+        };
+        for page in [RidePage::Stats, RidePage::Climb] {
+            for radar_paired in [false, true] {
+                let what = std::format!("{page:?} radar {radar_paired}");
+                let bare = view(page, Sign::None, radar_paired);
+                let under = view(page, turn, radar_paired);
+                let banner = sign::on_page(page, turn, radar_paired).unwrap().rect();
+                let canvas = bare.canvas();
+                let shapes = canvas.shapes.iter().map(|shape| shape.bounds());
+                let runs = canvas.runs.iter().map(|run| Rect {
+                    left: run.left.saturating_sub(SPILL),
+                    top: run.top,
+                    right: run.left + run.line.width() + SPILL,
+                    bottom: run.bottom(),
+                });
+                let straddling = shapes
+                    .chain(runs)
+                    .filter(|rect| rect.top < banner.bottom && banner.bottom < rect.bottom)
+                    .collect::<std::vec::Vec<_>>();
+                if page == RidePage::Stats {
+                    assert!(
+                        !straddling.is_empty(),
+                        "{what}: a reading straddles the banner's edge"
+                    );
+                }
+                let shift = if radar_paired { 0 } else { ride::CENTRE_SHIFT };
+                let hidden = |x: usize, y| {
+                    straddling.iter().any(|r| {
+                        (r.left..r.right).contains(&(x + shift)) && (r.top..r.bottom).contains(&y)
+                    })
+                };
+                let sent = Parts::of(&bare.scene()).changed(&Parts::of(&under.scene()));
+                let (bare, under) = (rows(&bare), rows(&under));
+                for y in 0..HEIGHT {
+                    if bare[y] != under[y] {
+                        assert!(sent.contains(y), "{what}: row {y} changes but is not sent");
+                    }
+                }
+                for y in (0..banner.top).chain(banner.bottom..HEIGHT) {
+                    for x in 0..WIDTH {
+                        let pixel = under[y][x];
+                        if hidden(x, y) {
+                            assert_eq!(pixel, BLACK, "{what}: a covered reading shows at {x},{y}");
+                        } else {
+                            assert_eq!(pixel, bare[y][x], "{what}: {x},{y} changed");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_sign_keeps_its_fill_and_white_ink_in_the_light_look() {
+        use crate::ride::course::nav::{Distance, Glyph};
+        let turn = Sign::Turn {
+            glyph: Glyph::Left,
+            distance: Distance::from_mm(120_000),
+        };
+        let page = |light| {
+            let mut view = View::new(Page::Ride, 0, None);
+            view.ride_page = RidePage::Stats;
+            view.course = true;
+            view.nav = turn;
+            view.light = light;
+            view.prepare();
+            rows(&view)
+        };
+        let (dark, light) = (page(false), page(true));
+        let rect = sign::on_page(RidePage::Stats, turn, false).unwrap().rect();
+        let banner = rect.top..rect.bottom;
+        let pixels = |rows: &[[u16; WIDTH]]| {
+            rows[banner.clone()]
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<std::vec::Vec<_>>()
+        };
+        assert_eq!(
+            pixels(&light),
+            pixels(&dark),
+            "the banner paints the same in both looks"
+        );
+        assert!(pixels(&light).contains(&sign::TURN_FILL), "turn fill");
+        assert!(pixels(&light).contains(&WHITE), "white ink");
     }
 
     #[test]

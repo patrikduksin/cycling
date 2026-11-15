@@ -19,7 +19,8 @@
 //! `app::climb_page`).
 use super::canvas::Canvas;
 use super::chrome::{self, Align, CONTENT, Rect};
-use super::workout::{Graphics, Scene, Text, View};
+use super::icons::SignForm;
+use super::workout::{Body, Graphics, Scene, Text, View};
 use crate::ride::laps::Lap;
 use crate::ride::zones::TrainingProfile;
 use crate::sensors::radar::{self, close};
@@ -321,6 +322,11 @@ pub(super) fn prepare(view: &mut View) {
         RidePage::Workout => super::workout::fill(view, workout::prepare),
         RidePage::Map => super::workout::fill(view, map::prepare),
     }
+    let banner = super::sign::on_page(view.ride_page, view.nav, view.radar_paired)
+        .filter(|sign| sign.form() == SignForm::Banner);
+    if let (Some(banner), Body::Canvas(canvas)) = (banner, &mut view.body) {
+        canvas.hide(banner.rect().top..banner.rect().bottom);
+    }
 }
 
 /// The main page's gauges, prepared in their own frame (#167).
@@ -406,9 +412,7 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
         RidePage::Map => parts.add(BODY.top..BODY.bottom, &scene.map()),
     }
     if page != RidePage::Main {
-        scene
-            .canvas()
-            .parts(parts, scene.banner_rows().unwrap_or(0..0));
+        scene.canvas().parts(parts);
     }
 }
 

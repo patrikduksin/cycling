@@ -1,9 +1,10 @@
 mod pose;
 mod raster;
+mod roads;
 
 use super::kilometres;
 use crate::ride::course::nav::{Glyph, Guidance, Sign, Spot};
-use crate::ride::homing::{Crumb, distance};
+use crate::ride::homing::{Crumb, Frame as RideFrame, distance};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
     ACCENT, AMBER, Align, BLACK, BODY as BODY_FACE, HEIGHT, Rect, Row, SECONDARY, WHITE, WIDTH,
@@ -15,7 +16,8 @@ use crate::screens::workout::{Text, View};
 use firmware_shell::rendering::font::FOOT_20;
 pub use pose::GROUND;
 use pose::{Aim, Keepout, Pose, Projection, Target, choose_pose};
-use raster::{Cover, Stroke, Triangle};
+use raster::{Bar, Class, Cover, Layer, Stroke, Triangle};
+use roads::{Detail, Roads};
 
 type Point = (f32, f32);
 
@@ -62,6 +64,7 @@ pub struct Key {
     left_m: Option<u32>,
     badge: Option<Rect>,
     radar: bool,
+    roads: u32,
 }
 
 impl Track<'_> {
@@ -84,6 +87,7 @@ impl Track<'_> {
             left_m: self.left_m,
             badge: self.badge,
             radar: self.radar,
+            roads: 0,
         }
     }
 
@@ -192,12 +196,46 @@ impl<'a> Cache<'a> {
         Self { frame, held: None }
     }
 
-    pub fn update(&mut self, track: &Track) {
-        let key = track.key();
-        if self.held != Some(key) {
+    /// Fill the frame again if `track` or the roads changed; whether it did.
+    pub fn update(&mut self, track: &Track) -> bool {
+        let key = Key {
+            roads: self.frame.roads.generation(),
+            ..track.key()
+        };
+        let stale = self.held != Some(key);
+        if stale {
             fill(self.frame, track);
             self.held = Some(key);
         }
+        stale
+    }
+
+    /// One pass of fetching the roads under the map from the terrain
+    /// cache, in the ride's `frame`: ask for the tiles the view lacks and
+    /// copy one that is cached. Whether it copied one.
+    pub fn fetch_roads(&mut self, engine: &mut terrain::Lookahead, frame: RideFrame) -> bool {
+        let Some(view) = self.frame.view() else {
+            engine.want([]);
+            return false;
+        };
+        let Some(header) = engine.header().copied() else {
+            return false;
+        };
+        let corners = view.map(|p| frame.locate(p));
+        let keys: heapless::Vec<_, { roads::TILES }> =
+            header.tiles_under(&corners).take(roads::TILES).collect();
+        let detail = Detail::of(self.frame.last_pose.step);
+        let roads = &mut self.frame.roads;
+        engine.want(roads.lacking(&keys, detail, frame));
+        let ready = roads
+            .lacking(&keys, detail, frame)
+            .find(|&key| engine.roads(key).is_some());
+        let Some((key, tile)) = ready.and_then(|key| Some((key, engine.roads(key)?))) else {
+            return false;
+        };
+        let (south, west) = header.origin(key);
+        roads.extract(frame, &keys, key, detail, (south * 10, west * 10), tile);
+        true
     }
 
     pub fn filled(&self) -> Option<Filled<'_>> {
@@ -229,6 +267,8 @@ impl core::hash::Hash for Filled<'_> {
 }
 
 const GROUND_COLOR: u16 = rgb(0x10, 0x10, 0x12);
+const MINOR_ROAD: u16 = rgb(0x2a, 0x2a, 0x2d);
+const MAJOR_ROAD: u16 = rgb(0x44, 0x44, 0x48);
 const RIDDEN: u16 = rgb(0x1f, 0x4a, 0x78);
 const CASING: u16 = rgb(0x04, 0x26, 0x4c);
 const BAND_ROWS: usize = 16;
@@ -243,6 +283,12 @@ const ARROW_SHAFT_PX: f32 = 26.0;
 const ARROW_BEFORE_TURN_PX: f32 = 10.0;
 const ARROW_HEAD_LENGTH_PX: f32 = 10.5;
 const ARROW_HEAD_HALF_WIDTH_PX: f32 = 7.9;
+const ROAD_SEGMENTS: usize = 2_048;
+const MINOR_ROAD_HALF_PX: f32 = 2.5;
+const MAJOR_ROAD_HALF_PX: f32 = 4.5;
+const GROUND_ROWS: usize = GROUND.end - GROUND.start;
+/// Roads are fetched for the view and this share of it more each way.
+const ROAD_FETCH_MARGIN: f32 = 0.25;
 const ARROW_STROKES: usize = 24;
 struct ArrowLayer {
     shaft_half: f32,
@@ -345,6 +391,12 @@ pub struct Frame {
     show: Show,
     last_pose: Pose,
     has_pose: bool,
+    last_centre: Point,
+    /// The ground and its roads, and the colour of each layer nibble.
+    layer: Layer<GROUND_ROWS>,
+    palette: [u16; 16],
+    /// Road segments drawn this fill, minor and major.
+    roads_drawn: [usize; 2],
     strokes: [Stroke; STROKES],
     counts: [usize; 2],
     band_offsets: [[u16; BAND_COUNT + 1]; 2],
@@ -356,6 +408,7 @@ pub struct Frame {
     puck: Option<Puck>,
     has_track: bool,
     left_m: Option<u32>,
+    roads: Roads,
 }
 
 impl Default for Frame {
@@ -364,6 +417,10 @@ impl Default for Frame {
             show: Show::Unavailable,
             last_pose: Pose::default(),
             has_pose: false,
+            last_centre: (0.0, 0.0),
+            layer: Layer::new(GROUND.start),
+            palette: [0; 16],
+            roads_drawn: [0; 2],
             strokes: [Stroke::default(); STROKES],
             counts: [0; 2],
             band_offsets: [[0; BAND_COUNT + 1]; 2],
@@ -375,6 +432,7 @@ impl Default for Frame {
             puck: None,
             has_track: false,
             left_m: None,
+            roads: Roads::default(),
         }
     }
 }
@@ -392,26 +450,54 @@ impl Frame {
 
     fn add(&mut self, line: Line, at: &Projection, points: impl Iterator<Item = Point>) {
         let room = line.room();
-        let reach = line.reach() + 1.0;
-        let mut points = points.map(|p| at.at(p)).peekable();
-        let Some(mut anchor) = points.next() else {
-            return;
-        };
-        while let Some(p) = points.next() {
-            let (dx, dy) = (p.0 - anchor.0, p.1 - anchor.1);
-            if dx * dx + dy * dy < MIN_STEP_PX * MIN_STEP_PX && points.peek().is_some() {
-                continue;
+        let (strokes, count) = (&mut self.strokes, &mut self.counts[line as usize]);
+        project(at, line.reach(), points, |a, b| {
+            if *count == room.len() {
+                return false;
             }
-            if visible(anchor, p, reach) {
-                let count = &mut self.counts[line as usize];
-                if *count == room.len() {
-                    return;
-                }
-                self.strokes[room.start + *count] = Stroke::new(anchor, p);
-                *count += 1;
-            }
-            anchor = p;
+            strokes[room.start + *count] = Stroke::new(a, b);
+            *count += 1;
+            true
+        });
+    }
+
+    /// The ground the last fill drew, a margin wider, in the ride's frame.
+    fn view(&self) -> Option<[Point; 4]> {
+        if !self.has_pose || self.show != Show::Map {
+            return None;
         }
+        let at = self.last_pose.projection(self.last_centre);
+        let (wide, high) = (WIDTH as f32, (GROUND.end - GROUND.start) as f32);
+        let (dx, dy) = (wide * ROAD_FETCH_MARGIN, high * ROAD_FETCH_MARGIN);
+        let (left, right) = (-dx, wide + dx);
+        let (top, bottom) = (GROUND.start as f32 - dy, GROUND.end as f32 + dy);
+        Some([(left, top), (right, top), (right, bottom), (left, bottom)].map(|p| at.back(p)))
+    }
+}
+
+/// Project `points` as one polyline `reach` wide, dropping points closer
+/// than `MIN_STEP_PX` and segments off the screen, and hand each segment to
+/// `put` while it says there is room for more.
+fn project(
+    at: &Projection,
+    reach: f32,
+    points: impl Iterator<Item = Point>,
+    mut put: impl FnMut(Point, Point) -> bool,
+) {
+    let reach = reach + 1.0;
+    let mut points = points.map(|p| at.at(p)).peekable();
+    let Some(mut anchor) = points.next() else {
+        return;
+    };
+    while let Some(p) = points.next() {
+        let (dx, dy) = (p.0 - anchor.0, p.1 - anchor.1);
+        if dx * dx + dy * dy < MIN_STEP_PX * MIN_STEP_PX && points.peek().is_some() {
+            continue;
+        }
+        if visible(anchor, p, reach) && !put(anchor, p) {
+            return;
+        }
+        anchor = p;
     }
 }
 
@@ -425,6 +511,40 @@ fn quarter((x, y): Point) -> (i32, i32) {
     (libm::roundf(4.0 * x) as i32, libm::roundf(4.0 * y) as i32)
 }
 
+/// Rasterise the held roads the pose's step draws onto the ground, nearest
+/// tile first, until `ROAD_SEGMENTS` are drawn.
+fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point) {
+    let Frame {
+        roads,
+        layer,
+        palette,
+        roads_drawn,
+        last_pose,
+        ..
+    } = frame;
+    layer.clear(GROUND.start);
+    *palette = raster::palette(GROUND_COLOR, MINOR_ROAD, MAJOR_ROAD);
+    *roads_drawn = [0; 2];
+    let mut drawn = 0;
+    for road in roads.each(Detail::of(last_pose.step), centre) {
+        let (class, half) = if road.class.major() {
+            (Class::Major, MAJOR_ROAD_HALF_PX)
+        } else {
+            (Class::Minor, MINOR_ROAD_HALF_PX)
+        };
+        project(at, half, road.points(), |a, b| {
+            layer.add(&Bar::new(a, b, half), class);
+            roads_drawn[class as usize] += 1;
+            drawn += 1;
+            drawn < ROAD_SEGMENTS
+        });
+        if drawn == ROAD_SEGMENTS {
+            break;
+        }
+    }
+}
+
+/// Project the track through this fix's pose and bucket it.
 fn fill(frame: &mut Frame, track: &Track) {
     frame.show = if !track.available {
         Show::Unavailable
@@ -470,8 +590,10 @@ fn fill(frame: &mut Frame, track: &Track) {
     };
     let pose = choose_pose(frame.has_pose.then_some(frame.last_pose), &aim, route);
     frame.last_pose = pose;
+    frame.last_centre = centre;
     frame.has_pose = true;
     let at = pose.projection(centre);
+    draw_roads(frame, &at, centre);
     match split {
         Some(split) => {
             frame.add(Line::Ridden, &at, track.behind_points(split));
@@ -692,7 +814,7 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
     if frame.show != Show::Map || !GROUND.contains(&y) {
         return;
     }
-    row.fill(GROUND_COLOR);
+    frame.layer.paint(row, &frame.palette);
     let mut cover = Cover::new(y);
     let band = (y - GROUND.start) / BAND_ROWS;
     for line in Line::ALL {
@@ -759,7 +881,7 @@ pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
         0 => color,
         c => blend(paint, color, c),
     };
-    let mut color = GROUND_COLOR;
+    let mut color = frame.palette[usize::from(frame.layer.nibble(x, y))];
     for line in Line::ALL {
         for &(half, paint) in line.layers() {
             let c = frame

@@ -55,7 +55,10 @@ pub struct Road<'t> {
 }
 
 impl<'t> Road<'t> {
-    pub(crate) fn all(tile: Tile<'t>, origin: (i32, i32)) -> impl Iterator<Item = Road<'t>> {
+    pub(crate) fn all(
+        tile: Tile<'t>,
+        origin: (i32, i32),
+    ) -> impl Iterator<Item = Road<'t>> + Clone {
         (0..tile.edge_count() as u16).map(move |index| Road {
             tile,
             edge: tile.edge(index),

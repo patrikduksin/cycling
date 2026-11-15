@@ -286,8 +286,7 @@ fn a_long_course_keeps_to_its_budget_and_each_band_holds_what_reaches_it() {
     for line in Line::ALL {
         for band in 0..BAND_COUNT {
             for &i in frame.band(line, band) {
-                let stroke = &frame.strokes[usize::from(i)];
-                let (first, last) = bands(stroke, line.reach()).unwrap();
+                let (first, last) = bands(&frame.strokes[usize::from(i)], line.reach()).unwrap();
                 assert!((first..=last).contains(&band));
             }
         }
@@ -479,5 +478,223 @@ fn on_the_last_leg_the_route_and_the_finish_clear_the_badge() {
             covered.len(),
             covered.first()
         );
+    }
+}
+
+mod santiago {
+    use super::*;
+    use crate::ride::homing::TURN;
+    use crate::screens::ride::map::roads::tests::{PLAZA, cached};
+    use std::time::Instant;
+    use std::{boxed::Box, println, string::String, vec::Vec};
+    use terrain::PAGE_BYTES;
+
+    /// A course through `here` heading `heading`: straight on for `turn_m`,
+    /// then right, with the turn shown on the map's badge.
+    pub(super) struct Approach {
+        pub(super) course: Vec<Crumb>,
+        here: Point,
+        heading: u16,
+        turn_m: f32,
+    }
+
+    impl Approach {
+        pub(super) fn new(here: Point, heading: u16, turn_m: f32) -> Self {
+            let a = f32::from(heading) / f32::from(TURN) * core::f32::consts::TAU;
+            let (sin, cos) = (libm::sinf(a), libm::cosf(a));
+            let to = |(right, ahead): Point| {
+                (
+                    here.0 + right * cos + ahead * sin,
+                    here.1 - right * sin + ahead * cos,
+                )
+            };
+            let mut points = Vec::new();
+            let mut along = -400.0;
+            while along < turn_m {
+                points.push(to((0.0, along)));
+                along += 20.0;
+            }
+            points.extend([to((0.0, turn_m)), to((1_000.0, turn_m))]);
+            Self {
+                course: follower_course(&points),
+                here,
+                heading,
+                turn_m,
+            }
+        }
+
+        pub(super) fn track(&self) -> Track<'_> {
+            let total = self.course.last().unwrap().along;
+            let end = self
+                .course
+                .partition_point(|c| c.along < total - 400.0)
+                .clamp(1, self.course.len() - 1);
+            let turn = self
+                .course
+                .iter()
+                .find(|c| (c.along - (total - 400.0 - self.turn_m)).abs() < 0.5);
+            let turn = turn.map(|c| (c.east, c.north)).unwrap();
+            Track {
+                available: true,
+                crumbs: &[],
+                here: Some(self.here),
+                heading: Some(self.heading),
+                course: &self.course,
+                ahead: Some((end, Some(self.here))),
+                guidance: Some(Guidance {
+                    sign: Sign::Chip {
+                        glyph: Glyph::Right,
+                        distance: Distance::from_mm((self.turn_m * 1000.0) as u32),
+                    },
+                    turn: Some((
+                        Spot {
+                            along_mm: ((400.0 + self.turn_m) * 1000.0) as u32,
+                            at: turn,
+                        },
+                        Glyph::Right,
+                    )),
+                    junction: None,
+                }),
+                left_m: Some(8_000),
+                badge: Some(BADGE),
+                radar: false,
+            }
+        }
+    }
+
+    /// Fill `cache` from `track` and fetch roads until every tile of the
+    /// view is held.
+    pub(super) fn settle(
+        cache: &mut Cache,
+        engine: &mut terrain::Lookahead,
+        frame: RideFrame,
+        track: &Track,
+    ) {
+        for _ in 0..40 {
+            cache.update(track);
+            cache.fetch_roads(engine, frame);
+        }
+        cache.update(track);
+    }
+
+    fn painted(frame: &Frame) -> Vec<u16> {
+        let mut screen = std::vec![0x1234u16; WIDTH * HEIGHT];
+        for (y, pixels) in screen.as_chunks_mut::<WIDTH>().0.iter_mut().enumerate() {
+            paint(frame, &mut Row::new(y, pixels));
+        }
+        screen
+    }
+
+    #[test]
+    fn central_santiago_paints_its_roads_under_the_route_as_the_reference_does() {
+        let mut arena = std::vec![0u8; 64 * PAGE_BYTES];
+        let mut engine = cached(&mut arena);
+        let ride = RideFrame::at(PLAZA);
+        let approach = Approach::new((0.0, -150.0), 0, 250.0);
+        let track = approach.track();
+        let mut frame = Box::new(Frame::default());
+        let mut cache = Cache::new(&mut frame);
+        settle(&mut cache, &mut engine, ride, &track);
+        let frame = &*cache.frame;
+        assert_eq!(frame.last_pose.step, Step::M400);
+        assert!(
+            frame.roads_drawn[0] > 10 && frame.roads_drawn[1] > 2,
+            "{:?}",
+            frame.roads_drawn
+        );
+        let screen = painted(frame);
+        for y in GROUND.start..GROUND.end {
+            for x in 0..WIDTH {
+                assert_eq!(
+                    screen[y * WIDTH + x],
+                    pixel(frame, x, y, 0x1234),
+                    "at {x},{y}"
+                );
+            }
+        }
+        let count = |color: u16| screen.iter().filter(|&&p| p == color).count();
+        assert!(count(MINOR_ROAD) > 2_000 && count(MAJOR_ROAD) > 1_000);
+        let (rider_x, rider_y) = (
+            frame.last_pose.rider.0 as usize,
+            frame.last_pose.rider.1 as usize,
+        );
+        let under_route = screen[(rider_y - 40) * WIDTH + rider_x];
+        assert_eq!(under_route, ACCENT, "the route paints over the roads");
+    }
+
+    #[test]
+    fn without_a_pack_the_course_is_drawn_on_bare_ground() {
+        let mut empty: [u8; 0] = [];
+        let mut engine = terrain::Lookahead::new(&mut empty, 10_000.0);
+        let approach = Approach::new((0.0, -150.0), 0, 250.0);
+        let track = approach.track();
+        let mut frame = Box::new(Frame::default());
+        let mut cache = Cache::new(&mut frame);
+        settle(&mut cache, &mut engine, RideFrame::at(PLAZA), &track);
+        let screen = painted(cache.frame);
+        assert!(!screen.iter().any(|&p| p == MINOR_ROAD || p == MAJOR_ROAD));
+        assert!(screen.iter().filter(|&&p| p == ACCENT).count() > 1_000);
+    }
+
+    /// Prints how much road each step's view of central Santiago draws,
+    /// over a grid of places and headings, and the densest of each step.
+    /// `cargo test -p vana --release --lib densest -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn densest_views_of_central_santiago() {
+        let mut arena = std::vec![0u8; 64 * PAGE_BYTES];
+        let mut engine = cached(&mut arena);
+        let ride = RideFrame::at(PLAZA);
+        println!(
+            "step  turn m  east  north  heading  minor  major  segments  fill µs  paint µs  without roads µs"
+        );
+        for (step, turn_m) in [
+            (Step::M300, 60.0),
+            (Step::M400, 250.0),
+            (Step::Km1, 500.0),
+            (Step::Km3, 1_500.0),
+        ] {
+            let mut densest = (0, String::new());
+            for east in (-1_600..=1_600).step_by(400) {
+                for north in (-2_000..=1_200).step_by(400) {
+                    for heading in [0, TURN / 8, TURN / 4, 3 * TURN / 8] {
+                        let approach = Approach::new((east as f32, north as f32), heading, turn_m);
+                        let track = approach.track();
+                        let mut frame = Box::new(Frame::default());
+                        let mut cache = Cache::new(&mut frame);
+                        settle(&mut cache, &mut engine, ride, &track);
+                        assert_eq!(cache.frame.last_pose.step, step);
+                        let started = Instant::now();
+                        fill(cache.frame, &track);
+                        let fill_us = started.elapsed().as_secs_f64() * 1e6;
+                        let started = Instant::now();
+                        for y in 0..HEIGHT {
+                            let mut pixels = [0u16; WIDTH];
+                            paint(cache.frame, &mut Row::new(y, &mut pixels));
+                        }
+                        let paint_us = started.elapsed().as_secs_f64() * 1e6;
+                        let mut bare = Box::new(Frame::default());
+                        fill(&mut bare, &track);
+                        let started = Instant::now();
+                        for y in 0..HEIGHT {
+                            let mut pixels = [0u16; WIDTH];
+                            paint(&bare, &mut Row::new(y, &mut pixels));
+                        }
+                        let bare_us = started.elapsed().as_secs_f64() * 1e6;
+                        let f = &*cache.frame;
+                        let rows = f.roads_drawn[0] + f.roads_drawn[1];
+                        let line = std::format!(
+                            "{step:?}  {turn_m}  {east}  {north}  {heading}  {}  {}  {rows}  {fill_us:.0}  {paint_us:.0}  {bare_us:.0}",
+                            f.counts[0],
+                            f.counts[1]
+                        );
+                        if rows > densest.0 {
+                            densest = (rows, line);
+                        }
+                    }
+                }
+            }
+            println!("{}", densest.1);
+        }
     }
 }

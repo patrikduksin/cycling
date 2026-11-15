@@ -146,6 +146,205 @@ impl Triangle {
     }
 }
 
+/// A segment with square ends: every point within `half` of its line and
+/// at most `half` past either end. On a row it is the overlap of two slabs,
+/// each an interval that moves linearly down the rows, so a row costs a few
+/// multiply-adds and no square root.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Bar {
+    top: f32,
+    bottom: f32,
+    slabs: [Slab; 2],
+}
+
+/// The columns `centre + slope * y ± half` of the row through `y`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Slab {
+    centre: f32,
+    slope: f32,
+    half: f32,
+}
+
+impl Slab {
+    /// The points within `half` of the line through `c` normal to `k`.
+    fn new(k: Point, c: Point, half: f32) -> Self {
+        if k.0.abs() < 1e-4 {
+            return Self {
+                centre: 0.0,
+                slope: 0.0,
+                half: f32::INFINITY,
+            };
+        }
+        let ratio = k.1 / k.0;
+        Self {
+            centre: c.0 + ratio * c.1,
+            slope: -ratio,
+            half: half / k.0.abs(),
+        }
+    }
+}
+
+impl Bar {
+    pub fn new(a: Point, b: Point, half: f32) -> Self {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let length = sqrtf(dx * dx + dy * dy);
+        let u = if length > 1e-3 {
+            (dx / length, dy / length)
+        } else {
+            (1.0, 0.0)
+        };
+        let c = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+        let along = length / 2.0 + half;
+        let reach = u.1.abs() * along + u.0.abs() * half;
+        Self {
+            top: c.1 - reach,
+            bottom: c.1 + reach,
+            slabs: [Slab::new((-u.1, u.0), c, half), Slab::new(u, c, along)],
+        }
+    }
+
+    /// Where the row through `y` crosses the bar.
+    fn across(&self, y: f32) -> Option<(f32, f32)> {
+        if y < self.top || y > self.bottom {
+            return None;
+        }
+        let [p, q] = self.slabs;
+        let (pc, qc) = (p.centre + p.slope * y, q.centre + q.slope * y);
+        let left = (pc - p.half).max(qc - q.half);
+        let right = (pc + p.half).min(qc + q.half);
+        (left < right).then_some((left, right))
+    }
+
+    /// How much of pixel (`x`, `y`) the bar covers, 0 to 1, by the row
+    /// through its centre.
+    #[cfg(test)]
+    pub fn share(&self, x: usize, y: usize) -> f32 {
+        self.across(y as f32 + 0.5).map_or(0.0, |(left, right)| {
+            (right.min(x as f32 + 1.0) - left.max(x as f32)).clamp(0.0, 1.0)
+        })
+    }
+}
+
+/// How much of a pixel a road covers, in the layer's four steps.
+fn quarter_steps(share: f32) -> u8 {
+    (share * 3.0 + 0.5) as u8
+}
+
+/// The roads of a fill, rasterised once and painted from a table each
+/// frame. Every pixel of `ROWS` rows from `top` holds a nibble: two bits of
+/// how much a minor road covers it and two of a major road, the largest of
+/// each class's bars, so a frame costs one lookup per pixel whatever the
+/// roads, and each bar is worked out once a fill instead of every frame.
+/// All zero bytes are an empty layer.
+#[derive(Clone)]
+pub struct Layer<const ROWS: usize> {
+    top: usize,
+    pairs: [[u8; WIDTH / 2]; ROWS],
+}
+
+/// A road's class on the layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    Minor,
+    Major,
+}
+
+impl Class {
+    const fn shift(self) -> u32 {
+        match self {
+            Self::Minor => 0,
+            Self::Major => 2,
+        }
+    }
+}
+
+/// The colour of each nibble: the ground, a minor road blended over it,
+/// then a major road over that.
+pub fn palette(ground: u16, minor: u16, major: u16) -> [u16; 16] {
+    core::array::from_fn(|nibble| {
+        let step = |shift: u32| (nibble as u8 >> shift & 3) * 5;
+        blend(major, blend(minor, ground, step(0)), step(2))
+    })
+}
+
+impl<const ROWS: usize> Layer<ROWS> {
+    pub fn new(top: usize) -> Self {
+        Self {
+            top,
+            pairs: [[0; WIDTH / 2]; ROWS],
+        }
+    }
+
+    pub fn clear(&mut self, top: usize) {
+        self.top = top;
+        for pairs in &mut self.pairs {
+            pairs.fill(0);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn nibble(&self, x: usize, y: usize) -> u8 {
+        let Some(pairs) = y.checked_sub(self.top).and_then(|r| self.pairs.get(r)) else {
+            return 0;
+        };
+        pairs[x / 2] >> (4 * (x % 2)) & 0xf
+    }
+
+    /// Add a bar of `class`: each pixel keeps the most any bar of the class
+    /// covers it.
+    pub fn add(&mut self, bar: &Bar, class: Class) {
+        let first = (bar.top - 0.5).max(self.top as f32);
+        let last = (bar.bottom - 0.5).min((self.top + ROWS) as f32 - 1.0);
+        if first > last {
+            return;
+        }
+        let shift = class.shift();
+        for y in libm::ceilf(first) as usize..=last as usize {
+            let Some((left, right)) = bar.across(y as f32 + 0.5) else {
+                continue;
+            };
+            let (left, right) = (left.max(0.0), right.min(WIDTH as f32));
+            if left >= right {
+                continue;
+            }
+            let pairs = &mut self.pairs[y - self.top];
+            let end = libm::ceilf(right) as usize;
+            for x in left as usize..end {
+                let steps = quarter_steps(right.min(x as f32 + 1.0) - left.max(x as f32));
+                let at = 4 * (x % 2) as u32 + shift;
+                let pair = &mut pairs[x / 2];
+                if steps > (*pair >> at & 3) {
+                    *pair = (*pair & !(3 << at)) | steps << at;
+                }
+            }
+        }
+    }
+
+    /// Paint row `row` from `palette`: every pixel, the ground too.
+    pub fn paint(&self, row: &mut Row, palette: &[u16; 16]) {
+        let Some(pairs) = row
+            .y()
+            .checked_sub(self.top)
+            .and_then(|r| self.pairs.get(r))
+        else {
+            return;
+        };
+        row.fill(palette[0]);
+        let clip = row.clip();
+        let pixels = row.pixels_mut();
+        for (i, &pair) in pairs.iter().enumerate() {
+            if pair == 0 {
+                continue;
+            }
+            for (x, nibble) in [(2 * i, pair & 0xf), (2 * i + 1, pair >> 4)] {
+                if nibble != 0 && clip.contains(&x) {
+                    pixels[x] = palette[usize::from(nibble)];
+                }
+            }
+        }
+    }
+}
+
 /// One row's coverage of one colour, built from strokes and painted once.
 pub struct Cover {
     cells: [u8; WIDTH],
@@ -319,6 +518,98 @@ mod tests {
             }
         }
         assert_eq!(worst, 0, "spans use the reference's own edge coverage");
+    }
+
+    #[test]
+    fn a_layer_holds_each_class_s_largest_share_of_a_pixel_in_four_steps() {
+        let mut random = SeededStrokes(11);
+        let mut layer = std::boxed::Box::new(Layer::<40>::new(5));
+        for case in 0..300 {
+            let half = [2.5, 4.5][case % 2];
+            let class = [Class::Minor, Class::Major][case / 2 % 2];
+            let bars: std::vec::Vec<Bar> = (0..3)
+                .map(|_| {
+                    let (a, b) = match case % 4 {
+                        0 => {
+                            let a = random.point();
+                            (a, (a.0, a.1 + random.next() * 30.0))
+                        }
+                        1 => {
+                            let a = random.point();
+                            (a, (a.0 + random.next() * 90.0, a.1))
+                        }
+                        2 => {
+                            let a = random.point();
+                            (a, a)
+                        }
+                        _ => (random.point(), random.point()),
+                    };
+                    Bar::new(a, b, half)
+                })
+                .collect();
+            layer.clear(5);
+            for bar in &bars {
+                layer.add(bar, class);
+            }
+            for y in 0..50 {
+                for x in 0..WIDTH {
+                    let share = bars.iter().map(|bar| bar.share(x, y)).fold(0.0, f32::max);
+                    let want = if (5..45).contains(&y) {
+                        quarter_steps(share)
+                    } else {
+                        0
+                    };
+                    let got = layer.nibble(x, y) >> class.shift() & 3;
+                    assert_eq!(got, want, "case {case} at {x},{y}: share {share}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_bar_ends_square_and_a_diagonal_one_spans_its_slant() {
+        let bar = Bar::new((100.0, 10.0), (100.0, 40.0), 4.5);
+        let row = |y: usize| {
+            (0..WIDTH)
+                .map(|x| quarter_steps(bar.share(x, y)))
+                .collect::<std::vec::Vec<_>>()
+        };
+        assert_eq!(&row(25)[95..106], &[2, 3, 3, 3, 3, 3, 3, 3, 3, 2, 0][..]);
+        assert_eq!(
+            row(44)[95..106],
+            row(25)[95..106],
+            "square past the end, not round"
+        );
+        assert!(row(46).iter().all(|&c| c == 0));
+        let diagonal = Bar::new((0.0, 0.0), (30.0, 30.0), 2.5);
+        let width = (0..WIDTH).filter(|&x| diagonal.share(x, 15) > 0.0).count();
+        assert!(
+            (7..=9).contains(&width),
+            "a 5 px road at 45° spans 5√2 columns: {width}"
+        );
+    }
+
+    #[test]
+    fn a_layer_paints_its_ground_and_roads_from_the_palette() {
+        let mut layer = std::boxed::Box::new(Layer::<20>::new(20));
+        layer.add(&Bar::new((50.0, 0.0), (50.0, 40.0), 2.5), Class::Minor);
+        layer.add(&Bar::new((0.0, 25.0), (240.0, 25.0), 4.5), Class::Major);
+        let palette = palette(0x1082, 0x2945, 0x4229);
+        let mut pixels = [0x1234u16; WIDTH];
+        layer.paint(&mut Row::new(35, &mut pixels), &palette);
+        assert_eq!((pixels[10], pixels[50]), (0x1082, 0x2945));
+        assert_eq!(
+            pixels[47], palette[2],
+            "an edge half covered rounds to two steps"
+        );
+        layer.paint(&mut Row::new(25, &mut pixels), &palette);
+        assert_eq!(pixels[50], 0x4229, "a major road over a minor one");
+        let mut outside = [0x1234u16; WIDTH];
+        layer.paint(&mut Row::new(40, &mut outside), &palette);
+        assert!(
+            outside.iter().all(|&p| p == 0x1234),
+            "rows past the layer are left alone"
+        );
     }
 
     #[test]

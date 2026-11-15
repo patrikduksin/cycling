@@ -208,7 +208,7 @@ impl<'a> Lookahead<'a> {
     }
 
     /// The roads of a tile, if it is in the cache.
-    pub fn roads(&self, key: TileKey) -> Option<impl Iterator<Item = Road<'_>>> {
+    pub fn roads(&self, key: TileKey) -> Option<impl Iterator<Item = Road<'_>> + Clone> {
         let origin = self.header()?.origin(key);
         match self.cache.get(key) {
             Lookup::Ready(tile) => Some(Road::all(tile, origin)),

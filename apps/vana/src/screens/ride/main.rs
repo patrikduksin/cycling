@@ -13,6 +13,7 @@ use crate::screens::chrome::{
 use crate::screens::workout::{Scene, View};
 use core::fmt::Write;
 use firmware_shell::rendering::font::{Face, SPILL};
+use firmware_shell::shell::Parts;
 
 const LEFT: usize = BODY.left + 10;
 const RIGHT: usize = BODY.right - 8;
@@ -260,6 +261,20 @@ fn target_band(view: &View) -> Option<(usize, core::ops::Range<usize>)> {
 fn band_rows(i: usize) -> core::ops::Range<usize> {
     let top = GAUGES[i] + GAUGE_HEIGHT + BAND_GAP;
     top..top + BAND_HEIGHT
+}
+
+/// The page's parts: the target band, each gauge, each label.
+pub(super) fn parts(scene: &Scene, parts: &mut Parts) {
+    let smooth = scene.smooth();
+    for i in 0..GAUGES.len() {
+        parts.add(band_rows(i), &smooth.band);
+    }
+    for (&top, mark) in GAUGES.iter().zip(&scene.gauges) {
+        parts.add(top..top + GAUGE_HEIGHT, mark);
+    }
+    for label in &smooth.labels {
+        parts.add(label.top..label.bottom(), label);
+    }
 }
 
 /// Paint a body row: a gauge row, or the labels that cover it.

@@ -1,6 +1,8 @@
 //! VANA workout rendering: the chrome around whichever screen is shown.
 use super::canvas::Canvas;
-use super::chrome::{BLACK, Battery, CONTENT, Gps, HEIGHT, Mark, Row, StatusBar, Toast, WIDTH};
+use super::chrome::{
+    BLACK, Battery, CONTENT, Gps, HEIGHT, Mark, Row, StatusBar, TOAST, Toast, WIDTH,
+};
 use super::cue::{Badge, Cue};
 use super::home::Home;
 use super::ready::Readiness;
@@ -211,6 +213,7 @@ impl<'a> Extra<'a> {
         back -> ride::Back = Self::Back { back, .. } => *back;
         sunset -> ride::Light = Self::Back { sunset, .. } => *sunset;
         map -> Option<&'a ride::MapFrame> = Self::Map(frame) => frame.map(|(frame, _)| frame);
+        map_key -> Option<ride::MapKey> = Self::Map(frame) => frame.map(|(_, key)| key);
         settings_lines -> &SettingsLines = Self::Settings { lines, .. } => lines;
         settings_pressed -> Option<u16> = Self::Settings { pressed, .. } => *pressed;
         lines -> &Lines = Self::Phone { lines, .. } | Self::Setup { lines, .. } => lines;
@@ -313,6 +316,30 @@ impl firmware_shell::shell::Picture for Scene<'_> {
             super::look::apply(row.pixels_mut());
         }
     }
+
+    /// A ride page in parts, so a frame sends the rows that changed. Every
+    /// other page is one part, sent whole: a list scrolls every row.
+    fn parts(&self, parts: &mut firmware_shell::shell::Parts) {
+        let Kind::Ride(page) = self.kind else {
+            parts.add(0..HEIGHT, self);
+            return;
+        };
+        // What moves or recolours every row: the page, the look, and the
+        // radar strip, which moves the body when it comes or goes.
+        parts.add(
+            0..HEIGHT,
+            &(
+                self.kind,
+                self.light,
+                self.radar.is_some(),
+                self.cues,
+                self.badge,
+            ),
+        );
+        parts.add(0..CONTENT.top, &self.bar);
+        parts.add(TOAST.top..TOAST.bottom, &self.toast);
+        ride::parts(self, page, parts);
+    }
 }
 
 impl<'v> Scene<'v> {
@@ -400,6 +427,11 @@ impl<'v> Scene<'v> {
 
     pub(super) fn map(&self) -> Option<&'v ride::MapFrame> {
         self.shown(self.extra.map(), "map", None)
+    }
+
+    /// What the map was filled from.
+    pub(super) fn map_key(&self) -> Option<ride::MapKey> {
+        self.shown(self.extra.map_key(), "map", None)
     }
 
     pub(super) fn qr(&self) -> Option<&'v super::qr::Placed> {

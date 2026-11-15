@@ -167,6 +167,11 @@ fn coverage(spans: &Spans, x: usize) -> u8 {
 /// The columns the arrow can touch.
 const REACH: usize = ARROW_RADIUS as usize + 2;
 
+/// The rows the arrow can cover, keyed by what places it.
+pub(super) fn parts(back: Back, parts: &mut firmware_shell::shell::Parts) {
+    parts.add(CY - REACH..CY + REACH + 1, &arrow(back));
+}
+
 /// The arrow's rows of the page, placed from the guide as they paint: the
 /// view keeps no arrow, so the frame costs no stack for it.
 pub(super) fn paint(back: Back, row: &mut Row) {

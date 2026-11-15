@@ -682,14 +682,14 @@ mod santiago {
                         }
                         let bare_us = started.elapsed().as_secs_f64() * 1e6;
                         let f = &*cache.frame;
-                        let rows = f.roads_drawn[0] + f.roads_drawn[1];
+                        let segments = f.roads_drawn[0] + f.roads_drawn[1];
                         let line = std::format!(
-                            "{step:?}  {turn_m}  {east}  {north}  {heading}  {}  {}  {rows}  {fill_us:.0}  {paint_us:.0}  {bare_us:.0}",
-                            f.counts[0],
-                            f.counts[1]
+                            "{step:?}  {turn_m}  {east}  {north}  {heading}  {}  {}  {segments}  {fill_us:.0}  {paint_us:.0}  {bare_us:.0}",
+                            f.roads_drawn[0],
+                            f.roads_drawn[1]
                         );
-                        if rows > densest.0 {
-                            densest = (rows, line);
+                        if segments > densest.0 {
+                            densest = (segments, line);
                         }
                     }
                 }

@@ -289,13 +289,14 @@ impl Class {
     }
 }
 
-/// The colour of each nibble: the ground, a minor road blended over it,
-/// then a major road over that.
-pub fn palette(ground: u16, minor: u16, major: u16) -> [u16; 16] {
-    core::array::from_fn(|nibble| {
-        let step = |shift: u32| (nibble as u8 >> shift & 3) * 5;
+/// The two pixels of each layer byte: per nibble the ground, a minor road
+/// blended over it, then a major road over that.
+pub fn pairs(ground: u16, minor: u16, major: u16) -> [[u16; 2]; 256] {
+    let colour = |nibble: u8| {
+        let step = |shift: u32| (nibble >> shift & 3) * 5;
         blend(major, blend(minor, ground, step(0)), step(2))
-    })
+    };
+    core::array::from_fn(|byte| [colour(byte as u8 & 0xf), colour(byte as u8 >> 4)])
 }
 
 impl<const ROWS: usize> Layer<ROWS> {
@@ -358,27 +359,34 @@ impl<const ROWS: usize> Layer<ROWS> {
         }
     }
 
-    /// Paint row `row` from `palette`: every pixel, the ground too.
-    pub fn paint(&self, row: &mut Row, palette: &[u16; 16]) {
-        let Some(pairs) = row
+    /// Paint `row` from `pairs`: every pixel in the layer's rows, the
+    /// ground too, two at a time.
+    pub fn paint(&self, row: &mut Row, pairs: &[[u16; 2]; 256]) {
+        let Some(bytes) = row
             .y()
             .checked_sub(self.top)
             .and_then(|r| self.pairs.get(r))
         else {
             return;
         };
-        row.fill(palette[0]);
         let clip = row.clip();
+        let (first, end) = (clip.start, clip.end.min(WIDTH));
+        if first >= end {
+            return;
+        }
         let pixels = row.pixels_mut();
-        for (i, &pair) in pairs.iter().enumerate() {
-            if pair == 0 {
-                continue;
+        let (whole_from, whole_to) = (first.div_ceil(2), end / 2);
+        if whole_from < whole_to {
+            let (chunks, _) = pixels[2 * whole_from..2 * whole_to].as_chunks_mut::<2>();
+            for (chunk, &byte) in chunks.iter_mut().zip(&bytes[whole_from..whole_to]) {
+                *chunk = pairs[usize::from(byte)];
             }
-            for (x, nibble) in [(2 * i, pair & 0xf), (2 * i + 1, pair >> 4)] {
-                if nibble != 0 && clip.contains(&x) {
-                    pixels[x] = palette[usize::from(nibble)];
-                }
-            }
+        }
+        if first % 2 == 1 {
+            pixels[first] = pairs[usize::from(bytes[first / 2])][1];
+        }
+        if end % 2 == 1 && end - 1 > first {
+            pixels[end - 1] = pairs[usize::from(bytes[end / 2])][0];
         }
     }
 }
@@ -627,23 +635,32 @@ mod tests {
         );
     }
 
+    fn pixels_of(layer: &Layer<20>, y: usize, pairs: &[[u16; 2]; 256]) -> [u16; WIDTH] {
+        core::array::from_fn(|x| pairs[usize::from(layer.nibble(x, y))][0])
+    }
+
     #[test]
     fn a_layer_paints_its_ground_and_roads_from_the_palette() {
         let mut layer = std::boxed::Box::new(Layer::<20>::new(20));
         layer.add(&Bar::new((50.0, 0.0), (50.0, 40.0), 2.5), Class::Minor);
         layer.add(&Bar::new((0.0, 25.0), (240.0, 25.0), 4.5), Class::Major);
-        let palette = palette(0x1082, 0x2945, 0x4229);
+        let pairs = pairs(0x1082, 0x2945, 0x4229);
         let mut pixels = [0x1234u16; WIDTH];
-        layer.paint(&mut Row::new(35, &mut pixels), &palette);
+        layer.paint(&mut Row::new(35, &mut pixels), &pairs);
         assert_eq!((pixels[10], pixels[50]), (0x1082, 0x2945));
         assert_eq!(
-            pixels[47], palette[2],
+            pixels[47], pairs[2][0],
             "an edge half covered rounds to two steps"
         );
-        layer.paint(&mut Row::new(25, &mut pixels), &palette);
+        assert_eq!(pixels, pixels_of(&layer, 35, &pairs));
+        let mut clipped = [0x1234u16; WIDTH];
+        layer.paint(&mut Row::new(35, &mut clipped).within(29..48), &pairs);
+        assert_eq!(clipped[28], 0x1234, "left of the clip is left alone");
+        assert_eq!(&clipped[29..48], &pixels[29..48]);
+        layer.paint(&mut Row::new(25, &mut pixels), &pairs);
         assert_eq!(pixels[50], 0x4229, "a major road over a minor one");
         let mut outside = [0x1234u16; WIDTH];
-        layer.paint(&mut Row::new(40, &mut outside), &palette);
+        layer.paint(&mut Row::new(40, &mut outside), &pairs);
         assert!(
             outside.iter().all(|&p| p == 0x1234),
             "rows past the layer are left alone"

@@ -273,7 +273,8 @@ const RIDDEN: u16 = rgb(0x1f, 0x4a, 0x78);
 const CASING: u16 = rgb(0x04, 0x26, 0x4c);
 const BAND_ROWS: usize = 16;
 const BAND_COUNT: usize = (GROUND.end - GROUND.start).div_ceil(BAND_ROWS);
-const MIN_STEP_PX: f32 = 2.0;
+const STRAY_PX: f32 = 0.35;
+const STRAIGHT_RUN: usize = 16;
 const RIDDEN_SEGMENTS: usize = 255;
 const ROUTE_SEGMENTS: usize = 160;
 const STROKES: usize = RIDDEN_SEGMENTS + ROUTE_SEGMENTS;
@@ -381,6 +382,8 @@ struct Arrow {
     shaft: [Stroke; ARROW_STROKES],
     strokes: usize,
     head: Triangle,
+    /// The rows it reaches, so the rest skip it.
+    rows: (f32, f32),
 }
 
 /// The map in screen space: refilled when the track's key changes,
@@ -392,9 +395,9 @@ pub struct Frame {
     last_pose: Pose,
     has_pose: bool,
     last_centre: Point,
-    /// The ground and its roads, and the colour of each layer nibble.
+    /// The ground and its roads, and the two pixels of each layer byte.
     layer: Layer<GROUND_ROWS>,
-    palette: [u16; 16],
+    pairs: [[u16; 2]; 256],
     /// Road segments drawn this fill, minor and major.
     roads_drawn: [usize; 2],
     strokes: [Stroke; STROKES],
@@ -419,7 +422,7 @@ impl Default for Frame {
             has_pose: false,
             last_centre: (0.0, 0.0),
             layer: Layer::new(GROUND.start),
-            palette: [0; 16],
+            pairs: [[0; 2]; 256],
             roads_drawn: [0; 2],
             strokes: [Stroke::default(); STROKES],
             counts: [0; 2],
@@ -475,9 +478,11 @@ impl Frame {
     }
 }
 
-/// Project `points` as one polyline `reach` wide, dropping points closer
-/// than `MIN_STEP_PX` and segments off the screen, and hand each segment to
-/// `put` while it says there is room for more.
+/// Project `points` as one polyline `reach` wide and hand each segment on
+/// the screen to `put` while it says there is room for more. A point is
+/// dropped while a straight segment past it strays less than `STRAY_PX`
+/// from it: a course comes a point every few metres, and each segment a
+/// row crosses costs that row, so a straight street is one segment.
 fn project(
     at: &Projection,
     reach: f32,
@@ -485,20 +490,42 @@ fn project(
     mut put: impl FnMut(Point, Point) -> bool,
 ) {
     let reach = reach + 1.0;
-    let mut points = points.map(|p| at.at(p)).peekable();
+    let mut points = points.map(|p| at.at(p));
     let Some(mut anchor) = points.next() else {
         return;
     };
-    while let Some(p) = points.next() {
-        let (dx, dy) = (p.0 - anchor.0, p.1 - anchor.1);
-        if dx * dx + dy * dy < MIN_STEP_PX * MIN_STEP_PX && points.peek().is_some() {
-            continue;
+    let mut passed: heapless::Vec<Point, STRAIGHT_RUN> = heapless::Vec::new();
+    let mut draw = |a: Point, b: Point| !visible(a, b, reach) || put(a, b);
+    for p in points {
+        let straight = !passed.is_full() && straight_past(anchor, p, &passed);
+        if !straight {
+            let Some(&end) = passed.last() else {
+                continue;
+            };
+            if !draw(anchor, end) {
+                return;
+            }
+            anchor = end;
+            passed.clear();
         }
-        if visible(anchor, p, reach) && !put(anchor, p) {
-            return;
-        }
-        anchor = p;
+        let _ = passed.push(p);
     }
+    if let Some(&end) = passed.last() {
+        draw(anchor, end);
+    }
+}
+
+/// Whether the segment `a`-`b` passes within `STRAY_PX` of every point of
+/// `passed`.
+fn straight_past(a: Point, b: Point, passed: &[Point]) -> bool {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let squared = dx * dx + dy * dy;
+    let per = if squared > 0.0 { 1.0 / squared } else { 0.0 };
+    passed.iter().all(|&(px, py)| {
+        let t = (((px - a.0) * dx + (py - a.1) * dy) * per).clamp(0.0, 1.0);
+        let (qx, qy) = (a.0 + t * dx - px, a.1 + t * dy - py);
+        qx * qx + qy * qy <= STRAY_PX * STRAY_PX
+    })
 }
 
 fn visible(a: Point, b: Point, reach: f32) -> bool {
@@ -517,13 +544,13 @@ fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point) {
     let Frame {
         roads,
         layer,
-        palette,
+        pairs,
         roads_drawn,
         last_pose,
         ..
     } = frame;
     layer.clear(GROUND.start);
-    *palette = raster::palette(GROUND_COLOR, MINOR_ROAD, MAJOR_ROAD);
+    *pairs = raster::pairs(GROUND_COLOR, MINOR_ROAD, MAJOR_ROAD);
     *roads_drawn = [0; 2];
     let mut drawn = 0;
     for road in roads.each(Detail::of(last_pose.step), centre) {
@@ -714,6 +741,13 @@ fn arrow<I: Iterator<Item = (Point, bool)>>(
         frame.arrow.shaft[frame.arrow.strokes] = Stroke::new(pair[0], pair[1]);
         frame.arrow.strokes += 1;
     }
+    let reach = ARROW_LAYERS[0].shaft_half + 1.0;
+    frame.arrow.rows = shaft
+        .iter()
+        .chain(&frame.arrow.head.0)
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(top, bottom), p| {
+            (top.min(p.1 - reach), bottom.max(p.1 + reach))
+        });
 }
 
 fn clipped(from: Point, to: Point, left: usize) -> Point {
@@ -814,7 +848,7 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
     if frame.show != Show::Map || !GROUND.contains(&y) {
         return;
     }
-    frame.layer.paint(row, &frame.palette);
+    frame.layer.paint(row, &frame.pairs);
     let mut cover = Cover::new(y);
     let band = (y - GROUND.start) / BAND_ROWS;
     for line in Line::ALL {
@@ -827,7 +861,8 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
         }
     }
     let arrow = &frame.arrow;
-    if arrow.strokes > 0 {
+    let centre = y as f32 + 0.5;
+    if arrow.strokes > 0 && (arrow.rows.0..=arrow.rows.1).contains(&centre) {
         for ArrowLayer {
             shaft_half: half,
             head_outline: outline,
@@ -881,7 +916,7 @@ pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
         0 => color,
         c => blend(paint, color, c),
     };
-    let mut color = frame.palette[usize::from(frame.layer.nibble(x, y))];
+    let mut color = frame.pairs[usize::from(frame.layer.nibble(x, y))][0];
     for line in Line::ALL {
         for &(half, paint) in line.layers() {
             let c = frame

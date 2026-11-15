@@ -116,7 +116,7 @@ Use typed results and observations; terminal code owns their text formatting.
 
 | Capability | Boundary and reason |
 | --- | --- |
-| Display | Expose geometry, supported formats and submission completion. The device owns panel quirks and DMA; the shell owns layout and rendering policy. Callers must know when a buffer is safe to reuse. |
+| Display | Expose geometry, supported formats and submission completion. The device owns panel quirks and DMA; the shell owns layout and rendering policy, including which 4-row bands a frame sends (`Rows`). Callers must know when a buffer is safe to reuse. |
 | Input | Expose supported physical controls and observations. The shell maps them to actions and chooses wake behavior. Device code must not invent releases the hardware cannot establish; overflow cancels held state, and a cancelled touch contact ends with one `Release` once the panel reports the lift or stops reporting the finger (`Input::Cancel`). |
 | Power | Expose battery observations and supported brightness and power operations. The device enforces hardware limits and sequencing; the shell chooses preferences and inactivity policy. |
 | Storage | Expose checked relative access to owned reservations. Callers never receive access to stock or vendor regions. Journal mechanics are reusable; the owner of the stored data chooses its schema and recovery rules. |

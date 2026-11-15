@@ -170,9 +170,11 @@ fn off_course_beyond_the_widest_step_the_chevrons_still_lead_back_to_the_junctio
         along_mm: TURN_MM,
         at: (0.0, 250.0),
     };
+    let behind = [1_700.0, 2_500.0, 3_250.0, 20_000.0, 150_000.0].map(|m| (0.0, 250.0 + m));
+    let oblique = [(10_000.0, 3_750.0), (-10_000.0, 3_750.0)];
     for radar in [false, true] {
-        for back_m in [1_700.0, 2_500.0, 3_250.0, 20_000.0, 150_000.0] {
-            let here = (0.0, 250.0 + back_m);
+        for here in behind.into_iter().chain(oblique) {
+            let back_m = distance(here, junction.at);
             let mut track = following(&c, here, 650.0, Some(junction));
             let sign = Sign::OffCourse {
                 back: Distance::from_mm((back_m * 1000.0) as u32),
@@ -206,11 +208,13 @@ fn off_course_beyond_the_widest_step_the_chevrons_still_lead_back_to_the_junctio
                 .collect();
             let ahead: std::vec::Vec<f32> = chevrons
                 .iter()
-                .map(|&(x, y)| (x as f32 - rider.0) * ux + (y as f32 - rider.1) * uy)
+                .map(|&(x, y)| (x as f32 + 0.5 - rider.0) * ux + (y as f32 + 0.5 - rider.1) * uy)
                 .collect();
             let beside = chevrons
                 .iter()
-                .map(|&(x, y)| ((x as f32 - rider.0) * uy - (y as f32 - rider.1) * ux).abs())
+                .map(|&(x, y)| {
+                    ((x as f32 + 0.5 - rider.0) * uy - (y as f32 + 0.5 - rider.1) * ux).abs()
+                })
                 .fold(0.0f32, f32::max);
             let reach = ahead.iter().fold(0.0f32, |a, &b| a.max(b))
                 - ahead.iter().fold(f32::INFINITY, |a, &b| a.min(b));

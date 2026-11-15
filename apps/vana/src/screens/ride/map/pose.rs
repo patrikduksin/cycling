@@ -410,9 +410,22 @@ fn try_step(
     let s = step.px_per_m();
     let (top, bottom) = (GROUND.start as f32 + EDGE + margin, GROUND.end as f32);
     let (y, holds) = match target {
-        Target::Junction((_, ahead)) if ahead <= 0.0 => {
+        Target::Junction((right, ahead)) if ahead <= 0.0 => {
             let y = f32::from(JUNCTION_Y) + ahead * s;
-            (libm::roundf(y.max(top)) as i16, y >= top)
+            if y >= top {
+                (libm::roundf(y) as i16, true)
+            } else {
+                let at_top = libm::roundf(top) as i16;
+                let below_badge = keepout.map_or(top, |k| k.bottom + CLEARANCE + PUCK_RADIUS_PX);
+                let toward = (right * s, -ahead * s);
+                let seen = chevrons_seen(columns, at_top, toward, left, keepout) != 0;
+                let y = if seen {
+                    at_top
+                } else {
+                    libm::roundf(below_badge.max(top)) as i16
+                };
+                (y, false)
+            }
         }
         Target::Junction((_, ahead)) => {
             let holds = f32::from(JUNCTION_Y) - ahead * s >= top;
@@ -520,6 +533,9 @@ fn try_step(
     });
     shown &= arrow;
     to_goal &= arrow;
+    if let (Target::Junction((right, ahead)), false) = (target, holds) {
+        to_goal &= chevrons_seen(columns, y, (right * s, -ahead * s), left, keepout);
+    }
     let bit = |mask: u16, k: usize| mask >> k & 1 == 1;
     let mut clear = [Clear::Nothing; COLUMNS];
     let mut roomy = 0;
@@ -542,6 +558,45 @@ fn try_step(
         past_clear,
         roomy,
     })
+}
+
+/// The columns from which all the chevrons towards a junction `toward` the
+/// rider show, clear of the badge, with the rider clear of it too.
+fn chevrons_seen(
+    columns: &[i16],
+    y: i16,
+    toward: Point,
+    left: f32,
+    keepout: Option<Keepout>,
+) -> u16 {
+    let mut seen = 0;
+    for (k, &x) in columns.iter().enumerate() {
+        let rider = (f32::from(x), f32::from(y));
+        let puck_clear = keepout
+            .and_then(|keep| {
+                keep.blocked_rider_columns(
+                    (0.0, rider.1),
+                    (0.0, rider.1),
+                    CLEARANCE + PUCK_RADIUS_PX,
+                )
+            })
+            .is_none_or(|(low, high)| !(low < rider.0 && rider.0 < high));
+        let junction = super::clipped(
+            rider,
+            (rider.0 + toward.0, rider.1 + toward.1),
+            left as usize,
+        );
+        let wings = super::chevron_wings(rider, junction);
+        let wings_clear = keepout.is_none_or(|keep| {
+            wings
+                .iter()
+                .all(|&(a, b)| !keep.near(a, b, super::CHEVRON_STROKE + 1.0))
+        });
+        if puck_clear && wings.is_full() && wings_clear {
+            seen |= 1 << k;
+        }
+    }
+    seen
 }
 
 pub(super) struct ArrowShape {

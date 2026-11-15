@@ -541,14 +541,22 @@ fn clipped(from: Point, to: Point, left: usize) -> Point {
 }
 
 fn chevrons(frame: &mut Frame, rider: Point, junction: Point) {
+    frame.chevron_count = 0;
+    for (wing, tip) in chevron_wings(rider, junction) {
+        frame.chevrons[frame.chevron_count] = Stroke::new(wing, tip);
+        frame.chevron_count += 1;
+    }
+}
+
+fn chevron_wings(rider: Point, junction: Point) -> heapless::Vec<(Point, Point), { CHEVRONS * 2 }> {
+    let mut wings = heapless::Vec::new();
     let (dx, dy) = (junction.0 - rider.0, junction.1 - rider.1);
     let length = libm::sqrtf(dx * dx + dy * dy);
     if length < 1.0 {
-        return;
+        return wings;
     }
     let (ux, uy) = (dx / length, dy / length);
     let middle = ((rider.0 + junction.0) / 2.0, (rider.1 + junction.1) / 2.0);
-    frame.chevron_count = 0;
     let half = length / 2.0;
     for k in 0..CHEVRONS {
         let offset = (k as f32 - 1.0) * CHEVRON_PITCH;
@@ -562,10 +570,10 @@ fn chevrons(frame: &mut Frame, rider: Point, junction: Point) {
                 tip.0 - ux * CHEVRON_DEPTH - uy * CHEVRON_HALF * side,
                 tip.1 - uy * CHEVRON_DEPTH + ux * CHEVRON_HALF * side,
             );
-            frame.chevrons[frame.chevron_count] = Stroke::new(wing, tip);
-            frame.chevron_count += 1;
+            let _ = wings.push((wing, tip));
         }
     }
+    wings
 }
 
 fn bands(stroke: &Stroke, half: f32) -> Option<(usize, usize)> {

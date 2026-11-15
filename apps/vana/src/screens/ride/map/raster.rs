@@ -1,21 +1,42 @@
 use crate::screens::chrome::{Row, WIDTH, blend};
-use libm::sqrtf;
 
 pub type Point = (f32, f32);
 
-/// A segment in screen pixels, with its inverse length kept for the rows.
+/// A segment in screen pixels, with what its rows need worked out once:
+/// the device has no divide or square root instruction, and a row is painted
+/// every frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stroke {
     pub a: Point,
     pub b: Point,
-    inverse: f32,
+    length: f32,
+    /// The unit direction, its reciprocals, and the inverse squared length.
+    along: Point,
+    per_along: Point,
+    per_length_squared: f32,
 }
 
 impl Stroke {
     pub fn new(a: Point, b: Point) -> Self {
-        let length = sqrtf((b.0 - a.0) * (b.0 - a.0) + (b.1 - a.1) * (b.1 - a.1));
-        let inverse = if length > 0.0 { 1.0 / length } else { 0.0 };
-        Self { a, b, inverse }
+        let squared = (b.0 - a.0) * (b.0 - a.0) + (b.1 - a.1) * (b.1 - a.1);
+        let length = root(squared);
+        if length <= 0.0 {
+            return Self {
+                a,
+                b,
+                ..Self::default()
+            };
+        }
+        let along = ((b.0 - a.0) / length, (b.1 - a.1) / length);
+        let reciprocal = |k: f32| if k.abs() < 1e-6 { 0.0 } else { 1.0 / k };
+        Self {
+            a,
+            b,
+            length,
+            along,
+            per_along: (reciprocal(along.0), reciprocal(along.1)),
+            per_length_squared: 1.0 / squared,
+        }
     }
 
     /// Rows `half` reaches, edges included.
@@ -32,20 +53,16 @@ impl Stroke {
         for (cx, cy) in [self.a, self.b] {
             let chord = radius * radius - (y - cy) * (y - cy);
             if chord >= 0.0 {
-                let chord = sqrtf(chord);
+                let chord = root(chord);
                 left = left.min(cx - chord);
                 right = right.max(cx + chord);
             }
         }
-        if self.inverse > 0.0 {
-            let (tx, ty) = (
-                (self.b.0 - self.a.0) * self.inverse,
-                (self.b.1 - self.a.1) * self.inverse,
-            );
-            let length = 1.0 / self.inverse;
+        if self.length > 0.0 {
+            let ((tx, ty), (per_tx, per_ty)) = (self.along, self.per_along);
             let v = y - self.a.1;
-            let side = solve_interval(-ty, tx * v, -radius, radius);
-            let along = solve_interval(tx, ty * v, 0.0, length);
+            let side = solve_interval(-ty, -per_ty, tx * v, -radius, radius);
+            let along = solve_interval(tx, per_tx, ty * v, 0.0, self.length);
             if let (Some(side), Some(along)) = (side, along) {
                 let (from, to) = (side.0.max(along.0), side.1.min(along.1));
                 if from <= to {
@@ -58,14 +75,30 @@ impl Stroke {
     }
 }
 
-fn solve_interval(k: f32, c: f32, low: f32, high: f32) -> Option<(f32, f32)> {
+/// The `u` for which `low <= k u + c <= high`, given `per_k`, `1 / k` (0
+/// when `k` is 0).
+fn solve_interval(k: f32, per_k: f32, c: f32, low: f32, high: f32) -> Option<(f32, f32)> {
     if k.abs() < 1e-6 {
         return (low..=high)
             .contains(&c)
             .then_some((f32::NEG_INFINITY, f32::INFINITY));
     }
-    let (p, q) = ((low - c) / k, (high - c) / k);
+    let (p, q) = ((low - c) * per_k, (high - c) * per_k);
     Some((p.min(q), p.max(q)))
+}
+
+/// The square root by multiplies only: a reciprocal-root estimate from the
+/// float's bits refined by three Newton steps, within a few ulps of
+/// `sqrtf`, which on the device is a slow bit-by-bit loop.
+fn root(x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let mut r = f32::from_bits(0x5f37_59df - (x.to_bits() >> 1));
+    for _ in 0..3 {
+        r *= 1.5 - 0.5 * x * r * r;
+    }
+    x * r
 }
 
 fn centre_columns((left, right): (f32, f32)) -> (i32, i32) {
@@ -83,19 +116,14 @@ pub fn coverage(stroke: &Stroke, half: f32, x: usize, y: usize) -> u8 {
     let (a, b) = (stroke.a, stroke.b);
     let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let length = dx * dx + dy * dy;
-    let t = if length > 0.0 {
-        (((px - a.0) * dx + (py - a.1) * dy) / length).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+    let t = (((px - a.0) * dx + (py - a.1) * dy) * stroke.per_length_squared).clamp(0.0, 1.0);
     let (qx, qy) = (a.0 + t * dx - px, a.1 + t * dy - py);
     let reach = half + 0.5;
     let near = qx * qx + qy * qy;
     if near >= reach * reach {
         return 0;
     }
-    ((reach - sqrtf(near)).clamp(0.0, 1.0) * 15.0 + 0.5) as u8
+    ((reach - root(near)).clamp(0.0, 1.0) * 15.0 + 0.5) as u8
 }
 
 /// A filled triangle, wound either way.
@@ -120,7 +148,8 @@ impl Triangle {
         for (p, q) in self.edges() {
             let k = -sign * (q.1 - p.1);
             let c = sign * ((q.0 - p.0) * (y - p.1) + (q.1 - p.1) * p.0);
-            let (from, to) = solve_interval(k, c, 0.0, f32::INFINITY)?;
+            let per_k = if k.abs() < 1e-6 { 0.0 } else { 1.0 / k };
+            let (from, to) = solve_interval(k, per_k, c, 0.0, f32::INFINITY)?;
             left = left.max(from);
             right = right.min(to);
         }
@@ -175,11 +204,12 @@ impl Slab {
                 half: f32::INFINITY,
             };
         }
-        let ratio = k.1 / k.0;
+        let per = 1.0 / k.0;
+        let ratio = k.1 * per;
         Self {
             centre: c.0 + ratio * c.1,
             slope: -ratio,
-            half: half / k.0.abs(),
+            half: half * per.abs(),
         }
     }
 }
@@ -187,9 +217,10 @@ impl Slab {
 impl Bar {
     pub fn new(a: Point, b: Point, half: f32) -> Self {
         let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-        let length = sqrtf(dx * dx + dy * dy);
+        let length = root(dx * dx + dy * dy);
         let u = if length > 1e-3 {
-            (dx / length, dy / length)
+            let per = 1.0 / length;
+            (dx * per, dy * per)
         } else {
             (1.0, 0.0)
         };
@@ -308,14 +339,21 @@ impl<const ROWS: usize> Layer<ROWS> {
                 continue;
             }
             let pairs = &mut self.pairs[y - self.top];
-            let end = libm::ceilf(right) as usize;
-            for x in left as usize..end {
-                let steps = quarter_steps(right.min(x as f32 + 1.0) - left.max(x as f32));
+            let (first, last) = (left as usize, libm::ceilf(right) as usize - 1);
+            let mut raise = |x: usize, steps: u8| {
                 let at = 4 * (x % 2) as u32 + shift;
                 let pair = &mut pairs[x / 2];
                 if steps > (*pair >> at & 3) {
                     *pair = (*pair & !(3 << at)) | steps << at;
                 }
+            };
+            let share = |x: usize| right.min(x as f32 + 1.0) - left.max(x as f32);
+            raise(first, quarter_steps(share(first)));
+            if last > first {
+                for x in first + 1..last {
+                    raise(x, 3);
+                }
+                raise(last, quarter_steps(share(last)));
             }
         }
     }
@@ -610,6 +648,17 @@ mod tests {
             outside.iter().all(|&p| p == 0x1234),
             "rows past the layer are left alone"
         );
+    }
+
+    #[test]
+    fn the_multiply_only_root_matches_the_square_root() {
+        let mut x = 1e-4f32;
+        while x < 1e5 {
+            let (got, want) = (root(x), libm::sqrtf(x));
+            assert!((got - want).abs() <= want * 1e-6, "{x}: {got} for {want}");
+            x *= 1.013;
+        }
+        assert_eq!(root(0.0), 0.0);
     }
 
     #[test]

@@ -195,6 +195,10 @@ impl Cover {
     /// Add a stroke of `half` to the row: the union, by the larger coverage.
     pub fn stroke(&mut self, stroke: &Stroke, half: f32) {
         let y = self.y as f32 + 0.5;
+        let (top, bottom) = stroke.rows(half);
+        if y < top || y > bottom {
+            return;
+        }
         let Some(outer) = stroke.across(half + 0.5, y) else {
             return;
         };
@@ -223,6 +227,12 @@ impl Cover {
 
     /// Add a triangle with its edges stroked by `outline`.
     pub fn triangle(&mut self, triangle: &Triangle, outline: f32) {
+        let ys = triangle.0.map(|p| p.1);
+        let y = self.y as f32 + 0.5;
+        let reach = outline + 0.5;
+        if y < ys[0].min(ys[1]).min(ys[2]) - reach || y > ys[0].max(ys[1]).max(ys[2]) + reach {
+            return;
+        }
         if let Some(inside) = triangle.across(self.y as f32 + 0.5) {
             let inside = columns(inside);
             if inside.0 < inside.1 {
@@ -235,20 +245,30 @@ impl Cover {
         }
     }
 
-    /// Paint `color` where the row is covered, blended at its edges, and
-    /// start over for the next colour.
+    /// Paint `color` where the row is covered: solid runs as spans, edges
+    /// blended over what the row holds. Then start over for the next colour.
     pub fn paint(&mut self, row: &mut Row, color: u16) {
-        if self.first >= self.end {
-            return;
+        let (first, end) = (self.first.max(0) as usize, self.end.max(0) as usize);
+        let cells = &self.cells;
+        let mut x = first;
+        while x < end {
+            let start = x;
+            let solid = cells[x] == 15;
+            while x < end && (cells[x] == 15) == solid {
+                x += 1;
+            }
+            if solid {
+                row.span(start..x, color);
+            } else {
+                row.each_over(start..x, |x, under| match cells[x] {
+                    0 => None,
+                    c => Some(blend(color, under, c)),
+                });
+            }
         }
-        let (first, end) = (self.first as usize, self.end as usize);
-        let cells = &mut self.cells;
-        row.each_over(first..end, |x, under| match cells[x] {
-            0 => None,
-            15 => Some(color),
-            c => Some(blend(color, under, c)),
-        });
-        cells[first..end].fill(0);
+        if first < end {
+            self.cells[first..end].fill(0);
+        }
         (self.first, self.end) = (WIDTH as i32, 0);
     }
 }
@@ -343,8 +363,8 @@ mod tests {
         for y in 5..30 {
             let mut cover = Cover::new(y);
             cover.triangle(&head, 0.5);
-            for x in 80..120 {
-                assert_eq!(cover.cells[x], head.coverage(0.5, x, y), "{x},{y}");
+            for (x, &cell) in cover.cells.iter().enumerate().take(120).skip(80) {
+                assert_eq!(cell, head.coverage(0.5, x, y), "{x},{y}");
             }
         }
         assert!(head.contains(99.0, 17.0) && !head.contains(110.0, 17.0));

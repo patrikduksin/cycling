@@ -133,13 +133,13 @@ impl Track<'_> {
     }
 
     /// A spot's metres to the course's end.
-    fn to_end_m(&self, spot: Spot) -> f32 {
+    fn metres_to_end(&self, spot: Spot) -> f32 {
         let total = self.course.last().map_or(0.0, |c| c.along);
         (total - spot.along_mm as f32 / 1000.0).max(0.0)
     }
 
     fn index_of(&self, spot: Spot) -> usize {
-        let to_end = self.to_end_m(spot);
+        let to_end = self.metres_to_end(spot);
         self.course
             .partition_point(|c| c.along < to_end)
             .clamp(1, self.course.len() - 1)
@@ -148,7 +148,7 @@ impl Track<'_> {
     /// The course ahead from `split`, in order, each point with whether it
     /// comes before the next turn.
     fn ahead_points(&self, (end, at): (usize, Point)) -> impl Iterator<Item = (Point, bool)> + '_ {
-        let turn = self.turn().map(|(spot, _)| self.to_end_m(spot));
+        let turn = self.turn().map(|(spot, _)| self.metres_to_end(spot));
         let near = self.course[end - 1].along;
         core::iter::once((at, turn.is_some())).chain(
             self.course[..end]

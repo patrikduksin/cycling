@@ -365,7 +365,7 @@ impl<'v> Scene<'v> {
     fn paint_content(&self, row: &mut Row) {
         let y = row.y();
         if let Some(bar) = self.bar
-            && y < STATUS_BAR.bottom
+            && y < self.bar_rows()
         {
             bar.paint(row);
             return;
@@ -407,6 +407,15 @@ impl<'v> Scene<'v> {
 
     pub(super) fn light(&self) -> bool {
         self.light
+    }
+
+    /// The rows the status bar paints: the map's ground reaches up to the
+    /// bar, every other page keeps the gap under it.
+    fn bar_rows(&self) -> usize {
+        match self.kind {
+            Kind::Ride(RidePage::Map) => STATUS_BAR.bottom,
+            _ => CONTENT.top,
+        }
     }
 
     #[cfg(test)]
@@ -473,7 +482,7 @@ impl<'v> Scene<'v> {
     #[cfg(test)]
     fn reference_content(&self, x: usize, y: usize) -> u16 {
         if let Some(bar) = self.bar
-            && y < STATUS_BAR.bottom
+            && y < self.bar_rows()
         {
             return bar.pixel(x, y);
         }

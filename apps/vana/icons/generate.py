@@ -178,17 +178,17 @@ def check_gaps(name: str, sizes: list[int]) -> None:
 
 
 def rasterize(name: str, size: int) -> dict:
-    return crop(render((HERE / f"{name}.svg").read_text(), size), size)
+    return crop(render((HERE / f"{name}.svg").read_text(), size), size, name)
 
 
-def crop(coverage: list[int], size: int) -> dict:
+def crop(coverage: list[int], size: int, name: str) -> dict:
     alpha = Image.new("L", (size, size))
     alpha.putdata([c * 17 for c in coverage])
     left, top, right, bottom = alpha.getbbox()
     width, height = right - left, bottom - top
     data = alpha.crop((left, top, right, bottom)).tobytes()
     pixels = [value // 17 for value in data]
-    assert 15 in pixels, f"an icon at {size} px has no solid pixel"
+    assert 15 in pixels, f"{name} at {size} px has no solid pixel"
     return dict(left=left, top=top, width=width, height=height, bits=pack(pixels, width))
 
 
@@ -222,7 +222,7 @@ def sign_glyph(art: str, mirror: int, scale: float, fill: tuple[int, int], centr
     edge = [coverage[i] for i in range(size)] + [coverage[i * size] for i in range(size)]
     edge += [coverage[-1 - i] for i in range(size)] + [coverage[i * size + size - 1] for i in range(size)]
     assert max(edge) == 0, f"a sign glyph at {scale} reaches past its square"
-    return dict(left=left, top=top, size=size, raster=crop(coverage, size))
+    return dict(left=left, top=top, size=size, raster=crop(coverage, size, f"a sign glyph at {scale}"))
 
 
 def zoom_sheet(names: list[str], size: int, path: Path) -> None:
@@ -314,7 +314,7 @@ def emit() -> str:
             "};",
             "",
         ]
-    raster = crop(render(draw(PUCK, PUCK_SIZE, PUCK_SIZE / 2, PUCK_SIZE / 2, 1, 1), PUCK_SIZE), PUCK_SIZE)
+    raster = crop(render(draw(PUCK, PUCK_SIZE, PUCK_SIZE / 2, PUCK_SIZE / 2, 1, 1), PUCK_SIZE), PUCK_SIZE, "puck")
     total += len(raster["bits"]) + 8
     body += [
         "/// The map's rider arrow; its square's centre is the puck's.",

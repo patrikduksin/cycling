@@ -426,6 +426,23 @@ fn far_from_any_turn_the_way_back_leads_to_where_the_rider_left() {
     );
 }
 
+fn junction_left_at(along_m: f32) -> Option<Point> {
+    let turns = [corner(1000.0, RIGHT)];
+    let mut rider = Rider::new(&turns, None);
+    rider.ride(0.0, 1055.0, 5.0);
+    rider.at(along_m);
+    for _ in 0..6 {
+        rider.fix(along_m + 1.0, 50.0, true);
+    }
+    rider.nav.guidance(&turns, rider.now_ms, locate)?.junction
+}
+
+#[test]
+fn the_way_back_leads_to_a_missed_turn_only_within_60_m_of_where_the_rider_left() {
+    assert_eq!(junction_left_at(1060.0), Some((0.0, 1000.0)));
+    assert_eq!(junction_left_at(1061.0), Some((0.0, 1061.0)));
+}
+
 #[test]
 fn arriving_sounds_once_and_shows_for_60_s() {
     let turns = [corner(1000.0, RIGHT)];
@@ -459,6 +476,16 @@ fn of_two_sounds_due_on_one_fix_the_second_waits_a_fix_while_it_holds() {
     assert_eq!(rider.at(680.0), Some(Event::OnCourse));
     assert_eq!(rider.fix(681.0, 20.0, false), None);
     assert_eq!(rider.at(682.0), None);
+}
+
+#[test]
+fn a_beep_put_off_a_fix_is_dropped_once_its_turn_is_passed() {
+    let turns = [turn(700.0, 710.0, Some(RIGHT)), turn(720.0, 730.0, Some(LEFT))];
+    let mut rider = Rider::new(&turns, Some(7_000));
+    assert_eq!(
+        rider.ride(697.0, 760.0, 7.0),
+        [(697.0, Event::Following), (704.0, Event::TurnNow)]
+    );
 }
 
 #[test]

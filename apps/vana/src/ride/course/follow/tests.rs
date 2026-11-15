@@ -9,6 +9,7 @@ use std::vec::Vec;
 
 mod many;
 mod passes;
+mod receiver;
 
 struct Rider<'a> {
     homing: Homing<'a>,

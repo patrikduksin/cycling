@@ -179,7 +179,6 @@ impl Sim {
         );
     }
 
-    /// From Home, open Settings, DISPLAY, and step to its fifth row, MODE.
     #[track_caller]
     pub fn open_mode_row(&mut self) {
         self.home("SETTINGS");

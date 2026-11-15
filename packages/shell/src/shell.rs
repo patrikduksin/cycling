@@ -18,7 +18,6 @@ use device_api::observation::Observation;
 use device_api::power::Power;
 use device_api::sensors::Light;
 
-/// Whether the backlight holds a percent or follows the ambient light.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrightnessChoice {
     Percent,
@@ -144,7 +143,6 @@ impl Parts {
     }
 }
 
-/// What `Shell::draw` did with a picture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Drawn {
     /// The panel already showed it, and nothing waited for a frame.
@@ -211,13 +209,9 @@ pub struct Shell<D, I, P, B> {
     pub clock: Option<fn() -> u64>,
     idle: Idle,
     effective: u8,
-    /// The curve the application wants the backlight to follow, or none for
-    /// the stored brightness.
     curve: Option<&'static Curve>,
     backlight: Backlight,
     light: Observation<Light>,
-    /// A brightness choice made at the terminal that the application has
-    /// not yet adopted. The application owns whether AUTO is on.
     brightness_choice: Option<BrightnessChoice>,
     power: P,
     display: D,
@@ -384,16 +378,13 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         self.effective
     }
     /// Follow the ambient light along `curve` from the next tick, or show the
-    /// stored brightness with none. The shell does not know why the
-    /// application chose it.
+    /// stored brightness with none.
     pub fn set_curve(&mut self, curve: Option<&'static Curve>) {
         self.curve = curve;
     }
-    /// Whether the backlight follows the ambient light.
     pub fn auto(&self) -> bool {
         self.curve.is_some()
     }
-    /// Offer the application a brightness choice made outside its Settings.
     pub fn offer_brightness_choice(&mut self, choice: BrightnessChoice) {
         self.brightness_choice = Some(choice);
     }

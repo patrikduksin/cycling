@@ -508,7 +508,6 @@ impl Runtime {
         let mut display = self.preferences.display;
         match row {
             Row::Brightness => {
-                // AUTO, then each step up; a level set elsewhere moves on too.
                 let next = BRIGHTNESS_STEPS
                     .into_iter()
                     .find(|step| *step > display.brightness);

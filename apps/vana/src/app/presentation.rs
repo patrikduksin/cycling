@@ -839,9 +839,10 @@ impl Runtime {
         view.graphics = self.motion.graphics(self.motion_visible(), now);
         view.prepare();
         let drawn = system.draw(&view.scene(), now);
-        // A frame the panel already showed still counts as drawn, so a glide
-        // that lands on the same pixels asks for no more frames.
         let pixels = crate::screens::ride::pixels(&view.graphics, &view.profile);
+        // Before the return below: a frame the panel already showed still
+        // counts as drawn, so a glide that lands on the same pixels asks for
+        // no more frames.
         self.motion.drew(&sample, pixels, now);
         // Only a frame the panel accepted is a milestone or answers a press;
         // a pending press waits for the next frame that reaches the panel.
@@ -1500,9 +1501,6 @@ impl Runtime {
         self.preferences.options.mode.policy()
     }
 
-    /// Take the readings the numbers show, as the mode says: each pass, or
-    /// once the ride clock's second turns (the wall clock's while no ride
-    /// records).
     fn latch_numbers(&mut self, now: u64) {
         let (recording, second) = if self.ride.active().status() == Status::Recording {
             (true, self.ride.active_ms(now) / 1000)
@@ -1550,7 +1548,6 @@ impl Runtime {
     }
 }
 
-/// The newest readings as the gauges take them: power is its 3 s average.
 fn arrived_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
     crate::ride::log::Sample {
         power_watts: readings.power_3s_watts,
@@ -1558,8 +1555,6 @@ fn arrived_sample(readings: &super::readings::Readings) -> crate::ride::log::Sam
     }
 }
 
-/// Everything a ride page prints as a number, as one moment's copy. Gauges
-/// and radar markers are not here: they keep the live readings.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Readout {
     live: crate::ride::log::Sample,
@@ -1574,12 +1569,6 @@ pub(super) struct Readout {
     paused_secs: u32,
 }
 
-/// The readout the ride pages' numbers show: the newest one, or the one of
-/// the second's start when the mode latches numbers. The one place numbers
-/// are chosen, so no page asks which mode it is in.
-/// When a readout was taken. Besides the second turning, a new page, a new
-/// lap or a climb starting or ending changes what a page says at once, so
-/// any of them makes the readout due: a page never opens on stale words.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Moment {
     recording: bool,
@@ -1597,7 +1586,6 @@ pub(super) struct Shown {
 }
 
 impl Shown {
-    /// Whether the readout is due: always on arrival, else at a new moment.
     fn stale(&self, numbers: super::mode::Numbers, moment: Moment) -> bool {
         numbers == super::mode::Numbers::OnArrival || self.taken != Some(moment)
     }
@@ -1611,7 +1599,6 @@ impl Shown {
         self.readout.live
     }
 
-    /// The numbers' sample: power is its 3 s average.
     pub(super) fn sample(&self) -> crate::ride::log::Sample {
         crate::ride::log::Sample {
             power_watts: self.readout.power_3s_watts,

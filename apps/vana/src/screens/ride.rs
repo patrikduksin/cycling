@@ -471,9 +471,6 @@ pub fn pixels(graphics: &Graphics, profile: &TrainingProfile) -> Pixels {
     }
 }
 
-/// The radar strip as drawn: the track's colour, and each target's row and
-/// whether it is close, so a range that moves less than a row changes
-/// nothing.
 #[derive(Clone, Copy, Debug, Hash)]
 pub struct Radar {
     track: u16,

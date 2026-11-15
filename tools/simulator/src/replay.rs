@@ -993,8 +993,6 @@ impl Sources {
         })
     }
 
-    /// A trace recorded before ambient light was traced holds none, and reads
-    /// as no reading rather than as a missing input.
     pub fn light(&self) -> Observation<sensors::Light> {
         self.light
             .latest

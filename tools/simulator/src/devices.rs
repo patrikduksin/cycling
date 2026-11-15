@@ -33,11 +33,7 @@ pub struct Frame {
     pub bench: Option<crate::bench::Request>,
     /// A hash of every frame shown since this was set, in order.
     pub hashes: Option<Vec<u64>>,
-    /// The `redraw-probe` comparing each frame shown with the one before.
     pub probe: Option<crate::probe::Probe>,
-    /// Repaint the frame the shell believes is shown and panic on any pixel
-    /// that differs, so a skipped frame never hides a change. The bench and
-    /// the probe turn it off to keep their long runs fast.
     pub check: bool,
 }
 impl Frame {

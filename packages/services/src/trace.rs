@@ -439,8 +439,6 @@ pub enum Event<'a> {
         snapshot: Option<positioning::Snapshot>,
     },
     Physical(sensors::Snapshot),
-    /// The ambient light reading, recorded with every report so a replay
-    /// ages it as the ride did. Roughly 3 reports a second.
     Light(Observation<sensors::Light>),
     Power(Option<InputSnapshot>),
     /// UTC from Wi-Fi synchronization, recorded when it no longer reads as

@@ -303,7 +303,6 @@ mod scenes {
         sim
     }
 
-    /// The main ride page with a radar, in the display mode SAVER.
     pub fn ride_main_saver() -> Sim {
         let mut sim = rider(true);
         sim.open_mode_row();

@@ -1,42 +1,17 @@
-//! A backlight that follows the ambient light. The state is integers moved
-//! in fixed ticks of elapsed time, so the device, the simulator and a replay
-//! of a trace reach the same percent from the same readings.
-//!
-//! Each tick compares the curve's percent for the reading with the held
-//! percent. A target outside the dead band starts a count in its direction,
-//! and the held percent follows only once that count outlasts the hold for
-//! the direction. A reading back inside the band, or on the other side, drops
-//! the count, so a change shorter than its hold never moves the screen: a
-//! short tunnel, a passing shadow, lamps close together. Light that stays
-//! bright past one hold and dark past the other, again and again, still moves
-//! it, such as lamps far apart at a slow pace.
-//! The shown percent then ramps to the held one, quickly up and slowly down.
 use device_api::observation::Observation;
 use device_api::sensors::Light;
 
 const TICK_MS: u64 = 100;
-/// A brighter target must last longer than this before the screen follows.
-/// A passing light or a lamp is shorter, and a rider waits no longer than
-/// this to see a lasting brightening start.
 const BRIGHTEN_HOLD_TICKS: u16 = 20;
-/// A darker target must last longer than this. A tunnel or a cloud is
-/// shorter, and the eye adapts to a lasting dimming slowly anyway.
 const DIM_HOLD_TICKS: u16 = 60;
-/// The most the shown percent rises in one tick, 80% a second: a lasting
-/// brightening, once started, finishes in about a second.
 const RISE_PERCENT: u8 = 8;
-/// The most it falls in one tick, 10% a second: 100% to 10% takes 9 s.
 const FALL_PERCENT: u8 = 1;
-/// The target must leave the held percent by more than this to count. Noise
-/// of a few light counts moves the target by about this much at the steepest
-/// part of the curve.
 const BAND_PERCENT: u8 = 3;
-/// Ticks worked off after a long pause between calls.
 const CATCH_UP_TICKS: u64 = 50;
 
-/// Light to duty percent, as knots with rising light. The duty is linear in
-/// power, so the knots carry the perceptual shape. Light below the first knot
-/// shows its percent and light above the last shows the last.
+/// Light to duty percent, as knots with rising light. Light below the first
+/// knot shows its percent and light above the last shows the last. The duty
+/// is linear in power, so the knots carry the perceptual shape.
 #[derive(Debug)]
 pub struct Curve(pub [(u16, u8); 5]);
 
@@ -70,8 +45,6 @@ impl Curve {
     }
 }
 
-/// Whether the target has been somewhere other than the held percent, and
-/// for how many ticks in a row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Pull {
     #[default]
@@ -132,9 +105,7 @@ impl Backlight {
         });
     }
 
-    /// The held percent after one more tick toward `target`.
     fn follow(&mut self, target: u8, held: u8, curve: &Curve) -> u8 {
-        // The ends are reached exactly, and left only by the band.
         let outside =
             target.abs_diff(held) > BAND_PERCENT || (target != held && curve.is_end(target));
         self.pull = match (outside, target > held, self.pull) {
@@ -172,7 +143,6 @@ mod tests {
         }
     }
 
-    /// Run `seconds` of ticks on `raw`, returning the percent after each.
     fn run(
         backlight: &mut Backlight,
         light: Observation<Light>,
@@ -184,9 +154,6 @@ mod tests {
             .collect()
     }
 
-    /// Settle on `schedule(0)`, then call every `pass_ms` for `seconds`,
-    /// reading the light as the companion reports it, three times a second.
-    /// Returns the percent after each pass, with its time.
     fn feed(schedule: impl Fn(u64) -> u16, pass_ms: u64, seconds: u64) -> Vec<(u64, u8)> {
         let mut backlight = Backlight::default();
         let settle = 30_000;
@@ -206,7 +173,6 @@ mod tests {
         high - low
     }
 
-    /// `dip` for the last `for_ms` of every `every_ms`, else `base`.
     fn pulses(base: u16, dip: u16, every_ms: u64, for_ms: u64) -> impl Fn(u64) -> u16 {
         move |ms| {
             if ms % every_ms >= every_ms - for_ms {

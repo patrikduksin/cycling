@@ -293,7 +293,7 @@ impl Runtime {
     }
 }
 
-pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>) {
+pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>, now: u64) {
     let Some(state) = track.as_deref_mut() else {
         return;
     };
@@ -304,6 +304,9 @@ pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>) {
         heading: state.homing.heading(),
         course: state.follower.course(),
         ahead: state.follower.ahead(),
+        guidance: state.follower.guidance(now),
+        left_m: state.follower.to_end_m(),
+        badge: None,
     };
     state.map.update(&drawn);
 }

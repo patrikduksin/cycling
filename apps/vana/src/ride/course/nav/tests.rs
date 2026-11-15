@@ -402,7 +402,7 @@ fn the_way_back_leads_to_the_missed_turn_and_never_moves() {
         rider.step(Observed::Fix(fixed));
     }
     let guidance = rider.nav.guidance(&turns, rider.now_ms, locate).unwrap();
-    assert_eq!(guidance.junction, Some((0.0, 1000.0)));
+    assert_eq!(guidance.junction.map(|spot| spot.at), Some((0.0, 1000.0)));
     let back = libm::sqrtf(90.0 * 90.0 + 36.0 * 36.0);
     assert_eq!(
         guidance.sign,
@@ -417,7 +417,7 @@ fn far_from_any_turn_the_way_back_leads_to_where_the_rider_left() {
     let turns = [corner(3000.0, RIGHT)];
     let (rider, _) = off_by(&turns, &[45.0, 120.0, 300.0, 500.0, 700.0, 900.0]);
     let guidance = rider.nav.guidance(&turns, rider.now_ms, locate).unwrap();
-    assert_eq!(guidance.junction, Some((0.0, 500.0)));
+    assert_eq!(guidance.junction.map(|spot| spot.at), Some((0.0, 500.0)));
     assert_eq!(
         guidance.sign,
         Sign::OffCourse {

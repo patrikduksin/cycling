@@ -677,7 +677,7 @@ impl Runtime {
             _ => navigation.home_cursor,
         };
         if page == Page::Ride && navigation.ride_page == RidePage::Map {
-            super::track::refresh_map(&mut self.track);
+            super::track::refresh_map(&mut self.track, now);
         }
         let mut view = View::new(page, cursor, local);
         view.editing = page == Page::Settings && navigation.settings_editing;

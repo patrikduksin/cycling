@@ -170,23 +170,30 @@ and when the rider stands still the last heading holds.
 Following a course, the rider's puck sits low on the screen. The course ahead
 is a wide blue route on a dark casing, the ridden part a thinner, dimmer
 blue, and a white arrow on the route marks the next turn's corner. The badge
-in the top-left corner shows the next turn and how far it is, at rest too.
-The zoom steps between 300 m, 400 m, 1 km and 3 km across, never gliding, and
-is 300 m within 100 m of the turn. The map keeps the rider, the next turn (on
-the last leg, the finish), the route up to it and the route past it clear of
-the badge; the route past the turn may come as near as its blue line, as in
-the map-approach mockup. It takes the closest step and rider column that keep
-all of that clear: the rider first moves sideways away from where the route
-goes, then the map zooms out, and only then does the rider move towards the
-route's side. When nothing keeps the route past the turn clear, the turn, the
-rider and the route up to the turn stay clear; when the turn is too far even
-for 3 km across, the route in view does. Among equal choices the rider's
-column stays put, and the route keeps clear of the screen's edges. The map
-steps out at once and back in only once the turn fits with room to spare.
-Off
-course, the badge turns amber, the puck's arrow turns amber, and up to three
-amber chevrons lead back in a straight line to a ringed junction, where the
-course left off; the route goes on from there. Arrived, the badge is green.
+in the top-left corner shows the next turn and how far it is, at rest too;
+with a radar paired it sits 8 px right of the radar strip. The zoom steps
+between 300 m, 400 m, 1 km and 3 km across, never gliding, and is 300 m
+within 100 m of the turn. The map keeps the rider, the next turn (on the last
+leg, the finish) and the route up to it clear of the badge, and only these
+choose the zoom: the closest step at which some rider column keeps them
+clear. The rider first moves sideways away from where the route goes, then
+the map zooms out, and only then does the rider move towards the route's
+side. Within that step the rider's column also keeps the route past the turn
+clear when one can, as near as its blue line, as in the map-approach mockup;
+when none can, the route past the turn runs under the badge, and it never
+changes the zoom. When the turn is too far even for 3 km across, the rider
+and the route in view stay clear. Among equal choices on one side of the
+route the rider's column stays put, and the route keeps clear of the screen's
+edges; a rider moved towards the route's side moves back once a column away
+from it keeps as much clear. The map steps out at once and back in only once
+the turn fits with room to spare.
+Off course, the badge turns amber, the puck's arrow turns amber, and up to
+three amber chevrons lead back in a straight line to a ringed junction, where
+the course left off; the route goes on from there. When the junction is too
+far behind for the rider and its ring to fit 3 km across, the rider sits at
+the top of the map and the chevrons still point down the straight line to
+the junction, midway to where that line leaves the map; the ring sinks off the
+bottom edge. Arrived, the badge is green.
 
 Without a course to follow, the map is 1 km across with the rider in the
 middle and the ride's own track behind in the ridden blue. A loaded course
@@ -207,8 +214,8 @@ comes within 30 minutes of the cut ride's last. Until that is read, the map
 draws the track read so far; a pass of the start then takes no lap. The
 course is followed again only as on any ride: by riding along it.
 
-A long press on the map (a second) stops following the course; a tap does
-nothing, so rain or a glove cannot.
+A long press anywhere on the map page (a second), the badge included, stops
+following the course; a tap does nothing, so rain or a glove cannot.
 
 ### Course
 

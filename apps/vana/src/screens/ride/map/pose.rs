@@ -239,8 +239,6 @@ enum Clear {
     Target,
     /// Those and the route up to the target.
     UpToTarget,
-    /// Those and the route past the target, by its blue line.
-    Everything,
 }
 
 const COLUMNS: usize = 16;
@@ -260,6 +258,7 @@ fn columns(start: i16, left: f32) -> (heapless::Vec<i16, COLUMNS>, usize) {
 struct Trial {
     y: i16,
     clear: [Clear; COLUMNS],
+    past_clear: u16,
     roomy: u16,
     left_first: bool,
 }
@@ -298,58 +297,66 @@ pub fn choose_pose(
             try_step(step, target, &columns, margin, i == last, aim, &route)
         })
         .collect();
-    let mut best: Option<(Clear, Pose)> = None;
-    for toward in [false, true] {
-        for (trial, &step) in trials.iter().zip(steps) {
+    let kept_at = |step: Step| {
+        prev.filter(|prev| prev.step == step)
+            .and_then(|prev| columns.iter().position(|&x| x == prev.rider.0))
+    };
+    let on_toward_side = |trial: &Trial, k: usize| k != 0 && (k <= left_count) != trial.left_first;
+    let mut best: Option<(Clear, usize)> = None;
+    'steps: for toward in [false, true] {
+        for (i, trial) in trials.iter().enumerate() {
             let Some(trial) = trial else {
                 continue;
             };
-            let kept = prev
-                .filter(|prev| prev.step == step && !toward)
-                .and_then(|prev| columns.iter().position(|&x| x == prev.rider.0));
-            let on_toward_side = |k: usize| k != 0 && (k <= left_count) != trial.left_first;
-            let order: heapless::Vec<usize, COLUMNS> = kept
-                .into_iter()
-                .chain(
-                    (0..columns.len()).filter(|&k| on_toward_side(k) == toward && Some(k) != kept),
-                )
-                .collect();
-            for roomy in [true, false] {
-                for &k in &order {
-                    if roomy && trial.roomy >> k & 1 == 0 {
-                        continue;
-                    }
-                    let clear = trial.clear[k];
-                    let pose = Pose {
-                        step,
-                        rider: (columns[k], trial.y),
-                        heading: aim.heading,
-                    };
-                    if clear == Clear::Everything {
-                        return pose;
-                    }
-                    if best.is_none_or(|(most, _)| clear > most) {
-                        best = Some((clear, pose));
-                    }
+            let kept = kept_at(steps[i]);
+            let side = (0..columns.len())
+                .filter(|&k| (on_toward_side(trial, k) && Some(k) != kept) == toward);
+            for k in side {
+                let clear = trial.clear[k];
+                if best.is_none_or(|(most, _)| clear > most) {
+                    best = Some((clear, i));
+                }
+                if clear == Clear::UpToTarget {
+                    break 'steps;
                 }
             }
         }
     }
-    match best {
-        Some((clear, pose)) if clear > Clear::Nothing => pose,
-        _ => Pose {
-            step: steps[last],
-            rider: (
-                start,
-                if matches!(target, Target::Free) {
-                    FREE_RIDER_Y
-                } else {
-                    RIDER_Y
-                },
-            ),
-            heading: aim.heading,
-        },
-    }
+    let chosen = best
+        .filter(|&(clear, _)| clear > Clear::Nothing)
+        .and_then(|(clear, i)| {
+            let trial = trials[i].as_ref()?;
+            let kept = kept_at(steps[i]);
+            let bit = |mask: u16, k: usize| mask >> k & 1 == 1;
+            let k = (0..columns.len())
+                .filter(|&k| trial.clear[k] == clear)
+                .min_by_key(|&k| {
+                    (
+                        !bit(trial.past_clear, k),
+                        on_toward_side(trial, k),
+                        Some(k) != kept,
+                        !bit(trial.roomy, k),
+                        k,
+                    )
+                })?;
+            Some(Pose {
+                step: steps[i],
+                rider: (columns[k], trial.y),
+                heading: aim.heading,
+            })
+        });
+    chosen.unwrap_or(Pose {
+        step: steps[last],
+        rider: (
+            start,
+            if matches!(target, Target::Free) {
+                FREE_RIDER_Y
+            } else {
+                RIDER_Y
+            },
+        ),
+        heading: aim.heading,
+    })
 }
 
 fn try_step(
@@ -367,9 +374,12 @@ fn try_step(
     let (y, holds) = match target {
         Target::Junction((_, ahead)) if ahead <= 0.0 => {
             let y = f32::from(JUNCTION_Y) + ahead * s;
-            (libm::roundf(y) as i16, y >= top)
+            (libm::roundf(y.max(top)) as i16, y >= top)
         }
-        Target::Junction((_, ahead)) => (JUNCTION_Y, f32::from(JUNCTION_Y) - ahead * s >= top),
+        Target::Junction((_, ahead)) => {
+            let holds = f32::from(JUNCTION_Y) - ahead * s >= top;
+            (if holds { JUNCTION_Y } else { RIDER_Y }, holds)
+        }
         Target::Free => (FREE_RIDER_Y, true),
         Target::Turn((_, ahead), _) | Target::Finish((_, ahead)) => (
             RIDER_Y,
@@ -379,7 +389,6 @@ fn try_step(
     if !holds && !widest {
         return None;
     }
-    let y = if holds { y } else { RIDER_Y };
     let screen = |(right, ahead): Point| (right * s, f32::from(y) - ahead * s);
     let all = (1u16 << columns.len()) - 1;
     let block = |a: Point, b: Point, pad: f32, mask: &mut u16| {
@@ -460,14 +469,12 @@ fn try_step(
     let mut clear = [Clear::Nothing; COLUMNS];
     let mut roomy = 0;
     for (k, &x) in columns.iter().enumerate() {
-        let route = bit(to_goal, k) && bit(whole, k);
-        clear[k] = match (bit(rider, k), bit(shown, k), bit(to_goal, k), route) {
+        clear[k] = match (bit(rider, k), bit(shown, k), bit(to_goal, k)) {
             (false, ..) => Clear::Nothing,
-            (true, true, _, true) => Clear::Everything,
-            (true, true, true, false) => Clear::UpToTarget,
-            (true, true, false, false) => Clear::Target,
-            (true, false, _, true) => Clear::RiderAndRoute,
-            (true, false, _, false) => Clear::Rider,
+            (true, true, true) => Clear::UpToTarget,
+            (true, true, false) => Clear::Target,
+            (true, false, true) => Clear::RiderAndRoute,
+            (true, false, false) => Clear::Rider,
         };
         let x = f32::from(x);
         if x + least >= left + EDGE && x + most <= WIDTH - EDGE {
@@ -477,6 +484,7 @@ fn try_step(
     Some(Trial {
         y,
         clear,
+        past_clear: whole,
         roomy,
         left_first: most >= -least,
     })
@@ -640,9 +648,14 @@ mod tests {
         };
         let pose = posed(None, far, straight, badge(137.0));
         assert_eq!(
-            (pose.step, pose.rider),
-            (Step::Km1, (176, 266)),
-            "3 km across runs the route past the turn up under the badge"
+            pose.step,
+            Step::Km3,
+            "the turn alone sets the step, from the side away from its route"
+        );
+        assert_eq!(
+            pose.rider,
+            (160, 266),
+            "the route past the turn pans the rider out from under the badge"
         );
         let left = Aim {
             target: Target::Turn((0.0, 90.0), Glyph::Left),
@@ -673,19 +686,39 @@ mod tests {
     }
 
     #[test]
-    fn a_column_that_still_fits_is_kept() {
+    fn a_column_that_still_fits_is_kept_on_its_side_of_the_route() {
+        let far = Aim {
+            target: Target::Turn((0.0, 900.0), Glyph::Right),
+            ..on_course(250.0)
+        };
+        let straight = |visit: &mut dyn FnMut(Point, bool)| {
+            visit((0.0, 0.0), true);
+            visit((0.0, 900.0), true);
+            visit((0.0, 3_000.0), false);
+        };
         let held = Pose {
+            step: Step::Km3,
+            rider: (176, 266),
+            heading: 0,
+        };
+        let pose = posed(Some(held), far, straight, badge(137.0));
+        assert_eq!(pose.rider, (176, 266), "not 160, as on a first fix");
+        let towards = Pose {
             step: Step::M400,
             rider: (96, 266),
             heading: 0,
         };
         let pose = posed(
-            Some(held),
+            Some(towards),
             on_course(250.0),
             mockup_route(250.0),
             badge(137.0),
         );
-        assert_eq!(pose.rider, (96, 266));
+        assert_eq!(
+            pose.rider,
+            (80, 266),
+            "it moves back away from the route's side once that keeps as much clear"
+        );
     }
 
     const BADGE: Keepout = Keepout {

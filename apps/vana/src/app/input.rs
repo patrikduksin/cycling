@@ -246,8 +246,8 @@ impl Runtime {
                 }
             }
             Page::Ride if paused_screen => None,
-            Page::Ride if self.sign_at(x, y, now, radar) => Some(Control::Sign),
             Page::Ride if navigation.ride_page == RidePage::Map => Some(Control::Map),
+            Page::Ride if self.sign_at(x, y, now, radar) => Some(Control::Sign),
             // Adding a minute to a step changes no ride state, so a tap may.
             Page::Ride
                 if navigation.ride_page == RidePage::Workout

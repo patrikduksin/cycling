@@ -137,7 +137,11 @@ pub fn place(sign: Sign, form: SignForm, radar: bool) -> Option<Placed> {
         SignForm::Badge => &BADGE,
         SignForm::Chip => &CHIP,
     };
-    let shift = if radar { RADAR_SHIFT } else { 0 };
+    let shift = match (radar, form) {
+        (false, _) => 0,
+        (true, SignForm::Badge) => RADAR,
+        (true, SignForm::Banner | SignForm::Chip) => RADAR_SHIFT,
+    };
     let text_left = geometry.text_left + shift as f32;
     let mut lines = heapless::Vec::new();
     let (fill, glyph, ink) = match (sign, &geometry.notices) {

@@ -1,18 +1,18 @@
 //! Where the map stands each fix: its zoom step and the rider's place on
 //! the screen, heading up.
 //!
-//! Riding a course, the rider sits low, at `RIDER_Y`. The step is the
-//! closest whose screen holds the next turn, with the turn, the route up to
-//! it and the rider clear of the badge, and the closest one within
-//! `CLOSE_M` of the turn. A wider step is taken at once, a closer one only
-//! once the turn fits it `SPARE_PX` farther from the rider. Only the badge
-//! zooms the map out: the rider's column starts by the turn's side and
-//! moves along a `GRID` away from the side the route ahead goes to, to the
-//! first column whose route in view keeps `EDGE` from both edges, else to
-//! the first that clears the badge; a column that still fits is kept. Off
-//! course the rider and the missed junction share the screen, the lower of
-//! them at `JUNCTION_Y`. With no turn to aim at, the map is `Step::Km1`
-//! across with the rider mid-map.
+//! Riding a course, the rider sits low, at `RIDER_Y`, and the step holds
+//! the target: the next turn, else the finish. Each step and column is
+//! ranked by what it keeps clear of the badge (`Clear`), and the closest
+//! step with the best rank wins; within `CLOSE_M` of the turn it is
+//! `Step::M300`. A wider step is taken at once, a closer one only once the
+//! target and the route up to it fit `SPARE_PX` further from the badge.
+//! The rider's column starts by the turn's side on a `GRID`; a column that
+//! still fits is kept, then columns away from the side the route goes to
+//! are tried at every step before those towards it, and those whose route
+//! in view keeps `EDGE` from both edges first. Off course the rider and the
+//! missed junction share the screen, the lower of them at `JUNCTION_Y`.
+//! With no course, the map is `Step::Km1` across with the rider mid-map.
 use crate::ride::course::nav::Glyph;
 use crate::ride::homing::TURN;
 use core::f32::consts::TAU;
@@ -34,7 +34,10 @@ const CLEARANCE: f32 = 8.0;
 const SPARE_PX: f32 = 6.0;
 const CLOSE_M: f32 = 100.0;
 /// What must clear the badge: the route's casing, and the rider's puck.
+/// Past the turn only the route's blue line must, since map-approach
+/// draws its casing under the badge's corner.
 const ROUTE_REACH: f32 = 9.0;
+const LINE_REACH: f32 = 6.0;
 const PUCK_REACH: f32 = 14.5;
 const JUNCTION_REACH: f32 = 12.0;
 
@@ -135,13 +138,76 @@ pub struct Keepout {
     pub top: f32,
     pub right: f32,
     pub bottom: f32,
+    pub radius: f32,
 }
 
 impl Keepout {
-    fn blocks(&self, (x, y): Point, reach: f32) -> bool {
-        let pad = CLEARANCE + reach;
-        x > self.left - pad && x < self.right + pad && y > self.top - pad && y < self.bottom + pad
+    /// The rider's columns, an open range, at which the segment from `a`
+    /// to `b` comes within `pad` of the box. `a` and `b` are pixels right
+    /// of the rider's column, and screen rows.
+    fn blocked(&self, a: Point, b: Point, pad: f32) -> Option<(f32, f32)> {
+        let (top, bottom) = (self.top - pad, self.bottom + pad);
+        let rise = b.1 - a.1;
+        let (from, to) = if rise.abs() < 1e-6 {
+            ((top < a.1 && a.1 < bottom).then_some((0.0, 1.0)))?
+        } else {
+            let (p, q) = ((top - a.1) / rise, (bottom - a.1) / rise);
+            (p.min(q).max(0.0), p.max(q).min(1.0))
+        };
+        if from > to {
+            return None;
+        }
+        let x = |t: f32| a.0 + t * (b.0 - a.0);
+        let (low, high) = (x(from).min(x(to)), x(from).max(x(to)));
+        Some((self.left - pad - high, self.right + pad - low))
     }
+
+    /// Whether the segment from `a` to `b` comes within `pad` of the
+    /// badge's rounded box.
+    fn near(&self, a: Point, b: Point, pad: f32) -> bool {
+        let r = self.radius;
+        let inner = Keepout {
+            left: self.left + r,
+            top: self.top + r,
+            right: self.right - r,
+            bottom: self.bottom - r,
+            radius: 0.0,
+        };
+        if inner
+            .blocked(a, b, 0.0)
+            .is_some_and(|(low, high)| low <= 0.0 && 0.0 <= high)
+        {
+            return true;
+        }
+        let corners = [
+            (inner.left, inner.top),
+            (inner.right, inner.top),
+            (inner.left, inner.bottom),
+            (inner.right, inner.bottom),
+        ];
+        let reach = r + pad;
+        corners
+            .iter()
+            .any(|&c| distance_to_segment(c, a, b) < reach)
+            || [a, b].iter().any(|&p| inner.distance_to(p) < reach)
+    }
+
+    fn distance_to(&self, (x, y): Point) -> f32 {
+        let dx = (self.left - x).max(x - self.right).max(0.0);
+        let dy = (self.top - y).max(y - self.bottom).max(0.0);
+        sqrtf(dx * dx + dy * dy)
+    }
+}
+
+fn distance_to_segment(p: Point, a: Point, b: Point) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let length = dx * dx + dy * dy;
+    let t = match length > 0.0 {
+        true => (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length).clamp(0.0, 1.0),
+        false => 0.0,
+    };
+    let (x, y) = (a.0 + t * dx - p.0, a.1 + t * dy - p.1);
+    sqrtf(x * x + y * y)
 }
 
 /// What the map is aimed at this fix, in the ride's frame.
@@ -149,184 +215,291 @@ impl Keepout {
 pub struct Aim {
     pub here: Point,
     pub heading: u16,
-    /// The next turn's start, and its glyph.
-    pub turn: Option<(Point, Glyph)>,
-    /// Off course: where the rider left the course.
-    pub junction: Option<Point>,
+    pub target: Target,
+    /// The map's left edge: 0, or the right of a radar's strip.
+    pub left: f32,
+    pub badge: Option<Keepout>,
 }
 
-#[derive(Clone, Copy)]
-enum Target {
-    /// Riding without a turn ahead.
+/// What the map holds in view besides the rider.
+#[derive(Clone, Copy, Debug)]
+pub enum Target {
+    /// Riding without a course.
     Free,
-    Turn(Point),
+    /// The next turn's corner, and its glyph.
+    Turn(Point, Glyph),
+    /// The course's end, with no turn left before it.
+    Finish(Point),
+    /// Off course: where the rider left the course.
     Junction(Point),
 }
 
+impl Aim {
+    /// Metres right of and ahead of the rider.
+    fn relative(&self, p: Point) -> Point {
+        axes(p, self.here, rotation(self.heading))
+    }
+}
+
+impl Target {
+    fn moved(self, by: impl Fn(Point) -> Point) -> Self {
+        match self {
+            Self::Free => Self::Free,
+            Self::Turn(at, glyph) => Self::Turn(by(at), glyph),
+            Self::Finish(at) => Self::Finish(by(at)),
+            Self::Junction(at) => Self::Junction(by(at)),
+        }
+    }
+}
+
+/// How much of the map a pose keeps clear of the badge, least first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum Clear {
+    #[default]
+    Nothing,
+    Rider,
+    /// The rider and the route in view, with the target off the screen.
+    RiderAndRoute,
+    /// The rider and the target, on the screen.
+    Target,
+    /// Those and the route up to the target.
+    UpToTarget,
+    /// Those and the route past the target, by its blue line.
+    Everything,
+}
+
+const COLUMNS: usize = 16;
+
 /// The columns the rider may take: `start`, those left of it nearest
 /// first, then those right of it; and how many are left of it.
-fn columns(start: i16) -> (heapless::Vec<i16, 16>, usize) {
-    let (low, high) = (EDGE as i16, WIDTH as i16 - EDGE as i16);
+fn columns(start: i16, left: f32) -> (heapless::Vec<i16, COLUMNS>, usize) {
+    let (low, high) = ((left + EDGE) as i16, WIDTH as i16 - EDGE as i16);
     let down = (1..).map(|k| start - k * GRID).take_while(|&x| x >= low);
     let up = (1..).map(|k| start + k * GRID).take_while(|&x| x <= high);
     let mut all = heapless::Vec::new();
     let _ = all.push(start);
     all.extend(down);
-    let left = all.len() - 1;
+    let count = all.len() - 1;
     all.extend(up);
-    (all, left)
+    (all, count)
 }
 
 /// A step tried for the pose: the rider's row, and per column of
-/// `columns(start)` whether the badge stays clear (`clear`) and the
-/// route in view also keeps its margin (`roomy`).
+/// `columns(start)` what stays clear and whether the route in view also
+/// keeps its margin (`roomy`).
 struct Trial {
     y: i16,
-    clear: u16,
+    clear: [Clear; COLUMNS],
     roomy: u16,
     left_first: bool,
 }
 
 /// The pose for this fix. `route` calls back with the route ahead in order,
-/// east-north metres, each point with whether it is before the next turn;
+/// east-north metres, each point with whether it is before the target;
 /// `prev` is the last pose, for hysteresis.
 pub fn choose_pose(
     prev: Option<Pose>,
     aim: &Aim,
     route: impl Fn(&mut dyn FnMut(Point, bool)),
-    keepout: Option<Keepout>,
 ) -> Pose {
-    let turn = rotation(aim.heading);
-    let rel = |p: Point| axes(p, aim.here, turn);
-    let target = match (aim.junction, aim.turn) {
-        (Some(junction), _) => Target::Junction(rel(junction)),
-        (None, Some((at, _))) => Target::Turn(rel(at)),
-        (None, None) => Target::Free,
-    };
-    let start = match (target, aim.turn) {
-        (Target::Turn(_), Some((_, Glyph::Left | Glyph::SharpLeft))) => 160,
-        (Target::Turn(_), Some((_, Glyph::UTurn))) => 120,
-        (Target::Free, _) => 120,
-        _ => 80,
-    };
-    let close = matches!(target, Target::Turn((r, a)) if sqrtf(r * r + a * a) <= CLOSE_M);
+    let target = aim.target.moved(|p| aim.relative(p));
+    let centre = ((aim.left + WIDTH) / 2.0) as i16;
+    let start = centre
+        + match target {
+            Target::Turn(_, Glyph::Left | Glyph::SharpLeft) => 40,
+            Target::Turn(_, Glyph::UTurn) | Target::Free | Target::Finish(_) => 0,
+            Target::Turn(..) | Target::Junction(_) => -40,
+        };
+    let close = matches!(target, Target::Turn((r, a), _) if sqrtf(r * r + a * a) <= CLOSE_M);
     let steps: &[Step] = match target {
         Target::Free => &[Step::Km1],
         Target::Junction(_) => &Step::ALL[1..],
-        Target::Turn(_) => &Step::ALL,
+        Target::Turn(..) if close => &Step::ALL[..1],
+        Target::Turn(..) | Target::Finish(_) => &Step::ALL,
     };
-    let (columns, left) = columns(start);
-    for &step in steps {
-        let spare = !close && prev.is_some_and(|prev| prev.step > step);
-        let Some(trial) = try_step(step, target, &columns, spare, &rel, &route, keepout) else {
-            continue;
-        };
-        let kept = prev
-            .filter(|prev| prev.step == step)
-            .and_then(|prev| columns.iter().position(|&x| x == prev.rider.0));
-        let away = (0..columns.len()).filter(|&k| k == 0 || (k <= left) == trial.left_first);
-        let mut clear = None;
-        for k in kept.into_iter().chain(away.filter(|&k| Some(k) != kept)) {
-            let pose = Pose {
-                step,
-                rider: (columns[k], trial.y),
-                heading: aim.heading,
+    let last = steps.len() - 1;
+    let (columns, left_count) = columns(start, aim.left);
+    let trials: heapless::Vec<Option<Trial>, 4> = steps
+        .iter()
+        .enumerate()
+        .map(|(i, &step)| {
+            let spare = !close && prev.is_some_and(|prev| prev.step > step);
+            let margin = if spare { SPARE_PX } else { 0.0 };
+            try_step(step, target, &columns, margin, i == last, aim, &route)
+        })
+        .collect();
+    let mut best: Option<(Clear, Pose)> = None;
+    for toward in [false, true] {
+        for (trial, &step) in trials.iter().zip(steps) {
+            let Some(trial) = trial else {
+                continue;
             };
-            if trial.roomy >> k & 1 == 1 {
-                return pose;
+            let kept = prev
+                .filter(|prev| prev.step == step && !toward)
+                .and_then(|prev| columns.iter().position(|&x| x == prev.rider.0));
+            let on_toward_side = |k: usize| k != 0 && (k <= left_count) != trial.left_first;
+            let order: heapless::Vec<usize, COLUMNS> = kept
+                .into_iter()
+                .chain(
+                    (0..columns.len()).filter(|&k| on_toward_side(k) == toward && Some(k) != kept),
+                )
+                .collect();
+            for roomy in [true, false] {
+                for &k in &order {
+                    if roomy && trial.roomy >> k & 1 == 0 {
+                        continue;
+                    }
+                    let clear = trial.clear[k];
+                    let pose = Pose {
+                        step,
+                        rider: (columns[k], trial.y),
+                        heading: aim.heading,
+                    };
+                    if clear == Clear::Everything {
+                        return pose;
+                    }
+                    if best.is_none_or(|(most, _)| clear > most) {
+                        best = Some((clear, pose));
+                    }
+                }
             }
-            if clear.is_none() && trial.clear >> k & 1 == 1 {
-                clear = Some(pose);
-            }
-        }
-        if let Some(pose) = clear {
-            return pose;
         }
     }
-    let y = match target {
-        Target::Free => FREE_Y,
-        _ => RIDER_Y,
-    };
-    Pose {
-        step: steps[steps.len() - 1],
-        rider: (start, y),
-        heading: aim.heading,
+    match best {
+        Some((clear, pose)) if clear > Clear::Nothing => pose,
+        _ => Pose {
+            step: steps[last],
+            rider: (
+                start,
+                if matches!(target, Target::Free) {
+                    FREE_Y
+                } else {
+                    RIDER_Y
+                },
+            ),
+            heading: aim.heading,
+        },
     }
 }
 
-/// Whether `step` holds the target at all and, if so, which columns clear
-/// the badge and keep the margin.
+/// What `step` keeps clear at each column, with the target and the route
+/// up to it held `margin` further from the badge. `None` when the step
+/// does not hold the target and is not the `widest`.
 fn try_step(
     step: Step,
     target: Target,
     columns: &[i16],
-    spare: bool,
-    rel: &impl Fn(Point) -> Point,
+    margin: f32,
+    widest: bool,
+    aim: &Aim,
     route: &impl Fn(&mut dyn FnMut(Point, bool)),
-    keepout: Option<Keepout>,
 ) -> Option<Trial> {
+    let (left, keepout) = (aim.left, aim.badge);
     let s = step.px_per_m();
-    let (top, bottom) = (GROUND.start as f32 + EDGE, GROUND.end as f32);
-    let y = match target {
+    let (top, bottom) = (GROUND.start as f32 + EDGE + margin, GROUND.end as f32);
+    let (y, holds) = match target {
         Target::Junction((_, ahead)) if ahead <= 0.0 => {
             let y = f32::from(JUNCTION_Y) + ahead * s;
-            (y >= top).then_some(libm::roundf(y) as i16)?
+            (libm::roundf(y) as i16, y >= top)
         }
-        Target::Junction((_, ahead)) => {
-            (f32::from(JUNCTION_Y) - ahead * s >= top).then_some(JUNCTION_Y)?
-        }
-        Target::Free => FREE_Y,
-        Target::Turn(_) => RIDER_Y,
+        Target::Junction((_, ahead)) => (JUNCTION_Y, f32::from(JUNCTION_Y) - ahead * s >= top),
+        Target::Free => (FREE_Y, true),
+        Target::Turn((_, ahead), _) | Target::Finish((_, ahead)) => (
+            RIDER_Y,
+            (top..bottom).contains(&(f32::from(RIDER_Y) - ahead * s)),
+        ),
     };
-    let screen =
-        |x: i16, (right, ahead): Point| (f32::from(x) + right * s, f32::from(y) - ahead * s);
-    let forbid = |p: Point, reach: f32, on_screen: bool, clear: &mut u16| {
-        for (k, &x) in columns.iter().enumerate() {
-            let at = screen(x, p);
-            let off = on_screen && !(EDGE..=WIDTH - EDGE).contains(&at.0);
-            if off || keepout.is_some_and(|keep| keep.blocks(at, reach)) {
-                *clear &= !(1 << k);
-            }
-        }
-    };
-    let mut clear = (1u16 << columns.len()) - 1;
-    forbid((0.0, 0.0), PUCK_REACH, false, &mut clear);
-    match target {
-        Target::Free => {}
-        Target::Turn(at) => {
-            let at = match spare {
-                true => {
-                    let px = sqrtf(at.0 * at.0 + at.1 * at.1) * s;
-                    let farther = (px + SPARE_PX) / px.max(1e-3);
-                    (at.0 * farther, at.1 * farther)
-                }
-                false => at,
-            };
-            let row = f32::from(y) - at.1 * s;
-            if !(top..bottom).contains(&row) {
-                return None;
-            }
-            forbid(at, ROUTE_REACH, true, &mut clear);
-        }
-        Target::Junction(at) => forbid(at, JUNCTION_REACH, true, &mut clear),
+    if !holds && !widest {
+        return None;
     }
+    let y = if holds { y } else { RIDER_Y };
+    let screen = |(right, ahead): Point| (right * s, f32::from(y) - ahead * s);
+    let all = (1u16 << columns.len()) - 1;
+    let block = |a: Point, b: Point, pad: f32, mask: &mut u16| {
+        let Some((low, high)) = keepout.and_then(|k| k.blocked(a, b, pad)) else {
+            return;
+        };
+        for (k, &x) in columns.iter().enumerate() {
+            if low < f32::from(x) && f32::from(x) < high {
+                *mask &= !(1 << k);
+            }
+        }
+    };
+    let past_the_turn = |a: Point, b: Point, mask: &mut u16| {
+        let Some(keep) = keepout else {
+            return;
+        };
+        let Some((low, high)) = keep.blocked(a, b, LINE_REACH) else {
+            return;
+        };
+        for (k, &x) in columns.iter().enumerate() {
+            let x = f32::from(x);
+            let shift = |(px, py): Point| (px + x, py);
+            if low < x && x < high && keep.near(shift(a), shift(b), LINE_REACH) {
+                *mask &= !(1 << k);
+            }
+        }
+    };
+    let mut rider = all;
+    block(
+        (0.0, f32::from(y)),
+        (0.0, f32::from(y)),
+        CLEARANCE + PUCK_REACH,
+        &mut rider,
+    );
+    let goal = match target {
+        Target::Free => None,
+        Target::Turn(at, _) | Target::Finish(at) => {
+            Some((screen(at), margin + CLEARANCE + ROUTE_REACH))
+        }
+        Target::Junction(at) => Some((screen(at), margin + CLEARANCE + JUNCTION_REACH)),
+    };
+    let mut shown = if holds { all } else { 0 };
+    if let Some((at, pad)) = goal {
+        block(at, at, pad, &mut shown);
+        for (k, &x) in columns.iter().enumerate() {
+            if !(left + EDGE..=WIDTH - EDGE).contains(&(f32::from(x) + at.0)) {
+                shown &= !(1 << k);
+            }
+        }
+    }
+    let (mut to_goal, mut whole) = (all, all);
     let (mut least, mut most) = (0.0f32, 0.0f32);
+    let mut last: Option<(Point, bool)> = None;
     route(&mut |p, before| {
-        let p = rel(p);
-        let row = f32::from(y) - p.1 * s;
-        if (GROUND.start as f32..bottom).contains(&row) {
+        let p = screen(aim.relative(p));
+        if (GROUND.start as f32..bottom).contains(&p.1) {
             least = least.min(p.0);
             most = most.max(p.0);
         }
-        if before {
-            forbid(p, ROUTE_REACH, false, &mut clear);
+        if let Some((from, was_before)) = last {
+            past_the_turn(from, p, &mut whole);
+            if was_before {
+                let to = match (before, goal) {
+                    (false, Some((corner, _))) => corner,
+                    _ => p,
+                };
+                block(from, to, margin + CLEARANCE + ROUTE_REACH, &mut to_goal);
+            }
         }
+        last = Some((p, before));
     });
-    let mut roomy = clear;
+    let bit = |mask: u16, k: usize| mask >> k & 1 == 1;
+    let mut clear = [Clear::Nothing; COLUMNS];
+    let mut roomy = 0;
     for (k, &x) in columns.iter().enumerate() {
+        let route = bit(to_goal, k) && bit(whole, k);
+        clear[k] = match (bit(rider, k), bit(shown, k), bit(to_goal, k), route) {
+            (false, ..) => Clear::Nothing,
+            (true, true, _, true) => Clear::Everything,
+            (true, true, true, false) => Clear::UpToTarget,
+            (true, true, false, false) => Clear::Target,
+            (true, false, _, true) => Clear::RiderAndRoute,
+            (true, false, _, false) => Clear::Rider,
+        };
         let x = f32::from(x);
-        if x + least * s < EDGE || x + most * s > WIDTH - EDGE {
-            roomy &= !(1 << k);
+        if x + least >= left + EDGE && x + most <= WIDTH - EDGE {
+            roomy |= 1 << k;
         }
     }
     Some(Trial {
@@ -363,6 +536,7 @@ mod tests {
             top: 30.0,
             right: 8.0 + width,
             bottom: 90.0,
+            radius: 12.0,
         })
     }
 
@@ -382,20 +556,30 @@ mod tests {
         Aim {
             here: (0.0, TURN_AT.1 - before),
             heading: 0,
-            turn: Some((TURN_AT, Glyph::Right)),
-            junction: None,
+            target: Target::Turn(TURN_AT, Glyph::Right),
+            left: 0.0,
+            badge: None,
         }
+    }
+
+    fn posed(
+        prev: Option<Pose>,
+        aim: Aim,
+        route: impl Fn(&mut dyn FnMut(Point, bool)),
+        badge: Option<Keepout>,
+    ) -> Pose {
+        choose_pose(prev, &Aim { badge, ..aim }, route)
     }
 
     #[test]
     fn the_poses_reproduce_the_three_map_mockups() {
-        let approach = choose_pose(None, &on_course(250.0), ahead(250.0), badge(137.0));
+        let approach = posed(None, on_course(250.0), ahead(250.0), badge(137.0));
         assert_eq!(
             (approach.step, approach.rider),
             (Step::M400, (80, 266)),
             "map-approach"
         );
-        let close = choose_pose(Some(approach), &on_course(40.0), ahead(40.0), badge(118.0));
+        let close = posed(Some(approach), on_course(40.0), ahead(40.0), badge(118.0));
         assert_eq!(
             (close.step, close.rider),
             (Step::M300, (64, 266)),
@@ -403,10 +587,10 @@ mod tests {
         );
         let off = Aim {
             here: (0.0, 390.0),
-            junction: Some(TURN_AT),
+            target: Target::Junction(TURN_AT),
             ..on_course(-140.0)
         };
-        let off = choose_pose(Some(close), &off, ahead(0.0), badge(152.0));
+        let off = posed(Some(close), off, ahead(0.0), badge(152.0));
         assert_eq!(
             (off.step, off.rider),
             (Step::M400, (80, 158)),
@@ -431,30 +615,30 @@ mod tests {
 
     #[test]
     fn the_turn_under_the_badge_zooms_out_and_zooming_in_waits_for_room() {
-        let wide = choose_pose(None, &on_course(250.0), ahead(250.0), badge(137.0));
+        let wide = posed(None, on_course(250.0), ahead(250.0), badge(137.0));
         assert_eq!(wide.step, Step::M400);
-        let no_badge = choose_pose(None, &on_course(250.0), ahead(250.0), None);
+        let no_badge = posed(None, on_course(250.0), ahead(250.0), None);
         assert_eq!(no_badge.step, Step::M300, "only the badge pushed it out");
-        let fresh = choose_pose(None, &on_course(195.0), ahead(195.0), badge(137.0));
+        let fresh = posed(None, on_course(195.0), ahead(195.0), badge(137.0));
         assert_eq!(fresh.step, Step::M300);
-        let near = choose_pose(Some(wide), &on_course(195.0), ahead(195.0), badge(137.0));
+        let near = posed(Some(wide), on_course(195.0), ahead(195.0), badge(137.0));
         assert_eq!(near.step, Step::M400);
-        let nearer = choose_pose(Some(near), &on_course(180.0), ahead(180.0), badge(137.0));
+        let nearer = posed(Some(near), on_course(180.0), ahead(180.0), badge(137.0));
         assert_eq!(nearer.step, Step::M300);
         let far = Pose {
             step: Step::Km3,
             ..wide
         };
-        let arriving = choose_pose(Some(far), &on_course(250.0), ahead(250.0), badge(137.0));
+        let arriving = posed(Some(far), on_course(250.0), ahead(250.0), badge(137.0));
         assert_eq!(arriving.step, Step::M400);
-        let close = choose_pose(Some(wide), &on_course(90.0), ahead(90.0), badge(137.0));
+        let close = posed(Some(wide), on_course(90.0), ahead(90.0), badge(137.0));
         assert_eq!(close.step, Step::M300);
     }
 
     #[test]
-    fn a_far_turn_takes_a_wide_step_and_a_left_turn_starts_right_of_centre() {
+    fn a_far_turn_pans_rather_than_run_the_route_past_it_under_the_badge() {
         let far = Aim {
-            turn: Some(((0.0, 900.0), Glyph::Right)),
+            target: Target::Turn((0.0, 900.0), Glyph::Right),
             ..on_course(250.0)
         };
         let straight = |visit: &mut dyn FnMut(Point, bool)| {
@@ -462,12 +646,14 @@ mod tests {
             visit((0.0, 900.0), true);
             visit((0.0, 3_000.0), false);
         };
+        let pose = posed(None, far, straight, badge(137.0));
         assert_eq!(
-            choose_pose(None, &far, straight, badge(137.0)).step,
-            Step::Km3
+            (pose.step, pose.rider),
+            (Step::Km1, (176, 266)),
+            "3 km across runs the route past the turn up under the badge"
         );
         let left = Aim {
-            turn: Some(((0.0, 90.0), Glyph::Left)),
+            target: Target::Turn((0.0, 90.0), Glyph::Left),
             ..on_course(250.0)
         };
         let to_the_left = |visit: &mut dyn FnMut(Point, bool)| {
@@ -475,14 +661,14 @@ mod tests {
             visit((0.0, 90.0), true);
             visit((-60.0, 100.0), false);
         };
-        let pose = choose_pose(None, &left, to_the_left, badge(137.0));
+        let pose = posed(None, left, to_the_left, badge(137.0));
         assert_eq!((pose.step, pose.rider), (Step::M300, (160, 266)));
     }
 
     #[test]
     fn a_route_running_off_the_edge_pans_but_never_zooms_out() {
         let aim = Aim {
-            turn: Some(((0.0, 200.0), Glyph::Right)),
+            target: Target::Turn((0.0, 200.0), Glyph::Right),
             ..on_course(250.0)
         };
         let east = |visit: &mut dyn FnMut(Point, bool)| {
@@ -490,7 +676,7 @@ mod tests {
             visit((0.0, 200.0), true);
             visit((500.0, 200.0), false);
         };
-        let pose = choose_pose(None, &aim, east, badge(137.0));
+        let pose = posed(None, aim, east, badge(137.0));
         assert_eq!((pose.step, pose.rider), (Step::M400, (80, 266)));
     }
 
@@ -498,11 +684,144 @@ mod tests {
     fn a_column_that_still_fits_is_kept() {
         let held = Pose {
             step: Step::M400,
-            rider: (48, 266),
+            rider: (96, 266),
             heading: 0,
         };
-        let pose = choose_pose(Some(held), &on_course(250.0), ahead(250.0), badge(137.0));
-        assert_eq!(pose.rider, (48, 266));
+        let pose = posed(Some(held), on_course(250.0), ahead(250.0), badge(137.0));
+        assert_eq!(pose.rider, (96, 266));
+    }
+
+    const BADGE: Keepout = Keepout {
+        left: 8.0,
+        top: 30.0,
+        right: 145.0,
+        bottom: 90.0,
+        radius: 12.0,
+    };
+
+    fn toward(turn: Point, glyph: Glyph) -> Aim {
+        Aim {
+            here: (0.0, 0.0),
+            heading: 0,
+            target: Target::Turn(turn, glyph),
+            left: 0.0,
+            badge: None,
+        }
+    }
+
+    /// Calls back with `points`, each marked before the turn until the
+    /// first that is not.
+    fn route(points: &[(Point, bool)]) -> impl Fn(&mut dyn FnMut(Point, bool)) + '_ {
+        move |visit| points.iter().for_each(|&(p, before)| visit(p, before))
+    }
+
+    /// How near the badge the route's casing comes, in pixels past its
+    /// edge, sampled every quarter pixel along each segment on the ground.
+    fn nearest_to_badge(pose: Pose, points: &[Point], badge: Keepout) -> f32 {
+        let at = pose.projection((0.0, 0.0));
+        let gap = |(x, y): Point| {
+            let dx = (badge.left - x).max(x - badge.right).max(0.0);
+            let dy = (badge.top - y).max(y - badge.bottom).max(0.0);
+            sqrtf(dx * dx + dy * dy) - ROUTE_REACH
+        };
+        let mut nearest = f32::INFINITY;
+        for pair in points.windows(2) {
+            let (a, b) = (at.at(pair[0]), at.at(pair[1]));
+            let length = sqrtf((b.0 - a.0) * (b.0 - a.0) + (b.1 - a.1) * (b.1 - a.1));
+            let samples = (length * 4.0) as usize + 1;
+            for k in 0..=samples {
+                let t = k as f32 / samples as f32;
+                let p = (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
+                if (GROUND.start as f32..GROUND.end as f32).contains(&p.1) {
+                    nearest = nearest.min(gap(p));
+                }
+            }
+        }
+        nearest
+    }
+
+    #[test]
+    fn a_pose_taken_on_zooming_in_holds_on_the_next_fix() {
+        let aim = toward((101.25, 220.0), Glyph::Right);
+        let points = [
+            ((0.0, 0.0), true),
+            ((0.0, 5.0), true),
+            ((101.25, 220.0), false),
+            ((400.0, 220.0), false),
+        ];
+        let wide = Pose {
+            step: Step::M400,
+            rider: (80, 266),
+            heading: 0,
+        };
+        let first = posed(Some(wide), aim, route(&points), Some(BADGE));
+        let next = posed(Some(first), aim, route(&points), Some(BADGE));
+        assert_eq!(next, first, "the same fix keeps its pose");
+    }
+
+    #[test]
+    fn the_route_between_its_points_clears_the_badge() {
+        let corner = (103.75, 270.0);
+        let points = [(0.0, 0.0), (0.0, 5.0), corner, (400.0, 270.0)];
+        let marked = [
+            (points[0], true),
+            (points[1], true),
+            (corner, false),
+            (points[3], false),
+        ];
+        let aim = toward(corner, Glyph::Right);
+        let pose = posed(None, aim, route(&marked), Some(BADGE));
+        assert!(
+            nearest_to_badge(pose, &points[..3], BADGE) >= CLEARANCE,
+            "{pose:?} runs the route to the turn under the badge"
+        );
+    }
+
+    #[test]
+    fn a_far_right_turn_pans_the_route_and_the_turn_clear_of_the_badge() {
+        for ahead in [2_500.0, 3_400.0] {
+            let points = [
+                (0.0, 0.0),
+                (0.0, ahead),
+                (700.0, ahead),
+                (700.0, ahead + 2_500.0),
+            ];
+            let marked = [
+                (points[0], true),
+                (points[1], false),
+                (points[2], false),
+                (points[3], false),
+            ];
+            let aim = toward(points[1], Glyph::Right);
+            let pose = posed(None, aim, route(&marked), Some(BADGE));
+            assert!(
+                nearest_to_badge(pose, &points, BADGE) >= CLEARANCE,
+                "{ahead} m: {pose:?} runs the route under the badge"
+            );
+        }
+    }
+
+    #[test]
+    fn when_no_pose_clears_the_route_past_the_turn_the_turn_and_the_way_to_it_stay_clear() {
+        let corner = (0.0, 100.0);
+        let mut marked = std::vec![((0.0, 0.0), true), (corner, false)];
+        for k in 0..40 {
+            let (from, to) = if k % 2 == 0 {
+                (-3_000.0, 3_000.0)
+            } else {
+                (3_000.0, -3_000.0)
+            };
+            let north = 150.0 + 100.0 * k as f32;
+            marked.push(((from, north), false));
+            marked.push(((to, north), false));
+        }
+        let aim = toward(corner, Glyph::Right);
+        let pose = posed(None, aim, route(&marked), Some(BADGE));
+        assert_eq!(pose.step, Step::M300, "zooming out clears nothing more");
+        assert!(
+            nearest_to_badge(pose, &[(0.0, 0.0), corner], BADGE) >= CLEARANCE,
+            "{pose:?} covers the turn or the way to it"
+        );
     }
 
     #[test]
@@ -510,10 +829,11 @@ mod tests {
         let free = Aim {
             here: (0.0, 0.0),
             heading: 0,
-            turn: None,
-            junction: None,
+            target: Target::Free,
+            left: 0.0,
+            badge: None,
         };
-        let pose = choose_pose(None, &free, |_: &mut dyn FnMut(Point, bool)| {}, None);
+        let pose = posed(None, free, |_: &mut dyn FnMut(Point, bool)| {}, None);
         assert_eq!((pose.step, pose.rider), (Step::Km1, (120, 156)));
     }
 }

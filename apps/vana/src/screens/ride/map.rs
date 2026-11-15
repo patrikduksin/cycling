@@ -12,10 +12,11 @@ use crate::screens::chrome::{
     blend, paint_disc_over, rgb,
 };
 use crate::screens::icons::PUCK;
+use crate::screens::sign::BADGE_RADIUS;
 use crate::screens::workout::{Text, View};
 use firmware_shell::rendering::font::FOOT_20;
 pub use pose::GROUND;
-use pose::{Aim, Keepout, Pose, Projection, choose_pose};
+use pose::{Aim, Keepout, Pose, Projection, Target, choose_pose};
 use raster::{Cover, Stroke, Triangle};
 
 type Point = (f32, f32);
@@ -42,6 +43,8 @@ pub struct Track<'a> {
     pub left_m: Option<u32>,
     /// The badge's box, which the route, the turn and the rider keep clear of.
     pub badge: Option<Rect>,
+    /// A radar's strip takes the screen's left edge.
+    pub radar: bool,
 }
 
 /// What a frame was filled from: refill it only when this changes, about
@@ -61,6 +64,7 @@ pub struct Key {
     junction: Option<u32>,
     left_m: Option<u32>,
     badge: Option<Rect>,
+    radar: bool,
 }
 
 impl Track<'_> {
@@ -82,6 +86,7 @@ impl Track<'_> {
             junction: self.junction().map(|j| j.along_mm),
             left_m: self.left_m,
             badge: self.badge,
+            radar: self.radar,
         }
     }
 
@@ -135,17 +140,31 @@ impl Track<'_> {
     }
 
     /// The course ahead from `split`, in order, each point with whether it
-    /// comes before the next turn.
+    /// comes before the next turn; all of it without one.
     fn ahead_points(&self, (end, at): (usize, Point)) -> impl Iterator<Item = (Point, bool)> + '_ {
         let turn = self.turn().map(|(spot, _)| self.metres_to_end(spot));
         let near = self.course[end - 1].along;
-        core::iter::once((at, turn.is_some())).chain(
+        core::iter::once((at, true)).chain(
             self.course[..end]
                 .iter()
                 .rev()
                 .take_while(move |c| near - c.along <= AHEAD_M)
-                .map(move |c| ((c.east, c.north), turn.is_some_and(|t| c.along > t))),
+                .map(move |c| ((c.east, c.north), turn.is_none_or(|t| c.along > t))),
         )
+    }
+
+    /// What the map holds in view besides the rider.
+    fn target(&self) -> Target {
+        if let Some(junction) = self.junction() {
+            return Target::Junction(junction.at);
+        }
+        if let Some((spot, glyph)) = self.turn() {
+            return Target::Turn(spot.at, glyph);
+        }
+        match self.course.first() {
+            Some(end) if self.following() => Target::Finish((end.east, end.north)),
+            _ => Target::Free,
+        }
     }
 
     /// The course behind `split`, nearest first.
@@ -271,7 +290,6 @@ const BAR_THICKNESS: usize = 3;
 const BAR_GAP: usize = 6;
 const DISTANCE_RIGHT: usize = 203;
 const UNIT_RIGHT: usize = 228;
-const CX: usize = WIDTH / 2;
 const MID_Y: usize = (GROUND.start + GROUND.end) / 2;
 const _: () = assert!(GROUND.end <= HEIGHT);
 
@@ -444,15 +462,16 @@ fn fill(frame: &mut Frame, track: &Track) {
     let aim = Aim {
         here: centre,
         heading: track.heading.unwrap_or(frame.pose.heading),
-        turn: track.turn().map(|(spot, glyph)| (spot.at, glyph)),
-        junction: track.junction().map(|j| j.at),
+        target: track.target(),
+        left: map_left(track.radar) as f32,
+        badge: track.badge.map(|rect| Keepout {
+            left: rect.left as f32,
+            top: rect.top as f32,
+            right: rect.right as f32,
+            bottom: rect.bottom as f32,
+            radius: BADGE_RADIUS as f32,
+        }),
     };
-    let keepout = track.badge.map(|rect| Keepout {
-        left: rect.left as f32,
-        top: rect.top as f32,
-        right: rect.right as f32,
-        bottom: rect.bottom as f32,
-    });
     let route = |visit: &mut dyn FnMut(Point, bool)| {
         if let Some(split) = split {
             track
@@ -460,7 +479,7 @@ fn fill(frame: &mut Frame, track: &Track) {
                 .for_each(|(p, before)| visit(p, before));
         }
     };
-    let pose = choose_pose(frame.posed.then_some(frame.pose), &aim, route, keepout);
+    let pose = choose_pose(frame.posed.then_some(frame.pose), &aim, route);
     frame.pose = pose;
     frame.posed = true;
     let at = pose.projection(centre);
@@ -486,7 +505,8 @@ fn fill(frame: &mut Frame, track: &Track) {
     if let Some(junction) = track.junction() {
         let junction = at.at(junction.at);
         chevrons(frame, rider, junction);
-        frame.junction = Some(quarter(junction));
+        let reach = JUNCTION_RINGS[0].0 as f32 / 4.0 + 1.0;
+        frame.junction = visible(junction, junction, reach).then(|| quarter(junction));
     }
     let tint = match (track.here, track.junction()) {
         (None, _) => SECONDARY,
@@ -614,10 +634,11 @@ fn bands(stroke: &Stroke, half: f32) -> Option<(usize, usize)> {
 }
 
 /// Sort each line's strokes into the bands their rows reach, in order,
-/// dropping the farthest of a line when the entries run out.
+/// dropping the farthest of a line when the entries run out. The route
+/// ahead takes its entries first.
 fn bucket(frame: &mut Frame) {
     let mut at = 0usize;
-    for line in Line::ALL {
+    for line in [Line::Route, Line::Ridden] {
         let room = line.room();
         let mut counts = [0usize; BANDS];
         let mut entries = 0;
@@ -703,6 +724,11 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
     }
 }
 
+/// Where the map starts: beside a radar's strip, or at the screen's edge.
+fn map_left(radar: bool) -> usize {
+    if radar { super::BODY.left } else { 0 }
+}
+
 /// The puck icon's square, centred on the puck.
 fn puck_corner((cx, cy): (i32, i32)) -> (usize, usize) {
     let half = i32::from(PUCK.size) * 2;
@@ -772,14 +798,16 @@ pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
 /// The footer, and what the page says when it has no map to draw.
 pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
+    let edge = map_left(view.radar_paired);
+    let (width, cx) = (WIDTH - edge, (edge + WIDTH) / 2);
     let say = |canvas: &mut Canvas, text: &[u8]| {
-        canvas.fit(&[&BODY_FACE], text, WIDTH, CX, MID_Y, Align::Center, WHITE);
+        canvas.fit(&[&BODY_FACE], text, width, cx, MID_Y, Align::Center, WHITE);
     };
     let frame = match view.map() {
         Some(frame) if frame.show == Show::Map => frame,
         Some(frame) if frame.show == Show::NoGps => {
             say(&mut canvas, b"NO GPS YET");
-            canvas.caption(b"MAP STARTS WITH GPS", WIDTH, CX, MID_Y + 24, Align::Center);
+            canvas.caption(b"MAP STARTS WITH GPS", width, cx, MID_Y + 24, Align::Center);
             return canvas;
         }
         _ => {
@@ -789,20 +817,20 @@ pub(super) fn prepare(view: &View) -> Canvas {
     };
     if !frame.has_track {
         let below = usize::try_from(frame.pose.rider.1).unwrap_or(MID_Y) - 36;
-        canvas.caption(b"DRAWS AS YOU RIDE", WIDTH, CX, below, Align::Center);
+        canvas.caption(b"DRAWS AS YOU RIDE", width, cx, below, Align::Center);
     }
     let (bar, label) = frame.pose.step.bar();
     canvas.shape(Shape::Bar {
         rect: Rect {
-            left: BAR_LEFT,
+            left: edge + BAR_LEFT,
             top: BAR_TOP,
-            right: BAR_LEFT + bar,
+            right: edge + BAR_LEFT + bar,
             bottom: BAR_TOP + BAR_THICKNESS,
         },
         radius: 1,
         color: SECONDARY,
     });
-    let left = BAR_LEFT + bar + BAR_GAP;
+    let left = edge + BAR_LEFT + bar + BAR_GAP;
     canvas.caption(label, DISTANCE_RIGHT - left, left, FOOT_BASE, Align::Left);
     let mut distance = Text::<12>::new();
     let mm = frame

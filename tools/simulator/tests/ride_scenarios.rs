@@ -9744,6 +9744,8 @@ mod navigation {
 mod course_map {
     use super::*;
     use device_api::server::Method;
+    use vana::screens::chrome::rgb;
+    use vana::screens::sign::{ARRIVED_FILL, OFF_FILL, TURN_FILL};
 
     const MOCKUP: &str = include_str!("../../../docs/design/course-navigation/map-approach.svg");
     const PX_PER_M: f64 = 240.0 / 400.0;
@@ -9828,6 +9830,10 @@ mod course_map {
     /// A rider with every sensor who loaded `course` from the phone and rides
     /// `route` at 36 km/h, 10 m a fix, on the map page.
     fn on_the_map(course: &[(f64, f64)], route: &[(f64, f64)]) -> Sim {
+        on_the_map_with(course, route, &["HEART RATE", "POWER METER", "SPEED/CAD"])
+    }
+
+    fn on_the_map_with(course: &[(f64, f64)], route: &[(f64, f64)], sensors: &[&str]) -> Sim {
         let mut sim = Sim::new();
         sim.fit_bulk(Presence::Ready);
         let mut sim = equip(sim.boot());
@@ -9840,7 +9846,8 @@ mod course_map {
         sim.press(Button::TopLeft);
         sim.advance(seconds(1));
         sim.ride_route(Route::from_gpx(&gpx_through("route", route)).unwrap());
-        sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);
+        sim.ant_sensor(device_type::RADAR, RADAR);
+        sim.pair(sensors);
         sim.ride_at(36.0, 210.0, 150.0, 88.0);
         sim.start_ride();
         ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
@@ -9878,5 +9885,155 @@ mod course_map {
         stand_at(&mut sim, LEAD_M + 390.0);
         assert_eq!(badge(&sim), ["140", "M", "TURN BACK"]);
         sim.checkpoint("map-offcourse");
+    }
+
+    const GROUND: u16 = rgb(0x10, 0x10, 0x12);
+
+    fn at(screen: &Screen, x: usize, y: usize) -> u16 {
+        screen.pixels[y * screen.width + x]
+    }
+
+    /// The badge's fill, left, top, right and bottom, the last two past it.
+    fn badge_box(screen: &Screen) -> Option<(u16, [usize; 4])> {
+        let fills = [TURN_FILL, OFF_FILL, ARRIVED_FILL];
+        let mut found: Option<(u16, [usize; 4])> = None;
+        for y in 22..130 {
+            for x in 0..screen.width {
+                let c = at(screen, x, y);
+                if !fills.contains(&c) {
+                    continue;
+                }
+                found = Some(match found {
+                    None => (c, [x, y, x + 1, y + 1]),
+                    Some((fill, [l, t, r, b])) => {
+                        (fill, [l.min(x), t.min(y), r.max(x + 1), b.max(y + 1)])
+                    }
+                });
+            }
+        }
+        found
+    }
+
+    /// Whether `c` lies between ground and the badge's fill, channel by
+    /// channel: the badge's own anti-aliased edge.
+    fn badge_edge(c: u16, fill: u16) -> bool {
+        let channels = |v: u16| {
+            [
+                i32::from(v >> 11),
+                i32::from(v >> 5 & 63),
+                i32::from(v & 31),
+            ]
+        };
+        let (c, low, high) = (channels(c), channels(GROUND), channels(fill));
+        (0..3).all(|k| c[k] >= low[k].min(high[k]) - 1 && c[k] <= low[k].max(high[k]) + 1)
+    }
+
+    /// How close the map's route, turn or rider come to the badge, in
+    /// pixels, up to `within`.
+    fn badge_gap(screen: &Screen, within: usize) -> Option<usize> {
+        let (fill, [l, t, r, b]) = badge_box(screen)?;
+        let mut gap = within;
+        for y in t.saturating_sub(within).max(22)..(b + within).min(290) {
+            for x in l.saturating_sub(within)..(r + within).min(screen.width) {
+                let dx = if x < l {
+                    l - x
+                } else {
+                    (x + 1).saturating_sub(r)
+                };
+                let dy = if y < t {
+                    t - y
+                } else {
+                    (y + 1).saturating_sub(b)
+                };
+                let d = dx.max(dy);
+                let c = at(screen, x, y);
+                if d == 0 || (d == 1 && badge_edge(c, fill)) || c == GROUND {
+                    continue;
+                }
+                gap = gap.min(d);
+            }
+        }
+        Some(gap)
+    }
+
+    /// Ride `course` on the map and return the fixes, in metres ridden,
+    /// from `from_m` to `until_m` where something of the map came within
+    /// 7 px of the badge.
+    fn crowded_fixes(course: &[(f64, f64)], from_m: f64, until_m: f64) -> Vec<i64> {
+        let mut sim = on_the_map(course, course);
+        let mut crowded = vec![];
+        ride_to(&mut sim, from_m);
+        while sim.world().distance_m < until_m {
+            sim.advance(seconds(1));
+            if badge_gap(&sim.screen(), 12).is_some_and(|gap| gap < 7) {
+                crowded.push(sim.world().distance_m as i64);
+            }
+        }
+        crowded
+    }
+
+    #[test]
+    fn the_badge_keeps_clear_of_the_route_to_a_far_turn_and_on_the_last_leg() {
+        type Ride<'a> = (&'a str, &'a [(f64, f64)], f64, f64);
+        let rides: [Ride; 2] = [
+            (
+                "a right turn 3.5 km on",
+                &[
+                    (0.0, 0.0),
+                    (0.0, 3_500.0),
+                    (700.0, 3_500.0),
+                    (700.0, 6_000.0),
+                ],
+                0.0,
+                3_400.0,
+            ),
+            (
+                "the last leg to the finish",
+                &[(0.0, 0.0), (0.0, 400.0), (300.0, 400.0), (300.0, 3_000.0)],
+                520.0,
+                2_950.0,
+            ),
+        ];
+        for (name, course, from_m, until_m) in rides {
+            let crowded = crowded_fixes(course, from_m, until_m);
+            assert!(
+                crowded.is_empty(),
+                "{name}: {} fixes crowd the badge, from {:?} m",
+                crowded.len(),
+                crowded.first()
+            );
+        }
+    }
+
+    #[test]
+    fn beside_a_radar_the_rider_and_the_scale_stay_whole() {
+        let course = [
+            (0.0, 0.0),
+            (0.0, 1_000.0),
+            (225.0, 1_000.0),
+            (225.0, 3_000.0),
+        ];
+        let sensors = ["HEART RATE", "POWER METER", "SPEED/CAD", "RADAR"];
+        let mut sim = on_the_map_with(&course, &course, &sensors);
+        ride_to(&mut sim, 910.0);
+        let screen = sim.screen();
+        let puck_left = (250..285)
+            .flat_map(|y| (26..screen.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| at(&screen, x, y) == WHITE)
+            .map(|(x, _)| x)
+            .min()
+            .expect("the puck");
+        assert!(
+            puck_left >= 30,
+            "its white starts at x {puck_left}, its ring cut"
+        );
+        let bar_left = (0..screen.width)
+            .find(|&x| at(&screen, x, 304) == SECONDARY)
+            .expect("the scale bar");
+        assert!(
+            bar_left >= 28,
+            "the bar starts under the radar strip, at {bar_left}"
+        );
+        sim.checkpoint("map-beside-radar");
     }
 }

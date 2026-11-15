@@ -68,11 +68,13 @@ const BANNER: Geometry = Geometry {
     }),
 };
 
+pub const BADGE_RADIUS: usize = 12;
+
 const BADGE: Geometry = Geometry {
     left: 8,
     top: BADGE_TOP,
     height: BADGE_HEIGHT,
-    radius: 12,
+    radius: BADGE_RADIUS,
     text_left: 63.4167,
     baseline: 71.28,
     digits: &SIGN_32,

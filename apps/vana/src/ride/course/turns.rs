@@ -1,13 +1,11 @@
-//! Turns on a course, found once when the course is placed, and when to warn
-//! of the next one while following it.
+//! Turns on a course, found once when the course is placed.
 //!
 //! `Scan` reads the course every `STEP_M` along it from its start, never at
 //! its own points, so a corner drawn with points 3 m or 8 m apart turns the
 //! same, and lists its turns by distance along (`Turn`). It runs a few steps
-//! a fix (`SCAN_STEPS`), so a long course never holds up one. `Warner` then
-//! looks only at the list and how far along the rider is: the turns cannot
-//! move with the rider or with GPS jitter, and the furthest the rider has
-//! been stands for where they are, so jitter never repeats or flips a word.
+//! a fix (`SCAN_STEPS`), so a long course never holds up one. Navigating
+//! (`course::nav`) then looks only at the list and how far along the rider
+//! is, so the turns cannot move with the rider or with GPS jitter.
 //!
 //! At each step the course's way is the chord from `HALF_CHORD_M` behind to
 //! `HALF_CHORD_M` ahead, which also smooths a jittery track. Where the way
@@ -50,7 +48,7 @@ use libm::{atan2f, fabsf, sqrtf, tanf};
 const STEP_M: f32 = 2.0;
 /// The course's way at a step is the chord this far behind to this far on.
 const HALF_CHORD_M: f32 = 7.5;
-const HALF_CHORD_MM: u32 = 7_500;
+pub(super) const HALF_CHORD_MM: u32 = 7_500;
 /// The way swinging this fast is turning: 60 degrees within 50 m.
 const RATE_DEG_PER_M: f32 = 1.2;
 /// Turning steps this close are one bend, and a bend that never swings
@@ -90,18 +88,6 @@ const WIDE_M: f32 = 21.0;
 const STRAIGHT_M: f32 = 5.0;
 const STRAIGHT_DEG: f32 = 3.0;
 const SHORT_HALF_M: f32 = 2.5;
-/// The first warning comes this far before a turn, the second this far.
-const AHEAD_MM: u32 = 155_000;
-const NOW_MM: u32 = 30_000;
-/// A turn first in reach nearer than this is warned of only at it, so two
-/// warnings never come a second apart.
-const AHEAD_MIN_MM: u32 = 60_000;
-/// A turn starting this soon after the start of another is named with it:
-/// LEFT THEN RIGHT.
-const THEN_MM: u32 = 35_000;
-/// The rider this far back from where they were has turned round; what was
-/// warned of is forgotten.
-const REWIND_MM: u32 = 30_000;
 /// Coarsely drawn corners closer than this, in one group or two, say
 /// nothing: which way they go first is not known.
 const CROWD_M: f32 = 10.0;
@@ -111,7 +97,7 @@ const RING_DEG: f32 = 200.0;
 const AGAINST_DEG: f32 = 45.0;
 
 /// The most turns a course keeps at once. Past them the scan waits until
-/// the rider is past half of them, which then make way (`Warner::passed`).
+/// the rider is past half of them, which then make way (`nav::Navigator::passed`).
 pub const TURNS: usize = 1024;
 /// Steps of the course scanned per fix while its turns are being found.
 pub const SCAN_STEPS: usize = 1_000;
@@ -228,15 +214,6 @@ impl Turn {
             sparse: false,
         })
     }
-}
-
-/// What to tell the rider.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Warning {
-    /// A turn about `metres` ahead, to the nearest 10, half down.
-    Ahead { kind: Kind, metres: u32 },
-    /// The turn is here, and `then` another right after it.
-    Now { kind: Kind, then: Option<Kind> },
 }
 
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -785,107 +762,6 @@ impl Scan {
             push(group.close(len, at), found);
         }
         self.done = true;
-    }
-}
-
-/// Where the rider stands with the course's turns: which is next, and what
-/// was said of it, so each turn is warned of once ahead and once at it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Warner {
-    /// The first turn the rider is not yet past.
-    next: usize,
-    /// The furthest the rider has been along the course since; the rider's
-    /// place for warnings, so jitter never moves it back.
-    furthest_mm: u32,
-    said: Said,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Said {
-    #[default]
-    Nothing,
-    /// Turn `0` was warned of ahead.
-    Ahead(usize),
-    /// Turns up to `0` were warned of at them.
-    Now(usize),
-}
-
-impl Warner {
-    /// How many turns from the start of the list it no longer needs.
-    pub fn passed(&self) -> usize {
-        match self.said {
-            Said::Nothing => self.next,
-            Said::Ahead(k) | Said::Now(k) => k.min(self.next),
-        }
-    }
-
-    /// The first `count` turns of the list, up to `passed`, are gone.
-    pub fn forget(&mut self, count: usize) {
-        let count = count.min(self.passed());
-        self.next -= count;
-        self.said = match self.said {
-            Said::Nothing => Said::Nothing,
-            Said::Ahead(k) => Said::Ahead(k - count),
-            Said::Now(k) => Said::Now(k - count),
-        };
-    }
-
-    /// The warning for the rider `along_mm` from the course's start, from
-    /// its `turns`, if one is due.
-    pub fn step(&mut self, turns: &[Turn], along_mm: u32) -> Option<Warning> {
-        if along_mm.saturating_add(REWIND_MM) < self.furthest_mm {
-            *self = Self {
-                furthest_mm: along_mm,
-                ..Self::default()
-            };
-        }
-        self.furthest_mm = self.furthest_mm.max(along_mm);
-        let here = self.furthest_mm;
-        let past = |turn: &Turn| turn.end_mm <= here.saturating_add(HALF_CHORD_MM);
-        while turns.get(self.next).is_some_and(past) {
-            self.next += 1;
-        }
-        // Nothing more until the rider is at the last corner warned of.
-        if let Said::Now(upto) = self.said
-            && turns.get(upto).is_some_and(|turn| !past(turn))
-        {
-            return None;
-        }
-        let mut k = self.next;
-        while turns
-            .get(k)
-            .is_some_and(|turn| turn.kind.is_none() && !turn.cornered)
-        {
-            k += 1;
-        }
-        let turn = turns.get(k)?;
-        // Corners left unnamed come before anything after them.
-        let kind = turn.kind?;
-        if turn.start_mm < here {
-            // The rider is in it already: too late to say.
-            self.said = Said::Now(k);
-            return None;
-        }
-        let ahead_mm = turn.start_mm - here;
-        if ahead_mm <= NOW_MM {
-            let after = turns.get(k + 1).filter(|after| {
-                !turn.twice
-                    && after.kind.is_some()
-                    && after.start_mm.saturating_sub(turn.start_mm) <= THEN_MM
-            });
-            self.said = Said::Now(after.map_or(k, |_| k + 1));
-            let then = match turn.twice {
-                true => Some(kind),
-                false => after.and_then(|after| after.kind),
-            };
-            return Some(Warning::Now { kind, then });
-        }
-        if !(AHEAD_MIN_MM..=AHEAD_MM).contains(&ahead_mm) || self.said == Said::Ahead(k) {
-            return None;
-        }
-        self.said = Said::Ahead(k);
-        let metres = ahead_mm.saturating_add(4_999) / 10_000 * 10;
-        Some(Warning::Ahead { kind, metres })
     }
 }
 

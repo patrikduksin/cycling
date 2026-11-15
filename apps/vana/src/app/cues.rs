@@ -51,12 +51,10 @@ pub enum Cue {
     OffCourse,
     /// Back on it, or following it began.
     OnCourse,
-    /// At the course's end.
-    Arrived,
-    /// A turn on the course ahead.
-    TurnAhead,
+    /// The course's next turn is coming up.
+    TurnSoon,
     /// The turn is here.
-    Turn,
+    TurnNow,
 }
 
 #[derive(Clone, Copy)]
@@ -94,11 +92,9 @@ impl Cue {
             // A gentle middle pair, unlike the single lap note.
             Self::Fuel => &[Middle, Middle],
             Self::OffCourse => &[High, Low],
-            Self::OnCourse => &[Low, Middle],
-            Self::Arrived => &[Low, Middle, High, High],
-            // A soft fall to warn, and a bright call at the turn itself.
-            Self::TurnAhead => &[Middle, Low],
-            Self::Turn => &[High, Middle, High],
+            Self::OnCourse => &[Low, High],
+            Self::TurnSoon => &[Low, Middle],
+            Self::TurnNow => &[High],
         }
     }
 
@@ -124,9 +120,8 @@ impl Cue {
             Self::Fuel => "fuel",
             Self::OffCourse => "off_course",
             Self::OnCourse => "on_course",
-            Self::Arrived => "arrived",
-            Self::TurnAhead => "turn_ahead",
-            Self::Turn => "turn",
+            Self::TurnSoon => "turn_soon",
+            Self::TurnNow => "turn_now",
         }
     }
 
@@ -273,8 +268,10 @@ mod tests {
         assert_eq!(ids(Cue::BandAlert), [10, 10]);
         assert_eq!(ids(Cue::Fuel), [0, 0]);
         assert_eq!(ids(Cue::StillPaused), [0, 0, 10]);
-        assert_eq!(ids(Cue::TurnAhead), [0, 21]);
-        assert_eq!(ids(Cue::Turn), [10, 0, 10]);
+        assert_eq!(ids(Cue::OffCourse), [10, 21]);
+        assert_eq!(ids(Cue::OnCourse), [21, 10]);
+        assert_eq!(ids(Cue::TurnSoon), [21, 0]);
+        assert_eq!(ids(Cue::TurnNow), [10]);
         // One pattern stands for every note; none leaves cues silent.
         let single = [pattern(4, 3000, 100)];
         assert_eq!(resolve(&single, Cue::Saved).to_vec(), [4, 4, 4]);

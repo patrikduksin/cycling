@@ -1,5 +1,6 @@
 //! Courses with more turns than the list holds.
 use super::*;
+use crate::ride::course::nav::tests::said as told;
 use crate::ride::course::stored::tests::found;
 use crate::ride::course::turns::tests::bends;
 use crate::ride::course::turns::{Kind, Side, TURNS, Turn};
@@ -38,8 +39,8 @@ fn at_corners(line: &[(f32, f32)], room: usize, stored: Option<usize>) -> Vec<Ki
     for k in 0..(length / 7.0) as usize {
         let (east, north) = along_line(line, k as f32 * 7.0);
         now += 1_000;
-        rider.observe(Some(at(east, north)), now);
-        said.extend(rider.follower.take_turn());
+        let event = rider.observe(Some(at(east, north)), now);
+        said.extend(event.and_then(|event| told(event, rider.follower.sign(now))));
         if rider.needs_course() {
             rider.set_course(points);
             if let Some(stored) = stored {
@@ -52,9 +53,9 @@ fn at_corners(line: &[(f32, f32)], room: usize, stored: Option<usize>) -> Vec<Ki
         }
     }
     said.into_iter()
-        .filter_map(|warning| match warning {
-            Warning::Now { kind, then: None } => Some(kind),
-            _ => None,
+        .filter_map(|said| match said {
+            Said::Now(kind) => Some(kind),
+            Said::Soon(_) => None,
         })
         .collect()
 }

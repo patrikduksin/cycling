@@ -78,6 +78,8 @@ pin at once and belongs in its own PR with `cycling verify` results.
   without screens; `--pr N` posts the table and the changed screens on a PR;
   `--video` adds before and after videos of changed scenarios. Logs go to
   `.local/verify/<commit>/`.
+- `cycling playbook-audit --session ID` prints a session digest for the
+  auditor brief in `docs/agents/playbook-auditor.md`.
 
 ## A device on another machine
 

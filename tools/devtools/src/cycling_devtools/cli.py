@@ -85,6 +85,11 @@ TASKS = [
         f'{DEV}verify',
     ),
     task(
+        'playbook-audit',
+        "Print a session transcript's digest for the auditor in docs/agents/playbook-auditor.md, --session ID",
+        f'{DEV}playbook_audit',
+    ),
+    task(
         'clean',
         'Free disk: remove merged, clean, idle worktrees and idle build dirs; dry run unless --apply, --idle-hours N (default 24)',
         f'{DEV}clean',

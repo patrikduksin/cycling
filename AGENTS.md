@@ -31,7 +31,9 @@ shell provides every tool and the `cycling` command; see
 - Inner loop: targeted host tests and the simulator; a firmware rebuild after
   a VANA edit takes about 45 s (the fat-LTO link is 30 s of it), and one after
   a commit that changes no firmware input about 2 s.
-- Before opening or updating a PR: `cycling verify --pr <n>`. It runs every
+- Before opening or updating a PR: follow the
+  [verify skill](.agents/skills/verify/SKILL.md): `/deslop`, `/no-comments`,
+  then `cycling verify --pr <n>`. Verify runs every
   gate in parallel and posts the results and the screens that changed against
   main, with a video of each new scenario. Add `--video` for before and after
   videos of changed scenarios, for a bug fix a reviewer should watch.

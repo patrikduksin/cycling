@@ -32,6 +32,12 @@ let
     root=$(git rev-parse --show-toplevel) || exit
     exec uv run --project "$root/tools/devtools" --locked python -m cycling_devtools.cli "$@"
   '';
+  gatedGh = pkgs.writeShellScriptBin "gh" ''
+    if root=$(git rev-parse --show-toplevel 2>/dev/null) && [ -x "$root/tools/pr-gates.sh" ]; then
+      "$root/tools/pr-gates.sh" "$@" || exit
+    fi
+    exec ${pkgs.gh}/bin/gh "$@"
+  '';
 in
 pkgs.mkShell {
   packages = with pkgs; [
@@ -46,7 +52,7 @@ pkgs.mkShell {
     ffmpeg-headless
     pkg-config
     git
-    gh
+    gatedGh
     jq
     rsync
     openssh

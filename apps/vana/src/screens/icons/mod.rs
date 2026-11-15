@@ -129,7 +129,7 @@ impl Icon {
 
 /// The course sign's three forms, as the mockups in
 /// `docs/design/course-navigation` draw them.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SignForm {
     /// Full width on a data page, rows 22 to 104.
     Banner,

@@ -44,8 +44,10 @@ FACES = [
     ("SIGN_20", 900, 20, NUMBERS + "ADEIKMRV", 0, "The chip's distance, the banner's unit and the badge's ARRIVED."),
     ("SIGN_18", 900, 18, "ABCKNRTU ", 0.5, "TURN BACK on a data page's banner."),
     ("SIGN_14", 900, 14, "ABCKMNRTU ", 0.5, "The badge's unit and TURN BACK."),
+    ("SIGN_13", 900, 13, "KM ", 0, "The at-rest chip's unit."),
     ("TOTAL_60", 700, 60, NUMBERS, 0, "The ride's distance when a course is done."),
     ("TOTAL_30", 700, 30, NUMBERS, 0, "The ride's averages when a course is done."),
+    ("TOTAL_11", 900, 11, "ABCDEGHIKMNPRSTVW /", 0.6, "The captions over those totals."),
     ("FOOT_20", 700, 20, NUMBERS, 0, "The distance left in the map's footer."),
 ]
 

@@ -229,13 +229,20 @@ impl Canvas {
         }
     }
 
-    pub fn parts(&self, parts: &mut Parts) {
+    /// What lies wholly in `covered`, rows something paints right across
+    /// over the canvas, sends nothing.
+    pub fn parts(&self, parts: &mut Parts, covered: core::ops::Range<usize>) {
+        let shown = |top, bottom| !(covered.start <= top && bottom <= covered.end);
         for shape in &self.shapes {
             let bounds = shape.bounds();
-            parts.add(bounds.top..bounds.bottom, shape);
+            if shown(bounds.top, bounds.bottom) {
+                parts.add(bounds.top..bounds.bottom, shape);
+            }
         }
         for run in &self.runs {
-            parts.add(run.top..run.bottom(), run);
+            if shown(run.top, run.bottom()) {
+                parts.add(run.top..run.bottom(), run);
+            }
         }
     }
 

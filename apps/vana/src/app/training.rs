@@ -26,7 +26,7 @@ use super::cues::Cue;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::chrome::Tone;
 use crate::screens::kinetic::Kinetic;
-use crate::screens::ride::{Pages, RidePage, Training as Shown};
+use crate::screens::ride::{PageChoice, Pages, RidePage, Training as Shown};
 use crate::screens::touch::List;
 use crate::screens::workout::{Page, Text};
 use crate::screens::workouts::{Choice, Picker, VISIBLE};
@@ -388,7 +388,17 @@ impl Runtime {
 
     /// The pages MOVE steps through: the workout's, the rider's choice.
     pub(super) fn ride_pages(&self) -> Pages {
-        Pages::new(self.workout_pages(), self.preferences.options.ride_pages)
+        Pages::new(self.workout_pages(), self.page_choice())
+    }
+
+    /// The pages the rider left on, and the map while a course is loaded,
+    /// which a tap on the course sign opens.
+    pub(super) fn page_choice(&self) -> PageChoice {
+        let choice = self.preferences.options.ride_pages;
+        match self.course() {
+            Some(_) => choice.showing(RidePage::Map),
+            None => choice,
+        }
     }
 
     pub(super) fn workout_command(

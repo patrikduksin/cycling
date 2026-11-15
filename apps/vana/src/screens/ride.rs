@@ -204,6 +204,13 @@ impl PageChoice {
         }
     }
 
+    pub const fn showing(self, page: RidePage) -> Self {
+        match page.hide_bit() {
+            Some(bit) => Self(self.0 & !bit),
+            None => self,
+        }
+    }
+
     /// Show or hide `page`; the always-on pages stay on.
     pub fn toggled(self, page: RidePage) -> Self {
         match page.hide_bit() {
@@ -286,6 +293,9 @@ pub(super) type Labels = heapless::Vec<chrome::Label<12>, 14>;
 #[derive(Default, Hash)]
 pub struct Smooth {
     pub(super) labels: Labels,
+    /// The top rows of the power and heart-rate gauges; none while the ride
+    /// totals show.
+    pub(super) gauges: Option<[usize; 2]>,
     /// A workout target under a gauge: which gauge and its columns.
     pub(super) band: Option<(usize, core::ops::Range<usize>)>,
 }
@@ -293,6 +303,7 @@ pub struct Smooth {
 impl Smooth {
     pub const EMPTY: Self = Self {
         labels: heapless::Vec::new(),
+        gauges: None,
         band: None,
     };
 }
@@ -397,7 +408,7 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
         RidePage::Map => parts.add(BODY.top..BODY.bottom, &scene.map()),
     }
     if page != RidePage::Main {
-        scene.canvas().parts(parts);
+        scene.canvas().parts(parts, scene.banner_rows());
     }
 }
 

@@ -169,51 +169,73 @@ fn off_course_beyond_the_widest_step_the_chevrons_still_lead_back_to_the_junctio
         along_mm: TURN_MM,
         at: (0.0, 250.0),
     };
-    let here = (0.0, 3_500.0);
-    let mut track = following(&c, here, 650.0, Some(junction));
-    track.badge = Some(Rect {
-        right: 160,
-        ..BADGE
-    });
-    let frame = filled(&track);
-    let pose = frame.last_pose;
-    assert_eq!(pose.step, Step::Km3);
-    let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
-    let towards = pose.projection(here).at(junction.at);
-    let (dx, dy) = (towards.0 - rider.0, towards.1 - rider.1);
-    let length = libm::sqrtf(dx * dx + dy * dy);
-    let (ux, uy) = (dx / length, dy / length);
-    let chevrons: std::vec::Vec<(usize, usize)> = GROUND
-        .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
-        .filter(|&(x, y)| {
-            let (x, y) = (x as f32 - rider.0, y as f32 - rider.1);
-            libm::sqrtf(x * x + y * y) > PUCK_CLEAR + 1.0
-        })
-        .filter(|&(x, y)| pixel(&frame, x, y, BLACK) == AMBER)
-        .collect();
-    let ahead: std::vec::Vec<f32> = chevrons
-        .iter()
-        .map(|&(x, y)| (x as f32 - rider.0) * ux + (y as f32 - rider.1) * uy)
-        .collect();
-    let beside = chevrons
-        .iter()
-        .map(|&(x, y)| ((x as f32 - rider.0) * uy - (y as f32 - rider.1) * ux).abs())
-        .fold(0.0f32, f32::max);
-    let reach = ahead.iter().fold(0.0f32, |a, &b| a.max(b))
-        - ahead.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-    assert!(
-        reach > 2.0 * CHEVRON_PITCH,
-        "{pose:?}: three chevrons span over two pitches, these {reach} px"
-    );
-    assert!(
-        ahead.iter().all(|&a| a > 0.0) && beside <= CHEVRON_HALF + CHEVRON_STROKE,
-        "{pose:?}: amber off the straight line to the junction, {} px aside",
-        beside
-    );
-    assert_eq!(
-        frame.junction_quarter_px, None,
-        "the ring is off the screen"
-    );
+    for radar in [false, true] {
+        for back_m in [1_700.0, 2_500.0, 3_250.0, 20_000.0, 150_000.0] {
+            let here = (0.0, 250.0 + back_m);
+            let mut track = following(&c, here, 650.0, Some(junction));
+            let sign = Sign::OffCourse {
+                back: Distance::from_mm((back_m * 1000.0) as u32),
+            };
+            let badge = crate::screens::sign::on_page(RidePage::Map, sign, radar)
+                .unwrap()
+                .rect();
+            track.guidance.as_mut().unwrap().sign = sign;
+            track.badge = Some(badge);
+            track.radar = radar;
+            let frame = filled(&track);
+            let pose = frame.last_pose;
+            let what = std::format!("radar {radar}, {back_m} m back, {pose:?}");
+            assert_eq!(pose.step, Step::Km3, "{what}");
+            let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
+            let towards = pose.projection(here).at(junction.at);
+            let (dx, dy) = (towards.0 - rider.0, towards.1 - rider.1);
+            let length = libm::sqrtf(dx * dx + dy * dy);
+            let (ux, uy) = (dx / length, dy / length);
+            let ring = JUNCTION_RINGS_QUARTER_PX[0].0 as f32 / 4.0 + 1.0;
+            let chevrons: std::vec::Vec<(usize, usize)> = GROUND
+                .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let away = |(cx, cy): Point| {
+                        let (x, y) = (x as f32 - cx, y as f32 - cy);
+                        libm::sqrtf(x * x + y * y)
+                    };
+                    away(rider) > PUCK_CLEAR + 1.0 && away(towards) > ring
+                })
+                .filter(|&(x, y)| pixel(&frame, x, y, BLACK) == AMBER)
+                .collect();
+            let ahead: std::vec::Vec<f32> = chevrons
+                .iter()
+                .map(|&(x, y)| (x as f32 - rider.0) * ux + (y as f32 - rider.1) * uy)
+                .collect();
+            let beside = chevrons
+                .iter()
+                .map(|&(x, y)| ((x as f32 - rider.0) * uy - (y as f32 - rider.1) * ux).abs())
+                .fold(0.0f32, f32::max);
+            let reach = ahead.iter().fold(0.0f32, |a, &b| a.max(b))
+                - ahead.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+            assert!(
+                reach > 2.0 * CHEVRON_PITCH,
+                "{what}: three chevrons span over two pitches, these {reach} px"
+            );
+            assert!(
+                ahead.iter().all(|&a| a > 0.0) && beside <= CHEVRON_HALF + CHEVRON_STROKE,
+                "{what}: amber off the straight line to the junction, {beside} px aside"
+            );
+            let hidden: std::vec::Vec<&(usize, usize)> = chevrons
+                .iter()
+                .filter(|&&(x, y)| badge.contains(x, y) || x < map_left(radar))
+                .collect();
+            assert!(
+                hidden.is_empty(),
+                "{what}: chevrons under the badge or the radar strip at {hidden:?}"
+            );
+            assert_eq!(
+                frame.junction_quarter_px.is_none(),
+                back_m > 3_200.0,
+                "{what}: the ring sinks off the screen past 3.2 km"
+            );
+        }
+    }
 }
 
 #[test]

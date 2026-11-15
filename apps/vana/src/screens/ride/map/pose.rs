@@ -236,7 +236,10 @@ const COLUMNS: usize = 16;
 fn columns(start: i16, left: f32) -> (heapless::Vec<i16, COLUMNS>, usize) {
     let (low, high) = ((left + EDGE) as i16, WIDTH as i16 - EDGE as i16);
     let down = (1..).map(|k| start - k * GRID).take_while(|&x| x >= low);
-    let up = (1..).map(|k| start + k * GRID).take_while(|&x| x <= high);
+    let up = (1..)
+        .map(|k| start + k * GRID)
+        .take_while(|&x| x < high)
+        .chain([high]);
     let mut all = heapless::Vec::new();
     let _ = all.push(start);
     all.extend(down);

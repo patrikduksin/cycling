@@ -10043,19 +10043,27 @@ mod course_map {
             (600.0, 1_500.0),
             (600.0, 5_000.0),
         ];
-        let mut sim = on_the_map(&course, &[(0.0, 0.0), (0.0, 6_000.0)]);
-        ride_to(&mut sim, 5_000.0);
-        assert_eq!(badge(&sim), ["3.5", "KM", "TURN BACK"]);
-        let screen = sim.screen();
-        let chevrons = (100..250)
-            .flat_map(|y| (0..screen.width).map(move |x| (x, y)))
-            .filter(|&(x, y)| at(&screen, x, y) == AMBER)
-            .count();
-        assert!(
-            chevrons >= 60,
-            "{chevrons} amber px between the rider and the junction"
-        );
-        sim.checkpoint("map-offcourse-far");
+        let sensors = ["HEART RATE", "POWER METER", "SPEED/CAD", "RADAR"];
+        for radar in [false, true] {
+            let paired = if radar { &sensors[..] } else { &sensors[..3] };
+            let mut sim = on_the_map_with(&course, &[(0.0, 0.0), (0.0, 12_000.0)], paired);
+            for (ridden, back) in [(3_200.0, "1.7"), (5_000.0, "3.5"), (11_500.0, "10")] {
+                ride_to(&mut sim, ridden);
+                assert_eq!(badge(&sim), [back, "KM", "TURN BACK"]);
+                let screen = sim.screen();
+                let chevrons = (100..250)
+                    .flat_map(|y| (0..screen.width).map(move |x| (x, y)))
+                    .filter(|&(x, y)| at(&screen, x, y) == AMBER)
+                    .count();
+                assert!(
+                    chevrons >= 60,
+                    "radar {radar}, {back} km back: {chevrons} amber px between the rider and the junction"
+                );
+                if !radar && back == "3.5" {
+                    sim.checkpoint("map-offcourse-far");
+                }
+            }
+        }
     }
 
     fn scale(screen: &Screen) -> (usize, String) {

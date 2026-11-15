@@ -317,15 +317,11 @@ impl firmware_shell::shell::Picture for Scene<'_> {
         }
     }
 
-    /// A ride page in parts, so a frame sends the rows that changed. Every
-    /// other page is one part, sent whole: a list scrolls every row.
     fn parts(&self, parts: &mut firmware_shell::shell::Parts) {
         let Kind::Ride(page) = self.kind else {
             parts.add(0..HEIGHT, self);
             return;
         };
-        // What moves or recolours every row: the page, the look, and the
-        // radar strip, which moves the body when it comes or goes.
         parts.add(
             0..HEIGHT,
             &(
@@ -429,7 +425,6 @@ impl<'v> Scene<'v> {
         self.shown(self.extra.map(), "map", None)
     }
 
-    /// What the map was filled from.
     pub(super) fn map_key(&self) -> Option<ride::MapKey> {
         self.shown(self.extra.map_key(), "map", None)
     }
@@ -1362,8 +1357,6 @@ mod tests {
         view.show_laps(ride::LapBars::new(), laps.current(), laps.previous());
     }
 
-    /// Every row whose pixels differ between the two views lies in a band
-    /// whose key changed, so a frame from one to the other sends it.
     #[track_caller]
     fn assert_parts_cover(before: &View, after: &View, what: &str) {
         use firmware_shell::shell::{Parts, Picture};
@@ -1385,7 +1378,6 @@ mod tests {
         assert!(changed > 0, "{what} changes no pixel");
     }
 
-    /// The inputs of a ride page that no simulator scenario changes alone.
     #[test]
     fn each_ride_page_input_alone_keys_the_rows_it_changes() {
         let target = |closing_speed_cm_s| radar::Target {

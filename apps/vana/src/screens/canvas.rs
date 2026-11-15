@@ -229,7 +229,6 @@ impl Canvas {
         }
     }
 
-    /// Each shape over the rows it can cover, then each run.
     pub fn parts(&self, parts: &mut Parts) {
         for shape in &self.shapes {
             let bounds = shape.bounds();

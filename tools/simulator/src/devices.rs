@@ -41,7 +41,7 @@ pub struct Frame {
     pub check: bool,
 }
 impl Frame {
-    /// A new frame is on the panel: `rows` of it painted, with `work`.
+    /// A new frame is on the panel.
     pub fn shown(&mut self, rows: usize, work: &Work) {
         self.submissions += 1;
         if let Some(hashes) = &mut self.hashes {

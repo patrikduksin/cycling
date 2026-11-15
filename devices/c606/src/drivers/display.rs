@@ -18,8 +18,7 @@ const PANEL_HEIGHT: usize = 320;
 const STRIP_ROWS: usize = 16;
 pub const STRIP_BYTES: usize = PANEL_WIDTH * STRIP_ROWS * 2;
 
-/// Fill a strip from panel row `top`, as many rows as `bytes` holds. Rows
-/// render in place when the DMA buffer is 2-byte aligned (it is
+/// Rows render in place when the DMA buffer is 2-byte aligned (it is
 /// word-aligned), else through a line buffer.
 fn render(bytes: &mut [u8], top: usize, row: &mut impl FnMut(usize, &mut [u16])) {
     // SAFETY: every bit pattern is a valid u16, and `align_to_mut` keeps the

@@ -263,7 +263,6 @@ fn band_rows(i: usize) -> core::ops::Range<usize> {
     top..top + BAND_HEIGHT
 }
 
-/// The page's parts: the target band, each gauge, each label.
 pub(super) fn parts(scene: &Scene, parts: &mut Parts) {
     let smooth = scene.smooth();
     for i in 0..GAUGES.len() {

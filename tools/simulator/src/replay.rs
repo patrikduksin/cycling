@@ -339,7 +339,6 @@ pub enum Seen {
         note: u8,
         of: u8,
     },
-    /// The panel's pixels as a trace recorded before `Panel` holds them.
     Frame(u32),
     Panel(u32),
 }
@@ -363,7 +362,6 @@ pub struct Replay {
     page: String,
     /// The trace replaced secrets as it recorded them.
     redacted: bool,
-    /// The trace digests the panel as `Event::Frame`, from before `Panel`.
     frames: bool,
 }
 
@@ -488,9 +486,7 @@ impl Replay {
 
     /// What the rider saw in the pass just run, against the recording. A
     /// stimulus replay can run another build, which may draw the same
-    /// things in other pixels, so it leaves the frames out. A trace from
-    /// before `Panel` is held to `frame`, the digest it took of the whole
-    /// panel.
+    /// things in other pixels, so it leaves the frames out.
     pub fn saw(&mut self, seen: &[Seen], frame: impl FnOnce() -> u32) {
         let recorded = core::mem::take(&mut self.seen);
         let mut frame = Some(frame);
@@ -566,8 +562,7 @@ impl Replay {
 }
 
 /// The first event where two traces part, with the pass it belongs to.
-/// What [`measured`] holds is left out, and so are the panel's digests of a
-/// trace from before `Panel`, which a replay digests otherwise.
+/// What [`measured`] holds is left out.
 pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     let frames = whole_frames(recorded);
     first_difference_of(recorded, replayed, |event| {
@@ -575,7 +570,6 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
     })
 }
 
-/// The trace digests the panel as `Event::Frame`: it is from before `Panel`.
 fn whole_frames(trace: &[u8]) -> bool {
     trace::decode(trace)
         .is_ok_and(|(_, mut events)| events.any(|event| matches!(event, Event::Frame(_))))

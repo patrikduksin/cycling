@@ -11,10 +11,7 @@
 //! (see `map`).
 //!
 //! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
-//! module beside `main` whose `prepare` returns its canvas, dispatched below
-//! in `paint` and in `parts`. A frame sends only the rows whose parts
-//! changed, so whatever a page paints beyond its canvas needs a part keyed
-//! by all it reads; the simulator panics on a row a missing key left stale.
+//! module beside `main` whose `prepare` returns its canvas, dispatched below.
 //!
 //! The climb page also follows the road: it comes up before a climb or once
 //! one is under way, and when the road is clear it returns to the page the
@@ -399,8 +396,6 @@ pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
     }
 }
 
-/// The parts `paint` draws over the scene's: the radar strip's track and
-/// each marker, then the page's own.
 pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
     if let Some(radar) = &scene.radar {
         parts.add(TRACK_TOP..TRACK_BOTTOM + 1, &radar.track);

@@ -613,7 +613,6 @@ pub(super) fn frame(view: &View) -> Frame {
     frame
 }
 
-/// The profile fill and its baseline.
 pub(super) fn chart_parts(frame: &Frame, parts: &mut firmware_shell::shell::Parts) {
     parts.add(CHART_TOP..frame.bottom + 1, frame);
 }

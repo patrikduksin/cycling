@@ -599,7 +599,6 @@ pub fn chart(player: &Player, profile: &TrainingProfile) -> Chart {
     chart
 }
 
-/// Paint the chart's row of bars.
 pub(super) fn chart_parts(chart: &Chart, parts: &mut firmware_shell::shell::Parts) {
     parts.add(CHART_TOP..CHART_BOTTOM, chart);
 }

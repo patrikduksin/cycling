@@ -123,7 +123,6 @@ mod tests {
     use super::{BAND_ROWS, Rows};
     use std::vec::Vec;
 
-    /// The runs as (first row, row after).
     fn runs(rows: Rows, height: usize) -> Vec<(usize, usize)> {
         rows.runs(height).map(|run| (run.start, run.end)).collect()
     }

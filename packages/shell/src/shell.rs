@@ -30,7 +30,7 @@ pub enum BrightnessChoice {
 pub const MIN_WIDTH: usize = 16;
 pub const MIN_HEIGHT: usize = 16;
 pub const CANVAS_MAX_WIDTH: usize = 320;
-/// The tallest panel: the shell keeps a digest of each of its bands.
+/// The tallest panel.
 pub const MAX_HEIGHT: usize = 320;
 const BANDS: usize = MAX_HEIGHT / BAND_ROWS;
 const FNV_OFFSET: u32 = 0x811c_9dc5;
@@ -153,8 +153,6 @@ pub enum Drawn {
     Failed,
 }
 
-/// FNV-1a over 64 bits, a part's key: a collision would skip a changed
-/// band.
 struct Fnv1a(u64);
 
 impl core::hash::Hasher for Fnv1a {
@@ -194,13 +192,8 @@ pub struct Shell<D, I, P, B> {
     pub operations: u32,
     pub storage_max_ms: u64,
     pub display_submissions: u32,
-    /// Each band's pixel digest as the panel last took it.
     sent: [u32; BANDS],
-    /// The bands' digests folded top to bottom, after the last frame the
-    /// panel took.
     panel: Option<u32>,
-    /// The parts of the picture on the panel, until anything else is
-    /// submitted.
     shown: Option<Parts>,
     /// The digest `take_frame` last handed out.
     taken: Option<u32>,
@@ -676,7 +669,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         self.shown = None;
         self.send(Rows::all(self.display.geometry().height), row);
     }
-    /// Submit `rows` of a frame; a capture takes every row.
     fn send(&mut self, rows: Rows, mut row: impl FnMut(usize, &mut [u16])) {
         let started = self.clock.map(|clock| clock());
         let sent = &mut self.sent;

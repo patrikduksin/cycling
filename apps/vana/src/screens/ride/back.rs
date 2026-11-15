@@ -167,7 +167,6 @@ fn coverage(spans: &Spans, x: usize) -> u8 {
 /// The columns the arrow can touch.
 const REACH: usize = ARROW_RADIUS as usize + 2;
 
-/// The rows the arrow can cover, keyed by what places it.
 pub(super) fn parts(back: Back, parts: &mut firmware_shell::shell::Parts) {
     parts.add(CY - REACH..CY + REACH + 1, &arrow(back));
 }

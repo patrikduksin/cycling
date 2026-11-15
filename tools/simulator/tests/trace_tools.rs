@@ -589,8 +589,6 @@ fn a_strict_replay_of_a_fixture_shows_the_recorded_frames() {
     assert_eq!(report.first, None, "{:?}", report.counts);
 }
 
-/// The fixture is from before `Event::Panel`: its frames digest every row
-/// in turn, and a strict replay still holds the panel to each of them.
 #[test]
 fn a_strict_replay_holds_a_trace_from_before_panel_digests_to_its_frames() {
     use firmware_services::trace::frozen::{Record, Recorder};

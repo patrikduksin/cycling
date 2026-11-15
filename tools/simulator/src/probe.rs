@@ -3,9 +3,7 @@
 //!
 //! The probe says how much of the screen a redraw engine would have had to
 //! repaint: which of the panel's 16-row strips changed, how many pixels, and
-//! how many frames changed nothing at all. It also says what the engine did:
-//! the rows each frame painted and the painters' work. `redraw-probe` prints
-//! the table.
+//! how many frames changed nothing at all. `redraw-probe` prints the table.
 use crate::bench::SCENES;
 use crate::sim::Sim;
 use crate::world::{Side, Vehicle};
@@ -14,20 +12,15 @@ use firmware_shell::rendering::work::Work;
 /// Rows the device sends in one strip.
 pub const STRIP_ROWS: usize = 16;
 
-/// What one submitted frame changed from the frame before it, and what
-/// painting it took.
+/// What one submitted frame changed from the frame before it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Change {
     pub strips: usize,
     pub pixels: usize,
-    /// Rows painted and sent.
     pub rows: usize,
-    /// Pixels the painters filled or walked (`pixel_work`).
     pub work: u64,
 }
 
-/// One number for what painting cost: pixels filled as spans, worked out
-/// one at a time, and walked to find glyph ink.
 pub fn pixel_work(work: &Work) -> u64 {
     work.span_pixels + work.evaluations + work.glyph_columns
 }
@@ -195,7 +188,6 @@ impl Result {
         percentiles(self.changes.iter().map(|c| c.strips).collect())
     }
 
-    /// Median and 90th percentile of rows painted over every frame.
     pub fn rows(&self) -> (usize, usize) {
         percentiles(self.changes.iter().map(|c| c.rows).collect())
     }

@@ -331,7 +331,6 @@ mod tests {
         assert!(display.0.borrow().pixels.iter().all(|&pixel| pixel == 3));
     }
 
-    /// Rows above `split` in one colour, the rest in another, each a part.
     #[derive(Hash)]
     struct Split {
         top: u16,

@@ -4,9 +4,7 @@
 //! `cargo run -p shell-simulator --no-default-features --bin redraw-probe -- [seconds] [case filter]`
 //! or `cycling redraw-probe [seconds] [case filter]`. The default is 60 s of
 //! simulated time per case. Strips are the panel's 16-row strips; the median
-//! and p90 run over every submitted frame, identical ones included. Painter
-//! work counts pixels filled, worked out one at a time and walked for glyph
-//! ink (`probe::pixel_work`).
+//! and p90 run over every submitted frame, identical ones included.
 use shell_simulator::probe::{CASES, run};
 
 fn main() {

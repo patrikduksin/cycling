@@ -6274,23 +6274,25 @@ fn map_page_draws_the_ride_track_heading_up_and_keeps_it_when_still() {
 
     // Round the bend: the track is rotated so the road ahead is up.
     ride_to(&mut sim, 1_900.0);
-    assert!(map_ink(&sim) > 100, "the track behind the rider");
+    assert!(
+        ridden_track_pixels(&sim) > 100,
+        "the track behind the rider"
+    );
     sim.checkpoint("the map mid ride, heading up");
 
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.wait_for("AUTO PAUSED", seconds(20)).unwrap();
     sim.press(Button::BottomLeft);
-    let moving = map_ink(&sim);
+    let moving = ridden_track_pixels(&sim);
     sim.advance(seconds(20));
     expect_map(&sim);
     sim.expect_no_text("N UP");
-    assert_eq!(map_ink(&sim), moving, "the map stays as it was");
+    assert_eq!(ridden_track_pixels(&sim), moving, "the map stays as it was");
     sim.checkpoint("the map standing still, heading held");
     sim.stop_ride();
 }
 
-/// Pixels of the ride's own track on the map.
-fn map_ink(sim: &Sim) -> usize {
+fn ridden_track_pixels(sim: &Sim) -> usize {
     map_pixels(sim, vana::screens::chrome::rgb(0x1f, 0x4a, 0x78))
 }
 
@@ -6310,7 +6312,7 @@ fn a_restart_keeps_the_track_and_the_start_for_the_next_ride() {
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    let before = map_ink(&sim);
+    let before = ridden_track_pixels(&sim);
     sim.checkpoint("the map before the power cut");
 
     sim.power_loss();
@@ -6320,7 +6322,7 @@ fn a_restart_keeps_the_track_and_the_start_for_the_next_ride() {
     sim.wait_for("RECORDING", seconds(2)).unwrap();
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    let after = map_ink(&sim);
+    let after = ridden_track_pixels(&sim);
     sim.note(
         NoteKind::Check,
         format!("map ink {before} px before, {after} px after"),
@@ -6357,7 +6359,7 @@ fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    let before = map_ink(&sim);
+    let before = ridden_track_pixels(&sim);
     sim.checkpoint("the map after five hours");
 
     sim.power_loss();
@@ -6373,7 +6375,7 @@ fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
         sim.advance(seconds(1));
         waited += 1;
     }
-    let after = map_ink(&sim);
+    let after = ridden_track_pixels(&sim);
     sim.note(
         NoteKind::Check,
         format!("track read back in {waited} s: map ink {before} px before, {after} px after"),
@@ -6399,7 +6401,7 @@ fn a_ride_that_moves_to_internal_memory_keeps_the_track_and_the_start() {
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    let before = map_ink(&sim);
+    let before = ridden_track_pixels(&sim);
     sim.checkpoint("the map on the card before it fails");
 
     // Riding on, the next write to the card fails.
@@ -6412,7 +6414,7 @@ fn a_ride_that_moves_to_internal_memory_keeps_the_track_and_the_start() {
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    let after = map_ink(&sim);
+    let after = ridden_track_pixels(&sim);
     sim.note(
         NoteKind::Check,
         format!("map ink {before} px before the move, {after} px after"),
@@ -6460,7 +6462,6 @@ fn course_ride_gpx() -> String {
     gpx_through("loop with a wrong turn", &legs)
 }
 
-/// Pixels of `color` on the map's ground.
 fn map_pixels(sim: &Sim, color: u16) -> usize {
     let screen = sim.screen();
     (22..290)
@@ -6469,13 +6470,10 @@ fn map_pixels(sim: &Sim, color: u16) -> usize {
         .count()
 }
 
-/// Pixels of the course ahead, in the route's blue.
 fn course_pixels(sim: &Sim) -> usize {
     map_pixels(sim, vana::screens::chrome::ACCENT)
 }
 
-/// The map page is showing: its page dot, and its ground over most of the
-/// screen.
 #[track_caller]
 fn expect_map(sim: &Sim) {
     assert_eq!(sim.screen().page().as_deref(), Some("5/5"));
@@ -6483,7 +6481,6 @@ fn expect_map(sim: &Sim) {
     assert!(ground > 30_000, "{ground} px of the map's ground");
 }
 
-/// The map badge's words, top-left over the map; none without one.
 fn map_badge(sim: &Sim) -> Vec<String> {
     sim.screen()
         .frame()
@@ -9750,13 +9747,10 @@ mod course_map {
     const MOCKUP: &str = include_str!("../../../docs/design/course-navigation/map-approach.svg");
     const PX_PER_M: f64 = 240.0 / 400.0;
     const RIDER: (f64, f64) = (80.0, 266.0);
-    /// Where the ride starts, south of map-approach's rider.
-    const LEAD_M: f64 = 1_000.0;
+    const START_TO_MOCKUP_RIDER_M: f64 = 1_000.0;
     const FIX_CATCHES_UP_S: u64 = 2;
     const SPACING_PAST_COURSE_MIN_STEP_M: f64 = 5.5;
 
-    /// The route the mockup draws, in metres east and north of the ride's
-    /// start, then on north so the course does not end in view.
     fn mockup_course() -> Vec<(f64, f64)> {
         let route = MOCKUP
             .split("<polyline points=\"")
@@ -9768,15 +9762,19 @@ mod course_map {
             .map(|pair| {
                 let (x, y) = pair.split_once(',').unwrap();
                 let (x, y): (f64, f64) = (x.parse().unwrap(), y.parse().unwrap());
-                ((x - RIDER.0) / PX_PER_M, LEAD_M + (RIDER.1 - y) / PX_PER_M)
+                (
+                    (x - RIDER.0) / PX_PER_M,
+                    START_TO_MOCKUP_RIDER_M + (RIDER.1 - y) / PX_PER_M,
+                )
             })
             .collect();
         let mut course = vec![(0.0, 0.0)];
         let mut stretch = vec![drawn[0]];
         for (k, &p) in drawn.iter().enumerate().skip(1) {
             stretch.push(p);
-            if k + 1 == drawn.len() || bend(stretch[stretch.len() - 2], p, drawn[k + 1]) > 0.5 {
-                course.extend(evenly(&stretch));
+            if k + 1 == drawn.len() || turn_angle(stretch[stretch.len() - 2], p, drawn[k + 1]) > 0.5
+            {
+                course.extend(resampled(&stretch));
                 stretch = vec![p];
             }
         }
@@ -9785,15 +9783,12 @@ mod course_map {
         course
     }
 
-    /// How far a line through `b` turns, in radians.
-    fn bend(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+    fn turn_angle(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
         let turn = (c.1 - b.1).atan2(c.0 - b.0) - (b.1 - a.1).atan2(b.0 - a.0);
         turn.sin().atan2(turn.cos()).abs()
     }
 
-    /// Points along `stretch`, evenly spaced at least
-    /// `SPACING_PAST_COURSE_MIN_STEP_M` apart, the last at its end.
-    fn evenly(stretch: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    fn resampled(stretch: &[(f64, f64)]) -> Vec<(f64, f64)> {
         let lengths: Vec<f64> = stretch
             .windows(2)
             .map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1))
@@ -9827,8 +9822,6 @@ mod course_map {
         sim.ride_at(36.0, 210.0, 150.0, 88.0);
     }
 
-    /// A rider with every sensor who loaded `course` from the phone and rides
-    /// `route` at 36 km/h, 10 m a fix, on the map page.
     fn on_the_map(course: &[(f64, f64)], route: &[(f64, f64)]) -> Sim {
         on_the_map_with(course, route, &["HEART RATE", "POWER METER", "SPEED/CAD"])
     }
@@ -9855,7 +9848,6 @@ mod course_map {
         sim
     }
 
-    /// The badge's words, top-left over the map.
     fn badge(sim: &Sim) -> Vec<String> {
         sim.screen()
             .frame()
@@ -9869,20 +9861,20 @@ mod course_map {
     #[test]
     fn the_map_steps_in_towards_a_turn_and_leads_back_to_it_once_missed() {
         let course = mockup_course();
-        let route = [(0.0, 0.0), (0.0, LEAD_M + 600.0)];
+        let route = [(0.0, 0.0), (0.0, START_TO_MOCKUP_RIDER_M + 600.0)];
         let mut sim = on_the_map(&course, &route);
-        stand_at(&mut sim, LEAD_M);
+        stand_at(&mut sim, START_TO_MOCKUP_RIDER_M);
         assert_eq!(badge(&sim), ["240", "M"], "to where the turn starts");
         sim.expect_text("100 M");
         sim.checkpoint("map-approach");
 
-        stand_at(&mut sim, LEAD_M + 210.0);
+        stand_at(&mut sim, START_TO_MOCKUP_RIDER_M + 210.0);
         assert_eq!(badge(&sim), ["30", "M"]);
         sim.checkpoint("map-close");
 
-        let off = ride_until_cue(&mut sim, "off_course", LEAD_M + 395.0);
-        assert!(off < LEAD_M + 395.0, "{off}");
-        stand_at(&mut sim, LEAD_M + 390.0);
+        let off = ride_until_cue(&mut sim, "off_course", START_TO_MOCKUP_RIDER_M + 395.0);
+        assert!(off < START_TO_MOCKUP_RIDER_M + 395.0, "{off}");
+        stand_at(&mut sim, START_TO_MOCKUP_RIDER_M + 390.0);
         assert_eq!(badge(&sim), ["140", "M", "TURN BACK"]);
         sim.checkpoint("map-offcourse");
     }

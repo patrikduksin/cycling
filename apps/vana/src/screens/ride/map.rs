@@ -1,5 +1,3 @@
-//! The map page: the course ahead heading up, with the rider low, the turn
-//! to make and, off course, the way back to where the rider left it.
 mod pose;
 mod raster;
 
@@ -21,7 +19,6 @@ use raster::{Cover, Stroke, Triangle};
 
 type Point = (f32, f32);
 
-/// What the page draws: the ride, the course it follows and the rider.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Track<'a> {
     /// The device has memory set aside for the breadcrumb.
@@ -82,7 +79,7 @@ impl Track<'_> {
                 .ahead
                 .map(|(segment, matched)| (segment, matched.map(bits))),
             sign: self.guidance.map(|g| g.sign),
-            turn: self.turn().map(|(spot, _)| spot.along_mm),
+            turn: self.turn_on_course().map(|(spot, _)| spot.along_mm),
             junction: self.junction().map(|j| j.along_mm),
             left_m: self.left_m,
             badge: self.badge,
@@ -90,8 +87,7 @@ impl Track<'_> {
         }
     }
 
-    /// Where the map centres: the rider, else where the track last was.
-    fn centre(&self) -> Option<Point> {
+    fn rider_or_last_crumb(&self) -> Option<Point> {
         self.here
             .or_else(|| self.crumbs.last().map(|c| (c.east, c.north)))
     }
@@ -106,16 +102,12 @@ impl Track<'_> {
             .filter(|_| self.following())
     }
 
-    /// The next turn to show: none while off course.
-    fn turn(&self) -> Option<(Spot, Glyph)> {
+    fn turn_on_course(&self) -> Option<(Spot, Glyph)> {
         self.guidance
             .and_then(|g| g.turn)
             .filter(|_| self.following() && self.junction().is_none())
     }
 
-    /// Where the route ahead starts: the index of the first course point
-    /// behind it (end first) and the point itself; the junction while off
-    /// course.
     fn split(&self) -> Option<(usize, Point)> {
         let (segment, matched) = self.ahead.filter(|_| self.following())?;
         if let Some(junction) = self.junction() {
@@ -126,7 +118,6 @@ impl Track<'_> {
         Some((end, matched.unwrap_or((c.east, c.north))))
     }
 
-    /// A spot's metres to the course's end.
     fn metres_to_end(&self, spot: Spot) -> f32 {
         let total = self.course.last().map_or(0.0, |c| c.along);
         (total - spot.along_mm as f32 / 1000.0).max(0.0)
@@ -139,26 +130,25 @@ impl Track<'_> {
             .clamp(1, self.course.len() - 1)
     }
 
-    /// The course ahead from `split`, in order, each point with whether it
-    /// comes before the next turn; all of it without one.
     fn ahead_points(&self, (end, at): (usize, Point)) -> impl Iterator<Item = (Point, bool)> + '_ {
-        let turn = self.turn().map(|(spot, _)| self.metres_to_end(spot));
+        let turn = self
+            .turn_on_course()
+            .map(|(spot, _)| self.metres_to_end(spot));
         let near = self.course[end - 1].along;
         core::iter::once((at, true)).chain(
             self.course[..end]
                 .iter()
                 .rev()
-                .take_while(move |c| near - c.along <= AHEAD_M)
+                .take_while(move |c| near - c.along <= LOOKAHEAD_M)
                 .map(move |c| ((c.east, c.north), turn.is_none_or(|t| c.along > t))),
         )
     }
 
-    /// What the map holds in view besides the rider.
     fn target(&self) -> Target {
         if let Some(junction) = self.junction() {
             return Target::Junction(junction.at);
         }
-        if let Some((spot, glyph)) = self.turn() {
+        if let Some((spot, glyph)) = self.turn_on_course() {
             return Target::Turn(spot.at, glyph);
         }
         match self.course.first() {
@@ -167,20 +157,16 @@ impl Track<'_> {
         }
     }
 
-    /// The course behind `split`, nearest first.
     fn behind_points(&self, (end, at): (usize, Point)) -> impl Iterator<Item = Point> + '_ {
         core::iter::once(at).chain(self.course[end..].iter().map(|c| (c.east, c.north)))
     }
 
-    /// The ride's own track, newest first from the rider.
     fn crumbs_back(&self) -> impl Iterator<Item = Point> + '_ {
         self.here
             .into_iter()
             .chain(self.crumbs.iter().rev().map(|c| (c.east, c.north)))
     }
 
-    /// The course one way from its point `nearest`: towards its end, or
-    /// with `up` towards its start.
     fn course_from(&self, nearest: usize, up: bool) -> impl Iterator<Item = Point> + '_ {
         let (down, rest) = self.course.split_at(nearest + 1);
         let to_end = down.iter().rev().filter(move |_| !up);
@@ -238,51 +224,58 @@ impl<'a> Filled<'a> {
 impl core::hash::Hash for Filled<'_> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.key.hash(state);
-        self.frame.pose.hash(state);
+        self.frame.last_pose.hash(state);
     }
 }
 
-/// The map's ground and the course's colours (docs/design/course-navigation).
 const GROUND_COLOR: u16 = rgb(0x10, 0x10, 0x12);
 const RIDDEN: u16 = rgb(0x1f, 0x4a, 0x78);
 const CASING: u16 = rgb(0x04, 0x26, 0x4c);
-/// Rows per bucket, from the top of the ground.
-const BAND: usize = 16;
-const BANDS: usize = (GROUND.end - GROUND.start).div_ceil(BAND);
-/// Points closer than this on screen to the last kept are dropped.
-const MIN_STEP: f32 = 2.0;
-/// Segments of each line kept after projection, and band entries in all.
+const BAND_ROWS: usize = 16;
+const BAND_COUNT: usize = (GROUND.end - GROUND.start).div_ceil(BAND_ROWS);
+const MIN_STEP_PX: f32 = 2.0;
 const RIDDEN_SEGMENTS: usize = 255;
 const ROUTE_SEGMENTS: usize = 160;
 const STROKES: usize = RIDDEN_SEGMENTS + ROUTE_SEGMENTS;
-const ITEMS: usize = 2048;
-/// The route ahead is walked this far along, past what the widest step shows.
-const AHEAD_M: f32 = 4_000.0;
-/// The turn arrow: `SHAFT` px along the route from `BEFORE` px before the
-/// turn (or a quarter of the way back to the rider, when that is less),
-/// then a head `HEAD_LENGTH` long and twice `HEAD_HALF` wide.
-const SHAFT: f32 = 26.0;
-const BEFORE: f32 = 10.0;
-const HEAD_LENGTH: f32 = 10.5;
-const HEAD_HALF: f32 = 7.9;
+const BAND_ENTRIES: usize = 2048;
+const LOOKAHEAD_M: f32 = 4_000.0;
+const ARROW_SHAFT_PX: f32 = 26.0;
+const ARROW_BEFORE_TURN_PX: f32 = 10.0;
+const ARROW_HEAD_LENGTH_PX: f32 = 10.5;
+const ARROW_HEAD_HALF_WIDTH_PX: f32 = 7.9;
 const ARROW_STROKES: usize = 24;
-/// The arrow's casing, then its white: shaft half width and head outline.
-const ARROW_LAYERS: [(f32, f32, u16); 2] = [(4.25, 1.75, CASING), (2.5, 0.5, WHITE)];
-/// Chevrons back to the junction: pitch, depth and half span, in px.
+struct ArrowLayer {
+    shaft_half: f32,
+    head_outline: f32,
+    color: u16,
+}
+const ARROW_LAYERS: [ArrowLayer; 2] = [
+    ArrowLayer {
+        shaft_half: 4.25,
+        head_outline: 1.75,
+        color: CASING,
+    },
+    ArrowLayer {
+        shaft_half: 2.5,
+        head_outline: 0.5,
+        color: WHITE,
+    },
+];
 const CHEVRONS: usize = 3;
 const CHEVRON_PITCH: f32 = 15.0;
 const CHEVRON_DEPTH: f32 = 6.0;
 const CHEVRON_HALF: f32 = 5.0;
 const CHEVRON_STROKE: f32 = 1.75;
-/// The puck's black ring and white disc, and the junction's rings, in
-/// quarter pixels.
-const PUCK_RINGS: [(i32, u16); 2] = [(58, BLACK), (50, WHITE)];
+const PUCK_RINGS_QUARTER_PX: [(i32, u16); 2] = [(58, BLACK), (50, WHITE)];
 const PUCK_CLEAR: f32 = 14.5;
 const JUNCTION_CLEAR: f32 = 12.0;
-const JUNCTION_RINGS: [(i32, u16); 4] = [(48, GROUND_COLOR), (40, AMBER), (22, BLACK), (14, WHITE)];
-const _: () = assert!(ITEMS <= u16::MAX as usize, "strokes are bucketed as u16");
+const JUNCTION_RINGS_QUARTER_PX: [(i32, u16); 4] =
+    [(48, GROUND_COLOR), (40, AMBER), (22, BLACK), (14, WHITE)];
+const _: () = assert!(
+    BAND_ENTRIES <= u16::MAX as usize,
+    "strokes are bucketed as u16"
+);
 
-/// The footer: the scale bar and its length, and how far is left.
 const FOOT_BASE: usize = 309;
 const BAR_LEFT: usize = 12;
 const BAR_TOP: usize = 303;
@@ -303,13 +296,9 @@ enum Show {
     Map,
 }
 
-/// The lines bucketed by band, in paint order, each with the widths and
-/// colours it paints in turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Line {
-    /// The course behind the rider, or the ride's own track.
     Ridden,
-    /// The course ahead: a casing, then the route over it.
     Route,
 }
 
@@ -335,7 +324,12 @@ impl Line {
     }
 }
 
-/// The turn arrow on the route: its shaft and its head.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Puck {
+    centre_quarter_px: (i32, i32),
+    arrow: u16,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Arrow {
     shaft: [Stroke; ARROW_STROKES],
@@ -349,21 +343,17 @@ struct Arrow {
 #[derive(Clone)]
 pub struct Frame {
     show: Show,
-    /// The pose of the last fill, once `posed`.
-    pose: Pose,
-    posed: bool,
+    last_pose: Pose,
+    has_pose: bool,
     strokes: [Stroke; STROKES],
     counts: [usize; 2],
-    /// Per line, where each band's strokes start in `items`.
-    starts: [[u16; BANDS + 1]; 2],
-    items: [u16; ITEMS],
+    band_offsets: [[u16; BAND_COUNT + 1]; 2],
+    items: [u16; BAND_ENTRIES],
     arrow: Arrow,
     chevrons: [Stroke; 2 * CHEVRONS],
     chevron_count: usize,
-    /// The junction's centre while off course, in quarter pixels.
-    junction: Option<(i32, i32)>,
-    /// The rider's puck, in quarter pixels, and its arrow's colour.
-    puck: Option<((i32, i32), u16)>,
+    junction_quarter_px: Option<(i32, i32)>,
+    puck: Option<Puck>,
     has_track: bool,
     left_m: Option<u32>,
 }
@@ -372,16 +362,16 @@ impl Default for Frame {
     fn default() -> Self {
         Self {
             show: Show::Unavailable,
-            pose: Pose::default(),
-            posed: false,
+            last_pose: Pose::default(),
+            has_pose: false,
             strokes: [Stroke::default(); STROKES],
             counts: [0; 2],
-            starts: [[0; BANDS + 1]; 2],
-            items: [0; ITEMS],
+            band_offsets: [[0; BAND_COUNT + 1]; 2],
+            items: [0; BAND_ENTRIES],
             arrow: Arrow::default(),
             chevrons: [Stroke::default(); 2 * CHEVRONS],
             chevron_count: 0,
-            junction: None,
+            junction_quarter_px: None,
             puck: None,
             has_track: false,
             left_m: None,
@@ -396,12 +386,10 @@ impl Frame {
     }
 
     fn band(&self, line: Line, band: usize) -> &[u16] {
-        let starts = &self.starts[line as usize];
-        &self.items[usize::from(starts[band])..usize::from(starts[band + 1])]
+        let band_offsets = &self.band_offsets[line as usize];
+        &self.items[usize::from(band_offsets[band])..usize::from(band_offsets[band + 1])]
     }
 
-    /// Project `points` as one polyline of `line`, dropping points closer
-    /// than `MIN_STEP` and segments off the screen, until its room is full.
     fn add(&mut self, line: Line, at: &Projection, points: impl Iterator<Item = Point>) {
         let room = line.room();
         let reach = line.reach() + 1.0;
@@ -411,7 +399,7 @@ impl Frame {
         };
         while let Some(p) = points.next() {
             let (dx, dy) = (p.0 - anchor.0, p.1 - anchor.1);
-            if dx * dx + dy * dy < MIN_STEP * MIN_STEP && points.peek().is_some() {
+            if dx * dx + dy * dy < MIN_STEP_PX * MIN_STEP_PX && points.peek().is_some() {
                 continue;
             }
             if visible(anchor, p, reach) {
@@ -427,7 +415,6 @@ impl Frame {
     }
 }
 
-/// Whether a segment can show on the ground at all.
 fn visible(a: Point, b: Point, reach: f32) -> bool {
     let (left, right) = (-reach, WIDTH as f32 + reach);
     let (top, bottom) = (GROUND.start as f32 - reach, GROUND.end as f32 + reach);
@@ -438,11 +425,10 @@ fn quarter((x, y): Point) -> (i32, i32) {
     (libm::roundf(4.0 * x) as i32, libm::roundf(4.0 * y) as i32)
 }
 
-/// Project the track through this fix's pose and bucket it.
 fn fill(frame: &mut Frame, track: &Track) {
     frame.show = if !track.available {
         Show::Unavailable
-    } else if track.centre().is_none() {
+    } else if track.rider_or_last_crumb().is_none() {
         Show::NoGps
     } else {
         Show::Map
@@ -450,18 +436,21 @@ fn fill(frame: &mut Frame, track: &Track) {
     frame.counts = [0; 2];
     frame.arrow.strokes = 0;
     frame.chevron_count = 0;
-    frame.junction = None;
+    frame.junction_quarter_px = None;
     frame.puck = None;
     frame.left_m = track.left_m.filter(|_| track.following());
-    let Some(centre) = track.centre().filter(|_| frame.show == Show::Map) else {
-        frame.posed = false;
-        frame.starts = [[0; BANDS + 1]; 2];
+    let Some(centre) = track
+        .rider_or_last_crumb()
+        .filter(|_| frame.show == Show::Map)
+    else {
+        frame.has_pose = false;
+        frame.band_offsets = [[0; BAND_COUNT + 1]; 2];
         return;
     };
     let split = track.split();
     let aim = Aim {
         here: centre,
-        heading: track.heading.unwrap_or(frame.pose.heading),
+        heading: track.heading.unwrap_or(frame.last_pose.heading),
         target: track.target(),
         left: map_left(track.radar) as f32,
         badge: track.badge.map(|rect| Keepout {
@@ -479,9 +468,9 @@ fn fill(frame: &mut Frame, track: &Track) {
                 .for_each(|(p, before)| visit(p, before));
         }
     };
-    let pose = choose_pose(frame.posed.then_some(frame.pose), &aim, route);
-    frame.pose = pose;
-    frame.posed = true;
+    let pose = choose_pose(frame.has_pose.then_some(frame.last_pose), &aim, route);
+    frame.last_pose = pose;
+    frame.has_pose = true;
     let at = pose.projection(centre);
     match split {
         Some(split) => {
@@ -498,28 +487,28 @@ fn fill(frame: &mut Frame, track: &Track) {
         }
     }
     frame.has_track = track.crumbs.len() >= 2 || split.is_some();
-    if let (Some(split), Some((turn, _))) = (split, track.turn()) {
+    if let (Some(split), Some((turn, _))) = (split, track.turn_on_course()) {
         arrow(frame, &at, || track.ahead_points(split), at.at(turn.at));
     }
     let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
     if let Some(junction) = track.junction() {
         let junction = at.at(junction.at);
         chevrons(frame, rider, junction);
-        let reach = JUNCTION_RINGS[0].0 as f32 / 4.0 + 1.0;
-        frame.junction = visible(junction, junction, reach).then(|| quarter(junction));
+        let reach = JUNCTION_RINGS_QUARTER_PX[0].0 as f32 / 4.0 + 1.0;
+        frame.junction_quarter_px = visible(junction, junction, reach).then(|| quarter(junction));
     }
     let tint = match (track.here, track.junction()) {
         (None, _) => SECONDARY,
         (Some(_), Some(_)) => AMBER,
         (Some(_), None) => ACCENT,
     };
-    frame.puck = Some((quarter(rider), tint));
+    frame.puck = Some(Puck {
+        centre_quarter_px: quarter(rider),
+        arrow: tint,
+    });
     bucket(frame);
 }
 
-/// The turn arrow: the route from just before the turn at `turn`, along it,
-/// and a head. `points` walks the route ahead from the rider, each point
-/// with whether it is before the turn.
 fn arrow<I: Iterator<Item = (Point, bool)>>(
     frame: &mut Frame,
     at: &Projection,
@@ -541,8 +530,8 @@ fn arrow<I: Iterator<Item = (Point, bool)>>(
     let Some(((rider, _), base)) = screen().next().zip(base) else {
         return;
     };
-    let start = (base - BEFORE.min(distance(rider, turn) / 4.0)).max(0.0);
-    let end = start + SHAFT;
+    let start = (base - ARROW_BEFORE_TURN_PX.min(distance(rider, turn) / 4.0)).max(0.0);
+    let end = start + ARROW_SHAFT_PX;
     let mut shaft: heapless::Vec<Point, { ARROW_STROKES + 1 }> = heapless::Vec::new();
     let (mut walked, mut last) = (0.0, None::<Point>);
     for (p, _) in screen() {
@@ -581,9 +570,18 @@ fn arrow<I: Iterator<Item = (Point, bool)>>(
         return;
     };
     frame.arrow.head = Triangle([
-        (tip.0 + ux * HEAD_LENGTH, tip.1 + uy * HEAD_LENGTH),
-        (tip.0 - uy * HEAD_HALF, tip.1 + ux * HEAD_HALF),
-        (tip.0 + uy * HEAD_HALF, tip.1 - ux * HEAD_HALF),
+        (
+            tip.0 + ux * ARROW_HEAD_LENGTH_PX,
+            tip.1 + uy * ARROW_HEAD_LENGTH_PX,
+        ),
+        (
+            tip.0 - uy * ARROW_HEAD_HALF_WIDTH_PX,
+            tip.1 + ux * ARROW_HEAD_HALF_WIDTH_PX,
+        ),
+        (
+            tip.0 + uy * ARROW_HEAD_HALF_WIDTH_PX,
+            tip.1 - ux * ARROW_HEAD_HALF_WIDTH_PX,
+        ),
     ]);
     frame.arrow.strokes = 0;
     for pair in shaft.windows(2) {
@@ -592,7 +590,6 @@ fn arrow<I: Iterator<Item = (Point, bool)>>(
     }
 }
 
-/// Three chevrons between the rider and the junction, pointing to it.
 fn chevrons(frame: &mut Frame, rider: Point, junction: Point) {
     let (dx, dy) = (junction.0 - rider.0, junction.1 - rider.1);
     let length = libm::sqrtf(dx * dx + dy * dy);
@@ -621,7 +618,6 @@ fn chevrons(frame: &mut Frame, rider: Point, junction: Point) {
     }
 }
 
-/// The bands a stroke of `half` reaches, if it reaches the ground at all.
 fn bands(stroke: &Stroke, half: f32) -> Option<(usize, usize)> {
     let (top, bottom) = stroke.rows(half);
     let low = (top - 1.0).max(GROUND.start as f32);
@@ -629,23 +625,22 @@ fn bands(stroke: &Stroke, half: f32) -> Option<(usize, usize)> {
     if low > high {
         return None;
     }
-    let band = |row: f32| (row as usize - GROUND.start) / BAND;
+    let band = |row: f32| (row as usize - GROUND.start) / BAND_ROWS;
     Some((band(low), band(high)))
 }
 
-/// Sort each line's strokes into the bands their rows reach, in order,
-/// dropping the farthest of a line when the entries run out. The route
-/// ahead takes its entries first.
+/// The route ahead takes its entries first, so the ridden part is what
+/// runs out.
 fn bucket(frame: &mut Frame) {
     let mut at = 0usize;
     for line in [Line::Route, Line::Ridden] {
         let room = line.room();
-        let mut counts = [0usize; BANDS];
+        let mut counts = [0usize; BAND_COUNT];
         let mut entries = 0;
         let mut kept = 0;
         for stroke in frame.line(line) {
             if let Some((first, last)) = bands(stroke, line.reach()) {
-                if at + entries + last - first + 1 > ITEMS {
+                if at + entries + last - first + 1 > BAND_ENTRIES {
                     break;
                 }
                 entries += last - first + 1;
@@ -654,13 +649,13 @@ fn bucket(frame: &mut Frame) {
             kept += 1;
         }
         frame.counts[line as usize] = kept;
-        let starts = &mut frame.starts[line as usize];
+        let band_offsets = &mut frame.band_offsets[line as usize];
         for (band, count) in counts.iter().enumerate() {
-            starts[band] = at as u16;
+            band_offsets[band] = at as u16;
             at += count;
         }
-        starts[BANDS] = at as u16;
-        let mut next = *starts;
+        band_offsets[BAND_COUNT] = at as u16;
+        let mut next = *band_offsets;
         for i in room.start..room.start + kept {
             if let Some((first, last)) = bands(&frame.strokes[i], line.reach()) {
                 for slot in &mut next[first..=last] {
@@ -678,7 +673,6 @@ fn disc(row: &mut Row, (cx, cy): (i32, i32), radius: i32, color: u16) {
     });
 }
 
-/// The map's ground and everything on it.
 pub(super) fn paint(frame: &Frame, row: &mut Row) {
     let y = row.y();
     if frame.show != Show::Map || !GROUND.contains(&y) {
@@ -686,7 +680,7 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
     }
     row.fill(GROUND_COLOR);
     let mut cover = Cover::new(y);
-    let band = (y - GROUND.start) / BAND;
+    let band = (y - GROUND.start) / BAND_ROWS;
     for line in Line::ALL {
         let items = frame.band(line, band);
         for &(half, color) in line.layers() {
@@ -698,7 +692,12 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
     }
     let arrow = &frame.arrow;
     if arrow.strokes > 0 {
-        for (half, outline, color) in ARROW_LAYERS {
+        for ArrowLayer {
+            shaft_half: half,
+            head_outline: outline,
+            color,
+        } in ARROW_LAYERS
+        {
             for stroke in &arrow.shaft[..arrow.strokes] {
                 cover.stroke(stroke, half);
             }
@@ -710,32 +709,33 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
         cover.stroke(stroke, CHEVRON_STROKE);
     }
     cover.paint(row, AMBER);
-    if let Some(at) = frame.junction {
-        for (radius, color) in JUNCTION_RINGS {
+    if let Some(at) = frame.junction_quarter_px {
+        for (radius, color) in JUNCTION_RINGS_QUARTER_PX {
             disc(row, at, radius, color);
         }
     }
-    if let Some((at, tint)) = frame.puck {
-        for (radius, color) in PUCK_RINGS {
+    if let Some(Puck {
+        centre_quarter_px: at,
+        arrow: tint,
+    }) = frame.puck
+    {
+        for (radius, color) in PUCK_RINGS_QUARTER_PX {
             disc(row, at, radius, color);
         }
-        let (left, top) = puck_corner(at);
+        let (left, top) = puck_top_left(at);
         PUCK.paint(row, left, top, tint);
     }
 }
 
-/// Where the map starts: beside a radar's strip, or at the screen's edge.
 fn map_left(radar: bool) -> usize {
     if radar { super::BODY.left } else { 0 }
 }
 
-/// The puck icon's square, centred on the puck.
-fn puck_corner((cx, cy): (i32, i32)) -> (usize, usize) {
+fn puck_top_left((cx, cy): (i32, i32)) -> (usize, usize) {
     let half = i32::from(PUCK.size) * 2;
     (((cx - half) / 4) as usize, ((cy - half) / 4) as usize)
 }
 
-/// The per-pixel original of `paint`: every stroke, no buckets.
 #[cfg(test)]
 pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
     if frame.show != Show::Map || !GROUND.contains(&y) {
@@ -759,7 +759,12 @@ pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
     }
     let arrow = &frame.arrow;
     if arrow.strokes > 0 {
-        for (half, outline, paint) in ARROW_LAYERS {
+        for ArrowLayer {
+            shaft_half: half,
+            head_outline: outline,
+            color: paint,
+        } in ARROW_LAYERS
+        {
             let c = arrow.shaft[..arrow.strokes]
                 .iter()
                 .map(|s| raster::coverage(s, half, x, y))
@@ -784,18 +789,21 @@ pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
             )
         })
     };
-    if let Some(at) = frame.junction {
-        color = rings(color, at, &JUNCTION_RINGS);
+    if let Some(at) = frame.junction_quarter_px {
+        color = rings(color, at, &JUNCTION_RINGS_QUARTER_PX);
     }
-    if let Some((at, tint)) = frame.puck {
-        color = rings(color, at, &PUCK_RINGS);
-        let (left, top) = puck_corner(at);
+    if let Some(Puck {
+        centre_quarter_px: at,
+        arrow: tint,
+    }) = frame.puck
+    {
+        color = rings(color, at, &PUCK_RINGS_QUARTER_PX);
+        let (left, top) = puck_top_left(at);
         color = PUCK.pixel(x, y, left, top, tint, color).unwrap_or(color);
     }
     color
 }
 
-/// The footer, and what the page says when it has no map to draw.
 pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
     let edge = map_left(view.radar_paired);
@@ -816,10 +824,10 @@ pub(super) fn prepare(view: &View) -> Canvas {
         }
     };
     if !frame.has_track {
-        let below = usize::try_from(frame.pose.rider.1).unwrap_or(MID_Y) - 36;
+        let below = usize::try_from(frame.last_pose.rider.1).unwrap_or(MID_Y) - 36;
         canvas.caption(b"DRAWS AS YOU RIDE", width, cx, below, Align::Center);
     }
-    let (bar, label) = frame.pose.step.bar();
+    let (bar, label) = frame.last_pose.step.bar();
     canvas.shape(Shape::Bar {
         rect: Rect {
             left: edge + BAR_LEFT,

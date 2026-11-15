@@ -1,18 +1,3 @@
-//! Where the map stands each fix: its zoom step and the rider's place on
-//! the screen, heading up.
-//!
-//! Riding a course, the rider sits low, at `RIDER_Y`, and the step holds
-//! the target: the next turn, else the finish. Each step and column is
-//! ranked by what it keeps clear of the badge (`Clear`), and the closest
-//! step with the best rank wins; within `CLOSE_M` of the turn it is
-//! `Step::M300`. A wider step is taken at once, a closer one only once the
-//! target and the route up to it fit `SPARE_PX` further from the badge.
-//! The rider's column starts by the turn's side on a `GRID`; a column that
-//! still fits is kept, then columns away from the side the route goes to
-//! are tried at every step before those towards it, and those whose route
-//! in view keeps `EDGE` from both edges first. Off course the rider and the
-//! missed junction share the screen, the lower of them at `JUNCTION_Y`.
-//! With no course, the map is `Step::Km1` across with the rider mid-map.
 use crate::ride::course::nav::Glyph;
 use crate::ride::homing::TURN;
 use core::f32::consts::TAU;
@@ -26,20 +11,18 @@ pub const WIDTH: f32 = crate::screens::chrome::WIDTH as f32;
 pub const GROUND: Range<usize> = 22..290;
 pub const RIDER_Y: i16 = 266;
 pub const JUNCTION_Y: i16 = 242;
-/// With no turn to aim at, the rider is mid-map, the track behind in view.
-const FREE_Y: i16 = ((GROUND.start + GROUND.end) / 2) as i16;
+const FREE_RIDER_Y: i16 = ((GROUND.start + GROUND.end) / 2) as i16;
 const GRID: i16 = 16;
 const EDGE: f32 = 24.0;
 const CLEARANCE: f32 = 8.0;
 const SPARE_PX: f32 = 6.0;
 const CLOSE_M: f32 = 100.0;
-/// What must clear the badge: the route's casing, and the rider's puck.
 /// Past the turn only the route's blue line must, since map-approach
 /// draws its casing under the badge's corner.
-const ROUTE_REACH: f32 = 9.0;
-const LINE_REACH: f32 = 6.0;
-const PUCK_REACH: f32 = 14.5;
-const JUNCTION_REACH: f32 = 12.0;
+const ROUTE_CASING_HALF_PX: f32 = 9.0;
+const ROUTE_LINE_HALF_PX: f32 = 6.0;
+const PUCK_RADIUS_PX: f32 = 14.5;
+const JUNCTION_RADIUS_PX: f32 = 12.0;
 
 /// The zoom steps, by metres across the screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -112,7 +95,7 @@ impl Pose {
 
 impl Projection {
     pub fn at(&self, p: Point) -> Point {
-        let (right, ahead) = axes(p, self.here, (self.sin, self.cos));
+        let (right, ahead) = right_and_ahead(p, self.here, (self.sin, self.cos));
         (
             self.rider.0 + right * self.scale,
             self.rider.1 - ahead * self.scale,
@@ -125,8 +108,7 @@ fn rotation(heading: u16) -> (f32, f32) {
     (sinf(turns * TAU), cosf(turns * TAU))
 }
 
-/// Metres to the right of and ahead of `centre`, facing the heading.
-fn axes(p: Point, centre: Point, (sin, cos): (f32, f32)) -> Point {
+fn right_and_ahead(p: Point, centre: Point, (sin, cos): (f32, f32)) -> Point {
     let (east, north) = (p.0 - centre.0, p.1 - centre.1);
     (east * cos - north * sin, east * sin + north * cos)
 }
@@ -162,8 +144,6 @@ impl Keepout {
         Some((self.left - pad - high, self.right + pad - low))
     }
 
-    /// Whether the segment from `a` to `b` comes within `pad` of the
-    /// badge's rounded box.
     fn near(&self, a: Point, b: Point, pad: f32) -> bool {
         let r = self.radius;
         let inner = Keepout {
@@ -224,20 +204,15 @@ pub struct Aim {
 /// What the map holds in view besides the rider.
 #[derive(Clone, Copy, Debug)]
 pub enum Target {
-    /// Riding without a course.
     Free,
-    /// The next turn's corner, and its glyph.
     Turn(Point, Glyph),
-    /// The course's end, with no turn left before it.
     Finish(Point),
-    /// Off course: where the rider left the course.
     Junction(Point),
 }
 
 impl Aim {
-    /// Metres right of and ahead of the rider.
     fn relative(&self, p: Point) -> Point {
-        axes(p, self.here, rotation(self.heading))
+        right_and_ahead(p, self.here, rotation(self.heading))
     }
 }
 
@@ -270,8 +245,6 @@ enum Clear {
 
 const COLUMNS: usize = 16;
 
-/// The columns the rider may take: `start`, those left of it nearest
-/// first, then those right of it; and how many are left of it.
 fn columns(start: i16, left: f32) -> (heapless::Vec<i16, COLUMNS>, usize) {
     let (low, high) = ((left + EDGE) as i16, WIDTH as i16 - EDGE as i16);
     let down = (1..).map(|k| start - k * GRID).take_while(|&x| x >= low);
@@ -284,9 +257,6 @@ fn columns(start: i16, left: f32) -> (heapless::Vec<i16, COLUMNS>, usize) {
     (all, count)
 }
 
-/// A step tried for the pose: the rider's row, and per column of
-/// `columns(start)` what stays clear and whether the route in view also
-/// keeps its margin (`roomy`).
 struct Trial {
     y: i16,
     clear: [Clear; COLUMNS],
@@ -372,7 +342,7 @@ pub fn choose_pose(
             rider: (
                 start,
                 if matches!(target, Target::Free) {
-                    FREE_Y
+                    FREE_RIDER_Y
                 } else {
                     RIDER_Y
                 },
@@ -382,9 +352,6 @@ pub fn choose_pose(
     }
 }
 
-/// What `step` keeps clear at each column, with the target and the route
-/// up to it held `margin` further from the badge. `None` when the step
-/// does not hold the target and is not the `widest`.
 fn try_step(
     step: Step,
     target: Target,
@@ -403,7 +370,7 @@ fn try_step(
             (libm::roundf(y) as i16, y >= top)
         }
         Target::Junction((_, ahead)) => (JUNCTION_Y, f32::from(JUNCTION_Y) - ahead * s >= top),
-        Target::Free => (FREE_Y, true),
+        Target::Free => (FREE_RIDER_Y, true),
         Target::Turn((_, ahead), _) | Target::Finish((_, ahead)) => (
             RIDER_Y,
             (top..bottom).contains(&(f32::from(RIDER_Y) - ahead * s)),
@@ -429,13 +396,13 @@ fn try_step(
         let Some(keep) = keepout else {
             return;
         };
-        let Some((low, high)) = keep.blocked(a, b, LINE_REACH) else {
+        let Some((low, high)) = keep.blocked(a, b, ROUTE_LINE_HALF_PX) else {
             return;
         };
         for (k, &x) in columns.iter().enumerate() {
             let x = f32::from(x);
             let shift = |(px, py): Point| (px + x, py);
-            if low < x && x < high && keep.near(shift(a), shift(b), LINE_REACH) {
+            if low < x && x < high && keep.near(shift(a), shift(b), ROUTE_LINE_HALF_PX) {
                 *mask &= !(1 << k);
             }
         }
@@ -444,15 +411,15 @@ fn try_step(
     block(
         (0.0, f32::from(y)),
         (0.0, f32::from(y)),
-        CLEARANCE + PUCK_REACH,
+        CLEARANCE + PUCK_RADIUS_PX,
         &mut rider,
     );
     let goal = match target {
         Target::Free => None,
         Target::Turn(at, _) | Target::Finish(at) => {
-            Some((screen(at), margin + CLEARANCE + ROUTE_REACH))
+            Some((screen(at), margin + CLEARANCE + ROUTE_CASING_HALF_PX))
         }
-        Target::Junction(at) => Some((screen(at), margin + CLEARANCE + JUNCTION_REACH)),
+        Target::Junction(at) => Some((screen(at), margin + CLEARANCE + JUNCTION_RADIUS_PX)),
     };
     let mut shown = if holds { all } else { 0 };
     if let Some((at, pad)) = goal {
@@ -479,7 +446,12 @@ fn try_step(
                     (false, Some((corner, _))) => corner,
                     _ => p,
                 };
-                block(from, to, margin + CLEARANCE + ROUTE_REACH, &mut to_goal);
+                block(
+                    from,
+                    to,
+                    margin + CLEARANCE + ROUTE_CASING_HALF_PX,
+                    &mut to_goal,
+                );
             }
         }
         last = Some((p, before));
@@ -514,10 +486,7 @@ fn try_step(
 mod tests {
     use super::*;
 
-    /// The course the three map mockups draw, in metres from where
-    /// map-approach's rider is, heading north: 250 m on, a right turn that
-    /// bends 183 m east and 66 m north, then north again.
-    const COURSE: [Point; 9] = [
+    const MOCKUP_COURSE: [Point; 9] = [
         (0.0, 0.0),
         (0.0, 250.0),
         (25.0, 248.0),
@@ -540,13 +509,11 @@ mod tests {
         })
     }
 
-    /// The course from `from` metres north on the first leg, each point
-    /// marked before or after the turn.
-    fn ahead(before: f32) -> impl Fn(&mut dyn FnMut(Point, bool)) {
+    fn mockup_route(before: f32) -> impl Fn(&mut dyn FnMut(Point, bool)) {
         let from = TURN_AT.1 - before;
         move |visit| {
             visit((0.0, from), from < TURN_AT.1);
-            for &p in COURSE.iter().filter(|p| p.0 > 0.0 || p.1 > from) {
+            for &p in MOCKUP_COURSE.iter().filter(|p| p.0 > 0.0 || p.1 > from) {
                 visit(p, p.0 == 0.0 && p.1 <= TURN_AT.1);
             }
         }
@@ -573,13 +540,18 @@ mod tests {
 
     #[test]
     fn the_poses_reproduce_the_three_map_mockups() {
-        let approach = posed(None, on_course(250.0), ahead(250.0), badge(137.0));
+        let approach = posed(None, on_course(250.0), mockup_route(250.0), badge(137.0));
         assert_eq!(
             (approach.step, approach.rider),
             (Step::M400, (80, 266)),
             "map-approach"
         );
-        let close = posed(Some(approach), on_course(40.0), ahead(40.0), badge(118.0));
+        let close = posed(
+            Some(approach),
+            on_course(40.0),
+            mockup_route(40.0),
+            badge(118.0),
+        );
         assert_eq!(
             (close.step, close.rider),
             (Step::M300, (64, 266)),
@@ -590,7 +562,7 @@ mod tests {
             target: Target::Junction(TURN_AT),
             ..on_course(-140.0)
         };
-        let off = posed(Some(close), off, ahead(0.0), badge(152.0));
+        let off = posed(Some(close), off, mockup_route(0.0), badge(152.0));
         assert_eq!(
             (off.step, off.rider),
             (Step::M400, (80, 158)),
@@ -615,23 +587,43 @@ mod tests {
 
     #[test]
     fn the_turn_under_the_badge_zooms_out_and_zooming_in_waits_for_room() {
-        let wide = posed(None, on_course(250.0), ahead(250.0), badge(137.0));
+        let wide = posed(None, on_course(250.0), mockup_route(250.0), badge(137.0));
         assert_eq!(wide.step, Step::M400);
-        let no_badge = posed(None, on_course(250.0), ahead(250.0), None);
+        let no_badge = posed(None, on_course(250.0), mockup_route(250.0), None);
         assert_eq!(no_badge.step, Step::M300, "only the badge pushed it out");
-        let fresh = posed(None, on_course(195.0), ahead(195.0), badge(137.0));
+        let fresh = posed(None, on_course(195.0), mockup_route(195.0), badge(137.0));
         assert_eq!(fresh.step, Step::M300);
-        let near = posed(Some(wide), on_course(195.0), ahead(195.0), badge(137.0));
+        let near = posed(
+            Some(wide),
+            on_course(195.0),
+            mockup_route(195.0),
+            badge(137.0),
+        );
         assert_eq!(near.step, Step::M400);
-        let nearer = posed(Some(near), on_course(180.0), ahead(180.0), badge(137.0));
+        let nearer = posed(
+            Some(near),
+            on_course(180.0),
+            mockup_route(180.0),
+            badge(137.0),
+        );
         assert_eq!(nearer.step, Step::M300);
         let far = Pose {
             step: Step::Km3,
             ..wide
         };
-        let arriving = posed(Some(far), on_course(250.0), ahead(250.0), badge(137.0));
+        let arriving = posed(
+            Some(far),
+            on_course(250.0),
+            mockup_route(250.0),
+            badge(137.0),
+        );
         assert_eq!(arriving.step, Step::M400);
-        let close = posed(Some(wide), on_course(90.0), ahead(90.0), badge(137.0));
+        let close = posed(
+            Some(wide),
+            on_course(90.0),
+            mockup_route(90.0),
+            badge(137.0),
+        );
         assert_eq!(close.step, Step::M300);
     }
 
@@ -687,7 +679,12 @@ mod tests {
             rider: (96, 266),
             heading: 0,
         };
-        let pose = posed(Some(held), on_course(250.0), ahead(250.0), badge(137.0));
+        let pose = posed(
+            Some(held),
+            on_course(250.0),
+            mockup_route(250.0),
+            badge(137.0),
+        );
         assert_eq!(pose.rider, (96, 266));
     }
 
@@ -722,7 +719,7 @@ mod tests {
         let gap = |(x, y): Point| {
             let dx = (badge.left - x).max(x - badge.right).max(0.0);
             let dy = (badge.top - y).max(y - badge.bottom).max(0.0);
-            sqrtf(dx * dx + dy * dy) - ROUTE_REACH
+            sqrtf(dx * dx + dy * dy) - ROUTE_CASING_HALF_PX
         };
         let mut nearest = f32::INFINITY;
         for pair in points.windows(2) {

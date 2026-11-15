@@ -4,10 +4,7 @@ use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
 use pose::Step;
 
-/// The course the map mockups draw, start first, in metres from where
-/// map-approach's rider is: 250 m north to a right turn that bends 183 m
-/// east and 66 m north, then north again.
-const COURSE: [Point; 9] = [
+const MOCKUP_COURSE: [Point; 9] = [
     (0.0, -400.0),
     (0.0, 250.0),
     (25.0, 248.0),
@@ -39,8 +36,7 @@ fn track_crumbs(points: &[Point]) -> std::vec::Vec<Crumb> {
         .collect()
 }
 
-/// A course as the follower keeps it: end first, `along` to the end.
-fn course(points: &[Point]) -> std::vec::Vec<Crumb> {
+fn follower_course(points: &[Point]) -> std::vec::Vec<Crumb> {
     let mut crumbs = track_crumbs(points);
     let total = crumbs.last().unwrap().along;
     for c in &mut crumbs {
@@ -60,7 +56,6 @@ fn free(crumbs: &[Crumb]) -> Track<'_> {
     }
 }
 
-/// Riding the mockup course `along_m` from its start, heading north.
 fn following(course: &[Crumb], here: Point, along_m: f32, junction: Option<Spot>) -> Track<'_> {
     let total = course.last().unwrap().along;
     let end = course
@@ -124,9 +119,12 @@ fn filled(track: &Track) -> Frame {
 
 #[test]
 fn the_course_ahead_is_blue_on_its_casing_and_the_ridden_part_dimmed() {
-    let c = course(&COURSE);
+    let c = follower_course(&MOCKUP_COURSE);
     let frame = filled(&approach(&c));
-    assert_eq!((frame.pose.step, frame.pose.rider), (Step::M400, (80, 266)));
+    assert_eq!(
+        (frame.last_pose.step, frame.last_pose.rider),
+        (Step::M400, (80, 266))
+    );
     let at = |x, y| pixel(&frame, x, y, BLACK);
     assert_eq!(at(80, 200), ACCENT, "the route ahead");
     assert_eq!(at(87, 200), CASING, "its casing");
@@ -148,9 +146,12 @@ fn the_course_ahead_is_blue_on_its_casing_and_the_ridden_part_dimmed() {
 
 #[test]
 fn off_course_chevrons_lead_back_to_the_junction_and_the_puck_turns_amber() {
-    let c = course(&COURSE);
+    let c = follower_course(&MOCKUP_COURSE);
     let frame = filled(&off_course(&c));
-    assert_eq!((frame.pose.step, frame.pose.rider), (Step::M400, (80, 158)));
+    assert_eq!(
+        (frame.last_pose.step, frame.last_pose.rider),
+        (Step::M400, (80, 158))
+    );
     let at = |x, y| pixel(&frame, x, y, BLACK);
     assert_eq!(at(80, 242), WHITE, "the junction's centre");
     assert_eq!(at(88, 242), AMBER, "its amber ring");
@@ -176,14 +177,17 @@ fn chevrons_that_would_sit_under_the_puck_or_the_ring_are_left_out() {
 fn without_a_course_the_ride_is_drawn_ridden_behind_the_rider_mid_map() {
     let c = track_crumbs(&[(0.0, 0.0), (0.0, 300.0), (0.0, 500.0)]);
     let frame = filled(&free(&c));
-    assert_eq!((frame.pose.step, frame.pose.rider), (Step::Km1, (120, 156)));
+    assert_eq!(
+        (frame.last_pose.step, frame.last_pose.rider),
+        (Step::Km1, (120, 156))
+    );
     assert_eq!(pixel(&frame, 120, 240, BLACK), RIDDEN, "350 m behind");
     assert_eq!(pixel(&frame, 120, 156, BLACK), ACCENT, "the puck");
 }
 
 #[test]
 fn rows_paint_what_the_per_pixel_original_says() {
-    let c = course(&COURSE);
+    let c = follower_course(&MOCKUP_COURSE);
     let wander: std::vec::Vec<Point> = (0..400)
         .map(|i| {
             let a = i as f32 * 0.21;
@@ -219,14 +223,14 @@ fn a_long_course_keeps_to_its_budget_and_each_band_holds_what_reaches_it() {
     let zigzag: std::vec::Vec<Point> = (0..4_000)
         .map(|i| (if i % 2 == 0 { 0.0 } else { 30.0 }, i as f32 * 5.0))
         .collect();
-    let c = course(&zigzag);
+    let c = follower_course(&zigzag);
     let mut track = following(&c, (0.0, 100.0), 100.0, None);
     track.guidance = None;
     let frame = filled(&track);
     assert!(frame.counts[Line::Route as usize] > 0);
     assert!(frame.counts[Line::Route as usize] <= ROUTE_SEGMENTS);
     for line in Line::ALL {
-        for band in 0..BANDS {
+        for band in 0..BAND_COUNT {
             for &i in frame.band(line, band) {
                 let stroke = &frame.strokes[usize::from(i)];
                 let (first, last) = bands(stroke, line.reach()).unwrap();
@@ -235,13 +239,13 @@ fn a_long_course_keeps_to_its_budget_and_each_band_holds_what_reaches_it() {
         }
     }
     for line in Line::ALL {
-        assert!(usize::from(frame.starts[line as usize][BANDS]) <= ITEMS);
+        assert!(usize::from(frame.band_offsets[line as usize][BAND_COUNT]) <= BAND_ENTRIES);
     }
 }
 
 #[test]
 fn the_frame_is_refilled_only_when_the_track_changes() {
-    let c = course(&COURSE);
+    let c = follower_course(&MOCKUP_COURSE);
     let mut frame = Frame::default();
     let mut cache = Cache::new(&mut frame);
     let t = approach(&c);
@@ -260,7 +264,7 @@ fn the_frame_is_refilled_only_when_the_track_changes() {
 #[test]
 fn fills_of_one_track_held_at_another_step_hash_apart() {
     use core::hash::{Hash, Hasher};
-    let c = course(&COURSE);
+    let c = follower_course(&MOCKUP_COURSE);
     let nearer = following(&c, (0.0, 55.0), 455.0, None);
     let (mut fresh_frame, mut held_frame) = (Frame::default(), Frame::default());
     let mut fresh = Cache::new(&mut fresh_frame);
@@ -270,7 +274,7 @@ fn fills_of_one_track_held_at_another_step_hash_apart() {
     held.update(&nearer);
     let (fresh, held) = (fresh.filled().unwrap(), held.filled().unwrap());
     assert_ne!(
-        fresh.frame.pose.step, held.frame.pose.step,
+        fresh.frame.last_pose.step, held.frame.last_pose.step,
         "zooming in waits"
     );
     let hash = |filled: &Filled| {
@@ -285,7 +289,6 @@ fn fills_of_one_track_held_at_another_step_hash_apart() {
     );
 }
 
-/// Each text in `want` shows whole, on the screen.
 #[track_caller]
 fn assert_shows(canvas: &Canvas, want: &[&str], what: &str) {
     use crate::screens::chrome::layout::{assert_shown, text};
@@ -323,7 +326,7 @@ fn every_state_lays_out_its_text() {
         ..Track::default()
     };
     check(&waiting, &["NO GPS YET", "MAP STARTS WITH GPS"], "no gps");
-    let c = course(&COURSE);
+    let c = follower_course(&MOCKUP_COURSE);
     check(&approach(&c), &["100 M", "12.40", "KM"], "following");
     let ride = track_crumbs(&[(0.0, 0.0), (0.0, 800.0)]);
     check(&free(&ride), &["250 M", "8.33", "KM"], "riding");
@@ -349,7 +352,7 @@ fn the_scale_bar_reads_each_step() {
 
 #[test]
 fn a_junction_far_off_the_screen_paints_nothing_of_it() {
-    let c = course(&[(0.0, 0.0), (0.0, 1_000.0)]);
+    let c = follower_course(&[(0.0, 0.0), (0.0, 1_000.0)]);
     let junction = Spot {
         along_mm: 0,
         at: (0.0, 0.0),
@@ -415,14 +418,14 @@ fn under_the_badge(frame: &Frame, badge: Rect) -> std::vec::Vec<(usize, usize)> 
 #[test]
 fn on_the_last_leg_the_route_and_the_finish_clear_the_badge() {
     let straight: std::vec::Vec<Point> = (0..=30).map(|k| (0.0, k as f32 * 100.0)).collect();
-    let c = course(&straight);
+    let c = follower_course(&straight);
     for north in [400.0, 2_000.0, 2_700.0] {
         let frame = filled(&last_leg(&c, north));
         let covered = under_the_badge(&frame, BADGE);
         assert!(
             covered.is_empty(),
             "{north} m: {:?} puts {} px under the badge, e.g. {:?}",
-            frame.pose,
+            frame.last_pose,
             covered.len(),
             covered.first()
         );
@@ -433,7 +436,7 @@ fn on_the_last_leg_the_route_and_the_finish_clear_the_badge() {
 fn beside_a_radar_the_footer_keeps_clear_of_its_strip() {
     use crate::screens::chrome::layout::text;
     use crate::screens::ride::BODY;
-    let c = course(&COURSE);
+    let c = follower_course(&MOCKUP_COURSE);
     let mut frame = Frame::default();
     let mut cache = Cache::new(&mut frame);
     cache.update(&approach(&c));
@@ -446,7 +449,11 @@ fn beside_a_radar_the_footer_keeps_clear_of_its_strip() {
     let Some(Shape::Bar { rect: bar, .. }) = canvas.shapes.first() else {
         panic!("a scale bar");
     };
-    assert!(bar.left >= BODY.left, "the bar starts at {}", bar.left);
+    assert!(
+        bar.left >= BODY.left,
+        "the bar band_offsets at {}",
+        bar.left
+    );
     assert_eq!(
         bar.right - bar.left,
         Step::M400.bar().0,

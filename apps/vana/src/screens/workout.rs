@@ -409,8 +409,6 @@ impl<'v> Scene<'v> {
         self.light
     }
 
-    /// The rows the status bar paints: the map's ground reaches up to the
-    /// bar, every other page keeps the gap under it.
     fn bar_rows(&self) -> usize {
         match self.kind {
             Kind::Ride(RidePage::Map) => STATUS_BAR.bottom,

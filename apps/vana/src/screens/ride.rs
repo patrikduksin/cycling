@@ -7,9 +7,6 @@
 //! their own coordinates. Keep the least important readings at the bottom:
 //! toasts cover `chrome::TOAST` for a moment.
 //!
-//! The map page draws the course and the rider per row from a frame
-//! prepared once per fix (see `map`). It takes the whole width; a paired
-//! radar keeps its strip.
 //!
 //! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
 //! module beside `main` whose `prepare` returns its canvas, dispatched below.

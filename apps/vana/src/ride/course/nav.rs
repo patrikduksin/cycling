@@ -575,7 +575,6 @@ impl Navigator {
     }
 }
 
-/// Where a turn bends: midway from where it starts to where it ends.
 fn corner(turn: &Turn) -> u32 {
     turn.start_mm / 2 + turn.end_mm / 2
 }

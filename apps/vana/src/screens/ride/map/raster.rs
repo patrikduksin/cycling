@@ -1,13 +1,3 @@
-//! Round-capped strokes painted row by row as spans.
-//!
-//! A stroke is a capsule: every point within `half` of a segment, the shape
-//! an SVG round-cap polyline draws per segment. On one row the capsule is a
-//! single interval, the union of its two end discs and the band between
-//! them, so each stroke-row costs a few multiply-adds (a square root only on
-//! rows that cross a cap). Pixels whose centre lies within `half - 0.5` are
-//! solid and stored; only the anti-aliased edge between that and
-//! `half + 0.5` evaluates `coverage`, the per-pixel reference, so a row
-//! painted from spans equals the reference pixel for pixel.
 use crate::screens::chrome::{Row, WIDTH, blend};
 use libm::sqrtf;
 
@@ -37,8 +27,7 @@ impl Stroke {
         )
     }
 
-    /// Where the row through `y` meets the capsule of radius `radius`.
-    fn across(&self, radius: f32, y: f32) -> Option<(f32, f32)> {
+    fn row_interval(&self, radius: f32, y: f32) -> Option<(f32, f32)> {
         let (mut left, mut right) = (f32::INFINITY, f32::NEG_INFINITY);
         for (cx, cy) in [self.a, self.b] {
             let chord = radius * radius - (y - cy) * (y - cy);
@@ -55,8 +44,8 @@ impl Stroke {
             );
             let length = 1.0 / self.inverse;
             let v = y - self.a.1;
-            let side = bounded(-ty, tx * v, -radius, radius);
-            let along = bounded(tx, ty * v, 0.0, length);
+            let side = solve_interval(-ty, tx * v, -radius, radius);
+            let along = solve_interval(tx, ty * v, 0.0, length);
             if let (Some(side), Some(along)) = (side, along) {
                 let (from, to) = (side.0.max(along.0), side.1.min(along.1));
                 if from <= to {
@@ -69,8 +58,7 @@ impl Stroke {
     }
 }
 
-/// The `u` for which `low <= k u + c <= high`.
-fn bounded(k: f32, c: f32, low: f32, high: f32) -> Option<(f32, f32)> {
+fn solve_interval(k: f32, c: f32, low: f32, high: f32) -> Option<(f32, f32)> {
     if k.abs() < 1e-6 {
         return (low..=high)
             .contains(&c)
@@ -80,8 +68,7 @@ fn bounded(k: f32, c: f32, low: f32, high: f32) -> Option<(f32, f32)> {
     Some((p.min(q), p.max(q)))
 }
 
-/// The columns whose centres fall in `[left, right]`.
-fn columns((left, right): (f32, f32)) -> (i32, i32) {
+fn centre_columns((left, right): (f32, f32)) -> (i32, i32) {
     let first = libm::ceilf(left - 0.5);
     let last = libm::floorf(right - 0.5);
     (
@@ -127,14 +114,13 @@ impl Triangle {
         if cross < 0.0 { -1.0 } else { 1.0 }
     }
 
-    /// Where the row through `y` is inside all three edges.
-    fn across(&self, y: f32) -> Option<(f32, f32)> {
+    fn row_interval(&self, y: f32) -> Option<(f32, f32)> {
         let sign = self.winding();
         let (mut left, mut right) = (f32::NEG_INFINITY, f32::INFINITY);
         for (p, q) in self.edges() {
             let k = -sign * (q.1 - p.1);
             let c = sign * ((q.0 - p.0) * (y - p.1) + (q.1 - p.1) * p.0);
-            let (from, to) = bounded(k, c, 0.0, f32::INFINITY)?;
+            let (from, to) = solve_interval(k, c, 0.0, f32::INFINITY)?;
             left = left.max(from);
             right = right.min(to);
         }
@@ -143,11 +129,10 @@ impl Triangle {
 
     #[cfg(test)]
     pub fn contains(&self, x: f32, y: f32) -> bool {
-        self.across(y)
+        self.row_interval(y)
             .is_some_and(|(left, right)| (left..=right).contains(&x))
     }
 
-    /// The triangle with its edges stroked by `outline`, as the reference.
     #[cfg(test)]
     pub fn coverage(&self, outline: f32, x: usize, y: usize) -> u8 {
         if self.contains(x as f32 + 0.5, y as f32 + 0.5) {
@@ -197,17 +182,17 @@ impl Cover {
         if y < top || y > bottom {
             return;
         }
-        let Some(outer) = stroke.across(half + 0.5, y) else {
+        let Some(outer) = stroke.row_interval(half + 0.5, y) else {
             return;
         };
-        let outer = columns(outer);
+        let outer = centre_columns(outer);
         if outer.0 >= outer.1 {
             return;
         }
         self.touch(outer);
         let inner = stroke
-            .across(half - 0.5, y)
-            .map(columns)
+            .row_interval(half - 0.5, y)
+            .map(centre_columns)
             .filter(|inner| inner.0 < inner.1)
             .unwrap_or((outer.0, outer.0));
         self.solid(inner);
@@ -231,8 +216,8 @@ impl Cover {
         if y < ys[0].min(ys[1]).min(ys[2]) - reach || y > ys[0].max(ys[1]).max(ys[2]) + reach {
             return;
         }
-        if let Some(inside) = triangle.across(self.y as f32 + 0.5) {
-            let inside = columns(inside);
+        if let Some(inside) = triangle.row_interval(self.y as f32 + 0.5) {
+            let inside = centre_columns(inside);
             if inside.0 < inside.1 {
                 self.touch(inside);
                 self.solid(inside);
@@ -275,10 +260,9 @@ impl Cover {
 mod tests {
     use super::*;
 
-    /// A small deterministic generator, so a failure names its case.
-    struct Strokes(u32);
+    struct SeededStrokes(u32);
 
-    impl Strokes {
+    impl SeededStrokes {
         fn next(&mut self) -> f32 {
             self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             (self.0 >> 8) as f32 / (1u32 << 24) as f32
@@ -298,7 +282,7 @@ mod tests {
 
     #[test]
     fn spans_cover_each_pixel_as_the_per_pixel_reference_does() {
-        let mut random = Strokes(7);
+        let mut random = SeededStrokes(7);
         let mut worst = 0;
         for case in 0..400 {
             let half = [0.5, 1.75, 2.5, 4.25, 6.0, 9.0][case % 6];

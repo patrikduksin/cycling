@@ -93,13 +93,19 @@ BRIGHTNESS in Settings → Display steps through AUTO, 25, 50, 75 and 100%. A
 percent is a fixed brightness. AUTO follows the ambient light sensor along
 the curve of the display mode (`app::mode::TABLE`): SAVER is lower than
 NORMAL at every light. A change in the light must last before the backlight follows: a
-darker one for more than 6 s, a brighter one for more than 2 s, so a tunnel,
-a passing shadow or lamps close together never move it. The 6 s keep running
-through brighter pulses of up to 1.5 s, such as street lamps on a dark road,
-while the light is darker more often than not. Light back at the held level
-starts them over. Light that stays bright for over 2 s still raises it: in a
-replay of the first night ride in SAVER, six such spells in 4.5 min raised it
-for 6 to 26 s each. It then rises at most 8 points every
+darker one for more than 6 s, a brighter one for more than 2 s, so a tunnel
+or a passing shadow never moves it. The 6 s keep running through brighter
+pulses of up to 1.5 s, such as street lamps on a dark road, while the light
+is darker more often than not. A pulse lasts from when the light leaves the
+darkest level of those 6 s, where the screen would dim to, until it is back
+there, so a wide pool of light that would raise the screen again from that
+level starts them over. Light back at the held level starts them over too.
+Over a steady road, lamps and pools of light that repeat every 7 s or faster
+move it once or twice and then leave it. Light that is bright for over 2 s
+and dark for over 6 s in turn can move it every time. Light that stays
+bright for over 2 s still raises it: in a
+replay of the first night ride in SAVER, five such spells in 4.5 min raised it
+for 7 to 42 s each. It then rises at most 8 points every
 100 ms (a full brightening takes about a second) and falls at most 1 point
 every 100 ms (100% to 10% takes 9 s). A change smaller than 3 points is
 ignored. The curves are provisional: no daylight reading

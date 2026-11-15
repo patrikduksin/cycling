@@ -12,7 +12,7 @@ const BAND_PERCENT: u8 = 3;
 const CATCH_UP_TICKS: u64 = 50;
 const _: () = assert!(
     PULSE_TICKS < BRIGHTEN_HOLD_TICKS,
-    "a lamp the dim count keeps must be too short to brighten the screen"
+    "a pulse the dim count keeps must be too short to brighten the screen from where it dims"
 );
 
 /// Light to duty percent, as knots with rising light. Light below the first
@@ -61,50 +61,59 @@ struct Pull {
 struct Darker {
     ticks: u16,
     lead: u16,
+    darkest: u8,
+    pulse: u16,
     spell: Spell,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Spell {
     Below,
-    Level(u16),
-    Lamp(u16),
+    Level,
+    Lamp,
 }
 
 impl Pull {
-    fn next(self, want: Ordering) -> Self {
+    fn next(self, want: Ordering, target: u8) -> Self {
         let brighter = if want == Ordering::Greater {
             self.brighter + 1
         } else {
             0
         };
         let darker = match self.darker {
-            Some(pull) => pull.next(want),
-            None => (want == Ordering::Less).then_some(Darker::START),
+            Some(pull) => pull.next(want, target),
+            None => (want == Ordering::Less).then_some(Darker::start(target)),
         };
         Self { brighter, darker }
     }
 }
 
 impl Darker {
-    const START: Self = Self {
-        ticks: 1,
-        lead: 1,
-        spell: Spell::Below,
-    };
+    fn start(target: u8) -> Self {
+        Self {
+            ticks: 1,
+            lead: 1,
+            darkest: target,
+            pulse: 0,
+            spell: Spell::Below,
+        }
+    }
 
-    fn next(self, want: Ordering) -> Option<Self> {
+    fn next(self, want: Ordering, target: u8) -> Option<Self> {
+        let darkest = if want == Ordering::Less {
+            self.darkest.min(target)
+        } else {
+            self.darkest
+        };
+        let at_darkest = want == Ordering::Less && target <= darkest + BAND_PERCENT;
+        let pulse = if at_darkest { 0 } else { self.pulse + 1 };
         let spell = match (want, self.spell) {
-            (Ordering::Less, Spell::Level(_)) => return Some(Self::START),
+            _ if pulse > PULSE_TICKS => return None,
+            (Ordering::Less, Spell::Level) => return Some(Self::start(target)),
             (Ordering::Less, _) => Spell::Below,
             _ if self.lead <= 1 => return None,
-            (_, Spell::Level(PULSE_TICKS..) | Spell::Lamp(PULSE_TICKS..)) => return None,
-            (Ordering::Greater, Spell::Below) => Spell::Lamp(1),
-            (_, Spell::Below) => Spell::Level(1),
-            (Ordering::Greater, Spell::Level(away)) | (_, Spell::Lamp(away)) => {
-                Spell::Lamp(away + 1)
-            }
-            (_, Spell::Level(away)) => Spell::Level(away + 1),
+            (Ordering::Greater, _) | (_, Spell::Lamp) => Spell::Lamp,
+            _ => Spell::Level,
         };
         let lead = if spell == Spell::Below {
             self.lead + 1
@@ -114,6 +123,8 @@ impl Darker {
         Some(Self {
             ticks: self.ticks + 1,
             lead,
+            darkest,
+            pulse,
             spell,
         })
     }
@@ -179,7 +190,7 @@ impl Backlight {
         } else {
             Ordering::Equal
         };
-        self.pull = self.pull.next(want);
+        self.pull = self.pull.next(want, target);
         let lasted = self.pull.brighter > BRIGHTEN_HOLD_TICKS
             || matches!(
                 self.pull.darker,

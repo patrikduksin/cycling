@@ -310,6 +310,7 @@ pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>, now: u64, 
         guidance: state.follower.guidance(now),
         left_m: state.follower.to_end_m(),
         badge,
+        radar,
     };
     state.map.update(&drawn);
 }

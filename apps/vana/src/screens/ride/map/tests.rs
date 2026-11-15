@@ -95,6 +95,7 @@ fn following(course: &[Crumb], here: Point, along_m: f32, junction: Option<Spot>
         }),
         left_m: Some(12_400),
         badge: Some(BADGE),
+        radar: false,
     }
 }
 
@@ -233,7 +234,9 @@ fn a_long_course_keeps_to_its_budget_and_each_band_holds_what_reaches_it() {
             }
         }
     }
-    assert!(usize::from(frame.starts[1][BANDS]) <= ITEMS);
+    for line in Line::ALL {
+        assert!(usize::from(frame.starts[line as usize][BANDS]) <= ITEMS);
+    }
 }
 
 #[test]
@@ -342,4 +345,119 @@ fn the_scale_bar_reads_each_step() {
     assert_eq!(bar(Step::M400), (100.0, &b"100 M"[..]));
     assert_eq!(bar(Step::Km1), (250.0, &b"250 M"[..]));
     assert_eq!(bar(Step::Km3), (1_000.0, &b"1 KM"[..]));
+}
+
+#[test]
+fn a_junction_far_off_the_screen_paints_nothing_of_it() {
+    let c = course(&[(0.0, 0.0), (0.0, 1_000.0)]);
+    let junction = Spot {
+        along_mm: 0,
+        at: (0.0, 0.0),
+    };
+    let track = following(&c, (0.0, 150_000.0), 0.0, Some(junction));
+    let frame = filled(&track);
+    for y in 0..HEIGHT {
+        let mut pixels = [BLACK; WIDTH];
+        paint(&frame, &mut Row::new(y, &mut pixels));
+        for (x, &got) in pixels.iter().enumerate() {
+            assert_eq!(got, pixel(&frame, x, y, BLACK), "at {x},{y}");
+        }
+    }
+}
+
+#[test]
+fn the_route_ahead_is_drawn_whatever_the_ridden_part_takes() {
+    let mut frame = Frame {
+        show: Show::Map,
+        ..Frame::default()
+    };
+    let pose = Pose {
+        step: Step::Km1,
+        rider: (120, 156),
+        heading: 0,
+    };
+    let at = pose.projection((0.0, 0.0));
+    let out_and_back = core::iter::once((0.0, 0.0))
+        .chain(core::iter::once((0.0, 200.0)))
+        .chain((0..RIDDEN_SEGMENTS).map(|k| (0.0, if k % 2 == 0 { -800.0 } else { 800.0 })));
+    frame.add(Line::Ridden, &at, out_and_back);
+    frame.add(Line::Route, &at, [(0.0, 0.0), (0.0, 1_000.0)].into_iter());
+    bucket(&mut frame);
+    let mut pixels = [BLACK; WIDTH];
+    paint(&frame, &mut Row::new(50, &mut pixels));
+    assert_eq!(pixels[120], ACCENT, "the route ahead, over the ridden part");
+}
+
+/// Riding north on the last leg of a straight course: no turn is left,
+/// so the badge shows the finish.
+fn last_leg(course: &[Crumb], north: f32) -> Track<'_> {
+    let mut track = following(course, (0.0, north), north, None);
+    let guidance = track.guidance.as_mut().unwrap();
+    guidance.turn = None;
+    guidance.sign = Sign::Chip {
+        glyph: Glyph::Finish,
+        distance: Distance::from_mm(2_600_000),
+    };
+    track
+}
+
+/// Whether anything of the map comes within `CLEARANCE` px of `badge`,
+/// less the anti-aliased half pixel.
+fn under_the_badge(frame: &Frame, badge: Rect) -> std::vec::Vec<(usize, usize)> {
+    let reach = 7;
+    let rows = GROUND.start.max(badge.top - reach)..badge.bottom + reach;
+    let columns = badge.left.saturating_sub(reach)..badge.right + reach;
+    rows.flat_map(|y| columns.clone().map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(frame, x, y, BLACK) != GROUND_COLOR)
+        .collect()
+}
+
+#[test]
+fn on_the_last_leg_the_route_and_the_finish_clear_the_badge() {
+    let straight: std::vec::Vec<Point> = (0..=30).map(|k| (0.0, k as f32 * 100.0)).collect();
+    let c = course(&straight);
+    for north in [400.0, 2_000.0, 2_700.0] {
+        let frame = filled(&last_leg(&c, north));
+        let covered = under_the_badge(&frame, BADGE);
+        assert!(
+            covered.is_empty(),
+            "{north} m: {:?} puts {} px under the badge, e.g. {:?}",
+            frame.pose,
+            covered.len(),
+            covered.first()
+        );
+    }
+}
+
+#[test]
+fn beside_a_radar_the_footer_keeps_clear_of_its_strip() {
+    use crate::screens::chrome::layout::text;
+    use crate::screens::ride::BODY;
+    let c = course(&COURSE);
+    let mut frame = Frame::default();
+    let mut cache = Cache::new(&mut frame);
+    cache.update(&approach(&c));
+    let mut view = View::new(Page::Ride, 0, None);
+    view.ride_page = RidePage::Map;
+    view.radar_paired = true;
+    view.show_map(cache.filled());
+    view.prepare();
+    let canvas = view.canvas();
+    let Some(Shape::Bar { rect: bar, .. }) = canvas.shapes.first() else {
+        panic!("a scale bar");
+    };
+    assert!(bar.left >= BODY.left, "the bar starts at {}", bar.left);
+    assert_eq!(
+        bar.right - bar.left,
+        Step::M400.bar().0,
+        "and keeps its length"
+    );
+    let texts: std::vec::Vec<_> = canvas.runs.iter().filter_map(text).collect();
+    for (k, (name, rect)) in texts.iter().enumerate() {
+        assert!(rect.left >= bar.right, "{name} beside the bar");
+        for (other, next) in &texts[k + 1..] {
+            let apart = rect.right <= next.left || next.right <= rect.left;
+            assert!(apart, "{name} and {other} overlap");
+        }
+    }
 }

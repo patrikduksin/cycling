@@ -1390,8 +1390,6 @@ mod santiago {
         let ride = RideFrame::at(PLAZA);
         let approach = Approach::new((0.0, -150.0), 0, 250.0);
         let track = approach.track();
-        // SAFETY: all zero bytes are a valid `Frame`, as composition makes
-        // it in PSRAM; this checks it.
         let mut zeroed: Box<Frame> = unsafe { Box::new_zeroed().assume_init() };
         let mut fresh = Box::new(Frame::default());
         assert_eq!(painted(&zeroed), painted(&fresh));

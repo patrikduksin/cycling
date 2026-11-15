@@ -173,19 +173,19 @@ pub(crate) mod scenes {
         },
         Scene {
             name: "map santiago 300 m",
-            reach: || santiago((1_200.0, 0.0), 45.0, 60.0, "100 M"),
+            reach: || densest_santiago((1_200.0, 0.0), 45.0, 60.0, "100 M"),
         },
         Scene {
             name: "map santiago 400 m",
-            reach: || santiago((1_200.0, 0.0), 45.0, 250.0, "100 M"),
+            reach: || densest_santiago((1_200.0, 0.0), 45.0, 250.0, "100 M"),
         },
         Scene {
             name: "map santiago 1 km",
-            reach: || santiago((-800.0, 1_200.0), 135.0, 500.0, "250 M"),
+            reach: || densest_santiago((-800.0, 1_200.0), 135.0, 500.0, "250 M"),
         },
         Scene {
             name: "map santiago 3 km",
-            reach: || santiago((-1_600.0, -1_200.0), 45.0, 1_500.0, "1 KM"),
+            reach: || densest_santiago((-1_600.0, -1_200.0), 45.0, 1_500.0, "1 KM"),
         },
         Scene {
             name: "paused",
@@ -519,9 +519,7 @@ pub(crate) mod scenes {
         include_bytes!("../../../packages/terrain/tests/data/santiago-centro.terrain");
     const PLAZA: (f64, f64) = (-33.4378, -70.6505);
 
-    /// The places are where `map::tests::santiago`'s probe found each
-    /// step's view of the pack densest.
-    fn santiago(at: (f64, f64), bearing: f64, turn_m: f64, scale: &str) -> Sim {
+    fn densest_santiago(at: (f64, f64), bearing: f64, turn_m: f64, scale: &str) -> Sim {
         let (sin, cos) = bearing.to_radians().sin_cos();
         let to = |right: f64, ahead: f64| {
             (

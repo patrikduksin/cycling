@@ -1062,7 +1062,7 @@ def restore_preferences(runner, state, _scenario):
     if any(actual.get(key) != original.get(key) for key in ('dim_timeout', 'dim_brightness')):
         runner.command(f'IDLE {original["dim_timeout"]} {original["dim_brightness"]}')
     actual = runner.command('SETTINGS')
-    for key in ('brightness', 'timezone', 'dim_timeout', 'dim_brightness'):
+    for key in ('brightness', 'auto', 'timezone', 'dim_timeout', 'dim_brightness'):
         if actual.get(key) != original.get(key):
             raise RuntimeError(f'preference restoration mismatch: {key}')
     return 'verified'

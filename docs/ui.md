@@ -94,7 +94,10 @@ percent is a fixed brightness. AUTO follows the ambient light sensor along
 the curve of the display mode (`app::mode::TABLE`): SAVER is lower than
 NORMAL at every light. A change in the light must last before the backlight follows: a
 darker one for more than 6 s, a brighter one for more than 2 s, so a tunnel,
-a shadow or a street lamp never moves it. It then rises at most 8 points every
+a passing shadow or lamps close together never move it. Light that repeats
+slower than that, bright for over 2 s and dark for over 6 s, can still move it
+(street lamps far apart at a slow pace); a ride trace will show whether real
+lamps reach the sensor that strongly. It then rises at most 8 points every
 100 ms (a full brightening takes about a second) and falls at most 1 point
 every 100 ms (100% to 10% takes 9 s). A change smaller than 3 points is
 ignored. The curves are provisional: no daylight reading

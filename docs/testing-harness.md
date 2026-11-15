@@ -107,7 +107,7 @@ completion and verifies transfer chunks.
 
 | Step | Fields and behavior |
 | --- | --- |
-| `command` | `command`, optional `expect` key/value assertions. Real devices allow read-only foundation commands and temporary `DISPLAY` and `BRIGHTNESS n` or `BRIGHTNESS AUTO`. |
+| `command` | `command`, optional `expect` key/value assertions. Real devices allow read-only foundation commands, temporary `DISPLAY`, and `BRIGHTNESS n` or `BRIGHTNESS AUTO`. A brightness choice is saved after 2 s like a rider's; the runner restores the original percent and AUTO at the end, so only an aborted run leaves a fixed brightness. |
 | `wait` | Read-only `command`, `equals` conditions, bounded `timeout_s`. Polling stays inside the runner. |
 | `input` | `gesture`: `tap`, `hold`, `swipe`, `drag` or `button`, with coordinates, `duration_ms`, destination, or button index and `repeat`. Or ordered `events` with `at_ms` and `event`. |
 | `capture` | `count`, `interval_ms`; writes verified, ordered PNGs with actual frame timestamps. `expected_crc32` asserts a frame; `checksum_only` skips the transfer. Mismatches retain an image. |

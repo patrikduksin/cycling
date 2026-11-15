@@ -1,12 +1,5 @@
 //! Portable foreground presentation and preferences. Acquisition lives independently.
 use crate::backlight::{Backlight, Curve};
-
-/// Whether the backlight holds a percent or follows the ambient light.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BrightnessChoice {
-    Percent,
-    Auto,
-}
 use crate::idle::Config;
 use crate::idle::Gate;
 use crate::idle::Idle;
@@ -22,6 +15,13 @@ use device_api::observation::Error;
 use device_api::observation::Observation;
 use device_api::power::Power;
 use device_api::sensors::Light;
+
+/// Whether the backlight holds a percent or follows the ambient light.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrightnessChoice {
+    Percent,
+    Auto,
+}
 
 /// Required display/input, with power and persistent settings independently optional.
 /// Constant working memory; rendering borrows no frame buffer across submission.

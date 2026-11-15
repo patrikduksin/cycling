@@ -6,7 +6,10 @@
 //! percent. A target outside the dead band starts a count in its direction,
 //! and the held percent follows only once that count outlasts the hold for
 //! the direction. A reading back inside the band, or on the other side, drops
-//! the count, so a tunnel, a shadow or a street lamp never moves the screen.
+//! the count, so a change shorter than its hold never moves the screen: a
+//! short tunnel, a passing shadow, lamps close together. Light that stays
+//! bright past one hold and dark past the other, again and again, still moves
+//! it, such as lamps far apart at a slow pace.
 //! The shown percent then ramps to the held one, quickly up and slowly down.
 use device_api::observation::Observation;
 use device_api::sensors::Light;

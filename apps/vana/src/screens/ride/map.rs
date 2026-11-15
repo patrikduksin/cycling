@@ -1471,6 +1471,36 @@ mod tests {
     }
 
     #[test]
+    fn fills_at_one_zoom_that_hold_the_rider_apart_hash_apart() {
+        use core::hash::{Hash, Hasher};
+        let shorter = crumbs(&[(0.0, 0.0), (250.0, 0.0)]);
+        let longer = crumbs(&[(0.0, 0.0), (300.0, 0.0)]);
+        let (mut fresh_frame, mut held_frame) = (Frame::default(), Frame::default());
+        let mut fresh = Cache::new(&mut fresh_frame);
+        fresh.update(&track(&shorter));
+        let mut held = Cache::new(&mut held_frame);
+        held.update(&track(&longer));
+        held.update(&track(&shorter));
+        let (fresh, held) = (fresh.filled().unwrap(), held.filled().unwrap());
+        assert_eq!(fresh.frame.zoom_held, held.frame.zoom_held);
+        let apart = (PAGE.top..PAGE.bottom)
+            .flat_map(|y| (PAGE.left..PAGE.right).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixel(fresh.frame, x, y, 0) != pixel(held.frame, x, y, 0))
+            .count();
+        assert!(apart > 0, "the longer track's rider position is held");
+        let hash = |filled: &Filled| {
+            let mut hasher = std::hash::DefaultHasher::new();
+            filled.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_ne!(
+            hash(&fresh),
+            hash(&held),
+            "a skipped band keeps the old map"
+        );
+    }
+
+    #[test]
     fn following_paints_the_way_home_green_to_the_matched_point() {
         let c = crumbs(&[(0.0, 0.0), (0.0, 100.0), (0.0, 200.0), (100.0, 200.0)]);
         let mut t = track(&c);

@@ -6301,10 +6301,6 @@ fn map_ink(sim: &Sim) -> usize {
         .count()
 }
 
-/// The next ride after a restart keeps the track and the start: a 3 km loop
-/// with AUTO LAP AT START, the power cut a lap and a half in, and the next
-/// ride started at once. MAP draws the whole track again, and the next pass
-/// of the ride's start takes a lap.
 #[test]
 fn a_restart_keeps_the_track_and_the_start_for_the_next_ride() {
     let mut sim = rider();
@@ -6358,9 +6354,6 @@ fn a_restart_keeps_the_track_and_the_start_for_the_next_ride() {
     assert_eq!(laps, 1);
 }
 
-/// Five hours on the card, then a power cut while riding on: the next ride
-/// reads the whole track back from the card a few records a tick, and MAP
-/// draws it again within seconds.
 #[test]
 fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
     let mut sim = bulk_rider();
@@ -6400,9 +6393,6 @@ fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
     sim.checkpoint("the map after the restart, five hours read back");
 }
 
-/// A ride on the card whose card fails a lap and a half round a 3 km loop
-/// with AUTO LAP AT START carries on on internal memory as the same ride: MAP
-/// keeps the whole track and the next pass of the ride's start takes the lap.
 #[test]
 fn a_ride_that_moves_to_internal_memory_keeps_the_track_and_the_start() {
     let mut sim = bulk_rider();
@@ -6506,12 +6496,10 @@ fn course_pixels(sim: &Sim) -> usize {
         .count()
 }
 
-/// The notes a course cue plays: off the course, back on it, at its end.
 const OFF_COURSE: [u8; 2] = [10, 21];
 const ON_COURSE: [u8; 2] = [21, 0];
 const ARRIVED: [u8; 4] = [21, 0, 10, 10];
 
-/// The rider rides on until the speaker plays `notes`, and says where.
 #[track_caller]
 fn ride_until_cue(sim: &mut Sim, notes: &[u8], what: &str, before_m: f64) -> f64 {
     let from = sim.device.sim().speaker.played.len();
@@ -6531,10 +6519,6 @@ fn ride_until_cue(sim: &mut Sim, notes: &[u8], what: &str, before_m: f64) -> f64
     at
 }
 
-/// A loop course loaded from the phone is followed from the ride's start:
-/// MAP draws the course ahead in grey under the ride's track, a wrong turn
-/// sounds off course and riding back onto the course back on it, and the
-/// course's end ends following it.
 #[test]
 fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
     use device_api::server::Method;
@@ -6709,9 +6693,6 @@ fn a_followed_course_warns_of_its_turns_and_not_of_a_gentle_bend() {
     sim.stop_ride();
 }
 
-/// A course followed on the card goes on being followed when the card fails
-/// and the ride moves to internal memory: no second FOLLOWING COURSE, and the
-/// wrong turn, the way back and the end sound as on the card.
 #[test]
 fn a_course_is_still_followed_after_the_ride_moves_to_internal_memory() {
     use device_api::server::Method;
@@ -6768,9 +6749,6 @@ fn a_course_is_still_followed_after_the_ride_moves_to_internal_memory() {
     assert_eq!(sim.rides().len(), 1);
 }
 
-/// A tap on MAP changes nothing; a long press stops following the course
-/// mid-ride, and it does not follow again by itself: the wrong turn later
-/// sounds nothing.
 #[test]
 fn a_long_press_on_the_map_stops_following_the_course() {
     use device_api::server::Method;
@@ -6820,9 +6798,7 @@ fn a_long_press_on_the_map_stops_following_the_course() {
     sim.stop_ride();
 }
 
-/// Riding into dusk in Santiago on 14 October 2026 (sunset 19:55 local,
-/// 22:55 UTC): a toast warns half an hour ahead and again at sunset, each
-/// once.
+/// Santiago on 14 October 2026: sunset 19:55 local, 22:55 UTC.
 #[test]
 fn riding_into_dusk_warns_before_sunset_and_again_at_sunset() {
     let mut sim = rider();
@@ -7019,13 +6995,8 @@ fn riding_round_a_loop_never_says_turn_back_on_the_last_leg() {
     sim.stop_ride();
 }
 
-/// A rider heading home who slows to a crawl has no heading for a moment, and
-/// the minutes of light slip away: the alert holds until moving again, and
-/// riding home says nothing: only the heading tells which way the rider
-/// rides.
-/// Out 8 km at 25 km/h, 75 minutes from sunset,
-/// then back, then 3 km/h for 25 minutes, long enough for the margin to fall
-/// under 15 minutes.
+/// 25 minutes at 3 km/h is long enough for the margin to fall under 15
+/// minutes.
 #[test]
 fn no_turn_back_when_stopping_on_the_way_home() {
     let mut sim = rider();

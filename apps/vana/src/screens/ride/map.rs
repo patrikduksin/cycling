@@ -61,7 +61,6 @@ struct Chain {
 }
 
 impl Track<'_> {
-    /// Points drawn: the breadcrumb, then the rider's fix as its tip.
     fn total(&self) -> usize {
         self.crumbs.len() + usize::from(self.here.is_some())
     }
@@ -221,8 +220,7 @@ impl core::hash::Hash for Filled<'_> {
     }
 }
 
-/// The header baseline.
-const HEAD: usize = 40;
+const HEADER_BASELINE: usize = 40;
 /// Where the track is drawn: the middle column, and rows from `TOP` to
 /// `BOTTOM`. The track and the rider are fitted inside a margin of `MARGIN`
 /// for the line and the marks.
@@ -290,7 +288,7 @@ const ITEMS: usize = TRACK_ITEMS + COURSE_ITEMS;
 const SPAN: usize = super::BODY.right - super::BODY.left;
 
 const _: () = assert!(BOTTOM <= crate::screens::chrome::TOAST.top);
-const _: () = assert!(HEAD + 12 < TOP);
+const _: () = assert!(HEADER_BASELINE + 12 < TOP);
 const _: () = assert!(ITEMS <= u16::MAX as usize, "segments are bucketed as u16");
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -933,7 +931,7 @@ fn length(text: &mut Text<12>, metres: u32) {
 pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
     let width = RIGHT - LEFT;
-    canvas.caption(b"MAP", width, LEFT, HEAD, Align::Left);
+    canvas.caption(b"MAP", width, LEFT, HEADER_BASELINE, Align::Left);
     let show = view.map().map_or(Show::Unavailable, |frame| frame.show);
     let Some(frame) = view.map() else {
         canvas.fit(
@@ -997,7 +995,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
         state.as_bytes(),
         width - 40,
         RIGHT,
-        HEAD,
+        HEADER_BASELINE,
         Align::Right,
         color,
     );

@@ -1,16 +1,3 @@
-//! The ride's track: its breadcrumb, fed from fresh fixes, the loaded course
-//! it follows, and the map drawn from both.
-//!
-//! Composition gives `RideTrack` a block of its own with room for
-//! `TRACK_CRUMBS` points (PSRAM on the device), the loaded course beside them
-//! and room for it in the ride's frame, and hands it to
-//! `Runtime::attach_track`; `Runtime` keeps only the reference, so none of it
-//! costs main's stack anything. Without it the map says NO TRACK and no
-//! course can be loaded.
-//!
-//! The ride started after a restart that recovered one reads the recovered
-//! ride's track and start back from the journal (`ride::homing::rebuild`), a
-//! few slots a tick, before it takes live fixes.
 use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Medium, Outing, Ride};
@@ -166,8 +153,6 @@ impl RideTrack {
         }
     }
 
-    /// The turn warning to give now: none within `TURN_HOLD_MS` of FOLLOWING
-    /// COURSE, which holds it until then.
     fn turn_after_following_shown(&mut self, now: u64) -> Option<Warning> {
         let turn = self.follower.take_turn().or(self.held_turn.take());
         let held = self
@@ -215,16 +200,11 @@ impl RideTrack {
 }
 
 impl Runtime {
-    /// Give the ride its track; without one it never runs.
+    /// Without a track the map says NO TRACK and no course loads.
     pub fn attach_track(&mut self, track: &'static mut RideTrack) {
         self.track = Some(track);
     }
 
-    /// Feed this pass's fix to the open ride's breadcrumb and the course it
-    /// follows, and cue what following the course changed. A new ride
-    /// starts a new breadcrumb, or reads back the one a restart cut short
-    /// from `store` or `bulk`; a ride that moves to internal memory keeps
-    /// its own.
     pub(super) fn observe_track(
         &mut self,
         store: &mut impl crate::ride::storage::RideStorage,

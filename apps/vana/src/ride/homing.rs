@@ -1,19 +1,4 @@
-//! The ride's breadcrumb: a thinned track of where the ride has been, the
-//! way to where it began, and passes of its start.
-//!
-//! Positions become metres east and north of the ride's first fix, the
-//! ride's `Frame`, which a course is placed in too (`course::follow`). The
-//! breadcrumb keeps a point only where the road bends: a streaming window
-//! simplification keeps the last point before any point in the window would
-//! stray more than the tolerance from a straight line. When the caller's
-//! buffer fills, the breadcrumb is thinned again in place as the course is
-//! (`ride::thin`), so a ride of any length fits. The buffer is the caller's
-//! (PSRAM on the device); this state is small. The heading comes from
-//! successive fixes.
-//!
-//! The way to the start (`Guide`) is what TURN BACK BY reckons the way home
-//! from (`ride::turn_back`). The rider is at the start within `ARRIVE_M` of
-//! it once the breadcrumb is `MIN_TRACK_M` long, until `LEAVE_M` away again.
+//! The ride's breadcrumb, the way to its start, and passes of its start.
 //!
 //! The same positions tell when the rider rides past the start (`StartPass`),
 //! for laps at the start: within `PASS_M` of it, then out beyond `PASS_END_M`
@@ -94,7 +79,6 @@ pub struct Fix {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
     origin: (i32, i32),
-    /// Metres per 1e-7 degree of longitude at the origin.
     east_per_e7: f32,
 }
 
@@ -423,8 +407,6 @@ impl<'a> Homing<'a> {
         self.len += 1;
     }
 
-    /// Thin the full breadcrumb in place until a quarter of it is free,
-    /// per `ride::thin`.
     fn thin(&mut self) {
         self.len = thin::thin(self.crumbs, self.len, &mut self.tolerance, |c| {
             (c.east, c.north)
@@ -599,11 +581,8 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// How far the breadcrumb strays from the road ridden: the worst
-    /// distance, in metres, of any point of `road` from the stretch that
-    /// replaced its fix. The breadcrumb keeps a
-    /// subsequence of the fixes, so each fix up to the last kept one lies
-    /// between two of them.
+    /// The breadcrumb keeps a subsequence of the fixes, so each fix up to the
+    /// last kept one lies between two of them.
     fn deviation(homing: &Homing, road: &[course::Point], fixes: &[(i32, i32)]) -> f32 {
         let kept = homing.crumbs();
         let xy = |c: Crumb| (c.east, c.north);

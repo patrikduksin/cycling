@@ -1,6 +1,3 @@
-//! Courses that pass the same place twice, ridden through `Rider` with
-//! noisy fixes: every word names the next corner of the pass the rider is
-//! on, or there is none.
 use super::*;
 use crate::ride::course::stored::tests::uploaded;
 use crate::ride::course::turns::tests::{FOUND, Found};
@@ -196,7 +193,6 @@ fn mirrored(line: &[(f32, f32)]) -> Vec<(f32, f32)> {
 struct Tally {
     wrong: Vec<String>,
     silent: usize,
-    /// Runs off course, though the rider kept to the course.
     off: usize,
     runs: usize,
 }
@@ -226,8 +222,6 @@ fn gate(lines: &[(String, Vec<(f32, f32)>)], found: Found) -> Tally {
     tally
 }
 
-/// Every course of `lines`, its turns found both ways: no wrong word, and
-/// never off course.
 fn pass(what: &str, lines: &[(String, Vec<(f32, f32)>)]) {
     let (mut wrong, mut off) = (Vec::new(), 0);
     for found in FOUND {
@@ -369,10 +363,6 @@ fn a_shortcut_onto_the_course_further_on_is_followed_from_there() {
     }
 }
 
-/// Courses that come back alongside themselves, with the fixes lost for 100
-/// to 300 m: across an out-and-back's far end, or just before a hairpin.
-/// Every word names the corner ahead on the pass the rider is on, no run is
-/// off course, and each reaches the course's end.
 #[test]
 fn a_gap_in_the_fixes_beside_another_pass_keeps_to_the_rider_s_pass() {
     let mut lines = Vec::new();

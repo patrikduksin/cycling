@@ -1,42 +1,24 @@
 //! Following the loaded course: placing it in the ride's frame, matching the
 //! rider to it, and warning of its turns ahead.
-//!
-//! The course is placed in the ride's frame (`homing::Frame`) once the ride
-//! has its first fix. It is kept end first, so its `along` is metres to its
-//! end. Riding along it, within `ON_M` and its way, for `JOIN_FIXES` fixes in
-//! a row, follows it by itself; crossing it does not. More than `OFF_M` from
-//! it is off course until the rider is back within `ON_M`; `DROP_M` off it,
-//! following stops. The match moves at most `JUMP_M` on along the course at a
-//! time, so the far leg of an out-and-back or the end of a loop never stands
-//! in for where the rider is. Where the course passes the same road twice,
-//! the pass that goes on from where the rider was, their way, is the one they
-//! are on. Dropping it, reaching its end or stopping it (`stop`) holds it off
-//! for the rest of the ride. While it is followed, on it and ridden its way,
-//! its turns ahead are warned of (`course::turns`).
 use crate::ride::course::turns::{SCAN_STEPS, Scan, Turn, Warner, Warning};
 use crate::ride::course::{self, along_m};
 use crate::ride::homing::{Crumb, Fix, Frame, TURN, bearing, distance};
 use crate::ride::thin::off_segment;
 
-/// Off course beyond this from the course, back on within `ON_M`.
 const OFF_M: f32 = 50.0;
 const ON_M: f32 = 25.0;
 /// Following stops this far from the course: the rider chose another way.
 const DROP_M: f32 = 500.0;
-/// At the end within this of it, on the course.
 const END_M: f32 = 30.0;
-/// Segments behind and ahead of the last match searched first.
 const SEARCH_BACK: usize = 64;
 const SEARCH_AHEAD: usize = 4;
-/// The match moves at most this far on towards the course's end, and back
-/// only this far behind where it was, in one fix.
+/// Only segments reaching from this far on to `BACK_M` behind the last match
+/// are searched, so the far leg of an out-and-back or the end of a loop never
+/// stands in for where the rider is.
 const JUMP_M: f32 = 500.0;
 const BACK_M: f32 = ON_M;
-/// Within `ON_M` and this little on from where the rider was, the course
-/// is matched first: where it passes the same road twice, the pass the
-/// rider is on, not the other. There a stretch more than `SLIP_M` behind
-/// the furthest the rider has been counts as that much farther off, and one
-/// against the rider's way `AGAINST_M` farther.
+/// Where the course passes the same road twice, these keep the match on the
+/// pass the rider is on.
 const NEAR_M: f32 = 100.0;
 const SLIP_M: f32 = 10.0;
 const AGAINST_M: f32 = 5.0;
@@ -45,8 +27,6 @@ const AGAINST_M: f32 = 5.0;
 /// course is matched as if just joined.
 const HOP_M: f32 = 40.0;
 const GAP_MS: u64 = 5_000;
-/// Riding along the course: this many fixes in a row within `ON_M` of it,
-/// heading its way within an eighth of a turn.
 const JOIN_FIXES: u8 = 5;
 
 type Point = (f32, f32);
@@ -70,8 +50,6 @@ pub struct Progress {
     pub off_course: bool,
 }
 
-/// The point of segment a-b nearest `p`, and how far along the segment it
-/// is, 0 to 1.
 fn project(p: Point, a: Point, b: Point) -> (Point, f32) {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let length = dx * dx + dy * dy;
@@ -83,7 +61,6 @@ fn project(p: Point, a: Point, b: Point) -> (Point, f32) {
     ((a.0 + t * dx, a.1 + t * dy), t)
 }
 
-/// Where `p` meets segment `end` of `line`, which runs from `end - 1`.
 fn nearest_on(line: &[Crumb], p: Point, end: usize) -> Nearest {
     let (a, b) = (line[end - 1], line[end]);
     let (point, t) = project(p, (a.east, a.north), (b.east, b.north));
@@ -91,53 +68,38 @@ fn nearest_on(line: &[Crumb], p: Point, end: usize) -> Nearest {
         end,
         off: distance(p, point),
         point,
-        along: a.along + t * (b.along - a.along),
+        to_end_m: a.along + t * (b.along - a.along),
     }
 }
 
-/// The nearest segment of the course to a position.
 #[derive(Clone, Copy)]
 struct Nearest {
-    /// The segment's far end: it runs from `end - 1` to `end`.
     end: usize,
     off: f32,
     point: Point,
-    /// Metres along the course from its end to `point`.
-    along: f32,
+    to_end_m: f32,
 }
 
 pub struct Follower<'a> {
-    /// The course, end first, in the ride's frame; empty without one.
     line: &'a mut [Crumb],
     len: usize,
     unplaced: bool,
-    /// The course is off for the rest of the ride: dropped, ended or stopped.
     held: bool,
-    /// Fixes in a row riding along the course, at its segment `join_end`.
     join_fixes: u8,
     join_end: usize,
     following: bool,
-    /// The segment last matched while following.
     segment: usize,
-    /// Where on the course the rider last was while following.
     matched: Option<Point>,
-    /// Metres to the course's end where the rider was last matched.
-    along: f32,
-    /// Metres to the course's end at the furthest the rider has been along
-    /// it since following it.
-    reached: f32,
-    /// The fix last matched, until a gap in the fixes.
+    to_end_m: f32,
+    furthest_to_end_m: f32,
     matched_fix: Option<Point>,
     off: bool,
     heading: Option<u16>,
     fix_ms: u64,
-    /// The course's turns, found a few steps a fix once it is placed, and
-    /// what was said of them.
     turns: &'a mut [Turn],
     turn_count: usize,
     scan: Scan,
     warner: Warner,
-    /// The turn warning from the last fix, until taken.
     turn: Option<Warning>,
 }
 
@@ -155,8 +117,8 @@ impl<'a> Follower<'a> {
             following: false,
             segment: 0,
             matched: None,
-            along: 0.0,
-            reached: 0.0,
+            to_end_m: 0.0,
+            furthest_to_end_m: 0.0,
             matched_fix: None,
             off: false,
             heading: None,
@@ -169,8 +131,8 @@ impl<'a> Follower<'a> {
         }
     }
 
-    /// A new ride: a loaded course is placed again from its first fix, and
-    /// may be followed again.
+    /// A new ride: following may start again, and a loaded course waits
+    /// (`unplaced`) to be set again in the new ride's frame.
     pub fn reset(&mut self) {
         self.unplaced |= self.len >= 2;
         self.len = 0;
@@ -294,7 +256,7 @@ impl<'a> Follower<'a> {
         self.following
     }
 
-    /// Stop following for the rest of the ride.
+    /// If following, stop for the rest of the ride.
     pub fn stop(&mut self) {
         if core::mem::take(&mut self.following) {
             self.held = true;
@@ -319,7 +281,7 @@ impl<'a> Follower<'a> {
     /// Where the rider is on the course, once matched while following.
     pub fn progress(&self) -> Option<Progress> {
         self.matched.map(|_| Progress {
-            to_end_m: (self.along + 0.5) as u32,
+            to_end_m: (self.to_end_m + 0.5) as u32,
             off_course: self.off,
         })
     }
@@ -350,13 +312,10 @@ impl<'a> Follower<'a> {
         None
     }
 
-    /// Whether this fix continues a ride along the course, its way, for
-    /// long enough to follow it: the earliest stretch within `ON_M` that
-    /// runs the rider's way, since where the course passes twice the first
-    /// pass is the one.
+    /// Where the course passes twice, the first pass ridden its way is joined.
     fn joining(&mut self, p: Point) -> bool {
         let heading = self.heading.filter(|_| !self.held && self.len >= 2);
-        let along = heading.and_then(|heading| {
+        let joined = heading.and_then(|heading| {
             (1..self.len).rev().find(|&end| {
                 let (a, b) = (self.line[end - 1], self.line[end]);
                 let (a, b) = ((a.east, a.north), (b.east, b.north));
@@ -364,7 +323,7 @@ impl<'a> Follower<'a> {
                 off_segment(p, a, b) < ON_M && !(TURN / 8..=TURN * 7 / 8).contains(&turn)
             })
         });
-        let Some(end) = along else {
+        let Some(end) = joined else {
             self.join_fixes = 0;
             return false;
         };
@@ -376,8 +335,8 @@ impl<'a> Follower<'a> {
     fn follow_from(&mut self, end: usize) {
         self.following = true;
         self.join_fixes = 0;
-        self.along = self.course().get(end).map_or(0.0, |c| c.along);
-        self.reached = self.along;
+        self.to_end_m = self.course().get(end).map_or(0.0, |c| c.along);
+        self.furthest_to_end_m = self.to_end_m;
         self.matched_fix = None;
         self.warner = Warner::default();
         self.segment = end;
@@ -385,8 +344,6 @@ impl<'a> Follower<'a> {
         self.off = false;
     }
 
-    /// The turn to warn of, while following the course, on it and riding
-    /// its way.
     fn warn_turn(&mut self) -> Option<Warning> {
         let heading = self.heading?;
         self.matched.filter(|_| self.following && !self.off)?;
@@ -399,14 +356,12 @@ impl<'a> Follower<'a> {
         if (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN)) {
             return None;
         }
-        let from_start = self.line[len - 1].along - self.along;
+        let from_start = self.line[len - 1].along - self.to_end_m;
         // A float cast saturates, so no position overflows.
         let along_mm = (from_start * 1000.0) as u32;
         self.warner.step(&self.turns[..self.turn_count], along_mm)
     }
 
-    /// Find a few more of the placed course's turns. With the list full,
-    /// the first half the rider is past makes way.
     fn scan_turns(&mut self) {
         if self.scan.done() {
             return;
@@ -432,31 +387,28 @@ impl<'a> Follower<'a> {
             .step(len, at, SCAN_STEPS, self.turns, self.turn_count);
     }
 
-    /// The nearest segment of the course among `ends`: the pass the rider
-    /// is on (`NEAR_M`) comes first; otherwise only segments from `JUMP_M`
-    /// on to `BACK_M` behind where the rider was are in reach, and on a tie
-    /// the earlier one wins.
     fn nearest(&self, p: Point, ends: core::ops::RangeInclusive<usize>) -> Option<Nearest> {
         let plain = |near: &Nearest, _: &Crumb, _: &Crumb| Some(near.off);
-        let (along, reached) = (self.along, self.reached);
+        let (to_end_m, furthest) = (self.to_end_m, self.furthest_to_end_m);
         if self.after_gap(p) {
-            return self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain);
+            return self.nearest_within(p, ends, to_end_m - JUMP_M, to_end_m + BACK_M, plain);
         }
         let on = |near: &Nearest, a: &Crumb, b: &Crumb| {
-            let back = (near.along - reached - SLIP_M).max(0.0);
+            let back = (near.to_end_m - furthest - SLIP_M).max(0.0);
             let against = if self.against(a, b) { AGAINST_M } else { 0.0 };
             (near.off <= ON_M).then_some(near.off + back + against)
         };
-        let Some(near) = self.nearest_within(p, ends.clone(), along - NEAR_M, along + BACK_M, on)
+        let Some(near) =
+            self.nearest_within(p, ends.clone(), to_end_m - NEAR_M, to_end_m + BACK_M, on)
         else {
-            return self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain);
+            return self.nearest_within(p, ends, to_end_m - JUMP_M, to_end_m + BACK_M, plain);
         };
         let line = self.course();
-        if near.along > reached + SLIP_M && self.against(&line[near.end - 1], &line[near.end]) {
+        if near.to_end_m > furthest + SLIP_M && self.against(&line[near.end - 1], &line[near.end]) {
             let ahead = |near: &Nearest, a: &Crumb, b: &Crumb| {
                 (near.off <= ON_M && !self.against(a, b)).then_some(near.off)
             };
-            let window = along - JUMP_M..=along + BACK_M;
+            let window = to_end_m - JUMP_M..=to_end_m + BACK_M;
             if let Some(ahead) = self.nearest_within(p, ends, *window.start(), *window.end(), ahead)
             {
                 return Some(ahead);
@@ -465,13 +417,10 @@ impl<'a> Follower<'a> {
         Some(near)
     }
 
-    /// Whether `p` follows a gap in the fixes, after which the rider may be
-    /// past the stretch they were last matched on.
     fn after_gap(&self, p: Point) -> bool {
         self.matched_fix.is_none_or(|fix| distance(fix, p) > HOP_M)
     }
 
-    /// Whether the course from `b` to `a` runs against the rider's heading.
     fn against(&self, a: &Crumb, b: &Crumb) -> bool {
         let way = bearing((b.east, b.north), (a.east, a.north));
         self.heading.is_some_and(|heading| {
@@ -479,9 +428,6 @@ impl<'a> Follower<'a> {
         })
     }
 
-    /// The segment among `ends` reaching from `floor` to `ceiling` metres
-    /// along that `cost` puts first, given where it meets `p`; a segment
-    /// without a cost is out.
     fn nearest_within(
         &self,
         p: Point,
@@ -523,14 +469,14 @@ impl<'a> Follower<'a> {
             self.stop();
             return None;
         }
-        if near.off <= ON_M && near.along < END_M {
+        if near.off <= ON_M && near.to_end_m < END_M {
             self.stop();
             return Some(Event::Arrived);
         }
         self.segment = near.end;
         self.matched = Some(near.point);
-        self.along = near.along;
-        self.reached = self.reached.min(near.along);
+        self.to_end_m = near.to_end_m;
+        self.furthest_to_end_m = self.furthest_to_end_m.min(near.to_end_m);
         self.matched_fix = Some(p);
         let was_off = self.off;
         self.off = if self.off {

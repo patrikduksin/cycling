@@ -12,7 +12,7 @@
 //! | 3..5 | LTHR in bpm, little-endian | 1 |
 //! | 5 | Saved ANT sensor count, at most 10 | 2 |
 //! | 6.. | Per sensor: device type, device number (little-endian), transmission type | 2 |
-//! | then | Flags: bit 0 auto-pause, bit 1 sounds, bit 2 sunset alert OFF (clear is on, so records saved before it keep the alert on), bits 3..7 ride pages hidden (clear is shown: STATS, LAP, CLIMB, a bit BACK TO START held, MAP); other bits zero | 3 |
+//! | then | Flags: bit 0 auto-pause, bit 1 sounds, bit 2 sunset alert OFF (clear is on, so records saved before it keep the alert on), bits 3, 4, 5 and 7 hide STATS, LAP, CLIMB and MAP (clear is shown); bit 6 hid BACK TO START and is cleared; other bits zero | 3 |
 //! | then | Auto lap: 0 off, 1 to 100 km between laps, 255 at the start point (255 reads as a damaged record before it existed) | 3 |
 //! | then | Day and night: 0 automatic, 1 always day, 2 always night | 3 |
 //! | then | First-run setup step to resume, 0 when setup is done | 3 |

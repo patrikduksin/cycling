@@ -1,5 +1,3 @@
-//! Following courses, fed fixes as the app feeds them: through the ride's
-//! breadcrumb (`Homing`), which hands each fresh one on.
 use super::*;
 use crate::ride::course::turns;
 use crate::ride::homing::Homing;
@@ -11,7 +9,6 @@ use std::vec::Vec;
 mod many;
 mod passes;
 
-/// A ride's breadcrumb and the course it follows.
 struct Rider<'a> {
     homing: Homing<'a>,
     follower: Follower<'a>,
@@ -54,7 +51,6 @@ fn course_of(corners: &[(f32, f32)]) -> Vec<course::Point> {
         .collect()
 }
 
-/// A 4 km square loop, start and end at the origin.
 const SQUARE: [(f32, f32); 5] = [
     (0.0, 0.0),
     (1000.0, 0.0),
@@ -63,9 +59,6 @@ const SQUARE: [(f32, f32); 5] = [
     (0.0, 0.0),
 ];
 
-/// Ride `points` as the app does: a fix a second, placing the course
-/// once the ride has its first fix. The turn warnings on the way, and
-/// every other event.
 fn ride_course_warned(
     rider: &mut Rider,
     course: &[course::Point],
@@ -75,8 +68,6 @@ fn ride_course_warned(
     ride_course_stored(rider, course, None, points, now)
 }
 
-/// As `ride_course_warned`, the course's turns `stored` at upload when
-/// given, in place of the scan.
 fn ride_course_stored(
     rider: &mut Rider,
     course: &[course::Point],
@@ -139,7 +130,6 @@ fn following_a_course_warns_of_each_corner_ahead_and_at_it() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
-/// The point `metres` along `line`, or its end.
 fn along_line(line: &[(f32, f32)], metres: f32) -> (f32, f32) {
     let mut walked = 0.0;
     for pair in line.windows(2) {
@@ -154,10 +144,6 @@ fn along_line(line: &[(f32, f32)], metres: f32) -> (f32, f32) {
     *line.last().unwrap()
 }
 
-/// Turns stored at upload are measured along the course in its own
-/// frame. Placed for a ride that starts 40 km north, they move into
-/// the ride's frame and sit where the scan of the placed course finds
-/// them; as stored, they would be well over 100 m out by the end.
 #[test]
 fn stored_turns_move_into_the_frame_of_a_ride_started_far_away() {
     use crate::ride::course::stored::tests::uploaded;
@@ -212,10 +198,6 @@ fn stored_turns_move_into_the_frame_of_a_ride_started_far_away() {
     }
 }
 
-/// Roundabouts of 15 to 40 m radius, left at the first, second and
-/// third exits, as drawn and thinned 12 km on, ridden through `Rider`
-/// with a fix every 5, 7 or 9 m up to 0, 3 or 6 m off, 39 times each:
-/// every word is the right way, or there is none.
 #[test]
 fn noisy_fixes_round_a_roundabout_never_give_a_wrong_word() {
     use crate::ride::course::stored::tests::uploaded;

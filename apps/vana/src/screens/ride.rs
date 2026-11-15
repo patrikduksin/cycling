@@ -437,8 +437,6 @@ fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
     }
 }
 
-/// The footer below the map keeps the whole width: the radar's strip
-/// ends above it.
 fn paint_map(scene: &Scene, row: &mut Row) {
     if let Some(map) = scene.map() {
         let left = if scene.radar.is_some() { BODY.left } else { 0 };

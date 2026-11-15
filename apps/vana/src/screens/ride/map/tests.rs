@@ -445,8 +445,6 @@ fn the_route_ahead_is_drawn_whatever_the_ridden_part_takes() {
     assert_eq!(pixels[120], ACCENT, "the route ahead, over the ridden part");
 }
 
-/// Riding north on the last leg of a straight course: no turn is left,
-/// so the badge shows the finish.
 fn last_leg(course: &[Crumb], north: f32) -> Track<'_> {
     let mut track = following(course, (0.0, north), north, None);
     let guidance = track.guidance.as_mut().unwrap();
@@ -458,8 +456,6 @@ fn last_leg(course: &[Crumb], north: f32) -> Track<'_> {
     track
 }
 
-/// Whether anything of the map comes within `CLEARANCE` px of `badge`,
-/// less the anti-aliased half pixel.
 fn under_the_badge(frame: &Frame, badge: Rect) -> std::vec::Vec<(usize, usize)> {
     let reach = 7;
     let rows = GROUND.start.max(badge.top - reach)..badge.bottom + reach;

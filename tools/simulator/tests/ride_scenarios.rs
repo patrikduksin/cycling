@@ -9900,7 +9900,6 @@ mod course_map {
         screen.pixels[y * screen.width + x]
     }
 
-    /// The badge's fill, left, top, right and bottom, the last two past it.
     fn badge_box(screen: &Screen) -> Option<(u16, [usize; 4])> {
         let fills = [TURN_FILL, OFF_FILL, ARRIVED_FILL];
         let mut found: Option<(u16, [usize; 4])> = None;
@@ -9921,9 +9920,7 @@ mod course_map {
         found
     }
 
-    /// Whether `c` lies between ground and the badge's fill, channel by
-    /// channel: the badge's own anti-aliased edge.
-    fn badge_edge(c: u16, fill: u16) -> bool {
+    fn is_badge_edge_blend(c: u16, fill: u16) -> bool {
         let channels = |v: u16| {
             [
                 i32::from(v >> 11),
@@ -9935,8 +9932,6 @@ mod course_map {
         (0..3).all(|k| c[k] >= low[k].min(high[k]) - 1 && c[k] <= low[k].max(high[k]) + 1)
     }
 
-    /// How close the map's route, turn or rider come to the badge, in
-    /// pixels, up to `within`.
     fn badge_gap(screen: &Screen, within: usize) -> Option<usize> {
         let (fill, [l, t, r, b]) = badge_box(screen)?;
         let mut gap = within;
@@ -9954,7 +9949,7 @@ mod course_map {
                 };
                 let d = dx.max(dy);
                 let c = at(screen, x, y);
-                if d == 0 || (d == 1 && badge_edge(c, fill)) || c == GROUND {
+                if d == 0 || (d == 1 && is_badge_edge_blend(c, fill)) || c == GROUND {
                     continue;
                 }
                 gap = gap.min(d);
@@ -9963,9 +9958,6 @@ mod course_map {
         Some(gap)
     }
 
-    /// Ride `course` on the map and return the fixes, in metres ridden,
-    /// from `from_m` to `until_m` where something of the map came within
-    /// 7 px of the badge.
     fn crowded_fixes(course: &[(f64, f64)], from_m: f64, until_m: f64) -> Vec<i64> {
         let mut sim = on_the_map(course, course);
         let mut crowded = vec![];

@@ -645,8 +645,6 @@ fn bands(stroke: &Stroke, half: f32) -> Option<(usize, usize)> {
     Some((band(low), band(high)))
 }
 
-/// The route ahead takes its entries first, so the ridden part is what
-/// runs out.
 fn bucket(frame: &mut Frame) {
     let mut at = 0usize;
     for line in [Line::Route, Line::Ridden] {

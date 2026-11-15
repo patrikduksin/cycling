@@ -220,6 +220,9 @@ fn distance_line(
 }
 
 /// A line from pen `left` with its capitals on `base`; where its ink ends.
+/// The pen falls on the pixel the mockup's fraction starts in, and a face's
+/// ink ends the row above its `baseline`, which is the row below the
+/// mockup's.
 fn push(
     lines: &mut heapless::Vec<Label<9>, 3>,
     face: &'static Face,
@@ -228,8 +231,14 @@ fn push(
     base: f32,
     color: u16,
 ) -> f32 {
-    let top = round(base) - usize::from(face.top) - usize::from(face.cap);
-    let label = Label::new(Line::new(face, text), round(left), top, Align::Left, color);
+    let top = base as usize + 1 - usize::from(face.top) - usize::from(face.cap);
+    let label = Label::new(
+        Line::new(face, text),
+        left as usize,
+        top,
+        Align::Left,
+        color,
+    );
     let _ = lines.push(label);
     left + face.ink_width(text) as f32
 }

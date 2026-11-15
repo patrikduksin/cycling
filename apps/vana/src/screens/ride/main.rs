@@ -31,7 +31,8 @@ const SEGMENTS: [usize; 2] = [7, 5];
 /// Where the readings sit, by baseline. A ride without a course keeps the
 /// hero speed; while a course is loaded the page is ride-straight.svg's,
 /// whose rows 22 to 104 belong to the course sign, so the sign coming and
-/// going never moves a reading.
+/// going never moves a reading. A face's ink ends the row above `baseline`,
+/// so each is one below the mockup's.
 struct Rows {
     time: usize,
     speed: usize,
@@ -41,18 +42,26 @@ struct Rows {
     lower: usize,
     /// The power and heart-rate gauges' top rows.
     gauges: [usize; 2],
+    /// From a value's ink to its unit: the mockup sets units after
+    /// proportional digits, further out than these tabular ones' ink.
+    unit_gap: usize,
+    /// Where the lower line's right reading ends: ride-straight inks its KM
+    /// to x 216, where CAPTION's tracking leaves a column.
+    lower_right: usize,
 }
 
 fn rows(course: bool) -> Rows {
     if course {
         return Rows {
-            time: 58,
-            speed: 149,
+            time: 59,
+            speed: 150,
             speed_faces: [&LARGE, &VALUE, &VALUE],
-            power: 199,
-            heart: 255,
-            lower: 303,
+            power: 200,
+            heart: 256,
+            lower: 304,
             gauges: [208, 266],
+            unit_gap: 6,
+            lower_right: RIGHT + 1,
         };
     }
     let (power, heart) = (BODY.top + 108, BODY.top + 166);
@@ -65,6 +74,8 @@ fn rows(course: bool) -> Rows {
         lower: baseline(&VALUE, BODY.top + 228),
         // Zone gauges sit just under the power and heart-rate numbers.
         gauges: [power + 47, heart + 47],
+        unit_gap: UNIT_GAP,
+        lower_right: RIGHT,
     }
 }
 
@@ -92,7 +103,8 @@ const GAP: usize = 8;
 const UNIT_GAP: usize = 4;
 
 /// A value and its unit just after it on baseline `base`, both inside
-/// `left..right`: the value takes the largest of `faces` that leaves room.
+/// `left..right`, `gap` apart: the value takes the largest of `faces` that
+/// leaves room.
 #[allow(clippy::too_many_arguments)]
 fn reading(
     labels: &mut Labels,
@@ -101,25 +113,25 @@ fn reading(
     unit: &[u8],
     (left, right): (usize, usize),
     base: usize,
-    align: Align,
+    (align, gap): (Align, usize),
     color: u16,
 ) {
     let unit_width = CAPTION.width(unit) + SPILL;
-    let room = right.saturating_sub(left + UNIT_GAP + unit_width);
+    let room = right.saturating_sub(left + gap + unit_width);
     let line = Line::fit(faces, value.as_bytes(), room);
     let face = line.face();
     let top = base - face.top as usize - face.cap as usize;
     let (value, unit) = match align {
         Align::Right => {
             let unit = on_baseline(&CAPTION, unit, right - SPILL, base, Align::Right, SECONDARY);
-            let value = Label::new(line, unit.left - UNIT_GAP, top, Align::Right, color);
+            let value = Label::new(line, unit.left - gap, top, Align::Right, color);
             (value, unit)
         }
         _ => {
             let value = Label::new(line, left, top, Align::Left, color);
             // After the value's ink, so a "--" keeps its unit as close as
             // a number does.
-            let at = left + face.ink_width(value.line.text()) + UNIT_GAP;
+            let at = left + face.ink_width(value.line.text()) + gap;
             (
                 value,
                 on_baseline(&CAPTION, unit, at, base, Align::Left, SECONDARY),
@@ -163,7 +175,7 @@ fn arrived(view: &View) -> Smooth {
     let caption = |labels: &mut Labels, text: &[u8], x, base, align| {
         let _ = labels.push(on_baseline(&TOTAL_11, text, x, base, align, SECONDARY));
     };
-    caption(labels, b"DISTANCE", LEFT, 132, Align::Left);
+    caption(labels, b"DISTANCE", LEFT, 133, Align::Left);
     let distance = value(&|v| kilometres(v, totals.distance_mm()));
     let faces: [&Face; 2] = [&TOTAL_60, &LARGE];
     reading(
@@ -172,17 +184,17 @@ fn arrived(view: &View) -> Smooth {
         &distance,
         b"KM",
         (LEFT, RIGHT),
-        184,
-        Align::Left,
+        185,
+        (Align::Left, rows(true).unit_gap),
         WHITE,
     );
-    caption(labels, b"RIDE TIME", LEFT, 210, Align::Left);
+    caption(labels, b"RIDE TIME", LEFT, 211, Align::Left);
     let time = value(&|v| elapsed(v, view.active_secs));
     let _ = labels.push(on_baseline(
         &VALUE,
         time.as_bytes(),
         LEFT,
-        243,
+        244,
         Align::Left,
         WHITE,
     ));
@@ -211,12 +223,12 @@ fn arrived(view: &View) -> Smooth {
         ),
     ];
     for (name, x, align, average, color) in averages {
-        caption(labels, name, x, 270, align);
+        caption(labels, name, x, 271, align);
         let _ = labels.push(on_baseline(
             &TOTAL_30,
             average.as_bytes(),
             x,
-            300,
+            301,
             align,
             color,
         ));
@@ -272,7 +284,7 @@ fn readings(smooth: &mut Smooth, view: &View, rows: &Rows) {
         b"KM/H",
         (LEFT, RIGHT),
         rows.speed,
-        Align::Left,
+        (Align::Left, rows.unit_gap),
         SPEED,
     );
 
@@ -306,7 +318,8 @@ fn readings(smooth: &mut Smooth, view: &View, rows: &Rows) {
         );
         let faces: [&Face; 2] = [&LARGE, &VALUE];
         let span = (LEFT, zone.left - GAP);
-        reading(labels, &faces, &text, unit, span, base, Align::Left, color);
+        let side = (Align::Left, rows.unit_gap);
+        reading(labels, &faces, &text, unit, span, base, side, color);
         let _ = labels.push(zone);
     }
 
@@ -315,12 +328,13 @@ fn readings(smooth: &mut Smooth, view: &View, rows: &Rows) {
     for (reading, text) in [left, right].into_iter().zip(&mut shown) {
         reading.write(view, text);
     }
-    lower(labels, [left, right], &shown, rows.lower);
+    lower(labels, [left, right], &shown, rows);
 }
 
 /// The last line: the chosen readings split it between them, the first
 /// from the left edge and the second from the right.
-fn lower(labels: &mut Labels, readings: [Reading; 2], values: &[Text<12>; 2], base: usize) {
+fn lower(labels: &mut Labels, readings: [Reading; 2], values: &[Text<12>; 2], rows: &Rows) {
+    let base = rows.lower;
     let middle = (LEFT + RIGHT) / 2;
     let faces: [&Face; 2] = [&VALUE, &BODY_FACE];
     let [left, right] = readings;
@@ -332,10 +346,10 @@ fn lower(labels: &mut Labels, readings: [Reading; 2], values: &[Text<12>; 2], ba
         left.unit(),
         span,
         base,
-        Align::Left,
+        (Align::Left, rows.unit_gap),
         left.color(),
     );
-    let span = (middle + GAP / 2, RIGHT);
+    let span = (middle + GAP / 2, rows.lower_right);
     reading(
         labels,
         &faces,
@@ -343,7 +357,7 @@ fn lower(labels: &mut Labels, readings: [Reading; 2], values: &[Text<12>; 2], ba
         right.unit(),
         span,
         base,
-        Align::Right,
+        (Align::Right, UNIT_GAP),
         right.color(),
     );
 }
@@ -696,7 +710,7 @@ mod tests {
                 for (reading, text) in [left, right].into_iter().zip(&mut texts) {
                     let _ = text.push_str(WIDEST_VALUES[usize::from(reading.id())]);
                 }
-                lower(&mut labels, [left, right], &texts, rows(false).lower);
+                lower(&mut labels, [left, right], &texts, &rows(false));
                 let items: Vec<_> = labels.iter().filter_map(text).collect();
                 let what = std::format!("{} | {}", left.name(), right.name());
                 assert_apart(&items, bounds, &what);

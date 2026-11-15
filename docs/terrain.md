@@ -345,7 +345,11 @@ it. Each copy:
   step its detail is drawn at, which keeps hairpins.
 
 The nine Santiago fixture tiles take 2,530 roads and 5,924 points at the
-1 km detail and 1,366 and 2,885 at 3 km. Each fill rasterises the roads
+1 km detail and 1,366 and 2,885 at 3 km. The ignored
+`densest_views_of_central_santiago` prints how much road each step's view
+of the fixture draws over a grid of places and headings, and the densest
+view of each step; run it with
+`cargo test -p vana --release --lib densest -- --ignored --nocapture`. Each fill rasterises the roads
 once onto a 4-bit layer of the ground (two bits of coverage a class a
 pixel), and a frame paints the ground and roads from it by table.
 
@@ -361,7 +365,8 @@ To measure it again:
 
 1. Build `bash devices/c606/build.sh scripted-gnss` and flash it with
    `cycling device flash-image`. Its receiver rides the fixture course from
-   Plaza de Armas after a two-minute hold, then 1.6 km off it.
+   Plaza de Armas after a two-minute hold, then 1.6 km off it, so the map
+   also shows the way back to a junction far behind, at its widest step.
 2. Put the fixture course's `course.dat` (the simulator writes it after an
    upload) on the card with `cycling files put course.dat <path>`, and
    restart.

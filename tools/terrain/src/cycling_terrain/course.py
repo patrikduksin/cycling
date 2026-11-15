@@ -13,6 +13,7 @@ import itertools
 import math
 import random
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from . import pack
 from .osm import ONEWAY, RESIDENTIAL
@@ -22,9 +23,15 @@ STRAIGHT_DEG = 40.0
 TURN_DEG = (50.0, 130.0)
 
 
+class Point(NamedTuple):
+    lat_micro: int
+    lon_micro: int
+    z_dm: int
+
+
 @dataclass
 class Road:
-    points: list[tuple[int, int, int]]  # lat µdeg, lon µdeg, z dm
+    points: list[Point]
     oneway: bool
 
 
@@ -39,7 +46,6 @@ def _metres(a, b) -> float:
 
 
 def _bearing(points) -> float:
-    """Degrees from north of the road leaving `points[0]`."""
     a = points[0]
     b = next((p for p in points[1:] if _metres(a, p) >= BEARING_M), points[-1])
     return math.degrees(math.atan2(*_east_north(a, b))) % 360
@@ -59,7 +65,8 @@ def roads(blob: bytes, classes: int = RESIDENTIAL) -> list[Road]:
         for number, edge in enumerate(tile.edges):
             if edge[4] <= classes:
                 points = [
-                    (south + y, west + x, z * pack.Z_STEP_DM - pack.Z_OFFSET_DM) for x, y, z in tile.geometry(number)
+                    Point(south + y, west + x, z * pack.Z_STEP_DM - pack.Z_OFFSET_DM)
+                    for x, y, z in tile.geometry(number)
                 ]
                 out.append(Road(points, bool(edge[5] & ONEWAY)))
     return out

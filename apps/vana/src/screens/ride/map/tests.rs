@@ -1238,8 +1238,6 @@ mod santiago {
     use terrain::pack::HEADER_BYTES;
     use terrain::{PAGE_BYTES, TileKey};
 
-    /// A course through `here` heading `heading`: straight on for `turn_m`,
-    /// then right, with the turn shown on the map's badge.
     pub(super) struct Approach {
         pub(super) course: Vec<Crumb>,
         here: Point,
@@ -1314,8 +1312,6 @@ mod santiago {
         }
     }
 
-    /// Fill `cache` from `track` and fetch roads until every tile of the
-    /// view is held.
     pub(super) fn settle(
         cache: &mut Cache,
         engine: &mut terrain::Lookahead,
@@ -1388,6 +1384,25 @@ mod santiago {
     }
 
     #[test]
+    fn zeroed_memory_is_an_empty_map_that_fills_and_fetches_as_a_new_one() {
+        let mut arena = std::vec![0u8; 64 * PAGE_BYTES];
+        let mut engine = cached(&mut arena);
+        let ride = RideFrame::at(PLAZA);
+        let approach = Approach::new((0.0, -150.0), 0, 250.0);
+        let track = approach.track();
+        // SAFETY: all zero bytes are a valid `Frame`, as composition makes
+        // it in PSRAM; this checks it.
+        let mut zeroed: Box<Frame> = unsafe { Box::new_zeroed().assume_init() };
+        let mut fresh = Box::new(Frame::default());
+        assert_eq!(painted(&zeroed), painted(&fresh));
+        for frame in [&mut zeroed, &mut fresh] {
+            settle(&mut Cache::new(frame), &mut engine, ride, &track);
+        }
+        assert!(road_pixels(&zeroed) > 1_000);
+        assert_eq!(painted(&zeroed), painted(&fresh));
+    }
+
+    #[test]
     fn the_margin_never_crowds_a_tile_on_the_screen_out_of_the_fetch() {
         let chile = terrain::Header {
             tile: 15_625,
@@ -1436,7 +1451,6 @@ mod santiago {
         }
     }
 
-    /// The fixture as a newer pack on the same grid with no roads at all.
     fn without_roads() -> Vec<u8> {
         let header = header();
         let mut pack = SANTIAGO.to_vec();
@@ -1447,8 +1461,6 @@ mod santiago {
         pack
     }
 
-    /// Run the look-ahead on `pack`, if there is one, and fill and fetch
-    /// as the app does each pass.
     fn ride_on(
         cache: &mut Cache,
         engine: &mut terrain::Lookahead,
@@ -1503,9 +1515,6 @@ mod santiago {
         assert_eq!(road_pixels(cache.frame), 0, "with no pack, bare ground");
     }
 
-    /// Prints how much road each scale's view of central Santiago draws,
-    /// over a grid of places and headings, and the densest of each scale.
-    /// `cargo test -p vana --release --lib densest -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn densest_views_of_central_santiago() {

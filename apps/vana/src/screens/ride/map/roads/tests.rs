@@ -9,7 +9,6 @@ use terrain::{Header, Lookahead, PAGE_BYTES, PackId, Status};
 /// contributors (ODbL); see `packages/terrain/tests/data/README.md`.
 pub(crate) const SANTIAGO: &[u8] =
     include_bytes!("../../../../../../../packages/terrain/tests/data/santiago-centro.terrain");
-/// Plaza de Armas, (lat_e7, lon_e7).
 pub(crate) const PLAZA: (i32, i32) = (-334_378_000, -706_505_000);
 
 pub(crate) fn header() -> Header {
@@ -22,7 +21,6 @@ pub(crate) fn every_tile(header: &Header) -> Vec<TileKey> {
         .collect()
 }
 
-/// A look-ahead with every tile of the fixture cached.
 pub(crate) fn cached(arena: &mut [u8]) -> Lookahead<'_> {
     let mut engine = Lookahead::new(arena, 10_000.0);
     let mut source: &[u8] = SANTIAGO;
@@ -40,7 +38,6 @@ fn corner(header: &Header, key: TileKey) -> (i32, i32) {
     (south * 10, west * 10)
 }
 
-/// Hold every tile of the fixture; whether each fit whole.
 fn extract_all(roads: &mut Roads, engine: &Lookahead, detail: Detail) -> bool {
     let header = header();
     let keys = every_tile(&header);
@@ -54,7 +51,6 @@ fn plaza_frame() -> RideFrame {
     RideFrame::at(PLAZA)
 }
 
-/// Roads held from the fixture, placed in `frame`.
 fn roads_in(frame: RideFrame) -> Box<Roads> {
     let mut roads = Box::new(Roads::default());
     roads.hold(Some(Source {
@@ -98,7 +94,7 @@ fn every_point_of_a_tile_is_within_half_a_pixel_of_a_held_road_of_its_class() {
         held.first().is_some_and(|(class, _)| class.major()),
         "majors are held first"
     );
-    let tolerance = Detail::Streets.tolerance_m() + 0.06;
+    let tolerance = Detail::Streets.half_pixel_m() + 0.06;
     for road in engine.roads(key).unwrap() {
         for (lat, lon) in road.points() {
             let p = frame.place(lat, lon);
@@ -123,7 +119,7 @@ fn room(roads: &mut Roads) -> Room<'_> {
         runs: 0,
         points: 0,
         full: false,
-        corner: (-334_000_000, -707_000_000),
+        corner_e7: (-334_000_000, -707_000_000),
         scale: (0.093, 0.111),
         tolerance: 1.0,
         open: None,

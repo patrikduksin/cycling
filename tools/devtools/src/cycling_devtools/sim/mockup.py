@@ -95,8 +95,6 @@ def matching(panel, target):
 
 
 def mixes(paint, under):
-    """The RGB565 colours the firmware's 4-bit blend makes of `paint` over
-    `under`, from a sliver to solid."""
     fg, bg = quantised(paint), quantised(under)
     return {tuple((f * a + b * (15 - a) + 7) // 15 for f, b in zip(fg, bg, strict=True)) for a in range(1, 16)}
 

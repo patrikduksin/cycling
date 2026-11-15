@@ -3,8 +3,7 @@
 //! Feed fixes with [`Lookahead::fix`]; call [`Lookahead::step`] often (the
 //! device calls it once per main-loop pass, outside rendering). Each step
 //! does one thing: reads the header, loads one chunk of a tile, matches the
-//! newest fix, or predicts the road ahead. With none of that due, it loads
-//! one chunk of a tile a map [`want`](Lookahead::want)s. Matching and prediction restart
+//! newest fix, or predicts the road ahead. Matching and prediction restart
 //! from scratch when they need a tile that is not cached, so no partial
 //! state survives between steps; they are cheap enough for that.
 use crate::cache::{Cache, Lookup};
@@ -117,6 +116,12 @@ pub enum Status {
 }
 
 #[derive(Clone, Copy, Debug)]
+enum Load {
+    Done,
+    Underway,
+    PackFailed,
+}
+
 enum Pack {
     Unread,
     Ready(Header),
@@ -331,9 +336,9 @@ impl<'a> Lookahead<'a> {
         self.steps = self.steps.wrapping_add(1);
         if let Some(key) = self.need {
             match self.load(source, &header, key) {
-                Some(true) => self.need = None,
-                Some(false) => {}
-                None => return Status::NoPack,
+                Load::Done => self.need = None,
+                Load::Underway => {}
+                Load::PackFailed => return Status::NoPack,
             }
             return Status::Working;
         }
@@ -432,23 +437,20 @@ impl<'a> Lookahead<'a> {
         self.load_wanted(source, &header)
     }
 
-    /// One step of loading `key`: true once it is cached or known missing,
-    /// `None` once read errors have made the pack unusable.
-    fn load(&mut self, source: &mut impl Source, header: &Header, key: TileKey) -> Option<bool> {
+    fn load(&mut self, source: &mut impl Source, header: &Header, key: TileKey) -> Load {
         match self.cache.load(source, header, key) {
-            Ok(done) => {
-                if done {
-                    self.failures = 0;
-                }
-                Some(done)
+            Ok(true) => {
+                self.failures = 0;
+                Load::Done
             }
+            Ok(false) => Load::Underway,
             Err(_) => {
                 self.failures = self.failures.saturating_add(1);
                 if self.failures >= READ_FAILURES {
                     self.pack = Pack::Failed;
-                    return None;
+                    return Load::PackFailed;
                 }
-                Some(false)
+                Load::Underway
             }
         }
     }
@@ -459,8 +461,8 @@ impl<'a> Lookahead<'a> {
             return Status::Idle;
         };
         match self.load(source, header, key) {
-            Some(_) => Status::Working,
-            None => Status::NoPack,
+            Load::Done | Load::Underway => Status::Working,
+            Load::PackFailed => Status::NoPack,
         }
     }
 

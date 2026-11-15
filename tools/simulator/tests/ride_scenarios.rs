@@ -9848,9 +9848,6 @@ mod course_map {
 
     const EVERY_SENSOR: [&str; 3] = ["HEART RATE", "POWER METER", "SPEED/CAD"];
 
-    /// A rider with every sensor and the central Santiago pack, who loaded
-    /// `course` from the phone and rides `route` at 36 km/h, 10 m a fix, on
-    /// the map page.
     fn on_the_map(course: &[(f64, f64)], route: &[(f64, f64)]) -> Sim {
         on_the_map_with(course, route, &EVERY_SENSOR)
     }

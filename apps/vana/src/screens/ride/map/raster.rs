@@ -2,9 +2,6 @@ use crate::screens::chrome::{Row, WIDTH, blend};
 
 pub type Point = (f32, f32);
 
-/// A segment in screen pixels, with what its rows need worked out once:
-/// the device has no divide or square root instruction, and a row is painted
-/// every frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stroke {
     pub a: Point,
@@ -74,8 +71,6 @@ impl Stroke {
     }
 }
 
-/// The `u` for which `low <= k u + c <= high`, given `per_k`, `1 / k` (0
-/// when `k` is 0).
 fn solve_interval(k: f32, per_k: f32, c: f32, low: f32, high: f32) -> Option<(f32, f32)> {
     if k.abs() < 1e-6 {
         return (low..=high)
@@ -86,9 +81,6 @@ fn solve_interval(k: f32, per_k: f32, c: f32, low: f32, high: f32) -> Option<(f3
     Some((p.min(q), p.max(q)))
 }
 
-/// The square root by multiplies only: a reciprocal-root estimate from the
-/// float's bits refined by three Newton steps, within a few ulps of
-/// `sqrtf`.
 fn root(x: f32) -> f32 {
     if x <= 0.0 {
         return 0.0;
@@ -174,8 +166,6 @@ impl Triangle {
     }
 }
 
-/// A segment with square ends: every point within `half` of its line and
-/// at most `half` past either end.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bar {
     top: f32,
@@ -183,7 +173,6 @@ pub struct Bar {
     slabs: [Slab; 2],
 }
 
-/// The columns `centre + slope * y ± half` of the row through `y`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Slab {
     centre: f32,
@@ -192,7 +181,6 @@ struct Slab {
 }
 
 impl Slab {
-    /// The points within `half` of the line through `c` normal to `k`.
     fn new(k: Point, c: Point, half: f32) -> Self {
         if k.0.abs() < 1e-4 {
             return Self {
@@ -231,7 +219,6 @@ impl Bar {
         }
     }
 
-    /// Where the row through `y` crosses the bar.
     fn across(&self, y: f32) -> Option<(f32, f32)> {
         if y < self.top || y > self.bottom {
             return None;
@@ -243,8 +230,6 @@ impl Bar {
         (left < right).then_some((left, right))
     }
 
-    /// How much of pixel (`x`, `y`) the bar covers, 0 to 1, by the row
-    /// through its centre.
     #[cfg(test)]
     pub fn share(&self, x: usize, y: usize) -> f32 {
         self.across(y as f32 + 0.5).map_or(0.0, |(left, right)| {
@@ -253,15 +238,10 @@ impl Bar {
     }
 }
 
-/// How much of a pixel a road covers, in the layer's four steps.
 fn quarter_steps(share: f32) -> u8 {
     (share * 3.0 + 0.5) as u8
 }
 
-/// The roads of a fill, rasterised once and painted from a table each
-/// frame. Every pixel of `ROWS` rows from `top` holds a nibble: two bits of
-/// how much a minor road covers it and two of a major road, the largest of
-/// each class's bars. All zero bytes are an empty layer.
 #[derive(Clone)]
 pub struct Layer<const ROWS: usize> {
     top: usize,
@@ -283,8 +263,6 @@ impl Class {
     }
 }
 
-/// The two pixels of each layer byte: per nibble the ground, a minor road
-/// blended over it, then a major road over that.
 pub fn pairs(ground: u16, minor: u16, major: u16) -> [[u16; 2]; 256] {
     let colour = |nibble: u8| {
         let step = |shift: u32| (nibble >> shift & 3) * 5;
@@ -316,8 +294,6 @@ impl<const ROWS: usize> Layer<ROWS> {
         pairs[x / 2] >> (4 * (x % 2)) & 0xf
     }
 
-    /// Add a bar of `class`: each pixel keeps the most any bar of the class
-    /// covers it.
     pub fn add(&mut self, bar: &Bar, class: Class) {
         let first = (bar.top - 0.5).max(self.top as f32);
         let last = (bar.bottom - 0.5).min((self.top + ROWS) as f32 - 1.0);
@@ -353,8 +329,6 @@ impl<const ROWS: usize> Layer<ROWS> {
         }
     }
 
-    /// Paint `row` from `pairs`: every pixel in the layer's rows, the
-    /// ground too.
     pub fn paint(&self, row: &mut Row, pairs: &[[u16; 2]; 256]) {
         let Some(bytes) = row
             .y()

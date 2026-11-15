@@ -1,9 +1,3 @@
-//! The roads of a cached tile, for drawing a map.
-//!
-//! A map asks [`Header::tiles_under`] which tiles its view touches, asks
-//! [`Lookahead::want`](crate::Lookahead::want) for them, and draws each
-//! tile [`Lookahead::roads`](crate::Lookahead::roads) returns. Roads come as
-//! a class, flags and absolute points; the tile records stay private.
 use crate::pack::{Header, TileKey};
 use crate::tile::{Edge, Tile, class};
 
@@ -50,7 +44,6 @@ impl RoadClass {
 pub struct Road<'t> {
     tile: Tile<'t>,
     edge: Edge,
-    /// The tile's south-west corner, micro-degrees.
     origin: (i32, i32),
 }
 
@@ -123,8 +116,6 @@ impl Header {
     }
 }
 
-/// Some side of the convex polygon `corners` has the whole `square` beyond
-/// it. The square's own sides are the bounding box the caller iterates.
 fn separated(corners: &[(i128, i128); 4], square: &[(i128, i128); 4]) -> bool {
     let cross = |a: (i128, i128), b: (i128, i128), p: (i128, i128)| {
         (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0)

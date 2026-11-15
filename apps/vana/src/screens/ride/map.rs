@@ -476,7 +476,6 @@ const ROAD_SEGMENTS: usize = 2_048;
 const MINOR_ROAD_HALF_PX: f32 = 2.5;
 const MAJOR_ROAD_HALF_PX: f32 = 4.5;
 const GROUND_ROWS: usize = GROUND.end - GROUND.start;
-/// Roads are fetched for the view and this share of it more each way.
 const ROAD_FETCH_MARGIN: f32 = 0.25;
 struct ArrowLayer {
     shaft_half: f32,
@@ -648,8 +647,6 @@ impl Frame {
         });
     }
 
-    /// The ground the last fill drew, `margin` of it wider each way, in
-    /// the ride's frame.
     fn view(&self, margin: f32) -> Option<[Point; 4]> {
         if !self.has_pose || self.show != Show::Map {
             return None;
@@ -662,9 +659,6 @@ impl Frame {
         Some([(left, top), (right, top), (right, bottom), (left, bottom)].map(|p| at.back(p)))
     }
 
-    /// The tiles of `header` the roads are fetched from, in the ride's
-    /// frame `ride`: those under the screen, then the margin's while there
-    /// is room.
     fn road_tiles(
         &self,
         header: &terrain::Header,
@@ -685,10 +679,6 @@ impl Frame {
     }
 }
 
-/// Project `points` as one polyline `reach` wide and hand each segment on
-/// the screen to `put` while it says there is room for more. A point is
-/// dropped while a straight segment past it strays less than `STRAY_PX`
-/// from it.
 fn project(
     at: &Projection,
     reach: f32,
@@ -721,8 +711,6 @@ fn project(
     }
 }
 
-/// Whether the segment `a`-`b` passes within `STRAY_PX` of every point of
-/// `passed`.
 fn straight_past(a: Point, b: Point, passed: &[Point]) -> bool {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let squared = dx * dx + dy * dy;
@@ -744,8 +732,6 @@ fn quarter((x, y): Point) -> (i32, i32) {
     (libm::roundf(4.0 * x) as i32, libm::roundf(4.0 * y) as i32)
 }
 
-/// Rasterise the held roads the pose's step draws onto the ground, nearest
-/// tile first, until `ROAD_SEGMENTS` are drawn.
 fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point) {
     let Frame {
         roads,

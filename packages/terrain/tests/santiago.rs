@@ -8,14 +8,12 @@ use terrain::pack::HEADER_BYTES;
 use terrain::{Header, Lookahead, PAGE_BYTES, RoadClass, Status, TileKey};
 
 const PACK: &[u8] = include_bytes!("data/santiago-centro.terrain");
-/// Plaza de Armas, (lat_e7, lon_e7).
 const PLAZA: (i32, i32) = (-334_378_000, -706_505_000);
 
 fn header() -> Header {
     Header::parse(PACK[..HEADER_BYTES].try_into().unwrap()).unwrap()
 }
 
-/// The whole grid as a view's corners.
 fn everything(header: &Header) -> [(i32, i32); 4] {
     let (south, west) = (header.south * 10, header.west * 10);
     let north = south + i32::from(header.rows) * header.tile as i32 * 10;
@@ -23,7 +21,6 @@ fn everything(header: &Header) -> [(i32, i32); 4] {
     [(south, west), (north, west), (north, east), (south, east)]
 }
 
-/// A look-ahead with every tile of the pack cached, as a map would have it.
 fn cached(arena: &mut [u8]) -> (Lookahead<'_>, Vec<TileKey>) {
     let header = header();
     let keys: Vec<TileKey> = header.tiles_under(&everything(&header)).collect();
@@ -74,10 +71,6 @@ fn every_tile_of_central_santiago_draws_its_roads_inside_it() {
     assert!(nearest_to_plaza < 80.0, "{nearest_to_plaza:.0} m");
 }
 
-/// Host time to read every road of a tile and turn its points into metres
-/// from the tile's corner, as a map's extraction does. A proxy for the
-/// device only: run it with
-/// `cargo test -p terrain --release --test santiago -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn extraction_cost_per_tile() {

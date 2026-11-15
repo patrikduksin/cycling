@@ -519,11 +519,8 @@ pub(crate) mod scenes {
         include_bytes!("../../../packages/terrain/tests/data/santiago-centro.terrain");
     const PLAZA: (f64, f64) = (-33.4378, -70.6505);
 
-    /// On the map page at `at`, metres east and north of Plaza de
-    /// Armas, following a course on bearing `bearing` (degrees) that turns
-    /// right `turn_m` ahead, with the pack's roads under it. The places are
-    /// where `map::tests::santiago`'s probe found each step's view of the
-    /// pack densest; `scale` is the step's scale bar.
+    /// The places are where `map::tests::santiago`'s probe found each
+    /// step's view of the pack densest.
     fn santiago(at: (f64, f64), bearing: f64, turn_m: f64, scale: &str) -> Sim {
         let (sin, cos) = bearing.to_radians().sin_cos();
         let to = |right: f64, ahead: f64| {

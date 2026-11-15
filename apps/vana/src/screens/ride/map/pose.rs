@@ -136,7 +136,6 @@ impl Projection {
         )
     }
 
-    /// The ride's point that `at` puts at screen point `p`.
     pub fn back(&self, p: Point) -> Point {
         let right = (p.0 - self.rider.0) / self.scale;
         let ahead = (self.rider.1 - p.1) / self.scale;

@@ -1,13 +1,3 @@
-//! A measurement build's receiver: NMEA for a ride through central
-//! Santiago, fed to the parser in place of the UART's bytes, so the map's
-//! roads can be timed on the device in the densest view (#361). Only
-//! `build.sh scripted-gnss` compiles it; the image riders flash never does.
-//!
-//! The rider waits at Plaza de Armas for `HOLD_MS` after boot, long enough
-//! to start a ride and page to the map, then rides the committed fixture
-//! course at `SPEED_M_S` for `ON_COURSE_M`, and carries straight on for
-//! `OFF_COURSE_M`, so the map also shows the way back to a junction far
-//! behind, at its widest step. Then it stands at the end.
 use core::fmt::Write as _;
 
 const COURSE: &str =
@@ -31,7 +21,6 @@ impl Script {
         }
     }
 
-    /// This second's sentences into `bytes`, once a second; the byte count.
     pub fn sentences(&mut self, now: u64, bytes: &mut [u8]) -> usize {
         let elapsed_ms = now.saturating_sub(self.started_ms);
         let second = elapsed_ms / 1000;
@@ -65,7 +54,6 @@ impl Script {
     }
 }
 
-/// `$body*checksum\r\n`, dropped if it does not fit.
 fn sentence(out: &mut Out, body: core::fmt::Arguments) {
     let mut bytes = [0u8; 120];
     let mut line = Out {
@@ -96,7 +84,6 @@ impl core::fmt::Write for Out<'_> {
     }
 }
 
-/// Degrees as NMEA's `dddmm.mmmmm,H`.
 struct Angle {
     degrees: u32,
     minutes: f64,
@@ -135,7 +122,6 @@ impl core::fmt::Display for Angle {
     }
 }
 
-/// The course's points, (lat, lon) in degrees.
 fn points() -> impl Iterator<Item = (f64, f64)> + Clone {
     COURSE.split("<trkpt ").skip(1).filter_map(|point| {
         let value = |key: &str| -> Option<f64> {
@@ -147,15 +133,11 @@ fn points() -> impl Iterator<Item = (f64, f64)> + Clone {
     })
 }
 
-/// Metres east and north from `a` to `b`.
 fn east_north(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
     let east = (b.1 - a.1) * M_PER_DEGREE * libm::cos(a.0.to_radians());
     (east, (b.0 - a.0) * M_PER_DEGREE)
 }
 
-/// Where the rider is `ridden_m` along: on the course up to
-/// `ON_COURSE_M`, then straight on along its last bearing. With the bearing
-/// of travel, degrees from north.
 fn place(ridden_m: f64) -> (f64, f64, f64) {
     let mut walked = 0.0;
     let mut last = None;
@@ -183,7 +165,6 @@ fn place(ridden_m: f64) -> (f64, f64, f64) {
     ahead(end, bearing, ridden_m - walked)
 }
 
-/// `metres` on from `at` along `bearing`.
 fn ahead(at: (f64, f64), bearing: f64, metres: f64) -> (f64, f64, f64) {
     let (sin, cos) = (
         libm::sin(bearing.to_radians()),

@@ -257,11 +257,11 @@ mod tests {
 
     struct Solid {
         color: u16,
-        honest: bool,
+        hashes_color: bool,
     }
     impl core::hash::Hash for Solid {
         fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-            if self.honest {
+            if self.hashes_color {
                 self.color.hash(state);
             }
         }
@@ -275,7 +275,7 @@ mod tests {
     fn solid(color: u16) -> Solid {
         Solid {
             color,
-            honest: true,
+            hashes_color: true,
         }
     }
 
@@ -406,7 +406,7 @@ mod tests {
         let mut shell = Shell::new(display, input, power, Memory::default(), 0).unwrap();
         let lying = |color| Solid {
             color,
-            honest: false,
+            hashes_color: false,
         };
         assert_eq!(shell.draw(&lying(1), 0), Drawn::Sent);
         shell.draw(&lying(2), 10);

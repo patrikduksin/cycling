@@ -5,7 +5,7 @@ use crate::geo::Point;
 use crate::matcher::Matcher;
 use crate::pack::{HEADER_BYTES, Header, MAGIC, TileKey};
 use crate::tile::{class, crc32, flag};
-use crate::{BEHIND_SAMPLES, End, Fix, Lookahead, PAGE_BYTES, Status};
+use crate::{BEHIND_SAMPLES, End, Fix, Lookahead, PAGE_BYTES, RoadClass, Status};
 use std::vec;
 use std::vec::Vec;
 
@@ -936,4 +936,180 @@ fn a_match_on_a_rewritten_tile_is_not_read_from_the_new_one() {
         matched.push(found.map(|m| (m.edge, m.z_dm / 10)));
     }
     assert_eq!(matched, [Some((2, 106)), Some((0, 303))]);
+}
+
+/// Step `engine` until it has nothing left to do.
+fn settle(engine: &mut Lookahead<'_>, source: &mut &[u8]) {
+    let mut steps = 0;
+    while engine.step(source) == Status::Working {
+        steps += 1;
+        assert!(steps < 500);
+    }
+}
+
+#[test]
+fn a_roads_points_are_its_geometry_from_node_to_node_in_e7() {
+    let shape = [
+        (-300.0, -100.0, 500.0),
+        (-100.0, 50.0, 510.0),
+        (100.0, -20.0, 505.0),
+        (300.0, 200.0, 520.0),
+    ];
+    let mut bridge = road(&shape, class::PRIMARY, 3);
+    bridge.flags = flag::ONEWAY | flag::BRIDGE;
+    let pack = pack(&[bridge]);
+    let key = TileKey { row: 0, col: 0 };
+    let mut arena = vec![0u8; PAGE_BYTES];
+    let mut engine = Lookahead::new(&mut arena, 10_000.0);
+    let mut source: &[u8] = &pack;
+    assert!(
+        engine.roads(key).is_none(),
+        "nothing is cached before a step"
+    );
+    engine.want([key]);
+    settle(&mut engine, &mut source);
+    let roads: Vec<_> = engine.roads(key).unwrap().collect();
+    assert_eq!(roads.len(), 1);
+    let expected: Vec<(i32, i32)> = shape
+        .iter()
+        .map(|&(east, north, _)| {
+            let (x, y) = local(east, north);
+            ((SOUTH + i32::from(y)) * 10, (WEST + i32::from(x)) * 10)
+        })
+        .collect();
+    assert_eq!(roads[0].points().collect::<Vec<_>>(), expected);
+    assert_eq!(roads[0].class(), RoadClass::Primary);
+    assert_eq!(roads[0].flags(), flag::ONEWAY | flag::BRIDGE);
+}
+
+#[test]
+fn class_bytes_parse_to_road_classes_and_majors_are_trunk_to_secondary() {
+    let bytes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 200];
+    let roads: Vec<_> = bytes
+        .iter()
+        .enumerate()
+        .map(|(n, &byte)| {
+            let east = n as f64 * 50.0 - 300.0;
+            road(&[(east, 0.0, 0.0), (east, 100.0, 0.0)], byte, 0)
+        })
+        .collect();
+    let pack = pack(&roads);
+    let key = TileKey { row: 0, col: 0 };
+    let mut arena = vec![0u8; PAGE_BYTES];
+    let mut engine = Lookahead::new(&mut arena, 10_000.0);
+    let mut source: &[u8] = &pack;
+    engine.want([key]);
+    settle(&mut engine, &mut source);
+    let classes: Vec<_> = engine.roads(key).unwrap().map(|r| r.class()).collect();
+    use RoadClass::*;
+    assert_eq!(
+        classes,
+        [
+            Path,
+            Trunk,
+            Primary,
+            Secondary,
+            Tertiary,
+            Unclassified,
+            Residential,
+            Service,
+            Track,
+            Cycleway,
+            Path,
+            Path,
+            Path
+        ]
+    );
+    let majors: Vec<_> = classes.iter().filter(|c| c.major()).collect();
+    assert_eq!(majors, [&Trunk, &Primary, &Secondary]);
+}
+
+#[test]
+fn a_tile_the_map_wants_never_delays_the_forecast() {
+    let ahead_road = [road(
+        &[(0.0, -400.0, 100.0), (0.0, 400.0, 140.0)],
+        class::SECONDARY,
+        7,
+    )];
+    let side_street = [road(
+        &[(-200.0, 0.0, 100.0), (200.0, 0.0, 100.0)],
+        class::RESIDENTIAL,
+        0,
+    )];
+    let pack = row_pack(&[&ahead_road, &side_street]);
+    let (here, beside) = (TileKey { row: 0, col: 0 }, TileKey { row: 0, col: 1 });
+    let fix = |north: f64, at_ms: u64| {
+        let (x, y) = local(0.0, north);
+        Fix {
+            lat: SOUTH + i32::from(y),
+            lon: WEST + i32::from(x),
+            at_ms,
+        }
+    };
+    let steps_to_forecast = |want: &[TileKey]| {
+        let mut arena = vec![0u8; 4 * PAGE_BYTES];
+        let mut engine = Lookahead::new(&mut arena, 10_000.0);
+        let mut source: &[u8] = &pack;
+        engine.want(want.iter().copied());
+        engine.fix(fix(-320.0, 0));
+        engine.fix(fix(-300.0, 4_000));
+        let mut steps = 0;
+        while !engine.ahead().on_road() {
+            assert_eq!(engine.step(&mut source), Status::Working);
+            steps += 1;
+        }
+        let at_forecast = engine.roads(beside).is_some();
+        settle(&mut engine, &mut source);
+        let after = engine.roads(beside).map(Iterator::count);
+        (steps, at_forecast, after)
+    };
+    let (alone, ..) = steps_to_forecast(&[]);
+    assert_eq!(
+        steps_to_forecast(&[beside, here]),
+        (alone, false, Some(1)),
+        "the forecast takes as many steps, and the map's tile follows it"
+    );
+}
+
+#[test]
+fn tiles_under_a_rotated_view_are_the_tiles_it_covers() {
+    use std::collections::BTreeSet;
+    let grid = Header::parse(&header(TILE as u32, SOUTH, WEST, 6, 6)).unwrap();
+    // A 3 x 4 km view turned 30° from north, its middle one tile in from the
+    // grid's west edge, so part of it is off the grid.
+    let middle = (
+        f64::from(SOUTH) + 2.6 * f64::from(TILE),
+        f64::from(WEST) + 1.2 * f64::from(TILE),
+    );
+    let lon_um = LON_UM;
+    let (sin, cos) = 30f64.to_radians().sin_cos();
+    let at = |across: f64, along: f64| {
+        let (east, north) = (across * cos + along * sin, along * cos - across * sin);
+        let lat = middle.0 + north / 0.111_195;
+        let lon = middle.1 + east / (lon_um * 1e-6);
+        ((lat * 10.0).round() as i32, (lon * 10.0).round() as i32)
+    };
+    let corners = [
+        at(-1500.0, -2000.0),
+        at(1500.0, -2000.0),
+        at(1500.0, 2000.0),
+        at(-1500.0, 2000.0),
+    ];
+    let under: BTreeSet<TileKey> = grid.tiles_under(&corners).collect();
+    let mut seen = BTreeSet::new();
+    for across in (-300..=300).map(|i| f64::from(i) * 5.0) {
+        for along in (-400..=400).map(|i| f64::from(i) * 5.0) {
+            let (lat, lon) = at(across, along);
+            seen.extend(grid.key(lat / 10, lon / 10));
+        }
+    }
+    assert_eq!(under, seen);
+    let lats = corners.map(|(lat, _)| lat / 10);
+    let lons = corners.map(|(_, lon)| lon / 10);
+    let south_west = grid.key(*lats.iter().min().unwrap(), WEST).unwrap();
+    let north_east = grid
+        .key(*lats.iter().max().unwrap(), *lons.iter().max().unwrap())
+        .unwrap();
+    let boxed = usize::from(north_east.row - south_west.row + 1) * usize::from(north_east.col + 1);
+    assert!(under.len() < boxed, "{} of the {boxed} boxed", under.len());
 }

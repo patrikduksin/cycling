@@ -219,6 +219,19 @@ impl Track<'_> {
 }
 
 /// Refill `frame` from `track` unless `held` says it already shows it.
+#[derive(Clone, Copy)]
+pub struct Filled<'a> {
+    pub frame: &'a Frame,
+    pub key: Key,
+}
+
+/// The frame is filled from its key alone, so the key stands for it.
+impl core::hash::Hash for Filled<'_> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+    }
+}
+
 pub fn update(frame: &mut Frame, held: &mut Option<Key>, track: &Track) {
     let key = track.key();
     if *held != Some(key) {
@@ -1462,11 +1475,11 @@ mod tests {
         }
     }
 
-    fn page<'a>(frame: Option<(&'a Frame, Key)>) -> View<'a> {
+    fn page<'a>(map: Option<Filled<'a>>) -> View<'a> {
         let mut view = View::new(Page::Ride, 0, None);
         view.ride_page = RidePage::Map;
         view.radar_paired = true;
-        view.show_map(frame);
+        view.show_map(map);
         view.totals.add(1000, 8333, &Default::default(), None);
         view.prepare();
         view
@@ -1476,9 +1489,12 @@ mod tests {
     fn every_state_lays_out_its_text() {
         let check = |track: &Track, want: &[&str], what: &str| {
             let frame = filled(track);
-            page(Some((&frame, track.key())))
-                .canvas()
-                .assert_laid_out(PAGE, want, what);
+            page(Some(Filled {
+                frame: &frame,
+                key: track.key(),
+            }))
+            .canvas()
+            .assert_laid_out(PAGE, want, what);
         };
         page(None)
             .canvas()

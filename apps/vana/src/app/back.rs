@@ -23,7 +23,7 @@ use crate::ride::log::{Slot, Status, decode};
 use crate::ride::turn_back::Leg;
 use crate::screens::chrome::Tone;
 pub use crate::screens::ride::MapFrame;
-use crate::screens::ride::{Back, MapKey, RidePage, Track, update_map};
+use crate::screens::ride::{Back, FilledMap, MapKey, RidePage, Track, update_map};
 use device_api::bulk::ReadWrite;
 
 pub use crate::ride::homing::Crumb;
@@ -401,9 +401,10 @@ pub(super) fn refresh_map(back: &mut Option<&'static mut BackToStart>) {
 }
 
 /// What the map page draws: borrows `Runtime::back`'s frame.
-pub(super) fn map_of<'a>(
-    back: &'a Option<&'static mut BackToStart>,
-) -> Option<(&'a MapFrame, MapKey)> {
+pub(super) fn map_of<'a>(back: &'a Option<&'static mut BackToStart>) -> Option<FilledMap<'a>> {
     let state = back.as_deref()?;
-    Some((&*state.map, state.map_key?))
+    Some(FilledMap {
+        frame: &*state.map,
+        key: state.map_key?,
+    })
 }

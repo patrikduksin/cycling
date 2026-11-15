@@ -147,7 +147,7 @@ pub(super) enum Extra<'a> {
         sunset: ride::Light,
     },
     /// The track, projected and kept beside the breadcrumb.
-    Map(Option<(&'a ride::MapFrame, ride::MapKey)>),
+    Map(Option<ride::FilledMap<'a>>),
     /// Settings' lines, and the row under a resting finger.
     Settings {
         lines: SettingsLines,
@@ -192,8 +192,8 @@ pub(super) type SettingsLines = [Text<38>; 1 + 2 * super::settings::SECTION_ROWS
 
 /// `$name` is the variant's field, or none when `$pat` is another variant.
 macro_rules! picks {
-    ($($name:ident -> $ty:ty = $pat:pat => $found:expr;)*) => {
-        $(fn $name(&self) -> Option<$ty> {
+    ($($(#[$meta:meta])* $name:ident -> $ty:ty = $pat:pat => $found:expr;)*) => {
+        $($(#[$meta])* fn $name(&self) -> Option<$ty> {
             match self {
                 $pat => Some($found),
                 _ => None,
@@ -206,14 +206,14 @@ impl<'a> Extra<'a> {
     picks! {
         climb_lent -> ClimbLent<'a> = Self::Climb { lent, .. } => *lent;
         climb_frame -> &ClimbFrame = Self::Climb { frame, .. } => frame;
+        #[cfg(test)]
         chart -> &ride::WorkoutChart = Self::Workout(chart) => chart;
         lap -> Lap = Self::Lap { lap, .. } => *lap;
         previous_lap -> Option<Lap> = Self::Lap { previous, .. } => *previous;
         lap_bars -> &ride::LapBars = Self::Lap { bars, .. } => bars;
         back -> ride::Back = Self::Back { back, .. } => *back;
         sunset -> ride::Light = Self::Back { sunset, .. } => *sunset;
-        map -> Option<&'a ride::MapFrame> = Self::Map(frame) => frame.map(|(frame, _)| frame);
-        map_key -> Option<ride::MapKey> = Self::Map(frame) => frame.map(|(_, key)| key);
+        map -> Option<&'a ride::MapFrame> = Self::Map(map) => map.map(|map| map.frame);
         settings_lines -> &SettingsLines = Self::Settings { lines, .. } => lines;
         settings_pressed -> Option<u16> = Self::Settings { pressed, .. } => *pressed;
         lines -> &Lines = Self::Phone { lines, .. } | Self::Setup { lines, .. } => lines;
@@ -236,7 +236,7 @@ pub struct Scene<'v> {
     light: bool,
     bar: Option<&'v StatusBar>,
     body: &'v Body,
-    extra: &'v Extra<'v>,
+    painted: Painted<'v>,
     pub(super) gauges: [Option<ride::Mark>; 2],
     pub(super) radar: Option<ride::Radar>,
     cues: &'static [Cue],
@@ -259,33 +259,65 @@ enum Kind {
     },
 }
 
-impl core::hash::Hash for Extra<'_> {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        core::mem::discriminant(self).hash(state);
+/// What a scene paints of the page's extra. Paint reads the extra only
+/// through this, so whatever it paints is hashed with the scene.
+#[derive(Clone, Copy, Hash)]
+enum Painted<'v> {
+    None,
+    Climb(&'v ClimbFrame),
+    Workout(&'v ride::WorkoutChart),
+    Lap,
+    Back(Option<(u16, crate::ride::homing::Mode)>),
+    Map(Option<&'v ride::FilledMap<'v>>),
+    Settings,
+    Phone(Option<&'v super::qr::Placed>),
+    Setup,
+    Ready,
+    Workouts,
+    Bests,
+    Form,
+    Summary(Option<&'v ride::ElevationChart>),
+}
+
+impl<'v> Painted<'v> {
+    picks! {
+        climb -> &'v ClimbFrame = Self::Climb(frame) => *frame;
+        chart -> &'v ride::WorkoutChart = Self::Workout(chart) => *chart;
+        arrow -> Option<(u16, crate::ride::homing::Mode)> = Self::Back(arrow) => *arrow;
+        map -> Option<&'v ride::FilledMap<'v>> = Self::Map(map) => *map;
+        qr -> Option<&'v super::qr::Placed> = Self::Phone(qr) => *qr;
+        elevation -> Option<&'v ride::ElevationChart> = Self::Summary(elevation) => *elevation;
+    }
+}
+
+impl Extra<'_> {
+    fn painted(&self) -> Painted<'_> {
         match self {
-            Self::None => {}
-            Self::Climb { lent: _, frame } => frame.hash(state),
-            Self::Workout(chart) => chart.hash(state),
+            Self::None => Painted::None,
+            Self::Climb { lent: _, frame } => Painted::Climb(frame),
+            Self::Workout(chart) => Painted::Workout(chart),
             Self::Lap {
                 bars: _,
                 lap: _,
                 previous: _,
-            } => {}
-            Self::Back { back, sunset: _ } => ride::back::arrow(*back).hash(state),
-            Self::Map(frame) => frame.map(|(_, key)| key).hash(state),
+            } => Painted::Lap,
+            Self::Back { back, sunset: _ } => Painted::Back(ride::back::arrow(*back)),
+            Self::Map(map) => Painted::Map(map.as_ref()),
             Self::Settings {
                 lines: _,
                 pressed: _,
-            } => {}
-            Self::Phone { qr, lines: _ } => qr.hash(state),
-            Self::Setup { step: _, lines: _ } => {}
-            Self::Ready(_) | Self::Workouts(_) | Self::Form(_) => {}
-            Self::Bests { bests: _, mode: _ } => {}
+            } => Painted::Settings,
+            Self::Phone { qr, lines: _ } => Painted::Phone(qr.as_ref()),
+            Self::Setup { step: _, lines: _ } => Painted::Setup,
+            Self::Ready(_) => Painted::Ready,
+            Self::Workouts(_) => Painted::Workouts,
+            Self::Bests { bests: _, mode: _ } => Painted::Bests,
+            Self::Form(_) => Painted::Form,
             Self::Summary {
                 after: _,
                 past_title: _,
                 elevation,
-            } => elevation.hash(state),
+            } => Painted::Summary(*elevation),
         }
     }
 }
@@ -390,31 +422,27 @@ impl<'v> Scene<'v> {
     }
 
     pub(super) fn climb(&self) -> &'v ClimbFrame {
-        self.shown(self.extra.climb_frame(), "climb chart", &NO_CLIMB_FRAME)
+        self.shown(self.painted.climb(), "climb chart", &NO_CLIMB_FRAME)
     }
 
     pub(super) fn chart(&self) -> &'v ride::WorkoutChart {
-        self.shown(self.extra.chart(), "workout chart", &NO_CHART)
+        self.shown(self.painted.chart(), "workout chart", &NO_CHART)
     }
 
-    pub(super) fn back(&self) -> ride::Back {
-        self.shown(self.extra.back(), "way back", ride::Back::default())
+    pub(super) fn arrow(&self) -> Option<(u16, crate::ride::homing::Mode)> {
+        self.shown(self.painted.arrow(), "way back", None)
     }
 
-    pub(super) fn map(&self) -> Option<&'v ride::MapFrame> {
-        self.shown(self.extra.map(), "map", None)
-    }
-
-    pub(super) fn map_key(&self) -> Option<ride::MapKey> {
-        self.shown(self.extra.map_key(), "map", None)
+    pub(super) fn map(&self) -> Option<&'v ride::FilledMap<'v>> {
+        self.shown(self.painted.map(), "map", None)
     }
 
     pub(super) fn qr(&self) -> Option<&'v super::qr::Placed> {
-        self.shown(self.extra.qr(), "code", None)
+        self.shown(self.painted.qr(), "code", None)
     }
 
     fn elevation_chart(&self) -> Option<&'v ride::ElevationChart> {
-        self.shown(self.extra.elevation(), "summary", None)
+        self.shown(self.painted.elevation(), "summary", None)
     }
 
     #[cfg(test)]
@@ -778,8 +806,8 @@ impl<'a> View<'a> {
     }
 
     #[inline(never)]
-    pub fn show_map(&mut self, frame: Option<(&'a ride::MapFrame, ride::MapKey)>) {
-        self.extra = Extra::Map(frame);
+    pub fn show_map(&mut self, map: Option<ride::FilledMap<'a>>) {
+        self.extra = Extra::Map(map);
     }
 
     /// Settings' lines, blank, for the caller to write.
@@ -951,7 +979,7 @@ impl<'a> View<'a> {
             light: self.light,
             bar: (!sheet && !self.full_screen()).then_some(&self.bar),
             body: &self.body,
-            extra: &self.extra,
+            painted: self.extra.painted(),
             gauges,
             radar,
             cues: if sheet { &[] } else { self.cues },

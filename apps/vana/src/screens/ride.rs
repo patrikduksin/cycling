@@ -48,7 +48,7 @@ pub use back::{Arrow, Back, Light};
 pub use climb::{Frame as ClimbFrame, Lent as ClimbLent};
 pub use elevation::Chart as ElevationChart;
 pub use lap::{LapBar, LapBars};
-pub use map::{Frame as MapFrame, Key as MapKey, Track, update as update_map};
+pub use map::{Filled as FilledMap, Frame as MapFrame, Key as MapKey, Track, update as update_map};
 pub use workout::{Chart as WorkoutChart, EXTEND_ROWS, Training, chart as workout_chart};
 
 use chrome::{ACCENT, AMBER, BLACK, BODY as BODY_FACE, POWER, Row, VALUE};
@@ -409,8 +409,8 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
         RidePage::Stats | RidePage::Lap => {}
         RidePage::Workout => workout::chart_parts(scene.chart(), parts),
         RidePage::Climb => climb::chart_parts(scene.climb(), parts),
-        RidePage::Map => parts.add(BODY.top..BODY.bottom, &scene.map_key()),
-        RidePage::Back => back::parts(scene.back(), parts),
+        RidePage::Map => parts.add(BODY.top..BODY.bottom, &scene.map()),
+        RidePage::Back => back::parts(scene.arrow(), parts),
     }
     if page != RidePage::Main {
         scene.canvas().parts(parts);
@@ -430,14 +430,14 @@ fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
             scene.canvas().paint(row);
         }
         RidePage::Map => {
-            if let Some(frame) = scene.map() {
-                map::paint(frame, row);
+            if let Some(map) = scene.map() {
+                map::paint(map.frame, row);
             }
             scene.canvas().paint(row);
         }
         RidePage::Back => {
             scene.canvas().paint(row);
-            back::paint(scene.back(), row);
+            back::paint(scene.arrow(), row);
         }
     }
 }
@@ -551,10 +551,10 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
             y,
             scene
                 .map()
-                .map_or(BLACK, |frame| map::pixel(frame, x, y, BLACK)),
+                .map_or(BLACK, |map| map::pixel(map.frame, x, y, BLACK)),
         ),
         RidePage::Back => back::arrow_pixel(
-            &back::frame(scene.back()),
+            &back::frame(scene.arrow()),
             x,
             y,
             scene.canvas().pixel(x, y, BLACK),
@@ -769,7 +769,7 @@ mod tests {
                 forecast: &crate::ride::climb_ahead::Forecast::NONE,
                 pinned: None,
             }),
-            Some(RidePage::Map) => view.show_map(Some(&*frame).zip(key)),
+            Some(RidePage::Map) => view.show_map(key.map(|key| map::Filled { frame, key })),
             Some(RidePage::Back) => view.show_back(Back::default(), Light::default()),
             _ => {}
         }

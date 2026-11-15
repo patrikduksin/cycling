@@ -163,34 +163,45 @@ screen opens again, a climb under way brings the page up.
 
 ### Map
 
-The last ride page, MAP, draws where the ride has been: its
-own GPS track as a white line, a green dot where it began, and the rider in
-blue. Riding, the track is turned so the way the rider is heading is up and
-the rider is an arrowhead; standing still (after about 15 s without moving,
-or while paused) it is north up, the rider a dot, and the page says N UP. The
-page fits the whole track and the rider to the screen, zooming out in steps
-and never closer than 500 m across; it holds still until the track nears the
-edge. A bar at the bottom shows the scale (150 M, 1.5 KM) and the ride's distance sits beside
-it. Without a fix the page says NO
-GPS YET and MAP STARTS WITH GPS; once a fix is lost the track stays where it
-was, with NO GPS in amber. A device with no memory for the track says NO TRACK.
+The last ride page is the map. It fills the screen between the status bar
+and a black footer, heading up: the way the rider is heading is always up,
+and when the rider stands still the last heading holds.
+
+Following a course, the rider's puck sits low on the screen. The course ahead
+is a wide blue route on a dark casing, the ridden part a thinner, dimmer
+blue, and a white arrow on the route marks the next turn's corner. The badge
+in the top-left corner shows the next turn and how far it is, at rest too.
+The zoom steps between 300 m, 400 m, 1 km and 3 km across, never gliding: the
+closest step that shows the next turn with the turn, the route up to it and
+the rider clear of the badge, and 300 m within 100 m of the turn. It steps
+out at once and back in only once the turn fits with room to spare. The
+rider moves sideways, away from where the route goes, so the route keeps
+clear of the screen's edges; only the badge makes the map zoom out. Off
+course, the badge turns amber, the puck's arrow turns amber, and up to three
+amber chevrons lead back in a straight line to a ringed junction, where the
+course left off; the route goes on from there. Arrived, the badge is green.
+
+Without a course to follow, the map is 1 km across with the rider in the
+middle and the ride's own track behind in the ridden blue. A loaded course
+not being followed is drawn in the route's blue, both ways from its point
+nearest the rider.
+
+The footer holds the scale bar (100 M, 250 M or 1 KM) and, while following,
+the distance left on the course; otherwise the ride's distance. Without a fix
+the page says NO GPS YET and MAP STARTS WITH GPS; once a fix is lost the map
+stays where it was and the puck's arrow turns grey. A device with no memory
+for the track says NO TRACK.
 
 The track is the ride's GPS breadcrumb, thinned to its bends, up to 4,096
-points in PSRAM, so a very long ride shows its bends thinned and a far-off
-start is a small dot. Each ride starts a new one. After a restart cuts a ride
+points in PSRAM. Each ride starts a new one. After a restart cuts a ride
 short, the ride started next reads the cut ride's track and start back from
 its journal, a few records a moment, and carries them on if its own first fix
-comes within 30 minutes of the cut ride's last. Until that is read, MAP
-draws the track read so far and says NO GPS; a pass of the start then takes
-no lap. The course is followed again only as on any ride: by riding along
-it.
+comes within 30 minutes of the cut ride's last. Until that is read, the map
+draws the track read so far; a pass of the start then takes no lap. The
+course is followed again only as on any ride: by riding along it.
 
-A loaded course (below) is drawn in grey under the ride's track: while
-following it, only what is ahead of the rider; otherwise the stretch nearest
-the rider. It does not change the zoom, so a course far from the ride does not
-show at all. While following the course, the header says FOLLOWING, and a
-long press on the page (a second) stops following; a tap does nothing, so
-rain or a glove cannot.
+A long press on the map (a second) stops following the course; a tap does
+nothing, so rain or a glove cannot.
 
 ### Course
 

@@ -299,9 +299,7 @@ pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>, now: u64, 
         return;
     };
     let sign = state.follower.sign(now);
-    let badge = sign::form(RidePage::Map, sign)
-        .and_then(|form| sign::place(sign, form, radar))
-        .map(|placed| placed.rect());
+    let badge = sign::on_page(RidePage::Map, sign, radar).map(|placed| placed.rect());
     let drawn = Track {
         available: true,
         crumbs: state.homing.crumbs(),

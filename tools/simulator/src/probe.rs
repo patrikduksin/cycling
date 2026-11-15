@@ -63,85 +63,79 @@ pub enum Feed {
     Charging { percent: u8 },
 }
 
+pub enum Start {
+    /// The bench scene of this name.
+    Scene(&'static str),
+    /// Ride main with a radar, in the Saver display mode.
+    RideMainSaver,
+}
+
 pub struct Case {
     pub name: &'static str,
-    pub scene: &'static str,
+    pub start: Start,
     pub feed: Feed,
-    pub saver: bool,
 }
 
 pub static CASES: [Case; 12] = [
     Case {
         name: "ride main, noisy, radar",
-        scene: "ride main + radar",
+        start: Start::Scene("ride main + radar"),
         feed: Feed::Noisy { cars: true },
-        saver: false,
     },
     Case {
         name: "ride main, noisy, radar, saver",
-        scene: "ride main + radar",
+        start: Start::RideMainSaver,
         feed: Feed::Noisy { cars: true },
-        saver: true,
     },
     Case {
         name: "ride main, steady, radar",
-        scene: "ride main + radar",
+        start: Start::Scene("ride main + radar"),
         feed: Feed::Steady { cars: true },
-        saver: false,
     },
     Case {
         name: "climb",
-        scene: "climb",
+        start: Start::Scene("climb"),
         feed: Feed::Steady { cars: false },
-        saver: false,
     },
     Case {
         name: "workout",
-        scene: "workout",
+        start: Start::Scene("workout"),
         feed: Feed::Steady { cars: false },
-        saver: false,
     },
     Case {
         name: "stats",
-        scene: "ride stats",
+        start: Start::Scene("ride stats"),
         feed: Feed::Steady { cars: false },
-        saver: false,
     },
     Case {
         name: "map",
-        scene: "map",
+        start: Start::Scene("map"),
         feed: Feed::Steady { cars: false },
-        saver: false,
     },
     Case {
         name: "settings (still)",
-        scene: "settings",
+        start: Start::Scene("settings"),
         feed: Feed::Steady { cars: false },
-        saver: false,
     },
     Case {
         name: "home",
-        scene: "home",
+        start: Start::Scene("home"),
         feed: Feed::Steady { cars: false },
-        saver: false,
     },
     Case {
         name: "home, charging at 50%",
-        scene: "home",
+        start: Start::Scene("home"),
         feed: Feed::Charging { percent: 50 },
-        saver: false,
     },
     Case {
         name: "home, charging at 99%",
-        scene: "home",
+        start: Start::Scene("home"),
         feed: Feed::Charging { percent: 99 },
-        saver: false,
     },
     Case {
         name: "home, charging at 100%",
-        scene: "home",
+        start: Start::Scene("home"),
         feed: Feed::Charging { percent: 100 },
-        saver: false,
     },
 ];
 
@@ -165,11 +159,11 @@ impl Result {
         self.changes.iter().filter(|c| c.pixels == 0).count()
     }
 
-    pub fn strips(&self) -> (usize, usize) {
+    pub fn strips(&self) -> Percentiles<usize> {
         percentiles(self.changes.iter().map(|c| c.strips).collect())
     }
 
-    pub fn rows(&self) -> (usize, usize) {
+    pub fn rows(&self) -> Percentiles<usize> {
         percentiles(self.changes.iter().map(|c| c.rows).collect())
     }
 
@@ -181,15 +175,24 @@ impl Result {
         self.changes.iter().map(|c| c.work).sum::<u64>() as f64 / self.seconds as f64
     }
 
-    /// Median and 90th percentile of changed pixels, as a share of the screen.
-    pub fn pixels(&self) -> (f64, f64) {
-        let (median, p90) = percentiles(self.changes.iter().map(|c| c.pixels).collect());
+    /// Changed pixels, as a share of the screen.
+    pub fn pixels(&self) -> Percentiles<f64> {
+        let pixels = percentiles(self.changes.iter().map(|c| c.pixels).collect());
         let share = |n: usize| n as f64 / self.screen_pixels as f64;
-        (share(median), share(p90))
+        Percentiles {
+            median: share(pixels.median),
+            p90: share(pixels.p90),
+        }
     }
 }
 
-fn percentiles(mut values: Vec<usize>) -> (usize, usize) {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Percentiles<T> {
+    pub median: T,
+    pub p90: T,
+}
+
+fn percentiles(mut values: Vec<usize>) -> Percentiles<usize> {
     values.sort_unstable();
     let at = |per_cent: usize| {
         (values.len() * per_cent)
@@ -197,7 +200,10 @@ fn percentiles(mut values: Vec<usize>) -> (usize, usize) {
             .checked_sub(1)
             .map_or(0, |rank| values[rank])
     };
-    (at(50), at(90))
+    Percentiles {
+        median: at(50),
+        p90: at(90),
+    }
 }
 
 struct Noise(u64);
@@ -212,15 +218,15 @@ impl Noise {
 }
 
 pub fn run(case: &Case, seconds: u64) -> Result {
-    let scene = SCENES
-        .iter()
-        .find(|scene| scene.name == case.scene)
-        .unwrap_or_else(|| panic!("no scene {}", case.scene));
-    let mut sim = if case.saver {
-        assert_eq!(case.scene, "ride main + radar", "{}", case.name);
-        crate::bench::ride_main_saver()
-    } else {
-        (scene.reach)()
+    let mut sim = match case.start {
+        Start::Scene(name) => {
+            let scene = SCENES
+                .iter()
+                .find(|scene| scene.name == name)
+                .unwrap_or_else(|| panic!("no scene {name}"));
+            (scene.reach)()
+        }
+        Start::RideMainSaver => crate::bench::ride_main_saver(),
     };
     let display = sim.device.display.clone();
     {
@@ -317,9 +323,21 @@ mod tests {
     }
 
     #[test]
+    fn a_strip_is_as_tall_as_the_c606_panel_sends_at_once() {
+        let display = include_str!("../../../devices/c606/src/drivers/display.rs");
+        let rows = display
+            .lines()
+            .find_map(|line| line.strip_prefix("const STRIP_ROWS: usize = "))
+            .and_then(|rest| rest.strip_suffix(';'))
+            .expect("the C606 display names its strip height");
+        assert_eq!(rows.parse(), Ok(STRIP_ROWS));
+    }
+
+    #[test]
     fn percentiles_pick_the_median_and_the_ninetieth() {
-        assert_eq!(percentiles((1..=10).collect()), (5, 9));
-        assert_eq!(percentiles([0, 0, 3, 3].into()), (0, 3));
-        assert_eq!(percentiles(Vec::new()), (0, 0));
+        let at = |median, p90| Percentiles { median, p90 };
+        assert_eq!(percentiles((1..=10).collect()), at(5, 9));
+        assert_eq!(percentiles([0, 0, 3, 3].into()), at(0, 3));
+        assert_eq!(percentiles(Vec::new()), at(0, 0));
     }
 }

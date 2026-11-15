@@ -35,10 +35,10 @@ fn home_on_usb_draws_only_while_its_battery_fill_visibly_climbs() {
 #[test]
 fn a_noisy_ride_changes_a_few_strips_a_frame() {
     let result = run(case("ride main, noisy, radar"), 10);
-    let (median, p90) = result.strips();
+    let strips = result.strips();
     assert!(result.fps() > 5.0, "{}", result.fps());
-    assert!((1..result.strips).contains(&median), "{median}");
-    assert!(p90 < result.strips, "{p90}");
+    assert!((1..result.strips).contains(&strips.median), "{strips:?}");
+    assert!(strips.p90 < result.strips, "{strips:?}");
 }
 
 #[test]

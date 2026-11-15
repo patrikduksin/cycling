@@ -12,10 +12,10 @@ pub const GROUND: Range<usize> = 22..290;
 pub const RIDER_Y: i16 = 266;
 pub const JUNCTION_Y: i16 = 242;
 const FREE_RIDER_Y: i16 = ((GROUND.start + GROUND.end) / 2) as i16;
-const GRID: i16 = 16;
-const EDGE: f32 = 24.0;
+pub(super) const GRID: i16 = 16;
+pub(super) const EDGE: f32 = 24.0;
 pub(super) const CLEARANCE: f32 = 8.0;
-const SPARE_PX: f32 = 6.0;
+pub(super) const SPARE_PX: f32 = 6.0;
 const CLOSE_M: f32 = 100.0;
 const ROUTE_CASING_HALF_PX: f32 = 9.0;
 const ROUTE_LINE_HALF_PX: f32 = 6.0;
@@ -409,39 +409,43 @@ fn try_step(
     let (left, keepout) = (aim.left, aim.badge);
     let s = step.px_per_m();
     let (top, bottom) = (GROUND.start as f32 + EDGE + margin, GROUND.end as f32);
-    let (y, holds) = match target {
-        Target::Junction((right, ahead)) if ahead <= 0.0 => {
-            let y = f32::from(JUNCTION_Y) + ahead * s;
-            if y >= top {
-                (libm::roundf(y) as i16, true)
+    let all = (1u16 << columns.len()) - 1;
+    let within = |x: f32| {
+        columns.iter().enumerate().fold(0u16, |mask, (k, &column)| {
+            let inside = (left + EDGE..=WIDTH - EDGE).contains(&(f32::from(column) + x));
+            mask | u16::from(inside) << k
+        })
+    };
+    let (y, holds, way_back) = match target {
+        Target::Junction((right, ahead)) => {
+            let (y, holds) = if ahead <= 0.0 {
+                let y = f32::from(JUNCTION_Y) + ahead * s;
+                (y.max(top), y >= top)
             } else {
-                let at_top = libm::roundf(top) as i16;
-                let below_badge = keepout.map_or(top, |k| k.bottom + CLEARANCE + PUCK_RADIUS_PX);
-                let toward = (right * s, -ahead * s);
-                let seen = chevrons_seen(columns, at_top, toward, left, keepout) != 0;
-                let y = if seen {
-                    at_top
-                } else {
-                    libm::roundf(below_badge.max(top)) as i16
-                };
-                (y, false)
+                let holds = f32::from(JUNCTION_Y) - ahead * s >= top;
+                (f32::from(if holds { JUNCTION_Y } else { RIDER_Y }), holds)
+            };
+            let on_screen = if holds { within(right * s) } else { 0 };
+            let toward = (right * s, -ahead * s);
+            let way_back = |y: i16| on_screen | chevrons_seen(columns, y, toward, left, keepout);
+            let below_badge = keepout.map_or(y, |k| (k.bottom + CLEARANCE + PUCK_RADIUS_PX).max(y));
+            let (y, below_badge) = (libm::roundf(y) as i16, libm::roundf(below_badge) as i16);
+            match way_back(y) {
+                0 => (below_badge, holds, way_back(below_badge)),
+                seen => (y, holds, seen),
             }
         }
-        Target::Junction((_, ahead)) => {
-            let holds = f32::from(JUNCTION_Y) - ahead * s >= top;
-            (if holds { JUNCTION_Y } else { RIDER_Y }, holds)
-        }
-        Target::Free => (FREE_RIDER_Y, true),
+        Target::Free => (FREE_RIDER_Y, true, all),
         Target::Turn((_, ahead), _) | Target::Finish((_, ahead)) => (
             RIDER_Y,
             (top..bottom).contains(&(f32::from(RIDER_Y) - ahead * s)),
+            all,
         ),
     };
     if !holds && !widest {
         return None;
     }
     let screen = |(right, ahead): Point| (right * s, f32::from(y) - ahead * s);
-    let all = (1u16 << columns.len()) - 1;
     let block = |a: Point, b: Point, pad: f32, mask: &mut u16| {
         let Some((low, high)) = keepout.and_then(|k| k.blocked_rider_columns(a, b, pad)) else {
             return;
@@ -499,11 +503,7 @@ fn try_step(
     let mut shown = if holds { all } else { 0 };
     if let Some((at, pad)) = goal {
         block(at, at, pad, &mut shown);
-        for (k, &x) in columns.iter().enumerate() {
-            if !(left + EDGE..=WIDTH - EDGE).contains(&(f32::from(x) + at.0)) {
-                shown &= !(1 << k);
-            }
-        }
+        shown &= within(at.0);
     }
     let (mut to_goal, mut past_clear) = (all, all);
     let (mut least, mut most) = (0.0f32, 0.0f32);
@@ -532,10 +532,7 @@ fn try_step(
         last = Some((p, before));
     });
     shown &= arrow;
-    to_goal &= arrow;
-    if let (Target::Junction((right, ahead)), false) = (target, holds) {
-        to_goal &= chevrons_seen(columns, y, (right * s, -ahead * s), left, keepout);
-    }
+    to_goal &= arrow & way_back;
     let bit = |mask: u16, k: usize| mask >> k & 1 == 1;
     let mut clear = [Clear::Nothing; COLUMNS];
     let mut roomy = 0;
@@ -1236,59 +1233,6 @@ mod tests {
                     differ.is_empty(),
                     "{glyph:?} turn, {tail} tail: another step at {differ:?} m out"
                 );
-            }
-        }
-    }
-
-    #[test]
-    fn the_route_past_the_turn_is_kept_clear_whenever_the_chosen_step_and_rank_can() {
-        let mockup: std::vec::Vec<Point> = MOCKUP_COURSE.to_vec();
-        let mirrored_left: std::vec::Vec<Point> =
-            LEFT_COURSE.iter().map(|&(x, y)| (-x, y)).collect();
-        let courses = [
-            (mockup, Glyph::Right, badge(137.0).unwrap()),
-            (LEFT_COURSE.to_vec(), Glyph::Left, BADGE),
-            (mirrored_left, Glyph::Right, BADGE),
-        ];
-        for (course, glyph, badge) in courses {
-            let mut prev: Option<Pose> = None;
-            for k in (1..=200).rev() {
-                let before = 10.0 * k as f32;
-                let aim = Aim {
-                    here: (0.0, course[1].1 - before),
-                    heading: 0,
-                    target: Target::Turn(course[1], glyph),
-                    left: 0.0,
-                    badge: Some(badge),
-                };
-                let points = ahead_of(&course, 1, before);
-                let pose = choose_pose(prev, &aim, route(&points));
-                let target = aim.target.moved(|p| aim.relative(p));
-                let close = before <= CLOSE_M;
-                let spare = !close && prev.is_some_and(|prev| prev.step > pose.step);
-                let margin = if spare { SPARE_PX } else { 0.0 };
-                let (columns, _) = columns(target, aim.left);
-                let trial = try_step(
-                    pose.step,
-                    target,
-                    &columns,
-                    margin,
-                    true,
-                    &aim,
-                    &route(&points),
-                )
-                .unwrap();
-                let chosen = columns.iter().position(|&x| x == pose.rider.0).unwrap();
-                let clear_past = |k: usize| trial.past_clear >> k & 1 == 1;
-                let could = (0..columns.len())
-                    .filter(|&k| trial.clear[k] == trial.clear[chosen])
-                    .find(|&k| clear_past(k));
-                assert!(
-                    could.is_none() || clear_past(chosen),
-                    "{glyph:?} turn {before} m out: {pose:?} runs the route past the turn under the badge, x {} would not",
-                    columns[could.unwrap()]
-                );
-                prev = Some(pose);
             }
         }
     }

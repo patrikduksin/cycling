@@ -244,6 +244,57 @@ fn off_course_beyond_the_widest_step_the_chevrons_still_lead_back_to_the_junctio
 }
 
 #[test]
+fn off_course_with_the_junction_off_screen_sideways_a_chevron_still_shows() {
+    let c = follower_course(&MOCKUP_COURSE);
+    let junction = Spot {
+        along_mm: TURN_MM,
+        at: (0.0, 250.0),
+    };
+    let mut missing = std::vec::Vec::new();
+    for radar in [false, true] {
+        for east in [-10_000.0, -5_000.0, -2_000.0, 2_000.0, 5_000.0, 10_000.0] {
+            for north in (0..=4_000).step_by(500) {
+                let here = (east, north as f32);
+                let back_m = distance(here, junction.at);
+                let mut track = following(&c, here, 650.0, Some(junction));
+                let sign = Sign::OffCourse {
+                    back: Distance::from_mm((back_m * 1000.0) as u32),
+                };
+                let badge = crate::screens::sign::on_page(RidePage::Map, sign, radar)
+                    .unwrap()
+                    .rect();
+                track.guidance.as_mut().unwrap().sign = sign;
+                track.badge = Some(badge);
+                track.radar = radar;
+                let frame = filled(&track);
+                let pose = frame.last_pose;
+                let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
+                let ring = pose.projection(here).at(junction.at);
+                let ring_reach = JUNCTION_RINGS_QUARTER_PX[0].0 as f32 / 4.0 + 1.0;
+                let away = |(x, y): (usize, usize), (cx, cy): Point| {
+                    let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                    libm::sqrtf(dx * dx + dy * dy)
+                };
+                let shown = GROUND
+                    .flat_map(|y| (map_left(radar)..WIDTH).map(move |x| (x, y)))
+                    .filter(|&p| !badge.contains(p.0, p.1))
+                    .filter(|&p| away(p, rider) > PUCK_CLEAR + 1.0 && away(p, ring) > ring_reach)
+                    .filter(|&(x, y)| pixel(&frame, x, y, BLACK) == AMBER)
+                    .count();
+                if shown < 30 {
+                    missing.push((radar, here, pose, shown));
+                }
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "{} fixes show less than one chevron of amber, (radar, here, pose, px): {missing:?}",
+        missing.len()
+    );
+}
+
+#[test]
 fn chevrons_that_would_sit_under_the_puck_or_the_ring_are_left_out() {
     let mut frame = Frame::default();
     chevrons(&mut frame, (80.0, 158.0), (80.0, 242.0));
@@ -518,11 +569,59 @@ struct Approach {
 }
 
 fn ride_to_the_last_turn(points: &[Point]) -> std::vec::Vec<Approach> {
+    let mut fixes = std::vec::Vec::new();
+    ride(points, |along_m, track, frame| {
+        fixes.push(Approach::of(along_m, track, frame));
+    });
+    fixes
+}
+
+impl Approach {
+    fn of(along_m: f32, track: &Track, frame: &Frame) -> Self {
+        let (turn, _) = track.turn_on_course().unwrap();
+        let at = frame.last_pose.projection(track.here.unwrap());
+        let split = track.split().unwrap();
+        let only = |route: &mut dyn Iterator<Item = Point>, keep_marks: bool| {
+            let mut alone = frame.clone();
+            alone.counts[Line::Route as usize] = 0;
+            alone.add(Line::Route, &at, route);
+            if !keep_marks {
+                alone.counts[Line::Ridden as usize] = 0;
+                alone.arrow.strokes = 0;
+                alone.puck = None;
+            }
+            bucket(&mut alone);
+            alone
+        };
+        let ahead = || track.ahead_points(split);
+        let up_to_turn = only(
+            &mut ahead()
+                .take_while(|&(_, before)| before)
+                .map(|(p, _)| p)
+                .chain([turn.at]),
+            true,
+        );
+        let past_turn = only(
+            &mut [turn.at]
+                .into_iter()
+                .chain(ahead().skip_while(|&(_, before)| before).map(|(p, _)| p)),
+            false,
+        );
+        Self {
+            along_m,
+            pose: frame.last_pose,
+            up_to_turn,
+            past_turn,
+            badge: track.badge.unwrap(),
+        }
+    }
+}
+
+fn ride(points: &[Point], mut visit: impl FnMut(f32, &Track, &Frame)) {
     let course = follower_course(points);
     let total = course.last().unwrap().along;
     let corners = track_crumbs(points);
     let mut frame = Frame::default();
-    let mut fixes = std::vec::Vec::new();
     let last_turn = corners[corners.len() - 2].along;
     let mut along_m = 10.0;
     while along_m < last_turn {
@@ -574,44 +673,9 @@ fn ride_to_the_last_turn(points: &[Point]) -> std::vec::Vec<Approach> {
             radar: false,
         };
         fill(&mut frame, &track);
-        let at = frame.last_pose.projection(here);
-        let split = track.split().unwrap();
-        let only = |route: &mut dyn Iterator<Item = Point>, keep_marks: bool| {
-            let mut alone = frame.clone();
-            alone.counts[Line::Route as usize] = 0;
-            alone.add(Line::Route, &at, route);
-            if !keep_marks {
-                alone.counts[Line::Ridden as usize] = 0;
-                alone.arrow.strokes = 0;
-                alone.puck = None;
-            }
-            bucket(&mut alone);
-            alone
-        };
-        let ahead = || track.ahead_points(split);
-        let up_to_turn = only(
-            &mut ahead()
-                .take_while(|&(_, before)| before)
-                .map(|(p, _)| p)
-                .chain([turn.at]),
-            true,
-        );
-        let past_turn = only(
-            &mut [turn.at]
-                .into_iter()
-                .chain(ahead().skip_while(|&(_, before)| before).map(|(p, _)| p)),
-            false,
-        );
-        fixes.push(Approach {
-            along_m,
-            pose: frame.last_pose,
-            up_to_turn,
-            past_turn,
-            badge,
-        });
+        visit(along_m, &track, &frame);
         along_m += 10.0;
     }
-    fixes
 }
 
 const LONG_LEFT: [Point; 4] = [
@@ -691,21 +755,91 @@ fn under_the_rounded_badge(badge: Rect, (x, y): (usize, usize)) -> bool {
     badge.contains(x, y) && dx * dx + dy * dy <= r * r
 }
 
+fn is_line(c: u16) -> bool {
+    let (r, b) = (u32::from(c >> 11) << 3, u32::from(c & 31) << 3);
+    r < 0x60 && b >= 0x90
+}
+
+fn line_under(badge: Rect, frame: &Frame) -> bool {
+    GROUND
+        .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+        .filter(|&p| under_the_rounded_badge(badge, p))
+        .any(|(x, y)| is_line(pixel(frame, x, y, BLACK)))
+}
+
+#[test]
+fn the_line_past_the_turn_goes_under_the_badge_only_when_no_other_column_keeps_as_much_clear() {
+    let mockup: std::vec::Vec<Point> = core::iter::once((0.0, -1_750.0))
+        .chain(MOCKUP_COURSE[1..].iter().copied())
+        .collect();
+    let left = [
+        (0.0, 0.0),
+        (0.0, 2_000.0),
+        (-300.0, 2_000.0),
+        (-300.0, 2_400.0),
+        (200.0, 3_000.0),
+    ];
+    let mirrored = left.map(|(x, y)| (-x, y));
+    let safe_gap = (pose::CLEARANCE + pose::SPARE_PX) as usize;
+    let (low, high) = (pose::EDGE as i16, WIDTH as i16 - pose::EDGE as i16);
+    let mut covered = 0;
+    let mut avoidable = std::vec::Vec::new();
+    for course in [&mockup[..], &left, &mirrored] {
+        ride(course, |along_m, track, frame| {
+            let badge = track.badge.unwrap();
+            let pose = frame.last_pose;
+            if !line_under(badge, &Approach::of(along_m, track, frame).past_turn) {
+                return;
+            }
+            covered += 1;
+            let here = track.here.unwrap();
+            let (turn, _) = track.turn_on_course().unwrap();
+            let turn_shown = |pose: Pose| {
+                let x = pose.projection(here).at(turn.at).0;
+                (f32::from(low)..=f32::from(high)).contains(&x)
+            };
+            let lattice = (-15..=15)
+                .map(|k| pose.rider.0 + k * pose::GRID)
+                .filter(|&x| (low..high).contains(&x))
+                .chain([high]);
+            for x in lattice.filter(|&x| x != pose.rider.0) {
+                let other = Pose {
+                    rider: (x, pose.rider.1),
+                    ..pose
+                };
+                let mut drawn = Frame {
+                    show: Show::Map,
+                    ..Frame::default()
+                };
+                draw(&mut drawn, track, here, other);
+                let fix = Approach::of(along_m, track, &drawn);
+                let keeps = gap_to(badge, &fix.up_to_turn).is_none_or(|g| g.0 >= safe_gap)
+                    && (turn_shown(other) || !turn_shown(pose));
+                if keeps && !line_under(badge, &fix.past_turn) {
+                    avoidable.push((along_m, pose, x));
+                    return;
+                }
+            }
+        });
+    }
+    assert!(
+        covered > 0,
+        "no fix puts the line past the turn under the badge"
+    );
+    assert!(
+        avoidable.is_empty(),
+        "{} of {covered} fixes put the line past the turn under the badge although another column \
+         keeps it and everything up to the turn clear, (m, pose, x) {avoidable:?}",
+        avoidable.len()
+    );
+}
+
 #[test]
 fn on_a_long_left_approach_the_line_past_the_turn_is_under_the_badge_on_one_stretch_a_step() {
-    let is_line = |c: u16| {
-        let (r, b) = (u32::from(c >> 11) << 3, u32::from(c & 31) << 3);
-        r < 0x60 && b >= 0x90
-    };
     let covered: std::vec::Vec<(usize, Step, f32)> = ride_to_the_last_turn(&LONG_LEFT)
         .iter()
         .enumerate()
-        .filter(|(_, fix)| {
-            GROUND
-                .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
-                .filter(|&p| under_the_rounded_badge(fix.badge, p))
-                .any(|(x, y)| is_line(pixel(&fix.past_turn, x, y, BLACK)))
-        })
+        .filter(|(_, fix)| line_under(fix.badge, &fix.past_turn))
         .map(|(k, fix)| (k, fix.pose.step, fix.along_m))
         .collect();
     assert!(covered.len() <= 34, "{} fixes: {covered:?}", covered.len());

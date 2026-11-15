@@ -467,8 +467,13 @@ fn fill(frame: &mut Frame, track: &Track) {
         }
     };
     let pose = choose_pose(frame.has_pose.then_some(frame.last_pose), &aim, route);
+    draw(frame, track, centre, pose);
+}
+
+fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
     frame.last_pose = pose;
     frame.has_pose = true;
+    let split = track.split();
     let at = pose.projection(centre);
     match split {
         Some(split) => {

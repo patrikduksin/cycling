@@ -1536,7 +1536,7 @@ impl Runtime {
         self.motion.due(
             self.motion_visible(),
             shown,
-            self.policy().motion_frame_ms,
+            self.policy().min_motion_frame_gap_ms,
             now,
             |graphics| crate::screens::ride::pixels(graphics, &profile),
         )

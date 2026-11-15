@@ -254,14 +254,14 @@ impl Motion {
     }
 
     /// When the next frame should draw what changed since the last one,
-    /// at most one every `frame_ms`: a new number as it comes, a glide
+    /// at most one every `min_gap_ms`: a new number as it comes, a glide
     /// once a graphic it moves would land on another pixel. None while
     /// neither.
     pub(super) fn due(
         &self,
         visible: Visible,
         sample: &Sample,
-        frame_ms: u64,
+        min_gap_ms: u64,
         now: u64,
         pixels: impl Fn(&Graphics) -> Pixels,
     ) -> Option<u64> {
@@ -269,7 +269,7 @@ impl Motion {
         if visible == Visible::default() {
             return None;
         }
-        let mut at = now.max(self.drawn_ms + frame_ms);
+        let mut at = now.max(self.drawn_ms + min_gap_ms);
         if visible.main && Numbers::from(sample) != self.numbers {
             return Some(at);
         }

@@ -21,8 +21,6 @@ pub struct Icon {
     bits: &'static [u8],
 }
 
-/// A shape's icon. A static icon never changes and keeps its address, so
-/// the address names its art.
 #[derive(Clone, Copy, Debug)]
 pub struct StaticIcon(pub &'static Icon);
 

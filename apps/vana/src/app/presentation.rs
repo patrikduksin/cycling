@@ -845,9 +845,8 @@ impl Runtime {
         if drawn == Drawn::Sent {
             let drawn = self.drawn_at(now);
             self.timing.first_frame(drawn);
-            // Setup on a first start is as ready as Home.
             if matches!(page, Page::Home | Page::Setup) {
-                self.timing.home(drawn);
+                self.timing.first_ready(drawn);
             }
             self.timing.frame(drawn);
         }

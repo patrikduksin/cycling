@@ -806,8 +806,6 @@ fn vitals_are_due_every_five_seconds_and_every_minute_in_dark_standby() {
     assert_eq!(due(&mut vitals, 140_000, 141_000, false), [140_000]);
 }
 
-/// A record that grows breaks every older trace, whose shorter record reads
-/// as corrupt, so new fields go in a record of their own under a new tag.
 #[test]
 fn records_keep_their_fields() {
     let fields: Vec<String> = RECORD_FIELDS

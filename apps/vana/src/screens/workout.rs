@@ -259,8 +259,6 @@ enum Kind {
     },
 }
 
-/// What a scene paints of the page's extra. Paint reads the extra only
-/// through this, so whatever it paints is hashed with the scene.
 #[derive(Clone, Copy, Hash)]
 enum Painted<'v> {
     None,
@@ -322,7 +320,6 @@ impl Extra<'_> {
     }
 }
 
-/// What a ride scene lays over every row: a change here repaints the page.
 #[derive(Hash)]
 struct WholePage<'v> {
     kind: Kind,
@@ -412,8 +409,8 @@ impl<'v> Scene<'v> {
         self.light
     }
 
-    /// One pixel of the painted scene; tests and previews only, as it paints a whole row.
-    pub fn pixel(&self, x: usize, y: usize) -> u16 {
+    #[cfg(test)]
+    pub(crate) fn pixel(&self, x: usize, y: usize) -> u16 {
         use firmware_shell::shell::Picture;
         let mut pixels = [0u16; WIDTH];
         self.paint(&mut Row::new(y, &mut pixels));
@@ -945,8 +942,6 @@ impl<'a> View<'a> {
         }
     }
 
-    /// One pixel of the prepared scene; tests only, as it prepares the view
-    /// and paints a whole row.
     #[cfg(test)]
     pub(crate) fn pixel(&mut self, x: usize, y: usize) -> u16 {
         self.prepare().pixel(x, y)

@@ -16,7 +16,7 @@ pub(super) const BLE_CADENCE: u8 = 1;
 #[derive(Default)]
 pub(super) struct Timing {
     first_frame: Option<u64>,
-    home: Option<u64>,
+    first_ready: Option<u64>,
     companion: Option<u64>,
     storage: Option<u64>,
     /// The recorder state the journal scan ended in (`error` if it failed).
@@ -44,8 +44,8 @@ impl Timing {
     pub(super) fn first_frame(&mut self, now: u64) {
         mark(&mut self.first_frame, now, "first_frame");
     }
-    pub(super) fn home(&mut self, now: u64) {
-        mark(&mut self.home, now, "home");
+    pub(super) fn first_ready(&mut self, now: u64) {
+        mark(&mut self.first_ready, now, "home");
     }
     pub(super) fn companion(&mut self, now: u64) {
         mark(&mut self.companion, now, "companion");
@@ -113,7 +113,7 @@ impl Timing {
             };
         }
         field(output, "first_frame_ms", self.first_frame);
-        field(output, "home_ms", self.home);
+        field(output, "home_ms", self.first_ready);
         field(output, "companion_ms", self.companion);
         field(output, "storage_ms", self.storage);
         let _ = write!(

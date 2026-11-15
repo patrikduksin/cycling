@@ -253,10 +253,6 @@ impl Motion {
         self.pixels = pixels;
     }
 
-    /// When the next frame should draw what changed since the last one,
-    /// at most one every `min_gap_ms`: a new number as it comes, a glide
-    /// once a graphic it moves would land on another pixel. None while
-    /// neither.
     pub(super) fn due(
         &self,
         visible: Visible,

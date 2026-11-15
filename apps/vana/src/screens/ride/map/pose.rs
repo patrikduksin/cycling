@@ -239,7 +239,6 @@ pub fn choose_pose(
                 clear = Some(pose);
             }
         }
-        // The badge stays clear here; the route may run off the edge.
         if let Some(pose) = clear {
             return pose;
         }
@@ -369,7 +368,8 @@ mod tests {
 
     /// The course from `from` metres north on the first leg, each point
     /// marked before or after the turn.
-    fn ahead(from: f32) -> impl Fn(&mut dyn FnMut(Point, bool)) {
+    fn ahead(before: f32) -> impl Fn(&mut dyn FnMut(Point, bool)) {
+        let from = TURN_AT.1 - before;
         move |visit| {
             visit((0.0, from), from < TURN_AT.1);
             for &p in COURSE.iter().filter(|p| p.0 > 0.0 || p.1 > from) {
@@ -378,9 +378,9 @@ mod tests {
         }
     }
 
-    fn on_course(north: f32) -> Aim {
+    fn on_course(before: f32) -> Aim {
         Aim {
-            here: (0.0, north),
+            here: (0.0, TURN_AT.1 - before),
             heading: 0,
             turn: Some((TURN_AT, Glyph::Right)),
             junction: None,
@@ -389,18 +389,13 @@ mod tests {
 
     #[test]
     fn the_poses_reproduce_the_three_map_mockups() {
-        let approach = choose_pose(None, &on_course(0.0), ahead(0.0), badge(137.0));
+        let approach = choose_pose(None, &on_course(250.0), ahead(250.0), badge(137.0));
         assert_eq!(
             (approach.step, approach.rider),
             (Step::M400, (80, 266)),
             "map-approach"
         );
-        let close = choose_pose(
-            Some(approach),
-            &on_course(210.0),
-            ahead(210.0),
-            badge(118.0),
-        );
+        let close = choose_pose(Some(approach), &on_course(40.0), ahead(40.0), badge(118.0));
         assert_eq!(
             (close.step, close.rider),
             (Step::M300, (64, 266)),
@@ -409,9 +404,9 @@ mod tests {
         let off = Aim {
             here: (0.0, 390.0),
             junction: Some(TURN_AT),
-            ..on_course(390.0)
+            ..on_course(-140.0)
         };
-        let off = choose_pose(Some(close), &off, ahead(250.0), badge(152.0));
+        let off = choose_pose(Some(close), &off, ahead(0.0), badge(152.0));
         assert_eq!(
             (off.step, off.rider),
             (Step::M400, (80, 158)),
@@ -428,7 +423,6 @@ mod tests {
         };
         let at = pose.projection((100.0, 50.0));
         assert_eq!(at.at((100.0, 50.0)), (80.0, 266.0));
-        // Riding east, 100 m east is 60 px up and 100 m north is 60 px left.
         let east = at.at((200.0, 50.0));
         assert!((east.0 - 80.0).abs() < 1e-3 && (east.1 - 206.0).abs() < 1e-3);
         let north = at.at((100.0, 150.0));
@@ -437,27 +431,23 @@ mod tests {
 
     #[test]
     fn the_turn_under_the_badge_zooms_out_and_zooming_in_waits_for_room() {
-        // 250 m ahead, 300 m across would put the turn under the badge.
-        let wide = choose_pose(None, &on_course(0.0), ahead(0.0), badge(137.0));
+        let wide = choose_pose(None, &on_course(250.0), ahead(250.0), badge(137.0));
         assert_eq!(wide.step, Step::M400);
-        let no_badge = choose_pose(None, &on_course(0.0), ahead(0.0), None);
+        let no_badge = choose_pose(None, &on_course(250.0), ahead(250.0), None);
         assert_eq!(no_badge.step, Step::M300, "only the badge pushed it out");
-        // 195 m ahead clears the badge 300 m across, but not 6 px farther.
-        let fresh = choose_pose(None, &on_course(55.0), ahead(55.0), badge(137.0));
+        let fresh = choose_pose(None, &on_course(195.0), ahead(195.0), badge(137.0));
         assert_eq!(fresh.step, Step::M300);
-        let near = choose_pose(Some(wide), &on_course(55.0), ahead(55.0), badge(137.0));
+        let near = choose_pose(Some(wide), &on_course(195.0), ahead(195.0), badge(137.0));
         assert_eq!(near.step, Step::M400);
-        let nearer = choose_pose(Some(near), &on_course(70.0), ahead(70.0), badge(137.0));
+        let nearer = choose_pose(Some(near), &on_course(180.0), ahead(180.0), badge(137.0));
         assert_eq!(nearer.step, Step::M300);
-        // Riding in from 3 km across, 250 m out is already 400 m across.
         let far = Pose {
             step: Step::Km3,
             ..wide
         };
-        let arriving = choose_pose(Some(far), &on_course(0.0), ahead(0.0), badge(137.0));
+        let arriving = choose_pose(Some(far), &on_course(250.0), ahead(250.0), badge(137.0));
         assert_eq!(arriving.step, Step::M400);
-        // Within 100 m the closest step comes at once.
-        let close = choose_pose(Some(wide), &on_course(160.0), ahead(160.0), badge(137.0));
+        let close = choose_pose(Some(wide), &on_course(90.0), ahead(90.0), badge(137.0));
         assert_eq!(close.step, Step::M300);
     }
 
@@ -465,7 +455,7 @@ mod tests {
     fn a_far_turn_takes_a_wide_step_and_a_left_turn_starts_right_of_centre() {
         let far = Aim {
             turn: Some(((0.0, 900.0), Glyph::Right)),
-            ..on_course(0.0)
+            ..on_course(250.0)
         };
         let straight = |visit: &mut dyn FnMut(Point, bool)| {
             visit((0.0, 0.0), true);
@@ -478,7 +468,7 @@ mod tests {
         );
         let left = Aim {
             turn: Some(((0.0, 90.0), Glyph::Left)),
-            ..on_course(0.0)
+            ..on_course(250.0)
         };
         let to_the_left = |visit: &mut dyn FnMut(Point, bool)| {
             visit((0.0, 0.0), true);
@@ -493,7 +483,7 @@ mod tests {
     fn a_route_running_off_the_edge_pans_but_never_zooms_out() {
         let aim = Aim {
             turn: Some(((0.0, 200.0), Glyph::Right)),
-            ..on_course(0.0)
+            ..on_course(250.0)
         };
         let east = |visit: &mut dyn FnMut(Point, bool)| {
             visit((0.0, 0.0), true);
@@ -511,7 +501,7 @@ mod tests {
             rider: (48, 266),
             heading: 0,
         };
-        let pose = choose_pose(Some(held), &on_course(0.0), ahead(0.0), badge(137.0));
+        let pose = choose_pose(Some(held), &on_course(250.0), ahead(250.0), badge(137.0));
         assert_eq!(pose.rider, (48, 266));
     }
 

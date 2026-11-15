@@ -1,16 +1,5 @@
 //! The map page: the course ahead heading up, with the rider low, the turn
 //! to make and, off course, the way back to where the rider left it.
-//!
-//! The map fills the screen between the status bar and a black footer.
-//! `pose` chooses the zoom step and the rider's place each fix. `fill`
-//! projects through it, once per fix, the ridden line (the course behind
-//! the rider, or the ride's own track when no course is followed) and the
-//! course ahead, keeping only what reaches the screen, nearest the rider
-//! first, and buckets the strokes by `BAND` rows. A row then paints the
-//! ground, the ridden line, the route's casing and the route, the turn
-//! arrow, the chevrons back, the missed junction and the rider's puck, each
-//! colour as row spans (`raster`). The footer holds the scale and how far
-//! is left; `prepare` lays it out as on other canvas pages.
 mod pose;
 mod raster;
 
@@ -596,7 +585,6 @@ fn chevrons(frame: &mut Frame, rider: Point, junction: Point) {
     let half = length / 2.0;
     for k in 0..CHEVRONS {
         let offset = (k as f32 - 1.0) * CHEVRON_PITCH;
-        // Only chevrons clear of the puck and the junction's ring.
         let (tail, tip) = (half + offset - CHEVRON_DEPTH, half + offset);
         if tail - CHEVRON_STROKE < PUCK_CLEAR || length - tip - CHEVRON_STROKE < JUNCTION_CLEAR {
             continue;

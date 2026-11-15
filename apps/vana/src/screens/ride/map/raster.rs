@@ -55,7 +55,6 @@ impl Stroke {
             );
             let length = 1.0 / self.inverse;
             let v = y - self.a.1;
-            // Off the line by at most `radius`, and between the ends.
             let side = bounded(-ty, tx * v, -radius, radius);
             let along = bounded(tx, ty * v, 0.0, length);
             if let (Some(side), Some(along)) = (side, along) {
@@ -133,7 +132,6 @@ impl Triangle {
         let sign = self.winding();
         let (mut left, mut right) = (f32::NEG_INFINITY, f32::INFINITY);
         for (p, q) in self.edges() {
-            // Inside: sign * ((q - p) x (point - p)) >= 0, linear in x.
             let k = -sign * (q.1 - p.1);
             let c = sign * ((q.0 - p.0) * (y - p.1) + (q.1 - p.1) * p.0);
             let (from, to) = bounded(k, c, 0.0, f32::INFINITY)?;
@@ -352,7 +350,6 @@ mod tests {
         assert!(row[91..109].iter().all(|&c| c == 15), "{:?}", &row[88..112]);
         assert_eq!((row[90], row[109]), (0, 0));
         assert_eq!(solid(25), 18);
-        // Past the end the cap narrows: 4.5 rows on, a chord of about 14 px.
         assert_eq!(solid(44), 14);
         assert_eq!(solid(49), 0);
     }

@@ -282,8 +282,7 @@ fn fills_of_one_track_held_at_another_step_hash_apart() {
     );
 }
 
-/// Each text in `want` shows whole, on the screen. The distance and its
-/// unit sit closer than two words would: they read as one.
+/// Each text in `want` shows whole, on the screen.
 #[track_caller]
 fn assert_shows(canvas: &Canvas, want: &[&str], what: &str) {
     use crate::screens::chrome::layout::{assert_shown, text};

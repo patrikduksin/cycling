@@ -360,8 +360,6 @@ fn crossing_a_course_or_riding_it_backwards_follows_nothing() {
     assert!(ride_course(&mut rider, &course, &backwards, &mut now).is_empty());
 }
 
-/// However far off the rider goes, the course is still followed, and off
-/// course, until they are back on it, riding its way.
 #[test]
 fn sharing_a_kilometre_then_turning_off_is_off_course_until_back_on_it() {
     let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);

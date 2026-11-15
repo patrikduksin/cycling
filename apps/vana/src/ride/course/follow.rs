@@ -1,7 +1,7 @@
 //! Following the loaded course: placing it in the ride's frame, matching the
 //! rider to it, and navigating it (`course::nav`).
 use crate::ride::course::nav::{
-    self, Event, Fixed, Guidance, Navigator, OFF_M, ON_M, Observed, Sign,
+    self, Event, Guidance, MatchedFix, Navigator, OFF_M, ON_M, Observed, Sign,
 };
 use crate::ride::course::turns::{SCAN_STEPS, Scan, Turn};
 use crate::ride::course::{self, along_m};
@@ -52,27 +52,27 @@ fn nearest_on(line: &[Crumb], p: Point, end: usize) -> Nearest {
     }
 }
 
-/// The course point `along_mm` from its start on `line`, which is end
-/// first.
-fn point_at(line: &[Crumb], along_mm: u32) -> Point {
-    let (Some(start), true) = (line.last(), line.len() >= 2) else {
-        return line.first().map_or((0.0, 0.0), |c| (c.east, c.north));
+fn point_at(end_first: &[Crumb], along_mm: u32) -> Point {
+    let (Some(start), true) = (end_first.last(), end_first.len() >= 2) else {
+        return end_first.first().map_or((0.0, 0.0), |c| (c.east, c.north));
     };
     let to_end_m = (start.along - along_mm as f32 / 1000.0).max(0.0);
-    let end = line
+    let end = end_first
         .partition_point(|c| c.along < to_end_m)
-        .clamp(1, line.len() - 1);
-    let (a, b) = (line[end - 1], line[end]);
+        .clamp(1, end_first.len() - 1);
+    let (a, b) = (end_first[end - 1], end_first[end]);
     let t = match b.along > a.along {
         true => ((to_end_m - a.along) / (b.along - a.along)).clamp(0.0, 1.0),
         false => 0.0,
     };
-    (a.east + t * (b.east - a.east), a.north + t * (b.north - a.north))
+    (
+        a.east + t * (b.east - a.east),
+        a.north + t * (b.north - a.north),
+    )
 }
 
 enum Matched {
     On(Nearest),
-    /// At the course's end: following stopped.
     End,
 }
 
@@ -97,8 +97,7 @@ pub struct Follower<'a> {
     to_end_m: f32,
     furthest_to_end_m: f32,
     matched_fix: Option<Point>,
-    /// More than `OFF_M` from the course: the whole course is searched.
-    wide: bool,
+    search_whole_course: bool,
     heading: Option<u16>,
     fix_ms: u64,
     turns: &'a mut [Turn],
@@ -124,7 +123,7 @@ impl<'a> Follower<'a> {
             to_end_m: 0.0,
             furthest_to_end_m: 0.0,
             matched_fix: None,
-            wide: false,
+            search_whole_course: false,
             heading: None,
             fix_ms: 0,
             turns,
@@ -143,7 +142,7 @@ impl<'a> Follower<'a> {
         self.join_fixes = 0;
         self.following = false;
         self.matched = None;
-        self.wide = false;
+        self.search_whole_course = false;
         self.heading = None;
         self.nav = Navigator::default();
     }
@@ -178,7 +177,6 @@ impl<'a> Follower<'a> {
         }
         self.len = n;
         (self.scan, self.turn_count) = (Scan::default(), 0);
-        self.nav = Navigator::default();
     }
 
     /// A course is loaded and waits for the ride's first fix to be placed.
@@ -260,12 +258,11 @@ impl<'a> Follower<'a> {
         self.nav = Navigator::default();
     }
 
-    /// As `stop`, keeping what navigating shows.
     fn let_go(&mut self) {
         if core::mem::take(&mut self.following) {
             self.held = true;
             self.matched = None;
-            self.wide = false;
+            self.search_whole_course = false;
         }
     }
 
@@ -292,7 +289,6 @@ impl<'a> Follower<'a> {
         self.nav.sign(&self.turns[..self.turn_count], now)
     }
 
-    /// What the map shows of the course besides the sign.
     pub fn guidance(&self, now: u64) -> Option<Guidance> {
         let line = &self.line[..self.len];
         self.nav
@@ -302,7 +298,12 @@ impl<'a> Follower<'a> {
     /// This main-loop pass's fix, if the ride has a fresh one
     /// (`Homing::observe`), and the ride's live speed. Every pass finds a
     /// few more of the course's turns.
-    pub fn observe(&mut self, fix: Option<Fix>, now: u64, speed_mm_s: Option<u32>) -> Option<Event> {
+    pub fn observe(
+        &mut self,
+        fix: Option<Fix>,
+        now: u64,
+        speed_mm_s: Option<u32>,
+    ) -> Option<Event> {
         self.scan_turns();
         let Some(fix) = fix else {
             let lost = self.following && now.saturating_sub(self.fix_ms) > nav::LOST_MS;
@@ -324,7 +325,7 @@ impl<'a> Follower<'a> {
             Matched::End => Observed::Arrived { now_ms: now },
             Matched::On(near) => {
                 let line = self.course();
-                let fixed = Fixed {
+                let fixed = MatchedFix {
                     now_ms: now,
                     // A float cast saturates, so no position overflows.
                     along_mm: ((line[self.len - 1].along - near.to_end_m) * 1000.0) as u32,
@@ -347,7 +348,9 @@ impl<'a> Follower<'a> {
     fn navigate(&mut self, observed: Observed) -> Option<Event> {
         let line = &self.line[..self.len];
         self.nav
-            .step(observed, &self.turns[..self.turn_count], |mm| point_at(line, mm))
+            .step(observed, &self.turns[..self.turn_count], |mm| {
+                point_at(line, mm)
+            })
     }
 
     /// Where the course passes twice, the first pass ridden its way is joined.
@@ -378,7 +381,7 @@ impl<'a> Follower<'a> {
         self.matched_fix = None;
         self.segment = end;
         self.matched = None;
-        self.wide = false;
+        self.search_whole_course = false;
     }
 
     fn scan_turns(&mut self) {
@@ -478,7 +481,7 @@ impl<'a> Follower<'a> {
         let window = self.segment.saturating_sub(SEARCH_BACK).max(1)
             ..=(self.segment + SEARCH_AHEAD).min(len - 1);
         let mut near = self.nearest(p, window)?;
-        if (self.wide || near.off > OFF_M)
+        if (self.search_whole_course || near.off > OFF_M)
             && let Some(anywhere) = self.nearest(p, 1..=len - 1)
             && anywhere.off < near.off
         {
@@ -493,7 +496,7 @@ impl<'a> Follower<'a> {
         self.to_end_m = near.to_end_m;
         self.furthest_to_end_m = self.furthest_to_end_m.min(near.to_end_m);
         self.matched_fix = Some(p);
-        self.wide = match self.wide {
+        self.search_whole_course = match self.search_whole_course {
             true => near.off > ON_M,
             false => near.off > OFF_M,
         };

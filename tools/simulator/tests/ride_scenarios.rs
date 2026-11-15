@@ -6496,15 +6496,12 @@ fn course_pixels(sim: &Sim) -> usize {
         .count()
 }
 
-/// The notes of each navigation cue.
 const TURN_SOON: [u8; 2] = [21, 0];
 const TURN_NOW: [u8; 1] = [10];
 const OFF_COURSE: [u8; 2] = [10, 21];
 const ON_COURSE: [u8; 2] = [21, 10];
 const ARRIVED: [u8; 2] = [0, 10];
 
-/// The cues begun since the speaker's `from`th note, by their names in the
-/// session's trace, each with its notes.
 fn cues_since(sim: &Sim, from: usize) -> Vec<(String, Vec<u8>)> {
     use firmware_services::trace::{Event, decode};
     let trace = sim.trace();
@@ -6532,15 +6529,8 @@ fn cues_since(sim: &Sim, from: usize) -> Vec<(String, Vec<u8>)> {
     cues
 }
 
-/// The rider rides on until a `cue` cue begins, checking `each` second of
-/// the way, and says where.
 #[track_caller]
-fn ride_until_cue_checking(
-    sim: &mut Sim,
-    cue: &str,
-    before_m: f64,
-    each: impl Fn(&Sim),
-) -> f64 {
+fn ride_until_cue_checking(sim: &mut Sim, cue: &str, before_m: f64, each: impl Fn(&Sim)) -> f64 {
     let from = sim.device.sim().speaker.played.len();
     let mut heard = from;
     loop {
@@ -6570,8 +6560,6 @@ fn ride_until_cue(sim: &mut Sim, cue: &str, before_m: f64) -> f64 {
     ride_until_cue_checking(sim, cue, before_m, |_| {})
 }
 
-/// The rider rides on until the next navigation cue, which must be `cue`
-/// with `notes` and nothing else, and says where.
 #[track_caller]
 fn ride_until_only(sim: &mut Sim, cue: &str, notes: &[u8], before_m: f64) -> f64 {
     let from = sim.device.sim().speaker.played.len();
@@ -6581,11 +6569,6 @@ fn ride_until_only(sim: &mut Sim, cue: &str, notes: &[u8], before_m: f64) -> f64
     at
 }
 
-/// A loop course loaded from the phone is followed from the ride's start:
-/// MAP draws the course ahead in grey under the ride's track, a wrong turn
-/// sounds off course once confirmed and again 15 s later, riding back onto
-/// the course sounds back on it, and the course's end plays the ride-start
-/// chime and ends following it.
 #[test]
 fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
     use device_api::server::Method;
@@ -6619,13 +6602,14 @@ fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
     assert!(grey > 100, "the course ahead is drawn: {grey} pixels");
     sim.checkpoint("the map with the course ahead in grey");
 
-    // The wrong turn: more than 40 m off the course for 5 s.
     let off = ride_until_only(&mut sim, "off_course", &OFF_COURSE, 2_150.0);
     assert!((1_990.0..2_090.0).contains(&off), "{off}");
     sim.checkpoint("off the course on the map");
     let again = ride_until_only(&mut sim, "off_course", &OFF_COURSE, 2_250.0);
-    assert!((100.0..112.0).contains(&(again - off)), "{off} then {again}");
-    // Back onto the course, within 25 m of it, riding its way.
+    assert!(
+        (100.0..112.0).contains(&(again - off)),
+        "{off} then {again}"
+    );
     let on = ride_until_only(&mut sim, "on_course", &ON_COURSE, 2_400.0);
     assert!((2_200.0..2_340.0).contains(&on), "{on}");
     sim.checkpoint("back on the course on the map");
@@ -6669,10 +6653,6 @@ fn turns_course_gpx() -> String {
     gpx_through("turns", &legs)
 }
 
-/// Following a course sounds each turn twice: two rising beeps when its
-/// banner opens, 30 s ahead at 25 km/h (208 m), and one beep 30 m before
-/// it. The right-angle turn and the hairpin each sound so; the gentle bend
-/// between sounds nothing.
 #[test]
 fn a_followed_course_sounds_its_turns_and_not_a_gentle_bend() {
     use device_api::server::Method;

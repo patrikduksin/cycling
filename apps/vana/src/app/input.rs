@@ -58,7 +58,7 @@ impl Runtime {
         // so a sheet or a dark screen can never leave it mid-contact. A
         // contact only completes on the screen it began on.
         let hit = match input {
-            Input::Touch(point) => self.hit_test(point, now, ant),
+            Input::Touch(point) => self.hit_test(point, now),
             _ => Hit::default(),
         };
         let owner = self.touch_owner();
@@ -213,7 +213,7 @@ impl Runtime {
 
     /// What lies under a finger landing at `point`: the control a tap
     /// would act on, the list it would scroll and whether the page swipes.
-    fn hit_test(&self, point: device_api::input::Point, now: u64, ant: &impl Ant) -> Hit {
+    fn hit_test(&self, point: device_api::input::Point, now: u64) -> Hit {
         let (x, y) = (usize::from(point.x), usize::from(point.y));
         let navigation = &self.navigation;
         let paused_screen = self.navigation.page == Page::Ride
@@ -242,12 +242,6 @@ impl Runtime {
                 }
             }
             Page::Ride if paused_screen => None,
-            // The back-to-start page's pad follows the track back, or stops.
-            Page::Ride if navigation.ride_page == RidePage::Back => {
-                let radar = crate::sensors::ant::device_type::RADAR;
-                let centred = ant.channel(radar, now).is_none();
-                crate::screens::ride::back::pad_at(x, y, centred).then_some(Control::BackPad)
-            }
             Page::Ride if navigation.ride_page == RidePage::Map => Some(Control::Map),
             // Adding a minute to a step changes no ride state, so a tap may.
             Page::Ride
@@ -302,7 +296,7 @@ impl Runtime {
                 if self.navigation.page == Page::Ride
                     && self.navigation.ride_page == RidePage::Map =>
             {
-                self.stop_following_from_map(now);
+                self.stop_following_from_map();
             }
             TouchEvent::Hold(_) => {}
             TouchEvent::Swipe(swipe) => self.swiped(swipe),
@@ -336,7 +330,6 @@ impl Runtime {
                 self.act_on_setting(now, ant);
             }
             Control::Setup(card) => self.setup_card(card, now, ant),
-            Control::BackPad => self.toggle_follow(now),
             Control::ExtendStep => self.extend_step(now),
             Control::Menu(point) => {
                 self.refresh_sensor_menu(ant, now);
@@ -525,7 +518,7 @@ impl Runtime {
             Row::AutoLap => options.auto_lap = after(&AUTO_LAP, options.auto_lap),
             Row::TimeZone => options.zone = after(&ZONES, options.zone),
             Row::WheelMode => options.wheel.manual = !options.wheel.manual,
-            Row::PageStats | Row::PageLap | Row::PageClimb | Row::PageMap | Row::PageBack => {
+            Row::PageStats | Row::PageLap | Row::PageClimb | Row::PageMap => {
                 if let Some(page) = row.ride_page() {
                     options.ride_pages = options.ride_pages.toggled(page);
                 }

@@ -175,35 +175,34 @@ async fn zeroed_external(layout: core::alloc::Layout) -> *mut u8 {
     pointer
 }
 
-/// Back to start's breadcrumb (48 KiB), the loaded course (16 KiB), the
+/// The ride's breadcrumb (48 KiB), the loaded course (16 KiB), the
 /// course in the ride's frame (24 KiB), its turns (16 KiB), what finds them
 /// while a course uploads (12 KiB) and their state live in PSRAM: main's
 /// stack shares DRAM with `Runtime`'s static future and cannot spare them.
-/// Without PSRAM the back-to-start page says NO TRACK and no course loads;
-/// false then.
-async fn attach_back(sdk: &mut vana::app::Runtime) -> bool {
+/// Without PSRAM the map says NO TRACK and no course loads; false then.
+async fn attach_track(sdk: &mut vana::app::Runtime) -> bool {
     use vana::app::{
-        BACK_CRUMBS, BackToStart, COURSE_POINTS, COURSE_TURNS, Course, CourseFinder, Crumb,
-        MapFrame, Turn,
+        COURSE_POINTS, COURSE_TURNS, Course, CourseFinder, Crumb, MapFrame, RideTrack,
+        TRACK_CRUMBS, Turn,
     };
-    let Ok(layout) = core::alloc::Layout::array::<Crumb>(BACK_CRUMBS) else {
+    let Ok(layout) = core::alloc::Layout::array::<Crumb>(TRACK_CRUMBS) else {
         return false;
     };
     let pointer = zeroed_external(layout).await;
     if pointer.is_null() {
-        log::warn!("back to start: no PSRAM for the breadcrumb");
+        log::warn!("ride track: no PSRAM for the breadcrumb");
         return false;
     }
-    // SAFETY: the block holds BACK_CRUMBS crumbs at the allocator's
+    // SAFETY: the block holds TRACK_CRUMBS crumbs at the allocator's
     // alignment for `Crumb`, all zero bytes, which is a valid `Crumb`. It is
     // never deallocated and this is its only reference.
-    let crumbs = unsafe { core::slice::from_raw_parts_mut(pointer.cast::<Crumb>(), BACK_CRUMBS) };
+    let crumbs = unsafe { core::slice::from_raw_parts_mut(pointer.cast::<Crumb>(), TRACK_CRUMBS) };
     let Ok(layout) = core::alloc::Layout::array::<Crumb>(COURSE_POINTS) else {
         return false;
     };
     let line = zeroed_external(layout).await;
     if line.is_null() {
-        log::warn!("back to start: no PSRAM for the course's line");
+        log::warn!("ride track: no PSRAM for the course's line");
         return false;
     }
     // SAFETY: as for the breadcrumb, with COURSE_POINTS crumbs.
@@ -213,7 +212,7 @@ async fn attach_back(sdk: &mut vana::app::Runtime) -> bool {
     };
     let turns = zeroed_external(layout).await;
     if turns.is_null() {
-        log::warn!("back to start: no PSRAM for the course's turns");
+        log::warn!("ride track: no PSRAM for the course's turns");
         return false;
     }
     // SAFETY: as for the breadcrumb, with COURSE_TURNS turns; all zero bytes
@@ -222,7 +221,7 @@ async fn attach_back(sdk: &mut vana::app::Runtime) -> bool {
     // The map's track is zero bytes to begin with too: nothing shown yet.
     let map = zeroed_external(core::alloc::Layout::new::<MapFrame>()).await;
     if map.is_null() {
-        log::warn!("back to start: no PSRAM for the map");
+        log::warn!("ride track: no PSRAM for the map");
         return false;
     }
     // SAFETY: the block holds a `MapFrame` at its alignment, all zero bytes,
@@ -231,7 +230,7 @@ async fn attach_back(sdk: &mut vana::app::Runtime) -> bool {
     let map = unsafe { &mut *map.cast::<MapFrame>() };
     let course = zeroed_external(core::alloc::Layout::new::<Course>()).await;
     if course.is_null() {
-        log::warn!("back to start: no PSRAM for the course");
+        log::warn!("ride track: no PSRAM for the course");
         return false;
     }
     // SAFETY: the block holds a `Course` at its alignment, all zero bytes,
@@ -240,28 +239,28 @@ async fn attach_back(sdk: &mut vana::app::Runtime) -> bool {
     let course = unsafe { &mut *course.cast::<Course>() };
     let finder = zeroed_external(core::alloc::Layout::new::<CourseFinder>()).await;
     if finder.is_null() {
-        log::warn!("back to start: no PSRAM for the course's turn finder");
+        log::warn!("ride track: no PSRAM for the course's turn finder");
         return false;
     }
     // SAFETY: the block holds a `CourseFinder` at its alignment, all zero
     // bytes, which is a valid `CourseFinder`. It is never deallocated and
     // this is its only reference.
     let finder = unsafe { &mut *finder.cast::<CourseFinder>() };
-    let state = core::alloc::Layout::new::<BackToStart>();
-    // SAFETY: `BackToStart` has a non-zero size; the block is never freed.
-    let back = unsafe { device::drivers::psram::allocate_external(state) }.cast::<BackToStart>();
-    if back.is_null() {
-        log::warn!("back to start: no PSRAM for its state");
+    let state = core::alloc::Layout::new::<RideTrack>();
+    // SAFETY: `RideTrack` has a non-zero size; the block is never freed.
+    let track = unsafe { device::drivers::psram::allocate_external(state) }.cast::<RideTrack>();
+    if track.is_null() {
+        log::warn!("ride track: no PSRAM for its state");
         return false;
     }
-    // SAFETY: the allocator returned a block with `BackToStart`'s size and
+    // SAFETY: the allocator returned a block with `RideTrack`'s size and
     // alignment. It is initialized by this write, never deallocated, and
     // this is its only reference.
-    let back = unsafe {
-        back.write(BackToStart::new(crumbs, line, turns, map, course, finder));
-        &mut *back
+    let track = unsafe {
+        track.write(RideTrack::new(crumbs, line, turns, map, course, finder));
+        &mut *track
     };
-    sdk.attach_back(back);
+    sdk.attach_track(track);
     true
 }
 
@@ -341,7 +340,7 @@ async fn console(
                 memory.terrain = true;
             }
         }
-        memory.back_to_start = attach_back(sdk).await;
+        memory.track = attach_track(sdk).await;
         // The phone session's indexes and response state live in external
         // RAM, copied from a constant, so they cost no task stack.
         const PHONE_WORK: vana::app::PhoneWork = vana::app::PhoneWork::new();

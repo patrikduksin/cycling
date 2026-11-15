@@ -163,7 +163,7 @@ screen opens again, a climb under way brings the page up.
 
 ### Map
 
-The ride page before BACK TO START, MAP, draws where the ride has been: its
+The last ride page, MAP, draws where the ride has been: its
 own GPS track as a white line, a green dot where it began, and the rider in
 blue. Riding, the track is turned so the way the rider is heading is up and
 the rider is an arrowhead; standing still (after about 15 s without moving,
@@ -171,34 +171,40 @@ or while paused) it is north up, the rider a dot, and the page says N UP. The
 page fits the whole track and the rider to the screen, zooming out in steps
 and never closer than 500 m across; it holds still until the track nears the
 edge. A bar at the bottom shows the scale (150 M, 1.5 KM) and the ride's distance sits beside
-it. Following the track back, the way home is green and the part already left
-behind grey, with FOLLOWING in the header. Without a fix the page says NO
+it. Without a fix the page says NO
 GPS YET and MAP STARTS WITH GPS; once a fix is lost the track stays where it
 was, with NO GPS in amber. A device with no memory for the track says NO TRACK.
 
-The map draws the same breadcrumb as BACK TO START (below), so a very long
-ride shows its bends thinned and a far-off start is a small dot.
+The track is the ride's GPS breadcrumb, thinned to its bends, up to 4,096
+points in PSRAM, so a very long ride shows its bends thinned and a far-off
+start is a small dot. Each ride starts a new one. After a restart cuts a ride
+short, the ride started next reads the cut ride's track and start back from
+its journal, a few records a moment, and carries them on if its own first fix
+comes within 30 minutes of the cut ride's last. Until that is read, MAP
+draws the track read so far and says NO GPS; a pass of the start then takes
+no lap. The course is followed again only as on any ride: by riding along
+it.
 
 A loaded course (below) is drawn in grey under the ride's track: while
 following it, only what is ahead of the rider; otherwise the stretch nearest
 the rider. It does not change the zoom, so a course far from the ride does not
-show at all. While following the course or the track, the header says
-FOLLOWING, and a long press on the page (a second) stops following
-(STOPPED FOLLOWING); a tap does nothing, so rain or a glove cannot.
+show at all. While following the course, the header says FOLLOWING, and a
+long press on the page (a second) stops following; a tap does nothing, so
+rain or a glove cannot.
 
 ### Course
 
 The phone page loads a course: a GPX track or route, up to 4 MB, which VANA
 keeps on its memory card until the next one replaces it or the page clears
-it. With BACK TO START on, riding along the course in its direction, within
-25 m of it for a few fixes, follows it: FOLLOWING COURSE and the rising cue.
+it. Riding along the course in its direction, within 25 m of it for a few
+fixes, follows it: FOLLOWING COURSE and the rising cue.
 Crossing it, or riding it the wrong way, follows nothing, and a course far
 from the ride says nothing. While following, more than 50 m off the course
-says OFF TRACK once with a falling cue, and within 25 m again BACK ON TRACK;
-the course gives no minute reminders. 500 m off, STOPPED FOLLOWING. Near its
-end, along it, END OF COURSE. After either, or after the rider stops it, the
-course no longer follows by itself for the rest of the ride; the pad can
-still follow it, and the next ride follows it again.
+sounds a falling cue once, and within 25 m again a rising one; there are no
+minute reminders. 500 m off, following stops. Near its end, along it,
+following ends with the end cue. After either, or after the rider stops it
+on MAP, the course is not followed again for the rest of the ride; the next
+ride follows it again.
 
 While following, each turn on the course is warned of twice: about 150 m
 before it, RIGHT IN 150 M with a soft falling cue, and about 30 m before it,
@@ -223,19 +229,12 @@ wrong way. Wherever
 which way comes first is not clear, as when corners come within a few metres
 of each other, or a turn's first bend goes against where it leads, nothing
 is said, and nothing after it either until the rider is there. A warning
-that comes just after another nudge waits a second. Off the course, riding it
+that comes just after FOLLOWING COURSE waits a second. Off the course, riding it
 the wrong way, standing still, or once it is stopped or ended, no turn is
 warned of; riding back past a turn and on again warns of it again. Where
 the course runs the same road twice, as a figure of eight or an out-and-back
 does, the warnings are those of the pass the rider is on. A course with more
 than 1,024 turns is warned of to its end.
-
-While following the course, the BACK TO START page says COURSE: the arrow
-points along the course a little way ahead (or back to it when off), DIRECT KM
-is straight to the course's end and TO END KM is along it, and the pad says
-STOP FOLLOWING. Otherwise the page works as below: riding back along the
-ride's own track still follows the track, and the pad says FOLLOW COURSE while
-the course is within 500 m, else FOLLOW TRACK BACK. With BACK TO START off no course is followed, as no track is.
 
 ### Workouts from the phone
 
@@ -267,7 +266,7 @@ when the ride screen opens, applies to every ride and survives a reboot.
 ### Choosing the ride pages
 
 Settings has a RIDE PAGES section with an ON or OFF row for each page a rider
-may not need: STATS, LAP, CLIMB, MAP and BACK TO START. All are ON by default. MAIN
+may not need: STATS, LAP, CLIMB and MAP. All are ON by default. MAIN
 is always on, and so is the WORKOUT page while a workout is chosen. MOVE and
 swipes step through the pages that are on, wrapping from the last to the
 first, and the page dots count only those. With every optional page off, MOVE
@@ -282,44 +281,6 @@ would cover the readings they chose to look at. The CLIMB row's note
 says NO CLIMB POP-UP while it is off. The choice is read when the ride screen
 opens and applies to the next ride page the rider sees; it cannot change under
 them, since Settings is not reachable during a ride.
-
-BACK TO START OFF also means the ride never follows its track back by itself:
-the page's pad is the only way to stop following, so without the page riding
-back over the track starts nothing, and no FOLLOWING TRACK, OFF TRACK or BACK
-AT START nudge sounds, and OFF TRACK never repeats its toast and chime every
-minute. The breadcrumb is still kept, because MAP draws it.
-
-### Back to start
-
-The page after MAP, BACK TO START (unless turned off), points the way to where the ride began.
-The arrow points relative to the way the rider rides, so straight up is
-straight on; standing still, it points north up and says N UP. DIRECT KM is
-the distance straight to the start, TRACK KM the distance back the way the
-ride came. MOVE reaches it last; a swipe back from the first page reaches it
-at once.
-
-Riding back along the ride's own track, against the way it was ridden,
-follows it by itself: FOLLOWING TRACK, a rising cue, and a green arrow that
-points along the track a little way ahead. More than 50 m off it, OFF TRACK
-shows on any page with a falling cue, and again each minute; within 25 m,
-BACK ON TRACK. 500 m off, following stops (STOPPED FOLLOWING): the rider chose
-another way, and the track still leads home from where they left it. At the
-start, BACK AT START. The page's pad (FOLLOW TRACK BACK, STOP FOLLOWING) does
-the same sooner; the buttons keep their ride roles. Laps of a loop the same
-way round never follow by themselves.
-
-Under the pad a grey line says when the light ends, SUNSET 19:42 in local
-time, and DARK once the sun is down. It shows only with a known position and
-time, and never in polar day.
-
-The track is the ride's GPS breadcrumb, thinned to its bends, up to 4,096
-points in PSRAM. Each ride starts a new one. After a restart cuts a ride
-short, the ride started next reads the cut ride's track and start back from
-its journal, a few records a moment, and carries them on if its own first fix
-comes within 30 minutes of the cut ride's last. Until that is read, BACK TO
-START says NO GPS and MAP draws the track read so far; a pass of the start
-then takes no lap. Following the track or the course starts again only as on
-any ride: by riding along it, or from the pad.
 
 ### Sunset
 
@@ -352,8 +313,8 @@ estimate waits for 5 minutes of moving and for 5 km/h or more.
 The alert is part of ALERTS SUNSET, with no setting of its own. It says nothing
 in polar day or night, after sunset, without a position or time, while paused,
 at the start, or on a recovered ride until its track has been read back. It
-also says nothing when riding towards the start (following the track back, or
-heading within a quarter turn of it, on a course too), and holds while the
+also says nothing when riding towards the start (heading within a quarter
+turn of it, on a course too), and holds while the
 heading is unknown, as after a stop, until the rider moves again. It rarely
 repeats: only after the margin has stayed above 30 minutes for 10 minutes.
 

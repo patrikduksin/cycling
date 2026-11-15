@@ -210,11 +210,7 @@ corners; each screen's layout test checks it.
 
 ## Cells
 
-The back-to-start page adds a `CAPTION` line under its pad, centred: `SUNSET 19:42`
-in `SECONDARY` (local time, 24-hour), or `DARK` in `WHITE` once the sun is down;
-nothing when position or time is unknown. A toast covers it while one shows.
-
-The stats, lap, climb and back-to-start pages (the map page draws instead) list readings in cells: a `CAPTION` in
+The stats, lap and climb pages (the map page draws instead) list readings in cells: a `CAPTION` in
 `SECONDARY` over its value in `VALUE`, in the metric's colour. Cells sit in two
 columns from the body's 10 px margin, 48 px apart, so each caption has 7 clear
 rows above it, and keep 8 px between the columns (`ride::cell`). A page that
@@ -418,7 +414,7 @@ Applied to the cycling-specific charts:
 | Elevation profile (climb) | A solid area per column, coloured by the steepness of that column's grade, on one `TERTIARY` baseline, with a 6 px `WHITE` disc for the rider. The grade sits in the top left, in `LARGE` while it fits beside power and heart rate (`VALUE` otherwise), each of those with its zone on a rounded chip in the zone's colour; a 5 px bar under them shows the current grade's steepness colour. On a climb from the map (`docs/terrain.md`) it is the whole climb from its foot past its top, fixed while the disc moves. What is climbed is at 25%, and a 6 px progress bar under it, as wide as the chart, fills `WHITE`, with FOOT, `NN% UP` and TOP under it. A climb ahead runs from the rider past the top, with the road before the foot and after the top at 25%. Without a map, a climb under way shows the last 4 km with the road before the climb at 25%. With no climb it is the whole ride, disc at the end. A `SECONDARY` "NO MAP" caption marks a missing terrain pack. |
 | Workout (workout page) | One bar per played step across the content width, with a 1 px gap. Its width is proportional to the step's planned time (distance and open steps get an estimate), its height to the target's intensity. A ramp is one stair per stage, up to the first stage at 150% of FTP (and always the stage on now), with width in proportion to its minutes and each stair's height and zone colour from its watts. The colour is the zone of the target's middle, `CADENCE` for cadence and `TERTIARY` without a target. Steps done and on now are full colour, steps ahead 25%. A `WHITE` bar under the chart marks the step on now, or under the stair on now for a ramp; the stairs ahead are 25%. Above the chart, the step's band gauge: a `TERTIARY` track, the target band in its metric colour, and a `WHITE` disc at the 3 s reading. A ramp's band is 95% to 110% of the stage's watts, which the page names (`HOLD 121 W`). When the workout ends, a rider on this page moves to the main page. |
 | Target band (main page) | During a workout, a 2 px `WHITE` bar under the power or heart gauge spans the step's target. |
-| Track (map) | The ride's GPS breadcrumb as a 3 px anti-aliased line, `WHITE`, in the body between the header and the footer. Heading up while riding (the rider's chevron, `ACCENT`, 4.5 px strokes, points up); north up and an `ACCENT` 7 px disc when standing still, with a `SECONDARY` "N UP" caption on the right of the title. The start is a 4 px `GREEN` dot. Following the track back, the way home is `GREEN` and the part left behind `SECONDARY`, with a `GREEN` "FOLLOWING" caption. The track and the rider are fitted to the body with a 10 px margin and centred on that box, so the rider can be anywhere on the page (a short track stays centred on the rider). The zoom is a ladder of 20% steps from 500 m across the body to about 80 km, the closest that fits. The box stays put until the track would come within 5 px of the edge. It steps back in only once the track fits 90% of the closer step, and a fix over 100 km away is left out of the fit. Laps over the same road are drawn once. The footer, in the toast band, holds a 3 px `SECONDARY` scale bar of 1, 1.5, 2, 3, 5, 6 or 8 times a power of ten (no longer than 56 px) with its length as a `CAPTION`, and the ride's distance, `WHITE`, on the right. |
+| Track (map) | The ride's GPS breadcrumb as a 3 px anti-aliased line, `WHITE`, in the body between the header and the footer. Heading up while riding (the rider's chevron, `ACCENT`, 4.5 px strokes, points up); north up and an `ACCENT` 7 px disc when standing still, with a `SECONDARY` "N UP" caption on the right of the title. The start is a 4 px `GREEN` dot. While following a course, a `GREEN` "FOLLOWING" caption. The track and the rider are fitted to the body with a 10 px margin and centred on that box, so the rider can be anywhere on the page (a short track stays centred on the rider). The zoom is a ladder of 20% steps from 500 m across the body to about 80 km, the closest that fits. The box stays put until the track would come within 5 px of the edge. It steps back in only once the track fits 90% of the closer step, and a fix over 100 km away is left out of the fit. Laps over the same road are drawn once. The footer, in the toast band, holds a 3 px `SECONDARY` scale bar of 1, 1.5, 2, 3, 5, 6 or 8 times a power of ten (no longer than 56 px) with its length as a `CAPTION`, and the ride's distance, `WHITE`, on the right. |
 | Lap comparison (laps) | One vertical bar per lap across the page's full width, each centred in an equal slot, up to 24 px wide with at least 3 px between bars, on one `TERTIARY` baseline. Height is proportional to the lap's average power, or its speed on a ride without power, in that metric's colour. Finished laps are drawn at 25%, the open lap in full colour, and the best lap gets a 2 px `WHITE` cap. The oldest lap is on the left and the open lap on the right; the 16 kept laps and the open one fit. |
 
 The time-in-zone bars, the profile and the lap bars reach into the toast band.
@@ -514,7 +510,7 @@ Acting on a row does one of three things:
   minus and plus pads. Editing WHEEL steps by 5 mm and makes the size MANUAL;
 - a choice steps to its next value at once (brightness auto/25/50/75/100%, dim
   after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, mode normal/saver, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
-  km/at start, wheel mode auto/manual, the main page's two lower readings (cycling through the list below), ride pages (STATS, LAP, CLIMB, MAP, BACK TO START) on/off, sounds on/off);
+  km/at start, wheel mode auto/manual, the main page's two lower readings (cycling through the list below), ride pages (STATS, LAP, CLIMB, MAP) on/off, sounds on/off);
 - an action opens a page (SENSORS, BESTS, FORM) or a flow (PHONE, a placeholder until the
   phone companion lands).
 
@@ -578,7 +574,7 @@ reading with no data yet shows `--`. The choice is two bytes of VANA's preferenc
 record from version 8, and the display mode's byte follows them from version 9
 (`app::preferences`); older records load with the defaults.
 
-RIDE PAGES (STATS, LAP, CLIMB, MAP, BACK TO START) lists one row per optional ride page, five rows that scroll. The ride screen's page dots
+RIDE PAGES (STATS, LAP, CLIMB, MAP) lists one row per optional ride page. The ride screen's page dots
 count the pages that are on, and a page that is off never takes a dot, a MOVE
 press or a swipe. The `TITLE` falls back to `BODY` when a section name is too
 wide, as `RIDE PAGES` is. The CLIMB row's note, NO CLIMB POP-UP, shows while it
@@ -652,7 +648,7 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
-| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card on Home, the row on Sensors, or the ride on Rides; a cue acts as its button; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does; on the back-to-start page, the pad starts or stops following the track back. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
+| Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card on Home, the row on Sensors, or the ride on Rides; a cue acts as its button; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
 | Drag | 10 px of mostly vertical travel on a list | The list follows the finger and coasts on when it lifts (see Lists that scroll); the card it landed on is never activated |
 | Swipe | 10 px of mostly sideways travel, then at least 48 px and twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings, out of the number editor too |
 | Long press | Still for 1 s, then lifted | On the map, stops following the course |
@@ -661,7 +657,7 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 ### How touch is routed
 
 Touch follows UIKit's model. When a finger lands, the screen hit-tests what
-lies under it: the control a tap would act on (a card, tile, row or pad), the
+lies under it: the control a tap would act on (a card, tile or row), the
 list it sits in and whether the page takes swipes. The contact stays bound to
 that hit until it lifts. The list's drag, the page's swipe and the control's
 tap then compete for it, and the first to win takes it: 10 px of mostly

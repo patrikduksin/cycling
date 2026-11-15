@@ -45,7 +45,6 @@ pub enum Row {
     PageLap,
     PageClimb,
     PageMap,
-    PageBack,
     Sounds,
     RadarAlerts,
     FuelAlert,
@@ -112,13 +111,7 @@ pub const SECTIONS: [(&str, &[Row]); 11] = [
     ("MAIN PAGE", &[Row::MainLeft, Row::MainRight]),
     (
         "RIDE PAGES",
-        &[
-            Row::PageStats,
-            Row::PageLap,
-            Row::PageClimb,
-            Row::PageMap,
-            Row::PageBack,
-        ],
+        &[Row::PageStats, Row::PageLap, Row::PageClimb, Row::PageMap],
     ),
     ("SOUND", &[Row::Sounds]),
     (
@@ -210,7 +203,6 @@ impl Row {
             Self::PageLap => "LAP",
             Self::PageClimb => "CLIMB",
             Self::PageMap => "MAP",
-            Self::PageBack => "BACK TO START",
             Self::Sounds => "SOUNDS",
             Self::RadarAlerts => "RADAR ALL CLEAR",
             Self::FuelAlert => "EAT AND DRINK",
@@ -234,7 +226,6 @@ impl Row {
             Self::PageLap => Some(RidePage::Lap),
             Self::PageClimb => Some(RidePage::Climb),
             Self::PageMap => Some(RidePage::Map),
-            Self::PageBack => Some(RidePage::Back),
             _ => None,
         }
     }
@@ -267,7 +258,6 @@ impl Row {
             | Self::PageLap
             | Self::PageClimb
             | Self::PageMap
-            | Self::PageBack
             | Self::Sounds
             | Self::RadarAlerts
             | Self::FuelAlert
@@ -640,7 +630,7 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 37);
+        assert_eq!(ROWS, 36);
         for index in 0..ROWS {
             assert_eq!(Row::at(index).index(), index);
             let (section, first) = section(index);
@@ -772,20 +762,20 @@ mod tests {
 
     #[test]
     fn a_long_section_scrolls_and_shows_where_it_is() {
-        let stats = Row::PageStats.index();
+        let display = Row::Brightness.index();
         let bar = |view: &mut View, y| view.pixel(BAR_LEFT + 1, y);
         let scrolled = |offset| {
-            let mut view = View::new(Page::Settings, stats, None);
+            let mut view = View::new(Page::Settings, display, None);
             view.scroll = offset;
             let _ = view.show_settings()[STATUS].push_str("SAVED");
             view.prepare();
             view
         };
-        let rows = SECTIONS[6].1.len();
+        let rows = SECTIONS[2].1.len();
         assert_eq!(rows, 5);
         // From the top: the thumb at the top of the track.
         let mut top = scrolled(0);
-        assert!(top.canvas().shows("RIDE PAGES"));
+        assert!(top.canvas().shows("DISPLAY"));
         assert_eq!(bar(&mut top, LAYOUT.top + 2), SECONDARY);
         assert_eq!(bar(&mut top, LAYOUT.bottom - 2), CARD);
         // Scrolled to the end: the thumb at the bottom, the fifth row whole
@@ -798,8 +788,8 @@ mod tests {
         assert!(LAYOUT.whole(4, end));
         let fifth = (LAYOUT.top as i32 + LAYOUT.span(4).0 - end + 10) as usize;
         assert_eq!(
-            target(100, fifth, stats, false, end),
-            Some(Target::Row(stats + 4))
+            target(100, fifth, display, false, end),
+            Some(Target::Row(display + 4))
         );
         // A short section has no bar.
         assert_eq!(bar(&mut view(0, false, &[], "SAVED"), LAYOUT.top + 2), 0);

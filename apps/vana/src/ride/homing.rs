@@ -1,40 +1,19 @@
-//! Back to start: a thinned breadcrumb of the ride, and the way back to where
-//! it began, either straight or along the breadcrumb.
+//! The ride's breadcrumb: a thinned track of where the ride has been, the
+//! way to where it began, and passes of its start.
 //!
-//! Positions become metres east and north of the ride's first fix. The
+//! Positions become metres east and north of the ride's first fix, the
+//! ride's `Frame`, which a course is placed in too (`course::follow`). The
 //! breadcrumb keeps a point only where the road bends: a streaming window
 //! simplification keeps the last point before any point in the window would
 //! stray more than the tolerance from a straight line. When the caller's
 //! buffer fills, the breadcrumb is thinned again in place as the course is
 //! (`ride::thin`), so a ride of any length fits. The buffer is the caller's
-//! (PSRAM on the device); this state is small.
+//! (PSRAM on the device); this state is small. The heading comes from
+//! successive fixes.
 //!
-//! Following the breadcrumb back freezes it and steers to a point a little
-//! way along it towards the start. More than `OFF_M` from it is off track
-//! until the rider is back within `ON_M`; `DROP_M` off it, following stops.
-//! Riding back along the breadcrumb, against the way it was ridden, starts
-//! following by itself, so no button is needed; the rider may also start or
-//! stop it. Stopping keeps the breadcrumb up to where the rider left it, so
-//! it still leads home. The heading comes from successive fixes, so the
-//! arrow can point relative to the way the rider rides.
-//!
-//! A loaded course (`set_course`) is a second line to follow, placed in the
-//! ride's frame once the ride has its first fix. It is kept end first, so
-//! following it is the same walk towards index 0 as following the breadcrumb
-//! home, and its `along` is metres to its end. Riding along it, within
-//! `ON_M` and its way, for `JOIN_FIXES` fixes in a row, follows it by itself;
-//! crossing it does not. While it is followed the breadcrumb keeps growing.
-//! Off the course is OFF TRACK once, with no reminders; the match moves at
-//! most `JUMP_M` on along the course at a time, so the far leg of an
-//! out-and-back or the end of a loop never stands in for where the rider is.
-//! Where the course passes the same road twice, the pass that goes on from
-//! where the rider was, their way, is the one they are on.
-//! Dropping it, reaching its end (`CourseEnd`) or stopping it holds it off
-//! from following by itself for the rest of the ride; the pad can still
-//! follow it. Whenever the course is not followed the
-//! breadcrumb is followed back as without one. While the course is
-//! followed, on it and ridden its way, its turns ahead are warned of
-//! (`course::turns`).
+//! The way to the start (`Guide`) is what TURN BACK BY reckons the way home
+//! from (`ride::turn_back`). The rider is at the start within `ARRIVE_M` of
+//! it once the breadcrumb is `MIN_TRACK_M` long, until `LEAVE_M` away again.
 //!
 //! The same positions tell when the rider rides past the start (`StartPass`),
 //! for laps at the start: within `PASS_M` of it, then out beyond `PASS_END_M`
@@ -44,8 +23,7 @@
 //! away, and counts once until they are away again; that gap is the
 //! hysteresis jitter near the start cannot cross. Waiting at the start, however
 //! long, delays the pass until the rider rides on.
-use crate::ride::course::turns::{SCAN_STEPS, Scan, Turn, Warner, Warning};
-use crate::ride::{course, thin};
+use crate::ride::thin::{self, off_segment};
 use libm::{atan2f, cosf, sqrtf};
 
 pub mod rebuild;
@@ -65,14 +43,6 @@ const HEADING_STEP_M: f32 = 15.0;
 const HEADING_STALE_MS: u64 = 15_000;
 /// A fix older than this leaves the guide without a position.
 const FIX_LOST_MS: u64 = 5_000;
-/// Off track beyond this from the breadcrumb, back on within `ON_M`.
-const OFF_M: f32 = 50.0;
-const ON_M: f32 = 25.0;
-/// Following steers to the breadcrumb this far ahead, towards the start.
-const LOOKAHEAD_M: f32 = 40.0;
-/// Segments behind and ahead of the last match searched first.
-const SEARCH_BACK: usize = 64;
-const SEARCH_AHEAD: usize = 4;
 /// At the start within this, once the breadcrumb is `MIN_TRACK_M` long;
 /// arrives again only after leaving by `LEAVE_M`.
 const ARRIVE_M: f32 = 30.0;
@@ -84,36 +54,8 @@ const PASS_M: f32 = 40.0;
 const PASS_END_M: f32 = 50.0;
 /// Another pass counts only after being this far from the start.
 const PASS_ARM_M: f32 = 100.0;
-/// While off track the nudge repeats this often.
-const REMIND_MS: u64 = 60_000;
 /// Standing still, the guide is brought up to date this often.
 const STILL_MS: u64 = 1_000;
-/// Following stops this far from the breadcrumb: the rider chose another way.
-const DROP_M: f32 = 500.0;
-/// Following the course, the match moves at most this far on towards its
-/// end, and back only this far behind where it was, in one fix.
-const JUMP_M: f32 = 500.0;
-const BACK_M: f32 = ON_M;
-/// Within `ON_M` and this little on from where the rider was, the course
-/// is matched first: where it passes the same road twice, the pass the
-/// rider is on, not the other. There a stretch more than `SLIP_M` behind
-/// the furthest the rider has been counts as that much farther off, and one
-/// against the rider's way `AGAINST_M` farther.
-const NEAR_M: f32 = 100.0;
-const SLIP_M: f32 = 10.0;
-const AGAINST_M: f32 = 5.0;
-/// A fix this far from the last one matched, or the first after the fix
-/// was lost, follows a gap: the rider may be past the near stretch, and the
-/// course is matched as if just joined.
-const HOP_M: f32 = 40.0;
-/// Riding along the course: this many fixes in a row within `ON_M` of it,
-/// heading its way within an eighth of a turn.
-const JOIN_FIXES: u8 = 5;
-/// Riding back along the breadcrumb: this close to it, against its way, on
-/// this many fixes in a row, away from its newest `RETRACE_SKIP_M`.
-const RETRACE_M: f32 = 20.0;
-const RETRACE_FIXES: u8 = 8;
-const RETRACE_SKIP_M: f32 = 300.0;
 /// Angles are in 4096ths of a turn, clockwise from north.
 pub const TURN: u16 = 4096;
 
@@ -128,72 +70,57 @@ pub struct Crumb {
     pub along: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Mode {
-    /// Straight to the start.
-    Direct,
-    /// Along the breadcrumb, on it.
-    Track,
-    /// Following, but more than `OFF_M` from the breadcrumb: back to it.
-    OffTrack,
-    /// At the start.
-    Arrived,
-}
-
-/// The way back, as of the last fix.
+/// The way to the start, as of the last fix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Guide {
-    pub mode: Mode,
-    /// Following the breadcrumb back, or the course, whatever `mode` says now.
-    pub following: bool,
-    /// Following the course, towards its end.
-    pub course: bool,
-    /// Not following: the course is loaded and within `DROP_M`, so the pad
-    /// follows it rather than the breadcrumb.
-    pub course_near: bool,
-    /// Straight to the start, or to the course's end while following it.
-    pub direct_m: u32,
-    /// Back along the breadcrumb, or on along the course, from here.
-    pub track_m: u32,
-    /// From the breadcrumb, while following.
-    pub off_m: u32,
-    /// Where to ride: to the start, or to the breadcrumb ahead.
+    pub at_start: bool,
+    /// Straight to the start.
     pub bearing: u16,
     /// The way the rider is riding, while moving.
     pub heading: Option<u16>,
 }
 
-impl Guide {
-    /// The arrow's angle: relative to the heading, or north up without one.
-    pub fn arrow(&self) -> u16 {
-        match self.heading {
-            Some(heading) => (self.bearing + TURN - heading) % TURN,
-            None => self.bearing,
+/// A fresh position, for what follows the rider (`course::follow`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fix {
+    /// Metres east and north of the ride's first fix.
+    pub at: (f32, f32),
+    pub heading: Option<u16>,
+    /// A new position; else the rider stands still, a second on.
+    pub moved: bool,
+}
+
+/// Where a ride's positions are measured from: its first fix.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    origin: (i32, i32),
+    /// Metres per 1e-7 degree of longitude at the origin.
+    east_per_e7: f32,
+}
+
+impl Frame {
+    fn at((lat, lon): (i32, i32)) -> Self {
+        Self {
+            origin: (lat, lon),
+            east_per_e7: east_per_e7(lat),
         }
     }
-}
 
-/// Which line a follow is on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Line {
-    Breadcrumb,
-    Course,
-}
-
-/// What a fix changed, for a nudge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Event {
-    /// Riding back along the breadcrumb: following it started by itself.
-    Following,
-    /// Left the breadcrumb while following, or still off it a while later.
-    OffTrack,
-    /// Back on the breadcrumb.
-    OnTrack,
-    /// So far off the breadcrumb that following stopped.
-    Dropped,
-    Arrived,
-    /// At the end of the course.
-    CourseEnd,
+    /// Metres east and north of the origin; across the antimeridian the
+    /// short way round is the way ridden.
+    pub fn place(&self, lat: i32, lon: i32) -> (f32, f32) {
+        let (lat0, lon0) = self.origin;
+        let mut east = i64::from(lon) - i64::from(lon0);
+        if east > 1_800_000_000 {
+            east -= 3_600_000_000;
+        } else if east < -1_800_000_000 {
+            east += 3_600_000_000;
+        }
+        (
+            east as f32 * self.east_per_e7,
+            (i64::from(lat) - i64::from(lat0)) as f32 * M_PER_E7,
+        )
+    }
 }
 
 type Point = (f32, f32);
@@ -239,38 +166,17 @@ impl StartPass {
     }
 }
 
-fn distance(a: Point, b: Point) -> f32 {
+pub(crate) fn distance(a: Point, b: Point) -> f32 {
     let (east, north) = (b.0 - a.0, b.1 - a.1);
     sqrtf(east * east + north * north)
 }
 
-/// The point of segment a-b nearest `p`, and how far along the segment it
-/// is, 0 to 1.
-fn project(p: Point, a: Point, b: Point) -> (Point, f32) {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let length = dx * dx + dy * dy;
-    let t = if length > 0.0 {
-        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    ((a.0 + t * dx, a.1 + t * dy), t)
-}
-
-fn off_segment(p: Point, a: Point, b: Point) -> f32 {
-    distance(p, project(p, a, b).0)
-}
-
 /// The bearing from `from` to `to`, in `TURN`ths clockwise from north.
-fn bearing(from: Point, to: Point) -> u16 {
+pub(crate) fn bearing(from: Point, to: Point) -> u16 {
     let radians = atan2f(to.0 - from.0, to.1 - from.1);
     let turns = radians / core::f32::consts::TAU;
     let turns = if turns < 0.0 { turns + 1.0 } else { turns };
     ((turns * f32::from(TURN)) as u32 % u32::from(TURN)) as u16
-}
-
-fn metres(value: f32) -> u32 {
-    (value + 0.5) as u32
 }
 
 /// Metres east per 1e-7 degree of longitude at this latitude.
@@ -279,89 +185,25 @@ fn east_per_e7(lat_e7: i32) -> f32 {
     M_PER_E7 * cosf(radians)
 }
 
-/// Where `p` meets segment `end` of `line`, which runs from `end - 1`.
-fn nearest_on(line: &[Crumb], p: Point, end: usize) -> Nearest {
-    let (a, b) = (line[end - 1], line[end]);
-    let (point, t) = project(p, (a.east, a.north), (b.east, b.north));
-    Nearest {
-        end,
-        off: distance(p, point),
-        point,
-        along: a.along + t * (b.along - a.along),
-    }
-}
-
-/// The nearest segment of the followed line to a position.
-#[derive(Clone, Copy)]
-struct Nearest {
-    /// The segment's far end: it runs from `end - 1` to `end`.
-    end: usize,
-    off: f32,
-    point: Point,
-    /// Metres along the line from its index 0 to `point`.
-    along: f32,
-}
-
 pub struct Homing<'a> {
     crumbs: &'a mut [Crumb],
     len: usize,
-    /// The course, end first, in this frame; empty without one.
-    line: &'a mut [Crumb],
-    line_len: usize,
-    /// A course is loaded but waits for the ride's first fix to be placed.
-    unplaced: bool,
-    /// The course is off for the rest of the ride: dropped, ended or stopped.
-    course_held: bool,
-    /// Fixes in a row riding along the course, at its segment `join_end`.
-    join_fixes: u8,
-    join_end: usize,
-    /// Metres to the course's end where the rider was last matched.
-    course_along: f32,
-    /// Metres to the course's end at the furthest the rider has been along
-    /// it since following it.
-    course_reached: f32,
-    /// The fix last matched to the course, until the fix is lost.
-    course_fix: Option<Point>,
-    /// The course's turns, found a few steps a fix once it is placed, and
-    /// what was said of them.
-    turns: &'a mut [Turn],
-    turn_count: usize,
-    scan: Scan,
-    warner: Warner,
-    /// The turn warning from the last fix, until taken.
-    turn: Option<Warning>,
     tolerance: f32,
-    origin: Option<(i32, i32)>,
-    /// Metres per 1e-7 degree of longitude at the start.
-    east_per_e7: f32,
+    frame: Option<Frame>,
     /// Fixes since the last kept point, oldest first.
     window: [Point; WINDOW],
     window_len: usize,
     fed: Option<(i32, i32)>,
     here: Option<Point>,
     here_ms: u64,
-    course_from: Option<Point>,
+    heading_from: Option<Point>,
     heading: Option<u16>,
     heading_ms: u64,
-    following: Option<Line>,
-    /// The segment last matched while following.
-    segment: usize,
-    /// Where on the breadcrumb the rider last was while following.
-    matched: Option<Point>,
-    /// Fixes in a row riding back along the breadcrumb, and its length
-    /// before the first of them.
-    retrace: u8,
-    retrace_len: usize,
-    /// Riding back along the breadcrumb starts following by itself; off
-    /// while the back-to-start page is, since its pad could not stop it.
-    auto_follow: bool,
-    off: bool,
     arrived: bool,
     pass: StartPass,
     /// Where the rider first moved, the start laps count from.
     pass_start: Option<Point>,
     passed: bool,
-    reminded_ms: u64,
     updated_ms: u64,
     guide: Option<Guide>,
 }
@@ -373,91 +215,40 @@ impl<'a> Homing<'a> {
         Self {
             crumbs,
             len: 0,
-            line: &mut [],
-            line_len: 0,
-            unplaced: false,
-            course_held: false,
-            join_fixes: 0,
-            join_end: 0,
-            course_along: 0.0,
-            course_reached: 0.0,
-            course_fix: None,
-            turns: &mut [],
-            turn_count: 0,
-            scan: Scan::default(),
-            warner: Warner::default(),
-            turn: None,
             tolerance: TOLERANCE_M,
-            origin: None,
-            east_per_e7: M_PER_E7,
+            frame: None,
             window: [(0.0, 0.0); WINDOW],
             window_len: 0,
             fed: None,
             here: None,
             here_ms: 0,
-            course_from: None,
+            heading_from: None,
             heading: None,
             heading_ms: 0,
-            following: None,
-            segment: 0,
-            matched: None,
-            retrace: 0,
-            retrace_len: 0,
-            auto_follow: true,
-            off: false,
             arrived: false,
             pass: StartPass::Spent,
             pass_start: None,
             passed: false,
-            reminded_ms: 0,
             updated_ms: 0,
             guide: None,
         }
     }
 
-    /// Room for a course of up to `line.len()` points.
-    /// Room for up to `turns.len()` of the course's turns.
-    pub fn with_turns(mut self, turns: &'a mut [Turn]) -> Self {
-        self.turns = turns;
-        self
-    }
-
-    pub fn with_line(mut self, line: &'a mut [Crumb]) -> Self {
-        self.line = line;
-        self
-    }
-
-    /// Forget the breadcrumb: a new ride starts where its first fix is. A
-    /// loaded course stays, to be placed again from that fix.
+    /// Forget the breadcrumb: a new ride starts where its first fix is.
     pub fn reset(&mut self) {
         self.len = 0;
         self.tolerance = TOLERANCE_M;
-        self.origin = None;
-        self.unplaced |= self.line_len >= 2;
-        self.line_len = 0;
-        self.course_held = false;
-        self.join_fixes = 0;
+        self.frame = None;
         self.window_len = 0;
         self.fed = None;
         self.here = None;
-        self.course_from = None;
+        self.heading_from = None;
         self.heading = None;
-        self.following = None;
-        self.turn = None;
-        self.segment = 0;
-        self.matched = None;
-        self.retrace = 0;
-        self.off = false;
         self.arrived = false;
         self.pass = StartPass::Spent;
         self.pass_start = None;
         self.passed = false;
         self.guide = None;
-    }
-
-    /// The turn ahead to warn of, from the last fix, once.
-    pub fn take_turn(&mut self) -> Option<Warning> {
-        self.turn.take()
     }
 
     /// Whether the rider rode past the start since this was last asked.
@@ -474,139 +265,9 @@ impl<'a> Homing<'a> {
         self.len == 0
     }
 
-    /// Following the breadcrumb back or the course.
-    pub fn following(&self) -> bool {
-        self.following.is_some()
-    }
-
-    /// Following the course.
-    pub fn following_course(&self) -> bool {
-        self.following == Some(Line::Course)
-    }
-
-    /// A course is loaded, placed in this ride's frame or waiting for its
-    /// first fix.
-    pub fn has_course(&self) -> bool {
-        self.line_len >= 2 || self.unplaced
-    }
-
-    /// The course waits for `set_course` again: the ride has its first fix.
-    pub fn needs_course(&self) -> bool {
-        self.unplaced && self.origin.is_some()
-    }
-
-    /// The course, end first, in metres from the origin; empty until placed.
-    pub fn course(&self) -> &[Crumb] {
-        &self.line[..self.line_len]
-    }
-
-    /// While following the course: what is ahead is its first `end`
-    /// points, from its end, and then this point on the stretch the rider
-    /// is on, if matched yet.
-    pub fn course_ahead(&self) -> Option<(usize, Option<(f32, f32)>)> {
-        self.following_course()
-            .then_some((self.segment, self.matched))
-    }
-
-    /// The course to follow, start first; fewer than two points clear it.
-    /// It is placed in the ride's frame now if the ride has a fix, else
-    /// once it does (`needs_course`). A follow of the breadcrumb under way
-    /// carries on.
-    pub fn set_course(&mut self, points: &[course::Point]) {
-        if self.following_course() {
-            self.stop_following();
-        }
-        self.line_len = 0;
-        self.join_fixes = 0;
-        let n = points.len().min(self.line.len());
-        self.unplaced = n >= 2 && self.origin.is_none();
-        if n < 2 || self.unplaced {
-            return;
-        }
-        for k in 0..n {
-            let point = points[n - 1 - k];
-            let p = self.frame(point.lat_e7, point.lon_e7);
-            let along = match k {
-                0 => 0.0,
-                _ => {
-                    let before = self.line[k - 1];
-                    before.along + distance((before.east, before.north), p)
-                }
-            };
-            self.line[k] = Crumb {
-                east: p.0,
-                north: p.1,
-                along,
-            };
-        }
-        self.line_len = n;
-        (self.scan, self.turn_count) = (Scan::default(), 0);
-        self.warner = Warner::default();
-    }
-
-    /// The placed course's turns as stored, in place of the scan: `fill`
-    /// writes them into the list in millimetres along `points`, the course
-    /// as `set_course` was given it, and returns how many and whether the
-    /// course has more, or `None` to scan for them. They move into this
-    /// ride's frame, kept point by kept point, so the rider's place along
-    /// the course finds them; the scan finds any after them.
-    pub fn take_turns(
-        &mut self,
-        points: &[course::Point],
-        fill: impl FnOnce(&mut [Turn]) -> Option<(usize, bool)>,
-    ) {
-        let len = self.line_len;
-        if len < 2 || points.len() != len {
-            return;
-        }
-        let Some((count, more)) = fill(self.turns).filter(|&(count, _)| count <= self.turns.len())
-        else {
-            (self.scan, self.turn_count) = (Scan::default(), 0);
-            return;
-        };
-        // Kept point `k` from the start is `line[len - 1 - k]`.
-        let line = &self.line[..len];
-        let frame_m = |k: usize| line[len - 1].along - line[len - 1 - k].along;
-        for end in [false, true] {
-            let mut course_m = course::along_m(points).enumerate().peekable();
-            let (mut k, mut from_m) = (0, 0.0f32);
-            for turn in &mut self.turns[..count] {
-                let slot = match end {
-                    false => &mut turn.start_mm,
-                    true => &mut turn.end_mm,
-                };
-                let at_m = *slot as f32 / 1000.0;
-                while let Some(&(next, next_m)) = course_m.peek() {
-                    if next_m > at_m {
-                        break;
-                    }
-                    (k, from_m) = (next, next_m);
-                    course_m.next();
-                }
-                let ride_m = match course_m.peek() {
-                    Some(&(next, next_m)) if next_m > from_m => {
-                        let t = (at_m - from_m) / (next_m - from_m);
-                        frame_m(k) + t * (frame_m(next) - frame_m(k))
-                    }
-                    _ => frame_m(k),
-                };
-                // A float cast saturates, so no position overflows.
-                *slot = (ride_m * 1000.0) as u32;
-            }
-        }
-        self.scan = match more {
-            true => Scan::after(&self.turns[..count]),
-            false => Scan::finished(),
-        };
-        self.turn_count = count;
-        self.warner = Warner::default();
-    }
-
-    /// The turn list, to find a course's turns into while it uploads. Only
-    /// while no course is placed: placing one finds its own.
-    pub fn turn_room(&mut self) -> &mut [Turn] {
-        (self.scan, self.turn_count) = (Scan::finished(), 0);
-        self.turns
+    /// The ride's frame, once it has its first fix.
+    pub fn frame(&self) -> Option<Frame> {
+        self.frame
     }
 
     /// The kept points, oldest first, for drawing the track.
@@ -637,98 +298,56 @@ impl<'a> Homing<'a> {
         self.heading
     }
 
-    /// While following: the route home is the first `end` points and then
-    /// this point on the segment the rider is on, if matched yet; without a
-    /// match the whole breadcrumb is the way home.
-    pub fn route_home(&self) -> Option<(usize, Option<(f32, f32)>)> {
-        (self.following == Some(Line::Breadcrumb)).then_some((self.segment, self.matched))
-    }
-
-    /// The way back as of the last fix, or none without a recent fix.
+    /// The way to the start as of the last fix, or none without a recent fix.
     pub fn guide(&self) -> Option<Guide> {
         self.guide
     }
 
-    /// Whether riding back over the breadcrumb, or along the course, starts
-    /// following it. Turning it off also stops a follow already under way,
-    /// so no OFF TRACK nudge can outlive the page that would stop it.
-    pub fn set_auto_follow(&mut self, on: bool) {
-        if !on && self.auto_follow {
-            self.stop_following();
-        }
-        self.auto_follow = on;
-    }
-
     /// The ride's position, if fresh, once per main-loop pass. A receiver
-    /// reports about once a second, so only a new position is a new fix.
-    pub fn observe(&mut self, location_e7: Option<(i32, i32)>, now: u64) -> Option<Event> {
-        self.scan_turns();
+    /// reports about once a second, so only a new position is a new fix;
+    /// standing still, the same one is handed on once a second.
+    pub fn observe(&mut self, location_e7: Option<(i32, i32)>, now: u64) -> Option<Fix> {
         let Some((lat, lon)) = location_e7 else {
             if self.here.is_some() && now.saturating_sub(self.here_ms) > FIX_LOST_MS {
                 self.here = None;
                 self.fed = None;
                 self.guide = None;
-                self.course_fix = None;
             }
             return None;
         };
         self.here_ms = now;
-        if self.fed == Some((lat, lon)) {
-            // Standing still: time still passes for the heading and the
-            // reminders, once a second, but nothing is recorded.
+        let moved = self.fed != Some((lat, lon));
+        let p = if moved {
+            self.fed = Some((lat, lon));
+            let p = self.place(lat, lon);
+            self.here = Some(p);
+            p
+        } else {
+            // Standing still: time still passes for the heading, once a
+            // second, but nothing is recorded.
             let p = self.here?;
             if now.saturating_sub(self.updated_ms) < STILL_MS {
                 return None;
             }
-            self.track_heading(p, now);
-            return self.update(p, now);
-        }
-        self.fed = Some((lat, lon));
-        if self.origin.is_none() {
-            self.origin = Some((lat, lon));
-            self.east_per_e7 = east_per_e7(lat);
-        }
-        let p = self.frame(lat, lon);
-        self.here = Some(p);
+            p
+        };
         self.track_heading(p, now);
-        if self.following == Some(Line::Breadcrumb) {
-            return self.update(p, now);
-        }
-        if self.following.is_none() && self.joining(p) {
-            self.engage_at(Line::Course, self.join_end, now);
+        if moved {
             self.add(p);
-            self.update(p, now);
-            return Some(Event::Following);
         }
-        if self.following_course() {
-            self.add(p);
-            let event = self.update(p, now);
-            self.turn = self.warn_turn();
-            return event;
-        }
-        if self.auto_follow && self.retracing(p) {
-            // The fixes since the turn ran back over the breadcrumb.
-            self.len = self.retrace_len;
-            self.window_len = 0;
-            self.retrace = 0;
-            if self.engage(now) {
-                self.update(p, now);
-                return Some(Event::Following);
-            }
-        }
-        self.add(p);
-        self.update(p, now)
+        self.update(p, now);
+        Some(Fix {
+            at: p,
+            heading: self.heading,
+            moved,
+        })
     }
 
     /// A fix from before a restart, read back from the journal, `at_ms` into
     /// the replay: it grows the breadcrumb and moves the start pass on as a
-    /// live fix would, but follows nothing, nudges nothing and takes no lap.
+    /// live fix would, but takes no lap.
     pub fn replay(&mut self, (lat, lon): (i32, i32), at_ms: u64) {
-        if self.origin.is_none() {
-            self.origin = Some((lat, lon));
-            self.east_per_e7 = east_per_e7(lat);
-        }
-        let p = self.frame(lat, lon);
+        let p = self.place(lat, lon);
         self.track_heading(p, at_ms);
         self.add(p);
         self.step_pass(p);
@@ -738,207 +357,22 @@ impl<'a> Homing<'a> {
     /// clock's, so the heading starts again from the next fix.
     pub fn end_replay(&mut self) {
         self.heading = None;
-        self.course_from = None;
+        self.heading_from = None;
     }
 
-    /// Metres east and north of the origin; across the antimeridian the
-    /// short way round is the way ridden.
-    fn frame(&self, lat: i32, lon: i32) -> Point {
-        let (lat0, lon0) = self.origin.unwrap_or((lat, lon));
-        let mut east = i64::from(lon) - i64::from(lon0);
-        if east > 1_800_000_000 {
-            east -= 3_600_000_000;
-        } else if east < -1_800_000_000 {
-            east += 3_600_000_000;
-        }
-        (
-            east as f32 * self.east_per_e7,
-            (i64::from(lat) - i64::from(lat0)) as f32 * M_PER_E7,
-        )
-    }
-
-    /// Whether this fix continues a ride along the course, its way, for
-    /// long enough to follow it: the earliest stretch within `ON_M` that
-    /// runs the rider's way, since where the course passes twice the first
-    /// pass is the one.
-    fn joining(&mut self, p: Point) -> bool {
-        let heading = self
-            .heading
-            .filter(|_| self.auto_follow && !self.course_held && self.line_len >= 2);
-        let along = heading.and_then(|heading| {
-            (1..self.line_len).rev().find(|&end| {
-                let (a, b) = (self.line[end - 1], self.line[end]);
-                let (a, b) = ((a.east, a.north), (b.east, b.north));
-                let turn = (heading + TURN - bearing(b, a)) % TURN;
-                off_segment(p, a, b) < ON_M && !(TURN / 8..=TURN * 7 / 8).contains(&turn)
-            })
-        });
-        let Some(end) = along else {
-            self.join_fixes = 0;
-            return false;
-        };
-        self.join_end = end;
-        self.join_fixes = self.join_fixes.saturating_add(1);
-        self.join_fixes >= JOIN_FIXES
-    }
-
-    /// Whether this fix continues a ride back along the breadcrumb.
-    fn retracing(&mut self, p: Point) -> bool {
-        let Some(heading) = self.heading.filter(|_| self.len >= 2) else {
-            self.retrace = 0;
-            return false;
-        };
-        let limit = self.crumbs[self.len - 1].along - RETRACE_SKIP_M;
-        let ends = self.crumbs[..self.len].partition_point(|c| c.along <= limit);
-        let near = (ends >= 2)
-            .then(|| self.nearest(p, 1..=ends - 1))
-            .flatten()
-            .filter(|near| near.off < RETRACE_M);
-        let against = near.is_some_and(|near| {
-            let (a, b) = (self.crumbs[near.end - 1], self.crumbs[near.end]);
-            let way = bearing((a.east, a.north), (b.east, b.north));
-            let turn = (heading + TURN - way) % TURN;
-            turn > TURN * 3 / 8 && turn < TURN * 5 / 8
-        });
-        if !against {
-            self.retrace = 0;
-            return false;
-        }
-        if self.retrace == 0 {
-            self.retrace_len = self.len;
-        }
-        self.retrace += 1;
-        self.retrace >= RETRACE_FIXES
-    }
-
-    /// Follow the course while it is near, else the breadcrumb back; or stop
-    /// following, after which the course is followed again only from here,
-    /// never by itself, for the rest of the ride. Following needs a line to follow; without one this
-    /// returns false.
-    pub fn set_following(&mut self, follow: bool, now: u64) -> bool {
-        if !follow {
-            self.stop_following();
-        } else if self.following.is_none()
-            && let Some(near) = self.here.and_then(|p| self.course_near(p))
-        {
-            self.engage_at(Line::Course, near.end, now);
-        } else if self.following.is_none() {
-            // The breadcrumb ends where the rider turns round.
-            if self.window_len > 0 {
-                let last = self.window[self.window_len - 1];
-                self.keep(last);
-                self.window_len = 0;
-            }
-            if !self.engage(now) {
-                return false;
-            }
-        }
-        if let Some(p) = self.here {
-            self.update(p, now);
-        }
-        true
-    }
-
-    fn engage(&mut self, now: u64) -> bool {
-        if self.len < 2 || self.crumbs[self.len - 1].along < MIN_STEP_M {
-            return false;
-        }
-        self.engage_at(Line::Breadcrumb, self.len - 1, now);
-        true
-    }
-
-    /// Follow `line` from its segment `end`.
-    fn engage_at(&mut self, line: Line, end: usize, now: u64) {
-        self.following = Some(line);
-        self.join_fixes = 0;
-        self.course_along = self.line[..self.line_len].get(end).map_or(0.0, |c| c.along);
-        self.course_reached = self.course_along;
-        self.course_fix = None;
-        self.warner = Warner::default();
-        self.segment = end;
-        self.matched = None;
-        self.off = false;
-        self.reminded_ms = now;
-    }
-
-    /// Recording resumes: the breadcrumb keeps the way home from where the
-    /// rider left it, and goes on from there. A course stopped is held off
-    /// for the rest of the ride.
-    fn stop_following(&mut self) {
-        let line = self.following.take();
-        self.off = false;
-        match line {
-            None => return,
-            Some(Line::Course) => {
-                self.course_held = true;
-                self.matched = None;
-                return;
-            }
-            Some(Line::Breadcrumb) => {}
-        }
-        self.window_len = 0;
-        self.retrace = 0;
-        if let Some(point) = self.matched.take() {
-            self.len = self.segment;
-            self.keep(point);
-        }
-    }
-
-    /// The turn to warn of, while following the course, on it and riding
-    /// its way.
-    fn warn_turn(&mut self) -> Option<Warning> {
-        let heading = self.heading?;
-        self.matched
-            .filter(|_| self.following_course() && !self.off)?;
-        let (len, end) = (self.line_len, self.segment);
-        if end == 0 || end >= len {
-            return None;
-        }
-        let (a, b) = (self.line[end - 1], self.line[end]);
-        let way = bearing((b.east, b.north), (a.east, a.north));
-        if (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN)) {
-            return None;
-        }
-        let from_start = self.line[len - 1].along - self.course_along;
-        // A float cast saturates, so no position overflows.
-        let along_mm = (from_start * 1000.0) as u32;
-        self.warner.step(&self.turns[..self.turn_count], along_mm)
-    }
-
-    /// Find a few more of the placed course's turns. With the list full,
-    /// the first half the rider is past makes way.
-    fn scan_turns(&mut self) {
-        if self.scan.done() {
-            return;
-        }
-        if self.scan.waiting() {
-            let (count, room) = (self.turn_count, self.turns.len());
-            let passed = self.warner.passed().min(count);
-            if passed < room / 2 {
-                return;
-            }
-            self.turns.copy_within(passed..count, 0);
-            self.turn_count -= passed;
-            self.warner.forget(passed);
-        }
-        let len = self.line_len;
-        // The course is kept end first; the scan reads it start first.
-        let line = &self.line[..len];
-        let at = |k: usize| {
-            let c = line[len - 1 - k];
-            (c.east, c.north)
-        };
-        self.turn_count = self
-            .scan
-            .step(len, at, SCAN_STEPS, self.turns, self.turn_count);
+    /// A position in the ride's frame, which the first one sets.
+    fn place(&mut self, lat: i32, lon: i32) -> Point {
+        self.frame
+            .get_or_insert_with(|| Frame::at((lat, lon)))
+            .place(lat, lon)
     }
 
     fn track_heading(&mut self, p: Point, now: u64) {
-        let from = *self.course_from.get_or_insert(p);
+        let from = *self.heading_from.get_or_insert(p);
         if distance(from, p) >= HEADING_STEP_M {
             self.heading = Some(bearing(from, p));
             self.heading_ms = now;
-            self.course_from = Some(p);
+            self.heading_from = Some(p);
         } else if now.saturating_sub(self.heading_ms) > HEADING_STALE_MS {
             self.heading = None;
         }
@@ -993,7 +427,7 @@ impl<'a> Homing<'a> {
     }
 
     /// Thin the full breadcrumb in place until a quarter of it is free,
-    /// per `ride::thin`. Only while recording, so no match index moves.
+    /// per `ride::thin`.
     fn thin(&mut self) {
         self.len = thin::thin(self.crumbs, self.len, &mut self.tolerance, |c| {
             (c.east, c.north)
@@ -1005,139 +439,7 @@ impl<'a> Homing<'a> {
         }
     }
 
-    /// The line being followed: the course while following it, else the
-    /// breadcrumb.
-    fn followed(&self) -> &[Crumb] {
-        if self.following_course() {
-            self.course()
-        } else {
-            &self.crumbs[..self.len]
-        }
-    }
-
-    /// The course's nearest stretch to `p` if it is within `DROP_M`: what
-    /// the pad follows, even once the course is held off from following by
-    /// itself.
-    fn course_near(&self, p: Point) -> Option<Nearest> {
-        if self.line_len < 2 {
-            return None;
-        }
-        let line = self.course();
-        let mut best: Option<Nearest> = None;
-        for end in (1..line.len()).rev() {
-            let near = nearest_on(line, p, end);
-            if best.is_none_or(|best| near.off < best.off) {
-                best = Some(near);
-            }
-        }
-        best.filter(|near| near.off <= DROP_M)
-    }
-
-    /// The nearest segment of the followed line among `ends`. Following the
-    /// course, the pass the rider is on (`NEAR_M`) comes first; otherwise
-    /// only segments from `JUMP_M` on to `BACK_M` behind where the rider was
-    /// are in reach, and on a tie the earlier one wins; on the breadcrumb
-    /// the one nearer home does.
-    fn nearest(&self, p: Point, ends: core::ops::RangeInclusive<usize>) -> Option<Nearest> {
-        let plain = |near: &Nearest, _: &Crumb, _: &Crumb| Some(near.off);
-        if !self.following_course() {
-            return self.nearest_within(p, ends, f32::MIN, f32::MAX, plain);
-        }
-        let (along, reached) = (self.course_along, self.course_reached);
-        // After a gap in the fixes the rider may be past the near stretch.
-        if self.course_fix.is_none_or(|fix| distance(fix, p) > HOP_M) {
-            return self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain);
-        }
-        let on = |near: &Nearest, a: &Crumb, b: &Crumb| {
-            let back = (near.along - reached - SLIP_M).max(0.0);
-            let against = if self.against(a, b) { AGAINST_M } else { 0.0 };
-            (near.off <= ON_M).then_some(near.off + back + against)
-        };
-        let Some(near) = self.nearest_within(p, ends.clone(), along - NEAR_M, along + BACK_M, on)
-        else {
-            return self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain);
-        };
-        // Sliding back against the rider's way, a pass ridden its own way
-        // close by is the one they are on.
-        let line = self.course();
-        if near.along > reached + SLIP_M && self.against(&line[near.end - 1], &line[near.end]) {
-            let ahead = |near: &Nearest, a: &Crumb, b: &Crumb| {
-                (near.off <= ON_M && !self.against(a, b)).then_some(near.off)
-            };
-            let window = along - JUMP_M..=along + BACK_M;
-            if let Some(ahead) = self.nearest_within(p, ends, *window.start(), *window.end(), ahead)
-            {
-                return Some(ahead);
-            }
-        }
-        Some(near)
-    }
-
-    /// Whether the course from `b` to `a` runs against the rider's heading.
-    fn against(&self, a: &Crumb, b: &Crumb) -> bool {
-        let way = bearing((b.east, b.north), (a.east, a.north));
-        self.heading.is_some_and(|heading| {
-            (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN))
-        })
-    }
-
-    /// The segment among `ends` reaching from `floor` to `ceiling` metres
-    /// along that `cost` puts first, given where it meets `p`; a segment
-    /// without a cost is out.
-    fn nearest_within(
-        &self,
-        p: Point,
-        ends: core::ops::RangeInclusive<usize>,
-        floor: f32,
-        ceiling: f32,
-        cost: impl Fn(&Nearest, &Crumb, &Crumb) -> Option<f32>,
-    ) -> Option<Nearest> {
-        let line = self.followed();
-        let course = self.following_course();
-        let mut best: Option<(Nearest, f32)> = None;
-        let mut consider = |end: usize| {
-            let (a, b) = (line[end - 1], line[end]);
-            if b.along < floor || a.along > ceiling {
-                return;
-            }
-            let near = nearest_on(line, p, end);
-            let Some(cost) = cost(&near, &a, &b) else {
-                return;
-            };
-            if best.is_none_or(|(_, best)| cost < best) {
-                best = Some((near, cost));
-            }
-        };
-        if course {
-            ends.rev().for_each(&mut consider);
-        } else {
-            ends.for_each(&mut consider);
-        }
-        best.map(|(near, _)| near)
-    }
-
-    /// The followed line `along` metres from its index 0, at or before
-    /// segment `end`.
-    fn at_along(&self, end: usize, along: f32) -> Point {
-        let line = self.followed();
-        let mut end = end;
-        while end > 1 && line[end - 1].along > along {
-            end -= 1;
-        }
-        let (a, b) = (line[end - 1], line[end]);
-        let span = b.along - a.along;
-        let t = if span > 0.0 {
-            ((along - a.along) / span).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        (
-            a.east + t * (b.east - a.east),
-            a.north + t * (b.north - a.north),
-        )
-    }
-
-    /// The breadcrumb's length from the start to the rider, while recording.
+    /// The breadcrumb's length from the start to the rider.
     fn recorded_m(&self, p: Point) -> f32 {
         match self.len {
             0 => 0.0,
@@ -1163,121 +465,39 @@ impl<'a> Homing<'a> {
             .is_some_and(|from| self.pass.step(distance(p, from), moving))
     }
 
-    fn update(&mut self, p: Point, now: u64) -> Option<Event> {
+    fn update(&mut self, p: Point, now: u64) {
         self.updated_ms = now;
         let start = self.start(p);
-        let course = self.following_course();
-        let goal = match self.course().first() {
-            Some(end) if course => (end.east, end.north),
-            _ => start,
-        };
-        let direct = distance(p, goal);
+        let direct = distance(p, start);
         self.passed |= self.step_pass(p);
-        let mut event = None;
-        let len = self.followed().len();
-        let (mode, track, off, target) = if self.following.is_some() && len >= 2 {
-            let window = self.segment.saturating_sub(SEARCH_BACK).max(1)
-                ..=(self.segment + SEARCH_AHEAD).min(len - 1);
-            let mut near = self.nearest(p, window)?;
-            if (self.off || near.off > OFF_M)
-                && let Some(anywhere) = self.nearest(p, 1..=len - 1)
-                && anywhere.off < near.off
-            {
-                near = anywhere;
-            }
-            if near.off > DROP_M {
-                self.stop_following();
-                self.update(p, now);
-                return Some(Event::Dropped);
-            }
-            if course && near.off <= ON_M && near.along < ARRIVE_M {
-                self.stop_following();
-                self.update(p, now);
-                return Some(Event::CourseEnd);
-            }
-            self.segment = near.end;
-            self.matched = Some(near.point);
-            self.course_along = near.along;
-            self.course_reached = self.course_reached.min(near.along);
-            self.course_fix = Some(p);
-            let was_off = self.off;
-            self.off = if self.off {
-                near.off > ON_M
-            } else {
-                near.off > OFF_M
-            };
-            if self.off && !was_off {
-                event = Some(Event::OffTrack);
-                self.reminded_ms = now;
-            } else if !self.off && was_off {
-                event = Some(Event::OnTrack);
-            } else if self.off && !course && now.saturating_sub(self.reminded_ms) >= REMIND_MS {
-                event = Some(Event::OffTrack);
-                self.reminded_ms = now;
-            }
-            let target = if self.off {
-                near.point
-            } else {
-                self.at_along(near.end, (near.along - LOOKAHEAD_M).max(0.0))
-            };
-            let mode = if self.off {
-                Mode::OffTrack
-            } else {
-                Mode::Track
-            };
-            (mode, near.along + near.off, near.off, target)
-        } else {
-            (Mode::Direct, self.recorded_m(p), 0.0, start)
-        };
-        // Following a course, the end that counts is the course's.
-        let long_enough =
-            !course && self.len >= 2 && self.crumbs[self.len - 1].along >= MIN_TRACK_M;
+        let long_enough = self.len >= 2 && self.crumbs[self.len - 1].along >= MIN_TRACK_M;
         if self.arrived && direct > LEAVE_M {
             self.arrived = false;
         } else if !self.arrived && long_enough && direct < ARRIVE_M {
             self.arrived = true;
-            self.off = false;
-            event = Some(Event::Arrived);
         }
-        let mode = if self.arrived { Mode::Arrived } else { mode };
-        let target = if distance(p, target) < 1.0 {
-            goal
-        } else {
-            target
-        };
-        let course_near = self.following.is_none() && self.course_near(p).is_some();
         self.guide = Some(Guide {
-            mode,
-            following: self.following.is_some(),
-            course,
-            course_near,
-            direct_m: metres(direct),
-            track_m: metres(track),
-            off_m: metres(off),
-            bearing: bearing(p, target),
+            at_start: self.arrived,
+            bearing: bearing(p, start),
             heading: self.heading,
         });
-        event
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::ride::course::turns;
+    use crate::ride::course;
     extern crate std;
     use std::vec;
     use std::vec::Vec;
-
-    mod many;
-    mod passes;
 
     /// About Santiago, where 1e-7 degree east is 0.0094 m.
     const LAT: i32 = -334_500_000;
     const LON: i32 = -706_600_000;
 
     /// A position `east` and `north` metres from (LAT, LON).
-    fn at(east: f32, north: f32) -> (i32, i32) {
+    pub(crate) fn at(east: f32, north: f32) -> (i32, i32) {
         let cos = cosf(LAT as f32 * 1e-7 * core::f32::consts::PI / 180.0);
         (
             LAT + (north / M_PER_E7) as i32,
@@ -1286,7 +506,7 @@ mod tests {
     }
 
     /// Fixes every `step` metres along straight legs between `corners`.
-    fn path(corners: &[(f32, f32)], step: f32) -> Vec<(f32, f32)> {
+    pub(crate) fn path(corners: &[(f32, f32)], step: f32) -> Vec<(f32, f32)> {
         let mut points = vec![corners[0]];
         for pair in corners.windows(2) {
             let length = distance(pair[0], pair[1]);
@@ -1302,13 +522,11 @@ mod tests {
         points
     }
 
-    fn ride(homing: &mut Homing, points: &[(f32, f32)], now: &mut u64) -> Vec<Event> {
-        let mut events = Vec::new();
+    fn ride(homing: &mut Homing, points: &[(f32, f32)], now: &mut u64) {
         for &(east, north) in points {
             *now += 1_000;
-            events.extend(homing.observe(Some(at(east, north)), *now));
+            homing.observe(Some(at(east, north)), *now);
         }
-        events
     }
 
     fn near(actual: u16, degrees: f32, within: f32) -> bool {
@@ -1327,7 +545,7 @@ mod tests {
             &[(0.0, 0.0), (1000.0, 0.0), (1000.0, 1000.0), (500.0, 1000.0)],
             7.0,
         );
-        assert!(ride(&mut homing, &route, &mut now).is_empty());
+        ride(&mut homing, &route, &mut now);
         // The start, both corners and a point each full window (336 m).
         let kept = &homing.crumbs[..homing.len()];
         assert!(kept.len() <= 9, "{kept:?}");
@@ -1338,14 +556,14 @@ mod tests {
                 "{corner:?} in {kept:?}"
             );
         }
+        let (direct_m, track_m) = homing.way_back().unwrap();
+        assert!((1115..=1120).contains(&direct_m), "{direct_m}");
+        assert!((2495..=2505).contains(&track_m), "{track_m}");
         let guide = homing.guide().unwrap();
-        assert_eq!(guide.mode, Mode::Direct);
-        assert!((1115..=1120).contains(&guide.direct_m), "{guide:?}");
-        assert!((2495..=2505).contains(&guide.track_m), "{guide:?}");
+        assert!(!guide.at_start);
         // Riding west, the start lies to the south-west: behind and left.
         assert!(near(guide.bearing, 206.6, 1.0), "{guide:?}");
         assert!(near(guide.heading.unwrap(), 270.0, 1.0), "{guide:?}");
-        assert!(near(guide.arrow(), 296.6, 1.0), "{guide:?}");
     }
 
     #[test]
@@ -1360,13 +578,12 @@ mod tests {
         ride(&mut homing, &path(&corners, 8.0), &mut now);
         assert!(homing.len() <= 32);
         assert!(homing.tolerance > TOLERANCE_M);
-        let guide = homing.guide().unwrap();
         // Thinning shortens the zig-zag to its trend, never past it.
-        assert!((23_800..=24_300).contains(&guide.track_m), "{guide:?}");
+        let (_, track_m) = homing.way_back().unwrap();
+        assert!((23_800..=24_300).contains(&track_m), "{track_m}");
         let crumbs = &homing.crumbs[..homing.len()];
         assert!(crumbs.windows(2).all(|w| w[1].along > w[0].along));
     }
-
     /// The fixes a receiver reports riding `road`: each `white` metres off at
     /// most, about a bias that wanders up to `bias` metres.
     fn received(road: &[course::Point], white: f32, bias: f32, seed: u64) -> Vec<(i32, i32)> {
@@ -1388,7 +605,7 @@ mod tests {
 
     /// How far the breadcrumb strays from the road ridden: the worst
     /// distance, in metres, of any point of `road` from the stretch that
-    /// replaced its fix. Riding without following, the breadcrumb keeps a
+    /// replaced its fix. The breadcrumb keeps a
     /// subsequence of the fixes, so each fix up to the last kept one lies
     /// between two of them.
     fn deviation(homing: &Homing, road: &[course::Point], fixes: &[(i32, i32)]) -> f32 {
@@ -1399,10 +616,10 @@ mod tests {
             if k + 1 == kept.len() {
                 break;
             }
-            if homing.frame(lat, lon) == xy(kept[k + 1]) {
+            if homing.frame().unwrap().place(lat, lon) == xy(kept[k + 1]) {
                 k += 1;
             }
-            let p = homing.frame(truth.lat_e7, truth.lon_e7);
+            let p = homing.frame().unwrap().place(truth.lat_e7, truth.lon_e7);
             let b = xy(kept[(k + 1).min(kept.len() - 1)]);
             worst = worst.max(off_segment(p, xy(kept[k]), b));
         }
@@ -1427,7 +644,6 @@ mod tests {
             let fixes = received(&road, white, bias, seed as u64 + 1);
             let mut crumbs = vec![Crumb::default(); 4096];
             let mut homing = Homing::new(&mut crumbs);
-            homing.set_auto_follow(false);
             let mut now = 0;
             for &fix in &fixes {
                 now += 1_000;
@@ -1447,78 +663,10 @@ mod tests {
     }
 
     #[test]
-    fn following_back_steers_along_the_breadcrumb_and_nudges_off_track() {
-        let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
-        let mut now = 0;
-        // Out: 600 m north, then 800 m east.
-        let out = path(&[(0.0, 0.0), (0.0, 600.0), (800.0, 600.0)], 7.0);
-        ride(&mut homing, &out, &mut now);
-        assert!(homing.set_following(true, now));
-        let guide = homing.guide().unwrap();
-        assert_eq!((guide.mode, guide.following), (Mode::Track, true));
-        assert!((1395..=1405).contains(&guide.track_m), "{guide:?}");
-        // Back west along the road: the breadcrumb ahead is due west.
-        let back = path(&[(800.0, 600.0), (300.0, 600.0)], 7.0);
-        assert!(ride(&mut homing, &back, &mut now).is_empty());
-        let guide = homing.guide().unwrap();
-        assert!(near(guide.bearing, 270.0, 2.0), "{guide:?}");
-        assert!(near(guide.arrow(), 0.0, 2.0), "straight ahead: {guide:?}");
-        // A wrong turn south: off track past 50 m, steering back north.
-        let wrong = path(&[(300.0, 600.0), (300.0, 520.0)], 7.0);
-        assert_eq!(ride(&mut homing, &wrong, &mut now), [Event::OffTrack]);
-        let guide = homing.guide().unwrap();
-        assert_eq!(guide.mode, Mode::OffTrack);
-        assert!((75..=85).contains(&guide.off_m), "{guide:?}");
-        assert!(near(guide.bearing, 0.0, 2.0), "{guide:?}");
-        assert!(near(guide.arrow(), 180.0, 2.0), "turn round: {guide:?}");
-        // Still off a minute later: the nudge repeats.
-        now += 59_000;
-        assert_eq!(
-            homing.observe(Some(at(300.0, 519.0)), now + 1_000),
-            Some(Event::OffTrack)
-        );
-        now += 1_000;
-        // Back to the road, then home along it.
-        let rejoin = path(&[(300.0, 520.0), (300.0, 590.0)], 7.0);
-        assert_eq!(ride(&mut homing, &rejoin, &mut now), [Event::OnTrack]);
-        let home = path(&[(300.0, 600.0), (0.0, 600.0), (0.0, 0.0)], 7.0);
-        assert_eq!(ride(&mut homing, &home, &mut now), [Event::Arrived]);
-        let guide = homing.guide().unwrap();
-        assert_eq!(guide.mode, Mode::Arrived);
-        assert!(guide.direct_m < 30, "{guide:?}");
-    }
-
-    #[test]
-    fn a_shortcut_back_to_the_breadcrumb_is_found_anywhere_on_it() {
-        let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
-        let mut now = 0;
-        // A square loop of 1 km sides, ridden anticlockwise from its corner.
-        let out = path(
-            &[(0.0, 0.0), (1000.0, 0.0), (1000.0, 1000.0), (0.0, 1000.0)],
-            7.0,
-        );
-        ride(&mut homing, &out, &mut now);
-        assert!(homing.set_following(true, now));
-        // Straight across to the first side: a wrong way, then on track
-        // again far along the breadcrumb, 900 m from the start.
-        let across = path(&[(0.0, 1000.0), (500.0, 500.0), (900.0, 10.0)], 30.0);
-        let events = ride(&mut homing, &across, &mut now);
-        assert_eq!(events, [Event::OffTrack, Event::OnTrack]);
-        let guide = homing.guide().unwrap();
-        assert_eq!(guide.mode, Mode::Track);
-        assert!((905..=915).contains(&guide.track_m), "{guide:?}");
-        // To the breadcrumb 40 m on, towards the start.
-        assert!(near(guide.bearing, 256.0, 3.0), "{guide:?}");
-    }
-
-    #[test]
     fn no_fix_no_guide_and_a_stopped_rider_has_no_heading() {
         let mut crumbs = vec![Crumb::default(); 16];
         let mut homing = Homing::new(&mut crumbs);
         assert_eq!(homing.guide(), None);
-        assert!(!homing.set_following(true, 0), "nothing to follow yet");
         let mut now = 0;
         ride(
             &mut homing,
@@ -1531,7 +679,6 @@ mod tests {
         homing.observe(Some(at(1.0, 101.0)), now + 21_000);
         let guide = homing.guide().unwrap();
         assert_eq!(guide.heading, None);
-        assert_eq!(guide.arrow(), guide.bearing, "north up");
         assert!(near(guide.bearing, 180.0, 2.0), "{guide:?}");
         homing.observe(None, now + 30_000);
         assert_eq!(homing.guide(), None);
@@ -1540,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn standing_still_loses_the_heading_and_off_track_still_reminds() {
+    fn standing_still_hands_the_fix_on_once_a_second_and_loses_the_heading() {
         let mut crumbs = vec![Crumb::default(); 64];
         let mut homing = Homing::new(&mut crumbs);
         let mut now = 0;
@@ -1549,17 +696,15 @@ mod tests {
             &path(&[(0.0, 0.0), (0.0, 600.0)], 7.0),
             &mut now,
         );
-        assert!(homing.set_following(true, now));
-        let wrong = path(&[(0.0, 600.0), (80.0, 600.0)], 7.0);
-        assert_eq!(ride(&mut homing, &wrong, &mut now), [Event::OffTrack]);
-        // The receiver keeps reporting the same position.
-        let mut events = Vec::new();
-        for _ in 0..70 {
-            now += 1_000;
-            events.extend(homing.observe(Some(at(80.0, 600.0)), now));
+        let mut still = Vec::new();
+        for _ in 0..40 {
+            now += 500;
+            still.extend(homing.observe(Some(at(0.0, 600.0)), now));
         }
-        assert_eq!(events, [Event::OffTrack], "the minute's reminder");
+        assert_eq!(still.len(), 20, "{still:?}");
+        assert!(still.iter().all(|fix| !fix.moved));
         assert_eq!(homing.guide().unwrap().heading, None);
+        assert_eq!(still.last().unwrap().heading, None);
     }
 
     #[test]
@@ -1568,81 +713,29 @@ mod tests {
         let mut homing = Homing::new(&mut crumbs);
         homing.observe(Some((0, 1_799_998_000)), 1_000);
         homing.observe(Some((0, -1_799_998_000)), 2_000);
-        let guide = homing.guide().unwrap();
-        assert!((40..=50).contains(&guide.direct_m), "{guide:?}");
+        let (direct_m, _) = homing.way_back().unwrap();
+        assert!((40..=50).contains(&direct_m), "{direct_m}");
     }
 
     #[test]
-    fn retracing_never_follows_while_auto_follow_is_off() {
-        let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
-        homing.set_auto_follow(false);
-        let mut now = 0;
-        let out = path(&[(0.0, 0.0), (0.0, 1000.0), (1000.0, 1000.0)], 7.0);
-        let back = path(&[(1000.0, 1000.0), (400.0, 1000.0)], 7.0);
-        let away = path(&[(400.0, 1000.0), (400.0, 2000.0)], 10.0);
-        for points in [&out, &back, &away] {
-            assert!(ride(&mut homing, points, &mut now).is_empty());
-        }
-        assert!(!homing.following());
-    }
-
-    #[test]
-    fn turning_auto_follow_off_ends_a_follow_and_silences_off_track() {
-        let mut crumbs = vec![Crumb::default(); 256];
+    fn back_at_the_start_after_a_loop_is_at_the_start_until_away_again() {
+        let mut crumbs = vec![Crumb::default(); 64];
         let mut homing = Homing::new(&mut crumbs);
         let mut now = 0;
-        let out = path(&[(0.0, 0.0), (0.0, 1000.0), (1000.0, 1000.0)], 7.0);
-        let back = path(&[(1000.0, 1000.0), (400.0, 1000.0)], 7.0);
-        let away = path(&[(400.0, 1000.0), (400.0, 4000.0)], 10.0);
-        for points in [&out, &back] {
-            ride(&mut homing, points, &mut now);
-        }
-        assert!(homing.following());
-        homing.set_auto_follow(false);
-        assert!(!homing.following());
-        let events = ride(&mut homing, &away, &mut now);
-        assert!(events.is_empty(), "{events:?}");
-        assert!(!homing.following());
-    }
-
-    #[test]
-    fn riding_back_along_the_breadcrumb_follows_it_and_stopping_keeps_the_way_home() {
-        let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
-        let mut now = 0;
-        // Out 1 km north and 1 km east, then back west along the road.
-        let out = path(&[(0.0, 0.0), (0.0, 1000.0), (1000.0, 1000.0)], 7.0);
-        assert!(ride(&mut homing, &out, &mut now).is_empty());
-        let back = path(&[(1000.0, 1000.0), (400.0, 1000.0)], 7.0);
-        assert_eq!(ride(&mut homing, &back, &mut now), [Event::Following]);
-        let guide = homing.guide().unwrap();
-        assert_eq!((guide.mode, guide.following), (Mode::Track, true));
-        assert!((1395..=1405).contains(&guide.track_m), "{guide:?}");
-        // The ride back did not stretch the breadcrumb.
-        assert!(homing.crumbs[homing.len() - 1].along <= 2001.0);
-        // A new way north: off track, then following stops 500 m off.
-        let away = path(&[(400.0, 1000.0), (400.0, 1510.0)], 10.0);
-        assert_eq!(
-            ride(&mut homing, &away, &mut now),
-            [Event::OffTrack, Event::Dropped]
+        ride(&mut homing, &path(&LOOP, 7.0), &mut now);
+        assert!(homing.guide().unwrap().at_start);
+        ride(
+            &mut homing,
+            &path(&[(0.0, 0.0), (0.0, 60.0)], 7.0),
+            &mut now,
         );
-        let guide = homing.guide().unwrap();
-        assert_eq!((guide.mode, guide.following), (Mode::Direct, false));
-        // The breadcrumb leads home from where the rider left it.
-        assert!((1895..=1915).contains(&guide.track_m), "{guide:?}");
-        // Laps of a loop, the same way round, never follow by themselves.
-        homing.reset();
-        let lap = [
-            (0.0, 0.0),
-            (500.0, 0.0),
-            (500.0, 500.0),
-            (0.0, 500.0),
-            (0.0, 0.0),
-        ];
-        let laps = path(&[lap, lap, lap].concat(), 7.0);
-        let events = ride(&mut homing, &laps, &mut now);
-        assert!(!events.contains(&Event::Following), "{events:?}");
+        assert!(homing.guide().unwrap().at_start, "within the 80 m to leave");
+        ride(
+            &mut homing,
+            &path(&[(0.0, 60.0), (0.0, 120.0)], 7.0),
+            &mut now,
+        );
+        assert!(!homing.guide().unwrap().at_start);
     }
 
     const LOOP: [(f32, f32); 5] = [
@@ -1993,512 +1086,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    fn course_of(corners: &[(f32, f32)]) -> Vec<course::Point> {
-        path(corners, 10.0)
-            .into_iter()
-            .map(|(east, north)| {
-                let (lat, lon) = at(east, north);
-                course::Point::new(lat, lon).unwrap()
-            })
-            .collect()
-    }
-
-    /// A 4 km square loop, start and end at the origin.
-    const SQUARE: [(f32, f32); 5] = [
-        (0.0, 0.0),
-        (1000.0, 0.0),
-        (1000.0, 1000.0),
-        (0.0, 1000.0),
-        (0.0, 0.0),
-    ];
-
-    /// Ride `points` as the app does: a fix a second, placing the course
-    /// once the ride has its first fix. The turn warnings on the way, and
-    /// every other event.
-    fn ride_course_warned(
-        homing: &mut Homing,
-        course: &[course::Point],
-        points: &[(f32, f32)],
-        now: &mut u64,
-    ) -> (Vec<Warning>, Vec<Event>) {
-        ride_course_stored(homing, course, None, points, now)
-    }
-
-    /// As `ride_course_warned`, the course's turns `stored` at upload when
-    /// given, in place of the scan.
-    fn ride_course_stored(
-        homing: &mut Homing,
-        course: &[course::Point],
-        stored: Option<&[Turn]>,
-        points: &[(f32, f32)],
-        now: &mut u64,
-    ) -> (Vec<Warning>, Vec<Event>) {
-        let (mut warnings, mut events) = (Vec::new(), Vec::new());
-        for &(east, north) in points {
-            *now += 1_000;
-            events.extend(homing.observe(Some(at(east, north)), *now));
-            warnings.extend(homing.take_turn());
-            if homing.needs_course() {
-                homing.set_course(course);
-                if let Some(stored) = stored {
-                    homing.take_turns(course, |turns| {
-                        turns[..stored.len()].copy_from_slice(stored);
-                        Some((stored.len(), false))
-                    });
-                }
-            }
-        }
-        (warnings, events)
-    }
-
-    fn ride_course(
-        homing: &mut Homing,
-        course: &[course::Point],
-        points: &[(f32, f32)],
-        now: &mut u64,
-    ) -> Vec<Event> {
-        ride_course_warned(homing, course, points, now).1
-    }
-
-    #[test]
-    fn following_a_course_warns_of_each_corner_ahead_and_at_it() {
-        use turns::{Kind, Side};
-        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut turns = vec![turns::Turn::default(); turns::TURNS];
-        let mut homing = Homing::new(&mut crumbs)
-            .with_line(&mut line)
-            .with_turns(&mut turns);
-        let course = course_of(&SQUARE);
-        homing.set_course(&course);
-        let mut now = 0;
-        let lap = path(&SQUARE, 7.0);
-        let (warnings, events) = ride_course_warned(&mut homing, &course, &lap, &mut now);
-        assert_eq!(events, [Event::Following, Event::CourseEnd]);
-        let left = Kind::Turn(Side::Left);
-        let corner = [
-            Warning::Ahead {
-                kind: left,
-                metres: 150,
-            },
-            Warning::Now {
-                kind: left,
-                then: None,
-            },
-        ];
-        assert_eq!(warnings, corner.repeat(3), "{warnings:?}");
-        // The next lap, with the course ended, warns of nothing.
-        let (warnings, _) = ride_course_warned(&mut homing, &course, &lap, &mut now);
-        assert!(warnings.is_empty(), "{warnings:?}");
-    }
-
-    /// The point `metres` along `line`, or its end.
-    fn along_line(line: &[(f32, f32)], metres: f32) -> (f32, f32) {
-        let mut walked = 0.0;
-        for pair in line.windows(2) {
-            let length = distance(pair[0], pair[1]);
-            if walked + length >= metres && length > 0.0 {
-                let t = (metres - walked) / length;
-                let (a, b) = (pair[0], pair[1]);
-                return (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
-            }
-            walked += length;
-        }
-        *line.last().unwrap()
-    }
-
-    /// Turns stored at upload are measured along the course in its own
-    /// frame. Placed for a ride that starts 40 km north, they move into
-    /// the ride's frame and sit where the scan of the placed course finds
-    /// them; as stored, they would be well over 100 m out by the end.
-    #[test]
-    fn stored_turns_move_into_the_frame_of_a_ride_started_far_away() {
-        use crate::ride::course::stored::tests::uploaded;
-        use crate::ride::course::turns::tests::bends;
-        use crate::ride::course::turns::{TURNS, Turn};
-        let corners: Vec<(f32, f32)> = (0..12)
-            .map(|k| {
-                (
-                    400.0 + 5_000.0 * k as f32,
-                    if k % 2 == 0 { 90.0 } else { -90.0 },
-                )
-            })
-            .collect();
-        let (course, stored) = uploaded(&bends(10.0, &corners));
-        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut turns = vec![Turn::default(); TURNS];
-        let mut homing = Homing::new(&mut crumbs)
-            .with_line(&mut line)
-            .with_turns(&mut turns);
-        homing.observe(Some(at(0.0, 40_000.0)), 1_000);
-        homing.set_course(course.points());
-        assert_eq!(homing.course().len(), course.points().len());
-        while !homing.scan.done() {
-            homing.scan_turns();
-        }
-        let named = |turns: &[Turn]| -> Vec<Turn> {
-            turns
-                .iter()
-                .filter(|turn| turn.kind.is_some())
-                .copied()
-                .collect()
-        };
-        let scanned = named(&homing.turns[..homing.turn_count]);
-        homing.take_turns(course.points(), |list| {
-            list[..stored.len()].copy_from_slice(&stored);
-            Some((stored.len(), false))
-        });
-        assert!(homing.scan.done());
-        let placed = named(&homing.turns[..homing.turn_count]);
-        assert_eq!(placed.len(), corners.len());
-        assert_eq!(scanned.len(), corners.len());
-        let apart = |a: &[Turn], b: &[Turn]| {
-            a.iter()
-                .zip(b)
-                .map(|(a, b)| a.start_mm.abs_diff(b.start_mm))
-                .max()
-                .unwrap()
-        };
-        let (moved, as_stored) = (apart(&placed, &scanned), apart(&named(&stored), &scanned));
-        std::println!(
-            "stored turns {moved} mm from the scan's once moved, {as_stored} mm as stored"
-        );
-        assert!(moved <= 10_000, "{moved} mm");
-        assert!(as_stored > 100_000, "{as_stored} mm");
-        for (placed, stored) in placed.iter().zip(&named(&stored)) {
-            assert_eq!((placed.kind, placed.twice), (stored.kind, stored.twice));
-        }
-    }
-
-    /// Roundabouts of 15 to 40 m radius, left at the first, second and
-    /// third exits, as drawn and thinned 12 km on, ridden through `Homing`
-    /// with a fix every 5, 7 or 9 m up to 0, 3 or 6 m off, 39 times each:
-    /// every word is the right way, or there is none.
-    #[test]
-    fn noisy_fixes_round_a_roundabout_never_give_a_wrong_word() {
-        use crate::ride::course::stored::tests::uploaded;
-        use crate::ride::course::turns::tests::{
-            FOUND, Found, Verdict, built, extended, judge, ring,
-        };
-        use crate::ride::course::turns::{TURNS, Turn};
-        use crate::testing::Rng;
-        for found in FOUND {
-            let (mut runs, mut silent, mut wrong) = (0, 0, Vec::new());
-            for radius in [15.0, 20.0, 30.0, 40.0] {
-                for sweep in [90.0, 180.0, 270.0] {
-                    let road = ring(radius, sweep, 5.0);
-                    let degrees = turns::swing(0.0, 180.0 - sweep);
-                    for after in [0.0, 12_000.0] {
-                        let (course, stored): (Vec<course::Point>, _) = match (found, after > 0.0) {
-                            (Found::Uploaded, _) => {
-                                let (course, turns) = uploaded(&extended(&road, after));
-                                (course.points().to_vec(), Some(turns))
-                            }
-                            (Found::Scanned, true) => {
-                                (built(&road, after).0.points().to_vec(), None)
-                            }
-                            (Found::Scanned, false) => (
-                                road.iter()
-                                    .map(|&(east, north)| {
-                                        course::tests::at(f64::from(east), f64::from(north))
-                                    })
-                                    .collect(),
-                                None,
-                            ),
-                        };
-                        for (noise, step) in [0.0f32, 3.0, 6.0]
-                            .into_iter()
-                            .flat_map(|noise| [5.0f32, 7.0, 9.0].map(|step| (noise, step)))
-                        {
-                            for seed in 0..39 {
-                                let mut rng = Rng::new(seed + 1);
-                                let mut jitter = || {
-                                    let span = (2.0 * noise * 1000.0) as u64;
-                                    rng.below(span + 1) as f32 / 1000.0 - noise
-                                };
-                                let fixes: Vec<(f32, f32)> = (0..(900.0 / step) as usize)
-                                    .map(|k| {
-                                        let (east, north) = along_line(&road, k as f32 * step);
-                                        (east + jitter(), north + jitter())
-                                    })
-                                    .collect();
-                                let (mut crumbs, mut line) =
-                                    (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-                                let mut turns = vec![Turn::default(); TURNS];
-                                let mut homing = Homing::new(&mut crumbs)
-                                    .with_line(&mut line)
-                                    .with_turns(&mut turns);
-                                homing.set_course(&course);
-                                let mut now = 0;
-                                let (warnings, _) = ride_course_stored(
-                                    &mut homing,
-                                    &course,
-                                    stored.as_deref(),
-                                    &fixes,
-                                    &mut now,
-                                );
-                                let said: Vec<_> = warnings.iter().map(|&w| (0, w)).collect();
-                                runs += 1;
-                                match judge(&said, degrees) {
-                                Verdict::Wrong => wrong.push(std::format!(
-                                    "{found:?}: r{radius} exit {sweep} after {after} noise {noise} step {step} seed {seed}: {warnings:?}"
-                                )),
-                                Verdict::Silent if sweep != 180.0 => silent += 1,
-                                Verdict::Silent => {}
-                                Verdict::Right => {}
-                            }
-                            }
-                        }
-                    }
-                }
-            }
-            std::println!(
-                "{found:?}: {} of {runs} wrong, {silent} silent at a first or third exit",
-                wrong.len()
-            );
-            assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
-        }
-    }
-
-    #[test]
-    fn riding_a_followed_course_the_wrong_way_or_stopped_warns_of_nothing() {
-        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut turns = vec![turns::Turn::default(); turns::TURNS];
-        let mut homing = Homing::new(&mut crumbs)
-            .with_line(&mut line)
-            .with_turns(&mut turns);
-        let course = course_of(&SQUARE);
-        homing.set_course(&course);
-        let mut now = 0;
-        // Backwards down the second side, the pad following it 120 m past
-        // a corner: the course's way, the corner is ahead.
-        let backwards = path(&[(1000.0, 950.0), (1000.0, 0.0), (300.0, 0.0)], 7.0);
-        let (warnings, _) = ride_course_warned(&mut homing, &course, &backwards[..10], &mut now);
-        assert!(warnings.is_empty());
-        assert!(homing.set_following(true, now) && homing.following_course());
-        let (warnings, events) =
-            ride_course_warned(&mut homing, &course, &backwards[10..], &mut now);
-        assert!(warnings.is_empty(), "{warnings:?} {events:?}");
-        // Forwards, but stopped from the pad before the first corner.
-        homing.reset();
-        let out = path(&[(0.0, 0.0), (500.0, 0.0)], 7.0);
-        assert_eq!(
-            ride_course(&mut homing, &course, &out, &mut now),
-            [Event::Following]
-        );
-        assert!(homing.set_following(false, now));
-        let on = path(&[(500.0, 0.0), (1000.0, 0.0), (1000.0, 500.0)], 7.0);
-        let (warnings, _) = ride_course_warned(&mut homing, &course, &on, &mut now);
-        assert!(warnings.is_empty(), "{warnings:?}");
-    }
-
-    #[test]
-    fn a_course_is_followed_along_it_with_one_off_track_nudge_to_its_end() {
-        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
-        let course = course_of(&SQUARE);
-        homing.set_course(&course);
-        assert!(
-            homing.has_course() && homing.course().is_empty(),
-            "placed at the first fix"
-        );
-        let mut now = 0;
-        let out = path(&[(0.0, 0.0), (500.0, 0.0)], 7.0);
-        assert_eq!(
-            ride_course(&mut homing, &course, &out, &mut now),
-            [Event::Following]
-        );
-        let guide = homing.guide().unwrap();
-        assert!(guide.course && guide.following);
-        assert!(
-            (3_480..=3_520).contains(&guide.track_m),
-            "{}",
-            guide.track_m
-        );
-        assert!(near(guide.arrow(), 0.0, 10.0), "ahead is straight on");
-        assert!(homing.route_home().is_none());
-        // A wrong turn 150 m south, slowly: one nudge, no reminders.
-        let detour = path(
-            &[(500.0, 0.0), (520.0, -150.0), (540.0, 0.0), (1000.0, 0.0)],
-            2.0,
-        );
-        assert_eq!(
-            ride_course(&mut homing, &course, &detour, &mut now),
-            [Event::OffTrack, Event::OnTrack]
-        );
-        let rest = path(
-            &[(1000.0, 0.0), (1000.0, 1000.0), (0.0, 1000.0), (0.0, 0.0)],
-            7.0,
-        );
-        assert_eq!(
-            ride_course(&mut homing, &course, &rest, &mut now),
-            [Event::CourseEnd]
-        );
-        assert!(!homing.following());
-        // The course stays off: a second lap, the same way, follows nothing.
-        let lap = path(&[(0.0, 0.0), (600.0, 0.0)], 7.0);
-        assert!(ride_course(&mut homing, &course, &lap, &mut now).is_empty());
-        // A new ride follows it again.
-        homing.reset();
-        assert_eq!(
-            ride_course(&mut homing, &course, &lap, &mut now),
-            [Event::Following]
-        );
-    }
-
-    #[test]
-    fn crossing_a_course_or_riding_it_backwards_follows_nothing() {
-        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
-        let course = course_of(&SQUARE);
-        homing.set_course(&course);
-        let mut now = 0;
-        let across = path(&[(500.0, -300.0), (500.0, 500.0)], 7.0);
-        assert!(ride_course(&mut homing, &course, &across, &mut now).is_empty());
-        homing.reset();
-        let backwards = path(&[(1000.0, 500.0), (1000.0, 0.0), (300.0, 0.0)], 7.0);
-        assert!(ride_course(&mut homing, &course, &backwards, &mut now).is_empty());
-    }
-
-    #[test]
-    fn sharing_a_kilometre_then_turning_off_nudges_once_and_lets_go() {
-        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
-        let course = course_of(&SQUARE);
-        homing.set_course(&course);
-        let mut now = 0;
-        // Along the first side, then south for good, slowly.
-        let ride = path(&[(0.0, 0.0), (1000.0, 0.0), (1000.0, -700.0)], 2.0);
-        assert_eq!(
-            ride_course(&mut homing, &course, &ride, &mut now),
-            [Event::Following, Event::OffTrack, Event::Dropped]
-        );
-        // Back onto the course its way: it stays off for this ride.
-        let back = path(
-            &[
-                (1000.0, -700.0),
-                (700.0, -700.0),
-                (700.0, 0.0),
-                (1000.0, 0.0),
-                (1000.0, 600.0),
-            ],
-            7.0,
-        );
-        assert!(ride_course(&mut homing, &course, &back, &mut now).is_empty());
-    }
-
-    #[test]
-    fn without_the_back_page_or_once_stopped_no_course_is_followed() {
-        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
-        let course = course_of(&SQUARE);
-        homing.set_course(&course);
-        homing.set_auto_follow(false);
-        let mut now = 0;
-        let out = path(&[(0.0, 0.0), (500.0, 0.0)], 7.0);
-        assert!(ride_course(&mut homing, &course, &out, &mut now).is_empty());
-        homing.set_auto_follow(true);
-        let on = path(&[(500.0, 0.0), (700.0, 0.0)], 7.0);
-        assert_eq!(
-            ride_course(&mut homing, &course, &on, &mut now),
-            [Event::Following]
-        );
-        // The pad or MAP stops it: riding on along it follows nothing...
-        assert!(homing.set_following(false, now));
-        let more = path(&[(700.0, 0.0), (1000.0, 0.0), (1000.0, 300.0)], 7.0);
-        assert!(ride_course(&mut homing, &course, &more, &mut now).is_empty());
-        // ...but the pad follows it again while it is near.
-        assert!(homing.guide().unwrap().course_near);
-        assert!(homing.set_following(true, now) && homing.following_course());
-        let on = path(&[(1000.0, 300.0), (1000.0, 600.0)], 7.0);
-        assert!(ride_course(&mut homing, &course, &on, &mut now).is_empty());
-        let guide = homing.guide().unwrap();
-        assert!(
-            guide.course && (2_380..=2_420).contains(&guide.track_m),
-            "{guide:?}"
-        );
-    }
-
-    #[test]
-    fn a_course_far_away_leaves_back_to_start_as_it_was() {
-        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
-        // At latitude 60, half a world from the ride at -33.45.
-        let course: Vec<course::Point> = (0..100)
-            .map(|i| course::Point::new(600_000_000 + i * 1_000, 250_000_000).unwrap())
-            .collect();
-        homing.set_course(&course);
-        let mut now = 0;
-        let out = path(&[(0.0, 0.0), (0.0, 800.0), (1200.0, 800.0)], 7.0);
-        assert!(ride_course(&mut homing, &course, &out, &mut now).is_empty());
-        let guide = homing.guide().unwrap();
-        assert!(!guide.course_near);
-        assert!(
-            (1_435..=1_450).contains(&guide.direct_m),
-            "{}",
-            guide.direct_m
-        );
-        let home = 180.0 + libm::atan2f(1200.0, 800.0).to_degrees();
-        assert!(near(guide.bearing, home, 2.0));
-        // Riding back the way it came follows the ride's own track.
-        let back = path(&[(1200.0, 800.0), (300.0, 800.0)], 7.0);
-        assert_eq!(
-            ride_course(&mut homing, &course, &back, &mut now),
-            [Event::Following]
-        );
-        assert!(homing.route_home().is_some() && !homing.following_course());
-        // The pad stops it and, with the course far, starts the track again.
-        assert!(homing.set_following(false, now));
-        assert!(homing.set_following(true, now) && !homing.following_course());
-    }
-
-    #[test]
-    fn an_out_and_back_course_keeps_to_the_leg_the_rider_is_on() {
-        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
-        // 2.5 km north and back, the way back 4 m to the side.
-        let course = course_of(&[(0.0, 0.0), (0.0, 2500.0), (4.0, 2500.0), (4.0, 0.0)]);
-        homing.set_course(&course);
-        let mut now = 0;
-        let mut last = u32::MAX;
-        let mut events = Vec::new();
-        for leg in [
-            path(&[(0.0, 0.0), (0.0, 2500.0)], 7.0),
-            path(&[(4.0, 2500.0), (4.0, 0.0)], 7.0),
-        ] {
-            for point in leg.windows(1) {
-                events.extend(ride_course(&mut homing, &course, point, &mut now));
-                if let Some(guide) = homing.guide().filter(|g| g.course) {
-                    assert!(
-                        guide.track_m <= last.saturating_add(30),
-                        "{} after {last}",
-                        guide.track_m
-                    );
-                    assert_eq!(guide.mode, Mode::Track);
-                    last = guide.track_m;
-                }
-            }
-        }
-        assert_eq!(events, [Event::Following, Event::CourseEnd]);
-    }
-
-    #[test]
-    fn a_course_set_mid_ride_keeps_a_follow_of_the_track() {
-        let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
-        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
-        let mut now = 0;
-        let out = path(&[(0.0, 0.0), (500.0, 0.0)], 7.0);
-        assert!(ride(&mut homing, &out, &mut now).is_empty());
-        assert!(homing.set_following(true, now) && homing.route_home().is_some());
-        let course = course_of(&SQUARE);
-        homing.set_course(&course);
-        assert!(homing.following() && !homing.following_course());
-        assert!(
-            !homing.course().is_empty(),
-            "placed from the ride's first fix"
-        );
-        homing.set_course(&[]);
-        assert!(!homing.has_course() && homing.following());
     }
 }

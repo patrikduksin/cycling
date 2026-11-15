@@ -1,13 +1,13 @@
 //! The course in the app: read from the FILES volume at boot and again when
 //! the card becomes ready, replaced by an upload from the phone, cleared from
-//! the phone. The course itself lives beside the breadcrumb (`back`); this
+//! the phone. The course itself lives beside the breadcrumb (`track`); this
 //! keeps whether it matches the stored file. An upload empties the course
 //! while it streams in, so one that fails or is cut off reads the stored
 //! course back. While the course is followed, a turn ahead is a toast and a
 //! cue.
 use super::Runtime;
-use super::back::NUDGE_MS;
 use super::cues::Cue;
+use super::track::NUDGE_MS;
 use crate::ride::course::turns::Warning;
 use crate::ride::course::{self, Course};
 use crate::screens::chrome::{Toast, Tone};
@@ -70,10 +70,10 @@ impl Runtime {
     pub(super) fn service_course(&mut self, media: &mut impl ReadWrite, now: u64) {
         let ready = self.ride.bulk.status().usable();
         let uploading = self.phone_uploading();
-        let Some(back) = self.back.as_deref_mut() else {
+        let Some(track) = self.track.as_deref_mut() else {
             return;
         };
-        let kept = &mut back.kept;
+        let kept = &mut track.kept;
         if ready && !kept.card_ready && kept.store == Store::Unavailable {
             kept.store = Store::Unread;
         }
@@ -81,12 +81,12 @@ impl Runtime {
         if kept.store != Store::Unread || uploading || now < kept.retry_at {
             return;
         }
-        let result = course::load(media, back.course);
+        let result = course::load(media, track.course);
         if let Err(error) = result {
             log::warn!(target: "sdk.course", "load_failed error={error:?}");
         }
-        back.kept.took(result, now);
-        back.course_changed(media);
+        track.kept.took(result, now);
+        track.course_changed(media);
         self.display.redraw();
     }
 
@@ -104,9 +104,9 @@ impl Runtime {
 
     /// The loaded course, while one is.
     pub fn course(&self) -> Option<&Course> {
-        self.back
+        self.track
             .as_deref()
-            .map(|back| &*back.course)
+            .map(|track| &*track.course)
             .filter(|course| !course.is_empty())
     }
 }

@@ -210,8 +210,7 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
         (1800, RidePage::Lap),
         (2200, RidePage::Climb),
         (2600, RidePage::Map),
-        (3000, RidePage::Back),
-        (3400, RidePage::Main),
+        (3000, RidePage::Main),
     ] {
         runtime.input(press(Button::BottomLeft), at, &mut radio);
         assert!(runtime.navigation.page == Page::Ride);
@@ -498,22 +497,20 @@ fn the_paused_screen_comes_first_and_paging_returns_to_it() {
     runtime.input(press(Button::BottomLeft), 4200, &mut radio);
     assert_eq!(runtime.navigation.ride_page, RidePage::Map);
     runtime.input(press(Button::BottomLeft), 4600, &mut radio);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Back);
-    runtime.input(press(Button::BottomLeft), 5000, &mut radio);
     assert!(
         !runtime.navigation.pause_hidden,
         "back to the paused screen"
     );
     // Paging on goes round every page again, starting at the first.
     let mut seen = std::vec::Vec::new();
-    for at in (5400..9400).step_by(400).take(7) {
+    for at in (5000..9000).step_by(400).take(6) {
         runtime.input(press(Button::BottomLeft), at, &mut radio);
         let navigation = &runtime.navigation;
         seen.push(navigation.pause_hidden.then_some(navigation.ride_page));
     }
     let pages = RidePage::ALL.map(Some);
-    assert_eq!(seen[..6], pages, "every page");
-    assert_eq!(seen[6], None, "then the paused screen");
+    assert_eq!(seen[..5], pages, "every page");
+    assert_eq!(seen[5], None, "then the paused screen");
     // A swipe back from the paused screen shows the last page.
     runtime.navigation.ride_page_chosen(RidePage::Main);
     runtime.navigation.pause_hidden = true;
@@ -526,7 +523,7 @@ fn the_paused_screen_comes_first_and_paging_returns_to_it() {
             runtime.navigation.pause_hidden,
             runtime.navigation.ride_page
         ),
-        (true, RidePage::Back)
+        (true, RidePage::Map)
     );
 }
 
@@ -763,7 +760,7 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
     assert_eq!(runtime.navigation.ride_page, RidePage::Map);
 
     // Already on the climb page: it stays there after the climb.
-    for at in [2600, 3000, 3400, 3800, 4200] {
+    for at in [2600, 3000, 3400, 3800] {
         runtime.input(press(Button::BottomLeft), at, &mut radio);
     }
     assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
@@ -790,10 +787,7 @@ fn move_and_swipes_skip_the_pages_the_rider_turned_off() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    hide(
-        &mut runtime,
-        &[RidePage::Stats, RidePage::Lap, RidePage::Map],
-    );
+    hide(&mut runtime, &[RidePage::Stats, RidePage::Lap]);
     on_ride_page(&mut runtime);
     let mut seen = std::vec::Vec::new();
     for at in [1000, 1400, 1800, 2200] {
@@ -804,7 +798,7 @@ fn move_and_swipes_skip_the_pages_the_rider_turned_off() {
         seen,
         [
             RidePage::Climb,
-            RidePage::Back,
+            RidePage::Map,
             RidePage::Main,
             RidePage::Climb
         ]
@@ -812,7 +806,7 @@ fn move_and_swipes_skip_the_pages_the_rider_turned_off() {
     runtime.previous_ride_page();
     assert_eq!(runtime.navigation.ride_page, RidePage::Main);
     runtime.previous_ride_page();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Back);
+    assert_eq!(runtime.navigation.ride_page, RidePage::Map);
 }
 
 #[test]

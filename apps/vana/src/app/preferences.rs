@@ -12,7 +12,7 @@
 //! | 3..5 | LTHR in bpm, little-endian | 1 |
 //! | 5 | Saved ANT sensor count, at most 10 | 2 |
 //! | 6.. | Per sensor: device type, device number (little-endian), transmission type | 2 |
-//! | then | Flags: bit 0 auto-pause, bit 1 sounds, bit 2 sunset alert OFF (clear is on, so records saved before it keep the alert on), bits 3..7 ride pages hidden (clear is shown: STATS, LAP, CLIMB, BACK TO START, MAP); other bits zero | 3 |
+//! | then | Flags: bit 0 auto-pause, bit 1 sounds, bit 2 sunset alert OFF (clear is on, so records saved before it keep the alert on), bits 3..7 ride pages hidden (clear is shown: STATS, LAP, CLIMB, a bit BACK TO START held, MAP); other bits zero | 3 |
 //! | then | Auto lap: 0 off, 1 to 100 km between laps, 255 at the start point (255 reads as a damaged record before it existed) | 3 |
 //! | then | Day and night: 0 automatic, 1 always day, 2 always night | 3 |
 //! | then | First-run setup step to resume, 0 when setup is done | 3 |
@@ -48,6 +48,9 @@
 //! it. The wheel size is global, not per sensor: the saved
 //! ANT sensors are one per kind and VANA rides one bike's wheel; a sensor moved
 //! to another wheel is relearned on the next ride.
+//!
+//! BACK TO START was removed as a page; a record that hid it reads with its
+//! bit dropped, the rest as it was, and is rewritten with the bit clear.
 //!
 //! The hidden-page bits took spare flag bits without a version bump. A
 //! record from a rider who hid nothing is byte for byte what version 5 always
@@ -433,7 +436,8 @@ pub struct Record {
 pub enum Stored {
     Missing,
     Current,
-    /// An older version, rewritten as current on the next save.
+    /// An older version, or the current one holding a hidden page that no
+    /// longer exists, rewritten as current on the next save.
     Migrated,
     /// A version this firmware does not know.
     Unsupported,
@@ -533,15 +537,15 @@ pub fn decode(bytes: &[u8]) -> (Record, Stored) {
     };
     match (profile, fields) {
         (Some(profile), Some((sensors, options))) => {
-            let stored = if version == VERSION {
-                Stored::Current
-            } else {
-                Stored::Migrated
-            };
             let record = Record {
                 profile,
                 sensors,
                 options,
+            };
+            let stored = if version == VERSION && encode(&record)[..] == *bytes {
+                Stored::Current
+            } else {
+                Stored::Migrated
             };
             (record, stored)
         }
@@ -1035,6 +1039,30 @@ mod tests {
         assert_eq!(decode(&rewritten), (migrated, Stored::Current));
     }
 
+    /// A rider who hid BACK TO START before it was removed keeps every
+    /// other setting; the next save writes its bit clear.
+    #[test]
+    fn a_record_that_hid_back_to_start_keeps_the_rest() {
+        let options = Options {
+            auto_lap: AutoLap::AtStart,
+            ride_pages: PageChoice::default().toggled(RidePage::Map),
+            ..Options::default()
+        };
+        let record = Record {
+            profile: TrainingProfile {
+                ftp_watts: 287,
+                ..TrainingProfile::default()
+            },
+            options,
+            ..Record::default()
+        };
+        let mut bytes = encode(&record);
+        let flags = 1 + 4 + 1;
+        bytes[flags] |= 1 << (PAGES_SHIFT + 3);
+        assert_eq!(decode(&bytes), (record, Stored::Migrated));
+        assert_eq!(decode(&encode(&record)), (record, Stored::Current));
+    }
+
     #[test]
     fn a_version_seven_record_decodes_unchanged_with_the_default_main_page() {
         let bytes = [
@@ -1508,7 +1536,7 @@ mod tests {
         every[0] |= 0b1111_1000;
         assert_eq!(
             Options::decode(&every, VERSION).map(|o| o.ride_pages.bits()),
-            Some(0b1_1111)
+            Some(0b1_0111)
         );
         // Version 7 options: one byte short or long, an unknown flag, too
         // long a lap, an unknown day/night, theme or zone, and an impossible FTP.

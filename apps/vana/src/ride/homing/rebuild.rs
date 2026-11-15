@@ -123,7 +123,8 @@ impl Rebuild {
 mod tests {
     use super::*;
     use crate::ride::course;
-    use crate::ride::homing::{Crumb, Event};
+    use crate::ride::course::follow::{Event, Follower};
+    use crate::ride::homing::Crumb;
     use crate::ride::log::{Sample, Source};
     extern crate std;
     use std::vec;
@@ -220,13 +221,11 @@ mod tests {
         }
     }
 
-    fn live(homing: &mut Homing, fixes: &[(i32, i32)], now: &mut u64) -> Vec<Event> {
-        let mut events = Vec::new();
+    fn live(homing: &mut Homing, fixes: &[(i32, i32)], now: &mut u64) {
         for &fix in fixes {
             *now += 1_000;
-            events.extend(homing.observe(Some(fix), *now));
+            homing.observe(Some(fix), *now);
         }
-        events
     }
 
     /// A ride of two laps cut short half way round the third, then the next
@@ -245,14 +244,12 @@ mod tests {
         let (before, after, slots) = restarted();
         let mut crumbs = vec![Crumb::default(); 512];
         let mut uncut = Homing::new(&mut crumbs);
-        uncut.set_auto_follow(false);
         let mut now = 0;
         live(&mut uncut, &before, &mut now);
         live(&mut uncut, &after, &mut now);
 
         let mut crumbs = vec![Crumb::default(); 512];
         let mut read = Homing::new(&mut crumbs);
-        read.set_auto_follow(false);
         let (steps, most) = rebuild(&mut read, &slots, 1, 8);
         assert!(most <= 8, "{most} slots in one step");
         assert!(
@@ -261,17 +258,13 @@ mod tests {
             slots.len()
         );
         assert_eq!(read.crumbs(), uncut.crumbs());
-        assert!(!read.following());
         assert!(read.guide().is_none(), "no guide until a live fix");
 
-        // Live fixes carry on the track: TRACK KM as the uncut ride has it.
+        // Live fixes carry on the track: its length as the uncut ride has it.
         let next = square(3)[975..990].to_vec();
         live(&mut uncut, &next, &mut now);
         live(&mut read, &next, &mut 10_000_000);
-        let (read_m, uncut_m) = (
-            read.guide().unwrap().track_m,
-            uncut.guide().unwrap().track_m,
-        );
+        let (read_m, uncut_m) = (read.way_back().unwrap().1, uncut.way_back().unwrap().1);
         assert!(
             read_m.abs_diff(uncut_m) <= 2,
             "{read_m} m against {uncut_m} m"
@@ -301,7 +294,6 @@ mod tests {
 
         let mut crumbs = vec![Crumb::default(); 1024];
         let mut uncut = Homing::new(&mut crumbs);
-        uncut.set_auto_follow(false);
         live(&mut uncut, &fixes, &mut 0);
         assert!(
             uncut.tolerance > super::super::TOLERANCE_M,
@@ -310,7 +302,6 @@ mod tests {
 
         let mut crumbs = vec![Crumb::default(); 1024];
         let mut read = Homing::new(&mut crumbs);
-        read.set_auto_follow(false);
         let (steps, most) = rebuild(&mut read, &slots, 1, 32);
         assert!(most <= 32, "{most} slots in one step");
         assert!(steps >= slots.len() / 32, "{steps} steps");
@@ -344,7 +335,7 @@ mod tests {
             let mut homing = Homing::new(&mut crumbs);
             rebuild(&mut homing, &slots, 4, 32);
             let first = homing.crumbs()[0];
-            let start = homing.frame(new[0].0, new[0].1);
+            let start = homing.frame().unwrap().place(new[0].0, new[0].1);
             assert_eq!((first.east, first.north), (0.0, 0.0), "{utc:?}");
             assert_eq!(start, (0.0, 0.0), "the new ride's first fix is the origin");
             assert!(homing.crumbs().last().unwrap().along < 820.0, "{utc:?}");
@@ -406,33 +397,36 @@ mod tests {
     }
 
     #[test]
-    fn reading_back_along_a_course_follows_nothing_and_holds_nothing() {
+    fn a_course_is_placed_once_read_back_and_followed_live() {
         let (before, _, slots) = restarted();
         let course: Vec<course::Point> = before[..380]
             .iter()
             .map(|&(lat, lon)| course::Point::new(lat, lon).unwrap())
             .collect();
         let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 512]);
-        let mut homing = Homing::new(&mut crumbs).with_line(&mut line);
-        homing.set_course(&course);
-        assert!(homing.has_course());
+        let mut homing = Homing::new(&mut crumbs);
+        let mut follower = Follower::new(&mut line, &mut []);
+        follower.set_course(&course, homing.frame());
+        assert!(follower.unplaced());
         let mut rebuild = Rebuild::new(1, slots.len());
         while !rebuild.step(&mut homing, slots.len(), 16, |i| slots.get(i).copied()) {
-            if homing.needs_course() {
-                homing.set_course(&course);
+            if follower.unplaced() && homing.frame().is_some() {
+                follower.set_course(&course, homing.frame());
             }
-            assert!(!homing.following(), "a replayed fix follows the course");
         }
         homing.end_replay();
         assert_eq!(
-            homing.course().len(),
+            follower.course().len(),
             course.len(),
             "placed in the ride's frame"
         );
-        // Riding on along the course, live, follows it by itself: not held.
-        let mut now = 0;
-        let events = live(&mut homing, &square(3)[0..40], &mut now);
+        // Riding on along the course, live, follows it by itself.
+        let mut events = Vec::new();
+        for (i, &fix) in square(3)[0..40].iter().enumerate() {
+            let now = (i as u64 + 1) * 1_000;
+            events.extend(follower.observe(homing.observe(Some(fix), now), now));
+        }
         assert!(events.contains(&Event::Following), "{events:?}");
-        assert!(homing.following_course());
+        assert!(follower.following());
     }
 }

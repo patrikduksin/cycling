@@ -79,8 +79,6 @@ pub enum Control {
     Raise,
     /// A setup card.
     Setup(usize),
-    /// The back-to-start page's pad.
-    BackPad,
     /// The workout page's time left, which extends the step.
     ExtendStep,
     /// The map, which a long press stops following the course.
@@ -473,7 +471,7 @@ mod tests {
     };
     /// A control on a page that swipes, with no list.
     const ON_PAGE: Hit = Hit {
-        control: Some(Control::BackPad),
+        control: Some(Control::ExtendStep),
         list: None,
         swipes: true,
     };
@@ -520,9 +518,9 @@ mod tests {
         assert_eq!(
             events,
             [
-                Pressed(Control::BackPad),
-                Released(Control::BackPad),
-                Activated(Control::BackPad)
+                Pressed(Control::ExtendStep),
+                Released(Control::ExtendStep),
+                Activated(Control::ExtendStep)
             ]
         );
         // A hold between a tap and a long press is nothing.
@@ -585,8 +583,8 @@ mod tests {
         assert_eq!(
             left,
             [
-                Pressed(Control::BackPad),
-                Released(Control::BackPad),
+                Pressed(Control::ExtendStep),
+                Released(Control::ExtendStep),
                 TouchEvent::Swipe(Swipe::Next)
             ]
         );
@@ -667,7 +665,7 @@ mod tests {
         assert!(t.feed(Input::Release, 350, A, |_| ON_PAGE).is_empty());
         // The next contact is whole again.
         let tap = contact(&mut t, ON_PAGE, &[(50, 50)], 100);
-        assert_eq!(tap.last(), Some(&Activated(Control::BackPad)));
+        assert_eq!(tap.last(), Some(&Activated(Control::ExtendStep)));
         // A stray release or a button changes nothing.
         let button = Input::Button {
             button: device_api::input::Button::BottomLeft,
@@ -793,7 +791,11 @@ mod tests {
             for &(input, owner, now) in edges.iter() {
                 last = t.feed(input, now, owner, |_| ON_PAGE);
             }
-            assert_eq!(last.contains(&Activated(Control::BackPad)), *want, "{what}");
+            assert_eq!(
+                last.contains(&Activated(Control::ExtendStep)),
+                *want,
+                "{what}"
+            );
         }
     }
 
@@ -813,7 +815,7 @@ mod tests {
         }
         assert!(t.feed(Input::Release, 2020, A, |_| ON_PAGE).is_empty());
         let tap = contact(&mut t, ON_PAGE, &[(60, 60)], 100);
-        assert_eq!(tap.last(), Some(&Activated(Control::BackPad)));
+        assert_eq!(tap.last(), Some(&Activated(Control::ExtendStep)));
     }
 
     /// The driver's contact, the bounded queue and the arbiter together, as
@@ -864,7 +866,7 @@ mod tests {
             produce(&mut contact, &mut edges, Poll::Release, 550);
             assert_eq!(
                 consume(&mut touches, &mut edges),
-                [Activated(Control::BackPad)]
+                [Activated(Control::ExtendStep)]
             );
         }
     }

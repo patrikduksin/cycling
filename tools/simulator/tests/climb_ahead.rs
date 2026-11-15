@@ -98,7 +98,7 @@ fn a_rider_who_waits_at_the_foot_still_gets_the_climb_page() {
     sim.start_ride();
     sim.ride_at(14.0, 240.0, 0.0, 80.0);
     ride_until_shown(&mut sim, "CLIMBING", 100.0);
-    assert_eq!(sim.screen().page().as_deref(), Some("4/6"));
+    assert_eq!(sim.screen().page().as_deref(), Some("4/5"));
 }
 
 #[test]
@@ -109,12 +109,12 @@ fn the_map_shows_the_climbs_up_g21_before_and_while_riding_them() {
     // G-21 starts on a short rise to about 410 m: the map has the rider on
     // a climb from the first fixes, and brings up the climb page.
     ride_until_shown(&mut sim, "CLIMBING", 100.0);
-    assert_eq!(sim.screen().page().as_deref(), Some("4/6"));
+    assert_eq!(sim.screen().page().as_deref(), Some("4/5"));
     // Over its top it shows the first ramp, 700 m from the start, once the
     // map is sure of the road again past a fork.
     let shown = ride_until_shown(&mut sim, "CLIMB IN", 600.0);
     assert!((400.0..550.0).contains(&shown), "at {shown:.0} m");
-    assert_eq!(sim.screen().page().as_deref(), Some("4/6"));
+    assert_eq!(sim.screen().page().as_deref(), Some("4/5"));
     assert!(sim.screen().field("LENGTH KM").is_some());
     for label in ["AVG", "GAIN M", "POWER 3S", "HEART", "0% UP", "FOOT", "TOP"] {
         assert!(

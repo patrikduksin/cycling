@@ -27,7 +27,7 @@ pub struct Config<'a> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Memory {
     pub terrain: bool,
-    pub back_to_start: bool,
+    pub track: bool,
     pub phone: bool,
     pub ride_index: bool,
     pub ride_facts: bool,
@@ -36,7 +36,7 @@ pub struct Memory {
 impl Memory {
     pub const ALL: Self = Self {
         terrain: true,
-        back_to_start: true,
+        track: true,
         phone: true,
         ride_index: true,
         ride_facts: true,
@@ -403,7 +403,7 @@ impl Wire<'_> for Memory {
     fn put(&self, w: &mut Writer) {
         let bits = [
             self.terrain,
-            self.back_to_start,
+            self.track,
             self.phone,
             self.ride_index,
             self.ride_facts,
@@ -419,7 +419,7 @@ impl Wire<'_> for Memory {
         let bit = |n: u8| byte & 1 << n != 0;
         Self {
             terrain: bit(0),
-            back_to_start: bit(1),
+            track: bit(1),
             phone: bit(2),
             ride_index: bit(3),
             ride_facts: bit(4),

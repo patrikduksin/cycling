@@ -27,7 +27,6 @@ use crate::sensors::radar::{self, close};
 use core::fmt::Write;
 use firmware_shell::shell::Parts;
 
-pub mod back;
 mod climb;
 pub mod elevation;
 pub(super) mod end;
@@ -44,7 +43,6 @@ mod zones;
 
 pub(super) use zones::{Mark, Marks, marks};
 
-pub use back::{Arrow, Back, Light};
 pub use climb::{Frame as ClimbFrame, Lent as ClimbLent};
 pub use elevation::Chart as ElevationChart;
 pub use lap::{LapBar, LapBars};
@@ -99,29 +97,19 @@ pub enum RidePage {
     Workout,
     /// The ride's own track as a breadcrumb, with the rider on it.
     Map,
-    /// The way back to the start: straight, or along the ride's own track.
-    Back,
 }
 
 impl RidePage {
     /// The pages of a free ride.
-    pub const ALL: [Self; 6] = [
-        Self::Main,
-        Self::Stats,
-        Self::Lap,
-        Self::Climb,
-        Self::Map,
-        Self::Back,
-    ];
+    pub const ALL: [Self; 5] = [Self::Main, Self::Stats, Self::Lap, Self::Climb, Self::Map];
     /// The pages while a workout is chosen or running.
-    pub const TRAINING: [Self; 7] = [
+    pub const TRAINING: [Self; 6] = [
         Self::Workout,
         Self::Main,
         Self::Stats,
         Self::Lap,
         Self::Climb,
         Self::Map,
-        Self::Back,
     ];
 
     /// The page as a trace names it.
@@ -133,7 +121,6 @@ impl RidePage {
             Self::Climb => "ride/climb",
             Self::Workout => "ride/workout",
             Self::Map => "ride/map",
-            Self::Back => "ride/back",
         }
     }
 
@@ -154,7 +141,7 @@ impl RidePage {
             }
             Self::Climb => matches!(reading, "power" | "hr" | "grade"),
             Self::Stats | Self::Map => reading == "dist",
-            Self::Lap | Self::Back | Self::Workout => false,
+            Self::Lap | Self::Workout => false,
         };
         (self != Self::Workout).then(|| READINGS.into_iter().filter(|r| drawn(r)).collect())
     }
@@ -172,7 +159,6 @@ impl RidePage {
             Self::Stats => Some(1 << 0),
             Self::Lap => Some(1 << 1),
             Self::Climb => Some(1 << 2),
-            Self::Back => Some(1 << 3),
             Self::Map => Some(1 << 4),
         }
     }
@@ -186,20 +172,23 @@ pub struct PageChoice(u8);
 
 impl PageChoice {
     /// The bits a record may carry.
-    pub const BITS: u8 = 0b1_1111;
+    pub const BITS: u8 = 0b1_0111;
+    /// BACK TO START's bit, from before the page was removed: read as
+    /// nothing, so a record that hid it keeps the rest.
+    const REMOVED: u8 = 1 << 3;
 
     /// The optional pages, in the order Settings lists them.
-    pub const OPTIONAL: [RidePage; 5] = [
+    pub const OPTIONAL: [RidePage; 4] = [
         RidePage::Stats,
         RidePage::Lap,
         RidePage::Climb,
         RidePage::Map,
-        RidePage::Back,
     ];
 
     /// The choice a record's hidden bits stand for; none when it holds bits
     /// that mean nothing.
     pub const fn from_bits(bits: u8) -> Option<Self> {
+        let bits = bits & !Self::REMOVED;
         if bits & !Self::BITS == 0 {
             Some(Self(bits))
         } else {
@@ -325,7 +314,6 @@ pub(super) fn prepare(view: &mut View) {
         // The app lays out the chart from its player: the workout stays there.
         RidePage::Workout => super::workout::fill(view, workout::prepare),
         RidePage::Map => super::workout::fill(view, map::prepare),
-        RidePage::Back => super::workout::fill(view, back::prepare),
     }
 }
 
@@ -410,7 +398,6 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
         RidePage::Workout => workout::chart_parts(scene.chart(), parts),
         RidePage::Climb => climb::chart_parts(scene.climb(), parts),
         RidePage::Map => parts.add(BODY.top..BODY.bottom, &scene.map()),
-        RidePage::Back => back::parts(scene.arrow(), parts),
     }
     if page != RidePage::Main {
         scene.canvas().parts(parts);
@@ -434,10 +421,6 @@ fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
                 map::paint(map.frame(), row);
             }
             scene.canvas().paint(row);
-        }
-        RidePage::Back => {
-            scene.canvas().paint(row);
-            back::paint(scene.arrow(), row);
         }
     }
 }
@@ -552,12 +535,6 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
             scene
                 .map()
                 .map_or(BLACK, |map| map::pixel(map.frame(), x, y, BLACK)),
-        ),
-        RidePage::Back => back::arrow_pixel(
-            &back::frame(scene.arrow()),
-            x,
-            y,
-            scene.canvas().pixel(x, y, BLACK),
         ),
     }
 }
@@ -753,7 +730,6 @@ mod tests {
             crumbs,
             here: Some((400.0, 300.0)),
             heading: None,
-            home: None,
             course: &[],
             ahead: None,
         };
@@ -770,7 +746,6 @@ mod tests {
                 pinned: None,
             }),
             Some(RidePage::Map) => view.show_map(map.filled()),
-            Some(RidePage::Back) => view.show_back(Back::default(), Light::default()),
             _ => {}
         }
         let texts: std::vec::Vec<std::string::String> = match page {
@@ -892,19 +867,16 @@ mod tests {
         assert_eq!(free.next(RidePage::Stats), Some(RidePage::Lap));
         assert_eq!(free.next(RidePage::Lap), Some(RidePage::Climb));
         assert_eq!(free.next(RidePage::Climb), Some(RidePage::Map));
-        assert_eq!(free.next(RidePage::Map), Some(RidePage::Back));
-        assert_eq!(free.next(RidePage::Back), None);
-        assert_eq!(free.following(RidePage::Back), RidePage::Main);
-        assert_eq!(free.preceding(RidePage::Main), RidePage::Back);
+        assert_eq!(free.next(RidePage::Map), None);
+        assert_eq!(free.following(RidePage::Map), RidePage::Main);
+        assert_eq!(free.preceding(RidePage::Main), RidePage::Map);
         assert_eq!(free.preceding(RidePage::Stats), RidePage::Main);
         let training = Pages::new(true, PageChoice::default());
         assert_eq!(training.as_slice(), RidePage::TRAINING);
         assert_eq!(training.following(RidePage::Workout), RidePage::Main);
         assert_eq!(training.following(RidePage::Climb), RidePage::Map);
-        assert_eq!(training.following(RidePage::Map), RidePage::Back);
-        assert_eq!(training.preceding(RidePage::Back), RidePage::Map);
-        assert_eq!(training.following(RidePage::Back), RidePage::Workout);
-        assert_eq!(training.preceding(RidePage::Workout), RidePage::Back);
+        assert_eq!(training.following(RidePage::Map), RidePage::Workout);
+        assert_eq!(training.preceding(RidePage::Workout), RidePage::Map);
         assert_eq!(training.position(RidePage::Main), 1);
         assert_eq!(free.position(RidePage::Workout), 0);
     }
@@ -974,7 +946,8 @@ mod tests {
         }
         assert_eq!(
             PageChoice::from_bits(0b1_1111).map(PageChoice::bits),
-            Some(0b1_1111)
+            Some(0b1_0111),
+            "BACK TO START hidden before it was removed"
         );
         assert_eq!(PageChoice::from_bits(0b10_0000), None);
     }

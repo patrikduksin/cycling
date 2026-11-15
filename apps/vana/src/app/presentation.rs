@@ -3,7 +3,6 @@ use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Medium, Request, RideMessage};
 use crate::clock::Zone;
-use crate::daylight::Sun;
 use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
@@ -463,8 +462,8 @@ impl Runtime {
             self.night.sun(now),
         );
         let sun = self.night.sun(now);
-        let leg = self.back.as_deref().and_then(|back| {
-            back.leg(
+        let leg = self.track.as_deref().and_then(|track| {
+            track.leg(
                 self.ride.totals.avg_speed_mm_s(),
                 self.ride.totals.moving_ms(),
             )
@@ -677,7 +676,7 @@ impl Runtime {
             _ => navigation.home_cursor,
         };
         if page == Page::Ride && navigation.ride_page == RidePage::Map {
-            super::back::refresh_map(&mut self.back);
+            super::track::refresh_map(&mut self.track);
         }
         let mut view = View::new(page, cursor, local);
         view.editing = page == Page::Settings && navigation.settings_editing;
@@ -722,13 +721,6 @@ impl Runtime {
         if let Some(picker) = picker {
             view.scroll = picker_offset;
             view.show_picker(picker);
-        }
-        if page == Page::Ride && view.ride_page == RidePage::Back {
-            let sunset = light(
-                self.night.sun(now).map(|(sun, _)| sun),
-                self.preferences.options.zone,
-            );
-            view.show_back(readout.back, sunset);
         }
         let gps_fix = gps.is_some_and(|p| p.gps.state == FixState::Fresh);
         view.gps = match gps {
@@ -834,7 +826,7 @@ impl Runtime {
         let light = self.light();
         view.light = light;
         if page == Page::Ride && view.ride_page == RidePage::Map {
-            view.show_map(super::back::map_of(&self.back));
+            view.show_map(super::track::map_of(&self.track));
         }
         view.graphics = self.motion.graphics(self.motion_visible(), now);
         let drawn = system.draw(&view.prepare(), now);
@@ -1414,7 +1406,7 @@ impl Runtime {
             }
             Row::MainLeft => write!(value, "{}", options.main_slots.left.name()),
             Row::MainRight => write!(value, "{}", options.main_slots.right.name()),
-            Row::PageStats | Row::PageLap | Row::PageClimb | Row::PageMap | Row::PageBack => {
+            Row::PageStats | Row::PageLap | Row::PageClimb | Row::PageMap => {
                 let shown = row
                     .ride_page()
                     .is_none_or(|page| options.ride_pages.shows(page));
@@ -1520,7 +1512,6 @@ impl Runtime {
                 previous_lap: ride.laps.previous(),
                 climbing: ride.climbs.climbing(),
                 training: self.shown_workout(&self.preferences.profile),
-                back: super::back::view_of(&self.back),
                 paused_secs: self.navigation.paused_since.map_or(0, |since| {
                     (now.saturating_sub(since) / 1000).min(u64::from(u32::MAX)) as u32
                 }),
@@ -1559,7 +1550,6 @@ pub(super) struct Readout {
     previous_lap: Option<crate::ride::laps::Lap>,
     climbing: Option<crate::ride::climb::Summary>,
     training: Option<ride::Training>,
-    back: ride::Back,
     paused_secs: u32,
 }
 
@@ -1625,17 +1615,6 @@ fn limit(value: &mut Text<38>, limit: u16, unit: &str) -> core::fmt::Result {
     }
 }
 
-/// The back page's light caption: sunset on the `zone` clock, or dark.
-fn light(sun: Option<Sun>, zone: Zone) -> ride::Light {
-    match sun {
-        Some(Sun::Up { sets_at }) => {
-            ride::Light::SetsAt(zone.local(sets_at.max(0) as u64).of_day() as u32)
-        }
-        Some(Sun::Down) => ride::Light::Dark,
-        _ => ride::Light::Unknown,
-    }
-}
-
 /// "UTC-3", "UTC+5:30" or "UTC", from seconds east of UTC.
 fn utc_offset(text: &mut Text<38>, offset_s: i64) -> core::fmt::Result {
     let sign = if offset_s < 0 { '-' } else { '+' };
@@ -1672,8 +1651,6 @@ pub(super) fn ant_stands_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daylight::sun_state;
-    use firmware_services::gps::unix_seconds;
 
     fn take(
         shown: &mut Shown,
@@ -1788,24 +1765,5 @@ mod tests {
             take_at(&mut shown, Numbers::EverySecond, moment, readout_at(watts));
             assert_eq!(shown.sample().power_watts, Some(watts));
         }
-    }
-
-    /// The sun sets near 17:42 in a Santiago winter and 20:55 in summer.
-    #[test]
-    fn sunset_reads_on_the_clock_of_the_season() {
-        let sets = |date: &[u8; 6]| {
-            let noon = unix_seconds(*date, *b"160000").unwrap();
-            match light(Some(sun_state(noon, -33.45, -70.66)), Zone::Chile) {
-                ride::Light::SetsAt(local) => (local / 3600, local / 60 % 60),
-                other => panic!("{other:?}"),
-            }
-        };
-        let (hour, minute) = sets(b"210626");
-        assert_eq!(hour, 17, "June");
-        assert!((38..=46).contains(&minute), "June 17:{minute}");
-        let (hour, minute) = sets(b"211226");
-        assert_eq!(hour, 20, "December 20:{minute}");
-        assert_eq!(light(Some(Sun::Down), Zone::Chile), ride::Light::Dark);
-        assert_eq!(light(None, Zone::Chile), ride::Light::Unknown);
     }
 }

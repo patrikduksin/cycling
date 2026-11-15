@@ -1,4 +1,4 @@
-//! Courses that pass the same place twice, ridden through `Homing` with
+//! Courses that pass the same place twice, ridden through `Rider` with
 //! noisy fixes: every word names the next corner of the pass the rider is
 //! on, or there is none.
 use super::*;
@@ -166,10 +166,8 @@ fn ride_gapped(
     };
     let (mut crumbs, mut kept) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
     let mut list = vec![Turn::default(); TURNS];
-    let mut homing = Homing::new(&mut crumbs)
-        .with_line(&mut kept)
-        .with_turns(&mut list);
-    homing.set_course(&course);
+    let mut rider = Rider::new(&mut crumbs, &mut kept, &mut list);
+    rider.set_course(&course);
     let (mut said, mut events) = (Vec::new(), Vec::new());
     let mut now = 0;
     for k in 0..=(length / step) as usize {
@@ -178,12 +176,12 @@ fn ride_gapped(
         let fix = (east + jitter(), north + jitter());
         if gap.contains(&metres) {
             now += 1_000;
-            homing.observe(None, now);
+            rider.observe(None, now);
             continue;
         }
         let one = [fix];
         let (words, more) =
-            ride_course_stored(&mut homing, &course, stored.as_deref(), &one, &mut now);
+            ride_course_stored(&mut rider, &course, stored.as_deref(), &one, &mut now);
         said.extend(words.into_iter().map(|w| (metres, w)));
         events.extend(more);
     }
@@ -198,7 +196,7 @@ fn mirrored(line: &[(f32, f32)]) -> Vec<(f32, f32)> {
 struct Tally {
     wrong: Vec<String>,
     silent: usize,
-    /// Runs told OFF TRACK, though the rider kept to the course.
+    /// Runs off course, though the rider kept to the course.
     off: usize,
     runs: usize,
 }
@@ -213,7 +211,7 @@ fn gate(lines: &[(String, Vec<(f32, f32)>)], found: Found) -> Tally {
                 for seed in 0..8 {
                     let (said, events) = ride_line(line, found, noise, step, seed);
                     tally.runs += 1;
-                    tally.off += usize::from(events.contains(&Event::OffTrack));
+                    tally.off += usize::from(events.contains(&Event::OffCourse));
                     match judge(&said, &corners, noise) {
                         Heard::Wrong => tally.wrong.push(std::format!(
                             "{found:?}: {name} noise {noise} step {step} seed {seed}: {said:?}"
@@ -229,13 +227,13 @@ fn gate(lines: &[(String, Vec<(f32, f32)>)], found: Found) -> Tally {
 }
 
 /// Every course of `lines`, its turns found both ways: no wrong word, and
-/// no OFF TRACK.
+/// never off course.
 fn pass(what: &str, lines: &[(String, Vec<(f32, f32)>)]) {
     let (mut wrong, mut off) = (Vec::new(), 0);
     for found in FOUND {
         let tally = gate(lines, found);
         std::println!(
-            "{what}, {found:?}: {} of {} wrong, {} silent, {} off track",
+            "{what}, {found:?}: {} of {} wrong, {} silent, {} off course",
             tally.wrong.len(),
             tally.runs,
             tally.silent,
@@ -245,7 +243,7 @@ fn pass(what: &str, lines: &[(String, Vec<(f32, f32)>)]) {
         off += tally.off;
     }
     assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(6)]);
-    assert_eq!(off, 0, "told OFF TRACK on the course");
+    assert_eq!(off, 0, "off course on the course");
 }
 
 /// Figure-of-eight courses. One rides a stem north to a junction, round a
@@ -374,7 +372,7 @@ fn a_shortcut_onto_the_course_further_on_is_followed_from_there() {
 /// Courses that come back alongside themselves, with the fixes lost for 100
 /// to 300 m: across an out-and-back's far end, or just before a hairpin.
 /// Every word names the corner ahead on the pass the rider is on, no run is
-/// told OFF TRACK, and each reaches the course's end.
+/// off course, and each reaches the course's end.
 #[test]
 fn a_gap_in_the_fixes_beside_another_pass_keeps_to_the_rider_s_pass() {
     let mut lines = Vec::new();
@@ -417,8 +415,8 @@ fn a_gap_in_the_fixes_beside_another_pass_keeps_to_the_rider_s_pass() {
                             let (said, events) =
                                 ride_gapped(line, line, found, noise, 7.0, seed, from..from + gap);
                             runs += 1;
-                            off += usize::from(events.contains(&Event::OffTrack));
-                            unended += usize::from(!events.contains(&Event::CourseEnd));
+                            off += usize::from(events.contains(&Event::OffCourse));
+                            unended += usize::from(!events.contains(&Event::Arrived));
                             if judge(&said, &corners, noise) == Heard::Wrong {
                                 wrong.push(std::format!(
                                     "{found:?}: {name} gap {gap} from {from} noise {noise} seed {seed}: {said:?} {events:?}"
@@ -431,9 +429,9 @@ fn a_gap_in_the_fixes_beside_another_pass_keeps_to_the_rider_s_pass() {
         }
     }
     std::println!(
-        "gaps: {} of {runs} wrong, {off} off track, {unended} never at the end",
+        "gaps: {} of {runs} wrong, {off} off course, {unended} never at the end",
         wrong.len()
     );
     assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(6)]);
-    assert_eq!((off, unended), (0, 0), "told OFF TRACK or never at the end");
+    assert_eq!((off, unended), (0, 0), "off course or never at the end");
 }

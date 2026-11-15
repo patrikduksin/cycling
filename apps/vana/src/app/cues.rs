@@ -48,12 +48,12 @@ pub enum Cue {
     BandAlert,
     /// Time to eat and drink.
     Fuel,
-    /// Off the track being followed back.
-    OffTrack,
-    /// Back on it.
-    OnTrack,
-    /// Back at the start, following the track.
-    AtStart,
+    /// Off the course being followed.
+    OffCourse,
+    /// Back on it, or following it began.
+    OnCourse,
+    /// At the course's end.
+    Arrived,
     /// A turn on the course ahead.
     TurnAhead,
     /// The turn is here.
@@ -94,9 +94,9 @@ impl Cue {
             Self::BandAlert => &[High, High],
             // A gentle middle pair, unlike the single lap note.
             Self::Fuel => &[Middle, Middle],
-            Self::OffTrack => &[High, Low],
-            Self::OnTrack => &[Low, Middle],
-            Self::AtStart => &[Low, Middle, High, High],
+            Self::OffCourse => &[High, Low],
+            Self::OnCourse => &[Low, Middle],
+            Self::Arrived => &[Low, Middle, High, High],
             // A soft fall to warn, and a bright call at the turn itself.
             Self::TurnAhead => &[Middle, Low],
             Self::Turn => &[High, Middle, High],
@@ -123,9 +123,9 @@ impl Cue {
             Self::RadarClear => "radar_clear",
             Self::BandAlert => "band_alert",
             Self::Fuel => "fuel",
-            Self::OffTrack => "off_track",
-            Self::OnTrack => "on_track",
-            Self::AtStart => "at_start",
+            Self::OffCourse => "off_course",
+            Self::OnCourse => "on_course",
+            Self::Arrived => "arrived",
             Self::TurnAhead => "turn_ahead",
             Self::Turn => "turn",
         }

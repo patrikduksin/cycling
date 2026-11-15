@@ -221,14 +221,14 @@ Laps:
   distance count. During a workout each step closes a lap instead, and neither
   kind of automatic lap runs. All share one numbered list.
 - AT START closes a lap each time the rider rides past where the ride began
-  (the first fix, as back to start measures from). A pass comes within 25 m of
+  (the first fix, as the breadcrumb measures from). A pass comes within 25 m of
   the start and then leaves beyond 35 m while moving, so the lap begins about
   40 m past the start (35 m and the next sample). It counts once the rider has been
   75 m away, which is why a ride never laps at its own start, and GPS jitter
   between 25 m and 75 m cannot fire it twice. More than a minute within 25 m
   is loitering, such as a car park, and is no pass. A pass closes no lap shorter
   than 500 m or 60 s of recorded time; the lap carries on. It needs the
-  breadcrumb, so it runs where back to start does.
+  breadcrumb, so it runs wherever the breadcrumb does.
 - For two seconds a toast in the status row shows `LAP n`, the finished lap's
   time and its average power.
 - Lap time is recorded time, so a pause adds none. Lap averages follow the ride
@@ -329,7 +329,7 @@ Recording:
 - After power loss, the open ride is closed with a RECOVERED record at its last
   committed active time and the ride screen shows `RECOVERED`; the next START is
   a new ride. That ride reads the recovered ride's positions back from the
-  journal for back to start and AT START laps (`ride::homing::rebuild`); its
+  journal for the map's track and AT START laps (`ride::homing::rebuild`); its
   totals and laps start from zero. Power lost during the very first write of an
   empty journal leaves one occupied invalid slot and recording stays available.
 - Sampling continues with missing sensors or GPS; unavailable measurements stay

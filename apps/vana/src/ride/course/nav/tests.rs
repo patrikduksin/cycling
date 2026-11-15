@@ -435,12 +435,16 @@ fn junction_left_at(along_m: f32) -> Option<Point> {
     for _ in 0..6 {
         rider.fix(along_m + 1.0, 50.0, true);
     }
-    rider.nav.guidance(&turns, rider.now_ms, locate)?.junction
+    rider
+        .nav
+        .guidance(&turns, rider.now_ms, locate)?
+        .junction
+        .map(|spot| spot.at)
 }
 
 #[test]
 fn the_way_back_leads_to_a_missed_turn_only_within_60_m_of_where_the_rider_left() {
-    assert_eq!(junction_left_at(1060.0), Some((0.0, 1000.0)));
+    assert_eq!(junction_left_at(1060.0), Some((0.0, 1005.0)), "the corner");
     assert_eq!(junction_left_at(1061.0), Some((0.0, 1061.0)));
 }
 

@@ -233,7 +233,7 @@ pub fn run(case: &Case, seconds: u64) -> Result {
     let (width, height) = (frame.geometry.width, frame.geometry.height);
     Result {
         seconds,
-        changes: frame.probe.take().map(|p| p.changes).unwrap_or_default(),
+        changes: frame.probe.take().expect("set above").changes,
         screen_pixels: width * height,
         strips: height.div_ceil(STRIP_ROWS),
     }

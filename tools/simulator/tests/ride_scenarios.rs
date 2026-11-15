@@ -6265,10 +6265,7 @@ fn map_page_draws_the_ride_track_and_goes_north_up_when_still() {
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.ride_at(25.0, 180.0, 0.0, 85.0);
     sim.start_ride();
-    // MOVE reaches MAP after the climb page.
-    for _ in 0..4 {
-        sim.press(Button::BottomLeft);
-    }
+    sim.ride_page("5/5");
     sim.expect_text("MAP");
     ride_to(&mut sim, 60.0);
     sim.checkpoint("the map early in the ride");
@@ -6374,10 +6371,9 @@ fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
     for _ in 0..5 {
         sim.advance(minutes(60));
     }
-    // Standing still the map turns north up, so the two maps compare.
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
-    press_to_page(&mut sim, "MAP");
+    sim.ride_page("5/5");
     sim.expect_text("N UP");
     let before = map_ink(&sim);
     sim.checkpoint("the map after five hours");
@@ -6388,7 +6384,7 @@ fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
     sim.home("RIDE");
     sim.press(Button::BottomRight);
     sim.wait_for("RECORDING", seconds(2)).unwrap();
-    press_to_page(&mut sim, "MAP");
+    sim.ride_page("5/5");
     let mut waited = 0;
     while sim.screen().contains("NO GPS") {
         assert!(waited < 120, "no track after {waited} s");
@@ -6463,18 +6459,6 @@ fn a_ride_that_moves_to_internal_memory_keeps_the_track_and_the_start() {
         .filter(|s| s.lap == Some(vana::ride::log::LapStart::Position))
         .count();
     assert_eq!(laps, 1);
-}
-
-/// MOVE through the ride pages until one titled `title` shows.
-#[track_caller]
-fn press_to_page(sim: &mut Sim, title: &str) {
-    for _ in 0..8 {
-        if sim.screen().contains(title) {
-            return;
-        }
-        sim.press(Button::BottomLeft);
-    }
-    panic!("no {title} page; screen:\n{}", sim.screen().text());
 }
 
 /// The legs of the course the rider loads: the bend loop once round, back

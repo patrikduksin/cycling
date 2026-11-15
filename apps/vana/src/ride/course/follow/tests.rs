@@ -34,7 +34,6 @@ impl<'a> Rider<'a> {
         self.follower.observe(fix, now)
     }
 
-    /// The course waits to be set again: the ride has its first fix.
     fn needs_course(&self) -> bool {
         self.follower.unplaced() && self.homing.frame().is_some()
     }
@@ -136,7 +135,6 @@ fn following_a_course_warns_of_each_corner_ahead_and_at_it() {
         },
     ];
     assert_eq!(warnings, corner.repeat(3), "{warnings:?}");
-    // The next lap, with the course ended, warns of nothing.
     let (warnings, _) = ride_course_warned(&mut rider, &course, &lap, &mut now);
     assert!(warnings.is_empty(), "{warnings:?}");
 }
@@ -306,7 +304,6 @@ fn riding_a_followed_course_the_wrong_way_or_stopped_warns_of_nothing() {
     let course = course_of(&SQUARE);
     rider.set_course(&course);
     let mut now = 0;
-    // Out along the first side, then back the way it came.
     let out = path(&[(0.0, 0.0), (600.0, 0.0)], 7.0);
     assert_eq!(
         ride_course(&mut rider, &course, &out, &mut now),
@@ -315,7 +312,6 @@ fn riding_a_followed_course_the_wrong_way_or_stopped_warns_of_nothing() {
     let back = path(&[(600.0, 0.0), (200.0, 0.0)], 7.0);
     let (warnings, events) = ride_course_warned(&mut rider, &course, &back, &mut now);
     assert!(warnings.is_empty(), "{warnings:?} {events:?}");
-    // Forwards, but stopped from MAP before the first corner.
     rider.reset();
     let out = path(&[(0.0, 0.0), (500.0, 0.0)], 7.0);
     assert_eq!(
@@ -347,7 +343,6 @@ fn a_course_is_followed_along_it_off_course_once_to_its_end() {
     let progress = rider.follower.progress().unwrap();
     assert!(!progress.off_course);
     assert!((3_480..=3_520).contains(&progress.to_end_m), "{progress:?}");
-    // A wrong turn 150 m south, slowly: off course once, then back on.
     let detour = path(
         &[(500.0, 0.0), (520.0, -150.0), (540.0, 0.0), (1000.0, 0.0)],
         2.0,
@@ -366,10 +361,8 @@ fn a_course_is_followed_along_it_off_course_once_to_its_end() {
     );
     assert!(!rider.follower.following());
     assert_eq!(rider.follower.progress(), None);
-    // The course stays off: a second lap, the same way, follows nothing.
     let lap = path(&[(0.0, 0.0), (600.0, 0.0)], 7.0);
     assert!(ride_course(&mut rider, &course, &lap, &mut now).is_empty());
-    // A new ride follows it again.
     rider.reset();
     assert_eq!(
         ride_course(&mut rider, &course, &lap, &mut now),
@@ -398,14 +391,12 @@ fn sharing_a_kilometre_then_turning_off_goes_off_course_once_and_lets_go() {
     let course = course_of(&SQUARE);
     rider.set_course(&course);
     let mut now = 0;
-    // Along the first side, then south for good, slowly.
     let ride = path(&[(0.0, 0.0), (1000.0, 0.0), (1000.0, -700.0)], 2.0);
     assert_eq!(
         ride_course(&mut rider, &course, &ride, &mut now),
         [Event::Following, Event::OffCourse]
     );
     assert!(!rider.follower.following(), "500 m off, following stopped");
-    // Back onto the course its way: it stays off for this ride.
     let back = path(
         &[
             (1000.0, -700.0),
@@ -442,7 +433,6 @@ fn once_stopped_from_the_map_the_course_is_not_followed_again() {
 fn an_out_and_back_course_keeps_to_the_leg_the_rider_is_on() {
     let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
     let mut rider = Rider::new(&mut crumbs, &mut line, &mut []);
-    // 2.5 km north and back, the way back 4 m to the side.
     let course = course_of(&[(0.0, 0.0), (0.0, 2500.0), (4.0, 2500.0), (4.0, 0.0)]);
     rider.set_course(&course);
     let mut now = 0;

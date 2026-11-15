@@ -110,7 +110,6 @@ pub struct Follower<'a> {
     /// The course, end first, in the ride's frame; empty without one.
     line: &'a mut [Crumb],
     len: usize,
-    /// A course is loaded but waits for the ride's first fix to be placed.
     unplaced: bool,
     /// The course is off for the rest of the ride: dropped, ended or stopped.
     held: bool,
@@ -242,7 +241,6 @@ impl<'a> Follower<'a> {
             (self.scan, self.turn_count) = (Scan::default(), 0);
             return;
         };
-        // Kept point `k` from the start is `line[len - 1 - k]`.
         let line = &self.line[..len];
         let frame_m = |k: usize| line[len - 1].along - line[len - 1 - k].along;
         for end in [false, true] {
@@ -320,7 +318,7 @@ impl<'a> Follower<'a> {
 
     /// Where the rider is on the course, once matched while following.
     pub fn progress(&self) -> Option<Progress> {
-        self.matched.filter(|_| self.following).map(|_| Progress {
+        self.matched.map(|_| Progress {
             to_end_m: (self.along + 0.5) as u32,
             off_course: self.off,
         })
@@ -345,7 +343,7 @@ impl<'a> Follower<'a> {
             return event;
         }
         if fix.moved && self.joining(fix.at) {
-            self.engage(self.join_end);
+            self.follow_from(self.join_end);
             self.update(fix.at);
             return Some(Event::Following);
         }
@@ -375,8 +373,7 @@ impl<'a> Follower<'a> {
         self.join_fixes >= JOIN_FIXES
     }
 
-    /// Follow the course from its segment `end`.
-    fn engage(&mut self, end: usize) {
+    fn follow_from(&mut self, end: usize) {
         self.following = true;
         self.join_fixes = 0;
         self.along = self.course().get(end).map_or(0.0, |c| c.along);
@@ -425,7 +422,6 @@ impl<'a> Follower<'a> {
             self.warner.forget(passed);
         }
         let len = self.len;
-        // The course is kept end first; the scan reads it start first.
         let line = &self.line[..len];
         let at = |k: usize| {
             let c = line[len - 1 - k];
@@ -443,8 +439,7 @@ impl<'a> Follower<'a> {
     fn nearest(&self, p: Point, ends: core::ops::RangeInclusive<usize>) -> Option<Nearest> {
         let plain = |near: &Nearest, _: &Crumb, _: &Crumb| Some(near.off);
         let (along, reached) = (self.along, self.reached);
-        // After a gap in the fixes the rider may be past the near stretch.
-        if self.matched_fix.is_none_or(|fix| distance(fix, p) > HOP_M) {
+        if self.after_gap(p) {
             return self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain);
         }
         let on = |near: &Nearest, a: &Crumb, b: &Crumb| {
@@ -456,8 +451,6 @@ impl<'a> Follower<'a> {
         else {
             return self.nearest_within(p, ends, along - JUMP_M, along + BACK_M, plain);
         };
-        // Sliding back against the rider's way, a pass ridden its own way
-        // close by is the one they are on.
         let line = self.course();
         if near.along > reached + SLIP_M && self.against(&line[near.end - 1], &line[near.end]) {
             let ahead = |near: &Nearest, a: &Crumb, b: &Crumb| {
@@ -470,6 +463,12 @@ impl<'a> Follower<'a> {
             }
         }
         Some(near)
+    }
+
+    /// Whether `p` follows a gap in the fixes, after which the rider may be
+    /// past the stretch they were last matched on.
+    fn after_gap(&self, p: Point) -> bool {
+        self.matched_fix.is_none_or(|fix| distance(fix, p) > HOP_M)
     }
 
     /// Whether the course from `b` to `a` runs against the rider's heading.

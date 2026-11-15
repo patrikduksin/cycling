@@ -87,8 +87,7 @@ pub struct RideTrack {
     finder: &'static mut Finder,
     pub(super) kept: super::course::Kept,
     resume: Resume,
-    /// When FOLLOWING COURSE showed, and a turn warning waiting on it.
-    nudged_at: Option<u64>,
+    following_shown_at: Option<u64>,
     held_turn: Option<Warning>,
 }
 
@@ -112,7 +111,7 @@ impl RideTrack {
             finder,
             kept: super::course::Kept::default(),
             resume: Resume::None,
-            nudged_at: None,
+            following_shown_at: None,
             held_turn: None,
         }
     }
@@ -161,11 +160,24 @@ impl RideTrack {
         });
     }
 
-    /// Place the loaded course once the ride has its first fix.
     fn place_course(&mut self, media: &mut impl ReadWrite) {
         if self.follower.unplaced() && self.homing.frame().is_some() {
             self.course_changed(media);
         }
+    }
+
+    /// The turn warning to give now: none within `TURN_HOLD_MS` of FOLLOWING
+    /// COURSE, which holds it until then.
+    fn turn_after_following_shown(&mut self, now: u64) -> Option<Warning> {
+        let turn = self.follower.take_turn().or(self.held_turn.take());
+        let held = self
+            .following_shown_at
+            .is_some_and(|at| now.saturating_sub(at) < TURN_HOLD_MS);
+        if held {
+            self.held_turn = turn;
+            return None;
+        }
+        turn
     }
 
     /// Store the turns `found` while the course uploaded beside it, or,
@@ -292,21 +304,10 @@ impl Runtime {
             self.display.redraw();
         }
         let joined = event == Some(Event::Following);
-        // A turn warning waits a moment rather than replace FOLLOWING COURSE.
         if joined {
-            state.nudged_at = Some(now);
+            state.following_shown_at = Some(now);
         }
-        let turn = state.follower.take_turn().or(state.held_turn.take());
-        let fresh = state
-            .nudged_at
-            .is_some_and(|at| now.saturating_sub(at) < TURN_HOLD_MS);
-        let turn = match turn {
-            Some(warning) if fresh => {
-                state.held_turn = Some(warning);
-                None
-            }
-            turn => turn,
-        };
+        let turn = state.turn_after_following_shown(now);
         if joined {
             let toast = Toast::new("FOLLOWING COURSE", Tone::Good);
             self.navigation.show(toast, NUDGE_MS, now);
@@ -325,8 +326,6 @@ impl Runtime {
         }
     }
 
-    /// A long press on MAP: stop following the course for the rest of the
-    /// ride.
     pub(super) fn stop_following_from_map(&mut self) {
         if let Some(state) = self.track.as_deref_mut()
             && state.follower.following()
@@ -337,7 +336,6 @@ impl Runtime {
     }
 }
 
-/// Bring the map page's track up to date with the breadcrumb and the course.
 pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>) {
     let Some(state) = track.as_deref_mut() else {
         return;
@@ -353,7 +351,6 @@ pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>) {
     state.map.update(&drawn);
 }
 
-/// What the map page draws: borrows `Runtime::track`'s frame.
 pub(super) fn map_of<'a>(track: &'a Option<&'static mut RideTrack>) -> Option<FilledMap<'a>> {
     track.as_deref()?.map.filled()
 }

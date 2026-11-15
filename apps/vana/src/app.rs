@@ -101,7 +101,6 @@ pub struct Runtime {
     motion: motion::Motion,
     shown: presentation::Shown,
     alerts: crate::ride::alerts::Alerts,
-    /// The ride's track lives in the block composition gives it.
     track: Option<&'static mut track::RideTrack>,
     reported: seen::Reported,
     /// This pass's `tick` or `look_ahead` read or wrote storage.

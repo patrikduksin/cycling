@@ -260,7 +260,6 @@ mod tests {
         assert_eq!(read.crumbs(), uncut.crumbs());
         assert!(read.guide().is_none(), "no guide until a live fix");
 
-        // Live fixes carry on the track: its length as the uncut ride has it.
         let next = square(3)[975..990].to_vec();
         live(&mut uncut, &next, &mut now);
         live(&mut read, &next, &mut 10_000_000);
@@ -420,7 +419,6 @@ mod tests {
             course.len(),
             "placed in the ride's frame"
         );
-        // Riding on along the course, live, follows it by itself.
         let mut events = Vec::new();
         for (i, &fix) in square(3)[0..40].iter().enumerate() {
             let now = (i as u64 + 1) * 1_000;

@@ -1039,8 +1039,6 @@ mod tests {
         assert_eq!(decode(&rewritten), (migrated, Stored::Current));
     }
 
-    /// A rider who hid BACK TO START before it was removed keeps every
-    /// other setting; the next save writes its bit clear.
     #[test]
     fn a_record_that_hid_back_to_start_keeps_the_rest() {
         let options = Options {

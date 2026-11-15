@@ -319,12 +319,10 @@ impl<'a> Homing<'a> {
         let moved = self.fed != Some((lat, lon));
         let p = if moved {
             self.fed = Some((lat, lon));
-            let p = self.place(lat, lon);
+            let p = self.place_in_frame_from_first(lat, lon);
             self.here = Some(p);
             p
         } else {
-            // Standing still: time still passes for the heading, once a
-            // second, but nothing is recorded.
             let p = self.here?;
             if now.saturating_sub(self.updated_ms) < STILL_MS {
                 return None;
@@ -347,7 +345,7 @@ impl<'a> Homing<'a> {
     /// the replay: it grows the breadcrumb and moves the start pass on as a
     /// live fix would, but takes no lap.
     pub fn replay(&mut self, (lat, lon): (i32, i32), at_ms: u64) {
-        let p = self.place(lat, lon);
+        let p = self.place_in_frame_from_first(lat, lon);
         self.track_heading(p, at_ms);
         self.add(p);
         self.step_pass(p);
@@ -360,8 +358,7 @@ impl<'a> Homing<'a> {
         self.heading_from = None;
     }
 
-    /// A position in the ride's frame, which the first one sets.
-    fn place(&mut self, lat: i32, lon: i32) -> Point {
+    fn place_in_frame_from_first(&mut self, lat: i32, lon: i32) -> Point {
         self.frame
             .get_or_insert_with(|| Frame::at((lat, lon)))
             .place(lat, lon)
@@ -439,7 +436,6 @@ impl<'a> Homing<'a> {
         }
     }
 
-    /// The breadcrumb's length from the start to the rider.
     fn recorded_m(&self, p: Point) -> f32 {
         match self.len {
             0 => 0.0,

@@ -48,7 +48,6 @@ pub enum Cue {
     BandAlert,
     /// Time to eat and drink.
     Fuel,
-    /// Off the course being followed.
     OffCourse,
     /// Back on it, or following it began.
     OnCourse,

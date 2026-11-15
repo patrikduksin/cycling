@@ -782,8 +782,6 @@ pub struct Session {
     /// reports traffic.
     host: bool,
     devices: Devices,
-    /// Each frame is traced as a whole-frame digest, as traces from before
-    /// panel digests hold them.
     legacy_frames: bool,
 }
 impl Session {
@@ -888,8 +886,6 @@ impl Session {
         if memory.phone {
             sdk.attach_phone(Box::leak(Box::new(vana::app::PhoneWork::new())));
         }
-        // The ride's track, which the device keeps in PSRAM; each boot gets a
-        // fresh one, as device memory starts over.
         if memory.track {
             let crumbs = Vec::leak(vec![vana::app::Crumb::default(); vana::app::TRACK_CRUMBS]);
             let map = Box::leak(Box::new(vana::app::MapFrame::default()));

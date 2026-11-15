@@ -614,9 +614,9 @@ middle and high notes by pitch. Rising runs mean go, falling ones stop.
 | Battery low or critical | low, low |
 | Workout step's last three seconds | low, once a second |
 | Workout step begins, workout ends or a test measures FTP (in place of the lap chime) | high, high |
-| Following the track back, or back on it | low, middle |
-| Off the track being followed | high, low |
-| Back at the start, following the track | low, middle, high, high |
+| Following a course, or back on it | low, middle |
+| Off the course being followed | high, low |
+| End of the course reached | low, middle, high, high |
 | Vehicle appears behind | the long alarm pattern |
 | Nearest vehicle near (under 60 m or 7 s), repeating every 1.5 s | low, once |
 | Nearest vehicle close (under 30 m or 4 s), repeating every 1 s | middle, once |

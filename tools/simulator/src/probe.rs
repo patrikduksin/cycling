@@ -231,7 +231,7 @@ pub fn run(case: &Case, seconds: u64) -> Result {
     let display = sim.device.display.clone();
     {
         let mut frame = display.0.borrow_mut();
-        frame.check = false;
+        frame.check_skipped_rows = false;
         frame.probe = Some(Probe::new(frame.geometry.width, &frame.pixels));
     }
     feed(&mut sim, case.feed, seconds);

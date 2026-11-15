@@ -34,7 +34,7 @@ pub struct Frame {
     /// A hash of every frame shown since this was set, in order.
     pub hashes: Option<Vec<u64>>,
     pub probe: Option<crate::probe::Probe>,
-    pub check: bool,
+    pub check_skipped_rows: bool,
 }
 impl Frame {
     /// A new frame is on the panel.
@@ -64,7 +64,7 @@ impl DisplayDevice {
             bench: None,
             hashes: None,
             probe: None,
-            check: true,
+            check_skipped_rows: true,
         })))
     }
 }
@@ -100,7 +100,7 @@ impl Display for DisplayDevice {
     }
     fn check(&mut self, mut row: impl FnMut(usize, &mut [u16])) {
         let frame = self.0.borrow();
-        if !frame.check {
+        if !frame.check_skipped_rows {
             return;
         }
         let mut painted = vec![0; frame.geometry.width];

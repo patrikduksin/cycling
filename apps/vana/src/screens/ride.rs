@@ -48,7 +48,7 @@ pub use back::{Arrow, Back, Light};
 pub use climb::{Frame as ClimbFrame, Lent as ClimbLent};
 pub use elevation::Chart as ElevationChart;
 pub use lap::{LapBar, LapBars};
-pub use map::{Filled as FilledMap, Frame as MapFrame, Key as MapKey, Track, update as update_map};
+pub use map::{Cache as MapCache, Filled as FilledMap, Frame as MapFrame, Track};
 pub use workout::{Chart as WorkoutChart, EXTEND_ROWS, Training, chart as workout_chart};
 
 use chrome::{ACCENT, AMBER, BLACK, BODY as BODY_FACE, POWER, Row, VALUE};
@@ -431,7 +431,7 @@ fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
         }
         RidePage::Map => {
             if let Some(map) = scene.map() {
-                map::paint(map.frame, row);
+                map::paint(map.frame(), row);
             }
             scene.canvas().paint(row);
         }
@@ -551,7 +551,7 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
             y,
             scene
                 .map()
-                .map_or(BLACK, |map| map::pixel(map.frame, x, y, BLACK)),
+                .map_or(BLACK, |map| map::pixel(map.frame(), x, y, BLACK)),
         ),
         RidePage::Back => back::arrow_pixel(
             &back::frame(scene.arrow()),
@@ -758,8 +758,8 @@ mod tests {
             ahead: None,
         };
         let frame = Box::leak(Box::default());
-        let mut key = None;
-        update_map(frame, &mut key, &track);
+        let mut map = MapCache::new(frame);
+        map.update(&track);
         match page {
             Some(RidePage::Lap) => view.show_laps(heapless::Vec::new(), Lap::default(), None),
             Some(RidePage::Climb) => view.show_climb(ClimbLent {
@@ -769,7 +769,7 @@ mod tests {
                 forecast: &crate::ride::climb_ahead::Forecast::NONE,
                 pinned: None,
             }),
-            Some(RidePage::Map) => view.show_map(key.map(|key| map::Filled { frame, key })),
+            Some(RidePage::Map) => view.show_map(map.filled()),
             Some(RidePage::Back) => view.show_back(Back::default(), Light::default()),
             _ => {}
         }

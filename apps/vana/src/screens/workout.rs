@@ -213,7 +213,7 @@ impl<'a> Extra<'a> {
         lap_bars -> &ride::LapBars = Self::Lap { bars, .. } => bars;
         back -> ride::Back = Self::Back { back, .. } => *back;
         sunset -> ride::Light = Self::Back { sunset, .. } => *sunset;
-        map -> Option<&'a ride::MapFrame> = Self::Map(map) => map.map(|map| map.frame);
+        map -> Option<&'a ride::MapFrame> = Self::Map(map) => map.map(|map| map.frame());
         settings_lines -> &SettingsLines = Self::Settings { lines, .. } => lines;
         settings_pressed -> Option<u16> = Self::Settings { pressed, .. } => *pressed;
         lines -> &Lines = Self::Phone { lines, .. } | Self::Setup { lines, .. } => lines;

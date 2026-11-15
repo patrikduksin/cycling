@@ -32,8 +32,3 @@ why = "units in CAPTION"
 [[text]]
 match = 'font-size="17" text-anchor="end">Z'
 why = "zone labels in BODY"
-
-# The chip's unit is 900 at 13 px; the screen draws it in CAPTION (800/13).
-[[text]]
-match = 'fill="#aeaeb2"'
-why = "the chip's KM in CAPTION"

@@ -239,8 +239,6 @@ enum Clear {
 
 const COLUMNS: usize = 16;
 
-/// The rider's columns for `target`: the start column, those left of it
-/// (counted) and those right of it, ending at the map's edge.
 fn columns(target: Target, left: f32) -> (heapless::Vec<i16, COLUMNS>, usize) {
     let start = ((left + WIDTH) / 2.0) as i16
         + match target {
@@ -269,39 +267,38 @@ struct Trial {
     roomy: u16,
 }
 
-/// The side the route goes to from the rider: columns on the other side are
-/// tried first.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Side {
     Left,
     Right,
 }
 
-/// A turn ahead names its side by its sign. A turn more beside the rider
-/// than ahead, as just after the last one, and any other target, take the
-/// side the route up to the target and the target reach further to, the
-/// right on a tie.
 fn route_side(target: Target, aim: &Aim, route: &impl Fn(&mut dyn FnMut(Point, bool))) -> Side {
+    let ahead_not_beside = |(right, ahead): Point| right.abs() <= ahead;
     let at = match target {
-        Target::Turn((right, ahead), glyph) if right.abs() <= ahead => match glyph {
-            Glyph::Left | Glyph::SharpLeft => return Side::Left,
-            Glyph::Right | Glyph::SharpRight => return Side::Right,
-            Glyph::UTurn | Glyph::Finish => Some((right, ahead)),
-        },
+        Target::Turn(at, Glyph::Left | Glyph::SharpLeft) if ahead_not_beside(at) => {
+            return Side::Left;
+        }
+        Target::Turn(at, Glyph::Right | Glyph::SharpRight) if ahead_not_beside(at) => {
+            return Side::Right;
+        }
         Target::Free => None,
         Target::Turn(at, _) | Target::Finish(at) | Target::Junction(at) => Some(at),
     };
-    let (mut least, mut most) = at.map_or((0.0f32, 0.0f32), |(right, _)| {
-        (right.min(0.0), right.max(0.0))
-    });
+    let (mut furthest_left, mut furthest_right) = (0.0f32, 0.0f32);
+    let mut reach = |right: f32| {
+        furthest_left = furthest_left.min(right);
+        furthest_right = furthest_right.max(right);
+    };
+    if let Some((right, _)) = at {
+        reach(right);
+    }
     route(&mut |p, before| {
         if before {
-            let right = aim.relative(p).0;
-            least = least.min(right);
-            most = most.max(right);
+            reach(aim.relative(p).0);
         }
     });
-    if most >= -least {
+    if furthest_right >= -furthest_left {
         Side::Right
     } else {
         Side::Left

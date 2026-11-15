@@ -507,7 +507,7 @@ fn on_the_last_leg_the_route_and_the_finish_clear_the_badge() {
 
 struct Approach {
     along_m: f32,
-    frame: Frame,
+    pose: Pose,
     up_to_turn: Frame,
     past_turn: Frame,
     badge: Rect,
@@ -520,11 +520,8 @@ fn ride_to_the_last_turn(points: &[Point]) -> std::vec::Vec<Approach> {
     let mut frame = Frame::default();
     let mut fixes = std::vec::Vec::new();
     let last_turn = corners[corners.len() - 2].along;
-    for k in 1.. {
-        let along_m = 10.0 * k as f32;
-        if along_m >= last_turn {
-            return fixes;
-        }
+    let mut along_m = 10.0;
+    while along_m < last_turn {
         let leg = corners.partition_point(|c| c.along <= along_m);
         let (from, to) = (corners[leg - 1], corners[leg]);
         let t = (along_m - from.along) / (to.along - from.along);
@@ -532,8 +529,8 @@ fn ride_to_the_last_turn(points: &[Point]) -> std::vec::Vec<Approach> {
             from.east + t * (to.east - from.east),
             from.north + t * (to.north - from.north),
         );
-        let bearing = |a: Crumb, b: Crumb| libm::atan2f(b.east - a.east, b.north - a.north);
-        let heading = bearing(from, to) / core::f32::consts::TAU * f32::from(TURN);
+        let bearing = libm::atan2f(to.east - from.east, to.north - from.north);
+        let heading = bearing / core::f32::consts::TAU * f32::from(TURN);
         let after = corners[leg + 1];
         let cross = (to.east - from.east) * (after.north - to.north)
             - (to.north - from.north) * (after.east - to.east);
@@ -603,13 +600,14 @@ fn ride_to_the_last_turn(points: &[Point]) -> std::vec::Vec<Approach> {
         );
         fixes.push(Approach {
             along_m,
-            frame: frame.clone(),
+            pose: frame.last_pose,
             up_to_turn,
             past_turn,
             badge,
         });
+        along_m += 10.0;
     }
-    unreachable!()
+    fixes
 }
 
 const LONG_LEFT: [Point; 4] = [
@@ -651,24 +649,18 @@ fn on_the_way_to_a_turn_nothing_up_to_it_comes_near_the_badge() {
         ("long left", &LONG_LEFT[..]),
         ("two150lr", &TWO_150_LEFT_THEN_RIGHT[..]),
     ] {
-        let near: std::vec::Vec<(f32, Pose, (usize, (usize, usize)))> =
-            ride_to_the_last_turn(course)
-                .iter()
-                .filter_map(|fix| {
-                    let gap = gap_to(fix.badge, &fix.up_to_turn)?;
-                    (gap.0 + 1 < pose::CLEARANCE as usize).then_some((
-                        fix.along_m,
-                        fix.frame.last_pose,
-                        gap,
-                    ))
-                })
-                .collect();
+        let near: std::vec::Vec<_> = ride_to_the_last_turn(course)
+            .iter()
+            .filter_map(|fix| {
+                let gap = gap_to(fix.badge, &fix.up_to_turn)?;
+                (gap.0 + 1 < pose::CLEARANCE as usize).then_some((fix.along_m, fix.pose, gap))
+            })
+            .collect();
         assert!(
             near.is_empty(),
-            "{name}: {} fixes come within {} px of the badge, e.g. (m, pose, (gap, px)) {:?}",
+            "{name}: {} fixes come within {} px of the badge, (m, pose, (gap, px)) {near:?}",
             near.len(),
-            pose::CLEARANCE,
-            &near
+            pose::CLEARANCE
         );
     }
 }
@@ -697,7 +689,7 @@ fn on_a_long_left_approach_the_line_past_the_turn_is_under_the_badge_on_one_stre
                 .filter(|&p| under_the_rounded_badge(fix.badge, p))
                 .any(|(x, y)| is_line(pixel(&fix.past_turn, x, y, BLACK)))
         })
-        .map(|(k, fix)| (k, fix.frame.last_pose.step, fix.along_m))
+        .map(|(k, fix)| (k, fix.pose.step, fix.along_m))
         .collect();
     assert!(covered.len() <= 34, "{} fixes: {covered:?}", covered.len());
     for step in Step::ALL {

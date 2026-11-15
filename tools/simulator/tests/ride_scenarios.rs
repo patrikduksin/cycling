@@ -9830,7 +9830,7 @@ mod course_map {
             .collect()
     }
 
-    fn kmh_drawing(px_per_m: f64) -> f64 {
+    fn kmh_at_px_per_m(px_per_m: f64) -> f64 {
         ROWS_AHEAD / px_per_m / AHEAD_S * 3.6
     }
 
@@ -9885,13 +9885,17 @@ mod course_map {
         let course = mockup_course();
         let route = [(0.0, 0.0), (0.0, START_TO_MOCKUP_RIDER_M + 600.0)];
         let mut sim = on_the_map_with(&course, &route, &["HEART RATE", "POWER METER"]);
-        let approach = kmh_drawing(PX_PER_M);
+        let approach = kmh_at_px_per_m(PX_PER_M);
         stand_at(&mut sim, START_TO_MOCKUP_RIDER_M, approach);
         assert_eq!(badge(&sim), ["240", "M"], "to where the turn starts");
         assert_eq!(scale(&sim.screen()), (60, "100 M".into()));
         sim.checkpoint("map-approach");
 
-        stand_at(&mut sim, START_TO_MOCKUP_RIDER_M + 210.0, kmh_drawing(0.8));
+        stand_at(
+            &mut sim,
+            START_TO_MOCKUP_RIDER_M + 210.0,
+            kmh_at_px_per_m(0.8),
+        );
         assert_eq!(badge(&sim), ["30", "M"]);
         assert_eq!(scale(&sim.screen()), (80, "100 M".into()));
         sim.checkpoint("map-close");

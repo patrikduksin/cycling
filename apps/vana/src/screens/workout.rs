@@ -5,11 +5,14 @@ use super::chrome::{
 };
 use super::cue::{Badge, Cue};
 use super::home::Home;
+use super::icons::SignForm;
 use super::ready::Readiness;
 use super::ride::summary::{self, After};
 use super::ride::{self, ClimbFrame, ClimbLent, Marks, RidePage, Smooth};
+use super::sign;
 use crate::clock::Local;
 use crate::ride::bests::Bests;
+use crate::ride::course::nav::Sign;
 use crate::ride::laps::Lap;
 use crate::ride::log::{Sample, Status};
 use crate::ride::rider::Rider;
@@ -235,6 +238,8 @@ pub struct Scene<'v> {
     cues: &'static [Cue],
     badge: Option<&'v Badge>,
     toast: Option<&'v Toast>,
+    /// Painted after the look, so its white ink and fills hold in both.
+    sign: Option<sign::Placed>,
 }
 
 #[derive(Clone, Copy, Debug, Hash)]
@@ -328,6 +333,9 @@ impl firmware_shell::shell::Picture for Scene<'_> {
         if self.light {
             super::look::apply(row.pixels_mut());
         }
+        if let Some(sign) = &self.sign {
+            sign.paint(row);
+        }
     }
 
     fn parts(&self, parts: &mut firmware_shell::shell::Parts) {
@@ -347,6 +355,10 @@ impl firmware_shell::shell::Picture for Scene<'_> {
         );
         parts.add(0..CONTENT.top, &self.bar);
         parts.add(TOAST.top..TOAST.bottom, &self.toast);
+        if let Some(sign) = &self.sign {
+            let rect = sign.rect();
+            parts.add(rect.top..rect.bottom, sign);
+        }
         ride::parts(self, page, parts);
     }
 }
@@ -399,6 +411,14 @@ impl<'v> Scene<'v> {
         self.light
     }
 
+    /// The rows a banner covers right across; none without one.
+    pub(super) fn banner_rows(&self) -> core::ops::Range<usize> {
+        match &self.sign {
+            Some(sign) if sign.form() == SignForm::Banner => sign.rect().top..sign.rect().bottom,
+            _ => 0..0,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn pixel(&self, x: usize, y: usize) -> u16 {
         use firmware_shell::shell::Picture;
@@ -449,11 +469,15 @@ impl<'v> Scene<'v> {
     #[cfg(test)]
     pub(super) fn reference_pixel(&self, x: usize, y: usize) -> u16 {
         let color = self.reference_content(x, y);
-        if self.light {
+        let color = if self.light {
             super::look::light(color)
         } else {
             color
-        }
+        };
+        self.sign
+            .as_ref()
+            .and_then(|sign| sign.pixel(x, y, color))
+            .unwrap_or(color)
     }
 
     #[cfg(test)]
@@ -567,7 +591,7 @@ pub struct View<'a> {
     pub editing: bool,
     /// How far the page's list is scrolled, in pixels; negative past the top.
     pub scroll: i32,
-    pub time: Text<16>,
+    pub time: Text<8>,
     /// The light look is in force: the QR panel is painted inverted so the
     /// output pass turns it back to dark modules on light.
     pub light: bool,
@@ -581,6 +605,10 @@ pub struct View<'a> {
     /// Button cues prepared for this frame.
     pub(super) cues: &'static [Cue],
     pub(super) badge: Option<Badge>,
+    /// The course sign this frame.
+    pub nav: Sign,
+    /// A course is loaded, so the main page keeps room for its sign.
+    pub course: bool,
 }
 
 #[cfg(target_pointer_width = "32")]
@@ -636,6 +664,8 @@ impl<'a> View<'a> {
             discard: Discard::Unavailable,
             cues: &[],
             badge: None,
+            nav: Sign::None,
+            course: false,
         }
     }
     /// A canvas page the runtime prepares itself, such as the ride list,
@@ -964,6 +994,11 @@ impl<'a> View<'a> {
             cues: if sheet { &[] } else { self.cues },
             badge: self.badge.as_ref().filter(|_| !sheet),
             toast: self.toast.as_ref().filter(|_| !sheet),
+            sign: match kind {
+                Kind::Ride(page) => sign::form(page, self.nav)
+                    .and_then(|form| sign::place(self.nav, form, self.radar_paired)),
+                _ => None,
+            },
         }
     }
 
@@ -1365,6 +1400,48 @@ mod tests {
         assert!(changed > 0, "{what} changes no pixel");
     }
 
+    /// The banner's digits stepping send its rows and no others, and the
+    /// clock ticking under it sends nothing.
+    #[test]
+    fn under_a_banner_only_its_digits_send() {
+        use crate::ride::course::nav::{Distance, Glyph};
+        use firmware_shell::shell::Parts;
+        let view = |page, metres: u32, secs| {
+            let mut view = View::new(Page::Ride, 0, None);
+            view.ride_page = page;
+            view.course = true;
+            view.nav = Sign::Turn {
+                glyph: Glyph::Left,
+                distance: Distance::from_mm(metres * 1000),
+            };
+            view.active_secs = secs;
+            if page == RidePage::Climb {
+                view.show_climb(ClimbLent::NONE);
+            }
+            view.prepare();
+            view
+        };
+        let sent = |before: &View, after: &View| {
+            let sent = Parts::of(&before.scene()).changed(&Parts::of(&after.scene()));
+            (0..HEIGHT)
+                .filter(|&y| sent.contains(y))
+                .collect::<std::vec::Vec<_>>()
+        };
+        for page in [RidePage::Main, RidePage::Stats, RidePage::Climb] {
+            let rows = sent(&view(page, 120, 60), &view(page, 110, 60));
+            assert!(!rows.is_empty(), "{page:?}");
+            assert!(
+                rows.iter().all(|y| (20..104).contains(y)),
+                "{page:?}: {rows:?}"
+            );
+        }
+        let ticked = sent(
+            &view(RidePage::Main, 120, 60),
+            &view(RidePage::Main, 120, 61),
+        );
+        assert_eq!(ticked, std::vec::Vec::<usize>::new());
+    }
+
     #[test]
     fn each_ride_page_input_alone_keys_the_rows_it_changes() {
         let target = |closing_speed_cm_s| radar::Target {
@@ -1499,11 +1576,49 @@ mod tests {
             view.prepare();
             assert_paints_reference(&view, "home");
         }
+        use crate::ride::course::nav::{Distance, Glyph};
+        let distance = Distance::from_mm(120_000);
+        let signs = [
+            (false, Sign::None, false),
+            (true, Sign::None, false),
+            (
+                true,
+                Sign::Chip {
+                    glyph: Glyph::Right,
+                    distance,
+                },
+                false,
+            ),
+            (
+                true,
+                Sign::Turn {
+                    glyph: Glyph::Left,
+                    distance,
+                },
+                false,
+            ),
+            (
+                true,
+                Sign::Turn {
+                    glyph: Glyph::Left,
+                    distance,
+                },
+                true,
+            ),
+            (true, Sign::OffCourse { back: distance }, false),
+            (true, Sign::Arrived, true),
+        ];
         for page in RidePage::ALL {
-            for radar_paired in [false, true] {
+            for (radar_paired, (course, nav, light)) in [false, true]
+                .into_iter()
+                .flat_map(|radar| signs.map(|sign| (radar, sign)))
+            {
                 let mut view = View::new(Page::Ride, 0, Some(Local(1_000_000)));
                 view.ride_page = page;
                 view.radar_paired = radar_paired;
+                view.course = course;
+                view.nav = nav;
+                view.light = light;
                 view.sample = sample;
                 // Gliding behind the numbers, so the gauges are drawn too.
                 view.graphics.power_3s = Some(255);
@@ -1545,7 +1660,10 @@ mod tests {
                     RidePage::Main | RidePage::Stats => {}
                 }
                 view.prepare();
-                assert_paints_reference(&view, &std::format!("{page:?} radar {radar_paired}"));
+                assert_paints_reference(
+                    &view,
+                    &std::format!("{page:?} radar {radar_paired} {nav:?} light {light}"),
+                );
             }
         }
         for (page, editing) in [

@@ -83,6 +83,8 @@ pub enum Control {
     ExtendStep,
     /// The map, which a long press stops following the course.
     Map,
+    /// The course sign on a data page, which opens the map.
+    Sign,
     /// The sensor menu, which finds its own target where the finger landed.
     Menu(Point),
 }

@@ -731,13 +731,13 @@ impl Default for StatusBar {
 }
 
 impl StatusBar {
-    pub fn new(clock: &Text<16>, gps: Gps, battery: Option<u8>, mark: Mark) -> Self {
+    pub fn new(clock: &Text<8>, gps: Gps, battery: Option<u8>, mark: Mark) -> Self {
         Self::with_battery(clock, gps, battery.map(Battery::level), mark)
     }
 
     /// The bar with a battery that may be charging: a green bolt then
     /// shows left of the icon, and the icon stays even when low.
-    pub fn with_battery(clock: &Text<16>, gps: Gps, battery: Option<Battery>, mark: Mark) -> Self {
+    pub fn with_battery(clock: &Text<8>, gps: Gps, battery: Option<Battery>, mark: Mark) -> Self {
         let line = Line::new(&BODY, clock.as_bytes());
         let top = MIDDLE - BODY.top as usize - BODY.cap as usize / 2;
         let clock = Label::new(line, WIDTH - EDGE, top, Align::Right, WHITE);
@@ -1219,7 +1219,7 @@ pub(crate) mod layout {
 mod tests {
     use super::*;
 
-    fn clock(value: &str) -> Text<16> {
+    fn clock(value: &str) -> Text<8> {
         let mut text = Text::new();
         let _ = text.push_str(value);
         text

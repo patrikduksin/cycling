@@ -5,8 +5,8 @@ use crate::ride::course::follow::Follower;
 use crate::ride::course::nav::{Event, Sign};
 use crate::ride::course::stored::{self, Finder, Finding};
 use crate::ride::course::{self, Course};
-use crate::ride::homing::Homing;
 use crate::ride::homing::rebuild::Rebuild;
+use crate::ride::homing::{Fix, Homing};
 use crate::ride::log::{Slot, Status, decode};
 use crate::ride::turn_back::Leg;
 use crate::screens::chrome::{Toast, Tone};
@@ -261,9 +261,9 @@ impl Runtime {
         }
         let fix = state.homing.observe(self.readings.reported, now);
         let speed = self.readings.live.speed_mm_s;
-        if let Some(fix) = fix {
-            let riding = fix.moved && self.ride.active().status() != Status::Paused;
-            state.zoom.observe(speed.filter(|_| riding));
+        let paused = self.ride.active().status() == Status::Paused;
+        if let (Some(Fix { moved: true, .. }), Some(speed), false) = (fix, speed, paused) {
+            state.zoom.observe_riding_at(speed);
         }
         let event = state.follower.observe(fix, now, speed);
         state.place_course(bulk);

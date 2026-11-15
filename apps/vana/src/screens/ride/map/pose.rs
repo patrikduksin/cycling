@@ -8,7 +8,6 @@ pub type Point = (f32, f32);
 pub const WIDTH: f32 = crate::screens::chrome::WIDTH as f32;
 /// The map's rows; the footer is below.
 pub const GROUND: Range<usize> = 22..290;
-/// Three quarters of the way down the map, so most of it is the road ahead.
 pub const RIDER_Y: i16 = (GROUND.start + (GROUND.end - GROUND.start) * 3 / 4) as i16;
 const ROWS_AHEAD: f32 = (RIDER_Y as usize - GROUND.start) as f32;
 pub(super) const ARROW_SHAFT_PX: f32 = 26.0;
@@ -23,17 +22,15 @@ const START_AHEAD_M: f32 = 300.0;
 const AHEAD_S: f32 = 40.0;
 const NEAREST_AHEAD_M: f32 = 150.0;
 const FURTHEST_AHEAD_M: f32 = 1_000.0;
-/// Slower than about 5 km/h the rider is stopped, or the speed is a
-/// standing receiver's noise.
 const STOPPED_BELOW_MM_S: u32 = 1_400;
-/// The share of the way to its goal the zoom moves on each fix.
-const EASE: f32 = 0.2;
+const EASE_PER_FIX: f32 = 0.2;
 const BAR_MAX_PX: f32 = 90.0;
 const BARS: [(f32, &[u8]); 3] = [(250.0, b"250 M"), (100.0, b"100 M"), (50.0, b"50 M")];
 
-/// Metres the map shows from the rider up to its top edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Reach(u16);
+pub struct Reach {
+    ahead_m: u16,
+}
 
 impl Default for Reach {
     fn default() -> Self {
@@ -43,10 +40,9 @@ impl Default for Reach {
 
 impl Reach {
     pub fn px_per_m(self) -> f32 {
-        ROWS_AHEAD / f32::from(self.0)
+        ROWS_AHEAD / f32::from(self.ahead_m)
     }
 
-    /// The scale bar's length in pixels, and what it reads.
     pub fn bar(self) -> (usize, &'static [u8]) {
         let s = self.px_per_m();
         let (m, label) = BARS
@@ -57,7 +53,6 @@ impl Reach {
     }
 }
 
-/// The map's scale, eased towards about `AHEAD_S` of riding ahead.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Zoom {
     ahead_m: f32,
@@ -72,17 +67,19 @@ impl Default for Zoom {
 }
 
 impl Zoom {
-    /// A new fix at `speed_mm_s`; none while the ride is paused.
-    pub fn observe(&mut self, speed_mm_s: Option<u32>) {
-        let Some(speed) = speed_mm_s.filter(|&v| v >= STOPPED_BELOW_MM_S) else {
+    pub fn observe_riding_at(&mut self, speed_mm_s: u32) {
+        if speed_mm_s < STOPPED_BELOW_MM_S {
             return;
-        };
-        let goal = (speed as f32 * (AHEAD_S / 1000.0)).clamp(NEAREST_AHEAD_M, FURTHEST_AHEAD_M);
-        self.ahead_m += (goal - self.ahead_m) * EASE;
+        }
+        let goal =
+            (speed_mm_s as f32 * (AHEAD_S / 1000.0)).clamp(NEAREST_AHEAD_M, FURTHEST_AHEAD_M);
+        self.ahead_m += (goal - self.ahead_m) * EASE_PER_FIX;
     }
 
     pub fn reach(self) -> Reach {
-        Reach(roundf(self.ahead_m) as u16)
+        Reach {
+            ahead_m: roundf(self.ahead_m) as u16,
+        }
     }
 }
 
@@ -106,11 +103,10 @@ pub struct Projection {
 }
 
 impl Pose {
-    /// The rider in the middle of the map, whose left edge is `left`.
-    pub fn new(reach: Reach, left: usize, heading: u16) -> Self {
+    pub fn new(reach: Reach, map_left: usize, heading: u16) -> Self {
         Self {
             reach,
-            rider: (((left + WIDTH as usize) / 2) as i16, RIDER_Y),
+            rider: (((map_left + WIDTH as usize) / 2) as i16, RIDER_Y),
             heading,
         }
     }
@@ -237,14 +233,14 @@ mod tests {
     fn settled(kmh: f32) -> Zoom {
         let mut zoom = Zoom::default();
         for _ in 0..60 {
-            zoom.observe(Some((kmh * KMH) as u32));
+            zoom.observe_riding_at((kmh * KMH) as u32);
         }
         zoom
     }
 
     #[test]
     fn a_projection_puts_the_heading_up_and_the_rider_where_posed() {
-        let pose = Pose::new(Reach(335), 0, TURN / 4);
+        let pose = Pose::new(Reach { ahead_m: 335 }, 0, TURN / 4);
         assert_eq!(pose.rider, (120, 223));
         let at = pose.projection((100.0, 50.0));
         assert_eq!(at.at((100.0, 50.0)), (120.0, 223.0));
@@ -256,18 +252,18 @@ mod tests {
 
     #[test]
     fn beside_a_radar_the_rider_is_in_the_middle_of_what_is_left() {
-        assert_eq!(Pose::new(Reach(300), 28, 0).rider, (134, 223));
+        assert_eq!(Pose::new(Reach { ahead_m: 300 }, 28, 0).rider, (134, 223));
     }
 
     #[test]
     fn a_ride_starts_showing_300_m_ahead() {
-        assert_eq!(Zoom::default().reach(), Reach(300));
+        assert_eq!(Zoom::default().reach(), Reach { ahead_m: 300 });
     }
 
     #[test]
     fn at_a_steady_speed_the_map_shows_40_s_ahead_within_150_m_to_1_km() {
         for (kmh, ahead_m) in [(10.0, 150), (25.0, 278), (40.0, 444), (120.0, 1_000)] {
-            assert_eq!(settled(kmh).reach(), Reach(ahead_m), "{kmh} km/h");
+            assert_eq!(settled(kmh).reach(), Reach { ahead_m }, "{kmh} km/h");
         }
     }
 
@@ -275,11 +271,11 @@ mod tests {
     fn a_change_of_speed_eases_in_over_several_fixes_without_turning_back() {
         for (from, to) in [(10.0, 40.0), (40.0, 10.0)] {
             let mut zoom = settled(from);
-            let goal = settled(to).reach().0;
-            let mut seen = std::vec![zoom.reach().0];
+            let goal = settled(to).reach().ahead_m;
+            let mut seen = std::vec![zoom.reach().ahead_m];
             for _ in 0..30 {
-                zoom.observe(Some((to * KMH) as u32));
-                seen.push(zoom.reach().0);
+                zoom.observe_riding_at((to * KMH) as u32);
+                seen.push(zoom.reach().ahead_m);
             }
             let steps: std::vec::Vec<i32> = seen
                 .windows(2)
@@ -309,18 +305,18 @@ mod tests {
     #[test]
     fn stopped_or_paused_the_scale_holds() {
         let riding = settled(40.0);
-        for still in [None, Some(0), Some(1_000)] {
+        for still in [0, 1_000] {
             let mut zoom = riding;
             for _ in 0..30 {
-                zoom.observe(still);
+                zoom.observe_riding_at(still);
             }
-            assert_eq!(zoom, riding, "{still:?}");
+            assert_eq!(zoom, riding, "{still} mm/s");
         }
     }
 
     #[test]
     fn the_scale_bar_reads_a_round_distance_up_to_90_px() {
-        let bar = |ahead_m| Reach(ahead_m).bar();
+        let bar = |ahead_m| Reach { ahead_m }.bar();
         assert_eq!(bar(150), (67, &b"50 M"[..]));
         assert_eq!(bar(278), (72, &b"100 M"[..]));
         assert_eq!(bar(335), (60, &b"100 M"[..]));

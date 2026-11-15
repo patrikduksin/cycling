@@ -101,7 +101,7 @@ fn off_course(course: &[Crumb]) -> Track<'_> {
 
 fn settled_at(speed_mm_s: u32) -> Reach {
     let mut zoom = Zoom::default();
-    (0..60).for_each(|_| zoom.observe(Some(speed_mm_s)));
+    (0..60).for_each(|_| zoom.observe_riding_at(speed_mm_s));
     zoom.reach()
 }
 
@@ -280,12 +280,12 @@ fn the_course_ahead_moves_neither_the_scale_nor_the_rider() {
                 let mut track = approach(c);
                 track.radar = radar;
                 let frame = filled(&track);
-                let puck: std::vec::Vec<u16> = (100..150)
+                let puck = (100..150)
                     .flat_map(|x| (200..250).map(move |y| (x, y)))
                     .map(|(x, y)| pixel(&frame, x, y, BLACK))
                     .filter(|&c| c == WHITE || c == BLACK)
-                    .collect();
-                (radar, frame.last_pose, puck.len())
+                    .count();
+                (radar, frame.last_pose, puck)
             })
         })
         .collect();

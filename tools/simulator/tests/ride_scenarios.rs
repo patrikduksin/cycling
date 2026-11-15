@@ -9830,7 +9830,6 @@ mod course_map {
             .collect()
     }
 
-    /// The speed whose 40 s ahead draws the map at `px_per_m`.
     fn kmh_drawing(px_per_m: f64) -> f64 {
         ROWS_AHEAD / px_per_m / AHEAD_S * 3.6
     }
@@ -9910,8 +9909,7 @@ mod course_map {
         screen.pixels[y * screen.width + x]
     }
 
-    /// The puck's black ring, as its bounding box; none if it is not whole.
-    fn puck(screen: &Screen, (cx, cy): (usize, usize)) -> Option<[usize; 4]> {
+    fn whole_puck_bounds(screen: &Screen, (cx, cy): (usize, usize)) -> Option<[usize; 4]> {
         let ring: Vec<(usize, usize)> = (cy - 20..cy + 20)
             .flat_map(|y| (cx - 20..cx + 20).map(move |x| (x, y)))
             .filter(|&(x, y)| at(screen, x, y) == BLACK)
@@ -9948,7 +9946,8 @@ mod course_map {
                     sim.advance(seconds(1));
                     off |= badge(&sim).contains(&"TURN BACK".to_string());
                     let at_m = sim.world().distance_m as i64;
-                    seen.entry(puck(&sim.screen(), centre)).or_insert(at_m);
+                    seen.entry(whole_puck_bounds(&sim.screen(), centre))
+                        .or_insert(at_m);
                 }
             }
             assert!(off, "radar {radar}: the ride went off course");
@@ -9973,7 +9972,7 @@ mod course_map {
         let mut sim = on_the_map_with(&course, &course, &sensors);
         ride_to(&mut sim, 910.0);
         let screen = sim.screen();
-        let puck = puck(&screen, RIDER_BESIDE_RADAR).expect("the puck, whole");
+        let puck = whole_puck_bounds(&screen, RIDER_BESIDE_RADAR).expect("the puck, whole");
         assert!(puck[0] >= 30, "its ring starts at x {}, cut", puck[0]);
         assert_eq!(
             scale(&screen),

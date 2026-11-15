@@ -513,8 +513,6 @@ fn chevrons(frame: &mut Frame, rider: Point, junction: Point, ring: bool) {
     }
 }
 
-/// Chevrons from the rider towards `towards`, centred on the way there but
-/// pushed out from under the puck, and short of the junction's ring.
 fn chevron_wings(
     rider: Point,
     towards: Point,

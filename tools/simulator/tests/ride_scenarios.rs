@@ -1870,7 +1870,7 @@ fn in_saver_the_climb_page_comes_up_already_climbing() {
     sim.ride_at(30.0, 180.0, 0.0, 85.0);
     ride_to(&mut sim, 500.0);
     sim.pause_ride();
-    sim.advance(370);
+    sim.advance(RIDE_CLOCK_LAG_MS);
     sim.resume_ride();
     ride_to(&mut sim, 1000.0);
     sim.ride_at(14.0, 260.0, 0.0, 75.0);
@@ -9519,6 +9519,11 @@ fn is_ride_clock(text: &str) -> bool {
 }
 
 const TICK_SLACK_MS: u64 = 60;
+/// How far the ride clock's seconds trail the wall clock's, so a frame
+/// that follows the wall clock shows up off the ride clock's tick.
+const RIDE_CLOCK_LAG_MS: u64 = 370;
+const RADAR_REPORTS_PER_S: usize = 4;
+const CAR_SECONDS: u64 = 6;
 
 fn tick_phase(frames: &[Drawn]) -> u64 {
     frames
@@ -9603,7 +9608,7 @@ struct Rides {
 }
 
 fn measure(sim: &mut Sim) -> Rides {
-    sim.advance(370);
+    sim.advance(RIDE_CLOCK_LAG_MS);
     sim.start_ride();
     sim.ride_at(28.0, 230.0, 142.0, 88.0);
     sim.advance(seconds(10));
@@ -9645,7 +9650,7 @@ fn measure(sim: &mut Sim) -> Rides {
         fast: false,
         side: Side::Behind,
     });
-    let car_frames = frames_drawn(sim, 6, |_, _| {}).len();
+    let car_frames = frames_drawn(sim, CAR_SECONDS, |_, _| {}).len();
     Rides {
         number_changes,
         longest_burst,
@@ -9713,8 +9718,9 @@ fn saver_mode_is_chosen_in_settings_kept_over_a_restart_and_draws_only_what_arri
         "no glide frames: {}",
         saver.longest_burst
     );
+    let radar_and_numbers = CAR_SECONDS as usize * (RADAR_REPORTS_PER_S + 1);
     assert!(
-        saver.car_frames <= 6 * 4 + 6 && saver.car_frames * 2 < smooth.car_frames,
+        saver.car_frames <= radar_and_numbers && saver.car_frames * 2 < smooth.car_frames,
         "{} frames in SAVER, {} in NORMAL",
         saver.car_frames,
         smooth.car_frames

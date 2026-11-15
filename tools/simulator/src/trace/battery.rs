@@ -768,6 +768,22 @@ mod tests {
             summary.contains("frame mean 1.75 ms, max 41.0 ms at 00:10.000"),
             "{summary}"
         );
+        let lost_health = super::summary(&timeline(&[
+            (5_000, window(10, 1_000, 3_000)),
+            (10_000, window(30, 2_000, 41_000)),
+            (
+                20_000,
+                vec![Event::FrameTime(FrameTime {
+                    frames: 5,
+                    mean_us: 4_000,
+                })],
+            ),
+            (25_000, vec![Event::Health(frame_max(2_000))]),
+        ]));
+        assert!(
+            lost_health.contains("frame mean 1.75 ms"),
+            "a frame time whose health was lost joins no other window: {lost_health}"
+        );
         let old = super::summary(&timeline(&[(5_000, vec![Event::Health(frame_max(3_000))])]));
         assert!(old.contains("slowest frame 3.0 ms at 00:05.000"), "{old}");
     }

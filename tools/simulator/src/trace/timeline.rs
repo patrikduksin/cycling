@@ -688,6 +688,9 @@ impl Reader {
     }
 
     fn event(&mut self, event: &Event<'_>) {
+        if !matches!(event, Event::FrameTime(_) | Event::Health(_)) {
+            self.frame_time_awaiting_health = None;
+        }
         match *event {
             Event::Pass { now_ms } => {
                 self.end_pass();

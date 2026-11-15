@@ -1,4 +1,3 @@
-//! Checks the rules in `docs/design/course-navigation/spec.md`.
 use super::*;
 extern crate std;
 use std::format;

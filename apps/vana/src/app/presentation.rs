@@ -587,10 +587,11 @@ impl Runtime {
         if let Some(sheet) = self.power.view() {
             let canvas = sheet.canvas();
             let light = self.light();
+            let look = look::Look::default();
             system.draw_canvas(240, 320, |row| {
                 PowerSheet::paint(&canvas, row);
                 if light {
-                    look::apply(row.pixels_mut());
+                    look.apply(row.pixels_mut());
                 }
             });
             self.power_drawn(!system.display_error);

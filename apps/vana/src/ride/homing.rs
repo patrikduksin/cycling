@@ -66,23 +66,20 @@ pub struct Guide {
     pub heading: Option<u16>,
 }
 
-/// A position as the receiver reported it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reported {
     pub location_e7: (i32, i32),
-    /// When the receiver took it, by the main loop's clock.
-    pub taken_ms: u64,
+    pub taken_loop_ms: u64,
 }
 
 impl Reported {
-    /// The receiver's position while its fix is fresh.
     pub fn fresh(gps: &Snapshot, now: u64) -> Option<Self> {
         if gps.state != FixState::Fresh {
             return None;
         }
         Some(Self {
             location_e7: (gps.latitude_e7?, gps.longitude_e7?),
-            taken_ms: now.saturating_sub(gps.age_ms?),
+            taken_loop_ms: now.saturating_sub(gps.age_ms?),
         })
     }
 }
@@ -95,9 +92,7 @@ pub struct Fix {
     pub heading: Option<u16>,
     /// A new position; else the rider stands still, a second on.
     pub moved: bool,
-    /// When the receiver took the position: handed on again, it is as old
-    /// as it was.
-    pub taken_ms: u64,
+    pub taken_loop_ms: u64,
 }
 
 /// Where a ride's positions are measured from: its first fix.
@@ -318,7 +313,7 @@ impl<'a> Homing<'a> {
     pub fn observe(&mut self, reported: Option<Reported>, now: u64) -> Option<Fix> {
         let Some(Reported {
             location_e7: (lat, lon),
-            taken_ms,
+            taken_loop_ms,
         }) = reported
         else {
             if self.here.is_some() && now.saturating_sub(self.here_ms) > FIX_LOST_MS {
@@ -328,7 +323,7 @@ impl<'a> Homing<'a> {
             }
             return None;
         };
-        self.here_ms = taken_ms;
+        self.here_ms = taken_loop_ms;
         let moved = self.fed != Some((lat, lon));
         let p = if moved {
             self.fed = Some((lat, lon));
@@ -351,7 +346,7 @@ impl<'a> Homing<'a> {
             at: p,
             heading: self.heading,
             moved,
-            taken_ms,
+            taken_loop_ms,
         })
     }
 
@@ -504,11 +499,10 @@ pub(crate) mod tests {
     const LAT: i32 = -334_500_000;
     const LON: i32 = -706_600_000;
 
-    /// The receiver's fix of `location_e7`, taken `now`.
     pub(crate) fn taken(location_e7: (i32, i32), now: u64) -> Option<Reported> {
         Some(Reported {
             location_e7,
-            taken_ms: now,
+            taken_loop_ms: now,
         })
     }
 

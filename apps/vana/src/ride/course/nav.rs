@@ -48,8 +48,7 @@ pub enum Observed {
 
 #[derive(Clone, Copy, Debug)]
 pub struct MatchedFix {
-    /// When the receiver took the fix.
-    pub taken_ms: u64,
+    pub taken_loop_ms: u64,
     /// The matched point, millimetres along from the course's start.
     pub along_mm: u32,
     pub to_end_mm: u32,
@@ -215,13 +214,20 @@ struct Next<'t> {
     unblocked: bool,
 }
 
-/// An event due on a fix. A turn's sound names its turn by where it
-/// starts, which forgetting passed turns leaves as it was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TurnId(u32);
+
+impl Turn {
+    const fn id(&self) -> TurnId {
+        TurnId(self.start_mm)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Raised {
     Following,
-    TurnSoon { start_mm: u32 },
-    TurnNow { start_mm: u32 },
+    TurnSoon { turn: TurnId },
+    TurnNow { turn: TurnId },
     OffCourse,
     StillOff,
     OnCourse,
@@ -336,8 +342,8 @@ impl Navigator {
         self.lost = false;
         let gap = self
             .last
-            .is_some_and(|last| fix.taken_ms.saturating_sub(last.taken_ms) > LOST_MS);
-        let now = fix.taken_ms;
+            .is_some_and(|last| fix.taken_loop_ms.saturating_sub(last.taken_loop_ms) > LOST_MS);
+        let now = fix.taken_loop_ms;
         self.place = match self.place {
             Place::On if fix.off_m > OFF_M => Place::Leaving {
                 since_ms: now,
@@ -440,7 +446,7 @@ impl Navigator {
         if let Some(k) = self.banner {
             if !was_open && self.last_sounded < Some(k) {
                 due.raise(Raised::TurnSoon {
-                    start_mm: turns[k].start_mm,
+                    turn: turns[k].id(),
                 });
             }
             self.last_sounded = self.last_sounded.max(Some(k));
@@ -454,7 +460,7 @@ impl Navigator {
         if let Some(next) = beep {
             self.last_beeped = Some(next.index);
             due.raise(Raised::TurnNow {
-                start_mm: next.turn.start_mm,
+                turn: next.turn.id(),
             });
         }
     }
@@ -479,17 +485,17 @@ impl Navigator {
     }
 
     fn holds(&self, raised: Raised, turns: &[Turn]) -> bool {
-        let starts = |k: usize, start_mm: u32| turns.get(k).is_some_and(|t| t.start_mm == start_mm);
+        let is = |k: usize, turn: TurnId| turns.get(k).is_some_and(|t| t.id() == turn);
         match raised {
             Raised::Following | Raised::OnCourse => self.place == Place::On,
             Raised::OffCourse | Raised::StillOff => matches!(self.place, Place::Off { .. }),
-            Raised::TurnSoon { start_mm } => self
+            Raised::TurnSoon { turn } => self
                 .banner
-                .is_some_and(|k| starts(k, start_mm) && self.last_beeped < Some(k)),
-            Raised::TurnNow { start_mm } => {
+                .is_some_and(|k| is(k, turn) && self.last_beeped < Some(k)),
+            Raised::TurnNow { turn } => {
                 let next = self.next(turns).map(|next| next.index);
                 self.banner.is_some()
-                    && next.is_some_and(|k| starts(k, start_mm))
+                    && next.is_some_and(|k| is(k, turn))
                     && self.last_beeped == next
             }
         }

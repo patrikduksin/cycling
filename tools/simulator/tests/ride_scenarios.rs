@@ -6259,9 +6259,6 @@ fn gpx_spaced(name: &str, legs: &[(f64, f64)], spacing: f64) -> String {
     shell_simulator::route::to_gpx(name, &points)
 }
 
-/// Without a course the map page draws the ride's own track behind the
-/// rider, a kilometre across and heading up, and keeps the last heading
-/// once the ride stops.
 #[test]
 fn map_page_draws_the_ride_track_heading_up_and_keeps_it_when_still() {
     let mut sim = rider();
@@ -6280,7 +6277,6 @@ fn map_page_draws_the_ride_track_heading_up_and_keeps_it_when_still() {
     assert!(map_ink(&sim) > 100, "the track behind the rider");
     sim.checkpoint("the map mid ride, heading up");
 
-    // Standing still the heading holds: the map never turns north up.
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.wait_for("AUTO PAUSED", seconds(20)).unwrap();
     sim.press(Button::BottomLeft);
@@ -6593,10 +6589,7 @@ fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
     // Riding off along the course follows it.
     let joined = ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
     assert!(joined < 120.0, "{joined}");
-    // MOVE reaches the map after the climb page.
-    for _ in 0..4 {
-        sim.press(Button::BottomLeft);
-    }
+    sim.ride_page("5/5");
     expect_map(&sim);
     ride_to(&mut sim, 1_400.0);
     assert!(!map_badge(&sim).is_empty(), "the badge shows the next turn");
@@ -6675,9 +6668,7 @@ fn a_followed_course_sounds_its_turns_and_not_a_gentle_bend() {
     sim.ride_at(25.0, 180.0, 0.0, 85.0);
     sim.start_ride();
     ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
-    for _ in 0..4 {
-        sim.press(Button::BottomLeft);
-    }
+    sim.ride_page("5/5");
     expect_map(&sim);
 
     let soon = ride_until_only(&mut sim, "turn_soon", &TURN_SOON, 500.0);
@@ -6771,9 +6762,7 @@ fn a_long_press_on_the_map_stops_following_the_course() {
     sim.ride_at(25.0, 180.0, 0.0, 85.0);
     sim.start_ride();
     ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
-    for _ in 0..4 {
-        sim.press(Button::BottomLeft);
-    }
+    sim.ride_page("5/5");
     expect_map(&sim);
     ride_to(&mut sim, 600.0);
     assert!(!map_badge(&sim).is_empty());
@@ -9753,22 +9742,16 @@ mod navigation {
 }
 
 mod course_map {
-    //! The course on the map page. The design scenario rides the course the map
-    //! mockups draw and checkpoints each map screen under its mockup's name in
-    //! `docs/design/course-navigation`, for `cycling mockup-compare`.
     use super::*;
     use device_api::server::Method;
 
     const MOCKUP: &str = include_str!("../../../docs/design/course-navigation/map-approach.svg");
-    /// map-approach is 400 m across with its rider at (80, 266), 250 m before
-    /// the turn.
     const PX_PER_M: f64 = 240.0 / 400.0;
     const RIDER: (f64, f64) = (80.0, 266.0);
     /// Where the ride starts, south of map-approach's rider.
     const LEAD_M: f64 = 1_000.0;
-    /// The course keeps no point within 5 m of the last; the mockup's points
-    /// are 3 to 6 m apart, so the route is walked again at this spacing.
-    const SPACING_M: f64 = 5.5;
+    const FIX_CATCHES_UP_S: u64 = 2;
+    const SPACING_PAST_COURSE_MIN_STEP_M: f64 = 5.5;
 
     /// The route the mockup draws, in metres east and north of the ride's
     /// start, then on north so the course does not end in view.
@@ -9786,8 +9769,6 @@ mod course_map {
                 ((x - RIDER.0) / PX_PER_M, LEAD_M + (RIDER.1 - y) / PX_PER_M)
             })
             .collect();
-        // The ride in, then each stretch between the drawing's corners at an
-        // even spacing, so every corner is a point.
         let mut course = vec![(0.0, 0.0)];
         let mut stretch = vec![drawn[0]];
         for (k, &p) in drawn.iter().enumerate().skip(1) {
@@ -9808,15 +9789,15 @@ mod course_map {
         turn.sin().atan2(turn.cos()).abs()
     }
 
-    /// Points along `stretch` at the even spacing nearest `SPACING_M` above,
-    /// ending at its end.
+    /// Points along `stretch`, evenly spaced at least
+    /// `SPACING_PAST_COURSE_MIN_STEP_M` apart, the last at its end.
     fn evenly(stretch: &[(f64, f64)]) -> Vec<(f64, f64)> {
         let lengths: Vec<f64> = stretch
             .windows(2)
             .map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1))
             .collect();
         let total: f64 = lengths.iter().sum();
-        let count = (total / SPACING_M).floor().max(1.0);
+        let count = (total / SPACING_PAST_COURSE_MIN_STEP_M).floor().max(1.0);
         (1..=count as usize)
             .map(|k| {
                 let mut at = total * k as f64 / count;
@@ -9835,15 +9816,12 @@ mod course_map {
             .collect()
     }
 
-    /// Ride the last metres to `metres` slowly and stand there a moment, so the
-    /// fix the map shows, which may trail a second behind, is where the rider
-    /// stands.
-    fn arrive(sim: &mut Sim, metres: f64) {
+    fn stand_at(sim: &mut Sim, metres: f64) {
         ride_to(sim, metres - 20.0);
         sim.ride_at(4.0, 120.0, 150.0, 60.0);
         ride_to(sim, metres - 0.6);
         sim.ride_at(0.0, 0.0, 150.0, 0.0);
-        sim.advance(seconds(2));
+        sim.advance(seconds(FIX_CATCHES_UP_S));
         sim.ride_at(36.0, 210.0, 150.0, 88.0);
     }
 
@@ -9886,18 +9864,18 @@ mod course_map {
         let course = mockup_course();
         let route = [(0.0, 0.0), (0.0, LEAD_M + 600.0)];
         let mut sim = on_the_map(&course, &route);
-        arrive(&mut sim, LEAD_M);
+        stand_at(&mut sim, LEAD_M);
         assert_eq!(badge(&sim), ["240", "M"], "to where the turn starts");
         sim.expect_text("100 M");
         sim.checkpoint("map-approach");
 
-        arrive(&mut sim, LEAD_M + 210.0);
+        stand_at(&mut sim, LEAD_M + 210.0);
         assert_eq!(badge(&sim), ["30", "M"]);
         sim.checkpoint("map-close");
 
         let off = ride_until_cue(&mut sim, "off_course", LEAD_M + 395.0);
         assert!(off < LEAD_M + 395.0, "{off}");
-        arrive(&mut sim, LEAD_M + 390.0);
+        stand_at(&mut sim, LEAD_M + 390.0);
         assert_eq!(badge(&sim), ["140", "M", "TURN BACK"]);
         sim.checkpoint("map-offcourse");
     }

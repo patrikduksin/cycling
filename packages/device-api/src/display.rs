@@ -45,16 +45,6 @@ impl Rows {
         }
     }
 
-    /// Every band that `rows` touches.
-    pub const fn covering(rows: Range<usize>) -> Self {
-        if rows.start >= rows.end {
-            return Self::NONE;
-        }
-        let first = rows.start / BAND_ROWS;
-        let last = (rows.end - 1) / BAND_ROWS;
-        Self(Self::all((last + 1) * BAND_ROWS).0 & !Self::all(first * BAND_ROWS).0)
-    }
-
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -90,12 +80,6 @@ impl core::ops::BitOr for Rows {
     }
 }
 
-impl core::ops::BitOrAssign for Rows {
-    fn bitor_assign(&mut self, other: Self) {
-        self.0 |= other.0;
-    }
-}
-
 /// Submission is synchronous. Return, including error, means all DMA access has
 /// ended and the device owns its buffers again. No cancellable future is exposed.
 pub trait Display {
@@ -128,18 +112,8 @@ mod tests {
     }
 
     #[test]
-    fn covering_a_range_takes_every_band_it_touches() {
-        assert_eq!(runs(Rows::covering(5..9), 320), [(4, 12)]);
-        assert_eq!(runs(Rows::covering(4..8), 320), [(4, 8)]);
-        assert_eq!(runs(Rows::covering(0..1), 320), [(0, 4)]);
-        assert_eq!(runs(Rows::covering(3..3), 320), []);
-        assert_eq!(runs(Rows::covering(316..400), 320), [(316, 320)]);
-        assert!(Rows::covering(7..9).contains(11) && !Rows::covering(7..9).contains(12));
-    }
-
-    #[test]
     fn runs_join_neighbouring_bands_and_stop_at_the_panel() {
-        let rows = Rows::covering(0..4) | Rows::band(1) | Rows::band(3) | Rows::all(512);
+        let rows = Rows::band(0) | Rows::band(1) | Rows::band(3) | Rows::all(512);
         assert_eq!(runs(rows, 23), [(0, 23)]);
         let rows = Rows::band(0) | Rows::band(1) | Rows::band(3) | Rows::band(79);
         assert_eq!(runs(rows, 320), [(0, 8), (12, 16), (316, 320)]);

@@ -276,8 +276,12 @@ pub fn execute(
             if let Some(work) = sdk.map_work_since_attached() {
                 let _ = write!(
                     output,
-                    "map_fills={} map_fill_max_us={} map_extracts={} map_extract_max_us={} ",
-                    work.fill.runs, work.fill.max_us, work.extract.runs, work.extract.max_us
+                    "map_fills={} map_fill_max_us={} map_extracts={} map_extract_max_us={} map_cuts={} ",
+                    work.fill.runs,
+                    work.fill.max_us,
+                    work.extract.runs,
+                    work.extract.max_us,
+                    work.cuts
                 );
             }
             let _ = crate::device::drivers::sdmmc::HEALTH.write(&mut output);

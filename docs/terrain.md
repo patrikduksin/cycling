@@ -328,11 +328,14 @@ the device cost is measured in the map's own extraction.
 The map (`apps/vana/src/screens/ride/map/roads.rs`) asks only for the tiles
 of its view, a quarter wider each way, that it does not yet hold at its
 step's detail, and copies one cached tile a look-ahead pass into a road
-cache in its own PSRAM block. The cache is heading-free: points stay
-tile-local micro-degrees and each tile keeps its corner in the ride's
-frame, so a fix only projects them. It holds 16 tiles, 4,096 roads and
-8,192 points; a tile that does not fit keeps its major roads and the
-`cut` counter records it. Each copy:
+cache in its own PSRAM block. The tiles on the screen come first, so the
+margin never crowds one out of the 16. The cache is heading-free: points
+stay tile-local micro-degrees and each tile keeps its corner in the ride's
+frame, so a fix only projects them. It holds the roads of one reading of
+the pack (`Lookahead::pack`): a reset for a new, rewritten or removed pack
+lets them all go. It holds 16 tiles, 4,096 roads and 8,192 points; a tile
+that does not fit keeps its major roads, and STATUS `map_cuts` counts
+it. Each copy:
 
 - keeps the classes the step draws: every road at 300 m and 400 m, no
   service roads, tracks or paths at 1 km, trunk to tertiary at 3 km;
@@ -364,7 +367,7 @@ To measure it again:
    restart.
 3. Within the hold, `RIDE START` and page to the map.
 4. Read STATUS (`display_frame_*`, `map_fill_max_us`,
-   `map_extract_max_us`), discard the ride, and pull the trace: its health
+   `map_extract_max_us`, `map_cuts`), discard the ride, and pull the trace: its health
    windows hold the frame mean and max, and its `vana.present.map_fill`
    and `look_ahead.map_extract` stages the map's work.
 5. Delete the course files and flash the rider's firmware back.

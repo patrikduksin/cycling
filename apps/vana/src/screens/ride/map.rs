@@ -379,18 +379,18 @@ impl<'a> Cache<'a> {
 
     /// One pass of fetching the roads under the map from the terrain
     /// cache, in the ride's `frame`: ask for the tiles the view lacks and
-    /// copy one that is cached. Whether it copied one.
-    pub fn fetch_roads(&mut self, engine: &mut terrain::Lookahead, frame: RideFrame) -> bool {
+    /// copy one that is cached.
+    pub fn fetch_roads(&mut self, engine: &mut terrain::Lookahead, frame: RideFrame) -> Fetched {
         let pack = engine.pack().map(|(pack, header)| (pack, *header));
         self.frame
             .roads
             .hold(pack.map(|(pack, _)| Source { pack, frame }));
         let Some((_, header)) = pack else {
-            return false;
+            return Fetched::Nothing;
         };
         let Some(keys) = self.frame.road_tiles(&header, frame) else {
             engine.want([]);
-            return false;
+            return Fetched::Nothing;
         };
         let detail = Detail::of(self.frame.last_pose.step);
         let roads = &mut self.frame.roads;
@@ -399,11 +399,14 @@ impl<'a> Cache<'a> {
             .lacking(&keys, detail)
             .find(|&key| engine.roads(key).is_some());
         let Some((key, tile)) = ready.and_then(|key| Some((key, engine.roads(key)?))) else {
-            return false;
+            return Fetched::Nothing;
         };
         let (south, west) = header.origin(key);
-        roads.extract(&keys, key, detail, (south * 10, west * 10), tile);
-        true
+        if roads.extract(&keys, key, detail, (south * 10, west * 10), tile) {
+            Fetched::Whole
+        } else {
+            Fetched::Cut
+        }
     }
 
     pub fn start_ride(&mut self) {
@@ -417,6 +420,16 @@ impl<'a> Cache<'a> {
             key,
         })
     }
+}
+
+/// What a pass of [`Cache::fetch_roads`] copied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fetched {
+    Nothing,
+    /// A tile with every road its detail draws.
+    Whole,
+    /// A tile whose minor roads did not all fit.
+    Cut,
 }
 
 #[derive(Clone, Copy)]

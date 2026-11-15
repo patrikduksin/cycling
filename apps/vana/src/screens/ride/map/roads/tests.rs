@@ -209,9 +209,10 @@ fn central_santiago_fits_at_every_detail() {
         let (runs, points) = roads.ends();
         println!("{detail:?}: 9 tiles, {runs} roads, {points} points");
         assert_eq!(roads.tiles, 9);
-        assert!(
-            whole || detail == Detail::Streets,
-            "{detail:?} holds the 3 x 3 tiles whole"
+        assert_eq!(
+            whole,
+            detail != Detail::Streets,
+            "{detail:?} holds the 3 x 3 tiles whole, but for some of their streets"
         );
     }
 }

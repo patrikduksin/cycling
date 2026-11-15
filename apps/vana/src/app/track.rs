@@ -11,7 +11,7 @@ use crate::ride::log::{Slot, Status, decode};
 use crate::ride::turn_back::Leg;
 use crate::screens::chrome::{Toast, Tone};
 pub use crate::screens::ride::MapFrame;
-use crate::screens::ride::{FilledMap, MapCache, MapZoom, Track};
+use crate::screens::ride::{Fetched, FilledMap, MapCache, MapZoom, Track};
 use device_api::bulk::ReadWrite;
 
 pub use crate::ride::homing::Crumb;
@@ -82,6 +82,8 @@ impl Timed {
 pub struct MapWork {
     pub fill: Timed,
     pub extract: Timed,
+    /// Extracted tiles whose minor roads did not all fit.
+    pub cuts: u32,
 }
 
 /// The breadcrumb, the course it follows and the open ride they belong to.
@@ -136,8 +138,14 @@ impl RideTrack {
             return;
         };
         let started = clock.map(|clock| clock());
-        if self.map.fetch_roads(engine, frame) {
+        let fetched = self.map.fetch_roads(engine, frame);
+        if fetched != Fetched::Nothing {
             self.timed(started, clock, |work| &mut work.extract);
+        }
+        if fetched == Fetched::Cut {
+            for work in [&mut self.work, &mut self.since_attached] {
+                work.cuts = work.cuts.saturating_add(1);
+            }
         }
     }
 

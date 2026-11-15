@@ -3659,7 +3659,7 @@ fn swipes_page_through_the_ride_and_taps_never_control_it() {
     assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
     sim.swipe_previous();
     assert_eq!(sim.screen().page().as_deref(), Some("5/5"), "wraps");
-    sim.expect_text("MAP");
+    expect_map(&sim);
     sim.swipe_previous();
     sim.swipe_previous();
     assert_eq!(sim.screen().page().as_deref(), Some("3/5"));
@@ -6259,50 +6259,43 @@ fn gpx_spaced(name: &str, legs: &[(f64, f64)], spacing: f64) -> String {
     shell_simulator::route::to_gpx(name, &points)
 }
 
-/// The map page draws the ride's own track: just the rider at first, the
-/// whole loop as it grows with the rider heading up, and north up (and
-/// saying so) once the ride stops.
+/// Without a course the map page draws the ride's own track behind the
+/// rider, a kilometre across and heading up, and keeps the last heading
+/// once the ride stops.
 #[test]
-fn map_page_draws_the_ride_track_and_goes_north_up_when_still() {
+fn map_page_draws_the_ride_track_heading_up_and_keeps_it_when_still() {
     let mut sim = rider();
     sim.ride_route(Route::from_gpx(&bend_loop_gpx()).unwrap());
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.ride_at(25.0, 180.0, 0.0, 85.0);
     sim.start_ride();
     sim.ride_page("5/5");
-    sim.expect_text("MAP");
+    expect_map(&sim);
     ride_to(&mut sim, 60.0);
+    sim.expect_text("250 M");
     sim.checkpoint("the map early in the ride");
 
     // Round the bend: the track is rotated so the road ahead is up.
     ride_to(&mut sim, 1_900.0);
-    sim.expect_no_text("N UP");
+    assert!(map_ink(&sim) > 100, "the track behind the rider");
     sim.checkpoint("the map mid ride, heading up");
 
-    // Further round the loop the zoom has stepped out to keep it all in.
-    ride_to(&mut sim, 3_600.0);
-    sim.checkpoint("the map on the far side of the loop");
-
-    // Standing still the map turns north up and says so.
+    // Standing still the heading holds: the map never turns north up.
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.wait_for("AUTO PAUSED", seconds(20)).unwrap();
     sim.press(Button::BottomLeft);
-    sim.expect_text("MAP");
-    // The heading is forgotten after 15 s without moving.
+    let moving = map_ink(&sim);
     sim.advance(seconds(20));
-    sim.expect_text("N UP");
-    sim.checkpoint("the map standing still, north up");
+    expect_map(&sim);
+    sim.expect_no_text("N UP");
+    assert_eq!(map_ink(&sim), moving, "the map stays as it was");
+    sim.checkpoint("the map standing still, heading held");
     sim.stop_ride();
 }
 
-/// Lit pixels where the map page draws the track, between the title and the
-/// page dots.
+/// Pixels of the ride's own track on the map.
 fn map_ink(sim: &Sim) -> usize {
-    let screen = sim.screen();
-    let rows = screen.height / 6..screen.height * 7 / 8;
-    rows.flat_map(|y| screen.pixels[y * screen.width..][..screen.width].iter())
-        .filter(|&&pixel| pixel != 0)
-        .count()
+    map_pixels(sim, vana::screens::chrome::rgb(0x1f, 0x4a, 0x78))
 }
 
 #[test]
@@ -6318,11 +6311,9 @@ fn a_restart_keeps_the_track_and_the_start_for_the_next_ride() {
     sim.ride_at(30.0, 220.0, 0.0, 90.0);
     sim.start_ride();
     ride_to(&mut sim, 4_500.0);
-    // Standing still the map turns north up, so the two maps compare.
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    sim.expect_text("N UP");
     let before = map_ink(&sim);
     sim.checkpoint("the map before the power cut");
 
@@ -6333,7 +6324,6 @@ fn a_restart_keeps_the_track_and_the_start_for_the_next_ride() {
     sim.wait_for("RECORDING", seconds(2)).unwrap();
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    sim.expect_text("N UP");
     let after = map_ink(&sim);
     sim.note(
         NoteKind::Check,
@@ -6371,7 +6361,6 @@ fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    sim.expect_text("N UP");
     let before = map_ink(&sim);
     sim.checkpoint("the map after five hours");
 
@@ -6411,11 +6400,9 @@ fn a_ride_that_moves_to_internal_memory_keeps_the_track_and_the_start() {
     sim.ride_at(30.0, 220.0, 0.0, 90.0);
     sim.start_ride();
     ride_to(&mut sim, 4_500.0);
-    // Standing still the map turns north up, so the two maps compare.
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    sim.expect_text("N UP");
     let before = map_ink(&sim);
     sim.checkpoint("the map on the card before it fails");
 
@@ -6429,7 +6416,6 @@ fn a_ride_that_moves_to_internal_memory_keeps_the_track_and_the_start() {
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    sim.expect_text("N UP");
     let after = map_ink(&sim);
     sim.note(
         NoteKind::Check,
@@ -6478,26 +6464,38 @@ fn course_ride_gpx() -> String {
     gpx_through("loop with a wrong turn", &legs)
 }
 
-/// Course-grey pixels on the map page's body, above the scale bar: within a
-/// step of `SECONDARY` in each RGB565 channel, as the panel's shading leaves
-/// them.
-fn course_pixels(sim: &Sim) -> usize {
-    let channels = |c: u16| {
-        [
-            i32::from(c >> 11),
-            i32::from(c >> 5 & 63),
-            i32::from(c & 31),
-        ]
-    };
-    let grey = channels(SECONDARY);
+/// Pixels of `color` on the map's ground.
+fn map_pixels(sim: &Sim, color: u16) -> usize {
     let screen = sim.screen();
-    (60..270)
-        .flat_map(|y| (0..screen.width).map(move |x| (x, y)))
-        .filter(|&(x, y)| {
-            let c = channels(screen.pixels[y * screen.width + x]);
-            c.iter().zip(grey).all(|(a, b)| (a - b).abs() <= 2)
-        })
+    (22..290)
+        .flat_map(|y| screen.pixels[y * screen.width..][..screen.width].iter())
+        .filter(|&&pixel| pixel == color)
         .count()
+}
+
+/// Pixels of the course ahead, in the route's blue.
+fn course_pixels(sim: &Sim) -> usize {
+    map_pixels(sim, vana::screens::chrome::ACCENT)
+}
+
+/// The map page is showing: its page dot, and its ground over most of the
+/// screen.
+#[track_caller]
+fn expect_map(sim: &Sim) {
+    assert_eq!(sim.screen().page().as_deref(), Some("5/5"));
+    let ground = map_pixels(sim, vana::screens::chrome::rgb(0x10, 0x10, 0x12));
+    assert!(ground > 30_000, "{ground} px of the map's ground");
+}
+
+/// The map badge's words, top-left over the map; none without one.
+fn map_badge(sim: &Sim) -> Vec<String> {
+    sim.screen()
+        .frame()
+        .read()
+        .into_iter()
+        .filter(|run| (30..90).contains(&run.y) && run.x < 160)
+        .map(|run| run.text)
+        .collect()
 }
 
 const TURN_SOON: [u8; 2] = [21, 0];
@@ -6595,16 +6593,16 @@ fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
     // Riding off along the course follows it.
     let joined = ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
     assert!(joined < 120.0, "{joined}");
-    // MOVE reaches MAP after the climb page.
+    // MOVE reaches the map after the climb page.
     for _ in 0..4 {
         sim.press(Button::BottomLeft);
     }
-    sim.expect_text("MAP");
+    expect_map(&sim);
     ride_to(&mut sim, 1_400.0);
-    sim.expect_text("FOLLOWING");
-    let grey = course_pixels(&sim);
-    assert!(grey > 100, "the course ahead is drawn: {grey} pixels");
-    sim.checkpoint("the map with the course ahead in grey");
+    assert!(!map_badge(&sim).is_empty(), "the badge shows the next turn");
+    let blue = course_pixels(&sim);
+    assert!(blue > 100, "the course ahead is drawn: {blue} pixels");
+    sim.checkpoint("the map with the course ahead in blue");
 
     let off = ride_until_only(&mut sim, "off_course", &OFF_COURSE, 2_150.0);
     assert!((1_990.0..2_090.0).contains(&off), "{off}");
@@ -6622,7 +6620,7 @@ fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
     assert!((5_500.0..5_700.0).contains(&end), "{end}");
     sim.advance(seconds(1));
     assert_eq!(cues_since(&sim, 0).last().unwrap().1, ARRIVED);
-    sim.expect_no_text("FOLLOWING");
+    assert_eq!(map_badge(&sim), ["ARRIVED"]);
     sim.checkpoint("the end of the course");
     // On up the course's first leg again: the course is done for this ride.
     while sim.world().distance_m < end + 250.0 {
@@ -6680,7 +6678,7 @@ fn a_followed_course_sounds_its_turns_and_not_a_gentle_bend() {
     for _ in 0..4 {
         sim.press(Button::BottomLeft);
     }
-    sim.expect_text("MAP");
+    expect_map(&sim);
 
     let soon = ride_until_only(&mut sim, "turn_soon", &TURN_SOON, 500.0);
     assert!((380.0..400.0).contains(&soon), "{soon}");
@@ -6776,14 +6774,14 @@ fn a_long_press_on_the_map_stops_following_the_course() {
     for _ in 0..4 {
         sim.press(Button::BottomLeft);
     }
-    sim.expect_text("MAP");
+    expect_map(&sim);
     ride_to(&mut sim, 600.0);
-    sim.expect_text("FOLLOWING");
+    assert!(!map_badge(&sim).is_empty());
     sim.tap(120, 160);
     sim.advance(seconds(1));
-    sim.expect_text("FOLLOWING");
+    assert!(!map_badge(&sim).is_empty(), "a tap does not stop following");
     sim.long_press(120, 160, 1_200);
-    sim.expect_no_text("FOLLOWING");
+    assert_eq!(map_badge(&sim), Vec::<String>::new(), "no turn to show");
     sim.checkpoint("following stopped from the map");
     let from = sim.device.sim().speaker.played.len();
     while sim.world().distance_m < 2_400.0 {
@@ -9742,15 +9740,17 @@ mod navigation {
             "not on the sign"
         );
         sim.tap(60, 86);
-        sim.expect_text("MAP");
-        assert_eq!(sim.screen().page().as_deref(), Some("5/5"));
+        expect_map(&sim);
         sim.checkpoint("the chip tapped opens the map");
 
         sim.press(Button::BottomLeft);
         assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
         ride_until_cue(&mut sim, "turn_soon", 6_900.0);
         sim.tap(120, 60);
-        sim.expect_text("MAP");
+        expect_map(&sim);
         sim.checkpoint("the banner tapped opens the map");
     }
 }
+
+#[path = "ride_scenarios/course_map.rs"]
+mod course_map;

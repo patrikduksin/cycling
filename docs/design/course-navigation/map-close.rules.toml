@@ -33,3 +33,10 @@ why = "distance left in FOOT_20"
 [[text]]
 match = 'font-weight="800" font-size="13"'
 why = "KM and the scale label in CAPTION"
+
+# The badge counts to where the turn starts, as every sign does; the map
+# draws the turn at its corner, where the mockup measures from. Its digits
+# read about 10 m less than the mockup's.
+[[text]]
+match = 'font-weight="900" font-size="32"'
+why = "the badge's distance counts to the turn's start, 10 m short of the corner"

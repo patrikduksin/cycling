@@ -11,7 +11,8 @@ use crate::ride::log::{Slot, Status, decode};
 use crate::ride::turn_back::Leg;
 use crate::screens::chrome::{Toast, Tone};
 pub use crate::screens::ride::MapFrame;
-use crate::screens::ride::{FilledMap, MapCache, Track};
+use crate::screens::ride::{FilledMap, MapCache, RidePage, Track};
+use crate::screens::sign;
 use device_api::bulk::ReadWrite;
 
 pub use crate::ride::homing::Crumb;
@@ -293,10 +294,14 @@ impl Runtime {
     }
 }
 
-pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>, now: u64) {
+pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>, now: u64, radar: bool) {
     let Some(state) = track.as_deref_mut() else {
         return;
     };
+    let sign = state.follower.sign(now);
+    let badge = sign::form(RidePage::Map, sign)
+        .and_then(|form| sign::place(sign, form, radar))
+        .map(|placed| placed.rect());
     let drawn = Track {
         available: true,
         crumbs: state.homing.crumbs(),
@@ -306,7 +311,7 @@ pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>, now: u64) 
         ahead: state.follower.ahead(),
         guidance: state.follower.guidance(now),
         left_m: state.follower.to_end_m(),
-        badge: None,
+        badge,
     };
     state.map.update(&drawn);
 }

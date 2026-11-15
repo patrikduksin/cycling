@@ -1,9 +1,5 @@
-//! The course in the app: read from the FILES volume at boot and again when
-//! the card becomes ready, replaced by an upload from the phone, cleared from
-//! the phone. The course itself lives beside the breadcrumb (`track`); this
-//! keeps whether it matches the stored file. An upload empties the course
-//! while it streams in, so one that fails or is cut off reads the stored
-//! course back.
+//! An upload empties the course while it streams in, so one that fails or is
+//! cut off reads the stored course back.
 use super::Runtime;
 use crate::ride::course::{self, Course};
 use device_api::bulk::ReadWrite;

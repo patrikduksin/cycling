@@ -1,5 +1,3 @@
-//! Following the loaded course: placing it in the ride's frame, matching the
-//! rider to it, and navigating it (`course::nav`).
 use crate::ride::course::nav::{
     self, Event, Guidance, MatchedFix, Navigator, OFF_M, ON_M, Observed, Sign,
 };

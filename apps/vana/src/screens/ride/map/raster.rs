@@ -379,7 +379,7 @@ impl<const ROWS: usize> Layer<ROWS> {
         if first % 2 == 1 {
             pixels[first] = pairs[usize::from(bytes[first / 2])][1];
         }
-        if end % 2 == 1 && end - 1 > first {
+        if end % 2 == 1 {
             pixels[end - 1] = pairs[usize::from(bytes[end / 2])][0];
         }
     }

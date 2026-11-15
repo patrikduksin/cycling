@@ -7,8 +7,9 @@
 //! their own coordinates. Keep the least important readings at the bottom:
 //! toasts cover `chrome::TOAST` for a moment.
 //!
-//! The map page draws the ride's track per row from a frame prepared once
-//! (see `map`).
+//! The map page draws the course and the rider per row from a frame
+//! prepared once per fix (see `map`). It takes the whole width; a paired
+//! radar keeps its strip.
 //!
 //! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
 //! module beside `main` whose `prepare` returns its canvas, dispatched below.
@@ -375,6 +376,17 @@ pub(super) fn cell(
 /// Paint a content row over the black the scene laid: the radar strip
 /// while a radar is paired, and the page in the body, centred without a radar.
 pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
+    if page == RidePage::Map {
+        let left = match &scene.radar {
+            Some(radar) => {
+                paint_radar(radar, &mut row.within(0..RADAR_WIDTH - 2));
+                BODY.left
+            }
+            None => 0,
+        };
+        paint_map(scene, &mut row.within(left..chrome::WIDTH));
+        return;
+    }
     if let Some(radar) = &scene.radar {
         paint_radar(radar, &mut row.within(0..RADAR_WIDTH - 2));
         paint_page(scene, page, &mut row.within(BODY.left..BODY.right));
@@ -409,7 +421,7 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
         RidePage::Stats | RidePage::Lap => {}
         RidePage::Workout => workout::chart_parts(scene.chart(), parts),
         RidePage::Climb => climb::chart_parts(scene.climb(), parts),
-        RidePage::Map => parts.add(BODY.top..BODY.bottom, &scene.map()),
+        RidePage::Map => parts.add(map::GROUND, &scene.map()),
     }
     if page != RidePage::Main {
         scene.canvas().parts(parts);
@@ -428,13 +440,15 @@ fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
             climb::paint_chart(scene.climb(), row);
             scene.canvas().paint(row);
         }
-        RidePage::Map => {
-            if let Some(map) = scene.map() {
-                map::paint(map.frame(), row);
-            }
-            scene.canvas().paint(row);
-        }
+        RidePage::Map => paint_map(scene, row),
     }
+}
+
+fn paint_map(scene: &Scene, row: &mut Row) {
+    if let Some(map) = scene.map() {
+        map::paint(map.frame(), row);
+    }
+    scene.canvas().paint(row);
 }
 
 /// Where the radar track runs: the rider at the top, 200 m at the bottom.
@@ -521,6 +535,13 @@ fn paint_radar(radar: &Radar, row: &mut Row) {
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
 pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize) -> u16 {
+    if page == RidePage::Map {
+        return match &scene.radar {
+            Some(radar) if x < RADAR_WIDTH - 2 => reference_radar_pixel(radar, x, y),
+            Some(_) if x < BODY.left => BLACK,
+            _ => reference_map_pixel(scene, x, y),
+        };
+    }
     let x = if let Some(radar) = &scene.radar {
         if x < RADAR_WIDTH - 2 {
             return reference_radar_pixel(radar, x, y);
@@ -541,14 +562,16 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
         RidePage::Climb => scene
             .canvas()
             .pixel(x, y, climb::chart_pixel(scene.climb(), x, y)),
-        RidePage::Map => scene.canvas().pixel(
-            x,
-            y,
-            scene
-                .map()
-                .map_or(BLACK, |map| map::pixel(map.frame(), x, y, BLACK)),
-        ),
+        RidePage::Map => reference_map_pixel(scene, x, y),
     }
+}
+
+#[cfg(test)]
+fn reference_map_pixel(scene: &Scene, x: usize, y: usize) -> u16 {
+    let under = scene
+        .map()
+        .map_or(BLACK, |map| map::pixel(map.frame(), x, y, BLACK));
+    scene.canvas().pixel(x, y, under)
 }
 
 #[cfg(test)]
@@ -716,9 +739,7 @@ mod tests {
             available: true,
             crumbs,
             here: Some((400.0, 300.0)),
-            heading: None,
-            course: &[],
-            ahead: None,
+            ..Track::default()
         };
         let frame = Box::leak(Box::default());
         let mut map = MapCache::new(frame);

@@ -493,7 +493,11 @@ fn fill(frame: &mut Frame, track: &Track) {
     let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
     if let Some(junction) = track.junction() {
         let junction = at.at(junction.at);
-        chevrons(frame, rider, junction);
+        chevrons(
+            frame,
+            rider,
+            clipped(rider, junction, map_left(track.radar)),
+        );
         let reach = JUNCTION_RINGS_QUARTER_PX[0].0 as f32 / 4.0 + 1.0;
         frame.junction_quarter_px = visible(junction, junction, reach).then(|| quarter(junction));
     }
@@ -588,6 +592,18 @@ fn arrow<I: Iterator<Item = (Point, bool)>>(
         frame.arrow.shaft[frame.arrow.strokes] = Stroke::new(pair[0], pair[1]);
         frame.arrow.strokes += 1;
     }
+}
+
+fn clipped(from: Point, to: Point, left: usize) -> Point {
+    let leaves = |from: f32, to: f32, low: f32, high: f32| match to - from {
+        d if d > 0.0 => (high - from) / d,
+        d if d < 0.0 => (low - from) / d,
+        _ => f32::INFINITY,
+    };
+    let t = leaves(from.0, to.0, left as f32, WIDTH as f32)
+        .min(leaves(from.1, to.1, GROUND.start as f32, GROUND.end as f32))
+        .min(1.0);
+    (from.0 + t * (to.0 - from.0), from.1 + t * (to.1 - from.1))
 }
 
 fn chevrons(frame: &mut Frame, rider: Point, junction: Point) {

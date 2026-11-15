@@ -11,14 +11,19 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let seconds = args.next().and_then(|n| n.parse().ok()).unwrap_or(60);
     let filter = args.next().unwrap_or_default();
-    println!("| case | fps | changed strips med / p90 | changed px med / p90 | identical frames |");
-    println!("|---|---:|---:|---:|---:|");
+    println!(
+        "| case | fps | changed strips med / p90 | changed px med / p90 | identical frames \
+         | painted rows med / p90 | painted rows/s | painter work k/s |"
+    );
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|");
     for case in CASES.iter().filter(|case| case.name.contains(&filter)) {
         let result = run(case, seconds);
         let (strips_median, strips_p90) = result.strips();
         let (pixels_median, pixels_p90) = result.pixels();
+        let (rows_median, rows_p90) = result.rows();
         println!(
-            "| {} | {:.1} | {strips_median} / {strips_p90} (of {}) | {:.2}% / {:.2}% | {} of {} |",
+            "| {} | {:.1} | {strips_median} / {strips_p90} (of {}) | {:.2}% / {:.2}% | {} of {} \
+             | {rows_median} / {rows_p90} | {:.0} | {:.0} |",
             case.name,
             result.fps(),
             result.strips,
@@ -26,6 +31,8 @@ fn main() {
             pixels_p90 * 100.0,
             result.identical(),
             result.changes.len(),
+            result.rows_per_second(),
+            result.work_per_second() / 1000.0,
         );
     }
 }

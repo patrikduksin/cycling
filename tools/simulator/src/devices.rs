@@ -1,6 +1,7 @@
 //! Deterministic owned devices for the portable shell. No physical timing claims.
 use device_api::display::Display;
 use device_api::display::Geometry;
+use device_api::display::Rows;
 use device_api::input::Button;
 use device_api::input::Controls;
 use device_api::input::Edge;
@@ -13,6 +14,7 @@ use device_api::power::Power;
 use device_api::storage::OwnedFlash;
 use device_api::storage::Region;
 use firmware_services::input::Edges;
+use firmware_shell::rendering::work::{self, Work};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -40,13 +42,13 @@ pub struct Frame {
 }
 impl Frame {
     /// A new frame is on the panel.
-    pub fn shown(&mut self) {
+    pub fn shown(&mut self, rows: usize, work: &Work) {
         self.submissions += 1;
         if let Some(hashes) = &mut self.hashes {
             hashes.push(hash(&self.pixels));
         }
         if let Some(probe) = &mut self.probe {
-            probe.observe(&self.pixels);
+            probe.observe(&self.pixels, rows, work);
         }
     }
 }
@@ -74,7 +76,7 @@ impl Display for DisplayDevice {
     fn geometry(&self) -> Geometry {
         self.0.borrow().geometry
     }
-    fn submit(&mut self, mut row: impl FnMut(usize, &mut [u16])) -> Result<(), Error> {
+    fn submit(&mut self, rows: Rows, mut row: impl FnMut(usize, &mut [u16])) -> Result<(), Error> {
         let mut frame = self.0.borrow_mut();
         let injected = core::mem::take(&mut frame.fail_next);
         if frame.refusals.refuse(injected) {
@@ -84,10 +86,20 @@ impl Display for DisplayDevice {
         if let Some(request) = &mut frame.bench {
             request.run((width, height), &mut row);
         }
-        for (y, pixels) in frame.pixels.chunks_exact_mut(width).enumerate() {
-            row(y, pixels);
-        }
-        frame.shown();
+        let counted = frame.probe.is_some();
+        let pixels = &mut frame.pixels;
+        let mut paint = || {
+            for y in rows.runs(height).flatten() {
+                row(y, &mut pixels[y * width..(y + 1) * width]);
+            }
+        };
+        let work = if counted {
+            work::count(paint)
+        } else {
+            paint();
+            Work::default()
+        };
+        frame.shown(rows.count(height), &work);
         Ok(())
     }
     fn check(&mut self, mut row: impl FnMut(usize, &mut [u16])) {

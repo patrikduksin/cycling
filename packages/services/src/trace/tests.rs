@@ -391,6 +391,7 @@ fn sample() -> Vec<Event<'static>> {
         Event::RideState("recording"),
         Event::Shown("W=210 BPM=142 KM/H=28.0"),
         Event::Frame(0xdead_beef),
+        Event::Panel(0x0bad_f00d),
         Event::Synthetic(Input::Button {
             button: Button::BottomLeft,
             code: 1,

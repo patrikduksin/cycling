@@ -14,6 +14,7 @@ use super::chrome::{
 };
 use super::icons::Icon;
 use firmware_shell::rendering::font::{Face, SPILL};
+use firmware_shell::shell::Parts;
 use heapless::Vec;
 
 /// Text on a canvas: up to 24 characters.
@@ -225,6 +226,16 @@ impl Canvas {
         }
         for run in &self.runs {
             run.paint(row);
+        }
+    }
+
+    pub fn parts(&self, parts: &mut Parts) {
+        for shape in &self.shapes {
+            let bounds = shape.bounds();
+            parts.add(bounds.top..bounds.bottom, shape);
+        }
+        for run in &self.runs {
+            parts.add(run.top..run.bottom(), run);
         }
     }
 

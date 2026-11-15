@@ -7,6 +7,7 @@
 use crate::bench::SCENES;
 use crate::sim::Sim;
 use crate::world::{Side, Vehicle};
+use firmware_shell::rendering::work::Work;
 
 /// Rows the device sends in one strip.
 pub const STRIP_ROWS: usize = 16;
@@ -16,6 +17,12 @@ pub const STRIP_ROWS: usize = 16;
 pub struct Change {
     pub strips: usize,
     pub pixels: usize,
+    pub rows: usize,
+    pub work: u64,
+}
+
+pub fn pixel_work(work: &Work) -> u64 {
+    work.span_pixels + work.evaluations + work.glyph_columns
 }
 
 /// Compares each shown frame with the last, as `Frame::shown` hands them over.
@@ -35,7 +42,7 @@ impl Probe {
         }
     }
 
-    pub fn observe(&mut self, pixels: &[u16]) {
+    pub fn observe(&mut self, pixels: &[u16], rows: usize, work: &Work) {
         let strip = self.width * STRIP_ROWS;
         let strips = self
             .previous
@@ -52,6 +59,8 @@ impl Probe {
         self.changes.push(Change {
             strips,
             pixels: pixel_count,
+            rows,
+            work: pixel_work(work),
         });
         self.previous.copy_from_slice(pixels);
     }
@@ -179,6 +188,18 @@ impl Result {
         percentiles(self.changes.iter().map(|c| c.strips).collect())
     }
 
+    pub fn rows(&self) -> (usize, usize) {
+        percentiles(self.changes.iter().map(|c| c.rows).collect())
+    }
+
+    pub fn rows_per_second(&self) -> f64 {
+        self.changes.iter().map(|c| c.rows).sum::<usize>() as f64 / self.seconds as f64
+    }
+
+    pub fn work_per_second(&self) -> f64 {
+        self.changes.iter().map(|c| c.work).sum::<u64>() as f64 / self.seconds as f64
+    }
+
     /// Median and 90th percentile of changed pixels, as a share of the screen.
     pub fn pixels(&self) -> (f64, f64) {
         let (median, p90) = percentiles(self.changes.iter().map(|c| c.pixels).collect());
@@ -283,25 +304,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_frame_counts_the_strips_and_pixels_that_differ_from_the_one_before() {
+    fn a_frame_counts_what_differs_from_the_one_before_and_what_painting_it_took() {
         let (width, height) = (4, 48);
         let blank = vec![0u16; width * height];
         let mut probe = Probe::new(width, &blank);
         let mut frame = blank.clone();
         frame[0] = 1;
         frame[width * 17 + 2] = 1;
-        probe.observe(&frame);
-        probe.observe(&frame);
+        let work = Work {
+            span_pixels: 10,
+            evaluations: 2,
+            glyph_columns: 3,
+            ..Work::default()
+        };
+        probe.observe(&frame, height, &work);
+        probe.observe(&frame, 4, &Work::default());
         assert_eq!(
             probe.changes,
             [
                 Change {
                     strips: 2,
-                    pixels: 2
+                    pixels: 2,
+                    rows: height,
+                    work: 15,
                 },
                 Change {
                     strips: 0,
-                    pixels: 0
+                    pixels: 0,
+                    rows: 4,
+                    work: 0,
                 }
             ]
         );

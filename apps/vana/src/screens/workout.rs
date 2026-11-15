@@ -1,6 +1,8 @@
 //! VANA workout rendering: the chrome around whichever screen is shown.
 use super::canvas::Canvas;
-use super::chrome::{BLACK, Battery, CONTENT, Gps, HEIGHT, Mark, Row, StatusBar, Toast, WIDTH};
+use super::chrome::{
+    BLACK, Battery, CONTENT, Gps, HEIGHT, Mark, Row, StatusBar, TOAST, Toast, WIDTH,
+};
 use super::cue::{Badge, Cue};
 use super::home::Home;
 use super::ready::Readiness;
@@ -211,6 +213,7 @@ impl<'a> Extra<'a> {
         back -> ride::Back = Self::Back { back, .. } => *back;
         sunset -> ride::Light = Self::Back { sunset, .. } => *sunset;
         map -> Option<&'a ride::MapFrame> = Self::Map(frame) => frame.map(|(frame, _)| frame);
+        map_key -> Option<ride::MapKey> = Self::Map(frame) => frame.map(|(_, key)| key);
         settings_lines -> &SettingsLines = Self::Settings { lines, .. } => lines;
         settings_pressed -> Option<u16> = Self::Settings { pressed, .. } => *pressed;
         lines -> &Lines = Self::Phone { lines, .. } | Self::Setup { lines, .. } => lines;
@@ -313,6 +316,26 @@ impl firmware_shell::shell::Picture for Scene<'_> {
             super::look::apply(row.pixels_mut());
         }
     }
+
+    fn parts(&self, parts: &mut firmware_shell::shell::Parts) {
+        let Kind::Ride(page) = self.kind else {
+            parts.add(0..HEIGHT, self);
+            return;
+        };
+        parts.add(
+            0..HEIGHT,
+            &(
+                self.kind,
+                self.light,
+                self.radar.is_some(),
+                self.cues,
+                self.badge,
+            ),
+        );
+        parts.add(0..CONTENT.top, &self.bar);
+        parts.add(TOAST.top..TOAST.bottom, &self.toast);
+        ride::parts(self, page, parts);
+    }
 }
 
 impl<'v> Scene<'v> {
@@ -400,6 +423,10 @@ impl<'v> Scene<'v> {
 
     pub(super) fn map(&self) -> Option<&'v ride::MapFrame> {
         self.shown(self.extra.map(), "map", None)
+    }
+
+    pub(super) fn map_key(&self) -> Option<ride::MapKey> {
+        self.shown(self.extra.map_key(), "map", None)
     }
 
     pub(super) fn qr(&self) -> Option<&'v super::qr::Placed> {
@@ -1328,6 +1355,93 @@ mod tests {
             );
         }
         view.show_laps(ride::LapBars::new(), laps.current(), laps.previous());
+    }
+
+    #[track_caller]
+    fn assert_parts_cover(before: &View, after: &View, what: &str) {
+        use firmware_shell::shell::{Parts, Picture};
+        let (before, after) = (before.scene(), after.scene());
+        let sent = Parts::of(&before).changed(&Parts::of(&after));
+        let mut changed = 0;
+        for y in 0..HEIGHT {
+            let (mut was, mut now) = ([0; WIDTH], [0; WIDTH]);
+            before.paint(&mut Row::new(y, &mut was));
+            after.paint(&mut Row::new(y, &mut now));
+            if was != now {
+                assert!(
+                    sent.contains(y),
+                    "{what}: row {y} changed, its band's key did not"
+                );
+                changed += 1;
+            }
+        }
+        assert!(changed > 0, "{what} changes no pixel");
+    }
+
+    #[test]
+    fn each_ride_page_input_alone_keys_the_rows_it_changes() {
+        let target = |closing_speed_cm_s| radar::Target {
+            threat: radar::Threat::Approach,
+            side: radar::Side::Behind,
+            range_mm: 30_000,
+            closing_speed_cm_s,
+        };
+        let ride = |change: &dyn Fn(&mut View)| {
+            let mut view = View::new(Page::Ride, 0, None);
+            view.radar_paired = true;
+            view.sample.speed_mm_s = Some(8333);
+            view.graphics.radar.status = radar::Status::Ready;
+            view.graphics.radar.targets[0] = Some(target(0));
+            view.prepare();
+            change(&mut view);
+            view
+        };
+        let base = ride(&|_| {});
+        let band = |view: &mut View| {
+            if let Body::Main(smooth) = &mut view.body {
+                smooth.band = Some((1, 100..160));
+            }
+        };
+        type Change<'c> = dyn for<'v> Fn(&mut View<'v>) + 'c;
+        let cases: [(&str, &Change<'_>); 7] = [
+            ("the light look", &|view| view.light = true),
+            ("radar pairing", &|view| {
+                view.radar_paired = false;
+                view.prepare();
+            }),
+            ("the radar track's status", &|view| {
+                view.graphics.radar.status = radar::Status::Error;
+            }),
+            ("a marker turning close on its row", &|view| {
+                view.graphics.radar.targets[0] = Some(target(500));
+            }),
+            ("the workout target band", &band),
+            ("button cues", &|view| view.cues = &ride::paused::CUES),
+            ("a badge", &|view| {
+                view.badge = Some(Badge {
+                    cx: 120,
+                    cy: 160,
+                    radius: 12,
+                    icon: super::super::cue::Icon::Check,
+                })
+            }),
+        ];
+        for (what, change) in cases {
+            assert_parts_cover(&base, &ride(change), what);
+        }
+    }
+
+    #[test]
+    fn the_phone_code_alone_keys_the_page() {
+        let phone = |text: &str| {
+            let mut view = View::new(Page::Phone, 0, None);
+            let (qr, _) = view.show_phone();
+            *qr = super::super::qr::Qr::encode(text)
+                .map(|code| super::super::qr::Placed::centred(code, 120, 100, 160));
+            view.prepare();
+            view
+        };
+        assert_parts_cover(&phone("WIFI:A"), &phone("WIFI:B"), "the code");
     }
 
     #[test]

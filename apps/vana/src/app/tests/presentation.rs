@@ -24,6 +24,7 @@ impl device_api::display::Display for Panel {
     }
     fn submit(
         &mut self,
+        rows: device_api::display::Rows,
         mut row: impl FnMut(usize, &mut [u16]),
     ) -> Result<(), device_api::observation::Error> {
         if self.1.get() > 0 {
@@ -31,8 +32,9 @@ impl device_api::display::Display for Panel {
             return Err(device_api::observation::Error::Unavailable);
         }
         let mut frame = self.0.borrow_mut();
-        for (y, pixels) in frame.as_chunks_mut::<WIDTH>().0.iter_mut().enumerate() {
-            row(y, pixels);
+        let lines = frame.as_chunks_mut::<WIDTH>().0;
+        for y in rows.runs(HEIGHT).flatten() {
+            row(y, &mut lines[y]);
         }
         Ok(())
     }

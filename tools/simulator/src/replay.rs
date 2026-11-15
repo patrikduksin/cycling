@@ -340,6 +340,7 @@ pub enum Seen {
         of: u8,
     },
     Frame(u32),
+    Panel(u32),
 }
 
 /// The shell's own devices, which a replay scripts from the trace: the
@@ -361,6 +362,7 @@ pub struct Replay {
     page: String,
     /// The trace replaced secrets as it recorded them.
     redacted: bool,
+    frames: bool,
 }
 
 impl Replay {
@@ -372,6 +374,7 @@ impl Replay {
         build: [u8; 20],
     ) -> Result<Self, trace::Error> {
         let (header, events) = trace::decode(&bytes)?;
+        let frames = whole_frames(&bytes);
         let redacted =
             trace::origin::Config::decode(header.config).is_some_and(|config| config.redacted);
         let cursor = events.cursor();
@@ -397,6 +400,7 @@ impl Replay {
             seen: Vec::new(),
             page: String::new(),
             redacted,
+            frames,
         })
     }
 
@@ -483,8 +487,19 @@ impl Replay {
     /// What the rider saw in the pass just run, against the recording. A
     /// stimulus replay can run another build, which may draw the same
     /// things in other pixels, so it leaves the frames out.
-    pub fn saw(&mut self, seen: &[Seen]) {
+    pub fn saw(&mut self, seen: &[Seen], frame: impl FnOnce() -> u32) {
         let recorded = core::mem::take(&mut self.seen);
+        let mut frame = Some(frame);
+        let seen: Vec<Seen> = seen
+            .iter()
+            .map(|seen| match seen {
+                Seen::Panel(_) if self.frames => {
+                    Seen::Frame(frame.take().map_or(0, |frame| frame()))
+                }
+                seen => seen.clone(),
+            })
+            .collect();
+        let seen = &seen[..];
         if let Some(page) = recorded.iter().rev().find_map(|seen| match seen {
             Seen::Page(page) => Some(page),
             _ => None,
@@ -492,7 +507,7 @@ impl Replay {
             self.page.clone_from(page);
         }
         let strict = self.sources.ledger.mode() == Mode::Strict;
-        let frame = |seen: &&Seen| matches!(seen, Seen::Frame(_));
+        let frame = |seen: &&Seen| matches!(seen, Seen::Frame(_) | Seen::Panel(_));
         let (kind, how) = if !seen
             .iter()
             .filter(|s| !frame(s))
@@ -532,7 +547,9 @@ impl Replay {
         if self.sources.ledger.mode() != Mode::Strict {
             return;
         }
-        let compared = |event: &Event<'_>| !measured(event) && !matches!(event, Event::Frame(_));
+        let compared = |event: &Event<'_>| {
+            !measured(event) && !matches!(event, Event::Frame(_) | Event::Panel(_))
+        };
         if let Some(difference) = first_difference_of(&self.bytes, trace, compared) {
             self.sources.ledger.note(Kind::Rerecorded, 1, || difference);
         }
@@ -547,7 +564,15 @@ impl Replay {
 /// The first event where two traces part, with the pass it belongs to.
 /// What [`measured`] holds is left out.
 pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
-    first_difference_of(recorded, replayed, |event| !measured(event))
+    let frames = whole_frames(recorded);
+    first_difference_of(recorded, replayed, |event| {
+        !measured(event) && !(frames && matches!(event, Event::Frame(_) | Event::Panel(_)))
+    })
+}
+
+fn whole_frames(trace: &[u8]) -> bool {
+    trace::decode(trace)
+        .is_ok_and(|(_, mut events)| events.any(|event| matches!(event, Event::Frame(_))))
 }
 
 /// The first `compared` event where two traces part.
@@ -620,6 +645,7 @@ pub(crate) fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
             of: *of,
         })),
         Event::Frame(digest) => Some(Some(Seen::Frame(*digest))),
+        Event::Panel(digest) => Some(Some(Seen::Panel(*digest))),
         event if measured(event) => Some(None),
         _ => None,
     }
@@ -940,6 +966,7 @@ impl Sources {
             | Event::RideState(_)
             | Event::Shown(_)
             | Event::Frame(_)
+            | Event::Panel(_)
             | Event::Log { .. }
             | Event::Health(_)
             | Event::Activity(_)

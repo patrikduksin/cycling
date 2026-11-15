@@ -1084,7 +1084,10 @@ impl Session {
         self.record_faults();
         let seen = self.record_seen();
         if let Devices::Replayed(replay) = &mut self.devices {
-            replay.saw(&seen);
+            let frame = self.display.0.borrow();
+            replay.saw(&seen, || {
+                firmware_shell::shell::frame_digest(&frame.pixels, frame.geometry.width)
+            });
         }
         let card = spool::Card::of(
             self.card_admits(),
@@ -1470,7 +1473,7 @@ impl Session {
             });
         }
         if let Some(digest) = self.shell.take_frame() {
-            record(Event::Frame(digest));
+            record(Event::Panel(digest));
         }
         crate::logs::drain(|level, target, text| {
             recorder.record(&Event::Log {
@@ -1503,7 +1506,8 @@ impl Session {
         self.shell.forget_panel();
         let mut frame = self.display.0.borrow_mut();
         frame.pixels.fill(0);
-        frame.shown();
+        let height = frame.geometry.height;
+        frame.shown(height, &firmware_shell::rendering::work::Work::default());
     }
     /// Whether the panel is lit: the shell set a brightness since power-on.
     pub fn lit(&self) -> bool {

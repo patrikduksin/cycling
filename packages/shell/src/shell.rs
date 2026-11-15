@@ -6,7 +6,9 @@ use crate::idle::Idle;
 use crate::preferences::Settings;
 use crate::rendering::row::Row;
 use crate::storage::Store;
+use device_api::display::BAND_ROWS;
 use device_api::display::Display;
+use device_api::display::Rows;
 use device_api::input::Button;
 use device_api::input::Input;
 use device_api::input::InputSource;
@@ -28,6 +30,9 @@ pub enum BrightnessChoice {
 pub const MIN_WIDTH: usize = 16;
 pub const MIN_HEIGHT: usize = 16;
 pub const CANVAS_MAX_WIDTH: usize = 320;
+/// The tallest panel.
+pub const MAX_HEIGHT: usize = 320;
+const BANDS: usize = MAX_HEIGHT / BAND_ROWS;
 const FNV_OFFSET: u32 = 0x811c_9dc5;
 const FNV_PRIME: u32 = 0x0100_0193;
 const _: () = assert!(
@@ -71,14 +76,72 @@ fn digest_pairs(hash: u32, pixels: &[u16]) -> u32 {
     last.iter()
         .fold(hash, |hash, &pixel| step(hash, u32::from(pixel)))
 }
+/// The digest an [`Event::Frame`] of an older trace holds: every row of the
+/// frame in turn.
+///
+/// [`Event::Frame`]: firmware_services::trace::Event::Frame
+pub fn frame_digest(pixels: &[u16], width: usize) -> u32 {
+    pixels.chunks(width).fold(FNV_OFFSET, digest)
+}
 /// A frame an application draws through `Shell::draw`: a logical canvas
 /// whose pixels follow from its `Hash` alone, so equal pictures paint alike.
 pub trait Picture: core::hash::Hash {
     /// The canvas's width and height, fitted to the panel as `draw_canvas`
-    /// fits them.
+    /// fits them. It is at most `MAX_HEIGHT` tall.
     const SIZE: (usize, usize);
     /// Paint every pixel of `row`'s clip.
     fn paint(&self, row: &mut Row);
+    /// Name the picture's parts, so a frame sends only the bands whose
+    /// parts changed. One part over every row, the default, sends the
+    /// picture whole or not at all.
+    fn parts(&self, parts: &mut Parts) {
+        parts.add(0..Self::SIZE.1, self);
+    }
+}
+
+/// The parts of a picture, as `Shell::draw` keys its bands: a band's key
+/// folds the key of every part that touches it, in the order they were
+/// added.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Parts {
+    keys: [u32; BANDS],
+}
+
+impl Parts {
+    /// The parts `picture` names, keyed band by band.
+    pub fn of<F: Picture>(picture: &F) -> Self {
+        const { assert!(F::SIZE.1 <= MAX_HEIGHT) };
+        let mut parts = Self {
+            keys: [FNV_OFFSET; BANDS],
+        };
+        picture.parts(&mut parts);
+        parts
+    }
+
+    /// The bands whose keys differ from `other`'s: what a frame sends to
+    /// bring a panel that shows one picture to the other.
+    pub fn changed(&self, other: &Self) -> Rows {
+        (0..BANDS)
+            .filter(|&band| self.keys[band] != other.keys[band])
+            .fold(Rows::NONE, |rows, band| rows | Rows::band(band))
+    }
+
+    /// `key` must cover everything paint draws in `rows` for this part.
+    pub fn add(&mut self, rows: core::ops::Range<usize>, key: &(impl core::hash::Hash + ?Sized)) {
+        use core::hash::Hasher;
+        let mut fnv = Fnv1a(0xcbf2_9ce4_8422_2325);
+        key.hash(&mut fnv);
+        let key = fnv.finish();
+        let key = (key ^ key >> 32) as u32;
+        let end = rows.end.min(MAX_HEIGHT).div_ceil(BAND_ROWS);
+        for band in self
+            .keys
+            .get_mut(rows.start / BAND_ROWS..end)
+            .unwrap_or_default()
+        {
+            *band = step(*band, key);
+        }
+    }
 }
 
 /// What `Shell::draw` did with a picture.
@@ -90,8 +153,6 @@ pub enum Drawn {
     Failed,
 }
 
-/// FNV-1a over 64 bits, a picture's key: a collision would skip a changed
-/// frame.
 struct Fnv1a(u64);
 
 impl core::hash::Hasher for Fnv1a {
@@ -104,13 +165,6 @@ impl core::hash::Hasher for Fnv1a {
             self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
         }
     }
-}
-
-fn key(picture: &impl Picture) -> u64 {
-    use core::hash::Hasher;
-    let mut fnv = Fnv1a(0xcbf2_9ce4_8422_2325);
-    picture.hash(&mut fnv);
-    fnv.finish()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,10 +192,9 @@ pub struct Shell<D, I, P, B> {
     pub operations: u32,
     pub storage_max_ms: u64,
     pub display_submissions: u32,
-    /// A digest of the pixels on the panel.
+    sent: [u32; BANDS],
     panel: Option<u32>,
-    /// The key of the picture on the panel, until anything else is submitted.
-    picture: Option<u64>,
+    shown: Option<Parts>,
     /// The digest `take_frame` last handed out.
     taken: Option<u32>,
     /// The latest submission, rendering included; measured when `clock` is set.
@@ -193,7 +246,10 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             _ => return Err(Error::Unavailable),
         }
         let geometry = display.geometry();
-        if geometry.width < MIN_WIDTH || geometry.height < MIN_HEIGHT {
+        if geometry.width < MIN_WIDTH
+            || geometry.height < MIN_HEIGHT
+            || geometry.height > MAX_HEIGHT
+        {
             return Err(Error::Invalid);
         }
         let controls = input.controls();
@@ -235,8 +291,9 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             synthetic: Synthetic::new(),
             boot_id: 0,
             synthetic_events: 0,
+            sent: [FNV_OFFSET; BANDS],
             panel: None,
-            picture: None,
+            shown: None,
             taken: None,
             store,
             settings,
@@ -565,60 +622,91 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         }
         result.is_ok()
     }
-    /// Bring the panel to `picture`: send it, unless the panel already shows
-    /// it and nothing waits for a frame (`frame_wanted`).
+    /// Bring the panel to `picture`: send the bands whose parts changed
+    /// since the panel showed them. A panel that shows something else, a
+    /// scaled one, or a frame something waits for (`frame_wanted`) takes
+    /// the whole picture.
     pub fn draw<F: Picture>(&mut self, picture: &F, now: u64) -> Drawn {
-        let key = key(picture);
-        let drawn = if self.picture == Some(key) && !self.frame_wanted(now) {
+        let parts = Parts::of(picture);
+        let geometry = self.display.geometry();
+        let fits = (geometry.width, geometry.height) == F::SIZE;
+        let changed = self.shown.map(|shown| shown.changed(&parts));
+        let rows = match changed {
+            _ if self.frame_wanted(now) => Rows::all(geometry.height),
+            Some(changed) if changed.is_empty() => Rows::NONE,
+            Some(changed) if fits => changed,
+            _ => Rows::all(geometry.height),
+        };
+        let drawn = if rows.is_empty() {
             Drawn::Unchanged
         } else {
-            let (width, height) = F::SIZE;
-            self.draw_canvas(width, height, |row| picture.paint(row));
+            if fits {
+                self.send(rows, |y, pixels| picture.paint(&mut Row::new(y, pixels)));
+            } else {
+                let (width, height) = F::SIZE;
+                self.draw_canvas(width, height, |row| picture.paint(row));
+            }
             if self.display_error {
+                self.shown = None;
                 return Drawn::Failed;
             }
-            self.picture = Some(key);
+            self.shown = Some(parts);
             Drawn::Sent
         };
         // Only an unscaled panel holds the picture's own rows to compare.
-        let geometry = self.display.geometry();
-        if (geometry.width, geometry.height) == F::SIZE {
+        if fits {
             self.display
                 .check(|y, pixels| picture.paint(&mut Row::new(y, pixels)));
         }
         drawn
     }
-    /// The next `draw` sends its picture whatever the panel showed.
+    /// The next `draw` sends its picture whole, whatever the panel showed.
     pub fn forget_panel(&mut self) {
-        self.picture = None;
+        self.shown = None;
     }
     /// Submit a frame row by row; `row(y, pixels)` must fill every physical pixel.
-    pub fn draw_rows(&mut self, mut row: impl FnMut(usize, &mut [u16])) {
-        self.picture = None;
+    pub fn draw_rows(&mut self, row: impl FnMut(usize, &mut [u16])) {
+        self.shown = None;
+        self.send(Rows::all(self.display.geometry().height), row);
+    }
+    fn send(&mut self, rows: Rows, mut row: impl FnMut(usize, &mut [u16])) {
         let started = self.clock.map(|clock| clock());
-        let mut frame = FNV_OFFSET;
+        let sent = &mut self.sent;
         let row = |y: usize, pixels: &mut [u16]| {
             row(y, pixels);
-            frame = digest(frame, pixels);
+            let band = &mut sent[y / BAND_ROWS];
+            let from = if y.is_multiple_of(BAND_ROWS) {
+                FNV_OFFSET
+            } else {
+                *band
+            };
+            *band = digest(from, pixels);
         };
         {
-            if self.harness.begin_frame(self.display.geometry()) {
+            let geometry = self.display.geometry();
+            if self.harness.begin_frame(geometry) {
+                let rows = Rows::all(geometry.height);
                 let mut row = row;
                 let harness = &mut self.harness;
                 self.display_error = self
                     .display
-                    .submit(|y, pixels| {
+                    .submit(rows, |y, pixels| {
                         row(y, pixels);
                         harness.row(y, pixels);
                     })
                     .is_err();
                 self.harness.finish_frame(!self.display_error);
             } else {
-                self.display_error = self.display.submit(row).is_err();
+                self.display_error = self.display.submit(rows, row).is_err();
             }
         }
         if !self.display_error {
-            self.panel = Some(frame);
+            let bands = self.display.geometry().height.div_ceil(BAND_ROWS);
+            self.panel = Some(
+                self.sent[..bands]
+                    .iter()
+                    .fold(FNV_OFFSET, |hash, &band| step(hash, band)),
+            );
         }
         self.display_submissions = self.display_submissions.saturating_add(1);
         if let (Some(clock), Some(started)) = (self.clock, started) {
@@ -653,7 +741,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             return;
         }
         if width == 0 || width > CANVAS_MAX_WIDTH {
-            self.picture = None;
+            self.shown = None;
             self.display_error = true;
             return;
         }

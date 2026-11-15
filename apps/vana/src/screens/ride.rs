@@ -25,6 +25,7 @@ use crate::ride::laps::Lap;
 use crate::ride::zones::TrainingProfile;
 use crate::sensors::radar::{self, close};
 use core::fmt::Write;
+use firmware_shell::shell::Parts;
 
 pub mod back;
 mod climb;
@@ -392,6 +393,27 @@ pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
     if start < end {
         row.pixels_mut()[start..end]
             .copy_from_slice(&body[start + CENTRE_SHIFT..end + CENTRE_SHIFT]);
+    }
+}
+
+pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
+    if let Some(radar) = &scene.radar {
+        parts.add(TRACK_TOP..TRACK_BOTTOM + 1, &radar.track);
+        for marker in radar.markers.iter().flatten() {
+            let y = usize::from(marker.0);
+            parts.add(y - TARGET_RADIUS..y + TARGET_RADIUS + 1, marker);
+        }
+    }
+    match page {
+        RidePage::Main => main::parts(scene, parts),
+        RidePage::Stats | RidePage::Lap => {}
+        RidePage::Workout => workout::chart_parts(scene.chart(), parts),
+        RidePage::Climb => climb::chart_parts(scene.climb(), parts),
+        RidePage::Map => parts.add(BODY.top..BODY.bottom, &scene.map_key()),
+        RidePage::Back => back::parts(scene.back(), parts),
+    }
+    if page != RidePage::Main {
+        scene.canvas().parts(parts);
     }
 }
 

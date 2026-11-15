@@ -5,7 +5,7 @@
 //! one.
 use core::cell::RefCell;
 use device_api::bulk::ReadWrite;
-use device_api::display::Display;
+use device_api::display::{Display, Rows};
 use device_api::observation::Availability;
 use device_api::power::Power;
 use device_api::storage::{OwnedFlash, Region};
@@ -54,7 +54,7 @@ fn a_refused_frame_and_backlight_write_have_the_numbers_the_simulator_gives_them
         display.0.borrow_mut().refusals.scripted = vec![1];
         power.0.borrow_mut().refusals.scripted = vec![0, 2];
         for _ in 0..3 {
-            let _ = panel.submit(|_, row| row.fill(pass));
+            let _ = panel.submit(Rows::all(4), |_, row| row.fill(pass));
             let _ = backlight.brightness(40);
         }
         log.record(&kept);
@@ -173,7 +173,7 @@ fn a_pass_records_refusals_and_faults_in_the_order_the_simulator_does() {
     let _ = RecordedBulk::counted(&mut inner, &kept, log).owned_write(70, &[1; 512]);
     let _ = recorded_flash.program(Region::Data, 0, &[1; 4]);
     let _ = backlight.brightness(10);
-    let _ = panel.submit(|_, row| row.fill(1));
+    let _ = panel.submit(Rows::all(4), |_, row| row.fill(1));
     log.record(&kept);
     let flash_fault = flash.fault.borrow().log[0];
     let card_fault = card.take_log()[0];

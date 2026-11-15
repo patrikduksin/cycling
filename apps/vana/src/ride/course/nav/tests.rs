@@ -50,7 +50,7 @@ impl<'t> Rider<'t> {
     fn fixed(&self, along_m: f32, off_m: f32, forward: bool) -> MatchedFix {
         let along_mm = (along_m * 1000.0) as u32;
         MatchedFix {
-            taken_ms: self.now_ms,
+            taken_loop_ms: self.now_ms,
             along_mm,
             to_end_mm: LENGTH_MM.saturating_sub(along_mm),
             off_m,

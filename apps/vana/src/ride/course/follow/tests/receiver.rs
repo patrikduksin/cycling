@@ -5,7 +5,6 @@ use firmware_services::gps::Parser;
 use std::format;
 use std::string::String;
 
-/// A receiver sent one GGA sentence for each of its fixes.
 #[derive(Default)]
 struct Receiver(Parser);
 
@@ -49,9 +48,14 @@ impl Rider<'_> {
 
 const PASS_MS: u64 = 250;
 
-/// Riding north up a course at 10 m/s to 100 m by 10 s, then fixes 60 m east
-/// of it at `off_ms`: what was heard, and the sign, on each main-loop pass.
-fn off_at(off_ms: &[u64]) -> Vec<(u64, Option<Event>, Sign)> {
+#[derive(Clone, Copy)]
+struct Pass {
+    now: u64,
+    event: Option<Event>,
+    sign: Sign,
+}
+
+fn off_at(off_ms: &[u64]) -> Vec<Pass> {
     let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 512]);
     let mut rider = Rider::new(&mut crumbs, &mut line, &mut []);
     let course = course_of(&[(0.0, 0.0), (0.0, 1000.0)]);
@@ -68,15 +72,19 @@ fn off_at(off_ms: &[u64]) -> Vec<(u64, Option<Event>, Sign)> {
         if rider.needs_course() {
             rider.set_course(&course);
         }
-        heard.push((now, event, rider.follower.sign(now)));
+        heard.push(Pass {
+            now,
+            event,
+            sign: rider.follower.sign(now),
+        });
     }
     heard
 }
 
-fn events(heard: &[(u64, Option<Event>, Sign)]) -> Vec<(u64, Event)> {
+fn events(heard: &[Pass]) -> Vec<(u64, Event)> {
     heard
         .iter()
-        .filter_map(|&(now, event, _)| event.map(|event| (now, event)))
+        .filter_map(|pass| pass.event.map(|event| (pass.now, event)))
         .collect()
 }
 
@@ -89,8 +97,8 @@ fn off_course_is_confirmed_by_a_receiver_fix_5_s_later_never_by_its_last_positio
     );
     let gone = heard
         .iter()
-        .find(|&&(now, _, sign)| now > 13_000 && sign == Sign::None)
-        .map(|&(now, ..)| now);
+        .find(|pass| pass.now > 13_000 && pass.sign == Sign::None)
+        .map(|pass| pass.now);
     assert_eq!(gone, Some(18_250), "lost 5 s after the last fix");
 
     let heard = off_at(&[11_000, 13_000, 16_000]);

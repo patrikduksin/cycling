@@ -70,7 +70,6 @@ impl Decoded {
 pub(super) struct Readings {
     /// The sample most recently offered to the recorder.
     pub(super) live: Sample,
-    /// The receiver's position in `live`, and when it took it.
     pub(super) reported: Option<Reported>,
     speed: Speed,
     /// Learns the wheel's circumference from GPS while riding.

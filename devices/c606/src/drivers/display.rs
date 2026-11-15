@@ -40,9 +40,6 @@ fn render(bytes: &mut [u8], top: usize, row: &mut impl FnMut(usize, &mut [u16]))
     }
 }
 
-/// Microseconds of the latest frame, of it spent waiting for the bus, and the
-/// slowest frame since boot and since the trace last took it, and the
-/// frames and time of those since it last took them; frames sent.
 pub struct Timing {
     frame_us: AtomicU32,
     wait_us: AtomicU32,

@@ -571,7 +571,6 @@ struct Reader {
     power: Vec<(u64, device_api::power::State)>,
     health: Vec<(u64, trace::Health)>,
     frame_times: Vec<(u64, trace::FrameTime)>,
-    /// The frame time that comes before the health record it belongs to.
     frame_time: Option<trace::FrameTime>,
     activity: Vec<Window>,
     /// The activity window of this pass, while its tasks are read.

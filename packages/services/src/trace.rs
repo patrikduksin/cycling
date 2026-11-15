@@ -334,8 +334,7 @@ pub struct Health {
 }
 
 /// The frames the panel took in the window of the [`Event::Health`] that
-/// follows. A new record rather than a field of `Health`, since a reader
-/// takes a record that ends early as corrupt.
+/// follows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameTime {
     pub frames: u32,
@@ -343,7 +342,6 @@ pub struct FrameTime {
 }
 
 impl FrameTime {
-    /// The window's frames: how many, and the microseconds they took in all.
     pub fn of_window(frames: u32, total_us: u64) -> Option<Self> {
         let mean_us = total_us.checked_div(u64::from(frames))?;
         Some(Self {

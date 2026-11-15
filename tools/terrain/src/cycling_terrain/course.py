@@ -4,7 +4,7 @@ From the junction nearest a start point the walk keeps straight on and,
 every leg of a few hundred metres, turns onto a cross street. It never rides
 an edge twice, a oneway backwards or a road outside `classes`, and it avoids
 roads that lead nowhere new. The seed picks the legs and turns, so the same
-arguments give the same course. Nobody rode it: it is synthetic.
+arguments give the same course. The course is synthetic; nobody rode it.
 """
 
 from __future__ import annotations
@@ -30,19 +30,21 @@ class Road:
     oneway: bool
 
 
-def _metres(a, b) -> float:
+def _east_north(a, b) -> tuple[float, float]:
     north = (b[0] - a[0]) * 0.111195
     east = (b[1] - a[1]) * 0.111195 * math.cos(math.radians(a[0] * 1e-6))
-    return math.hypot(east, north)
+    return east, north
+
+
+def _metres(a, b) -> float:
+    return math.hypot(*_east_north(a, b))
 
 
 def _bearing(points) -> float:
     """Degrees from north of the road leaving `points[0]`."""
     a = points[0]
     b = next((p for p in points[1:] if _metres(a, p) >= BEARING_M), points[-1])
-    north = (b[0] - a[0]) * 0.111195
-    east = (b[1] - a[1]) * 0.111195 * math.cos(math.radians(a[0] * 1e-6))
-    return math.degrees(math.atan2(east, north)) % 360
+    return math.degrees(math.atan2(*_east_north(a, b))) % 360
 
 
 def _turn(heading: float, bearing: float) -> float:

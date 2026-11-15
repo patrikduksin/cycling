@@ -493,7 +493,7 @@ impl Replay {
         let seen: Vec<Seen> = seen
             .iter()
             .map(|seen| match seen {
-                Seen::Panel(_) if self.digests == Digests::Frames => {
+                Seen::Panel(_) if self.digests == Digests::LegacyFrames => {
                     Seen::Frame(frame.take().map_or(0, |frame| frame()))
                 }
                 seen => seen.clone(),
@@ -564,7 +564,7 @@ impl Replay {
 /// The first event where two traces part, with the pass it belongs to.
 /// What [`measured`] holds is left out.
 pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
-    let frames = Digests::of(recorded) == Digests::Frames;
+    let frames = Digests::of(recorded) == Digests::LegacyFrames;
     first_difference_of(recorded, replayed, |event| {
         !measured(event) && !(frames && matches!(event, Event::Frame(_) | Event::Panel(_)))
     })
@@ -572,9 +572,7 @@ pub fn first_difference(recorded: &[u8], replayed: &[u8]) -> Option<String> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Digests {
-    /// An older trace's [`Event::Frame`]: every row of the frame.
-    Frames,
-    /// [`Event::Panel`]: each band as the shell last sent it.
+    LegacyFrames,
     Panel,
 }
 
@@ -582,7 +580,11 @@ impl Digests {
     fn of(trace: &[u8]) -> Self {
         let frames = trace::decode(trace)
             .is_ok_and(|(_, mut events)| events.any(|event| matches!(event, Event::Frame(_))));
-        if frames { Self::Frames } else { Self::Panel }
+        if frames {
+            Self::LegacyFrames
+        } else {
+            Self::Panel
+        }
     }
 }
 

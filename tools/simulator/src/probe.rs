@@ -1,4 +1,4 @@
-use crate::bench::SCENES;
+use crate::bench::scenes;
 use crate::sim::Sim;
 use crate::world::{Side, Vehicle};
 use firmware_shell::rendering::work::Work;
@@ -63,78 +63,71 @@ pub enum Feed {
     Charging { percent: u8 },
 }
 
-pub enum Start {
-    /// The bench scene of this name.
-    Scene(&'static str),
-    /// Ride main with a radar, in the Saver display mode.
-    RideMainSaver,
-}
-
 pub struct Case {
     pub name: &'static str,
-    pub start: Start,
+    pub reach: fn() -> Sim,
     pub feed: Feed,
 }
 
 pub static CASES: [Case; 12] = [
     Case {
         name: "ride main, noisy, radar",
-        start: Start::Scene("ride main + radar"),
+        reach: scenes::ride_main,
         feed: Feed::Noisy { cars: true },
     },
     Case {
         name: "ride main, noisy, radar, saver",
-        start: Start::RideMainSaver,
+        reach: scenes::ride_main_radar_saver,
         feed: Feed::Noisy { cars: true },
     },
     Case {
         name: "ride main, steady, radar",
-        start: Start::Scene("ride main + radar"),
+        reach: scenes::ride_main,
         feed: Feed::Steady { cars: true },
     },
     Case {
         name: "climb",
-        start: Start::Scene("climb"),
+        reach: scenes::climb,
         feed: Feed::Steady { cars: false },
     },
     Case {
         name: "workout",
-        start: Start::Scene("workout"),
+        reach: scenes::workout_page,
         feed: Feed::Steady { cars: false },
     },
     Case {
         name: "stats",
-        start: Start::Scene("ride stats"),
+        reach: scenes::stats,
         feed: Feed::Steady { cars: false },
     },
     Case {
         name: "map",
-        start: Start::Scene("map"),
+        reach: scenes::map_page,
         feed: Feed::Steady { cars: false },
     },
     Case {
         name: "settings (still)",
-        start: Start::Scene("settings"),
+        reach: scenes::settings,
         feed: Feed::Steady { cars: false },
     },
     Case {
         name: "home",
-        start: Start::Scene("home"),
+        reach: scenes::home,
         feed: Feed::Steady { cars: false },
     },
     Case {
         name: "home, charging at 50%",
-        start: Start::Scene("home"),
+        reach: scenes::home,
         feed: Feed::Charging { percent: 50 },
     },
     Case {
         name: "home, charging at 99%",
-        start: Start::Scene("home"),
+        reach: scenes::home,
         feed: Feed::Charging { percent: 99 },
     },
     Case {
         name: "home, charging at 100%",
-        start: Start::Scene("home"),
+        reach: scenes::home,
         feed: Feed::Charging { percent: 100 },
     },
 ];
@@ -175,8 +168,7 @@ impl Result {
         self.changes.iter().map(|c| c.work).sum::<u64>() as f64 / self.seconds as f64
     }
 
-    /// Changed pixels, as a share of the screen.
-    pub fn pixels(&self) -> Percentiles<f64> {
+    pub fn pixel_share(&self) -> Percentiles<f64> {
         let pixels = percentiles(self.changes.iter().map(|c| c.pixels).collect());
         let share = |n: usize| n as f64 / self.screen_pixels as f64;
         Percentiles {
@@ -218,16 +210,7 @@ impl Noise {
 }
 
 pub fn run(case: &Case, seconds: u64) -> Result {
-    let mut sim = match case.start {
-        Start::Scene(name) => {
-            let scene = SCENES
-                .iter()
-                .find(|scene| scene.name == name)
-                .unwrap_or_else(|| panic!("no scene {name}"));
-            (scene.reach)()
-        }
-        Start::RideMainSaver => crate::bench::ride_main_saver(),
-    };
+    let mut sim = (case.reach)();
     let display = sim.device.display.clone();
     {
         let mut frame = display.0.borrow_mut();

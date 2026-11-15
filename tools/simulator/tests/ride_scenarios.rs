@@ -1870,7 +1870,7 @@ fn in_saver_the_climb_page_comes_up_already_climbing() {
     sim.ride_at(30.0, 180.0, 0.0, 85.0);
     ride_to(&mut sim, 500.0);
     sim.pause_ride();
-    sim.advance(RIDE_CLOCK_LAG_MS);
+    sim.advance(WALL_AND_RIDE_SECONDS_APART_MS);
     sim.resume_ride();
     ride_to(&mut sim, 1000.0);
     sim.ride_at(14.0, 260.0, 0.0, 75.0);
@@ -9519,9 +9519,7 @@ fn is_ride_clock(text: &str) -> bool {
 }
 
 const TICK_SLACK_MS: u64 = 60;
-/// How far the ride clock's seconds trail the wall clock's, so a frame
-/// that follows the wall clock shows up off the ride clock's tick.
-const RIDE_CLOCK_LAG_MS: u64 = 370;
+const WALL_AND_RIDE_SECONDS_APART_MS: u64 = 370;
 const RADAR_REPORTS_PER_S: usize = 4;
 const CAR_SECONDS: u64 = 6;
 
@@ -9608,7 +9606,7 @@ struct Rides {
 }
 
 fn measure(sim: &mut Sim) -> Rides {
-    sim.advance(RIDE_CLOCK_LAG_MS);
+    sim.advance(WALL_AND_RIDE_SECONDS_APART_MS);
     sim.start_ride();
     sim.ride_at(28.0, 230.0, 142.0, 88.0);
     sim.advance(seconds(10));

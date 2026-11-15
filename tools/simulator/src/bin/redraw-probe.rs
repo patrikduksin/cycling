@@ -11,7 +11,7 @@ fn main() {
     println!("|---|---:|---:|---:|---:|---:|---:|---:|");
     for case in CASES.iter().filter(|case| case.name.contains(&filter)) {
         let result = run(case, seconds);
-        let (strips, pixels, rows) = (result.strips(), result.pixels(), result.rows());
+        let (strips, pixels, rows) = (result.strips(), result.pixel_share(), result.rows());
         println!(
             "| {} | {:.1} | {} / {} (of {}) | {:.2}% / {:.2}% | {} of {} | {} / {} | {:.0} | {:.0} |",
             case.name,

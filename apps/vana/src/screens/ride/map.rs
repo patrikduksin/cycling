@@ -392,7 +392,7 @@ impl<'a> Cache<'a> {
             engine.want([]);
             return Fetched::Nothing;
         };
-        let detail = Detail::of(self.frame.last_pose.step);
+        let detail = Detail::of(self.frame.last_pose.reach);
         let roads = &mut self.frame.roads;
         engine.want(roads.lacking(&keys, detail));
         let ready = roads
@@ -648,7 +648,7 @@ impl Frame {
     }
 
     fn view(&self, margin: f32) -> Option<[Point; 4]> {
-        if !self.has_pose || self.show != Show::Map {
+        if self.show != Show::Map {
             return None;
         }
         let at = self.last_pose.projection(self.last_centre);
@@ -745,7 +745,7 @@ fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point) {
     *pairs = raster::pairs(GROUND_COLOR, MINOR_ROAD, MAJOR_ROAD);
     *roads_drawn = [0; 2];
     let room = |drawn: &[usize; 2]| drawn[0] + drawn[1] < ROAD_SEGMENTS;
-    for road in roads.each(Detail::of(last_pose.step), centre) {
+    for road in roads.each(Detail::of(last_pose.reach), centre) {
         if !room(roads_drawn) {
             break;
         }

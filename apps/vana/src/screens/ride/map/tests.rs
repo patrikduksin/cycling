@@ -1339,7 +1339,10 @@ mod santiago {
         let mut engine = cached(&mut arena);
         let ride = RideFrame::at(PLAZA);
         let approach = Approach::new((0.0, -150.0), 0, 250.0);
-        let track = approach.track();
+        let track = Track {
+            reach: settled_at(8_375),
+            ..approach.track()
+        };
         let mut frame = Box::new(Frame::default());
         let mut cache = Cache::new(&mut frame);
         settle(&mut cache, &mut engine, ride, &track);
@@ -1403,11 +1406,11 @@ mod santiago {
     #[test]
     fn the_margin_never_crowds_a_tile_on_the_screen_out_of_the_fetch() {
         let chile = terrain::Header {
-            tile: 15_625,
+            tile: 7_812,
             south: -56_000_000,
             west: -76_000_000,
-            rows: 2_471,
-            cols: 640,
+            rows: 4_942,
+            cols: 1_280,
             ..header()
         };
         let ride = RideFrame::at((-531_600_000, -709_000_000));
@@ -1430,11 +1433,11 @@ mod santiago {
             heading: Some(TURN / 8),
             course: &course,
             ahead: Some((1, Some((0.0, 0.0)))),
+            reach: settled_at(30_000),
             ..Track::default()
         };
         let mut frame = Box::new(Frame::default());
         fill(&mut frame, &track);
-        assert_eq!(frame.last_pose.step, Step::Km3);
         let under = |margin: f32| -> Vec<TileKey> {
             let corners = frame.view(margin).unwrap().map(|p| ride.locate(p));
             chile.tiles_under(&corners).collect()

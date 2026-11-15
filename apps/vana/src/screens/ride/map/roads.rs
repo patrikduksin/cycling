@@ -1,4 +1,4 @@
-use super::pose::Step;
+use super::pose::{CLOSEST, Reach, WIDTH};
 use crate::ride::homing::Frame as RideFrame;
 use terrain::{PackId, Road, RoadClass, TileKey};
 
@@ -11,20 +11,22 @@ const _: () = assert!(
 );
 const STRETCH: usize = 32;
 
+/// Between the old 400 m and 1 km zoom steps, by scale.
+const TOWN_ACROSS_M: f32 = 632.0;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Detail {
     #[default]
     Streets,
     Town,
-    Arteries,
 }
 
 impl Detail {
-    pub fn of(step: Step) -> Self {
-        match step {
-            Step::M300 | Step::M400 => Self::Streets,
-            Step::Km1 => Self::Town,
-            Step::Km3 => Self::Arteries,
+    pub fn of(reach: Reach) -> Self {
+        if reach.px_per_m() * TOWN_ACROSS_M < WIDTH {
+            Self::Town
+        } else {
+            Self::Streets
         }
     }
 
@@ -35,17 +37,15 @@ impl Detail {
                 class,
                 RoadClass::Service | RoadClass::Track | RoadClass::Path
             ),
-            Self::Arteries => class <= RoadClass::Tertiary,
         }
     }
 
     fn half_pixel_m(self) -> f32 {
-        let closest = match self {
-            Self::Streets => Step::M300,
-            Self::Town => Step::Km1,
-            Self::Arteries => Step::Km3,
+        let closest_px_per_m = match self {
+            Self::Streets => CLOSEST.px_per_m(),
+            Self::Town => WIDTH / TOWN_ACROSS_M,
         };
-        0.5 / closest.px_per_m()
+        0.5 / closest_px_per_m
     }
 }
 

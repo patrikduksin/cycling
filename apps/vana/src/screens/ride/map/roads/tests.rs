@@ -199,7 +199,7 @@ fn a_road_that_carries_on_where_one_of_its_class_ended_joins_it() {
 fn central_santiago_fits_at_every_detail() {
     let mut arena = std::vec![0u8; 64 * PAGE_BYTES];
     let engine = cached(&mut arena);
-    for detail in [Detail::Streets, Detail::Town, Detail::Arteries] {
+    for detail in [Detail::Streets, Detail::Town] {
         let mut roads = roads_in(plaza_frame());
         let whole = extract_all(&mut roads, &engine, detail);
         let (runs, points) = roads.ends();
@@ -220,7 +220,7 @@ fn tiles_out_of_the_view_make_room_and_a_new_detail_replaces_the_old() {
     let header = header();
     let keys = every_tile(&header);
     let mut roads = roads_in(plaza_frame());
-    extract_all(&mut roads, &engine, Detail::Arteries);
+    extract_all(&mut roads, &engine, Detail::Streets);
     let count = |roads: &Roads| roads.each(Detail::Streets, (0.0, 0.0)).count();
     let all = count(&roads);
     let one = keys[4];
@@ -236,7 +236,7 @@ fn tiles_out_of_the_view_make_room_and_a_new_detail_replaces_the_old() {
     assert!(roads.generation() != generation);
     assert!(count(&roads) < all);
     assert_eq!(roads.lacking(&keys, Detail::Town).count(), 8);
-    assert_eq!(roads.lacking(&keys, Detail::Arteries).count(), 9);
+    assert_eq!(roads.lacking(&keys, Detail::Streets).count(), 9);
     let generation = roads.generation();
     roads.hold(Some(Source {
         pack: PackId::default(),

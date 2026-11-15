@@ -13,6 +13,9 @@ const ROWS_AHEAD: f32 = (RIDER_Y as usize - GROUND.start) as f32;
 const START_AHEAD_M: f32 = 300.0;
 const AHEAD_S: f32 = 40.0;
 const NEAREST_AHEAD_M: f32 = 150.0;
+pub(super) const CLOSEST: Reach = Reach {
+    ahead_m: NEAREST_AHEAD_M as u16,
+};
 const FURTHEST_AHEAD_M: f32 = 1_000.0;
 const MOVING_FROM_MM_S: u32 = 5 * 1_000_000 / 3_600;
 const EASE_PER_FIX: f32 = 0.2;

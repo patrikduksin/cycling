@@ -172,20 +172,20 @@ pub(crate) mod scenes {
             reach: map_off_course,
         },
         Scene {
-            name: "map santiago 300 m",
-            reach: || densest_santiago((1_200.0, 0.0), 45.0, 60.0, "100 M"),
+            name: "map santiago 15 km/h",
+            reach: || densest_santiago((1_200.0, 0.0), 45.0, 60.0, 15.0, "50 M"),
         },
         Scene {
-            name: "map santiago 400 m",
-            reach: || densest_santiago((1_200.0, 0.0), 45.0, 250.0, "100 M"),
+            name: "map santiago 25 km/h",
+            reach: || densest_santiago((1_200.0, 0.0), 45.0, 250.0, 25.0, "100 M"),
         },
         Scene {
-            name: "map santiago 1 km",
-            reach: || densest_santiago((-800.0, 1_200.0), 135.0, 500.0, "250 M"),
+            name: "map santiago 50 km/h",
+            reach: || densest_santiago((-800.0, 1_200.0), 135.0, 500.0, 50.0, "100 M"),
         },
         Scene {
-            name: "map santiago 3 km",
-            reach: || densest_santiago((-1_600.0, -1_200.0), 45.0, 1_500.0, "1 KM"),
+            name: "map santiago 90 km/h",
+            reach: || densest_santiago((-1_600.0, -1_200.0), 45.0, 1_500.0, 90.0, "250 M"),
         },
         Scene {
             name: "paused",
@@ -519,7 +519,7 @@ pub(crate) mod scenes {
         include_bytes!("../../../packages/terrain/tests/data/santiago-centro.terrain");
     const PLAZA: (f64, f64) = (-33.4378, -70.6505);
 
-    fn densest_santiago(at: (f64, f64), bearing: f64, turn_m: f64, scale: &str) -> Sim {
+    fn densest_santiago(at: (f64, f64), bearing: f64, turn_m: f64, kmh: f64, scale: &str) -> Sim {
         let (sin, cos) = bearing.to_radians().sin_cos();
         let to = |right: f64, ahead: f64| {
             (
@@ -553,7 +553,7 @@ pub(crate) mod scenes {
         sim.ant_sensor(device_type::POWER, 1234);
         sim.ant_sensor(device_type::SPEED_CADENCE, 777);
         sim.pair(&["POWER METER", "SPEED/CAD"]);
-        sim.ride_at(36.0, 210.0, 0.0, 88.0);
+        sim.ride_at(kmh, 210.0, 0.0, 88.0);
         sim.start_ride();
         while sim.world().distance_m < 570.0 {
             sim.advance(seconds(1));

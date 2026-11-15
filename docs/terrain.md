@@ -337,18 +337,19 @@ lets them all go. It holds 16 tiles, 4,096 roads and 8,192 points; a tile
 that does not fit keeps its major roads, and STATUS `map_cuts` counts
 it. Each copy:
 
-- keeps the classes the step draws: every road at 300 m and 400 m, no
-  service roads, tracks or paths at 1 km, trunk to tertiary at 3 km;
+- keeps the classes the map's scale draws: every road while the map is
+  under about 630 m across (between the old 400 m and 1 km zoom steps,
+  about 48 km/h), and no service roads, tracks or paths wider than that;
 - joins a road to the last of its class when it starts where that one
   ended, so a street of many blocks is one polyline;
 - simplifies it so no point strays more than half a pixel at the closest
-  step its detail is drawn at, which keeps hairpins.
+  scale its detail is drawn at, which keeps hairpins.
 
-The nine Santiago fixture tiles take 2,530 roads and 5,924 points at the
-1 km detail and 1,366 and 2,885 at 3 km. The ignored
-`densest_views_of_central_santiago` prints how much road each step's view
+The nine Santiago fixture tiles take 2,530 roads and 6,077 points at the
+town detail; every street does not fit them whole. The ignored
+`densest_views_of_central_santiago` prints how much road each scale's view
 of the fixture draws over a grid of places and headings, and the densest
-view of each step; run it with
+view of each scale; run it with
 `cargo test -p vana --release --lib densest -- --ignored --nocapture`. Each fill rasterises the roads
 once onto a 4-bit layer of the ground (two bits of coverage a class a
 pixel), and a frame paints the ground and roads from it by table.

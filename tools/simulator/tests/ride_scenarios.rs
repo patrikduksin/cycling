@@ -10019,13 +10019,12 @@ mod course_map {
             puck_left >= 30,
             "its white starts at x {puck_left}, its ring cut"
         );
-        let bar_left = (0..screen.width)
-            .find(|&x| at(&screen, x, 304) == SECONDARY)
-            .expect("the scale bar");
-        assert!(
-            bar_left >= 28,
-            "the bar starts under the radar strip, at {bar_left}"
-        );
+        let bar = (0..screen.width)
+            .skip_while(|&x| at(&screen, x, 304) != SECONDARY)
+            .take_while(|&x| at(&screen, x, 304) == SECONDARY)
+            .count();
+        assert_eq!(bar, 80, "the bar is 100 m long at 300 m across");
+        assert_eq!(badge(&sim), ["90", "M"]);
         sim.checkpoint("map-beside-radar");
     }
 }

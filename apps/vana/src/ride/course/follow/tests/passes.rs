@@ -62,7 +62,7 @@ enum Heard {
 /// rider's `corners`, with fixes up to `noise` m off: a word may name the
 /// corner after one the rider is within 12 m and that of, or the one they
 /// are at.
-fn judge(said: &[(f32, Warning)], corners: &[(f32, f32)], noise: f32) -> Heard {
+fn judge(said: &[(f32, Said)], corners: &[(f32, f32)], noise: f32) -> Heard {
     let mut named = vec![false; corners.len()];
     for &(metres, warning) in said {
         let next = |metres: f32| {
@@ -78,18 +78,10 @@ fn judge(said: &[(f32, Warning)], corners: &[(f32, f32)], noise: f32) -> Heard {
         ]
         .into_iter()
         .any(|at| match warning {
-            Warning::Ahead { kind, .. } => names(kind, corners, at).is_some(),
-            Warning::Now { kind, then } => match names(kind, corners, at) {
-                None => false,
-                Some(n) => {
-                    let then = match then {
-                        None => Some(0),
-                        Some(then) => names(then, corners, at + n),
-                    };
-                    then.inspect(|m| named[at..at + n + m].iter_mut().for_each(|c| *c = true))
-                        .is_some()
-                }
-            },
+            Said::Soon(kind) => names(kind, corners, at).is_some(),
+            Said::Now(kind) => names(kind, corners, at)
+                .inspect(|n| named[at..at + n].iter_mut().for_each(|c| *c = true))
+                .is_some(),
         });
         if !ok {
             return Heard::Wrong;
@@ -114,7 +106,7 @@ fn ride_line(
     noise: f32,
     step: f32,
     seed: u64,
-) -> (Vec<(f32, Warning)>, Vec<Event>) {
+) -> (Vec<(f32, Said)>, Vec<Event>) {
     ride_way(line, line, found, noise, step, seed)
 }
 
@@ -126,7 +118,7 @@ fn ride_way(
     noise: f32,
     step: f32,
     seed: u64,
-) -> (Vec<(f32, Warning)>, Vec<Event>) {
+) -> (Vec<(f32, Said)>, Vec<Event>) {
     ride_gapped(line, way, found, noise, step, seed, 0.0..0.0)
 }
 
@@ -140,7 +132,7 @@ fn ride_gapped(
     step: f32,
     seed: u64,
     gap: core::ops::Range<f32>,
-) -> (Vec<(f32, Warning)>, Vec<Event>) {
+) -> (Vec<(f32, Said)>, Vec<Event>) {
     let drawn = path(line, 5.0);
     let (course, stored): (Vec<course::Point>, Option<Vec<Turn>>) = match found {
         Found::Scanned => (
@@ -349,8 +341,8 @@ fn a_shortcut_onto_the_course_further_on_is_followed_from_there() {
                 let now: Vec<Kind> = said
                     .iter()
                     .filter_map(|&(_, warning)| match warning {
-                        Warning::Now { kind, .. } => Some(kind),
-                        Warning::Ahead { .. } => None,
+                        Said::Now(kind) => Some(kind),
+                        Said::Soon(_) => None,
                     })
                     .collect();
                 assert_eq!(

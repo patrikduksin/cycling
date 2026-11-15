@@ -1,4 +1,5 @@
 use super::*;
+use crate::ride::course::nav::tests::{Said, said};
 use crate::ride::course::turns;
 use crate::ride::homing::Homing;
 use crate::ride::homing::tests::{at, path};
@@ -28,7 +29,7 @@ impl<'a> Rider<'a> {
 
     fn observe(&mut self, location_e7: Option<(i32, i32)>, now: u64) -> Option<Event> {
         let fix = self.homing.observe(location_e7, now);
-        self.follower.observe(fix, now)
+        self.follower.observe(fix, now, None)
     }
 
     fn needs_course(&self) -> bool {
@@ -64,7 +65,7 @@ fn ride_course_warned(
     course: &[course::Point],
     points: &[(f32, f32)],
     now: &mut u64,
-) -> (Vec<Warning>, Vec<Event>) {
+) -> (Vec<Said>, Vec<Event>) {
     ride_course_stored(rider, course, None, points, now)
 }
 
@@ -74,12 +75,15 @@ fn ride_course_stored(
     stored: Option<&[Turn]>,
     points: &[(f32, f32)],
     now: &mut u64,
-) -> (Vec<Warning>, Vec<Event>) {
+) -> (Vec<Said>, Vec<Event>) {
     let (mut warnings, mut events) = (Vec::new(), Vec::new());
     for &(east, north) in points {
         *now += 1_000;
-        events.extend(rider.observe(Some(at(east, north)), *now));
-        warnings.extend(rider.follower.take_turn());
+        let event = rider.observe(Some(at(east, north)), *now);
+        match event.and_then(|event| said(event, rider.follower.sign(*now))) {
+            Some(told) => warnings.push(told),
+            None => events.extend(event),
+        }
         if rider.needs_course() {
             rider.set_course(course);
             if let Some(stored) = stored {
@@ -115,16 +119,7 @@ fn following_a_course_warns_of_each_corner_ahead_and_at_it() {
     let (warnings, events) = ride_course_warned(&mut rider, &course, &lap, &mut now);
     assert_eq!(events, [Event::Following, Event::Arrived]);
     let left = Kind::Turn(Side::Left);
-    let corner = [
-        Warning::Ahead {
-            kind: left,
-            metres: 150,
-        },
-        Warning::Now {
-            kind: left,
-            then: None,
-        },
-    ];
+    let corner = [Said::Soon(left), Said::Now(left)];
     assert_eq!(warnings, corner.repeat(3), "{warnings:?}");
     let (warnings, _) = ride_course_warned(&mut rider, &course, &lap, &mut now);
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -322,16 +317,15 @@ fn a_course_is_followed_along_it_off_course_once_to_its_end() {
         ride_course(&mut rider, &course, &out, &mut now),
         [Event::Following]
     );
-    let progress = rider.follower.progress().unwrap();
-    assert!(!progress.off_course);
-    assert!((3_480..=3_520).contains(&progress.to_end_m), "{progress:?}");
+    let to_end = rider.follower.to_end_m().unwrap();
+    assert!((3_480..=3_520).contains(&to_end), "{to_end}");
     let detour = path(
         &[(500.0, 0.0), (520.0, -150.0), (540.0, 0.0), (1000.0, 0.0)],
         2.0,
     );
     assert_eq!(
         ride_course(&mut rider, &course, &detour, &mut now),
-        [Event::OffCourse, Event::OnCourse]
+        [Event::OffCourse, Event::StillOff, Event::OnCourse]
     );
     let rest = path(
         &[(1000.0, 0.0), (1000.0, 1000.0), (0.0, 1000.0), (0.0, 0.0)],
@@ -342,7 +336,7 @@ fn a_course_is_followed_along_it_off_course_once_to_its_end() {
         [Event::Arrived]
     );
     assert!(!rider.follower.following());
-    assert_eq!(rider.follower.progress(), None);
+    assert_eq!(rider.follower.to_end_m(), None);
     let lap = path(&[(0.0, 0.0), (600.0, 0.0)], 7.0);
     assert!(ride_course(&mut rider, &course, &lap, &mut now).is_empty());
     rider.reset();
@@ -366,8 +360,10 @@ fn crossing_a_course_or_riding_it_backwards_follows_nothing() {
     assert!(ride_course(&mut rider, &course, &backwards, &mut now).is_empty());
 }
 
+/// However far off the rider goes, the course is still followed, and off
+/// course, until they are back on it, riding its way.
 #[test]
-fn sharing_a_kilometre_then_turning_off_goes_off_course_once_and_lets_go() {
+fn sharing_a_kilometre_then_turning_off_is_off_course_until_back_on_it() {
     let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
     let mut rider = Rider::new(&mut crumbs, &mut line, &mut []);
     let course = course_of(&SQUARE);
@@ -376,9 +372,11 @@ fn sharing_a_kilometre_then_turning_off_goes_off_course_once_and_lets_go() {
     let ride = path(&[(0.0, 0.0), (1000.0, 0.0), (1000.0, -700.0)], 2.0);
     assert_eq!(
         ride_course(&mut rider, &course, &ride, &mut now),
-        [Event::Following, Event::OffCourse]
+        [Event::Following, Event::OffCourse, Event::StillOff]
     );
-    assert!(!rider.follower.following(), "500 m off, following stopped");
+    assert!(rider.follower.following(), "700 m off");
+    let off = rider.follower.sign(now);
+    assert!(matches!(off, Sign::OffCourse { .. }), "{off:?}");
     let back = path(
         &[
             (1000.0, -700.0),
@@ -389,7 +387,10 @@ fn sharing_a_kilometre_then_turning_off_goes_off_course_once_and_lets_go() {
         ],
         7.0,
     );
-    assert!(ride_course(&mut rider, &course, &back, &mut now).is_empty());
+    assert_eq!(
+        ride_course(&mut rider, &course, &back, &mut now),
+        [Event::OnCourse]
+    );
 }
 
 #[test]
@@ -426,13 +427,11 @@ fn an_out_and_back_course_keeps_to_the_leg_the_rider_is_on() {
     ] {
         for point in leg.windows(1) {
             events.extend(ride_course(&mut rider, &course, point, &mut now));
-            if let Some(progress) = rider.follower.progress() {
-                assert!(
-                    progress.to_end_m <= last.saturating_add(30),
-                    "{progress:?} after {last}"
-                );
-                assert!(!progress.off_course);
-                last = progress.to_end_m;
+            if let Some(to_end) = rider.follower.to_end_m() {
+                assert!(to_end <= last.saturating_add(30), "{to_end} after {last}");
+                let sign = rider.follower.sign(now);
+                assert!(!matches!(sign, Sign::OffCourse { .. }), "{sign:?}");
+                last = to_end;
             }
         }
     }

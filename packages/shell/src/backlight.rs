@@ -319,6 +319,29 @@ mod tests {
     }
 
     #[test]
+    fn dappled_shade_on_a_bright_road_never_moves_the_screen() {
+        for dark_percent in [40, 50] {
+            let mut state = 12_345_u32;
+            let lights: Vec<u16> = (0..3_700)
+                .map(|reading| {
+                    state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    if reading > 0 && (state >> 16) % 100 < dark_percent {
+                        300
+                    } else {
+                        1_500
+                    }
+                })
+                .collect();
+            let shown = feed(|ms| lights[(ms / 333) as usize], 40, 1_200);
+            assert!(
+                swing(&shown) <= 2,
+                "{dark_percent}% dark: {}",
+                swing(&shown)
+            );
+        }
+    }
+
+    #[test]
     fn the_output_never_moves_faster_than_the_ramp() {
         let mut backlight = Backlight::default();
         let mut previous = backlight.step(fresh(68), &CURVE, 50, 0);

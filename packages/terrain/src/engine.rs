@@ -123,9 +123,16 @@ enum Pack {
     Failed,
 }
 
+/// Which reading of a pack the cache's tiles come from. Each reset starts
+/// a new one, so a tile's roads copied out of the cache are the pack's only
+/// while it stays the same.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PackId(u32);
+
 pub struct Lookahead<'a> {
     cache: Cache<'a>,
     pack: Pack,
+    pack_id: PackId,
     failures: u8,
     matcher: Matcher,
     fix: Option<Fix>,
@@ -152,6 +159,7 @@ impl<'a> Lookahead<'a> {
         Self {
             cache: Cache::new(arena),
             pack: Pack::Unread,
+            pack_id: PackId::default(),
             failures: 0,
             matcher: Matcher::default(),
             fix: None,
@@ -174,7 +182,12 @@ impl<'a> Lookahead<'a> {
         &self.ahead
     }
 
-    pub fn header(&self) -> Option<&Header> {
+    /// The pack's header once it is read, and which reading it is.
+    pub fn pack(&self) -> Option<(PackId, &Header)> {
+        self.header().map(|header| (self.pack_id, header))
+    }
+
+    fn header(&self) -> Option<&Header> {
         match &self.pack {
             Pack::Ready(header) => Some(header),
             _ => None,
@@ -191,6 +204,7 @@ impl<'a> Lookahead<'a> {
     pub fn reset(&mut self) {
         self.cache.clear();
         self.pack = Pack::Unread;
+        self.pack_id = PackId(self.pack_id.0.wrapping_add(1));
         self.failures = 0;
         self.matcher.reset();
         self.need = None;

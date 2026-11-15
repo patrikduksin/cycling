@@ -3,7 +3,7 @@ use std::boxed::Box;
 use std::println;
 use std::vec::Vec;
 use terrain::pack::HEADER_BYTES;
-use terrain::{Header, Lookahead, PAGE_BYTES, Status};
+use terrain::{Header, Lookahead, PAGE_BYTES, PackId, Status};
 
 /// The 3 x 3 tiles around Plaza de Armas. Data (c) OpenStreetMap
 /// contributors (ODbL); see `packages/terrain/tests/data/README.md`.
@@ -41,17 +41,27 @@ fn corner(header: &Header, key: TileKey) -> (i32, i32) {
 }
 
 /// Hold every tile of the fixture; whether each fit whole.
-fn extract_all(roads: &mut Roads, engine: &Lookahead, frame: RideFrame, detail: Detail) -> bool {
+fn extract_all(roads: &mut Roads, engine: &Lookahead, detail: Detail) -> bool {
     let header = header();
     let keys = every_tile(&header);
     keys.iter().fold(true, |whole, &key| {
         let tile = engine.roads(key).expect("cached");
-        roads.extract(frame, &keys, key, detail, corner(&header, key), tile) && whole
+        roads.extract(&keys, key, detail, corner(&header, key), tile) && whole
     })
 }
 
 fn plaza_frame() -> RideFrame {
     RideFrame::at(PLAZA)
+}
+
+/// Roads held from the fixture, placed in `frame`.
+fn roads_in(frame: RideFrame) -> Box<Roads> {
+    let mut roads = Box::new(Roads::default());
+    roads.hold(Some(Source {
+        pack: PackId::default(),
+        frame,
+    }));
+    roads
 }
 
 #[test]
@@ -61,9 +71,8 @@ fn every_point_of_a_tile_is_within_half_a_pixel_of_a_held_road_of_its_class() {
     let header = header();
     let frame = plaza_frame();
     let key = header.tiles_under(&[PLAZA; 4]).next().unwrap();
-    let mut roads = Box::new(Roads::default());
+    let mut roads = roads_in(frame);
     roads.extract(
-        frame,
         &[key],
         key,
         Detail::Streets,
@@ -194,10 +203,9 @@ fn a_road_that_carries_on_where_one_of_its_class_ended_joins_it() {
 fn central_santiago_fits_at_every_detail() {
     let mut arena = std::vec![0u8; 64 * PAGE_BYTES];
     let engine = cached(&mut arena);
-    let frame = plaza_frame();
     for detail in [Detail::Streets, Detail::Town, Detail::Arteries] {
-        let mut roads = Box::new(Roads::default());
-        let whole = extract_all(&mut roads, &engine, frame, detail);
+        let mut roads = roads_in(plaza_frame());
+        let whole = extract_all(&mut roads, &engine, detail);
         let (runs, points) = roads.ends();
         println!("{detail:?}: 9 tiles, {runs} roads, {points} points");
         assert_eq!(roads.tiles, 9);
@@ -213,16 +221,14 @@ fn tiles_out_of_the_view_make_room_and_a_new_detail_replaces_the_old() {
     let mut arena = std::vec![0u8; 64 * PAGE_BYTES];
     let engine = cached(&mut arena);
     let header = header();
-    let frame = plaza_frame();
     let keys = every_tile(&header);
-    let mut roads = Box::new(Roads::default());
-    extract_all(&mut roads, &engine, frame, Detail::Arteries);
+    let mut roads = roads_in(plaza_frame());
+    extract_all(&mut roads, &engine, Detail::Arteries);
     let count = |roads: &Roads| roads.each(Detail::Streets, (0.0, 0.0)).count();
     let all = count(&roads);
     let one = keys[4];
     let generation = roads.generation();
     roads.extract(
-        frame,
         &[one],
         one,
         Detail::Town,
@@ -232,14 +238,19 @@ fn tiles_out_of_the_view_make_room_and_a_new_detail_replaces_the_old() {
     assert_eq!(roads.tiles, 1, "the tiles out of the view are let go");
     assert!(roads.generation() != generation);
     assert!(count(&roads) < all);
-    assert_eq!(roads.lacking(&keys, Detail::Town, frame).count(), 8);
-    assert_eq!(roads.lacking(&keys, Detail::Arteries, frame).count(), 9);
-    let moved = RideFrame::at((PLAZA.0 + 1_000, PLAZA.1));
+    assert_eq!(roads.lacking(&keys, Detail::Town).count(), 8);
+    assert_eq!(roads.lacking(&keys, Detail::Arteries).count(), 9);
+    let generation = roads.generation();
+    roads.hold(Some(Source {
+        pack: PackId::default(),
+        frame: RideFrame::at((PLAZA.0 + 1_000, PLAZA.1)),
+    }));
     assert_eq!(
-        roads.lacking(&[one], Detail::Town, moved).count(),
+        roads.lacking(&[one], Detail::Town).count(),
         1,
         "a new ride's frame places them again"
     );
+    assert!(roads.generation() != generation, "and the map fills again");
 }
 
 #[test]
@@ -247,10 +258,9 @@ fn letting_a_tile_go_keeps_the_others_roads_intact() {
     let mut arena = std::vec![0u8; 64 * PAGE_BYTES];
     let engine = cached(&mut arena);
     let header = header();
-    let frame = plaza_frame();
     let keys = every_tile(&header);
-    let mut roads = Box::new(Roads::default());
-    extract_all(&mut roads, &engine, frame, Detail::Town);
+    let mut roads = roads_in(plaza_frame());
+    extract_all(&mut roads, &engine, Detail::Town);
     let points = |roads: &Roads, key: TileKey| -> Vec<(f32, f32)> {
         let t = roads.held[..roads.tiles]
             .iter()

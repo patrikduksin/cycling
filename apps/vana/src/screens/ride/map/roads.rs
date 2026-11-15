@@ -6,10 +6,11 @@
 //! hands one cached tile to [`Roads::extract`]. A tile keeps the roads its
 //! detail draws, simplified so no point strays more than half a pixel at
 //! that detail's closest step, as tile-local micro-degrees. Its corner is
-//! placed in the ride's frame, so a new ride's frame places them again.
+//! placed in the ride's frame, so a new ride's frame places them again, and
+//! a new reading of the pack copies them again.
 use super::pose::Step;
 use crate::ride::homing::Frame as RideFrame;
-use terrain::{Road, RoadClass, TileKey};
+use terrain::{PackId, Road, RoadClass, TileKey};
 
 /// Tiles held at once: as many as a map may ask the terrain cache for.
 pub const TILES: usize = terrain::WANTED;
@@ -96,10 +97,17 @@ impl Default for Run {
     }
 }
 
-/// Zero bytes are a valid `Roads`: nothing held, in no frame.
+/// What held roads were copied from and placed in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Source {
+    pub pack: PackId,
+    pub frame: RideFrame,
+}
+
+/// Zero bytes are a valid `Roads`: nothing held, from no source.
 #[derive(Clone)]
 pub struct Roads {
-    frame: Option<RideFrame>,
+    source: Option<Source>,
     held: [Held; TILES],
     tiles: usize,
     runs: [Run; RUNS],
@@ -112,7 +120,7 @@ pub struct Roads {
 impl Default for Roads {
     fn default() -> Self {
         Self {
-            frame: None,
+            source: None,
             held: [Held::default(); TILES],
             tiles: 0,
             runs: [Run::default(); RUNS],
@@ -147,17 +155,24 @@ impl Roads {
         self.generation
     }
 
-    /// The tiles of `keys` not held at `detail` in `frame`, to load.
+    /// Hold roads of `source` from now on, letting go of any of another;
+    /// none without one.
+    pub fn hold(&mut self, source: Option<Source>) {
+        if self.source != source {
+            self.source = source;
+            self.keep(|_| false);
+        }
+    }
+
+    /// The tiles of `keys` not held at `detail`, to load.
     pub fn lacking<'k>(
         &'k self,
         keys: &'k [TileKey],
         detail: Detail,
-        frame: RideFrame,
     ) -> impl Iterator<Item = TileKey> + 'k {
-        let stale = self.frame != Some(frame);
         keys.iter()
             .copied()
-            .filter(move |&key| stale || !self.holds(key, detail))
+            .filter(move |&key| !self.holds(key, detail))
     }
 
     fn holds(&self, key: TileKey, detail: Detail) -> bool {
@@ -166,23 +181,21 @@ impl Roads {
             .any(|held| held.key == Some(key) && held.detail == detail)
     }
 
-    /// Hold the roads of tile `key` at `detail`, its corner `corner` as
-    /// `(lat_e7, lon_e7)`, in place of any other copy of it. Tiles not in
-    /// `view` make room first; when even so the roads do not fit, the
-    /// minor ones are left out. Whether every road fit.
+    /// Hold the roads of tile `key` of the source at `detail`, its corner
+    /// `corner` as `(lat_e7, lon_e7)`, in place of any other copy of it.
+    /// Tiles not in `view` make room first; when even so the roads do not
+    /// fit, the minor ones are left out. Whether every road fit.
     pub fn extract<'t>(
         &mut self,
-        frame: RideFrame,
         view: &[TileKey],
         key: TileKey,
         detail: Detail,
         corner: (i32, i32),
         roads: impl Iterator<Item = Road<'t>> + Clone,
     ) -> bool {
-        if self.frame != Some(frame) {
-            self.tiles = 0;
-            self.frame = Some(frame);
-        }
+        let Some(Source { frame, .. }) = self.source else {
+            return false;
+        };
         self.keep(|held| held.key != Some(key) && held.key.is_some_and(|k| view.contains(&k)));
         if self.tiles == TILES {
             return false;

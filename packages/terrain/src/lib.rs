@@ -36,7 +36,7 @@ pub mod tile;
 
 pub use cache::{Cache, MAX_TILE_BYTES, PAGE_BYTES};
 pub use engine::{
-    Ahead, BEHIND_SAMPLES, End, Fix, Lookahead, MAX_SAMPLES, SAMPLE_M, Status, WANTED,
+    Ahead, BEHIND_SAMPLES, End, Fix, Lookahead, MAX_SAMPLES, PackId, SAMPLE_M, Status, WANTED,
 };
 pub use matcher::Matched;
 pub use pack::{Error, Header, Source, TileKey};

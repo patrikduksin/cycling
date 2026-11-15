@@ -19,7 +19,7 @@ use firmware_shell::rendering::font::FOOT_20;
 pub use pose::{GROUND, Reach, Zoom};
 use pose::{Pose, Projection};
 use raster::{Bar, Class, Cover, Layer, Stroke, Triangle};
-use roads::{Detail, Roads};
+use roads::{Detail, Roads, Source};
 
 type Point = (f32, f32);
 
@@ -381,7 +381,11 @@ impl<'a> Cache<'a> {
     /// cache, in the ride's `frame`: ask for the tiles the view lacks and
     /// copy one that is cached. Whether it copied one.
     pub fn fetch_roads(&mut self, engine: &mut terrain::Lookahead, frame: RideFrame) -> bool {
-        let Some(header) = engine.header().copied() else {
+        let pack = engine.pack().map(|(pack, header)| (pack, *header));
+        self.frame
+            .roads
+            .hold(pack.map(|(pack, _)| Source { pack, frame }));
+        let Some((_, header)) = pack else {
             return false;
         };
         let Some(keys) = self.frame.road_tiles(&header, frame) else {
@@ -390,15 +394,15 @@ impl<'a> Cache<'a> {
         };
         let detail = Detail::of(self.frame.last_pose.step);
         let roads = &mut self.frame.roads;
-        engine.want(roads.lacking(&keys, detail, frame));
+        engine.want(roads.lacking(&keys, detail));
         let ready = roads
-            .lacking(&keys, detail, frame)
+            .lacking(&keys, detail)
             .find(|&key| engine.roads(key).is_some());
         let Some((key, tile)) = ready.and_then(|key| Some((key, engine.roads(key)?))) else {
             return false;
         };
         let (south, west) = header.origin(key);
-        roads.extract(frame, &keys, key, detail, (south * 10, west * 10), tile);
+        roads.extract(&keys, key, detail, (south * 10, west * 10), tile);
         true
     }
 
@@ -656,7 +660,10 @@ impl Frame {
         let screen = self.view(0.0)?.map(|p| ride.locate(p));
         let margin = self.view(ROAD_FETCH_MARGIN)?.map(|p| ride.locate(p));
         let mut keys = heapless::Vec::new();
-        for key in header.tiles_under(&screen).chain(header.tiles_under(&margin)) {
+        for key in header
+            .tiles_under(&screen)
+            .chain(header.tiles_under(&margin))
+        {
             if !keys.contains(&key) && keys.push(key).is_err() {
                 break;
             }

@@ -477,13 +477,32 @@ fn health(timeline: &Timeline, out: &mut String) {
             .max_by_key(|(_, us)| *us)
             .map(|(at, us)| format!("{} at {}", millis(us), session_clock(at)))
     };
+    let frames: u64 = timeline
+        .frame_times
+        .iter()
+        .map(|(_, f)| u64::from(f.frames))
+        .sum();
+    let frame = match (slowest(|h| h.frame_max_us), frames) {
+        (Some(slowest), 1..) => {
+            let total_us: u64 = timeline
+                .frame_times
+                .iter()
+                .map(|(_, f)| u64::from(f.frames) * u64::from(f.mean_us))
+                .sum();
+            Some(format!(
+                "frame mean {:.2} ms, max {slowest}",
+                total_us as f64 / frames as f64 / 1000.0
+            ))
+        }
+        (slowest, _) => slowest.map(|slowest| format!("slowest frame {slowest}")),
+    };
     let timings: Vec<String> = [
-        ("pass", slowest(|h| h.pass_max_us)),
-        ("frame", slowest(|h| h.frame_max_us)),
-        ("card write", slowest(|h| h.card_write_max_us)),
+        slowest(|h| h.pass_max_us).map(|slowest| format!("slowest pass {slowest}")),
+        frame,
+        slowest(|h| h.card_write_max_us).map(|slowest| format!("slowest card write {slowest}")),
     ]
     .into_iter()
-    .filter_map(|(name, slowest)| Some(format!("slowest {name} {}", slowest?)))
+    .flatten()
     .collect();
     if !timings.is_empty() {
         let _ = writeln!(out, "  timing: {}", timings.join("; "));
@@ -543,7 +562,7 @@ mod tests {
     use super::*;
     use crate::trace::timeline::read;
     use firmware_services::trace::frozen::{Record, Recorder, Sink};
-    use firmware_services::trace::{self, Activity, Consumers, Event, Header};
+    use firmware_services::trace::{self, Activity, Consumers, Event, FrameTime, Header};
 
     struct Blocks(Vec<u8>);
 
@@ -727,6 +746,46 @@ mod tests {
             summary.contains("  timing: slowest pass 180.0 ms at 05:50.000"),
             "{summary}"
         );
+    }
+
+    #[test]
+    fn the_mean_frame_time_joins_the_slowest_frame_in_the_summary() {
+        let frame_max = |us| Health {
+            frame_max_us: Some(us),
+            ..Health::default()
+        };
+        let window = |frames, mean_us, max_us| {
+            vec![
+                Event::FrameTime(FrameTime { frames, mean_us }),
+                Event::Health(frame_max(max_us)),
+            ]
+        };
+        let summary = summary(&timeline(&[
+            (5_000, window(10, 1_000, 3_000)),
+            (10_000, window(30, 2_000, 41_000)),
+        ]));
+        assert!(
+            summary.contains("frame mean 1.75 ms, max 41.0 ms at 00:10.000"),
+            "{summary}"
+        );
+        let lost_health = super::summary(&timeline(&[
+            (5_000, window(10, 1_000, 3_000)),
+            (10_000, window(30, 2_000, 41_000)),
+            (
+                20_000,
+                vec![Event::FrameTime(FrameTime {
+                    frames: 5,
+                    mean_us: 4_000,
+                })],
+            ),
+            (25_000, vec![Event::Health(frame_max(2_000))]),
+        ]));
+        assert!(
+            lost_health.contains("frame mean 1.75 ms"),
+            "a frame time whose health was lost joins no other window: {lost_health}"
+        );
+        let old = super::summary(&timeline(&[(5_000, vec![Event::Health(frame_max(3_000))])]));
+        assert!(old.contains("slowest frame 3.0 ms at 00:05.000"), "{old}");
     }
 
     #[test]

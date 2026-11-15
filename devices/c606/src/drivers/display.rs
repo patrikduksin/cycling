@@ -40,13 +40,13 @@ fn render(bytes: &mut [u8], top: usize, row: &mut impl FnMut(usize, &mut [u16]))
     }
 }
 
-/// Microseconds of the latest frame, of it spent waiting for the bus, and the
-/// slowest frame since boot and since the trace last took it; frames sent.
 pub struct Timing {
     frame_us: AtomicU32,
     wait_us: AtomicU32,
     max_us: AtomicU32,
     window_max_us: AtomicU32,
+    window_total_us: AtomicU32,
+    window_frames: AtomicU32,
     frames: AtomicU32,
 }
 impl Timing {
@@ -57,11 +57,20 @@ impl Timing {
             .store(wait_us.min(u32::MAX as u64) as u32, Ordering::Relaxed);
         self.max_us.fetch_max(frame_us, Ordering::Relaxed);
         self.window_max_us.fetch_max(frame_us, Ordering::Relaxed);
+        self.window_total_us.fetch_add(frame_us, Ordering::Relaxed);
+        self.window_frames.fetch_add(1, Ordering::Relaxed);
         self.frames.fetch_add(1, Ordering::Relaxed);
     }
     /// The slowest frame since the last take.
     pub fn take_window_max(&self) -> u32 {
         self.window_max_us.swap(0, Ordering::Relaxed)
+    }
+    /// The frames since the last take, and the microseconds they took.
+    pub fn take_window_total(&self) -> (u32, u32) {
+        (
+            self.window_frames.swap(0, Ordering::Relaxed),
+            self.window_total_us.swap(0, Ordering::Relaxed),
+        )
     }
     /// Frames sent since boot.
     pub fn frames(&self) -> u32 {
@@ -81,6 +90,8 @@ pub static TIMING: Timing = Timing {
     wait_us: AtomicU32::new(0),
     max_us: AtomicU32::new(0),
     window_max_us: AtomicU32::new(0),
+    window_total_us: AtomicU32::new(0),
+    window_frames: AtomicU32::new(0),
     frames: AtomicU32::new(0),
 };
 

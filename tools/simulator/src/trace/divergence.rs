@@ -191,6 +191,7 @@ mod tests {
             silences: Vec::new(),
             power: Vec::new(),
             health: Vec::new(),
+            frame_times: Vec::new(),
             activity: Vec::new(),
         }
     }

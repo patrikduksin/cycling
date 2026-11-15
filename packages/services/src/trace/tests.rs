@@ -401,6 +401,10 @@ fn sample() -> Vec<Event<'static>> {
             target: "terrain",
             text: "no PSRAM for the tile cache",
         },
+        Event::FrameTime(FrameTime {
+            frames: 52,
+            mean_us: 1_380,
+        }),
         Event::Health(Health {
             simulated: false,
             heap_free: Some(61_234),
@@ -609,6 +613,20 @@ fn a_cursor_past_the_bytes_ends_torn_without_panicking() {
         shorter.by_ref().for_each(drop);
         assert!(shorter.end().is_some(), "cut at {cut}");
     }
+}
+
+#[test]
+fn a_window_of_known_frames_has_their_mean() {
+    let times_us = [1_000u32, 2_000, 6_000];
+    let total_us = times_us.iter().map(|&us| u64::from(us)).sum();
+    assert_eq!(
+        FrameTime::of_window(3, total_us),
+        Some(FrameTime {
+            frames: 3,
+            mean_us: 3_000
+        })
+    );
+    assert_eq!(FrameTime::of_window(0, 0), None);
 }
 
 #[test]

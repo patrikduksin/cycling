@@ -12,7 +12,7 @@ pub struct Policy {
     pub glides: bool,
     pub numbers: Numbers,
     pub note: &'static str,
-    pub motion_frame_ms: u64,
+    pub min_motion_frame_gap_ms: u64,
     pub light_curve: &'static Curve,
 }
 
@@ -29,7 +29,7 @@ static TABLE: [Policy; 2] = [
         glides: true,
         numbers: Numbers::OnArrival,
         note: "SMOOTH",
-        motion_frame_ms: 40,
+        min_motion_frame_gap_ms: 40,
         light_curve: &NORMAL,
     },
     Policy {
@@ -37,7 +37,7 @@ static TABLE: [Policy; 2] = [
         glides: false,
         numbers: Numbers::EverySecond,
         note: "NO GLIDES",
-        motion_frame_ms: 40,
+        min_motion_frame_gap_ms: 40,
         light_curve: &SAVER,
     },
 ];

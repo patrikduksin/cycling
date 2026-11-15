@@ -10,7 +10,7 @@ use crate::screens::chrome::{
     SECONDARY, TITLE, VALUE, WHITE,
 };
 use crate::screens::cue::{Corner, Cue, Icon as CueIcon};
-use crate::screens::icons::{ARROW, Icon, PLUS, REFRESH, Sensor, Size};
+use crate::screens::icons::{ARROW, Icon, PLUS, REFRESH, Sensor, Size, StaticIcon};
 use crate::screens::workout::Text;
 use crate::sensors::ant::BatteryStatus;
 use core::fmt::Write;
@@ -620,7 +620,7 @@ impl Drawing<'_> {
 
     fn icon(&mut self, icon: &'static Icon, left: usize, top: usize, color: u16) {
         self.canvas.shape(Shape::Icon {
-            icon,
+            icon: StaticIcon(icon),
             left,
             top,
             color,

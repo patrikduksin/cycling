@@ -69,7 +69,7 @@ impl From<&Sample> for Numbers {
 /// One radar slot: the report it last saw and where its marker glides.
 struct Track {
     glide: Glide,
-    closes: bool,
+    extrapolates: bool,
     seen: Option<radar::Target>,
     /// When the radar sent the report the marker moves on from.
     reported_ms: u64,
@@ -79,7 +79,7 @@ impl Track {
     fn new(glides: bool) -> Self {
         Self {
             glide: glide(glides, TARGET_MS),
-            closes: glides,
+            extrapolates: glides,
             seen: None,
             reported_ms: 0,
         }
@@ -87,7 +87,7 @@ impl Track {
 
     /// How far a target closes from its report to `now`, in mm.
     fn closed(&self, target: radar::Target, reported_ms: u64, now: u64) -> i32 {
-        if !self.closes {
+        if !self.extrapolates {
             return 0;
         }
         let closing_mm_s = i64::from(target.closing_speed_cm_s) * 10;
@@ -157,7 +157,7 @@ impl Track {
 
     fn moving(&self, now: u64) -> bool {
         self.glide.moving(now)
-            || self.closes
+            || self.extrapolates
                 && self.seen.is_some_and(|target| {
                     target.closing_speed_cm_s > 0
                         && now.saturating_sub(self.reported_ms) < EXTRAPOLATE_MS
@@ -253,15 +253,11 @@ impl Motion {
         self.pixels = pixels;
     }
 
-    /// When the next frame should draw what changed since the last one,
-    /// at most one every `frame_ms`: a new number as it comes, a glide
-    /// once a graphic it moves would land on another pixel. None while
-    /// neither.
     pub(super) fn due(
         &self,
         visible: Visible,
         sample: &Sample,
-        frame_ms: u64,
+        min_gap_ms: u64,
         now: u64,
         pixels: impl Fn(&Graphics) -> Pixels,
     ) -> Option<u64> {
@@ -269,7 +265,7 @@ impl Motion {
         if visible == Visible::default() {
             return None;
         }
-        let mut at = now.max(self.drawn_ms + frame_ms);
+        let mut at = now.max(self.drawn_ms + min_gap_ms);
         if visible.main && Numbers::from(sample) != self.numbers {
             return Some(at);
         }

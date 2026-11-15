@@ -323,7 +323,7 @@ impl Runtime {
     ) {
         let mut view = View::new(Page::Boot, 0, None);
         view.light = self.light();
-        let scene = view.scene();
+        let scene = view.prepare();
         system.draw_canvas(240, 320, |row| scene.paint(row));
     }
 
@@ -837,25 +837,19 @@ impl Runtime {
             view.show_map(super::back::map_of(&self.back));
         }
         view.graphics = self.motion.graphics(self.motion_visible(), now);
-        view.prepare();
-        let drawn = system.draw(&view.scene(), now);
+        let drawn = system.draw(&view.prepare(), now);
         let pixels = crate::screens::ride::pixels(&view.graphics, &view.profile);
-        // Before the return below: a frame the panel already showed still
-        // counts as drawn, so a glide that lands on the same pixels asks for
-        // no more frames.
         self.motion.drew(&sample, pixels, now);
         // Only a frame the panel accepted is a milestone or answers a press;
         // a pending press waits for the next frame that reaches the panel.
-        if drawn != Drawn::Sent {
-            return;
+        if drawn == Drawn::Sent {
+            let drawn = self.drawn_at(now);
+            self.timing.first_frame(drawn);
+            if matches!(page, Page::Home | Page::Setup) {
+                self.timing.first_ready(drawn);
+            }
+            self.timing.frame(drawn);
         }
-        let drawn = self.drawn_at(now);
-        self.timing.first_frame(drawn);
-        // Setup on a first start is as ready as Home.
-        if matches!(page, Page::Home | Page::Setup) {
-            self.timing.home(drawn);
-        }
-        self.timing.frame(drawn);
     }
 
     /// Home says what is still starting, or why turning off did not happen;
@@ -1541,7 +1535,7 @@ impl Runtime {
         self.motion.due(
             self.motion_visible(),
             shown,
-            self.policy().motion_frame_ms,
+            self.policy().min_motion_frame_gap_ms,
             now,
             |graphics| crate::screens::ride::pixels(graphics, &profile),
         )

@@ -402,6 +402,14 @@ impl<'v> Scene<'v> {
         self.light
     }
 
+    /// One pixel of the painted scene; tests and previews only, as it paints a whole row.
+    pub fn pixel(&self, x: usize, y: usize) -> u16 {
+        use firmware_shell::shell::Picture;
+        let mut pixels = [0u16; WIDTH];
+        self.paint(&mut Row::new(y, &mut pixels));
+        pixels.get(x).copied().unwrap_or(0)
+    }
+
     fn shown<T>(&self, found: Option<T>, what: &str, blank: T) -> T {
         debug_assert!(found.is_some(), "{:?} has no {what}", self.kind);
         found.unwrap_or(blank)
@@ -598,7 +606,7 @@ impl<'a> View<'a> {
         } else {
             let _ = time.push_str("--:--");
         }
-        let mut view = Self {
+        Self {
             now_ms: 0,
             sample: Sample::default(),
             power_3s: None,
@@ -635,13 +643,7 @@ impl<'a> View<'a> {
             discard: Discard::Unavailable,
             cues: &[],
             badge: None,
-        };
-        // The brand flash is painted before anything prepares a frame, as
-        // the preloaded startup frame: it needs no `prepare` to show.
-        if page == Page::Boot {
-            view.body = Body::Canvas(view.boot_canvas());
         }
-        view
     }
     /// A canvas page the runtime prepares itself, such as the ride list,
     /// whose cards it makes on demand.
@@ -906,14 +908,6 @@ impl<'a> View<'a> {
         }
     }
 
-    /// One pixel of the painted canvas; tests and previews only, as it paints a whole row.
-    pub fn pixel(&self, x: usize, y: usize) -> u16 {
-        use firmware_shell::shell::Picture;
-        let mut pixels = [0u16; WIDTH];
-        self.scene().paint(&mut Row::new(y, &mut pixels));
-        pixels.get(x).copied().unwrap_or(0)
-    }
-
     /// The screen takes the whole panel, without the status bar: the brand,
     /// the paused screen and the questions, whose back cue the bar would cut.
     fn full_screen(&self) -> bool {
@@ -941,11 +935,18 @@ impl<'a> View<'a> {
         }
     }
 
+    /// One pixel of the prepared scene; tests only, as it prepares the view
+    /// and paints a whole row.
+    #[cfg(test)]
+    pub(crate) fn pixel(&mut self, x: usize, y: usize) -> u16 {
+        self.prepare().pixel(x, y)
+    }
+
     fn paused_screen_shown(&self) -> bool {
         self.page == Page::Ride && self.pause_screen
     }
 
-    pub fn scene(&self) -> Scene<'_> {
+    fn scene(&self) -> Scene<'_> {
         let sheet = self.page == Page::Boot || self.ftp_offer.is_some();
         let kind = match self.page {
             _ if sheet => Kind::Canvas,
@@ -997,7 +998,7 @@ impl<'a> View<'a> {
         canvas
     }
 
-    pub fn prepare(&mut self) {
+    pub fn prepare(&mut self) -> Scene<'_> {
         let mark = match self.state {
             Status::Recording => Mark::Recording,
             Status::Paused if self.auto_paused => Mark::AutoPaused,
@@ -1120,6 +1121,7 @@ impl<'a> View<'a> {
             self.cues = &[];
             self.badge = None;
         }
+        self.scene()
     }
 }
 
@@ -1246,13 +1248,14 @@ mod tests {
 
     /// Whether any pixel in the rows and columns has `color`.
     fn painted(
-        view: &View,
+        view: &mut View,
         ys: core::ops::Range<usize>,
         xs: core::ops::Range<usize>,
         color: u16,
     ) -> bool {
+        let scene = view.prepare();
         ys.into_iter()
-            .any(|y| xs.clone().any(|x| view.pixel(x, y) == color))
+            .any(|y| xs.clone().any(|x| scene.pixel(x, y) == color))
     }
 
     #[test]
@@ -1287,7 +1290,7 @@ mod tests {
         view.active_secs = 3725;
         view.state = Status::Recording;
         view.prepare();
-        assert!(painted(&view, 0..STATUS_BAR.bottom, 0..60, RED), "REC");
+        assert!(painted(&mut view, 0..STATUS_BAR.bottom, 0..60, RED), "REC");
         assert_eq!(label_color(&view, b"1:02:05"), Some(WHITE));
         assert_eq!(label_color(&view, b"-3.5%"), Some(GRADE));
         assert_eq!(label_color(&view, b"29.9"), Some(SPEED));
@@ -1302,17 +1305,17 @@ mod tests {
         assert_eq!(label_color(&view, b"90"), Some(CADENCE));
         assert_eq!(label_color(&view, b"0.01"), Some(WHITE));
         for color in [WHITE, SPEED, POWER, GRADE, CADENCE] {
-            assert!(painted(&view, 24..280, 28..240, color), "{color:#x}");
+            assert!(painted(&mut view, 24..280, 28..240, color), "{color:#x}");
         }
         // The power gauge lights five of seven zones; Z5 is amber.
-        assert!(painted(&view, 170..190, 120..200, AMBER));
+        assert!(painted(&mut view, 170..190, 120..200, AMBER));
         // No button labels: the bottom band is free for toasts.
-        assert!(!painted(&view, TOAST.top + 2..320, 28..240, WHITE));
+        assert!(!painted(&mut view, TOAST.top + 2..320, 28..240, WHITE));
         // The same watts sit in a lower zone for a stronger rider.
         view.profile = crate::ride::zones::TrainingProfile::new(300, 185).unwrap();
         view.prepare();
         assert_eq!(label_color(&view, b"Z3"), Some(zone_color(3)));
-        assert!(!painted(&view, 170..190, 120..200, AMBER));
+        assert!(!painted(&mut view, 170..190, 120..200, AMBER));
     }
 
     #[test]
@@ -1320,21 +1323,22 @@ mod tests {
         let mut view = View::new(Page::Ride, 0, None);
         view.sample.speed_mm_s = Some(8333);
         view.prepare();
-        let leftmost = |view: &View| {
+        let leftmost = |view: &mut View| {
+            let scene = view.prepare();
             (60..130)
                 .flat_map(|y| (0..240).map(move |x| (x, y)))
-                .filter(|&(x, y)| view.pixel(x, y) == SPEED)
+                .filter(|&(x, y)| scene.pixel(x, y) == SPEED)
                 .map(|(x, _)| x)
                 .min()
         };
-        let centred = leftmost(&view).unwrap();
+        let centred = leftmost(&mut view).unwrap();
         view.radar_paired = true;
-        assert_eq!(leftmost(&view), Some(centred + 14));
+        assert_eq!(leftmost(&mut view), Some(centred + 14));
         view.toast = Some(Toast::new("RIDE SAVED", Tone::Good));
-        assert!(painted(&view, TOAST.top..320, 0..120, GREEN));
-        assert!(painted(&view, TOAST.top..320, 0..240, RAISED));
+        assert!(painted(&mut view, TOAST.top..320, 0..120, GREEN));
+        assert!(painted(&mut view, TOAST.top..320, 0..240, RAISED));
         // Two pages: two dots, the first lit.
-        assert!(painted(&view, 0..STATUS_BAR.bottom, 0..40, WHITE));
+        assert!(painted(&mut view, 0..STATUS_BAR.bottom, 0..40, WHITE));
     }
 
     /// A first lap of five minutes at 200 W and 30 km/h, then `seconds` of
@@ -1711,15 +1715,14 @@ mod tests {
         }
     }
 
-    /// A Boot view straight from `new`, as the startup frame is built,
-    /// paints VANA and LABS without `prepare`.
     #[test]
-    fn a_new_boot_view_paints_the_brand_without_prepare() {
-        let view = View::new(Page::Boot, 0, None);
-        assert!(view.canvas().shows("VANA") && view.canvas().shows("LABS"));
+    fn a_boot_view_paints_the_brand() {
+        let mut view = View::new(Page::Boot, 0, None);
+        let scene = view.prepare();
+        assert!(scene.canvas().shows("VANA") && scene.canvas().shows("LABS"));
         let lit = (0..320)
             .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
-            .filter(|&(x, y)| view.pixel(x, y) != BLACK)
+            .filter(|&(x, y)| scene.pixel(x, y) != BLACK)
             .count();
         assert!(lit > 200, "{lit} lit pixels");
     }

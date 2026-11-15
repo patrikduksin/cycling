@@ -854,9 +854,9 @@ impl Session {
             vana::sensors::ble_profile::Profile::HeartRate
         };
         {
-            let view =
+            let mut view =
                 vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
-            let scene = view.scene();
+            let scene = view.prepare();
             shell.draw_canvas(240, 320, |row| {
                 firmware_shell::shell::Picture::paint(&scene, row);
             });

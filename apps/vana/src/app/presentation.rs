@@ -323,7 +323,7 @@ impl Runtime {
     ) {
         let mut view = View::new(Page::Boot, 0, None);
         view.light = self.light();
-        let scene = view.scene();
+        let scene = view.prepare();
         system.draw_canvas(240, 320, |row| scene.paint(row));
     }
 
@@ -837,8 +837,7 @@ impl Runtime {
             view.show_map(super::back::map_of(&self.back));
         }
         view.graphics = self.motion.graphics(self.motion_visible(), now);
-        view.prepare();
-        let drawn = system.draw(&view.scene(), now);
+        let drawn = system.draw(&view.prepare(), now);
         let pixels = crate::screens::ride::pixels(&view.graphics, &view.profile);
         self.motion.drew(&sample, pixels, now);
         // Only a frame the panel accepted is a milestone or answers a press;

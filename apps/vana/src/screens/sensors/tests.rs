@@ -1000,10 +1000,11 @@ fn crowded_sensor_pages_never_overlap_clip_or_drop_anything() {
 #[test]
 fn painted_rows_match_the_per_pixel_reference() {
     for (what, menu) in crowded() {
-        let frame = menu.frame();
+        let mut frame = menu.frame();
+        let scene = frame.prepare();
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
-                let (got, want) = (frame.pixel(x, y), frame.scene().reference_pixel(x, y));
+                let (got, want) = (scene.pixel(x, y), scene.reference_pixel(x, y));
                 assert_eq!(got, want, "{what} at {x},{y}: {got:#06x} != {want:#06x}");
             }
         }

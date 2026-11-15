@@ -736,10 +736,10 @@ mod tests {
     }
 
     /// Every painted row equals the per-pixel reference.
-    fn assert_paints_reference(view: &View) {
+    fn assert_paints_reference(view: &mut View) {
+        let scene = view.prepare();
         for y in 0..320 {
             let mut pixels = [0x5555; crate::screens::chrome::WIDTH];
-            let scene = view.scene();
             firmware_shell::shell::Picture::paint(&scene, &mut Row::new(y, &mut pixels));
             for (x, &pixel) in pixels.iter().enumerate() {
                 assert_eq!(pixel, scene.reference_pixel(x, y), "{x},{y}");
@@ -820,7 +820,7 @@ mod tests {
         assert!(frame.bands[10..50].iter().all(|&b| b == Steepness::Easy));
         assert!(frame.bands[125..165].iter().all(|&b| b == Steepness::Hard));
         assert!(frame.bands[185..].iter().all(|&b| b == Steepness::Descent));
-        assert_paints_reference(&view);
+        assert_paints_reference(&mut view);
     }
 
     #[test]
@@ -838,7 +838,7 @@ mod tests {
         let first = PROFILE_LEN - 130;
         assert!(frame.dim[first..first + 40].iter().all(|&d| d));
         assert!(frame.dim[PROFILE_LEN - 60..].iter().all(|&d| !d));
-        assert_paints_reference(&view);
+        assert_paints_reference(&mut view);
     }
 
     #[test]
@@ -877,7 +877,7 @@ mod tests {
                 .iter()
                 .all(|&b| b == Steepness::Steep)
         );
-        assert_paints_reference(&view);
+        assert_paints_reference(&mut view);
     }
 
     #[test]
@@ -887,8 +887,8 @@ mod tests {
         // 600 m up, 400 m to go: the map sees the rest from here.
         let ride = ride.mapped(2, 5, |m: f64| m.min(400.0) * 0.08);
         let mut view = ride.view();
-        view.prepare();
-        let canvas = view.canvas();
+        let scene = view.prepare();
+        let canvas = scene.canvas();
         for text in [
             "CLIMBING",
             "CAT 4",
@@ -900,7 +900,7 @@ mod tests {
         ] {
             assert!(canvas.shows(text), "{text}");
         }
-        let frame = view.climb();
+        let frame = scene.climb();
         // The chart starts at the foot: the rider is 600 m into 1.2 km of it.
         let rider = usize::from(frame.rider);
         assert!((95..=105).contains(&rider), "{rider}");
@@ -913,7 +913,7 @@ mod tests {
         // The rider's disc sits on the profile at the rider's column.
         let x = CHART_LEFT + rider;
         assert_eq!(
-            view.pixel(x, CHART_TOP + usize::from(frame.tops[rider])),
+            scene.pixel(x, CHART_TOP + usize::from(frame.tops[rider])),
             WHITE
         );
         // The bar is filled to the share climbed.
@@ -928,7 +928,7 @@ mod tests {
             (CHART_RIGHT - CHART_LEFT) * 600 / 1000
         );
         assert!(canvas.shows("FOOT") && canvas.shows("TOP"));
-        assert_paints_reference(&view);
+        assert_paints_reference(&mut view);
     }
 
     /// Every road, with the widest values, lays out whole.
@@ -971,7 +971,7 @@ mod tests {
                     &["POWER 3S", "HEART"],
                     &std::format!("{what} {tenths:?}"),
                 );
-                assert_paints_reference(&view);
+                assert_paints_reference(&mut view);
             }
         }
     }

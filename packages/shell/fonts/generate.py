@@ -7,11 +7,6 @@
 Run `uv run packages/shell/fonts/generate.py` after changing a face below; it
 rewrites `packages/shell/src/rendering/font/faces.rs`. The source is Nunito, a
 rounded sans under the SIL Open Font License (see OFL.txt beside this file).
-
-Each face is one weight at one pixel size and holds printable ASCII from space
-to underscore (uppercase only; the UI writes capitals), or only the characters
-it names. Digits share one advance so numbers do not jitter as they change. A glyph box starts at the
-face's cap line, so a line of text is `height` pixels tall from its top.
 """
 
 from pathlib import Path

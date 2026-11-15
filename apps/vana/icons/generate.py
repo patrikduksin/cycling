@@ -15,12 +15,6 @@ The whole SVG is rendered at once, so parts that overlap make one shape with
 no seam. Parts that do not touch in the drawing must keep a clear pixel
 between them at every size, or the script stops. `--zoom DIR` also writes an
 8x nearest-neighbour sheet of each size to DIR for review.
-
-The course sign's glyphs come from the mockups in docs/design/course-navigation
-instead: each is drawn at the scale and sub-pixel centre the mockup gives it in
-each form of the sign, so a painted glyph is the mockup's own pixels. A left
-glyph is drawn mirrored, as the mockup does, rather than flipped at paint: a
-centre at a quarter pixel cannot be flipped onto pixel columns.
 """
 
 import io
@@ -28,6 +22,7 @@ import math
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import NamedTuple
 
 import resvg_py
 from PIL import Image
@@ -50,15 +45,12 @@ SENSORS = [
 SENSOR_SIZES = [22, 26, 34]
 MARKS = [("refresh", 18), ("plus", 18), ("arrow", 28)]
 
-# Sign glyph art in the mockups' units, centred on the origin.
 TURN = (
     '<path d="M-15 19 V-1 Q-15 -11 -5 -11 H4" fill="none" stroke="#fff" stroke-width="10" '
     'stroke-linecap="round" stroke-linejoin="round"/>'
     '<polygon points="3,-23 22,-11 3,1" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>'
 )
-# No mockup draws a sharp turn: this is TURN's stem and head with the bend
-# carried on to 135 degrees, for review against the mockups.
-SHARP = (
+SHARP_TURN_135 = (
     '<path d="M-15 20 V-4 Q-15 -18 -6 -9 L2 -1" fill="none" stroke="#fff" stroke-width="10" '
     'stroke-linecap="round" stroke-linejoin="round"/>'
     '<polygon points="10.5,-9.5 -6.5,7.5 15.4,12.4" fill="#fff" stroke="#fff" stroke-width="2" '
@@ -74,31 +66,42 @@ FLAG = (
     '<path d="M-13 -22 H20 L12 -10.5 L20 1 H-13 Z" fill="#fff" stroke="#fff" stroke-width="2" '
     'stroke-linejoin="round"/>'
 )
-# The sign's forms: the glyph's scale and the top-left corner of the fill it
-# sits on, from ride-turns, map-approach and ride-straight.
-FORMS = [("Banner", 1.25, (0, 22)), ("Badge", 0.9167, (8, 30)), ("Chip", 0.375, (24, 72))]
-# Glyph centres per form, in screen pixels. A turn's centre is the mockups';
-# the off-course U-turn's is ride-offcourse's and map-offcourse's; the flag's
-# banner centre is arrived's. No mockup draws these in the other forms, so
-# those keep the banner's offset from the turn's centre, scaled.
+
+
+class SignFormSpec(NamedTuple):
+    name: str
+    scale: float
+    fill_origin: tuple[int, int]
+
+
+FORMS = [
+    SignFormSpec("Banner", 1.25, (0, 22)),
+    SignFormSpec("Badge", 0.9167, (8, 30)),
+    SignFormSpec("Chip", 0.375, (24, 72)),
+]
 TURN_AT = [(52.75, 63.0), (34.33, 60.0), (37.44, 86.0)]
 BACK_AT = [(54.0, 63.0), (38.0, 60.0), None]
 FLAG_AT = [(49.62, 63.0), None, None]
-# name, art, 1 or -1 for mirrored, centres per form
+
+
+class SignGlyphSpec(NamedTuple):
+    name: str
+    svg: str
+    horizontal_scale: int
+    centres_by_form: list
+
+
 SIGN_GLYPHS = [
-    ("Right", TURN, 1, TURN_AT),
-    ("Left", TURN, -1, TURN_AT),
-    ("SharpRight", SHARP, 1, TURN_AT),
-    ("SharpLeft", SHARP, -1, TURN_AT),
-    ("UTurnLeft", UTURN, 1, TURN_AT),
-    ("UTurnRight", UTURN, -1, TURN_AT),
-    ("Back", UTURN, 1, BACK_AT),
-    ("Flag", FLAG, 1, FLAG_AT),
+    SignGlyphSpec("Right", TURN, 1, TURN_AT),
+    SignGlyphSpec("Left", TURN, -1, TURN_AT),
+    SignGlyphSpec("SharpRight", SHARP_TURN_135, 1, TURN_AT),
+    SignGlyphSpec("SharpLeft", SHARP_TURN_135, -1, TURN_AT),
+    SignGlyphSpec("UTurnLeft", UTURN, 1, TURN_AT),
+    SignGlyphSpec("UTurnRight", UTURN, -1, TURN_AT),
+    SignGlyphSpec("Back", UTURN, 1, BACK_AT),
+    SignGlyphSpec("Flag", FLAG, 1, FLAG_AT),
 ]
-# Art units from a glyph's centre to the edge of its ink, with room to spare.
-REACH = 26
-# The map's rider arrow, centred on the puck's discs; map-approach paints it
-# ACCENT and map-offcourse AMBER.
+GLYPH_INK_RADIUS_UNITS = 26
 PUCK = '<polygon points="0,-8.5 7,7 0,3 -7,7" fill="#fff" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>'
 PUCK_SIZE = 20
 
@@ -192,11 +195,9 @@ def crop(coverage: list[int], size: int, name: str) -> dict:
     return dict(left=left, top=top, width=width, height=height, bits=pack(pixels, width))
 
 
-def centres(at: list) -> list[tuple[float, float]]:
-    """A glyph's centre in each form, filling a form no mockup draws it in
-    from the banner's offset to the turn's centre."""
+def centres_with_scaled_banner_fallback(at: list) -> list[tuple[float, float]]:
     (bx, by), (tx, ty) = at[0], TURN_AT[0]
-    banner = FORMS[0][1]
+    banner = FORMS[0].scale
     out = []
     for (_, scale, _), centre, (ux, uy) in zip(FORMS, at, TURN_AT, strict=True):
         out.append(centre or (ux + (bx - tx) / banner * scale, uy + (by - ty) / banner * scale))
@@ -210,19 +211,21 @@ def draw(art: str, size: int, x: float, y: float, mirror: int, scale: float) -> 
     )
 
 
-def sign_glyph(art: str, mirror: int, scale: float, fill: tuple[int, int], centre: tuple[float, float]) -> dict:
-    """The glyph in a square whose top-left corner sits a whole number of
-    pixels from the fill's, so the glyph keeps its centre's fraction."""
-    reach = math.ceil(REACH * scale) + 1
+def rasterize_at_subpixel_centre(
+    art: str, mirror: int, scale: float, fill: tuple[int, int], centre: tuple[float, float]
+) -> dict:
+    reach = math.ceil(GLYPH_INK_RADIUS_UNITS * scale) + 1
     x, y = centre[0] - fill[0], centre[1] - fill[1]
-    left, top = max(int(x) - reach, 0), max(int(y) - reach, 0)
-    size = max(int(x) + reach - left, int(y) + reach - top)
-    svg = draw(art, size, x - left, y - top, mirror, scale)
+    raster_origin_x, raster_origin_y = max(int(x) - reach, 0), max(int(y) - reach, 0)
+    size = max(int(x) + reach - raster_origin_x, int(y) + reach - raster_origin_y)
+    svg = draw(art, size, x - raster_origin_x, y - raster_origin_y, mirror, scale)
     coverage = render(svg, size)
     edge = [coverage[i] for i in range(size)] + [coverage[i * size] for i in range(size)]
     edge += [coverage[-1 - i] for i in range(size)] + [coverage[i * size + size - 1] for i in range(size)]
     assert max(edge) == 0, f"a sign glyph at {scale} reaches past its square"
-    return dict(left=left, top=top, size=size, raster=crop(coverage, size, f"a sign glyph at {scale}"))
+    return dict(
+        left=raster_origin_x, top=raster_origin_y, size=size, raster=crop(coverage, size, f"a sign glyph at {scale}")
+    )
 
 
 def zoom_sheet(names: list[str], size: int, path: Path) -> None:
@@ -237,10 +240,12 @@ def zoom_sheet(names: list[str], size: int, path: Path) -> None:
 
 
 def sign_sheet(form: str, scale: float, fill: tuple[int, int], path: Path) -> None:
-    """Every sign glyph in one form, white on its fill, each pixel 8 x 8."""
-    form_index = [f for f, _, _ in FORMS].index(form)
+    form_index = [f.name for f in FORMS].index(form)
     glyphs = [
-        sign_glyph(art, mirror, scale, fill, centres(at)[form_index]) for _, art, mirror, at in SIGN_GLYPHS
+        rasterize_at_subpixel_centre(
+            g.svg, g.horizontal_scale, scale, fill, centres_with_scaled_banner_fallback(g.centres_by_form)[form_index]
+        )
+        for g in SIGN_GLYPHS
     ]
     cell = max(g["size"] for g in glyphs) + 4
     sheet = Image.new("RGB", (cell * len(glyphs), cell), (10, 111, 224))
@@ -322,16 +327,14 @@ def emit() -> str:
         *fields(PUCK_SIZE, raster, 4),
         "};",
         "",
-        "/// Each `SignGlyph`, in `SignForm` order.",
         f"pub(super) static SIGN_GLYPHS: [[SignArt; {len(FORMS)}]; {len(SIGN_GLYPHS)}] = [",
     ]
-    for name, art, mirror, at in SIGN_GLYPHS:
-        body += [f"    // {name}", "    ["]
-        for (form, scale, fill), centre in zip(FORMS, centres(at), strict=True):
-            glyph = sign_glyph(art, mirror, scale, fill, centre)
+    for _, art, mirror, at in SIGN_GLYPHS:
+        body += ["    ["]
+        for (_, scale, fill), centre in zip(FORMS, centres_with_scaled_banner_fallback(at), strict=True):
+            glyph = rasterize_at_subpixel_centre(art, mirror, scale, fill, centre)
             total += len(glyph["raster"]["bits"]) + 10
             body += [
-                f"        // {form}, centred at ({centre[0]:.2f}, {centre[1]:.2f})",
                 "        SignArt {",
                 f"            left: {glyph['left']},",
                 f"            top: {glyph['top']},",
@@ -343,7 +346,7 @@ def emit() -> str:
         body.append("    ],")
     body += ["];", ""]
     variants = "\n".join(f"    {camel(name)}," for name in SENSORS)
-    glyphs = "\n".join(f"    {name}," for name, *_ in SIGN_GLYPHS)
+    glyphs = "\n".join(f"    {g.name}," for g in SIGN_GLYPHS)
     head = [
         "//! Generated by `apps/vana/icons/generate.py` from the SVGs beside it.",
         "//! Do not edit by hand.",
@@ -356,7 +359,7 @@ def emit() -> str:
         variants,
         "}",
         "",
-        "/// A course sign's glyph. A left glyph is drawn mirrored, not flipped.",
+        "/// A course sign's glyph.",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]",
         "pub enum SignGlyph {",
         glyphs,

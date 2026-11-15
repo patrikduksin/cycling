@@ -18,7 +18,7 @@ pub enum Sensor {
     Generic,
 }
 
-/// A course sign's glyph. A left glyph is drawn mirrored, not flipped.
+/// A course sign's glyph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SignGlyph {
     Right,
@@ -947,11 +947,8 @@ pub static PUCK: Icon = Icon {
     ],
 };
 
-/// Each `SignGlyph`, in `SignForm` order.
 pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
-    // Right
     [
-        // Banner, centred at (52.75, 63.00)
         SignArt {
             left: 18,
             top: 7,
@@ -1095,7 +1092,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Badge, centred at (34.33, 60.00)
         SignArt {
             left: 1,
             top: 5,
@@ -1177,7 +1173,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Chip, centred at (37.44, 86.00)
         SignArt {
             left: 2,
             top: 3,
@@ -1204,9 +1199,7 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
             },
         },
     ],
-    // Left
     [
-        // Banner, centred at (52.75, 63.00)
         SignArt {
             left: 18,
             top: 7,
@@ -1345,7 +1338,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Badge, centred at (34.33, 60.00)
         SignArt {
             left: 1,
             top: 5,
@@ -1427,7 +1419,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Chip, centred at (37.44, 86.00)
         SignArt {
             left: 2,
             top: 3,
@@ -1454,9 +1445,7 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
             },
         },
     ],
-    // SharpRight
     [
-        // Banner, centred at (52.75, 63.00)
         SignArt {
             left: 18,
             top: 7,
@@ -1570,7 +1559,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Badge, centred at (34.33, 60.00)
         SignArt {
             left: 1,
             top: 5,
@@ -1635,7 +1623,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Chip, centred at (37.44, 86.00)
         SignArt {
             left: 2,
             top: 3,
@@ -1660,9 +1647,7 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
             },
         },
     ],
-    // SharpLeft
     [
-        // Banner, centred at (52.75, 63.00)
         SignArt {
             left: 18,
             top: 7,
@@ -1772,7 +1757,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Badge, centred at (34.33, 60.00)
         SignArt {
             left: 1,
             top: 5,
@@ -1837,7 +1821,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Chip, centred at (37.44, 86.00)
         SignArt {
             left: 2,
             top: 3,
@@ -1862,9 +1845,7 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
             },
         },
     ],
-    // UTurnLeft
     [
-        // Banner, centred at (52.75, 63.00)
         SignArt {
             left: 18,
             top: 7,
@@ -2008,7 +1989,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Badge, centred at (34.33, 60.00)
         SignArt {
             left: 1,
             top: 5,
@@ -2090,7 +2070,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Chip, centred at (37.44, 86.00)
         SignArt {
             left: 2,
             top: 3,
@@ -2118,9 +2097,7 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
             },
         },
     ],
-    // UTurnRight
     [
-        // Banner, centred at (52.75, 63.00)
         SignArt {
             left: 18,
             top: 7,
@@ -2259,7 +2236,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Badge, centred at (34.33, 60.00)
         SignArt {
             left: 1,
             top: 5,
@@ -2341,7 +2317,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Chip, centred at (37.44, 86.00)
         SignArt {
             left: 2,
             top: 3,
@@ -2369,9 +2344,7 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
             },
         },
     ],
-    // Back
     [
-        // Banner, centred at (54.00, 63.00)
         SignArt {
             left: 20,
             top: 7,
@@ -2510,7 +2483,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Badge, centred at (38.00, 60.00)
         SignArt {
             left: 5,
             top: 5,
@@ -2592,7 +2564,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Chip, centred at (37.81, 86.00)
         SignArt {
             left: 2,
             top: 3,
@@ -2620,9 +2591,7 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
             },
         },
     ],
-    // Flag
     [
-        // Banner, centred at (49.62, 63.00)
         SignArt {
             left: 15,
             top: 7,
@@ -2756,7 +2725,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Badge, centred at (32.03, 60.00)
         SignArt {
             left: 0,
             top: 5,
@@ -2838,7 +2806,6 @@ pub(super) static SIGN_GLYPHS: [[SignArt; 3]; 8] = [
                 ],
             },
         },
-        // Chip, centred at (36.50, 86.00)
         SignArt {
             left: 1,
             top: 3,

@@ -1362,6 +1362,96 @@ mod tests {
         view.show_laps(ride::LapBars::new(), laps.current(), laps.previous());
     }
 
+    /// Every row whose pixels differ between the two views lies in a band
+    /// whose key changed, so a frame from one to the other sends it.
+    #[track_caller]
+    fn assert_parts_cover(before: &View, after: &View, what: &str) {
+        use firmware_shell::shell::{Parts, Picture};
+        let (before, after) = (before.scene(), after.scene());
+        let sent = Parts::of(&before).changed(&Parts::of(&after));
+        let mut changed = 0;
+        for y in 0..HEIGHT {
+            let (mut was, mut now) = ([0; WIDTH], [0; WIDTH]);
+            before.paint(&mut Row::new(y, &mut was));
+            after.paint(&mut Row::new(y, &mut now));
+            if was != now {
+                assert!(
+                    sent.contains(y),
+                    "{what}: row {y} changed, its band's key did not"
+                );
+                changed += 1;
+            }
+        }
+        assert!(changed > 0, "{what} changes no pixel");
+    }
+
+    /// The inputs of a ride page that no simulator scenario changes alone.
+    #[test]
+    fn each_ride_page_input_alone_keys_the_rows_it_changes() {
+        let target = |closing_speed_cm_s| radar::Target {
+            threat: radar::Threat::Approach,
+            side: radar::Side::Behind,
+            range_mm: 30_000,
+            closing_speed_cm_s,
+        };
+        let ride = |change: &dyn Fn(&mut View)| {
+            let mut view = View::new(Page::Ride, 0, None);
+            view.radar_paired = true;
+            view.sample.speed_mm_s = Some(8333);
+            view.graphics.radar.status = radar::Status::Ready;
+            view.graphics.radar.targets[0] = Some(target(0));
+            view.prepare();
+            change(&mut view);
+            view
+        };
+        let base = ride(&|_| {});
+        let band = |view: &mut View| {
+            if let Body::Main(smooth) = &mut view.body {
+                smooth.band = Some((1, 100..160));
+            }
+        };
+        type Change<'c> = dyn for<'v> Fn(&mut View<'v>) + 'c;
+        let cases: [(&str, &Change<'_>); 7] = [
+            ("the light look", &|view| view.light = true),
+            ("radar pairing", &|view| {
+                view.radar_paired = false;
+                view.prepare();
+            }),
+            ("the radar track's status", &|view| {
+                view.graphics.radar.status = radar::Status::Error;
+            }),
+            ("a marker turning close on its row", &|view| {
+                view.graphics.radar.targets[0] = Some(target(500));
+            }),
+            ("the workout target band", &band),
+            ("button cues", &|view| view.cues = &ride::paused::CUES),
+            ("a badge", &|view| {
+                view.badge = Some(Badge {
+                    cx: 120,
+                    cy: 160,
+                    radius: 12,
+                    icon: super::super::cue::Icon::Check,
+                })
+            }),
+        ];
+        for (what, change) in cases {
+            assert_parts_cover(&base, &ride(change), what);
+        }
+    }
+
+    #[test]
+    fn the_phone_code_alone_keys_the_page() {
+        let phone = |text: &str| {
+            let mut view = View::new(Page::Phone, 0, None);
+            let (qr, _) = view.show_phone();
+            *qr = super::super::qr::Qr::encode(text)
+                .map(|code| super::super::qr::Placed::centred(code, 120, 100, 160));
+            view.prepare();
+            view
+        };
+        assert_parts_cover(&phone("WIFI:A"), &phone("WIFI:B"), "the code");
+    }
+
     #[test]
     fn home_highlights_the_selected_tile() {
         let mut view = View::new(Page::Home, 1, None);

@@ -102,11 +102,30 @@ pub trait Picture: core::hash::Hash {
 /// The parts of a picture, as `Shell::draw` keys its bands: a band's key
 /// folds the key of every part that touches it, in the order they were
 /// added.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Parts {
     keys: [u32; BANDS],
 }
 
 impl Parts {
+    /// The parts `picture` names, keyed band by band.
+    pub fn of<F: Picture>(picture: &F) -> Self {
+        const { assert!(F::SIZE.1 <= MAX_HEIGHT) };
+        let mut parts = Self {
+            keys: [FNV_OFFSET; BANDS],
+        };
+        picture.parts(&mut parts);
+        parts
+    }
+
+    /// The bands whose keys differ from `other`'s: what a frame sends to
+    /// bring a panel that shows one picture to the other.
+    pub fn changed(&self, other: &Self) -> Rows {
+        (0..BANDS)
+            .filter(|&band| self.keys[band] != other.keys[band])
+            .fold(Rows::NONE, |rows, band| rows | Rows::band(band))
+    }
+
     /// `key` must cover everything paint draws in `rows` for this part.
     pub fn add(&mut self, rows: core::ops::Range<usize>, key: &(impl core::hash::Hash + ?Sized)) {
         use core::hash::Hasher;
@@ -180,9 +199,9 @@ pub struct Shell<D, I, P, B> {
     /// The bands' digests folded top to bottom, after the last frame the
     /// panel took.
     panel: Option<u32>,
-    /// The keys of the picture on the panel, band by band, until anything
-    /// else is submitted.
-    keys: Option<[u32; BANDS]>,
+    /// The parts of the picture on the panel, until anything else is
+    /// submitted.
+    shown: Option<Parts>,
     /// The digest `take_frame` last handed out.
     taken: Option<u32>,
     /// The latest submission, rendering included; measured when `clock` is set.
@@ -281,7 +300,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             synthetic_events: 0,
             sent: [FNV_OFFSET; BANDS],
             panel: None,
-            keys: None,
+            shown: None,
             taken: None,
             store,
             settings,
@@ -615,18 +634,10 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     /// scaled one, or a frame something waits for (`frame_wanted`) takes
     /// the whole picture.
     pub fn draw<F: Picture>(&mut self, picture: &F, now: u64) -> Drawn {
-        const { assert!(F::SIZE.1 <= MAX_HEIGHT) };
-        let mut parts = Parts {
-            keys: [FNV_OFFSET; BANDS],
-        };
-        picture.parts(&mut parts);
+        let parts = Parts::of(picture);
         let geometry = self.display.geometry();
         let fits = (geometry.width, geometry.height) == F::SIZE;
-        let changed = self.keys.map(|shown| {
-            (0..F::SIZE.1.div_ceil(BAND_ROWS))
-                .filter(|&band| shown[band] != parts.keys[band])
-                .fold(Rows::NONE, |rows, band| rows | Rows::band(band))
-        });
+        let changed = self.shown.map(|shown| shown.changed(&parts));
         let rows = match changed {
             _ if self.frame_wanted(now) => Rows::all(geometry.height),
             Some(changed) if changed.is_empty() => Rows::NONE,
@@ -643,10 +654,10 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                 self.draw_canvas(width, height, |row| picture.paint(row));
             }
             if self.display_error {
-                self.keys = None;
+                self.shown = None;
                 return Drawn::Failed;
             }
-            self.keys = Some(parts.keys);
+            self.shown = Some(parts);
             Drawn::Sent
         };
         // Only an unscaled panel holds the picture's own rows to compare.
@@ -658,11 +669,11 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     }
     /// The next `draw` sends its picture whole, whatever the panel showed.
     pub fn forget_panel(&mut self) {
-        self.keys = None;
+        self.shown = None;
     }
     /// Submit a frame row by row; `row(y, pixels)` must fill every physical pixel.
     pub fn draw_rows(&mut self, row: impl FnMut(usize, &mut [u16])) {
-        self.keys = None;
+        self.shown = None;
         self.send(Rows::all(self.display.geometry().height), row);
     }
     /// Submit `rows` of a frame; a capture takes every row.
@@ -738,7 +749,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             return;
         }
         if width == 0 || width > CANVAS_MAX_WIDTH {
-            self.keys = None;
+            self.shown = None;
             self.display_error = true;
             return;
         }

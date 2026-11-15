@@ -1,18 +1,10 @@
-//! The redraw probe (#369): run a page for simulated seconds under a named
-//! sensor feed and compare every submitted frame with the one before.
-//!
-//! The probe says how much of the screen a redraw engine would have had to
-//! repaint: which of the panel's 16-row strips changed, how many pixels, and
-//! how many frames changed nothing at all. `redraw-probe` prints the table.
 use crate::bench::SCENES;
 use crate::sim::Sim;
 use crate::world::{Side, Vehicle};
 use firmware_shell::rendering::work::Work;
 
-/// Rows the device sends in one strip.
 pub const STRIP_ROWS: usize = 16;
 
-/// What one submitted frame changed from the frame before it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Change {
     pub strips: usize,
@@ -25,7 +17,6 @@ pub fn pixel_work(work: &Work) -> u64 {
     work.span_pixels + work.evaluations + work.glyph_columns
 }
 
-/// Compares each shown frame with the last, as `Frame::shown` hands them over.
 pub struct Probe {
     width: usize,
     previous: Vec<u16>,
@@ -33,7 +24,6 @@ pub struct Probe {
 }
 
 impl Probe {
-    /// Starts from the frame on the panel now, which is not counted.
     pub fn new(width: usize, pixels: &[u16]) -> Self {
         Self {
             width,
@@ -66,24 +56,17 @@ impl Probe {
     }
 }
 
-/// What the sensors do while the page is watched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feed {
-    /// The scene's readings hold; with `cars`, a vehicle appears about every 7 s.
     Steady { cars: bool },
-    /// Power within 35 W, and heart rate, speed and cadence, change every 250 ms.
     Noisy { cars: bool },
-    /// The readings hold and the battery charges at `percent`, as on USB.
     Charging { percent: u8 },
 }
 
 pub struct Case {
     pub name: &'static str,
-    /// A scene of `bench::SCENES`.
     pub scene: &'static str,
     pub feed: Feed,
-    /// The rider chose the display mode SAVER first. Only "ride main + radar"
-    /// can be reached that way.
     pub saver: bool,
 }
 
@@ -165,7 +148,6 @@ pub static CASES: [Case; 12] = [
 const TICK_MS: u64 = 250;
 const CAR_EVERY_MS: u64 = 7_000;
 
-/// What the probe saw over a run.
 #[derive(Clone, Debug)]
 pub struct Result {
     pub seconds: u64,
@@ -183,7 +165,6 @@ impl Result {
         self.changes.iter().filter(|c| c.pixels == 0).count()
     }
 
-    /// Median and 90th percentile of changed strips over every frame.
     pub fn strips(&self) -> (usize, usize) {
         percentiles(self.changes.iter().map(|c| c.strips).collect())
     }
@@ -219,11 +200,9 @@ fn percentiles(mut values: Vec<usize>) -> (usize, usize) {
     (at(50), at(90))
 }
 
-/// A small deterministic noise source, so a run repeats exactly.
 struct Noise(u64);
 
 impl Noise {
-    /// A value in -1.0..=1.0.
     fn next(&mut self) -> f64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
@@ -232,7 +211,6 @@ impl Noise {
     }
 }
 
-/// Reach the case's scene, then watch it for `seconds` of simulated time.
 pub fn run(case: &Case, seconds: u64) -> Result {
     let scene = SCENES
         .iter()

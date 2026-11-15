@@ -98,7 +98,6 @@ pub(super) const fn color(steepness: Steepness) -> u16 {
 #[derive(Clone, Copy)]
 pub struct Lent<'a> {
     pub climbs: &'a Climbs,
-    /// The climb under way, as the page's numbers show it.
     pub climbing: Option<crate::ride::climb::Summary>,
     /// The whole ride's elevation.
     pub trace: &'a Trace,

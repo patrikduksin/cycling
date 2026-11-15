@@ -21,7 +21,6 @@ pub struct Icon {
     bits: &'static [u8],
 }
 
-/// Every icon is a static, so its address names it.
 impl core::hash::Hash for Icon {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         core::ptr::hash(self, state);

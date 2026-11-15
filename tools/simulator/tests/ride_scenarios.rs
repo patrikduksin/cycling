@@ -1869,7 +1869,6 @@ fn in_saver_the_climb_page_comes_up_already_climbing() {
     sim.start_ride();
     sim.ride_at(30.0, 180.0, 0.0, 85.0);
     ride_to(&mut sim, 500.0);
-    // A pause shifts the ride clock's second off the wall clock's.
     sim.pause_ride();
     sim.advance(370);
     sim.resume_ride();
@@ -4634,7 +4633,6 @@ fn settings_group_display_ride_sound_and_device_and_keep_every_choice() {
     sim.expect_field("BRIGHTNESS", "AUTO");
     sim.expect_field("DIM AFTER", "30 S");
     sim.checkpoint("display section");
-    // ACT steps a choice: AUTO, then 25, 50 and 75%; the backlight follows at once.
     sim.press(Button::BottomRight);
     sim.expect_field("BRIGHTNESS", "25%");
     sim.press(Button::BottomRight);
@@ -5163,7 +5161,6 @@ fn riding_through_sunset_turns_the_day_night_decision_and_leaves_the_backlight_a
     sim.stop_ride();
     go_home(&mut sim);
 
-    // Settings says it is night, and DAY holds the day look.
     sim.home("SETTINGS");
     show_setting(&mut sim, "DAY / NIGHT");
     sim.expect_field("DAY / NIGHT", "AUTO");
@@ -9504,8 +9501,6 @@ fn a_ride_paged_by_a_press_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), a_ride_paged_by_a_press, false);
 }
 
-/// One frame a ride drew: the four numbers on its main page, the ride clock,
-/// every text on the page and when the frame was drawn on the sim's clock.
 struct Drawn {
     at: u64,
     drawn_ms: u64,
@@ -9514,7 +9509,6 @@ struct Drawn {
     texts: Vec<String>,
 }
 
-/// The ride clock reads `H:MM:SS`.
 fn is_ride_clock(text: &str) -> bool {
     let parts: Vec<&str> = text.split(':').collect();
     parts.len() == 3
@@ -9524,12 +9518,8 @@ fn is_ride_clock(text: &str) -> bool {
             .all(|part| part.len() == 2 && part.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// How late after a ride-clock second a frame may draw and still count as
-/// the second's own.
 const TICK_SLACK_MS: u64 = 60;
 
-/// Where the ride clock's second turns on the sim's clock, mod a second: the
-/// first frame whose ride clock text changed.
 fn tick_phase(frames: &[Drawn]) -> u64 {
     frames
         .windows(2)
@@ -9538,7 +9528,6 @@ fn tick_phase(frames: &[Drawn]) -> u64 {
         .expect("the ride clock turned over")
 }
 
-/// When a frame's text changed away from the ride clock's second turning.
 fn off_tick_in(frames: &[Drawn], phase: u64) -> Vec<u64> {
     frames
         .windows(2)
@@ -9548,8 +9537,6 @@ fn off_tick_in(frames: &[Drawn], phase: u64) -> Vec<u64> {
         .collect()
 }
 
-/// Ride `secs` seconds, calling `feed` with the elapsed ms every 250 ms as
-/// a sensor reports, and list the frames that drew something new.
 fn frames_drawn(sim: &mut Sim, secs: u64, mut feed: impl FnMut(&mut Sim, u64)) -> Vec<Drawn> {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let (mut frames, mut last, mut shown) = (Vec::new(), 0, 0);
@@ -9590,7 +9577,6 @@ fn frames_drawn(sim: &mut Sim, secs: u64, mut feed: impl FnMut(&mut Sim, u64)) -
     frames
 }
 
-/// A noisy feed: every reading wobbles at each report.
 fn wobbling() -> impl FnMut(&mut Sim, u64) {
     let mut seed = 0x9e37_79b9_7f4a_7c15u64;
     move |sim, _| {
@@ -9609,23 +9595,14 @@ fn wobbling() -> impl FnMut(&mut Sim, u64) {
     }
 }
 
-/// What a ride in a display mode drew.
 struct Rides {
-    /// When the main page's numbers changed, ms into a noisy minute's first 10 s.
     number_changes: Vec<u64>,
-    /// Longest run of frames each at most 50 ms after the one before, after
-    /// power steps up: a glide draws one every 40 ms.
     longest_burst: usize,
-    /// Frames drawn in 6 s while a car closes from behind.
     car_frames: usize,
-    /// When any ride page's text changed between ride-clock seconds, ms into
-    /// 5 s windows on the main page and each page after it.
     off_tick: Vec<u64>,
 }
 
 fn measure(sim: &mut Sim) -> Rides {
-    // The ride clock starts off the wall clock's second, so a latch on the
-    // wrong clock shows.
     sim.advance(370);
     sim.start_ride();
     sim.ride_at(28.0, 230.0, 142.0, 88.0);
@@ -9736,8 +9713,6 @@ fn saver_mode_is_chosen_in_settings_kept_over_a_restart_and_draws_only_what_arri
         "no glide frames: {}",
         saver.longest_burst
     );
-    // A radar reports four times a second, so a marker moves at most that
-    // often, and the numbers add one frame a second.
     assert!(
         saver.car_frames <= 6 * 4 + 6 && saver.car_frames * 2 < smooth.car_frames,
         "{} frames in SAVER, {} in NORMAL",
@@ -9746,7 +9721,6 @@ fn saver_mode_is_chosen_in_settings_kept_over_a_restart_and_draws_only_what_arri
     );
 }
 
-/// Let the light settle for a minute and read the backlight.
 fn backlight_in(sim: &mut Sim, light: Option<u16>) -> u8 {
     sim.set_ambient_light(light);
     sim.advance(seconds(60));

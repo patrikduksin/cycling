@@ -595,7 +595,6 @@ const EDGE: usize = 8;
 const MARK_ICON: usize = 10;
 /// Battery icon: a 19 × 10 pill with a nub.
 const BATTERY_WIDTH: usize = 19;
-/// The widest fill: the icon's body, less its outline and gap.
 const FILL_WIDTH: usize = BATTERY_WIDTH - 6;
 /// Below this the percentage shows in place of the icon.
 pub const LOW_BATTERY: u8 = 20;
@@ -662,7 +661,6 @@ impl Battery {
         (level as u16 + rise) as u8
     }
 
-    /// Columns of the icon's fill, of `FILL_WIDTH`.
     const fn fill_columns(self) -> usize {
         (self.fill() as usize * FILL_WIDTH).div_ceil(100)
     }
@@ -681,8 +679,6 @@ impl Battery {
         }
     }
 }
-/// The icon as drawn, not the reading: a charge or an animation step that
-/// moves the fill by less than a column changes no pixel.
 impl core::hash::Hash for Battery {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         (self.fill_columns(), self.color(), self.charging).hash(state);

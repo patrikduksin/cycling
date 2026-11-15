@@ -1,10 +1,8 @@
 //! Graphics drawn between sensor samples. ANT+ sensors report about four
 //! times a second, so the main page's zone gauges and the radar markers
 //! glide from one sample to the next instead of jumping. Numbers never
-//! glide: a rider glancing down mid-glide could not read one, so they jump
-//! to each reading, or once a second when the mode latches them. Recording, totals and radar alerts use the
-//! readings as they arrive too. A mode that does not glide (`mode::Policy`)
-//! has every gauge and marker jump to each reading or report instead.
+//! glide: a rider glancing down mid-glide could not read one. Recording,
+//! totals and radar alerts use the readings as they arrive.
 use crate::ride::log::Sample;
 use crate::screens::ride::Pixels;
 use crate::screens::workout::Graphics;
@@ -44,7 +42,6 @@ impl Default for Motion {
     }
 }
 
-/// A glide that takes `ms` to reach a reading, or none when `glides` is off.
 const fn glide(glides: bool, ms: u32) -> Glide {
     Glide::new(if glides { ms } else { 0 })
 }
@@ -72,7 +69,6 @@ impl From<&Sample> for Numbers {
 /// One radar slot: the report it last saw and where its marker glides.
 struct Track {
     glide: Glide,
-    /// The marker keeps closing at the reported speed between reports.
     closes: bool,
     seen: Option<radar::Target>,
     /// When the radar sent the report the marker moves on from.
@@ -206,8 +202,7 @@ impl Motion {
     }
 
     /// Take the latest readings, `sample` with power as its 3 s average:
-    /// a changed one starts its glide at `now`. When `glides` differs from
-    /// the last call, every gauge and marker restarts at its reading.
+    /// a changed one starts its glide at `now`.
     pub(super) fn take(&mut self, sample: &Sample, radar: &Reports, glides: bool, now: u64) {
         if glides != self.glides {
             *self = Self {
@@ -500,9 +495,6 @@ mod tests {
         assert_eq!(motion.graphics(ALL, 3_090).radar.targets[0], None);
     }
 
-    /// Without glides each reading and report shows at once, the radar
-    /// markers stop closing between reports, and a frame is asked for when a
-    /// reading or report arrives and never between them.
     #[test]
     fn without_glides_gauges_and_markers_jump_when_a_reading_or_report_arrives() {
         let mut motion = Motion::default();
@@ -538,7 +530,6 @@ mod tests {
         assert_eq!(due(&motion, ALL, &next, 3_000), None, "nor a quiet radar");
     }
 
-    /// A mode change takes effect at once, in either direction.
     #[test]
     fn changing_the_mode_restarts_the_glides_at_their_readings() {
         let mut motion = Motion::default();

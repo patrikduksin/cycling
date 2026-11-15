@@ -95,7 +95,6 @@ fn colour(mode: Mode) -> u16 {
     }
 }
 
-/// What the arrow is drawn from: its angle and its mode, or none.
 pub(in crate::screens) fn arrow(back: Back) -> Option<(u16, Mode)> {
     match back {
         Back::Guide(guide) if guide.mode != Mode::Arrived => Some((guide.arrow(), guide.mode)),

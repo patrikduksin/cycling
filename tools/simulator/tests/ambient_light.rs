@@ -59,7 +59,6 @@ fn a_trace_recorded_before_ambient_light_was_traced_still_replays_exactly() {
     assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
 }
 
-/// The levels the backlight passed through, in order.
 fn levels(mut samples: Vec<u8>) -> Vec<u8> {
     samples.dedup();
     samples

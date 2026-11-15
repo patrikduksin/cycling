@@ -34,7 +34,6 @@ pub(in crate::screens) struct Marks {
 }
 
 impl Marks {
-    /// The power and heart-rate gauges.
     pub(in crate::screens) fn gauges(&self) -> [Option<Mark>; 2] {
         [self.power, self.heart]
     }

@@ -18,7 +18,6 @@ fn a_still_page_submits_no_frame() {
     assert!(result.changes.len() <= 1, "{}", result.changes.len());
 }
 
-/// The first frame shows the battery charging; a minute may turn too.
 #[test]
 fn home_on_usb_draws_only_while_its_battery_fill_visibly_climbs() {
     let climbing = run(case("home, charging at 50%"), 30);

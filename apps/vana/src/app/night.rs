@@ -1,6 +1,3 @@
-//! Night: whether it is dark, for the Theme's AUTO and the Settings notes.
-//! The backlight does not follow it; the ambient light sensor does.
-//!
 //! In automatic mode the sun decides: its altitude at the last fixed position
 //! and the recorded UTC (network time, else the receiver's clock).
 //! Without a position it falls back to the local clock, and without any clock
@@ -118,7 +115,6 @@ impl Runtime {
             .is_light(self.night.is_night())
     }
 
-    /// Decide day or night. Call once per loop.
     pub(super) fn follow_daylight(&mut self, now: u64, position: &impl Positioning) {
         let gps = position.snapshot(now).map(|snapshot| snapshot.gps);
         let fresh = gps.filter(|gps| gps.state == FixState::Fresh);

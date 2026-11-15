@@ -14,12 +14,9 @@ pub fn request_status(result: Result<(), device_api::observation::Error>) -> &'s
 
 pub const MAX_LINE: usize = 256;
 
-/// What `BRIGHTNESS` asks for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Brightness {
-    /// A fixed percent, as a rider's percent in Settings.
     Percent(u8),
-    /// Follow the ambient light again.
     Auto,
 }
 

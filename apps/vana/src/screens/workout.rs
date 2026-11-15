@@ -230,33 +230,22 @@ impl<'a> Extra<'a> {
     }
 }
 
-/// What a frame shows, borrowed from a prepared `View`: the only input to
-/// painting, so two equal scenes paint the same pixels and the shell can skip
-/// a frame whose scene it already shows.
 #[derive(Hash)]
 pub struct Scene<'v> {
     kind: Kind,
-    /// The light look, applied to each painted row.
     light: bool,
-    /// None when the screen takes the whole panel.
     bar: Option<&'v StatusBar>,
     body: &'v Body,
     extra: &'v Extra<'v>,
-    /// The main page's power and heart-rate gauges.
     pub(super) gauges: [Option<ride::Mark>; 2],
-    /// The radar strip as drawn, while a radar is paired on a ride page.
     pub(super) radar: Option<ride::Radar>,
     cues: &'static [Cue],
     badge: Option<&'v Badge>,
     toast: Option<&'v Toast>,
 }
 
-/// Which painter a scene runs: what `View::scene` decided once from the
-/// page, its sheet, the pause, the layout and the scroll.
 #[derive(Clone, Copy, Debug, Hash)]
 enum Kind {
-    /// The canvas: the brand, a sheet over any page, the paused screen and
-    /// every page that only prepares a canvas.
     Canvas,
     Home,
     Ride(RidePage),
@@ -264,14 +253,12 @@ enum Kind {
     Summary {
         elevation: bool,
     },
-    /// A list that scrolls: this many pixels down its canvas.
     List {
         layout: &'static super::scroll::Layout,
         scroll: i32,
     },
 }
 
-/// Only what painting reads: the rest went into the canvas in `prepare`.
 impl core::hash::Hash for Extra<'_> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
@@ -285,7 +272,6 @@ impl core::hash::Hash for Extra<'_> {
                 previous: _,
             } => {}
             Self::Back { back, sunset: _ } => ride::back::arrow(*back).hash(state),
-            // The frame is filled from its key, and only when the key changes.
             Self::Map(frame) => frame.map(|(_, key)| key).hash(state),
             Self::Settings {
                 lines: _,
@@ -307,8 +293,6 @@ impl core::hash::Hash for Extra<'_> {
 impl firmware_shell::shell::Picture for Scene<'_> {
     const SIZE: (usize, usize) = (WIDTH, HEIGHT);
 
-    /// One row of the 240 × 320 canvas: the status bar, the shown screen,
-    /// its button cues, then the toast over it.
     fn paint(&self, row: &mut Row) {
         row.fill(BLACK);
         self.paint_content(row);
@@ -365,7 +349,6 @@ impl<'v> Scene<'v> {
                 }
                 self.canvas().paint(row);
             }
-            // This row may show a row of the list.
             Kind::List { layout, scroll } => {
                 if let Some(at) = layout.canvas_row(y, scroll) {
                     self.canvas().paint(&mut row.at(at));
@@ -383,13 +366,10 @@ impl<'v> Scene<'v> {
         }
     }
 
-    /// The light look is in force.
     pub(super) fn light(&self) -> bool {
         self.light
     }
 
-    /// What the scene finds in its body or extra: the value, or for a wrong
-    /// variant a blank, after a debug assertion, as `View`'s accessors do.
     fn shown<T>(&self, found: Option<T>, what: &str, blank: T) -> T {
         debug_assert!(found.is_some(), "{:?} has no {what}", self.kind);
         found.unwrap_or(blank)
@@ -437,7 +417,6 @@ impl<'v> Scene<'v> {
         self.shown(self.extra.elevation(), "summary", None)
     }
 
-    /// The per-pixel original of `paint`, kept as the reference it must match.
     #[cfg(test)]
     pub(super) fn reference_pixel(&self, x: usize, y: usize) -> u16 {
         let color = self.reference_content(x, y);
@@ -938,7 +917,6 @@ impl<'a> View<'a> {
         self.page == Page::Ride && self.pause_screen
     }
 
-    /// What this frame shows; call after `prepare`.
     pub fn scene(&self) -> Scene<'_> {
         let sheet = self.page == Page::Boot || self.ftp_offer.is_some();
         let kind = match self.page {

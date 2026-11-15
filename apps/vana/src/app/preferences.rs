@@ -84,9 +84,7 @@ const PROFILE_LENGTH: usize = 5;
 const ALERTS_LENGTH: usize = 9;
 const WHEEL_LENGTH: usize = 3;
 const OPTIONS_LENGTH: usize = OPTIONS_LENGTH_V9 + 1;
-/// Options as version 9 stored them, without the brightness choice.
 const OPTIONS_LENGTH_V9: usize = OPTIONS_LENGTH_V8 + 1;
-/// Options as version 8 stored them, without the display mode.
 const OPTIONS_LENGTH_V8: usize = OPTIONS_LENGTH_V7 + slots::LENGTH;
 /// Options as version 7 stored them, without the main page's readings.
 const OPTIONS_LENGTH_V7: usize = OPTIONS_LENGTH_V6 + rider::LENGTH;
@@ -276,8 +274,6 @@ pub struct Options {
     /// The readings on the main page's lower line.
     pub main_slots: Slots,
     pub mode: DisplayMode,
-    /// The backlight follows the ambient light; otherwise it holds the
-    /// shell's stored percent.
     pub auto_brightness: bool,
 }
 
@@ -777,8 +773,6 @@ impl Runtime {
         self.save_display(system, now, false);
     }
 
-    /// The terminal's `BRIGHTNESS` means what a rider's choice in Settings
-    /// means: a percent holds, AUTO follows the light.
     fn adopt_brightness_choice<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,
         system: &mut Shell<D, I, P, B>,
@@ -1041,8 +1035,6 @@ mod tests {
         assert_eq!(decode(&rewritten), (migrated, Stored::Current));
     }
 
-    /// A version 7 record keeps every field it had, with the default lower
-    /// line, and its rewrite as version 9 only appends the two slots and the mode.
     #[test]
     fn a_version_seven_record_decodes_unchanged_with_the_default_main_page() {
         let bytes = [
@@ -1071,8 +1063,6 @@ mod tests {
         assert_eq!(decode(&rewritten), (migrated, Stored::Current));
     }
 
-    /// A version 8 record keeps every field it had and loads in the normal
-    /// display mode, so a rider's screen does not change on the update.
     #[test]
     fn a_version_eight_record_decodes_unchanged_in_the_normal_mode() {
         let bytes = [
@@ -1092,8 +1082,6 @@ mod tests {
         assert_eq!(decode(&rewritten), (migrated, Stored::Current));
     }
 
-    /// A record from before AUTO has no brightness choice: the rider's stored
-    /// percent stays in the shell, and the backlight follows the light.
     #[test]
     fn an_older_record_loads_with_the_brightness_on_auto_and_a_choice_round_trips() {
         let bytes = [
@@ -1119,7 +1107,6 @@ mod tests {
         assert_eq!(decode(&damaged), (Record::default(), Stored::Malformed));
     }
 
-    /// The mode is stored as its table row; a row no firmware wrote is damage.
     #[test]
     fn a_stored_mode_round_trips_and_an_unknown_row_is_damage() {
         let mut chosen = Record::default();
@@ -1162,8 +1149,6 @@ mod tests {
         }
     }
 
-    /// Every older version loads with the body unset and its other fields
-    /// unchanged, and its rewrite as version 9 only appends the body, slots and mode.
     #[test]
     fn every_older_record_decodes_unchanged_with_the_rider_unset() {
         let sensors = [1, 120, 0x34, 0x12, 1];
@@ -1419,7 +1404,6 @@ mod tests {
             )
         );
         assert_eq!(Options::default().setup, 0);
-        // The next save writes version 9 with the same profile and sensors.
         let migrated = decode(&[2, 2, 1, 170, 0, 1, 120, 0x34, 0x12, 1]).0;
         assert_eq!(decode(&encode(&migrated)), (migrated, Stored::Current));
     }

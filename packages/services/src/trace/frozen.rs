@@ -235,8 +235,7 @@ impl<T> Default for Latest<T> {
 
 impl<T: Aging> Latest<T> {
     /// A value a replay assumes until the trace says otherwise, so that
-    /// it is not recorded first. A trace written before an input existed
-    /// then replays to the same events.
+    /// it is not recorded first.
     pub fn assumed(value: T) -> Self {
         Self {
             recorded: Some((value, 0)),

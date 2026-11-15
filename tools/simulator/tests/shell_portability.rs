@@ -255,8 +255,6 @@ mod tests {
         );
     }
 
-    /// One colour over the whole canvas; a dishonest one hashes nothing, so
-    /// every colour looks like the one on the panel.
     struct Solid {
         color: u16,
         honest: bool,

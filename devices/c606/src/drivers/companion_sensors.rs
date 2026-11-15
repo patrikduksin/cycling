@@ -104,8 +104,6 @@ impl State {
                 }
             }
             Decode::Report(report) => {
-                // Light is not counted: the snapshot is traced whenever it changes,
-                // so counting light would trace the whole snapshot at the light rate.
                 if !matches!(report, Report::Light(_)) {
                     self.reports = self.reports.saturating_add(1);
                 }

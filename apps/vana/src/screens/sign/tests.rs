@@ -67,6 +67,21 @@ fn a_paired_radar_moves_the_content_by_half_its_strip() {
 }
 
 #[test]
+fn beside_a_radar_the_badge_keeps_8_px_from_the_map_s_edge() {
+    for sign in [turn(Glyph::Right, 250), off(140), Sign::Arrived] {
+        let alone = place(sign, SignForm::Badge, false).unwrap();
+        let paired = place(sign, SignForm::Badge, true).unwrap();
+        assert_eq!(paired.rect().left, RADAR + 8, "{sign:?}");
+        assert_eq!(
+            paired.rect().right - paired.rect().left,
+            alone.rect().right - alone.rect().left,
+            "{sign:?}"
+        );
+        assert_eq!(paired.glyph_at.0, alone.glyph_at.0 + RADAR, "{sign:?}");
+    }
+}
+
+#[test]
 fn the_chip_only_shows_the_next_turn_at_rest() {
     assert!(place(turn(Glyph::Right, 120), SignForm::Chip, false).is_none());
     assert!(place(off(140), SignForm::Chip, false).is_none());

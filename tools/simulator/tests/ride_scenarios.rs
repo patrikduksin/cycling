@@ -6740,8 +6740,7 @@ fn a_course_is_still_followed_after_the_ride_moves_to_internal_memory() {
     assert_eq!(sim.rides().len(), 1);
 }
 
-#[test]
-fn a_long_press_on_the_map_stops_following_the_course() {
+fn following_the_loop_on_the_map() -> Sim {
     use device_api::server::Method;
     let mut sim = Sim::new();
     sim.fit_bulk(Presence::Ready);
@@ -6763,6 +6762,12 @@ fn a_long_press_on_the_map_stops_following_the_course() {
     expect_map(&sim);
     ride_to(&mut sim, 600.0);
     assert!(!map_badge(&sim).is_empty());
+    sim
+}
+
+#[test]
+fn a_long_press_on_the_map_stops_following_the_course() {
+    let mut sim = following_the_loop_on_the_map();
     sim.tap(120, 160);
     sim.advance(seconds(1));
     assert!(!map_badge(&sim).is_empty(), "a tap does not stop following");
@@ -6785,6 +6790,16 @@ fn a_long_press_on_the_map_stops_following_the_course() {
         "no cue off the course"
     );
     sim.stop_ride();
+}
+
+#[test]
+fn a_long_press_on_the_badge_stops_following_too() {
+    let mut sim = following_the_loop_on_the_map();
+    sim.tap(70, 60);
+    sim.advance(seconds(1));
+    assert!(!map_badge(&sim).is_empty(), "a tap does not stop following");
+    sim.long_press(70, 60, 1_200);
+    assert_eq!(map_badge(&sim), Vec::<String>::new(), "no turn to show");
 }
 
 /// Santiago on 14 October 2026: sunset 19:55 local, 22:55 UTC.
@@ -10026,5 +10041,125 @@ mod course_map {
         assert_eq!(bar, 80, "the bar is 100 m long at 300 m across");
         assert_eq!(badge(&sim), ["90", "M"]);
         sim.checkpoint("map-beside-radar");
+    }
+
+    #[test]
+    fn far_off_course_the_chevrons_still_point_back_to_the_junction() {
+        let course = [
+            (0.0, 0.0),
+            (0.0, 1_500.0),
+            (600.0, 1_500.0),
+            (600.0, 5_000.0),
+        ];
+        let mut sim = on_the_map(&course, &[(0.0, 0.0), (0.0, 6_000.0)]);
+        ride_to(&mut sim, 5_000.0);
+        assert_eq!(badge(&sim), ["3.5", "KM", "TURN BACK"]);
+        let screen = sim.screen();
+        let chevrons = (100..250)
+            .flat_map(|y| (0..screen.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| at(&screen, x, y) == AMBER)
+            .count();
+        assert!(
+            chevrons >= 60,
+            "{chevrons} amber px between the rider and the junction"
+        );
+        sim.checkpoint("map-offcourse-far");
+    }
+
+    fn scale(screen: &Screen) -> (usize, String) {
+        let bar = (0..screen.width)
+            .skip_while(|&x| at(screen, x, 304) != SECONDARY)
+            .take_while(|&x| at(screen, x, 304) == SECONDARY)
+            .count();
+        let label: Vec<String> = screen
+            .frame()
+            .read()
+            .into_iter()
+            .filter(|run| run.y >= 290 && run.x < 110)
+            .map(|run| run.text)
+            .collect();
+        (bar, label.join(" "))
+    }
+
+    #[test]
+    fn the_zoom_never_steps_back_and_forth_on_the_way_to_one_turn() {
+        type Ride<'a> = (&'a str, &'a [(f64, f64)], f64);
+        let rides: [Ride; 2] = [
+            (
+                "an S-bend",
+                &[
+                    (0.0, 0.0),
+                    (0.0, 1_500.0),
+                    (120.0, 1_560.0),
+                    (120.0, 1_700.0),
+                    (0.0, 1_760.0),
+                    (0.0, 4_000.0),
+                ],
+                2_200.0,
+            ),
+            (
+                "a zigzag of 80 m legs",
+                &[
+                    (0.0, 0.0),
+                    (0.0, 1_200.0),
+                    (-80.0, 1_200.0),
+                    (-80.0, 1_280.0),
+                    (-160.0, 1_280.0),
+                    (-160.0, 1_360.0),
+                    (-160.0, 4_000.0),
+                ],
+                1_800.0,
+            ),
+        ];
+        for (name, course, until_m) in rides {
+            let mut along = 0.0;
+            let corners: Vec<f64> = course[..course.len() - 1]
+                .windows(2)
+                .map(|leg| {
+                    along += (leg[1].0 - leg[0].0).hypot(leg[1].1 - leg[0].1);
+                    along
+                })
+                .collect();
+            let mut sim = on_the_map(course, course);
+            struct Run {
+                scale: (usize, String),
+                from_m: i64,
+                first_turn: Option<usize>,
+                last_turn: Option<usize>,
+            }
+            let mut runs: Vec<Run> = vec![];
+            while sim.world().distance_m < until_m {
+                sim.advance(seconds(1));
+                let ridden = sim.world().distance_m;
+                let turn = corners.iter().position(|&c| c > ridden + 5.0);
+                let scale = scale(&sim.screen());
+                if scale.1.is_empty() {
+                    continue;
+                }
+                match runs.last_mut() {
+                    Some(run) if run.scale == scale => run.last_turn = turn,
+                    _ => runs.push(Run {
+                        scale,
+                        from_m: ridden as i64,
+                        first_turn: turn,
+                        last_turn: turn,
+                    }),
+                }
+            }
+            let back_and_forth: Vec<(i64, i64)> = runs
+                .windows(3)
+                .filter(|w| {
+                    w[0].scale == w[2].scale
+                        && w[0].last_turn == w[1].first_turn
+                        && w[1].first_turn == w[1].last_turn
+                        && w[1].last_turn == w[2].first_turn
+                })
+                .map(|w| (w[1].from_m, w[2].from_m))
+                .collect();
+            assert!(
+                back_and_forth.is_empty(),
+                "{name}: the zoom steps away and back, from and to metres {back_and_forth:?}"
+            );
+        }
     }
 }

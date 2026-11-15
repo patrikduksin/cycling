@@ -1099,13 +1099,13 @@ mod tests {
     #[test]
     fn reads_each_sign_and_totals_face_as_itself() {
         use firmware_shell::rendering::font::{
-            BODY, FOOT_20, SIGN_14, SIGN_18, SIGN_20, SIGN_27, SIGN_32, SIGN_50, TITLE, TOTAL_30,
-            TOTAL_60,
+            BODY, FOOT_20, SIGN_13, SIGN_14, SIGN_18, SIGN_20, SIGN_27, SIGN_32, SIGN_50, TITLE,
+            TOTAL_11, TOTAL_30, TOTAL_60,
         };
         const TURN: u16 = 0x0b7c;
         const OFF_COURSE: u16 = 0xd3a0;
         const ARRIVED: u16 = 0x1cc8;
-        let cases: [(&Face, u16, &str); 17] = [
+        let cases: [(&Face, u16, &str); 20] = [
             (&SIGN_50, TURN, "120"),
             (&SIGN_50, OFF_COURSE, "1.4"),
             (&SIGN_32, TURN, "250"),
@@ -1118,9 +1118,12 @@ mod tests {
             (&SIGN_18, OFF_COURSE, "TURN BACK"),
             (&SIGN_14, OFF_COURSE, "TURN BACK"),
             (&SIGN_14, TURN, "KM"),
+            (&SIGN_13, BG, "KM"),
             (&TOTAL_60, 0, "56.20"),
             (&TOTAL_30, 0, "27.1"),
             (&TOTAL_30, 0, "168"),
+            (&TOTAL_11, 0, "AVG KM/H"),
+            (&TOTAL_11, 0, "RIDE TIME"),
             (&FOOT_20, 0, "12.4"),
             (&FOOT_20, 0, "0.8"),
         ];

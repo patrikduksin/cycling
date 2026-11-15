@@ -12,8 +12,8 @@ use super::work;
 use core::ops::Range;
 
 pub use faces::{
-    BODY, CAPTION, FACES, FOOT_20, HERO, LARGE, SIGN_14, SIGN_18, SIGN_20, SIGN_27, SIGN_32,
-    SIGN_50, TITLE, TOTAL_30, TOTAL_60, VALUE,
+    BODY, CAPTION, FACES, FOOT_20, HERO, LARGE, SIGN_13, SIGN_14, SIGN_18, SIGN_20, SIGN_27,
+    SIGN_32, SIGN_50, TITLE, TOTAL_11, TOTAL_30, TOTAL_60, VALUE,
 };
 
 /// Anti-aliased glyphs may cover this many columns past a line's advance width.
@@ -505,15 +505,17 @@ mod tests {
     /// draw, and every one of those.
     #[test]
     fn each_sign_and_totals_face_draws_its_texts() {
-        let draws: [(&Face, &[u8]); 9] = [
+        let draws: [(&Face, &[u8]); 11] = [
             (&SIGN_50, b"0123456789."),
             (&SIGN_32, b"0123456789."),
             (&SIGN_27, b"ARRIVED"),
             (&SIGN_20, b"0123456789. KM ARRIVED"),
             (&SIGN_18, b"TURN BACK"),
             (&SIGN_14, b"TURN BACK KM"),
+            (&SIGN_13, b"KM"),
             (&TOTAL_60, b"0123456789."),
             (&TOTAL_30, b"0123456789.:"),
+            (&TOTAL_11, b"DISTANCE RIDE TIME AVG KM/H W BPM"),
             (&FOOT_20, b"0123456789."),
         ];
         for (face, text) in draws {

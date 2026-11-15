@@ -222,13 +222,33 @@ impl<'a> Tile<'a> {
         if index > usize::from(edge.vertices) {
             return self.node(edge.to);
         }
-        let base = HEADER + self.nodes * NODE + 2 * self.edges * ADJ + self.edges * EDGE;
-        let at = base + (edge.first_vertex as usize + index - 1) * VERTEX;
+        let at = self.vertex_base() + (edge.first_vertex as usize + index - 1) * VERTEX;
         Node {
             x: u16_at(self.bytes, at),
             y: u16_at(self.bytes, at + 2),
             z: u16_at(self.bytes, at + 4),
         }
+    }
+
+    /// Every point of an edge in order, `point(edge, 0..points(edge))`, with
+    /// its interior read as one slice.
+    pub fn shape(&self, edge: &Edge) -> impl Iterator<Item = Node> + use<'a> {
+        let start = self.vertex_base() + edge.first_vertex as usize * VERTEX;
+        let bytes: &'a [u8] = self.bytes;
+        let (inner, _) = bytes[start..start + usize::from(edge.vertices) * VERTEX].as_chunks();
+        let inner = inner.iter().map(|v: &[u8; VERTEX]| Node {
+            x: u16_at(v, 0),
+            y: u16_at(v, 2),
+            z: u16_at(v, 4),
+        });
+        let (from, to) = (self.node(edge.from), self.node(edge.to));
+        core::iter::once(from)
+            .chain(inner)
+            .chain(core::iter::once(to))
+    }
+
+    fn vertex_base(&self) -> usize {
+        HEADER + self.nodes * NODE + 2 * self.edges * ADJ + self.edges * EDGE
     }
 
     pub fn points(edge: &Edge) -> usize {

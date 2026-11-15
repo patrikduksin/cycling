@@ -117,6 +117,14 @@ impl<'a> Cache<'a> {
         Lookup::Absent
     }
 
+    /// Neither loaded nor known missing; unlike `get`, not a use.
+    pub fn absent(&self, key: TileKey) -> bool {
+        !self.missing.contains(&Some(key))
+            && !self.slots[..self.count]
+                .iter()
+                .any(|slot| slot.ready && slot.key == Some(key))
+    }
+
     fn forget(&mut self, key: TileKey) {
         self.missing[self.next_missing] = Some(key);
         self.next_missing = (self.next_missing + 1) % MISSING;

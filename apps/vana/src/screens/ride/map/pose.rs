@@ -560,8 +560,6 @@ fn try_step(
     })
 }
 
-/// The columns from which all the chevrons towards a junction `toward` the
-/// rider show, clear of the badge, with the rider clear of it too.
 fn chevrons_seen(
     columns: &[i16],
     y: i16,
@@ -604,8 +602,6 @@ pub(super) struct ArrowShape {
     pub(super) head: [Point; 3],
 }
 
-/// The turn arrow on the route, which calls back with screen points from
-/// the rider on, each with whether it is before `turn`.
 pub(super) fn arrow_shape(
     route: &impl Fn(&mut dyn FnMut(Point, bool)),
     turn: Point,

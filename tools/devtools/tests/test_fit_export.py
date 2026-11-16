@@ -7,11 +7,12 @@ cover the Rust encoder end to end with two independent decoders.
 import datetime as dt
 import itertools
 import json
-import subprocess
+import os
 import tempfile
 import unittest
 import zlib
 from pathlib import Path
+from unittest.mock import patch
 
 import fitdecode
 from garmin_fit_sdk import Decoder, Stream
@@ -97,11 +98,6 @@ def ride(ride_id=1, seconds=600, pause_at=300, pause_wall_ms=120_000, utc=True, 
     return slots
 
 
-def debug_build(command, **kwargs):
-    """The test reuses the debug build `cycling test` already made."""
-    return subprocess.run([part for part in command if part != '--release'], **kwargs)
-
-
 class FitExportTests(unittest.TestCase):
     def convert(self, slots, start_utc_ms=None):
         temporary = tempfile.TemporaryDirectory()
@@ -109,7 +105,7 @@ class FitExportTests(unittest.TestCase):
         directory = Path(temporary.name)
         raw = directory / 'ride-slots.bin'
         raw.write_bytes(b''.join(slots))
-        rides = write_fit(directory, raw, start_utc_ms, run=debug_build)
+        rides = write_fit(directory, raw, start_utc_ms)
         return directory, rides
 
     def test_garmin_sdk_reads_a_valid_cycling_activity(self):
@@ -235,7 +231,9 @@ class FitExportTests(unittest.TestCase):
         self.assertEqual(late[1] - late[0], dt.timedelta(seconds=1))
 
     def test_command_uses_the_firmware_encoder(self):
-        command = fit_command(Path('in.bin'), Path('out'), 5)
+        with patch.dict(os.environ):
+            os.environ.pop('RIDE_FIT', None)
+            command = fit_command(Path('in.bin'), Path('out'), 5)
         self.assertEqual(command[command.index('--bin') + 1], 'ride-fit')
         # Absolute, because cargo runs from the workspace root.
         here = Path.cwd()

@@ -13,7 +13,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from cycling_devtools.workspace import ROOT
+from cycling_devtools.workspace import ROOT, SIMULATOR_BUILD
 
 DEV = 'python -m cycling_devtools.'
 # The terrain pack builder has its own environment (osmium, numpy, tifffile).
@@ -78,7 +78,9 @@ TASKS = [
     task(
         'test-python',
         'Device tool and terrain tests, spread over worker processes',
-        'python -m pytest -q -n auto --maxprocesses=8 tools/devtools',
+        # With the simulator, so vana compiles once with the features both need.
+        ' '.join((*SIMULATOR_BUILD, '-q', '-p', 'vana', '--bin', 'ride-fit')),
+        'RIDE_FIT=${CARGO_TARGET_DIR:-target}/debug/ride-fit python -m pytest -q -n auto --maxprocesses=8 tools/devtools',
         f'{TERRAIN} pytest -q tools/terrain',
     ),
     task(

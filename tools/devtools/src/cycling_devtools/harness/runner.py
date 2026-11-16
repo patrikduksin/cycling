@@ -463,8 +463,6 @@ class Runner:
             self.transport.delay(READY_POLL_S)
 
     def readiness(self, detail, stop):
-        """Classify a BUSY detail as `starting` or a key of NOT_READY; POWER tells charging standby apart from the
-        other power transitions."""
         words = detail.split()
         if words[:1] == ['starting']:
             return next((STARTUP_STOPPED[word] for word in words if word in STARTUP_STOPPED), 'starting')

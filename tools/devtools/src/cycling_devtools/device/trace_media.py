@@ -245,7 +245,6 @@ def pull_files(transfer, media, out, problems):
 
 
 def pull_media(connection, media, out, cache, problems, timing):
-    """RIDES and FILES as the header names them, in one transfer session."""
     rides = rides_log(connection, media, problems)
     head = rides[2] if rides else 0
     pulled = {}

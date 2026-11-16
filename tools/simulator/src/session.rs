@@ -782,6 +782,7 @@ pub struct Session {
     /// reports traffic.
     host: bool,
     devices: Devices,
+    legacy_frames: bool,
 }
 impl Session {
     pub fn new(root: &Path, width: usize, height: usize) -> io::Result<Self> {
@@ -885,19 +886,17 @@ impl Session {
         if memory.phone {
             sdk.attach_phone(Box::leak(Box::new(vana::app::PhoneWork::new())));
         }
-        // Back to start's breadcrumb, which the device keeps in PSRAM; each
-        // boot gets a fresh one, as device memory starts over.
-        if memory.back_to_start {
-            let crumbs = Vec::leak(vec![vana::app::Crumb::default(); vana::app::BACK_CRUMBS]);
+        if memory.track {
+            let crumbs = Vec::leak(vec![vana::app::Crumb::default(); vana::app::TRACK_CRUMBS]);
             let map = Box::leak(Box::new(vana::app::MapFrame::default()));
             let line = Vec::leak(vec![vana::app::Crumb::default(); vana::app::COURSE_POINTS]);
             let turns = Vec::leak(vec![vana::app::Turn::default(); vana::app::COURSE_TURNS]);
             let course = Box::leak(Box::new(vana::app::Course::empty()));
             let finder = Box::leak(Box::new(vana::app::CourseFinder::new()));
-            let back = Box::new(vana::app::BackToStart::new(
+            let track = Box::new(vana::app::RideTrack::new(
                 crumbs, line, turns, map, course, finder,
             ));
-            sdk.attach_back(Box::leak(back));
+            sdk.attach_track(Box::leak(track));
         }
         let trace = Trace::new(Start {
             boot,
@@ -927,8 +926,15 @@ impl Session {
             edges_seen: 0,
             host: false,
             devices: Devices::Simulated(Box::new(Simulated::new())),
+            legacy_frames: false,
         })
     }
+    /// Trace each frame as a whole-frame digest from now on, as the fixtures
+    /// that hold a trace from before panel digests were recorded.
+    pub fn record_legacy_frames(&mut self) {
+        self.legacy_frames = true;
+    }
+
     /// A C606-sized device on the captured media, with the capture's trace
     /// standing in for the world. Drive it with `replay_step`.
     pub fn replaying(capture: &Capture, mode: Mode) -> io::Result<Self> {
@@ -1473,7 +1479,16 @@ impl Session {
             });
         }
         if let Some(digest) = self.shell.take_frame() {
-            record(Event::Panel(digest));
+            if self.legacy_frames {
+                let frame = self.display.0.borrow();
+                let width = frame.geometry.width;
+                record(Event::Frame(firmware_shell::shell::frame_digest(
+                    &frame.pixels,
+                    width,
+                )));
+            } else {
+                record(Event::Panel(digest));
+            }
         }
         crate::logs::drain(|level, target, text| {
             recorder.record(&Event::Log {

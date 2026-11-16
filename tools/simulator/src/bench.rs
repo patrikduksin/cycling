@@ -122,7 +122,7 @@ pub(crate) mod scenes {
         pub reach: fn() -> Sim,
     }
 
-    pub static SCENES: [Scene; 32] = [
+    pub static SCENES: [Scene; 31] = [
         Scene {
             name: "home",
             reach: home,
@@ -162,10 +162,6 @@ pub(crate) mod scenes {
         Scene {
             name: "map",
             reach: map_page,
-        },
-        Scene {
-            name: "back to start",
-            reach: back_page,
         },
         Scene {
             name: "paused",
@@ -353,7 +349,7 @@ pub(crate) mod scenes {
         sim.pair(&["SPEED/CAD", "POWER METER"]);
         sim.start_ride();
         sim.ride_at(30.0, 180.0, 0.0, 85.0);
-        sim.ride_page("4/6");
+        sim.ride_page("4/5");
         while sim.world().distance_m < 1000.0 {
             sim.advance(seconds(1));
         }
@@ -400,7 +396,7 @@ pub(crate) mod scenes {
 
     pub(crate) fn stats() -> Sim {
         let mut sim = riding(120);
-        sim.ride_page("2/6");
+        sim.ride_page("2/5");
         sim.expect_text("AVG W");
         sim
     }
@@ -409,7 +405,7 @@ pub(crate) mod scenes {
         let mut sim = riding(60);
         sim.lap(1);
         sim.advance(seconds(30));
-        sim.ride_page("3/6");
+        sim.ride_page("3/5");
         sim.expect_text("LAP TIME");
         sim
     }
@@ -421,22 +417,15 @@ pub(crate) mod scenes {
         sim.wait_for("RECORDING", seconds(2)).unwrap();
         sim.ride_at(30.0, 120.0, 142.0, 90.0);
         sim.advance(seconds(20));
-        assert_eq!(sim.screen().page().as_deref(), Some("1/7"));
+        assert_eq!(sim.screen().page().as_deref(), Some("1/6"));
         sim.expect_text("1/12");
         sim
     }
 
     pub(crate) fn map_page() -> Sim {
         let mut sim = riding(90);
-        sim.ride_page("5/6");
+        sim.ride_page("5/5");
         sim.expect_text("MAP");
-        sim
-    }
-
-    fn back_page() -> Sim {
-        let mut sim = riding(90);
-        sim.ride_page("6/6");
-        sim.expect_text("BACK TO START");
         sim
     }
 
@@ -626,7 +615,7 @@ pub(crate) mod scenes {
 
     fn main_with_band() -> Sim {
         let mut sim = workout_page();
-        sim.ride_page("2/7");
+        sim.ride_page("2/6");
         sim
     }
 

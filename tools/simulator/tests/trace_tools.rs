@@ -87,8 +87,10 @@ fn record_trace_fixtures() {
         ("laps-and-a-menu", laps_and_a_menu),
     ];
     for (name, scenario) in scenarios {
-        let mut sim = Sim::new().boot();
+        let mut sim = Sim::new();
         sim.discard_recording();
+        sim.device.record_legacy_frames();
+        let mut sim = sim.boot();
         scenario(&mut sim);
         file::save(&sim.capture(), &fixture(name)).expect("the fixture saves");
     }

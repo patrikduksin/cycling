@@ -114,7 +114,7 @@ in it (`warnings=1`), and a warning names what changed in the same pass
 (`(same pass: ride ended saved, page summary began)`). VANA's warnings about
 saving or reading media are `storage` events. A page span says what brought
 the page up and which of the shown readings it draws:
-`page ride/back ... cause="after button BottomLeft code 1" shows=none`. The
+`page ride/lap ... cause="after button BottomLeft code 1" shows=none`. The
 cause is the input or command in the pass the page changed in, the ride state
 that changed with it (`with ride auto_paused`), a toast, `at power-on`, or
 `by itself`: VANA's own rule, such as the climb page coming up on a climb. A
@@ -169,13 +169,13 @@ Two checks before you trust a reading or a page change:
   the readings the page's numbers show, never glided, with power as the 3 s
   average. A reading reaches the screen on the next frame, so confirm a
   borderline one in `screens.txt`. A page line's `shows` lists what that page
-  draws (`ride/climb` power,hr,grade; `ride/map` dist; `ride/back` none), so
-  `hr=--` while the rider was on `ride/back` is a gap in the data the rider
+  draws (`ride/climb` power,hr,grade; `ride/map` dist; `ride/lap` none), so
+  `hr=--` while the rider was on `ride/lap` is a gap in the data the rider
   never saw. The main page's lower pair is the rider's choice; the tool
   assumes the default, cad and dist.
 - **A press or a rule?** A page change `by itself` is VANA's rule. A run of
   `after button ...` changes a second or two apart is the rider paging: two
-  presses of BottomLeft step two pages (ride/climb, ride/map, ride/back). The
+  presses of BottomLeft step two pages (ride/lap, ride/climb, ride/map). The
   climb page comes up and goes back by itself only until the rider pages
   during the climb; then the page stays where they put it. "The page
   vanished" is often that.

@@ -9,14 +9,13 @@ use device_api::{
     sensors::Snapshot,
 };
 
-mod back;
 mod bests;
 mod calibration;
 mod climb_page;
 pub use crate::ride::course::stored::Finder as CourseFinder;
 pub use crate::ride::course::turns::{TURNS as COURSE_TURNS, Turn};
 pub use crate::ride::course::{Course, POINTS as COURSE_POINTS};
-pub use back::{BACK_CRUMBS, BackToStart, Crumb, MapFrame};
+pub use track::{Crumb, MapFrame, RideTrack, TRACK_CRUMBS};
 mod commands;
 mod course;
 mod cues;
@@ -49,6 +48,7 @@ mod sensor_links;
 #[cfg(test)]
 mod tests;
 mod timing;
+mod track;
 mod training;
 pub use phone::{
     Closed as PhoneClosed, Mode as PhoneMode, Status as PhoneStatus, Work as PhoneWork,
@@ -101,8 +101,7 @@ pub struct Runtime {
     motion: motion::Motion,
     shown: presentation::Shown,
     alerts: crate::ride::alerts::Alerts,
-    /// Back to start's breadcrumb lives in the block composition gives it.
-    back: Option<&'static mut back::BackToStart>,
+    track: Option<&'static mut track::RideTrack>,
     reported: seen::Reported,
     /// This pass's `tick` or `look_ahead` read or wrote storage.
     storage_worked: bool,
@@ -139,7 +138,7 @@ impl Runtime {
             motion: motion::Motion::default(),
             shown: presentation::Shown::default(),
             alerts: crate::ride::alerts::Alerts::default(),
-            back: None,
+            track: None,
             reported: seen::Reported::default(),
             storage_worked: false,
         }
@@ -314,7 +313,7 @@ impl Runtime {
         self.service_course(bulk, now);
         self.directory_step(store, bulk);
         self.service_form();
-        self.track_back(store, bulk, now);
+        self.observe_track(store, bulk, now);
         self.follow_road();
         self.storage_worked = store.touched || bulk.touched;
     }

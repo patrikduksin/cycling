@@ -10,7 +10,7 @@
 //! the margin has stayed at or above `CLEAR_S` for `CLEAR_MS`, which is rare: it
 //! takes a loop swinging back or a faster pace.
 use crate::daylight::Sun;
-use crate::ride::homing::{Guide, Mode, TURN};
+use crate::ride::homing::{Guide, TURN};
 
 /// The alert is due when this little time is left before the latest turn.
 pub const WARN_S: i64 = 15 * 60;
@@ -43,9 +43,9 @@ pub struct Leg {
 impl Leg {
     /// The leg from `guide`, with `way` the metres in a straight line to the
     /// start and the metres of track ridden, or `None` when it is not one to
-    /// warn about: at the start, riding towards it already (following the track
-    /// back, or heading within `HOME_ARC` of it, on a course or not), or with
-    /// no heading, as after a stop, when which way the rider rides is not known.
+    /// warn about: at the start, riding towards it already (heading within
+    /// `HOME_ARC` of it, on a course or not), or with no heading, as after a
+    /// stop, when which way the rider rides is not known.
     pub fn of(
         guide: &Guide,
         way: Option<(u32, u32)>,
@@ -53,8 +53,7 @@ impl Leg {
         moving_ms: u64,
     ) -> Option<Self> {
         let heading = guide.heading?;
-        let outbound = (guide.course || !guide.following) && !towards_start(guide, heading);
-        (outbound && guide.mode != Mode::Arrived).then_some(Self {
+        (!towards_start(guide, heading) && !guide.at_start).then_some(Self {
             home_m: home_m(way?),
             speed_mm_s: speed_mm_s?,
             moving_ms,
@@ -168,13 +167,7 @@ mod tests {
     /// Heading straight for the start.
     fn homeward() -> Guide {
         Guide {
-            mode: Mode::Direct,
-            following: false,
-            course: false,
-            course_near: false,
-            direct_m: 5_000,
-            track_m: 5_000,
-            off_m: 0,
+            at_start: false,
             bearing: 0,
             heading: Some(0),
         }
@@ -250,12 +243,7 @@ mod tests {
 
     #[test]
     fn the_way_home_is_the_straight_line_not_the_track_ridden() {
-        let loop_leg = Guide {
-            track_m: 33_000,
-            direct_m: 7_000,
-            ..outbound()
-        };
-        let leg = Leg::of(&loop_leg, Some((7_000, 25_000)), Some(FAST), HOUR_MS).unwrap();
+        let leg = Leg::of(&outbound(), Some((7_000, 25_000)), Some(FAST), HOUR_MS).unwrap();
         assert_eq!(leg.home_m, 9_100);
         let sets = Sun::Up { sets_at: SETS };
         let turn = Turn::new(sets, SETS - 3600, leg).unwrap();
@@ -270,15 +258,6 @@ mod tests {
         };
         assert_eq!(
             Leg::of(&stopped, Some((5_000, 9_000)), Some(FAST), HOUR_MS),
-            None
-        );
-        let course = Guide {
-            following: true,
-            course: true,
-            ..stopped
-        };
-        assert_eq!(
-            Leg::of(&course, Some((5_000, 9_000)), Some(FAST), HOUR_MS),
             None
         );
     }
@@ -296,16 +275,8 @@ mod tests {
             Leg::of(&homeward(), Some((5_000, 9_000)), Some(FAST), HOUR_MS),
             None
         );
-        let following = Guide {
-            following: true,
-            ..outbound()
-        };
-        assert_eq!(
-            Leg::of(&following, Some((5_000, 9_000)), Some(FAST), HOUR_MS),
-            None
-        );
         let arrived = Guide {
-            mode: Mode::Arrived,
+            at_start: true,
             ..outbound()
         };
         assert_eq!(
@@ -336,18 +307,6 @@ mod tests {
             ..homeward()
         };
         assert!(Leg::of(&across, Some((5_000, 9_000)), Some(FAST), HOUR_MS).is_some());
-    }
-
-    #[test]
-    fn a_course_followed_is_a_leg_unless_heading_for_the_start() {
-        let course = |guide: Guide| Guide {
-            following: true,
-            course: true,
-            ..guide
-        };
-        let way = Some((5_000, 9_000));
-        assert!(Leg::of(&course(outbound()), way, Some(FAST), HOUR_MS).is_some());
-        assert_eq!(Leg::of(&course(homeward()), way, Some(FAST), HOUR_MS), None);
     }
 
     fn turn(left_s: i64) -> Option<Turn> {

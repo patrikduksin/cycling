@@ -1,38 +1,26 @@
-//! Back to start: the ride's breadcrumb, fed from fresh fixes, and nudges
-//! when following it back, or when following the loaded course.
-//!
-//! Composition gives `BackToStart` a block of its own with room for
-//! `BACK_CRUMBS` points (PSRAM on the device), the loaded course beside them
-//! and room for it in the ride's frame, and hands it to
-//! `Runtime::attach_back`; `Runtime` keeps only the reference, so none of it
-//! costs main's stack anything. Without it the back-to-start page says NO
-//! TRACK and no course can be loaded.
-//!
-//! The ride started after a restart that recovered one reads the recovered
-//! ride's track and start back from the journal (`ride::homing::rebuild`), a
-//! few slots a tick, before it takes live fixes.
 use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Medium, Outing, Ride};
+use crate::ride::course::follow::{Event, Follower};
 use crate::ride::course::stored::{self, Finder, Finding};
 use crate::ride::course::turns::Warning;
 use crate::ride::course::{self, Course};
+use crate::ride::homing::Homing;
 use crate::ride::homing::rebuild::Rebuild;
-use crate::ride::homing::{Event, Homing};
 use crate::ride::log::{Slot, Status, decode};
 use crate::ride::turn_back::Leg;
-use crate::screens::chrome::Tone;
+use crate::screens::chrome::{Toast, Tone};
 pub use crate::screens::ride::MapFrame;
-use crate::screens::ride::{Back, FilledMap, MapCache, RidePage, Track};
+use crate::screens::ride::{FilledMap, MapCache, Track};
 use device_api::bulk::ReadWrite;
 
 pub use crate::ride::homing::Crumb;
 
 /// Points the breadcrumb keeps: 48 KiB, thinned to fit a ride of any length.
-pub const BACK_CRUMBS: usize = 4096;
+pub const TRACK_CRUMBS: usize = 4096;
 /// The nudges stay a little longer than a confirmation.
 pub(super) const NUDGE_MS: u64 = 4_000;
-/// A turn warning waits this long after a nudge, so the nudge is read.
+/// A turn warning waits this long after FOLLOWING COURSE, so it is read.
 const TURN_HOLD_MS: u64 = 1_000;
 /// Slots the rebuild reads per tick, as the history replay does.
 const REBUILD_INTERNAL: usize = 32;
@@ -74,9 +62,10 @@ impl Resume {
     }
 }
 
-/// The breadcrumb and the open ride it belongs to.
-pub struct BackToStart {
+/// The breadcrumb, the course it follows and the open ride they belong to.
+pub struct RideTrack {
     homing: Homing<'static>,
+    follower: Follower<'static>,
     outing: Option<Outing>,
     map: MapCache<'static>,
     /// The loaded course and whether it matches the stored one.
@@ -85,12 +74,11 @@ pub struct BackToStart {
     finder: &'static mut Finder,
     pub(super) kept: super::course::Kept,
     resume: Resume,
-    /// When the last nudge showed, and a turn warning waiting on it.
-    nudged_at: Option<u64>,
+    following_shown_at: Option<u64>,
     held_turn: Option<Warning>,
 }
 
-impl BackToStart {
+impl RideTrack {
     /// The breadcrumb in `crumbs`, the course and room for it in the
     /// ride's frame in `line`; all may be zeroed memory.
     pub fn new(
@@ -102,14 +90,15 @@ impl BackToStart {
         finder: &'static mut Finder,
     ) -> Self {
         Self {
-            homing: Homing::new(crumbs).with_line(line).with_turns(turns),
+            homing: Homing::new(crumbs),
+            follower: Follower::new(line, turns),
             outing: None,
             map: MapCache::new(map),
             course,
             finder,
             kept: super::course::Kept::default(),
             resume: Resume::None,
-            nudged_at: None,
+            following_shown_at: None,
             held_turn: None,
         }
     }
@@ -133,8 +122,9 @@ impl BackToStart {
     /// found by the scan when none of its own are there.
     pub(super) fn course_changed(&mut self, media: &mut impl ReadWrite) {
         let course = &*self.course;
-        self.homing.set_course(course.points());
-        self.homing.take_turns(course.points(), |turns| {
+        self.follower
+            .set_course(course.points(), self.homing.frame());
+        self.follower.take_turns(course.points(), |turns| {
             match stored::load(media, course::key(course), turns) {
                 Ok(Some(stored)) => {
                     log::info!(
@@ -157,6 +147,24 @@ impl BackToStart {
         });
     }
 
+    fn place_course(&mut self, media: &mut impl ReadWrite) {
+        if self.follower.unplaced() && self.homing.frame().is_some() {
+            self.course_changed(media);
+        }
+    }
+
+    fn turn_after_following_shown(&mut self, now: u64) -> Option<Warning> {
+        let turn = self.follower.take_turn().or(self.held_turn.take());
+        let held = self
+            .following_shown_at
+            .is_some_and(|at| now.saturating_sub(at) < TURN_HOLD_MS);
+        if held {
+            self.held_turn = turn;
+            return None;
+        }
+        turn
+    }
+
     /// Store the turns `found` while the course uploaded beside it, or,
     /// with none to trust, remove what is there.
     pub(super) fn save_turns(&mut self, media: &mut impl ReadWrite, found: Option<stored::Found>) {
@@ -170,7 +178,7 @@ impl BackToStart {
                     found.full,
                     found.reach
                 );
-                let turns = &self.homing.turn_room()[..found.count];
+                let turns = &self.follower.turn_room()[..found.count];
                 stored::save(media, key, turns, found.full)
             }
             None => stored::delete(media),
@@ -185,35 +193,32 @@ impl BackToStart {
     pub(super) fn upload(&mut self) -> (&mut Course, Finding<'_>) {
         let finding = Finding {
             finder: self.finder,
-            turns: self.homing.turn_room(),
+            turns: self.follower.turn_room(),
         };
         (self.course, finding)
     }
 }
 
 impl Runtime {
-    /// Give back-to-start its breadcrumb; without one it never runs.
-    pub fn attach_back(&mut self, back: &'static mut BackToStart) {
-        self.back = Some(back);
+    /// Without a track the map says NO TRACK and no course loads.
+    pub fn attach_track(&mut self, track: &'static mut RideTrack) {
+        self.track = Some(track);
     }
 
-    /// Feed this pass's fix to the open ride's breadcrumb, and nudge on
-    /// what following it back changed. A new ride starts a new breadcrumb,
-    /// or reads back the one a restart cut short from `store` or `bulk`; a
-    /// ride that moves to internal memory keeps its own.
-    pub(super) fn track_back(
+    pub(super) fn observe_track(
         &mut self,
         store: &mut impl crate::ride::storage::RideStorage,
         bulk: &mut impl device_api::bulk::ReadWrite,
         now: u64,
     ) {
-        let Some(state) = self.back.as_deref_mut() else {
+        let Some(state) = self.track.as_deref_mut() else {
             return;
         };
         let outing = self.ride.outing();
         let riding = outing.is_some();
         if riding && outing != state.outing {
             state.homing.reset();
+            state.follower.reset();
             state.resume = match state.resume {
                 Resume::Waiting { medium, ride_id } if medium == self.ride.shown() => {
                     let upper = self.ride.recorder(medium).next_slot();
@@ -226,9 +231,6 @@ impl Runtime {
             };
         }
         state.outing = outing;
-        state
-            .homing
-            .set_auto_follow(self.preferences.options.ride_pages.shows(RidePage::Back));
         if !riding {
             state.resume = Resume::waiting(&self.ride);
             state.held_turn = None;
@@ -266,9 +268,7 @@ impl Runtime {
                     _ => false,
                 }
             };
-            if state.homing.needs_course() {
-                state.course_changed(bulk);
-            }
+            state.place_course(bulk);
             if !done {
                 state.resume = Resume::Reading { medium, rebuild };
                 return;
@@ -276,52 +276,29 @@ impl Runtime {
             state.homing.end_replay();
             state.resume = Resume::None;
         }
-        let event = state.homing.observe(self.readings.live.location_e7, now);
-        if state.homing.needs_course() {
-            state.course_changed(bulk);
-        }
-        let following = state.homing.following();
-        let course = state.homing.following_course();
+        let fix = state.homing.observe(self.readings.live.location_e7, now);
+        let event = state.follower.observe(fix, now);
+        state.place_course(bulk);
         if state.homing.take_pass() {
             self.ride.passed_start(now);
             self.display.redraw();
         }
-        let nudge = match event {
-            Some(Event::Following) if course => {
-                Some(("FOLLOWING COURSE", Tone::Good, Some(Cue::OnTrack)))
-            }
-            Some(Event::Following) => Some(("FOLLOWING TRACK", Tone::Good, Some(Cue::OnTrack))),
-            Some(Event::OffTrack) => Some(("OFF TRACK", Tone::Warn, Some(Cue::OffTrack))),
-            Some(Event::OnTrack) => Some(("BACK ON TRACK", Tone::Good, Some(Cue::OnTrack))),
-            Some(Event::Dropped) => Some(("STOPPED FOLLOWING", Tone::Info, None)),
-            // Riding past the start on a loop is no news unless heading back.
-            Some(Event::Arrived) if following => {
-                Some(("BACK AT START", Tone::Good, Some(Cue::AtStart)))
-            }
-            Some(Event::CourseEnd) => Some(("END OF COURSE", Tone::Good, Some(Cue::AtStart))),
-            _ => None,
-        };
-        // A turn warning waits a moment rather than replace a nudge just shown.
-        if nudge.is_some() {
-            state.nudged_at = Some(now);
+        let joined = event == Some(Event::Following);
+        if joined {
+            state.following_shown_at = Some(now);
         }
-        let turn = state.homing.take_turn().or(state.held_turn.take());
-        let fresh = state
-            .nudged_at
-            .is_some_and(|at| now.saturating_sub(at) < TURN_HOLD_MS);
-        let turn = match turn {
-            Some(warning) if fresh => {
-                state.held_turn = Some(warning);
-                None
-            }
-            turn => turn,
-        };
-        if let Some((message, tone, cue)) = nudge {
-            let toast = crate::screens::chrome::Toast::new(message, tone);
+        let turn = state.turn_after_following_shown(now);
+        if joined {
+            let toast = Toast::new("FOLLOWING COURSE", Tone::Good);
             self.navigation.show(toast, NUDGE_MS, now);
-            if let Some(cue) = cue {
-                self.cue(cue, now);
-            }
+        }
+        if let Some(event) = event {
+            let cue = match event {
+                Event::Following | Event::OnCourse => Cue::OnCourse,
+                Event::OffCourse => Cue::OffCourse,
+                Event::Arrived => Cue::Arrived,
+            };
+            self.cue(cue, now);
             self.display.redraw();
         }
         if let Some(warning) = turn {
@@ -329,75 +306,31 @@ impl Runtime {
         }
     }
 
-    /// The tap on the page's pad: follow the course or the breadcrumb back,
-    /// or stop.
-    pub(super) fn toggle_follow(&mut self, now: u64) {
-        let Some(state) = self.back.as_deref_mut() else {
-            self.navigation.toast("NO TRACK", Tone::Info, now);
-            return;
-        };
-        let follow = !state.homing.following();
-        // Half read back, the track would lose the rest when following stops.
-        let reading = matches!(state.resume, Resume::Reading { .. });
-        if reading || !state.homing.set_following(follow, now) {
-            self.navigation.toast("NO TRACK YET", Tone::Info, now);
-        } else if follow {
-            let message = if state.homing.following_course() {
-                "FOLLOWING COURSE"
-            } else {
-                "FOLLOWING TRACK"
-            };
-            self.navigation.toast(message, Tone::Good, now);
-            self.cue(Cue::OnTrack, now);
-        }
-    }
-
-    /// A long press on MAP: stop following the course or the breadcrumb,
-    /// mid-ride. The pad on BACK TO START can follow again.
-    pub(super) fn stop_following_from_map(&mut self, now: u64) {
-        let Some(state) = self.back.as_deref_mut() else {
-            return;
-        };
-        if state.homing.following() {
-            state.homing.set_following(false, now);
-            self.navigation.toast("STOPPED FOLLOWING", Tone::Info, now);
+    pub(super) fn stop_following_from_map(&mut self) {
+        if let Some(state) = self.track.as_deref_mut()
+            && state.follower.following()
+        {
+            state.follower.stop();
             self.display.redraw();
         }
     }
 }
 
-/// What the back-to-start page shows: borrows only `Runtime::back`.
-pub(super) fn view_of(back: &Option<&'static mut BackToStart>) -> Back {
-    match back.as_deref() {
-        None => Back::Unavailable,
-        Some(state) => state.homing.guide().map_or(
-            Back::Waiting {
-                following: state.homing.following(),
-                course: state.homing.following_course(),
-            },
-            Back::Guide,
-        ),
-    }
-}
-
-/// Bring the map page's track up to date with the breadcrumb.
-pub(super) fn refresh_map(back: &mut Option<&'static mut BackToStart>) {
-    let Some(state) = back.as_deref_mut() else {
+pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>) {
+    let Some(state) = track.as_deref_mut() else {
         return;
     };
-    let track = Track {
+    let drawn = Track {
         available: true,
         crumbs: state.homing.crumbs(),
         here: state.homing.position(),
         heading: state.homing.heading(),
-        home: state.homing.route_home(),
-        course: state.homing.course(),
-        ahead: state.homing.course_ahead(),
+        course: state.follower.course(),
+        ahead: state.follower.ahead(),
     };
-    state.map.update(&track);
+    state.map.update(&drawn);
 }
 
-/// What the map page draws: borrows `Runtime::back`'s frame.
-pub(super) fn map_of<'a>(back: &'a Option<&'static mut BackToStart>) -> Option<FilledMap<'a>> {
-    back.as_deref()?.map.filled()
+pub(super) fn map_of<'a>(track: &'a Option<&'static mut RideTrack>) -> Option<FilledMap<'a>> {
+    track.as_deref()?.map.filled()
 }

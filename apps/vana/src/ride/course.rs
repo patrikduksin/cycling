@@ -41,6 +41,7 @@ use firmware_services::le::{get_u16, get_u32, put_u16, put_u32};
 use firmware_services::{files, volume};
 use libm::{cosf, sqrtf};
 
+pub mod follow;
 pub mod gpx;
 pub mod stored;
 pub mod turns;

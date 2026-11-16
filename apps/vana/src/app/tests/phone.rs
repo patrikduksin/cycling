@@ -610,8 +610,8 @@ fn attach_course_room(runtime: &mut Runtime) {
     let map = Box::leak(Box::new(crate::app::MapFrame::default()));
     let course = Box::leak(Box::new(crate::ride::course::Course::empty()));
     let finder = Box::leak(Box::new(crate::app::CourseFinder::new()));
-    let back = crate::app::BackToStart::new(crumbs, line, turns, map, course, finder);
-    runtime.attach_back(Box::leak(Box::new(back)));
+    let track = crate::app::RideTrack::new(crumbs, line, turns, map, course, finder);
+    runtime.attach_track(Box::leak(Box::new(track)));
 }
 
 /// A GPX loop of `points` fixes, about 10 m apart, about Santiago.

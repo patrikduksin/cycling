@@ -30,22 +30,20 @@ fn at_corners(line: &[(f32, f32)], room: usize, stored: Option<usize>) -> Vec<Ki
     let points = course.points();
     let (mut crumbs, mut kept) = (vec![Crumb::default(); 64], vec![Crumb::default(); 2048]);
     let mut list = vec![Turn::default(); room];
-    let mut homing = Homing::new(&mut crumbs)
-        .with_line(&mut kept)
-        .with_turns(&mut list);
-    homing.set_course(points);
+    let mut rider = Rider::new(&mut crumbs, &mut kept, &mut list);
+    rider.set_course(points);
     let length: f32 = line.windows(2).map(|w| distance(w[0], w[1])).sum();
     let mut now = 0;
     let mut said = Vec::new();
     for k in 0..(length / 7.0) as usize {
         let (east, north) = along_line(line, k as f32 * 7.0);
         now += 1_000;
-        homing.observe(Some(at(east, north)), now);
-        said.extend(homing.take_turn());
-        if homing.needs_course() {
-            homing.set_course(points);
+        rider.observe(Some(at(east, north)), now);
+        said.extend(rider.follower.take_turn());
+        if rider.needs_course() {
+            rider.set_course(points);
             if let Some(stored) = stored {
-                homing.take_turns(points, |list| {
+                rider.follower.take_turns(points, |list| {
                     let count = stored.min(turns.len());
                     list[..count].copy_from_slice(&turns[..count]);
                     Some((count, true))

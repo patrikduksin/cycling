@@ -141,11 +141,6 @@ pub(super) enum Extra<'a> {
         lap: Lap,
         previous: Option<Lap>,
     },
-    /// The way back, and when the light ends; the arrow is placed as it paints.
-    Back {
-        back: ride::Back,
-        sunset: ride::Light,
-    },
     /// The track, projected and kept beside the breadcrumb.
     Map(Option<ride::FilledMap<'a>>),
     /// Settings' lines, and the row under a resting finger.
@@ -211,8 +206,6 @@ impl<'a> Extra<'a> {
         lap -> Lap = Self::Lap { lap, .. } => *lap;
         previous_lap -> Option<Lap> = Self::Lap { previous, .. } => *previous;
         lap_bars -> &ride::LapBars = Self::Lap { bars, .. } => bars;
-        back -> ride::Back = Self::Back { back, .. } => *back;
-        sunset -> ride::Light = Self::Back { sunset, .. } => *sunset;
         map -> Option<&'a ride::MapFrame> = Self::Map(map) => map.map(|map| map.frame());
         settings_lines -> &SettingsLines = Self::Settings { lines, .. } => lines;
         settings_pressed -> Option<u16> = Self::Settings { pressed, .. } => *pressed;
@@ -265,7 +258,6 @@ enum Painted<'v> {
     Climb(&'v ClimbFrame),
     Workout(&'v ride::WorkoutChart),
     Lap,
-    Back(Option<(u16, crate::ride::homing::Mode)>),
     Map(Option<&'v ride::FilledMap<'v>>),
     Settings,
     Phone(Option<&'v super::qr::Placed>),
@@ -281,7 +273,6 @@ impl<'v> Painted<'v> {
     picks! {
         climb -> &'v ClimbFrame = Self::Climb(frame) => *frame;
         chart -> &'v ride::WorkoutChart = Self::Workout(chart) => *chart;
-        arrow -> Option<(u16, crate::ride::homing::Mode)> = Self::Back(arrow) => *arrow;
         map -> Option<&'v ride::FilledMap<'v>> = Self::Map(map) => *map;
         qr -> Option<&'v super::qr::Placed> = Self::Phone(qr) => *qr;
         elevation -> Option<&'v ride::ElevationChart> = Self::Summary(elevation) => *elevation;
@@ -299,7 +290,6 @@ impl Extra<'_> {
                 lap: _,
                 previous: _,
             } => Painted::Lap,
-            Self::Back { back, sunset: _ } => Painted::Back(ride::back::arrow(*back)),
             Self::Map(map) => Painted::Map(map.as_ref()),
             Self::Settings {
                 lines: _,
@@ -442,10 +432,6 @@ impl<'v> Scene<'v> {
 
     pub(super) fn chart(&self) -> &'v ride::WorkoutChart {
         self.shown(self.painted.chart(), "workout chart", &NO_CHART)
-    }
-
-    pub(super) fn arrow(&self) -> Option<(u16, crate::ride::homing::Mode)> {
-        self.shown(self.painted.arrow(), "way back", None)
     }
 
     pub(super) fn map(&self) -> Option<&'v ride::FilledMap<'v>> {
@@ -712,14 +698,6 @@ impl<'a> View<'a> {
         self.shown(self.extra.lap_bars(), "lap bars", &NO_BARS)
     }
 
-    pub(super) fn back(&self) -> ride::Back {
-        self.shown(self.extra.back(), "way back", ride::Back::default())
-    }
-
-    pub(super) fn sunset(&self) -> ride::Light {
-        self.shown(self.extra.sunset(), "sunset", ride::Light::default())
-    }
-
     pub(super) fn map(&self) -> Option<&'a ride::MapFrame> {
         self.shown(self.extra.map(), "map", None)
     }
@@ -807,11 +785,6 @@ impl<'a> View<'a> {
             lap,
             previous,
         };
-    }
-
-    #[inline(never)]
-    pub fn show_back(&mut self, back: ride::Back, sunset: ride::Light) {
-        self.extra = Extra::Back { back, sunset };
     }
 
     #[inline(never)]
@@ -1219,8 +1192,7 @@ mod tests {
         assert!(none.climb_lent().is_none());
         assert!(none.climb_frame().is_none() && none.chart().is_none());
         assert!(none.lap().is_none() && none.previous_lap().is_none());
-        assert!(none.lap_bars().is_none() && none.back().is_none());
-        assert!(none.sunset().is_none() && none.map().is_none());
+        assert!(none.lap_bars().is_none() && none.map().is_none());
         assert!(none.lines().is_none() && none.qr().is_none());
         assert!(none.setup_step().is_none() && none.readiness().is_none());
         assert!(none.picker().is_none() && none.bests().is_none());
@@ -1565,21 +1537,8 @@ mod tests {
                 }
                 view.graphics.radar.status = radar::Status::Ready;
                 view.toast = radar_paired.then(|| Toast::new("LAP 1 05:00 200W", Tone::Info));
-                // The back-to-start arrow at an angle, its edges blended.
-                let back = ride::Back::Guide(crate::ride::homing::Guide {
-                    mode: crate::ride::homing::Mode::Track,
-                    following: true,
-                    course: false,
-                    course_near: false,
-                    direct_m: 1_920,
-                    track_m: 2_700,
-                    off_m: 0,
-                    bearing: 2_500,
-                    heading: Some(300),
-                });
                 match page {
                     RidePage::Lap => two_laps(&mut view, 125, 250, 9000),
-                    RidePage::Back => view.show_back(back, ride::Light::default()),
                     RidePage::Workout => view.show_workout(ride::WorkoutChart::default()),
                     RidePage::Climb => view.show_climb(ClimbLent::NONE),
                     RidePage::Map => view.show_map(None),

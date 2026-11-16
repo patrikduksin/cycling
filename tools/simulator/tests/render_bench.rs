@@ -4,18 +4,17 @@
 //! screens updates its hash here and shows the new screen in its sim-compare.
 use shell_simulator::bench::{SCENES, hash, measure};
 
-const HASHES: [(&str, u64); 32] = [
+const HASHES: [(&str, u64); 31] = [
     ("home", 0x5dea_9846_5bc7_40a5),
-    ("ride main + radar", 0xf365_f621_41fa_2a0d),
-    ("climb", 0xf04e_a2e3_fb4e_82f6),
+    ("ride main + radar", 0x3437_7b1e_d009_bc6d),
+    ("climb", 0x32a9_3676_5104_5d86),
     ("summary", 0x6404_f2e0_1f19_a7b9),
     ("sensors list", 0x0f56_378e_4d72_916a),
     ("workouts", 0x3fcb_3076_c488_efd3),
-    ("ride stats", 0x38c8_5703_1839_7873),
-    ("lap", 0x1865_f901_76e6_b43e),
-    ("workout", 0xcce5_4cc7_16cc_65be),
-    ("map", 0x19c2_6ffd_d6ac_5393),
-    ("back to start", 0x1920_6d8e_0f5d_1fe3),
+    ("ride stats", 0xf916_9d13_b2bc_8d63),
+    ("lap", 0x5413_6f09_78d5_37de),
+    ("workout", 0x0fe2_b351_c404_256e),
+    ("map", 0xa1f7_e9c6_5748_d0f3),
     ("paused", 0x1abb_4ec0_be41_8109),
     ("end ride", 0x45ab_e5fa_c73d_1778),
     ("ready", 0x3dc6_4149_a715_c58c),
@@ -34,7 +33,7 @@ const HASHES: [(&str, u64); 32] = [
     ("bests confirm", 0x40ab_8b32_d5ef_28e6),
     ("form no power", 0x5ed1_0eab_524c_8dc5),
     ("phone from saved ride", 0xffb0_a2fb_7c21_fe75),
-    ("main with workout band", 0x98ed_6b1c_e526_7bcc),
+    ("main with workout band", 0x920d_1275_eed2_89fc),
     ("settings light", 0x5b8f_741b_699d_2bea),
     ("home light", 0x09fb_425c_a4c6_e514),
 ];

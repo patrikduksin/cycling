@@ -23,6 +23,16 @@ debug = 2
 panic = "abort"
 overflow-checks = true
 
+# The host trace tools (`cycling trace`, `cycling replay`): optimised like
+# release but without the firmware's fat LTO and size optimisation.
+[profile.tools]
+inherits = "release"
+opt-level = 3
+lto = false
+codegen-units = 16
+debug = "line-tables-only"
+panic = "unwind"
+
 [patch.crates-io]
 trouble-host = { path = "vendor/trouble-host" }
 

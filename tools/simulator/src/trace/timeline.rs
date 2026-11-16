@@ -283,8 +283,8 @@ pub struct Entry {
     /// The same source said the same thing before: only counters or a
     /// reading moved. Hidden unless asked for.
     pub repeat: bool,
-    /// The bytes behind a decoded packet, in hex.
-    pub hex: Option<String>,
+    /// The bytes behind a decoded packet.
+    pub bytes: Option<[u8; 8]>,
     /// For a page: what in its pass brought it up.
     pub cause: Option<Cause>,
     /// For a ride page: which shown readings it draws, `power,hr,grade`, or
@@ -345,8 +345,8 @@ impl fmt::Display for Entry {
             }
             write!(f, ")")?;
         }
-        match &self.hex {
-            Some(hex) if f.alternate() => write!(f, "  [{hex}]"),
+        match &self.bytes {
+            Some(bytes) if f.alternate() => write!(f, "  [{}]", hex(bytes)),
             _ => Ok(()),
         }
     }
@@ -558,9 +558,11 @@ struct Reader {
     recording: bool,
     clock: Vec<Anchor>,
     utc_at_boot_ms: Option<u64>,
-    last: HashMap<(Kind, u8), String>,
+    /// The last entry each source said that was not a repeat.
+    last: HashMap<(Kind, u8), usize>,
     pages: Pages,
-    heard: HashMap<String, u64>,
+    /// When each sensor was last heard, by type and number.
+    heard: HashMap<(u8, u16), (ant::Identity, u64)>,
     silences: Vec<Silence>,
     /// The first entry of the pass being read.
     pass_start: usize,
@@ -593,16 +595,20 @@ impl Reader {
     }
 
     fn push_from(&mut self, kind: Kind, source: u8, text: String) {
-        let repeat = !kind.edge() && self.last.get(&(kind, source)) == Some(&text);
+        let repeat = !kind.edge()
+            && self
+                .last
+                .get(&(kind, source))
+                .is_some_and(|&i| self.entries[i].text == text);
         if !repeat {
-            self.last.insert((kind, source), text.clone());
+            self.last.insert((kind, source), self.entries.len());
         }
         self.entries.push(Entry {
             at: self.at(),
             kind,
             text,
             repeat,
-            hex: None,
+            bytes: None,
             cause: None,
             shows: None,
         });
@@ -656,13 +662,14 @@ impl Reader {
         }
     }
 
-    fn heard_from(&mut self, sensor: &str) {
-        let Some(last_ms) = self.heard.insert(sensor.to_string(), self.now) else {
+    fn heard_from(&mut self, identity: ant::Identity) {
+        let key = (identity.device_type, identity.device_number);
+        let Some((_, last_ms)) = self.heard.insert(key, (identity, self.now)) else {
             return;
         };
         if self.now - last_ms > SILENCE_MS {
             self.silences.push(Silence {
-                sensor: sensor.to_string(),
+                sensor: sensor(identity),
                 last_ms,
                 next_ms: Some(self.now),
             });
@@ -672,11 +679,11 @@ impl Reader {
     fn silent_at_end(&mut self) {
         let mut open: Vec<Silence> = self
             .heard
-            .iter()
-            .filter(|(_, last_ms)| self.now - **last_ms > SILENCE_MS)
-            .map(|(sensor, last_ms)| Silence {
-                sensor: sensor.clone(),
-                last_ms: *last_ms,
+            .values()
+            .filter(|(_, last_ms)| self.now - *last_ms > SILENCE_MS)
+            .map(|&(identity, last_ms)| Silence {
+                sensor: sensor(identity),
+                last_ms,
                 next_ms: None,
             })
             .collect();
@@ -742,11 +749,13 @@ impl Reader {
             }
             Event::AntPacket(packet) => {
                 let words = self.pages.describe(packet.identity, packet.data);
-                let sensor = sensor(packet.identity);
-                self.heard_from(&sensor);
-                self.push(Kind::AntPacket, format!("{sensor} {words}"));
+                self.heard_from(packet.identity);
+                self.push(
+                    Kind::AntPacket,
+                    format!("{} {words}", sensor(packet.identity)),
+                );
                 if let Some(entry) = self.entries.last_mut() {
-                    entry.hex = Some(hex(&packet.data));
+                    entry.bytes = Some(packet.data);
                 }
             }
             Event::AntRequest { operation, result } => self.push(

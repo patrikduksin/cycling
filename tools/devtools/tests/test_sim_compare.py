@@ -6,6 +6,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 import zlib
 
@@ -126,7 +127,7 @@ def test_comparison_shows_only_differences_side_by_side(tmp_path):
     markdown, attachments = compare.comparison(
         compare.pair(old, new), old, new, tmp_path, ('origin/main', 'aaa', 'Base subject', 'bbb')
     )
-    assert 'Before: `origin/main` at `aaa` (Base subject)' in markdown
+    assert 'Before: the merge-base with `origin/main`, `aaa` (Base subject)' in markdown
     assert markdown.startswith('## ✅ Simulator before/after: 1 changed · 1 new · 1 removed · 1 unchanged')
     assert '- Steady: home' in markdown
     assert '### ✅ Steady' not in markdown
@@ -142,7 +143,7 @@ def test_comparison_shows_only_differences_side_by_side(tmp_path):
     assert not any('steady' in a for a in attachments)
     for path in attachments:
         assert path in markdown
-    assert all(len(files) <= report.ATTACHMENT_LIMIT for _, files in report.comments(markdown, attachments))
+    assert report.comments(markdown, attachments) == [(markdown, attachments)]
 
 
 def test_videos_on_both_sides_show_as_before_and_after(tmp_path):
@@ -186,23 +187,53 @@ def test_chunks_it_cannot_decode_compare_as_bytes():
     assert compare.pixels(palette) == palette
 
 
-def test_one_scenario_with_many_changes_splits_within_the_attachment_limit(tmp_path):
+def test_a_comparison_too_long_for_one_comment_splits_between_scenarios(tmp_path):
     before, after = tmp_path / 'before', tmp_path / 'after'
-    many = 30
-    scenario(before, 'busy', {f'screen {i}': png(IMAGE, 4) for i in range(many)})
-    scenario(after, 'busy', {f'screen {i}': png(OTHER, 4) for i in range(many)}, video=True)
+    for i in range(30):
+        scenario(before, f'busy_{i:02}', {f'screen {j}': png(IMAGE, 4) for j in range(10)})
+        scenario(after, f'busy_{i:02}', {f'screen {j}': png(OTHER, 4) for j in range(10)})
     old, new = report.load(before), report.load(after)
     markdown, attachments = compare.comparison(
         compare.pair(old, new), old, new, tmp_path, ('origin/main', 'aaa', 'Base subject', 'bbb')
     )
-    assert len(attachments) == 2 * many + 1
-    assert '### ✅ Busy (continued)' in markdown
     chunks = report.comments(markdown, attachments)
     assert len(chunks) == 2
-    assert all(len(files) <= report.ATTACHMENT_LIMIT for _, files in chunks)
     assert sorted(f for _, files in chunks for f in files) == sorted(attachments)
-    # Every continued table has its own header row.
-    assert all('| Screen | Before | After |' in body for body, _ in chunks)
+    for body, files in chunks:
+        uploaded = body
+        for path in files:
+            uploaded = uploaded.replace(path, 'https://github.com/user-attachments/assets/' + 'f' * 36)
+        assert len(uploaded) <= report.BODY_LIMIT
+        assert '| Screen | Before | After |' in body
+
+
+def test_a_scenario_too_long_for_one_comment_splits_between_its_rows(tmp_path):
+    before, after = tmp_path / 'before', tmp_path / 'after'
+    screens = 500
+    scenario(before, 'endless', {f'screen {j}': png(IMAGE, 4) for j in range(screens)})
+    scenario(after, 'endless', {f'screen {j}': png(OTHER, 4) for j in range(screens)}, status='fail')
+    (after / 'endless/result.json').write_text(
+        (after / 'endless/result.json').read_text().replace('"boom"', json.dumps('boom ' * 50_000))
+    )
+    old, new = report.load(before), report.load(after)
+    markdown, attachments = compare.comparison(
+        compare.pair(old, new), old, new, tmp_path, ('origin/main', 'aaa', 'Base subject', 'bbb')
+    )
+    chunks = report.comments(markdown, attachments)
+    assert len(chunks) > 1
+    assert sorted(f for _, files in chunks for f in files) == sorted(attachments)
+    rows = [line for body, _ in chunks for line in body.splitlines() if line.startswith('|') and '<img' in line]
+    assert len(rows) == screens
+    for body, files in chunks:
+        uploaded = body
+        for path in files:
+            uploaded = uploaded.replace(path, 'https://github.com/user-attachments/assets/' + 'f' * 36)
+        assert len(uploaded) <= report.BODY_LIMIT - report.NOTE_ROOM
+        if files:
+            assert '| Screen | Before | After |' in body
+    headings = [line for body, _ in chunks for line in body.splitlines() if line.startswith('### ')]
+    assert headings == ['### ❌ Endless', *['### ❌ Endless (continued)'] * (len(headings) - 1)]
+    assert markdown.count('boom') < 1_000, 'the failure is cut, not repeated whole'
 
 
 def test_a_build_failure_or_empty_run_is_incomplete(tmp_path):
@@ -216,155 +247,171 @@ def test_a_build_failure_or_empty_run_is_incomplete(tmp_path):
     assert compare.incomplete(tmp_path, 101) is None
 
 
-def test_base_and_current_never_share_a_target_directory(tmp_path, monkeypatch):
-    targets = {}
-
-    def fake(*runs):
-        for run in runs:
-            targets[run.artifacts.name] = run.target
-            run.artifacts.mkdir(parents=True, exist_ok=True)
-            scenario(run.artifacts, 'ride', {'riding': png(IMAGE, 4)})
-            (run.artifacts / 'cargo.log').write_text('test ride ... ok\ntest result: ok. 1 passed\n')
-        return [0] * len(runs)
-
-    @contextlib.contextmanager
-    def checkout(commit, path):
-        yield path
-
-    monkeypatch.setattr(compare, 'scenarios', fake)
-    monkeypatch.setattr(compare, 'checkout', checkout)
-    monkeypatch.setattr(compare, 'git', lambda *args: 'abc1234 Base subject')
-    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
-    monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
-    assert compare.main(['--out', str(tmp_path / 'out')]) == 0
-    assert targets['after'] == tmp_path / 'target'
-    assert targets['before'] == tmp_path / 'target/sim-compare-base'
-
-
-def test_main_refuses_an_incomplete_baseline_before_reporting(tmp_path, monkeypatch):
-    def one(run):
-        assert run.artifacts.is_absolute() and run.target.is_absolute()
-        run.artifacts.mkdir(parents=True, exist_ok=True)
-        if run.artifacts.name == 'after':
-            scenario(run.artifacts, 'ride', {'riding': png(IMAGE, 4)})
-            (run.artifacts / 'cargo.log').write_text('test ride ... ok\ntest result: ok. 1 passed\n')
-            return 0
-        (run.artifacts / 'cargo.log').write_text('error: could not compile\n')
-        return 101
-
-    def fake(*runs):
-        return [one(run) for run in runs]
-
-    @contextlib.contextmanager
-    def checkout(commit, path):
-        yield path
-
-    posted = []
-    monkeypatch.setattr(compare, 'scenarios', fake)
-    monkeypatch.setattr(compare, 'checkout', checkout)
-    monkeypatch.setattr(compare, 'git', lambda *args: 'abc1234 Base subject')
-    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
-    monkeypatch.setattr(report, 'post', lambda *args: posted.append(args))
-    monkeypatch.chdir(tmp_path)
-    assert compare.main(['--out', 'relative', '--pr', '1']) == 1
-    assert posted == []
-    assert not (tmp_path / 'relative/summary.md').exists()
-
-
 SCREENS = {
     'before': {'steady': png(IMAGE, 4), 'ride': png(IMAGE, 4)},
     'after': {'steady': png(IMAGE, 4), 'ride': png(OTHER, 4), 'fresh': png(IMAGE, 4)},
 }
-TESTS = {'steady': 'steady', 'ride': 'ride', 'fresh': 'mutations::fresh'}
 
 
-def simulate(runs):
+def simulate(runs, broken=()):
     def one(run):
+        assert run.artifacts.is_absolute() and run.target.is_absolute()
         runs.append(run)
         side = 'before' if run.target.name == 'sim-compare-base' else 'after'
-        names = [n for n in SCREENS[side] if run.tests[2:] == () or TESTS[n] in run.tests[2:]]
+        names = [n for n in SCREENS[side] if not run.tests or run.tests[0] in n]
         shutil.rmtree(run.artifacts, ignore_errors=True)
         run.artifacts.mkdir(parents=True)
+        if side in broken:
+            (run.artifacts / 'cargo.log').write_text('error: could not compile\n')
+            return 101
         for name in names:
-            scenario(run.artifacts, name, {'final screen': SCREENS[side][name]}, video=run.video or side == 'before')
-        log = ''.join(f'test {TESTS[n]} ... ok\n' for n in names)
+            scenario(run.artifacts, name, {'final screen': SCREENS[side][name]})
+            (run.artifacts / name / 'frames.bin').write_text(side)
+        log = ''.join(f'test {n} ... ok\n' for n in names)
         (run.artifacts / 'cargo.log').write_text(f'{log}test result: ok. {len(names)} passed\n')
         return 0
 
-    return lambda *runs: [one(run) for run in runs]
+    return one
 
 
-def fake_main(tmp_path, monkeypatch, runs, checkouts):
+RENDERER = """
+import pathlib, sys
+directory = pathlib.Path(sys.argv[2])
+(directory / 'video.mp4').write_text((directory / 'frames.bin').read_text())
+print(directory / 'video.mp4')
+"""
+
+
+def fake_main(tmp_path, monkeypatch, runs, checkouts, broken=()):
     @contextlib.contextmanager
     def checkout(commit, path):
         checkouts.append(commit)
         yield path
 
-    monkeypatch.setattr(compare, 'scenarios', simulate(runs))
+    def git(*args):
+        if args[0] == 'rev-parse':
+            return 'abc1234'
+        return 'Base subject' if args[0] == 'log' else 'abc1234'
+
+    renderer = tmp_path / 'target/debug/shell-simulator'
+    renderer.parent.mkdir(parents=True)
+    renderer.write_text(f'#!{sys.executable}\n{RENDERER}')
+    renderer.chmod(0o755)
+    monkeypatch.setattr(compare, 'run_scenarios', simulate(runs, broken))
     monkeypatch.setattr(compare, 'checkout', checkout)
-    monkeypatch.setattr(compare, 'git', lambda *args: 'abc1234' if args[0] == 'rev-parse' else 'Base subject')
+    monkeypatch.setattr(compare, 'git', git)
+    monkeypatch.setattr(compare, 'rustc_hash', lambda: 'rust1')
+    monkeypatch.setattr(compare, 'FILL', tmp_path / 'fill')
     monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
     monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
     return lambda *args: compare.main(['--out', str(tmp_path / 'out'), *args])
 
 
+def test_base_and_current_never_share_a_target_directory(tmp_path, monkeypatch):
+    runs = []
+    main = fake_main(tmp_path, monkeypatch, runs, [])
+    assert main() == 0
+    targets = {run.artifacts.name: run.target for run in runs}
+    assert targets == {'after': tmp_path / 'target', 'before': tmp_path / 'target/sim-compare-base'}
+
+
+def test_main_refuses_an_incomplete_baseline_before_reporting(tmp_path, monkeypatch):
+    posted = []
+    main = fake_main(tmp_path, monkeypatch, [], [], broken=('before',))
+    monkeypatch.setattr(report, 'post', lambda *args: posted.append(args))
+    monkeypatch.chdir(tmp_path)
+    assert compare.main(['--out', 'relative', '--pr', '1']) == 1
+    assert main() == 1
+    assert posted == []
+    assert not (tmp_path / 'relative/summary.md').exists()
+    assert not (compare.CACHE / 'abc1234-rust1').exists()
+
+
 @pytest.mark.parametrize('video', [False, True])
-def test_main_records_video_only_for_new_scenarios_and_asked_for_changes(tmp_path, monkeypatch, video):
+def test_videos_come_from_the_runs_own_frames(tmp_path, monkeypatch, video):
     runs = []
     main = fake_main(tmp_path, monkeypatch, runs, [])
     out = tmp_path / 'out'
     assert main(*(['--video'] if video else [])) == 0
-    assert [(r.artifacts.name, r.tests, r.video) for r in runs] == [
-        ('after', (), False),
-        ('before', (), False),
-        ('after-video', ('--', '--exact', 'mutations::fresh', *(['ride'] if video else [])), True),
-        *([('before-video', ('--', '--exact', 'ride'), True)] if video else []),
-    ]
+    assert sorted(r.artifacts.name for r in runs) == ['after', 'before']
     summary = (out / 'summary.md').read_text()
     assert summary.startswith('## ✅ Simulator before/after: 1 changed · 1 new · 0 removed · 1 unchanged')
     assert 'out/after/fresh/video.mp4' in summary
     assert ('out/after/ride/video.mp4' in summary) == video
     assert ('out/before/ride/video.mp4' in summary) == video
     assert 'steady/video.mp4' not in summary
+    assert (out / 'after/fresh/video.mp4').read_text() == 'after'
+    if video:
+        assert (out / 'before/ride/video.mp4').read_text() == 'before'
+    assert not list(compare.CACHE.glob('*/*/video.*'))
 
 
-def test_a_complete_base_is_cached_by_commit_and_filter(tmp_path, monkeypatch, cache):
+def test_a_complete_base_is_cached_by_commit_rustc_and_filter(tmp_path, monkeypatch, cache):
     runs, checkouts = [], []
     main = fake_main(tmp_path, monkeypatch, runs, checkouts)
     assert main() == 0
     first = (tmp_path / 'out/summary.md').read_text()
-    assert [r.artifacts.name for r in runs] == ['after', 'before', 'after-video']
-    assert (cache / 'abc1234/ride/final.png').exists()
-    assert not list(cache.glob('abc1234/*/video.*'))
+    assert (cache / 'abc1234-rust1/ride/final.png').exists()
+    assert (cache / 'abc1234-rust1/ride/frames.bin').exists()
     runs.clear()
     assert main() == 0
-    assert [r.artifacts.name for r in runs] == ['after', 'after-video']
+    assert [r.artifacts.name for r in runs] == ['after']
     assert checkouts == ['abc1234']
     assert (tmp_path / 'out/summary.md').read_text() == first
     assert main('--filter', 'ride') == 0
-    assert [r.artifacts.name for r in runs][-2] == 'before'
-    assert len([p for p in cache.iterdir() if not p.name.startswith('.')]) == 2
+    assert 'before' in [r.artifacts.name for r in runs]
+    monkeypatch.setattr(compare, 'rustc_hash', lambda: 'rust2')
+    assert main() == 0
+    assert len([p for p in cache.iterdir() if not p.name.startswith('.')]) == 3
 
 
-def test_an_incomplete_base_is_not_cached(tmp_path, monkeypatch, cache):
-    main = fake_main(tmp_path, monkeypatch, [], [])
-    real = compare.scenarios
+def test_the_base_is_the_merge_base(monkeypatch):
+    calls = []
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: calls.append('fetch'))
+    fake_git(monkeypatch, calls)
+    assert compare.resolve_base(None) == ('origin/main', 'base5678', 'Base subject')
+    assert calls == [
+        'fetch',
+        ('rev-parse', '--verify', 'origin/main^{commit}'),
+        ('merge-base', 'HEAD', 'main1234'),
+        ('log', '-1', '--no-show-signature', '--format=%s', 'base5678'),
+    ]
 
-    def broken(*runs):
-        statuses = real(*runs)
-        for i, run in enumerate(runs):
-            if run.artifacts.name == 'before':
-                (run.artifacts / 'cargo.log').write_text('error: could not compile\n')
-                statuses[i] = 101
-        return statuses
 
-    monkeypatch.setattr(compare, 'scenarios', broken)
-    assert main() == 1
-    assert not (cache / 'abc1234').exists()
+def test_fill_caches_a_commit_once_for_later_comparisons(tmp_path, monkeypatch, cache):
+    runs, checkouts = [], []
+    main = fake_main(tmp_path, monkeypatch, runs, checkouts)
+    assert main('--fill', 'abc1234') == 0
+    assert main('--fill', 'abc1234') == 0
+    assert checkouts == ['abc1234']
+    assert [r.artifacts.name for r in runs] == ['before']
+    runs.clear()
+    assert main() == 0
+    assert [r.artifacts.name for r in runs] == ['after']
+
+
+def test_concurrent_misses_on_one_base_build_it_once(tmp_path, monkeypatch, cache):
+    runs, checkouts = [], []
+    fake_main(tmp_path, monkeypatch, runs, checkouts)
+    real = compare.run_scenarios
+
+    def slow(run):
+        time.sleep(0.3)
+        return real(run)
+
+    monkeypatch.setattr(compare, 'run_scenarios', slow)
+    target = tmp_path / 'target'
+    outs = [tmp_path / f'out{i}' for i in range(3)]
+    with concurrent.futures.ThreadPoolExecutor(3) as pool:
+        problems = list(pool.map(lambda out: compare.ensure_base('key', 'abc1234', out, target, ()), outs))
+    assert problems == [None] * 3
+    assert checkouts == ['abc1234']
+    for out in outs:
+        assert (out / 'before/ride/final.png').exists()
 
 
 def run_dir(path, marker):
-    scenario(path, 'ride', {'riding': png(IMAGE, 4)}, video=True)
+    scenario(path, 'ride', {'riding': png(IMAGE, 4)})
     (path / 'cargo.log').write_text(f'{marker}\ntest ride ... ok\ntest result: ok. 1 passed\n')
     return path
 
@@ -398,34 +445,150 @@ def test_cache_keeps_the_most_recently_used_entries(tmp_path, monkeypatch, cache
     assert not compare.restore('old', tmp_path / 'restored')
 
 
+def test_evicting_a_key_never_lets_a_second_build_of_it_start(tmp_path, monkeypatch, cache):
+    monkeypatch.setattr(compare, 'CACHE_ENTRIES', 1)
+    run = run_dir(tmp_path / 'run', 'run')
+    compare.store('k', run)
+    os.utime(cache / 'k', (0, 0))
+    building, finish, events = threading.Event(), threading.Event(), []
+
+    def first():
+        with compare.build_lock('k'):
+            building.set()
+            finish.wait(5)
+            events.append('first finished')
+
+    def second():
+        with compare.build_lock('k'):
+            events.append('second started')
+
+    builder = threading.Thread(target=first)
+    builder.start()
+    building.wait(5)
+    compare.store('newer', run)
+    assert not (cache / 'k').exists()
+    waiter = threading.Thread(target=second)
+    waiter.start()
+    waiter.join(0.5)
+    assert events == [], 'a second build started while the first held the lock'
+    finish.set()
+    builder.join()
+    waiter.join()
+    assert events == ['first finished', 'second started']
+
+
+def fill_commits(tmp_path, monkeypatch):
+    @contextlib.contextmanager
+    def checkout(commit, path):
+        path.mkdir(parents=True, exist_ok=True)
+        (path / 'commit').write_text(commit)
+        yield path
+
+    def run(run):
+        time.sleep(0.2)
+        commit = (run.source / 'commit').read_text()
+        run.artifacts.mkdir(parents=True, exist_ok=True)
+        scenario(run.artifacts, 'ride', {'final screen': png(IMAGE, 4)})
+        (run.artifacts / 'ride/frames.bin').write_text(commit)
+        (run.artifacts / 'cargo.log').write_text('test ride ... ok\ntest result: ok. 1 passed\n')
+        return 0
+
+    monkeypatch.setattr(compare, 'checkout', checkout)
+    monkeypatch.setattr(compare, 'run_scenarios', run)
+    monkeypatch.setattr(compare, 'git', lambda *args: args[-1].removesuffix('^{commit}'))
+    monkeypatch.setattr(compare, 'rustc_hash', lambda: 'rust1')
+    monkeypatch.setattr(compare, 'FILL', tmp_path / 'fill')
+    monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
+
+
+def test_overlapping_fills_of_different_commits_each_cache_their_own_screens(tmp_path, monkeypatch, cache):
+    fill_commits(tmp_path, monkeypatch)
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        assert list(pool.map(compare.fill, ['aaa', 'bbb'])) == [None, None]
+    for commit in ('aaa', 'bbb'):
+        assert (cache / f'{commit}-rust1/ride/frames.bin').read_text() == commit
+    assert list((tmp_path / 'fill').iterdir()) == [], 'a fill left its checkout or screens behind'
+
+
 def fake_git(monkeypatch, calls):
-    """Answers rev-parse and log like git would, recording every call."""
 
     def git(*args):
         calls.append(args)
         if args[0] == 'rev-parse':
-            return 'abc1234'
+            return 'main1234'
+        if args[0] == 'merge-base':
+            return 'base5678'
         assert args[0] == 'log' and '--no-show-signature' in args
         return 'Base subject'
 
     monkeypatch.setattr(compare, 'git', git)
 
 
-def test_default_base_is_origin_main_fetched_before_resolving(monkeypatch):
-    calls = []
-    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: calls.append('fetch'))
-    fake_git(monkeypatch, calls)
-    assert compare.resolve_base(None) == ('origin/main', 'abc1234', 'Base subject')
-    assert calls[0] == 'fetch'
-    assert calls[1] == ('rev-parse', '--verify', 'origin/main^{commit}')
-    assert calls[2] == ('log', '-1', '--no-show-signature', '--format=%s', 'abc1234')
+def test_a_missing_merge_base_is_named_as_such(tmp_path, monkeypatch, capsys):
+    def git(*args):
+        if args[0] == 'merge-base':
+            raise subprocess.CalledProcessError(1, ['git', *args], '', '')
+        return 'main1234'
+
+    monkeypatch.setattr(compare, 'git', git)
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
+    assert compare.main(['--out', str(tmp_path / 'out')]) == 2
+    err = capsys.readouterr().err
+    assert 'no merge-base of HEAD and origin/main' in err and 'shallow clone' in err
+    assert 'unknown git ref' not in err
+
+
+def test_an_interrupt_stops_the_base_run_at_once(tmp_path, monkeypatch):
+    started = []
+    real = subprocess.Popen
+
+    def popen(*args, **kwargs):
+        started.append(real(*args, **kwargs))
+        return started[-1]
+
+    class Interrupted:
+        def write(self, text):
+            if text.startswith('after |'):
+                raise KeyboardInterrupt
+
+        def flush(self):
+            pass
+
+    @contextlib.contextmanager
+    def checkout(commit, path):
+        path.mkdir(parents=True, exist_ok=True)
+        yield path
+
+    script = (
+        'import os, sys, time\n'
+        'if os.environ["SIM_ARTIFACTS"].endswith("before"):\n'
+        '    print("base running", flush=True); time.sleep(60)\n'
+        'time.sleep(1); print("after running", flush=True); time.sleep(60)\n'
+    )
+    monkeypatch.setattr(compare, 'COMMAND', [sys.executable, '-c', script])
+    monkeypatch.setattr(compare.subprocess, 'Popen', popen)
+    monkeypatch.setattr(compare.sys, 'stdout', Interrupted())
+    monkeypatch.setattr(compare, 'checkout', checkout)
+    monkeypatch.setattr(compare, 'git', lambda *args: 'Base subject' if args[0] == 'log' else 'abc1234')
+    monkeypatch.setattr(compare, 'rustc_hash', lambda: 'rust1')
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
+    monkeypatch.setattr(compare, 'CARGO', compare.Cargo())
+    monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
+    began = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        compare.main(['--out', str(tmp_path / 'out')])
+    assert time.monotonic() - began < compare.GRACE_S
+    assert len(started) == 2
+    for process in started:
+        assert process.wait(timeout=5) is not None
+    assert not (compare.CACHE / 'abc1234-rust1').exists()
 
 
 def test_explicit_base_is_resolved_without_fetching(monkeypatch):
     calls = []
     monkeypatch.setattr(compare, 'fetch_origin_main', lambda: calls.append('fetch'))
     fake_git(monkeypatch, calls)
-    assert compare.resolve_base('main') == ('main', 'abc1234', 'Base subject')
+    assert compare.resolve_base('main') == ('main', 'base5678', 'Base subject')
     assert 'fetch' not in calls
     assert calls[0] == ('rev-parse', '--verify', 'main^{commit}')
 
@@ -433,7 +596,7 @@ def test_explicit_base_is_resolved_without_fetching(monkeypatch):
 def test_signed_base_under_show_signature_is_not_parsed_as_sha(monkeypatch):
     # With log.showSignature=true, a log without --no-show-signature prints gpg lines before the commit line.
     def git(*args):
-        if args[0] == 'rev-parse':
+        if args[0] in ('rev-parse', 'merge-base'):
             return 'abc1234'
         if '--no-show-signature' not in args:
             return 'gpg: Signature made Sat Oct 17\ngpg: Good signature\nabc1234 Base subject'
@@ -460,9 +623,9 @@ def test_failed_fetch_warns_and_keeps_existing_origin_main(monkeypatch, capsys):
     assert 'could not fetch origin/main' in err and 'could not resolve host' in err and 'existing origin/main' in err
 
 
-def test_runs_go_at_once_each_into_its_own_log(tmp_path, monkeypatch, capsys):
+def test_a_run_logs_under_its_side_without_video_or_the_target_variable(tmp_path, monkeypatch, capsys):
     script = (
-        'import os, sys, time; print(time.time(), flush=True); time.sleep(0.5); print(os.environ.get("SIM_VIDEO"));'
+        'import os, sys; print(os.environ.get("SIM_VIDEO"), os.environ["SIM_ARTIFACTS"]);'
         'print(sys.argv[1:3] == ["--target-dir", os.environ.get("TARGET_SEEN")] and "CARGO_TARGET_DIR" not in os.environ);'
         'sys.exit(int(sys.argv[-1]))'
     )
@@ -470,18 +633,12 @@ def test_runs_go_at_once_each_into_its_own_log(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv('SIM_VIDEO', '1')
     monkeypatch.setenv('CARGO_TARGET_DIR', '/elsewhere')
     monkeypatch.setenv('TARGET_SEEN', str(tmp_path / 'target'))
-    runs = [
-        compare.Run(tmp_path, tmp_path / 'after', tmp_path / 'target', ('3',)),
-        compare.Run(tmp_path, tmp_path / 'before', tmp_path / 'target', ('0',), video=True),
-    ]
-    assert compare.scenarios(*runs) == [3, 0]
-    after, before = ((tmp_path / side / 'cargo.log').read_text().split() for side in ('after', 'before'))
-    assert abs(float(after[0]) - float(before[0])) < 0.4
-    assert (after[1], before[1]) == ('None', '1')
+    assert compare.run_scenarios(compare.Run(tmp_path, tmp_path / 'after', tmp_path / 'target', ('3',))) == 3
+    log = (tmp_path / 'after/cargo.log').read_text().split()
+    assert log[:2] == ['None', str(tmp_path / 'after')]
     # The target goes on the command line: sccache keys on every CARGO_* variable.
-    assert (after[2], before[2]) == ('True', 'True')
-    printed = capsys.readouterr().out
-    assert 'after | None' in printed and 'before | 1' in printed
+    assert log[2] == 'True'
+    assert f'after | None {tmp_path / "after"}' in capsys.readouterr().out
 
 
 def test_streaming_errors_stop_cargo_and_its_children(tmp_path, monkeypatch):
@@ -505,7 +662,7 @@ def test_streaming_errors_stop_cargo_and_its_children(tmp_path, monkeypatch):
     monkeypatch.setattr(compare.subprocess, 'Popen', popen)
     monkeypatch.setattr(compare.sys, 'stdout', Broken())
     with pytest.raises(BrokenPipeError):
-        compare.scenarios(compare.Run(tmp_path, tmp_path / 'run', tmp_path / 'target'))
+        compare.run_scenarios(compare.Run(tmp_path, tmp_path / 'run', tmp_path / 'target'))
     assert started[0].poll() is not None
     # The whole group is gone, grandchildren included, once init reaps them.
     deadline = time.monotonic() + 5

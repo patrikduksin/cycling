@@ -179,6 +179,7 @@ class JudgeTests(CleanCase):
             '.local/firmware/cycling-os',
             '.local/verify/log',
             '.local/sim/latest/a.png',
+            '.local/sim/publish/tmpab12cd34.log',
             'target/x',
             'a/__pycache__/m.pyc',
         ):

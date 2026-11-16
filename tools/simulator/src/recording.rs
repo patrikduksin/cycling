@@ -3,7 +3,9 @@
 //!
 //! Recording is enabled by `SIM_ARTIFACTS=<directory>`; each scenario writes
 //! `<directory>/<scenario>/` when its `Sim` is dropped, including on failure.
-//! The video is written only with `SIM_VIDEO=1`.
+//! The video is written only with `SIM_VIDEO=1`, but every scenario stores the
+//! frames it is made from in `frames.bin`, so [`render_video`] can make it
+//! later without running the scenario again.
 use crate::artifacts::{Canvas, Series, Still, chart_png, chart_svg, gif, mp4};
 use crate::sim::{Note, NoteKind};
 use crate::world::World;
@@ -12,6 +14,9 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use tape::{Panels, Playback, Shot};
+
+mod tape;
 
 /// Device screens are shown at twice the panel size.
 pub(crate) const SCALE: usize = 2;
@@ -123,30 +128,19 @@ pub fn take_panic() -> Option<String> {
     PANIC.with(|p| p.borrow_mut().take())
 }
 
-/// A frame as runs of equal pixels; UI frames compress well.
-struct Frame {
-    at_ms: u64,
-    runs: Vec<(u16, u32)>,
-}
-
-impl Frame {
-    fn new(at_ms: u64, pixels: &[u16]) -> Self {
-        let mut runs: Vec<(u16, u32)> = Vec::new();
-        for &pixel in pixels {
-            match runs.last_mut() {
-                Some((color, count)) if *color == pixel => *count += 1,
-                _ => runs.push((pixel, 1)),
-            }
-        }
-        Self { at_ms, runs }
-    }
-
-    fn pixels(&self) -> Vec<u16> {
-        self.runs
-            .iter()
-            .flat_map(|&(color, count)| std::iter::repeat_n(color, count as usize))
-            .collect()
-    }
+/// Render the video of the scenario recorded in `dir` from the shots it
+/// stored, as if it had run with `SIM_VIDEO=1`; returns the file written.
+pub fn render_video(dir: &Path) -> io::Result<String> {
+    let bytes = fs::read(dir.join(tape::FILE))?;
+    let (header, film) = tape::read(&bytes)?;
+    let mut recording = Recording::at(dir.to_path_buf(), &header.name, header.width, header.height);
+    recording.truth = header.truth;
+    recording.video(
+        &header.shots,
+        film,
+        &header.notes,
+        header.failure.as_deref(),
+    )
 }
 
 /// The world each second, for charts.
@@ -174,9 +168,9 @@ pub struct Recording {
     dir: PathBuf,
     width: usize,
     height: usize,
-    frames: Vec<Frame>,
+    frames_at: Vec<u64>,
+    panels: Panels,
     last: Vec<u16>,
-    kept: usize,
     checkpoints: Vec<Checkpoint>,
     truth: Vec<Truth>,
     submissions: u32,
@@ -229,9 +223,9 @@ impl Recording {
             name: name.to_string(),
             width,
             height,
-            frames: Vec::new(),
+            frames_at: Vec::new(),
+            panels: Panels::new(),
             last: Vec::new(),
-            kept: 0,
             checkpoints: Vec::new(),
             truth: Vec::new(),
             submissions: u32::MAX,
@@ -279,40 +273,48 @@ impl Recording {
         self.checkpoints.push(Checkpoint {
             name: name.to_string(),
             at_ms,
-            frame: self.kept - 1,
+            frame: self.frames_at.len() - 1,
             pixels: pixels.to_vec(),
             notes,
         });
     }
 
     fn keep(&mut self, at_ms: u64, pixels: &[u16]) {
+        self.frames_at.push(at_ms);
+        self.panels.push(&self.last, pixels, self.width);
         self.last.clear();
         self.last.extend_from_slice(pixels);
-        self.kept += 1;
-        if self.video {
-            self.frames.push(Frame::new(at_ms, pixels));
-        }
     }
 
     /// Write every artifact; failures to write are reported, never hidden.
-    pub fn write(&self, outcome: Outcome<'_>) -> io::Result<()> {
+    pub fn write(mut self, outcome: Outcome<'_>) -> io::Result<()> {
         let failure = std::thread::panicking()
             .then(|| PANIC.with(|p| p.borrow_mut().take()).unwrap_or_default());
         replace_dir(&self.dir)?;
         let mut files = Vec::new();
 
-        let stills = if self.video {
-            self.stills(&outcome, failure.as_deref())
-        } else {
-            Vec::new()
-        };
-        if !stills.is_empty() {
-            if mp4(&stills, FPS, &self.dir.join("video.mp4"))? {
-                files.push("video.mp4".to_string());
-            } else {
-                fs::write(self.dir.join("video.gif"), gif(&stills))?;
-                files.push("video.gif".to_string());
+        let (frames, shots): (Vec<usize>, Vec<Shot>) = self.shots(&outcome).into_iter().unzip();
+        if !shots.is_empty() {
+            let panels = std::mem::replace(&mut self.panels, Panels::new()).finish();
+            let film = tape::film(&panels, self.width, self.height, &frames)?;
+            if self.video {
+                files.push(self.video(&shots, &film, outcome.notes, failure.as_deref())?);
             }
+            let mut truth: Vec<Truth> = shots
+                .iter()
+                .filter_map(|shot| self.truth_at(shot.at_ms).copied())
+                .collect();
+            truth.dedup_by_key(|t| t.at_ms);
+            let header = tape::Header {
+                name: self.name.clone(),
+                width: self.width,
+                height: self.height,
+                failure: failure.clone(),
+                notes: outcome.notes.to_vec(),
+                truth,
+                shots,
+            };
+            fs::write(self.dir.join(tape::FILE), tape::write(&header, &film))?;
         }
         for (index, checkpoint) in self.checkpoints.iter().enumerate() {
             let canvas = self.compose(
@@ -326,7 +328,7 @@ impl Recording {
             fs::write(self.dir.join(&file), canvas.png())?;
             files.push(file);
         }
-        if self.kept > 0 {
+        if !self.frames_at.is_empty() {
             let canvas = self.compose(
                 &self.last,
                 outcome.end_ms,
@@ -365,15 +367,42 @@ impl Recording {
         Ok(())
     }
 
-    /// The video: every distinct frame, held for its compressed duration.
-    fn stills(&self, outcome: &Outcome<'_>, failure: Option<&str>) -> Vec<Still> {
-        let Some(first) = self.frames.first() else {
+    fn video(
+        &self,
+        shots: &[Shot],
+        film: &[u8],
+        notes: &[Note],
+        failure: Option<&str>,
+    ) -> io::Result<String> {
+        let mut playback = Playback::new(film, self.width, self.height);
+        let mut stills = Vec::with_capacity(shots.len());
+        for (index, shot) in shots.iter().enumerate() {
+            stills.push(Still {
+                canvas: self.compose(
+                    playback.frame(index)?,
+                    shot.at_ms,
+                    notes,
+                    failure,
+                    shot.caption.as_deref(),
+                ),
+                hold_ms: shot.hold_ms,
+            });
+        }
+        if mp4(&stills, FPS, &self.dir.join("video.mp4"))? {
+            return Ok("video.mp4".to_string());
+        }
+        fs::write(self.dir.join("video.gif"), gif(&stills))?;
+        Ok("video.gif".to_string())
+    }
+
+    fn shots(&self, outcome: &Outcome<'_>) -> Vec<(usize, Shot)> {
+        let frames = &self.frames_at;
+        let Some(&start) = frames.first() else {
             return Vec::new();
         };
-        let start = first.at_ms;
         let end = outcome
             .end_ms
-            .max(self.frames.last().map_or(start, |f| f.at_ms) + 1000);
+            .max(frames.last().map_or(start, |&at| at) + 1000);
         // Windows around actions play in real time; a frame counts only the
         // part of its hold that overlaps them, so long quiet holds compress.
         let mut windows: Vec<(u64, u64)> = outcome
@@ -397,10 +426,10 @@ impl Recording {
             }
             covered
         };
-        let durations: Vec<(usize, u64, u64)> = (0..self.frames.len())
+        let durations: Vec<(usize, u64, u64)> = (0..frames.len())
             .map(|i| {
-                let from = self.frames[i].at_ms;
-                let until = self.frames.get(i + 1).map_or(end, |f| f.at_ms).max(from);
+                let from = frames[i];
+                let until = frames.get(i + 1).map_or(end, |&at| at).max(from);
                 (i, until - from, overlap(from, until))
             })
             .filter(|&(_, ms, _)| ms > 0)
@@ -412,10 +441,9 @@ impl Recording {
         let shown_real = real as f64 / real_speed;
         let budget = (TARGET_VIDEO_MS as f64 - shown_real).max(10_000.0);
         let speed = (compressed as f64 / budget).max(1.0);
-        let mut stills = Vec::new();
+        let mut shots = Vec::new();
         let mut carried = 0.0;
         for (index, ms, real) in durations {
-            let at = self.frames[index].at_ms;
             let shown = real as f64 / real_speed + (ms - real) as f64 / speed + carried;
             // Frames shorter than one video frame merge into the next.
             if shown < 1000.0 / f64::from(FPS) && !self.checkpoints.iter().any(|c| c.frame == index)
@@ -428,19 +456,22 @@ impl Recording {
                 .checkpoints
                 .iter()
                 .find(|c| c.frame == index)
-                .map(|c| c.name.as_str());
-            stills.push(Still {
-                canvas: self.compose(
-                    &self.frames[index].pixels(),
-                    at,
-                    outcome.notes,
-                    failure,
+                .map(|c| c.name.clone());
+            shots.push((
+                index,
+                Shot {
+                    at_ms: frames[index],
+                    hold_ms: shown as u32,
                     caption,
-                ),
-                hold_ms: shown as u32,
-            });
+                },
+            ));
         }
-        stills
+        shots
+    }
+
+    fn truth_at(&self, at_ms: u64) -> Option<&Truth> {
+        let after = self.truth.partition_point(|t| t.at_ms <= at_ms);
+        after.checked_sub(1).map(|i| &self.truth[i])
     }
 
     /// The device screen with a panel of time, scenario and recent events.
@@ -475,7 +506,7 @@ impl Recording {
                 PANEL_WIDTH,
             ) + 8;
         }
-        if let Some(truth) = self.truth.iter().rev().find(|t| t.at_ms <= at_ms) {
+        if let Some(truth) = self.truth_at(at_ms) {
             let line = format!(
                 "{:.0} KM/H  {:.0} W  {:.0} BPM",
                 truth.speed_kmh, truth.power_w, truth.heart_bpm
@@ -557,7 +588,7 @@ impl Recording {
             if failure.is_some() { "fail" } else { "pass" },
             failure.map_or("null".to_string(), json),
             outcome.end_ms,
-            self.kept,
+            self.frames_at.len(),
             files.iter().map(|f| json(f)).collect::<Vec<_>>().join(", "),
             self.checkpoints
                 .iter()
@@ -687,11 +718,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frames_round_trip_through_runs() {
-        let pixels = [1, 1, 1, 2, 3, 3, 0xffff];
-        let frame = Frame::new(0, &pixels);
-        assert_eq!(frame.runs.len(), 4);
-        assert_eq!(frame.pixels(), pixels);
+    fn quiet_stretches_merge_into_fewer_shots() {
+        let frames: Vec<u64> = (0..6_000).map(|i| i * 1_000).collect();
+        let outcome = Outcome {
+            notes: &[note(0)],
+            end_ms: 6_000_000,
+            rides: Vec::new(),
+        };
+        let shown = recording(&frames).shots(&outcome);
+        assert!(shown.len() < frames.len() / 2, "{} shots", shown.len());
+        assert!(shown.windows(2).all(|pair| pair[0].0 < pair[1].0));
     }
 
     #[test]
@@ -705,7 +741,7 @@ mod tests {
     fn recording(frames: &[u64]) -> Recording {
         let mut recording = Recording::at(PathBuf::new(), "timing", 4, 2);
         for (i, &at) in frames.iter().enumerate() {
-            recording.frames.push(Frame::new(at, &[i as u16; 8]));
+            recording.keep(at, &[i as u16; 8]);
         }
         recording
     }
@@ -724,8 +760,8 @@ mod tests {
             end_ms,
             rides: Vec::new(),
         };
-        let stills = recording.stills(&outcome, None);
-        stills.iter().map(|s| u64::from(s.hold_ms)).sum()
+        let shots = recording.shots(&outcome);
+        shots.iter().map(|(_, shot)| u64::from(shot.hold_ms)).sum()
     }
 
     #[test]

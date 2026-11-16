@@ -325,8 +325,9 @@ TASKS = [
     ),
     task(
         'sim-compare',
-        'Run simulator scenarios here and on a base ref; report changed screens Before | After '
-        '(--base REF, --pr N, --filter NAME, --video for before/after videos of changed scenarios)',
+        'Run simulator scenarios here and on the merge-base with main; report changed screens Before | After '
+        '(--base REF, --pr N, --filter NAME, --video for before/after videos of changed scenarios, '
+        "--fill COMMIT to cache a commit's screens as a base)",
         f'{DEV}sim.compare',
     ),
     task(

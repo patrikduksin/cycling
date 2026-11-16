@@ -2344,9 +2344,11 @@ name = "shell-simulator"
 version = "0.1.0"
 dependencies = [
  "device-api",
+ "fdeflate",
  "firmware-console",
  "firmware-services",
  "firmware-shell",
+ "flate2",
  "gif",
  "log",
  "minifb",

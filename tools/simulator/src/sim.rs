@@ -1110,6 +1110,7 @@ impl Drop for Sim {
         let Some(recording) = self.recording.take() else {
             return;
         };
+        let name = recording.name.clone();
         // A second panic while a failed scenario unwinds would abort the whole
         // test binary, so artifact work never unwinds out of here.
         let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1122,8 +1123,8 @@ impl Drop for Sim {
         }));
         match written {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => eprintln!("scenario artifacts for {}: {error}", recording.name),
-            Err(_) => eprintln!("scenario artifacts for {} panicked", recording.name),
+            Ok(Err(error)) => eprintln!("scenario artifacts for {name}: {error}"),
+            Err(_) => eprintln!("scenario artifacts for {name} panicked"),
         }
     }
 }

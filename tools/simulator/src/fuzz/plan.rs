@@ -1,4 +1,3 @@
-//! A session as plain data, drawn from its seed without looking at the device.
 use crate::world::Side;
 use device_api::input::Button;
 use std::ops::RangeInclusive;
@@ -54,8 +53,6 @@ impl Rng {
     }
 }
 
-/// Everything a session does. Plain data, so F2 can delete steps and run
-/// the rest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Plan {
     pub seed: u64,
@@ -107,14 +104,11 @@ pub enum Course {
     Corpus { pick: u64 },
 }
 
-/// Where courses start: mid-latitude, near the pole, on the antimeridian, on
-/// the equator at the prime meridian.
-pub const CENTERS: [(f64, f64); 4] = [
-    (-33.45, -70.66),
-    (79.9, 11.9),
-    (-16.8, 179.995),
-    (0.0005, -0.0005),
-];
+const MID_LATITUDE: (f64, f64) = (-33.45, -70.66);
+const NEAR_POLE: (f64, f64) = (79.9, 11.9);
+const ANTIMERIDIAN: (f64, f64) = (-16.8, 179.995);
+const NULL_ISLAND: (f64, f64) = (0.0005, -0.0005);
+pub const CENTERS: [(f64, f64); 4] = [MID_LATITUDE, NEAR_POLE, ANTIMERIDIAN, NULL_ISLAND];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RideAction {
@@ -135,7 +129,6 @@ impl RideAction {
     }
 }
 
-/// Integers only, so a plan is `Eq` and its Debug output reads as a script.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     Wait {
@@ -198,9 +191,6 @@ const BUTTONS: [Button; 3] = [Button::TopLeft, Button::BottomLeft, Button::Botto
 
 type Draw = fn(&mut Rng, &Setup) -> Option<Step>;
 
-/// The one table that sets what sessions look like: (weight, drawer). A
-/// drawer answers `None` when the setup cannot use its step, and the row is
-/// drawn again.
 const WEIGHTS: &[(u64, Draw)] = &[
     (30, |rng, _| Some(Step::Press(rng.pick(&BUTTONS)))),
     (20, |rng, _| {
@@ -332,13 +322,11 @@ fn setup(rng: &mut Rng) -> Setup {
     }
 }
 
-/// A plan from its seed alone.
 pub fn draw(seed: u64) -> Plan {
     let mut rng = Rng::new(seed);
     let setup = setup(&mut rng);
     let length_ms = rng.octaves(5 * 60_000..=90 * 60_000);
     let mut steps = Vec::new();
-    // Most sessions record a ride, or the checks on recorded data see none.
     if rng.percent(75) {
         steps.extend([ride(&mut rng), Step::Host(RideAction::Start)]);
     }

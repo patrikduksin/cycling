@@ -1,6 +1,3 @@
-//! Random rides, faults and presses in the twin, each session a function of
-//! its seed: the seed draws a `Plan`, the executor plays it with raw inputs,
-//! and the checks judge every step.
 pub mod check;
 pub mod corpus;
 pub mod plan;
@@ -22,7 +19,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use vana::ride::log::Kind;
 
-/// Where in a session a finding was made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum At {
     Setup,
@@ -48,7 +44,7 @@ pub struct Finding {
 pub struct WorldLog(pub Vec<u8>);
 
 impl WorldLog {
-    /// Equal digests mean the same session, as far as the device saw it.
+    /// A fingerprint of the trace of the boot the finding was made in.
     pub fn digest(&self) -> u64 {
         use std::hash::{DefaultHasher, Hash, Hasher};
         let mut hasher = DefaultHasher::new();
@@ -105,15 +101,13 @@ pub fn clock(ms: u64) -> String {
     format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
 }
 
-/// What sessions reached, summed over a run.
 #[derive(Default)]
 pub struct Coverage {
     pub sessions: u64,
     pub simulated_ms: u64,
-    /// The sum of every session's world log digest: two runs of the same
-    /// seeds on one build agree on it. The trace header names the commit, so
-    /// another build differs.
-    pub world_logs: u64,
+    /// The wrapping sum of every session's world log digest; two runs of the
+    /// same seeds on one build agree on it.
+    pub world_log_digests: u64,
     /// Presses and holds by the page shown before them, and button.
     pub presses: BTreeMap<(&'static str, &'static str), u64>,
     /// Checks a guard kept from judging, by check and guard.
@@ -124,7 +118,7 @@ impl Coverage {
     pub fn merge(&mut self, other: Coverage) {
         self.sessions += other.sessions;
         self.simulated_ms += other.simulated_ms;
-        self.world_logs = self.world_logs.wrapping_add(other.world_logs);
+        self.world_log_digests = self.world_log_digests.wrapping_add(other.world_log_digests);
         for (key, n) in other.presses {
             *self.presses.entry(key).or_default() += n;
         }
@@ -165,7 +159,7 @@ pub fn run(plan: &Plan, corpus: &Corpus, verbose: bool) -> Result<Coverage, Find
         verbose,
         at: At::Setup,
         coverage: Coverage::default(),
-        course: None,
+        course_trace: None,
     };
     let outcome = catch_unwind(AssertUnwindSafe(|| session.play(&mut sim, corpus)));
     let world_log = WorldLog(catch_unwind(AssertUnwindSafe(|| sim.trace())).unwrap_or_default());
@@ -173,7 +167,7 @@ pub fn run(plan: &Plan, corpus: &Corpus, verbose: bool) -> Result<Coverage, Find
         Ok(Ok(())) => {
             session.coverage.sessions = 1;
             session.coverage.simulated_ms = sim.now();
-            session.coverage.world_logs = world_log.digest();
+            session.coverage.world_log_digests = world_log.digest();
             return Ok(session.coverage);
         }
         Ok(Err(failed)) => failed,
@@ -188,7 +182,7 @@ pub fn run(plan: &Plan, corpus: &Corpus, verbose: bool) -> Result<Coverage, Find
         at: session.at,
         at_ms: sim.now(),
         detail,
-        corpus: session.course.and(corpus.dir.clone()),
+        corpus: session.course_trace.and(corpus.dir.clone()),
         world_log,
     })
 }
@@ -198,8 +192,7 @@ struct Session<'a> {
     verbose: bool,
     at: At,
     coverage: Coverage,
-    /// The corpus trace the course came from.
-    course: Option<PathBuf>,
+    course_trace: Option<PathBuf>,
 }
 
 type Failed = (&'static str, String);
@@ -208,12 +201,12 @@ impl Session<'_> {
     fn play(&mut self, sim: &mut Sim, corpus: &Corpus) -> Result<(), Failed> {
         let setup = &self.plan.setup;
         let card = setup.card == Card::Ready;
-        self.course = prepare(sim, setup, corpus);
+        self.course_trace = prepare(sim, setup, corpus);
         let mut before = observe(sim, card, None);
         if self.verbose {
             println!("seed {:#018x}", self.plan.seed);
             println!("setup {setup:?}");
-            if let Some(path) = &self.course {
+            if let Some(path) = &self.course_trace {
                 println!("course from {}", path.display());
             }
             println!("   0:00:00 setup -> {}", before.summary());
@@ -297,8 +290,6 @@ fn ant(sensor: Sensor) -> (u8, u16, &'static str) {
     }
 }
 
-/// Boot, equip, pair and fit the card: no fault yet, so the flows'
-/// assertions are true preconditions. Returns the corpus trace ridden.
 fn prepare(sim: &mut Sim, setup: &Setup, corpus: &Corpus) -> Option<PathBuf> {
     if setup.card != Card::None {
         sim.fit_bulk(if setup.card == Card::Ready {
@@ -361,7 +352,6 @@ fn route(course: &Course, corpus: &Corpus) -> (Route, Option<PathBuf>) {
     }
 }
 
-/// Raw inputs only: never a flow that asserts on the screen.
 fn apply(sim: &mut Sim, step: &Step) {
     match *step {
         Step::Wait { ms } => sim.advance(u64::from(ms)),
@@ -381,9 +371,7 @@ fn apply(sim: &mut Sim, step: &Step) {
         Step::Stop => sim.ride_at(0.0, 0.0, 90.0, 0.0),
         Step::Host(action) => {
             if !sim.is_off() {
-                // The host must read its last outcome before it may act again.
-                sim.command("RIDE STATUS");
-                sim.command(action.command());
+                sim.host_command(action.command());
             }
         }
         Step::Dropout { sensor, present } => {
@@ -414,11 +402,8 @@ fn apply(sim: &mut Sim, step: &Step) {
     }
 }
 
-/// States a rider can start a ride from.
 const STARTABLE: [&str; 3] = ["ready", "saved", "recovered"];
 
-/// After everything the session did, a settled device that boots again
-/// still records a ride and saves it.
 fn still_a_bike_computer(sim: &mut Sim, setup: &Setup) -> Verdict {
     for sensor in &setup.sensors {
         let (kind, number, _) = ant(*sensor);
@@ -484,7 +469,6 @@ fn still_a_bike_computer(sim: &mut Sim, setup: &Setup) -> Verdict {
     Verdict::Pass
 }
 
-/// Each medium numbers its rides itself.
 fn ids(rides: &[crate::rides::Ride]) -> Vec<u32> {
     rides.iter().map(|r| r.id).collect()
 }

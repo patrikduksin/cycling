@@ -3,6 +3,11 @@ use crate::sim::{NoteKind, Sim, seconds};
 use device_api::input::Button;
 
 impl Sim {
+    pub fn host_command(&mut self, text: &str) -> (&'static str, String) {
+        self.command("RIDE STATUS");
+        self.command(text)
+    }
+
     /// Choose a Home card, such as RIDE, SENSORS, TRAIN or RIDES; the focused
     /// one has a white title. One extra press covers a dimmed screen, which a
     /// press only wakes.

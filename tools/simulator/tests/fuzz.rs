@@ -1,7 +1,5 @@
-//! The fuzzer's promise: a session is a function of its seed.
 use shell_simulator::fuzz::{self, Corpus, FIXED};
 
-/// Fixed seeds whose sessions are short enough for every PR.
 fn short_fixed_seeds(count: usize) -> Vec<u64> {
     FIXED
         .filter(|seed| {
@@ -21,8 +19,11 @@ fn a_session_is_a_function_of_its_seed() {
     let corpus = Corpus::none();
     let first = fuzz::run(&plan, &corpus, false).expect("a fixed seed passes");
     let second = fuzz::run(&plan, &corpus, false).expect("a fixed seed passes");
-    assert_ne!(first.world_logs, 0);
-    assert_eq!(first.world_logs, second.world_logs, "seed {seed:#x}");
+    assert_ne!(first.world_log_digests, 0);
+    assert_eq!(
+        first.world_log_digests, second.world_log_digests,
+        "seed {seed:#x}"
+    );
     assert_eq!(first.presses, second.presses, "seed {seed:#x}");
 }
 

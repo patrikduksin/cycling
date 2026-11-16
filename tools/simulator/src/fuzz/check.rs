@@ -1,11 +1,8 @@
-//! What must hold after every step: pure functions over two observations.
 use super::plan::Step;
 use crate::rides::Ride;
 use crate::sim::Sim;
 use vana::ride::log::Kind;
 
-/// The device between steps, read without a console command, so observing
-/// never becomes an input in the world log.
 pub struct Observation {
     pub at_ms: u64,
     pub boot: u32,
@@ -23,7 +20,6 @@ pub struct Observation {
 }
 
 impl Observation {
-    /// The page and the newest ride on each medium, for a verbose session.
     pub fn summary(&self) -> String {
         let mut out = self.page.to_string();
         for (medium, rides) in media(self) {
@@ -65,8 +61,6 @@ pub fn observe(sim: &mut Sim, card: bool, previous: Option<&Observation>) -> Obs
     }
 }
 
-/// The card's rides as a host reads them out of the device, whatever this
-/// boot's controller does.
 pub(super) fn card_rides(sim: &Sim) -> Vec<Ride> {
     use vana::ride::bulk::{Bulk, BulkState};
     use vana::ride::journal::{Journal, Scan};
@@ -90,9 +84,7 @@ pub(super) fn card_rides(sim: &Sim) -> Vec<Ride> {
     crate::rides::read(&bytes)
 }
 
-/// The `broken()` hook. The twin has nothing to ask yet, so it answers
-/// `None`; #397 0b replaces this body with VANA's global invariant, and the
-/// `broken() holds` row already reads it.
+/// #397 0b's `broken()` replaces this body.
 fn broken(sim: &Sim) -> Option<String> {
     let _ = sim;
     None
@@ -148,13 +140,12 @@ pub const CHECKS: &[Check] = &[
     },
 ];
 
-/// Power-on never takes longer than this to leave the boot page.
-const BOOT_MS: u64 = 15_000;
+const BOOT_PAGE_DEADLINE_MS: u64 = 15_000;
 
 fn leaves_boot(moment: &Moment) -> Verdict {
     let after = moment.after;
     let on_ms = after.at_ms - after.on_since_ms;
-    if after.off || on_ms < BOOT_MS || after.page != "boot" {
+    if after.off || on_ms < BOOT_PAGE_DEADLINE_MS || after.page != "boot" {
         return Verdict::Pass;
     }
     Verdict::Fail(format!(
@@ -170,7 +161,6 @@ fn media(observation: &Observation) -> [(&'static str, &[Ride]); 2] {
     ]
 }
 
-/// No step without a button deletes a ride, so samples on media only grow.
 fn samples_survive(moment: &Moment) -> Verdict {
     if matches!(moment.step, Some(Step::Press(_) | Step::Hold(..))) {
         return Verdict::Pass;
@@ -204,8 +194,6 @@ fn terminal(kind: Kind) -> bool {
     matches!(kind, Kind::Finish | Kind::Recovered | Kind::Full)
 }
 
-/// Ids are unique on a medium, a ride begins with Start, ends with at most
-/// one terminal record, and only the newest ride may still be open.
 fn rides_decode(moment: &Moment) -> Verdict {
     for (medium, rides) in media(moment.after) {
         for (index, ride) in rides.iter().enumerate() {
@@ -234,8 +222,8 @@ fn rides_decode(moment: &Moment) -> Verdict {
     Verdict::Pass
 }
 
-/// 150 km/h in mm/s: no drawn ride comes near it.
-const FASTEST_MM_S: u32 = 41_667;
+const FASTEST_KMH: u32 = 150;
+const FASTEST_MM_S: u32 = (FASTEST_KMH * 1_000_000).div_ceil(3_600);
 
 fn no_garbage(moment: &Moment) -> Verdict {
     for (medium, rides) in media(moment.after) {
@@ -261,10 +249,8 @@ fn no_garbage(moment: &Moment) -> Verdict {
     Verdict::Pass
 }
 
-/// Waits at least this long are long enough to judge the sample rate.
 const JUDGED_WAIT_MS: u32 = 30_000;
 
-/// A ride recording through a quiet wait gains about a sample a second.
 fn keeps_recording(moment: &Moment) -> Verdict {
     let Some(Step::Wait { ms }) = moment.step else {
         return Verdict::Pass;

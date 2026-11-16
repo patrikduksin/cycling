@@ -1,5 +1,3 @@
-//! `cycling fuzz`: random rides, faults and button presses in the twin, each
-//! session reproducible from its seed.
 use shell_simulator::fuzz::plan::Rng;
 use shell_simulator::fuzz::{self, Corpus, Coverage, FIXED, Finding, PAGES, Plan};
 use std::path::{Path, PathBuf};
@@ -38,7 +36,6 @@ enum Seeds {
 
 struct Args {
     seeds: Seeds,
-    /// The fixed set rides synthetic courses only, the same on every machine.
     fixed: bool,
     corpus: Option<PathBuf>,
     jobs: usize,
@@ -237,7 +234,7 @@ fn summary(coverage: &Coverage, findings: usize, wall: Duration, jobs: usize) {
         coverage.simulated_ms as f64 / 3_600_000.0,
         coverage.sessions as f64 / seconds.max(0.001),
     );
-    println!("world logs: {:016x}", coverage.world_logs);
+    println!("world logs: {:016x}", coverage.world_log_digests);
     let pressed: Vec<_> = PAGES
         .iter()
         .filter(|page| coverage.presses.keys().any(|(p, _)| p == *page))

@@ -1,19 +1,11 @@
-//! The fuzzer finds a bug planted in VANA's recovery, and the seed that
-//! found it finds it again. `cycling fuzz-planted` runs this.
 #![cfg(feature = "planted-bug")]
 use shell_simulator::fuzz::{self, Corpus, FIXED, Finding};
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{Sim, seconds};
 use vana::ride::log::Kind;
 
-/// The proof searches these seeds. About 45 % of seeds find the plant
-/// (89 of seeds 1 to 200), so the range holds several hits. They lie inside
-/// `FIXED`, which tier 2 runs without the plant and which must pass: the
-/// finding comes from the plant, not from noise.
 const PROOF_SEEDS: u64 = 16;
 
-/// A paused ride the plant never recovers stays open while the next ride
-/// starts beside it.
 const PLANT_CHECK: &str = "rides decode";
 
 #[test]
@@ -27,13 +19,11 @@ fn the_plant_fires_by_hand() {
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.command("RIDE START");
     sim.advance(seconds(20));
-    sim.command("RIDE STATUS");
-    sim.command("RIDE PAUSE");
+    sim.host_command("RIDE PAUSE");
     sim.advance(seconds(3));
     sim.power_loss();
     sim.advance(seconds(5));
-    sim.command("RIDE STATUS");
-    let (answer, out) = sim.command("RIDE START");
+    let (answer, out) = sim.host_command("RIDE START");
     assert_eq!(answer, "ACCEPTED", "{out}");
     sim.advance(seconds(10));
     let rides = sim.rides();

@@ -1,12 +1,9 @@
-//! Courses from world logs: the GPS track of each `.trace` under a directory.
 use crate::route::{Point, Route, distance_m, from_e7};
 use device_api::gps::FixState;
 use firmware_services::trace::{Event, decode};
 use std::path::{Path, PathBuf};
 
-/// Fixes closer than this to the last one kept add nothing to a course.
 const SPACING_M: f64 = 5.0;
-/// Shorter tracks are a device standing still, not a ride.
 const SHORTEST_M: f64 = 500.0;
 
 #[derive(Default)]

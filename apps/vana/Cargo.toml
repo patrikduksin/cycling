@@ -9,7 +9,6 @@ publish = false
 
 [features]
 default = []
-# A deliberate recovery bug the fuzzer must find (tools/simulator/tests/fuzz_planted.rs).
 planted-bug = []
 
 [dependencies]

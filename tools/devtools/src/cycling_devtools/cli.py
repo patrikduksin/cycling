@@ -24,8 +24,9 @@ SYSTEM_PYTHON = 'PYTHONPATH=tools/devtools/src /usr/bin/python3 -m cycling_devto
 SIM_SCENARIOS = 'cargo test -p shell-simulator --locked --no-default-features --test ride_scenarios'
 TRACE = 'cargo run -q -p shell-simulator --locked --no-default-features --bin trace --'
 FUZZ = 'cargo run -q -p shell-simulator --locked --no-default-features --bin fuzz --'
-# World logs live in the primary checkout's .local, which worktrees do not share.
-RIDE_TRACES = '"$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.local/ride-trace"'
+PRIMARY_CHECKOUT_RIDE_TRACES = (
+    '"$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.local/ride-trace"'
+)
 
 
 @dataclass(frozen=True)
@@ -309,7 +310,7 @@ TASKS = [
         'fuzz',
         'Random rides, faults and button presses in the twin, each session reproducible from its seed; '
         'findings go to .local/fuzz ([--minutes N | --seed S | --seeds A-B | --fixed] [--jobs N])',
-        f'{FUZZ} --corpus {RIDE_TRACES} --out .local/fuzz',
+        f'{FUZZ} --corpus {PRIMARY_CHECKOUT_RIDE_TRACES} --out .local/fuzz',
     ),
     task(
         'fuzz-planted',

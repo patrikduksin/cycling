@@ -14,6 +14,13 @@ case $task in
         ;;
 esac
 
+json=false
+for arg; do [ "$arg" != --json ] || json=true; done
+if $json; then
+    set -E
+    trap 'echo "{\"error\": \"the trace launcher failed at line $LINENO; see stderr\"}"; exit 2' ERR
+fi
+
 {
     read -r root
     read -r common
@@ -30,12 +37,6 @@ mapfile -t sources < "$root/tools/simulator/build-sources"
 edited() {
     [ -n "$(git -C "$root" status --porcelain --untracked-files=normal -- "${sources[@]}")" ]
 }
-json=false
-for arg; do [ "$arg" != --json ] || json=true; done
-if $json; then
-    set -E
-    trap 'echo "{\"error\": \"the trace launcher failed at line $LINENO; see stderr\"}"; exit 2' ERR
-fi
 cache=$(dirname "$common")/.local/tools/trace
 mkdir -p "$cache"
 

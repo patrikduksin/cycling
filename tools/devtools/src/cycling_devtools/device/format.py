@@ -16,25 +16,34 @@ import time
 
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.harness.base import poll_across_resets
-from cycling_devtools.terminal.usb import UsbConnection
+from cycling_devtools.terminal.usb import UsbConnection, reply_fields
 from cycling_devtools.workspace import ROOT, private_path
 
 RESTART_S = 120
+BEFORE_RESTART = ('running', 'done')
+
+
+def stores(reply):
+    if reply['status'] != 'OK':
+        raise RuntimeError(f'FORMAT: {reply["status"]} {reply["data"]}')
+    return reply_fields(reply['data'])
 
 
 def health(connection):
-    reply = connection.terminal_command('FORMAT')
-    if reply['status'] != 'OK':
-        raise RuntimeError(f'FORMAT: {reply["status"]} {reply["data"]}')
-    return dict(field.split('=', 1) for field in reply['data'].split())
+    return stores(connection.terminal_command('FORMAT'))
 
 
 def finished(connection):
-    """Done once the wipe failed, or the restarted device has read every store."""
-    stores = health(connection)
-    state = stores['state']
-    settled = state not in ('running', 'done') and 'unread' not in stores.values()
-    return state == 'failed' or settled, stores
+    reply = connection.terminal_command('FORMAT')
+    if reply['status'] == 'BUSY':
+        # On USB the software reset ends in charging standby, which answers BUSY until woken.
+        if reply_fields(connection.terminal_command('COMPANION')['data']).get('startup') == 'charging':
+            connection.terminal_command('POWER WAKE')
+        return False, {'state': 'busy', 'reply': reply['data']}
+    held = stores(reply)
+    if held['state'] == 'failed':
+        return True, held
+    return held['state'] not in BEFORE_RESTART and 'unread' not in held.values(), held
 
 
 def wipe(port, log_dir):

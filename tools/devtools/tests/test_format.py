@@ -45,6 +45,20 @@ def test_a_wipe_waits_out_the_restart_and_the_stores_still_unread(monkeypatch, t
     assert after.sent == ['FORMAT', 'FORMAT']
 
 
+@pytest.mark.parametrize(
+    ('companion', 'woken', 'sent'),
+    [
+        ('startup=charging', [('ACCEPTED', ''), OSError('gone')], ['POWER WAKE', 'FORMAT', 'FORMAT']),
+        ('startup=starting', [], ['FORMAT']),
+    ],
+)
+def test_a_wipe_wakes_the_charging_standby_the_restart_ends_in(monkeypatch, tmp_path, companion, woken, sent):
+    before = ScriptedDevice(('ACCEPTED', ''), RuntimeError('USB terminal closed'))
+    after = ScriptedDevice(('BUSY', 'power transition'), ('OK', companion), *woken, ('OK', CURRENT))
+    assert wipe(monkeypatch, tmp_path, before, after)['settings'] == 'blank'
+    assert after.sent == ['FORMAT', 'COMPANION', *sent]
+
+
 def test_a_wipe_that_never_settles_times_out(monkeypatch, tmp_path):
     clock = iter(range(0, 10_000, 30))
     monkeypatch.setattr(base.time, 'monotonic', lambda: next(clock))

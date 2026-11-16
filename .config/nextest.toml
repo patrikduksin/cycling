@@ -29,6 +29,7 @@ test(/::share_[0-7]$/)
 | test(=ride::course::turns::tests::a_recorded_track_names_its_turns_no_worse_than_the_course_as_kept)
 | test(=ride::course::follow::tests::noisy_fixes_round_a_roundabout_never_give_a_wrong_word)
 """
+test-group = "slow"
 priority = 50
 
 [profile.without-ride-scenarios]

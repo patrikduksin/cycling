@@ -17,11 +17,18 @@ target_root="${CYCLING_FW_TARGET_ROOT:-$PWD/.local}"
 # The image and its ELF land in .local, where flash and backtrace read them;
 # a build beside another (verify) needs its own directory.
 image_dir="${CYCLING_IMAGE_DIR:-.local}"
+# `build.sh check` (cycling check-firmware) stops after a cargo check of the
+# firmware: the type check for its target, without codegen or the link.
+verb=build
+if [[ "${1:-}" == check ]]; then
+  verb=check
+  shift
+fi
 variant=""
 case "$#:${1:-}" in
   0:) ;;
   2:--variant) variant="$2" ;;
-  *) echo "usage: build.sh [--variant NAME]" >&2; exit 2 ;;
+  *) echo "usage: build.sh [check] [--variant NAME]" >&2; exit 2 ;;
 esac
 mkdir -p .local "$image_dir"
 partitions="$image_dir/partitions.csv"
@@ -40,9 +47,10 @@ fi
 # sccache keys every rustc call on all CARGO_* variables: an exported
 # per-worktree CARGO_TARGET_DIR would keep every worktree's builds apart.
 unset CARGO_TARGET_DIR
-CYCLING_BUILD_COMMIT="$commit_placeholder" cargo build --target-dir "$firmware_target" -p "$package" \
+CYCLING_BUILD_COMMIT="$commit_placeholder" cargo "$verb" --target-dir "$firmware_target" -p "$package" \
   --bin "$bin" --release --locked --no-default-features --features "$features" \
   --target "$target"
+[[ "$verb" == build ]] || exit 0
 elf="$image_dir/cycling.elf"
 uv run --project tools/devtools --locked python -m cycling_devtools.stamp \
   "$firmware_target/$target/release/$bin" "$elf" \

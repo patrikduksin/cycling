@@ -105,9 +105,15 @@ TASKS = [
     ),
     task(
         'verify',
-        'Run every PR gate in parallel (test, check, simulate, build, screens, harness-virtual); --fast for the inner loop, '
-        '--pr N to post results and changed screens, --video for before/after videos of changed scenarios',
+        'Run the PR gates the changed paths select, in parallel; it stops if the tree changes, and passes are cached by tree hash. '
+        '--pr N to post results and changed screens, --video for before/after videos of changed scenarios, '
+        '--all for every gate, --fresh to ignore cached passes, --deep for tier 2 alone (fuzz)',
         f'{DEV}verify',
+    ),
+    task(
+        'quick',
+        'Inner loop: tests without the slow group and clippy on the crates the diff touches, and a firmware cargo check',
+        f'{DEV}quick',
     ),
     task(
         'playbook-audit',
@@ -131,20 +137,49 @@ TASKS = [
     task(
         'check',
         'Check formatting and lint host code',
-        'uv run --script tools/check-boundaries.py',
-        f'{DEV}devices --locked',
+        needs=[
+            'check-boundaries',
+            'check-devices',
+            'check-generated-web',
+            'check-python',
+            'check-rust',
+            'check-web',
+        ],
+    ),
+    task('check-boundaries', 'Package boundary rules', 'uv run --script tools/check-boundaries.py'),
+    task('check-devices', 'The files generated from each device.toml are current', f'{DEV}devices --locked'),
+    task(
+        'check-generated-web',
+        'The committed phone web client matches its source',
         'uv run --script apps/vana/web/build.py --check',
+    ),
+    task(
+        'check-python',
+        'Format and lint the device tools and the terrain builder',
         'ruff format --check tools/devtools',
         'ruff check tools/devtools',
         f'{TERRAIN} ruff format --check tools/terrain',
         f'{TERRAIN} ruff check tools/terrain',
+    ),
+    task(
+        'check-rust',
+        'Clippy and rustfmt over the workspace',
         'cargo check -p device-api --locked --features network-stack',
         'cargo clippy --workspace --all-targets --locked --no-default-features --features shell-simulator/live -- -D warnings',
         'cargo fmt --all -- --check',
+    ),
+    task(
+        'check-web',
+        'Typecheck, lint and format check of the web packages',
         'bun install --frozen-lockfile --silent',
         'bun run typecheck',
         'bun run lint',
         'bun run format:check',
+    ),
+    task(
+        'check-firmware',
+        "cargo check of a device's firmware for its target, without the link",
+        'bash devices/build.sh check',
     ),
     task('terrain', 'Build, validate or trace offline terrain packs (docs/terrain.md)', f'{TERRAIN} cycling-terrain'),
     task(

@@ -19,7 +19,7 @@ nix develop
 `nix develop` enters the dev shell; `nix develop -c <command>` runs one command
 in it. The first shell downloads about 1 GB (about 4 GB in the Nix store, most
 of it the two Rust toolchains); later ones start in about 2 s.
-`cycling verify --fast` once fills the compiler cache. Claude Code sessions
+`cycling verify --all` once fills the compiler cache. Claude Code sessions
 enter the shell through the [SessionStart hook](../.claude/hooks/dev-shell.sh),
 which also keeps it from Nix garbage collection (`.local/dev-shell`).
 
@@ -70,19 +70,43 @@ pin at once and belongs in its own PR with `cycling verify` results.
 - The firmware compiles with a placeholder commit, which `build.sh` replaces
   in the linked ELF, so a commit that changes no firmware input rebuilds
   nothing (about 2 s).
-- `cycling verify` runs test, check, simulate, the firmware build and the
-  screens in parallel, then harness-virtual alone, and prints one table. The
-  screens lane is `cycling sim-compare`: it runs the ride scenarios once,
-  recorded, and the test lane's nextest profile (`without-ride-scenarios`, in
-  `.config/nextest.toml`) leaves them out. `--fast` is the inner-loop subset
-  without screens; `--pr N` posts the table and the changed screens on a PR;
-  `--video` adds before and after videos of changed scenarios. `--deep` runs
-  tier 2 alone, at nice 19: `cycling fuzz --fixed` and `cycling fuzz-planted`.
-  Logs go to `.local/verify/<commit>/`.
-- A test over 5 s on its own belongs in nextest's `slow` group
-  (`.config/nextest.toml`), which `-E 'not group(slow)'` leaves out. Split a
-  long VANA sweep into eight tests with `split_in_eight!`
-  (`apps/vana/src/testing.rs`) before adding it there.
+- `cycling verify` certifies a tree. It hashes the worktree as it is,
+  untracked files included, and runs the gates in the worktree. After each
+  gate it hashes the tree again and compares every file's change time. If
+  anything differs, an edit that was undone included, it stops the gates that
+  are still running, names the files, and certifies nothing. Do not edit while
+  it runs. The table in `tools/devtools/src/cycling_devtools/lanes.py` maps
+  the paths changed since the merge-base with main to gates, and a path it
+  does not know selects every gate; `--all` selects them regardless. A
+  workspace crate selects the firmware build when the package of a
+  `devices/*/device.toml` depends on it. The firmware build, the tests, the
+  checks, simulate and the screens run in parallel lanes, the firmware first,
+  then harness-virtual alone. Each gate that passes is recorded in the primary
+  checkout's `.local/verify/results` under the tree hash, the toolchain and
+  the gate's definition, so no worktree runs it on that tree again (`cached`
+  in the table; `--fresh` runs it anyway). The screens lane is
+  `cycling sim-compare`: it runs the ride scenarios once, recorded, and the
+  test lane's nextest profile (`without-ride-scenarios`, in
+  `.config/nextest.toml`) leaves them out. `--pr N` posts the table and the
+  changed screens on a PR; `--video` adds before and after videos of changed
+  scenarios. Logs go to `.local/verify/<tree>/`, and a `tests-passed` file
+  appears there when the test gates have passed. `--deep` runs tier 2 alone,
+  at nice 19 and without a slot: `cycling fuzz --fixed` and
+  `cycling fuzz-planted`.
+- A verify with gates to run takes one of the machine's slots first, one per
+  ten cores (`tools/devtools/src/cycling_devtools/admission.py`), and waits
+  when none is free. Its time in the table includes the wait and names it. It
+  refuses to start with under 20 GB free.
+- `cycling quick` is the inner loop: nextest without the `slow` group and
+  clippy on the crates the diff touches, and `cycling check-firmware` when a
+  device links one of them. It takes no slot and certifies nothing.
+- nextest's `slow` group (`.config/nextest.toml`) holds the tests that
+  `cycling quick` leaves out with `-E 'not group(slow)'`: a test over 5 s on
+  its own, and every share of a sweep. `cycling verify` runs them all. Split
+  a long VANA sweep into eight tests with `split_in_eight!`
+  (`apps/vana/src/testing.rs`), so verify runs its shares side by side. The
+  48 sweep shares cost `cycling quick` 200 of its 265 CPU-s after a VANA
+  edit.
 - `cycling playbook-audit --session ID` prints a session digest for the
   auditor brief in `docs/agents/playbook-auditor.md`.
 

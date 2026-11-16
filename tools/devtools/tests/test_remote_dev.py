@@ -1,4 +1,4 @@
-"""Remote development tools: device task snapshots, crash decoding and verify."""
+"""Remote development tools: device task snapshots and crash decoding."""
 
 import contextlib
 import io
@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cycling_devtools import verify
 from cycling_devtools.device import remote
 from cycling_devtools.terminal import backtrace
 from workspace_fixture import init_checkout
@@ -153,30 +152,6 @@ class BacktraceTests(unittest.TestCase):
             (Path(directory) / '15178ed1119a.elf').write_bytes(b'15178ed1119a')
             chosen = backtrace.choose_elf(reply, Path(directory))
         self.assertEqual(chosen, (backtrace.ROOT / '.local/cycling.elf', '15178ed1119a'))
-
-
-class VerifyTests(unittest.TestCase):
-    def test_a_failed_step_stops_its_lane_only(self):
-        lane = [verify.Step('first', 'exit 3'), verify.Step('second', 'true')]
-        with tempfile.TemporaryDirectory() as logs, patch.object(verify, 'ROOT', Path(logs)):
-            results = verify.run_lane(lane, Path(logs))
-            self.assertEqual([(r.step.name, r.ok) for r in results], [('first', False)])
-            self.assertIn('$ exit 3', results[0].log.read_text())
-
-    def test_the_full_gate_builds_the_firmware_beside_the_flashed_image(self):
-        names = {step.name for lane in verify.lanes('full') for step in lane}
-        self.assertTrue({'build', 'test', 'check', 'simulate', 'screens'} <= names)
-        self.assertNotEqual(dict(verify.BUILD.env)['CYCLING_IMAGE_DIR'], '.local')
-
-    def test_the_full_gate_runs_the_scenarios_once_and_posts_their_screens(self):
-        steps = {step.name: step for lane in verify.lanes('full', 7) for step in lane}
-        self.assertEqual(steps['screens'].command, 'cycling sim-compare --pr 7')
-        videos = {step.name: step for lane in verify.lanes('full', 7, video=True) for step in lane}
-        self.assertEqual(videos['screens'].command, 'cycling sim-compare --pr 7 --video')
-        self.assertEqual(dict(steps['test'].env)['NEXTEST_PROFILE'], 'without-ride-scenarios')
-        fast = {step.name: step for lane in verify.lanes('fast', 7) for step in lane}
-        self.assertNotIn('screens', fast)
-        self.assertNotIn('NEXTEST_PROFILE', dict(fast['test'].env))
 
 
 if __name__ == '__main__':

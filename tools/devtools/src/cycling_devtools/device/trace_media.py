@@ -6,9 +6,7 @@ only, up to the ends the header recorded: ride export for the internal
 journal, and one transfer session for the RIDES log's records and `files get`
 of each file the header lists. A local terrain pack under .local/ with the
 header's SHA-256 stands in for TERRAIN. `cycling trace rebuild` then writes
-<trace>.origin beside the trace and says what it could not rebuild, and
-`cycling trace find <trace> mark` lists the moments the rider marked by
-holding MOVE. Nothing is written to the device.
+<trace>.origin beside the trace and says what it could not rebuild. Nothing is written to the device.
 
 The pulled media go into <trace stem>.media/ beside the trace:
 internal.slots, rides.slots and rides.epoch, files.list and files/<name>,

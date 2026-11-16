@@ -25,6 +25,7 @@ fi
 cache=$(dirname "$common")/.local/tools/trace
 if [ ! -x "$cache/$commit" ]; then
     build
+    # An edit made while it built would be in the binary.
     if edited; then
         exec "$target/tools/trace" "$@"
     fi

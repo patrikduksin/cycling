@@ -77,7 +77,11 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 let (a, b) = range
                     .split_once('-')
                     .ok_or(format!("not a range: {range}"))?;
-                args.seeds = Seeds::Range(seed(a)?, seed(b)?);
+                let (first, last) = (seed(a)?, seed(b)?);
+                if first > last {
+                    return Err(format!("an empty range: {range}"));
+                }
+                args.seeds = Seeds::Range(first, last);
             }
             "--fixed" => {
                 args.seeds = Seeds::Range(*FIXED.start(), *FIXED.end());

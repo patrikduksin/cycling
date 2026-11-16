@@ -11,7 +11,7 @@ use crate::flows::status_field;
 use crate::route::{Point, Route};
 use crate::sim::{Sim, seconds};
 use crate::world::Vehicle;
-use check::{CHECKS, Moment, Observation, Verdict, observe};
+use check::{BOOT_PAGE_DEADLINE_MS, CHECKS, Moment, Observation, Verdict, observe};
 use device_api::input::Button;
 use plan::{CENTERS, Card, Course, Sensor, Setup, Step};
 use std::collections::BTreeMap;
@@ -69,7 +69,7 @@ impl fmt::Debug for WorldLog {
 impl Finding {
     pub fn reproduce(&self) -> String {
         let course = match &self.course_trace {
-            Some(trace) => format!("--corpus {}", trace.display()),
+            Some(trace) => format!("--corpus {}", shell_word(&trace.to_string_lossy())),
             None => "--no-corpus".to_string(),
         };
         format!("cycling fuzz --seed {:#018x} {course}", self.seed)
@@ -94,6 +94,15 @@ impl fmt::Display for Finding {
         writeln!(f, "  world log {:016x}", self.world_log.digest())?;
         write!(f, "  reproduce: {}", self.reproduce())
     }
+}
+
+/// `text` as one POSIX shell word.
+fn shell_word(text: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "/._-".contains(c);
+    if !text.is_empty() && text.chars().all(plain) {
+        return text.to_string();
+    }
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// World time as h:mm:ss.
@@ -202,7 +211,9 @@ impl Session<'_> {
     fn play(&mut self, sim: &mut Sim, corpus: &Corpus) -> Result<(), Failed> {
         let setup = &self.plan.setup;
         let card = setup.card == Card::Ready;
-        self.course_trace = prepare(sim, setup, corpus);
+        let (road, course_trace) = route(&setup.course, corpus);
+        self.course_trace = course_trace;
+        prepare(sim, setup, road);
         let mut before = observe(sim, card, None);
         if self.verbose {
             println!("seed {:#018x}", self.plan.seed);
@@ -291,7 +302,7 @@ fn ant(sensor: Sensor) -> (u8, u16, &'static str) {
     }
 }
 
-fn prepare(sim: &mut Sim, setup: &Setup, corpus: &Corpus) -> Option<PathBuf> {
+fn prepare(sim: &mut Sim, setup: &Setup, road: Route) {
     if setup.card != Card::None {
         sim.fit_bulk(if setup.card == Card::Ready {
             Presence::Ready
@@ -305,8 +316,7 @@ fn prepare(sim: &mut Sim, setup: &Setup, corpus: &Corpus) -> Option<PathBuf> {
         let (kind, number, _) = ant(*sensor);
         sim.ant_sensor(kind, number);
     }
-    let (route, course) = route(&setup.course, corpus);
-    sim.ride_route(route);
+    sim.ride_route(road);
     sim.ride_at(0.0, 0.0, 72.0, 0.0);
     if !setup.sensors.is_empty() {
         let names: Vec<_> = setup.sensors.iter().map(|s| ant(*s).2).collect();
@@ -315,7 +325,6 @@ fn prepare(sim: &mut Sim, setup: &Setup, corpus: &Corpus) -> Option<PathBuf> {
     if setup.card == Card::Ready {
         sim.init_bulk();
     }
-    course
 }
 
 /// The road `course` rides, and the corpus trace it came from.
@@ -412,9 +421,10 @@ fn still_a_bike_computer(sim: &mut Sim, setup: &Setup) -> Verdict {
     sim.cut_power();
     let booted = sim.now();
     while sim.is_off() || !sim.device.lit() || sim.vana_page() == "boot" {
-        if sim.now() - booted > seconds(15) {
+        if sim.now() - booted > BOOT_PAGE_DEADLINE_MS {
             return Verdict::Fail(format!(
-                "not past the boot page 15 s after power-on; screen:\n{}",
+                "not past the boot page {} s after power-on; screen:\n{}",
+                BOOT_PAGE_DEADLINE_MS / 1000,
                 sim.screen().text()
             ));
         }

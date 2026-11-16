@@ -58,6 +58,11 @@ fn the_fuzzer_finds_the_planted_bug_and_its_seed_reproduces_it() {
         "{} of {PROOF_SEEDS} seeds found the plant; the first:\n{first}",
         found.len()
     );
+    println!(
+        "reproduce with the plant: CARGO_TARGET_DIR=target/planted cargo run -p shell-simulator \
+         --no-default-features --features planted-bug --bin fuzz -- --seed {:#018x} --no-corpus",
+        first.seed
+    );
     for finding in &found {
         assert_eq!(finding.check, PLANT_CHECK, "{finding}");
     }

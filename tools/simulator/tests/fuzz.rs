@@ -69,3 +69,25 @@ fn a_finding_names_the_course_it_rode() {
         "{with}"
     );
 }
+
+#[test]
+fn a_reproduce_line_keeps_an_odd_course_path_one_shell_word() {
+    let path = "/tmp/rider's rides/a lap.trace";
+    let finding = Finding {
+        seed: 1,
+        check: "no panic",
+        at: At::End,
+        at_ms: 0,
+        detail: String::new(),
+        course_trace: Some(path.into()),
+        world_log: WorldLog(Vec::new()),
+    };
+    let line = finding.reproduce();
+    let word = line.split_once(" --corpus ").expect("names the course").1;
+    assert_eq!(word, r"'/tmp/rider'\''s rides/a lap.trace'");
+    let shell = std::process::Command::new("sh")
+        .args(["-c", &format!("printf '%s|' {word}")])
+        .output()
+        .expect("sh runs");
+    assert_eq!(String::from_utf8_lossy(&shell.stdout), format!("{path}|"));
+}

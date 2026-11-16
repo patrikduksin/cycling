@@ -9,6 +9,7 @@ use shell_simulator::ant::{BatteryReport, ZeroReply, device_type};
 use shell_simulator::bulk::Presence;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{NoteKind, Screen, Sim, minutes, seconds};
+use shell_simulator::status_field;
 use shell_simulator::world::{Side, Vehicle};
 use vana::ride::fit::Refusal;
 use vana::ride::log::{
@@ -3221,17 +3222,9 @@ fn an_internal_write_failure_after_a_move_is_never_hidden_by_the_fallback() {
     let (_, status) = sim.command("RIDE STATUS");
     assert_eq!(
         status_field(&status, "medium"),
-        "internal",
+        Some("internal"),
         "{fault}: {status}"
     );
-}
-
-fn status_field(status: &str, name: &str) -> String {
-    status
-        .split_whitespace()
-        .find_map(|field| field.strip_prefix(name)?.strip_prefix('='))
-        .unwrap_or_default()
-        .to_string()
 }
 
 #[test]
@@ -3251,10 +3244,18 @@ fn bulk_failure_on_resume_continues_the_ride_on_internal_flash() {
     sim.checkpoint("MMC failed on resume: the ride continues on internal flash");
     sim.advance(minutes(2));
     let (_, status) = sim.command("RIDE STATUS");
-    assert_eq!(status_field(&status, "medium"), "internal", "{status}");
-    assert_eq!(status_field(&status, "state"), "recording", "{status}");
-    assert_eq!(status_field(&status, "moved"), "1", "{status}");
-    let samples: u32 = status_field(&status, "samples").parse().unwrap();
+    assert_eq!(
+        status_field(&status, "medium"),
+        Some("internal"),
+        "{status}"
+    );
+    assert_eq!(
+        status_field(&status, "state"),
+        Some("recording"),
+        "{status}"
+    );
+    assert_eq!(status_field(&status, "moved"), Some("1"), "{status}");
+    let samples: u32 = status_field(&status, "samples").unwrap().parse().unwrap();
     assert!(samples >= 100, "the continuation records: {status}");
     let active = sim.screen().elapsed().unwrap();
     assert!(active.starts_with("0:07:"), "{active}");
@@ -3274,8 +3275,12 @@ fn bulk_failure_while_pausing_continues_paused_on_internal_flash() {
     sim.checkpoint("MMC failed while pausing: the ride stays paused on internal flash");
     sim.advance(minutes(1));
     let (_, status) = sim.command("RIDE STATUS");
-    assert_eq!(status_field(&status, "medium"), "internal", "{status}");
-    assert_eq!(status_field(&status, "state"), "paused", "{status}");
+    assert_eq!(
+        status_field(&status, "medium"),
+        Some("internal"),
+        "{status}"
+    );
+    assert_eq!(status_field(&status, "state"), Some("paused"), "{status}");
     sim.resume_ride();
     sim.wait_for("RECORDING INT", seconds(5)).unwrap();
     sim.stop_ride();
@@ -3294,10 +3299,14 @@ fn a_second_ride_cannot_start_on_the_other_medium() {
         assert_eq!(result, "STATE", "{command}");
     }
     let (_, internal) = sim.command("RIDE INTERNAL STATUS");
-    assert_eq!(status_field(&internal, "state"), "ready", "{internal}");
+    assert_eq!(
+        status_field(&internal, "state"),
+        Some("ready"),
+        "{internal}"
+    );
     sim.stop_ride();
     let (_, bulk) = sim.command("RIDE BULK STATUS");
-    assert_eq!(status_field(&bulk, "state"), "saved", "{bulk}");
+    assert_eq!(status_field(&bulk, "state"), Some("saved"), "{bulk}");
 }
 
 #[test]
@@ -3319,10 +3328,10 @@ fn a_bulk_ride_that_fills_the_log_shows_saved_then_the_next_ride_goes_internal()
     sim.stop_ride();
     sim.checkpoint("the MMC ride is saved though the MMC has no room left");
     let (_, status) = sim.command("RIDE STATUS");
-    assert_eq!(status_field(&status, "medium"), "bulk", "{status}");
-    assert_eq!(status_field(&status, "state"), "saved", "{status}");
-    assert_eq!(status_field(&status, "free_s"), "0", "{status}");
-    assert_eq!(status_field(&status, "fallback"), "1", "{status}");
+    assert_eq!(status_field(&status, "medium"), Some("bulk"), "{status}");
+    assert_eq!(status_field(&status, "state"), Some("saved"), "{status}");
+    assert_eq!(status_field(&status, "free_s"), Some("0"), "{status}");
+    assert_eq!(status_field(&status, "fallback"), Some("1"), "{status}");
     sim.expect_no_text("INT");
     let active = sim.screen().elapsed().unwrap();
     assert!(
@@ -3337,7 +3346,11 @@ fn a_bulk_ride_that_fills_the_log_shows_saved_then_the_next_ride_goes_internal()
     sim.press(Button::BottomRight);
     sim.wait_for("RECORDING INT", seconds(3)).unwrap();
     let (_, status) = sim.command("RIDE STATUS");
-    assert_eq!(status_field(&status, "medium"), "internal", "{status}");
+    assert_eq!(
+        status_field(&status, "medium"),
+        Some("internal"),
+        "{status}"
+    );
     sim.stop_ride();
 
     // After a reboot nothing is shown from the MMC ride: rides go internal.
@@ -3347,7 +3360,7 @@ fn a_bulk_ride_that_fills_the_log_shows_saved_then_the_next_ride_goes_internal()
     sim.expect_text("ON INTERNAL MEMORY");
     sim.checkpoint("an MMC without room: rides record internally");
     let (_, status) = sim.command("RIDE STATUS");
-    assert_eq!(status_field(&status, "fallback"), "1", "{status}");
+    assert_eq!(status_field(&status, "fallback"), Some("1"), "{status}");
 }
 
 #[test]
@@ -3368,7 +3381,7 @@ fn bulk_rides_without_superblocks_are_kept_out_of_export_and_clear() {
     sim.device.bulk.corrupt(2049);
     sim.power_loss();
     let (_, status) = sim.command("RIDE BULK STATUS");
-    assert_eq!(status_field(&status, "state"), "corrupt", "{status}");
+    assert_eq!(status_field(&status, "state"), Some("corrupt"), "{status}");
     let writes = sim.device.bulk.writes();
     // Not offered as an empty journal to export or reclaim.
     assert_ne!(sim.command("EXPORT BULK INFO").0, "OK");
@@ -3408,10 +3421,10 @@ fn a_continuation_that_cannot_start_does_not_count_the_bulk_ride_twice() {
     sim.expect_text("STORAGE FULL");
     sim.checkpoint("MMC and internal flash both full: the ride ends");
     let (_, bulk) = sim.command("RIDE BULK STATUS");
-    let recorded: u64 = status_field(&bulk, "active_ms").parse().unwrap();
+    let recorded: u64 = status_field(&bulk, "active_ms").unwrap().parse().unwrap();
     assert!((30_000..60_000).contains(&recorded), "{bulk}");
     let (_, status) = sim.command("RIDE STATUS");
-    assert_eq!(status_field(&status, "moved"), "0", "{status}");
+    assert_eq!(status_field(&status, "moved"), Some("0"), "{status}");
     // The screen shows the bulk ride's time once, not twice.
     let shown = sim.screen().elapsed().unwrap();
     let seconds_shown = shown.split(':').fold(0u64, |total, part| {
@@ -3444,8 +3457,12 @@ fn an_auto_pause_the_mmc_fails_to_record_still_resumes_by_itself() {
         sim.wait_for("RECORDING INT", seconds(10))
             .unwrap_or_else(|error| panic!("failing after {after}: {error}"));
         let (_, status) = sim.command("RIDE STATUS");
-        assert_eq!(status_field(&status, "medium"), "internal", "{status}");
-        assert_eq!(status_field(&status, "moved"), "1", "{status}");
+        assert_eq!(
+            status_field(&status, "medium"),
+            Some("internal"),
+            "{status}"
+        );
+        assert_eq!(status_field(&status, "moved"), Some("1"), "{status}");
     }
 }
 
@@ -3470,8 +3487,8 @@ fn a_bulk_ride_that_fails_with_internal_flash_full_stays_on_screen() {
     sim.expect_text("STORAGE ERROR");
     sim.checkpoint("MMC failed and internal flash is full: the failed ride stays shown");
     let (_, bulk) = sim.command("RIDE BULK STATUS");
-    assert_eq!(status_field(&bulk, "state"), "error", "{bulk}");
-    let recorded: u64 = status_field(&bulk, "active_ms").parse().unwrap();
+    assert_eq!(status_field(&bulk, "state"), Some("error"), "{bulk}");
+    let recorded: u64 = status_field(&bulk, "active_ms").unwrap().parse().unwrap();
     assert!(recorded >= 30_000, "{bulk}");
     let shown = sim.screen().elapsed().unwrap();
     let seconds_shown = shown.split(':').fold(0u64, |total, part| {
@@ -3493,19 +3510,23 @@ fn clearing_the_internal_journal_drops_a_moved_rides_carried_time() {
     sim.advance(seconds(5));
     sim.stop_ride();
     let (_, internal) = sim.command("RIDE INTERNAL STATUS");
-    assert_eq!(status_field(&internal, "state"), "saved", "{internal}");
-    let upper = status_field(&internal, "slot");
+    assert_eq!(
+        status_field(&internal, "state"),
+        Some("saved"),
+        "{internal}"
+    );
+    let upper = status_field(&internal, "slot").unwrap();
     assert_eq!(
         sim.command(&format!("RIDE CLEAR CONFIRM {upper}")).0,
         "ACCEPTED"
     );
     sim.advance(seconds(10));
     let (_, internal) = sim.command("RIDE INTERNAL STATUS");
-    assert_eq!(status_field(&internal, "slot"), "0", "{internal}");
+    assert_eq!(status_field(&internal, "slot"), Some("0"), "{internal}");
     sim.checkpoint("internal journal cleared after a moved ride: no carried time");
     assert_eq!(sim.screen().elapsed().unwrap(), "0:00:00");
     let (_, status) = sim.command("RIDE STATUS");
-    assert_eq!(status_field(&status, "moved"), "0", "{status}");
+    assert_eq!(status_field(&status, "moved"), Some("0"), "{status}");
 }
 
 #[test]
@@ -3532,8 +3553,8 @@ fn a_failed_first_mmc_start_after_an_internal_ride_shows_the_storage_error() {
     sim.expect_text("ON INTERNAL MEMORY");
     sim.checkpoint("the MMC fails its first START: Ready falls back to internal");
     let (_, status) = sim.command("RIDE STATUS");
-    assert_eq!(status_field(&status, "medium"), "bulk", "{status}");
-    assert_eq!(status_field(&status, "state"), "error", "{status}");
+    assert_eq!(status_field(&status, "medium"), Some("bulk"), "{status}");
+    assert_eq!(status_field(&status, "state"), Some("error"), "{status}");
 }
 
 #[test]
@@ -5955,7 +5976,7 @@ fn a_cleared_journal_forgets_its_facts_and_the_next_ride_one_keeps_its_own() {
     sim.done();
 
     let (_, status) = sim.command("RIDE BULK STATUS");
-    let upper = status_field(&status, "slot");
+    let upper = status_field(&status, "slot").unwrap();
     let (accepted, out) = sim.command(&format!("RIDE BULK CLEAR CONFIRM {upper}"));
     assert_eq!(accepted, "ACCEPTED", "{out}");
     sim.advance(seconds(10));
@@ -6397,7 +6418,7 @@ fn a_ride_that_moves_to_internal_memory_keeps_the_track_and_the_start() {
     sim.fail_bulk(0, 0);
     sim.wait_for("RECORDING INT", seconds(15)).unwrap();
     let (_, status) = sim.command("RIDE STATUS");
-    assert_eq!(status_field(&status, "moved"), "1", "{status}");
+    assert_eq!(status_field(&status, "moved"), Some("1"), "{status}");
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
@@ -6708,7 +6729,7 @@ fn a_course_is_still_followed_after_the_ride_moves_to_internal_memory() {
     sim.fail_bulk(0, 0);
     sim.wait_for("RECORDING INT", seconds(15)).unwrap();
     let (_, status) = sim.command("RIDE STATUS");
-    assert_eq!(status_field(&status, "moved"), "1", "{status}");
+    assert_eq!(status_field(&status, "moved"), Some("1"), "{status}");
     sim.checkpoint("the ride moved to internal memory mid-course");
 
     let no_second_join = |sim: &Sim| {

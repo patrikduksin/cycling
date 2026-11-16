@@ -140,7 +140,7 @@ pub const CHECKS: &[Check] = &[
     },
 ];
 
-const BOOT_PAGE_DEADLINE_MS: u64 = 15_000;
+pub(super) const BOOT_PAGE_DEADLINE_MS: u64 = 15_000;
 
 fn leaves_boot(moment: &Moment) -> Verdict {
     let after = moment.after;
@@ -229,6 +229,7 @@ fn rides_decode(moment: &Moment) -> Verdict {
 
 const FASTEST_KMH: u32 = 150;
 const FASTEST_MM_S: u32 = (FASTEST_KMH * 1_000_000).div_ceil(3_600);
+const HIGHEST_BPM: u16 = 250;
 
 fn no_garbage(moment: &Moment) -> Verdict {
     for (medium, rides) in media(moment.after) {
@@ -236,13 +237,13 @@ fn no_garbage(moment: &Moment) -> Verdict {
             let mut last_ms = 0;
             for sample in ride.samples() {
                 let fault = if sample.active_ms < last_ms {
-                    "active time went back"
+                    "active time went back".to_string()
                 } else if sample.speed_mm_s.is_some_and(|v| v > FASTEST_MM_S) {
-                    "speed beyond 150 km/h"
-                } else if sample.heart_bpm.is_some_and(|v| v > 250) {
-                    "heart rate beyond 250"
+                    format!("speed beyond {FASTEST_KMH} km/h")
+                } else if sample.heart_bpm.is_some_and(|v| v > HIGHEST_BPM) {
+                    format!("heart rate beyond {HIGHEST_BPM}")
                 } else if sample.battery_percent.is_some_and(|v| v > 100) {
-                    "battery beyond 100 %"
+                    "battery beyond 100 %".to_string()
                 } else {
                     last_ms = sample.active_ms;
                     continue;

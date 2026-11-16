@@ -18,7 +18,7 @@ use crate::ride::journal::{Internal, InternalState};
 use crate::ride::laps::{AutoLap, Lap, Laps};
 use crate::ride::log::{Altitude, Sample, Status};
 use crate::ride::metrics::Step;
-use crate::ride::recorder::{Recorder, ResultEvent};
+use crate::ride::recorder::{Recorder, Refused, ResultEvent};
 use crate::ride::storage::RideStorage;
 use crate::ride::totals::{Efforts, Totals};
 use crate::ride::zones::{TrainingProfile, ZoneTime};
@@ -356,6 +356,7 @@ impl Ride {
             && (matches!(
                 status,
                 Status::NeedsInit
+                    | Status::Foreign
                     | Status::Unavailable
                     | Status::Corrupt
                     | Status::Error
@@ -375,7 +376,9 @@ impl Ride {
         medium: Medium,
         start: impl FnOnce(&mut Recorder, u32) -> bool,
     ) -> bool {
-        let Some(token) = self.start(medium, start) else {
+        let Ok(token) = self.start(medium, |recorder, token| {
+            start(recorder, token).then_some(()).ok_or(())
+        }) else {
             return false;
         };
         self.request = Request::Pending(token);
@@ -386,26 +389,21 @@ impl Ride {
     pub(super) fn submit_host(
         &mut self,
         medium: Medium,
-        start: impl FnOnce(&mut Recorder, u32) -> bool,
-    ) -> bool {
-        let Some(token) = self.start(medium, start) else {
-            return false;
-        };
-        self.host = Request::Pending(token);
-        true
+        start: impl FnOnce(&mut Recorder, u32) -> Result<(), Refused>,
+    ) -> Result<(), Refused> {
+        self.host = Request::Pending(self.start(medium, start)?);
+        Ok(())
     }
 
-    fn start(
+    fn start<E>(
         &mut self,
         medium: Medium,
-        start: impl FnOnce(&mut Recorder, u32) -> bool,
-    ) -> Option<u32> {
+        start: impl FnOnce(&mut Recorder, u32) -> Result<(), E>,
+    ) -> Result<u32, E> {
         let token = self.next_token;
-        if !start(self.recorder_mut(medium), token) {
-            return None;
-        }
+        start(self.recorder_mut(medium), token)?;
         self.next_token = token.wrapping_add(1).max(1);
-        Some(token)
+        Ok(token)
     }
 
     /// An operation of either actor is queued: the recorders take one at a

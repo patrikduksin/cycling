@@ -1,7 +1,6 @@
 use super::Runtime;
 use super::input::HOLD_GAP_MS;
 use super::preferences::Stored;
-use super::storage::Store;
 use crate::ride::log::SECTORS;
 use crate::screens::workout::Page;
 use device_api::bulk::{Error as MediaError, ReadWrite};
@@ -29,9 +28,32 @@ pub(super) enum Format {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Stage {
     Mark,
-    Wipe(Store),
+    Card(Card),
     JournalSector(usize),
     Settings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Card {
+    Table,
+    Rides,
+    Files,
+    Traces,
+}
+
+impl Stage {
+    fn next(self) -> Next {
+        Next::Stage(match self {
+            Self::Mark => Self::Card(Card::Table),
+            Self::Card(Card::Table) => Self::Card(Card::Rides),
+            Self::Card(Card::Rides) => Self::Card(Card::Files),
+            Self::Card(Card::Files) => Self::Card(Card::Traces),
+            Self::Card(Card::Traces) => Self::JournalSector(0),
+            Self::JournalSector(index) if index + 1 < SECTORS => Self::JournalSector(index + 1),
+            Self::JournalSector(_) => Self::Settings,
+            Self::Settings => return Next::Done,
+        })
+    }
 }
 
 impl Format {
@@ -48,6 +70,10 @@ impl Format {
 
     pub(super) fn owns_storage(self) -> bool {
         matches!(self, Self::Running(_) | Self::Failed | Self::Done)
+    }
+
+    pub(super) fn admits_rides(self) -> bool {
+        matches!(self, Self::Idle | Self::Declined)
     }
 }
 
@@ -75,23 +101,10 @@ pub(super) enum Next {
     Done,
 }
 
-impl Next {
-    /// The first stage that wipes `store`; done after the last store.
-    fn wiping(store: Option<Store>) -> Self {
-        match store {
-            Some(Store::Internal) => Self::Stage(Stage::JournalSector(0)),
-            Some(Store::Settings) => Self::Stage(Stage::Settings),
-            Some(store) => Self::Stage(Stage::Wipe(store)),
-            None => Self::Done,
-        }
-    }
-}
-
 fn began_after_drawn(drawn: u64, at: u64) -> bool {
     at >= drawn + HOLD_GAP_MS
 }
 
-/// FORMAT never starts under an open ride, whoever asks.
 pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go) {
     use Format::*;
     match (format, event) {
@@ -195,9 +208,8 @@ impl Runtime {
     }
 
     /// Offer FORMAT once the stores are read, and run one stage of a wipe a
-    /// pass. Call it once a pass, after `tick`: the pass that marks the
-    /// settings writes nothing to the card, so composition, seeing
-    /// [`Self::owns_storage`], ends its trace before the first card write.
+    /// pass. Call it once a pass, after `tick`; the marking pass writes
+    /// nothing to the card, so composition can end its trace first.
     #[inline(never)]
     pub fn service_format<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,
@@ -239,29 +251,23 @@ impl Runtime {
                 }
                 self.preferences.stored = Stored::Foreign;
                 match bulk.owned_info() {
-                    Ok(_) => Some(Next::wiping(Some(Store::ALL[0]))),
+                    Ok(_) => Some(stage.next()),
                     Err(MediaError::Unsupported | MediaError::Unavailable) => {
-                        Some(Next::wiping(Some(Store::Internal)))
+                        Some(Next::Stage(Stage::JournalSector(0)))
                     }
                     Err(MediaError::Failed | MediaError::Range) => None,
                 }
             }
-            Stage::Wipe(store) => {
+            Stage::Card(card) => {
                 let seed = now ^ bulk.entropy();
-                wipe(store, bulk, seed)?;
-                Some(Next::wiping(store.next()))
+                wipe(card, bulk, seed)?;
+                Some(stage.next())
             }
             Stage::JournalSector(index) => {
-                crate::ride::journal::wipe_sector(&mut system.data_storage(), index).ok()?;
-                Some(if index + 1 < SECTORS {
-                    Next::Stage(Stage::JournalSector(index + 1))
-                } else {
-                    Next::wiping(Store::Internal.next())
-                })
+                crate::ride::journal::wipe_sector(&mut system.data_storage(), index)
+                    .then(|| stage.next())
             }
-            Stage::Settings => system
-                .erase_settings()
-                .then(|| Next::wiping(Store::Settings.next())),
+            Stage::Settings => system.erase_settings().then(|| stage.next()),
         }
     }
 }
@@ -269,35 +275,29 @@ impl Runtime {
 // Not inlined, so its sector buffer stays out of the console task's frame,
 // which sits under every frame VANA prepares (#167).
 #[inline(never)]
-fn wipe(store: Store, bulk: &mut impl ReadWrite, seed: u64) -> Option<()> {
+fn wipe(card: Card, bulk: &mut impl ReadWrite, seed: u64) -> Option<()> {
     let mut sector = [0u8; 512];
-    match store {
-        Store::Table => wipe_table(bulk, &mut sector),
-        Store::Rides => {
+    match card {
+        Card::Table => wipe_table(bulk, &mut sector),
+        Card::Rides => {
             let rides = &mut volume::open(bulk, &RIDES, &mut sector).ok()?;
             crate::ride::bulk::wipe(rides, seed, &mut sector).ok()
         }
-        Store::Files => in_volume(bulk, &FILES, &mut sector, |files, sector| {
+        Card::Files => in_volume(bulk, &FILES, &mut sector, |files, sector| {
             if files::mount(files, sector) == Err(files::Error::Foreign) {
                 files::erase(files, sector).ok()?;
             }
             files::format(files, seed, sector).ok().map(drop)
         }),
-        Store::Traces => in_volume(bulk, &STORE, &mut sector, |traces, sector| {
+        Card::Traces => in_volume(bulk, &STORE, &mut sector, |traces, sector| {
             if store::mount(traces, sector).err() == Some(store::Error::Foreign) {
                 store::erase(traces, sector).ok()?;
             }
             store::format(traces, seed, sector).ok().map(drop)
         }),
-        // The records go with FILES; the boot flash has stages of its own.
-        Store::Records | Store::Internal | Store::Settings => Some(()),
     }
 }
 
-/// The default table where the table is not current, and the terrain pack
-/// erased with it, or alone when the pack is of another version. The pack
-/// goes before the table is published, so a cut between leaves the table
-/// still to replace.
 fn wipe_table(bulk: &mut impl ReadWrite, sector: &mut volume::Sector) -> Option<()> {
     let (table, replace) = match volume::read(bulk, sector) {
         Ok(Layout::Table(table)) => (table, false),
@@ -318,7 +318,6 @@ fn wipe_table(bulk: &mut impl ReadWrite, sector: &mut volume::Sector) -> Option<
     Some(())
 }
 
-/// `wipe` in the volume `name`; a volume the table lacks has nothing to wipe.
 fn in_volume<B: ReadWrite>(
     bulk: &mut B,
     name: &volume::Name,
@@ -390,8 +389,8 @@ mod tests {
             (wiping, press(ACT, 9_000), wiping, Go::Stay),
             (
                 wiping,
-                Event::Wrote(Next::Stage(Stage::Wipe(Store::Table))),
-                Running(Stage::Wipe(Store::Table)),
+                Event::Wrote(Next::Stage(Stage::Card(Card::Table))),
+                Running(Stage::Card(Card::Table)),
                 Go::Stay,
             ),
             (

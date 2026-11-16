@@ -77,6 +77,11 @@ fn act_formats_everything_and_the_device_then_records_and_keeps_a_ride() {
     sim.expect_text("MADE BY ANOTHER VERSION");
     sim.expect_text("RIDES AND SETTINGS GO");
     sim.checkpoint("the offer");
+    assert_eq!(
+        sim.command("RIDE START").0,
+        "BUSY",
+        "no ride under the question"
+    );
     sim.press(ACT);
     sim.expect_text("CHECKING STORAGE");
     sim.checkpoint("formatting");

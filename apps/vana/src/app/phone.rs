@@ -527,7 +527,8 @@ impl Runtime {
             | Status::Unavailable
             | Status::Error
             | Status::Corrupt
-            | Status::NeedsInit => Readiness::Never,
+            | Status::NeedsInit
+            | Status::Foreign => Readiness::Never,
             _ => Readiness::Pending,
         }
     }

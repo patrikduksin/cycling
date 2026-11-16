@@ -7,10 +7,9 @@
 use super::Runtime;
 use super::pace::Touched;
 use super::recording::{Medium, Request};
-use super::storage::{Health, Store};
 use crate::ride::control::Action;
 use crate::ride::log::{SLOT_SIZE, Slot, VERSION, transport_checksum};
-use crate::ride::recorder::Recorder;
+use crate::ride::recorder::{Recorder, Refused};
 use crate::ride::storage::RideStorage;
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
@@ -71,17 +70,6 @@ impl Runtime {
             return self.radar_command(operation, now, output);
         }
         let stored = named.unwrap_or(Medium::Internal);
-        let erases = matches!(
-            (domain, operation, argument),
-            (Some("RIDE"), Some("INIT"), None) | (Some("RIDE"), Some("CLEAR"), Some("CONFIRM"))
-        );
-        let log = match stored {
-            Medium::Internal => Store::Internal,
-            Medium::Bulk => Store::Rides,
-        };
-        if erases && self.storage_health().of(log) == Health::Foreign {
-            return "FOREIGN";
-        }
         if (domain, operation, argument) == (Some("RIDE"), Some("CLEAR"), Some("CONFIRM")) {
             let Some(bound) = bound.and_then(|value| value.parse::<usize>().ok()) else {
                 return "INVALID";
@@ -133,9 +121,15 @@ impl Runtime {
                     // One ride at a time, whichever medium it is on.
                     return "STATE";
                 }
+                if !self.format.admits_rides() {
+                    return "BUSY";
+                }
                 let medium = named.unwrap_or(self.ride.target(action));
                 self.submit(medium, output, |recorder, token| {
-                    recorder.request(action, now, token)
+                    recorder
+                        .request(action, now, token)
+                        .then_some(())
+                        .ok_or(Refused::State)
                 })
             }
             (Some("EXPORT"), Some("INFO"), None) => self.export_info(stored, output),
@@ -153,7 +147,7 @@ impl Runtime {
         &mut self,
         medium: Medium,
         output: &mut impl Write,
-        start: impl FnOnce(&mut Recorder, u32) -> bool,
+        start: impl FnOnce(&mut Recorder, u32) -> Result<(), Refused>,
     ) -> &'static str {
         if !matches!(self.ride.host, Request::Idle) || self.ride.pending() {
             return "BUSY";
@@ -161,8 +155,10 @@ impl Runtime {
         if write!(output, "token={}", self.ride.next_token()).is_err() {
             return "OUTPUT";
         }
-        if !self.ride.submit_host(medium, start) {
-            return "STATE";
+        match self.ride.submit_host(medium, start) {
+            Ok(()) => {}
+            Err(Refused::Foreign) => return "FOREIGN",
+            Err(Refused::State) => return "STATE",
         }
         // A host action replaces the rider's last notice, as a rider's does.
         if matches!(self.ride.request, Request::Completed(_)) {

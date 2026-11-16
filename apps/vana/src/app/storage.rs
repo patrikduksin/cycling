@@ -29,8 +29,6 @@ impl Health {
     }
 }
 
-/// Everything VANA stores, in the order FORMAT wipes it: the card, then the
-/// internal journal, and the settings last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Store {
     Table,
@@ -66,10 +64,6 @@ impl Store {
             Self::Internal => "internal",
             Self::Settings => "settings",
         }
-    }
-
-    pub fn next(self) -> Option<Self> {
-        Self::ALL.get(self as usize + 1).copied()
     }
 
     const fn on_card(self) -> bool {
@@ -180,7 +174,6 @@ fn in_volume<B: ReadWrite>(
     }
 }
 
-/// The records as their owners read them: foreign if any one is.
 #[inline(never)]
 fn records(bulk: &mut impl ReadWrite) -> Health {
     let held = [
@@ -218,12 +211,11 @@ impl Runtime {
             Store::Internal,
             match self.ride.internal.status() {
                 Status::Scanning => Health::Unread,
-                _ if self.ride.internal.holds_another_version() => Health::Foreign,
-                Status::NeedsInit
-                | Status::Error
-                | Status::Unsupported
-                | Status::Unavailable
-                | Status::Corrupt => Health::Unusable,
+                Status::NeedsInit => Health::Blank,
+                Status::Foreign => Health::Foreign,
+                Status::Error | Status::Unsupported | Status::Unavailable | Status::Corrupt => {
+                    Health::Unusable
+                }
                 _ => Health::Current,
             },
         );

@@ -130,9 +130,10 @@ cycling ride-clear --medium bulk .local/exports/<export-id>
 - `RIDE`/`EXPORT` take an optional `BULK` or `INTERNAL` word. Ride control,
   `STATUS` and `HISTORY` default to the medium of the ride on screen, and START
   to the medium the next ride will use; `INIT`, `CLEAR` and `EXPORT` default to
-  internal. START is refused while a ride is open on either medium. `INIT` and
-  `CLEAR` answer `FOREIGN` over a log of another version; only FORMAT erases
-  one. Bulk status adds `capacity`, `store`,
+  internal. START is refused while a ride is open on either medium,
+  and answers `BUSY` while the FORMAT question is up. `STATUS` reads
+  `state=foreign` over a log of another version, where `INIT` and `CLEAR`
+  answer `FOREIGN`; only FORMAT erases one. Bulk status adds `capacity`, `store`,
   `generation`, `boot_reads` and `layout` (`volumes`, `blank`, `lost`
   or `foreign`).
 - The 1 GiB RIDES volume holds 2,097,136 records, about 2,330 h at 1 Hz, so the

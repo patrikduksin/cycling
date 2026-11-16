@@ -286,7 +286,11 @@ impl<B: ReadWrite> Bulk<'_, B> {
                 self.state.region = Region::Lost;
                 Scan::Corrupt
             }
-            Err(volume::Error::Foreign | volume::Error::Missing | volume::Error::Small) => {
+            Err(volume::Error::Foreign) => {
+                self.state.region = Region::Foreign;
+                Scan::Foreign
+            }
+            Err(volume::Error::Missing | volume::Error::Small) => {
                 self.state.region = Region::Foreign;
                 Scan::Corrupt
             }
@@ -371,7 +375,8 @@ impl<B: ReadWrite> Journal for Bulk<'_, B> {
             Err(Error::Uninitialized) => Scan::Uninitialized,
             Err(Error::Media(MediaError::Unsupported)) => Scan::Unsupported,
             Err(Error::Media(MediaError::Unavailable)) => Scan::Unavailable,
-            Err(Error::Foreign | Error::Corrupt) => Scan::Corrupt,
+            Err(Error::Foreign) => Scan::Foreign,
+            Err(Error::Corrupt) => Scan::Corrupt,
             Err(_) => Scan::Failed,
         };
         self.state.recovery = None;

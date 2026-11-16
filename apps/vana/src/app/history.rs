@@ -120,7 +120,10 @@ impl Runtime {
     /// Saved rides of one journal.
     fn journal_len(&self, medium: Medium) -> usize {
         let recorder = self.ride.recorder(medium);
-        if matches!(recorder.status(), Status::Scanning | Status::NeedsInit) {
+        if matches!(
+            recorder.status(),
+            Status::Scanning | Status::NeedsInit | Status::Foreign
+        ) {
             return 0;
         }
         let (indexed, newer) = self.split(medium);
@@ -381,7 +384,10 @@ impl Runtime {
         let recorder = self.ride.recorder(medium);
         if !recorder.exportable() {
             // A failed journal stays unreadable until VANA restarts.
-            if matches!(recorder.status(), Status::Error | Status::NeedsInit) {
+            if matches!(
+                recorder.status(),
+                Status::Error | Status::NeedsInit | Status::Foreign
+            ) {
                 replay.abandon();
                 self.history.open = Some((medium, replay, summary));
                 self.display.redraw();

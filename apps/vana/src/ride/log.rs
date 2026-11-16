@@ -43,7 +43,10 @@ const COMMITTED: u32 = 0x434f_4d54;
 pub enum Status {
     #[default]
     Scanning,
+    /// The medium holds no log yet.
     NeedsInit,
+    /// Data this version did not write: only FORMAT erases it.
+    Foreign,
     Formatting,
     Clearing,
     Ready,
@@ -77,6 +80,7 @@ impl Status {
             Self::Corrupt => "corrupt",
             Self::Scanning => "scanning",
             Self::NeedsInit => "needs_init",
+            Self::Foreign => "foreign",
             Self::Formatting => "formatting",
             Self::Clearing => "clearing",
             Self::Ready => "ready",
@@ -93,6 +97,7 @@ impl Status {
         match self {
             Self::Scanning => b"SCAN",
             Self::NeedsInit => b"INIT",
+            Self::Foreign => b"FOREIGN",
             Self::Formatting => b"FORMAT",
             Self::Clearing => b"CLEAR",
             Self::Ready => b"READY",
@@ -607,8 +612,7 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Occupied data the recorder did not write: only explicit initialize may
-    /// erase it. A single torn first append (power lost during the first START
+    /// Occupied data the recorder did not write: only FORMAT may erase it. A single torn first append (power lost during the first START
     /// of a fresh or cleared journal) is the recorder's own and stays in place
     /// as an occupied invalid slot.
     pub fn unknown_data(&self) -> bool {

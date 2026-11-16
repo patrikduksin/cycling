@@ -351,6 +351,7 @@ mod tests {
             Status::Error,
             Status::Scanning,
             Status::NeedsInit,
+            Status::Foreign,
         ] {
             for wheel in [RIDING, STOPPED, UNKNOWN, Motion::Lost] {
                 let mut auto = auto_paused();

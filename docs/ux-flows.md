@@ -233,8 +233,10 @@ it. Riding along the course in its direction, within 25 m of it for a few
 fixes, follows it: FOLLOWING COURSE and the rising cue.
 Crossing it, or riding it the wrong way, follows nothing, and a course far
 from the ride says nothing. Riding the wrong way within 25 m of it for three
-fixes in a row says TURN AROUND (below), silently, until the rider rides its
-way, leaves it or loses the fix. Until following starts, the map draws small
+moving fixes says TURN AROUND (below), silently, until the rider rides its
+way, leaves it or loses the fix. A moving fix is at least 2 m on from the
+last one, at 5 km/h or more when the ride's speed is known, so a fix
+jittering at a stop never counts. Until following starts, the map draws small
 arrows on the course's line near the rider, the way it runs, so a rider
 standing at a junction sees which way to go. Riding another part of the same
 course follows from wherever the rider joins it, as before. While following,
@@ -261,7 +263,9 @@ next, and is dropped if it no longer holds, so a turn beeping 30 m ahead
 right after rejoining the course drops its rising beeps. A navigation sound
 raised while a radar alarm or another sound plays waits and plays after it,
 however long that takes, unless by then its turn is passed or the off-course
-state it told of has ended.
+state it told of has ended. One of each kind waits at once; together they
+play OFF COURSE first, then ON COURSE, the beep at a turn and the turn
+ahead. A sound whose turn passes before the buzzer starts it never plays.
 A turn is where the course turns by 60 degrees or more, turning at least as
 sharply as 60 degrees in 50 m: LEFT or RIGHT, SHARP LEFT or SHARP RIGHT past
 120 degrees, and U-TURN past 150. A bend gentler than that sounds nothing.
@@ -273,13 +277,20 @@ roundabout of up to about 40 m radius is one turn, named by the way it
 leaves, and straight over one sounds nothing.
 A course's turns are found once, as it loads from the phone, from every
 point of the file, so a long course thinned to fit names them as drawn.
-A spur, where the course goes into a side street up to 150 m deep and comes
-straight back to where it left, as a waypoint just off the road draws it,
-is dropped as the course loads when the course then carries on less than 90
-degrees from the way it came: riding on past it sounds no turn and is not
-off course, and where the course turns there, that corner is the turn. A
-longer out-and-back, a hairpin and a roundabout keep their turns. A course
-loaded before this keeps its spurs until it is loaded again.
+A spur is where the course goes into a dead end up to 150 m deep and
+comes straight back along it, every point of the way back within about 3 m
+of the way out, as a waypoint just off the road draws it. VANA takes every
+such dead-end visit for a planner's artifact, even one meant: it says no
+turn into it, no U-TURN at its end and no turn out of it. Where the course
+turns at the spur's base, that corner is the turn, named by the course's
+way before the spur and after it. The course keeps the spur's points and
+its length, so distance along it and arrival are unchanged. Riding straight
+past the base is not off course, and riding into the spur and back sounds
+nothing either. At the far end of a longer out-and-back, a dead end of up
+to 30 m past its last corner is a spur too, so the corner says U-TURN. A
+longer dead end, roads side by side about 8 m apart, a hairpin and a
+roundabout keep their turns. Turns stored with a course loaded before this
+keep its spurs until the course is loaded again.
 Where the course is drawn coarsely, as a planner's route is, or it was loaded
 before turns were found this way, a turn of several corners is named only
 roughly: LEFT or RIGHT from about 80 degrees, U-TURN from about 160, never

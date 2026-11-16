@@ -75,7 +75,6 @@ pub fn decode_catalog(bytes: &[u8]) -> Option<Catalog> {
     }
     let recovery = if bytes[1] & 1 != 0 {
         let source = match bytes[3] {
-            1 => Source::Demo,
             2 => Source::Live,
             _ => return None,
         };

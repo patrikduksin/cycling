@@ -615,9 +615,8 @@ by distance and by time, and the most ascent. Settings, PROFILE, BESTS lists
 each with its value and the day it was set, and each power best also in W/KG
 once Settings, BODY holds a weight; BACK returns to Settings.
 
-- Only a ride recorded live that finishes counts. A demo ride never does,
-  nor a discarded one. Deleting a saved ride keeps the bests it set.
-  Rides under 10 minutes can set a power best but not a distance, time or
+- Only a ride that finishes counts, never a discarded one. Deleting a saved
+  ride keeps the bests it set. Rides under 10 minutes can set a power best but not a distance, time or
   ascent one, so a test press is not the longest ride.
 - A best is replaced only by a higher value; a tie keeps the older day.
 - A power above what a person holds for that length (2,500 W for 5 s,

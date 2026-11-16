@@ -195,8 +195,8 @@ mod tests {
             corrupt_readback: None,
         };
         for (offset, entry) in [
-            Entry::event(Kind::Start, Source::Demo, 7, 0, 0),
-            Entry::event(Kind::Finish, Source::Demo, 7, 1, 10),
+            Entry::event(Kind::Start, Source::Live, 7, 0, 0),
+            Entry::event(Kind::Finish, Source::Live, 7, 1, 10),
         ]
         .into_iter()
         .enumerate()

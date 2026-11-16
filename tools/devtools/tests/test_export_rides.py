@@ -220,7 +220,7 @@ class RideExportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rides_from_slots([self.fixture()[0], self.fixture()[0]])
         with tempfile.TemporaryDirectory() as directory:
-            no_location = {'ride_id': 1, 'source': 'demo', 'segments': []}
+            no_location = {'ride_id': 1, 'source': 'live', 'segments': []}
             self.assertEqual(write_gpx(no_location, Path(directory) / 'none.gpx'), 'no valid location samples')
 
     def test_gpx_11_normalizes_positive_180_and_preserves_time(self):
@@ -527,12 +527,9 @@ class BulkDataStartTest(unittest.TestCase):
     def test_rides_volume_offsets_record_zero(self):
         self.assertEqual(self.start('OK', 'layout=volumes rides=2048+2097152'), 2064)
 
-    def test_firmware_without_volumes_keeps_the_legacy_start(self):
-        self.assertEqual(self.start('INVALID', 'malformed command'), 16)
-
-    def test_a_legacy_layout_under_volume_firmware_is_refused(self):
+    def test_a_region_without_a_rides_volume_is_refused(self):
         with self.assertRaises(RuntimeError):
-            self.start('OK', 'layout=legacy region=5777407')
+            self.start('OK', 'layout=blank')
 
 
 if __name__ == '__main__':

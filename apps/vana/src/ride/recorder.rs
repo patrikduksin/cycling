@@ -96,7 +96,7 @@ impl Default for Recorder {
             accumulated_ms: 0,
             running_since: 0,
             stop_at: None,
-            source: Source::Demo,
+            source: Source::Live,
             open_ride: false,
             summary: Summary::default(),
             samples: [Sample::default(); crate::ride::log::SAMPLES_PER_BATCH],
@@ -382,7 +382,7 @@ impl Recorder {
 
         if self.status == Status::Recording && self.stop_at.is_none() && now >= self.next_sample {
             if self.sample_count < self.samples.len() {
-                let mut sample = sample.for_source(self.source);
+                let mut sample = sample.for_slot();
                 sample.active_ms = self.active_ms(now);
                 sample.lap = self.lap_marks.pop();
                 self.samples[self.sample_count] = sample;
@@ -408,7 +408,7 @@ impl Recorder {
             && self.sample_count < self.samples.len()
             && self.lap_marks.lap_waiting()
         {
-            let mut sample = sample.for_source(self.source);
+            let mut sample = sample.for_slot();
             sample.active_ms = self.active_ms(now);
             sample.lap = self.lap_marks.pop();
             self.samples[self.sample_count] = sample;

@@ -20,10 +20,9 @@ terminal. Use device `HELP` for commands and the
   media step at a time.
 - Nothing is deleted or reused automatically when storage is full.
 
-Persisted compatibility and recovery invariants live beside
+The record layout and recovery invariants live beside
 [ride/log.rs](../apps/vana/src/ride/log.rs) and
-[ride/recorder.rs](../apps/vana/src/ride/recorder.rs). Existing demo records stay
-readable; new terminal rides use live observations.
+[ride/recorder.rs](../apps/vana/src/ride/recorder.rs).
 
 ## Export
 

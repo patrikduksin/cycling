@@ -321,7 +321,7 @@ impl Replay {
 
 /// The distance a sample covers over `elapsed_ms`, at its speed.
 fn step_mm(sample: &Sample, elapsed_ms: u64) -> u64 {
-    let speed = sample.speed_mm_s.or(sample.demo_speed_mm_s).unwrap_or(0);
+    let speed = sample.speed_mm_s.unwrap_or(0);
     u64::from(speed) * elapsed_ms / 1000
 }
 
@@ -355,7 +355,6 @@ mod tests {
             active_ms,
             utc_ms: None,
             location_e7: None,
-            demo_speed_mm_s: None,
             heart_bpm: Some(140),
             cadence_tenths: Some(900),
             battery_percent: None,

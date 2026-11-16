@@ -505,9 +505,8 @@ impl Rig {
                 let action =
                     self.rng
                         .pick(&[Action::Start, Action::Pause, Action::Resume, Action::Finish]);
-                let source = self.rng.pick(&[Source::Live, Source::Demo]);
                 let now = self.now;
-                self.recorder.request(action, source, now, 1);
+                self.recorder.request(action, Source::Live, now, 1);
                 if self.rng.one_in(2) {
                     let start = self.rng.pick(&[
                         LapStart::Manual,

@@ -147,6 +147,7 @@ class ClearRidesTests(unittest.TestCase):
             capacity=5_777_391,
             invalid_containers=[],
             invalid_sectors=[],
+            data_start=16,
         )
         (root / 'manifest.json').write_text(json.dumps(manifest))
         return manifest

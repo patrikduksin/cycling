@@ -3,9 +3,8 @@
 //! BESTS view under Settings, PROFILE.
 //!
 //! The bests live in a small file beside the workout outcomes
-//! (`ride::bests`), not in the preference record. Only a ride that was
-//! recorded live counts (`Source::Live`, never a demo ride), and only a ride
-//! that finished; a ride read back from a journal never merges again. A ride
+//! (`ride::bests`), not in the preference record. Only a ride that finished
+//! counts; a ride read back from a journal never merges again. A ride
 //! is never held up for the file. Where it cannot be used the BESTS view says
 //! why: no store to keep it in, a damaged file (CLEAR BESTS starts over), or a
 //! store that would not take the write (the merged bests stay in memory and
@@ -15,7 +14,7 @@ use super::Runtime;
 use super::recording::{Medium, Ride};
 use crate::clock::Zone;
 use crate::ride::bests::{self, Bests, Found, Outcome, suggest_ftp};
-use crate::ride::log::{Source, Status};
+use crate::ride::log::Status;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::bests::Mode;
 use crate::screens::chrome::Tone;
@@ -155,9 +154,6 @@ fn outcome(ride: &Ride, medium: Medium, zone: Zone, now: u64) -> Option<(Outcome
         .flatten()
         .last()
         .copied()?;
-    if saved.source != Some(Source::Live) {
-        return None;
-    }
     let day = saved.first_utc_ms.map_or(0, |utc| {
         (zone.local(utc / 1000).0 / 86_400).min(u64::from(u16::MAX)) as u16
     });

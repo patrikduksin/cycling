@@ -112,12 +112,12 @@ pub const fn fresh_u16(value: u16, received_ms: u64, now_ms: u64) -> (Option<u16
     }
 }
 
-/// Only durable live rides receive fresh standard-sensor values.
+/// Only an open ride receives fresh standard-sensor values.
 pub const fn ride_fields(
     snapshot: Snapshot,
     source: Option<crate::ride::log::Source>,
 ) -> (Option<u16>, Option<u16>) {
-    if matches!(source, Some(crate::ride::log::Source::Live)) {
+    if source.is_some() {
         (snapshot.heart_bpm, snapshot.cadence_tenths)
     } else {
         (None, None)
@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn only_live_ride_samples_receive_fresh_sensor_values() {
+    fn only_an_open_ride_receives_fresh_sensor_values() {
         let snapshot = Snapshot {
             heart_bpm: Some(72),
             cadence_tenths: Some(600),
@@ -345,10 +345,6 @@ mod tests {
         assert_eq!(
             ride_fields(snapshot, Some(crate::ride::log::Source::Live)),
             (Some(72), Some(600))
-        );
-        assert_eq!(
-            ride_fields(snapshot, Some(crate::ride::log::Source::Demo)),
-            (None, None)
         );
         assert_eq!(ride_fields(snapshot, None), (None, None));
     }

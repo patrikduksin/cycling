@@ -558,7 +558,6 @@ impl Runtime {
             active_ms: 0,
             utc_ms,
             location_e7: reported.map(|reported| reported.location_e7),
-            demo_speed_mm_s: None,
             heart_bpm: readings
                 .heart
                 .filter(|heart| fresh(heart.received_ms))

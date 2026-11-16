@@ -140,6 +140,7 @@ explains it:
 
 | The rider said | Query |
 | --- | --- |
+| the rider marked it (MOVE held 1.5 s) | `find <trace> mark`: each mark names when MOVE went down and the page shown before; `cycling trace pull` prints them last |
 | a reading showed dashes | `cycling trace find <trace> power=--` (also `hr`, `speed`, `cad`, `dist`, `grade`, `time`; `!=` and `~` work too) |
 | a page did or did not come up | `find <trace> page --where climb` |
 | a message flashed | `find <trace> toast` |

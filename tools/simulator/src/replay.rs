@@ -333,6 +333,11 @@ pub enum Seen {
     Toast(String),
     RideState(String),
     Shown(String),
+    Mark {
+        count: u16,
+        pressed_ms: u64,
+        page: String,
+    },
     Sound {
         pattern: u8,
         cue: String,
@@ -608,6 +613,15 @@ pub(crate) fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
         Event::Toast(text) => Some(Some(Seen::Toast((*text).into()))),
         Event::RideState(state) => Some(Some(Seen::RideState((*state).into()))),
         Event::Shown(fields) => Some(Some(Seen::Shown((*fields).into()))),
+        Event::Mark {
+            count,
+            pressed_ms,
+            page,
+        } => Some(Some(Seen::Mark {
+            count: *count,
+            pressed_ms: *pressed_ms,
+            page: (*page).into(),
+        })),
         Event::Sound {
             pattern,
             cue,
@@ -937,6 +951,7 @@ impl Sources {
             | Event::Sound { .. }
             | Event::RideState(_)
             | Event::Shown(_)
+            | Event::Mark { .. }
             | Event::Panel(_)
             | Event::Log { .. }
             | Event::FrameTime(_)

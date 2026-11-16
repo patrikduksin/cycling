@@ -139,6 +139,7 @@ pub enum Kind {
     Toast,
     Sound,
     Ride,
+    Mark,
     Shown,
     Log,
     Phone,
@@ -151,7 +152,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::Gap,
         Self::Input,
         Self::Command,
@@ -171,6 +172,7 @@ impl Kind {
         Self::Toast,
         Self::Sound,
         Self::Ride,
+        Self::Mark,
         Self::Shown,
         Self::Log,
         Self::Phone,
@@ -203,6 +205,7 @@ impl Kind {
             Self::Toast => "toast",
             Self::Sound => "sound",
             Self::Ride => "ride",
+            Self::Mark => "mark",
             Self::Shown => "shown",
             Self::Log => "log",
             Self::Phone => "phone",
@@ -221,7 +224,13 @@ impl Kind {
     pub const fn seen(self) -> bool {
         matches!(
             self,
-            Self::Page | Self::Toast | Self::Sound | Self::Ride | Self::Shown | Self::Log
+            Self::Page
+                | Self::Toast
+                | Self::Sound
+                | Self::Ride
+                | Self::Mark
+                | Self::Shown
+                | Self::Log
         )
     }
 
@@ -234,7 +243,7 @@ impl Kind {
     /// played), not a state reported again, so none is ever a repeat: two
     /// presses of one button are two presses.
     pub const fn edge(self) -> bool {
-        matches!(self, Self::Input | Self::Command | Self::Sound)
+        matches!(self, Self::Input | Self::Command | Self::Sound | Self::Mark)
     }
 
     /// Many per second, or every few seconds all session long; hidden
@@ -971,6 +980,14 @@ impl Reader {
                 });
                 self.push(Kind::Ride, state);
             }
+            Event::Mark {
+                count,
+                pressed_ms,
+                page,
+            } => self.push(
+                Kind::Mark,
+                format!("{count} pressed {} on {page}", session_clock(pressed_ms)),
+            ),
             Event::Shown(fields) => {
                 self.ride_time_shown(fields);
                 self.push(Kind::Shown, fields)

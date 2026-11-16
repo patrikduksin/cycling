@@ -1,7 +1,8 @@
 //! A session told as OpenTelemetry-shaped spans and notable events: the
 //! session, each ride and its recording and paused stretches, page visits,
 //! toasts, sensor links and silences, GPS fix and companion start-up as
-//! spans; boot, laps, warnings, commands and gaps as events.
+//! spans; boot, laps, the rider's marks, warnings, commands and gaps as
+//! events.
 use crate::trace::timeline::{
     Entry, Kind, Moment, TOAST_CLEARED, Timeline, duration, session_clock,
 };
@@ -210,7 +211,7 @@ pub fn tell(timeline: &Timeline) -> Story {
                 laps += 1;
                 events.push(Point::new(entry.at, "lap", entry.text.clone()));
             }
-            Kind::Log | Kind::Gap | Kind::Command | Kind::Storage => {
+            Kind::Mark | Kind::Log | Kind::Gap | Kind::Command | Kind::Storage => {
                 events.push(Point::new(entry.at, entry.kind.name(), entry.text.clone()))
             }
             _ => {}

@@ -3,8 +3,8 @@
 //!
 //! The settings and the internal journal are read from their owners. The
 //! card's volumes are read once, after the bulk recorder's scan, by
-//! [`Probe`]: the table, then the head of each volume, then the head of the
-//! tables VANA writes into FILES. Files the host writes (course, turns,
+//! [`Probe`]: the table, then the head of each volume, then the head of each
+//! table and workout record VANA writes into FILES. Files the host writes (course, turns,
 //! workouts) are the host's to replace and never raise the offer; nor does
 //! the terrain pack.
 use super::Runtime;
@@ -75,6 +75,7 @@ impl Probe {
         }
     }
 
+    #[inline(never)]
     fn read(bulk: &mut impl ReadWrite) -> Self {
         let mut sector = [0u8; 512];
         let table = match volume::read(bulk, &mut sector) {
@@ -141,23 +142,34 @@ fn files_health(
         Err(files::Error::Foreign) => return (Health::Foreign, Health::Unusable),
         Err(_) => return (Health::Unusable, Health::Unusable),
     };
-    let mut records = Health::Current;
-    for (name, magic, version) in [
+    let stamps = [
         crate::ride::facts::STAMP,
         crate::ride::deleted::STAMP,
         crate::ride::bests::STAMP,
-    ] {
-        let mut head = [0u8; 5];
-        let read = files::Name::new(name)
-            .and_then(|name| dir.find(volume, &name, sector))
-            .and_then(|entry| match entry {
-                Some(entry) => dir.read(volume, &entry, 0, &mut head, sector),
-                None => Ok(0),
-            });
-        match read {
-            Ok(5) if head[..4] == magic[..] && head[4] != version => return (Health::Current, Health::Foreign),
-            Ok(_) => {}
-            Err(_) => records = Health::Unusable,
+    ];
+    let mut records = Health::Current;
+    for index in 0..files::DIR_SECTORS {
+        let Ok(entries) = dir.entries(volume, index, sector) else {
+            return (Health::Current, Health::Unusable);
+        };
+        for entry in entries.iter().flatten() {
+            let name = entry.name.as_str();
+            let stamp = stamps
+                .iter()
+                .find(|(file, ..)| *file == name)
+                .map(|(_, magic, version)| (*magic, *version))
+                .or_else(|| crate::workout::history::stamp(name));
+            let Some((magic, version)) = stamp else {
+                continue;
+            };
+            let mut head = [0u8; 5];
+            match dir.read(volume, entry, 0, &mut head, sector) {
+                Ok(5) if head[..4] == magic[..] && head[4] != version => {
+                    return (Health::Current, Health::Foreign);
+                }
+                Ok(_) => {}
+                Err(_) => records = Health::Unusable,
+            }
         }
     }
     (Health::Current, records)

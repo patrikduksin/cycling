@@ -4,7 +4,6 @@ pub mod bench;
 pub mod bulk;
 pub mod devices;
 mod flows;
-pub use flows::status_field;
 pub mod fuzz;
 pub mod gps;
 pub mod live;

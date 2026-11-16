@@ -313,7 +313,7 @@ impl HeldLeg {
         let counted_from = *self.counted_from.get_or_insert(fix.at);
         let travelled_from = |from: Point| distance(from, fix.at) >= MOVING_M;
         let motion = match speed_mm_s {
-            Some(v) if !pose::moving(v) => Motion::Stopped,
+            Some(v) if !follow::moving(v) => Motion::Stopped,
             Some(_) if travelled_from(counted_from) => Motion::Moving,
             Some(_) => Motion::TooSlowToTell,
             None if last.is_some_and(|last| travelled_from(last.at)) => Motion::Moving,

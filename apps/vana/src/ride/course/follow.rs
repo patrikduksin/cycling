@@ -27,7 +27,7 @@ const GAP_MS: u64 = 5_000;
 const JOIN_FIXES: u8 = 5;
 const TURN_AROUND_FIXES: u8 = 3;
 const MOVING_M: f32 = 2.0;
-const MOVING_MM_S: u32 = 1_400;
+pub(crate) const MOVING_FROM_MM_S: u32 = 5 * 1_000_000 / 3_600;
 const MORE_THAN_45_DEG_OFF: core::ops::RangeInclusive<u16> = TURN / 8..=TURN * 7 / 8;
 const MORE_THAN_135_DEG_OFF: core::ops::Range<u16> = TURN * 3 / 8 + 1..TURN * 5 / 8;
 
@@ -36,8 +36,12 @@ type Point = (f32, f32);
 /// A fix this far on from the last one, at least this fast when the ride's
 /// speed is known: a stop's jitter passes only by jumping that far with no
 /// speed known.
-fn moving(travelled_m: Option<f32>, speed_mm_s: Option<u32>) -> bool {
-    travelled_m.is_some_and(|m| m >= MOVING_M) && speed_mm_s.is_none_or(|v| v >= MOVING_MM_S)
+fn fix_moving(travelled_m: Option<f32>, speed_mm_s: Option<u32>) -> bool {
+    travelled_m.is_some_and(|m| m >= MOVING_M) && speed_mm_s.is_none_or(moving)
+}
+
+pub(crate) fn moving(speed_mm_s: u32) -> bool {
+    speed_mm_s >= MOVING_FROM_MM_S
 }
 
 pub(crate) fn project(p: Point, a: Point, b: Point) -> (Point, f32) {
@@ -374,7 +378,7 @@ impl<'a> Follower<'a> {
             .last_fix
             .replace(fix.at)
             .map(|last| distance(last, fix.at));
-        let moving = moving(travelled_m, speed_mm_s);
+        let moving = fix_moving(travelled_m, speed_mm_s);
         let joined = !self.following && fix.moved && self.joining(fix.at, moving);
         if joined {
             self.follow_from(self.join_end);

@@ -1,4 +1,5 @@
 use super::roads::Detail;
+use crate::ride::course::follow::moving;
 use crate::ride::homing::TURN;
 use core::f32::consts::TAU;
 use core::ops::Range;
@@ -16,7 +17,6 @@ const AHEAD_S: f32 = 40.0;
 const NEAREST_AHEAD_M: f32 = 150.0;
 pub(super) const CLOSEST: Reach = Reach::new(NEAREST_AHEAD_M as u16, Detail::Streets);
 const FURTHEST_AHEAD_M: f32 = 1_000.0;
-const MOVING_FROM_MM_S: u32 = 5 * 1_000_000 / 3_600;
 const EASE_PER_FIX: f32 = 0.2;
 const BAR_MAX_PX: f32 = 90.0;
 const BARS: [(f32, &[u8]); 3] = [(250.0, b"250 M"), (100.0, b"100 M"), (50.0, b"50 M")];
@@ -73,10 +73,6 @@ impl Default for Zoom {
             detail: Detail::Streets,
         }
     }
-}
-
-pub(super) fn moving(speed_mm_s: u32) -> bool {
-    speed_mm_s >= MOVING_FROM_MM_S
 }
 
 impl Zoom {
@@ -166,6 +162,7 @@ pub fn rotation(heading: u16) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ride::course::follow::MOVING_FROM_MM_S;
 
     const KMH: f32 = 1_000_000.0 / 3_600.0;
 

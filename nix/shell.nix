@@ -32,10 +32,8 @@ let
     root=$(git rev-parse --show-toplevel) || exit
     # Starting Python under load takes most of a second, and agents query
     # traces constantly.
-    case "''${1:-}:''${2:-}" in
-      trace:pull | trace:-- | replay:--) ;;
-      trace:*) cd "$root" && exec bash tools/simulator/trace.sh "''${@:2}" ;;
-      replay:*) cd "$root" && exec bash tools/simulator/trace.sh "$@" ;;
+    case "''${1:-}" in
+      trace | replay) cd "$root" && exec bash tools/simulator/trace.sh "$@" ;;
     esac
     exec uv run --project "$root/tools/devtools" --locked python -m cycling_devtools.cli "$@"
   '';

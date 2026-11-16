@@ -39,7 +39,7 @@ PACK_COPIES = ROOT / '.local' / 'terrain' / 'sha256'
 
 def trace_tool(*args):
     """Run `cycling trace` and return what it printed."""
-    command = [*shlex.split(TRACE), *map(str, args)]
+    command = [*shlex.split(TRACE), 'trace', *map(str, args)]
     done = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
     if done.returncode != 0:
         raise RuntimeError(f'cycling trace {args[0]}: {done.stderr.strip()}')

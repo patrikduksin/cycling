@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -16,9 +17,16 @@ manifest=$(dirname "${4:?}")
 mkdir -p "$CARGO_TARGET_DIR/tools"
 tree=$(cat "$manifest/apps/app.rs")
 commit=$(git -C "$manifest" rev-parse HEAD)
-printf '#!/usr/bin/env bash\\necho "built %s %s: $*"\\n' "$commit" "$tree" > "$CARGO_TARGET_DIR/tools/trace"
+printf '#!/usr/bin/env bash\\necho "built %s %s: $*"\\nexit ${TRACE_EXIT:-0}\\n' "$commit" "$tree" \\
+    > "$CARGO_TARGET_DIR/tools/trace"
 chmod +x "$CARGO_TARGET_DIR/tools/trace"
 echo "$manifest" >> "$BUILDS"
+eval "${WHILE_BUILDING:-}"
+"""
+
+FAKE_UV = """#!/usr/bin/env bash
+echo "uv $*"
+exit ${UV_EXIT:-0}
 """
 
 
@@ -43,8 +51,9 @@ class TraceLauncherTests(unittest.TestCase):
         self.commit('first')
         bin_dir = self.tmp / 'bin'
         bin_dir.mkdir()
-        (bin_dir / 'cargo').write_text(FAKE_CARGO)
-        (bin_dir / 'cargo').chmod(0o755)
+        for name, script in (('cargo', FAKE_CARGO), ('uv', FAKE_UV)):
+            (bin_dir / name).write_text(script)
+            (bin_dir / name).chmod(0o755)
         self.builds = self.tmp / 'builds.log'
         self.builds.touch()
         self.env = {
@@ -68,15 +77,12 @@ class TraceLauncherTests(unittest.TestCase):
         )
         return git(self.repo, 'rev-parse', 'HEAD')
 
-    def run_trace(self, checkout, *args):
-        done = subprocess.run(
-            ['bash', 'tools/simulator/trace.sh', *args],
-            cwd=checkout,
-            env=self.env,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+    def launch(self, argv, checkout=None, **env):
+        return subprocess.run(argv, cwd=checkout or self.repo, env={**self.env, **env}, capture_output=True, text=True)
+
+    def run_trace(self, checkout, *args, **env):
+        done = self.launch(['bash', 'tools/simulator/trace.sh', 'trace', *args], checkout, **env)
+        self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout.strip()
 
     def built(self):
@@ -124,13 +130,116 @@ class TraceLauncherTests(unittest.TestCase):
         self.assertEqual(len(self.built()), 7)
         self.assertEqual(sorted(p.name for p in self.cache().iterdir()), sorted(commits[-5:]))
 
+    def test_a_commit_made_while_it_builds_is_not_cached_under_either_commit(self):
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        commit = 'git -C "$manifest" -c user.name=t -c user.email=t@t commit -q --allow-empty -m moved'
+        out = self.run_trace(self.repo, 'summary', WHILE_BUILDING=commit)
+        self.assertEqual(out, f'built {head} one: summary', 'runs what it built')
+        self.assertFalse(self.cache().exists() and any(self.cache().iterdir()))
+        moved = git(self.repo, 'rev-parse', 'HEAD')
+        self.assertEqual(self.run_trace(self.repo, 'summary'), f'built {moved} one: summary')
+        self.assertEqual(sorted(p.name for p in self.cache().iterdir()), [moved])
+
+    def test_an_edit_made_while_it_builds_is_not_cached(self):
+        self.run_trace(self.repo, 'summary', WHILE_BUILDING='echo two > "$manifest/apps/app.rs"')
+        self.assertFalse(self.cache().exists() and any(self.cache().iterdir()))
+
+    def test_an_untracked_build_input_counts_as_an_edit_and_an_ignored_one_does_not(self):
+        (self.repo / '.gitignore').write_text('*.tmp\n')
+        git(self.repo, 'add', '.gitignore')
+        head = self.commit('ignore')
+        self.run_trace(self.repo, 'summary')
+        (self.repo / 'apps' / 'scratch.tmp').write_text('ignored')
+        self.run_trace(self.repo, 'summary')
+        self.assertEqual(len(self.built()), 1, 'an ignored file builds nothing')
+        (self.repo / 'apps' / 'extra.rs').write_text('untracked')
+        self.run_trace(self.repo, 'summary')
+        self.assertEqual(len(self.built()), 2, 'an untracked input builds the working tree')
+        self.assertEqual(sorted(p.name for p in self.cache().iterdir()), [head])
+
+    def test_pruning_keeps_the_five_used_last_and_drops_stale_temporary_copies(self):
+        first = git(self.repo, 'rev-parse', 'HEAD')
+        self.run_trace(self.repo, 'summary')
+        self.cache().joinpath(f'.{first}.Abc123').write_text('left by a killed install')
+        os.utime(self.cache() / f'.{first}.Abc123', (0, 0))
+        self.cache().joinpath(f'.{first}.Fresh1').write_text('an install in progress')
+        commits = [first]
+        for n in range(4):
+            (self.repo / 'apps' / 'app.rs').write_text(f'v{n}')
+            commits.append(self.commit(f'v{n}'))
+            self.run_trace(self.repo, 'summary')
+        worktree = self.tmp / 'worktree'
+        git(self.repo, 'worktree', 'add', '-q', '--detach', str(worktree), first)
+        self.run_trace(worktree, 'summary')
+        (self.repo / 'apps' / 'app.rs').write_text('v4')
+        commits.append(self.commit('v4'))
+        self.run_trace(self.repo, 'summary')
+        names = sorted(p.name for p in self.cache().iterdir())
+        self.assertEqual(names, sorted([f'.{first}.Fresh1', first, *commits[2:]]), 'the oldest unused one goes')
+
 
 class RoutingTests(unittest.TestCase):
-    def test_the_cycling_command_runs_trace_queries_with_the_launcher_the_task_runner_runs(self):
-        launcher = cli.TRACE.removeprefix('bash ')
-        self.assertTrue((ROOT / launcher).is_file())
+    """The argv `cycling trace` and `cycling replay` pass on, through the nix wrapper and the task runner."""
+
+    def setUp(self):
+        launcher = TraceLauncherTests('run')
+        launcher.setUp()
+        self.addCleanup(launcher.doCleanups)
+        self.launcher = launcher
+        self.repo = launcher.repo
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        self.built = f'built {head} one:'
         shell = (ROOT / 'nix' / 'shell.nix').read_text()
-        self.assertEqual(shell.count(f'exec bash {launcher} '), 2, 'trace and replay in nix/shell.nix')
+        body = re.search(r'writeShellScriptBin "cycling" \'\'\n(.*?)\n\s*\'\';', shell, re.S).group(1)
+        self.wrapper = self.launcher.tmp / 'cycling'
+        self.wrapper.write_text(body.replace("''$", '$'))
+
+    def cycling(self, *args, **env):
+        return self.launcher.launch(['bash', str(self.wrapper), *args], **env)
+
+    def task(self, name, *args, **env):
+        task = cli.BY_NAME[name]
+        return self.launcher.launch(cli.bash(task.steps[-1], task, list(args), last=True), **env)
+
+    def test_queries_reach_the_tool_with_or_without_a_leading_double_dash(self):
+        for args, said in (
+            (('trace', 'summary', 'x.trace'), 'summary x.trace'),
+            (('trace', '--', 'find', 'x.trace', 'mark'), 'find x.trace mark'),
+            (('replay', 'x.trace', '--from', '1:00'), 'replay x.trace --from 1:00'),
+            (('replay', '--', 'x.trace'), 'replay x.trace'),
+        ):
+            done = self.cycling(*args)
+            self.assertEqual((done.returncode, done.stdout.strip()), (0, f'{self.built} {said}'), args)
+
+    def test_the_task_runner_runs_the_same_launcher(self):
+        for args, said in ((('trace', 'find', 'x.trace'), 'find x.trace'), (('replay', 'x.trace'), 'replay x.trace')):
+            done = self.task(*args)
+            self.assertEqual((done.returncode, done.stdout.strip()), (0, f'{self.built} {said}'), args)
+
+    def test_pull_goes_to_the_device_tools(self):
+        expected = (
+            f'uv run --project {self.repo}/tools/devtools --locked python -m cycling_devtools.device.volumes trace-pull'
+        )
+        for done in (
+            self.cycling('trace', 'pull', 'a.trace', '--json'),
+            self.cycling('trace', '--', 'pull', 'a.trace', '--json'),
+            self.task('trace', 'pull', 'a.trace', '--json'),
+        ):
+            self.assertEqual((done.returncode, done.stdout.strip()), (0, f'{expected} a.trace --json'))
+
+    def test_the_exit_status_comes_through(self):
+        self.assertEqual(self.cycling('trace', 'summary', 'x.trace', TRACE_EXIT='2').returncode, 2)
+        self.assertEqual(self.task('replay', 'x.trace', TRACE_EXIT='3').returncode, 3)
+        self.assertEqual(self.cycling('trace', 'pull', UV_EXIT='4').returncode, 4)
+        refused = self.launcher.launch(['bash', 'tools/simulator/trace.sh', 'summary', 'x.trace'])
+        self.assertEqual(refused.returncode, 2, 'the launcher names its task first')
+
+    def test_other_tasks_go_to_the_task_runner(self):
+        done = self.cycling('sim', '--', 'x')
+        self.assertEqual(
+            done.stdout.strip(),
+            f'uv run --project {self.repo}/tools/devtools --locked python -m cycling_devtools.cli sim -- x',
+        )
 
 
 if __name__ == '__main__':

@@ -11,6 +11,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+from cycling_devtools import seed
 from cycling_devtools.workspace import ROOT, SIMULATOR_BUILD
 
 DEV = 'python -m cycling_devtools.'
@@ -35,10 +36,11 @@ class Task:
     needs: tuple[str, ...] = ()
     alias: str | None = None
     takes_device: bool = False
+    builds: bool = False  # compiles with cargo: a fresh worktree is seeded first
 
 
-def task(name, help, *steps, needs=(), alias=None, takes_device=False):
-    return Task(name, help, steps, tuple(needs), alias, takes_device)
+def task(name, help, *steps, needs=(), alias=None, takes_device=False, builds=False):
+    return Task(name, help, steps, tuple(needs), alias, takes_device, builds)
 
 
 TASKS = [
@@ -47,6 +49,7 @@ TASKS = [
         "Build a device's firmware and its application image; --variant NAME adds a [build].variants image",
         'bash devices/build.sh',
         takes_device=True,
+        builds=True,
     ),
     task(
         'build-maintenance',
@@ -65,17 +68,20 @@ TASKS = [
         'test',
         'Test host firmware logic, device tools and the web packages',
         needs=['test-rust', 'test-trouble-host', 'test-python', 'test-web'],
+        builds=True,
     ),
     task(
         'test-rust',
         'Rust host tests: nextest runs every test binary at once, then the doc tests',
         'cargo nextest run --workspace --locked --no-default-features',
         'cargo test --workspace --locked --no-default-features --doc',
+        builds=True,
     ),
     task(
         'test-trouble-host',
         'Vendored BLE host tests; their own workspace and target dir, so they run beside test-rust',
         'cargo test --manifest-path vendor/trouble-host/Cargo.toml --lib --locked',
+        builds=True,
     ),
     task(
         'test-python',
@@ -84,6 +90,7 @@ TASKS = [
         ' '.join((*SIMULATOR_BUILD, '-q', '-p', 'vana', '--bin', 'ride-fit')),
         'RIDE_FIT=${CARGO_TARGET_DIR:-target}/debug/ride-fit python -m pytest -q -n auto --maxprocesses=8 tools/devtools',
         f'{TERRAIN} pytest -q tools/terrain',
+        builds=True,
     ),
     task(
         'test-web',
@@ -108,6 +115,7 @@ TASKS = [
         'Run every PR gate in parallel (test, check, simulate, build, screens, harness-virtual); --fast for the inner loop, '
         '--pr N to post results and changed screens, --video for before/after videos of changed scenarios',
         f'{DEV}verify',
+        builds=True,
     ),
     task(
         'playbook-audit',
@@ -145,6 +153,7 @@ TASKS = [
         'bun run typecheck',
         'bun run lint',
         'bun run format:check',
+        builds=True,
     ),
     task('terrain', 'Build, validate or trace offline terrain packs (docs/terrain.md)', f'{TERRAIN} cycling-terrain'),
     task(
@@ -288,6 +297,7 @@ TASKS = [
         'simulate',
         'Run the portable shell against deterministic display and input devices',
         'cargo run -p shell-simulator --locked --no-default-features --bin shell-simulator',
+        builds=True,
     ),
     task(
         'sim',
@@ -295,6 +305,7 @@ TASKS = [
         'rm -rf .local/sim/latest && mkdir -p .local/sim/latest',
         f'SIM_ARTIFACTS=$PWD/.local/sim/latest {SIM_SCENARIOS} 2>&1 | tee .local/sim/latest/cargo.log || true',
         f'{DEV}sim.report .local/sim/latest',
+        builds=True,
     ),
     task(
         'sim-pr',
@@ -303,23 +314,27 @@ TASKS = [
         'rm -rf .local/sim/pr && mkdir -p .local/sim/pr',
         f'SIM_ARTIFACTS=$PWD/.local/sim/pr SIM_VIDEO=1 {SIM_SCENARIOS} 2>&1 | tee .local/sim/pr/cargo.log || true',
         f'{DEV}sim.report .local/sim/pr --pr "$1"',
+        builds=True,
     ),
     task(
         'fuzz',
         'Random rides, faults and button presses in the twin, each session reproducible from its seed; '
         'findings go to .local/fuzz ([--minutes N | --seed S | --seeds A-B | --fixed] [--jobs N])',
         f'{FUZZ} --corpus {PRIMARY_CHECKOUT_RIDE_TRACES} --out .local/fuzz',
+        builds=True,
     ),
     task(
         'fuzz-planted',
         'Prove the fuzzer: it finds the bug planted behind the planted-bug feature, and its seed finds it again',
         'CARGO_TARGET_DIR=target/planted cargo test -p shell-simulator --locked --no-default-features '
         '--features planted-bug --test fuzz_planted -- --nocapture',
+        builds=True,
     ),
     task(
         'redraw-probe',
         'Report how much of the screen each page changes from frame to frame under a sensor feed: redraw-probe [seconds] [case filter]',
         'cargo run -q -p shell-simulator --locked --no-default-features --bin redraw-probe --',
+        builds=True,
     ),
     task(
         'sim-compare',
@@ -327,6 +342,7 @@ TASKS = [
         '(--base REF, --pr N, --filter NAME, --video for before/after videos of changed scenarios, '
         "--fill COMMIT to cache a commit's screens as a base)",
         f'{DEV}sim.compare',
+        builds=True,
     ),
     task(
         'mockup-compare',
@@ -343,6 +359,7 @@ TASKS = [
         'sim-live',
         'Open a window onto the simulated device; the session is recorded to .local/sim/live',
         'SIM_ARTIFACTS=$PWD/.local/sim/live SIM_VIDEO=1 cargo run -p shell-simulator --locked --no-default-features --features live --bin sim-live',
+        builds=True,
     ),
     task(
         'trace',
@@ -350,11 +367,13 @@ TASKS = [
         'test-stub (--help; skill: ride-trace); pull [file] copies the newest or a named device trace into '
         '.local/traces/ and rebuilds the media it started on beside it (.origin)',
         f'{TRACE} trace',
+        builds=True,
     ),
     task(
         'replay',
         'Replay a window of a ride trace with screenshots, screen text and divergence: replay <trace> --from T --to T',
         f'{TRACE} replay',
+        builds=True,
     ),
     task(
         'harness',
@@ -382,6 +401,7 @@ TASKS = [
         f'{DEV}harness.runner run shared --backend virtual',
         f'{DEV}harness.runner run virtual-foundation --backend virtual',
         f'{DEV}harness.runner run virtual-sdk --backend virtual',
+        builds=True,
     ),
     task(
         'mmc-inspect',
@@ -448,6 +468,8 @@ def run(task, args=(), env=None, replace=False):
     """Run needs, then steps in order. With replace, the last step takes over this process,
     so an interactive tool gets the terminal and its signals directly."""
     env = environment() if env is None else env
+    if task.builds:
+        seed.seed()
     if code := run_side_by_side(task.needs, env):
         return code
     for i, step in enumerate(task.steps):

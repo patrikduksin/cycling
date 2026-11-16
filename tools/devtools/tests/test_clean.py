@@ -184,6 +184,7 @@ class JudgeTests(CleanCase):
             '.local/sim/publish/tmpab12cd34.log',
             'target/x',
             'vendor/trouble-host/target/debug/x',
+            '.local/seeding/target/x',
             '.local/cycling.bin',
             '.local/cycling.elf',
             '.local/stack-frames.md',
@@ -340,6 +341,16 @@ class IdleBuildDirTests(CleanCase):
         self.assertEqual(rows['target'].action, R)
         self.assertEqual(rows['vendor/trouble-host/target'].action, K)
 
+    def test_the_seed_sources_seeded_dirs_stay_however_idle(self):
+        for name in ('target', '.local/firmware', '.local/verify'):
+            (self.primary / name).mkdir(parents=True)
+        self.age(self.primary / 'target', 100)
+        self.age(self.primary / '.local', 100)
+        rows = {d.relative_to(self.primary).as_posix(): v for d, v in self.verdicts(self.primary).items()}
+        self.assertEqual(rows['target'].reason, 'seed source for new worktrees')
+        self.assertEqual(rows['.local/firmware'].reason, 'seed source for new worktrees')
+        self.assertEqual(rows['.local/verify'].action, R)
+
     def test_hard_links_count_once_and_symlinked_dirs_are_skipped(self):
         kept = self.add_worktree('kept')
         (kept / '.local/firmware').mkdir(parents=True)
@@ -408,7 +419,9 @@ class PlanTests(CleanCase):
         with patch.object(clean, 'merged_pull_request', return_value=None):
             rows = clean.plan(self.ctx(current=mine))
         removed = {row.path for row in clean.removable(rows)}
-        self.assertEqual(removed, {dead, wip / '.local/firmware', self.primary.resolve() / '.local/firmware'})
+        self.assertEqual(removed, {dead, wip / '.local/firmware'})
+        seed_source = next(row for row in rows if row.path == self.primary.resolve() / '.local/firmware')
+        self.assertEqual(seed_source.reason, 'seed source for new worktrees')
 
     def test_a_row_is_judged_again_before_it_is_deleted(self):
         dead = self.add_worktree('dead', commit=True)

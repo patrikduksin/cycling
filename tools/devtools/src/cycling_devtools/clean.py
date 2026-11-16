@@ -5,8 +5,9 @@ agents leave them behind. A worktree is removed only when it is provably dead: i
 branch is merged, it has commits of its own, its tree is clean and quiet, it holds
 no ignored file outside the regenerable build dirs, it contains no other worktree
 and no process works inside it. Build directories of the worktrees that stay are
-deleted when nothing in them changed for --idle-hours. The primary checkout and
-its .local/elf archive are never touched. Every row is judged again right before
+deleted when nothing in them changed for --idle-hours, except the seed source's,
+which start every new worktree. The primary checkout and its .local/elf archive
+are never touched. Every row is judged again right before
 it is deleted.
 
 Live agents are found by the cwd of each /proc/<pid>. Another user's processes
@@ -27,10 +28,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+from cycling_devtools import seed
 from cycling_devtools.workspace import ROOT
 
-# Idle-deleted, relative to a worktree: regenerable by cargo, build.sh and verify.
-BUILD_DIRS = ('target', 'vendor/trouble-host/target', '.local/firmware*', '.local/verify')
+# Idle-deleted, relative to a worktree: regenerable by cargo, build.sh, verify and seeding.
+BUILD_DIRS = (*seed.SEEDED, '.local/firmware*', '.local/verify', seed.STAGING)
 # Also regenerable: build.sh's image and the dev shell's GC root (.claude/hooks/dev-shell.sh).
 BUILD_OUTPUTS = (
     '.local/cycling.bin',
@@ -77,6 +79,7 @@ class Context:
     idle_hours: float
     now: float
     unreadable: int = 0  # processes whose cwd we may not read (other users)
+    seed_source: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -154,14 +157,16 @@ def processes(proc=Path('/proc')):
 
 def context(idle_hours=IDLE_HOURS, current=ROOT, root=ROOT, proc=Path('/proc'), now=None):
     found, unreadable = processes(proc)
+    trees = worktrees(root)
     return Context(
-        worktrees(root),
+        trees,
         found,
         Path(current).resolve(),
         root,
         idle_hours,
         time.time() if now is None else now,
         unreadable,
+        seed.source(trees[0].path),
     )
 
 
@@ -374,6 +379,8 @@ def judge_dir(tree, directory, ctx):
     """(size, decision) for one build dir of a kept worktree."""
     size, newest = measure(directory)
     idle = (ctx.now - newest) / 3600
+    if tree.path == ctx.seed_source and directory.relative_to(tree.path).as_posix() in seed.SEEDED:
+        return size, keep('seed source for new worktrees')
     if direct_occupants(tree, ctx) or occupants(directory, ctx):
         return size, keep('live process in worktree')
     if idle < ctx.idle_hours:

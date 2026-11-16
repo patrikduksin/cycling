@@ -87,7 +87,7 @@ commands:
       a command or a note is never one. A sound names its cue. ANT+ pages
       read as words (power 230 W, hr 142 bpm, cadence 86 rpm, radar targets);
       --hex adds each packet's bytes.
-  find <trace> <query> [--where TEXT] [--from T] [--to T] [--limit N] [--hex]
+  find <trace> <query> [--where TEXT] [--from T] [--to T] [--limit N|all] [--hex]
       field=value, field!=value or field~text over the shown readings (time,
       speed, power, hr, cad, dist, grade) gives the stretches it held, e.g.
       power=--; a kind or kinds (toast, page,ride) gives those entries; any
@@ -280,10 +280,11 @@ fn run(args: &[String]) -> Result<String, String> {
                 .get(1)
                 .ok_or("find needs a query: field=value, a kind or text")?;
             let window = options.window(timeline)?;
-            let limit: usize = options
-                .value("limit")
-                .map_or(Ok(50), str::parse)
-                .map_err(|_| "--limit takes a number")?;
+            let limit = match options.value("limit") {
+                None => 50,
+                Some("all") => usize::MAX,
+                Some(limit) => limit.parse().map_err(|_| "--limit takes a number or all")?,
+            };
             let found = find(
                 timeline,
                 &Query::parse(query),

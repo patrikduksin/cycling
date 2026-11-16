@@ -6,7 +6,8 @@ only, up to the ends the header recorded: ride export for the internal
 journal, and one transfer session for the RIDES log's records and `files get`
 of each file the header lists. A local terrain pack under .local/ with the
 header's SHA-256 stands in for TERRAIN. `cycling trace rebuild` then writes
-<trace>.origin beside the trace and says what it could not rebuild. Nothing is written to the device.
+<trace>.origin beside the trace and says what it could not rebuild. Nothing is
+written to the device.
 
 The pulled media go into <trace stem>.media/ beside the trace:
 internal.slots, rides.slots and rides.epoch, files.list and files/<name>,
@@ -317,9 +318,7 @@ def pull(
         if pack is not None:
             (out / 'terrain.pack').symlink_to(os.path.relpath(pack, out))
     rebuilt = json.loads(tool('rebuild', trace, '--pulled', out, '--json'))
-    marks = json.loads(tool('find', trace, 'mark', '--limit', str(2**63), '--json'))
-    if len(marks['found']) != marks['total']:
-        raise RuntimeError(f'cycling trace find listed {len(marks["found"])} of {marks["total"]} marks')
+    marks = json.loads(tool('find', trace, 'mark', '--limit', 'all', '--json'))
     timing['total_s'] = round(time.monotonic() - started, 3)
     result.update(
         media=str(out), origin=rebuilt['origin'], rebuilt=rebuilt['not_rebuilt'], marks=marks['found'], timing=timing

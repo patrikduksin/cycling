@@ -24,7 +24,7 @@ import time
 import zlib
 from pathlib import Path
 
-from cycling_devtools.device.port import add_port_argument, selected_port
+from cycling_devtools.device.port import add_port_argument, select_port, selected_port
 from cycling_devtools.terminal.usb import UsbConnection
 from cycling_devtools.workspace import ROOT, private_path
 
@@ -648,29 +648,52 @@ def main():
     pull.add_argument(
         '--json',
         action='store_true',
-        help='print only the result, one JSON document, without the marks listed after it',
+        help='print only the result, one JSON document, without the marks listed after it; a failure is {"error"}',
     )
     args = parser.parse_args()
     for path in (getattr(args, 'file', None),):
         if path is not None and not path.is_file():
             parser.error(f'{path} is not a file')
+    if args.action == 'trace-pull':
+        return pull_trace(args, parser)
     result = run(args, selected_port(parser, args.port))
     print(json.dumps(result, indent=2))
-    if args.action == 'trace-pull' and not args.json:
-        from cycling_devtools.device import trace_media
+    if isinstance(result, dict) and (problems := lost(result, result.get('path', getattr(args, 'path', None)))):
+        raise SystemExit(problems)
 
-        print(trace_media.marks_text(result['marks']))
-    if not isinstance(result, dict):
-        return
+
+def lost(result, path):
+    """What the device could not read back for `result`, in one message, or None."""
     problems = [f'the device lost {h["records"]} record(s) from record {h["record"]}' for h in result.get('holes', [])]
     if 'incomplete' in result:
-        stop = result['incomplete']
-        problems.append(f'a sector read failed at record {stop["record"]}, so the pull stopped there')
-    if problems:
-        raise SystemExit(
-            f'{result["name"]}: {"; ".join(problems)}; {result.get("path", getattr(args, "path", None))} '
-            f'holds the {result["records"]} records that read back'
-        )
+        problems.append(f'a sector read failed at record {result["incomplete"]["record"]}, so the pull stopped there')
+    if not problems:
+        return None
+    return f'{result["name"]}: {"; ".join(problems)}; {path} holds the {result["records"]} records that read back'
+
+
+def pull_trace(args, parser):
+    """The result is the one document on stdout. Without --json the marks follow on stderr; with it a failure is
+    {"error": ...} and exit status 2, as for the trace commands."""
+    if not args.json:
+        from cycling_devtools.device import trace_media
+
+        result = run(args, selected_port(parser, args.port))
+        print(json.dumps(result, indent=2))
+        print(trace_media.marks_text(result['marks']), file=sys.stderr)
+        if problems := lost(result, result['path']):
+            raise SystemExit(problems)
+        return
+    try:
+        result = run(args, select_port(args.port))
+    except Exception as error:
+        result = {'error': str(error) or type(error).__name__}
+    else:
+        if problems := lost(result, result['path']):
+            result['error'] = problems
+    print(json.dumps(result, indent=2))
+    if 'error' in result:
+        raise SystemExit(2)
 
 
 if __name__ == '__main__':

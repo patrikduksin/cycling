@@ -1368,6 +1368,8 @@ fn json_find_gives_stretches_or_entries_up_to_the_limit_and_the_total() {
         .count();
     assert_eq!(pages["total"], all);
     assert!(all > 2);
+    let every = trace_json(&["find", path_of(&trace), "page", "--limit", "all"]);
+    assert_eq!(every["found"].as_array().unwrap().len(), all);
     for page in found {
         assert_eq!(
             (&page["type"], &page["kind"]),

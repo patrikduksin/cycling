@@ -22,7 +22,8 @@ never as advertisements or anything else on the air, so a sensor that never
 appears was never connected, not necessarily absent. Every command below prints
 text: start there, and open a PNG only to confirm what the text says. Add
 `--json` to any of them, `trace pull` too, for one JSON document to parse
-instead; `cycling trace --help` gives each command's fields.
+instead, or `{"error": ...}` with exit status 2 when it fails;
+`cycling trace --help` gives each command's fields.
 
 ## 1. Get the trace
 
@@ -140,7 +141,7 @@ explains it:
 
 | The rider said | Query |
 | --- | --- |
-| the rider marked it (MOVE held 1.5 s) | `find <trace> mark`: each mark names when MOVE went down and the page shown before; `cycling trace pull` prints them last |
+| the rider marked it (MOVE held 1.5 s) | `find <trace> mark`: each mark names when MOVE went down and the page shown before; `cycling trace pull` lists them on stderr after its JSON |
 | a reading showed dashes | `cycling trace find <trace> power=--` (also `hr`, `speed`, `cad`, `dist`, `grade`, `time`; `!=` and `~` work too) |
 | a page did or did not come up | `find <trace> page --where climb` |
 | a message flashed | `find <trace> toast` |

@@ -39,6 +39,8 @@ CHECK = Step('check', 'cycling check', (('CARGO_TARGET_DIR', 'target/clippy'),))
 
 
 def lanes(mode, pr=None, video=False):
+    if mode == 'deep':
+        return [[Step('fuzz', 'nice -n 19 cycling fuzz --fixed'), Step('planted', 'nice -n 19 cycling fuzz-planted')]]
     if mode == 'fast':
         return [[Step('test', 'cycling test')], [CHECK], [BUILD]]
     screens = 'cycling sim-compare' + (f' --pr {pr}' if pr else '') + (' --video' if video else '')
@@ -53,7 +55,7 @@ def lanes(mode, pr=None, video=False):
     ]
 
 
-ALONE = {'full': [Step('harness-virtual', 'cycling harness-virtual')], 'fast': []}
+ALONE = {'full': [Step('harness-virtual', 'cycling harness-virtual')], 'fast': [], 'deep': []}
 
 
 @dataclass
@@ -118,6 +120,7 @@ def failure_tail(results, lines=30):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--fast', action='store_true', help='test, check and build only')
+    parser.add_argument('--deep', action='store_true', help='tier 2 only: fixed fuzz seeds, planted bug')
     parser.add_argument('--pr', type=int, help='post the result table and the changed screens on this pull request')
     parser.add_argument(
         '--video',
@@ -126,7 +129,7 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     warn_if_low_disk()
-    mode = 'fast' if args.fast else 'full'
+    mode = 'deep' if args.deep else 'fast' if args.fast else 'full'
 
     sha = git('rev-parse', '--short=12', 'HEAD')
     dirty = bool(git('status', '--porcelain', '--untracked-files=no'))

@@ -23,6 +23,9 @@ TERRAIN = 'uv run --project tools/terrain --locked'
 SYSTEM_PYTHON = 'PYTHONPATH=tools/devtools/src /usr/bin/python3 -m cycling_devtools.'
 SIM_SCENARIOS = 'cargo test -p shell-simulator --locked --no-default-features --test ride_scenarios'
 TRACE = 'cargo run -q -p shell-simulator --locked --no-default-features --bin trace --'
+FUZZ = 'cargo run -q -p shell-simulator --locked --no-default-features --bin fuzz --'
+# World logs live in the primary checkout's .local, which worktrees do not share.
+RIDE_TRACES = '"$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.local/ride-trace"'
 
 
 @dataclass(frozen=True)
@@ -301,6 +304,18 @@ TASKS = [
         'rm -rf .local/sim/pr && mkdir -p .local/sim/pr',
         f'SIM_ARTIFACTS=$PWD/.local/sim/pr SIM_VIDEO=1 {SIM_SCENARIOS} 2>&1 | tee .local/sim/pr/cargo.log || true',
         f'{DEV}sim.report .local/sim/pr --pr "$1"',
+    ),
+    task(
+        'fuzz',
+        'Random rides, faults and button presses in the twin, each session reproducible from its seed; '
+        'findings go to .local/fuzz ([--minutes N | --seed S | --seeds A-B | --fixed] [--jobs N])',
+        f'{FUZZ} --corpus {RIDE_TRACES} --out .local/fuzz',
+    ),
+    task(
+        'fuzz-planted',
+        'Prove the fuzzer: it finds the bug planted behind the planted-bug feature, and its seed finds it again',
+        'CARGO_TARGET_DIR=target/planted cargo test -p shell-simulator --locked --no-default-features '
+        '--features planted-bug --test fuzz_planted -- --nocapture',
     ),
     task(
         'redraw-probe',

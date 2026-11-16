@@ -60,6 +60,25 @@ Each session is written as `live_session-<unix time>` under `.local/sim/live`
 when the window closes or on `Esc`; Ctrl-C in the terminal discards it. `sim-live --frames N --screenshot out.png` renders N
 frames at 30 fps without a window.
 
+`cycling fuzz` (`src/fuzz/`, `src/bin/fuzz.rs`) runs random sessions in the
+twin. A seed draws a plan blind to the device (`plan.rs`): a course, synthetic
+or the GPS track of a world log under the primary checkout's
+`.local/ride-trace`, the sensors and the card, then steps of button presses,
+rides, sensor dropouts, GPS and barometer loss, radar vehicles, battery
+changes, host ride commands, power cuts, torn flash writes and card refusals.
+The executor plays each step with raw inputs, and the checks in `check.rs`
+judge the device after it: rides decode, committed samples survive, a riding
+ride keeps recording, the boot page clears, and no panic. At the end the
+settled device must boot and record and save a ride. A finding prints the seed
+and the command that reproduces it, and writes the plan and the world log under
+`.local/fuzz/<seed>`. `--seed S` prints the session step by step, `--minutes N`
+runs fresh seeds on several threads and prints coverage of pages by button and
+the skipped guards, and `--fixed` runs the seed set that `cycling verify --deep`
+runs. `cycling fuzz-planted` proves the fuzzer: behind the `planted-bug`
+feature, VANA's recovery forgets a ride that lost power while paused, and the
+test finds that bug from a seed and finds it again from the same seed.
+`broken()` (#397 0b) joins the checks through the hook in `check.rs`.
+
 `cycling simulate` runs the shell alone on two display geometries and `cycling harness-virtual`
 the shared terminal scenarios. Terminal mode (`--terminal`) requires an explicit
 disposable `--state-dir` and prints a `ready` line once booted; the harness builds

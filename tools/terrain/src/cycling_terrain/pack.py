@@ -15,8 +15,7 @@ from dataclasses import dataclass
 from .graph import METRES_PER_DEGREE, Grid, Tiles
 
 MAGIC = b'VANA-TERRAIN\0\0\0\0'
-# 2: elevation in 0.2 m steps from -500 m (1 had decimetres from -200 m).
-VERSION = 2
+VERSION = 3
 SECTOR = 512
 TILE_MAGIC = b'VT'
 TILE_VERSION = 1
@@ -35,7 +34,7 @@ Z_OFFSET_DM = 5000
 MAX_TILE_BYTES = 48 * 1024  # the firmware cache limit (packages/terrain cache.rs)
 MAX_EDGES = 0x7FFF
 
-HEADER = struct.Struct('<16sHHIiiHHIIIIQII32s')
+HEADER = struct.Struct('<16sBBHIiiHHIIIIQII32s')
 assert HEADER.size <= SECTOR - 4
 
 
@@ -152,6 +151,7 @@ def encode_pack(tiles: Tiles, attribution: str, source: str, created: int) -> by
         0,
         MAGIC,
         VERSION,
+        0,
         1 + attribution_sectors,
         grid.tile,
         grid.south,
@@ -216,9 +216,10 @@ def read_header(blob: bytes) -> Header:
     if struct.unpack_from('<I', sector, SECTOR - 4)[0] != zlib.crc32(sector[: SECTOR - 4]):
         raise ValueError('header CRC mismatch')
     fields = HEADER.unpack_from(sector)
-    if fields[0] != MAGIC or fields[1] != VERSION:
-        raise ValueError('not a version 1 terrain pack')
+    if fields[:3] != (MAGIC, VERSION, 0):
+        raise ValueError(f'not a version {VERSION} terrain pack')
     (
+        _,
         _,
         _,
         _,

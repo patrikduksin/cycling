@@ -38,7 +38,7 @@ pub enum Error {
 }
 
 pub const MAGIC: &[u8; 16] = b"VANA-TERRAIN\0\0\0\0";
-pub const VERSION: u16 = 2;
+pub const VERSION: u8 = 3;
 pub const HEADER_BYTES: usize = 512;
 pub const ENTRY_BYTES: usize = 8;
 /// How far a grid may reach from 0°, in micro-degrees: twice round the
@@ -77,7 +77,7 @@ impl Header {
         if crate::tile::crc32(&sector[..HEADER_BYTES - 4]) != u32_at(sector, HEADER_BYTES - 4) {
             return Err(Error::Corrupt);
         }
-        if &sector[..16] != MAGIC || u16_at(sector, 16) != VERSION {
+        if &sector[..16] != MAGIC || sector[16..18] != [VERSION, 0] {
             return Err(Error::Unsupported);
         }
         let header = Self {

@@ -158,7 +158,7 @@ All integers are little-endian.
 Header fields, in order:
 
 - magic `VANA-TERRAIN\0\0\0\0`;
-- version u16 = 2, header sectors u16 (the header and its attribution);
+- version u8 = 3, a zero byte, header sectors u16 (the header and its attribution);
 - tile size µdeg u32, south i32 µdeg, west i32 µdeg;
 - rows u16, cols u16;
 - directory offset u32, data offset u32, total bytes u32, tile count u32;
@@ -190,7 +190,7 @@ a u16 of 0.2 m steps from −500 m (up to 12,607 m; the builder refuses anything
 Version rules:
 
 - The pack header version changes on any layout change; the device refuses
-  unknown versions and treats the volume as having no pack.
+  any other version and treats the volume as having no pack.
 - The volume pack tag is the host's label (`CHILE-TERRAIN-V1`). The volume
   pack's CRC covers the image. The device trusts the terrain header's own
   magic and version, not the tag.

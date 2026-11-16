@@ -62,7 +62,7 @@ fn row_pack(tiles: &[&[Road]]) -> Vec<u8> {
     let total = data + tiles.iter().map(|t| t.len() as u32).sum::<u32>();
     let mut out = vec![0u8; HEADER_BYTES];
     out[..16].copy_from_slice(MAGIC);
-    out[16..18].copy_from_slice(&crate::pack::VERSION.to_le_bytes());
+    out[16] = crate::pack::VERSION;
     out[18..20].copy_from_slice(&1u16.to_le_bytes());
     out[20..24].copy_from_slice(&(TILE as u32).to_le_bytes());
     out[24..28].copy_from_slice(&SOUTH.to_le_bytes());
@@ -703,7 +703,7 @@ fn header(tile: u32, south: i32, west: i32, rows: u16, cols: u16) -> [u8; HEADER
     let data = directory + u32::from(rows) * u32::from(cols) * 8;
     let mut out = [0u8; HEADER_BYTES];
     out[..16].copy_from_slice(MAGIC);
-    out[16..18].copy_from_slice(&crate::pack::VERSION.to_le_bytes());
+    out[16] = crate::pack::VERSION;
     out[20..24].copy_from_slice(&tile.to_le_bytes());
     out[24..28].copy_from_slice(&south.to_le_bytes());
     out[28..32].copy_from_slice(&west.to_le_bytes());

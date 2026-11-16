@@ -91,3 +91,40 @@ fn a_reproduce_line_keeps_an_odd_course_path_one_shell_word() {
         .expect("sh runs");
     assert_eq!(String::from_utf8_lossy(&shell.stdout), format!("{path}|"));
 }
+
+#[test]
+fn a_run_in_child_processes_adds_up_its_sessions() {
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_fuzz"))
+        .args(["--seeds", "1-2", "--no-corpus", "--jobs", "2"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the fuzz binary starts");
+    let in_process = std::thread::scope(|scope| {
+        let sessions: Vec<_> = (1..=2)
+            .map(|seed| {
+                scope.spawn(move || {
+                    fuzz::run(&fuzz::draw(seed), &Corpus::none(), false)
+                        .unwrap_or_else(|finding| panic!("{finding}"))
+                        .world_log_digests
+                })
+            })
+            .collect();
+        sessions
+            .into_iter()
+            .map(|session| session.join().expect("a session returns"))
+            .fold(0u64, u64::wrapping_add)
+    });
+    let output = run.wait_with_output().expect("the fuzz run ends");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("fuzz: 2 sessions,"), "{stdout}");
+    assert!(
+        stdout.contains(&format!("world logs: {in_process:016x}\n")),
+        "{stdout}"
+    );
+}

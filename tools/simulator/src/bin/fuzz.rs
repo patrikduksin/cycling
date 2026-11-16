@@ -1,10 +1,21 @@
 use shell_simulator::fuzz::plan::Rng;
 use shell_simulator::fuzz::{self, Corpus, Coverage, FIXED, Finding, PAGES, Plan};
+use std::collections::{BTreeSet, VecDeque};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{ChildStdin, ChildStdout, Command, ExitCode, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+/// Each boot leaks the device blocks VANA takes as `&'static mut`, about
+/// 2.2 MB a session, so a child serves this many sessions and exits: 33 MB
+/// at most, against 0.05 s to start the next.
+const SESSIONS_PER_CHILD: u32 = 8;
+
+/// The stderr lines a dead child's finding shows.
+const STDERR_TAIL: usize = 12;
 
 const USAGE: &str = "\
 usage: cycling fuzz [--minutes N | --seed S | --seeds A-B | --fixed]
@@ -14,9 +25,10 @@ Each session draws a plan from its seed: a course (synthetic, or a GPS track
 from a world log under --corpus), sensors, a card, then button presses, rides,
 sensor dropouts, GPS and barometer loss, radar vehicles, battery changes,
 power cuts, torn flash writes and card refusals. After every step the checks
-read the device; a panic is a finding too. A finding prints the seed and the
-command that reproduces it, and writes the plan, the world log of its boot and
-the corpus trace it rode under --out DIR/<seed>.
+read the device; a panic is a finding too, and so is a crash that ends a
+session's process. A finding prints the seed and the command that reproduces
+it, and writes the plan, the world log of its boot and the corpus trace it
+rode under --out DIR/<seed>.
 
   --minutes N   fresh seeds for N minutes of wall time (the default, 1)
   --seed S      one session, printing each step and the page after it
@@ -34,6 +46,8 @@ enum Seeds {
     One(u64),
     Range(u64, u64),
     Minutes(u64),
+    /// A child of a run: the seeds its parent writes to stdin.
+    Stdin,
 }
 
 struct Args {
@@ -98,6 +112,7 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     .ok_or(format!("not a job count: {jobs}"))?;
             }
             "--out" => args.out = Some(value()?.into()),
+            "--child" => args.seeds = Seeds::Stdin,
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument {other}")),
         }
@@ -121,6 +136,10 @@ fn main() -> ExitCode {
     } else {
         Corpus::load(args.corpus.as_deref())
     };
+    if let Seeds::Stdin = args.seeds {
+        serve(&corpus, args.out.as_deref());
+        return ExitCode::SUCCESS;
+    }
     if let Some(path) = &corpus.path {
         println!("corpus: {} courses from {}", corpus.len(), path.display());
         let mut reasons = std::collections::BTreeMap::<&str, usize>::new();
@@ -142,14 +161,15 @@ fn main() -> ExitCode {
                     coverage
                 }
                 Err(finding) => {
-                    found(finding, &plan, args.out.as_deref(), &report);
+                    let text = found(finding, &plan, args.out.as_deref());
+                    reported(&report, plan.seed, &text);
                     Coverage::default()
                 }
             }
         }
         Seeds::Range(first, last) => {
             let seeds = Mutex::new(first..=last);
-            pool(args.jobs, &corpus, args.out.as_deref(), &report, || {
+            pool(&args, &corpus, &report, || {
                 seeds.lock().unwrap_or_else(|e| e.into_inner()).next()
             })
         }
@@ -159,11 +179,12 @@ fn main() -> ExitCode {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos() as u64);
             let next = AtomicU64::new(0);
-            pool(args.jobs, &corpus, args.out.as_deref(), &report, || {
+            pool(&args, &corpus, &report, || {
                 let index = next.fetch_add(1, Ordering::Relaxed);
                 (Instant::now() < deadline).then(|| Rng::new(base.wrapping_add(index)).next_u64())
             })
         }
+        Seeds::Stdin => unreachable!("a child serves before this"),
     };
     let findings = report.into_inner().unwrap_or_else(|e| e.into_inner());
     if !matches!(args.seeds, Seeds::One(_)) {
@@ -176,24 +197,56 @@ fn main() -> ExitCode {
     }
 }
 
+/// Runs every seed `next` gives in child processes, `args.jobs` at a time,
+/// so a run's memory stays that of a few children.
 fn pool(
-    jobs: usize,
+    args: &Args,
     corpus: &Corpus,
-    out: Option<&Path>,
     report: &Mutex<Vec<u64>>,
     next: impl Fn() -> Option<u64> + Sync,
 ) -> Coverage {
+    let exe = std::env::current_exe().expect("the fuzz binary finds itself");
+    let spawn = || {
+        let mut command = Command::new(&exe);
+        command.arg("--child");
+        if args.no_corpus {
+            command.arg("--no-corpus");
+        } else if let Some(path) = &args.corpus {
+            command.arg("--corpus").arg(path);
+        }
+        if let Some(out) = &args.out {
+            command.arg("--out").arg(out);
+        }
+        Child::spawn(command)
+    };
     std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..jobs)
+        let workers: Vec<_> = (0..args.jobs)
             .map(|_| {
                 scope.spawn(|| {
                     let mut coverage = Coverage::default();
+                    let mut child: Option<Child> = None;
                     while let Some(seed) = next() {
-                        let plan = fuzz::draw(seed);
-                        match fuzz::run(&plan, corpus, false) {
-                            Ok(session) => coverage.merge(session),
-                            Err(finding) => found(finding, &plan, out, report),
+                        let mut serving = match child.take() {
+                            Some(child) if child.sessions < SESSIONS_PER_CHILD => child,
+                            spent => {
+                                if let Some(spent) = spent {
+                                    spent.finish();
+                                }
+                                spawn()
+                            }
+                        };
+                        match serving.session(seed) {
+                            Outcome::Pass(session) => coverage.merge(session),
+                            Outcome::Found(text) => reported(report, seed, &text),
+                            Outcome::Died { started } => {
+                                reported(report, seed, &serving.died(seed, started, corpus));
+                                continue;
+                            }
                         }
+                        child = Some(serving);
+                    }
+                    if let Some(child) = child {
+                        child.finish();
                     }
                     coverage
                 })
@@ -211,12 +264,220 @@ fn pool(
     })
 }
 
-fn found(mut finding: Finding, plan: &Plan, out: Option<&Path>, report: &Mutex<Vec<u64>>) {
+/// What a child wrote for one seed.
+enum Outcome {
+    Pass(Coverage),
+    /// The finding as the child printed it.
+    Found(String),
+    /// The child exited before the seed's record ended.
+    Died {
+        started: bool,
+    },
+}
+
+/// A `--child` process and the pipes to it.
+///
+/// A child reads one decimal seed per line until EOF and writes a record per
+/// seed, one tab-separated line each:
+///
+///   start  SEED
+///   press  PAGE  BUTTON  N       (any number)
+///   skip   CHECK  WHY  N         (any number)
+///   pass   SIMULATED_MS  WORLD_LOG_DIGEST
+///
+/// or, for a finding, `start`, then `say  LINE` for each line it printed and
+/// `found`.
+struct Child {
+    process: std::process::Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    stderr: JoinHandle<VecDeque<String>>,
+    sessions: u32,
+}
+
+impl Child {
+    fn spawn(mut command: Command) -> Self {
+        let mut process = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the fuzz binary starts a child of itself");
+        let stderr = BufReader::new(process.stderr.take().expect("piped"));
+        let stderr = std::thread::spawn(move || {
+            let mut stderr = stderr;
+            let mut tail = VecDeque::new();
+            while let Some(line) = read_line(&mut stderr) {
+                eprintln!("{line}");
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if tail.len() == STDERR_TAIL {
+                    tail.pop_front();
+                }
+                tail.push_back(line);
+            }
+            tail
+        });
+        Self {
+            stdin: process.stdin.take().expect("piped"),
+            stdout: BufReader::new(process.stdout.take().expect("piped")),
+            process,
+            stderr,
+            sessions: 0,
+        }
+    }
+
+    fn session(&mut self, seed: u64) -> Outcome {
+        self.sessions += 1;
+        if writeln!(self.stdin, "{seed}").is_err() {
+            return Outcome::Died { started: false };
+        }
+        let mut started = false;
+        let mut coverage = Coverage::default();
+        let mut said = String::new();
+        while let Some(line) = read_line(&mut self.stdout) {
+            if let Some(text) = line.strip_prefix("say\t") {
+                said.push_str(text);
+                said.push('\n');
+                continue;
+            }
+            match line.split('\t').collect::<Vec<_>>()[..] {
+                ["start", started_seed] if number(started_seed) == seed => started = true,
+                ["press", page, button, n] => {
+                    *coverage
+                        .presses
+                        .entry((name(page), name(button)))
+                        .or_default() += number(n);
+                }
+                ["skip", check, why, n] => {
+                    *coverage.skips.entry((name(check), name(why))).or_default() += number(n);
+                }
+                ["pass", simulated_ms, digest] => {
+                    coverage.sessions = 1;
+                    coverage.simulated_ms = number(simulated_ms);
+                    coverage.world_log_digests = number(digest);
+                    return Outcome::Pass(coverage);
+                }
+                ["found"] => return Outcome::Found(said.trim_end().to_string()),
+                _ => println!("{line}"),
+            }
+        }
+        Outcome::Died { started }
+    }
+
+    fn finish(mut self) {
+        drop(self.stdin);
+        let status = self.process.wait().expect("a child is waited on once");
+        let _ = self.stderr.join();
+        if !status.success() {
+            eprintln!("fuzz: a child exited with {status} after its sessions");
+        }
+    }
+
+    /// The finding for `seed`, whose record a dead child never ended.
+    fn died(mut self, seed: u64, started: bool, corpus: &Corpus) -> String {
+        drop(self.stdin);
+        let status = self.process.wait().expect("a child is waited on once");
+        let tail = self.stderr.join().unwrap_or_default();
+        let course = fuzz::route(&fuzz::draw(seed).setup.course, corpus).1;
+        let when = if started {
+            ""
+        } else {
+            ", before its session started"
+        };
+        let mut text =
+            format!("FAIL seed={seed:#018x} check=\"the process died\" ({status}{when})\n");
+        for line in tail {
+            text.push_str(&format!("  {line}\n"));
+        }
+        text.push_str(&format!(
+            "  reproduce: {}",
+            fuzz::reproduce(seed, course.as_deref())
+        ));
+        text
+    }
+}
+
+fn read_line(reader: &mut impl BufRead) -> Option<String> {
+    let mut bytes = Vec::new();
+    match reader.read_until(b'\n', &mut bytes) {
+        Ok(0) | Err(_) => None,
+        Ok(_) => Some(
+            String::from_utf8_lossy(&bytes)
+                .trim_end_matches(['\n', '\r'])
+                .to_string(),
+        ),
+    }
+}
+
+fn number(text: &str) -> u64 {
+    text.parse()
+        .unwrap_or_else(|_| panic!("a fuzz child wrote {text:?} for a number"))
+}
+
+/// `text` as the `&'static str` a coverage key holds; a run meets a few dozen
+/// distinct names, each kept once.
+fn name(text: &str) -> &'static str {
+    static NAMES: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(known) = names.get(text) {
+        return known;
+    }
+    let leaked: &'static str = Box::leak(text.into());
+    names.insert(leaked);
+    leaked
+}
+
+/// A child's side: the seeds on stdin, a record each on stdout.
+fn serve(corpus: &Corpus, out: Option<&Path>) {
+    std::thread::scope(|scope| {
+        // Sessions ran on a pool thread before children, and a deep recursion
+        // must overflow at the same depth as it did there.
+        scope.spawn(|| {
+            for line in std::io::stdin().lock().lines() {
+                let line = line.expect("the parent writes text");
+                let seed: u64 = line
+                    .parse()
+                    .unwrap_or_else(|_| panic!("the parent wrote {line:?} for a seed"));
+                println!("start\t{seed}");
+                let plan = fuzz::draw(seed);
+                match fuzz::run(&plan, corpus, false) {
+                    Ok(coverage) => {
+                        for ((page, button), n) in &coverage.presses {
+                            println!("press\t{page}\t{button}\t{n}");
+                        }
+                        for ((check, why), n) in &coverage.skips {
+                            println!("skip\t{check}\t{why}\t{n}");
+                        }
+                        println!(
+                            "pass\t{}\t{}",
+                            coverage.simulated_ms, coverage.world_log_digests
+                        );
+                    }
+                    Err(finding) => {
+                        for line in found(finding, &plan, out).lines() {
+                            println!("say\t{line}");
+                        }
+                        println!("found");
+                    }
+                }
+            }
+        });
+    });
+}
+
+fn reported(report: &Mutex<Vec<u64>>, seed: u64, text: &str) {
     let mut report = report.lock().unwrap_or_else(|e| e.into_inner());
-    report.push(finding.seed);
+    report.push(seed);
+    println!("{text}");
+}
+
+/// Writes `finding`'s plan, world log and course under `out`, and returns
+/// the finding as printed.
+fn found(mut finding: Finding, plan: &Plan, out: Option<&Path>) -> String {
     let Some(out) = out else {
-        println!("{finding}");
-        return;
+        return finding.to_string();
     };
     let dir = out.join(format!("{:#018x}", finding.seed));
     let written = (|| -> std::io::Result<()> {
@@ -234,17 +495,16 @@ fn found(mut finding: Finding, plan: &Plan, out: Option<&Path>, report: &Mutex<V
         }
         Ok(())
     })();
-    println!("{finding}");
     match written {
-        Ok(()) => println!("  wrote {}", dir.display()),
-        Err(error) => println!("  could not write {}: {error}", dir.display()),
+        Ok(()) => format!("{finding}\n  wrote {}", dir.display()),
+        Err(error) => format!("{finding}\n  could not write {}: {error}", dir.display()),
     }
 }
 
 fn summary(coverage: &Coverage, findings: usize, wall: Duration, jobs: usize) {
     let seconds = wall.as_secs_f64();
     println!(
-        "fuzz: {} sessions, {:.1} h simulated, {findings} findings, {seconds:.0} s on {jobs} threads ({:.1} sessions/s)",
+        "fuzz: {} sessions, {:.1} h simulated, {findings} findings, {seconds:.0} s on {jobs} processes ({:.1} sessions/s)",
         coverage.sessions,
         coverage.simulated_ms as f64 / 3_600_000.0,
         coverage.sessions as f64 / seconds.max(0.001),

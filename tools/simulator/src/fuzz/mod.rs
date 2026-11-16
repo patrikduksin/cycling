@@ -17,7 +17,7 @@ use plan::{CENTERS, Card, Course, Sensor, Setup, Step};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use vana::ride::log::Kind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,12 +68,17 @@ impl fmt::Debug for WorldLog {
 
 impl Finding {
     pub fn reproduce(&self) -> String {
-        let course = match &self.course_trace {
-            Some(trace) => format!("--corpus {}", shell_word(&trace.to_string_lossy())),
-            None => "--no-corpus".to_string(),
-        };
-        format!("cycling fuzz --seed {:#018x} {course}", self.seed)
+        reproduce(self.seed, self.course_trace.as_deref())
     }
+}
+
+/// The command that replays `seed` on the course it rode.
+pub fn reproduce(seed: u64, course_trace: Option<&Path>) -> String {
+    let course = match course_trace {
+        Some(trace) => format!("--corpus {}", shell_word(&trace.to_string_lossy())),
+        None => "--no-corpus".to_string(),
+    };
+    format!("cycling fuzz --seed {seed:#018x} {course}")
 }
 
 impl fmt::Display for Finding {

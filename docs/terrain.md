@@ -327,7 +327,7 @@ the device cost is measured in the map's own extraction.
 
 The map (`apps/vana/src/screens/ride/map/roads.rs`) asks only for the tiles
 of its view, a quarter wider each way, that it does not yet hold at its
-step's detail, and copies one cached tile a look-ahead pass into a road
+scale's detail, and copies one cached tile a look-ahead pass into a road
 cache in its own PSRAM block. The tiles on the screen come first, so the
 margin never crowds one out of the 16. The cache is heading-free: points
 stay tile-local micro-degrees and each tile keeps its corner in the ride's
@@ -337,9 +337,11 @@ lets them all go. It holds 16 tiles, 4,096 roads and 8,192 points; a tile
 that does not fit keeps its major roads, and STATUS `map_cuts` counts
 it. Each copy:
 
-- keeps the classes the map's scale draws: every road while the map is
-  under about 630 m across (between the old 400 m and 1 km zoom steps,
-  about 48 km/h), and no service roads, tracks or paths wider than that;
+- keeps the classes the map's scale draws: every road up to about 530 m
+  ahead (about 48 km/h), and no service roads, tracks or paths further out.
+  The detail changes only 30 m past that, at 560 m ahead going out and
+  500 m coming in, so speed noise near 48 km/h does not swap it on every
+  fix;
 - joins a road to the last of its class when it starts where that one
   ended, so a street of many blocks is one polyline;
 - simplifies it so no point strays more than half a pixel at the closest

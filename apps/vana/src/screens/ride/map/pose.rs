@@ -1,3 +1,4 @@
+use super::roads::Detail;
 use crate::ride::homing::TURN;
 use core::f32::consts::TAU;
 use core::ops::Range;
@@ -13,9 +14,7 @@ const ROWS_AHEAD: f32 = (RIDER_Y as usize - GROUND.start) as f32;
 const START_AHEAD_M: f32 = 300.0;
 const AHEAD_S: f32 = 40.0;
 const NEAREST_AHEAD_M: f32 = 150.0;
-pub(super) const CLOSEST: Reach = Reach {
-    ahead_m: NEAREST_AHEAD_M as u16,
-};
+pub(super) const CLOSEST: Reach = Reach::new(NEAREST_AHEAD_M as u16, Detail::Streets);
 const FURTHEST_AHEAD_M: f32 = 1_000.0;
 const MOVING_FROM_MM_S: u32 = 5 * 1_000_000 / 3_600;
 const EASE_PER_FIX: f32 = 0.2;
@@ -25,6 +24,7 @@ const BARS: [(f32, &[u8]); 3] = [(250.0, b"250 M"), (100.0, b"100 M"), (50.0, b"
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Reach {
     ahead_m: u16,
+    detail: Detail,
 }
 
 impl Default for Reach {
@@ -36,6 +36,14 @@ impl Default for Reach {
 impl Reach {
     pub fn ahead_m(self) -> f32 {
         f32::from(self.ahead_m)
+    }
+
+    pub(super) const fn new(ahead_m: u16, detail: Detail) -> Self {
+        Self { ahead_m, detail }
+    }
+
+    pub(super) fn detail(self) -> Detail {
+        self.detail
     }
 
     pub fn px_per_m(self) -> f32 {
@@ -55,12 +63,14 @@ impl Reach {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Zoom {
     ahead_m: f32,
+    detail: Detail,
 }
 
 impl Default for Zoom {
     fn default() -> Self {
         Self {
             ahead_m: START_AHEAD_M,
+            detail: Detail::Streets,
         }
     }
 }
@@ -77,12 +87,11 @@ impl Zoom {
         let goal =
             (speed_mm_s as f32 * (AHEAD_S / 1000.0)).clamp(NEAREST_AHEAD_M, FURTHEST_AHEAD_M);
         self.ahead_m += (goal - self.ahead_m) * EASE_PER_FIX;
+        self.detail = self.detail.at(self.ahead_m);
     }
 
     pub fn reach(self) -> Reach {
-        Reach {
-            ahead_m: roundf(self.ahead_m) as u16,
-        }
+        Reach::new(roundf(self.ahead_m) as u16, self.detail)
     }
 }
 
@@ -170,7 +179,7 @@ mod tests {
 
     #[test]
     fn a_projection_puts_the_heading_up_and_the_rider_where_posed() {
-        let pose = Pose::new(Reach { ahead_m: 335 }, 0, TURN / 4);
+        let pose = Pose::new(Reach::new(335, Detail::Streets), 0, TURN / 4);
         assert_eq!(pose.rider, (120, 223));
         let at = pose.projection((100.0, 50.0));
         assert_eq!(at.at((100.0, 50.0)), (120.0, 223.0));
@@ -182,18 +191,21 @@ mod tests {
 
     #[test]
     fn beside_a_radar_the_rider_is_in_the_middle_of_what_is_left() {
-        assert_eq!(Pose::new(Reach { ahead_m: 300 }, 28, 0).rider, (134, 223));
+        assert_eq!(
+            Pose::new(Reach::new(300, Detail::Streets), 28, 0).rider,
+            (134, 223)
+        );
     }
 
     #[test]
     fn a_ride_starts_showing_300_m_ahead() {
-        assert_eq!(Zoom::default().reach(), Reach { ahead_m: 300 });
+        assert_eq!(Zoom::default().reach(), Reach::new(300, Detail::Streets));
     }
 
     #[test]
     fn at_a_steady_speed_the_map_shows_40_s_ahead_within_150_m_to_1_km() {
         for (kmh, ahead_m) in [(10.0, 150), (25.0, 278), (40.0, 444), (120.0, 1_000)] {
-            assert_eq!(settled(kmh).reach(), Reach { ahead_m }, "{kmh} km/h");
+            assert_eq!(settled(kmh).reach().ahead_m, ahead_m, "{kmh} km/h");
         }
     }
 
@@ -252,12 +264,16 @@ mod tests {
             zoom.observe_riding_at(MOVING_FROM_MM_S - 1);
         }
         assert_eq!(zoom, riding, "just under 5 km/h");
-        assert_eq!(settled(5.0).reach(), Reach { ahead_m: 150 }, "5 km/h");
+        assert_eq!(
+            settled(5.0).reach(),
+            Reach::new(150, Detail::Streets),
+            "5 km/h"
+        );
     }
 
     #[test]
     fn the_scale_bar_reads_a_round_distance_up_to_90_px() {
-        let bar = |ahead_m| Reach { ahead_m }.bar();
+        let bar = |ahead_m| Reach::new(ahead_m, Detail::Streets).bar();
         assert_eq!(bar(150), (67, &b"50 M"[..]));
         assert_eq!(bar(278), (72, &b"100 M"[..]));
         assert_eq!(bar(335), (60, &b"100 M"[..]));

@@ -1,4 +1,5 @@
 use super::*;
+use crate::screens::ride::map::Zoom;
 use std::boxed::Box;
 use std::println;
 use std::vec::Vec;
@@ -275,4 +276,57 @@ fn letting_a_tile_go_keeps_the_others_roads_intact() {
     roads.keep(|held| held.key.is_some_and(|k| kept.contains(&k)));
     assert_eq!(roads.tiles, 8);
     assert_eq!(points(&roads, keys[8]), before);
+}
+
+fn details_riding_at(zoom: &mut Zoom, speeds_mm_s: &[u32]) -> Vec<Detail> {
+    speeds_mm_s
+        .iter()
+        .map(|&speed| {
+            zoom.observe_riding_at(speed);
+            zoom.reach().detail()
+        })
+        .collect()
+}
+
+fn switches(details: &[Detail]) -> usize {
+    details.windows(2).filter(|pair| pair[0] != pair[1]).count()
+}
+
+fn noisy(mean_mm_s: u32, spread_mm_s: u32, fixes: usize) -> Vec<u32> {
+    let mut seed = 7u32;
+    (0..fixes)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            mean_mm_s - spread_mm_s + (seed >> 8) % (2 * spread_mm_s + 1)
+        })
+        .collect()
+}
+
+#[test]
+fn speed_noise_near_the_switch_holds_the_detail() {
+    let alternating: Vec<u32> = (0..600).map(|i| [12_500, 14_000][i % 2]).collect();
+    for riding in [noisy(13_200, 300, 600), alternating] {
+        for coming_from in [10_000, 20_000] {
+            let mut zoom = Zoom::default();
+            details_riding_at(&mut zoom, &[coming_from; 60]);
+            details_riding_at(&mut zoom, &riding[..60]);
+            let settled = details_riding_at(&mut zoom, &riding[60..]);
+            assert_eq!(
+                switches(&settled),
+                0,
+                "from {coming_from} mm/s: {:?}",
+                &settled[..20]
+            );
+        }
+    }
+}
+
+#[test]
+fn a_change_of_speed_across_the_switch_changes_the_detail_once() {
+    let mut zoom = Zoom::default();
+    details_riding_at(&mut zoom, &[10_000; 60]);
+    let faster = details_riding_at(&mut zoom, &[16_000; 60]);
+    assert_eq!((switches(&faster), faster[59]), (1, Detail::Town));
+    let slower = details_riding_at(&mut zoom, &[10_000; 60]);
+    assert_eq!((switches(&slower), slower[59]), (1, Detail::Streets));
 }

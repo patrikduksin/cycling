@@ -19,7 +19,7 @@ use firmware_shell::rendering::font::FOOT_20;
 pub use pose::{GROUND, Reach, Zoom};
 use pose::{Pose, Projection};
 use raster::{Bar, Class, Cover, Layer, Stroke, Triangle};
-use roads::{Detail, Roads, Source};
+use roads::{Roads, Source};
 
 type Point = (f32, f32);
 
@@ -392,7 +392,7 @@ impl<'a> Cache<'a> {
             engine.want([]);
             return Fetched::Nothing;
         };
-        let detail = Detail::of(self.frame.last_pose.reach);
+        let detail = self.frame.last_pose.reach.detail();
         let roads = &mut self.frame.roads;
         engine.want(roads.lacking(&keys, detail));
         let ready = roads
@@ -745,7 +745,7 @@ fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point) {
     *pairs = raster::pairs(GROUND_COLOR, MINOR_ROAD, MAJOR_ROAD);
     *roads_drawn = [0; 2];
     let room = |drawn: &[usize; 2]| drawn[0] + drawn[1] < ROAD_SEGMENTS;
-    for road in roads.each(Detail::of(last_pose.reach), centre) {
+    for road in roads.each(last_pose.reach.detail(), centre) {
         if !room(roads_drawn) {
             break;
         }

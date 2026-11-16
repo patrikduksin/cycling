@@ -39,6 +39,10 @@ name = "trace"
 path = "src/bin/trace.rs"
 
 [[bin]]
+name = "fuzz"
+path = "src/bin/fuzz.rs"
+
+[[bin]]
 name = "sim-live"
 path = "src/bin/sim-live.rs"
 required-features = ["live"]

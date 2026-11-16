@@ -1,0 +1,313 @@
+//! What must hold after every step: pure functions over two observations.
+use super::plan::Step;
+use crate::rides::Ride;
+use crate::sim::Sim;
+use vana::ride::log::Kind;
+
+/// The device between steps, read without a console command, so observing
+/// never becomes an input in the world log.
+pub struct Observation {
+    pub at_ms: u64,
+    pub boot: u32,
+    pub uptime_ms: u64,
+    pub page: &'static str,
+    pub off: bool,
+    pub journal: Vec<Ride>,
+    /// Rides on the card; empty without one.
+    pub card: Vec<Ride>,
+    /// A storage fault was armed or fired since this boot began.
+    pub faulted: bool,
+    pub broken: Option<String>,
+}
+
+impl Observation {
+    /// The page and the newest ride on each medium, for a verbose session.
+    pub fn summary(&self) -> String {
+        let mut out = self.page.to_string();
+        for (medium, rides) in media(self) {
+            if let Some(ride) = rides.last() {
+                let last = ride.kinds().last().copied();
+                out += &format!(
+                    " {medium}: {} rides, #{} {} samples {last:?}",
+                    rides.len(),
+                    ride.id,
+                    ride.samples().count()
+                );
+            }
+        }
+        out
+    }
+}
+
+/// Read the device. `faulted` carries over from the previous observation
+/// within the same boot.
+pub fn observe(sim: &mut Sim, card: bool, previous: Option<&Observation>) -> Observation {
+    let boot = sim.device.boot;
+    let armed = sim.device.media.fault.borrow().after.is_some() || sim.device.bulk.faulted();
+    let carried = previous.is_some_and(|p| p.boot == boot && p.faulted);
+    Observation {
+        at_ms: sim.now(),
+        boot,
+        uptime_ms: sim.device.now,
+        page: if sim.is_off() { "off" } else { sim.vana_page() },
+        off: sim.is_off(),
+        journal: sim.rides(),
+        card: if card { card_rides(sim) } else { Vec::new() },
+        faulted: armed || carried,
+        broken: broken(sim),
+    }
+}
+
+/// The card's rides as a host reads them out of the device, whatever this
+/// boot's controller does.
+pub(super) fn card_rides(sim: &Sim) -> Vec<Ride> {
+    use vana::ride::bulk::{Bulk, BulkState};
+    use vana::ride::journal::{Journal, Scan};
+    let mut media = sim.device.bulk.inspect();
+    let mut state = BulkState::default();
+    let mut journal = Bulk::new(&mut state, &mut media);
+    let catalog = loop {
+        match journal.scan() {
+            Scan::More => {}
+            Scan::Done(catalog) | Scan::Uncertain(catalog) => break catalog,
+            _ => return Vec::new(),
+        }
+    };
+    let mut bytes = Vec::new();
+    for index in 0..catalog.next_slot {
+        let mut slot = vana::ride::log::Slot::default();
+        if journal.read_slot(index, &mut slot) == Some(true) {
+            bytes.extend_from_slice(&slot.0);
+        }
+    }
+    crate::rides::read(&bytes)
+}
+
+/// The `broken()` hook. The twin has nothing to ask yet, so it answers
+/// `None`; #397 0b replaces this body with VANA's global invariant, and the
+/// `broken() holds` row already reads it.
+fn broken(sim: &Sim) -> Option<String> {
+    let _ = sim;
+    None
+}
+
+pub enum Verdict {
+    Pass,
+    /// The check applied, but a guard named here kept it from judging.
+    Skip(&'static str),
+    Fail(String),
+}
+
+/// One step and the device before and after it; `step` is `None` for the
+/// end of the session.
+pub struct Moment<'a> {
+    pub step: Option<&'a Step>,
+    pub before: &'a Observation,
+    pub after: &'a Observation,
+}
+
+pub struct Check {
+    pub name: &'static str,
+    pub run: fn(&Moment) -> Verdict,
+}
+
+pub const CHECKS: &[Check] = &[
+    Check {
+        name: "leaves the boot page",
+        run: leaves_boot,
+    },
+    Check {
+        name: "committed samples survive",
+        run: samples_survive,
+    },
+    Check {
+        name: "rides decode",
+        run: rides_decode,
+    },
+    Check {
+        name: "no garbage sample",
+        run: no_garbage,
+    },
+    Check {
+        name: "keeps recording while riding",
+        run: keeps_recording,
+    },
+    Check {
+        name: "broken() holds",
+        run: |moment| match &moment.after.broken {
+            Some(why) => Verdict::Fail(why.clone()),
+            None => Verdict::Pass,
+        },
+    },
+];
+
+/// Power-on never takes longer than this to leave the boot page.
+const BOOT_MS: u64 = 15_000;
+
+fn leaves_boot(moment: &Moment) -> Verdict {
+    let after = moment.after;
+    if after.off || after.uptime_ms < BOOT_MS || after.page != "boot" {
+        return Verdict::Pass;
+    }
+    Verdict::Fail(format!(
+        "still on the boot page {} s after power-on",
+        after.uptime_ms / 1000
+    ))
+}
+
+fn media(observation: &Observation) -> [(&'static str, &[Ride]); 2] {
+    [
+        ("journal", &observation.journal),
+        ("card", &observation.card),
+    ]
+}
+
+/// No step without a button deletes a ride, so samples on media only grow.
+fn samples_survive(moment: &Moment) -> Verdict {
+    if matches!(moment.step, Some(Step::Press(_) | Step::Hold(..))) {
+        return Verdict::Pass;
+    }
+    for ((medium, before), (_, after)) in media(moment.before).into_iter().zip(media(moment.after))
+    {
+        for ride in before {
+            let had = ride.samples().count();
+            match after.iter().find(|r| r.id == ride.id) {
+                None => {
+                    return Verdict::Fail(format!(
+                        "{medium} ride {} with {had} samples is gone",
+                        ride.id
+                    ));
+                }
+                Some(now) if now.samples().count() < had => {
+                    return Verdict::Fail(format!(
+                        "{medium} ride {} had {had} samples, now {}",
+                        ride.id,
+                        now.samples().count()
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    Verdict::Pass
+}
+
+fn terminal(kind: Kind) -> bool {
+    matches!(kind, Kind::Finish | Kind::Recovered | Kind::Full)
+}
+
+/// Ids are unique on a medium, a ride begins with Start, ends with at most
+/// one terminal record, and only the newest ride may still be open.
+fn rides_decode(moment: &Moment) -> Verdict {
+    for (medium, rides) in media(moment.after) {
+        for (index, ride) in rides.iter().enumerate() {
+            let kinds = ride.kinds();
+            let newest = index + 1 == rides.len();
+            let terminals = kinds.iter().filter(|k| terminal(**k)).count();
+            let fault = if rides[..index].iter().any(|r| r.id == ride.id) {
+                "its id appears twice"
+            } else if kinds.first() != Some(&Kind::Start) {
+                "it does not begin with Start"
+            } else if terminals > 1
+                || (terminals == 1 && !kinds.last().is_some_and(|k| terminal(*k)))
+            {
+                "a terminal record is not its last"
+            } else if terminals == 0 && !newest {
+                "a newer ride started while it was open"
+            } else {
+                continue;
+            };
+            return Verdict::Fail(format!(
+                "{medium} ride {}: {fault}; kinds {kinds:?}",
+                ride.id
+            ));
+        }
+    }
+    Verdict::Pass
+}
+
+/// 150 km/h in mm/s: no drawn ride comes near it.
+const FASTEST_MM_S: u32 = 41_667;
+
+fn no_garbage(moment: &Moment) -> Verdict {
+    for (medium, rides) in media(moment.after) {
+        for ride in rides {
+            let mut last_ms = 0;
+            for sample in ride.samples() {
+                let fault = if sample.active_ms < last_ms {
+                    "active time went back"
+                } else if sample.speed_mm_s.is_some_and(|v| v > FASTEST_MM_S) {
+                    "speed beyond 150 km/h"
+                } else if sample.heart_bpm.is_some_and(|v| v > 250) {
+                    "heart rate beyond 250"
+                } else if sample.battery_percent.is_some_and(|v| v > 100) {
+                    "battery beyond 100 %"
+                } else {
+                    last_ms = sample.active_ms;
+                    continue;
+                };
+                return Verdict::Fail(format!("{medium} ride {}: {fault}: {sample:?}", ride.id));
+            }
+        }
+    }
+    Verdict::Pass
+}
+
+/// Waits at least this long are long enough to judge the sample rate.
+const JUDGED_WAIT_MS: u32 = 30_000;
+
+/// A ride recording through a quiet wait gains about a sample a second.
+fn keeps_recording(moment: &Moment) -> Verdict {
+    let Some(Step::Wait { ms }) = moment.step else {
+        return Verdict::Pass;
+    };
+    if *ms < JUDGED_WAIT_MS {
+        return Verdict::Pass;
+    }
+    let open = |rides: &[Ride]| {
+        rides
+            .last()
+            .filter(|r| {
+                matches!(
+                    r.kinds().last(),
+                    Some(Kind::Start | Kind::Samples | Kind::Resume)
+                )
+            })
+            .map(|r| (r.id, r.samples().count(), r.entries.len()))
+    };
+    let (before, after) = (moment.before, moment.after);
+    let (medium, (id, had, entries)) = match (open(&before.journal), open(&before.card)) {
+        (Some(ride), None) => (&after.journal, ride),
+        (None, Some(ride)) => (&after.card, ride),
+        (None, None) => return Verdict::Pass,
+        (Some(_), Some(_)) => return Verdict::Skip("open rides on both media"),
+    };
+    if after.boot != before.boot {
+        return Verdict::Skip("rebooted during the wait");
+    }
+    if after.off {
+        return Verdict::Skip("turned off during the wait");
+    }
+    if before.faulted || after.faulted {
+        return Verdict::Skip("a storage fault this boot");
+    }
+    let Some(ride) = medium.iter().find(|r| r.id == id) else {
+        return Verdict::Fail(format!("ride {id} is gone"));
+    };
+    let stopped = ride.entries[entries..]
+        .iter()
+        .any(|e| e.kind != Kind::Samples);
+    if stopped {
+        return Verdict::Skip("paused or ended during the wait");
+    }
+    let gained = ride.samples().count().saturating_sub(had);
+    let expected =
+        (*ms as usize / 1000 * 8 / 10).saturating_sub(2 * vana::ride::log::SAMPLES_PER_BATCH);
+    if gained < expected {
+        return Verdict::Fail(format!(
+            "ride {id} gained {gained} samples in {} s of recording",
+            ms / 1000
+        ));
+    }
+    Verdict::Pass
+}

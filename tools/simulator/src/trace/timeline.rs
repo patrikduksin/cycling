@@ -26,29 +26,24 @@ pub struct Moment {
 impl fmt::Display for Moment {
     /// `40:12.345 ride 38:05`, or `ride --:--` outside a ride.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ms = self.session_ms;
-        write!(
-            f,
-            "{:02}:{:02}.{:03} ride ",
-            ms / 60_000,
-            ms / 1000 % 60,
-            ms % 1000
-        )?;
+        write!(f, "{} ride ", session_clock(self.session_ms))?;
         match self.ride_ms {
-            Some(ms) => write!(f, "{:02}:{:02}", ms / 60_000, ms / 1000 % 60),
+            Some(ms) => write!(f, "{}", ride_clock(ms)),
             None => f.write_str("--:--"),
         }
     }
 }
 
 /// `mm:ss.mmm`, minutes unbounded.
-pub fn session_clock(ms: u64) -> String {
-    format!("{:02}:{:02}.{:03}", ms / 60_000, ms / 1000 % 60, ms % 1000)
+pub fn session_clock(ms: u64) -> impl fmt::Display {
+    fmt::from_fn(move |f| {
+        write!(f, "{:02}:{:02}.{:03}", ms / 60_000, ms / 1000 % 60, ms % 1000)
+    })
 }
 
 /// `mm:ss`, minutes unbounded.
-pub fn ride_clock(ms: u64) -> String {
-    format!("{:02}:{:02}", ms / 60_000, ms / 1000 % 60)
+pub fn ride_clock(ms: u64) -> impl fmt::Display {
+    fmt::from_fn(move |f| write!(f, "{:02}:{:02}", ms / 60_000, ms / 1000 % 60))
 }
 
 /// `1:05:03`, `5:03` or `3.2s`: a length of time.
@@ -741,7 +736,7 @@ impl Reader {
             self.heard.push(Heard {
                 identity,
                 last_ms: self.now,
-                name: sensor(identity),
+                name: sensor(identity).to_string(),
             });
             return &self.heard[self.heard.len() - 1].name;
         };
@@ -821,7 +816,7 @@ impl Reader {
                         line,
                         "{}{} rssi {}",
                         if i == 0 { "found " } else { ", " },
-                        Sensor(d.identity),
+                        sensor(d.identity),
                         d.rssi
                     );
                 }
@@ -839,8 +834,7 @@ impl Reader {
                 let mut line = self.line();
                 line.push_str(self.heard_from(packet.identity));
                 line.push(' ');
-                self.pages
-                    .describe_into(&mut line, packet.identity, packet.data);
+                self.pages.describe(&mut line, packet.identity, packet.data);
                 self.push_line(Kind::AntPacket, 0, line);
                 if let Some(entry) = self.entries.last_mut() {
                     entry.bytes = Some(packet.data);
@@ -1215,15 +1209,9 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// An ANT+ sensor as `power#12345`.
-pub fn sensor(identity: ant::Identity) -> String {
-    Sensor(identity).to_string()
-}
-
-pub struct Sensor(pub ant::Identity);
-
-impl fmt::Display for Sensor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0.device_type {
+pub fn sensor(identity: ant::Identity) -> impl fmt::Display {
+    fmt::from_fn(move |f| {
+        match identity.device_type {
             11 => f.write_str("power"),
             40 => f.write_str("radar"),
             120 => f.write_str("hr"),
@@ -1232,8 +1220,8 @@ impl fmt::Display for Sensor {
             123 => f.write_str("speed"),
             other => write!(f, "type{other}"),
         }?;
-        write!(f, "#{}", self.0.device_number)
-    }
+        write!(f, "#{}", identity.device_number)
+    })
 }
 
 fn ant_link(out: &mut String, channel: u8, snapshot: Option<ant::Snapshot>) {
@@ -1241,7 +1229,7 @@ fn ant_link(out: &mut String, channel: u8, snapshot: Option<ant::Snapshot>) {
         None => write!(out, "ch{channel} closed"),
         Some(s) => {
             let _ = match s.selected {
-                Some(peer) => write!(out, "ch{channel} {}", Sensor(peer)),
+                Some(peer) => write!(out, "ch{channel} {}", sensor(peer)),
                 None => write!(out, "ch{channel} no sensor"),
             };
             write!(
@@ -1325,31 +1313,15 @@ fn battery(out: &mut String, snapshot: Option<device_api::input::InputSnapshot>)
     });
 }
 
-pub fn rate(per_second: f64) -> String {
-    Rate(per_second).to_string()
+pub fn rate(per_second: f64) -> impl fmt::Display {
+    fmt::from_fn(move |f| match per_second {
+        per_second if per_second >= 10.0 => write!(f, "{per_second:.0}/s"),
+        per_second => write!(f, "{per_second:.1}/s"),
+    })
 }
 
-struct Rate(f64);
-
-impl fmt::Display for Rate {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            per_second if per_second >= 10.0 => write!(f, "{per_second:.0}/s"),
-            per_second => write!(f, "{per_second:.1}/s"),
-        }
-    }
-}
-
-pub fn percent(share: f64) -> String {
-    Percent(share).to_string()
-}
-
-struct Percent(f64);
-
-impl fmt::Display for Percent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:.1}%", self.0 * 100.0)
-    }
+pub fn percent(share: f64) -> impl fmt::Display {
+    fmt::from_fn(move |f| write!(f, "{:.1}%", share * 100.0))
 }
 
 /// A health record as one timeline line.
@@ -1413,8 +1385,8 @@ fn health(h: &trace::Health, frame_time: Option<trace::FrameTime>) -> String {
 fn window(window: &Window) -> String {
     let a = &window.activity;
     let span_ms = u64::from(a.window_ms).max(1);
-    let share = |us: u32| Percent(f64::from(us) / (span_ms * 1000) as f64);
-    let per_s = |count: u32| Rate(f64::from(count) * 1000.0 / span_ms as f64);
+    let share = |us: u32| percent(f64::from(us) / (span_ms * 1000) as f64);
+    let per_s = |count: u32| rate(f64::from(count) * 1000.0 / span_ms as f64);
     let mut text = String::new();
     let _ = write!(
         text,
@@ -1459,8 +1431,8 @@ fn window(window: &Window) -> String {
             if i == 0 { "; pass stages " } else { ", " },
             stage.name,
             share(stage.busy_us),
-            Micros(u64::from(stage.busy_us) / u64::from(stage.runs.max(1))),
-            Micros(u64::from(stage.max_us))
+            micros(u64::from(stage.busy_us) / u64::from(stage.runs.max(1))),
+            micros(u64::from(stage.max_us))
         );
     }
     let c = &a.consumers;
@@ -1519,19 +1491,11 @@ pub fn millis(us: u32) -> String {
 }
 
 /// `850 µs`, or `3.15 ms` from a millisecond up.
-pub fn micros(us: u64) -> String {
-    Micros(us).to_string()
-}
-
-struct Micros(u64);
-
-impl fmt::Display for Micros {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            us if us >= 1000 => write!(f, "{:.2} ms", us as f64 / 1000.0),
-            us => write!(f, "{us} µs"),
-        }
-    }
+pub fn micros(us: u64) -> impl fmt::Display {
+    fmt::from_fn(move |f| match us {
+        us if us >= 1000 => write!(f, "{:.2} ms", us as f64 / 1000.0),
+        us => write!(f, "{us} µs"),
+    })
 }
 
 #[cfg(test)]

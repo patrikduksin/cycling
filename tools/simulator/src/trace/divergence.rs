@@ -187,15 +187,6 @@ pub fn summarize(
     }
 }
 
-pub fn describe(
-    timeline: &Timeline,
-    window: (u64, u64),
-    before: &Counts,
-    report: &Report,
-) -> String {
-    summarize(timeline, window, before, report).to_string()
-}
-
 impl fmt::Display for Divergences {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
@@ -288,7 +279,7 @@ mod tests {
             detail: "the recording asked Scan".into(),
         });
         report.counts = Counts::from([(Kind::NotRequested, 3), (Kind::Carried, 1)]);
-        let text = describe(&timeline(), (1_000, 5_000), &before, &report);
+        let text = summarize(&timeline(), (1_000, 5_000), &before, &report).to_string();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[1], "  rider-visible: none");
         assert!(
@@ -308,7 +299,7 @@ mod tests {
 
         let mut seen = Report::new(Mode::Strict);
         seen.counts = Counts::from([(Kind::Seen, 1)]);
-        let text = describe(&timeline(), (0, 5_000), &Counts::new(), &seen);
+        let text = summarize(&timeline(), (0, 5_000), &Counts::new(), &seen).to_string();
         assert!(text.contains("  rider-visible: 1 (Seen 1)"), "{text}");
         assert!(!text.contains("rider-visible: none"), "{text}");
     }

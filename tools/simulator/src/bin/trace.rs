@@ -746,7 +746,7 @@ fn replay(
         || {
             PathBuf::from(".local/replay").join(format!(
                 "{stem}-{}",
-                session_clock(from).replace([':', '.'], "-")
+                session_clock(from).to_string().replace([':', '.'], "-")
             ))
         },
         PathBuf::from,

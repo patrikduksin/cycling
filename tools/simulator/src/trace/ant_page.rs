@@ -25,13 +25,8 @@ pub struct Pages {
 }
 
 impl Pages {
-    pub fn describe(&mut self, identity: Identity, data: [u8; 8]) -> String {
-        let mut out = String::new();
-        self.describe_into(&mut out, identity, data);
-        out
-    }
-
-    pub fn describe_into(&mut self, out: &mut String, identity: Identity, data: [u8; 8]) {
+    /// Write what the packet said to `out`.
+    pub fn describe(&mut self, out: &mut String, identity: Identity, data: [u8; 8]) {
         let before = self
             .last
             .insert((identity.device_type, identity.device_number), data);
@@ -211,22 +206,28 @@ mod tests {
         }
     }
 
+    fn said(pages: &mut Pages, identity: Identity, data: [u8; 8]) -> String {
+        let mut out = String::new();
+        pages.describe(&mut out, identity, data);
+        out
+    }
+
     #[test]
     fn power_reads_watts_and_cadence_from_page_0x10() {
         let mut pages = Pages::default();
         assert_eq!(
-            pages.describe(
+            said(&mut pages, 
                 sensor(POWER),
                 [0x10, 0xd3, 0xff, 88, 0x50, 0x49, 0xe6, 0x00]
             ),
             "power 230 W, cadence 88 rpm (event 211)"
         );
         assert_eq!(
-            pages.describe(sensor(POWER), [0x10, 0xd4, 0xff, 0xff, 0, 0, 0, 0]),
+            said(&mut pages, sensor(POWER), [0x10, 0xd4, 0xff, 0xff, 0, 0, 0, 0]),
             "power 0 W, cadence -- (event 212)"
         );
         assert_eq!(
-            pages.describe(sensor(POWER), [0x52, 0xff, 0, 0, 0, 0, 0xfa, 0x22]),
+            said(&mut pages, sensor(POWER), [0x52, 0xff, 0, 0, 0, 0, 0xfa, 0x22]),
             "battery GOOD 2.98 V"
         );
     }
@@ -235,11 +236,11 @@ mod tests {
     fn heart_rate_ignores_the_toggle_bit() {
         let mut pages = Pages::default();
         assert_eq!(
-            pages.describe(sensor(HEART_RATE), [0x84, 0, 0, 0, 0x34, 0x12, 37, 142]),
+            said(&mut pages, sensor(HEART_RATE), [0x84, 0, 0, 0, 0x34, 0x12, 37, 142]),
             "hr 142 bpm (beat 37)"
         );
         assert_eq!(
-            pages.describe(sensor(HEART_RATE), [0x04, 0, 0, 0, 0, 0, 38, 0]),
+            said(&mut pages, sensor(HEART_RATE), [0x04, 0, 0, 0, 0, 0, 38, 0]),
             "hr -- (beat 38)"
         );
     }
@@ -248,14 +249,14 @@ mod tests {
     fn heart_rate_battery_page_still_carries_the_reading_vana_reads() {
         let mut pages = Pages::default();
         assert_eq!(
-            pages.describe(
+            said(&mut pages, 
                 sensor(HEART_RATE),
                 [0x87, 0x40, 0xfa, 0x22, 0x34, 0x12, 39, 141]
             ),
             "hr 141 bpm (beat 39), battery GOOD 2.98 V"
         );
         assert_eq!(
-            pages.describe(sensor(HEART_RATE), [0xd2, 0xff, 0, 0, 0, 0, 0xfa, 0x22]),
+            said(&mut pages, sensor(HEART_RATE), [0xd2, 0xff, 0, 0, 0, 0, 0xfa, 0x22]),
             "battery GOOD 2.98 V",
             "the common battery page with the toggle bit set"
         );
@@ -266,15 +267,15 @@ mod tests {
         let mut pages = Pages::default();
         let sensor = sensor(SPEED_CADENCE);
         assert_eq!(
-            pages.describe(sensor, [0, 0, 10, 0, 0, 0, 100, 0]),
+            said(&mut pages, sensor, [0, 0, 10, 0, 0, 0, 100, 0]),
             "cadence rev 10, wheel rev 100"
         );
         assert_eq!(
-            pages.describe(sensor, [0xcd, 0x02, 11, 0, 0x00, 0x04, 104, 0]),
+            said(&mut pages, sensor, [0xcd, 0x02, 11, 0, 0x00, 0x04, 104, 0]),
             "cadence 86 rpm (rev 11), wheel 4.00 rev/s (rev 104)"
         );
         assert_eq!(
-            pages.describe(sensor, [0xcd, 0x02, 11, 0, 0x00, 0x04, 104, 0]),
+            said(&mut pages, sensor, [0xcd, 0x02, 11, 0, 0x00, 0x04, 104, 0]),
             "cadence rev 11 (no new revolution), wheel rev 104 (no new revolution)"
         );
     }
@@ -283,11 +284,11 @@ mod tests {
     fn radar_lists_each_target_with_side_range_and_closing_speed() {
         let mut pages = Pages::default();
         assert_eq!(
-            pages.describe(sensor(RADAR), [0x30, 0b01, 0b00, 10, 0, 0, 3, 0]),
+            said(&mut pages, sensor(RADAR), [0x30, 0b01, 0b00, 10, 0, 0, 3, 0]),
             "radar targets A: behind 31 m approaching 9.1 m/s"
         );
         assert_eq!(
-            pages.describe(sensor(RADAR), [0x31, 0, 0, 0, 0, 0, 0, 0]),
+            said(&mut pages, sensor(RADAR), [0x31, 0, 0, 0, 0, 0, 0, 0]),
             "radar targets B: none"
         );
     }

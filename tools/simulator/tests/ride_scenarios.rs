@@ -4739,8 +4739,6 @@ fn ride_cues_rise_to_go_fall_to_pause_and_mark_laps() {
     sim.checkpoint("ride saved with its cue");
 }
 
-/// This session's trace entries of `kind`, as `cycling trace find` lists
-/// them.
 fn traced(sim: &Sim, kind: Traced) -> Vec<String> {
     shell_simulator::trace::timeline::read(&sim.trace())
         .expect("the session's own trace decodes")
@@ -4762,7 +4760,6 @@ fn marks_on_a_ride(sim: &mut Sim) {
     sim.advance(seconds(5));
     let first = sim.screen().page().expect("page dots");
     assert!(first.starts_with("1/"), "{first}");
-    // The first report pages as a press does; the repeats leave the page.
     sim.hold(Button::BottomLeft, 1000);
     let second = sim.screen().page().expect("page dots");
     assert!(second.starts_with("2/"), "one page on, not three: {second}");

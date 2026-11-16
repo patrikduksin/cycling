@@ -273,7 +273,6 @@ def pull_media(connection, media, out, cache, problems, timing):
 
 
 def marks_text(marks):
-    """The rider's marks as `cycling trace pull` prints them after its result."""
     if not marks:
         return 'marks: none'
     return '\n'.join(['marks:', *(f'  {mark}' for mark in marks)])

@@ -20,7 +20,6 @@ TERRAIN = 'uv run --project tools/terrain --locked'
 # system Python provides; they use the source tree instead of the uv environment.
 SYSTEM_PYTHON = 'PYTHONPATH=tools/devtools/src /usr/bin/python3 -m cycling_devtools.'
 SIM_SCENARIOS = 'cargo test -p shell-simulator --locked --no-default-features --test ride_scenarios'
-# The trace tool built once per commit, so agents' trace queries skip cargo (tools/simulator/trace.sh).
 TRACE = 'bash tools/simulator/trace.sh'
 FUZZ = 'cargo run -q -p shell-simulator --locked --no-default-features --bin fuzz --'
 PRIMARY_CHECKOUT_RIDE_TRACES = (
@@ -467,7 +466,6 @@ def run_side_by_side(names, env):
         return 0
     if len(names) == 1:
         return run(BY_NAME[names[0]], env=env)
-    # Imported here: they cost a tenth of a second at start-up, which every quick task would pay.
     import threading
     from concurrent.futures import ThreadPoolExecutor
 

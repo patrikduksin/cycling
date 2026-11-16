@@ -420,8 +420,6 @@ mod tests {
         assert!(live.sim.device.sim_mut().battery.charging);
     }
 
-    /// The MOVE reports the device received while `key` stayed down for
-    /// `ms`.
     fn reports(live: &mut Live, key: char, ms: u64) -> usize {
         let count = |live: &Live| {
             crate::trace::timeline::read(&live.sim.trace())
@@ -502,7 +500,6 @@ mod tests {
         let mut live = Live::new();
         boot(&mut live);
         live.key_down('3');
-        // About ten reports in a real second, not one per simulated 100 ms.
         let reported = reports(&mut live, 'a', 1_000);
         assert!((5..=15).contains(&reported), "{reported} reports");
     }

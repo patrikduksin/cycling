@@ -85,17 +85,13 @@ impl Meaning {
 /// The report's counts before the window opened.
 pub type Counts = BTreeMap<Kind, u32>;
 
-/// What a replay window's divergences mean: `describe` in words,
-/// `--json` as data.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Divergences {
     pub mode: &'static str,
     pub from_ms: u64,
     pub to_ms: u64,
-    /// Inside the window, by meaning.
     pub meanings: Vec<Meant>,
     pub first: Option<First>,
-    /// Before the window opened, by kind.
     #[serde(serialize_with = "by_kind")]
     pub before: Counts,
     pub verdict: &'static str,
@@ -191,7 +187,6 @@ pub fn summarize(
     }
 }
 
-/// `summarize`, in words.
 pub fn describe(
     timeline: &Timeline,
     window: (u64, u64),

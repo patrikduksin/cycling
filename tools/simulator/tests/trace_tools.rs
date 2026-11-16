@@ -1217,8 +1217,6 @@ fn a_damaged_block_ends_the_timeline_as_corrupt() {
     assert!(timeline.entries.is_empty());
 }
 
-/// `cycling trace <args> --json`: what it printed, as the one JSON document
-/// it must be.
 fn trace_json(args: &[&str]) -> serde_json::Value {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_trace"))
         .args(args)

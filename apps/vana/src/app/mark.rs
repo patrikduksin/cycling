@@ -1,8 +1,3 @@
-//! The rider's mark. Holding MOVE for `HOLD_MS` on the ride pages, Ready,
-//! the summary or Home writes a mark into the session trace, so whoever
-//! reads the trace later starts at the moment the rider noticed something.
-//! The hold's first report is an ordinary MOVE; the mark puts back what it
-//! changed, so a mark leaves the ride and the screen as they were.
 use super::Runtime;
 use super::climb_page::Follow;
 use super::cues::Cue;
@@ -12,17 +7,12 @@ use crate::screens::ride::RidePage;
 use crate::screens::workout::{Page, Text};
 use core::fmt::Write;
 
-/// How long MOVE stays down to mark, from the hold's first report.
 const HOLD_MS: u64 = 1_500;
 
-/// A mark VANA made, until `report_seen` hands it on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Mark {
-    /// Its number in this power-on session, from 1.
     pub count: u16,
-    /// When the hold's first report came.
     pub pressed_ms: u64,
-    /// The page shown before that report, by its seen name.
     pub page: &'static str,
 }
 
@@ -33,7 +23,6 @@ pub(super) struct Marks {
     pub(super) made: Option<Mark>,
 }
 
-/// A MOVE hold that began on a page that marks.
 #[derive(Clone, Copy)]
 struct Hold {
     since: u64,
@@ -42,7 +31,6 @@ struct Hold {
     marked: bool,
 }
 
-/// What MOVE changes on a page that marks, as it was before the hold.
 #[derive(Clone, Copy)]
 enum View {
     Ride {
@@ -57,8 +45,6 @@ enum View {
 }
 
 impl View {
-    /// None on a page where a held MOVE does something of its own, or
-    /// nothing marks.
     fn of(navigation: &Navigation) -> Option<Self> {
         Some(match navigation.page {
             Page::Ride => Self::Ride {
@@ -98,9 +84,6 @@ impl View {
 }
 
 impl Runtime {
-    /// A MOVE report, before any debounce. On a page that marks, the hold's
-    /// first report goes on as a press, its repeats never act, and the
-    /// repeat that reaches `HOLD_MS` marks. True when the report is spent.
     pub(super) fn mark_hold(&mut self, held: bool, received: u64, now: u64) -> bool {
         let Some(before) = View::of(&self.navigation) else {
             self.marks.hold = None;

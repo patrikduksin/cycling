@@ -23,8 +23,6 @@ debug = 2
 panic = "abort"
 overflow-checks = true
 
-# The host trace tools (`cycling trace`, `cycling replay`): optimised like
-# release but without the firmware's fat LTO and size optimisation.
 [profile.tools]
 inherits = "release"
 opt-level = 3

@@ -1,6 +1,3 @@
-"""tools/simulator/trace.sh: the trace tool of a clean commit is built once and shared by every worktree; an edited
-tree builds and runs its own."""
-
 import os
 import shutil
 import subprocess
@@ -13,8 +10,6 @@ from cycling_devtools.workspace import ROOT
 
 LAUNCHER = ROOT / 'tools' / 'simulator' / 'trace.sh'
 
-# Stands in for cargo: it "builds" a trace tool that prints the commit and the tree it was built from, and logs
-# each build.
 FAKE_CARGO = """#!/usr/bin/env bash
 set -eu
 manifest=$(dirname "${4:?}")

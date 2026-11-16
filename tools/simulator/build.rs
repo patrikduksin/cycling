@@ -1,11 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The checkout paths whose tracked files build VANA in the simulator, one
-/// a line from the repository root. An edit under any of them makes the
-/// build `-dirty`; the simulator gets them as `CYCLING_BUILD_SOURCES` for
-/// the same check, and `trace.sh` reads the file to tell whether the
-/// binary built for the commit is this tree's.
 const BUILD_SOURCES: &str = include_str!("build-sources");
 
 fn git(root: &Path, args: &[&str]) -> Option<String> {

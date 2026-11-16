@@ -31,7 +31,6 @@ impl Pages {
         out
     }
 
-    /// `describe`, written at the end of `out`.
     pub fn describe_into(&mut self, out: &mut String, identity: Identity, data: [u8; 8]) {
         let before = self
             .last

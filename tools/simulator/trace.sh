@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# `cycling trace` and `cycling replay`: run the trace tool without cargo's
-# freshness check. A checkout whose build sources match its commit runs the
-# binary built for that commit, kept in the primary checkout's
-# .local/tools/trace/ for every worktree and built once. One with
-# uncommitted changes to them builds its own tree and runs that.
 set -euo pipefail
 
 {
@@ -30,7 +25,6 @@ fi
 cache=$(dirname "$common")/.local/tools/trace
 if [ ! -x "$cache/$commit" ]; then
     build
-    # An edit made while it built would be in the binary.
     if edited; then
         exec "$target/tools/trace" "$@"
     fi

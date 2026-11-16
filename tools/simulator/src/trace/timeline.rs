@@ -300,7 +300,6 @@ pub struct Entry {
     /// The same source said the same thing before: only counters or a
     /// reading moved. Hidden unless asked for.
     pub repeat: bool,
-    /// The bytes behind a decoded packet.
     #[serde(skip_serializing_if = "Option::is_none", serialize_with = "hex_bytes")]
     pub bytes: Option<[u8; 8]>,
     /// For a page: what in its pass brought it up.
@@ -325,7 +324,6 @@ impl Serialize for Kind {
     }
 }
 
-/// As the summary writes it: `after button BottomLeft code 1`.
 impl Serialize for Cause {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self)
@@ -552,6 +550,8 @@ pub fn field<'a>(shown: &'a str, name: &str) -> Option<&'a str> {
         .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
 }
 
+const TRACE_BYTES_PER_ENTRY_FLOOR: usize = 16;
+
 /// Decode `bytes`; an error for a trace whose header does not decode.
 pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
     let (header, mut events) = trace::decode(bytes).map_err(|error| match error {
@@ -560,9 +560,7 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
     })?;
     let mut reader = Reader {
         last: vec![None; Kind::ALL.len() << 8],
-        // A device trace spends about 23 bytes an entry, so the entries
-        // rarely move as they grow.
-        entries: Vec::with_capacity(bytes.len() / 16),
+        entries: Vec::with_capacity(bytes.len() / TRACE_BYTES_PER_ENTRY_FLOOR),
         ..Reader::default()
     };
     for event in events.by_ref() {
@@ -595,7 +593,6 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
     })
 }
 
-/// A sensor that sent packets: when it was last heard, and its name.
 struct Heard {
     identity: ant::Identity,
     last_ms: u64,
@@ -611,14 +608,9 @@ struct Reader {
     recording: bool,
     clock: Vec<Anchor>,
     utc_at_boot_ms: Option<u64>,
-    /// The last entry each source said that was not a repeat, indexed by
-    /// kind, then source.
     last: Vec<Option<usize>>,
-    /// The text of the entry being written, reused so that an entry costs
-    /// one allocation of its exact length.
     line: String,
     pages: Pages,
-    /// Each sensor heard from; a handful.
     heard: Vec<Heard>,
     silences: Vec<Silence>,
     /// The first entry of the pass being read.
@@ -657,7 +649,6 @@ impl Reader {
         self.push_line(kind, 0, line);
     }
 
-    /// Push `text` lowercased, as the Debug names of enums read.
     fn push_lower(&mut self, kind: Kind, text: fmt::Arguments<'_>) {
         let mut line = self.line();
         let _ = line.write_fmt(text);
@@ -665,7 +656,6 @@ impl Reader {
         self.push_line(kind, 0, line);
     }
 
-    /// The reused line buffer, empty, to write an entry's text into.
     fn line(&mut self) -> String {
         let mut line = std::mem::take(&mut self.line);
         line.clear();
@@ -742,8 +732,6 @@ impl Reader {
         }
     }
 
-    /// Note a packet from `identity`, and the silence it ends; the sensor's
-    /// name.
     fn heard_from(&mut self, identity: ant::Identity) -> &str {
         let at = self.heard.iter().position(|heard| {
             (heard.identity.device_type, heard.identity.device_number)
@@ -1208,8 +1196,6 @@ fn about_storage(text: &str) -> bool {
     STORAGE_WORDS.iter().any(|word| text.contains(word))
 }
 
-/// Lowercase `line` from byte `start`, as `str::to_lowercase` does, without
-/// a copy when that part is ASCII.
 fn lowercase_from(line: &mut String, start: usize) {
     if line[start..].is_ascii() {
         line[start..].make_ascii_lowercase();
@@ -1233,7 +1219,6 @@ pub fn sensor(identity: ant::Identity) -> String {
     Sensor(identity).to_string()
 }
 
-/// Writes an ANT+ sensor as `power#12345`.
 pub struct Sensor(pub ant::Identity);
 
 impl fmt::Display for Sensor {
@@ -1344,7 +1329,6 @@ pub fn rate(per_second: f64) -> String {
     Rate(per_second).to_string()
 }
 
-/// Writes a rate as `12/s`, or `1.5/s` under ten.
 struct Rate(f64);
 
 impl fmt::Display for Rate {
@@ -1360,7 +1344,6 @@ pub fn percent(share: f64) -> String {
     Percent(share).to_string()
 }
 
-/// Writes a share as `12.5%`.
 struct Percent(f64);
 
 impl fmt::Display for Percent {

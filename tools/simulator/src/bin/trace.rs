@@ -147,7 +147,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// One JSON document, on its own line.
 fn json(value: &impl Serialize) -> String {
     let mut out = serde_json::to_string(value).expect("trace data serializes");
     out.push('\n');
@@ -216,9 +215,7 @@ fn run(args: &[String]) -> Result<String, String> {
     );
     let (capture, media) =
         file::load(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    // The process exits once the command is done; freeing half a million
-    // entries one by one would only delay that.
-    let timeline = || read(&capture.trace).map(|timeline| &*Box::leak(Box::new(timeline)));
+    let timeline = || read(&capture.trace).map(kept_until_exit);
     match command.as_str() {
         "summary" => Ok(summary(&path, timeline()?, &media, as_json)),
         "origin" => {
@@ -319,20 +316,16 @@ fn run(args: &[String]) -> Result<String, String> {
     }
 }
 
-/// The trace's header and the media it starts on, as data.
 #[derive(Serialize)]
 struct Header<'a> {
     trace: String,
-    /// None when unknown.
     build: Option<&'a str>,
     boot: u32,
     format: u16,
     end_ms: u64,
     passes: u64,
     end: &'static str,
-    /// saved, rebuilt or blank.
     media: &'static str,
-    /// For rebuilt media, what could not be rebuilt, one line each.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     media_report: Vec<&'a str>,
 }
@@ -362,6 +355,10 @@ impl<'a> Header<'a> {
             },
         }
     }
+}
+
+fn kept_until_exit<T>(value: T) -> &'static T {
+    Box::leak(Box::new(value))
 }
 
 fn header(path: &Path, timeline: &Timeline, media: &Media) -> String {
@@ -402,9 +399,7 @@ struct Summary<'a> {
     silences: &'a [Silence],
     spans: &'a [Span],
     events: &'a [Point],
-    /// The activity, battery flags and health lines.
     battery: Vec<&'a str>,
-    /// Per kind, in the order `--kinds` lists them.
     entries: BTreeMap<Kind, Count>,
 }
 
@@ -509,11 +504,8 @@ fn summary(path: &Path, timeline: &Timeline, media: &Media, as_json: bool) -> St
 #[derive(Serialize)]
 struct Window<'a> {
     from_ms: u64,
-    /// None for the end of the trace.
     to_ms: Option<u64>,
     entries: Vec<&'a Entry>,
-    /// What the window held that the options left out: kinds by name, and
-    /// `repeats`.
     hidden: BTreeMap<&'a str, usize>,
 }
 
@@ -577,7 +569,6 @@ fn in_window(timeline: &Timeline, from: u64, to: u64) -> impl Iterator<Item = &E
 
 #[derive(Serialize)]
 struct Answers<'a> {
-    /// Up to `--limit`.
     found: &'a [Found<'a>],
     total: usize,
 }
@@ -689,10 +680,7 @@ fn pick_mode(
     }
 }
 
-/// The files that build VANA with uncommitted changes in the checkout this
-/// runs in, which need not be the one that built it: worktrees share the
-/// binary built for a commit.
-fn uncommitted() -> Vec<String> {
+fn uncommitted_here() -> Vec<String> {
     std::process::Command::new("git")
         .args(["status", "--porcelain", "--untracked-files=no", "--"])
         .args(
@@ -720,7 +708,6 @@ struct Replayed<'a> {
     from_ms: u64,
     to_ms: u64,
     reached: Moment,
-    /// The trace ended before `to_ms`.
     trace_ended: bool,
     divergence: Option<divergence::Divergences>,
     artifacts: Artifacts,
@@ -752,7 +739,7 @@ fn replay(
         options.value("mode").unwrap_or("auto"),
         &timeline.build,
         option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""),
-        &uncommitted(),
+        &uncommitted_here(),
     )?;
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("trace");
     let dir = options.value("out").map_or_else(

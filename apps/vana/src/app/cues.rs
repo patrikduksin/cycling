@@ -54,7 +54,6 @@ pub enum Cue {
     OnCourse,
     TurnSoon,
     TurnNow,
-    /// The rider marked a moment for the trace.
     Mark,
 }
 

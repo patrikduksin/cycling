@@ -53,7 +53,7 @@ use device_api::display::Display;
 use device_api::input::InputSource;
 use device_api::power::Power;
 use device_api::storage::OwnedFlash;
-use firmware_shell::preferences::AppPreferences;
+use firmware_shell::preferences::{AppPreferences, Source};
 use firmware_shell::shell::{BrightnessChoice, Shell};
 
 const VERSION: u8 = 11;
@@ -487,9 +487,9 @@ impl Default for Preferences {
 }
 
 impl Preferences {
-    fn load(bytes: &[u8], settings_foreign: bool) -> Self {
+    fn load(bytes: &[u8], settings: Source) -> Self {
         let (record, stored) = decode(bytes);
-        let stored = if settings_foreign {
+        let stored = if settings == Source::Foreign {
             Stored::Foreign
         } else {
             stored
@@ -599,8 +599,8 @@ impl Preferences {
 
 impl Runtime {
     /// Adopt the preferences the shell loaded at startup.
-    pub fn load_preferences(&mut self, app: &AppPreferences, settings_foreign: bool) {
-        self.preferences = Preferences::load(app.bytes(), settings_foreign);
+    pub fn load_preferences(&mut self, app: &AppPreferences, settings: Source) {
+        self.preferences = Preferences::load(app.bytes(), settings);
         self.links.saved = self.preferences.sensors;
         self.apply_options();
         self.settle_wheel(0);
@@ -1086,11 +1086,11 @@ mod tests {
     fn sensor_changes_save_at_once_and_locked_records_keep_them_in_memory() {
         let mut sensors = Saved::default();
         sensors.select(sensor(120, 1));
-        let mut preferences = Preferences::load(&encode(&Record::default()), false);
+        let mut preferences = Preferences::load(&encode(&Record::default()), Source::Current);
         assert_eq!(preferences.stored, Stored::Current);
         preferences.set_sensors(sensors, 10_000);
         assert!(preferences.due(10_000));
-        let mut locked = Preferences::load(&[5, 9], false);
+        let mut locked = Preferences::load(&[5, 9], Source::Current);
         locked.set_sensors(sensors, 10_000);
         assert_eq!(locked.sensors, sensors);
         assert!(!locked.due(60_000));
@@ -1098,7 +1098,7 @@ mod tests {
 
     #[test]
     fn edits_settle_before_saving_and_a_foreign_record_is_never_replaced() {
-        let mut preferences = Preferences::load(&[], false);
+        let mut preferences = Preferences::load(&[], Source::Missing);
         assert_eq!(preferences.persistence(), Persistence::Saved);
         let stronger = TrainingProfile::new(250, 185).unwrap();
         preferences.set(stronger, 1_000);
@@ -1106,13 +1106,13 @@ mod tests {
         assert!(!preferences.due(2_999));
         assert!(preferences.due(3_000));
 
-        let mut locked = Preferences::load(&[VERSION + 1, 9], false);
+        let mut locked = Preferences::load(&[VERSION + 1, 9], Source::Current);
         assert_eq!(locked.stored, Stored::Foreign);
         assert_eq!(locked.persistence(), Persistence::Locked);
         locked.set(stronger, 1_000);
         assert_eq!(locked.profile, stronger, "edits still apply");
         assert!(!locked.due(60_000), "unreadable data is never replaced");
-        let mut shell = Preferences::load(&[], true);
+        let mut shell = Preferences::load(&[], Source::Foreign);
         assert_eq!(shell.persistence(), Persistence::Locked);
         shell.set(stronger, 1_000);
         assert!(!shell.due(60_000), "nor are foreign settings around it");
@@ -1120,7 +1120,7 @@ mod tests {
 
     #[test]
     fn option_edits_settle_like_profile_edits() {
-        let mut preferences = Preferences::load(&encode(&Record::default()), false);
+        let mut preferences = Preferences::load(&encode(&Record::default()), Source::Current);
         let quiet = Options {
             sounds: false,
             ..preferences.options

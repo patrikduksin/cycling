@@ -145,7 +145,10 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(shell.settings_source, "unavailable");
+        assert_eq!(
+            shell.settings_source,
+            firmware_shell::preferences::Source::Unavailable
+        );
         assert!(!shell.settings_error);
         shell.settings.dim_timeout_secs = 1;
         input.push(0, Input::Touch(Point { x: 1, y: 1 }));
@@ -395,6 +398,26 @@ mod tests {
             fresh.take_frame(),
             "the panel's digest, whichever rows were sent"
         );
+    }
+
+    #[test]
+    fn nothing_saves_settings_from_a_format_mark_until_the_restart() {
+        use firmware_shell::preferences::{AppPreferences, Source};
+        let display = DisplayDevice::new(240, 320);
+        let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+        let power = PowerDevice::new(Availability::Ready);
+        let mut shell = Shell::new(display, input, power, Memory::default(), 0).unwrap();
+        assert!(shell.save());
+        assert_eq!(shell.settings_source, Source::Current);
+        assert!(shell.condemn_settings());
+        assert_eq!(shell.settings_source, Source::Foreign);
+        assert!(!shell.save(), "the mark stays");
+        assert!(shell.erase_settings());
+        let app = AppPreferences::new(&[1]).unwrap();
+        assert!(!shell.save(), "an erased journal stays blank");
+        assert!(!shell.save_app_preferences(app));
+        assert!(!shell.save_connectivity());
+        assert!(shell.settings_error);
     }
 
     #[test]

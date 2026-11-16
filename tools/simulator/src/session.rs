@@ -876,7 +876,7 @@ impl Session {
                 sdk.attach_deleted_rides(Box::leak(deleted));
             }
         }
-        sdk.load_preferences(&shell.settings.app, shell.settings_foreign);
+        sdk.load_preferences(&shell.settings.app, shell.settings_source);
         sdk.set_micros_clock(host_micros);
         // The look-ahead and its tile cache, which the device keeps in PSRAM;
         // each boot starts them over, as device memory does.

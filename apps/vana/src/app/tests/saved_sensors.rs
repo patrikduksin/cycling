@@ -266,7 +266,7 @@ fn disconnect_removes_closes_and_late_events_cannot_resurrect_it() {
     let mut restarted = Runtime::new(Profile::HeartRate);
     restarted.load_preferences(
         &firmware_shell::preferences::AppPreferences::new(&record).unwrap(),
-        false,
+        firmware_shell::preferences::Source::Current,
     );
     let mut fresh = Radio::new();
     run(&mut restarted, &mut fresh, 0, 30_000);
@@ -352,7 +352,7 @@ fn unreadable_saved_record_is_kept_and_reported() {
     let mut runtime = Runtime::new(Profile::HeartRate);
     runtime.load_preferences(
         &firmware_shell::preferences::AppPreferences::new(&[3, 1, 2]).unwrap(),
-        false,
+        firmware_shell::preferences::Source::Current,
     );
     let mut radio = Radio::new();
     advance(&mut runtime, &mut radio, 0);
@@ -406,7 +406,7 @@ fn save_problems_stay_visible_while_discovery_runs() {
     let mut runtime = Runtime::new(Profile::HeartRate);
     runtime.load_preferences(
         &firmware_shell::preferences::AppPreferences::new(&[3, 1, 2]).unwrap(),
-        false,
+        firmware_shell::preferences::Source::Current,
     );
     let mut radio = Radio::new();
     run(&mut runtime, &mut radio, 0, 1_000);

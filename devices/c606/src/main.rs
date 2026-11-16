@@ -295,7 +295,7 @@ async fn console(
         ..Default::default()
     };
     {
-        sdk.load_preferences(&system.settings.app, system.settings_foreign);
+        sdk.load_preferences(&system.settings.app, system.settings_source);
         sdk.set_latency_clock(|| embassy_time::Instant::now().as_millis());
         sdk.set_micros_clock(|| embassy_time::Instant::now().as_micros());
         sdk.draw_boot(system);

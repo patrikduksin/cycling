@@ -314,7 +314,7 @@ fn restored(peers: &[Identity]) -> Runtime {
     let mut runtime = Runtime::new(Profile::HeartRate);
     runtime.load_preferences(
         &firmware_shell::preferences::AppPreferences::new(&record).unwrap(),
-        false,
+        firmware_shell::preferences::Source::Current,
     );
     runtime
 }

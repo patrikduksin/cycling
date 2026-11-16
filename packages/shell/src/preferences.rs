@@ -224,8 +224,24 @@ impl Settings {
 pub enum Source {
     Current,
     Missing,
-    /// Another version, or damaged: kept, never overwritten unasked.
+    /// Another version, or damaged: kept, and never saved over.
     Foreign,
+    /// The journal could not be read.
+    Failed,
+    /// There is no configuration storage.
+    Unavailable,
+}
+
+impl Source {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Missing => "missing",
+            Self::Foreign => "foreign",
+            Self::Failed => "failed",
+            Self::Unavailable => "unavailable",
+        }
+    }
 }
 
 pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
@@ -624,7 +640,9 @@ pub(crate) mod tests {
                 Source::Foreign => {
                     assert_eq!(decoded, Settings::default(), "seed {seed}")
                 }
-                Source::Missing => panic!("seed {seed}: {source:?}"),
+                Source::Missing | Source::Failed | Source::Unavailable => {
+                    panic!("seed {seed}: {source:?}")
+                }
             }
         }
     }

@@ -81,7 +81,7 @@ fn main() {
             buttons[0],
             shell.foreground,
             display.0.borrow().submissions,
-            shell.settings_source
+            shell.settings_source.name()
         );
     }
 }

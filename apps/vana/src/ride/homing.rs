@@ -285,6 +285,10 @@ impl<'a> Homing<'a> {
         self.here
     }
 
+    pub fn position_taken_ms(&self) -> Option<u64> {
+        self.here.map(|_| self.here_ms)
+    }
+
     /// While the fix is fresh: metres in a straight line from it to the
     /// ride's start, and metres of track ridden, the way back over it.
     pub fn way_back(&self) -> Option<(u32, u32)> {

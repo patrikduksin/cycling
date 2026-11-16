@@ -121,31 +121,28 @@ fn opens_at(speed_mm_s: Option<u32>) -> f32 {
 }
 
 #[test]
-fn the_banner_opens_30_s_ahead_clamped_to_150_to_400_m() {
-    for (speed_mm_s, ahead_m) in [
-        (None, 150.0),
-        (Some(0), 150.0),
-        (Some(3_000), 150.0),
-        (Some(5_000), 150.0),
-        (Some(8_000), 240.0),
-        (Some(13_333), 399.0),
-        (Some(20_000), 400.0),
-        (Some(u32::MAX), 400.0),
+fn the_banner_opens_300_m_ahead_at_any_speed() {
+    for speed_mm_s in [
+        None,
+        Some(0),
+        Some(2_778),
+        Some(6_944),
+        Some(11_111),
+        Some(u32::MAX),
     ] {
-        let opened = opens_at(speed_mm_s);
-        assert_eq!(1000.0 - opened, ahead_m, "{speed_mm_s:?}");
+        assert_eq!(1000.0 - opens_at(speed_mm_s), 300.0, "{speed_mm_s:?}");
     }
 }
 
 #[test]
-fn the_banner_opens_at_30_s_exactly_and_not_a_millimetre_sooner() {
+fn the_banner_opens_at_300_m_exactly_and_not_a_millimetre_sooner() {
     let turns = [corner(1000.0, RIGHT)];
     let mut rider = Rider::new(&turns, Some(8_000));
     assert_eq!(rider.at(0.0), Some(Event::Following));
-    assert_eq!(rider.at(759.999), None);
-    assert_eq!(rider.sign(), chip(Glyph::Right, 240));
-    assert_eq!(rider.at(760.0), Some(Event::TurnSoon));
-    assert_eq!(rider.sign(), shows(Glyph::Right, 240));
+    assert_eq!(rider.at(699.999), None);
+    assert_eq!(rider.sign(), chip(Glyph::Right, 300));
+    assert_eq!(rider.at(700.0), Some(Event::TurnSoon));
+    assert_eq!(rider.sign(), shows(Glyph::Right, 300));
 }
 
 #[test]
@@ -184,7 +181,7 @@ fn past_a_turn_the_sign_shows_the_next_at_once_and_stays_up_40_m() {
     rider.at(1050.0);
     assert_eq!(rider.sign(), chip(Glyph::Left, 1950));
     let heard = rider.ride(1055.0, 3000.0, 5.0);
-    assert_eq!(heard, [(2850.0, Event::TurnSoon), (2970.0, Event::TurnNow)]);
+    assert_eq!(heard, [(2700.0, Event::TurnSoon), (2970.0, Event::TurnNow)]);
 }
 
 fn through_two(turns: &[Turn; 2], speed_mm_s: Option<u32>) -> (Vec<Event>, Vec<Sign>) {
@@ -201,8 +198,8 @@ fn through_two(turns: &[Turn; 2], speed_mm_s: Option<u32>) -> (Vec<Event>, Vec<S
 }
 
 #[test]
-fn turns_under_300_m_apart_keep_the_banner_up_through_them() {
-    for (gap_m, dense) in [(299.0, true), (300.0, false)] {
+fn turns_that_open_their_window_by_the_end_of_the_grace_keep_the_banner_up_through_them() {
+    for (gap_m, dense) in [(340.0, true), (345.0, false)] {
         let turns = [corner(1000.0, RIGHT), corner(1010.0 + gap_m, LEFT)];
         let (heard, signs) = through_two(&turns, None);
         let up = signs.iter().all(|sign| matches!(sign, Sign::Turn { .. }));
@@ -250,7 +247,7 @@ fn a_gentle_bend_holds_nothing_back() {
     let heard = rider.ride(0.0, 1000.0, 5.0);
     assert_eq!(
         heard[1..],
-        [(850.0, Event::TurnSoon), (970.0, Event::TurnNow)]
+        [(700.0, Event::TurnSoon), (970.0, Event::TurnNow)]
     );
 }
 
@@ -279,7 +276,7 @@ fn the_beep_comes_30_m_before_the_turn_once_however_the_fixes_jitter() {
         heard,
         [
             (0.0, Event::Following),
-            (850.0, Event::TurnSoon),
+            (700.0, Event::TurnSoon),
             (970.0, Event::TurnNow)
         ]
     );
@@ -293,9 +290,9 @@ fn riding_back_30_m_and_on_again_sounds_the_turn_again() {
     assert_eq!(rider.events(976.0, 980.0, 1.0), []);
     rider.at(951.0);
     assert_eq!(rider.events(955.0, 1000.0, 5.0), [], "29 m back is jitter");
-    rider.at(800.0);
-    let heard = rider.ride(805.0, 1000.0, 5.0);
-    assert_eq!(heard, [(850.0, Event::TurnSoon), (970.0, Event::TurnNow)]);
+    rider.at(650.0);
+    let heard = rider.ride(655.0, 1000.0, 5.0);
+    assert_eq!(heard, [(700.0, Event::TurnSoon), (970.0, Event::TurnNow)]);
 }
 
 #[test]
@@ -402,8 +399,12 @@ fn the_way_back_leads_to_the_missed_turn_and_never_moves() {
         rider.step(Observed::Fix(fixed));
     }
     let guidance = rider.nav.guidance(&turns, rider.now_ms, locate).unwrap();
-    assert_eq!(guidance.junction, Some((0.0, 1000.0)));
-    let back = libm::sqrtf(90.0 * 90.0 + 36.0 * 36.0);
+    assert_eq!(
+        guidance.junction.map(|spot| spot.at),
+        Some((0.0, 1005.0)),
+        "the corner, midway through the turn's 10 m"
+    );
+    let back = libm::sqrtf(90.0 * 90.0 + 31.0 * 31.0);
     assert_eq!(
         guidance.sign,
         Sign::OffCourse {
@@ -417,7 +418,7 @@ fn far_from_any_turn_the_way_back_leads_to_where_the_rider_left() {
     let turns = [corner(3000.0, RIGHT)];
     let (rider, _) = off_by(&turns, &[45.0, 120.0, 300.0, 500.0, 700.0, 900.0]);
     let guidance = rider.nav.guidance(&turns, rider.now_ms, locate).unwrap();
-    assert_eq!(guidance.junction, Some((0.0, 500.0)));
+    assert_eq!(guidance.junction.map(|spot| spot.at), Some((0.0, 500.0)));
     assert_eq!(
         guidance.sign,
         Sign::OffCourse {
@@ -434,12 +435,16 @@ fn junction_left_at(along_m: f32) -> Option<Point> {
     for _ in 0..6 {
         rider.fix(along_m + 1.0, 50.0, true);
     }
-    rider.nav.guidance(&turns, rider.now_ms, locate)?.junction
+    rider
+        .nav
+        .guidance(&turns, rider.now_ms, locate)?
+        .junction
+        .map(|spot| spot.at)
 }
 
 #[test]
 fn the_way_back_leads_to_a_missed_turn_only_within_60_m_of_where_the_rider_left() {
-    assert_eq!(junction_left_at(1060.0), Some((0.0, 1000.0)));
+    assert_eq!(junction_left_at(1060.0), Some((0.0, 1005.0)), "the corner");
     assert_eq!(junction_left_at(1061.0), Some((0.0, 1061.0)));
 }
 
@@ -462,20 +467,20 @@ fn arriving_sounds_once_and_shows_for_60_s() {
 
 #[test]
 fn of_two_sounds_due_on_one_fix_the_second_waits_a_fix_while_it_holds() {
-    let turns = [corner(700.0, RIGHT)];
+    let turns = [corner(900.0, RIGHT)];
     let (mut rider, _) = off_by(&turns, &[60.0; 6]);
-    assert_eq!(rider.at(600.0), Some(Event::OnCourse));
-    assert_eq!(rider.at(605.0), Some(Event::TurnSoon));
-    assert_eq!(rider.at(610.0), None);
+    assert_eq!(rider.at(800.0), Some(Event::OnCourse));
+    assert_eq!(rider.at(805.0), Some(Event::TurnSoon));
+    assert_eq!(rider.at(810.0), None);
     let (mut rider, _) = off_by(&turns, &[60.0; 6]);
-    assert_eq!(rider.at(680.0), Some(Event::OnCourse));
-    assert_eq!(rider.at(681.0), Some(Event::TurnNow));
-    assert_eq!(rider.at(682.0), None);
+    assert_eq!(rider.at(880.0), Some(Event::OnCourse));
+    assert_eq!(rider.at(881.0), Some(Event::TurnNow));
+    assert_eq!(rider.at(882.0), None);
     assert_eq!(rider.sign(), shows(Glyph::Right, 18));
     let (mut rider, _) = off_by(&turns, &[60.0; 6]);
-    assert_eq!(rider.at(680.0), Some(Event::OnCourse));
-    assert_eq!(rider.fix(681.0, 20.0, false), None);
-    assert_eq!(rider.at(682.0), None);
+    assert_eq!(rider.at(880.0), Some(Event::OnCourse));
+    assert_eq!(rider.fix(881.0, 20.0, false), None);
+    assert_eq!(rider.at(882.0), None);
 }
 
 #[test]
@@ -495,9 +500,9 @@ fn a_beep_put_off_a_fix_is_dropped_once_its_turn_is_passed() {
 fn the_same_fix_again_sounds_nothing_more() {
     let turns = [corner(1000.0, RIGHT)];
     let mut rider = Rider::new(&turns, None);
-    rider.ride(0.0, 845.0, 5.0);
+    rider.ride(0.0, 695.0, 5.0);
     rider.now_ms += 1_000;
-    let fixed = rider.fixed(850.0, 0.0, true);
+    let fixed = rider.fixed(700.0, 0.0, true);
     assert_eq!(rider.step(Observed::Fix(fixed)), Some(Event::TurnSoon));
     for _ in 0..3 {
         assert_eq!(rider.step(Observed::Fix(fixed)), None);

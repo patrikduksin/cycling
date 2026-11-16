@@ -3,14 +3,14 @@
 //!
 //! `Navigator` sees one `Observed` per fix and the course's turns, in
 //! millimetres along from its start, and keeps the latches the sign needs.
-//! The banner opens `window_mm` before the next turn, and stays open once
+//! The banner opens `WINDOW_MM` before the next turn, and stays open once
 //! open. After a turn it shows the next one at once, and stays up for
 //! `GRACE_MM` past the turn, or longer while the turns are `dense`. Its
 //! sound plays only when it opens, and the beep `BEEP_MM` before each
 //! turn plays once. Off course is more than `OFF_M` off on fixes at least
 //! `CONFIRM_MS` apart, with none nearer between. It holds until the rider
 //! is back within `ON_M`, riding the course's way, however far off they
-//! went. The way back leads to where they left the course (`Junction`),
+//! went. The way back leads to where they left the course (`Spot`),
 //! which never moves. Each step returns at most one `Event`. A second one
 //! due on the same fix waits one fix, and is dropped if it no longer holds.
 use crate::ride::course::turns::{HALF_CHORD_MM, Kind, Side, Turn};
@@ -23,11 +23,8 @@ pub const ON_M: f32 = 25.0;
 const CONFIRM_MS: u64 = 5_000;
 pub const LOST_MS: u64 = 5_000;
 const REMIND_MS: u64 = 15_000;
-const WINDOW_S: u32 = 30;
-const WINDOW_MIN_MM: u32 = 150_000;
-const WINDOW_MAX_MM: u32 = 400_000;
+const WINDOW_MM: u32 = 300_000;
 const GRACE_MM: u32 = 40_000;
-const DENSE_MM: u32 = 300_000;
 const DENSE_S: u32 = 25;
 const BEEP_MM: u32 = 30_000;
 const REWIND_MM: u32 = 30_000;
@@ -177,18 +174,18 @@ const _: () = assert!(core::mem::size_of::<Sign>() == 4, "View has no spare byte
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Guidance {
     pub sign: Sign,
-    /// The next turn: where it starts and its glyph.
-    pub turn: Option<(Point, Glyph)>,
-    /// The matched point: the course ahead starts here.
-    pub matched: Point,
-    /// Off course: where the rider left it, which the way back leads to.
-    pub junction: Option<Point>,
+    /// The next turn: its corner and its glyph.
+    pub turn: Option<(Spot, Glyph)>,
+    /// Off course: where the rider left it, which the way back leads to;
+    /// a missed turn's corner.
+    pub junction: Option<Spot>,
 }
 
+/// A point of the course, and how far along it is from the course's start.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Junction {
-    along_mm: u32,
-    at: Point,
+pub struct Spot {
+    pub along_mm: u32,
+    pub at: Point,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -197,11 +194,11 @@ enum Place {
     On,
     Leaving {
         since_ms: u64,
-        junction: Junction,
+        junction: Spot,
     },
     Off {
         since_ms: u64,
-        junction: Junction,
+        junction: Spot,
         reminded: bool,
     },
 }
@@ -386,7 +383,7 @@ impl Navigator {
         self.last = Some(fix);
     }
 
-    fn junction(&self, turns: &[Turn], along_mm: u32, locate: &impl Fn(u32) -> Point) -> Junction {
+    fn junction(&self, turns: &[Turn], along_mm: u32, locate: &impl Fn(u32) -> Point) -> Spot {
         let left_mm = self.last.map_or(along_mm, |last| last.along_mm);
         let just_passed = self.cursor.checked_sub(1).and_then(|k| turns.get(k));
         let shown = self.next(turns).map(|next| next.turn);
@@ -395,8 +392,8 @@ impl Navigator {
             .flatten()
             .filter(|turn| turn.start_mm.abs_diff(left_mm) <= MISSED_MM)
             .min_by_key(|turn| turn.start_mm.abs_diff(left_mm));
-        let along_mm = missed.map_or(left_mm, |turn| turn.start_mm);
-        Junction {
+        let along_mm = missed.map_or(left_mm, corner);
+        Spot {
             along_mm,
             at: locate(along_mm),
         }
@@ -425,8 +422,7 @@ impl Navigator {
         let next = self.next(turns);
         let speed = fix.speed_mm_s;
         let ahead = |next: &Next| next.turn.start_mm.checked_sub(here);
-        let opens =
-            |next: &Next| next.unblocked && ahead(next).is_some_and(|mm| mm <= window_mm(speed));
+        let opens = |next: &Next| next.unblocked && ahead(next).is_some_and(|mm| mm <= WINDOW_MM);
         let was_open = self.banner.is_some();
         self.banner = match (self.banner, next) {
             (Some(k), Some(next)) if k == next.index => Some(k),
@@ -541,17 +537,18 @@ impl Navigator {
         now_ms: u64,
         locate: impl Fn(u32) -> Point,
     ) -> Option<Guidance> {
-        let last = self.last.filter(|_| !self.lost)?;
+        self.last.filter(|_| !self.lost)?;
         let junction = match self.place {
-            Place::Off { junction, .. } => Some(junction.at),
+            Place::Off { junction, .. } => Some(junction),
             Place::On | Place::Leaving { .. } => None,
         };
         Some(Guidance {
             sign: self.sign(turns, now_ms),
-            turn: self
-                .next(turns)
-                .map(|next| (locate(next.turn.start_mm), next.glyph)),
-            matched: locate(last.along_mm),
+            turn: self.next(turns).map(|next| {
+                let along_mm = corner(next.turn);
+                let at = locate(along_mm);
+                (Spot { along_mm, at }, next.glyph)
+            }),
             junction,
         })
     }
@@ -574,15 +571,13 @@ impl Navigator {
     }
 }
 
-fn window_mm(speed_mm_s: Option<u32>) -> u32 {
-    speed_mm_s
-        .map_or(WINDOW_MIN_MM, |v| v.saturating_mul(WINDOW_S))
-        .clamp(WINDOW_MIN_MM, WINDOW_MAX_MM)
+fn corner(turn: &Turn) -> u32 {
+    turn.start_mm / 2 + turn.end_mm / 2
 }
 
 fn dense(turn: &Turn, next: &Turn, speed_mm_s: Option<u32>) -> bool {
     let gap = next.start_mm.saturating_sub(turn.end_mm);
-    gap < DENSE_MM || speed_mm_s.is_some_and(|v| gap < v.saturating_mul(DENSE_S))
+    speed_mm_s.is_some_and(|v| gap < v.saturating_mul(DENSE_S))
 }
 
 #[cfg(test)]

@@ -457,3 +457,25 @@ fn a_course_set_mid_ride_is_placed_from_the_ride_s_first_fix() {
     rider.set_course(&[]);
     assert!(rider.follower.course().is_empty() && !rider.follower.unplaced());
 }
+
+#[test]
+fn placing_the_same_course_again_or_starting_a_ride_is_a_new_placement() {
+    let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
+    let mut rider = Rider::new(&mut crumbs, &mut line, &mut []);
+    let mut now = 0;
+    let out = path(&[(1000.0, 1000.0), (1500.0, 1000.0)], 7.0);
+    ride_course(&mut rider, &[], &out, &mut now);
+    let course = course_of(&SQUARE);
+    let mut seen = vec![rider.follower.placement()];
+    rider.set_course(&course);
+    seen.push(rider.follower.placement());
+    rider.set_course(&course);
+    seen.push(rider.follower.placement());
+    rider.reset();
+    seen.push(rider.follower.placement());
+    rider.set_course(&[]);
+    seen.push(rider.follower.placement());
+    for (k, a) in seen.iter().enumerate() {
+        assert!(!seen[k + 1..].contains(a), "{seen:?}");
+    }
+}

@@ -68,11 +68,13 @@ const BANNER: Geometry = Geometry {
     }),
 };
 
+const BADGE_RADIUS: usize = 12;
+
 const BADGE: Geometry = Geometry {
     left: 8,
     top: BADGE_TOP,
     height: BADGE_HEIGHT,
-    radius: 12,
+    radius: BADGE_RADIUS,
     text_left: 63.4167,
     baseline: 71.28,
     digits: &SIGN_32,
@@ -100,14 +102,15 @@ const CHIP: Geometry = Geometry {
 const CHIP_SQUARE: usize = 28;
 
 /// The form `page` shows `sign` in: a banner on the data pages, the chip
-/// only on main.
+/// only on main, and on the map the badge, at rest too.
 pub fn form(page: RidePage, sign: Sign) -> Option<SignForm> {
     match (page, sign) {
         (_, Sign::None) => None,
+        (RidePage::Map, _) => Some(SignForm::Badge),
         (RidePage::Main, Sign::Chip { .. }) => Some(SignForm::Chip),
         (RidePage::Stats | RidePage::Climb, Sign::Chip { .. }) => None,
         (RidePage::Main | RidePage::Stats | RidePage::Climb, _) => Some(SignForm::Banner),
-        (RidePage::Lap | RidePage::Workout | RidePage::Map, _) => None,
+        (RidePage::Lap | RidePage::Workout, _) => None,
     }
 }
 
@@ -134,7 +137,11 @@ pub fn place(sign: Sign, form: SignForm, radar: bool) -> Option<Placed> {
         SignForm::Badge => &BADGE,
         SignForm::Chip => &CHIP,
     };
-    let shift = if radar { RADAR_SHIFT } else { 0 };
+    let shift = match (radar, form) {
+        (false, _) => 0,
+        (true, SignForm::Badge) => RADAR,
+        (true, SignForm::Banner | SignForm::Chip) => RADAR_SHIFT,
+    };
     let text_left = geometry.text_left + shift as f32;
     let mut lines = heapless::Vec::new();
     let (fill, glyph, ink) = match (sign, &geometry.notices) {

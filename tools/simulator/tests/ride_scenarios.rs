@@ -3659,7 +3659,7 @@ fn swipes_page_through_the_ride_and_taps_never_control_it() {
     assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
     sim.swipe_previous();
     assert_eq!(sim.screen().page().as_deref(), Some("5/5"), "wraps");
-    sim.expect_text("MAP");
+    expect_map(&sim);
     sim.swipe_previous();
     sim.swipe_previous();
     assert_eq!(sim.screen().page().as_deref(), Some("3/5"));
@@ -6259,50 +6259,41 @@ fn gpx_spaced(name: &str, legs: &[(f64, f64)], spacing: f64) -> String {
     shell_simulator::route::to_gpx(name, &points)
 }
 
-/// The map page draws the ride's own track: just the rider at first, the
-/// whole loop as it grows with the rider heading up, and north up (and
-/// saying so) once the ride stops.
 #[test]
-fn map_page_draws_the_ride_track_and_goes_north_up_when_still() {
+fn map_page_draws_the_ride_track_heading_up_and_keeps_it_when_still() {
     let mut sim = rider();
     sim.ride_route(Route::from_gpx(&bend_loop_gpx()).unwrap());
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.ride_at(25.0, 180.0, 0.0, 85.0);
     sim.start_ride();
     sim.ride_page("5/5");
-    sim.expect_text("MAP");
+    expect_map(&sim);
     ride_to(&mut sim, 60.0);
+    sim.expect_text("100 M");
     sim.checkpoint("the map early in the ride");
 
     // Round the bend: the track is rotated so the road ahead is up.
     ride_to(&mut sim, 1_900.0);
-    sim.expect_no_text("N UP");
+    assert!(
+        ridden_track_pixels(&sim) > 100,
+        "the track behind the rider"
+    );
     sim.checkpoint("the map mid ride, heading up");
 
-    // Further round the loop the zoom has stepped out to keep it all in.
-    ride_to(&mut sim, 3_600.0);
-    sim.checkpoint("the map on the far side of the loop");
-
-    // Standing still the map turns north up and says so.
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.wait_for("AUTO PAUSED", seconds(20)).unwrap();
     sim.press(Button::BottomLeft);
-    sim.expect_text("MAP");
-    // The heading is forgotten after 15 s without moving.
+    let moving = ridden_track_pixels(&sim);
     sim.advance(seconds(20));
-    sim.expect_text("N UP");
-    sim.checkpoint("the map standing still, north up");
+    expect_map(&sim);
+    sim.expect_no_text("N UP");
+    assert_eq!(ridden_track_pixels(&sim), moving, "the map stays as it was");
+    sim.checkpoint("the map standing still, heading held");
     sim.stop_ride();
 }
 
-/// Lit pixels where the map page draws the track, between the title and the
-/// page dots.
-fn map_ink(sim: &Sim) -> usize {
-    let screen = sim.screen();
-    let rows = screen.height / 6..screen.height * 7 / 8;
-    rows.flat_map(|y| screen.pixels[y * screen.width..][..screen.width].iter())
-        .filter(|&&pixel| pixel != 0)
-        .count()
+fn ridden_track_pixels(sim: &Sim) -> usize {
+    map_pixels(sim, vana::screens::chrome::rgb(0x1f, 0x4a, 0x78))
 }
 
 #[test]
@@ -6318,12 +6309,10 @@ fn a_restart_keeps_the_track_and_the_start_for_the_next_ride() {
     sim.ride_at(30.0, 220.0, 0.0, 90.0);
     sim.start_ride();
     ride_to(&mut sim, 4_500.0);
-    // Standing still the map turns north up, so the two maps compare.
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    sim.expect_text("N UP");
-    let before = map_ink(&sim);
+    let before = ridden_track_pixels(&sim);
     sim.checkpoint("the map before the power cut");
 
     sim.power_loss();
@@ -6333,8 +6322,7 @@ fn a_restart_keeps_the_track_and_the_start_for_the_next_ride() {
     sim.wait_for("RECORDING", seconds(2)).unwrap();
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    sim.expect_text("N UP");
-    let after = map_ink(&sim);
+    let after = ridden_track_pixels(&sim);
     sim.note(
         NoteKind::Check,
         format!("map ink {before} px before, {after} px after"),
@@ -6371,8 +6359,7 @@ fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    sim.expect_text("N UP");
-    let before = map_ink(&sim);
+    let before = ridden_track_pixels(&sim);
     sim.checkpoint("the map after five hours");
 
     sim.power_loss();
@@ -6388,7 +6375,7 @@ fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
         sim.advance(seconds(1));
         waited += 1;
     }
-    let after = map_ink(&sim);
+    let after = ridden_track_pixels(&sim);
     sim.note(
         NoteKind::Check,
         format!("track read back in {waited} s: map ink {before} px before, {after} px after"),
@@ -6411,12 +6398,10 @@ fn a_ride_that_moves_to_internal_memory_keeps_the_track_and_the_start() {
     sim.ride_at(30.0, 220.0, 0.0, 90.0);
     sim.start_ride();
     ride_to(&mut sim, 4_500.0);
-    // Standing still the map turns north up, so the two maps compare.
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    sim.expect_text("N UP");
-    let before = map_ink(&sim);
+    let before = ridden_track_pixels(&sim);
     sim.checkpoint("the map on the card before it fails");
 
     // Riding on, the next write to the card fails.
@@ -6429,8 +6414,7 @@ fn a_ride_that_moves_to_internal_memory_keeps_the_track_and_the_start() {
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.advance(seconds(20));
     sim.ride_page("5/5");
-    sim.expect_text("N UP");
-    let after = map_ink(&sim);
+    let after = ridden_track_pixels(&sim);
     sim.note(
         NoteKind::Check,
         format!("map ink {before} px before the move, {after} px after"),
@@ -6478,26 +6462,33 @@ fn course_ride_gpx() -> String {
     gpx_through("loop with a wrong turn", &legs)
 }
 
-/// Course-grey pixels on the map page's body, above the scale bar: within a
-/// step of `SECONDARY` in each RGB565 channel, as the panel's shading leaves
-/// them.
-fn course_pixels(sim: &Sim) -> usize {
-    let channels = |c: u16| {
-        [
-            i32::from(c >> 11),
-            i32::from(c >> 5 & 63),
-            i32::from(c & 31),
-        ]
-    };
-    let grey = channels(SECONDARY);
+fn map_pixels(sim: &Sim, color: u16) -> usize {
     let screen = sim.screen();
-    (60..270)
-        .flat_map(|y| (0..screen.width).map(move |x| (x, y)))
-        .filter(|&(x, y)| {
-            let c = channels(screen.pixels[y * screen.width + x]);
-            c.iter().zip(grey).all(|(a, b)| (a - b).abs() <= 2)
-        })
+    (22..290)
+        .flat_map(|y| screen.pixels[y * screen.width..][..screen.width].iter())
+        .filter(|&&pixel| pixel == color)
         .count()
+}
+
+fn course_pixels(sim: &Sim) -> usize {
+    map_pixels(sim, vana::screens::chrome::ACCENT)
+}
+
+#[track_caller]
+fn expect_map(sim: &Sim) {
+    assert_eq!(sim.screen().page().as_deref(), Some("5/5"));
+    let ground = map_pixels(sim, vana::screens::chrome::rgb(0x10, 0x10, 0x12));
+    assert!(ground > 30_000, "{ground} px of the map's ground");
+}
+
+fn map_badge(sim: &Sim) -> Vec<String> {
+    sim.screen()
+        .frame()
+        .read()
+        .into_iter()
+        .filter(|run| (30..90).contains(&run.y) && run.x < 160)
+        .map(|run| run.text)
+        .collect()
 }
 
 const TURN_SOON: [u8; 2] = [21, 0];
@@ -6595,16 +6586,13 @@ fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
     // Riding off along the course follows it.
     let joined = ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
     assert!(joined < 120.0, "{joined}");
-    // MOVE reaches MAP after the climb page.
-    for _ in 0..4 {
-        sim.press(Button::BottomLeft);
-    }
-    sim.expect_text("MAP");
+    sim.ride_page("5/5");
+    expect_map(&sim);
     ride_to(&mut sim, 1_400.0);
-    sim.expect_text("FOLLOWING");
-    let grey = course_pixels(&sim);
-    assert!(grey > 100, "the course ahead is drawn: {grey} pixels");
-    sim.checkpoint("the map with the course ahead in grey");
+    assert!(!map_badge(&sim).is_empty(), "the badge shows the next turn");
+    let blue = course_pixels(&sim);
+    assert!(blue > 100, "the course ahead is drawn: {blue} pixels");
+    sim.checkpoint("the map with the course ahead in blue");
 
     let off = ride_until_only(&mut sim, "off_course", &OFF_COURSE, 2_150.0);
     assert!((1_990.0..2_090.0).contains(&off), "{off}");
@@ -6622,7 +6610,7 @@ fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
     assert!((5_500.0..5_700.0).contains(&end), "{end}");
     sim.advance(seconds(1));
     assert_eq!(cues_since(&sim, 0).last().unwrap().1, ARRIVED);
-    sim.expect_no_text("FOLLOWING");
+    assert_eq!(map_badge(&sim), ["ARRIVED"]);
     sim.checkpoint("the end of the course");
     // On up the course's first leg again: the course is done for this ride.
     while sim.world().distance_m < end + 250.0 {
@@ -6677,13 +6665,11 @@ fn a_followed_course_sounds_its_turns_and_not_a_gentle_bend() {
     sim.ride_at(25.0, 180.0, 0.0, 85.0);
     sim.start_ride();
     ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
-    for _ in 0..4 {
-        sim.press(Button::BottomLeft);
-    }
-    sim.expect_text("MAP");
+    sim.ride_page("5/5");
+    expect_map(&sim);
 
     let soon = ride_until_only(&mut sim, "turn_soon", &TURN_SOON, 500.0);
-    assert!((380.0..400.0).contains(&soon), "{soon}");
+    assert!((290.0..310.0).contains(&soon), "{soon}");
     sim.checkpoint("the right turn's banner opens");
     let now = ride_until_only(&mut sim, "turn_now", &TURN_NOW, 620.0);
     assert!((560.0..580.0).contains(&now), "{now}");
@@ -6692,7 +6678,7 @@ fn a_followed_course_sounds_its_turns_and_not_a_gentle_bend() {
     // Round the gentle bend and on: silence until the hairpin is near.
     ride_to(&mut sim, 700.0);
     let from = sim.device.sim_mut().speaker.played.len();
-    while sim.world().distance_m < 1_380.0 {
+    while sim.world().distance_m < 1_280.0 {
         sim.advance(seconds(1));
     }
     assert_eq!(
@@ -6702,7 +6688,7 @@ fn a_followed_course_sounds_its_turns_and_not_a_gentle_bend() {
     );
 
     let soon = ride_until_only(&mut sim, "turn_soon", &TURN_SOON, 1_500.0);
-    assert!((1_385.0..1_405.0).contains(&soon), "{soon}");
+    assert!((1_290.0..1_310.0).contains(&soon), "{soon}");
     sim.checkpoint("the hairpin's banner opens");
     let now = ride_until_only(&mut sim, "turn_now", &TURN_NOW, 1_620.0);
     assert!((1_565.0..1_585.0).contains(&now), "{now}");
@@ -6754,8 +6740,7 @@ fn a_course_is_still_followed_after_the_ride_moves_to_internal_memory() {
     assert_eq!(sim.rides().len(), 1);
 }
 
-#[test]
-fn a_long_press_on_the_map_stops_following_the_course() {
+fn following_the_loop_on_the_map() -> Sim {
     use device_api::server::Method;
     let mut sim = Sim::new();
     sim.fit_bulk(Presence::Ready);
@@ -6773,17 +6758,21 @@ fn a_long_press_on_the_map_stops_following_the_course() {
     sim.ride_at(25.0, 180.0, 0.0, 85.0);
     sim.start_ride();
     ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
-    for _ in 0..4 {
-        sim.press(Button::BottomLeft);
-    }
-    sim.expect_text("MAP");
+    sim.ride_page("5/5");
+    expect_map(&sim);
     ride_to(&mut sim, 600.0);
-    sim.expect_text("FOLLOWING");
+    assert!(!map_badge(&sim).is_empty());
+    sim
+}
+
+#[test]
+fn a_long_press_on_the_map_stops_following_the_course() {
+    let mut sim = following_the_loop_on_the_map();
     sim.tap(120, 160);
     sim.advance(seconds(1));
-    sim.expect_text("FOLLOWING");
+    assert!(!map_badge(&sim).is_empty(), "a tap does not stop following");
     sim.long_press(120, 160, 1_200);
-    sim.expect_no_text("FOLLOWING");
+    assert_eq!(map_badge(&sim), Vec::<String>::new(), "no turn to show");
     sim.checkpoint("following stopped from the map");
     let from = sim.device.sim().speaker.played.len();
     while sim.world().distance_m < 2_400.0 {
@@ -6801,6 +6790,16 @@ fn a_long_press_on_the_map_stops_following_the_course() {
         "no cue off the course"
     );
     sim.stop_ride();
+}
+
+#[test]
+fn a_long_press_on_the_badge_stops_following_too() {
+    let mut sim = following_the_loop_on_the_map();
+    sim.tap(70, 60);
+    sim.advance(seconds(1));
+    assert!(!map_badge(&sim).is_empty(), "a tap does not stop following");
+    sim.long_press(70, 60, 1_200);
+    assert_eq!(map_badge(&sim), Vec::<String>::new(), "no turn to show");
 }
 
 /// Santiago on 14 October 2026: sunset 19:55 local, 22:55 UTC.
@@ -9651,7 +9650,7 @@ mod navigation {
         assert_eq!(at_rest.len(), 5, "{at_rest:?}");
 
         let soon = ride_until_only(&mut sim, "turn_soon", &TURN_SOON, 6_850.0);
-        assert!((6_780.0..6_810.0).contains(&soon), "{soon}");
+        assert!((6_690.0..6_710.0).contains(&soon), "{soon}");
         ride_until_sign(&mut sim, BANNER, &["120", "M"], 6_900.0);
         assert_eq!(readings_at(&sim), at_rest, "the banner moves no reading");
         sim.expect_no_text("0:");
@@ -9742,15 +9741,373 @@ mod navigation {
             "not on the sign"
         );
         sim.tap(60, 86);
-        sim.expect_text("MAP");
-        assert_eq!(sim.screen().page().as_deref(), Some("5/5"));
+        expect_map(&sim);
         sim.checkpoint("the chip tapped opens the map");
 
         sim.press(Button::BottomLeft);
         assert_eq!(sim.screen().page().as_deref(), Some("1/5"));
         ride_until_cue(&mut sim, "turn_soon", 6_900.0);
         sim.tap(120, 60);
-        sim.expect_text("MAP");
+        expect_map(&sim);
         sim.checkpoint("the banner tapped opens the map");
+    }
+}
+
+mod course_map {
+    use super::*;
+    use device_api::server::Method;
+    use vana::screens::chrome::BLACK;
+
+    const MOCKUP: &str = include_str!("../../../docs/design/course-navigation/map-approach.svg");
+    const PX_PER_M: f64 = 240.0 / 400.0;
+    const RIDER: (f64, f64) = (120.0, 223.0);
+    const RIDER_BESIDE_RADAR: (usize, usize) = (134, 223);
+    const AHEAD_S: f64 = 40.0;
+    const ROWS_AHEAD: f64 = 201.0;
+    const START_TO_MOCKUP_RIDER_M: f64 = 1_000.0;
+    const FIX_CATCHES_UP_S: u64 = 2;
+    const SPACING_PAST_COURSE_MIN_STEP_M: f64 = 5.5;
+
+    fn mockup_course() -> Vec<(f64, f64)> {
+        let route = MOCKUP
+            .split("<polyline points=\"")
+            .find(|polyline| polyline.contains("stroke=\"#0a84ff\""))
+            .and_then(|polyline| polyline.split('"').next())
+            .expect("map-approach draws the route");
+        let drawn: Vec<(f64, f64)> = route
+            .split(' ')
+            .map(|pair| {
+                let (x, y) = pair.split_once(',').unwrap();
+                let (x, y): (f64, f64) = (x.parse().unwrap(), y.parse().unwrap());
+                (
+                    (x - RIDER.0) / PX_PER_M,
+                    START_TO_MOCKUP_RIDER_M + (RIDER.1 - y) / PX_PER_M,
+                )
+            })
+            .collect();
+        let mut course = vec![(0.0, 0.0)];
+        let mut stretch = vec![drawn[0]];
+        for (k, &p) in drawn.iter().enumerate().skip(1) {
+            stretch.push(p);
+            if k + 1 == drawn.len() || turn_angle(stretch[stretch.len() - 2], p, drawn[k + 1]) > 0.5
+            {
+                course.extend(resampled(&stretch));
+                stretch = vec![p];
+            }
+        }
+        let &(east, north) = drawn.last().unwrap();
+        course.push((east, north + 3_000.0));
+        course
+    }
+
+    fn turn_angle(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+        let turn = (c.1 - b.1).atan2(c.0 - b.0) - (b.1 - a.1).atan2(b.0 - a.0);
+        turn.sin().atan2(turn.cos()).abs()
+    }
+
+    fn resampled(stretch: &[(f64, f64)]) -> Vec<(f64, f64)> {
+        let lengths: Vec<f64> = stretch
+            .windows(2)
+            .map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1))
+            .collect();
+        let total: f64 = lengths.iter().sum();
+        let count = (total / SPACING_PAST_COURSE_MIN_STEP_M).floor().max(1.0);
+        (1..=count as usize)
+            .map(|k| {
+                let mut at = total * k as f64 / count;
+                for (pair, &length) in stretch.windows(2).zip(&lengths) {
+                    if at <= length {
+                        let t = at / length;
+                        return (
+                            pair[0].0 + t * (pair[1].0 - pair[0].0),
+                            pair[0].1 + t * (pair[1].1 - pair[0].1),
+                        );
+                    }
+                    at -= length;
+                }
+                *stretch.last().unwrap()
+            })
+            .collect()
+    }
+
+    fn kmh_at_px_per_m(px_per_m: f64) -> f64 {
+        ROWS_AHEAD / px_per_m / AHEAD_S * 3.6
+    }
+
+    fn stand_at(sim: &mut Sim, metres: f64, kmh: f64) {
+        sim.ride_at(kmh, 210.0, 150.0, 88.0);
+        ride_to(sim, metres - 20.0);
+        sim.ride_at(4.0, 120.0, 150.0, 60.0);
+        ride_to(sim, metres - 0.6);
+        sim.ride_at(0.0, 0.0, 150.0, 0.0);
+        sim.advance(seconds(FIX_CATCHES_UP_S));
+        sim.ride_at(kmh, 210.0, 150.0, 88.0);
+    }
+
+    fn on_the_map(course: &[(f64, f64)], route: &[(f64, f64)]) -> Sim {
+        on_the_map_with(course, route, &["HEART RATE", "POWER METER", "SPEED/CAD"])
+    }
+
+    fn on_the_map_with(course: &[(f64, f64)], route: &[(f64, f64)], sensors: &[&str]) -> Sim {
+        let mut sim = Sim::new();
+        sim.fit_bulk(Presence::Ready);
+        let mut sim = equip(sim.boot());
+        sim.init_bulk();
+        sim.format_files();
+        sim.connect_phone();
+        let gpx = gpx_through("course", course);
+        let (status, body) = sim.phone_request(Method::Put, "/api/course", gpx.as_bytes());
+        assert_eq!(status, 200, "{body}");
+        sim.press(Button::TopLeft);
+        sim.advance(seconds(1));
+        sim.ride_route(Route::from_gpx(&gpx_through("route", route)).unwrap());
+        sim.ant_sensor(device_type::RADAR, RADAR);
+        sim.pair(sensors);
+        sim.ride_at(36.0, 210.0, 150.0, 88.0);
+        sim.start_ride();
+        ride_until_shown(&mut sim, "FOLLOWING COURSE", 150.0);
+        sim.ride_page("5/5");
+        sim
+    }
+
+    fn badge(sim: &Sim) -> Vec<String> {
+        sim.screen()
+            .frame()
+            .read()
+            .into_iter()
+            .filter(|run| (30..90).contains(&run.y) && run.x < 160)
+            .map(|run| run.text)
+            .collect()
+    }
+
+    #[test]
+    fn the_map_rides_the_three_mockups_at_their_scales() {
+        let course = mockup_course();
+        let route = [(0.0, 0.0), (0.0, START_TO_MOCKUP_RIDER_M + 600.0)];
+        let mut sim = on_the_map_with(&course, &route, &["HEART RATE", "POWER METER"]);
+        let approach = kmh_at_px_per_m(PX_PER_M);
+        stand_at(&mut sim, START_TO_MOCKUP_RIDER_M, approach);
+        assert_eq!(badge(&sim), ["240", "M"], "to where the turn starts");
+        assert_eq!(scale(&sim.screen()), (60, "100 M".into()));
+        sim.checkpoint("map-approach");
+
+        stand_at(
+            &mut sim,
+            START_TO_MOCKUP_RIDER_M + 210.0,
+            kmh_at_px_per_m(0.8),
+        );
+        assert_eq!(badge(&sim), ["30", "M"]);
+        assert_eq!(scale(&sim.screen()), (80, "100 M".into()));
+        sim.checkpoint("map-close");
+
+        sim.ride_at(approach, 210.0, 150.0, 88.0);
+        let off = ride_until_cue(&mut sim, "off_course", START_TO_MOCKUP_RIDER_M + 395.0);
+        assert!(off < START_TO_MOCKUP_RIDER_M + 395.0, "{off}");
+        stand_at(&mut sim, START_TO_MOCKUP_RIDER_M + 390.0, approach);
+        assert_eq!(badge(&sim), ["140", "M", "TURN BACK"]);
+        assert_eq!(scale(&sim.screen()).1, "100 M");
+        sim.checkpoint("map-offcourse");
+    }
+
+    fn at(screen: &Screen, x: usize, y: usize) -> u16 {
+        screen.pixels[y * screen.width + x]
+    }
+
+    fn whole_puck_bounds(screen: &Screen, (cx, cy): (usize, usize)) -> Option<[usize; 4]> {
+        let ring: Vec<(usize, usize)> = (cy - 20..cy + 20)
+            .flat_map(|y| (cx - 20..cx + 20).map(move |x| (x, y)))
+            .filter(|&(x, y)| at(screen, x, y) == BLACK)
+            .collect();
+        let (xs, ys) = (ring.iter().map(|p| p.0), ring.iter().map(|p| p.1));
+        let bounds = [xs.clone().min()?, ys.clone().min()?, xs.max()?, ys.max()?];
+        let whole = at(screen, cx, cy - 11) == WHITE && at(screen, cx, cy + 10) == WHITE;
+        whole.then_some(bounds)
+    }
+
+    #[test]
+    fn the_puck_holds_one_pixel_on_every_fix_on_course_and_off() {
+        let course = [
+            (0.0, 0.0),
+            (0.0, 1_200.0),
+            (500.0, 1_200.0),
+            (500.0, 4_000.0),
+        ];
+        let route = [(0.0, 0.0), (0.0, 2_400.0)];
+        let sensors = ["HEART RATE", "POWER METER", "SPEED/CAD", "RADAR"];
+        for radar in [false, true] {
+            let paired = if radar { &sensors[..] } else { &sensors[..3] };
+            let centre = if radar {
+                RIDER_BESIDE_RADAR
+            } else {
+                (120, 223)
+            };
+            let mut sim = on_the_map_with(&course, &route, paired);
+            let mut seen = std::collections::BTreeMap::new();
+            let mut off = false;
+            for (kmh, until_m) in [(40.0, 700.0), (12.0, 1_000.0), (28.0, 2_300.0)] {
+                sim.ride_at(kmh, 210.0, 150.0, 88.0);
+                while sim.world().distance_m < until_m {
+                    sim.advance(seconds(1));
+                    off |= badge(&sim).contains(&"TURN BACK".to_string());
+                    let at_m = sim.world().distance_m as i64;
+                    seen.entry(whole_puck_bounds(&sim.screen(), centre))
+                        .or_insert(at_m);
+                }
+            }
+            assert!(off, "radar {radar}: the ride went off course");
+            assert_eq!(
+                seen.len(),
+                1,
+                "radar {radar}: the puck at, from metres: {seen:?}"
+            );
+            assert!(seen.keys().all(Option::is_some), "radar {radar}: {seen:?}");
+        }
+    }
+
+    #[test]
+    fn beside_a_radar_the_rider_and_the_scale_stay_whole() {
+        let course = [
+            (0.0, 0.0),
+            (0.0, 1_000.0),
+            (225.0, 1_000.0),
+            (225.0, 3_000.0),
+        ];
+        let sensors = ["HEART RATE", "POWER METER", "SPEED/CAD", "RADAR"];
+        let mut sim = on_the_map_with(&course, &course, &sensors);
+        ride_to(&mut sim, 910.0);
+        let screen = sim.screen();
+        let puck = whole_puck_bounds(&screen, RIDER_BESIDE_RADAR).expect("the puck, whole");
+        assert!(puck[0] >= 30, "its ring starts at x {}, cut", puck[0]);
+        assert_eq!(
+            scale(&screen),
+            (50, "100 M".into()),
+            "400 m ahead at 36 km/h"
+        );
+        assert_eq!(badge(&sim), ["90", "M"]);
+        sim.checkpoint("map-beside-radar");
+    }
+    #[test]
+    fn far_off_course_the_chevrons_still_point_back_to_the_junction() {
+        let course = [
+            (0.0, 0.0),
+            (0.0, 1_500.0),
+            (600.0, 1_500.0),
+            (600.0, 5_000.0),
+        ];
+        let sensors = ["HEART RATE", "POWER METER", "SPEED/CAD", "RADAR"];
+        for radar in [false, true] {
+            let paired = if radar { &sensors[..] } else { &sensors[..3] };
+            let mut sim = on_the_map_with(&course, &[(0.0, 0.0), (0.0, 12_000.0)], paired);
+            for (ridden, back) in [(3_200.0, "1.7"), (5_000.0, "3.5"), (11_500.0, "10")] {
+                ride_to(&mut sim, ridden);
+                assert_eq!(badge(&sim), [back, "KM", "TURN BACK"]);
+                let screen = sim.screen();
+                let chevrons = (100..250)
+                    .flat_map(|y| (0..screen.width).map(move |x| (x, y)))
+                    .filter(|&(x, y)| at(&screen, x, y) == AMBER)
+                    .count();
+                assert!(
+                    chevrons >= 60,
+                    "radar {radar}, {back} km back: {chevrons} amber px between the rider and the junction"
+                );
+                if !radar && back == "3.5" {
+                    sim.checkpoint("map-offcourse-far");
+                }
+            }
+        }
+    }
+
+    fn scale(screen: &Screen) -> (usize, String) {
+        let bar = (0..screen.width)
+            .skip_while(|&x| at(screen, x, 304) != SECONDARY)
+            .take_while(|&x| at(screen, x, 304) == SECONDARY)
+            .count();
+        let label: Vec<String> = screen
+            .frame()
+            .read()
+            .into_iter()
+            .filter(|run| run.y >= 290 && run.x < 110)
+            .map(|run| run.text)
+            .collect();
+        (bar, label.join(" "))
+    }
+
+    fn metres_per_px(screen: &Screen) -> f64 {
+        let (px, label) = scale(screen);
+        let metres: f64 = label.trim_end_matches(" M").parse().unwrap();
+        metres / px as f64
+    }
+
+    #[test]
+    fn the_map_shows_about_40_s_ahead_and_eases_from_speed_to_speed() {
+        let course = [(0.0, 0.0), (0.0, 9_000.0)];
+        let mut sim = on_the_map_with(&course, &course, &["HEART RATE", "POWER METER"]);
+        for (kmh, bar) in [
+            (10.0, (67, "50 M")),
+            (25.0, (72, "100 M")),
+            (40.0, (45, "100 M")),
+        ] {
+            sim.ride_at(kmh, 210.0, 150.0, 88.0);
+            sim.advance(seconds(60));
+            assert_eq!(scale(&sim.screen()), (bar.0, bar.1.into()), "{kmh} km/h");
+        }
+        sim.ride_at(10.0, 210.0, 150.0, 88.0);
+        sim.advance(seconds(60));
+        sim.ride_at(40.0, 210.0, 150.0, 88.0);
+        let mut seen = vec![metres_per_px(&sim.screen())];
+        for _ in 0..30 {
+            sim.advance(seconds(1));
+            seen.push(metres_per_px(&sim.screen()));
+        }
+        let (first, last) = (seen[0], *seen.last().unwrap());
+        assert!(
+            seen.windows(2).all(|w| w[1] >= w[0] - 0.01 * first),
+            "10 to 40 km/h narrows on the way: {seen:?}"
+        );
+        let halfway = seen
+            .iter()
+            .position(|&m| m >= (first + last) / 2.0)
+            .unwrap();
+        assert!(halfway >= 3, "half the way out in {halfway} s: {seen:?}");
+        sim.ride_at(0.0, 0.0, 150.0, 0.0);
+        sim.advance(seconds(30));
+        sim.expect_text("AUTO PAUSED");
+        sim.ride_at(40.0, 210.0, 150.0, 88.0);
+        while scale(&sim.screen()).1.is_empty() {
+            sim.advance(seconds(1));
+        }
+        assert_eq!(metres_per_px(&sim.screen()), last, "standing still held it");
+    }
+
+    #[test]
+    fn the_badge_counts_the_next_turn_down_from_300_m_at_any_speed() {
+        let course = [(0.0, 0.0), (0.0, 2_000.0), (400.0, 2_000.0)];
+        for kmh in [10.0, 25.0, 40.0] {
+            let mut sim = on_the_map(&course, &course);
+            sim.ride_at(kmh, 210.0, 150.0, 88.0);
+            ride_to(&mut sim, 1_500.0);
+            let soon = ride_until_cue(&mut sim, "turn_soon", 1_800.0);
+            let ahead = 2_000.0 - soon;
+            assert!(
+                (285.0..=315.0).contains(&ahead),
+                "{kmh} km/h: opened {ahead} m ahead"
+            );
+            let mut read: Vec<u32> = vec![];
+            while sim.world().distance_m < 1_950.0 {
+                let shown = badge(&sim);
+                assert_eq!(
+                    shown.get(1).map(String::as_str),
+                    Some("M"),
+                    "{kmh} km/h: {shown:?}"
+                );
+                read.push(shown[0].parse().unwrap());
+                sim.advance(seconds(1));
+            }
+            assert!(read[0] <= 300, "{kmh} km/h: {read:?}");
+            assert!(
+                read.windows(2).all(|w| w[1] <= w[0]),
+                "{kmh} km/h counts down: {read:?}"
+            );
+        }
     }
 }

@@ -163,34 +163,67 @@ screen opens again, a climb under way brings the page up.
 
 ### Map
 
-The last ride page, MAP, draws where the ride has been: its
-own GPS track as a white line, a green dot where it began, and the rider in
-blue. Riding, the track is turned so the way the rider is heading is up and
-the rider is an arrowhead; standing still (after about 15 s without moving,
-or while paused) it is north up, the rider a dot, and the page says N UP. The
-page fits the whole track and the rider to the screen, zooming out in steps
-and never closer than 500 m across; it holds still until the track nears the
-edge. A bar at the bottom shows the scale (150 M, 1.5 KM) and the ride's distance sits beside
-it. Without a fix the page says NO
-GPS YET and MAP STARTS WITH GPS; once a fix is lost the track stays where it
-was, with NO GPS in amber. A device with no memory for the track says NO TRACK.
+The last ride page is the map. It fills the screen between the status bar
+and a black footer, heading up: the way the rider is heading is always up,
+and when the rider stands still the last heading holds.
+
+The rider's puck sits in one place on every fix: centred across the map and
+three quarters of the way down it, so most of the map is the road ahead and,
+while following, the blue route runs up through the middle. The course
+ahead is a wide blue route on a dark casing, and a white arrow on the route
+marks the next turn's corner. Only the course still to ride is drawn: from
+the rider's place on it, forward along the course for 1.5 times the
+distance the map shows ahead, so a road that winds a little still runs past
+the top edge.
+Off course the walk starts at the junction and goes that far past the
+rider's distance to it. The course behind the rider is not drawn, and
+neither is the ride's own track. The way back of an out-and-back shows only
+when its turnaround is within that distance: then it is course still to
+ride. Before joining, the rider's place is the nearest point on a stretch
+of course that runs the rider's way; it holds while the rider stands still
+or wavers between two stretches, so the route does not jump from fix to
+fix.
+The badge in the top-left corner shows the next turn and how far it is, at
+rest too; with a radar paired it sits 8 px right of the radar strip. It may
+cover the route, never the puck: straight up from the puck it covers from
+0.66 to 0.96 of the distance the map shows ahead, 184 to 267 m at 25 km/h,
+so a turn there can be under the badge.
+
+The map never pans or zooms to fit a turn or the route: its scale follows
+the speed. From the puck to the top edge it shows about 40 s of riding,
+never less than 150 m nor more than 1 km, so at 25 km/h it shows about
+280 m. A ride starts at 300 m. A change of speed eases the scale in over several seconds,
+never back and forth; stopped, slower than about 5 km/h, or paused, it holds.
+
+Off course, the badge turns amber, the puck's arrow turns amber, and up to
+three amber chevrons lead back in a straight line towards the junction where
+the course left off, at the same scale and with the puck in the same place.
+When the junction is off the map the chevrons point to where that line
+leaves it, clear of the puck, the badge and a radar strip whichever way it
+lies; the ringed junction shows once it is on the map, and the route goes on
+from there, and only forward. Arrived, the badge is green.
+
+Without a course loaded, the map draws the ride's own track behind the
+rider in a thinner, dimmer blue. A loaded course not being followed, before
+joining it or after stopping, is drawn in the route's blue from its point
+nearest the rider, only the way the course runs.
+
+The footer holds the scale bar (50 M, 100 M or 250 M) and, while following,
+the distance left on the course; otherwise the ride's distance. Without a fix
+the page says NO GPS YET and MAP STARTS WITH GPS; once a fix is lost the map
+stays where it was and the puck's arrow turns grey. A device with no memory
+for the track says NO TRACK.
 
 The track is the ride's GPS breadcrumb, thinned to its bends, up to 4,096
-points in PSRAM, so a very long ride shows its bends thinned and a far-off
-start is a small dot. Each ride starts a new one. After a restart cuts a ride
+points in PSRAM. Each ride starts a new one. After a restart cuts a ride
 short, the ride started next reads the cut ride's track and start back from
 its journal, a few records a moment, and carries them on if its own first fix
-comes within 30 minutes of the cut ride's last. Until that is read, MAP
-draws the track read so far and says NO GPS; a pass of the start then takes
-no lap. The course is followed again only as on any ride: by riding along
-it.
+comes within 30 minutes of the cut ride's last. Until that is read, the map
+draws the track read so far; a pass of the start then takes no lap. The
+course is followed again only as on any ride: by riding along it.
 
-A loaded course (below) is drawn in grey under the ride's track: while
-following it, only what is ahead of the rider; otherwise the stretch nearest
-the rider. It does not change the zoom, so a course far from the ride does not
-show at all. While following the course, the header says FOLLOWING, and a
-long press on the page (a second) stops following; a tap does nothing, so
-rain or a glove cannot.
+A long press anywhere on the map page (a second), the badge included, stops
+following the course; a tap does nothing, so rain or a glove cannot.
 
 ### Course
 
@@ -210,10 +243,10 @@ course is not followed again for the rest of the ride; the next ride follows
 it again.
 
 While following, each turn on the course sounds twice: two rising beeps when
-it comes 30 s ahead at the ride's speed (never nearer than 150 m nor farther
-than 400 m), and one beep 30 m before it. Turns under 300 m or 25 s apart
-are one run: the rising beeps sound for the first only, and each turn of the
-run beeps 30 m before it. A turn first met nearer than 30 s ahead sounds its
+it comes 300 m ahead, at any speed, and one beep 30 m before it. Turns whose
+next one is within 300 m when the first's 40 m past it ends, or under 25 s
+apart, are one run: the rising beeps sound for the first only, and each turn
+of the run beeps 30 m before it. A turn first met nearer than 300 m sounds its
 rising beeps at once, and one the rider is already in sounds nothing. At most
 one navigation sound plays per fix: another due on the same fix waits for the
 next, and is dropped if it no longer holds, so a turn beeping 30 m ahead

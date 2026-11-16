@@ -1,7 +1,7 @@
 //! VANA workout rendering: the chrome around whichever screen is shown.
 use super::canvas::Canvas;
 use super::chrome::{
-    BLACK, Battery, CONTENT, Gps, HEIGHT, Mark, Row, StatusBar, TOAST, Toast, WIDTH,
+    BLACK, Battery, CONTENT, Gps, HEIGHT, Mark, Row, STATUS_BAR, StatusBar, TOAST, Toast, WIDTH,
 };
 use super::cue::{Badge, Cue};
 use super::home::Home;
@@ -365,7 +365,7 @@ impl<'v> Scene<'v> {
     fn paint_content(&self, row: &mut Row) {
         let y = row.y();
         if let Some(bar) = self.bar
-            && y < CONTENT.top
+            && y < self.bar_rows()
         {
             bar.paint(row);
             return;
@@ -407,6 +407,13 @@ impl<'v> Scene<'v> {
 
     pub(super) fn light(&self) -> bool {
         self.light
+    }
+
+    fn bar_rows(&self) -> usize {
+        match self.kind {
+            Kind::Ride(RidePage::Map) => STATUS_BAR.bottom,
+            _ => CONTENT.top,
+        }
     }
 
     #[cfg(test)]
@@ -473,7 +480,7 @@ impl<'v> Scene<'v> {
     #[cfg(test)]
     fn reference_content(&self, x: usize, y: usize) -> u16 {
         if let Some(bar) = self.bar
-            && y < CONTENT.top
+            && y < self.bar_rows()
         {
             return bar.pixel(x, y);
         }

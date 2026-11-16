@@ -122,7 +122,7 @@ pub(crate) mod scenes {
         pub reach: fn() -> Sim,
     }
 
-    pub static SCENES: [Scene; 31] = [
+    pub static SCENES: [Scene; 33] = [
         Scene {
             name: "home",
             reach: home,
@@ -162,6 +162,14 @@ pub(crate) mod scenes {
         Scene {
             name: "map",
             reach: map_page,
+        },
+        Scene {
+            name: "map course",
+            reach: map_course,
+        },
+        Scene {
+            name: "map off course",
+            reach: map_off_course,
         },
         Scene {
             name: "paused",
@@ -425,7 +433,81 @@ pub(crate) mod scenes {
     pub(crate) fn map_page() -> Sim {
         let mut sim = riding(90);
         sim.ride_page("5/5");
-        sim.expect_text("MAP");
+        sim.expect_text("100 M");
+        sim
+    }
+
+    fn gpx_every_ten_metres(origin: Point, legs: &[(f64, f64)]) -> String {
+        let at = |(east, north): (f64, f64)| {
+            let lat = origin.lat + north / 111_195.0;
+            let lon = origin.lon + east / (111_195.0 * origin.lat.to_radians().cos());
+            (Point::new(lat, lon), None)
+        };
+        let mut points = vec![at(legs[0])];
+        for pair in legs.windows(2) {
+            let steps = ((pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1) / 10.0).ceil();
+            for step in 1..=steps as usize {
+                let t = step as f64 / steps;
+                points.push(at((
+                    pair[0].0 + t * (pair[1].0 - pair[0].0),
+                    pair[0].1 + t * (pair[1].1 - pair[0].1),
+                )));
+            }
+        }
+        crate::route::to_gpx("bench", &points)
+    }
+
+    fn following_on_the_map(metres: f64) -> Sim {
+        let origin = Point::new(-33.45, -70.66);
+        let mut sim = Sim::new();
+        sim.fit_bulk(Presence::Ready);
+        let mut sim = sim.boot();
+        sim.discard_recording();
+        sim.init_bulk();
+        sim.format_files();
+        sim.connect_phone();
+        let course = gpx_every_ten_metres(
+            origin,
+            &[
+                (0.0, 0.0),
+                (0.0, 1_000.0),
+                (60.0, 1_010.0),
+                (150.0, 1_060.0),
+                (183.0, 1_066.0),
+                (183.0, 4_000.0),
+            ],
+        );
+        let (status, _) = sim.phone_request(
+            device_api::server::Method::Put,
+            "/api/course",
+            course.as_bytes(),
+        );
+        assert_eq!(status, 200);
+        sim.press(Button::TopLeft);
+        sim.advance(seconds(1));
+        let route = gpx_every_ten_metres(origin, &[(0.0, 0.0), (0.0, 2_000.0)]);
+        sim.ride_route(Route::from_gpx(&route).unwrap());
+        sim.ant_sensor(device_type::POWER, 1234);
+        sim.ant_sensor(device_type::SPEED_CADENCE, 777);
+        sim.pair(&["POWER METER", "SPEED/CAD"]);
+        sim.ride_at(36.0, 210.0, 0.0, 88.0);
+        sim.start_ride();
+        while sim.world().distance_m < metres {
+            sim.advance(seconds(1));
+        }
+        sim.ride_page("5/5");
+        sim
+    }
+
+    fn map_course() -> Sim {
+        let mut sim = following_on_the_map(750.0);
+        sim.expect_text("100 M");
+        sim
+    }
+
+    fn map_off_course() -> Sim {
+        let mut sim = following_on_the_map(1_140.0);
+        sim.expect_text("TURN BACK");
         sim
     }
 

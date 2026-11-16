@@ -32,12 +32,24 @@ The mockups use these values on top of the palette in
 | Minor road | `#2a2a2d`, 5 px | Residential and smaller |
 | Major road | `#444448`, 9 px | Primary and secondary classes |
 | Route ahead | `ACCENT` `#0a84ff`, 12 px on an 18 px `#04264c` casing | Course still to ride |
-| Ridden | `#1f4a78`, 5 px | Course already ridden |
+| Ridden | `#1f4a78`, 5 px | The ride's own track, on a ride without a course |
 | Off-course marks | `AMBER` `#ff9f0a` | Rider puck, chevrons back, missed-junction ring |
 
 The typeface is Nunito at weights 800 and 900, as everywhere else in VANA.
 
 ## Checking a screen against its mockup
+
+The three map mockups were drawn with the rider low and to the left, at the
+stepped zoom. After the 2026-11-15 ride Patrik fixed the rider at x 120,
+row 223, so their map layer (everything between the ground and the footer)
+was moved to put the puck there: map-approach by (+40, -43), map-close by
+(+56, -43) and map-offcourse by (+40, +65). Off course the junction now lies
+below the map, so its three chevrons were redrawn as the map draws them, from
+the puck down towards the bottom edge, and the route past the junction was
+extended up to the status bar. The scales are as drawn; the scenario rides at
+the speeds that give them. While a course is loaded the map draws only the
+course ahead, so the ridden line below the puck was taken out of all three
+(drawn on map-approach and map-close; below the screen on map-offcourse).
 
 `cycling mockup-compare` compares each mockup with the simulator checkpoint a
 scenario names after it (`.local/sim/latest/<scenario>/NN-ride-turns.png`, run

@@ -77,6 +77,15 @@ pub enum Mode {
     Stimulus,
 }
 
+impl Mode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Stimulus => "stimulus",
+        }
+    }
+}
+
 /// A way a replay parted from its recording.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
@@ -112,6 +121,27 @@ pub enum Kind {
     Truncated,
     /// The recording lost events here: its sink had no room for them.
     Lost,
+}
+
+impl Kind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unrecorded => "Unrecorded",
+            Self::Modelled => "Modelled",
+            Self::LeftOver => "LeftOver",
+            Self::OtherRequest => "OtherRequest",
+            Self::NotRequested => "NotRequested",
+            Self::Refused => "Refused",
+            Self::NotHeard => "NotHeard",
+            Self::Carried => "Carried",
+            Self::Seen => "Seen",
+            Self::Redacted => "Redacted",
+            Self::Rerecorded => "Rerecorded",
+            Self::Unreplayable => "Unreplayable",
+            Self::Truncated => "Truncated",
+            Self::Lost => "Lost",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -333,6 +363,11 @@ pub enum Seen {
     Toast(String),
     RideState(String),
     Shown(String),
+    Mark {
+        count: u16,
+        pressed_ms: u64,
+        page: String,
+    },
     Sound {
         pattern: u8,
         cue: String,
@@ -608,6 +643,15 @@ pub(crate) fn seen(event: &Event<'_>) -> Option<Option<Seen>> {
         Event::Toast(text) => Some(Some(Seen::Toast((*text).into()))),
         Event::RideState(state) => Some(Some(Seen::RideState((*state).into()))),
         Event::Shown(fields) => Some(Some(Seen::Shown((*fields).into()))),
+        Event::Mark {
+            count,
+            pressed_ms,
+            page,
+        } => Some(Some(Seen::Mark {
+            count: *count,
+            pressed_ms: *pressed_ms,
+            page: (*page).into(),
+        })),
         Event::Sound {
             pattern,
             cue,
@@ -937,6 +981,7 @@ impl Sources {
             | Event::Sound { .. }
             | Event::RideState(_)
             | Event::Shown(_)
+            | Event::Mark { .. }
             | Event::Panel(_)
             | Event::Log { .. }
             | Event::FrameTime(_)

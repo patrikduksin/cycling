@@ -211,8 +211,12 @@ cycling trace pull [FILE]                     # a ride trace and the media it st
 the media it started on beside it, as `<name>.origin`, for a replay. It reads
 only: ride export up to the ends the trace header records, `files get` for
 each file the header lists, and a local terrain pack with the header's
-SHA-256. The [ride-trace skill](../.agents/skills/ride-trace/SKILL.md) says
-what a rebuild cannot give back.
+SHA-256. It prints its result as one JSON document, then on stderr the
+moments the rider marked by holding MOVE (`marks:` with one line each, or
+`marks: none`). With `--json` it prints only the document, and a failure it
+reports, bad arguments included, as `{"error": ...}` with exit status 2. The
+[ride-trace skill](../.agents/skills/ride-trace/SKILL.md) says what a rebuild
+cannot give back.
 
 `cycling store get` pulls a file record by record. The session keeps the
 file open between requests, so a pull reads about one sector per 486 bytes,

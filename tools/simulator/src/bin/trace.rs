@@ -1,31 +1,46 @@
 //! `cycling trace` and `cycling replay`: read a ride trace as text, find
 //! moments in it, export it to OpenTelemetry, replay a window of it with
 //! screenshots, and write a regression test from it.
-use firmware_services::trace::{self, End};
 use shell_simulator::recording::Recording;
 use shell_simulator::replay::Mode;
 use shell_simulator::sim::Sim;
 use shell_simulator::trace::file::{self, Media};
 use shell_simulator::trace::find::{Query, find};
-use shell_simulator::trace::story::tell;
-use shell_simulator::trace::timeline::{
-    At, Entry, Kind, SILENCE_MS, Timeline, duration, read, session_clock,
+use shell_simulator::trace::report::{
+    Answers, Artifacts, Header, Listing, Prose, Rebuilt, Replayed, Stub, Summary, Written,
+    in_window, render,
 };
-use shell_simulator::trace::{battery, divergence, origin, otlp, rebuild, stub};
+use shell_simulator::trace::story::tell;
+use shell_simulator::trace::timeline::{At, Entry, Kind, Timeline, read, session_clock};
+use shell_simulator::trace::{divergence, origin, otlp, rebuild, stub};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-usage: cycling trace <command> <trace> [options]
-       cycling replay <trace> [options]
+usage: cycling trace <command> <trace> [options] [--json]
+       cycling replay <trace> [options] [--json]
 
 Read a ride trace (<name>.trace; the media it started on are in <name>.origin
 beside it: saved by the simulator, or rebuilt for a device trace by pull). Times are the session clock, mm:ss.mmm since power-on,
 and the ride clock, which runs only while a ride records; every line starts
 `<session> ride <ride>`. Time options take 40:00, 1:02:03, 90s, 40m or 2500ms,
 and r40:00 for a ride time.
+
+--json, on any command, prints one JSON document instead of the text, and
+{error} with exit status 2 when the command fails. A moment is
+{session_ms, ride_ms}, ride_ms null outside a ride. An entry is a moment's
+fields with {kind, text, repeat}, a page's cause and shows, and a packet's
+bytes in hex, whatever --hex says. summary gives {header, silences, spans,
+events, battery, entries (per kind {new, repeats})}; timeline {from_ms,
+to_ms, entries, hidden}; find {found, total}, each found an entry with type
+entry or {type stretch, from, to, first}, at most --limit of them; replay
+{header, mode, why, from_ms, to_ms, reached, trace_ended, divergence,
+artifacts}; origin {origin, lines} and media {lines}; rebuild {origin,
+not_rebuilt}; otlp {traces, metrics}, or {out} with --out; test-stub
+{fixture_steps, test}. The summary's battery and the lines of origin and
+media are prose, the text's own lines, with no fields to parse.
 
 commands:
   summary <trace>
@@ -65,14 +80,14 @@ commands:
       input, command, startup, ant, ant.packet, ant.request, ble, ble.packet,
       gps, sensors, battery, time, storage (media faults and VANA's warnings
       about saving or reading), entropy, page, toast, sound, ride, shown,
-      log, phone, power, display, buzzer, trace, health, activity; groups
-      seen, inputs, default, all (health and activity, every few seconds,
+      log, phone, power, display, buzzer, trace, health, activity, mark;
+      groups seen, inputs, default, all (health and activity, every few seconds,
       only by name or all). --all also lists entries
       that only repeat their source (a counter or reading moved); a press,
       a command or a note is never one. A sound names its cue. ANT+ pages
       read as words (power 230 W, hr 142 bpm, cadence 86 rpm, radar targets);
       --hex adds each packet's bytes.
-  find <trace> <query> [--where TEXT] [--from T] [--to T] [--limit N] [--hex]
+  find <trace> <query> [--where TEXT] [--from T] [--to T] [--limit N|all] [--hex]
       field=value, field!=value or field~text over the shown readings (time,
       speed, power, hr, cad, dist, grade) gives the stretches it held, e.g.
       power=--; a kind or kinds (toast, page,ride) gives those entries; any
@@ -114,6 +129,11 @@ commands:
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // trace.sh caches a binary under a commit only if it says it was built there.
+    if args == ["--build-commit"] {
+        println!("{}", option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""));
+        return ExitCode::SUCCESS;
+    }
     if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
@@ -124,6 +144,9 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
+            if args.iter().any(|a| a == "--json") {
+                println!("{}", serde_json::json!({ "error": error }));
+            }
             eprintln!("cycling trace: {error}");
             ExitCode::from(2)
         }
@@ -178,7 +201,8 @@ impl Options {
 
 fn run(args: &[String]) -> Result<String, String> {
     let (command, rest) = args.split_first().expect("arguments checked");
-    let options = Options::parse(rest, &["all", "video", "hex"])?;
+    let options = Options::parse(rest, &["all", "video", "hex", "json"])?;
+    let json = options.has("json");
     let path = PathBuf::from(
         options
             .positional
@@ -187,53 +211,108 @@ fn run(args: &[String]) -> Result<String, String> {
     );
     let (capture, media) =
         file::load(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let timeline = read(&capture.trace)?;
-    match command.as_str() {
-        "summary" => Ok(summary(&path, &timeline, &media)),
-        "origin" => Ok(origin::describe(
-            &capture,
-            media.clone(),
-            &std::fs::canonicalize(file::origin_path(&path))
+    let mut decoded = None;
+    let out = match command.as_str() {
+        "summary" => {
+            let timeline = decode(&mut decoded, &capture.trace)?;
+            render(json, &Summary::of(&path, timeline, &media))
+        }
+        "origin" => {
+            let origin = std::fs::canonicalize(file::origin_path(&path))
                 .unwrap_or_else(|_| file::origin_path(&path))
                 .display()
-                .to_string(),
-        )),
-        "media" => rebuild::media(&capture.trace),
+                .to_string();
+            let lines = origin::describe(&capture, media.clone(), &origin);
+            render(
+                json,
+                &Prose {
+                    lines,
+                    origin: Some(origin),
+                },
+            )
+        }
+        "media" => {
+            let lines = rebuild::media(&capture.trace)?;
+            render(
+                json,
+                &Prose {
+                    lines,
+                    origin: None,
+                },
+            )
+        }
         "rebuild" => {
             let dir = options
                 .value("pulled")
                 .ok_or("rebuild needs --pulled DIR")?;
             let pulled =
                 rebuild::Pulled::read(Path::new(dir)).map_err(|e| format!("{dir}: {e}"))?;
-            let (origin, gaps) = rebuild::rebuild(&capture.trace, &pulled)?;
-            let report = rebuild::report(&gaps);
-            file::save_rebuilt(&origin, &report, &path)
+            let (origin, not_rebuilt) = rebuild::rebuild(&capture.trace, &pulled)?;
+            file::save_rebuilt(&origin, &rebuild::report(&not_rebuilt), &path)
                 .map_err(|e| format!("{}: {e}", file::origin_path(&path).display()))?;
-            let written = std::fs::canonicalize(file::origin_path(&path))
+            let origin = std::fs::canonicalize(file::origin_path(&path))
                 .map_err(|e| format!("{}: {e}", path.display()))?;
-            Ok(format!(
-                "origin {}
-{report}",
-                written.display()
-            ))
+            render(
+                json,
+                &Rebuilt {
+                    not_rebuilt,
+                    origin,
+                },
+            )
         }
-        "timeline" => timeline_text(&timeline, &options),
-        "find" => find_text(&timeline, &options),
+        "timeline" => {
+            let timeline = decode(&mut decoded, &capture.trace)?;
+            let window = options.window(timeline)?;
+            let kinds = Kind::parse_list(options.value("kinds").unwrap_or("default"))?;
+            let listing = Listing::of(
+                timeline,
+                window,
+                &kinds,
+                options.has("all"),
+                options.has("hex"),
+            );
+            render(json, &listing)
+        }
+        "find" => {
+            let timeline = decode(&mut decoded, &capture.trace)?;
+            let query = options
+                .positional
+                .get(1)
+                .ok_or("find needs a query: field=value, a kind or text")?;
+            let window = options.window(timeline)?;
+            let limit = match options.value("limit") {
+                None => 50,
+                Some("all") => usize::MAX,
+                Some(limit) => limit.parse().map_err(|_| "--limit takes a number or all")?,
+            };
+            let found = find(
+                timeline,
+                &Query::parse(query),
+                window,
+                options.value("where"),
+            );
+            render(json, &Answers::of(found, limit, options.has("hex")))
+        }
         "otlp" => {
-            let json = otlp::export(&timeline, &tell(&timeline));
+            let timeline = decode(&mut decoded, &capture.trace)?;
+            let requests = otlp::export(timeline, &tell(timeline));
             match options.value("out") {
                 Some(out) => {
-                    std::fs::write(out, json).map_err(|e| format!("{out}: {e}"))?;
+                    std::fs::write(out, requests.to_string()).map_err(|e| format!("{out}: {e}"))?;
                     let out = std::fs::canonicalize(out).map_err(|e| format!("{out}: {e}"))?;
-                    Ok(format!("{}\n", out.display()))
+                    render(json, &Written { out })
                 }
-                None => Ok(json),
+                None => render(json, &requests),
             }
         }
-        "replay" => replay(&path, &capture, &timeline, &media, &options),
+        "replay" => {
+            let timeline = decode(&mut decoded, &capture.trace)?;
+            render(json, &replay(&path, &capture, timeline, &media, &options)?)
+        }
         "test-stub" => {
+            let timeline = decode(&mut decoded, &capture.trace)?;
             let at = options
-                .time(&timeline, "at")?
+                .time(timeline, "at")?
                 .ok_or("test-stub needs --at")?;
             let fixture = path
                 .file_stem()
@@ -248,190 +327,27 @@ fn run(args: &[String]) -> Result<String, String> {
                 .map(|list| list.split(',').map(stub::Expect::parse).collect())
                 .transpose()?
                 .unwrap_or_default();
-            let test = stub::stub(&timeline, fixture, &name, at, &expect)?;
-            Ok(match stub::to_fixture(&path, &capture, &media) {
-                Some(steps) => format!("{steps}\n{test}"),
-                None => test,
-            })
+            let test = stub::stub(timeline, fixture, &name, at, &expect)?;
+            let fixture_steps = stub::to_fixture(&path, &capture, &media);
+            render(
+                json,
+                &Stub {
+                    fixture_steps,
+                    test,
+                },
+            )
         }
         other => Err(format!("unknown command {other:?}; see --help")),
-    }
-}
-
-fn header(path: &Path, timeline: &Timeline, media: &Media) -> String {
-    let mut out = String::new();
-    let _ = writeln!(out, "trace {}", path.display());
-    let _ = writeln!(
-        out,
-        "build {}, boot {}, format {}, {} over {} passes, {}; media {}",
-        if timeline.build.is_empty() {
-            "unknown"
-        } else {
-            &timeline.build
-        },
-        timeline.boot,
-        trace::VERSION,
-        duration(timeline.end_ms),
-        timeline.passes,
-        match timeline.end {
-            End::Complete => "complete",
-            End::Torn => "torn: the last block was cut short",
-            End::Corrupt => "corrupt: a damaged block and everything after it were dropped",
-        },
-        match media {
-            Media::Saved => "saved beside it (.origin)".into(),
-            Media::Rebuilt(report) => format!(
-                "rebuilt from its header and the pulled media (.origin); {}",
-                report.trim_end().replace('\n', "; ")
-            ),
-            Media::Blank => "not saved: replays start on blank media".into(),
-        }
-    );
-    out
-}
-
-fn summary(path: &Path, timeline: &Timeline, media: &Media) -> String {
-    let mut out = header(path, timeline, media);
-    let silences: Vec<String> = timeline
-        .silences
-        .iter()
-        .map(|silence| {
-            let until = silence.next_ms.unwrap_or(timeline.end_ms);
-            format!(
-                "{} silent {}-{} ({}{})",
-                silence.sensor,
-                session_clock(silence.last_ms),
-                session_clock(until),
-                duration(until - silence.last_ms),
-                if silence.next_ms.is_none() {
-                    ", to the end"
-                } else {
-                    ""
-                }
-            )
-        })
-        .collect();
-    let _ = writeln!(
-        out,
-        "sensor silences (no ANT+ packet for over {}): {}",
-        duration(SILENCE_MS),
-        if silences.is_empty() {
-            "none".into()
-        } else {
-            silences.join("; ")
-        }
-    );
-    let story = tell(timeline);
-    let mut lines: Vec<(u64, String)> = story
-        .spans
-        .iter()
-        .map(|span| (span.start.session_ms, span.to_string()))
-        .chain(
-            story
-                .events
-                .iter()
-                .map(|event| (event.at.session_ms, event.to_string())),
-        )
-        .collect();
-    lines.sort_by_key(|(at, _)| *at);
-    for (_, line) in lines {
-        let _ = writeln!(out, "{line}");
-    }
-    let mut counts: BTreeMap<Kind, (usize, usize)> = BTreeMap::new();
-    for entry in &timeline.entries {
-        let count = counts.entry(entry.kind).or_default();
-        if entry.repeat {
-            count.1 += 1;
-        } else {
-            count.0 += 1;
-        }
-    }
-    let counts: Vec<String> = counts
-        .iter()
-        .map(|(kind, (new, repeats))| match repeats {
-            0 => format!("{} {new}", kind.name()),
-            _ => format!("{} {new}+{repeats}", kind.name()),
-        })
-        .collect();
-    out.push_str(&battery::summary(timeline));
-    let _ = writeln!(out, "entries: {}", counts.join(", "));
-    let _ = writeln!(
-        out,
-        "next: timeline --from T --to T, find <field=value|kind|text>, replay --from T"
-    );
-    out
-}
-
-fn timeline_text(timeline: &Timeline, options: &Options) -> Result<String, String> {
-    let (from, to) = options.window(timeline)?;
-    let kinds = Kind::parse_list(options.value("kinds").unwrap_or("default"))?;
-    let all = options.has("all");
-    let mut out = String::new();
-    let mut hidden: BTreeMap<&str, usize> = BTreeMap::new();
-    for entry in in_window(timeline, from, to) {
-        if !kinds.contains(&entry.kind) {
-            *hidden.entry(entry.kind.name()).or_default() += 1;
-        } else if entry.repeat && !all {
-            *hidden.entry("repeats").or_default() += 1;
-        } else if options.has("hex") {
-            let _ = writeln!(out, "{entry:#}");
-        } else {
-            let _ = writeln!(out, "{entry}");
-        }
-    }
-    if !hidden.is_empty() {
-        let hidden: Vec<String> = hidden.iter().map(|(k, n)| format!("{k} {n}")).collect();
-        let _ = writeln!(out, "hidden: {} (--kinds all, --all)", hidden.join(", "));
-    }
+    }?;
+    // A timeline is millions of small allocations, and the process ends once
+    // this is printed: freeing them would only cost time.
+    std::mem::forget(decoded);
     Ok(out)
 }
 
-fn in_window(timeline: &Timeline, from: u64, to: u64) -> impl Iterator<Item = &Entry> {
-    timeline
-        .entries
-        .iter()
-        .filter(move |e| (from..=to).contains(&e.at.session_ms))
-}
-
-fn find_text(timeline: &Timeline, options: &Options) -> Result<String, String> {
-    let query = options
-        .positional
-        .get(1)
-        .ok_or("find needs a query: field=value, a kind or text")?;
-    let window = options.window(timeline)?;
-    let limit: usize = options
-        .value("limit")
-        .map_or(Ok(50), str::parse)
-        .map_err(|_| "--limit takes a number")?;
-    let found = find(
-        timeline,
-        &Query::parse(query),
-        window,
-        options.value("where"),
-    );
-    let mut out = String::new();
-    for line in found.iter().take(limit) {
-        if options.has("hex") {
-            let _ = writeln!(out, "{line:#}");
-        } else {
-            let _ = writeln!(out, "{line}");
-        }
-    }
-    match found.len() {
-        0 => out.push_str("found nothing\n"),
-        n if n > limit => {
-            let _ = writeln!(out, "... {} more (--limit)", n - limit);
-        }
-        _ => {}
-    }
-    Ok(out)
-}
-
-fn mode_name(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Stimulus => "stimulus",
-        Mode::Strict => "strict",
-    }
+/// `trace` decoded into `slot`, which `run` forgets rather than frees.
+fn decode<'a>(slot: &'a mut Option<Timeline>, trace: &[u8]) -> Result<&'a Timeline, String> {
+    Ok(slot.insert(read(trace)?))
 }
 
 const DIRTY: &str = "-dirty";
@@ -494,13 +410,14 @@ fn pick_mode(
     }
 }
 
-fn uncommitted() -> Vec<String> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+fn uncommitted_here() -> Vec<String> {
     std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
         .args(["status", "--porcelain", "--untracked-files=no", "--"])
-        .args(shell_simulator::session::build_sources())
+        .args(
+            shell_simulator::session::build_sources()
+                .iter()
+                .map(|source| format!(":(top){source}")),
+        )
         .output()
         .ok()
         .filter(|out| out.status.success())
@@ -513,13 +430,13 @@ fn uncommitted() -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn replay(
+fn replay<'a>(
     path: &Path,
     capture: &shell_simulator::replay::Capture,
-    timeline: &Timeline,
-    media: &Media,
+    timeline: &'a Timeline,
+    media: &'a Media,
     options: &Options,
-) -> Result<String, String> {
+) -> Result<Replayed<'a>, String> {
     let from = options.time(timeline, "from")?.unwrap_or(0);
     let to = options.time(timeline, "to")?.unwrap_or(from + 60_000);
     let every = match options.value("every") {
@@ -533,14 +450,14 @@ fn replay(
         options.value("mode").unwrap_or("auto"),
         &timeline.build,
         option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""),
-        &uncommitted(),
+        &uncommitted_here(),
     )?;
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("trace");
     let dir = options.value("out").map_or_else(
         || {
             PathBuf::from(".local/replay").join(format!(
                 "{stem}-{}",
-                session_clock(from).replace([':', '.'], "-")
+                session_clock(from).to_string().replace([':', '.'], "-")
             ))
         },
         PathBuf::from,
@@ -581,46 +498,39 @@ fn replay(
         }
     }
     let reached = timeline.moment(sim.device.now);
-    let report = sim
+    let divergences = sim
         .device
         .report()
-        .map(|report| divergence::describe(timeline, (from, to), &before, &report))
-        .unwrap_or_default();
+        .map(|report| divergence::summarize(timeline, (from, to), &before, &report));
     let own = sim.trace();
     drop(sim);
     let write = |name: &str, bytes: &[u8]| {
         std::fs::write(dir.join(name), bytes).map_err(|e| format!("{}: {e}", dir.display()))
     };
     write("screens.txt", screens.as_bytes())?;
+    let report = divergences
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
     write("divergence.txt", report.as_bytes())?;
     write("replayed.trace", &own)?;
-    let mut out = header(path, timeline, media);
-    let _ = writeln!(out, "mode {}: {why}", mode_name(mode));
-    let _ = writeln!(
-        out,
-        "replayed {} from {} to {}; reached {}{}",
-        mode_name(mode),
-        session_clock(from),
-        session_clock(to),
-        reached,
-        if ran { "" } else { " (the trace ended)" }
-    );
-    let _ = write!(out, "divergence: {report}");
     let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
         .filter_map(|entry| Some(entry.ok()?.path()))
         .collect();
     files.sort();
-    let _ = writeln!(out, "artifacts in {}:", dir.display());
-    for file in files {
-        let _ = writeln!(out, "  {}", file.display());
-    }
-    let _ = writeln!(
-        out,
-        "screens.txt has the screen text at each screenshot; replayed.trace is this replay's own trace (diff it with timeline)"
-    );
-    Ok(out)
+    Ok(Replayed {
+        header: Header::of(path, timeline, media),
+        mode,
+        why,
+        from_ms: from,
+        to_ms: to,
+        reached,
+        trace_ended: !ran,
+        divergence: divergences,
+        artifacts: Artifacts { dir, files },
+    })
 }
 
 #[cfg(test)]

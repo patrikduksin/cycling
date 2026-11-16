@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import shutil
 import struct
@@ -111,8 +112,28 @@ def header(pack=None):
     return '\n'.join(lines) + '\n'
 
 
+MARKS = [
+    {
+        'type': 'entry',
+        'session_ms': 42410,
+        'ride_ms': 35000,
+        'kind': 'mark',
+        'text': '1 pressed 00:40.900 on ride/main',
+        'repeat': False,
+    },
+    {
+        'type': 'entry',
+        'session_ms': 70020,
+        'ride_ms': 62000,
+        'kind': 'mark',
+        'text': '2 pressed 01:08.510 on ride/stats',
+        'repeat': False,
+    },
+]
+
+
 class TracePullTests(unittest.TestCase):
-    def pull(self, directory, export, pack=None, roots=(), device=None):
+    def pull(self, directory, export, pack=None, roots=(), device=None, marks=()):
         device = device or RidesDevice()
         if not device.rides and export.rides:
             device.rides = {int(export.store, 16): list(export.rides)}
@@ -124,9 +145,16 @@ class TracePullTests(unittest.TestCase):
             calls.append((command, *args))
             if command == 'media':
                 return header(pack)
+            if command == 'find':
+                return json.dumps({'found': list(marks), 'total': len(marks)})
             out = Path(args[2])
             calls.append(sorted(str(path.relative_to(out)) for path in out.rglob('*')))
-            return f'origin {args[0].with_suffix(".origin")}\nfile bests.dat (revision 3): gone from the device\n'
+            return json.dumps(
+                {
+                    'origin': str(args[0].with_suffix('.origin')),
+                    'not_rebuilt': ['file bests.dat (revision 3): gone from the device'],
+                }
+            )
 
         with mock.patch.object(volumes, 'open_session', return_value=FakeTransfer(device)):
             result = trace_media.pull(
@@ -162,9 +190,23 @@ class TracePullTests(unittest.TestCase):
             self.assertIn('files/workouts/tempo.vw', calls[2])
             self.assertEqual(result['rebuilt'], ['file bests.dat (revision 3): gone from the device'])
             self.assertEqual(result['origin'], str(directory / '000003-00000007.origin'))
+            self.assertEqual(result['marks'], [])
             self.assertNotIn('problems', result)
         self.assertNotIn('EXPORT SLOT 2', export.commands, 'stops at the slots the header names')
         self.assertFalse(any(word in ' '.join(export.commands) for word in ('CLEAR', 'INIT', 'PUT', 'DELETE')))
+
+    def test_the_pull_keeps_every_mark_the_rider_made(self):
+        export = FakeExport([slot(0)], [slot(10)])
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls = self.pull(Path(directory), export, marks=MARKS)
+            trace = Path(directory) / '000003-00000007.trace'
+            self.assertIn(('find', trace, 'mark', '--limit', 'all', '--json'), calls)
+        self.assertEqual(result['marks'], MARKS)
+        self.assertEqual(
+            trace_media.marks_text(result['marks']),
+            'marks:\n  mark 1 pressed 00:40.900 on ride/main\n  mark 2 pressed 01:08.510 on ride/stats',
+        )
+        self.assertEqual(trace_media.marks_text([]), 'marks: none')
 
     def test_a_ride_log_cleared_since_is_not_pulled_and_no_pack_is_linked(self):
         export = FakeExport([slot(0)], [slot(20)], store='00000000000000cd')

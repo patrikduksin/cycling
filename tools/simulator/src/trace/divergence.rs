@@ -2,9 +2,10 @@
 //! they mean for the rider, so a clean window does not read as a replay
 //! fault.
 use crate::replay::{Kind, Mode, Report};
-use crate::trace::timeline::{Timeline, session_clock};
+use crate::trace::timeline::{Moment, Timeline, session_clock};
+use serde::{Serialize, Serializer};
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
+use std::fmt;
 
 /// What a divergence says about the replay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -84,15 +85,66 @@ impl Meaning {
 /// The report's counts before the window opened.
 pub type Counts = BTreeMap<Kind, u32>;
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Divergences {
+    /// The replay document names the mode once, at its top.
+    #[serde(skip)]
+    pub mode: Mode,
+    pub from_ms: u64,
+    pub to_ms: u64,
+    pub meanings: Vec<Meant>,
+    pub first: Option<First>,
+    #[serde(serialize_with = "by_kind")]
+    pub before: Counts,
+    pub verdict: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Meant {
+    pub meaning: Meaning,
+    pub total: u32,
+    #[serde(serialize_with = "by_kind")]
+    pub kinds: Counts,
+    pub explain: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct First {
+    pub at: Moment,
+    pub meaning: Meaning,
+    #[serde(serialize_with = "kind_name")]
+    pub kind: Kind,
+    pub detail: String,
+}
+
+impl Serialize for Meaning {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.label())
+    }
+}
+
+fn by_kind<S: Serializer>(counts: &Counts, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_map(
+        counts
+            .iter()
+            .filter(|(_, n)| **n > 0)
+            .map(|(kind, n)| (kind.name(), n)),
+    )
+}
+
+fn kind_name<S: Serializer>(kind: &Kind, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(kind.name())
+}
+
 /// The divergences from `from` to `to`, by meaning, the first of them, and
 /// how many came before `from`. `before` is the report's counts at `from`,
 /// taken when its `first` was cleared.
-pub fn describe(
+pub fn summarize(
     timeline: &Timeline,
     (from, to): (u64, u64),
     before: &Counts,
     report: &Report,
-) -> String {
+) -> Divergences {
     let mode = report.mode;
     let mut by_meaning: BTreeMap<Meaning, Counts> = BTreeMap::new();
     for (&kind, &count) in &report.counts {
@@ -104,50 +156,6 @@ pub fn describe(
                 .insert(kind, inside);
         }
     }
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "in {}-{} ({}):",
-        session_clock(from),
-        session_clock(to),
-        match mode {
-            Mode::Stimulus => "stimulus",
-            Mode::Strict => "strict",
-        }
-    );
-    if !by_meaning.contains_key(&Meaning::RiderVisible) {
-        out.push_str("  rider-visible: none\n");
-    }
-    for (meaning, counts) in &by_meaning {
-        let total: u32 = counts.values().sum();
-        let _ = writeln!(
-            out,
-            "  {}: {total} ({}): {}",
-            meaning.label(),
-            counts_text(counts),
-            meaning.explain()
-        );
-    }
-    if let Some(first) = &report.first {
-        let _ = writeln!(
-            out,
-            "  first: {} {}, {:?}: {}",
-            timeline.moment(first.at_ms),
-            Meaning::of(first.kind, mode).label(),
-            first.kind,
-            first.detail
-        );
-    }
-    let earlier: u32 = before.values().sum();
-    let _ = writeln!(
-        out,
-        "before {}: {}",
-        session_clock(from),
-        match earlier {
-            0 => "none".to_string(),
-            _ => format!("{earlier} ({})", counts_text(before)),
-        }
-    );
     let verdict = if by_meaning.contains_key(&Meaning::RiderVisible) {
         "the rider saw something else than the recording in this window"
     } else if by_meaning.contains_key(&Meaning::ReplayFault) {
@@ -159,15 +167,85 @@ pub fn describe(
     } else {
         "the rider saw what the recording saw; nothing here is a replay fault"
     };
-    let _ = writeln!(out, "verdict: {verdict}");
-    out
+    Divergences {
+        mode,
+        from_ms: from,
+        to_ms: to,
+        meanings: by_meaning
+            .into_iter()
+            .map(|(meaning, kinds)| Meant {
+                meaning,
+                total: kinds.values().sum(),
+                kinds,
+                explain: meaning.explain(),
+            })
+            .collect(),
+        first: report.first.as_ref().map(|first| First {
+            at: timeline.moment(first.at_ms),
+            meaning: Meaning::of(first.kind, mode),
+            kind: first.kind,
+            detail: first.detail.clone(),
+        }),
+        before: before.clone(),
+        verdict,
+    }
+}
+
+impl fmt::Display for Divergences {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "in {}-{} ({}):",
+            session_clock(self.from_ms),
+            session_clock(self.to_ms),
+            self.mode.name()
+        )?;
+        if !self
+            .meanings
+            .iter()
+            .any(|meant| meant.meaning == Meaning::RiderVisible)
+        {
+            f.write_str("  rider-visible: none\n")?;
+        }
+        for meant in &self.meanings {
+            writeln!(
+                f,
+                "  {}: {} ({}): {}",
+                meant.meaning.label(),
+                meant.total,
+                counts_text(&meant.kinds),
+                meant.explain
+            )?;
+        }
+        if let Some(first) = &self.first {
+            writeln!(
+                f,
+                "  first: {} {}, {}: {}",
+                first.at,
+                first.meaning.label(),
+                first.kind.name(),
+                first.detail
+            )?;
+        }
+        let earlier: u32 = self.before.values().sum();
+        writeln!(
+            f,
+            "before {}: {}",
+            session_clock(self.from_ms),
+            match earlier {
+                0 => "none".to_string(),
+                _ => format!("{earlier} ({})", counts_text(&self.before)),
+            }
+        )?;
+        writeln!(f, "verdict: {}", self.verdict)
+    }
 }
 
 fn counts_text(counts: &Counts) -> String {
     counts
         .iter()
         .filter(|(_, n)| **n > 0)
-        .map(|(kind, n)| format!("{kind:?} {n}"))
+        .map(|(kind, n)| format!("{} {n}", kind.name()))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -205,7 +283,7 @@ mod tests {
             detail: "the recording asked Scan".into(),
         });
         report.counts = Counts::from([(Kind::NotRequested, 3), (Kind::Carried, 1)]);
-        let text = describe(&timeline(), (1_000, 5_000), &before, &report);
+        let text = summarize(&timeline(), (1_000, 5_000), &before, &report).to_string();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[1], "  rider-visible: none");
         assert!(
@@ -222,10 +300,15 @@ mod tests {
             lines[6].ends_with("nothing here is a replay fault"),
             "{text}"
         );
+        let json =
+            serde_json::to_value(summarize(&timeline(), (1_000, 5_000), &before, &report)).unwrap();
+        assert_eq!(json["first"]["kind"], "NotRequested");
+        assert_eq!(json["meanings"][0]["kinds"]["NotRequested"], 2);
+        assert_eq!(json["before"]["NotRequested"], 1);
 
         let mut seen = Report::new(Mode::Strict);
         seen.counts = Counts::from([(Kind::Seen, 1)]);
-        let text = describe(&timeline(), (0, 5_000), &Counts::new(), &seen);
+        let text = summarize(&timeline(), (0, 5_000), &Counts::new(), &seen).to_string();
         assert!(text.contains("  rider-visible: 1 (Seen 1)"), "{text}");
         assert!(!text.contains("rider-visible: none"), "{text}");
     }

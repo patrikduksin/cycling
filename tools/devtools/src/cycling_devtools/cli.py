@@ -9,8 +9,6 @@ names them itself. `needs` run first, side by side, each line prefixed.
 import os
 import subprocess
 import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from cycling_devtools.workspace import ROOT, SIMULATOR_BUILD
@@ -22,7 +20,7 @@ TERRAIN = 'uv run --project tools/terrain --locked'
 # system Python provides; they use the source tree instead of the uv environment.
 SYSTEM_PYTHON = 'PYTHONPATH=tools/devtools/src /usr/bin/python3 -m cycling_devtools.'
 SIM_SCENARIOS = 'cargo test -p shell-simulator --locked --no-default-features --test ride_scenarios'
-TRACE = 'cargo run -q -p shell-simulator --locked --no-default-features --bin trace --'
+TRACE = 'bash tools/simulator/trace.sh'
 FUZZ = 'cargo run -q -p shell-simulator --locked --no-default-features --bin fuzz --'
 PRIMARY_CHECKOUT_RIDE_TRACES = (
     '"$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.local/ride-trace"'
@@ -348,10 +346,10 @@ TASKS = [
     ),
     task(
         'trace',
-        'Read a ride trace as text: summary, timeline, find, otlp, replay, test-stub (--help; skill: ride-trace); '
-        'pull [file] copies the newest or a named device trace into .local/traces/ and rebuilds the media it '
-        'started on beside it (.origin)',
-        f'if [ "${{1:-}}" = pull ]; then shift; {DEV}device.volumes trace-pull "$@"; else {TRACE} "$@"; fi',
+        'Read a ride trace as text, or one JSON document with --json: summary, timeline, find, otlp, replay, '
+        'test-stub (--help; skill: ride-trace); pull [file] copies the newest or a named device trace into '
+        '.local/traces/ and rebuilds the media it started on beside it (.origin)',
+        f'{TRACE} trace',
     ),
     task(
         'replay',
@@ -464,8 +462,13 @@ def run(task, args=(), env=None, replace=False):
 
 def run_side_by_side(names, env):
     """One need runs in the foreground; several run in parallel with prefixed output."""
+    if not names:
+        return 0
     if len(names) == 1:
         return run(BY_NAME[names[0]], env=env)
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
     lock = threading.Lock()
 
     def prefixed(name):
@@ -483,7 +486,7 @@ def run_side_by_side(names, env):
                 print(f'[{name}] {line}', end='', flush=True)
         return process.wait()
 
-    with ThreadPoolExecutor(len(names) or 1) as pool:
+    with ThreadPoolExecutor(len(names)) as pool:
         codes = list(pool.map(prefixed, names))
     return next((code for code in codes if code), 0)
 

@@ -1,27 +1,33 @@
 //! A session told as OpenTelemetry-shaped spans and notable events: the
 //! session, each ride and its recording and paused stretches, page visits,
 //! toasts, sensor links and silences, GPS fix and companion start-up as
-//! spans; boot, laps, warnings, commands and gaps as events.
+//! spans; boot, laps, the rider's marks, warnings, commands and gaps as
+//! events.
 use crate::trace::timeline::{
     Entry, Kind, Moment, TOAST_CLEARED, Timeline, duration, session_clock,
 };
-use firmware_services::trace::End;
+use serde::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::fmt;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Span {
     pub name: String,
     pub start: Moment,
     pub end: Moment,
     /// Index of the enclosing span; the session has none.
     pub parent: Option<usize>,
+    #[serde(serialize_with = "in_order")]
     pub attributes: Vec<(String, String)>,
     /// Still going when the trace ended.
     pub open: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+fn in_order<S: Serializer>(pairs: &[(String, String)], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_map(pairs.iter().map(|(key, value)| (key, value)))
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Point {
     pub at: Moment,
     pub name: String,
@@ -107,15 +113,7 @@ pub fn tell(timeline: &Timeline) -> Story {
             ),
             ("boot".into(), timeline.boot.to_string()),
             ("passes".into(), timeline.passes.to_string()),
-            (
-                "end".into(),
-                match timeline.end {
-                    End::Complete => "complete",
-                    End::Torn => "torn",
-                    End::Corrupt => "corrupt",
-                }
-                .into(),
-            ),
+            ("end".into(), timeline.end.name().into()),
         ],
         open: false,
     }];
@@ -204,7 +202,7 @@ pub fn tell(timeline: &Timeline) -> Story {
                 laps += 1;
                 events.push(Point::new(entry.at, "lap", entry.text.clone()));
             }
-            Kind::Log | Kind::Gap | Kind::Command | Kind::Storage => {
+            Kind::Mark | Kind::Log | Kind::Gap | Kind::Command | Kind::Storage => {
                 events.push(Point::new(entry.at, entry.kind.name(), entry.text.clone()))
             }
             _ => {}

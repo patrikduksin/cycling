@@ -603,7 +603,7 @@ def run(args, port):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = Parser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_port_argument(parser)
     actions = parser.add_subparsers(dest='action', required=True)
     actions.add_parser('inspect', help='volume table, terrain pack and file store')
@@ -645,23 +645,64 @@ def main():
         help='pull a ride trace from STORE into .local/traces/ and rebuild the media it started on beside it',
     )
     pull.add_argument('name', nargs='?', help='the trace, such as 000042-1a2b3c4d.trace; the newest by default')
+    pull.add_argument(
+        '--json',
+        action='store_true',
+        help='print only the result, one JSON document, without the marks listed after it; a failure is {"error"}',
+    )
     args = parser.parse_args()
     for path in (getattr(args, 'file', None),):
         if path is not None and not path.is_file():
             parser.error(f'{path} is not a file')
+    if args.action == 'trace-pull':
+        return pull_trace(args, parser)
     result = run(args, selected_port(parser, args.port))
     print(json.dumps(result, indent=2))
-    if not isinstance(result, dict):
-        return
+    if isinstance(result, dict) and (problems := lost(result, result.get('path', getattr(args, 'path', None)))):
+        raise SystemExit(problems)
+
+
+def lost(result, path):
+    """What the device could not read back for `result`, in one message, or None."""
     problems = [f'the device lost {h["records"]} record(s) from record {h["record"]}' for h in result.get('holes', [])]
     if 'incomplete' in result:
-        stop = result['incomplete']
-        problems.append(f'a sector read failed at record {stop["record"]}, so the pull stopped there')
-    if problems:
-        raise SystemExit(
-            f'{result["name"]}: {"; ".join(problems)}; {result.get("path", getattr(args, "path", None))} '
-            f'holds the {result["records"]} records that read back'
-        )
+        problems.append(f'a sector read failed at record {result["incomplete"]["record"]}, so the pull stopped there')
+    if not problems:
+        return None
+    return f'{result["name"]}: {"; ".join(problems)}; {path} holds the {result["records"]} records that read back'
+
+
+def pull_trace(args, parser):
+    """The result is the one document on stdout, naming a lost record as its "error". Without --json the marks
+    follow on stderr and a failure is raised; with it a failure is {"error": ...} and exit status 2, as for the
+    trace commands."""
+    from cycling_devtools.device import trace_media
+
+    port = selected_port(parser, args.port)
+    try:
+        result = run(args, port)
+    except Exception as error:
+        if not args.json:
+            raise
+        result = {'error': str(error) or type(error).__name__}
+    else:
+        if problems := lost(result, result['path']):
+            result['error'] = problems
+    print(json.dumps(result, indent=2))
+    if not args.json:
+        print(trace_media.marks_text(result['marks']), file=sys.stderr)
+    if 'error' in result:
+        raise SystemExit(2 if args.json else result['error'])
+
+
+class Parser(argparse.ArgumentParser):
+    """Under --json a usage error is one {"error": ...} document too, with argparse's exit status 2."""
+
+    def error(self, message):
+        if '--json' not in sys.argv[1:]:
+            super().error(message)
+        print(json.dumps({'error': message}, indent=2))
+        raise SystemExit(2)
 
 
 if __name__ == '__main__':

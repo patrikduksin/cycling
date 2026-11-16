@@ -388,6 +388,44 @@ fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
 }
 
 #[test]
+fn the_riders_marks_are_found_by_kind_and_told_as_events() {
+    let mut sim = Sim::new().boot();
+    sim.discard_recording();
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(2));
+    let pressed = sim.device.clock_ms();
+    sim.hold(Button::BottomLeft, 1600);
+    sim.advance(seconds(3));
+    sim.hold(Button::BottomLeft, 1600);
+    sim.advance(seconds(1));
+    let timeline = read(&sim.capture().trace).unwrap();
+    let found: Vec<String> = find(&timeline, &Query::parse("mark"), (0, u64::MAX), None)
+        .iter()
+        .map(|found| found.to_string())
+        .collect();
+    assert_eq!(found.len(), 2, "{found:?}");
+    let first = format!(
+        "mark        1 pressed {} on ride/main",
+        shell_simulator::trace::timeline::session_clock(pressed)
+    );
+    assert!(found[0].ends_with(&first), "{found:?}");
+    assert!(found[1].contains("mark        2 pressed "), "{found:?}");
+    let told: Vec<String> = tell(&timeline)
+        .events
+        .iter()
+        .filter(|e| e.name == "mark")
+        .map(|e| e.text.clone())
+        .collect();
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told[0].starts_with("1 pressed "), "{told:?}");
+    assert!(
+        Kind::parse_list("seen").unwrap().contains(&Kind::Mark),
+        "a mark is something VANA showed"
+    );
+}
+
+#[test]
 fn a_page_a_harness_press_brought_up_names_the_press() {
     let mut sim = Sim::new().boot();
     sim.discard_recording();
@@ -450,7 +488,7 @@ fn each_note_names_the_cue_vana_played_it_for() {
 #[test]
 fn otlp_export_is_one_traces_and_one_metrics_request() {
     let timeline = timeline("power-dropout-after-descent");
-    let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline));
+    let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline)).to_string();
     let lines: Vec<&str> = json.lines().collect();
     assert_eq!(lines.len(), 2);
     assert!(
@@ -1145,7 +1183,7 @@ fn activity_and_health_are_found_by_kind_and_exported_per_task() {
         matches!(health.first(), Some(Found::Entry(entry)) if entry.text.starts_with("simulated, gps ")),
         "{health:?}"
     );
-    let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline));
+    let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline)).to_string();
     let metrics = json.lines().nth(1).expect("a metrics request");
     assert!(
         metrics.contains(
@@ -1177,4 +1215,252 @@ fn a_damaged_block_ends_the_timeline_as_corrupt() {
     let timeline = read(&bytes).unwrap();
     assert_eq!(timeline.end, firmware_services::trace::End::Corrupt);
     assert!(timeline.entries.is_empty());
+}
+
+fn trace_json(args: &[&str]) -> serde_json::Value {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_trace"))
+        .args(args)
+        .arg("--json")
+        .output()
+        .expect("the trace tool runs");
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{args:?} printed one JSON document: {e}"))
+}
+
+fn path_of(trace: &Path) -> &str {
+    trace.to_str().expect("a UTF-8 path")
+}
+
+#[test]
+fn the_json_summary_holds_the_header_silences_story_battery_and_counts() {
+    let trace = fixture("power-dropout-after-descent");
+    let summary = trace_json(&["summary", path_of(&trace)]);
+    let timeline = timeline("power-dropout-after-descent");
+    let header = &summary["header"];
+    assert_eq!(header["end_ms"], timeline.end_ms);
+    assert_eq!(header["passes"], timeline.passes);
+    assert_eq!(header["end"], "complete");
+    assert_eq!(header["media"], "saved", "the fixture's .origin");
+    let silences = summary["silences"].as_array().unwrap();
+    let [silence] = silences.as_slice() else {
+        panic!("only the power meter went quiet: {silences:?}");
+    };
+    assert_eq!(silence["sensor"], format!("power#{POWER}"));
+    let (last, next) = (
+        silence["last_ms"].as_u64().unwrap(),
+        silence["next_ms"].as_u64().expect("the meter came back"),
+    );
+    assert!((24_500..=25_500).contains(&(next - last)));
+    let span = summary["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|span| span["name"] == format!("ant power#{POWER} silent"))
+        .expect("a span for the silence");
+    assert_eq!(span["start"]["session_ms"], last);
+    let ride = summary["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|span| span["name"] == "ride")
+        .expect("the ride is a span");
+    assert!(ride["attributes"].is_object(), "{ride}");
+    let event = summary["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["name"] == "storage")
+        .expect("the save warning is an event");
+    assert!(event["at"]["session_ms"].is_u64() && event["text"].is_string());
+    let shown = timeline
+        .entries
+        .iter()
+        .filter(|e| e.kind == Kind::Shown && !e.repeat)
+        .count();
+    assert_eq!(summary["entries"]["shown"]["new"], shown);
+    let battery = summary["battery"].as_array().unwrap();
+    assert!(
+        battery.iter().any(|line| line
+            .as_str()
+            .is_some_and(|line| line.starts_with("battery flags: "))),
+        "{battery:?}"
+    );
+}
+
+#[test]
+fn the_json_timeline_lists_the_window_and_counts_what_it_hid() {
+    let trace = fixture("power-dropout-after-descent");
+    let window = trace_json(&[
+        "timeline",
+        path_of(&trace),
+        "--from",
+        "3:00",
+        "--to",
+        "3:30",
+    ]);
+    assert_eq!(
+        (window["from_ms"].as_u64(), window["to_ms"].as_u64()),
+        (Some(180_000), Some(210_000))
+    );
+    let entries = window["entries"].as_array().unwrap();
+    assert!(!entries.is_empty());
+    for entry in entries {
+        let at = entry["session_ms"].as_u64().unwrap();
+        assert!((180_000..=210_000).contains(&at), "{entry}");
+        assert!(entry["ride_ms"].is_u64(), "inside the ride: {entry}");
+        assert_eq!(entry["repeat"], false, "{entry}");
+        let kind = entry["kind"].as_str().unwrap();
+        assert!(!Kind::parse_list(kind).unwrap()[0].bulky(), "{entry}");
+    }
+    assert!(window["hidden"]["ant.packet"].as_u64().unwrap() > 0);
+    assert!(window["hidden"]["repeats"].as_u64().unwrap() > 0);
+
+    let packets = trace_json(&[
+        "timeline",
+        path_of(&trace),
+        "--kinds",
+        "ant.packet",
+        "--all",
+    ]);
+    assert!(
+        packets["to_ms"].is_null(),
+        "no --to is the end of the trace"
+    );
+    let packet = &packets["entries"][0];
+    let bytes = packet["bytes"]
+        .as_str()
+        .expect("a packet carries its bytes");
+    assert_eq!(bytes.split(' ').count(), 8, "{bytes}");
+    assert!(
+        bytes
+            .split(' ')
+            .all(|byte| u8::from_str_radix(byte, 16).is_ok())
+    );
+    let boot = &trace_json(&["timeline", path_of(&trace), "--to", "1s"])["entries"][0];
+    assert!(boot["ride_ms"].is_null(), "before the ride: {boot}");
+}
+
+#[test]
+fn json_find_gives_stretches_or_entries_up_to_the_limit_and_the_total() {
+    let trace = fixture("power-dropout-after-descent");
+    let dashes = trace_json(&["find", path_of(&trace), "power=--", "--from", "r10s"]);
+    let [stretch] = dashes["found"].as_array().unwrap().as_slice() else {
+        panic!("one stretch of dashes: {dashes}");
+    };
+    assert_eq!(stretch["type"], "stretch");
+    let held = stretch["to"]["session_ms"].as_u64().unwrap()
+        - stretch["from"]["session_ms"].as_u64().unwrap();
+    assert!((15_000..=35_000).contains(&held), "dashes for {held} ms");
+    assert!(stretch["first"].as_str().unwrap().contains("power=--"));
+
+    let pages = trace_json(&["find", path_of(&trace), "page", "--limit", "2"]);
+    let found = pages["found"].as_array().unwrap();
+    assert_eq!(found.len(), 2);
+    let all = timeline("power-dropout-after-descent")
+        .entries
+        .iter()
+        .filter(|e| e.kind == Kind::Page && !e.repeat)
+        .count();
+    assert_eq!(pages["total"], all);
+    assert!(all > 2);
+    let every = trace_json(&["find", path_of(&trace), "page", "--limit", "all"]);
+    assert_eq!(every["found"].as_array().unwrap().len(), all);
+    for page in found {
+        assert_eq!(
+            (&page["type"], &page["kind"]),
+            (&"entry".into(), &"page".into())
+        );
+        assert!(page["cause"].is_string(), "{page}");
+    }
+}
+
+#[test]
+fn every_other_trace_command_answers_in_one_json_document() {
+    let trace = fixture("power-dropout-after-descent");
+    let trace = path_of(&trace);
+    let origin = trace_json(&["origin", trace]);
+    assert!(origin["origin"].as_str().unwrap().ends_with(".origin"));
+    assert!(origin["lines"][0].as_str().unwrap().starts_with("origin "));
+    assert_eq!(trace_json(&["media", trace])["lines"][0], "boot 1");
+    let otlp = trace_json(&["otlp", trace]);
+    assert!(otlp["traces"]["resourceSpans"].is_array(), "{otlp}");
+    assert!(otlp["metrics"]["resourceMetrics"].is_array());
+    let stub = trace_json(&["test-stub", trace, "--at", "r1:00"]);
+    assert!(
+        stub["fixture_steps"].is_null(),
+        "a committed fixture needs no steps"
+    );
+    assert!(stub["test"].as_str().unwrap().contains("#[test]"));
+
+    let dir = scratch("rebuild-json");
+    let copy = dir.join("copy.trace");
+    std::fs::copy(fixture("laps-and-a-menu"), &copy).unwrap();
+    std::fs::create_dir(dir.join("pulled")).unwrap();
+    let rebuilt = trace_json(&[
+        "rebuild",
+        path_of(&copy),
+        "--pulled",
+        path_of(&dir.join("pulled")),
+    ]);
+    assert_eq!(
+        rebuilt["origin"],
+        path_of(&std::fs::canonicalize(dir.join("copy.origin")).unwrap())
+    );
+    assert!(
+        rebuilt["not_rebuilt"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gap| gap.as_str().unwrap().contains("not pulled")),
+        "{rebuilt}"
+    );
+
+    let failed = std::process::Command::new(env!("CARGO_BIN_EXE_trace"))
+        .args(["summary", "no-such.trace", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(failed.status.code(), Some(2));
+    let error: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert!(error["error"].as_str().unwrap().contains("no-such.trace"));
+}
+
+#[test]
+fn a_json_replay_names_its_mode_window_divergence_and_artifacts() {
+    let dir = scratch("replay-json");
+    let out = dir.join("out");
+    let replayed = trace_json(&[
+        "replay",
+        path_of(&fixture("laps-and-a-menu")),
+        "--to",
+        "3s",
+        "--every",
+        "1s",
+        "--out",
+        path_of(&out),
+    ]);
+    assert_eq!(replayed["mode"], "stimulus", "the fixture names no build");
+    assert!(!replayed["why"].as_str().unwrap().is_empty());
+    assert_eq!(
+        (replayed["from_ms"].as_u64(), replayed["to_ms"].as_u64()),
+        (Some(0), Some(3_000))
+    );
+    assert_eq!(replayed["reached"]["session_ms"], 3_000);
+    assert_eq!(replayed["trace_ended"], false);
+    let divergence = &replayed["divergence"];
+    assert!(divergence.get("mode").is_none(), "the mode is named once");
+    assert!(divergence["meanings"].is_array() && divergence["verdict"].is_string());
+    let files: Vec<&str> = replayed["artifacts"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file.as_str().unwrap())
+        .collect();
+    for name in ["screens.txt", "divergence.txt", "replayed.trace"] {
+        assert!(files.iter().any(|file| file.ends_with(name)), "{files:?}");
+    }
 }

@@ -20,6 +20,7 @@ machine (`cycling device trace pull` does).
 """
 
 import hashlib
+import json
 import os
 import shlex
 import shutil
@@ -39,7 +40,7 @@ PACK_COPIES = ROOT / '.local' / 'terrain' / 'sha256'
 
 def trace_tool(*args):
     """Run `cycling trace` and return what it printed."""
-    command = [*shlex.split(TRACE), *map(str, args)]
+    command = [*shlex.split(TRACE), 'trace', *map(str, args)]
     done = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
     if done.returncode != 0:
         raise RuntimeError(f'cycling trace {args[0]}: {done.stderr.strip()}')
@@ -271,6 +272,12 @@ def pull_media(connection, media, out, cache, problems, timing):
         )
 
 
+def marks_text(marks):
+    if not marks:
+        return 'marks: none'
+    return '\n'.join(['marks:', *(f'  mark {mark["text"]}' for mark in marks)])
+
+
 def session(connection, timing, name, work):
     """Run `work(transfer)` in one transfer session, the app paused, and note how long it took here and where its
     time went on the device."""
@@ -310,9 +317,12 @@ def pull(
         pack = keep_pack(media['terrain'], roots, copies)
         if pack is not None:
             (out / 'terrain.pack').symlink_to(os.path.relpath(pack, out))
-    report = tool('rebuild', trace, '--pulled', out).splitlines()
+    rebuilt = json.loads(tool('rebuild', trace, '--pulled', out, '--json'))
+    marks = json.loads(tool('find', trace, 'mark', '--limit', 'all', '--json'))
     timing['total_s'] = round(time.monotonic() - started, 3)
-    result.update(media=str(out), origin=report[0].removeprefix('origin '), rebuilt=report[1:], timing=timing)
+    result.update(
+        media=str(out), origin=rebuilt['origin'], rebuilt=rebuilt['not_rebuilt'], marks=marks['found'], timing=timing
+    )
     if problems:
         result['problems'] = problems
     return result

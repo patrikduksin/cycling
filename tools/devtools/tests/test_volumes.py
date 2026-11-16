@@ -1,4 +1,6 @@
 import hashlib
+import io
+import json
 import os
 import struct
 import sys
@@ -10,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from cycling_devtools.device import volumes
+from cycling_devtools.device.port import DiscoveryError
 from cycling_devtools.device.volumes import FRAME, OP, SECTOR, Transfer, crc
 
 
@@ -189,6 +192,16 @@ class FakeTransfer(Transfer):
         if status and volumes.STATUS[status] not in allow:
             raise volumes.TransferError(name, status)
         return volumes.STATUS[status], arg, count, data
+
+
+MARK = {
+    'type': 'entry',
+    'session_ms': 42410,
+    'ride_ms': 35000,
+    'kind': 'mark',
+    'text': '1 pressed 00:40.900 on ride/main',
+    'repeat': False,
+}
 
 
 class VolumesTests(unittest.TestCase):
@@ -418,6 +431,78 @@ class VolumesTests(unittest.TestCase):
         device.store = {}
         with self.assertRaisesRegex(ValueError, 'no file in traces/'):
             volumes.trace_pull(transfer, directory=Path('unused'))
+
+    def pulled(self, argv, outcome, port=None):
+        run = mock.Mock(side_effect=outcome) if isinstance(outcome, Exception) else mock.Mock(return_value=outcome)
+        with (
+            mock.patch.object(sys, 'argv', ['volumes', 'trace-pull', *argv]),
+            mock.patch('cycling_devtools.device.port.select_port', port or mock.Mock(return_value='port')),
+            mock.patch.object(volumes, 'run', run),
+            mock.patch('sys.stdout', new_callable=io.StringIO) as out,
+            mock.patch('sys.stderr', new_callable=io.StringIO) as err,
+        ):
+            try:
+                volumes.main()
+                status = 0
+            except SystemExit as exit:
+                status = exit.code
+        return status, out.getvalue(), err.getvalue()
+
+    def pull_result(self, marks, **more):
+        return {'name': 'traces/000010-0000bbbb.trace', 'records': 2, 'path': 'x.trace', 'marks': marks, **more}
+
+    def test_trace_pull_with_json_prints_one_json_document_holding_the_marks(self):
+        for marks in ([], [MARK]):
+            result = self.pull_result(marks)
+            self.assertEqual(self.pulled(['--json'], result), (0, json.dumps(result, indent=2) + '\n', ''))
+
+    def test_trace_pull_prints_its_result_then_lists_the_marks_on_stderr(self):
+        for marks, listing in (([], 'marks: none\n'), ([MARK], 'marks:\n  mark 1 pressed 00:40.900 on ride/main\n')):
+            result = self.pull_result(marks)
+            status, out, err = self.pulled([], result)
+            self.assertEqual((status, json.loads(out), err), (0, result, listing))
+
+    def test_trace_pull_with_json_prints_each_failure_as_an_error_document(self):
+        for failure in (
+            ValueError('STORE holds no file in traces/'),
+            DiscoveryError('no device found'),
+            RuntimeError('cycling trace media: bad header'),
+        ):
+            status, out, _ = self.pulled(['--json'], failure)
+            self.assertEqual((status, json.loads(out)), (2, {'error': str(failure)}))
+
+    def test_trace_pull_with_json_prints_a_usage_or_port_error_as_an_error_document(self):
+        for argv in (['a.trace', 'b.trace', '--json'], ['--json', '--bogus'], ['--port', '--json']):
+            status, out, err = self.pulled(argv, self.pull_result([]))
+            self.assertEqual((status, list(json.loads(out)), err), (2, ['error'], ''), argv)
+        lost = mock.Mock(side_effect=DiscoveryError('no device found'))
+        status, out, _ = self.pulled(['--json'], self.pull_result([]), port=lost)
+        self.assertEqual(status, 2)
+        self.assertIn('no device found', json.loads(out)['error'])
+        status, out, err = self.pulled(['--bogus'], self.pull_result([]))
+        self.assertEqual((status, out), (2, ''), 'without --json argparse prints its usage')
+        self.assertIn('unrecognized arguments: --bogus', err)
+
+    def test_trace_pull_without_json_raises_a_failure_and_exits_naming_lost_records(self):
+        with self.assertRaisesRegex(RuntimeError, 'bad header'):
+            self.pulled([], RuntimeError('cycling trace media: bad header'))
+        result = self.pull_result([], holes=[{'record': 20, 'records': 2, 'offset': 100}])
+        status, out, err = self.pulled([], result)
+        self.assertIn('the device lost 2 record(s) from record 20', status)
+        self.assertEqual((json.loads(out)['error'], err), (status, 'marks: none\n'))
+
+    def test_trace_pull_with_json_names_the_records_the_device_lost_in_its_one_document(self):
+        result = self.pull_result([], holes=[{'record': 20, 'records': 2, 'offset': 100}])
+        status, out, _ = self.pulled(['--json'], result)
+        self.assertEqual(status, 2)
+        self.assertEqual(
+            json.loads(out),
+            {
+                **result,
+                'error': f'{result["name"]}: the device lost 2 record(s) from record 20; '
+                'x.trace holds the 2 records that read back',
+            },
+        )
 
     def run_main(self, argv, result, message):
         with (

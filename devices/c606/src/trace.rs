@@ -222,6 +222,15 @@ impl Trace {
             Seen::Toast(text) => record.record(&Event::Toast(text)),
             Seen::RideState(state) => record.record(&Event::RideState(state)),
             Seen::Shown(fields) => record.record(&Event::Shown(fields)),
+            Seen::Mark {
+                count,
+                pressed_ms,
+                page,
+            } => record.record(&Event::Mark {
+                count,
+                pressed_ms,
+                page,
+            }),
             Seen::Note {
                 cue,
                 pattern,

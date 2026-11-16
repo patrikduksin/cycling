@@ -9,6 +9,7 @@ pub mod find;
 pub mod origin;
 pub mod otlp;
 pub mod rebuild;
+pub mod report;
 pub mod secret;
 pub mod story;
 pub mod stub;

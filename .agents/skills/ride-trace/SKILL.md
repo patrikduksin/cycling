@@ -20,7 +20,11 @@ what drew power); replays read past both. For a battery problem, go to
 what VANA read: a BLE sensor shows as VANA's link to it and the packets it took,
 never as advertisements or anything else on the air, so a sensor that never
 appears was never connected, not necessarily absent. Every command below prints
-text: start there, and open a PNG only to confirm what the text says.
+text: start there, and open a PNG only to confirm what the text says. Add
+`--json` to any of them, `trace pull` too, for one JSON document to parse
+instead. A failure the tool reports, such as bad arguments, a trace that does
+not read or a tool that did not build, is `{"error": ...}` with exit status 2;
+`cycling trace --help` gives each command's fields.
 
 ## 1. Get the trace
 
@@ -138,6 +142,7 @@ explains it:
 
 | The rider said | Query |
 | --- | --- |
+| the rider marked it (MOVE held 1.5 s) | `find <trace> mark`: each mark names when MOVE went down and the page shown before; `cycling trace pull` lists them on stderr after its JSON |
 | a reading showed dashes | `cycling trace find <trace> power=--` (also `hr`, `speed`, `cad`, `dist`, `grade`, `time`; `!=` and `~` work too) |
 | a page did or did not come up | `find <trace> page --where climb` |
 | a message flashed | `find <trace> toast` |
@@ -346,7 +351,14 @@ wakes it.
 
 ## Reference
 
-- `cycling trace --help` lists every command, kind and option.
+- `cycling trace --help` lists every command, kind and option, and the
+  fields of each `--json` document.
+- `cycling trace` and `cycling replay` run the trace tool built for the
+  checkout's commit, kept in the primary checkout's `.local/tools/trace/`
+  for every worktree. The first query after a commit builds it, which takes
+  a minute; later ones answer a two-hour trace in under a second. A checkout
+  with uncommitted changes to the files that build VANA builds its own tree
+  each time, as `cargo run` would.
 - `cycling trace otlp <trace> --out <file>` writes OTLP/JSON (a traces and a
   metrics request, one per line) for an OpenTelemetry viewer; the collector's
   `otlpjsonfile` receiver reads it.

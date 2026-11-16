@@ -55,7 +55,7 @@ pub fn describe(capture: &Capture, media: Media, origin: &str) -> String {
             let sensors: Vec<String> = record
                 .sensors
                 .peers()
-                .map(|(_, peer)| sensor(peer))
+                .map(|(_, peer)| sensor(peer).to_string())
                 .collect();
             let _ = writeln!(
                 out,

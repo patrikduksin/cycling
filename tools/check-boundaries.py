@@ -43,6 +43,10 @@ SINGLE_WRITERS = {
     "Page::Summary": "apps/vana/src/app/ride_control.rs",
     "RideMessage::Clear": "apps/vana/src/app/ride_control.rs",
     "RideMessage::StorageNotReady": "apps/vana/src/app/ride_control.rs",
+    "Follow::Shown": "apps/vana/src/app/climb_page.rs",
+    "Hold::Idle": "apps/vana/src/app/mark.rs",
+    "Hold::Holding": "apps/vana/src/app/mark.rs",
+    "Hold::Spent": "apps/vana/src/app/mark.rs",
 }
 ASSIGNMENT = re.compile(r'(?<![=!<>])=\s*(?:\w+\s*::\s*)*(' + '|'.join(
     re.escape(value).replace('::', r'\s*::\s*') for value in SINGLE_WRITERS) + r')\b')

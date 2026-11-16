@@ -169,7 +169,7 @@ impl Totals {
         let wakes = rate(self.per_second(task.polls));
         match task.busy {
             Some(busy) => format!("{wakes} {}", percent(self.share(busy))),
-            None => wakes,
+            None => wakes.to_string(),
         }
     }
 }

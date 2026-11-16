@@ -5,6 +5,7 @@
 //! finger (`hit_test`), through the arbiter in `screens::touch`: it selects,
 //! scrolls and changes pages, and never starts, pauses, laps or stops a ride.
 use super::Runtime;
+use super::mark::MoveReport;
 use crate::clock::Zone;
 use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
@@ -77,6 +78,9 @@ impl Runtime {
                 self.list_pan(list, pan, received);
             }
         }
+        if input == Input::Cancel {
+            self.mark_input_lost(now);
+        }
         if !self.display.is_active() {
             return;
         }
@@ -135,6 +139,27 @@ impl Runtime {
         let Input::Button { button, code: 1 } = input else {
             return;
         };
+        if button != Button::BottomLeft {
+            self.button_press(button, held, received, now, ant);
+            return;
+        }
+        match self.mark_sees_every_move_report(held, received, now) {
+            MoveReport::Held => {}
+            MoveReport::Press => {
+                self.button_press(button, held, received, now, ant);
+                self.mark_after_press(now);
+            }
+        }
+    }
+
+    fn button_press(
+        &mut self,
+        button: Button,
+        held: bool,
+        received: u64,
+        now: u64,
+        ant: &mut impl Ant,
+    ) {
         if received.saturating_sub(self.navigation.last_press) < DEBOUNCE_MS {
             return;
         }

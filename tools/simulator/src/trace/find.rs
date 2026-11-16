@@ -1,6 +1,7 @@
 //! Locate moments in a timeline: every entry of a kind, the stretches in
 //! which a shown field held a value, or entries that mention some text.
 use crate::trace::timeline::{Entry, Kind, Moment, Timeline, duration, field, session_clock};
+use serde::Serialize;
 use std::fmt;
 
 /// What to look for.
@@ -48,7 +49,8 @@ impl Query {
 }
 
 /// One answer: an entry, or a stretch of time.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum Found<'a> {
     Entry(&'a Entry),
     Stretch {

@@ -112,7 +112,9 @@ even when it zeroed.
 Starting switches straight to the ride pages, shows a RECORDING toast and
 plays the start chime. On the ride pages ACT pauses, MOVE turns the page and
 BACK takes a lap (with a lap toast and the lap chime). The ride pages never
-show cues: the buttons keep fixed roles.
+show cues: the buttons keep fixed roles. Holding MOVE for 1.5 s marks the
+moment in the session trace (MARK n and three middle notes) and leaves the
+page as it was; `cycling trace pull` lists the marks.
 
 Settings RIDE has AUTO LAP: OFF, EVERY 1, 2, 5 or 10 KM, or AT START, which
 takes a lap each time the rider rides past where the ride began, for loops

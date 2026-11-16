@@ -3,9 +3,21 @@
 import importlib.util
 import re
 import subprocess
+import sys
 import unittest
 
 from cycling_devtools import cli
+
+
+class StartupTests(unittest.TestCase):
+    def test_quick_tasks_load_no_thread_pool(self):
+        loaded = subprocess.run(
+            [sys.executable, '-c', 'import sys, cycling_devtools.cli; print("concurrent.futures" in sys.modules)'],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual(loaded, 'False')
 
 
 class TaskTableTests(unittest.TestCase):

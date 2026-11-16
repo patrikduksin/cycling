@@ -30,6 +30,11 @@ let
   # environment; tools/devtools/src/cycling_devtools/cli.py owns the tasks.
   cycling = pkgs.writeShellScriptBin "cycling" ''
     root=$(git rev-parse --show-toplevel) || exit
+    # Starting Python under load takes most of a second, and agents query
+    # traces constantly.
+    case "''${1:-}" in
+      trace | replay) cd "$root" && exec bash tools/simulator/trace.sh "$@" ;;
+    esac
     exec uv run --project "$root/tools/devtools" --locked python -m cycling_devtools.cli "$@"
   '';
   gatedGh = pkgs.writeShellScriptBin "gh" ''
@@ -55,6 +60,7 @@ pkgs.mkShell {
     gatedGh
     jq
     rsync
+    util-linux
     openssh
   ];
 

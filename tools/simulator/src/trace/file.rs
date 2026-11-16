@@ -25,6 +25,16 @@ pub enum Media {
     Blank,
 }
 
+impl Media {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Saved => "saved",
+            Self::Rebuilt(_) => "rebuilt",
+            Self::Blank => "blank",
+        }
+    }
+}
+
 pub fn origin_path(trace: &Path) -> PathBuf {
     trace.with_extension("origin")
 }

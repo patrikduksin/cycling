@@ -663,6 +663,7 @@ middle and high notes by pitch. Rising runs mean go, falling ones stop.
 | Nearest vehicle close (under 30 m or 4 s), repeating every 1 s | middle, once |
 | Nearest vehicle passing (under 15 m or 2 s), repeating every 0.5 s | high, once |
 | Road empty for 2 s after vehicles (ALL CLEAR setting) | low, high |
+| The rider marks a moment (MOVE held 1.5 s) | middle, middle, middle |
 
 Each note waits for the previous one's guard. A newer cue replaces one in
 progress, and a cue that cannot start within a second is dropped. SOUNDS OFF
@@ -678,14 +679,23 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 | Button | Home | Sensors | Settings | Workouts | Ride |
 | --- | --- | --- | --- | --- | --- |
 | BottomRight (ACT) | Open the focused card | Open the focused row; on a sensor's page, zero a power meter or ask FORGET SENSOR?; answer a question | Act on the row (edit, step a choice, open); while editing, raise it | Choose the focused workout, then Ready | Pause, resume; on the NEW FTP sheet, save it |
-| BottomLeft (MOVE) | Focus the next card | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages |
+| BottomLeft (MOVE) | Focus the next card; held 1.5 s: mark the moment (MARK n) | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages; held 1.5 s: mark the moment (MARK n) |
 | TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back a page: SENSORS, then where Sensors opened from | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
 
 | Button | Ready | End ride? | Summary | Rides | Saved ride |
 | --- | --- | --- | --- | --- | --- |
 | BottomRight (ACT) | Start the ride | End and save it | Done: Home | Open the focused ride | Send to the phone |
-| BottomLeft (MOVE) | — | — | Next page (wraps) | Focus the next ride (wraps; held, four on) | Next page (wraps) |
+| BottomLeft (MOVE) | Held 1.5 s: mark the moment (MARK n) | — | Next page (wraps); held 1.5 s: mark the moment (MARK n) | Focus the next ride (wraps; held, four on) | Next page (wraps) |
 | TopLeft (BACK) | Home, dropping a chosen workout | Keep the ride, paused | Home | Home | Back to Rides |
+
+The rider's mark writes the moment into the session trace, so whoever reads
+the trace later starts where the rider noticed something. MOVE held for 1.5 s
+marks once per hold, while the button is still down, with three middle notes
+and a `MARK n` toast that counts the marks since power-on, so it confirms with
+SOUNDS OFF too. The hold's first report is an ordinary MOVE; the mark puts
+back the page or focus it changed, and the repeats before it change nothing.
+The mark names the time of that first report and the page shown before it.
+Lists and Settings keep their own held MOVE, so nothing marks there.
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |

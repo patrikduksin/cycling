@@ -33,9 +33,10 @@ slots (owner decision, 2026-10-17). The backup is `.local/device/flash.bin` with
 its `manifest.json`; keep the separate copy too.
 
 - A/B: slot A is `0x20000` (stock's ota_0), slot B `0x760000`. Slot B ends with
-  the 1 MiB ride journal and the settings, so images are capped below them in
-  both slots (`APP_SIZE`). `flash` writes the slot that is not selected; after a
-  full restore that is slot B, and the next flash replaces stock in slot A.
+  the 1 MiB ride journal and the settings, so images in both slots are capped
+  below them; `device.toml`'s `[owned]` ranges set the cap. `flash` writes the
+  slot that is not selected; after a full restore that is slot B, and the next
+  flash replaces stock in slot A.
 - After the watchdog reset `flash` and `rollback` wait up to 25 s for the
   console to answer `INFO`, whose `slot=` field reports the booted slot. Silence
   or a different slot reselects the previous slot and fails with the reason.

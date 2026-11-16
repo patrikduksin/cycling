@@ -23,9 +23,8 @@ def slot(index):
 class FakeExport:
     """Ride export replies for both journals, as the device's EXPORT commands give them."""
 
-    def __init__(self, internal, rides, store=STORE, export_rides=False):
+    def __init__(self, internal, rides, store=STORE):
         self.internal, self.rides, self.store, self.commands = internal, rides, store, []
-        self.export_rides = export_rides
 
     def terminal_command(self, command):
         self.commands.append(command)
@@ -36,7 +35,7 @@ class FakeExport:
         if verb == 'INFO':
             data = f'INFO 1 256 {len(slots)} ready' + (f' {self.store} 3 5777391' if bulk else '')
         else:
-            assert not bulk or self.export_rides, 'RIDES is read through the transfer session'
+            assert not bulk, 'RIDES is read through the transfer session'
             index = int(words[-1])
             data = f'SLOT {index} {zlib.crc32(slots[index]):08x} {slots[index].hex()}' + (' valid' if bulk else '')
         return dict(id=len(self.commands), status='OK', data=data)
@@ -257,26 +256,6 @@ class TracePullTests(unittest.TestCase):
             self.assertEqual(device.asked[:2], [19, 0])
             media = directory / '000003-00000007.media'
             self.assertEqual((media / 'rides.slots').read_bytes()[-SLOT_SIZE:], slot(77))
-
-    def test_firmware_from_before_rides_read_gets_rides_through_ride_export(self):
-        rides = [slot(10 + i) for i in range(5)]
-        export = FakeExport([], rides, export_rides=True)
-        device = RidesDevice()
-        device.handle = lambda op, *args: (
-            (volumes.STATUS.index('invalid'), 0, 0, b'')
-            if op == OP['rides_read']
-            else FakeDevice.handle(device, op, *args)
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            directory = Path(directory)
-            with mock.patch.object(trace_media, 'header_media', return_value=self.media(head=4)):
-                result, _ = self.pull(directory, export, device=device)
-            media = directory / '000003-00000007.media'
-            self.assertEqual((media / 'rides.slots').read_bytes(), b''.join(rides[:4]))
-            self.assertEqual((media / 'rides.epoch').read_text(), f'store {STORE}\ngeneration 3\ninvalid \n')
-            self.assertNotIn('problems', result)
-        self.assertIn('EXPORT BULK SLOT 3', export.commands)
-        self.assertNotIn('EXPORT BULK SLOT 4', export.commands)
 
     def media(self, head):
         media = trace_media.header_media(header())

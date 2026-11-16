@@ -245,8 +245,7 @@ def pull_files(transfer, media, out, problems):
 
 
 def pull_media(connection, media, out, cache, problems, timing):
-    """RIDES and FILES as the header names them, in one transfer session. RIDES goes through ride export instead
-    on firmware from before RIDES_READ."""
+    """RIDES and FILES as the header names them, in one transfer session."""
     rides = rides_log(connection, media, problems)
     head = rides[2] if rides else 0
     pulled = {}
@@ -255,11 +254,6 @@ def pull_media(connection, media, out, cache, problems, timing):
         if head:
             try:
                 pulled['invalid'] = pull_rides(transfer, rides[0], head, out / 'rides.slots', cache)
-            except volumes.TransferError as error:
-                if error.status == 'invalid':
-                    pulled['export'] = True
-                else:
-                    problems.append(f'RIDES: {error}')
             except (RuntimeError, ValueError, TimeoutError) as error:
                 problems.append(f'RIDES: {error}')
         pull_files(transfer, media, out, problems)
@@ -271,11 +265,6 @@ def pull_media(connection, media, out, cache, problems, timing):
     if not head:
         (out / 'rides.slots').write_bytes(b'')
         pulled['invalid'] = []
-    elif pulled.get('export'):
-        try:
-            pulled['invalid'] = pull_slots(connection, 'bulk', head, out / 'rides.slots')
-        except (RuntimeError, ValueError, TimeoutError) as error:
-            problems.append(f'RIDES: {error}')
     if 'invalid' in pulled:
         store, generation, _ = rides
         invalid = ' '.join(map(str, pulled['invalid']))

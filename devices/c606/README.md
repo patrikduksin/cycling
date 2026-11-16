@@ -16,12 +16,17 @@ binary can depend on applications; that does not make application imports suitab
 inside drivers. Preserve DMA ownership, interrupt behavior, memory placement and
 power sequencing when changing hardware code.
 
-`build.sh` (run by `cycling build`) builds the firmware, or with `maintenance`
-(`cycling build-maintenance`) the MMC maintenance image (see
-[storage research](research/storage.md)), and writes `.local/cycling.bin`
-for either application slot; `cycling flash` picks the slot that is not
-selected. `partitions.csv` matches the device layout; never flash it
-or a generated bootloader.
+[device.toml](device.toml) declares the C606 once: its build target and
+variants, partitions, owned flash ranges, panel and buttons. `cycling devices`
+checks it and writes [src/fitted.rs](src/fitted.rs), the constants the drivers
+read; `cycling check` fails while that file is stale, and
+`cycling devices --check` compares the attached unit's `FITTED` reply with
+the manifest. [devices/build.sh](../build.sh) (run by `cycling build`) builds
+the firmware, or with `--variant maintenance` (`cycling build-maintenance`) the
+MMC maintenance image (see [storage research](research/storage.md)), and writes
+`.local/cycling.bin` for either application slot; `cycling flash` picks the
+slot that is not selected. The partition table it generates beside the image
+matches the device layout; never flash it or a generated bootloader.
 
 Device access, flashing and hardware validation follow
 [AGENTS.md](../../AGENTS.md) and the [C606 skill](../../.agents/skills/c606/SKILL.md).

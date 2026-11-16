@@ -7,7 +7,7 @@ uncommitted and untracked files, is snapshotted as a commit and pushed into a
 worktree of the device host's primary checkout, so its lock, backup and safety
 rules are the ones that guard the device. `flash` and `flash-maintenance` build
 here and send only the image; `flash-image` sends the image last built here, as
-a measurement build (`build.sh scripted-gnss`) leaves it; every other task
+a measurement build (`cycling build --variant scripted-gnss`) leaves it; every other task
 sends nothing but the source. Afterwards the host's
 .local evidence (logs, test reports, exports) is copied back to the same paths
 here. Only the image and text cross the network: no USB forwarding.

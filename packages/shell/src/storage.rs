@@ -101,6 +101,10 @@ impl<B: OwnedFlash> Store<B> {
     pub fn crash(&mut self) -> RegionAccess<'_, B> {
         RegionAccess::new(self.journal.flash_mut(), Region::Crash)
     }
+
+    pub fn geometry(&mut self, region: Region) -> device_api::storage::Geometry {
+        self.journal.flash_mut().geometry(region)
+    }
 }
 
 #[cfg(test)]

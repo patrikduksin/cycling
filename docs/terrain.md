@@ -357,7 +357,7 @@ once onto a 4-bit layer of the ground (two bits of coverage a class a
 pixel), and a frame paints the ground and roads from it by table.
 
 On the device, riding the fixture course in the light look (5 s health
-windows with `build.sh scripted-gnss`), the map with roads sends a frame in
+windows with `cycling build --variant scripted-gnss`), the map with roads sends a frame in
 31 ms at the median window's slowest (p95 44 ms) against 35 ms (p95 54 ms)
 for the map before roads: the roads cost less than the map work this
 change sped up, but the map page is still over its 25 ms frame budget. A
@@ -366,7 +366,7 @@ with roads up to 48 ms.
 
 To measure it again:
 
-1. Build `bash devices/c606/build.sh scripted-gnss` and flash it with
+1. Build `cycling build --variant scripted-gnss` and flash it with
    `cycling device flash-image`. Its receiver rides the fixture course from
    Plaza de Armas after a two-minute hold, then 1.6 km off it, so the map
    also shows the way back to a junction far behind, at its widest step.

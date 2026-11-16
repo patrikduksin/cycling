@@ -10,7 +10,7 @@ ignored `.local/` (see [AGENTS.md](../../../AGENTS.md)).
 - [ANT+ companion support](ant.md) and its [investigation](ant-investigation/README.md)
 - [Storage investigation](storage.md)
 - [Vendor firmware format and boot process](firmware.md)
-- [Partition layout](../partitions.csv)
+- [Partition layout](../device.toml)
 - [Safe device workflow](../../../.agents/skills/c606/SKILL.md)
 
 The read-only [unpacker](unpack.py) takes your own update file:

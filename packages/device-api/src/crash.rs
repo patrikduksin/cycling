@@ -169,14 +169,11 @@ impl Marker {
     }
 }
 
-/// Which image build.sh built.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Image {
     #[default]
     Rider,
-    /// `cycling build-maintenance`.
     Maintenance,
-    /// `build.sh scripted-gnss`, which rides a fixture course.
     ScriptedGnss,
 }
 
@@ -217,15 +214,15 @@ impl Build {
     }
 
     /// The archived ELF's name after its commit, as build.sh writes it:
-    /// `-dirty` for uncommitted changes, then the image's own suffix.
+    /// `-dirty` for uncommitted changes, then `-` and the variant's name.
     pub const fn suffix(self) -> &'static str {
         match (self.dirty, self.image) {
             (false, Image::Rider) => "",
             (true, Image::Rider) => "-dirty",
-            (false, Image::Maintenance) => "-maint",
-            (true, Image::Maintenance) => "-dirty-maint",
-            (false, Image::ScriptedGnss) => "-gnss",
-            (true, Image::ScriptedGnss) => "-dirty-gnss",
+            (false, Image::Maintenance) => "-maintenance",
+            (true, Image::Maintenance) => "-dirty-maintenance",
+            (false, Image::ScriptedGnss) => "-scripted-gnss",
+            (true, Image::ScriptedGnss) => "-dirty-scripted-gnss",
         }
     }
 }
@@ -467,9 +464,9 @@ mod tests {
     fn each_image_names_the_elf_build_sh_archives_for_it() {
         for (dirty, image, elf) in [
             (false, Image::Rider, ""),
-            (true, Image::Maintenance, "-dirty-maint"),
-            (false, Image::ScriptedGnss, "-gnss"),
-            (true, Image::ScriptedGnss, "-dirty-gnss"),
+            (true, Image::Maintenance, "-dirty-maintenance"),
+            (false, Image::ScriptedGnss, "-scripted-gnss"),
+            (true, Image::ScriptedGnss, "-dirty-scripted-gnss"),
         ] {
             let build = Build { dirty, image };
             let words = encode(&Panic { build, ..panic() });

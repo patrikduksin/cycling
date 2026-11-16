@@ -1,7 +1,7 @@
-"""C606 backup, A/B cycling slots, rollback and full stock restore.
+"""Backup, A/B cycling slots, rollback and full stock restore, on the layout of the device manifest.
 
 Stock lives in the verified private backup, not on the device: cycling may use
-both application slots, and `stock` restores the complete 16 MiB backup. Writes
+both application slots, and `stock` restores the complete flash backup. Writes
 never touch eFuses, and flashes never touch the settings and ride reservations
 at the end of slot B.
 """
@@ -16,8 +16,10 @@ import sys
 import termios
 import time
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 
+from cycling_devtools import devices
 from cycling_devtools.device import mmc_maintenance
 from cycling_devtools.device.flasher import EsptoolFlasher, Flasher, monitor
 from cycling_devtools.device.page_flasher import PageFlasher
@@ -26,30 +28,48 @@ from cycling_devtools.terminal.usb import UsbConnection, acquire_lock, open_no_r
 from cycling_devtools.workspace import DEVICE_LOCAL, ROOT
 
 LOCAL = DEVICE_LOCAL / 'device'
-FLASH_SIZE = 0x1000000
-SECTOR = 0x1000
-SLOT_SIZE = 0x73A000
-SETTINGS_SIZE = 0x2000
-RIDE_SIZE = 0x100000
-# Slot B ends with the ride journal and then settings, so an image there must
-# stop before them. Slot A has no reservation; it uses the same cap so either
-# slot can hold any image.
-APP_SIZE = SLOT_SIZE - SETTINGS_SIZE - RIDE_SIZE
-SLOTS = (0x20000, 0x760000)
+SECTOR = devices.ERASE_SECTOR
 NAMES = 'AB'
-OWNED = (SLOTS[1] + APP_SIZE, RIDE_SIZE + SETTINGS_SIZE)
-# Bootloader, partition table, NVS, OTA selection, PHY data and coredump.
-# Cycling keeps its last panic record in the coredump partition's final two
-# sectors (0x1E000..0x20000); flashing writes only OTA selection here, and a
-# full restore puts the backup's bytes back.
-BOOT_ZONE = SLOTS[0]
 # Matches the harness reconnect bound for a restarted console.
 CONSOLE_SECONDS = 25
 BOOT_CAPTURE_SECONDS = 3
 APP_DESC_MAGIC = 0xABCD5432
-PROJECT = b'c606-firmware'
 # Descriptor version suffix of bulk-maintenance builds, which speak only the binary maintenance protocol.
 MAINTENANCE_MARK = b'+maintenance'
+
+
+@dataclass(frozen=True)
+class Layout:
+    name: str
+    project: bytes
+    flash_size: int
+    slots: tuple[int, ...]
+    slot_size: int
+    app_size: int
+    owned: tuple[int, int]
+    partitions: tuple[devices.Partition, ...]
+    metadata: tuple[int, int]
+    otadata: int
+
+    @property
+    def boot_zone(self):
+        return self.slots[0]
+
+    @classmethod
+    def of(cls, device):
+        table, otadata = device.partition_table, device.partition('otadata')
+        return cls(
+            name=device.name,
+            project=device.package.encode(),
+            flash_size=device.flash_size,
+            slots=tuple(slot.offset for slot in device.slots),
+            slot_size=device.slots[0].size,
+            app_size=device.image_cap,
+            owned=device.owned_tail,
+            partitions=device.partitions,
+            metadata=(table, otadata.end - table),
+            otadata=otadata.offset - table,
+        )
 
 
 def require(condition, message):
@@ -92,43 +112,35 @@ def image_span(data):
     return ((offset + 16) & ~15) + 32
 
 
-def is_cycling(header):
+def is_cycling(header, layout):
     """The application descriptor at the start of the first segment names this firmware."""
     return (
         len(header) >= 0x70
         and header[0] == 0xE9
         and struct.unpack_from('<I', header, 0x20)[0] == APP_DESC_MAGIC
-        and header[0x50:0x70].rstrip(b'\0') == PROJECT
+        and header[0x50:0x70].rstrip(b'\0') == layout.project
     )
 
 
-def speaks_maintenance(header):
+def speaks_maintenance(header, layout):
     """Whether a cycling image is the bulk-maintenance build, from its stored descriptor version."""
-    return is_cycling(header) and header[0x30:0x50].rstrip(b'\0').endswith(MAINTENANCE_MARK)
+    return is_cycling(header, layout) and header[0x30:0x50].rstrip(b'\0').endswith(MAINTENANCE_MARK)
 
 
-def describe(header, stock):
+def describe(header, stock, layout):
     """What a slot holds, from its first sector: cycling, stock or other."""
-    if is_cycling(header):
+    if is_cycling(header, layout):
         return 'cycling'
     return 'stock' if header == stock[:SECTOR] else 'other'
 
 
-def validate_cycling(data):
+def validate_cycling(data, layout):
     require(image_length(data) == len(data), 'Image has bytes outside its validated image extent')
-    require(len(data) <= APP_SIZE, 'Image overlaps the reserved slot-B ride/settings storage')
-    require(is_cycling(data), 'Image is not cycling firmware (application descriptor mismatch)')
+    require(len(data) <= layout.app_size, 'Image overlaps the reserved slot-B ride/settings storage')
+    require(is_cycling(data, layout), 'Image is not cycling firmware (application descriptor mismatch)')
 
 
-def partitions(metadata):
-    expected = [
-        ('nvs', 1, 2, 0x9000, 0x4000),
-        ('otadata', 1, 0, 0xD000, 0x2000),
-        ('phy_init', 1, 1, 0xF000, 0x1000),
-        ('coredump', 1, 3, 0x10000, 0x10000),
-        ('ota_0', 0, 0x10, SLOTS[0], SLOT_SIZE),
-        ('ota_1', 0, 0x11, SLOTS[1], SLOT_SIZE),
-    ]
+def partitions(metadata, layout):
     entries = []
     for offset in range(0, 0xC00, 32):
         entry = metadata[offset : offset + 32]
@@ -141,12 +153,13 @@ def partitions(metadata):
         require(flags == 0, 'Encrypted or flagged partition is unsupported')
         entries.append((label.rstrip(b'\0').decode(), kind, subtype, address, size))
     # Stock labels can differ; layout and types must match exactly.
-    require([e[1:] for e in entries] == [e[1:] for e in expected], 'Unsupported C606 partition layout')
+    expected = [p.entry for p in layout.partitions]
+    require([e[1:] for e in entries] == expected, f'Partition layout differs from devices/{layout.name}/device.toml')
 
 
-def records(metadata):
+def records(metadata, layout):
     result = []
-    for offset in (0x5000, 0x6000):
+    for offset in (layout.otadata, layout.otadata + SECTOR):
         record = metadata[offset : offset + 32]
         seq, state, crc = struct.unpack_from('<I20xII', record)
         valid = seq not in (0, 0xFFFFFFFF) and state not in (3, 4)
@@ -157,24 +170,29 @@ def records(metadata):
     return result
 
 
-def selected_slot(metadata):
+def selected_slot(metadata, layout):
     """Slot the bootloader starts: the highest valid sequence selects (sequence - 1) % 2."""
-    return (max(records(metadata))[0] - 1) % 2
+    return (max(records(metadata, layout))[0] - 1) % 2
 
 
-def verified_backup(local=None):
+def verified_backup(layout, local=None):
     """Prove the private backup is complete and self-consistent before it may be written."""
     local = LOCAL if local is None else local
     require((local / 'manifest.json').exists(), 'No private backup; stock cannot be restored')
     manifest = json.loads((local / 'manifest.json').read_text())
     backup = (local / 'flash.bin').read_bytes()
     stock = (local / 'stock.bin').read_bytes()
-    require(len(backup) == FLASH_SIZE and sha(backup) == manifest['flash_sha256'], 'Backup flash.bin hash mismatch')
+    require(
+        len(backup) == layout.flash_size and sha(backup) == manifest['flash_sha256'], 'Backup flash.bin hash mismatch'
+    )
     require(sha(stock) == manifest['stock_sha256'], 'Backup stock.bin hash mismatch')
-    require(backup[SLOTS[0] : SLOTS[0] + len(stock)] == stock, 'stock.bin is not the backup slot A image')
-    require(sha(backup[:0x8000]) == manifest['bootloader_region_sha256'], 'Backup bootloader region mismatch')
-    partitions(backup[0x8000:0x10000])
-    require(selected_slot(backup[0x8000:0x10000]) == 0, 'Backup does not select stock slot A')
+    require(backup[layout.slots[0] : layout.slots[0] + len(stock)] == stock, 'stock.bin is not the backup slot A image')
+    require(
+        sha(backup[: layout.metadata[0]]) == manifest['bootloader_region_sha256'], 'Backup bootloader region mismatch'
+    )
+    metadata = backup[layout.metadata[0] : sum(layout.metadata)]
+    partitions(metadata, layout)
+    require(selected_slot(metadata, layout) == 0, 'Backup does not select stock slot A')
     return manifest, backup
 
 
@@ -186,17 +204,17 @@ def sectors_differing(actual, expected):
     ]
 
 
-def restore_plan(current, backup, gap=0x10000):
+def restore_plan(current, backup, layout, gap=0x10000):
     """Runs of differing sectors to write: application zone first, boot metadata last.
 
     Application runs merge across short identical gaps to bound esptool calls.
     Boot metadata stays sector-exact so identical bootloader sectors are never
     rewritten, and is written top-down, bootloader last.
     """
-    require(len(current) == len(backup) == FLASH_SIZE, 'Restore needs complete 16 MiB images')
+    require(len(current) == len(backup) == layout.flash_size, 'Restore needs complete 16 MiB images')
     application, boot = [], []
     for offset in sectors_differing(current, backup):
-        runs, merge = (boot, 0) if offset < BOOT_ZONE else (application, gap)
+        runs, merge = (boot, 0) if offset < layout.boot_zone else (application, gap)
         if runs and offset - (runs[-1][0] + runs[-1][1]) <= merge:
             runs[-1][1] = offset + SECTOR - runs[-1][0]
         else:
@@ -250,8 +268,8 @@ def flasher_for(port, resolve, log_dir, environ=os.environ, chip='esp32s3') -> F
 
 
 class Device:
-    def __init__(self, flasher: Flasher):
-        self.flasher = flasher
+    def __init__(self, flasher: Flasher, layout: Layout):
+        self.flasher, self.layout = flasher, layout
         LOCAL.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(LOCAL, 0o700)
 
@@ -270,10 +288,10 @@ class Device:
             f'This {chip.family} cannot report secure boot or flash encryption, so it is treated as not writable',
         )
         require(chip.accepts_unsigned, 'This procedure requires secure boot and flash encryption disabled')
-        metadata = self.read(0x8000, 0x8000, 'before.bin')
+        metadata = self.read(*self.layout.metadata, 'before.bin')
         if strict:
-            partitions(metadata)
-            records(metadata)
+            partitions(metadata, self.layout)
+            records(metadata, self.layout)
         return metadata, chip.identity
 
     def verify(self, address, path):
@@ -294,27 +312,27 @@ class Device:
         )
 
     def backup(self, metadata, identity):
-        require(selected_slot(metadata) == 0, 'Boot stock slot A before making the baseline backup')
+        require(selected_slot(metadata, self.layout) == 0, 'Boot stock slot A before making the baseline backup')
         require(not (LOCAL / 'manifest.json').exists(), 'A backup already exists; it will not be overwritten')
         # Cycling may occupy slot A now, so a fresh host must never record it as the stock baseline.
         refusal = (
             'Slot A holds cycling firmware, so it cannot become the stock baseline; copy the existing '
             f'verified backup (flash.bin, stock.bin, manifest.json) into {LOCAL} instead'
         )
-        require(not is_cycling(self.header(0)), refusal)
+        require(not is_cycling(self.header(0), self.layout), refusal)
         print('Reading the full 16 MiB flash. This takes about two minutes.', flush=True)
-        backup = self.read(0, FLASH_SIZE, 'flash.bin')
+        backup = self.read(0, self.layout.flash_size, 'flash.bin')
         self.verify(0, LOCAL / 'flash.bin')
-        stock = backup[SLOTS[0] : SLOTS[0] + SLOT_SIZE]
+        stock = backup[self.layout.slots[0] : self.layout.slots[0] + self.layout.slot_size]
         stock = stock[: image_length(stock)]
-        require(not is_cycling(stock), refusal)
+        require(not is_cycling(stock, self.layout), refusal)
         (LOCAL / 'stock.bin').write_bytes(stock)
         manifest = {
             'identity': identity,
             'flash_sha256': sha(backup),
             'stock_sha256': sha(stock),
             'stock_length': len(stock),
-            'bootloader_region_sha256': sha(backup[:0x8000]),
+            'bootloader_region_sha256': sha(backup[: self.layout.metadata[0]]),
         }
         (LOCAL / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         self.reboot()
@@ -331,50 +349,55 @@ class Device:
             sha(backup) == manifest['flash_sha256'] and sha(stock) == manifest['stock_sha256'],
             'Backup integrity check failed',
         )
-        require(metadata[:0x1000] == backup[0x8000:0x9000], 'Partition table changed since backup')
-        boot = self.read(0, 0x8000, 'bootloader-check.bin')
+        require(
+            metadata[:SECTOR] == backup[self.layout.metadata[0] : self.layout.metadata[0] + SECTOR],
+            'Partition table changed since backup',
+        )
+        boot = self.read(0, self.layout.metadata[0], 'bootloader-check.bin')
         require(sha(boot) == manifest['bootloader_region_sha256'], 'Bootloader changed since backup')
 
     def header(self, slot):
-        header = self.read(SLOTS[slot], SECTOR, f'slot-{NAMES[slot].lower()}-header.bin')
+        header = self.read(self.layout.slots[slot], SECTOR, f'slot-{NAMES[slot].lower()}-header.bin')
         return header
 
     def contents(self, slot):
         """Describe what a slot holds from its first sector: cycling, stock or other."""
-        return describe(self.header(slot), (LOCAL / 'stock.bin').read_bytes())
+        return describe(self.header(slot), (LOCAL / 'stock.bin').read_bytes(), self.layout)
 
     def read_image(self, slot):
         """Read only as much of a slot as its image occupies, then require a valid cycling image."""
         size = 0x100000
         while True:
-            data = self.read(SLOTS[slot], size, f'slot-{NAMES[slot].lower()}.bin')
+            data = self.read(self.layout.slots[slot], size, f'slot-{NAMES[slot].lower()}.bin')
             try:
                 span = image_span(data)
                 if span is not None and span <= len(data):
-                    validate_cycling(data[:span])
+                    validate_cycling(data[:span], self.layout)
                     return data[:span]
-                require(size < APP_SIZE and (span or 0) <= APP_SIZE, 'Image exceeds the slot cap')
+                require(
+                    size < self.layout.app_size and (span or 0) <= self.layout.app_size, 'Image exceeds the slot cap'
+                )
             except RuntimeError as error:
                 raise RuntimeError(f'Slot {NAMES[slot]} does not hold a valid cycling image: {error}') from None
-            size = min(APP_SIZE, max(size * 2, -(-(span or 0) // SECTOR) * SECTOR))
+            size = min(self.layout.app_size, max(size * 2, -(-(span or 0) // SECTOR) * SECTOR))
 
     def select(self, metadata, slot):
-        valid = records(metadata)
+        valid = records(metadata, self.layout)
         latest, newest_offset = max(valid)
         require(latest < 0xFFFFFFFC, 'OTA sequence needs manual inspection before rollover')
         sequence = latest + 1
         if (sequence - 1) % 2 != slot:
             sequence += 1
-        offset = 0x6000 if newest_offset == 0x5000 else 0x5000
-        sector = bytearray(b'\xff' * 0x1000)
+        offset = self.layout.otadata + SECTOR if newest_offset == self.layout.otadata else self.layout.otadata
+        sector = bytearray(b'\xff' * SECTOR)
         struct.pack_into('<I', sector, 0, sequence)
         struct.pack_into('<I', sector, 28, zlib.crc32(sector[:4], 0xFFFFFFFF))
         path = LOCAL / 'selection.bin'
         path.write_bytes(sector)
         expected = bytearray(metadata)
-        expected[offset : offset + 0x1000] = sector
-        self.write(0x8000 + offset, path)
-        actual = self.read(0x8000, 0x8000, 'after.bin')
+        expected[offset : offset + SECTOR] = sector
+        self.write(self.layout.metadata[0] + offset, path)
+        actual = self.read(*self.layout.metadata, 'after.bin')
         require(actual == expected, 'Boot selection readback does not match the planned change')
         self.reboot()
         print(f'Slot {NAMES[slot]} selected; watchdog reset sent.', flush=True)
@@ -438,15 +461,15 @@ class Device:
     def restore(self, backup):
         """Write the verified backup over every differing sector, then read the whole flash back."""
         print('Reading the full 16 MiB flash before restore. This takes about two minutes.', flush=True)
-        current = self.read(0, FLASH_SIZE, 'restore-before.bin')
-        plan = restore_plan(current, backup)
+        current = self.read(0, self.layout.flash_size, 'restore-before.bin')
+        plan = restore_plan(current, backup, self.layout)
         print(f'Restoring {sum(length for _, length in plan) // SECTOR} differing sectors in {len(plan)} writes.')
         run = LOCAL / 'restore-run.bin'
         for address, length in plan:
             run.write_bytes(backup[address : address + length])
             self.write(address, run)
         print('Reading the full flash back for sector-wise verification.', flush=True)
-        after = self.read(0, FLASH_SIZE, 'restore-after.bin')
+        after = self.read(0, self.layout.flash_size, 'restore-after.bin')
         bad = sectors_differing(after, backup)
         if bad:
             raise RuntimeError(f'{len(bad)} sectors differ from the backup, first at {bad[0]:#x}; rerun cycling stock')
@@ -458,7 +481,7 @@ class Device:
     def stock_select(self, metadata):
         """Light path: boot slot A only while it still holds the verified stock image."""
         try:
-            self.verify(SLOTS[0], LOCAL / 'stock.bin')
+            self.verify(self.layout.slots[0], LOCAL / 'stock.bin')
         except RuntimeError:
             raise RuntimeError('Slot A no longer holds stock; use cycling stock for the full restore') from None
         self.select(metadata, 0)
@@ -493,15 +516,16 @@ def main():
     if args.action == 'monitor':
         monitor(port, args.seconds)
         return
+    layout = Layout.of(devices.selected())
     # Everything checkable offline is checked before interrupting the running firmware.
     candidate = ROOT / '.local/cycling.bin'
     if args.action == 'flash':
         image = candidate.read_bytes()
-        validate_cycling(image)
+        validate_cycling(image, layout)
     if args.action == 'stock':
         confirm_restore(args.confirm_restore)
-        manifest, backup = verified_backup()
-    device = Device(flasher_for(port, resolve, LOCAL))
+        manifest, backup = verified_backup(layout)
+    device = Device(flasher_for(port, resolve, LOCAL), layout)
     if args.action == 'stock':
         _, identity = device.connect(strict=False)
         require(identity == manifest['identity'], 'Connected device does not match the backup')
@@ -515,10 +539,10 @@ def main():
     if args.action == 'stock-select':
         device.stock_select(metadata)
         return
-    running = selected_slot(metadata)
+    running = selected_slot(metadata, layout)
     other = 1 - running
     running_header = device.header(running)
-    running_contents = describe(running_header, (LOCAL / 'stock.bin').read_bytes())
+    running_contents = describe(running_header, (LOCAL / 'stock.bin').read_bytes(), layout)
     if args.action == 'rollback':
         image = device.read_image(other)
         print(f'Slot {NAMES[running]} is selected; returning to the cycling image in slot {NAMES[other]}.', flush=True)
@@ -530,10 +554,10 @@ def main():
             f'(held {target_contents}{note}).',
             flush=True,
         )
-        owned = device.flasher.digest(*OWNED)
-        device.write(SLOTS[other], candidate)
-        device.verify(SLOTS[other], candidate)
-        require(device.flasher.digest(*OWNED) == owned, 'The flash changed the ride and settings reservations')
+        owned = device.flasher.digest(*layout.owned)
+        device.write(layout.slots[other], candidate)
+        device.verify(layout.slots[other], candidate)
+        require(device.flasher.digest(*layout.owned) == owned, 'The flash changed the ride and settings reservations')
         print('Rides and settings are unchanged (MD5).', flush=True)
     device.boot(
         metadata,
@@ -543,8 +567,8 @@ def main():
         args.boot_seconds,
         previous_console=running_contents == 'cycling',
         # Each image's descriptor, not the environment, says which protocol its console speaks.
-        maintenance=speaks_maintenance(image),
-        previous_maintenance=speaks_maintenance(running_header),
+        maintenance=speaks_maintenance(image, layout),
+        previous_maintenance=speaks_maintenance(running_header, layout),
     )
 
 
@@ -561,5 +585,5 @@ def run_locked():
 if __name__ == '__main__':
     try:
         run_locked()
-    except (RuntimeError, OSError) as error:
+    except (RuntimeError, OSError, devices.ManifestError) as error:
         sys.exit(str(error))

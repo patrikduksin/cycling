@@ -23,8 +23,8 @@ through the [remote device skill](../remote-device/SKILL.md).
 | `cycling flash-image` | `flash` for an image built elsewhere: writes the existing `.local/cycling.bin` without building. |
 | `cycling monitor` | Reads USB logs without resetting. |
 
-These tasks run [firmware.py](../../../tools/devtools/src/cycling_devtools/device/firmware.py),
-which owns the flash geometry. It verifies the device and baseline, validates the
+These tasks run [firmware.py](../../../tools/devtools/src/cycling_devtools/device/firmware.py)
+on the flash geometry of [device.toml](../../../devices/c606/device.toml). It verifies the device and baseline, validates the
 image and ranges, restricts writes to an application slot and OTA selection
 (or, for `stock`, the backup itself), and reads back changes.
 

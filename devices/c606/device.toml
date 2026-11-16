@@ -1,0 +1,40 @@
+[device]
+name = "c606"
+
+[build]
+chip = "esp32s3"
+target = "xtensa-esp32s3-none-elf"
+package = "c606-firmware"
+bin = "cycling-os"
+flash = { size = "16MB", mode = "dio", freq = "80mhz" }
+app_partition = "ota_1"
+stack_budget = 61440
+variants = { maintenance = "bulk-maintenance", scripted-gnss = "scripted-gnss" }
+
+[partitions]
+table = 0x8000
+rows = [
+  { name = "nvs", type = "data", subtype = "nvs", offset = 0x9000, size = 0x4000 },
+  { name = "otadata", type = "data", subtype = "ota", offset = 0xD000, size = 0x2000 },
+  { name = "phy_init", type = "data", subtype = "phy", offset = 0xF000, size = 0x1000 },
+  { name = "coredump", type = "data", subtype = "coredump", offset = 0x10000, size = 0x10000 },
+  { name = "ota_0", type = "app", subtype = "ota_0", offset = 0x20000, size = 0x73A000 },
+  { name = "ota_1", type = "app", subtype = "ota_1", offset = 0x760000, size = 0x73A000 },
+]
+
+[owned]
+data = { offset = 0xD98000, size = 0x100000, within = "ota_1" }
+configuration = { offset = 0xE98000, size = 0x2000, within = "ota_1" }
+crash = { offset = 0x1E000, size = 0x2000, within = "coredump" }
+
+[panel]
+width = 240
+height = 320
+
+[controls]
+touch = true
+buttons = [
+  { id = 0, role = "back" },
+  { id = 1, role = "move" },
+  { id = 2, role = "act" },
+]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 # The flake dev shell (`nix develop`) provides the pinned Xtensa toolchain.
 if [[ -z "${CYCLING_ESP_TOOLCHAIN:-}" ]]; then
   echo "Enter the dev shell first: nix develop (docs/dev-setup.md)." >&2
@@ -17,15 +17,17 @@ target_root="${CYCLING_FW_TARGET_ROOT:-$PWD/.local}"
 # The image and its ELF land in .local, where flash and backtrace read them;
 # a build beside another (verify) needs its own directory.
 image_dir="${CYCLING_IMAGE_DIR:-.local}"
-# `build.sh maintenance` (cycling build-maintenance) builds the MMC
-# maintenance image instead of the firmware.
-case "${1:-}" in
-  "") firmware_features="hardware"; firmware_target="$target_root/firmware"; variant="" ;;
-  maintenance) firmware_features="hardware,bulk-maintenance"; firmware_target="$target_root/firmware-maintenance"; variant="-maint" ;;
-  scripted-gnss) firmware_features="hardware,scripted-gnss"; firmware_target="$target_root/firmware-gnss"; variant="-gnss" ;;
-  *) echo "usage: build.sh [maintenance|scripted-gnss]" >&2; exit 2 ;;
+variant=""
+case "$#:${1:-}" in
+  0:) ;;
+  2:--variant) variant="$2" ;;
+  *) echo "usage: build.sh [--variant NAME]" >&2; exit 2 ;;
 esac
 mkdir -p .local "$image_dir"
+partitions="$image_dir/partitions.csv"
+manifest="$(uv run --project tools/devtools --locked python -m cycling_devtools.devices --build-env "$partitions" --variant "$variant")"
+eval "$manifest"
+firmware_target="$target_root/firmware${variant:+-$variant}"
 export PATH="$CYCLING_ESP_TOOLCHAIN/bin:$CYCLING_ESP_TOOLCHAIN/xtensa-esp-elf/bin:$PATH"
 CYCLING_BUILD_COMMIT="$(git rev-parse --short=12 HEAD)"
 placeholder_source="zcyclingzcommitzplaceholderzzzzzzzzzzzzzzzzzzzzzzzzz"
@@ -38,22 +40,22 @@ fi
 # sccache keys every rustc call on all CARGO_* variables: an exported
 # per-worktree CARGO_TARGET_DIR would keep every worktree's builds apart.
 unset CARGO_TARGET_DIR
-CYCLING_BUILD_COMMIT="$commit_placeholder" cargo build --target-dir "$firmware_target" -p c606-firmware \
-  --bin cycling-os --release --locked --no-default-features --features "$firmware_features" \
-  --target xtensa-esp32s3-none-elf
+CYCLING_BUILD_COMMIT="$commit_placeholder" cargo build --target-dir "$firmware_target" -p "$package" \
+  --bin "$bin" --release --locked --no-default-features --features "$features" \
+  --target "$target"
 elf="$image_dir/cycling.elf"
 uv run --project tools/devtools --locked python -m cycling_devtools.stamp \
-  "$firmware_target/xtensa-esp32s3-none-elf/release/cycling-os" "$elf" \
+  "$firmware_target/$target/release/$bin" "$elf" \
   --placeholder "$commit_placeholder" --commit "$CYCLING_BUILD_COMMIT"
 # The main stack is the internal DRAM that statics and the heap leave. Each
 # task and VANA's frame preparation run on it, so growing statics silently
 # shrinks it until boot overflows the stack guard (#167). Fail the build
 # first: keep new state out of internal RAM, or measure STATUS
 # stack_untouched on the device and lower the budget deliberately.
-min_stack_bytes="${CYCLING_MIN_STACK_BYTES:-61440}"
-stack_symbols="$(xtensa-esp32s3-elf-nm "$elf")"
-stack_start="$(awk '$3 == "_stack_start_cpu0" { print $1 }' <<<"$stack_symbols")"
-stack_end="$(awk '$3 == "_stack_end_cpu0" { print $1 }' <<<"$stack_symbols")"
+min_stack_bytes="${CYCLING_MIN_STACK_BYTES:-$stack_budget}"
+stack_symbols="$("$nm" "$elf")"
+stack_start="$(awk -v symbol="$stack_start_symbol" '$3 == symbol { print $1 }' <<<"$stack_symbols")"
+stack_end="$(awk -v symbol="$stack_end_symbol" '$3 == symbol { print $1 }' <<<"$stack_symbols")"
 stack_bytes=$((16#$stack_start - 16#$stack_end))
 echo "Main stack region: $stack_bytes bytes (budget $min_stack_bytes)"
 if (( stack_bytes < min_stack_bytes )); then
@@ -66,10 +68,10 @@ fi
 # The maintenance image runs no VANA frames and has no budgets.
 if [[ -z "$variant" ]]; then
   uv run --project tools/devtools --locked python -m cycling_devtools.stack_frames "$elf" \
-    --report "$image_dir/stack-frames.md"
+    --budgets "$device_dir/stack-frames.toml" --report "$image_dir/stack-frames.md"
 fi
-espflash save-image --chip esp32s3 --flash-mode dio --flash-freq 80mhz --flash-size 16mb \
-  --partition-table devices/c606/partitions.csv --target-app-partition ota_1 \
+espflash save-image --chip "$chip" --flash-mode "$flash_mode" --flash-freq "$flash_freq" --flash-size "$flash_size" \
+  --partition-table "$partitions" --target-app-partition "$app_partition" \
   "$elf" "$image_dir/cycling.bin"
 # And one per commit and image, named as the panic record's elf= says, in
 # the primary checkout's .local so every worktree's builds are found
@@ -81,8 +83,9 @@ if [[ "$CYCLING_BUILD_DIRTY" == 1 ]]; then
 fi
 archive="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.local/elf"
 mkdir -p "$archive"
-cp "$elf" "$archive/.$CYCLING_BUILD_COMMIT$suffix$variant.elf.$$"
-mv -f "$archive/.$CYCLING_BUILD_COMMIT$suffix$variant.elf.$$" "$archive/$CYCLING_BUILD_COMMIT$suffix$variant.elf"
+name="$CYCLING_BUILD_COMMIT$suffix${variant:+-$variant}"
+cp "$elf" "$archive/.$name.elf.$$"
+mv -f "$archive/.$name.elf.$$" "$archive/$name.elf"
 # Best effort: a concurrent build in another worktree may prune a file between
 # the glob and ls, which must not fail this build.
 { ls -1t "$archive"/*.elf 2>/dev/null | tail -n +25 | xargs -r rm -f; } || true

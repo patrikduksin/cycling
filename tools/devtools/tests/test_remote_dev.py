@@ -1,5 +1,7 @@
 """Remote development tools: device task snapshots, crash decoding and verify."""
 
+import contextlib
+import io
 import subprocess
 import tempfile
 import unittest
@@ -138,12 +140,19 @@ class BacktraceTests(unittest.TestCase):
             self.assertEqual(backtrace.choose_elf(reply, Path(directory)), (named, '15178ed1119a'))
 
     def test_a_crash_record_from_the_scripted_gnss_build_picks_its_elf_not_the_riders(self):
-        reply = ['{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-gnss pcs=0x42001234"}\n']
+        reply = ['{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-scripted-gnss pcs=0x42001234"}\n']
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / '15178ed1119a.elf').write_bytes(b'15178ed1119a')
-            named = Path(directory) / '15178ed1119a-gnss.elf'
+            named = Path(directory) / '15178ed1119a-scripted-gnss.elf'
             named.write_bytes(b'15178ed1119a')
             self.assertEqual(backtrace.choose_elf(reply, Path(directory)), (named, '15178ed1119a'))
+
+    def test_a_crash_record_naming_an_elf_that_was_not_kept_never_takes_another_builds(self):
+        reply = ['{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-gnss pcs=0x42001234"}\n']
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stderr(io.StringIO()):
+            (Path(directory) / '15178ed1119a.elf').write_bytes(b'15178ed1119a')
+            chosen = backtrace.choose_elf(reply, Path(directory))
+        self.assertEqual(chosen, (backtrace.ROOT / '.local/cycling.elf', '15178ed1119a'))
 
 
 class VerifyTests(unittest.TestCase):

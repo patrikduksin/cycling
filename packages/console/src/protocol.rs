@@ -75,6 +75,7 @@ pub enum Command {
     BleForget,
     BleEcho,
     Storage,
+    Fitted,
     Display(u16),
     Restart,
     /// The last recorded panic.
@@ -309,6 +310,7 @@ pub fn parse(bytes: &[u8]) -> Result<Request, Error> {
         "SAVE" => Command::Save,
         "ACTIVITY" => Command::Activity,
         "STORAGE" => Command::Storage,
+        "FITTED" => Command::Fitted,
         "RESTART" => Command::Restart,
         "CRASH" => match words.next() {
             None => Command::Crash,
@@ -640,6 +642,7 @@ mod tests {
             "ADD",
             "WORKOUT",
             "STORAGE",
+            "FITTED",
             "VOLUME",
             "SCAN",
             "CONNECT",

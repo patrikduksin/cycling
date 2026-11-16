@@ -368,6 +368,15 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     pub fn forget_frame(&mut self) {
         (self.panel, self.taken) = (None, None);
     }
+    pub fn display_geometry(&self) -> device_api::display::Geometry {
+        self.display.geometry()
+    }
+    pub fn owned_geometry(
+        &mut self,
+        region: device_api::storage::Region,
+    ) -> device_api::storage::Geometry {
+        self.store.geometry(region)
+    }
     /// The physical input source, for composition that records what `tick` took.
     pub fn input_source(&mut self) -> &mut I {
         &mut self.input

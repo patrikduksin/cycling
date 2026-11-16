@@ -6,22 +6,28 @@ use crate::trace::timeline::{
     Entry, Kind, Moment, TOAST_CLEARED, Timeline, duration, session_clock,
 };
 use firmware_services::trace::End;
+use serde::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::fmt;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Span {
     pub name: String,
     pub start: Moment,
     pub end: Moment,
     /// Index of the enclosing span; the session has none.
     pub parent: Option<usize>,
+    #[serde(serialize_with = "in_order")]
     pub attributes: Vec<(String, String)>,
     /// Still going when the trace ended.
     pub open: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+fn in_order<S: Serializer>(pairs: &[(String, String)], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_map(pairs.iter().map(|(key, value)| (key, value)))
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Point {
     pub at: Moment,
     pub name: String,

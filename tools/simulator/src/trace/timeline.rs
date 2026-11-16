@@ -6,6 +6,7 @@ use device_api::ant;
 use device_api::input::Input;
 use device_api::observation::Observation;
 use firmware_services::trace::{self, End, Event, Level};
+use serde::{Serialize, Serializer};
 use std::fmt;
 use std::fmt::Write as _;
 
@@ -16,7 +17,7 @@ pub const SILENCE_MS: u64 = 3_000;
 
 /// When something happened: uptime since power-on, and the ride clock while
 /// a ride is open (it stops while the ride is paused).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Moment {
     pub session_ms: u64,
     pub ride_ms: Option<u64>,
@@ -281,8 +282,9 @@ impl Kind {
 }
 
 /// One decoded event.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Entry {
+    #[serde(flatten)]
     pub at: Moment,
     pub kind: Kind,
     pub text: String,
@@ -290,12 +292,35 @@ pub struct Entry {
     /// reading moved. Hidden unless asked for.
     pub repeat: bool,
     /// The bytes behind a decoded packet.
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "hex_bytes")]
     pub bytes: Option<[u8; 8]>,
     /// For a page: what in its pass brought it up.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<Cause>,
     /// For a ride page: which shown readings it draws, `power,hr,grade`, or
     /// `none`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub shows: Option<String>,
+}
+
+fn hex_bytes<S: Serializer>(bytes: &Option<[u8; 8]>, serializer: S) -> Result<S::Ok, S::Error> {
+    match bytes {
+        Some(bytes) => serializer.serialize_str(&hex(bytes)),
+        None => serializer.serialize_none(),
+    }
+}
+
+impl Serialize for Kind {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+/// As the summary writes it: `after button BottomLeft code 1`.
+impl Serialize for Cause {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
 }
 
 /// What brought a page up, read from the pass it changed in.
@@ -413,7 +438,7 @@ pub struct StageTime {
 }
 
 /// No packet from `sensor` after `last_ms` until `next_ms`, or to the end.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Silence {
     pub sensor: String,
     pub last_ms: u64,

@@ -2356,6 +2356,7 @@ dependencies = [
  "rqrr",
  "serde",
  "serde-json-core",
+ "serde_json",
  "sha2",
  "terrain",
  "vana",

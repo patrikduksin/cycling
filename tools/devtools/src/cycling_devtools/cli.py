@@ -89,7 +89,7 @@ TASKS = [
     ),
     task(
         'test-slow',
-        'The web tests with those too slow for every verify (CYCLING_SLOW=1), one file at a time so load cannot time them out',
+        'Every web test, one file at a time, including those too slow for every verify (CYCLING_SLOW=1)',
         'bun install --frozen-lockfile --silent',
         'CYCLING_SLOW=1 bun test web',
     ),

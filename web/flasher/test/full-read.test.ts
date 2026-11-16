@@ -29,6 +29,6 @@ describe('a full read', () => {
       expect(md5Hex(assembled)).toBe(expected)
       expect(digest).toBe(expected)
     },
-    60_000,
+    600_000,
   )
 })

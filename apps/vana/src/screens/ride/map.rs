@@ -29,6 +29,8 @@ pub struct Track<'a> {
     pub crumbs: &'a [Crumb],
     /// The rider, while the fix is fresh.
     pub here: Option<Point>,
+    /// When the receiver took `here`.
+    pub here_taken_ms: Option<u64>,
     /// The way the rider is riding, in `TURN`ths clockwise from north.
     pub heading: Option<u16>,
     /// The ride's live speed, when a sensor or the receiver reports one.
@@ -56,9 +58,9 @@ pub struct Key {
     newest: u32,
     here: Option<(u32, u32)>,
     heading: Option<u16>,
-    course: usize,
-    course_m: u32,
+    course: (usize, u32),
     ahead: Option<(usize, Option<(u32, u32)>)>,
+    leg: Option<usize>,
     sign: Option<Sign>,
     turn: Option<u32>,
     junction: Option<u32>,
@@ -68,7 +70,7 @@ pub struct Key {
 }
 
 impl Track<'_> {
-    fn key(&self) -> Key {
+    fn key(&self, leg: Option<usize>) -> Key {
         let bits = |(x, y): Point| (x.to_bits(), y.to_bits());
         Key {
             available: self.available,
@@ -76,11 +78,11 @@ impl Track<'_> {
             newest: self.crumbs.last().map_or(0, |c| c.along.to_bits()),
             here: self.here.map(bits),
             heading: self.heading,
-            course: self.course.len(),
-            course_m: self.course.last().map_or(0, |c| c.along.to_bits()),
+            course: self.course_key(),
             ahead: self
                 .ahead
                 .map(|(segment, matched)| (segment, matched.map(bits))),
+            leg,
             sign: self.guidance.map(|g| g.sign),
             turn: self.turn_on_course().map(|(spot, _)| spot.along_mm),
             junction: self.junction().map(|j| j.along_mm),
@@ -88,6 +90,11 @@ impl Track<'_> {
             reach: self.reach,
             radar: self.radar,
         }
+    }
+
+    fn course_key(&self) -> (usize, u32) {
+        let total_m = self.course.last().map_or(0, |c| c.along.to_bits());
+        (self.course.len(), total_m)
     }
 
     fn rider_or_last_crumb(&self) -> Option<Point> {
@@ -133,19 +140,13 @@ impl Track<'_> {
             .clamp(1, self.course.len() - 1)
     }
 
-    fn place(&self, centre: Point, held: &mut HeldLeg) -> Option<(usize, Point)> {
-        let travelled_m = self
-            .here
-            .zip(core::mem::replace(&mut held.last_fix, self.here))
-            .map(|(here, last)| distance(last, here));
-        let moving = moving(travelled_m, self.speed_mm_s);
-        if let Some(place @ (end, _)) = self.split() {
-            held.hold(end);
+    fn place(&self, centre: Point, held: Option<usize>) -> Option<(usize, Point)> {
+        if let Some(place) = self.split() {
             return Some(place);
         }
-        let chosen = self.joining(centre, held.end, moving)?;
-        let place = held.choose(chosen);
-        Some((place.end, place.at))
+        let joining = self.joining(centre, held)?;
+        let leg = joining.held.unwrap_or(joining.best);
+        Some((leg.end, leg.at))
     }
 
     fn ahead_points(
@@ -185,7 +186,7 @@ impl Track<'_> {
             .chain(self.crumbs.iter().rev().map(|c| (c.east, c.north)))
     }
 
-    fn joining(&self, centre: Point, held: Option<usize>, moving: bool) -> Option<Joining> {
+    fn joining(&self, centre: Point, held: Option<usize>) -> Option<Joining> {
         let legs = 1..self.course.len();
         let leg = |end: usize| {
             let (a, b) = (self.course[end - 1], self.course[end]);
@@ -214,14 +215,13 @@ impl Track<'_> {
         let ours =
             closest(legs.clone().filter(our_way).map(leg)).filter(|l| l.gap_m <= JOIN_WITHIN_M);
         let best = ours.or_else(|| closest(legs.map(leg)))?;
-        let moving_held = held.filter(|_| moving);
-        let heading_against_held = moving_held.is_some_and(|held| {
+        let heading_against_held = held.is_some_and(|held| {
             let (a, b) = (self.course[held.end - 1], self.course[held.end]);
             let off_its_way =
                 (heading + TURN - bearing((b.east, b.north), (a.east, a.north))) % TURN;
             MORE_THAN_135_DEG_OFF.contains(&off_its_way)
         });
-        let held_leg_too_far = moving_held.is_some_and(|held| {
+        let held_leg_too_far = held.is_some_and(|held| {
             best.end != held.end
                 && (held.gap_m > JOIN_WITHIN_M || held.gap_m - best.gap_m > JOIN_SWITCH_M)
         });
@@ -248,15 +248,71 @@ struct Joining {
     held_leg_too_far: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Fixed {
+    at: Point,
+    taken_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Motion {
+    Moving,
+    TooSlowToTell,
+    Stopped,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct HeldLeg {
+    course: (usize, u32),
     end: Option<usize>,
-    last_fix: Option<Point>,
+    last_fix: Option<Fixed>,
+    counted_from: Option<Point>,
     against_fixes: u8,
     too_far_fixes: u8,
 }
 
 impl HeldLeg {
+    fn observe(&mut self, track: &Track) {
+        if self.course != track.course_key() {
+            *self = Self {
+                course: track.course_key(),
+                ..Self::default()
+            };
+        }
+        let fix = track.here.map(|at| Fixed {
+            at,
+            taken_ms: track.here_taken_ms,
+        });
+        let motion = fix.and_then(|fix| self.motion(fix, track.speed_mm_s));
+        if let Some((end, _)) = track.split() {
+            self.hold(end);
+            return;
+        }
+        if let (Some(fix), Some(motion)) = (fix, motion)
+            && let Some(joining) = track.joining(fix.at, self.end)
+        {
+            self.choose(joining, motion);
+        }
+    }
+
+    fn motion(&mut self, fix: Fixed, speed_mm_s: Option<u32>) -> Option<Motion> {
+        if self.last_fix.replace(fix) == Some(fix) {
+            return None;
+        }
+        let from = *self.counted_from.get_or_insert(fix.at);
+        let far_enough = distance(from, fix.at) >= MOVING_M;
+        let motion = match speed_mm_s {
+            Some(v) if v < STOPPED_BELOW_MM_S => Motion::Stopped,
+            _ if far_enough => Motion::Moving,
+            Some(_) => Motion::TooSlowToTell,
+            None => Motion::Stopped,
+        };
+        if motion != Motion::TooSlowToTell {
+            self.counted_from = Some(fix.at);
+        }
+        Some(motion)
+    }
+
     fn hold(&mut self, end: usize) {
         self.end = Some(end);
         self.against_fixes = 0;
@@ -271,25 +327,23 @@ impl HeldLeg {
             heading_against_held,
             held_leg_too_far,
         }: Joining,
-    ) -> Leg {
-        let Some(held) = held else {
+        motion: Motion,
+    ) {
+        if held.is_none() {
             self.hold(best.end);
-            return best;
+            return;
+        }
+        let count = |n: u8, holds: bool| match motion {
+            Motion::Moving if holds => n.saturating_add(1),
+            Motion::TooSlowToTell => n,
+            _ => 0,
         };
-        let count = |n: u8, holds: bool| if holds { n.saturating_add(1) } else { 0 };
         self.against_fixes = count(self.against_fixes, heading_against_held);
         self.too_far_fixes = count(self.too_far_fixes, held_leg_too_far);
         if self.against_fixes >= TURN_AROUND_FIXES || self.too_far_fixes >= TOO_FAR_FIXES {
             self.hold(best.end);
-            best
-        } else {
-            held
         }
     }
-}
-
-fn moving(travelled_m: Option<f32>, speed_mm_s: Option<u32>) -> bool {
-    travelled_m.is_some_and(|m| m >= MOVING_M) && speed_mm_s.is_none_or(|v| v >= STOPPED_BELOW_MM_S)
 }
 
 fn closest(legs: impl Iterator<Item = Leg>) -> Option<Leg> {
@@ -307,11 +361,16 @@ impl<'a> Cache<'a> {
     }
 
     pub fn update(&mut self, track: &Track) {
-        let key = track.key();
+        self.frame.route_leg.observe(track);
+        let key = track.key(self.frame.route_leg.end);
         if self.held != Some(key) {
             fill(self.frame, track);
             self.held = Some(key);
         }
+    }
+
+    pub fn start_ride(&mut self) {
+        self.frame.route_leg = HeldLeg::default();
     }
 
     pub fn filled(&self) -> Option<Filled<'_>> {
@@ -569,7 +628,7 @@ fn fill(frame: &mut Frame, track: &Track) {
 
 fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
     frame.last_pose = pose;
-    let place = track.place(centre, &mut frame.route_leg);
+    let place = track.place(centre, frame.route_leg.end);
     let at = pose.projection(centre);
     match place {
         Some(place) => {

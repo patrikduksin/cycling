@@ -86,6 +86,7 @@ fn following(course: &[Crumb], here: Point, along_m: f32, junction: Option<Spot>
         left_m: Some(12_400),
         reach: Reach::default(),
         radar: false,
+        ..Track::default()
     }
 }
 
@@ -137,6 +138,11 @@ fn settled_at(speed_mm_s: u32) -> Reach {
     let mut zoom = Zoom::default();
     (0..60).for_each(|_| zoom.observe_riding_at(speed_mm_s));
     zoom.reach()
+}
+
+fn fill(frame: &mut Frame, track: &Track) {
+    frame.route_leg.observe(track);
+    super::fill(frame, track);
 }
 
 fn filled(track: &Track) -> Frame {
@@ -802,7 +808,7 @@ fn way_drawn(frame: &Frame, here: Point, lane_m: f32) -> Way {
 
 struct Rider<'a> {
     homing: Homing<'a>,
-    frame: Frame,
+    map: Cache<'static>,
     now: u64,
 }
 
@@ -810,7 +816,7 @@ impl<'a> Rider<'a> {
     fn new(storage: &'a mut [Crumb]) -> Self {
         Self {
             homing: Homing::new(storage),
-            frame: Frame::default(),
+            map: Cache::new(std::boxed::Box::leak(std::boxed::Box::default())),
             now: 0,
         }
     }
@@ -831,13 +837,19 @@ impl<'a> Rider<'a> {
         );
     }
 
-    fn sees(&mut self, course: &[Crumb], lane_m: f32, speed_mm_s: Option<u32>) -> Way {
+    fn shows(&mut self, course: &[Crumb], speed_mm_s: Option<u32>) -> Point {
         let here = self.homing.position().expect("a fix");
         let mut track = joining(course, here);
+        track.here_taken_ms = self.homing.position_taken_ms();
         track.heading = self.homing.heading();
         track.speed_mm_s = speed_mm_s;
-        fill(&mut self.frame, &track);
-        way_drawn(&self.frame, here, lane_m)
+        self.map.update(&track);
+        here
+    }
+
+    fn sees(&mut self, course: &[Crumb], lane_m: f32, speed_mm_s: Option<u32>) -> Way {
+        let here = self.shows(course, speed_mm_s);
+        way_drawn(self.map.frame, here, lane_m)
     }
 
     fn rides_and_sees(
@@ -849,6 +861,20 @@ impl<'a> Rider<'a> {
     ) -> Way {
         self.reports(at);
         self.sees(course, lane_m, speed_mm_s)
+    }
+
+    fn holds_the_way_back(&mut self, course: &[Crumb]) {
+        for north in [0.0, 20.0, 40.0, 60.0] {
+            assert_eq!(
+                self.rides_and_sees(course, 6.0, (0.0, north), RIDING),
+                Way::Out
+            );
+        }
+        let back = [40.0, 30.0, 20.0, 10.0]
+            .into_iter()
+            .map(|north| self.rides_and_sees(course, 6.0, (0.0, north), RIDING))
+            .last();
+        assert_eq!(back, Some(Way::Back), "turned back");
     }
 }
 
@@ -1012,4 +1038,135 @@ fn riding_across_to_the_course_then_along_it_draws_one_way_then_the_way_out() {
         "the way out holds once drawn: {along:?}"
     );
     assert!(first_out <= 4, "the way out by fix {first_out}: {along:?}");
+}
+
+#[test]
+fn a_stop_between_each_fix_the_other_way_never_turns_the_held_leg_back() {
+    let c = there_and_back(6.0);
+    let mut storage = [Crumb::default(); 64];
+    let mut rider = Rider::new(&mut storage);
+    for north in [0.0, 20.0, 40.0, 60.0] {
+        assert_eq!(
+            rider.rides_and_sees(&c, 6.0, (0.0, north), RIDING),
+            Way::Out
+        );
+    }
+    for north in [40.0, 36.0, 20.0] {
+        for speed_mm_s in [RIDING, STANDING] {
+            assert_eq!(
+                rider.rides_and_sees(&c, 6.0, (0.0, north), speed_mm_s),
+                Way::Out,
+                "{north} m north at {speed_mm_s:?} mm/s"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_stop_between_two_fixes_far_from_the_held_leg_starts_their_count_again() {
+    let c = there_and_back(6.0);
+    let mut storage = [Crumb::default(); 64];
+    let mut rider = Rider::new(&mut storage);
+    for north in [0.0, 20.0, 40.0, 60.0] {
+        assert_eq!(
+            rider.rides_and_sees(&c, 6.0, (0.0, north), RIDING),
+            Way::Out
+        );
+    }
+    for (at, speed_mm_s, way) in [
+        ((30.0, 60.0), RIDING, Way::Out),
+        ((30.0, 60.0), STANDING, Way::Out),
+        ((30.0, 64.0), RIDING, Way::Out),
+        ((30.0, 68.0), RIDING, Way::Back),
+    ] {
+        assert_eq!(
+            rider.rides_and_sees(&c, 6.0, at, speed_mm_s),
+            way,
+            "at {at:?}, {speed_mm_s:?} mm/s"
+        );
+    }
+}
+
+#[test]
+fn a_course_removed_and_loaded_again_forgets_the_leg_it_held() {
+    let c = there_and_back(6.0);
+    let mut storage = [Crumb::default(); 64];
+    let mut rider = Rider::new(&mut storage);
+    rider.holds_the_way_back(&c);
+    rider.shows(&[], RIDING);
+    for north in [30.0, 40.0] {
+        rider.reports((0.0, north));
+        rider.shows(&[], RIDING);
+    }
+    assert_eq!(
+        rider.sees(&c, 6.0, RIDING),
+        Way::Out,
+        "riding north on the way out"
+    );
+}
+
+#[test]
+fn a_new_ride_forgets_the_leg_the_last_one_held() {
+    let c = there_and_back(6.0);
+    let mut storage = [Crumb::default(); 64];
+    let mut rider = Rider::new(&mut storage);
+    rider.holds_the_way_back(&c);
+    rider.homing.reset();
+    rider.map.start_ride();
+    assert_eq!(
+        rider.rides_and_sees(&c, 6.0, (0.0, 0.0), STANDING),
+        Way::Out,
+        "the first fix, on the way out"
+    );
+}
+
+#[test]
+fn drifting_at_6_kmh_onto_a_road_26_m_away_and_riding_it_moves_the_route_onto_it() {
+    let c = follower_course(&[
+        (0.0, -1_000.0),
+        (0.0, 1_000.0),
+        (1_000.0, 1_000.0),
+        (1_000.0, -1_000.0),
+        (26.0, -1_000.0),
+        (26.0, 1_000.0),
+    ]);
+    const SLOW: Option<u32> = Some(1_667);
+    let road = |rider: &Rider, here: Point| {
+        let (first, second) = (
+            blue_at(rider.map.frame, here, (0.0, here.1 + 60.0)),
+            blue_at(rider.map.frame, here, (26.0, here.1 + 60.0)),
+        );
+        assert!((first > 0) != (second > 0), "one road at {here:?}");
+        if first > 0 { 0 } else { 26 }
+    };
+    let mut storage = [Crumb::default(); 64];
+    let mut rider = Rider::new(&mut storage);
+    for north in [0.0, 20.0, 40.0, 60.0] {
+        rider.reports((0.0, north));
+        let here = rider.shows(&c, RIDING);
+        assert_eq!(road(&rider, here), 0, "riding the first road");
+    }
+    let step_m = 6.0 / 3.6;
+    let drift = (1..=16).map(|fix| (fix as f32 * step_m, 60.0));
+    let along = (1..=20).map(|fix| (26.0, 60.0 + fix as f32 * step_m));
+    let roads: std::vec::Vec<u32> = drift
+        .chain(along)
+        .map(|at| {
+            rider.reports(at);
+            let here = rider.shows(&c, SLOW);
+            road(&rider, here)
+        })
+        .collect();
+    let moved = roads
+        .iter()
+        .position(|&x| x == 26)
+        .expect("the second road");
+    assert!(
+        roads[moved..].iter().all(|&x| x == 26),
+        "the second road holds: {roads:?}"
+    );
+    assert!(
+        moved < 16,
+        "the second road before the drift reaches it, not fix {moved}: {roads:?}"
+    );
 }

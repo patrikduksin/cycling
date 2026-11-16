@@ -202,6 +202,7 @@ impl Runtime {
         if riding && outing != state.outing {
             state.homing.reset();
             state.follower.reset();
+            state.map.start_ride();
             state.zoom = MapZoom::default();
             state.resume = match state.resume {
                 Resume::Waiting { medium, ride_id } if medium == self.ride.shown() => {
@@ -312,6 +313,7 @@ pub(super) fn refresh_map(
         available: true,
         crumbs: state.homing.crumbs(),
         here: state.homing.position(),
+        here_taken_ms: state.homing.position_taken_ms(),
         heading: state.homing.heading(),
         speed_mm_s,
         course: state.follower.course(),

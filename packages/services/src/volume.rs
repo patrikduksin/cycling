@@ -12,8 +12,7 @@
 //!
 //! Only [`create`], an explicit initialize, writes a table, and it refuses a
 //! table it does not understand. The default plan ends with `STORE`, which
-//! takes the rest of the region. A volume is its name; the mechanism inside
-//! checks its own format.
+//! takes the rest of the region.
 
 use crate::checksum::crc32;
 use crate::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};

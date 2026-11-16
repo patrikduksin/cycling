@@ -10,7 +10,7 @@ use firmware_services::{files, pack, store};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Status,
-    /// Write the default table over a blank region.
+    /// Write the default table over a blank or lost region.
     Init,
     /// Enter the binary transfer session; the composition owns the switch.
     Transfer,

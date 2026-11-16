@@ -1,5 +1,3 @@
-//! The owned MMC region's volumes: terrain, files and the store installed by
-//! the host beside the rides.
 use shell_simulator::bulk::Presence;
 use shell_simulator::sim::{Sim, seconds};
 

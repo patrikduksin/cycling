@@ -201,7 +201,6 @@ impl<'a, B: ReadWrite> Bulk<'a, B> {
         });
         // The recorder's seed is clock based and can repeat across boots.
         let seed = seed ^ self.media.entropy();
-        // Creates the table over a blank region; refuses a foreign one.
         let rides = volume::create(self.media, &mut self.state.sector)
             .ok()
             .and_then(|table| table.find(&RIDES));

@@ -3,8 +3,7 @@
 //! BESTS view under Settings, PROFILE.
 //!
 //! The bests live in a small file beside the workout outcomes
-//! (`ride::bests`), not in the preference record. Only a ride that finished
-//! counts; a ride read back from a journal never merges again. A ride
+//! (`ride::bests`), not in the preference record. A ride
 //! is never held up for the file. Where it cannot be used the BESTS view says
 //! why: no store to keep it in, a damaged file (CLEAR BESTS starts over), or a
 //! store that would not take the write (the merged bests stay in memory and

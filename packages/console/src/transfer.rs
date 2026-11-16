@@ -366,9 +366,6 @@ impl Session {
                     Ok(info) => info.sectors,
                     Err(_) => return Reply::error(status::MEDIA),
                 };
-                // Layout code, then region, generation, planned and
-                // unallocated sectors at 8..40, then 25-byte entries: name,
-                // a zero byte, start and sectors.
                 out[..TABLE_HEAD].fill(0);
                 put_u64(out, 8, region);
                 let mut length = TABLE_HEAD;

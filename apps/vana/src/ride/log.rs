@@ -220,9 +220,7 @@ pub struct Sample {
 }
 
 impl Sample {
-    /// The readings a slot holds. A battery reading above 100 % is dropped:
-    /// `decode` refuses it, so the batch would not read back and recording
-    /// would stop as a media failure.
+    /// The readings a slot holds. A battery reading above 100 % is dropped.
     pub fn for_slot(mut self) -> Self {
         self.battery_percent = self.battery_percent.filter(|percent| *percent <= 100);
         self
@@ -568,8 +566,6 @@ pub struct Timeline {
     pending: Option<u64>,
     paused: bool,
     previous_ms: Option<u64>,
-    /// The last sample's speed and power, which hold until a pause or the
-    /// finish.
     last: Option<(Option<u32>, Option<u16>)>,
 }
 

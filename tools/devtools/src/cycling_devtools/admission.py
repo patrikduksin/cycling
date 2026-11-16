@@ -26,14 +26,21 @@ def free_slot(pool):
     return None
 
 
-@contextlib.contextmanager
-def admitted():
+def require_disk():
     if (free := clean.free_gb(workspace.ROOT)) < MIN_FREE_GB:
         raise SystemExit(f'{free:.0f} GB free, under {MIN_FREE_GB} GB: free disk first (cycling clean --apply)')
+
+
+@contextlib.contextmanager
+def admitted():
+    """Holds one of the machine's slots; yields the seconds spent waiting for it."""
+    require_disk()
     pool = workspace.main_checkout() / '.local' / 'admission'
     pool.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     while (slot := free_slot(pool)) is None:
         time.sleep(POLL_SECONDS)
     with slot:
+        # The runs ahead in the queue may have filled the disk.
+        require_disk()
         yield time.monotonic() - started

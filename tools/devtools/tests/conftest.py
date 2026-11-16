@@ -1,3 +1,5 @@
+import signal
+
 import pytest
 
 from cycling_devtools import lanes, workspace
@@ -26,3 +28,11 @@ def checkout(tmp_path, monkeypatch):
     monkeypatch.setattr(lanes, 'RULES', (('docs/', lanes.NONE),))
     monkeypatch.setattr(lanes, 'firmware_crates', lambda root: ())
     return root
+
+
+@pytest.fixture
+def restored_signals():
+    kept = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGHUP)}
+    yield
+    for number, handler in kept.items():
+        signal.signal(number, handler)

@@ -3,6 +3,7 @@ import contextlib
 import json
 import os
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -538,7 +539,8 @@ def test_a_missing_merge_base_is_named_as_such(tmp_path, monkeypatch, capsys):
     assert 'unknown git ref' not in err
 
 
-def test_an_interrupt_stops_the_base_run_at_once(tmp_path, monkeypatch):
+@pytest.mark.parametrize('stopped_by', [KeyboardInterrupt, signal.SIGTERM])
+def test_an_interrupt_or_a_termination_stops_both_runs_at_once(tmp_path, monkeypatch, restored_signals, stopped_by):
     started = []
     real = subprocess.Popen
 
@@ -549,7 +551,9 @@ def test_an_interrupt_stops_the_base_run_at_once(tmp_path, monkeypatch):
     class Interrupted:
         def write(self, text):
             if text.startswith('after |'):
-                raise KeyboardInterrupt
+                if stopped_by is KeyboardInterrupt:
+                    raise KeyboardInterrupt
+                os.kill(os.getpid(), stopped_by)
 
         def flush(self):
             pass
@@ -575,7 +579,7 @@ def test_an_interrupt_stops_the_base_run_at_once(tmp_path, monkeypatch):
     monkeypatch.setattr(compare, 'CARGO', compare.Cargo())
     monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
     began = time.monotonic()
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(KeyboardInterrupt if stopped_by is KeyboardInterrupt else SystemExit):
         compare.main(['--out', str(tmp_path / 'out')])
     assert time.monotonic() - began < compare.GRACE_S
     assert len(started) == 2

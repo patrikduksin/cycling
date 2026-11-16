@@ -1,8 +1,8 @@
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -11,6 +11,9 @@ from pathlib import Path
 from cycling_devtools import workspace
 
 RESULTS_KEPT_DAYS = 30
+# Ambient settings that change what a gate builds or asserts, so a pass under one value says nothing about another.
+KEYED_ENV_PREFIXES = ('CYCLING_', 'CARGO_BUILD_', 'CARGO_PROFILE_')
+KEYED_ENV_NAMES = frozenset({'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'NEXTEST_PROFILE'})
 
 
 def git(*args, cwd=None, env=None):
@@ -24,6 +27,18 @@ def git(*args, cwd=None, env=None):
     ).stdout.strip()
 
 
+def merge_base(commit):
+    for main in ('origin/main', 'main'):
+        done = subprocess.run(['git', 'merge-base', main, commit], cwd=workspace.ROOT, capture_output=True, text=True)
+        if done.returncode == 0:
+            return done.stdout.strip()
+    raise SystemExit('cycling: no origin/main or main to compare with')
+
+
+def changed_paths(base, tree_id):
+    return git('diff', '--name-only', '--no-renames', base, tree_id).splitlines()
+
+
 def results_dir():
     return workspace.main_checkout() / '.local' / 'verify' / 'results'
 
@@ -33,8 +48,9 @@ def tree_hash(root):
     with tempfile.TemporaryDirectory(dir=index.parent) as scratch:
         env = {'GIT_INDEX_FILE': str(Path(scratch) / 'index')}
         if index.exists():
-            # The copy keeps the stat cache, so only changed files are hashed.
-            Path(env['GIT_INDEX_FILE']).write_bytes(index.read_bytes())
+            # The copy keeps the stat cache, so only changed files are hashed, and the index's own
+            # time, which git needs to tell an edit made in the second the index was written.
+            shutil.copy2(index, env['GIT_INDEX_FILE'])
         git('add', '-A', cwd=root, env=env)
         return git('write-tree', cwd=root, env=env)
 
@@ -58,26 +74,26 @@ class Watch:
         """An edit that was undone still changed its file's change time."""
         now = stamps(self.root)
         moved = {name for name in self.stamps.keys() | now.keys() if self.stamps.get(name) != now.get(name)}
-        moved.update(git('diff', '--name-only', '--no-renames', self.tree, tree_hash(self.root)).splitlines())
+        moved.update(changed_paths(self.tree, tree_hash(self.root)))
         return sorted(moved)
 
 
-@contextlib.contextmanager
-def locked(path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('a') as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        yield
-
-
 def toolchain():
-    stores = [entry for entry in os.environ.get('PATH', '').split(':') if entry.startswith('/nix/store/')]
-    stores.append(os.environ.get('CYCLING_ESP_TOOLCHAIN', ''))
-    return hashlib.sha256('\n'.join(stores).encode()).hexdigest()[:16]
+    return [entry for entry in os.environ.get('PATH', '').split(':') if entry.startswith('/nix/store/')]
 
 
-def result_key(tree, *revision):
-    return hashlib.sha256(json.dumps([tree, toolchain(), *revision]).encode()).hexdigest()[:32]
+def keyed_env(gate_env):
+    ambient = {
+        name: value
+        for name, value in os.environ.items()
+        if name in KEYED_ENV_NAMES or name.startswith(KEYED_ENV_PREFIXES)
+    }
+    return sorted((ambient | dict(gate_env)).items())
+
+
+def result_key(tree, gate, command, gate_env):
+    inputs = [tree, toolchain(), gate, command, keyed_env(gate_env)]
+    return hashlib.sha256(json.dumps(inputs).encode()).hexdigest()[:32]
 
 
 def cached_pass(key):

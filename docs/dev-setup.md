@@ -72,34 +72,41 @@ pin at once and belongs in its own PR with `cycling verify` results.
   nothing (about 2 s).
 - `cycling verify` certifies a tree. It hashes the worktree as it is,
   untracked files included, and runs the gates in the worktree. After each
-  gate it hashes the tree again and compares every file's change time. If
-  anything differs, an edit that was undone included, it stops the gates that
-  are still running, names the files, and certifies nothing. Do not edit while
-  it runs. The table in `tools/devtools/src/cycling_devtools/lanes.py` maps
+  gate, and once more before it reports, it hashes the tree again and compares
+  every file's change time. If anything differs, an edit that was undone
+  included, it stops the gates that are still running, names the files, and
+  certifies nothing. A run that is interrupted or terminated stops its gates
+  the same way, and `cycling sim-compare` stops the cargo runs it started. Do
+  not edit while it runs. The table in `tools/devtools/src/cycling_devtools/lanes.py` maps
   the paths changed since the merge-base with main to gates, and a path it
   does not know selects every gate; `--all` selects them regardless. A
   workspace crate selects the firmware build when the package of a
   `devices/*/device.toml` depends on it. The firmware build, the tests, the
   checks, simulate and the screens run in parallel lanes, the firmware first,
   then harness-virtual alone. Each gate that passes is recorded in the primary
-  checkout's `.local/verify/results` under the tree hash, the toolchain and
-  the gate's definition, so no worktree runs it on that tree again (`cached`
+  checkout's `.local/verify/results` under the tree hash, the toolchain, the
+  gate's definition and the settings in the environment that change a build
+  (`CYCLING_*`, `RUSTFLAGS`, `CARGO_BUILD_*`, `CARGO_PROFILE_*`,
+  `NEXTEST_PROFILE`), so no worktree runs it on that tree again (`cached`
   in the table; `--fresh` runs it anyway). The screens lane is
-  `cycling sim-compare`: it runs the ride scenarios once, recorded, and the
+  `cycling sim-compare --base <merge-base>`: it runs the ride scenarios once,
+  recorded, and compares them with the merge-base's, and the
   test lane's nextest profile (`without-ride-scenarios`, in
   `.config/nextest.toml`) leaves them out. `--pr N` posts the table and the
-  changed screens on a PR; `--video` adds before and after videos of changed
-  scenarios. Logs go to `.local/verify/<tree>/`, and a `tests-passed` file
+  changed screens on a PR, and refuses a tree that is not its commit;
+  `--video` adds before and after videos of changed scenarios. Logs go to `.local/verify/<tree>/`, and a `tests-passed` file
   appears there when the test gates have passed. `--deep` runs tier 2 alone,
   at nice 19 and without a slot: `cycling fuzz --fixed` and
   `cycling fuzz-planted`.
 - A verify with gates to run takes one of the machine's slots first, one per
   ten cores (`tools/devtools/src/cycling_devtools/admission.py`), and waits
   when none is free. Its time in the table includes the wait and names it. It
-  refuses to start with under 20 GB free.
-- `cycling quick` is the inner loop: nextest without the `slow` group and
-  clippy on the crates the diff touches, and `cycling check-firmware` when a
-  device links one of them. It takes no slot and certifies nothing.
+  refuses to start with under 20 GB free, and checks again once it has its
+  slot.
+- `cycling quick` is the inner loop: nextest without the `slow` group and the
+  ride scenarios, clippy on the crates the diff touches, and
+  `cycling check-firmware` when a device links one of them. It takes no slot
+  and certifies nothing.
 - nextest's `slow` group (`.config/nextest.toml`) holds the tests that
   `cycling quick` leaves out with `-E 'not group(slow)'`: a test over 5 s on
   its own, and every share of a sweep. `cycling verify` runs them all. Split

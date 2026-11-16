@@ -2,8 +2,8 @@
 
 import argparse
 import contextlib
+import dataclasses
 import os
-import signal
 import subprocess
 import sys
 import threading
@@ -12,8 +12,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from cycling_devtools import admission, lanes, tree, workspace
+from cycling_devtools import admission, lanes, runner, tree, workspace
 from cycling_devtools.clean import warn_if_low_disk
+from cycling_devtools.lanes import Gate
+from cycling_devtools.runner import Result
 from cycling_devtools.tree import git
 
 TESTS_PASSED = 'tests-passed'
@@ -22,7 +24,7 @@ TESTS_PASSED = 'tests-passed'
 @dataclass(frozen=True)
 class Request:
     root: Path
-    base: str
+    merge_base: str
     pr: int | None = None
     video: bool = False
     everything: bool = False
@@ -32,16 +34,33 @@ class Request:
     def command(self, gate):
         if not gate.reports:
             return gate.command
-        return gate.command + (f' --pr {self.pr}' if self.pr else '') + (' --video' if self.video else '')
+        posting = (f' --pr {self.pr}' if self.pr else '') + (' --video' if self.video else '')
+        return f'{gate.command} --base {self.merge_base}{posting}'
 
 
-@dataclass
-class Result:
-    gate: lanes.Gate
-    ok: bool
-    seconds: float
-    log: Path | None = None
-    cached: bool = False
+@dataclass(frozen=True)
+class Plan:
+    title: str
+    parallel: tuple[tuple[Gate, ...], ...]
+    alone: tuple[Gate, ...] = ()
+    skipped: tuple[str, ...] = ()
+    takes_slot: bool = True
+    marks_tests: bool = True
+
+    @property
+    def gates(self):
+        return [gate for lane in (*self.parallel, self.alone) for gate in lane]
+
+
+def plan_for(request, watch):
+    if request.deep:
+        return Plan('cycling verify --deep', (lanes.DEEP,), takes_slot=False, marks_tests=False)
+    if request.everything:
+        names = lanes.EVERY
+    else:
+        names = lanes.select(tree.changed_paths(request.merge_base, watch.tree), request.root)
+    *parallel, alone = (tuple(gate for gate in lane if gate.name in names) for lane in (*lanes.LANES, lanes.ALONE))
+    return Plan('cycling verify', tuple(filter(None, parallel)), alone, tuple(sorted(lanes.EVERY - names)))
 
 
 @dataclass
@@ -61,84 +80,62 @@ class Outcome:
 
 
 class Run:
-    def __init__(self, request, watch, selected, logs):
+    def __init__(self, request, watch, plan, logs):
         self.request = request
         self.watch = watch
+        self.plan = plan
         self.logs = logs
+        self.gates = runner.Gates(request.root, logs)
         self.lock = threading.Lock()
-        self.selected = selected
-        self.tests_out = {gate.name for gate in selected if gate.test}
-        self.running = set()
-        self.changed = []
+        self.tests_out = {gate.name for gate in plan.gates if gate.test}
+        self.edited = []
         self.find_cached()
 
     def find_cached(self):
         self.cached = {
             gate.name: seconds
-            for gate in self.selected
-            if not self.request.fresh and (seconds := tree.cached_pass(self.keys(gate)[0])) is not None
+            for gate in self.plan.gates
+            if not self.request.fresh and (seconds := tree.cached_pass(self.lookup_key(gate))) is not None
         }
 
-    def keys(self, gate):
-        base = self.request.base if gate.reports else None
-        commands = dict.fromkeys((self.request.command(gate), gate.command))
-        return [tree.result_key(self.watch.tree, gate.name, command, gate.env, base) for command in commands]
+    def key(self, gate, request):
+        return tree.result_key(self.watch.tree, gate.name, request.command(gate), gate.env)
+
+    def lookup_key(self, gate):
+        return self.key(gate, self.request)
+
+    def record_keys(self, gate):
+        # A pass that posted on a pull request also certifies the run that posts nothing, never the reverse.
+        return {self.lookup_key(gate), self.key(gate, dataclasses.replace(self.request, pr=None, video=False))}
 
     def gate(self, gate):
         if gate.name in self.cached:
             return Result(gate, True, self.cached[gate.name], cached=True)
-        log = self.logs / f'{gate.name}.log'
-        command = self.request.command(gate)
         if report := frame_report(gate, self.request.root):
             report.unlink(missing_ok=True)
-        started = time.monotonic()
-        with log.open('w') as out:
-            out.write(f'$ {command}\n')
-            out.flush()
-            with self.lock:
-                if self.changed:
-                    return Result(gate, False, 0.0, log)
-                # Its own process group, so stop() reaches the compilers and tests below the shell.
-                process = subprocess.Popen(
-                    command,
-                    shell=True,
-                    cwd=self.request.root,
-                    env=os.environ | dict(gate.env),
-                    stdout=out,
-                    stderr=subprocess.STDOUT,
-                    process_group=0,
-                )
-                self.running.add(process)
-            code = process.wait()
-            with self.lock:
-                self.running.discard(process)
-        seconds = time.monotonic() - started
-        ok = code == 0 and not self.tree_changed()
-        if ok:
-            for key in self.keys(gate):
-                tree.record_pass(key, gate.name, self.watch.tree, seconds)
-        return Result(gate, ok, seconds, log)
+        result = self.gates.run(gate, self.request.command(gate))
+        result.ok = result.ok and not self.stop_if_edited()
+        if result.ok:
+            for key in self.record_keys(gate):
+                tree.record_pass(key, gate.name, self.watch.tree, result.seconds)
+        return result
 
-    def tree_changed(self):
+    def stop_if_edited(self):
+        """Whether the tree has changed since the run began. The first change found stops every gate."""
         with self.lock:
-            if not self.changed:
-                self.changed = self.watch.changed()
-                if self.changed:
-                    self.stop()
-            return bool(self.changed)
-
-    def stop(self):
-        for process in self.running:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGTERM)
+            if not self.edited:
+                self.edited = self.watch.changed()
+                if self.edited:
+                    self.gates.stop()
+            return bool(self.edited)
 
     def lane(self, lane):
         results = []
         for gate in lane:
-            if self.changed:
+            if self.edited:
                 break
             result = self.gate(gate)
-            if self.changed:
+            if self.edited:
                 break
             results.append(result)
             took = 'cached' if result.cached else f'{result.seconds:.0f} s'
@@ -165,86 +162,62 @@ def frame_report(gate, root):
     return root / image_dir / 'stack-frames.md' if image_dir else None
 
 
-def merge_base(commit):
-    for main in ('origin/main', 'main'):
-        done = subprocess.run(['git', 'merge-base', main, commit], cwd=workspace.ROOT, capture_output=True, text=True)
-        if done.returncode == 0:
-            return done.stdout.strip()
-    raise SystemExit('cycling verify: no origin/main or main to compare with')
-
-
-def changed_paths(base, tree_id):
-    return git('diff', '--name-only', '--no-renames', base, tree_id).splitlines()
-
-
-def table(command, results, skipped, watch, total, queued, cpu):
+def table(title, results, skipped, watch, total, queued, cpu):
     rows = ['| step | result | time |', '| --- | --- | --- |']
     for r in results:
         took = f'cached ({r.seconds:.0f} s)' if r.cached else f'{r.seconds:.0f} s'
         rows.append(f'| `{r.gate.name}` | {"✅" if r.ok else "❌"} | {took} |')
     sha = git('rev-parse', '--short=12', 'HEAD', cwd=watch.root)
-    state = '' if git('rev-parse', 'HEAD^{tree}', cwd=watch.root) == watch.tree else ' with uncommitted changes'
+    state = '' if head_tree(watch.root) == watch.tree else ' with uncommitted changes'
     where = f'{sha}{state}, tree {watch.tree[:12]}'
     took = f'{total:.0f} s' + (f' ({queued:.0f} s queued)' if queued >= 1 else '')
-    head = f'### `{command}` on {os.uname().nodename} — {where}, {took}, {cpu:.0f} CPU-s'
+    head = f'### `{title}` on {os.uname().nodename} — {where}, {took}, {cpu:.0f} CPU-s'
     notes = f'\n\nNot selected by the changed paths: {", ".join(f"`{name}`" for name in skipped)}.' if skipped else ''
     return f'{head}\n\n' + '\n'.join(rows) + notes
 
 
-def failure_tail(results, lines=30):
-    parts = []
-    for result in results:
-        if not result.ok:
-            tail = result.log.read_text(errors='replace').splitlines()[-lines:]
-            parts.append(f'--- {result.gate.name}\n' + '\n'.join(tail))
-    return '\n'.join(parts)
-
-
-def children_cpu():
-    times = os.times()
-    return times.children_user + times.children_system
+def head_tree(root):
+    return git('rev-parse', 'HEAD^{tree}', cwd=root)
 
 
 def verify(request):
     watch = tree.Watch(request.root)
-    if request.deep:
-        chosen, skipped = [list(lanes.DEEP), []], []
-    else:
-        names = lanes.EVERY if request.everything else lanes.select(changed_paths(request.base, watch.tree))
-        chosen = [[gate for gate in lane if gate.name in names] for lane in (*lanes.LANES, lanes.ALONE)]
-        skipped = sorted(lanes.EVERY - names)
-    *parallel, alone = chosen
-    parallel = [lane for lane in parallel if lane]
+    if request.pr and (loose := tree.changed_paths(head_tree(request.root), watch.tree)):
+        files = '\n'.join(loose)
+        raise SystemExit(
+            'cycling verify --pr: results posted on a pull request must describe a commit, '
+            f'and these files differ from HEAD. Commit or remove them.\n\n{files}'
+        )
+    plan = plan_for(request, watch)
     logs = request.root / '.local' / 'verify' / watch.tree[:12]
     logs.mkdir(parents=True, exist_ok=True)
     (logs / TESTS_PASSED).unlink(missing_ok=True)
     print(f'logs: {logs}', flush=True)
 
-    started, cpu = time.monotonic(), children_cpu()
-    selected = [gate for lane in chosen for gate in lane]
-    run = Run(request, watch, selected, logs)
-    if not run.tests_out and not request.deep:
+    started, cpu = time.monotonic(), runner.children_cpu()
+    run = Run(request, watch, plan, logs)
+    if plan.marks_tests and not run.tests_out:
         run.tests_passed()
     with contextlib.ExitStack() as held:
-        waits = not request.deep and len(run.cached) < len(selected)
-        queued = held.enter_context(admission.admitted()) if waits else 0.0
-        if queued >= 1:
-            run.tree_changed()
+        queued = 0.0
+        if plan.takes_slot and len(run.cached) < len(plan.gates):
+            queued = held.enter_context(admission.admitted())
+            # During the wait the tree may have been edited, or passed by another run.
+            run.stop_if_edited()
             run.find_cached()
-        with ThreadPoolExecutor(len(parallel) or 1) as pool:
+        with ThreadPoolExecutor(len(plan.parallel) or 1) as pool:
             try:
-                results = [r for lane in pool.map(run.lane, parallel) for r in lane]
+                results = [r for lane in pool.map(run.lane, plan.parallel) for r in lane]
+                if all(r.ok for r in results):
+                    results += run.lane(plan.alone)
             except BaseException:
                 # The pool waits for its lanes, and an interrupt reaches no gate's process group.
-                with run.lock:
-                    run.stop()
+                run.gates.stop()
                 raise
-        if all(r.ok for r in results):
-            results += run.lane(alone)
-    total, cpu = time.monotonic() - started, children_cpu() - cpu
+    total, cpu = time.monotonic() - started, runner.children_cpu() - cpu
 
-    if run.changed:
-        files = '\n'.join(run.changed)
+    if run.stop_if_edited():
+        files = '\n'.join(run.edited)
         return Outcome(False, f'`cycling verify` stopped: the tree changed while its gates ran.\n\n{files}', '', '')
     frames = [
         path.read_text()
@@ -253,10 +226,8 @@ def verify(request):
     ]
     return Outcome(
         all(r.ok for r in results),
-        table(
-            'cycling verify --deep' if request.deep else 'cycling verify', results, skipped, watch, total, queued, cpu
-        ),
-        failure_tail(results),
+        table(plan.title, results, plan.skipped, watch, total, queued, cpu),
+        runner.failure_tail(results),
         '\n'.join(frames),
     )
 
@@ -274,10 +245,10 @@ def main(argv=None):
     parser.add_argument('--deep', action='store_true', help='tier 2 only: the fixed fuzz seeds and the planted bug')
     args = parser.parse_args(argv)
     warn_if_low_disk()
+    runner.stop_on_signals()
 
-    if args.pr and tree.tree_hash(workspace.ROOT) != git('rev-parse', 'HEAD^{tree}'):
-        parser.error('commit first: results posted on a PR must describe a commit')
-    outcome = verify(Request(workspace.ROOT, merge_base('HEAD'), args.pr, args.video, args.all, args.fresh, args.deep))
+    request = Request(workspace.ROOT, tree.merge_base('HEAD'), args.pr, args.video, args.all, args.fresh, args.deep)
+    outcome = verify(request)
 
     print('\n' + outcome.report)
     if outcome.failures:

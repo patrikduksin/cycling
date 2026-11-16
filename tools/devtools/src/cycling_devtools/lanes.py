@@ -1,7 +1,6 @@
+import os
 import tomllib
 from dataclasses import dataclass
-
-from cycling_devtools import workspace
 
 
 @dataclass(frozen=True)
@@ -43,28 +42,28 @@ DEEP = (
 
 EVERY = frozenset(gate.name for lane in (*LANES, ALONE) for gate in lane)
 NONE = frozenset()
-HOST = frozenset(
+RUST_CODE = frozenset(
     {'test-rust', 'simulate', 'check-rust', 'check-boundaries', 'screens', 'harness-virtual', 'test-python'}
 )
-RUST = HOST | {'build', 'check-devices'}
+RUST_BUILD = RUST_CODE | {'build', 'check-devices'}
 WEB = frozenset({'test-web', 'check-web'})
+
+# What decides which gates run, how they run and where a pass is kept: `cli` holds each gate's steps,
+# and the rest is `verify` with everything it imports. A change to one of them is verified by every gate.
+VERIFY_MODULES = ('admission', 'clean', 'cli', 'lanes', 'runner', 'tree', 'verify', 'workspace')
 
 # A path no rule matches selects every gate, so a new directory is verified in full until it gets a rule.
 RULES = (
-    ('apps/', HOST | {'check-generated-web'}),
-    ('packages/', HOST),
-    ('devices/', RUST),
-    ('vendor/', RUST | {'test-trouble-host'}),
-    ('Cargo.toml', RUST),
-    ('Cargo.lock', RUST),
-    ('.cargo/', RUST),
-    ('.config/nextest.toml', RUST),
-    ('tools/simulator/', HOST),
-    ('tools/devtools/src/cycling_devtools/cli.py', EVERY),
-    ('tools/devtools/src/cycling_devtools/lanes.py', EVERY),
-    ('tools/devtools/src/cycling_devtools/verify.py', EVERY),
-    ('tools/devtools/src/cycling_devtools/tree.py', EVERY),
-    ('tools/devtools/src/cycling_devtools/admission.py', EVERY),
+    ('apps/', RUST_CODE | {'check-generated-web'}),
+    ('packages/', RUST_CODE),
+    ('devices/', RUST_BUILD),
+    ('vendor/', RUST_BUILD | {'test-trouble-host'}),
+    ('Cargo.toml', RUST_BUILD),
+    ('Cargo.lock', RUST_BUILD),
+    ('.cargo/', RUST_BUILD | {'test-trouble-host'}),
+    ('.config/nextest.toml', RUST_BUILD),
+    ('tools/simulator/', RUST_CODE),
+    *((f'tools/devtools/src/cycling_devtools/{module}.py', EVERY) for module in VERIFY_MODULES),
     (
         'tools/devtools/',
         frozenset({'test-python', 'check-python', 'check-devices', 'build', 'screens', 'harness-virtual'}),
@@ -84,6 +83,8 @@ RULES = (
     ('docs/design/', EVERY),
     ('docs/screenshots/', EVERY),
     ('docs/', NONE),
+    # tools/simulator/tests/trace_tools.rs reads this skill.
+    ('.agents/skills/ride-trace/', frozenset({'test-rust', 'test-python'})),
     ('.agents/', frozenset({'test-python'})),
     ('.claude/', NONE),
     ('.github/', NONE),
@@ -96,27 +97,52 @@ RULES = (
 )
 
 
+@dataclass(frozen=True)
+class Crate:
+    directory: str
+    name: str
+    path_deps: tuple[str, ...]
+
+
+def path_deps(manifest, directory, shared):
+    """The directories of the path dependencies that end up in this crate's build, so not the dev ones."""
+    found = []
+    for table in (manifest, *manifest.get('target', {}).values()):
+        for kind in ('dependencies', 'build-dependencies'):
+            for name, need in table.get(kind, {}).items():
+                if not isinstance(need, dict):
+                    continue
+                if need.get('workspace'):
+                    need, base = shared.get(name), ''
+                else:
+                    base = directory
+                if isinstance(need, dict) and 'path' in need:
+                    found.append(os.path.normpath(os.path.join(base, need['path'])))
+    return tuple(found)
+
+
 def members(root):
-    found = {}
-    for member in tomllib.loads((root / 'Cargo.toml').read_text())['workspace']['members']:
-        crate = tomllib.loads((root / member / 'Cargo.toml').read_text())
-        needs = crate.get('dependencies', {}).items()
-        found[member] = (
-            crate['package']['name'],
-            [need.get('package', name) for name, need in needs if isinstance(need, dict) and 'path' in need],
-        )
+    workspace = tomllib.loads((root / 'Cargo.toml').read_text())['workspace']
+    shared = workspace.get('dependencies', {})
+    found = []
+    for directory in workspace['members']:
+        manifest = tomllib.loads((root / directory / 'Cargo.toml').read_text())
+        found.append(Crate(directory, manifest['package']['name'], path_deps(manifest, directory, shared)))
     return found
 
 
 def firmware_crates(root):
-    crates = {name: (member, needs) for member, (name, needs) in members(root).items()}
-    wanted = [tomllib.loads(path.read_text())['build']['package'] for path in root.glob('devices/*/device.toml')]
+    crates = members(root)
+    by_directory = {crate.directory: crate for crate in crates}
+    packages = {tomllib.loads(path.read_text())['build']['package'] for path in root.glob('devices/*/device.toml')}
+    wanted = [crate.directory for crate in crates if crate.name in packages]
     linked = set()
     while wanted:
-        name = wanted.pop()
-        if name in crates and crates[name][0] not in linked:
-            linked.add(crates[name][0])
-            wanted += crates[name][1]
+        directory = wanted.pop()
+        if directory not in linked:
+            linked.add(directory)
+            if directory in by_directory:
+                wanted += by_directory[directory].path_deps
     return linked
 
 
@@ -127,6 +153,6 @@ def gates_for(path, firmware):
     return gates | {'build'} if any(path.startswith(f'{crate}/') for crate in firmware) else gates
 
 
-def select(paths):
-    firmware = firmware_crates(workspace.ROOT) if paths else ()
+def select(paths, root):
+    firmware = firmware_crates(root) if paths else ()
     return frozenset().union(*(gates_for(path, firmware) for path in paths))

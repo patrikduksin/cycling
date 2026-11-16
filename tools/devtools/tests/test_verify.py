@@ -1,40 +1,77 @@
+import ast
+import os
+import signal
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
-from cycling_devtools import admission, lanes, quick, tree, verify, workspace
+from cycling_devtools import admission, lanes, quick, runner, tree, verify, workspace
 from verify_fixture import commit, gate_runs, git
 
 
+def select(*paths):
+    return lanes.select(paths, workspace.ROOT)
+
+
 def test_a_docs_change_selects_no_gate():
-    assert lanes.select(['docs/ui.md', 'README.md']) == frozenset()
+    assert select('docs/ui.md', 'README.md') == frozenset()
 
 
 def test_rust_under_apps_selects_the_firmware_the_host_tests_and_pytest_but_not_the_web():
-    selected = lanes.select(['apps/vana/src/app.rs'])
+    selected = select('apps/vana/src/app.rs')
     assert {'build', 'test-rust', 'check-rust', 'screens', 'test-python', 'harness-virtual'} <= selected
     assert not {'test-web', 'check-web'} & selected
 
 
 def test_the_simulator_selects_pytest_but_not_the_firmware():
-    selected = lanes.select(['tools/simulator/src/session.rs'])
+    selected = select('tools/simulator/src/session.rs')
     assert 'test-python' in selected
     assert 'build' not in selected
 
 
 def test_devtools_select_the_firmware_but_not_the_rust_tests():
-    selected = lanes.select(['tools/devtools/src/cycling_devtools/rides/export.py'])
+    selected = select('tools/devtools/src/cycling_devtools/rides/export.py')
     assert {'build', 'test-python', 'check-python'} <= selected
     assert 'test-rust' not in selected
 
 
 def test_a_path_no_rule_knows_selects_every_gate():
-    assert lanes.select(['docs/ui.md', 'firmware-next/src/main.rs']) == lanes.EVERY
+    assert select('docs/ui.md', 'firmware-next/src/main.rs') == lanes.EVERY
 
 
-def test_the_modules_that_define_the_gates_select_every_gate():
-    assert lanes.select(['tools/devtools/src/cycling_devtools/lanes.py']) == lanes.EVERY
+def imported_devtools_modules(module):
+    source = Path(verify.__file__).with_name(f'{module}.py').read_text()
+    found = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.module == 'cycling_devtools':
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and (node.module or '').startswith('cycling_devtools.'):
+            found.add(node.module.split('.')[1])
+    return found
+
+
+def test_verify_and_every_module_it_imports_select_every_gate():
+    modules, todo = set(), ['verify']
+    while todo:
+        module = todo.pop()
+        if module not in modules:
+            modules.add(module)
+            todo += imported_devtools_modules(module)
+    assert set(lanes.VERIFY_MODULES) == modules | {'cli'}
+    for module in lanes.VERIFY_MODULES:
+        assert select(f'tools/devtools/src/cycling_devtools/{module}.py') == lanes.EVERY
+
+
+def test_the_skill_a_rust_test_reads_selects_the_rust_tests():
+    assert 'test-rust' in select('.agents/skills/ride-trace/SKILL.md')
+    assert 'test-rust' not in select('.agents/skills/verify/SKILL.md')
+
+
+def test_the_cargo_configuration_selects_the_vendored_host_tests_too():
+    assert {'build', 'test-rust', 'test-trouble-host'} <= select('.cargo/config.toml')
 
 
 def test_every_rule_names_known_gates_and_every_gate_has_a_rule():
@@ -69,7 +106,8 @@ def test_the_firmware_lane_starts_first_and_builds_beside_the_flashed_image():
 def test_the_screens_gate_posts_on_the_pull_request_and_the_tests_leave_the_scenarios_to_it():
     gates = {gate.name: gate for lane in lanes.LANES for gate in lane}
     posting = verify.Request(workspace.ROOT, 'base', pr=7, video=True)
-    assert posting.command(gates['screens']) == 'cycling sim-compare --pr 7 --video'
+    assert posting.command(gates['screens']) == 'cycling sim-compare --base base --pr 7 --video'
+    assert verify.Request(workspace.ROOT, 'base').command(gates['screens']) == 'cycling sim-compare --base base'
     assert posting.command(gates['test-rust']) == 'cycling test-rust'
     assert dict(gates['test-rust'].env)['NEXTEST_PROFILE'] == 'without-ride-scenarios'
 
@@ -259,16 +297,179 @@ def test_quick_checks_the_crates_the_diff_touches_and_the_firmware_when_a_device
     firmware = lanes.firmware_crates(workspace.ROOT)
     crates = quick.touched(['apps/vana/src/app.rs', 'docs/ui.md', 'tools/simulator/src/session.rs'], workspace.ROOT)
     assert crates == {'apps/vana': 'vana', 'tools/simulator': 'shell-simulator'}
-    assert [step.name for step in quick.steps(crates, firmware)] == ['test', 'clippy', 'check-firmware']
+    assert [gate.name for gate in quick.gates(crates, firmware)] == ['test', 'clippy', 'check-firmware']
     simulator = {'tools/simulator': 'shell-simulator'}
-    assert [step.name for step in quick.steps(simulator, firmware)] == ['test', 'clippy']
-    assert "-p vana -p shell-simulator -E 'not group(slow)'" in quick.steps(crates, firmware)[0].command
-    assert quick.steps({}, firmware) == []
+    assert [gate.name for gate in quick.gates(simulator, firmware)] == ['test', 'clippy']
+    assert "-p vana -p shell-simulator -E 'not group(slow)'" in quick.gates(crates, firmware)[0].command
+    assert quick.gates({}, firmware) == []
+
+
+def test_quick_leaves_the_ride_scenarios_to_verify():
+    test = quick.gates({'tools/simulator': 'shell-simulator'}, set())[0]
+    assert dict(test.env)['NEXTEST_PROFILE'] == 'without-ride-scenarios'
 
 
 def test_the_firmware_is_built_for_the_crates_a_device_manifest_links_and_not_for_the_others():
     assert {'devices/c606', 'apps/vana', 'packages/shell'} <= lanes.firmware_crates(workspace.ROOT)
     assert 'tools/simulator' not in lanes.firmware_crates(workspace.ROOT)
-    assert 'build' in lanes.select(['packages/shell/src/shell.rs'])
-    assert 'build' in lanes.select(['devices/c606/device.toml'])
-    assert 'build' in lanes.select(['devices/build.sh'])
+    assert 'build' in select('packages/shell/src/shell.rs')
+    assert 'build' in select('devices/c606/device.toml')
+    assert 'build' in select('devices/build.sh')
+
+
+def write(root, files):
+    for name, text in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
+def test_the_firmware_follows_target_build_and_workspace_dependencies_of_the_tree_it_is_asked_about(
+    tmp_path, monkeypatch
+):
+    package = '[package]\nname = "{}"\n'
+    on_target = (
+        '[target.\'cfg(target_arch = "xtensa")\'.dependencies]\n'
+        'renamed = { path = "../on-target", package = "on-target" }\n'
+        '[dev-dependencies]\ntested-with = { path = "../tested-with" }\n'
+    )
+    write(
+        tmp_path,
+        {
+            'Cargo.toml': '[workspace]\nmembers = ["dev", "on-target", "at-build", "shared", "tested-with", "tool"]\n'
+            '[workspace.dependencies]\nshared = { path = "shared" }\n',
+            'devices/unit/device.toml': '[build]\npackage = "unit-firmware"\n',
+            'dev/Cargo.toml': package.format('unit-firmware') + on_target,
+            'on-target/Cargo.toml': package.format('on-target')
+            + '[build-dependencies]\nat-build = { path = "../at-build" }\n',
+            'at-build/Cargo.toml': package.format('at-build') + '[dependencies]\nshared.workspace = true\n',
+            'shared/Cargo.toml': package.format('shared'),
+            'tested-with/Cargo.toml': package.format('tested-with'),
+            'tool/Cargo.toml': package.format('tool'),
+        },
+    )
+    assert lanes.firmware_crates(tmp_path) == {'dev', 'on-target', 'at-build', 'shared'}
+    monkeypatch.setattr(lanes, 'RULES', (('shared/', lanes.NONE), ('tool/', lanes.NONE)))
+    assert lanes.select(['shared/src/lib.rs'], tmp_path) == {'build'}
+    assert lanes.select(['tool/src/lib.rs'], tmp_path) == lanes.NONE
+    assert lanes.select(['shared/src/lib.rs'], workspace.ROOT) == lanes.NONE
+
+
+def test_an_edit_in_the_second_the_index_was_written_changes_the_tree_hash(checkout):
+    while time.time() % 1 > 0.5:
+        time.sleep(0.05)
+    (checkout / 'src' / 'a.txt').write_text('a\n')
+    git('add', '-A', cwd=checkout)
+    (checkout / 'src' / 'a.txt').write_text('b\n')
+    time.sleep(1.1)
+    assert tree.tree_hash(checkout) != git('rev-parse', 'HEAD^{tree}', cwd=checkout)
+
+
+def test_a_pass_under_one_setting_of_the_build_does_not_stand_for_another(checkout, monkeypatch):
+    (checkout / 'src' / 'new.txt').write_text('new')
+    monkeypatch.setenv('CYCLING_MIN_STACK_BYTES', '0')
+    assert verify.verify(request(checkout)).ok
+    monkeypatch.setenv('EDITOR', 'ed')
+    assert verify.verify(request(checkout)).ok
+    assert gate_runs(checkout) == 1
+    settings = (('CYCLING_MIN_STACK_BYTES', '999999999'), ('RUSTFLAGS', '-Dwarnings'), ('CARGO_PROFILE_DEV_DEBUG', '0'))
+    for name, value in settings:
+        monkeypatch.setenv(name, value)
+        assert verify.verify(request(checkout)).ok
+    assert gate_runs(checkout) == 4
+
+
+def test_an_edit_during_a_run_that_found_every_gate_cached_is_not_certified(checkout, monkeypatch):
+    (checkout / 'src' / 'new.txt').write_text('new')
+    assert verify.verify(request(checkout)).ok
+    cached_pass = tree.cached_pass
+
+    def edited_after_the_lookup(key):
+        (checkout / 'src' / 'a.txt').write_text('edited')
+        return cached_pass(key)
+
+    monkeypatch.setattr(tree, 'cached_pass', edited_after_the_lookup)
+    outcome = verify.verify(request(checkout))
+    assert not outcome.ok
+    assert 'the tree changed while its gates ran.\n\nsrc/a.txt' in outcome.report
+
+
+def test_an_edit_during_a_run_that_selects_no_gate_is_not_certified(checkout, monkeypatch):
+    commit(checkout, 'Docs', **{'docs/ui.md': 'words'})
+    plan_for = verify.plan_for
+
+    def edited_after_the_plan(request, watch):
+        (checkout / 'docs' / 'ui.md').write_text('more words')
+        return plan_for(request, watch)
+
+    monkeypatch.setattr(verify, 'plan_for', edited_after_the_plan)
+    assert not verify.verify(request(checkout)).ok
+
+
+def test_results_for_a_pull_request_are_refused_inside_the_run_when_the_tree_is_not_the_commit(checkout):
+    commit(checkout, 'Change', **{'src/b.txt': 'b'})
+    (checkout / 'src' / 'untracked.txt').write_text('new')
+    with pytest.raises(SystemExit, match=r'differ from HEAD(.|\n)*\n\nsrc/untracked.txt'):
+        verify.verify(request(checkout, pr=7))
+    assert gate_runs(checkout) == 0
+
+
+def alive(pid):
+    try:
+        return Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[0] != 'Z'
+    except OSError:
+        return False
+
+
+def gone(pid_file):
+    pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 10
+    while alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return not alive(pid)
+
+
+def started(pid_file):
+    deadline = time.monotonic() + 20
+    while not (running := pid_file.exists() and pid_file.read_text().strip()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return running
+
+
+LONG = 'sleep 300 & echo $! > "$PID_FILE"; wait'
+
+
+@pytest.mark.parametrize('number', [signal.SIGTERM, signal.SIGHUP])
+@pytest.mark.parametrize('lane', ['parallel', 'alone'])
+def test_a_terminated_run_stops_its_gates_in_either_kind_of_lane(
+    checkout, monkeypatch, tmp_path, restored_signals, number, lane
+):
+    runner.stop_on_signals()
+    monkeypatch.setenv('PID_FILE', str(tmp_path / 'pid'))
+    long = (lanes.Gate('probe', LONG),)
+    monkeypatch.setattr(lanes, 'LANES', (long,) if lane == 'parallel' else ())
+    monkeypatch.setattr(lanes, 'ALONE', long if lane == 'alone' else ())
+    threading.Thread(target=lambda: started(tmp_path / 'pid') and os.kill(os.getpid(), number)).start()
+    with pytest.raises(SystemExit) as stopped:
+        verify.verify(request(checkout, everything=True))
+    assert stopped.value.code == 128 + number
+    assert gone(tmp_path / 'pid')
+
+
+def test_the_disk_is_checked_again_once_the_slot_is_held(checkout, monkeypatch):
+    (checkout / 'src' / 'new.txt').write_text('new')
+    free = iter([25.0, 19.0])
+    monkeypatch.setattr(admission.clean, 'free_gb', lambda path: next(free))
+    with pytest.raises(SystemExit, match='19 GB free, under 20 GB'):
+        verify.verify(request(checkout))
+    assert gate_runs(checkout) == 0
+
+
+def test_the_gates_are_selected_from_the_tree_under_verification(checkout, monkeypatch, tmp_path):
+    asked = []
+    monkeypatch.setattr(lanes, 'firmware_crates', lambda root: asked.append(root) or ())
+    elsewhere = tmp_path / 'elsewhere'
+    git('worktree', 'add', '-q', '--detach', str(elsewhere), cwd=checkout)
+    (elsewhere / 'src' / 'new.txt').write_text('new')
+    assert verify.verify(request(elsewhere)).ok
+    assert asked == [elsewhere]

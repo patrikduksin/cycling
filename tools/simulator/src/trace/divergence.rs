@@ -87,7 +87,9 @@ pub type Counts = BTreeMap<Kind, u32>;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Divergences {
-    pub mode: &'static str,
+    /// The replay document names the mode once, at its top.
+    #[serde(skip)]
+    pub mode: Mode,
     pub from_ms: u64,
     pub to_ms: u64,
     pub meanings: Vec<Meant>,
@@ -110,7 +112,8 @@ pub struct Meant {
 pub struct First {
     pub at: Moment,
     pub meaning: Meaning,
-    pub kind: String,
+    #[serde(serialize_with = "kind_name")]
+    pub kind: Kind,
     pub detail: String,
 }
 
@@ -125,8 +128,12 @@ fn by_kind<S: Serializer>(counts: &Counts, serializer: S) -> Result<S::Ok, S::Er
         counts
             .iter()
             .filter(|(_, n)| **n > 0)
-            .map(|(kind, n)| (format!("{kind:?}"), n)),
+            .map(|(kind, n)| (kind.name(), n)),
     )
+}
+
+fn kind_name<S: Serializer>(kind: &Kind, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(kind.name())
 }
 
 /// The divergences from `from` to `to`, by meaning, the first of them, and
@@ -161,7 +168,7 @@ pub fn summarize(
         "the rider saw what the recording saw; nothing here is a replay fault"
     };
     Divergences {
-        mode: mode.name(),
+        mode,
         from_ms: from,
         to_ms: to,
         meanings: by_meaning
@@ -176,7 +183,7 @@ pub fn summarize(
         first: report.first.as_ref().map(|first| First {
             at: timeline.moment(first.at_ms),
             meaning: Meaning::of(first.kind, mode),
-            kind: format!("{:?}", first.kind),
+            kind: first.kind,
             detail: first.detail.clone(),
         }),
         before: before.clone(),
@@ -191,7 +198,7 @@ impl fmt::Display for Divergences {
             "in {}-{} ({}):",
             session_clock(self.from_ms),
             session_clock(self.to_ms),
-            self.mode
+            self.mode.name()
         )?;
         if !self
             .meanings
@@ -216,7 +223,7 @@ impl fmt::Display for Divergences {
                 "  first: {} {}, {}: {}",
                 first.at,
                 first.meaning.label(),
-                first.kind,
+                first.kind.name(),
                 first.detail
             )?;
         }
@@ -238,7 +245,7 @@ fn counts_text(counts: &Counts) -> String {
     counts
         .iter()
         .filter(|(_, n)| **n > 0)
-        .map(|(kind, n)| format!("{kind:?} {n}"))
+        .map(|(kind, n)| format!("{} {n}", kind.name()))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -293,6 +300,11 @@ mod tests {
             lines[6].ends_with("nothing here is a replay fault"),
             "{text}"
         );
+        let json =
+            serde_json::to_value(summarize(&timeline(), (1_000, 5_000), &before, &report)).unwrap();
+        assert_eq!(json["first"]["kind"], "NotRequested");
+        assert_eq!(json["meanings"][0]["kinds"]["NotRequested"], 2);
+        assert_eq!(json["before"]["NotRequested"], 1);
 
         let mut seen = Report::new(Mode::Strict);
         seen.counts = Counts::from([(Kind::Seen, 1)]);

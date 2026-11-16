@@ -1,6 +1,7 @@
 //! What each `cycling trace` command prints: one value per command, which
 //! writes itself as text (`Display`) and as JSON (`Serialize`) from the same
 //! fields, so the two cannot tell different stories.
+use crate::replay::Mode;
 use crate::trace::battery;
 use crate::trace::divergence::Divergences;
 use crate::trace::file::Media;
@@ -54,6 +55,10 @@ pub struct Header<'a> {
 
 fn end_name<S: Serializer>(end: &End, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(end.name())
+}
+
+fn mode_name<S: Serializer>(mode: &Mode, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(mode.name())
 }
 
 fn media_name<S: Serializer>(media: &&Media, serializer: S) -> Result<S::Ok, S::Error> {
@@ -384,7 +389,8 @@ impl fmt::Display for Stub {
 #[derive(Serialize)]
 pub struct Replayed<'a> {
     pub header: Header<'a>,
-    pub mode: &'static str,
+    #[serde(serialize_with = "mode_name")]
+    pub mode: Mode,
     pub why: String,
     pub from_ms: u64,
     pub to_ms: u64,
@@ -403,11 +409,11 @@ pub struct Artifacts {
 impl fmt::Display for Replayed<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.header)?;
-        writeln!(f, "mode {}: {}", self.mode, self.why)?;
+        writeln!(f, "mode {}: {}", self.mode.name(), self.why)?;
         writeln!(
             f,
             "replayed {} from {} to {}; reached {}{}",
-            self.mode,
+            self.mode.name(),
             session_clock(self.from_ms),
             session_clock(self.to_ms),
             self.reached,

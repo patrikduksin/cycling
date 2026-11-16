@@ -1452,7 +1452,7 @@ fn a_json_replay_names_its_mode_window_divergence_and_artifacts() {
     assert_eq!(replayed["reached"]["session_ms"], 3_000);
     assert_eq!(replayed["trace_ended"], false);
     let divergence = &replayed["divergence"];
-    assert_eq!(divergence["mode"], "stimulus");
+    assert!(divergence.get("mode").is_none(), "the mode is named once");
     assert!(divergence["meanings"].is_array() && divergence["verdict"].is_string());
     let files: Vec<&str> = replayed["artifacts"]["files"]
         .as_array()

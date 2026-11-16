@@ -522,7 +522,7 @@ fn replay<'a>(
     files.sort();
     Ok(Replayed {
         header: Header::of(path, timeline, media),
-        mode: mode.name(),
+        mode,
         why,
         from_ms: from,
         to_ms: to,

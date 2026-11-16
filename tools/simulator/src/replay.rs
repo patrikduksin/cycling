@@ -123,6 +123,27 @@ pub enum Kind {
     Lost,
 }
 
+impl Kind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unrecorded => "Unrecorded",
+            Self::Modelled => "Modelled",
+            Self::LeftOver => "LeftOver",
+            Self::OtherRequest => "OtherRequest",
+            Self::NotRequested => "NotRequested",
+            Self::Refused => "Refused",
+            Self::NotHeard => "NotHeard",
+            Self::Carried => "Carried",
+            Self::Seen => "Seen",
+            Self::Redacted => "Redacted",
+            Self::Rerecorded => "Rerecorded",
+            Self::Unreplayable => "Unreplayable",
+            Self::Truncated => "Truncated",
+            Self::Lost => "Lost",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Divergence {
     /// The pass it happened in.

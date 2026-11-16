@@ -10,7 +10,7 @@
 use crate::recording::json;
 use crate::trace::story::Story;
 use crate::trace::timeline::{Kind, Timeline, Window, field};
-use firmware_services::trace::Health;
+use firmware_services::trace::{self, Health};
 use std::fmt::Write as _;
 
 const SHOWN: [(&str, &str); 6] = [
@@ -58,7 +58,7 @@ pub fn export(timeline: &Timeline, story: &Story) -> String {
             }
         ),
         attribute("vana.boot", &timeline.boot.to_string()),
-        attribute("vana.trace.version", &timeline.version.to_string()),
+        attribute("vana.trace.version", &trace::VERSION.to_string()),
         attribute(
             "vana.clock",
             if timeline.utc_at_boot_ms.is_some() {

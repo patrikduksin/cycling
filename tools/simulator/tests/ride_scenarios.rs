@@ -8260,7 +8260,7 @@ fn a_stimulus_replay_names_no_frame_in_what_the_rider_saw() {
     let report = replayed.device.report().unwrap();
     let first = report.first.as_ref().expect("the altered page diverges");
     assert!(
-        first.detail.contains("a page the rider never saw") && !first.detail.contains("Frame("),
+        first.detail.contains("a page the rider never saw") && !first.detail.contains("Panel("),
         "a stimulus replay compares no frames: {report}"
     );
 }
@@ -8718,7 +8718,6 @@ mod mutations {
                 room: room / 2,
             },
             Event::Page(_) => Event::Page("bests"),
-            Event::Frame(digest) => Event::Frame(digest ^ 1),
             Event::Panel(digest) => Event::Panel(digest ^ 1),
             Event::Sound {
                 pattern,

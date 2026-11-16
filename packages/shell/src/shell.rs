@@ -75,13 +75,6 @@ fn digest_pairs(hash: u32, pixels: &[u16]) -> u32 {
     last.iter()
         .fold(hash, |hash, &pixel| step(hash, u32::from(pixel)))
 }
-/// The digest an [`Event::Frame`] of an older trace holds: every row of the
-/// frame in turn.
-///
-/// [`Event::Frame`]: firmware_services::trace::Event::Frame
-pub fn frame_digest(pixels: &[u16], width: usize) -> u32 {
-    pixels.chunks(width).fold(FNV_OFFSET, digest)
-}
 /// A frame an application draws through `Shell::draw`: a logical canvas
 /// whose pixels follow from its `Hash` alone, so equal pictures paint alike.
 pub trait Picture: core::hash::Hash {

@@ -782,7 +782,6 @@ pub struct Session {
     /// reports traffic.
     host: bool,
     devices: Devices,
-    legacy_frames: bool,
 }
 impl Session {
     pub fn new(root: &Path, width: usize, height: usize) -> io::Result<Self> {
@@ -927,13 +926,7 @@ impl Session {
             edges_seen: 0,
             host: false,
             devices: Devices::Simulated(Box::new(Simulated::new())),
-            legacy_frames: false,
         })
-    }
-    /// Trace each frame as a whole-frame digest from now on, as the fixtures
-    /// that hold a trace from before panel digests were recorded.
-    pub fn record_legacy_frames(&mut self) {
-        self.legacy_frames = true;
     }
 
     /// A C606-sized device on the captured media, with the capture's trace
@@ -1091,10 +1084,7 @@ impl Session {
         self.record_faults();
         let seen = self.record_seen();
         if let Devices::Replayed(replay) = &mut self.devices {
-            let frame = self.display.0.borrow();
-            replay.saw(&seen, || {
-                firmware_shell::shell::frame_digest(&frame.pixels, frame.geometry.width)
-            });
+            replay.saw(&seen);
         }
         let card = spool::Card::of(
             self.card_admits(),
@@ -1480,16 +1470,7 @@ impl Session {
             });
         }
         if let Some(digest) = self.shell.take_frame() {
-            if self.legacy_frames {
-                let frame = self.display.0.borrow();
-                let width = frame.geometry.width;
-                record(Event::Frame(firmware_shell::shell::frame_digest(
-                    &frame.pixels,
-                    width,
-                )));
-            } else {
-                record(Event::Panel(digest));
-            }
+            record(Event::Panel(digest));
         }
         crate::logs::drain(|level, target, text| {
             recorder.record(&Event::Log {

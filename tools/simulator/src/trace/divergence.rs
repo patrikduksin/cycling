@@ -179,14 +179,13 @@ mod tests {
 
     fn timeline() -> Timeline {
         Timeline {
-            version: 1,
             build: String::new(),
             boot: 1,
             entries: Vec::new(),
             clock: Vec::new(),
             passes: 0,
             end_ms: 0,
-            torn: false,
+            end: None,
             utc_at_boot_ms: None,
             silences: Vec::new(),
             power: Vec::new(),

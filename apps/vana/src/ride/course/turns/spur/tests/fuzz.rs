@@ -722,7 +722,7 @@ pub(super) struct Judged {
     pub(super) planned: usize,
 }
 
-pub(super) fn judge(seeds: core::ops::Range<u64>) -> Judged {
+pub(super) fn judge(seeds: impl IntoIterator<Item = u64>) -> Judged {
     let mut tally = Judged::default();
     for seed in seeds {
         let Some(case) = drawn(seed) else {

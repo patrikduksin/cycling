@@ -1,4 +1,6 @@
-use super::super::tests::{Said, hairpin, join, line_of, path, ride_with, ring, turns_of};
+use super::super::tests::{
+    Said, Share, hairpin, join, line_of, path, ride_with, ring, split_in_eight, turns_of,
+};
 use super::super::{Kind, PlacedScan, SCAN_STEPS, Side, TURNS, Turn, distance};
 use crate::ride::course::stored::tests::{found, found_along, uploaded};
 use core::cell::Cell;
@@ -714,9 +716,10 @@ fn unlike(shapes: Vec<Shape>, every_m: &[f32]) -> (Vec<String>, usize) {
     (failed, checked)
 }
 
-#[test]
-fn a_marked_spur_says_what_the_course_without_it_says() {
-    let (failed, checked) = unlike(shapes(&[0.0]), &EVERY_M);
+split_in_eight!(a_marked_spur_says_what_the_course_without_it_says);
+fn a_marked_spur_says_what_the_course_without_it_says(mut share: Share) {
+    let shapes = shapes(&[0.0]).into_iter().filter(|_| share.takes());
+    let (failed, checked) = unlike(shapes.collect(), &EVERY_M);
     assert!(
         failed.is_empty(),
         "{} of {checked}:\n{}",
@@ -736,9 +739,14 @@ fn a_spur_before_a_hook_back_towards_the_way_in_says_what_the_course_without_it_
     );
 }
 
-#[test]
-fn a_spur_whose_way_back_comes_back_beside_its_base_says_what_the_course_without_it_says() {
-    let (failed, checked) = unlike(shapes(&DRIFTS), &EVERY_M);
+split_in_eight!(
+    a_spur_whose_way_back_comes_back_beside_its_base_says_what_the_course_without_it_says
+);
+fn a_spur_whose_way_back_comes_back_beside_its_base_says_what_the_course_without_it_says(
+    mut share: Share,
+) {
+    let shapes = shapes(&DRIFTS).into_iter().filter(|_| share.takes());
+    let (failed, checked) = unlike(shapes.collect(), &EVERY_M);
     assert!(
         failed.is_empty(),
         "{} of {checked}:\n{}",
@@ -855,7 +863,7 @@ fn a_spur_off_a_spur_says_what_they_said_uncut() {
 
 mod fuzz;
 
-fn judged_at_random(seeds: core::ops::Range<u64>) {
+fn judged_at_random(seeds: impl IntoIterator<Item = u64>) {
     let judged = fuzz::judge(seeds);
     std::println!(
         "{} courses: {} spur stretches said as without them, {} as uncut, {} planned",
@@ -872,9 +880,9 @@ fn judged_at_random(seeds: core::ops::Range<u64>) {
     );
 }
 
-#[test]
-fn spurs_drawn_at_random_say_what_they_say_without_them_or_uncut() {
-    judged_at_random(0..2_000);
+split_in_eight!(spurs_drawn_at_random_say_what_they_say_without_them_or_uncut);
+fn spurs_drawn_at_random_say_what_they_say_without_them_or_uncut(mut share: Share) {
+    judged_at_random((0..2_000).filter(|_| share.takes()));
 }
 
 #[test]

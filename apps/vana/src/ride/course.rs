@@ -21,19 +21,16 @@
 //! | --- | --- |
 //! | 0..4 | magic `VCRS` |
 //! | 4 | version, 1 |
-//! | 5 | header length `h`: 34 in version 1 |
-//! | 6 | point length `s`: 8 in version 1 |
+//! | 5 | header length, 34 |
+//! | 6 | point length, 8 |
 //! | 7 | name length, up to 24 |
 //! | 8..10 | points `n`, 2 to 2048 |
 //! | 10..34 | the name: `A-Z`, `0-9`, space and `-._'`, zero padded |
-//! | h.. | `n` points of `s` bytes: latitude, then longitude, in 1e-7 degrees (i32 each) |
-//! | h+n*s.. | CRC32 of every byte before it |
+//! | 34.. | `n` points of 8 bytes: latitude, then longitude, in 1e-7 degrees (i32 each) |
+//! | 34+8n.. | CRC32 of every byte before it |
 //!
-//! Later versions may lengthen the header or each point and raise the
-//! version; a reader takes the fields it knows from any version at least 1.
-//! A file with more points than a reader holds reads as damaged, never as
-//! part of a course. Firmware from before courses never opens `course.dat`,
-//! so the file disturbs neither it nor the rides and files beside it.
+//! A file of another version or shape reads as damaged, never as part of a
+//! course, and is left alone until an upload replaces it.
 use crate::ride::thin;
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::Crc32;
@@ -64,10 +61,10 @@ const LON_MAX_E7: u32 = 1_800_000_000;
 const FILE: &str = "course.dat";
 const MAGIC: &[u8; 4] = b"VCRS";
 pub const VERSION: u8 = 1;
-const HEADER_V1: usize = 34;
-const POINT_V1: usize = 8;
+const HEADER: usize = 34;
+const POINT: usize = 8;
 /// The longest file this version writes.
-pub const MAX_FILE: usize = HEADER_V1 + POINTS * POINT_V1 + 4;
+pub const MAX_FILE: usize = HEADER + POINTS * POINT + 4;
 
 /// A position in 1e-7 degrees, within the ranges of latitude and longitude.
 #[repr(C)]
@@ -318,8 +315,8 @@ pub fn encode(course: &Course, mut put: impl FnMut(&[u8])) {
     put(&sum.to_le_bytes());
 }
 
-/// The CRC32 of `course` encoded as version 1, whatever version its file
-/// is: the turns stored beside it name their course by it.
+/// The CRC that ends `course`'s file: the turns stored beside it name their
+/// course by it.
 pub fn key(course: &Course) -> u32 {
     sealed(course, &mut |_| {})
 }
@@ -331,17 +328,17 @@ fn sealed(course: &Course, put: &mut impl FnMut(&[u8])) -> u32 {
         crc = crc.update(bytes);
         put(bytes);
     };
-    let mut header = [0u8; HEADER_V1];
+    let mut header = [0u8; HEADER];
     header[..4].copy_from_slice(MAGIC);
     header[4] = VERSION;
-    header[5] = HEADER_V1 as u8;
-    header[6] = POINT_V1 as u8;
+    header[5] = HEADER as u8;
+    header[6] = POINT as u8;
     header[7] = course.name_len as u8;
     put_u16(&mut header, 8, course.len as u16);
     header[10..10 + course.name_len as usize].copy_from_slice(course.name().as_bytes());
     emit(&header);
     for point in course.points() {
-        let mut bytes = [0u8; POINT_V1];
+        let mut bytes = [0u8; POINT];
         put_u32(&mut bytes, 0, point.lat_e7 as u32);
         put_u32(&mut bytes, 4, point.lon_e7 as u32);
         emit(&bytes);
@@ -377,45 +374,42 @@ fn decode_into<E>(
     read: &mut impl FnMut(u32, &mut [u8]) -> Result<(), E>,
     course: &mut Course,
 ) -> Result<(), DecodeError<E>> {
-    let mut head = [0u8; 255];
-    if (length as usize) < HEADER_V1 + 4 {
+    let mut head = [0u8; HEADER];
+    if (length as usize) < HEADER + 4 {
         return Err(DecodeError::Damaged);
     }
-    read(0, &mut head[..HEADER_V1]).map_err(DecodeError::Read)?;
-    let (header, point, name_len) = (usize::from(head[5]), usize::from(head[6]), head[7]);
+    read(0, &mut head).map_err(DecodeError::Read)?;
+    let name_len = head[7];
     let count = usize::from(get_u16(&head, 8));
-    let expected = header as u64 + count as u64 * point as u64 + 4;
     if &head[..4] != MAGIC
-        || head[4] < 1
-        || header < HEADER_V1
-        || point < POINT_V1
+        || head[4] != VERSION
+        || usize::from(head[5]) != HEADER
+        || usize::from(head[6]) != POINT
         || usize::from(name_len) > NAME
         || !(2..=POINTS).contains(&count)
-        || expected != u64::from(length)
+        || HEADER + count * POINT + 4 != length as usize
     {
         return Err(DecodeError::Damaged);
     }
-    read(0, &mut head[..header]).map_err(DecodeError::Read)?;
-    let mut crc = Crc32::new().update(&head[..header]);
+    let mut crc = Crc32::new().update(&head);
     let name = &head[10..10 + usize::from(name_len)];
     if !name.iter().all(|&b| name_byte(b)) {
         return Err(DecodeError::Damaged);
     }
     course.name[..name.len()].copy_from_slice(name);
     course.name_len = u32::from(name_len);
-    // Whole points per read, about a sector's worth; a point is at most
-    // 255 bytes.
+    // Whole points per read, about a sector's worth.
     let mut chunk = [0u8; SECTOR_SIZE];
-    let per = SECTOR_SIZE / point;
+    let per = SECTOR_SIZE / POINT;
     let mut index = 0;
     while index < count {
         let n = per.min(count - index);
-        let bytes = &mut chunk[..n * point];
-        read((header + index * point) as u32, bytes).map_err(DecodeError::Read)?;
+        let bytes = &mut chunk[..n * POINT];
+        read((HEADER + index * POINT) as u32, bytes).map_err(DecodeError::Read)?;
         crc = crc.update(bytes);
         for (slot, bytes) in course.points[index..index + n]
             .iter_mut()
-            .zip(bytes.chunks_exact(point))
+            .zip(bytes.chunks_exact(POINT))
         {
             let (lat, lon) = (get_u32(bytes, 0) as i32, get_u32(bytes, 4) as i32);
             *slot = Point::new(lat, lon).ok_or(DecodeError::Damaged)?;

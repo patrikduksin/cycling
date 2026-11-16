@@ -307,7 +307,7 @@ fn a_course_without_its_own_turns_reads_none() {
 }
 
 /// A turns file damaged in any way reads as none: a byte changed anywhere,
-/// cut short, or longer.
+/// cut short, longer, of another version or with an unknown flag.
 #[test]
 fn a_damaged_turns_file_reads_none() {
     let (course, turns) = uploaded(&extended(&ring(20.0, 270.0, 5.0), 0.0));
@@ -322,12 +322,20 @@ fn a_damaged_turns_file_reads_none() {
         let read = load(&mut region, key(&course), &mut list);
         assert_eq!(read, Ok(None), "byte {at}");
     }
-    for length in [0, 1, HEADER_V1, bytes.len() - 1] {
+    for length in [0, 1, HEADER, bytes.len() - 1] {
         assert_eq!(decoded(&bytes[..length], &mut list), None, "{length} bytes");
     }
     let mut longer = bytes.clone();
     longer.push(0);
     assert_eq!(decoded(&longer, &mut list), None);
+    for (at, value) in [(4, 2), (7, 2)] {
+        let mut other = bytes.clone();
+        other[at] = value;
+        let body = other.len() - 4;
+        let crc = firmware_services::checksum::crc32(&other[..body]);
+        other[body..].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decoded(&other, &mut list), None, "byte {at}");
+    }
 }
 
 /// Hostile files, random and mutated from a real one, some sealed with a
@@ -353,7 +361,7 @@ fn hostile_turns_files_never_panic() {
                 0 => bytes[at] = rng.below(256) as u8,
                 1 => bytes.truncate(at),
                 2 => bytes.insert(at, rng.below(256) as u8),
-                _ => bytes[at.min(HEADER_V1 - 1)] = rng.below(256) as u8,
+                _ => bytes[at.min(HEADER - 1)] = rng.below(256) as u8,
             }
         }
         if case % 2 == 0 && bytes.len() >= 4 {

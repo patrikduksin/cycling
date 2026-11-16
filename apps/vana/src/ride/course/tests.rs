@@ -131,37 +131,10 @@ fn a_course_file_round_trips() {
     course.set_name(b"Bend loop");
     let bytes = file(&course);
     assert_eq!(&bytes[..4], b"VCRS");
-    assert_eq!(
-        bytes.len(),
-        HEADER_V1 + course.points().len() * POINT_V1 + 4
-    );
+    assert_eq!(bytes.len(), HEADER + course.points().len() * POINT + 4);
     let back = decoded(&bytes).unwrap();
     assert!(same(&course, &back));
     assert_eq!(back.name(), "BEND LOOP");
-}
-
-/// A later version may lengthen the header and each point; this reader
-/// takes the fields it knows.
-#[test]
-fn a_later_version_with_longer_headers_and_points_still_reads() {
-    let mut course = built(square(500.0, 25.0));
-    course.set_name(b"LATER");
-    let v1 = file(&course);
-    let n = course.points().len();
-    let mut v2 = Vec::new();
-    v2.extend_from_slice(&v1[..HEADER_V1]);
-    v2[4] = 2;
-    v2[5] = (HEADER_V1 + 6) as u8;
-    v2[6] = (POINT_V1 + 4) as u8;
-    v2.extend_from_slice(&[9; 6]);
-    for i in 0..n {
-        let at = HEADER_V1 + i * POINT_V1;
-        v2.extend_from_slice(&v1[at..at + POINT_V1]);
-        v2.extend_from_slice(&[0xee; 4]);
-    }
-    let crc = firmware_services::checksum::crc32(&v2);
-    v2.extend_from_slice(&crc.to_le_bytes());
-    assert!(same(&course, &decoded(&v2).unwrap()));
 }
 
 #[test]
@@ -171,16 +144,21 @@ fn files_that_are_not_courses_read_as_damaged() {
     let mut too_many = good.clone();
     put_u16(&mut too_many, 8, (POINTS + 1) as u16);
     let mut off_earth = good.clone();
-    put_u32(&mut off_earth, HEADER_V1, 900_000_001);
+    put_u32(&mut off_earth, HEADER, 900_000_001);
     let body = off_earth.len() - 4;
     let crc = firmware_services::checksum::crc32(&off_earth[..body]);
     off_earth[body..].copy_from_slice(&crc.to_le_bytes());
     let mut far_south = good.clone();
-    put_u32(&mut far_south, HEADER_V1, i32::MIN as u32);
+    put_u32(&mut far_south, HEADER, i32::MIN as u32);
     let mut foreign = good.clone();
     foreign[0] = b'X';
     let mut old = good.clone();
     old[4] = 0;
+    let mut later = good.clone();
+    later[4] = 2;
+    let body = later.len() - 4;
+    let crc = firmware_services::checksum::crc32(&later[..body]);
+    later[body..].copy_from_slice(&crc.to_le_bytes());
     for bytes in [
         &good[..10],
         &too_many,
@@ -188,6 +166,7 @@ fn files_that_are_not_courses_read_as_damaged() {
         &far_south,
         &foreign,
         &old,
+        &later,
         &good[..good.len() - 1],
     ] {
         assert_eq!(decoded(bytes).err(), Some(DecodeError::Damaged));
@@ -262,7 +241,7 @@ fn a_damaged_file_or_a_missing_store_says_so() {
     let mut region = formatted();
     let course = built(square(300.0, 10.0));
     let mut bytes = file(&course);
-    bytes[HEADER_V1 + 3] ^= 0x40;
+    bytes[HEADER + 3] ^= 0x40;
     put(&mut region, "course.dat", &bytes);
     let mut back = built(square(100.0, 10.0));
     assert_eq!(load(&mut region, &mut back), Err(Error::Damaged));

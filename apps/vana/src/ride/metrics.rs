@@ -125,6 +125,7 @@ pub struct Speed {
     epoch: Option<Epoch>,
     value: Option<u32>,
     count_interval_ms: u64,
+    lost_since_count: bool,
     /// The wheel has stood so long that its last revolution is no reference.
     standing: bool,
     received: u64,
@@ -139,6 +140,7 @@ impl Default for Speed {
             epoch: None,
             value: None,
             count_interval_ms: 0,
+            lost_since_count: false,
             standing: false,
             received: 0,
         }
@@ -178,6 +180,7 @@ impl Speed {
         };
         let heard_ms = self.received;
         let heard_stopped = self.value(heard_ms) == Some(0);
+        self.lost_since_count |= current.received_ms.saturating_sub(heard_ms) > DROPOUT_MS;
         self.received = current.received_ms;
         if let Some(previous) = self.previous {
             let dt = current.event_time.wrapping_sub(previous.event_time);
@@ -201,9 +204,7 @@ impl Speed {
                 self.standing = repeat;
             } else if dt != 0 && dr != 0 {
                 let speed = u64::from(dr) * u64::from(self.wheel_mm) * 1024 / u64::from(dt);
-                let heard_rolling_without_loss =
-                    !heard_stopped && current.received_ms.saturating_sub(heard_ms) <= DROPOUT_MS;
-                if heard_rolling_without_loss {
+                if !heard_stopped && !self.lost_since_count {
                     self.count_interval_ms =
                         (u64::from(dt) * 1000 / 1024).min(COUNT_INTERVAL_MAX_MS);
                 }
@@ -214,6 +215,7 @@ impl Speed {
             }
         }
         self.previous = Some(current);
+        self.lost_since_count = false;
     }
 
     /// The wheel speed now, in mm/s, never more than one circumference per the
@@ -906,6 +908,45 @@ mod tests {
                 heard.then(|| packet(count.wrapping_mul(256), count, now, 0))
             },
             30_000,
+        );
+        let [(paused, Pause)] = calls[..] else {
+            panic!("{calls:?}");
+        };
+        assert!(paused - last_count_ms <= 4250, "{calls:?}");
+    }
+    #[test]
+    fn a_stop_after_a_dropout_and_one_repeat_pauses_as_soon_as_without_one() {
+        use crate::ride::auto::Decision::Pause;
+        let last_count_ms = 12_750;
+        let calls = auto_calls(
+            |now| {
+                let count = match now {
+                    0..10_000 => now / 250,
+                    10_000..12_500 => return None,
+                    12_500 => 39,
+                    _ => last_count_ms / 250,
+                } as u16;
+                Some(packet(count.wrapping_mul(256), count, now, 0))
+            },
+            30_000,
+        );
+        let [(paused, Pause)] = calls[..] else {
+            panic!("{calls:?}");
+        };
+        assert!(paused - last_count_ms <= 4250, "{calls:?}");
+    }
+    #[test]
+    fn a_sensor_that_counts_less_often_than_the_cap_still_pauses_soon_after_it_stops() {
+        use crate::ride::auto::Decision::Pause;
+        let interval_ms = 3000;
+        let last_count_ms = 10 * interval_ms;
+        let calls = auto_calls(
+            |now| {
+                let batches = (now.min(last_count_ms) / interval_ms) as u16;
+                let event_time = batches.wrapping_mul((interval_ms * 1024 / 1000) as u16);
+                Some(packet(event_time, batches.wrapping_mul(6), now, 0))
+            },
+            60_000,
         );
         let [(paused, Pause)] = calls[..] else {
             panic!("{calls:?}");

@@ -1087,6 +1087,125 @@ impl Sim {
     }
 
     /// Rides committed to media, decoded by VANA's journal format.
+    /// Leave `store` as another version of the firmware would have written
+    /// it: the current format with another version byte, resealed. Stores:
+    /// `settings`, `internal`, `table`, `rides`, `files`, `records`,
+    /// `traces`, `terrain`. Cut the power afterwards, so the device reads it.
+    pub fn make_foreign(&mut self, store: &str) {
+        use device_api::bulk::ReadWrite;
+        use device_api::storage::{OwnedFlash, Region};
+        use firmware_services::volume::{self, Volume};
+        self.note(NoteKind::Device, format!("{store} of another version"));
+        let mut sector = [0u8; 512];
+        let mut reseal =
+            |media: &mut dyn FnMut(bool, u64, &mut [u8; 512]), at: u64, byte: usize| {
+                media(false, at, &mut sector);
+                sector[byte] = 1;
+                let crc = firmware_services::checksum::crc32(&sector[..508]);
+                sector[508..].copy_from_slice(&crc.to_le_bytes());
+                media(true, at, &mut sector);
+            };
+        let volume = match store {
+            "settings" => {
+                let mut journal = firmware_services::storage::Journal::new(
+                    self.device.media.clone(),
+                    Region::Configuration,
+                );
+                journal.save(b"another version").expect("the journal saves");
+                return;
+            }
+            "internal" => {
+                self.device
+                    .media
+                    .program(Region::Data, 0, b"RIDE\x01\0\0\0")
+                    .expect("the journal programs");
+                return;
+            }
+            "records" => {
+                self.put_file(vana::ride::bests::STAMP.0, b"VBST\x01 another version");
+                return;
+            }
+            "table" => {
+                self.init_volumes();
+                let mut bulk = self.device.host_bulk();
+                for copy in 0..2 {
+                    reseal(
+                        &mut |write, at, sector| {
+                            if write {
+                                bulk.owned_write(at, sector).expect("written")
+                            } else {
+                                bulk.owned_read(at, sector).expect("read")
+                            }
+                        },
+                        copy,
+                        16,
+                    );
+                }
+                return;
+            }
+            "rides" => {
+                self.format_rides();
+                volume::RIDES
+            }
+            "files" => {
+                self.format_files();
+                volume::FILES
+            }
+            "traces" => {
+                self.format_store();
+                volume::STORE
+            }
+            "terrain" => {
+                self.install_terrain(b"CHILE-TERRAIN-V1", &[7; 600]);
+                volume::TERRAIN
+            }
+            other => panic!("no store named {other}"),
+        };
+        let table = self.init_volumes();
+        let extent = table.find(&volume).expect("the volume");
+        let mut bulk = self.device.host_bulk();
+        let mut media = Volume::new(&mut bulk, extent);
+        let (copies, byte) = match store {
+            "rides" => ([0, 1], 5),
+            "terrain" => ([0, 1], 16),
+            _ => ([0, 32], 16),
+        };
+        for copy in copies {
+            reseal(
+                &mut |write, at, sector| {
+                    if write {
+                        media.owned_write(at, sector).expect("written")
+                    } else {
+                        media.owned_read(at, sector).expect("read")
+                    }
+                },
+                copy,
+                byte,
+            );
+        }
+    }
+
+    /// Start an empty ride log in RIDES, as `RIDE BULK INIT` would.
+    pub fn format_rides(&mut self) {
+        use firmware_services::volume::{self, Volume};
+        let table = self.init_volumes();
+        let mut sector = [0u8; 512];
+        let mut bulk = self.device.host_bulk();
+        let mut rides = Volume::new(&mut bulk, table.find(&volume::RIDES).expect("RIDES"));
+        let initial = vana::ride::bulk::encode_catalog(&vana::ride::log::Catalog {
+            next_ride_id: 1,
+            ..Default::default()
+        });
+        firmware_services::sector_log::format(
+            &mut rides,
+            vana::ride::bulk::TAG,
+            1,
+            &initial,
+            &mut sector,
+        )
+        .expect("the log formats");
+    }
+
     pub fn rides(&mut self) -> Vec<crate::rides::Ride> {
         crate::rides::read(&self.ride_media())
     }

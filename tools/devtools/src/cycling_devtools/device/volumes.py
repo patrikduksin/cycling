@@ -651,7 +651,12 @@ def main():
         if path is not None and not path.is_file():
             parser.error(f'{path} is not a file')
     result = run(args, selected_port(parser, args.port))
+    marks = result.pop('marks', None) if isinstance(result, dict) else None
     print(json.dumps(result, indent=2))
+    if marks is not None:
+        from cycling_devtools.device import trace_media
+
+        print(trace_media.marks_text(marks))
     if not isinstance(result, dict):
         return
     problems = [f'the device lost {h["records"]} record(s) from record {h["record"]}' for h in result.get('holes', [])]

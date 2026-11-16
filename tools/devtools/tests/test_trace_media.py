@@ -112,7 +112,7 @@ def header(pack=None):
 
 
 class TracePullTests(unittest.TestCase):
-    def pull(self, directory, export, pack=None, roots=(), device=None):
+    def pull(self, directory, export, pack=None, roots=(), device=None, marks='found nothing\n'):
         device = device or RidesDevice()
         if not device.rides and export.rides:
             device.rides = {int(export.store, 16): list(export.rides)}
@@ -124,6 +124,8 @@ class TracePullTests(unittest.TestCase):
             calls.append((command, *args))
             if command == 'media':
                 return header(pack)
+            if command == 'find':
+                return marks
             out = Path(args[2])
             calls.append(sorted(str(path.relative_to(out)) for path in out.rglob('*')))
             return f'origin {args[0].with_suffix(".origin")}\nfile bests.dat (revision 3): gone from the device\n'
@@ -162,9 +164,25 @@ class TracePullTests(unittest.TestCase):
             self.assertIn('files/workouts/tempo.vw', calls[2])
             self.assertEqual(result['rebuilt'], ['file bests.dat (revision 3): gone from the device'])
             self.assertEqual(result['origin'], str(directory / '000003-00000007.origin'))
+            self.assertEqual(result['marks'], [])
             self.assertNotIn('problems', result)
         self.assertNotIn('EXPORT SLOT 2', export.commands, 'stops at the slots the header names')
         self.assertFalse(any(word in ' '.join(export.commands) for word in ('CLEAR', 'INIT', 'PUT', 'DELETE')))
+
+    def test_the_pull_lists_the_marks_the_rider_made(self):
+        export = FakeExport([slot(0)], [slot(10)])
+        lines = [
+            '00:42.410 ride 00:35  mark        1 pressed 00:40.900 on ride/main',
+            '01:10.020 ride 01:02  mark        2 pressed 01:08.510 on ride/stats',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls = self.pull(Path(directory), export, marks='\n'.join(lines) + '\n')
+            self.assertIn(('find', Path(directory) / '000003-00000007.trace', 'mark'), calls)
+        self.assertEqual(result['marks'], lines)
+        self.assertEqual(
+            trace_media.marks_text(result['marks']), '\n'.join(['marks:', *(f'  {line}' for line in lines)])
+        )
+        self.assertEqual(trace_media.marks_text([]), 'marks: none')
 
     def test_a_ride_log_cleared_since_is_not_pulled_and_no_pack_is_linked(self):
         export = FakeExport([slot(0)], [slot(20)], store='00000000000000cd')

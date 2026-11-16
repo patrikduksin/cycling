@@ -443,6 +443,20 @@ class VolumesTests(unittest.TestCase):
         ):
             volumes.main()
 
+    def test_a_trace_pull_prints_its_result_then_the_marks(self):
+        mark = '00:42.410 ride 00:35  mark        1 pressed 00:40.900 on ride/main'
+        result = {'name': 'traces/0001', 'path': 'out.trace', 'marks': [mark]}
+        with (
+            mock.patch.object(sys, 'argv', ['volumes', 'trace-pull']),
+            mock.patch.object(volumes, 'selected_port', return_value='port'),
+            mock.patch.object(volumes, 'run', return_value=result),
+            mock.patch('builtins.print') as printed,
+        ):
+            volumes.main()
+        lines = [call.args[0] for call in printed.call_args_list]
+        self.assertNotIn('marks', lines[0])
+        self.assertEqual(lines[1], f'marks:\n  {mark}')
+
     def test_a_get_goes_on_after_each_hole_and_names_them_all(self):
         device = FakeDevice()
         trace = [bytes([i % 251]) * (486 - (i % 5) * 90) for i in range(40)]

@@ -425,6 +425,19 @@ class AbFlashTests(Workspace):
             self.assertTrue(end <= device.OWNED[0] or address >= device.OWNED[0] + device.OWNED[1])
             self.assertTrue(address >= device.SLOTS[0] or address in (0xD000, 0xE000))
 
+    def test_a_flash_that_changes_rides_or_settings_refuses_to_boot(self):
+        self.candidate(image())
+        original = self.flasher.write
+
+        def write(address, path):
+            original(address, path)
+            self.flasher.memory[device.OWNED[0]] ^= 1
+
+        self.flasher.write = write
+        with self.assertRaisesRegex(RuntimeError, 'changed the ride and settings reservations'):
+            self.main('flash')
+        self.assertEqual(self.selected(), 0)
+
     def test_invalid_missing_or_foreign_image_never_connects(self):
         bad = bytearray(image())
         bad[-1] ^= 1
@@ -457,7 +470,7 @@ class AbFlashTests(Workspace):
         self.assertEqual(self.selected(), 0)
         self.assertEqual(self.consoles, 1)
 
-    def test_older_firmware_without_slot_field_counts_as_booted(self):
+    def test_a_console_without_a_slot_field_counts_as_booted(self):
         self.candidate(image())
         self.booting = lambda slot: {'commit': 'abc'}
         self.assertIn('Running slot B per OTA selection', self.main('flash'))
@@ -575,37 +588,6 @@ class ReviewFixTests(Workspace):
             self.assertIsNone(REAL_CONSOLE_INFO(lambda: '/dev/gone', 0.05, Path(temp) / 'console.log'))
         self.assertGreaterEqual(opened.call_count, 1)
 
-    def test_restore_owned_puts_a_restore_snapshot_back_under_cycling(self):
-        self.main('stock', '--confirm-restore')
-        (snapshot,) = self.local.glob('owned-pre-restore-*.bin')
-        self.assertNotEqual(self.owned(), self.rides)
-        with self.assertRaisesRegex(RuntimeError, 'does not hold cycling firmware'):
-            self.main('restore-owned', str(snapshot))
-        self.candidate(image())
-        self.main('flash')
-        newer = self.owned()
-        writes = len(self.flasher.writes)
-        output = self.main('restore-owned', str(snapshot))
-        self.assertEqual(self.owned(), self.rides)
-        self.assertEqual(self.flasher.writes[writes:], [device.OWNED])
-        (before,) = self.local.glob('owned-before-restore-*.bin')
-        self.assertEqual(before.read_bytes(), newer)
-        self.assertIn('Rides and settings restored', output)
-
-    def test_restore_owned_refuses_foreign_or_wrong_size_snapshots(self):
-        outside = self.root / 'owned.bin'
-        outside.write_bytes(self.rides)
-        with self.assertRaisesRegex(RuntimeError, 'Snapshot must be a file under'):
-            self.main('restore-owned', str(outside))
-        short = self.local / 'short.bin'
-        short.write_bytes(b'\0' * 16)
-        self.candidate(image())
-        self.main('flash')
-        with self.assertRaisesRegex(RuntimeError, 'exactly'):
-            self.main('restore-owned', str(short))
-        with self.assertRaisesRegex(RuntimeError, 'needs a snapshot'):
-            self.main('restore-owned')
-
 
 class CrashJournalTests(Workspace):
     def test_a_written_crash_journal_never_blocks_or_meets_flash_rollback_and_stock(self):
@@ -649,19 +631,15 @@ class RollbackTests(Workspace):
 
 
 class StockTests(Workspace):
-    def test_full_restore_rewrites_differing_sectors_saves_cycling_data_and_resets(self):
+    def test_full_restore_rewrites_differing_sectors_and_resets(self):
         self.candidate(image(marker=1))
         self.main('flash')
         self.candidate(image(marker=2))
         self.main('flash')
         reboots = self.flasher.reboots
-        output = self.main('stock', '--confirm-restore')
+        self.main('stock', '--confirm-restore')
         self.assertEqual(bytes(self.flasher.memory), self.backup)
         self.assertEqual(self.flasher.reboots, reboots + 1)
-        snapshots = list(self.local.glob('owned-pre-restore-*.bin'))
-        self.assertEqual(len(snapshots), 1)
-        self.assertEqual(snapshots[0].read_bytes(), self.rides)
-        self.assertIn(str(snapshots[0]), output)
         self.assertFalse((self.local / 'restore-before.bin').exists())
         self.assertFalse((self.local / 'restore-after.bin').exists())
         # Bootloader sectors were identical, so they were never rewritten.

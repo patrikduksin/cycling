@@ -335,12 +335,6 @@ class Device:
         boot = self.read(0, 0x8000, 'bootloader-check.bin')
         require(sha(boot) == manifest['bootloader_region_sha256'], 'Bootloader changed since backup')
 
-    def snapshot_owned(self, prefix='owned-before'):
-        # A fresh read for this operation, never the original stock baseline.
-        name = f'{prefix}-{time.time_ns()}.bin'
-        self.read(*OWNED, name)
-        return OWNED[0], LOCAL / name
-
     def header(self, slot):
         header = self.read(SLOTS[slot], SECTOR, f'slot-{NAMES[slot].lower()}-header.bin')
         return header
@@ -441,41 +435,10 @@ class Device:
             state = 'it holds stock; confirm the screen'
         raise RuntimeError(f'Slot {NAMES[slot]} {problem}. Reselected slot {NAMES[previous]}; {state}. Logs: {LOCAL}')
 
-    def restore_owned(self, metadata, snapshot):
-        """Write a saved ride/settings snapshot back into the reservations under running cycling firmware."""
-        data = Path(snapshot).read_bytes()
-        require(len(data) == OWNED[1], f'Snapshot must be exactly {OWNED[1]:#x} bytes of rides and settings')
-        require(
-            self.contents(selected_slot(metadata)) == 'cycling',
-            'The selected slot does not hold cycling firmware; flash cycling before restoring rides and settings',
-        )
-        _, before = self.snapshot_owned('owned-before-restore')
-        print(f'Saved the current reservations to {before}; writing {snapshot}.', flush=True)
-        self.write(OWNED[0], Path(snapshot))
-        self.verify(OWNED[0], Path(snapshot))
-        after = self.read(*OWNED, 'owned-after-restore.bin')
-        require(after == data, 'Ride/settings readback does not match the snapshot')
-        (LOCAL / 'owned-after-restore.bin').unlink(missing_ok=True)
-        self.reboot()
-        print('Rides and settings restored and read back; watchdog reset sent so the firmware reloads them.')
-
     def restore(self, backup):
         """Write the verified backup over every differing sector, then read the whole flash back."""
         print('Reading the full 16 MiB flash before restore. This takes about two minutes.', flush=True)
         current = self.read(0, FLASH_SIZE, 'restore-before.bin')
-        snapshot = LOCAL / f'owned-pre-restore-{time.time_ns()}.bin'
-        snapshot.write_bytes(current[OWNED[0] : OWNED[0] + OWNED[1]])
-        print(
-            f'Saved current ride journal (offset 0, {RIDE_SIZE:#x} bytes) and settings '
-            f'(offset {RIDE_SIZE:#x}, {SETTINGS_SIZE:#x} bytes) from {OWNED[0]:#x} to {snapshot}',
-            flush=True,
-        )
-        print(
-            'The restore puts the backup bytes back into these reservations, so cycling firmware will not persist '
-            'settings or rides there until they are restored. After flashing cycling again, run: '
-            f'cycling restore-owned {snapshot}',
-            flush=True,
-        )
         plan = restore_plan(current, backup)
         print(f'Restoring {sum(length for _, length in plan) // SECTOR} differing sectors in {len(plan)} writes.')
         run = LOCAL / 'restore-run.bin'
@@ -491,7 +454,6 @@ class Device:
             (LOCAL / name).unlink(missing_ok=True)
         self.reboot()
         print('Full stock restore verified; watchdog reset sent. Stock can remove USB: confirm the screen.')
-        return snapshot
 
     def stock_select(self, metadata):
         """Light path: boot slot A only while it still holds the verified stock image."""
@@ -509,23 +471,18 @@ def confirm_restore(confirmed, stdin=None):
     stdin = sys.stdin if stdin is None else stdin
     require(stdin.isatty(), 'A full stock restore rewrites the whole 16 MiB flash; pass --confirm-restore')
     print('This rewrites the whole flash with the verified stock backup (eFuses untouched).')
-    print(
-        'Current cycling rides and settings are saved privately first. Type RESTORE to continue: ', end='', flush=True
-    )
+    print('Cycling rides and settings on the device are lost. Type RESTORE to continue: ', end='', flush=True)
     require(stdin.readline().strip() == 'RESTORE', 'Restore cancelled')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument(
-        'action', choices=['backup', 'flash', 'rollback', 'stock', 'stock-select', 'restore-owned', 'monitor']
-    )
+    parser.add_argument('action', choices=['backup', 'flash', 'rollback', 'stock', 'stock-select', 'monitor'])
     add_port_argument(parser)
     parser.add_argument('--seconds', type=int, default=15, help='monitor duration')
     parser.add_argument(
         '--boot-seconds', type=int, default=CONSOLE_SECONDS, help='console deadline before reselecting the old slot'
     )
-    parser.add_argument('snapshot', nargs='?', type=Path, help='restore-owned: a saved owned-*.bin snapshot')
     parser.add_argument('--confirm-restore', action='store_true', help='stock: skip the interactive confirmation')
     args = parser.parse_args()
     port = selected_port(parser, args.port)
@@ -541,12 +498,6 @@ def main():
     if args.action == 'flash':
         image = candidate.read_bytes()
         validate_cycling(image)
-    if args.action == 'restore-owned':
-        require(args.snapshot is not None, 'restore-owned needs a snapshot path')
-        require(
-            args.snapshot.resolve().is_relative_to(LOCAL.resolve()) and args.snapshot.is_file(),
-            f'Snapshot must be a file under {LOCAL}',
-        )
     if args.action == 'stock':
         confirm_restore(args.confirm_restore)
         manifest, backup = verified_backup()
@@ -564,11 +515,6 @@ def main():
     if args.action == 'stock-select':
         device.stock_select(metadata)
         return
-    if args.action == 'restore-owned':
-        device.restore_owned(metadata, args.snapshot)
-        info = console_info(resolve, args.boot_seconds, LOCAL / f'{time.time_ns()}-console.log')
-        print(f'Console answers INFO on slot {info.get("slot", "?")}.' if info else 'Console did not answer INFO.')
-        return
     running = selected_slot(metadata)
     other = 1 - running
     running_header = device.header(running)
@@ -584,10 +530,10 @@ def main():
             f'(held {target_contents}{note}). Rides and settings are preserved.',
             flush=True,
         )
-        owned_address, owned_before = device.snapshot_owned()
+        owned = device.flasher.digest(*OWNED)
         device.write(SLOTS[other], candidate)
         device.verify(SLOTS[other], candidate)
-        device.verify(owned_address, owned_before)
+        require(device.flasher.digest(*OWNED) == owned, 'The flash changed the ride and settings reservations')
     device.boot(
         metadata,
         other,

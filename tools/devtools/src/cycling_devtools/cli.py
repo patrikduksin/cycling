@@ -154,13 +154,8 @@ TASKS = [
     ),
     task(
         'stock',
-        'Restore the complete verified 16 MiB stock backup (confirmation required; saves cycling rides/settings first)',
+        'Restore the complete verified 16 MiB stock backup (confirmation required; cycling rides and settings are lost)',
         f'{DEV}device.firmware stock',
-    ),
-    task(
-        'restore-owned',
-        'Write a saved ride/settings snapshot back under running cycling firmware, with verified readback',
-        f'{DEV}device.firmware restore-owned',
     ),
     task(
         'stock-select',

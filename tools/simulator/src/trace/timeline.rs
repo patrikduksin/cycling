@@ -364,8 +364,8 @@ pub struct Timeline {
     pub passes: u64,
     /// The last pass's uptime.
     pub end_ms: u64,
-    /// The trace ends in a block that was cut short or failed its check.
-    pub end: Option<End>,
+    /// How the trace's events ended: whole, cut short or damaged.
+    pub end: End,
     /// UTC in ms at uptime zero, from the first GPS or Wi-Fi time.
     pub utc_at_boot_ms: Option<u64>,
     /// Stretches in which a sensor that had sent packets sent none, in
@@ -537,7 +537,7 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         boot: header.boot,
         passes: reader.passes,
         end_ms: reader.now,
-        end: events.end(),
+        end: events.end().unwrap_or(End::Complete),
         entries: reader.entries,
         clock: reader.clock,
         utc_at_boot_ms: reader.utc_at_boot_ms,

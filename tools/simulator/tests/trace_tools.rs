@@ -1175,6 +1175,6 @@ fn a_damaged_block_ends_the_timeline_as_corrupt() {
     let header = 6 + usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));
     bytes[header + 2] ^= 0xff;
     let timeline = read(&bytes).unwrap();
-    assert_eq!(timeline.end, Some(firmware_services::trace::End::Corrupt));
+    assert_eq!(timeline.end, firmware_services::trace::End::Corrupt);
     assert!(timeline.entries.is_empty());
 }

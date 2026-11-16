@@ -274,9 +274,9 @@ fn header(path: &Path, timeline: &Timeline, media: &Media) -> String {
         duration(timeline.end_ms),
         timeline.passes,
         match timeline.end {
-            Some(End::Torn) => "torn: the last block was cut short",
-            Some(End::Corrupt) => "corrupt: a damaged block and everything after it were dropped",
-            _ => "complete",
+            End::Complete => "complete",
+            End::Torn => "torn: the last block was cut short",
+            End::Corrupt => "corrupt: a damaged block and everything after it were dropped",
         },
         match media {
             Media::Saved => "saved beside it (.origin)".into(),

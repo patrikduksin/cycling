@@ -30,6 +30,13 @@ let
   # environment; tools/devtools/src/cycling_devtools/cli.py owns the tasks.
   cycling = pkgs.writeShellScriptBin "cycling" ''
     root=$(git rev-parse --show-toplevel) || exit
+    # Agents query traces constantly; starting Python under load would take
+    # most of a second. The trace and replay tasks in cli.py run the same.
+    case "''${1:-}:''${2:-}" in
+      trace:pull | trace:-- | replay:--) ;;
+      trace:*) cd "$root" && exec bash tools/simulator/trace.sh "''${@:2}" ;;
+      replay:*) cd "$root" && exec bash tools/simulator/trace.sh "$@" ;;
+    esac
     exec uv run --project "$root/tools/devtools" --locked python -m cycling_devtools.cli "$@"
   '';
   gatedGh = pkgs.writeShellScriptBin "gh" ''

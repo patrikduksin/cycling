@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from cycling_devtools import cli
 from cycling_devtools.workspace import ROOT
 
 LAUNCHER = ROOT / 'tools' / 'simulator' / 'trace.sh'
@@ -127,6 +128,14 @@ class TraceLauncherTests(unittest.TestCase):
             self.assertEqual(self.run_trace(self.repo, 'summary'), f'built {commits[-1]} v{n}: summary')
         self.assertEqual(len(self.built()), 7)
         self.assertEqual(sorted(p.name for p in self.cache().iterdir()), sorted(commits[-5:]))
+
+
+class RoutingTests(unittest.TestCase):
+    def test_the_cycling_command_runs_trace_queries_with_the_launcher_the_task_runner_runs(self):
+        launcher = cli.TRACE.removeprefix('bash ')
+        self.assertTrue((ROOT / launcher).is_file())
+        shell = (ROOT / 'nix' / 'shell.nix').read_text()
+        self.assertEqual(shell.count(f'exec bash {launcher} '), 2, 'trace and replay in nix/shell.nix')
 
 
 if __name__ == '__main__':

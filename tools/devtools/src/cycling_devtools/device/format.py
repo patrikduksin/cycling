@@ -1,19 +1,21 @@
 """Report what each of VANA's stores holds, or format them all.
 
     cycling format            every store: current, blank, foreign or unusable
-    cycling format --confirm  erase the rides, the traces, the settings and the files, then wait for the restart
+    cycling format --confirm  erase the rides, the traces, the files and the settings, then wait for the restart
 
 A store written by another firmware version reads `foreign`: the device keeps it and offers FORMAT on its
-screen at boot. `--confirm` runs the same wipe from here, foreign data or not. The terrain pack is kept
-unless the volume table is not one this version reads, or the pack itself is of another version.
+screen at boot. `--confirm` runs the same wipe from here, foreign data or not. It keeps the terrain pack
+under a volume table of this version, unless the pack itself is of another version; any other table is
+replaced, and the pack goes with it.
 """
 
 import argparse
+import contextlib
 import json
 import time
 
 from cycling_devtools.device.port import add_port_argument, selected_port
-from cycling_devtools.harness.base import reopen
+from cycling_devtools.harness.base import poll_across_resets
 from cycling_devtools.terminal.usb import UsbConnection
 from cycling_devtools.workspace import ROOT, private_path
 
@@ -27,29 +29,25 @@ def health(connection):
     return dict(field.split('=', 1) for field in reply['data'].split())
 
 
-def wait_for_restart(connection, sleep):
-    try:
-        while (state := health(connection)['state']) == 'running':
-            sleep(0.5)
-    except OSError, TimeoutError:
-        return 'done'
-    return state
+def finished(connection):
+    """Done once the wipe failed, or the restarted device has read every store."""
+    stores = health(connection)
+    state = stores['state']
+    settled = state not in ('running', 'done') and 'unread' not in stores.values()
+    return state == 'failed' or settled, stores
 
 
-def wipe(port, log_dir, sleep=time.sleep):
-    with UsbConnection(port, log_dir / f'usb-{time.time_ns()}.log') as connection:
+def wipe(port, log_dir):
+    with contextlib.ExitStack() as opened:
+        connection = opened.enter_context(UsbConnection(port, log_dir / f'usb-{time.time_ns()}.log'))
         reply = connection.terminal_command('FORMAT CONFIRM')
         if reply['status'] != 'ACCEPTED':
             raise RuntimeError(f'FORMAT CONFIRM: {reply["status"]} {reply["data"]}')
-        state = wait_for_restart(connection, sleep)
-    if state == 'failed':
+        connection, after = poll_across_resets(connection, port, log_dir, 'format', RESTART_S, finished)
+        opened.push(connection)
+    if after['state'] == 'failed':
         raise RuntimeError('the wipe failed; power the device off and on, then format again')
-    connection = reopen(port, log_dir, 'after-format', RESTART_S)
-    try:
-        after = health(connection)
-    finally:
-        connection.__exit__(None, None, None)
-    left = sorted(name for name, value in after.items() if value in ('foreign', 'unread'))
+    left = sorted(name for name, value in after.items() if value == 'foreign')
     if left:
         raise RuntimeError(f'still not formatted after the restart: {", ".join(left)}')
     return after

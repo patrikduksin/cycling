@@ -24,6 +24,7 @@ jobs:
           persist-credentials: false
       - uses: cachix/install-nix-action@v31.11.5
       - run: nix develop -c cycling test
+      - run: nix develop -c cycling test-slow
       - run: nix develop -c cycling check
       - run: nix develop -c cycling simulate
       - run: nix develop -c cycling harness-virtual

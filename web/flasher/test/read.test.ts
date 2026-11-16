@@ -24,6 +24,23 @@ describe('read', () => {
     expect(md5Hex(assembled)).toBe(device.flashMd5(0x8000, 0x10000))
   })
 
+  test('a read that ends at the last byte of flash matches it and the chip digest', async () => {
+    const device = sim({ flash: noise(FLASH_BYTES, 11) })
+    const size = READ_PIECE_BYTES * 2 + 100
+    const address = FLASH_BYTES - size
+    const { assembled, digest } = valueOf(
+      await session(device, s =>
+        Effect.all({
+          assembled: readAll(s, address, size),
+          digest: s.digest({ address, size }),
+        }),
+      ),
+    )
+    const expected = device.flashMd5(address, size)
+    expect(md5Hex(assembled)).toBe(expected)
+    expect(digest).toBe(expected)
+  })
+
   test('emits each verified piece, then its progress, in order', async () => {
     const device = sim({ flash: noise(FLASH_BYTES, 2) })
     const size = READ_PIECE_BYTES * 2 + 100

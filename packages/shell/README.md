@@ -20,14 +20,14 @@ The application runtime remains in VANA. Composition coordinates it with the
 shell; there is no generic application framework. Keep device imports and cycling
 profile interpretation out of this crate.
 
-Settings version 6 adds a small application area. The shell bounds its length
+Settings version 6 has a small application area. The shell bounds its length
 and carries its bytes through every save without interpreting them; the
 application owns their schema, versioning and recovery (VANA stores its training
 profile and saved ANT sensors there, see `apps/vana/src/app/preferences.rs`).
 
-The settings format includes the BLE profile selector for compatibility. Retain
-its bytes and migration behavior even though VANA interprets the selection; moving
-it requires an explicit format migration. Public settings and diagnostic fields
+The settings format includes the BLE profile selector. Retain its bytes even
+though VANA interprets the selection; moving it changes the format and bumps the
+settings version. Public settings and diagnostic fields
 remain integration points; prefer operations that keep their invariants with the
 shell when changing those interfaces.
 

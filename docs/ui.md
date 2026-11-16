@@ -610,8 +610,7 @@ three averages share the unit AVG, because the half-width slot has no room for
 more, and their colour tells them apart (`POWER`, `HEART`, `SPEED`). A count
 past 9999 KCAL reads in thousands ("10K"), so a number is never cut off. A
 reading with no data yet shows `--`. The choice is two bytes of VANA's preference
-record from version 8, and the display mode's byte follows them from version 9
-(`app::preferences`); older records load with the defaults.
+record, and the display mode's byte follows them (`app::preferences`).
 
 RIDE PAGES (STATS, LAP, CLIMB, MAP) lists one row per optional ride page. The ride screen's page dots
 count the pages that are on, and a page that is off never takes a dot, a MOVE

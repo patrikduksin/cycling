@@ -13,16 +13,16 @@ const LENGTH: usize = layout::APP + APP_CAPACITY;
 /// Bytes reserved for the application's own versioned preference record.
 pub const APP_CAPACITY: usize = 96;
 
-/// Byte offsets of the persisted settings record. Older versions are prefixes
-/// of this layout; text fields are length-prefixed and zero-padded, and every
-/// unused byte must stay zero. Multi-byte fields are little-endian.
+/// Byte offsets of the persisted settings record. Text fields are
+/// length-prefixed and zero-padded, and every unused byte must stay zero.
+/// Multi-byte fields are little-endian.
 mod layout {
     pub const VERSION_BYTE: usize = 7;
     pub const BRIGHTNESS: usize = 8;
     pub const DIM_TIMEOUT: usize = 9;
     pub const DIM_BRIGHTNESS: usize = 11;
     pub const TIMEZONE: usize = 12;
-    /// Always zero; terminates version 4 records.
+    /// Always zero.
     pub const RESERVED: usize = 14;
     pub const WIFI: usize = 15;
     pub const SSID_LEN: usize = 16;
@@ -37,14 +37,9 @@ mod layout {
     pub const BLE_ADDRESS: usize = BLE_ADDRESS_KIND + 1;
     pub const BLE_SERVICE: usize = BLE_ADDRESS + 6;
     pub const BLE_CHARACTERISTIC: usize = BLE_SERVICE + 2;
-    /// Terminates version 5 records.
     pub const APP_LEN: usize = BLE_CHARACTERISTIC + 2;
     pub const APP: usize = APP_LEN + 1;
 }
-const V2_LENGTH: usize = 10;
-const V3_LENGTH: usize = 13;
-const V4_LENGTH: usize = layout::RESERVED + 1;
-const V5_LENGTH: usize = layout::APP_LEN;
 
 /// Application-owned preference bytes the shell stores without interpreting.
 /// The application chooses their schema, versioning and recovery; the shell
@@ -227,129 +222,84 @@ impl Settings {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Source {
     Current,
-    LegacyDefaults,
-    Migrated,
     Missing,
-    Malformed,
-    Unsupported,
+    /// Another version, or damaged: kept, never overwritten unasked.
+    Foreign,
 }
 
 pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
-    use layout::*;
     let Some(payload) = payload else {
         return (Settings::default(), Source::Missing);
     };
-    if payload == b"cycling\x01" {
-        return (Settings::default(), Source::LegacyDefaults);
+    match decode_current(payload) {
+        Some(settings) => (settings, Source::Current),
+        None => (Settings::default(), Source::Foreign),
     }
-    if !payload.starts_with(PREFIX) || payload.len() < 8 {
-        return (Settings::default(), Source::Malformed);
+}
+
+fn decode_current(payload: &[u8]) -> Option<Settings> {
+    use layout::*;
+    if payload.len() != LENGTH
+        || !payload.starts_with(PREFIX)
+        || payload[VERSION_BYTE] != VERSION
+        || payload[RESERVED] != 0
+    {
+        return None;
     }
-    let version = payload[VERSION_BYTE];
-    let length = payload.len();
-    let settings = match version {
-        2 if length == V2_LENGTH && payload[V2_LENGTH - 1] == 0 => {
-            return match Settings::new(payload[BRIGHTNESS]) {
-                Some(settings) => (settings, Source::Migrated),
-                None => (Settings::default(), Source::Malformed),
-            };
-        }
-        3 if length == V3_LENGTH && payload[V3_LENGTH - 1] == 0 => {
-            return match Settings::with_idle(
-                payload[BRIGHTNESS],
-                get_u16(payload, DIM_TIMEOUT),
-                payload[DIM_BRIGHTNESS],
-            ) {
-                Some(settings) => (settings, Source::Migrated),
-                None => (Settings::default(), Source::Malformed),
-            };
-        }
-        4 | 5 | VERSION
-            if ((version == 4 && length == V4_LENGTH)
-                || (version == 5 && length == V5_LENGTH)
-                || (version == VERSION && length == LENGTH))
-                && payload[RESERVED] == 0 =>
-        {
-            Settings::with_values(
-                payload[BRIGHTNESS],
-                get_u16(payload, DIM_TIMEOUT),
-                payload[DIM_BRIGHTNESS],
-                get_u16(payload, TIMEZONE) as i16,
-            )
-        }
-        4 | 5 | VERSION => None,
-        _ => return (Settings::default(), Source::Unsupported),
-    };
-    match settings {
-        Some(mut settings) => {
-            if version == 4 {
-                return (settings, Source::Migrated);
+    let mut settings = Settings::with_values(
+        payload[BRIGHTNESS],
+        get_u16(payload, DIM_TIMEOUT),
+        payload[DIM_BRIGHTNESS],
+        get_u16(payload, TIMEZONE) as i16,
+    )?;
+    match payload[WIFI] {
+        0 => {
+            if payload[SSID_LEN..BLE].iter().any(|b| *b != 0) {
+                return None;
             }
-            let malformed = || (Settings::default(), Source::Malformed);
-            match payload[WIFI] {
-                0 => {
-                    if payload[SSID_LEN..BLE].iter().any(|b| *b != 0) {
-                        return malformed();
-                    }
-                }
-                kind @ (1 | 2) => {
-                    let (Some(ssid), Some(password)) = (
-                        text(payload, SSID_LEN, PASSWORD_LEN),
-                        text(payload, PASSWORD_LEN, BLE),
-                    ) else {
-                        return malformed();
-                    };
-                    settings.wifi =
-                        device_api::connectivity::WifiConfig::new(ssid, password, kind == 2);
-                    if settings.wifi.is_none() {
-                        return malformed();
-                    }
-                }
-                _ => return malformed(),
-            }
-            match payload[BLE] {
-                0 => {
-                    if payload[BLE_PROFILE..APP_LEN].iter().any(|b| *b != 0) {
-                        return malformed();
-                    }
-                }
-                1 => {
-                    let mut address = [0; 6];
-                    address.copy_from_slice(&payload[BLE_ADDRESS..BLE_SERVICE]);
-                    let address = match payload[BLE_ADDRESS_KIND] {
-                        0 if address == [0; 6] => None,
-                        1 => Some(address),
-                        _ => return malformed(),
-                    };
-                    let Some(name) = text(payload, BLE_NAME_LEN, BLE_ADDRESS_KIND)
-                        .and_then(device_api::connectivity::Text::new)
-                    else {
-                        return malformed();
-                    };
-                    if name.is_empty() && address.is_none() {
-                        return malformed();
-                    }
-                    settings.ble = Some(device_api::ble_transport::Selection {
-                        name,
-                        address,
-                        service: get_u16(payload, BLE_SERVICE),
-                        characteristic: get_u16(payload, BLE_CHARACTERISTIC),
-                    });
-                    settings.ble_profile = payload[BLE_PROFILE];
-                }
-                _ => return malformed(),
-            }
-            if version == 5 {
-                return (settings, Source::Migrated);
-            }
-            let Some(app) = text(payload, APP_LEN, LENGTH).and_then(AppPreferences::new) else {
-                return malformed();
-            };
-            settings.app = app;
-            (settings, Source::Current)
         }
-        None => (Settings::default(), Source::Malformed),
+        kind @ (1 | 2) => {
+            let ssid = text(payload, SSID_LEN, PASSWORD_LEN)?;
+            let password = text(payload, PASSWORD_LEN, BLE)?;
+            settings.wifi = Some(device_api::connectivity::WifiConfig::new(
+                ssid,
+                password,
+                kind == 2,
+            )?);
+        }
+        _ => return None,
     }
+    match payload[BLE] {
+        0 => {
+            if payload[BLE_PROFILE..APP_LEN].iter().any(|b| *b != 0) {
+                return None;
+            }
+        }
+        1 => {
+            let mut address = [0; 6];
+            address.copy_from_slice(&payload[BLE_ADDRESS..BLE_SERVICE]);
+            let address = match payload[BLE_ADDRESS_KIND] {
+                0 if address == [0; 6] => None,
+                1 => Some(address),
+                _ => return None,
+            };
+            let name = text(payload, BLE_NAME_LEN, BLE_ADDRESS_KIND)
+                .and_then(device_api::connectivity::Text::new)?;
+            if name.is_empty() && address.is_none() {
+                return None;
+            }
+            settings.ble = Some(device_api::ble_transport::Selection {
+                name,
+                address,
+                service: get_u16(payload, BLE_SERVICE),
+                characteristic: get_u16(payload, BLE_CHARACTERISTIC),
+            });
+            settings.ble_profile = payload[BLE_PROFILE];
+        }
+        _ => return None,
+    }
+    settings.app = text(payload, APP_LEN, LENGTH).and_then(AppPreferences::new)?;
+    Some(settings)
 }
 
 /// A length byte at `at`, then text that must fit before `end` with zero padding.
@@ -419,26 +369,25 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
-    fn current_legacy_missing_malformed_and_unsupported_are_safe() {
+    fn current_missing_and_foreign_are_told_apart() {
         let settings = Settings::new(75).unwrap();
         assert_eq!(
             decode(Some(&settings.encode())),
             (settings, Source::Current)
         );
-        assert_eq!(decode(Some(b"cycling\x01")).1, Source::LegacyDefaults);
         assert_eq!(decode(None).1, Source::Missing);
-        assert_eq!(decode(Some(b"garbage")).1, Source::Malformed);
-        assert_eq!(decode(Some(b"cycling\x07\x32\0")).1, Source::Unsupported);
-        assert_eq!(decode(Some(b"cycling\x02\x00\0")).1, Source::Malformed);
-        assert_eq!(decode(Some(b"cycling\x02\x65\0")).1, Source::Malformed);
-        assert_eq!(decode(Some(b"cycling\x02\x4b\0")).1, Source::Migrated);
-        let mut version_three = [0u8; 13];
-        version_three[..7].copy_from_slice(b"cycling");
-        version_three[7] = 3;
-        version_three[8] = 75;
-        version_three[9..11].copy_from_slice(&30u16.to_le_bytes());
-        version_three[11] = 10;
-        assert_eq!(decode(Some(&version_three)), (settings, Source::Migrated));
+        let mut older = settings.encode();
+        older[7] = 5;
+        for foreign in [
+            &b"garbage"[..],
+            b"cycling\x01",
+            b"cycling\x02\x4b\0",
+            b"cycling\x07\x32\0",
+            &older,
+            &older[..159],
+        ] {
+            assert_eq!(decode(Some(foreign)), (Settings::default(), Source::Foreign));
+        }
         assert!(settings.with_timezone(330).is_some());
         assert!(settings.with_timezone(331).is_none());
     }
@@ -471,30 +420,20 @@ pub(crate) mod tests {
             assert_eq!(updated.ble_profile, 1);
             assert_eq!(decode(Some(&updated.encode())).0, updated);
         }
-        let mut old = [0; 15];
-        old[..7].copy_from_slice(b"cycling");
-        old[7] = 4;
-        old[8] = 77;
-        old[9..11].copy_from_slice(&45u16.to_le_bytes());
-        old[11] = 12;
-        old[12..14].copy_from_slice(&(-180i16).to_le_bytes());
-        let (migrated, source) = decode(Some(&old));
-        assert_eq!(source, Source::Migrated);
-        assert_eq!(migrated, Settings::with_values(77, 45, 12, -180).unwrap());
     }
 
     #[test]
-    fn corrupt_connectivity_lengths_and_reserved_bytes_are_preserved_as_malformed() {
+    fn corrupt_connectivity_lengths_and_reserved_bytes_are_preserved_as_foreign() {
         let current = Settings::default().encode();
         for index in [15, 16, 49, 113, 114, 115, 148, 158, 159, 160, 255] {
             let mut payload = current;
             payload[index] = 255;
-            assert_eq!(decode(Some(&payload)).1, Source::Malformed);
+            assert_eq!(decode(Some(&payload)).1, Source::Foreign);
         }
     }
 
     #[test]
-    fn version_five_and_six_layouts_are_pinned_and_padding_must_be_zero() {
+    fn version_six_layout_is_pinned_and_padding_must_be_zero() {
         let mut settings = Settings::with_values(77, 0x0102, 12, -180).unwrap();
         settings.wifi =
             Some(device_api::connectivity::WifiConfig::new(b"ssid", b"password", false).unwrap());
@@ -505,8 +444,8 @@ pub(crate) mod tests {
             characteristic: 0x2a37,
         });
         settings.ble_profile = 3;
-        let mut expected = [0u8; 159];
-        expected[..8].copy_from_slice(b"cycling\x05");
+        let mut expected = [0u8; 256];
+        expected[..8].copy_from_slice(b"cycling\x06");
         expected[8] = 77;
         expected[9..11].copy_from_slice(&[2, 1]);
         expected[11] = 12;
@@ -524,12 +463,6 @@ pub(crate) mod tests {
         expected[149..155].copy_from_slice(&[1, 2, 3, 4, 5, 6]);
         expected[155..157].copy_from_slice(&[0x0d, 0x18]);
         expected[157..159].copy_from_slice(&[0x37, 0x2a]);
-        // Version 5 records stay readable, with no application preferences.
-        assert_eq!(decode(Some(&expected)), (settings, Source::Migrated));
-        let version_five = expected;
-        let mut expected = [0u8; 256];
-        expected[..159].copy_from_slice(&version_five);
-        expected[7] = 6;
         expected[159] = 3;
         expected[160..163].copy_from_slice(&[1, 0xd7, 0]);
         settings.app = AppPreferences::new(&[1, 0xd7, 0]).unwrap();
@@ -547,11 +480,11 @@ pub(crate) mod tests {
         ] {
             let mut payload = expected;
             payload[index] = value;
-            assert_eq!(decode(Some(&payload)).1, Source::Malformed, "{index}");
+            assert_eq!(decode(Some(&payload)).1, Source::Foreign, "{index}");
         }
         let mut anonymous = expected;
         anonymous[148] = 0;
-        assert_eq!(decode(Some(&anonymous)).1, Source::Malformed);
+        assert_eq!(decode(Some(&anonymous)).1, Source::Foreign);
         anonymous[149..155].fill(0);
         assert_eq!(decode(Some(&anonymous)).0.ble.unwrap().address, None);
         let mut unnamed = expected;
@@ -560,7 +493,7 @@ pub(crate) mod tests {
         assert_eq!(decode(Some(&unnamed)).1, Source::Current);
         unnamed[148] = 0;
         unnamed[149..155].fill(0);
-        assert_eq!(decode(Some(&unnamed)).1, Source::Malformed);
+        assert_eq!(decode(Some(&unnamed)).1, Source::Foreign);
     }
 
     #[test]
@@ -684,15 +617,10 @@ pub(crate) mod tests {
                 // Every byte of a current record is meaningful, so a damaged
                 // one reads only if it is exactly another valid record.
                 Source::Current => assert_eq!(decoded.encode()[..], payload[..], "seed {seed}"),
-                Source::Migrated => assert_eq!(
-                    decode(Some(&decoded.encode())),
-                    (decoded, Source::Current),
-                    "seed {seed}"
-                ),
-                Source::Malformed | Source::Unsupported => {
+                Source::Foreign => {
                     assert_eq!(decoded, Settings::default(), "seed {seed}")
                 }
-                Source::Missing | Source::LegacyDefaults => panic!("seed {seed}: {source:?}"),
+                Source::Missing => panic!("seed {seed}: {source:?}"),
             }
         }
     }

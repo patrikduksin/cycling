@@ -257,10 +257,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                 match value.source {
                     crate::preferences::Source::Current => "current",
                     crate::preferences::Source::Missing => "missing",
-                    crate::preferences::Source::Migrated => "migrated",
-                    crate::preferences::Source::LegacyDefaults => "legacy",
-                    crate::preferences::Source::Malformed => "malformed",
-                    crate::preferences::Source::Unsupported => "unsupported",
+                    crate::preferences::Source::Foreign => "foreign",
                 },
                 false,
             ),

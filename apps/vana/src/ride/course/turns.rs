@@ -42,7 +42,7 @@
 //! which make way for the rest.
 //! Distances along the course are u32 millimetres, saturating.
 use libm::{atan2f, fabsf, sqrtf, tanf};
-use spur::Spurs;
+pub(crate) use spur::Spurs;
 
 /// The course is read this often along it, at whole steps from its start,
 /// so a turn is found at the same place from wherever the rider is.
@@ -217,7 +217,7 @@ impl Turn {
     }
 }
 
-fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
+pub(crate) fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
     let (east, north) = (b.0 - a.0, b.1 - a.1);
     sqrtf(east * east + north * north)
 }
@@ -580,11 +580,10 @@ impl Scan {
         self.waiting
     }
 
-    /// Metres along the course to the middle of the chord it reads ahead
-    /// of the scan for spurs, which starts half a chord in; it has read the
-    /// course half a chord beyond.
-    pub(crate) fn along_m(&self) -> f32 {
-        self.spurs.along_m()
+    /// The point the chord it reads ahead of the scan for spurs heads for:
+    /// it has read the course no further.
+    pub(crate) fn reads_to(&self) -> usize {
+        self.spurs.reads_to()
     }
 
     #[cfg(test)]

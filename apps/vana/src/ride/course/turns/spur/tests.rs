@@ -1,8 +1,7 @@
 use super::super::tests::{Said, hairpin, join, line_of, path, ride_with, ring, turns_of};
 use super::super::{Kind, SCAN_STEPS, Scan, Side, TURNS, Turn, distance};
 use super::RETRACE_M;
-use crate::ride::course::Course;
-use crate::ride::course::stored::tests::{found, uploaded};
+use crate::ride::course::stored::tests::{found, found_along, unspurred, uploaded};
 use std::string::{String, ToString};
 use std::vec::Vec;
 use std::{format, vec};
@@ -371,22 +370,88 @@ impl Shape {
 }
 
 const DEPTHS: [f32; 8] = [10.0, 12.0, 20.0, 35.0, 60.0, 100.0, 145.0, 150.0];
-const DRIFTS: [f32; 6] = [0.5, 1.0, 1.5, 2.0, 2.5, RETRACE_M];
+/// The last as near `RETRACE_M` as an uploaded course's points, a 1e-7
+/// degree apart, can be sure to say.
+const DRIFTS: [f32; 6] = [0.5, 1.0, 1.5, 2.0, 2.5, RETRACE_M - 0.05];
 /// Spurs retraced exactly this deep are marked whatever their shape, as
 /// shallower and deeper ones, at the edges of what is a spur, may not be.
 const MARKED_M: core::ops::RangeInclusive<f32> = 20.0..=145.0;
 const DRIFTED_MARKED_M: core::ops::RangeInclusive<f32> = 20.0..=100.0;
+/// The first metres of a hook back towards the way in lie within
+/// `RETRACE_M` of it, and take the way back of the deepest past `SPUR_M`.
+const HOOKED_MARKED_M: core::ops::RangeInclusive<f32> = 20.0..=100.0;
+
+const BASE: (f32, f32) = (0.0, 300.0);
 
 fn shapes(drifts: &[f32]) -> Vec<Shape> {
-    let base = (0.0, 300.0);
+    let mut ons: Vec<(String, Vec<(f32, f32)>)> = vec![
+        ("straight on".to_string(), vec![(0.0, 700.0)]),
+        ("left at the base".to_string(), vec![(-400.0, 300.0)]),
+    ];
+    for jog in [10.0, 15.0, 25.0, 40.0, 60.0] {
+        let at = BASE.1 + jog;
+        let dogleg = vec![(0.0, at), (15.0, at), (15.0, 700.0)];
+        ons.push((format!("a {jog} m jog right"), dogleg));
+        ons.push((format!("left {jog} m on"), vec![(0.0, at), (-400.0, at)]));
+    }
     let ways_in = [
-        ("straight in", vec![(0.0, 0.0), base]),
+        ("straight in", vec![(0.0, 0.0), BASE]),
         (
             "a corner 25 m before",
-            vec![(-300.0, 275.0), (0.0, 275.0), base],
+            vec![(-300.0, 275.0), (0.0, 275.0), BASE],
         ),
-        ("a corner at the base", vec![(-300.0, 300.0), base]),
+        ("a corner at the base", vec![(-300.0, 300.0), BASE]),
     ];
+    let mut shapes = Vec::new();
+    for (in_name, way_in) in &ways_in {
+        for (on_name, on) in &ons {
+            shapes.extend(spurs_between(in_name, way_in, on_name, on, drifts));
+        }
+    }
+    shapes
+}
+
+/// km 87.2: in at 18 degrees, then a hook back towards the way in, 3.6 m
+/// off it at its first corner, a dogleg east and a left 150 m on, with
+/// each spur at its base retraced exactly.
+fn hooks() -> Vec<Shape> {
+    let from_base = |corners: &[(f32, f32)]| -> Vec<(f32, f32)> {
+        let at = |&(east, north): &(f32, f32)| (BASE.0 + east, BASE.1 + north);
+        corners.iter().map(at).collect()
+    };
+    let way_in = from_base(&[
+        (-90.0, -300.0),
+        (0.0, -30.0),
+        (4.0, -18.0),
+        (8.0, -6.0),
+        (0.0, 0.0),
+    ]);
+    let on = from_base(&[
+        (10.0, -3.0),
+        (12.0, 5.0),
+        (16.0, 14.0),
+        (27.0, 10.0),
+        (33.0, 10.0),
+        (33.0, 4.0),
+        (60.0, -4.0),
+        (80.0, -7.0),
+        (81.0, -1.0),
+        (115.0, 145.0),
+        (-185.0, 145.0),
+    ]);
+    let on_name = "a hook, a dogleg and a left 150 m on";
+    spurs_between("in at 18 degrees", &way_in, on_name, &on, &[0.0])
+}
+
+/// A spur of each way and depth, and way back `drifts` off, between
+/// `way_in` and `on`, where what is drawn is a dead end.
+fn spurs_between(
+    in_name: &str,
+    way_in: &[(f32, f32)],
+    on_name: &str,
+    on: &[(f32, f32)],
+    drifts: &[f32],
+) -> Vec<Shape> {
     let ways = [
         ("right", 90.0f32),
         ("left", -90.0),
@@ -394,40 +459,24 @@ fn shapes(drifts: &[f32]) -> Vec<Shape> {
         ("a V back left", -150.0),
         ("a V ahead", 30.0),
     ];
-    let mut ons: Vec<(String, Vec<(f32, f32)>)> = vec![
-        ("straight on".to_string(), vec![(0.0, 700.0)]),
-        ("left at the base".to_string(), vec![(-400.0, 300.0)]),
-    ];
-    for jog in [10.0, 15.0, 25.0, 40.0, 60.0] {
-        let at = base.1 + jog;
-        let dogleg = vec![(0.0, at), (15.0, at), (15.0, 700.0)];
-        ons.push((format!("a {jog} m jog right"), dogleg));
-        ons.push((format!("left {jog} m on"), vec![(0.0, at), (-400.0, at)]));
-    }
     let mut shapes = Vec::new();
-    for (in_name, way_in) in &ways_in {
-        for (way_name, degrees) in ways {
-            for depth in DEPTHS {
-                for (on_name, on) in &ons {
-                    for &drift in drifts {
-                        let a = degrees.to_radians();
-                        let shape = Shape {
-                            name: format!(
-                                "{in_name}, {depth} m {way_name} back {drift} m off, {on_name}"
-                            ),
-                            way_in: way_in.clone(),
-                            depth,
-                            tip: (
-                                base.0 + depth * libm::sinf(a),
-                                base.1 + depth * libm::cosf(a),
-                            ),
-                            drift,
-                            on: on.clone(),
-                        };
-                        if !shape.tangled() {
-                            shapes.push(shape);
-                        }
-                    }
+    for (way_name, degrees) in ways {
+        for depth in DEPTHS {
+            for &drift in drifts {
+                let a = degrees.to_radians();
+                let shape = Shape {
+                    name: format!("{in_name}, {depth} m {way_name} back {drift} m off, {on_name}"),
+                    way_in: way_in.to_vec(),
+                    depth,
+                    tip: (
+                        BASE.0 + depth * libm::sinf(a),
+                        BASE.1 + depth * libm::cosf(a),
+                    ),
+                    drift,
+                    on: on.to_vec(),
+                };
+                if !shape.tangled() {
+                    shapes.push(shape);
                 }
             }
         }
@@ -480,39 +529,45 @@ fn scanned(line: &[(f32, f32)]) -> (Vec<Turn>, f32) {
     (turns, scan.spurs_m())
 }
 
-/// The shapes, drawn a point every few metres, where a marked spur does
-/// not say what the course without it says, as scanned and, with `upload`,
-/// as found at upload; and how many were marked, as each `marked_m` deep
-/// is.
+/// Drawn a point every this many metres, or at the corners alone.
+const EVERY_M: [f32; 6] = [1.0, 3.0, 5.0, 8.0, 15.0, 10_000.0];
+
+/// The shapes, drawn a point every `every_m`, where a marked spur does not
+/// say what the course without it says, as scanned and as found along the
+/// track at upload; and how many each marked, as each `marked_m` deep is.
+/// The upload is held to what it says of the course without the points it
+/// reads past.
 fn unlike(
     shapes: Vec<Shape>,
     marked_m: core::ops::RangeInclusive<f32>,
-    upload: bool,
+    every_m: &[f32],
 ) -> (Vec<String>, usize) {
     let (mut failed, mut checked) = (Vec::new(), 0);
     for shape in shapes {
-        for step in [1.0, 3.0, 5.0, 8.0, 15.0, 10_000.0] {
+        for &step in every_m {
             let name = format!("{}, every {step} m", shape.name);
             let with = path(&shape.corners(true), step);
             let without = path(&shape.corners(false), step);
-            let (marked, spur_m) = scanned(&with);
-            if spur_m == 0.0 {
-                assert!(!marked_m.contains(&shape.depth), "unmarked: {name}");
-                continue;
-            }
-            checked += 1;
             let base_m = nearest(&without, shape.returns_to()).0;
             let drawn_m = length(&with) - length(&without);
-            let scan = as_without(&marked, &turns_of(&without), base_m, drawn_m);
-            let upload_unlike = upload && {
-                let ((kept_with, with, _), (kept_without, without, _)) =
-                    (found(&with), found(&without));
-                let kept_m = |course: &Course| length(&line_of(course));
-                let kept_spur_m = kept_m(&kept_with) - kept_m(&kept_without);
-                !as_without(&with, &without, base_m, kept_spur_m)
+            let (marked, scanned_m) = scanned(&with);
+            let (uploaded, uploaded_m) = found_along(&with);
+            for (path, spur_m) in [("scan", scanned_m), ("upload", uploaded_m)] {
+                assert!(
+                    spur_m > 0.0 || !marked_m.contains(&shape.depth),
+                    "unmarked on {path}: {name}"
+                );
+            }
+            checked += usize::from(scanned_m > 0.0) + usize::from(uploaded_m > 0.0);
+            let scan =
+                scanned_m == 0.0 || as_without(&marked, &turns_of(&without), base_m, drawn_m);
+            let upload = uploaded_m == 0.0 || {
+                let unspurred = unspurred(&with);
+                let base_m = nearest(&unspurred, shape.returns_to()).0;
+                as_without(&uploaded, &found_along(&unspurred).0, base_m, uploaded_m)
             };
-            if !scan || upload_unlike {
-                failed.push(format!("{name}: scan {scan}, upload {}", !upload_unlike));
+            if !scan || !upload {
+                failed.push(format!("{name}: scan {scan}, upload {upload}"));
             }
         }
     }
@@ -521,7 +576,21 @@ fn unlike(
 
 #[test]
 fn a_marked_spur_says_what_the_course_without_it_says() {
-    let (failed, checked) = unlike(shapes(&[0.0]), MARKED_M, true);
+    let (failed, checked) = unlike(shapes(&[0.0]), MARKED_M, &EVERY_M);
+    assert!(
+        failed.is_empty(),
+        "{} of {checked}:\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
+}
+
+/// Drawn at its corners: the scan reads a hook drawn a point every few
+/// metres as part of the spur's way back while it is within `RETRACE_M`
+/// of the way in.
+#[test]
+fn a_spur_before_a_hook_back_towards_the_way_in_says_what_the_course_without_it_says() {
+    let (failed, checked) = unlike(hooks(), HOOKED_MARKED_M, &[10_000.0]);
     assert!(
         failed.is_empty(),
         "{} of {checked}:\n{}",
@@ -531,8 +600,8 @@ fn a_marked_spur_says_what_the_course_without_it_says() {
 }
 
 #[test]
-fn a_spur_whose_way_back_comes_back_beside_its_base_scans_as_the_course_without_it() {
-    let (failed, checked) = unlike(shapes(&DRIFTS), DRIFTED_MARKED_M, false);
+fn a_spur_whose_way_back_comes_back_beside_its_base_says_what_the_course_without_it_says() {
+    let (failed, checked) = unlike(shapes(&DRIFTS), DRIFTED_MARKED_M, &EVERY_M);
     assert!(
         failed.is_empty(),
         "{} of {checked}:\n{}",

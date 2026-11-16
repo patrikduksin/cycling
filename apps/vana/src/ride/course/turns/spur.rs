@@ -173,7 +173,7 @@ struct Skip {
 /// Finds a course's spurs ahead of the scan, and reads the course to the
 /// scan without them.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Spurs {
+pub(crate) struct Spurs {
     behind: Cursor,
     ahead: Cursor,
     /// Metres along to the middle of the chord, and its way.
@@ -192,21 +192,29 @@ pub(super) struct Spurs {
 }
 
 impl Spurs {
-    /// Metres along the course to the middle of its chord; it has read the
-    /// course half a chord beyond.
-    pub(super) fn along_m(&self) -> f32 {
-        self.s.max(HALF_CHORD_M)
+    /// The point its chord heads for: it has read the course no further.
+    pub(crate) fn reads_to(&self) -> usize {
+        self.ahead.next
+    }
+
+    /// The points before this are in no spur it has yet to find.
+    pub(crate) fn settled(&self) -> usize {
+        self.trail.next
+    }
+
+    pub(crate) fn done(&self) -> bool {
+        self.done
     }
 
     pub(super) fn found_to(&self, m: f32) -> bool {
         self.done || m <= self.trail_m
     }
 
-    pub(super) fn oldest(&self) -> usize {
+    pub(crate) fn oldest(&self) -> usize {
         self.behind.next.min(self.trail.next).saturating_sub(1)
     }
 
-    pub(super) fn step(&mut self, len: usize, at: &impl Fn(usize) -> (f32, f32)) {
+    pub(crate) fn step(&mut self, len: usize, at: &impl Fn(usize) -> (f32, f32)) {
         if self.done {
             return;
         }
@@ -305,16 +313,21 @@ impl Spurs {
         self.count += 1;
     }
 
-    /// Point `k` of the course as the scan reads it, `at` the course.
-    pub(super) fn at(&self, at: &impl Fn(usize) -> (f32, f32), k: usize) -> (f32, f32) {
+    fn skip_of(&self, k: usize) -> Option<&Skip> {
         let skips = &self.skips[..self.count];
-        match skips
+        skips
             .iter()
             .find(|skip| (skip.first..skip.last).contains(&k))
-        {
-            Some(skip) => skip.base,
-            None => at(k),
-        }
+    }
+
+    /// Point `k` of the course as the scan reads it, `at` the course.
+    pub(super) fn at(&self, at: &impl Fn(usize) -> (f32, f32), k: usize) -> (f32, f32) {
+        self.skip_of(k).map_or_else(|| at(k), |skip| skip.base)
+    }
+
+    /// Whether the course read without its spurs has no point `k`.
+    pub(crate) fn skipped(&self, k: usize) -> bool {
+        self.skip_of(k).is_some()
     }
 
     /// `turn`, found on the course as the scan reads it, on the course.
@@ -344,7 +357,7 @@ impl Spurs {
     }
 
     /// The scan reads no point before `oldest` again.
-    pub(super) fn passed(&mut self, oldest: usize) {
+    pub(crate) fn passed(&mut self, oldest: usize) {
         let passed = self.skips[..self.count]
             .iter()
             .take_while(|skip| skip.last <= oldest)

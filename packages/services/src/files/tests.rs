@@ -276,6 +276,9 @@ fn foreign_directories_are_reported() {
     assert_eq!(format(&mut media, 2, &mut s), Err(Error::Foreign));
     assert_eq!(media.writes, before);
     assert_eq!(mount(&mut media, &mut s), Err(Error::Foreign));
+    erase(&mut media, &mut s).unwrap();
+    assert_eq!(mount(&mut media, &mut s), Err(Error::Uninitialized));
+    assert!(format(&mut media, 2, &mut s).unwrap().is_empty());
 }
 
 enum Op {

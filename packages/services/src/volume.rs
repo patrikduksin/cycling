@@ -10,8 +10,8 @@
 //! unchanged inside it, and no access through a volume can reach another
 //! volume or the table.
 //!
-//! Only [`create`], an explicit initialize, writes a table, and it refuses a
-//! table it does not understand. The default plan ends with `STORE`, which
+//! [`create`], an explicit initialize, writes a table and refuses one it does
+//! not understand. Only [`replace`] writes over a foreign table. The default plan ends with `STORE`, which
 //! takes the rest of the region.
 
 use crate::checksum::crc32;
@@ -309,6 +309,18 @@ pub fn create(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, 
     if let Layout::Table(table) = layout {
         return Ok(table);
     }
+    let table = plan(media.owned_info()?.sectors)?;
+    table.encode(sector);
+    for copy in [1, 0] {
+        media.owned_write(copy, sector)?;
+    }
+    Ok(table)
+}
+
+/// Write the default table over whatever the table sectors hold, a foreign
+/// table included. Copy 1 goes first: a region that read foreign still does
+/// until copy 0 is written too.
+pub fn replace(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, Error> {
     let table = plan(media.owned_info()?.sectors)?;
     table.encode(sector);
     for copy in [1, 0] {

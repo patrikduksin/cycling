@@ -421,6 +421,32 @@ pub fn format(
     lay_out(media, tag, epoch, sequence, initial, sector)
 }
 
+/// Zero both superblocks, whatever they hold, so the region reads as never
+/// formatted. Only this gets past a foreign superblock; [`format`] refuses one.
+pub fn erase(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<(), Error> {
+    sector.fill(0);
+    for copy in 0..2 {
+        media.owned_write(copy, sector)?;
+    }
+    Ok(())
+}
+
+/// Whether the superblocks name an epoch of `tag`, from two sector reads and
+/// no recovery: `false` on a region never formatted as a log.
+pub fn formatted(
+    media: &mut impl ReadWrite,
+    tag: &[u8; 16],
+    sector: &mut Sector,
+) -> Result<bool, Error> {
+    let capacity = capacity(media.owned_info()?.sectors)?;
+    let mut copies = [Replica::Invalid; 2];
+    for (index, copy) in copies.iter_mut().enumerate() {
+        media.owned_read(index as u64, sector)?;
+        *copy = super_copy(sector, tag, capacity);
+    }
+    Ok(choose(copies)?.is_some())
+}
+
 /// Start the epoch `store` of `generation`, as [`format`] would have, on a
 /// region that holds no log: for a host rebuilding the medium a recording
 /// started on. Writes `RING + 2` sectors.

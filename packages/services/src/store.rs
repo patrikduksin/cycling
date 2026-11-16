@@ -392,6 +392,16 @@ pub fn format(media: &mut impl ReadWrite, seed: u64, sector: &mut Sector) -> Res
     format_chunks(media, seed, CHUNK, sector)
 }
 
+/// Zero both header copies, whatever they hold, so the volume reads as never
+/// formatted. Only this gets past a foreign store; [`format`] refuses one.
+pub fn erase(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<(), Error> {
+    sector.fill(0);
+    for copy in 0..2 {
+        media.owned_write(base(copy), sector)?;
+    }
+    Ok(())
+}
+
 fn format_chunks(
     media: &mut impl ReadWrite,
     seed: u64,

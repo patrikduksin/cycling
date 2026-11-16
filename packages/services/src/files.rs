@@ -273,6 +273,16 @@ pub fn format(media: &mut impl ReadWrite, seed: u64, sector: &mut Sector) -> Res
     Ok(dir)
 }
 
+/// Zero both header copies, whatever they hold, so the volume reads as never
+/// formatted. Only this gets past a foreign directory; [`format`] refuses one.
+pub fn erase(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<(), Error> {
+    sector.fill(0);
+    for copy in 0..2 {
+        media.owned_write(base(copy), sector)?;
+    }
+    Ok(())
+}
+
 /// A store holding `files`, each `(name, revision, bytes)`, in slot order
 /// and under the id and generation a host names: for rebuilding the medium a
 /// recording started on. Writes copy A whatever the volume holds; extents

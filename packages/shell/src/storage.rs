@@ -36,7 +36,18 @@ impl<B: OwnedFlash> Store<B> {
 
     pub fn load(&mut self) -> Result<Loaded, Error<B::Error>> {
         let mut payload = [0u8; CAPACITY];
-        let record = self.journal.load(&mut payload)?;
+        let record = match self.journal.load(&mut payload) {
+            // A journal of another version: kept, like a record of one.
+            Err(firmware_services::storage::Error::UnrecognizedJournal) => {
+                return Ok(Loaded {
+                    settings: crate::preferences::Settings::default(),
+                    source: crate::preferences::Source::Foreign,
+                    sequence: None,
+                    length: 0,
+                });
+            }
+            record => record?,
+        };
         let bytes = record.map(|record| &payload[..record.length]);
         let (settings, source) = crate::preferences::decode(bytes);
         Ok(Loaded {
@@ -89,6 +100,21 @@ impl<B: OwnedFlash> Store<B> {
         settings.ble = current.ble;
         settings.ble_profile = current.ble_profile;
         self.save(settings)
+    }
+
+    /// FORMAT's first step: unless the settings already read foreign, save
+    /// a record no version reads. Until [`Self::erase`] completes, every boot
+    /// then finds foreign settings, wherever a FORMAT was cut.
+    pub fn condemn(&mut self) -> Result<(), Error<B::Error>> {
+        if self.load()?.source != crate::preferences::Source::Foreign {
+            self.journal.save(b"FORMAT")?;
+        }
+        Ok(())
+    }
+
+    /// FORMAT's last step: erase the journal, foreign or not.
+    pub fn erase(&mut self) -> Result<(), Error<B::Error>> {
+        Ok(self.journal.erase()?)
     }
 
     pub fn data(&mut self) -> RegionAccess<'_, B> {

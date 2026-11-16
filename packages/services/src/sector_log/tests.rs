@@ -477,6 +477,13 @@ fn lost_checkpoints_or_foreign_superblocks_are_kept_for_diagnosis() {
         Error::Foreign
     );
     assert_eq!(media.writes, 0);
+    assert_eq!(formatted(&mut media, TAG, &mut sector), Err(Error::Foreign));
+    erase(&mut media, &mut sector).unwrap();
+    assert_eq!(formatted(&mut media, TAG, &mut sector), Ok(false));
+    format(&mut media, TAG, 2, &[], &mut sector).unwrap();
+    assert_eq!(formatted(&mut media, TAG, &mut sector), Ok(true));
+    media.reboot();
+    assert!(recover(&mut media).unwrap().records.is_empty());
 
     // A region that grew at its end keeps the epoch and its capacity until
     // the next format; one that shrank may have lost records.

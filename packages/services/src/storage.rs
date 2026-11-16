@@ -136,6 +136,22 @@ impl<F: OwnedFlash> Journal<F> {
         Ok(record)
     }
 
+    /// Erase both sectors, whatever they hold. The newest record goes last,
+    /// so a cut never leaves an older record as the newest.
+    pub fn erase(&mut self) -> Result<(), Error<F::Error>> {
+        let last = match self.scan() {
+            Ok(Scan::Newest(sector, _)) => sector,
+            Ok(Scan::Free { .. }) | Err(Error::UnrecognizedJournal) => 1,
+            Err(error) => return Err(error),
+        };
+        for sector in [1 - last, last] {
+            self.flash
+                .erase(self.region, sector * SECTOR_SIZE, SECTOR_SIZE)
+                .map_err(Error::Flash)?;
+        }
+        Ok(())
+    }
+
     fn scan(&mut self) -> Result<Scan, Error<F::Error>> {
         let geometry = self.flash.geometry(self.region);
         if geometry.capacity < SECTOR_COUNT * SECTOR_SIZE
@@ -501,6 +517,30 @@ pub(crate) mod tests {
                 .all(|byte| *byte == 0xff)
         );
         assert_eq!(journal.save(b"first").unwrap().sequence, 1);
+    }
+
+    #[test]
+    fn an_erase_cut_anywhere_never_brings_an_older_record_back() {
+        for saves in 1..=3 {
+            for cut in 0..=4 {
+                let mut journal = Journal::new(Memory::default(), Region::Configuration);
+                for save in 0..saves {
+                    journal.save(&[save]).unwrap();
+                }
+                journal.flash.fail_after = Some(journal.flash.operations + cut);
+                let erased = journal.erase();
+                journal.flash.fail_after = None;
+                let mut output = [0; 16];
+                match journal.load(&mut output) {
+                    Ok(None) => assert!(erased.is_ok(), "{saves} {cut}"),
+                    Ok(Some(_)) => {
+                        assert!(erased.is_err());
+                        assert_eq!(output[0], saves - 1, "{saves} {cut}");
+                    }
+                    Err(error) => assert_eq!(error, Error::UnrecognizedJournal),
+                }
+            }
+        }
     }
 
     #[test]

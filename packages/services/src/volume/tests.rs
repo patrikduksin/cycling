@@ -122,6 +122,25 @@ fn tables_this_version_cannot_use_are_foreign_and_never_replaced() {
 }
 
 #[test]
+fn only_replace_writes_over_a_foreign_table_and_a_cut_leaves_it_foreign() {
+    let mut media = Media::new(C606);
+    let mut s = sector();
+    let table = create(&mut media, &mut s).unwrap();
+    let mut other = media.get(0);
+    other[16] = 1;
+    let checksum = crc32(&other[..CRC]);
+    other[CRC..].copy_from_slice(&checksum.to_le_bytes());
+    media.set(0, other);
+    media.set(1, other);
+    assert_eq!(replace(&mut media, &mut s), Ok(table));
+    let new = media.get(0);
+    media.set(0, other);
+    assert_eq!(read(&mut media, &mut s), Err(Error::Foreign));
+    media.set(0, new);
+    assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(table)));
+}
+
+#[test]
 fn the_newest_generation_wins() {
     let mut media = Media::new(C606);
     let mut s = sector();

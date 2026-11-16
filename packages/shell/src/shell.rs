@@ -174,6 +174,8 @@ pub struct Shell<D, I, P, B> {
     store: Store<B>,
     pub settings: Settings,
     pub settings_source: &'static str,
+    /// The stored settings are of another version: kept, and never saved over.
+    pub settings_foreign: bool,
     pub settings_error: bool,
     pub reset: device_api::crash::Reset,
     pub crash: device_api::crash::Marker,
@@ -280,6 +282,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             store,
             settings,
             settings_source: source,
+            settings_foreign: source == "foreign",
             settings_error: error,
             reset: device_api::crash::Reset::Unknown,
             crash: device_api::crash::Marker::None,
@@ -580,6 +583,21 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         });
         self.dirty = self.display_error;
     }
+    /// FORMAT's first step (`Store::condemn`).
+    pub fn condemn_settings(&mut self) -> bool {
+        let condemned = self.store.condemn().is_ok();
+        if condemned {
+            self.settings_source = "foreign";
+            self.settings_foreign = true;
+        }
+        condemned
+    }
+
+    /// FORMAT's last step (`Store::erase`).
+    pub fn erase_settings(&mut self) -> bool {
+        self.store.erase().is_ok()
+    }
+
     pub fn save_connectivity(&mut self) -> bool {
         let result = self.store.save_connectivity(self.settings);
         self.operations = self.operations.saturating_add(1);

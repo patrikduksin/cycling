@@ -181,6 +181,16 @@ pub fn status(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Option<
     Ok(current(media, sector)?.map(|(header, _)| header))
 }
 
+/// Zero both header copies, whatever they hold, so the volume reads as never
+/// formatted. Only this gets past a foreign pack; [`begin`] refuses one.
+pub fn erase(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<(), Error> {
+    sector.fill(0);
+    for copy in 0..2 {
+        media.owned_write(copy, sector)?;
+    }
+    Ok(())
+}
+
 /// Write `header` into the copy that is not current and return it.
 fn publish(
     media: &mut impl ReadWrite,

@@ -139,13 +139,13 @@ impl Track<'_> {
             .zip(core::mem::replace(&mut held.last_fix, self.here))
             .map(|(here, last)| distance(last, here));
         let moving = moving(travelled_m, self.speed_mm_s);
-        let place = self.split().or_else(|| self.joining(centre, held, moving));
-        let end = place.map(|(end, _)| end);
-        if end != held.end {
-            held.against_fixes = 0;
+        if let Some(place @ (end, _)) = self.split() {
+            held.hold(end);
+            return Some(place);
         }
-        held.end = end;
-        place
+        let chosen = self.joining(centre, held.end, moving)?;
+        let place = held.choose(chosen);
+        Some((place.end, place.at))
     }
 
     fn ahead_points(
@@ -185,7 +185,7 @@ impl Track<'_> {
             .chain(self.crumbs.iter().rev().map(|c| (c.east, c.north)))
     }
 
-    fn joining(&self, centre: Point, held: &mut HeldLeg, moving: bool) -> Option<(usize, Point)> {
+    fn joining(&self, centre: Point, held: Option<usize>, moving: bool) -> Option<Joining> {
         let legs = 1..self.course.len();
         let leg = |end: usize| {
             let (a, b) = (self.course[end - 1], self.course[end]);
@@ -196,33 +196,41 @@ impl Track<'_> {
                 gap_m: distance(at, centre),
             }
         };
-        let held_leg = held.end.filter(|end| legs.contains(end)).map(leg);
-        let chosen = match self.heading {
-            None => held_leg.or_else(|| closest(legs.clone().map(leg))),
-            Some(heading) => {
-                let (sin, cos) = pose::rotation(heading);
-                let our_way = |&end: &usize| {
-                    let (a, b) = (self.course[end - 1], self.course[end]);
-                    (a.east - b.east) * sin + (a.north - b.north) * cos > 0.0
-                };
-                let ours = closest(legs.clone().filter(our_way).map(leg))
-                    .filter(|l| l.gap_m <= JOIN_WITHIN_M);
-                let best = ours.or_else(|| closest(legs.clone().map(leg)))?;
-                if let Some(l) = held_leg {
-                    let (a, b) = (self.course[l.end - 1], self.course[l.end]);
-                    let off_its_way =
-                        (heading + TURN - bearing((b.east, b.north), (a.east, a.north))) % TURN;
-                    held.observe(off_its_way, moving);
-                }
-                let stays = |l: &Leg| {
-                    !held.turned_back()
-                        && l.gap_m <= JOIN_WITHIN_M
-                        && l.gap_m - best.gap_m <= JOIN_SWITCH_M
-                };
-                Some(held_leg.filter(stays).unwrap_or(best))
-            }
+        let held = held.filter(|end| legs.contains(end)).map(leg);
+        let Some(heading) = self.heading else {
+            let best = held.or_else(|| closest(legs.map(leg)))?;
+            return Some(Joining {
+                held,
+                best,
+                heading_against_held: false,
+                held_leg_too_far: false,
+            });
         };
-        chosen.map(|l| (l.end, l.at))
+        let (sin, cos) = pose::rotation(heading);
+        let our_way = |&end: &usize| {
+            let (a, b) = (self.course[end - 1], self.course[end]);
+            (a.east - b.east) * sin + (a.north - b.north) * cos > 0.0
+        };
+        let ours =
+            closest(legs.clone().filter(our_way).map(leg)).filter(|l| l.gap_m <= JOIN_WITHIN_M);
+        let best = ours.or_else(|| closest(legs.map(leg)))?;
+        let moving_held = held.filter(|_| moving);
+        let heading_against_held = moving_held.is_some_and(|held| {
+            let (a, b) = (self.course[held.end - 1], self.course[held.end]);
+            let off_its_way =
+                (heading + TURN - bearing((b.east, b.north), (a.east, a.north))) % TURN;
+            MORE_THAN_135_DEG_OFF.contains(&off_its_way)
+        });
+        let held_leg_too_far = moving_held.is_some_and(|held| {
+            best.end != held.end
+                && (held.gap_m > JOIN_WITHIN_M || held.gap_m - best.gap_m > JOIN_SWITCH_M)
+        });
+        Some(Joining {
+            held,
+            best,
+            heading_against_held,
+            held_leg_too_far,
+        })
     }
 }
 
@@ -233,24 +241,50 @@ struct Leg {
     gap_m: f32,
 }
 
+struct Joining {
+    held: Option<Leg>,
+    best: Leg,
+    heading_against_held: bool,
+    held_leg_too_far: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct HeldLeg {
     end: Option<usize>,
     last_fix: Option<Point>,
     against_fixes: u8,
+    too_far_fixes: u8,
 }
 
 impl HeldLeg {
-    fn observe(&mut self, off_its_way: u16, moving: bool) {
-        if !MORE_THAN_45_DEG_OFF.contains(&off_its_way) {
-            self.against_fixes = 0;
-        } else if moving && MORE_THAN_135_DEG_OFF.contains(&off_its_way) {
-            self.against_fixes = self.against_fixes.saturating_add(1);
-        }
+    fn hold(&mut self, end: usize) {
+        self.end = Some(end);
+        self.against_fixes = 0;
+        self.too_far_fixes = 0;
     }
 
-    fn turned_back(&self) -> bool {
-        self.against_fixes >= TURN_AROUND_FIXES
+    fn choose(
+        &mut self,
+        Joining {
+            held,
+            best,
+            heading_against_held,
+            held_leg_too_far,
+        }: Joining,
+    ) -> Leg {
+        let Some(held) = held else {
+            self.hold(best.end);
+            return best;
+        };
+        let count = |n: u8, holds: bool| if holds { n.saturating_add(1) } else { 0 };
+        self.against_fixes = count(self.against_fixes, heading_against_held);
+        self.too_far_fixes = count(self.too_far_fixes, held_leg_too_far);
+        if self.against_fixes >= TURN_AROUND_FIXES || self.too_far_fixes >= TOO_FAR_FIXES {
+            self.hold(best.end);
+            best
+        } else {
+            held
+        }
     }
 }
 
@@ -323,8 +357,8 @@ const ROUTE_REACH: f32 = 1.5;
 const JOIN_WITHIN_M: f32 = 25.0;
 const JOIN_SWITCH_M: f32 = 10.0;
 const TURN_AROUND_FIXES: u8 = 3;
+const TOO_FAR_FIXES: u8 = 2;
 const MOVING_M: f32 = 2.0;
-const MORE_THAN_45_DEG_OFF: core::ops::RangeInclusive<u16> = TURN / 8..=TURN * 7 / 8;
 const MORE_THAN_135_DEG_OFF: core::ops::Range<u16> = TURN * 3 / 8 + 1..TURN * 5 / 8;
 struct ArrowLayer {
     shaft_half: f32,

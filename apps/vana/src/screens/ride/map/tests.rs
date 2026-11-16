@@ -1,6 +1,6 @@
 use super::*;
 use crate::ride::course::nav::Distance;
-use crate::ride::homing::TURN;
+use crate::ride::homing::{Homing, Reported, TURN};
 use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
 
@@ -629,7 +629,8 @@ fn on_one_road_out_and_back_the_way_the_rider_rides_is_the_route() {
 }
 
 #[test]
-fn between_two_roads_the_same_way_the_route_holds_its_road_until_another_is_10_m_closer() {
+fn between_two_roads_the_same_way_the_route_holds_its_road_until_another_is_10_m_closer_on_2_fixes()
+{
     let c = follower_course(&[
         (0.0, -100.0),
         (0.0, 1_000.0),
@@ -650,8 +651,13 @@ fn between_two_roads_the_same_way_the_route_holds_its_road_until_another_is_10_m
     }
     fill(&mut frame, &joining(&c, (22.0, 0.0)));
     assert!(
+        road_x(&frame) < 120,
+        "22 m east, one fix 14 m nearer the second road"
+    );
+    fill(&mut frame, &joining(&c, (24.0, 0.0)));
+    assert!(
         road_x(&frame) > 120,
-        "22 m east, 14 m nearer the second road"
+        "24 m east, the second fix nearer the second road"
     );
 }
 
@@ -761,8 +767,8 @@ fn a_turn_past_the_edge_of_the_map_draws_its_road_coming_back_onto_it() {
 }
 
 const RIDING_MM_S: u32 = 4_167;
-const WAY_OUT: Point = (0.0, 100.0);
-const WAY_BACK: Point = (6.0, -50.0);
+const STANDING: Option<u32> = Some(0);
+const RIDING: Option<u32> = Some(RIDING_MM_S);
 
 fn degrees(d: f32) -> u16 {
     (d * f32::from(TURN) / 360.0) as u16
@@ -774,15 +780,75 @@ fn blue_at(frame: &Frame, here: Point, world: Point) -> usize {
     blue_in(frame, x - 4..x + 5, y - 4..y + 5)
 }
 
-fn draws_the_way_out(frame: &Frame, here: Point) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Way {
+    Out,
+    Back,
+}
+
+const ALONG_EACH_WAY_M: f32 = 60.0;
+
+fn way_drawn(frame: &Frame, here: Point, lane_m: f32) -> Way {
     match (
-        blue_at(frame, here, WAY_OUT),
-        blue_at(frame, here, WAY_BACK),
+        blue_at(frame, here, (0.0, here.1 + ALONG_EACH_WAY_M)),
+        blue_at(frame, here, (lane_m, here.1 - ALONG_EACH_WAY_M)),
     ) {
         (0, 0) => panic!("neither way drawn"),
-        (_, 0) => true,
-        (0, _) => false,
+        (_, 0) => Way::Out,
+        (0, _) => Way::Back,
         _ => panic!("both ways drawn"),
+    }
+}
+
+struct Rider<'a> {
+    homing: Homing<'a>,
+    frame: Frame,
+    now: u64,
+}
+
+impl<'a> Rider<'a> {
+    fn new(storage: &'a mut [Crumb]) -> Self {
+        Self {
+            homing: Homing::new(storage),
+            frame: Frame::default(),
+            now: 0,
+        }
+    }
+
+    fn reports(&mut self, (east, north): Point) {
+        const METRES_PER_E7: f32 = 0.011_119_508;
+        self.now += 1_000;
+        let location_e7 = (
+            libm::roundf(north / METRES_PER_E7) as i32,
+            libm::roundf(east / METRES_PER_E7) as i32,
+        );
+        self.homing.observe(
+            Some(Reported {
+                location_e7,
+                taken_loop_ms: self.now,
+            }),
+            self.now,
+        );
+    }
+
+    fn sees(&mut self, course: &[Crumb], lane_m: f32, speed_mm_s: Option<u32>) -> Way {
+        let here = self.homing.position().expect("a fix");
+        let mut track = joining(course, here);
+        track.heading = self.homing.heading();
+        track.speed_mm_s = speed_mm_s;
+        fill(&mut self.frame, &track);
+        way_drawn(&self.frame, here, lane_m)
+    }
+
+    fn rides_and_sees(
+        &mut self,
+        course: &[Crumb],
+        lane_m: f32,
+        at: Point,
+        speed_mm_s: Option<u32>,
+    ) -> Way {
+        self.reports(at);
+        self.sees(course, lane_m, speed_mm_s)
     }
 }
 
@@ -798,7 +864,7 @@ fn headings_across_the_held_leg_never_switch_it_standing_or_riding() {
         track.heading = Some(degrees(d));
         fill(&mut frame, &track);
         assert!(
-            draws_the_way_out(&frame, (3.0, 0.0)),
+            way_drawn(&frame, (3.0, 0.0), 6.0) == Way::Out,
             "standing, fix {fix} at {d}°"
         );
     }
@@ -806,76 +872,144 @@ fn headings_across_the_held_leg_never_switch_it_standing_or_riding() {
         let here = (3.0, 4.0 * fix as f32);
         let mut track = joining(&c, here);
         track.heading = Some(degrees(d));
-        track.speed_mm_s = Some(RIDING_MM_S);
+        track.speed_mm_s = RIDING;
         fill(&mut frame, &track);
-        assert!(draws_the_way_out(&frame, here), "riding, fix {fix} at {d}°");
+        assert!(
+            way_drawn(&frame, here, 6.0) == Way::Out,
+            "riding, fix {fix} at {d}°"
+        );
     }
 }
+
+const JITTER: [Point; 5] = [(0.0, 0.0), (16.0, 1.4), (0.0, 2.8), (16.0, 1.4), (0.0, 0.0)];
 
 #[test]
 fn a_stop_s_gps_jitter_never_switches_the_held_leg() {
-    use crate::ride::homing::{Homing, Reported};
-    const METRES_PER_E7: f32 = 0.011_119_508;
-    let c = there_and_back(6.0);
-    let mut storage = [Crumb::default(); 64];
-    let mut homing = Homing::new(&mut storage);
-    let mut frame = Frame::default();
-    let mut drawn = 0;
-    for (fix, (east, north)) in [(0.0, 0.0), (16.0, 1.4), (0.0, 2.8), (16.0, 1.4), (0.0, 0.0)]
-        .into_iter()
-        .enumerate()
-    {
-        let now = fix as u64 * 1_000;
-        let location_e7 = (
-            (north / METRES_PER_E7) as i32,
-            (east / METRES_PER_E7) as i32,
-        );
-        homing.observe(
-            Some(Reported {
-                location_e7,
-                taken_loop_ms: now,
-            }),
-            now,
-        );
-        let Some(heading) = homing.heading() else {
-            continue;
-        };
-        let here = homing.position().unwrap();
-        let mut track = joining(&c, here);
-        track.heading = Some(heading);
-        fill(&mut frame, &track);
-        assert!(
-            draws_the_way_out(&frame, here),
-            "fix {fix} at ({east}, {north})"
-        );
-        drawn += 1;
+    for (lane_m, speed_mm_s) in [(6.0, None), (6.0, STANDING), (20.0, STANDING)] {
+        let c = there_and_back(lane_m);
+        let mut storage = [Crumb::default(); 64];
+        let mut rider = Rider::new(&mut storage);
+        let mut drawn = 0;
+        for (fix, at) in JITTER.into_iter().enumerate() {
+            rider.reports(at);
+            if rider.homing.heading().is_none() {
+                continue;
+            }
+            assert!(
+                rider.sees(&c, lane_m, speed_mm_s) == Way::Out,
+                "legs {lane_m} m apart at {speed_mm_s:?} mm/s, fix {fix} at {at:?}"
+            );
+            drawn += 1;
+        }
+        assert_eq!(drawn, 4, "every fix after the first has a heading");
     }
-    assert_eq!(drawn, 4, "every fix after the first has a heading");
 }
 
 #[test]
-fn a_u_turn_at_15_kmh_before_joining_switches_to_the_way_back_on_its_3rd_or_4th_fix() {
+fn standing_jitter_across_25_m_from_the_held_leg_never_switches_it() {
     let c = there_and_back(6.0);
-    let mut frame = Frame::default();
-    let step_m = RIDING_MM_S as f32 / 1_000.0;
-    let mut north = 0.0;
-    for _ in 0..5 {
-        let mut track = joining(&c, (0.0, north));
-        track.speed_mm_s = Some(RIDING_MM_S);
-        fill(&mut frame, &track);
-        assert!(draws_the_way_out(&frame, (0.0, north)), "riding out");
-        north += step_m;
+    let mut storage = [Crumb::default(); 64];
+    let mut rider = Rider::new(&mut storage);
+    for at in [(0.0, 0.0), (24.0, -40.0), (24.0, -20.0)] {
+        rider.reports(at);
     }
-    let switched = (1..=4).find(|_| {
-        north -= step_m;
-        let mut track = joining(&c, (0.0, north));
-        track.heading = Some(SOUTH);
-        track.speed_mm_s = Some(RIDING_MM_S);
-        fill(&mut frame, &track);
-        !draws_the_way_out(&frame, (0.0, north))
-    });
     assert!(
-        matches!(switched, Some(3 | 4)),
-        "switched on fix {switched:?}"
+        rider.rides_and_sees(&c, 6.0, (24.0, 0.0), STANDING) == Way::Out,
+        "24 m off"
     );
+    assert!(
+        rider.rides_and_sees(&c, 6.0, (26.0, -1.0), STANDING) == Way::Out,
+        "26 m off"
+    );
+}
+
+#[test]
+fn turning_back_then_stopping_and_riding_across_never_switches_the_held_leg() {
+    let c = there_and_back(6.0);
+    let mut storage = [Crumb::default(); 64];
+    let mut rider = Rider::new(&mut storage);
+    for (at, speed_mm_s) in [
+        ((0.0, 0.0), RIDING),
+        ((0.0, 20.0), RIDING),
+        ((0.0, 40.0), RIDING),
+        ((0.0, 60.0), RIDING),
+        ((0.0, 40.0), RIDING),
+        ((0.0, 36.0), RIDING),
+        ((0.0, 36.0), STANDING),
+        ((16.0, 40.0), RIDING),
+        ((0.0, 20.0), RIDING),
+    ] {
+        assert!(
+            rider.rides_and_sees(&c, 6.0, at, speed_mm_s) == Way::Out,
+            "at {at:?}, {speed_mm_s:?} mm/s"
+        );
+    }
+}
+
+fn fixes_to_turn_back(kmh: f32) -> Option<usize> {
+    let c = there_and_back(6.0);
+    let mut storage = [Crumb::default(); 64];
+    let mut rider = Rider::new(&mut storage);
+    let speed_mm_s = Some((kmh / 3.6 * 1_000.0) as u32);
+    let step_m = kmh / 3.6;
+    for fix in 0..=30 {
+        let at = (0.0, step_m * fix as f32);
+        assert!(
+            rider.rides_and_sees(&c, 6.0, at, speed_mm_s) == Way::Out,
+            "{kmh} km/h out, fix {fix}"
+        );
+    }
+    let mut switched = None;
+    for fix in 1..=30 {
+        let at = (0.0, step_m * (30 - fix) as f32);
+        let back = rider.rides_and_sees(&c, 6.0, at, speed_mm_s) == Way::Back;
+        match switched {
+            None if back => switched = Some(fix),
+            Some(on) => assert!(back, "{kmh} km/h: back on fix {on}, out again on {fix}"),
+            None => {}
+        }
+    }
+    std::println!("{kmh} km/h U-turn: the way back from fix {switched:?}");
+    switched
+}
+
+#[test]
+fn a_u_turn_before_joining_switches_to_the_way_back_and_keeps_it() {
+    for (kmh, by_fix) in [(8.0, 11), (15.0, 8), (30.0, 4)] {
+        let switched = fixes_to_turn_back(kmh);
+        assert!(
+            switched.is_some_and(|fix| fix <= by_fix),
+            "{kmh} km/h: the way back from fix {switched:?}, by {by_fix}"
+        );
+    }
+}
+
+#[test]
+fn riding_across_to_the_course_then_along_it_draws_one_way_then_the_way_out() {
+    let c = there_and_back(6.0);
+    let mut storage = [Crumb::default(); 64];
+    let mut rider = Rider::new(&mut storage);
+    rider.reports((0.0, 0.0));
+    rider.reports((-80.0, 0.0));
+    let across: std::vec::Vec<Way> = [-60.0, -40.0, -20.0, -4.0]
+        .into_iter()
+        .map(|east| rider.rides_and_sees(&c, 6.0, (east, 0.0), RIDING))
+        .collect();
+    assert!(
+        across.windows(2).all(|w| w[0] == w[1]),
+        "one way while riding across: {across:?}"
+    );
+    let along: std::vec::Vec<Way> = [4.0, 8.0, 12.0, 16.0, 20.0, 24.0, 28.0, 32.0]
+        .into_iter()
+        .map(|north| rider.rides_and_sees(&c, 6.0, (0.0, north), RIDING))
+        .collect();
+    let first_out = along
+        .iter()
+        .position(|&way| way == Way::Out)
+        .expect("the way out");
+    assert!(
+        along[first_out..].iter().all(|&way| way == Way::Out),
+        "the way out holds once drawn: {along:?}"
+    );
+    assert!(first_out <= 4, "the way out by fix {first_out}: {along:?}");
 }

@@ -78,7 +78,10 @@ TASKS = [
     task(
         'test-python',
         'Device tool and terrain tests, spread over worker processes',
-        'python -m pytest -q -n auto --maxprocesses=8 tools/devtools',
+        # One build with the simulator the harness tests launch, so vana compiles
+        # once with the features both need and their own build finds it fresh.
+        'cargo build -q --locked --no-default-features -p vana --bin ride-fit -p shell-simulator --bin shell-simulator',
+        'RIDE_FIT=${CARGO_TARGET_DIR:-target}/debug/ride-fit python -m pytest -q -n auto --maxprocesses=8 tools/devtools',
         f'{TERRAIN} pytest -q tools/terrain',
     ),
     task(

@@ -18,6 +18,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import subprocess
 import time
 import xml.etree.ElementTree as ET
@@ -495,7 +496,8 @@ def write_exports(output, canonical, header):
 
 def fit_command(canonical, output, start_utc_ms=None):
     """The firmware's own FIT encoder, built for the host (`apps/vana/src/bin/ride-fit.rs`)."""
-    command = ['cargo', 'run', '--quiet', '--release', '--locked', '-p', 'vana', '--bin', 'ride-fit', '--']
+    built = os.environ.get('RIDE_FIT')
+    command = [built] if built else ['cargo', 'run', '--quiet', '--locked', '-p', 'vana', '--bin', 'ride-fit', '--']
     # Cargo runs from the workspace root, so relative paths would move.
     command += [str(Path(canonical).resolve()), str(Path(output).resolve())]
     if start_utc_ms is not None:
@@ -503,9 +505,11 @@ def fit_command(canonical, output, start_utc_ms=None):
     return command
 
 
-def write_fit(output, canonical, start_utc_ms=None, run=subprocess.run):
+def write_fit(output, canonical, start_utc_ms=None):
     """Convert every ride in `canonical` to `ride-<id>.fit`; list the results in `fit.json`."""
-    result = run(fit_command(canonical, output, start_utc_ms), cwd=ROOT, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        fit_command(canonical, output, start_utc_ms), cwd=ROOT, capture_output=True, text=True, check=False
+    )
     if result.returncode != 0:
         raise RuntimeError(f'FIT conversion failed: {result.stderr.strip()}')
     rides = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]

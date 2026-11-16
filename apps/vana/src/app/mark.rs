@@ -1,5 +1,5 @@
 use super::Runtime;
-use super::climb_page::Follow;
+use super::climb_page::{Follow, press_undone};
 use super::cues::Cue;
 use super::input::HOLD_GAP_MS;
 use super::presentation::Navigation;
@@ -85,6 +85,12 @@ struct Press {
     after: View,
 }
 
+impl Press {
+    fn held_at(self, received: u64) -> bool {
+        received.saturating_sub(self.last) < HOLD_GAP_MS
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Event {
     Move {
@@ -103,10 +109,9 @@ enum Event {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct View {
     page: Page,
-    ride_page: RidePage,
-    pause_hidden: bool,
-    pause_wrapped: bool,
-    climb: Follow,
+    ride: (RidePage, Follow),
+    /// `pause_hidden` and `pause_wrapped`.
+    pause: (bool, bool),
     summary_page: usize,
     home_cursor: usize,
 }
@@ -116,8 +121,12 @@ enum Effect {
     None,
     /// Handle the report as a press.
     Press,
-    /// The hold marked: undo its press and record it.
-    Mark(Press),
+    /// The hold marked: show `restore` and record the press.
+    Mark {
+        pressed_ms: u64,
+        page: &'static str,
+        restore: View,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,74 +135,60 @@ struct Step {
     effect: Effect,
 }
 
+const fn to(hold: Hold, effect: Effect) -> Step {
+    Step { hold, effect }
+}
+
 fn step(hold: Hold, event: Event) -> Step {
-    let (held, received, view, page) = match event {
-        Event::Move {
-            held,
-            received,
-            view,
-            page,
-        } => (held, received, view, page),
-        Event::Pressed(view) => {
-            let hold = match hold {
-                Hold::Holding(press) => Hold::Holding(Press {
-                    after: view,
-                    ..press
-                }),
-                other => other,
+    match (event, hold) {
+        (Event::Cancel, _) => to(Hold::Idle, Effect::None),
+        (Event::Pressed(view), Hold::Holding(press)) => to(
+            Hold::Holding(Press {
+                after: view,
+                ..press
+            }),
+            Effect::None,
+        ),
+        (Event::Pressed(_), Hold::Idle | Hold::Spent) => to(hold, Effect::None),
+        (Event::Move { view, .. }, _) if !view.marks() => to(Hold::Idle, Effect::Press),
+        (
+            Event::Move {
+                held: false,
+                received,
+                view,
+                page,
+            },
+            _,
+        ) => {
+            let press = Press {
+                since: received,
+                last: received,
+                page,
+                before: view,
+                after: view,
             };
-            return Step {
-                hold,
-                effect: Effect::None,
+            to(Hold::Holding(press), Effect::Press)
+        }
+        (Event::Move { received, view, .. }, Hold::Holding(press))
+            if press.held_at(received) && received.saturating_sub(press.since) >= HOLD_MS =>
+        {
+            let effect = Effect::Mark {
+                pressed_ms: press.since,
+                page: press.page,
+                restore: undone(press, view),
             };
+            to(Hold::Spent, effect)
         }
-        Event::Cancel => {
-            return Step {
-                hold: Hold::Idle,
-                effect: Effect::None,
-            };
+        (Event::Move { received, .. }, Hold::Holding(press)) if press.held_at(received) => to(
+            Hold::Holding(Press {
+                last: received,
+                ..press
+            }),
+            Effect::None,
+        ),
+        (Event::Move { .. }, Hold::Idle | Hold::Holding(_) | Hold::Spent) => {
+            to(Hold::Spent, Effect::None)
         }
-    };
-    if !view.marks() {
-        return Step {
-            hold: Hold::Idle,
-            effect: Effect::Press,
-        };
-    }
-    if !held {
-        let press = Press {
-            since: received,
-            last: received,
-            page,
-            before: view,
-            after: view,
-        };
-        return Step {
-            hold: Hold::Holding(press),
-            effect: Effect::Press,
-        };
-    }
-    match hold {
-        Hold::Holding(press) if received.saturating_sub(press.last) < HOLD_GAP_MS => {
-            if received.saturating_sub(press.since) >= HOLD_MS {
-                Step {
-                    hold: Hold::Spent,
-                    effect: Effect::Mark(press),
-                }
-            } else {
-                Step {
-                    hold: Hold::Holding(Press {
-                        last: received,
-                        ..press
-                    }),
-                    effect: Effect::None,
-                }
-            }
-        }
-        Hold::Idle | Hold::Holding(_) | Hold::Spent => Step {
-            hold: Hold::Spent,
-            effect: Effect::None,
-        },
     }
 }
 
@@ -201,18 +196,26 @@ impl Runtime {
     /// The only writer of `Marks`.
     fn mark_apply(&mut self, step: Step, now: u64) -> MoveReport {
         self.marks.hold = step.hold;
-        let press = match step.effect {
+        let (pressed_ms, page, restore) = match step.effect {
             Effect::None => return MoveReport::Held,
             Effect::Press => return MoveReport::Press,
-            Effect::Mark(press) => press,
+            Effect::Mark {
+                pressed_ms,
+                page,
+                restore,
+            } => (pressed_ms, page, restore),
         };
-        undo(press, &mut self.navigation);
+        let navigation = &mut self.navigation;
+        (navigation.ride_page, navigation.climb) = restore.ride;
+        (navigation.pause_hidden, navigation.pause_wrapped) = restore.pause;
+        navigation.summary_page = restore.summary_page;
+        navigation.home_cursor = restore.home_cursor;
         let marks = &mut self.marks;
         marks.count = marks.count.saturating_add(1);
         marks.made = Some(Mark {
             count: marks.count,
-            pressed_ms: press.since,
-            page: press.page,
+            pressed_ms,
+            page,
         });
         let mut text = Text::<12>::new();
         let _ = write!(text, "MARK {}", marks.count);
@@ -227,10 +230,8 @@ impl View {
     fn of(navigation: &Navigation) -> Self {
         Self {
             page: navigation.page,
-            ride_page: navigation.ride_page,
-            pause_hidden: navigation.pause_hidden,
-            pause_wrapped: navigation.pause_wrapped,
-            climb: navigation.climb,
+            ride: (navigation.ride_page, navigation.climb),
+            pause: (navigation.pause_hidden, navigation.pause_wrapped),
             summary_page: navigation.summary_page,
             home_cursor: navigation.home_cursor,
         }
@@ -242,68 +243,27 @@ impl View {
             Page::Ride | Page::Ready | Page::Summary | Page::Home
         )
     }
-
-    /// The ride page the rider chose: under a climb page that came up by
-    /// itself, the page it goes back to.
-    fn rider_page(self) -> RidePage {
-        match self.climb {
-            Follow::Shown { back_to } => back_to,
-            Follow::Idle | Follow::Done => self.ride_page,
-        }
-    }
 }
 
-/// Undo what the press changed, part by part, leaving each part something
-/// else changed since: a pause shows the paused screen, and a climb its page,
-/// whatever the press did. The ride page and the climb follower are one part,
-/// so a page is never put back under a follower that has moved on.
-fn undo(press: Press, navigation: &mut Navigation) {
+/// `now` with what the press changed put back, part by part, leaving each
+/// part something else changed since: a pause shows the paused screen, and a
+/// climb its page, whatever the press did.
+fn undone(press: Press, now: View) -> View {
     let (before, after) = (press.before, press.after);
-    if before.page != after.page || navigation.page != after.page {
-        return;
+    if before.page != after.page || now.page != after.page {
+        return now;
     }
-    let mut ride = (navigation.ride_page, navigation.climb);
-    put_back(
-        &mut ride,
-        (before.ride_page, before.climb),
-        (after.ride_page, after.climb),
-    );
-    (navigation.ride_page, navigation.climb) = ride;
-    // A climb page that came up during the hold goes back to the page from
-    // before the press, not the one the press showed.
-    if !matches!(after.climb, Follow::Shown { .. })
-        && navigation.climb
-            == (Follow::Shown {
-                back_to: after.ride_page,
-            })
-    {
-        navigation.climb = Follow::Shown {
-            back_to: before.rider_page(),
-        };
+    View {
+        page: now.page,
+        ride: press_undone(before.ride, after.ride, now.ride),
+        pause: put_back(now.pause, before.pause, after.pause),
+        summary_page: put_back(now.summary_page, before.summary_page, after.summary_page),
+        home_cursor: put_back(now.home_cursor, before.home_cursor, after.home_cursor),
     }
-    let mut pause = (navigation.pause_hidden, navigation.pause_wrapped);
-    put_back(
-        &mut pause,
-        (before.pause_hidden, before.pause_wrapped),
-        (after.pause_hidden, after.pause_wrapped),
-    );
-    (navigation.pause_hidden, navigation.pause_wrapped) = pause;
-    put_back(
-        &mut navigation.summary_page,
-        before.summary_page,
-        after.summary_page,
-    );
-    put_back(
-        &mut navigation.home_cursor,
-        before.home_cursor,
-        after.home_cursor,
-    );
 }
 
-fn put_back<T: Copy + PartialEq>(part: &mut T, before: T, after: T) {
-    if *part == after {
-        *part = before;
-    }
+fn put_back<T: PartialEq>(now: T, before: T, after: T) -> T {
+    if now == after { before } else { now }
 }
 
 #[cfg(test)]
@@ -312,15 +272,13 @@ mod tests {
 
     const RIDE: View = View {
         page: Page::Ride,
-        ride_page: RidePage::Main,
-        pause_hidden: false,
-        pause_wrapped: false,
-        climb: Follow::Idle,
+        ride: (RidePage::Main, Follow::Idle),
+        pause: (false, false),
         summary_page: 0,
         home_cursor: 0,
     };
     const NEXT: View = View {
-        ride_page: RidePage::Stats,
+        ride: (RidePage::Stats, Follow::Idle),
         ..RIDE
     };
     const SETTINGS: View = View {
@@ -382,6 +340,13 @@ mod tests {
                 Effect::None,
             ),
             (
+                "a press after a mark changes nothing",
+                Hold::Spent,
+                Event::Pressed(NEXT),
+                Hold::Spent,
+                Effect::None,
+            ),
+            (
                 "a repeat short of the threshold does nothing",
                 holding(1_000, 2_300),
                 report(true, 2_400, NEXT),
@@ -389,17 +354,15 @@ mod tests {
                 Effect::None,
             ),
             (
-                "the repeat at the threshold marks",
+                "the repeat at the threshold marks and puts back the page",
                 holding(1_000, 2_400),
                 report(true, 2_500, NEXT),
                 Hold::Spent,
-                Effect::Mark(Press {
-                    since: 1_000,
-                    last: 2_400,
+                Effect::Mark {
+                    pressed_ms: 1_000,
                     page: "ride/main",
-                    before: RIDE,
-                    after: NEXT,
-                }),
+                    restore: RIDE,
+                },
             ),
             (
                 "repeats after a mark do nothing",
@@ -460,75 +423,57 @@ mod tests {
         }
     }
 
-    fn undone(before: View, after: View, now: View) -> View {
-        let mut navigation = Navigation::default();
-        navigation.page = now.page;
-        navigation.ride_page = now.ride_page;
-        navigation.pause_hidden = now.pause_hidden;
-        navigation.pause_wrapped = now.pause_wrapped;
-        navigation.climb = now.climb;
-        navigation.summary_page = now.summary_page;
-        navigation.home_cursor = now.home_cursor;
-        let press = Press {
+    #[test]
+    fn a_mark_undoes_its_press_and_leaves_what_moved_on() {
+        let press = |before, after| Press {
             since: 0,
             last: 0,
             page: "ride",
             before,
             after,
         };
-        undo(press, &mut navigation);
-        View::of(&navigation)
-    }
-
-    #[test]
-    fn a_mark_undoes_its_press_and_leaves_what_moved_on() {
-        let shown = |back_to| Follow::Shown { back_to };
-        let ride = |ride_page, climb| View {
-            ride_page,
-            climb,
+        let paused = |view| View {
+            pause: (true, false),
+            ..view
+        };
+        let home = |home_cursor| View {
+            page: Page::Home,
+            home_cursor,
             ..RIDE
         };
-        let on_climb = ride(RidePage::Climb, shown(RidePage::Map));
-        let paged = ride(RidePage::Main, Follow::Done);
         let cases = [
             ("nothing else moved", RIDE, NEXT, NEXT, RIDE),
             (
-                "the climb page that came up by itself, and where it goes back",
-                on_climb,
-                paged,
-                paged,
-                on_climb,
-            ),
-            (
-                "a climb that ended leaves the page the press showed",
-                on_climb,
-                paged,
-                ride(RidePage::Main, Follow::Idle),
-                ride(RidePage::Main, Follow::Idle),
-            ),
-            (
-                "a climb page that came up stays and goes back to the page from before",
-                RIDE,
-                NEXT,
-                ride(RidePage::Climb, shown(RidePage::Stats)),
-                ride(RidePage::Climb, shown(RidePage::Main)),
-            ),
-            (
                 "a pause shows the paused screen over the page put back",
-                View {
-                    pause_hidden: true,
-                    ..RIDE
-                },
-                View {
-                    pause_hidden: true,
-                    ..NEXT
-                },
+                paused(RIDE),
+                paused(NEXT),
                 NEXT,
                 RIDE,
+            ),
+            (
+                "another page leaves what is shown",
+                RIDE,
+                NEXT,
+                SETTINGS,
+                SETTINGS,
+            ),
+            (
+                "the Home cursor goes back",
+                home(0),
+                home(1),
+                home(1),
+                home(0),
+            ),
+            (
+                "a cursor moved since stays",
+                home(0),
+                home(1),
+                home(2),
+                home(2),
             ),
         ];
         for (name, before, after, now, then) in cases {
-            assert_eq!(undone(before, after, now), then, "{name}");
+            assert_eq!(undone(press(before, after), now), then, "{name}");
         }
     }
 }

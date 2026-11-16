@@ -172,8 +172,32 @@ pub(super) fn workout_finished(navigation: &mut Navigation) {
     }
 }
 
-/// With `workout_finished` and a mark's undo, the only writer of
-/// `Navigation::climb`, and of a ride page the road chose.
+/// A rider's mark undoes the MOVE press that began its hold: the ride page and
+/// the follower go back as one, so a page is never put back under a follower
+/// that has moved on. A climb page that came up during the hold stays, and
+/// goes back to the page from before the press, not the one the press showed.
+pub(super) fn press_undone(
+    before: (RidePage, Follow),
+    after: (RidePage, Follow),
+    now: (RidePage, Follow),
+) -> (RidePage, Follow) {
+    if now == after {
+        return before;
+    }
+    match (after.1, now.1) {
+        (Follow::Idle | Follow::Done, Follow::Shown { back_to }) if back_to == after.0 => {
+            let chosen = match before.1 {
+                Follow::Shown { back_to } => back_to,
+                Follow::Idle | Follow::Done => before.0,
+            };
+            (now.0, Follow::Shown { back_to: chosen })
+        }
+        _ => now,
+    }
+}
+
+/// With `workout_finished` and the mark showing what `press_undone` put back,
+/// the only writer of `Navigation::climb`, and of a ride page the road chose.
 fn apply(navigation: &mut Navigation, step: Step) {
     navigation.climb = step.follow;
     if let Some(page) = step.show {
@@ -204,6 +228,47 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn a_mark_puts_back_the_page_and_the_follower_as_one() {
+        let shown = |back_to| Follow::Shown { back_to };
+        let on_climb = (Climb, shown(RidePage::Map));
+        let paged = (Main, Follow::Done);
+        let rows = [
+            (
+                "nothing else moved",
+                (Main, Follow::Idle),
+                (Stats, Follow::Idle),
+                (Stats, Follow::Idle),
+                (Main, Follow::Idle),
+            ),
+            (
+                "the climb page that came up by itself, and where it goes back",
+                on_climb,
+                paged,
+                paged,
+                on_climb,
+            ),
+            (
+                "a climb that ended leaves the page the press showed",
+                on_climb,
+                paged,
+                (Main, Follow::Idle),
+                (Main, Follow::Idle),
+            ),
+            (
+                "a climb page that came up stays and goes back to the page from before",
+                (Main, Follow::Idle),
+                (Stats, Follow::Idle),
+                (Climb, shown(Stats)),
+                (Climb, shown(Main)),
+            ),
+        ];
+        for (what, before, after, now, want) in rows {
+            assert_eq!(press_undone(before, after, now), want, "{what}");
+        }
+    }
+
     use RidePage::{Climb, Main, Stats};
     use Road::{Ahead, Clear, Climbing};
 

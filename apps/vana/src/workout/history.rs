@@ -203,7 +203,8 @@ pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<(), LoadError
     Ok(())
 }
 
-/// Delete every record of `journal`, as its ride ids start over.
+/// Delete every record of `journal`, as its ride ids start over. A file of
+/// the journal that is not a current record is kept, and the clear stops there.
 pub fn forget(media: &mut impl ReadWrite, journal: u8) -> Result<(), LoadError> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = volume::open(media, &volume::FILES, &mut sector).map_err(LoadError::Volume)?;
@@ -215,19 +216,22 @@ pub fn forget(media: &mut impl ReadWrite, journal: u8) -> Result<(), LoadError> 
     );
     loop {
         let dir = files::mount(&mut store, &mut sector).map_err(LoadError::Files)?;
-        let mut names: heapless::Vec<files::Name, 16> = heapless::Vec::new();
+        let mut entries: heapless::Vec<files::Entry, 16> = heapless::Vec::new();
         dir.list(&mut store, &mut sector, |entry| {
             let name = entry.name.as_str();
             if name.starts_with(prefix.as_str()) && name.ends_with(SUFFIX) {
-                let _ = names.push(entry.name);
+                let _ = entries.push(*entry);
             }
         })
         .map_err(LoadError::Files)?;
-        if names.is_empty() {
+        if entries.is_empty() {
             return Ok(());
         }
-        for name in &names {
-            files::delete(&mut store, name, &mut sector).map_err(LoadError::Files)?;
+        for entry in &entries {
+            read(&mut store, &dir, entry, &mut sector)?;
+        }
+        for entry in &entries {
+            files::delete(&mut store, &entry.name, &mut sector).map_err(LoadError::Files)?;
         }
     }
 }
@@ -332,6 +336,9 @@ mod tests {
         assert_eq!(save(&mut region, &record(KEEP as u32 + 1)), Err(FOREIGN));
         assert_eq!(load(&mut region, b'b', 2), Ok(Some(record(2))));
         assert_eq!(load(&mut region, b'b', KEEP as u32 + 1), Ok(None));
+        assert_eq!(forget(&mut region, b'b'), Err(FOREIGN));
+        assert_eq!(load(&mut region, b'b', 1), Err(FOREIGN));
+        assert_eq!(load(&mut region, b'b', 2), Ok(Some(record(2))));
     }
 
     #[test]

@@ -687,7 +687,8 @@ Each slot ends in the CRC32 of the bytes before it:
 | 22..26 | climbs finished and their gain in m, u16 each |
 | 28..32 | CRC32 of the slot's bytes before it |
 
-A slot of another record version reads as damaged and goes on the next save.
+A table holding a slot of another record version is foreign: it is read
+without that slot and never rewritten.
 
 ### Discarded and deleted rides
 

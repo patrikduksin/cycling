@@ -88,6 +88,12 @@ TASKS = [
         'bun test --parallel=8 web',
     ),
     task(
+        'test-slow',
+        'Tests too slow for every verify, run after merges: the full 16 MiB flasher read',
+        'bun install --frozen-lockfile --silent',
+        'CYCLING_SLOW=1 bun test web/flasher',
+    ),
+    task(
         'stack-frames',
         "Report a firmware ELF's largest stack frames against its device's stack-frames.toml; --suggest prints new budgets",
         f'{DEV}stack_frames',

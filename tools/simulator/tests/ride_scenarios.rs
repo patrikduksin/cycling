@@ -4869,11 +4869,10 @@ fn pausing_during_a_mark_keeps_the_paused_screen() {
     assert_eq!(marks(&sim).len(), 1);
 }
 
-/// How long after `start` a fresh rider's ride first meets `reached`,
-/// stepping a tenth of a second.
-fn ms_until(start: fn(&mut Sim), reached: fn(&mut Sim) -> bool) -> u64 {
-    let mut sim = rider();
-    start(&mut sim);
+/// How long after `setup` its ride first meets `reached`, stepping a tenth
+/// of a second.
+fn ms_until(setup: fn() -> Sim, reached: fn(&mut Sim) -> bool) -> u64 {
+    let mut sim = setup();
     let mut waited = 0;
     while !reached(&mut sim) {
         assert!(waited < seconds(120), "never reached");
@@ -4883,13 +4882,15 @@ fn ms_until(start: fn(&mut Sim), reached: fn(&mut Sim) -> bool) -> u64 {
     waited
 }
 
-fn stopping_at_a_light(sim: &mut Sim) {
+fn stopping_at_a_light() -> Sim {
+    let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.start_ride();
-    paused_and_paged_away(sim);
+    paused_and_paged_away(&mut sim);
     sim.advance(seconds(30));
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim
 }
 
 #[test]
@@ -4900,8 +4901,7 @@ fn an_auto_pause_during_a_mark_keeps_the_paused_screen() {
             .is_some_and(|(_, state)| state == "auto_paused")
     };
     let pauses = ms_until(stopping_at_a_light, auto_paused);
-    let mut sim = rider();
-    stopping_at_a_light(&mut sim);
+    let mut sim = stopping_at_a_light();
     sim.advance(pauses - 700);
     assert!(!auto_paused(&mut sim));
     sim.hold(Button::BottomLeft, 1600);
@@ -4910,11 +4910,12 @@ fn an_auto_pause_during_a_mark_keeps_the_paused_screen() {
     assert_eq!(sim.seen().page.expect("a page").1, "ride/paused");
 }
 
-fn climbing(sim: &mut Sim) {
-    *sim = hill_rider();
+fn climbing() -> Sim {
+    let mut sim = hill_rider();
     sim.start_ride();
     sim.ride_at(14.0, 260.0, 0.0, 75.0);
-    ride_to(sim, 1200.0);
+    ride_to(&mut sim, 1200.0);
+    sim
 }
 
 #[test]
@@ -4925,8 +4926,7 @@ fn the_climb_page_coming_up_during_a_mark_stays() {
             .is_some_and(|dots| dots.starts_with("4/"))
     };
     let shown = ms_until(climbing, on_climb);
-    let mut sim = rider();
-    climbing(&mut sim);
+    let mut sim = climbing();
     sim.advance(shown - 700);
     assert!(!on_climb(&mut sim), "{:?}", sim.screen().page());
     sim.hold(Button::BottomLeft, 1600);
@@ -4952,8 +4952,8 @@ fn seen_page(sim: &Sim) -> String {
 
 /// On the last ride page, the page after the climb page, when the climb
 /// page comes up by itself.
-fn on_the_climb_page(sim: &mut Sim) {
-    *sim = hill_rider();
+fn on_the_climb_page() -> Sim {
+    let mut sim = hill_rider();
     sim.start_ride();
     sim.ride_at(14.0, 260.0, 0.0, 75.0);
     sim.advance(seconds(5));
@@ -4965,17 +4965,17 @@ fn on_the_climb_page(sim: &mut Sim) {
     {
         sim.press(Button::BottomLeft);
     }
-    assert_eq!(seen_page(sim), "ride/map");
-    while seen_page(sim) != "ride/climb" {
+    assert_eq!(seen_page(&sim), "ride/map");
+    while seen_page(&sim) != "ride/climb" {
         assert!(sim.world().distance_m < 2500.0, "no climb page");
         sim.advance(100);
     }
+    sim
 }
 
 #[test]
 fn a_mark_on_the_climb_page_that_came_up_goes_back_after_the_top() {
-    let mut sim = rider();
-    on_the_climb_page(&mut sim);
+    let mut sim = on_the_climb_page();
     sim.advance(seconds(5));
     sim.hold(Button::BottomLeft, 1600);
     sim.expect_text("MARK 1");
@@ -4988,16 +4988,16 @@ fn a_mark_on_the_climb_page_that_came_up_goes_back_after_the_top() {
     );
 }
 
-fn near_the_top(sim: &mut Sim) {
-    on_the_climb_page(sim);
-    ride_to(sim, 2450.0);
+fn near_the_top() -> Sim {
+    let mut sim = on_the_climb_page();
+    ride_to(&mut sim, 2450.0);
+    sim
 }
 
 #[test]
 fn a_climb_that_ends_during_a_mark_leaves_its_page() {
     let over = ms_until(near_the_top, |sim| seen_page(sim) != "ride/climb");
-    let mut sim = rider();
-    near_the_top(&mut sim);
+    let mut sim = near_the_top();
     sim.advance(over - 700);
     assert_eq!(seen_page(&sim), "ride/climb");
     sim.hold(Button::BottomLeft, 1600);

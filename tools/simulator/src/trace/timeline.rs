@@ -354,7 +354,7 @@ impl fmt::Display for Entry {
 
 /// A whole trace, decoded.
 pub struct Timeline {
-    pub version: u16,
+    pub version: u8,
     /// The recording build's commit in hex, trailing zero bytes dropped;
     /// empty when unknown.
     pub build: String,
@@ -712,7 +712,7 @@ impl Reader {
             Event::Synthetic(pressed) => {
                 self.push(Kind::Input, format!("synthetic {}", input(pressed)))
             }
-            Event::Frame(_) | Event::Panel(_) => {}
+            Event::Panel(_) => {}
             Event::Command(line) => self.push(Kind::Command, super::secret::shown_command(line)),
             Event::Startup(startup) => {
                 self.push(Kind::Startup, format!("companion {}", startup.name()))
@@ -994,13 +994,6 @@ impl Reader {
             Event::Lost { blocks, bytes } => self.push(
                 Kind::Trace,
                 format!("{blocks} blocks, {bytes} B, lost here: the recorder had no room for them"),
-            ),
-            Event::Unknown { tag, body } => self.push(
-                Kind::Trace,
-                format!(
-                    "a record tagged {tag} this build cannot read, {} B",
-                    body.len()
-                ),
             ),
             Event::FrameTime(frame_time) => self.frame_time_awaiting_health = Some(frame_time),
             Event::Health(health) => {

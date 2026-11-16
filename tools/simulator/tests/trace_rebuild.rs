@@ -522,23 +522,22 @@ fn files_and_a_pack_that_did_not_read_at_power_on_are_reported() {
 }
 
 #[test]
-fn a_trace_from_before_the_media_layout_is_refused_with_why() {
+fn a_trace_of_another_version_is_refused_with_why() {
     use firmware_services::trace;
     let (_, trace, _) = recorded_session();
     let (header, _) = trace::decode(&trace).unwrap();
-    let older = trace::Header {
-        version: 1,
-        oldest_reader: 1,
+    let other = trace::Header {
+        version: trace::VERSION + 1,
         ..header
     };
     let mut block = vec![0u8; 64 * 1024];
-    let len = trace::encode_header(&older, &mut block).unwrap();
+    let len = trace::encode_header(&other, &mut block).unwrap();
     let first = 2 + usize::from(u16::from_le_bytes([trace[0], trace[1]])) + 4;
-    let older = [&block[..len], &trace[first..]].concat();
-    let why = "trace format version 1 is older than this build reads";
+    let other = [&block[..len], &trace[first..]].concat();
+    let why = "is not this build's";
     for error in [
-        rebuild::media(&older).unwrap_err(),
-        rebuild::rebuild(&older, &Pulled::default())
+        rebuild::media(&other).unwrap_err(),
+        rebuild::rebuild(&other, &Pulled::default())
             .err()
             .expect("refused"),
     ] {

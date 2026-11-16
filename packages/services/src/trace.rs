@@ -9,8 +9,8 @@
 //!
 //! A record byte with the top bit set is a [`Event::Pass`] 0 to 127 ms after
 //! the previous pass. Any other record is a tag byte, the body length as a
-//! varint and the body, so a reader skips tags it does not know. Times inside
-//! a record are stored relative to the current pass.
+//! varint and the body. Times inside a record are stored relative to the
+//! current pass.
 use crate::checksum::crc32;
 use device_api::ant;
 use device_api::ble_transport;
@@ -30,22 +30,16 @@ pub mod spool;
 #[cfg(test)]
 mod tests;
 
-pub const VERSION: u16 = 2;
-/// The oldest version that reads what this version writes. A later version
-/// that only appends fields and adds tags keeps it; one that changes the
-/// meaning of a field raises it.
-pub const OLDEST_READER: u16 = 2;
-/// The oldest version this one reads. Version 2 laid the header's media out
-/// anew, so a version 1 trace would read as other media than it names.
-pub const OLDEST_READABLE: u16 = 2;
+/// The header's first byte. A reader reads only its own version. Versions 1
+/// and 2 opened with a two-byte version, whose first byte is never 3.
+pub const VERSION: u8 = 3;
 pub const MAX_BLOCK: usize = u16::MAX as usize + FRAME;
 const FRAME: usize = 2 + 4;
 
 /// What a replay needs before the first pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header<'a> {
-    pub version: u16,
-    pub oldest_reader: u16,
+    pub version: u8,
     /// Git commit of the recording firmware, zero when unknown.
     pub build: [u8; 20],
     pub boot: u32,
@@ -480,12 +474,6 @@ pub enum Event<'a> {
         blocks: u32,
         bytes: u32,
     },
-    /// A record this version cannot read: its tag is unknown, or a later
-    /// version wrote a value this one has no code for. Kept whole.
-    Unknown {
-        tag: u8,
-        body: &'a [u8],
-    },
     /// What the phone access point reports, recorded when it changes.
     AccessPoint {
         state: AccessPointState,
@@ -557,11 +545,6 @@ pub enum Event<'a> {
     RideState(&'a str),
     /// The displayed fields, about once a second.
     Shown(&'a str),
-    /// A digest of the pixels on the panel at the end of a pass, when they
-    /// changed since the last: every row of the frame in turn. Traces
-    /// recorded before the shell sent only the rows that changed hold it;
-    /// newer ones hold [`Event::Panel`].
-    Frame(u32),
     /// A digest of the pixels on the panel at the end of a pass, when they
     /// changed since the last: each 4-row band digested as the shell last
     /// sent it, then the bands top to bottom. It does not depend on which
@@ -643,7 +626,6 @@ mod tag {
     pub const SHOWN: u8 = 68;
     pub const SYNTHETIC: u8 = 70;
     pub const LOG: u8 = 69;
-    pub const FRAME: u8 = 71;
     pub const PANEL: u8 = 72;
     pub const HEALTH: u8 = 80;
     pub const ACTIVITY: u8 = 81;
@@ -1366,7 +1348,6 @@ impl Wire<'_> for ble_transport::Packet {
 impl<'a> Wire<'a> for Header<'a> {
     fn put(&self, w: &mut Writer) {
         self.version.put(w);
-        self.oldest_reader.put(w);
         w.bytes(&self.build);
         self.boot.put(w);
         self.profile.put(w);
@@ -1375,8 +1356,7 @@ impl<'a> Wire<'a> for Header<'a> {
     }
     fn take(r: &mut Reader<'a>) -> Self {
         Self {
-            version: u16::take(r),
-            oldest_reader: u16::take(r),
+            version: u8::take(r),
             build: <[u8; 20]>::take(r),
             boot: u32::take(r),
             profile: u8::take(r),
@@ -1410,7 +1390,6 @@ impl<'a> Event<'a> {
             Self::StorageFault(_) => tag::STORAGE_FAULT,
             Self::Entropy(_) => tag::ENTROPY,
             Self::TooLarge(_) => tag::TOO_LARGE,
-            Self::Unknown { tag, .. } => *tag,
             Self::AccessPoint { .. } => tag::ACCESS_POINT,
             Self::AccessPointRequest { .. } => tag::ACCESS_POINT_REQUEST,
             Self::Server { .. } => tag::SERVER,
@@ -1433,7 +1412,6 @@ impl<'a> Event<'a> {
             Self::RideState(_) => tag::RIDE_STATE,
             Self::Shown(_) => tag::SHOWN,
             Self::Synthetic(_) => tag::SYNTHETIC,
-            Self::Frame(_) => tag::FRAME,
             Self::Panel(_) => tag::PANEL,
             Self::Log { .. } => tag::LOG,
             Self::FrameTime(_) => tag::FRAME_TIME,
@@ -1487,7 +1465,6 @@ impl<'a> Event<'a> {
             | Self::RideState(text)
             | Self::Shown(text) => text.put(w),
             Self::StorageFault(fault) => fault.put(w),
-            Self::Unknown { body, .. } => w.bytes(body),
             Self::AccessPoint { state, reach } => {
                 state.put(w);
                 reach.put(w);
@@ -1560,7 +1537,7 @@ impl<'a> Event<'a> {
                 text.put(w);
             }
             Self::Synthetic(input) => input.put(w),
-            Self::Frame(digest) | Self::Panel(digest) => digest.put(w),
+            Self::Panel(digest) => digest.put(w),
             Self::FrameTime(frame_time) => frame_time.put(w),
             Self::Health(health) => health.put(w),
             Self::Activity(activity) => activity.put(w),
@@ -1680,7 +1657,6 @@ impl<'a> Event<'a> {
             tag::RIDE_STATE => Self::RideState(Wire::take(r)),
             tag::SHOWN => Self::Shown(Wire::take(r)),
             tag::SYNTHETIC => Self::Synthetic(Wire::take(r)),
-            tag::FRAME => Self::Frame(Wire::take(r)),
             tag::PANEL => Self::Panel(Wire::take(r)),
             tag::LOG => Self::Log {
                 level: Wire::take(r),
@@ -1832,7 +1808,6 @@ pub struct Cursor {
     block: usize,
     at: usize,
     now: u64,
-    later: bool,
     end: Option<End>,
     checked: Option<(usize, [u8; 4])>,
 }
@@ -1847,45 +1822,38 @@ pub struct Events<'a> {
 pub enum Error {
     /// The header block is missing, torn or malformed.
     Header,
-    /// A version this build does not read: one before
-    /// [`OLDEST_READABLE`], or a later one that needs a later reader.
-    Version(u16),
+    /// The header opens with a version other than [`VERSION`].
+    Version(u8),
 }
 
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match *self {
             Self::Header => f.write_str("the header block is missing, torn or malformed"),
-            Self::Version(version) if version > VERSION => write!(
-                f,
-                "trace format version {version} is newer than this build reads ({OLDEST_READABLE} to {VERSION}): read it with a later build"
-            ),
             Self::Version(version) => write!(
                 f,
-                "trace format version {version} is older than this build reads ({OLDEST_READABLE} to {VERSION}): read it with the build that recorded it"
+                "trace format {version} is not this build's ({VERSION}): read it with the build that recorded it"
             ),
         }
     }
 }
 
-/// The header and the events after it. A later version may append fields to
-/// the header and to any record; they are skipped.
+/// The header and the events after it.
 pub fn decode(bytes: &[u8]) -> Result<(Header<'_>, Events<'_>), Error> {
     let (payload, next) = block(bytes, 0).ok_or(Error::Header)?;
+    let version = *payload.first().ok_or(Error::Header)?;
+    if version != VERSION {
+        return Err(Error::Version(version));
+    }
     let mut r = Reader::new(payload, 0);
     let header = Header::take(&mut r);
-    let later = header.version > VERSION;
-    if !r.ok() || (r.at != payload.len() && !later) {
+    if !r.ok() || r.at != payload.len() {
         return Err(Error::Header);
-    }
-    if header.version < OLDEST_READABLE || header.oldest_reader > VERSION {
-        return Err(Error::Version(header.version));
     }
     let cursor = Cursor {
         block: next,
         at: 0,
         now: 0,
-        later,
         end: None,
         checked: None,
     };
@@ -1981,14 +1949,9 @@ impl<'a> Events<'a> {
             c.now = r.varint();
             None
         } else {
-            let unknown = Event::Unknown { tag: first, body };
-            match Event::take_body(first, &mut r) {
-                Some(_) if c.later && !r.ok() => return Ok(Some(unknown)),
-                Some(event) => Some(event),
-                None => return Ok(Some(unknown)),
-            }
+            Some(Event::take_body(first, &mut r).ok_or(End::Corrupt)?)
         };
-        if !r.ok() || (r.at != body.len() && !c.later) {
+        if !r.ok() || r.at != body.len() {
             return Err(End::Corrupt);
         }
         if let Some(Event::Pass { now_ms }) = event {

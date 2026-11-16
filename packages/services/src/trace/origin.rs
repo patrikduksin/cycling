@@ -4,8 +4,6 @@
 //! VANA; [`Media`] is its `media`, where each medium stood at power-on.
 //! Composition gathers both. A replay starts from them, so a device trace
 //! replays with the media it names and nothing else beside it.
-//!
-//! A later version may append fields; this one reads its known prefix.
 use super::{Reader, Wire, Writer};
 use crate::volume::{self, Layout, Volume};
 use device_api::bulk::{Error as MediaError, ReadWrite};
@@ -304,7 +302,6 @@ pub fn header(
     let media = media.encode(rest)?;
     let header = super::Header {
         version: super::VERSION,
-        oldest_reader: super::OLDEST_READER,
         build: build(commit),
         boot,
         profile,
@@ -381,7 +378,7 @@ fn encode<'a, T: Wire<'a>>(value: &T, out: &mut [u8]) -> Option<usize> {
 fn decode<'a, T: Wire<'a>>(bytes: &'a [u8]) -> Option<T> {
     let mut r = Reader::new(bytes, 0);
     let value = T::take(&mut r);
-    r.ok().then_some(value)
+    (r.ok() && r.at == bytes.len()).then_some(value)
 }
 
 impl<'a> Wire<'a> for Config<'a> {

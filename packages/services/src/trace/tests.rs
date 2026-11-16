@@ -6,7 +6,6 @@ use std::vec::Vec;
 
 const HEADER: Header<'static> = Header {
     version: VERSION,
-    oldest_reader: OLDEST_READER,
     build: [7; 20],
     boot: 42,
     profile: 1,
@@ -390,7 +389,6 @@ fn sample() -> Vec<Event<'static>> {
         },
         Event::RideState("recording"),
         Event::Shown("W=210 BPM=142 KM/H=28.0"),
-        Event::Frame(0xdead_beef),
         Event::Panel(0x0bad_f00d),
         Event::Synthetic(Input::Button {
             button: Button::BottomLeft,
@@ -536,11 +534,11 @@ fn a_torn_header_is_refused() {
 }
 
 #[test]
-fn a_record_this_version_cannot_read_is_kept_whole() {
+fn a_record_with_an_unknown_tag_ends_the_trace_as_corrupt() {
     let mut payload = std::vec![0u8; 64];
     let mut w = Writer::new(&mut payload, 0);
     w.byte(SHORT_PASS | 10);
-    w.record(120, |w| w.bytes(b"from a later version"));
+    w.record(120, |w| w.bytes(b"no such record"));
     w.byte(SHORT_PASS | 10);
     let len = w.len;
     let mut bytes = std::vec![0u8; 256];
@@ -548,17 +546,8 @@ fn a_record_this_version_cannot_read_is_kept_whole() {
     bytes[header + 2..header + 2 + len].copy_from_slice(&payload[..len]);
     let end = header + seal(&mut bytes[header..], len).unwrap();
     let (got, finish) = decoded(&bytes[..end]);
-    let expected = [
-        Event::Pass { now_ms: 10 },
-        Event::Unknown {
-            tag: 120,
-            body: b"from a later version",
-        },
-        Event::Pass { now_ms: 20 },
-    ];
-    assert_eq!(got, expected);
-    assert_eq!(finish, Some(End::Complete));
-    assert_eq!(decoded(&encode(&expected, 256)).0, expected);
+    assert_eq!(got, [Event::Pass { now_ms: 10 }]);
+    assert_eq!(finish, Some(End::Corrupt));
 }
 
 #[test]
@@ -630,101 +619,46 @@ fn a_window_of_known_frames_has_their_mean() {
 }
 
 #[test]
-fn fields_a_later_version_appends_are_skipped() {
-    let later = Header {
-        version: VERSION + 1,
-        ..HEADER
-    };
+fn bytes_past_the_known_fields_are_refused() {
     let mut bytes = std::vec![0u8; 512];
     let mut w = Writer::new(&mut bytes[2..], 0);
-    later.put(&mut w);
-    w.bytes(b"a later header field");
+    HEADER.put(&mut w);
+    w.bytes(b"an extra header field");
     let len = w.len;
     let header_end = seal(&mut bytes, len).unwrap();
+    assert_eq!(decode(&bytes[..header_end]).err(), Some(Error::Header));
+
+    let header_end = encode_header(&HEADER, &mut bytes).unwrap();
     let mut w = Writer::new(&mut bytes[header_end + 2..], 0);
     w.byte(SHORT_PASS | 10);
     w.record(tag::ENTROPY, |w| {
         w.varint(7);
-        w.bytes(b"a later field");
+        w.bytes(b"an extra field");
     });
-    w.record(tag::STARTUP, |w| w.byte(200));
-    w.byte(SHORT_PASS | 10);
     let len = w.len;
     let end = header_end + seal(&mut bytes[header_end..], len).unwrap();
-    let (header, events) = decode(&bytes[..end]).unwrap();
-    assert_eq!(header, later);
-    assert_eq!(
-        events.collect::<Vec<_>>(),
-        [
-            Event::Pass { now_ms: 10 },
-            Event::Entropy(7),
-            Event::Unknown {
-                tag: tag::STARTUP,
-                body: &[200],
-            },
-            Event::Pass { now_ms: 20 },
-        ]
-    );
-    let mut own = bytes.clone();
-    own[2] = VERSION as u8;
-    let crc = crc32(&own[2..header_end - 4]).to_le_bytes();
-    own[header_end - 4..header_end].copy_from_slice(&crc);
-    assert_eq!(decode(&own[..end]).err(), Some(Error::Header));
+    let (got, finish) = decoded(&bytes[..end]);
+    assert_eq!(got, [Event::Pass { now_ms: 10 }]);
+    assert_eq!(finish, Some(End::Corrupt));
 }
 
 #[test]
-fn a_trace_an_older_reader_cannot_read_is_refused() {
+fn a_trace_of_another_version_is_refused_as_foreign() {
+    for version in [0, VERSION + 1] {
+        let mut bytes = std::vec![0u8; 128];
+        let len = encode_header(&Header { version, ..HEADER }, &mut bytes).unwrap();
+        assert_eq!(decode(&bytes[..len]).err(), Some(Error::Version(version)));
+    }
     let mut bytes = std::vec![0u8; 128];
-    let broken = Header {
-        version: VERSION + 2,
-        oldest_reader: VERSION + 1,
-        ..HEADER
-    };
-    let len = encode_header(&broken, &mut bytes).unwrap();
+    bytes[2..6].copy_from_slice(&[2, 0, 2, 0]);
+    let len = seal(&mut bytes, 4).unwrap();
+    let error = decode(&bytes[..len]).err().unwrap();
+    assert_eq!(error, Error::Version(2));
     assert_eq!(
-        decode(&bytes[..len]).err(),
-        Some(Error::Version(VERSION + 2))
-    );
-}
-
-#[test]
-fn a_version_zero_trace_is_refused() {
-    let mut bytes = std::vec![0u8; 128];
-    let len = encode_header(
-        &Header {
-            version: 0,
-            ..HEADER
-        },
-        &mut bytes,
-    )
-    .unwrap();
-    assert_eq!(decode(&bytes[..len]).err(), Some(Error::Version(0)));
-}
-
-#[test]
-fn a_trace_from_before_the_media_layout_is_refused_with_why() {
-    let mut bytes = std::vec![0u8; 128];
-    let len = encode_header(
-        &Header {
-            version: 1,
-            oldest_reader: 1,
-            ..HEADER
-        },
-        &mut bytes,
-    )
-    .unwrap();
-    let error = decode(&bytes[..len]).err();
-    assert_eq!(error, Some(Error::Version(1)));
-    assert_eq!(
-        error.unwrap().to_string(),
+        error.to_string(),
         std::format!(
-            "trace format version 1 is older than this build reads ({OLDEST_READABLE} to {VERSION}): read it with the build that recorded it"
+            "trace format 2 is not this build's ({VERSION}): read it with the build that recorded it"
         )
-    );
-    assert!(
-        Error::Version(VERSION + 1)
-            .to_string()
-            .contains("newer than this build reads"),
     );
 }
 

@@ -577,7 +577,6 @@ mod tests {
     fn timeline(passes: &[(u64, Vec<Event<'_>>)]) -> Timeline {
         let header = Header {
             version: trace::VERSION,
-            oldest_reader: trace::OLDEST_READER,
             build: [0; 20],
             boot: 1,
             profile: 0,

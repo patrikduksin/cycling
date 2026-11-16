@@ -89,7 +89,6 @@ fn record_trace_fixtures() {
     for (name, scenario) in scenarios {
         let mut sim = Sim::new();
         sim.discard_recording();
-        sim.device.record_legacy_frames();
         let mut sim = sim.boot();
         scenario(&mut sim);
         file::save(&sim.capture(), &fixture(name)).expect("the fixture saves");
@@ -592,20 +591,19 @@ fn a_strict_replay_of_a_fixture_shows_the_recorded_frames() {
 }
 
 #[test]
-fn a_strict_replay_holds_a_trace_from_before_panel_digests_to_its_frames() {
+fn a_strict_replay_holds_a_fixture_to_its_panel_digests() {
     use firmware_services::trace::frozen::{Record, Recorder};
     use firmware_services::trace::{Event, decode, encode_header};
     let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
     let (header, events) = decode(&capture.trace).unwrap();
     let mut events: Vec<Event<'_>> = events.collect();
-    assert!(!events.iter().any(|event| matches!(event, Event::Panel(_))));
     let frames: Vec<usize> = (0..events.len())
-        .filter(|&at| matches!(events[at], Event::Frame(_)))
+        .filter(|&at| matches!(events[at], Event::Panel(_)))
         .collect();
     assert!(frames.len() > 10, "{}", frames.len());
     let at = frames[frames.len() / 2];
-    if let Event::Frame(digest) = events[at] {
-        events[at] = Event::Frame(digest ^ 1);
+    if let Event::Panel(digest) = events[at] {
+        events[at] = Event::Panel(digest ^ 1);
     }
     let mut trace = vec![0u8; 4096];
     let len = encode_header(&header, &mut trace).unwrap();

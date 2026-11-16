@@ -424,6 +424,9 @@ impl Runtime {
         bulk: &mut impl ReadWrite,
         now: u64,
     ) {
+        if self.format.owns_storage() {
+            return;
+        }
         // Wrapped as `tick` wraps them, so the storage code both reach is
         // built once.
         let (store, bulk) = (&mut Touched::new(store), &mut Touched::new(bulk));

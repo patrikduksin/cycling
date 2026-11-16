@@ -31,6 +31,12 @@ impl Runtime {
         // Wrapped as `tick` wraps them, so the storage code both reach is
         // built once.
         let (store, bulk) = (&mut Touched::new(store), &mut Touched::new(bulk));
+        if let Some(argument) = words.strip_prefix("FORMAT") {
+            return self.format_command(argument.trim(), now, output);
+        }
+        if self.format.owns_storage() {
+            return "BUSY";
+        }
         let mut workout = words.split_ascii_whitespace();
         if workout.next() == Some("WORKOUT") {
             return self.workout_command(&mut workout, bulk, now, output);
@@ -154,8 +160,7 @@ impl Runtime {
     }
 
     /// `PROFILE` reports the training profile; `PROFILE FTP|LTHR value` sets
-    /// one threshold, saved once edits settle; `PROFILE OVERWRITE` replaces a
-    /// stored profile this firmware cannot read.
+    /// one threshold, saved once edits settle.
     fn profile_command(
         &mut self,
         operation: Option<&str>,
@@ -183,7 +188,6 @@ impl Runtime {
                 self.preferences.set(profile, now);
                 self.display.redraw();
             }
-            (Some("OVERWRITE"), None) => self.preferences.overwrite(now),
             _ => return "INVALID",
         }
         let preferences = &self.preferences;

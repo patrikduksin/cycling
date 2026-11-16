@@ -496,6 +496,12 @@ impl<H: AsRef<[u8]>> File<H> {
         Ok(())
     }
 
+    /// The card is being formatted under the session: the file goes with
+    /// its store, and no later pass stages another.
+    pub fn formatted(&mut self) {
+        *self = Self::Ended("the storage was formatted");
+    }
+
     fn end(&mut self, why: &'static str) -> Result<(), &'static str> {
         *self = Self::Ended(why);
         Err(why)

@@ -791,6 +791,7 @@ impl Runtime {
                 view.scroll = offset;
                 view.set_canvas(self.history_canvas(offset, pressed));
             }
+            Page::Format => view.formatting = self.format.owns_storage(),
             Page::EndRide | Page::DiscardRide => {
                 view.discard = if self.ride.discard != super::recording::Discard::Idle {
                     crate::screens::workout::Discard::Answered
@@ -852,6 +853,9 @@ impl Runtime {
             self.timing.first_frame(drawn);
             if matches!(page, Page::Home | Page::Setup) {
                 self.timing.first_ready(drawn);
+            }
+            if page == Page::Format {
+                self.format_event(super::format::Event::Drawn(drawn), now);
             }
             self.timing.frame(drawn);
         }
@@ -1194,6 +1198,10 @@ impl Runtime {
 
     /// Room for the ride about to start, wherever it will go.
     fn storage_check(&self) -> Check {
+        const UNFORMATTED: (&str, &str) = ("STORAGE NOT FORMATTED", "OFF AND ON TO FORMAT");
+        if self.format.owns_storage() {
+            return Check::new(Level::Problem, UNFORMATTED.0, UNFORMATTED.1);
+        }
         let medium = self.ride.medium();
         let recorder = self.ride.recorder(medium);
         let mut title = Text::<24>::new();
@@ -1226,6 +1234,9 @@ impl Runtime {
                 Check::new(Level::Good, title.as_str(), "")
             }
             Status::Full => Check::new(Level::Problem, "STORAGE FULL", "EXPORT OLD RIDES"),
+            _ if self.storage_health().foreign() => {
+                Check::new(Level::Problem, UNFORMATTED.0, UNFORMATTED.1)
+            }
             _ => Check::new(Level::Problem, "STORAGE PROBLEM", "TURN VANA OFF AND ON"),
         }
     }

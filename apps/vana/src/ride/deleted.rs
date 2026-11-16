@@ -45,6 +45,9 @@ use firmware_services::{files, volume};
 pub const TABLE: &str = "rides/deleted.tbl";
 const MAGIC: &[u8; 4] = b"VDEL";
 const TABLE_VERSION: u8 = 2;
+/// The file, its magic and its version byte at offset 4: what tells this
+/// table in another version from other bytes.
+pub const STAMP: (&str, &[u8; 4], u8) = (TABLE, MAGIC, TABLE_VERSION);
 const VERSION: u8 = 2;
 pub const SLOT: usize = 32;
 /// Rides the table can hide, in 8 KB.

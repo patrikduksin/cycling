@@ -312,7 +312,10 @@ fn restored(peers: &[Identity]) -> Runtime {
         ..preferences::Record::default()
     });
     let mut runtime = Runtime::new(Profile::HeartRate);
-    runtime.load_preferences(&firmware_shell::preferences::AppPreferences::new(&record).unwrap());
+    runtime.load_preferences(
+        &firmware_shell::preferences::AppPreferences::new(&record).unwrap(),
+        false,
+    );
     runtime
 }
 

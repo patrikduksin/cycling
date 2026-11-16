@@ -27,6 +27,9 @@ pub const LOW_STORAGE_S: u32 = 60 * 60;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Boot,
+    /// FORMAT STORAGE?, asked when stored data is of another version, and
+    /// the wait while the storage is formatted.
+    Format,
     Home,
     Sensors,
     /// Before a ride: what is ready, and ACT starts.
@@ -59,6 +62,7 @@ impl Page {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Boot => "boot",
+            Self::Format => "format",
             Self::Home => "home",
             Self::Sensors => "sensors",
             Self::Ready => "ready",
@@ -583,6 +587,8 @@ pub struct View<'a> {
     pub training: Option<ride::Training>,
     /// A test's FTP waiting for the rider's answer, and the FTP in force.
     pub ftp_offer: Option<(u16, u16)>,
+    /// The storage is being formatted: `Page::Format` shows the wait.
+    pub formatting: bool,
     pub page: Page,
     /// The focused Home card, or the selected Settings field.
     pub cursor: usize,
@@ -651,6 +657,7 @@ impl<'a> View<'a> {
             marks: Marks::default(),
             training: None,
             ftp_offer: None,
+            formatting: false,
             page,
             cursor,
             editing: false,
@@ -920,7 +927,7 @@ impl<'a> View<'a> {
     /// the paused screen and the questions, whose back cue the bar would cut.
     fn full_screen(&self) -> bool {
         match self.page {
-            Page::Boot | Page::EndRide | Page::DiscardRide => true,
+            Page::Boot | Page::Format | Page::EndRide | Page::DiscardRide => true,
             Page::Summary | Page::PastRide => summary::question_shown(self.after()),
             Page::Sensors => super::sensors::full_screen(self.cues),
             _ => self.paused_screen_shown(),
@@ -1023,6 +1030,14 @@ impl<'a> View<'a> {
             Page::Boot => {
                 fill(self, |view| view.boot_canvas());
                 &[]
+            }
+            Page::Format => {
+                fill(self, |view| super::format::prepare(view.formatting));
+                if self.formatting {
+                    &[]
+                } else {
+                    &ride::end::TRASH_CUES
+                }
             }
             Page::Settings => {
                 fill(self, super::settings::prepare);

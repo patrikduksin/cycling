@@ -408,12 +408,12 @@ Training profile:
   for the rides list's TSS, at the FTP the ride's facts kept (see Ride facts),
   else at the profile's FTP now. A ride without power has no effort and adds
   nothing.
-- `PROFILE`, `PROFILE FTP watts`, `PROFILE LTHR bpm` and `PROFILE OVERWRITE`
+- `PROFILE`, `PROFILE FTP watts` and `PROFILE LTHR bpm`
   read and set it from the terminal. The profile and the saved ANT sensors are
   one versioned record in the application area of the settings record
   (`app::preferences`). A stored record this firmware did not write keeps the
-  defaults in force, with no saved sensors, and is never replaced until
-  `PROFILE OVERWRITE`.
+  defaults in force, with no saved sensors, and is never replaced: the
+  device offers FORMAT (see [volumes](mmc-volumes.md#format)).
 
 Radar uses the left edge of the workout screen:
 

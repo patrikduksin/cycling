@@ -169,6 +169,7 @@ impl Runtime {
             Page::Setup => self.setup_input(button, now, ant),
             // A press during the brand flash opens Home straight away.
             Page::Boot => self.navigation.page = self.first_page(),
+            Page::Format => self.format_input(button, held, received, now),
             Page::Sensors => {}
         }
     }
@@ -200,6 +201,7 @@ impl Runtime {
             }
             Page::Setup => u32::from(self.preferences.options.setup),
             Page::Boot
+            | Page::Format
             | Page::Home
             | Page::Ready
             | Page::EndRide

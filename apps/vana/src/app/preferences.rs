@@ -39,7 +39,7 @@
 //! setup is due, and the first change writes a record. Any other record that
 //! is not exactly what this firmware would write is foreign: the defaults
 //! stay in force and the record stays stored untouched until the rider
-//! explicitly overwrites it (`PROFILE OVERWRITE`).
+//! formats the storage (`super::format`).
 use super::Runtime;
 use super::mode::DisplayMode;
 use crate::clock::Zone;
@@ -72,7 +72,7 @@ const DEBOUNCE_MS: u64 = 2_000;
 const RETRY_MS: u64 = 5_000;
 const AUTO_PAUSE: u8 = 1 << 0;
 const SOUNDS: u8 = 1 << 1;
-const SUNSET_OFF: u8 = 1 << 2;
+const SUNSET: u8 = 1 << 2;
 /// Where the hidden-page bits start in the flags.
 const PAGES_SHIFT: u32 = 3;
 /// The longest automatic lap a record may hold.
@@ -276,8 +276,8 @@ impl Options {
         if self.sounds {
             flags |= SOUNDS;
         }
-        if !self.sunset_alert {
-            flags |= SUNSET_OFF;
+        if self.sunset_alert {
+            flags |= SUNSET;
         }
         flags |= self.ride_pages.bits() << PAGES_SHIFT;
         let mut bytes = [0; OPTIONS_LENGTH];
@@ -326,7 +326,7 @@ impl Options {
             rider: Rider::decode(rider)?,
             setup,
             alerts,
-            sunset_alert: flags & SUNSET_OFF == 0,
+            sunset_alert: flags & SUNSET != 0,
             ride_pages: PageChoice::from_bits(flags >> PAGES_SHIFT)?,
             main_slots: Slots::decode(main_slots)?,
             mode: DisplayMode::from_byte(mode)?,
@@ -462,7 +462,6 @@ pub(super) struct Preferences {
     pub(super) display: DisplayChoice,
     display_edit: Option<DisplayEdit>,
     pub(super) stored: Stored,
-    locked: bool,
     changed_at: Option<u64>,
     retry_at: u64,
     failed: bool,
@@ -480,7 +479,6 @@ impl Default for Preferences {
             display: DisplayChoice::default(),
             display_edit: None,
             stored: Stored::Missing,
-            locked: false,
             changed_at: None,
             retry_at: 0,
             failed: false,
@@ -490,14 +488,17 @@ impl Default for Preferences {
 }
 
 impl Preferences {
-    fn load(bytes: &[u8]) -> Self {
+    /// `foreign`: the settings record these bytes came out of is of another
+    /// version, so nothing can be saved into it either.
+    fn load(bytes: &[u8], foreign: bool) -> Self {
         let (record, stored) = decode(bytes);
+        let stored = if foreign { Stored::Foreign } else { stored };
         Self {
             profile: record.profile,
             sensors: record.sensors,
             options: record.options,
             stored,
-            locked: stored == Stored::Foreign,
+
             ..Self::default()
         }
     }
@@ -511,12 +512,12 @@ impl Preferences {
 
     /// Unreadable stored data is kept, so edits do not persist.
     pub(super) fn locked(&self) -> bool {
-        self.locked
+        self.stored == Stored::Foreign
     }
 
     pub(super) fn persistence(&self) -> Persistence {
         let display = self.display_edit;
-        if self.locked {
+        if self.locked() {
             Persistence::Locked
         } else if self.failed || display.is_some_and(|edit| edit.failed) {
             Persistence::Failed
@@ -533,7 +534,7 @@ impl Preferences {
             return;
         }
         self.profile = profile;
-        if !self.locked {
+        if !self.locked() {
             self.changed_at = Some(now);
             self.edit = self.edit.wrapping_add(1);
         }
@@ -545,7 +546,7 @@ impl Preferences {
             return;
         }
         self.options = options;
-        if !self.locked {
+        if !self.locked() {
             self.changed_at = Some(now);
             self.edit = self.edit.wrapping_add(1);
         }
@@ -574,17 +575,10 @@ impl Preferences {
             return;
         }
         self.sensors = sensors;
-        if !self.locked {
+        if !self.locked() {
             self.changed_at = Some(now.saturating_sub(DEBOUNCE_MS));
             self.edit = self.edit.wrapping_add(1);
         }
-    }
-
-    /// Replace unreadable stored data with the profile in force.
-    pub(super) fn overwrite(&mut self, now: u64) {
-        self.locked = false;
-        self.changed_at = Some(now.saturating_sub(DEBOUNCE_MS));
-        self.edit = self.edit.wrapping_add(1);
     }
 
     /// The edit waiting for its write, if any.
@@ -594,7 +588,7 @@ impl Preferences {
 
     /// An edit is waiting for its write.
     fn pending(&self) -> bool {
-        self.changed_at.is_some() && !self.locked
+        self.changed_at.is_some() && !self.locked()
     }
 
     fn due(&self, now: u64) -> bool {
@@ -605,8 +599,9 @@ impl Preferences {
 
 impl Runtime {
     /// Adopt the preferences the shell loaded at startup.
-    pub fn load_preferences(&mut self, app: &AppPreferences) {
-        self.preferences = Preferences::load(app.bytes());
+    /// `foreign`: the shell found settings of another version and kept them.
+    pub fn load_preferences(&mut self, app: &AppPreferences, foreign: bool) {
+        self.preferences = Preferences::load(app.bytes(), foreign);
         self.links.saved = self.preferences.sensors;
         self.apply_options();
         self.settle_wheel(0);
@@ -769,15 +764,15 @@ mod tests {
     }
 
     #[test]
-    fn version_ten_layout_is_pinned() {
+    fn the_layout_is_pinned() {
         let profile = TrainingProfile::new(0x0102, 170).unwrap();
         let none = Saved::default();
         let defaults = record(profile, none, Options::default());
         assert_eq!(
             encode(&defaults).as_slice(),
             [
-                10, 2, 1, 170, 0, 0, 0b11, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 1, 0, 1
+                11, 2, 1, 170, 0, 0, 0b111, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 1, 0, 1
             ]
         );
         assert_eq!(decode(&encode(&defaults)), (defaults, Stored::Current));
@@ -816,8 +811,8 @@ mod tests {
         assert_eq!(
             bytes.as_slice(),
             [
-                10, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b10, 10, 2, 3, 50, 180, 100,
-                0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6, 2, 1, 0
+                11, 2, 1, 170, 0, 2, 120, 0x34, 0x12, 1, 40, 7, 0, 5, 0b110, 10, 2, 3, 50, 180,
+                100, 0, 0x2c, 1, 70, 30, 0, 2, 1, 0xf4, 0x39, 0x08, 1, 72, 41, 2, 6, 2, 1, 0
             ]
         );
         assert_eq!(decode(&bytes), (chosen, Stored::Current));
@@ -995,7 +990,7 @@ mod tests {
         first_run.options.setup = Options::FIRST_RUN;
         assert_eq!(decode(&[]), (first_run, Stored::Missing));
         let current = encode(&defaults);
-        for version in [0, 1, 9, 11, 0xff] {
+        for version in [0, 1, 10, 12, 0xff] {
             let mut other = current.to_vec();
             other[0] = version;
             assert_eq!(decode(&other), (defaults, Stored::Foreign), "{version}");
@@ -1017,14 +1012,14 @@ mod tests {
             sunset_alert: false,
             ..Options::default()
         };
-        assert_eq!(off.encode()[0], AUTO_PAUSE | SOUNDS | SUNSET_OFF);
+        assert_eq!(off.encode()[0], AUTO_PAUSE | SOUNDS);
         assert_eq!(Options::decode(&off.encode()), Some(off));
         assert!(
             Options::decode(&Options::default().encode())
                 .unwrap()
                 .sunset_alert
         );
-        assert_eq!(Options::default().encode()[0], AUTO_PAUSE | SOUNDS);
+        assert_eq!(Options::default().encode()[0], AUTO_PAUSE | SOUNDS | SUNSET);
         let stats_and_lap = PageChoice::default()
             .toggled(RidePage::Stats)
             .toggled(RidePage::Lap);
@@ -1034,7 +1029,7 @@ mod tests {
         };
         assert_eq!(
             hidden.encode()[0],
-            AUTO_PAUSE | SOUNDS | stats_and_lap.bits() << PAGES_SHIFT
+            AUTO_PAUSE | SOUNDS | SUNSET | stats_and_lap.bits() << PAGES_SHIFT
         );
         assert_eq!(Options::decode(&hidden.encode()), Some(hidden));
         // AT START (byte 1) and hidden pages (flags) share a record.
@@ -1071,7 +1066,7 @@ mod tests {
         for (case, profile, options) in [
             ("one byte short", FTP, good[..OPTIONS_LENGTH - 1].to_vec()),
             ("one byte long", FTP, [&good[..], &[0]].concat()),
-            ("unknown flag", FTP, with(FLAGS, good[FLAGS] | 1 << 6)),
+            ("unknown flag", FTP, with(FLAGS, good[FLAGS] | 1 << 7)),
             ("lap too long", FTP, with(AUTO_LAP, AUTO_LAP_FIRST_UNUSED)),
             ("unknown day/night", FTP, with(DAYLIGHT, 3)),
             ("unknown theme", FTP, with(THEME, 3)),
@@ -1092,19 +1087,19 @@ mod tests {
     fn sensor_changes_save_at_once_and_locked_records_keep_them_in_memory() {
         let mut sensors = Saved::default();
         sensors.select(sensor(120, 1));
-        let mut preferences = Preferences::load(&encode(&Record::default()));
+        let mut preferences = Preferences::load(&encode(&Record::default()), false);
         assert_eq!(preferences.stored, Stored::Current);
         preferences.set_sensors(sensors, 10_000);
         assert!(preferences.due(10_000));
-        let mut locked = Preferences::load(&[5, 9]);
+        let mut locked = Preferences::load(&[5, 9], false);
         locked.set_sensors(sensors, 10_000);
         assert_eq!(locked.sensors, sensors);
         assert!(!locked.due(60_000));
     }
 
     #[test]
-    fn edits_settle_before_saving_and_locked_records_wait_for_overwrite() {
-        let mut preferences = Preferences::load(&[]);
+    fn edits_settle_before_saving_and_a_foreign_record_is_never_replaced() {
+        let mut preferences = Preferences::load(&[], false);
         assert_eq!(preferences.persistence(), Persistence::Saved);
         let stronger = TrainingProfile::new(250, 185).unwrap();
         preferences.set(stronger, 1_000);
@@ -1112,19 +1107,21 @@ mod tests {
         assert!(!preferences.due(2_999));
         assert!(preferences.due(3_000));
 
-        let mut locked = Preferences::load(&[11, 9]);
+        let mut locked = Preferences::load(&[VERSION + 1, 9], false);
         assert_eq!(locked.stored, Stored::Foreign);
         assert_eq!(locked.persistence(), Persistence::Locked);
         locked.set(stronger, 1_000);
         assert_eq!(locked.profile, stronger, "edits still apply");
         assert!(!locked.due(60_000), "unreadable data is never replaced");
-        locked.overwrite(60_000);
-        assert!(locked.due(60_000));
+        let mut shell = Preferences::load(&[], true);
+        assert_eq!(shell.persistence(), Persistence::Locked);
+        shell.set(stronger, 1_000);
+        assert!(!shell.due(60_000), "nor are foreign settings around it");
     }
 
     #[test]
     fn option_edits_settle_like_profile_edits() {
-        let mut preferences = Preferences::load(&encode(&Record::default()));
+        let mut preferences = Preferences::load(&encode(&Record::default()), false);
         let quiet = Options {
             sounds: false,
             ..preferences.options

@@ -246,6 +246,7 @@ fn serviced(page: Page, seen: Seen, before: Status) -> Step {
             Some(Go::OpenRide)
         }
         Page::Boot
+        | Page::Format
         | Page::Home
         | Page::Sensors
         | Page::Ready

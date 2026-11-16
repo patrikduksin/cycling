@@ -202,6 +202,9 @@ impl Bests {
 const FILE: &str = "bests.dat";
 const MAGIC: &[u8; 4] = b"VBST";
 pub const VERSION: u8 = 2;
+/// The file, its magic and its version byte at offset 4: what tells this
+/// table in another version from other bytes.
+pub const STAMP: (&str, &[u8; 4], u8) = (FILE, MAGIC, VERSION);
 const VERSION_AT: usize = 4;
 const BODY_LENGTH_AT: usize = 5;
 const FIELDS_AT: usize = 6;

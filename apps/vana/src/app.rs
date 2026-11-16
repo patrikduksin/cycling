@@ -22,6 +22,7 @@ mod cues;
 mod deleted;
 mod facts;
 mod form;
+mod format;
 mod history;
 mod input;
 mod lists;
@@ -41,8 +42,10 @@ mod recording;
 mod ride_control;
 mod seen;
 mod setup;
+mod storage;
 pub use recording::{Journals, Medium};
 pub use seen::Seen;
+pub use storage::{Health, StorageHealth};
 mod phone;
 mod sensor_links;
 #[cfg(test)]
@@ -90,6 +93,9 @@ pub struct Runtime {
     facts: facts::Kept,
     deleted: deleted::Hidden,
     form: form::Kept,
+    format: format::Format,
+    /// The card's volumes as this boot found them, once read.
+    storage: Option<storage::Probe>,
     power: power::Power,
     timing: timing::Timing,
     training: training::Training,
@@ -129,6 +135,8 @@ impl Runtime {
             facts: facts::Kept::default(),
             deleted: deleted::Hidden::default(),
             form: form::Kept::default(),
+            format: format::Format::default(),
+            storage: None,
             power: power::Power::default(),
             timing: timing::Timing::default(),
             training: training::Training::default(),
@@ -322,6 +330,9 @@ impl Runtime {
             self.display.redraw();
         }
         self.note_milestones(now, ant, &sample);
+        if self.format.owns_storage() {
+            return;
+        }
         self.record(store, bulk, now, sample);
         self.replay_step(store, bulk);
         self.service_workouts(bulk);

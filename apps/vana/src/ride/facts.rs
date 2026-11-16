@@ -51,6 +51,9 @@ pub const TABLE: &str = "rides/facts.tbl";
 pub const VERSION: u8 = 2;
 const TABLE_MAGIC: &[u8; 4] = b"VFTB";
 const TABLE_VERSION: u8 = 2;
+/// The file, its magic and its version byte at offset 4: what tells this
+/// table in another version from other bytes.
+pub const STAMP: (&str, &[u8; 4], u8) = (TABLE, TABLE_MAGIC, TABLE_VERSION);
 pub const SLOT: usize = 32;
 const FIELDS: usize = 2;
 /// Rides the table keeps: FORM's 120 days at eight rides a day, in 32 KB.

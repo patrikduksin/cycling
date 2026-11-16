@@ -1,31 +1,20 @@
-"""Run simulator scenarios on a base ref and the current checkout, and compare them.
-
-The base runs in a temporary detached worktree under `.local/sim/compare`, built
-into its own directory inside the current target directory (ignored with it). Sharing one directory let
-cargo reuse the base's test binary for the current checkout afterwards, because
-workspace artifacts are keyed by package, not by checkout path, and freshness by
-file times. The separate directory stays incremental from run to run. Checkpoint
-screenshots are paired by scenario and checkpoint name and compared by pixels,
-so a reviewer sees Before | After only for screens that changed.
-"""
+"""Run simulator scenarios on the merge-base and the current checkout, and compare them."""
 
 import argparse
 import fcntl
 import functools
 import hashlib
 import os
-import queue
-import re
 import shutil
 import signal
 import struct
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import zlib
-from contextlib import ExitStack, contextmanager, suppress
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,9 +23,12 @@ from cycling_devtools.sim import report
 from cycling_devtools.workspace import ROOT, main_checkout
 
 OUT = ROOT / '.local/sim/compare'
-CACHE = main_checkout() / '.local/sim/base-cache'
-CACHE_ENTRIES = 4
+FILL = ROOT / '.local/sim/fill'
+CACHE = main_checkout() / '.local/sim/screens-cache'
+# A busy day of main commits (23 on 2026-11-14), at about 180 MB each.
+CACHE_ENTRIES = 24
 STAGING = '.staging-'
+BUILDING = '.building-'
 ABANDONED_STAGING_S = 3600
 COMMAND = [
     'cargo',
@@ -56,7 +48,7 @@ DECODED = {b'IHDR', b'IDAT', b'IEND'}
 GRACE_S = 5
 TABLE = ['| Screen | Before | After |', '|---|---|---|']
 DEFAULT_BASE = 'origin/main'
-TEST = re.compile(r'^test (\S+) \.\.\. ', re.MULTILINE)
+VIDEO_JOBS = 8
 
 
 @dataclass(frozen=True)
@@ -175,7 +167,7 @@ def comparison(pairs, before, after, base, refs):
         f'## {icon} Simulator before/after: {count["changed"]} changed · {count["new"]} new · '
         f'{count["removed"]} removed · {count["unchanged"]} unchanged',
         '',
-        f'Before: `{base_ref}` at `{base_commit}` ({base_subject}), '
+        f'Before: the merge-base with `{base_ref}`, `{base_commit}` ({base_subject}), '
         f'{sum(r["status"] == "pass" for r in before)}/{len(before)} scenarios passed. '
         f'After: `{head_commit}`, {passed}/{len(after)} passed. '
         'Screens are paired by scenario and checkpoint and compared by pixels.',
@@ -205,7 +197,6 @@ def comparison(pairs, before, after, base, refs):
         lines += ['', f'### {mark} {report.title(scenario)}{suffix}', '']
         if failed and result['failure']:
             lines += [*report.fenced(result['failure']), '']
-        section = 0
         videos = [
             (label, r, video)
             for label, r in (('Before', previous.get(scenario)), ('After', result))
@@ -214,7 +205,6 @@ def comparison(pairs, before, after, base, refs):
         for label, r, video in videos:
             path = report.reference(r['dir'] / video, base)
             attachments.append(path)
-            section += 1
             if len(videos) > 1:
                 lines += [f'**{label}**', '']
             lines += [path if video.endswith('.mp4') else f'![video]({path})', '']
@@ -222,12 +212,6 @@ def comparison(pairs, before, after, base, refs):
             lines += TABLE
         for p, state in shown:
             images = [None if i is None else report.reference(i, base) for i in (p.before, p.after)]
-            needed = sum(i is not None for i in images)
-            # Comments split only between sections, so keep each within gh's limit.
-            if section + needed > report.ATTACHMENT_LIMIT:
-                lines += ['', f'### {mark} {report.title(scenario)} (continued)', '', *TABLE]
-                section = 0
-            section += needed
             attachments += [i for i in images if i]
             cells = ['—' if i is None else f'<img src="{i}" width="300">' for i in images]
             label = p.checkpoint if state == 'changed' else f'{p.checkpoint} · **{state}**'
@@ -240,7 +224,10 @@ def comparison(pairs, before, after, base, refs):
 
 
 def base_target(target):
-    """The base's own cargo target directory, so neither build can serve the other."""
+    """The base's own cargo target directory, so neither build can serve the other.
+    Sharing one let cargo reuse the base's test binary for the current checkout,
+    because workspace artifacts are keyed by package, not by checkout path, and
+    freshness by file times."""
     return target / 'sim-compare-base'
 
 
@@ -250,72 +237,35 @@ class Run:
     artifacts: Path
     target: Path
     tests: tuple[str, ...] = ()
-    video: bool = False
 
 
 def selection(name_filter):
     return (name_filter,) if name_filter else ()
 
 
-def test_of_session(name):
-    return re.sub(r'-\d+$', '', name)
-
-
-def exact(run_dir, names):
-    log = (run_dir / 'cargo.log').read_text(errors='replace')
-    paths = {path.rsplit('::', 1)[-1]: path for path in TEST.findall(log)}
-    tests = (test_of_session(name) for name in names)
-    return ('--', '--exact', *dict.fromkeys(paths.get(test, test) for test in tests))
-
-
-def scenarios(*runs):
-    processes, pumps, done = [], [], queue.Queue()
+def run_scenarios(run):
+    shutil.rmtree(run.artifacts, ignore_errors=True)
+    run.artifacts.mkdir(parents=True)
+    # Not CARGO_TARGET_DIR: sccache keys on every CARGO_* variable, so an
+    # absolute path there would keep each worktree's dependency builds apart.
+    env = {k: v for k, v in os.environ.items() if k not in ('CARGO_TARGET_DIR', 'SIM_VIDEO')}
+    process = subprocess.Popen(
+        [*COMMAND, '--target-dir', str(run.target), *run.tests],
+        cwd=run.source,
+        env=env | {'SIM_ARTIFACTS': str(run.artifacts)},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
     try:
-        for run in runs:
-            shutil.rmtree(run.artifacts, ignore_errors=True)
-            run.artifacts.mkdir(parents=True)
-            # Not CARGO_TARGET_DIR: sccache keys on every CARGO_* variable, so an
-            # absolute path there would keep each worktree's dependency builds apart.
-            env = {k: v for k, v in os.environ.items() if k != 'CARGO_TARGET_DIR'} | {
-                'SIM_ARTIFACTS': str(run.artifacts)
-            }
-            env.pop('SIM_VIDEO', None)
-            if run.video:
-                env['SIM_VIDEO'] = '1'
-            processes.append(
-                subprocess.Popen(
-                    [*COMMAND, '--target-dir', str(run.target), *run.tests],
-                    cwd=run.source,
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    start_new_session=True,
-                )
-            )
-            prefix = f'{run.artifacts.name} | ' if len(runs) > 1 else ''
-            pumps.append(threading.Thread(target=echo, args=(processes[-1], run.artifacts, prefix, done)))
-            pumps[-1].start()
-        for _ in pumps:
-            if error := done.get():
-                raise error
-        return [process.wait() for process in processes]
-    finally:
-        for process in processes:
-            stop(process)
-        for pump in pumps:
-            pump.join()
-
-
-def echo(process, artifacts, prefix, done):
-    try:
-        with (artifacts / 'cargo.log').open('w') as log:
+        with (run.artifacts / 'cargo.log').open('w') as log:
             for line in process.stdout:
-                sys.stdout.write(prefix + line)
+                sys.stdout.write(f'{run.artifacts.name} | {line}')
                 log.write(line)
-        done.put(None)
-    except BaseException as error:
-        done.put(error)
+        return process.wait()
+    finally:
+        stop(process)
 
 
 def stop(process):
@@ -346,12 +296,6 @@ def incomplete(directory, status):
     return None
 
 
-def drop_unrequested_videos(results):
-    for result in results:
-        result['files'] = [f for f in result['files'] if not f.startswith('video.')]
-    return results
-
-
 def video_scenarios(pairs, before, after, with_changed):
     old, current = {r['name'] for r in before}, {r['name'] for r in after}
     new = [r['name'] for r in after if r['name'] not in old]
@@ -362,23 +306,28 @@ def video_scenarios(pairs, before, after, with_changed):
     return [*new, *differ], differ
 
 
-def record_videos(videos):
-    if not videos:
-        return
-    for (run, results, names), status in zip(videos, scenarios(*(run for run, _, _ in videos)), strict=True):
-        if problem := incomplete(run.artifacts, status):
-            print(f'sim-compare: warning: some videos are missing: {problem}', file=sys.stderr)
-        by_name = {r['name']: r for r in results}
-        for name in names:
-            for video in sorted((run.artifacts / name).glob('video.*')):
-                video.rename(by_name[name]['dir'] / video.name)
-                by_name[name]['files'].append(video.name)
+def render_videos(renderer, results):
+    def render(result):
+        done = subprocess.run([renderer, '--video', result['dir']], capture_output=True, text=True)
+        if done.returncode:
+            print(f'sim-compare: warning: no video of {result["name"]}: {done.stderr.strip()}', file=sys.stderr)
+        else:
+            result['files'].append(Path(done.stdout.strip()).name)
+
+    with ThreadPoolExecutor(VIDEO_JOBS) as pool:
+        list(pool.map(render, results))
 
 
-def cache_key(commit, name_filter):
+def rustc_hash():
+    version = subprocess.run(['rustc', '-vV'], cwd=ROOT, check=True, capture_output=True, text=True).stdout
+    return hashlib.sha256(version.encode()).hexdigest()[:12]
+
+
+def cache_key(commit, rustc, name_filter):
+    key = f'{commit}-{rustc}'
     if not name_filter:
-        return commit
-    return f'{commit}-{hashlib.sha256(name_filter.encode()).hexdigest()[:16]}'
+        return key
+    return f'{key}-{hashlib.sha256(name_filter.encode()).hexdigest()[:16]}'
 
 
 @contextmanager
@@ -389,8 +338,12 @@ def cache_lock(kind):
         yield
 
 
-def copy_run(source, destination):
-    shutil.copytree(source, destination, ignore=shutil.ignore_patterns('video.*'))
+@contextmanager
+def build_lock(key):
+    CACHE.mkdir(parents=True, exist_ok=True)
+    with (CACHE / f'{BUILDING}{key}').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def restore(key, directory):
@@ -399,7 +352,7 @@ def restore(key, directory):
         if not entry.is_dir():
             return False
         shutil.rmtree(directory, ignore_errors=True)
-        copy_run(entry, directory)
+        shutil.copytree(entry, directory)
         os.utime(entry)
     return True
 
@@ -408,7 +361,7 @@ def store(key, directory):
     CACHE.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=STAGING, dir=CACHE))
     try:
-        copy_run(directory, staging / key)
+        shutil.copytree(directory, staging / key)
         with cache_lock(fcntl.LOCK_EX):
             # Fails when another run stored the same base first.
             with suppress(OSError):
@@ -424,10 +377,36 @@ def evict():
     entries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     for entry in entries[CACHE_ENTRIES:]:
         shutil.rmtree(entry, ignore_errors=True)
+        (CACHE / f'{BUILDING}{entry.name}').unlink(missing_ok=True)
     for staging in CACHE.glob(f'{STAGING}*'):
         with suppress(FileNotFoundError):
             if time.time() - staging.stat().st_mtime > ABANDONED_STAGING_S:
                 shutil.rmtree(staging, ignore_errors=True)
+
+
+def ensure_base(key, commit, out, target, tests):
+    before = out / 'before'
+    if restore(key, before):
+        print(f'sim-compare: base screens from {CACHE / key}', flush=True)
+        return None
+    with build_lock(key):
+        if restore(key, before):
+            print(f'sim-compare: base screens from {CACHE / key}, built meanwhile', flush=True)
+            return None
+        with checkout(commit, out / 'base-src') as source:
+            status = run_scenarios(Run(source, before, base_target(target), tests))
+        problem = incomplete(before, status)
+        if problem is None:
+            store(key, before)
+        return problem
+
+
+def fill(commit, name_filter=None):
+    commit = git('rev-parse', '--verify', f'{commit}^{{commit}}')
+    key = cache_key(commit, rustc_hash(), name_filter)
+    if (CACHE / key).is_dir():
+        return None
+    return ensure_base(key, commit, FILL, cargo_target(), selection(name_filter))
 
 
 @contextmanager
@@ -478,85 +457,77 @@ def resolve_base(base):
     if base is None:
         fetch_origin_main()
         base = DEFAULT_BASE
-    # rev-parse resolves the commit itself; log --format would print signature output first under log.showSignature.
-    sha = git('rev-parse', '--verify', f'{base}^{{commit}}')
+    sha = git('merge-base', 'HEAD', git('rev-parse', '--verify', f'{base}^{{commit}}'))
+    # log --format would print signature output first under log.showSignature.
     subject = git('log', '-1', '--no-show-signature', '--format=%s', sha)
     return base, sha, subject
+
+
+def cargo_target():
+    return Path(os.environ.get('CARGO_TARGET_DIR') or ROOT / 'target').resolve()
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        '--base', help=f'git ref to compare against (default: {DEFAULT_BASE}, fetched from origin first)'
+        '--base',
+        help=f'compare against the merge-base with this git ref (default: {DEFAULT_BASE}, fetched from origin first)',
     )
     parser.add_argument('--pr', help='pull request to comment on with the comparison')
     parser.add_argument('--filter', help='cargo test name filter, applied to both runs')
     parser.add_argument(
         '--video', action='store_true', help='also show before and after videos of scenarios whose screens changed'
     )
+    parser.add_argument(
+        '--fill', metavar='COMMIT', help="only cache COMMIT's screens as a base for later comparisons, then exit"
+    )
     parser.add_argument('--out', type=Path, default=OUT)
     args = parser.parse_args(argv)
     warn_if_low_disk()
+    if args.fill:
+        if problem := fill(args.fill, args.filter):
+            print(f'sim-compare: {args.fill} was not cached: {problem}', file=sys.stderr)
+            return 1
+        return 0
     try:
         base, base_commit, base_subject = resolve_base(args.base)
     except subprocess.CalledProcessError:
         print(f'unknown git ref {args.base or DEFAULT_BASE!r}', file=sys.stderr)
         return 2
     short = base_commit[:10]
-    print(f'sim-compare base: {base} at {short} {base_subject}', flush=True)
+    print(f'sim-compare base: merge-base with {base} at {short} {base_subject}', flush=True)
     # Absolute, because the base runs with its worktree as working directory.
     out = args.out.resolve()
-    target = Path(os.environ.get('CARGO_TARGET_DIR') or ROOT / 'target').resolve()
+    target = cargo_target()
     after_dir, before_dir = out / 'after', out / 'before'
     (out / 'summary.md').unlink(missing_ok=True)
     tests = selection(args.filter)
-    key = cache_key(base_commit, args.filter)
-    with ExitStack() as stack:
-
-        @functools.cache
-        def base_source():
-            return stack.enter_context(checkout(base_commit, out / 'base-src'))
-
-        current = Run(ROOT, after_dir, target, tests)
-        cached = restore(key, before_dir)
-        if cached:
-            print(f'sim-compare: base screens from {CACHE / key}', flush=True)
-            [after_status], before_status = scenarios(current), 0
-        else:
-            after_status, before_status = scenarios(current, Run(base_source(), before_dir, base_target(target), tests))
-        before_problem = incomplete(before_dir, before_status)
-        if not cached and before_problem is None:
-            store(key, before_dir)
-        problems = [
-            f'{side}: {problem}'
-            for side, problem in (
-                ('after (this checkout)', incomplete(after_dir, after_status)),
-                (f'before ({base})', before_problem),
-            )
-            if problem
-        ]
-        if problems:
-            sys.stdout.flush()
-            print(
-                '\nsim-compare: refusing to compare an incomplete run; nothing was reported or posted.', file=sys.stderr
-            )
-            for problem in problems:
-                print(f'  {problem}', file=sys.stderr)
-            return 1
-        before, after = (
-            drop_unrequested_videos(report.load(before_dir)),
-            drop_unrequested_videos(report.load(after_dir)),
+    key = cache_key(base_commit, rustc_hash(), args.filter)
+    with ThreadPoolExecutor(1) as pool:
+        base_run = pool.submit(ensure_base, key, base_commit, out, target, tests)
+        after_status = run_scenarios(Run(ROOT, after_dir, target, tests))
+        before_problem = base_run.result()
+    problems = [
+        f'{side}: {problem}'
+        for side, problem in (
+            ('after (this checkout)', incomplete(after_dir, after_status)),
+            (f'before (merge-base with {base})', before_problem),
         )
-        pairs = pair(before, after)
-        after_videos, before_videos = video_scenarios(pairs, before, after, args.video)
-        videos = []
-        if after_videos:
-            run = Run(ROOT, out / 'after-video', target, exact(after_dir, after_videos), True)
-            videos.append((run, after, after_videos))
-        if before_videos:
-            run = Run(base_source(), out / 'before-video', base_target(target), exact(before_dir, before_videos), True)
-            videos.append((run, before, before_videos))
-        record_videos(videos)
+        if problem
+    ]
+    if problems:
+        sys.stdout.flush()
+        print('\nsim-compare: refusing to compare an incomplete run; nothing was reported or posted.', file=sys.stderr)
+        for problem in problems:
+            print(f'  {problem}', file=sys.stderr)
+        return 1
+    before, after = report.load(before_dir), report.load(after_dir)
+    pairs = pair(before, after)
+    after_videos, before_videos = video_scenarios(pairs, before, after, args.video)
+    render_videos(
+        target / 'debug/shell-simulator',
+        [*(r for r in after if r['name'] in after_videos), *(r for r in before if r['name'] in before_videos)],
+    )
     for directory, results in ((before_dir, before), (after_dir, after)):
         (directory / 'index.html').write_text(report.page(results, f'Simulator scenarios ({directory.name})'))
     markdown, attachments = comparison(pairs, before, after, ROOT, (base, short, base_subject, report.commit()))

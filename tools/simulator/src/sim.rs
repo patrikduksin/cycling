@@ -1107,7 +1107,7 @@ impl Sim {
 
 impl Drop for Sim {
     fn drop(&mut self) {
-        let Some(recording) = self.recording.take() else {
+        let Some(mut recording) = self.recording.take() else {
             return;
         };
         // A second panic while a failed scenario unwinds would abort the whole

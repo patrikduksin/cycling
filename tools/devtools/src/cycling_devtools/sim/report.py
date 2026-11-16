@@ -11,16 +11,23 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from cycling_devtools.workspace import ROOT
 
 # gh accepts at most this many attachments per command.
 ATTACHMENT_LIMIT = 50
+# GitHub refuses a longer comment body.
+BODY_LIMIT = 65_536
 CHECKPOINT_LIMIT = 4
 ASSET = r'https://github\.com/user-attachments/assets/[0-9a-fA-F-]+'
+ASSET_URL_LENGTH = len('https://github.com/user-attachments/assets/') + 36
+PENDING = '⏳'
+PUBLISH = ROOT / '.local/sim/publish'
 # The listing labels attachment i as `![i](path)`; gh renders it either as
 # Markdown or as an <img> tag, with attributes in any order.
 LISTED = (
@@ -221,44 +228,102 @@ def page(results, heading):
 
 
 def comments(markdown, attachments):
-    """Split into comments that each stay within gh's attachment limit."""
-    if len(attachments) <= ATTACHMENT_LIMIT:
-        return [(markdown, attachments)]
+    def uploaded_size(text):
+        return len(text) + sum(text.count(a) * (ASSET_URL_LENGTH - len(a)) for a in attachments)
+
     head, *sections = markdown.split('\n### ')
-    chunks, body, files = [], head, []
-    for section in sections:
-        section = '\n### ' + section
-        needed = [a for a in attachments if a in section]
-        if files and len(files) + len(needed) > ATTACHMENT_LIMIT:
-            chunks.append((body, files))
-            body, files = '## Simulator scenarios (continued)\n', []
+    chunks, body, used = [], head, uploaded_size(head)
+    for section in ('\n### ' + s for s in sections):
+        if used + uploaded_size(section) > BODY_LIMIT and body.strip():
+            chunks.append(body)
+            body = '## Simulator scenarios (continued)\n'
+            used = len(body)
         body += section
-        files += needed
-    chunks.append((body, files))
-    return chunks
+        used += uploaded_size(section)
+    chunks.append(body)
+    return [(chunk, [a for a in attachments if a in chunk]) for chunk in chunks]
+
+
+def replace_media(body, files, mark=PENDING):
+    for path in map(re.escape, files):
+        body = re.sub(rf'<img src="{path}"[^>]*>|!\[[^\]]*\]\({path}\)|^{path}$', mark, body, flags=re.MULTILINE)
+    return body
+
+
+def snapshot(attachments):
+    """Copies of the attachments for the background upload, which a later run
+    cannot overwrite; returns the job directory and each copy by original."""
+    PUBLISH.mkdir(parents=True, exist_ok=True)
+    job = Path(tempfile.mkdtemp(dir=PUBLISH))
+    copies = {}
+    for i, path in enumerate(attachments):
+        copy = job / f'{i}{Path(path).suffix}'
+        shutil.copyfile(ROOT / path, copy)
+        copies[path] = reference(copy, ROOT)
+    return job, copies
 
 
 def post(pr, markdown, attachments):
-    """Upload, then lay out. gh rewrites only Markdown image references, so each
-    comment first lists its files as plain references, then is edited into the
-    report with the uploaded URLs in tables and as video players."""
-    for body, files in comments(markdown, attachments):
-        listing = 'Uploading simulator artifacts…\n\n' + '\n\n'.join(f'![{i}]({path})' for i, path in enumerate(files))
-        command = ['gh', 'pr', 'comment', str(pr), '--body-file', '-']
-        for path in files:
-            command += ['--attach', path]
-        url = gh(command, listing)
-        comment = url.strip().rsplit('#issuecomment-', 1)[-1]
-        if not comment.isdigit():
-            raise RuntimeError(f'gh did not report the new comment: {url!r}')
-        endpoint = f'repos/{{owner}}/{{repo}}/issues/comments/{comment}'
-        try:
-            uploaded = gh(['gh', 'api', endpoint, '--jq', '.body'])
-            gh(['gh', 'api', '-X', 'PATCH', endpoint, '-F', 'body=@-'], resolve(body, files, uploaded))
-        except Exception:
-            # Leave no half-written "Uploading…" comment behind.
-            subprocess.run(['gh', 'api', '-X', 'DELETE', endpoint], cwd=ROOT, capture_output=True)
-            raise
+    job, copies = snapshot(attachments)
+    pages = [
+        {'comment': post_comment(pr, replace_media(body, files)), 'body': body, 'files': files}
+        for body, files in comments(markdown, attachments)
+    ]
+    (job / 'job.json').write_text(json.dumps({'pr': str(pr), 'pages': pages, 'copies': copies}))
+    with (job / 'publish.log').open('w') as log:
+        subprocess.Popen(
+            [sys.executable, '-m', 'cycling_devtools.sim.report', '--publish', str(job)],
+            cwd=ROOT,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    print(f'posted on #{pr}; {len(attachments)} attachments upload in the background, log in {job / "publish.log"}')
+
+
+def publish(job):
+    """gh rewrites only Markdown references, never an HTML <img>, so each batch
+    goes up in a throwaway comment that lists it as Markdown images, and the
+    uploaded URLs are read back from that comment before it is deleted."""
+    state = json.loads((job / 'job.json').read_text())
+    pages, copies = state['pages'], state['copies']
+    remaining = list(copies)
+    try:
+        while remaining:
+            batch, later = remaining[:ATTACHMENT_LIMIT], remaining[ATTACHMENT_LIMIT:]
+            listing = 'Uploading simulator artifacts…\n\n' + '\n\n'.join(
+                f'![{i}]({copies[path]})' for i, path in enumerate(batch)
+            )
+            upload = post_comment(state['pr'], listing, [copies[path] for path in batch])
+            try:
+                uploaded = gh(['gh', 'api', upload, '--jq', '.body'])
+            finally:
+                gh(['gh', 'api', '-X', 'DELETE', upload])
+            for page in pages:
+                if any(path in page['files'] for path in batch):
+                    page['body'] = resolve(page['body'], batch, uploaded)
+                    edit(page['comment'], replace_media(page['body'], later))
+            remaining = later
+    except Exception as error:
+        for page in pages:
+            edit(page['comment'], replace_media(page['body'], remaining, f'upload failed: {error}'))
+        raise
+    shutil.rmtree(job)
+
+
+def post_comment(pr, body, attachments=()):
+    command = ['gh', 'pr', 'comment', str(pr), '--body-file', '-']
+    for path in attachments:
+        command += ['--attach', path]
+    url = gh(command, body)
+    number = url.strip().rsplit('#issuecomment-', 1)[-1]
+    if not number.isdigit():
+        raise RuntimeError(f'gh did not report the new comment: {url!r}')
+    return f'repos/{{owner}}/{{repo}}/issues/comments/{number}'
+
+
+def edit(endpoint, body):
+    gh(['gh', 'api', '-X', 'PATCH', endpoint, '-F', 'body=@-'], body)
 
 
 def gh(command, stdin=None):
@@ -295,10 +360,16 @@ def commit():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('run', type=Path, help='directory given to SIM_ARTIFACTS')
+    parser.add_argument('run', type=Path, nargs='?', help='directory given to SIM_ARTIFACTS')
     parser.add_argument('--pr', help='pull request to comment on with inline artifacts')
     parser.add_argument('--heading', default='Simulator scenarios')
+    parser.add_argument('--publish', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.publish:
+        publish(args.publish)
+        return 0
+    if args.run is None:
+        parser.error('name the run directory')
     results = load(args.run)
     if not results:
         print(f'no scenario results under {args.run}', file=sys.stderr)

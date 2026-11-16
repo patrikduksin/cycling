@@ -8,6 +8,19 @@ use shell_simulator::devices::Memory;
 use shell_simulator::devices::PowerDevice;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|a| a == "--video") {
+        let mut failed = false;
+        for dir in &args[2..] {
+            match shell_simulator::recording::render_video(std::path::Path::new(dir)) {
+                Ok(file) => println!("{dir}/{file}"),
+                Err(error) => {
+                    eprintln!("{dir}: {error}");
+                    failed = true;
+                }
+            }
+        }
+        std::process::exit(i32::from(failed));
+    }
     if args.iter().any(|a| a == "--terminal") {
         let value = |name: &str| {
             args.iter()

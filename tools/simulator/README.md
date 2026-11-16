@@ -28,16 +28,24 @@ Scenarios live in `tests/ride_scenarios.rs`. `cycling sim` runs them with
 screenshots (`sim.checkpoint(..)`), a chart of the world, recorded rides as GPX
 and JSON, a timeline and `result.json` for each scenario under `.local/sim/latest`,
 including failed ones. `SIM_VIDEO=1` adds a captioned video; encoding it is most
-of a run's time, so only `cycling sim-pr` and `cycling sim-live` set it. `artifacts/` holds the PNG, GIF, MP4 (through `ffmpeg`)
+of a run's time, so only `cycling sim-pr` and `cycling sim-live` set it. Every
+scenario also stores the frames its video would show in `frames.bin`, so
+`shell-simulator --video <scenario dir>...` renders that video later without
+running the scenario again. `artifacts/` holds the PNG, GIF, MP4 (through `ffmpeg`)
 and chart encoders. `cycling sim-pr <number>` posts the run inline on a pull
-request through `cycling_devtools.sim.report`. `cycling sim-compare [--base <ref>]
-[--filter <test name>] [--pr <number>] [--video]` also runs the base ref (default `origin/main`, fetched first) in a temporary
-worktree and reports only screens whose pixels changed, Before | After
-(`cycling_devtools.sim.compare`). Both sides run without video; only scenarios
-new in the PR run again for a video, and with `--video` the scenarios whose
-screens changed too, on both sides. A complete base run is cached by commit and
-filter in the primary checkout's `.local/sim/base-cache`, so a later comparison
-against the same base, from any worktree, runs only the current checkout.
+request through `cycling_devtools.sim.report`: the comment posts at once and its
+media upload in the background, filling it in place. `cycling sim-compare [--base <ref>]
+[--filter <test name>] [--pr <number>] [--video]` also runs the merge-base with
+the base ref (default `origin/main`, fetched first) in a temporary worktree and
+reports only screens whose pixels changed, Before | After
+(`cycling_devtools.sim.compare`). Both sides run once, without video; scenarios
+new in the PR get a video from their stored frames, and with `--video` the
+scenarios whose screens changed too, on both sides. A complete base run is
+cached by commit, rustc and filter in the primary checkout's
+`.local/sim/screens-cache`, so a later comparison against the same base, from
+any worktree, runs only the current checkout. `cycling sim-compare --fill <commit>`
+caches a commit's run ahead of time, for a merge to call on each new main;
+concurrent misses on one base build it once.
 
 `cycling sim-live` opens a window (`src/bin/sim-live.rs`, behind the `live`
 feature) onto `live.rs`: the device powers on beside a rider at 25 km/h on a

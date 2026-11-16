@@ -1,4 +1,8 @@
 import json
+import re
+from pathlib import Path
+
+import pytest
 
 from cycling_devtools.sim import report
 
@@ -50,16 +54,101 @@ def test_checkpoints_are_capped_but_keep_the_last(tmp_path):
     assert checkpoints[-1] == '07-step-6.png'
 
 
-def test_comments_split_at_the_attachment_limit(tmp_path):
+def test_comments_split_only_at_github_size_limit(tmp_path):
     for i in range(12):
-        scenario(tmp_path, f'scenario_{i:02}', checkpoints=4)
+        scenario(tmp_path, f'scenario_{i:03}', checkpoints=4)
+    markdown, attachments = report.summary(report.load(tmp_path), tmp_path, 'Sim', 'abc')
+    assert len(attachments) > report.ATTACHMENT_LIMIT
+    assert report.comments(markdown, attachments) == [(markdown, attachments)]
+    for i in range(12, 150):
+        scenario(tmp_path, f'scenario_{i:03}', checkpoints=4)
     markdown, attachments = report.summary(report.load(tmp_path), tmp_path, 'Sim', 'abc')
     chunks = report.comments(markdown, attachments)
     assert len(chunks) > 1
-    assert all(len(files) <= report.ATTACHMENT_LIMIT for _, files in chunks)
     assert sorted(f for _, files in chunks for f in files) == sorted(attachments)
     for body, files in chunks:
         assert all(f in body for f in files)
+        uploaded = body
+        for path in files:
+            uploaded = uploaded.replace(path, 'https://github.com/user-attachments/assets/' + 'f' * 36)
+        assert len(uploaded) <= report.BODY_LIMIT
+
+
+class FakeGitHub:
+    def __init__(self, fail_uploads=False):
+        self.comments, self.next, self.uploads, self.fail_uploads = {}, 1, [], fail_uploads
+
+    def __call__(self, command, stdin=None):
+        if command[:3] == ['gh', 'pr', 'comment']:
+            files = command[command.index('--body-file') + 3 :: 2]
+            if files and self.fail_uploads:
+                raise RuntimeError('upload refused')
+            self.uploads.append(len(files))
+            body = stdin
+            for i, path in enumerate(files):
+                url = f'https://github.com/user-attachments/assets/{self.next:04}-{i:04}'
+                # gh shows videos as bare URLs and images as Markdown.
+                body = re.sub(
+                    rf'!\[(\d+)\]\({re.escape(path)}\)', url if path.endswith('.mp4') else rf'![\1]({url})', body
+                )
+            self.comments[self.next] = body
+            self.next += 1
+            return f'https://github.com/o/r/pull/7#issuecomment-{self.next - 1}\n'
+        number = int(next(c for c in command if '/comments/' in c).rsplit('/', 1)[-1])
+        if 'DELETE' in command:
+            del self.comments[number]
+        elif 'PATCH' in command:
+            self.comments[number] = stdin
+        else:
+            return self.comments[number]
+        return ''
+
+
+def posted(tmp_path, monkeypatch, github):
+    root = tmp_path / 'root'
+    for i in range(20):
+        scenario(root / 'run', f'scenario_{i:02}', checkpoints=4)
+    markdown, attachments = report.summary(report.load(root / 'run'), root, 'Sim', 'abc')
+    spawned = []
+    monkeypatch.setattr(report, 'ROOT', root)
+    monkeypatch.setattr(report, 'PUBLISH', root / 'publish')
+    monkeypatch.setattr(report, 'gh', github)
+    monkeypatch.setattr(report.subprocess, 'Popen', lambda command, **kwargs: spawned.append(command))
+    report.post(7, markdown, attachments)
+    [command] = spawned
+    assert command[-2] == '--publish'
+    return attachments, Path(command[-1])
+
+
+def test_the_report_posts_at_once_and_its_media_fill_in_one_comment(tmp_path, monkeypatch):
+    github = FakeGitHub()
+    attachments, job = posted(tmp_path, monkeypatch, github)
+    [(number, first)] = github.comments.items()
+    assert first.count(report.PENDING) == len(attachments)
+    assert './run/' not in first
+    report.publish(job)
+    assert list(github.comments) == [number]
+    final = github.comments[number]
+    assert report.PENDING not in final and './run/' not in final
+    assert final.count('https://github.com/user-attachments/assets/') == len(attachments)
+    assert github.uploads == [0, 50, 50, 20]
+    assert not job.exists()
+
+
+def test_a_failed_upload_says_so_in_the_report(tmp_path, monkeypatch):
+    github = FakeGitHub(fail_uploads=True)
+    _, job = posted(tmp_path, monkeypatch, github)
+    with pytest.raises(RuntimeError):
+        report.publish(job)
+    [final] = github.comments.values()
+    assert 'upload failed: upload refused' in final and report.PENDING not in final
+    assert job.exists()
+
+
+def test_pending_media_show_as_a_mark_not_a_broken_image():
+    body = './a/video.mp4\n![video](./a/v.gif)\n| <img src="./a/01-x.png" width="300"> |\n![chart](./a/chart.png)'
+    marked = report.replace_media(body, ['./a/video.mp4', './a/v.gif', './a/01-x.png', './a/chart.png'])
+    assert marked == '⏳\n⏳\n| ⏳ |\n⏳'
 
 
 def test_page_links_every_artifact(tmp_path):

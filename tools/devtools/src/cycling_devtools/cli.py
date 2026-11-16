@@ -89,9 +89,9 @@ TASKS = [
     ),
     task(
         'test-slow',
-        'Tests too slow for every verify, run after merges: the full 16 MiB flasher read',
+        'The web tests with those too slow for every verify (CYCLING_SLOW=1), one file at a time so load cannot time them out',
         'bun install --frozen-lockfile --silent',
-        'CYCLING_SLOW=1 bun test web/flasher',
+        'CYCLING_SLOW=1 bun test web',
     ),
     task(
         'stack-frames',

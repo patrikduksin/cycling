@@ -33,7 +33,6 @@ def require_disk():
 
 @contextlib.contextmanager
 def admitted():
-    """Holds one of the machine's slots; yields the seconds spent waiting for it."""
     require_disk()
     pool = workspace.main_checkout() / '.local' / 'admission'
     pool.mkdir(parents=True, exist_ok=True)
@@ -41,6 +40,5 @@ def admitted():
     while (slot := free_slot(pool)) is None:
         time.sleep(POLL_SECONDS)
     with slot:
-        # The runs ahead in the queue may have filled the disk.
         require_disk()
         yield time.monotonic() - started

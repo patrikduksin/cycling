@@ -11,7 +11,6 @@ from pathlib import Path
 from cycling_devtools import workspace
 
 RESULTS_KEPT_DAYS = 30
-# Ambient settings that change what a gate builds or asserts, so a pass under one value says nothing about another.
 KEYED_ENV_PREFIXES = ('CYCLING_', 'CARGO_BUILD_', 'CARGO_PROFILE_')
 KEYED_ENV_NAMES = frozenset({'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'NEXTEST_PROFILE'})
 

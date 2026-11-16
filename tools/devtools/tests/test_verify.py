@@ -444,7 +444,7 @@ LONG = 'sleep 300 & echo $! > "$PID_FILE"; wait'
 def test_a_terminated_run_stops_its_gates_in_either_kind_of_lane(
     checkout, monkeypatch, tmp_path, restored_signals, number, lane
 ):
-    runner.stop_on_signals()
+    runner.unwind_on_termination()
     monkeypatch.setenv('PID_FILE', str(tmp_path / 'pid'))
     long = (lanes.Gate('probe', LONG),)
     monkeypatch.setattr(lanes, 'LANES', (long,) if lane == 'parallel' else ())

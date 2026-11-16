@@ -1,5 +1,3 @@
-"""Runs gates as shell commands with a log each, and can stop every one of them."""
-
 import contextlib
 import os
 import signal
@@ -58,14 +56,11 @@ class Gates:
         with self.lock:
             self.stopped = True
             for process in self.running:
-                # Each gate leads its own process group, so this reaches the compilers and tests below the shell.
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGTERM)
 
 
-def stop_on_signals():
-    """A terminated run unwinds like an interrupted one, so it stops its gates on the way out."""
-
+def unwind_on_termination():
     def stop(number, frame):
         raise SystemExit(128 + number)
 

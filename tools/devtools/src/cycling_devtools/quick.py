@@ -43,7 +43,7 @@ def run(running, gate):
 
 
 def main():
-    runner.stop_on_signals()
+    runner.unwind_on_termination()
     root = workspace.ROOT
     paths = tree.changed_paths(tree.merge_base('HEAD'), tree.tree_hash(root))
     crates = touched(paths, root)

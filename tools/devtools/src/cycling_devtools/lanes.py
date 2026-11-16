@@ -48,8 +48,6 @@ RUST_CODE = frozenset(
 RUST_BUILD = RUST_CODE | {'build', 'check-devices'}
 WEB = frozenset({'test-web', 'check-web'})
 
-# What decides which gates run, how they run and where a pass is kept: `cli` holds each gate's steps,
-# and the rest is `verify` with everything it imports. A change to one of them is verified by every gate.
 VERIFY_MODULES = ('admission', 'clean', 'cli', 'lanes', 'runner', 'tree', 'verify', 'workspace')
 
 # A path no rule matches selects every gate, so a new directory is verified in full until it gets a rule.
@@ -105,7 +103,6 @@ class Crate:
 
 
 def path_deps(manifest, directory, shared):
-    """The directories of the path dependencies that end up in this crate's build, so not the dev ones."""
     found = []
     for table in (manifest, *manifest.get('target', {}).values()):
         for kind in ('dependencies', 'build-dependencies'):

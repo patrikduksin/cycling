@@ -559,8 +559,7 @@ def main(argv=None):
     parser.add_argument('--out', type=Path, default=OUT)
     args = parser.parse_args(argv)
     warn_if_low_disk()
-    # Cargo runs in sessions of its own, which a signal to this process's group does not reach.
-    runner.stop_on_signals()
+    runner.unwind_on_termination()
     if args.fill:
         if problem := fill(args.fill, args.filter):
             print(f'sim-compare: {args.fill} was not cached: {problem}', file=sys.stderr)

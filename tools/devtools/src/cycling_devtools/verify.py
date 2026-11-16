@@ -105,6 +105,7 @@ class Run:
         return self.key(gate, self.request)
 
     def record_keys(self, gate):
+
         # A pass that posted on a pull request also certifies the run that posts nothing, never the reverse.
         return {self.lookup_key(gate), self.key(gate, dataclasses.replace(self.request, pr=None, video=False))}
 
@@ -121,7 +122,6 @@ class Run:
         return result
 
     def stop_if_edited(self):
-        """Whether the tree has changed since the run began. The first change found stops every gate."""
         with self.lock:
             if not self.edited:
                 self.edited = self.watch.changed()
@@ -202,7 +202,6 @@ def verify(request):
         queued = 0.0
         if plan.takes_slot and len(run.cached) < len(plan.gates):
             queued = held.enter_context(admission.admitted())
-            # During the wait the tree may have been edited, or passed by another run.
             run.stop_if_edited()
             run.find_cached()
         with ThreadPoolExecutor(len(plan.parallel) or 1) as pool:
@@ -245,7 +244,7 @@ def main(argv=None):
     parser.add_argument('--deep', action='store_true', help='tier 2 only: the fixed fuzz seeds and the planted bug')
     args = parser.parse_args(argv)
     warn_if_low_disk()
-    runner.stop_on_signals()
+    runner.unwind_on_termination()
 
     request = Request(workspace.ROOT, tree.merge_base('HEAD'), args.pr, args.video, args.all, args.fresh, args.deep)
     outcome = verify(request)

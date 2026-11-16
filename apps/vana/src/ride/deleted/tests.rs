@@ -35,6 +35,10 @@ fn a_record_round_trips_and_a_damaged_slot_is_none() {
     assert_eq!(decode(&slot), Some(saved));
     slot[5] ^= 1;
     assert_eq!(decode(&slot), None);
+    let mut other = encode(&saved);
+    other[0] = 2;
+    seal(&mut other);
+    assert_eq!(decode(&other), None, "another record version");
 }
 
 #[test]
@@ -122,7 +126,7 @@ fn a_full_table_refuses_the_next_ride() {
 }
 
 #[test]
-fn a_foreign_or_later_table_is_read_as_nothing_and_never_written_over() {
+fn a_foreign_table_is_read_as_nothing_and_never_written_over() {
     let mut card = formatted();
     put(&mut card, TABLE, b"not a table");
     let mut kept = shelf();
@@ -138,6 +142,17 @@ fn a_foreign_or_later_table_is_read_as_nothing_and_never_written_over() {
     assert_eq!(read(&mut card, &mut kept), Err(Error::Table));
     assert_eq!(save(&mut card, &mut kept, &record(1)), Err(Error::Table));
     assert_eq!(decode_table(&later).count(), 0);
+
+    let mut other = std::vec![0u8; 2 * SLOT];
+    other[..4].copy_from_slice(MAGIC);
+    other[4] = 2;
+    put_u16(&mut other, 6, SLOT as u16);
+    seal(&mut other[..SLOT]);
+    other[SLOT..].copy_from_slice(&encode(&record(1)));
+    put(&mut card, TABLE, &other);
+    assert_eq!(read(&mut card, &mut kept), Err(Error::Table));
+    assert_eq!(save(&mut card, &mut kept, &record(2)), Err(Error::Table));
+    assert_eq!(decode_table(&other).count(), 0);
 }
 
 #[test]

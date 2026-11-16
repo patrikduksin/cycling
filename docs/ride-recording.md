@@ -737,11 +737,8 @@ written.
   totals count every ride meanwhile.
 - The records of internal-journal rides are on the card too. Another card
   shows those rides again. A
-  `rides/deleted.tbl` without the magic, with a damaged header or with
-  another stride is read as hiding nothing and never written over.
-- Firmware from before the table lists only `.workout` and `.facts` files
-  under `rides/`, so it leaves `rides/deleted.tbl` alone and shows every ride
-  again. Updating again hides them.
+  `rides/deleted.tbl` without the magic, with a damaged header, or of another
+  version or stride is read as hiding nothing and never written over.
 
 The table is a header and then one 32-byte slot per hidden ride, each ending
 in the CRC32 of the bytes before it:

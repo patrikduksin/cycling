@@ -26,8 +26,7 @@
 //! | 28..32 | CRC32 of bytes 0..28 |
 //!
 //! A record hides the ride whose journal, store, id, start second and ride
-//! time all match, so an undated ride is hidden too, and a stale record left
-//! after older firmware cleared a journal hides nothing new in practice.
+//! time all match, so an undated ride is hidden too.
 //!
 //! A save writes the whole table again, copy-on-write, its slots byte for
 //! byte and in their order with the new one last, so a table that only gains
@@ -35,9 +34,9 @@
 //! length at power-on. The commit is one directory write, so a cut leaves the
 //! old table or the new. Saving a ride twice changes nothing.
 //! The table keeps up to [`KEEP`] rides and never drops one on its own.
-//! A table this version would not write, such as one with another stride
-//! from a later version, hides nothing and is never written over. Older firmware lists only `.workout` and `.facts` files under
-//! `rides/`, so it never opens or deletes this one.
+//! A table of another version or stride, or with a damaged header, is
+//! foreign: it hides nothing and is never written over. A slot of another
+//! record version reads as damaged.
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::{Crc32, crc32};
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
@@ -174,10 +173,10 @@ pub fn encode(record: &Record) -> [u8; SLOT] {
     slot
 }
 
-/// A slot of any record version from 1 on, or `None` if damaged, empty or of
-/// a reason this version does not know.
+/// A current slot, or `None` if damaged, empty, of another version or of a
+/// reason this version does not know.
 pub fn decode(slot: &[u8]) -> Option<Record> {
-    if slot.len() < SLOT || slot[0] < 1 || !sound(slot) {
+    if slot.len() != SLOT || slot[0] != VERSION || !sound(slot) {
         return None;
     }
     let reason = match slot[1] {
@@ -198,11 +197,11 @@ pub fn decode(slot: &[u8]) -> Option<Record> {
     })
 }
 
-/// Whether `bytes` start with a header this version writes over.
+/// Whether `bytes` start with a current, sound header.
 fn ours(bytes: &[u8]) -> bool {
     bytes.len() >= SLOT
         && bytes[..4] == MAGIC[..]
-        && bytes[4] >= 1
+        && bytes[4] == TABLE_VERSION
         && usize::from(get_u16(bytes, 6)) == SLOT
         && sound(&bytes[..SLOT])
 }

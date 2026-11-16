@@ -405,9 +405,9 @@ class Device:
             self.switch_back(slot, previous, f'failed after selection ({error})', resolve, seconds, previous_probe)
         info = console_info(resolve, seconds, LOCAL / f'{time.time_ns()}-console.log', maintenance)
         reported = None if info is None else info.get('slot')
-        if info is not None and reported in (None, NAMES[slot]):
+        if info is not None and (reported == NAMES[slot] or (maintenance and reported is None)):
             detail = ' '.join(f'{key}={info[key]}' for key in ('commit', 'protocol') if key in info)
-            source = 'INFO' if reported else 'OTA selection (this firmware does not report its slot)'
+            source = 'INFO' if reported else 'OTA selection (the maintenance image does not report its slot)'
             print(f'Running slot {NAMES[slot]} per {source}; {detail}')
             return info
         problem = (
@@ -527,13 +527,14 @@ def main():
         note = '; stock stays in the verified backup' if target_contents == 'stock' else ''
         print(
             f'Slot {NAMES[running]} ({running_contents}) is selected; writing slot {NAMES[other]} '
-            f'(held {target_contents}{note}). Rides and settings are preserved.',
+            f'(held {target_contents}{note}).',
             flush=True,
         )
         owned = device.flasher.digest(*OWNED)
         device.write(SLOTS[other], candidate)
         device.verify(SLOTS[other], candidate)
         require(device.flasher.digest(*OWNED) == owned, 'The flash changed the ride and settings reservations')
+        print('Rides and settings are unchanged (MD5).', flush=True)
     device.boot(
         metadata,
         other,

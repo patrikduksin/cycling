@@ -286,9 +286,10 @@ class EsptoolFlasherTests(unittest.TestCase):
             patch('esptool.cmds.detect_chip', detect_chip),
             patch('esptool.cmds.run_stub', lambda rom: rom),
             patch('esptool.cmds.attach_flash', lambda loader: None),
+            patch('esptool.cmds._set_flash_parameters', lambda loader: asked.append('sized')),
         ):
             self.assertEqual(self.flasher().digest(0xD98000, 0x102000), 'ab' * 16)
-        self.assertEqual(asked, [('/dev/ttyACM0', 'no-reset'), (0xD98000, 0x102000), 'closed'])
+        self.assertEqual(asked, [('/dev/ttyACM0', 'no-reset'), 'sized', (0xD98000, 0x102000), 'closed'])
 
     def test_a_failed_digest_keeps_esptools_words_in_a_private_log(self):
         from esptool.util import FatalError

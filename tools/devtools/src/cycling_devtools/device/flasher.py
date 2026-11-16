@@ -208,7 +208,7 @@ class EsptoolFlasher:
 
     def digest(self, address, size):
         # The CLI prints no MD5 for a region, so this verb drives esptool's API on the same no-reset connection.
-        from esptool.cmds import attach_flash, detect_chip, run_stub
+        from esptool.cmds import _set_flash_parameters, attach_flash, detect_chip, run_stub
 
         self.count += 1
         log = self.log_dir / f'{time.time_ns()}-{self.count}.log'
@@ -217,6 +217,7 @@ class EsptoolFlasher:
                 with detect_chip(self.port, connect_mode='no-reset') as rom:
                     loader = run_stub(rom)
                     attach_flash(loader)
+                    _set_flash_parameters(loader)
                     return loader.flash_md5sum(address, size)
             # FatalError is a RuntimeError; a lost or busy port raises serial's OSError.
             except (RuntimeError, OSError) as error:

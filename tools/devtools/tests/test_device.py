@@ -470,10 +470,12 @@ class AbFlashTests(Workspace):
         self.assertEqual(self.selected(), 0)
         self.assertEqual(self.consoles, 1)
 
-    def test_a_console_without_a_slot_field_counts_as_booted(self):
+    def test_firmware_that_does_not_report_its_slot_is_a_failed_boot(self):
         self.candidate(image())
         self.booting = lambda slot: {'commit': 'abc'}
-        self.assertIn('Running slot B per OTA selection', self.main('flash'))
+        with self.assertRaisesRegex(RuntimeError, 'INFO reports slot None'):
+            self.main('flash')
+        self.assertEqual(self.selected(), 0)
 
     def test_large_image_is_read_back_in_steps(self):
         large = image(extra=0x180000)

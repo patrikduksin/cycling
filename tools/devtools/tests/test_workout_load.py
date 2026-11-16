@@ -18,7 +18,7 @@ def test_layout_matches_the_device_codec_pin():
             'steps': [{'repeat': 2, 'steps': [{'intensity': 'work', 'minutes': 5, 'ftp': [90, 95], 'note': 'go'}]}],
         }
     )
-    header = [*b'VW', 1, 0, 2, *b'AB', 1, 1]
+    header = [*b'VW', 2, 0, 2, *b'AB', 1, 1]
     step = [1, 0, 0x2C, 0x01, 0, 0, 1, 90, 0, 95, 0, 0, 0, 0, 2, *b'GO']
     body = bytes([*header, *step, 0, 1, 2])
     assert data == body + struct.pack('<I', zlib.crc32(body))
@@ -67,7 +67,7 @@ def test_invalid_workouts_are_refused_on_the_host(workout):
 @pytest.mark.parametrize('path', EXAMPLES, ids=lambda path: path.stem)
 def test_examples_encode(path):
     data = load.encode(json.loads(path.read_text()))
-    assert data[:3] == b'VW\x01'
+    assert data[:3] == b'VW\x02'
     assert len(data) <= 5 + 20 + 2 + 12 * 35 + 8 * 3 + 4
 
 

@@ -1,6 +1,6 @@
 //! Rides on the owned bulk MMC region, through the sector log mechanism.
 //!
-//! Each log record holds one committed version-1 slot, so the internal
+//! Each log record holds one committed slot, so the internal
 //! journal's scanner and exporter decode bulk rides unchanged; a slot index is
 //! the record index. Checkpoints hold this module's catalog schema: counters,
 //! the open ride and the latest summaries. VANA checkpoints after every
@@ -23,12 +23,16 @@ use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64
 use firmware_services::sector_log::{self, Error, Log, PAYLOAD, Recovery as LogRecovery, Step};
 use firmware_services::volume::{self, Extent, Layout, RIDES, Volume};
 
-/// Owner and schema of the log: VANA rides, slot and catalog version 1.
-pub const TAG: &[u8; 16] = b"VANA-RIDES-V1\0\0\0";
+/// Owner and version of the log: VANA rides, and in the last byte the slot
+/// version, which covers the catalog too.
+pub const TAG: &[u8; 16] = &{
+    let mut tag = *b"VANA-RIDES\0\0\0\0\0\0";
+    tag[15] = crate::ride::log::VERSION;
+    tag
+};
 /// Records between checkpoints, which bounds the records boot replays.
 pub const CHECKPOINT_RECORDS: u32 = 32;
 
-const SCHEMA: u8 = 1;
 /// Counters and the open ride's position precede its summary.
 const OPEN: usize = 40;
 /// Completed-ride summaries follow the open ride's.
@@ -39,7 +43,6 @@ const _: () = assert!(ENCODED <= PAYLOAD);
 /// Encode the recovery state for a checkpoint.
 pub fn encode_catalog(catalog: &Catalog) -> [u8; ENCODED] {
     let mut bytes = [0u8; ENCODED];
-    bytes[0] = SCHEMA;
     bytes[1] = u8::from(catalog.recovery.is_some())
         | u8::from(catalog.torn_first) << 1
         | u8::from(catalog.recovery.is_some_and(|r| r.gap)) << 2;
@@ -65,7 +68,7 @@ pub fn encode_catalog(catalog: &Catalog) -> [u8; ENCODED] {
 }
 
 pub fn decode_catalog(bytes: &[u8]) -> Option<Catalog> {
-    if bytes.len() != ENCODED || bytes[0] != SCHEMA || bytes[1] & !7 != 0 {
+    if bytes.len() != ENCODED || bytes[0] != 0 || bytes[1] & !7 != 0 {
         return None;
     }
     let count = usize::from(bytes[2]);

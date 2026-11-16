@@ -33,7 +33,7 @@ pub const HISTORY_CAPACITY: usize = 4;
 pub const MAX_STEP_MS: u64 = 3000;
 
 const MAGIC: [u8; 4] = *b"RIDE";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const HEADER_SIZE: usize = 32;
 const SAMPLE_SIZE: usize = 48;
 const COMMIT_OFFSET: usize = 252;

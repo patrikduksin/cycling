@@ -326,7 +326,7 @@ fn a_damaged_turns_file_reads_none() {
     let mut longer = bytes.clone();
     longer.push(0);
     assert_eq!(decoded(&longer, &mut list), None);
-    for (at, value) in [(4, 2), (7, 2)] {
+    for (at, value) in [(4, 3), (7, 2)] {
         let mut other = bytes.clone();
         other[at] = value;
         let body = other.len() - 4;

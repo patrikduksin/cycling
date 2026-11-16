@@ -57,7 +57,7 @@ use device_api::storage::OwnedFlash;
 use firmware_shell::preferences::AppPreferences;
 use firmware_shell::shell::{BrightnessChoice, Shell};
 
-const VERSION: u8 = 10;
+const VERSION: u8 = 11;
 /// The circumference assumed until one is set or learned.
 pub const DEFAULT_WHEEL_MM: u16 = crate::ride::metrics::WHEEL_MM as u16;
 const PROFILE_LENGTH: usize = 5;

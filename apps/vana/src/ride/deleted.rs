@@ -44,8 +44,8 @@ use firmware_services::{files, volume};
 
 pub const TABLE: &str = "rides/deleted.tbl";
 const MAGIC: &[u8; 4] = b"VDEL";
-const TABLE_VERSION: u8 = 1;
-const VERSION: u8 = 1;
+const TABLE_VERSION: u8 = 2;
+const VERSION: u8 = 2;
 pub const SLOT: usize = 32;
 /// Rides the table can hide, in 8 KB.
 pub const KEEP: usize = 256;

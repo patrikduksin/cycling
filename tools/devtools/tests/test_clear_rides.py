@@ -109,7 +109,7 @@ class ClearRidesTests(unittest.TestCase):
             export.mkdir()
             raw = b'x' * 512
             self.fixture(export, raw)
-            info = {'version': 1, 'slot_size': 256, 'upper_bound': 2, 'status': 'ready'}
+            info = {'version': 2, 'slot_size': 256, 'upper_bound': 2, 'status': 'ready'}
             with self.assertRaisesRegex(RuntimeError, 'does not match'):
                 self.run_clear(export, output, b'y' * 512, [info, info])
             self.connection.terminal_command.assert_not_called()
@@ -124,7 +124,7 @@ class ClearRidesTests(unittest.TestCase):
             export.mkdir()
             raw = b'x' * 512
             self.fixture(export, raw)
-            info = {'version': 1, 'slot_size': 256, 'upper_bound': 2, 'status': 'ready'}
+            info = {'version': 2, 'slot_size': 256, 'upper_bound': 2, 'status': 'ready'}
             self.run_clear(export, root / 'ok', raw, [info, info, {**info, 'upper_bound': 0}])
             self.factory.assert_called_once()
             self.context.__enter__.assert_called_once()
@@ -174,7 +174,7 @@ class ClearRidesTests(unittest.TestCase):
             )
             (export / 'manifest.json').write_text(json.dumps(manifest))
             info = {
-                'version': 1,
+                'version': 2,
                 'slot_size': 256,
                 'upper_bound': 2,
                 'status': 'ready',
@@ -229,7 +229,7 @@ class ClearRidesTests(unittest.TestCase):
             raw = b'x' * 512
             self.bulk_fixture(export, raw)
             info = {
-                'version': 1,
+                'version': 2,
                 'slot_size': 256,
                 'upper_bound': 2,
                 'status': 'ready',

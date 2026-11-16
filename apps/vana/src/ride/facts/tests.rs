@@ -118,7 +118,7 @@ fn any_slot_round_trips_and_every_tear_or_flipped_bit_is_refused() {
 fn a_slot_of_another_record_version_reads_as_damaged() {
     let mut slot = [0; SLOT];
     encode_slot(&record(1), &mut slot);
-    slot[0] = 2;
+    slot[0] = 3;
     seal(&mut slot);
     assert_eq!(decode_slot(&slot), None);
 }
@@ -386,7 +386,7 @@ fn a_table_of_another_version_or_length_is_left_alone() {
     }
     let current = raw(&mut region, TABLE).unwrap();
     let mut later = current.clone();
-    later[4] = 2;
+    later[4] = 3;
     seal(&mut later[..SLOT]);
     let mut longer = current.clone();
     longer.extend_from_slice(&[0; SLOT / 2]);

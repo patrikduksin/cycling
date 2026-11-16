@@ -2,7 +2,7 @@
 //!
 //! A journal scans, initializes, clears and appends in bounded steps and owns
 //! its layout. The recorder owns ride state and decides what to append. Both
-//! media hold the same version-1 slots, so one scanner and one exporter
+//! media hold the same slots, so one scanner and one exporter
 //! decode either. Construct a journal for one service call from its retained
 //! state and the borrowed storage handle.
 

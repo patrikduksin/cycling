@@ -1,7 +1,7 @@
 """Read the immutable ride-slot prefix over USB and create JSON/GPX exports.
 
 `--medium bulk` reads the ride log on the owned MMC region instead of the
-internal journal. Its slots are the same version-1 records; each sits in a
+internal journal. Its slots are the same records; each sits in a
 sector container the device validates. Invalid containers are exported as zero
 slots, listed in the manifest, and their raw sectors are kept for diagnosis.
 
@@ -30,6 +30,7 @@ from cycling_devtools.little_endian import i16, i32, u16, u32, u64
 from cycling_devtools.terminal.usb import UsbConnection
 from cycling_devtools.workspace import ROOT
 
+VERSION = 2
 SLOT_SIZE = 256
 COMMIT = 0x434F4D54
 MAX_SLOTS = 4096
@@ -67,7 +68,7 @@ def info(connection, medium='internal'):
         except ValueError as error:
             raise ValueError('malformed bulk export info') from error
         limit = metadata['capacity']
-    if version != 1 or slot_size != SLOT_SIZE or not 0 <= upper <= limit:
+    if version != VERSION or slot_size != SLOT_SIZE or not 0 <= upper <= limit:
         raise ValueError('unsupported or out-of-bounds export info')
     return metadata
 
@@ -145,7 +146,7 @@ def decode_slot(data):
     count = data[6]
     if (
         data[:4] != b'RIDE'
-        or data[4] != 1
+        or data[4] != VERSION
         or data[5] not in range(1, 8)
         or data[7] != 2
         or count > 4

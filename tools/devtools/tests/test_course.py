@@ -11,12 +11,12 @@ def sealed(body):
 
 
 def course_file(points=((-334500000, -706600000), (-334510000, -706600000)), name=b'LOOP'):
-    header = b'VCRS' + bytes([1, 34, 8, len(name)]) + struct.pack('<H', len(points)) + name.ljust(24, b'\0')
+    header = b'VCRS' + bytes([2, 34, 8, len(name)]) + struct.pack('<H', len(points)) + name.ljust(24, b'\0')
     return sealed(header + b''.join(struct.pack('<ii', *p) for p in points))
 
 
 def turns_file(key, turns, full=False, record=12):
-    header = b'VTRN' + bytes([1, 16, record, int(full)]) + struct.pack('<IHH', key, len(turns), 0)
+    header = b'VTRN' + bytes([2, 16, record, int(full)]) + struct.pack('<IHH', key, len(turns), 0)
     rows = b''.join(struct.pack('<IIBB', *turn).ljust(record, b'\0') for turn in turns)
     return sealed(header + rows)
 
@@ -32,19 +32,20 @@ def test_a_course_and_its_turns_decode():
     ]
 
 
-def test_the_key_is_the_course_encoded_as_version_1():
-    v1 = course_file()
-    assert decode_course(v1).key == struct.unpack('<I', v1[-4:])[0]
-    longer = bytearray(v1[:-4])
-    longer[5] = 40
-    longer[34:34] = b'\0' * 6
-    v2 = sealed(bytes([*longer[:4], 2, *longer[5:]]))
-    assert decode_course(v2).key == decode_course(v1).key
+def test_the_key_is_the_crc_that_ends_the_course_file():
+    stored = course_file()
+    assert decode_course(stored).key == struct.unpack('<I', stored[-4:])[0]
 
 
-def test_a_later_version_with_longer_turns_still_decodes():
-    stored = decode_turns(turns_file(7, [(1, 2, 1, 1)], record=16))
-    assert stored.turns[0].kind == 'LEFT' and stored.turns[0].twice
+def test_another_version_or_record_length_is_refused():
+    stored = course_file()
+    with pytest.raises(ValueError):
+        decode_course(sealed(stored[:4] + bytes([1]) + stored[5:-4]))
+    turns = turns_file(7, [(1, 2, 1, 1)])
+    with pytest.raises(ValueError):
+        decode_turns(sealed(turns[:4] + bytes([1]) + turns[5:-4]))
+    with pytest.raises(ValueError):
+        decode_turns(turns_file(7, [(1, 2, 1, 1)], record=16))
 
 
 @pytest.mark.parametrize(

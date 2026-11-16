@@ -48,9 +48,9 @@ use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64
 use firmware_services::{files, volume};
 
 pub const TABLE: &str = "rides/facts.tbl";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const TABLE_MAGIC: &[u8; 4] = b"VFTB";
-const TABLE_VERSION: u8 = 1;
+const TABLE_VERSION: u8 = 2;
 pub const SLOT: usize = 32;
 const FIELDS: usize = 2;
 /// Rides the table keeps: FORM's 120 days at eight rides a day, in 32 KB.

@@ -1,4 +1,4 @@
-//! The upload format of one workout, version 1. Hosts write it (`cycling
+//! The upload format of one workout. Hosts write it (`cycling
 //! workout-load` from JSON); the device checks and stores it unchanged.
 //! Multi-byte fields are little-endian.
 //!
@@ -26,7 +26,7 @@ use firmware_services::checksum::crc32;
 use firmware_services::le::{get_u16, get_u32, put_u16, put_u32};
 
 const MAGIC: &[u8; 2] = b"VW";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const STEP_FIXED: usize = 15;
 /// The largest encoded workout.
 pub const ENCODED_MAX: usize =
@@ -270,7 +270,7 @@ mod tests {
         );
         let bytes = encode(&workout);
         let body = [
-            b'V', b'W', 1, 0, 2, b'A', b'B', 1, 1, // header
+            b'V', b'W', 2, 0, 2, b'A', b'B', 1, 1, // header
             1, 0, 0x2c, 0x01, 0, 0, 1, 90, 0, 95, 0, 0, 0, 0, 2, b'G', b'O', // step
             0, 1, 2, // block
         ];
@@ -312,7 +312,7 @@ mod tests {
         wrong[0] = b'X';
         assert_eq!(decode(&wrong), Err(DecodeError::Magic));
         let mut newer = bytes.clone();
-        newer[2] = 2;
+        newer[2] = 3;
         assert_eq!(decode(&newer), Err(DecodeError::Version));
         let mut flipped = bytes.clone();
         flipped[10] ^= 0x40;
@@ -330,7 +330,7 @@ mod tests {
         ));
         // Lower case names are not what hosts write.
         let mut lower = heapless::Vec::<u8, 64>::new();
-        let _ = lower.extend_from_slice(&[b'V', b'W', 1, 0, 1, b'a', 1, 0]);
+        let _ = lower.extend_from_slice(&[b'V', b'W', 2, 0, 1, b'a', 1, 0]);
         let _ = lower.extend_from_slice(&[1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let crc = crc32(&lower);
         let _ = lower.extend_from_slice(&crc.to_le_bytes());

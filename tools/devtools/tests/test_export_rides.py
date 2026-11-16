@@ -26,7 +26,7 @@ from cycling_devtools.terminal.usb import terminal_reply
 def slot(kind, ride_id, sequence, active_ms, samples=()):
     data = bytearray(b'\xff' * SLOT_SIZE)
     data[:4] = b'RIDE'
-    data[4:8] = bytes([1, kind, len(samples), 2])
+    data[4:8] = bytes([2, kind, len(samples), 2])
     data[8:12] = ride_id.to_bytes(4, 'little')
     data[12:16] = sequence.to_bytes(4, 'little')
     data[16:24] = active_ms.to_bytes(8, 'little')
@@ -88,7 +88,7 @@ class FakeBulk:
         self.commands.append(command)
         words = command.split()
         if words[:3] == ['EXPORT', 'BULK', 'INFO']:
-            data = f'INFO 1 256 {len(self.slots)} ready 00000000000000ab 2 {self.capacity}'
+            data = f'INFO 2 256 {len(self.slots)} ready 00000000000000ab 2 {self.capacity}'
         elif words[:3] == ['EXPORT', 'BULK', 'SLOT']:
             index = int(words[3])
             valid = index not in self.invalid
@@ -212,10 +212,11 @@ class RideExportTests(unittest.TestCase):
         rides, invalid = rides_from_slots([self.fixture()[0], bytes(damaged), self.fixture()[-1]])
         self.assertEqual(invalid, [1])
         self.assertTrue(rides[0]['gap'])
-        unsupported = bytearray(self.fixture()[0])
-        unsupported[4] = 2
-        with self.assertRaises(ValueError):
-            decode_slot(bytes(unsupported))
+        for offset in (4, 7):
+            unsupported = bytearray(self.fixture()[0])
+            unsupported[offset] = 1
+            with self.assertRaises(ValueError):
+                decode_slot(bytes(unsupported))
         with self.assertRaises(ValueError):
             rides_from_slots([self.fixture()[0], self.fixture()[0]])
         with tempfile.TemporaryDirectory() as directory:
@@ -295,7 +296,7 @@ class RideExportTests(unittest.TestCase):
 
     def test_parser_fragmentation_ids_index_and_crc_are_strict(self):
         reply = b'noise\n' + b''.join(
-            json.dumps(dict(type='reply', id=index, status='OK', data='INFO 1 256 2 ready')).encode() + b'\n'
+            json.dumps(dict(type='reply', id=index, status='OK', data='INFO 2 256 2 ready')).encode() + b'\n'
             for index in [3, 4]
         )
         for split in range(len(reply) + 1):
@@ -487,7 +488,7 @@ class LargeExportTests(unittest.TestCase):
             size = canonical.stat().st_size
             tracemalloc.start()
             try:
-                summary = write_exports(output, canonical, {'version': 1, 'upper_bound': size // SLOT_SIZE})
+                summary = write_exports(output, canonical, {'version': 2, 'upper_bound': size // SLOT_SIZE})
                 _, peak = tracemalloc.get_traced_memory()
             finally:
                 tracemalloc.stop()
@@ -509,7 +510,7 @@ class LargeExportTests(unittest.TestCase):
             output = Path(directory)
             canonical = output / 'ride-slots.bin'
             canonical.write_bytes(b'')
-            write_exports(output, canonical, {'version': 1})
+            write_exports(output, canonical, {'version': 2})
             manifest = json.loads((output / 'manifest.json').read_text())
             self.assertEqual((manifest['rides'], manifest['raw_sha256']), ([], hashlib.sha256(b'').hexdigest()))
 

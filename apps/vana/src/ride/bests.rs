@@ -12,7 +12,7 @@
 //! not kept at all: formatting is the host's decision, never a ride's, and a
 //! host `files format` erases them.
 //!
-//! Persisted version 1, little-endian:
+//! Persisted, little-endian:
 //!
 //! | Bytes | Field |
 //! | --- | --- |
@@ -201,7 +201,7 @@ impl Bests {
 
 const FILE: &str = "bests.dat";
 const MAGIC: &[u8; 4] = b"VBST";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const VERSION_AT: usize = 4;
 const BODY_LENGTH_AT: usize = 5;
 const FIELDS_AT: usize = 6;

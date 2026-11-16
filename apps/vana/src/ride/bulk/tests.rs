@@ -345,10 +345,10 @@ fn unformatted_missing_or_unsupported_media_is_never_written() {
 #[test]
 fn a_volume_table_this_firmware_cannot_use_is_never_written() {
     let mut device = Device::initialized(CAPACITY);
-    // A newer table version, resealed.
+    // Another table version, resealed.
     for copy in 0..2 {
         let mut table = device.media.get(copy);
-        table[16] = 2;
+        table[16] = 3;
         let crc = firmware_services::checksum::crc32(&table[..508]);
         table[508..].copy_from_slice(&crc.to_le_bytes());
         device.media.written.insert(copy, table);

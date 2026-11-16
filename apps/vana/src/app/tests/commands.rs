@@ -112,7 +112,7 @@ fn export_returns_checksummed_slots_within_the_journal() {
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     assert_eq!(
         run(&mut runtime, &mut journal, 0, "EXPORT INFO"),
-        ("OK", "INFO 1 256 0 ready".into())
+        ("OK", "INFO 2 256 0 ready".into())
     );
     assert_eq!(
         run(&mut runtime, &mut journal, 0, "EXPORT SLOT 0").0,
@@ -133,7 +133,7 @@ fn export_returns_checksummed_slots_within_the_journal() {
     let (status, info) = run(&mut runtime, &mut journal, 2000, "EXPORT INFO");
     assert_eq!(status, "OK");
     let slots = info
-        .strip_prefix("INFO 1 256 ")
+        .strip_prefix("INFO 2 256 ")
         .and_then(|rest| rest.strip_suffix(" saved"))
         .and_then(|slots| slots.parse::<usize>().ok())
         .unwrap_or_else(|| panic!("{info}"));

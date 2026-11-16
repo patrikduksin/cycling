@@ -1155,7 +1155,7 @@ mod tests {
 
     #[test]
     fn foreign_data_in_the_first_slot_still_requires_initialization() {
-        for first in [[0u8; 5], *b"RIDE\x02", [0xff, 0xff, 0xff, 0xff, 0xff]] {
+        for first in [[0u8; 5], *b"RIDE\x01", [0xff, 0xff, 0xff, 0xff, 0xff]] {
             let mut media = Memory::default();
             media.bytes[..5].copy_from_slice(&first);
             media.bytes[100] = 0;
@@ -1165,8 +1165,8 @@ mod tests {
         }
         // Two unknown slots are never treated as one torn append.
         let mut media = Memory::default();
-        media.bytes[..5].copy_from_slice(b"RIDE\x01");
-        media.bytes[256..261].copy_from_slice(b"RIDE\x01");
+        media.bytes[..5].copy_from_slice(b"RIDE\x02");
+        media.bytes[256..261].copy_from_slice(b"RIDE\x02");
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
         assert_eq!(recorder.status(), Status::NeedsInit);

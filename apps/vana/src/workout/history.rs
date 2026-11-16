@@ -1,7 +1,7 @@
 //! How a saved ride's workout went, kept on the FILES volume beside the
 //! ride: one small file per ride, `rides/<journal><ride id>.workout`.
 //!
-//! Persisted version 1, little-endian:
+//! Persisted, little-endian:
 //!
 //! | Bytes | Field |
 //! | --- | --- |
@@ -34,7 +34,7 @@ use firmware_services::{files, volume};
 
 pub const FOLDER: &str = "rides/";
 const SUFFIX: &str = ".workout";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const MAGIC: &[u8; 4] = b"VWKO";
 const BODY_LENGTH: usize = 66;
 pub const SIZE: usize = BODY_LENGTH + 4;
@@ -305,13 +305,13 @@ mod tests {
     fn another_version_is_foreign() {
         let mut longer = [0u8; SIZE + 6];
         longer[..BODY_LENGTH].copy_from_slice(&encode(&record(5))[..BODY_LENGTH]);
-        longer[4] = 2;
+        longer[4] = 3;
         longer[5] = (BODY_LENGTH + 6) as u8;
         let crc = crc32(&longer[..BODY_LENGTH + 6]);
         put_u32(&mut longer, BODY_LENGTH + 6, crc);
         assert_eq!(decode(&longer), None);
         let mut other = encode(&record(5));
-        other[4] = 2;
+        other[4] = 3;
         let crc = crc32(&other[..BODY_LENGTH]);
         put_u32(&mut other, BODY_LENGTH, crc);
         assert_eq!(decode(&other), None);

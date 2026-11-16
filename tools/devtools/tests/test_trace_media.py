@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import shutil
 import struct
@@ -111,8 +112,28 @@ def header(pack=None):
     return '\n'.join(lines) + '\n'
 
 
+MARKS = [
+    {
+        'type': 'entry',
+        'session_ms': 42410,
+        'ride_ms': 35000,
+        'kind': 'mark',
+        'text': '1 pressed 00:40.900 on ride/main',
+        'repeat': False,
+    },
+    {
+        'type': 'entry',
+        'session_ms': 70020,
+        'ride_ms': 62000,
+        'kind': 'mark',
+        'text': '2 pressed 01:08.510 on ride/stats',
+        'repeat': False,
+    },
+]
+
+
 class TracePullTests(unittest.TestCase):
-    def pull(self, directory, export, pack=None, roots=(), device=None, marks='found nothing\n'):
+    def pull(self, directory, export, pack=None, roots=(), device=None, marks=(), listed=None):
         device = device or RidesDevice()
         if not device.rides and export.rides:
             device.rides = {int(export.store, 16): list(export.rides)}
@@ -125,10 +146,15 @@ class TracePullTests(unittest.TestCase):
             if command == 'media':
                 return header(pack)
             if command == 'find':
-                return marks
+                return json.dumps({'found': list(marks if listed is None else marks[:listed]), 'total': len(marks)})
             out = Path(args[2])
             calls.append(sorted(str(path.relative_to(out)) for path in out.rglob('*')))
-            return f'origin {args[0].with_suffix(".origin")}\nfile bests.dat (revision 3): gone from the device\n'
+            return json.dumps(
+                {
+                    'origin': str(args[0].with_suffix('.origin')),
+                    'not_rebuilt': ['file bests.dat (revision 3): gone from the device'],
+                }
+            )
 
         with mock.patch.object(volumes, 'open_session', return_value=FakeTransfer(device)):
             result = trace_media.pull(
@@ -169,20 +195,24 @@ class TracePullTests(unittest.TestCase):
         self.assertNotIn('EXPORT SLOT 2', export.commands, 'stops at the slots the header names')
         self.assertFalse(any(word in ' '.join(export.commands) for word in ('CLEAR', 'INIT', 'PUT', 'DELETE')))
 
-    def test_the_pull_lists_the_marks_the_rider_made(self):
+    def test_the_pull_keeps_every_mark_the_rider_made(self):
         export = FakeExport([slot(0)], [slot(10)])
-        lines = [
-            '00:42.410 ride 00:35  mark        1 pressed 00:40.900 on ride/main',
-            '01:10.020 ride 01:02  mark        2 pressed 01:08.510 on ride/stats',
-        ]
         with tempfile.TemporaryDirectory() as directory:
-            result, calls = self.pull(Path(directory), export, marks='\n'.join(lines) + '\n')
-            self.assertIn(('find', Path(directory) / '000003-00000007.trace', 'mark', '--limit', str(2**32)), calls)
-        self.assertEqual(result['marks'], lines)
+            result, calls = self.pull(Path(directory), export, marks=MARKS)
+            trace = Path(directory) / '000003-00000007.trace'
+            self.assertIn(('find', trace, 'mark', '--limit', str(2**63), '--json'), calls)
+        self.assertEqual(result['marks'], MARKS)
         self.assertEqual(
-            trace_media.marks_text(result['marks']), '\n'.join(['marks:', *(f'  {line}' for line in lines)])
+            trace_media.marks_text(result['marks']),
+            'marks:\n  mark 1 pressed 00:40.900 on ride/main\n  mark 2 pressed 01:08.510 on ride/stats',
         )
         self.assertEqual(trace_media.marks_text([]), 'marks: none')
+
+    def test_a_pull_refuses_a_mark_listing_cut_short(self):
+        export = FakeExport([slot(0)], [slot(10)])
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, 'listed 1 of 2 marks'):
+                self.pull(Path(directory), export, marks=MARKS, listed=1)
 
     def test_a_ride_log_cleared_since_is_not_pulled_and_no_pack_is_linked(self):
         export = FakeExport([slot(0)], [slot(20)], store='00000000000000cd')

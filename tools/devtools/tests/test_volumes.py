@@ -193,6 +193,16 @@ class FakeTransfer(Transfer):
         return volumes.STATUS[status], arg, count, data
 
 
+MARK = {
+    'type': 'entry',
+    'session_ms': 42410,
+    'ride_ms': 35000,
+    'kind': 'mark',
+    'text': '1 pressed 00:40.900 on ride/main',
+    'repeat': False,
+}
+
+
 class VolumesTests(unittest.TestCase):
     def test_the_end_reply_says_where_the_session_time_went(self):
         device = FakeDevice()
@@ -421,17 +431,28 @@ class VolumesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'no file in traces/'):
             volumes.trace_pull(transfer, directory=Path('unused'))
 
-    def test_trace_pull_prints_one_json_document_with_or_without_json(self):
-        result = {'name': 'traces/000010-0000bbbb.trace', 'records': 2, 'bytes': 3, 'path': 'x.trace'}
-        for argv in (['volumes', 'trace-pull', '--json'], ['volumes', 'trace-pull']):
-            with (
-                mock.patch.object(sys, 'argv', argv),
-                mock.patch.object(volumes, 'selected_port', return_value='port'),
-                mock.patch.object(volumes, 'run', return_value=result),
-                mock.patch('sys.stdout', new_callable=io.StringIO) as out,
-            ):
-                volumes.main()
-            self.assertEqual(json.loads(out.getvalue()), result, argv)
+    def pulled(self, argv, marks):
+        result = {'name': 'traces/000010-0000bbbb.trace', 'records': 2, 'path': 'x.trace', 'marks': marks}
+        with (
+            mock.patch.object(sys, 'argv', ['volumes', 'trace-pull', *argv]),
+            mock.patch.object(volumes, 'selected_port', return_value='port'),
+            mock.patch.object(volumes, 'run', return_value=result),
+            mock.patch('sys.stdout', new_callable=io.StringIO) as out,
+        ):
+            volumes.main()
+        return result, out.getvalue()
+
+    def test_trace_pull_with_json_prints_one_json_document_holding_the_marks(self):
+        for marks in ([], [MARK]):
+            result, out = self.pulled(['--json'], marks)
+            self.assertEqual(json.loads(out), result)
+
+    def test_trace_pull_prints_its_result_then_lists_the_marks(self):
+        for marks, listing in (([], 'marks: none\n'), ([MARK], 'marks:\n  mark 1 pressed 00:40.900 on ride/main\n')):
+            result, out = self.pulled([], marks)
+            document, end = json.JSONDecoder().raw_decode(out)
+            self.assertEqual(document, result)
+            self.assertEqual(out[end:], '\n' + listing)
 
     def run_main(self, argv, result, message):
         with (
@@ -442,20 +463,6 @@ class VolumesTests(unittest.TestCase):
             self.assertRaisesRegex(SystemExit, message),
         ):
             volumes.main()
-
-    def test_a_trace_pull_prints_its_result_with_the_marks_then_lists_them(self):
-        mark = '00:42.410 ride 00:35  mark        1 pressed 00:40.900 on ride/main'
-        result = {'name': 'traces/0001', 'path': 'out.trace', 'marks': [mark]}
-        with (
-            mock.patch.object(sys, 'argv', ['volumes', 'trace-pull']),
-            mock.patch.object(volumes, 'selected_port', return_value='port'),
-            mock.patch.object(volumes, 'run', return_value=result),
-            mock.patch('builtins.print') as printed,
-        ):
-            volumes.main()
-        lines = [call.args[0] for call in printed.call_args_list]
-        self.assertEqual(json.loads(lines[0])['marks'], [mark])
-        self.assertEqual(lines[1], f'marks:\n  {mark}')
 
     def test_a_get_goes_on_after_each_hole_and_names_them_all(self):
         device = FakeDevice()

@@ -19,6 +19,7 @@ machine (`cycling device trace pull` does).
 """
 
 import hashlib
+import json
 import os
 import shlex
 import shutil
@@ -273,7 +274,7 @@ def pull_media(connection, media, out, cache, problems, timing):
 def marks_text(marks):
     if not marks:
         return 'marks: none'
-    return '\n'.join(['marks:', *(f'  {mark}' for mark in marks)])
+    return '\n'.join(['marks:', *(f'  mark {mark["text"]}' for mark in marks)])
 
 
 def session(connection, timing, name, work):
@@ -315,11 +316,13 @@ def pull(
         pack = keep_pack(media['terrain'], roots, copies)
         if pack is not None:
             (out / 'terrain.pack').symlink_to(os.path.relpath(pack, out))
-    report = tool('rebuild', trace, '--pulled', out).splitlines()
-    marks = [line for line in tool('find', trace, 'mark', '--limit', str(2**32)).splitlines() if line != 'found nothing']
+    rebuilt = json.loads(tool('rebuild', trace, '--pulled', out, '--json'))
+    marks = json.loads(tool('find', trace, 'mark', '--limit', str(2**63), '--json'))
+    if len(marks['found']) != marks['total']:
+        raise RuntimeError(f'cycling trace find listed {len(marks["found"])} of {marks["total"]} marks')
     timing['total_s'] = round(time.monotonic() - started, 3)
     result.update(
-        media=str(out), origin=report[0].removeprefix('origin '), rebuilt=report[1:], marks=marks, timing=timing
+        media=str(out), origin=rebuilt['origin'], rebuilt=rebuilt['not_rebuilt'], marks=marks['found'], timing=timing
     )
     if problems:
         result['problems'] = problems

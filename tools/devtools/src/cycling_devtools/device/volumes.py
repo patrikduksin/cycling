@@ -645,18 +645,21 @@ def main():
         help='pull a ride trace from STORE into .local/traces/ and rebuild the media it started on beside it',
     )
     pull.add_argument('name', nargs='?', help='the trace, such as 000042-1a2b3c4d.trace; the newest by default')
-    pull.add_argument('--json', action='store_true', help='print the result as one JSON document, as it always does')
+    pull.add_argument(
+        '--json',
+        action='store_true',
+        help='print only the result, one JSON document, without the marks listed after it',
+    )
     args = parser.parse_args()
     for path in (getattr(args, 'file', None),):
         if path is not None and not path.is_file():
             parser.error(f'{path} is not a file')
     result = run(args, selected_port(parser, args.port))
-    marks = result.get('marks') if isinstance(result, dict) else None
     print(json.dumps(result, indent=2))
-    if marks is not None:
+    if args.action == 'trace-pull' and not args.json:
         from cycling_devtools.device import trace_media
 
-        print(trace_media.marks_text(marks))
+        print(trace_media.marks_text(result['marks']))
     if not isinstance(result, dict):
         return
     problems = [f'the device lost {h["records"]} record(s) from record {h["record"]}' for h in result.get('holes', [])]

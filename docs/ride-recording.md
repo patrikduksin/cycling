@@ -411,9 +411,9 @@ Training profile:
 - `PROFILE`, `PROFILE FTP watts`, `PROFILE LTHR bpm` and `PROFILE OVERWRITE`
   read and set it from the terminal. The profile and the saved ANT sensors are
   one versioned record in the application area of the settings record
-  (version 2; version 1 profiles migrate with no saved sensors). A stored record
-  this firmware cannot read keeps the defaults in force, with no saved sensors,
-  and is never replaced until `PROFILE OVERWRITE`.
+  (`app::preferences`). A stored record this firmware did not write keeps the
+  defaults in force, with no saved sensors, and is never replaced until
+  `PROFILE OVERWRITE`.
 
 Radar uses the left edge of the workout screen:
 

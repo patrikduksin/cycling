@@ -19,6 +19,15 @@ const BOOT_TIMEOUT_MS: u64 = 15_000;
 const PRESS_GAP_MS: u64 = 400;
 /// Touch reports arrive this often while a finger moves.
 const TOUCH_STEP_MS: u64 = 30;
+const FOREIGN_WRITE_ORDER: [Store; Store::ALL.len()] = [
+    Store::Records,
+    Store::Files,
+    Store::Rides,
+    Store::Traces,
+    Store::Internal,
+    Store::Settings,
+    Store::Table,
+];
 /// The companion repeats a held button's report this often.
 pub const HOLD_REPEAT_MS: u64 = 100;
 /// Repeated top-left reports that turn an off device on: about a 1.5 s hold.
@@ -1091,15 +1100,10 @@ impl Sim {
     /// them: the current format with another version byte, resealed. Cut the
     /// power afterwards, so the device reads them.
     pub fn make_foreign(&mut self, stores: &[Store]) {
-        // A record is written through a current FILES, and every volume is
-        // found through a current table.
-        let mut stores = stores.to_vec();
-        stores.sort_by_key(|store| match store {
-            Store::Records => 0,
-            Store::Table => 2,
-            _ => 1,
-        });
-        for store in stores {
+        for store in FOREIGN_WRITE_ORDER
+            .into_iter()
+            .filter(|store| stores.contains(store))
+        {
             self.make_store_foreign(store);
         }
     }

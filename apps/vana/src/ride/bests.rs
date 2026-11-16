@@ -272,41 +272,50 @@ pub fn decode_file(bytes: &[u8]) -> Option<Bests> {
     Bests::decode(&bytes[FIELDS_AT..BODY])
 }
 
-/// What the store holds, and the bests when they are current.
-fn read(media: &mut impl ReadWrite) -> Result<(Contents, Bests), Error> {
+enum File {
+    Missing,
+    Current(Bests),
+    Damaged,
+    Foreign,
+}
+
+fn read(media: &mut impl ReadWrite) -> Result<File, Error> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = open(media, &mut sector)?;
     let dir = files::mount(&mut store, &mut sector)?;
     let name = files::Name::new(FILE)?;
     let Some(entry) = dir.find(&mut store, &name, &mut sector)? else {
-        return Ok((Contents::Missing, Bests::default()));
+        return Ok(File::Missing);
     };
     let mut bytes = [0; SIZE];
     let length = (entry.length as usize).min(SIZE);
     dir.read(&mut store, &entry, 0, &mut bytes[..length], &mut sector)?;
     let bytes = &bytes[..length];
     Ok(if another_version(bytes, MAGIC, VERSION) {
-        (Contents::Foreign, Bests::default())
+        File::Foreign
     } else if entry.length as usize != SIZE {
-        (Contents::Damaged, Bests::default())
+        File::Damaged
     } else {
-        decode_file(bytes).map_or((Contents::Damaged, Bests::default()), |bests| {
-            (Contents::Current, bests)
-        })
+        decode_file(bytes).map_or(File::Damaged, File::Current)
     })
 }
 
-/// What the store holds.
 pub fn contents(media: &mut impl ReadWrite) -> Result<Contents, Error> {
-    read(media).map(|(contents, _)| contents)
+    Ok(match read(media)? {
+        File::Missing => Contents::Missing,
+        File::Current(_) => Contents::Current,
+        File::Damaged => Contents::Damaged,
+        File::Foreign => Contents::Foreign,
+    })
 }
 
 /// The stored bests; none when the store has no file yet.
 pub fn load(media: &mut impl ReadWrite) -> Result<Bests, Error> {
     match read(media)? {
-        (Contents::Missing | Contents::Current, bests) => Ok(bests),
-        (Contents::Damaged, _) => Err(Error::Damaged),
-        (Contents::Foreign, _) => Err(Error::Foreign),
+        File::Missing => Ok(Bests::default()),
+        File::Current(bests) => Ok(bests),
+        File::Damaged => Err(Error::Damaged),
+        File::Foreign => Err(Error::Foreign),
     }
 }
 

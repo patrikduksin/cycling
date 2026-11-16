@@ -607,8 +607,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         self.store_settings(|store, settings| store.save(settings))
     }
 
-    /// Settings read as foreign at boot or condemned by FORMAT are never
-    /// saved over, even once FORMAT has erased them.
     fn store_settings<E>(
         &mut self,
         save: impl FnOnce(&mut Store<B>, Settings) -> Result<firmware_services::storage::Record, E>,

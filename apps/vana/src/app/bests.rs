@@ -5,9 +5,8 @@
 //! The bests live in a small file beside the workout outcomes
 //! (`ride::bests`), not in the preference record. A ride
 //! is never held up for the file. Where it cannot be used the BESTS view says
-//! why: no store to keep it in, a damaged file (CLEAR BESTS starts over), a
-//! file of another version (only FORMAT replaces it), or a
-//! store that would not take the write (the merged bests stay in memory and
+//! why: no store to keep it in, a damaged file, a file of another version, or
+//! a store that would not take the write (the merged bests stay in memory and
 //! the next write keeps them). A read that failed only this time is tried
 //! again, with the ride's outcome waiting.
 use super::Runtime;
@@ -34,7 +33,6 @@ enum Store {
     Unavailable,
     /// A file is there that does not decode; it is left alone.
     Damaged,
-    /// The file is of another version; only FORMAT replaces it.
     Foreign,
     /// The store would not take a write: the bests are in memory only.
     NotSaved,

@@ -44,7 +44,6 @@ pub enum Contents {
     Foreign,
 }
 
-/// A file that names its owner's `magic` and carries another version byte.
 pub(crate) fn another_version(head: &[u8], magic: &[u8; 4], version: u8) -> bool {
     head.len() > 4 && head[..4] == magic[..] && head[4] != version
 }

@@ -21,9 +21,9 @@
 //!
 //! A file of another version is foreign: never read, replaced or rotated
 //! out. A file of this version that does not decode is damaged, and is
-//! replaced and rotated out like a record. Ride ids restart when a journal is cleared or initialized,
-//! and `forget` then deletes that journal's records. Only the newest
-//! [`KEEP`] records stay.
+//! replaced and rotated out like a record. Ride ids restart when a journal
+//! is cleared or initialized, and `forget` then deletes that journal's
+//! records. Only the newest [`KEEP`] records stay.
 use super::library::LoadError;
 use super::model::{NAME_BYTES, Name, Test};
 use super::player::Summary;
@@ -182,8 +182,6 @@ fn read(
     })
 }
 
-/// What the records hold together: `Foreign` if any one is, else
-/// `Damaged` if any one is.
 pub fn contents(media: &mut impl ReadWrite) -> Result<Contents, LoadError> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = volume::open(media, &volume::FILES, &mut sector).map_err(LoadError::Volume)?;

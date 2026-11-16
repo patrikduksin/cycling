@@ -224,7 +224,8 @@ impl Settings {
 pub enum Source {
     Current,
     Missing,
-    /// Another version, or damaged: kept, and never saved over.
+    /// Another version, damaged, or condemned by FORMAT: never saved over,
+    /// even once FORMAT has erased it.
     Foreign,
     /// The journal could not be read.
     Failed,

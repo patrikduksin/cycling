@@ -469,9 +469,16 @@ impl Sim {
     /// The companion repeats code-1 reports while a button stays down; the
     /// firmware cannot observe a release (see issue #86).
     pub fn hold(&mut self, button: Button, ms: u64) {
+        self.hold_while(button, ms, |_, _| {});
+    }
+
+    /// `hold`, calling `during` with how long the button has been held
+    /// before each of its reports.
+    pub fn hold_while(&mut self, button: Button, ms: u64, mut during: impl FnMut(&mut Self, u64)) {
         self.note(NoteKind::Input, format!("hold {button:?} {ms} ms"));
         let mut held = 0;
         while held < ms {
+            during(self, held);
             self.deliver(button, held > 0);
             self.advance(HOLD_REPEAT_MS);
             held += HOLD_REPEAT_MS;

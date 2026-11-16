@@ -4841,6 +4841,132 @@ fn holding_move_on_home_marks_and_keeps_the_focus() {
     );
 }
 
+/// A pause the rider paged away from, then a resume: the paused screen
+/// stays hidden in the view until the next pause brings it back.
+fn paused_and_paged_away(sim: &mut Sim) {
+    sim.pause_ride();
+    sim.show_ride_pages();
+    sim.resume_ride();
+    sim.advance(seconds(5));
+}
+
+#[test]
+fn pausing_during_a_mark_keeps_the_paused_screen() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(5));
+    paused_and_paged_away(&mut sim);
+    sim.hold_while(Button::BottomLeft, 1600, |sim, held| {
+        if held == 500 {
+            sim.report(Button::BottomRight);
+        }
+    });
+    sim.expect_text("MARK 1");
+    assert_eq!(sim.ride_state(), "paused");
+    assert_eq!(sim.seen().page.expect("a page").1, "ride/paused");
+    assert_eq!(marks(&sim).len(), 1);
+}
+
+/// How long after `start` a fresh rider's ride first meets `reached`,
+/// stepping a tenth of a second.
+fn ms_until(start: fn(&mut Sim), reached: fn(&mut Sim) -> bool) -> u64 {
+    let mut sim = rider();
+    start(&mut sim);
+    let mut waited = 0;
+    while !reached(&mut sim) {
+        assert!(waited < seconds(120), "never reached");
+        sim.advance(100);
+        waited += 100;
+    }
+    waited
+}
+
+fn stopping_at_a_light(sim: &mut Sim) {
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    paused_and_paged_away(sim);
+    sim.advance(seconds(30));
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+}
+
+#[test]
+fn an_auto_pause_during_a_mark_keeps_the_paused_screen() {
+    let auto_paused = |sim: &mut Sim| {
+        sim.seen()
+            .ride
+            .is_some_and(|(_, state)| state == "auto_paused")
+    };
+    let pauses = ms_until(stopping_at_a_light, auto_paused);
+    let mut sim = rider();
+    stopping_at_a_light(&mut sim);
+    sim.advance(pauses - 700);
+    assert!(!auto_paused(&mut sim));
+    sim.hold(Button::BottomLeft, 1600);
+    sim.expect_text("MARK 1");
+    assert!(auto_paused(&mut sim));
+    assert_eq!(sim.seen().page.expect("a page").1, "ride/paused");
+}
+
+fn climbing(sim: &mut Sim) {
+    *sim = hill_rider();
+    sim.start_ride();
+    sim.ride_at(14.0, 260.0, 0.0, 75.0);
+    ride_to(sim, 1200.0);
+}
+
+#[test]
+fn the_climb_page_coming_up_during_a_mark_stays() {
+    let on_climb = |sim: &mut Sim| {
+        sim.screen()
+            .page()
+            .is_some_and(|dots| dots.starts_with("4/"))
+    };
+    let shown = ms_until(climbing, on_climb);
+    let mut sim = rider();
+    climbing(&mut sim);
+    sim.advance(shown - 700);
+    assert!(!on_climb(&mut sim), "{:?}", sim.screen().page());
+    sim.hold(Button::BottomLeft, 1600);
+    sim.expect_text("MARK 1");
+    let pages = traced(&sim, Traced::Page);
+    let climb = pages.iter().position(|page| page == "ride/climb");
+    assert_eq!(
+        &pages[climb.expect("the climb page came up")..],
+        ["ride/climb"],
+        "nothing took the climb page away: {pages:?}"
+    );
+    ride_to(&mut sim, 4500.0);
+    assert_eq!(
+        sim.seen().page.expect("a page").1,
+        "ride/main",
+        "past the climb, the page from before the hold"
+    );
+}
+
+#[test]
+fn a_move_that_closes_the_power_sheet_marks_nothing_however_long_it_is_held() {
+    let mut sim = rider();
+    sim.advance(seconds(3));
+    sim.press(Button::BottomLeft);
+    assert!(!sim.screen().white("RIDE"), "{}", sim.screen().text());
+    sim.advance(seconds(5));
+    sim.press(Button::TopLeft);
+    sim.expect_text("TURN OFF");
+    sim.hold(Button::BottomLeft, 1600);
+    sim.expect_no_text("TURN OFF");
+    sim.advance(seconds(1));
+    sim.expect_no_text("MARK");
+    assert!(marks(&sim).is_empty(), "{:?}", marks(&sim));
+    assert!(
+        !sim.screen().white("RIDE"),
+        "the focus stays where the tap left it: {}",
+        sim.screen().text()
+    );
+}
+
 #[test]
 fn a_ride_with_marks_replays_exactly() {
     assert_replays_exactly(equip(hashed().boot()), marks_on_a_ride, false);

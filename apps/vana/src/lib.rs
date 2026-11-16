@@ -1,4 +1,8 @@
 #![no_std]
+
+#[cfg(all(feature = "planted-bug", target_os = "none"))]
+compile_error!("planted-bug is the fuzzer's proof and never reaches a device");
+
 #[cfg(test)]
 extern crate std;
 pub mod app;

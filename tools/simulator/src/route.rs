@@ -47,7 +47,7 @@ pub struct Route {
 }
 
 impl Route {
-    fn new(points: Vec<Point>, closed: bool) -> Self {
+    pub(crate) fn new(points: Vec<Point>, closed: bool) -> Self {
         let mut cumulative = Vec::with_capacity(points.len());
         let mut total = 0.0;
         for (i, p) in points.iter().enumerate() {

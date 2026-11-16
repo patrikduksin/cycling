@@ -127,6 +127,25 @@ impl SimBulk {
         Self(self.0.clone(), true)
     }
 
+    /// A host's copy of the sectors on a card that is present and working,
+    /// whatever this boot's controller does.
+    pub fn inspect(&self) -> Self {
+        let copy = self.copy();
+        {
+            let mut region = copy.0.borrow_mut();
+            region.presence = Presence::Ready;
+            region.fault = None;
+            region.failed = false;
+        }
+        Self(copy.0, true)
+    }
+
+    /// A write fault is armed, or one failed the controller this boot.
+    pub fn faulted(&self) -> bool {
+        let region = self.0.borrow();
+        region.fault.is_some() || region.failed
+    }
+
     pub fn begin_pass(&self) {
         self.0.borrow_mut().attempts = 0;
     }

@@ -118,6 +118,11 @@ pub fn capture_panics() {
     });
 }
 
+/// The message of this thread's last panic, once.
+pub fn take_panic() -> Option<String> {
+    PANIC.with(|p| p.borrow_mut().take())
+}
+
 /// A frame as runs of equal pixels; UI frames compress well.
 struct Frame {
     at_ms: u64,

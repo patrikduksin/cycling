@@ -10,6 +10,7 @@ publish = false
 [features]
 default = []
 live = ["dep:minifb"]
+planted-bug = ["vana/planted-bug"]
 
 [dependencies]
 device-api = { path = "../../packages/device-api" }
@@ -37,6 +38,10 @@ path = "src/bin/redraw-probe.rs"
 [[bin]]
 name = "trace"
 path = "src/bin/trace.rs"
+
+[[bin]]
+name = "fuzz"
+path = "src/bin/fuzz.rs"
 
 [[bin]]
 name = "sim-live"

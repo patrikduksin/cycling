@@ -576,6 +576,8 @@ impl Recorder {
                 return;
             }
         };
+        #[cfg(feature = "planted-bug")]
+        let catalog = forget_paused_recovery(catalog, journal);
         self.catalog = catalog;
         // Write an overdue checkpoint before any append, so repeated cuts
         // cannot grow what the next boot replays.
@@ -749,6 +751,18 @@ impl Recorder {
             );
         }
     }
+}
+
+#[cfg(feature = "planted-bug")]
+fn forget_paused_recovery(mut catalog: Catalog, journal: &mut impl Journal) -> Catalog {
+    let mut last = crate::ride::log::Slot::default();
+    let paused = catalog.next_slot > 0
+        && journal.read_slot(catalog.next_slot - 1, &mut last) == Some(true)
+        && crate::ride::log::decode(&last).is_some_and(|e| e.kind == Kind::Pause);
+    if paused {
+        catalog.recovery = None;
+    }
+    catalog
 }
 
 #[cfg(test)]

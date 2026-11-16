@@ -4,6 +4,7 @@ pub mod bench;
 pub mod bulk;
 pub mod devices;
 mod flows;
+pub mod fuzz;
 pub mod gps;
 pub mod live;
 pub mod logs;

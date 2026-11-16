@@ -76,8 +76,9 @@ pin at once and belongs in its own PR with `cycling verify` results.
   recorded, and the test lane's nextest profile (`without-ride-scenarios`, in
   `.config/nextest.toml`) leaves them out. `--fast` is the inner-loop subset
   without screens; `--pr N` posts the table and the changed screens on a PR;
-  `--video` adds before and after videos of changed scenarios. Logs go to
-  `.local/verify/<commit>/`.
+  `--video` adds before and after videos of changed scenarios. `--deep` runs
+  tier 2 alone, at nice 19: `cycling fuzz --fixed` and `cycling fuzz-planted`.
+  Logs go to `.local/verify/<commit>/`.
 - A test over 5 s on its own belongs in nextest's `slow` group
   (`.config/nextest.toml`), which `-E 'not group(slow)'` leaves out. Split a
   long VANA sweep into eight tests with `split_in_eight!`

@@ -2,7 +2,20 @@
 use crate::sim::{NoteKind, Sim, seconds};
 use device_api::input::Button;
 
+/// The value after `name=` in a status line such as `RIDE STATUS`'s.
+pub fn status_field<'a>(status: &'a str, name: &str) -> Option<&'a str> {
+    status
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix(name)?.strip_prefix('='))
+}
+
 impl Sim {
+    /// The host reads its last outcome (`RIDE STATUS`) before VANA accepts another ride action.
+    pub fn command_after_reading_outcome(&mut self, text: &str) -> (&'static str, String) {
+        self.command("RIDE STATUS");
+        self.command(text)
+    }
+
     /// Choose a Home card, such as RIDE, SENSORS, TRAIN or RIDES; the focused
     /// one has a white title. One extra press covers a dimmed screen, which a
     /// press only wakes.
@@ -283,9 +296,7 @@ impl Sim {
     /// status row can be showing a toast instead.
     pub fn ride_state(&mut self) -> String {
         let (_, status) = self.command("RIDE STATUS");
-        status
-            .split_whitespace()
-            .find_map(|part| part.strip_prefix("state="))
+        status_field(&status, "state")
             .unwrap_or_default()
             .to_string()
     }

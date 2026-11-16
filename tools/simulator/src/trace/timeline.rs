@@ -26,9 +26,10 @@ pub struct Moment {
 impl fmt::Display for Moment {
     /// `40:12.345 ride 38:05`, or `ride --:--` outside a ride.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ride ", session_clock(self.session_ms))?;
+        session_clock(self.session_ms).fmt(f)?;
+        f.write_str(" ride ")?;
         match self.ride_ms {
-            Some(ms) => write!(f, "{}", ride_clock(ms)),
+            Some(ms) => ride_clock(ms).fmt(f),
             None => f.write_str("--:--"),
         }
     }
@@ -37,7 +38,13 @@ impl fmt::Display for Moment {
 /// `mm:ss.mmm`, minutes unbounded.
 pub fn session_clock(ms: u64) -> impl fmt::Display {
     fmt::from_fn(move |f| {
-        write!(f, "{:02}:{:02}.{:03}", ms / 60_000, ms / 1000 % 60, ms % 1000)
+        write!(
+            f,
+            "{:02}:{:02}.{:03}",
+            ms / 60_000,
+            ms / 1000 % 60,
+            ms % 1000
+        )
     })
 }
 
@@ -554,15 +561,18 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         trace::Error::Version(_) => error.to_string(),
     })?;
     let mut reader = Reader {
-        last: vec![None; Kind::ALL.len() << 8],
-        entries: Vec::with_capacity(bytes.len() / TRACE_BYTES_PER_ENTRY_FLOOR),
+        entries: Entries {
+            list: Vec::with_capacity(bytes.len() / TRACE_BYTES_PER_ENTRY_FLOOR),
+            last: vec![None; Entries::slot(Kind::ALL[Kind::ALL.len() - 1], u8::MAX) + 1],
+            line: String::new(),
+        },
         ..Reader::default()
     };
     for event in events.by_ref() {
         reader.event(&event);
     }
     reader.end_pass();
-    reader.silent_at_end();
+    reader.sensors.silent_at_end(reader.now);
     let build_len = header
         .build
         .iter()
@@ -577,15 +587,60 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         passes: reader.passes,
         end_ms: reader.now,
         end: events.end().unwrap_or(End::Complete),
-        entries: reader.entries,
+        entries: reader.entries.list,
         clock: reader.clock,
         utc_at_boot_ms: reader.utc_at_boot_ms,
-        silences: reader.silences,
+        silences: reader.sensors.silences,
         power: reader.power,
         health: reader.health,
         frame_times: reader.frame_times,
         activity: reader.activity,
     })
+}
+
+/// The entries read so far, and each source's last entry that was no
+/// repeat.
+#[derive(Default)]
+struct Entries {
+    list: Vec<Entry>,
+    last: Vec<Option<usize>>,
+    /// Each entry's text is written here first, so a text is allocated once,
+    /// at its own length.
+    line: String,
+}
+
+impl Entries {
+    /// Where a source's last entry is kept: a kind, and the ANT channel for
+    /// links (0 for the rest).
+    fn slot(kind: Kind, source: u8) -> usize {
+        (kind as usize) << 8 | usize::from(source)
+    }
+
+    fn push_with(
+        &mut self,
+        at: Moment,
+        kind: Kind,
+        source: u8,
+        write: impl FnOnce(&mut String) -> fmt::Result,
+    ) -> &mut Entry {
+        self.line.clear();
+        write(&mut self.line).expect("a String takes any text");
+        let slot = &mut self.last[Self::slot(kind, source)];
+        let repeat = !kind.edge() && slot.is_some_and(|i| self.list[i].text == self.line);
+        if !repeat {
+            *slot = Some(self.list.len());
+        }
+        self.list.push(Entry {
+            at,
+            kind,
+            text: self.line.clone(),
+            repeat,
+            bytes: None,
+            cause: None,
+            shows: None,
+        });
+        self.list.last_mut().expect("an entry was just pushed")
+    }
 }
 
 struct Heard {
@@ -594,20 +649,78 @@ struct Heard {
     name: String,
 }
 
+/// Each ANT+ sensor heard: its name, when it last sent, the silences
+/// between its packets, and the page state its rates need.
+#[derive(Default)]
+struct Sensors {
+    heard: Vec<Heard>,
+    silences: Vec<Silence>,
+    pages: Pages,
+}
+
+impl Sensors {
+    /// Write a packet as its sensor and what it said, noting the silence it
+    /// ends.
+    fn packet(&mut self, now: u64, identity: ant::Identity, data: [u8; 8], line: &mut String) {
+        let at = self.heard.iter().position(|heard| {
+            (heard.identity.device_type, heard.identity.device_number)
+                == (identity.device_type, identity.device_number)
+        });
+        let heard = match at {
+            Some(at) => {
+                let heard = &mut self.heard[at];
+                heard.identity = identity;
+                let last_ms = std::mem::replace(&mut heard.last_ms, now);
+                if now - last_ms > SILENCE_MS {
+                    self.silences.push(Silence {
+                        sensor: heard.name.clone(),
+                        last_ms,
+                        next_ms: Some(now),
+                    });
+                }
+                heard
+            }
+            None => {
+                self.heard.push(Heard {
+                    identity,
+                    last_ms: now,
+                    name: sensor(identity).to_string(),
+                });
+                self.heard.last_mut().expect("a sensor was just pushed")
+            }
+        };
+        line.push_str(&heard.name);
+        line.push(' ');
+        self.pages.describe(line, identity, data);
+    }
+
+    fn silent_at_end(&mut self, now: u64) {
+        let mut open: Vec<Silence> = self
+            .heard
+            .iter()
+            .filter(|heard| now - heard.last_ms > SILENCE_MS)
+            .map(|heard| Silence {
+                sensor: heard.name.clone(),
+                last_ms: heard.last_ms,
+                next_ms: None,
+            })
+            .collect();
+        self.silences.append(&mut open);
+        self.silences
+            .sort_by(|a, b| (a.last_ms, &a.sensor).cmp(&(b.last_ms, &b.sensor)));
+    }
+}
+
 #[derive(Default)]
 struct Reader {
-    entries: Vec<Entry>,
+    entries: Entries,
+    sensors: Sensors,
     now: u64,
     passes: u64,
     ride_ms: Option<u64>,
     recording: bool,
     clock: Vec<Anchor>,
     utc_at_boot_ms: Option<u64>,
-    last: Vec<Option<usize>>,
-    line: String,
-    pages: Pages,
-    heard: Vec<Heard>,
-    silences: Vec<Silence>,
     /// The first entry of the pass being read.
     pass_start: usize,
     /// A page was reported before this pass.
@@ -634,56 +747,20 @@ impl Reader {
             .get_or_insert(utc_ms.saturating_sub(self.now));
     }
 
-    fn push(&mut self, kind: Kind, text: &str) {
-        self.push_from(kind, 0, text);
-    }
-
-    fn push_fmt(&mut self, kind: Kind, text: fmt::Arguments<'_>) {
-        let mut line = self.line();
-        let _ = line.write_fmt(text);
-        self.push_line(kind, 0, line);
-    }
-
-    fn push_lower(&mut self, kind: Kind, text: fmt::Arguments<'_>) {
-        let mut line = self.line();
-        let _ = line.write_fmt(text);
-        lowercase_from(&mut line, 0);
-        self.push_line(kind, 0, line);
-    }
-
-    fn line(&mut self) -> String {
-        let mut line = std::mem::take(&mut self.line);
-        line.clear();
-        line
-    }
-
-    fn push_line(&mut self, kind: Kind, source: u8, line: String) {
-        self.push_from(kind, source, &line);
-        self.line = line;
-    }
-
-    fn push_from(&mut self, kind: Kind, source: u8, text: &str) {
-        let slot = &mut self.last[(kind as usize) << 8 | usize::from(source)];
-        let repeat = !kind.edge() && slot.is_some_and(|i| self.entries[i].text == text);
-        if !repeat {
-            *slot = Some(self.entries.len());
-        }
-        self.entries.push(Entry {
-            at: self.at(),
-            kind,
-            text: text.to_owned(),
-            repeat,
-            bytes: None,
-            cause: None,
-            shows: None,
-        });
+    fn push_with(
+        &mut self,
+        kind: Kind,
+        source: u8,
+        write: impl FnOnce(&mut String) -> fmt::Result,
+    ) {
+        self.entries.push_with(self.at(), kind, source, write);
     }
 
     /// Give each page that changed in the pass just read its cause, and
     /// enter its activity window.
     fn end_pass(&mut self) {
         self.close_window();
-        let pass = &mut self.entries[self.pass_start..];
+        let pass = &mut self.entries.list[self.pass_start..];
         if pass.iter().any(|e| e.kind == Kind::Page) {
             let cause = if self.paged {
                 Cause::of(pass)
@@ -698,7 +775,7 @@ impl Reader {
                 }
             }
         }
-        self.pass_start = self.entries.len();
+        self.pass_start = self.entries.list.len();
     }
 
     /// Set the ride clock to the ride time VANA showed when they part: a
@@ -722,51 +799,11 @@ impl Reader {
 
     fn close_window(&mut self) {
         if let Some(window) = self.window.take() {
-            self.push(Kind::Activity, &self::window(&window));
+            self.push_with(Kind::Activity, 0, |line| {
+                line.write_str(&self::window(&window))
+            });
             self.activity.push(window);
         }
-    }
-
-    fn heard_from(&mut self, identity: ant::Identity) -> &str {
-        let at = self.heard.iter().position(|heard| {
-            (heard.identity.device_type, heard.identity.device_number)
-                == (identity.device_type, identity.device_number)
-        });
-        let Some(at) = at else {
-            self.heard.push(Heard {
-                identity,
-                last_ms: self.now,
-                name: sensor(identity).to_string(),
-            });
-            return &self.heard[self.heard.len() - 1].name;
-        };
-        let heard = &mut self.heard[at];
-        heard.identity = identity;
-        let last_ms = std::mem::replace(&mut heard.last_ms, self.now);
-        if self.now - last_ms > SILENCE_MS {
-            self.silences.push(Silence {
-                sensor: heard.name.clone(),
-                last_ms,
-                next_ms: Some(self.now),
-            });
-        }
-        &self.heard[at].name
-    }
-
-    fn silent_at_end(&mut self) {
-        let mut open: Vec<Silence> = self
-            .heard
-            .iter()
-            .filter(|heard| self.now - heard.last_ms > SILENCE_MS)
-            .map(|heard| Silence {
-                sensor: heard.name.clone(),
-                last_ms: heard.last_ms,
-                next_ms: None,
-            })
-            .collect();
-        self.silences.append(&mut open);
-        self.silences
-            .sort_by(|a, b| (a.last_ms, &a.sensor).cmp(&(b.last_ms, &b.sensor)));
     }
 
     fn event(&mut self, event: &Event<'_>) {
@@ -776,102 +813,111 @@ impl Reader {
         match *event {
             Event::Pass { now_ms } => {
                 self.end_pass();
-                if self.passes > 0 && now_ms.saturating_sub(self.now) >= GAP_MS {
-                    self.push_fmt(
-                        Kind::Gap,
-                        format_args!(
+                let since = now_ms.saturating_sub(self.now);
+                if self.passes > 0 && since >= GAP_MS {
+                    self.push_with(Kind::Gap, 0, |line| {
+                        write!(
+                            line,
                             "no pass for {} until {}",
-                            duration(now_ms - self.now),
+                            duration(since),
                             session_clock(now_ms)
-                        ),
-                    );
+                        )
+                    });
                 }
                 if self.recording {
-                    self.ride_ms = self.ride_ms.map(|ms| ms + now_ms.saturating_sub(self.now));
+                    self.ride_ms = self.ride_ms.map(|ms| ms + since);
                 }
                 self.now = now_ms;
                 self.passes += 1;
             }
-            Event::Input(edge) => self.push(Kind::Input, &input(edge.input)),
-            Event::Synthetic(pressed) => {
-                self.push_fmt(Kind::Input, format_args!("synthetic {}", input(pressed)))
+            Event::Input(edge) => {
+                self.push_with(Kind::Input, 0, |line| line.write_str(&input(edge.input)))
             }
+            Event::Synthetic(pressed) => self.push_with(Kind::Input, 0, |line| {
+                write!(line, "synthetic {}", input(pressed))
+            }),
             Event::Panel(_) => {}
-            Event::Command(line) => self.push(Kind::Command, &super::secret::shown_command(line)),
-            Event::Startup(startup) => {
-                self.push_fmt(Kind::Startup, format_args!("companion {}", startup.name()))
-            }
-            Event::AntRadio(radio) => self.push_lower(
-                Kind::Ant,
-                format_args!(
-                    "radio {:?}{}",
-                    radio.availability,
-                    if radio.scanning { " scanning" } else { "" }
-                ),
-            ),
-            Event::AntDiscoveries(found) => {
-                let mut line = self.line();
+            Event::Command(command) => self.push_with(Kind::Command, 0, |line| {
+                line.write_str(&super::secret::shown_command(command))
+            }),
+            Event::Startup(startup) => self.push_with(Kind::Startup, 0, |line| {
+                write!(line, "companion {}", startup.name())
+            }),
+            Event::AntRadio(radio) => self.push_with(Kind::Ant, 0, |line| {
+                write_lower(
+                    line,
+                    format_args!(
+                        "radio {:?}{}",
+                        radio.availability,
+                        if radio.scanning { " scanning" } else { "" }
+                    ),
+                )
+            }),
+            Event::AntDiscoveries(found) => self.push_with(Kind::Ant, 0, |line| {
                 for (i, d) in found.iter().flatten().enumerate() {
-                    let _ = write!(
+                    write!(
                         line,
                         "{}{} rssi {}",
                         if i == 0 { "found " } else { ", " },
                         sensor(d.identity),
                         d.rssi
-                    );
+                    )?;
                 }
                 if line.is_empty() {
                     line.push_str("found nothing");
                 }
-                self.push_line(Kind::Ant, 0, line);
-            }
+                Ok(())
+            }),
             Event::AntLink { channel, snapshot } => {
-                let mut line = self.line();
-                ant_link(&mut line, channel, snapshot);
-                self.push_line(Kind::Ant, channel, line);
+                self.push_with(Kind::Ant, channel, |line| ant_link(line, channel, snapshot))
             }
             Event::AntPacket(packet) => {
-                let mut line = self.line();
-                line.push_str(self.heard_from(packet.identity));
-                line.push(' ');
-                self.pages.describe(&mut line, packet.identity, packet.data);
-                self.push_line(Kind::AntPacket, 0, line);
-                if let Some(entry) = self.entries.last_mut() {
-                    entry.bytes = Some(packet.data);
-                }
+                let now = self.now;
+                let entry = self
+                    .entries
+                    .push_with(self.at(), Kind::AntPacket, 0, |line| {
+                        self.sensors.packet(now, packet.identity, packet.data, line);
+                        Ok(())
+                    });
+                entry.bytes = Some(packet.data);
             }
-            Event::AntRequest { operation, result } => self.push_fmt(
-                Kind::AntRequest,
-                format_args!("{} -> {}", ant_operation(operation), ant_result(result)),
-            ),
-            Event::AntSend(send) => {
-                self.push_fmt(Kind::AntRequest, format_args!("send status {send:?}"))
+            Event::AntRequest { operation, result } => {
+                self.push_with(Kind::AntRequest, 0, |line| {
+                    write!(
+                        line,
+                        "{} -> {}",
+                        ant_operation(operation),
+                        ant_result(result)
+                    )
+                })
             }
+            Event::AntSend(send) => self.push_with(Kind::AntRequest, 0, |line| {
+                write!(line, "send status {send:?}")
+            }),
             Event::BleLink {
                 availability,
                 snapshot,
-            } => {
-                let mut line = self.line();
-                let _ = write!(line, "link {}", snapshot.link.name());
+            } => self.push_with(Kind::Ble, 0, |line| {
+                write!(line, "link {}", snapshot.link.name())?;
                 if availability != device_api::observation::Availability::Ready {
                     let start = line.len();
-                    let _ = write!(line, " ({availability:?})");
-                    lowercase_from(&mut line, start);
+                    write!(line, " ({availability:?})")?;
+                    lowercase_from(line, start);
                 }
-                self.push_line(Kind::Ble, 0, line);
-            }
-            Event::BlePacket(packet) => self.push_fmt(
-                Kind::BlePacket,
-                format_args!(
+                Ok(())
+            }),
+            Event::BlePacket(packet) => self.push_with(Kind::BlePacket, 0, |line| {
+                write!(
+                    line,
                     "connection {} seq {} data {}",
                     packet.connection,
                     packet.sequence,
                     hex(packet.data().unwrap_or(&[]))
-                ),
-            ),
-            Event::BleBattery(level) => {
-                self.push_fmt(Kind::Ble, format_args!("sensor battery raw {}", level.raw))
-            }
+                )
+            }),
+            Event::BleBattery(level) => self.push_with(Kind::Ble, 0, |line| {
+                write!(line, "sensor battery raw {}", level.raw)
+            }),
             Event::Position {
                 availability: _,
                 snapshot,
@@ -879,74 +925,73 @@ impl Reader {
                 if let Some(utc) = snapshot.and_then(|s| s.gps.utc_ms) {
                     self.learn_utc(utc);
                 }
-                let mut line = self.line();
-                gps(&mut line, snapshot);
-                self.push_line(Kind::Gps, 0, line);
+                self.push_with(Kind::Gps, 0, |line| gps(line, snapshot));
             }
-            Event::Physical(snapshot) => self.push(
-                Kind::Sensors,
-                match snapshot.pressure {
+            Event::Physical(snapshot) => self.push_with(Kind::Sensors, 0, |line| {
+                line.write_str(match snapshot.pressure {
                     Observation::Unavailable => "barometer unavailable",
                     Observation::Fresh { .. } => "barometer fresh",
                     Observation::Stale { .. } => "barometer stale",
-                },
-            ),
+                })
+            }),
             Event::Light(light) => match light {
-                Observation::Unavailable => self.push(Kind::Sensors, "ambient light unavailable"),
-                Observation::Fresh { value, .. } => {
-                    self.push_fmt(Kind::Sensors, format_args!("ambient light {}", value.0))
-                }
-                Observation::Stale { value, .. } => self.push_fmt(
-                    Kind::Sensors,
-                    format_args!("ambient light {} stale", value.0),
-                ),
+                Observation::Unavailable => self.push_with(Kind::Sensors, 0, |line| {
+                    line.write_str("ambient light unavailable")
+                }),
+                Observation::Fresh { value, .. } => self.push_with(Kind::Sensors, 0, |line| {
+                    write!(line, "ambient light {}", value.0)
+                }),
+                Observation::Stale { value, .. } => self.push_with(Kind::Sensors, 0, |line| {
+                    write!(line, "ambient light {} stale", value.0)
+                }),
             },
             Event::Power(snapshot) => {
-                let mut line = self.line();
-                battery(&mut line, snapshot);
-                self.push_line(Kind::Battery, 0, line);
+                self.push_with(Kind::Battery, 0, |line| battery(line, snapshot))
             }
             Event::NetworkTime(snapshot) => {
                 if let Some(unix) = snapshot.unix_seconds {
                     self.learn_utc(unix * 1000 + u64::from(snapshot.millis));
                 }
                 match snapshot.unix_seconds {
-                    Some(unix) => self.push_lower(
-                        Kind::Time,
-                        format_args!("wifi utc {unix} ({:?})", snapshot.status),
-                    ),
-                    None => self.push_lower(
-                        Kind::Time,
-                        format_args!("wifi utc none ({:?})", snapshot.status),
-                    ),
+                    Some(unix) => self.push_with(Kind::Time, 0, |line| {
+                        write_lower(
+                            line,
+                            format_args!("wifi utc {unix} ({:?})", snapshot.status),
+                        )
+                    }),
+                    None => self.push_with(Kind::Time, 0, |line| {
+                        write_lower(line, format_args!("wifi utc none ({:?})", snapshot.status))
+                    }),
                 }
             }
-            Event::StorageFault(fault) => self.push_lower(
-                Kind::Storage,
-                format_args!(
-                    "{:?} {:?} failed at {}: {:?}",
-                    fault.medium, fault.op, fault.at, fault.error
-                ),
-            ),
-            Event::Entropy(value) => self.push_fmt(Kind::Entropy, format_args!("{value:#018x}")),
-            Event::Page(page) => self.push(Kind::Page, page),
-            Event::Toast(text) => self.push(
-                Kind::Toast,
-                if text.is_empty() { TOAST_CLEARED } else { text },
-            ),
+            Event::StorageFault(fault) => self.push_with(Kind::Storage, 0, |line| {
+                write_lower(
+                    line,
+                    format_args!(
+                        "{:?} {:?} failed at {}: {:?}",
+                        fault.medium, fault.op, fault.at, fault.error
+                    ),
+                )
+            }),
+            Event::Entropy(value) => {
+                self.push_with(Kind::Entropy, 0, |line| write!(line, "{value:#018x}"))
+            }
+            Event::Page(page) => self.push_with(Kind::Page, 0, |line| line.write_str(page)),
+            Event::Toast(text) => self.push_with(Kind::Toast, 0, |line| {
+                line.write_str(if text.is_empty() { TOAST_CLEARED } else { text })
+            }),
             Event::Sound {
                 pattern,
                 cue,
                 note,
                 of,
-            } => self.push(
-                Kind::Sound,
-                &match (cue.replace('_', " "), of) {
+            } => self.push_with(Kind::Sound, 0, |line| {
+                line.write_str(&match (cue.replace('_', " "), of) {
                     (cue, _) if cue.is_empty() => format!("pattern {pattern}"),
                     (cue, 1) => format!("pattern {pattern}: {cue}"),
                     (cue, of) => format!("pattern {pattern}: {cue} ({note} of {of})"),
-                },
-            ),
+                })
+            }),
             Event::RideState(state) => {
                 let open = matches!(state, "recording" | "paused" | "auto_paused");
                 self.ride_ms = match (self.ride_ms, open) {
@@ -960,53 +1005,58 @@ impl Reader {
                     ride_ms: self.ride_ms,
                     running: self.recording,
                 });
-                self.push(Kind::Ride, state);
+                self.push_with(Kind::Ride, 0, |line| line.write_str(state));
             }
             Event::Mark {
                 count,
                 pressed_ms,
                 page,
-            } => self.push_fmt(
-                Kind::Mark,
-                format_args!("{count} pressed {} on {page}", session_clock(pressed_ms)),
-            ),
+            } => self.push_with(Kind::Mark, 0, |line| {
+                write!(
+                    line,
+                    "{count} pressed {} on {page}",
+                    session_clock(pressed_ms)
+                )
+            }),
             Event::Shown(fields) => {
                 self.ride_time_shown(fields);
-                self.push(Kind::Shown, fields)
+                self.push_with(Kind::Shown, 0, |line| line.write_str(fields))
             }
             Event::Log {
                 level,
                 target,
                 text,
-            } => self.push_fmt(
+            } => self.push_with(
                 if about_storage(text) {
                     Kind::Storage
                 } else {
                     Kind::Log
                 },
-                format_args!(
-                    "{} {target} {text}",
-                    match level {
-                        Level::Error => "error",
-                        Level::Warn => "warn",
-                    }
-                ),
+                0,
+                |line| {
+                    write!(
+                        line,
+                        "{} {target} {text}",
+                        match level {
+                            Level::Error => "error",
+                            Level::Warn => "warn",
+                        }
+                    )
+                },
             ),
-            Event::AccessPoint { state, reach } => self.push_lower(
-                Kind::Phone,
-                format_args!("access point {state:?}, {reach:?}"),
-            ),
-            Event::AccessPointRequest { start, result } => self.push_fmt(
-                Kind::Phone,
-                format_args!(
+            Event::AccessPoint { state, reach } => self.push_with(Kind::Phone, 0, |line| {
+                write_lower(line, format_args!("access point {state:?}, {reach:?}"))
+            }),
+            Event::AccessPointRequest { start, result } => self.push_with(Kind::Phone, 0, |line| {
+                write!(
+                    line,
                     "access point {} -> {}",
                     if start { "start" } else { "stop" },
                     answer(result)
-                ),
-            ),
-            Event::Server { request, room } => self.push(
-                Kind::Phone,
-                &match request {
+                )
+            }),
+            Event::Server { request, room } => self.push_with(Kind::Phone, 0, |line| {
+                line.write_str(&match request {
                     Some(request) => format!(
                         "server holds #{} {:?} {}{}{} body {} B, room {room} B",
                         request.id,
@@ -1017,91 +1067,94 @@ impl Reader {
                         request.body
                     ),
                     None => format!("server holds nothing, room {room} B"),
-                },
-            ),
-            Event::ServerListen(listen) => self.push(
-                Kind::Phone,
-                if listen {
+                })
+            }),
+            Event::ServerListen(listen) => self.push_with(Kind::Phone, 0, |line| {
+                line.write_str(if listen {
                     "server listen"
                 } else {
                     "server stop"
-                },
-            ),
+                })
+            }),
             Event::ServerFinish(id) => {
-                self.push_fmt(Kind::Phone, format_args!("server finish #{id}"))
+                self.push_with(Kind::Phone, 0, |line| write!(line, "server finish #{id}"))
             }
-            Event::ServerRead { id, part, more } => self.push_fmt(
-                Kind::Phone,
-                format_args!(
+            Event::ServerRead { id, part, more } => self.push_with(Kind::Phone, 0, |line| {
+                write!(
+                    line,
                     "server read #{id} {} B{}",
                     part.len(),
                     if more { ", more" } else { "" }
-                ),
-            ),
-            Event::ServerWrite { id, taken } => self.push_fmt(
-                Kind::Phone,
-                format_args!("server write #{id} took {taken} B"),
-            ),
+                )
+            }),
+            Event::ServerWrite { id, taken } => self.push_with(Kind::Phone, 0, |line| {
+                write!(line, "server write #{id} took {taken} B")
+            }),
             Event::PowerControl(status) => {
                 self.power.push((self.now, status.state));
-                self.push_lower(
-                    Kind::Power,
-                    format_args!("{:?} {:?}", status.state, status.operation),
-                )
+                self.push_with(Kind::Power, 0, |line| {
+                    write_lower(
+                        line,
+                        format_args!("{:?} {:?}", status.state, status.operation),
+                    )
+                })
             }
             Event::PowerRequest {
                 operation,
                 delay_ms,
                 result,
-            } => self.push_fmt(
-                Kind::Power,
-                format_args!(
+            } => self.push_with(Kind::Power, 0, |line| {
+                write!(
+                    line,
                     "{} in {delay_ms} ms -> {}",
                     format!("{operation:?}").to_lowercase(),
                     answer(result)
-                ),
-            ),
-            Event::PoweredOff => self.push(Kind::Power, "powered off"),
-            Event::Backlight(availability) => {
-                self.push_lower(Kind::Display, format_args!("backlight {availability:?}"))
+                )
+            }),
+            Event::PoweredOff => {
+                self.push_with(Kind::Power, 0, |line| line.write_str("powered off"))
             }
-            Event::Refused { output, attempt } => self.push_lower(
-                Kind::Display,
-                format_args!("{output:?} refused, attempt {attempt}"),
-            ),
-            Event::SoundState(snapshot) => self.push_lower(
-                Kind::Buzzer,
-                format_args!("{:?} {:?}", snapshot.state, snapshot.pattern),
-            ),
-            Event::SoundRequest { play, result } => self.push_fmt(
-                Kind::Buzzer,
-                format_args!(
+            Event::Backlight(availability) => self.push_with(Kind::Display, 0, |line| {
+                write_lower(line, format_args!("backlight {availability:?}"))
+            }),
+            Event::Refused { output, attempt } => self.push_with(Kind::Display, 0, |line| {
+                write_lower(line, format_args!("{output:?} refused, attempt {attempt}"))
+            }),
+            Event::SoundState(snapshot) => self.push_with(Kind::Buzzer, 0, |line| {
+                write_lower(
+                    line,
+                    format_args!("{:?} {:?}", snapshot.state, snapshot.pattern),
+                )
+            }),
+            Event::SoundRequest { play, result } => self.push_with(Kind::Buzzer, 0, |line| {
+                write!(
+                    line,
                     "{} -> {}",
                     match play {
                         Some(pattern) => format!("play {pattern}"),
                         None => "stop".into(),
                     },
                     answer(result)
-                ),
-            ),
-            Event::TooLarge(tag) => self.push_fmt(
-                Kind::Trace,
-                format_args!("a record tagged {tag} was too large and left out"),
-            ),
-            Event::HostWrote => self.push(
-                Kind::Trace,
-                "a host wrote FILES or TERRAIN; the trace ends here",
-            ),
-            Event::Lost { blocks, bytes } => self.push_fmt(
-                Kind::Trace,
-                format_args!(
+                )
+            }),
+            Event::TooLarge(tag) => self.push_with(Kind::Trace, 0, |line| {
+                write!(line, "a record tagged {tag} was too large and left out")
+            }),
+            Event::HostWrote => self.push_with(Kind::Trace, 0, |line| {
+                line.write_str("a host wrote FILES or TERRAIN; the trace ends here")
+            }),
+            Event::Lost { blocks, bytes } => self.push_with(Kind::Trace, 0, |line| {
+                write!(
+                    line,
                     "{blocks} blocks, {bytes} B, lost here: the recorder had no room for them"
-                ),
-            ),
+                )
+            }),
             Event::FrameTime(frame_time) => self.frame_time_awaiting_health = Some(frame_time),
             Event::Health(health) => {
                 let frame_time = self.frame_time_awaiting_health.take();
-                self.push(Kind::Health, &self::health(&health, frame_time));
+                self.push_with(Kind::Health, 0, |line| {
+                    line.write_str(&self::health(&health, frame_time))
+                });
                 self.health.push((self.now, health));
                 self.frame_times.extend(frame_time.map(|f| (self.now, f)));
             }
@@ -1190,6 +1243,12 @@ fn about_storage(text: &str) -> bool {
     STORAGE_WORDS.iter().any(|word| text.contains(word))
 }
 
+fn write_lower(line: &mut String, text: fmt::Arguments<'_>) -> fmt::Result {
+    line.write_fmt(text)?;
+    lowercase_from(line, 0);
+    Ok(())
+}
+
 fn lowercase_from(line: &mut String, start: usize) {
     if line[start..].is_ascii() {
         line[start..].make_ascii_lowercase();
@@ -1224,14 +1283,14 @@ pub fn sensor(identity: ant::Identity) -> impl fmt::Display {
     })
 }
 
-fn ant_link(out: &mut String, channel: u8, snapshot: Option<ant::Snapshot>) {
-    let _ = match snapshot {
+fn ant_link(out: &mut String, channel: u8, snapshot: Option<ant::Snapshot>) -> fmt::Result {
+    match snapshot {
         None => write!(out, "ch{channel} closed"),
         Some(s) => {
-            let _ = match s.selected {
+            match s.selected {
                 Some(peer) => write!(out, "ch{channel} {}", sensor(peer)),
                 None => write!(out, "ch{channel} no sensor"),
-            };
+            }?;
             write!(
                 out,
                 " {}{}{}",
@@ -1240,7 +1299,7 @@ fn ant_link(out: &mut String, channel: u8, snapshot: Option<ant::Snapshot>) {
                 if s.scanning { " scanning" } else { "" }
             )
         }
-    };
+    }
 }
 
 fn ant_operation(operation: ant::AntOperation) -> String {
@@ -1272,10 +1331,9 @@ fn input(input: Input) -> String {
     }
 }
 
-fn gps(out: &mut String, snapshot: Option<device_api::positioning::Snapshot>) {
+fn gps(out: &mut String, snapshot: Option<device_api::positioning::Snapshot>) -> fmt::Result {
     let Some(snapshot) = snapshot else {
-        out.push_str("no receiver");
-        return;
+        return out.write_str("no receiver");
     };
     let fix = snapshot.gps;
     let state = match fix.state {
@@ -1286,16 +1344,16 @@ fn gps(out: &mut String, snapshot: Option<device_api::positioning::Snapshot>) {
     };
     out.push_str(state);
     if let Some(satellites) = fix.satellites {
-        let _ = write!(out, " sats {satellites}");
+        write!(out, " sats {satellites}")?;
     }
+    Ok(())
 }
 
-fn battery(out: &mut String, snapshot: Option<device_api::input::InputSnapshot>) {
+fn battery(out: &mut String, snapshot: Option<device_api::input::InputSnapshot>) -> fmt::Result {
     let Some(snapshot) = snapshot else {
-        out.push_str("companion silent");
-        return;
+        return out.write_str("companion silent");
     };
-    let _ = match snapshot.battery {
+    match snapshot.battery {
         Observation::Fresh {
             value: (percent, _),
             ..
@@ -1305,12 +1363,12 @@ fn battery(out: &mut String, snapshot: Option<device_api::input::InputSnapshot>)
             ..
         } => write!(out, "{percent}% stale"),
         Observation::Unavailable => out.write_str("level unknown"),
-    };
-    out.push_str(match snapshot.power {
+    }?;
+    out.write_str(match snapshot.power {
         Observation::Fresh { value: 0, .. } | Observation::Stale { value: 0, .. } => " charging",
         Observation::Unavailable => "",
         _ => " on battery",
-    });
+    })
 }
 
 pub fn rate(per_second: f64) -> impl fmt::Display {
@@ -1387,9 +1445,7 @@ fn window(window: &Window) -> String {
     let span_ms = u64::from(a.window_ms).max(1);
     let share = |us: u32| percent(f64::from(us) / (span_ms * 1000) as f64);
     let per_s = |count: u32| rate(f64::from(count) * 1000.0 / span_ms as f64);
-    let mut text = String::new();
-    let _ = write!(
-        text,
+    let mut text = format!(
         "{}{}: {} wakeups",
         if a.simulated { "simulated " } else { "" },
         duration(span_ms),
@@ -1401,39 +1457,45 @@ fn window(window: &Window) -> String {
     if let Some(switches) = a.switches {
         let _ = write!(text, ", {} switches", per_s(switches));
     }
-    for (name, us) in [
+    let cpu: Vec<String> = [
         ("awake", a.awake_us),
         ("main", a.main_us),
         ("radio", a.radio_us),
         ("idle", a.idle_us),
         ("counting", a.hooks_us),
-    ] {
-        if let Some(us) = us {
-            let _ = write!(text, ", {name} {}", share(us));
-        }
+    ]
+    .into_iter()
+    .filter_map(|(name, us)| Some(format!("{name} {}", share(us?))))
+    .collect();
+    if !cpu.is_empty() {
+        let _ = write!(text, ", {}", cpu.join(", "));
     }
-    for (i, task) in window.tasks.iter().enumerate() {
-        let _ = write!(
-            text,
-            "{}{} {}",
-            if i == 0 { "; " } else { ", " },
-            task.name,
-            per_s(task.polls)
-        );
-        if let Some(busy) = task.busy_us {
-            let _ = write!(text, " {}", share(busy));
-        }
+    let tasks: Vec<String> = window
+        .tasks
+        .iter()
+        .map(|task| match task.busy_us {
+            Some(busy) => format!("{} {} {}", task.name, per_s(task.polls), share(busy)),
+            None => format!("{} {}", task.name, per_s(task.polls)),
+        })
+        .collect();
+    if !tasks.is_empty() {
+        let _ = write!(text, "; {}", tasks.join(", "));
     }
-    for (i, stage) in window.stages.iter().enumerate() {
-        let _ = write!(
-            text,
-            "{}{} {} ({} a pass, max {})",
-            if i == 0 { "; pass stages " } else { ", " },
-            stage.name,
-            share(stage.busy_us),
-            micros(u64::from(stage.busy_us) / u64::from(stage.runs.max(1))),
-            micros(u64::from(stage.max_us))
-        );
+    let stages: Vec<String> = window
+        .stages
+        .iter()
+        .map(|stage| {
+            format!(
+                "{} {} ({} a pass, max {})",
+                stage.name,
+                share(stage.busy_us),
+                micros(u64::from(stage.busy_us) / u64::from(stage.runs.max(1))),
+                micros(u64::from(stage.max_us))
+            )
+        })
+        .collect();
+    if !stages.is_empty() {
+        let _ = write!(text, "; pass stages {}", stages.join(", "));
     }
     let c = &a.consumers;
     let _ = write!(

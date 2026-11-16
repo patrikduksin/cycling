@@ -1,10 +1,21 @@
 use super::super::tests::{Said, hairpin, join, line_of, path, ride_with, ring, turns_of};
 use super::super::{Kind, PlacedScan, SCAN_STEPS, Side, TURNS, Turn, distance};
-use super::RETRACE_M;
 use crate::ride::course::stored::tests::{found, found_along, uploaded};
+use core::cell::Cell;
 use std::string::{String, ToString};
 use std::vec::Vec;
 use std::{format, vec};
+
+std::thread_local! {
+    pub(super) static UNCUT: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) fn uncut<R>(f: impl FnOnce() -> R) -> R {
+    UNCUT.set(true);
+    let said = f();
+    UNCUT.set(false);
+    said
+}
 
 const LEFT: Kind = Kind::Turn(Side::Left);
 const RIGHT: Kind = Kind::Turn(Side::Right);
@@ -62,11 +73,25 @@ fn side_visit(depth: f32, apart: f32) -> Vec<(f32, f32)> {
 
 #[test]
 fn a_dead_end_visit_of_up_to_150_m_says_nothing_where_the_road_runs_on() {
-    for depth in [12.0, 30.0, 60.0, 92.0, 100.0, 145.0] {
-        for apart in [0.0, 2.0] {
+    for depth in [15.0, 30.0, 60.0, 92.0, 100.0, 140.0] {
+        for apart in [0.0, 0.5] {
             let told = told(&side_visit(depth, apart));
             assert_eq!(told, [[], []], "{depth} m deep, {apart} m apart");
         }
+    }
+}
+
+#[test]
+fn a_dead_end_too_shallow_or_drifting_to_be_sure_of_says_what_it_said_uncut() {
+    for (depth, apart) in [(10.0, 0.0), (12.0, 0.0), (60.0, 1.5), (60.0, 3.0)] {
+        let drawn = side_visit(depth, apart);
+        let said = told(&drawn);
+        assert_eq!(
+            said,
+            uncut(|| told(&drawn)),
+            "{depth} m deep, {apart} m apart"
+        );
+        assert_ne!(said, [[], []], "{depth} m deep, {apart} m apart");
     }
 }
 
@@ -95,7 +120,7 @@ fn roads_8_m_apart_are_a_switchback_whose_u_turns_stay() {
 
 #[test]
 fn a_spur_past_a_corner_leaves_the_corner_named() {
-    for overshoot in [12.0, 30.0, 90.0] {
+    for overshoot in [30.0, 60.0, 90.0] {
         let drawn = path(
             &[
                 (0.0, 0.0),
@@ -109,13 +134,23 @@ fn a_spur_past_a_corner_leaves_the_corner_named() {
     }
 }
 
+fn without_or_uncut(with: &[(f32, f32)], without: &[(f32, f32)], base_m: f32, spur_m: f32) -> bool {
+    let scan = turns_of(with);
+    let upload = found(with).1;
+    let scan_right = as_without(&scan, &turns_of(without), base_m, spur_m)
+        || heeded(&scan) == heeded(&uncut(|| turns_of(with)));
+    let upload_right = as_without(&upload, &found(without).1, base_m, spur_m)
+        || heeded(&upload) == heeded(&uncut(|| found(with).1));
+    scan_right && upload_right
+}
+
 /// The turns told on `corners`, scanned as given rather than as kept.
 fn kept_about(corners: &[(f32, f32)]) -> [Vec<Kind>; 2] {
     told_kept(corners, corners)
 }
 
 #[test]
-fn a_spur_whose_way_back_overshoots_its_base_says_nothing_where_the_course_runs_on() {
+fn a_spur_whose_way_back_overshoots_its_base_says_what_it_said_uncut() {
     // km 9.78: in at 152 degrees, a 27 m spur, and back on a line 7
     // degrees off the way out, which passes the base 3.3 m off and meets
     // the course 11 m on.
@@ -128,11 +163,11 @@ fn a_spur_whose_way_back_overshoots_its_base_says_nothing_where_the_course_runs_
         (111.0, -279.8),
         (171.7, -462.3),
     ];
-    assert_eq!(kept_about(&corners), [[LEFT]; 2]);
+    assert_eq!(kept_about(&corners), uncut(|| kept_about(&corners)));
 }
 
 #[test]
-fn a_spur_at_the_end_of_a_long_out_and_back_says_what_the_course_without_it_says() {
+fn a_spur_at_the_end_of_a_long_out_and_back_says_what_it_said_with_or_without_it() {
     // km 51.46: a 420 m out-and-back whose far end turns left into a 17 m
     // spur; its way back strays 3.7 m from the way out 25 m on.
     let out = [
@@ -159,11 +194,22 @@ fn a_spur_at_the_end_of_a_long_out_and_back_says_what_the_course_without_it_says
         .copied()
         .collect();
     let told = kept_about(&corners);
-    assert_eq!(told, kept_about(&without));
     assert!(
-        told.iter().all(|told| told.contains(&Kind::UTurn)),
+        told == kept_about(&without) || told == uncut(|| kept_about(&corners)),
         "{told:?}"
     );
+}
+
+#[test]
+fn a_fork_15_degrees_off_the_way_in_says_what_it_said_uncut() {
+    for depth in [60.0f32, 151.0, 160.0] {
+        let out = 165f32.to_radians();
+        let tip = (depth * libm::sinf(out), 300.0 + depth * libm::cosf(out));
+        let back = 255f32.to_radians();
+        let back = (2.9 * libm::sinf(back), 300.0 + 2.9 * libm::cosf(back));
+        let drawn = path(&[(0.0, 0.0), (0.0, 300.0), tip, back, (400.0, 300.0)], 5.0);
+        assert_eq!(told(&drawn), uncut(|| told(&drawn)), "{depth} m deep");
+    }
 }
 
 #[test]
@@ -178,7 +224,7 @@ fn hairpins_and_roundabouts_keep_their_turns() {
 }
 
 #[test]
-fn a_dogleg_just_past_a_spur_holds_back_the_next_sign_as_it_would_without_it() {
+fn a_dogleg_just_past_a_spur_holds_back_the_next_sign_as_without_it_or_uncut() {
     // km 87.2: in at 18 degrees, a hook into an 82 m spur, then a dogleg
     // east that the scan takes for one turn group, ending 86 m past where
     // the way back meets the course, and a left 150 m on.
@@ -207,27 +253,17 @@ fn a_dogleg_just_past_a_spur_holds_back_the_next_sign_as_it_would_without_it() {
     let with: Vec<_> = way_in.iter().chain(&spur).chain(&on).copied().collect();
     let base_m = length(&way_in);
     let spur_m = length(&with) - length(&without);
-    assert!(as_without(
-        &turns_of(&with),
-        &turns_of(&without),
-        base_m,
-        spur_m
-    ));
-    assert!(as_without(
-        &found(&with).1,
-        &found(&without).1,
-        base_m,
-        spur_m
-    ));
+    assert!(without_or_uncut(&with, &without, base_m, spur_m));
     let said = |line: &[(f32, f32)]| {
         heard_kept(line, line)
             .map(|heard| heard.into_iter().map(|(_, said)| said).collect::<Vec<_>>())
     };
-    assert_eq!(said(&with), said(&without));
+    let said_with = said(&with);
+    assert!(said_with == said(&without) || said_with == uncut(|| said(&with)));
 }
 
 #[test]
-fn a_spur_whose_way_on_hooks_back_beside_the_way_in_says_what_the_course_without_it_says() {
+fn a_spur_whose_way_on_hooks_back_beside_the_way_in_says_what_it_says_without_it_or_uncut() {
     let way_in = [(0.0, 0.0), (0.0, 300.0)];
     let spur = [(-80.0, 320.0), (0.0, 300.0)];
     let on = [
@@ -243,18 +279,7 @@ fn a_spur_whose_way_on_hooks_back_beside_the_way_in_says_what_the_course_without
     let without: Vec<_> = way_in.iter().chain(&on).copied().collect();
     let with: Vec<_> = way_in.iter().chain(&spur).chain(&on).copied().collect();
     let (base_m, spur_m) = (length(&way_in), length(&with) - length(&without));
-    assert!(as_without(
-        &turns_of(&with),
-        &turns_of(&without),
-        base_m,
-        spur_m
-    ));
-    assert!(as_without(
-        &found(&with).1,
-        &found(&without).1,
-        base_m,
-        spur_m
-    ));
+    assert!(without_or_uncut(&with, &without, base_m, spur_m));
 }
 
 #[test]
@@ -390,6 +415,21 @@ impl Shape {
         (base.0 + side.0 * drift, base.1 + side.1 * drift)
     }
 
+    fn parted(&self) -> bool {
+        let bearing = |from: (f32, f32), to: (f32, f32)| (to.0 - from.0).atan2(to.1 - from.1);
+        let ways = [
+            bearing(self.base(), self.comes_from()),
+            bearing(self.base(), self.tip),
+            bearing(self.returns_to(), self.on[0]),
+        ];
+        let apart = |a: f32, b: f32| libm::cosf(a - b) <= libm::cosf(CUT_DEG.to_radians());
+        apart(ways[0], ways[1]) && apart(ways[1], ways[2]) && apart(ways[2], ways[0])
+    }
+
+    fn cut(&self) -> bool {
+        CUT_M.contains(&self.depth) && self.drift <= CUT_DRIFT_M && self.parted()
+    }
+
     fn corners(&self) -> Vec<(f32, f32)> {
         let spur = [self.tip, self.returns_to()];
         self.way_in
@@ -459,16 +499,12 @@ impl Shape {
 }
 
 const DEPTHS: [f32; 8] = [10.0, 12.0, 20.0, 35.0, 60.0, 100.0, 145.0, 150.0];
-/// The last as near `RETRACE_M` as an uploaded course's points, a 1e-7
-/// degree apart, can be sure to say.
-const DRIFTS: [f32; 6] = [0.5, 1.0, 1.5, 2.0, 2.5, RETRACE_M - 0.05];
-/// Spurs retraced exactly this deep are marked whatever their shape, as
-/// shallower and deeper ones, at the edges of what is a spur, may not be.
-const MARKED_M: core::ops::RangeInclusive<f32> = 20.0..=145.0;
-const DRIFTED_MARKED_M: core::ops::RangeInclusive<f32> = 20.0..=100.0;
-/// The first metres of a hook back towards the way in lie within
-/// `RETRACE_M` of it, and take the way back of the deepest past `SPUR_M`.
-const HOOKED_MARKED_M: core::ops::RangeInclusive<f32> = 20.0..=100.0;
+/// Either side of `CLOSE_M`, as a way back that ends exactly that far off
+/// leaves the way out wherever its points round it to.
+const DRIFTS: [f32; 6] = [0.5, 0.9, 1.1, 1.5, 2.0, 3.0];
+const CUT_M: core::ops::RangeInclusive<f32> = 20.0..=100.0;
+const CUT_DRIFT_M: f32 = 0.5;
+const CUT_DEG: f32 = 45.0;
 
 const BASE: (f32, f32) = (0.0, 300.0);
 const BASE_ALONG_M: [f32; 3] = [0.0, 8.0, 25.0];
@@ -643,14 +679,7 @@ fn scanned(line: &[(f32, f32)]) -> (Vec<Turn>, f32) {
 /// Drawn a point every this many metres, or at the corners alone.
 const EVERY_M: [f32; 6] = [1.0, 3.0, 5.0, 8.0, 15.0, 10_000.0];
 
-/// The shapes, drawn a point every `every_m`, where a marked spur does not
-/// say what the course without it says, as scanned and as found along the
-/// track at upload; and how many each marked, as each `marked_m` deep is.
-fn unlike(
-    shapes: Vec<Shape>,
-    marked_m: core::ops::RangeInclusive<f32>,
-    every_m: &[f32],
-) -> (Vec<String>, usize) {
+fn unlike(shapes: Vec<Shape>, every_m: &[f32]) -> (Vec<String>, usize) {
     let (mut failed, mut checked) = (Vec::new(), 0);
     for shape in shapes {
         for &step in every_m {
@@ -658,21 +687,27 @@ fn unlike(
             let Drawn { with, without } = shape.drawn(step);
             let base_m = nearest(&without, shape.returns_to()).0;
             let drawn_m = length(&with) - length(&without);
-            let (marked, scanned_m) = scanned(&with);
-            let (uploaded, uploaded_m) = found_along(&with);
-            for (path, spur_m) in [("scan", scanned_m), ("upload", uploaded_m)] {
-                assert!(
-                    spur_m > 0.0 || !marked_m.contains(&shape.depth),
-                    "unmarked on {path}: {name}"
-                );
-            }
-            checked += usize::from(scanned_m > 0.0) + usize::from(uploaded_m > 0.0);
-            let scan =
-                scanned_m == 0.0 || as_without(&marked, &turns_of(&without), base_m, drawn_m);
-            let upload = uploaded_m == 0.0
-                || as_without(&uploaded, &found_along(&without).0, base_m, drawn_m);
-            if !scan || !upload {
-                failed.push(format!("{name}: scan {scan}, upload {upload}"));
+            let paths = [
+                (
+                    scanned(&with),
+                    turns_of(&without),
+                    uncut(|| scanned(&with).0),
+                ),
+                (
+                    found_along(&with),
+                    found_along(&without).0,
+                    uncut(|| found_along(&with).0),
+                ),
+            ];
+            for (path, ((said, cut_m), reference, uncut)) in ["scan", "upload"].iter().zip(paths) {
+                checked += usize::from(cut_m > 0.0);
+                let right = match cut_m > 0.0 {
+                    true => as_without(&said, &reference, base_m, drawn_m),
+                    false => heeded(&said) == heeded(&uncut) && !shape.cut(),
+                };
+                if !right {
+                    failed.push(format!("{name}: {path}, {cut_m} m cut"));
+                }
             }
         }
     }
@@ -681,7 +716,7 @@ fn unlike(
 
 #[test]
 fn a_marked_spur_says_what_the_course_without_it_says() {
-    let (failed, checked) = unlike(shapes(&[0.0]), MARKED_M, &EVERY_M);
+    let (failed, checked) = unlike(shapes(&[0.0]), &EVERY_M);
     assert!(
         failed.is_empty(),
         "{} of {checked}:\n{}",
@@ -690,12 +725,9 @@ fn a_marked_spur_says_what_the_course_without_it_says() {
     );
 }
 
-/// Drawn at its corners: the scan reads a hook drawn a point every few
-/// metres as part of the spur's way back while it is within `RETRACE_M`
-/// of the way in.
 #[test]
 fn a_spur_before_a_hook_back_towards_the_way_in_says_what_the_course_without_it_says() {
-    let (failed, checked) = unlike(hooks(), HOOKED_MARKED_M, &EVERY_M);
+    let (failed, checked) = unlike(hooks(), &EVERY_M);
     assert!(
         failed.is_empty(),
         "{} of {checked}:\n{}",
@@ -706,7 +738,7 @@ fn a_spur_before_a_hook_back_towards_the_way_in_says_what_the_course_without_it_
 
 #[test]
 fn a_spur_whose_way_back_comes_back_beside_its_base_says_what_the_course_without_it_says() {
-    let (failed, checked) = unlike(shapes(&DRIFTS), DRIFTED_MARKED_M, &EVERY_M);
+    let (failed, checked) = unlike(shapes(&DRIFTS), &EVERY_M);
     assert!(
         failed.is_empty(),
         "{} of {checked}:\n{}",
@@ -716,7 +748,8 @@ fn a_spur_whose_way_back_comes_back_beside_its_base_says_what_the_course_without
 }
 
 #[test]
-fn a_spur_whose_way_back_drifts_off_its_way_out_leaves_the_corner_named() {
+fn a_spur_whose_way_back_drifts_off_its_way_out_leaves_the_corner_named_or_says_what_it_said_uncut()
+{
     for drift in [0.0].into_iter().chain(DRIFTS) {
         let at = 300.0 + drift;
         let drawn = path(
@@ -729,27 +762,26 @@ fn a_spur_whose_way_back_drifts_off_its_way_out_leaves_the_corner_named() {
             ],
             5.0,
         );
-        assert_eq!(told(&drawn), [[LEFT]; 2], "{drift} m off");
+        let said = told(&drawn);
+        let sure = drift <= CUT_DRIFT_M;
+        assert!(
+            said == [[LEFT]; 2] || !sure && said == uncut(|| told(&drawn)),
+            "{drift} m off: {said:?}"
+        );
     }
 }
 
-/// North 300 m, then an out-and-back of 420 m, east 377 m and right 43 m
-/// south, whose far end turns `stub` m to the `side` and back, and on
-/// north: drawn a point every `every_m`. The way back comes back `apart`
-/// beside the stub's base, and 30 m on strays `stray` off the way out to
-/// the stub's other side.
 fn out_and_back_with_a_stub(
-    stub: f32,
-    side: f32,
+    (leg, stub, side): (f32, f32, f32),
     (apart, stray): (f32, f32),
     every_m: f32,
 ) -> Vec<(f32, f32)> {
-    let (corner, base) = ((377.0, 300.0), (377.0, 257.0));
+    let (corner, base) = ((377.0, 300.0), (377.0, 300.0 - leg));
     let tip = (base.0 + side * stub, base.1);
     let back = [
         tip,
         (base.0 + side * apart, base.1),
-        (base.0 - side * stray, base.1 + 30.0),
+        (base.0 - side * stray, base.1 + leg.min(30.0)),
         corner,
         (0.0, 300.0),
         (0.0, 700.0),
@@ -760,45 +792,21 @@ fn out_and_back_with_a_stub(
     ])
 }
 
-const TIP_U_TURN: [Kind; 5] = [RIGHT, RIGHT, Kind::UTurn, LEFT, RIGHT];
-
 #[test]
-fn a_dead_end_at_the_far_end_of_a_long_out_and_back_is_its_u_turn() {
-    // km 51.46, its 17 m dead end bracketed.
-    for stub in [10.0, 15.0, 20.0] {
-        for side in [1.0, -1.0] {
-            let drawn = out_and_back_with_a_stub(stub, side, (0.0, 3.7), 5.0);
-            assert_eq!(
-                kept_about(&drawn),
-                [TIP_U_TURN; 2],
-                "{stub} m to the {side}"
-            );
-        }
-    }
-}
-
-#[test]
-fn a_dead_end_of_up_to_30_m_at_the_far_end_of_a_long_out_and_back_is_its_u_turn() {
-    stubs_say_the_u_turn(&[12.0, 17.0, 25.0, 30.0], &EVERY_M);
-}
-
-#[test]
-fn a_dead_end_too_shallow_for_a_spur_drawn_every_few_metres_at_the_far_end_is_its_u_turn() {
-    stubs_say_the_u_turn(&[5.0, 8.0], &[3.0, 5.0, 8.0]);
-}
-
-fn stubs_say_the_u_turn(stubs: &[f32], every: &[f32]) {
+fn a_dead_end_at_the_far_end_of_a_long_out_and_back_says_what_it_said_uncut() {
     let mut failed = Vec::new();
-    for &stub in stubs {
-        for side in [1.0, -1.0] {
-            for back in [(0.0, 0.0), (2.0, 0.0), (0.0, 3.7)] {
-                for &every_m in every {
-                    let drawn = out_and_back_with_a_stub(stub, side, back, every_m);
-                    let told = kept_about(&drawn);
-                    if told != [TIP_U_TURN; 2] {
-                        failed.push(format!(
-                            "{stub} m to the {side}, back {back:?}, every {every_m} m: {told:?}"
-                        ));
+    for leg in [25.0, 32.0, 43.0] {
+        for stub in [5.0, 10.0, 17.0, 30.0] {
+            for side in [1.0, -1.0] {
+                for back in [(0.0, 0.0), (2.0, 0.0), (0.0, 3.7)] {
+                    for every_m in [3.0, 5.0, 10_000.0] {
+                        let drawn = out_and_back_with_a_stub((leg, stub, side), back, every_m);
+                        let said = kept_about(&drawn);
+                        if said != uncut(|| kept_about(&drawn)) {
+                            failed.push(format!(
+                                "{leg} m leg, {stub} m to the {side}, back {back:?}, every {every_m} m: {said:?}"
+                            ));
+                        }
                     }
                 }
             }
@@ -819,7 +827,7 @@ fn spurs_one_after_another_say_what_the_course_without_them_says() {
         (0.0, 300.0),
         (60.0, 300.0),
         (0.0, 300.0),
-        (-12.0, 300.0),
+        (-20.0, 300.0),
         (0.0, 300.0),
         (0.0, 700.0),
         (300.0, 700.0),
@@ -828,7 +836,7 @@ fn spurs_one_after_another_say_what_the_course_without_them_says() {
 }
 
 #[test]
-fn a_spur_off_a_spur_says_what_the_course_without_them_says() {
+fn a_spur_off_a_spur_says_what_the_course_without_them_says_or_uncut() {
     let corners = [
         (0.0, 0.0),
         (0.0, 300.0),
@@ -840,30 +848,41 @@ fn a_spur_off_a_spur_says_what_the_course_without_them_says() {
         (0.0, 700.0),
         (300.0, 700.0),
     ];
-    assert_eq!(told(&path(&corners, 5.0)), [[RIGHT]; 2]);
+    let drawn = path(&corners, 5.0);
+    let [kept, uploaded] = told(&drawn);
+    assert!(
+        kept == [RIGHT] || kept == uncut(|| told(&drawn))[0],
+        "{kept:?}"
+    );
+    assert_eq!(uploaded, [RIGHT]);
 }
 
 mod fuzz;
 
-#[test]
-fn spurs_drawn_at_random_say_what_the_course_without_them_says() {
-    let (failed, checked) = fuzz::unlike(0..2_000);
+fn judged_at_random(seeds: core::ops::Range<u64>) {
+    let judged = fuzz::judge(seeds);
+    std::println!(
+        "{} courses: {} spur stretches said as without them, {} as uncut, {} planned",
+        judged.courses,
+        judged.without,
+        judged.uncut,
+        judged.planned
+    );
     assert!(
-        failed.is_empty(),
-        "{} of {checked}:\n{}",
-        failed.len(),
-        failed.join("\n")
+        judged.failed.is_empty(),
+        "{}:\n{}",
+        judged.failed.len(),
+        judged.failed.join("\n")
     );
 }
 
 #[test]
-#[ignore = "100,000 courses: cargo test -p vana --lib --release spurs_drawn -- --ignored"]
-fn spurs_drawn_at_random_say_what_the_course_without_them_says_at_length() {
-    let (failed, checked) = fuzz::unlike(0..100_000);
-    assert!(
-        failed.is_empty(),
-        "{} of {checked}:\n{}",
-        failed.len(),
-        failed.join("\n")
-    );
+fn spurs_drawn_at_random_say_what_they_say_without_them_or_uncut() {
+    judged_at_random(0..2_000);
+}
+
+#[test]
+#[ignore = "100,000 courses: cargo test -p vana --lib --release spurs_drawn -- --ignored --nocapture"]
+fn spurs_drawn_at_random_say_what_they_say_without_them_or_uncut_at_length() {
+    judged_at_random(0..100_000);
 }

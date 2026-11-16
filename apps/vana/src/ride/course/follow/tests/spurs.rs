@@ -24,7 +24,7 @@ fn with_spur(drawn: &[(f32, f32)], ridden: &[(f32, f32)]) -> (Vec<Said>, Vec<Eve
 fn dead_end() -> Vec<(f32, f32)> {
     join(&[
         path(&[(0.0, 0.0), (0.0, 300.0), (60.0, 300.0)], 5.0),
-        path(&[(60.0, 302.0), (0.0, 302.0), (0.0, 700.0)], 5.0),
+        path(&[(60.0, 300.5), (0.0, 300.5), (0.0, 700.0)], 5.0),
     ])
 }
 
@@ -41,8 +41,8 @@ fn riding_into_a_short_spur_and_back_says_no_turn_and_stays_on_course() {
         (0.0, 0.0),
         (0.0, 300.0),
         (60.0, 300.0),
-        (60.0, 302.0),
-        (0.0, 302.0),
+        (60.0, 300.5),
+        (0.0, 300.5),
         (0.0, 700.0),
     ];
     let (warnings, events) = with_spur(&dead_end(), &ridden);

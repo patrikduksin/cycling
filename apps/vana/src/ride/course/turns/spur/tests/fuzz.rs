@@ -1,22 +1,16 @@
-//! Courses drawn at random, each with up to three spurs, against the same
-//! course with every spur's path taken out at its base: a spur must say
-//! what that course says, on both the scan and the upload.
-//!
-//! The generator leaves out what is read otherwise by design, each where it
-//! draws it. A road within `NEAR_M` of a spur, or leaving its base within
-//! 30 degrees of it (`ALONG_COS`), cannot be told from a way back up to
-//! `RETRACE_M` off, nor can a way back drifting more than `V_DRIFT_M` off a
-//! V. Dead ends within a few metres of `SPUR_MIN_M` or `SPUR_M` deep, or
-//! from five metres under to ten over `TIP_SPUR_M` past a far corner, sit
-//! on the edge of what is a spur. A V
-//! is never drawn on a lead. A spur by an out-and-back's far corner, or on
-//! its way back less than `SPUR_M` from it, makes the far end a dead end
-//! too, and either could be the road. Corners turn at least 10 degrees from
-//! where a turn's kind changes, which a cut that steps aside can cross.
+//! Courses drawn at random, each with up to three spurs, of every shape a
+//! spur can take, near a spur's edges included: a fork too narrow to tell
+//! from the road, a way back drifting off, a dead end at an out-and-back's
+//! far corner, depths either side of `SPUR_MIN_M` and `SPUR_M`. At each
+//! spur, the scan and the upload must say what the course says with the
+//! spur's path taken out, or what it said before spurs were cut
+//! (`uncut`). A spur of the planner's own shape, retraced exactly 20 to
+//! 100 m deep, parted 45 degrees or more from the way in and the way on,
+//! must be cut.
 
-use super::super::super::{Turn, distance};
-use super::super::{RETRACE_M, SPUR_M, SPUR_MIN_M, TIP_SPUR_M};
-use super::{heeded, join, length, path, scanned};
+use super::super::super::{STEP_M, Turn, distance, swing};
+use super::super::{RAY_M, SPUR_M, SPUR_MIN_M};
+use super::{heeded, join, length, path, scanned, uncut};
 use crate::ride::course::stored::tests::found_along;
 use crate::ride::thin::off_segment;
 use crate::testing::Rng;
@@ -25,6 +19,8 @@ use std::vec::Vec;
 use std::{format, vec};
 
 type P = (f32, f32);
+/// A course's turns as one path finds them, and metres of it cut as spurs.
+type TurnsOf = fn(&[P]) -> (Vec<Turn>, f32);
 
 const EVERY_M: [f32; 6] = [1.0, 3.0, 5.0, 8.0, 15.0, 10_000.0];
 const NEAR_M: f32 = 6.0;
@@ -33,18 +29,26 @@ const NEAR_M: f32 = 6.0;
 /// ends only frees the next, and a cut that steps aside moves it most.
 const STARTS_M: f32 = 10.0;
 const ENDS_M: f32 = 15.0;
-const SHALLOWEST_M: f32 = SPUR_MIN_M + 3.0;
-const SPUR_MAX_M: f32 = SPUR_M - 10.0;
-const TIP_STUB_GAP_M: f32 = TIP_SPUR_M + 10.0;
-const FAR_CORNER_M: f32 = 40.0;
+const SHALLOWEST_M: f32 = SPUR_MIN_M - 3.0;
+const DEEPEST_M: f32 = SPUR_M + 10.0;
 const ROUTE_APART_M: f32 = 30.0;
-/// A road leaving a spur's base nearer its line than 30 degrees runs within
-/// `RETRACE_M` of it for metres.
-const ALONG_COS: f32 = 0.866;
-/// A spur within `V_DEG` of a road at its base whose way back drifts more
-/// than `V_DRIFT_M` runs within `RETRACE_M` of that road.
-const V_DEG: f32 = 55.0;
-const V_DRIFT_M: f32 = 2.0;
+const DRIFT_M: f32 = 3.5;
+/// The scan reads a course at whole steps from its start, so a spur cut
+/// shifts the steps the course after it is read at, as the course without
+/// its spurs is shifted by what it leaves out. What either says is also what
+/// it says read from a start this much further back.
+const PHASES_M: [f32; 8] = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75];
+/// A turn on the edge of being told says it or not from one start to one a
+/// few centimetres away, so the shift a cut makes is read give or take
+/// this.
+const NEAR_PHASES_M: [f32; 7] = [-0.15, -0.1, -0.05, 0.0, 0.05, 0.1, 0.15];
+const AROUND_M: f32 = 30.0;
+const PLANNED_M: core::ops::RangeInclusive<f32> = 20.0..=100.0;
+const PLANNED_DEG: f32 = 45.0;
+/// A spur within this of another, or of a corner turning back
+/// `TURNS_BACK_DEG` or more, may be uncut with it.
+const ALONE_M: f32 = 250.0;
+const TURNS_BACK_DEG: f32 = 110.0;
 
 fn uniform(rng: &mut Rng, low: f32, high: f32) -> f32 {
     low + (high - low) * (rng.next() >> 40) as f32 / (1u64 << 24) as f32
@@ -136,6 +140,7 @@ struct Cut {
     from_m: f32,
     rejoin_m: f32,
     apart_m: f32,
+    planned: bool,
 }
 
 struct Route {
@@ -163,6 +168,47 @@ impl Route {
         let t = ((m - along[i - 1]) / (along[i] - along[i - 1])).clamp(0.0, 1.0);
         let p = (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
         (p, bearing(a, b), i)
+    }
+
+    fn planned(&self, site: &Site) -> bool {
+        let [spur] = &site.spurs[..] else {
+            return false;
+        };
+        let along = self.along();
+        let total_m = along[self.corners.len() - 1];
+        let near = |m: f32| (m - site.along_m).abs() <= ALONE_M;
+        let crowded = self
+            .sites
+            .iter()
+            .any(|other| other.along_m != site.along_m && near(other.along_m));
+        let turns_back = (1..self.corners.len() - 1).any(|i| {
+            let (a, b, c) = (self.corners[i - 1], self.corners[i], self.corners[i + 1]);
+            let turned = libm::fabsf(swing(bearing(a, b), bearing(b, c)));
+            turned >= TURNS_BACK_DEG && near(along[i])
+        });
+        if crowded || turns_back {
+            return false;
+        }
+        let (base, _, _) = self.point(site.along_m);
+        let ray = |m: f32| {
+            let (p, _, _) = self.point(m.clamp(0.0, total_m));
+            (distance(base, p) >= 1.0).then(|| bearing(base, p))
+        };
+        let rays = [
+            ray(site.along_m - RAY_M),
+            Some(spur.bearing),
+            ray(site.along_m + RAY_M),
+        ];
+        let apart = |a: Option<f32>, b: Option<f32>| {
+            a.zip(b)
+                .is_none_or(|(a, b)| libm::fabsf(swing(a, b)) >= PLANNED_DEG)
+        };
+        spur.drift == 0.0
+            && spur.inner.is_none()
+            && PLANNED_M.contains(&spur.depth)
+            && apart(rays[0], rays[1])
+            && apart(rays[1], rays[2])
+            && apart(rays[2], rays[0])
     }
 
     fn case(&self) -> Case {
@@ -196,6 +242,7 @@ impl Route {
                 from_m,
                 rejoin_m: length(&join(&with)),
                 apart_m: distance(base, to),
+                planned: self.planned(site),
             });
             chunk = vec![to];
             if next < self.corners.len() && along[next] <= site.along_m {
@@ -213,10 +260,6 @@ impl Route {
         }
     }
 
-    /// A spur leaves its base within 30 degrees of the road, or runs past
-    /// its first 8 m within `NEAR_M` of the course or of another site's
-    /// spur; or two parts of the route that do not meet run within
-    /// `ROUTE_APART_M` of each other, or along each other.
     fn tangled(&self) -> bool {
         let mut lines = Vec::new();
         let mut bases = Vec::new();
@@ -245,16 +288,6 @@ impl Route {
             let way = bearing(base, tip);
             for segment in &segments {
                 if touches(segment, base) {
-                    let ends = [segment.0, segment.1];
-                    let same = ends
-                        .iter()
-                        .filter(|&&end| distance(end, base) > 0.5)
-                        .any(|&end| {
-                            libm::cosf((bearing(base, end) - way).to_radians()) > ALONG_COS
-                        });
-                    if same {
-                        return true;
-                    }
                     continue;
                 }
                 let near = (8..=depth as usize).any(|m| {
@@ -304,11 +337,7 @@ impl Route {
 }
 
 fn turn_deg(rng: &mut Rng) -> f32 {
-    let size = match rng.below(5) {
-        0 => uniform(rng, 20.0, 45.0),
-        1 => uniform(rng, 130.0, 140.0),
-        _ => uniform(rng, 70.0, 110.0),
-    };
+    let size = uniform(rng, 20.0, 160.0);
     match rng.one_in(2) {
         true => size,
         false => -size,
@@ -341,10 +370,7 @@ fn route(rng: &mut Rng, tags: &mut Vec<String>) -> (Vec<P>, Option<usize>, Optio
         if k > 0 && far_end.is_none() && lead.is_none() && rng.one_in(5) {
             let side = rng.pick(&[90.0, -90.0]);
             let total = uniform(rng, 200.0, 600.0);
-            let end_m = match rng.one_in(3) {
-                true => uniform(rng, 15.0, TIP_SPUR_M - 5.0),
-                false => uniform(rng, TIP_STUB_GAP_M, 80.0),
-            };
+            let end_m = uniform(rng, 15.0, 80.0);
             let corner = toward(last, heading + side, total - end_m);
             let end = toward(corner, heading + side + rng.pick(&[90.0, -90.0]), end_m);
             corners.extend([corner, end, corner, last]);
@@ -360,8 +386,8 @@ fn route(rng: &mut Rng, tags: &mut Vec<String>) -> (Vec<P>, Option<usize>, Optio
 
 fn depth(rng: &mut Rng, most: f32) -> f32 {
     match rng.below(10) {
-        0 => uniform(rng, SHALLOWEST_M, SHALLOWEST_M + 2.0),
-        1 => uniform(rng, (most - 10.0).max(SHALLOWEST_M), most),
+        0 => uniform(rng, SHALLOWEST_M, SPUR_MIN_M + 3.0),
+        1 => uniform(rng, (most - 20.0).max(SHALLOWEST_M), most),
         _ => uniform(rng, SHALLOWEST_M, most),
     }
 }
@@ -375,12 +401,9 @@ fn spur(
     tags: &mut Vec<String>,
 ) -> Spur {
     let bearing = heading + way;
-    let apart = |road: f32| libm::fabsf(super::super::super::swing(road, bearing));
-    let v = apart(heading + 180.0).min(apart(ahead)) < V_DEG;
-    let most = if v { V_DRIFT_M } else { RETRACE_M - 0.05 };
     let drift = match rng.below(3) {
         0 => 0.0,
-        _ => uniform(rng, 0.0, most),
+        _ => uniform(rng, 0.0, DRIFT_M),
     };
     let right = toward((0.0, 0.0), bearing + 90.0, 1.0);
     let on = toward((0.0, 0.0), ahead, 1.0);
@@ -414,9 +437,9 @@ fn spur(
 
 fn way(rng: &mut Rng) -> f32 {
     match rng.below(4) {
-        0 => rng.pick(&[90.0, -90.0, 145.0, -145.0, 35.0, -35.0]),
+        0 => rng.pick(&[90.0, -90.0, 145.0, -145.0, 35.0, -35.0, 165.0, -15.0]),
         _ => {
-            let size = uniform(rng, 30.0, 150.0);
+            let size = uniform(rng, 5.0, 175.0);
             if rng.one_in(2) { size } else { -size }
         }
     }
@@ -441,7 +464,7 @@ fn drawn(seed: u64) -> Option<Case> {
     if let Some((end, way)) = far_end
         && spurs_left > 0
     {
-        let stub = uniform(&mut rng, SHALLOWEST_M, TIP_SPUR_M - 5.0);
+        let stub = uniform(&mut rng, SHALLOWEST_M, 45.0);
         tags.push("at the far end".into());
         let side = rng.pick(&[90.0, -90.0]);
         let stub = spur(&mut rng, (way, side, way), stub, &mut tags);
@@ -475,7 +498,7 @@ fn drawn(seed: u64) -> Option<Case> {
             "past a lead" => 0.0,
             _ => way(&mut rng),
         };
-        let first = depth(&mut rng, SPUR_MAX_M);
+        let first = depth(&mut rng, DEEPEST_M);
         let mut site = Site {
             along_m,
             spurs: vec![spur(
@@ -488,7 +511,7 @@ fn drawn(seed: u64) -> Option<Case> {
         spurs_left -= 1;
         if spurs_left > 0 && rng.one_in(3) {
             tags.push("then another".into());
-            let (way, depth) = (way(&mut rng), depth(&mut rng, SPUR_MAX_M));
+            let (way, depth) = (way(&mut rng), depth(&mut rng, DEEPEST_M));
             site.spurs
                 .push(spur(&mut rng, (heading, way, ahead), depth, &mut tags));
             spurs_left -= 1;
@@ -509,14 +532,30 @@ fn drawn(seed: u64) -> Option<Case> {
             .iter()
             .all(|b| (a.along_m - b.along_m).abs() > 1.0)
     });
-    let apart = far_end.is_none_or(|(end, _)| {
-        let far = (along[end - 1] - FAR_CORNER_M)..(along[end + 1] + SPUR_M);
-        route
-            .sites
-            .iter()
-            .all(|site| site.along_m == along[end] || !far.contains(&site.along_m))
-    });
-    (spaced && apart && !route.tangled()).then(|| route.case())
+    (spaced && !route.tangled()).then(|| route.case())
+}
+
+fn led_by(line: &[P], lead_m: f32) -> Vec<P> {
+    let (first, second) = (line[0], line[1]);
+    let along = distance(first, second);
+    let lead = (
+        first.0 - lead_m * (second.0 - first.0) / along,
+        first.1 - lead_m * (second.1 - first.1) / along,
+    );
+    let led = (lead_m > 0.0).then_some(lead);
+    led.into_iter().chain(line.iter().copied()).collect()
+}
+
+fn led(turns: Vec<Turn>, lead_m: f32) -> Vec<Turn> {
+    let lead_mm = (lead_m * 1000.0) as u32;
+    turns
+        .into_iter()
+        .map(|turn| Turn {
+            start_mm: turn.start_mm.saturating_sub(lead_mm),
+            end_mm: turn.end_mm.saturating_sub(lead_mm),
+            ..turn
+        })
+        .collect()
 }
 
 /// Metres along the course without its spurs to `m` along it drawn.
@@ -534,50 +573,207 @@ fn without_m(cut: &[Cut], m: f32) -> f32 {
     m - removed
 }
 
-fn alike(drawn: &[Turn], without: &[Turn], cut: &[Cut]) -> bool {
-    let (drawn, without) = (heeded(drawn), heeded(without));
-    let placed = |mm: u32, want_mm: u32, near_m: f32| {
-        (without_m(cut, mm as f32 / 1000.0) - want_mm as f32 / 1000.0).abs() <= near_m
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Said {
+    Without,
+    Uncut,
+    Neither,
+}
+
+fn stretches(cut: &[Cut]) -> Vec<(f32, f32, bool)> {
+    let mut stretches: Vec<(f32, f32, usize, bool)> = Vec::new();
+    for cut in cut {
+        let (from_m, to_m) = (cut.from_m - AROUND_M, cut.rejoin_m + AROUND_M);
+        match stretches.last_mut() {
+            Some(last) if from_m <= last.1 => {
+                last.1 = to_m;
+                last.2 += 1;
+            }
+            _ => stretches.push((from_m, to_m, 1, cut.planned)),
+        }
+    }
+    stretches
+        .into_iter()
+        .map(|(from_m, to_m, sites, planned)| (from_m, to_m, sites == 1 && planned))
+        .collect()
+}
+
+/// A turn in a stretch, and whether it starts within `STARTS_M` of the
+/// stretch or only within twice that, where a turn just outside it in one
+/// course may be just inside it in another.
+type Grouped = Vec<Vec<(Turn, bool)>>;
+
+fn grouped(turns: &[Turn], bounds: &[(f32, f32)], along: impl Fn(u32) -> f32) -> Grouped {
+    let mut groups = vec![Vec::new(); bounds.len() + 1];
+    for turn in heeded(turns) {
+        let m = along(turn.start_mm);
+        let within = |slack_m: f32| {
+            move |&(from_m, to_m): &(f32, f32)| (from_m - slack_m..=to_m + slack_m).contains(&m)
+        };
+        for (k, bound) in bounds.iter().enumerate() {
+            if within(2.0 * STARTS_M)(bound) {
+                groups[k].push((turn, within(STARTS_M)(bound)));
+            }
+        }
+        if !bounds.iter().any(within(-2.0 * STARTS_M)) {
+            let core = !bounds.iter().any(within(-STARTS_M));
+            groups[bounds.len()].push((turn, core));
+        }
+    }
+    groups
+}
+
+fn same(said: &[(Turn, bool)], want: &[(Turn, bool)], onto: impl Fn(u32) -> f32) -> bool {
+    let metres = |mm: u32| mm as f32 / 1000.0;
+    let alike =
+        |turn: &Turn, other: &Turn, onto: &dyn Fn(u32) -> f32, other_onto: &dyn Fn(u32) -> f32| {
+            turn.kind == other.kind
+                && (onto(turn.start_mm) - other_onto(other.start_mm)).abs() <= STARTS_M
+        };
+    let kept = |list: &[(Turn, bool)],
+                others: &[(Turn, bool)],
+                onto: &dyn Fn(u32) -> f32,
+                other_onto: &dyn Fn(u32) -> f32| {
+        list.iter()
+            .filter(|(turn, core)| {
+                *core
+                    || others
+                        .iter()
+                        .any(|(other, _)| alike(turn, other, onto, other_onto))
+            })
+            .map(|(turn, _)| *turn)
+            .collect::<Vec<_>>()
     };
-    drawn.len() == without.len()
-        && drawn.iter().zip(&without).all(|(turn, want)| {
+    let (said, want) = (
+        kept(said, want, &onto, &metres),
+        kept(want, said, &metres, &onto),
+    );
+    let placed = |mm: u32, want_mm: u32, near_m: f32| (onto(mm) - metres(want_mm)).abs() <= near_m;
+    said.len() == want.len()
+        && said.iter().zip(&want).all(|(turn, want)| {
             (turn.kind, turn.twice, turn.cornered) == (want.kind, want.twice, want.cornered)
                 && placed(turn.start_mm, want.start_mm, STARTS_M)
                 && placed(turn.end_mm, want.end_mm, ENDS_M)
         })
 }
 
+fn judged(
+    drawn: &[Turn],
+    without: &[Vec<Turn>],
+    uncut: &[Vec<Turn>],
+    cut: &[Cut],
+) -> Vec<(Said, bool)> {
+    let stretches = stretches(cut);
+    let drawn_bounds: Vec<_> = stretches.iter().map(|s| (s.0, s.1)).collect();
+    let without_bounds: Vec<_> = stretches
+        .iter()
+        .map(|s| (without_m(cut, s.0), without_m(cut, s.1)))
+        .collect();
+    let metres = |mm: u32| mm as f32 / 1000.0;
+    let drawn = grouped(drawn, &drawn_bounds, metres);
+    let uncut: Vec<_> = uncut
+        .iter()
+        .map(|uncut| grouped(uncut, &drawn_bounds, metres))
+        .collect();
+    let without: Vec<_> = without
+        .iter()
+        .map(|without| grouped(without, &without_bounds, metres))
+        .collect();
+    let planned = stretches.iter().map(|s| s.2).chain([false]);
+    drawn
+        .iter()
+        .enumerate()
+        .zip(planned)
+        .map(|((k, drawn), planned)| {
+            let onto = |mm| without_m(cut, metres(mm));
+            let said = if without.iter().any(|without| same(drawn, &without[k], onto)) {
+                Said::Without
+            } else if uncut.iter().any(|uncut| same(drawn, &uncut[k], metres)) {
+                Said::Uncut
+            } else {
+                Said::Neither
+            };
+            (said, planned)
+        })
+        .collect()
+}
+
 fn told(turns: &[Turn]) -> String {
     let said: Vec<_> = heeded(turns)
         .iter()
-        .map(|turn| format!("{:?}@{:.0}", turn.kind, turn.start_mm as f32 / 1000.0))
+        .map(|turn| {
+            let flags = match (turn.twice, turn.cornered) {
+                (true, true) => "+2c",
+                (true, false) => "+2",
+                (false, true) => "+c",
+                (false, false) => "",
+            };
+            format!(
+                "{:?}{flags}@{:.0}",
+                turn.kind,
+                turn.start_mm as f32 / 1000.0
+            )
+        })
         .collect();
     said.join(" ")
 }
 
-/// Each case of `seeds` drawn whose spurs do not say what the course
-/// without them says, and how many were drawn.
-pub(super) fn unlike(seeds: core::ops::Range<u64>) -> (Vec<String>, usize) {
-    let (mut failed, mut checked) = (Vec::new(), 0);
+#[derive(Default)]
+pub(super) struct Judged {
+    pub(super) failed: Vec<String>,
+    pub(super) courses: usize,
+    pub(super) without: usize,
+    pub(super) uncut: usize,
+    pub(super) planned: usize,
+}
+
+pub(super) fn judge(seeds: core::ops::Range<u64>) -> Judged {
+    let mut tally = Judged::default();
     for seed in seeds {
         let Some(case) = drawn(seed) else {
             continue;
         };
-        checked += 1;
-        let (scan, scan_without) = (scanned(&case.with).0, scanned(&case.without).0);
-        let (upload, upload_without) = (found_along(&case.with).0, found_along(&case.without).0);
-        let scan_ok = alike(&scan, &scan_without, &case.cut);
-        let upload_ok = alike(&upload, &upload_without, &case.cut);
-        if !scan_ok || !upload_ok {
-            failed.push(format!(
-                "{}: scan {scan_ok}, upload {upload_ok}\n  without: {}\n  scan:    {}\n  without: {}\n  upload:  {}",
-                case.name,
-                told(&scan_without),
-                told(&scan),
-                told(&upload_without),
-                told(&upload)
-            ));
+        tally.courses += 1;
+        let paths: [(&str, TurnsOf); 2] = [("scan", scanned), ("upload", found_along)];
+        for (path, turns_of) in paths {
+            let (drawn, cut_m) = turns_of(&case.with);
+            let removed_m: f32 = case
+                .cut
+                .iter()
+                .map(|cut| cut.rejoin_m - cut.from_m - cut.apart_m)
+                .sum();
+            let phases = |shift_m: f32| {
+                let near = NEAR_PHASES_M.map(|by_m| (shift_m + by_m).rem_euclid(STEP_M));
+                PHASES_M.into_iter().chain(near)
+            };
+            let read = |line: &[P], lead_m: f32| led(turns_of(&led_by(line, lead_m)).0, lead_m);
+            let without: Vec<_> = phases(removed_m - cut_m)
+                .map(|lead_m| read(&case.without, lead_m))
+                .collect();
+            let uncut: Vec<_> = phases(-cut_m)
+                .map(|lead_m| uncut(|| read(&case.with, lead_m)))
+                .collect();
+            let stretches = judged(&drawn, &without, &uncut, &case.cut);
+            for (k, (said, planned)) in stretches.iter().enumerate() {
+                let spur = k + 1 < stretches.len();
+                match said {
+                    Said::Without if spur => tally.without += 1,
+                    Said::Uncut if spur => tally.uncut += 1,
+                    _ => {}
+                }
+                tally.planned += usize::from(*planned);
+                let wrong = *said == Said::Neither || (*planned && *said != Said::Without);
+                if wrong {
+                    tally.failed.push(format!(
+                        "{} ({path}, stretch {k}, {said:?}, planned {planned})\n  drawn:   {}\n  without: {}\n  uncut:   {}",
+                        case.name,
+                        told(&drawn),
+                        told(&without[0]),
+                        told(&uncut[0])
+                    ));
+                }
+            }
         }
     }
-    (failed, checked)
+    tally
 }

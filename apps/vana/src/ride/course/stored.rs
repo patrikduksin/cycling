@@ -11,10 +11,11 @@
 //! as they stream in, keeping only the last `RING` of them, which is all the
 //! scan still reads. Where the points jitter, as a recorded GPS track's do,
 //! each is first moved to the mean of those about it, so jitter reads as no
-//! bend. Each turn is found in metres along the full track, spurs and all;
-//! once the course is complete, it is moved to the same place along the
-//! course as kept, by the full track's distance to each kept point, so the
-//! rider's place on the stored course finds it.
+//! bend. Whether they jitter is read from the points as given, spurs and
+//! all, so a spur cut never changes it. Each turn is found in metres along
+//! the full track, spurs and all; once the course is complete, it is moved
+//! to the same place along the course as kept, by the full track's distance
+//! to each kept point, so the rider's place on the stored course finds it.
 //!
 //! The file store commits one file at a time, so the turns cannot commit
 //! with the course. Instead they name their course by its key
@@ -63,8 +64,8 @@ const FULL: u8 = 1;
 pub const MAX_FILE: usize = HEADER_V1 + TURNS * RECORD + 4;
 
 /// Points given that `Spurs` may still read: it reads back over a spur's
-/// way out and way back, some 350 m, and a stop on a recorded track adds a
-/// point a second where it stood.
+/// way out and way back and a spur before it, some 430 m, and a stop on a
+/// recorded track adds a point a second where it stood.
 pub const GIVEN: usize = 2048;
 /// Points the scan reads that it keeps. It reads back only as far as the
 /// group of bends it is in and the bend after it: at most 109 points on the
@@ -99,6 +100,7 @@ struct Taken {
     at: (f32, f32),
     m: f32,
     spurs_m: f32,
+    jitter_k: usize,
 }
 
 /// The last point passed on outside a spur, metres along the points given
@@ -141,9 +143,12 @@ pub struct Finder {
     /// them are in the ring.
     raw: [Taken; RAW],
     raw_taken: usize,
-    /// Whether, at point `k` taken, how far it lies to the side of the line
-    /// between its neighbours swung by `NOISE_M` or more from the point
-    /// before (`swung[k % RAW]`), and that for the newest point it is known.
+    jitter: [(f32, f32); 2],
+    jitter_taken: usize,
+    /// Whether, at point `k` the jitter test took, how far it lies to the
+    /// side of the line between its neighbours swung by `NOISE_M` or more
+    /// from the point before (`swung[k % RAW]`), and that for the newest
+    /// point it is known.
     swung: [bool; RAW],
     side: f32,
     smoothed: usize,
@@ -181,6 +186,21 @@ pub struct Finder {
 }
 
 impl Finder {
+    fn jitter(&mut self, p: (f32, f32)) -> usize {
+        let k = self.jitter_taken;
+        if k > 0 && distance(self.jitter[1], p) < RING_STEP_M {
+            return k - 1;
+        }
+        if k >= 2 {
+            let now = side(self.jitter[0], self.jitter[1], p);
+            self.swung[(k - 1) % RAW] = k >= 3 && (now - self.side).abs() >= NOISE_M;
+            self.side = now;
+        }
+        self.jitter = [self.jitter[1], p];
+        self.jitter_taken += 1;
+        k
+    }
+
     /// What zeroed memory holds, for a host that builds one in place.
     pub fn new() -> Self {
         Self {
@@ -195,6 +215,8 @@ impl Finder {
             spur_m: 0.0,
             raw: [Taken::default(); RAW],
             raw_taken: 0,
+            jitter: [(0.0, 0.0); 2],
+            jitter_taken: 0,
             swung: [false; RAW],
             side: 0.0,
             smoothed: 0,
@@ -278,7 +300,8 @@ impl Finding<'_> {
         let finder = &mut *self.finder;
         let given = &finder.given;
         let here = finder.spurs.at(&|j: usize| given[j % GIVEN].0, k);
-        let here_m = given[k % GIVEN].1;
+        let (given_here, here_m) = given[k % GIVEN];
+        let jitter_k = finder.jitter(given_here);
         finder.spur_m += finder.spurs.cut_at(k);
         let last = finder.raw_taken.checked_sub(1).map(|j| finder.raw[j % RAW]);
         let step = last.map_or(f32::INFINITY, |last| distance(last.at, here));
@@ -301,6 +324,7 @@ impl Finding<'_> {
                 at: here,
                 m,
                 spurs_m,
+                jitter_k,
             });
         }
         self.place(k, track_m);
@@ -326,12 +350,6 @@ impl Finding<'_> {
         let k = finder.raw_taken;
         finder.raw[k % RAW] = point;
         finder.raw_taken += 1;
-        if k >= 2 {
-            let (a, p) = (finder.raw[(k - 2) % RAW].at, finder.raw[(k - 1) % RAW].at);
-            let now = side(a, p, point.at);
-            finder.swung[(k - 1) % RAW] = k >= 3 && (now - finder.side).abs() >= NOISE_M;
-            finder.side = now;
-        }
         self.smooth(false);
     }
 
@@ -357,8 +375,11 @@ impl Finding<'_> {
                     (sum, n) = ((sum.0 + p.0, sum.1 + p.1), n + 1.0);
                 }
             }
-            let from = first.max(i.saturating_sub(NOISE_SPAN)) + 2;
-            let to = last.saturating_sub(1);
+            let jitter_i = finder.raw[i % RAW].jitter_k;
+            let jitter_last = finder.raw[(last - 1) % RAW].jitter_k + 1;
+            let jitter_first = jitter_last.saturating_sub(RAW);
+            let from = jitter_first.max(jitter_i.saturating_sub(NOISE_SPAN)) + 2;
+            let to = jitter_last.saturating_sub(1);
             let swung = (from..to).filter(|&k| finder.swung[k % RAW]).count();
             let noisy = to > from && swung * 2 > to - from;
             let here = match noisy {
@@ -544,6 +565,7 @@ impl Follow for Finding<'_> {
         finder.spurs = Spurs::default();
         (finder.last_passed, finder.spur_m) = (Passed::default(), 0.0);
         (finder.raw_taken, finder.smoothed, finder.taken) = (0, 0, 0);
+        finder.jitter_taken = 0;
         (finder.taken_m, finder.ring_spurs_m) = (0.0, 0.0);
         (finder.cut_count, finder.passed_spurs_mm, finder.kept_len) = (0, 0, 0);
         finder.scan = Scan::default();

@@ -2,58 +2,72 @@
 //! route into a side street and straight back along it. A rider riding on
 //! past it would hear a turn, a U-turn and a turn, none of which they take.
 //!
+//! A spur is cut only where the course is sure to be one. Anywhere else the
+//! course is read as drawn, as it was before spurs were found. So at each
+//! spur the course says either what it would say with the spur's path taken
+//! out, or what it said before spurs were cut: never a turn neither says,
+//! and never without one both say.
+//!
 //! `Spurs` reads the course as it is, ahead of the scan, the scan's own
 //! chord a step at a time. Where that chord swings by `REVERSAL_DEG` over
-//! `REVERSAL_STEPS`, the course has turned back on itself, even where its
-//! legs lie a few metres apart. From there its way back is walked a metre
-//! at a time, and onto each of its points, while it stays within
-//! `RETRACE_M` of its way out, read without the spurs already found. Ending
-//! within `SPUR_M` of the tip, it is a spur from the point of the way out
-//! furthest back that it came beside to where it did: a detour off the road
-//! the course rides on. Where the course turns back again during a walk, it
-//! is walked in turn once that walk ends, so spurs one after another, and a
-//! spur off a spur's way out, are each found. Retracing further, or back
-//! beside the way in `ON_M` past where its way back left its way out
-//! without turning back again, the course is a longer out-and-back, whose
-//! legs' corners the rider is told; but a dead end at its far end,
-//! `TIP_SPUR_M` or less past the last corner, or past one that far past the
-//! corner before it, is a spur from that corner, where it turns most.
-//! Either way the way out must go at least `SPUR_MIN_M` from the spur's
-//! base, as a stop's jitter never does. A hairpin's legs part too soon and
-//! roads side by side are too far apart to be one. So a dead end visited no deeper than `SPUR_M` is taken
-//! for a planner's artifact.
+//! `REVERSAL_STEPS`, or `WIDE_REVERSAL_DEG` over `WIDE_REVERSAL_STEPS`, the
+//! course has turned back on itself. From there its way back is walked a
+//! metre at a time while it stays within `CLOSE_M` of its way out, read
+//! without the spurs already found, as a planner's way back retraces its
+//! way out. Where it came beside the point of the way out furthest back is
+//! the spur's base. The spur is cut when it goes `SPUR_MIN_M` to `SPUR_M`
+//! from its base, the way on is `PARTED_M` off the way out `RAY_M` on, and
+//! the way in, the spur and the way on each leave the base `APART_DEG` or
+//! more from the others at each of `RAYS_M` along. A way back that drifts
+//! off, a fork too narrow to tell from the road, and a way on back along the
+//! way in, as at the far end of an out-and-back, each fail this. Where the
+//! course turns back again during a walk, it is walked in turn once that
+//! walk ends, so spurs one after another, and a spur off a spur's way out,
+//! are each found.
 //!
-//! A course with a spur says exactly what the course would say with the
-//! spur's path taken out, each turn after the spur as much further on as
-//! the spur is long. That course runs along the way in to the base on the
-//! way out, then on from the base on the way back, either part way along a
-//! segment, as on a route drawn at its corners: the way on keeps its own
-//! corners. The scan reads it through `Spurs::at` (`Spurs::skip`), far
-//! enough behind `Spurs` that every spur before what it reads is found,
-//! and its turns are moved onto the course by `Spurs::real`. The course
-//! itself keeps every point of a spur, and its length.
-use super::{BEND_MIN_DEG, Cursor, HALF_CHORD_M, STEP_M, TURN_DEG, Turn, distance, mm, swing, way};
+//! A walk whose spur is not sure walks on while the way back stays within
+//! `LOOSE_M` of the way out, and no further than `SPUR_M`, to find the whole
+//! stretch that may or may not be a spur. A spur cut within `NEAR_UNSURE_M`
+//! of that stretch is uncut, and so is one within that of it, as is one
+//! found there later: the turns of spurs that near read together, so either
+//! all are cut or none. `BACK_M` keeps the scan far enough behind that it
+//! has read none of them.
+//!
+//! A course with a spur cut says what the course would say with the spur's
+//! path taken out, each turn after the spur as much further on as the spur
+//! is long. That course runs along the way in to the base on the way out,
+//! then on from where the way back came beside it. The scan reads it
+//! through `Spurs::at` (`Spurs::skip`), far enough behind `Spurs` that every
+//! spur before what it reads is found, and its turns are moved onto the
+//! course by `Spurs::real`. The course itself keeps every point of a spur,
+//! and its length.
+use super::{Cursor, HALF_CHORD_M, STEP_M, Turn, distance, mm, swing, way};
 use crate::ride::thin::off_segment;
 use libm::{atan2f, fabsf, sqrtf};
 
 /// `Spurs` keeps this far of the course behind its chord's middle: a
-/// spur's whole way out and the way in before it.
-const BACK_M: f32 = SPUR_M + 2.0 * WAY_M;
+/// spur's whole way out, the way in before it, and a spur cut there that it
+/// may yet uncut.
+const BACK_M: f32 = SPUR_M + NEAR_UNSURE_M + 2.0 * WAY_M;
 const REVERSAL_DEG: f32 = 120.0;
 const REVERSAL_STEPS: usize = 3;
-const RETRACE_M: f32 = 3.0;
-const SPUR_MIN_M: f32 = 10.0;
+/// A dead end whose way back comes back metres to the side of its way out
+/// swings the chord round more slowly.
+const WIDE_REVERSAL_DEG: f32 = 160.0;
+const WIDE_REVERSAL_STEPS: usize = 8;
+const CLOSE_M: f32 = 1.0;
+const LOOSE_M: f32 = 4.0;
+const NEAR_UNSURE_M: f32 = 80.0;
+const PARTED_M: f32 = 2.0 * CLOSE_M;
+const SPUR_MIN_M: f32 = 13.0;
 const SPUR_M: f32 = 150.0;
-const TIP_SPUR_M: f32 = 2.0 * WAY_M;
-const ON_M: f32 = 20.0;
-const TURNED_BACK_M: f32 = 2.0;
+const RAYS_M: [f32; 4] = [1.5, 3.0, 6.0, RAY_M];
+const RAY_M: f32 = 10.0;
+const APART_DEG: f32 = 30.0;
 /// The way into a spur and on from it is the chord this long.
 const WAY_M: f32 = 2.0 * HALF_CHORD_M;
 const WALK_M: f32 = 1.0;
-const SAME_M: f32 = 0.05;
 const FURTHER_BACK_M: f32 = 0.05;
-const TURNS_OFF_DEG: f32 = 10.0;
-const PAST_BASE_M: f32 = 2.0 * WAY_M;
 /// Spurs the scan reads past at once; one more found before it is past
 /// the first is ridden as drawn.
 const SKIPS: usize = 4;
@@ -64,18 +78,12 @@ struct Stretch {
     base_m: f32,
     rejoin: Cursor,
     rejoin_m: f32,
-    tip: Cursor,
-    past_corner: bool,
 }
 
-/// Where a spur's way back left its way out, `m` along it, and the
-/// furthest it has gone from there: one that comes back that way turned
-/// back again, into a dead end of its own.
 #[derive(Clone, Copy, Debug)]
-struct Left {
-    m: f32,
-    at: (f32, f32),
-    away_m: f32,
+enum Ended {
+    Spur(Stretch),
+    Unsure { from_m: f32, to_m: f32 },
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -83,23 +91,16 @@ enum Walk {
     #[default]
     None,
     /// The course turned back at `tip_m`, the point `tip`; `back` has
-    /// walked `back_m` of its way back, whose last metre lies beside the
-    /// way out `beside_m` along. `corner` is the spur from where the way
-    /// out swings most, by `corner_deg`, `TIP_SPUR_M` or less before
-    /// `corner_from_m`: the tip, or the corner before it once the walk has
-    /// passed that corner.
+    /// walked `back_m` of its way back.
     Back {
         tip_m: f32,
         tip: Cursor,
         back: Cursor,
         back_m: f32,
         step_end_m: f32,
-        beside_m: f32,
         furthest_back: Stretch,
-        corner: Option<Stretch>,
-        corner_from_m: f32,
-        corner_deg: f32,
-        left: Option<Left>,
+        left_m: Option<f32>,
+        unsure_from_m: Option<f32>,
     },
 }
 
@@ -111,43 +112,34 @@ impl Walk {
             back: tip,
             back_m: 0.0,
             step_end_m: WALK_M,
-            beside_m: tip_m,
             furthest_back: Stretch {
                 base_m: tip_m,
                 rejoin: tip,
                 rejoin_m: tip_m,
-                tip,
-                past_corner: false,
             },
-            corner: None,
-            corner_from_m: tip_m,
-            corner_deg: 0.0,
-            left: None,
+            left_m: None,
+            unsure_from_m: None,
         }
     }
 
     /// Walk on as far as `read_m`, beside the way out from `trail`,
-    /// `trail_m` along, read without `skips`: the spur, once its way back
-    /// has left the way out and gone `ON_M` on, or the course ends first.
+    /// `trail_m` along, read without `skips`.
     fn on(
         &mut self,
         len: usize,
         at: &impl Fn(usize) -> (f32, f32),
         (trail, trail_m, skips): (&Cursor, f32, &[Skip]),
         read_m: f32,
-    ) -> Option<Stretch> {
+    ) -> Option<Ended> {
         let Self::Back {
             tip_m,
             tip,
             mut back,
             mut back_m,
             mut step_end_m,
-            mut beside_m,
             mut furthest_back,
-            mut corner,
-            mut corner_from_m,
-            mut corner_deg,
-            mut left,
+            mut left_m,
+            mut unsure_from_m,
         } = *self
         else {
             return None;
@@ -158,90 +150,56 @@ impl Walk {
             skips,
             tip: &tip,
         };
-        let deep = |spur: &Stretch| way_out.deepest(spur.base_m, at) >= SPUR_MIN_M;
         *self = Self::None;
+        let unsure = |from_m: f32, back_m: f32| {
+            let to_m = tip_m + back_m;
+            Some(Ended::Unsure { from_m, to_m })
+        };
         while tip_m + back_m + WALK_M <= read_m {
             let to_end = step_end_m - back_m;
             let step = back.stride(len, at, to_end);
+            let from_m = unsure_from_m.unwrap_or(furthest_back.base_m);
             if !back.on(len, at, step) {
-                return left.and(Some(furthest_back));
-            }
-            if left.is_none() && back_m + step > SPUR_M {
-                return corner.filter(deep);
+                return unsure(from_m, back_m);
             }
             back_m += step;
             if step >= to_end {
                 (back_m, step_end_m) = (step_end_m, step_end_m + WALK_M);
             }
-            let (off, along_m) = way_out.nearest(back.here, at);
-            if let Some(left) = &mut left {
-                let from_left = distance(back.here, left.at);
-                left.away_m = left.away_m.max(from_left);
-                if back_m - left.m < ON_M {
-                    continue;
-                }
-                let turned_back = left.away_m - from_left >= TURNED_BACK_M;
-                let way_in_again =
-                    off <= RETRACE_M && along_m < furthest_back.base_m && !turned_back;
-                return match way_in_again {
-                    true => corner.filter(deep),
-                    false => Some(furthest_back),
-                };
+            if back_m > SPUR_M {
+                return unsure(from_m, back_m);
             }
-            if off > RETRACE_M {
-                if trail_m > 0.0 && along_m - trail_m < WALK_M {
-                    return corner.filter(deep);
+            if let Some(from_m) = &mut unsure_from_m {
+                let (off, along_m) = way_out.nearest(back.here, at);
+                if off > LOOSE_M {
+                    return unsure(*from_m, back_m);
                 }
-                if !deep(&furthest_back) {
-                    return None;
-                }
-                left = Some(Left {
-                    m: back_m,
-                    at: back.here,
-                    away_m: 0.0,
-                });
+                *from_m = from_m.min(along_m);
                 continue;
             }
-            let was_m = beside_m.min(along_m + WAY_M);
-            beside_m = along_m;
-            let here = Stretch {
-                base_m: beside_m,
-                rejoin: back,
-                rejoin_m: tip_m + back_m,
-                tip,
-                past_corner: false,
-            };
-            if beside_m < furthest_back.base_m - FURTHER_BACK_M {
-                furthest_back = here;
+            if let Some(left_m) = left_m {
+                if back_m - left_m < RAY_M {
+                    continue;
+                }
+                let parted = way_out.nearest(back.here, at).0 >= PARTED_M;
+                if parted && way_out.sure(&furthest_back, len, at) {
+                    return Some(Ended::Spur(furthest_back));
+                }
+                unsure_from_m = Some(furthest_back.base_m);
+                continue;
             }
-            let reach = |m: f32| (SPUR_MIN_M..=TIP_SPUR_M).contains(&(corner_from_m - m));
-            let past = corner.filter(|corner| corner.base_m < corner_from_m);
-            let (corner_m, swung) = match past.is_some() || reach(beside_m) || reach(was_m) {
-                true => way_out.sharpest(beside_m, was_m, at),
-                false => (beside_m, 0.0),
-            };
-            let past_corner = reach(corner_m);
-            let turns = swung >= TURN_DEG;
-            let sharper = match past {
-                Some(_) => swung > corner_deg,
-                None => past_corner,
-            };
-            if turns && sharper {
-                corner = Some(Stretch {
-                    base_m: corner_m,
-                    past_corner,
-                    ..here
-                });
-                corner_deg = swung;
-            } else if let Some(past) = past
-                && !turns
-            {
-                corner_from_m = past.base_m;
-            }
-            if let Some(corner) = &mut corner
-                && fabsf(beside_m - corner.base_m) <= RETRACE_M
-            {
-                (corner.rejoin, corner.rejoin_m) = (back, tip_m + back_m);
+            let (off, along_m) = way_out.nearest(back.here, at);
+            if off > CLOSE_M {
+                if trail_m > 0.0 && along_m - trail_m < WALK_M {
+                    return unsure(furthest_back.base_m, back_m);
+                }
+                left_m = Some(back_m);
+            } else if along_m < furthest_back.base_m - FURTHER_BACK_M {
+                furthest_back = Stretch {
+                    base_m: along_m,
+                    rejoin: back,
+                    rejoin_m: tip_m + back_m,
+                };
             }
         }
         *self = Self::Back {
@@ -250,12 +208,9 @@ impl Walk {
             back,
             back_m,
             step_end_m,
-            beside_m,
             furthest_back,
-            corner,
-            corner_from_m,
-            corner_deg,
-            left,
+            left_m,
+            unsure_from_m,
         };
         None
     }
@@ -289,8 +244,7 @@ fn skip_of(skips: &[Skip], k: usize) -> Option<&Skip> {
 
 /// Where a turn starting `start_mm` along the course as read starts on the
 /// course, `onto` it. One that starts a step or less past a spur's base
-/// turns at the base, as the course runs into the spur: a U-turn where the
-/// spur was the far end of an out-and-back starts there.
+/// turns at the base, as the course runs into the spur.
 pub(crate) fn starts_at(start_mm: u32, onto: impl Fn(u32) -> u32) -> u32 {
     let step_mm = mm(STEP_M);
     onto(start_mm).min(onto(start_mm.saturating_sub(step_mm)) + step_mm)
@@ -321,7 +275,7 @@ pub(crate) struct Spurs {
     /// Metres along to the middle of the chord, and its way.
     s: f32,
     heading: Option<f32>,
-    chord_swings: [f32; REVERSAL_STEPS],
+    chord_swings: [f32; WIDE_REVERSAL_STEPS],
     /// The course `BACK_M` as read behind the chord's middle, or further
     /// while a spur is walked, and never within a spur cut.
     trail: Cursor,
@@ -333,6 +287,7 @@ pub(crate) struct Spurs {
     reversed: usize,
     skips: [Skip; SKIPS],
     count: usize,
+    unsure: Option<Span>,
     passed_cut_m: f32,
     started: bool,
     done: bool,
@@ -387,11 +342,15 @@ impl Spurs {
         let turned = self.heading.map_or(0.0, |heading| swing(heading, now));
         self.heading = Some(now);
         self.chord_swings.copy_within(1.., 0);
-        self.chord_swings[REVERSAL_STEPS - 1] = turned;
-        if fabsf(self.chord_swings.iter().sum::<f32>()) < REVERSAL_DEG {
+        self.chord_swings[WIDE_REVERSAL_STEPS - 1] = turned;
+        let swung = |steps: usize| {
+            let swings = &self.chord_swings[WIDE_REVERSAL_STEPS - steps..];
+            fabsf(swings.iter().sum::<f32>())
+        };
+        if swung(REVERSAL_STEPS) < REVERSAL_DEG && swung(WIDE_REVERSAL_STEPS) < WIDE_REVERSAL_DEG {
             return;
         }
-        self.chord_swings = [0.0; REVERSAL_STEPS];
+        self.chord_swings = [0.0; WIDE_REVERSAL_STEPS];
         let mut tip = self.behind;
         tip.on(len, at, HALF_CHORD_M);
         match self.walk {
@@ -419,19 +378,52 @@ impl Spurs {
             }
             let skips = &self.skips[..self.count];
             let way_out = (&self.trail, self.trail_m, skips);
-            if let Some(spur) = self.walk.on(len, at, way_out, read_m) {
-                self.skip(spur, len, at);
-                let within = self.reversals[..self.reversed]
-                    .iter()
-                    .take_while(|(tip_m, _)| *tip_m <= spur.rejoin_m)
-                    .count();
-                self.reversals.copy_within(within..self.reversed, 0);
-                self.reversed -= within;
+            match self.walk.on(len, at, way_out, read_m) {
+                Some(Ended::Spur(spur)) if !self.beside_unsure(&Span::of(&spur)) => {
+                    self.skip(spur, len, at);
+                    let within = self.reversals[..self.reversed]
+                        .iter()
+                        .take_while(|(tip_m, _)| *tip_m <= spur.rejoin_m)
+                        .count();
+                    self.reversals.copy_within(within..self.reversed, 0);
+                    self.reversed -= within;
+                }
+                Some(Ended::Spur(spur)) => self.unsure(Span::of(&spur)),
+                Some(Ended::Unsure { from_m, to_m }) => self.unsure(Span { from_m, to_m }),
+                None => {}
             }
             if matches!(self.walk, Walk::Back { .. }) {
                 return;
             }
         }
+    }
+
+    fn beside_unsure(&self, spur: &Span) -> bool {
+        self.unsure
+            .is_some_and(|unsure| spur.near(&unsure) && !spur.takes(&unsure))
+    }
+
+    fn unsure(&mut self, span: Span) {
+        let mut span = match self.unsure {
+            Some(was) if span.near(&was) => Span {
+                from_m: span.from_m.min(was.from_m),
+                to_m: span.to_m.max(was.to_m),
+            },
+            _ => span,
+        };
+        while let Some(skip) = self.skips[..self.count].last() {
+            let cut = Span {
+                from_m: skip.from_m,
+                to_m: skip.rejoin_m,
+            };
+            let read_by_scan = skip.from_m < self.trail_m;
+            if read_by_scan || !cut.near(&span) {
+                break;
+            }
+            span.from_m = span.from_m.min(cut.from_m);
+            self.count -= 1;
+        }
+        self.unsure = Some(span);
     }
 
     /// Bring the trail up to `BACK_M` of the course as read behind
@@ -458,13 +450,12 @@ impl Spurs {
     }
 
     fn skip(&mut self, spur: Stretch, len: usize, at: &impl Fn(usize) -> (f32, f32)) {
-        let mut out = self.on_course(spur.base_m, len, at);
-        let (mut back, mut base_m, mut rejoin_m) = (spur.rejoin, spur.base_m, spur.rejoin_m);
-        let from = (out.here.next - 1, out.before_m);
-        if let Some((left_m, j)) = self.left_by(&spur, from, (len, back.next), at) {
-            out = self.on_course(left_m, len, at);
-            (back, base_m, rejoin_m) = (Cursor::at(at, j), left_m, along(at, from, j));
+        #[cfg(test)]
+        if tests::UNCUT.get() {
+            return;
         }
+        let out = self.on_course(spur.base_m, len, at);
+        let (back, base_m, rejoin_m) = (spur.rejoin, spur.base_m, spur.rejoin_m);
         let (mut first, last) = (out.here.next, back.next);
         let before = self.skips[..self.count]
             .iter()
@@ -494,32 +485,6 @@ impl Spurs {
             cut_m: rejoin_m - from_m - distance(from, back.here),
         };
         self.count = before + 1;
-    }
-
-    fn left_by(
-        &self,
-        spur: &Stretch,
-        from: (usize, f32),
-        (len, to): (usize, usize),
-        at: &impl Fn(usize) -> (f32, f32),
-    ) -> Option<(f32, usize)> {
-        let way_out = WayOut {
-            trail: &self.trail,
-            trail_m: self.trail_m,
-            skips: &self.skips[..self.count],
-            tip: &spur.tip,
-        };
-        let parts =
-            |k: usize, j: usize| k > 0 && j + 1 < len && parted(at(k), at(k - 1), at(j + 1));
-        let (left_m, j, parts) = retraced(at, &spur.tip, (from.0, to))
-            .map(|(k, j)| (along(at, from, k), j, parts(k, j)))
-            .or_else(|| {
-                let (left_m, j) = way_out.left_at(spur, (len, to), at)?;
-                Some((left_m, j, true))
-            })?;
-        let walked_on = left_m - spur.base_m;
-        let proven = !spur.past_corner && (walked_on <= 0.0 || parts);
-        (fabsf(walked_on) <= WAY_M && proven).then_some((left_m, j))
     }
 
     /// Point `k` of the course as the scan reads it, `at` the course.
@@ -577,34 +542,27 @@ impl Spurs {
     }
 }
 
-fn parted(meet: (f32, f32), way_out: (f32, f32), way_back: (f32, f32)) -> bool {
-    let bearing = |q: (f32, f32)| atan2f(q.0 - meet.0, q.1 - meet.1).to_degrees();
-    fabsf(swing(bearing(way_out), bearing(way_back))) >= TURNS_OFF_DEG
+#[derive(Clone, Copy, Debug)]
+struct Span {
+    from_m: f32,
+    to_m: f32,
 }
 
-fn along(at: &impl Fn(usize) -> (f32, f32), from: (usize, f32), k: usize) -> f32 {
-    let steps = (from.0..k).map(|j| distance(at(j), at(j + 1)));
-    from.1 + steps.sum::<f32>()
-}
+impl Span {
+    fn of(spur: &Stretch) -> Self {
+        Self {
+            from_m: spur.base_m,
+            to_m: spur.rejoin_m,
+        }
+    }
 
-fn retraced(
-    at: &impl Fn(usize) -> (f32, f32),
-    tip: &Cursor,
-    (from, to): (usize, usize),
-) -> Option<(usize, usize)> {
-    (from..=tip.next.min(to))
-        .rev()
-        .take_while(|&k| k + 1 >= tip.next || distance(at(k), tip.here) <= HALF_CHORD_M)
-        .find_map(|apex| {
-            let meets = |j: usize| {
-                apex >= from + j && apex + j <= to && distance(at(apex - j), at(apex + j)) <= SAME_M
-            };
-            let mut j = 0;
-            while meets(j + 1) {
-                j += 1;
-            }
-            (j > 0).then_some((apex - j, apex + j))
-        })
+    fn near(&self, other: &Span) -> bool {
+        self.from_m <= other.to_m + NEAR_UNSURE_M && other.from_m - NEAR_UNSURE_M <= self.to_m
+    }
+
+    fn takes(&self, other: &Span) -> bool {
+        self.from_m <= other.from_m && other.to_m <= self.to_m
+    }
 }
 
 struct OnCourse {
@@ -621,114 +579,106 @@ struct WayOut<'a> {
     tip: &'a Cursor,
 }
 
+#[derive(Clone, Copy)]
+struct Segment {
+    a: (f32, f32),
+    b: (f32, f32),
+    a_m: f32,
+    along: f32,
+    read_m: f32,
+}
+
 impl WayOut<'_> {
-    /// Each segment, with metres along the course to its start and along
-    /// it: none along the line across a spur cut.
-    fn each(
-        &self,
-        at: &impl Fn(usize) -> (f32, f32),
-        mut segment: impl FnMut((f32, f32), (f32, f32), f32, f32),
-    ) {
-        let (mut from, mut from_m) = (self.trail.here, self.trail_m);
+    fn each(&self, at: &impl Fn(usize) -> (f32, f32), mut segment: impl FnMut(Segment)) {
+        let (mut a, mut a_m, mut read_m) = (self.trail.here, self.trail_m, 0.0);
         let points = (self.trail.next..self.tip.next)
             .map(|k| (read(self.skips, at, k), cut_at(self.skips, k)));
-        for (to, cut_m) in points.chain(core::iter::once((self.tip.here, 0.0))) {
-            let along = distance(from, to);
-            segment(from, to, from_m, if cut_m > 0.0 { 0.0 } else { along });
-            from_m += along + cut_m;
-            from = to;
+        for (b, cut_m) in points.chain(core::iter::once((self.tip.here, 0.0))) {
+            let length = distance(a, b);
+            let along = if cut_m > 0.0 { 0.0 } else { length };
+            segment(Segment {
+                a,
+                b,
+                a_m,
+                along,
+                read_m,
+            });
+            (a, a_m, read_m) = (b, a_m + length + cut_m, read_m + length);
         }
     }
 
     /// How far `p` is from it, and metres along to its point nearest `p`.
     fn nearest(&self, p: (f32, f32), at: &impl Fn(usize) -> (f32, f32)) -> (f32, f32) {
         let mut nearest = (f32::INFINITY, self.trail_m);
-        self.each(at, |a, b, a_m, along| {
-            let off = off_segment(p, a, b);
-            if off < nearest.0 {
-                let to_foot = sqrtf((distance(a, p) * distance(a, p) - off * off).max(0.0));
-                nearest = (off, a_m + to_foot.min(along));
-            }
-        });
+        self.each(
+            at,
+            |Segment {
+                 a, b, a_m, along, ..
+             }| {
+                let off = off_segment(p, a, b);
+                if off <= nearest.0 {
+                    let to_foot = sqrtf((distance(a, p) * distance(a, p) - off * off).max(0.0));
+                    nearest = (off, a_m + to_foot.min(along));
+                }
+            },
+        );
         nearest
     }
 
-    /// Its point `m` along.
-    fn point(&self, m: f32, at: &impl Fn(usize) -> (f32, f32)) -> (f32, f32) {
-        let mut point = self.tip.here;
-        let mut found = false;
-        self.each(at, |a, b, a_m, along| {
-            if !found && a_m + along >= m {
-                let t = if along > 0.0 {
-                    ((m - a_m) / along).max(0.0)
+    fn point(&self, m: f32, by: f32, at: &impl Fn(usize) -> (f32, f32)) -> (f32, f32) {
+        let mut to_m = None;
+        self.each(at, |segment| {
+            if to_m.is_none() && segment.a_m + segment.along >= m {
+                to_m = Some(segment.read_m + (m - segment.a_m).clamp(0.0, segment.along) + by);
+            }
+        });
+        let to_m = to_m.unwrap_or(f32::INFINITY);
+        let mut point = self.trail.here;
+        self.each(at, |Segment { a, b, read_m, .. }| {
+            let length = distance(a, b);
+            if to_m >= read_m {
+                let t = if length > 0.0 {
+                    ((to_m - read_m) / length).min(1.0)
                 } else {
                     0.0
                 };
                 point = (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
-                found = true;
             }
         });
         point
     }
 
-    fn left_at(
-        &self,
-        spur: &Stretch,
-        (len, to): (usize, usize),
-        at: &impl Fn(usize) -> (f32, f32),
-    ) -> Option<(f32, usize)> {
-        let corner = |j: usize| {
-            let ways = way(at(j - 1), at(j)).zip(way(at(j), at(j + 1)));
-            ways.is_some_and(|(into, on)| fabsf(swing(into, on)) >= BEND_MIN_DEG)
+    fn sure(&self, spur: &Stretch, len: usize, at: &impl Fn(usize) -> (f32, f32)) -> bool {
+        let base = self.point(spur.base_m, 0.0, at);
+        let parted = |&ray_m: &f32| {
+            let mut on = spur.rejoin;
+            let way_on = on
+                .on(len, at, ray_m)
+                .then(|| bearing(spur.rejoin.here, on.here))?;
+            let way_in = bearing(base, self.point(spur.base_m, -ray_m, at));
+            let out = bearing(base, self.point(spur.base_m, ray_m, at));
+            let apart = |a: f32, b: Option<f32>| b.is_none_or(|b| fabsf(swing(a, b)) >= APART_DEG);
+            Some(apart(out?, way_in) && apart(out?, way_on) && apart(way_on?, way_in))
         };
-        (spur.tip.next..to.min(len - 1))
-            .rev()
-            .take_while(|&j| distance(at(j), spur.rejoin.here) <= PAST_BASE_M)
-            .filter(|&j| corner(j))
-            .find_map(|j| {
-                let (off, m) = self.nearest(at(j), at);
-                (off <= SAME_M).then_some((m, j))
-            })
-    }
-
-    /// Where from `from_m` to `to_m` along it swings most, a metre at a
-    /// time, and how far.
-    fn sharpest(&self, from_m: f32, to_m: f32, at: &impl Fn(usize) -> (f32, f32)) -> (f32, f32) {
-        let half = WAY_M / 2.0;
-        let swing_at = |m: f32| {
-            let here = self.point(m, at);
-            let way_in = way(self.point(m - half, at), here);
-            let way_on = way(here, self.point(m + half, at));
-            way_in
-                .zip(way_on)
-                .map_or(0.0, |(way_in, way_on)| fabsf(swing(way_in, way_on)))
-        };
-        let metres = (to_m - from_m).max(0.0) as usize;
-        (0..=metres)
-            .map(|k| from_m + k as f32)
-            .map(|m| (m, swing_at(m)))
-            .fold((from_m, 0.0), |best, m| if m.1 > best.1 { m } else { best })
+        (SPUR_MIN_M..=SPUR_M).contains(&self.deepest(spur.base_m, at))
+            && RAYS_M.iter().all(|ray_m| parted(ray_m) == Some(true))
     }
 
     /// How far from its point `base_m` along it goes, on to the tip.
     fn deepest(&self, base_m: f32, at: &impl Fn(usize) -> (f32, f32)) -> f32 {
-        let mut base = None;
+        let base = self.point(base_m, 0.0, at);
         let mut deepest = 0.0f32;
-        self.each(at, |a, b, a_m, along| {
-            if base.is_none() && a_m + along >= base_m {
-                let t = if along > 0.0 {
-                    (base_m - a_m) / along
-                } else {
-                    0.0
-                };
-                base = Some((a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1)));
-            }
-            if let Some(base) = base {
+        self.each(at, |Segment { b, a_m, along, .. }| {
+            if a_m + along >= base_m {
                 deepest = deepest.max(distance(base, b));
             }
         });
         deepest
     }
+}
+
+fn bearing(a: (f32, f32), b: (f32, f32)) -> Option<f32> {
+    (distance(a, b) >= 1.0).then(|| atan2f(b.0 - a.0, b.1 - a.1).to_degrees())
 }
 
 #[cfg(test)]

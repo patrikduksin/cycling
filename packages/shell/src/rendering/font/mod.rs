@@ -506,8 +506,8 @@ mod tests {
         let draws: [(&Face, &[u8]); 11] = [
             (&SIGN_50, b"0123456789."),
             (&SIGN_32, b"0123456789."),
-            (&SIGN_27, b"ARRIVED"),
-            (&SIGN_20, b"0123456789. KM ARRIVED"),
+            (&SIGN_27, b"ARRIVED TURN AROUND"),
+            (&SIGN_20, b"0123456789. KM ARRIVED TURN AROUND"),
             (&SIGN_18, b"TURN BACK"),
             (&SIGN_14, b"TURN BACK KM"),
             (&SIGN_13, b"KM"),

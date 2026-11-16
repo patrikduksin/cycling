@@ -7,13 +7,16 @@ extern crate std;
 use std::vec;
 use std::vec::Vec;
 
+mod joining;
 mod many;
 mod passes;
 mod receiver;
+mod spurs;
 
 struct Rider<'a> {
     homing: Homing<'a>,
     follower: Follower<'a>,
+    paused: bool,
 }
 
 impl<'a> Rider<'a> {
@@ -21,6 +24,7 @@ impl<'a> Rider<'a> {
         Self {
             homing: Homing::new(crumbs),
             follower: Follower::new(line, turns),
+            paused: false,
         }
     }
 
@@ -32,7 +36,7 @@ impl<'a> Rider<'a> {
         let fix = self
             .homing
             .observe(location_e7.and_then(|e7| taken(e7, now)), now);
-        self.follower.observe(fix, now, None)
+        self.follower.observe(fix, now, None, self.paused)
     }
 
     fn needs_course(&self) -> bool {
@@ -392,6 +396,30 @@ fn sharing_a_kilometre_then_turning_off_is_off_course_until_back_on_it() {
         ride_course(&mut rider, &course, &back, &mut now),
         [Event::OnCourse]
     );
+}
+
+#[test]
+fn moving_the_bike_while_paused_never_says_off_course() {
+    let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
+    let mut rider = Rider::new(&mut crumbs, &mut line, &mut []);
+    let course = course_of(&SQUARE);
+    rider.set_course(&course);
+    let mut now = 0;
+    let on = path(&[(0.0, 0.0), (500.0, 0.0)], 7.0);
+    assert_eq!(
+        ride_course(&mut rider, &course, &on, &mut now),
+        [Event::Following]
+    );
+    rider.paused = true;
+    let mut cafe = path(&[(500.0, 0.0), (500.0, -44.0)], 2.0);
+    cafe.extend([(500.0, -44.0); 60]);
+    assert!(ride_course(&mut rider, &course, &cafe, &mut now).is_empty());
+    let sign = rider.follower.sign(now);
+    assert!(!matches!(sign, Sign::OffCourse { .. }), "{sign:?}");
+    rider.paused = false;
+    let back = path(&[(500.0, -44.0), (500.0, 0.0), (800.0, 0.0)], 7.0);
+    let (_, events) = ride_course_warned(&mut rider, &course, &back, &mut now);
+    assert!(events.is_empty(), "{events:?}");
 }
 
 #[test]

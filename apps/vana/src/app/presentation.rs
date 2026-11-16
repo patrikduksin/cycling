@@ -516,7 +516,9 @@ impl Runtime {
         } else {
             self.alerts.battery_away();
         }
-        self.cues.play(sound, now);
+        let track = &self.track;
+        self.cues
+            .play(sound, now, |cue| super::track::holds(track, cue));
     }
 
     /// Show `alert` as a toast and raise its cue.

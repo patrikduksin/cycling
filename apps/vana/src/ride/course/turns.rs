@@ -129,7 +129,8 @@ impl Kind {
         }
     }
 
-    fn of(degrees: f32) -> Option<Self> {
+    /// A turn of `degrees`, clockwise positive.
+    pub(super) fn of(degrees: f32) -> Option<Self> {
         let side = if degrees > 0.0 {
             Side::Right
         } else {

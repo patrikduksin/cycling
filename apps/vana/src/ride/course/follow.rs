@@ -25,6 +25,9 @@ const AGAINST_M: f32 = 5.0;
 const HOP_M: f32 = 40.0;
 const GAP_MS: u64 = 5_000;
 const JOIN_FIXES: u8 = 5;
+const TURN_AROUND_FIXES: u8 = 3;
+const MORE_THAN_45_DEG_OFF: core::ops::RangeInclusive<u16> = TURN / 8..=TURN * 7 / 8;
+const MORE_THAN_135_DEG_OFF: core::ops::Range<u16> = TURN * 3 / 8 + 1..TURN * 5 / 8;
 
 type Point = (f32, f32);
 
@@ -91,6 +94,16 @@ impl Placement {
     }
 }
 
+/// A moved fix beside the course, as its heading is to the course's way.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Riding {
+    /// Along the segment ending at this point: the first pass ridden its way.
+    Along(usize),
+    Against,
+    Across,
+    Away,
+}
+
 pub struct Follower<'a> {
     line: &'a mut [Crumb],
     len: usize,
@@ -99,6 +112,7 @@ pub struct Follower<'a> {
     held: bool,
     join_fixes: u8,
     join_end: usize,
+    turn_around_fixes: u8,
     following: bool,
     segment: usize,
     matched: Option<Point>,
@@ -126,6 +140,7 @@ impl<'a> Follower<'a> {
             held: false,
             join_fixes: 0,
             join_end: 0,
+            turn_around_fixes: 0,
             following: false,
             segment: 0,
             matched: None,
@@ -150,6 +165,7 @@ impl<'a> Follower<'a> {
         self.placement = self.placement.next();
         self.held = false;
         self.join_fixes = 0;
+        self.turn_around_fixes = 0;
         self.following = false;
         self.matched = None;
         self.search_whole_course = false;
@@ -165,6 +181,7 @@ impl<'a> Follower<'a> {
         self.len = 0;
         self.placement = self.placement.next();
         self.join_fixes = 0;
+        self.turn_around_fixes = 0;
         let n = points.len().min(self.line.len());
         self.unplaced = n >= 2 && frame.is_none();
         let Some(frame) = frame.filter(|_| n >= 2) else {
@@ -263,6 +280,11 @@ impl<'a> Follower<'a> {
         self.following
     }
 
+    /// A placed course that following may still start on.
+    pub fn joinable(&self) -> bool {
+        !self.following && !self.held && self.len >= 2
+    }
+
     /// If following, stop for the rest of the ride.
     pub fn stop(&mut self) {
         self.let_go();
@@ -301,7 +323,15 @@ impl<'a> Follower<'a> {
     }
 
     pub fn sign(&self, now: u64) -> Sign {
+        let fresh = now.saturating_sub(self.taken_loop_ms) <= nav::LOST_MS;
+        if self.joinable() && self.turn_around_fixes >= TURN_AROUND_FIXES && fresh {
+            return Sign::TurnAround;
+        }
         self.nav.sign(&self.turns[..self.turn_count], now)
+    }
+
+    pub fn holds(&self, event: Event) -> bool {
+        self.following && self.nav.holds(event, &self.turns[..self.turn_count])
     }
 
     pub fn guidance(&self, now: u64) -> Option<Guidance> {
@@ -318,6 +348,7 @@ impl<'a> Follower<'a> {
         fix: Option<Fix>,
         now: u64,
         speed_mm_s: Option<u32>,
+        paused: bool,
     ) -> Option<Event> {
         self.scan_turns();
         let Some(fix) = fix else {
@@ -350,6 +381,7 @@ impl<'a> Follower<'a> {
                     forward: self.heading.is_some()
                         && !self.against(&line[near.end - 1], &line[near.end]),
                     speed_mm_s,
+                    paused,
                 };
                 match joined {
                     true => Observed::Joined(fixed),
@@ -370,22 +402,44 @@ impl<'a> Follower<'a> {
 
     /// Where the course passes twice, the first pass ridden its way is joined.
     fn joining(&mut self, p: Point) -> bool {
-        let heading = self.heading.filter(|_| !self.held && self.len >= 2);
-        let joined = heading.and_then(|heading| {
-            (1..self.len).rev().find(|&end| {
-                let (a, b) = (self.line[end - 1], self.line[end]);
-                let (a, b) = ((a.east, a.north), (b.east, b.north));
-                let turn = (heading + TURN - bearing(b, a)) % TURN;
-                off_segment(p, a, b) < ON_M && !(TURN / 8..=TURN * 7 / 8).contains(&turn)
-            })
-        });
-        let Some(end) = joined else {
+        let Some(heading) = self.heading.filter(|_| !self.held && self.len >= 2) else {
+            self.join_fixes = 0;
+            return false;
+        };
+        let riding = self.riding(p, heading);
+        self.turn_around_fixes = match riding {
+            Riding::Against => self.turn_around_fixes.saturating_add(1),
+            Riding::Across => self.turn_around_fixes,
+            Riding::Along(_) | Riding::Away => 0,
+        };
+        let Riding::Along(end) = riding else {
             self.join_fixes = 0;
             return false;
         };
         self.join_end = end;
         self.join_fixes = self.join_fixes.saturating_add(1);
         self.join_fixes >= JOIN_FIXES
+    }
+
+    fn riding(&self, p: Point, heading: u16) -> Riding {
+        let mut riding = Riding::Away;
+        for end in (1..self.len).rev() {
+            let (a, b) = (self.line[end - 1], self.line[end]);
+            let (a, b) = ((a.east, a.north), (b.east, b.north));
+            if off_segment(p, a, b) >= ON_M {
+                continue;
+            }
+            let off_its_way = (heading + TURN - bearing(b, a)) % TURN;
+            if !MORE_THAN_45_DEG_OFF.contains(&off_its_way) {
+                return Riding::Along(end);
+            }
+            if MORE_THAN_135_DEG_OFF.contains(&off_its_way) {
+                riding = Riding::Against;
+            } else if riding == Riding::Away {
+                riding = Riding::Across;
+            }
+        }
+        riding
     }
 
     fn follow_from(&mut self, end: usize) {

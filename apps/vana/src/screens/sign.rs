@@ -42,11 +42,18 @@ struct Geometry {
     notices: Option<Notices>,
 }
 
+struct TwoLines {
+    face: &'static Face,
+    upper: f32,
+    lower: f32,
+}
+
 struct Notices {
     back: f32,
     turn_back_line: f32,
     turn_back: &'static Face,
     arrived: (&'static Face, f32),
+    turn_around: TwoLines,
 }
 
 const BANNER_ARRIVED: f32 = 72.5175;
@@ -65,6 +72,11 @@ const BANNER: Geometry = Geometry {
         turn_back_line: 93.0,
         turn_back: &SIGN_18,
         arrived: (&SIGN_27, BANNER_ARRIVED),
+        turn_around: TwoLines {
+            face: &SIGN_27,
+            upper: 58.0,
+            lower: 86.0,
+        },
     }),
 };
 
@@ -84,6 +96,11 @@ const BADGE: Geometry = Geometry {
         turn_back_line: 82.0,
         turn_back: &SIGN_14,
         arrived: (&SIGN_20, badge_baseline_from_banner(BANNER_ARRIVED)),
+        turn_around: TwoLines {
+            face: &SIGN_20,
+            upper: 56.0,
+            lower: 78.0,
+        },
     }),
 };
 
@@ -165,6 +182,12 @@ pub fn place(sign: Sign, form: SignForm, radar: bool) -> Option<Placed> {
             let (face, base) = notices.arrived;
             let ink = push(&mut lines, face, b"ARRIVED", text_left, base, WHITE);
             (ARRIVED_FILL, SignGlyph::Flag, ink)
+        }
+        (Sign::TurnAround, Some(notices)) => {
+            let TwoLines { face, upper, lower } = notices.turn_around;
+            let turn = push(&mut lines, face, b"TURN", text_left, upper, WHITE);
+            let around = push(&mut lines, face, b"AROUND", text_left, lower, WHITE);
+            (OFF_FILL, art(Glyph::UTurn), turn.max(around))
         }
         (Sign::None, _) | (_, None) => return None,
     };

@@ -8,7 +8,8 @@
 //! `GRACE_MM` past the turn, or longer while the turns are `dense`. Its
 //! sound plays only when it opens, and the beep `BEEP_MM` before each
 //! turn plays once. Off course is more than `OFF_M` off on fixes at least
-//! `CONFIRM_MS` apart, with none nearer between. It holds until the rider
+//! `CONFIRM_MS` apart, with none nearer between and none while the ride is
+//! paused, when the bike may be wheeled anywhere. It holds until the rider
 //! is back within `ON_M`, riding the course's way, however far off they
 //! went. The way back leads to where they left the course (`Spot`),
 //! which never moves. Each step returns at most one `Event`. A second one
@@ -56,6 +57,9 @@ pub struct MatchedFix {
     pub forward: bool,
     /// The ride's live speed; without one the banner opens at its least.
     pub speed_mm_s: Option<u32>,
+    /// The ride is paused: the bike may be wheeled anywhere, so the fix
+    /// never confirms off course or reminds of it.
+    pub paused: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +170,8 @@ pub enum Sign {
     OffCourse { back: Distance },
     /// The `ARRIVED_MS` after the end (green).
     Arrived,
+    /// Not yet following, and riding against the course beside it (amber).
+    TurnAround,
 }
 
 const _: () = assert!(core::mem::size_of::<Sign>() == 4, "View has no spare bytes");
@@ -322,7 +328,7 @@ impl Navigator {
             }
             Observed::Fix(fix) => self.fix(fix, turns, &locate, &mut due),
         }
-        if let Some(parked) = parked.filter(|&raised| self.holds(raised, turns)) {
+        if let Some(parked) = parked.filter(|&raised| self.still_due(raised, turns)) {
             due.raise(parked);
         }
         self.pending = due.second;
@@ -342,7 +348,8 @@ impl Navigator {
             .is_some_and(|last| fix.taken_loop_ms.saturating_sub(last.taken_loop_ms) > LOST_MS);
         let now = fix.taken_loop_ms;
         self.place = match self.place {
-            Place::On if fix.off_m > OFF_M => Place::Leaving {
+            Place::Leaving { .. } if fix.paused => Place::On,
+            Place::On if fix.off_m > OFF_M && !fix.paused => Place::Leaving {
                 since_ms: now,
                 junction: self.junction(turns, fix.along_mm, locate),
             },
@@ -367,7 +374,7 @@ impl Navigator {
                 since_ms,
                 junction,
                 reminded: false,
-            } if now.saturating_sub(since_ms) >= REMIND_MS => {
+            } if now.saturating_sub(since_ms) >= REMIND_MS && !fix.paused => {
                 due.raise(Raised::StillOff);
                 Place::Off {
                     since_ms,
@@ -480,7 +487,7 @@ impl Navigator {
         None
     }
 
-    fn holds(&self, raised: Raised, turns: &[Turn]) -> bool {
+    fn still_due(&self, raised: Raised, turns: &[Turn]) -> bool {
         let is = |k: usize, turn: TurnId| turns.get(k).is_some_and(|t| t.id() == turn);
         match raised {
             Raised::Following | Raised::OnCourse => self.place == Place::On,
@@ -495,6 +502,27 @@ impl Navigator {
                     && self.last_beeped == next
             }
         }
+    }
+
+    /// Whether `event`, raised earlier and still unheard, is still so: the
+    /// turn it is of not yet passed, the rider still off course or on it.
+    pub fn holds(&self, event: Event, turns: &[Turn]) -> bool {
+        let raised = match event {
+            Event::Following => Raised::Following,
+            Event::OnCourse => Raised::OnCourse,
+            Event::OffCourse => Raised::OffCourse,
+            Event::StillOff => Raised::StillOff,
+            Event::Arrived => return self.arrived_ms.is_some(),
+            Event::TurnSoon => match self.last_sounded.and_then(|k| turns.get(k)) {
+                Some(turn) => Raised::TurnSoon { turn: turn.id() },
+                None => return false,
+            },
+            Event::TurnNow => match self.last_beeped.and_then(|k| turns.get(k)) {
+                Some(turn) => Raised::TurnNow { turn: turn.id() },
+                None => return false,
+            },
+        };
+        self.still_due(raised, turns)
     }
 
     pub fn sign(&self, turns: &[Turn], now_ms: u64) -> Sign {

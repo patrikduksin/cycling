@@ -1103,7 +1103,7 @@ mod tests {
         const TURN: u16 = 0x0b7c;
         const OFF_COURSE: u16 = 0xd3a0;
         const ARRIVED: u16 = 0x1cc8;
-        let cases: [(&Face, u16, &str); 20] = [
+        let cases: [(&Face, u16, &str); 23] = [
             (&SIGN_50, TURN, "120"),
             (&SIGN_50, OFF_COURSE, "1.4"),
             (&SIGN_32, TURN, "250"),
@@ -1113,6 +1113,9 @@ mod tests {
             (&SIGN_20, TURN, "KM"),
             (&SIGN_20, BG, "6.4"),
             (&SIGN_20, ARRIVED, "ARRIVED"),
+            (&SIGN_27, OFF_COURSE, "TURN"),
+            (&SIGN_27, OFF_COURSE, "AROUND"),
+            (&SIGN_20, OFF_COURSE, "AROUND"),
             (&SIGN_18, OFF_COURSE, "TURN BACK"),
             (&SIGN_14, OFF_COURSE, "TURN BACK"),
             (&SIGN_14, TURN, "KM"),

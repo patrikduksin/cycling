@@ -119,6 +119,7 @@ pub struct Speed {
     previous: Option<Revolution>,
     epoch: Option<Epoch>,
     value: Option<u32>,
+    count_interval_ms: u64,
     /// The wheel has stood so long that its last revolution is no reference.
     standing: bool,
     received: u64,
@@ -132,6 +133,7 @@ impl Default for Speed {
             previous: None,
             epoch: None,
             value: None,
+            count_interval_ms: 0,
             standing: false,
             received: 0,
         }
@@ -192,6 +194,7 @@ impl Speed {
                 self.standing = repeat;
             } else if dt != 0 && dr != 0 {
                 let speed = u64::from(dr) * u64::from(self.wheel_mm) * 1024 / u64::from(dt);
+                self.count_interval_ms = u64::from(dt) * 1000 / 1024;
                 self.value = (speed <= MAX_SPEED_MM_S).then_some(speed as u32);
             } else {
                 // Repeated event: keep timing from the last real revolution.
@@ -201,12 +204,10 @@ impl Speed {
         self.previous = Some(current);
     }
 
-    /// The wheel speed now. Once the time since the last revolution exceeds
-    /// what the last measurement implies, the wheel cannot be going faster
-    /// than one circumference per that time, so the reading decays with it
-    /// instead of holding until the wheel is declared stopped. The age is
-    /// measured from when the packet carrying the last revolution arrived, so a
-    /// lost repeat packet does not create a decay. Under 2 km/h it reads zero.
+    /// The wheel speed now, in mm/s: `None` once the sensor has been silent
+    /// `SPEED_SILENT_MS`, zero under 2 km/h, and never more than one
+    /// circumference per the time the next count is overdue, timed between
+    /// packet arrivals.
     pub fn value(&self, now: u64) -> Option<u32> {
         if now.saturating_sub(self.received) > SPEED_SILENT_MS {
             return None;
@@ -215,8 +216,9 @@ impl Speed {
         // Measured to the latest packet, not the clock: only packets that repeat the
         // old revolution show the wheel has not turned. Silence proves nothing.
         let age_ms = self.received.saturating_sub(previous.received_ms).max(1);
-        // A newer revolution may sit in a packet not yet received.
-        let overdue_ms = age_ms.saturating_sub(PACKET_SLACK_MS).max(1);
+        // Some sensors count only about once a second, holding revolutions until then.
+        let next_count_due_ms = self.count_interval_ms + PACKET_SLACK_MS;
+        let overdue_ms = age_ms.saturating_sub(next_count_due_ms).max(1);
         let bound = u64::from(self.wheel_mm) * 1000 / overdue_ms;
         let speed = match self.value {
             Some(speed) => u64::from(speed).min(bound),
@@ -616,11 +618,11 @@ mod tests {
         assert_eq!(speed.value(100), None);
         speed.receive(packet(488, 0, 1100, 0));
         assert_eq!(speed.value(1100), Some(WHEEL_MM));
-        speed.receive(packet(488, 0, 5300, 0));
-        assert_eq!(speed.value(5300), Some(0));
-        assert_eq!(speed.value(8400), None);
-        speed.receive(packet(1512, 1, 8500, 1));
-        assert_eq!(speed.value(8500), None);
+        speed.receive(packet(488, 0, 6300, 0));
+        assert_eq!(speed.value(6300), Some(0));
+        assert_eq!(speed.value(9400), None);
+        speed.receive(packet(1512, 1, 9500, 1));
+        assert_eq!(speed.value(9500), None);
     }
     #[test]
     fn revolutions_count_across_the_wrap_and_the_size_scales_speed() {
@@ -650,21 +652,19 @@ mod tests {
         speed.receive(packet(0, 0, 0, 0));
         speed.receive(packet(1024, 1, 1000, 0));
         assert_eq!(speed.value(1000), Some(WHEEL_MM));
-        // Repeat packets within a revolution period change nothing.
-        speed.receive(packet(1024, 1, 1250, 0));
-        assert_eq!(speed.value(1250), Some(WHEEL_MM));
-        assert_eq!(speed.value(1999), Some(WHEEL_MM));
-        // Overdue: bounded by one circumference per elapsed time.
-        speed.receive(packet(1024, 1, 2500, 0));
-        assert_eq!(speed.value(2500), Some(WHEEL_MM * 1000 / 1200));
-        speed.receive(packet(1024, 1, 3000, 0));
-        let at_three = speed.value(3000).unwrap();
-        assert!(at_three < WHEEL_MM * 1000 / 1200, "{at_three}");
-        // Under 2 km/h (556 mm/s) is zero, a little under four seconds on.
-        speed.receive(packet(1024, 1, 4900, 0));
-        assert!(speed.value(4900).unwrap() > 0);
-        speed.receive(packet(1024, 1, 5200, 0));
-        assert_eq!(speed.value(5300), Some(0));
+        speed.receive(packet(1024, 1, 2250, 0));
+        assert_eq!(speed.value(2250), Some(WHEEL_MM));
+        assert_eq!(speed.value(2999), Some(WHEEL_MM));
+        speed.receive(packet(1024, 1, 3500, 0));
+        let overdue_ms = 3500 - 1000 - 1000 - PACKET_SLACK_MS as u32;
+        assert_eq!(speed.value(3500), Some(WHEEL_MM * 1000 / overdue_ms));
+        speed.receive(packet(1024, 1, 4000, 0));
+        let at_four = speed.value(4000).unwrap();
+        assert!(at_four < WHEEL_MM * 1000 / overdue_ms, "{at_four}");
+        speed.receive(packet(1024, 1, 5900, 0));
+        assert!(speed.value(5900).unwrap() > 0);
+        speed.receive(packet(1024, 1, 6200, 0));
+        assert_eq!(speed.value(6300), Some(0));
     }
     #[test]
     fn repeated_packets_after_a_connect_are_unknown_then_stopped_never_fast() {
@@ -759,6 +759,80 @@ mod tests {
         assert_eq!(speed.value(2100), Some(WHEEL_MM));
         speed.receive(packet(3072, 3, 3100, 0));
         assert_eq!(speed.value(3100), Some(WHEEL_MM));
+    }
+    const BATCH_MS: u64 = 1100;
+    const BATCH_REVOLUTIONS: u16 = 4;
+    const BATCHED_MM_S: u32 = BATCH_REVOLUTIONS as u32 * WHEEL_MM * 1000 / BATCH_MS as u32;
+    fn batched(at: u64, stopped_after: u64) -> device_api::ant::Packet {
+        let batches = (at.min(stopped_after) / BATCH_MS) as u16;
+        let event_time = batches.wrapping_mul((BATCH_MS * 1024 / 1000) as u16);
+        let count = batches.wrapping_mul(BATCH_REVOLUTIONS);
+        packet(event_time, count, at, 0)
+    }
+    #[test]
+    fn a_sensor_that_counts_once_a_second_reads_its_speed_between_counts() {
+        let mut speed = Speed::default();
+        for now in (0..60_000).step_by(50) {
+            if now % 250 == 0 {
+                speed.receive(batched(now, u64::MAX));
+            }
+            if now >= 1250 {
+                let value = speed.value(now).unwrap();
+                assert!(value * 100 >= BATCHED_MM_S * 97, "{value} mm/s at {now}");
+            }
+        }
+    }
+    #[test]
+    fn the_odometer_of_a_sensor_that_counts_once_a_second_matches_its_revolutions() {
+        let mut speed = Speed::default();
+        let mut odometer = Odometer::default();
+        let first_count_ms = 5 * BATCH_MS;
+        let last_count_ms = 65 * BATCH_MS;
+        let mut counted = 0;
+        for now in (0..=last_count_ms).step_by(50) {
+            if now % 250 == 0 {
+                speed.receive(batched(now, u64::MAX));
+            }
+            if now == first_count_ms {
+                counted = speed.revolutions();
+                odometer.step(now, None);
+            } else if now > first_count_ms {
+                odometer.step(now, speed.value(now));
+            }
+        }
+        let wheel_mm = (speed.revolutions() - counted) * u64::from(WHEEL_MM);
+        let distance_mm = odometer.distance_mm();
+        assert!(
+            distance_mm.abs_diff(wheel_mm) * 100 <= wheel_mm,
+            "{distance_mm} mm against {wheel_mm} mm"
+        );
+    }
+    #[test]
+    fn a_sensor_that_counts_once_a_second_reads_zero_soon_after_the_wheel_stops() {
+        let mut speed = Speed::default();
+        let last_count_ms = 10 * BATCH_MS;
+        for now in (0..30_000).step_by(250) {
+            speed.receive(batched(now, last_count_ms));
+            let value = speed.value(now).unwrap_or(0);
+            if (1250..=last_count_ms + 1250).contains(&now) {
+                assert!(value * 100 >= BATCHED_MM_S * 97, "{value} mm/s at {now}");
+            } else if now >= last_count_ms + 5250 {
+                assert_eq!(value, 0, "{} ms after the last count", now - last_count_ms);
+            }
+        }
+    }
+    #[test]
+    fn a_sensor_that_counts_every_packet_reads_the_same() {
+        let mut speed = Speed::default();
+        for now in (0..20_000).step_by(50) {
+            if now % 250 == 0 {
+                let count = (now / 250) as u16;
+                speed.receive(packet(count.wrapping_mul(256), count, now, 0));
+            }
+            if now >= 250 {
+                assert_eq!(speed.value(now), Some(4 * WHEEL_MM), "at {now}");
+            }
+        }
     }
     #[test]
     fn speed_rejects_implausible_and_expired_revolutions() {

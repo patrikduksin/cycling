@@ -290,9 +290,10 @@ Auto-pause and auto-start (on by default, constants in `ride/auto.rs`):
 - Only a measured speed pauses, resumes or starts a ride. Without a wheel or
   GPS speed nothing pauses or starts, and the ride page says `AUTO PAUSE OFF`
   for the first 8 s.
-- Wheel: pause below 3 km/h for 1 s. Wheel speed decays once a revolution is overdue
-  (at most one circumference per time since it), so it is below 3 km/h about 3 s
-  after the last revolution and the ride pauses about 4 s after standing. Resume: at or
+- Wheel: pause below 3 km/h for 1 s. Wheel speed decays once the sensor is late
+  against its own interval between counts (at most one circumference per time past
+  it), so it is below 3 km/h about 3 s plus that interval after the last revolution,
+  and the ride pauses 4-5 s after standing. Resume: at or
   above 4.5 km/h for 1 s. Start: at or above 6 km/h for 3 s. The debounce stays
   in active time; time paused is excluded like a manual pause.
 - GPS: pause at zero (below 3.6 km/h) for 2 s, resume at or above 7.2 km/h for

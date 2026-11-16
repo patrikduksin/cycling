@@ -29,9 +29,8 @@ pub fn calories(
     }
 }
 
-/// The wheel sensor cannot measure below about 1.9 km/h (one 2136 mm
-/// revolution per its 4 s stop timeout), so anything it reports at or above
-/// 1.8 km/h is rolling and counts as moving time.
+/// The wheel speed reads zero below 2 km/h (`ride::metrics`), so anything it
+/// reports at or above 1.8 km/h is rolling and counts as moving time.
 pub const MOVING_MIN_MM_S: u32 = 500;
 /// Altitude must leave a band this wide (3.0 m) around the last turning point
 /// before a climb or descent counts, so barometric noise adds no ascent.

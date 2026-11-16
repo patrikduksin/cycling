@@ -163,6 +163,7 @@ fn an_auto_paused_ride_and_a_zero_km_test_ride_discard_the_same_way() {
     sim.wait_for("RIDE DISCARDED", seconds(5)).unwrap();
 
     sim.ride_at(0.0, 0.0, 72.0, 0.0);
+    sim.advance(seconds(10));
     sim.start_ride();
     sim.advance(seconds(15));
     if sim.ride_state() == "recording" {

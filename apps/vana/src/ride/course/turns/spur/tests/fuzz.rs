@@ -3,11 +3,12 @@
 //! what that course says, on both the scan and the upload.
 //!
 //! The generator leaves out what is read otherwise by design, each where it
-//! draws it. A road within `NEAR_M` of a spur, or leaving its base nearer
-//! than `ALONG_COS`, cannot be told from a way back up to `RETRACE_M` off,
-//! nor can a way back drifting more than `V_DRIFT_M` off a V. Dead ends
-//! within a few metres of `SPUR_MIN_M` or `SPUR_M` deep, or within five of
-//! `TIP_SPUR_M` past a far corner, sit on the edge of what is a spur. A V
+//! draws it. A road within `NEAR_M` of a spur, or leaving its base within
+//! 30 degrees of it (`ALONG_COS`), cannot be told from a way back up to
+//! `RETRACE_M` off, nor can a way back drifting more than `V_DRIFT_M` off a
+//! V. Dead ends within a few metres of `SPUR_MIN_M` or `SPUR_M` deep, or
+//! from five metres under to ten over `TIP_SPUR_M` past a far corner, sit
+//! on the edge of what is a spur. A V
 //! is never drawn on a lead. A spur by an out-and-back's far corner, or on
 //! its way back less than `SPUR_M` from it, makes the far end a dead end
 //! too, and either could be the road. Corners turn at least 10 degrees from
@@ -36,11 +37,12 @@ const SHALLOWEST_M: f32 = SPUR_MIN_M + 3.0;
 const SPUR_MAX_M: f32 = SPUR_M - 10.0;
 const TIP_STUB_GAP_M: f32 = TIP_SPUR_M + 10.0;
 const FAR_CORNER_M: f32 = 40.0;
+const ROUTE_APART_M: f32 = 30.0;
 /// A road leaving a spur's base nearer its line than 30 degrees runs within
 /// `RETRACE_M` of it for metres.
 const ALONG_COS: f32 = 0.866;
-/// A spur this near a road at its base whose way back drifts further runs
-/// within `RETRACE_M` of that road.
+/// A spur within `V_DEG` of a road at its base whose way back drifts more
+/// than `V_DRIFT_M` runs within `RETRACE_M` of that road.
 const V_DEG: f32 = 55.0;
 const V_DRIFT_M: f32 = 2.0;
 
@@ -84,15 +86,14 @@ impl Spur {
         toward(base, self.bearing + 90.0, self.drift)
     }
 
-    /// Draw it from `base` onto `line`; where its way back ends.
-    fn draw(&self, base: P, line: &mut Vec<Vec<P>>) -> P {
+    fn draw(&self, base: P, line: &mut Vec<Vec<P>>) {
         let tip = self.tip(base);
         match &self.inner {
             Some((along, inner)) => {
                 let inner_base = toward(base, self.bearing, along * self.depth);
                 line.push(path(&[base, inner_base], self.out_every));
-                let back = inner.draw(inner_base, line);
-                line.push(path(&[back, tip], self.out_every));
+                inner.draw(inner_base, line);
+                line.push(path(&[inner.returns_to(inner_base), tip], self.out_every));
             }
             None => line.push(path(&[base, tip], self.out_every)),
         }
@@ -102,18 +103,13 @@ impl Spur {
             false => vec![tip, to],
         };
         line.push(path(&back, self.back_every));
-        to
     }
 
     /// Its centre line from `base`, and those of its own spurs.
-    fn lines(&self, base: P, depth: usize, lines: &mut Vec<(P, P, usize)>) {
-        lines.push((base, self.tip(base), depth));
+    fn lines(&self, base: P, lines: &mut Vec<(P, P)>) {
+        lines.push((base, self.tip(base)));
         if let Some((along, inner)) = &self.inner {
-            inner.lines(
-                toward(base, self.bearing, along * self.depth),
-                depth + 1,
-                lines,
-            );
+            inner.lines(toward(base, self.bearing, along * self.depth), lines);
         }
     }
 }
@@ -125,17 +121,23 @@ struct Site {
     spurs: Vec<Spur>,
 }
 
-/// A course as drawn, and as it would be without its spurs, with the
-/// stretches of it they take, as metres along it to where each leaves the
-/// route and comes back, and how far apart the two are.
+/// A course as drawn, and as it would be without its spurs.
 struct Case {
     name: String,
     with: Vec<P>,
     without: Vec<P>,
-    cut: Vec<(f32, f32, f32)>,
+    cut: Vec<Cut>,
 }
 
-/// The route, a point every `every` metres, with what is drawn on it.
+/// Where a site's spurs leave the route and come back to it, metres along
+/// the course as drawn, and how far apart the two are.
+#[derive(Clone, Copy)]
+struct Cut {
+    from_m: f32,
+    rejoin_m: f32,
+    apart_m: f32,
+}
+
 struct Route {
     corners: Vec<P>,
     every: f32,
@@ -186,10 +188,15 @@ impl Route {
             let from_m = length(&join(&with));
             let mut to = base;
             for spur in &site.spurs {
-                to = spur.draw(to, &mut with);
+                spur.draw(to, &mut with);
+                to = spur.returns_to(to);
             }
             without.push(path(&[base, to], self.every));
-            cut.push((from_m, length(&join(&with)), distance(base, to)));
+            cut.push(Cut {
+                from_m,
+                rejoin_m: length(&join(&with)),
+                apart_m: distance(base, to),
+            });
             chunk = vec![to];
             if next < self.corners.len() && along[next] <= site.along_m {
                 next += 1;
@@ -206,8 +213,10 @@ impl Route {
         }
     }
 
-    /// A spur runs within `NEAR_M` of the course other than at its base,
-    /// or two parts of the route run that near.
+    /// A spur leaves its base within 30 degrees of the road, or runs past
+    /// its first 8 m within `NEAR_M` of the course or of another site's
+    /// spur; or two parts of the route that do not meet run within
+    /// `ROUTE_APART_M` of each other, or along each other.
     fn tangled(&self) -> bool {
         let mut lines = Vec::new();
         let mut bases = Vec::new();
@@ -215,7 +224,7 @@ impl Route {
             let (mut base, _, _) = self.point(site.along_m);
             for spur in &site.spurs {
                 let first = lines.len();
-                spur.lines(base, 0, &mut lines);
+                spur.lines(base, &mut lines);
                 bases.push((base, first, lines.len()));
                 base = spur.returns_to(base);
             }
@@ -227,7 +236,7 @@ impl Route {
             .map(|pair| (pair[0], pair[1]))
             .collect();
         let touches = |segment: &(P, P), p: P| off_segment(p, segment.0, segment.1) < 0.5;
-        for (i, &(base, tip, _)) in lines.iter().enumerate() {
+        for (i, &(base, tip)) in lines.iter().enumerate() {
             let depth = distance(base, tip);
             let owner = bases
                 .iter()
@@ -255,7 +264,7 @@ impl Route {
                     return true;
                 }
             }
-            for (j, &(other_base, other_tip, _)) in lines.iter().enumerate() {
+            for (j, &(other_base, other_tip)) in lines.iter().enumerate() {
                 if (owner.0..owner.1).contains(&j) {
                     continue;
                 }
@@ -288,7 +297,7 @@ impl Route {
                     !meet
                         && path(&[b.0, b.1], 2.0)
                             .into_iter()
-                            .any(|p| off_segment(p, a.0, a.1) < 30.0)
+                            .any(|p| off_segment(p, a.0, a.1) < ROUTE_APART_M)
                 })
             })
     }
@@ -413,7 +422,8 @@ fn way(rng: &mut Rng) -> f32 {
     }
 }
 
-/// Case `seed`: a route, and up to three spurs on it.
+/// Case `seed`: a route and up to three spurs on it, or none where it draws
+/// what the generator leaves out.
 fn drawn(seed: u64) -> Option<Case> {
     let mut rng = Rng::new(seed);
     let mut tags = vec![format!("case {seed}")];
@@ -510,21 +520,21 @@ fn drawn(seed: u64) -> Option<Case> {
 }
 
 /// Metres along the course without its spurs to `m` along it drawn.
-fn without_m(cut: &[(f32, f32, f32)], m: f32) -> f32 {
+fn without_m(cut: &[Cut], m: f32) -> f32 {
     let mut removed = 0.0;
-    for &(from_m, to_m, apart) in cut {
-        if m <= from_m {
+    for cut in cut {
+        if m <= cut.from_m {
             break;
         }
-        if m < to_m {
-            return from_m - removed;
+        if m < cut.rejoin_m {
+            return cut.from_m - removed;
         }
-        removed += to_m - from_m - apart;
+        removed += cut.rejoin_m - cut.from_m - cut.apart_m;
     }
     m - removed
 }
 
-fn alike(drawn: &[Turn], without: &[Turn], cut: &[(f32, f32, f32)]) -> bool {
+fn alike(drawn: &[Turn], without: &[Turn], cut: &[Cut]) -> bool {
     let (drawn, without) = (heeded(drawn), heeded(without));
     let placed = |mm: u32, want_mm: u32, near_m: f32| {
         (without_m(cut, mm as f32 / 1000.0) - want_mm as f32 / 1000.0).abs() <= near_m

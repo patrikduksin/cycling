@@ -45,7 +45,7 @@
 //! U-turn) and flags (1 two corners, 2 cornered). Later versions may lengthen
 //! the header or each turn, and add flags, and raise the version; a reader
 //! takes what it knows from any version at least 1.
-use super::turns::{RECORD, STEP_MM, Scan, Spurs, TURNS, Turn, distance};
+use super::turns::{RECORD, Scan, Spurs, TURNS, Turn, distance, starts_at};
 use super::{Error, Follow, POINTS, Point, east_per_e7, metres};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::Crc32;
@@ -419,8 +419,7 @@ impl Finding<'_> {
                 mm.saturating_add(finder.passed_spurs_mm + spurs_mm)
             };
             for turn in &mut self.turns[listed..finder.found] {
-                let at_base = onto_track(turn.start_mm.saturating_sub(STEP_MM)) + STEP_MM;
-                turn.start_mm = onto_track(turn.start_mm).min(at_base);
+                turn.start_mm = starts_at(turn.start_mm, onto_track);
                 turn.end_mm = onto_track(turn.end_mm);
             }
             let oldest = finder.scan.oldest();

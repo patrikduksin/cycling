@@ -19,8 +19,8 @@
 //! `TIP_SPUR_M` or less past the last corner, or past one that far past the
 //! corner before it, is a spur from that corner, where it turns most.
 //! Either way the way out must go at least `SPUR_MIN_M` from the spur's
-//! base, as a stop's jitter never does. A hairpin's legs part too soon and roads side by side are too far
-//! apart to be one. So a dead end visited no deeper than `SPUR_M` is taken
+//! base, as a stop's jitter never does. A hairpin's legs part too soon and
+//! roads side by side are too far apart to be one. So a dead end visited no deeper than `SPUR_M` is taken
 //! for a planner's artifact.
 //!
 //! A course with a spur says exactly what the course would say with the
@@ -84,11 +84,10 @@ enum Walk {
     None,
     /// The course turned back at `tip_m`, the point `tip`; `back` has
     /// walked `back_m` of its way back, whose last metre lies beside the
-    /// way out `beside_m` along. `corner` is the spur past the furthest
-    /// corner the way out turned `TIP_SPUR_M` or less before the tip, or
-    /// before `corner_from_m`, the corner before that, from where it swung
-    /// most, `corner_deg`. `left` is where the way back left the way out,
-    /// once it has.
+    /// way out `beside_m` along. `corner` is the spur from where the way
+    /// out swings most, by `corner_deg`, `TIP_SPUR_M` or less before
+    /// `corner_from_m`: the tip, or the corner before it once the walk has
+    /// passed that corner.
     Back {
         tip_m: f32,
         tip: Cursor,
@@ -288,6 +287,15 @@ fn skip_of(skips: &[Skip], k: usize) -> Option<&Skip> {
         .find(|skip| (skip.first..skip.last).contains(&k))
 }
 
+/// Where a turn starting `start_mm` along the course as read starts on the
+/// course, `onto` it. One that starts a step or less past a spur's base
+/// turns at the base, as the course runs into the spur: a U-turn where the
+/// spur was the far end of an out-and-back starts there.
+pub(crate) fn starts_at(start_mm: u32, onto: impl Fn(u32) -> u32) -> u32 {
+    let step_mm = mm(STEP_M);
+    onto(start_mm).min(onto(start_mm.saturating_sub(step_mm)) + step_mm)
+}
+
 /// Point `k` of the course read without `skips`, `at` the course.
 fn read(skips: &[Skip], at: &impl Fn(usize) -> (f32, f32), k: usize) -> (f32, f32) {
     match skip_of(skips, k) {
@@ -313,8 +321,7 @@ pub(crate) struct Spurs {
     /// Metres along to the middle of the chord, and its way.
     s: f32,
     heading: Option<f32>,
-    /// How far the chord swung at each of the last `REVERSAL_STEPS`.
-    swung: [f32; REVERSAL_STEPS],
+    chord_swings: [f32; REVERSAL_STEPS],
     /// The course `BACK_M` as read behind the chord's middle, or further
     /// while a spur is walked, and never within a spur cut.
     trail: Cursor,
@@ -379,12 +386,12 @@ impl Spurs {
         };
         let turned = self.heading.map_or(0.0, |heading| swing(heading, now));
         self.heading = Some(now);
-        self.swung.copy_within(1.., 0);
-        self.swung[REVERSAL_STEPS - 1] = turned;
-        if fabsf(self.swung.iter().sum::<f32>()) < REVERSAL_DEG {
+        self.chord_swings.copy_within(1.., 0);
+        self.chord_swings[REVERSAL_STEPS - 1] = turned;
+        if fabsf(self.chord_swings.iter().sum::<f32>()) < REVERSAL_DEG {
             return;
         }
-        self.swung = [0.0; REVERSAL_STEPS];
+        self.chord_swings = [0.0; REVERSAL_STEPS];
         let mut tip = self.behind;
         tip.on(len, at, HALF_CHORD_M);
         match self.walk {
@@ -397,8 +404,6 @@ impl Spurs {
         }
     }
 
-    /// Walk each spur as far as `read_m`, and on to the next reversal once
-    /// a walk ends.
     fn walk_on(&mut self, read_m: f32, len: usize, at: &impl Fn(usize) -> (f32, f32)) {
         loop {
             if matches!(self.walk, Walk::None) {
@@ -532,15 +537,11 @@ impl Spurs {
     }
 
     /// `turn`, found on the course as the scan reads it, on the course.
-    /// A turn that starts a step or less past a spur's base turns at the
-    /// base, as the course runs into the spur: a U-turn where the spur was
-    /// the far end of an out-and-back starts there.
     pub(super) fn real(&self, turn: Turn) -> Turn {
-        let real = |read_mm: u32| self.real_m(read_mm as f32 / 1000.0);
-        let start_m = turn.start_mm as f32 / 1000.0;
+        let real = |read_mm: u32| mm(self.real_m(read_mm as f32 / 1000.0));
         Turn {
-            start_mm: mm(real(turn.start_mm).min(self.real_m(start_m - STEP_M) + STEP_M)),
-            end_mm: mm(real(turn.end_mm)),
+            start_mm: starts_at(turn.start_mm, real),
+            end_mm: real(turn.end_mm),
             ..turn
         }
     }

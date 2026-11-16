@@ -42,12 +42,11 @@
 //! which make way for the rest.
 //! Distances along the course are u32 millimetres, saturating.
 use libm::{atan2f, fabsf, sqrtf, tanf};
-pub(crate) use spur::Spurs;
+pub(crate) use spur::{Spurs, starts_at};
 
 /// The course is read this often along it, at whole steps from its start,
 /// so a turn is found at the same place from wherever the rider is.
 const STEP_M: f32 = 2.0;
-pub(super) const STEP_MM: u32 = 2_000;
 /// The course's way at a step is the chord this far behind to this far on.
 const HALF_CHORD_M: f32 = 7.5;
 pub(super) const HALF_CHORD_MM: u32 = 7_500;

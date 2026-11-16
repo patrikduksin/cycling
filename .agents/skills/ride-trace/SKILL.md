@@ -22,7 +22,8 @@ never as advertisements or anything else on the air, so a sensor that never
 appears was never connected, not necessarily absent. Every command below prints
 text: start there, and open a PNG only to confirm what the text says. Add
 `--json` to any of them, `trace pull` too, for one JSON document to parse
-instead, or `{"error": ...}` with exit status 2 when it fails;
+instead. A failure the tool reports, such as bad arguments, a trace that does
+not read or a tool that did not build, is `{"error": ...}` with exit status 2;
 `cycling trace --help` gives each command's fields.
 
 ## 1. Get the trace

@@ -24,7 +24,7 @@ import time
 import zlib
 from pathlib import Path
 
-from cycling_devtools.device.port import add_port_argument, select_port, selected_port
+from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.terminal.usb import UsbConnection
 from cycling_devtools.workspace import ROOT, private_path
 
@@ -603,7 +603,7 @@ def run(args, port):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = Parser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_port_argument(parser)
     actions = parser.add_subparsers(dest='action', required=True)
     actions.add_parser('inspect', help='volume table, terrain pack and file store')
@@ -673,26 +673,35 @@ def lost(result, path):
 
 
 def pull_trace(args, parser):
-    """The result is the one document on stdout. Without --json the marks follow on stderr; with it a failure is
-    {"error": ...} and exit status 2, as for the trace commands."""
-    if not args.json:
-        from cycling_devtools.device import trace_media
+    """The result is the one document on stdout, naming a lost record as its "error". Without --json the marks
+    follow on stderr and a failure is raised; with it a failure is {"error": ...} and exit status 2, as for the
+    trace commands."""
+    from cycling_devtools.device import trace_media
 
-        result = run(args, selected_port(parser, args.port))
-        print(json.dumps(result, indent=2))
-        print(trace_media.marks_text(result['marks']), file=sys.stderr)
-        if problems := lost(result, result['path']):
-            raise SystemExit(problems)
-        return
+    port = selected_port(parser, args.port)
     try:
-        result = run(args, select_port(args.port))
+        result = run(args, port)
     except Exception as error:
+        if not args.json:
+            raise
         result = {'error': str(error) or type(error).__name__}
     else:
         if problems := lost(result, result['path']):
             result['error'] = problems
     print(json.dumps(result, indent=2))
+    if not args.json:
+        print(trace_media.marks_text(result['marks']), file=sys.stderr)
     if 'error' in result:
+        raise SystemExit(2 if args.json else result['error'])
+
+
+class Parser(argparse.ArgumentParser):
+    """Under --json a usage error is one {"error": ...} document too, with argparse's exit status 2."""
+
+    def error(self, message):
+        if '--json' not in sys.argv[1:]:
+            super().error(message)
+        print(json.dumps({'error': message}, indent=2))
         raise SystemExit(2)
 
 

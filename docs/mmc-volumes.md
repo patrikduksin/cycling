@@ -213,8 +213,8 @@ only: ride export up to the ends the trace header records, `files get` for
 each file the header lists, and a local terrain pack with the header's
 SHA-256. It prints its result as one JSON document, then on stderr the
 moments the rider marked by holding MOVE (`marks:` with one line each, or
-`marks: none`). With `--json` it prints only the document, and a failure as
-`{"error": ...}` with exit status 2. The
+`marks: none`). With `--json` it prints only the document, and a failure it
+reports, bad arguments included, as `{"error": ...}` with exit status 2. The
 [ride-trace skill](../.agents/skills/ride-trace/SKILL.md) says what a rebuild
 cannot give back.
 

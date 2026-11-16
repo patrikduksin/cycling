@@ -30,8 +30,7 @@ pub mod spool;
 #[cfg(test)]
 mod tests;
 
-/// The header's first byte. A reader reads only its own version. Versions 1
-/// and 2 opened with a two-byte version, whose first byte is never 3.
+/// The header's first byte.
 pub const VERSION: u8 = 3;
 pub const MAX_BLOCK: usize = u16::MAX as usize + FRAME;
 const FRAME: usize = 2 + 4;

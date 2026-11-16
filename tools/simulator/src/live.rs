@@ -371,7 +371,7 @@ impl Default for Live {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace::timeline::Kind;
+    use firmware_services::trace::{self, Event};
 
     fn run(live: &mut Live, ms: u64) {
         for _ in 0..ms / 33 {
@@ -422,12 +422,15 @@ mod tests {
     }
 
     fn reports(live: &mut Live, key: char, ms: u64) -> usize {
+        let move_report = Input::Button {
+            button: Button::BottomLeft,
+            code: 1,
+        };
         let count = |live: &Live| {
-            crate::trace::timeline::read(&live.sim.trace())
-                .expect("the session's own trace decodes")
-                .entries
-                .iter()
-                .filter(|entry| entry.kind == Kind::Input && entry.text.contains("BottomLeft"))
+            let trace = live.sim.trace();
+            let (_, events) = trace::decode(&trace).expect("the session's own trace decodes");
+            events
+                .filter(|event| matches!(event, Event::Input(edge) if edge.input == move_report))
                 .count()
         };
         let before = count(live);

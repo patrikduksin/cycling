@@ -787,18 +787,22 @@ impl Scan {
     }
 }
 
+/// Coarse corners close together, apart or not, say nothing.
+fn crowds(last: &Turn, turn: &Turn) -> bool {
+    last.sparse
+        && turn.sparse
+        && last.cornered
+        && turn.cornered
+        && turn.start_mm.saturating_sub(last.end_mm) < mm(CROWD_M)
+}
+
 /// List `turn`, unless it starts at or before `from_mm`, known already.
 fn list(from_mm: u32, turn: Turn, turns: &mut [Turn], found: &mut usize) {
     if from_mm > 0 && turn.start_mm <= from_mm {
         return;
     }
-    // Coarse corners close together, apart or not, say nothing.
     if let Some(last) = found.checked_sub(1).and_then(|k| turns.get_mut(k))
-        && last.sparse
-        && turn.sparse
-        && last.cornered
-        && turn.cornered
-        && turn.start_mm.saturating_sub(last.end_mm) < mm(CROWD_M)
+        && crowds(last, &turn)
     {
         last.kind = None;
         if let Some(slot) = turns.get_mut(*found) {

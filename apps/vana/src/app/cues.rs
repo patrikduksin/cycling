@@ -190,11 +190,32 @@ pub(super) struct Played {
     pub of: u8,
 }
 
+/// Navigation cues waiting for the buzzer, one of each kind.
+#[derive(Default)]
+struct Waiting([bool; 4]);
+
+impl Waiting {
+    fn add(&mut self, cue: Navigation) {
+        self.0[cue as usize] = true;
+    }
+
+    fn any(&self) -> bool {
+        self.0.contains(&true)
+    }
+
+    /// The most urgent cue waiting that still `holds`; those before it that
+    /// no longer do are dropped.
+    fn next(&mut self, holds: impl Fn(Navigation) -> bool) -> Option<Navigation> {
+        Navigation::BY_URGENCY
+            .into_iter()
+            .find(|&cue| core::mem::take(&mut self.0[cue as usize]) && holds(cue))
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Cues {
     pending: Option<(Cue, u64)>,
-    /// Navigation cues waiting, one of each kind, by `Navigation::ALL`.
-    navigation_waiting: [bool; 4],
+    navigation_waiting: Waiting,
     playing: Option<Cue>,
     run: Sequence,
     note: u8,
@@ -212,7 +233,7 @@ impl Cues {
             return;
         }
         if let Some(cue) = cue.navigation() {
-            self.navigation_waiting[cue as usize] = true;
+            self.navigation_waiting.add(cue);
             return;
         }
         let busy = |held: Option<Cue>| held.is_some_and(Cue::safety);
@@ -236,7 +257,7 @@ impl Cues {
     ) {
         let next = match self.pending.take() {
             Some((cue, at)) => (now.saturating_sub(at) < STALE_MS).then_some(cue),
-            None if !self.run.is_playing() => self.next_navigation(&holds),
+            None if !self.run.is_playing() => self.navigation_waiting.next(&holds).map(Cue::from),
             None => None,
         };
         if let Some(cue) = next {
@@ -245,7 +266,7 @@ impl Cues {
                 .filter(|_| self.run.is_playing())
                 .and_then(Cue::navigation)
             {
-                self.navigation_waiting[cut as usize] = true;
+                self.navigation_waiting.add(cut);
             }
             let notes = resolve(sound.patterns(), cue);
             self.run.start(&notes, now);
@@ -272,16 +293,9 @@ impl Cues {
         }
     }
 
-    fn next_navigation(&mut self, holds: &impl Fn(Navigation) -> bool) -> Option<Cue> {
-        Navigation::ALL.into_iter().find_map(|cue| {
-            let waited = core::mem::take(&mut self.navigation_waiting[cue as usize]);
-            (waited && holds(cue)).then_some(Cue::from(cue))
-        })
-    }
-
     /// A cue waits for the buzzer or is still sounding.
     pub(super) fn busy(&self) -> bool {
-        self.pending.is_some() || self.navigation_waiting.contains(&true) || self.run.is_playing()
+        self.pending.is_some() || self.navigation_waiting.any() || self.run.is_playing()
     }
 
     pub(super) fn take_played(&mut self) -> Option<Played> {

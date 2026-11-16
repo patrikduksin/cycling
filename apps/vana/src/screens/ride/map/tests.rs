@@ -401,8 +401,14 @@ fn marks_stay_on_the_ground_as_the_scale_eases() {
     for (reach, marks) in &seen[1..] {
         assert!(marks.len() >= 3, "{reach:?}: {marks:?}");
         for north in marks {
-            let moved = before.iter().map(|b| (b - north).abs()).fold(f32::MAX, f32::min);
-            assert!(moved < 2.0, "{reach:?}: {north} m moved {moved} m: {before:?}");
+            let moved = before
+                .iter()
+                .map(|b| (b - north).abs())
+                .fold(f32::MAX, f32::min);
+            assert!(
+                moved < 2.0,
+                "{reach:?}: {north} m moved {moved} m: {before:?}"
+            );
         }
     }
 }

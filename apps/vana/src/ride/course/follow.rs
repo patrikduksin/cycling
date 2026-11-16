@@ -26,15 +26,18 @@ const HOP_M: f32 = 40.0;
 const GAP_MS: u64 = 5_000;
 const JOIN_FIXES: u8 = 5;
 const TURN_AROUND_FIXES: u8 = 3;
-/// A fix counts towards TURN AROUND only moving: this far on from the last
-/// fix, and at least this fast when the ride's speed is known, so a fix
-/// jittering at a stop never does.
 const MOVING_M: f32 = 2.0;
 const MOVING_MM_S: u32 = 1_400;
 const MORE_THAN_45_DEG_OFF: core::ops::RangeInclusive<u16> = TURN / 8..=TURN * 7 / 8;
 const MORE_THAN_135_DEG_OFF: core::ops::Range<u16> = TURN * 3 / 8 + 1..TURN * 5 / 8;
 
 type Point = (f32, f32);
+
+/// A fix this far on from the last one, at least this fast when the ride's
+/// speed is known: one jittering at a stop never is.
+fn moving(travelled_m: Option<f32>, speed_mm_s: Option<u32>) -> bool {
+    travelled_m.is_some_and(|m| m >= MOVING_M) && speed_mm_s.is_none_or(|v| v >= MOVING_MM_S)
+}
 
 pub(crate) fn project(p: Point, a: Point, b: Point) -> (Point, f32) {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
@@ -368,9 +371,11 @@ impl<'a> Follower<'a> {
         }
         self.taken_loop_ms = fix.taken_loop_ms;
         self.heading = fix.heading;
-        let travelled = self.last_fix.replace(fix.at).map(|last| distance(last, fix.at));
-        let moving = travelled.is_some_and(|m| m >= MOVING_M)
-            && speed_mm_s.is_none_or(|v| v >= MOVING_MM_S);
+        let travelled_m = self
+            .last_fix
+            .replace(fix.at)
+            .map(|last| distance(last, fix.at));
+        let moving = moving(travelled_m, speed_mm_s);
         let joined = !self.following && fix.moved && self.joining(fix.at, moving);
         if joined {
             self.follow_from(self.join_end);

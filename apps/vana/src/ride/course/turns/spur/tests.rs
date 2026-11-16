@@ -13,8 +13,7 @@ fn length(line: &[(f32, f32)]) -> f32 {
 
 /// The turns a rider riding `drawn` start to end is told to take as they
 /// reach them: by the scan of the course as kept, and from the turns found
-/// while it uploaded. The course keeps its length, less what thinning cuts
-/// from its corners.
+/// while it uploaded.
 fn told(drawn: &[(f32, f32)]) -> [Vec<Kind>; 2] {
     let (course, _) = uploaded(drawn);
     told_kept(drawn, &line_of(&course))
@@ -104,7 +103,7 @@ fn a_spur_past_a_corner_leaves_the_corner_named() {
     }
 }
 
-/// The points of the first ride's course about a spur, as it was kept.
+/// The turns told on `corners`, scanned as given rather than as kept.
 fn kept_about(corners: &[(f32, f32)]) -> [Vec<Kind>; 2] {
     told_kept(corners, corners)
 }

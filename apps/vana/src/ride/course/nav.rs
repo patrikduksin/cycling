@@ -57,8 +57,6 @@ pub struct MatchedFix {
     pub forward: bool,
     /// The ride's live speed; without one the banner opens at its least.
     pub speed_mm_s: Option<u32>,
-    /// The ride is paused: the bike may be wheeled anywhere, so the fix
-    /// never confirms off course or reminds of it.
     pub paused: bool,
 }
 
@@ -76,7 +74,7 @@ pub enum Event {
     Arrived,
 }
 
-/// A navigation sound that may wait for the buzzer, most urgent first.
+/// A navigation sound that may wait for the buzzer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Navigation {
     OffCourse,
@@ -86,7 +84,7 @@ pub enum Navigation {
 }
 
 impl Navigation {
-    pub const ALL: [Self; 4] = [
+    pub const BY_URGENCY: [Self; 4] = [
         Self::OffCourse,
         Self::OnCourse,
         Self::TurnNow,

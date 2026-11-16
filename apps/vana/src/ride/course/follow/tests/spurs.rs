@@ -3,8 +3,6 @@ use crate::ride::course::stored::tests::uploaded;
 use crate::ride::course::turns::tests::join;
 use turns::{Kind, Side};
 
-/// North 700 m with a 60 m dead end east at 300 m, and the course as
-/// uploaded with its turns.
 fn with_spur(drawn: &[(f32, f32)], ridden: &[(f32, f32)]) -> (Vec<Said>, Vec<Event>) {
     let (course, stored) = uploaded(drawn);
     let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
@@ -22,6 +20,7 @@ fn with_spur(drawn: &[(f32, f32)], ridden: &[(f32, f32)]) -> (Vec<Said>, Vec<Eve
     )
 }
 
+/// North 700 m with a 60 m dead end east at 300 m.
 fn dead_end() -> Vec<(f32, f32)> {
     join(&[
         path(&[(0.0, 0.0), (0.0, 300.0), (60.0, 300.0)], 5.0),

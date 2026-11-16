@@ -12,7 +12,7 @@
 //! that corner. Either way the way out must go at least `SPUR_MIN_M` from
 //! the spur's base, as a stop's jitter never does. A hairpin's legs part
 //! too soon and roads side by side are too far apart to be one. So a dead
-//! end visited 150 m deep or less is taken for a planner's artifact.
+//! end visited no deeper than `SPUR_M` is taken for a planner's artifact.
 //!
 //! The course keeps every point of a spur, and its length. The turns found
 //! on it and half a chord either side say nothing. In their place is one
@@ -37,24 +37,31 @@ const TIP_SPUR_M: f32 = 2.0 * WAY_M;
 const WAY_M: f32 = 2.0 * HALF_CHORD_M;
 const WALK_M: f32 = 1.0;
 
+/// A spur's base and where its way back meets the course, metres along.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Stretch {
+    base_m: f32,
+    rejoin_m: f32,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) enum Spur {
     #[default]
     None,
     /// The course turned back at `tip_m`, the point `tip`; `back` has
     /// walked `back_m` of its way back, whose last metre lies beside the
-    /// way out `beside_m` along. The furthest the way out turned a corner
-    /// back from the tip, and how far the way back had come by then.
+    /// way out `beside_m` along. `corner` is the spur past the furthest
+    /// corner the way out turned back from the tip.
     Walking {
         tip_m: f32,
         tip: Cursor,
         back: Cursor,
         back_m: f32,
         beside_m: f32,
-        corner: Option<(f32, f32)>,
+        corner: Option<Stretch>,
     },
-    /// A spur from `base_m` to `rejoin_m`, waiting for its turns to be found.
-    Found { base_m: f32, rejoin_m: f32 },
+    /// A spur waiting for its turns to be found.
+    Found(Stretch),
 }
 
 impl Spur {
@@ -94,8 +101,8 @@ impl Spur {
             trail_m,
             tip: &tip,
         };
-        let found = |base_m: f32, rejoin_m: f32| match way_out.deepest(base_m, at) >= SPUR_MIN_M {
-            true => Self::Found { base_m, rejoin_m },
+        let found = |spur: Stretch| match way_out.deepest(spur.base_m, at) >= SPUR_MIN_M {
+            true => Self::Found(spur),
             false => Self::None,
         };
         let (mut back, mut back_m, mut beside_m, mut corner) = (back, back_m, beside_m, corner);
@@ -105,19 +112,25 @@ impl Spur {
                 return;
             }
             if back_m + WALK_M > SPUR_M {
-                *self = corner.map_or(Self::None, |(base_m, rejoin_m)| found(base_m, rejoin_m));
+                *self = corner.map_or(Self::None, found);
                 return;
             }
             back_m += WALK_M;
             let (off, along_m) = way_out.nearest(back.here, at);
             if off > RETRACE_M {
-                *self = found(beside_m, tip_m + back_m - WALK_M);
+                *self = found(Stretch {
+                    base_m: beside_m,
+                    rejoin_m: tip_m + back_m - WALK_M,
+                });
                 return;
             }
             beside_m = along_m;
             let past_corner = (SPUR_MIN_M..=TIP_SPUR_M).contains(&(tip_m - beside_m));
             if past_corner && way_out.turns_at(beside_m, at) {
-                corner = Some((beside_m, tip_m + back_m));
+                corner = Some(Stretch {
+                    base_m: beside_m,
+                    rejoin_m: tip_m + back_m,
+                });
             }
         }
         *self = Self::Walking {
@@ -132,11 +145,9 @@ impl Spur {
 
     /// A found spur, once every turn the scan has yet to list begins after
     /// `open_from_m`, past it.
-    pub(super) fn settled(&self, open_from_m: f32) -> Option<(f32, f32)> {
+    pub(super) fn settled(&self, open_from_m: f32) -> Option<Stretch> {
         match *self {
-            Self::Found { base_m, rejoin_m } if open_from_m > rejoin_m + WAY_M => {
-                Some((base_m, rejoin_m))
-            }
+            Self::Found(spur) if open_from_m > spur.rejoin_m + WAY_M => Some(spur),
             _ => None,
         }
     }
@@ -231,12 +242,11 @@ impl WayOut<'_> {
     }
 }
 
-/// Put the spur from `base_m` to `rejoin_m` into `turns`, the first `found`
-/// of them listed, each after `from_mm`; `trail` is the course `trail_m`
-/// along, the furthest back it may be read.
-#[allow(clippy::too_many_arguments)]
+/// Put `spur` into `turns`, the first `found` of them listed, each after
+/// `from_mm`; `trail` is the course `trail_m` along, the furthest back it
+/// may be read.
 pub(super) fn mark(
-    (base_m, rejoin_m): (f32, f32),
+    Stretch { base_m, rejoin_m }: Stretch,
     len: usize,
     at: &impl Fn(usize) -> (f32, f32),
     (trail, trail_m): (Cursor, f32),
@@ -250,7 +260,7 @@ pub(super) fn mark(
     let from = mm(base_m - HALF_CHORD_M);
     let first = turns[..*found].partition_point(|turn| turn.end_mm <= from);
     let on_it = &turns[first..*found];
-    let ends = on_it.partition_point(|turn| turn.start_mm < mm(rejoin_m + HALF_CHORD_M));
+    let on_spur = on_it.partition_point(|turn| turn.start_mm < mm(rejoin_m + HALF_CHORD_M));
     let point = |m: f32| {
         let mut cursor = trail;
         cursor.on(len, at, (m - trail_m).max(0.0));
@@ -260,7 +270,7 @@ pub(super) fn mark(
         .first()
         .map_or(base_m, |turn| base_m.min(turn.start_mm as f32 / 1000.0));
     let way_in = way(point(way_in_m - WAY_M), point(way_in_m));
-    let turning_to = |on_it: &[Turn]| {
+    let corner_after = |on_it: &[Turn]| {
         let way_on_m = on_it
             .last()
             .map_or(rejoin_m, |turn| rejoin_m.max(turn.end_mm as f32 / 1000.0));
@@ -269,11 +279,11 @@ pub(super) fn mark(
             .zip(way_on)
             .and_then(|(way_in, way_on)| Kind::of(swing(way_in, way_on)))
     };
-    let (ends, kind) = match turning_to(on_it) {
+    let (silenced, kind) = match corner_after(on_it) {
         None => (on_it.len(), None),
-        Some(_) => (ends, turning_to(&on_it[..ends])),
+        Some(_) => (on_spur, corner_after(&on_it[..on_spur])),
     };
-    for turn in &mut turns[first..first + ends] {
+    for turn in &mut turns[first..first + silenced] {
         *turn = Turn {
             start_mm: turn.start_mm,
             end_mm: turn.end_mm,
@@ -290,7 +300,7 @@ pub(super) fn mark(
         cornered: true,
         ..Turn::default()
     };
-    if ends > 0 {
+    if silenced > 0 {
         turns[first] = base;
     } else if *found < turns.len() {
         turns.copy_within(first..*found, first + 1);

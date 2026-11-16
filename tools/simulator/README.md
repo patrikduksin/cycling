@@ -29,12 +29,14 @@ screenshots (`sim.checkpoint(..)`), a chart of the world, recorded rides as GPX
 and JSON, a timeline and `result.json` for each scenario under `.local/sim/latest`,
 including failed ones. `SIM_VIDEO=1` adds a captioned video; encoding it is most
 of a run's time, so only `cycling sim-pr` and `cycling sim-live` set it. Every
-scenario also stores the frames its video would show in `frames.bin`, so
+scenario also stores the frames its video would show in `frames.bin`
+(`recording/tape.rs`), so
 `shell-simulator --video <scenario dir>...` renders that video later without
 running the scenario again. `artifacts/` holds the PNG, GIF, MP4 (through `ffmpeg`)
 and chart encoders. `cycling sim-pr <number>` posts the run inline on a pull
 request through `cycling_devtools.sim.report`: the comment posts at once and its
-media upload in the background, filling it in place. `cycling sim-compare [--base <ref>]
+media upload in the background, filling it in place; media that fail to upload are
+marked, with gh's errors in `.local/sim/publish/<job>.log`. `cycling sim-compare [--base <ref>]
 [--filter <test name>] [--pr <number>] [--video]` also runs the merge-base with
 the base ref (default `origin/main`, fetched first) in a temporary worktree and
 reports only screens whose pixels changed, Before | After

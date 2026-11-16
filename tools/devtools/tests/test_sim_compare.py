@@ -6,6 +6,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 import zlib
 
@@ -204,6 +205,35 @@ def test_a_comparison_too_long_for_one_comment_splits_between_scenarios(tmp_path
             uploaded = uploaded.replace(path, 'https://github.com/user-attachments/assets/' + 'f' * 36)
         assert len(uploaded) <= report.BODY_LIMIT
         assert '| Screen | Before | After |' in body
+
+
+def test_a_scenario_too_long_for_one_comment_splits_between_its_rows(tmp_path):
+    before, after = tmp_path / 'before', tmp_path / 'after'
+    screens = 500
+    scenario(before, 'endless', {f'screen {j}': png(IMAGE, 4) for j in range(screens)})
+    scenario(after, 'endless', {f'screen {j}': png(OTHER, 4) for j in range(screens)}, status='fail')
+    (after / 'endless/result.json').write_text(
+        (after / 'endless/result.json').read_text().replace('"boom"', json.dumps('boom ' * 50_000))
+    )
+    old, new = report.load(before), report.load(after)
+    markdown, attachments = compare.comparison(
+        compare.pair(old, new), old, new, tmp_path, ('origin/main', 'aaa', 'Base subject', 'bbb')
+    )
+    chunks = report.comments(markdown, attachments)
+    assert len(chunks) > 1
+    assert sorted(f for _, files in chunks for f in files) == sorted(attachments)
+    rows = [line for body, _ in chunks for line in body.splitlines() if line.startswith('|') and '<img' in line]
+    assert len(rows) == screens
+    for body, files in chunks:
+        uploaded = body
+        for path in files:
+            uploaded = uploaded.replace(path, 'https://github.com/user-attachments/assets/' + 'f' * 36)
+        assert len(uploaded) <= report.BODY_LIMIT - report.NOTE_ROOM
+        if files:
+            assert '| Screen | Before | After |' in body
+    headings = [line for body, _ in chunks for line in body.splitlines() if line.startswith('### ')]
+    assert headings == ['### ❌ Endless', *['### ❌ Endless (continued)'] * (len(headings) - 1)]
+    assert markdown.count('boom') < 1_000, 'the failure is cut, not repeated whole'
 
 
 def test_a_build_failure_or_empty_run_is_incomplete(tmp_path):
@@ -409,13 +439,78 @@ def test_cache_keeps_the_most_recently_used_entries(tmp_path, monkeypatch, cache
     stale = cache / f'{compare.STAGING}killed'
     stale.mkdir()
     os.utime(stale, (0, 0))
-    with compare.build_lock('old'):
-        pass
     compare.store('new', run)
     assert sorted(p.name for p in cache.iterdir() if not p.name.startswith('.')) == ['new', 'used']
     assert not stale.exists()
-    assert not (cache / f'{compare.BUILDING}old').exists()
     assert not compare.restore('old', tmp_path / 'restored')
+
+
+def test_evicting_a_key_never_lets_a_second_build_of_it_start(tmp_path, monkeypatch, cache):
+    monkeypatch.setattr(compare, 'CACHE_ENTRIES', 1)
+    run = run_dir(tmp_path / 'run', 'run')
+    compare.store('k', run)
+    os.utime(cache / 'k', (0, 0))
+    building, finish, events = threading.Event(), threading.Event(), []
+
+    def first():
+        with compare.build_lock('k'):
+            building.set()
+            finish.wait(5)
+            events.append('first finished')
+
+    def second():
+        with compare.build_lock('k'):
+            events.append('second started')
+
+    builder = threading.Thread(target=first)
+    builder.start()
+    building.wait(5)
+    compare.store('newer', run)
+    assert not (cache / 'k').exists()
+    waiter = threading.Thread(target=second)
+    waiter.start()
+    waiter.join(0.5)
+    assert events == [], 'a second build started while the first held the lock'
+    finish.set()
+    builder.join()
+    waiter.join()
+    assert events == ['first finished', 'second started']
+
+
+def fill_commits(tmp_path, monkeypatch):
+    """Fills whose checkouts hold their commit and whose runs overlap, writing
+    that commit into each scenario's frames."""
+
+    @contextlib.contextmanager
+    def checkout(commit, path):
+        path.mkdir(parents=True, exist_ok=True)
+        (path / 'commit').write_text(commit)
+        yield path
+
+    def run(run):
+        time.sleep(0.2)
+        commit = (run.source / 'commit').read_text()
+        run.artifacts.mkdir(parents=True, exist_ok=True)
+        scenario(run.artifacts, 'ride', {'final screen': png(IMAGE, 4)})
+        (run.artifacts / 'ride/frames.bin').write_text(commit)
+        (run.artifacts / 'cargo.log').write_text('test ride ... ok\ntest result: ok. 1 passed\n')
+        return 0
+
+    monkeypatch.setattr(compare, 'checkout', checkout)
+    monkeypatch.setattr(compare, 'run_scenarios', run)
+    monkeypatch.setattr(compare, 'git', lambda *args: args[-1].removesuffix('^{commit}'))
+    monkeypatch.setattr(compare, 'rustc_hash', lambda: 'rust1')
+    monkeypatch.setattr(compare, 'FILL', tmp_path / 'fill')
+    monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
+
+
+def test_overlapping_fills_of_different_commits_each_cache_their_own_screens(tmp_path, monkeypatch, cache):
+    fill_commits(tmp_path, monkeypatch)
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        assert list(pool.map(compare.fill, ['aaa', 'bbb'])) == [None, None]
+    for commit in ('aaa', 'bbb'):
+        assert (cache / f'{commit}-rust1/ride/frames.bin').read_text() == commit
+    assert list((tmp_path / 'fill').iterdir()) == [], 'a fill left its checkout or screens behind'
 
 
 def fake_git(monkeypatch, calls):
@@ -430,6 +525,69 @@ def fake_git(monkeypatch, calls):
         return 'Base subject'
 
     monkeypatch.setattr(compare, 'git', git)
+
+
+def test_a_missing_merge_base_is_named_as_such(tmp_path, monkeypatch, capsys):
+    def git(*args):
+        if args[0] == 'merge-base':
+            raise subprocess.CalledProcessError(1, ['git', *args], '', '')
+        return 'main1234'
+
+    monkeypatch.setattr(compare, 'git', git)
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
+    assert compare.main(['--out', str(tmp_path / 'out')]) == 2
+    err = capsys.readouterr().err
+    assert 'no merge-base of HEAD and origin/main' in err and 'shallow clone' in err
+    assert 'unknown git ref' not in err
+
+
+def test_an_interrupt_stops_the_base_run_at_once(tmp_path, monkeypatch):
+    started = []
+    real = subprocess.Popen
+
+    def popen(*args, **kwargs):
+        started.append(real(*args, **kwargs))
+        return started[-1]
+
+    class Interrupted:
+        """A terminal whose user presses Ctrl-C once this checkout's run prints."""
+
+        def write(self, text):
+            if text.startswith('after |'):
+                raise KeyboardInterrupt
+
+        def flush(self):
+            pass
+
+    @contextlib.contextmanager
+    def checkout(commit, path):
+        path.mkdir(parents=True, exist_ok=True)
+        yield path
+
+    # The base runs until stopped; this checkout's run prints once the base is up.
+    script = (
+        'import os, sys, time\n'
+        'if os.environ["SIM_ARTIFACTS"].endswith("before"):\n'
+        '    print("base running", flush=True); time.sleep(60)\n'
+        'time.sleep(1); print("after running", flush=True); time.sleep(60)\n'
+    )
+    monkeypatch.setattr(compare, 'COMMAND', [sys.executable, '-c', script])
+    monkeypatch.setattr(compare.subprocess, 'Popen', popen)
+    monkeypatch.setattr(compare.sys, 'stdout', Interrupted())
+    monkeypatch.setattr(compare, 'checkout', checkout)
+    monkeypatch.setattr(compare, 'git', lambda *args: 'Base subject' if args[0] == 'log' else 'abc1234')
+    monkeypatch.setattr(compare, 'rustc_hash', lambda: 'rust1')
+    monkeypatch.setattr(compare, 'fetch_origin_main', lambda: None)
+    monkeypatch.setattr(compare, 'CARGO', compare.Cargo())
+    monkeypatch.setenv('CARGO_TARGET_DIR', str(tmp_path / 'target'))
+    began = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        compare.main(['--out', str(tmp_path / 'out')])
+    assert time.monotonic() - began < compare.GRACE_S
+    assert len(started) == 2
+    for process in started:
+        assert process.wait(timeout=5) is not None
+    assert not (compare.CACHE / 'abc1234-rust1').exists()
 
 
 def test_explicit_base_is_resolved_without_fetching(monkeypatch):

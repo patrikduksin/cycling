@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
+from contextlib import suppress
 from pathlib import Path
 
 from cycling_devtools.workspace import ROOT
@@ -23,10 +25,16 @@ from cycling_devtools.workspace import ROOT
 ATTACHMENT_LIMIT = 50
 # GitHub refuses a longer comment body.
 BODY_LIMIT = 65_536
+# Room kept in every comment for the note a failed upload adds.
+NOTE_ROOM = 500
+# A failure longer than this is cut; result.json keeps all of it.
+FAILURE_LIMIT = 4_000
+CONTINUED = '## Simulator scenarios (continued)\n'
 CHECKPOINT_LIMIT = 4
 ASSET = r'https://github\.com/user-attachments/assets/[0-9a-fA-F-]+'
 ASSET_URL_LENGTH = len('https://github.com/user-attachments/assets/') + 36
 PENDING = '⏳'
+FAILED = '✖'
 PUBLISH = ROOT / '.local/sim/publish'
 # The listing labels attachment i as `![i](path)`; gh renders it either as
 # Markdown or as an <img> tag, with attributes in any order.
@@ -80,7 +88,10 @@ def missing(run, name, failure):
 
 def fenced(text):
     """A code block that neither closes early nor splits comments."""
-    text = text.strip().replace('\n### ', '\n ### ')
+    text = text.strip()
+    if len(text) > FAILURE_LIMIT:
+        text = text[:FAILURE_LIMIT] + '\n… (cut; result.json has the whole failure)'
+    text = text.replace('\n### ', '\n ### ')
     fence = '`' * max([3, *(len(m) + 1 for m in re.findall(r'`{3,}', text))])
     return [fence + 'text', text, fence]
 
@@ -228,26 +239,73 @@ def page(results, heading):
 
 
 def comments(markdown, attachments):
+    """Comment bodies, each with the attachments it shows, that stay under
+    GitHub's limit once every attachment is an asset URL. Comments break
+    between scenarios, and a scenario too long for one comment breaks between
+    its table rows, repeating its heading and table header."""
+    limit = BODY_LIMIT - NOTE_ROOM
+
     def uploaded_size(text):
         return len(text) + sum(text.count(a) * (ASSET_URL_LENGTH - len(a)) for a in attachments)
 
     head, *sections = markdown.split('\n### ')
+    pieces = [
+        piece for section in sections for piece in by_rows('\n### ' + section, limit - len(CONTINUED), uploaded_size)
+    ]
     chunks, body, used = [], head, uploaded_size(head)
-    for section in ('\n### ' + s for s in sections):
-        if used + uploaded_size(section) > BODY_LIMIT and body.strip():
+    for piece, size in pieces:
+        if used + size > limit and body.strip():
             chunks.append(body)
-            body = '## Simulator scenarios (continued)\n'
-            used = len(body)
-        body += section
-        used += uploaded_size(section)
+            body, used = CONTINUED, len(CONTINUED)
+        body += piece
+        used += size
     chunks.append(body)
     return [(chunk, [a for a in attachments if a in chunk]) for chunk in chunks]
+
+
+def by_rows(section, limit, uploaded_size):
+    """(text, uploaded size) pieces of a section, each within `limit` unless
+    its heading and table header alone exceed it."""
+    lines = section.split('\n')
+    sizes = [uploaded_size(line) + 1 for line in lines]
+    table = next((i + 1 for i, line in enumerate(lines) if line.startswith('|---')), len(lines))
+    if sum(sizes) <= limit or table == len(lines):
+        return [(section, sum(sizes) - 1)]
+    again = ['', f'{lines[1]} (continued)', '', *lines[table - 2 : table]]
+    again_size = sum(len(line) + 1 for line in again)
+    pieces, piece, used = [], lines[:table], sum(sizes[:table])
+    for line, size in zip(lines[table:], sizes[table:], strict=True):
+        if used + size > limit:
+            pieces.append(piece)
+            piece, used = list(again), again_size
+        piece.append(line)
+        used += size
+    pieces.append(piece)
+    return [('\n'.join(piece), sum(uploaded_size(line) + 1 for line in piece) - 1) for piece in pieces]
 
 
 def replace_media(body, files, mark=PENDING):
     for path in map(re.escape, files):
         body = re.sub(rf'<img src="{path}"[^>]*>|!\[[^\]]*\]\({path}\)|^{path}$', mark, body, flags=re.MULTILINE)
     return body
+
+
+def failed(body, files, log):
+    """The body with `files` marked as failed and one note under its heading."""
+    heading, rest = replace_media(body, files, FAILED).split('\n', 1)
+    note = (
+        f'{FAILED} {len(files)} attachments failed to upload; see `{reference(log, ROOT)}` on the machine that posted.'
+    )
+    return f'{heading}\n\n{note}\n{rest}'
+
+
+def give_up(pages, log):
+    """Mark each page's media that never uploaded as failed; `log` says why.
+    A page whose edit fails too is skipped, so it cannot hide the others."""
+    for page in pages:
+        if page['files']:
+            with suppress(Exception):
+                edit(page['comment'], failed(page['body'], page['files'], log))
 
 
 def snapshot(attachments):
@@ -263,22 +321,33 @@ def snapshot(attachments):
     return job, copies
 
 
+def log_of(job):
+    """Beside the job, so it outlives the copies a finished job deletes."""
+    return job.parent / f'{job.name}.log'
+
+
 def post(pr, markdown, attachments):
     job, copies = snapshot(attachments)
-    pages = [
-        {'comment': post_comment(pr, replace_media(body, files)), 'body': body, 'files': files}
-        for body, files in comments(markdown, attachments)
-    ]
+    log = log_of(job)
+    pages = []
+    try:
+        for body, files in comments(markdown, attachments):
+            pages.append({'comment': post_comment(pr, replace_media(body, files)), 'body': body, 'files': files})
+    except Exception:
+        log.write_text(traceback.format_exc())
+        give_up(pages, log)
+        shutil.rmtree(job)
+        raise
     (job / 'job.json').write_text(json.dumps({'pr': str(pr), 'pages': pages, 'copies': copies}))
-    with (job / 'publish.log').open('w') as log:
+    with log.open('w') as out:
         subprocess.Popen(
             [sys.executable, '-m', 'cycling_devtools.sim.report', '--publish', str(job)],
             cwd=ROOT,
-            stdout=log,
+            stdout=out,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-    print(f'posted on #{pr}; {len(attachments)} attachments upload in the background, log in {job / "publish.log"}')
+    print(f'posted on #{pr}; {len(attachments)} attachments upload in the background, log in {log}')
 
 
 def publish(job):
@@ -288,6 +357,7 @@ def publish(job):
     state = json.loads((job / 'job.json').read_text())
     pages, copies = state['pages'], state['copies']
     remaining = list(copies)
+    log = log_of(job)
     try:
         while remaining:
             batch, later = remaining[:ATTACHMENT_LIMIT], remaining[ATTACHMENT_LIMIT:]
@@ -302,13 +372,15 @@ def publish(job):
             for page in pages:
                 if any(path in page['files'] for path in batch):
                     page['body'] = resolve(page['body'], batch, uploaded)
+                    page['files'] = [path for path in page['files'] if path not in batch]
                     edit(page['comment'], replace_media(page['body'], later))
             remaining = later
-    except Exception as error:
-        for page in pages:
-            edit(page['comment'], replace_media(page['body'], remaining, f'upload failed: {error}'))
+    except Exception:
+        give_up(pages, log)
         raise
-    shutil.rmtree(job)
+    finally:
+        shutil.rmtree(job)
+    log.unlink()
 
 
 def post_comment(pr, body, attachments=()):
@@ -327,7 +399,12 @@ def edit(endpoint, body):
 
 
 def gh(command, stdin=None):
-    return subprocess.run(command, input=stdin, text=True, cwd=ROOT, check=True, capture_output=True).stdout
+    """gh's output; on failure, an error with what gh printed and not the
+    command, whose attachment paths would fill a comment."""
+    done = subprocess.run(command, input=stdin, text=True, cwd=ROOT, capture_output=True)
+    if done.returncode:
+        raise RuntimeError(f'{" ".join(command[:3])} exited with status {done.returncode}: {done.stderr.strip()}')
+    return done.stdout
 
 
 def resolve(body, files, uploaded):

@@ -32,10 +32,10 @@ from cycling_devtools.workspace import ROOT
 # Idle-deleted under <worktree>/.local: regenerable by build.sh and verify.
 BUILD_DIR_PATTERNS = ('firmware*', 'verify')
 # Ignored content that a removed worktree may take with it. Everything else ignored
-# (agent notes, harness runs, sim/live recordings, the sim-compare and fill checkouts, uploads
-# still in flight) blocks removal.
+# (agent notes, harness runs, sim/live recordings, the sim-compare and fill checkouts) blocks
+# removal. An upload in flight keeps its worktree as a live process; a finished one leaves a log.
 CACHE_NAMES = ('__pycache__', '.pytest_cache', '.ruff_cache', '.venv')
-KEEP_IN_SIM = ('live', 'compare', 'fill', 'publish')
+KEEP_IN_SIM = ('live', 'compare', 'fill')
 IDLE_HOURS = 24.0
 LOW_DISK_GB = 30
 GB = 10**9

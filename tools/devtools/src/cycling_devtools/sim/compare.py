@@ -11,9 +11,10 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zlib
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +29,10 @@ CACHE = main_checkout() / '.local/sim/screens-cache'
 # A busy day of main commits (23 on 2026-11-14), at about 180 MB each.
 CACHE_ENTRIES = 24
 STAGING = '.staging-'
-BUILDING = '.building-'
+# Lock files are never deleted: a process waiting on one holds its inode, so a
+# replaced file would let a second process build the same key. Keys share this
+# many files, and two keys on one file only wait for each other.
+LOCKS = 1024
 ABANDONED_STAGING_S = 3600
 COMMAND = [
     'cargo',
@@ -40,6 +44,8 @@ COMMAND = [
     '--test',
     'ride_scenarios',
 ]
+# Inside the cargo target directory; COMMAND builds it alongside the tests.
+RENDERER = Path('debug/shell-simulator')
 PNG = b'\x89PNG\r\n\x1a\n'
 CHANNELS = {0: 1, 2: 3, 4: 2, 6: 4}
 # Only these chunks are decoded; any other (PLTE, tRNS, gAMA, ...) falls back to bytes.
@@ -243,13 +249,46 @@ def selection(name_filter):
     return (name_filter,) if name_filter else ()
 
 
+class Cargo:
+    """The cargo runs in flight, so an interrupt can stop the base run that a
+    background thread started in its own session."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.running = set()
+        self.stopping = False
+
+    def start(self, command, **kwargs):
+        with self.lock:
+            if self.stopping:
+                raise RuntimeError('sim-compare was interrupted')
+            process = subprocess.Popen(command, **kwargs)
+            self.running.add(process)
+            return process
+
+    def finish(self, process):
+        stop(process)
+        with self.lock:
+            self.running.discard(process)
+
+    def stop_all(self):
+        with self.lock:
+            self.stopping = True
+            running = list(self.running)
+        for process in running:
+            stop(process)
+
+
+CARGO = Cargo()
+
+
 def run_scenarios(run):
     shutil.rmtree(run.artifacts, ignore_errors=True)
     run.artifacts.mkdir(parents=True)
     # Not CARGO_TARGET_DIR: sccache keys on every CARGO_* variable, so an
     # absolute path there would keep each worktree's dependency builds apart.
     env = {k: v for k, v in os.environ.items() if k not in ('CARGO_TARGET_DIR', 'SIM_VIDEO')}
-    process = subprocess.Popen(
+    process = CARGO.start(
         [*COMMAND, '--target-dir', str(run.target), *run.tests],
         cwd=run.source,
         env=env | {'SIM_ARTIFACTS': str(run.artifacts)},
@@ -265,7 +304,7 @@ def run_scenarios(run):
                 log.write(line)
         return process.wait()
     finally:
-        stop(process)
+        CARGO.finish(process)
 
 
 def stop(process):
@@ -331,19 +370,20 @@ def cache_key(commit, rustc, name_filter):
 
 
 @contextmanager
-def cache_lock(kind):
-    CACHE.mkdir(parents=True, exist_ok=True)
-    with (CACHE / '.lock').open('a') as lock:
+def flock(path, kind=fcntl.LOCK_EX):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a') as lock:
         fcntl.flock(lock, kind)
         yield
 
 
-@contextmanager
+def cache_lock(kind):
+    return flock(CACHE / '.lock', kind)
+
+
 def build_lock(key):
-    CACHE.mkdir(parents=True, exist_ok=True)
-    with (CACHE / f'{BUILDING}{key}').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        yield
+    bucket = int(hashlib.sha256(key.encode()).hexdigest(), 16) % LOCKS
+    return flock(CACHE / '.locks' / str(bucket))
 
 
 def restore(key, directory):
@@ -377,7 +417,6 @@ def evict():
     entries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     for entry in entries[CACHE_ENTRIES:]:
         shutil.rmtree(entry, ignore_errors=True)
-        (CACHE / f'{BUILDING}{entry.name}').unlink(missing_ok=True)
     for staging in CACHE.glob(f'{STAGING}*'):
         with suppress(FileNotFoundError):
             if time.time() - staging.stat().st_mtime > ABANDONED_STAGING_S:
@@ -393,20 +432,32 @@ def ensure_base(key, commit, out, target, tests):
         if restore(key, before):
             print(f'sim-compare: base screens from {CACHE / key}, built meanwhile', flush=True)
             return None
-        with checkout(commit, out / 'base-src') as source:
-            status = run_scenarios(Run(source, before, base_target(target), tests))
-        problem = incomplete(before, status)
-        if problem is None:
-            store(key, before)
-        return problem
+        return build(key, commit, out, target, tests)
+
+
+def build(key, commit, out, target, tests):
+    """Run `commit`'s scenarios into `out`/before and cache them when complete;
+    returns why they are incomplete, or None."""
+    before, base = out / 'before', base_target(target)
+    # Cargo releases its own lock while the tests run, so a second base build in
+    # this target directory could replace the test binary before it starts.
+    with flock(base.parent / f'{base.name}.lock'), checkout(commit, out / 'base-src') as source:
+        status = run_scenarios(Run(source, before, base, tests))
+    problem = incomplete(before, status)
+    if problem is None:
+        store(key, before)
+    return problem
 
 
 def fill(commit, name_filter=None):
     commit = git('rev-parse', '--verify', f'{commit}^{{commit}}')
     key = cache_key(commit, rustc_hash(), name_filter)
-    if (CACHE / key).is_dir():
-        return None
-    return ensure_base(key, commit, FILL, cargo_target(), selection(name_filter))
+    with build_lock(key):
+        if (CACHE / key).is_dir():
+            return None
+        FILL.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=f'{key}-', dir=FILL) as scratch:
+            return build(key, commit, Path(scratch), cargo_target(), selection(name_filter))
 
 
 @contextmanager
@@ -453,14 +504,43 @@ def fetch_origin_main():
         )
 
 
+class NoBase(Exception):
+    pass
+
+
 def resolve_base(base):
     if base is None:
         fetch_origin_main()
         base = DEFAULT_BASE
-    sha = git('merge-base', 'HEAD', git('rev-parse', '--verify', f'{base}^{{commit}}'))
+    try:
+        tip = git('rev-parse', '--verify', f'{base}^{{commit}}')
+    except subprocess.CalledProcessError:
+        raise NoBase(f'unknown git ref {base!r}') from None
+    try:
+        sha = git('merge-base', 'HEAD', tip)
+    except subprocess.CalledProcessError as error:
+        why = (error.stderr or '').strip() or 'they share no commit'
+        raise NoBase(
+            f'no merge-base of HEAD and {base} ({why}); a shallow clone or unrelated history has none'
+        ) from None
     # log --format would print signature output first under log.showSignature.
     subject = git('log', '-1', '--no-show-signature', '--format=%s', sha)
     return base, sha, subject
+
+
+def in_background(function, *args):
+    """`function(*args)` in a daemon thread, so an interrupt never waits for it,
+    even while it waits for another process's build lock."""
+    future = Future()
+
+    def run():
+        try:
+            future.set_result(function(*args))
+        except BaseException as error:
+            future.set_exception(error)
+
+    threading.Thread(target=run, daemon=True).start()
+    return future
 
 
 def cargo_target():
@@ -491,8 +571,8 @@ def main(argv=None):
         return 0
     try:
         base, base_commit, base_subject = resolve_base(args.base)
-    except subprocess.CalledProcessError:
-        print(f'unknown git ref {args.base or DEFAULT_BASE!r}', file=sys.stderr)
+    except NoBase as error:
+        print(f'sim-compare: {error}', file=sys.stderr)
         return 2
     short = base_commit[:10]
     print(f'sim-compare base: merge-base with {base} at {short} {base_subject}', flush=True)
@@ -503,10 +583,13 @@ def main(argv=None):
     (out / 'summary.md').unlink(missing_ok=True)
     tests = selection(args.filter)
     key = cache_key(base_commit, rustc_hash(), args.filter)
-    with ThreadPoolExecutor(1) as pool:
-        base_run = pool.submit(ensure_base, key, base_commit, out, target, tests)
+    base_run = in_background(ensure_base, key, base_commit, out, target, tests)
+    try:
         after_status = run_scenarios(Run(ROOT, after_dir, target, tests))
         before_problem = base_run.result()
+    except BaseException:
+        CARGO.stop_all()
+        raise
     problems = [
         f'{side}: {problem}'
         for side, problem in (
@@ -525,7 +608,7 @@ def main(argv=None):
     pairs = pair(before, after)
     after_videos, before_videos = video_scenarios(pairs, before, after, args.video)
     render_videos(
-        target / 'debug/shell-simulator',
+        target / RENDERER,
         [*(r for r in after if r['name'] in after_videos), *(r for r in before if r['name'] in before_videos)],
     )
     for directory, results in ((before_dir, before), (after_dir, after)):

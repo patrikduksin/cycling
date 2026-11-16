@@ -75,14 +75,20 @@ def test_comments_split_only_at_github_size_limit(tmp_path):
 
 
 class FakeGitHub:
-    def __init__(self, fail_uploads=False):
+    def __init__(self, fail_uploads=False, fail_page=None):
         self.comments, self.next, self.uploads, self.fail_uploads = {}, 1, [], fail_uploads
+        self.fail_page, self.pages = fail_page, 0
 
     def __call__(self, command, stdin=None):
         if command[:3] == ['gh', 'pr', 'comment']:
             files = command[command.index('--body-file') + 3 :: 2]
             if files and self.fail_uploads:
-                raise RuntimeError('upload refused')
+                # What gh's error looked like: the command, every --attach path included.
+                raise RuntimeError(' '.join(command) + ' upload refused')
+            if not files:
+                self.pages += 1
+                if self.pages == self.fail_page:
+                    raise RuntimeError('HTTP 502: posting the page failed')
             self.uploads.append(len(files))
             body = stdin
             for i, path in enumerate(files):
@@ -104,10 +110,10 @@ class FakeGitHub:
         return ''
 
 
-def posted(tmp_path, monkeypatch, github):
+def posted(tmp_path, monkeypatch, github, scenarios=20):
     root = tmp_path / 'root'
-    for i in range(20):
-        scenario(root / 'run', f'scenario_{i:02}', checkpoints=4)
+    for i in range(scenarios):
+        scenario(root / 'run', f'scenario_{i:03}', checkpoints=4)
     markdown, attachments = report.summary(report.load(root / 'run'), root, 'Sim', 'abc')
     spawned = []
     monkeypatch.setattr(report, 'ROOT', root)
@@ -133,16 +139,61 @@ def test_the_report_posts_at_once_and_its_media_fill_in_one_comment(tmp_path, mo
     assert final.count('https://github.com/user-attachments/assets/') == len(attachments)
     assert github.uploads == [0, 50, 50, 20]
     assert not job.exists()
+    assert not report.log_of(job).exists()
 
 
-def test_a_failed_upload_says_so_in_the_report(tmp_path, monkeypatch):
+def test_a_failed_upload_leaves_one_short_note_and_no_pending_mark(tmp_path, monkeypatch):
     github = FakeGitHub(fail_uploads=True)
-    _, job = posted(tmp_path, monkeypatch, github)
+    attachments, job = posted(tmp_path, monkeypatch, github, scenarios=150)
+    pages = len(github.comments)
+    assert pages > 1
     with pytest.raises(RuntimeError):
         report.publish(job)
-    [final] = github.comments.values()
-    assert 'upload failed: upload refused' in final and report.PENDING not in final
-    assert job.exists()
+    assert len(github.comments) == pages
+    log = report.log_of(job)
+    for body in github.comments.values():
+        assert report.PENDING not in body and '--attach' not in body
+        assert body.count('attachments failed to upload') == 1
+        assert f'see `./{log.relative_to(tmp_path / "root")}`' in body
+        assert len(body) <= report.BODY_LIMIT
+    assert sum(body.count(report.FAILED) for body in github.comments.values()) == len(attachments) + pages
+    assert not job.exists(), 'the copies of a failed job stay behind'
+    assert log.exists()
+
+
+def test_a_page_that_fails_to_post_leaves_no_earlier_page_pending(tmp_path, monkeypatch):
+    github = FakeGitHub(fail_page=2)
+    root = tmp_path / 'root'
+    for i in range(150):
+        scenario(root / 'run', f'scenario_{i:03}', checkpoints=4)
+    markdown, attachments = report.summary(report.load(root / 'run'), root, 'Sim', 'abc')
+    monkeypatch.setattr(report, 'ROOT', root)
+    monkeypatch.setattr(report, 'PUBLISH', root / 'publish')
+    monkeypatch.setattr(report, 'gh', github)
+    monkeypatch.setattr(report.subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('nothing to upload'))
+    with pytest.raises(RuntimeError):
+        report.post(7, markdown, attachments)
+    [first] = github.comments.values()
+    assert report.PENDING not in first and 'attachments failed to upload' in first
+    [log] = (root / 'publish').iterdir()
+    assert log.suffix == '.log' and 'posting the page failed' in log.read_text()
+
+
+def test_gh_failures_carry_what_gh_said_not_the_command(monkeypatch):
+    def run(command, **kwargs):
+        return report.subprocess.CompletedProcess(command, 1, '', 'HTTP 422: Body is too long\n')
+
+    monkeypatch.setattr(report.subprocess, 'run', run)
+    command = ['gh', 'pr', 'comment', '7', '--body-file', '-', *['--attach', './a/0.png'] * 50]
+    with pytest.raises(RuntimeError) as error:
+        report.gh(command)
+    assert 'HTTP 422: Body is too long' in str(error.value)
+    assert '--attach' not in str(error.value)
+
+
+def test_a_long_failure_is_cut_in_the_comment():
+    fence = report.fenced('x' * 100_000)
+    assert len(fence[1]) < report.FAILURE_LIMIT + 100
 
 
 def test_pending_media_show_as_a_mark_not_a_broken_image():

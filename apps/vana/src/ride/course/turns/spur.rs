@@ -88,10 +88,10 @@ impl Spur {
         let Self::Walking {
             tip_m,
             tip,
-            back,
-            back_m,
-            beside_m,
-            corner,
+            mut back,
+            mut back_m,
+            mut beside_m,
+            mut corner,
         } = *self
         else {
             return;
@@ -105,7 +105,6 @@ impl Spur {
             true => Self::Found(spur),
             false => Self::None,
         };
-        let (mut back, mut back_m, mut beside_m, mut corner) = (back, back_m, beside_m, corner);
         while tip_m + back_m + WALK_M <= read_m {
             if !back.on(len, at, WALK_M) {
                 *self = Self::None;

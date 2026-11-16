@@ -9,7 +9,9 @@ use vana::ride::log::Kind;
 pub struct Observation {
     pub at_ms: u64,
     pub boot: u32,
-    pub uptime_ms: u64,
+    /// When the device last came on: a boot, or a wake from charging
+    /// standby, which shows the boot page again in the same session.
+    pub on_since_ms: u64,
     pub page: &'static str,
     pub off: bool,
     pub journal: Vec<Ride>,
@@ -42,15 +44,20 @@ impl Observation {
 /// Read the device. `faulted` carries over from the previous observation
 /// within the same boot.
 pub fn observe(sim: &mut Sim, card: bool, previous: Option<&Observation>) -> Observation {
-    let boot = sim.device.boot;
+    let (at_ms, boot, off) = (sim.now(), sim.device.boot, sim.is_off());
     let armed = sim.device.media.fault.borrow().after.is_some() || sim.device.bulk.faulted();
     let carried = previous.is_some_and(|p| p.boot == boot && p.faulted);
+    let on_since_ms = match previous {
+        Some(p) if p.boot == boot && !p.off => p.on_since_ms,
+        Some(p) if p.boot == boot => at_ms,
+        _ => at_ms.saturating_sub(sim.device.now),
+    };
     Observation {
-        at_ms: sim.now(),
+        at_ms,
         boot,
-        uptime_ms: sim.device.now,
-        page: if sim.is_off() { "off" } else { sim.vana_page() },
-        off: sim.is_off(),
+        on_since_ms,
+        page: if off { "off" } else { sim.vana_page() },
+        off,
         journal: sim.rides(),
         card: if card { card_rides(sim) } else { Vec::new() },
         faulted: armed || carried,
@@ -146,12 +153,13 @@ const BOOT_MS: u64 = 15_000;
 
 fn leaves_boot(moment: &Moment) -> Verdict {
     let after = moment.after;
-    if after.off || after.uptime_ms < BOOT_MS || after.page != "boot" {
+    let on_ms = after.at_ms - after.on_since_ms;
+    if after.off || on_ms < BOOT_MS || after.page != "boot" {
         return Verdict::Pass;
     }
     Verdict::Fail(format!(
         "still on the boot page {} s after power-on",
-        after.uptime_ms / 1000
+        on_ms / 1000
     ))
 }
 

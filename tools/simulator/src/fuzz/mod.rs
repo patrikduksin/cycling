@@ -111,7 +111,8 @@ pub struct Coverage {
     pub sessions: u64,
     pub simulated_ms: u64,
     /// The sum of every session's world log digest: two runs of the same
-    /// seeds agree on it.
+    /// seeds on one build agree on it. The trace header names the commit, so
+    /// another build differs.
     pub world_logs: u64,
     /// Presses and holds by the page shown before them, and button.
     pub presses: BTreeMap<(&'static str, &'static str), u64>,

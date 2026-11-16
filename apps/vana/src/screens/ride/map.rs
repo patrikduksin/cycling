@@ -510,6 +510,11 @@ const CHEVRON_DEPTH: f32 = 6.0;
 const CHEVRON_HALF: f32 = 5.0;
 const CHEVRON_STROKE: f32 = 1.75;
 const MARKS: usize = 8;
+/// Marks sit on the ground every `MARK_STEP_M` along the course, or every
+/// second, fourth and so on of those, the fewest that keep them at least
+/// `MARK_PITCH_PX` apart: as the scale eases they stay put, and thin out
+/// or fill in only where it doubles.
+const MARK_STEP_M: f32 = 25.0;
 const MARK_PITCH_PX: f32 = 40.0;
 const MARK_REACH_PX: f32 = 320.0;
 const MARK_DEPTH: f32 = 3.5;
@@ -951,7 +956,11 @@ fn marks(
     rider: Point,
 ) {
     let total = course.last().map_or(0.0, |c| c.along);
-    let (pitch, nudge) = (MARK_PITCH_PX / px_per_m, 1.0 / px_per_m);
+    let nudge = 1.0 / px_per_m;
+    let mut pitch = MARK_STEP_M;
+    while pitch * px_per_m < MARK_PITCH_PX {
+        pitch *= 2.0;
+    }
     let furthest = ahead_m.start.max(ahead_m.end - MARK_REACH_PX / px_per_m);
     let first = libm::ceilf(furthest / pitch).max(0.0) as u32;
     let last = libm::floorf(ahead_m.end.min(total - nudge) / pitch);

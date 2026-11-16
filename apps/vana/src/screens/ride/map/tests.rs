@@ -360,15 +360,69 @@ fn before_joining_marks_on_the_course_ahead_point_the_way_it_runs() {
     assert!(kept >= 2, "they stay on the ground as the rider moves");
 }
 
+/// Metres north of the rider's of each mark drawn on a course running
+/// north through the puck: the runs of the casing's colour along the
+/// route's middle.
+fn marks_north(frame: &Frame) -> std::vec::Vec<f32> {
+    let (x, rider_y) = (frame.last_pose.rider.0 as usize, frame.last_pose.rider.1);
+    let px_per_m = frame.last_pose.reach.px_per_m();
+    let casing: std::vec::Vec<bool> = GROUND
+        .map(|y| pixel(frame, x, y, BLACK) == CASING)
+        .collect();
+    let mut marks = std::vec::Vec::new();
+    let mut run = None;
+    for (k, &on) in casing.iter().chain([&false]).enumerate() {
+        match (on, run) {
+            (true, None) => run = Some(k),
+            (false, Some(start)) => {
+                let y = GROUND.start as f32 + (start + k - 1) as f32 / 2.0;
+                marks.push((f32::from(rider_y) - y) / px_per_m);
+                run = None;
+            }
+            _ => {}
+        }
+    }
+    marks
+}
+
+#[test]
+fn marks_stay_on_the_ground_as_the_scale_eases() {
+    let c = follower_course(&MOCKUP_COURSE);
+    let mut zoom = Zoom::default();
+    let mut track = waiting_to_join(&c, (0.0, -100.0), 0);
+    let mut seen = std::vec::Vec::new();
+    for _ in 0..4 {
+        track.reach = zoom.reach();
+        seen.push((track.reach, marks_north(&filled(&track))));
+        zoom.observe_riding_at(6_500);
+    }
+    let (first, before) = &seen[0];
+    assert!(before.len() >= 3, "{first:?}: {before:?}");
+    for (reach, marks) in &seen[1..] {
+        assert!(marks.len() >= 3, "{reach:?}: {marks:?}");
+        for north in marks {
+            let moved = before.iter().map(|b| (b - north).abs()).fold(f32::MAX, f32::min);
+            assert!(moved < 2.0, "{reach:?}: {north} m moved {moved} m: {before:?}");
+        }
+    }
+}
+
 #[test]
 fn following_or_done_with_the_course_shows_no_marks() {
     let c = follower_course(&MOCKUP_COURSE);
-    assert_eq!(filled(&approach(&c)).mark_count, 0);
+    let waiting = waiting_to_join(&c, (0.0, -100.0), 0);
+    assert!(marks_north(&filled(&waiting)).len() >= 3);
+    let following = Track {
+        ahead: Some((c.len() - 1, Some((0.0, -100.0)))),
+        joinable: false,
+        ..waiting_to_join(&c, (0.0, -100.0), 0)
+    };
+    assert_eq!(marks_north(&filled(&following)), []);
     let done = Track {
         joinable: false,
         ..waiting_to_join(&c, (0.0, -100.0), 0)
     };
-    assert_eq!(filled(&done).mark_count, 0);
+    assert_eq!(marks_north(&filled(&done)), []);
 }
 
 #[test]

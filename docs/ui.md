@@ -204,9 +204,9 @@ does, so the cue reads at a glance.
 The summary's FTP offer uses two of them at once: Check beside ACT takes the
 suggested FTP, Back beside BACK keeps the one in force. END RIDE? uses three:
 Back, Check and, with a FILES store to note it on, Trash beside MOVE, which
-asks DISCARD RIDE?. DISCARD RIDE? and a saved ride's DELETE RIDE? put Trash
-beside ACT. A question with a back cue (END RIDE?, DISCARD RIDE?, the FTP
-offer, DELETE RIDE?) shows without the status bar, which would cut the cue.
+asks DISCARD RIDE?. DISCARD RIDE?, a saved ride's DELETE RIDE? and a boot's
+FORMAT STORAGE? ([volumes](mmc-volumes.md#format)) put Trash beside ACT. A question with a back cue (END RIDE?, DISCARD RIDE?, the FTP
+offer, DELETE RIDE?, FORMAT STORAGE?) shows without the status bar, which would cut the cue.
 
 Only Ready, the paused screen, End ride, Discard ride, the summary, a
 saved ride and a sensor's pages (its detail, FORGET SENSOR? and REPLACE

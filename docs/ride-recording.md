@@ -107,7 +107,7 @@ cycling ride-clear .local/exports/<export-id>
 ## Bulk MMC storage
 
 When the owned MMC partition from #108 is present and initialized, rides record
-there instead of internal flash. Each version-1 slot sits in its own 512-byte
+there instead of internal flash. Each slot sits in its own 512-byte
 sector container, so the export format is the same as for internal flash. The
 mechanism is [`sector_log`](../packages/services/src/sector_log.rs) and the
 VANA format is [ride/bulk.rs](../apps/vana/src/ride/bulk.rs).

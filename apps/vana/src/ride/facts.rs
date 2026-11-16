@@ -196,7 +196,8 @@ fn encode_slot(record: &Record, slot: &mut [u8]) {
     seal(slot);
 }
 
-/// A current slot, or `None` if damaged, empty or of another version.
+/// A current slot, or `None` if damaged, empty or of another version; a
+/// table holding a slot of another version is refused, never rewritten.
 pub fn decode_slot(slot: &[u8]) -> Option<Record> {
     if slot.len() != SLOT
         || slot[0] != VERSION
@@ -205,6 +206,10 @@ pub fn decode_slot(slot: &[u8]) -> Option<Record> {
         return None;
     }
     Some(decode_fields(slot))
+}
+
+fn foreign_slot(slot: &[u8]) -> bool {
+    slot.len() == SLOT && slot[0] != VERSION && crc32(&slot[..SLOT - 4]) == get_u32(slot, SLOT - 4)
 }
 
 /// The rides a whole table holds, oldest saved first, read as the firmware
@@ -406,6 +411,7 @@ fn rewrite(media: &mut impl ReadWrite, change: Change) -> Result<(), Error> {
     };
 
     let mut kept = 0;
+    let mut foreign = false;
     let mut dropped = table.is_some_and(|table| !table.sound);
     if let Some(table) = table {
         table.each(
@@ -416,6 +422,7 @@ fn rewrite(media: &mut impl ReadWrite, change: Change) -> Result<(), Error> {
             &mut bytes,
             |_, slot| {
                 if let Slot::Ride(slot) = slot {
+                    foreign |= foreign_slot(slot);
                     match change.keeps(slot) {
                         Some(_) => kept += 1,
                         None => dropped = true,
@@ -423,6 +430,9 @@ fn rewrite(media: &mut impl ReadWrite, change: Change) -> Result<(), Error> {
                 }
             },
         )?;
+    }
+    if foreign {
+        return Err(Error::Table);
     }
     let saved = match change {
         Change::Save(record) => Some(record),

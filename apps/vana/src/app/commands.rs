@@ -7,6 +7,7 @@
 use super::Runtime;
 use super::pace::Touched;
 use super::recording::{Medium, Request};
+use super::storage::{Health, Store};
 use crate::ride::control::Action;
 use crate::ride::log::{SLOT_SIZE, Slot, VERSION, transport_checksum};
 use crate::ride::recorder::Recorder;
@@ -70,6 +71,17 @@ impl Runtime {
             return self.radar_command(operation, now, output);
         }
         let stored = named.unwrap_or(Medium::Internal);
+        let erases = matches!(
+            (domain, operation, argument),
+            (Some("RIDE"), Some("INIT"), None) | (Some("RIDE"), Some("CLEAR"), Some("CONFIRM"))
+        );
+        let log = match stored {
+            Medium::Internal => Store::Internal,
+            Medium::Bulk => Store::Rides,
+        };
+        if erases && self.storage_health().of(log) == Health::Foreign {
+            return "FOREIGN";
+        }
         if (domain, operation, argument) == (Some("RIDE"), Some("CLEAR"), Some("CONFIRM")) {
             let Some(bound) = bound.and_then(|value| value.parse::<usize>().ok()) else {
                 return "INVALID";

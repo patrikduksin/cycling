@@ -368,9 +368,10 @@ impl Runtime {
     fn submit_ride(&mut self, action: Action, origin: Origin, now: u64) -> bool {
         self.ride.request = Request::Idle;
         let medium = self.ride.target(action);
-        let accepted = self.ride.submit(medium, |recorder, token| {
-            recorder.request(action, now, token)
-        });
+        let accepted = !self.owns_storage()
+            && self.ride.submit(medium, |recorder, token| {
+                recorder.request(action, now, token)
+            });
         if accepted
             && action == Action::Finish
             && self.navigation.page == Page::DiscardRide

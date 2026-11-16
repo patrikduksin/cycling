@@ -7,6 +7,7 @@ use vana::screens::workout::Page;
 
 const ACT: Button = Button::BottomRight;
 const BACK: Button = Button::TopLeft;
+const MOVE: Button = Button::BottomLeft;
 
 fn field<'a>(status: &'a str, name: &str) -> &'a str {
     status
@@ -270,4 +271,40 @@ fn a_wipe_that_fails_says_so_on_the_ready_page() {
     sim.expect_text("STORAGE NOT FORMATTED");
     sim.expect_text("OFF AND ON TO FORMAT");
     sim.checkpoint("the wipe failed");
+    for _ in 0..2 {
+        sim.press(ACT);
+        sim.advance(seconds(1));
+        assert_eq!(sim.device.sdk.page(), Page::Ready, "no ride opens");
+        assert!(!sim.device.sdk.recording());
+    }
+    sim.expect_text("STORAGE NOT READY");
+    assert_eq!(sim.command("RIDE START").0, "BUSY");
+}
+
+#[test]
+fn a_declined_offer_leaves_bests_and_a_ride_log_of_another_version_alone() {
+    let mut sim = device_with_foreign(
+        "format-declined-records",
+        &[Store::Records, Store::Internal],
+    );
+    let bests = sim.file("bests.dat");
+    let (_, journal) = flash(&mut sim);
+    wait_for_offer(&mut sim);
+    sim.press(BACK);
+    sim.skip_setup();
+    assert_eq!(sim.command("RIDE INTERNAL INIT").0, "FOREIGN");
+    assert_eq!(sim.command("RIDE CLEAR CONFIRM 1").0, "FOREIGN");
+    sim.home("SETTINGS");
+    sim.press(MOVE);
+    sim.press(MOVE);
+    sim.expect_field("BESTS", "NOT FORMATTED");
+    sim.press(ACT);
+    sim.expect_text("BESTS NOT FORMATTED");
+    sim.checkpoint("bests of another version");
+    sim.press(ACT);
+    sim.press(ACT);
+    sim.advance(seconds(1));
+    sim.expect_no_text("CLEAR BESTS?");
+    assert_eq!(sim.file("bests.dat"), bests, "the bests are kept");
+    assert_eq!(flash(&mut sim).1, journal, "the ride journal is kept");
 }

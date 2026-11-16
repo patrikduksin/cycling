@@ -612,9 +612,10 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Occupied data the recorder did not write: only FORMAT may erase it. A single torn first append (power lost during the first START
-    /// of a fresh or cleared journal) is the recorder's own and stays in place
-    /// as an occupied invalid slot.
+    /// Occupied data the recorder did not write: only FORMAT may erase it. A
+    /// single torn first append (power lost during the first START of a fresh
+    /// or cleared journal) is the recorder's own and stays in place as an
+    /// occupied invalid slot.
     pub fn unknown_data(&self) -> bool {
         self.valid_slots == 0
             && self.invalid_slots != 0

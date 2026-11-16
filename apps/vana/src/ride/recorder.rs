@@ -6,9 +6,10 @@
 //!
 //! Boot scans without erasing. Unknown occupied data reads foreign, and only
 //! FORMAT erases it, except one torn first append on an otherwise empty
-//! journal, which stays an occupied invalid slot. Start never reclaims space and needs room for one
-//! sample batch besides the terminal slot. A media failure stops mutation until inspection or
-//! reboot/rescan resolves an uncertain commit. Clear verifies each erased sector
+//! journal, which stays an occupied invalid slot. Start never reclaims space
+//! and needs room for one sample batch besides the terminal slot. A media
+//! failure stops mutation until inspection or reboot/rescan resolves an
+//! uncertain commit. Clear verifies each erased sector
 //! but is not atomic across power loss. Never retry a timed-out mutation blindly.
 //!
 //! Pause/finish freeze active duration when accepted, before flushing. Sampling
@@ -41,7 +42,6 @@ enum Pending {
     Clear(u32),
 }
 
-/// Why the recorder turned an initialize or clear down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {
     Foreign,

@@ -30,6 +30,8 @@ struct Nor {
     erased: u64,
     /// Cut power while erasing sector number `.0`, leaving it as `.1` says.
     erase_cut: Option<(u64, EraseTear)>,
+    /// Erase sector number `.0` as `.1` says, yet report success.
+    erase_lie: Option<(u64, EraseTear)>,
     /// An interrupted erase left old and erased bytes mixed, until a clear
     /// or initialize completes.
     torn_erase: bool,
@@ -49,6 +51,21 @@ enum EraseTear {
     Scattered(u64),
 }
 
+impl EraseTear {
+    fn apply(self, stored: &mut [u8]) {
+        match self {
+            Self::Old => {}
+            Self::Prefix(n) => stored[..n].fill(0xff),
+            Self::Scattered(seed) => {
+                let mut rng = Rng::new(seed);
+                for byte in stored.iter_mut().filter(|_| rng.one_in(2)) {
+                    *byte = 0xff;
+                }
+            }
+        }
+    }
+}
+
 impl Nor {
     fn blank(bytes: Vec<u8>) -> Self {
         Self {
@@ -57,6 +74,7 @@ impl Nor {
             cut: None,
             erased: 0,
             erase_cut: None,
+            erase_lie: None,
             torn_erase: false,
             off: false,
             used: 0,
@@ -117,22 +135,20 @@ impl RideStorage for Nor {
         if let Some((at, tear)) = self.erase_cut
             && at == self.erased
         {
-            match tear {
-                EraseTear::Old => {}
-                EraseTear::Prefix(n) => stored[..n].fill(0xff),
-                EraseTear::Scattered(seed) => {
-                    let mut rng = Rng::new(seed);
-                    for byte in stored.iter_mut().filter(|_| rng.one_in(2)) {
-                        *byte = 0xff;
-                    }
-                }
-            }
+            tear.apply(stored);
             self.erase_cut = None;
             self.torn_erase = true;
             self.off = true;
             return Err(());
         }
-        stored.fill(0xff);
+        match self.erase_lie {
+            Some((at, tear)) if at == self.erased => {
+                tear.apply(stored);
+                self.erase_lie = None;
+                self.torn_erase = true;
+            }
+            _ => stored.fill(0xff),
+        }
         self.erased += 1;
         Ok(())
     }
@@ -748,6 +764,31 @@ fn power_cut_during_the_format_wipe_keeps_foreign_data_until_it_finishes() {
         );
         scan(&mut rig);
         assert_eq!(rig.recorder.status(), Status::Ready, "seed {seed}");
+    }
+}
+
+#[test]
+fn an_erase_that_reports_success_over_programmed_bytes_fails_the_format_wipe() {
+    for seed in 0..CASES {
+        let mut rig = Rig::new(seed);
+        for byte in rig.probe.nor.bytes.iter_mut() {
+            *byte = rig.rng.byte() & 0x7f;
+        }
+        rig.probe.nor.used = SLOTS;
+        let sector = rig.rng.below(SECTORS as u64) as usize;
+        let tear = match rig.rng.below(3) {
+            0 => EraseTear::Old,
+            1 => EraseTear::Prefix(rig.rng.below(SECTOR_SIZE as u64) as usize),
+            _ => EraseTear::Scattered(rig.rng.next()),
+        };
+        rig.probe.nor.erase_lie = Some((sector as u64, tear));
+        let finished = (0..SECTORS).all(|index| wipe_sector(&mut rig.probe.nor, index));
+        assert!(!finished, "seed {seed}");
+        assert!(rig.probe.nor.erase_lie.is_none(), "seed {seed}");
+        for _ in 0..=SECTORS {
+            rig.service();
+        }
+        assert_eq!(rig.recorder.status(), Status::Foreign, "seed {seed}");
     }
 }
 

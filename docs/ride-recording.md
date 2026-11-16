@@ -133,7 +133,9 @@ cycling ride-clear --medium bulk .local/exports/<export-id>
   internal. START is refused while a ride is open on either medium,
   and answers `BUSY` while the FORMAT question is up. `STATUS` reads
   `state=foreign` over a log of another version, where `INIT` and `CLEAR`
-  answer `FOREIGN`; only FORMAT erases one. Bulk status adds `capacity`, `store`,
+  answer `FOREIGN`; only FORMAT erases one. On a foreign card
+  `RIDE BULK CLEAR CONFIRM` answers `STATE`, because the export check for a
+  recovered store runs first. Bulk status adds `capacity`, `store`,
   `generation`, `boot_reads` and `layout` (`volumes`, `blank`, `lost`
   or `foreign`).
 - The 1 GiB RIDES volume holds 2,097,136 records, about 2,330 h at 1 Hz, so the

@@ -2,6 +2,7 @@ use super::*;
 pub(crate) use crate::ride::course::nav::tests::{Said, ride_with};
 use crate::ride::course::tests::{at as point_at, empty};
 use crate::ride::course::{Builder, Course, east_per_e7, metres};
+use crate::testing::{Share, split_in_eight};
 use std::vec;
 use std::vec::Vec;
 
@@ -551,11 +552,11 @@ pub(crate) fn judge(said: &[(u32, Said)], degrees: f32) -> Verdict {
     }
 }
 
+split_in_eight!(a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all);
 /// Every exit of a roundabout, and hairpins, on a course thinned to fit:
 /// what is said is right, or nothing is. Turns found at upload name every
 /// hairpin a U-turn.
-#[test]
-fn a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all() {
+fn a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all(mut share: Share) {
     let mut silent = [Vec::new(), Vec::new()];
     let (mut runs, mut u_turns, mut hairpins) = (0, [0; 2], 0);
     // 0 m on is the course as drawn; after 12 or 150 km it is thinned.
@@ -564,6 +565,9 @@ fn a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all() {
             for curved in [false, true] {
                 for radius in [15.0, 20.0, 25.0, 30.0, 35.0, 40.0] {
                     for sweep in (3..=22).map(|k| k as f32 * 15.0) {
+                        if !share.takes() {
+                            continue;
+                        }
                         let drawn = match curved {
                             true => curved_ring(radius, sweep, spacing),
                             false => ring(radius, sweep, spacing),
@@ -588,6 +592,9 @@ fn a_thinned_course_names_its_roundabouts_and_hairpins_rightly_or_not_at_all() {
                 continue;
             }
             for radius in [20.0, 25.0, 30.0, 35.0, 40.0] {
+                if !share.takes() {
+                    continue;
+                }
                 hairpins += 1;
                 let each = heard_each(&hairpin(radius, spacing), after, 1_200.0);
                 for (k, said) in each.iter().enumerate() {
@@ -851,8 +858,8 @@ pub(crate) fn block(spacing: f32, apart: f32, kerb: f32, right: bool) -> Vec<(f3
     }
 }
 
-#[test]
-fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
+split_in_eight!(a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn);
+fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn(mut share: Share) {
     let (mut runs, mut silent) = (0, [0; 2]);
     // 0 km on is the course as drawn; after 12 or 150 km it is thinned.
     for after in [0.0, 12_000.0, 150_000.0] {
@@ -862,6 +869,9 @@ fn a_city_block_is_two_turns_the_way_they_go_and_never_a_u_turn() {
                     for apart in [
                         15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0, 70.0, 80.0,
                     ] {
+                        if !share.takes() {
+                            continue;
+                        }
                         runs += 1;
                         let side = if right { Side::Right } else { Side::Left };
                         let fits = |kind: Kind| match kind {
@@ -962,15 +972,18 @@ fn ride_corners(
     each
 }
 
+split_in_eight!(corners_of_either_way_close_together_are_named_the_way_they_go);
 /// Two to four street corners of either way, 15 to 80 m apart, drawn every
 /// 3, 5 or 8 m or only at the corners (a planner's route), as drawn and
 /// thinned: every warning names the next corner's way, or there is none.
-#[test]
-fn corners_of_either_way_close_together_are_named_the_way_they_go() {
+fn corners_of_either_way_close_together_are_named_the_way_they_go(mut share: Share) {
     let mut courses = Vec::new();
     for count in 2..=4usize {
         for ways in 0..1u32 << count {
             for apart in [15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 80.0] {
+                if !share.takes() {
+                    continue;
+                }
                 courses.push(
                     (0..count)
                         .map(|k| {

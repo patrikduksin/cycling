@@ -48,3 +48,62 @@ impl Draw for Rng {
         }
     }
 }
+
+/// One of a sweep's parts, split so nextest runs them on separate cores.
+pub(crate) struct Share {
+    k: usize,
+    seen: usize,
+}
+
+impl Share {
+    pub(crate) const fn new(k: usize) -> Self {
+        assert!(k < 8);
+        Self { k, seen: 0 }
+    }
+
+    pub(crate) fn takes(&mut self) -> bool {
+        self.seen += 1;
+        (self.seen - 1) % 8 == self.k
+    }
+}
+
+macro_rules! split_in_eight {
+    ($sweep:ident) => {
+        mod $sweep {
+            use $crate::testing::Share;
+            #[test]
+            fn share_0() {
+                super::$sweep(Share::new(0));
+            }
+            #[test]
+            fn share_1() {
+                super::$sweep(Share::new(1));
+            }
+            #[test]
+            fn share_2() {
+                super::$sweep(Share::new(2));
+            }
+            #[test]
+            fn share_3() {
+                super::$sweep(Share::new(3));
+            }
+            #[test]
+            fn share_4() {
+                super::$sweep(Share::new(4));
+            }
+            #[test]
+            fn share_5() {
+                super::$sweep(Share::new(5));
+            }
+            #[test]
+            fn share_6() {
+                super::$sweep(Share::new(6));
+            }
+            #[test]
+            fn share_7() {
+                super::$sweep(Share::new(7));
+            }
+        }
+    };
+}
+pub(crate) use split_in_eight;

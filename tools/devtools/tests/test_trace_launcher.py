@@ -184,7 +184,9 @@ class TraceLauncherTests(unittest.TestCase):
         commits.append(self.commit('v4'))
         self.run_trace(self.repo, 'summary')
         names = sorted(p.name for p in self.cache().iterdir())
-        self.assertEqual(names, sorted([f'.{first}.Fresh1', '.lock', first, *commits[2:]]), 'the oldest unused one goes')
+        self.assertEqual(
+            names, sorted([f'.{first}.Fresh1', '.lock', first, *commits[2:]]), 'the oldest unused one goes'
+        )
 
     @contextmanager
     def locked(self, path, how):

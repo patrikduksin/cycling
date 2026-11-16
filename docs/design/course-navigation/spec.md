@@ -6,7 +6,7 @@
 
 **Banner timing.** It appears when the turn is 300 m away, at any speed. It leaves 40 m past the turn, unless the next turn is inside its window.
 
-**Dense turns.** Turns under 300 m or 25 s apart are dense; the sign stays up through the cluster. It always shows one turn, the next one, and switches as the rider passes each.
+**Dense turns.** Turns under 340 m (the 300 m window plus the 40 m past a turn) or 25 s apart are dense; the sign stays up through the cluster. It always shows one turn, the next one, and switches as the rider passes each.
 
 **States.** Ink is always white, units included; the fill carries the state.
 

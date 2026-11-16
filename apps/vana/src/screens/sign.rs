@@ -68,7 +68,7 @@ const BANNER: Geometry = Geometry {
     }),
 };
 
-pub const BADGE_RADIUS: usize = 12;
+const BADGE_RADIUS: usize = 12;
 
 const BADGE: Geometry = Geometry {
     left: 8,

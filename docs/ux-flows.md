@@ -174,13 +174,14 @@ ahead is a wide blue route on a dark casing, the ridden part a thinner,
 dimmer blue, and a white arrow on the route marks the next turn's corner.
 The badge in the top-left corner shows the next turn and how far it is, at
 rest too; with a radar paired it sits 8 px right of the radar strip. It may
-cover the route, never the puck.
+cover the route, never the puck: straight up from the puck it covers from
+0.66 to 0.96 of the distance the map shows ahead, 184 to 267 m at 25 km/h,
+so a turn there can be under the badge.
 
 The map never pans or zooms to fit a turn or the route: its scale follows
 the speed. From the puck to the top edge it shows about 40 s of riding,
 never less than 150 m nor more than 1 km, so at 25 km/h it shows about
-280 m and a turn comes into view about when its warning sounds. A ride
-starts at 300 m. A change of speed eases the scale in over several seconds,
+280 m. A ride starts at 300 m. A change of speed eases the scale in over several seconds,
 never back and forth; stopped, slower than about 5 km/h, or paused, it holds.
 
 Off course, the badge turns amber, the puck's arrow turns amber, and up to

@@ -1,3 +1,4 @@
+mod arrow;
 mod pose;
 mod raster;
 
@@ -11,9 +12,10 @@ use crate::screens::chrome::{
 };
 use crate::screens::icons::PUCK;
 use crate::screens::workout::{Text, View};
+use arrow::{ARROW_OUTLINE_PX, ARROW_SHAFT_HALF_PX, ARROW_STROKES, arrow_shape};
 use firmware_shell::rendering::font::FOOT_20;
-use pose::{ARROW_OUTLINE_PX, ARROW_SHAFT_HALF_PX, ARROW_STROKES, Pose, Projection, arrow_shape};
 pub use pose::{GROUND, Reach, Zoom};
+use pose::{Pose, Projection};
 use raster::{Cover, Stroke, Triangle};
 
 type Point = (f32, f32);

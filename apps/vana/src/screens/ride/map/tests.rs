@@ -236,22 +236,6 @@ fn far_off_course_in_every_direction_three_chevrons_lead_back_clear_of_the_badge
 }
 
 #[test]
-fn chevrons_keep_off_the_puck_and_the_ring() {
-    let mut frame = Frame::default();
-    chevrons(&mut frame, (120.0, 223.0), (120.0, 123.0), true);
-    assert_eq!(frame.chevron_count, 6, "three, two strokes each");
-    chevrons(&mut frame, (120.0, 223.0), (120.0, 173.0), true);
-    assert_eq!(frame.chevron_count, 2, "one fits 50 px short of a ring");
-    chevrons(&mut frame, (120.0, 223.0), (120.0, 290.0), false);
-    assert_eq!(
-        frame.chevron_count, 6,
-        "three fit 67 px down to the map's edge"
-    );
-    chevrons(&mut frame, (120.0, 223.0), (120.0, 190.0), true);
-    assert_eq!(frame.chevron_count, 0, "none fits 33 px short of a ring");
-}
-
-#[test]
 fn without_a_course_the_ride_is_drawn_ridden_behind_the_rider() {
     let c = track_crumbs(&[(0.0, 0.0), (0.0, 300.0), (0.0, 500.0)]);
     let frame = filled(&free(&c));

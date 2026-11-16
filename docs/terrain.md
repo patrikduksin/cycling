@@ -131,7 +131,10 @@ and keeps downloads and national packs in the ignored `.local/terrain`:
    - It checks that every portal has a twin at the same elevation.
 
 The sample pack (`--sample`, Farellones and route G-21, 92 KB) and a G-21
-track are committed under `packages/terrain/tests/data` for tests.
+track are committed under `packages/terrain/tests/data` for tests. So are
+the 3 × 3 tiles around Plaza de Armas (`santiago-centro.terrain`, 180 KB,
+the densest roads a map draws) and a synthetic course along its streets,
+written by `cycling terrain course` (see that folder's README).
 
 ## Pack format (v2)
 
@@ -288,6 +291,9 @@ A prediction that meets an absent tile returns its key. The engine loads it
 over the next calls and restarts. Predictions run every 2 s, or sooner when
 the match changes.
 
+With none of that due, a step loads one chunk of a tile a map has asked for
+(below).
+
 VANA calls `step` once per main-loop pass, after the ride tick, so the
 look-ahead never blocks a frame. On the sample ride a fix needs at most about
 25 steps.
@@ -296,6 +302,83 @@ The device finds the ready pack in the `TERRAIN` volume, through
 `volume::open` and `pack::open`. It looks at the volume again every 10 s. A
 new, rewritten or removed pack resets the engine, as does a pack the engine
 gave up on after read errors.
+
+### Roads for the map
+
+The map page draws the cached tiles' roads. `packages/terrain/src/roads.rs`
+keeps the tile records private; callers see:
+
+- `Header::tiles_under(corners)`: the tiles a convex view (four
+  `(lat_e7, lon_e7)` corners, as a rectangle turned to the heading) touches;
+- `Lookahead::want(keys)`: up to 16 tiles the map would like, replacing its
+  last request. `step` loads them one chunk at a time, and only when no
+  tile the matcher or predictor needs, no match and no prediction is due,
+  so the map never delays the climb forecast. Map and look-ahead tiles share
+  the one LRU arena;
+- `Lookahead::roads(key)`: a cached tile's roads, `None` until it is cached.
+  Each `Road` has a `RoadClass` (unknown class bytes read as `Path`; trunk,
+  primary and secondary are `major`), its flags and its points, absolute
+  `(lat_e7, lon_e7)` from the first node through the shape to the last.
+
+Reading every road of the densest central-Santiago tile (848 edges, 1,858
+points) takes about 23 µs on the development laptop
+(`tests/santiago.rs`, `extraction_cost_per_tile`). That is a host figure;
+the device cost is measured in the map's own extraction.
+
+The map (`apps/vana/src/screens/ride/map/roads.rs`) asks only for the tiles
+of its view, a quarter wider each way, that it does not yet hold at its
+scale's detail, and copies one cached tile a look-ahead pass into a road
+cache in its own PSRAM block. The tiles on the screen come first, so the
+margin never crowds one out of the 16. The cache is heading-free: points
+stay tile-local micro-degrees and each tile keeps its corner in the ride's
+frame, so a fix only projects them. It holds the roads of one reading of
+the pack (`Lookahead::pack`): a reset for a new, rewritten or removed pack
+lets them all go. It holds 16 tiles, 4,096 roads and 8,192 points; a tile
+that does not fit keeps its major roads, and STATUS `map_cuts` counts
+it. Each copy:
+
+- keeps the classes the map's scale draws: every road up to about 530 m
+  ahead (about 48 km/h), and no service roads, tracks or paths further out.
+  The detail changes only 30 m past that, at 560 m ahead going out and
+  500 m coming in, so speed noise near 48 km/h does not swap it on every
+  fix;
+- joins a road to the last of its class when it starts where that one
+  ended, so a street of many blocks is one polyline;
+- simplifies it so no point strays more than half a pixel at the closest
+  scale its detail is drawn at, which keeps hairpins.
+
+The nine Santiago fixture tiles take 2,530 roads and 6,077 points at the
+town detail; every street does not fit them whole. The ignored
+`densest_views_of_central_santiago` prints how much road each scale's view
+of the fixture draws over a grid of places and headings, and the densest
+view of each scale; run it with
+`cargo test -p vana --release --lib densest -- --ignored --nocapture`. Each fill rasterises the roads
+once onto a 4-bit layer of the ground (two bits of coverage a class a
+pixel), and a frame paints the ground and roads from it by table.
+
+On the device, riding the fixture course in the light look (5 s health
+windows with `build.sh scripted-gnss`), the map with roads sends a frame in
+31 ms at the median window's slowest (p95 44 ms) against 35 ms (p95 54 ms)
+for the map before roads: the roads cost less than the map work this
+change sped up, but the map page is still over its 25 ms frame budget. A
+road extraction takes up to 10 ms of its look-ahead pass, and a map fill
+with roads up to 48 ms.
+
+To measure it again:
+
+1. Build `bash devices/c606/build.sh scripted-gnss` and flash it with
+   `cycling device flash-image`. Its receiver rides the fixture course from
+   Plaza de Armas after a two-minute hold, then 1.6 km off it, so the map
+   also shows the way back to a junction far behind, at its widest step.
+2. Put the fixture course's `course.dat` (the simulator writes it after an
+   upload) on the card with `cycling files put course.dat <path>`, and
+   restart.
+3. Within the hold, `RIDE START` and page to the map.
+4. Read STATUS (`display_frame_*`, `map_fill_max_us`,
+   `map_extract_max_us`, `map_cuts`), discard the ride, and pull the trace: its health
+   windows hold the frame mean and max, and its `vana.present.map_fill`
+   and `look_ahead.map_extract` stages the map's work.
+5. Delete the course files and flash the rider's firmware back.
 
 ### Climbs ahead
 
@@ -368,7 +451,13 @@ The device validation in the integration PR covers frame time against the
   - no pack or off the map;
   - a corrupt tile.
 
-  Cache paging has its own unit test.
+  Cache paging has its own unit test. The road API has tests for a road's
+  points, the class bytes, a map's tiles waiting for the forecast, and the
+  tiles under a turned view.
+- `packages/terrain/tests/santiago.rs` reads every road of the central
+  Santiago pack and checks each stays inside its tile. Its ignored
+  `extraction_cost_per_tile` prints the host cost per tile; run it with
+  `cargo test -p terrain --release --test santiago -- --ignored --nocapture`.
 - `packages/terrain/tests/sample.rs` rides G-21 up to Farellones at 5 m/s with
   wandering GPS noise. It checks:
   - more than 98% of fixes match G-21;

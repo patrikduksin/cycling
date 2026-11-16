@@ -83,6 +83,17 @@ def test_real_roads_are_excused_but_other_colours_on_the_ground_are_not():
     assert any('#101012' in f for f in failures('map-approach', actual))
 
 
+def test_the_blended_edge_of_a_road_past_the_screen_edge_is_excused():
+    actual = rendered('map-approach')
+    draw = ImageDraw.Draw(actual)
+    edge = sorted(mockup.mixes((0x44, 0x44, 0x48), mockup.GROUND))[3]
+    eight_bit = (edge[0] << 3, edge[1] << 2, edge[2] << 3)
+    draw.line([(238, 150), (238, 160)], fill=eight_bit, width=3)
+    assert failures('map-approach', actual) == []
+    draw.line([(238, 240), (238, 250)], fill=(0x30, 0x10, 0x10), width=3)
+    assert any('#101012' in f for f in failures('map-approach', actual))
+
+
 def test_an_element_with_several_paints_must_be_named(tmp_path, monkeypatch):
     monkeypatch.setattr(mockup, 'MOCKUPS', tmp_path)
     (tmp_path / 'box.svg').write_text(

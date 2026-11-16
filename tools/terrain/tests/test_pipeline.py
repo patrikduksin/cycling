@@ -1,11 +1,12 @@
 """The builder's rules on small inputs, and the committed sample pack."""
 
+import itertools
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from cycling_terrain import osm, pack, trace
+from cycling_terrain import course, osm, pack, trace
 from cycling_terrain.graph import Edge, Grid, _cut_segment, cut_into_tiles, distinct_positions, simplify, smooth
 
 SAMPLE = Path(__file__).resolve().parents[3] / 'packages/terrain/tests/data/farellones.terrain'
@@ -164,3 +165,55 @@ def test_trace_rides_oneways_forwards_and_goes_uphill():
     road = trace.road(pack.encode_pack(cut_into_tiles(roads, grid), 'a', 'b', 0), 'G-2')
     assert road[0][2] < road[-1][2]
     assert max(lat for lat, _, _ in road) == south + 3_000
+
+
+def test_a_course_stops_rather_than_ride_a_street_twice_or_a_oneway_backwards():
+    grid = Grid.around(-33.4, -70.5, -33.39, -70.49, TILE)
+    a, b, c = ((grid.south + 5_000, grid.west + 2_000 + k * 4_000, 500.0) for k in range(3))
+    streets = [edge([a, b], road_class=osm.RESIDENTIAL), edge([c, b], road_class=osm.RESIDENTIAL, flags=osm.ONEWAY)]
+    blob = pack.encode_pack(cut_into_tiles(streets, grid), 'a', 'b', 0)
+    points = course.walk(blob, (a[0] / 1e6, a[1] / 1e6), 5_000)
+    assert [p[:2] for p in points] == [a[:2], b[:2]]
+
+
+def test_a_course_follows_streets_and_turns_where_it_could_go_straight_on():
+    grid = Grid.around(-33.4, -70.5, -33.37, -70.47, TILE)
+    south, west = grid.south + 2_000, grid.west + 2_000
+    step_lat, step_lon = 3_600, 4_300
+    streets = []
+    for i in range(5):
+        for j in range(4):
+            streets.append(
+                edge(
+                    [
+                        (south + i * step_lat, west + j * step_lon, 500.0),
+                        (south + i * step_lat, west + (j + 1) * step_lon, 500.0),
+                    ],
+                    road_class=osm.RESIDENTIAL,
+                )
+            )
+            streets.append(
+                edge(
+                    [
+                        (south + j * step_lat, west + i * step_lon, 500.0),
+                        (south + (j + 1) * step_lat, west + i * step_lon, 500.0),
+                    ],
+                    road_class=osm.RESIDENTIAL,
+                )
+            )
+    blob = pack.encode_pack(cut_into_tiles(streets, grid), 'a', 'b', 0)
+    start = ((south + step_lat) / 1e6, (west + step_lon) / 1e6)
+    points = course.walk(blob, start, 4_000, seed=3, leg=(300, 500))
+    assert course.walk(blob, start, 4_000, seed=3, leg=(300, 500)) == points
+
+    pieces = {(a[:2], b[:2]) for road in course.roads(blob) for a, b in itertools.pairwise(road.points)}
+    steps = [(a[:2], b[:2]) for a, b in itertools.pairwise(points)]
+    assert all(step in pieces or step[::-1] in pieces for step in steps)
+    assert sum(course._metres(a, b) for a, b in itertools.pairwise(points)) >= 4_000
+    interior = {(south + i * step_lat, west + j * step_lon) for i in range(1, 4) for j in range(1, 4)}
+    turns = [
+        here
+        for (start, here), (_, end) in itertools.pairwise(steps)
+        if here in interior and course._turn(course._bearing([start, here]), course._bearing([here, end])) > 45
+    ]
+    assert turns

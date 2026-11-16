@@ -1,21 +1,38 @@
 use crate::screens::chrome::{Row, WIDTH, blend};
-use libm::sqrtf;
 
 pub type Point = (f32, f32);
 
-/// A segment in screen pixels, with its inverse length kept for the rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stroke {
     pub a: Point,
     pub b: Point,
-    inverse: f32,
+    length: f32,
+    along: Point,
+    per_along: Point,
+    per_length_squared: f32,
 }
 
 impl Stroke {
     pub fn new(a: Point, b: Point) -> Self {
-        let length = sqrtf((b.0 - a.0) * (b.0 - a.0) + (b.1 - a.1) * (b.1 - a.1));
-        let inverse = if length > 0.0 { 1.0 / length } else { 0.0 };
-        Self { a, b, inverse }
+        let squared = (b.0 - a.0) * (b.0 - a.0) + (b.1 - a.1) * (b.1 - a.1);
+        let length = root(squared);
+        if length <= 0.0 {
+            return Self {
+                a,
+                b,
+                ..Self::default()
+            };
+        }
+        let along = ((b.0 - a.0) / length, (b.1 - a.1) / length);
+        let reciprocal = |k: f32| if k.abs() < 1e-6 { 0.0 } else { 1.0 / k };
+        Self {
+            a,
+            b,
+            length,
+            along,
+            per_along: (reciprocal(along.0), reciprocal(along.1)),
+            per_length_squared: 1.0 / squared,
+        }
     }
 
     /// Rows `half` reaches, edges included.
@@ -32,20 +49,16 @@ impl Stroke {
         for (cx, cy) in [self.a, self.b] {
             let chord = radius * radius - (y - cy) * (y - cy);
             if chord >= 0.0 {
-                let chord = sqrtf(chord);
+                let chord = root(chord);
                 left = left.min(cx - chord);
                 right = right.max(cx + chord);
             }
         }
-        if self.inverse > 0.0 {
-            let (tx, ty) = (
-                (self.b.0 - self.a.0) * self.inverse,
-                (self.b.1 - self.a.1) * self.inverse,
-            );
-            let length = 1.0 / self.inverse;
+        if self.length > 0.0 {
+            let ((tx, ty), (per_tx, per_ty)) = (self.along, self.per_along);
             let v = y - self.a.1;
-            let side = solve_interval(-ty, tx * v, -radius, radius);
-            let along = solve_interval(tx, ty * v, 0.0, length);
+            let side = solve_interval(-ty, -per_ty, tx * v, -radius, radius);
+            let along = solve_interval(tx, per_tx, ty * v, 0.0, self.length);
             if let (Some(side), Some(along)) = (side, along) {
                 let (from, to) = (side.0.max(along.0), side.1.min(along.1));
                 if from <= to {
@@ -58,14 +71,25 @@ impl Stroke {
     }
 }
 
-fn solve_interval(k: f32, c: f32, low: f32, high: f32) -> Option<(f32, f32)> {
+fn solve_interval(k: f32, per_k: f32, c: f32, low: f32, high: f32) -> Option<(f32, f32)> {
     if k.abs() < 1e-6 {
         return (low..=high)
             .contains(&c)
             .then_some((f32::NEG_INFINITY, f32::INFINITY));
     }
-    let (p, q) = ((low - c) / k, (high - c) / k);
+    let (p, q) = ((low - c) * per_k, (high - c) * per_k);
     Some((p.min(q), p.max(q)))
+}
+
+fn root(x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let mut r = f32::from_bits(0x5f37_59df - (x.to_bits() >> 1));
+    for _ in 0..3 {
+        r *= 1.5 - 0.5 * x * r * r;
+    }
+    x * r
 }
 
 fn centre_columns((left, right): (f32, f32)) -> (i32, i32) {
@@ -83,44 +107,72 @@ pub fn coverage(stroke: &Stroke, half: f32, x: usize, y: usize) -> u8 {
     let (a, b) = (stroke.a, stroke.b);
     let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let length = dx * dx + dy * dy;
-    let t = if length > 0.0 {
-        (((px - a.0) * dx + (py - a.1) * dy) / length).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+    let t = (((px - a.0) * dx + (py - a.1) * dy) * stroke.per_length_squared).clamp(0.0, 1.0);
     let (qx, qy) = (a.0 + t * dx - px, a.1 + t * dy - py);
     let reach = half + 0.5;
     let near = qx * qx + qy * qy;
     if near >= reach * reach {
         return 0;
     }
-    ((reach - sqrtf(near)).clamp(0.0, 1.0) * 15.0 + 0.5) as u8
+    ((reach - root(near)).clamp(0.0, 1.0) * 15.0 + 0.5) as u8
 }
 
 /// A filled triangle, wound either way.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Triangle(pub [Point; 3]);
+pub struct Triangle {
+    corners: [Point; 3],
+    edges: [Edge; 3],
+    strokes: [Stroke; 3],
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Edge {
+    from: Point,
+    run: Point,
+    sign: f32,
+    k: f32,
+    per_k: f32,
+}
 
 impl Triangle {
-    fn edges(&self) -> [(Point, Point); 3] {
-        let [p, q, r] = self.0;
-        [(p, q), (q, r), (r, p)]
+    pub fn new(corners: [Point; 3]) -> Self {
+        let [p, q, r] = corners;
+        let cross = (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
+        let sign = if cross < 0.0 { -1.0 } else { 1.0 };
+        let sides = [(p, q), (q, r), (r, p)];
+        Self {
+            corners,
+            edges: sides.map(|(from, to)| {
+                let run = (to.0 - from.0, to.1 - from.1);
+                let k = -sign * run.1;
+                Edge {
+                    from,
+                    run,
+                    sign,
+                    k,
+                    per_k: if k.abs() < 1e-6 { 0.0 } else { 1.0 / k },
+                }
+            }),
+            strokes: sides.map(|(from, to)| Stroke::new(from, to)),
+        }
     }
 
-    fn winding(&self) -> f32 {
-        let [p, q, r] = self.0;
-        let cross = (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
-        if cross < 0.0 { -1.0 } else { 1.0 }
+    pub fn corners(&self) -> &[Point; 3] {
+        &self.corners
     }
 
     fn row_interval(&self, y: f32) -> Option<(f32, f32)> {
-        let sign = self.winding();
         let (mut left, mut right) = (f32::NEG_INFINITY, f32::INFINITY);
-        for (p, q) in self.edges() {
-            let k = -sign * (q.1 - p.1);
-            let c = sign * ((q.0 - p.0) * (y - p.1) + (q.1 - p.1) * p.0);
-            let (from, to) = solve_interval(k, c, 0.0, f32::INFINITY)?;
+        for Edge {
+            from: p,
+            run,
+            sign,
+            k,
+            per_k,
+        } in self.edges
+        {
+            let c = sign * (run.0 * (y - p.1) + run.1 * p.0);
+            let (from, to) = solve_interval(k, per_k, c, 0.0, f32::INFINITY)?;
             left = left.max(from);
             right = right.min(to);
         }
@@ -138,11 +190,204 @@ impl Triangle {
         if self.contains(x as f32 + 0.5, y as f32 + 0.5) {
             return 15;
         }
-        self.edges()
-            .into_iter()
-            .map(|(p, q)| coverage(&Stroke::new(p, q), outline, x, y))
+        self.strokes
+            .iter()
+            .map(|stroke| coverage(stroke, outline, x, y))
             .max()
             .unwrap_or(0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Bar {
+    top: f32,
+    bottom: f32,
+    slabs: [Slab; 2],
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Slab {
+    centre: f32,
+    slope: f32,
+    half: f32,
+}
+
+impl Slab {
+    fn new(k: Point, c: Point, half: f32) -> Self {
+        if k.0.abs() < 1e-4 {
+            return Self {
+                centre: 0.0,
+                slope: 0.0,
+                half: f32::INFINITY,
+            };
+        }
+        let per = 1.0 / k.0;
+        let ratio = k.1 * per;
+        Self {
+            centre: c.0 + ratio * c.1,
+            slope: -ratio,
+            half: half * per.abs(),
+        }
+    }
+}
+
+impl Bar {
+    pub fn new(a: Point, b: Point, half: f32) -> Self {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let length = root(dx * dx + dy * dy);
+        let u = if length > 1e-3 {
+            let per = 1.0 / length;
+            (dx * per, dy * per)
+        } else {
+            (1.0, 0.0)
+        };
+        let c = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+        let along = length / 2.0 + half;
+        let reach = u.1.abs() * along + u.0.abs() * half;
+        Self {
+            top: c.1 - reach,
+            bottom: c.1 + reach,
+            slabs: [Slab::new((-u.1, u.0), c, half), Slab::new(u, c, along)],
+        }
+    }
+
+    fn across(&self, y: f32) -> Option<(f32, f32)> {
+        if y < self.top || y > self.bottom {
+            return None;
+        }
+        let [p, q] = self.slabs;
+        let (pc, qc) = (p.centre + p.slope * y, q.centre + q.slope * y);
+        let left = (pc - p.half).max(qc - q.half);
+        let right = (pc + p.half).min(qc + q.half);
+        (left < right).then_some((left, right))
+    }
+
+    #[cfg(test)]
+    pub fn share(&self, x: usize, y: usize) -> f32 {
+        self.across(y as f32 + 0.5).map_or(0.0, |(left, right)| {
+            (right.min(x as f32 + 1.0) - left.max(x as f32)).clamp(0.0, 1.0)
+        })
+    }
+}
+
+fn quarter_steps(share: f32) -> u8 {
+    (share * 3.0 + 0.5) as u8
+}
+
+#[derive(Clone)]
+pub struct Layer<const ROWS: usize> {
+    top: usize,
+    pairs: [[u8; WIDTH / 2]; ROWS],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    Minor,
+    Major,
+}
+
+impl Class {
+    const fn shift(self) -> u32 {
+        match self {
+            Self::Minor => 0,
+            Self::Major => 2,
+        }
+    }
+}
+
+pub fn pairs(ground: u16, minor: u16, major: u16) -> [[u16; 2]; 256] {
+    let colour = |nibble: u8| {
+        let step = |shift: u32| (nibble >> shift & 3) * 5;
+        blend(major, blend(minor, ground, step(0)), step(2))
+    };
+    core::array::from_fn(|byte| [colour(byte as u8 & 0xf), colour(byte as u8 >> 4)])
+}
+
+impl<const ROWS: usize> Layer<ROWS> {
+    pub fn new(top: usize) -> Self {
+        Self {
+            top,
+            pairs: [[0; WIDTH / 2]; ROWS],
+        }
+    }
+
+    pub fn clear(&mut self, top: usize) {
+        self.top = top;
+        for pairs in &mut self.pairs {
+            pairs.fill(0);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn nibble(&self, x: usize, y: usize) -> u8 {
+        let Some(pairs) = y.checked_sub(self.top).and_then(|r| self.pairs.get(r)) else {
+            return 0;
+        };
+        pairs[x / 2] >> (4 * (x % 2)) & 0xf
+    }
+
+    pub fn add(&mut self, bar: &Bar, class: Class) {
+        let first = (bar.top - 0.5).max(self.top as f32);
+        let last = (bar.bottom - 0.5).min((self.top + ROWS) as f32 - 1.0);
+        if first > last {
+            return;
+        }
+        let shift = class.shift();
+        for y in libm::ceilf(first) as usize..=last as usize {
+            let Some((left, right)) = bar.across(y as f32 + 0.5) else {
+                continue;
+            };
+            let (left, right) = (left.max(0.0), right.min(WIDTH as f32));
+            if left >= right {
+                continue;
+            }
+            let pairs = &mut self.pairs[y - self.top];
+            let (first, last) = (left as usize, libm::ceilf(right) as usize - 1);
+            let mut raise = |x: usize, steps: u8| {
+                let at = 4 * (x % 2) as u32 + shift;
+                let pair = &mut pairs[x / 2];
+                if steps > (*pair >> at & 3) {
+                    *pair = (*pair & !(3 << at)) | steps << at;
+                }
+            };
+            let share = |x: usize| right.min(x as f32 + 1.0) - left.max(x as f32);
+            raise(first, quarter_steps(share(first)));
+            if last > first {
+                for x in first + 1..last {
+                    raise(x, 3);
+                }
+                raise(last, quarter_steps(share(last)));
+            }
+        }
+    }
+
+    pub fn paint(&self, row: &mut Row, pairs: &[[u16; 2]; 256]) {
+        let Some(bytes) = row
+            .y()
+            .checked_sub(self.top)
+            .and_then(|r| self.pairs.get(r))
+        else {
+            return;
+        };
+        let clip = row.clip();
+        let (first, end) = (clip.start, clip.end.min(WIDTH));
+        if first >= end {
+            return;
+        }
+        let pixels = row.pixels_mut();
+        let (whole_from, whole_to) = (first.div_ceil(2), end / 2);
+        if whole_from < whole_to {
+            let (chunks, _) = pixels[2 * whole_from..2 * whole_to].as_chunks_mut::<2>();
+            for (chunk, &byte) in chunks.iter_mut().zip(&bytes[whole_from..whole_to]) {
+                *chunk = pairs[usize::from(byte)];
+            }
+        }
+        if first % 2 == 1 {
+            pixels[first] = pairs[usize::from(bytes[first / 2])][1];
+        }
+        if end % 2 == 1 {
+            pixels[end - 1] = pairs[usize::from(bytes[end / 2])][0];
+        }
     }
 }
 
@@ -210,7 +455,7 @@ impl Cover {
 
     /// Add a triangle with its edges stroked by `outline`.
     pub fn triangle(&mut self, triangle: &Triangle, outline: f32) {
-        let ys = triangle.0.map(|p| p.1);
+        let ys = triangle.corners.map(|p| p.1);
         let y = self.y as f32 + 0.5;
         let reach = outline + 0.5;
         if y < ys[0].min(ys[1]).min(ys[2]) - reach || y > ys[0].max(ys[1]).max(ys[2]) + reach {
@@ -223,8 +468,8 @@ impl Cover {
                 self.solid(inside);
             }
         }
-        for (p, q) in triangle.edges() {
-            self.stroke(&Stroke::new(p, q), outline);
+        for stroke in &triangle.strokes {
+            self.stroke(stroke, outline);
         }
     }
 
@@ -322,6 +567,138 @@ mod tests {
     }
 
     #[test]
+    fn a_layer_holds_each_class_s_largest_share_of_a_pixel_in_four_steps() {
+        let mut random = SeededStrokes(11);
+        let mut layer = std::boxed::Box::new(Layer::<40>::new(5));
+        for case in 0..300 {
+            let half = [2.5, 4.5][case % 2];
+            let class = [Class::Minor, Class::Major][case / 2 % 2];
+            let bars: std::vec::Vec<Bar> = (0..3)
+                .map(|_| {
+                    let (a, b) = match case % 4 {
+                        0 => {
+                            let a = random.point();
+                            (a, (a.0, a.1 + random.next() * 30.0))
+                        }
+                        1 => {
+                            let a = random.point();
+                            (a, (a.0 + random.next() * 90.0, a.1))
+                        }
+                        2 => {
+                            let a = random.point();
+                            (a, a)
+                        }
+                        _ => (random.point(), random.point()),
+                    };
+                    Bar::new(a, b, half)
+                })
+                .collect();
+            layer.clear(5);
+            for bar in &bars {
+                layer.add(bar, class);
+            }
+            for y in 0..50 {
+                for x in 0..WIDTH {
+                    let share = bars.iter().map(|bar| bar.share(x, y)).fold(0.0, f32::max);
+                    let want = if (5..45).contains(&y) {
+                        quarter_steps(share)
+                    } else {
+                        0
+                    };
+                    let got = layer.nibble(x, y) >> class.shift() & 3;
+                    assert_eq!(got, want, "case {case} at {x},{y}: share {share}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_bar_ends_square_and_a_diagonal_one_spans_its_slant() {
+        let bar = Bar::new((100.0, 10.0), (100.0, 40.0), 4.5);
+        let row = |y: usize| {
+            (0..WIDTH)
+                .map(|x| quarter_steps(bar.share(x, y)))
+                .collect::<std::vec::Vec<_>>()
+        };
+        assert_eq!(&row(25)[95..106], &[2, 3, 3, 3, 3, 3, 3, 3, 3, 2, 0][..]);
+        assert_eq!(
+            row(44)[95..106],
+            row(25)[95..106],
+            "square past the end, not round"
+        );
+        assert!(row(46).iter().all(|&c| c == 0));
+        let diagonal = Bar::new((0.0, 0.0), (30.0, 30.0), 2.5);
+        let width = (0..WIDTH).filter(|&x| diagonal.share(x, 15) > 0.0).count();
+        assert!(
+            (7..=9).contains(&width),
+            "a 5 px road at 45° spans 5√2 columns: {width}"
+        );
+    }
+
+    fn pixels_of(layer: &Layer<20>, y: usize, pairs: &[[u16; 2]; 256]) -> [u16; WIDTH] {
+        core::array::from_fn(|x| pairs[usize::from(layer.nibble(x, y))][0])
+    }
+
+    #[test]
+    fn a_clip_of_any_width_and_parity_paints_just_its_columns() {
+        let mut layer = std::boxed::Box::new(Layer::<1>::new(0));
+        layer.add(&Bar::new((4.0, -5.0), (4.0, 5.0), 1.2), Class::Major);
+        let pairs = pairs(0x1082, 0x2945, 0x4229);
+        let mut whole = [0x1234u16; WIDTH];
+        layer.paint(&mut Row::new(0, &mut whole), &pairs);
+        for start in 0..6 {
+            for width in 1..4 {
+                let clip = start..start + width;
+                let mut pixels = [0x1234u16; WIDTH];
+                layer.paint(&mut Row::new(0, &mut pixels).within(clip.clone()), &pairs);
+                for x in 0..WIDTH {
+                    let expected = if clip.contains(&x) { whole[x] } else { 0x1234 };
+                    assert_eq!(pixels[x], expected, "column {x} of clip {clip:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_layer_paints_its_ground_and_roads_from_the_palette() {
+        let mut layer = std::boxed::Box::new(Layer::<20>::new(20));
+        layer.add(&Bar::new((50.0, 0.0), (50.0, 40.0), 2.5), Class::Minor);
+        layer.add(&Bar::new((0.0, 25.0), (240.0, 25.0), 4.5), Class::Major);
+        let pairs = pairs(0x1082, 0x2945, 0x4229);
+        let mut pixels = [0x1234u16; WIDTH];
+        layer.paint(&mut Row::new(35, &mut pixels), &pairs);
+        assert_eq!((pixels[10], pixels[50]), (0x1082, 0x2945));
+        assert_eq!(
+            pixels[47], pairs[2][0],
+            "an edge half covered rounds to two steps"
+        );
+        assert_eq!(pixels, pixels_of(&layer, 35, &pairs));
+        let mut clipped = [0x1234u16; WIDTH];
+        layer.paint(&mut Row::new(35, &mut clipped).within(29..48), &pairs);
+        assert_eq!(clipped[28], 0x1234, "left of the clip is left alone");
+        assert_eq!(&clipped[29..48], &pixels[29..48]);
+        layer.paint(&mut Row::new(25, &mut pixels), &pairs);
+        assert_eq!(pixels[50], 0x4229, "a major road over a minor one");
+        let mut outside = [0x1234u16; WIDTH];
+        layer.paint(&mut Row::new(40, &mut outside), &pairs);
+        assert!(
+            outside.iter().all(|&p| p == 0x1234),
+            "rows past the layer are left alone"
+        );
+    }
+
+    #[test]
+    fn the_multiply_only_root_matches_the_square_root() {
+        let mut x = 1e-4f32;
+        while x < 1e5 {
+            let (got, want) = (root(x), libm::sqrtf(x));
+            assert!((got - want).abs() <= want * 1e-6, "{x}: {got} for {want}");
+            x *= 1.013;
+        }
+        assert_eq!(root(0.0), 0.0);
+    }
+
+    #[test]
     fn a_wide_stroke_is_solid_inside_and_round_at_its_caps() {
         let stroke = Stroke::new((100.0, 10.0), (100.0, 40.0));
         let solid = |y| {
@@ -340,7 +717,7 @@ mod tests {
 
     #[test]
     fn a_triangle_fills_inside_and_strokes_its_edges() {
-        let head = Triangle([(106.4, 17.1), (96.0, 25.1), (95.8, 9.4)]);
+        let head = Triangle::new([(106.4, 17.1), (96.0, 25.1), (95.8, 9.4)]);
         for y in 5..30 {
             let mut cover = Cover::new(y);
             cover.triangle(&head, 0.5);

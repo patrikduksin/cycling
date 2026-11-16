@@ -103,7 +103,7 @@ pub struct Frame {
 }
 
 impl Frame {
-    fn at((lat, lon): (i32, i32)) -> Self {
+    pub(crate) fn at((lat, lon): (i32, i32)) -> Self {
         Self {
             origin: (lat, lon),
             east_per_e7: east_per_e7(lat),
@@ -124,6 +124,20 @@ impl Frame {
             east as f32 * self.east_per_e7,
             (i64::from(lat) - i64::from(lat0)) as f32 * M_PER_E7,
         )
+    }
+
+    /// The `(lat_e7, lon_e7)` that `place` puts at `(east, north)`.
+    pub fn locate(&self, (east, north): (f32, f32)) -> (i32, i32) {
+        let (lat0, lon0) = self.origin;
+        (
+            lat0.saturating_add((north / M_PER_E7) as i32),
+            lon0.saturating_add((east / self.east_per_e7) as i32),
+        )
+    }
+
+    /// Metres per 1e-7 degree east and north.
+    pub fn metres_per_e7(&self) -> (f32, f32) {
+        (self.east_per_e7, M_PER_E7)
     }
 }
 

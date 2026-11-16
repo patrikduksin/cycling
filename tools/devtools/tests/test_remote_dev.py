@@ -62,8 +62,18 @@ class RemoteScriptTests(unittest.TestCase):
 
     def test_build_is_refused_as_a_device_task(self):
         with patch.dict(remote.os.environ, {'CYCLING_DEVICE_HOST': 'h'}), self.assertRaises(SystemExit) as raised:
-            remote.main(['flash-image'])
+            remote.main(['build'])
         self.assertIn('cycling device flash', str(raised.exception))
+
+    def test_flash_image_sends_the_image_built_here_without_building(self):
+        with (
+            patch.dict(remote.os.environ, {'CYCLING_DEVICE_HOST': 'h'}),
+            patch.object(remote, 'snapshot', side_effect=RuntimeError('stop')),
+            patch.object(remote.subprocess, 'run') as run,
+            self.assertRaises(RuntimeError),
+        ):
+            remote.main(['flash-image'])
+        run.assert_not_called()
 
     def test_each_flash_task_builds_its_own_image_here_first(self):
         for task, build in (('flash', 'build'), ('flash-maintenance', 'build-maintenance')):
@@ -124,6 +134,14 @@ class BacktraceTests(unittest.TestCase):
         reply = ['{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-sdk1-h1 pcs=0x42001234"}\n']
         with tempfile.TemporaryDirectory() as directory:
             named = Path(directory) / '15178ed1119a-sdk1-h1.elf'
+            named.write_bytes(b'15178ed1119a')
+            self.assertEqual(backtrace.choose_elf(reply, Path(directory)), (named, '15178ed1119a'))
+
+    def test_a_crash_record_from_the_scripted_gnss_build_picks_its_elf_not_the_riders(self):
+        reply = ['{"data": "kind=panic commit=15178ed1119a elf=15178ed1119a-gnss pcs=0x42001234"}\n']
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / '15178ed1119a.elf').write_bytes(b'15178ed1119a')
+            named = Path(directory) / '15178ed1119a-gnss.elf'
             named.write_bytes(b'15178ed1119a')
             self.assertEqual(backtrace.choose_elf(reply, Path(directory)), (named, '15178ed1119a'))
 

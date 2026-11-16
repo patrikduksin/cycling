@@ -5,6 +5,7 @@ use super::chrome::{
 };
 use super::cue::{Badge, Cue};
 use super::home::Home;
+use super::look::Look;
 use super::ready::Readiness;
 use super::ride::summary::{self, After};
 use super::ride::{self, ClimbFrame, ClimbLent, Marks, RidePage, Smooth};
@@ -238,6 +239,7 @@ pub struct Scene<'v> {
     badge: Option<&'v Badge>,
     toast: Option<&'v Toast>,
     sign: Option<sign::Placed>,
+    look: Look,
 }
 
 #[derive(Clone, Copy, Debug, Hash)]
@@ -329,7 +331,7 @@ impl firmware_shell::shell::Picture for Scene<'_> {
         row.fill(BLACK);
         self.paint_content(row);
         if self.light {
-            super::look::apply(row.pixels_mut());
+            self.look.apply(row.pixels_mut());
         }
         if let Some(sign) = &self.sign {
             sign.paint(row);
@@ -994,6 +996,7 @@ impl<'a> View<'a> {
                 Kind::Ride(page) => sign::on_page(page, self.nav, self.radar_paired),
                 _ => None,
             },
+            look: Look::default(),
         }
     }
 

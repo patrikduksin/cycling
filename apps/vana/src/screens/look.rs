@@ -1,6 +1,7 @@
 //! The light look: every screen paints with the dark palette, and a light
 //! look maps each painted row through `light` on its way to the panel.
 use super::chrome::{BLACK, rgb};
+use core::cell::Cell;
 
 const fn channels(pixel: u16) -> (i32, i32, i32) {
     let (r, g, b) = (
@@ -58,18 +59,49 @@ const fn clamp(channel: i32) -> u8 {
     }
 }
 
-/// Map a painted row to the light look. Rows are long runs of one colour, so
-/// the last answer is reused while the pixel repeats.
-pub fn apply(pixels: &mut [u16]) {
-    let (mut from, mut to) = (BLACK, light(BLACK));
-    for pixel in pixels {
-        if *pixel != from {
-            from = *pixel;
-            to = light(from);
+/// Maps painted rows to the light look. Rows are long runs of one colour and
+/// a screen holds few colours, so answers are kept across a frame's rows and
+/// the last one is reused while the pixel repeats.
+pub struct Look {
+    known: [Cell<(u16, u16)>; KNOWN],
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Self {
+            known: core::array::from_fn(|_| Cell::new((BLACK, LIGHT_BLACK))),
         }
-        *pixel = to;
     }
 }
+
+/// What a look has kept never changes the pixels it maps.
+impl core::hash::Hash for Look {
+    fn hash<H: core::hash::Hasher>(&self, _: &mut H) {}
+}
+
+impl Look {
+    pub fn apply(&self, pixels: &mut [u16]) {
+        let (mut from, mut to) = (BLACK, LIGHT_BLACK);
+        for pixel in pixels {
+            if *pixel != from {
+                from = *pixel;
+                let slot = &self.known[usize::from(from ^ from >> 5 ^ from >> 11) % KNOWN];
+                let (kept, mapped) = slot.get();
+                to = if kept == from {
+                    mapped
+                } else {
+                    let mapped = light(from);
+                    slot.set((from, mapped));
+                    mapped
+                };
+            }
+            *pixel = to;
+        }
+    }
+}
+
+const KNOWN: usize = 128;
+const LIGHT_BLACK: u16 = light(BLACK);
 
 #[cfg(test)]
 mod tests {
@@ -115,7 +147,7 @@ mod tests {
     #[test]
     fn a_row_maps_pixel_by_pixel() {
         let mut row = [BLACK, BLACK, WHITE, POWER, POWER, BLACK];
-        apply(&mut row);
+        Look::default().apply(&mut row);
         let expect = [BLACK, BLACK, WHITE, POWER, POWER, BLACK].map(light);
         assert_eq!(row, expect);
     }

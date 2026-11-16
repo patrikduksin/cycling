@@ -24,6 +24,7 @@ fn main() {
             name.contains(&filter)
         }
     };
+    let mut map_work = Vec::new();
     for scene in SCENES.iter().filter(|scene| picked(scene.name)) {
         let mut sim = (scene.reach)();
         let request = measure(&mut sim, frames);
@@ -32,6 +33,11 @@ fn main() {
             "{}: passes painted different pixels",
             scene.name
         );
+        if let Some(work) = sim.device.sdk.map_work_since_attached()
+            && work.fill.runs > 0
+        {
+            map_work.push((scene.name, work));
+        }
         let (min, median) = request.micros();
         let work = request.work;
         println!(
@@ -45,6 +51,29 @@ fn main() {
             work.glyph_pixels,
             work.mixes,
             request.hash
+        );
+    }
+    if map_work.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "Map work from the ride's start to the measured frame, host µs: fills project the course and the roads, extractions copy a tile's roads."
+    );
+    println!(
+        "| screen | fills | fill mean | fill max | extractions | extraction mean | extraction max |"
+    );
+    println!("|---|---:|---:|---:|---:|---:|---:|");
+    for (name, work) in map_work {
+        let mean = |t: vana::app::Timed| t.busy_us.checked_div(t.runs).unwrap_or(0);
+        println!(
+            "| {name} | {} | {} | {} | {} | {} | {} |",
+            work.fill.runs,
+            mean(work.fill),
+            work.fill.max_us,
+            work.extract.runs,
+            mean(work.extract),
+            work.extract.max_us
         );
     }
 }

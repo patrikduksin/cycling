@@ -1,11 +1,12 @@
 mod arrow;
 mod pose;
 mod raster;
+mod roads;
 
 use super::kilometres;
 use crate::ride::course::follow::{self, Placement};
 use crate::ride::course::nav::{Glyph, Guidance, Sign, Spot};
-use crate::ride::homing::{Crumb, TURN, bearing, distance};
+use crate::ride::homing::{Crumb, Frame as RideFrame, TURN, bearing, distance};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
     ACCENT, AMBER, Align, BLACK, BODY as BODY_FACE, HEIGHT, Rect, Row, SECONDARY, WHITE, WIDTH,
@@ -17,7 +18,8 @@ use arrow::{ARROW_OUTLINE_PX, ARROW_SHAFT_HALF_PX, ARROW_STROKES, arrow_shape};
 use firmware_shell::rendering::font::FOOT_20;
 pub use pose::{GROUND, Reach, Zoom};
 use pose::{Pose, Projection};
-use raster::{Cover, Stroke, Triangle};
+use raster::{Bar, Class, Cover, Layer, Stroke, Triangle};
+use roads::{Roads, Source};
 
 type Point = (f32, f32);
 
@@ -68,6 +70,7 @@ pub struct Key {
     left_m: Option<u32>,
     reach: Reach,
     radar: bool,
+    roads: u32,
 }
 
 impl Track<'_> {
@@ -90,6 +93,7 @@ impl Track<'_> {
             left_m: self.left_m,
             reach: self.reach,
             radar: self.radar,
+            roads: 0,
         }
     }
 
@@ -358,12 +362,50 @@ impl<'a> Cache<'a> {
         Self { frame, held: None }
     }
 
-    pub fn update(&mut self, track: &Track) {
+    /// Fill the frame again if `track` or the roads changed; whether it did.
+    pub fn update(&mut self, track: &Track) -> bool {
         self.frame.route_leg.observe(track);
-        let key = track.key(self.frame.route_leg.end);
-        if self.held != Some(key) {
+        let key = Key {
+            roads: self.frame.roads.generation(),
+            ..track.key(self.frame.route_leg.end)
+        };
+        let stale = self.held != Some(key);
+        if stale {
             fill(self.frame, track);
             self.held = Some(key);
+        }
+        stale
+    }
+
+    /// One pass of fetching the roads under the map from the terrain
+    /// cache, in the ride's `frame`: ask for the tiles the view lacks and
+    /// copy one that is cached.
+    pub fn fetch_roads(&mut self, engine: &mut terrain::Lookahead, frame: RideFrame) -> Fetched {
+        let pack = engine.pack().map(|(pack, header)| (pack, *header));
+        self.frame
+            .roads
+            .hold(pack.map(|(pack, _)| Source { pack, frame }));
+        let Some((_, header)) = pack else {
+            return Fetched::Nothing;
+        };
+        let Some(keys) = self.frame.road_tiles(&header, frame) else {
+            engine.want([]);
+            return Fetched::Nothing;
+        };
+        let detail = self.frame.last_pose.reach.detail();
+        let roads = &mut self.frame.roads;
+        engine.want(roads.lacking(&keys, detail));
+        let ready = roads
+            .lacking(&keys, detail)
+            .find(|&key| engine.roads(key).is_some());
+        let Some((key, tile)) = ready.and_then(|key| Some((key, engine.roads(key)?))) else {
+            return Fetched::Nothing;
+        };
+        let (south, west) = header.origin(key);
+        if roads.extract(&keys, key, detail, (south * 10, west * 10), tile) {
+            Fetched::Whole
+        } else {
+            Fetched::Cut
         }
     }
 
@@ -378,6 +420,16 @@ impl<'a> Cache<'a> {
             key,
         })
     }
+}
+
+/// What a pass of [`Cache::fetch_roads`] copied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fetched {
+    Nothing,
+    /// A tile with every road its detail draws.
+    Whole,
+    /// A tile whose minor roads did not all fit.
+    Cut,
 }
 
 #[derive(Clone, Copy)]
@@ -400,11 +452,14 @@ impl core::hash::Hash for Filled<'_> {
 }
 
 const GROUND_COLOR: u16 = rgb(0x10, 0x10, 0x12);
+const MINOR_ROAD: u16 = rgb(0x2a, 0x2a, 0x2d);
+const MAJOR_ROAD: u16 = rgb(0x44, 0x44, 0x48);
 const RIDDEN: u16 = rgb(0x1f, 0x4a, 0x78);
 const CASING: u16 = rgb(0x04, 0x26, 0x4c);
 const BAND_ROWS: usize = 16;
 const BAND_COUNT: usize = (GROUND.end - GROUND.start).div_ceil(BAND_ROWS);
-const MIN_STEP_PX: f32 = 2.0;
+const STRAY_PX: f32 = 0.35;
+const STRAIGHT_RUN: usize = 16;
 const RIDDEN_SEGMENTS: usize = 255;
 const ROUTE_SEGMENTS: usize = 160;
 const STROKES: usize = RIDDEN_SEGMENTS + ROUTE_SEGMENTS;
@@ -417,6 +472,11 @@ const TURN_AROUND_FIXES: u8 = 3;
 const TOO_FAR_FIXES: u8 = 2;
 const MOVING_M: f32 = 2.0;
 const MORE_THAN_135_DEG_OFF: core::ops::Range<u16> = TURN * 3 / 8 + 1..TURN * 5 / 8;
+const ROAD_SEGMENTS: usize = 2_048;
+const MINOR_ROAD_HALF_PX: f32 = 2.5;
+const MAJOR_ROAD_HALF_PX: f32 = 4.5;
+const GROUND_ROWS: usize = GROUND.end - GROUND.start;
+const ROAD_FETCH_MARGIN: f32 = 0.25;
 struct ArrowLayer {
     shaft_half: f32,
     head_outline: f32,
@@ -508,6 +568,7 @@ struct Arrow {
     shaft: [Stroke; ARROW_STROKES],
     strokes: usize,
     head: Triangle,
+    rows: (f32, f32),
 }
 
 /// The map in screen space: refilled when the track's key changes,
@@ -517,6 +578,10 @@ struct Arrow {
 pub struct Frame {
     show: Show,
     last_pose: Pose,
+    last_centre: Point,
+    layer: Layer<GROUND_ROWS>,
+    pairs: [[u16; 2]; 256],
+    roads_drawn: [usize; 2],
     strokes: [Stroke; STROKES],
     counts: [usize; 2],
     band_offsets: [[u16; BAND_COUNT + 1]; 2],
@@ -529,6 +594,7 @@ pub struct Frame {
     has_track: bool,
     left_m: Option<u32>,
     route_leg: HeldLeg,
+    roads: Roads,
 }
 
 impl Default for Frame {
@@ -536,6 +602,10 @@ impl Default for Frame {
         Self {
             show: Show::Unavailable,
             last_pose: Pose::default(),
+            last_centre: (0.0, 0.0),
+            layer: Layer::new(GROUND.start),
+            pairs: [[0; 2]; 256],
+            roads_drawn: [0; 2],
             strokes: [Stroke::default(); STROKES],
             counts: [0; 2],
             band_offsets: [[0; BAND_COUNT + 1]; 2],
@@ -548,6 +618,7 @@ impl Default for Frame {
             has_track: false,
             left_m: None,
             route_leg: HeldLeg::default(),
+            roads: Roads::default(),
         }
     }
 }
@@ -565,27 +636,90 @@ impl Frame {
 
     fn add(&mut self, line: Line, at: &Projection, points: impl Iterator<Item = Point>) {
         let room = line.room();
-        let reach = line.reach() + 1.0;
-        let mut points = points.map(|p| at.at(p)).peekable();
-        let Some(mut anchor) = points.next() else {
-            return;
-        };
-        while let Some(p) = points.next() {
-            let (dx, dy) = (p.0 - anchor.0, p.1 - anchor.1);
-            if dx * dx + dy * dy < MIN_STEP_PX * MIN_STEP_PX && points.peek().is_some() {
-                continue;
+        let (strokes, count) = (&mut self.strokes, &mut self.counts[line as usize]);
+        project(at, line.reach(), points, |a, b| {
+            if *count == room.len() {
+                return false;
             }
-            if visible(anchor, p, reach) {
-                let count = &mut self.counts[line as usize];
-                if *count == room.len() {
-                    return;
-                }
-                self.strokes[room.start + *count] = Stroke::new(anchor, p);
-                *count += 1;
-            }
-            anchor = p;
-        }
+            strokes[room.start + *count] = Stroke::new(a, b);
+            *count += 1;
+            true
+        });
     }
+
+    fn view(&self, margin: f32) -> Option<[Point; 4]> {
+        if self.show != Show::Map {
+            return None;
+        }
+        let at = self.last_pose.projection(self.last_centre);
+        let (wide, high) = (WIDTH as f32, (GROUND.end - GROUND.start) as f32);
+        let (dx, dy) = (wide * margin, high * margin);
+        let (left, right) = (-dx, wide + dx);
+        let (top, bottom) = (GROUND.start as f32 - dy, GROUND.end as f32 + dy);
+        Some([(left, top), (right, top), (right, bottom), (left, bottom)].map(|p| at.back(p)))
+    }
+
+    fn road_tiles(
+        &self,
+        header: &terrain::Header,
+        ride: RideFrame,
+    ) -> Option<heapless::Vec<terrain::TileKey, { roads::TILES }>> {
+        let screen = self.view(0.0)?.map(|p| ride.locate(p));
+        let margin = self.view(ROAD_FETCH_MARGIN)?.map(|p| ride.locate(p));
+        let mut keys = heapless::Vec::new();
+        for key in header
+            .tiles_under(&screen)
+            .chain(header.tiles_under(&margin))
+        {
+            if !keys.contains(&key) && keys.push(key).is_err() {
+                break;
+            }
+        }
+        Some(keys)
+    }
+}
+
+fn project(
+    at: &Projection,
+    reach: f32,
+    points: impl Iterator<Item = Point>,
+    mut put: impl FnMut(Point, Point) -> bool,
+) {
+    let reach = reach + 1.0;
+    let mut points = points.map(|p| at.at(p));
+    let Some(mut anchor) = points.next() else {
+        return;
+    };
+    let mut passed: heapless::Vec<Point, STRAIGHT_RUN> = heapless::Vec::new();
+    let mut draw = |a: Point, b: Point| !visible(a, b, reach) || put(a, b);
+    for p in points {
+        let straight = !passed.is_full() && straight_past(anchor, p, &passed);
+        if !straight {
+            let Some(&end) = passed.last() else {
+                continue;
+            };
+            if !draw(anchor, end) {
+                return;
+            }
+            anchor = end;
+            passed.clear();
+        }
+        let _ = passed.push(p);
+    }
+    if let Some(&end) = passed.last() {
+        draw(anchor, end);
+    }
+}
+
+fn straight_past(a: Point, b: Point, passed: &[Point]) -> bool {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let squared = dx * dx + dy * dy;
+    let per = if squared > 0.0 { 1.0 / squared } else { 0.0 };
+    passed.iter().all(|&(px, py)| {
+        let t = (((px - a.0) * dx + (py - a.1) * dy) * per).clamp(0.0, 1.0);
+        let (qx, qy) = (a.0 + t * dx - px, a.1 + t * dy - py);
+        qx * qx + qy * qy <= STRAY_PX * STRAY_PX
+    })
 }
 
 fn visible(a: Point, b: Point, reach: f32) -> bool {
@@ -596,6 +730,36 @@ fn visible(a: Point, b: Point, reach: f32) -> bool {
 
 fn quarter((x, y): Point) -> (i32, i32) {
     (libm::roundf(4.0 * x) as i32, libm::roundf(4.0 * y) as i32)
+}
+
+fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point) {
+    let Frame {
+        roads,
+        layer,
+        pairs,
+        roads_drawn,
+        last_pose,
+        ..
+    } = frame;
+    layer.clear(GROUND.start);
+    *pairs = raster::pairs(GROUND_COLOR, MINOR_ROAD, MAJOR_ROAD);
+    *roads_drawn = [0; 2];
+    let room = |drawn: &[usize; 2]| drawn[0] + drawn[1] < ROAD_SEGMENTS;
+    for road in roads.each(last_pose.reach.detail(), centre) {
+        if !room(roads_drawn) {
+            break;
+        }
+        let (class, half) = if road.class.major() {
+            (Class::Major, MAJOR_ROAD_HALF_PX)
+        } else {
+            (Class::Minor, MINOR_ROAD_HALF_PX)
+        };
+        project(at, half, road.points(), |a, b| {
+            layer.add(&Bar::new(a, b, half), class);
+            roads_drawn[class as usize] += 1;
+            room(roads_drawn)
+        });
+    }
 }
 
 fn fill(frame: &mut Frame, track: &Track) {
@@ -626,8 +790,10 @@ fn fill(frame: &mut Frame, track: &Track) {
 
 fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
     frame.last_pose = pose;
+    frame.last_centre = centre;
     let place = track.place(centre, frame.route_leg.end);
     let at = pose.projection(centre);
+    draw_roads(frame, &at, centre);
     match place {
         Some(place) => {
             let to_junction = track.junction().map_or(0.0, |j| distance(centre, j.at));
@@ -675,12 +841,20 @@ fn arrow(frame: &mut Frame, at: &Projection, track: &Track, split: (usize, Point
     let Some(shape) = arrow_shape(&route, turn) else {
         return;
     };
-    frame.arrow.head = Triangle(shape.head);
+    frame.arrow.head = Triangle::new(shape.head);
     frame.arrow.strokes = 0;
     for pair in shape.shaft.windows(2) {
         frame.arrow.shaft[frame.arrow.strokes] = Stroke::new(pair[0], pair[1]);
         frame.arrow.strokes += 1;
     }
+    let reach = ARROW_LAYERS[0].shaft_half + 1.0;
+    frame.arrow.rows = shape
+        .shaft
+        .iter()
+        .chain(frame.arrow.head.corners())
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(top, bottom), p| {
+            (top.min(p.1 - reach), bottom.max(p.1 + reach))
+        });
 }
 
 fn clipped(from: Point, to: Point, left: usize) -> Point {
@@ -792,7 +966,7 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
     if frame.show != Show::Map || !GROUND.contains(&y) {
         return;
     }
-    row.fill(GROUND_COLOR);
+    frame.layer.paint(row, &frame.pairs);
     let mut cover = Cover::new(y);
     let band = (y - GROUND.start) / BAND_ROWS;
     for line in Line::ALL {
@@ -805,7 +979,8 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
         }
     }
     let arrow = &frame.arrow;
-    if arrow.strokes > 0 {
+    let centre = y as f32 + 0.5;
+    if arrow.strokes > 0 && (arrow.rows.0..=arrow.rows.1).contains(&centre) {
         for ArrowLayer {
             shaft_half: half,
             head_outline: outline,
@@ -859,7 +1034,7 @@ pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
         0 => color,
         c => blend(paint, color, c),
     };
-    let mut color = GROUND_COLOR;
+    let mut color = frame.pairs[usize::from(frame.layer.nibble(x, y))][0];
     for line in Line::ALL {
         for &(half, paint) in line.layers() {
             let c = frame

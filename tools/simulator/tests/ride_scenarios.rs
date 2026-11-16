@@ -9759,6 +9759,8 @@ mod course_map {
     use vana::screens::chrome::BLACK;
 
     const MOCKUP: &str = include_str!("../../../docs/design/course-navigation/map-approach.svg");
+    const SANTIAGO: &[u8] =
+        include_bytes!("../../../packages/terrain/tests/data/santiago-centro.terrain");
     const PX_PER_M: f64 = 240.0 / 400.0;
     const RIDER: (f64, f64) = (120.0, 223.0);
     const RIDER_BESIDE_RADAR: (usize, usize) = (134, 223);
@@ -9844,23 +9846,32 @@ mod course_map {
         sim.ride_at(kmh, 210.0, 150.0, 88.0);
     }
 
+    const EVERY_SENSOR: [&str; 3] = ["HEART RATE", "POWER METER", "SPEED/CAD"];
+
     fn on_the_map(course: &[(f64, f64)], route: &[(f64, f64)]) -> Sim {
-        on_the_map_with(course, route, &["HEART RATE", "POWER METER", "SPEED/CAD"])
+        on_the_map_with(course, route, &EVERY_SENSOR)
     }
 
     fn on_the_map_with(course: &[(f64, f64)], route: &[(f64, f64)], sensors: &[&str]) -> Sim {
+        let (course, route) = (gpx_through("course", course), gpx_through("route", route));
+        on_the_map_of(&course, &route, Some(SANTIAGO), sensors)
+    }
+
+    fn on_the_map_of(course: &str, route: &str, pack: Option<&[u8]>, sensors: &[&str]) -> Sim {
         let mut sim = Sim::new();
         sim.fit_bulk(Presence::Ready);
         let mut sim = equip(sim.boot());
         sim.init_bulk();
         sim.format_files();
+        if let Some(pack) = pack {
+            sim.install_terrain(b"CHILE-TERRAIN-V1", pack);
+        }
         sim.connect_phone();
-        let gpx = gpx_through("course", course);
-        let (status, body) = sim.phone_request(Method::Put, "/api/course", gpx.as_bytes());
+        let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
         assert_eq!(status, 200, "{body}");
         sim.press(Button::TopLeft);
         sim.advance(seconds(1));
-        sim.ride_route(Route::from_gpx(&gpx_through("route", route)).unwrap());
+        sim.ride_route(Route::from_gpx(route).unwrap());
         sim.ant_sensor(device_type::RADAR, RADAR);
         sim.pair(sensors);
         sim.ride_at(36.0, 210.0, 150.0, 88.0);
@@ -9878,6 +9889,46 @@ mod course_map {
             .filter(|run| (30..90).contains(&run.y) && run.x < 160)
             .map(|run| run.text)
             .collect()
+    }
+
+    const SANTIAGO_COURSE: &str =
+        include_str!("../../../packages/terrain/tests/data/santiago-centro-course.gpx");
+    const MINOR_ROAD: u16 = vana::screens::chrome::rgb(0x2a, 0x2a, 0x2d);
+    const MAJOR_ROAD: u16 = vana::screens::chrome::rgb(0x44, 0x44, 0x48);
+
+    #[test]
+    fn a_course_through_central_santiago_runs_over_its_streets_on_the_map() {
+        let mut sim = on_the_map_of(
+            SANTIAGO_COURSE,
+            SANTIAGO_COURSE,
+            Some(SANTIAGO),
+            &EVERY_SENSOR,
+        );
+        ride_to(&mut sim, 1_200.0);
+        expect_map(&sim);
+        let (minor, major) = (map_pixels(&sim, MINOR_ROAD), map_pixels(&sim, MAJOR_ROAD));
+        assert!(
+            minor > 500 && major > 500,
+            "{minor} minor and {major} major road px"
+        );
+        assert!(
+            course_pixels(&sim) > 1_000,
+            "the route is drawn over the streets"
+        );
+        sim.checkpoint("map-santiago");
+    }
+
+    #[test]
+    fn without_a_terrain_pack_the_map_draws_the_course_on_bare_ground() {
+        let mut sim = on_the_map_of(SANTIAGO_COURSE, SANTIAGO_COURSE, None, &EVERY_SENSOR);
+        ride_to(&mut sim, 1_200.0);
+        expect_map(&sim);
+        assert_eq!(
+            map_pixels(&sim, MINOR_ROAD) + map_pixels(&sim, MAJOR_ROAD),
+            0
+        );
+        assert!(course_pixels(&sim) > 1_000);
+        sim.checkpoint("map-no-pack");
     }
 
     #[test]

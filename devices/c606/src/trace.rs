@@ -274,6 +274,7 @@ impl Trace {
         heap_min: usize,
         now: u64,
         quiet: bool,
+        map_work: impl FnOnce() -> Option<vana::app::MapWork>,
     ) {
         use device_api::ant::Ant as _;
         use device_api::ble_transport::Ble as _;
@@ -380,6 +381,21 @@ impl Trace {
                 busy_us: stage.busy_us,
                 max_us: stage.max_us,
             });
+        }
+        if let Some(work) = map_work() {
+            for (name, timed) in [
+                ("vana.present.map_fill", work.fill),
+                ("look_ahead.map_extract", work.extract),
+            ] {
+                if timed.runs > 0 {
+                    record.record(&Event::Stage {
+                        name,
+                        runs: timed.runs,
+                        busy_us: timed.busy_us,
+                        max_us: timed.max_us,
+                    });
+                }
+            }
         }
     }
 

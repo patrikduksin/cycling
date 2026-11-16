@@ -6,12 +6,13 @@
 //! newest fix, or predicts the road ahead. Matching and prediction restart
 //! from scratch when they need a tile that is not cached, so no partial
 //! state survives between steps; they are cheap enough for that.
-use crate::cache::Cache;
+use crate::cache::{Cache, Lookup};
 use crate::geo::{self, Point};
 use crate::matcher::{Matched, Matcher};
 use crate::pack::{Error, HEADER_BYTES, Header, Source, TileKey};
 pub use crate::predict::{BEHIND_SAMPLES, End, MAX_SAMPLES, SAMPLE_M};
 use crate::predict::{Need, Prediction, predict};
+use crate::roads::Road;
 
 /// Movement that sets a new heading: under it, GPS noise dominates.
 const HEADING_MOVE_M: f32 = 15.0;
@@ -23,6 +24,8 @@ const HEADING_MAX_AGE_MS: u64 = 120_000;
 const PREDICT_EVERY_MS: u64 = 2_000;
 /// Give up on a pack that fails to read this many times in a row.
 const READ_FAILURES: u8 = 8;
+/// Tiles a map may ask for at once: a 3 km view across tile corners.
+pub const WANTED: usize = 16;
 /// Tile loads one match or prediction may ask for before it gives up: more
 /// than the cache could hold means its tiles evict each other.
 const fn reload_limit(pages: usize) -> u16 {
@@ -113,15 +116,28 @@ pub enum Status {
 }
 
 #[derive(Clone, Copy, Debug)]
+enum Load {
+    Done,
+    Underway,
+    PackFailed,
+}
+
 enum Pack {
     Unread,
     Ready(Header),
     Failed,
 }
 
+/// Which reading of a pack the cache's tiles come from. Each reset starts
+/// a new one, so a tile's roads copied out of the cache are the pack's only
+/// while it stays the same.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PackId(u32);
+
 pub struct Lookahead<'a> {
     cache: Cache<'a>,
     pack: Pack,
+    pack_id: PackId,
     failures: u8,
     matcher: Matcher,
     fix: Option<Fix>,
@@ -129,6 +145,7 @@ pub struct Lookahead<'a> {
     predict_due: bool,
     last_predict_ms: Option<u64>,
     need: Option<TileKey>,
+    wanted: [Option<TileKey>; WANTED],
     /// Tiles requested by the current match or prediction attempt.
     reloads: u16,
     history: [Point; HISTORY],
@@ -147,6 +164,7 @@ impl<'a> Lookahead<'a> {
         Self {
             cache: Cache::new(arena),
             pack: Pack::Unread,
+            pack_id: PackId::default(),
             failures: 0,
             matcher: Matcher::default(),
             fix: None,
@@ -154,6 +172,7 @@ impl<'a> Lookahead<'a> {
             predict_due: false,
             last_predict_ms: None,
             need: None,
+            wanted: [None; WANTED],
             reloads: 0,
             history: [Point::default(); HISTORY],
             history_len: 0,
@@ -168,7 +187,12 @@ impl<'a> Lookahead<'a> {
         &self.ahead
     }
 
-    pub fn header(&self) -> Option<&Header> {
+    /// The pack's header once it is read, and which reading it is.
+    pub fn pack(&self) -> Option<(PackId, &Header)> {
+        self.header().map(|header| (self.pack_id, header))
+    }
+
+    fn header(&self) -> Option<&Header> {
         match &self.pack {
             Pack::Ready(header) => Some(header),
             _ => None,
@@ -185,9 +209,11 @@ impl<'a> Lookahead<'a> {
     pub fn reset(&mut self) {
         self.cache.clear();
         self.pack = Pack::Unread;
+        self.pack_id = PackId(self.pack_id.0.wrapping_add(1));
         self.failures = 0;
         self.matcher.reset();
         self.need = None;
+        self.wanted = [None; WANTED];
         self.reloads = 0;
         self.last_predict_ms = None;
         self.predict_due = false;
@@ -197,6 +223,25 @@ impl<'a> Lookahead<'a> {
             generation: self.ahead.generation.wrapping_add(1),
             ..Ahead::default()
         };
+    }
+
+    /// The roads of a tile, if it is in the cache.
+    pub fn roads(&self, key: TileKey) -> Option<impl Iterator<Item = Road<'_>> + Clone> {
+        let origin = self.header()?.origin(key);
+        match self.cache.get(key) {
+            Lookup::Ready(tile) => Some(Road::all(tile, origin)),
+            Lookup::Missing | Lookup::Absent => None,
+        }
+    }
+
+    /// The tiles a map would like cached, replacing the last request: up to
+    /// `WANTED`. `step` loads them only when the look-ahead has nothing of
+    /// its own to read or compute, so the climb forecast never waits.
+    pub fn want(&mut self, keys: impl IntoIterator<Item = TileKey>) {
+        self.wanted = [None; WANTED];
+        for (slot, key) in self.wanted.iter_mut().zip(keys) {
+            *slot = Some(key);
+        }
     }
 
     /// Bearing of travel from recent fixes, if the rider moved recently.
@@ -290,24 +335,15 @@ impl<'a> Lookahead<'a> {
         };
         self.steps = self.steps.wrapping_add(1);
         if let Some(key) = self.need {
-            match self.cache.load(source, &header, key) {
-                Ok(true) => {
-                    self.need = None;
-                    self.failures = 0;
-                }
-                Ok(false) => {}
-                Err(_) => {
-                    self.failures = self.failures.saturating_add(1);
-                    if self.failures >= READ_FAILURES {
-                        self.pack = Pack::Failed;
-                        return Status::NoPack;
-                    }
-                }
+            match self.load(source, &header, key) {
+                Load::Done => self.need = None,
+                Load::Underway => {}
+                Load::PackFailed => return Status::NoPack,
             }
             return Status::Working;
         }
         let Some(fix) = self.fix else {
-            return Status::Idle;
+            return self.load_wanted(source, &header);
         };
         let point = Point {
             lat: fix.lat,
@@ -398,7 +434,36 @@ impl<'a> Lookahead<'a> {
                 }
             }
         }
-        Status::Idle
+        self.load_wanted(source, &header)
+    }
+
+    fn load(&mut self, source: &mut impl Source, header: &Header, key: TileKey) -> Load {
+        match self.cache.load(source, header, key) {
+            Ok(true) => {
+                self.failures = 0;
+                Load::Done
+            }
+            Ok(false) => Load::Underway,
+            Err(_) => {
+                self.failures = self.failures.saturating_add(1);
+                if self.failures >= READ_FAILURES {
+                    self.pack = Pack::Failed;
+                    return Load::PackFailed;
+                }
+                Load::Underway
+            }
+        }
+    }
+
+    fn load_wanted(&mut self, source: &mut impl Source, header: &Header) -> Status {
+        let mut wanted = self.wanted.iter().flatten().copied();
+        let Some(key) = wanted.find(|&key| self.cache.absent(key)) else {
+            return Status::Idle;
+        };
+        match self.load(source, header, key) {
+            Load::Done | Load::Underway => Status::Working,
+            Load::PackFailed => Status::NoPack,
+        }
     }
 
     /// Ask for `key`, unless this attempt already asked for more tiles than

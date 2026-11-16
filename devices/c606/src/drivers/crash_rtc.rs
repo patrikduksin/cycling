@@ -200,7 +200,13 @@ const fn is_one(value: Option<&str>) -> bool {
 /// How this image was built, for finding its symbols.
 const BUILD: device_api::crash::Build = device_api::crash::Build {
     dirty: is_one(option_env!("CYCLING_BUILD_DIRTY")),
-    maintenance: cfg!(feature = "bulk-maintenance"),
+    image: if cfg!(feature = "bulk-maintenance") {
+        device_api::crash::Image::Maintenance
+    } else if cfg!(feature = "scripted-gnss") {
+        device_api::crash::Image::ScriptedGnss
+    } else {
+        device_api::crash::Image::Rider
+    },
 };
 
 /// Record where and why the firmware panicked, print it as esp-backtrace

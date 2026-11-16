@@ -11,7 +11,7 @@ use crate::ride::log::{Slot, Status, decode};
 use crate::ride::turn_back::Leg;
 use crate::screens::chrome::{Toast, Tone};
 pub use crate::screens::ride::MapFrame;
-use crate::screens::ride::{FilledMap, MapCache, MapZoom, Track};
+use crate::screens::ride::{Fetched, FilledMap, MapCache, MapZoom, Track};
 use device_api::bulk::ReadWrite;
 
 pub use crate::ride::homing::Crumb;
@@ -59,6 +59,33 @@ impl Resume {
     }
 }
 
+/// Runs of one piece of the map's work and their time, in microseconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Timed {
+    pub runs: u32,
+    pub busy_us: u32,
+    pub max_us: u32,
+}
+
+impl Timed {
+    fn add(&mut self, us: u64) {
+        let us = u32::try_from(us).unwrap_or(u32::MAX);
+        self.runs = self.runs.saturating_add(1);
+        self.busy_us = self.busy_us.saturating_add(us);
+        self.max_us = self.max_us.max(us);
+    }
+}
+
+/// The map's fills (projecting the course and the roads) and road
+/// extractions, timed by the composition's microsecond clock.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MapWork {
+    pub fill: Timed,
+    pub extract: Timed,
+    /// Extracted tiles whose minor roads did not all fit.
+    pub cuts: u32,
+}
+
 /// The breadcrumb, the course it follows and the open ride they belong to.
 pub struct RideTrack {
     homing: Homing<'static>,
@@ -72,6 +99,8 @@ pub struct RideTrack {
     finder: &'static mut Finder,
     pub(super) kept: super::course::Kept,
     resume: Resume,
+    pub(super) work: MapWork,
+    pub(super) since_attached: MapWork,
 }
 
 impl RideTrack {
@@ -95,6 +124,41 @@ impl RideTrack {
             finder,
             kept: super::course::Kept::default(),
             resume: Resume::None,
+            work: MapWork::default(),
+            since_attached: MapWork::default(),
+        }
+    }
+
+    pub(super) fn fetch_roads(
+        &mut self,
+        engine: &mut terrain::Lookahead,
+        clock: Option<fn() -> u64>,
+    ) {
+        let Some(frame) = self.homing.frame() else {
+            return;
+        };
+        let started = clock.map(|clock| clock());
+        let fetched = self.map.fetch_roads(engine, frame);
+        if fetched != Fetched::Nothing {
+            self.timed(started, clock, |work| &mut work.extract);
+        }
+        if fetched == Fetched::Cut {
+            for work in [&mut self.work, &mut self.since_attached] {
+                work.cuts = work.cuts.saturating_add(1);
+            }
+        }
+    }
+
+    fn timed(
+        &mut self,
+        started: Option<u64>,
+        clock: Option<fn() -> u64>,
+        which: fn(&mut MapWork) -> &mut Timed,
+    ) {
+        if let (Some(started), Some(clock)) = (started, clock) {
+            let us = clock().saturating_sub(started);
+            which(&mut self.work).add(us);
+            which(&mut self.since_attached).add(us);
         }
     }
 
@@ -305,6 +369,7 @@ pub(super) fn refresh_map(
     now: u64,
     speed_mm_s: Option<u32>,
     radar: bool,
+    clock: Option<fn() -> u64>,
 ) {
     let Some(state) = track.as_deref_mut() else {
         return;
@@ -324,7 +389,10 @@ pub(super) fn refresh_map(
         reach: state.zoom.reach(),
         radar,
     };
-    state.map.update(&drawn);
+    let started = clock.map(|clock| clock());
+    if state.map.update(&drawn) {
+        state.timed(started, clock, |work| &mut work.fill);
+    }
 }
 
 pub(super) fn sign_of(track: &Option<&'static mut RideTrack>, now: u64) -> Sign {

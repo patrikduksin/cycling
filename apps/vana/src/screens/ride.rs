@@ -44,7 +44,9 @@ pub(super) use zones::{Mark, Marks, marks};
 pub use climb::{Frame as ClimbFrame, Lent as ClimbLent};
 pub use elevation::Chart as ElevationChart;
 pub use lap::{LapBar, LapBars};
-pub use map::{Cache as MapCache, Filled as FilledMap, Frame as MapFrame, Track, Zoom as MapZoom};
+pub use map::{
+    Cache as MapCache, Fetched, Filled as FilledMap, Frame as MapFrame, Track, Zoom as MapZoom,
+};
 pub use workout::{Chart as WorkoutChart, EXTEND_ROWS, Training, chart as workout_chart};
 
 use chrome::{ACCENT, AMBER, BLACK, BODY as BODY_FACE, POWER, Row, VALUE};

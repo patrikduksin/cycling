@@ -169,40 +169,63 @@ impl Marker {
     }
 }
 
+/// Which image build.sh built.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Image {
+    #[default]
+    Rider,
+    /// `cycling build-maintenance`.
+    Maintenance,
+    /// `build.sh scripted-gnss`, which rides a fixture course.
+    ScriptedGnss,
+}
+
 /// How the image that panicked was built, so its symbols can be found.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Build {
     /// Built from a checkout with uncommitted changes.
     pub dirty: bool,
-    /// The bulk-maintenance image (`cycling build-maintenance`).
-    pub maintenance: bool,
+    pub image: Image,
 }
 
 impl Build {
     const fn bits(self) -> u32 {
-        self.dirty as u32 | (self.maintenance as u32) << 3
+        let image = match self.image {
+            Image::Rider => 0,
+            Image::Maintenance => 1,
+            Image::ScriptedGnss => 2,
+        };
+        self.dirty as u32 | image << 3
     }
 
     const fn from_bits(bits: u32) -> Option<Self> {
         // Bits 1 and 2 marked VANA and harness builds before every build had
         // both; ignore them so records written by older firmware still read.
-        if bits & !0xf != 0 {
+        if bits & !0x1f != 0 {
             return None;
         }
+        let image = match bits >> 3 {
+            0 => Image::Rider,
+            1 => Image::Maintenance,
+            2 => Image::ScriptedGnss,
+            _ => return None,
+        };
         Some(Self {
             dirty: bits & 1 != 0,
-            maintenance: bits & 8 != 0,
+            image,
         })
     }
 
     /// The archived ELF's name after its commit, as build.sh writes it:
-    /// `-dirty` for uncommitted changes, then `-maint` for a maintenance image.
+    /// `-dirty` for uncommitted changes, then the image's own suffix.
     pub const fn suffix(self) -> &'static str {
-        match (self.dirty, self.maintenance) {
-            (false, false) => "",
-            (true, false) => "-dirty",
-            (false, true) => "-maint",
-            (true, true) => "-dirty-maint",
+        match (self.dirty, self.image) {
+            (false, Image::Rider) => "",
+            (true, Image::Rider) => "-dirty",
+            (false, Image::Maintenance) => "-maint",
+            (true, Image::Maintenance) => "-dirty-maint",
+            (false, Image::ScriptedGnss) => "-gnss",
+            (true, Image::ScriptedGnss) => "-dirty-gnss",
         }
     }
 }
@@ -428,7 +451,7 @@ mod tests {
             kind: Kind::Panic,
             build: Build {
                 dirty: true,
-                maintenance: false,
+                image: Image::Rider,
             },
             version: "0.1.0",
             commit: "15178ed1119a",
@@ -437,6 +460,22 @@ mod tests {
             line: 217,
             message: b"attempt to subtract with overflow",
             pcs: &[0x4200_1234, 0x4200_5678, 0x4037_9abc],
+        }
+    }
+
+    #[test]
+    fn each_image_names_the_elf_build_sh_archives_for_it() {
+        for (dirty, image, elf) in [
+            (false, Image::Rider, ""),
+            (true, Image::Maintenance, "-dirty-maint"),
+            (false, Image::ScriptedGnss, "-gnss"),
+            (true, Image::ScriptedGnss, "-dirty-gnss"),
+        ] {
+            let build = Build { dirty, image };
+            let words = encode(&Panic { build, ..panic() });
+            let record = record(&words).expect("valid record");
+            assert_eq!(record.build, build);
+            assert_eq!(record.build.suffix(), elf);
         }
     }
 

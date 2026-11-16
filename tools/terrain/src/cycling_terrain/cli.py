@@ -16,8 +16,8 @@ from pathlib import Path
 
 import osmium
 
+from . import course, graph, osm, pack, trace
 from . import dem as dem_module
-from . import graph, osm, pack, trace
 
 GEOFABRIK = 'https://download.geofabrik.de/south-america/chile-latest.osm.pbf'
 OSM_ATTRIBUTION = (
@@ -96,6 +96,22 @@ def trace_road(args) -> int:
     return 0
 
 
+def course_gpx(args) -> int:
+    points = course.walk(args.pack.read_bytes(), args.start, args.km * 1000, args.seed)
+    if len(points) < 2:
+        print('no rideable road near the start', file=sys.stderr)
+        return 1
+    args.out.write_text(course.gpx(args.name, points))
+    return 0
+
+
+def point(text: str) -> tuple[float, float]:
+    values = tuple(float(v) for v in text.split(','))
+    if len(values) != 2:
+        raise argparse.ArgumentTypeError('a point is lat,lon')
+    return values
+
+
 def validate(args) -> int:
     blob = args.pack.read_bytes()
     try:
@@ -149,6 +165,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('road', help='its ref or name, for example G-21')
     p.add_argument('--out', type=Path, required=True)
     p.set_defaults(run=trace_road)
+
+    p = sub.add_parser('course', help="write a synthetic GPX course along a pack's streets")
+    p.add_argument('pack', type=Path)
+    p.add_argument('--start', type=point, required=True, help='lat,lon; the course starts at the junction nearest it')
+    p.add_argument('--km', type=float, default=6.0)
+    p.add_argument('--seed', type=int, default=1, help='picks the legs and turns')
+    p.add_argument('--name', default='Synthetic course')
+    p.add_argument('--out', type=Path, required=True)
+    p.set_defaults(run=course_gpx)
 
     args = parser.parse_args(argv)
     return args.run(args)

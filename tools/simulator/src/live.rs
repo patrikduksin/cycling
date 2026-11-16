@@ -420,26 +420,25 @@ mod tests {
         assert!(live.sim.device.sim_mut().battery.charging);
     }
 
-    /// Moves of the Home cursor while `key` stays down for `ms`.
-    fn moves(live: &mut Live, key: char, ms: u64) -> usize {
-        // The focused Home card has a white title.
-        let train = |live: &Live| {
-            let screen = live.sim.screen();
-            ["RIDE", "SENSORS", "TRAIN", "SETTINGS"]
-                .into_iter()
-                .position(|tile| screen.white(tile))
+    /// The MOVE reports the device received while `key` stayed down for
+    /// `ms`.
+    fn reports(live: &mut Live, key: char, ms: u64) -> usize {
+        let count = |live: &Live| {
+            crate::trace::timeline::read(&live.sim.trace())
+                .expect("the session's own trace decodes")
+                .entries
+                .iter()
+                .filter(|entry| entry.text == "button BottomLeft code 1")
+                .count()
         };
-        let mut was = train(live);
-        let mut moves = 0;
+        let before = count(live);
         live.key_down(key);
         for _ in 0..ms / 33 {
             live.tick(33.0);
-            moves += usize::from(train(live) != was);
-            was = train(live);
         }
         live.key_up(key);
         run(live, 1_000);
-        moves + usize::from(train(live) != was)
+        count(live) - before
     }
 
     #[test]
@@ -494,8 +493,8 @@ mod tests {
     fn a_tap_is_one_press_and_a_hold_repeats() {
         let mut live = Live::new();
         boot(&mut live);
-        assert_eq!(moves(&mut live, 'a', 200), 1);
-        assert!(moves(&mut live, 'a', 1_500) >= 3);
+        assert_eq!(reports(&mut live, 'a', 200), 1);
+        assert!(reports(&mut live, 'a', 1_500) >= 10);
     }
 
     #[test]
@@ -503,9 +502,9 @@ mod tests {
         let mut live = Live::new();
         boot(&mut live);
         live.key_down('3');
-        // About eight repeats in a real second, not one per simulated 100 ms.
-        let moved = moves(&mut live, 'a', 1_000);
-        assert!((3..=10).contains(&moved), "{moved} moves");
+        // About ten reports in a real second, not one per simulated 100 ms.
+        let reported = reports(&mut live, 'a', 1_000);
+        assert!((5..=15).contains(&reported), "{reported} reports");
     }
 
     #[test]

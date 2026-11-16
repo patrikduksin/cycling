@@ -129,7 +129,7 @@ checks completion. The device does not export stored credentials.
   authorized compiled selection, which it migrates to owned settings before
   restoring echo. Restoring another owner's configuration needs a deliberate plan.
 
-The virtual backend covers parsing, settings migration and persistence, selection
+The virtual backend covers parsing, settings persistence, selection
 changes and notification-generation rejection; radio connect and scan are
 unsupported there. It preserves a pre-existing data file and exercises torn
 configuration updates.

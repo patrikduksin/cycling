@@ -19,10 +19,9 @@
 //!
 //! The file store commits one file at a time, so the turns cannot commit
 //! with the course. Instead they name their course by its key
-//! (`course::key`), the CRC32 of the course encoded as version 1 of
-//! `course.dat`: turns of any other course, left by a cut
-//! between the two writes or by firmware that writes only `course.dat`, are
-//! not this course's, and its turns are found by the scan as before. A
+//! (`course::key`), the CRC that ends `course.dat`: turns of any other
+//! course, left by a cut between the two writes, are not this course's, and
+//! its turns are found by the scan as before. A
 //! course without the file, or with one that does not decode, is scanned
 //! the same way.
 //!
@@ -32,20 +31,19 @@
 //! | --- | --- |
 //! | 0..4 | magic `VTRN` |
 //! | 4 | version, 1 |
-//! | 5 | header length `h`: 16 in version 1 |
-//! | 6 | turn length `s`: 12 in version 1 |
-//! | 7 | flags: 1, the course has more turns than are stored |
+//! | 5 | header length, 16 |
+//! | 6 | turn length, 12 |
+//! | 7 | flags: 1, the course has more turns than are stored; other bits zero |
 //! | 8..12 | the course's key |
 //! | 12..14 | turns `n`, up to 1024 |
 //! | 14..16 | zero |
-//! | h.. | `n` turns of `s` bytes, in order along the course (`Turn::record`) |
-//! | h+n*s.. | CRC32 of every byte before it |
+//! | 16.. | `n` turns of 12 bytes, in order along the course (`Turn::record`) |
+//! | 16+12n.. | CRC32 of every byte before it |
 //!
 //! A turn is from and to in millimetres along the course as stored (u32
 //! each), its kind (0 none, 1 left, 2 right, 3 sharp left, 4 sharp right, 5
-//! U-turn) and flags (1 two corners, 2 cornered). Later versions may lengthen
-//! the header or each turn, and add flags, and raise the version; a reader
-//! takes what it knows from any version at least 1.
+//! U-turn) and flags (1 two corners, 2 cornered). A file of another version
+//! or shape reads as one that does not decode.
 use super::turns::{RECORD, Scan, Spurs, TURNS, Turn, distance, starts_at};
 use super::{Error, Follow, POINTS, Point, east_per_e7, metres};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
@@ -57,11 +55,11 @@ use libm::sqrtf;
 const FILE: &str = "course-turns.dat";
 const MAGIC: &[u8; 4] = b"VTRN";
 pub const VERSION: u8 = 1;
-const HEADER_V1: usize = 16;
+const HEADER: usize = 16;
 /// The course has more turns than the file holds.
 const FULL: u8 = 1;
 /// The longest file this version writes.
-pub const MAX_FILE: usize = HEADER_V1 + TURNS * RECORD + 4;
+pub const MAX_FILE: usize = HEADER + TURNS * RECORD + 4;
 
 /// Capacity of the input-point buffer used during turn finding.
 pub const GIVEN: usize = 2048;
@@ -628,10 +626,10 @@ pub fn encode(key: u32, turns: &[Turn], full: bool, mut put: impl FnMut(&[u8])) 
         crc = crc.update(bytes);
         put(bytes);
     };
-    let mut header = [0u8; HEADER_V1];
+    let mut header = [0u8; HEADER];
     header[..4].copy_from_slice(MAGIC);
     header[4] = VERSION;
-    header[5] = HEADER_V1 as u8;
+    header[5] = HEADER as u8;
     header[6] = RECORD as u8;
     header[7] = if full { FULL } else { 0 };
     put_u32(&mut header, 8, key);
@@ -660,44 +658,40 @@ pub fn decode<E>(
     mut read: impl FnMut(u32, &mut [u8]) -> Result<(), E>,
     turns: &mut [Turn],
 ) -> Result<Option<Stored>, E> {
-    let mut head = [0u8; 255];
-    if (length as usize) < HEADER_V1 + 4 {
+    let mut head = [0u8; HEADER];
+    if (length as usize) < HEADER + 4 {
         return Ok(None);
     }
-    read(0, &mut head[..HEADER_V1])?;
-    let (header, record) = (usize::from(head[5]), usize::from(head[6]));
+    read(0, &mut head)?;
     let count = usize::from(get_u16(&head, 12));
-    let expected = header as u64 + count as u64 * record as u64 + 4;
     if &head[..4] != MAGIC
-        || head[4] < 1
-        || header < HEADER_V1
-        || record < RECORD
+        || head[4] != VERSION
+        || usize::from(head[5]) != HEADER
+        || usize::from(head[6]) != RECORD
+        || head[7] & !FULL != 0
         || count > turns.len()
-        || expected != u64::from(length)
+        || HEADER + count * RECORD + 4 != length as usize
     {
         return Ok(None);
     }
-    read(0, &mut head[..header])?;
-    let mut crc = Crc32::new().update(&head[..header]);
+    let mut crc = Crc32::new().update(&head);
     let stored = Stored {
         key: get_u32(&head, 8),
         count,
         full: head[7] & FULL != 0,
     };
-    // Whole turns per read, about a sector's worth; a turn is at most 255
-    // bytes.
     let mut chunk = [0u8; SECTOR_SIZE];
-    let per = SECTOR_SIZE / record;
+    let per = SECTOR_SIZE / RECORD;
     let (mut index, mut valid) = (0, true);
     let mut last = Turn::default();
     while index < count {
         let n = per.min(count - index);
-        let bytes = &mut chunk[..n * record];
-        read((header + index * record) as u32, bytes)?;
+        let bytes = &mut chunk[..n * RECORD];
+        read((HEADER + index * RECORD) as u32, bytes)?;
         crc = crc.update(bytes);
         for (slot, bytes) in turns[index..index + n]
             .iter_mut()
-            .zip(bytes.chunks_exact(record))
+            .zip(bytes.as_chunks::<RECORD>().0)
         {
             let Some(turn) = Turn::from_record(bytes) else {
                 valid = false;

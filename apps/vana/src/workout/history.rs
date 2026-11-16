@@ -7,7 +7,7 @@
 //! | --- | --- |
 //! | 0..4 | magic `VWKO` |
 //! | 4 | version, 1 |
-//! | 5 | body length `n` before the CRC: 66 in version 1 |
+//! | 5 | body length before the CRC, 66 |
 //! | 6 | journal: `i` internal, `b` bulk |
 //! | 7 | flags: 1 finished, 2 start time known, 4 FTP measured |
 //! | 8..12 | ride id in that journal |
@@ -17,12 +17,12 @@
 //! | 42..48 | steps done, steps, skipped (u16 each) |
 //! | 48..64 | targeted, in, under and over target ms (u32 each) |
 //! | 64..66 | FTP the test measured, W |
-//! | n..n+4 | CRC32 of bytes 0..n |
+//! | 66..70 | CRC32 of bytes 0..66 |
 //!
-//! Later versions only append fields before the CRC and raise the version;
-//! a reader takes the fields it knows from any version at least 1. Ride ids
-//! restart when a journal is cleared or initialized, and `forget` then
-//! deletes that journal's records. Only the newest [`KEEP`] records stay.
+//! A file of any other version or length is foreign: never read, replaced or
+//! rotated out. Ride ids restart when a journal is cleared or initialized,
+//! and `forget` then deletes that journal's records. Only the newest
+//! [`KEEP`] records stay.
 use super::library::LoadError;
 use super::model::{NAME_BYTES, Name, Test};
 use super::player::Summary;
@@ -36,9 +36,8 @@ pub const FOLDER: &str = "rides/";
 const SUFFIX: &str = ".workout";
 pub const VERSION: u8 = 1;
 const MAGIC: &[u8; 4] = b"VWKO";
-/// Body bytes of version 1, before the CRC.
-const BODY_V1: usize = 66;
-pub const SIZE: usize = BODY_V1 + 4;
+const BODY_LENGTH: usize = 66;
+pub const SIZE: usize = BODY_LENGTH + 4;
 /// Records kept; saving another deletes the oldest.
 pub const KEEP: usize = 32;
 
@@ -77,7 +76,7 @@ pub fn encode(record: &Record) -> [u8; SIZE] {
     let summary = &record.summary;
     bytes[..4].copy_from_slice(MAGIC);
     bytes[4] = VERSION;
-    bytes[5] = BODY_V1 as u8;
+    bytes[5] = BODY_LENGTH as u8;
     bytes[6] = record.journal;
     bytes[7] = if summary.finished { FINISHED } else { 0 }
         | if record.started_utc_ms.is_some() {
@@ -104,19 +103,18 @@ pub fn encode(record: &Record) -> [u8; SIZE] {
     put_u32(&mut bytes, 56, millis(summary.under_ms));
     put_u32(&mut bytes, 60, millis(summary.over_ms));
     put_u16(&mut bytes, 64, summary.ftp.unwrap_or(0));
-    let crc = crc32(&bytes[..BODY_V1]);
-    put_u32(&mut bytes, BODY_V1, crc);
+    let crc = crc32(&bytes[..BODY_LENGTH]);
+    put_u32(&mut bytes, BODY_LENGTH, crc);
     bytes
 }
 
-/// A record of any version from 1 on, or `None` if damaged or foreign.
+/// A current record, or `None` if damaged or foreign.
 pub fn decode(bytes: &[u8]) -> Option<Record> {
-    let body = usize::from(*bytes.get(5)?);
-    if bytes.get(..4)? != MAGIC
-        || bytes[4] < 1
-        || body < BODY_V1
-        || bytes.len() < body + 4
-        || crc32(&bytes[..body]) != get_u32(bytes, body)
+    if bytes.len() != SIZE
+        || bytes[..4] != *MAGIC
+        || bytes[4] != VERSION
+        || usize::from(bytes[5]) != BODY_LENGTH
+        || crc32(&bytes[..BODY_LENGTH]) != get_u32(bytes, BODY_LENGTH)
     {
         return None;
     }
@@ -151,31 +149,53 @@ pub fn decode(bytes: &[u8]) -> Option<Record> {
     })
 }
 
+const FOREIGN: LoadError = LoadError::Decode(super::codec::DecodeError::Version);
+
+fn read(
+    store: &mut impl ReadWrite,
+    dir: &files::Dir,
+    entry: &files::Entry,
+    sector: &mut files::Sector,
+) -> Result<Record, LoadError> {
+    if entry.length as usize != SIZE {
+        return Err(FOREIGN);
+    }
+    let mut bytes = [0; SIZE];
+    dir.read(store, entry, 0, &mut bytes, sector)
+        .map_err(LoadError::Files)?;
+    decode(&bytes).ok_or(FOREIGN)
+}
+
 /// Save `record`, replacing one for the same ride and deleting the oldest
-/// record once [`KEEP`] are stored.
+/// record once [`KEEP`] are stored. A file in either place that is not a
+/// current record is kept, and the save refused.
 pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<(), LoadError> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = volume::open(media, &volume::FILES, &mut sector).map_err(LoadError::Volume)?;
     let name = file(record.journal, record.ride_id);
     let dir = files::mount(&mut store, &mut sector).map_err(LoadError::Files)?;
     let mut kept = 0;
-    let mut replaces = false;
+    let mut replaces = None;
     let mut oldest: Option<files::Entry> = None;
     dir.list(&mut store, &mut sector, |entry| {
         if !entry.name.as_str().starts_with(FOLDER) || !entry.name.as_str().ends_with(SUFFIX) {
             return;
         }
         kept += 1;
-        replaces |= entry.name == name;
+        if entry.name == name {
+            replaces = Some(*entry);
+        }
         if oldest.is_none_or(|old| entry.revision < old.revision) {
             oldest = Some(*entry);
         }
     })
     .map_err(LoadError::Files)?;
-    if !replaces
-        && kept >= KEEP
+    if let Some(replaces) = replaces {
+        read(&mut store, &dir, &replaces, &mut sector)?;
+    } else if kept >= KEEP
         && let Some(oldest) = oldest
     {
+        read(&mut store, &dir, &oldest, &mut sector)?;
         dir.delete(&mut store, &oldest.name, &mut sector)
             .map_err(LoadError::Files)?;
     }
@@ -183,7 +203,8 @@ pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<(), LoadError
     Ok(())
 }
 
-/// Delete every record of `journal`, as its ride ids start over.
+/// Delete every record of `journal`, as its ride ids start over. A file of
+/// the journal that is not a current record is kept, and the clear stops there.
 pub fn forget(media: &mut impl ReadWrite, journal: u8) -> Result<(), LoadError> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = volume::open(media, &volume::FILES, &mut sector).map_err(LoadError::Volume)?;
@@ -195,19 +216,22 @@ pub fn forget(media: &mut impl ReadWrite, journal: u8) -> Result<(), LoadError> 
     );
     loop {
         let dir = files::mount(&mut store, &mut sector).map_err(LoadError::Files)?;
-        let mut names: heapless::Vec<files::Name, 16> = heapless::Vec::new();
+        let mut entries: heapless::Vec<files::Entry, 16> = heapless::Vec::new();
         dir.list(&mut store, &mut sector, |entry| {
             let name = entry.name.as_str();
             if name.starts_with(prefix.as_str()) && name.ends_with(SUFFIX) {
-                let _ = names.push(entry.name);
+                let _ = entries.push(*entry);
             }
         })
         .map_err(LoadError::Files)?;
-        if names.is_empty() {
+        if entries.is_empty() {
             return Ok(());
         }
-        for name in &names {
-            files::delete(&mut store, name, &mut sector).map_err(LoadError::Files)?;
+        for entry in &entries {
+            read(&mut store, &dir, entry, &mut sector)?;
+        }
+        for entry in &entries {
+            files::delete(&mut store, &entry.name, &mut sector).map_err(LoadError::Files)?;
         }
     }
 }
@@ -227,20 +251,17 @@ pub fn load(
     else {
         return Ok(None);
     };
-    let mut bytes = [0; 2 * SIZE];
-    let length = (entry.length as usize).min(bytes.len());
-    dir.read(&mut store, &entry, 0, &mut bytes[..length], &mut sector)
-        .map_err(LoadError::Files)?;
-    decode(&bytes[..length])
-        .filter(|record| record.journal == journal && record.ride_id == ride_id)
-        .map(Some)
-        .ok_or(LoadError::Decode(super::codec::DecodeError::Checksum))
+    let record = read(&mut store, &dir, &entry, &mut sector)?;
+    if record.journal != journal || record.ride_id != ride_id {
+        return Err(FOREIGN);
+    }
+    Ok(Some(record))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workout::library::tests::{formatted, put};
+    use crate::workout::library::tests::{Region, formatted, put};
 
     fn record(ride_id: u32) -> Record {
         Record {
@@ -281,15 +302,43 @@ mod tests {
     }
 
     #[test]
-    fn a_later_version_with_more_fields_still_reads() {
-        let mut bytes = [0u8; SIZE + 6];
-        bytes[..BODY_V1].copy_from_slice(&encode(&record(5))[..BODY_V1]);
-        bytes[4] = 2;
-        bytes[5] = (BODY_V1 + 6) as u8;
-        bytes[BODY_V1..BODY_V1 + 6].copy_from_slice(&[9; 6]);
-        let crc = crc32(&bytes[..BODY_V1 + 6]);
-        put_u32(&mut bytes, BODY_V1 + 6, crc);
-        assert_eq!(decode(&bytes), Some(record(5)));
+    fn another_version_is_foreign() {
+        let mut longer = [0u8; SIZE + 6];
+        longer[..BODY_LENGTH].copy_from_slice(&encode(&record(5))[..BODY_LENGTH]);
+        longer[4] = 2;
+        longer[5] = (BODY_LENGTH + 6) as u8;
+        let crc = crc32(&longer[..BODY_LENGTH + 6]);
+        put_u32(&mut longer, BODY_LENGTH + 6, crc);
+        assert_eq!(decode(&longer), None);
+        let mut other = encode(&record(5));
+        other[4] = 2;
+        let crc = crc32(&other[..BODY_LENGTH]);
+        put_u32(&mut other, BODY_LENGTH, crc);
+        assert_eq!(decode(&other), None);
+    }
+
+    fn full_folder_whose_oldest_is_foreign() -> Region {
+        let mut region = formatted();
+        let mut foreign = encode(&record(1));
+        foreign[4] = VERSION + 1;
+        put(&mut region, file(b'b', 1).as_str(), &foreign);
+        for ride in 2..=KEEP as u32 {
+            save(&mut region, &record(ride)).unwrap();
+        }
+        region
+    }
+
+    #[test]
+    fn a_save_never_replaces_or_rotates_out_a_foreign_file() {
+        let mut region = full_folder_whose_oldest_is_foreign();
+        assert_eq!(save(&mut region, &record(1)), Err(FOREIGN));
+        assert_eq!(load(&mut region, b'b', 1), Err(FOREIGN));
+        assert_eq!(save(&mut region, &record(KEEP as u32 + 1)), Err(FOREIGN));
+        assert_eq!(load(&mut region, b'b', 2), Ok(Some(record(2))));
+        assert_eq!(load(&mut region, b'b', KEEP as u32 + 1), Ok(None));
+        assert_eq!(forget(&mut region, b'b'), Err(FOREIGN));
+        assert_eq!(load(&mut region, b'b', 1), Err(FOREIGN));
+        assert_eq!(load(&mut region, b'b', 2), Ok(Some(record(2))));
     }
 
     #[test]

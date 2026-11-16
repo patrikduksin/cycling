@@ -173,7 +173,6 @@ pub struct PageChoice(u8);
 impl PageChoice {
     /// The bits a record may carry.
     pub const BITS: u8 = 0b1_0111;
-    const BACK_TO_START_REMOVED: u8 = 1 << 3;
 
     /// The optional pages, in the order Settings lists them.
     pub const OPTIONAL: [RidePage; 4] = [
@@ -186,7 +185,6 @@ impl PageChoice {
     /// The choice a record's hidden bits stand for; none when it holds bits
     /// that mean nothing.
     pub const fn from_bits(bits: u8) -> Option<Self> {
-        let bits = bits & !Self::BACK_TO_START_REMOVED;
         if bits & !Self::BITS == 0 {
             Some(Self(bits))
         } else {
@@ -911,11 +909,7 @@ mod tests {
             assert_eq!(off.bits().count_ones(), 1);
             assert_eq!(off.toggled(page), default);
         }
-        assert_eq!(
-            PageChoice::from_bits(0b1_1111).map(PageChoice::bits),
-            Some(0b1_0111),
-            "BACK TO START hidden before it was removed"
-        );
+        assert_eq!(PageChoice::from_bits(0b1_1111), None);
         assert_eq!(PageChoice::from_bits(0b10_0000), None);
     }
 

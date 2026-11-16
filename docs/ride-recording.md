@@ -411,9 +411,9 @@ Training profile:
 - `PROFILE`, `PROFILE FTP watts`, `PROFILE LTHR bpm` and `PROFILE OVERWRITE`
   read and set it from the terminal. The profile and the saved ANT sensors are
   one versioned record in the application area of the settings record
-  (version 2; version 1 profiles migrate with no saved sensors). A stored record
-  this firmware cannot read keeps the defaults in force, with no saved sensors,
-  and is never replaced until `PROFILE OVERWRITE`.
+  (`app::preferences`). A stored record this firmware did not write keeps the
+  defaults in force, with no saved sensors, and is never replaced until
+  `PROFILE OVERWRITE`.
 
 Radar uses the left edge of the workout screen:
 
@@ -475,20 +475,18 @@ host's `files format` erases them). A file that does not decode is never
 merged into; only CLEAR BESTS replaces it. A write the store refuses leaves
 the merged bests in memory for the next write, and a read that failed only
 this time is retried with the ride's outcome waiting (one outcome is kept).
-The reader takes at most 84 bytes of the file, so a later version must keep
-the whole file within 84 bytes or raise the reader first.
+A file of another version or length reads as one that does not decode.
 
 | Bytes | Field |
 | --- | --- |
 | 0..4 | magic `VBST` |
 | 4 | version, 1 |
-| 5 | body length `n` before the CRC: 38 in version 1 |
+| 5 | body length before the CRC, 38 |
 | 6..38 | four power marks (watts and day, u16 each), distance in metres (u32) and day (u16), time in seconds (u32) and day (u16), ascent in metres (u16) and day (u16), little-endian |
-| n..n+4 | CRC32 of bytes 0..n |
+| 38..42 | CRC32 of bytes 0..38 |
 
 A day is days since 1970-01-01 in the clock's time zone, 0 when the clock was
-unknown; a value of 0 is no best. Later versions only append fields before the
-CRC and raise the version, within the 84 bytes above.
+unknown; a value of 0 is no best.
 
 ### Course
 
@@ -509,25 +507,22 @@ the file in one atomic commit only once the whole body has read as a course;
 an upload that fails, or that the phone cuts off, leaves the stored course,
 which VANA then reads back. Body bytes count as activity, so a slow upload
 does not end the phone session as idle. `DELETE /api/course` removes it. Without a card, a
-FILES volume or a store the host formatted, no course is kept. Firmware from
-before courses never opens the file.
+FILES volume or a store the host formatted, no course is kept.
 
 | Bytes | Field |
 | --- | --- |
 | 0..4 | magic `VCRS` |
 | 4 | version, 1 |
-| 5 | header length `h`: 34 in version 1 |
-| 6 | point length `s`: 8 in version 1 |
+| 5 | header length, 34 |
+| 6 | point length, 8 |
 | 7 | name length, up to 24 |
 | 8..10 | points `n`, 2 to 2048 (u16) |
 | 10..34 | the name: `A-Z`, `0-9`, space and `-._'`, zero padded |
-| h.. | `n` points of `s` bytes: latitude, then longitude, in 1e-7 degrees (i32 each), little-endian |
-| h+n*s.. | CRC32 of every byte before it |
+| 34.. | `n` points of 8 bytes: latitude, then longitude, in 1e-7 degrees (i32 each), little-endian |
+| 34+8n.. | CRC32 of every byte before it |
 
-Later versions may lengthen the header or each point and raise the version; a
-reader takes the fields it knows from any version at least 1. A file with more
-points than the reader holds reads as damaged and is left alone until an
-upload replaces it.
+A file of another version or shape reads as damaged and is left alone until
+an upload replaces it.
 
 The upload also finds the course's turns, from every point of the file a
 metre apart or more, before thinning (`ride::course::stored`): the turn scan runs
@@ -542,10 +537,8 @@ proportion between the kept points either side; the gates' turns land within
 3 m of where the full track's point projects onto the kept course. The turns
 are written as `course-turns.dat` once `course.dat` is committed, and removed
 with it. The file store commits one file at a time, so the turns name their
-course by its key: the CRC32 of the course encoded as version 1 of
-`course.dat` (for a version 1 file, the CRC that ends it). Turns left by a cut
-between the two writes, or by firmware that writes only `course.dat`, are not
-that course's. A course without its own turns, or with a turns file that does
+course by its key: the CRC that ends `course.dat`. Turns left by a cut
+between the two writes are not that course's. A course without its own turns, or with a turns file that does
 not decode, has them found by scanning the course as kept when it is placed,
 as before; so does a course whose scan at upload needed more than the 512
 points it keeps, and its turns file is removed. Placing a course reads its
@@ -560,18 +553,16 @@ after the end of the last stored one.
 | --- | --- |
 | 0..4 | magic `VTRN` |
 | 4 | version, 1 |
-| 5 | header length `h`: 16 in version 1 |
-| 6 | turn length `s`: 12 in version 1 |
-| 7 | flags: 1, the course has more turns than are stored |
-| 8..12 | the course's key: the CRC32 of the course encoded as version 1 of `course.dat` |
+| 5 | header length, 16 |
+| 6 | turn length, 12 |
+| 7 | flags: 1, the course has more turns than are stored; other bits zero |
+| 8..12 | the course's key: the CRC that ends `course.dat` |
 | 12..14 | turns `n`, up to 1024 (u16) |
 | 14..16 | zero |
-| h.. | `n` turns of `s` bytes, in order along the course: from and to in millimetres along the course as kept (u32 each), kind (0 none, 1 left, 2 right, 3 sharp left, 4 sharp right, 5 U-turn), flags (1 two corners, 2 cornered), two zero bytes |
-| h+n*s.. | CRC32 of every byte before it |
+| 16.. | `n` turns of 12 bytes, in order along the course: from and to in millimetres along the course as kept (u32 each), kind (0 none, 1 left, 2 right, 3 sharp left, 4 sharp right, 5 U-turn), flags (1 two corners, 2 cornered), two zero bytes |
+| 16+12n.. | CRC32 of every byte before it |
 
-Later versions may lengthen the header or each turn, add flags and raise the
-version; a reader takes what it knows from any version at least 1. Firmware
-from before stored turns never opens the file.
+A file of another version or shape reads as one that does not decode.
 
 FTP tests end on a NEW FTP sheet while the ride keeps recording: ACT saves the
 new FTP to the profile, BACK keeps the old one. The ride is then on the main
@@ -632,8 +623,9 @@ it as `rides/<i|b><ride id>.workout` on FILES. The record holds the name,
 test, steps done and skipped, time in, under and over target, the FTP a test
 measured, and the ride's start time. Clearing or initializing a journal
 deletes its records, as its ride ids start over. It is a versioned 70-byte
-record (`apps/vana/src/workout/history.rs`) that later versions only extend.
-The newest 32 are kept. `WORKOUT HISTORY INTERNAL|BULK id` reports one. A
+record (`apps/vana/src/workout/history.rs`). The newest 32 are kept. A save
+never replaces or rotates out a file of another version or shape; it is
+refused instead. `WORKOUT HISTORY INTERNAL|BULK id` reports one. A
 ride recovered after a power cut has no record.
 
 ### Ride facts
@@ -656,49 +648,32 @@ open or being written.
 - A record applies to a journal ride only when its journal, ride id and start
   second match. Clearing or initializing a journal drops its records once the
   clear succeeds, as its ride ids start over; a clear that fails keeps them
-  with the rides. Firmware from before the table clears a journal without
-  touching it, and the start time keeps those records off the new rides. So a
-  ride whose start time is unknown (no clock) gets no facts.
+  with the rides. The start time keeps a record off a later ride with its id,
+  so a ride whose start time is unknown (no clock) gets no facts.
 - A ride that moved from the MMC onto internal flash is two journal rides.
   Its facts go with the part that finished on internal flash; the MMC part
   counts at the FTP now.
-- Firmware from before the table kept a file per ride,
-  `rides/<i|b><ride id>.facts`, the newest 64. VANA reads them after the
-  table, folds eight per tick into it and deletes them only once the table
-  holding them has committed; a cut in between folds them again. A ride in
-  both keeps the later start, and the table's on a tie. A file that does not
-  decode is deleted too, as that firmware's rotation would have; one that
-  does not read stays for the next boot.
 - Facts give way to every other file: a ride saves its workout record first,
-  and a new table never takes the last free directory entry, unless it folds
-  older files that free entries right after. With no entry free it deletes
-  first an older file that holds nothing to fold, else the oldest older file,
-  whose record the same write commits; a cut in between loses that one ride,
-  as older firmware's rotation would. Clearing a journal deletes its older
-  files on a full directory too.
+  and a new table never takes the last free directory entry.
 - Without a card, a FILES volume or a store the host formatted, nothing is
   written and every reader shows what it showed before facts were kept. A
   write the store refuses is logged and the ride is not held up for it. A
-  table whose header is damaged is read at the stride, 32 to 512 bytes, at
-  which most slots of its first two sectors pass their CRC, and the next save
-  writes it again with a fresh header, copy-on-write. One where no slot
-  passes at any stride, or a `rides/facts.tbl` without the magic, is left as
-  it is and nothing is saved over it.
+  table whose header fails its CRC keeps its slots, and the next save writes
+  it again with a fresh header, copy-on-write. A `rides/facts.tbl` without
+  the magic, of another table version or stride, or not a whole number of
+  slots, is foreign: it is left as it is and nothing is saved over it.
 - Past 1000 rides the table drops the oldest saved and the memory the oldest
   start: the same ride unless rides were saved out of start order, and each
   boot reads the table again.
-- Firmware from before the table lists only `.workout` and `.facts` files
-  under `rides/`, so it leaves `rides/facts.tbl` alone; it then shows rides as
-  if they had no facts, and the table is still there after an update.
 
-The table is a header and then one slot per ride, oldest saved first. Each
-slot is `stride` bytes and ends in the CRC32 of the bytes before it:
+The table is a header and then one 32-byte slot per ride, oldest saved first.
+Each slot ends in the CRC32 of the bytes before it:
 
 | Header bytes | Field |
 | --- | --- |
 | 0..4 | magic `VFTB` |
 | 4 | table version, 1 |
-| 6..8 | stride: 32, a power of two up to 512 |
+| 6..8 | stride, 32 |
 
 | Slot bytes | Field |
 | --- | --- |
@@ -710,16 +685,10 @@ slot is `stride` bytes and ends in the CRC32 of the bytes before it:
 | 16..20 | FTP (W) and LTHR (BPM), u16 each |
 | 20..22 | HR recovery, BPM fallen (i16) |
 | 22..26 | climbs finished and their gain in m, u16 each |
-| stride-4.. | CRC32 of the slot's bytes before it |
+| 28..32 | CRC32 of the slot's bytes before it |
 
-Later versions only add fields before the CRC, or lengthen the stride for
-them. A save copies the slots it keeps byte for byte, so it never drops
-fields it does not know.
-
-An older per-ride file is a 34-byte record, version 1: magic `VFCT`, the
-version, a body length `n` (30), the slot's bytes 2..26 above, and the CRC32
-of bytes 0..n. The reader takes up to 259 bytes, as much as a one-byte body
-length allows.
+A table holding a slot of another record version is foreign: it is read
+without that slot and never rewritten.
 
 ### Discarded and deleted rides
 
@@ -761,11 +730,8 @@ written.
   totals count every ride meanwhile.
 - The records of internal-journal rides are on the card too. Another card
   shows those rides again. A
-  `rides/deleted.tbl` without the magic, with a damaged header or with
-  another stride is read as hiding nothing and never written over.
-- Firmware from before the table lists only `.workout` and `.facts` files
-  under `rides/`, so it leaves `rides/deleted.tbl` alone and shows every ride
-  again. Updating again hides them.
+  `rides/deleted.tbl` without the magic, with a damaged header, or of another
+  version or stride is read as hiding nothing and never written over.
 
 The table is a header and then one 32-byte slot per hidden ride, each ending
 in the CRC32 of the bytes before it:

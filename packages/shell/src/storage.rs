@@ -51,10 +51,7 @@ impl<B: OwnedFlash> Store<B> {
         &mut self,
         settings: crate::preferences::Settings,
     ) -> Result<Record, Error<B::Error>> {
-        if matches!(
-            self.load()?.source,
-            crate::preferences::Source::Unsupported | crate::preferences::Source::Malformed
-        ) {
+        if self.load()?.source == crate::preferences::Source::Foreign {
             return Err(Error::UnrecognizedSettings);
         }
         match self.journal.save(&settings.encode()) {
@@ -112,19 +109,24 @@ mod tests {
     use super::memory::Memory;
     use super::*;
     #[test]
-    fn unsupported_and_malformed_settings_are_readable_but_cannot_be_overwritten() {
+    fn foreign_settings_are_readable_but_cannot_be_overwritten() {
         use crate::preferences::Settings;
         use crate::preferences::Source;
-        for (payload, source) in [
-            (b"cycling\x07".as_slice(), Source::Unsupported),
-            (b"unrecognized".as_slice(), Source::Malformed),
-            (b"cycling\x04".as_slice(), Source::Malformed),
+        let mut older = Settings::default().encode();
+        older[7] -= 1;
+        for payload in [
+            b"cycling\x07".as_slice(),
+            b"unrecognized".as_slice(),
+            b"cycling\x01".as_slice(),
+            b"cycling\x04".as_slice(),
+            &older,
+            &Settings::default().encode()[..100],
         ] {
             let mut journal = Journal::new(Memory::default(), Region::Configuration);
             journal.save(&Settings::default().encode()).unwrap();
             journal.save(payload).unwrap();
             let mut store = Store { journal };
-            assert_eq!(store.load().unwrap().source, source);
+            assert_eq!(store.load().unwrap().source, Source::Foreign);
             let before = store.journal.flash_mut().bytes;
             let operations = store.journal.flash_mut().operations;
             assert_eq!(
@@ -135,33 +137,6 @@ mod tests {
             // Two scan reads plus a verified load; no mutation operation.
             assert_eq!(store.journal.flash_mut().operations - operations, 3);
         }
-    }
-
-    #[test]
-    fn migration_and_connectivity_save_keep_preferences() {
-        use crate::preferences::Settings;
-        use crate::preferences::Source;
-        let mut journal = Journal::new(Memory::default(), Region::Configuration);
-        let old = [
-            b'c', b'y', b'c', b'l', b'i', b'n', b'g', 4, 75, 30, 0, 10, 0, 0, 0,
-        ];
-        journal.save(&old).unwrap();
-        let mut store = Store { journal };
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded.source, Source::Migrated);
-        assert_eq!(loaded.settings.brightness, 75);
-        let mut settings = loaded.settings;
-        settings.wifi = Some(
-            device_api::connectivity::WifiConfig::new(b"Owned test", b"test-password", false)
-                .unwrap(),
-        );
-        store.save(settings).unwrap();
-        assert_eq!(store.load().unwrap().settings, settings);
-        let update = settings.with_timezone(330).unwrap();
-        store.save(update).unwrap();
-        assert_eq!(store.load().unwrap().settings.wifi, settings.wifi);
-        assert_eq!(store.load().unwrap().settings.brightness, 75);
-        let _ = Settings::default();
     }
 
     #[test]
@@ -187,15 +162,10 @@ mod tests {
     }
 
     #[test]
-    fn supported_settings_versions_and_missing_journal_remain_writable() {
+    fn current_settings_and_missing_journal_remain_writable() {
         use crate::preferences::Settings;
         use crate::preferences::Source;
-        for payload in [
-            None,
-            Some(b"cycling\x01".as_slice()),
-            Some(b"cycling\x02\x32\x00".as_slice()),
-            Some(Settings::default().encode().as_slice()),
-        ] {
+        for payload in [None, Some(Settings::default().encode().as_slice())] {
             let mut journal = Journal::new(Memory::default(), Region::Configuration);
             if let Some(payload) = payload {
                 journal.save(payload).unwrap();
@@ -240,10 +210,7 @@ mod tests {
             let mut rng = Rng::new(seed);
             let stored = arbitrary_settings(&mut rng).encode().to_vec();
             let payload = damage(&mut rng, stored);
-            if !matches!(
-                decode(Some(&payload)).1,
-                Source::Malformed | Source::Unsupported
-            ) {
+            if decode(Some(&payload)).1 != Source::Foreign {
                 continue;
             }
             let mut journal = Journal::new(Memory::default(), Region::Configuration);

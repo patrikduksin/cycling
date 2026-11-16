@@ -18,16 +18,12 @@
 //! | --- | --- |
 //! | 0..4 | magic `VBST` |
 //! | 4 | version, 1 |
-//! | 5 | body length `n` before the CRC: 38 in version 1 |
+//! | 5 | body length before the CRC, 38 |
 //! | 6..38 | the bests (`Bests::ENCODED`) |
-//! | n..n+4 | CRC32 of bytes 0..n |
+//! | 38..42 | CRC32 of bytes 0..38 |
 //!
-//! Later versions only append fields before the CRC and raise the version; a
-//! reader takes the fields it knows from any version at least 1. This reader
-//! takes at most `READ_MAX` (84) bytes of a file, so a later version must keep
-//! the whole file, CRC included, within 84 bytes or raise the reader first;
-//! a longer one reads as damaged. A file that does not decode is never merged
-//! into; only CLEAR BESTS replaces it.
+//! A file of any other version or length is foreign, read like a damaged
+//! one: never merged into; only CLEAR BESTS replaces it.
 //!
 //! The ride bests need a ride of `MIN_RIDE_S`, so a test press of a few
 //! seconds does not become "the longest ride". A power above
@@ -206,10 +202,11 @@ impl Bests {
 const FILE: &str = "bests.dat";
 const MAGIC: &[u8; 4] = b"VBST";
 pub const VERSION: u8 = 1;
-const BODY_V1: usize = 6 + Bests::ENCODED;
-const SIZE: usize = BODY_V1 + 4;
-/// The most bytes of a file this reader takes.
-pub const READ_MAX: usize = 2 * SIZE;
+const VERSION_AT: usize = 4;
+const BODY_LENGTH_AT: usize = 5;
+const FIELDS_AT: usize = 6;
+const BODY: usize = FIELDS_AT + Bests::ENCODED;
+const SIZE: usize = BODY + 4;
 
 /// Why bests could not be read or written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,27 +247,25 @@ fn open<'a, M: ReadWrite>(
 pub fn encode_file(bests: &Bests) -> [u8; SIZE] {
     let mut bytes = [0; SIZE];
     bytes[..4].copy_from_slice(MAGIC);
-    bytes[4] = VERSION;
-    bytes[5] = BODY_V1 as u8;
-    bytes[6..BODY_V1].copy_from_slice(&bests.encode());
-    let crc = crc32(&bytes[..BODY_V1]);
-    bytes[BODY_V1..].copy_from_slice(&crc.to_le_bytes());
+    bytes[VERSION_AT] = VERSION;
+    bytes[BODY_LENGTH_AT] = BODY as u8;
+    bytes[FIELDS_AT..BODY].copy_from_slice(&bests.encode());
+    let crc = crc32(&bytes[..BODY]);
+    bytes[BODY..].copy_from_slice(&crc.to_le_bytes());
     bytes
 }
 
-/// The bests of a file of any version from 1 on, or `None` if damaged or
-/// foreign.
+/// The bests of a current file, or `None` if damaged or foreign.
 pub fn decode_file(bytes: &[u8]) -> Option<Bests> {
-    let body = usize::from(*bytes.get(5)?);
-    let crc = bytes.get(body..body + 4)?;
-    if bytes.get(..4)? != MAGIC
-        || bytes[4] < 1
-        || body < BODY_V1
-        || crc32(&bytes[..body]).to_le_bytes() != crc
+    let bytes: &[u8; SIZE] = bytes.try_into().ok()?;
+    if bytes[..4] != *MAGIC
+        || bytes[VERSION_AT] != VERSION
+        || usize::from(bytes[BODY_LENGTH_AT]) != BODY
+        || crc32(&bytes[..BODY]).to_le_bytes() != bytes[BODY..]
     {
         return None;
     }
-    Bests::decode(&bytes[6..BODY_V1])
+    Bests::decode(&bytes[FIELDS_AT..BODY])
 }
 
 /// The stored bests; none when the store has no file yet.
@@ -282,10 +277,12 @@ pub fn load(media: &mut impl ReadWrite) -> Result<Bests, Error> {
     let Some(entry) = dir.find(&mut store, &name, &mut sector)? else {
         return Ok(Bests::default());
     };
-    let mut bytes = [0; READ_MAX];
-    let length = (entry.length as usize).min(READ_MAX);
-    dir.read(&mut store, &entry, 0, &mut bytes[..length], &mut sector)?;
-    decode_file(&bytes[..length]).ok_or(Error::Damaged)
+    if entry.length as usize != SIZE {
+        return Err(Error::Damaged);
+    }
+    let mut bytes = [0; SIZE];
+    dir.read(&mut store, &entry, 0, &mut bytes, &mut sector)?;
+    decode_file(&bytes).ok_or(Error::Damaged)
 }
 
 /// Store `bests`, replacing whatever file is there in one atomic commit. A
@@ -407,6 +404,14 @@ mod tests {
         assert_eq!(bests.merge(&limits, 9).power, [true; 4]);
     }
 
+    fn sealed(version: u8, fields: &[u8]) -> std::vec::Vec<u8> {
+        let length = (FIELDS_AT + fields.len()) as u8;
+        let mut bytes = [&MAGIC[..], &[version, length], fields].concat();
+        let crc = crc32(&bytes);
+        bytes.extend_from_slice(&crc.to_le_bytes());
+        bytes
+    }
+
     #[test]
     fn the_file_round_trips_and_a_foreign_one_is_refused() {
         let mut bests = Bests::default();
@@ -415,14 +420,11 @@ mod tests {
         assert_eq!(&bytes[..4], b"VBST");
         assert_eq!(bytes.len(), 42);
         assert_eq!(decode_file(&bytes), Some(bests));
-        // A later version appends fields before the CRC; this reader skips them.
-        let mut longer = [0u8; SIZE + 2];
-        longer[..BODY_V1].copy_from_slice(&bytes[..BODY_V1]);
-        longer[4] = 2;
-        longer[5] = (BODY_V1 + 2) as u8;
-        let crc = crc32(&longer[..BODY_V1 + 2]);
-        longer[BODY_V1 + 2..].copy_from_slice(&crc.to_le_bytes());
-        assert_eq!(decode_file(&longer), Some(bests));
+        let fields = &bytes[FIELDS_AT..BODY];
+        assert_eq!(decode_file(&sealed(VERSION, fields)), Some(bests));
+        assert_eq!(decode_file(&sealed(VERSION + 1, fields)), None);
+        let appended = [fields, &[0, 0]].concat();
+        assert_eq!(decode_file(&sealed(VERSION + 1, &appended)), None);
         let mut torn = bytes;
         torn[10] ^= 1;
         assert_eq!(decode_file(&torn), None);

@@ -79,14 +79,18 @@ impl Saved {
         output
     }
 
-    pub fn decode(payload: &[u8]) -> Result<Self, Unreadable> {
-        let [count, identities @ ..] = payload else {
+    /// The field at the start of `bytes`, and the bytes after it.
+    pub fn decode(bytes: &[u8]) -> Result<(Self, &[u8]), Unreadable> {
+        let [count, rest @ ..] = bytes else {
             return Err(Unreadable);
         };
         let count = usize::from(*count);
-        if count > CHANNEL_CAPACITY || identities.len() != count * IDENTITY_BYTES {
+        if count > CHANNEL_CAPACITY {
             return Err(Unreadable);
         }
+        let (identities, rest) = rest
+            .split_at_checked(count * IDENTITY_BYTES)
+            .ok_or(Unreadable)?;
         let mut saved = Self::default();
         for (slot, bytes) in identities
             .as_chunks::<IDENTITY_BYTES>()
@@ -104,7 +108,7 @@ impl Saved {
             }
             saved.0[slot] = Some(peer);
         }
-        Ok(saved)
+        Ok((saved, rest))
     }
 }
 
@@ -162,27 +166,26 @@ mod tests {
         saved.remove(120);
         let record = saved.encode();
         assert_eq!(record.as_slice(), [2, 40, 0xef, 0xbe, 0xa5, 11, 7, 0, 1]);
-        let restored = Saved::decode(&record).unwrap();
+        let (restored, rest) = Saved::decode(&record).unwrap();
+        assert!(rest.is_empty());
         // Tiles keep their order; gaps close on restart.
         assert_eq!(restored.get(0), saved.get(1));
         assert_eq!(restored.get(1), saved.get(2));
         assert_eq!(restored.encode(), record);
-        assert_eq!(Saved::decode(&[0]), Ok(Saved::default()));
+        assert_eq!(Saved::decode(&[0, 7]), Ok((Saved::default(), &[7][..])));
         let mut full = Saved::default();
         for kind in 1..=10 {
             full.select(peer(kind, u16::from(kind)));
         }
-        assert_eq!(Saved::decode(&full.encode()), Ok(full));
+        assert_eq!(Saved::decode(&full.encode()), Ok((full, &[][..])));
     }
 
     #[test]
     fn inconsistent_fields_are_unreadable() {
         for payload in [
             &[][..],
-            &[0, 0],
             &[1],
             &[1, 120, 1, 0],
-            &[1, 120, 1, 0, 1, 0],
             &[1, 120, 0, 0, 1],
             &[2, 120, 1, 0, 1, 120, 2, 0, 1],
             &[11],

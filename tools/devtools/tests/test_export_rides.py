@@ -23,10 +23,10 @@ from cycling_devtools.rides.export import (
 from cycling_devtools.terminal.usb import terminal_reply
 
 
-def slot(kind, source, ride_id, sequence, active_ms, samples=()):
+def slot(kind, ride_id, sequence, active_ms, samples=()):
     data = bytearray(b'\xff' * SLOT_SIZE)
     data[:4] = b'RIDE'
-    data[4:8] = bytes([1, kind, len(samples), source])
+    data[4:8] = bytes([1, kind, len(samples), 2])
     data[8:12] = ride_id.to_bytes(4, 'little')
     data[12:16] = sequence.to_bytes(4, 'little')
     data[16:24] = active_ms.to_bytes(8, 'little')
@@ -118,16 +118,16 @@ class RideExportTests(unittest.TestCase):
         missing = {'active_ms': 2000, 'utc_ms': None, 'location': None}
         later = {'active_ms': 3000, 'utc_ms': 1_699_999_999_000, 'location': (100000010, 200000010), 'cadence': 615}
         return [
-            slot(1, 2, 7, 0, 0),
-            slot(2, 2, 7, 1, 2000, [first, missing]),
-            slot(3, 2, 7, 2, 2000),
-            slot(4, 2, 7, 3, 2000),
-            slot(2, 2, 7, 4, 3000, [later]),
-            slot(6, 2, 7, 5, 3000),
+            slot(1, 7, 0, 0),
+            slot(2, 7, 1, 2000, [first, missing]),
+            slot(3, 7, 2, 2000),
+            slot(4, 7, 3, 2000),
+            slot(2, 7, 4, 3000, [later]),
+            slot(6, 7, 5, 3000),
         ]
 
-    def test_workout_optional_fields_preserve_legacy_samples(self):
-        data = bytearray(slot(2, 2, 1, 1, 1000, [{'active_ms': 1000}]))
+    def test_optional_sample_fields_decode_present_and_absent(self):
+        data = bytearray(slot(2, 1, 1, 1000, [{'active_ms': 1000}]))
         data[48:52] = (0x1C0).to_bytes(4, 'little')
         data[70:72] = (215).to_bytes(2, 'little')
         data[72:76] = (12345).to_bytes(4, 'little')
@@ -136,11 +136,10 @@ class RideExportTests(unittest.TestCase):
         data[28:32] = zlib.crc32(data[:252]).to_bytes(4, 'little')
         sample = decode_slot(bytes(data))['samples'][0]
         self.assertEqual((sample['speed_mm_s'], sample['power_watts'], sample['gradient_tenths']), (12345, 215, -37))
-        old = decode_slot(self.fixture()[1])['samples'][1]
-        self.assertIsNone(old['speed_mm_s'])
-        self.assertIsNone(old['power_watts'])
-        self.assertIsNone(old['gradient_tenths'])
-        # Samples written before altitude was kept have erased bytes 46..48.
+        absent = decode_slot(self.fixture()[1])['samples'][1]
+        self.assertIsNone(absent['speed_mm_s'])
+        self.assertIsNone(absent['power_watts'])
+        self.assertIsNone(absent['gradient_tenths'])
         self.assertIsNone(decode_slot(self.fixture()[1])['samples'][1]['altitude_m'])
         self.assertEqual(decode_slot(self.fixture()[1])['samples'][0]['altitude_m'], 123.4)
 
@@ -155,10 +154,10 @@ class RideExportTests(unittest.TestCase):
             }
 
         slots = [
-            slot(1, 2, 3, 0, 0),
-            slot(2, 2, 3, 1, 4000, [at(1, 0), at(2), at(3, 1), at(4)]),
-            slot(2, 2, 3, 2, 6000, [at(5, 2), at(6, 0x42)]),
-            slot(5, 2, 3, 3, 6000),
+            slot(1, 3, 0, 0),
+            slot(2, 3, 1, 4000, [at(1, 0), at(2), at(3, 1), at(4)]),
+            slot(2, 3, 2, 6000, [at(5, 2), at(6, 0x42)]),
+            slot(5, 3, 3, 6000),
         ]
         rides, invalid = rides_from_slots(slots)
         self.assertEqual(invalid, [], 'the marks change no checked byte')
@@ -186,12 +185,12 @@ class RideExportTests(unittest.TestCase):
         def at(second, lap=None):
             return {'active_ms': second * 1000, 'location': (-333_646_900, -705_155_800), 'lap': lap}
 
-        slots = [slot(1, 2, 3, 0, 0), slot(2, 2, 3, 1, 3000, [at(1, 0), at(2, 5), at(3, 6)]), slot(5, 2, 3, 2, 3000)]
+        slots = [slot(1, 3, 0, 0), slot(2, 3, 1, 3000, [at(1, 0), at(2, 5), at(3, 6)]), slot(5, 3, 2, 3000)]
         rides, invalid = rides_from_slots(slots)
         self.assertEqual(invalid, [])
         self.assertEqual([lap['started_by'] for lap in rides[0]['laps']], ['ride', 'position'])
 
-    def test_a_ride_recorded_before_lap_marks_has_no_laps(self):
+    def test_a_ride_with_no_lap_marks_has_no_laps(self):
         rides, _ = rides_from_slots(self.fixture())
         self.assertIsNone(rides[0]['laps'])
         self.assertTrue(all(sample['lap'] is None for sample in rides[0]['samples']))
@@ -201,7 +200,7 @@ class RideExportTests(unittest.TestCase):
         self.assertEqual(invalid, [])
         self.assertEqual(len(rides), 1)
         ride = rides[0]
-        self.assertEqual((ride['ride_id'], ride['source'], ride['terminal']), (7, 'live', 'recovered'))
+        self.assertEqual((ride['ride_id'], ride['terminal']), (7, 'recovered'))
         self.assertEqual(len(ride['samples']), 3)
         self.assertEqual(ride['samples'][0]['heart_bpm'], 72)
         self.assertEqual(ride['samples'][2]['cadence_tenths'], 615)
@@ -220,7 +219,7 @@ class RideExportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rides_from_slots([self.fixture()[0], self.fixture()[0]])
         with tempfile.TemporaryDirectory() as directory:
-            no_location = {'ride_id': 1, 'source': 'demo', 'segments': []}
+            no_location = {'ride_id': 1, 'segments': []}
             self.assertEqual(write_gpx(no_location, Path(directory) / 'none.gpx'), 'no valid location samples')
 
     def test_gpx_11_normalizes_positive_180_and_preserves_time(self):
@@ -281,13 +280,13 @@ class RideExportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             read_slot(FakeBulk(self.fixture()), 0, 'removable')
 
-    def test_forward_gap_keeps_later_records_and_splits_unknown_source(self):
+    def test_forward_gap_keeps_later_records_and_skips_a_foreign_ride(self):
         sample = {'active_ms': 3000, 'utc_ms': 100, 'location': (1, 2)}
         slots = [
-            slot(1, 2, 1, 0, 0),
-            slot(2, 1, 9, 1, 3000, [sample]),
-            slot(2, 2, 1, 3, 3000, [sample]),
-            slot(5, 2, 1, 4, 3000),
+            slot(1, 1, 0, 0),
+            slot(2, 9, 1, 3000, [sample]),
+            slot(2, 1, 3, 3000, [sample]),
+            slot(5, 1, 4, 3000),
         ]
         ride = rides_from_slots(slots)[0][0]
         self.assertTrue(ride['gap'])
@@ -423,7 +422,7 @@ class RideExportTests(unittest.TestCase):
             {'active_ms': 2000, 'utc_ms': None, 'location': (2, 3)},
             {'active_ms': 3000, 'utc_ms': 90, 'location': (3, 4)},
         ]
-        slots = [slot(1, 2, 1, 0, 0), slot(2, 2, 1, 1, 3000, points), slot(5, 2, 1, 2, 3000)]
+        slots = [slot(1, 1, 0, 0), slot(2, 1, 1, 3000, points), slot(5, 1, 2, 3000)]
         ride = rides_from_slots(slots)[0][0]
         self.assertEqual([len(segment) for segment in ride['segments']], [2, 1])
         ride['segments'][0][0]['utc_ms'] = (1 << 64) - 1
@@ -438,12 +437,12 @@ class RideExportTests(unittest.TestCase):
             {'active_ms': 6000, 'utc_ms': 1_700_000_100_000, 'location': (6000, 6000)},
         ]
         slots = [
-            slot(1, 2, 3, 0, 0),
-            slot(2, 2, 3, 1, 4000, [*before, synced]),
-            slot(3, 2, 3, 2, 4000),
-            slot(4, 2, 3, 3, 4000),
-            slot(2, 2, 3, 4, 6000, after_pause),
-            slot(5, 2, 3, 5, 6000),
+            slot(1, 3, 0, 0),
+            slot(2, 3, 1, 4000, [*before, synced]),
+            slot(3, 3, 2, 4000),
+            slot(4, 3, 3, 4000),
+            slot(2, 3, 4, 6000, after_pause),
+            slot(5, 3, 5, 6000),
         ]
         ride = rides_from_slots(slots)[0][0]
         times = [sample['utc_ms'] for sample in ride['samples']]
@@ -463,7 +462,7 @@ class RideExportTests(unittest.TestCase):
     def test_clock_sync_after_a_gap_does_not_date_samples_before_the_gap(self):
         untimed = [{'active_ms': 1000, 'utc_ms': None, 'location': (1, 1)}]
         timed = [{'active_ms': 9000, 'utc_ms': 1_700_000_009_000, 'location': (2, 2)}]
-        slots = [slot(1, 2, 4, 0, 0), slot(2, 2, 4, 1, 1000, untimed), b'\0' * SLOT_SIZE, slot(2, 2, 4, 3, 9000, timed)]
+        slots = [slot(1, 4, 0, 0), slot(2, 4, 1, 1000, untimed), b'\0' * SLOT_SIZE, slot(2, 4, 3, 9000, timed)]
         ride = rides_from_slots(slots)[0][0]
         self.assertIsNone(ride['samples'][0]['utc_ms'])
         self.assertNotIn('utc_derived', ride['samples'][0])
@@ -478,13 +477,13 @@ class LargeExportTests(unittest.TestCase):
             canonical = output / 'ride-slots.bin'
             with canonical.open('wb') as raw:
                 for ride in range(1, rides + 1):
-                    raw.write(slot(1, 2, ride, 0, 0))
+                    raw.write(slot(1, ride, 0, 0))
                     for batch in range(1, batches + 1):
                         samples = [
                             {'active_ms': (batch - 1) * 4000 + step * 1000, 'heart': 120} for step in range(1, 5)
                         ]
-                        raw.write(slot(2, 2, ride, batch, batch * 4000, samples))
-                    raw.write(slot(5, 2, ride, batches + 1, batches * 4000))
+                        raw.write(slot(2, ride, batch, batch * 4000, samples))
+                    raw.write(slot(5, ride, batches + 1, batches * 4000))
             size = canonical.stat().st_size
             tracemalloc.start()
             try:
@@ -527,12 +526,9 @@ class BulkDataStartTest(unittest.TestCase):
     def test_rides_volume_offsets_record_zero(self):
         self.assertEqual(self.start('OK', 'layout=volumes rides=2048+2097152'), 2064)
 
-    def test_firmware_without_volumes_keeps_the_legacy_start(self):
-        self.assertEqual(self.start('INVALID', 'malformed command'), 16)
-
-    def test_a_legacy_layout_under_volume_firmware_is_refused(self):
+    def test_a_region_without_a_rides_volume_is_refused(self):
         with self.assertRaises(RuntimeError):
-            self.start('OK', 'layout=legacy region=5777407')
+            self.start('OK', 'layout=blank')
 
 
 if __name__ == '__main__':

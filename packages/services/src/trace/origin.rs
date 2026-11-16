@@ -194,7 +194,7 @@ pub fn volumes<'e>(
     use crate::{files, pack};
     let table = match volume::read(bulk, sector) {
         Ok(Layout::Table(table)) => table,
-        Ok(Layout::Blank | Layout::Legacy) | Err(volume::Error::Media(MediaError::Unsupported)) => {
+        Ok(Layout::Blank) | Err(volume::Error::Media(MediaError::Unsupported)) => {
             return (Found::Absent, Found::Absent);
         }
         Ok(Layout::Lost)

@@ -257,7 +257,7 @@ pub fn rebuild(trace: &[u8], pulled: &Pulled) -> Result<(Origin, Vec<Gap>), Stri
     volume::create(&mut card, &mut sector).map_err(|e| format!("volume table: {e:?}"))?;
     let mut out = String::new();
     let status = firmware_console::commands::volumes::execute(
-        firmware_console::commands::volumes::Command::AddStore,
+        firmware_console::commands::volumes::Command::StoreFormat,
         &mut card,
         &mut out,
     );

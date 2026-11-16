@@ -12,7 +12,7 @@ use shell_simulator::sim::{NoteKind, Screen, Sim, minutes, seconds};
 use shell_simulator::world::{Side, Vehicle};
 use vana::ride::fit::Refusal;
 use vana::ride::log::{
-    Entry, Kind, LapStart, SLOT_SIZE, SLOTS, Sample, Slot, Source, commit_word, decode, encode,
+    Entry, Kind, LapStart, SLOT_SIZE, SLOTS, Sample, Slot, commit_word, decode, encode,
 };
 use vana::screens::chrome::{AMBER, GREEN, RED, SECONDARY, WHITE, ZONES};
 
@@ -177,15 +177,9 @@ fn old_ride_leaving(free: usize) -> Vec<u8> {
     for index in 0..used {
         let sequence = index as u32;
         let entry = if index == 0 {
-            Entry::event(Kind::Start, Source::Live, 1, 0, 0)
+            Entry::event(Kind::Start, 1, 0, 0)
         } else if index == used - 1 {
-            Entry::event(
-                Kind::Finish,
-                Source::Live,
-                1,
-                sequence,
-                index as u64 * 4_000,
-            )
+            Entry::event(Kind::Finish, 1, sequence, index as u64 * 4_000)
         } else {
             let first = (index as u64 - 1) * 4 + 1;
             let batch = [
@@ -194,7 +188,7 @@ fn old_ride_leaving(free: usize) -> Vec<u8> {
                 sample(first + 2),
                 sample(first + 3),
             ];
-            Entry::batch(Source::Live, 1, sequence, &batch).unwrap()
+            Entry::batch(1, sequence, &batch).unwrap()
         };
         let mut slot = encode(&entry);
         slot.0[SLOT_SIZE - 4..].copy_from_slice(&commit_word().0);
@@ -4351,16 +4345,15 @@ fn training_history(plan: &[(u64, u16)], minutes: u64) -> Vec<u8> {
             power_watts: (watts != 0).then_some(watts),
             ..Sample::default()
         };
-        push(Entry::event(Kind::Start, Source::Live, ride_id, 0, 0));
+        push(Entry::event(Kind::Start, ride_id, 0, 0));
         let mut sequence = 1;
         for batch in 0..samples / 4 {
             let samples: Vec<_> = (1..=4).map(|i| sample(batch * 4 + i)).collect();
-            push(Entry::batch(Source::Live, ride_id, sequence, &samples).unwrap());
+            push(Entry::batch(ride_id, sequence, &samples).unwrap());
             sequence += 1;
         }
         push(Entry::event(
             Kind::Finish,
-            Source::Live,
             ride_id,
             sequence,
             samples * HISTORY_STEP_MS,
@@ -5660,20 +5653,14 @@ fn journal_of_powered_rides(rides: &[(u64, u64, f64, Option<u16>)]) -> Vec<u8> {
                 ..Sample::default()
             })
             .collect();
-        push(&Entry::event(Kind::Start, Source::Live, id, 0, 0));
+        push(&Entry::event(Kind::Start, id, 0, 0));
         let mut sequence = 1;
         for batch in samples.chunks(4) {
-            push(&Entry::batch(Source::Live, id, sequence, batch).unwrap());
+            push(&Entry::batch(id, sequence, batch).unwrap());
             sequence += 1;
         }
         let active_ms = minutes * 60_000;
-        push(&Entry::event(
-            Kind::Finish,
-            Source::Live,
-            id,
-            sequence,
-            active_ms,
-        ));
+        push(&Entry::event(Kind::Finish, id, sequence, active_ms));
     }
     slots
 }

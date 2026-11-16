@@ -140,7 +140,7 @@ class FakeDevice:
         if op == OP['files_delete']:
             return (0, 0, 0, b'') if self.files.pop(payload.decode(), None) is not None else (8, 0, 0, b'')
         if self.store is None and op in (OP['store_status'], OP['store_list'], OP['store_read']):
-            return volumes.STATUS.index('invalid'), 0, 0, b''
+            return volumes.STATUS.index('uninitialized'), 0, 0, b''
         if op == OP['store_status']:
             info = struct.pack('<QQ6I', self.generation, 0xCD, len(self.store), 64, 1039, 1000, 512, 486)
             return 0, self.generation, len(self.store), info
@@ -306,38 +306,6 @@ class VolumesTests(unittest.TestCase):
         ):
             volumes.run(Namespace(action='terrain-verify', file=Path('pack')), 'port')
         self.assertEqual(order, ['hash', 'connect', 'session', ('verify', (1, b'', 2))])
-
-    def test_add_store_runs_the_line_command_and_reports_a_refusal(self):
-        sent = []
-
-        class Connection:
-            def __init__(self, status):
-                self.status = status
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_):
-                return False
-
-            def terminal_command(self, command):
-                sent.append(command)
-                return {'status': self.status, 'data': 'layout=volumes store=5244928+532479'}
-
-        with tempfile.TemporaryDirectory() as directory:
-            for status in ('OK', 'UNINITIALIZED'):
-                with mock.patch.multiple(
-                    volumes,
-                    private_path=lambda _: Path(directory),
-                    UsbConnection=lambda *_, status=status: Connection(status),
-                ):
-                    if status == 'OK':
-                        result = volumes.run(Namespace(action='add-store'), 'port')
-                        self.assertEqual(result, {'status': 'layout=volumes store=5244928+532479'})
-                    else:
-                        with self.assertRaisesRegex(RuntimeError, 'VOLUME ADD STORE: UNINITIALIZED'):
-                            volumes.run(Namespace(action='add-store'), 'port')
-        self.assertEqual(sent, ['VOLUME ADD STORE', 'VOLUME ADD STORE'])
 
     def test_store_format_needs_confirm_and_runs_the_line_command(self):
         sent = []
@@ -532,10 +500,10 @@ class VolumesTests(unittest.TestCase):
             self.assertEqual(out.read_bytes(), b'an earlier pull')
             self.assertFalse(Path(f'{out}.partial').exists())
 
-    def test_inspect_reports_firmware_from_before_store(self):
+    def test_inspect_reports_a_region_without_a_store(self):
         device = FakeDevice()
         device.store = None
-        self.assertEqual(volumes.inspect(FakeTransfer(device))['store'], {'state': 'unsupported'})
+        self.assertEqual(volumes.inspect(FakeTransfer(device))['store'], {'state': 'uninitialized'})
 
     def test_a_get_whose_bytes_do_not_match_leaves_no_file(self):
         with tempfile.TemporaryDirectory() as directory:

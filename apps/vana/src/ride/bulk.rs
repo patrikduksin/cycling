@@ -10,14 +10,13 @@
 //!
 //! The log lives in the RIDES volume of the owned region's volume table
 //! (`firmware_services::volume`). The region starts unformatted. Only explicit
-//! initialize writes: the volume table when there is none (a blank region, or
-//! the log from before volumes, which then reports `layout=legacy`), then a
+//! initialize writes: the volume table when there is none, then a
 //! superblock; clear (after a verified export) starts a new epoch whose
 //! superblock makes older records unreachable without erasing them.
 
 use crate::ride::journal::{Journal, Progress, Scan};
 use crate::ride::log::{
-    Catalog, Entry, HISTORY_CAPACITY, Recovery, SLOT_SIZE, Scanner, Slot, Source, Summary,
+    Catalog, Entry, HISTORY_CAPACITY, RECORDED_LIVE, Recovery, SLOT_SIZE, Scanner, Slot, Summary,
 };
 use device_api::bulk::{Error as MediaError, ReadWrite};
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
@@ -51,7 +50,7 @@ pub fn encode_catalog(catalog: &Catalog) -> [u8; ENCODED] {
     put_u16(&mut bytes, 18, catalog.invalid_slots);
     put_u16(&mut bytes, 20, catalog.valid_slots);
     if let Some(open) = catalog.recovery {
-        bytes[3] = open.source as u8;
+        bytes[3] = RECORDED_LIVE;
         put_u32(&mut bytes, 24, open.ride_id);
         put_u32(&mut bytes, 28, open.next_sequence);
         put_u64(&mut bytes, 32, open.active_ms);
@@ -74,14 +73,11 @@ pub fn decode_catalog(bytes: &[u8]) -> Option<Catalog> {
         return None;
     }
     let recovery = if bytes[1] & 1 != 0 {
-        let source = match bytes[3] {
-            1 => Source::Demo,
-            2 => Source::Live,
-            _ => return None,
-        };
+        if bytes[3] != RECORDED_LIVE {
+            return None;
+        }
         Some(Recovery {
             ride_id: get_u32(bytes, 24),
-            source,
             next_sequence: get_u32(bytes, 28),
             active_ms: get_u64(bytes, 32),
             gap: bytes[1] & 4 != 0,
@@ -122,8 +118,6 @@ pub enum Region {
     /// A table with a RIDES volume.
     Volumes,
     Blank,
-    /// The whole-region log from before volumes; initialize replaces it.
-    Legacy,
     /// The table is damaged over a ride log; kept untouched for diagnosis.
     Lost,
     /// A table this firmware cannot use, or one without RIDES. Never written.
@@ -136,7 +130,6 @@ impl Region {
             Self::Unread => "unknown",
             Self::Volumes => "volumes",
             Self::Blank => "blank",
-            Self::Legacy => "legacy",
             Self::Lost => "lost",
             Self::Foreign => "foreign",
         }
@@ -206,7 +199,6 @@ impl<'a, B: ReadWrite> Bulk<'a, B> {
         });
         // The recorder's seed is clock based and can repeat across boots.
         let seed = seed ^ self.media.entropy();
-        // Creates the table over a blank or legacy region; refuses a foreign one.
         let rides = volume::create(self.media, &mut self.state.sector)
             .ok()
             .and_then(|table| table.find(&RIDES));
@@ -253,11 +245,6 @@ impl<B: ReadWrite> Bulk<'_, B> {
             },
             Ok(Layout::Blank) => {
                 self.state.region = Region::Blank;
-                Scan::Uninitialized
-            }
-            // Test data from before volumes: report it, write nothing.
-            Ok(Layout::Legacy) => {
-                self.state.region = Region::Legacy;
                 Scan::Uninitialized
             }
             // Rides may be there; only an explicit initialize writes.

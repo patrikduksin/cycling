@@ -127,7 +127,7 @@ mod tests {
     use crate::ride::course::nav::Event;
     use crate::ride::homing::Crumb;
     use crate::ride::homing::tests::taken;
-    use crate::ride::log::{Sample, Source};
+    use crate::ride::log::Sample;
     extern crate std;
     use std::vec;
     use std::vec::Vec;
@@ -168,7 +168,7 @@ mod tests {
     /// Ride `id`'s journal: START, a sample a second from `utc` at the fixes,
     /// and its closing record.
     fn ride(id: u32, fixes: &[Option<(i32, i32)>], utc: Option<u64>, end: Kind) -> Vec<Entry> {
-        let mut slots = vec![Entry::event(Kind::Start, Source::Live, id, 0, 0)];
+        let mut slots = vec![Entry::event(Kind::Start, id, 0, 0)];
         let samples: Vec<Sample> = fixes
             .iter()
             .enumerate()
@@ -180,16 +180,10 @@ mod tests {
             })
             .collect();
         for (i, batch) in samples.chunks(4).enumerate() {
-            slots.push(Entry::batch(Source::Live, id, i as u32 + 1, batch).unwrap());
+            slots.push(Entry::batch(id, i as u32 + 1, batch).unwrap());
         }
         let last = samples.len() as u64 * 1_000;
-        slots.push(Entry::event(
-            end,
-            Source::Live,
-            id,
-            samples.len() as u32,
-            last,
-        ));
+        slots.push(Entry::event(end, id, samples.len() as u32, last));
         slots
     }
 
@@ -366,7 +360,7 @@ mod tests {
             location_e7: Some(fixes[205]),
             ..Sample::default()
         };
-        slots.push(Entry::batch(Source::Live, 2, 4, &[first]).unwrap());
+        slots.push(Entry::batch(2, 4, &[first]).unwrap());
         assert!(rebuild.step(&mut homing, slots.len(), 16, |i| slots.get(i).copied()));
         assert!(homing.len() >= kept);
         assert_eq!(

@@ -10,11 +10,8 @@ use firmware_services::{files, pack, store};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Status,
-    /// Write the default table over a blank or legacy region.
+    /// Write the default table over a blank or lost region.
     Init,
-    /// Migrate a table from before STORE to one with it, and format the
-    /// store in it when it has none.
-    AddStore,
     /// Enter the binary transfer session; the composition owns the switch.
     Transfer,
     Terrain,
@@ -36,10 +33,6 @@ pub fn parse(name: &str, words: &mut core::str::SplitAsciiWhitespace<'_>) -> Opt
     let command = match (name, words.next()) {
         ("VOLUME", None | Some("STATUS")) => Command::Status,
         ("VOLUME", Some("INIT")) => Command::Init,
-        ("VOLUME", Some("ADD")) => match words.next() {
-            Some("STORE") => Command::AddStore,
-            _ => return None,
-        },
         ("VOLUME", Some("TRANSFER")) => Command::Transfer,
         ("STORE", None | Some("STATUS")) => Command::Store,
         ("STORE", Some("FORMAT")) => match words.next() {
@@ -167,14 +160,9 @@ fn entry(out: &mut impl Write, entry: &files::Entry) {
 pub fn execute(command: Command, media: &mut impl ReadWrite, out: &mut impl Write) -> &'static str {
     let mut sector = [0u8; 512];
     match command {
-        Command::Status | Command::Init | Command::AddStore => {
+        Command::Status | Command::Init => {
             let found = match command {
                 Command::Init => volume::create(media, &mut sector).map(Layout::Table),
-                Command::AddStore => match volume::add_store(media, &mut sector) {
-                    Ok(table) => Ok(Layout::Table(table)),
-                    Err(volume::AddStoreError::Table(e)) => Err(e),
-                    Err(volume::AddStoreError::Store(e)) => return store_status(e),
-                },
                 _ => volume::read(media, &mut sector),
             };
             let region = match media.owned_info() {

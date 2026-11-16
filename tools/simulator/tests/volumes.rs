@@ -1,5 +1,3 @@
-//! The owned MMC region's volumes: migration from the whole-region ride log,
-//! and terrain and files installed by the host beside the rides.
 use shell_simulator::bulk::Presence;
 use shell_simulator::sim::{Sim, seconds};
 
@@ -8,50 +6,6 @@ fn field<'a>(status: &'a str, name: &str) -> &'a str {
         .split_whitespace()
         .find_map(|f| f.strip_prefix(name).and_then(|f| f.strip_prefix('=')))
         .unwrap_or_else(|| panic!("{name} in {status}"))
-}
-
-#[test]
-fn the_ride_log_from_before_volumes_is_reported_until_initialized_again() {
-    let mut sim = Sim::new();
-    sim.fit_bulk(Presence::Ready);
-    // The bulk store as the whole-region log left it, four test rides on it.
-    {
-        use firmware_services::sector_log;
-        let mut sector = [0u8; 512];
-        let initial = vana::ride::bulk::encode_catalog(&Default::default());
-        let mut log = sector_log::format(
-            &mut sim.device.bulk,
-            vana::ride::bulk::TAG,
-            1,
-            &initial,
-            &mut sector,
-        )
-        .unwrap();
-        for _ in 0..4 {
-            log.append(&mut sim.device.bulk, &[7; 128], &mut sector)
-                .unwrap();
-        }
-    }
-    let writes = sim.device.bulk.writes();
-    let mut sim = sim.boot();
-    let (_, status) = sim.command("RIDE BULK STATUS");
-    assert_eq!(field(&status, "state"), "needs_init");
-    assert_eq!(field(&status, "layout"), "legacy");
-    let (status, volumes) = sim.command("VOLUME STATUS");
-    assert_eq!(
-        (status, volumes.as_str()),
-        ("OK", "layout=legacy sectors=5777407")
-    );
-    sim.advance(seconds(10));
-    assert_eq!(sim.device.bulk.writes(), writes, "nothing written over it");
-
-    sim.init_bulk();
-    let (_, status) = sim.command("RIDE BULK STATUS");
-    assert_eq!(field(&status, "layout"), "volumes");
-    assert_eq!(field(&status, "rides"), "0");
-    let (_, volumes) = sim.command("VOLUME STATUS");
-    assert!(volumes.starts_with("layout=volumes"), "{volumes}");
-    assert!(volumes.contains("rides=2048+2097152"), "{volumes}");
 }
 
 fn files_entries(sim: &mut Sim) -> usize {
@@ -150,101 +104,6 @@ fn terrain_and_files_installed_by_the_host_live_beside_bulk_rides() {
     assert_eq!(status, "OK");
     assert_eq!(sim.file("settings/phone.json"), None);
     assert_eq!(sim.command("VOLUME TRANSFER").0, "UNSUPPORTED");
-}
-
-fn table_before_store(sim: &mut Sim) {
-    use device_api::bulk::ReadWrite;
-    let mut table = sim.device.bulk.sector(0);
-    assert_eq!(table[18], 4, "four volumes");
-    table[18] = 3;
-    table[64 + 3 * 32..64 + 4 * 32].fill(0);
-    let checksum = firmware_services::checksum::crc32(&table[..508]);
-    table[508..].copy_from_slice(&checksum.to_le_bytes());
-    for copy in 0..2 {
-        sim.device.bulk.owned_write(copy, &table).unwrap();
-    }
-}
-
-#[test]
-fn the_owner_adds_store_to_a_table_from_before_it_and_rides_and_files_stay() {
-    let mut sim = Sim::new();
-    sim.fit_bulk(Presence::Ready);
-    sim.init_volumes();
-    table_before_store(&mut sim);
-    let mut sim = sim.boot();
-    sim.init_bulk();
-    sim.put_file("workouts/sweet-spot.json", b"{\"steps\":[]}");
-    sim.start_ride();
-    sim.advance(seconds(30));
-    sim.stop_ride();
-    sim.done();
-    let ride = |sim: &mut Sim| -> Vec<(u32, usize)> {
-        let rides = sim.bulk_rides();
-        rides.iter().map(|r| (r.id, r.entries.len())).collect()
-    };
-    let rides = ride(&mut sim);
-    assert_eq!(rides.len(), 1);
-    let (_, volumes) = sim.command("VOLUME STATUS");
-    assert_eq!(field(&volumes, "unallocated"), "532479");
-    assert!(!volumes.contains("store="), "{volumes}");
-    assert_eq!(sim.command("STORE STATUS").0, "UNINITIALIZED");
-
-    let (status, volumes) = sim.command("VOLUME ADD STORE");
-    assert_eq!(status, "OK", "{volumes}");
-    assert_eq!(
-        (
-            field(&volumes, "generation"),
-            field(&volumes, "unallocated"),
-            field(&volumes, "rides"),
-            field(&volumes, "files"),
-            field(&volumes, "terrain"),
-            field(&volumes, "store"),
-        ),
-        (
-            "2",
-            "0",
-            "2048+2097152",
-            "2099200+524288",
-            "2623488+2621440",
-            "5244928+532479"
-        )
-    );
-    let (_, store) = sim.command("STORE STATUS");
-    assert_eq!(
-        (field(&store, "state"), field(&store, "files")),
-        ("ready", "0")
-    );
-    assert_eq!(field(&store, "chunks"), "1039");
-    let writes = sim.device.bulk.writes();
-    assert_eq!(sim.command("VOLUME ADD STORE").0, "OK");
-    assert_eq!(sim.device.bulk.writes(), writes, "already added");
-
-    let mut sim = sim.boot();
-    assert_eq!(ride(&mut sim), rides);
-    assert_eq!(
-        sim.file("workouts/sweet-spot.json").as_deref(),
-        Some(&b"{\"steps\":[]}"[..])
-    );
-    assert_eq!(field(&sim.command("STORE STATUS").1, "state"), "ready");
-}
-
-#[test]
-fn adding_store_over_a_damaged_store_reports_it_and_writes_nothing() {
-    use device_api::bulk::ReadWrite;
-    let mut sim = Sim::new();
-    sim.fit_bulk(Presence::Ready);
-    sim.init_volumes();
-    table_before_store(&mut sim);
-    let mut header = [0u8; 512];
-    header[..16].copy_from_slice(firmware_services::store::MAGIC);
-    sim.device.bulk.owned_write(5_244_928, &header).unwrap();
-    let mut sim = sim.boot();
-    let writes = sim.device.bulk.writes();
-    let (status, _) = sim.command("VOLUME ADD STORE");
-    assert_eq!(status, "CORRUPT");
-    assert_eq!(sim.device.bulk.writes(), writes, "nothing written");
-    let (_, volumes) = sim.command("VOLUME STATUS");
-    assert_eq!(field(&volumes, "generation"), "1", "{volumes}");
 }
 
 #[test]

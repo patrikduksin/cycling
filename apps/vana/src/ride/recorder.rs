@@ -31,13 +31,12 @@ use crate::ride::log::Kind;
 use crate::ride::log::LapStart;
 use crate::ride::log::Recovery;
 use crate::ride::log::Sample;
-use crate::ride::log::Source;
 use crate::ride::log::Status;
 use crate::ride::log::Summary;
 
 #[derive(Clone, Copy)]
 enum Pending {
-    Ride(Action, Source, u64, u32),
+    Ride(Action, u64, u32),
     Initialize(u32),
     Clear(u32),
 }
@@ -67,7 +66,6 @@ pub struct Recorder {
     accumulated_ms: u64,
     running_since: u64,
     stop_at: Option<u64>,
-    source: Source,
     open_ride: bool,
     summary: Summary,
     samples: [Sample; crate::ride::log::SAMPLES_PER_BATCH],
@@ -96,7 +94,6 @@ impl Default for Recorder {
             accumulated_ms: 0,
             running_since: 0,
             stop_at: None,
-            source: Source::Demo,
             open_ride: false,
             summary: Summary::default(),
             samples: [Sample::default(); crate::ride::log::SAMPLES_PER_BATCH],
@@ -188,8 +185,8 @@ impl Recorder {
         self.max_erase_ms
     }
 
-    pub fn source(&self) -> Option<Source> {
-        self.open_ride.then_some(self.source)
+    pub fn ride_open(&self) -> bool {
+        self.open_ride
     }
 
     pub fn summaries(&self) -> [Option<Summary>; crate::ride::log::HISTORY_CAPACITY] {
@@ -225,7 +222,7 @@ impl Recorder {
             )
     }
 
-    pub fn request(&mut self, action: Action, source: Source, now: u64, token: u32) -> bool {
+    pub fn request(&mut self, action: Action, now: u64, token: u32) -> bool {
         if self.pending.is_some() || self.result.is_some() {
             return false;
         }
@@ -244,15 +241,10 @@ impl Recorder {
             }
         };
         if allowed {
-            let source = if action == Action::Start {
-                source
-            } else {
-                self.source
-            };
             if matches!(action, Action::Pause | Action::Finish) {
                 self.stop_at = Some(now);
             }
-            self.pending = Some(Pending::Ride(action, source, now, token));
+            self.pending = Some(Pending::Ride(action, now, token));
         }
         allowed
     }
@@ -382,7 +374,7 @@ impl Recorder {
 
         if self.status == Status::Recording && self.stop_at.is_none() && now >= self.next_sample {
             if self.sample_count < self.samples.len() {
-                let mut sample = sample.for_source(self.source);
+                let mut sample = sample.without_impossible_battery();
                 sample.active_ms = self.active_ms(now);
                 sample.lap = self.lap_marks.pop();
                 self.samples[self.sample_count] = sample;
@@ -408,7 +400,7 @@ impl Recorder {
             && self.sample_count < self.samples.len()
             && self.lap_marks.lap_waiting()
         {
-            let mut sample = sample.for_source(self.source);
+            let mut sample = sample.without_impossible_battery();
             sample.active_ms = self.active_ms(now);
             sample.lap = self.lap_marks.pop();
             self.samples[self.sample_count] = sample;
@@ -420,7 +412,6 @@ impl Recorder {
         {
             let entry = Entry::event(
                 Kind::Recovered,
-                recovery.source,
                 recovery.ride_id,
                 recovery.next_sequence,
                 recovery.active_ms,
@@ -443,7 +434,7 @@ impl Recorder {
         if let Some(Pending::Clear(_)) = self.pending {
             return false;
         }
-        if let Some(Pending::Ride(action, source, action_ms, token)) = self.pending {
+        if let Some(Pending::Ride(action, action_ms, token)) = self.pending {
             if self.sample_count != 0 && matches!(action, Action::Pause | Action::Finish) {
                 if !self.flush(journal, now, clock) {
                     self.pending = None;
@@ -482,7 +473,7 @@ impl Recorder {
                 self.ride_id = self.catalog.next_ride_id;
                 self.sequence = 0;
             }
-            let entry = Entry::event(kind, source, self.ride_id, self.sequence, active_ms);
+            let entry = Entry::event(kind, self.ride_id, self.sequence, active_ms);
             let ok = self.append(
                 journal,
                 &entry,
@@ -498,11 +489,10 @@ impl Recorder {
                         self.running_since = action_ms;
                         self.next_sample = action_ms;
                         self.stop_at = None;
-                        self.source = source;
                         self.open_ride = true;
                         self.lap_marks = Marks::default();
                         self.lap_marks.push(LapStart::Ride);
-                        self.summary = Summary::started(self.ride_id, source);
+                        self.summary = Summary::started(self.ride_id);
                         self.status = Status::Recording;
                         // As a scan would see it once START is committed.
                         self.catalog.next_ride_id = self.ride_id.wrapping_add(1).max(1);
@@ -599,7 +589,6 @@ impl Recorder {
             self.committed_ms = recovery.active_ms;
             self.ride_id = recovery.ride_id;
             self.sequence = recovery.next_sequence;
-            self.source = recovery.source;
             self.open_ride = true;
             self.summary = recovery.summary;
             Status::Recovered
@@ -663,7 +652,6 @@ impl Recorder {
         if self.open_ride && catalog.recovery.is_none() {
             catalog.recovery = Some(Recovery {
                 ride_id: self.ride_id,
-                source: self.source,
                 next_sequence: self.sequence,
                 active_ms: self.committed_ms,
                 gap: false,
@@ -680,13 +668,7 @@ impl Recorder {
                 .dropped_samples
                 .saturating_add(self.sample_count as u32);
             self.sample_count = 0;
-            let entry = Entry::event(
-                Kind::Full,
-                self.source,
-                self.ride_id,
-                self.sequence,
-                self.active_ms(now),
-            );
+            let entry = Entry::event(Kind::Full, self.ride_id, self.sequence, self.active_ms(now));
             if self.append(journal, &entry, true, now, clock) {
                 self.summary.finish(Kind::Full, entry.active_ms, false);
                 self.catalog.push_summary(self.summary);
@@ -700,7 +682,6 @@ impl Recorder {
             return false;
         }
         let entry = Entry::batch(
-            self.source,
             self.ride_id,
             self.sequence,
             &self.samples[..self.sample_count],
@@ -917,11 +898,11 @@ mod tests {
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
         assert_eq!(media.mutations, 0);
-        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        assert!(recorder.request(Action::Start, 100, 1));
         recorder.service(&mut media, 100, Sample::default(), &|| 100);
         assert!(recorder.take_result().unwrap().ok);
         recorder.service(&mut media, 1_100, Sample::default(), &|| 1_100);
-        assert!(recorder.request(Action::Pause, Source::Live, 2_100, 2));
+        assert!(recorder.request(Action::Pause, 2_100, 2));
         recorder.service(&mut media, 2_100, Sample::default(), &|| 2_100);
         recorder.service(&mut media, 2_100, Sample::default(), &|| 2_100);
         assert!(recorder.take_result().unwrap().ok);
@@ -938,7 +919,7 @@ mod tests {
         let mut media = Memory::default();
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
-        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        assert!(recorder.request(Action::Start, 100, 1));
         recorder.service(&mut media, 100, Sample::default(), &|| 100);
         assert!(recorder.take_result().unwrap().ok);
         recorder.service(
@@ -951,7 +932,7 @@ mod tests {
             },
             &|| 1100,
         );
-        assert!(recorder.request(Action::Finish, Source::Live, 2100, 2));
+        assert!(recorder.request(Action::Finish, 2100, 2));
         assert_eq!(recorder.active_ms(9000), 2000);
         for _ in 0..3 {
             recorder.service(&mut media, 9000, Sample::default(), &|| 9000);
@@ -970,12 +951,12 @@ mod tests {
         let mut media = Memory::default();
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
-        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        assert!(recorder.request(Action::Start, 100, 1));
         recorder.service(&mut media, 100, Sample::default(), &|| 100);
         assert!(recorder.take_result().unwrap().ok);
         recorder.service(&mut media, 100, Sample::default(), &|| 100);
         recorder.mark_lap(LapStart::Manual);
-        assert!(recorder.request(Action::Finish, Source::Live, 900, 2));
+        assert!(recorder.request(Action::Finish, 900, 2));
         for _ in 0..3 {
             recorder.service(&mut media, 9000, Sample::default(), &|| 9000);
         }
@@ -1001,7 +982,7 @@ mod tests {
         let mut media = Memory::default();
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
-        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        assert!(recorder.request(Action::Start, 100, 1));
         recorder.service(&mut media, 100, Sample::default(), &|| 100);
         assert!(recorder.take_result().unwrap().ok);
         recorder.mark_lap(LapStart::Manual);
@@ -1015,7 +996,7 @@ mod tests {
         }
         recorder.mark_lap(LapStart::Manual);
         recorder.mark_lap(LapStart::Step);
-        assert!(recorder.request(Action::Finish, Source::Live, 3900, 2));
+        assert!(recorder.request(Action::Finish, 3900, 2));
         for _ in 0..3 {
             recorder.service(&mut media, 9000, Sample::default(), &|| 9000);
         }
@@ -1048,11 +1029,11 @@ mod tests {
         let mut media = Memory::default();
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
-        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        assert!(recorder.request(Action::Start, 100, 1));
         recorder.service(&mut media, 100, Sample::default(), &|| 100);
         assert!(recorder.take_result().unwrap().ok);
         recorder.mark_lap(LapStart::Manual);
-        assert!(recorder.request(Action::Pause, Source::Live, 600, 2));
+        assert!(recorder.request(Action::Pause, 600, 2));
         for _ in 0..3 {
             recorder.service(&mut media, 600, Sample::default(), &|| 600);
         }
@@ -1079,7 +1060,7 @@ mod tests {
         let mut media = Memory::default();
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
-        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        assert!(recorder.request(Action::Start, 100, 1));
         recorder.service(&mut media, 100, Sample::default(), &|| 100);
         assert!(recorder.take_result().unwrap().ok);
         // Four seconds of altitudes that are not on the 0.2 m grid, or past its range.
@@ -1092,7 +1073,7 @@ mod tests {
             };
             recorder.service(&mut media, now, sample, &|| now);
         }
-        assert!(recorder.request(Action::Finish, Source::Live, 4100, 2));
+        assert!(recorder.request(Action::Finish, 4100, 2));
         for _ in 0..3 {
             recorder.service(&mut media, 9000, Sample::default(), &|| 9000);
         }
@@ -1114,7 +1095,7 @@ mod tests {
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
         media.fail_commit = true;
-        assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+        assert!(recorder.request(Action::Start, 100, 1));
         recorder.service(&mut media, 100, Sample::default(), &|| 100);
         assert_eq!(recorder.status(), Status::Error);
         assert!(!recorder.take_result().unwrap().ok);
@@ -1124,7 +1105,7 @@ mod tests {
     }
 
     fn start(recorder: &mut Recorder, media: &mut Memory, now: u64) {
-        assert!(recorder.request(Action::Start, Source::Live, now, 1));
+        assert!(recorder.request(Action::Start, now, 1));
         recorder.service(media, now, Sample::default(), &|| now);
         assert!(recorder.take_result().unwrap().ok);
     }
@@ -1138,7 +1119,7 @@ mod tests {
             let mut recorder = Recorder::default();
             scan(&mut recorder, &mut media);
             media.tear_write = Some(torn);
-            assert!(recorder.request(Action::Start, Source::Live, 100, 1));
+            assert!(recorder.request(Action::Start, 100, 1));
             recorder.service(&mut media, 100, Sample::default(), &|| 100);
             assert_eq!(recorder.status(), Status::Error);
 
@@ -1147,7 +1128,7 @@ mod tests {
             assert_eq!(rebooted.status(), Status::Ready, "torn after {torn} bytes");
             assert_eq!(rebooted.next_slot(), 1);
             start(&mut rebooted, &mut media, 200);
-            assert!(rebooted.request(Action::Finish, Source::Live, 1_200, 2));
+            assert!(rebooted.request(Action::Finish, 1_200, 2));
             for now in [1_200, 1_200] {
                 rebooted.service(&mut media, now, Sample::default(), &|| now);
             }
@@ -1206,18 +1187,18 @@ mod tests {
         for now in (0..=10_000).step_by(10) {
             recorder.service(&mut media, now, Sample::default(), &|| now);
         }
-        assert!(recorder.request(Action::Pause, Source::Live, 10_005, 2));
+        assert!(recorder.request(Action::Pause, 10_005, 2));
         for _ in 0..3 {
             recorder.service(&mut media, 10_005, Sample::default(), &|| 10_005);
         }
         assert!(recorder.take_result().unwrap().ok);
-        assert!(recorder.request(Action::Resume, Source::Live, 70_000, 3));
+        assert!(recorder.request(Action::Resume, 70_000, 3));
         recorder.service(&mut media, 70_000, Sample::default(), &|| 70_000);
         assert!(recorder.take_result().unwrap().ok);
         for now in (70_000..=80_000).step_by(10) {
             recorder.service(&mut media, now, Sample::default(), &|| now);
         }
-        assert!(recorder.request(Action::Finish, Source::Live, 80_005, 4));
+        assert!(recorder.request(Action::Finish, 80_005, 4));
         for _ in 0..3 {
             recorder.service(&mut media, 80_005, Sample::default(), &|| 80_005);
         }
@@ -1245,7 +1226,7 @@ mod tests {
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
         start(&mut recorder, &mut media, 0);
-        assert!(recorder.request(Action::Finish, Source::Live, 0, 2));
+        assert!(recorder.request(Action::Finish, 0, 2));
         recorder.service(&mut media, 0, Sample::default(), &|| 0);
         assert!(recorder.take_result().unwrap().ok);
         media.bytes[2 * crate::ride::log::SLOT_SIZE
@@ -1255,7 +1236,7 @@ mod tests {
         scan(&mut nearly, &mut media);
         assert_eq!(nearly.status(), Status::Ready);
         assert_eq!(nearly.remaining_secs(), 0);
-        assert!(nearly.request(Action::Start, Source::Live, 0, 3));
+        assert!(nearly.request(Action::Start, 0, 3));
         nearly.service(&mut media, 0, Sample::default(), &|| 0);
         assert!(!nearly.take_result().unwrap().ok);
         assert_eq!(nearly.status(), Status::Full);
@@ -1291,7 +1272,7 @@ mod tests {
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
         start(&mut recorder, &mut media, 0);
-        assert!(recorder.request(Action::Finish, Source::Live, 0, 2));
+        assert!(recorder.request(Action::Finish, 0, 2));
         recorder.service(&mut media, 0, Sample::default(), &|| 0);
         assert!(recorder.take_result().unwrap().ok);
         // Room for START, one batch and the terminal record.

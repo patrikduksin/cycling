@@ -34,8 +34,6 @@ COMMIT = 0x434F4D54
 MAX_SLOTS = 4096
 # Bulk record 0 follows the log's superblocks and checkpoints in its volume.
 BULK_LOG_DATA = 16
-# Where record 0 was before the volume table (exports made then record no start).
-BULK_DATA_START = BULK_LOG_DATA
 MEDIA = ('internal', 'bulk')
 LAP_STARTS = {0: 'ride', 1: 'manual', 2: 'distance', 3: 'step', 4: 'distance_step', 5: 'position'}
 
@@ -96,9 +94,6 @@ def read_slot(connection, index, medium='internal'):
 def bulk_data_start(connection):
     """Owned MMC sector of bulk record 0: the RIDES volume's start plus the log metadata."""
     reply = connection.terminal_command('VOLUME STATUS')
-    if reply['status'] == 'INVALID':
-        # Firmware from before the volume table has no VOLUME command; its log starts at sector 0.
-        return BULK_DATA_START
     fields = dict(field.split('=', 1) for field in reply['data'].split() if '=' in field)
     if reply['status'] != 'OK' or fields.get('layout') != 'volumes' or 'rides' not in fields:
         raise RuntimeError(f'no RIDES volume: {reply["status"]} {reply["data"]}')
@@ -151,7 +146,7 @@ def decode_slot(data):
         data[:4] != b'RIDE'
         or data[4] != 1
         or data[5] not in range(1, 8)
-        or data[7] not in (1, 2)
+        or data[7] != 2
         or count > 4
         or u16(data, 24) != count * 48
         or data[26:28] != b'\0\0'
@@ -167,7 +162,7 @@ def decode_slot(data):
     for index in range(count):
         value = data[32 + index * 48 : 80 + index * 48]
         flags = u32(value, 16)
-        if flags & ~0x800001FF or (flags & 4 and not flags & 0x80000000):
+        if flags & ~0x1FB:
             raise ValueError('invalid sample flags')
         battery = value[36] if flags & 32 else None
         if battery is not None and battery > 100:
@@ -178,7 +173,6 @@ def decode_slot(data):
                 'utc_ms': u64(value, 8) if flags & 1 else None,
                 'latitude_e7': i32(value, 20) if flags & 2 else None,
                 'longitude_e7': i32(value, 24) if flags & 2 else None,
-                'demo_speed_mm_s': u32(value, 28) if flags & 4 else None,
                 'heart_bpm': u16(value, 32) if flags & 8 else None,
                 'cadence_tenths': u16(value, 34) if flags & 16 else None,
                 'speed_mm_s': u32(value, 40) if flags & 64 else None,
@@ -194,7 +188,6 @@ def decode_slot(data):
         raise ValueError('sample/header duration mismatch')
     return {
         'kind': data[5],
-        'source': 'demo' if data[7] == 1 else 'live',
         'ride_id': u32(data, 8),
         'sequence': u32(data, 12),
         'active_ms': active_ms,
@@ -291,7 +284,6 @@ def iter_rides(slots, invalid):
             seen.add(entry['ride_id'])
             current = {
                 'ride_id': entry['ride_id'],
-                'source': entry['source'],
                 'start_slot': index,
                 'end_slot': None,
                 'terminal': None,
@@ -308,7 +300,7 @@ def iter_rides(slots, invalid):
             continue
         if not current:
             continue
-        if entry['ride_id'] != current['ride_id'] or entry['source'] != current['source']:
+        if entry['ride_id'] != current['ride_id']:
             current['gap'] = True
             if current['segments'][-1]:
                 current['segments'].append([])
@@ -399,7 +391,7 @@ def write_gpx(ride, path):
         ET.SubElement(point, f'{{{ns}}}name').text = f'LAP {lap["lap"]}'
         ET.SubElement(point, f'{{{ns}}}type').text = lap['started_by']
     track = ET.SubElement(root, f'{{{ns}}}trk')
-    ET.SubElement(track, f'{{{ns}}}name').text = f'Ride {ride["ride_id"]} ({ride["source"]})'
+    ET.SubElement(track, f'{{{ns}}}name').text = f'Ride {ride["ride_id"]}'
     points = 0
     for segment in segments:
         xml_segment = ET.SubElement(track, f'{{{ns}}}trkseg')
@@ -476,7 +468,6 @@ def write_exports(output, canonical, header):
             error = write_gpx(ride, gpx_path)
             entry = {
                 'ride_id': ride['ride_id'],
-                'source': ride['source'],
                 'terminal': ride['terminal'],
                 'samples': len(ride['samples']),
                 'gpx': None if error else gpx_path.name,

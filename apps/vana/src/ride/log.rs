@@ -1,27 +1,16 @@
 //! Fixed-slot, append-only ride records with commit-last recovery.
 //!
-//! Persisted version 1 is shared with the host exporter and existing device data.
-//! Keep the 256-byte slot, 32-byte header, four 48-byte samples, CRC and separate
-//! aligned commit word compatible. `encode` leaves the commit erased; media must
-//! program the body before `commit_word`. Demo provenance remains decodable even
-//! though ordinary terminal recording creates only live rides.
+//! The host exporter reads the same layout: a 256-byte slot, a 32-byte
+//! header, four 48-byte samples, CRC and a separate aligned commit word.
+//! `encode` leaves the commit erased; media must program the body before
+//! `commit_word`.
 //!
 //! Sample bytes 46..48 hold the smoothed barometric altitude as FIT's
-//! `altitude` field, (metres + 500) * 5 as u16, with 0xFFFF for none. There is
-//! no flag bit: decoders reject unknown flags, so a flag would make new rides
-//! unreadable after a rollback. Older samples left the bytes erased (0xFFFF),
-//! and older decoders never read them, so both directions stay compatible.
+//! `altitude` field, (metres + 500) * 5 as u16, with 0xFFFF for none.
 //!
-//! Sample byte 37, the last spare sample byte, marks the first sample of each
-//! lap with why the lap began ([`LapStart`]); 0xFF is none. Values 6 to 254
-//! are reserved for later marks and read as none here. Firmware that predates a
-//! mark reads it as none too, so a ride keeps all its data and only loses that
-//! lap boundary: the laps on either side read as one.
-//! There is no flag bit and no record kind: decoders reject unknown flags and
-//! kinds, and an unknown kind would read as a gap after a rollback. Older
-//! samples left the byte erased, and older decoders never read it (only the
-//! CRC covers it), so both directions stay compatible. A ride that marks no
-//! sample predates lap marks.
+//! Sample byte 37 marks the first sample of each lap with why the lap began
+//! ([`LapStart`]); 0xFF is none. Values 6 to 254 are reserved and read as
+//! none.
 //!
 //! Occupied invalid slots consume capacity and mark gaps; they are never free
 //! space. Scanning recovers an open ride at its last committed active duration,
@@ -154,21 +143,9 @@ pub enum Kind {
     Full = 7,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum Source {
-    Demo = 1,
-    Live = 2,
-}
-
-impl Source {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Demo => "demo",
-            Self::Live => "live",
-        }
-    }
-}
+/// A fixed byte in every slot (offset 7), summary (offset 4) and open-ride
+/// catalog (offset 3); decode rejects any other value.
+pub const RECORDED_LIVE: u8 = 2;
 
 /// Why a lap began, kept on its first sample.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -221,7 +198,6 @@ pub struct Sample {
     pub active_ms: u64,
     pub utc_ms: Option<u64>,
     pub location_e7: Option<(i32, i32)>,
-    pub demo_speed_mm_s: Option<u32>,
     pub heart_bpm: Option<u16>,
     pub cadence_tenths: Option<u16>,
     pub battery_percent: Option<u8>,
@@ -234,13 +210,8 @@ pub struct Sample {
 }
 
 impl Sample {
-    /// The readings a slot of a `source` ride holds. A battery reading above
-    /// 100 % is dropped: `decode` refuses it, so the batch would not read
-    /// back and recording would stop as a media failure.
-    pub fn for_source(mut self, source: Source) -> Self {
-        if source == Source::Live {
-            self.demo_speed_mm_s = None;
-        }
+    /// This sample without a battery reading above 100 %, which a slot cannot hold.
+    pub fn without_impossible_battery(mut self) -> Self {
         self.battery_percent = self.battery_percent.filter(|percent| *percent <= 100);
         self
     }
@@ -249,7 +220,6 @@ impl Sample {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Entry {
     pub kind: Kind,
-    pub source: Source,
     pub ride_id: u32,
     pub sequence: u32,
     pub active_ms: u64,
@@ -258,16 +228,9 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub const fn event(
-        kind: Kind,
-        source: Source,
-        ride_id: u32,
-        sequence: u32,
-        active_ms: u64,
-    ) -> Self {
+    pub const fn event(kind: Kind, ride_id: u32, sequence: u32, active_ms: u64) -> Self {
         Self {
             kind,
-            source,
             ride_id,
             sequence,
             active_ms,
@@ -275,7 +238,6 @@ impl Entry {
                 active_ms: 0,
                 utc_ms: None,
                 location_e7: None,
-                demo_speed_mm_s: None,
                 heart_bpm: None,
                 cadence_tenths: None,
                 battery_percent: None,
@@ -289,17 +251,11 @@ impl Entry {
         }
     }
 
-    pub fn batch(source: Source, ride_id: u32, sequence: u32, samples: &[Sample]) -> Option<Self> {
+    pub fn batch(ride_id: u32, sequence: u32, samples: &[Sample]) -> Option<Self> {
         if samples.is_empty() || samples.len() > SAMPLES_PER_BATCH {
             return None;
         }
-        let mut entry = Self::event(
-            Kind::Samples,
-            source,
-            ride_id,
-            sequence,
-            samples.last()?.active_ms,
-        );
+        let mut entry = Self::event(Kind::Samples, ride_id, sequence, samples.last()?.active_ms);
         entry.samples[..samples.len()].copy_from_slice(samples);
         entry.count = samples.len() as u8;
         Some(entry)
@@ -312,7 +268,7 @@ pub fn encode(entry: &Entry) -> Slot {
     slot.0[4] = VERSION;
     slot.0[5] = entry.kind as u8;
     slot.0[6] = entry.count;
-    slot.0[7] = entry.source as u8;
+    slot.0[7] = RECORDED_LIVE;
     put_u32(&mut slot.0, 8, entry.ride_id);
     put_u32(&mut slot.0, 12, entry.sequence);
     put_u64(&mut slot.0, 16, entry.active_ms);
@@ -357,12 +313,7 @@ pub fn decode(slot: &Slot) -> Option<Entry> {
         7 => Kind::Full,
         _ => return None,
     };
-    let source = match slot.0[7] {
-        1 => Source::Demo,
-        2 => Source::Live,
-        _ => return None,
-    };
-    if (kind == Kind::Samples) != (count > 0) {
+    if slot.0[7] != RECORDED_LIVE || (kind == Kind::Samples) != (count > 0) {
         return None;
     }
     let mut samples = [Sample::default(); SAMPLES_PER_BATCH];
@@ -375,7 +326,6 @@ pub fn decode(slot: &Slot) -> Option<Entry> {
     }
     Some(Entry {
         kind,
-        source,
         ride_id: get_u32(&slot.0, 8),
         sequence: get_u32(&slot.0, 12),
         active_ms,
@@ -426,7 +376,6 @@ pub fn freeze_at(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Recovery {
     pub ride_id: u32,
-    pub source: Source,
     pub next_sequence: u32,
     pub active_ms: u64,
     pub gap: bool,
@@ -436,7 +385,6 @@ pub struct Recovery {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Summary {
     pub ride_id: u32,
-    pub source: Option<Source>,
     pub recovered: bool,
     pub full: bool,
     pub gap: bool,
@@ -446,7 +394,6 @@ pub struct Summary {
     pub gps_samples: u32,
     pub heart_average: Option<u16>,
     pub cadence_average: Option<u16>,
-    demo_speed_mm_s: Option<u32>,
     // Wide enough for a ride as long as the bulk log (thousands of hours).
     heart_sum: u64,
     heart_count: u32,
@@ -455,10 +402,9 @@ pub struct Summary {
 }
 
 impl Summary {
-    pub fn started(ride_id: u32, source: Source) -> Self {
+    pub fn started(ride_id: u32) -> Self {
         Self {
             ride_id,
-            source: Some(source),
             ..Self::default()
         }
     }
@@ -473,7 +419,6 @@ impl Summary {
         self.gps_samples = self
             .gps_samples
             .saturating_add(u32::from(sample.location_e7.is_some()));
-        self.demo_speed_mm_s = self.demo_speed_mm_s.or(sample.demo_speed_mm_s);
         if let Some(value) = sample.heart_bpm {
             self.heart_sum = self.heart_sum.saturating_add(u64::from(value));
             self.heart_count = self.heart_count.saturating_add(1);
@@ -501,27 +446,19 @@ impl Summary {
     pub fn encode(&self, bytes: &mut [u8]) {
         bytes[..Self::ENCODED].fill(0);
         put_u32(bytes, 0, self.ride_id);
-        bytes[4] = self.source.map_or(0, |s| s as u8);
-        let options = [
-            self.first_utc_ms.is_some(),
-            self.distance_mm.is_some(),
-            self.heart_average.is_some(),
-            self.cadence_average.is_some(),
-            self.demo_speed_mm_s.is_some(),
-            self.recovered,
-            self.full,
-            self.gap,
-        ];
-        bytes[5] = options
-            .iter()
-            .enumerate()
-            .fold(0, |flags, (bit, set)| flags | (u8::from(*set) << bit));
+        bytes[4] = RECORDED_LIVE;
+        bytes[5] = u8::from(self.first_utc_ms.is_some())
+            | u8::from(self.distance_mm.is_some()) << 1
+            | u8::from(self.heart_average.is_some()) << 2
+            | u8::from(self.cadence_average.is_some()) << 3
+            | u8::from(self.recovered) << 5
+            | u8::from(self.full) << 6
+            | u8::from(self.gap) << 7;
         put_u64(bytes, 8, self.active_ms);
         put_u64(bytes, 16, self.first_utc_ms.unwrap_or(0));
         put_u64(bytes, 24, self.distance_mm.unwrap_or(0));
         put_u16(bytes, 32, self.heart_average.unwrap_or(0));
         put_u16(bytes, 34, self.cadence_average.unwrap_or(0));
-        put_u32(bytes, 36, self.demo_speed_mm_s.unwrap_or(0));
         put_u32(bytes, 40, self.gps_samples);
         put_u32(bytes, 44, self.heart_count);
         put_u32(bytes, 48, self.cadence_count);
@@ -531,19 +468,17 @@ impl Summary {
 
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let flags = bytes[5];
-        let source = match bytes[4] {
-            0 => None,
-            1 => Some(Source::Demo),
-            2 => Some(Source::Live),
-            _ => return None,
-        };
-        if bytes[6..8] != [0, 0] || bytes[52..56] != [0; 4] {
+        if bytes[4] != RECORDED_LIVE
+            || flags & 1 << 4 != 0
+            || bytes[6..8] != [0, 0]
+            || bytes[36..40] != [0; 4]
+            || bytes[52..56] != [0; 4]
+        {
             return None;
         }
         let has = |bit: u8| flags & (1 << bit) != 0;
         Some(Self {
             ride_id: get_u32(bytes, 0),
-            source,
             recovered: has(5),
             full: has(6),
             gap: has(7),
@@ -553,7 +488,6 @@ impl Summary {
             gps_samples: get_u32(bytes, 40),
             heart_average: has(2).then(|| get_u16(bytes, 32)),
             cadence_average: has(3).then(|| get_u16(bytes, 34)),
-            demo_speed_mm_s: has(4).then(|| get_u32(bytes, 36)),
             heart_sum: get_u64(bytes, 56),
             heart_count: get_u32(bytes, 44),
             cadence_sum: get_u64(bytes, 64),
@@ -566,10 +500,6 @@ impl Summary {
         self.recovered = kind == Kind::Recovered;
         self.full = kind == Kind::Full;
         self.gap |= gap;
-        self.distance_mm = self
-            .demo_speed_mm_s
-            .map(|speed| active_ms.saturating_mul(u64::from(speed)) / 1_000)
-            .or(self.distance_mm);
         let average = |sum: u64, count: u32| {
             (count != 0).then(|| (sum / u64::from(count)).min(u64::from(u16::MAX)) as u16)
         };
@@ -599,9 +529,7 @@ pub struct Timeline {
     pending: Option<u64>,
     paused: bool,
     previous_ms: Option<u64>,
-    /// The last sample's speeds and power, which hold until a pause or the
-    /// finish.
-    last: Option<(Option<u32>, Option<u32>, Option<u16>)>,
+    last: Option<(Option<u32>, Option<u16>)>,
 }
 
 impl Timeline {
@@ -626,11 +554,7 @@ impl Timeline {
             .saturating_sub(self.previous_ms.unwrap_or(sample.active_ms))
             .min(MAX_STEP_MS);
         self.previous_ms = Some(sample.active_ms);
-        self.last = Some((
-            sample.speed_mm_s,
-            sample.demo_speed_mm_s,
-            sample.power_watts,
-        ));
+        self.last = Some((sample.speed_mm_s, sample.power_watts));
         (started, elapsed)
     }
 
@@ -643,7 +567,7 @@ impl Timeline {
     /// since the last sample, and that sample's speed and power held over
     /// it, while running.
     pub fn hold(&mut self, active_ms: u64) -> Option<(u64, Sample)> {
-        let (true, Some(previous), Some((speed_mm_s, demo_speed_mm_s, power_watts))) =
+        let (true, Some(previous), Some((speed_mm_s, power_watts))) =
             (self.running(), self.previous_ms, self.last)
         else {
             return None;
@@ -655,7 +579,6 @@ impl Timeline {
         self.previous_ms = Some(active_ms);
         let held = Sample {
             speed_mm_s,
-            demo_speed_mm_s,
             power_watts,
             ..Sample::default()
         };
@@ -832,11 +755,10 @@ impl Scanner {
             Kind::Start => {
                 self.open = Some(Recovery {
                     ride_id: entry.ride_id,
-                    source: entry.source,
                     next_sequence: entry.sequence.wrapping_add(1),
                     active_ms: entry.active_ms,
                     gap: false,
-                    summary: Summary::started(entry.ride_id, entry.source),
+                    summary: Summary::started(entry.ride_id),
                 });
                 if let Some(load) = load.as_deref_mut() {
                     *load = PowerLoad::default();
@@ -846,10 +768,7 @@ impl Scanner {
                 let Some(open) = self.open.as_mut() else {
                     return;
                 };
-                if entry.ride_id != open.ride_id
-                    || entry.source != open.source
-                    || entry.sequence != open.next_sequence
-                {
+                if entry.ride_id != open.ride_id || entry.sequence != open.next_sequence {
                     open.gap = true;
                     return;
                 }
@@ -868,10 +787,7 @@ impl Scanner {
             }
             Kind::Finish | Kind::Recovered | Kind::Full => {
                 let Some(open) = self.open else { return };
-                if entry.ride_id == open.ride_id
-                    && entry.source == open.source
-                    && entry.sequence == open.next_sequence
-                {
+                if entry.ride_id == open.ride_id && entry.sequence == open.next_sequence {
                     self.completed = self.completed.saturating_add(1);
                     let mut summary = open.summary;
                     summary.finish(entry.kind, entry.active_ms, open.gap);
@@ -909,10 +825,6 @@ fn encode_sample(sample: &Sample, bytes: &mut [u8]) {
         put_u32(bytes, 20, latitude as u32);
         put_u32(bytes, 24, longitude as u32);
     }
-    if let Some(value) = sample.demo_speed_mm_s {
-        flags |= 4 | 0x8000_0000;
-        put_u32(bytes, 28, value);
-    }
     if let Some(value) = sample.heart_bpm {
         flags |= 8;
         put_u16(bytes, 32, value);
@@ -946,7 +858,7 @@ fn encode_sample(sample: &Sample, bytes: &mut [u8]) {
 
 fn decode_sample(bytes: &[u8]) -> Option<Sample> {
     let flags = get_u32(bytes, 16);
-    if flags & !(0x8000_01ff) != 0 || flags & 4 != 0 && flags & 0x8000_0000 == 0 {
+    if flags & !0x1fb != 0 {
         return None;
     }
     let battery = (flags & 32 != 0).then_some(bytes[36]);
@@ -958,7 +870,6 @@ fn decode_sample(bytes: &[u8]) -> Option<Sample> {
         utc_ms: (flags & 1 != 0).then(|| get_u64(bytes, 8)),
         location_e7: (flags & 2 != 0)
             .then(|| (get_u32(bytes, 20) as i32, get_u32(bytes, 24) as i32)),
-        demo_speed_mm_s: (flags & 4 != 0).then(|| get_u32(bytes, 28)),
         heart_bpm: (flags & 8 != 0).then(|| get_u16(bytes, 32)),
         cadence_tenths: (flags & 16 != 0).then(|| get_u16(bytes, 34)),
         battery_percent: battery,
@@ -1013,7 +924,6 @@ mod tests {
             active_ms,
             utc_ms: Some(1_789_000_000_123),
             location_e7: Some((-333_646_900, -705_155_800)),
-            demo_speed_mm_s: Some(5_000),
             battery_percent: Some(87),
             speed_mm_s: Some(12345),
             power_watts: Some(215),
@@ -1024,75 +934,17 @@ mod tests {
 
     #[test]
     fn events_and_bounded_samples_round_trip() {
-        let event = Entry::event(Kind::Pause, Source::Demo, 4, 9, 12_345);
+        let event = Entry::event(Kind::Pause, 4, 9, 12_345);
         let mut encoded = encode(&event);
         encoded.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
         assert_eq!(decode(&encoded), Some(event));
 
         let samples = [sample(1_000), sample(2_000), sample(3_000), sample(4_000)];
-        let batch = Entry::batch(Source::Demo, 4, 10, &samples).unwrap();
+        let batch = Entry::batch(4, 10, &samples).unwrap();
         let mut encoded = encode(&batch);
         encoded.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
         assert_eq!(decode(&encoded), Some(batch));
-        assert!(Entry::batch(Source::Demo, 1, 1, &[]).is_none());
-        assert_eq!(sample(1).for_source(Source::Live).demo_speed_mm_s, None);
-        assert_eq!(
-            sample(1).for_source(Source::Demo).demo_speed_mm_s,
-            Some(5_000)
-        );
-    }
-
-    /// Frozen copy of the decoder that shipped before lap marks (with altitude): never update it.
-    fn decode_before_lap_marks(slot: &Slot) -> Option<std::vec::Vec<Sample>> {
-        let count = usize::from(slot.0[6]);
-        let mut checked = slot.clone();
-        checked.0[28..32].fill(0);
-        if slot.0[..4] != *b"RIDE"
-            || slot.0[4] != 1
-            || !(1..=7).contains(&slot.0[5])
-            || !(1..=2).contains(&slot.0[7])
-            || count > 4
-            || get_u16(&slot.0, 24) as usize != count * 48
-            || slot.0[26..28] != [0, 0]
-            || get_u32(&slot.0, 252) != 0x434f_4d54
-            || crc32(&checked.0[..252]) != get_u32(&slot.0, 28)
-            || (slot.0[5] == 2) != (count > 0)
-        {
-            return None;
-        }
-        let mut samples = std::vec::Vec::new();
-        for index in 0..count {
-            let bytes = &slot.0[32 + index * 48..][..48];
-            let flags = get_u32(bytes, 16);
-            if flags & !0x8000_01ff != 0 || flags & 4 != 0 && flags & 0x8000_0000 == 0 {
-                return None;
-            }
-            if flags & 32 != 0 && bytes[36] > 100 {
-                return None;
-            }
-            samples.push(Sample {
-                active_ms: get_u64(bytes, 0),
-                utc_ms: (flags & 1 != 0).then(|| get_u64(bytes, 8)),
-                location_e7: (flags & 2 != 0)
-                    .then(|| (get_u32(bytes, 20) as i32, get_u32(bytes, 24) as i32)),
-                demo_speed_mm_s: (flags & 4 != 0).then(|| get_u32(bytes, 28)),
-                heart_bpm: (flags & 8 != 0).then(|| get_u16(bytes, 32)),
-                cadence_tenths: (flags & 16 != 0).then(|| get_u16(bytes, 34)),
-                battery_percent: (flags & 32 != 0).then_some(bytes[36]),
-                speed_mm_s: (flags & 64 != 0).then(|| get_u32(bytes, 40)),
-                power_watts: (flags & 128 != 0).then(|| get_u16(bytes, 38)),
-                gradient_tenths: (flags & 256 != 0).then(|| get_u16(bytes, 44) as i16),
-                altitude: Altitude::from_code(get_u16(bytes, 46)),
-                lap: None,
-            });
-        }
-        if samples
-            .last()
-            .is_some_and(|s| s.active_ms != get_u64(&slot.0, 16))
-        {
-            return None;
-        }
-        Some(samples)
+        assert!(Entry::batch(1, 1, &[]).is_none());
     }
 
     fn committed(entry: &Entry) -> Slot {
@@ -1102,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn lap_marks_round_trip_and_older_decoders_read_every_sample() {
+    fn lap_marks_round_trip_and_keep_the_ride_whole() {
         let marks = [
             Some(LapStart::Ride),
             Some(LapStart::Manual),
@@ -1113,30 +965,17 @@ mod tests {
             lap,
             ..sample(1_000)
         });
-        let entry = Entry::batch(Source::Live, 2, 1, &samples).unwrap();
+        let entry = Entry::batch(2, 1, &samples).unwrap();
         let slot = committed(&entry);
-        assert_eq!(decode(&slot), Some(entry), "the recorder's own check");
-
-        let old = decode_before_lap_marks(&slot).expect("an older decoder accepts it");
-        let unmarked: std::vec::Vec<Sample> =
-            samples.iter().map(|s| Sample { lap: None, ..*s }).collect();
-        assert_eq!(old, unmarked, "no sample lost or changed");
-
-        let plain = committed(&Entry::batch(Source::Live, 2, 1, &unmarked).unwrap());
-        let differ: std::vec::Vec<usize> = (0..SLOT_SIZE)
-            .filter(|&i| slot.0[i] != plain.0[i])
-            .filter(|i| !(28..32).contains(i))
-            .collect();
-        assert_eq!(differ, [32 + 37, 80 + 37, 128 + 37, 176 + 37]);
+        assert_eq!(decode(&slot), Some(entry));
 
         let ride = [
-            committed(&Entry::event(Kind::Start, Source::Live, 2, 0, 0)),
+            committed(&Entry::event(Kind::Start, 2, 0, 0)),
             slot,
-            committed(&Entry::event(Kind::Finish, Source::Live, 2, 2, 1_000)),
+            committed(&Entry::event(Kind::Finish, 2, 2, 1_000)),
         ];
         let mut scan = Scanner::default();
         for (index, slot) in ride.iter().enumerate() {
-            assert!(decode_before_lap_marks(slot).is_some());
             scan.accept_slot(index, &slot.0);
         }
         let catalog = scan.catalog();
@@ -1150,15 +989,11 @@ mod tests {
             lap: Some(LapStart::Position),
             ..sample(1_000)
         };
-        let slot = committed(&Entry::batch(Source::Live, 2, 1, &[marked]).unwrap());
+        let slot = committed(&Entry::batch(2, 1, &[marked]).unwrap());
         assert_eq!(slot.0[32 + 37], 5);
         assert_eq!(
             decode(&slot).unwrap().samples[0].lap,
             Some(LapStart::Position)
-        );
-        assert!(
-            decode_before_lap_marks(&slot).is_some(),
-            "older decoders keep the sample"
         );
         for byte in 6..=254 {
             assert_eq!(LapStart::from_byte(byte), None, "{byte}");
@@ -1166,8 +1001,8 @@ mod tests {
     }
 
     #[test]
-    fn samples_written_before_lap_marks_have_none() {
-        let entry = Entry::batch(Source::Live, 1, 1, &[sample(1_000)]).unwrap();
+    fn an_unmarked_or_reserved_lap_byte_reads_as_none() {
+        let entry = Entry::batch(1, 1, &[sample(1_000)]).unwrap();
         let mut slot = committed(&entry);
         assert_eq!(slot.0[HEADER_SIZE + LAP_BYTE], 0xff);
         assert_eq!(decode(&slot).unwrap().samples[0].lap, None);
@@ -1181,10 +1016,10 @@ mod tests {
     }
 
     #[test]
-    fn altitude_rides_in_the_spare_sample_bytes_without_a_flag() {
+    fn altitude_round_trips_in_its_sample_bytes() {
         let mut sample = sample(1_000);
         sample.altitude = Some(Altitude::from_dm(1_234));
-        let encoded = encode(&Entry::batch(Source::Live, 1, 1, &[sample]).unwrap());
+        let encoded = encode(&Entry::batch(1, 1, &[sample]).unwrap());
         assert_eq!(get_u16(&encoded.0, HEADER_SIZE + 46), 3_117);
         let mut committed = encoded.clone();
         committed.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
@@ -1198,23 +1033,22 @@ mod tests {
         for dm in [-9_000, -5_001, 0, 1, 1_235, 126_000, i32::MAX] {
             let mut odd = sample;
             odd.altitude = Some(Altitude::from_dm(dm));
-            let mut slot = encode(&Entry::batch(Source::Live, 1, 1, &[odd]).unwrap());
+            let mut slot = encode(&Entry::batch(1, 1, &[odd]).unwrap());
             slot.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
             assert_eq!(decode(&slot).unwrap().samples[0], odd, "{dm}");
         }
-        // No flag bit is used, so an older decoder accepts the sample.
-        let flags = get_u32(&encoded.0, HEADER_SIZE + 16);
-        assert_eq!(flags & !0x8000_01ff, 0);
 
-        // A sample of the old layout, bytes 46..48 erased, has no altitude.
-        let mut old = committed.clone();
-        old.0[HEADER_SIZE + 46..HEADER_SIZE + 48].fill(0xff);
-        assert_eq!(decode_sample(&old.0[HEADER_SIZE..]).unwrap().altitude, None);
+        let mut none = committed.clone();
+        none.0[HEADER_SIZE + 46..HEADER_SIZE + 48].fill(0xff);
+        assert_eq!(
+            decode_sample(&none.0[HEADER_SIZE..]).unwrap().altitude,
+            None
+        );
     }
 
     #[test]
     fn torn_corrupt_unknown_and_malformed_records_are_occupied_invalid() {
-        let entry = Entry::event(Kind::Start, Source::Demo, 1, 0, 0);
+        let entry = Entry::event(Kind::Start, 1, 0, 0);
         let valid = encode(&entry);
         assert_eq!(decode(&valid), None);
         for offset in [0, 4, 5, 6, 7, 12, 28, 100, COMMIT_OFFSET] {
@@ -1242,10 +1076,10 @@ mod tests {
     fn scanner_preserves_finished_and_recovers_last_committed_duration() {
         let mut sector = Sector([0xff; SECTOR_SIZE]);
         let entries = [
-            Entry::event(Kind::Start, Source::Demo, 1, 0, 0),
-            Entry::event(Kind::Finish, Source::Demo, 1, 1, 8_000),
-            Entry::event(Kind::Start, Source::Demo, 2, 0, 0),
-            Entry::batch(Source::Demo, 2, 1, &[sample(1_000), sample(2_000)]).unwrap(),
+            Entry::event(Kind::Start, 1, 0, 0),
+            Entry::event(Kind::Finish, 1, 1, 8_000),
+            Entry::event(Kind::Start, 2, 0, 0),
+            Entry::batch(2, 1, &[sample(1_000), sample(2_000)]).unwrap(),
         ];
         for (index, entry) in entries.iter().enumerate() {
             let mut slot = encode(entry);
@@ -1269,10 +1103,10 @@ mod tests {
     #[test]
     fn scanner_does_not_call_an_interrupted_ride_completed() {
         let mut sector = Sector([0xff; SECTOR_SIZE]);
-        for (index, source) in [Source::Live, Source::Demo].into_iter().enumerate() {
-            let mut slot = encode(&Entry::event(Kind::Start, source, index as u32 + 1, 0, 0));
+        for index in 0..2 {
+            let mut slot = encode(&Entry::event(Kind::Start, index + 1, 0, 0));
             slot.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
-            sector.0[index * SLOT_SIZE..][..SLOT_SIZE].copy_from_slice(&slot.0);
+            sector.0[index as usize * SLOT_SIZE..][..SLOT_SIZE].copy_from_slice(&slot.0);
         }
         let mut scan = Scanner::default();
         scan.accept(&sector);
@@ -1281,7 +1115,7 @@ mod tests {
         }
         let catalog = scan.finish().unwrap();
         assert_eq!(catalog.completed, 0);
-        assert_eq!(catalog.recovery.unwrap().source, Source::Demo);
+        assert_eq!(catalog.recovery.unwrap().ride_id, 2);
     }
 
     #[test]
@@ -1295,26 +1129,20 @@ mod tests {
         let mut sector = Sector([0xff; SECTOR_SIZE]);
         let mut index = 0;
         for ride_id in 1..=5 {
-            let source = if ride_id == 5 {
-                Source::Live
-            } else {
-                Source::Demo
-            };
-            let mut value = sample(60_000 + u64::from(ride_id) * 1_000).for_source(source);
+            let mut value = sample(60_000 + u64::from(ride_id) * 1_000);
             value.utc_ms = Some(1_789_000_000_000 + u64::from(ride_id));
             value.location_e7 = (ride_id == 5).then_some((-333_646_900, -705_155_800));
             value.heart_bpm = (ride_id == 5).then_some(72);
             value.cadence_tenths = (ride_id == 5).then_some(615);
             let entries = [
-                Entry::event(Kind::Start, source, ride_id, 0, 0),
-                Entry::batch(source, ride_id, 1, &[value]).unwrap(),
+                Entry::event(Kind::Start, ride_id, 0, 0),
+                Entry::batch(ride_id, 1, &[value]).unwrap(),
                 Entry::event(
                     if ride_id == 4 {
                         Kind::Recovered
                     } else {
                         Kind::Finish
                     },
-                    source,
                     ride_id,
                     2,
                     value.active_ms,
@@ -1340,7 +1168,6 @@ mod tests {
         assert_eq!(catalog.summaries[0].unwrap().ride_id, 2);
         assert!(catalog.summaries[2].unwrap().recovered);
         let live = catalog.summaries[3].unwrap();
-        assert_eq!(live.source, Some(Source::Live));
         // One sample 65 s in: the first covers at most a second at 12.3 m/s.
         assert_eq!(live.distance_mm, Some(12_345));
         assert_eq!(live.gps_samples, 1);
@@ -1356,7 +1183,7 @@ mod tests {
             speed_mm_s: speed,
             ..Sample::default()
         };
-        let mut summary = Summary::started(1, Source::Live);
+        let mut summary = Summary::started(1);
         // No speed yet: no distance, not zero.
         summary.add_sample(at(1_000, None));
         assert_eq!(summary.distance_mm, None);

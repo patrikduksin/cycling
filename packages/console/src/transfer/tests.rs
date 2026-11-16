@@ -359,15 +359,16 @@ fn line_commands_report_volumes_terrain_and_files() {
 }
 
 #[test]
-fn line_commands_add_and_report_the_store() {
+fn line_commands_format_and_report_the_store() {
     let mut media = Media::default();
     let mut out = String::new();
     assert_eq!(
-        volumes::execute(volumes::Command::AddStore, &mut media, &mut out),
+        volumes::execute(volumes::Command::StoreFormat, &mut media, &mut out),
         "UNINITIALIZED"
     );
     assert!(media.written.is_empty());
     volumes::execute(volumes::Command::Init, &mut media, &mut out);
+    assert!(out.ends_with(" store=5244928+532479"), "{out}");
     out.clear();
     assert_eq!(
         volumes::execute(volumes::Command::Store, &mut media, &mut out),
@@ -376,10 +377,9 @@ fn line_commands_add_and_report_the_store() {
     assert_eq!(out, "state=uninitialized");
     out.clear();
     assert_eq!(
-        volumes::execute(volumes::Command::AddStore, &mut media, &mut out),
+        volumes::execute(volumes::Command::StoreFormat, &mut media, &mut out),
         "OK"
     );
-    assert!(out.ends_with(" store=5244928+532479"), "{out}");
     out.clear();
     volumes::execute(volumes::Command::Store, &mut media, &mut out);
     assert!(
@@ -397,13 +397,6 @@ fn line_commands_add_and_report_the_store() {
         let name = firmware_services::store::Name::new(&std::format!("traces/{i}")).unwrap();
         store.create(&mut vol, &name, None, &mut sector).unwrap();
     }
-    let writes = media.written.clone();
-    out.clear();
-    assert_eq!(
-        volumes::execute(volumes::Command::AddStore, &mut media, &mut out),
-        "OK"
-    );
-    assert!(media.written == writes, "nothing written");
     out.clear();
     volumes::execute(volumes::Command::Store, &mut media, &mut out);
     assert!(
@@ -417,14 +410,6 @@ fn line_commands_add_and_report_the_store() {
     out.clear();
     volumes::execute(volumes::Command::StoreList(8), &mut media, &mut out);
     assert_eq!(out, "traces/8:9:1 traces/9:10:1");
-    for (line, parsed) in [
-        ("ADD STORE", Some(volumes::Command::AddStore)),
-        ("ADD", None),
-        ("ADD FILES", None),
-    ] {
-        let mut words = line.split_ascii_whitespace();
-        assert_eq!(volumes::parse("VOLUME", &mut words), parsed, "{line}");
-    }
     for (line, parsed) in [
         ("", Some(volumes::Command::Store)),
         ("LIST", Some(volumes::Command::StoreList(0))),
@@ -489,7 +474,7 @@ fn store_files_are_listed_pulled_by_record_range_and_deleted() {
     host.session = Session::default();
     host.id = 0;
     let mut out = String::new();
-    volumes::execute(volumes::Command::AddStore, &mut host.media, &mut out);
+    volumes::execute(volumes::Command::StoreFormat, &mut host.media, &mut out);
     let records = 2 * firmware_services::store::CHUNK + 300;
     let trace = record_traces(&mut host.media, records);
 
@@ -565,7 +550,7 @@ fn a_pull_stops_at_records_the_medium_lost_and_says_which() {
     use firmware_services::store::{CHUNK, DATA, PAYLOAD};
     let mut host = Host::new();
     volumes::execute(
-        volumes::Command::AddStore,
+        volumes::Command::StoreFormat,
         &mut host.media,
         &mut String::new(),
     );
@@ -604,7 +589,7 @@ fn only_the_owners_store_format_replaces_a_corrupt_store() {
     let mut media = Media::default();
     let mut out = String::new();
     volumes::execute(volumes::Command::Init, &mut media, &mut out);
-    volumes::execute(volumes::Command::AddStore, &mut media, &mut out);
+    volumes::execute(volumes::Command::StoreFormat, &mut media, &mut out);
     let mut sector = [0u8; 512];
     let start = volume::open(&mut media, &volume::STORE, &mut sector)
         .unwrap()
@@ -614,10 +599,11 @@ fn only_the_owners_store_format_replaces_a_corrupt_store() {
     header[100] ^= 1;
     media.written.insert(start, header);
     assert!(!media.written.contains_key(&(start + COPY_B)));
-    for command in [volumes::Command::Store, volumes::Command::AddStore] {
-        out.clear();
-        assert_eq!(volumes::execute(command, &mut media, &mut out), "CORRUPT");
-    }
+    out.clear();
+    assert_eq!(
+        volumes::execute(volumes::Command::Store, &mut media, &mut out),
+        "CORRUPT"
+    );
     out.clear();
     assert_eq!(
         volumes::execute(volumes::Command::StoreFormat, &mut media, &mut out),

@@ -12,7 +12,6 @@ from pathlib import Path
 
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.rides.export import (
-    BULK_DATA_START,
     MEDIA,
     bulk_data_start,
     info,
@@ -62,7 +61,7 @@ def verify_invalid_sectors(directory, manifest):
         raise ValueError('bulk export invalid sectors do not match its invalid containers')
     for entry in sectors:
         index = entry['index']
-        start = manifest.get('data_start', BULK_DATA_START)
+        start = manifest['data_start']
         if not 0 <= index < manifest['upper_bound'] or entry.get('sector') != start + index:
             raise ValueError('bulk export invalid sector is out of bounds')
         path = directory / Path(entry['file']).name
@@ -152,7 +151,7 @@ def clear(port, export_directory, output, medium='internal'):
         # Zero placeholders stand in for invalid containers: the raw sectors
         # behind them must match what the export kept.
         start = bulk_data_start(connection) if invalid else None
-        if invalid and start != manifest.get('data_start', BULK_DATA_START):
+        if invalid and start != manifest['data_start']:
             raise RuntimeError('bulk records moved since the export; create and verify a new export')
         raw_sectors = [hashlib.sha256(read_owned_sector(connection, start + index)).hexdigest() for index in invalid]
         unchanged = info(connection, medium) == current

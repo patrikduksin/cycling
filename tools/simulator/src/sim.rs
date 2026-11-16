@@ -934,8 +934,8 @@ impl Sim {
         );
     }
 
-    /// Write the volume table over a blank or legacy region, as
-    /// `VOLUME INIT` would.
+    /// Write the volume table over a blank or lost region, as `VOLUME INIT`
+    /// would.
     pub fn init_volumes(&mut self) -> firmware_services::volume::Table {
         let mut sector = [0u8; 512];
         firmware_services::volume::create(&mut self.device.host_bulk(), &mut sector)
@@ -1018,16 +1018,16 @@ impl Sim {
         Some(bytes)
     }
 
-    /// Give the bulk region a STORE volume holding an empty store, as the
-    /// owner's `VOLUME ADD STORE` would: the volume table is created first if
-    /// there is none, and a store that exists is kept.
+    /// Format an empty store in the bulk region's STORE volume, as the
+    /// owner's `STORE FORMAT CONFIRM` would: the volume table is created
+    /// first if there is none.
     pub fn format_store(&mut self) {
         use firmware_console::commands::volumes;
         self.init_volumes();
         let mut out = String::new();
         let mut media = self.device.host_bulk();
-        let status = volumes::execute(volumes::Command::AddStore, &mut media, &mut out);
-        assert_eq!(status, "OK", "VOLUME ADD STORE: {out}");
+        let status = volumes::execute(volumes::Command::StoreFormat, &mut media, &mut out);
+        assert_eq!(status, "OK", "STORE FORMAT CONFIRM: {out}");
     }
 
     /// A file's bytes from STORE, as the host's `store get` would read

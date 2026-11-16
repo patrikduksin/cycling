@@ -495,7 +495,7 @@ impl Runtime {
     ) -> Sample {
         let ble = self.sensors.snapshot(now);
         let (ble_heart_bpm, cadence_tenths) =
-            ble_profile::ride_fields(ble, self.ride.active().source());
+            ble_profile::ride_fields(ble, self.ride.active().ride_open());
         let position = observations.position.snapshot(now);
         let reported = position.and_then(|snapshot| Reported::fresh(&snapshot.gps, now));
         let utc_ms = utc_ms(
@@ -558,7 +558,6 @@ impl Runtime {
             active_ms: 0,
             utc_ms,
             location_e7: reported.map(|reported| reported.location_e7),
-            demo_speed_mm_s: None,
             heart_bpm: readings
                 .heart
                 .filter(|heart| fresh(heart.received_ms))

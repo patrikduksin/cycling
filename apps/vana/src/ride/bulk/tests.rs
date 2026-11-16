@@ -199,7 +199,7 @@ impl Device {
     }
 
     fn act(&mut self, action: Action) -> bool {
-        if !self.recorder.request(action, Source::Live, self.now, 7) {
+        if !self.recorder.request(action, self.now, 7) {
             return false;
         }
         for _ in 0..4 {
@@ -246,7 +246,7 @@ const CAPACITY: u64 = 1_000_000;
 
 #[test]
 fn catalogs_round_trip_through_checkpoints() {
-    let mut summary = Summary::started(9, Source::Live);
+    let mut summary = Summary::started(9);
     summary.add_sample(Sample {
         active_ms: 4_000,
         utc_ms: Some(1_789_000_000_000),
@@ -265,7 +265,6 @@ fn catalogs_round_trip_through_checkpoints() {
         valid_slots: 4_999,
         recovery: Some(Recovery {
             ride_id: 9,
-            source: Source::Live,
             next_sequence: 77,
             active_ms: 4_000,
             gap: true,
@@ -288,7 +287,7 @@ fn catalogs_round_trip_through_checkpoints() {
 #[test]
 fn day_long_ride_averages_survive_checkpoints_without_saturating() {
     // 24 h at 1 Hz: past the 65,535 samples a 16-bit count could hold.
-    let mut summary = Summary::started(1, Source::Live);
+    let mut summary = Summary::started(1);
     for second in 0..24 * 3600u64 {
         summary.add_sample(Sample {
             active_ms: second * 1000,
@@ -303,7 +302,6 @@ fn day_long_ride_averages_survive_checkpoints_without_saturating() {
         next_ride_id: 2,
         recovery: Some(Recovery {
             ride_id: 1,
-            source: Source::Live,
             next_sequence: 21_601,
             active_ms: 24 * 3600 * 1000,
             gap: false,
@@ -328,7 +326,7 @@ fn unformatted_missing_or_unsupported_media_is_never_written() {
     let mut device = Device::new(CAPACITY);
     device.reboot();
     assert_eq!(device.recorder.status(), Status::NeedsInit);
-    assert!(!device.recorder.request(Action::Start, Source::Live, 0, 1));
+    assert!(!device.recorder.request(Action::Start, 0, 1));
     assert_eq!(device.recorder.remaining_secs(), 0);
     // No epoch, no capacity: not the internal journal's slot count.
     assert_eq!(device.recorder.slots(), 0);
@@ -342,41 +340,6 @@ fn unformatted_missing_or_unsupported_media_is_never_written() {
         assert!(!device.recorder.initialize(1));
     }
     assert_eq!(device.media.writes, 0);
-}
-
-#[test]
-fn the_whole_region_log_from_before_volumes_is_reported_and_only_initialize_replaces_it() {
-    // The bulk store as #164 left it: the log at relative sector 0.
-    let mut device = Device::new(CAPACITY);
-    let mut sector = [0u8; 512];
-    let initial = encode_catalog(&Catalog::default());
-    let mut old = sector_log::format(&mut device.media, TAG, 3, &initial, &mut sector).unwrap();
-    for _ in 0..4 {
-        old.append(&mut device.media, &[1; SLOT_SIZE], &mut sector)
-            .unwrap();
-    }
-    let writes = device.media.writes;
-    device.reboot();
-    assert_eq!(device.recorder.status(), Status::NeedsInit);
-    assert_eq!(device.state.region(), Region::Legacy);
-    assert!(!device.recorder.request(Action::Start, Source::Live, 0, 1));
-    device.run_until(10_000, 10);
-    assert_eq!(device.media.writes, writes);
-    // Initialize writes the volume table and a new log inside RIDES.
-    assert!(device.recorder.initialize(5));
-    device.service();
-    assert!(device.recorder.take_result().unwrap().ok);
-    assert_eq!(
-        device.media.writes,
-        writes + 2 + 2 + sector_log::RING as u32
-    );
-    device.reboot();
-    assert_eq!(device.state.region(), Region::Volumes);
-    assert_eq!(
-        (device.recorder.status(), device.recorder.next_slot()),
-        (Status::Ready, 0)
-    );
-    assert!(device.act(Action::Start));
 }
 
 #[test]
@@ -556,7 +519,7 @@ fn an_action_queued_before_a_failed_checkpoint_fails_and_nothing_more_is_written
             assert_eq!(device.recorder.status(), Status::Paused);
         }
         // The action is queued; the checkpoint written first fails once.
-        assert!(device.recorder.request(action, Source::Live, device.now, 9));
+        assert!(device.recorder.request(action, device.now, 9));
         device.media.transient = true;
         device.media.fail_after = Some((0, 0));
         device.service();
@@ -603,7 +566,7 @@ fn a_reformat_after_lost_superblocks_never_revives_an_older_store() {
     use crate::ride::journal::Journal;
     use crate::ride::log::{Entry, Kind};
     let mut media = Media::new(V + sector_log::DATA_START + 1_000);
-    let entry = Entry::event(Kind::Start, Source::Live, 1, 0, 0);
+    let entry = Entry::event(Kind::Start, 1, 0, 0);
     // Store A with 200 records, from a clock-based seed.
     let mut state = BulkState::default();
     let mut bulk = Bulk::new(&mut state, &mut media);
@@ -706,7 +669,7 @@ fn lost_checkpoints_are_kept_until_an_explicit_initialize() {
     assert_eq!(device.recorder.status(), Status::Corrupt);
     // No epoch recovered, so no extent to export or clear up to.
     assert!(device.state.log().is_none());
-    assert!(!device.recorder.request(Action::Start, Source::Live, 0, 1));
+    assert!(!device.recorder.request(Action::Start, 0, 1));
     let writes = device.media.writes;
     device.run_until(10_000, 10);
     assert_eq!(device.media.writes, writes);
@@ -754,7 +717,7 @@ fn an_unproven_end_is_corrupt_and_exportable_but_never_written_or_cleared() {
     assert_eq!(bulk.read_slot(upper - 1, &mut slot), Some(true));
     // Nothing starts, appends or clears; only an explicit initialize may.
     let writes = device.media.writes;
-    assert!(!device.recorder.request(Action::Start, Source::Live, 0, 1));
+    assert!(!device.recorder.request(Action::Start, 0, 1));
     assert!(!device.recorder.clear(upper, 3));
     device.run_until(10_000, 10);
     assert_eq!(device.media.writes, writes);

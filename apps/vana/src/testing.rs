@@ -37,7 +37,6 @@ impl Draw for Rng {
                     (rng.range(0, 3_600_000_000) as i64 - 1_800_000_000) as i32,
                 )
             }),
-            demo_speed_mm_s: self.option(|rng| rng.next() as u32),
             heart_bpm: self.option(|rng| rng.next() as u16),
             cadence_tenths: self.option(|rng| rng.next() as u16),
             battery_percent: self.option(Self::byte),

@@ -1,6 +1,6 @@
 use super::*;
 use crate::ride::elevation::Trace;
-use crate::ride::log::{LapStart, Source, commit_word, encode};
+use crate::ride::log::{LapStart, commit_word, encode};
 use crate::ride::replay::{Progress, Replay, Sums};
 use crate::ride::rider::Rider;
 use crate::ride::totals::Efforts;
@@ -134,12 +134,12 @@ fn ride(utc: bool, pause_wall_ms: u64) -> Vec<Slot> {
     let first: Vec<Sample> = (1..=4).map(|i| sample(i * 1000, utc)).collect();
     let second: Vec<Sample> = (5..=8).map(|i| later(i * 1000)).collect();
     vec![
-        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
-        slot(&Entry::batch(Source::Live, 3, 1, &first).unwrap()),
-        slot(&Entry::event(Kind::Pause, Source::Live, 3, 2, 4_000)),
-        slot(&Entry::event(Kind::Resume, Source::Live, 3, 3, 4_000)),
-        slot(&Entry::batch(Source::Live, 3, 4, &second).unwrap()),
-        slot(&Entry::event(Kind::Finish, Source::Live, 3, 5, 8_000)),
+        slot(&Entry::event(Kind::Start, 3, 0, 0)),
+        slot(&Entry::batch(3, 1, &first).unwrap()),
+        slot(&Entry::event(Kind::Pause, 3, 2, 4_000)),
+        slot(&Entry::event(Kind::Resume, 3, 3, 4_000)),
+        slot(&Entry::batch(3, 4, &second).unwrap()),
+        slot(&Entry::event(Kind::Finish, 3, 5, 8_000)),
     ]
 }
 
@@ -236,7 +236,7 @@ fn a_late_clock_dates_earlier_samples_from_its_first_offset() {
     let mut early: Vec<Sample> = (1..=4).map(|i| sample(i * 1000, true)).collect();
     early[0].utc_ms = None;
     early[1].utc_ms = None;
-    slots[1] = slot(&Entry::batch(Source::Live, 3, 1, &early).unwrap());
+    slots[1] = slot(&Entry::batch(3, 1, &early).unwrap());
     let (_, bytes) = file(&slots, None).unwrap();
     let t = fit_time(T0);
     let times: Vec<u64> = decode(&bytes)
@@ -251,22 +251,17 @@ fn a_late_clock_dates_earlier_samples_from_its_first_offset() {
 fn other_rides_invalid_slots_and_missing_readings_are_skipped() {
     let mut slots = ride(true, 0);
     slots.insert(2, Slot([0x55; 256]));
-    slots.insert(
-        3,
-        slot(&Entry::batch(Source::Live, 9, 1, &[sample(500, true)]).unwrap()),
-    );
+    slots.insert(3, slot(&Entry::batch(9, 1, &[sample(500, true)]).unwrap()));
     let bare = Sample {
         active_ms: 4_500,
         utc_ms: Some(T0 + 4_500),
         ..Sample::default()
     };
-    slots.insert(6, slot(&Entry::batch(Source::Live, 3, 4, &[bare]).unwrap()));
+    slots.insert(6, slot(&Entry::batch(3, 4, &[bare]).unwrap()));
     // The next ride's start ends an interrupted one, and later slots are ignored.
     let end = slots.len() - 1;
-    slots[end] = slot(&Entry::event(Kind::Start, Source::Live, 4, 0, 0));
-    slots.push(slot(
-        &Entry::batch(Source::Live, 4, 1, &[sample(1_000, true)]).unwrap(),
-    ));
+    slots[end] = slot(&Entry::event(Kind::Start, 4, 0, 0));
+    slots.push(slot(&Entry::batch(4, 1, &[sample(1_000, true)]).unwrap()));
     let (plan, bytes) = file(&slots, None).unwrap();
     assert_eq!(plan.samples, 9);
     let messages = decode(&bytes);
@@ -279,9 +274,9 @@ fn an_impossible_cadence_exports_as_the_highest_one() {
     let mut fast = sample(1_000, true);
     fast.cadence_tenths = Some(u16::MAX);
     let slots = [
-        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
-        slot(&Entry::batch(Source::Live, 3, 1, &[fast]).unwrap()),
-        slot(&Entry::event(Kind::Finish, Source::Live, 3, 2, 1_000)),
+        slot(&Entry::event(Kind::Start, 3, 0, 0)),
+        slot(&Entry::batch(3, 1, &[fast]).unwrap()),
+        slot(&Entry::event(Kind::Finish, 3, 2, 1_000)),
     ];
     let (_, bytes) = file(&slots, None).unwrap();
     let record = decode(&bytes).into_iter().find(|m| m.global == 20).unwrap();
@@ -291,8 +286,8 @@ fn an_impossible_cadence_exports_as_the_highest_one() {
 #[test]
 fn an_empty_ride_is_refused() {
     let slots = [
-        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
-        slot(&Entry::event(Kind::Finish, Source::Live, 3, 1, 0)),
+        slot(&Entry::event(Kind::Start, 3, 0, 0)),
+        slot(&Entry::event(Kind::Finish, 3, 1, 0)),
     ];
     assert_eq!(file(&slots, Some(T0)).unwrap_err(), Refusal::Empty);
 }
@@ -322,22 +317,14 @@ fn stream_bounds_hold() {
 
 #[test]
 fn an_hour_at_one_hertz_stays_small() {
-    let mut slots = vec![slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0))];
+    let mut slots = vec![slot(&Entry::event(Kind::Start, 3, 0, 0))];
     for batch in 0..900u64 {
         let samples: Vec<Sample> = (1..=4)
             .map(|i| sample((batch * 4 + i) * 1000, true))
             .collect();
-        slots.push(slot(
-            &Entry::batch(Source::Live, 3, batch as u32 + 1, &samples).unwrap(),
-        ));
+        slots.push(slot(&Entry::batch(3, batch as u32 + 1, &samples).unwrap()));
     }
-    slots.push(slot(&Entry::event(
-        Kind::Finish,
-        Source::Live,
-        3,
-        901,
-        3_600_000,
-    )));
+    slots.push(slot(&Entry::event(Kind::Finish, 3, 901, 3_600_000)));
     let (plan, bytes) = file(&slots, None).unwrap();
     assert_eq!(plan.samples, 3600);
     assert!(bytes.len() < 140_000, "{} bytes", bytes.len());
@@ -358,9 +345,9 @@ fn a_ride_without_power_has_no_calories() {
         })
         .collect();
     let slots = [
-        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
-        slot(&Entry::batch(Source::Live, 3, 1, &samples).unwrap()),
-        slot(&Entry::event(Kind::Finish, Source::Live, 3, 2, 4_000)),
+        slot(&Entry::event(Kind::Start, 3, 0, 0)),
+        slot(&Entry::batch(3, 1, &samples).unwrap()),
+        slot(&Entry::event(Kind::Finish, 3, 2, 4_000)),
     ];
     let (_, bytes) = file(&slots, None).unwrap();
     let messages = decode(&bytes);
@@ -398,14 +385,12 @@ fn summary_totals(slots: &[Slot]) -> Totals {
 
 fn journal(samples: &[Sample]) -> Vec<Slot> {
     let end = samples.last().map_or(0, |s| s.active_ms);
-    let mut slots = vec![slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0))];
+    let mut slots = vec![slot(&Entry::event(Kind::Start, 3, 0, 0))];
     for (index, batch) in samples.chunks(4).enumerate() {
         let sequence = index as u32 + 1;
-        slots.push(slot(
-            &Entry::batch(Source::Live, 3, sequence, batch).unwrap(),
-        ));
+        slots.push(slot(&Entry::batch(3, sequence, batch).unwrap()));
     }
-    slots.push(slot(&Entry::event(Kind::Finish, Source::Live, 3, 99, end)));
+    slots.push(slot(&Entry::event(Kind::Finish, 3, 99, end)));
     slots
 }
 
@@ -533,13 +518,13 @@ fn the_export_adds_up_the_seconds_the_saved_summary_does() {
         ..second[3]
     });
     let slots = [
-        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
-        slot(&Entry::batch(Source::Live, 3, 1, &first).unwrap()),
-        slot(&Entry::event(Kind::Pause, Source::Live, 3, 2, 4_900)),
-        slot(&Entry::event(Kind::Resume, Source::Live, 3, 3, 4_900)),
-        slot(&Entry::batch(Source::Live, 3, 4, &second[..4]).unwrap()),
-        slot(&Entry::batch(Source::Live, 3, 5, &second[4..]).unwrap()),
-        slot(&Entry::event(Kind::Finish, Source::Live, 3, 6, 9_800)),
+        slot(&Entry::event(Kind::Start, 3, 0, 0)),
+        slot(&Entry::batch(3, 1, &first).unwrap()),
+        slot(&Entry::event(Kind::Pause, 3, 2, 4_900)),
+        slot(&Entry::event(Kind::Resume, 3, 3, 4_900)),
+        slot(&Entry::batch(3, 4, &second[..4]).unwrap()),
+        slot(&Entry::batch(3, 5, &second[4..]).unwrap()),
+        slot(&Entry::event(Kind::Finish, 3, 6, 9_800)),
     ];
     let summary = summary_totals(&slots);
     for rider in [Rider::default(), body()] {
@@ -590,10 +575,10 @@ fn altitude_fills_records_and_ascent_and_descent() {
         .map(|i| at(i * 1000, (i != 6).then_some(1300 - (i as i32 - 4) * 100)))
         .collect();
     let slots = [
-        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
-        slot(&Entry::batch(Source::Live, 3, 1, &up).unwrap()),
-        slot(&Entry::batch(Source::Live, 3, 2, &down).unwrap()),
-        slot(&Entry::event(Kind::Finish, Source::Live, 3, 3, 8_000)),
+        slot(&Entry::event(Kind::Start, 3, 0, 0)),
+        slot(&Entry::batch(3, 1, &up).unwrap()),
+        slot(&Entry::batch(3, 2, &down).unwrap()),
+        slot(&Entry::event(Kind::Finish, 3, 3, 8_000)),
     ];
     let (plan, bytes) = file(&slots, None).unwrap();
     assert_eq!(bytes.len() as u32, plan.size);
@@ -651,11 +636,11 @@ fn an_unreadable_slot_takes_the_clock_again() {
     let mut late = sample(2_000, true);
     late.utc_ms = Some(T0 + 62_000);
     let slots = [
-        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
-        slot(&Entry::batch(Source::Live, 3, 1, &[sample(1_000, true)]).unwrap()),
+        slot(&Entry::event(Kind::Start, 3, 0, 0)),
+        slot(&Entry::batch(3, 1, &[sample(1_000, true)]).unwrap()),
         Slot([0x33; 256]),
-        slot(&Entry::batch(Source::Live, 3, 4, &[late]).unwrap()),
-        slot(&Entry::event(Kind::Finish, Source::Live, 3, 5, 2_000)),
+        slot(&Entry::batch(3, 4, &[late]).unwrap()),
+        slot(&Entry::event(Kind::Finish, 3, 5, 2_000)),
     ];
     let (_, bytes) = file(&slots, None).unwrap();
     assert_eq!(record_times(&bytes), [1, 62]);
@@ -668,7 +653,7 @@ fn a_resumed_stretch_dated_part_way_is_dated_from_its_start() {
     for (index, sample) in second.iter_mut().enumerate() {
         sample.utc_ms = (index >= 2).then(|| T0 + sample.active_ms + 60_000);
     }
-    slots[4] = slot(&Entry::batch(Source::Live, 3, 4, &second).unwrap());
+    slots[4] = slot(&Entry::batch(3, 4, &second).unwrap());
     let (_, bytes) = file(&slots, None).unwrap();
     assert_eq!(record_times(&bytes), [1, 2, 3, 4, 65, 66, 67, 68]);
     let t = fit_time(T0);
@@ -683,10 +668,10 @@ fn a_resumed_stretch_dated_part_way_is_dated_from_its_start() {
 #[test]
 fn time_between_the_last_sample_and_a_pause_counts() {
     let slots = [
-        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
-        slot(&Entry::batch(Source::Live, 3, 1, &[sample(1_000, true)]).unwrap()),
-        slot(&Entry::event(Kind::Pause, Source::Live, 3, 2, 1_500)),
-        slot(&Entry::event(Kind::Finish, Source::Live, 3, 3, 1_500)),
+        slot(&Entry::event(Kind::Start, 3, 0, 0)),
+        slot(&Entry::batch(3, 1, &[sample(1_000, true)]).unwrap()),
+        slot(&Entry::event(Kind::Pause, 3, 2, 1_500)),
+        slot(&Entry::event(Kind::Finish, 3, 3, 1_500)),
     ];
     let (_, bytes) = file(&slots, None).unwrap();
     let session = decode(&bytes).into_iter().find(|m| m.global == 18).unwrap();
@@ -740,8 +725,8 @@ fn lapped_ride_with(second_lap: LapStart) -> Vec<Slot> {
     second[0] = mark(5_000, LapStart::Manual);
     second[2] = mark(7_000, second_lap);
     let mut slots = ride(true, 60_000);
-    slots[1] = slot(&Entry::batch(Source::Live, 3, 1, &first).unwrap());
-    slots[4] = slot(&Entry::batch(Source::Live, 3, 4, &second).unwrap());
+    slots[1] = slot(&Entry::batch(3, 1, &first).unwrap());
+    slots[4] = slot(&Entry::batch(3, 4, &second).unwrap());
     slots
 }
 
@@ -749,7 +734,7 @@ fn lapped_ride_with(second_lap: LapStart) -> Vec<Slot> {
 /// or never comes, pauses of any wall time, damaged slots, another ride's
 /// records, and any end.
 fn arbitrary_ride(rng: &mut crate::testing::Rng) -> Vec<Slot> {
-    let mut slots = vec![slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0))];
+    let mut slots = vec![slot(&Entry::event(Kind::Start, 3, 0, 0))];
     let mut sequence = 1;
     let mut active_ms = 0;
     let mut offset_ms = T0 + rng.below(86_400_000);
@@ -770,32 +755,18 @@ fn arbitrary_ride(rng: &mut crate::testing::Rng) -> Vec<Slot> {
                         sample
                     })
                     .collect();
-                slots.push(slot(
-                    &Entry::batch(Source::Live, 3, sequence, &samples).unwrap(),
-                ));
+                slots.push(slot(&Entry::batch(3, sequence, &samples).unwrap()));
             }
             6 => {
-                slots.push(slot(&Entry::event(
-                    Kind::Pause,
-                    Source::Live,
-                    3,
-                    sequence,
-                    active_ms,
-                )));
+                slots.push(slot(&Entry::event(Kind::Pause, 3, sequence, active_ms)));
                 sequence += 1;
                 let any = rng.below(86_400_000);
                 offset_ms += rng.pick(&[0, 1_000, 3_600_000, any]);
-                slots.push(slot(&Entry::event(
-                    Kind::Resume,
-                    Source::Live,
-                    3,
-                    sequence,
-                    active_ms,
-                )));
+                slots.push(slot(&Entry::event(Kind::Resume, 3, sequence, active_ms)));
             }
             7 => slots.push(Slot(core::array::from_fn(|_| rng.byte()))),
             8 => {
-                let mut other = slot(&Entry::batch(Source::Live, 9, 1, &[rng.sample()]).unwrap());
+                let mut other = slot(&Entry::batch(9, 1, &[rng.sample()]).unwrap());
                 if rng.one_in(2) {
                     let at = rng.below(252) as usize;
                     other.0[at] ^= 1 << rng.below(8);
@@ -814,15 +785,9 @@ fn arbitrary_ride(rng: &mut crate::testing::Rng) -> Vec<Slot> {
         Kind::Samples,
     ]);
     match end {
-        Kind::Start => slots.push(slot(&Entry::event(Kind::Start, Source::Live, 4, 0, 0))),
+        Kind::Start => slots.push(slot(&Entry::event(Kind::Start, 4, 0, 0))),
         Kind::Samples => {}
-        kind => slots.push(slot(&Entry::event(
-            kind,
-            Source::Live,
-            3,
-            sequence,
-            active_ms,
-        ))),
+        kind => slots.push(slot(&Entry::event(kind, 3, sequence, active_ms))),
     }
     slots
 }
@@ -924,10 +889,7 @@ fn a_slot_of_four_laps_stays_within_its_bound() {
         .collect();
     let before = out.0;
     export.slot(&slots[3], &mut out);
-    export.slot(
-        &slot(&Entry::batch(Source::Live, 3, 4, &marked).unwrap()),
-        &mut out,
-    );
+    export.slot(&slot(&Entry::batch(3, 4, &marked).unwrap()), &mut out);
     assert_eq!(LAP.record_size(), LAP_RECORD);
     assert_eq!(out.0 - before, MAX_SLOT_OUTPUT - 7, "all but a pause");
 }
@@ -947,9 +909,9 @@ fn lap_distances_add_up_to_the_session_to_the_centimetre() {
         })
         .collect();
     let slots = [
-        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
-        slot(&Entry::batch(Source::Live, 3, 1, &samples).unwrap()),
-        slot(&Entry::event(Kind::Finish, Source::Live, 3, 2, 4_000)),
+        slot(&Entry::event(Kind::Start, 3, 0, 0)),
+        slot(&Entry::batch(3, 1, &samples).unwrap()),
+        slot(&Entry::event(Kind::Finish, 3, 2, 4_000)),
     ];
     let (_, bytes) = file(&slots, None).unwrap();
     let messages = decode(&bytes);
@@ -981,19 +943,11 @@ fn lap_ascent_and_descent_add_up_to_the_session() {
             }
         })
         .collect();
-    let mut slots = vec![slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0))];
+    let mut slots = vec![slot(&Entry::event(Kind::Start, 3, 0, 0))];
     for (index, batch) in samples.chunks(4).enumerate() {
-        slots.push(slot(
-            &Entry::batch(Source::Live, 3, index as u32 + 1, batch).unwrap(),
-        ));
+        slots.push(slot(&Entry::batch(3, index as u32 + 1, batch).unwrap()));
     }
-    slots.push(slot(&Entry::event(
-        Kind::Finish,
-        Source::Live,
-        3,
-        16,
-        60_000,
-    )));
+    slots.push(slot(&Entry::event(Kind::Finish, 3, 16, 60_000)));
     let (plan, bytes) = file(&slots, None).unwrap();
     assert_eq!(plan.laps, 9);
     let messages = decode(&bytes);
@@ -1083,9 +1037,9 @@ fn a_stored_cadence_past_the_sensor_range_exports_capped() {
     let mut wild = sample(1_000, true);
     wild.cadence_tenths = Some(u16::MAX);
     let slots = [
-        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
-        slot(&Entry::batch(Source::Live, 3, 1, &[wild]).unwrap()),
-        slot(&Entry::event(Kind::Finish, Source::Live, 3, 2, 1_000)),
+        slot(&Entry::event(Kind::Start, 3, 0, 0)),
+        slot(&Entry::batch(3, 1, &[wild]).unwrap()),
+        slot(&Entry::event(Kind::Finish, 3, 2, 1_000)),
     ];
     let (_, bytes) = file(&slots, None).unwrap();
     let record = decode(&bytes).into_iter().find(|m| m.global == 20).unwrap();
@@ -1102,9 +1056,9 @@ fn gap(jump_ms: u64) -> [Slot; 3] {
         ..first
     };
     [
-        slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
-        slot(&Entry::batch(Source::Live, 3, 1, &[first, later]).unwrap()),
-        slot(&Entry::event(Kind::Finish, Source::Live, 3, 2, jump_ms)),
+        slot(&Entry::event(Kind::Start, 3, 0, 0)),
+        slot(&Entry::batch(3, 1, &[first, later]).unwrap()),
+        slot(&Entry::event(Kind::Finish, 3, 2, jump_ms)),
     ]
 }
 

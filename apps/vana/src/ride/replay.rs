@@ -8,9 +8,8 @@
 //! a restart shares). Each `step` reads at most a given number of slots, so a
 //! long ride never holds up a frame. Reading is read-only.
 //!
-//! Laps come from the lap marks on samples (`log::LapStart`); a ride recorded
-//! before lap marks has none, and its laps stay unknown. Climbs are not in
-//! the journal: a ride's count comes from its facts (`ride::facts`).
+//! Laps come from the lap marks on samples (`log::LapStart`). Climbs are not
+//! in the journal: a ride's count comes from its facts (`ride::facts`).
 //! Ascent and descent follow the recorded altitude with a live ride's rules;
 //! a ride recorded without altitude estimates its ascent from the recorded
 //! gradient over the distance ridden.
@@ -321,14 +320,14 @@ impl Replay {
 
 /// The distance a sample covers over `elapsed_ms`, at its speed.
 fn step_mm(sample: &Sample, elapsed_ms: u64) -> u64 {
-    let speed = sample.speed_mm_s.or(sample.demo_speed_mm_s).unwrap_or(0);
+    let speed = sample.speed_mm_s.unwrap_or(0);
     u64::from(speed) * elapsed_ms / 1000
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ride::log::{Altitude, Source};
+    use crate::ride::log::Altitude;
     use std::vec::Vec;
 
     #[derive(Default)]
@@ -355,7 +354,6 @@ mod tests {
             active_ms,
             utc_ms: None,
             location_e7: None,
-            demo_speed_mm_s: None,
             heart_bpm: Some(140),
             cadence_tenths: Some(900),
             battery_percent: None,
@@ -378,16 +376,13 @@ mod tests {
                 sequence += 1;
                 slots.push(entry);
             };
-            next(
-                &mut slots,
-                Entry::event(Kind::Start, Source::Live, ride_id, 0, 0),
-            );
+            next(&mut slots, Entry::event(Kind::Start, ride_id, 0, 0));
             let samples: Vec<_> = (1..=seconds).map(|s| sample(s * 1000, watts)).collect();
             for chunk in samples.chunks(4) {
-                let batch = Entry::batch(Source::Live, ride_id, 0, chunk).unwrap();
+                let batch = Entry::batch(ride_id, 0, chunk).unwrap();
                 next(&mut slots, batch);
             }
-            let finish = Entry::event(Kind::Finish, Source::Live, ride_id, 0, seconds * 1000);
+            let finish = Entry::event(Kind::Finish, ride_id, 0, seconds * 1000);
             next(&mut slots, finish);
         }
         slots
@@ -440,17 +435,11 @@ mod tests {
                 ..sample(s * 1000, 200)
             })
             .collect();
-        let mut slots = std::vec![Entry::event(Kind::Start, Source::Live, 1, 0, 0)];
+        let mut slots = std::vec![Entry::event(Kind::Start, 1, 0, 0)];
         for chunk in samples.chunks(4) {
-            slots.push(Entry::batch(Source::Live, 1, 0, chunk).unwrap());
+            slots.push(Entry::batch(1, 0, chunk).unwrap());
         }
-        slots.push(Entry::event(
-            Kind::Finish,
-            Source::Live,
-            1,
-            0,
-            seconds * 1000,
-        ));
+        slots.push(Entry::event(Kind::Finish, 1, 0, seconds * 1000));
         slots
     }
 

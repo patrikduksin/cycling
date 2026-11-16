@@ -430,7 +430,6 @@ fn a_refused_answer_to_end_ride_returns_to_the_ride_and_says_storage_not_ready()
     let nobody_waits = 0;
     assert!(runtime.ride.internal.request(
         crate::ride::control::Action::Resume,
-        crate::ride::log::Source::Live,
         2500,
         nobody_waits
     ));
@@ -687,12 +686,7 @@ fn totals_stop_at_an_accepted_finish_while_its_flush_is_pending() {
             runtime
                 .ride
                 .submit(crate::app::Medium::Internal, |recorder, token| {
-                    recorder.request(
-                        crate::ride::control::Action::Finish,
-                        crate::ride::log::Source::Live,
-                        2100,
-                        token,
-                    )
+                    recorder.request(crate::ride::control::Action::Finish, 2100, token)
                 })
         );
     });

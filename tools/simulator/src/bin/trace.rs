@@ -513,13 +513,17 @@ fn pick_mode(
     }
 }
 
+/// The files that build VANA with uncommitted changes in the checkout this
+/// runs in, which need not be the one that built it: worktrees share the
+/// binary built for a commit.
 fn uncommitted() -> Vec<String> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
         .args(["status", "--porcelain", "--untracked-files=no", "--"])
-        .args(shell_simulator::session::build_sources())
+        .args(
+            shell_simulator::session::build_sources()
+                .iter()
+                .map(|source| format!(":(top){source}")),
+        )
         .output()
         .ok()
         .filter(|out| out.status.success())

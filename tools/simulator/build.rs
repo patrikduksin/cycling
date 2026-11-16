@@ -1,19 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The checkout paths whose tracked files build VANA in the simulator, from
-/// the repository root. An edit under any of them makes the build `-dirty`;
-/// the simulator gets them as `CYCLING_BUILD_SOURCES` for the same check.
-const BUILD_SOURCES: &[&str] = &[
-    "apps",
-    "packages",
-    "tools/simulator",
-    "vendor",
-    "patches",
-    ".cargo",
-    "Cargo.toml",
-    "Cargo.lock",
-];
+/// The checkout paths whose tracked files build VANA in the simulator, one
+/// a line from the repository root. An edit under any of them makes the
+/// build `-dirty`; the simulator gets them as `CYCLING_BUILD_SOURCES` for
+/// the same check, and `trace.sh` reads the file to tell whether the
+/// binary built for the commit is this tree's.
+const BUILD_SOURCES: &str = include_str!("build-sources");
 
 fn git(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
@@ -28,10 +21,11 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    let sources: Vec<&str> = BUILD_SOURCES.lines().collect();
     println!("cargo:rerun-if-env-changed=CYCLING_BUILD_COMMIT");
     println!(
         "cargo:rustc-env=CYCLING_BUILD_SOURCES={}",
-        BUILD_SOURCES.join(" ")
+        sources.join(" ")
     );
     if std::env::var_os("CYCLING_BUILD_COMMIT").is_some() {
         return;
@@ -51,14 +45,13 @@ fn main() {
             }
         }
     }
-    let tracked =
-        git(&root, &[&["ls-files", "--"][..], BUILD_SOURCES].concat()).unwrap_or_default();
+    let tracked = git(&root, &[&["ls-files", "--"][..], &sources].concat()).unwrap_or_default();
     for file in tracked.lines() {
         println!("cargo:rerun-if-changed={}", root.join(file).display());
     }
     let status = [
         &["status", "--porcelain", "--untracked-files=no", "--"][..],
-        BUILD_SOURCES,
+        &sources,
     ]
     .concat();
     let dirty = git(&root, &status).is_none_or(|changes| !changes.is_empty());

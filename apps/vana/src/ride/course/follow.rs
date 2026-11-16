@@ -82,9 +82,19 @@ struct Nearest {
     to_end_m: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Placement(u32);
+
+impl Placement {
+    pub(crate) fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
 pub struct Follower<'a> {
     line: &'a mut [Crumb],
     len: usize,
+    placement: Placement,
     unplaced: bool,
     held: bool,
     join_fixes: u8,
@@ -111,6 +121,7 @@ impl<'a> Follower<'a> {
         Self {
             line,
             len: 0,
+            placement: Placement::default(),
             unplaced: false,
             held: false,
             join_fixes: 0,
@@ -136,6 +147,7 @@ impl<'a> Follower<'a> {
     pub fn reset(&mut self) {
         self.unplaced |= self.len >= 2;
         self.len = 0;
+        self.placement = self.placement.next();
         self.held = false;
         self.join_fixes = 0;
         self.following = false;
@@ -151,6 +163,7 @@ impl<'a> Follower<'a> {
     pub fn set_course(&mut self, points: &[course::Point], frame: Option<Frame>) {
         self.stop();
         self.len = 0;
+        self.placement = self.placement.next();
         self.join_fixes = 0;
         let n = points.len().min(self.line.len());
         self.unplaced = n >= 2 && frame.is_none();
@@ -268,6 +281,10 @@ impl<'a> Follower<'a> {
     /// placed.
     pub fn course(&self) -> &[Crumb] {
         &self.line[..self.len]
+    }
+
+    pub fn placement(&self) -> Placement {
+        self.placement
     }
 
     /// While following: what is ahead is the course's first `end` points,

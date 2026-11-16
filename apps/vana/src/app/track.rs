@@ -317,6 +317,7 @@ pub(super) fn refresh_map(
         heading: state.homing.heading(),
         speed_mm_s,
         course: state.follower.course(),
+        placement: state.follower.placement(),
         ahead: state.follower.ahead(),
         guidance: state.follower.guidance(now),
         left_m: state.follower.to_end_m(),

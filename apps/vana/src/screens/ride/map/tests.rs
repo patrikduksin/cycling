@@ -809,6 +809,7 @@ fn way_drawn(frame: &Frame, here: Point, lane_m: f32) -> Way {
 struct Rider<'a> {
     homing: Homing<'a>,
     map: Cache<'static>,
+    placement: Placement,
     now: u64,
 }
 
@@ -817,6 +818,7 @@ impl<'a> Rider<'a> {
         Self {
             homing: Homing::new(storage),
             map: Cache::new(std::boxed::Box::leak(std::boxed::Box::default())),
+            placement: Placement::default(),
             now: 0,
         }
     }
@@ -840,6 +842,7 @@ impl<'a> Rider<'a> {
     fn shows(&mut self, course: &[Crumb], speed_mm_s: Option<u32>) -> Point {
         let here = self.homing.position().expect("a fix");
         let mut track = joining(course, here);
+        track.placement = self.placement;
         track.here_taken_ms = self.homing.position_taken_ms();
         track.heading = self.homing.heading();
         track.speed_mm_s = speed_mm_s;
@@ -861,6 +864,10 @@ impl<'a> Rider<'a> {
     ) -> Way {
         self.reports(at);
         self.sees(course, lane_m, speed_mm_s)
+    }
+
+    fn places_a_course(&mut self) {
+        self.placement = self.placement.next();
     }
 
     fn holds_the_way_back(&mut self, course: &[Crumb]) {
@@ -1001,7 +1008,7 @@ fn fixes_to_turn_back(kmh: f32) -> Option<usize> {
 
 #[test]
 fn a_u_turn_before_joining_switches_to_the_way_back_and_keeps_it() {
-    for (kmh, by_fix) in [(8.0, 11), (15.0, 8), (30.0, 4)] {
+    for (kmh, by_fix) in [(5.0, 24), (8.0, 11), (15.0, 8), (30.0, 4)] {
         let switched = fixes_to_turn_back(kmh);
         assert!(
             switched.is_some_and(|fix| fix <= by_fix),
@@ -1093,11 +1100,13 @@ fn a_course_removed_and_loaded_again_forgets_the_leg_it_held() {
     let mut storage = [Crumb::default(); 64];
     let mut rider = Rider::new(&mut storage);
     rider.holds_the_way_back(&c);
+    rider.places_a_course();
     rider.shows(&[], RIDING);
     for north in [30.0, 40.0] {
         rider.reports((0.0, north));
         rider.shows(&[], RIDING);
     }
+    rider.places_a_course();
     assert_eq!(
         rider.sees(&c, 6.0, RIDING),
         Way::Out,
@@ -1168,5 +1177,55 @@ fn drifting_at_6_kmh_onto_a_road_26_m_away_and_riding_it_moves_the_route_onto_it
     assert!(
         moved < 16,
         "the second road before the drift reaches it, not fix {moved}: {roads:?}"
+    );
+}
+
+#[test]
+fn fixes_without_a_speed_never_count_travel_the_fixes_with_one_left_short() {
+    let c = there_and_back(6.0);
+    let mut storage = [Crumb::default(); 64];
+    let mut rider = Rider::new(&mut storage);
+    for north in [0.0, 20.0, 40.0, 60.0] {
+        assert_eq!(
+            rider.rides_and_sees(&c, 6.0, (0.0, north), RIDING),
+            Way::Out
+        );
+    }
+    const CRAWL: Option<u32> = Some(1_400);
+    for (north, speed_mm_s) in [
+        (60.0, STANDING),
+        (61.5, CRAWL),
+        (63.0, None),
+        (61.5, CRAWL),
+        (60.0, None),
+        (61.5, CRAWL),
+        (63.0, None),
+    ] {
+        assert_eq!(
+            rider.rides_and_sees(&c, 6.0, (30.0, north), speed_mm_s),
+            Way::Out,
+            "1.5 m to {north} m north at {speed_mm_s:?} mm/s"
+        );
+    }
+}
+
+#[test]
+fn a_course_replaced_by_the_same_one_1_m_east_forgets_the_leg_it_held() {
+    let c = there_and_back(6.0);
+    let mut moved = c.clone();
+    for crumb in &mut moved {
+        crumb.east += 1.0;
+    }
+    let mut storage = [Crumb::default(); 64];
+    let mut rider = Rider::new(&mut storage);
+    rider.holds_the_way_back(&c);
+    for north in [30.0, 50.0, 70.0] {
+        rider.reports((0.0, north));
+    }
+    rider.places_a_course();
+    assert_eq!(
+        rider.sees(&moved, 6.0, STANDING),
+        Way::Out,
+        "stopped, heading north on the way out"
     );
 }

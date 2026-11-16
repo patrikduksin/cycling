@@ -3,7 +3,7 @@ mod pose;
 mod raster;
 
 use super::kilometres;
-use crate::ride::course::follow;
+use crate::ride::course::follow::{self, Placement};
 use crate::ride::course::nav::{Glyph, Guidance, Sign, Spot};
 use crate::ride::homing::{Crumb, TURN, bearing, distance};
 use crate::screens::canvas::{Canvas, Shape};
@@ -16,7 +16,7 @@ use crate::screens::workout::{Text, View};
 use arrow::{ARROW_OUTLINE_PX, ARROW_SHAFT_HALF_PX, ARROW_STROKES, arrow_shape};
 use firmware_shell::rendering::font::FOOT_20;
 pub use pose::{GROUND, Reach, Zoom};
-use pose::{Pose, Projection, STOPPED_BELOW_MM_S};
+use pose::{Pose, Projection};
 use raster::{Cover, Stroke, Triangle};
 
 type Point = (f32, f32);
@@ -38,6 +38,7 @@ pub struct Track<'a> {
     /// The loaded course, end first, each point's `along` its metres to the
     /// end; empty without one.
     pub course: &'a [Crumb],
+    pub placement: Placement,
     /// Following the course: what is ahead is its first points up to this
     /// index, from its end, and then the matched point if any.
     pub ahead: Option<(usize, Option<Point>)>,
@@ -58,7 +59,7 @@ pub struct Key {
     newest: u32,
     here: Option<(u32, u32)>,
     heading: Option<u16>,
-    course: (usize, u32),
+    placement: Placement,
     ahead: Option<(usize, Option<(u32, u32)>)>,
     leg: Option<usize>,
     sign: Option<Sign>,
@@ -78,7 +79,7 @@ impl Track<'_> {
             newest: self.crumbs.last().map_or(0, |c| c.along.to_bits()),
             here: self.here.map(bits),
             heading: self.heading,
-            course: self.course_key(),
+            placement: self.placement,
             ahead: self
                 .ahead
                 .map(|(segment, matched)| (segment, matched.map(bits))),
@@ -90,11 +91,6 @@ impl Track<'_> {
             reach: self.reach,
             radar: self.radar,
         }
-    }
-
-    fn course_key(&self) -> (usize, u32) {
-        let total_m = self.course.last().map_or(0, |c| c.along.to_bits());
-        (self.course.len(), total_m)
     }
 
     fn rider_or_last_crumb(&self) -> Option<Point> {
@@ -263,7 +259,7 @@ enum Motion {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct HeldLeg {
-    course: (usize, u32),
+    placement: Placement,
     end: Option<usize>,
     last_fix: Option<Fixed>,
     counted_from: Option<Point>,
@@ -273,9 +269,9 @@ struct HeldLeg {
 
 impl HeldLeg {
     fn observe(&mut self, track: &Track) {
-        if self.course != track.course_key() {
+        if self.placement != track.placement {
             *self = Self {
-                course: track.course_key(),
+                placement: track.placement,
                 ..Self::default()
             };
         }
@@ -296,15 +292,17 @@ impl HeldLeg {
     }
 
     fn motion(&mut self, fix: Fixed, speed_mm_s: Option<u32>) -> Option<Motion> {
-        if self.last_fix.replace(fix) == Some(fix) {
+        let last = self.last_fix.replace(fix);
+        if last == Some(fix) {
             return None;
         }
-        let from = *self.counted_from.get_or_insert(fix.at);
-        let far_enough = distance(from, fix.at) >= MOVING_M;
+        let counted_from = *self.counted_from.get_or_insert(fix.at);
+        let travelled_from = |from: Point| distance(from, fix.at) >= MOVING_M;
         let motion = match speed_mm_s {
-            Some(v) if v < STOPPED_BELOW_MM_S => Motion::Stopped,
-            _ if far_enough => Motion::Moving,
+            Some(v) if !pose::moving(v) => Motion::Stopped,
+            Some(_) if travelled_from(counted_from) => Motion::Moving,
             Some(_) => Motion::TooSlowToTell,
+            None if last.is_some_and(|last| travelled_from(last.at)) => Motion::Moving,
             None => Motion::Stopped,
         };
         if motion != Motion::TooSlowToTell {

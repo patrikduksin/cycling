@@ -14,7 +14,7 @@ const START_AHEAD_M: f32 = 300.0;
 const AHEAD_S: f32 = 40.0;
 const NEAREST_AHEAD_M: f32 = 150.0;
 const FURTHEST_AHEAD_M: f32 = 1_000.0;
-pub(super) const STOPPED_BELOW_MM_S: u32 = 1_400;
+const MOVING_FROM_MM_S: u32 = 5 * 1_000_000 / 3_600;
 const EASE_PER_FIX: f32 = 0.2;
 const BAR_MAX_PX: f32 = 90.0;
 const BARS: [(f32, &[u8]); 3] = [(250.0, b"250 M"), (100.0, b"100 M"), (50.0, b"50 M")];
@@ -62,9 +62,13 @@ impl Default for Zoom {
     }
 }
 
+pub(super) fn moving(speed_mm_s: u32) -> bool {
+    speed_mm_s >= MOVING_FROM_MM_S
+}
+
 impl Zoom {
     pub fn observe_riding_at(&mut self, speed_mm_s: u32) {
-        if speed_mm_s < STOPPED_BELOW_MM_S {
+        if !moving(speed_mm_s) {
             return;
         }
         let goal =
@@ -226,6 +230,17 @@ mod tests {
             }
             assert_eq!(zoom, riding, "{still} mm/s");
         }
+    }
+
+    #[test]
+    fn from_5_kmh_the_scale_follows_the_speed_and_below_it_holds() {
+        let riding = settled(40.0);
+        let mut zoom = riding;
+        for _ in 0..30 {
+            zoom.observe_riding_at(MOVING_FROM_MM_S - 1);
+        }
+        assert_eq!(zoom, riding, "just under 5 km/h");
+        assert_eq!(settled(5.0).reach(), Reach { ahead_m: 150 }, "5 km/h");
     }
 
     #[test]

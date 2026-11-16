@@ -34,7 +34,8 @@ const MORE_THAN_135_DEG_OFF: core::ops::Range<u16> = TURN * 3 / 8 + 1..TURN * 5 
 type Point = (f32, f32);
 
 /// A fix this far on from the last one, at least this fast when the ride's
-/// speed is known: one jittering at a stop never is.
+/// speed is known: a stop's jitter passes only by jumping that far with no
+/// speed known.
 fn moving(travelled_m: Option<f32>, speed_mm_s: Option<u32>) -> bool {
     travelled_m.is_some_and(|m| m >= MOVING_M) && speed_mm_s.is_none_or(|v| v >= MOVING_MM_S)
 }
@@ -102,7 +103,6 @@ impl Placement {
     }
 }
 
-/// A moved fix beside the course, as its heading is to the course's way.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Riding {
     /// Along the segment ending at this point: the first pass ridden its way.
@@ -291,7 +291,6 @@ impl<'a> Follower<'a> {
         self.following
     }
 
-    /// A placed course that following may still start on.
     pub fn joinable(&self) -> bool {
         !self.following && !self.held && self.len >= 2
     }

@@ -754,8 +754,6 @@ impl Scan {
         self.look_for_spurs(len, at, turns, found);
     }
 
-    /// Keep the course behind in reach, walk back from where it turned
-    /// back, and put a spur found into the list once its turns are.
     fn look_for_spurs(
         &mut self,
         len: usize,

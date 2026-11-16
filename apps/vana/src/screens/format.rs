@@ -1,8 +1,3 @@
-//! FORMAT STORAGE?: what a boot asks when stored data is of another version.
-//!
-//! The question in the layout of END RIDE?, white on black. ACT (trash cue)
-//! formats, BACK keeps everything as it is, MOVE does nothing. While the
-//! storage is formatted the same page says so, with no cues.
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::{Align, BODY, CAPTION, SECONDARY, TITLE, WHITE, WIDTH};
 

@@ -480,7 +480,7 @@ A file of another version or length reads as one that does not decode.
 | Bytes | Field |
 | --- | --- |
 | 0..4 | magic `VBST` |
-| 4 | version, 1 |
+| 4 | version, 2 |
 | 5 | body length before the CRC, 38 |
 | 6..38 | four power marks (watts and day, u16 each), distance in metres (u32) and day (u16), time in seconds (u32) and day (u16), ascent in metres (u16) and day (u16), little-endian |
 | 38..42 | CRC32 of bytes 0..38 |
@@ -512,7 +512,7 @@ FILES volume or a store the host formatted, no course is kept.
 | Bytes | Field |
 | --- | --- |
 | 0..4 | magic `VCRS` |
-| 4 | version, 1 |
+| 4 | version, 2 |
 | 5 | header length, 34 |
 | 6 | point length, 8 |
 | 7 | name length, up to 24 |
@@ -552,7 +552,7 @@ after the end of the last stored one.
 | Bytes | Field |
 | --- | --- |
 | 0..4 | magic `VTRN` |
-| 4 | version, 1 |
+| 4 | version, 2 |
 | 5 | header length, 16 |
 | 6 | turn length, 12 |
 | 7 | flags: 1, the course has more turns than are stored; other bits zero |
@@ -580,7 +580,7 @@ page.
 Load a workout from JSON with `cycling workout-load <file> [--name stem]`;
 `--dry-run` prints the file it would put. Examples are in
 `tools/devtools/workouts/` and the format is described in
-`cycling_devtools.workouts.load`. The host writes codec version 1
+`cycling_devtools.workouts.load`. The host writes codec version 2
 (`apps/vana/src/workout/codec.rs`) to the MMC's FILES volume as
 `workouts/<stem>.vw` through the volume transfer session. That session checks
 the CRC on commit and reads the file back. `cycling files put
@@ -672,12 +672,12 @@ Each slot ends in the CRC32 of the bytes before it:
 | Header bytes | Field |
 | --- | --- |
 | 0..4 | magic `VFTB` |
-| 4 | table version, 1 |
+| 4 | table version, 2 |
 | 6..8 | stride, 32 |
 
 | Slot bytes | Field |
 | --- | --- |
-| 0 | record version, 1 |
+| 0 | record version, 2 |
 | 2 | journal: `i` internal, `b` bulk |
 | 3 | flags: 1 profile, 2 HR recovery, 4 climbs |
 | 4..8 | ride id |
@@ -739,12 +739,12 @@ in the CRC32 of the bytes before it:
 | Header bytes | Field |
 | --- | --- |
 | 0..4 | magic `VDEL` |
-| 4 | table version, 1 |
+| 4 | table version, 2 |
 | 6..8 | stride, 32 |
 
 | Slot bytes | Field |
 | --- | --- |
-| 0 | record version, 1 |
+| 0 | record version, 2 |
 | 1 | why: 1 discarded at the end, 2 deleted on VANA |
 | 2 | journal: `i` internal, `b` bulk |
 | 4..8 | ride id |

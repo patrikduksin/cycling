@@ -1,11 +1,11 @@
 """Report what each of VANA's stores holds, or format them all.
 
     cycling format            every store: current, blank, foreign or unusable
-    cycling format --confirm  erase the rides, the settings and the files, then wait for the restart
+    cycling format --confirm  erase the rides, the traces, the settings and the files, then wait for the restart
 
 A store written by another firmware version reads `foreign`: the device keeps it and offers FORMAT on its
 screen at boot. `--confirm` runs the same wipe from here, foreign data or not. The terrain pack is kept
-unless the volume table or the pack itself is of another version.
+unless the volume table is not one this version reads, or the pack itself is of another version.
 """
 
 import argparse
@@ -27,17 +27,21 @@ def health(connection):
     return dict(field.split('=', 1) for field in reply['data'].split())
 
 
+def wait_for_restart(connection, sleep):
+    try:
+        while (state := health(connection)['state']) == 'running':
+            sleep(0.5)
+    except OSError, TimeoutError:
+        return 'done'
+    return state
+
+
 def wipe(port, log_dir, sleep=time.sleep):
     with UsbConnection(port, log_dir / f'usb-{time.time_ns()}.log') as connection:
         reply = connection.terminal_command('FORMAT CONFIRM')
         if reply['status'] != 'ACCEPTED':
             raise RuntimeError(f'FORMAT CONFIRM: {reply["status"]} {reply["data"]}')
-        # The device restarts when the wipe is done; a wipe that fails stays up and says so.
-        try:
-            while (state := health(connection)['state']) == 'running':
-                sleep(0.5)
-        except OSError, TimeoutError:
-            state = 'done'
+        state = wait_for_restart(connection, sleep)
     if state == 'failed':
         raise RuntimeError('the wipe failed; power the device off and on, then format again')
     connection = reopen(port, log_dir, 'after-format', RESTART_S)
@@ -54,7 +58,9 @@ def wipe(port, log_dir, sleep=time.sleep):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_port_argument(parser)
-    parser.add_argument('--confirm', action='store_true', help='erase the rides, the settings and the files')
+    parser.add_argument(
+        '--confirm', action='store_true', help='erase the rides, the traces, the settings and the files'
+    )
     args = parser.parse_args(argv)
     port = selected_port(parser, args.port)
     log_dir = private_path(ROOT / '.local' / 'volumes')

@@ -8,13 +8,13 @@
 //! | Header bytes | Field |
 //! | --- | --- |
 //! | 0..4 | magic `VFTB` |
-//! | 4 | table version, 1 |
+//! | 4 | table version, 2 |
 //! | 6..8 | stride, 32 |
 //! | 28..32 | CRC32 of bytes 0..28 |
 //!
 //! | Slot bytes | Field |
 //! | --- | --- |
-//! | 0 | record version, 1 |
+//! | 0 | record version, 2 |
 //! | 2 | journal: `i` internal, `b` bulk |
 //! | 3 | flags: 1 profile, 2 HR recovery, 4 climbs |
 //! | 4..8 | ride id in that journal |
@@ -51,9 +51,10 @@ pub const TABLE: &str = "rides/facts.tbl";
 pub const VERSION: u8 = 2;
 const TABLE_MAGIC: &[u8; 4] = b"VFTB";
 const TABLE_VERSION: u8 = 2;
-/// The file, its magic and its version byte at offset 4: what tells this
-/// table in another version from other bytes.
-pub const STAMP: (&str, &[u8; 4], u8) = (TABLE, TABLE_MAGIC, TABLE_VERSION);
+pub const STAMP: super::Stamp = super::Stamp {
+    magic: TABLE_MAGIC,
+    version: TABLE_VERSION,
+};
 pub const SLOT: usize = 32;
 const FIELDS: usize = 2;
 /// Rides the table keeps: FORM's 120 days at eight rides a day, in 32 KB.

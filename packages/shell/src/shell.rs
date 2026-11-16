@@ -583,7 +583,9 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         });
         self.dirty = self.display_error;
     }
-    /// FORMAT's first step (`Store::condemn`).
+    /// Leave the settings reading foreign until [`Self::erase_settings`]
+    /// completes: current ones are replaced with a record no version reads.
+    /// False when the write failed.
     pub fn condemn_settings(&mut self) -> bool {
         let condemned = self.store.condemn().is_ok();
         if condemned {
@@ -593,7 +595,8 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         condemned
     }
 
-    /// FORMAT's last step (`Store::erase`).
+    /// Erase the settings journal, foreign or not. False when the erase
+    /// failed; the settings may then still read foreign.
     pub fn erase_settings(&mut self) -> bool {
         self.store.erase().is_ok()
     }

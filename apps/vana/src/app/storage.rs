@@ -1,29 +1,18 @@
-//! What each of VANA's stores holds: the one answer the FORMAT offer, the
-//! ready line and `FORMAT` read.
-//!
-//! The settings and the internal journal are read from their owners. The
-//! card's volumes are read once, after the bulk recorder's scan, by
-//! [`Probe`]: the table, then the head of each volume, then the head of each
-//! table and workout record VANA writes into FILES. Files the host writes (course, turns,
-//! workouts) are the host's to replace and never raise the offer; nor does
-//! the terrain pack.
 use super::Runtime;
 use super::preferences::Stored;
 use crate::ride::log::Status;
+use crate::ride::{bests, deleted, facts};
 use device_api::bulk::ReadWrite;
 use firmware_services::volume::{self, FILES, Layout, RIDES, STORE, Table, Volume};
 use firmware_services::{files, sector_log, store};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Health {
-    /// Not read yet this boot.
     #[default]
     Unread,
     Blank,
     Current,
-    /// Written by another version: kept, and the device offers FORMAT.
     Foreign,
-    /// Damaged, unreachable or absent. Not another version's, so no offer.
     Unusable,
 }
 
@@ -39,7 +28,6 @@ impl Health {
     }
 }
 
-/// Every store's health, by the name `FORMAT` reports it under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StorageHealth(pub [(&'static str, Health); 7]);
 
@@ -53,18 +41,16 @@ impl StorageHealth {
     }
 }
 
-/// What the card's volumes hold.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct Probe {
+pub(super) struct CardProbe {
     table: Health,
     rides: Health,
     files: Health,
-    /// The tables VANA writes into FILES.
     records: Health,
     traces: Health,
 }
 
-impl Probe {
+impl CardProbe {
     fn all(health: Health) -> Self {
         Self {
             table: health,
@@ -92,7 +78,7 @@ impl Probe {
         let (files, records) = files_health(bulk, &table, &mut sector);
         Self {
             table: Health::Current,
-            rides: in_volume(bulk, &table, &RIDES, |volume| {
+            rides: volume_health(bulk, &table, &RIDES, |volume| {
                 match sector_log::formatted(volume, crate::ride::bulk::TAG, &mut sector) {
                     Ok(true) => Health::Current,
                     Ok(false) => Health::Blank,
@@ -102,7 +88,7 @@ impl Probe {
             }),
             files,
             records,
-            traces: in_volume(bulk, &table, &STORE, |volume| {
+            traces: volume_health(bulk, &table, &STORE, |volume| {
                 match store::mount(volume, &mut sector) {
                     Ok(_) => Health::Current,
                     Err(store::Error::Uninitialized) => Health::Blank,
@@ -114,8 +100,7 @@ impl Probe {
     }
 }
 
-/// A volume the plan leaves out, as small media do, is no store to format.
-fn in_volume<B: ReadWrite>(
+fn volume_health<B: ReadWrite>(
     bulk: &mut B,
     table: &Table,
     name: &volume::Name,
@@ -142,10 +127,10 @@ fn files_health(
         Err(files::Error::Foreign) => return (Health::Foreign, Health::Unusable),
         Err(_) => return (Health::Unusable, Health::Unusable),
     };
-    let stamps = [
-        crate::ride::facts::STAMP,
-        crate::ride::deleted::STAMP,
-        crate::ride::bests::STAMP,
+    let tables = [
+        (facts::TABLE, facts::STAMP),
+        (deleted::TABLE, deleted::STAMP),
+        (bests::FILE, bests::STAMP),
     ];
     let mut records = Health::Current;
     for index in 0..files::DIR_SECTORS {
@@ -154,17 +139,17 @@ fn files_health(
         };
         for entry in entries.iter().flatten() {
             let name = entry.name.as_str();
-            let stamp = stamps
+            let stamp = tables
                 .iter()
-                .find(|(file, ..)| *file == name)
-                .map(|(_, magic, version)| (*magic, *version))
+                .find(|(file, _)| *file == name)
+                .map(|(_, stamp)| *stamp)
                 .or_else(|| crate::workout::history::stamp(name));
-            let Some((magic, version)) = stamp else {
+            let Some(stamp) = stamp else {
                 continue;
             };
             let mut head = [0u8; 5];
             match dir.read(volume, entry, 0, &mut head, sector) {
-                Ok(5) if head[..4] == magic[..] && head[4] != version => {
+                Ok(5) if stamp.another_version(&head) => {
                     return (Health::Current, Health::Foreign);
                 }
                 Ok(_) => {}
@@ -176,18 +161,16 @@ fn files_health(
 }
 
 impl Runtime {
-    /// Read the card's volumes once the bulk recorder has scanned them. A
-    /// card that is absent or failing is not read again.
     pub(super) fn probe_storage(&mut self, bulk: &mut impl ReadWrite) {
-        if self.storage.is_some() {
+        if self.card_probe.is_some() {
             return;
         }
-        self.storage = match self.ride.bulk.status() {
+        self.card_probe = match self.ride.bulk.status() {
             Status::Scanning => None,
             Status::Unsupported | Status::Unavailable | Status::Error => {
-                Some(Probe::all(Health::Unusable))
+                Some(CardProbe::all(Health::Unusable))
             }
-            _ => Some(Probe::read(bulk)),
+            _ => Some(CardProbe::read(bulk)),
         };
     }
 
@@ -197,17 +180,17 @@ impl Runtime {
             Stored::Current => Health::Current,
             Stored::Foreign => Health::Foreign,
         };
-        // The internal journal never reads blank: `NeedsInit` there is
-        // occupied data no slot of this version explains.
         let internal = match self.ride.internal.status() {
             Status::Scanning => Health::Unread,
-            Status::NeedsInit => Health::Foreign,
-            Status::Error | Status::Unsupported | Status::Unavailable | Status::Corrupt => {
-                Health::Unusable
-            }
+            _ if self.ride.internal.holds_another_version() => Health::Foreign,
+            Status::NeedsInit
+            | Status::Error
+            | Status::Unsupported
+            | Status::Unavailable
+            | Status::Corrupt => Health::Unusable,
             _ => Health::Current,
         };
-        let probe = self.storage.unwrap_or_default();
+        let probe = self.card_probe.unwrap_or_default();
         StorageHealth([
             ("settings", settings),
             ("internal", internal),

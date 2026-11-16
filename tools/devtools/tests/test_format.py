@@ -5,9 +5,7 @@ from cycling_devtools.device import format as device_format
 CURRENT = 'state=idle settings=blank internal=current table=current rides=current'
 
 
-class Device:
-    """Replies in order; an exception stands for the connection a restart drops."""
-
+class ScriptedConnection:
     def __init__(self, *replies):
         self.replies, self.sent = list(replies), []
 
@@ -32,13 +30,13 @@ def wipe(monkeypatch, tmp_path, before, after):
 
 
 def test_health_is_read_as_fields():
-    device = Device(('OK', 'state=offered settings=foreign rides=current'))
+    device = ScriptedConnection(('OK', 'state=offered settings=foreign rides=current'))
     assert device_format.health(device) == {'state': 'offered', 'settings': 'foreign', 'rides': 'current'}
 
 
 def test_a_wipe_waits_out_the_restart_and_reports_the_fresh_stores(monkeypatch, tmp_path):
-    before = Device(('ACCEPTED', ''), ('OK', 'state=running'), OSError('gone'))
-    after = Device(('OK', CURRENT))
+    before = ScriptedConnection(('ACCEPTED', ''), ('OK', 'state=running'), OSError('gone'))
+    after = ScriptedConnection(('OK', CURRENT))
     assert wipe(monkeypatch, tmp_path, before, after)['settings'] == 'blank'
     assert before.sent == ['FORMAT CONFIRM', 'FORMAT', 'FORMAT']
 
@@ -53,4 +51,4 @@ def test_a_wipe_waits_out_the_restart_and_reports_the_fresh_stores(monkeypatch, 
 )
 def test_a_wipe_that_does_not_finish_is_an_error(monkeypatch, tmp_path, before, after, message):
     with pytest.raises(RuntimeError, match=message):
-        wipe(monkeypatch, tmp_path, Device(*before), Device(*after))
+        wipe(monkeypatch, tmp_path, ScriptedConnection(*before), ScriptedConnection(*after))

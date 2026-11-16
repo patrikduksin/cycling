@@ -10,12 +10,12 @@
 //! | Header bytes | Field |
 //! | --- | --- |
 //! | 0..4 | magic `VDEL` |
-//! | 4 | table version, 1 |
+//! | 4 | table version, 2 |
 //! | 6..8 | stride, 32 |
 //!
 //! | Slot bytes | Field |
 //! | --- | --- |
-//! | 0 | record version, 1 |
+//! | 0 | record version, 2 |
 //! | 1 | why: 1 discarded at the end, 2 deleted on VANA |
 //! | 2 | journal: `i` internal, `b` bulk |
 //! | 4..8 | ride id in that journal |
@@ -45,9 +45,10 @@ use firmware_services::{files, volume};
 pub const TABLE: &str = "rides/deleted.tbl";
 const MAGIC: &[u8; 4] = b"VDEL";
 const TABLE_VERSION: u8 = 2;
-/// The file, its magic and its version byte at offset 4: what tells this
-/// table in another version from other bytes.
-pub const STAMP: (&str, &[u8; 4], u8) = (TABLE, MAGIC, TABLE_VERSION);
+pub const STAMP: super::Stamp = super::Stamp {
+    magic: MAGIC,
+    version: TABLE_VERSION,
+};
 const VERSION: u8 = 2;
 pub const SLOT: usize = 32;
 /// Rides the table can hide, in 8 KB.

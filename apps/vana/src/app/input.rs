@@ -37,7 +37,7 @@ const AUTO_LAP: [AutoLap; 6] = [
 /// UTC-3 is Magallanes and Aysén all year.
 const ZONES: [Zone; 3] = [Zone::Chile, Zone::utc(-3), Zone::utc(-4)];
 /// Held buttons repeat about every 100 ms; a longer gap means a new press.
-const HOLD_GAP_MS: u64 = 250;
+pub const HOLD_GAP_MS: u64 = 250;
 
 impl Runtime {
     pub fn input_active(&self) -> bool {

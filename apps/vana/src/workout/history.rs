@@ -6,7 +6,7 @@
 //! | Bytes | Field |
 //! | --- | --- |
 //! | 0..4 | magic `VWKO` |
-//! | 4 | version, 1 |
+//! | 4 | version, 2 |
 //! | 5 | zero |
 //! | 6 | journal: `i` internal, `b` bulk |
 //! | 7 | flags: 1 finished, 2 start time known, 4 FTP measured |
@@ -26,6 +26,7 @@
 use super::library::LoadError;
 use super::model::{NAME_BYTES, Name, Test};
 use super::player::Summary;
+use crate::ride::Stamp;
 use core::fmt::Write;
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::crc32;
@@ -151,19 +152,16 @@ pub fn decode(bytes: &[u8]) -> Option<Record> {
 const FOREIGN: LoadError = LoadError::Decode(super::codec::DecodeError::Version);
 const DAMAGED: LoadError = LoadError::Decode(super::codec::DecodeError::Checksum);
 
-/// The magic and version byte of `name`, if it names a record's file: what
-/// tells a record of another version from other bytes.
-pub fn stamp(name: &str) -> Option<(&'static [u8; 4], u8)> {
-    (name.starts_with(FOLDER) && name.ends_with(SUFFIX)).then_some((MAGIC, VERSION))
+pub fn stamp(name: &str) -> Option<Stamp> {
+    (name.starts_with(FOLDER) && name.ends_with(SUFFIX)).then_some(Stamp {
+        magic: MAGIC,
+        version: VERSION,
+    })
 }
 
-/// What a record's file holds.
 enum Stored {
     Current(Record),
-    /// A record of this version that fails its checks: nothing in it can
-    /// be read, so a save may replace it and a rotation may delete it.
     Damaged,
-    /// Another version, or not a record: kept, never written over.
     Foreign,
 }
 
@@ -185,10 +183,6 @@ fn read(
     Ok(decode(&bytes).map_or(Stored::Damaged, Stored::Current))
 }
 
-/// Save `record`, replacing one for the same ride and deleting the oldest
-/// record once [`KEEP`] are stored. A foreign file is never replaced or
-/// deleted: the rotation passes over it to the oldest record that is not
-/// foreign, and the save is refused only when there is none.
 pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<(), LoadError> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = volume::open(media, &volume::FILES, &mut sector).map_err(LoadError::Volume)?;
@@ -214,39 +208,39 @@ pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<(), LoadError
             return Err(FOREIGN);
         }
     } else if kept >= KEEP {
-        // Revisions only grow, so each pass looks past the foreign file the
-        // last one found.
-        let mut passed = None;
-        loop {
-            let mut oldest: Option<files::Entry> = None;
-            dir.list(&mut store, &mut sector, |entry| {
-                if stamp(entry.name.as_str()).is_some()
-                    && passed.is_none_or(|passed| entry.revision > passed)
-                    && oldest.is_none_or(|old| entry.revision < old.revision)
-                {
-                    oldest = Some(*entry);
-                }
-            })
+        let oldest = oldest_replaceable(&mut store, &dir, &mut sector)?;
+        dir.delete(&mut store, &oldest.name, &mut sector)
             .map_err(LoadError::Files)?;
-            let oldest = oldest.ok_or(FOREIGN)?;
-            if matches!(
-                read(&mut store, &dir, &oldest, &mut sector)?,
-                Stored::Foreign
-            ) {
-                passed = Some(oldest.revision);
-                continue;
-            }
-            dir.delete(&mut store, &oldest.name, &mut sector)
-                .map_err(LoadError::Files)?;
-            break;
-        }
     }
     files::write(&mut store, &name, &encode(record), &mut sector).map_err(LoadError::Files)?;
     Ok(())
 }
 
-/// Delete every record of `journal`, as its ride ids start over. A foreign
-/// file of the journal is kept, and the clear stops at its batch.
+fn oldest_replaceable(
+    store: &mut impl ReadWrite,
+    dir: &files::Dir,
+    sector: &mut files::Sector,
+) -> Result<files::Entry, LoadError> {
+    let mut passed = None;
+    loop {
+        let mut oldest: Option<files::Entry> = None;
+        dir.list(store, sector, |entry| {
+            if stamp(entry.name.as_str()).is_some()
+                && passed.is_none_or(|passed| entry.revision > passed)
+                && oldest.is_none_or(|old| entry.revision < old.revision)
+            {
+                oldest = Some(*entry);
+            }
+        })
+        .map_err(LoadError::Files)?;
+        let oldest = oldest.ok_or(FOREIGN)?;
+        if !matches!(read(store, dir, &oldest, sector)?, Stored::Foreign) {
+            return Ok(oldest);
+        }
+        passed = Some(oldest.revision);
+    }
+}
+
 pub fn forget(media: &mut impl ReadWrite, journal: u8) -> Result<(), LoadError> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = volume::open(media, &volume::FILES, &mut sector).map_err(LoadError::Volume)?;

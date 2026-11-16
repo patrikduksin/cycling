@@ -33,3 +33,15 @@ pub mod turn_back;
 pub mod week;
 pub mod wheel_size;
 pub mod zones;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    pub magic: &'static [u8; 4],
+    pub version: u8,
+}
+
+impl Stamp {
+    pub fn another_version(&self, head: &[u8; 5]) -> bool {
+        head[..4] == self.magic[..] && head[4] != self.version
+    }
+}

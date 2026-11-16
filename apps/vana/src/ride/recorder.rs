@@ -113,6 +113,10 @@ impl Recorder {
         self.status
     }
 
+    pub fn holds_another_version(&self) -> bool {
+        self.status == Status::NeedsInit && self.catalog.unknown_data()
+    }
+
     pub fn completed(&self) -> u16 {
         self.catalog.completed
     }

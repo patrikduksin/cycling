@@ -20,7 +20,7 @@
 //! | Bytes | Field |
 //! | --- | --- |
 //! | 0..4 | magic `VCRS` |
-//! | 4 | version, 1 |
+//! | 4 | version, 2 |
 //! | 5 | header length, 34 |
 //! | 6 | point length, 8 |
 //! | 7 | name length, up to 24 |

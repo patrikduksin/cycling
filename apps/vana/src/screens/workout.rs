@@ -27,8 +27,6 @@ pub const LOW_STORAGE_S: u32 = 60 * 60;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Boot,
-    /// FORMAT STORAGE?, asked when stored data is of another version, and
-    /// the wait while the storage is formatted.
     Format,
     Home,
     Sensors,
@@ -587,7 +585,6 @@ pub struct View<'a> {
     pub training: Option<ride::Training>,
     /// A test's FTP waiting for the rider's answer, and the FTP in force.
     pub ftp_offer: Option<(u16, u16)>,
-    /// The storage is being formatted: `Page::Format` shows the wait.
     pub formatting: bool,
     pub page: Page,
     /// The focused Home card, or the selected Settings field.

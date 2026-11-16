@@ -17,7 +17,7 @@
 //! | Bytes | Field |
 //! | --- | --- |
 //! | 0..4 | magic `VBST` |
-//! | 4 | version, 1 |
+//! | 4 | version, 2 |
 //! | 5 | body length before the CRC, 38 |
 //! | 6..38 | the bests (`Bests::ENCODED`) |
 //! | 38..42 | CRC32 of bytes 0..38 |
@@ -199,12 +199,13 @@ impl Bests {
     }
 }
 
-const FILE: &str = "bests.dat";
+pub const FILE: &str = "bests.dat";
 const MAGIC: &[u8; 4] = b"VBST";
 pub const VERSION: u8 = 2;
-/// The file, its magic and its version byte at offset 4: what tells this
-/// table in another version from other bytes.
-pub const STAMP: (&str, &[u8; 4], u8) = (FILE, MAGIC, VERSION);
+pub const STAMP: super::Stamp = super::Stamp {
+    magic: MAGIC,
+    version: VERSION,
+};
 const VERSION_AT: usize = 4;
 const BODY_LENGTH_AT: usize = 5;
 const FIELDS_AT: usize = 6;

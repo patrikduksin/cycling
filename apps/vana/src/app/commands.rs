@@ -159,8 +159,6 @@ impl Runtime {
         "ACCEPTED"
     }
 
-    /// `PROFILE` reports the training profile; `PROFILE FTP|LTHR value` sets
-    /// one threshold, saved once edits settle.
     fn profile_command(
         &mut self,
         operation: Option<&str>,

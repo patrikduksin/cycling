@@ -1,15 +1,20 @@
-//! The FORMAT offer: what a boot asks when stored data is of another
-//! version, and the wipe behind its ACT and `FORMAT CONFIRM`.
 use device_api::input::Button;
 use device_api::storage::Region;
 use shell_simulator::bulk::Presence;
-use shell_simulator::sim::{Sim, seconds};
+use shell_simulator::sim::{Sim, Store, seconds};
+use vana::app::HOLD_GAP_MS;
 use vana::screens::workout::Page;
 
 const ACT: Button = Button::BottomRight;
 const BACK: Button = Button::TopLeft;
-const STORES: [&str; 7] = [
-    "settings", "internal", "table", "rides", "records", "files", "traces",
+const STORES: [Store; 7] = [
+    Store::Settings,
+    Store::Internal,
+    Store::Table,
+    Store::Rides,
+    Store::Records,
+    Store::Files,
+    Store::Traces,
 ];
 
 fn field<'a>(status: &'a str, name: &str) -> &'a str {
@@ -19,25 +24,17 @@ fn field<'a>(status: &'a str, name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("{name} in {status}"))
 }
 
-/// A device with a card whose `stores` another version wrote, powered on.
-fn device_with_foreign(name: &str, stores: &[&str]) -> Sim {
+fn device_with_foreign(name: &str, stores: &[Store]) -> Sim {
     let mut sim = Sim::named(name);
     sim.fit_bulk(Presence::Ready);
     sim.format_rides();
     sim.format_files();
     sim.format_store();
-    // The table last: the volumes are found through it.
-    for store in stores.iter().filter(|store| **store != "table") {
-        sim.make_foreign(store);
-    }
-    if stores.contains(&"table") {
-        sim.make_foreign("table");
-    }
+    sim.make_foreign(stores);
     sim.cut_power();
     sim
 }
 
-/// The settings and the internal journal, byte for byte.
 fn flash(sim: &mut Sim) -> (Vec<u8>, Vec<u8>) {
     (
         sim.device.media.contents(Region::Configuration),
@@ -48,8 +45,7 @@ fn flash(sim: &mut Sim) -> (Vec<u8>, Vec<u8>) {
 fn wait_for_offer(sim: &mut Sim) {
     sim.wait_for("FORMAT STORAGE?", seconds(20))
         .expect("the offer");
-    // A press counts once the question has been on screen a moment.
-    sim.advance(500);
+    sim.advance(2 * HOLD_GAP_MS);
 }
 
 fn wait_for_restart(sim: &mut Sim) {
@@ -73,11 +69,11 @@ fn health(sim: &mut Sim) -> String {
 #[test]
 fn each_store_of_another_version_alone_raises_the_offer() {
     for store in STORES {
-        let mut sim = device_with_foreign(&format!("format-offer-{store}"), &[store]);
+        let mut sim = device_with_foreign(&format!("format-offer-{}", store.name()), &[store]);
         sim.discard_recording();
         wait_for_offer(&mut sim);
         let health = health(&mut sim);
-        assert_eq!(field(&health, store), "foreign", "{health}");
+        assert_eq!(field(&health, store.name()), "foreign", "{health}");
         assert_eq!(field(&health, "state"), "offered");
     }
 }
@@ -99,7 +95,7 @@ fn act_formats_everything_and_the_device_then_records_and_keeps_a_ride() {
     let health = health(&mut sim);
     assert_eq!(field(&health, "state"), "idle", "{health}");
     for store in STORES {
-        assert_eq!(field(&health, store), "current", "{health}");
+        assert_eq!(field(&health, store.name()), "current", "{health}");
     }
 
     sim.start_ride();
@@ -115,7 +111,7 @@ fn act_formats_everything_and_the_device_then_records_and_keeps_a_ride() {
 
 #[test]
 fn back_declines_and_nothing_is_written_until_the_next_boot_asks_again() {
-    let mut sim = device_with_foreign("format-declined", &["settings", "rides"]);
+    let mut sim = device_with_foreign("format-declined", &[Store::Settings, Store::Rides]);
     let before = flash(&mut sim);
     wait_for_offer(&mut sim);
     sim.press(BACK);
@@ -139,7 +135,7 @@ fn back_declines_and_nothing_is_written_until_the_next_boot_asks_again() {
 
 #[test]
 fn a_ride_log_of_another_version_says_so_on_the_ready_page() {
-    let mut sim = device_with_foreign("format-declined-rides", &["rides", "internal"]);
+    let mut sim = device_with_foreign("format-declined-rides", &[Store::Rides, Store::Internal]);
     wait_for_offer(&mut sim);
     sim.press(BACK);
     sim.skip_setup();
@@ -152,7 +148,7 @@ fn a_ride_log_of_another_version_says_so_on_the_ready_page() {
 #[test]
 fn a_button_held_through_boot_neither_formats_nor_declines() {
     for button in [ACT, BACK] {
-        let mut sim = device_with_foreign("format-held", &["settings"]);
+        let mut sim = device_with_foreign("format-held", &[Store::Settings]);
         sim.discard_recording();
         let before = flash(&mut sim);
         sim.report(button);
@@ -199,7 +195,7 @@ fn format_confirm_wipes_a_current_device_and_keeps_its_terrain() {
 
 #[test]
 fn a_table_of_another_version_takes_the_terrain_pack_with_it() {
-    let mut sim = device_with_foreign("format-table", &["terrain", "table"]);
+    let mut sim = device_with_foreign("format-table", &[Store::Terrain, Store::Table]);
     sim.discard_recording();
     wait_for_offer(&mut sim);
     sim.press(ACT);
@@ -211,15 +207,13 @@ fn a_table_of_another_version_takes_the_terrain_pack_with_it() {
 
 #[test]
 fn a_terrain_pack_of_another_version_alone_raises_no_offer() {
-    let mut sim = device_with_foreign("format-terrain", &["terrain"]);
+    let mut sim = device_with_foreign("format-terrain", &[Store::Terrain]);
     sim.discard_recording();
     let mut sim = sim.boot();
     sim.advance(seconds(5));
     assert_eq!(field(&health(&mut sim), "state"), "idle");
 }
 
-/// The card or the flash fails at each write of a wipe in turn, as a cut
-/// would leave it: the next boot asks again, and its ACT completes.
 #[test]
 fn a_wipe_cut_at_any_write_is_offered_again_and_then_completes() {
     for (flash, cut) in (0..40)
@@ -244,7 +238,7 @@ fn a_wipe_cut_at_any_write_is_offered_again_and_then_completes() {
         assert_eq!(field(&health, "settings"), "blank", "cut {cut} {flash}");
         for store in &STORES[1..] {
             assert_eq!(
-                field(&health, store),
+                field(&health, store.name()),
                 "current",
                 "cut {cut} {flash}: {health}"
             );

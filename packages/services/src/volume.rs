@@ -11,8 +11,8 @@
 //! volume or the table.
 //!
 //! [`create`], an explicit initialize, writes a table and refuses one it does
-//! not understand. Only [`replace`] writes over a foreign table. The default plan ends with `STORE`, which
-//! takes the rest of the region.
+//! not understand. Only [`replace`] writes over a foreign table. The default
+//! plan ends with `STORE`, which takes the rest of the region.
 
 use crate::checksum::crc32;
 use crate::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
@@ -48,8 +48,16 @@ pub const TERRAIN_SECTORS: u64 = 1280 * MIB;
 pub const STORE_MIN: u64 = 2 * MIB;
 
 const CRC: usize = SECTOR_SIZE - 4;
+pub const VERSION_AT: usize = 16;
+const COUNT_AT: usize = 18;
+const SECTOR_SIZE_AT: usize = 20;
+const GENERATION_AT: usize = 24;
+const PLANNED_AT: usize = 32;
 const ENTRIES: usize = 64;
 const ENTRY: usize = 32;
+const ENTRY_RESERVED: core::ops::Range<usize> = 8..16;
+const ENTRY_START_AT: usize = 16;
+const ENTRY_SECTORS_AT: usize = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -129,16 +137,16 @@ impl Table {
     fn encode(&self, sector: &mut Sector) {
         sector.fill(0);
         sector[..16].copy_from_slice(MAGIC);
-        sector[16] = VERSION;
-        put_u16(sector, 18, self.volumes().count() as u16);
-        put_u32(sector, 20, SECTOR_SIZE as u32);
-        put_u64(sector, 24, self.generation);
-        put_u64(sector, 32, self.planned);
+        sector[VERSION_AT] = VERSION;
+        put_u16(sector, COUNT_AT, self.volumes().count() as u16);
+        put_u32(sector, SECTOR_SIZE_AT, SECTOR_SIZE as u32);
+        put_u64(sector, GENERATION_AT, self.generation);
+        put_u64(sector, PLANNED_AT, self.planned);
         for (index, volume) in self.volumes().enumerate() {
             let entry = &mut sector[ENTRIES + index * ENTRY..][..ENTRY];
             entry[..8].copy_from_slice(&volume.name);
-            put_u64(entry, 16, volume.start);
-            put_u64(entry, 24, volume.sectors);
+            put_u64(entry, ENTRY_START_AT, volume.start);
+            put_u64(entry, ENTRY_SECTORS_AT, volume.sectors);
         }
         let checksum = crc32(&sector[..CRC]);
         put_u32(sector, CRC, checksum);
@@ -180,9 +188,9 @@ fn decode(sector: &Sector, region: u64) -> Replica {
     if sector[..16] != MAGIC[..] || get_u32(sector, CRC) != crc32(&sector[..CRC]) {
         return Replica::Invalid;
     }
-    let count = usize::from(get_u16(sector, 18));
-    if sector[16..18] != [VERSION, 0]
-        || get_u32(sector, 20) != SECTOR_SIZE as u32
+    let count = usize::from(get_u16(sector, COUNT_AT));
+    if sector[VERSION_AT..COUNT_AT] != [VERSION, 0]
+        || get_u32(sector, SECTOR_SIZE_AT) != SECTOR_SIZE as u32
         || count > MAX_VOLUMES
         || sector[40..ENTRIES].iter().any(|b| *b != 0)
         || sector[ENTRIES + count * ENTRY..CRC].iter().any(|b| *b != 0)
@@ -196,10 +204,10 @@ fn decode(sector: &Sector, region: u64) -> Replica {
         let entry = &sector[ENTRIES + index * ENTRY..][..ENTRY];
         let mut name = [0; 8];
         name.copy_from_slice(&entry[..8]);
-        let start = get_u64(entry, 16);
-        let sectors = get_u64(entry, 24);
+        let start = get_u64(entry, ENTRY_START_AT);
+        let sectors = get_u64(entry, ENTRY_SECTORS_AT);
         if name[0] == 0
-            || entry[8..16].iter().any(|b| *b != 0)
+            || entry[ENTRY_RESERVED].iter().any(|b| *b != 0)
             || start < end
             || sectors == 0
             || start.checked_add(sectors).is_none_or(|e| e > region)

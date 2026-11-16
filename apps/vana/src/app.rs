@@ -43,6 +43,7 @@ mod ride_control;
 mod seen;
 mod setup;
 mod storage;
+pub use input::HOLD_GAP_MS;
 pub use recording::{Journals, Medium};
 pub use seen::Seen;
 pub use storage::{Health, StorageHealth};
@@ -94,8 +95,7 @@ pub struct Runtime {
     deleted: deleted::Hidden,
     form: form::Kept,
     format: format::Format,
-    /// The card's volumes as this boot found them, once read.
-    storage: Option<storage::Probe>,
+    card_probe: Option<storage::CardProbe>,
     power: power::Power,
     timing: timing::Timing,
     training: training::Training,
@@ -136,7 +136,7 @@ impl Runtime {
             deleted: deleted::Hidden::default(),
             form: form::Kept::default(),
             format: format::Format::default(),
-            storage: None,
+            card_probe: None,
             power: power::Power::default(),
             timing: timing::Timing::default(),
             training: training::Training::default(),

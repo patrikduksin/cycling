@@ -10,9 +10,12 @@ pub const CAPACITY: usize = SECTOR_SIZE - HEADER_SIZE;
 
 const MAGIC: [u8; 4] = *b"C606";
 const VERSION: u8 = 2;
-/// Header bytes a save programs before the checksum: magic, version, a
-/// reserved zero, the header size, the sequence.
-const HEAD: usize = 12;
+const VERSION_AT: usize = 4;
+const HEADER_SIZE_AT: usize = 6;
+const SEQUENCE_AT: usize = 8;
+const LENGTH_AT: usize = 12;
+const CHECKSUM_AT: usize = 16;
+const HEAD: usize = LENGTH_AT;
 const COMMITTED: u32 = 0x434f_4d54;
 const COMMIT_OFFSET: usize = 20;
 /// Flash programs a page's bits in parallel, and pages in address order.
@@ -103,10 +106,10 @@ impl<F: OwnedFlash> Journal<F> {
 
         self.scratch.0.fill(0xff);
         self.scratch.0[..HEAD].copy_from_slice(&head(sequence));
-        put_u32(&mut self.scratch.0, 12, payload.len() as u32);
+        put_u32(&mut self.scratch.0, LENGTH_AT, payload.len() as u32);
         self.scratch.0[HEADER_SIZE..HEADER_SIZE + payload.len()].copy_from_slice(payload);
         let checksum = checksum(sequence, payload);
-        put_u32(&mut self.scratch.0, 16, checksum);
+        put_u32(&mut self.scratch.0, CHECKSUM_AT, checksum);
 
         self.flash
             .erase(self.region, target * SECTOR_SIZE, SECTOR_SIZE)
@@ -206,7 +209,8 @@ impl<F: OwnedFlash> Journal<F> {
 
 fn decode(sector: &Sector) -> Option<Record> {
     let bytes = &sector.0;
-    if bytes[..8] != head(0)[..8] || get_u32(bytes, COMMIT_OFFSET) != COMMITTED {
+    if bytes[..SEQUENCE_AT] != head(0)[..SEQUENCE_AT] || get_u32(bytes, COMMIT_OFFSET) != COMMITTED
+    {
         return None;
     }
     whole(bytes)
@@ -214,13 +218,14 @@ fn decode(sector: &Sector) -> Option<Record> {
 
 /// The record whose length and checksum verify, committed or not.
 fn whole(bytes: &[u8; SECTOR_SIZE]) -> Option<Record> {
-    let length = get_u32(bytes, 12) as usize;
+    let length = get_u32(bytes, LENGTH_AT) as usize;
     if length > CAPACITY {
         return None;
     }
-    let sequence = get_u32(bytes, 8);
+    let sequence = get_u32(bytes, SEQUENCE_AT);
     let payload = &bytes[HEADER_SIZE..HEADER_SIZE + length];
-    (get_u32(bytes, 16) == checksum(sequence, payload)).then_some(Record { sequence, length })
+    (get_u32(bytes, CHECKSUM_AT) == checksum(sequence, payload))
+        .then_some(Record { sequence, length })
 }
 
 /// Whether a sector holds a partial first save. A cut inside the first page
@@ -248,9 +253,9 @@ fn torn_first_save(sector: &Sector) -> bool {
 fn head(sequence: u32) -> [u8; HEAD] {
     let mut header = [0; HEAD];
     header[..4].copy_from_slice(&MAGIC);
-    header[4] = VERSION;
-    put_u16(&mut header, 6, HEADER_SIZE as u16);
-    put_u32(&mut header, 8, sequence);
+    header[VERSION_AT] = VERSION;
+    put_u16(&mut header, HEADER_SIZE_AT, HEADER_SIZE as u16);
+    put_u32(&mut header, SEQUENCE_AT, sequence);
     header
 }
 
@@ -567,15 +572,14 @@ pub(crate) mod tests {
                     journal.flash.bytes[1][COMMIT_OFFSET..HEADER_SIZE].fill(0xff);
                     journal.flash.bytes[0].fill(0xff);
                 }
-                // Another version whose header is 28 bytes, not yet committed.
                 6 => {
                     let header = &mut journal.flash.bytes[0];
                     header[0..4].copy_from_slice(&MAGIC);
-                    put_u16(header, 4, 4);
-                    put_u16(header, 6, 28);
-                    put_u32(header, 8, 1);
-                    put_u32(header, 12, 5);
-                    put_u32(header, 16, 0);
+                    put_u16(header, VERSION_AT, 4);
+                    put_u16(header, HEADER_SIZE_AT, 28);
+                    put_u32(header, SEQUENCE_AT, 1);
+                    put_u32(header, LENGTH_AT, 5);
+                    put_u32(header, CHECKSUM_AT, 0);
                     header[28..33].copy_from_slice(b"three");
                 }
                 // A torn sequence 3 whose older records were erased.

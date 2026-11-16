@@ -23,13 +23,13 @@ use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64
 use firmware_services::sector_log::{self, Error, Log, PAYLOAD, Recovery as LogRecovery, Step};
 use firmware_services::volume::{self, Extent, Layout, RIDES, Volume};
 
-/// Owner and version of the log: VANA rides, and in the last byte the slot
-/// version, which covers the catalog too.
-pub const TAG: &[u8; 16] = &{
+pub const TAG: &[u8; 16] = &tag(crate::ride::log::VERSION);
+
+const fn tag(version: u8) -> [u8; 16] {
     let mut tag = *b"VANA-RIDES\0\0\0\0\0\0";
-    tag[15] = crate::ride::log::VERSION;
+    tag[15] = version;
     tag
-};
+}
 /// Records between checkpoints, which bounds the records boot replays.
 pub const CHECKPOINT_RECORDS: u32 = 32;
 

@@ -470,7 +470,6 @@ impl Trace {
         self.ended(after);
     }
 
-    /// VANA is formatting the card ([`File::formatted`]).
     pub fn storage_formatted(&mut self) {
         self.file.formatted();
         *self.record.get_mut() = None;

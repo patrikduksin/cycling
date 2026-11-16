@@ -7,7 +7,7 @@
 //!
 //! | Byte | Field |
 //! | --- | --- |
-//! | 0 | Record version, 10 |
+//! | 0 | Record version, 11 |
 //! | 1..3 | FTP in watts, little-endian |
 //! | 3..5 | LTHR in bpm, little-endian |
 //! | 5 | Saved ANT sensor count, at most 10 |
@@ -38,8 +38,7 @@
 //! An empty area means nothing was saved yet: the defaults apply, first-run
 //! setup is due, and the first change writes a record. Any other record that
 //! is not exactly what this firmware would write is foreign: the defaults
-//! stay in force and the record stays stored untouched until the rider
-//! formats the storage (`super::format`).
+//! stay in force and the record stays stored untouched.
 use super::Runtime;
 use super::mode::DisplayMode;
 use crate::clock::Zone;
@@ -488,17 +487,18 @@ impl Default for Preferences {
 }
 
 impl Preferences {
-    /// `foreign`: the settings record these bytes came out of is of another
-    /// version, so nothing can be saved into it either.
-    fn load(bytes: &[u8], foreign: bool) -> Self {
+    fn load(bytes: &[u8], settings_foreign: bool) -> Self {
         let (record, stored) = decode(bytes);
-        let stored = if foreign { Stored::Foreign } else { stored };
+        let stored = if settings_foreign {
+            Stored::Foreign
+        } else {
+            stored
+        };
         Self {
             profile: record.profile,
             sensors: record.sensors,
             options: record.options,
             stored,
-
             ..Self::default()
         }
     }
@@ -599,9 +599,8 @@ impl Preferences {
 
 impl Runtime {
     /// Adopt the preferences the shell loaded at startup.
-    /// `foreign`: the shell found settings of another version and kept them.
-    pub fn load_preferences(&mut self, app: &AppPreferences, foreign: bool) {
-        self.preferences = Preferences::load(app.bytes(), foreign);
+    pub fn load_preferences(&mut self, app: &AppPreferences, settings_foreign: bool) {
+        self.preferences = Preferences::load(app.bytes(), settings_foreign);
         self.links.saved = self.preferences.sensors;
         self.apply_options();
         self.settle_wheel(0);

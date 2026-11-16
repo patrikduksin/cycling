@@ -37,7 +37,6 @@ impl<B: OwnedFlash> Store<B> {
     pub fn load(&mut self) -> Result<Loaded, Error<B::Error>> {
         let mut payload = [0u8; CAPACITY];
         let record = match self.journal.load(&mut payload) {
-            // A journal of another version: kept, like a record of one.
             Err(firmware_services::storage::Error::UnrecognizedJournal) => {
                 return Ok(Loaded {
                     settings: crate::preferences::Settings::default(),
@@ -107,7 +106,7 @@ impl<B: OwnedFlash> Store<B> {
     /// then finds foreign settings, wherever a FORMAT was cut.
     pub fn condemn(&mut self) -> Result<(), Error<B::Error>> {
         if self.load()?.source != crate::preferences::Source::Foreign {
-            self.journal.save(b"FORMAT")?;
+            self.journal.save(crate::preferences::CONDEMNED)?;
         }
         Ok(())
     }

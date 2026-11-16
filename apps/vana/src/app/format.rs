@@ -1,18 +1,5 @@
-//! FORMAT: the offer a boot makes when stored data is of another version,
-//! and the one wipe behind its ACT and `FORMAT CONFIRM`.
-//!
-//! The wipe writes fresh formats over everything VANA stores: the settings,
-//! the internal ride journal, and the RIDES, FILES and STORE volumes. The
-//! terrain pack is kept unless the volume table had to be replaced or the
-//! pack itself is of another version.
-//!
-//! A cut leads back to the offer. The first stage leaves a settings record
-//! no version reads, and the last erases the settings, so every boot in
-//! between finds them foreign. Each stage writes from what the medium holds,
-//! so running them all again over a half-formatted device ends the same.
-//! The device restarts when the wipe is done, so every owner reads its
-//! store again.
 use super::Runtime;
+use super::input::HOLD_GAP_MS;
 use super::preferences::Stored;
 use crate::ride::log::{SECTORS, SLOTS_PER_SECTOR, Slot, erased};
 use crate::ride::storage::RideStorage;
@@ -26,23 +13,16 @@ use firmware_services::volume::{self, FILES, Layout, RIDES, STORE, TERRAIN, Volu
 use firmware_services::{files, pack, sector_log, store};
 use firmware_shell::shell::Shell;
 
-/// A button reported again within this long is still held (`app::input`).
-const HOLD_GAP_MS: u64 = 250;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Format {
     #[default]
     Idle,
-    /// The question is on screen, since `drawn_at` once a frame showed it.
     Offered {
         drawn_at: Option<u64>,
     },
-    /// The rider said no: not asked again this boot.
     Declined,
     Running(Stage),
-    /// A write failed. The settings stay foreign, so the next boot offers.
     Failed,
-    /// Everything is written: composition restarts the device.
     Done,
 }
 
@@ -53,8 +33,7 @@ pub(super) enum Stage {
     Rides,
     Files,
     Traces,
-    /// The internal journal, a sector a pass.
-    Internal(usize),
+    JournalSector(usize),
     Settings,
 }
 
@@ -70,8 +49,6 @@ impl Format {
         }
     }
 
-    /// The stores are being rewritten, or were left half written: nothing
-    /// else may read or write them before the restart.
     pub(super) fn owns_storage(self) -> bool {
         matches!(self, Self::Running(_) | Self::Failed | Self::Done)
     }
@@ -79,38 +56,30 @@ impl Format {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Event {
-    /// Every store was read. `hub`: the rider is on the brand, Home or setup
-    /// with no ride open, where a question may interrupt.
-    Read {
-        foreign: bool,
-        hub: bool,
-    },
-    /// A frame showing the question reached the panel.
+    Read { foreign: bool, hub: bool },
     Drawn(u64),
-    /// A button report on the question, received at `at`.
-    Report {
-        button: Button,
-        held: bool,
-        at: u64,
-    },
-    /// `FORMAT CONFIRM`.
-    Confirm {
-        ride_open: bool,
-    },
-    /// The stage that ran, and what follows it.
-    Wrote(Option<Stage>),
+    Report { button: Button, held: bool, at: u64 },
+    Confirm { ride_open: bool },
+    Wrote(Next),
     WriteFailed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Go {
     Stay,
-    /// Show the question, or the wait once the wipe runs.
     Question,
-    /// Back to the page a boot opens.
     FirstPage,
-    /// The ready page, whose storage line says the wipe failed.
     Ready,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Next {
+    Stage(Stage),
+    Done,
+}
+
+fn began_after_drawn(drawn: u64, at: u64) -> bool {
+    at >= drawn + HOLD_GAP_MS
 }
 
 pub(super) fn step(format: Format, event: Event) -> (Format, Go) {
@@ -126,8 +95,6 @@ pub(super) fn step(format: Format, event: Event) -> (Format, Go) {
         (Offered { drawn_at: None }, Event::Drawn(at)) => {
             (Offered { drawn_at: Some(at) }, Go::Stay)
         }
-        // Only a press that began after the question was drawn answers it:
-        // a button held since before, as the power-on hold is, never does.
         (
             Offered {
                 drawn_at: Some(drawn),
@@ -137,7 +104,7 @@ pub(super) fn step(format: Format, event: Event) -> (Format, Go) {
                 held: false,
                 at,
             },
-        ) if at >= drawn + HOLD_GAP_MS => match button {
+        ) if began_after_drawn(drawn, at) => match button {
             Button::BottomRight => (Running(Stage::Mark), Go::Stay),
             Button::TopLeft => (Declined, Go::FirstPage),
             Button::BottomLeft | Button::Center => (format, Go::Stay),
@@ -145,21 +112,18 @@ pub(super) fn step(format: Format, event: Event) -> (Format, Go) {
         (Idle | Offered { .. } | Declined | Failed, Event::Confirm { ride_open: false }) => {
             (Running(Stage::Mark), Go::Question)
         }
-        (Running(_), Event::Wrote(Some(next))) => (Running(next), Go::Stay),
-        (Running(_), Event::Wrote(None)) => (Done, Go::Stay),
+        (Running(_), Event::Wrote(Next::Stage(next))) => (Running(next), Go::Stay),
+        (Running(_), Event::Wrote(Next::Done)) => (Done, Go::Stay),
         (Running(_), Event::WriteFailed) => (Failed, Go::Ready),
         _ => (format, Go::Stay),
     }
 }
 
 impl Runtime {
-    /// The wipe is running: composition ends the trace file and refuses
-    /// host access to the card.
     pub fn formatting(&self) -> bool {
         matches!(self.format, Format::Running(_))
     }
 
-    /// The wipe is done: composition restarts the device.
     pub fn restart_due(&self) -> bool {
         self.format == Format::Done
     }
@@ -173,8 +137,8 @@ impl Runtime {
             Go::FirstPage => self.first_page(),
             Go::Ready => Page::Ready,
         };
-        // The brand ends in the question by itself (`first_page`).
-        if !(go == Go::Question && self.navigation.page == Page::Boot) {
+        let brand_leads_to_question = go == Go::Question && self.navigation.page == Page::Boot;
+        if !brand_leads_to_question {
             self.navigation.page = page;
             self.navigation.page_since = now;
         }
@@ -191,7 +155,6 @@ impl Runtime {
         self.format_event(Event::Report { button, held, at }, now);
     }
 
-    /// `FORMAT` reports every store and the wipe; `FORMAT CONFIRM` starts it.
     pub(super) fn format_command(
         &mut self,
         argument: &str,
@@ -219,8 +182,6 @@ impl Runtime {
         }
     }
 
-    /// Read the stores once, make the offer, and run one stage of a wipe.
-    /// Call once a pass, after `tick`.
     #[inline(never)]
     pub fn service_format<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,
@@ -248,7 +209,6 @@ impl Runtime {
         self.format_event(event, now);
     }
 
-    /// Run `stage`; the stage after it, or `None` when a write failed.
     // Not inlined, so its sector buffer stays out of the console task's
     // frame, which sits under every frame VANA prepares (#167).
     #[inline(never)]
@@ -258,7 +218,7 @@ impl Runtime {
         system: &mut Shell<D, I, P, B>,
         bulk: &mut impl ReadWrite,
         now: u64,
-    ) -> Option<Option<Stage>> {
+    ) -> Option<Next> {
         let mut sector = [0u8; 512];
         let seed = now ^ bulk.entropy();
         let next = match stage {
@@ -267,10 +227,9 @@ impl Runtime {
                     return None;
                 }
                 self.preferences.stored = Stored::Foreign;
-                // A device without the card formats what it has.
                 match bulk.owned_info() {
                     Ok(_) => Stage::Table,
-                    Err(_) => Stage::Internal(0),
+                    Err(_) => Stage::JournalSector(0),
                 }
             }
             Stage::Table => {
@@ -330,9 +289,9 @@ impl Runtime {
                     Err(volume::Error::Missing) => {}
                     Err(_) => return None,
                 }
-                Stage::Internal(0)
+                Stage::JournalSector(0)
             }
-            Stage::Internal(index) => {
+            Stage::JournalSector(index) => {
                 let mut journal = system.data_storage();
                 let mut slot = Slot::default();
                 let mut used = false;
@@ -344,7 +303,7 @@ impl Runtime {
                     journal.ride_erase_sector(index).ok()?;
                 }
                 if index + 1 < SECTORS {
-                    Stage::Internal(index + 1)
+                    Stage::JournalSector(index + 1)
                 } else {
                     Stage::Settings
                 }
@@ -353,10 +312,10 @@ impl Runtime {
                 if !system.erase_settings() {
                     return None;
                 }
-                return Some(None);
+                return Some(Next::Done);
             }
         };
-        Some(Some(next))
+        Some(Next::Stage(next))
     }
 }
 
@@ -439,11 +398,16 @@ mod tests {
             (wiping, press(ACT, 9_000), wiping, Go::Stay),
             (
                 wiping,
-                Event::Wrote(Some(Stage::Table)),
+                Event::Wrote(Next::Stage(Stage::Table)),
                 Running(Stage::Table),
                 Go::Stay,
             ),
-            (Running(Stage::Settings), Event::Wrote(None), Done, Go::Stay),
+            (
+                Running(Stage::Settings),
+                Event::Wrote(Next::Done),
+                Done,
+                Go::Stay,
+            ),
             (wiping, Event::WriteFailed, Failed, Go::Ready),
             (Done, Event::Confirm { ride_open: false }, Done, Go::Stay),
             (Done, read(true, true), Done, Go::Stay),

@@ -5,7 +5,7 @@
 //! | Bytes | Field |
 //! | --- | --- |
 //! | 0..2 | `VW` |
-//! | 2 | Version, 1 |
+//! | 2 | Version, 2 |
 //! | 3 | Test: 0 none, 1 twenty minutes, 2 ramp |
 //! | 4 | Name length n, at most 20, then n name bytes |
 //! | then 1 | Step count s, 1..=12 |
@@ -269,11 +269,12 @@ mod tests {
             None,
         );
         let bytes = encode(&workout);
-        let body = [
-            b'V', b'W', 2, 0, 2, b'A', b'B', 1, 1, // header
-            1, 0, 0x2c, 0x01, 0, 0, 1, 90, 0, 95, 0, 0, 0, 0, 2, b'G', b'O', // step
-            0, 1, 2, // block
+        let header = [b'V', b'W', 2, 0, 2, b'A', b'B', 1, 1];
+        let step = [
+            1, 0, 0x2c, 0x01, 0, 0, 1, 90, 0, 95, 0, 0, 0, 0, 2, b'G', b'O',
         ];
+        let block = [0, 1, 2];
+        let body = [&header[..], &step, &block].concat();
         assert_eq!(&bytes[..body.len()], &body);
         assert_eq!(bytes.len(), body.len() + 4);
         assert_eq!(get_u32(&bytes, body.len()), crc32(&body));

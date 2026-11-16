@@ -14,9 +14,14 @@ const SPEED_SILENT_MS: u64 = 3000;
 /// that long, and a little more, before it is seen.
 const PACKET_SLACK_MS: u64 = 300;
 /// Below this (2 km/h) a wheel that has not completed a revolution is stopped.
-const WHEEL_STOPPED_MM_S: u64 = 556;
+pub(crate) const WHEEL_STOPPED_MM_S: u64 = 556;
 /// A revolution this old cannot anchor a new speed measurement.
 const REVOLUTION_EXPIRED_MS: u64 = 60_000;
+/// Batching sensors count about once a second: on the 2026-11-15 ride, 99 %
+/// of the intervals were under 1.4 s and none reached 2 s.
+const COUNT_INTERVAL_MAX_MS: u64 = 1500;
+/// Packets arrive about every 250 ms, so a silence this long lost several.
+const DROPOUT_MS: u64 = 1000;
 
 /// The latest wheel revolution event of an ANT+ speed page.
 #[derive(Clone, Copy)]
@@ -171,6 +176,8 @@ impl Speed {
             count: u16::from_le_bytes([data[6], data[7]]),
             received_ms: packet.received_ms,
         };
+        let heard_ms = self.received;
+        let heard_stopped = self.value(heard_ms) == Some(0);
         self.received = current.received_ms;
         if let Some(previous) = self.previous {
             let dt = current.event_time.wrapping_sub(previous.event_time);
@@ -194,7 +201,12 @@ impl Speed {
                 self.standing = repeat;
             } else if dt != 0 && dr != 0 {
                 let speed = u64::from(dr) * u64::from(self.wheel_mm) * 1024 / u64::from(dt);
-                self.count_interval_ms = u64::from(dt) * 1000 / 1024;
+                let heard_rolling_without_loss =
+                    !heard_stopped && current.received_ms.saturating_sub(heard_ms) <= DROPOUT_MS;
+                if heard_rolling_without_loss {
+                    self.count_interval_ms =
+                        (u64::from(dt) * 1000 / 1024).min(COUNT_INTERVAL_MAX_MS);
+                }
                 self.value = (speed <= MAX_SPEED_MM_S).then_some(speed as u32);
             } else {
                 // Repeated event: keep timing from the last real revolution.
@@ -204,10 +216,11 @@ impl Speed {
         self.previous = Some(current);
     }
 
-    /// The wheel speed now, in mm/s: `None` once the sensor has been silent
-    /// `SPEED_SILENT_MS`, zero under 2 km/h, and never more than one
-    /// circumference per the time the next count is overdue, timed between
-    /// packet arrivals.
+    /// The wheel speed now, in mm/s, never more than one circumference per the
+    /// time the next count is overdue, timed between packet arrivals. Under
+    /// 2 km/h it is zero. It is `None` after `SPEED_SILENT_MS` of silence, and
+    /// while no plausible revolution has been measured unless that bound is
+    /// already under 2 km/h.
     pub fn value(&self, now: u64) -> Option<u32> {
         if now.saturating_sub(self.received) > SPEED_SILENT_MS {
             return None;
@@ -216,7 +229,6 @@ impl Speed {
         // Measured to the latest packet, not the clock: only packets that repeat the
         // old revolution show the wheel has not turned. Silence proves nothing.
         let age_ms = self.received.saturating_sub(previous.received_ms).max(1);
-        // Some sensors count only about once a second, holding revolutions until then.
         let next_count_due_ms = self.count_interval_ms + PACKET_SLACK_MS;
         let overdue_ms = age_ms.saturating_sub(next_count_due_ms).max(1);
         let bound = u64::from(self.wheel_mm) * 1000 / overdue_ms;
@@ -656,11 +668,11 @@ mod tests {
         assert_eq!(speed.value(2250), Some(WHEEL_MM));
         assert_eq!(speed.value(2999), Some(WHEEL_MM));
         speed.receive(packet(1024, 1, 3500, 0));
-        let overdue_ms = 3500 - 1000 - 1000 - PACKET_SLACK_MS as u32;
-        assert_eq!(speed.value(3500), Some(WHEEL_MM * 1000 / overdue_ms));
+        let overdue = speed.value(3500).unwrap();
+        assert!(overdue < WHEEL_MM, "{overdue}");
         speed.receive(packet(1024, 1, 4000, 0));
-        let at_four = speed.value(4000).unwrap();
-        assert!(at_four < WHEEL_MM * 1000 / overdue_ms, "{at_four}");
+        let later = speed.value(4000).unwrap();
+        assert!(later < overdue, "{later}");
         speed.receive(packet(1024, 1, 5900, 0));
         assert!(speed.value(5900).unwrap() > 0);
         speed.receive(packet(1024, 1, 6200, 0));
@@ -822,7 +834,7 @@ mod tests {
         }
     }
     #[test]
-    fn a_sensor_that_counts_every_packet_reads_the_same() {
+    fn a_sensor_that_counts_every_packet_reads_the_measured_speed_between_packets() {
         let mut speed = Speed::default();
         for now in (0..20_000).step_by(50) {
             if now % 250 == 0 {
@@ -833,6 +845,72 @@ mod tests {
                 assert_eq!(speed.value(now), Some(4 * WHEEL_MM), "at {now}");
             }
         }
+    }
+    fn auto_calls(
+        sensor: impl Fn(u64) -> Option<device_api::ant::Packet>,
+        until: u64,
+    ) -> std::vec::Vec<(u64, crate::ride::auto::Decision)> {
+        use crate::ride::auto::{Auto, Call, Decision, Motion, Source};
+        use crate::ride::log::Status;
+        let mut speed = Speed::default();
+        let mut auto = Auto::default();
+        let mut status = Status::Recording;
+        let mut calls = std::vec::Vec::new();
+        for now in (0..until).step_by(250) {
+            if let Some(heard) = sensor(now) {
+                speed.receive(heard);
+            }
+            let motion = match speed.value(now) {
+                Some(mm_s) => Motion::Measured(Source::Wheel, mm_s),
+                None => Motion::Unknown(Source::Wheel),
+            };
+            if let Some(Call::Do(decision)) = auto.update(now, status, motion, false, true) {
+                auto.accepted(decision);
+                status = match decision {
+                    Decision::Pause => Status::Paused,
+                    Decision::Resume | Decision::Start => Status::Recording,
+                };
+                calls.push((now, decision));
+            }
+        }
+        calls
+    }
+    #[test]
+    fn a_stop_after_a_brief_restart_pauses_as_soon_as_the_first() {
+        use crate::ride::auto::Decision::{Pause, Resume};
+        let calls = auto_calls(
+            |now| {
+                let (event_time, count) = match now {
+                    0..1000 => (0, 0),
+                    1000..7000 => (1024, 4),
+                    _ => (7168, 8),
+                };
+                Some(packet(event_time, count, now, 0))
+            },
+            20_000,
+        );
+        let [(first, Pause), (_, Resume), (second, Pause)] = calls[..] else {
+            panic!("{calls:?}");
+        };
+        assert!(first - 1000 <= 5000, "{calls:?}");
+        assert!(second - 7000 <= 5000, "{calls:?}");
+    }
+    #[test]
+    fn a_stop_right_after_a_radio_dropout_pauses_as_soon_as_without_one() {
+        use crate::ride::auto::Decision::Pause;
+        let last_count_ms = 12_500;
+        let calls = auto_calls(
+            |now| {
+                let count = (now.min(last_count_ms) / 250) as u16;
+                let heard = !(10_000..last_count_ms).contains(&now);
+                heard.then(|| packet(count.wrapping_mul(256), count, now, 0))
+            },
+            30_000,
+        );
+        let [(paused, Pause)] = calls[..] else {
+            panic!("{calls:?}");
+        };
+        assert!(paused - last_count_ms <= 5500, "{calls:?}");
     }
     #[test]
     fn speed_rejects_implausible_and_expired_revolutions() {

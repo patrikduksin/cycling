@@ -29,9 +29,8 @@ pub fn calories(
     }
 }
 
-/// The wheel speed reads zero below 2 km/h (`ride::metrics`), so anything it
-/// reports at or above 1.8 km/h is rolling and counts as moving time.
 pub const MOVING_MIN_MM_S: u32 = 500;
+const _: () = assert!(MOVING_MIN_MM_S as u64 <= crate::ride::metrics::WHEEL_STOPPED_MM_S);
 /// Altitude must leave a band this wide (3.0 m) around the last turning point
 /// before a climb or descent counts, so barometric noise adds no ascent.
 pub const ELEVATION_BAND_DM: i32 = 30;

@@ -187,9 +187,11 @@ fn run(args: &[String]) -> Result<String, String> {
     );
     let (capture, media) =
         file::load(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let timeline = read(&capture.trace)?;
+    // The process exits once the command is done; freeing half a million
+    // entries one by one would only delay that.
+    let timeline = || read(&capture.trace).map(|timeline| &*Box::leak(Box::new(timeline)));
     match command.as_str() {
-        "summary" => Ok(summary(&path, &timeline, &media)),
+        "summary" => Ok(summary(&path, timeline()?, &media)),
         "origin" => Ok(origin::describe(
             &capture,
             media.clone(),
@@ -217,10 +219,11 @@ fn run(args: &[String]) -> Result<String, String> {
                 written.display()
             ))
         }
-        "timeline" => timeline_text(&timeline, &options),
-        "find" => find_text(&timeline, &options),
+        "timeline" => timeline_text(timeline()?, &options),
+        "find" => find_text(timeline()?, &options),
         "otlp" => {
-            let json = otlp::export(&timeline, &tell(&timeline));
+            let timeline = timeline()?;
+            let json = otlp::export(timeline, &tell(timeline));
             match options.value("out") {
                 Some(out) => {
                     std::fs::write(out, json).map_err(|e| format!("{out}: {e}"))?;
@@ -230,10 +233,11 @@ fn run(args: &[String]) -> Result<String, String> {
                 None => Ok(json),
             }
         }
-        "replay" => replay(&path, &capture, &timeline, &media, &options),
+        "replay" => replay(&path, &capture, timeline()?, &media, &options),
         "test-stub" => {
+            let timeline = timeline()?;
             let at = options
-                .time(&timeline, "at")?
+                .time(timeline, "at")?
                 .ok_or("test-stub needs --at")?;
             let fixture = path
                 .file_stem()
@@ -248,7 +252,7 @@ fn run(args: &[String]) -> Result<String, String> {
                 .map(|list| list.split(',').map(stub::Expect::parse).collect())
                 .transpose()?
                 .unwrap_or_default();
-            let test = stub::stub(&timeline, fixture, &name, at, &expect)?;
+            let test = stub::stub(timeline, fixture, &name, at, &expect)?;
             Ok(match stub::to_fixture(&path, &capture, &media) {
                 Some(steps) => format!("{steps}\n{test}"),
                 None => test,

@@ -594,6 +594,74 @@ fn terrain_block() -> &'static mut vana::app::Terrain {
     }
 }
 
+/// Device memory VANA holds as `&'static mut`, as the device's composition
+/// hands it PSRAM blocks; freed, newest first, when dropped.
+#[derive(Default)]
+struct Blocks(Vec<Box<dyn FnOnce()>>);
+
+impl Blocks {
+    /// # Safety
+    /// The reference must not be used once `self` is dropped.
+    unsafe fn hold<T: ?Sized + 'static>(&mut self, block: Box<T>) -> &'static mut T {
+        let block = Box::into_raw(block);
+        // SAFETY: `block` came from `Box::into_raw`, and only this frees it.
+        self.0
+            .push(Box::new(move || drop(unsafe { Box::from_raw(block) })));
+        // SAFETY: the caller's contract.
+        unsafe { &mut *block }
+    }
+}
+
+impl Drop for Blocks {
+    fn drop(&mut self) {
+        while let Some(free) = self.0.pop() {
+            free();
+        }
+    }
+}
+
+/// Give `sdk` the device memory `memory` names. The look-ahead block comes
+/// from `TERRAIN_BLOCKS` instead and goes back there.
+///
+/// # Safety
+/// `sdk` must be dropped before `blocks`.
+unsafe fn attach_memory(sdk: &mut vana::app::Runtime, memory: Memory, blocks: &mut Blocks) {
+    use vana::app::{COURSE_POINTS, COURSE_TURNS, Crumb, TRACK_CRUMBS, Turn};
+    use vana::ride::deleted::SHELF_BYTES as DELETED;
+    use vana::ride::directory::{ENTRY, RIDES, RideIndex};
+    use vana::ride::facts::SHELF_BYTES as FACTS;
+    // SAFETY: every block goes to `sdk` alone, and the caller drops it first.
+    unsafe {
+        if memory.ride_index {
+            let internal = blocks.hold(vec![0u8; RIDES * ENTRY].into_boxed_slice());
+            let bulk = blocks.hold(vec![0u8; RIDES * ENTRY].into_boxed_slice());
+            sdk.attach_ride_index(blocks.hold(Box::new(RideIndex::new(internal, bulk))));
+        }
+        if memory.ride_facts {
+            sdk.attach_ride_facts(blocks.hold(vec![0u8; FACTS].into_boxed_slice()));
+            sdk.attach_deleted_rides(blocks.hold(vec![0u8; DELETED].into_boxed_slice()));
+        }
+        if memory.phone {
+            sdk.attach_phone(blocks.hold(Box::new(vana::app::PhoneWork::new())));
+        }
+        if memory.track {
+            let crumbs = blocks.hold(vec![Crumb::default(); TRACK_CRUMBS].into_boxed_slice());
+            let map = blocks.hold(Box::new(vana::app::MapFrame::default()));
+            let line = blocks.hold(vec![Crumb::default(); COURSE_POINTS].into_boxed_slice());
+            let turns = blocks.hold(vec![Turn::default(); COURSE_TURNS].into_boxed_slice());
+            let course = blocks.hold(Box::new(vana::app::Course::empty()));
+            let finder = blocks.hold(Box::new(vana::app::CourseFinder::new()));
+            let track = vana::app::RideTrack::new(crumbs, line, turns, map, course, finder);
+            sdk.attach_track(blocks.hold(Box::new(track)));
+        }
+    }
+    // The look-ahead and its tile cache, which the device keeps in PSRAM;
+    // each boot starts them over, as device memory does.
+    if memory.terrain {
+        sdk.attach_terrain(terrain_block());
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         if let Some(terrain) = self.sdk.detach_terrain() {
@@ -770,7 +838,11 @@ pub struct Session {
     pub media: FileFlash,
     /// The owned MMC region; absent unless a scenario fits one.
     pub bulk: crate::bulk::SimBulk,
+    /// Never moved out of the session: it points into `_blocks`.
     pub sdk: vana::app::Runtime,
+    /// Declared after `sdk`, so it is dropped after the runtime that points
+    /// into it.
+    _blocks: Blocks,
     trace: Trace,
     origin: Option<Origin>,
     unrecorded: Option<(&'static str, u64)>,
@@ -862,42 +934,13 @@ impl Session {
             });
         }
         shell.forget_frame();
+        let mut blocks = Blocks::default();
         let mut sdk = vana::app::Runtime::new(profile);
-        {
-            use vana::ride::directory::{ENTRY, RIDES, RideIndex};
-            let bytes = || Box::leak(vec![0u8; RIDES * ENTRY].into_boxed_slice());
-            if memory.ride_index {
-                sdk.attach_ride_index(Box::leak(Box::new(RideIndex::new(bytes(), bytes()))));
-            }
-            let facts = vec![0u8; vana::ride::facts::SHELF_BYTES].into_boxed_slice();
-            if memory.ride_facts {
-                sdk.attach_ride_facts(Box::leak(facts));
-                let deleted = vec![0u8; vana::ride::deleted::SHELF_BYTES].into_boxed_slice();
-                sdk.attach_deleted_rides(Box::leak(deleted));
-            }
-        }
+        // SAFETY: `sdk` is dropped before `blocks`: here by declaration order,
+        // in `Session` by field order.
+        unsafe { attach_memory(&mut sdk, memory, &mut blocks) };
         sdk.load_preferences(&shell.settings.app);
         sdk.set_micros_clock(host_micros);
-        // The look-ahead and its tile cache, which the device keeps in PSRAM;
-        // each boot starts them over, as device memory does.
-        if memory.terrain {
-            sdk.attach_terrain(terrain_block());
-        }
-        if memory.phone {
-            sdk.attach_phone(Box::leak(Box::new(vana::app::PhoneWork::new())));
-        }
-        if memory.track {
-            let crumbs = Vec::leak(vec![vana::app::Crumb::default(); vana::app::TRACK_CRUMBS]);
-            let map = Box::leak(Box::new(vana::app::MapFrame::default()));
-            let line = Vec::leak(vec![vana::app::Crumb::default(); vana::app::COURSE_POINTS]);
-            let turns = Vec::leak(vec![vana::app::Turn::default(); vana::app::COURSE_TURNS]);
-            let course = Box::leak(Box::new(vana::app::Course::empty()));
-            let finder = Box::leak(Box::new(vana::app::CourseFinder::new()));
-            let track = Box::new(vana::app::RideTrack::new(
-                crumbs, line, turns, map, course, finder,
-            ));
-            sdk.attach_track(Box::leak(track));
-        }
         let trace = Trace::new(Start {
             boot,
             profile: shell.settings.ble_profile,
@@ -918,6 +961,7 @@ impl Session {
             media,
             bulk: crate::bulk::SimBulk::default(),
             sdk,
+            _blocks: blocks,
             trace,
             origin: None,
             unrecorded: None,

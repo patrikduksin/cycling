@@ -1,6 +1,6 @@
 //! A two-sector, power-loss-tolerant journal for small records.
 use crate::checksum::Crc32;
-use crate::le::{get_u16, get_u32, put_u16, put_u32};
+use crate::le::{get_u32, put_u16, put_u32};
 use device_api::storage::*;
 
 pub const SECTOR_SIZE: usize = 4096;
@@ -9,10 +9,13 @@ pub const HEADER_SIZE: usize = 24;
 pub const CAPACITY: usize = SECTOR_SIZE - HEADER_SIZE;
 
 const MAGIC: [u8; 4] = *b"C606";
-/// Every later format keeps bit 0 clear, so its whole version field never
-/// passes `torn_first_save` as a partly programmed version 1.
-const FORMAT_VERSION: u16 = 1;
-const _: () = assert!(FORMAT_VERSION == 1 || FORMAT_VERSION & 1 == 0);
+const VERSION: u8 = 2;
+const VERSION_AT: usize = 4;
+const HEADER_SIZE_AT: usize = 6;
+const SEQUENCE_AT: usize = 8;
+const LENGTH_AT: usize = 12;
+const CHECKSUM_AT: usize = 16;
+const HEAD: usize = LENGTH_AT;
 const COMMITTED: u32 = 0x434f_4d54;
 const COMMIT_OFFSET: usize = 20;
 /// Flash programs a page's bits in parallel, and pages in address order.
@@ -102,14 +105,11 @@ impl<F: OwnedFlash> Journal<F> {
         };
 
         self.scratch.0.fill(0xff);
-        self.scratch.0[0..4].copy_from_slice(&MAGIC);
-        put_u16(&mut self.scratch.0, 4, FORMAT_VERSION);
-        put_u16(&mut self.scratch.0, 6, HEADER_SIZE as u16);
-        put_u32(&mut self.scratch.0, 8, sequence);
-        put_u32(&mut self.scratch.0, 12, payload.len() as u32);
+        self.scratch.0[..HEAD].copy_from_slice(&head(sequence));
+        put_u32(&mut self.scratch.0, LENGTH_AT, payload.len() as u32);
         self.scratch.0[HEADER_SIZE..HEADER_SIZE + payload.len()].copy_from_slice(payload);
         let checksum = checksum(sequence, payload);
-        put_u32(&mut self.scratch.0, 16, checksum);
+        put_u32(&mut self.scratch.0, CHECKSUM_AT, checksum);
 
         self.flash
             .erase(self.region, target * SECTOR_SIZE, SECTOR_SIZE)
@@ -137,6 +137,22 @@ impl<F: OwnedFlash> Journal<F> {
             return Err(Error::ReadbackFailed);
         }
         Ok(record)
+    }
+
+    /// Erase both sectors, whatever they hold. The newest record goes last,
+    /// so a cut never leaves an older record as the newest.
+    pub fn erase(&mut self) -> Result<(), Error<F::Error>> {
+        let last = match self.scan() {
+            Ok(Scan::Newest(sector, _)) => sector,
+            Ok(Scan::Free { .. }) | Err(Error::UnrecognizedJournal) => 1,
+            Err(error) => return Err(error),
+        };
+        for sector in [1 - last, last] {
+            self.flash
+                .erase(self.region, sector * SECTOR_SIZE, SECTOR_SIZE)
+                .map_err(Error::Flash)?;
+        }
+        Ok(())
     }
 
     fn scan(&mut self) -> Result<Scan, Error<F::Error>> {
@@ -193,10 +209,7 @@ impl<F: OwnedFlash> Journal<F> {
 
 fn decode(sector: &Sector) -> Option<Record> {
     let bytes = &sector.0;
-    if bytes[0..4] != MAGIC
-        || get_u16(bytes, 4) != FORMAT_VERSION
-        || get_u16(bytes, 6) as usize != HEADER_SIZE
-        || get_u32(bytes, COMMIT_OFFSET) != COMMITTED
+    if bytes[..SEQUENCE_AT] != head(0)[..SEQUENCE_AT] || get_u32(bytes, COMMIT_OFFSET) != COMMITTED
     {
         return None;
     }
@@ -205,13 +218,14 @@ fn decode(sector: &Sector) -> Option<Record> {
 
 /// The record whose length and checksum verify, committed or not.
 fn whole(bytes: &[u8; SECTOR_SIZE]) -> Option<Record> {
-    let length = get_u32(bytes, 12) as usize;
+    let length = get_u32(bytes, LENGTH_AT) as usize;
     if length > CAPACITY {
         return None;
     }
-    let sequence = get_u32(bytes, 8);
+    let sequence = get_u32(bytes, SEQUENCE_AT);
     let payload = &bytes[HEADER_SIZE..HEADER_SIZE + length];
-    (get_u32(bytes, 16) == checksum(sequence, payload)).then_some(Record { sequence, length })
+    (get_u32(bytes, CHECKSUM_AT) == checksum(sequence, payload))
+        .then_some(Record { sequence, length })
 }
 
 /// Whether a sector holds a partial first save. A cut inside the first page
@@ -220,11 +234,7 @@ fn whole(bytes: &[u8; SECTOR_SIZE]) -> Option<Record> {
 /// partial. A partial header whose checksum still verifies belongs to a whole
 /// later save, such as a sequence 3 cut before its commit word.
 fn torn_first_save(sector: &Sector) -> bool {
-    let mut header = [0; 12];
-    header[0..4].copy_from_slice(&MAGIC);
-    put_u16(&mut header, 4, FORMAT_VERSION);
-    put_u16(&mut header, 6, HEADER_SIZE as u16);
-    put_u32(&mut header, 8, 1);
+    let header = head(1);
     let bytes = &sector.0;
     let commit = get_u32(bytes, COMMIT_OFFSET);
     if commit == COMMITTED || commit & COMMITTED != COMMITTED {
@@ -238,6 +248,15 @@ fn torn_first_save(sector: &Sector) -> bool {
             && bytes[..12].iter().any(|byte| *byte != 0xff)
             && bytes[PAGE_SIZE..].iter().all(|byte| *byte == 0xff)
             && whole(bytes).is_none())
+}
+
+fn head(sequence: u32) -> [u8; HEAD] {
+    let mut header = [0; HEAD];
+    header[..4].copy_from_slice(&MAGIC);
+    header[VERSION_AT] = VERSION;
+    put_u16(&mut header, HEADER_SIZE_AT, HEADER_SIZE as u16);
+    put_u32(&mut header, SEQUENCE_AT, sequence);
+    header
 }
 
 fn newer(candidate: u32, current: u32) -> bool {
@@ -430,7 +449,7 @@ pub(crate) mod tests {
                 ("read", region, 0, 4096),
             ]
         );
-        assert_eq!(&journal.flash.memory.bytes[0][..8], b"C606\x01\x00\x18\x00");
+        assert_eq!(&journal.flash.memory.bytes[0][..8], b"C606\x02\x00\x18\x00");
         assert_eq!(
             &journal.flash.memory.bytes[0][20..24],
             &COMMITTED.to_le_bytes()
@@ -506,6 +525,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_erase_cut_anywhere_never_brings_an_older_record_back() {
+        for saves in 1..=3 {
+            for cut in 0..=4 {
+                let mut journal = Journal::new(Memory::default(), Region::Configuration);
+                for save in 0..saves {
+                    journal.save(&[save]).unwrap();
+                }
+                journal.flash.fail_after = Some(journal.flash.operations + cut);
+                let erased = journal.erase();
+                journal.flash.fail_after = None;
+                let mut output = [0; 16];
+                match journal.load(&mut output) {
+                    Ok(None) => assert!(erased.is_ok(), "{saves} {cut}"),
+                    Ok(Some(_)) => {
+                        assert!(erased.is_err());
+                        assert_eq!(output[0], saves - 1, "{saves} {cut}");
+                    }
+                    Err(error) => assert_eq!(error, Error::UnrecognizedJournal),
+                }
+            }
+        }
+    }
+
+    #[test]
     fn occupied_unrecognized_journals_refuse_load_and_save_without_mutation() {
         for scenario in 0..10 {
             let mut journal = Journal::new(Memory::default(), Region::Configuration);
@@ -529,15 +572,14 @@ pub(crate) mod tests {
                     journal.flash.bytes[1][COMMIT_OFFSET..HEADER_SIZE].fill(0xff);
                     journal.flash.bytes[0].fill(0xff);
                 }
-                // A future format whose header is 28 bytes, not yet committed.
                 6 => {
                     let header = &mut journal.flash.bytes[0];
                     header[0..4].copy_from_slice(&MAGIC);
-                    put_u16(header, 4, 4);
-                    put_u16(header, 6, 28);
-                    put_u32(header, 8, 1);
-                    put_u32(header, 12, 5);
-                    put_u32(header, 16, 0);
+                    put_u16(header, VERSION_AT, 4);
+                    put_u16(header, HEADER_SIZE_AT, 28);
+                    put_u32(header, SEQUENCE_AT, 1);
+                    put_u32(header, LENGTH_AT, 5);
+                    put_u32(header, CHECKSUM_AT, 0);
                     header[28..33].copy_from_slice(b"three");
                 }
                 // A torn sequence 3 whose older records were erased.
@@ -558,7 +600,7 @@ pub(crate) mod tests {
                 _ => {
                     journal.save(b"existing").unwrap();
                     if scenario == 2 {
-                        journal.flash.bytes[0][4..6].copy_from_slice(&2u16.to_le_bytes());
+                        journal.flash.bytes[0][4] = 1;
                     } else {
                         journal.flash.bytes[0][HEADER_SIZE] ^= 1;
                     }

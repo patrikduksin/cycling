@@ -443,6 +443,26 @@ fn a_refused_answer_to_end_ride_returns_to_the_ride_and_says_storage_not_ready()
 }
 
 #[test]
+fn no_ride_starts_while_the_format_question_is_up() {
+    use crate::ride::auto::{Call, Decision};
+    let mut journal = Journal::erased();
+    let mut radio = Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    runtime.format = crate::app::format::Format::Offered {
+        drawn_at: Some(1000),
+    };
+    runtime.navigation.page = Page::Ready;
+    runtime.ride_auto(Call::Do(Decision::Start), 2000);
+    assert_eq!(
+        host(&mut runtime, &mut journal, 2000, "RIDE START").0,
+        "BUSY"
+    );
+    settle(&mut runtime, &mut journal, &mut radio, 2000);
+    assert!(!runtime.ride.open());
+    assert_eq!(runtime.ride.internal.status(), Status::Ready);
+}
+
+#[test]
 fn a_failed_finish_read_by_the_host_stays_on_the_summary_and_lets_the_rider_leave() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();

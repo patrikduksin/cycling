@@ -20,7 +20,7 @@ least), or
 `"open": true` (until the rider presses MARK). Its target is at most one of
 `ftp` [low, high] %, `watts` [low, high], `heart_zone` 1-5, `lthr` [low,
 high] %, `cadence` [low, high] rpm or `ramp` {start, step, every}; none is a
-free ride. `test` may be `twenty` or `ramp`. The encoding is codec version 1
+free ride. `test` may be `twenty` or `ramp`. The encoding is the workout codec
 (`apps/vana/src/workout/codec.rs`).
 
 The workout goes onto the MMC's FILES volume as `workouts/<name>.vw` through
@@ -44,7 +44,7 @@ from cycling_devtools.terminal.usb import UsbConnection
 from cycling_devtools.workspace import ROOT
 
 MAGIC = b'VW'
-VERSION = 1
+VERSION = 2
 NAME_BYTES = 20
 MAX_STEPS = 12
 MAX_BLOCKS = 8

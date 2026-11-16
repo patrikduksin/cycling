@@ -37,7 +37,7 @@ const AUTO_LAP: [AutoLap; 6] = [
 /// UTC-3 is Magallanes and Aysén all year.
 const ZONES: [Zone; 3] = [Zone::Chile, Zone::utc(-3), Zone::utc(-4)];
 /// Held buttons repeat about every 100 ms; a longer gap means a new press.
-const HOLD_GAP_MS: u64 = 250;
+pub const HOLD_GAP_MS: u64 = 250;
 
 impl Runtime {
     pub fn input_active(&self) -> bool {
@@ -169,6 +169,7 @@ impl Runtime {
             Page::Setup => self.setup_input(button, now, ant),
             // A press during the brand flash opens Home straight away.
             Page::Boot => self.navigation.page = self.first_page(),
+            Page::Format => self.format_input(button, held, received, now),
             Page::Sensors => {}
         }
     }
@@ -200,6 +201,7 @@ impl Runtime {
             }
             Page::Setup => u32::from(self.preferences.options.setup),
             Page::Boot
+            | Page::Format
             | Page::Home
             | Page::Ready
             | Page::EndRide

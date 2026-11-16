@@ -52,7 +52,10 @@ its `manifest.json`; keep the separate copy too.
   sectors never), reads the whole flash back, and resets. It reads 16 MiB
   twice, so allow about five minutes. Cycling rides and settings are lost. The
   reservations then hold the backup's bytes. The next cycling firmware refuses
-  them as foreign, never overwrites them, and offers FORMAT.
+  them as foreign, never overwrites them, and offers FORMAT on its screen at
+  boot. `cycling format` reports each store and `cycling format --confirm`
+  wipes them all; there is no other way to bring old rides or settings back
+  into use ([volumes](../../../docs/mmc-volumes.md#format)).
 - Never use generic flashing tools or write the backup by hand. The recovered
   layout assumes secure boot and flash encryption are disabled.
 - Never touch eFuses. Preserve the bootloader and partition table. No vendor

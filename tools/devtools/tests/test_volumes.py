@@ -56,19 +56,19 @@ class FakeDevice:
     def handle(self, op, arg, count, payload):
         """Returns (status, arg, count, payload)."""
         if op == OP['hello']:
-            return 0, 0, 0, struct.pack('<QII', 5_777_407, 4096, 1)
+            return 0, 0, 0, struct.pack('<QII', 5_777_407, 4096, 2)
         if op == OP['end']:
             return 0, 0, 0, b''
         if op == OP['volumes']:
             table = bytearray(40)
-            table[0] = 2
+            table[0] = 1
             table[8:40] = struct.pack('<QQQQ', 5_777_407, 1, 5_777_407, 532_479)
             for name, start, sectors in [
                 (b'RIDES', 2048, 2_097_152),
                 (b'FILES', 2_099_200, 524_288),
                 (b'TERRAIN', 2_623_488, 2_621_440),
             ]:
-                table += name.ljust(8, b'\0') + bytes(1) + struct.pack('<QQ', start, sectors)
+                table += name.ljust(8, b'\0') + struct.pack('<QQ', start, sectors)
             return 0, 0, 3, bytes(table)
         if op == OP['terrain_status']:
             return 0, 0, 0, self.terrain_info()

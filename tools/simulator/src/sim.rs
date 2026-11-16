@@ -9,6 +9,7 @@ use crate::world::{Vehicle, World};
 use device_api::input::{Button, Input, Point};
 use device_api::storage::Region;
 use std::fmt::Write as _;
+use vana::app::Store;
 
 /// Cards on VANA's Home, in MOVE order: RIDE, SENSORS, TRAIN, SETTINGS.
 pub const HOME_CARDS: usize = 4;
@@ -18,6 +19,15 @@ const BOOT_TIMEOUT_MS: u64 = 15_000;
 const PRESS_GAP_MS: u64 = 400;
 /// Touch reports arrive this often while a finger moves.
 const TOUCH_STEP_MS: u64 = 30;
+const FOREIGN_WRITE_ORDER: [Store; Store::ALL.len()] = [
+    Store::Records,
+    Store::Files,
+    Store::Rides,
+    Store::Traces,
+    Store::Internal,
+    Store::Settings,
+    Store::Table,
+];
 /// The companion repeats a held button's report this often.
 pub const HOLD_REPEAT_MS: u64 = 100;
 /// Repeated top-left reports that turn an off device on: about a 1.5 s hold.
@@ -1086,6 +1096,101 @@ impl Sim {
         self.device.media.contents(Region::Data)
     }
 
+    /// Leave `stores` as another version of the firmware would have written
+    /// them: the current format with another version byte, resealed. Cut the
+    /// power afterwards, so the device reads them.
+    pub fn make_foreign(&mut self, stores: &[Store]) {
+        for store in FOREIGN_WRITE_ORDER
+            .into_iter()
+            .filter(|store| stores.contains(store))
+        {
+            self.make_store_foreign(store);
+        }
+    }
+
+    /// Leave the terrain pack as another version would have written it.
+    pub fn make_terrain_foreign(&mut self) {
+        self.note(NoteKind::Device, "terrain of another version");
+        self.install_terrain(b"CHILE-TERRAIN-V1", &[7; 600]);
+        self.reseal_volume_foreign(firmware_services::volume::TERRAIN, [0, 1], 16);
+    }
+
+    fn make_store_foreign(&mut self, store: Store) {
+        use device_api::storage::{OwnedFlash, Region};
+        use firmware_services::volume;
+        self.note(
+            NoteKind::Device,
+            format!("{} of another version", store.name()),
+        );
+        match store {
+            Store::Settings => {
+                let mut journal = firmware_services::storage::Journal::new(
+                    self.device.media.clone(),
+                    Region::Configuration,
+                );
+                journal.save(b"another version").expect("the journal saves");
+            }
+            Store::Internal => {
+                self.device
+                    .media
+                    .program(Region::Data, 0, b"RIDE\x01\0\0\0")
+                    .expect("the journal programs");
+            }
+            Store::Records => {
+                let mut bests = vana::ride::bests::encode_file(&Default::default());
+                bests[4] = 1;
+                let body = bests.len() - 4;
+                let crc = firmware_services::checksum::crc32(&bests[..body]);
+                bests[body..].copy_from_slice(&crc.to_le_bytes());
+                self.put_file("bests.dat", &bests);
+            }
+            Store::Table => {
+                self.init_volumes();
+                let mut bulk = self.device.host_bulk();
+                for copy in 0..2 {
+                    reseal_foreign(&mut bulk, copy, volume::VERSION_AT);
+                }
+            }
+            Store::Rides => {
+                self.format_rides();
+                self.reseal_volume_foreign(volume::RIDES, [0, 1], 5);
+            }
+            Store::Files => {
+                self.format_files();
+                self.reseal_volume_foreign(volume::FILES, [0, 32], 16);
+            }
+            Store::Traces => {
+                self.format_store();
+                self.reseal_volume_foreign(volume::STORE, [0, 32], 16);
+            }
+        }
+    }
+
+    fn reseal_volume_foreign(
+        &mut self,
+        name: firmware_services::volume::Name,
+        copies: [u64; 2],
+        byte: usize,
+    ) {
+        let table = self.init_volumes();
+        let extent = table.find(&name).expect("the volume");
+        let mut bulk = self.device.host_bulk();
+        let mut media = firmware_services::volume::Volume::new(&mut bulk, extent);
+        for copy in copies {
+            reseal_foreign(&mut media, copy, byte);
+        }
+    }
+
+    /// Start an empty ride log in RIDES, as `RIDE BULK INIT` would.
+    pub fn format_rides(&mut self) {
+        use firmware_services::volume::{self, Volume};
+        let table = self.init_volumes();
+        let mut sector = [0u8; 512];
+        let mut bulk = self.device.host_bulk();
+        let mut rides = Volume::new(&mut bulk, table.find(&volume::RIDES).expect("RIDES"));
+        vana::ride::bulk::start(&mut rides, 1, &mut sector).expect("the log formats");
+    }
+
     /// Rides committed to media, decoded by VANA's journal format.
     pub fn rides(&mut self) -> Vec<crate::rides::Ride> {
         crate::rides::read(&self.ride_media())
@@ -1133,4 +1238,13 @@ impl Default for Sim {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn reseal_foreign(media: &mut impl device_api::bulk::ReadWrite, at: u64, byte: usize) {
+    let mut sector = [0u8; 512];
+    media.owned_read(at, &mut sector).expect("read");
+    sector[byte] = 1;
+    let crc = firmware_services::checksum::crc32(&sector[..508]);
+    sector[508..].copy_from_slice(&crc.to_le_bytes());
+    media.owned_write(at, &sector).expect("written");
 }

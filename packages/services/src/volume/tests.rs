@@ -88,15 +88,20 @@ fn tables_this_version_cannot_use_are_foreign_and_never_replaced() {
         changed[CRC..].copy_from_slice(&checksum.to_le_bytes());
         changed
     };
+    let unnamed = ENTRIES;
+    let second_start = ENTRIES + ENTRY + ENTRY_START_AT;
+    let third_sectors = ENTRIES + 2 * ENTRY + ENTRY_SECTORS_AT;
     for (offset, value) in [
-        (16, 2),                       // version
-        (21, 0),                       // sector size
-        (18, 9),                       // count beyond the maximum
-        (ENTRIES, 0),                  // unnamed
-        (ENTRIES + 10, 1),             // reserved entry bytes
-        (ENTRIES + ENTRY + 17, 0),     // second volume overlaps the first
-        (ENTRIES + 2 * ENTRY + 31, 1), // third volume past the region
-        (300, 1),                      // bytes after the last entry
+        (VERSION_AT, 1),
+        (VERSION_AT + 1, 1),
+        (ENTRIES + ENTRY_RESERVED.start, 1),
+        (SECTOR_SIZE_AT + 1, 0),
+        (COUNT_AT, 9),
+        (unnamed, 0),
+        (ENTRIES + ENTRY_RESERVED.start + 2, 1),
+        (second_start + 1, 0),
+        (third_sectors + 7, 1),
+        (CRC - 1, 1),
     ] {
         media.set(0, reseal(offset, value));
         media.set(1, good);
@@ -117,6 +122,25 @@ fn tables_this_version_cannot_use_are_foreign_and_never_replaced() {
     changed[CRC..].copy_from_slice(&checksum.to_le_bytes());
     media.set(0, changed);
     assert_eq!(read(&mut media, &mut s), Err(Error::Foreign));
+}
+
+#[test]
+fn only_replace_writes_over_a_foreign_table_and_a_cut_leaves_it_foreign() {
+    let mut media = Media::new(C606);
+    let mut s = sector();
+    let table = create(&mut media, &mut s).unwrap();
+    let mut other = media.get(0);
+    other[16] = 1;
+    let checksum = crc32(&other[..CRC]);
+    other[CRC..].copy_from_slice(&checksum.to_le_bytes());
+    media.set(0, other);
+    media.set(1, other);
+    assert_eq!(replace(&mut media, &mut s), Ok(table));
+    let new = media.get(0);
+    media.set(0, other);
+    assert_eq!(read(&mut media, &mut s), Err(Error::Foreign));
+    media.set(0, new);
+    assert_eq!(read(&mut media, &mut s), Ok(Layout::Table(table)));
 }
 
 #[test]

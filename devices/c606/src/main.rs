@@ -295,7 +295,7 @@ async fn console(
         ..Default::default()
     };
     {
-        sdk.load_preferences(&system.settings.app);
+        sdk.load_preferences(&system.settings.app, system.settings_source);
         sdk.set_latency_clock(|| embassy_time::Instant::now().as_millis());
         sdk.set_micros_clock(|| embassy_time::Instant::now().as_micros());
         sdk.draw_boot(system);
@@ -412,6 +412,9 @@ async fn console(
                 true,
                 embassy_time::Instant::now().as_millis(),
             );
+        }
+        if sdk.restart_due() {
+            commands::Diagnostics::restart(&FirmwareDiagnostics, false);
         }
         if let Some(panic) = terminal.reboot_due(now) {
             trace.sync(&mut devices.bulk, now);
@@ -609,6 +612,7 @@ fn vana_pass(
                 physical,
             },
         );
+        sdk.service_format(system, &mut bulk, now);
         stage_ended(Stage::VanaTick);
         // One bounded look-ahead step a pass (a tile chunk, a match or a
         // prediction), before the frame that may show its result.
@@ -636,6 +640,9 @@ fn vana_pass(
     trace.log.record(&trace.record);
     trace.seen(sdk, system.take_frame(), now);
     stage_ended(Stage::Seen);
+    if sdk.owns_storage() {
+        trace.storage_formatted();
+    }
     trace.drain(
         &mut devices.bulk,
         sdk.journals_at_boot(),

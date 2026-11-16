@@ -4,11 +4,12 @@
 //! [`Journal`] supplies the medium. Bulk media that are missing, unformatted or
 //! untrustworthy stay in their own state and are never written implicitly.
 //!
-//! Boot scans without erasing. Unknown occupied data requires explicit initialize,
-//! except one torn first append on an otherwise empty journal, which stays an
-//! occupied invalid slot. Start never reclaims space and needs room for one
-//! sample batch besides the terminal slot. A media failure stops mutation until inspection or
-//! reboot/rescan resolves an uncertain commit. Clear verifies each erased sector
+//! Boot scans without erasing. Unknown occupied data reads foreign, and only
+//! FORMAT erases it, except one torn first append on an otherwise empty
+//! journal, which stays an occupied invalid slot. Start never reclaims space
+//! and needs room for one sample batch besides the terminal slot. A media
+//! failure stops mutation until inspection or reboot/rescan resolves an
+//! uncertain commit. Clear verifies each erased sector
 //! but is not atomic across power loss. Never retry a timed-out mutation blindly.
 //!
 //! Pause/finish freeze active duration when accepted, before flushing. Sampling
@@ -39,6 +40,12 @@ enum Pending {
     Ride(Action, u64, u32),
     Initialize(u32),
     Clear(u32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    Foreign,
+    State,
 }
 
 #[derive(Clone, Copy)]
@@ -214,6 +221,7 @@ impl Recorder {
             && matches!(
                 self.status,
                 Status::NeedsInit
+                    | Status::Foreign
                     | Status::Ready
                     | Status::Saved
                     | Status::Recovered
@@ -251,20 +259,26 @@ impl Recorder {
 
     /// Explicitly prepare a journal that holds no usable rides. Corrupt bulk
     /// media is only superseded by a new epoch; its sectors stay readable.
-    pub fn initialize(&mut self, token: u32) -> bool {
+    pub fn initialize(&mut self, token: u32) -> Result<(), Refused> {
+        if self.status == Status::Foreign {
+            return Err(Refused::Foreign);
+        }
         if !matches!(self.status, Status::NeedsInit | Status::Corrupt)
             || self.pending.is_some()
             || self.result.is_some()
         {
-            return false;
+            return Err(Refused::State);
         }
         self.pending = Some(Pending::Initialize(token));
         self.step = 0;
         self.status = Status::Formatting;
-        true
+        Ok(())
     }
 
-    pub fn clear(&mut self, expected_upper: usize, token: u32) -> bool {
+    pub fn clear(&mut self, expected_upper: usize, token: u32) -> Result<(), Refused> {
+        if self.status == Status::Foreign {
+            return Err(Refused::Foreign);
+        }
         if !crate::ride::reclaim::request_allowed(
             self.status,
             self.open_ride,
@@ -272,12 +286,12 @@ impl Recorder {
             expected_upper,
             self.catalog.next_slot,
         ) {
-            return false;
+            return Err(Refused::State);
         }
         self.pending = Some(Pending::Clear(token));
         self.step = 0;
         self.status = Status::Clearing;
-        true
+        Ok(())
     }
 
     /// A lap closed: a sample this ride stores, after those of laps already
@@ -552,6 +566,10 @@ impl Recorder {
                 self.status = Status::NeedsInit;
                 return;
             }
+            Scan::Foreign => {
+                self.status = Status::Foreign;
+                return;
+            }
             Scan::Unsupported => {
                 self.status = Status::Unsupported;
                 return;
@@ -583,7 +601,7 @@ impl Recorder {
         // cannot grow what the next boot replays.
         self.checkpoint_due = journal.checkpoint_overdue();
         self.status = if catalog.unknown_data() {
-            Status::NeedsInit
+            Status::Foreign
         } else if catalog.next_slot >= self.slots {
             Status::Full
         } else if let Some(recovery) = catalog.recovery {
@@ -801,9 +819,6 @@ mod tests {
         fn scan(&mut self) -> Scan {
             Internal::new(&mut self.state, &mut self.flash).scan()
         }
-        fn initialize(&mut self, step: usize, seed: u64) -> Progress {
-            Internal::new(&mut self.state, &mut self.flash).initialize(step, seed)
-        }
         fn clear(&mut self, step: usize, seed: u64) -> Progress {
             Internal::new(&mut self.state, &mut self.flash).clear(step, seed)
         }
@@ -896,13 +911,20 @@ mod tests {
         }
     }
     #[test]
-    fn scan_preserves_unknown_data_and_requires_explicit_initialization() {
+    fn unknown_data_reads_foreign_and_no_initialize_or_clear_erases_it() {
         let mut media = Memory::default();
         media.bytes[0] = 0;
         let original = media.bytes.clone();
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
-        assert_eq!(recorder.status(), Status::NeedsInit);
+        assert_eq!(recorder.status(), Status::Foreign);
+        assert_eq!(recorder.initialize(1), Err(Refused::Foreign));
+        assert_eq!(
+            recorder.clear(recorder.next_slot(), 1),
+            Err(Refused::Foreign)
+        );
+        recorder.service(&mut media, 0, Sample::default(), &|| 0);
+        assert_eq!(recorder.status(), Status::Foreign);
         assert_eq!(media.mutations, 0);
         assert_eq!(media.bytes, original);
     }
@@ -1154,22 +1176,22 @@ mod tests {
     }
 
     #[test]
-    fn foreign_data_in_the_first_slot_still_requires_initialization() {
-        for first in [[0u8; 5], *b"RIDE\x02", [0xff, 0xff, 0xff, 0xff, 0xff]] {
+    fn foreign_data_in_the_first_slot_reads_foreign() {
+        for first in [[0u8; 5], *b"RIDE\x01", [0xff, 0xff, 0xff, 0xff, 0xff]] {
             let mut media = Memory::default();
             media.bytes[..5].copy_from_slice(&first);
             media.bytes[100] = 0;
             let mut recorder = Recorder::default();
             scan(&mut recorder, &mut media);
-            assert_eq!(recorder.status(), Status::NeedsInit, "{first:?}");
+            assert_eq!(recorder.status(), Status::Foreign, "{first:?}");
         }
         // Two unknown slots are never treated as one torn append.
         let mut media = Memory::default();
-        media.bytes[..5].copy_from_slice(b"RIDE\x01");
-        media.bytes[256..261].copy_from_slice(b"RIDE\x01");
+        media.bytes[..5].copy_from_slice(b"RIDE\x02");
+        media.bytes[256..261].copy_from_slice(b"RIDE\x02");
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
-        assert_eq!(recorder.status(), Status::NeedsInit);
+        assert_eq!(recorder.status(), Status::Foreign);
     }
 
     #[test]

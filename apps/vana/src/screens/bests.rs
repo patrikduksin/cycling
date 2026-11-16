@@ -41,6 +41,8 @@ pub enum Mode {
     Unavailable,
     /// The file cannot be read; ACT asks to start over.
     Damaged,
+    /// The file is of another version; only FORMAT replaces it.
+    Foreign,
     /// The store would not take the bests; they are in memory only.
     NotSaved,
 }
@@ -100,6 +102,23 @@ pub fn prepare(view: &View) -> Canvas {
                 &mut canvas,
                 &[&CAPTION],
                 b"IT CANNOT BE READ",
+                174,
+                SECONDARY,
+            );
+            return canvas;
+        }
+        Mode::Foreign => {
+            centred(
+                &mut canvas,
+                &[&BODY, &CAPTION],
+                b"BESTS NOT FORMATTED",
+                150,
+                AMBER,
+            );
+            centred(
+                &mut canvas,
+                &[&CAPTION],
+                b"OFF AND ON TO FORMAT",
                 174,
                 SECONDARY,
             );
@@ -315,6 +334,10 @@ mod tests {
         assert!(none.cues.is_empty());
         for (mode, want) in [
             (Mode::Damaged, ["BESTS FILE DAMAGED", "IT CANNOT BE READ"]),
+            (
+                Mode::Foreign,
+                ["BESTS NOT FORMATTED", "OFF AND ON TO FORMAT"],
+            ),
             (Mode::NotSaved, ["BESTS NOT SAVED", "STORAGE REFUSED THEM"]),
         ] {
             let mut view = View::new(Page::Bests, 0, None);

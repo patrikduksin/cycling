@@ -470,6 +470,11 @@ impl Trace {
         self.ended(after);
     }
 
+    pub fn storage_formatted(&mut self) {
+        self.file.formatted();
+        *self.record.get_mut() = None;
+    }
+
     fn ended(&mut self, result: Result<(), &'static str>) {
         if let Err(why) = result {
             log::warn!(target: "trace", "ended: {why}");

@@ -77,7 +77,7 @@ fn pace(seen: &Seen) -> Pace {
         | Page::EndRide
         | Page::DiscardRide
         | Page::Summary => true,
-        Page::Boot | Page::Phone | Page::Setup => false,
+        Page::Boot | Page::Format | Page::Phone | Page::Setup => false,
     };
     if still && !seen.busy {
         Pace::Still

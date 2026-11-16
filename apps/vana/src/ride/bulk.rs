@@ -1,6 +1,6 @@
 //! Rides on the owned bulk MMC region, through the sector log mechanism.
 //!
-//! Each log record holds one committed version-1 slot, so the internal
+//! Each log record holds one committed slot, so the internal
 //! journal's scanner and exporter decode bulk rides unchanged; a slot index is
 //! the record index. Checkpoints hold this module's catalog schema: counters,
 //! the open ride and the latest summaries. VANA checkpoints after every
@@ -23,12 +23,16 @@ use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64
 use firmware_services::sector_log::{self, Error, Log, PAYLOAD, Recovery as LogRecovery, Step};
 use firmware_services::volume::{self, Extent, Layout, RIDES, Volume};
 
-/// Owner and schema of the log: VANA rides, slot and catalog version 1.
-pub const TAG: &[u8; 16] = b"VANA-RIDES-V1\0\0\0";
+pub const TAG: &[u8; 16] = &tag(crate::ride::log::VERSION);
+
+const fn tag(version: u8) -> [u8; 16] {
+    let mut tag = *b"VANA-RIDES\0\0\0\0\0\0";
+    tag[15] = version;
+    tag
+}
 /// Records between checkpoints, which bounds the records boot replays.
 pub const CHECKPOINT_RECORDS: u32 = 32;
 
-const SCHEMA: u8 = 1;
 /// Counters and the open ride's position precede its summary.
 const OPEN: usize = 40;
 /// Completed-ride summaries follow the open ride's.
@@ -36,10 +40,44 @@ const HISTORY: usize = OPEN + Summary::ENCODED;
 const ENCODED: usize = HISTORY + HISTORY_CAPACITY * Summary::ENCODED;
 const _: () = assert!(ENCODED <= PAYLOAD);
 
+/// Whether RIDES holds a log of this version: `Ok(false)` when it was never
+/// formatted, `Err(Error::Foreign)` when another version's log is there.
+pub fn formatted(
+    rides: &mut impl ReadWrite,
+    sector: &mut sector_log::Sector,
+) -> Result<bool, Error> {
+    sector_log::formatted(rides, TAG, sector)
+}
+
+/// Start an empty log in RIDES, as `RIDE BULK INIT` does: refused over
+/// another version's log.
+pub fn start(
+    rides: &mut impl ReadWrite,
+    seed: u64,
+    sector: &mut sector_log::Sector,
+) -> Result<Log, Error> {
+    let initial = encode_catalog(&Catalog {
+        next_ride_id: 1,
+        ..Catalog::default()
+    });
+    sector_log::format(rides, TAG, seed, &initial, sector)
+}
+
+/// FORMAT's wipe: an empty log, whatever RIDES held.
+pub fn wipe(
+    rides: &mut impl ReadWrite,
+    seed: u64,
+    sector: &mut sector_log::Sector,
+) -> Result<(), Error> {
+    if formatted(rides, sector) == Err(Error::Foreign) {
+        sector_log::erase(rides, sector)?;
+    }
+    start(rides, seed, sector).map(drop)
+}
+
 /// Encode the recovery state for a checkpoint.
 pub fn encode_catalog(catalog: &Catalog) -> [u8; ENCODED] {
     let mut bytes = [0u8; ENCODED];
-    bytes[0] = SCHEMA;
     bytes[1] = u8::from(catalog.recovery.is_some())
         | u8::from(catalog.torn_first) << 1
         | u8::from(catalog.recovery.is_some_and(|r| r.gap)) << 2;
@@ -65,7 +103,7 @@ pub fn encode_catalog(catalog: &Catalog) -> [u8; ENCODED] {
 }
 
 pub fn decode_catalog(bytes: &[u8]) -> Option<Catalog> {
-    if bytes.len() != ENCODED || bytes[0] != SCHEMA || bytes[1] & !7 != 0 {
+    if bytes.len() != ENCODED || bytes[0] != 0 || bytes[1] & !7 != 0 {
         return None;
     }
     let count = usize::from(bytes[2]);
@@ -193,10 +231,6 @@ impl<'a, B: ReadWrite> Bulk<'a, B> {
     }
 
     fn format(&mut self, seed: u64) -> Progress {
-        let initial = encode_catalog(&Catalog {
-            next_ride_id: 1,
-            ..Catalog::default()
-        });
         // The recorder's seed is clock based and can repeat across boots.
         let seed = seed ^ self.media.entropy();
         let rides = volume::create(self.media, &mut self.state.sector)
@@ -209,7 +243,7 @@ impl<'a, B: ReadWrite> Bulk<'a, B> {
         self.state.region = Region::Volumes;
         self.state.rides = Some(rides);
         let mut media = Volume::new(self.media, rides);
-        match sector_log::format(&mut media, TAG, seed, &initial, &mut self.state.sector) {
+        match start(&mut media, seed, &mut self.state.sector) {
             Ok(log) => {
                 self.state.log = Some(log);
                 self.state.since_checkpoint = 0;
@@ -252,7 +286,11 @@ impl<B: ReadWrite> Bulk<'_, B> {
                 self.state.region = Region::Lost;
                 Scan::Corrupt
             }
-            Err(volume::Error::Foreign | volume::Error::Missing | volume::Error::Small) => {
+            Err(volume::Error::Foreign) => {
+                self.state.region = Region::Foreign;
+                Scan::Foreign
+            }
+            Err(volume::Error::Missing | volume::Error::Small) => {
                 self.state.region = Region::Foreign;
                 Scan::Corrupt
             }
@@ -337,7 +375,8 @@ impl<B: ReadWrite> Journal for Bulk<'_, B> {
             Err(Error::Uninitialized) => Scan::Uninitialized,
             Err(Error::Media(MediaError::Unsupported)) => Scan::Unsupported,
             Err(Error::Media(MediaError::Unavailable)) => Scan::Unavailable,
-            Err(Error::Foreign | Error::Corrupt) => Scan::Corrupt,
+            Err(Error::Foreign) => Scan::Foreign,
+            Err(Error::Corrupt) => Scan::Corrupt,
             Err(_) => Scan::Failed,
         };
         self.state.recovery = None;

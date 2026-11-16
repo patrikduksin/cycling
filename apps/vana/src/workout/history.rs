@@ -1,13 +1,13 @@
 //! How a saved ride's workout went, kept on the FILES volume beside the
 //! ride: one small file per ride, `rides/<journal><ride id>.workout`.
 //!
-//! Persisted version 1, little-endian:
+//! Persisted, little-endian:
 //!
 //! | Bytes | Field |
 //! | --- | --- |
 //! | 0..4 | magic `VWKO` |
-//! | 4 | version, 1 |
-//! | 5 | body length before the CRC, 66 |
+//! | 4 | version, 2 |
+//! | 5 | zero |
 //! | 6 | journal: `i` internal, `b` bulk |
 //! | 7 | flags: 1 finished, 2 start time known, 4 FTP measured |
 //! | 8..12 | ride id in that journal |
@@ -19,13 +19,15 @@
 //! | 64..66 | FTP the test measured, W |
 //! | 66..70 | CRC32 of bytes 0..66 |
 //!
-//! A file of any other version or length is foreign: never read, replaced or
-//! rotated out. Ride ids restart when a journal is cleared or initialized,
-//! and `forget` then deletes that journal's records. Only the newest
-//! [`KEEP`] records stay.
+//! A file of another version is foreign: never read, replaced or rotated
+//! out. A file of this version that does not decode is damaged, and is
+//! replaced and rotated out like a record. Ride ids restart when a journal
+//! is cleared or initialized, and `forget` then deletes that journal's
+//! records. Only the newest [`KEEP`] records stay.
 use super::library::LoadError;
 use super::model::{NAME_BYTES, Name, Test};
 use super::player::Summary;
+use crate::ride::{Contents, another_version};
 use core::fmt::Write;
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::crc32;
@@ -34,7 +36,7 @@ use firmware_services::{files, volume};
 
 pub const FOLDER: &str = "rides/";
 const SUFFIX: &str = ".workout";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const MAGIC: &[u8; 4] = b"VWKO";
 const BODY_LENGTH: usize = 66;
 pub const SIZE: usize = BODY_LENGTH + 4;
@@ -76,7 +78,6 @@ pub fn encode(record: &Record) -> [u8; SIZE] {
     let summary = &record.summary;
     bytes[..4].copy_from_slice(MAGIC);
     bytes[4] = VERSION;
-    bytes[5] = BODY_LENGTH as u8;
     bytes[6] = record.journal;
     bytes[7] = if summary.finished { FINISHED } else { 0 }
         | if record.started_utc_ms.is_some() {
@@ -113,7 +114,7 @@ pub fn decode(bytes: &[u8]) -> Option<Record> {
     if bytes.len() != SIZE
         || bytes[..4] != *MAGIC
         || bytes[4] != VERSION
-        || usize::from(bytes[5]) != BODY_LENGTH
+        || bytes[5] != 0
         || crc32(&bytes[..BODY_LENGTH]) != get_u32(bytes, BODY_LENGTH)
     {
         return None;
@@ -150,25 +151,63 @@ pub fn decode(bytes: &[u8]) -> Option<Record> {
 }
 
 const FOREIGN: LoadError = LoadError::Decode(super::codec::DecodeError::Version);
+const DAMAGED: LoadError = LoadError::Decode(super::codec::DecodeError::Checksum);
+
+fn is_record(name: &str) -> bool {
+    name.starts_with(FOLDER) && name.ends_with(SUFFIX)
+}
+
+enum Stored {
+    Current(Record),
+    Damaged,
+    Foreign,
+}
 
 fn read(
     store: &mut impl ReadWrite,
     dir: &files::Dir,
     entry: &files::Entry,
     sector: &mut files::Sector,
-) -> Result<Record, LoadError> {
-    if entry.length as usize != SIZE {
-        return Err(FOREIGN);
-    }
+) -> Result<Stored, LoadError> {
     let mut bytes = [0; SIZE];
-    dir.read(store, entry, 0, &mut bytes, sector)
+    let length = (entry.length as usize).min(SIZE);
+    dir.read(store, entry, 0, &mut bytes[..length], sector)
         .map_err(LoadError::Files)?;
-    decode(&bytes).ok_or(FOREIGN)
+    Ok(if another_version(&bytes[..length], MAGIC, VERSION) {
+        Stored::Foreign
+    } else if entry.length as usize != SIZE {
+        Stored::Damaged
+    } else {
+        decode(&bytes).map_or(Stored::Damaged, Stored::Current)
+    })
 }
 
-/// Save `record`, replacing one for the same ride and deleting the oldest
-/// record once [`KEEP`] are stored. A file in either place that is not a
-/// current record is kept, and the save refused.
+pub fn contents(media: &mut impl ReadWrite) -> Result<Contents, LoadError> {
+    let mut sector = [0; SECTOR_SIZE];
+    let mut store = volume::open(media, &volume::FILES, &mut sector).map_err(LoadError::Volume)?;
+    let dir = files::mount(&mut store, &mut sector).map_err(LoadError::Files)?;
+    let mut contents = Contents::Missing;
+    for index in 0..files::DIR_SECTORS {
+        let entries = dir
+            .entries(&mut store, index, &mut sector)
+            .map_err(LoadError::Files)?;
+        for entry in entries.iter().flatten() {
+            if !is_record(entry.name.as_str()) {
+                continue;
+            }
+            contents = match (contents, read(&mut store, &dir, entry, &mut sector)?) {
+                (_, Stored::Foreign) => return Ok(Contents::Foreign),
+                (_, Stored::Damaged) | (Contents::Damaged, _) => Contents::Damaged,
+                _ => Contents::Current,
+            };
+        }
+    }
+    Ok(contents)
+}
+
+/// Save `record`, replacing a current or damaged file of the same ride and
+/// deleting the oldest record once [`KEEP`] are stored. A foreign file in
+/// either place is kept, and the save refused.
 pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<(), LoadError> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = volume::open(media, &volume::FILES, &mut sector).map_err(LoadError::Volume)?;
@@ -178,7 +217,7 @@ pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<(), LoadError
     let mut replaces = None;
     let mut oldest: Option<files::Entry> = None;
     dir.list(&mut store, &mut sector, |entry| {
-        if !entry.name.as_str().starts_with(FOLDER) || !entry.name.as_str().ends_with(SUFFIX) {
+        if !is_record(entry.name.as_str()) {
             return;
         }
         kept += 1;
@@ -190,12 +229,17 @@ pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<(), LoadError
         }
     })
     .map_err(LoadError::Files)?;
-    if let Some(replaces) = replaces {
-        read(&mut store, &dir, &replaces, &mut sector)?;
-    } else if kept >= KEEP
-        && let Some(oldest) = oldest
+    let rotated = if replaces.is_none() && kept >= KEEP {
+        oldest
+    } else {
+        None
+    };
+    if let Some(entry) = replaces.or(rotated)
+        && let Stored::Foreign = read(&mut store, &dir, &entry, &mut sector)?
     {
-        read(&mut store, &dir, &oldest, &mut sector)?;
+        return Err(FOREIGN);
+    }
+    if let Some(oldest) = rotated {
         dir.delete(&mut store, &oldest.name, &mut sector)
             .map_err(LoadError::Files)?;
     }
@@ -203,8 +247,8 @@ pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<(), LoadError
     Ok(())
 }
 
-/// Delete every record of `journal`, as its ride ids start over. A file of
-/// the journal that is not a current record is kept, and the clear stops there.
+/// Delete every record of `journal`, as its ride ids start over. A foreign
+/// file of the journal is kept, and the clear stops there.
 pub fn forget(media: &mut impl ReadWrite, journal: u8) -> Result<(), LoadError> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = volume::open(media, &volume::FILES, &mut sector).map_err(LoadError::Volume)?;
@@ -228,7 +272,9 @@ pub fn forget(media: &mut impl ReadWrite, journal: u8) -> Result<(), LoadError> 
             return Ok(());
         }
         for entry in &entries {
-            read(&mut store, &dir, entry, &mut sector)?;
+            if matches!(read(&mut store, &dir, entry, &mut sector)?, Stored::Foreign) {
+                return Err(FOREIGN);
+            }
         }
         for entry in &entries {
             files::delete(&mut store, &entry.name, &mut sector).map_err(LoadError::Files)?;
@@ -251,11 +297,13 @@ pub fn load(
     else {
         return Ok(None);
     };
-    let record = read(&mut store, &dir, &entry, &mut sector)?;
-    if record.journal != journal || record.ride_id != ride_id {
-        return Err(FOREIGN);
+    match read(&mut store, &dir, &entry, &mut sector)? {
+        Stored::Current(record) if record.journal == journal && record.ride_id == ride_id => {
+            Ok(Some(record))
+        }
+        Stored::Current(_) | Stored::Damaged => Err(DAMAGED),
+        Stored::Foreign => Err(FOREIGN),
     }
-    Ok(Some(record))
 }
 
 #[cfg(test)]
@@ -302,19 +350,17 @@ mod tests {
     }
 
     #[test]
-    fn another_version_is_foreign() {
-        let mut longer = [0u8; SIZE + 6];
-        longer[..BODY_LENGTH].copy_from_slice(&encode(&record(5))[..BODY_LENGTH]);
-        longer[4] = 2;
-        longer[5] = (BODY_LENGTH + 6) as u8;
-        let crc = crc32(&longer[..BODY_LENGTH + 6]);
-        put_u32(&mut longer, BODY_LENGTH + 6, crc);
-        assert_eq!(decode(&longer), None);
+    fn another_version_or_length_is_no_record() {
         let mut other = encode(&record(5));
-        other[4] = 2;
+        other[4] = VERSION + 1;
         let crc = crc32(&other[..BODY_LENGTH]);
         put_u32(&mut other, BODY_LENGTH, crc);
         assert_eq!(decode(&other), None);
+        let mut longer = [0u8; SIZE + 6];
+        longer[..BODY_LENGTH].copy_from_slice(&encode(&record(5))[..BODY_LENGTH]);
+        let crc = crc32(&longer[..BODY_LENGTH + 6]);
+        put_u32(&mut longer, BODY_LENGTH + 6, crc);
+        assert_eq!(decode(&longer), None);
     }
 
     fn full_folder_whose_oldest_is_foreign() -> Region {
@@ -331,6 +377,7 @@ mod tests {
     #[test]
     fn a_save_never_replaces_or_rotates_out_a_foreign_file() {
         let mut region = full_folder_whose_oldest_is_foreign();
+        assert_eq!(contents(&mut region), Ok(Contents::Foreign));
         assert_eq!(save(&mut region, &record(1)), Err(FOREIGN));
         assert_eq!(load(&mut region, b'b', 1), Err(FOREIGN));
         assert_eq!(save(&mut region, &record(KEEP as u32 + 1)), Err(FOREIGN));
@@ -339,6 +386,34 @@ mod tests {
         assert_eq!(forget(&mut region, b'b'), Err(FOREIGN));
         assert_eq!(load(&mut region, b'b', 1), Err(FOREIGN));
         assert_eq!(load(&mut region, b'b', 2), Ok(Some(record(2))));
+    }
+
+    #[test]
+    fn a_damaged_record_reads_as_damage_and_is_replaced_and_rotated_out() {
+        let mut region = formatted();
+        assert_eq!(contents(&mut region), Ok(Contents::Missing));
+        save(&mut region, &record(9)).unwrap();
+        assert_eq!(contents(&mut region), Ok(Contents::Current));
+        forget(&mut region, b'b').unwrap();
+        let mut damaged = encode(&record(1));
+        damaged[30] ^= 1;
+        put(&mut region, file(b'b', 1).as_str(), &damaged);
+        assert_eq!(load(&mut region, b'b', 1), Err(DAMAGED));
+        assert_eq!(contents(&mut region), Ok(Contents::Damaged));
+        for ride in 2..=KEEP as u32 + 1 {
+            save(&mut region, &record(ride)).unwrap();
+        }
+        assert_eq!(
+            load(&mut region, b'b', 1),
+            Ok(None),
+            "rotated out as the oldest"
+        );
+        put(&mut region, file(b'b', 1).as_str(), &damaged);
+        save(&mut region, &record(1)).unwrap();
+        assert_eq!(load(&mut region, b'b', 1), Ok(Some(record(1))));
+        put(&mut region, file(b'b', 40).as_str(), &damaged);
+        assert_eq!(forget(&mut region, b'b'), Ok(()));
+        assert_eq!(load(&mut region, b'b', 40), Ok(None));
     }
 
     #[test]

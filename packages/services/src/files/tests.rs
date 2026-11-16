@@ -267,7 +267,7 @@ fn foreign_directories_are_reported() {
     let mut s = sector();
     let dir = format(&mut media, 1, &mut s).unwrap();
     let mut header = media.get(base(dir.copy));
-    header[16] = 2;
+    header[16] = 1;
     let checksum = crc32(&header[..CRC]);
     header[CRC..].copy_from_slice(&checksum.to_le_bytes());
     media.set(base(dir.copy), header);
@@ -276,6 +276,9 @@ fn foreign_directories_are_reported() {
     assert_eq!(format(&mut media, 2, &mut s), Err(Error::Foreign));
     assert_eq!(media.writes, before);
     assert_eq!(mount(&mut media, &mut s), Err(Error::Foreign));
+    erase(&mut media, &mut s).unwrap();
+    assert_eq!(mount(&mut media, &mut s), Err(Error::Uninitialized));
+    assert!(format(&mut media, 2, &mut s).unwrap().is_empty());
 }
 
 enum Op {

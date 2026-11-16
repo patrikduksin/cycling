@@ -28,7 +28,7 @@ use device_api::bulk::{Error as MediaError, ReadWrite, SECTOR_SIZE};
 pub type Sector = [u8; SECTOR_SIZE];
 
 pub const MAGIC: &[u8; 16] = b"CYCLING-FILES\0\0\0";
-pub const VERSION: u16 = 1;
+pub const VERSION: u8 = 2;
 pub const NAME: usize = 40;
 const ENTRY: usize = 64;
 /// Entry slots in each directory sector.
@@ -180,7 +180,7 @@ fn decode_header(sector: &Sector, copy: u64, data: u64) -> Replica {
     if sector[..16] != MAGIC[..] || get_u32(sector, CRC) != crc32(&sector[..CRC]) {
         return Replica::Invalid;
     }
-    if get_u16(sector, 16) != VERSION
+    if sector[16..18] != [VERSION, 0]
         || sector[20..24].iter().any(|b| *b != 0)
         || sector[44..CRCS].iter().any(|b| *b != 0)
         || sector[CRCS + 4 * DIR_SECTORS..CRC].iter().any(|b| *b != 0)
@@ -273,6 +273,16 @@ pub fn format(media: &mut impl ReadWrite, seed: u64, sector: &mut Sector) -> Res
     Ok(dir)
 }
 
+/// Zero both header copies, whatever they hold, so the volume reads as never
+/// formatted. Only this gets past a foreign directory; [`format`] refuses one.
+pub fn erase(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<(), Error> {
+    sector.fill(0);
+    for copy in 0..2 {
+        media.owned_write(base(copy), sector)?;
+    }
+    Ok(())
+}
+
 /// A store holding `files`, each `(name, revision, bytes)`, in slot order
 /// and under the id and generation a host names: for rebuilding the medium a
 /// recording started on. Writes copy A whatever the volume holds; extents
@@ -343,7 +353,7 @@ pub fn restore(
 fn write_header(media: &mut impl ReadWrite, dir: &Dir, sector: &mut Sector) -> Result<(), Error> {
     sector.fill(0);
     sector[..16].copy_from_slice(MAGIC);
-    put_u16(sector, 16, VERSION);
+    sector[16] = VERSION;
     put_u16(sector, 18, dir.count);
     put_u64(sector, 24, dir.id);
     put_u64(sector, 32, dir.generation);

@@ -9,7 +9,7 @@ use super::pace::Touched;
 use super::recording::{Medium, Request};
 use crate::ride::control::Action;
 use crate::ride::log::{SLOT_SIZE, Slot, VERSION, transport_checksum};
-use crate::ride::recorder::Recorder;
+use crate::ride::recorder::{Recorder, Refused};
 use crate::ride::storage::RideStorage;
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
@@ -31,6 +31,12 @@ impl Runtime {
         // Wrapped as `tick` wraps them, so the storage code both reach is
         // built once.
         let (store, bulk) = (&mut Touched::new(store), &mut Touched::new(bulk));
+        if let Some(argument) = words.strip_prefix("FORMAT") {
+            return self.format_command(argument.trim(), now, output);
+        }
+        if self.format.owns_storage() {
+            return "BUSY";
+        }
         let mut workout = words.split_ascii_whitespace();
         if workout.next() == Some("WORKOUT") {
             return self.workout_command(&mut workout, bulk, now, output);
@@ -115,9 +121,15 @@ impl Runtime {
                     // One ride at a time, whichever medium it is on.
                     return "STATE";
                 }
+                if !self.format.admits_rides() {
+                    return "BUSY";
+                }
                 let medium = named.unwrap_or(self.ride.target(action));
                 self.submit(medium, output, |recorder, token| {
-                    recorder.request(action, now, token)
+                    recorder
+                        .request(action, now, token)
+                        .then_some(())
+                        .ok_or(Refused::State)
                 })
             }
             (Some("EXPORT"), Some("INFO"), None) => self.export_info(stored, output),
@@ -135,7 +147,7 @@ impl Runtime {
         &mut self,
         medium: Medium,
         output: &mut impl Write,
-        start: impl FnOnce(&mut Recorder, u32) -> bool,
+        start: impl FnOnce(&mut Recorder, u32) -> Result<(), Refused>,
     ) -> &'static str {
         if !matches!(self.ride.host, Request::Idle) || self.ride.pending() {
             return "BUSY";
@@ -143,8 +155,10 @@ impl Runtime {
         if write!(output, "token={}", self.ride.next_token()).is_err() {
             return "OUTPUT";
         }
-        if !self.ride.submit_host(medium, start) {
-            return "STATE";
+        match self.ride.submit_host(medium, start) {
+            Ok(()) => {}
+            Err(Refused::Foreign) => return "FOREIGN",
+            Err(Refused::State) => return "STATE",
         }
         // A host action replaces the rider's last notice, as a rider's does.
         if matches!(self.ride.request, Request::Completed(_)) {
@@ -153,9 +167,6 @@ impl Runtime {
         "ACCEPTED"
     }
 
-    /// `PROFILE` reports the training profile; `PROFILE FTP|LTHR value` sets
-    /// one threshold, saved once edits settle; `PROFILE OVERWRITE` replaces a
-    /// stored profile this firmware cannot read.
     fn profile_command(
         &mut self,
         operation: Option<&str>,
@@ -183,7 +194,6 @@ impl Runtime {
                 self.preferences.set(profile, now);
                 self.display.redraw();
             }
-            (Some("OVERWRITE"), None) => self.preferences.overwrite(now),
             _ => return "INVALID",
         }
         let preferences = &self.preferences;

@@ -8,8 +8,10 @@ pub const DEFAULT_TIMEZONE_MINUTES: i16 = 0;
 pub const DEBOUNCE_MS: u64 = 1_000;
 pub const RETRY_MS: u64 = 5_000;
 const PREFIX: &[u8] = b"cycling";
-const VERSION: u8 = 6;
+const VERSION: u8 = 7;
 const LENGTH: usize = layout::APP + APP_CAPACITY;
+pub const CONDEMNED: &[u8] = b"FORMAT";
+const _: () = assert!(CONDEMNED.len() != LENGTH);
 /// Bytes reserved for the application's own versioned preference record.
 pub const APP_CAPACITY: usize = 96;
 
@@ -222,8 +224,25 @@ impl Settings {
 pub enum Source {
     Current,
     Missing,
-    /// Another version, or damaged: kept, never overwritten unasked.
+    /// Another version, damaged, or condemned by FORMAT: never saved over,
+    /// even once FORMAT has erased it.
     Foreign,
+    /// The journal could not be read.
+    Failed,
+    /// There is no configuration storage.
+    Unavailable,
+}
+
+impl Source {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Missing => "missing",
+            Self::Foreign => "foreign",
+            Self::Failed => "failed",
+            Self::Unavailable => "unavailable",
+        }
+    }
 }
 
 pub fn decode(payload: Option<&[u8]>) -> (Settings, Source) {
@@ -435,7 +454,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn version_six_layout_is_pinned_and_padding_must_be_zero() {
+    fn the_layout_is_pinned_and_padding_must_be_zero() {
         let mut settings = Settings::with_values(77, 0x0102, 12, -180).unwrap();
         settings.wifi =
             Some(device_api::connectivity::WifiConfig::new(b"ssid", b"password", false).unwrap());
@@ -447,7 +466,7 @@ pub(crate) mod tests {
         });
         settings.ble_profile = 3;
         let mut expected = [0u8; 256];
-        expected[..8].copy_from_slice(b"cycling\x06");
+        expected[..8].copy_from_slice(b"cycling\x07");
         expected[8] = 77;
         expected[9..11].copy_from_slice(&[2, 1]);
         expected[11] = 12;
@@ -622,7 +641,9 @@ pub(crate) mod tests {
                 Source::Foreign => {
                     assert_eq!(decoded, Settings::default(), "seed {seed}")
                 }
-                Source::Missing => panic!("seed {seed}: {source:?}"),
+                Source::Missing | Source::Failed | Source::Unavailable => {
+                    panic!("seed {seed}: {source:?}")
+                }
             }
         }
     }

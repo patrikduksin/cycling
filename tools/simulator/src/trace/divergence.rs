@@ -185,7 +185,7 @@ mod tests {
             clock: Vec::new(),
             passes: 0,
             end_ms: 0,
-            end: None,
+            end: firmware_services::trace::End::Complete,
             utc_at_boot_ms: None,
             silences: Vec::new(),
             power: Vec::new(),

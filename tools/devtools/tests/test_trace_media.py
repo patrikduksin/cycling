@@ -33,7 +33,7 @@ class FakeExport:
         slots = self.rides if bulk else self.internal
         verb = words[2 if bulk else 1]
         if verb == 'INFO':
-            data = f'INFO 1 256 {len(slots)} ready' + (f' {self.store} 3 5777391' if bulk else '')
+            data = f'INFO 2 256 {len(slots)} ready' + (f' {self.store} 3 5777391' if bulk else '')
         else:
             assert not bulk, 'RIDES is read through the transfer session'
             index = int(words[-1])

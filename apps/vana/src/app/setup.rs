@@ -24,9 +24,11 @@ impl Runtime {
         (step != Step::Welcome || !used).then_some(step)
     }
 
-    /// The page after the brand: setup while it is due, else Home.
     pub(super) fn first_page(&self) -> Page {
-        if self.setup_step().is_some() {
+        use super::format::Format;
+        if matches!(self.format, Format::Offered { .. } | Format::Running(_)) {
+            Page::Format
+        } else if self.setup_step().is_some() {
             Page::Setup
         } else {
             Page::Home

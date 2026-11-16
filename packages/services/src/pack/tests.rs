@@ -244,6 +244,8 @@ fn headers_of_another_version_are_foreign() {
     header[CRC..].copy_from_slice(&checksum.to_le_bytes());
     media.set(0, header);
     assert_eq!(status(&mut media, &mut s), Err(Error::Foreign));
+    erase(&mut media, &mut s).unwrap();
+    assert_eq!(status(&mut media, &mut s), Ok(None));
 }
 
 impl Replica {

@@ -155,7 +155,7 @@ fn files_that_are_not_courses_read_as_damaged() {
     let mut old = good.clone();
     old[4] = 0;
     let mut later = good.clone();
-    later[4] = 2;
+    later[4] = 3;
     let body = later.len() - 4;
     let crc = firmware_services::checksum::crc32(&later[..body]);
     later[body..].copy_from_slice(&crc.to_le_bytes());

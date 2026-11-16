@@ -159,7 +159,7 @@ impl RidePage {
             Self::Stats => Some(1 << 0),
             Self::Lap => Some(1 << 1),
             Self::Climb => Some(1 << 2),
-            Self::Map => Some(1 << 4),
+            Self::Map => Some(1 << 3),
         }
     }
 }
@@ -172,7 +172,7 @@ pub struct PageChoice(u8);
 
 impl PageChoice {
     /// The bits a record may carry.
-    pub const BITS: u8 = 0b1_0111;
+    pub const BITS: u8 = 0b1111;
 
     /// The optional pages, in the order Settings lists them.
     pub const OPTIONAL: [RidePage; 4] = [

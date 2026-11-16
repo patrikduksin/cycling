@@ -12,22 +12,24 @@
 //! not kept at all: formatting is the host's decision, never a ride's, and a
 //! host `files format` erases them.
 //!
-//! Persisted version 1, little-endian:
+//! Persisted, little-endian:
 //!
 //! | Bytes | Field |
 //! | --- | --- |
 //! | 0..4 | magic `VBST` |
-//! | 4 | version, 1 |
+//! | 4 | version, 2 |
 //! | 5 | body length before the CRC, 38 |
 //! | 6..38 | the bests (`Bests::ENCODED`) |
 //! | 38..42 | CRC32 of bytes 0..38 |
 //!
-//! A file of any other version or length is foreign, read like a damaged
-//! one: never merged into; only CLEAR BESTS replaces it.
+//! A file of another version is foreign: never merged into nor replaced,
+//! CLEAR BESTS included; only FORMAT erases it. A file of this version that
+//! does not decode is damaged, and CLEAR BESTS replaces it.
 //!
 //! The ride bests need a ride of `MIN_RIDE_S`, so a test press of a few
 //! seconds does not become "the longest ride". A power above
 //! `PLAUSIBLE_WATTS` for its window is a sensor glitch and never a best.
+use super::{Contents, another_version};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::crc32;
 use firmware_services::{files, volume};
@@ -201,7 +203,7 @@ impl Bests {
 
 const FILE: &str = "bests.dat";
 const MAGIC: &[u8; 4] = b"VBST";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const VERSION_AT: usize = 4;
 const BODY_LENGTH_AT: usize = 5;
 const FIELDS_AT: usize = 6;
@@ -218,6 +220,8 @@ pub enum Error {
     Media,
     /// A file is there but does not decode.
     Damaged,
+    /// The file is of another version: kept, and never written over.
+    Foreign,
     /// The store has no room for the file.
     Full,
 }
@@ -268,26 +272,59 @@ pub fn decode_file(bytes: &[u8]) -> Option<Bests> {
     Bests::decode(&bytes[FIELDS_AT..BODY])
 }
 
-/// The stored bests; none when the store has no file yet.
-pub fn load(media: &mut impl ReadWrite) -> Result<Bests, Error> {
+enum File {
+    Missing,
+    Current(Bests),
+    Damaged,
+    Foreign,
+}
+
+fn read(media: &mut impl ReadWrite) -> Result<File, Error> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = open(media, &mut sector)?;
     let dir = files::mount(&mut store, &mut sector)?;
     let name = files::Name::new(FILE)?;
     let Some(entry) = dir.find(&mut store, &name, &mut sector)? else {
-        return Ok(Bests::default());
+        return Ok(File::Missing);
     };
-    if entry.length as usize != SIZE {
-        return Err(Error::Damaged);
-    }
     let mut bytes = [0; SIZE];
-    dir.read(&mut store, &entry, 0, &mut bytes, &mut sector)?;
-    decode_file(&bytes).ok_or(Error::Damaged)
+    let length = (entry.length as usize).min(SIZE);
+    dir.read(&mut store, &entry, 0, &mut bytes[..length], &mut sector)?;
+    let bytes = &bytes[..length];
+    Ok(if another_version(bytes, MAGIC, VERSION) {
+        File::Foreign
+    } else if entry.length as usize != SIZE {
+        File::Damaged
+    } else {
+        decode_file(bytes).map_or(File::Damaged, File::Current)
+    })
 }
 
-/// Store `bests`, replacing whatever file is there in one atomic commit. A
-/// store the host has not formatted is not formatted here.
+pub fn contents(media: &mut impl ReadWrite) -> Result<Contents, Error> {
+    Ok(match read(media)? {
+        File::Missing => Contents::Missing,
+        File::Current(_) => Contents::Current,
+        File::Damaged => Contents::Damaged,
+        File::Foreign => Contents::Foreign,
+    })
+}
+
+/// The stored bests; none when the store has no file yet.
+pub fn load(media: &mut impl ReadWrite) -> Result<Bests, Error> {
+    match read(media)? {
+        File::Missing => Ok(Bests::default()),
+        File::Current(bests) => Ok(bests),
+        File::Damaged => Err(Error::Damaged),
+        File::Foreign => Err(Error::Foreign),
+    }
+}
+
+/// Store `bests`, replacing a current or damaged file in one atomic commit.
+/// A store the host has not formatted is not formatted here.
 pub fn save(media: &mut impl ReadWrite, bests: &Bests) -> Result<(), Error> {
+    if contents(media)? == Contents::Foreign {
+        return Err(Error::Foreign);
+    }
     let mut sector = [0; SECTOR_SIZE];
     let mut store = open(media, &mut sector)?;
     files::mount(&mut store, &mut sector)?;
@@ -307,6 +344,50 @@ pub fn suggest_ftp(best_20_min: u16, ftp_watts: u16) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workout::library::tests::{Region, formatted, put};
+
+    fn stored(region: &mut Region) -> Option<std::vec::Vec<u8>> {
+        let mut sector = [0; SECTOR_SIZE];
+        let mut store = volume::open(region, &volume::FILES, &mut sector).unwrap();
+        let dir = files::mount(&mut store, &mut sector).unwrap();
+        let name = files::Name::new(FILE).unwrap();
+        let entry = dir.find(&mut store, &name, &mut sector).unwrap()?;
+        let mut bytes = std::vec![0; entry.length as usize];
+        dir.read(&mut store, &entry, 0, &mut bytes, &mut sector)
+            .unwrap();
+        Some(bytes)
+    }
+
+    #[test]
+    fn a_damaged_file_is_replaced_and_one_of_another_version_never_is() {
+        let mut region = formatted();
+        assert_eq!(contents(&mut region), Ok(Contents::Missing));
+        let bests = Bests {
+            time_s: mark(3600, 8),
+            ..Bests::default()
+        };
+        save(&mut region, &bests).unwrap();
+        assert_eq!(contents(&mut region), Ok(Contents::Current));
+        assert_eq!(load(&mut region), Ok(bests));
+
+        let mut damaged = encode_file(&bests);
+        damaged[FIELDS_AT] ^= 1;
+        put(&mut region, FILE, &damaged);
+        assert_eq!(load(&mut region), Err(Error::Damaged));
+        put(&mut region, FILE, b"VBST");
+        assert_eq!(load(&mut region), Err(Error::Damaged));
+        save(&mut region, &Bests::default()).unwrap();
+        assert_eq!(load(&mut region), Ok(Bests::default()));
+
+        let mut foreign = encode_file(&bests).to_vec();
+        foreign[VERSION_AT] = VERSION + 1;
+        foreign.extend_from_slice(&[0; 8]);
+        put(&mut region, FILE, &foreign);
+        assert_eq!(contents(&mut region), Ok(Contents::Foreign));
+        assert_eq!(load(&mut region), Err(Error::Foreign));
+        assert_eq!(save(&mut region, &Bests::default()), Err(Error::Foreign));
+        assert_eq!(stored(&mut region), Some(foreign), "left as it was");
+    }
 
     fn ride(power: [Option<u16>; 4], km: u32, minutes: u32, ascent: u32) -> Outcome {
         Outcome {

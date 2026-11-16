@@ -4,6 +4,7 @@ use crate::idle::Config;
 use crate::idle::Gate;
 use crate::idle::Idle;
 use crate::preferences::Settings;
+use crate::preferences::Source;
 use crate::rendering::row::Row;
 use crate::storage::Store;
 use device_api::display::BAND_ROWS;
@@ -173,7 +174,7 @@ pub struct Shell<D, I, P, B> {
     pub synthetic_events: u32,
     store: Store<B>,
     pub settings: Settings,
-    pub settings_source: &'static str,
+    pub settings_source: Source,
     pub settings_error: bool,
     pub reset: device_api::crash::Reset,
     pub crash: device_api::crash::Marker,
@@ -252,22 +253,14 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             None
         };
         let (settings, source, error) = match loaded {
-            Some(Ok(value)) => (
-                value.settings,
-                match value.source {
-                    crate::preferences::Source::Current => "current",
-                    crate::preferences::Source::Missing => "missing",
-                    crate::preferences::Source::Foreign => "foreign",
-                },
-                false,
-            ),
-            Some(Err(_)) => (Settings::default(), "failed", true),
+            Some(Ok(value)) => (value.settings, value.source, false),
+            Some(Err(_)) => (Settings::default(), Source::Failed, true),
             None if storage_available == Availability::Unsupported => {
-                (Settings::default(), "unavailable", false)
+                (Settings::default(), Source::Unavailable, false)
             }
-            None => (Settings::default(), "failed", true),
+            None => (Settings::default(), Source::Failed, true),
         };
-        log::info!(target:"settings", "loaded source={} failed={}", source,error);
+        log::info!(target:"settings", "loaded source={} failed={}", source.name(), error);
         Ok(Self {
             harness: crate::harness::State::default(),
             synthetic: Synthetic::new(),
@@ -580,35 +573,52 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         });
         self.dirty = self.display_error;
     }
-    pub fn save_connectivity(&mut self) -> bool {
-        let result = self.store.save_connectivity(self.settings);
-        self.operations = self.operations.saturating_add(1);
-        self.settings_error = result.is_err();
-        if result.is_ok() {
-            self.settings_source = "current";
+    /// Leave the settings reading foreign until [`Self::erase_settings`]
+    /// completes: current ones are replaced with a record no version reads.
+    /// From here until a restart nothing saves settings. False when the
+    /// write failed.
+    pub fn condemn_settings(&mut self) -> bool {
+        let condemned = self.store.condemn().is_ok();
+        if condemned {
+            self.settings_source = Source::Foreign;
         }
-        result.is_ok()
+        condemned
+    }
+
+    /// Erase the settings journal, foreign or not. False when the erase
+    /// failed; the settings may then still read foreign.
+    pub fn erase_settings(&mut self) -> bool {
+        self.store.erase().is_ok()
+    }
+
+    pub fn save_connectivity(&mut self) -> bool {
+        self.store_settings(|store, settings| store.save_connectivity(settings))
     }
     /// Persist the application's preferences without saving temporary shell
     /// changes; on success they also become the current settings.
     pub fn save_app_preferences(&mut self, app: crate::preferences::AppPreferences) -> bool {
-        let result = self.store.save_app(app);
-        self.operations = self.operations.saturating_add(1);
-        self.settings_error = result.is_err();
-        if result.is_ok() {
+        let saved = self.store_settings(|store, _| store.save_app(app));
+        if saved {
             self.settings.app = app;
-            self.settings_source = "current";
         }
-        result.is_ok()
+        saved
     }
     pub fn save(&mut self) -> bool {
-        let result = self.store.save(self.settings);
+        self.store_settings(|store, settings| store.save(settings))
+    }
+
+    fn store_settings<E>(
+        &mut self,
+        save: impl FnOnce(&mut Store<B>, Settings) -> Result<firmware_services::storage::Record, E>,
+    ) -> bool {
+        let saved =
+            self.settings_source != Source::Foreign && save(&mut self.store, self.settings).is_ok();
         self.operations = self.operations.saturating_add(1);
-        self.settings_error = result.is_err();
-        if result.is_ok() {
-            self.settings_source = "current";
+        self.settings_error = !saved;
+        if saved {
+            self.settings_source = Source::Current;
         }
-        result.is_ok()
+        saved
     }
     /// Bring the panel to `picture`: send the bands whose parts changed
     /// since the panel showed them. A panel that shows something else, a

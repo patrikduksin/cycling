@@ -20,7 +20,7 @@ The application runtime remains in VANA. Composition coordinates it with the
 shell; there is no generic application framework. Keep device imports and cycling
 profile interpretation out of this crate.
 
-Settings version 6 has a small application area. The shell bounds its length
+The settings record has a small application area. The shell bounds its length
 and carries its bytes through every save without interpreting them; the
 application owns their schema, versioning and recovery (VANA stores its training
 profile and saved ANT sensors there, see `apps/vana/src/app/preferences.rs`).

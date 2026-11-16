@@ -2,11 +2,11 @@
 //!
 //! A journal scans, initializes, clears and appends in bounded steps and owns
 //! its layout. The recorder owns ride state and decides what to append. Both
-//! media hold the same version-1 slots, so one scanner and one exporter
+//! media hold the same slots, so one scanner and one exporter
 //! decode either. Construct a journal for one service call from its retained
 //! state and the borrowed storage handle.
 
-use crate::ride::log::{Catalog, Entry, SECTORS, SLOTS, Scanner, Sector, Slot};
+use crate::ride::log::{Catalog, Entry, SLOTS, SLOTS_PER_SECTOR, Scanner, Sector, Slot};
 use crate::ride::reclaim::{Clear, Media, Progress as ClearProgress};
 use crate::ride::storage::RideStorage;
 
@@ -20,6 +20,8 @@ pub enum Scan {
     Done(Catalog),
     /// Nothing this journal wrote is there; only explicit initialize may write.
     Uninitialized,
+    /// Another version's data is there; only FORMAT may write.
+    Foreign,
     /// This device has no such medium.
     Unsupported,
     /// The medium should exist but cannot be reached now.
@@ -46,8 +48,12 @@ pub trait Journal {
     fn slots(&self) -> usize;
     /// At most one bounded media read.
     fn scan(&mut self) -> Scan;
-    /// Step `step` (from zero) of an explicit initialize.
-    fn initialize(&mut self, step: usize, seed: u64) -> Progress;
+    /// Step `step` (from zero) of an explicit initialize, which the recorder
+    /// asks only of a blank or corrupt journal. The internal journal is never
+    /// either, so it keeps this refusal.
+    fn initialize(&mut self, _step: usize, _seed: u64) -> Progress {
+        Progress::Failed
+    }
     /// Step `step` (from zero) of an explicit clear after a verified export.
     fn clear(&mut self, step: usize, seed: u64) -> Progress;
     /// Program `entry` at `index` and verify it. `Some(checkpoint)` once it
@@ -82,6 +88,26 @@ impl Default for InternalState {
             sector: Sector::default(),
             clear: Clear::default(),
         }
+    }
+}
+
+/// FORMAT's wipe of internal sector `index`: true once it reads erased. Slot
+/// by slot, so no sector buffer counts against the stack budget (#167).
+pub fn wipe_sector<S: RideStorage>(store: &mut S, index: usize) -> bool {
+    let erased = |store: &mut S| -> Option<bool> {
+        let mut slot = Slot::default();
+        for at in index * SLOTS_PER_SECTOR..(index + 1) * SLOTS_PER_SECTOR {
+            store.ride_read_slot(at, &mut slot).ok()?;
+            if !crate::ride::log::erased(&slot.0) {
+                return Some(false);
+            }
+        }
+        Some(true)
+    };
+    match erased(store) {
+        Some(true) => true,
+        Some(false) => store.ride_erase_sector(index).is_ok() && erased(store) == Some(true),
+        None => false,
     }
 }
 
@@ -124,20 +150,6 @@ impl<S: RideStorage> Journal for Internal<'_, S> {
                 Scan::Done(catalog)
             }
             None => Scan::More,
-        }
-    }
-
-    fn initialize(&mut self, step: usize, _: u64) -> Progress {
-        let ok = self.store.ride_erase_sector(step).is_ok()
-            && self
-                .store
-                .ride_read_sector(step, &mut self.state.sector)
-                .is_ok()
-            && crate::ride::log::erased(&self.state.sector.0);
-        match (ok, step + 1 == SECTORS) {
-            (false, _) => Progress::Failed,
-            (true, true) => Progress::Done,
-            (true, false) => Progress::More,
         }
     }
 

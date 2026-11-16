@@ -25,12 +25,12 @@
 //! course without the file, or with one that does not decode, is scanned
 //! the same way.
 //!
-//! Persisted version 1, little-endian:
+//! Persisted, little-endian:
 //!
 //! | Bytes | Field |
 //! | --- | --- |
 //! | 0..4 | magic `VTRN` |
-//! | 4 | version, 1 |
+//! | 4 | version, 2 |
 //! | 5 | header length, 16 |
 //! | 6 | turn length, 12 |
 //! | 7 | flags: 1, the course has more turns than are stored; other bits zero |
@@ -54,7 +54,7 @@ use libm::sqrtf;
 
 const FILE: &str = "course-turns.dat";
 const MAGIC: &[u8; 4] = b"VTRN";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const HEADER: usize = 16;
 /// The course has more turns than the file holds.
 const FULL: u8 = 1;

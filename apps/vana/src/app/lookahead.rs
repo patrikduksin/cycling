@@ -140,6 +140,9 @@ impl Runtime {
     /// One bounded step of the look-ahead against the TERRAIN volume of the
     /// owned region `media`.
     pub fn look_ahead(&mut self, media: &mut impl ReadWrite, now: u64) -> terrain::Status {
+        if self.format.owns_storage() {
+            return terrain::Status::NoPack;
+        }
         let Some(state) = self.lookahead.as_deref_mut() else {
             return terrain::Status::NoPack;
         };

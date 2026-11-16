@@ -27,7 +27,7 @@ pub fn execute<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
                 s.timezone_minutes,
                 system.effective(),
                 system.dimmed(),
-                system.settings_source,
+                system.settings_source.name(),
                 system.settings_error
             );
         }

@@ -15,12 +15,12 @@
 //! pass frees less than a quarter, so a long course keeps its shape to within
 //! a few times the tolerance its length needs. The last point always stays.
 //!
-//! Persisted version 1, little-endian:
+//! Persisted, little-endian:
 //!
 //! | Bytes | Field |
 //! | --- | --- |
 //! | 0..4 | magic `VCRS` |
-//! | 4 | version, 1 |
+//! | 4 | version, 2 |
 //! | 5 | header length, 34 |
 //! | 6 | point length, 8 |
 //! | 7 | name length, up to 24 |
@@ -60,7 +60,7 @@ const LON_MAX_E7: u32 = 1_800_000_000;
 
 const FILE: &str = "course.dat";
 const MAGIC: &[u8; 4] = b"VCRS";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const HEADER: usize = 34;
 const POINT: usize = 8;
 /// The longest file this version writes.

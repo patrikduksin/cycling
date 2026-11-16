@@ -876,7 +876,7 @@ impl Session {
                 sdk.attach_deleted_rides(Box::leak(deleted));
             }
         }
-        sdk.load_preferences(&shell.settings.app);
+        sdk.load_preferences(&shell.settings.app, shell.settings_source);
         sdk.set_micros_clock(host_micros);
         // The look-ahead and its tile cache, which the device keeps in PSRAM;
         // each boot starts them over, as device memory does.
@@ -1091,6 +1091,10 @@ impl Session {
             self.sdk.recording(),
             self.sdk.shutdown_due(),
         );
+        if self.sdk.owns_storage() {
+            self.trace.file.formatted();
+            self.trace.recorder.borrow_mut().sink_mut().spool = None;
+        }
         self.trace.drain(&self.bulk, card, self.now);
     }
     /// Whether the card admits work after this pass, as the C606's power
@@ -1422,6 +1426,7 @@ impl Session {
                 physical,
             },
         );
+        self.sdk.service_format(&mut self.shell, &mut bulk, now);
         self.sdk.look_ahead(&mut bulk, now);
         self.sdk.serve_phone(
             &mut server,
@@ -1548,6 +1553,9 @@ impl Session {
             }
             self.now += core::mem::take(&mut self.unseen_ms);
             self.tick();
+            if self.sdk.restart_due() {
+                self.restart().expect("the media reopens");
+            }
             if self.off && self.sim().battery.charging {
                 self.start_charging().expect("the media reopens");
             }
@@ -1711,6 +1719,7 @@ impl Session {
             Command::Volume(firmware_console::commands::volumes::Command::Transfer) => {
                 return "UNSUPPORTED";
             }
+            Command::Volume(_) if self.sdk.owns_storage() => return "BUSY",
             Command::Volume(command) => {
                 return firmware_console::commands::volumes::execute(
                     command,

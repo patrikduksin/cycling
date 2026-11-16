@@ -110,9 +110,9 @@ pub fn tell(timeline: &Timeline) -> Story {
             (
                 "end".into(),
                 match timeline.end {
-                    Some(End::Torn) => "torn",
-                    Some(End::Corrupt) => "corrupt",
-                    _ => "complete",
+                    End::Complete => "complete",
+                    End::Torn => "torn",
+                    End::Corrupt => "corrupt",
                 }
                 .into(),
             ),

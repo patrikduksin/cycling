@@ -6062,9 +6062,9 @@ fn a_course_loaded_from_the_phone_is_kept_across_a_restart() {
     assert_eq!(status, 200, "{body}");
     assert!(body.contains(r#""name":"BEND LOOP""#), "{body}");
     let stored = sim.file("course.dat").expect("course.dat on FILES");
-    assert_eq!(&stored[..5], b"VCRS\x01");
+    assert_eq!(&stored[..5], b"VCRS\x02");
     let turns = sim.file("course-turns.dat").expect("its turns beside it");
-    assert_eq!(&turns[..5], b"VTRN\x01");
+    assert_eq!(&turns[..5], b"VTRN\x02");
     assert_eq!(
         &turns[8..12],
         &stored[stored.len() - 4..],

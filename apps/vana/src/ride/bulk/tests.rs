@@ -1,7 +1,7 @@
 use super::*;
 use crate::ride::control::Action;
 use crate::ride::log::{SAMPLES_PER_BATCH, Sample, Status};
-use crate::ride::recorder::Recorder;
+use crate::ride::recorder::{Recorder, Refused};
 use device_api::bulk::OwnedInfo;
 use std::collections::BTreeMap;
 use std::vec::Vec;
@@ -215,7 +215,7 @@ impl Device {
         let mut device = Self::new(sectors);
         device.reboot();
         assert_eq!(device.recorder.status(), Status::NeedsInit);
-        assert!(device.recorder.initialize(1));
+        assert_eq!(device.recorder.initialize(1), Ok(()));
         device.service();
         assert!(device.recorder.take_result().unwrap().ok);
         assert_eq!(device.recorder.status(), Status::Ready);
@@ -337,7 +337,7 @@ fn unformatted_missing_or_unsupported_media_is_never_written() {
         device.media.missing = Some(error);
         device.reboot();
         assert_eq!(device.recorder.status(), status);
-        assert!(!device.recorder.initialize(1));
+        assert_eq!(device.recorder.initialize(1), Err(Refused::State));
     }
     assert_eq!(device.media.writes, 0);
 }
@@ -345,22 +345,22 @@ fn unformatted_missing_or_unsupported_media_is_never_written() {
 #[test]
 fn a_volume_table_this_firmware_cannot_use_is_never_written() {
     let mut device = Device::initialized(CAPACITY);
-    // A newer table version, resealed.
     for copy in 0..2 {
         let mut table = device.media.get(copy);
-        table[16] = 2;
+        table[firmware_services::volume::VERSION_AT] = 3;
         let crc = firmware_services::checksum::crc32(&table[..508]);
         table[508..].copy_from_slice(&crc.to_le_bytes());
         device.media.written.insert(copy, table);
     }
     device.reboot();
-    assert_eq!(device.recorder.status(), Status::Corrupt);
+    assert_eq!(device.recorder.status(), Status::Foreign);
     assert_eq!(device.state.region(), Region::Foreign);
     let writes = device.media.writes;
-    assert!(device.recorder.initialize(6));
-    device.service();
-    assert!(!device.recorder.take_result().unwrap().ok);
+    assert_eq!(device.recorder.initialize(6), Err(Refused::Foreign));
+    assert_eq!(device.recorder.clear(0, 6), Err(Refused::Foreign));
+    device.run_until(10_000, 10);
     assert_eq!(device.media.writes, writes);
+    assert_eq!(device.recorder.status(), Status::Foreign);
 }
 
 #[test]
@@ -675,7 +675,7 @@ fn lost_checkpoints_are_kept_until_an_explicit_initialize() {
     assert_eq!(device.media.writes, writes);
     // Records stay on media for diagnosis; a new epoch writes only metadata.
     let records: Vec<_> = (V + 16..V + 30).map(|i| device.media.get(i)).collect();
-    assert!(device.recorder.initialize(2));
+    assert_eq!(device.recorder.initialize(2), Ok(()));
     device.service();
     assert!(device.recorder.take_result().unwrap().ok);
     assert_eq!(device.media.writes, writes + 2 + sector_log::RING as u32);
@@ -718,10 +718,10 @@ fn an_unproven_end_is_corrupt_and_exportable_but_never_written_or_cleared() {
     // Nothing starts, appends or clears; only an explicit initialize may.
     let writes = device.media.writes;
     assert!(!device.recorder.request(Action::Start, 0, 1));
-    assert!(!device.recorder.clear(upper, 3));
+    assert_eq!(device.recorder.clear(upper, 3), Err(Refused::State));
     device.run_until(10_000, 10);
     assert_eq!(device.media.writes, writes);
-    assert!(device.recorder.initialize(4));
+    assert_eq!(device.recorder.initialize(4), Ok(()));
     device.service();
     assert!(device.recorder.take_result().unwrap().ok);
     device.reboot();
@@ -740,8 +740,8 @@ fn clear_starts_an_empty_epoch_only_for_the_exported_bound() {
     device.service();
     let upper = device.recorder.next_slot();
     let old = device.state.log().unwrap().store_id();
-    assert!(!device.recorder.clear(upper - 1, 3));
-    assert!(device.recorder.clear(upper, 3));
+    assert_eq!(device.recorder.clear(upper - 1, 3), Err(Refused::State));
+    assert_eq!(device.recorder.clear(upper, 3), Ok(()));
     device.service();
     assert!(device.recorder.take_result().unwrap().ok);
     assert_eq!(device.recorder.next_slot(), 0);
@@ -826,7 +826,7 @@ fn a_new_store_is_named_by_the_pass_and_entropy_not_the_latency_clock() {
         let mut device = Device::new(CAPACITY);
         device.reboot();
         device.now = 5_000;
-        assert!(device.recorder.initialize(1));
+        assert_eq!(device.recorder.initialize(1), Ok(()));
         device.recorder.service(
             &mut Probe {
                 bulk: Bulk::new(&mut device.state, &mut device.media),

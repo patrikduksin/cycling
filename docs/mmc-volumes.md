@@ -32,6 +32,75 @@ If both table copies are damaged but `RIDES` still holds a log, the layout is
 `lost` (the rides are corrupt, not blank). `VOLUME INIT` then rewrites the
 default table, which restores access to the log.
 
+## FORMAT
+
+Every persisted format has one version byte: the settings journal and the
+records in it, the ride slots, the volume table, the sector log, FILES, STORE,
+the pack, and each table VANA writes into FILES. Data with another version byte
+is `foreign`. No reader accepts it and no format, create or initialize writes
+over it.
+
+A boot that finds a foreign store asks `FORMAT STORAGE?` once, from the brand,
+Home or setup, never over a ride:
+
+- ACT (trash cue) wipes everything VANA stores: the settings (shell settings,
+  preferences, the Wi-Fi password), the internal ride journal, and the `RIDES`,
+  `FILES` and `STORE` volumes. The screen says `CHECKING STORAGE`, and the
+  device restarts into first-run setup. Only a press that begins after the
+  question is drawn counts, so a button held through boot does nothing.
+- BACK keeps everything. Stores of the current version keep working, the
+  ready page says `STORAGE NOT FORMATTED` / `OFF AND ON TO FORMAT` where a
+  ride cannot record, settings say `NOT SAVED: DATA KEPT`, BESTS says
+  `BESTS NOT FORMATTED` and offers no CLEAR BESTS, `RIDE INIT` and
+  `RIDE CLEAR CONFIRM` answer `FOREIGN` over a foreign ride log, and the next
+  boot asks again.
+
+`FORMAT CONFIRM` on the terminal, or `cycling format --confirm`, runs the same
+wipe whether or not anything is foreign. `FORMAT`, or `cycling format`, reports
+each store as `current`, `blank`, `foreign` or `unusable`, in the order the
+wipe takes them: `table`, `rides`, `files`, `records` (the facts, deleted
+rides, bests and workout outcomes VANA writes into FILES), `traces` (STORE),
+`internal` and `settings`. Each record's owner (`ride/facts.rs`,
+`ride/deleted.rs`, `ride/bests.rs`, `workout/history.rs`) decides what its file
+holds, and a file that names the owner but carries another version byte is
+foreign.
+
+What the wipe leaves alone:
+
+- The terrain pack, unless the volume table itself was foreign (the default
+  table is written and the pack goes with it) or the pack's own header is
+  foreign. A foreign pack alone raises no offer; the map draws without roads.
+- Files the host wrote into FILES are erased with it, but a foreign course,
+  turns or workout file alone raises no offer: load it again.
+- The crash record, the stock backup and the firmware slots.
+
+Damage is not foreign. A lost table, a corrupt log, a damaged record or a
+failing card reads `unusable` or `current`, shows `STORAGE PROBLEM` where a
+ride cannot record and raises no offer; `FORMAT CONFIRM` still rewrites it.
+The internal ride journal is the exception: it cannot tell a slot of another
+version from its own torn appends, so data it cannot read is `foreign`, raises
+the offer, and only FORMAT erases it.
+
+From its first write until the restart, the wipe owns storage: no ride starts
+(`STORAGE NOT READY`), nothing saves settings, the trace file ends, and
+storage commands answer `BUSY`.
+
+A power cut during the wipe leads back to the offer. The wipe first saves a
+settings record no version reads and erases the settings last, so every boot
+in between finds foreign settings; running the wipe again over a half-formatted
+device ends in the same state. A replaced table is written after the terrain
+pack is erased, so a cut between still finds the old table. A wipe whose write
+fails stops and shows the ready page with `STORAGE NOT FORMATTED`. The next
+boot offers it again when the first write, the settings mark, was made; when
+that write is the one that failed, nothing was wiped, and the next boot finds
+the stores as they were.
+
+The code is `apps/vana/src/app/storage.rs` (what each store holds) and
+`apps/vana/src/app/format.rs` (the offer and the wipe). The only functions that
+write over a foreign store are `erase` in the sector log, files, store and
+pack, `volume::replace`, `ride::bulk::wipe`, `ride::journal::wipe_sector` and
+the settings journal's `erase`.
+
 ## Store
 
 `STORE` holds growable files that are written by appending. A name is a path
@@ -134,6 +203,7 @@ cycling terrain-write pack.bin --tag CHILE-V1 --verify   # resumes a matching wr
 cycling terrain-verify pack.bin
 cycling files list | put NAME PATH | get NAME PATH | delete NAME | format --confirm
 cycling store list [traces/] | get NAME PATH | delete NAME | format --confirm
+cycling format [--confirm]                    # every store's health; --confirm wipes them all
 cycling trace pull [FILE]                     # a ride trace and the media it started on, read only
 ```
 

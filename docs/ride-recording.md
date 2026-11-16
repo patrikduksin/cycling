@@ -107,7 +107,7 @@ cycling ride-clear .local/exports/<export-id>
 ## Bulk MMC storage
 
 When the owned MMC partition from #108 is present and initialized, rides record
-there instead of internal flash. Each version-1 slot sits in its own 512-byte
+there instead of internal flash. Each slot sits in its own 512-byte
 sector container, so the export format is the same as for internal flash. The
 mechanism is [`sector_log`](../packages/services/src/sector_log.rs) and the
 VANA format is [ride/bulk.rs](../apps/vana/src/ride/bulk.rs).
@@ -130,7 +130,12 @@ cycling ride-clear --medium bulk .local/exports/<export-id>
 - `RIDE`/`EXPORT` take an optional `BULK` or `INTERNAL` word. Ride control,
   `STATUS` and `HISTORY` default to the medium of the ride on screen, and START
   to the medium the next ride will use; `INIT`, `CLEAR` and `EXPORT` default to
-  internal. START is refused while a ride is open on either medium. Bulk status adds `capacity`, `store`,
+  internal. START is refused while a ride is open on either medium,
+  and answers `BUSY` while the FORMAT question is up. `STATUS` reads
+  `state=foreign` over a log of another version, where `INIT` and `CLEAR`
+  answer `FOREIGN`; only FORMAT erases one. On a foreign card
+  `RIDE BULK CLEAR CONFIRM` answers `STATE`, because the export check for a
+  recovered store runs first. Bulk status adds `capacity`, `store`,
   `generation`, `boot_reads` and `layout` (`volumes`, `blank`, `lost`
   or `foreign`).
 - The 1 GiB RIDES volume holds 2,097,136 records, about 2,330 h at 1 Hz, so the
@@ -408,12 +413,12 @@ Training profile:
   for the rides list's TSS, at the FTP the ride's facts kept (see Ride facts),
   else at the profile's FTP now. A ride without power has no effort and adds
   nothing.
-- `PROFILE`, `PROFILE FTP watts`, `PROFILE LTHR bpm` and `PROFILE OVERWRITE`
+- `PROFILE`, `PROFILE FTP watts` and `PROFILE LTHR bpm`
   read and set it from the terminal. The profile and the saved ANT sensors are
   one versioned record in the application area of the settings record
   (`app::preferences`). A stored record this firmware did not write keeps the
-  defaults in force, with no saved sensors, and is never replaced until
-  `PROFILE OVERWRITE`.
+  defaults in force, with no saved sensors, and is never replaced: the
+  device offers FORMAT (see [volumes](mmc-volumes.md#format)).
 
 Radar uses the left edge of the workout screen:
 
@@ -472,15 +477,16 @@ back with the same synchronous write as the workout outcome; a ride that
 cannot be stored claims no best. VANA never formats the store: without a
 card, a FILES volume or a store the host formatted, bests are not kept (the
 host's `files format` erases them). A file that does not decode is never
-merged into; only CLEAR BESTS replaces it. A write the store refuses leaves
-the merged bests in memory for the next write, and a read that failed only
-this time is retried with the ride's outcome waiting (one outcome is kept).
-A file of another version or length reads as one that does not decode.
+merged into; only CLEAR BESTS replaces it. A file of another version is
+foreign: never merged into nor replaced, CLEAR BESTS included, until FORMAT
+erases it. A write the store refuses leaves the merged bests in memory for the
+next write, and a read that failed only this time is retried with the ride's
+outcome waiting (one outcome is kept).
 
 | Bytes | Field |
 | --- | --- |
 | 0..4 | magic `VBST` |
-| 4 | version, 1 |
+| 4 | version, 2 |
 | 5 | body length before the CRC, 38 |
 | 6..38 | four power marks (watts and day, u16 each), distance in metres (u32) and day (u16), time in seconds (u32) and day (u16), ascent in metres (u16) and day (u16), little-endian |
 | 38..42 | CRC32 of bytes 0..38 |
@@ -512,7 +518,7 @@ FILES volume or a store the host formatted, no course is kept.
 | Bytes | Field |
 | --- | --- |
 | 0..4 | magic `VCRS` |
-| 4 | version, 1 |
+| 4 | version, 2 |
 | 5 | header length, 34 |
 | 6 | point length, 8 |
 | 7 | name length, up to 24 |
@@ -552,7 +558,7 @@ after the end of the last stored one.
 | Bytes | Field |
 | --- | --- |
 | 0..4 | magic `VTRN` |
-| 4 | version, 1 |
+| 4 | version, 2 |
 | 5 | header length, 16 |
 | 6 | turn length, 12 |
 | 7 | flags: 1, the course has more turns than are stored; other bits zero |
@@ -580,7 +586,7 @@ page.
 Load a workout from JSON with `cycling workout-load <file> [--name stem]`;
 `--dry-run` prints the file it would put. Examples are in
 `tools/devtools/workouts/` and the format is described in
-`cycling_devtools.workouts.load`. The host writes codec version 1
+`cycling_devtools.workouts.load`. The host writes codec version 2
 (`apps/vana/src/workout/codec.rs`) to the MMC's FILES volume as
 `workouts/<stem>.vw` through the volume transfer session. That session checks
 the CRC on commit and reads the file back. `cycling files put
@@ -672,12 +678,12 @@ Each slot ends in the CRC32 of the bytes before it:
 | Header bytes | Field |
 | --- | --- |
 | 0..4 | magic `VFTB` |
-| 4 | table version, 1 |
+| 4 | table version, 2 |
 | 6..8 | stride, 32 |
 
 | Slot bytes | Field |
 | --- | --- |
-| 0 | record version, 1 |
+| 0 | record version, 2 |
 | 2 | journal: `i` internal, `b` bulk |
 | 3 | flags: 1 profile, 2 HR recovery, 4 climbs |
 | 4..8 | ride id |
@@ -739,12 +745,12 @@ in the CRC32 of the bytes before it:
 | Header bytes | Field |
 | --- | --- |
 | 0..4 | magic `VDEL` |
-| 4 | table version, 1 |
+| 4 | table version, 2 |
 | 6..8 | stride, 32 |
 
 | Slot bytes | Field |
 | --- | --- |
-| 0 | record version, 1 |
+| 0 | record version, 2 |
 | 1 | why: 1 discarded at the end, 2 deleted on VANA |
 | 2 | journal: `i` internal, `b` bulk |
 | 4..8 | ride id |

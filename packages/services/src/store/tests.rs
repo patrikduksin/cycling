@@ -602,7 +602,8 @@ fn foreign_and_damaged_metadata_are_reported_and_never_formatted_over() {
         changed
     };
     for (offset, value) in [
-        (16, 2),
+        (16, 1),
+        (17, 1),
         (18, 9),
         (20, 3),
         (22, 1),
@@ -617,6 +618,10 @@ fn foreign_and_damaged_metadata_are_reported_and_never_formatted_over() {
         assert_eq!(format(&mut media, 2, &mut s).err(), Some(Error::Foreign));
         assert_eq!(media.writes, writes);
     }
+    erase(&mut media, &mut s).unwrap();
+    assert_eq!(mount(&mut media, &mut s).err(), Some(Error::Uninitialized));
+    media.set(base(0), good);
+    media.set(base(1), [0; SECTOR_SIZE]);
     media.set(base(store.copy), good);
     let mut store = mount(&mut media, &mut s).unwrap();
     store.create(&mut media, &name("a"), None, &mut s).unwrap();

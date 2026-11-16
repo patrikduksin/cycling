@@ -411,6 +411,11 @@ TASKS = [
         f'{DEV}device.volumes files',
     ),
     task(
+        'format',
+        "Report what each of VANA's stores holds; --confirm erases rides, settings and files and restarts the device",
+        f'{DEV}device.format',
+    ),
+    task(
         'store',
         'List, get or delete files in the MMC STORE, such as ride traces, or erase it (list [dir/]|get name path|delete name|format --confirm)',
         f'{DEV}device.volumes store',

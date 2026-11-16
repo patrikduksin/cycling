@@ -4,6 +4,7 @@ pub mod canvas;
 pub mod chrome;
 pub mod cue;
 pub mod form;
+pub mod format;
 pub mod history;
 pub mod home;
 pub mod icons;

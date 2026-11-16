@@ -8,13 +8,13 @@
 //! | Header bytes | Field |
 //! | --- | --- |
 //! | 0..4 | magic `VFTB` |
-//! | 4 | table version, 1 |
+//! | 4 | table version, 2 |
 //! | 6..8 | stride, 32 |
 //! | 28..32 | CRC32 of bytes 0..28 |
 //!
 //! | Slot bytes | Field |
 //! | --- | --- |
-//! | 0 | record version, 1 |
+//! | 0 | record version, 2 |
 //! | 2 | journal: `i` internal, `b` bulk |
 //! | 3 | flags: 1 profile, 2 HR recovery, 4 climbs |
 //! | 4..8 | ride id in that journal |
@@ -42,15 +42,16 @@
 //! whose start time is unknown has no facts. A profile out of range reads as
 //! none and leaves the other fields.
 use super::zones::TrainingProfile;
+use super::{Contents, another_version};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::{Crc32, crc32};
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
 use firmware_services::{files, volume};
 
 pub const TABLE: &str = "rides/facts.tbl";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 const TABLE_MAGIC: &[u8; 4] = b"VFTB";
-const TABLE_VERSION: u8 = 1;
+const TABLE_VERSION: u8 = 2;
 pub const SLOT: usize = 32;
 const FIELDS: usize = 2;
 /// Rides the table keeps: FORM's 120 days at eight rides a day, in 32 KB.
@@ -492,6 +493,46 @@ pub fn save(media: &mut impl ReadWrite, record: &Record) -> Result<(), Error> {
 /// Drop every record of `journal`, as its ride ids start over.
 pub fn forget(media: &mut impl ReadWrite, journal: u8) -> Result<(), Error> {
     rewrite(media, Change::Forget(journal))
+}
+
+/// What the table holds. A header or a slot of another version is foreign,
+/// and the table is then never rewritten.
+#[inline(never)]
+pub fn contents(media: &mut impl ReadWrite) -> Result<Contents, Error> {
+    let mut sector = [0; SECTOR_SIZE];
+    let mut bytes = [0; SECTOR_SIZE];
+    let mut store = volume::open(media, &volume::FILES, &mut sector)?;
+    let dir = files::mount(&mut store, &mut sector)?;
+    let Some(entry) = dir.find(&mut store, &table_name(), &mut sector)? else {
+        return Ok(Contents::Missing);
+    };
+    let read = dir.read(&mut store, &entry, 0, &mut bytes, &mut sector)?;
+    if another_version(&bytes[..read], TABLE_MAGIC, TABLE_VERSION) {
+        return Ok(Contents::Foreign);
+    }
+    let sound = match header_state(&bytes[..read], entry.length as usize) {
+        Header::Foreign => return Ok(Contents::Damaged),
+        Header::Sound => true,
+        Header::Damaged => false,
+    };
+    let mut foreign = false;
+    Table { entry, sound }.each(
+        &mut store,
+        &dir,
+        0..usize::MAX,
+        &mut sector,
+        &mut bytes,
+        |_, slot| {
+            if let Slot::Ride(slot) = slot {
+                foreign |= foreign_slot(slot);
+            }
+        },
+    )?;
+    Ok(match (foreign, sound) {
+        (true, _) => Contents::Foreign,
+        (false, true) => Contents::Current,
+        (false, false) => Contents::Damaged,
+    })
 }
 
 /// One piece of the table that [`read`] visited.

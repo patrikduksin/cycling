@@ -777,7 +777,7 @@ function encodeWorkout(workout) {
   }
   if (steps.length < 1 || steps.length > WORKOUT.maxSteps) throw new Error(`A workout has 1 to ${WORKOUT.maxSteps} steps.`);
   if (blocks.length > WORKOUT.maxBlocks) throw new Error(`A workout has at most ${WORKOUT.maxBlocks} repeat groups.`);
-  const body = [0x56, 0x57, 1, test === null ? 0 : WORKOUT.tests[test], name.length, ...name, steps.length, blocks.length];
+  const body = [0x56, 0x57, 2, test === null ? 0 : WORKOUT.tests[test], name.length, ...name, steps.length, blocks.length];
   const le = (value, size) => Array.from({ length: size }, (_, i) => Math.floor(value / 2 ** (8 * i)) & 0xFF);
   for (const step of steps) {
     if (!step || typeof step !== 'object' || !WORKOUT.intensities.includes(step.intensity)) throw new Error(`intensity must be one of ${WORKOUT.intensities.join(', ')}`);

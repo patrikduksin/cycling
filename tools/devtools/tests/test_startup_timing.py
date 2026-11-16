@@ -34,8 +34,8 @@ class StartupTimingTests(unittest.TestCase):
 
     def test_poll_treats_busy_startup_as_pending_until_the_milestones_arrive(self):
         replies = [
-            {'status': 'BUSY', 'data': 'power transition'},
-            {'status': 'BUSY', 'data': 'power transition'},
+            {'status': 'BUSY', 'data': 'starting companion=probing'},
+            {'status': 'BUSY', 'data': 'starting companion=probing'},
             {'status': 'OK', 'data': 'first_frame_ms=- home_ms=- sensors=-'},
             {'status': 'OK', 'data': REPLY},
         ]

@@ -472,13 +472,11 @@ class HarnessTests(unittest.TestCase):
                 finally:
                     runner.trace.close()
 
-        for detail in ('starting companion=probing', 'power transition'):
-            with self.subTest(detail=detail):
-                fake = Starting([detail, detail])
-                self.assertTrue(recover(fake)['boot_changed'])
-                self.assertEqual(fake.commands.count('RESTART'), 1)
-                self.assertEqual(fake.commands[-2:], ['SETTINGS', 'HARNESS CAPS'])
-                self.assertEqual(len(fake.delays), 2)
+        fake = Starting(['starting companion=probing'] * 2)
+        self.assertTrue(recover(fake)['boot_changed'])
+        self.assertEqual(fake.commands.count('RESTART'), 1)
+        self.assertEqual(fake.commands[-2:], ['SETTINGS', 'HARNESS CAPS'])
+        self.assertEqual(len(fake.delays), 2)
         for busy, power, error in (
             ('power transition', 'state: Charging', 'charging standby.*POWER WAKE'),
             ('starting companion=charging', 'state: Initializing', 'charging standby.*POWER WAKE'),

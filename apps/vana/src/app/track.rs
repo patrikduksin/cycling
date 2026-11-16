@@ -1,9 +1,9 @@
 use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Medium, Outing, Ride};
-use crate::ride::course::follow::{Event, Follower};
+use crate::ride::course::follow::Follower;
+use crate::ride::course::nav::Event;
 use crate::ride::course::stored::{self, Finder, Finding};
-use crate::ride::course::turns::Warning;
 use crate::ride::course::{self, Course};
 use crate::ride::homing::Homing;
 use crate::ride::homing::rebuild::Rebuild;
@@ -18,10 +18,7 @@ pub use crate::ride::homing::Crumb;
 
 /// Points the breadcrumb keeps: 48 KiB, thinned to fit a ride of any length.
 pub const TRACK_CRUMBS: usize = 4096;
-/// The nudges stay a little longer than a confirmation.
-pub(super) const NUDGE_MS: u64 = 4_000;
-/// A turn warning waits this long after FOLLOWING COURSE, so it is read.
-const TURN_HOLD_MS: u64 = 1_000;
+const NUDGE_MS: u64 = 2 * super::presentation::TOAST_MS;
 /// Slots the rebuild reads per tick, as the history replay does.
 const REBUILD_INTERNAL: usize = 32;
 const REBUILD_BULK: usize = 8;
@@ -74,8 +71,6 @@ pub struct RideTrack {
     finder: &'static mut Finder,
     pub(super) kept: super::course::Kept,
     resume: Resume,
-    following_shown_at: Option<u64>,
-    held_turn: Option<Warning>,
 }
 
 impl RideTrack {
@@ -98,8 +93,6 @@ impl RideTrack {
             finder,
             kept: super::course::Kept::default(),
             resume: Resume::None,
-            following_shown_at: None,
-            held_turn: None,
         }
     }
 
@@ -151,18 +144,6 @@ impl RideTrack {
         if self.follower.unplaced() && self.homing.frame().is_some() {
             self.course_changed(media);
         }
-    }
-
-    fn turn_after_following_shown(&mut self, now: u64) -> Option<Warning> {
-        let turn = self.follower.take_turn().or(self.held_turn.take());
-        let held = self
-            .following_shown_at
-            .is_some_and(|at| now.saturating_sub(at) < TURN_HOLD_MS);
-        if held {
-            self.held_turn = turn;
-            return None;
-        }
-        turn
     }
 
     /// Store the turns `found` while the course uploaded beside it, or,
@@ -233,7 +214,6 @@ impl Runtime {
         state.outing = outing;
         if !riding {
             state.resume = Resume::waiting(&self.ride);
-            state.held_turn = None;
             return;
         }
         if let Resume::Reading {
@@ -276,34 +256,31 @@ impl Runtime {
             state.homing.end_replay();
             state.resume = Resume::None;
         }
-        let fix = state.homing.observe(self.readings.live.location_e7, now);
-        let event = state.follower.observe(fix, now);
+        let fix = state.homing.observe(self.readings.reported, now);
+        let event = state
+            .follower
+            .observe(fix, now, self.readings.live.speed_mm_s);
         state.place_course(bulk);
         if state.homing.take_pass() {
             self.ride.passed_start(now);
             self.display.redraw();
         }
-        let joined = event == Some(Event::Following);
-        if joined {
-            state.following_shown_at = Some(now);
-        }
-        let turn = state.turn_after_following_shown(now);
-        if joined {
+        let Some(event) = event else {
+            return;
+        };
+        if event == Event::Following {
             let toast = Toast::new("FOLLOWING COURSE", Tone::Good);
             self.navigation.show(toast, NUDGE_MS, now);
         }
-        if let Some(event) = event {
-            let cue = match event {
-                Event::Following | Event::OnCourse => Cue::OnCourse,
-                Event::OffCourse => Cue::OffCourse,
-                Event::Arrived => Cue::Arrived,
-            };
-            self.cue(cue, now);
-            self.display.redraw();
-        }
-        if let Some(warning) = turn {
-            self.warn_turn(warning, now);
-        }
+        let cue = match event {
+            Event::Following | Event::OnCourse => Cue::OnCourse,
+            Event::TurnSoon => Cue::TurnSoon,
+            Event::TurnNow => Cue::TurnNow,
+            Event::OffCourse | Event::StillOff => Cue::OffCourse,
+            Event::Arrived => Cue::Start,
+        };
+        self.cue(cue, now);
+        self.display.redraw();
     }
 
     pub(super) fn stop_following_from_map(&mut self) {

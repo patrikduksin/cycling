@@ -43,6 +43,7 @@ use libm::{cosf, sqrtf};
 
 pub mod follow;
 pub mod gpx;
+pub mod nav;
 pub mod stored;
 pub mod turns;
 

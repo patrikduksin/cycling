@@ -1,6 +1,5 @@
 use super::*;
 use crate::ride::course::tests::{at as point_at, road};
-use crate::ride::course::turns::Warner;
 use crate::ride::course::turns::tests::{
     arc, bends, block, build, curved_ring, extended, hairpin, join, path, ring,
 };
@@ -380,11 +379,11 @@ fn a_course_of_more_turns_than_the_list_holds_keeps_the_first() {
     let mut list = vec![Turn::default(); TURNS];
     let stored = decoded(&bytes, &mut list).unwrap();
     assert_eq!((stored.count, stored.full), (TURNS, true));
-    let mut warner = Warner::default();
-    let past = list[TURNS - 1].end_mm + 50_000;
-    let said: Vec<_> = (0..2_000)
-        .filter_map(|k| warner.step(&list, past + k * 7_000))
-        .collect();
+    let past = list[TURNS - 1].end_mm as f32 / 1000.0 + 50.0;
+    let said = crate::ride::course::turns::tests::ride_with(
+        &list,
+        (0..2_000).map(|k| past + k as f32 * 7.0),
+    );
     assert!(said.is_empty(), "{said:?}");
 }
 

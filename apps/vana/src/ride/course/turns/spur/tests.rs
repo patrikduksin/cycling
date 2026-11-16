@@ -1,7 +1,10 @@
 use super::super::tests::{Said, hairpin, join, line_of, path, ride_with, ring, turns_of};
-use super::super::{Kind, Side, distance};
-use crate::ride::course::stored::tests::uploaded;
+use super::super::{Kind, SCAN_STEPS, Scan, Side, TURNS, Turn, distance};
+use crate::ride::course::Course;
+use crate::ride::course::stored::tests::{found, uploaded};
+use std::string::{String, ToString};
 use std::vec::Vec;
+use std::{format, vec};
 
 const LEFT: Kind = Kind::Turn(Side::Left);
 const RIGHT: Kind = Kind::Turn(Side::Right);
@@ -196,35 +199,257 @@ fn a_dogleg_just_past_a_spur_holds_back_the_next_sign_as_it_would_without_it() {
     ];
     let without: Vec<_> = way_in.iter().chain(&on).copied().collect();
     let with: Vec<_> = way_in.iter().chain(&spur).chain(&on).copied().collect();
+    let base_m = length(&way_in);
     let spur_m = length(&with) - length(&without);
-    let shifted = heard_kept(&without, &without).map(|said| {
-        said.into_iter()
-            .map(|(m, said)| (m as f32 + spur_m, said))
-            .collect::<Vec<_>>()
-    });
-    let heard = heard_kept(&with, &with);
-    for (heard, shifted) in heard.iter().zip(&shifted) {
-        assert_eq!(heard.len(), shifted.len(), "{heard:?} for {shifted:?}");
-        for (&(m, said), &(want_m, want)) in heard.iter().zip(shifted) {
-            assert_eq!(said, want, "{heard:?} for {shifted:?}");
-            assert!(
-                (m as f32 - want_m).abs() <= 5.0,
-                "{heard:?} for {shifted:?}"
-            );
-        }
-    }
+    assert!(as_without(
+        &turns_of(&with),
+        &turns_of(&without),
+        base_m,
+        spur_m
+    ));
+    assert!(as_without(
+        &found(&with).1,
+        &found(&without).1,
+        base_m,
+        spur_m
+    ));
+    let said = |line: &[(f32, f32)]| {
+        heard_kept(line, line)
+            .map(|heard| heard.into_iter().map(|(_, said)| said).collect::<Vec<_>>())
+    };
+    assert_eq!(said(&with), said(&without));
 }
 
 #[test]
-fn a_jog_25_m_past_a_spur_keeps_both_its_turns() {
-    let corners = [
-        (0.0, 0.0),
-        (0.0, 300.0),
-        (60.0, 300.0),
-        (0.0, 300.0),
-        (0.0, 325.0),
-        (15.0, 325.0),
-        (15.0, 700.0),
+fn a_jog_just_past_a_spur_keeps_both_its_turns() {
+    for jog in [10.0, 15.0, 25.0] {
+        let corners = [
+            (0.0, 0.0),
+            (0.0, 300.0),
+            (60.0, 300.0),
+            (0.0, 300.0),
+            (0.0, 300.0 + jog),
+            (15.0, 300.0 + jog),
+            (15.0, 700.0),
+        ];
+        assert_eq!(told(&path(&corners, 5.0)), [[RIGHT, LEFT]; 2], "{jog} m");
+    }
+}
+
+/// Metres along `line` to its point nearest `p`, and how far off it is.
+fn nearest(line: &[(f32, f32)], p: (f32, f32)) -> (f32, f32) {
+    let (mut off, mut off_m, mut from_m) = (f32::INFINITY, 0.0, 0.0);
+    for pair in line.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let along = distance(a, b);
+        let t = match along > 0.0 {
+            true => {
+                let dot = (p.0 - a.0) * (b.0 - a.0) + (p.1 - a.1) * (b.1 - a.1);
+                (dot / (along * along)).clamp(0.0, 1.0)
+            }
+            false => 0.0,
+        };
+        let foot = (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
+        if distance(foot, p) < off {
+            (off, off_m) = (distance(foot, p), from_m + t * along);
+        }
+        from_m += along;
+    }
+    (off_m, off)
+}
+
+/// A course with a spur `depth` deep at its base, and the same course
+/// without it.
+struct Shape {
+    name: String,
+    way_in: Vec<(f32, f32)>,
+    depth: f32,
+    tip: (f32, f32),
+    on: Vec<(f32, f32)>,
+}
+
+impl Shape {
+    fn base(&self) -> (f32, f32) {
+        self.way_in[self.way_in.len() - 1]
+    }
+
+    fn corners(&self, spur: bool) -> Vec<(f32, f32)> {
+        let spur = match spur {
+            true => vec![self.tip, self.base()],
+            false => vec![],
+        };
+        self.way_in
+            .iter()
+            .chain(&spur)
+            .chain(&self.on)
+            .copied()
+            .collect()
+    }
+
+    /// The spur leaves the course or comes back onto it other than at its
+    /// base: what is drawn is not a dead end.
+    fn tangled(&self) -> bool {
+        let base = self.base();
+        let way = |p: (f32, f32)| {
+            let (east, north) = (p.0 - base.0, p.1 - base.1);
+            east.atan2(north)
+        };
+        let came = self.way_in[self.way_in.len() - 2];
+        let ways = [way(self.tip), way(came), way(self.on[0])];
+        let same = |a: f32, b: f32| libm::cosf(a - b) > 0.99;
+        let overlaps = same(ways[0], ways[1]) || same(ways[0], ways[2]) || same(ways[1], ways[2]);
+        let course: Vec<_> = self.way_in.iter().chain(&self.on).copied().collect();
+        let away: Vec<_> = course
+            .windows(2)
+            .filter(|pair| pair[0] != base && pair[1] != base)
+            .map(|pair| pair.to_vec())
+            .collect();
+        let near = (8..=self.depth as usize).any(|m| {
+            let t = m as f32 / self.depth;
+            let p = (
+                base.0 + t * (self.tip.0 - base.0),
+                base.1 + t * (self.tip.1 - base.1),
+            );
+            away.iter().any(|segment| nearest(segment, p).1 < 6.0)
+        });
+        overlaps || near
+    }
+}
+
+const DEPTHS: [f32; 8] = [10.0, 12.0, 20.0, 35.0, 60.0, 100.0, 145.0, 150.0];
+/// Spurs this deep are marked whatever their shape, as shallower and
+/// deeper ones, at the edges of what is a spur, may not be.
+const MARKED_M: core::ops::RangeInclusive<f32> = 20.0..=145.0;
+
+fn shapes() -> Vec<Shape> {
+    let base = (0.0, 300.0);
+    let ways_in = [
+        ("straight in", vec![(0.0, 0.0), base]),
+        (
+            "a corner 25 m before",
+            vec![(-300.0, 275.0), (0.0, 275.0), base],
+        ),
+        ("a corner at the base", vec![(-300.0, 300.0), base]),
     ];
-    assert_eq!(told(&path(&corners, 5.0)), [[RIGHT, LEFT]; 2]);
+    let ways = [
+        ("right", 90.0f32),
+        ("left", -90.0),
+        ("a V back right", 150.0),
+        ("a V back left", -150.0),
+        ("a V ahead", 30.0),
+    ];
+    let mut ons: Vec<(String, Vec<(f32, f32)>)> = vec![
+        ("straight on".to_string(), vec![(0.0, 700.0)]),
+        ("left at the base".to_string(), vec![(-400.0, 300.0)]),
+    ];
+    for jog in [10.0, 15.0, 25.0, 40.0, 60.0] {
+        let at = base.1 + jog;
+        let dogleg = vec![(0.0, at), (15.0, at), (15.0, 700.0)];
+        ons.push((format!("a {jog} m jog right"), dogleg));
+        ons.push((format!("left {jog} m on"), vec![(0.0, at), (-400.0, at)]));
+    }
+    let mut shapes = Vec::new();
+    for (in_name, way_in) in &ways_in {
+        for (way_name, degrees) in ways {
+            for depth in DEPTHS {
+                for (on_name, on) in &ons {
+                    let a = degrees.to_radians();
+                    let shape = Shape {
+                        name: format!("{in_name}, {depth} m {way_name}, {on_name}"),
+                        way_in: way_in.clone(),
+                        depth,
+                        tip: (
+                            base.0 + depth * libm::sinf(a),
+                            base.1 + depth * libm::cosf(a),
+                        ),
+                        on: on.clone(),
+                    };
+                    if !shape.tangled() {
+                        shapes.push(shape);
+                    }
+                }
+            }
+        }
+    }
+    shapes
+}
+
+/// The turns a rider is told of or held back by.
+fn heeded(turns: &[Turn]) -> Vec<Turn> {
+    turns
+        .iter()
+        .filter(|turn| turn.kind.is_some() || turn.cornered)
+        .copied()
+        .collect()
+}
+
+/// Whether `marked` says what `reference` says, as the course without the
+/// `spur_m` of it after `base_m` sees it, each where it is give or take
+/// `NEAR_M`.
+fn as_without(marked: &[Turn], reference: &[Turn], base_m: f32, spur_m: f32) -> bool {
+    const NEAR_M: f32 = 6.0;
+    let (marked, reference) = (heeded(marked), heeded(reference));
+    let without = |mm: u32| {
+        let m = mm as f32 / 1000.0;
+        match m {
+            m if m <= base_m => m,
+            m if m >= base_m + spur_m => m - spur_m,
+            _ => base_m,
+        }
+    };
+    let near = |mm: u32, want_mm: u32| (without(mm) - want_mm as f32 / 1000.0).abs() <= NEAR_M;
+    marked.len() == reference.len()
+        && marked.iter().zip(&reference).all(|(turn, want)| {
+            (turn.kind, turn.twice, turn.cornered) == (want.kind, want.twice, want.cornered)
+                && near(turn.start_mm, want.start_mm)
+                && near(turn.end_mm, want.end_mm)
+        })
+}
+
+/// `line`'s turns as a placed course's are found, and metres of it read
+/// past as spurs.
+fn scanned(line: &[(f32, f32)]) -> (Vec<Turn>, f32) {
+    let mut turns = vec![Turn::default(); TURNS];
+    let mut scan = Scan::default();
+    let mut found = 0;
+    while !scan.done() {
+        found = scan.step(line.len(), |k| line[k], SCAN_STEPS, &mut turns, found);
+    }
+    turns.truncate(found);
+    (turns, scan.spurs_m())
+}
+
+#[test]
+fn a_marked_spur_says_what_the_course_without_it_says() {
+    let (mut failed, mut checked) = (Vec::new(), 0);
+    for shape in shapes() {
+        for step in [1.0, 3.0, 5.0, 8.0, 15.0, 10_000.0] {
+            let name = format!("{}, every {step} m", shape.name);
+            let with = path(&shape.corners(true), step);
+            let without = path(&shape.corners(false), step);
+            let (marked, spur_m) = scanned(&with);
+            if spur_m == 0.0 {
+                assert!(!MARKED_M.contains(&shape.depth), "unmarked: {name}");
+                continue;
+            }
+            checked += 1;
+            let base_m = nearest(&without, shape.base()).0;
+            let drawn_m = length(&with) - length(&without);
+            let scan = as_without(&marked, &turns_of(&without), base_m, drawn_m);
+            let ((kept_with, with, _), (kept_without, without, _)) =
+                (found(&with), found(&without));
+            let kept_m = |course: &Course| length(&line_of(course));
+            let kept_spur_m = kept_m(&kept_with) - kept_m(&kept_without);
+            let upload = as_without(&with, &without, base_m, kept_spur_m);
+            if !scan || !upload {
+                failed.push(format!("{name}: scan {scan}, upload {upload}"));
+            }
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "{} of {checked}:\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
 }

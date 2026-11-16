@@ -633,6 +633,8 @@ once Settings, BODY holds a weight; BACK returns to Settings.
   SAVED; the bests merged so far stay in memory and the next write keeps them.
   A read that failed only this time is tried again with the ride waiting.
 - A file that cannot be read says BESTS FILE DAMAGED and is left alone.
+- A file of another version says BESTS NOT FORMATTED / OFF AND ON TO FORMAT,
+  and ACT does nothing: only FORMAT replaces it.
 - ACT on BESTS asks CLEAR BESTS?: ACT (check cue) clears them, replacing a
   damaged file too, and BACK (back cue) keeps them. A failed clear says CLEAR
   FAILED.

@@ -130,7 +130,9 @@ cycling ride-clear --medium bulk .local/exports/<export-id>
 - `RIDE`/`EXPORT` take an optional `BULK` or `INTERNAL` word. Ride control,
   `STATUS` and `HISTORY` default to the medium of the ride on screen, and START
   to the medium the next ride will use; `INIT`, `CLEAR` and `EXPORT` default to
-  internal. START is refused while a ride is open on either medium. Bulk status adds `capacity`, `store`,
+  internal. START is refused while a ride is open on either medium. `INIT` and
+  `CLEAR` answer `FOREIGN` over a log of another version; only FORMAT erases
+  one. Bulk status adds `capacity`, `store`,
   `generation`, `boot_reads` and `layout` (`volumes`, `blank`, `lost`
   or `foreign`).
 - The 1 GiB RIDES volume holds 2,097,136 records, about 2,330 h at 1 Hz, so the
@@ -472,10 +474,11 @@ back with the same synchronous write as the workout outcome; a ride that
 cannot be stored claims no best. VANA never formats the store: without a
 card, a FILES volume or a store the host formatted, bests are not kept (the
 host's `files format` erases them). A file that does not decode is never
-merged into; only CLEAR BESTS replaces it. A write the store refuses leaves
-the merged bests in memory for the next write, and a read that failed only
-this time is retried with the ride's outcome waiting (one outcome is kept).
-A file of another version or length reads as one that does not decode.
+merged into; only CLEAR BESTS replaces it. A file of another version is
+foreign: never merged into nor replaced, CLEAR BESTS included, until FORMAT
+erases it. A write the store refuses leaves the merged bests in memory for the
+next write, and a read that failed only this time is retried with the ride's
+outcome waiting (one outcome is kept).
 
 | Bytes | Field |
 | --- | --- |

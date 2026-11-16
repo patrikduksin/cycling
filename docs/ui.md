@@ -576,8 +576,9 @@ each power best also shows its W/KG as a `CAPTION` on the label's line. A best n
 has no cues; BACK returns to Settings. The row's value counts the bests set
 (7 SET, NONE YET, or a problem). A problem replaces the list with an `AMBER`
 headline and a grey line: BESTS NOT KEPT where there is no place to keep them,
-BESTS FILE DAMAGED for a file that cannot be read, and BESTS NOT SAVED when
-the store would not take a write. ACT asks CLEAR BESTS? with the check cue
+BESTS FILE DAMAGED for a file that cannot be read, BESTS NOT FORMATTED (shrunk
+to fit) with OFF AND ON TO FORMAT for a file of another version, and BESTS NOT
+SAVED when the store would not take a write. ACT asks CLEAR BESTS? with the check cue
 beside ACT to clear and the back cue beside BACK to keep; on a damaged file it
 starts them over. A failed clear says CLEAR FAILED in a toast.
 

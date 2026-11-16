@@ -158,7 +158,12 @@ fn a_spur_at_the_end_of_a_long_out_and_back_says_what_the_course_without_it_says
         .chain(out[..4].iter().rev())
         .copied()
         .collect();
-    assert_eq!(kept_about(&corners), kept_about(&without));
+    let told = kept_about(&corners);
+    assert_eq!(told, kept_about(&without));
+    assert!(
+        told.iter().all(|told| told.contains(&Kind::UTurn)),
+        "{told:?}"
+    );
 }
 
 #[test]
@@ -626,4 +631,74 @@ fn a_spur_whose_way_back_drifts_off_its_way_out_leaves_the_corner_named() {
         );
         assert_eq!(told(&drawn), [[LEFT]; 2], "{drift} m off");
     }
+}
+
+/// North 300 m, then an out-and-back of 420 m, east 377 m and right 43 m
+/// south, whose far end turns `stub` m to the `side` and back, and on
+/// north: drawn a point every `every_m`. The way back comes back `apart`
+/// beside the stub's base, and 30 m on strays `stray` off the way out to
+/// the stub's other side.
+fn out_and_back_with_a_stub(
+    stub: f32,
+    side: f32,
+    (apart, stray): (f32, f32),
+    every_m: f32,
+) -> Vec<(f32, f32)> {
+    let (corner, base) = ((377.0, 300.0), (377.0, 257.0));
+    let tip = (base.0 + side * stub, base.1);
+    let back = [
+        tip,
+        (base.0 + side * apart, base.1),
+        (base.0 - side * stray, base.1 + 30.0),
+        corner,
+        (0.0, 300.0),
+        (0.0, 700.0),
+    ];
+    join(&[
+        path(&[(0.0, 0.0), (0.0, 300.0), corner, base, tip], every_m),
+        path(&back, every_m),
+    ])
+}
+
+const TIP_U_TURN: [Kind; 5] = [RIGHT, RIGHT, Kind::UTurn, LEFT, RIGHT];
+
+#[test]
+fn a_dead_end_at_the_far_end_of_a_long_out_and_back_is_its_u_turn() {
+    // km 51.46, its 17 m dead end bracketed.
+    for stub in [10.0, 15.0, 20.0] {
+        for side in [1.0, -1.0] {
+            let drawn = out_and_back_with_a_stub(stub, side, (0.0, 3.7), 5.0);
+            assert_eq!(
+                kept_about(&drawn),
+                [TIP_U_TURN; 2],
+                "{stub} m to the {side}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_dead_end_of_up_to_30_m_at_the_far_end_of_a_long_out_and_back_is_its_u_turn() {
+    let mut failed = Vec::new();
+    for stub in [5.0, 8.0, 12.0, 17.0, 25.0, 30.0] {
+        for side in [1.0, -1.0] {
+            for back in [(0.0, 0.0), (2.0, 0.0), (0.0, 3.7)] {
+                for every_m in [3.0, 5.0, 8.0] {
+                    let drawn = out_and_back_with_a_stub(stub, side, back, every_m);
+                    let told = kept_about(&drawn);
+                    if told != [TIP_U_TURN; 2] {
+                        failed.push(format!(
+                            "{stub} m to the {side}, back {back:?}, every {every_m} m: {told:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "{}:\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
 }

@@ -288,10 +288,16 @@ the spur as much further on as the spur is long. A corner at the spur's
 base, or a jog just past it, is named as it would be without the spur. The
 course keeps the spur's points and its length, so distance along it and
 arrival are unchanged. Riding straight past the base is not off course, and
-riding into the spur and back sounds nothing either. At the far end of a
-longer out-and-back, a dead end of up to 30 m past its last corner is a spur
-too, so the corner says U-TURN. A longer dead end, roads side by side about
-8 m apart, a hairpin and a roundabout keep their turns. Turns stored with a
+riding into the spur and back sounds nothing either. A spur is a detour off
+a road the course rides on. A dead end whose way back runs on back along the
+way in, within 20 m of leaving it, is the far end of a longer out-and-back,
+even where the way back strays more than 3 m for a few metres. At the far end of a longer out-and-back, a dead end of up
+to 30 m past its last corner is a spur, so the corner says U-TURN. A longer
+dead end, roads side by side about 8 m apart, a hairpin and a roundabout keep
+their turns. Known limit: where the road on from a spur's base hooks back
+within 3 m of the way in for its first 9 m or so, and is drawn a point every
+few metres, VANA takes those metres for more of the spur, and its turns there
+may differ from the course without the spur. Turns stored with a
 course loaded before this keep its spurs until the course is loaded again.
 Where the course is drawn coarsely, as a planner's route is, or it was loaded
 before turns were found this way, a turn of several corners is named only

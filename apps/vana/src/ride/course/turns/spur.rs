@@ -7,15 +7,21 @@
 //! step, the course has turned back on itself. From there its way back is
 //! walked a metre at a time while it stays within `RETRACE_M` of its way
 //! out. Ending within `SPUR_M` of the tip, it is a spur from the point of
-//! the way out furthest back that it came beside to where it did. Retracing
-//! further, the
-//! course is a longer out-and-back, whose legs' corners the rider is told;
-//! but a dead end at its far end, `TIP_SPUR_M` or less past the last corner,
-//! is a spur from that corner. Either way the way out must go at least
-//! `SPUR_MIN_M` from the spur's base, as a stop's jitter never does. A
-//! hairpin's legs part too soon and roads side by side are too far apart to
-//! be one. So a dead end visited no deeper than `SPUR_M` is taken for a
-//! planner's artifact.
+//! the way out furthest back that it came beside to where it did: a detour
+//! off the road the course rides on. Retracing further, or back beside the
+//! way in `ON_M` past where its way back left its way out, the course is a
+//! longer out-and-back, whose legs' corners the rider is told; but a dead
+//! end at its far end, `TIP_SPUR_M` or less past the last corner, is a spur
+//! from that corner. Either way the way out must go at least `SPUR_MIN_M` from
+//! the spur's base, as a stop's jitter never does. A hairpin's legs part too
+//! soon and roads side by side are too far apart to be one. So a dead end
+//! visited no deeper than `SPUR_M` is taken for a planner's artifact.
+//!
+//! A road from the base that hooks back beside the way in, within
+//! `RETRACE_M` of it for its first 9 m or so, reads wrong where it is drawn
+//! densely: those metres are taken for more of the spur's way back, so its
+//! base is placed back along the way in, and its turns may not be those of
+//! the course without it.
 //!
 //! A course with a spur says exactly what the course would say with the
 //! spur's out-and-back taken out, each turn after the spur as much further
@@ -37,6 +43,7 @@ const RETRACE_M: f32 = 3.0;
 const SPUR_MIN_M: f32 = 10.0;
 const SPUR_M: f32 = 150.0;
 const TIP_SPUR_M: f32 = 2.0 * WAY_M;
+const ON_M: f32 = 20.0;
 /// The way into a spur and on from it is the chord this long.
 const WAY_M: f32 = 2.0 * HALF_CHORD_M;
 const WALK_M: f32 = 1.0;
@@ -60,7 +67,8 @@ enum Walk {
     /// The course turned back at `tip_m`, the point `tip`; `back` has
     /// walked `back_m` of its way back, whose last metre lies beside the
     /// way out `beside_m` along. `corner` is the spur past the furthest
-    /// corner the way out turned back from the tip.
+    /// corner the way out turned back from the tip. `left_m` is `back_m`
+    /// where the way back left the way out, once it has.
     Back {
         tip_m: f32,
         tip: Cursor,
@@ -69,6 +77,7 @@ enum Walk {
         beside_m: f32,
         furthest_back: Stretch,
         corner: Option<Stretch>,
+        left_m: Option<f32>,
     },
 }
 
@@ -86,11 +95,13 @@ impl Walk {
                 after_tip: tip.next,
             },
             corner: None,
+            left_m: None,
         }
     }
 
     /// Walk on as far as `read_m`, beside the way out from `trail`,
-    /// `trail_m` along: the spur, once its way back has left the way out.
+    /// `trail_m` along: the spur, once its way back has left the way out
+    /// and gone `ON_M` on, or the course ends first.
     fn on(
         &mut self,
         len: usize,
@@ -106,6 +117,7 @@ impl Walk {
             mut beside_m,
             mut furthest_back,
             mut corner,
+            mut left_m,
         } = *self
         else {
             return None;
@@ -119,15 +131,29 @@ impl Walk {
         *self = Self::None;
         while tip_m + back_m + WALK_M <= read_m {
             if !back.on(len, at, WALK_M) {
-                return None;
+                return left_m.and(Some(furthest_back));
             }
-            if back_m + WALK_M > SPUR_M {
+            if left_m.is_none() && back_m + WALK_M > SPUR_M {
                 return corner.filter(deep);
             }
             back_m += WALK_M;
             let (off, along_m) = way_out.nearest(back.here, at);
+            if let Some(left_m) = left_m {
+                if back_m - left_m < ON_M {
+                    continue;
+                }
+                let way_in_again = off <= RETRACE_M && along_m < furthest_back.base_m;
+                return match way_in_again {
+                    true => corner.filter(deep),
+                    false => Some(furthest_back),
+                };
+            }
             if off > RETRACE_M {
-                return Some(furthest_back).filter(deep);
+                if !deep(&furthest_back) {
+                    return None;
+                }
+                left_m = Some(back_m);
+                continue;
             }
             beside_m = along_m;
             if beside_m < furthest_back.base_m {
@@ -154,6 +180,7 @@ impl Walk {
             beside_m,
             furthest_back,
             corner,
+            left_m,
         };
         None
     }

@@ -602,7 +602,8 @@ fn foreign_and_damaged_metadata_are_reported_and_never_formatted_over() {
         changed
     };
     for (offset, value) in [
-        (16, 2),
+        (16, 1),
+        (17, 1),
         (18, 9),
         (20, 3),
         (22, 1),

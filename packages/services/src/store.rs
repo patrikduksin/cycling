@@ -98,7 +98,7 @@ use device_api::bulk::{Error as MediaError, ReadWrite, SECTOR_SIZE};
 pub type Sector = [u8; SECTOR_SIZE];
 
 pub const MAGIC: &[u8; 16] = b"CYCLING-STORE\0\0\0";
-pub const VERSION: u16 = 1;
+pub const VERSION: u8 = 2;
 /// Longest name or directory in bytes.
 pub const NAME: usize = 40;
 const ENTRY: usize = 64;
@@ -264,7 +264,7 @@ impl Header {
     fn encode(&self, sector: &mut Sector) {
         sector.fill(0);
         sector[..16].copy_from_slice(MAGIC);
-        put_u16(sector, 16, VERSION);
+        sector[16] = VERSION;
         put_u16(sector, 18, DIR_SECTORS as u16);
         put_u16(sector, 20, self.table() as u16);
         put_u64(sector, 24, self.id);
@@ -308,7 +308,7 @@ fn decode(sector: &Sector, data: u64) -> Replica {
         && (1..=MAX_CHUNKS as u32).contains(&head.chunks)
         && u64::from(head.chunks) * u64::from(head.chunk) <= data;
     if !fits
-        || get_u16(sector, 16) != VERSION
+        || sector[16..18] != [VERSION, 0]
         || usize::from(get_u16(sector, 18)) != DIR_SECTORS
         || usize::from(get_u16(sector, 20)) != head.table()
         || head.id == 0

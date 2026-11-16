@@ -58,7 +58,7 @@ pub const RING: u64 = 8;
 pub const DATA_START: u64 = 16;
 
 const MAGIC: [u8; 4] = *b"SLOG";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const SUPER: u8 = 1;
 const CHECKPOINT: u8 = 2;
 const RECORD: u8 = 3;

@@ -16,13 +16,13 @@
 //! against the host's CRCs, and writing continues from the first mismatch.
 
 use crate::checksum::{Crc32, crc32};
-use crate::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
+use crate::le::{get_u32, get_u64, put_u32, put_u64};
 use device_api::bulk::{Error as MediaError, ReadWrite, SECTOR_SIZE};
 
 pub type Sector = [u8; SECTOR_SIZE];
 
 pub const MAGIC: &[u8; 16] = b"CYCLING-PACK\0\0\0\0";
-pub const VERSION: u16 = 1;
+pub const VERSION: u8 = 2;
 /// First data sector; the sectors between the headers and it stay unused.
 pub const DATA: u64 = 8;
 /// Sectors one verify call may read.
@@ -95,7 +95,7 @@ impl Header {
     fn encode(&self, sector: &mut Sector) {
         sector.fill(0);
         sector[..16].copy_from_slice(MAGIC);
-        put_u16(sector, 16, VERSION);
+        sector[16] = VERSION;
         sector[18] = match self.state {
             State::Writing => 1,
             State::Ready => 2,
@@ -126,7 +126,7 @@ fn decode(sector: &Sector) -> Replica {
         2 => State::Ready,
         _ => return Replica::Foreign,
     };
-    if get_u16(sector, 16) != VERSION
+    if sector[16..18] != [VERSION, 0]
         || sector[19..24].iter().any(|b| *b != 0)
         || sector[44..48].iter().any(|b| *b != 0)
         || sector[104..CRC].iter().any(|b| *b != 0)

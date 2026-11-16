@@ -89,7 +89,9 @@ fn tables_this_version_cannot_use_are_foreign_and_never_replaced() {
         changed
     };
     for (offset, value) in [
-        (16, 2),                       // version
+        (16, 1),                       // version
+        (17, 1),                       // reserved beside the version
+        (ENTRIES + 8, 1),              // reserved entry bytes
         (21, 0),                       // sector size
         (18, 9),                       // count beyond the maximum
         (ENTRIES, 0),                  // unnamed

@@ -267,7 +267,7 @@ fn foreign_directories_are_reported() {
     let mut s = sector();
     let dir = format(&mut media, 1, &mut s).unwrap();
     let mut header = media.get(base(dir.copy));
-    header[16] = 2;
+    header[16] = 1;
     let checksum = crc32(&header[..CRC]);
     header[CRC..].copy_from_slice(&checksum.to_le_bytes());
     media.set(base(dir.copy), header);

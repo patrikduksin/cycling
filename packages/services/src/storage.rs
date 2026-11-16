@@ -1,6 +1,6 @@
 //! A two-sector, power-loss-tolerant journal for small records.
 use crate::checksum::Crc32;
-use crate::le::{get_u16, get_u32, put_u16, put_u32};
+use crate::le::{get_u32, put_u16, put_u32};
 use device_api::storage::*;
 
 pub const SECTOR_SIZE: usize = 4096;
@@ -9,10 +9,10 @@ pub const HEADER_SIZE: usize = 24;
 pub const CAPACITY: usize = SECTOR_SIZE - HEADER_SIZE;
 
 const MAGIC: [u8; 4] = *b"C606";
-/// Every later format keeps bit 0 clear, so its whole version field never
-/// passes `torn_first_save` as a partly programmed version 1.
-const FORMAT_VERSION: u16 = 1;
-const _: () = assert!(FORMAT_VERSION == 1 || FORMAT_VERSION & 1 == 0);
+const VERSION: u8 = 2;
+/// Header bytes a save programs before the checksum: magic, version, a
+/// reserved zero, the header size, the sequence.
+const HEAD: usize = 12;
 const COMMITTED: u32 = 0x434f_4d54;
 const COMMIT_OFFSET: usize = 20;
 /// Flash programs a page's bits in parallel, and pages in address order.
@@ -102,10 +102,7 @@ impl<F: OwnedFlash> Journal<F> {
         };
 
         self.scratch.0.fill(0xff);
-        self.scratch.0[0..4].copy_from_slice(&MAGIC);
-        put_u16(&mut self.scratch.0, 4, FORMAT_VERSION);
-        put_u16(&mut self.scratch.0, 6, HEADER_SIZE as u16);
-        put_u32(&mut self.scratch.0, 8, sequence);
+        self.scratch.0[..HEAD].copy_from_slice(&head(sequence));
         put_u32(&mut self.scratch.0, 12, payload.len() as u32);
         self.scratch.0[HEADER_SIZE..HEADER_SIZE + payload.len()].copy_from_slice(payload);
         let checksum = checksum(sequence, payload);
@@ -193,11 +190,7 @@ impl<F: OwnedFlash> Journal<F> {
 
 fn decode(sector: &Sector) -> Option<Record> {
     let bytes = &sector.0;
-    if bytes[0..4] != MAGIC
-        || get_u16(bytes, 4) != FORMAT_VERSION
-        || get_u16(bytes, 6) as usize != HEADER_SIZE
-        || get_u32(bytes, COMMIT_OFFSET) != COMMITTED
-    {
+    if bytes[..8] != head(0)[..8] || get_u32(bytes, COMMIT_OFFSET) != COMMITTED {
         return None;
     }
     whole(bytes)
@@ -220,11 +213,7 @@ fn whole(bytes: &[u8; SECTOR_SIZE]) -> Option<Record> {
 /// partial. A partial header whose checksum still verifies belongs to a whole
 /// later save, such as a sequence 3 cut before its commit word.
 fn torn_first_save(sector: &Sector) -> bool {
-    let mut header = [0; 12];
-    header[0..4].copy_from_slice(&MAGIC);
-    put_u16(&mut header, 4, FORMAT_VERSION);
-    put_u16(&mut header, 6, HEADER_SIZE as u16);
-    put_u32(&mut header, 8, 1);
+    let header = head(1);
     let bytes = &sector.0;
     let commit = get_u32(bytes, COMMIT_OFFSET);
     if commit == COMMITTED || commit & COMMITTED != COMMITTED {
@@ -238,6 +227,15 @@ fn torn_first_save(sector: &Sector) -> bool {
             && bytes[..12].iter().any(|byte| *byte != 0xff)
             && bytes[PAGE_SIZE..].iter().all(|byte| *byte == 0xff)
             && whole(bytes).is_none())
+}
+
+fn head(sequence: u32) -> [u8; HEAD] {
+    let mut header = [0; HEAD];
+    header[..4].copy_from_slice(&MAGIC);
+    header[4] = VERSION;
+    put_u16(&mut header, 6, HEADER_SIZE as u16);
+    put_u32(&mut header, 8, sequence);
+    header
 }
 
 fn newer(candidate: u32, current: u32) -> bool {
@@ -430,7 +428,7 @@ pub(crate) mod tests {
                 ("read", region, 0, 4096),
             ]
         );
-        assert_eq!(&journal.flash.memory.bytes[0][..8], b"C606\x01\x00\x18\x00");
+        assert_eq!(&journal.flash.memory.bytes[0][..8], b"C606\x02\x00\x18\x00");
         assert_eq!(
             &journal.flash.memory.bytes[0][20..24],
             &COMMITTED.to_le_bytes()
@@ -529,7 +527,7 @@ pub(crate) mod tests {
                     journal.flash.bytes[1][COMMIT_OFFSET..HEADER_SIZE].fill(0xff);
                     journal.flash.bytes[0].fill(0xff);
                 }
-                // A future format whose header is 28 bytes, not yet committed.
+                // Another version whose header is 28 bytes, not yet committed.
                 6 => {
                     let header = &mut journal.flash.bytes[0];
                     header[0..4].copy_from_slice(&MAGIC);
@@ -558,7 +556,7 @@ pub(crate) mod tests {
                 _ => {
                     journal.save(b"existing").unwrap();
                     if scenario == 2 {
-                        journal.flash.bytes[0][4..6].copy_from_slice(&2u16.to_le_bytes());
+                        journal.flash.bytes[0][4] = 1;
                     } else {
                         journal.flash.bytes[0][HEADER_SIZE] ^= 1;
                     }

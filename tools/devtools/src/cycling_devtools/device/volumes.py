@@ -77,7 +77,7 @@ STATUS = [
     'empty',
     'hole',
 ]
-LAYOUTS = {0: 'blank', 2: 'volumes', 3: 'foreign', 4: 'lost'}
+LAYOUTS = {0: 'blank', 1: 'volumes', 2: 'foreign', 3: 'lost'}
 PACK_STATES = {0: 'empty', 1: 'writing', 2: 'ready'}
 NAME = 40
 ENTRY = 2 + NAME + 12
@@ -172,7 +172,7 @@ def open_session(connection):
     transfer = Transfer(connection.fd, connection.log)
     hello = transfer.call('hello')[3]
     sectors, max_payload, version = struct.unpack('<QII', hello[:16])
-    if version != 1 or max_payload < MAX_PAYLOAD:
+    if version != 2 or max_payload < MAX_PAYLOAD:
         raise RuntimeError(f'unsupported transfer session version={version} max_payload={max_payload}')
     transfer.region = sectors
     return transfer
@@ -195,10 +195,10 @@ def decode_volumes(data):
     layout = LAYOUTS.get(data[0], str(data[0]))
     region, generation, planned, unallocated = struct.unpack('<QQQQ', data[8:40])
     volumes = []
-    for offset in range(40, len(data), 25):
-        entry = data[offset : offset + 25]
+    for offset in range(40, len(data), 24):
+        entry = data[offset : offset + 24]
         name = entry[:8].rstrip(b'\0').decode()
-        start, sectors = struct.unpack('<QQ', entry[9:25])
+        start, sectors = struct.unpack('<QQ', entry[8:24])
         volumes.append({'name': name, 'start': start, 'sectors': sectors})
     result = {'layout': layout, 'sectors': region, 'volumes': volumes}
     if layout == 'volumes':

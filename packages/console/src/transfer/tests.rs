@@ -144,10 +144,10 @@ fn headers_are_checked_and_ids_must_increase() {
 fn the_volume_table_is_reported() {
     let mut host = Host::new();
     let (status, _, count, table) = host.call(op::VOLUMES, 0, 0, &[]);
-    assert_eq!((status, count, table[0]), (status::OK, 4, 2));
+    assert_eq!((status, count, table[0]), (status::OK, 4, 1));
     assert_eq!(get_u64(&table, 8), C606);
     assert_eq!(get_u64(&table, 32), 0);
-    let names: Vec<_> = table[40..].chunks(25).map(|e| e[..8].to_vec()).collect();
+    let names: Vec<_> = table[40..].chunks(24).map(|e| e[..8].to_vec()).collect();
     assert_eq!(
         names,
         [
@@ -613,11 +613,11 @@ fn only_the_owners_store_format_replaces_a_corrupt_store() {
         out.starts_with("state=ready files=0 capacity=64 chunks=1039 free=1039 generation=1 "),
         "{out}"
     );
-    let mut newer = media.written[&start];
-    newer[16] = 2;
-    let checksum = crc32(&newer[..508]);
-    newer[508..].copy_from_slice(&checksum.to_le_bytes());
-    media.written.insert(start + COPY_B, newer);
+    let mut other = media.written[&start];
+    other[16] = 1;
+    let checksum = crc32(&other[..508]);
+    other[508..].copy_from_slice(&checksum.to_le_bytes());
+    media.written.insert(start + COPY_B, other);
     let written = media.written.clone();
     out.clear();
     assert_eq!(

@@ -22,7 +22,7 @@ pub type Sector = [u8; SECTOR_SIZE];
 pub type Name = [u8; 8];
 
 pub const MAGIC: &[u8; 16] = b"CYCLING-VOLUMES\0";
-pub const VERSION: u16 = 1;
+pub const VERSION: u8 = 2;
 pub const MAX_VOLUMES: usize = 8;
 /// Sectors before any volume: both table copies.
 pub const TABLE: u64 = 2;
@@ -129,7 +129,7 @@ impl Table {
     fn encode(&self, sector: &mut Sector) {
         sector.fill(0);
         sector[..16].copy_from_slice(MAGIC);
-        put_u16(sector, 16, VERSION);
+        sector[16] = VERSION;
         put_u16(sector, 18, self.volumes().count() as u16);
         put_u32(sector, 20, SECTOR_SIZE as u32);
         put_u64(sector, 24, self.generation);
@@ -181,7 +181,7 @@ fn decode(sector: &Sector, region: u64) -> Replica {
         return Replica::Invalid;
     }
     let count = usize::from(get_u16(sector, 18));
-    if get_u16(sector, 16) != VERSION
+    if sector[16..18] != [VERSION, 0]
         || get_u32(sector, 20) != SECTOR_SIZE as u32
         || count > MAX_VOLUMES
         || sector[40..ENTRIES].iter().any(|b| *b != 0)
@@ -199,7 +199,7 @@ fn decode(sector: &Sector, region: u64) -> Replica {
         let start = get_u64(entry, 16);
         let sectors = get_u64(entry, 24);
         if name[0] == 0
-            || entry[9..16].iter().any(|b| *b != 0)
+            || entry[8..16].iter().any(|b| *b != 0)
             || start < end
             || sectors == 0
             || start.checked_add(sectors).is_none_or(|e| e > region)

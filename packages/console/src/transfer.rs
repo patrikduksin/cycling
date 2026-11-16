@@ -34,7 +34,7 @@ use firmware_services::{files, pack, sector_log, store};
 
 pub const HEADER: usize = 36;
 pub const MAX_PAYLOAD: usize = 4096;
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const REQUEST: &[u8; 4] = b"C6VQ";
 pub const REPLY: &[u8; 4] = b"C6VP";
 /// The session ends after this long without a request.
@@ -256,6 +256,8 @@ fn terrain_info(header: Option<pack::Header>, capacity: u64, cursor: u64, out: &
 
 /// Bytes before the entries of a `VOLUMES` reply.
 const TABLE_HEAD: usize = 40;
+/// A volume in the `VOLUMES` reply: name, start, sectors.
+const TABLE_ENTRY: usize = 24;
 
 /// File entry encoding: slot u16, name 40 (zero padded), length, CRC, revision.
 const ENTRY: usize = 2 + files::NAME + 12;
@@ -371,25 +373,24 @@ impl Session {
                 let mut length = TABLE_HEAD;
                 match volume::read(media, &mut sector) {
                     Ok(Layout::Blank) => out[0] = 0,
-                    Ok(Layout::Lost) => out[0] = 4,
+                    Ok(Layout::Lost) => out[0] = 3,
                     Ok(Layout::Table(table)) => {
-                        out[0] = 2;
+                        out[0] = 1;
                         put_u64(out, 16, table.generation);
                         put_u64(out, 24, table.planned);
                         put_u64(out, 32, table.unallocated(region));
                         for v in table.volumes() {
-                            let e = &mut out[length..length + 25];
+                            let e = &mut out[length..length + TABLE_ENTRY];
                             e[..8].copy_from_slice(&v.name);
-                            e[8] = 0;
-                            put_u64(e, 9, v.start);
-                            put_u64(e, 17, v.sectors);
-                            length += 25;
+                            put_u64(e, 8, v.start);
+                            put_u64(e, 16, v.sectors);
+                            length += TABLE_ENTRY;
                         }
                     }
-                    Err(volume::Error::Foreign) => out[0] = 3,
+                    Err(volume::Error::Foreign) => out[0] = 2,
                     Err(e) => return Reply::error(volume_error(e)),
                 }
-                Reply::ok(0, ((length - TABLE_HEAD) / 25) as u32, length)
+                Reply::ok(0, ((length - TABLE_HEAD) / TABLE_ENTRY) as u32, length)
             }
             op::TERRAIN_STATUS..=op::TERRAIN_CRC => self.terrain(request, payload, media, out),
             op::FILES_STATUS..=op::FILES_STAT => self.files(request, payload, media, out),

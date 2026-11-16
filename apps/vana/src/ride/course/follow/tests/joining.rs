@@ -114,3 +114,23 @@ fn a_lost_fix_takes_turn_around_down() {
     }
     assert_eq!(rider.follower.sign(now), Sign::None);
 }
+
+#[test]
+fn standing_beside_the_course_with_a_jittering_fix_never_says_turn_around() {
+    let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 2048]);
+    let mut rider = Rider::new(&mut crumbs, &mut line, &mut []);
+    let course = course_of(&SQUARE);
+    rider.set_course(&course);
+    let mut now = 0;
+    let jitter = [
+        (600.0, 3.0),
+        (584.0, 3.0),
+        (583.9, 3.0),
+        (584.1, 3.0),
+        (584.0, 3.2),
+        (583.8, 3.0),
+        (584.1, 2.9),
+    ];
+    let signs = signs_along(&mut rider, &course, &jitter, &mut now);
+    assert!(signs.iter().all(|&s| s != Sign::TurnAround), "{signs:?}");
+}

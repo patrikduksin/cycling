@@ -26,6 +26,11 @@ const HOP_M: f32 = 40.0;
 const GAP_MS: u64 = 5_000;
 const JOIN_FIXES: u8 = 5;
 const TURN_AROUND_FIXES: u8 = 3;
+/// A fix counts towards TURN AROUND only moving: this far on from the last
+/// fix, and at least this fast when the ride's speed is known, so a fix
+/// jittering at a stop never does.
+const MOVING_M: f32 = 2.0;
+const MOVING_MM_S: u32 = 1_400;
 const MORE_THAN_45_DEG_OFF: core::ops::RangeInclusive<u16> = TURN / 8..=TURN * 7 / 8;
 const MORE_THAN_135_DEG_OFF: core::ops::Range<u16> = TURN * 3 / 8 + 1..TURN * 5 / 8;
 
@@ -113,6 +118,7 @@ pub struct Follower<'a> {
     join_fixes: u8,
     join_end: usize,
     turn_around_fixes: u8,
+    last_fix: Option<Point>,
     following: bool,
     segment: usize,
     matched: Option<Point>,
@@ -141,6 +147,7 @@ impl<'a> Follower<'a> {
             join_fixes: 0,
             join_end: 0,
             turn_around_fixes: 0,
+            last_fix: None,
             following: false,
             segment: 0,
             matched: None,
@@ -166,6 +173,7 @@ impl<'a> Follower<'a> {
         self.held = false;
         self.join_fixes = 0;
         self.turn_around_fixes = 0;
+        self.last_fix = None;
         self.following = false;
         self.matched = None;
         self.search_whole_course = false;
@@ -360,7 +368,10 @@ impl<'a> Follower<'a> {
         }
         self.taken_loop_ms = fix.taken_loop_ms;
         self.heading = fix.heading;
-        let joined = !self.following && fix.moved && self.joining(fix.at);
+        let travelled = self.last_fix.replace(fix.at).map(|last| distance(last, fix.at));
+        let moving = travelled.is_some_and(|m| m >= MOVING_M)
+            && speed_mm_s.is_none_or(|v| v >= MOVING_MM_S);
+        let joined = !self.following && fix.moved && self.joining(fix.at, moving);
         if joined {
             self.follow_from(self.join_end);
         }
@@ -400,16 +411,17 @@ impl<'a> Follower<'a> {
             })
     }
 
-    /// Where the course passes twice, the first pass ridden its way is joined.
-    fn joining(&mut self, p: Point) -> bool {
+    /// Where the course passes twice, the first pass ridden its way is
+    /// joined. Only a `moving` fix counts towards TURN AROUND.
+    fn joining(&mut self, p: Point, moving: bool) -> bool {
         let Some(heading) = self.heading.filter(|_| !self.held && self.len >= 2) else {
             self.join_fixes = 0;
             return false;
         };
         let riding = self.riding(p, heading);
         self.turn_around_fixes = match riding {
-            Riding::Against => self.turn_around_fixes.saturating_add(1),
-            Riding::Across => self.turn_around_fixes,
+            Riding::Against if moving => self.turn_around_fixes.saturating_add(1),
+            Riding::Against | Riding::Across => self.turn_around_fixes,
             Riding::Along(_) | Riding::Away => 0,
         };
         let Riding::Along(end) = riding else {

@@ -17,8 +17,6 @@ target_root="${CYCLING_FW_TARGET_ROOT:-$PWD/.local}"
 # The image and its ELF land in .local, where flash and backtrace read them;
 # a build beside another (verify) needs its own directory.
 image_dir="${CYCLING_IMAGE_DIR:-.local}"
-# `build.sh check` (cycling check-firmware) stops after a cargo check of the
-# firmware: the type check for its target, without codegen or the link.
 verb=build
 if [[ "${1:-}" == check ]]; then
   verb=check

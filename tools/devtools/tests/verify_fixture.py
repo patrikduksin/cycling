@@ -1,5 +1,3 @@
-"""Helpers for the verify and merge tests' throwaway checkout (the `checkout` fixture in conftest.py)."""
-
 import subprocess
 
 IDENTITY = {

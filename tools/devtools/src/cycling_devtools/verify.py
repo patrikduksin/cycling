@@ -1,11 +1,4 @@
-"""Local replacement for CI: the gates the changed paths select, in parallel lanes, one pass/fail table.
-
-Verify certifies a tree, not a worktree. The gates run in the worktree, and a
-run whose files change under it stops and certifies nothing (tree.py). Each
-gate that passes is recorded under the tree's hash, the toolchain and its own
-definition, so the same tree is never verified twice, here or in another
-worktree.
-"""
+"""Local replacement for CI: the gates the changed paths select, in parallel lanes, one pass/fail table."""
 
 import argparse
 import contextlib
@@ -23,20 +16,17 @@ from cycling_devtools import admission, lanes, tree, workspace
 from cycling_devtools.clean import warn_if_low_disk
 from cycling_devtools.tree import git
 
-# Printed, and written as a file of this name in the log directory, once every selected test gate has passed.
 TESTS_PASSED = 'tests-passed'
 
 
 @dataclass(frozen=True)
 class Request:
     root: Path
-    # The commit the changed paths are counted against and the screens are compared with.
     base: str
     pr: int | None = None
     video: bool = False
     everything: bool = False
     fresh: bool = False
-    # Tier 2 alone, whatever paths changed.
     deep: bool = False
 
     def command(self, gate):
@@ -71,8 +61,6 @@ class Outcome:
 
 
 class Run:
-    """One verify of one tree: what its gates are keyed by, which tests are still out, and what changed under it."""
-
     def __init__(self, request, watch, selected, logs):
         self.request = request
         self.watch = watch
@@ -92,11 +80,6 @@ class Run:
         }
 
     def keys(self, gate):
-        """The keys a pass of gate is recorded under; a cached pass is looked up under the first.
-
-        A run that posts on a pull request must happen for that pull request, and
-        its pass also stands for a run that posts nothing, such as the merge's.
-        """
         base = self.request.base if gate.reports else None
         commands = dict.fromkeys((self.request.command(gate), gate.command))
         return [tree.result_key(self.watch.tree, gate.name, command, gate.env, base) for command in commands]
@@ -112,7 +95,6 @@ class Run:
         with log.open('w') as out:
             out.write(f'$ {command}\n')
             out.flush()
-            # Started under the lock: stop() either finds this gate running or has already kept it from starting.
             with self.lock:
                 if self.changed:
                     return Result(gate, False, 0.0, log)
@@ -138,7 +120,6 @@ class Run:
         return Result(gate, ok, seconds, log)
 
     def tree_changed(self):
-        """Whether the tree differs from the one this run certifies. The first gate to see it stops the others."""
         with self.lock:
             if not self.changed:
                 self.changed = self.watch.changed()
@@ -185,7 +166,6 @@ def frame_report(gate, root):
 
 
 def merge_base(commit):
-    """Where commit left main: the tree its changed paths are counted against."""
     for main in ('origin/main', 'main'):
         done = subprocess.run(['git', 'merge-base', main, commit], cwd=workspace.ROOT, capture_output=True, text=True)
         if done.returncode == 0:
@@ -226,10 +206,6 @@ def children_cpu():
 
 
 def verify(request):
-    """Run the gates that the tree of request.root needs and return the Outcome.
-
-    A run with gates to run waits for one of the machine's slots first, and its time counts the wait.
-    """
     watch = tree.Watch(request.root)
     if request.deep:
         chosen, skipped = [list(lanes.DEEP), []], []
@@ -250,12 +226,10 @@ def verify(request):
     if not run.tests_out and not request.deep:
         run.tests_passed()
     with contextlib.ExitStack() as held:
-        # Tier 2 runs at nice 19 and holds no slot against the pull requests' runs.
         waits = not request.deep and len(run.cached) < len(selected)
         queued = held.enter_context(admission.admitted()) if waits else 0.0
         if queued >= 1:
             run.tree_changed()
-            # Another run may have passed this tree while this one waited.
             run.find_cached()
         with ThreadPoolExecutor(len(parallel) or 1) as pool:
             try:

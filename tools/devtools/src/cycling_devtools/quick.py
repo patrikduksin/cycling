@@ -1,9 +1,3 @@
-"""Tier 0, the inner loop: the crates the diff touches, checked in place within seconds.
-
-It runs in the worktree itself and records nothing: `cycling verify` is what
-certifies a tree. Tests leave out nextest's `slow` group.
-"""
-
 import os
 import subprocess
 import sys
@@ -22,7 +16,6 @@ class Step:
 
 
 def touched(paths, root):
-    """Directory and package name of each workspace crate the paths touch."""
     return {
         directory: name
         for directory, (name, _) in sorted(lanes.members(root).items())
@@ -31,7 +24,6 @@ def touched(paths, root):
 
 
 def steps(crates, firmware):
-    """What to run for the touched crates; the firmware check only when a device links one of them."""
     if not crates:
         return []
     packages = ' '.join(f'-p {name}' for name in crates.values())

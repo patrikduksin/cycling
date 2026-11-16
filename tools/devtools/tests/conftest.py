@@ -1,5 +1,3 @@
-"""Fixtures shared by the verify and merge tests."""
-
 import pytest
 
 from cycling_devtools import lanes, workspace
@@ -8,10 +6,6 @@ from verify_fixture import IDENTITY, commit, git
 
 @pytest.fixture
 def checkout(tmp_path, monkeypatch):
-    """A checkout of a bare origin, standing in for both the worktree and the primary checkout.
-
-    Its one gate passes unless the tree holds a file named broken, and appends a line to runs.log each time it runs.
-    """
     for name, value in IDENTITY.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv('GATE_RUNS', str(tmp_path / 'runs.log'))

@@ -1,5 +1,3 @@
-"""Verify certifies a tree: the gates a change selects, what the hash covers, cached passes, and edits under the gates."""
-
 import time
 from concurrent.futures import ThreadPoolExecutor
 

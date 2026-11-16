@@ -1,5 +1,3 @@
-"""Remote development tools: device task snapshots and crash decoding."""
-
 import contextlib
 import io
 import subprocess

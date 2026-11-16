@@ -139,17 +139,17 @@ struct Count {
 impl<'a> Summary<'a> {
     pub fn of(path: &Path, timeline: &'a Timeline, media: &'a Media) -> Self {
         let story = tell(timeline);
-        let mut entries: BTreeMap<Kind, Count> = BTreeMap::new();
+        let mut counts = [(0, 0); Kind::ALL.len()];
         for entry in &timeline.entries {
-            let count = entries
-                .entry(entry.kind)
-                .or_insert(Count { new: 0, repeats: 0 });
-            if entry.repeat {
-                count.repeats += 1;
-            } else {
-                count.new += 1;
-            }
+            let (new, repeats) = &mut counts[entry.kind as usize];
+            *if entry.repeat { repeats } else { new } += 1;
         }
+        let entries = Kind::ALL
+            .into_iter()
+            .zip(counts)
+            .filter(|(_, (new, repeats))| new + repeats > 0)
+            .map(|(kind, (new, repeats))| (kind, Count { new, repeats }))
+            .collect();
         Self {
             header: Header::of(path, timeline, media),
             silences: &timeline.silences,
@@ -278,23 +278,27 @@ impl<'a> Listing<'a> {
             shown[*kind as usize] = true;
         }
         let mut entries = Vec::new();
-        let mut hidden = BTreeMap::new();
+        let mut hidden = [0; Kind::ALL.len()];
+        let mut repeats = 0;
         for entry in in_window(timeline, from, to) {
-            let left_out = if !shown[entry.kind as usize] {
-                entry.kind.name()
+            if !shown[entry.kind as usize] {
+                hidden[entry.kind as usize] += 1;
             } else if entry.repeat && !all {
-                "repeats"
+                repeats += 1;
             } else {
                 entries.push(entry);
-                continue;
-            };
-            *hidden.entry(left_out).or_default() += 1;
+            }
         }
         Self {
             from_ms: from,
             to_ms: (to != u64::MAX).then_some(to),
             entries,
-            hidden,
+            hidden: Kind::ALL
+                .iter()
+                .map(|kind| (kind.name(), hidden[*kind as usize]))
+                .chain([("repeats", repeats)])
+                .filter(|(_, n)| *n > 0)
+                .collect(),
             hex,
         }
     }

@@ -576,6 +576,20 @@ impl Recorder {
                 return;
             }
         };
+        // The fuzzer's proof: recovery forgets a ride that lost power while
+        // paused, so the next ride starts beside it, still open.
+        #[cfg(feature = "planted-bug")]
+        let catalog = {
+            let mut catalog = catalog;
+            let mut last = crate::ride::log::Slot::default();
+            let paused = catalog.next_slot > 0
+                && journal.read_slot(catalog.next_slot - 1, &mut last) == Some(true)
+                && crate::ride::log::decode(&last).is_some_and(|e| e.kind == Kind::Pause);
+            if paused {
+                catalog.recovery = None;
+            }
+            catalog
+        };
         self.catalog = catalog;
         // Write an overdue checkpoint before any append, so repeated cuts
         // cannot grow what the next boot replays.

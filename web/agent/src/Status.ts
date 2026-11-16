@@ -111,6 +111,8 @@ const whatOf = (request: DoorRequest): string =>
         `read ${formatBytes(size)} at ${hex(address)}`,
       write: ({ address }) => `write at ${hex(address)}`,
       verify: ({ address }) => `verify at ${hex(address)}`,
+      digest: ({ address, size }) =>
+        `digest ${formatBytes(size)} at ${hex(address)}`,
       reboot: () => 'reboot',
     }),
   )

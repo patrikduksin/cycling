@@ -323,7 +323,7 @@ const withBridge = <A, E>(
   )
 
 describe('device socket', () => {
-  test('enter, read, write, verify and reboot run as ops on the page, with files on this machine', () =>
+  test('enter, read, write, verify, digest and reboot run as ops on the page, with files on this machine', () =>
     withBridge((relay, endpoints, dir, notices) =>
       Effect.gen(function* () {
         const page = yield* fakePage(relay)
@@ -369,6 +369,9 @@ describe('device socket', () => {
         expect(
           yield* door.ask({ op: 'verify', address: 0x61000, path: imagePath }),
         ).toEqual({ ok: { matched: false } })
+        expect(
+          yield* door.ask({ op: 'digest', address: 0x60000, size: 0x21000 }),
+        ).toEqual({ ok: { md5: md5(image) } })
 
         const bootPath = join(dir, 'boot.log')
         expect(
@@ -385,6 +388,7 @@ describe('device socket', () => {
           'flasher: write at 0x60000',
           'flasher: verify at 0x60000',
           'flasher: verify at 0x61000',
+          'flasher: digest 132 KiB at 0x60000',
           'flasher: reboot',
         ])
         expect(lines.join('\n')).not.toContain(FAKE_MAC)

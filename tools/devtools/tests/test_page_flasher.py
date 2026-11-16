@@ -76,6 +76,8 @@ class PageFlasherTests(unittest.TestCase):
                 return {'ok': {**DOOR_CHIP, 'mac': MAC}}
             if request['op'] == 'verify':
                 return {'ok': {'matched': request['address'] == 0x10000}}
+            if request['op'] == 'digest':
+                return {'ok': {'md5': f'{request["address"]:08x}{request["size"]:024x}'}}
             return {'ok': {'md5': '0' * 32}}
 
         door, page = self.door(answer)
@@ -97,6 +99,7 @@ class PageFlasherTests(unittest.TestCase):
         page.write(0x10000, self.dir / 'image.bin')
         self.assertTrue(page.verify(0x10000, self.dir / 'image.bin'))
         self.assertFalse(page.verify(0x20000, self.dir / 'image.bin'))
+        self.assertEqual(page.digest(0xD98000, 0x102000), f'{0xD98000:08x}{0x102000:024x}')
         self.assertEqual(
             door.requests[1:3],
             [

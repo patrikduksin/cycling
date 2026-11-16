@@ -1,5 +1,6 @@
 """A Flasher over a bytearray: what the real Device runs against in tests."""
 
+import hashlib
 from pathlib import Path
 
 from cycling_devtools.device.flasher import Chip, Flash, FlasherError, Security, Usb
@@ -51,6 +52,9 @@ class MemoryFlasher:
     def verify(self, address, path: Path):
         data = path.read_bytes()
         return self.memory[self._span(address, len(data))] == data
+
+    def digest(self, address, size):
+        return hashlib.md5(self.memory[self._span(address, size)]).hexdigest()
 
     def reboot(self, seconds):
         self.reboots += 1

@@ -71,6 +71,11 @@ export interface Flasher {
     address: number,
     path: string,
   ) => Effect.Effect<boolean, FlashError>
+  /** The chip's MD5 of `size` bytes at `address`. */
+  readonly digest: (
+    address: number,
+    size: number,
+  ) => Effect.Effect<Md5, FlashError>
   /**
    * Watchdog reset into the selected app, then `seconds` of console output
    * into `path`. False when the device did not come back as the console in
@@ -326,11 +331,10 @@ export const leaseFlasher = (
         )
       })
 
-    const verify = (address: number, path: string) =>
+    const digest = (address: number, size: number) =>
       Effect.gen(function* () {
-        const bytes = yield* readFile(path)
-        const region = yield* regionOf(address, bytes.byteLength)
-        const chip = yield* retried(id =>
+        const region = yield* regionOf(address, size)
+        return yield* retried(id =>
           once(id, { op: { _tag: 'Digest', lease, region } }).pipe(
             Effect.flatMap(({ outcome }) =>
               outcome._tag === 'Digest'
@@ -339,7 +343,12 @@ export const leaseFlasher = (
             ),
           ),
         )
-        return chip === md5Of(bytes)
+      })
+
+    const verify = (address: number, path: string) =>
+      Effect.gen(function* () {
+        const bytes = yield* readFile(path)
+        return (yield* digest(address, bytes.byteLength)) === md5Of(bytes)
       })
 
     const reboot = (seconds: number, path: string) =>
@@ -378,7 +387,7 @@ export const leaseFlasher = (
         ),
       )
 
-    return { enter, read, write, verify, reboot } satisfies Flasher
+    return { enter, read, write, verify, digest, reboot } satisfies Flasher
   })
 
 const chipOf = (chip: Chip): EnteredChip => ({

@@ -131,8 +131,8 @@ impl Track<'_> {
             .clamp(1, self.course.len() - 1)
     }
 
-    fn place(&self, centre: Point) -> Option<(usize, Point)> {
-        self.split().or_else(|| self.nearest(centre))
+    fn place(&self, centre: Point, held: Option<usize>) -> Option<(usize, Point)> {
+        self.split().or_else(|| self.joining(centre, held))
     }
 
     fn ahead_points(
@@ -143,13 +143,26 @@ impl Track<'_> {
         let turn = self
             .turn_on_course()
             .map(|(spot, _)| self.metres_to_end(spot));
-        let near = self.course[end - 1].along;
+        let before = move |along: f32| turn.is_none_or(|t| along > t);
+        let next = self.course[end - 1];
+        let start = (at, next.along + distance(at, (next.east, next.north)));
+        let stop = start.1 - reach_m;
+        let first = self.course[..end].partition_point(|c| c.along < stop);
+        let walked = |c: &Crumb| ((c.east, c.north), c.along);
+        let last = self.course[first..end].first().map_or(start, walked);
+        let cut = first.checked_sub(1).map(|k| {
+            let ((x, y), from) = last;
+            let to = self.course[k];
+            let t = (from - stop) / (from - to.along);
+            ((x + t * (to.east - x), y + t * (to.north - y)), stop)
+        });
         core::iter::once((at, true)).chain(
-            self.course[..end]
+            self.course[first..end]
                 .iter()
                 .rev()
-                .take_while(move |c| near - c.along <= reach_m)
-                .map(move |c| ((c.east, c.north), turn.is_none_or(|t| c.along > t))),
+                .map(walked)
+                .chain(cut)
+                .map(move |(p, along)| (p, before(along))),
         )
     }
 
@@ -159,17 +172,50 @@ impl Track<'_> {
             .chain(self.crumbs.iter().rev().map(|c| (c.east, c.north)))
     }
 
-    fn nearest(&self, centre: Point) -> Option<(usize, Point)> {
-        (1..self.course.len())
-            .map(|end| {
-                let (a, b) = (self.course[end - 1], self.course[end]);
-                (
-                    end,
-                    follow::project(centre, (a.east, a.north), (b.east, b.north)).0,
-                )
-            })
-            .min_by(|a, b| distance(a.1, centre).total_cmp(&distance(b.1, centre)))
+    fn joining(&self, centre: Point, held: Option<usize>) -> Option<(usize, Point)> {
+        let legs = 1..self.course.len();
+        let leg = |end: usize| {
+            let (a, b) = (self.course[end - 1], self.course[end]);
+            let at = follow::project(centre, (a.east, a.north), (b.east, b.north)).0;
+            Leg {
+                end,
+                at,
+                gap_m: distance(at, centre),
+            }
+        };
+        let held = held.filter(|end| legs.contains(end)).map(leg);
+        let chosen = match self.heading {
+            None => held.or_else(|| closest(legs.clone().map(leg))),
+            Some(heading) => {
+                let (sin, cos) = pose::rotation(heading);
+                let our_way = |&end: &usize| {
+                    let (a, b) = (self.course[end - 1], self.course[end]);
+                    (a.east - b.east) * sin + (a.north - b.north) * cos > 0.0
+                };
+                let ours = closest(legs.clone().filter(our_way).map(leg))
+                    .filter(|l| l.gap_m <= JOIN_WITHIN_M);
+                let best = ours.or_else(|| closest(legs.clone().map(leg)))?;
+                let stays = |held: &Leg| {
+                    (ours.is_none() || our_way(&held.end))
+                        && held.gap_m <= JOIN_WITHIN_M
+                        && held.gap_m - best.gap_m <= JOIN_SWITCH_M
+                };
+                Some(held.filter(stays).unwrap_or(best))
+            }
+        };
+        chosen.map(|l| (l.end, l.at))
     }
+}
+
+#[derive(Clone, Copy)]
+struct Leg {
+    end: usize,
+    at: Point,
+    gap_m: f32,
+}
+
+fn closest(legs: impl Iterator<Item = Leg>) -> Option<Leg> {
+    legs.min_by(|a, b| a.gap_m.total_cmp(&b.gap_m))
 }
 
 pub struct Cache<'a> {
@@ -229,7 +275,9 @@ const ROUTE_SEGMENTS: usize = 160;
 const STROKES: usize = RIDDEN_SEGMENTS + ROUTE_SEGMENTS;
 const BAND_ENTRIES: usize = 2048;
 const LOOKAHEAD_M: f32 = 4_000.0;
-const ROUTE_REACHES: f32 = 2.0;
+const ROUTE_REACH: f32 = 1.5;
+const JOIN_WITHIN_M: f32 = 25.0;
+const JOIN_SWITCH_M: f32 = 10.0;
 struct ArrowLayer {
     shaft_half: f32,
     head_outline: f32,
@@ -341,6 +389,7 @@ pub struct Frame {
     puck: Option<Puck>,
     has_track: bool,
     left_m: Option<u32>,
+    route_leg: Option<usize>,
 }
 
 impl Default for Frame {
@@ -359,6 +408,7 @@ impl Default for Frame {
             puck: None,
             has_track: false,
             left_m: None,
+            route_leg: None,
         }
     }
 }
@@ -399,22 +449,6 @@ impl Frame {
     }
 }
 
-fn until_it_leaves(
-    at: &Projection,
-    reach: f32,
-    points: impl Iterator<Item = Point>,
-) -> impl Iterator<Item = Point> {
-    let at = *at;
-    let (mut last, mut shown) = (None, false);
-    points.take_while(move |&p| {
-        let here = at.at(p);
-        let on = last.is_none_or(|from| visible(from, here, reach + 1.0));
-        last = Some(here);
-        shown |= on;
-        on || !shown
-    })
-}
-
 fn visible(a: Point, b: Point, reach: f32) -> bool {
     let (left, right) = (-reach, WIDTH as f32 + reach);
     let (top, bottom) = (GROUND.start as f32 - reach, GROUND.end as f32 + reach);
@@ -453,13 +487,15 @@ fn fill(frame: &mut Frame, track: &Track) {
 
 fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
     frame.last_pose = pose;
-    let place = track.place(centre);
+    let place = track.place(centre, frame.route_leg);
+    frame.route_leg = place.map(|(end, _)| end);
     let at = pose.projection(centre);
     match place {
         Some(place) => {
-            let ahead = track.ahead_points(place, ROUTE_REACHES * pose.reach.ahead_m());
-            let shown = until_it_leaves(&at, Line::Route.reach(), ahead.map(|(p, _)| p));
-            frame.add(Line::Route, &at, shown);
+            let to_junction = track.junction().map_or(0.0, |j| distance(centre, j.at));
+            let reach_m = ROUTE_REACH * pose.reach.ahead_m() + to_junction;
+            let ahead = track.ahead_points(place, reach_m);
+            frame.add(Line::Route, &at, ahead.map(|(p, _)| p));
         }
         None => frame.add(Line::Ridden, &at, track.crumbs_back()),
     }

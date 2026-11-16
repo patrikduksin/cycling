@@ -133,7 +133,7 @@ impl Projection {
     }
 }
 
-fn rotation(heading: u16) -> (f32, f32) {
+pub fn rotation(heading: u16) -> (f32, f32) {
     let turns = f32::from(heading % TURN) / f32::from(TURN);
     (sinf(turns * TAU), cosf(turns * TAU))
 }

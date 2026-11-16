@@ -172,11 +172,17 @@ three quarters of the way down it, so most of the map is the road ahead and,
 while following, the blue route runs up through the middle. The course
 ahead is a wide blue route on a dark casing, and a white arrow on the route
 marks the next turn's corner. Only the course still to ride is drawn: from
-the rider's place on it, forward until it first leaves the map, at most
-twice the distance the map shows ahead. The course behind the rider, and a
-later part of it that comes back into view (the way back of an
-out-and-back, the end of a loop), is not drawn, and neither is the ride's
-own track.
+the rider's place on it, forward along the course for 1.5 times the
+distance the map shows ahead, so a road that winds a little still runs past
+the top edge.
+Off course the walk starts at the junction and goes that far past the
+rider's distance to it. The course behind the rider is not drawn, and
+neither is the ride's own track. The way back of an out-and-back shows only
+when its turnaround is within that distance: then it is course still to
+ride. Before joining, the rider's place is the nearest point on a stretch
+of course that runs the rider's way; it holds while the rider stands still
+or wavers between two stretches, so the route does not jump from fix to
+fix.
 The badge in the top-left corner shows the next turn and how far it is, at
 rest too; with a radar paired it sits 8 px right of the radar strip. It may
 cover the route, never the puck: straight up from the puck it covers from

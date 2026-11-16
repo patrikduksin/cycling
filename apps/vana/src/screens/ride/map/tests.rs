@@ -1,5 +1,6 @@
 use super::*;
 use crate::ride::course::nav::Distance;
+use crate::ride::homing::TURN;
 use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
 
@@ -563,4 +564,197 @@ fn the_ridden_track_is_drawn_only_without_a_course() {
     assert_eq!(ridden_px(&before), 0, "before joining");
     assert_eq!(ridden_px(&along), 0, "following");
     assert!(ridden_px(&free(&ridden)) > 0, "a free ride");
+}
+
+const AHEAD_OF_THE_PUCK: core::ops::Range<usize> = GROUND.start..205;
+const SOUTH: u16 = TURN / 2;
+
+fn blue_columns(frame: &Frame, y: usize) -> std::vec::Vec<usize> {
+    (0..WIDTH)
+        .filter(|&x| pixel(frame, x, y, BLACK) == ACCENT)
+        .collect()
+}
+
+fn blue_in(frame: &Frame, xs: core::ops::Range<usize>, ys: core::ops::Range<usize>) -> usize {
+    ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(frame, x, y, BLACK) == ACCENT)
+        .count()
+}
+
+fn there_and_back(lane_m: f32) -> std::vec::Vec<Crumb> {
+    follower_course(&[
+        (0.0, -100.0),
+        (0.0, 1_000.0),
+        (lane_m, 1_000.0),
+        (lane_m, -100.0),
+    ])
+}
+
+#[test]
+fn a_rider_between_the_way_out_and_back_sees_the_way_out_on_every_fix() {
+    let c = there_and_back(6.0);
+    let mut frame = Frame::default();
+    for x in [2.0, 4.0, 2.0, 4.0] {
+        fill(&mut frame, &joining(&c, (x, 0.0)));
+        assert!(
+            route_in(&frame, AHEAD_OF_THE_PUCK).is_some(),
+            "{x} m east: ahead"
+        );
+        assert_eq!(
+            route_in(&frame, BEHIND_THE_PUCK),
+            None,
+            "{x} m east: behind"
+        );
+    }
+}
+
+#[test]
+fn on_one_road_out_and_back_the_way_the_rider_rides_is_the_route() {
+    let c = there_and_back(0.0);
+    for heading in [0, SOUTH] {
+        let mut track = joining(&c, (0.0, 0.0));
+        track.heading = Some(heading);
+        let frame = filled(&track);
+        assert!(
+            route_in(&frame, AHEAD_OF_THE_PUCK).is_some(),
+            "heading {heading}: ahead"
+        );
+        assert_eq!(
+            route_in(&frame, BEHIND_THE_PUCK),
+            None,
+            "heading {heading}: behind"
+        );
+    }
+}
+
+#[test]
+fn between_two_roads_the_same_way_the_route_holds_its_road_until_another_is_10_m_closer() {
+    let c = follower_course(&[
+        (0.0, -100.0),
+        (0.0, 1_000.0),
+        (300.0, 1_000.0),
+        (300.0, -100.0),
+        (30.0, -100.0),
+        (30.0, 1_000.0),
+    ]);
+    let road_x = |frame: &Frame| {
+        let columns = blue_columns(frame, 150);
+        assert!(!columns.is_empty(), "a route ahead");
+        columns.iter().sum::<usize>() / columns.len()
+    };
+    let mut frame = Frame::default();
+    for x in [14.0, 16.0, 14.0, 16.0] {
+        fill(&mut frame, &joining(&c, (x, 0.0)));
+        assert!(road_x(&frame) < 120, "{x} m east: the first road");
+    }
+    fill(&mut frame, &joining(&c, (22.0, 0.0)));
+    assert!(
+        road_x(&frame) > 120,
+        "22 m east, 14 m nearer the second road"
+    );
+}
+
+#[test]
+fn standing_still_before_joining_the_route_keeps_its_leg() {
+    let c = there_and_back(6.0);
+    let mut frame = Frame::default();
+    fill(&mut frame, &joining(&c, (2.0, 0.0)));
+    let mut standing = joining(&c, (4.0, 0.0));
+    standing.heading = None;
+    fill(&mut frame, &standing);
+    assert!(route_in(&frame, AHEAD_OF_THE_PUCK).is_some(), "ahead");
+    assert_eq!(route_in(&frame, BEHIND_THE_PUCK), None, "behind");
+}
+
+#[test]
+fn after_following_stops_the_route_keeps_the_leg_it_followed() {
+    let c = there_and_back(6.0);
+    let mut frame = Frame::default();
+    fill(&mut frame, &on_course(&c, (0.0, 0.0), 100.0));
+    let mut stopped = joining(&c, (4.0, 0.0));
+    stopped.heading = None;
+    fill(&mut frame, &stopped);
+    assert!(route_in(&frame, AHEAD_OF_THE_PUCK).is_some(), "ahead");
+    assert_eq!(route_in(&frame, BEHIND_THE_PUCK), None, "behind");
+}
+
+#[test]
+fn a_route_that_jogs_after_its_turn_still_reaches_the_top_edge() {
+    let c = follower_course(&MOCKUP_COURSE);
+    let mut track = following(&c, (0.0, 20.0), 420.0, None);
+    track.reach = settled_at(10_000);
+    let frame = filled(&track);
+    assert!(
+        route_in(&frame, GROUND.start..GROUND.start + 1).is_some(),
+        "the route at the map's top row"
+    );
+}
+
+#[test]
+fn a_turn_back_beyond_the_top_of_the_map_draws_none_of_its_way_back() {
+    let c = follower_course(&[(0.0, -100.0), (0.0, 400.0), (20.0, -100.0)]);
+    let frame = filled(&on_course(&c, (0.0, 0.0), 100.0));
+    assert_eq!(pixel(&frame, 120, 150, BLACK), ACCENT, "the way to it");
+    assert_eq!(route_in(&frame, BEHIND_THE_PUCK), None, "the way back");
+}
+
+#[test]
+fn a_turn_back_on_the_map_draws_its_way_back() {
+    let c = follower_course(&[(0.0, -100.0), (0.0, 150.0), (20.0, -100.0)]);
+    let frame = filled(&on_course(&c, (0.0, 0.0), 100.0));
+    assert_eq!(pixel(&frame, 120, 150, BLACK), ACCENT, "the way to it");
+    assert!(
+        route_in(&frame, BEHIND_THE_PUCK).is_some(),
+        "the way back, past the puck"
+    );
+}
+
+#[test]
+fn off_course_from_a_junction_below_the_map_the_route_runs_up_past_the_rider() {
+    let c = follower_course(&[(0.0, -200.0), (0.0, -150.0), (0.0, 0.0), (0.0, 200.0)]);
+    let junction = Spot {
+        along_mm: 0,
+        at: (0.0, -200.0),
+    };
+    let frame = filled(&following(&c, (0.0, 0.0), 200.0, Some(junction)));
+    assert_eq!(
+        frame.junction_quarter_px, None,
+        "the junction is off the map"
+    );
+    assert_eq!(pixel(&frame, 120, 150, BLACK), ACCENT, "the course ahead");
+}
+
+#[test]
+fn a_turn_past_the_edge_of_the_map_draws_its_road_coming_back_onto_it() {
+    let c = follower_course(&[
+        (0.0, -100.0),
+        (0.0, 0.0),
+        (200.0, 80.0),
+        (210.0, 120.0),
+        (170.0, 160.0),
+        (170.0, 240.0),
+    ]);
+    let mut track = on_course(&c, (0.0, 0.0), 100.0);
+    let total = c.last().unwrap().along;
+    let turn_mm = ((total - c[1].along) * 1_000.0) as u32;
+    track.guidance = Some(Guidance {
+        sign: Sign::Chip {
+            glyph: Glyph::Left,
+            distance: Distance::from_mm(turn_mm - 100_000),
+        },
+        turn: Some((
+            Spot {
+                along_mm: turn_mm,
+                at: (170.0, 160.0),
+            },
+            Glyph::Left,
+        )),
+        junction: None,
+    });
+    let frame = filled(&track);
+    assert!(frame.arrow.strokes > 0, "the turn's arrow");
+    assert!(
+        blue_in(&frame, 223..WIDTH, 75..115) > 0,
+        "the road after the turn, back on the map"
+    );
 }

@@ -25,7 +25,6 @@ pub struct Pages {
 }
 
 impl Pages {
-    /// Write what the packet said to `out`.
     pub fn describe(&mut self, out: &mut String, identity: Identity, data: [u8; 8]) {
         let before = self
             .last

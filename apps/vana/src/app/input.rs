@@ -149,8 +149,6 @@ impl Runtime {
         }
     }
 
-    /// A button report on the page, unless it comes too soon after the last
-    /// press.
     fn button_press(
         &mut self,
         button: Button,

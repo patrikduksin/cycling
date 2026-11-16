@@ -16,7 +16,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// `value` as one JSON document on a line, or as its text.
 pub fn render<T: Serialize + fmt::Display>(json: bool, value: &T) -> Result<String, String> {
     if !json {
         return Ok(value.to_string());
@@ -37,8 +36,6 @@ fn as_strings<T: fmt::Display, S: Serializer>(
     serializer.collect_seq(items.iter().map(ToString::to_string))
 }
 
-/// The trace a command read: its file, its build, how it ended and the
-/// media a replay starts from.
 #[derive(Serialize)]
 pub struct Header<'a> {
     trace: String,
@@ -121,7 +118,6 @@ impl fmt::Display for Header<'_> {
     }
 }
 
-/// `cycling trace summary`.
 #[derive(Serialize)]
 pub struct Summary<'a> {
     header: Header<'a>,
@@ -245,7 +241,6 @@ impl fmt::Display for Prose {
     }
 }
 
-/// `cycling trace rebuild`.
 #[derive(Serialize)]
 pub struct Rebuilt {
     #[serde(serialize_with = "as_strings")]
@@ -260,8 +255,6 @@ impl fmt::Display for Rebuilt {
     }
 }
 
-/// `cycling trace timeline`: the entries in a window, and how many of each
-/// kind it left out.
 #[derive(Serialize)]
 pub struct Listing<'a> {
     from_ms: u64,
@@ -273,7 +266,6 @@ pub struct Listing<'a> {
 }
 
 impl<'a> Listing<'a> {
-    /// The entries of `kinds` from `from` to `to`, repeats only with `all`.
     pub fn of(
         timeline: &'a Timeline,
         (from, to): (u64, u64),
@@ -335,7 +327,6 @@ pub fn in_window(timeline: &Timeline, from: u64, to: u64) -> impl Iterator<Item 
         .filter(move |e| (from..=to).contains(&e.at.session_ms))
 }
 
-/// `cycling trace find`: the first answers, and how many there were.
 #[derive(Serialize)]
 pub struct Answers<'a> {
     found: Vec<Found<'a>>,
@@ -400,7 +391,6 @@ impl Serialize for Otlp {
     }
 }
 
-/// A file a command wrote: `otlp --out`.
 #[derive(Serialize)]
 pub struct Written {
     pub out: PathBuf,
@@ -412,8 +402,6 @@ impl fmt::Display for Written {
     }
 }
 
-/// `cycling trace test-stub`: the test, after the commands that make the
-/// trace a fixture when it is none yet.
 #[derive(Serialize)]
 pub struct Stub {
     pub fixture_steps: Option<String>,
@@ -429,7 +417,6 @@ impl fmt::Display for Stub {
     }
 }
 
-/// `cycling replay`.
 #[derive(Serialize)]
 pub struct Replayed<'a> {
     pub header: Header<'a>,

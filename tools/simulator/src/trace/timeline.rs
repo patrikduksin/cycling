@@ -6,7 +6,6 @@ use device_api::ant;
 use device_api::input::Input;
 use device_api::observation::Observation;
 use firmware_services::trace::{self, End, Event, Level};
-use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Write as _;
 
@@ -26,10 +25,17 @@ pub struct Moment {
 impl fmt::Display for Moment {
     /// `40:12.345 ride 38:05`, or `ride --:--` outside a ride.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ride ", session_clock(self.session_ms))?;
+        let ms = self.session_ms;
+        write!(
+            f,
+            "{:02}:{:02}.{:03} ride ",
+            ms / 60_000,
+            ms / 1000 % 60,
+            ms % 1000
+        )?;
         match self.ride_ms {
-            Some(ms) => write!(f, "{}", ride_clock(ms)),
-            None => write!(f, "--:--"),
+            Some(ms) => write!(f, "{:02}:{:02}", ms / 60_000, ms / 1000 % 60),
+            None => f.write_str("--:--"),
         }
     }
 }
@@ -518,7 +524,13 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         trace::Error::Header => "no trace header: the file is no ride trace".to_string(),
         trace::Error::Version(_) => error.to_string(),
     })?;
-    let mut reader = Reader::default();
+    let mut reader = Reader {
+        last: vec![None; Kind::ALL.len() << 8],
+        // A device trace spends about 23 bytes an entry, so the entries
+        // rarely move as they grow.
+        entries: Vec::with_capacity(bytes.len() / 16),
+        ..Reader::default()
+    };
     for event in events.by_ref() {
         reader.event(&event);
     }
@@ -549,6 +561,13 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
     })
 }
 
+/// A sensor that sent packets: when it was last heard, and its name.
+struct Heard {
+    identity: ant::Identity,
+    last_ms: u64,
+    name: String,
+}
+
 #[derive(Default)]
 struct Reader {
     entries: Vec<Entry>,
@@ -558,11 +577,15 @@ struct Reader {
     recording: bool,
     clock: Vec<Anchor>,
     utc_at_boot_ms: Option<u64>,
-    /// The last entry each source said that was not a repeat.
-    last: HashMap<(Kind, u8), usize>,
+    /// The last entry each source said that was not a repeat, indexed by
+    /// kind, then source.
+    last: Vec<Option<usize>>,
+    /// The text of the entry being written, reused so that an entry costs
+    /// one allocation of its exact length.
+    line: String,
     pages: Pages,
-    /// When each sensor was last heard, by type and number.
-    heard: HashMap<(u8, u16), (ant::Identity, u64)>,
+    /// Each sensor heard from; a handful.
+    heard: Vec<Heard>,
     silences: Vec<Silence>,
     /// The first entry of the pass being read.
     pass_start: usize,
@@ -590,23 +613,46 @@ impl Reader {
             .get_or_insert(utc_ms.saturating_sub(self.now));
     }
 
-    fn push(&mut self, kind: Kind, text: String) {
+    fn push(&mut self, kind: Kind, text: &str) {
         self.push_from(kind, 0, text);
     }
 
-    fn push_from(&mut self, kind: Kind, source: u8, text: String) {
-        let repeat = !kind.edge()
-            && self
-                .last
-                .get(&(kind, source))
-                .is_some_and(|&i| self.entries[i].text == text);
+    fn push_fmt(&mut self, kind: Kind, text: fmt::Arguments<'_>) {
+        let mut line = self.line();
+        let _ = line.write_fmt(text);
+        self.push_line(kind, 0, line);
+    }
+
+    /// Push `text` lowercased, as the Debug names of enums read.
+    fn push_lower(&mut self, kind: Kind, text: fmt::Arguments<'_>) {
+        let mut line = self.line();
+        let _ = line.write_fmt(text);
+        lowercase_from(&mut line, 0);
+        self.push_line(kind, 0, line);
+    }
+
+    /// The reused line buffer, empty, to write an entry's text into.
+    fn line(&mut self) -> String {
+        let mut line = std::mem::take(&mut self.line);
+        line.clear();
+        line
+    }
+
+    fn push_line(&mut self, kind: Kind, source: u8, line: String) {
+        self.push_from(kind, source, &line);
+        self.line = line;
+    }
+
+    fn push_from(&mut self, kind: Kind, source: u8, text: &str) {
+        let slot = &mut self.last[(kind as usize) << 8 | usize::from(source)];
+        let repeat = !kind.edge() && slot.is_some_and(|i| self.entries[i].text == text);
         if !repeat {
-            self.last.insert((kind, source), self.entries.len());
+            *slot = Some(self.entries.len());
         }
         self.entries.push(Entry {
             at: self.at(),
             kind,
-            text,
+            text: text.to_owned(),
             repeat,
             bytes: None,
             cause: None,
@@ -657,33 +703,47 @@ impl Reader {
 
     fn close_window(&mut self) {
         if let Some(window) = self.window.take() {
-            self.push(Kind::Activity, self::window(&window));
+            self.push(Kind::Activity, &self::window(&window));
             self.activity.push(window);
         }
     }
 
-    fn heard_from(&mut self, identity: ant::Identity) {
-        let key = (identity.device_type, identity.device_number);
-        let Some((_, last_ms)) = self.heard.insert(key, (identity, self.now)) else {
-            return;
+    /// Note a packet from `identity`, and the silence it ends; the sensor's
+    /// name.
+    fn heard_from(&mut self, identity: ant::Identity) -> &str {
+        let at = self.heard.iter().position(|heard| {
+            (heard.identity.device_type, heard.identity.device_number)
+                == (identity.device_type, identity.device_number)
+        });
+        let Some(at) = at else {
+            self.heard.push(Heard {
+                identity,
+                last_ms: self.now,
+                name: sensor(identity),
+            });
+            return &self.heard[self.heard.len() - 1].name;
         };
+        let heard = &mut self.heard[at];
+        heard.identity = identity;
+        let last_ms = std::mem::replace(&mut heard.last_ms, self.now);
         if self.now - last_ms > SILENCE_MS {
             self.silences.push(Silence {
-                sensor: sensor(identity),
+                sensor: heard.name.clone(),
                 last_ms,
                 next_ms: Some(self.now),
             });
         }
+        &self.heard[at].name
     }
 
     fn silent_at_end(&mut self) {
         let mut open: Vec<Silence> = self
             .heard
-            .values()
-            .filter(|(_, last_ms)| self.now - *last_ms > SILENCE_MS)
-            .map(|&(identity, last_ms)| Silence {
-                sensor: sensor(identity),
-                last_ms,
+            .iter()
+            .filter(|heard| self.now - heard.last_ms > SILENCE_MS)
+            .map(|heard| Silence {
+                sensor: heard.name.clone(),
+                last_ms: heard.last_ms,
                 next_ms: None,
             })
             .collect();
@@ -700,12 +760,14 @@ impl Reader {
             Event::Pass { now_ms } => {
                 self.end_pass();
                 if self.passes > 0 && now_ms.saturating_sub(self.now) >= GAP_MS {
-                    let text = format!(
-                        "no pass for {} until {}",
-                        duration(now_ms - self.now),
-                        session_clock(now_ms)
+                    self.push_fmt(
+                        Kind::Gap,
+                        format_args!(
+                            "no pass for {} until {}",
+                            duration(now_ms - self.now),
+                            session_clock(now_ms)
+                        ),
                     );
-                    self.push(Kind::Gap, text);
                 }
                 if self.recording {
                     self.ride_ms = self.ride_ms.map(|ms| ms + now_ms.saturating_sub(self.now));
@@ -713,73 +775,78 @@ impl Reader {
                 self.now = now_ms;
                 self.passes += 1;
             }
-            Event::Input(edge) => self.push(Kind::Input, input(edge.input)),
+            Event::Input(edge) => self.push(Kind::Input, &input(edge.input)),
             Event::Synthetic(pressed) => {
-                self.push(Kind::Input, format!("synthetic {}", input(pressed)))
+                self.push_fmt(Kind::Input, format_args!("synthetic {}", input(pressed)))
             }
             Event::Panel(_) => {}
-            Event::Command(line) => self.push(Kind::Command, super::secret::shown_command(line)),
+            Event::Command(line) => self.push(Kind::Command, &super::secret::shown_command(line)),
             Event::Startup(startup) => {
-                self.push(Kind::Startup, format!("companion {}", startup.name()))
+                self.push_fmt(Kind::Startup, format_args!("companion {}", startup.name()))
             }
-            Event::AntRadio(radio) => self.push(
+            Event::AntRadio(radio) => self.push_lower(
                 Kind::Ant,
-                format!(
+                format_args!(
                     "radio {:?}{}",
                     radio.availability,
                     if radio.scanning { " scanning" } else { "" }
-                )
-                .to_lowercase(),
+                ),
             ),
             Event::AntDiscoveries(found) => {
-                let found: Vec<String> = found
-                    .iter()
-                    .flatten()
-                    .map(|d| format!("{} rssi {}", sensor(d.identity), d.rssi))
-                    .collect();
-                let text = if found.is_empty() {
-                    "found nothing".into()
-                } else {
-                    format!("found {}", found.join(", "))
-                };
-                self.push(Kind::Ant, text);
+                let mut line = self.line();
+                for (i, d) in found.iter().flatten().enumerate() {
+                    let _ = write!(
+                        line,
+                        "{}{} rssi {}",
+                        if i == 0 { "found " } else { ", " },
+                        Sensor(d.identity),
+                        d.rssi
+                    );
+                }
+                if line.is_empty() {
+                    line.push_str("found nothing");
+                }
+                self.push_line(Kind::Ant, 0, line);
             }
             Event::AntLink { channel, snapshot } => {
-                self.push_from(Kind::Ant, channel, ant_link(channel, snapshot))
+                let mut line = self.line();
+                ant_link(&mut line, channel, snapshot);
+                self.push_line(Kind::Ant, channel, line);
             }
             Event::AntPacket(packet) => {
-                let words = self.pages.describe(packet.identity, packet.data);
-                self.heard_from(packet.identity);
-                self.push(
-                    Kind::AntPacket,
-                    format!("{} {words}", sensor(packet.identity)),
-                );
+                let mut line = self.line();
+                line.push_str(self.heard_from(packet.identity));
+                line.push(' ');
+                self.pages
+                    .describe_into(&mut line, packet.identity, packet.data);
+                self.push_line(Kind::AntPacket, 0, line);
                 if let Some(entry) = self.entries.last_mut() {
                     entry.bytes = Some(packet.data);
                 }
             }
-            Event::AntRequest { operation, result } => self.push(
+            Event::AntRequest { operation, result } => self.push_fmt(
                 Kind::AntRequest,
-                format!("{} -> {}", ant_operation(operation), ant_result(result)),
+                format_args!("{} -> {}", ant_operation(operation), ant_result(result)),
             ),
-            Event::AntSend(send) => self.push(Kind::AntRequest, format!("send status {send:?}")),
+            Event::AntSend(send) => {
+                self.push_fmt(Kind::AntRequest, format_args!("send status {send:?}"))
+            }
             Event::BleLink {
                 availability,
                 snapshot,
-            } => self.push(
-                Kind::Ble,
-                format!(
-                    "link {}{}",
-                    snapshot.link.name(),
-                    match availability {
-                        device_api::observation::Availability::Ready => String::new(),
-                        other => format!(" ({other:?})").to_lowercase(),
-                    }
-                ),
-            ),
-            Event::BlePacket(packet) => self.push(
+            } => {
+                let mut line = self.line();
+                let _ = write!(line, "link {}", snapshot.link.name());
+                if availability != device_api::observation::Availability::Ready {
+                    let start = line.len();
+                    let _ = write!(line, " ({availability:?})");
+                    lowercase_from(&mut line, start);
+                }
+                self.push_line(Kind::Ble, 0, line);
+            }
+            Event::BlePacket(packet) => self.push_fmt(
                 Kind::BlePacket,
-                format!(
+                format_args!(
                     "connection {} seq {} data {}",
                     packet.connection,
                     packet.sequence,
@@ -787,7 +854,7 @@ impl Reader {
                 ),
             ),
             Event::BleBattery(level) => {
-                self.push(Kind::Ble, format!("sensor battery raw {}", level.raw))
+                self.push_fmt(Kind::Ble, format_args!("sensor battery raw {}", level.raw))
             }
             Event::Position {
                 availability: _,
@@ -796,58 +863,60 @@ impl Reader {
                 if let Some(utc) = snapshot.and_then(|s| s.gps.utc_ms) {
                     self.learn_utc(utc);
                 }
-                self.push(Kind::Gps, gps(snapshot))
+                let mut line = self.line();
+                gps(&mut line, snapshot);
+                self.push_line(Kind::Gps, 0, line);
             }
             Event::Physical(snapshot) => self.push(
                 Kind::Sensors,
                 match snapshot.pressure {
-                    Observation::Unavailable => "barometer unavailable".into(),
-                    Observation::Fresh { .. } => "barometer fresh".into(),
-                    Observation::Stale { .. } => "barometer stale".into(),
+                    Observation::Unavailable => "barometer unavailable",
+                    Observation::Fresh { .. } => "barometer fresh",
+                    Observation::Stale { .. } => "barometer stale",
                 },
             ),
-            Event::Light(light) => self.push(
-                Kind::Sensors,
-                match light {
-                    Observation::Unavailable => "ambient light unavailable".into(),
-                    Observation::Fresh { value, .. } => format!("ambient light {}", value.0),
-                    Observation::Stale { value, .. } => {
-                        format!("ambient light {} stale", value.0)
-                    }
-                },
-            ),
-            Event::Power(snapshot) => self.push(Kind::Battery, battery(snapshot)),
+            Event::Light(light) => match light {
+                Observation::Unavailable => self.push(Kind::Sensors, "ambient light unavailable"),
+                Observation::Fresh { value, .. } => {
+                    self.push_fmt(Kind::Sensors, format_args!("ambient light {}", value.0))
+                }
+                Observation::Stale { value, .. } => self.push_fmt(
+                    Kind::Sensors,
+                    format_args!("ambient light {} stale", value.0),
+                ),
+            },
+            Event::Power(snapshot) => {
+                let mut line = self.line();
+                battery(&mut line, snapshot);
+                self.push_line(Kind::Battery, 0, line);
+            }
             Event::NetworkTime(snapshot) => {
                 if let Some(unix) = snapshot.unix_seconds {
                     self.learn_utc(unix * 1000 + u64::from(snapshot.millis));
                 }
-                self.push(
-                    Kind::Time,
-                    match snapshot.unix_seconds {
-                        Some(unix) => {
-                            format!("wifi utc {unix} ({:?})", snapshot.status).to_lowercase()
-                        }
-                        None => format!("wifi utc none ({:?})", snapshot.status).to_lowercase(),
-                    },
-                )
+                match snapshot.unix_seconds {
+                    Some(unix) => self.push_lower(
+                        Kind::Time,
+                        format_args!("wifi utc {unix} ({:?})", snapshot.status),
+                    ),
+                    None => self.push_lower(
+                        Kind::Time,
+                        format_args!("wifi utc none ({:?})", snapshot.status),
+                    ),
+                }
             }
-            Event::StorageFault(fault) => self.push(
+            Event::StorageFault(fault) => self.push_lower(
                 Kind::Storage,
-                format!(
+                format_args!(
                     "{:?} {:?} failed at {}: {:?}",
                     fault.medium, fault.op, fault.at, fault.error
-                )
-                .to_lowercase(),
+                ),
             ),
-            Event::Entropy(value) => self.push(Kind::Entropy, format!("{value:#018x}")),
-            Event::Page(page) => self.push(Kind::Page, page.into()),
+            Event::Entropy(value) => self.push_fmt(Kind::Entropy, format_args!("{value:#018x}")),
+            Event::Page(page) => self.push(Kind::Page, page),
             Event::Toast(text) => self.push(
                 Kind::Toast,
-                if text.is_empty() {
-                    TOAST_CLEARED.into()
-                } else {
-                    text.into()
-                },
+                if text.is_empty() { TOAST_CLEARED } else { text },
             ),
             Event::Sound {
                 pattern,
@@ -856,7 +925,7 @@ impl Reader {
                 of,
             } => self.push(
                 Kind::Sound,
-                match (cue.replace('_', " "), of) {
+                &match (cue.replace('_', " "), of) {
                     (cue, _) if cue.is_empty() => format!("pattern {pattern}"),
                     (cue, 1) => format!("pattern {pattern}: {cue}"),
                     (cue, of) => format!("pattern {pattern}: {cue} ({note} of {of})"),
@@ -875,23 +944,23 @@ impl Reader {
                     ride_ms: self.ride_ms,
                     running: self.recording,
                 });
-                self.push(Kind::Ride, state.into());
+                self.push(Kind::Ride, state);
             }
             Event::Shown(fields) => {
                 self.ride_time_shown(fields);
-                self.push(Kind::Shown, fields.into())
+                self.push(Kind::Shown, fields)
             }
             Event::Log {
                 level,
                 target,
                 text,
-            } => self.push(
+            } => self.push_fmt(
                 if about_storage(text) {
                     Kind::Storage
                 } else {
                     Kind::Log
                 },
-                format!(
+                format_args!(
                     "{} {target} {text}",
                     match level {
                         Level::Error => "error",
@@ -899,13 +968,13 @@ impl Reader {
                     }
                 ),
             ),
-            Event::AccessPoint { state, reach } => self.push(
+            Event::AccessPoint { state, reach } => self.push_lower(
                 Kind::Phone,
-                format!("access point {state:?}, {reach:?}").to_lowercase(),
+                format_args!("access point {state:?}, {reach:?}"),
             ),
-            Event::AccessPointRequest { start, result } => self.push(
+            Event::AccessPointRequest { start, result } => self.push_fmt(
                 Kind::Phone,
-                format!(
+                format_args!(
                     "access point {} -> {}",
                     if start { "start" } else { "stop" },
                     answer(result)
@@ -913,7 +982,7 @@ impl Reader {
             ),
             Event::Server { request, room } => self.push(
                 Kind::Phone,
-                match request {
+                &match request {
                     Some(request) => format!(
                         "server holds #{} {:?} {}{}{} body {} B, room {room} B",
                         request.id,
@@ -932,56 +1001,57 @@ impl Reader {
                     "server listen"
                 } else {
                     "server stop"
-                }
-                .into(),
+                },
             ),
-            Event::ServerFinish(id) => self.push(Kind::Phone, format!("server finish #{id}")),
-            Event::ServerRead { id, part, more } => self.push(
+            Event::ServerFinish(id) => {
+                self.push_fmt(Kind::Phone, format_args!("server finish #{id}"))
+            }
+            Event::ServerRead { id, part, more } => self.push_fmt(
                 Kind::Phone,
-                format!(
+                format_args!(
                     "server read #{id} {} B{}",
                     part.len(),
                     if more { ", more" } else { "" }
                 ),
             ),
-            Event::ServerWrite { id, taken } => {
-                self.push(Kind::Phone, format!("server write #{id} took {taken} B"))
-            }
+            Event::ServerWrite { id, taken } => self.push_fmt(
+                Kind::Phone,
+                format_args!("server write #{id} took {taken} B"),
+            ),
             Event::PowerControl(status) => {
                 self.power.push((self.now, status.state));
-                self.push(
+                self.push_lower(
                     Kind::Power,
-                    format!("{:?} {:?}", status.state, status.operation).to_lowercase(),
+                    format_args!("{:?} {:?}", status.state, status.operation),
                 )
             }
             Event::PowerRequest {
                 operation,
                 delay_ms,
                 result,
-            } => self.push(
+            } => self.push_fmt(
                 Kind::Power,
-                format!(
+                format_args!(
                     "{} in {delay_ms} ms -> {}",
                     format!("{operation:?}").to_lowercase(),
                     answer(result)
                 ),
             ),
-            Event::PoweredOff => self.push(Kind::Power, "powered off".into()),
-            Event::Backlight(availability) => self.push(
+            Event::PoweredOff => self.push(Kind::Power, "powered off"),
+            Event::Backlight(availability) => {
+                self.push_lower(Kind::Display, format_args!("backlight {availability:?}"))
+            }
+            Event::Refused { output, attempt } => self.push_lower(
                 Kind::Display,
-                format!("backlight {availability:?}").to_lowercase(),
+                format_args!("{output:?} refused, attempt {attempt}"),
             ),
-            Event::Refused { output, attempt } => self.push(
-                Kind::Display,
-                format!("{output:?} refused, attempt {attempt}").to_lowercase(),
-            ),
-            Event::SoundState(snapshot) => self.push(
+            Event::SoundState(snapshot) => self.push_lower(
                 Kind::Buzzer,
-                format!("{:?} {:?}", snapshot.state, snapshot.pattern).to_lowercase(),
+                format_args!("{:?} {:?}", snapshot.state, snapshot.pattern),
             ),
-            Event::SoundRequest { play, result } => self.push(
+            Event::SoundRequest { play, result } => self.push_fmt(
                 Kind::Buzzer,
-                format!(
+                format_args!(
                     "{} -> {}",
                     match play {
                         Some(pattern) => format!("play {pattern}"),
@@ -990,22 +1060,24 @@ impl Reader {
                     answer(result)
                 ),
             ),
-            Event::TooLarge(tag) => self.push(
+            Event::TooLarge(tag) => self.push_fmt(
                 Kind::Trace,
-                format!("a record tagged {tag} was too large and left out"),
+                format_args!("a record tagged {tag} was too large and left out"),
             ),
             Event::HostWrote => self.push(
                 Kind::Trace,
-                "a host wrote FILES or TERRAIN; the trace ends here".into(),
+                "a host wrote FILES or TERRAIN; the trace ends here",
             ),
-            Event::Lost { blocks, bytes } => self.push(
+            Event::Lost { blocks, bytes } => self.push_fmt(
                 Kind::Trace,
-                format!("{blocks} blocks, {bytes} B, lost here: the recorder had no room for them"),
+                format_args!(
+                    "{blocks} blocks, {bytes} B, lost here: the recorder had no room for them"
+                ),
             ),
             Event::FrameTime(frame_time) => self.frame_time_awaiting_health = Some(frame_time),
             Event::Health(health) => {
                 let frame_time = self.frame_time_awaiting_health.take();
-                self.push(Kind::Health, self::health(&health, frame_time));
+                self.push(Kind::Health, &self::health(&health, frame_time));
                 self.health.push((self.now, health));
                 self.frame_times.extend(frame_time.map(|f| (self.now, f)));
             }
@@ -1094,6 +1166,18 @@ fn about_storage(text: &str) -> bool {
     STORAGE_WORDS.iter().any(|word| text.contains(word))
 }
 
+/// Lowercase `line` from byte `start`, as `str::to_lowercase` does, without
+/// a copy when that part is ASCII.
+fn lowercase_from(line: &mut String, start: usize) {
+    if line[start..].is_ascii() {
+        line[start..].make_ascii_lowercase();
+    } else {
+        let lower = line[start..].to_lowercase();
+        line.truncate(start);
+        line.push_str(&lower);
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -1104,36 +1188,44 @@ fn hex(bytes: &[u8]) -> String {
 
 /// An ANT+ sensor as `power#12345`.
 pub fn sensor(identity: ant::Identity) -> String {
-    format!(
-        "{}#{}",
-        sensor_type(identity.device_type),
-        identity.device_number
-    )
+    Sensor(identity).to_string()
 }
 
-pub fn sensor_type(device_type: u8) -> String {
-    match device_type {
-        11 => "power".into(),
-        40 => "radar".into(),
-        120 => "hr".into(),
-        121 => "speed_cadence".into(),
-        122 => "cadence".into(),
-        123 => "speed".into(),
-        other => format!("type{other}"),
+/// Writes an ANT+ sensor as `power#12345`.
+pub struct Sensor(pub ant::Identity);
+
+impl fmt::Display for Sensor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.device_type {
+            11 => f.write_str("power"),
+            40 => f.write_str("radar"),
+            120 => f.write_str("hr"),
+            121 => f.write_str("speed_cadence"),
+            122 => f.write_str("cadence"),
+            123 => f.write_str("speed"),
+            other => write!(f, "type{other}"),
+        }?;
+        write!(f, "#{}", self.0.device_number)
     }
 }
 
-fn ant_link(channel: u8, snapshot: Option<ant::Snapshot>) -> String {
-    let Some(s) = snapshot else {
-        return format!("ch{channel} closed");
+fn ant_link(out: &mut String, channel: u8, snapshot: Option<ant::Snapshot>) {
+    let _ = match snapshot {
+        None => write!(out, "ch{channel} closed"),
+        Some(s) => {
+            let _ = match s.selected {
+                Some(peer) => write!(out, "ch{channel} {}", Sensor(peer)),
+                None => write!(out, "ch{channel} no sensor"),
+            };
+            write!(
+                out,
+                " {}{}{}",
+                s.link.name(),
+                if s.stale { " stale" } else { "" },
+                if s.scanning { " scanning" } else { "" }
+            )
+        }
     };
-    let peer = s.selected.map_or("no sensor".into(), sensor);
-    format!(
-        "ch{channel} {peer} {}{}{}",
-        s.link.name(),
-        if s.stale { " stale" } else { "" },
-        if s.scanning { " scanning" } else { "" }
-    )
 }
 
 fn ant_operation(operation: ant::AntOperation) -> String {
@@ -1165,9 +1257,10 @@ fn input(input: Input) -> String {
     }
 }
 
-fn gps(snapshot: Option<device_api::positioning::Snapshot>) -> String {
+fn gps(out: &mut String, snapshot: Option<device_api::positioning::Snapshot>) {
     let Some(snapshot) = snapshot else {
-        return "no receiver".into();
+        out.push_str("no receiver");
+        return;
     };
     let fix = snapshot.gps;
     let state = match fix.state {
@@ -1176,45 +1269,62 @@ fn gps(snapshot: Option<device_api::positioning::Snapshot>) -> String {
         device_api::gps::FixState::Fresh => "fix",
         device_api::gps::FixState::Stale => "fix stale",
     };
-    match fix.satellites {
-        Some(satellites) => format!("{state} sats {satellites}"),
-        None => state.into(),
+    out.push_str(state);
+    if let Some(satellites) = fix.satellites {
+        let _ = write!(out, " sats {satellites}");
     }
 }
 
-fn battery(snapshot: Option<device_api::input::InputSnapshot>) -> String {
+fn battery(out: &mut String, snapshot: Option<device_api::input::InputSnapshot>) {
     let Some(snapshot) = snapshot else {
-        return "companion silent".into();
+        out.push_str("companion silent");
+        return;
     };
-    let level = match snapshot.battery {
+    let _ = match snapshot.battery {
         Observation::Fresh {
             value: (percent, _),
             ..
-        } => format!("{percent}%"),
+        } => write!(out, "{percent}%"),
         Observation::Stale {
             value: (percent, _),
             ..
-        } => format!("{percent}% stale"),
-        Observation::Unavailable => "level unknown".into(),
+        } => write!(out, "{percent}% stale"),
+        Observation::Unavailable => out.write_str("level unknown"),
     };
-    let supply = match snapshot.power {
+    out.push_str(match snapshot.power {
         Observation::Fresh { value: 0, .. } | Observation::Stale { value: 0, .. } => " charging",
         Observation::Unavailable => "",
         _ => " on battery",
-    };
-    format!("{level}{supply}")
+    });
 }
 
 pub fn rate(per_second: f64) -> String {
-    if per_second >= 10.0 {
-        format!("{per_second:.0}/s")
-    } else {
-        format!("{per_second:.1}/s")
+    Rate(per_second).to_string()
+}
+
+/// Writes a rate as `12/s`, or `1.5/s` under ten.
+struct Rate(f64);
+
+impl fmt::Display for Rate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            per_second if per_second >= 10.0 => write!(f, "{per_second:.0}/s"),
+            per_second => write!(f, "{per_second:.1}/s"),
+        }
     }
 }
 
 pub fn percent(share: f64) -> String {
-    format!("{:.1}%", share * 100.0)
+    Percent(share).to_string()
+}
+
+/// Writes a share as `12.5%`.
+struct Percent(f64);
+
+impl fmt::Display for Percent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:.1}%", self.0 * 100.0)
+    }
 }
 
 /// A health record as one timeline line.
@@ -1278,9 +1388,11 @@ fn health(h: &trace::Health, frame_time: Option<trace::FrameTime>) -> String {
 fn window(window: &Window) -> String {
     let a = &window.activity;
     let span_ms = u64::from(a.window_ms).max(1);
-    let share = |us: u32| percent(f64::from(us) / (span_ms * 1000) as f64);
-    let per_s = |count: u32| rate(f64::from(count) * 1000.0 / span_ms as f64);
-    let mut text = format!(
+    let share = |us: u32| Percent(f64::from(us) / (span_ms * 1000) as f64);
+    let per_s = |count: u32| Rate(f64::from(count) * 1000.0 / span_ms as f64);
+    let mut text = String::new();
+    let _ = write!(
+        text,
         "{}{}: {} wakeups",
         if a.simulated { "simulated " } else { "" },
         duration(span_ms),
@@ -1292,45 +1404,39 @@ fn window(window: &Window) -> String {
     if let Some(switches) = a.switches {
         let _ = write!(text, ", {} switches", per_s(switches));
     }
-    let cpu: Vec<String> = [
+    for (name, us) in [
         ("awake", a.awake_us),
         ("main", a.main_us),
         ("radio", a.radio_us),
         ("idle", a.idle_us),
         ("counting", a.hooks_us),
-    ]
-    .into_iter()
-    .filter_map(|(name, us)| Some(format!("{name} {}", share(us?))))
-    .collect();
-    if !cpu.is_empty() {
-        let _ = write!(text, ", {}", cpu.join(", "));
+    ] {
+        if let Some(us) = us {
+            let _ = write!(text, ", {name} {}", share(us));
+        }
     }
-    let tasks: Vec<String> = window
-        .tasks
-        .iter()
-        .map(|task| match task.busy_us {
-            Some(busy) => format!("{} {} {}", task.name, per_s(task.polls), share(busy)),
-            None => format!("{} {}", task.name, per_s(task.polls)),
-        })
-        .collect();
-    if !tasks.is_empty() {
-        let _ = write!(text, "; {}", tasks.join(", "));
+    for (i, task) in window.tasks.iter().enumerate() {
+        let _ = write!(
+            text,
+            "{}{} {}",
+            if i == 0 { "; " } else { ", " },
+            task.name,
+            per_s(task.polls)
+        );
+        if let Some(busy) = task.busy_us {
+            let _ = write!(text, " {}", share(busy));
+        }
     }
-    let stages: Vec<String> = window
-        .stages
-        .iter()
-        .map(|stage| {
-            format!(
-                "{} {} ({} a pass, max {})",
-                stage.name,
-                share(stage.busy_us),
-                micros(u64::from(stage.busy_us) / u64::from(stage.runs.max(1))),
-                micros(u64::from(stage.max_us))
-            )
-        })
-        .collect();
-    if !stages.is_empty() {
-        let _ = write!(text, "; pass stages {}", stages.join(", "));
+    for (i, stage) in window.stages.iter().enumerate() {
+        let _ = write!(
+            text,
+            "{}{} {} ({} a pass, max {})",
+            if i == 0 { "; pass stages " } else { ", " },
+            stage.name,
+            share(stage.busy_us),
+            Micros(u64::from(stage.busy_us) / u64::from(stage.runs.max(1))),
+            Micros(u64::from(stage.max_us))
+        );
     }
     let c = &a.consumers;
     let _ = write!(
@@ -1389,10 +1495,17 @@ pub fn millis(us: u32) -> String {
 
 /// `850 µs`, or `3.15 ms` from a millisecond up.
 pub fn micros(us: u64) -> String {
-    if us >= 1000 {
-        format!("{:.2} ms", us as f64 / 1000.0)
-    } else {
-        format!("{us} µs")
+    Micros(us).to_string()
+}
+
+struct Micros(u64);
+
+impl fmt::Display for Micros {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            us if us >= 1000 => write!(f, "{:.2} ms", us as f64 / 1000.0),
+            us => write!(f, "{us} µs"),
+        }
     }
 }
 

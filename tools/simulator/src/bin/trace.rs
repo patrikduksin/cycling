@@ -337,17 +337,19 @@ fn summary(path: &Path, timeline: &Timeline, media: &Media) -> String {
     for (_, line) in lines {
         let _ = writeln!(out, "{line}");
     }
-    let mut counts: BTreeMap<Kind, (usize, usize)> = BTreeMap::new();
+    let mut counts = [(0usize, 0usize); Kind::ALL.len()];
     for entry in &timeline.entries {
-        let count = counts.entry(entry.kind).or_default();
+        let count = &mut counts[entry.kind as usize];
         if entry.repeat {
             count.1 += 1;
         } else {
             count.0 += 1;
         }
     }
-    let counts: Vec<String> = counts
+    let counts: Vec<String> = Kind::ALL
         .iter()
+        .zip(counts)
+        .filter(|(_, (new, repeats))| new + repeats > 0)
         .map(|(kind, (new, repeats))| match repeats {
             0 => format!("{} {new}", kind.name()),
             _ => format!("{} {new}+{repeats}", kind.name()),
@@ -367,18 +369,31 @@ fn timeline_text(timeline: &Timeline, options: &Options) -> Result<String, Strin
     let kinds = Kind::parse_list(options.value("kinds").unwrap_or("default"))?;
     let all = options.has("all");
     let mut out = String::new();
-    let mut hidden: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut shown = [false; Kind::ALL.len()];
+    for kind in kinds {
+        shown[kind as usize] = true;
+    }
+    let mut hidden = [0usize; Kind::ALL.len()];
+    let mut repeats = 0;
+    let hex = options.has("hex");
     for entry in in_window(timeline, from, to) {
-        if !kinds.contains(&entry.kind) {
-            *hidden.entry(entry.kind.name()).or_default() += 1;
+        if !shown[entry.kind as usize] {
+            hidden[entry.kind as usize] += 1;
         } else if entry.repeat && !all {
-            *hidden.entry("repeats").or_default() += 1;
-        } else if options.has("hex") {
+            repeats += 1;
+        } else if hex {
             let _ = writeln!(out, "{entry:#}");
         } else {
             let _ = writeln!(out, "{entry}");
         }
     }
+    let mut hidden: Vec<(&str, usize)> = Kind::ALL
+        .iter()
+        .map(|kind| (kind.name(), hidden[*kind as usize]))
+        .chain([("repeats", repeats)])
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    hidden.sort();
     if !hidden.is_empty() {
         let hidden: Vec<String> = hidden.iter().map(|(k, n)| format!("{k} {n}")).collect();
         let _ = writeln!(out, "hidden: {} (--kinds all, --all)", hidden.join(", "));

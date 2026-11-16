@@ -1,7 +1,7 @@
 use super::super::tests::{Said, hairpin, join, line_of, path, ride_with, ring, turns_of};
-use super::super::{Kind, SCAN_STEPS, Scan, Side, TURNS, Turn, distance};
+use super::super::{Kind, PlacedScan, SCAN_STEPS, Side, TURNS, Turn, distance};
 use super::RETRACE_M;
-use crate::ride::course::stored::tests::{found, found_along, unspurred, uploaded};
+use crate::ride::course::stored::tests::{found, found_along, uploaded};
 use std::string::{String, ToString};
 use std::vec::Vec;
 use std::{format, vec};
@@ -258,6 +258,39 @@ fn a_spur_whose_way_on_hooks_back_beside_the_way_in_says_what_the_course_without
 }
 
 #[test]
+fn a_spur_drawn_at_its_corners_whose_way_back_turns_off_along_its_way_out_keeps_the_u_turn() {
+    let corners = [
+        (0.0, 0.0),
+        (0.0, 300.0),
+        (60.0, 300.0),
+        (8.0, 300.0),
+        (8.0, 0.0),
+        (300.0, 0.0),
+    ];
+    let without = [
+        (0.0, 0.0),
+        (0.0, 300.0),
+        (8.0, 300.0),
+        (8.0, 0.0),
+        (300.0, 0.0),
+    ];
+    assert_eq!(kept_about(&without), [[Kind::UTurn, LEFT]; 2]);
+    assert_eq!(kept_about(&corners), kept_about(&without));
+}
+
+#[test]
+fn a_spur_drawn_at_its_corners_where_the_road_runs_on_says_nothing() {
+    for (tip, on) in [
+        ((60.0, 300.0), (0.0, 700.0)),
+        ((-60.0, 300.0), (300.0, 300.0)),
+    ] {
+        let corners = [(0.0, 0.0), (0.0, 300.0), tip, (0.0, 300.0), on];
+        let without = [(0.0, 0.0), (0.0, 300.0), on];
+        assert_eq!(kept_about(&corners), kept_about(&without), "{tip:?}");
+    }
+}
+
+#[test]
 fn a_jog_just_past_a_spur_keeps_both_its_turns() {
     for jog in [10.0, 15.0, 25.0] {
         let corners = [
@@ -271,6 +304,31 @@ fn a_jog_just_past_a_spur_keeps_both_its_turns() {
         ];
         assert_eq!(told(&path(&corners, 5.0)), [[RIGHT, LEFT]; 2], "{jog} m");
     }
+}
+
+fn upto(line: &[(f32, f32)], m: f32) -> Vec<(f32, f32)> {
+    let mut kept = vec![line[0]];
+    let mut kept_m = 0.0;
+    for pair in line.windows(2) {
+        let along = distance(pair[0], pair[1]);
+        if kept_m + along >= m {
+            let t = (m - kept_m) / along;
+            let end = (
+                pair[0].0 + t * (pair[1].0 - pair[0].0),
+                pair[0].1 + t * (pair[1].1 - pair[0].1),
+            );
+            kept.extend((distance(pair[0], end) > 0.0).then_some(end));
+            return kept;
+        }
+        kept_m += along;
+        kept.push(pair[1]);
+    }
+    kept
+}
+
+struct Drawn {
+    with: Vec<(f32, f32)>,
+    without: Vec<(f32, f32)>,
 }
 
 /// Metres along `line` to its point nearest `p`, and how far off it is.
@@ -301,6 +359,7 @@ fn nearest(line: &[(f32, f32)], p: (f32, f32)) -> (f32, f32) {
 struct Shape {
     name: String,
     way_in: Vec<(f32, f32)>,
+    base: (f32, f32),
     depth: f32,
     tip: (f32, f32),
     drift: f32,
@@ -309,11 +368,19 @@ struct Shape {
 
 impl Shape {
     fn base(&self) -> (f32, f32) {
-        self.way_in[self.way_in.len() - 1]
+        self.base
+    }
+
+    fn comes_from(&self) -> (f32, f32) {
+        let n = self.way_in.len();
+        match self.way_in[n - 1] == self.base {
+            true => self.way_in[n - 2],
+            false => self.way_in[n - 1],
+        }
     }
 
     fn returns_to(&self) -> (f32, f32) {
-        let (came, base, tip) = (self.way_in[self.way_in.len() - 2], self.base(), self.tip);
+        let (came, base, tip) = (self.comes_from(), self.base(), self.tip);
         let side = ((base.1 - tip.1) / self.depth, (tip.0 - base.0) / self.depth);
         let onward = side.0 * (base.0 - came.0) + side.1 * (base.1 - came.1);
         let drift = match onward < -0.01 {
@@ -323,25 +390,29 @@ impl Shape {
         (base.0 + side.0 * drift, base.1 + side.1 * drift)
     }
 
-    fn corners(&self, spur: bool) -> Vec<(f32, f32)> {
-        let back = match self.drift > 0.0 {
-            true => vec![self.returns_to()],
-            false => vec![],
-        };
-        let spur = match spur {
-            true => vec![self.tip, self.base()],
-            false => vec![],
-        };
-        let spur = match (spur.is_empty(), back.is_empty()) {
-            (false, false) => vec![self.tip, self.returns_to()],
-            _ => [spur, back].concat(),
-        };
+    fn corners(&self) -> Vec<(f32, f32)> {
+        let spur = [self.tip, self.returns_to()];
         self.way_in
             .iter()
             .chain(&spur)
             .chain(&self.on)
             .copied()
             .collect()
+    }
+
+    fn drawn(&self, step: f32) -> Drawn {
+        let out: Vec<_> = self.way_in.iter().chain([&self.tip]).copied().collect();
+        let base_m = length(&self.way_in) + distance(self.way_in[self.way_in.len() - 1], self.base);
+        let on: Vec<_> = [self.returns_to()]
+            .iter()
+            .chain(&self.on)
+            .copied()
+            .collect();
+        let without = join(&[upto(&path(&out, step), base_m), path(&on, step)]);
+        Drawn {
+            with: path(&self.corners(), step),
+            without,
+        }
     }
 
     /// The spur leaves the course or runs beside it other than at its
@@ -352,11 +423,17 @@ impl Shape {
             let (east, north) = (p.0 - base.0, p.1 - base.1);
             east.atan2(north)
         };
-        let came = self.way_in[self.way_in.len() - 2];
-        let ways = [way(self.tip), way(came), way(self.on[0])];
+        let ways = [way(self.tip), way(self.comes_from()), way(self.on[0])];
         let same = |a: f32, b: f32| libm::cosf(a - b) > 0.99;
         let overlaps = same(ways[0], ways[1]) || same(ways[0], ways[2]) || same(ways[1], ways[2]);
-        let course: Vec<_> = self.way_in.iter().chain(&self.on).copied().collect();
+        let mut course: Vec<_> = self
+            .way_in
+            .iter()
+            .chain([&base])
+            .chain(&self.on)
+            .copied()
+            .collect();
+        course.dedup();
         let away: Vec<_> = course
             .windows(2)
             .filter(|pair| pair[0] != base && pair[1] != base)
@@ -370,7 +447,14 @@ impl Shape {
             );
             away.iter().any(|segment| nearest(segment, p).1 < 6.0)
         });
-        overlaps || near
+        let segments: Vec<_> = course.windows(2).collect();
+        let crossed = segments.iter().enumerate().any(|(i, a)| {
+            segments[i + 1..]
+                .iter()
+                .skip(1)
+                .any(|b| path(b, 1.0).into_iter().any(|p| nearest(a, p).1 < 6.0))
+        });
+        overlaps || near || crossed
     }
 }
 
@@ -387,6 +471,7 @@ const DRIFTED_MARKED_M: core::ops::RangeInclusive<f32> = 20.0..=100.0;
 const HOOKED_MARKED_M: core::ops::RangeInclusive<f32> = 20.0..=100.0;
 
 const BASE: (f32, f32) = (0.0, 300.0);
+const BASE_ALONG_M: [f32; 3] = [0.0, 8.0, 25.0];
 
 fn shapes(drifts: &[f32]) -> Vec<Shape> {
     let mut ons: Vec<(String, Vec<(f32, f32)>)> = vec![
@@ -410,7 +495,14 @@ fn shapes(drifts: &[f32]) -> Vec<Shape> {
     let mut shapes = Vec::new();
     for (in_name, way_in) in &ways_in {
         for (on_name, on) in &ons {
-            shapes.extend(spurs_between(in_name, way_in, on_name, on, drifts));
+            shapes.extend(spurs_between(
+                in_name,
+                way_in,
+                on_name,
+                on,
+                drifts,
+                &BASE_ALONG_M,
+            ));
         }
     }
     shapes
@@ -445,7 +537,7 @@ fn hooks() -> Vec<Shape> {
         (-185.0, 145.0),
     ]);
     let on_name = "a hook, a dogleg and a left 150 m on";
-    spurs_between("in at 18 degrees", &way_in, on_name, &on, &[0.0])
+    spurs_between("in at 18 degrees", &way_in, on_name, &on, &[0.0], &[0.0])
 }
 
 /// A spur of each way and depth, and way back `drifts` off, between
@@ -456,32 +548,46 @@ fn spurs_between(
     on_name: &str,
     on: &[(f32, f32)],
     drifts: &[f32],
+    leads: &[f32],
 ) -> Vec<Shape> {
     let ways = [
         ("right", 90.0f32),
         ("left", -90.0),
-        ("a V back right", 150.0),
-        ("a V back left", -150.0),
-        ("a V ahead", 30.0),
+        ("a V back right", 145.0),
+        ("a V back left", -145.0),
+        ("a V ahead", 35.0),
     ];
     let mut shapes = Vec::new();
     for (way_name, degrees) in ways {
-        for depth in DEPTHS {
-            for &drift in drifts {
-                let a = degrees.to_radians();
-                let shape = Shape {
-                    name: format!("{in_name}, {depth} m {way_name} back {drift} m off, {on_name}"),
-                    way_in: way_in.to_vec(),
-                    depth,
-                    tip: (
-                        BASE.0 + depth * libm::sinf(a),
-                        BASE.1 + depth * libm::cosf(a),
-                    ),
-                    drift,
-                    on: on.to_vec(),
-                };
-                if !shape.tangled() {
-                    shapes.push(shape);
+        let a = degrees.to_radians();
+        let along = |p: (f32, f32), m: f32| (p.0 + m * libm::sinf(a), p.1 + m * libm::cosf(a));
+        let hooks_back_beside_its_way_out = degrees.abs() != 90.0;
+        let leads = match hooks_back_beside_its_way_out {
+            true => &[0.0][..],
+            false => leads,
+        };
+        for &lead in leads {
+            let base = along(BASE, lead);
+            let way_name = match lead > 0.0 {
+                true => format!("{way_name} {lead} m along it"),
+                false => way_name.to_string(),
+            };
+            for depth in DEPTHS {
+                for &drift in drifts {
+                    let shape = Shape {
+                        name: format!(
+                            "{in_name}, {depth} m {way_name} back {drift} m off, {on_name}"
+                        ),
+                        way_in: way_in.to_vec(),
+                        base,
+                        depth,
+                        tip: along(base, depth),
+                        drift,
+                        on: on.iter().map(|&p| along(p, lead)).collect(),
+                    };
+                    if !shape.tangled() {
+                        shapes.push(shape);
+                    }
                 }
             }
         }
@@ -525,7 +631,7 @@ fn as_without(marked: &[Turn], reference: &[Turn], base_m: f32, spur_m: f32) -> 
 /// past as spurs.
 fn scanned(line: &[(f32, f32)]) -> (Vec<Turn>, f32) {
     let mut turns = vec![Turn::default(); TURNS];
-    let mut scan = Scan::default();
+    let mut scan = PlacedScan::default();
     let mut found = 0;
     while !scan.done() {
         found = scan.step(line.len(), |k| line[k], SCAN_STEPS, &mut turns, found);
@@ -540,8 +646,6 @@ const EVERY_M: [f32; 6] = [1.0, 3.0, 5.0, 8.0, 15.0, 10_000.0];
 /// The shapes, drawn a point every `every_m`, where a marked spur does not
 /// say what the course without it says, as scanned and as found along the
 /// track at upload; and how many each marked, as each `marked_m` deep is.
-/// The upload is held to what it says of the course without the points it
-/// reads past.
 fn unlike(
     shapes: Vec<Shape>,
     marked_m: core::ops::RangeInclusive<f32>,
@@ -551,8 +655,7 @@ fn unlike(
     for shape in shapes {
         for &step in every_m {
             let name = format!("{}, every {step} m", shape.name);
-            let with = path(&shape.corners(true), step);
-            let without = path(&shape.corners(false), step);
+            let Drawn { with, without } = shape.drawn(step);
             let base_m = nearest(&without, shape.returns_to()).0;
             let drawn_m = length(&with) - length(&without);
             let (marked, scanned_m) = scanned(&with);
@@ -566,11 +669,8 @@ fn unlike(
             checked += usize::from(scanned_m > 0.0) + usize::from(uploaded_m > 0.0);
             let scan =
                 scanned_m == 0.0 || as_without(&marked, &turns_of(&without), base_m, drawn_m);
-            let upload = uploaded_m == 0.0 || {
-                let unspurred = unspurred(&with);
-                let base_m = nearest(&unspurred, shape.returns_to()).0;
-                as_without(&uploaded, &found_along(&unspurred).0, base_m, uploaded_m)
-            };
+            let upload = uploaded_m == 0.0
+                || as_without(&uploaded, &found_along(&without).0, base_m, drawn_m);
             if !scan || !upload {
                 failed.push(format!("{name}: scan {scan}, upload {upload}"));
             }
@@ -595,7 +695,7 @@ fn a_marked_spur_says_what_the_course_without_it_says() {
 /// of the way in.
 #[test]
 fn a_spur_before_a_hook_back_towards_the_way_in_says_what_the_course_without_it_says() {
-    let (failed, checked) = unlike(hooks(), HOOKED_MARKED_M, &[10_000.0]);
+    let (failed, checked) = unlike(hooks(), HOOKED_MARKED_M, &EVERY_M);
     assert!(
         failed.is_empty(),
         "{} of {checked}:\n{}",
@@ -679,11 +779,20 @@ fn a_dead_end_at_the_far_end_of_a_long_out_and_back_is_its_u_turn() {
 
 #[test]
 fn a_dead_end_of_up_to_30_m_at_the_far_end_of_a_long_out_and_back_is_its_u_turn() {
+    stubs_say_the_u_turn(&[12.0, 17.0, 25.0, 30.0], &EVERY_M);
+}
+
+#[test]
+fn a_dead_end_too_shallow_for_a_spur_drawn_every_few_metres_at_the_far_end_is_its_u_turn() {
+    stubs_say_the_u_turn(&[5.0, 8.0], &[3.0, 5.0, 8.0]);
+}
+
+fn stubs_say_the_u_turn(stubs: &[f32], every: &[f32]) {
     let mut failed = Vec::new();
-    for stub in [5.0, 8.0, 12.0, 17.0, 25.0, 30.0] {
+    for &stub in stubs {
         for side in [1.0, -1.0] {
             for back in [(0.0, 0.0), (2.0, 0.0), (0.0, 3.7)] {
-                for every_m in [3.0, 5.0, 8.0] {
+                for &every_m in every {
                     let drawn = out_and_back_with_a_stub(stub, side, back, every_m);
                     let told = kept_about(&drawn);
                     if told != [TIP_U_TURN; 2] {

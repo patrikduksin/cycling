@@ -39,33 +39,6 @@ pub(crate) fn found(full: &[(f32, f32)]) -> (Box<Course>, Vec<Turn>, Found) {
     (course, turns, found)
 }
 
-/// `full` without the points an upload reads past as spurs.
-pub(crate) fn unspurred(full: &[(f32, f32)]) -> Vec<(f32, f32)> {
-    let points: Vec<Point> = full
-        .iter()
-        .map(|&(east, north)| point_at(f64::from(east), f64::from(north)))
-        .collect();
-    let line = framed(&points);
-    let at = |k: usize| line[k];
-    let mut spurs = crate::ride::course::turns::Spurs::default();
-    let mut kept = Vec::new();
-    while kept.len() < full.len() {
-        spurs.step(line.len(), &at);
-        let settled = match spurs.done() {
-            true => full.len(),
-            false => spurs.settled(),
-        };
-        for k in kept.len()..settled {
-            kept.push(!spurs.skipped(k));
-            spurs.passed(k + 1);
-        }
-    }
-    full.iter()
-        .zip(kept)
-        .filter_map(|(&p, kept)| kept.then_some(p))
-        .collect()
-}
-
 /// `full` uploaded, its turns along it, before they move onto the course
 /// as kept, and metres of it read past as spurs.
 pub(crate) fn found_along(full: &[(f32, f32)]) -> (Vec<Turn>, f32) {

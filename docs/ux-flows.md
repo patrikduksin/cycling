@@ -294,10 +294,14 @@ way in, within 20 m of leaving it, is the far end of a longer out-and-back,
 even where the way back strays more than 3 m for a few metres. At the far end of a longer out-and-back, a dead end of up
 to 30 m past its last corner is a spur, so the corner says U-TURN. A longer
 dead end, roads side by side about 8 m apart, a hairpin and a roundabout keep
-their turns. Known limit: where the road on from a spur's base hooks back
-within 3 m of the way in for its first 9 m or so, and is drawn a point every
-few metres, VANA takes those metres for more of the spur, and its turns there
-may differ from the course without the spur. Turns stored with a
+their turns. Where the way back meets the course part way along the way out,
+as on a route drawn only at its corners, the course without the spur runs on
+from that point, so a road from there 8 m beside the way in keeps its
+U-TURN. Known limit: where the road on from a spur's base runs within 3 m of
+the way in for its first few metres, and the way back neither comes back
+through the point it left by nor turns at a point of the way out, as a
+recorded track's may not, VANA takes those metres for more of the spur, and
+its turns there may differ from the course without the spur. Turns stored with a
 course loaded before this keep its spurs until the course is loaded again.
 Where the course is drawn coarsely, as a planner's route is, or it was loaded
 before turns were found this way, a turn of several corners is named only

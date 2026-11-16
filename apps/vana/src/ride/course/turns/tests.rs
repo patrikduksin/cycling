@@ -60,7 +60,7 @@ fn length(line: &[(f32, f32)]) -> f32 {
 pub(crate) fn turns_of(line: &[(f32, f32)]) -> Vec<Turn> {
     let mut turns = vec![Turn::default(); TURNS];
     let at = |k: usize| line[k];
-    let mut scan = Scan::default();
+    let mut scan = PlacedScan::default();
     let mut found = 0;
     while !scan.done() {
         found = scan.step(line.len(), at, SCAN_STEPS, &mut turns, found);
@@ -433,7 +433,7 @@ fn thousands_of_points_in_one_spot_cost_a_bounded_scan() {
         line[k]
     };
     let mut turns = vec![Turn::default(); TURNS];
-    let mut scan = Scan::default();
+    let mut scan = PlacedScan::default();
     let found = scan.step(line.len(), at, SCAN_STEPS, &mut turns, 0);
     assert!(found <= 1);
     // Each point is passed once by each end of the chord, and its tail.

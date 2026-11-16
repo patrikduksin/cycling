@@ -4,17 +4,17 @@
 //! Thinning a long course to fit (`course::Builder`) cuts its corners and
 //! roundabouts into a few long segments, and a scan of what is kept can only
 //! guess at them (`turns`). `Finder` follows the upload instead. It first
-//! reads every point given for out-and-back spurs, as the scan of a placed
-//! course does (`turns::Spurs`), and passes on only the points no spur
-//! takes, so what follows reads the course as though its spurs were never
-//! drawn. It scans those a metre apart or more as they stream in, keeping
-//! only the last `RING` of them, which is all the scan still reads. Where
-//! the points jitter, as a recorded GPS track's do, each is first moved to
-//! the mean of those about it, so jitter reads as no bend. Each turn is
-//! found in metres along the full track, spurs and all; once the course is
-//! complete, it is moved to the same place along the course as kept, by
-//! the full track's distance to each kept point, so the rider's place on
-//! the stored course finds it.
+//! reads every point given for out-and-back spurs (`turns::Spurs`), and
+//! passes on the course as `Spurs` reads it, each spur cut at its base, so
+//! what follows reads the course as though its spurs were never drawn. Its
+//! scan finds no spurs of its own. It scans the points a metre apart or more
+//! as they stream in, keeping only the last `RING` of them, which is all the
+//! scan still reads. Where the points jitter, as a recorded GPS track's do,
+//! each is first moved to the mean of those about it, so jitter reads as no
+//! bend. Each turn is found in metres along the full track, spurs and all;
+//! once the course is complete, it is moved to the same place along the
+//! course as kept, by the full track's distance to each kept point, so the
+//! rider's place on the stored course finds it.
 //!
 //! The file store commits one file at a time, so the turns cannot commit
 //! with the course. Instead they name their course by its key
@@ -101,6 +101,14 @@ struct Taken {
     spurs_m: f32,
 }
 
+/// The last point passed on outside a spur, metres along the points given
+/// to it and along the full track.
+#[derive(Clone, Copy, Debug, Default)]
+struct Passed {
+    given_m: f32,
+    track_m: f32,
+}
+
 /// The ring's point `first`, the first after a spur, and the millimetres
 /// along the ring before it and of the spur.
 #[derive(Clone, Copy, Debug, Default)]
@@ -121,15 +129,12 @@ pub struct Finder {
     started: bool,
     /// The last `GIVEN` points given, in metres from the origin, and metres
     /// along them to each: point `k` is `given[k % GIVEN]`. The first
-    /// `passed` have been passed on, or dropped inside a spur.
+    /// `passed` have been passed on.
     given: [((f32, f32), f32); GIVEN],
     given_count: usize,
     passed: usize,
     spurs: Spurs,
-    /// The last point passed on, metres along the points given to it and
-    /// along the full track; and whether points after it were dropped.
-    last_passed: ((f32, f32), f32, f32),
-    in_spur: bool,
+    last_passed: Passed,
     /// Metres of spurs passed since the last point taken.
     spur_m: f32,
     /// The last points taken: point `k` is `raw[k % RAW]`. `smoothed` of
@@ -186,8 +191,7 @@ impl Finder {
             given_count: 0,
             passed: 0,
             spurs: Spurs::default(),
-            last_passed: ((0.0, 0.0), 0.0, 0.0),
-            in_spur: false,
+            last_passed: Passed::default(),
             spur_m: 0.0,
             raw: [Taken::default(); RAW],
             raw_taken: 0,
@@ -270,36 +274,35 @@ impl Finding<'_> {
         }
     }
 
-    /// Pass on point `k` given, or drop it inside a spur, and place it along
-    /// the full track for the course's points.
     fn pass_on(&mut self, k: usize) {
         let finder = &mut *self.finder;
-        let (here, here_m) = finder.given[k % GIVEN];
-        let (before, before_m, before_track_m) = finder.last_passed;
-        let track_m = if finder.spurs.skipped(k) {
-            finder.in_spur = true;
-            before_track_m + here_m - before_m
-        } else {
-            if core::mem::take(&mut finder.in_spur) {
-                finder.spur_m += here_m - before_m - distance(before, here);
+        let given = &finder.given;
+        let here = finder.spurs.at(&|j: usize| given[j % GIVEN].0, k);
+        let here_m = given[k % GIVEN].1;
+        finder.spur_m += finder.spurs.cut_at(k);
+        let last = finder.raw_taken.checked_sub(1).map(|j| finder.raw[j % RAW]);
+        let step = last.map_or(f32::INFINITY, |last| distance(last.at, here));
+        let (m, spurs_m) = last.map_or((0.0, 0.0), |last| {
+            (last.m + step, last.spurs_m + finder.spur_m)
+        });
+        let track_m = match finder.spurs.skipped(k) {
+            true => finder.last_passed.track_m + here_m - finder.last_passed.given_m,
+            false => {
+                finder.last_passed = Passed {
+                    given_m: here_m,
+                    track_m: m + spurs_m,
+                };
+                m + spurs_m
             }
-            let last = finder.raw_taken.checked_sub(1).map(|j| finder.raw[j % RAW]);
-            let step = last.map_or(f32::INFINITY, |last| distance(last.at, here));
-            let (m, spurs_m) = last.map_or((0.0, 0.0), |last| {
-                (last.m + step, last.spurs_m + finder.spur_m)
-            });
-            let track_m = m + spurs_m;
-            finder.last_passed = (here, here_m, track_m);
-            if step >= RING_STEP_M {
-                finder.spur_m = 0.0;
-                self.take_raw(Taken {
-                    at: here,
-                    m,
-                    spurs_m,
-                });
-            }
-            track_m
         };
+        if step >= RING_STEP_M {
+            finder.spur_m = 0.0;
+            self.take_raw(Taken {
+                at: here,
+                m,
+                spurs_m,
+            });
+        }
         self.place(k, track_m);
     }
 
@@ -538,7 +541,7 @@ impl Follow for Finding<'_> {
         finder.started = false;
         (finder.given_count, finder.passed) = (0, 0);
         finder.spurs = Spurs::default();
-        (finder.in_spur, finder.spur_m) = (false, 0.0);
+        (finder.last_passed, finder.spur_m) = (Passed::default(), 0.0);
         (finder.raw_taken, finder.smoothed, finder.taken) = (0, 0, 0);
         (finder.taken_m, finder.ring_spurs_m) = (0.0, 0.0);
         (finder.cut_count, finder.passed_spurs_mm, finder.kept_len) = (0, 0, 0);

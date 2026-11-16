@@ -237,10 +237,20 @@ struct Cursor {
 
 impl Cursor {
     fn start(at: &impl Fn(usize) -> (f32, f32)) -> Self {
+        Self::at(at, 0)
+    }
+
+    fn at(at: &impl Fn(usize) -> (f32, f32), k: usize) -> Self {
         Self {
-            next: 1,
-            here: at(0),
+            next: k + 1,
+            here: at(k),
         }
+    }
+
+    /// `most`, or less to stop on the point it is heading for.
+    fn stride(&self, len: usize, at: &impl Fn(usize) -> (f32, f32), most: f32) -> f32 {
+        let to_next = (self.next < len).then(|| distance(self.here, at(self.next)));
+        to_next.filter(|&m| m > 0.0 && m < most).unwrap_or(most)
     }
 
     /// How long the segment it is on is.
@@ -527,14 +537,12 @@ impl Open {
 /// Finds a course's turns once, start to end, a few steps at a time, so a
 /// long course never holds up a fix.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Scan {
+pub(in crate::ride::course) struct Scan {
     behind: Cursor,
     ahead: Cursor,
     tail: Cursor,
     tail_m: f32,
-    spurs: Spurs,
-    /// Metres along to the middle of the chord, the course read through
-    /// `spurs`.
+    /// Metres along to the middle of the chord.
     s: f32,
     heading: Option<f32>,
     total: f32,
@@ -560,17 +568,6 @@ impl Scan {
         }
     }
 
-    /// A scan that lists only the turns after `turns`, the first of the
-    /// course's turns, found elsewhere: those starting past the end of the
-    /// last of them. The same turn found again, a few metres apart, starts
-    /// within it.
-    pub fn after(turns: &[Turn]) -> Self {
-        Self {
-            from_mm: turns.last().map_or(0, |last| last.end_mm),
-            ..Self::default()
-        }
-    }
-
     pub fn done(&self) -> bool {
         self.done
     }
@@ -580,24 +577,12 @@ impl Scan {
         self.waiting
     }
 
-    /// The point the chord it reads ahead of the scan for spurs heads for:
-    /// it has read the course no further.
     pub(crate) fn reads_to(&self) -> usize {
-        self.spurs.reads_to()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn spurs_m(&self) -> f32 {
-        self.spurs.spurs_m()
+        self.ahead.next
     }
 
     /// The first point the scan may still read.
     pub(crate) fn oldest(&self) -> usize {
-        self.read_from().min(self.spurs.oldest())
-    }
-
-    /// The first point the scan may still read through `spurs`.
-    fn read_from(&self) -> usize {
         let tails = [self.bend.map(|b| b.tail), self.open.map(|o| o.tail)];
         tails
             .into_iter()
@@ -623,7 +608,6 @@ impl Scan {
             self.done = true;
             return found;
         }
-        let mut spurs = core::mem::take(&mut self.spurs);
         // A step lists at most one turn, and the end two.
         self.waiting = false;
         for _ in 0..steps {
@@ -631,27 +615,18 @@ impl Scan {
                 self.waiting = true;
                 break;
             }
-            spurs.passed(self.read_from());
-            spurs.step(len, &at);
-            let front_m = self.s.max(HALF_CHORD_M) + HALF_CHORD_M + STEP_M;
-            if !spurs.found_to(spurs.real_m(front_m)) {
-                continue;
-            }
-            let read = |k: usize| spurs.at(&at, k);
-            if !self.read(len, &read, &spurs, turns, &mut found) {
+            if !self.read(len, &at, &|turn| turn, turns, &mut found) {
                 break;
             }
         }
-        self.spurs = spurs;
         found
     }
 
-    /// Read a step more of the course through `spurs`; false once it ends.
     fn read(
         &mut self,
         len: usize,
         at: &impl Fn(usize) -> (f32, f32),
-        spurs: &Spurs,
+        onto_course: &impl Fn(Turn) -> Turn,
         turns: &mut [Turn],
         found: &mut usize,
     ) -> bool {
@@ -669,7 +644,7 @@ impl Scan {
         if !self.behind.on(len, at, STEP_M) || !self.ahead.on(len, at, STEP_M) {
             self.waiting = turns.len() - *found < 2;
             if !self.waiting {
-                self.finish(len, at, spurs, turns, found);
+                self.finish(len, at, onto_course, turns, found);
             }
             return false;
         }
@@ -699,7 +674,7 @@ impl Scan {
             {
                 self.bend = None;
                 if let Some(group) = self.take(done, self.total - turned) {
-                    self.list(group.close(len, at), spurs, turns, found);
+                    self.list(group.close(len, at), onto_course, turns, found);
                 }
             }
             match &mut self.bend {
@@ -723,7 +698,7 @@ impl Scan {
             Some(done) if s - done.last > BEND_GAP_M => {
                 self.bend = None;
                 if let Some(group) = self.take(done, self.total) {
-                    self.list(group.close(len, at), spurs, turns, found);
+                    self.list(group.close(len, at), onto_course, turns, found);
                 }
             }
             Some(_) => {}
@@ -734,7 +709,7 @@ impl Scan {
                 };
                 if let Some(group) = self.open.filter(|group| s - group.last > reach(group)) {
                     self.open = None;
-                    self.list(group.close(len, at), spurs, turns, found);
+                    self.list(group.close(len, at), onto_course, turns, found);
                 }
             }
         }
@@ -761,25 +736,29 @@ impl Scan {
         &mut self,
         len: usize,
         at: &impl Fn(usize) -> (f32, f32),
-        spurs: &Spurs,
+        onto_course: &impl Fn(Turn) -> Turn,
         turns: &mut [Turn],
         found: &mut usize,
     ) {
         if let Some(done) = self.bend.take()
             && let Some(group) = self.take(done, self.total)
         {
-            self.list(group.close(len, at), spurs, turns, found);
+            self.list(group.close(len, at), onto_course, turns, found);
         }
         if let Some(group) = self.open.take() {
-            self.list(group.close(len, at), spurs, turns, found);
+            self.list(group.close(len, at), onto_course, turns, found);
         }
         self.done = true;
     }
 
-    /// List `turn`, found through `spurs`, where it is on the course,
-    /// unless it starts at or before `from_mm`, known already.
-    fn list(&mut self, turn: Turn, spurs: &Spurs, turns: &mut [Turn], found: &mut usize) {
-        let on_course = spurs.real(turn);
+    fn list(
+        &mut self,
+        turn: Turn,
+        onto_course: &impl Fn(Turn) -> Turn,
+        turns: &mut [Turn],
+        found: &mut usize,
+    ) {
+        let on_course = onto_course(turn);
         if self.from_mm > 0 && on_course.start_mm <= self.from_mm {
             return;
         }
@@ -801,6 +780,81 @@ impl Scan {
             *slot = on_course;
             *found += 1;
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlacedScan {
+    spurs: Spurs,
+    scan: Scan,
+}
+
+impl PlacedScan {
+    pub fn finished() -> Self {
+        Self {
+            scan: Scan::finished(),
+            ..Self::default()
+        }
+    }
+
+    /// A scan that lists only the turns after `turns`, the first of the
+    /// course's turns, found elsewhere: those starting past the end of the
+    /// last of them.
+    pub fn after(turns: &[Turn]) -> Self {
+        let scan = Scan {
+            from_mm: turns.last().map_or(0, |last| last.end_mm),
+            ..Scan::default()
+        };
+        Self {
+            scan,
+            ..Self::default()
+        }
+    }
+
+    pub fn done(&self) -> bool {
+        self.scan.done
+    }
+
+    pub fn waiting(&self) -> bool {
+        self.scan.waiting
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spurs_m(&self) -> f32 {
+        self.spurs.spurs_m()
+    }
+
+    pub fn step(
+        &mut self,
+        len: usize,
+        at: impl Fn(usize) -> (f32, f32),
+        steps: usize,
+        turns: &mut [Turn],
+        mut found: usize,
+    ) -> usize {
+        let (spurs, scan) = (&mut self.spurs, &mut self.scan);
+        if scan.done || len < 2 {
+            scan.done = true;
+            return found;
+        }
+        scan.waiting = false;
+        for _ in 0..steps {
+            if found >= turns.len() {
+                scan.waiting = true;
+                break;
+            }
+            spurs.passed(scan.oldest());
+            spurs.step(len, &at);
+            let front_m = scan.s.max(HALF_CHORD_M) + HALF_CHORD_M + STEP_M;
+            if !spurs.found_to(spurs.real_m(front_m)) {
+                continue;
+            }
+            let read = |k: usize| spurs.at(&at, k);
+            if !scan.read(len, &read, &|turn| spurs.real(turn), turns, &mut found) {
+                break;
+            }
+        }
+        found
     }
 }
 

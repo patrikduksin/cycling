@@ -1,7 +1,7 @@
 use crate::ride::course::nav::{
     self, Event, Guidance, MatchedFix, Navigation, Navigator, OFF_M, ON_M, Observed, Sign,
 };
-use crate::ride::course::turns::{SCAN_STEPS, Scan, Turn};
+use crate::ride::course::turns::{PlacedScan, SCAN_STEPS, Turn};
 use crate::ride::course::{self, along_m};
 use crate::ride::homing::{Crumb, Fix, Frame, TURN, bearing, distance};
 use crate::ride::thin::off_segment;
@@ -133,7 +133,7 @@ pub struct Follower<'a> {
     taken_loop_ms: u64,
     turns: &'a mut [Turn],
     turn_count: usize,
-    scan: Scan,
+    scan: PlacedScan,
     nav: Navigator,
 }
 
@@ -162,7 +162,7 @@ impl<'a> Follower<'a> {
             taken_loop_ms: 0,
             turns,
             turn_count: 0,
-            scan: Scan::default(),
+            scan: PlacedScan::default(),
             nav: Navigator::default(),
         }
     }
@@ -215,7 +215,7 @@ impl<'a> Follower<'a> {
             };
         }
         self.len = n;
-        (self.scan, self.turn_count) = (Scan::default(), 0);
+        (self.scan, self.turn_count) = (PlacedScan::default(), 0);
     }
 
     /// A course is loaded and waits for the ride's first fix to be placed.
@@ -240,7 +240,7 @@ impl<'a> Follower<'a> {
         }
         let Some((count, more)) = fill(self.turns).filter(|&(count, _)| count <= self.turns.len())
         else {
-            (self.scan, self.turn_count) = (Scan::default(), 0);
+            (self.scan, self.turn_count) = (PlacedScan::default(), 0);
             return;
         };
         let line = &self.line[..len];
@@ -273,8 +273,8 @@ impl<'a> Follower<'a> {
             }
         }
         self.scan = match more {
-            true => Scan::after(&self.turns[..count]),
-            false => Scan::finished(),
+            true => PlacedScan::after(&self.turns[..count]),
+            false => PlacedScan::finished(),
         };
         self.turn_count = count;
         self.nav = Navigator::default();
@@ -283,7 +283,7 @@ impl<'a> Follower<'a> {
     /// The turn list, to find a course's turns into while it uploads. Only
     /// while no course is placed: placing one finds its own.
     pub fn turn_room(&mut self) -> &mut [Turn] {
-        (self.scan, self.turn_count) = (Scan::finished(), 0);
+        (self.scan, self.turn_count) = (PlacedScan::finished(), 0);
         self.turns
     }
 

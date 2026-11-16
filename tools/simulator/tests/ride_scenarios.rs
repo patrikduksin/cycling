@@ -4946,6 +4946,88 @@ fn the_climb_page_coming_up_during_a_mark_stays() {
     );
 }
 
+fn seen_page(sim: &Sim) -> String {
+    sim.seen().page.expect("a page").1
+}
+
+/// On the last ride page, the page after the climb page, when the climb
+/// page comes up by itself.
+fn on_the_climb_page(sim: &mut Sim) {
+    *sim = hill_rider();
+    sim.start_ride();
+    sim.ride_at(14.0, 260.0, 0.0, 75.0);
+    sim.advance(seconds(5));
+    while sim
+        .screen()
+        .page()
+        .and_then(|dots| dots.split_once('/').map(|(on, of)| on != of))
+        .expect("page dots")
+    {
+        sim.press(Button::BottomLeft);
+    }
+    assert_eq!(seen_page(sim), "ride/map");
+    while seen_page(sim) != "ride/climb" {
+        assert!(sim.world().distance_m < 2500.0, "no climb page");
+        sim.advance(100);
+    }
+}
+
+#[test]
+fn a_mark_on_the_climb_page_that_came_up_goes_back_after_the_top() {
+    let mut sim = rider();
+    on_the_climb_page(&mut sim);
+    sim.advance(seconds(5));
+    sim.hold(Button::BottomLeft, 1600);
+    sim.expect_text("MARK 1");
+    assert_eq!(seen_page(&sim), "ride/climb", "the page put back");
+    ride_to(&mut sim, 4500.0);
+    assert_eq!(
+        seen_page(&sim),
+        "ride/map",
+        "past the climb, the page from before it came up"
+    );
+}
+
+fn near_the_top(sim: &mut Sim) {
+    on_the_climb_page(sim);
+    ride_to(sim, 2450.0);
+}
+
+#[test]
+fn a_climb_that_ends_during_a_mark_leaves_its_page() {
+    let over = ms_until(near_the_top, |sim| seen_page(sim) != "ride/climb");
+    let mut sim = rider();
+    near_the_top(&mut sim);
+    sim.advance(over - 700);
+    assert_eq!(seen_page(&sim), "ride/climb");
+    sim.hold(Button::BottomLeft, 1600);
+    sim.expect_text("MARK 1");
+    sim.advance(seconds(10));
+    assert_eq!(
+        seen_page(&sim),
+        "ride/map",
+        "the rider's page, not the page of a climb that is over"
+    );
+}
+
+#[test]
+fn input_lost_during_a_hold_marks_nothing() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(5));
+    sim.hold_while(Button::BottomLeft, 1600, |sim, held| {
+        if held == 500 {
+            let at = sim.device.clock_ms();
+            sim.device.input.push(at, device_api::input::Input::Cancel);
+        }
+    });
+    sim.advance(seconds(1));
+    sim.expect_no_text("MARK");
+    assert!(marks(&sim).is_empty(), "{:?}", marks(&sim));
+}
+
 #[test]
 fn a_move_that_closes_the_power_sheet_marks_nothing_however_long_it_is_held() {
     let mut sim = rider();

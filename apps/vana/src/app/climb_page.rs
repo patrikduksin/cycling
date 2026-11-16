@@ -172,8 +172,8 @@ pub(super) fn workout_finished(navigation: &mut Navigation) {
     }
 }
 
-/// With `workout_finished`, the only writer of `Navigation::climb`, and of a
-/// ride page the road chose.
+/// With `workout_finished` and a mark's undo, the only writer of
+/// `Navigation::climb`, and of a ride page the road chose.
 fn apply(navigation: &mut Navigation, step: Step) {
     navigation.climb = step.follow;
     if let Some(page) = step.show {

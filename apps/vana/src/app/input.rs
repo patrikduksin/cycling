@@ -78,6 +78,9 @@ impl Runtime {
                 self.list_pan(list, pan, received);
             }
         }
+        if input == Input::Cancel {
+            self.mark_input_lost(now);
+        }
         if !self.display.is_active() {
             return;
         }
@@ -144,7 +147,7 @@ impl Runtime {
             MoveReport::Held => {}
             MoveReport::Press => {
                 self.button_press(button, held, received, now, ant);
-                self.mark_after_press();
+                self.mark_after_press(now);
             }
         }
     }

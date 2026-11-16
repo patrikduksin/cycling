@@ -31,7 +31,7 @@ pub mod spool;
 mod tests;
 
 /// The header's first byte.
-pub const VERSION: u8 = 3;
+pub const VERSION: u8 = 4;
 pub const MAX_BLOCK: usize = u16::MAX as usize + FRAME;
 const FRAME: usize = 2 + 4;
 

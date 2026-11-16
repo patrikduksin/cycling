@@ -4,12 +4,10 @@
 //! far corner, depths either side of `SPUR_MIN_M` and `SPUR_M`. At each
 //! spur, the scan and the upload must say what the course says with the
 //! spur's path taken out, or what it said before spurs were cut
-//! (`uncut`). A spur of the planner's own shape, retraced exactly 20 to
-//! 100 m deep, parted 45 degrees or more from the way in and the way on,
-//! must be cut.
+//! (`uncut`).
 
 use super::super::super::{STEP_M, Turn, distance, swing};
-use super::super::{RAY_M, SPUR_M, SPUR_MIN_M};
+use super::super::{ALONE_M, RAY_M, SPUR_M, SPUR_MIN_M};
 use super::{heeded, join, length, path, scanned, uncut};
 use crate::ride::course::stored::tests::found_along;
 use crate::ride::thin::off_segment;
@@ -45,9 +43,6 @@ const NEAR_PHASES_M: [f32; 7] = [-0.15, -0.1, -0.05, 0.0, 0.05, 0.1, 0.15];
 const AROUND_M: f32 = 30.0;
 const PLANNED_M: core::ops::RangeInclusive<f32> = 20.0..=100.0;
 const PLANNED_DEG: f32 = 45.0;
-/// A spur within this of another, or of a corner turning back
-/// `TURNS_BACK_DEG` or more, may be uncut with it.
-const ALONE_M: f32 = 250.0;
 const TURNS_BACK_DEG: f32 = 110.0;
 
 fn uniform(rng: &mut Rng, low: f32, high: f32) -> f32 {

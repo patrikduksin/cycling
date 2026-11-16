@@ -63,9 +63,7 @@ const FULL: u8 = 1;
 /// The longest file this version writes.
 pub const MAX_FILE: usize = HEADER_V1 + TURNS * RECORD + 4;
 
-/// Points given that `Spurs` may still read: it reads back over a spur's
-/// way out and way back and a spur before it, some 430 m, and a stop on a
-/// recorded track adds a point a second where it stood.
+/// Capacity of the input-point buffer used during turn finding.
 pub const GIVEN: usize = 2048;
 /// Points the scan reads that it keeps. It reads back only as far as the
 /// group of bends it is in and the bend after it: at most 109 points on the

@@ -27,11 +27,7 @@
 //!
 //! A walk whose spur is not sure walks on while the way back stays within
 //! `LOOSE_M` of the way out, and no further than `SPUR_M`, to find the whole
-//! stretch that may or may not be a spur. A spur cut within `NEAR_UNSURE_M`
-//! of that stretch is uncut, and so is one within that of it, as is one
-//! found there later: the turns of spurs that near read together, so either
-//! all are cut or none. `BACK_M` keeps the scan far enough behind that it
-//! has read none of them.
+//! stretch that may or may not be a spur.
 //!
 //! A course with a spur cut says what the course would say with the spur's
 //! path taken out, each turn after the spur as much further on as the spur
@@ -45,10 +41,9 @@ use super::{Cursor, HALF_CHORD_M, STEP_M, Turn, distance, mm, swing, way};
 use crate::ride::thin::off_segment;
 use libm::{atan2f, fabsf, sqrtf};
 
-/// `Spurs` keeps this far of the course behind its chord's middle: a
-/// spur's whole way out, the way in before it, and a spur cut there that it
-/// may yet uncut.
-const BACK_M: f32 = SPUR_M + NEAR_UNSURE_M + 2.0 * WAY_M;
+const WAY_OUT_M: f32 = SPUR_M + 2.0 * WAY_M;
+const HELD_M: f32 = WAY_OUT_M + UNCUT_REACH_M;
+const UNCUT_REACH_M: f32 = LOOSE_M + ALONE_M + 2.0 * SPUR_M;
 const REVERSAL_DEG: f32 = 120.0;
 const REVERSAL_STEPS: usize = 3;
 /// A dead end whose way back comes back metres to the side of its way out
@@ -57,7 +52,8 @@ const WIDE_REVERSAL_DEG: f32 = 160.0;
 const WIDE_REVERSAL_STEPS: usize = 8;
 const CLOSE_M: f32 = 1.0;
 const LOOSE_M: f32 = 4.0;
-const NEAR_UNSURE_M: f32 = 80.0;
+pub(super) const ALONE_M: f32 = 250.0;
+const END_SLACK_M: f32 = LOOSE_M;
 const PARTED_M: f32 = 2.0 * CLOSE_M;
 const SPUR_MIN_M: f32 = 13.0;
 const SPUR_M: f32 = 150.0;
@@ -83,7 +79,7 @@ struct Stretch {
 #[derive(Clone, Copy, Debug)]
 enum Ended {
     Spur(Stretch),
-    Unsure { from_m: f32, to_m: f32 },
+    Unsure(Span),
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -100,7 +96,7 @@ enum Walk {
         step_end_m: f32,
         furthest_back: Stretch,
         left_m: Option<f32>,
-        unsure_from_m: Option<f32>,
+        loose: Option<Span>,
     },
 }
 
@@ -118,7 +114,7 @@ impl Walk {
                 rejoin_m: tip_m,
             },
             left_m: None,
-            unsure_from_m: None,
+            loose: None,
         }
     }
 
@@ -139,7 +135,7 @@ impl Walk {
             mut step_end_m,
             mut furthest_back,
             mut left_m,
-            mut unsure_from_m,
+            mut loose,
         } = *self
         else {
             return None;
@@ -151,30 +147,37 @@ impl Walk {
             tip: &tip,
         };
         *self = Self::None;
-        let unsure = |from_m: f32, back_m: f32| {
-            let to_m = tip_m + back_m;
-            Some(Ended::Unsure { from_m, to_m })
-        };
+        let far_end = Some(Ended::Unsure(Span {
+            from_m: tip_m,
+            to_m: tip_m,
+        }));
         while tip_m + back_m + WALK_M <= read_m {
             let to_end = step_end_m - back_m;
             let step = back.stride(len, at, to_end);
-            let from_m = unsure_from_m.unwrap_or(furthest_back.base_m);
             if !back.on(len, at, step) {
-                return unsure(from_m, back_m);
+                let from_m = loose.map_or(furthest_back.base_m, |loose| loose.from_m);
+                let to_m = tip_m + back_m;
+                return Some(Ended::Unsure(Span { from_m, to_m }));
             }
             back_m += step;
             if step >= to_end {
                 (back_m, step_end_m) = (step_end_m, step_end_m + WALK_M);
             }
             if back_m > SPUR_M {
-                return unsure(from_m, back_m);
+                return far_end;
             }
-            if let Some(from_m) = &mut unsure_from_m {
+            if let Some(loose) = &mut loose {
                 let (off, along_m) = way_out.nearest(back.here, at);
                 if off > LOOSE_M {
-                    return unsure(*from_m, back_m);
+                    return Some(Ended::Unsure(*loose));
                 }
-                *from_m = from_m.min(along_m);
+                let walked_m = tip_m + back_m - loose.to_m;
+                if further_back(loose.from_m, walked_m, LOOSE_M).contains(&along_m) {
+                    *loose = Span {
+                        from_m: along_m,
+                        to_m: tip_m + back_m,
+                    };
+                }
                 continue;
             }
             if let Some(left_m) = left_m {
@@ -185,16 +188,20 @@ impl Walk {
                 if parted && way_out.sure(&furthest_back, len, at) {
                     return Some(Ended::Spur(furthest_back));
                 }
-                unsure_from_m = Some(furthest_back.base_m);
+                loose = Some(Span::of(&furthest_back));
                 continue;
             }
             let (off, along_m) = way_out.nearest(back.here, at);
+            let walked_m = tip_m + back_m - furthest_back.rejoin_m;
+            let further_back = further_back(furthest_back.base_m, walked_m, WAY_M);
             if off > CLOSE_M {
                 if trail_m > 0.0 && along_m - trail_m < WALK_M {
-                    return unsure(furthest_back.base_m, back_m);
+                    return far_end;
                 }
                 left_m = Some(back_m);
-            } else if along_m < furthest_back.base_m - FURTHER_BACK_M {
+            } else if further_back.contains(&along_m)
+                && along_m < furthest_back.base_m - FURTHER_BACK_M
+            {
                 furthest_back = Stretch {
                     base_m: along_m,
                     rejoin: back,
@@ -210,7 +217,7 @@ impl Walk {
             step_end_m,
             furthest_back,
             left_m,
-            unsure_from_m,
+            loose,
         };
         None
     }
@@ -276,10 +283,10 @@ pub(crate) struct Spurs {
     s: f32,
     heading: Option<f32>,
     chord_swings: [f32; WIDE_REVERSAL_STEPS],
-    /// The course `BACK_M` as read behind the chord's middle, or further
-    /// while a spur is walked, and never within a spur cut.
-    trail: Cursor,
-    trail_m: f32,
+    way_out: Cursor,
+    way_out_m: f32,
+    held: Cursor,
+    held_m: f32,
     walk: Walk,
     /// Where the course turned back while a spur was walked, and the point
     /// there: each is walked in turn once the walk before it ends.
@@ -287,7 +294,7 @@ pub(crate) struct Spurs {
     reversed: usize,
     skips: [Skip; SKIPS],
     count: usize,
-    unsure: Option<Span>,
+    cluster: Option<Cluster>,
     passed_cut_m: f32,
     started: bool,
     done: bool,
@@ -301,7 +308,7 @@ impl Spurs {
 
     /// The points before this are in no spur it has yet to find.
     pub(crate) fn settled(&self) -> usize {
-        self.trail.next
+        self.held.next
     }
 
     pub(crate) fn done(&self) -> bool {
@@ -309,11 +316,11 @@ impl Spurs {
     }
 
     pub(super) fn found_to(&self, m: f32) -> bool {
-        self.done || m <= self.trail_m
+        self.done || m <= self.held_m
     }
 
     pub(crate) fn oldest(&self) -> usize {
-        self.behind.next.min(self.trail.next).saturating_sub(1)
+        self.behind.next.min(self.held.next).saturating_sub(1)
     }
 
     pub(crate) fn step(&mut self, len: usize, at: &impl Fn(usize) -> (f32, f32)) {
@@ -323,7 +330,7 @@ impl Spurs {
         if !self.started {
             self.started = true;
             self.behind = Cursor::start(at);
-            (self.ahead, self.trail) = (self.behind, self.behind);
+            (self.ahead, self.way_out, self.held) = (self.behind, self.behind, self.behind);
             self.done = !self.ahead.on(len, at, WAY_M);
             self.s = HALF_CHORD_M;
             self.heading = way(self.behind.here, self.ahead.here);
@@ -377,9 +384,16 @@ impl Spurs {
                 self.walk = Walk::reversed(tip_m, tip);
             }
             let skips = &self.skips[..self.count];
-            let way_out = (&self.trail, self.trail_m, skips);
-            match self.walk.on(len, at, way_out, read_m) {
-                Some(Ended::Spur(spur)) if !self.beside_unsure(&Span::of(&spur)) => {
+            let way_out = (&self.way_out, self.way_out_m, skips);
+            let ended = match self.walk.on(len, at, way_out, read_m) {
+                Some(Ended::Spur(spur)) => Some((Span::of(&spur), Some(spur))),
+                Some(Ended::Unsure(span)) => Some((span, None)),
+                None => None,
+            };
+            if let Some((span, spur)) = ended {
+                if let Some(cluster) = self.join(span, spur.is_some()) {
+                    self.uncut_near(cluster);
+                } else if let Some(spur) = spur {
                     self.skip(spur, len, at);
                     let within = self.reversals[..self.reversed]
                         .iter()
@@ -388,9 +402,6 @@ impl Spurs {
                     self.reversals.copy_within(within..self.reversed, 0);
                     self.reversed -= within;
                 }
-                Some(Ended::Spur(spur)) => self.unsure(Span::of(&spur)),
-                Some(Ended::Unsure { from_m, to_m }) => self.unsure(Span { from_m, to_m }),
-                None => {}
             }
             if matches!(self.walk, Walk::Back { .. }) {
                 return;
@@ -398,51 +409,63 @@ impl Spurs {
         }
     }
 
-    fn beside_unsure(&self, spur: &Span) -> bool {
-        self.unsure
-            .is_some_and(|unsure| spur.near(&unsure) && !spur.takes(&unsure))
+    /// The cluster of spurs found before it that a spur found at `span`,
+    /// sure or not, joins. A sure spur takes the unsure ones within it.
+    fn join(&mut self, span: Span, sure: bool) -> Option<Span> {
+        let taken = |cluster: &Cluster| sure && !cluster.any_sure && span.takes(&cluster.span);
+        let joined = self
+            .cluster
+            .filter(|cluster| cluster.span.near(&span) && !taken(cluster));
+        let cluster = match joined {
+            Some(cluster) => Cluster {
+                span: Span {
+                    from_m: span.from_m.min(cluster.span.from_m),
+                    to_m: span.to_m.max(cluster.span.to_m),
+                },
+                any_sure: sure || cluster.any_sure,
+            },
+            None => Cluster {
+                span,
+                any_sure: sure,
+            },
+        };
+        self.cluster = Some(cluster);
+        joined.map(|_| cluster.span)
     }
 
-    fn unsure(&mut self, span: Span) {
-        let mut span = match self.unsure {
-            Some(was) if span.near(&was) => Span {
-                from_m: span.from_m.min(was.from_m),
-                to_m: span.to_m.max(was.to_m),
-            },
-            _ => span,
-        };
+    fn uncut_near(&mut self, cluster: Span) {
         while let Some(skip) = self.skips[..self.count].last() {
             let cut = Span {
                 from_m: skip.from_m,
                 to_m: skip.rejoin_m,
             };
-            let read_by_scan = skip.from_m < self.trail_m;
-            if read_by_scan || !cut.near(&span) {
+            if skip.from_m < self.held_m || !cut.near(&cluster) {
                 break;
             }
-            span.from_m = span.from_m.min(cut.from_m);
             self.count -= 1;
         }
-        self.unsure = Some(span);
     }
 
-    /// Bring the trail up to `BACK_M` of the course as read behind
-    /// `front_m`, before any spur cut there.
     fn follow(&mut self, front_m: f32, len: usize, at: &impl Fn(usize) -> (f32, f32)) {
-        let mut lag = front_m - BACK_M;
-        for skip in self.skips[..self.count].iter().rev() {
-            if skip.rejoin_m > lag {
-                lag -= skip.rejoin_m - skip.from_m;
+        let skips = &self.skips[..self.count];
+        let bring = |cursor: &mut Cursor, cursor_m: &mut f32, back_m: f32| {
+            let mut lag = front_m - back_m;
+            for skip in skips.iter().rev() {
+                if skip.rejoin_m > lag {
+                    lag -= skip.rejoin_m - skip.from_m;
+                }
             }
-        }
-        if lag > self.trail_m && self.trail.on(len, at, lag - self.trail_m) {
-            self.trail_m = lag;
-        }
+            if lag > *cursor_m && cursor.on(len, at, lag - *cursor_m) {
+                *cursor_m = lag;
+            }
+        };
+        bring(&mut self.way_out, &mut self.way_out_m, WAY_OUT_M);
+        bring(&mut self.held, &mut self.held_m, HELD_M);
     }
 
     fn on_course(&self, m: f32, len: usize, at: &impl Fn(usize) -> (f32, f32)) -> OnCourse {
-        let mut here = self.trail;
-        here.on(len, at, m - self.trail_m);
+        let mut here = self.way_out;
+        here.on(len, at, m - self.way_out_m);
         OnCourse {
             before_m: m - distance(at(here.next - 1), here.here),
             here,
@@ -456,25 +479,16 @@ impl Spurs {
         }
         let out = self.on_course(spur.base_m, len, at);
         let (back, base_m, rejoin_m) = (spur.rejoin, spur.base_m, spur.rejoin_m);
-        let (mut first, last) = (out.here.next, back.next);
-        let before = self.skips[..self.count]
-            .iter()
-            .take_while(|skip| skip.last <= first)
-            .count();
-        if before >= SKIPS || last <= first {
+        let (first, last) = (out.here.next, back.next);
+        if self.count >= SKIPS || last <= first {
             return;
         }
-        let (mut from, mut from_m) = match last > first + 1 {
+        let (from, from_m) = match last > first + 1 {
             true => (out.here.here, base_m),
             false => (at(first - 1), out.before_m),
         };
-        if let Some(earlier) = self.skips[before..self.count].first()
-            && earlier.first < first
-        {
-            (first, from, from_m) = (earlier.first, earlier.out, earlier.from_m);
-        }
-        let cut_m: f32 = self.skips[..before].iter().map(|skip| skip.cut_m).sum();
-        self.skips[before] = Skip {
+        let cut_m: f32 = self.skips[..self.count].iter().map(|skip| skip.cut_m).sum();
+        self.skips[self.count] = Skip {
             first,
             last,
             out: from,
@@ -484,7 +498,7 @@ impl Spurs {
             cut_from_m: from_m - self.passed_cut_m - cut_m,
             cut_m: rejoin_m - from_m - distance(from, back.here),
         };
-        self.count = before + 1;
+        self.count += 1;
     }
 
     /// Point `k` of the course as the scan reads it, `at` the course.
@@ -557,12 +571,19 @@ impl Span {
     }
 
     fn near(&self, other: &Span) -> bool {
-        self.from_m <= other.to_m + NEAR_UNSURE_M && other.from_m - NEAR_UNSURE_M <= self.to_m
+        let near_m = ALONE_M - END_SLACK_M;
+        self.from_m <= other.to_m + near_m && other.from_m - near_m <= self.to_m
     }
 
     fn takes(&self, other: &Span) -> bool {
         self.from_m <= other.from_m && other.to_m <= self.to_m
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Cluster {
+    span: Span,
+    any_sure: bool,
 }
 
 struct OnCourse {
@@ -675,6 +696,13 @@ impl WayOut<'_> {
         });
         deepest
     }
+}
+
+/// Where the way back, `walked_m` on from coming beside the way out
+/// `from_m` along it, may come beside it further back: no further than it
+/// has walked, give or take `slack_m`.
+fn further_back(from_m: f32, walked_m: f32, slack_m: f32) -> core::ops::Range<f32> {
+    from_m - walked_m - slack_m..from_m
 }
 
 fn bearing(a: (f32, f32), b: (f32, f32)) -> Option<f32> {

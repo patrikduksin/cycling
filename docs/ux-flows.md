@@ -289,14 +289,16 @@ the course says what it said before spurs were found: the turn in, the
 U-TURN and the turn out. So at every spur the course says one or the other,
 never a turn that neither says, and never leaves out a turn that both say.
 VANA is not sure of a way back that drifts more than 1 m off the way out, a
-dead end under 13 m or over 150 m deep, a fork narrower than 30 degrees, the
-far end of a longer out-and-back, where the way on runs back along the way
-in, or a spur within 80 m of any of those. The course keeps a spur's points
-and its length, so distance along it and arrival are unchanged. Riding
-straight past the base of a spur left out is not off course, and riding into
-it and back sounds nothing either. Roads side by side about 8 m apart, a
-hairpin and a roundabout keep their turns. Turns stored with a course loaded
-before this keep its spurs until the course is loaded again.
+dead end under 13 m or over 150 m deep, a fork narrower than 30 degrees, or
+the far end of a longer out-and-back, where the way on runs back along the
+way in. Nor is it sure of spurs within 250 m of one another, sure of each or
+not, or of a spur within 250 m of an out-and-back's far end: it leaves every
+one of them as drawn. The course keeps a spur's points and its length, so
+distance along it and arrival are unchanged. Riding straight past the base
+of a spur left out is not off course, and riding into it and back sounds
+nothing either. Roads side by side about 8 m apart, a hairpin and a
+roundabout keep their turns. Turns stored with a course loaded before this
+keep its spurs until the course is loaded again.
 Where the course is drawn coarsely, as a planner's route is, or it was loaded
 before turns were found this way, a turn of several corners is named only
 roughly: LEFT or RIGHT from about 80 degrees, U-TURN from about 160, never

@@ -821,7 +821,7 @@ fn a_dead_end_at_the_far_end_of_a_long_out_and_back_says_what_it_said_uncut() {
 }
 
 #[test]
-fn spurs_one_after_another_say_what_the_course_without_them_says() {
+fn spurs_one_after_another_say_what_they_said_uncut() {
     let corners = [
         (0.0, 0.0),
         (0.0, 300.0),
@@ -832,11 +832,12 @@ fn spurs_one_after_another_say_what_the_course_without_them_says() {
         (0.0, 700.0),
         (300.0, 700.0),
     ];
-    assert_eq!(told(&path(&corners, 5.0)), [[RIGHT]; 2]);
+    let drawn = path(&corners, 5.0);
+    assert_eq!(told(&drawn), uncut(|| told(&drawn)));
 }
 
 #[test]
-fn a_spur_off_a_spur_says_what_the_course_without_them_says_or_uncut() {
+fn a_spur_off_a_spur_says_what_they_said_uncut() {
     let corners = [
         (0.0, 0.0),
         (0.0, 300.0),
@@ -849,12 +850,7 @@ fn a_spur_off_a_spur_says_what_the_course_without_them_says_or_uncut() {
         (300.0, 700.0),
     ];
     let drawn = path(&corners, 5.0);
-    let [kept, uploaded] = told(&drawn);
-    assert!(
-        kept == [RIGHT] || kept == uncut(|| told(&drawn))[0],
-        "{kept:?}"
-    );
-    assert_eq!(uploaded, [RIGHT]);
+    assert_eq!(told(&drawn), uncut(|| told(&drawn)));
 }
 
 mod fuzz;

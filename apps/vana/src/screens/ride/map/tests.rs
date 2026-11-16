@@ -99,6 +99,38 @@ fn off_course(course: &[Crumb]) -> Track<'_> {
     following(course, (-100.0, 150.0), 500.0, Some(junction))
 }
 
+fn joining(course: &[Crumb], here: Point) -> Track<'_> {
+    Track {
+        available: true,
+        here: Some(here),
+        heading: Some(0),
+        course,
+        ..Track::default()
+    }
+}
+
+fn on_course(course: &[Crumb], here: Point, along_m: f32) -> Track<'_> {
+    let mut track = following(course, here, along_m, None);
+    track.guidance = None;
+    track
+}
+
+fn blue_runs(frame: &Frame, y: usize) -> usize {
+    (0..WIDTH)
+        .map(|x| pixel(frame, x, y, BLACK) == ACCENT)
+        .fold((0, false), |(runs, was), is| {
+            (runs + usize::from(is && !was), is)
+        })
+        .0
+}
+
+fn route_in(frame: &Frame, rows: core::ops::Range<usize>) -> Option<(usize, usize)> {
+    rows.flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+        .find(|&(x, y)| matches!(pixel(frame, x, y, BLACK), ACCENT | CASING))
+}
+
+const BEHIND_THE_PUCK: core::ops::Range<usize> = 240..GROUND.end;
+
 fn settled_at(speed_mm_s: u32) -> Reach {
     let mut zoom = Zoom::default();
     (0..60).for_each(|_| zoom.observe_riding_at(speed_mm_s));
@@ -112,7 +144,7 @@ fn filled(track: &Track) -> Frame {
 }
 
 #[test]
-fn the_course_ahead_is_blue_on_its_casing_and_the_ridden_part_dimmed() {
+fn the_course_ahead_is_blue_on_its_casing_and_nothing_is_drawn_behind_the_puck() {
     let c = follower_course(&MOCKUP_COURSE);
     let frame = filled(&approach(&c));
     assert_eq!(frame.last_pose.rider, (120, 223));
@@ -120,8 +152,11 @@ fn the_course_ahead_is_blue_on_its_casing_and_the_ridden_part_dimmed() {
     assert_eq!(at(120, 150), ACCENT, "the route ahead");
     assert_eq!(at(127, 150), CASING, "its casing");
     assert_eq!(at(131, 150), GROUND_COLOR, "the ground beside it");
-    assert_eq!(at(120, 270), RIDDEN, "the ridden course below the puck");
-    assert_eq!(at(124, 270), GROUND_COLOR, "which is narrower");
+    assert_eq!(
+        at(120, 270),
+        GROUND_COLOR,
+        "nothing of the course behind the puck"
+    );
     assert_eq!(at(120, 60), WHITE, "the turn arrow's shaft, 250 m up");
     assert_eq!(at(141, 57), WHITE, "its head, on the route after the turn");
     assert_eq!(at(120, 212), WHITE, "the puck's disc");
@@ -425,20 +460,107 @@ fn a_junction_far_off_the_screen_paints_nothing_of_it() {
 }
 
 #[test]
-fn the_route_ahead_is_drawn_whatever_the_ridden_part_takes() {
-    let mut frame = Frame {
-        show: Show::Map,
-        ..Frame::default()
+fn on_an_out_and_back_only_the_way_out_is_blue_and_nothing_behind_the_puck() {
+    let c = follower_course(&[
+        (0.0, -400.0),
+        (0.0, 2_000.0),
+        (30.0, 2_000.0),
+        (30.0, -400.0),
+    ]);
+    let frame = filled(&on_course(&c, (0.0, 0.0), 400.0));
+    for y in [40, 100, 150, 200] {
+        assert_eq!(blue_runs(&frame, y), 1, "one blue line at row {y}");
+    }
+    assert_eq!(pixel(&frame, 120, 150, BLACK), ACCENT, "the way out");
+    assert_eq!(
+        pixel(&frame, 140, 150, BLACK),
+        GROUND_COLOR,
+        "not the way back"
+    );
+    assert_eq!(route_in(&frame, BEHIND_THE_PUCK), None, "behind the puck");
+}
+
+#[test]
+fn a_loop_finishing_across_the_rider_draws_no_second_line() {
+    let c = follower_course(&[
+        (0.0, -200.0),
+        (0.0, 600.0),
+        (600.0, 600.0),
+        (600.0, 0.0),
+        (-500.0, 0.0),
+    ]);
+    let frame = filled(&on_course(&c, (0.0, 0.0), 200.0));
+    assert_eq!(pixel(&frame, 120, 150, BLACK), ACCENT, "the course ahead");
+    for x in [40, 70, 170, 200] {
+        assert_eq!(
+            pixel(&frame, x, 223, BLACK),
+            GROUND_COLOR,
+            "the finish across the puck's row at x {x}"
+        );
+    }
+    assert_eq!(route_in(&frame, BEHIND_THE_PUCK), None, "behind the puck");
+}
+
+#[test]
+fn before_joining_the_course_runs_only_its_own_way_from_the_nearest_point() {
+    let north = follower_course(&[(0.0, -1_000.0), (0.0, 1_000.0)]);
+    let frame = filled(&joining(&north, (0.0, 0.0)));
+    assert_eq!(
+        pixel(&frame, 120, 150, BLACK),
+        ACCENT,
+        "ahead, the course's way"
+    );
+    assert_eq!(route_in(&frame, BEHIND_THE_PUCK), None, "not back along it");
+    let south = follower_course(&[(0.0, 1_000.0), (0.0, -1_000.0)]);
+    let frame = filled(&joining(&south, (0.0, 0.0)));
+    assert_eq!(
+        pixel(&frame, 120, 270, BLACK),
+        ACCENT,
+        "behind, the course's way"
+    );
+    assert_eq!(
+        route_in(&frame, GROUND.start..205),
+        None,
+        "not ahead against it"
+    );
+}
+
+#[test]
+fn off_course_the_line_starts_at_the_junction_and_runs_on_from_it() {
+    let c = follower_course(&MOCKUP_COURSE);
+    let track = off_course(&c);
+    let frame = filled(&track);
+    let at = frame.last_pose.projection(track.here.unwrap());
+    let shown = |p: Point| {
+        let (x, y) = at.at(p);
+        pixel(&frame, x as usize, y as usize, BLACK)
     };
-    let pose = Pose::new(Reach::default(), 0, 0);
-    let at = pose.projection((0.0, 0.0));
-    let out_and_back = core::iter::once((0.0, 0.0))
-        .chain(core::iter::once((0.0, 200.0)))
-        .chain((0..RIDDEN_SEGMENTS).map(|k| (0.0, if k % 2 == 0 { -800.0 } else { 800.0 })));
-    frame.add(Line::Ridden, &at, out_and_back);
-    frame.add(Line::Route, &at, [(0.0, 0.0), (0.0, 1_000.0)].into_iter());
-    bucket(&mut frame);
-    let mut pixels = [BLACK; WIDTH];
-    paint(&frame, &mut Row::new(50, &mut pixels));
-    assert_eq!(pixels[120], ACCENT, "the route ahead, over the ridden part");
+    assert_eq!(shown((60.0, 260.0)), ACCENT, "on from the junction");
+    for north in [100.0, 150.0, 200.0] {
+        assert_eq!(
+            shown((0.0, north)),
+            GROUND_COLOR,
+            "the course before the junction, {north} m north"
+        );
+    }
+}
+
+#[test]
+fn the_ridden_track_is_drawn_only_without_a_course() {
+    let ridden = track_crumbs(&[(-300.0, -300.0), (-150.0, -150.0), (0.0, 0.0)]);
+    let c = follower_course(&[(0.0, -1_000.0), (0.0, 1_000.0)]);
+    let mut before = joining(&c, (0.0, 0.0));
+    before.crumbs = &ridden;
+    let mut along = on_course(&c, (0.0, 0.0), 1_000.0);
+    along.crumbs = &ridden;
+    let ridden_px = |track: &Track| {
+        let frame = filled(track);
+        GROUND
+            .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixel(&frame, x, y, BLACK) == RIDDEN)
+            .count()
+    };
+    assert_eq!(ridden_px(&before), 0, "before joining");
+    assert_eq!(ridden_px(&along), 0, "following");
+    assert!(ridden_px(&free(&ridden)) > 0, "a free ride");
 }

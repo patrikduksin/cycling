@@ -31,6 +31,10 @@ impl Default for Reach {
 }
 
 impl Reach {
+    pub fn ahead_m(self) -> f32 {
+        f32::from(self.ahead_m)
+    }
+
     pub fn px_per_m(self) -> f32 {
         ROWS_AHEAD / f32::from(self.ahead_m)
     }

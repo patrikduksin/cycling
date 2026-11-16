@@ -28,7 +28,7 @@ const JOIN_FIXES: u8 = 5;
 
 type Point = (f32, f32);
 
-fn project(p: Point, a: Point, b: Point) -> (Point, f32) {
+pub(crate) fn project(p: Point, a: Point, b: Point) -> (Point, f32) {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let length = dx * dx + dy * dy;
     let t = if length > 0.0 {

@@ -3,6 +3,7 @@ mod pose;
 mod raster;
 
 use super::kilometres;
+use crate::ride::course::follow;
 use crate::ride::course::nav::{Glyph, Guidance, Sign, Spot};
 use crate::ride::homing::{Crumb, distance};
 use crate::screens::canvas::{Canvas, Shape};
@@ -130,7 +131,15 @@ impl Track<'_> {
             .clamp(1, self.course.len() - 1)
     }
 
-    fn ahead_points(&self, (end, at): (usize, Point)) -> impl Iterator<Item = (Point, bool)> + '_ {
+    fn place(&self, centre: Point) -> Option<(usize, Point)> {
+        self.split().or_else(|| self.nearest(centre))
+    }
+
+    fn ahead_points(
+        &self,
+        (end, at): (usize, Point),
+        reach_m: f32,
+    ) -> impl Iterator<Item = (Point, bool)> + '_ {
         let turn = self
             .turn_on_course()
             .map(|(spot, _)| self.metres_to_end(spot));
@@ -139,13 +148,9 @@ impl Track<'_> {
             self.course[..end]
                 .iter()
                 .rev()
-                .take_while(move |c| near - c.along <= LOOKAHEAD_M)
+                .take_while(move |c| near - c.along <= reach_m)
                 .map(move |c| ((c.east, c.north), turn.is_none_or(|t| c.along > t))),
         )
-    }
-
-    fn behind_points(&self, (end, at): (usize, Point)) -> impl Iterator<Item = Point> + '_ {
-        core::iter::once(at).chain(self.course[end..].iter().map(|c| (c.east, c.north)))
     }
 
     fn crumbs_back(&self) -> impl Iterator<Item = Point> + '_ {
@@ -154,18 +159,16 @@ impl Track<'_> {
             .chain(self.crumbs.iter().rev().map(|c| (c.east, c.north)))
     }
 
-    fn course_from(&self, nearest: usize, up: bool) -> impl Iterator<Item = Point> + '_ {
-        let (down, rest) = self.course.split_at(nearest + 1);
-        let to_end = down.iter().rev().filter(move |_| !up);
-        let to_start = down[nearest..].iter().chain(rest).filter(move |_| up);
-        to_end.chain(to_start).map(|c| (c.east, c.north))
-    }
-
-    fn nearest(&self, centre: Point) -> usize {
-        let gap = |c: &Crumb| distance((c.east, c.north), centre);
-        (0..self.course.len())
-            .min_by(|&a, &b| gap(&self.course[a]).total_cmp(&gap(&self.course[b])))
-            .unwrap_or(0)
+    fn nearest(&self, centre: Point) -> Option<(usize, Point)> {
+        (1..self.course.len())
+            .map(|end| {
+                let (a, b) = (self.course[end - 1], self.course[end]);
+                (
+                    end,
+                    follow::project(centre, (a.east, a.north), (b.east, b.north)).0,
+                )
+            })
+            .min_by(|a, b| distance(a.1, centre).total_cmp(&distance(b.1, centre)))
     }
 }
 
@@ -226,6 +229,7 @@ const ROUTE_SEGMENTS: usize = 160;
 const STROKES: usize = RIDDEN_SEGMENTS + ROUTE_SEGMENTS;
 const BAND_ENTRIES: usize = 2048;
 const LOOKAHEAD_M: f32 = 4_000.0;
+const ROUTE_REACHES: f32 = 2.0;
 struct ArrowLayer {
     shaft_half: f32,
     head_outline: f32,
@@ -395,6 +399,22 @@ impl Frame {
     }
 }
 
+fn until_it_leaves(
+    at: &Projection,
+    reach: f32,
+    points: impl Iterator<Item = Point>,
+) -> impl Iterator<Item = Point> {
+    let at = *at;
+    let (mut last, mut shown) = (None, false);
+    points.take_while(move |&p| {
+        let here = at.at(p);
+        let on = last.is_none_or(|from| visible(from, here, reach + 1.0));
+        last = Some(here);
+        shown |= on;
+        on || !shown
+    })
+}
+
 fn visible(a: Point, b: Point, reach: f32) -> bool {
     let (left, right) = (-reach, WIDTH as f32 + reach);
     let (top, bottom) = (GROUND.start as f32 - reach, GROUND.end as f32 + reach);
@@ -433,25 +453,19 @@ fn fill(frame: &mut Frame, track: &Track) {
 
 fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
     frame.last_pose = pose;
-    let split = track.split();
+    let place = track.place(centre);
     let at = pose.projection(centre);
-    match split {
-        Some(split) => {
-            frame.add(Line::Ridden, &at, track.behind_points(split));
-            frame.add(Line::Route, &at, track.ahead_points(split).map(|(p, _)| p));
+    match place {
+        Some(place) => {
+            let ahead = track.ahead_points(place, ROUTE_REACHES * pose.reach.ahead_m());
+            let shown = until_it_leaves(&at, Line::Route.reach(), ahead.map(|(p, _)| p));
+            frame.add(Line::Route, &at, shown);
         }
-        None => {
-            frame.add(Line::Ridden, &at, track.crumbs_back());
-            if track.course.len() >= 2 {
-                let nearest = track.nearest(centre);
-                frame.add(Line::Route, &at, track.course_from(nearest, false));
-                frame.add(Line::Route, &at, track.course_from(nearest, true));
-            }
-        }
+        None => frame.add(Line::Ridden, &at, track.crumbs_back()),
     }
-    frame.has_track = track.crumbs.len() >= 2 || split.is_some();
-    if let (Some(split), Some((turn, _))) = (split, track.turn_on_course()) {
-        arrow(frame, &at, track, split, at.at(turn.at));
+    frame.has_track = track.crumbs.len() >= 2 || place.is_some();
+    if let (Some(place), Some((turn, _))) = (place, track.turn_on_course()) {
+        arrow(frame, &at, track, place, at.at(turn.at));
     }
     let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
     if let Some(junction) = track.junction() {
@@ -481,7 +495,7 @@ fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
 fn arrow(frame: &mut Frame, at: &Projection, track: &Track, split: (usize, Point), turn: Point) {
     let route = |visit: &mut dyn FnMut(Point, bool)| {
         track
-            .ahead_points(split)
+            .ahead_points(split, LOOKAHEAD_M)
             .for_each(|(p, before)| visit(at.at(p), before));
     };
     let Some(shape) = arrow_shape(&route, turn) else {

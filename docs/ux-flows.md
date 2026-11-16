@@ -170,8 +170,13 @@ and when the rider stands still the last heading holds.
 The rider's puck sits in one place on every fix: centred across the map and
 three quarters of the way down it, so most of the map is the road ahead and,
 while following, the blue route runs up through the middle. The course
-ahead is a wide blue route on a dark casing, the ridden part a thinner,
-dimmer blue, and a white arrow on the route marks the next turn's corner.
+ahead is a wide blue route on a dark casing, and a white arrow on the route
+marks the next turn's corner. Only the course still to ride is drawn: from
+the rider's place on it, forward until it first leaves the map, at most
+twice the distance the map shows ahead. The course behind the rider, and a
+later part of it that comes back into view (the way back of an
+out-and-back, the end of a loop), is not drawn, and neither is the ride's
+own track.
 The badge in the top-left corner shows the next turn and how far it is, at
 rest too; with a radar paired it sits 8 px right of the radar strip. It may
 cover the route, never the puck: straight up from the puck it covers from
@@ -190,12 +195,12 @@ the course left off, at the same scale and with the puck in the same place.
 When the junction is off the map the chevrons point to where that line
 leaves it, clear of the puck, the badge and a radar strip whichever way it
 lies; the ringed junction shows once it is on the map, and the route goes on
-from there. Arrived, the badge is green.
+from there, and only forward. Arrived, the badge is green.
 
-Without a course to follow, the map draws the ride's own track behind the
-rider in the ridden blue. A loaded course
-not being followed is drawn in the route's blue, both ways from its point
-nearest the rider.
+Without a course loaded, the map draws the ride's own track behind the
+rider in a thinner, dimmer blue. A loaded course not being followed, before
+joining it or after stopping, is drawn in the route's blue from its point
+nearest the rider, only the way the course runs.
 
 The footer holds the scale bar (50 M, 100 M or 250 M) and, while following,
 the distance left on the course; otherwise the ride's distance. Without a fix

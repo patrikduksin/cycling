@@ -15,10 +15,9 @@ through the [remote device skill](../remote-device/SKILL.md).
 | Task | Does |
 | --- | --- |
 | `cycling backup` | One-time full-flash backup into private `.local/device`. Refuses to overwrite an existing backup. |
-| `cycling flash` | Rebuilds the firmware, writes the slot that is not selected, verifies it and the reservations, selects and boots it, and requires its console. |
+| `cycling flash` | Rebuilds the firmware, writes the slot that is not selected, verifies it, checks the stub's MD5 of the ride and settings reservations is unchanged, selects and boots it, and requires its console. |
 | `cycling rollback` | Validates the cycling image in the other slot and boots it. No slot writes. |
 | `cycling stock` | Full restore of the verified 16 MiB backup. Asks for confirmation (`-- --confirm-restore` skips it). |
-| `cycling restore-owned <snapshot>` | Writes a saved `.local/device/owned-*.bin` back into the ride/settings reservations while cycling is selected, after saving the current ones; verified readback, then reset. |
 | `cycling stock-select` (alias `boot-stock`) | Boots slot A without rewriting flash, only while it still holds the verified stock image. |
 | `cycling flash-maintenance` | `flash` with the MMC maintenance image (`cycling build-maintenance`) instead of the firmware; `cycling flash` returns to the firmware. |
 | `cycling flash-image` | `flash` for an image built elsewhere: writes the existing `.local/cycling.bin` without building. |
@@ -40,28 +39,27 @@ its `manifest.json`; keep the separate copy too.
 - After the watchdog reset `flash` and `rollback` wait up to 25 s for the
   console to answer `INFO`, whose `slot=` field reports the booted slot. Silence
   or a different slot reselects the previous slot and fails with the reason.
-  Firmware without the `slot=` field is reported by OTA selection only.
   The maintenance image (`cycling flash-maintenance`) marks its descriptor version
   `+maintenance`; for such an image (new, rollback target or previous slot) the
   check uses the maintenance protocol's INFO frame instead (that build has no
-  JSON console and needs working MMC). Maintenance images built before the
-  marker are probed as JSON and get switched back. A reset
+  JSON console and needs working MMC). That frame has no slot, so OTA selection
+  names the booted slot. A reset
   failure after the selection was written (for example ROM download mode) also
   reselects the previous slot from freshly read metadata.
-- `stock` checks every backup hash and the device identity before writing, saves
-  the current ride and settings reservations as
-  `.local/device/owned-pre-restore-<ns>.bin` (rides at offset 0, settings at
-  `0x100000`) and prints the path and the `cycling restore-owned` command
-  that puts them back after the next cycling flash, writes only differing sectors (boot metadata
-  last, identical bootloader sectors never), reads the whole flash back, and
-  resets. It reads 16 MiB twice: allow about five minutes. The reservations
-  then hold the backup's bytes, so cycling reports `SETTINGS source=failed
-  persistence_error=true` and `EXPORT INFO ... needs_init` and refuses to persist
-  until `cycling restore-owned` writes the snapshot back.
+- `stock` checks every backup hash and the device identity before writing,
+  writes only differing sectors (boot metadata last, identical bootloader
+  sectors never), reads the whole flash back, and resets. It reads 16 MiB
+  twice, so allow about five minutes. Cycling rides and settings are lost. The
+  reservations then hold the backup's bytes. The next cycling firmware refuses
+  them as foreign, never overwrites them, and offers FORMAT.
 - Never use generic flashing tools or write the backup by hand. The recovered
   layout assumes secure boot and flash encryption are disabled.
-- Never touch eFuses. Preserve the bootloader, partition table and the ride and
-  settings reservations across flashes. No vendor filesystem writes.
+- Never touch eFuses. Preserve the bootloader and partition table. No vendor
+  filesystem writes.
+- A flash with unchanged formats keeps settings and rides; `flash` checks the
+  stub's MD5 of the owned reservations. A format change wipes them. Each
+  persisted format has one version byte, and firmware refuses a mismatch as
+  foreign instead of overwriting it.
 - The first backup needs an explicit `--port` or `CYCLING_PORT`, because port
   discovery relies on its manifest. `backup` refuses when slot A holds cycling:
   on a new host, copy the existing verified backup instead. Keep a separate copy of the backup. Never

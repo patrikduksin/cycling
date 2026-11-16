@@ -38,7 +38,7 @@ hand.
 - Evidence (logs, reports, exports) comes back to the same `.local/` path the
   task printed. Read it here.
 - `CYCLING_*` task settings travel with the command.
-- `stock`, `stock-select`, `backup` and `restore-owned` need the owner's
+- `stock`, `stock-select` and `backup` need the owner's
   go-ahead in the task; ask rather than run them.
 - After device tests, leave cycling firmware running (`cycling device flash`),
   as the C606 skill requires, and report what you observed.

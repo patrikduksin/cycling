@@ -67,11 +67,10 @@ The Wi-Fi example encodes a test network `Test` with a test password; use
 - Status, help and errors omit passwords, SSIDs and peer identifiers. `NETWORKS`
   and `PEERS` replies contain private names and identifiers; keep them in ignored
   local evidence. Password hex is still a password.
-- Settings schema v6 migrates v1 through v5 records without resetting preferences.
-  v6 adds a bounded application area that the shell carries through every save
-  without interpreting; VANA stores its training profile and saved ANT sensors
-  there. Firmware older
-  than v6 reports a v6 record as unsupported and keeps it intact.
+- The settings record has a bounded application area that the shell carries
+  through every save without interpreting. VANA stores its training profile and
+  saved ANT sensors there. A record with another settings version is refused as
+  foreign and kept intact.
   Connectivity writes preserve saved brightness, idle and timezone values, even
   while a harness has changed them temporarily. Unsupported or malformed occupied
   settings still refuse replacement.

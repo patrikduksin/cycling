@@ -195,11 +195,15 @@ VANA; calibration belongs to the device. The shell settings envelope also stores
 the BLE profile selector that VANA interprets (see the
 [shell README](../packages/shell/README.md)).
 
-Moving code does not authorize discarding or reinterpreting persisted data.
-Preserve compatibility or provide an explicit migration with recovery behavior.
-A package move must also preserve terminal commands, reply framing and binary
-record formats; verify them through their existing tests, because relocation
-alone is not evidence that a device still behaves correctly.
+Persisted formats have no compatibility readers and no migrations. Each format
+has one version byte. A format change bumps it, and the data in the old format
+is wiped. Firmware refuses a record with another version as foreign. It never
+overwrites it, and the device offers FORMAT.
+
+A pure move changes no format. It keeps terminal commands, reply framing and
+binary record formats unless the PR names the change. Verify them through their
+existing tests, because relocation alone is not evidence that a device still
+behaves correctly.
 
 Unsupported or corrupt occupied journals stay available for diagnosis; they never
 silently become empty settings or free space. VANA owns ride recovery, export and

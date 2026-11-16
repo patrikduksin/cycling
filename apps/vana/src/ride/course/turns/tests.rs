@@ -318,7 +318,7 @@ fn a_rider_inside_a_roundabout_hears_nothing_of_it() {
 }
 
 /// `course`'s points in metres east and north of its start.
-fn line_of(course: &Course) -> Vec<(f32, f32)> {
+pub(crate) fn line_of(course: &Course) -> Vec<(f32, f32)> {
     let points = course.points();
     let scale = east_per_e7(points[0]);
     points

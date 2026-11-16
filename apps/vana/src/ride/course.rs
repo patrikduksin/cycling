@@ -41,12 +41,9 @@ use firmware_services::le::{get_u16, get_u32, put_u16, put_u32};
 use firmware_services::{files, volume};
 use libm::{cosf, sqrtf};
 
-use turns::Kind;
-
 pub mod follow;
 pub mod gpx;
 pub mod nav;
-mod spur;
 pub mod stored;
 pub mod turns;
 
@@ -236,18 +233,12 @@ impl Builder {
         self.keep(course, point, follow);
     }
 
-    /// End the course at the newest point given, and drop its spurs.
+    /// End the course at the newest point given.
     pub fn finish(&mut self, course: &mut Course, follow: &mut impl Follow) {
         if let Some(last) = self.last.take()
             && course.points().last() != Some(&last)
         {
             self.keep(course, last, follow);
-        }
-        let len = course.len as usize;
-        if len >= 3 {
-            let (origin, scale) = (course.points[0], self.east_per_e7);
-            let at = |p: Point| metres(origin, p, scale);
-            course.len = spur::prune(&mut course.points[..len], at, follow) as u32;
         }
     }
 
@@ -275,12 +266,8 @@ pub trait Follow {
     fn given(&mut self, _point: Point) {}
     /// The newest point given is kept, at `index`.
     fn kept(&mut self, _index: usize) {}
-    /// Thinning or a cut moved the kept point at `from` to `to`.
+    /// Thinning moved the kept point at `from` to `to`.
     fn moved(&mut self, _to: usize, _from: usize) {}
-    /// The course is complete, and the kept points between `after` and
-    /// `before` are cut from it: those after move down next. Where they
-    /// were, the course now turns as `corner` says.
-    fn cut(&mut self, _after: usize, _before: usize, _corner: Option<Kind>) {}
 }
 
 /// Nothing follows.

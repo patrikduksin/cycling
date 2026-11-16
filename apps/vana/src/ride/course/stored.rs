@@ -42,7 +42,7 @@
 //! U-turn) and flags (1 two corners, 2 cornered). Later versions may lengthen
 //! the header or each turn, and add flags, and raise the version; a reader
 //! takes what it knows from any version at least 1.
-use super::turns::{HALF_CHORD_MM, Kind, RECORD, Scan, TURNS, Turn};
+use super::turns::{RECORD, Scan, TURNS, Turn};
 use super::{Error, Follow, POINTS, Point, east_per_e7, metres};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::Crc32;
@@ -395,43 +395,6 @@ impl Follow for Finding<'_> {
         if let (true, Some(&from)) = (to < kept.len(), kept.get(from)) {
             kept[to] = from;
         }
-    }
-
-    fn cut(&mut self, after: usize, before: usize, corner: Option<Kind>) {
-        let kept = &self.finder.kept_mm;
-        let (Some(&from), Some(&to)) = (kept.get(after), kept.get(before)) else {
-            return;
-        };
-        let Some(found) = self.scan_to_end() else {
-            return;
-        };
-        let reach = 2 * HALF_CHORD_MM;
-        let beyond_the_cut = |turn: &Turn| {
-            turn.start_mm.saturating_add(reach) < from || turn.end_mm > to.saturating_add(reach)
-        };
-        let mut left = 0;
-        for k in 0..found {
-            let turn = self.turns[k];
-            if turn.end_mm < from || turn.start_mm > to {
-                self.turns[left] = turn;
-                left += 1;
-            } else if turn.kind.is_some() && beyond_the_cut(&turn) {
-                self.finder.lost = true;
-            }
-        }
-        if let Some(kind) = corner
-            && left < self.turns.len()
-        {
-            let at = self.turns[..left].partition_point(|turn| turn.start_mm < from);
-            self.turns.copy_within(at..left, at + 1);
-            let mut turn = Turn::default();
-            turn.start_mm = from.saturating_sub(HALF_CHORD_MM);
-            turn.end_mm = to.saturating_add(HALF_CHORD_MM);
-            turn.kind = Some(kind);
-            self.turns[at] = turn;
-            left += 1;
-        }
-        self.finder.found = left;
     }
 }
 

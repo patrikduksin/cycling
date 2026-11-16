@@ -42,6 +42,7 @@
 //! which make way for the rest.
 //! Distances along the course are u32 millimetres, saturating.
 use libm::{atan2f, fabsf, sqrtf, tanf};
+use spur::Spur;
 
 /// The course is read this often along it, at whole steps from its start,
 /// so a turn is found at the same place from wherever the rider is.
@@ -129,8 +130,7 @@ impl Kind {
         }
     }
 
-    /// A turn of `degrees`, clockwise positive.
-    pub(super) fn of(degrees: f32) -> Option<Self> {
+    fn of(degrees: f32) -> Option<Self> {
         let side = if degrees > 0.0 {
             Side::Right
         } else {
@@ -532,6 +532,11 @@ pub struct Scan {
     ahead: Cursor,
     tail: Cursor,
     tail_m: f32,
+    /// The course `spur::BACK_M` behind the chord's middle, or further while
+    /// a spur is being looked into, and metres along to it.
+    trail: Cursor,
+    trail_m: f32,
+    spur: Spur,
     /// Metres along to the middle of the chord.
     s: f32,
     heading: Option<f32>,
@@ -588,7 +593,7 @@ impl Scan {
         tails
             .into_iter()
             .flatten()
-            .chain([self.behind, self.tail])
+            .chain([self.behind, self.tail, self.trail])
             .map(|cursor| cursor.next.saturating_sub(1))
             .min()
             .unwrap_or(0)
@@ -605,31 +610,7 @@ impl Scan {
         turns: &mut [Turn],
         mut found: usize,
     ) -> usize {
-        let (room, from_mm) = (turns.len(), self.from_mm);
-        let mut push = |turn: Turn, found: &mut usize| {
-            if from_mm > 0 && turn.start_mm <= from_mm {
-                return;
-            }
-            // Coarse corners close together, apart or not, say nothing.
-            if let Some(last) = found.checked_sub(1).and_then(|k| turns.get_mut(k))
-                && last.sparse
-                && turn.sparse
-                && last.cornered
-                && turn.cornered
-                && turn.start_mm.saturating_sub(last.end_mm) < mm(CROWD_M)
-            {
-                last.kind = None;
-                if let Some(slot) = turns.get_mut(*found) {
-                    *slot = Turn { kind: None, ..turn };
-                    *found += 1;
-                }
-                return;
-            }
-            if let Some(slot) = turns.get_mut(*found) {
-                *slot = turn;
-                *found += 1;
-            }
-        };
+        let room = turns.len();
         if self.done || len < 2 {
             self.done = true;
             return found;
@@ -637,7 +618,7 @@ impl Scan {
         if !self.started {
             self.started = true;
             self.behind = Cursor::start(&at);
-            (self.ahead, self.tail) = (self.behind, self.behind);
+            (self.ahead, self.tail, self.trail) = (self.behind, self.behind, self.behind);
             if !self.ahead.on(len, &at, 2.0 * HALF_CHORD_M) {
                 self.done = true;
                 return found;
@@ -655,7 +636,7 @@ impl Scan {
             if !self.behind.on(len, &at, STEP_M) || !self.ahead.on(len, &at, STEP_M) {
                 self.waiting = room - found < 2;
                 if !self.waiting {
-                    self.finish(len, &at, &mut found, &mut push);
+                    self.finish(len, &at, turns, &mut found);
                 }
                 return found;
             }
@@ -664,12 +645,18 @@ impl Scan {
             if lag > self.tail_m && self.tail.on(len, &at, lag - self.tail_m) {
                 self.tail_m = lag;
             }
+            self.look_for_spurs(len, &at, turns, &mut found);
             let Some(now) = way(self.behind.here, self.ahead.here) else {
                 continue;
             };
             let turned = self.heading.map_or(0.0, |heading| swing(heading, now));
             self.heading = Some(now);
             self.total += turned;
+            if fabsf(turned) >= spur::REVERSAL_DEG && matches!(self.spur, Spur::None) {
+                let mut tip = self.behind;
+                tip.on(len, &at, HALF_CHORD_M);
+                self.spur = Spur::reversed(self.s, tip);
+            }
             let sparse = self.behind.segment(len, &at) >= SPARSE_M
                 || self.ahead.segment(len, &at) >= SPARSE_M;
             if let Some(bend) = &mut self.bend {
@@ -684,7 +671,7 @@ impl Scan {
                     .filter(|bend| s - bend.start > SPAN_M || bend.right != right)
                 {
                     self.bend = None;
-                    self.take(done, self.total - turned, len, &at, &mut found, &mut push);
+                    self.take(done, self.total - turned, len, &at, turns, &mut found);
                 }
                 match &mut self.bend {
                     Some(bend) => bend.last = s,
@@ -706,7 +693,7 @@ impl Scan {
             match self.bend {
                 Some(done) if s - done.last > BEND_GAP_M => {
                     self.bend = None;
-                    self.take(done, self.total, len, &at, &mut found, &mut push);
+                    self.take(done, self.total, len, &at, turns, &mut found);
                 }
                 Some(_) => {}
                 None => {
@@ -716,7 +703,7 @@ impl Scan {
                     };
                     if let Some(group) = self.open.filter(|group| s - group.last > reach(group)) {
                         self.open = None;
-                        push(group.close(len, &at), &mut found);
+                        list(self.from_mm, group.close(len, &at), turns, &mut found);
                     }
                 }
             }
@@ -732,19 +719,20 @@ impl Scan {
         total: f32,
         len: usize,
         at: &impl Fn(usize) -> (f32, f32),
+        turns: &mut [Turn],
         found: &mut usize,
-        push: &mut impl FnMut(Turn, &mut usize),
     ) {
         if bend.peak < BEND_MIN_DEG {
             return;
         }
         let swung = total - bend.before;
+        let from_mm = self.from_mm;
         if let Some(group) = &mut self.open {
             if group.takes(&bend, swung) {
                 group.join(&bend, swung, total);
                 return;
             }
-            push(group.close(len, at), found);
+            list(from_mm, group.close(len, at), turns, found);
         }
         self.open = Some(Open::new(bend, swung));
     }
@@ -753,18 +741,79 @@ impl Scan {
         &mut self,
         len: usize,
         at: &impl Fn(usize) -> (f32, f32),
+        turns: &mut [Turn],
         found: &mut usize,
-        push: &mut impl FnMut(Turn, &mut usize),
     ) {
         if let Some(done) = self.bend.take() {
-            self.take(done, self.total, len, at, found, push);
+            self.take(done, self.total, len, at, turns, found);
         }
         if let Some(group) = self.open.take() {
-            push(group.close(len, at), found);
+            list(self.from_mm, group.close(len, at), turns, found);
         }
         self.done = true;
+        self.look_for_spurs(len, at, turns, found);
+    }
+
+    /// Keep the course behind in reach, walk back from where it turned
+    /// back, and put a spur found into the list once its turns are.
+    fn look_for_spurs(
+        &mut self,
+        len: usize,
+        at: &impl Fn(usize) -> (f32, f32),
+        turns: &mut [Turn],
+        found: &mut usize,
+    ) {
+        if matches!(self.spur, Spur::None) {
+            let lag = self.s - spur::BACK_M;
+            if lag > self.trail_m && self.trail.on(len, at, lag - self.trail_m) {
+                self.trail_m = lag;
+            }
+        }
+        let read_m = self.s + HALF_CHORD_M;
+        self.spur.walk(len, at, (&self.trail, self.trail_m), read_m);
+        let unread_m = match self.done {
+            true => f32::INFINITY,
+            false => self.s - STEP_M,
+        };
+        let open_from_m = [self.bend.map(|b| b.start), self.open.map(|o| o.start)]
+            .into_iter()
+            .flatten()
+            .fold(unread_m, f32::min);
+        if let Some(spur) = self.spur.settled(open_from_m) {
+            let trail = (self.trail, self.trail_m);
+            spur::mark(spur, len, at, trail, turns, found, self.from_mm);
+            self.spur = Spur::None;
+        }
     }
 }
+
+/// List `turn`, unless it starts at or before `from_mm`, known already.
+fn list(from_mm: u32, turn: Turn, turns: &mut [Turn], found: &mut usize) {
+    if from_mm > 0 && turn.start_mm <= from_mm {
+        return;
+    }
+    // Coarse corners close together, apart or not, say nothing.
+    if let Some(last) = found.checked_sub(1).and_then(|k| turns.get_mut(k))
+        && last.sparse
+        && turn.sparse
+        && last.cornered
+        && turn.cornered
+        && turn.start_mm.saturating_sub(last.end_mm) < mm(CROWD_M)
+    {
+        last.kind = None;
+        if let Some(slot) = turns.get_mut(*found) {
+            *slot = Turn { kind: None, ..turn };
+            *found += 1;
+        }
+        return;
+    }
+    if let Some(slot) = turns.get_mut(*found) {
+        *slot = turn;
+        *found += 1;
+    }
+}
+
+mod spur;
 
 #[cfg(test)]
 pub(crate) mod tests;

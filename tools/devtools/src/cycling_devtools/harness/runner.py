@@ -463,11 +463,6 @@ class Runner:
             self.transport.delay(READY_POLL_S)
 
     def readiness(self, detail, stop):
-        """Classify a BUSY detail as `starting` or a key of NOT_READY.
-
-        Older firmware says `BUSY power transition` while starting too; POWER
-        then tells startup (`state: Initializing`) from charging standby.
-        """
         words = detail.split()
         if words[:1] == ['starting']:
             return next((STARTUP_STOPPED[word] for word in words if word in STARTUP_STOPPED), 'starting')
@@ -476,8 +471,6 @@ class Runner:
         reply = self.request('POWER', remaining(stop))
         if reply['status'] != 'OK':
             return 'busy'
-        if 'state: Initializing' in reply['data']:
-            return 'starting'
         return 'standby' if 'state: Charging' in reply['data'] else 'busy'
 
     def operation(self, command, statuses=('OK',)):

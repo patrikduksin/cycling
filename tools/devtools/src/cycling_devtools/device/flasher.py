@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -71,6 +72,9 @@ class Flasher(Protocol):
 
     def verify(self, address: int, path: Path) -> bool:
         """Whether the chip's MD5 of len(file) bytes at address equals the file's."""
+
+    def digest(self, address: int, size: int) -> str:
+        """The stub's MD5 of size bytes at address, lowercase hex."""
 
     def reboot(self, seconds: float) -> bytes | None:
         """Reboot into the selected app (python esptool's watchdog reset, or RTS where the family or port has none);
@@ -201,6 +205,24 @@ class EsptoolFlasher:
 
     def verify(self, address, path):
         return 'Verification successful (digest matched).' in self._run('verify-flash', hex(address), path)
+
+    def digest(self, address, size):
+        # The CLI prints no MD5 for a region, so this verb drives esptool's API on the same no-reset connection.
+        from esptool.cmds import _set_flash_parameters, attach_flash, detect_chip, run_stub
+
+        self.count += 1
+        log = self.log_dir / f'{time.time_ns()}-{self.count}.log'
+        with log.open('w') as output, redirect_stdout(output), redirect_stderr(output):
+            try:
+                with detect_chip(self.port, connect_mode='no-reset') as rom:
+                    loader = run_stub(rom)
+                    attach_flash(loader)
+                    _set_flash_parameters(loader)
+                    return loader.flash_md5sum(address, size)
+            # FatalError is a RuntimeError; a lost or busy port raises serial's OSError.
+            except (RuntimeError, OSError) as error:
+                print(f'{type(error).__name__}: {error}')
+                raise FlasherError(f'esptool failed; inspect private logs in {self.log_dir}') from None
 
     def reboot(self, seconds):
         # RTS hard-reset left this C606 in ROM download mode. The watchdog

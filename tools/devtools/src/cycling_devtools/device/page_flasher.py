@@ -68,6 +68,9 @@ class PageFlasher:
     def verify(self, address, path):
         return self._ask({'op': 'verify', 'address': address, 'path': str(Path(path).resolve())})['matched']
 
+    def digest(self, address, size):
+        return self._ask({'op': 'digest', 'address': address, 'size': size})['md5']
+
     def reboot(self, seconds):
         capture = (self.log_dir / f'{time.time_ns()}-page-capture.bin').resolve()
         if not self._ask({'op': 'reboot', 'seconds': seconds, 'path': str(capture)})['captured']:

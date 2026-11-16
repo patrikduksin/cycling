@@ -56,13 +56,18 @@ Read the [C606 skill](.agents/skills/c606/SKILL.md) before flashing, serial
 access or device tests. It owns the procedure; these rules always apply:
 
 - Change device firmware only through `cycling backup`, `cycling flash`,
-  `cycling flash-maintenance`, `cycling rollback`, `cycling stock`,
-  `cycling stock-select` and `cycling restore-owned`.
+  `cycling flash-maintenance`, `cycling rollback`, `cycling stock` and
+  `cycling stock-select`.
 - Stock lives in the verified private backup, not on the device (owner
   decision, 2026-10-17): cycling may occupy both A/B application slots, and
   `cycling stock` restores the complete backup. Never touch eFuses. Preserve
-  the bootloader and partition table, and persisted cycling settings and rides
-  across flashes. No vendor filesystem writes outside that full restore.
+  the bootloader and partition table. No vendor filesystem writes outside that
+  full restore.
+- A flash keeps settings and rides while their formats are unchanged:
+  `cycling flash` compares the stub's MD5 of the owned reservations before and
+  after the write. Each persisted format has one version byte. A format change
+  bumps it and wipes the data. Firmware refuses data with another version as
+  foreign and never overwrites it.
 - Serialize all device access. Linked worktrees share the primary checkout's
   `.local` device lock and backup. When `CYCLING_DEVICE_HOST` is set the device
   is on that machine: reach it only through `cycling device <task>` and the

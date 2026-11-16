@@ -136,7 +136,7 @@ RelayClient (socket, token, capped redial)
   never sees SLIP.
 - The device socket speaks JSON lines, one request then one reply:
   `enter`, `read{address, size, path}`, `write{address, path}`,
-  `verify{address, path}`, `reboot{seconds, path}`. Paths are absolute files
+  `verify{address, path}`, `digest{address, size}`, `reboot{seconds, path}`. Paths are absolute files
   on this machine; the socket lives in the 0700 session directory. One
   connection is one lease, released (`Op Release`) when the connection closes,
   so a Python process that exits, crashes or is killed gives the device back.

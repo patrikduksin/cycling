@@ -264,6 +264,45 @@ class EsptoolFlasherTests(unittest.TestCase):
         self.assertEqual(self.arguments()[-3:], ['verify-flash', '0x20000', '/private/stock.bin'])
         self.assertFalse(target.verify(0x20000, Path('/private/stock.bin')))
 
+    def test_digest_asks_the_stub_for_the_region_without_a_reset(self):
+        asked = []
+
+        class Loader:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                asked.append('closed')
+
+            def flash_md5sum(self, address, size):
+                asked.append((address, size))
+                return 'ab' * 16
+
+        def detect_chip(port, connect_mode):
+            asked.append((port, connect_mode))
+            return Loader()
+
+        with (
+            patch('esptool.cmds.detect_chip', detect_chip),
+            patch('esptool.cmds.run_stub', lambda rom: rom),
+            patch('esptool.cmds.attach_flash', lambda loader: None),
+            patch('esptool.cmds._set_flash_parameters', lambda loader: asked.append('sized')),
+        ):
+            self.assertEqual(self.flasher().digest(0xD98000, 0x102000), 'ab' * 16)
+        self.assertEqual(asked, [('/dev/ttyACM0', 'no-reset'), 'sized', (0xD98000, 0x102000), 'closed'])
+
+    def test_a_failed_digest_keeps_esptools_words_in_a_private_log(self):
+        from esptool.util import FatalError
+
+        def detect_chip(port, connect_mode):
+            raise FatalError(f'no answer from {MAC}')
+
+        with patch('esptool.cmds.detect_chip', detect_chip), self.assertRaises(flasher.FlasherError) as raised:
+            self.flasher().digest(0, 16)
+        self.assertNotIn(MAC, str(raised.exception))
+        (log,) = self.logs.glob('*.log')
+        self.assertIn(MAC, log.read_text())
+
     def test_reboot_resets_by_watchdog_then_returns_the_boot_output(self):
         def capture(port, seconds, output):
             self.assertEqual((port, seconds), ('/dev/ttyACM0', 3))

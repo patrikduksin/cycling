@@ -44,6 +44,11 @@ export const DoorRequest = Schema.Union([
     path: AbsolutePath,
   }),
   Schema.Struct({
+    op: Schema.Literal('digest'),
+    address: Address,
+    size: Schema.Int,
+  }),
+  Schema.Struct({
     op: Schema.Literal('reboot'),
     seconds: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 60 })),
     path: AbsolutePath,
@@ -161,6 +166,10 @@ const answer = (
         flasher
           .verify(address, path)
           .pipe(Effect.map(matched => ({ ok: { matched } }))),
+      digest: ({ address, size }) =>
+        flasher
+          .digest(address, size)
+          .pipe(Effect.map(md5 => ({ ok: { md5 } }))),
       reboot: ({ seconds, path }) =>
         flasher
           .reboot(seconds, path)

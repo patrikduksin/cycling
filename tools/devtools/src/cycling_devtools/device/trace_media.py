@@ -245,41 +245,30 @@ def pull_files(transfer, media, out, problems):
 
 
 def pull_media(connection, media, out, cache, problems, timing):
-    """RIDES and FILES as the header names them, in one transfer session. RIDES goes through ride export instead
-    on firmware from before RIDES_READ."""
     rides = rides_log(connection, media, problems)
     head = rides[2] if rides else 0
-    pulled = {}
 
     def work(transfer):
+        invalid = None
         if head:
             try:
-                pulled['invalid'] = pull_rides(transfer, rides[0], head, out / 'rides.slots', cache)
-            except volumes.TransferError as error:
-                if error.status == 'invalid':
-                    pulled['export'] = True
-                else:
-                    problems.append(f'RIDES: {error}')
+                invalid = pull_rides(transfer, rides[0], head, out / 'rides.slots', cache)
             except (RuntimeError, ValueError, TimeoutError) as error:
                 problems.append(f'RIDES: {error}')
         pull_files(transfer, media, out, problems)
+        return invalid
 
-    if head or media['files'] is not None:
-        session(connection, timing, 'media_session', work)
+    invalid = session(connection, timing, 'media_session', work) if head or media['files'] is not None else None
     if rides is None:
         return
     if not head:
         (out / 'rides.slots').write_bytes(b'')
-        pulled['invalid'] = []
-    elif pulled.get('export'):
-        try:
-            pulled['invalid'] = pull_slots(connection, 'bulk', head, out / 'rides.slots')
-        except (RuntimeError, ValueError, TimeoutError) as error:
-            problems.append(f'RIDES: {error}')
-    if 'invalid' in pulled:
+        invalid = []
+    if invalid is not None:
         store, generation, _ = rides
-        invalid = ' '.join(map(str, pulled['invalid']))
-        (out / 'rides.epoch').write_text(f'store {store:016x}\ngeneration {generation}\ninvalid {invalid}\n')
+        (out / 'rides.epoch').write_text(
+            f'store {store:016x}\ngeneration {generation}\ninvalid {" ".join(map(str, invalid))}\n'
+        )
 
 
 def session(connection, timing, name, work):

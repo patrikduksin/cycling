@@ -222,6 +222,7 @@ enum Place {
         since_ms: u64,
         junction: Spot,
         reminded: bool,
+        paused_since_sound: bool,
     },
 }
 
@@ -380,6 +381,7 @@ impl Navigator {
                     since_ms: now,
                     junction,
                     reminded: false,
+                    paused_since_sound: false,
                 }
             }
             Place::Off { .. } if fix.off_m <= ON_M && fix.forward => {
@@ -390,14 +392,27 @@ impl Navigator {
                 since_ms,
                 junction,
                 reminded: false,
+                ..
             } if now.saturating_sub(since_ms) >= REMIND_MS && !fix.paused => {
                 due.raise(Raised::StillOff);
                 Place::Off {
                     since_ms,
                     junction,
                     reminded: true,
+                    paused_since_sound: false,
                 }
             }
+            Place::Off {
+                since_ms,
+                junction,
+                reminded,
+                ..
+            } if fix.paused => Place::Off {
+                since_ms,
+                junction,
+                reminded,
+                paused_since_sound: true,
+            },
             off => off,
         };
         if self.place == Place::On {
@@ -507,7 +522,15 @@ impl Navigator {
         let is = |k: usize, turn: TurnId| turns.get(k).is_some_and(|t| t.id() == turn);
         match raised {
             Raised::Following | Raised::OnCourse => self.place == Place::On,
-            Raised::OffCourse | Raised::StillOff => matches!(self.place, Place::Off { .. }),
+            Raised::OffCourse | Raised::StillOff => {
+                matches!(
+                    self.place,
+                    Place::Off {
+                        paused_since_sound: false,
+                        ..
+                    }
+                )
+            }
             Raised::TurnSoon { turn } => self
                 .banner
                 .is_some_and(|k| is(k, turn) && self.last_beeped < Some(k)),

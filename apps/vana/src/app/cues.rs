@@ -569,4 +569,81 @@ mod tests {
             ]
         );
     }
+
+    struct Course {
+        nav: crate::ride::course::nav::Navigator,
+        cues: Cues,
+        buzzer: GuardedBuzzer,
+        heard: std::vec::Vec<(u64, Cue)>,
+    }
+
+    impl Course {
+        fn joined(buzzer_free_at_ms: u64) -> Self {
+            let mut course = Self {
+                nav: Default::default(),
+                cues: Cues::default(),
+                buzzer: GuardedBuzzer {
+                    free_at_ms: buzzer_free_at_ms,
+                },
+                heard: std::vec::Vec::new(),
+            };
+            let fix = Self::fix(0, 0.0, false);
+            course
+                .nav
+                .step(Observed::Joined(fix), &[], |_| (0.0, 100.0));
+            course
+        }
+
+        fn fix(now: u64, off_m: f32, paused: bool) -> crate::ride::course::nav::MatchedFix {
+            crate::ride::course::nav::MatchedFix {
+                taken_loop_ms: now,
+                along_mm: 100_000,
+                to_end_mm: 10_000_000,
+                off_m,
+                here: (off_m, 100.0),
+                forward: true,
+                speed_mm_s: Some(4_000),
+                paused,
+            }
+        }
+
+        fn ride(&mut self, from_ms: u64, to_ms: u64, off_m: f32, paused: bool) {
+            for now in (from_ms..to_ms).step_by(50) {
+                if (now - from_ms).is_multiple_of(1_000) {
+                    let fix = Observed::Fix(Self::fix(now, off_m, paused));
+                    let event = self.nav.step(fix, &[], |_| (0.0, 100.0));
+                    if let Some(Event::OffCourse | Event::StillOff) = event {
+                        self.cues.raise(Cue::OffCourse, false, now);
+                    }
+                }
+                let nav = &self.nav;
+                self.cues
+                    .play(&mut self.buzzer, now, |cue| nav.holds(cue, &[]));
+                let first = self.cues.take_played().filter(|p| p.note == 1);
+                self.heard.extend(first.map(|p| (now, p.cue)));
+            }
+        }
+    }
+
+    use crate::ride::course::nav::{Event, Observed};
+
+    #[test]
+    fn an_off_course_waiting_for_the_buzzer_when_the_ride_pauses_never_sounds() {
+        let mut course = Course::joined(6_800);
+        course.ride(1_000, 6_200, 44.0, false);
+        course.ride(6_200, 60_000, 44.0, true);
+        assert_eq!(course.heard, []);
+    }
+
+    #[test]
+    fn off_course_sounds_again_once_the_paused_ride_resumes() {
+        let mut course = Course::joined(6_800);
+        course.ride(1_000, 6_200, 44.0, false);
+        course.ride(6_200, 10_000, 44.0, true);
+        course.ride(10_000, 30_000, 44.0, false);
+        assert_eq!(course.heard, [(21_000, Cue::OffCourse)], "reminded");
+        course.ride(30_000, 32_000, 0.0, false);
+        course.ride(32_000, 40_000, 44.0, false);
+        assert_eq!(course.heard[1..], [(37_000, Cue::OffCourse)], "left again");
+    }
 }

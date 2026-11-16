@@ -558,8 +558,10 @@ fn write_files(
 /// The ride facts table `now` less the records of rides that had not ended
 /// at power-on: VANA appends a ride's record when it is saved.
 fn facts_at_power_on(now: &[u8], ended: &BTreeSet<(u8, u32)>) -> Option<Vec<u8>> {
-    let stride = facts::table_stride(now)?;
-    let mut slots = now.chunks_exact(stride);
+    if !facts::table_sound(now) {
+        return None;
+    }
+    let mut slots = now.chunks_exact(facts::SLOT);
     let mut table = slots.next()?.to_vec();
     for slot in slots {
         if facts::decode_slot(slot)

@@ -4,10 +4,8 @@
 //!
 //! The table is read onto the `Shelf` the composition lends (PSRAM on the
 //! device), a few sectors per tick while no ride is open or being written:
-//! after boot, and again each time the card becomes ready. The files older
-//! firmware kept per ride are read after it, one directory sector per tick,
-//! and then folded into the table a batch per tick. A save or a cleared
-//! journal then updates the shelf in place. Without a FILES volume or a shelf
+//! after boot, and again each time the card becomes ready. A save or a
+//! cleared journal then updates the shelf in place. Without a FILES volume or a shelf
 //! nothing is kept and every reader shows what it did before: stress at the
 //! FTP now, no HR recovery and no climbs.
 use super::Runtime;
@@ -18,7 +16,7 @@ use crate::ride::zones::TrainingProfile;
 use device_api::bulk::ReadWrite;
 use firmware_services::{files, volume};
 
-/// A failed read of the files is tried again this long after.
+/// A failed read of the table is tried again this long after.
 const RETRY_MS: u64 = 5_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,10 +27,6 @@ enum Scan {
         piece: usize,
         revision: Option<u32>,
     },
-    /// The next directory sector of older files.
-    Files(usize),
-    /// Fold the older files into the table.
-    Fold,
     Retry {
         at: u64,
     },
@@ -100,7 +94,7 @@ impl Kept {
         }
     }
 
-    /// Keep a record read from the files, unless the shelf holds its ride
+    /// Keep a record read from the table, unless the shelf holds its ride
     /// from the same or a later start, as after a save.
     fn read(&mut self, record: Record) {
         if !matches!(record.journal, b'i' | b'b') {
@@ -231,22 +225,10 @@ impl Kept {
                         piece,
                         revision: Some(revision),
                     }),
-                    Ok(_) | Err(Error::Table) => Ok(Scan::Files(0)),
+                    Ok(_) | Err(Error::Table) => Ok(Scan::Done),
                     Err(error) => Err(error),
                 }
             }
-            Scan::Files(index) => facts::read_files(bulk, index, |record| self.read(record))
-                .map(|next| next.map_or(Scan::Fold, Scan::Files)),
-            Scan::Fold => match facts::fold(bulk) {
-                Ok(true) => Ok(Scan::Fold),
-                Ok(false) => Ok(Scan::Done),
-                Err(error) if absent(error) => Err(error),
-                // The next boot folds them; the shelf already holds them.
-                Err(error) => {
-                    log::warn!(target: "sdk.facts", "fold_failed error={error:?}");
-                    Ok(Scan::Done)
-                }
-            },
             done => Ok(done),
         };
         self.scan = match next {
@@ -286,7 +268,7 @@ impl Runtime {
         self.facts.scan = Scan::START;
     }
 
-    /// Add the heart-rate recovery once it is measured, and read the files
+    /// Add the heart-rate recovery once it is measured, and read the table
     /// while no ride is open or being written.
     pub(super) fn service_facts(&mut self, bulk: &mut impl ReadWrite, now: u64) {
         let riding = self.ride.active().riding();
@@ -323,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn a_save_outranks_the_file_read() {
+    fn a_save_outranks_the_table_read() {
         let mut kept = kept();
         kept.saved(record(2, Some(30)));
         kept.read(record(2, None));
@@ -346,8 +328,8 @@ mod tests {
     }
 
     #[test]
-    fn the_scan_reads_the_table_and_older_files_then_folds_them_in() {
-        use crate::workout::library::tests::{Region, formatted, put};
+    fn the_scan_reads_the_table_a_piece_at_a_time() {
+        use crate::workout::library::tests::{Region, formatted};
         let mut blank = Region::default();
         let mut kept = kept();
         kept.scan_step(&mut blank, 0, false, true);
@@ -361,15 +343,6 @@ mod tests {
         for ride in 1..=200 {
             facts::save(&mut card, &record(ride, Some(12))).unwrap();
         }
-        let older = Record {
-            journal: b'i',
-            ..record(9, Some(20))
-        };
-        put(
-            &mut card,
-            facts::file(b'i', 9).as_str(),
-            &facts::encode(&older),
-        );
         kept.scan_step(&mut card, 0, true, true);
         assert_eq!(kept.scan, Scan::START, "a ready card starts over");
         let mut steps = 0;
@@ -378,21 +351,11 @@ mod tests {
             steps += 1;
         }
         let pieces = (facts::SLOT * 201).div_ceil(facts::PIECE * 512);
-        assert_eq!(steps, pieces + files::DIR_SECTORS + 1);
+        assert_eq!(steps, pieces);
         for ride in [1, 200] {
             let found = kept.find(Medium::Bulk, ride, Some(START));
             assert_eq!(found.and_then(|f| f.recovery_bpm), Some(12), "ride {ride}");
         }
-        let found = kept.find(Medium::Internal, 9, Some(START));
-        assert_eq!(found.and_then(|f| f.recovery_bpm), Some(20));
-        let mut last = None;
-        let mut piece = Some(0);
-        while let Some(index) = piece {
-            piece = facts::read(&mut card, index, |record| last = Some(record))
-                .unwrap()
-                .and_then(|piece| piece.next);
-        }
-        assert_eq!(last, Some(older), "the older file folded in last");
     }
 
     #[test]

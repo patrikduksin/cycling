@@ -30,26 +30,39 @@ mapfile -t sources < "$root/tools/simulator/build-sources"
 edited() {
     [ -n "$(git -C "$root" status --porcelain --untracked-files=normal -- "${sources[@]}")" ]
 }
-target=${CARGO_TARGET_DIR:-$root/target}
-[[ $target = /* ]] || target=$PWD/$target
+json=false
+for arg; do [ "$arg" != --json ] || json=true; done
 cache=$(dirname "$common")/.local/tools/trace
-mkdir -p "$target" "$cache"
+mkdir -p "$cache"
+
+# A failed build under --json still prints one JSON document; cargo's
+# diagnostics went to stderr.
+build_failed() {
+    rm -f "$copy"
+    if $json; then
+        echo '{"error": "the trace tool did not build; cargo said why on stderr"}'
+        exit 2
+    fi
+    exit "$1"
+}
 
 # Worktrees can share a target dir, so the build and the copy out of it hold
-# one lock: the copy is then this build, not another worktree's. Cargo gets
-# neither lock's fd, or the sccache server it starts would hold it for good.
+# one lock: the copy is then this build, not another worktree's. Cargo names
+# the target dir and the binary, whatever its config says. Cargo gets neither
+# lock's fd, or the sccache server it starts would hold it for good.
 build_copy() {
     copy=$(mktemp "$cache/.$commit.XXXXXX")
+    local target built
+    target=$(cargo metadata --format-version 1 --no-deps --manifest-path "$root/Cargo.toml" 8>&- \
+        | jq -r .target_directory) || build_failed $?
+    mkdir -p "$target"
     {
         flock 9 \
-            && cargo build -q --manifest-path "$root/Cargo.toml" --profile tools -p shell-simulator \
-                --locked --no-default-features --bin trace 8>&- 9>&- \
-            && install -m 0755 "$target/tools/trace" "$copy"
-    } 9> "$target/.trace-build.lock" || {
-        status=$?
-        rm -f "$copy"
-        exit $status
-    }
+            && built=$(cargo build -q --manifest-path "$root/Cargo.toml" --profile tools -p shell-simulator \
+                --locked --no-default-features --bin trace --message-format=json-render-diagnostics 8>&- 9>&- \
+                | jq -r 'select(.reason == "compiler-artifact" and .target.name == "trace") | .executable // empty') \
+            && install -m 0755 "$built" "$copy"
+    } 9> "$target/.trace-build.lock" || build_failed $?
 }
 run_copy() {
     status=0
@@ -66,6 +79,8 @@ fi
 # A cached binary runs holding a shared lock on fd 8, kept across the exec,
 # and pruning skips while anyone holds it.
 exec 8> "$cache/.lock"
+# Each pass runs the cached binary or builds it; a binary just cached runs on
+# the next pass, under the shared lock like any other.
 while :; do
     flock -s 8
     # The touch marks the binary as used, so pruning by age keeps the ones in use.

@@ -1,4 +1,5 @@
 import fcntl
+import json
 import os
 import re
 import shutil
@@ -16,21 +17,36 @@ LAUNCHER = ROOT / 'tools' / 'simulator' / 'trace.sh'
 
 FAKE_CARGO = """#!/usr/bin/env bash
 set -eu
+command=$1
 while [ "$1" != --manifest-path ]; do shift; done
 manifest=$(dirname "$2")
-mkdir -p "$CARGO_TARGET_DIR/tools"
+target=${CARGO_TARGET_DIR:-${CARGO_BUILD_TARGET_DIR:-$manifest/target}}
+if [ "$command" = metadata ]; then
+    echo "{\\"target_directory\\": \\"$target\\"}"
+    exit
+fi
+[ -z "${BUILD_EXIT:-}" ] || { echo 'error: it does not compile' >&2; exit "$BUILD_EXIT"; }
+mkdir -p "$target/tools"
 tree=$(cat "$manifest/apps/app.rs")
 commit=$(git -C "$manifest" rev-parse HEAD)
-cat > "$CARGO_TARGET_DIR/tools/trace" <<BIN
+cat > "$target/tools/trace" <<BIN
 #!/usr/bin/env bash
 if [ "\\$*" = --build-commit ]; then echo "\\${STAMP:-$commit}"; exit; fi
 [ -z "\\${PROBE_LOCK:-}" ] || { flock -xn "\\$PROBE_LOCK" true && echo unlocked || echo locked; }
 echo "built $commit $tree: \\$*"
 exit \\${TRACE_EXIT:-0}
 BIN
-chmod +x "$CARGO_TARGET_DIR/tools/trace"
+chmod +x "$target/tools/trace"
 echo "$manifest" >> "$BUILDS"
 eval "${WHILE_BUILDING:-}"
+echo '{"reason": "compiler-artifact", "target": {"name": "vana"}, "executable": null}'
+echo "{\\"reason\\": \\"compiler-artifact\\", \\"target\\": {\\"name\\": \\"trace\\"}, \\"executable\\": \\"$target/tools/trace\\"}"
+echo '{"reason": "build-finished", "success": true}'
+"""
+
+FAKE_INSTALL = f"""#!/usr/bin/env bash
+eval "${{WHILE_COPYING:-}}"
+exec {shutil.which('install')} "$@"
 """
 
 FAKE_UV = """#!/usr/bin/env bash
@@ -43,7 +59,9 @@ def git(cwd, *args):
     return subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
-class TraceLauncherTests(unittest.TestCase):
+class LauncherCase(unittest.TestCase):
+    """A git repo with trace.sh in it, and a fake cargo, install and uv first on PATH."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
@@ -60,7 +78,7 @@ class TraceLauncherTests(unittest.TestCase):
         self.commit('first')
         bin_dir = self.tmp / 'bin'
         bin_dir.mkdir()
-        for name, script in (('cargo', FAKE_CARGO), ('uv', FAKE_UV)):
+        for name, script in (('cargo', FAKE_CARGO), ('install', FAKE_INSTALL), ('uv', FAKE_UV)):
             (bin_dir / name).write_text(script)
             (bin_dir / name).chmod(0o755)
         self.builds = self.tmp / 'builds.log'
@@ -72,9 +90,9 @@ class TraceLauncherTests(unittest.TestCase):
             'CARGO_TARGET_DIR': str(self.tmp / 'target'),
         }
 
-    def commit(self, message):
+    def commit(self, message, checkout=None):
         git(
-            self.repo,
+            checkout or self.repo,
             '-c',
             'user.name=test',
             '-c',
@@ -84,7 +102,7 @@ class TraceLauncherTests(unittest.TestCase):
             '-am',
             message,
         )
-        return git(self.repo, 'rev-parse', 'HEAD')
+        return git(checkout or self.repo, 'rev-parse', 'HEAD')
 
     def launch(self, argv, checkout=None, **env):
         return subprocess.run(argv, cwd=checkout or self.repo, env={**self.env, **env}, capture_output=True, text=True)
@@ -100,6 +118,11 @@ class TraceLauncherTests(unittest.TestCase):
     def cache(self):
         return self.repo / '.local' / 'tools' / 'trace'
 
+    def binaries(self):
+        return sorted(p.name for p in self.cache().iterdir() if not p.name.startswith('.'))
+
+
+class TraceLauncherTests(LauncherCase):
     def test_a_clean_commit_builds_once_and_every_worktree_runs_that_binary(self):
         head = git(self.repo, 'rev-parse', 'HEAD')
         self.assertEqual(self.run_trace(self.repo, 'summary', 'x.trace'), f'built {head} one: summary x.trace')
@@ -210,9 +233,6 @@ class TraceLauncherTests(unittest.TestCase):
         self.assertEqual(waiting.returncode, 0)
         return out.strip()
 
-    def binaries(self):
-        return sorted(p.name for p in self.cache().iterdir() if not p.name.startswith('.'))
-
     def test_a_binary_that_names_another_commit_runs_and_is_not_cached(self):
         head = git(self.repo, 'rev-parse', 'HEAD')
         self.assertEqual(self.run_trace(self.repo, 'summary', STAMP='another'), f'built {head} one: summary')
@@ -248,29 +268,87 @@ class TraceLauncherTests(unittest.TestCase):
         self.assertEqual(self.waits_for(self.cache() / '.lock', 'find'), f'built {head} one: find')
         self.assertEqual(len(self.built()), 1, 'the cached binary ran')
 
+    def test_worktrees_sharing_a_target_dir_each_run_and_cache_their_own_build(self):
+        first = git(self.repo, 'rev-parse', 'HEAD')
+        worktree = self.tmp / 'worktree'
+        git(self.repo, 'worktree', 'add', '-q', '--detach', str(worktree), first)
+        (worktree / 'apps' / 'app.rs').write_text('two')
+        second = self.commit('two', worktree)
+        barrier = self.tmp / 'barrier'
+        barrier.mkdir()
 
-class RoutingTests(unittest.TestCase):
+        def start(checkout, **env):
+            return subprocess.Popen(
+                ['bash', 'tools/simulator/trace.sh', 'trace', 'summary'],
+                cwd=checkout,
+                env={**self.env, 'BARRIER': str(barrier), **env},
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+
+        # The first copies only once the second has built or has waited two
+        # seconds for the target dir: a copy outside the build's lock would
+        # take the second worktree's binary.
+        one = start(
+            self.repo,
+            WHILE_BUILDING='touch "$BARRIER/one-built"',
+            WHILE_COPYING='for _ in $(seq 20); do [ -e "$BARRIER/two-built" ] && break; sleep 0.1; done',
+        )
+        deadline = time.monotonic() + 10
+        while not (barrier / 'one-built').exists():
+            self.assertLess(time.monotonic(), deadline, 'the first never built')
+            time.sleep(0.01)
+        two = start(worktree, WHILE_BUILDING='touch "$BARRIER/two-built"')
+        outs = [proc.communicate(timeout=30)[0].strip() for proc in (one, two)]
+        self.assertEqual(outs, [f'built {first} one: summary', f'built {second} two: summary'])
+        self.assertEqual(self.binaries(), sorted([first, second]))
+        self.assertEqual(self.run_trace(self.repo, 'find'), f'built {first} one: find')
+        self.assertEqual(self.run_trace(worktree, 'find'), f'built {second} two: find')
+        self.assertEqual(len(self.built()), 2)
+
+    def test_the_build_runs_the_binary_cargo_names_and_locks_its_target_dir(self):
+        stale = self.repo / 'target' / 'tools' / 'trace'
+        stale.parent.mkdir(parents=True)
+        stale.write_text('#!/usr/bin/env bash\necho stale\n')
+        stale.chmod(0o755)
+        elsewhere = self.tmp / 'elsewhere'
+        del self.env['CARGO_TARGET_DIR']
+        self.env['CARGO_BUILD_TARGET_DIR'] = str(elsewhere)
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        self.assertEqual(self.waits_for(elsewhere / '.trace-build.lock', 'summary'), f'built {head} one: summary')
+        self.assertFalse((self.repo / 'target' / '.trace-build.lock').exists())
+
+    def test_a_failed_build_under_json_prints_one_error_document(self):
+        for edit in ('one', 'two'):
+            (self.repo / 'apps' / 'app.rs').write_text(edit)
+            launch = ['bash', 'tools/simulator/trace.sh', 'trace', 'summary', 'x.trace']
+            failed = self.launch([*launch, '--json'], BUILD_EXIT='101')
+            self.assertEqual(failed.returncode, 2, edit)
+            self.assertIn('did not build', json.loads(failed.stdout)['error'])
+            self.assertIn('it does not compile', failed.stderr)
+            plain = self.launch(launch, BUILD_EXIT='101')
+            self.assertEqual((plain.returncode, plain.stdout), (101, ''), edit)
+        self.assertEqual(list(self.cache().iterdir()), [self.cache() / '.lock'], 'no copy is left')
+
+
+class RoutingTests(LauncherCase):
     """The argv `cycling trace` and `cycling replay` pass on, through the nix wrapper and the task runner."""
 
     def setUp(self):
-        launcher = TraceLauncherTests('run')
-        launcher.setUp()
-        self.addCleanup(launcher.doCleanups)
-        self.launcher = launcher
-        self.repo = launcher.repo
+        super().setUp()
         head = git(self.repo, 'rev-parse', 'HEAD')
         self.built = f'built {head} one:'
         shell = (ROOT / 'nix' / 'shell.nix').read_text()
         body = re.search(r'writeShellScriptBin "cycling" \'\'\n(.*?)\n\s*\'\';', shell, re.S).group(1)
-        self.wrapper = self.launcher.tmp / 'cycling'
+        self.wrapper = self.tmp / 'cycling'
         self.wrapper.write_text(body.replace("''$", '$'))
 
     def cycling(self, *args, **env):
-        return self.launcher.launch(['bash', str(self.wrapper), *args], **env)
+        return self.launch(['bash', str(self.wrapper), *args], **env)
 
     def task(self, name, *args, **env):
         task = cli.BY_NAME[name]
-        return self.launcher.launch(cli.bash(task.steps[-1], task, list(args), last=True), **env)
+        return self.launch(cli.bash(task.steps[-1], task, list(args), last=True), **env)
 
     def test_queries_reach_the_tool_with_or_without_a_leading_double_dash(self):
         for args, said in (
@@ -302,7 +380,7 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(self.cycling('trace', 'summary', 'x.trace', TRACE_EXIT='2').returncode, 2)
         self.assertEqual(self.task('replay', 'x.trace', TRACE_EXIT='3').returncode, 3)
         self.assertEqual(self.cycling('trace', 'pull', UV_EXIT='4').returncode, 4)
-        refused = self.launcher.launch(['bash', 'tools/simulator/trace.sh', 'summary', 'x.trace'])
+        refused = self.launch(['bash', 'tools/simulator/trace.sh', 'summary', 'x.trace'])
         self.assertEqual(refused.returncode, 2, 'the launcher names its task first')
 
     def test_other_tasks_go_to_the_task_runner(self):

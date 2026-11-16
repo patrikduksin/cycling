@@ -21,6 +21,18 @@ fn told(drawn: &[(f32, f32)]) -> [Vec<Kind>; 2] {
 
 /// The same, where the device scans `kept`.
 fn told_kept(drawn: &[(f32, f32)], kept: &[(f32, f32)]) -> [Vec<Kind>; 2] {
+    heard_kept(drawn, kept).map(|said| {
+        said.into_iter()
+            .filter_map(|(_, said)| match said {
+                Said::Now(kind) => Some(kind),
+                Said::Soon(_) => None,
+            })
+            .collect()
+    })
+}
+
+/// `told_kept`, with every `Said` and the metre it is heard at.
+fn heard_kept(drawn: &[(f32, f32)], kept: &[(f32, f32)]) -> [Vec<(u32, Said)>; 2] {
     let (course, stored) = uploaded(drawn);
     let (kept_m, drawn_m) = (length(&line_of(&course)), length(drawn));
     assert!(
@@ -28,17 +40,9 @@ fn told_kept(drawn: &[(f32, f32)], kept: &[(f32, f32)]) -> [Vec<Kind>; 2] {
         "{kept_m} m kept of {drawn_m} m"
     );
     let positions = || (0..=(kept_m / 5.0) as usize).map(|k| k as f32 * 5.0);
-    let now = |said: Vec<(u32, Said)>| {
-        said.into_iter()
-            .filter_map(|(_, said)| match said {
-                Said::Now(kind) => Some(kind),
-                Said::Soon(_) => None,
-            })
-            .collect()
-    };
     [
-        now(ride_with(&turns_of(kept), positions())),
-        now(ride_with(&stored, positions())),
+        ride_with(&turns_of(kept), positions()),
+        ride_with(&stored, positions()),
     ]
 }
 
@@ -162,4 +166,65 @@ fn hairpins_and_roundabouts_keep_their_turns() {
         assert_eq!(told(&ring(radius, 90.0, 5.0)), [[RIGHT]; 2], "r{radius}");
         assert_eq!(told(&ring(radius, 270.0, 5.0)), [[LEFT]; 2], "r{radius}");
     }
+}
+
+#[test]
+fn a_dogleg_just_past_a_spur_holds_back_the_next_sign_as_it_would_without_it() {
+    // km 87.2: in at 18 degrees, a hook into an 82 m spur, then a dogleg
+    // east that the scan takes for one turn group, ending 86 m past where
+    // the way back meets the course, and a left 150 m on.
+    let way_in = [
+        (-90.0, -300.0),
+        (0.0, -30.0),
+        (4.0, -18.0),
+        (8.0, -6.0),
+        (0.0, 0.0),
+    ];
+    let spur = [(-78.0, 25.0), (0.0, 0.0)];
+    let on = [
+        (10.0, -3.0),
+        (12.0, 5.0),
+        (16.0, 14.0),
+        (27.0, 10.0),
+        (33.0, 10.0),
+        (33.0, 4.0),
+        (60.0, -4.0),
+        (80.0, -7.0),
+        (81.0, -1.0),
+        (115.0, 145.0),
+        (-185.0, 145.0),
+    ];
+    let without: Vec<_> = way_in.iter().chain(&on).copied().collect();
+    let with: Vec<_> = way_in.iter().chain(&spur).chain(&on).copied().collect();
+    let spur_m = length(&with) - length(&without);
+    let shifted = heard_kept(&without, &without).map(|said| {
+        said.into_iter()
+            .map(|(m, said)| (m as f32 + spur_m, said))
+            .collect::<Vec<_>>()
+    });
+    let heard = heard_kept(&with, &with);
+    for (heard, shifted) in heard.iter().zip(&shifted) {
+        assert_eq!(heard.len(), shifted.len(), "{heard:?} for {shifted:?}");
+        for (&(m, said), &(want_m, want)) in heard.iter().zip(shifted) {
+            assert_eq!(said, want, "{heard:?} for {shifted:?}");
+            assert!(
+                (m as f32 - want_m).abs() <= 5.0,
+                "{heard:?} for {shifted:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_jog_25_m_past_a_spur_keeps_both_its_turns() {
+    let corners = [
+        (0.0, 0.0),
+        (0.0, 300.0),
+        (60.0, 300.0),
+        (0.0, 300.0),
+        (0.0, 325.0),
+        (15.0, 325.0),
+        (15.0, 700.0),
+    ];
+    assert_eq!(told(&path(&corners, 5.0)), [[RIGHT, LEFT]; 2]);
 }

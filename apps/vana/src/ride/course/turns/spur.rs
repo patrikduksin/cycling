@@ -19,8 +19,11 @@
 //! turn at its base, named by the course's way before the first of them
 //! and after the last, so a corner at the base is never lost. A way back
 //! that meets the course past the base, as thinning draws one, may turn
-//! onto it within a chord after: that turn goes too when, with it, the
-//! course runs on as it came.
+//! onto it within a chord after: that turn goes too when it ends within
+//! half a chord more and, with it, the course runs on as it came. A turn
+//! ending further is the course's own, as a dogleg just past a spur is:
+//! one that began on the spur says nothing, but its corner, if it has one,
+//! still holds back what is after it.
 use super::{Cursor, HALF_CHORD_M, Kind, TURN_DEG, Turn, distance, mm, swing, way};
 use crate::ride::thin::off_segment;
 use libm::{fabsf, sqrtf};
@@ -278,14 +281,19 @@ pub(super) fn mark(
             .zip(way_on)
             .and_then(|(way_in, way_on)| Kind::of(swing(way_in, way_on)))
     };
-    let (silenced, kind) = match corner_after(on_it) {
-        None => (on_it.len(), None),
+    let reach_mm = mm(rejoin_m + WAY_M + HALF_CHORD_M);
+    let onto = on_it
+        .partition_point(|turn| turn.end_mm <= reach_mm)
+        .max(on_spur);
+    let (silenced, kind) = match corner_after(&on_it[..onto]) {
+        None => (onto, None),
         Some(_) => (on_spur, corner_after(&on_it[..on_spur])),
     };
     for turn in &mut turns[first..first + silenced] {
         *turn = Turn {
             start_mm: turn.start_mm,
             end_mm: turn.end_mm,
+            cornered: turn.cornered && turn.end_mm > reach_mm,
             ..Turn::default()
         };
     }

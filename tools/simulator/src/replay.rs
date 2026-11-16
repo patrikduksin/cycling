@@ -1747,8 +1747,8 @@ mod tests {
     use super::*;
     use device_api::input::Button;
     use device_api::server::Method;
-    use firmware_services::trace::frozen::{FrozenServer, READ_PART, Record, Recorder};
     use firmware_services::trace::Header;
+    use firmware_services::trace::frozen::{FrozenServer, READ_PART, Record, Recorder};
 
     struct Transport {
         request: server::Request,

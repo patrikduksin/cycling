@@ -301,7 +301,6 @@ pub fn header(
     let (config, rest) = scratch.split_at_mut(configured);
     let media = media.encode(rest)?;
     let header = super::Header {
-        version: super::VERSION,
         build: build(commit),
         boot,
         profile,

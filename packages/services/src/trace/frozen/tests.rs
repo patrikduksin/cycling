@@ -222,7 +222,6 @@ struct File {
 impl File {
     fn new(room: Option<usize>) -> Self {
         let header = Header {
-            version: crate::trace::VERSION,
             build: [0; 20],
             boot: 1,
             profile: 0,

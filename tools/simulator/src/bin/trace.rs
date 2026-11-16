@@ -1,6 +1,7 @@
 //! `cycling trace` and `cycling replay`: read a ride trace as text, find
 //! moments in it, export it to OpenTelemetry, replay a window of it with
 //! screenshots, and write a regression test from it.
+use firmware_services::trace::{self, End};
 use shell_simulator::recording::Recording;
 use shell_simulator::replay::Mode;
 use shell_simulator::sim::Sim;
@@ -269,13 +270,13 @@ fn header(path: &Path, timeline: &Timeline, media: &Media) -> String {
             &timeline.build
         },
         timeline.boot,
-        timeline.version,
+        trace::VERSION,
         duration(timeline.end_ms),
         timeline.passes,
-        if timeline.torn {
-            "torn: the last block was cut short"
-        } else {
-            "complete"
+        match timeline.end {
+            Some(End::Torn) => "torn: the last block was cut short",
+            Some(End::Corrupt) => "corrupt: a damaged block and everything after it were dropped",
+            _ => "complete",
         },
         match media {
             Media::Saved => "saved beside it (.origin)".into(),

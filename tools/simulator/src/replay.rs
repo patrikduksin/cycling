@@ -1748,7 +1748,7 @@ mod tests {
     use device_api::input::Button;
     use device_api::server::Method;
     use firmware_services::trace::frozen::{FrozenServer, READ_PART, Record, Recorder};
-    use firmware_services::trace::{Header, VERSION};
+    use firmware_services::trace::Header;
 
     struct Transport {
         request: server::Request,
@@ -1784,7 +1784,6 @@ mod tests {
 
     fn recorded_by(build: [u8; 20]) -> RefCell<Recorder<Box<[u8]>, Blocks>> {
         let header = Header {
-            version: VERSION,
             build,
             boot: 1,
             profile: 0,

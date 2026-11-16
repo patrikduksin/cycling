@@ -38,7 +38,6 @@ const FRAME: usize = 2 + 4;
 /// What a replay needs before the first pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header<'a> {
-    pub version: u8,
     /// Git commit of the recording firmware, zero when unknown.
     pub build: [u8; 20],
     pub boot: u32,
@@ -1346,7 +1345,7 @@ impl Wire<'_> for ble_transport::Packet {
 
 impl<'a> Wire<'a> for Header<'a> {
     fn put(&self, w: &mut Writer) {
-        self.version.put(w);
+        VERSION.put(w);
         w.bytes(&self.build);
         self.boot.put(w);
         self.profile.put(w);
@@ -1354,8 +1353,8 @@ impl<'a> Wire<'a> for Header<'a> {
         self.media.put(w);
     }
     fn take(r: &mut Reader<'a>) -> Self {
+        u8::take(r);
         Self {
-            version: u8::take(r),
             build: <[u8; 20]>::take(r),
             boot: u32::take(r),
             profile: u8::take(r),

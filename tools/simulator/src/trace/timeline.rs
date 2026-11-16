@@ -354,7 +354,6 @@ impl fmt::Display for Entry {
 
 /// A whole trace, decoded.
 pub struct Timeline {
-    pub version: u8,
     /// The recording build's commit in hex, trailing zero bytes dropped;
     /// empty when unknown.
     pub build: String,
@@ -366,7 +365,7 @@ pub struct Timeline {
     /// The last pass's uptime.
     pub end_ms: u64,
     /// The trace ends in a block that was cut short or failed its check.
-    pub torn: bool,
+    pub end: Option<End>,
     /// UTC in ms at uptime zero, from the first GPS or Wi-Fi time.
     pub utc_at_boot_ms: Option<u64>,
     /// Stretches in which a sensor that had sent packets sent none, in
@@ -531,7 +530,6 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         .rposition(|&b| b != 0)
         .map_or(0, |i| i + 1);
     Ok(Timeline {
-        version: header.version,
         build: header.build[..build_len]
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -539,7 +537,7 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         boot: header.boot,
         passes: reader.passes,
         end_ms: reader.now,
-        torn: events.end() == Some(End::Torn),
+        end: events.end(),
         entries: reader.entries,
         clock: reader.clock,
         utc_at_boot_ms: reader.utc_at_boot_ms,

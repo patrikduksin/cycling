@@ -1168,3 +1168,13 @@ fn activity_and_health_are_found_by_kind_and_exported_per_task() {
         "the simulator knows no heap"
     );
 }
+
+#[test]
+fn a_damaged_block_ends_the_timeline_as_corrupt() {
+    let mut bytes = std::fs::read(fixture("laps-and-a-menu")).unwrap();
+    let header = 6 + usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));
+    bytes[header + 2] ^= 0xff;
+    let timeline = read(&bytes).unwrap();
+    assert_eq!(timeline.end, Some(firmware_services::trace::End::Corrupt));
+    assert!(timeline.entries.is_empty());
+}

@@ -5,7 +5,6 @@ use std::string::{String, ToString};
 use std::vec::Vec;
 
 const HEADER: Header<'static> = Header {
-    version: VERSION,
     build: [7; 20],
     boot: 42,
     profile: 1,
@@ -646,7 +645,9 @@ fn bytes_past_the_known_fields_are_refused() {
 fn a_trace_of_another_version_is_refused_as_foreign() {
     for version in [0, VERSION + 1] {
         let mut bytes = std::vec![0u8; 128];
-        let len = encode_header(&Header { version, ..HEADER }, &mut bytes).unwrap();
+        let len = encode_header(&HEADER, &mut bytes).unwrap();
+        bytes[2] = version;
+        let len = seal(&mut bytes, len - FRAME).unwrap();
         assert_eq!(decode(&bytes[..len]).err(), Some(Error::Version(version)));
     }
     let mut bytes = std::vec![0u8; 128];

@@ -576,7 +576,6 @@ mod tests {
     /// A device trace of `passes`, each a time and the events in it.
     fn timeline(passes: &[(u64, Vec<Event<'_>>)]) -> Timeline {
         let header = Header {
-            version: trace::VERSION,
             build: [0; 20],
             boot: 1,
             profile: 0,

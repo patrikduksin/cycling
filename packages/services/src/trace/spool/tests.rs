@@ -64,7 +64,6 @@ impl ReadWrite for Stalling {
 }
 
 const HEADER: Header<'static> = Header {
-    version: crate::trace::VERSION,
     build: [0; 20],
     boot: 7,
     profile: 0,

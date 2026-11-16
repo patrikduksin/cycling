@@ -526,12 +526,11 @@ fn a_trace_of_another_version_is_refused_with_why() {
     use firmware_services::trace;
     let (_, trace, _) = recorded_session();
     let (header, _) = trace::decode(&trace).unwrap();
-    let other = trace::Header {
-        version: trace::VERSION + 1,
-        ..header
-    };
     let mut block = vec![0u8; 64 * 1024];
-    let len = trace::encode_header(&other, &mut block).unwrap();
+    let len = trace::encode_header(&header, &mut block).unwrap();
+    block[2] = trace::VERSION + 1;
+    let crc = firmware_services::checksum::crc32(&block[2..len - 4]);
+    block[len - 4..len].copy_from_slice(&crc.to_le_bytes());
     let first = 2 + usize::from(u16::from_le_bytes([trace[0], trace[1]])) + 4;
     let other = [&block[..len], &trace[first..]].concat();
     let why = "is not this build's";

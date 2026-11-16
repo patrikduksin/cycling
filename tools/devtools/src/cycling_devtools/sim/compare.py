@@ -30,8 +30,7 @@ CACHE = main_checkout() / '.local/sim/screens-cache'
 CACHE_ENTRIES = 24
 STAGING = '.staging-'
 # Lock files are never deleted: a process waiting on one holds its inode, so a
-# replaced file would let a second process build the same key. Keys share this
-# many files, and two keys on one file only wait for each other.
+# replaced file would let a second process build the same key.
 LOCKS = 1024
 ABANDONED_STAGING_S = 3600
 COMMAND = [
@@ -44,7 +43,7 @@ COMMAND = [
     '--test',
     'ride_scenarios',
 ]
-# Inside the cargo target directory; COMMAND builds it alongside the tests.
+# COMMAND builds it alongside the tests.
 RENDERER = Path('debug/shell-simulator')
 PNG = b'\x89PNG\r\n\x1a\n'
 CHANNELS = {0: 1, 2: 3, 4: 2, 6: 4}
@@ -250,9 +249,6 @@ def selection(name_filter):
 
 
 class Cargo:
-    """The cargo runs in flight, so an interrupt can stop the base run that a
-    background thread started in its own session."""
-
     def __init__(self):
         self.lock = threading.Lock()
         self.running = set()
@@ -436,8 +432,6 @@ def ensure_base(key, commit, out, target, tests):
 
 
 def build(key, commit, out, target, tests):
-    """Run `commit`'s scenarios into `out`/before and cache them when complete;
-    returns why they are incomplete, or None."""
     before, base = out / 'before', base_target(target)
     # Cargo releases its own lock while the tests run, so a second base build in
     # this target directory could replace the test binary before it starts.

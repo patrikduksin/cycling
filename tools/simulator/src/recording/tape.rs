@@ -1,7 +1,3 @@
-//! `frames.bin`: the frames a scenario's video shows, stored so the video can
-//! be rendered after the run. It holds a header (the scenario, its notes, the
-//! world at each shot and the shots) followed by the film: each frame as the
-//! rows that differ from the frame before it, zlib-compressed.
 use super::Truth;
 use crate::sim::{Note, NoteKind};
 use flate2::Compression;
@@ -12,11 +8,6 @@ use std::io::{self, BufReader, Read, Write as _};
 pub(super) const FILE: &str = "frames.bin";
 const VERSION: u8 = 1;
 
-/// Every panel a scenario keeps, as row deltas. Every frame of every scenario
-/// is encoded here, so this uses fdeflate's fast fixed-table encoder, built for
-/// mostly-zero rows like these. The film uses flate2's fast level: the default
-/// level makes it 28% smaller but costs about 11 more CPU-seconds per run of
-/// every scenario.
 pub(super) struct Panels(fdeflate::Compressor<Vec<u8>>);
 
 impl Panels {
@@ -35,7 +26,6 @@ impl Panels {
     }
 }
 
-/// The kept panels at `frames`, in that order, as a film.
 pub(super) fn film(
     panels: &[u8],
     width: usize,
@@ -54,9 +44,8 @@ pub(super) fn film(
     film.finish()
 }
 
-/// A panel as the rows that differ from the panel before it (all zeros at the
-/// start), each as its differing span XORed with what was there: a row count,
-/// then per row its y, x0, x1 and the span.
+/// Each frame is stored as the rows that changed since the frame before, XORed
+/// with it; the first frame is taken against a blank panel.
 struct RowDeltas;
 
 impl RowDeltas {
@@ -117,7 +106,6 @@ impl RowDeltas {
     }
 }
 
-/// Plays panels or a film forward, one frame at a time.
 pub(super) struct Playback<'a> {
     stream: BufReader<ZlibDecoder<&'a [u8]>>,
     width: usize,
@@ -135,8 +123,10 @@ impl<'a> Playback<'a> {
         }
     }
 
-    /// The frame at `index`, which is never before the last frame played.
     pub(super) fn frame(&mut self, index: usize) -> io::Result<&[u16]> {
+        if index + 1 < self.played {
+            return Err(io::Error::other("tape playback only runs forward"));
+        }
         while self.played <= index {
             RowDeltas::apply(&mut self.stream, &mut self.pixels, self.width)?;
             self.played += 1;
@@ -145,22 +135,18 @@ impl<'a> Playback<'a> {
     }
 }
 
-/// One frame of the video: when it was on the panel, how long the video
-/// holds it and the checkpoint it shows, if any.
 pub(super) struct Shot {
     pub at_ms: u64,
     pub hold_ms: u32,
     pub caption: Option<String>,
 }
 
-/// Everything in `frames.bin` before the film.
 pub(super) struct Header {
     pub name: String,
     pub width: usize,
     pub height: usize,
     pub failure: Option<String>,
     pub notes: Vec<Note>,
-    /// The world at the shots, for their captions.
     pub truth: Vec<Truth>,
     pub shots: Vec<Shot>,
 }
@@ -195,7 +181,6 @@ pub(super) fn write(header: &Header, film: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The header and the film of a `frames.bin`.
 pub(super) fn read(bytes: &[u8]) -> io::Result<(Header, &[u8])> {
     let mut tape = Reader(bytes);
     if tape.take::<1>()? != [VERSION] {

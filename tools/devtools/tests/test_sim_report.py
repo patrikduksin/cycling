@@ -83,7 +83,6 @@ class FakeGitHub:
         if command[:3] == ['gh', 'pr', 'comment']:
             files = command[command.index('--body-file') + 3 :: 2]
             if files and self.fail_uploads:
-                # What gh's error looked like: the command, every --attach path included.
                 raise RuntimeError(' '.join(command) + ' upload refused')
             if not files:
                 self.pages += 1

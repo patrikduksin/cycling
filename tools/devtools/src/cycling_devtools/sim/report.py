@@ -25,9 +25,7 @@ from cycling_devtools.workspace import ROOT
 ATTACHMENT_LIMIT = 50
 # GitHub refuses a longer comment body.
 BODY_LIMIT = 65_536
-# Room kept in every comment for the note a failed upload adds.
 NOTE_ROOM = 500
-# A failure longer than this is cut; result.json keeps all of it.
 FAILURE_LIMIT = 4_000
 CONTINUED = '## Simulator scenarios (continued)\n'
 CHECKPOINT_LIMIT = 4
@@ -239,10 +237,6 @@ def page(results, heading):
 
 
 def comments(markdown, attachments):
-    """Comment bodies, each with the attachments it shows, that stay under
-    GitHub's limit once every attachment is an asset URL. Comments break
-    between scenarios, and a scenario too long for one comment breaks between
-    its table rows, repeating its heading and table header."""
     limit = BODY_LIMIT - NOTE_ROOM
 
     def uploaded_size(text):
@@ -264,8 +258,6 @@ def comments(markdown, attachments):
 
 
 def by_rows(section, limit, uploaded_size):
-    """(text, uploaded size) pieces of a section, each within `limit` unless
-    its heading and table header alone exceed it."""
     lines = section.split('\n')
     sizes = [uploaded_size(line) + 1 for line in lines]
     table = next((i + 1 for i, line in enumerate(lines) if line.startswith('|---')), len(lines))
@@ -291,7 +283,6 @@ def replace_media(body, files, mark=PENDING):
 
 
 def failed(body, files, log):
-    """The body with `files` marked as failed and one note under its heading."""
     heading, rest = replace_media(body, files, FAILED).split('\n', 1)
     note = (
         f'{FAILED} {len(files)} attachments failed to upload; see `{reference(log, ROOT)}` on the machine that posted.'
@@ -300,8 +291,6 @@ def failed(body, files, log):
 
 
 def give_up(pages, log):
-    """Mark each page's media that never uploaded as failed; `log` says why.
-    A page whose edit fails too is skipped, so it cannot hide the others."""
     for page in pages:
         if page['files']:
             with suppress(Exception):
@@ -322,7 +311,6 @@ def snapshot(attachments):
 
 
 def log_of(job):
-    """Beside the job, so it outlives the copies a finished job deletes."""
     return job.parent / f'{job.name}.log'
 
 
@@ -399,8 +387,6 @@ def edit(endpoint, body):
 
 
 def gh(command, stdin=None):
-    """gh's output; on failure, an error with what gh printed and not the
-    command, whose attachment paths would fill a comment."""
     done = subprocess.run(command, input=stdin, text=True, cwd=ROOT, capture_output=True)
     if done.returncode:
         raise RuntimeError(f'{" ".join(command[:3])} exited with status {done.returncode}: {done.stderr.strip()}')

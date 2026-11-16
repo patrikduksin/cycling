@@ -395,8 +395,6 @@ impl Recording {
         Ok("video.gif".to_string())
     }
 
-    /// Every distinct frame worth showing, by its index among the kept
-    /// frames, held for its compressed duration.
     fn shots(&self, outcome: &Outcome<'_>) -> Vec<(usize, Shot)> {
         let frames = &self.frames_at;
         let Some(&start) = frames.first() else {

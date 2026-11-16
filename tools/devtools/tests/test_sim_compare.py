@@ -478,9 +478,6 @@ def test_evicting_a_key_never_lets_a_second_build_of_it_start(tmp_path, monkeypa
 
 
 def fill_commits(tmp_path, monkeypatch):
-    """Fills whose checkouts hold their commit and whose runs overlap, writing
-    that commit into each scenario's frames."""
-
     @contextlib.contextmanager
     def checkout(commit, path):
         path.mkdir(parents=True, exist_ok=True)
@@ -550,8 +547,6 @@ def test_an_interrupt_stops_the_base_run_at_once(tmp_path, monkeypatch):
         return started[-1]
 
     class Interrupted:
-        """A terminal whose user presses Ctrl-C once this checkout's run prints."""
-
         def write(self, text):
             if text.startswith('after |'):
                 raise KeyboardInterrupt
@@ -564,7 +559,6 @@ def test_an_interrupt_stops_the_base_run_at_once(tmp_path, monkeypatch):
         path.mkdir(parents=True, exist_ok=True)
         yield path
 
-    # The base runs until stopped; this checkout's run prints once the base is up.
     script = (
         'import os, sys, time\n'
         'if os.environ["SIM_ARTIFACTS"].endswith("before"):\n'

@@ -186,7 +186,6 @@ mod tests {
         use crate::ride::log::SLOT_SIZE;
         use crate::ride::log::SLOTS_PER_SECTOR;
         use crate::ride::log::Scanner;
-        use crate::ride::log::Source;
         use crate::ride::log::encode;
         let mut media = Fake {
             sectors: vec![[0xff; crate::ride::log::SECTOR_SIZE]; SECTORS],
@@ -195,8 +194,8 @@ mod tests {
             corrupt_readback: None,
         };
         for (offset, entry) in [
-            Entry::event(Kind::Start, Source::Live, 7, 0, 0),
-            Entry::event(Kind::Finish, Source::Live, 7, 1, 10),
+            Entry::event(Kind::Start, 7, 0, 0),
+            Entry::event(Kind::Finish, 7, 1, 10),
         ]
         .into_iter()
         .enumerate()

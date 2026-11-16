@@ -188,7 +188,6 @@ def decode_slot(data):
         raise ValueError('sample/header duration mismatch')
     return {
         'kind': data[5],
-        'source': 'live',
         'ride_id': u32(data, 8),
         'sequence': u32(data, 12),
         'active_ms': active_ms,
@@ -285,7 +284,6 @@ def iter_rides(slots, invalid):
             seen.add(entry['ride_id'])
             current = {
                 'ride_id': entry['ride_id'],
-                'source': entry['source'],
                 'start_slot': index,
                 'end_slot': None,
                 'terminal': None,
@@ -302,7 +300,7 @@ def iter_rides(slots, invalid):
             continue
         if not current:
             continue
-        if entry['ride_id'] != current['ride_id'] or entry['source'] != current['source']:
+        if entry['ride_id'] != current['ride_id']:
             current['gap'] = True
             if current['segments'][-1]:
                 current['segments'].append([])
@@ -393,7 +391,7 @@ def write_gpx(ride, path):
         ET.SubElement(point, f'{{{ns}}}name').text = f'LAP {lap["lap"]}'
         ET.SubElement(point, f'{{{ns}}}type').text = lap['started_by']
     track = ET.SubElement(root, f'{{{ns}}}trk')
-    ET.SubElement(track, f'{{{ns}}}name').text = f'Ride {ride["ride_id"]} ({ride["source"]})'
+    ET.SubElement(track, f'{{{ns}}}name').text = f'Ride {ride["ride_id"]}'
     points = 0
     for segment in segments:
         xml_segment = ET.SubElement(track, f'{{{ns}}}trkseg')
@@ -470,7 +468,6 @@ def write_exports(output, canonical, header):
             error = write_gpx(ride, gpx_path)
             entry = {
                 'ride_id': ride['ride_id'],
-                'source': ride['source'],
                 'terminal': ride['terminal'],
                 'samples': len(ride['samples']),
                 'gpx': None if error else gpx_path.name,

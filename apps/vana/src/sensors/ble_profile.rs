@@ -113,11 +113,8 @@ pub const fn fresh_u16(value: u16, received_ms: u64, now_ms: u64) -> (Option<u16
 }
 
 /// Only an open ride receives fresh standard-sensor values.
-pub const fn ride_fields(
-    snapshot: Snapshot,
-    source: Option<crate::ride::log::Source>,
-) -> (Option<u16>, Option<u16>) {
-    if source.is_some() {
+pub const fn ride_fields(snapshot: Snapshot, ride_open: bool) -> (Option<u16>, Option<u16>) {
+    if ride_open {
         (snapshot.heart_bpm, snapshot.cadence_tenths)
     } else {
         (None, None)
@@ -342,11 +339,8 @@ mod tests {
             cadence_tenths: Some(600),
             ..Snapshot::default()
         };
-        assert_eq!(
-            ride_fields(snapshot, Some(crate::ride::log::Source::Live)),
-            (Some(72), Some(600))
-        );
-        assert_eq!(ride_fields(snapshot, None), (None, None));
+        assert_eq!(ride_fields(snapshot, true), (Some(72), Some(600)));
+        assert_eq!(ride_fields(snapshot, false), (None, None));
     }
 
     #[test]

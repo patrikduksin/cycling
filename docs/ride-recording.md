@@ -33,7 +33,8 @@ cycling ride-export                          # Writes .local/exports/<id>/ by de
 - Export is read-only and requires a closed, exportable recorder state.
 - The host checks every slot's index, length and transport CRC, then rechecks
   metadata, and renames the partial raw file only after the complete prefix
-  passes. It also validates record version, commit, CRC, sequence, source and flags.
+  passes. It also validates record version, commit, CRC, sequence, the fixed
+  byte 7 and flags.
 - Invalid occupied slots stay in the raw prefix and manifest. Restart an
   interrupted export from zero.
 - Output: raw bytes, SHA-256, manifest, reconstructed ride JSON and GPX. Ride IDs
@@ -341,16 +342,11 @@ Recording:
   satellite metadata, speed or distance.
 - Optional sample flags 0x40, 0x80 and 0x100 add measured speed in mm/s at byte
   40, power in watts at byte 38 and signed gradient in tenths of a percent at byte
-  44. Old slots and the version-1 envelope stay readable; use the current exporter
-  for these fields.
+  44.
 - Sample bytes 46..48 hold the smoothed barometric altitude (the ride page's
   `Totals` altitude, only with a fresh pressure reading) as FIT's `altitude`
   field: u16 of (metres + 500) * 5, 0.2 m resolution, 0xFFFF for none. It has
-  no flag bit: decoders reject unknown flags, so a flag would break reading new
-  rides after a firmware rollback. Older samples left the bytes erased, and
-  older firmware and host tools never read them, so version 1 is unchanged and
-  both directions stay readable. The host JSON has `altitude_m` and the GPX
-  `<ele>`.
+  no flag bit. The host JSON has `altitude_m` and the GPX `<ele>`.
 - Gradient estimates the pressure change over at least 30 metres of wheel
   distance and needs fresh pressure and moving wheel data.
 
@@ -360,10 +356,7 @@ Lap marks:
   the ride's first sample (the ride keeps its laps), 1 a lap press, 2 an
   automatic lap, 3 a workout step that lasts a time or until marked, 4 a
   workout step that lasts a distance, 5 a pass of the ride's start point (FIT
-  `lap_trigger` position_start). 0xFF, what every earlier sample holds,
-  marks nothing. A value this firmware does not know reads as no mark, so
-  firmware and host tools from before value 5 keep every sample of a ride with
-  position laps and only read those laps as one.
+  `lap_trigger` position_start). 0xFF marks nothing.
 - The lap boundary is at the sample before the mark, so a lap is accurate to
   the one-second sample grid. Laps that close within one sample share its
   mark, and a lap closed while paused marks the first sample after resume.
@@ -373,17 +366,7 @@ Lap marks:
   rides and two FIT files. The lap open at the move is split across them,
   and the internal part starts with a ride mark, not a lap boundary.
 - Values 6 to 254 are reserved for later marks; this firmware and
-  `ride-export` read them as no mark. Byte 37 was the last spare sample byte.
-- Compatibility decided the place. Firmware recovery, the ride index and
-  `ride-export` reject unknown record kinds and unknown sample flag bits, and
-  they count a rejected slot as a gap, so a lap record kind or a flag would
-  make older firmware and tools mark new rides as gapped or drop their samples.
-  Byte 37 lies between battery (36) and power (38); no flag covers it, older
-  decoders never read it, and only the slot CRC, which the writer computes,
-  includes it. Bytes 46 and 47 were the other spare pair, taken by altitude.
-- `ride/log.rs` tests decode marked slots with a frozen copy of the decoder
-  from before lap marks, and the host tests decode them with the current
-  exporter's unchanged checks.
+  `ride-export` read them as no mark.
 
 Fixed settings in this build:
 

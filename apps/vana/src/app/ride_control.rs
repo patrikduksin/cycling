@@ -3,7 +3,7 @@ use super::cues::Cue;
 use super::recording::{Discard, Request, RideMessage};
 use crate::ride::auto::{Call, Decision};
 use crate::ride::control::Action;
-use crate::ride::log::{Source, Status};
+use crate::ride::log::Status;
 use crate::screens::chrome::Tone;
 use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
@@ -368,7 +368,7 @@ impl Runtime {
         self.ride.request = Request::Idle;
         let medium = self.ride.target(action);
         let accepted = self.ride.submit(medium, |recorder, token| {
-            recorder.request(action, Source::Live, now, token)
+            recorder.request(action, now, token)
         });
         if accepted
             && action == Action::Finish

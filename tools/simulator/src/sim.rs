@@ -934,8 +934,8 @@ impl Sim {
         );
     }
 
-    /// Write the volume table over a blank or legacy region, as
-    /// `VOLUME INIT` would.
+    /// Write the volume table over a blank or lost region, as `VOLUME INIT`
+    /// would.
     pub fn init_volumes(&mut self) -> firmware_services::volume::Table {
         let mut sector = [0u8; 512];
         firmware_services::volume::create(&mut self.device.host_bulk(), &mut sector)

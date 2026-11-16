@@ -248,8 +248,8 @@ impl Rig {
     fn finished_rides(&mut self, ids: &[u32]) {
         for (n, &ride_id) in ids.iter().enumerate() {
             let entries = [
-                Entry::event(Kind::Start, Source::Live, ride_id, 0, 0),
-                Entry::event(Kind::Finish, Source::Live, ride_id, 1, 0),
+                Entry::event(Kind::Start, ride_id, 0, 0),
+                Entry::event(Kind::Finish, ride_id, 1, 0),
             ];
             for (offset, entry) in entries.iter().enumerate() {
                 let index = 2 * n + offset;
@@ -506,7 +506,7 @@ impl Rig {
                     self.rng
                         .pick(&[Action::Start, Action::Pause, Action::Resume, Action::Finish]);
                 let now = self.now;
-                self.recorder.request(action, Source::Live, now, 1);
+                self.recorder.request(action, now, 1);
                 if self.rng.one_in(2) {
                     let start = self.rng.pick(&[
                         LapStart::Manual,
@@ -634,7 +634,7 @@ fn damaged_slots_anywhere_are_counted_and_never_written_over() {
         for _ in 0..3 {
             rig.service();
         }
-        rig.recorder.request(Action::Start, Source::Live, 0, 1);
+        rig.recorder.request(Action::Start, 0, 1);
         for _ in 0..3 {
             rig.service();
         }
@@ -801,7 +801,7 @@ fn ride_ids_count_on_past_the_largest_id() {
         rig.boot();
         rig.service();
         // A ride started now is a new ride, never one of those on record.
-        rig.recorder.request(Action::Start, Source::Live, 0, 1);
+        rig.recorder.request(Action::Start, 0, 1);
         for _ in 0..3 {
             rig.service();
         }

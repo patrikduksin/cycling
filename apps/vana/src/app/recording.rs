@@ -16,7 +16,7 @@ use crate::ride::elevation::Trace;
 use crate::ride::facts::Climbing;
 use crate::ride::journal::{Internal, InternalState};
 use crate::ride::laps::{AutoLap, Lap, Laps};
-use crate::ride::log::{Altitude, Sample, Source, Status};
+use crate::ride::log::{Altitude, Sample, Status};
 use crate::ride::metrics::Step;
 use crate::ride::recorder::{Recorder, ResultEvent};
 use crate::ride::storage::RideStorage;
@@ -729,7 +729,7 @@ impl Ride {
             return;
         }
         // Token 0: no rider or host waits for this start.
-        if !self.internal.request(Action::Start, Source::Live, now, 0) {
+        if !self.internal.request(Action::Start, now, 0) {
             self.give_up_continuation();
         }
     }
@@ -1001,7 +1001,7 @@ impl Runtime {
                 Status::Paused => ride.pause_continuation = false,
                 Status::Recording => {
                     if ride.internal.pending_action().is_none() {
-                        ride.internal.request(Action::Pause, Source::Live, now, 0);
+                        ride.internal.request(Action::Pause, now, 0);
                     }
                 }
                 _ if !ride.internal.riding() => ride.pause_continuation = false,

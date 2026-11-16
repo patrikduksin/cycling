@@ -1,5 +1,5 @@
 use super::*;
-use crate::ride::log::{Entry, Kind, Sample, Source, commit_word, encode as encode_slot};
+use crate::ride::log::{Entry, Kind, Sample, commit_word, encode as encode_slot};
 use std::boxed::Box;
 use std::vec;
 use std::vec::Vec;
@@ -12,7 +12,7 @@ fn sample(active_ms: u64, utc_ms: u64, heart: u16) -> Sample {
         active_ms,
         utc_ms: Some(utc_ms),
         heart_bpm: Some(heart),
-        ..Entry::event(Kind::Samples, Source::Live, 0, 0, 0).samples[0]
+        ..Entry::event(Kind::Samples, 0, 0, 0).samples[0]
     }
 }
 
@@ -29,7 +29,7 @@ fn journal(rides: u32) -> Vec<Vec<u8>> {
     for ride in 1..=rides {
         let utc = 1_789_000_000_000 + u64::from(ride) * 3_600_000;
         let heart = 100 + ride as u16;
-        slots.push(slot(&Entry::event(Kind::Start, Source::Live, ride, 0, 0)));
+        slots.push(slot(&Entry::event(Kind::Start, ride, 0, 0)));
         for batch in 0..2u32 {
             let samples: Vec<Sample> = (0..4u64)
                 .map(|i| {
@@ -37,17 +37,9 @@ fn journal(rides: u32) -> Vec<Vec<u8>> {
                     sample(ms, utc + ms, heart)
                 })
                 .collect();
-            slots.push(slot(
-                &Entry::batch(Source::Live, ride, batch + 1, &samples).unwrap(),
-            ));
+            slots.push(slot(&Entry::batch(ride, batch + 1, &samples).unwrap()));
         }
-        slots.push(slot(&Entry::event(
-            Kind::Finish,
-            Source::Live,
-            ride,
-            3,
-            8_000,
-        )));
+        slots.push(slot(&Entry::event(Kind::Finish, ride, 3, 8_000)));
     }
     slots
 }
@@ -147,7 +139,7 @@ fn a_failed_read_retries_and_an_invalid_slot_counts_as_in_the_catalog() {
 #[test]
 fn an_unfinished_ride_is_not_listed() {
     let mut slots = journal(1);
-    slots.push(slot(&Entry::event(Kind::Start, Source::Live, 2, 0, 0)));
+    slots.push(slot(&Entry::event(Kind::Start, 2, 0, 0)));
     let mut index = Journal::new(storage(RIDES));
     run(&mut index, &slots, 4);
     assert_eq!(index.len(), 1);
@@ -159,7 +151,7 @@ fn powered(
     watts: impl Fn(u64) -> Option<u16>,
     seconds: u64,
 ) -> (Vec<Vec<u8>>, Vec<Sample>) {
-    let mut slots = vec![slot(&Entry::event(Kind::Start, Source::Live, ride, 0, 0))];
+    let mut slots = vec![slot(&Entry::event(Kind::Start, ride, 0, 0))];
     let samples: Vec<Sample> = (1..=seconds)
         .map(|s| Sample {
             power_watts: watts(s),
@@ -168,14 +160,11 @@ fn powered(
         .collect();
     for (batch, chunk) in samples.chunks(4).enumerate() {
         let sequence = batch as u32 + 1;
-        slots.push(slot(
-            &Entry::batch(Source::Live, ride, sequence, chunk).unwrap(),
-        ));
+        slots.push(slot(&Entry::batch(ride, sequence, chunk).unwrap()));
     }
     let sequence = samples.len().div_ceil(4) as u32 + 1;
     slots.push(slot(&Entry::event(
         Kind::Finish,
-        Source::Live,
         ride,
         sequence,
         seconds * 1000,

@@ -16,7 +16,7 @@
 
 use crate::ride::journal::{Journal, Progress, Scan};
 use crate::ride::log::{
-    Catalog, Entry, HISTORY_CAPACITY, Recovery, SLOT_SIZE, Scanner, Slot, Source, Summary,
+    Catalog, Entry, HISTORY_CAPACITY, RECORDED_LIVE, Recovery, SLOT_SIZE, Scanner, Slot, Summary,
 };
 use device_api::bulk::{Error as MediaError, ReadWrite};
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
@@ -50,7 +50,7 @@ pub fn encode_catalog(catalog: &Catalog) -> [u8; ENCODED] {
     put_u16(&mut bytes, 18, catalog.invalid_slots);
     put_u16(&mut bytes, 20, catalog.valid_slots);
     if let Some(open) = catalog.recovery {
-        bytes[3] = open.source as u8;
+        bytes[3] = RECORDED_LIVE;
         put_u32(&mut bytes, 24, open.ride_id);
         put_u32(&mut bytes, 28, open.next_sequence);
         put_u64(&mut bytes, 32, open.active_ms);
@@ -73,13 +73,11 @@ pub fn decode_catalog(bytes: &[u8]) -> Option<Catalog> {
         return None;
     }
     let recovery = if bytes[1] & 1 != 0 {
-        let source = match bytes[3] {
-            2 => Source::Live,
-            _ => return None,
-        };
+        if bytes[3] != RECORDED_LIVE {
+            return None;
+        }
         Some(Recovery {
             ride_id: get_u32(bytes, 24),
-            source,
             next_sequence: get_u32(bytes, 28),
             active_ms: get_u64(bytes, 32),
             gap: bytes[1] & 4 != 0,

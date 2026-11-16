@@ -634,10 +634,9 @@ fn title(summary: &Summary, number: usize, zone: Zone) -> Text<20> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ride::log::Source;
 
     fn started(utc_ms: Option<u64>) -> Summary {
-        let mut summary = Summary::started(1, Source::Live);
+        let mut summary = Summary::started(1);
         summary.first_utc_ms = utc_ms;
         summary
     }

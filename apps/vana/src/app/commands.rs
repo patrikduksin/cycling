@@ -8,7 +8,7 @@ use super::Runtime;
 use super::pace::Touched;
 use super::recording::{Medium, Request};
 use crate::ride::control::Action;
-use crate::ride::log::{SLOT_SIZE, Slot, Source, VERSION, transport_checksum};
+use crate::ride::log::{SLOT_SIZE, Slot, VERSION, transport_checksum};
 use crate::ride::recorder::Recorder;
 use crate::ride::storage::RideStorage;
 use core::fmt::Write;
@@ -117,7 +117,7 @@ impl Runtime {
                 }
                 let medium = named.unwrap_or(self.ride.target(action));
                 self.submit(medium, output, |recorder, token| {
-                    recorder.request(action, Source::Live, now, token)
+                    recorder.request(action, now, token)
                 })
             }
             (Some("EXPORT"), Some("INFO"), None) => self.export_info(stored, output),
@@ -374,9 +374,8 @@ impl Runtime {
         for summary in recorder.summaries().iter().flatten() {
             if write!(
                 output,
-                " ride={},{},{},{},{},{}",
+                " ride={},{},{},{},{}",
                 summary.ride_id,
-                summary.source.map(Source::name).unwrap_or("unknown"),
                 summary.active_ms,
                 u8::from(summary.recovered),
                 u8::from(summary.full),

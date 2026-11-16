@@ -4,7 +4,7 @@
 //! An index is fed slots in order, one at a time, so a caller can spread a
 //! large bulk log over many service steps. It keeps the newest `KEPT` rides.
 
-use crate::ride::log::{self, Kind, MAX_STEP_MS, Slot, Source};
+use crate::ride::log::{self, Kind, MAX_STEP_MS, Slot};
 
 /// Rides an index keeps; older ones drop out first.
 pub const KEPT: usize = 32;
@@ -33,7 +33,6 @@ impl End {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Activity {
     pub ride_id: u32,
-    pub source: Source,
     pub start_slot: usize,
     /// UTC of the ride's start, from its first dated sample.
     pub start_utc_ms: Option<u64>,
@@ -50,10 +49,9 @@ pub struct Activity {
 }
 
 impl Activity {
-    fn new(ride_id: u32, source: Source, start_slot: usize) -> Self {
+    fn new(ride_id: u32, start_slot: usize) -> Self {
         Self {
             ride_id,
-            source,
             start_slot,
             start_utc_ms: None,
             active_ms: 0,
@@ -127,14 +125,14 @@ impl Index {
         };
         if entry.kind == Kind::Start {
             self.close(End::Interrupted);
-            self.open = Some(Activity::new(entry.ride_id, entry.source, self.next - 1));
+            self.open = Some(Activity::new(entry.ride_id, self.next - 1));
             self.seen += 1;
             return;
         }
         let Some(open) = self.open.as_mut() else {
             return;
         };
-        if entry.ride_id != open.ride_id || entry.source != open.source {
+        if entry.ride_id != open.ride_id {
             return;
         }
         open.active_ms = open.active_ms.max(entry.active_ms);
@@ -225,16 +223,16 @@ mod tests {
     #[test]
     fn finds_rides_their_start_distance_and_end() {
         let slots = [
-            slot(&Entry::event(Kind::Start, Source::Live, 1, 0, 0)),
-            slot(&Entry::batch(Source::Live, 1, 1, &[sample(1_000), sample(2_000)]).unwrap()),
-            slot(&Entry::event(Kind::Pause, Source::Live, 1, 2, 2_000)),
-            slot(&Entry::event(Kind::Resume, Source::Live, 1, 3, 2_000)),
-            slot(&Entry::batch(Source::Live, 1, 4, &[sample(3_000)]).unwrap()),
-            slot(&Entry::event(Kind::Finish, Source::Live, 1, 5, 3_000)),
+            slot(&Entry::event(Kind::Start, 1, 0, 0)),
+            slot(&Entry::batch(1, 1, &[sample(1_000), sample(2_000)]).unwrap()),
+            slot(&Entry::event(Kind::Pause, 1, 2, 2_000)),
+            slot(&Entry::event(Kind::Resume, 1, 3, 2_000)),
+            slot(&Entry::batch(1, 4, &[sample(3_000)]).unwrap()),
+            slot(&Entry::event(Kind::Finish, 1, 5, 3_000)),
             Slot([0x11; 256]),
-            slot(&Entry::event(Kind::Start, Source::Live, 2, 0, 0)),
-            slot(&Entry::batch(Source::Live, 2, 1, &[sample(1_000)]).unwrap()),
-            slot(&Entry::event(Kind::Start, Source::Live, 3, 0, 0)),
+            slot(&Entry::event(Kind::Start, 2, 0, 0)),
+            slot(&Entry::batch(2, 1, &[sample(1_000)]).unwrap()),
+            slot(&Entry::event(Kind::Start, 3, 0, 0)),
         ];
         let mut index = Index::default();
         for slot in &slots {
@@ -266,9 +264,9 @@ mod tests {
         };
         let mut index = Index::default();
         for entry in [
-            Entry::event(Kind::Start, Source::Live, 1, 0, 0),
-            Entry::batch(Source::Live, 1, 1, &[fast(1_000), fast(1 << 40)]).unwrap(),
-            Entry::event(Kind::Finish, Source::Live, 1, 2, 1 << 40),
+            Entry::event(Kind::Start, 1, 0, 0),
+            Entry::batch(1, 1, &[fast(1_000), fast(1 << 40)]).unwrap(),
+            Entry::event(Kind::Finish, 1, 2, 1 << 40),
         ] {
             index.accept(Some(&slot(&entry)));
         }
@@ -281,20 +279,8 @@ mod tests {
     fn keeps_the_newest_rides() {
         let mut index = Index::default();
         for ride in 0..(KEPT as u32 + 5) {
-            index.accept(Some(&slot(&Entry::event(
-                Kind::Start,
-                Source::Live,
-                ride + 1,
-                0,
-                0,
-            ))));
-            index.accept(Some(&slot(&Entry::event(
-                Kind::Finish,
-                Source::Live,
-                ride + 1,
-                1,
-                0,
-            ))));
+            index.accept(Some(&slot(&Entry::event(Kind::Start, ride + 1, 0, 0))));
+            index.accept(Some(&slot(&Entry::event(Kind::Finish, ride + 1, 1, 0))));
         }
         index.finish();
         assert_eq!(index.rides().count(), KEPT);

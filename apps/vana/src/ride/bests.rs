@@ -29,11 +29,9 @@
 //! a longer one reads as damaged. A file that does not decode is never merged
 //! into; only CLEAR BESTS replaces it.
 //!
-//! Only rides recorded live count, and the caller applies that rule: a demo
-//! ride never reaches `merge`. The ride bests also need a ride of
-//! `MIN_RIDE_S`, so a test press of a few seconds does not become "the
-//! longest ride". A power above `PLAUSIBLE_WATTS` for its window is a
-//! sensor glitch and never a best.
+//! The ride bests need a ride of `MIN_RIDE_S`, so a test press of a few
+//! seconds does not become "the longest ride". A power above
+//! `PLAUSIBLE_WATTS` for its window is a sensor glitch and never a best.
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::crc32;
 use firmware_services::{files, volume};

@@ -607,7 +607,7 @@ def main():
     add_port_argument(parser)
     actions = parser.add_subparsers(dest='action', required=True)
     actions.add_parser('inspect', help='volume table, terrain pack and file store')
-    actions.add_parser('init', help='write the default volume table over a blank region')
+    actions.add_parser('init', help='write the default volume table over a blank or lost region')
     write = actions.add_parser('terrain-write', help='install a terrain pack from a file (resumable)')
     write.add_argument('file', type=Path)
     write.add_argument('--tag', required=True, help='pack format tag, up to 16 ASCII characters')

@@ -143,19 +143,9 @@ pub enum Kind {
     Full = 7,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum Source {
-    Live = 2,
-}
-
-impl Source {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Live => "live",
-        }
-    }
-}
+/// A fixed byte in every slot (offset 7), summary (offset 4) and open-ride
+/// catalog (offset 3); decode rejects any other value.
+pub const RECORDED_LIVE: u8 = 2;
 
 /// Why a lap began, kept on its first sample.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -220,8 +210,8 @@ pub struct Sample {
 }
 
 impl Sample {
-    /// The readings a slot holds. A battery reading above 100 % is dropped.
-    pub fn for_slot(mut self) -> Self {
+    /// This sample without a battery reading above 100 %, which a slot cannot hold.
+    pub fn without_impossible_battery(mut self) -> Self {
         self.battery_percent = self.battery_percent.filter(|percent| *percent <= 100);
         self
     }
@@ -230,7 +220,6 @@ impl Sample {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Entry {
     pub kind: Kind,
-    pub source: Source,
     pub ride_id: u32,
     pub sequence: u32,
     pub active_ms: u64,
@@ -239,16 +228,9 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub const fn event(
-        kind: Kind,
-        source: Source,
-        ride_id: u32,
-        sequence: u32,
-        active_ms: u64,
-    ) -> Self {
+    pub const fn event(kind: Kind, ride_id: u32, sequence: u32, active_ms: u64) -> Self {
         Self {
             kind,
-            source,
             ride_id,
             sequence,
             active_ms,
@@ -269,17 +251,11 @@ impl Entry {
         }
     }
 
-    pub fn batch(source: Source, ride_id: u32, sequence: u32, samples: &[Sample]) -> Option<Self> {
+    pub fn batch(ride_id: u32, sequence: u32, samples: &[Sample]) -> Option<Self> {
         if samples.is_empty() || samples.len() > SAMPLES_PER_BATCH {
             return None;
         }
-        let mut entry = Self::event(
-            Kind::Samples,
-            source,
-            ride_id,
-            sequence,
-            samples.last()?.active_ms,
-        );
+        let mut entry = Self::event(Kind::Samples, ride_id, sequence, samples.last()?.active_ms);
         entry.samples[..samples.len()].copy_from_slice(samples);
         entry.count = samples.len() as u8;
         Some(entry)
@@ -292,7 +268,7 @@ pub fn encode(entry: &Entry) -> Slot {
     slot.0[4] = VERSION;
     slot.0[5] = entry.kind as u8;
     slot.0[6] = entry.count;
-    slot.0[7] = entry.source as u8;
+    slot.0[7] = RECORDED_LIVE;
     put_u32(&mut slot.0, 8, entry.ride_id);
     put_u32(&mut slot.0, 12, entry.sequence);
     put_u64(&mut slot.0, 16, entry.active_ms);
@@ -337,11 +313,7 @@ pub fn decode(slot: &Slot) -> Option<Entry> {
         7 => Kind::Full,
         _ => return None,
     };
-    let source = match slot.0[7] {
-        2 => Source::Live,
-        _ => return None,
-    };
-    if (kind == Kind::Samples) != (count > 0) {
+    if slot.0[7] != RECORDED_LIVE || (kind == Kind::Samples) != (count > 0) {
         return None;
     }
     let mut samples = [Sample::default(); SAMPLES_PER_BATCH];
@@ -354,7 +326,6 @@ pub fn decode(slot: &Slot) -> Option<Entry> {
     }
     Some(Entry {
         kind,
-        source,
         ride_id: get_u32(&slot.0, 8),
         sequence: get_u32(&slot.0, 12),
         active_ms,
@@ -405,7 +376,6 @@ pub fn freeze_at(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Recovery {
     pub ride_id: u32,
-    pub source: Source,
     pub next_sequence: u32,
     pub active_ms: u64,
     pub gap: bool,
@@ -415,7 +385,6 @@ pub struct Recovery {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Summary {
     pub ride_id: u32,
-    pub source: Option<Source>,
     pub recovered: bool,
     pub full: bool,
     pub gap: bool,
@@ -433,10 +402,9 @@ pub struct Summary {
 }
 
 impl Summary {
-    pub fn started(ride_id: u32, source: Source) -> Self {
+    pub fn started(ride_id: u32) -> Self {
         Self {
             ride_id,
-            source: Some(source),
             ..Self::default()
         }
     }
@@ -478,7 +446,7 @@ impl Summary {
     pub fn encode(&self, bytes: &mut [u8]) {
         bytes[..Self::ENCODED].fill(0);
         put_u32(bytes, 0, self.ride_id);
-        bytes[4] = self.source.map_or(0, |s| s as u8);
+        bytes[4] = RECORDED_LIVE;
         bytes[5] = u8::from(self.first_utc_ms.is_some())
             | u8::from(self.distance_mm.is_some()) << 1
             | u8::from(self.heart_average.is_some()) << 2
@@ -500,12 +468,8 @@ impl Summary {
 
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let flags = bytes[5];
-        let source = match bytes[4] {
-            0 => None,
-            2 => Some(Source::Live),
-            _ => return None,
-        };
-        if flags & 1 << 4 != 0
+        if bytes[4] != RECORDED_LIVE
+            || flags & 1 << 4 != 0
             || bytes[6..8] != [0, 0]
             || bytes[36..40] != [0; 4]
             || bytes[52..56] != [0; 4]
@@ -515,7 +479,6 @@ impl Summary {
         let has = |bit: u8| flags & (1 << bit) != 0;
         Some(Self {
             ride_id: get_u32(bytes, 0),
-            source,
             recovered: has(5),
             full: has(6),
             gap: has(7),
@@ -792,11 +755,10 @@ impl Scanner {
             Kind::Start => {
                 self.open = Some(Recovery {
                     ride_id: entry.ride_id,
-                    source: entry.source,
                     next_sequence: entry.sequence.wrapping_add(1),
                     active_ms: entry.active_ms,
                     gap: false,
-                    summary: Summary::started(entry.ride_id, entry.source),
+                    summary: Summary::started(entry.ride_id),
                 });
                 if let Some(load) = load.as_deref_mut() {
                     *load = PowerLoad::default();
@@ -806,10 +768,7 @@ impl Scanner {
                 let Some(open) = self.open.as_mut() else {
                     return;
                 };
-                if entry.ride_id != open.ride_id
-                    || entry.source != open.source
-                    || entry.sequence != open.next_sequence
-                {
+                if entry.ride_id != open.ride_id || entry.sequence != open.next_sequence {
                     open.gap = true;
                     return;
                 }
@@ -828,10 +787,7 @@ impl Scanner {
             }
             Kind::Finish | Kind::Recovered | Kind::Full => {
                 let Some(open) = self.open else { return };
-                if entry.ride_id == open.ride_id
-                    && entry.source == open.source
-                    && entry.sequence == open.next_sequence
-                {
+                if entry.ride_id == open.ride_id && entry.sequence == open.next_sequence {
                     self.completed = self.completed.saturating_add(1);
                     let mut summary = open.summary;
                     summary.finish(entry.kind, entry.active_ms, open.gap);
@@ -978,17 +934,17 @@ mod tests {
 
     #[test]
     fn events_and_bounded_samples_round_trip() {
-        let event = Entry::event(Kind::Pause, Source::Live, 4, 9, 12_345);
+        let event = Entry::event(Kind::Pause, 4, 9, 12_345);
         let mut encoded = encode(&event);
         encoded.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
         assert_eq!(decode(&encoded), Some(event));
 
         let samples = [sample(1_000), sample(2_000), sample(3_000), sample(4_000)];
-        let batch = Entry::batch(Source::Live, 4, 10, &samples).unwrap();
+        let batch = Entry::batch(4, 10, &samples).unwrap();
         let mut encoded = encode(&batch);
         encoded.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
         assert_eq!(decode(&encoded), Some(batch));
-        assert!(Entry::batch(Source::Live, 1, 1, &[]).is_none());
+        assert!(Entry::batch(1, 1, &[]).is_none());
     }
 
     fn committed(entry: &Entry) -> Slot {
@@ -1009,14 +965,14 @@ mod tests {
             lap,
             ..sample(1_000)
         });
-        let entry = Entry::batch(Source::Live, 2, 1, &samples).unwrap();
+        let entry = Entry::batch(2, 1, &samples).unwrap();
         let slot = committed(&entry);
         assert_eq!(decode(&slot), Some(entry));
 
         let ride = [
-            committed(&Entry::event(Kind::Start, Source::Live, 2, 0, 0)),
+            committed(&Entry::event(Kind::Start, 2, 0, 0)),
             slot,
-            committed(&Entry::event(Kind::Finish, Source::Live, 2, 2, 1_000)),
+            committed(&Entry::event(Kind::Finish, 2, 2, 1_000)),
         ];
         let mut scan = Scanner::default();
         for (index, slot) in ride.iter().enumerate() {
@@ -1033,7 +989,7 @@ mod tests {
             lap: Some(LapStart::Position),
             ..sample(1_000)
         };
-        let slot = committed(&Entry::batch(Source::Live, 2, 1, &[marked]).unwrap());
+        let slot = committed(&Entry::batch(2, 1, &[marked]).unwrap());
         assert_eq!(slot.0[32 + 37], 5);
         assert_eq!(
             decode(&slot).unwrap().samples[0].lap,
@@ -1046,7 +1002,7 @@ mod tests {
 
     #[test]
     fn an_unmarked_or_reserved_lap_byte_reads_as_none() {
-        let entry = Entry::batch(Source::Live, 1, 1, &[sample(1_000)]).unwrap();
+        let entry = Entry::batch(1, 1, &[sample(1_000)]).unwrap();
         let mut slot = committed(&entry);
         assert_eq!(slot.0[HEADER_SIZE + LAP_BYTE], 0xff);
         assert_eq!(decode(&slot).unwrap().samples[0].lap, None);
@@ -1063,7 +1019,7 @@ mod tests {
     fn altitude_round_trips_in_its_sample_bytes() {
         let mut sample = sample(1_000);
         sample.altitude = Some(Altitude::from_dm(1_234));
-        let encoded = encode(&Entry::batch(Source::Live, 1, 1, &[sample]).unwrap());
+        let encoded = encode(&Entry::batch(1, 1, &[sample]).unwrap());
         assert_eq!(get_u16(&encoded.0, HEADER_SIZE + 46), 3_117);
         let mut committed = encoded.clone();
         committed.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
@@ -1077,7 +1033,7 @@ mod tests {
         for dm in [-9_000, -5_001, 0, 1, 1_235, 126_000, i32::MAX] {
             let mut odd = sample;
             odd.altitude = Some(Altitude::from_dm(dm));
-            let mut slot = encode(&Entry::batch(Source::Live, 1, 1, &[odd]).unwrap());
+            let mut slot = encode(&Entry::batch(1, 1, &[odd]).unwrap());
             slot.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
             assert_eq!(decode(&slot).unwrap().samples[0], odd, "{dm}");
         }
@@ -1092,7 +1048,7 @@ mod tests {
 
     #[test]
     fn torn_corrupt_unknown_and_malformed_records_are_occupied_invalid() {
-        let entry = Entry::event(Kind::Start, Source::Live, 1, 0, 0);
+        let entry = Entry::event(Kind::Start, 1, 0, 0);
         let valid = encode(&entry);
         assert_eq!(decode(&valid), None);
         for offset in [0, 4, 5, 6, 7, 12, 28, 100, COMMIT_OFFSET] {
@@ -1120,10 +1076,10 @@ mod tests {
     fn scanner_preserves_finished_and_recovers_last_committed_duration() {
         let mut sector = Sector([0xff; SECTOR_SIZE]);
         let entries = [
-            Entry::event(Kind::Start, Source::Live, 1, 0, 0),
-            Entry::event(Kind::Finish, Source::Live, 1, 1, 8_000),
-            Entry::event(Kind::Start, Source::Live, 2, 0, 0),
-            Entry::batch(Source::Live, 2, 1, &[sample(1_000), sample(2_000)]).unwrap(),
+            Entry::event(Kind::Start, 1, 0, 0),
+            Entry::event(Kind::Finish, 1, 1, 8_000),
+            Entry::event(Kind::Start, 2, 0, 0),
+            Entry::batch(2, 1, &[sample(1_000), sample(2_000)]).unwrap(),
         ];
         for (index, entry) in entries.iter().enumerate() {
             let mut slot = encode(entry);
@@ -1148,7 +1104,7 @@ mod tests {
     fn scanner_does_not_call_an_interrupted_ride_completed() {
         let mut sector = Sector([0xff; SECTOR_SIZE]);
         for index in 0..2 {
-            let mut slot = encode(&Entry::event(Kind::Start, Source::Live, index + 1, 0, 0));
+            let mut slot = encode(&Entry::event(Kind::Start, index + 1, 0, 0));
             slot.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
             sector.0[index as usize * SLOT_SIZE..][..SLOT_SIZE].copy_from_slice(&slot.0);
         }
@@ -1179,15 +1135,14 @@ mod tests {
             value.heart_bpm = (ride_id == 5).then_some(72);
             value.cadence_tenths = (ride_id == 5).then_some(615);
             let entries = [
-                Entry::event(Kind::Start, Source::Live, ride_id, 0, 0),
-                Entry::batch(Source::Live, ride_id, 1, &[value]).unwrap(),
+                Entry::event(Kind::Start, ride_id, 0, 0),
+                Entry::batch(ride_id, 1, &[value]).unwrap(),
                 Entry::event(
                     if ride_id == 4 {
                         Kind::Recovered
                     } else {
                         Kind::Finish
                     },
-                    Source::Live,
                     ride_id,
                     2,
                     value.active_ms,
@@ -1213,7 +1168,6 @@ mod tests {
         assert_eq!(catalog.summaries[0].unwrap().ride_id, 2);
         assert!(catalog.summaries[2].unwrap().recovered);
         let live = catalog.summaries[3].unwrap();
-        assert_eq!(live.source, Some(Source::Live));
         // One sample 65 s in: the first covers at most a second at 12.3 m/s.
         assert_eq!(live.distance_mm, Some(12_345));
         assert_eq!(live.gps_samples, 1);
@@ -1229,7 +1183,7 @@ mod tests {
             speed_mm_s: speed,
             ..Sample::default()
         };
-        let mut summary = Summary::started(1, Source::Live);
+        let mut summary = Summary::started(1);
         // No speed yet: no distance, not zero.
         summary.add_sample(at(1_000, None));
         assert_eq!(summary.distance_mm, None);

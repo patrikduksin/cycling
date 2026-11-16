@@ -60,6 +60,7 @@ pkgs.mkShell {
     gatedGh
     jq
     rsync
+    util-linux
     openssh
   ];
 

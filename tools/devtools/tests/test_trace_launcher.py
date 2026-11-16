@@ -1,9 +1,12 @@
+import fcntl
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 from cycling_devtools import cli
@@ -13,12 +16,18 @@ LAUNCHER = ROOT / 'tools' / 'simulator' / 'trace.sh'
 
 FAKE_CARGO = """#!/usr/bin/env bash
 set -eu
-manifest=$(dirname "${4:?}")
+while [ "$1" != --manifest-path ]; do shift; done
+manifest=$(dirname "$2")
 mkdir -p "$CARGO_TARGET_DIR/tools"
 tree=$(cat "$manifest/apps/app.rs")
 commit=$(git -C "$manifest" rev-parse HEAD)
-printf '#!/usr/bin/env bash\\necho "built %s %s: $*"\\nexit ${TRACE_EXIT:-0}\\n' "$commit" "$tree" \\
-    > "$CARGO_TARGET_DIR/tools/trace"
+cat > "$CARGO_TARGET_DIR/tools/trace" <<BIN
+#!/usr/bin/env bash
+if [ "\\$*" = --build-commit ]; then echo "\\${STAMP:-$commit}"; exit; fi
+[ -z "\\${PROBE_LOCK:-}" ] || { flock -xn "\\$PROBE_LOCK" true && echo unlocked || echo locked; }
+echo "built $commit $tree: \\$*"
+exit \\${TRACE_EXIT:-0}
+BIN
 chmod +x "$CARGO_TARGET_DIR/tools/trace"
 echo "$manifest" >> "$BUILDS"
 eval "${WHILE_BUILDING:-}"
@@ -115,7 +124,7 @@ class TraceLauncherTests(unittest.TestCase):
         self.assertEqual(self.run_trace(self.repo, 'summary'), f'built {head} two: summary')
         self.assertEqual(self.run_trace(self.repo, 'summary'), f'built {head} two: summary')
         self.assertEqual(len(self.built()), 3, 'an edited tree builds on every run; cargo decides what is fresh')
-        self.assertEqual(sorted(p.name for p in self.cache().iterdir()), [head])
+        self.assertEqual(self.binaries(), [head])
         (self.repo / 'apps' / 'app.rs').write_text('one')
         self.assertEqual(self.run_trace(self.repo, 'summary'), f'built {head} one: summary')
         self.assertEqual(len(self.built()), 3, 'back at the commit, the cached binary runs')
@@ -128,21 +137,21 @@ class TraceLauncherTests(unittest.TestCase):
             commits.append(self.commit(f'v{n}'))
             self.assertEqual(self.run_trace(self.repo, 'summary'), f'built {commits[-1]} v{n}: summary')
         self.assertEqual(len(self.built()), 7)
-        self.assertEqual(sorted(p.name for p in self.cache().iterdir()), sorted(commits[-5:]))
+        self.assertEqual(self.binaries(), sorted(commits[-5:]))
 
     def test_a_commit_made_while_it_builds_is_not_cached_under_either_commit(self):
         head = git(self.repo, 'rev-parse', 'HEAD')
         commit = 'git -C "$manifest" -c user.name=t -c user.email=t@t commit -q --allow-empty -m moved'
         out = self.run_trace(self.repo, 'summary', WHILE_BUILDING=commit)
         self.assertEqual(out, f'built {head} one: summary', 'runs what it built')
-        self.assertFalse(self.cache().exists() and any(self.cache().iterdir()))
+        self.assertEqual(self.binaries(), [])
         moved = git(self.repo, 'rev-parse', 'HEAD')
         self.assertEqual(self.run_trace(self.repo, 'summary'), f'built {moved} one: summary')
-        self.assertEqual(sorted(p.name for p in self.cache().iterdir()), [moved])
+        self.assertEqual(self.binaries(), [moved])
 
     def test_an_edit_made_while_it_builds_is_not_cached(self):
         self.run_trace(self.repo, 'summary', WHILE_BUILDING='echo two > "$manifest/apps/app.rs"')
-        self.assertFalse(self.cache().exists() and any(self.cache().iterdir()))
+        self.assertEqual(self.binaries(), [])
 
     def test_an_untracked_build_input_counts_as_an_edit_and_an_ignored_one_does_not(self):
         (self.repo / '.gitignore').write_text('*.tmp\n')
@@ -155,7 +164,7 @@ class TraceLauncherTests(unittest.TestCase):
         (self.repo / 'apps' / 'extra.rs').write_text('untracked')
         self.run_trace(self.repo, 'summary')
         self.assertEqual(len(self.built()), 2, 'an untracked input builds the working tree')
-        self.assertEqual(sorted(p.name for p in self.cache().iterdir()), [head])
+        self.assertEqual(self.binaries(), [head])
 
     def test_pruning_keeps_the_five_used_last_and_drops_stale_temporary_copies(self):
         first = git(self.repo, 'rev-parse', 'HEAD')
@@ -175,7 +184,67 @@ class TraceLauncherTests(unittest.TestCase):
         commits.append(self.commit('v4'))
         self.run_trace(self.repo, 'summary')
         names = sorted(p.name for p in self.cache().iterdir())
-        self.assertEqual(names, sorted([f'.{first}.Fresh1', first, *commits[2:]]), 'the oldest unused one goes')
+        self.assertEqual(names, sorted([f'.{first}.Fresh1', '.lock', first, *commits[2:]]), 'the oldest unused one goes')
+
+    @contextmanager
+    def locked(self, path, how):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w') as lock:
+            fcntl.flock(lock, how)
+            yield
+
+    def waits_for(self, lock, *args):
+        with self.locked(lock, fcntl.LOCK_EX):
+            waiting = subprocess.Popen(
+                ['bash', 'tools/simulator/trace.sh', 'trace', *args],
+                cwd=self.repo,
+                env=self.env,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            time.sleep(0.5)
+            self.assertIsNone(waiting.poll(), 'waits while the lock is held')
+        out, _ = waiting.communicate(timeout=30)
+        self.assertEqual(waiting.returncode, 0)
+        return out.strip()
+
+    def binaries(self):
+        return sorted(p.name for p in self.cache().iterdir() if not p.name.startswith('.'))
+
+    def test_a_binary_that_names_another_commit_runs_and_is_not_cached(self):
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        self.assertEqual(self.run_trace(self.repo, 'summary', STAMP='another'), f'built {head} one: summary')
+        self.assertEqual(self.binaries(), [])
+        self.assertEqual(list(self.cache().glob('.*.*')), [], 'its copy is gone')
+
+    def test_a_build_waits_for_one_in_the_same_target_dir(self):
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        lock = self.tmp / 'target' / '.trace-build.lock'
+        self.assertEqual(self.waits_for(lock, 'summary'), f'built {head} one: summary')
+        self.assertEqual(len(self.built()), 1)
+
+    def test_a_cached_binary_runs_holding_the_cache_lock(self):
+        self.run_trace(self.repo, 'summary')
+        out = self.run_trace(self.repo, 'summary', PROBE_LOCK=str(self.cache() / '.lock'))
+        self.assertEqual(out.splitlines()[0], 'locked')
+
+    def test_pruning_skips_while_a_cached_binary_runs(self):
+        with self.locked(self.cache() / '.lock', fcntl.LOCK_SH):
+            for n in range(6):
+                (self.repo / 'apps' / 'app.rs').write_text(f'v{n}')
+                self.commit(f'v{n}')
+                self.run_trace(self.repo, 'summary')
+            self.assertEqual(len(self.binaries()), 6)
+        (self.repo / 'apps' / 'app.rs').write_text('v6')
+        self.commit('v6')
+        self.run_trace(self.repo, 'summary')
+        self.assertEqual(len(self.binaries()), 5)
+
+    def test_a_lookup_waits_while_pruning(self):
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        self.run_trace(self.repo, 'summary')
+        self.assertEqual(self.waits_for(self.cache() / '.lock', 'find'), f'built {head} one: find')
+        self.assertEqual(len(self.built()), 1, 'the cached binary ran')
 
 
 class RoutingTests(unittest.TestCase):

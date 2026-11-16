@@ -30,32 +30,60 @@ mapfile -t sources < "$root/tools/simulator/build-sources"
 edited() {
     [ -n "$(git -C "$root" status --porcelain --untracked-files=normal -- "${sources[@]}")" ]
 }
-build() {
-    cargo build -q --manifest-path "$root/Cargo.toml" --profile tools -p shell-simulator \
-        --locked --no-default-features --bin trace
-}
 target=${CARGO_TARGET_DIR:-$root/target}
 [[ $target = /* ]] || target=$PWD/$target
+cache=$(dirname "$common")/.local/tools/trace
+mkdir -p "$target" "$cache"
+
+# Worktrees can share a target dir, so the build and the copy out of it hold
+# one lock: the copy is then this build, not another worktree's. Cargo gets
+# neither lock's fd, or the sccache server it starts would hold it for good.
+build_copy() {
+    copy=$(mktemp "$cache/.$commit.XXXXXX")
+    {
+        flock 9 \
+            && cargo build -q --manifest-path "$root/Cargo.toml" --profile tools -p shell-simulator \
+                --locked --no-default-features --bin trace 8>&- 9>&- \
+            && install -m 0755 "$target/tools/trace" "$copy"
+    } 9> "$target/.trace-build.lock" || {
+        status=$?
+        rm -f "$copy"
+        exit $status
+    }
+}
+run_copy() {
+    status=0
+    "$copy" "$@" || status=$?
+    rm -f "$copy"
+    exit $status
+}
 
 if edited; then
-    build
-    exec "$target/tools/trace" "$@"
+    build_copy
+    run_copy "$@"
 fi
 
-cache=$(dirname "$common")/.local/tools/trace
-# The touch marks the binary as used, so pruning by age keeps the ones in use.
-if [ -x "$cache/$commit" ] && touch -c "$cache/$commit"; then
-    exec "$cache/$commit" "$@"
-fi
-build
-# A commit or an edit made while it built would be in the binary.
-if [ "$(git -C "$root" rev-parse HEAD)" != "$commit" ] || edited; then
-    exec "$target/tools/trace" "$@"
-fi
-mkdir -p "$cache"
-copy=$(mktemp "$cache/.$commit.XXXXXX")
-install -m 0755 "$target/tools/trace" "$copy"
-mv -f "$copy" "$cache/$commit"
-ls -t "$cache" | tail -n +6 | (cd "$cache" && xargs -r rm -f --)
-find "$cache" -maxdepth 1 -name '.*.??????' -mmin +60 -delete
-exec "$cache/$commit" "$@"
+# A cached binary runs holding a shared lock on fd 8, kept across the exec,
+# and pruning skips while anyone holds it.
+exec 8> "$cache/.lock"
+while :; do
+    flock -s 8
+    # The touch marks the binary as used, so pruning by age keeps the ones in use.
+    if [ -x "$cache/$commit" ] && touch -c "$cache/$commit"; then
+        exec "$cache/$commit" "$@"
+    fi
+    flock -u 8
+    build_copy
+    # A commit or an edit made while it built would be in the binary; the
+    # binary names the commit it was built from.
+    if [ "$(git -C "$root" rev-parse HEAD)" != "$commit" ] || edited \
+        || [ "$("$copy" --build-commit)" != "$commit" ]; then
+        run_copy "$@"
+    fi
+    mv -f "$copy" "$cache/$commit"
+    (
+        flock -xn 7 || exit 0
+        ls -t "$cache" | tail -n +6 | (cd "$cache" && xargs -r rm -f --)
+        find "$cache" -maxdepth 1 -name '.*.??????' -mmin +60 -delete
+    ) 7> "$cache/.lock" || true
+done

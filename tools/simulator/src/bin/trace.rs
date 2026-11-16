@@ -129,6 +129,11 @@ commands:
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // trace.sh caches a binary under a commit only if it says it was built there.
+    if args == ["--build-commit"] {
+        println!("{}", option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""));
+        return ExitCode::SUCCESS;
+    }
     if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
         print!("{USAGE}");
         return ExitCode::SUCCESS;

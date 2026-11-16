@@ -811,3 +811,34 @@ fn stubs_say_the_u_turn(stubs: &[f32], every: &[f32]) {
         failed.join("\n")
     );
 }
+
+#[test]
+fn spurs_one_after_another_say_what_the_course_without_them_says() {
+    let corners = [
+        (0.0, 0.0),
+        (0.0, 300.0),
+        (60.0, 300.0),
+        (0.0, 300.0),
+        (-12.0, 300.0),
+        (0.0, 300.0),
+        (0.0, 700.0),
+        (300.0, 700.0),
+    ];
+    assert_eq!(told(&path(&corners, 5.0)), [[RIGHT]; 2]);
+}
+
+#[test]
+fn a_spur_off_a_spur_says_what_the_course_without_them_says() {
+    let corners = [
+        (0.0, 0.0),
+        (0.0, 300.0),
+        (40.0, 300.0),
+        (40.0, 330.0),
+        (40.0, 300.0),
+        (100.0, 300.0),
+        (0.0, 300.0),
+        (0.0, 700.0),
+        (300.0, 700.0),
+    ];
+    assert_eq!(told(&path(&corners, 5.0)), [[RIGHT]; 2]);
+}

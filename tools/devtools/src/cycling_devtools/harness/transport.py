@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from cycling_devtools.terminal.usb import UsbConnection, open_no_reset, terminal_reply
-from cycling_devtools.workspace import ROOT
+from cycling_devtools.workspace import ROOT, SIMULATOR_BUILD
 
 # C606's startup check watches its companion this long after a restart.
 RESTART_PROBE_MS = 3000
@@ -190,17 +190,7 @@ class Virtual:
     def build(self):
         """Compile before any request: a build under load must not consume a reply timeout."""
         result = subprocess.run(
-            [
-                'cargo',
-                'build',
-                '-p',
-                'shell-simulator',
-                '--locked',
-                '--no-default-features',
-                '--bin',
-                'shell-simulator',
-                '--message-format=json-render-diagnostics',
-            ],
+            [*SIMULATOR_BUILD, '--message-format=json-render-diagnostics'],
             cwd=ROOT,
             stdout=subprocess.PIPE,
             stderr=self.errors,

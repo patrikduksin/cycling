@@ -4,6 +4,18 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
+# The harness's virtual backend. `cycling test-python` builds it with ride-fit in
+# this same form, so the harness tests find it fresh.
+SIMULATOR_BUILD = (
+    'cargo',
+    'build',
+    '-p',
+    'shell-simulator',
+    '--locked',
+    '--no-default-features',
+    '--bin',
+    'shell-simulator',
+)
 
 
 def main_checkout(root=ROOT):

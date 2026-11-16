@@ -9,6 +9,7 @@ use shell_simulator::ant::{BatteryReport, ZeroReply, device_type};
 use shell_simulator::bulk::Presence;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{NoteKind, Screen, Sim, minutes, seconds};
+use shell_simulator::trace::timeline::{Kind as Traced, session_clock};
 use shell_simulator::world::{Side, Vehicle};
 use vana::ride::fit::Refusal;
 use vana::ride::log::{
@@ -4736,6 +4737,97 @@ fn ride_cues_rise_to_go_fall_to_pause_and_mark_laps() {
     sim.advance(seconds(2));
     assert_eq!(played_since(&sim, from), [21, 0, 10], "a rising run: saved");
     sim.checkpoint("ride saved with its cue");
+}
+
+/// This session's trace entries of `kind`, as `cycling trace find` lists
+/// them.
+fn traced(sim: &Sim, kind: Traced) -> Vec<String> {
+    shell_simulator::trace::timeline::read(&sim.trace())
+        .expect("the session's own trace decodes")
+        .entries
+        .into_iter()
+        .filter(|entry| entry.kind == kind && !entry.repeat)
+        .map(|entry| entry.text)
+        .collect()
+}
+
+fn marks(sim: &Sim) -> Vec<String> {
+    traced(sim, Traced::Mark)
+}
+
+fn marks_on_a_ride(sim: &mut Sim) {
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(5));
+    let first = sim.screen().page().expect("page dots");
+    assert!(first.starts_with("1/"), "{first}");
+    // The first report pages as a press does; the repeats leave the page.
+    sim.hold(Button::BottomLeft, 1000);
+    let second = sim.screen().page().expect("page dots");
+    assert!(second.starts_with("2/"), "one page on, not three: {second}");
+    sim.advance(seconds(3));
+    assert!(marks(sim).is_empty(), "a hold of a second marks nothing");
+    sim.expect_no_text("MARK");
+
+    let page = sim.seen().page.expect("a page").1;
+    let pressed = sim.device.clock_ms();
+    let from = sim.device.sim().speaker.played.len();
+    sim.hold(Button::BottomLeft, 1600);
+    sim.expect_text("MARK 1");
+    assert_eq!(
+        sim.screen().page(),
+        Some(second.clone()),
+        "the page put back"
+    );
+    assert_eq!(sim.seen().page.expect("a page").1, page);
+    assert_eq!(
+        marks(sim),
+        [format!("1 pressed {} on {page}", session_clock(pressed))]
+    );
+    sim.checkpoint("marked");
+    sim.advance(seconds(3));
+    assert_eq!(played_since(sim, from), [0, 0, 0], "middle, middle, middle");
+    sim.hold(Button::BottomLeft, 1600);
+    sim.expect_text("MARK 2");
+    assert_eq!(sim.screen().page(), Some(second), "the page put back");
+    assert_eq!(marks(sim).len(), 2);
+    sim.advance(seconds(30));
+    sim.stop_ride();
+}
+
+#[test]
+fn holding_move_marks_the_moment_and_leaves_the_ride_as_it_was() {
+    let mut sim = rider();
+    marks_on_a_ride(&mut sim);
+    let toasts = traced(&sim, Traced::Toast);
+    assert!(
+        !toasts.iter().any(|toast| toast.starts_with("LAP")),
+        "a mark takes no lap: {toasts:?}"
+    );
+    let states = traced(&sim, Traced::Ride);
+    let paused = states.iter().filter(|state| *state == "paused").count();
+    assert_eq!(paused, 1, "only the pause that ends the ride: {states:?}");
+}
+
+#[test]
+fn holding_move_on_home_marks_and_keeps_the_focus() {
+    let mut sim = rider();
+    sim.advance(seconds(3));
+    assert!(sim.screen().white("RIDE"), "{}", sim.screen().text());
+    let pressed = sim.device.clock_ms();
+    sim.hold(Button::BottomLeft, 1600);
+    sim.expect_text("MARK 1");
+    assert!(sim.screen().white("RIDE"), "{}", sim.screen().text());
+    assert_eq!(
+        marks(&sim),
+        [format!("1 pressed {} on home", session_clock(pressed))]
+    );
+}
+
+#[test]
+fn a_ride_with_marks_replays_exactly() {
+    assert_replays_exactly(equip(hashed().boot()), marks_on_a_ride, false);
 }
 
 #[test]

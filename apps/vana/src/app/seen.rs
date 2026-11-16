@@ -13,6 +13,14 @@ pub enum Seen<'a> {
     /// The recorder's state by name; a pause the device chose is
     /// `auto_paused`.
     RideState(&'a str),
+    /// The rider held MOVE to mark a moment: the mark's number in this
+    /// power-on session, from 1, when the hold's first report came, and the
+    /// page shown before it, named as `Page` names it.
+    Mark {
+        count: u16,
+        pressed_ms: u64,
+        page: &'a str,
+    },
     /// The main page's readings as `name=value` pairs, e.g.
     /// `time=0:40:12 speed=31.2 power=-- hr=142 cad=88 dist=12.40 grade=4.0%`.
     Shown(&'a str),
@@ -40,6 +48,13 @@ impl super::Runtime {
     /// the cue note the rider heard. Call once a pass, after `alert`. Reads
     /// VANA; writes only what it last reported.
     pub fn report_seen(&mut self, now: u64, sink: &mut impl FnMut(Seen<'_>)) {
+        if let Some(mark) = self.marks.made.take() {
+            sink(Seen::Mark {
+                count: mark.count,
+                pressed_ms: mark.pressed_ms,
+                page: mark.page,
+            });
+        }
         let page = self.seen_page();
         if self.reported.page != page {
             self.reported.page = page;
@@ -86,7 +101,7 @@ impl super::Runtime {
         }
     }
 
-    fn seen_page(&self) -> &'static str {
+    pub(super) fn seen_page(&self) -> &'static str {
         let navigation = &self.navigation;
         match navigation.page {
             Page::Ride

@@ -388,6 +388,44 @@ fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
 }
 
 #[test]
+fn the_riders_marks_are_found_by_kind_and_told_as_events() {
+    let mut sim = Sim::new().boot();
+    sim.discard_recording();
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(2));
+    let pressed = sim.device.clock_ms();
+    sim.hold(Button::BottomLeft, 1600);
+    sim.advance(seconds(3));
+    sim.hold(Button::BottomLeft, 1600);
+    sim.advance(seconds(1));
+    let timeline = read(&sim.capture().trace).unwrap();
+    let found: Vec<String> = find(&timeline, &Query::parse("mark"), (0, u64::MAX), None)
+        .iter()
+        .map(|found| found.to_string())
+        .collect();
+    assert_eq!(found.len(), 2, "{found:?}");
+    let first = format!(
+        "mark        1 pressed {} on ride/main",
+        shell_simulator::trace::timeline::session_clock(pressed)
+    );
+    assert!(found[0].ends_with(&first), "{found:?}");
+    assert!(found[1].contains("mark        2 pressed "), "{found:?}");
+    let told: Vec<String> = tell(&timeline)
+        .events
+        .iter()
+        .filter(|e| e.name == "mark")
+        .map(|e| e.text.clone())
+        .collect();
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told[0].starts_with("1 pressed "), "{told:?}");
+    assert!(
+        Kind::parse_list("seen").unwrap().contains(&Kind::Mark),
+        "a mark is something VANA showed"
+    );
+}
+
+#[test]
 fn a_page_a_harness_press_brought_up_names_the_press() {
     let mut sim = Sim::new().boot();
     sim.discard_recording();

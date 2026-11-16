@@ -1453,6 +1453,15 @@ impl Session {
             vana::app::Seen::Toast(text) => record(Event::Toast(text)),
             vana::app::Seen::RideState(state) => record(Event::RideState(state)),
             vana::app::Seen::Shown(fields) => record(Event::Shown(fields)),
+            vana::app::Seen::Mark {
+                count,
+                pressed_ms,
+                page,
+            } => record(Event::Mark {
+                count,
+                pressed_ms,
+                page,
+            }),
             vana::app::Seen::Note {
                 cue,
                 pattern,

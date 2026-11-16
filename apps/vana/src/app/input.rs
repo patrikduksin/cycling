@@ -135,6 +135,11 @@ impl Runtime {
         let Input::Button { button, code: 1 } = input else {
             return;
         };
+        // Every MOVE report counts towards a mark, so this goes before the
+        // debounce drops repeats.
+        if button == Button::BottomLeft && self.mark_hold(held, received, now) {
+            return;
+        }
         if received.saturating_sub(self.navigation.last_press) < DEBOUNCE_MS {
             return;
         }

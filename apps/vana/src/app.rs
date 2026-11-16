@@ -27,6 +27,7 @@ mod history;
 mod input;
 mod lists;
 mod lookahead;
+mod mark;
 mod mode;
 mod motion;
 mod night;
@@ -100,6 +101,7 @@ pub struct Runtime {
     timing: timing::Timing,
     training: training::Training,
     cues: cues::Cues,
+    marks: mark::Marks,
     history: history::History,
     night: night::Night,
     /// The look-ahead's state lives in the block composition gives it.
@@ -141,6 +143,7 @@ impl Runtime {
             timing: timing::Timing::default(),
             training: training::Training::default(),
             cues: cues::Cues::default(),
+            marks: mark::Marks::default(),
             history: history::History::default(),
             night: night::Night::default(),
             lookahead: None,

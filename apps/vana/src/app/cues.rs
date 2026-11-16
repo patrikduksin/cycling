@@ -54,6 +54,8 @@ pub enum Cue {
     OnCourse,
     TurnSoon,
     TurnNow,
+    /// The rider marked a moment for the trace.
+    Mark,
 }
 
 #[derive(Clone, Copy)]
@@ -94,6 +96,7 @@ impl Cue {
             Self::OnCourse => &[Low, High],
             Self::TurnSoon => &[Low, Middle],
             Self::TurnNow => &[High],
+            Self::Mark => &[Middle, Middle, Middle],
         }
     }
 
@@ -121,6 +124,7 @@ impl Cue {
             Self::OnCourse => "on_course",
             Self::TurnSoon => "turn_soon",
             Self::TurnNow => "turn_now",
+            Self::Mark => "mark",
         }
     }
 
@@ -345,6 +349,7 @@ mod tests {
         assert_eq!(ids(Cue::OnCourse), [21, 10]);
         assert_eq!(ids(Cue::TurnSoon), [21, 0]);
         assert_eq!(ids(Cue::TurnNow), [10]);
+        assert_eq!(ids(Cue::Mark), [0, 0, 0]);
         // One pattern stands for every note; none leaves cues silent.
         let single = [pattern(4, 3000, 100)];
         assert_eq!(resolve(&single, Cue::Saved).to_vec(), [4, 4, 4]);

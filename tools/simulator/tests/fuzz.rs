@@ -131,8 +131,12 @@ fn a_run_in_child_processes_adds_up_its_sessions() {
 
 #[test]
 fn a_child_that_dies_is_a_finding_with_a_reproduce_line() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fuzz"))
-        .args(["--seeds", "1-1", "--no-corpus", "--jobs", "1"])
+    let output = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "ulimit -c 0 && exec \"$0\" --seeds 1-1 --no-corpus --jobs 1",
+        ])
+        .arg(env!("CARGO_BIN_EXE_fuzz"))
         .env("RUST_MIN_STACK", "40000")
         .output()
         .expect("the fuzz run ends");

@@ -8,21 +8,23 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
 usage: cycling fuzz [--minutes N | --seed S | --seeds A-B | --fixed]
-                    [--corpus DIR] [--jobs N] [--out DIR]
+                    [--corpus PATH | --no-corpus] [--jobs N] [--out DIR]
 
 Each session draws a plan from its seed: a course (synthetic, or a GPS track
 from a world log under --corpus), sensors, a card, then button presses, rides,
 sensor dropouts, GPS and barometer loss, radar vehicles, battery changes,
 power cuts, torn flash writes and card refusals. After every step the checks
 read the device; a panic is a finding too. A finding prints the seed and the
-command that reproduces it, and writes the plan and the world log of its boot
-under --out DIR/<seed>.
+command that reproduces it, and writes the plan, the world log of its boot and
+the corpus trace it rode under --out DIR/<seed>.
 
   --minutes N   fresh seeds for N minutes of wall time (the default, 1)
   --seed S      one session, printing each step and the page after it
   --seeds A-B   the seeds A to B
-  --fixed       the fixed seed set tier 2 runs, on synthetic courses only
-  --corpus DIR  courses from every .trace under DIR; missing means none
+  --fixed       the fixed seed set tier 2 runs, with --no-corpus
+  --corpus PATH courses from a .trace file, or every .trace under a
+                directory; missing means none
+  --no-corpus   no corpus, even with --corpus
   --jobs N      sessions side by side (default: half the cores)
   --out DIR     where findings are written
 
@@ -36,7 +38,7 @@ enum Seeds {
 
 struct Args {
     seeds: Seeds,
-    fixed: bool,
+    no_corpus: bool,
     corpus: Option<PathBuf>,
     jobs: usize,
     out: Option<PathBuf>,
@@ -53,7 +55,7 @@ fn seed(text: &str) -> Result<u64, String> {
 fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut args = Args {
         seeds: Seeds::Minutes(1),
-        fixed: false,
+        no_corpus: false,
         corpus: None,
         jobs: std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).max(1)),
         out: None,
@@ -79,9 +81,10 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--fixed" => {
                 args.seeds = Seeds::Range(*FIXED.start(), *FIXED.end());
-                args.fixed = true;
+                args.no_corpus = true;
             }
             "--corpus" => args.corpus = Some(value()?.into()),
+            "--no-corpus" => args.no_corpus = true,
             "--jobs" => {
                 let jobs = value()?;
                 args.jobs = jobs
@@ -109,13 +112,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let corpus = if args.fixed {
+    let corpus = if args.no_corpus {
         Corpus::none()
     } else {
         Corpus::load(args.corpus.as_deref())
     };
-    if let Some(dir) = &corpus.dir {
-        println!("corpus: {} courses from {}", corpus.len(), dir.display());
+    if let Some(path) = &corpus.path {
+        println!("corpus: {} courses from {}", corpus.len(), path.display());
         let mut reasons = std::collections::BTreeMap::<&str, usize>::new();
         for (_, why) in &corpus.skipped {
             *reasons.entry(why).or_default() += 1;
@@ -135,16 +138,15 @@ fn main() -> ExitCode {
                     coverage
                 }
                 Err(finding) => {
-                    found(&finding, &plan, args.out.as_deref(), &report);
+                    found(finding, &plan, args.out.as_deref(), &report);
                     Coverage::default()
                 }
             }
         }
         Seeds::Range(first, last) => {
-            let next = AtomicU64::new(first);
+            let seeds = Mutex::new(first..=last);
             pool(args.jobs, &corpus, args.out.as_deref(), &report, || {
-                let seed = next.fetch_add(1, Ordering::Relaxed);
-                (seed <= last).then_some(seed)
+                seeds.lock().unwrap_or_else(|e| e.into_inner()).next()
             })
         }
         Seeds::Minutes(minutes) => {
@@ -186,7 +188,7 @@ fn pool(
                         let plan = fuzz::draw(seed);
                         match fuzz::run(&plan, corpus, false) {
                             Ok(session) => coverage.merge(session),
-                            Err(finding) => found(&finding, &plan, out, report),
+                            Err(finding) => found(finding, &plan, out, report),
                         }
                     }
                     coverage
@@ -205,23 +207,32 @@ fn pool(
     })
 }
 
-fn found(finding: &Finding, plan: &Plan, out: Option<&Path>, report: &Mutex<Vec<u64>>) {
+fn found(mut finding: Finding, plan: &Plan, out: Option<&Path>, report: &Mutex<Vec<u64>>) {
     let mut report = report.lock().unwrap_or_else(|e| e.into_inner());
     report.push(finding.seed);
-    println!("{finding}");
     let Some(out) = out else {
+        println!("{finding}");
         return;
     };
     let dir = out.join(format!("{:#018x}", finding.seed));
-    let written = std::fs::create_dir_all(&dir)
-        .and_then(|()| std::fs::write(dir.join("plan.txt"), format!("{plan:#?}\n")))
-        .and_then(|()| std::fs::write(dir.join("world.trace"), &finding.world_log.0));
+    let written = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("plan.txt"), format!("{plan:#?}\n"))?;
+        std::fs::write(dir.join("world.trace"), &finding.world_log.0)?;
+        if let Some(trace) = &finding.course_trace {
+            let course = std::path::absolute(dir.join("course.trace"))?;
+            // A replay's --corpus names this very file, and a copy onto
+            // itself would truncate it before reading.
+            let staged = dir.join("course.trace.new");
+            std::fs::copy(trace, &staged)?;
+            std::fs::rename(&staged, &course)?;
+            finding.course_trace = Some(course);
+        }
+        Ok(())
+    })();
+    println!("{finding}");
     match written {
-        Ok(()) => println!(
-            "  wrote {} and {}",
-            dir.join("plan.txt").display(),
-            dir.join("world.trace").display()
-        ),
+        Ok(()) => println!("  wrote {}", dir.display()),
         Err(error) => println!("  could not write {}: {error}", dir.display()),
     }
 }

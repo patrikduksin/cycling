@@ -7,6 +7,7 @@ pub use plan::{FIXED, Plan, draw};
 
 use crate::ant::device_type;
 use crate::bulk::Presence;
+use crate::flows::status_field;
 use crate::route::{Point, Route};
 use crate::sim::{Sim, seconds};
 use crate::world::Vehicle;
@@ -34,8 +35,9 @@ pub struct Finding {
     pub at: At,
     pub at_ms: u64,
     pub detail: String,
-    /// The corpus directory, when the session rode a course from it.
-    pub corpus: Option<PathBuf>,
+    /// The corpus trace the session rode; without one, the replay takes no
+    /// corpus.
+    pub course_trace: Option<PathBuf>,
     pub world_log: WorldLog,
 }
 
@@ -66,12 +68,11 @@ impl fmt::Debug for WorldLog {
 
 impl Finding {
     pub fn reproduce(&self) -> String {
-        let corpus = self
-            .corpus
-            .as_ref()
-            .map(|dir| format!(" --corpus {}", dir.display()))
-            .unwrap_or_default();
-        format!("cycling fuzz --seed {:#018x}{corpus}", self.seed)
+        let course = match &self.course_trace {
+            Some(trace) => format!("--corpus {}", trace.display()),
+            None => "--no-corpus".to_string(),
+        };
+        format!("cycling fuzz --seed {:#018x} {course}", self.seed)
     }
 }
 
@@ -182,7 +183,7 @@ pub fn run(plan: &Plan, corpus: &Corpus, verbose: bool) -> Result<Coverage, Find
         at: session.at,
         at_ms: sim.now(),
         detail,
-        corpus: session.course_trace.and(corpus.dir.clone()),
+        course_trace: session.course_trace,
         world_log,
     })
 }
@@ -317,7 +318,8 @@ fn prepare(sim: &mut Sim, setup: &Setup, corpus: &Corpus) -> Option<PathBuf> {
     course
 }
 
-fn route(course: &Course, corpus: &Corpus) -> (Route, Option<PathBuf>) {
+/// The road `course` rides, and the corpus trace it came from.
+pub fn route(course: &Course, corpus: &Corpus) -> (Route, Option<PathBuf>) {
     let center = |index: u8| {
         let (lat, lon) = CENTERS[usize::from(index) % CENTERS.len()];
         Point::new(lat, lon)
@@ -339,15 +341,8 @@ fn route(course: &Course, corpus: &Corpus) -> (Route, Option<PathBuf>) {
             (Route::profile(center(*at), &knots), None)
         }
         Course::Corpus { pick } => match corpus.route(*pick) {
-            Some((path, route)) => (route.clone(), Some(path.clone())),
-            None => (
-                Route::loop_around(
-                    center((pick % 4) as u8),
-                    (2_000 + pick % 30_000) as f64,
-                    (pick % 200) as f64,
-                ),
-                None,
-            ),
+            Some((path, road)) => (road.clone(), Some(path.clone())),
+            None => route(&plan::empty_corpus_loop(*pick), corpus),
         },
     }
 }
@@ -371,7 +366,7 @@ fn apply(sim: &mut Sim, step: &Step) {
         Step::Stop => sim.ride_at(0.0, 0.0, 90.0, 0.0),
         Step::Host(action) => {
             if !sim.is_off() {
-                sim.host_command(action.command());
+                sim.command_after_reading_outcome(action.command());
             }
         }
         Step::Dropout { sensor, present } => {
@@ -413,7 +408,7 @@ fn still_a_bike_computer(sim: &mut Sim, setup: &Setup) -> Verdict {
     sim.set_barometer(true);
     sim.set_battery(80, false);
     sim.ride_at(0.0, 0.0, 72.0, 0.0);
-    sim.device.media.fault.borrow_mut().after = None;
+    sim.clear_storage_fault();
     sim.cut_power();
     let booted = sim.now();
     while sim.is_off() || !sim.device.lit() || sim.vana_page() == "boot" {
@@ -427,9 +422,9 @@ fn still_a_bike_computer(sim: &mut Sim, setup: &Setup) -> Verdict {
     }
     sim.advance(seconds(5));
     let (_, status) = sim.command("RIDE STATUS");
-    let state = field(&status, "state").unwrap_or_default();
-    if !STARTABLE.contains(&state.as_str()) {
-        return Verdict::Skip(match state.as_str() {
+    let state = status_field(&status, "state").unwrap_or_default();
+    if !STARTABLE.contains(&state) {
+        return Verdict::Skip(match state {
             "full" => "journal full",
             "error" => "recorder error",
             "needs_init" => "journal needs init",
@@ -439,19 +434,19 @@ fn still_a_bike_computer(sim: &mut Sim, setup: &Setup) -> Verdict {
     }
     let known = (ids(&sim.rides()), ids(&card_rides_if(sim, setup)));
     sim.ride_at(25.0, 180.0, 130.0, 85.0);
-    let (answer, out) = sim.command("RIDE START");
+    let (answer, out) = sim.command_after_reading_outcome("RIDE START");
     if answer != "ACCEPTED" {
         return Verdict::Fail(format!("RIDE START answered {answer} {out} in {status}"));
     }
     sim.advance(seconds(30));
     let (_, recording) = sim.command("RIDE STATUS");
-    let samples: u32 = field(&recording, "samples")
+    let samples: u32 = status_field(&recording, "samples")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    if field(&recording, "state").as_deref() != Some("recording") || samples < 20 {
+    if status_field(&recording, "state") != Some("recording") || samples < 20 {
         return Verdict::Fail(format!("30 s after RIDE START: {recording}"));
     }
-    let (answer, out) = sim.command("RIDE FINISH");
+    let (answer, out) = sim.command_after_reading_outcome("RIDE FINISH");
     if answer != "ACCEPTED" {
         return Verdict::Fail(format!("RIDE FINISH answered {answer} {out}"));
     }
@@ -478,11 +473,4 @@ fn card_rides_if(sim: &Sim, setup: &Setup) -> Vec<crate::rides::Ride> {
         return Vec::new();
     }
     check::card_rides(sim)
-}
-
-fn field(status: &str, name: &str) -> Option<String> {
-    status
-        .split_whitespace()
-        .find_map(|part| part.strip_prefix(name)?.strip_prefix('='))
-        .map(str::to_string)
 }

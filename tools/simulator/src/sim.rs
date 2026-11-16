@@ -904,6 +904,16 @@ impl Sim {
         fault.partial = partial;
     }
 
+    /// Disarm a storage fault `fail_storage` armed that has not fired.
+    pub fn clear_storage_fault(&mut self) {
+        self.device.media.fault.borrow_mut().after = None;
+    }
+
+    /// A flash fault is armed, or a card fault is armed or failed this boot.
+    pub fn storage_faulted(&self) -> bool {
+        self.device.media.fault.borrow().after.is_some() || self.device.bulk.faulted()
+    }
+
     /// Fit the C606 owned MMC region, as it is before VANA formats it.
     pub fn fit_bulk(&mut self, presence: crate::bulk::Presence) {
         self.note(NoteKind::Device, format!("bulk media {presence:?}"));

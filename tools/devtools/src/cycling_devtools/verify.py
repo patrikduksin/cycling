@@ -96,11 +96,12 @@ def git(*args):
     return subprocess.run(['git', *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def table(results, sha, dirty, total):
+def table(results, mode, sha, dirty, total):
     rows = ['| step | result | time |', '| --- | --- | --- |']
     rows += [f'| `{r.step.name}` | {"✅" if r.ok else "❌"} | {r.seconds:.0f} s |' for r in results]
     state = ' (uncommitted changes)' if dirty else ''
-    return f'### `cycling verify` on {os.uname().nodename} — {sha}{state}, {total:.0f} s\n\n' + '\n'.join(rows)
+    command = 'cycling verify' if mode == 'full' else f'cycling verify --{mode}'
+    return f'### `{command}` on {os.uname().nodename} — {sha}{state}, {total:.0f} s\n\n' + '\n'.join(rows)
 
 
 def frame_reports(results):
@@ -119,8 +120,9 @@ def failure_tail(results, lines=30):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('--fast', action='store_true', help='test, check and build only')
-    parser.add_argument('--deep', action='store_true', help='tier 2 only: fixed fuzz seeds, planted bug')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--fast', action='store_true', help='test, check and build only')
+    modes.add_argument('--deep', action='store_true', help='tier 2 only: fixed fuzz seeds, planted bug')
     parser.add_argument('--pr', type=int, help='post the result table and the changed screens on this pull request')
     parser.add_argument(
         '--video',
@@ -147,7 +149,7 @@ def main(argv=None):
     total = time.monotonic() - started
     ok = all(r.ok for r in results)
 
-    report = table(results, sha, dirty, total)
+    report = table(results, mode, sha, dirty, total)
     tail = failure_tail(results)
     print('\n' + report)
     if tail:

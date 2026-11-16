@@ -99,9 +99,17 @@ pub enum Course {
     },
     /// A straight road east through (distance m, elevation m) knots.
     Profile { center: u8, knots: Vec<(u32, i16)> },
-    /// A track from the corpus, by index; an empty corpus rides a loop
-    /// drawn from `pick` instead.
+    /// A track from the corpus, by index; an empty corpus rides
+    /// `empty_corpus_loop(pick)` instead.
     Corpus { pick: u64 },
+}
+
+pub fn empty_corpus_loop(pick: u64) -> Course {
+    Course::Loop {
+        center: (pick % CENTERS.len() as u64) as u8,
+        length_m: (2_000 + pick % 30_000) as u32,
+        climb_m: (pick % 200) as u16,
+    }
 }
 
 const MID_LATITUDE: (f64, f64) = (-33.45, -70.66);

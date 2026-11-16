@@ -41,7 +41,7 @@ impl Observation {
 /// within the same boot.
 pub fn observe(sim: &mut Sim, card: bool, previous: Option<&Observation>) -> Observation {
     let (at_ms, boot, off) = (sim.now(), sim.device.boot, sim.is_off());
-    let armed = sim.device.media.fault.borrow().after.is_some() || sim.device.bulk.faulted();
+    let armed = sim.storage_faulted();
     let carried = previous.is_some_and(|p| p.boot == boot && p.faulted);
     let on_since_ms = match previous {
         Some(p) if p.boot == boot && !p.off => p.on_since_ms,
@@ -161,9 +161,14 @@ fn media(observation: &Observation) -> [(&'static str, &[Ride]); 2] {
     ]
 }
 
+/// Pages where a press can discard or delete a ride.
+const REMOVING_PAGES: [&str; 2] = ["discard_ride", "past_ride"];
+
 fn samples_survive(moment: &Moment) -> Verdict {
-    if matches!(moment.step, Some(Step::Press(_) | Step::Hold(..))) {
-        return Verdict::Pass;
+    if matches!(moment.step, Some(Step::Press(_) | Step::Hold(..)))
+        && REMOVING_PAGES.contains(&moment.before.page)
+    {
+        return Verdict::Skip("a press on a page that removes rides");
     }
     for ((medium, before), (_, after)) in media(moment.before).into_iter().zip(media(moment.after))
     {
@@ -250,6 +255,11 @@ fn no_garbage(moment: &Moment) -> Verdict {
 }
 
 const JUDGED_WAIT_MS: u32 = 30_000;
+/// The share of a judged wait's seconds a recording ride must gain as samples.
+const SAMPLED_PERCENT: usize = 80;
+/// Batches a judged wait may fall short by, since samples reach the medium a
+/// batch at a time.
+const BATCH_SLACK: usize = 2;
 
 fn keeps_recording(moment: &Moment) -> Verdict {
     let Some(Step::Wait { ms }) = moment.step else {
@@ -288,15 +298,19 @@ fn keeps_recording(moment: &Moment) -> Verdict {
     let Some(ride) = medium.iter().find(|r| r.id == id) else {
         return Verdict::Fail(format!("ride {id} is gone"));
     };
-    let stopped = ride.entries[entries..]
-        .iter()
-        .any(|e| e.kind != Kind::Samples);
+    let Some(new) = ride.entries.get(entries..) else {
+        return Verdict::Fail(format!(
+            "ride {id} shrank from {entries} entries to {}",
+            ride.entries.len()
+        ));
+    };
+    let stopped = new.iter().any(|e| e.kind != Kind::Samples);
     if stopped {
         return Verdict::Skip("paused or ended during the wait");
     }
     let gained = ride.samples().count().saturating_sub(had);
-    let expected =
-        (*ms as usize / 1000 * 8 / 10).saturating_sub(2 * vana::ride::log::SAMPLES_PER_BATCH);
+    let expected = (*ms as usize / 1000 * SAMPLED_PERCENT / 100)
+        .saturating_sub(BATCH_SLACK * vana::ride::log::SAMPLES_PER_BATCH);
     if gained < expected {
         return Verdict::Fail(format!(
             "ride {id} gained {gained} samples in {} s of recording",

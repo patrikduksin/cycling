@@ -19,11 +19,11 @@ fn the_plant_fires_by_hand() {
     sim.ride_at(25.0, 0.0, 0.0, 0.0);
     sim.command("RIDE START");
     sim.advance(seconds(20));
-    sim.host_command("RIDE PAUSE");
+    sim.command_after_reading_outcome("RIDE PAUSE");
     sim.advance(seconds(3));
     sim.power_loss();
     sim.advance(seconds(5));
-    let (answer, out) = sim.host_command("RIDE START");
+    let (answer, out) = sim.command_after_reading_outcome("RIDE START");
     assert_eq!(answer, "ACCEPTED", "{out}");
     sim.advance(seconds(10));
     let rides = sim.rides();

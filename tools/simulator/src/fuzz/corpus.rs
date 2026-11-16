@@ -8,7 +8,7 @@ const SHORTEST_M: f64 = 500.0;
 
 #[derive(Default)]
 pub struct Corpus {
-    pub dir: Option<PathBuf>,
+    pub path: Option<PathBuf>,
     /// Sorted by path, so a pick names the same course on every run.
     routes: Vec<(PathBuf, Route)>,
     /// Traces that gave no course, and why.
@@ -20,15 +20,18 @@ impl Corpus {
         Self::default()
     }
 
-    /// Every `.trace` under `dir`; a missing directory is an empty corpus.
-    pub fn load(dir: Option<&Path>) -> Self {
+    /// The trace at `path`, or every `.trace` under it; a missing path is an
+    /// empty corpus.
+    pub fn load(path: Option<&Path>) -> Self {
         let mut corpus = Self {
-            dir: dir.map(Path::to_path_buf),
+            path: path.map(Path::to_path_buf),
             ..Self::none()
         };
         let mut paths = Vec::new();
-        if let Some(dir) = dir {
-            traces(dir, &mut paths);
+        match path {
+            Some(file) if file.is_file() => paths.push(file.to_path_buf()),
+            Some(dir) => traces(dir, &mut paths),
+            None => {}
         }
         paths.sort();
         for path in paths {

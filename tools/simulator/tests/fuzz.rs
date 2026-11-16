@@ -1,4 +1,6 @@
-use shell_simulator::fuzz::{self, Corpus, FIXED};
+use shell_simulator::fuzz::plan::Course;
+use shell_simulator::fuzz::{self, At, Corpus, FIXED, Finding, WorldLog};
+use std::path::Path;
 
 fn short_fixed_seeds(count: usize) -> Vec<u64> {
     FIXED
@@ -38,4 +40,32 @@ fn short_fixed_seeds_pass() {
             });
         }
     });
+}
+
+#[test]
+fn a_finding_names_the_course_it_rode() {
+    let plan = FIXED
+        .map(fuzz::draw)
+        .find(|plan| matches!(plan.setup.course, Course::Corpus { .. }))
+        .expect("a fixed seed draws a corpus course");
+    let finding = |corpus: &Corpus| Finding {
+        seed: plan.seed,
+        check: "no panic",
+        at: At::End,
+        at_ms: 0,
+        detail: String::new(),
+        course_trace: fuzz::route(&plan.setup.course, corpus).1,
+        world_log: WorldLog(Vec::new()),
+    };
+    let without = finding(&Corpus::none()).reproduce();
+    assert!(without.ends_with(" --no-corpus"), "{without}");
+
+    let trace = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/traces/laps-and-a-menu.trace");
+    let one = Corpus::load(Some(&trace));
+    assert_eq!(one.len(), 1, "{:?}", one.skipped);
+    let with = finding(&one).reproduce();
+    assert!(
+        with.ends_with(&format!(" --corpus {}", trace.display())),
+        "{with}"
+    );
 }

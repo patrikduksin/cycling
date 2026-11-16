@@ -1,18 +1,18 @@
 //! `cycling trace` and `cycling replay`: read a ride trace as text, find
 //! moments in it, export it to OpenTelemetry, replay a window of it with
 //! screenshots, and write a regression test from it.
-use firmware_services::trace::{self, End};
-use serde::Serialize;
 use shell_simulator::recording::Recording;
 use shell_simulator::replay::Mode;
 use shell_simulator::sim::Sim;
 use shell_simulator::trace::file::{self, Media};
-use shell_simulator::trace::find::{Found, Query, find};
-use shell_simulator::trace::story::{Point, Span, tell};
-use shell_simulator::trace::timeline::{
-    At, Entry, Kind, Moment, SILENCE_MS, Silence, Timeline, duration, read, session_clock,
+use shell_simulator::trace::find::{Query, find};
+use shell_simulator::trace::report::{
+    Answers, Artifacts, Header, Listing, Otlp, Prose, Rebuilt, Replayed, Stub, Summary, Written,
+    in_window, render,
 };
-use shell_simulator::trace::{battery, divergence, origin, otlp, rebuild, stub};
+use shell_simulator::trace::story::tell;
+use shell_simulator::trace::timeline::{At, Entry, Kind, Timeline, read, session_clock};
+use shell_simulator::trace::{divergence, origin, otlp, rebuild, stub};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -33,13 +33,14 @@ and r40:00 for a ride time.
 {session_ms, ride_ms}, ride_ms null outside a ride. An entry is a moment's
 fields with {kind, text, repeat}, a page's cause and shows, and a packet's
 bytes in hex, whatever --hex says. summary gives {header, silences, spans,
-events, battery (its lines), entries (per kind {new, repeats})}; timeline
-{from_ms, to_ms, entries, hidden}; find {found, total}, each found an entry
-with type entry or {type stretch, from, to, first}, at most --limit of
-them; replay {header, mode, why, from_ms, to_ms, reached, trace_ended,
-divergence, artifacts}; origin and media {lines}; rebuild {origin,
+events, battery, entries (per kind {new, repeats})}; timeline {from_ms,
+to_ms, entries, hidden}; find {found, total}, each found an entry with type
+entry or {type stretch, from, to, first}, at most --limit of them; replay
+{header, mode, why, from_ms, to_ms, reached, trace_ended, divergence,
+artifacts}; origin {origin, lines} and media {lines}; rebuild {origin,
 not_rebuilt}; otlp {traces, metrics}, or {out} with --out; test-stub
-{fixture_steps, test}.
+{fixture_steps, test}. The summary's battery and the lines of origin and
+media are prose, the text's own lines, with no fields to parse.
 
 commands:
   summary <trace>
@@ -139,22 +140,12 @@ fn main() -> ExitCode {
         }
         Err(error) => {
             if args.iter().any(|a| a == "--json") {
-                print!("{}", json(&serde_json::json!({ "error": error })));
+                println!("{}", serde_json::json!({ "error": error }));
             }
             eprintln!("cycling trace: {error}");
             ExitCode::from(2)
         }
     }
-}
-
-fn json(value: &impl Serialize) -> String {
-    let mut out = serde_json::to_string(value).expect("trace data serializes");
-    out.push('\n');
-    out
-}
-
-fn lines(text: &str) -> Vec<&str> {
-    text.lines().collect()
 }
 
 struct Options {
@@ -206,7 +197,7 @@ impl Options {
 fn run(args: &[String]) -> Result<String, String> {
     let (command, rest) = args.split_first().expect("arguments checked");
     let options = Options::parse(rest, &["all", "video", "hex", "json"])?;
-    let as_json = options.has("json");
+    let json = options.has("json");
     let path = PathBuf::from(
         options
             .positional
@@ -215,26 +206,35 @@ fn run(args: &[String]) -> Result<String, String> {
     );
     let (capture, media) =
         file::load(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let timeline = || read(&capture.trace).map(kept_until_exit);
-    match command.as_str() {
-        "summary" => Ok(summary(&path, timeline()?, &media, as_json)),
+    let mut decoded = None;
+    let out = match command.as_str() {
+        "summary" => {
+            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
+            render(json, &Summary::of(&path, timeline, &media))
+        }
         "origin" => {
             let origin = std::fs::canonicalize(file::origin_path(&path))
                 .unwrap_or_else(|_| file::origin_path(&path))
                 .display()
                 .to_string();
-            let text = origin::describe(&capture, media.clone(), &origin);
-            Ok(match as_json {
-                true => json(&serde_json::json!({ "origin": origin, "lines": lines(&text) })),
-                false => text,
-            })
+            let lines = origin::describe(&capture, media.clone(), &origin);
+            render(
+                json,
+                &Prose {
+                    lines,
+                    origin: Some(origin),
+                },
+            )
         }
         "media" => {
-            let text = rebuild::media(&capture.trace)?;
-            Ok(match as_json {
-                true => json(&serde_json::json!({ "lines": lines(&text) })),
-                false => text,
-            })
+            let lines = rebuild::media(&capture.trace)?;
+            render(
+                json,
+                &Prose {
+                    lines,
+                    origin: None,
+                },
+            )
         }
         "rebuild" => {
             let dir = options
@@ -242,52 +242,69 @@ fn run(args: &[String]) -> Result<String, String> {
                 .ok_or("rebuild needs --pulled DIR")?;
             let pulled =
                 rebuild::Pulled::read(Path::new(dir)).map_err(|e| format!("{dir}: {e}"))?;
-            let (origin, gaps) = rebuild::rebuild(&capture.trace, &pulled)?;
-            let report = rebuild::report(&gaps);
-            file::save_rebuilt(&origin, &report, &path)
+            let (origin, not_rebuilt) = rebuild::rebuild(&capture.trace, &pulled)?;
+            file::save_rebuilt(&origin, &rebuild::report(&not_rebuilt), &path)
                 .map_err(|e| format!("{}: {e}", file::origin_path(&path).display()))?;
-            let written = std::fs::canonicalize(file::origin_path(&path))
+            let origin = std::fs::canonicalize(file::origin_path(&path))
                 .map_err(|e| format!("{}: {e}", path.display()))?;
-            Ok(match as_json {
-                true => json(&serde_json::json!({
-                    "origin": written,
-                    "not_rebuilt": gaps.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                })),
-                false => format!("origin {}\n{report}", written.display()),
-            })
+            render(
+                json,
+                &Rebuilt {
+                    not_rebuilt,
+                    origin,
+                },
+            )
         }
-        "timeline" => timeline_text(timeline()?, &options),
-        "find" => find_text(timeline()?, &options),
+        "timeline" => {
+            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
+            let window = options.window(timeline)?;
+            let kinds = Kind::parse_list(options.value("kinds").unwrap_or("default"))?;
+            let listing = Listing::of(
+                timeline,
+                window,
+                &kinds,
+                options.has("all"),
+                options.has("hex"),
+            );
+            render(json, &listing)
+        }
+        "find" => {
+            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
+            let query = options
+                .positional
+                .get(1)
+                .ok_or("find needs a query: field=value, a kind or text")?;
+            let window = options.window(timeline)?;
+            let limit: usize = options
+                .value("limit")
+                .map_or(Ok(50), str::parse)
+                .map_err(|_| "--limit takes a number")?;
+            let found = find(
+                timeline,
+                &Query::parse(query),
+                window,
+                options.value("where"),
+            );
+            render(json, &Answers::of(found, limit, options.has("hex")))
+        }
         "otlp" => {
-            let timeline = timeline()?;
+            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
             let requests = otlp::export(timeline, &tell(timeline));
             match options.value("out") {
                 Some(out) => {
                     std::fs::write(out, requests).map_err(|e| format!("{out}: {e}"))?;
                     let out = std::fs::canonicalize(out).map_err(|e| format!("{out}: {e}"))?;
-                    Ok(match as_json {
-                        true => json(&serde_json::json!({ "out": out })),
-                        false => format!("{}\n", out.display()),
-                    })
+                    render(json, &Written { out })
                 }
-                None if as_json => {
-                    let mut requests = requests.lines().map(serde_json::from_str);
-                    let mut next = || -> Result<serde_json::Value, String> {
-                        requests
-                            .next()
-                            .ok_or("the export holds two requests")?
-                            .map_err(|e| format!("the export is no JSON: {e}"))
-                    };
-                    Ok(json(
-                        &serde_json::json!({ "traces": next()?, "metrics": next()? }),
-                    ))
-                }
-                None => Ok(requests),
+                None => render(json, &Otlp(requests)),
             }
         }
-        "replay" => replay(&path, &capture, timeline()?, &media, &options),
+        "replay" => {
+            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
+            render(json, &replay(&path, &capture, timeline, &media, &options)?)
+        }
         "test-stub" => {
-            let timeline = timeline()?;
+            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
             let at = options
                 .time(timeline, "at")?
                 .ok_or("test-stub needs --at")?;
@@ -305,311 +322,20 @@ fn run(args: &[String]) -> Result<String, String> {
                 .transpose()?
                 .unwrap_or_default();
             let test = stub::stub(timeline, fixture, &name, at, &expect)?;
-            let steps = stub::to_fixture(&path, &capture, &media);
-            Ok(match (as_json, steps) {
-                (true, steps) => json(&serde_json::json!({ "fixture_steps": steps, "test": test })),
-                (false, Some(steps)) => format!("{steps}\n{test}"),
-                (false, None) => test,
-            })
+            let fixture_steps = stub::to_fixture(&path, &capture, &media);
+            render(
+                json,
+                &Stub {
+                    fixture_steps,
+                    test,
+                },
+            )
         }
         other => Err(format!("unknown command {other:?}; see --help")),
-    }
-}
-
-#[derive(Serialize)]
-struct Header<'a> {
-    trace: String,
-    build: Option<&'a str>,
-    boot: u32,
-    format: u16,
-    end_ms: u64,
-    passes: u64,
-    end: &'static str,
-    media: &'static str,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    media_report: Vec<&'a str>,
-}
-
-impl<'a> Header<'a> {
-    fn of(path: &Path, timeline: &'a Timeline, media: &'a Media) -> Self {
-        Self {
-            trace: path.display().to_string(),
-            build: (!timeline.build.is_empty()).then_some(timeline.build.as_str()),
-            boot: timeline.boot,
-            format: trace::VERSION.into(),
-            end_ms: timeline.end_ms,
-            passes: timeline.passes,
-            end: match timeline.end {
-                Some(End::Torn) => "torn",
-                Some(End::Corrupt) => "corrupt",
-                _ => "complete",
-            },
-            media: match media {
-                Media::Saved => "saved",
-                Media::Rebuilt(_) => "rebuilt",
-                Media::Blank => "blank",
-            },
-            media_report: match media {
-                Media::Rebuilt(report) => report.lines().collect(),
-                _ => Vec::new(),
-            },
-        }
-    }
-}
-
-fn kept_until_exit<T>(value: T) -> &'static T {
-    Box::leak(Box::new(value))
-}
-
-fn header(path: &Path, timeline: &Timeline, media: &Media) -> String {
-    let mut out = String::new();
-    let _ = writeln!(out, "trace {}", path.display());
-    let _ = writeln!(
-        out,
-        "build {}, boot {}, format {}, {} over {} passes, {}; media {}",
-        if timeline.build.is_empty() {
-            "unknown"
-        } else {
-            &timeline.build
-        },
-        timeline.boot,
-        trace::VERSION,
-        duration(timeline.end_ms),
-        timeline.passes,
-        match timeline.end {
-            End::Complete => "complete",
-            End::Torn => "torn: the last block was cut short",
-            End::Corrupt => "corrupt: a damaged block and everything after it were dropped",
-        },
-        match media {
-            Media::Saved => "saved beside it (.origin)".into(),
-            Media::Rebuilt(report) => format!(
-                "rebuilt from its header and the pulled media (.origin); {}",
-                report.trim_end().replace('\n', "; ")
-            ),
-            Media::Blank => "not saved: replays start on blank media".into(),
-        }
-    );
-    out
-}
-
-#[derive(Serialize)]
-struct Summary<'a> {
-    header: Header<'a>,
-    silences: &'a [Silence],
-    spans: &'a [Span],
-    events: &'a [Point],
-    battery: Vec<&'a str>,
-    entries: BTreeMap<Kind, Count>,
-}
-
-#[derive(Serialize)]
-struct Count {
-    new: usize,
-    repeats: usize,
-}
-
-fn summary(path: &Path, timeline: &Timeline, media: &Media, as_json: bool) -> String {
-    let story = tell(timeline);
-    let battery = battery::summary(timeline);
-    let mut counts = [(0usize, 0usize); Kind::ALL.len()];
-    for entry in &timeline.entries {
-        let count = &mut counts[entry.kind as usize];
-        if entry.repeat {
-            count.1 += 1;
-        } else {
-            count.0 += 1;
-        }
-    }
-    let counts: Vec<(Kind, usize, usize)> = Kind::ALL
-        .iter()
-        .zip(counts)
-        .filter(|(_, (new, repeats))| new + repeats > 0)
-        .map(|(kind, (new, repeats))| (*kind, new, repeats))
-        .collect();
-    if as_json {
-        return json(&Summary {
-            header: Header::of(path, timeline, media),
-            silences: &timeline.silences,
-            spans: &story.spans,
-            events: &story.events,
-            battery: lines(&battery),
-            entries: counts
-                .iter()
-                .map(|&(kind, new, repeats)| (kind, Count { new, repeats }))
-                .collect(),
-        });
-    }
-    let mut out = header(path, timeline, media);
-    let silences: Vec<String> = timeline
-        .silences
-        .iter()
-        .map(|silence| {
-            let until = silence.next_ms.unwrap_or(timeline.end_ms);
-            format!(
-                "{} silent {}-{} ({}{})",
-                silence.sensor,
-                session_clock(silence.last_ms),
-                session_clock(until),
-                duration(until - silence.last_ms),
-                if silence.next_ms.is_none() {
-                    ", to the end"
-                } else {
-                    ""
-                }
-            )
-        })
-        .collect();
-    let _ = writeln!(
-        out,
-        "sensor silences (no ANT+ packet for over {}): {}",
-        duration(SILENCE_MS),
-        if silences.is_empty() {
-            "none".into()
-        } else {
-            silences.join("; ")
-        }
-    );
-    let mut lines: Vec<(u64, String)> = story
-        .spans
-        .iter()
-        .map(|span| (span.start.session_ms, span.to_string()))
-        .chain(
-            story
-                .events
-                .iter()
-                .map(|event| (event.at.session_ms, event.to_string())),
-        )
-        .collect();
-    lines.sort_by_key(|(at, _)| *at);
-    for (_, line) in lines {
-        let _ = writeln!(out, "{line}");
-    }
-    let counts: Vec<String> = counts
-        .iter()
-        .map(|(kind, new, repeats)| match repeats {
-            0 => format!("{} {new}", kind.name()),
-            _ => format!("{} {new}+{repeats}", kind.name()),
-        })
-        .collect();
-    out.push_str(&battery);
-    let _ = writeln!(out, "entries: {}", counts.join(", "));
-    let _ = writeln!(
-        out,
-        "next: timeline --from T --to T, find <field=value|kind|text>, replay --from T"
-    );
-    out
-}
-
-#[derive(Serialize)]
-struct Window<'a> {
-    from_ms: u64,
-    to_ms: Option<u64>,
-    entries: Vec<&'a Entry>,
-    hidden: BTreeMap<&'a str, usize>,
-}
-
-fn timeline_text(timeline: &Timeline, options: &Options) -> Result<String, String> {
-    let (from, to) = options.window(timeline)?;
-    let kinds = Kind::parse_list(options.value("kinds").unwrap_or("default"))?;
-    let all = options.has("all");
-    let mut shown = [false; Kind::ALL.len()];
-    for kind in kinds {
-        shown[kind as usize] = true;
-    }
-    let mut entries = Vec::new();
-    let mut hidden = [0usize; Kind::ALL.len()];
-    let mut repeats = 0;
-    for entry in in_window(timeline, from, to) {
-        if !shown[entry.kind as usize] {
-            hidden[entry.kind as usize] += 1;
-        } else if entry.repeat && !all {
-            repeats += 1;
-        } else {
-            entries.push(entry);
-        }
-    }
-    let mut hidden: Vec<(&str, usize)> = Kind::ALL
-        .iter()
-        .map(|kind| (kind.name(), hidden[*kind as usize]))
-        .chain([("repeats", repeats)])
-        .filter(|(_, n)| *n > 0)
-        .collect();
-    hidden.sort();
-    if options.has("json") {
-        return Ok(json(&Window {
-            from_ms: from,
-            to_ms: (to != u64::MAX).then_some(to),
-            entries,
-            hidden: hidden.into_iter().collect(),
-        }));
-    }
-    let mut out = String::new();
-    let hex = options.has("hex");
-    for entry in entries {
-        if hex {
-            let _ = writeln!(out, "{entry:#}");
-        } else {
-            let _ = writeln!(out, "{entry}");
-        }
-    }
-    if !hidden.is_empty() {
-        let hidden: Vec<String> = hidden.iter().map(|(k, n)| format!("{k} {n}")).collect();
-        let _ = writeln!(out, "hidden: {} (--kinds all, --all)", hidden.join(", "));
-    }
-    Ok(out)
-}
-
-fn in_window(timeline: &Timeline, from: u64, to: u64) -> impl Iterator<Item = &Entry> {
-    timeline
-        .entries
-        .iter()
-        .filter(move |e| (from..=to).contains(&e.at.session_ms))
-}
-
-#[derive(Serialize)]
-struct Answers<'a> {
-    found: &'a [Found<'a>],
-    total: usize,
-}
-
-fn find_text(timeline: &Timeline, options: &Options) -> Result<String, String> {
-    let query = options
-        .positional
-        .get(1)
-        .ok_or("find needs a query: field=value, a kind or text")?;
-    let window = options.window(timeline)?;
-    let limit: usize = options
-        .value("limit")
-        .map_or(Ok(50), str::parse)
-        .map_err(|_| "--limit takes a number")?;
-    let found = find(
-        timeline,
-        &Query::parse(query),
-        window,
-        options.value("where"),
-    );
-    if options.has("json") {
-        return Ok(json(&Answers {
-            found: &found[..found.len().min(limit)],
-            total: found.len(),
-        }));
-    }
-    let mut out = String::new();
-    for line in found.iter().take(limit) {
-        if options.has("hex") {
-            let _ = writeln!(out, "{line:#}");
-        } else {
-            let _ = writeln!(out, "{line}");
-        }
-    }
-    match found.len() {
-        0 => out.push_str("found nothing\n"),
-        n if n > limit => {
-            let _ = writeln!(out, "... {} more (--limit)", n - limit);
-        }
-        _ => {}
-    }
+    }?;
+    // A timeline is millions of small allocations, and the process ends once
+    // this is printed: freeing them would only cost time.
+    std::mem::forget(decoded);
     Ok(out)
 }
 
@@ -700,32 +426,13 @@ fn uncommitted_here() -> Vec<String> {
         .unwrap_or_default()
 }
 
-#[derive(Serialize)]
-struct Replayed<'a> {
-    header: Header<'a>,
-    mode: &'static str,
-    why: String,
-    from_ms: u64,
-    to_ms: u64,
-    reached: Moment,
-    trace_ended: bool,
-    divergence: Option<divergence::Divergences>,
-    artifacts: Artifacts,
-}
-
-#[derive(Serialize)]
-struct Artifacts {
-    dir: PathBuf,
-    files: Vec<PathBuf>,
-}
-
-fn replay(
+fn replay<'a>(
     path: &Path,
     capture: &shell_simulator::replay::Capture,
-    timeline: &Timeline,
-    media: &Media,
+    timeline: &'a Timeline,
+    media: &'a Media,
     options: &Options,
-) -> Result<String, String> {
+) -> Result<Replayed<'a>, String> {
     let from = options.time(timeline, "from")?.unwrap_or(0);
     let to = options.time(timeline, "to")?.unwrap_or(from + 60_000);
     let every = match options.value("every") {
@@ -791,16 +498,16 @@ fn replay(
         .device
         .report()
         .map(|report| divergence::summarize(timeline, (from, to), &before, &report));
-    let report = divergences
-        .as_ref()
-        .map(ToString::to_string)
-        .unwrap_or_default();
     let own = sim.trace();
     drop(sim);
     let write = |name: &str, bytes: &[u8]| {
         std::fs::write(dir.join(name), bytes).map_err(|e| format!("{}: {e}", dir.display()))
     };
     write("screens.txt", screens.as_bytes())?;
+    let report = divergences
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
     write("divergence.txt", report.as_bytes())?;
     write("replayed.trace", &own)?;
     let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -809,40 +516,17 @@ fn replay(
         .filter_map(|entry| Some(entry.ok()?.path()))
         .collect();
     files.sort();
-    if options.has("json") {
-        return Ok(json(&Replayed {
-            header: Header::of(path, timeline, media),
-            mode: mode_name(mode),
-            why,
-            from_ms: from,
-            to_ms: to,
-            reached,
-            trace_ended: !ran,
-            divergence: divergences,
-            artifacts: Artifacts { dir, files },
-        }));
-    }
-    let mut out = header(path, timeline, media);
-    let _ = writeln!(out, "mode {}: {why}", mode_name(mode));
-    let _ = writeln!(
-        out,
-        "replayed {} from {} to {}; reached {}{}",
-        mode_name(mode),
-        session_clock(from),
-        session_clock(to),
+    Ok(Replayed {
+        header: Header::of(path, timeline, media),
+        mode: mode_name(mode),
+        why,
+        from_ms: from,
+        to_ms: to,
         reached,
-        if ran { "" } else { " (the trace ended)" }
-    );
-    let _ = write!(out, "divergence: {report}");
-    let _ = writeln!(out, "artifacts in {}:", dir.display());
-    for file in files {
-        let _ = writeln!(out, "  {}", file.display());
-    }
-    let _ = writeln!(
-        out,
-        "screens.txt has the screen text at each screenshot; replayed.trace is this replay's own trace (diff it with timeline)"
-    );
-    Ok(out)
+        trace_ended: !ran,
+        divergence: divergences,
+        artifacts: Artifacts { dir, files },
+    })
 }
 
 #[cfg(test)]

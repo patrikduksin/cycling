@@ -842,3 +842,28 @@ fn a_spur_off_a_spur_says_what_the_course_without_them_says() {
     ];
     assert_eq!(told(&path(&corners, 5.0)), [[RIGHT]; 2]);
 }
+
+mod fuzz;
+
+#[test]
+fn spurs_drawn_at_random_say_what_the_course_without_them_says() {
+    let (failed, checked) = fuzz::unlike(0..2_000);
+    assert!(
+        failed.is_empty(),
+        "{} of {checked}:\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
+}
+
+#[test]
+#[ignore = "100,000 courses: cargo test -p vana --lib --release spurs_drawn -- --ignored"]
+fn spurs_drawn_at_random_say_what_the_course_without_them_says_at_length() {
+    let (failed, checked) = fuzz::unlike(0..100_000);
+    assert!(
+        failed.is_empty(),
+        "{} of {checked}:\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
+}

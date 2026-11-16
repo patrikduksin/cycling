@@ -32,6 +32,10 @@ edited() {
 }
 json=false
 for arg; do [ "$arg" != --json ] || json=true; done
+if $json; then
+    set -E
+    trap 'echo "{\"error\": \"the trace launcher failed at line $LINENO; see stderr\"}"; exit 2' ERR
+fi
 cache=$(dirname "$common")/.local/tools/trace
 mkdir -p "$cache"
 

@@ -330,6 +330,17 @@ class TraceLauncherTests(LauncherCase):
             self.assertEqual((plain.returncode, plain.stdout), (101, ''), edit)
         self.assertEqual(list(self.cache().iterdir()), [self.cache() / '.lock'], 'no copy is left')
 
+    def test_a_cache_it_cannot_create_under_json_prints_one_error_document(self):
+        self.cache().parent.mkdir(parents=True)
+        self.cache().write_text('not a directory')
+        launch = ['bash', 'tools/simulator/trace.sh', 'trace', 'summary', 'x.trace']
+        failed = self.launch([*launch, '--json'])
+        self.assertEqual(failed.returncode, 2, failed.stderr)
+        self.assertIn('launcher failed', json.loads(failed.stdout)['error'])
+        plain = self.launch(launch)
+        self.assertNotEqual(plain.returncode, 0)
+        self.assertEqual(plain.stdout, '')
+
 
 class RoutingTests(LauncherCase):
     """The argv `cycling trace` and `cycling replay` pass on, through the nix wrapper and the task runner."""

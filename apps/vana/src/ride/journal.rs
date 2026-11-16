@@ -6,7 +6,7 @@
 //! decode either. Construct a journal for one service call from its retained
 //! state and the borrowed storage handle.
 
-use crate::ride::log::{Catalog, Entry, SECTORS, SLOTS, Scanner, Sector, Slot};
+use crate::ride::log::{Catalog, Entry, SECTORS, SLOTS, SLOTS_PER_SECTOR, Scanner, Sector, Slot};
 use crate::ride::reclaim::{Clear, Media, Progress as ClearProgress};
 use crate::ride::storage::RideStorage;
 
@@ -83,6 +83,21 @@ impl Default for InternalState {
             clear: Clear::default(),
         }
     }
+}
+
+/// FORMAT's wipe of internal sector `index`: erased, unless it already is.
+/// It reads a slot at a time, so no whole sector sits on the stack.
+pub fn wipe_sector<S: RideStorage>(store: &mut S, index: usize) -> Result<(), S::Error> {
+    let mut slot = Slot::default();
+    let mut used = false;
+    for at in index * SLOTS_PER_SECTOR..(index + 1) * SLOTS_PER_SECTOR {
+        store.ride_read_slot(at, &mut slot)?;
+        used |= !crate::ride::log::erased(&slot.0);
+    }
+    if used {
+        store.ride_erase_sector(index)?;
+    }
+    Ok(())
 }
 
 /// The internal journal: fixed slots in the owned boot-flash reservation.

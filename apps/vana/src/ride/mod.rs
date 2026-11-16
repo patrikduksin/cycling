@@ -34,14 +34,17 @@ pub mod week;
 pub mod wheel_size;
 pub mod zones;
 
+/// What a file VANA writes into FILES holds, as its owner reads it. Its owner
+/// never writes over a `Foreign` file; only FORMAT replaces one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Stamp {
-    pub magic: &'static [u8; 4],
-    pub version: u8,
+pub enum Contents {
+    Missing,
+    Current,
+    Damaged,
+    Foreign,
 }
 
-impl Stamp {
-    pub fn another_version(&self, head: &[u8; 5]) -> bool {
-        head[..4] == self.magic[..] && head[4] != self.version
-    }
+/// A file that names its owner's `magic` and carries another version byte.
+pub(crate) fn another_version(head: &[u8], magic: &[u8; 4], version: u8) -> bool {
+    head.len() > 4 && head[..4] == magic[..] && head[4] != version
 }

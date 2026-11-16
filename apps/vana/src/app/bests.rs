@@ -5,7 +5,8 @@
 //! The bests live in a small file beside the workout outcomes
 //! (`ride::bests`), not in the preference record. A ride
 //! is never held up for the file. Where it cannot be used the BESTS view says
-//! why: no store to keep it in, a damaged file (CLEAR BESTS starts over), or a
+//! why: no store to keep it in, a damaged file (CLEAR BESTS starts over), a
+//! file of another version (only FORMAT replaces it), or a
 //! store that would not take the write (the merged bests stay in memory and
 //! the next write keeps them). A read that failed only this time is tried
 //! again, with the ride's outcome waiting.
@@ -33,6 +34,8 @@ enum Store {
     Unavailable,
     /// A file is there that does not decode; it is left alone.
     Damaged,
+    /// The file is of another version; only FORMAT replaces it.
+    Foreign,
     /// The store would not take a write: the bests are in memory only.
     NotSaved,
 }
@@ -67,6 +70,7 @@ impl Kept {
         let _ = match (self.store, self.bests.count()) {
             (Store::Unavailable, _) => text.push_str("NOT KEPT"),
             (Store::Damaged, _) => text.push_str("DAMAGED"),
+            (Store::Foreign, _) => text.push_str("NOT FORMATTED"),
             (Store::NotSaved, _) => text.push_str("NOT SAVED"),
             (Store::Unread, _) => Ok(()),
             (Store::Kept, 0) => text.push_str("NONE YET"),
@@ -80,6 +84,7 @@ impl Kept {
             _ if self.confirming => Mode::Confirm,
             Store::Unavailable => Mode::Unavailable,
             Store::Damaged => Mode::Damaged,
+            Store::Foreign => Mode::Foreign,
             Store::NotSaved => Mode::NotSaved,
             _ => Mode::List,
         }
@@ -103,6 +108,10 @@ impl Kept {
             }
             Err(bests::Error::Damaged) => {
                 self.store = Store::Damaged;
+                return Found::default();
+            }
+            Err(bests::Error::Foreign) => {
+                self.store = Store::Foreign;
                 return Found::default();
             }
             Err(_) => {
@@ -133,6 +142,7 @@ impl Kept {
                 self.unsaved = false;
             }
             Err(bests::Error::Unavailable) => self.store = Store::Unavailable,
+            Err(bests::Error::Foreign) => self.store = Store::Foreign,
             Err(error) => {
                 log::warn!(target: "sdk.bests", "save_failed error={error:?}");
                 self.store = Store::NotSaved;
@@ -368,6 +378,7 @@ impl Runtime {
                 }
                 Err(bests::Error::Media) => kept.retry_at = now.saturating_add(RETRY_MS),
                 Err(bests::Error::Damaged) => kept.store = Store::Damaged,
+                Err(bests::Error::Foreign) => kept.store = Store::Foreign,
                 Err(_) => kept.store = Store::Unavailable,
             }
             self.display.redraw();

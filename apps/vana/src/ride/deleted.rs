@@ -37,6 +37,7 @@
 //! A table of another version or stride, or with a damaged header, is
 //! foreign: it hides nothing and is never written over. A slot of another
 //! record version reads as damaged.
+use super::{Contents, another_version};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::{Crc32, crc32};
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
@@ -45,10 +46,6 @@ use firmware_services::{files, volume};
 pub const TABLE: &str = "rides/deleted.tbl";
 const MAGIC: &[u8; 4] = b"VDEL";
 const TABLE_VERSION: u8 = 2;
-pub const STAMP: super::Stamp = super::Stamp {
-    magic: MAGIC,
-    version: TABLE_VERSION,
-};
 const VERSION: u8 = 2;
 pub const SLOT: usize = 32;
 /// Rides the table can hide, in 8 KB.
@@ -394,6 +391,26 @@ pub fn read(media: &mut impl ReadWrite, shelf: &mut Shelf) -> Result<bool, Error
         at += read;
     }
     Ok(true)
+}
+
+/// What the table holds: foreign when its header is of another version.
+pub fn contents(media: &mut impl ReadWrite) -> Result<Contents, Error> {
+    let mut sector = [0; SECTOR_SIZE];
+    let mut bytes = [0; SECTOR_SIZE];
+    let mut store = volume::open(media, &volume::FILES, &mut sector)?;
+    let dir = files::mount(&mut store, &mut sector)?;
+    let Some(entry) = dir.find(&mut store, &table_name(), &mut sector)? else {
+        return Ok(Contents::Missing);
+    };
+    let read = dir.read(&mut store, &entry, 0, &mut bytes, &mut sector)?;
+    let head = &bytes[..read];
+    Ok(if another_version(head, MAGIC, TABLE_VERSION) {
+        Contents::Foreign
+    } else if writable_table(head, entry.length as usize) {
+        Contents::Current
+    } else {
+        Contents::Damaged
+    })
 }
 
 /// The table being written, a sector at a time.

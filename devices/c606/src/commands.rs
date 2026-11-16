@@ -156,7 +156,7 @@ pub fn execute(
         }
         Command::Volume(command) => {
             use firmware_console::commands::volumes;
-            if sdk.formatting() {
+            if sdk.owns_storage() {
                 terminal.reply(request.id, "BUSY", "formatting", now);
                 return;
             }

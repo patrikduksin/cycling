@@ -9,6 +9,7 @@ use crate::world::{Vehicle, World};
 use device_api::input::{Button, Input, Point};
 use device_api::storage::Region;
 use std::fmt::Write as _;
+use vana::app::Store;
 
 /// Cards on VANA's Home, in MOVE order: RIDE, SENSORS, TRAIN, SETTINGS.
 pub const HOME_CARDS: usize = 4;
@@ -1090,77 +1091,87 @@ impl Sim {
     /// them: the current format with another version byte, resealed. Cut the
     /// power afterwards, so the device reads them.
     pub fn make_foreign(&mut self, stores: &[Store]) {
-        for store in stores.iter().filter(|store| **store != Store::Table) {
-            self.make_store_foreign(*store);
-        }
-        if stores.contains(&Store::Table) {
-            self.make_table_foreign();
+        // A record is written through a current FILES, and every volume is
+        // found through a current table.
+        let mut stores = stores.to_vec();
+        stores.sort_by_key(|store| match store {
+            Store::Records => 0,
+            Store::Table => 2,
+            _ => 1,
+        });
+        for store in stores {
+            self.make_store_foreign(store);
         }
     }
 
-    fn make_table_foreign(&mut self) {
-        self.note(NoteKind::Device, "table of another version");
-        self.init_volumes();
-        let mut bulk = self.device.host_bulk();
-        for copy in 0..2 {
-            reseal_foreign(&mut bulk, copy, firmware_services::volume::VERSION_AT);
-        }
+    /// Leave the terrain pack as another version would have written it.
+    pub fn make_terrain_foreign(&mut self) {
+        self.note(NoteKind::Device, "terrain of another version");
+        self.install_terrain(b"CHILE-TERRAIN-V1", &[7; 600]);
+        self.reseal_volume_foreign(firmware_services::volume::TERRAIN, [0, 1], 16);
     }
 
     fn make_store_foreign(&mut self, store: Store) {
         use device_api::storage::{OwnedFlash, Region};
-        use firmware_services::volume::{self, Volume};
+        use firmware_services::volume;
         self.note(
             NoteKind::Device,
             format!("{} of another version", store.name()),
         );
-        let volume = match store {
+        match store {
             Store::Settings => {
                 let mut journal = firmware_services::storage::Journal::new(
                     self.device.media.clone(),
                     Region::Configuration,
                 );
                 journal.save(b"another version").expect("the journal saves");
-                return;
             }
             Store::Internal => {
                 self.device
                     .media
                     .program(Region::Data, 0, b"RIDE\x01\0\0\0")
                     .expect("the journal programs");
-                return;
             }
             Store::Records => {
-                self.put_file(vana::ride::bests::FILE, b"VBST\x01 another version");
-                return;
+                let mut bests = vana::ride::bests::encode_file(&Default::default());
+                bests[4] = 1;
+                let body = bests.len() - 4;
+                let crc = firmware_services::checksum::crc32(&bests[..body]);
+                bests[body..].copy_from_slice(&crc.to_le_bytes());
+                self.put_file("bests.dat", &bests);
             }
-            Store::Table => return self.make_table_foreign(),
+            Store::Table => {
+                self.init_volumes();
+                let mut bulk = self.device.host_bulk();
+                for copy in 0..2 {
+                    reseal_foreign(&mut bulk, copy, volume::VERSION_AT);
+                }
+            }
             Store::Rides => {
                 self.format_rides();
-                volume::RIDES
+                self.reseal_volume_foreign(volume::RIDES, [0, 1], 5);
             }
             Store::Files => {
                 self.format_files();
-                volume::FILES
+                self.reseal_volume_foreign(volume::FILES, [0, 32], 16);
             }
             Store::Traces => {
                 self.format_store();
-                volume::STORE
+                self.reseal_volume_foreign(volume::STORE, [0, 32], 16);
             }
-            Store::Terrain => {
-                self.install_terrain(b"CHILE-TERRAIN-V1", &[7; 600]);
-                volume::TERRAIN
-            }
-        };
+        }
+    }
+
+    fn reseal_volume_foreign(
+        &mut self,
+        name: firmware_services::volume::Name,
+        copies: [u64; 2],
+        byte: usize,
+    ) {
         let table = self.init_volumes();
-        let extent = table.find(&volume).expect("the volume");
+        let extent = table.find(&name).expect("the volume");
         let mut bulk = self.device.host_bulk();
-        let mut media = Volume::new(&mut bulk, extent);
-        let (copies, byte) = match store {
-            Store::Rides => ([0, 1], 5),
-            Store::Terrain => ([0, 1], 16),
-            _ => ([0, 32], 16),
-        };
+        let mut media = firmware_services::volume::Volume::new(&mut bulk, extent);
         for copy in copies {
             reseal_foreign(&mut media, copy, byte);
         }
@@ -1173,18 +1184,7 @@ impl Sim {
         let mut sector = [0u8; 512];
         let mut bulk = self.device.host_bulk();
         let mut rides = Volume::new(&mut bulk, table.find(&volume::RIDES).expect("RIDES"));
-        let initial = vana::ride::bulk::encode_catalog(&vana::ride::log::Catalog {
-            next_ride_id: 1,
-            ..Default::default()
-        });
-        firmware_services::sector_log::format(
-            &mut rides,
-            vana::ride::bulk::TAG,
-            1,
-            &initial,
-            &mut sector,
-        )
-        .expect("the log formats");
+        vana::ride::bulk::start(&mut rides, 1, &mut sector).expect("the log formats");
     }
 
     /// Rides committed to media, decoded by VANA's journal format.
@@ -1232,33 +1232,6 @@ impl Drop for Sim {
 impl Default for Sim {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Store {
-    Settings,
-    Internal,
-    Table,
-    Rides,
-    Files,
-    Records,
-    Traces,
-    Terrain,
-}
-
-impl Store {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Settings => "settings",
-            Self::Internal => "internal",
-            Self::Table => "table",
-            Self::Rides => "rides",
-            Self::Files => "files",
-            Self::Records => "records",
-            Self::Traces => "traces",
-            Self::Terrain => "terrain",
-        }
     }
 }
 

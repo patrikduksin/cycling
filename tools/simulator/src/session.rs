@@ -1091,7 +1091,7 @@ impl Session {
             self.sdk.recording(),
             self.sdk.shutdown_due(),
         );
-        if self.sdk.formatting() {
+        if self.sdk.owns_storage() {
             self.trace.file.formatted();
             self.trace.recorder.borrow_mut().sink_mut().spool = None;
         }
@@ -1719,7 +1719,7 @@ impl Session {
             Command::Volume(firmware_console::commands::volumes::Command::Transfer) => {
                 return "UNSUPPORTED";
             }
-            Command::Volume(_) if self.sdk.formatting() => return "BUSY",
+            Command::Volume(_) if self.sdk.owns_storage() => return "BUSY",
             Command::Volume(command) => {
                 return firmware_console::commands::volumes::execute(
                     command,

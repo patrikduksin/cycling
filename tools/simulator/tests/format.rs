@@ -1,21 +1,12 @@
 use device_api::input::Button;
 use device_api::storage::Region;
 use shell_simulator::bulk::Presence;
-use shell_simulator::sim::{Sim, Store, seconds};
-use vana::app::HOLD_GAP_MS;
+use shell_simulator::sim::{Sim, seconds};
+use vana::app::{HOLD_GAP_MS, Store};
 use vana::screens::workout::Page;
 
 const ACT: Button = Button::BottomRight;
 const BACK: Button = Button::TopLeft;
-const STORES: [Store; 7] = [
-    Store::Settings,
-    Store::Internal,
-    Store::Table,
-    Store::Rides,
-    Store::Records,
-    Store::Files,
-    Store::Traces,
-];
 
 fn field<'a>(status: &'a str, name: &str) -> &'a str {
     status
@@ -68,7 +59,7 @@ fn health(sim: &mut Sim) -> String {
 
 #[test]
 fn each_store_of_another_version_alone_raises_the_offer() {
-    for store in STORES {
+    for store in Store::ALL {
         let mut sim = device_with_foreign(&format!("format-offer-{}", store.name()), &[store]);
         sim.discard_recording();
         wait_for_offer(&mut sim);
@@ -80,7 +71,7 @@ fn each_store_of_another_version_alone_raises_the_offer() {
 
 #[test]
 fn act_formats_everything_and_the_device_then_records_and_keeps_a_ride() {
-    let mut sim = device_with_foreign("format-offer", &STORES);
+    let mut sim = device_with_foreign("format-offer", &Store::ALL);
     wait_for_offer(&mut sim);
     sim.expect_text("MADE BY ANOTHER VERSION");
     sim.expect_text("RIDES AND SETTINGS GO");
@@ -94,7 +85,7 @@ fn act_formats_everything_and_the_device_then_records_and_keeps_a_ride() {
     sim.advance(seconds(2));
     let health = health(&mut sim);
     assert_eq!(field(&health, "state"), "idle", "{health}");
-    for store in STORES {
+    for store in Store::ALL {
         assert_eq!(field(&health, store.name()), "current", "{health}");
     }
 
@@ -195,8 +186,15 @@ fn format_confirm_wipes_a_current_device_and_keeps_its_terrain() {
 
 #[test]
 fn a_table_of_another_version_takes_the_terrain_pack_with_it() {
-    let mut sim = device_with_foreign("format-table", &[Store::Terrain, Store::Table]);
+    let mut sim = Sim::named("format-table");
     sim.discard_recording();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_rides();
+    sim.format_files();
+    sim.format_store();
+    sim.make_terrain_foreign();
+    sim.make_foreign(&[Store::Table]);
+    sim.cut_power();
     wait_for_offer(&mut sim);
     sim.press(ACT);
     wait_for_restart(&mut sim);
@@ -207,8 +205,13 @@ fn a_table_of_another_version_takes_the_terrain_pack_with_it() {
 
 #[test]
 fn a_terrain_pack_of_another_version_alone_raises_no_offer() {
-    let mut sim = device_with_foreign("format-terrain", &[Store::Terrain]);
+    let mut sim = Sim::named("format-terrain");
     sim.discard_recording();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_rides();
+    sim.format_files();
+    sim.format_store();
+    sim.make_terrain_foreign();
     let mut sim = sim.boot();
     sim.advance(seconds(5));
     assert_eq!(field(&health(&mut sim), "state"), "idle");
@@ -220,8 +223,15 @@ fn a_wipe_cut_at_any_write_is_offered_again_and_then_completes() {
         .map(|cut| (false, cut))
         .chain([(true, 0), (true, 1), (true, 2)])
     {
-        let mut sim = device_with_foreign("format-cut", &STORES);
+        let mut sim = Sim::named("format-cut");
         sim.discard_recording();
+        sim.fit_bulk(Presence::Ready);
+        sim.format_rides();
+        sim.format_files();
+        sim.format_store();
+        sim.install_terrain(b"CHILE-TERRAIN-V1", &[7; 600]);
+        sim.make_foreign(&Store::ALL);
+        sim.cut_power();
         wait_for_offer(&mut sim);
         if flash {
             sim.fail_storage(cut, 2);
@@ -236,19 +246,21 @@ fn a_wipe_cut_at_any_write_is_offered_again_and_then_completes() {
         wait_for_restart(&mut sim);
         let health = health(&mut sim);
         assert_eq!(field(&health, "settings"), "blank", "cut {cut} {flash}");
-        for store in &STORES[1..] {
+        for store in Store::ALL.iter().filter(|store| **store != Store::Settings) {
             assert_eq!(
                 field(&health, store.name()),
                 "current",
                 "cut {cut} {flash}: {health}"
             );
         }
+        let (_, terrain) = sim.command("TERRAIN STATUS");
+        assert_eq!(field(&terrain, "state"), "empty", "cut {cut} {flash}");
     }
 }
 
 #[test]
 fn a_wipe_that_fails_says_so_on_the_ready_page() {
-    let mut sim = device_with_foreign("format-failed", &STORES);
+    let mut sim = device_with_foreign("format-failed", &Store::ALL);
     wait_for_offer(&mut sim);
     sim.fail_bulk(3, 100);
     sim.press(ACT);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ride::Contents;
 use crate::testing::Rng;
 use crate::workout::library::tests::{formatted, put};
 use firmware_services::testing::{Media, Tear};
@@ -370,9 +371,11 @@ fn a_table_holding_a_slot_of_another_record_version_is_left_alone() {
         save(&mut region, &record(ride)).unwrap();
     }
     let mut foreign = raw(&mut region, TABLE).unwrap();
+    assert_eq!(contents(&mut region), Ok(Contents::Current));
     foreign[SLOT * 2] = VERSION + 1;
     seal(&mut foreign[SLOT * 2..SLOT * 3]);
     put(&mut region, TABLE, &foreign);
+    assert_eq!(contents(&mut region), Ok(Contents::Foreign));
     assert_eq!(save(&mut region, &record(4)), Err(Error::Table));
     assert_eq!(forget(&mut region, b'b'), Err(Error::Table));
     assert_eq!(raw(&mut region, TABLE), Some(foreign), "left as it was");
@@ -401,8 +404,13 @@ fn a_table_of_another_version_or_length_is_left_alone() {
     }
     put_u16(&mut wider, 6, 64);
     seal(&mut wider[..64]);
-    for foreign in [later, longer, wider] {
+    for (foreign, held) in [
+        (later, Contents::Foreign),
+        (longer, Contents::Damaged),
+        (wider, Contents::Damaged),
+    ] {
         put(&mut region, TABLE, &foreign);
+        assert_eq!(contents(&mut region), Ok(held));
         assert_eq!(read(&mut region, 0, |_| {}), Err(Error::Table));
         assert_eq!(decode_table(&foreign).count(), 0);
         assert_eq!(save(&mut region, &record(4)), Err(Error::Table));

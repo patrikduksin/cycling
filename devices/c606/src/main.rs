@@ -640,7 +640,7 @@ fn vana_pass(
     trace.log.record(&trace.record);
     trace.seen(sdk, system.take_frame(), now);
     stage_ended(Stage::Seen);
-    if sdk.formatting() {
+    if sdk.owns_storage() {
         trace.storage_formatted();
     }
     trace.drain(

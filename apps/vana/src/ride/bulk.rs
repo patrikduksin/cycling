@@ -40,6 +40,41 @@ const HISTORY: usize = OPEN + Summary::ENCODED;
 const ENCODED: usize = HISTORY + HISTORY_CAPACITY * Summary::ENCODED;
 const _: () = assert!(ENCODED <= PAYLOAD);
 
+/// Whether RIDES holds a log of this version: `Ok(false)` when it was never
+/// formatted, `Err(Error::Foreign)` when another version's log is there.
+pub fn formatted(
+    rides: &mut impl ReadWrite,
+    sector: &mut sector_log::Sector,
+) -> Result<bool, Error> {
+    sector_log::formatted(rides, TAG, sector)
+}
+
+/// Start an empty log in RIDES, as `RIDE BULK INIT` does: refused over
+/// another version's log.
+pub fn start(
+    rides: &mut impl ReadWrite,
+    seed: u64,
+    sector: &mut sector_log::Sector,
+) -> Result<Log, Error> {
+    let initial = encode_catalog(&Catalog {
+        next_ride_id: 1,
+        ..Catalog::default()
+    });
+    sector_log::format(rides, TAG, seed, &initial, sector)
+}
+
+/// FORMAT's wipe: an empty log, whatever RIDES held.
+pub fn wipe(
+    rides: &mut impl ReadWrite,
+    seed: u64,
+    sector: &mut sector_log::Sector,
+) -> Result<(), Error> {
+    if formatted(rides, sector) == Err(Error::Foreign) {
+        sector_log::erase(rides, sector)?;
+    }
+    start(rides, seed, sector).map(drop)
+}
+
 /// Encode the recovery state for a checkpoint.
 pub fn encode_catalog(catalog: &Catalog) -> [u8; ENCODED] {
     let mut bytes = [0u8; ENCODED];
@@ -196,10 +231,6 @@ impl<'a, B: ReadWrite> Bulk<'a, B> {
     }
 
     fn format(&mut self, seed: u64) -> Progress {
-        let initial = encode_catalog(&Catalog {
-            next_ride_id: 1,
-            ..Catalog::default()
-        });
         // The recorder's seed is clock based and can repeat across boots.
         let seed = seed ^ self.media.entropy();
         let rides = volume::create(self.media, &mut self.state.sector)
@@ -212,7 +243,7 @@ impl<'a, B: ReadWrite> Bulk<'a, B> {
         self.state.region = Region::Volumes;
         self.state.rides = Some(rides);
         let mut media = Volume::new(self.media, rides);
-        match sector_log::format(&mut media, TAG, seed, &initial, &mut self.state.sector) {
+        match start(&mut media, seed, &mut self.state.sector) {
             Ok(log) => {
                 self.state.log = Some(log);
                 self.state.since_checkpoint = 0;

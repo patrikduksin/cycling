@@ -1,4 +1,5 @@
 use super::*;
+use crate::ride::Contents;
 use crate::workout::library::tests::{formatted, put};
 
 const STORE: u64 = 0x5eed;
@@ -128,7 +129,9 @@ fn a_full_table_refuses_the_next_ride() {
 #[test]
 fn a_foreign_table_is_read_as_nothing_and_never_written_over() {
     let mut card = formatted();
+    assert_eq!(contents(&mut card), Ok(Contents::Missing));
     put(&mut card, TABLE, b"not a table");
+    assert_eq!(contents(&mut card), Ok(Contents::Damaged));
     let mut kept = shelf();
     assert_eq!(read(&mut card, &mut kept), Err(Error::Table));
     assert_eq!(save(&mut card, &mut kept, &record(1)), Err(Error::Table));
@@ -139,6 +142,7 @@ fn a_foreign_table_is_read_as_nothing_and_never_written_over() {
     put_u16(&mut later, 6, 64);
     seal(&mut later[..64]);
     put(&mut card, TABLE, &later);
+    assert_eq!(contents(&mut card), Ok(Contents::Foreign));
     assert_eq!(read(&mut card, &mut kept), Err(Error::Table));
     assert_eq!(save(&mut card, &mut kept, &record(1)), Err(Error::Table));
     assert_eq!(decode_table(&later).count(), 0);

@@ -1,16 +1,16 @@
 use super::Runtime;
 use super::input::HOLD_GAP_MS;
 use super::preferences::Stored;
-use crate::ride::log::{SECTORS, SLOTS_PER_SECTOR, Slot, erased};
-use crate::ride::storage::RideStorage;
+use super::storage::Store;
+use crate::ride::log::SECTORS;
 use crate::screens::workout::Page;
-use device_api::bulk::ReadWrite;
+use device_api::bulk::{Error as MediaError, ReadWrite};
 use device_api::display::Display;
 use device_api::input::{Button, InputSource};
 use device_api::power::Power;
 use device_api::storage::OwnedFlash;
 use firmware_services::volume::{self, FILES, Layout, RIDES, STORE, TERRAIN, Volume};
-use firmware_services::{files, pack, sector_log, store};
+use firmware_services::{files, pack, store};
 use firmware_shell::shell::Shell;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,10 +29,7 @@ pub(super) enum Format {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Stage {
     Mark,
-    Table,
-    Rides,
-    Files,
-    Traces,
+    Wipe(Store),
     JournalSector(usize),
     Settings,
 }
@@ -59,7 +56,7 @@ pub(super) enum Event {
     Read { foreign: bool, hub: bool },
     Drawn(u64),
     Report { button: Button, held: bool, at: u64 },
-    Confirm { ride_open: bool },
+    Confirm,
     Wrote(Next),
     WriteFailed,
 }
@@ -78,11 +75,24 @@ pub(super) enum Next {
     Done,
 }
 
+impl Next {
+    /// The first stage that wipes `store`; done after the last store.
+    fn wiping(store: Option<Store>) -> Self {
+        match store {
+            Some(Store::Internal) => Self::Stage(Stage::JournalSector(0)),
+            Some(Store::Settings) => Self::Stage(Stage::Settings),
+            Some(store) => Self::Stage(Stage::Wipe(store)),
+            None => Self::Done,
+        }
+    }
+}
+
 fn began_after_drawn(drawn: u64, at: u64) -> bool {
     at >= drawn + HOLD_GAP_MS
 }
 
-pub(super) fn step(format: Format, event: Event) -> (Format, Go) {
+/// FORMAT never starts under an open ride, whoever asks.
+pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go) {
     use Format::*;
     match (format, event) {
         (
@@ -105,11 +115,11 @@ pub(super) fn step(format: Format, event: Event) -> (Format, Go) {
                 at,
             },
         ) if began_after_drawn(drawn, at) => match button {
-            Button::BottomRight => (Running(Stage::Mark), Go::Stay),
+            Button::BottomRight if !ride_open => (Running(Stage::Mark), Go::Stay),
             Button::TopLeft => (Declined, Go::FirstPage),
-            Button::BottomLeft | Button::Center => (format, Go::Stay),
+            Button::BottomRight | Button::BottomLeft | Button::Center => (format, Go::Stay),
         },
-        (Idle | Offered { .. } | Declined | Failed, Event::Confirm { ride_open: false }) => {
+        (Idle | Offered { .. } | Declined | Failed, Event::Confirm) if !ride_open => {
             (Running(Stage::Mark), Go::Question)
         }
         (Running(_), Event::Wrote(Next::Stage(next))) => (Running(next), Go::Stay),
@@ -120,8 +130,11 @@ pub(super) fn step(format: Format, event: Event) -> (Format, Go) {
 }
 
 impl Runtime {
-    pub fn formatting(&self) -> bool {
-        matches!(self.format, Format::Running(_))
+    /// From the first FORMAT write until the restart, nothing but FORMAT
+    /// reaches storage: no ride starts, the trace stops, and storage
+    /// commands answer `BUSY`.
+    pub fn owns_storage(&self) -> bool {
+        self.format.owns_storage()
     }
 
     pub fn restart_due(&self) -> bool {
@@ -129,7 +142,7 @@ impl Runtime {
     }
 
     pub(super) fn format_event(&mut self, event: Event, now: u64) {
-        let (format, go) = step(self.format, event);
+        let (format, go) = step(self.format, event, self.ride.open());
         self.format = format;
         let page = match go {
             Go::Stay => return self.display_after(format),
@@ -164,15 +177,14 @@ impl Runtime {
         match argument {
             "" => {
                 let _ = write!(output, "state={}", self.format.name());
-                for (name, health) in self.storage_health().0 {
-                    let _ = write!(output, " {name}={}", health.name());
+                for (store, health) in self.storage_health().iter() {
+                    let _ = write!(output, " {}={}", store.name(), health.name());
                 }
                 "OK"
             }
             "CONFIRM" => {
-                let ride_open = self.ride.open();
-                self.format_event(Event::Confirm { ride_open }, now);
-                if self.formatting() {
+                self.format_event(Event::Confirm, now);
+                if matches!(self.format, Format::Running(_)) {
                     "ACCEPTED"
                 } else {
                     "STATE"
@@ -182,6 +194,10 @@ impl Runtime {
         }
     }
 
+    /// Offer FORMAT once the stores are read, and run one stage of a wipe a
+    /// pass. Call it once a pass, after `tick`: the pass that marks the
+    /// settings writes nothing to the card, so composition, seeing
+    /// [`Self::owns_storage`], ends its trace before the first card write.
     #[inline(never)]
     pub fn service_format<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,
@@ -209,9 +225,6 @@ impl Runtime {
         self.format_event(event, now);
     }
 
-    // Not inlined, so its sector buffer stays out of the console task's
-    // frame, which sits under every frame VANA prepares (#167).
-    #[inline(never)]
     fn write<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,
         stage: Stage,
@@ -219,103 +232,103 @@ impl Runtime {
         bulk: &mut impl ReadWrite,
         now: u64,
     ) -> Option<Next> {
-        let mut sector = [0u8; 512];
-        let seed = now ^ bulk.entropy();
-        let next = match stage {
+        match stage {
             Stage::Mark => {
                 if !system.condemn_settings() {
                     return None;
                 }
                 self.preferences.stored = Stored::Foreign;
                 match bulk.owned_info() {
-                    Ok(_) => Stage::Table,
-                    Err(_) => Stage::JournalSector(0),
-                }
-            }
-            Stage::Table => {
-                let kept = matches!(volume::read(bulk, &mut sector), Ok(Layout::Table(_)));
-                let table = if kept {
-                    volume::create(bulk, &mut sector)
-                } else {
-                    volume::replace(bulk, &mut sector)
-                }
-                .ok()?;
-                if let Some(extent) = table.find(&TERRAIN) {
-                    let terrain = &mut Volume::new(bulk, extent);
-                    let foreign = pack::status(terrain, &mut sector) == Err(pack::Error::Foreign);
-                    if !kept || foreign {
-                        pack::erase(terrain, &mut sector).ok()?;
+                    Ok(_) => Some(Next::wiping(Some(Store::ALL[0]))),
+                    Err(MediaError::Unsupported | MediaError::Unavailable) => {
+                        Some(Next::wiping(Some(Store::Internal)))
                     }
+                    Err(MediaError::Failed | MediaError::Range) => None,
                 }
-                Stage::Rides
             }
-            Stage::Rides => {
-                let initial = crate::ride::bulk::encode_catalog(&crate::ride::log::Catalog {
-                    next_ride_id: 1,
-                    ..Default::default()
-                });
-                let rides = &mut volume::open(bulk, &RIDES, &mut sector).ok()?;
-                let tag = crate::ride::bulk::TAG;
-                if sector_log::formatted(rides, tag, &mut sector) == Err(sector_log::Error::Foreign)
-                {
-                    sector_log::erase(rides, &mut sector).ok()?;
-                }
-                sector_log::format(rides, tag, seed, &initial, &mut sector).ok()?;
-                Stage::Files
-            }
-            Stage::Files => {
-                match volume::open(bulk, &FILES, &mut sector) {
-                    Ok(mut files) => {
-                        if files::mount(&mut files, &mut sector) == Err(files::Error::Foreign) {
-                            files::erase(&mut files, &mut sector).ok()?;
-                        }
-                        files::format(&mut files, seed, &mut sector).ok()?;
-                    }
-                    Err(volume::Error::Missing) => {}
-                    Err(_) => return None,
-                }
-                Stage::Traces
-            }
-            Stage::Traces => {
-                match volume::open(bulk, &STORE, &mut sector) {
-                    Ok(mut traces) => {
-                        if store::mount(&mut traces, &mut sector).err()
-                            == Some(store::Error::Foreign)
-                        {
-                            store::erase(&mut traces, &mut sector).ok()?;
-                        }
-                        store::format(&mut traces, seed, &mut sector).ok()?;
-                    }
-                    Err(volume::Error::Missing) => {}
-                    Err(_) => return None,
-                }
-                Stage::JournalSector(0)
+            Stage::Wipe(store) => {
+                let seed = now ^ bulk.entropy();
+                wipe(store, bulk, seed)?;
+                Some(Next::wiping(store.next()))
             }
             Stage::JournalSector(index) => {
-                let mut journal = system.data_storage();
-                let mut slot = Slot::default();
-                let mut used = false;
-                for at in index * SLOTS_PER_SECTOR..(index + 1) * SLOTS_PER_SECTOR {
-                    journal.ride_read_slot(at, &mut slot).ok()?;
-                    used |= !erased(&slot.0);
-                }
-                if used {
-                    journal.ride_erase_sector(index).ok()?;
-                }
-                if index + 1 < SECTORS {
-                    Stage::JournalSector(index + 1)
+                crate::ride::journal::wipe_sector(&mut system.data_storage(), index).ok()?;
+                Some(if index + 1 < SECTORS {
+                    Next::Stage(Stage::JournalSector(index + 1))
                 } else {
-                    Stage::Settings
-                }
+                    Next::wiping(Store::Internal.next())
+                })
             }
-            Stage::Settings => {
-                if !system.erase_settings() {
-                    return None;
-                }
-                return Some(Next::Done);
+            Stage::Settings => system
+                .erase_settings()
+                .then(|| Next::wiping(Store::Settings.next())),
+        }
+    }
+}
+
+// Not inlined, so its sector buffer stays out of the console task's frame,
+// which sits under every frame VANA prepares (#167).
+#[inline(never)]
+fn wipe(store: Store, bulk: &mut impl ReadWrite, seed: u64) -> Option<()> {
+    let mut sector = [0u8; 512];
+    match store {
+        Store::Table => wipe_table(bulk, &mut sector),
+        Store::Rides => {
+            let rides = &mut volume::open(bulk, &RIDES, &mut sector).ok()?;
+            crate::ride::bulk::wipe(rides, seed, &mut sector).ok()
+        }
+        Store::Files => in_volume(bulk, &FILES, &mut sector, |files, sector| {
+            if files::mount(files, sector) == Err(files::Error::Foreign) {
+                files::erase(files, sector).ok()?;
             }
-        };
-        Some(Next::Stage(next))
+            files::format(files, seed, sector).ok().map(drop)
+        }),
+        Store::Traces => in_volume(bulk, &STORE, &mut sector, |traces, sector| {
+            if store::mount(traces, sector).err() == Some(store::Error::Foreign) {
+                store::erase(traces, sector).ok()?;
+            }
+            store::format(traces, seed, sector).ok().map(drop)
+        }),
+        // The records go with FILES; the boot flash has stages of its own.
+        Store::Records | Store::Internal | Store::Settings => Some(()),
+    }
+}
+
+/// The default table where the table is not current, and the terrain pack
+/// erased with it, or alone when the pack is of another version. The pack
+/// goes before the table is published, so a cut between leaves the table
+/// still to replace.
+fn wipe_table(bulk: &mut impl ReadWrite, sector: &mut volume::Sector) -> Option<()> {
+    let (table, replace) = match volume::read(bulk, sector) {
+        Ok(Layout::Table(table)) => (table, false),
+        Ok(Layout::Blank | Layout::Lost) | Err(volume::Error::Foreign) => {
+            (volume::plan(bulk.owned_info().ok()?.sectors).ok()?, true)
+        }
+        Err(_) => return None,
+    };
+    if let Some(extent) = table.find(&TERRAIN) {
+        let terrain = &mut Volume::new(bulk, extent);
+        if replace || pack::status(terrain, sector) == Err(pack::Error::Foreign) {
+            pack::erase(terrain, sector).ok()?;
+        }
+    }
+    if replace {
+        volume::replace(bulk, sector).ok()?;
+    }
+    Some(())
+}
+
+/// `wipe` in the volume `name`; a volume the table lacks has nothing to wipe.
+fn in_volume<B: ReadWrite>(
+    bulk: &mut B,
+    name: &volume::Name,
+    sector: &mut volume::Sector,
+    wipe: impl FnOnce(&mut Volume<'_, B>, &mut volume::Sector) -> Option<()>,
+) -> Option<()> {
+    match volume::open(bulk, name, sector) {
+        Ok(mut volume) => wipe(&mut volume, sector),
+        Err(volume::Error::Missing) => Some(()),
+        Err(_) => None,
     }
 }
 
@@ -370,36 +383,15 @@ mod tests {
             (ASKED, press(MOVE, 9_000), ASKED, Go::Stay),
             (ASKED, press(ACT, 1_250), wiping, Go::Stay),
             (ASKED, press(BACK, 1_250), Declined, Go::FirstPage),
-            (
-                Idle,
-                Event::Confirm { ride_open: false },
-                wiping,
-                Go::Question,
-            ),
-            (
-                Declined,
-                Event::Confirm { ride_open: false },
-                wiping,
-                Go::Question,
-            ),
-            (
-                Failed,
-                Event::Confirm { ride_open: false },
-                wiping,
-                Go::Question,
-            ),
-            (Idle, Event::Confirm { ride_open: true }, Idle, Go::Stay),
-            (
-                wiping,
-                Event::Confirm { ride_open: false },
-                wiping,
-                Go::Stay,
-            ),
+            (Idle, Event::Confirm, wiping, Go::Question),
+            (Declined, Event::Confirm, wiping, Go::Question),
+            (Failed, Event::Confirm, wiping, Go::Question),
+            (wiping, Event::Confirm, wiping, Go::Stay),
             (wiping, press(ACT, 9_000), wiping, Go::Stay),
             (
                 wiping,
-                Event::Wrote(Next::Stage(Stage::Table)),
-                Running(Stage::Table),
+                Event::Wrote(Next::Stage(Stage::Wipe(Store::Table))),
+                Running(Stage::Wipe(Store::Table)),
                 Go::Stay,
             ),
             (
@@ -409,11 +401,32 @@ mod tests {
                 Go::Stay,
             ),
             (wiping, Event::WriteFailed, Failed, Go::Ready),
-            (Done, Event::Confirm { ride_open: false }, Done, Go::Stay),
+            (Done, Event::Confirm, Done, Go::Stay),
             (Done, read(true, true), Done, Go::Stay),
         ];
         for (format, event, after, go) in rows {
-            assert_eq!(step(format, event), (after, go), "{format:?} {event:?}");
+            assert_eq!(
+                step(format, event, false),
+                (after, go),
+                "{format:?} {event:?}"
+            );
         }
+    }
+
+    #[test]
+    fn nothing_starts_a_wipe_under_an_open_ride() {
+        for (format, event) in [
+            (ASKED, press(ACT, 1_250)),
+            (Idle, Event::Confirm),
+            (UNDRAWN, Event::Confirm),
+            (Declined, Event::Confirm),
+            (Failed, Event::Confirm),
+        ] {
+            assert_eq!(step(format, event, true), (format, Go::Stay), "{format:?}");
+        }
+        assert_eq!(
+            step(ASKED, press(BACK, 1_250), true),
+            (Declined, Go::FirstPage)
+        );
     }
 }

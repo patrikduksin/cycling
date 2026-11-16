@@ -46,7 +46,7 @@ mod storage;
 pub use input::HOLD_GAP_MS;
 pub use recording::{Journals, Medium};
 pub use seen::Seen;
-pub use storage::{Health, StorageHealth};
+pub use storage::{Health, StorageHealth, Store};
 mod phone;
 mod sensor_links;
 #[cfg(test)]
@@ -95,7 +95,7 @@ pub struct Runtime {
     deleted: deleted::Hidden,
     form: form::Kept,
     format: format::Format,
-    card_probe: Option<storage::CardProbe>,
+    card_probe: Option<storage::StorageHealth>,
     power: power::Power,
     timing: timing::Timing,
     training: training::Training,

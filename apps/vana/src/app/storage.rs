@@ -1,10 +1,11 @@
 use super::Runtime;
 use super::preferences::Stored;
 use crate::ride::log::Status;
-use crate::ride::{bests, deleted, facts};
+use crate::ride::{Contents, bests, deleted, facts};
+use crate::workout::history;
 use device_api::bulk::ReadWrite;
 use firmware_services::volume::{self, FILES, Layout, RIDES, STORE, Table, Volume};
-use firmware_services::{files, sector_log, store};
+use firmware_services::{files, store};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Health {
@@ -28,79 +29,146 @@ impl Health {
     }
 }
 
+/// Everything VANA stores, in the order FORMAT wipes it: the card, then the
+/// internal journal, and the settings last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StorageHealth(pub [(&'static str, Health); 7]);
+pub enum Store {
+    Table,
+    Rides,
+    Files,
+    /// The tables VANA writes into FILES: facts, deleted rides, bests and
+    /// workout outcomes.
+    Records,
+    /// The STORE volume.
+    Traces,
+    Internal,
+    Settings,
+}
 
-impl StorageHealth {
-    pub fn settled(&self) -> bool {
-        self.0.iter().all(|(_, health)| *health != Health::Unread)
+impl Store {
+    pub const ALL: [Self; 7] = [
+        Self::Table,
+        Self::Rides,
+        Self::Files,
+        Self::Records,
+        Self::Traces,
+        Self::Internal,
+        Self::Settings,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::Rides => "rides",
+            Self::Files => "files",
+            Self::Records => "records",
+            Self::Traces => "traces",
+            Self::Internal => "internal",
+            Self::Settings => "settings",
+        }
     }
 
-    pub fn foreign(&self) -> bool {
-        self.0.iter().any(|(_, health)| *health == Health::Foreign)
+    pub fn next(self) -> Option<Self> {
+        Self::ALL.get(self as usize + 1).copied()
+    }
+
+    const fn on_card(self) -> bool {
+        !matches!(self, Self::Internal | Self::Settings)
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct CardProbe {
-    table: Health,
-    rides: Health,
-    files: Health,
-    records: Health,
-    traces: Health,
-}
+pub struct StorageHealth([Health; Store::ALL.len()]);
 
-impl CardProbe {
-    fn all(health: Health) -> Self {
-        Self {
-            table: health,
-            rides: health,
-            files: health,
-            records: health,
-            traces: health,
+impl StorageHealth {
+    pub fn of(&self, store: Store) -> Health {
+        self.0[store as usize]
+    }
+
+    fn set(&mut self, store: Store, health: Health) {
+        self.0[store as usize] = health;
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (Store, Health)> + '_ {
+        Store::ALL.into_iter().map(|store| (store, self.of(store)))
+    }
+
+    pub fn settled(&self) -> bool {
+        !self.0.contains(&Health::Unread)
+    }
+
+    pub fn foreign(&self) -> bool {
+        self.0.contains(&Health::Foreign)
+    }
+
+    fn card(health: Health) -> Self {
+        let mut all = Self::default();
+        for store in Store::ALL.into_iter().filter(|store| store.on_card()) {
+            all.set(store, health);
         }
+        all
     }
 
     #[inline(never)]
-    fn read(bulk: &mut impl ReadWrite) -> Self {
+    fn read_card(bulk: &mut impl ReadWrite) -> Self {
         let mut sector = [0u8; 512];
         let table = match volume::read(bulk, &mut sector) {
             Ok(Layout::Table(table)) => table,
-            Ok(Layout::Blank) => return Self::all(Health::Blank),
+            Ok(Layout::Blank) => return Self::card(Health::Blank),
             Err(volume::Error::Foreign) => {
-                return Self {
-                    table: Health::Foreign,
-                    ..Self::all(Health::Unusable)
-                };
+                let mut health = Self::card(Health::Unusable);
+                health.set(Store::Table, Health::Foreign);
+                return health;
             }
-            Ok(Layout::Lost) | Err(_) => return Self::all(Health::Unusable),
+            Ok(Layout::Lost) | Err(_) => return Self::card(Health::Unusable),
         };
-        let (files, records) = files_health(bulk, &table, &mut sector);
-        Self {
-            table: Health::Current,
-            rides: volume_health(bulk, &table, &RIDES, |volume| {
-                match sector_log::formatted(volume, crate::ride::bulk::TAG, &mut sector) {
-                    Ok(true) => Health::Current,
-                    Ok(false) => Health::Blank,
-                    Err(sector_log::Error::Foreign) => Health::Foreign,
-                    Err(_) => Health::Unusable,
+        let mut health = Self::default();
+        for store in Store::ALL {
+            let held = match store {
+                Store::Table => Health::Current,
+                Store::Rides => {
+                    in_volume(
+                        bulk,
+                        &table,
+                        &RIDES,
+                        |rides| match crate::ride::bulk::formatted(rides, &mut sector) {
+                            Ok(true) => Health::Current,
+                            Ok(false) => Health::Blank,
+                            Err(firmware_services::sector_log::Error::Foreign) => Health::Foreign,
+                            Err(_) => Health::Unusable,
+                        },
+                    )
                 }
-            }),
-            files,
-            records,
-            traces: volume_health(bulk, &table, &STORE, |volume| {
-                match store::mount(volume, &mut sector) {
-                    Ok(_) => Health::Current,
-                    Err(store::Error::Uninitialized) => Health::Blank,
-                    Err(store::Error::Foreign) => Health::Foreign,
-                    Err(_) => Health::Unusable,
-                }
-            }),
+                Store::Files => in_volume(bulk, &table, &FILES, |files| {
+                    match files::mount(files, &mut sector) {
+                        Ok(_) => Health::Current,
+                        Err(files::Error::Uninitialized) => Health::Blank,
+                        Err(files::Error::Foreign) => Health::Foreign,
+                        Err(_) => Health::Unusable,
+                    }
+                }),
+                Store::Records => match health.of(Store::Files) {
+                    Health::Current => records(bulk),
+                    Health::Blank => Health::Blank,
+                    _ => Health::Unusable,
+                },
+                Store::Traces => in_volume(bulk, &table, &STORE, |traces| {
+                    match store::mount(traces, &mut sector) {
+                        Ok(_) => Health::Current,
+                        Err(store::Error::Uninitialized) => Health::Blank,
+                        Err(store::Error::Foreign) => Health::Foreign,
+                        Err(_) => Health::Unusable,
+                    }
+                }),
+                Store::Internal | Store::Settings => continue,
+            };
+            health.set(store, held);
         }
+        health
     }
 }
 
-fn volume_health<B: ReadWrite>(
+fn in_volume<B: ReadWrite>(
     bulk: &mut B,
     table: &Table,
     name: &volume::Name,
@@ -112,52 +180,22 @@ fn volume_health<B: ReadWrite>(
     }
 }
 
-fn files_health(
-    bulk: &mut impl ReadWrite,
-    table: &Table,
-    sector: &mut files::Sector,
-) -> (Health, Health) {
-    let Some(extent) = table.find(&FILES) else {
-        return (Health::Blank, Health::Blank);
-    };
-    let volume = &mut Volume::new(bulk, extent);
-    let dir = match files::mount(volume, sector) {
-        Ok(dir) => dir,
-        Err(files::Error::Uninitialized) => return (Health::Blank, Health::Blank),
-        Err(files::Error::Foreign) => return (Health::Foreign, Health::Unusable),
-        Err(_) => return (Health::Unusable, Health::Unusable),
-    };
-    let tables = [
-        (facts::TABLE, facts::STAMP),
-        (deleted::TABLE, deleted::STAMP),
-        (bests::FILE, bests::STAMP),
+/// The records as their owners read them: foreign if any one is.
+#[inline(never)]
+fn records(bulk: &mut impl ReadWrite) -> Health {
+    let held = [
+        facts::contents(bulk).ok(),
+        deleted::contents(bulk).ok(),
+        bests::contents(bulk).ok(),
+        history::contents(bulk).ok(),
     ];
-    let mut records = Health::Current;
-    for index in 0..files::DIR_SECTORS {
-        let Ok(entries) = dir.entries(volume, index, sector) else {
-            return (Health::Current, Health::Unusable);
-        };
-        for entry in entries.iter().flatten() {
-            let name = entry.name.as_str();
-            let stamp = tables
-                .iter()
-                .find(|(file, _)| *file == name)
-                .map(|(_, stamp)| *stamp)
-                .or_else(|| crate::workout::history::stamp(name));
-            let Some(stamp) = stamp else {
-                continue;
-            };
-            let mut head = [0u8; 5];
-            match dir.read(volume, entry, 0, &mut head, sector) {
-                Ok(5) if stamp.another_version(&head) => {
-                    return (Health::Current, Health::Foreign);
-                }
-                Ok(_) => {}
-                Err(_) => records = Health::Unusable,
-            }
-        }
+    if held.contains(&Some(Contents::Foreign)) {
+        Health::Foreign
+    } else if held.contains(&None) {
+        Health::Unusable
+    } else {
+        Health::Current
     }
-    (Health::Current, records)
 }
 
 impl Runtime {
@@ -168,37 +206,35 @@ impl Runtime {
         self.card_probe = match self.ride.bulk.status() {
             Status::Scanning => None,
             Status::Unsupported | Status::Unavailable | Status::Error => {
-                Some(CardProbe::all(Health::Unusable))
+                Some(StorageHealth::card(Health::Unusable))
             }
-            _ => Some(CardProbe::read(bulk)),
+            _ => Some(StorageHealth::read_card(bulk)),
         };
     }
 
     pub fn storage_health(&self) -> StorageHealth {
-        let settings = match self.preferences.stored {
-            Stored::Missing => Health::Blank,
-            Stored::Current => Health::Current,
-            Stored::Foreign => Health::Foreign,
-        };
-        let internal = match self.ride.internal.status() {
-            Status::Scanning => Health::Unread,
-            _ if self.ride.internal.holds_another_version() => Health::Foreign,
-            Status::NeedsInit
-            | Status::Error
-            | Status::Unsupported
-            | Status::Unavailable
-            | Status::Corrupt => Health::Unusable,
-            _ => Health::Current,
-        };
-        let probe = self.card_probe.unwrap_or_default();
-        StorageHealth([
-            ("settings", settings),
-            ("internal", internal),
-            ("table", probe.table),
-            ("rides", probe.rides),
-            ("files", probe.files),
-            ("records", probe.records),
-            ("traces", probe.traces),
-        ])
+        let mut health = self.card_probe.unwrap_or_default();
+        health.set(
+            Store::Internal,
+            match self.ride.internal.status() {
+                Status::Scanning => Health::Unread,
+                _ if self.ride.internal.holds_another_version() => Health::Foreign,
+                Status::NeedsInit
+                | Status::Error
+                | Status::Unsupported
+                | Status::Unavailable
+                | Status::Corrupt => Health::Unusable,
+                _ => Health::Current,
+            },
+        );
+        health.set(
+            Store::Settings,
+            match self.preferences.stored {
+                Stored::Missing => Health::Blank,
+                Stored::Current => Health::Current,
+                Stored::Foreign => Health::Foreign,
+            },
+        );
+        health
     }
 }

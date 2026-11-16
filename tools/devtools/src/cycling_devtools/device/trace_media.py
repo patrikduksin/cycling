@@ -319,7 +319,7 @@ def pull(
         if pack is not None:
             (out / 'terrain.pack').symlink_to(os.path.relpath(pack, out))
     report = tool('rebuild', trace, '--pulled', out).splitlines()
-    marks = [line for line in tool('find', trace, 'mark').splitlines() if line != 'found nothing']
+    marks = [line for line in tool('find', trace, 'mark', '--limit', str(2**32)).splitlines() if line != 'found nothing']
     timing['total_s'] = round(time.monotonic() - started, 3)
     result.update(
         media=str(out), origin=report[0].removeprefix('origin '), rebuilt=report[1:], marks=marks, timing=timing

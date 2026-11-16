@@ -984,9 +984,9 @@ impl Reader {
                 count,
                 pressed_ms,
                 page,
-            } => self.push(
+            } => self.push_fmt(
                 Kind::Mark,
-                format!("{count} pressed {} on {page}", session_clock(pressed_ms)),
+                format_args!("{count} pressed {} on {page}", session_clock(pressed_ms)),
             ),
             Event::Shown(fields) => {
                 self.ride_time_shown(fields);

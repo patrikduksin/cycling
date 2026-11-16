@@ -79,8 +79,8 @@ commands:
       input, command, startup, ant, ant.packet, ant.request, ble, ble.packet,
       gps, sensors, battery, time, storage (media faults and VANA's warnings
       about saving or reading), entropy, page, toast, sound, ride, shown,
-      log, phone, power, display, buzzer, trace, health, activity; groups
-      seen, inputs, default, all (health and activity, every few seconds,
+      log, phone, power, display, buzzer, trace, health, activity, mark;
+      groups seen, inputs, default, all (health and activity, every few seconds,
       only by name or all). --all also lists entries
       that only repeat their source (a counter or reading moved); a press,
       a command or a note is never one. A sound names its cue. ANT+ pages

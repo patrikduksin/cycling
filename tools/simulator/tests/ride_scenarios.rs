@@ -4811,6 +4811,25 @@ fn holding_move_marks_the_moment_and_leaves_the_ride_as_it_was() {
 }
 
 #[test]
+fn holding_move_on_a_ride_page_steps_one_page_however_long_it_is_held() {
+    let mut sim = rider();
+    sim.pair(&["SPEED/CAD"]);
+    sim.ride_at(25.0, 0.0, 0.0, 0.0);
+    sim.start_ride();
+    sim.advance(seconds(5));
+    let first = sim.screen().page().expect("page dots");
+    assert!(first.starts_with("1/"), "{first}");
+    sim.hold(Button::BottomLeft, 1400);
+    let held = sim.screen().page().expect("page dots");
+    assert!(held.starts_with("2/"), "one page on, not four: {held}");
+    sim.checkpoint("held-move-one-page");
+    sim.advance(seconds(1));
+    sim.press(Button::BottomLeft);
+    let next = sim.screen().page().expect("page dots");
+    assert!(next.starts_with("3/"), "a new press still pages: {next}");
+}
+
+#[test]
 fn holding_move_on_home_marks_and_keeps_the_focus() {
     let mut sim = rider();
     sim.advance(seconds(3));

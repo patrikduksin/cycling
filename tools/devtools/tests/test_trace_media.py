@@ -177,7 +177,7 @@ class TracePullTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as directory:
             result, calls = self.pull(Path(directory), export, marks='\n'.join(lines) + '\n')
-            self.assertIn(('find', Path(directory) / '000003-00000007.trace', 'mark'), calls)
+            self.assertIn(('find', Path(directory) / '000003-00000007.trace', 'mark', '--limit', str(2**32)), calls)
         self.assertEqual(result['marks'], lines)
         self.assertEqual(
             trace_media.marks_text(result['marks']), '\n'.join(['marks:', *(f'  {line}' for line in lines)])

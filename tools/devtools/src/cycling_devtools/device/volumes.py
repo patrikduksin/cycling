@@ -651,7 +651,7 @@ def main():
         if path is not None and not path.is_file():
             parser.error(f'{path} is not a file')
     result = run(args, selected_port(parser, args.port))
-    marks = result.pop('marks', None) if isinstance(result, dict) else None
+    marks = result.get('marks') if isinstance(result, dict) else None
     print(json.dumps(result, indent=2))
     if marks is not None:
         from cycling_devtools.device import trace_media

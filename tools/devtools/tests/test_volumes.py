@@ -443,7 +443,7 @@ class VolumesTests(unittest.TestCase):
         ):
             volumes.main()
 
-    def test_a_trace_pull_prints_its_result_then_the_marks(self):
+    def test_a_trace_pull_prints_its_result_with_the_marks_then_lists_them(self):
         mark = '00:42.410 ride 00:35  mark        1 pressed 00:40.900 on ride/main'
         result = {'name': 'traces/0001', 'path': 'out.trace', 'marks': [mark]}
         with (
@@ -454,7 +454,7 @@ class VolumesTests(unittest.TestCase):
         ):
             volumes.main()
         lines = [call.args[0] for call in printed.call_args_list]
-        self.assertNotIn('marks', lines[0])
+        self.assertEqual(json.loads(lines[0])['marks'], [mark])
         self.assertEqual(lines[1], f'marks:\n  {mark}')
 
     def test_a_get_goes_on_after_each_hole_and_names_them_all(self):

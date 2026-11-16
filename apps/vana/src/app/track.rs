@@ -299,7 +299,12 @@ impl Runtime {
     }
 }
 
-pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>, now: u64, radar: bool) {
+pub(super) fn refresh_map(
+    track: &mut Option<&'static mut RideTrack>,
+    now: u64,
+    speed_mm_s: Option<u32>,
+    radar: bool,
+) {
     let Some(state) = track.as_deref_mut() else {
         return;
     };
@@ -308,6 +313,7 @@ pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>, now: u64, 
         crumbs: state.homing.crumbs(),
         here: state.homing.position(),
         heading: state.homing.heading(),
+        speed_mm_s,
         course: state.follower.course(),
         ahead: state.follower.ahead(),
         guidance: state.follower.guidance(now),

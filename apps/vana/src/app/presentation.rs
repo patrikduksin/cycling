@@ -686,7 +686,8 @@ impl Runtime {
         view.sample = self.shown.live();
         view.radar_paired = ant.channel(device_type::RADAR, now).is_some();
         if page == Page::Ride && navigation.ride_page == RidePage::Map {
-            super::track::refresh_map(&mut self.track, now, view.radar_paired);
+            let speed_mm_s = self.readings.live.speed_mm_s;
+            super::track::refresh_map(&mut self.track, now, speed_mm_s, view.radar_paired);
         }
         view.auto_paused = self.ride.auto.paused();
         view.ride_page = navigation.ride_page;

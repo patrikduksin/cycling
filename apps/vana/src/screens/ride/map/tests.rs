@@ -69,6 +69,7 @@ fn following(course: &[Crumb], here: Point, along_m: f32, junction: Option<Spot>
         crumbs: &[],
         here: Some(here),
         heading: Some(0),
+        speed_mm_s: None,
         course,
         ahead: Some((end, Some(here))),
         guidance: Some(Guidance {
@@ -756,5 +757,125 @@ fn a_turn_past_the_edge_of_the_map_draws_its_road_coming_back_onto_it() {
     assert!(
         blue_in(&frame, 223..WIDTH, 75..115) > 0,
         "the road after the turn, back on the map"
+    );
+}
+
+const RIDING_MM_S: u32 = 4_167;
+const WAY_OUT: Point = (0.0, 100.0);
+const WAY_BACK: Point = (6.0, -50.0);
+
+fn degrees(d: f32) -> u16 {
+    (d * f32::from(TURN) / 360.0) as u16
+}
+
+fn blue_at(frame: &Frame, here: Point, world: Point) -> usize {
+    let (x, y) = frame.last_pose.projection(here).at(world);
+    let (x, y) = (x as usize, y as usize);
+    blue_in(frame, x - 4..x + 5, y - 4..y + 5)
+}
+
+fn draws_the_way_out(frame: &Frame, here: Point) -> bool {
+    match (
+        blue_at(frame, here, WAY_OUT),
+        blue_at(frame, here, WAY_BACK),
+    ) {
+        (0, 0) => panic!("neither way drawn"),
+        (_, 0) => true,
+        (0, _) => false,
+        _ => panic!("both ways drawn"),
+    }
+}
+
+#[test]
+fn headings_across_the_held_leg_never_switch_it_standing_or_riding() {
+    let c = there_and_back(6.0);
+    let mut frame = Frame::default();
+    for (fix, d) in [85.0, 95.0, 85.0, 95.0, 85.0, 275.0, 85.0, 275.0]
+        .into_iter()
+        .enumerate()
+    {
+        let mut track = joining(&c, (3.0, 0.0));
+        track.heading = Some(degrees(d));
+        fill(&mut frame, &track);
+        assert!(
+            draws_the_way_out(&frame, (3.0, 0.0)),
+            "standing, fix {fix} at {d}°"
+        );
+    }
+    for (fix, d) in [85.0, 95.0, 85.0, 95.0, 85.0, 95.0].into_iter().enumerate() {
+        let here = (3.0, 4.0 * fix as f32);
+        let mut track = joining(&c, here);
+        track.heading = Some(degrees(d));
+        track.speed_mm_s = Some(RIDING_MM_S);
+        fill(&mut frame, &track);
+        assert!(draws_the_way_out(&frame, here), "riding, fix {fix} at {d}°");
+    }
+}
+
+#[test]
+fn a_stop_s_gps_jitter_never_switches_the_held_leg() {
+    use crate::ride::homing::{Homing, Reported};
+    const METRES_PER_E7: f32 = 0.011_119_508;
+    let c = there_and_back(6.0);
+    let mut storage = [Crumb::default(); 64];
+    let mut homing = Homing::new(&mut storage);
+    let mut frame = Frame::default();
+    let mut drawn = 0;
+    for (fix, (east, north)) in [(0.0, 0.0), (16.0, 1.4), (0.0, 2.8), (16.0, 1.4), (0.0, 0.0)]
+        .into_iter()
+        .enumerate()
+    {
+        let now = fix as u64 * 1_000;
+        let location_e7 = (
+            (north / METRES_PER_E7) as i32,
+            (east / METRES_PER_E7) as i32,
+        );
+        homing.observe(
+            Some(Reported {
+                location_e7,
+                taken_loop_ms: now,
+            }),
+            now,
+        );
+        let Some(heading) = homing.heading() else {
+            continue;
+        };
+        let here = homing.position().unwrap();
+        let mut track = joining(&c, here);
+        track.heading = Some(heading);
+        fill(&mut frame, &track);
+        assert!(
+            draws_the_way_out(&frame, here),
+            "fix {fix} at ({east}, {north})"
+        );
+        drawn += 1;
+    }
+    assert_eq!(drawn, 4, "every fix after the first has a heading");
+}
+
+#[test]
+fn a_u_turn_at_15_kmh_before_joining_switches_to_the_way_back_on_its_3rd_or_4th_fix() {
+    let c = there_and_back(6.0);
+    let mut frame = Frame::default();
+    let step_m = RIDING_MM_S as f32 / 1_000.0;
+    let mut north = 0.0;
+    for _ in 0..5 {
+        let mut track = joining(&c, (0.0, north));
+        track.speed_mm_s = Some(RIDING_MM_S);
+        fill(&mut frame, &track);
+        assert!(draws_the_way_out(&frame, (0.0, north)), "riding out");
+        north += step_m;
+    }
+    let switched = (1..=4).find(|_| {
+        north -= step_m;
+        let mut track = joining(&c, (0.0, north));
+        track.heading = Some(SOUTH);
+        track.speed_mm_s = Some(RIDING_MM_S);
+        fill(&mut frame, &track);
+        !draws_the_way_out(&frame, (0.0, north))
+    });
+    assert!(
+        matches!(switched, Some(3 | 4)),
+        "switched on fix {switched:?}"
     );
 }

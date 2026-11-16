@@ -643,6 +643,7 @@ impl Runtime {
             self.history_ride_started();
         }
         let pages = self.ride_pages();
+        let (choice, course) = (self.page_choice_with_course_map(), self.course().is_some());
         let ftp_offer = self.ftp_sheet();
         let picker_offset = self.list_offset(List::Workouts, now);
         let picker = (self.navigation.page == Page::Workouts).then(|| {
@@ -689,7 +690,9 @@ impl Runtime {
         view.radar_paired = ant.channel(device_type::RADAR, now).is_some();
         view.auto_paused = self.ride.auto.paused();
         view.ride_page = navigation.ride_page;
-        view.ride_pages = self.preferences.options.ride_pages;
+        view.ride_pages = choice;
+        view.nav = super::track::sign_of(&self.track, now);
+        view.course = course;
         view.main_slots = self.preferences.options.main_slots;
         let readout = self.shown.readout();
         let (climbing, paused_secs) = (readout.climbing, readout.paused_secs);

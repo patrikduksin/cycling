@@ -18,6 +18,7 @@ use crate::screens::sensors::Action;
 use crate::screens::settings;
 use crate::screens::touch::{Control, Hit, List, Owner, Swipe, TouchEvent};
 use crate::screens::workout::{HOME, Page};
+use crate::sensors::ant::device_type;
 use device_api::ant::Ant;
 use device_api::input::{Button, Input};
 
@@ -58,7 +59,10 @@ impl Runtime {
         // so a sheet or a dark screen can never leave it mid-contact. A
         // contact only completes on the screen it began on.
         let hit = match input {
-            Input::Touch(point) => self.hit_test(point, now),
+            Input::Touch(point) => {
+                let radar = ant.channel(device_type::RADAR, now).is_some();
+                self.hit_test(point, now, radar)
+            }
             _ => Hit::default(),
         };
         let owner = self.touch_owner();
@@ -213,7 +217,7 @@ impl Runtime {
 
     /// What lies under a finger landing at `point`: the control a tap
     /// would act on, the list it would scroll and whether the page swipes.
-    fn hit_test(&self, point: device_api::input::Point, now: u64) -> Hit {
+    fn hit_test(&self, point: device_api::input::Point, now: u64, radar: bool) -> Hit {
         let (x, y) = (usize::from(point.x), usize::from(point.y));
         let navigation = &self.navigation;
         let paused_screen = self.navigation.page == Page::Ride
@@ -242,6 +246,7 @@ impl Runtime {
                 }
             }
             Page::Ride if paused_screen => None,
+            Page::Ride if self.sign_at(x, y, now, radar) => Some(Control::Sign),
             Page::Ride if navigation.ride_page == RidePage::Map => Some(Control::Map),
             // Adding a minute to a step changes no ride state, so a tap may.
             Page::Ride
@@ -277,6 +282,12 @@ impl Runtime {
             }
         }
         hit
+    }
+
+    fn sign_at(&self, x: usize, y: usize, now: u64, radar: bool) -> bool {
+        let sign = super::track::sign_of(&self.track, now);
+        crate::screens::sign::on_page(self.navigation.ride_page, sign, radar)
+            .is_some_and(|placed| placed.rect().contains(x, y))
     }
 
     /// One event of a contact on the page it began on.
@@ -337,6 +348,7 @@ impl Runtime {
                 let action = self.menu.tap(x, y, now);
                 self.sensors_action(action, now, ant);
             }
+            Control::Sign => self.navigation.ride_page_chosen(RidePage::Map),
             Control::Lower | Control::Raise | Control::Map => {}
         }
     }

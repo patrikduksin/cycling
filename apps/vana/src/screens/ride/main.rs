@@ -5,25 +5,21 @@
 //! white bar under the power (or heart-rate) gauge spans the step's target.
 use super::slots::Reading;
 use super::zones::{GAUGE_WIDTH, Mark};
-use super::{BODY, Labels, Smooth, Text, elapsed, speed, whole};
+use super::{BODY, Labels, RidePage, Smooth, Text, elapsed, kilometres, speed, whole};
+use crate::ride::course::nav::Sign;
 use crate::screens::chrome::{
     Align, BLACK, BODY as BODY_FACE, CAPTION, GRADE, HEART, HERO, LARGE, Label, Line, POWER, Rect,
     Row, SECONDARY, SPEED, TERTIARY, VALUE, WHITE, blend, rounded, zone_color,
 };
+use crate::screens::icons::SignForm;
+use crate::screens::sign::{self, baseline_under_mockup};
 use crate::screens::workout::{Scene, View};
 use core::fmt::Write;
-use firmware_shell::rendering::font::{Face, SPILL};
+use firmware_shell::rendering::font::{Face, SPILL, TOTAL_11, TOTAL_30, TOTAL_60};
 use firmware_shell::shell::Parts;
 
 const LEFT: usize = BODY.left + 10;
 const RIGHT: usize = BODY.right - 8;
-const TIME_TOP: usize = BODY.top + 4;
-const SPEED_TOP: usize = BODY.top + 38;
-const POWER_TOP: usize = BODY.top + 108;
-const HEART_TOP: usize = BODY.top + 166;
-const LOWER_TOP: usize = BODY.top + 228;
-/// Zone gauges sit just under the power and heart-rate numbers.
-const GAUGES: [usize; 2] = [POWER_TOP + 47, HEART_TOP + 47];
 const GAUGE_HEIGHT: usize = 5;
 const GAUGE_GAP: usize = 3;
 /// The workout target sits this far under its gauge, this tall.
@@ -31,6 +27,52 @@ const BAND_GAP: usize = 2;
 const BAND_HEIGHT: usize = 2;
 /// Power has seven zones, heart rate five.
 const SEGMENTS: [usize; 2] = [7, 5];
+
+struct Rows {
+    time: usize,
+    speed: usize,
+    speed_faces: &'static [&'static Face],
+    power: usize,
+    heart: usize,
+    lower: usize,
+    gauges: [usize; 2],
+    unit_gap: usize,
+    lower_right: usize,
+}
+
+const COURSE_UNIT_INK_GAP: usize = 6;
+const COURSE_LOWER_UNIT_RIGHT: usize = RIGHT + 1;
+
+static HERO_SPEED: [&Face; 3] = [&HERO, &LARGE, &VALUE];
+static COURSE_SPEED: [&Face; 2] = [&LARGE, &VALUE];
+
+fn rows(course: bool) -> Rows {
+    if course {
+        return Rows {
+            time: baseline_under_mockup(58),
+            speed: baseline_under_mockup(149),
+            speed_faces: &COURSE_SPEED,
+            power: baseline_under_mockup(199),
+            heart: baseline_under_mockup(255),
+            lower: baseline_under_mockup(303),
+            gauges: [208, 266],
+            unit_gap: COURSE_UNIT_INK_GAP,
+            lower_right: COURSE_LOWER_UNIT_RIGHT,
+        };
+    }
+    let (power, heart) = (BODY.top + 108, BODY.top + 166);
+    Rows {
+        time: baseline(&VALUE, BODY.top + 4),
+        speed: baseline(&HERO, BODY.top + 38),
+        speed_faces: &HERO_SPEED,
+        power: baseline(&LARGE, power),
+        heart: baseline(&LARGE, heart),
+        lower: baseline(&VALUE, BODY.top + 228),
+        gauges: [power + 47, heart + 47],
+        unit_gap: UNIT_GAP,
+        lower_right: RIGHT,
+    }
+}
 
 /// The bottom of `face`'s capitals for a label whose top is `top`.
 const fn baseline(face: &Face, top: usize) -> usize {
@@ -55,8 +97,6 @@ const GAP: usize = 8;
 /// Space between a value and its unit.
 const UNIT_GAP: usize = 4;
 
-/// A value and its unit just after it on baseline `base`, both inside
-/// `left..right`: the value takes the largest of `faces` that leaves room.
 #[allow(clippy::too_many_arguments)]
 fn reading(
     labels: &mut Labels,
@@ -65,25 +105,25 @@ fn reading(
     unit: &[u8],
     (left, right): (usize, usize),
     base: usize,
-    align: Align,
+    (align, gap): (Align, usize),
     color: u16,
 ) {
     let unit_width = CAPTION.width(unit) + SPILL;
-    let room = right.saturating_sub(left + UNIT_GAP + unit_width);
+    let room = right.saturating_sub(left + gap + unit_width);
     let line = Line::fit(faces, value.as_bytes(), room);
     let face = line.face();
     let top = base - face.top as usize - face.cap as usize;
     let (value, unit) = match align {
         Align::Right => {
             let unit = on_baseline(&CAPTION, unit, right - SPILL, base, Align::Right, SECONDARY);
-            let value = Label::new(line, unit.left - UNIT_GAP, top, Align::Right, color);
+            let value = Label::new(line, unit.left - gap, top, Align::Right, color);
             (value, unit)
         }
         _ => {
             let value = Label::new(line, left, top, Align::Left, color);
             // After the value's ink, so a "--" keeps its unit as close as
             // a number does.
-            let at = left + face.ink_width(value.line.text()) + UNIT_GAP;
+            let at = left + face.ink_width(value.line.text()) + gap;
             (
                 value,
                 on_baseline(&CAPTION, unit, at, base, Align::Left, SECONDARY),
@@ -94,18 +134,112 @@ fn reading(
     let _ = labels.push(unit);
 }
 
+fn value(write: &dyn Fn(&mut Text<12>)) -> Text<12> {
+    let mut text = Text::new();
+    write(&mut text);
+    text
+}
+
 pub(super) fn prepare(view: &View) -> Smooth {
-    let sample = view.sample;
+    if view.course && view.nav == Sign::Arrived {
+        return arrived(view);
+    }
+    let rows = rows(view.course);
+    let mut smooth = Smooth {
+        gauges: Some(rows.gauges),
+        ..Smooth::default()
+    };
+    let banner_covers_time_and_grade =
+        sign::form(RidePage::Main, view.nav) == Some(SignForm::Banner);
+    if !banner_covers_time_and_grade {
+        time_and_grade(&mut smooth.labels, view, rows.time);
+    }
+    readings(&mut smooth, view, &rows);
+    smooth
+}
+
+fn arrived(view: &View) -> Smooth {
+    let totals = &view.totals;
     let mut smooth = Smooth::default();
     let labels = &mut smooth.labels;
-    let value = |write: &dyn Fn(&mut Text<12>)| {
-        let mut text = Text::new();
-        write(&mut text);
-        text
+    let caption = |labels: &mut Labels, text: &[u8], x, base, align| {
+        let _ = labels.push(on_baseline(&TOTAL_11, text, x, base, align, SECONDARY));
     };
+    caption(
+        labels,
+        b"DISTANCE",
+        LEFT,
+        baseline_under_mockup(132),
+        Align::Left,
+    );
+    let distance = value(&|v| kilometres(v, totals.distance_mm()));
+    let faces: [&Face; 2] = [&TOTAL_60, &LARGE];
+    reading(
+        labels,
+        &faces,
+        &distance,
+        b"KM",
+        (LEFT, RIGHT),
+        baseline_under_mockup(184),
+        (Align::Left, rows(true).unit_gap),
+        WHITE,
+    );
+    caption(
+        labels,
+        b"RIDE TIME",
+        LEFT,
+        baseline_under_mockup(210),
+        Align::Left,
+    );
+    let time = value(&|v| elapsed(v, view.active_secs));
+    let _ = labels.push(on_baseline(
+        &VALUE,
+        time.as_bytes(),
+        LEFT,
+        baseline_under_mockup(243),
+        Align::Left,
+        WHITE,
+    ));
+    let centre = (LEFT + RIGHT - SPILL) / 2;
+    let averages = [
+        (
+            &b"AVG KM/H"[..],
+            LEFT,
+            Align::Left,
+            value(&|v| speed(v, totals.avg_speed_mm_s())),
+            SPEED,
+        ),
+        (
+            b"AVG W",
+            centre,
+            Align::Center,
+            value(&|v| whole(v, totals.avg_power())),
+            POWER,
+        ),
+        (
+            b"AVG BPM",
+            RIGHT - SPILL,
+            Align::Right,
+            value(&|v| whole(v, totals.avg_heart_bpm())),
+            HEART,
+        ),
+    ];
+    for (name, x, align, average, color) in averages {
+        caption(labels, name, x, baseline_under_mockup(270), align);
+        let _ = labels.push(on_baseline(
+            &TOTAL_30,
+            average.as_bytes(),
+            x,
+            baseline_under_mockup(300),
+            align,
+            color,
+        ));
+    }
+    smooth
+}
 
-    // Time and grade share a line; the grade keeps its size and the clock
-    // steps down when hours of riding make it long.
+fn time_and_grade(labels: &mut Labels, view: &View, base: usize) {
+    let sample = view.sample;
     let grade = value(&|v| {
         let _ = match sample.gradient_tenths {
             Some(g) => write!(
@@ -118,7 +252,6 @@ pub(super) fn prepare(view: &View) -> Smooth {
             None => v.push_str("--%"),
         };
     });
-    let base = baseline(&VALUE, TIME_TOP);
     let grade = on_baseline(
         &BODY_FACE,
         grade.as_bytes(),
@@ -136,18 +269,20 @@ pub(super) fn prepare(view: &View) -> Smooth {
     let top = base - line.face().top as usize - line.face().cap as usize;
     let _ = labels.push(Label::new(line, LEFT, top, Align::Left, WHITE));
     let _ = labels.push(grade);
+}
 
+fn readings(smooth: &mut Smooth, view: &View, rows: &Rows) {
+    let sample = view.sample;
+    let labels = &mut smooth.labels;
     let kmh = value(&|v| speed(v, sample.speed_mm_s));
-    let base = baseline(&HERO, SPEED_TOP);
-    let faces: [&Face; 3] = [&HERO, &LARGE, &VALUE];
     reading(
         labels,
-        &faces,
+        rows.speed_faces,
         &kmh,
         b"KM/H",
         (LEFT, RIGHT),
-        base,
-        Align::Left,
+        rows.speed,
+        (Align::Left, rows.unit_gap),
         SPEED,
     );
 
@@ -161,17 +296,16 @@ pub(super) fn prepare(view: &View) -> Smooth {
     smooth.band = target_band(view);
     let watts = value(&|v| whole(v, view.power_3s));
     let bpm = value(&|v| whole(v, sample.heart_bpm));
-    let rows = [
-        (watts, &b"W"[..], POWER_TOP, POWER),
-        (bpm, &b"BPM"[..], HEART_TOP, HEART),
+    let lines = [
+        (watts, &b"W"[..], rows.power, POWER),
+        (bpm, &b"BPM"[..], rows.heart, HEART),
     ];
-    for ((text, unit, top, color), zone) in rows.into_iter().zip(zones) {
+    for ((text, unit, base, color), zone) in lines.into_iter().zip(zones) {
         let mut name = Text::<12>::new();
         let _ = match zone {
             0 => name.push_str("Z-"),
             z => write!(name, "Z{z}"),
         };
-        let base = baseline(&LARGE, top);
         let zone = on_baseline(
             &BODY_FACE,
             name.as_bytes(),
@@ -182,7 +316,8 @@ pub(super) fn prepare(view: &View) -> Smooth {
         );
         let faces: [&Face; 2] = [&LARGE, &VALUE];
         let span = (LEFT, zone.left - GAP);
-        reading(labels, &faces, &text, unit, span, base, Align::Left, color);
+        let side = (Align::Left, rows.unit_gap);
+        reading(labels, &faces, &text, unit, span, base, side, color);
         let _ = labels.push(zone);
     }
 
@@ -191,15 +326,14 @@ pub(super) fn prepare(view: &View) -> Smooth {
     for (reading, text) in [left, right].into_iter().zip(&mut shown) {
         reading.write(view, text);
     }
-    lower(labels, [left, right], &shown);
-    smooth
+    lower(labels, [left, right], &shown, rows);
 }
 
 /// The last line: the chosen readings split it between them, the first
 /// from the left edge and the second from the right.
-fn lower(labels: &mut Labels, readings: [Reading; 2], values: &[Text<12>; 2]) {
+fn lower(labels: &mut Labels, readings: [Reading; 2], values: &[Text<12>; 2], rows: &Rows) {
+    let base = rows.lower;
     let middle = (LEFT + RIGHT) / 2;
-    let base = baseline(&VALUE, LOWER_TOP);
     let faces: [&Face; 2] = [&VALUE, &BODY_FACE];
     let [left, right] = readings;
     let span = (LEFT, middle - GAP / 2);
@@ -210,10 +344,10 @@ fn lower(labels: &mut Labels, readings: [Reading; 2], values: &[Text<12>; 2]) {
         left.unit(),
         span,
         base,
-        Align::Left,
+        (Align::Left, rows.unit_gap),
         left.color(),
     );
-    let span = (middle + GAP / 2, RIGHT);
+    let span = (middle + GAP / 2, rows.lower_right);
     reading(
         labels,
         &faces,
@@ -221,7 +355,7 @@ fn lower(labels: &mut Labels, readings: [Reading; 2], values: &[Text<12>; 2]) {
         right.unit(),
         span,
         base,
-        Align::Right,
+        (Align::Right, UNIT_GAP),
         right.color(),
     );
 }
@@ -258,17 +392,20 @@ fn target_band(view: &View) -> Option<(usize, core::ops::Range<usize>)> {
     Some((i, from..to))
 }
 
-fn band_rows(i: usize) -> core::ops::Range<usize> {
-    let top = GAUGES[i] + GAUGE_HEIGHT + BAND_GAP;
+fn band_rows(gauge: usize) -> core::ops::Range<usize> {
+    let top = gauge + GAUGE_HEIGHT + BAND_GAP;
     top..top + BAND_HEIGHT
+}
+
+fn band(smooth: &Smooth) -> Option<(core::ops::Range<usize>, core::ops::Range<usize>)> {
+    let (i, columns) = smooth.band.clone()?;
+    Some((band_rows(smooth.gauges?[i]), columns))
 }
 
 pub(super) fn parts(scene: &Scene, parts: &mut Parts) {
     let smooth = scene.smooth();
-    for i in 0..GAUGES.len() {
-        parts.add(band_rows(i), &smooth.band);
-    }
-    for (&top, mark) in GAUGES.iter().zip(&scene.gauges) {
+    for (&top, mark) in smooth.gauges.iter().flatten().zip(&scene.gauges) {
+        parts.add(band_rows(top), &smooth.band);
         parts.add(top..top + GAUGE_HEIGHT, mark);
     }
     for label in &smooth.labels {
@@ -280,12 +417,12 @@ pub(super) fn parts(scene: &Scene, parts: &mut Parts) {
 pub(super) fn paint(scene: &Scene, row: &mut Row) {
     let y = row.y();
     let smooth = scene.smooth();
-    if let Some((i, columns)) = &smooth.band
-        && band_rows(*i).contains(&y)
+    if let Some((rows, columns)) = band(smooth)
+        && rows.contains(&y)
     {
-        row.span(columns.clone(), WHITE);
+        row.span(columns, WHITE);
     }
-    for (i, &top) in GAUGES.iter().enumerate() {
+    for (i, &top) in smooth.gauges.iter().flatten().enumerate() {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
             let mark = scene.gauges[i].unwrap_or_default();
             paint_gauge(row, mark.zone, mark.fill.into(), SEGMENTS[i], top);
@@ -301,13 +438,13 @@ pub(super) fn paint(scene: &Scene, row: &mut Row) {
 #[cfg(test)]
 pub(super) fn reference_pixel(scene: &Scene, x: usize, y: usize) -> u16 {
     let smooth = scene.smooth();
-    if let Some((i, columns)) = &smooth.band
-        && band_rows(*i).contains(&y)
+    if let Some((rows, columns)) = band(smooth)
+        && rows.contains(&y)
         && columns.contains(&x)
     {
         return WHITE;
     }
-    for (i, &top) in GAUGES.iter().enumerate() {
+    for (i, &top) in smooth.gauges.iter().flatten().enumerate() {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
             let mark = scene.gauges[i].unwrap_or_default();
             return gauge(mark.zone, mark.fill.into(), SEGMENTS[i], x, y, top);
@@ -385,7 +522,6 @@ mod tests {
     use super::*;
     use crate::ride::log::{Sample, Status};
     use crate::screens::chrome::layout::{assert_apart, assert_shown, text};
-    use crate::screens::ride::kilometres;
     use crate::screens::ride::slots::Slots;
     use crate::screens::workout::Page;
     use std::string::String;
@@ -431,7 +567,13 @@ mod tests {
     };
 
     fn view(case: Case) -> View<'static> {
+        on_course(case, None)
+    }
+
+    fn on_course(case: Case, nav: Option<Sign>) -> View<'static> {
         let mut view = View::new(Page::Ride, 0, Some(crate::clock::Local(86_399)));
+        view.course = nav.is_some();
+        view.nav = nav.unwrap_or_default();
         view.state = case.state;
         view.active_secs = case.secs;
         let sample = Sample {
@@ -453,7 +595,7 @@ mod tests {
 
     fn items(view: &View) -> Vec<(String, Rect)> {
         let mut items: Vec<_> = view.smooth().labels.iter().filter_map(text).collect();
-        for (i, &top) in GAUGES.iter().enumerate() {
+        for (i, &top) in view.smooth().gauges.iter().flatten().enumerate() {
             let rect = Rect {
                 left: LEFT,
                 top,
@@ -462,8 +604,7 @@ mod tests {
             };
             items.push((std::format!("gauge {i}"), rect));
         }
-        if let Some((i, columns)) = &view.smooth().band {
-            let rows = band_rows(*i);
+        if let Some((rows, columns)) = band(view.smooth()) {
             let rect = Rect {
                 left: columns.start,
                 top: rows.start,
@@ -564,7 +705,7 @@ mod tests {
                 for (reading, text) in [left, right].into_iter().zip(&mut texts) {
                     let _ = text.push_str(WIDEST_VALUES[usize::from(reading.id())]);
                 }
-                lower(&mut labels, [left, right], &texts);
+                lower(&mut labels, [left, right], &texts, &rows(false));
                 let items: Vec<_> = labels.iter().filter_map(text).collect();
                 let what = std::format!("{} | {}", left.name(), right.name());
                 assert_apart(&items, bounds, &what);
@@ -653,6 +794,96 @@ mod tests {
         }
     }
 
+    fn signs() -> [Sign; 4] {
+        use crate::ride::course::nav::{Distance, Glyph};
+        let distance = Distance::from_mm(6_400_000);
+        [
+            Sign::None,
+            Sign::Chip {
+                glyph: Glyph::Right,
+                distance,
+            },
+            Sign::Turn {
+                glyph: Glyph::Left,
+                distance,
+            },
+            Sign::OffCourse { back: distance },
+        ]
+    }
+
+    #[test]
+    fn the_course_sign_never_moves_or_resizes_a_reading() {
+        let readings = |nav| {
+            let view = on_course(WIDEST, Some(nav));
+            let time = elapsed_text(WIDEST.secs);
+            let rects: Vec<(String, Rect)> = items(&view)
+                .into_iter()
+                .filter(|(name, rect)| *name != time && !name.ends_with('%') && rect.top > 0)
+                .collect();
+            rects
+        };
+        let at_rest = readings(Sign::None);
+        assert_eq!(at_rest.len(), 14, "{at_rest:?}");
+        for (name, rect) in &at_rest {
+            assert!(rect.top >= 104, "{name:?} {rect:?} is under the sign");
+        }
+        for nav in signs() {
+            assert_eq!(readings(nav), at_rest, "{nav:?}");
+        }
+    }
+
+    #[test]
+    fn the_banner_hides_the_time_and_grade_and_the_chip_does_not() {
+        for nav in signs() {
+            let view = on_course(WIDEST, Some(nav));
+            let names: Vec<String> = items(&view).into_iter().map(|(name, _)| name).collect();
+            let shown = names.contains(&elapsed_text(WIDEST.secs));
+            let banner = matches!(nav, Sign::Turn { .. } | Sign::OffCourse { .. });
+            assert_eq!(shown, !banner, "{nav:?}: {names:?}");
+        }
+    }
+
+    #[test]
+    fn arrived_shows_the_ride_totals_without_gauges() {
+        let mut view = View::new(Page::Ride, 0, Some(crate::clock::Local(86_399)));
+        view.course = true;
+        view.nav = Sign::Arrived;
+        view.active_secs = WIDEST.secs;
+        let sample = Sample {
+            speed_mm_s: Some(27_750),
+            power_watts: Some(999),
+            heart_bpm: WIDEST.bpm,
+            ..Sample::default()
+        };
+        for _ in 0..36_000 {
+            view.totals.add(1000, 27_750, &sample, None);
+        }
+        view.prepare();
+        assert_eq!(view.smooth().gauges, None);
+        let items = items(&view);
+        let mut distance = Text::new();
+        kilometres(&mut distance, view.totals.distance_mm());
+        let want = [
+            "DISTANCE",
+            distance.as_str(),
+            "RIDE TIME",
+            "AVG KM/H",
+            "AVG W",
+            "AVG BPM",
+        ];
+        assert_shown(&items, &want, "arrived");
+        let rows = |name: &str| items.iter().find(|(n, _)| n == name).unwrap().1.top;
+        assert!(rows("DISTANCE") < rows("RIDE TIME") && rows("RIDE TIME") < rows("AVG W"));
+        let bounds = Rect { top: 104, ..BODY };
+        assert_apart(&items, bounds, "arrived");
+    }
+
+    fn elapsed_text(secs: u64) -> String {
+        let mut text = Text::new();
+        elapsed(&mut text, secs);
+        String::from(text.as_str())
+    }
+
     #[test]
     fn extreme_readings_never_overlap_or_clip() {
         let bounds = Rect {
@@ -661,8 +892,12 @@ mod tests {
             right: BODY.right,
             bottom: BODY.bottom,
         };
-        for case in cases() {
-            let view = view(case);
+        let chip = signs()[1];
+        for (case, nav) in cases()
+            .into_iter()
+            .flat_map(|case| [(case, None), (case, Some(chip))])
+        {
+            let view = on_course(case, nav);
             let what = std::format!(
                 "{:?} km/h, {:?} W, {:?} bpm, {:?} rpm/10, {} mm, {} s, {:?}",
                 case.speed_mm_s,
@@ -673,7 +908,11 @@ mod tests {
                 case.secs,
                 case.grade_tenths
             );
-            let items = items(&view);
+            let mut items = items(&view);
+            if let Some(form) = nav.and_then(|nav| sign::form(RidePage::Main, nav)) {
+                let placed = sign::place(view.nav, form, true).unwrap();
+                items.push(("chip".into(), placed.rect()));
+            }
             assert_apart(&items, bounds, &what);
             let mut want = Vec::new();
             let mut format = |write: &dyn Fn(&mut Text<12>)| {

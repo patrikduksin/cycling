@@ -2,7 +2,7 @@ use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Medium, Outing, Ride};
 use crate::ride::course::follow::Follower;
-use crate::ride::course::nav::Event;
+use crate::ride::course::nav::{Event, Sign};
 use crate::ride::course::stored::{self, Finder, Finding};
 use crate::ride::course::{self, Course};
 use crate::ride::homing::Homing;
@@ -306,6 +306,12 @@ pub(super) fn refresh_map(track: &mut Option<&'static mut RideTrack>) {
         ahead: state.follower.ahead(),
     };
     state.map.update(&drawn);
+}
+
+pub(super) fn sign_of(track: &Option<&'static mut RideTrack>, now: u64) -> Sign {
+    track
+        .as_deref()
+        .map_or(Sign::None, |state| state.follower.sign(now))
 }
 
 pub(super) fn map_of<'a>(track: &'a Option<&'static mut RideTrack>) -> Option<FilledMap<'a>> {

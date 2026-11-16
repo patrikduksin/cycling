@@ -7,11 +7,6 @@
 Run `uv run packages/shell/fonts/generate.py` after changing a face below; it
 rewrites `packages/shell/src/rendering/font/faces.rs`. The source is Nunito, a
 rounded sans under the SIL Open Font License (see OFL.txt beside this file).
-
-Each face is one weight at one pixel size and holds printable ASCII from space
-to underscore (uppercase only; the UI writes capitals). Digits share one
-advance so numbers do not jitter as they change. A glyph box starts at the
-face's cap line, so a line of text is `height` pixels tall from its top.
 """
 
 from pathlib import Path
@@ -35,14 +30,26 @@ FACES = [
     ("VALUE", 700, 34, NUMBERS, 0, "Secondary readings."),
     ("LARGE", 700, 50, NUMBERS, 0, "Primary readings beside each other."),
     ("HERO", 700, 78, NUMBERS, 0, "The one reading a screen is about."),
+    ("SIGN_50", 900, 50, NUMBERS, 0, "The distance on a data page's turn banner."),
+    ("SIGN_32", 900, 32, NUMBERS, 0, "The distance on the map's turn badge."),
+    ("SIGN_27", 900, 27, "ADEIRV ", 0, "ARRIVED on a data page's banner."),
+    ("SIGN_20", 900, 20, NUMBERS + "ADEIKMRV", 0, "The chip's distance, the banner's unit and the badge's ARRIVED."),
+    ("SIGN_18", 900, 18, "ABCKNRTU ", 0.5, "TURN BACK on a data page's banner."),
+    ("SIGN_14", 900, 14, "ABCKMNRTU ", 0.5, "The badge's unit and TURN BACK."),
+    ("SIGN_13", 900, 13, "KM ", 0, "The at-rest chip's unit."),
+    ("TOTAL_60", 700, 60, NUMBERS, 0, "The ride's distance when a course is done."),
+    ("TOTAL_30", 700, 30, NUMBERS, 0, "The ride's averages when a course is done."),
+    ("TOTAL_11", 900, 11, "ABCDEGHIKMNPRSTVW /", 0.6, "The captions over those totals."),
+    ("FOOT_20", 700, 20, NUMBERS, 0, "The distance left in the map's footer."),
 ]
+SHIPPED_ADVANCES = {"CAPTION": {"_": 7}}
 
 
 def quantize(alpha: int) -> int:
     return (alpha * 15 + 127) // 255
 
 
-def rasterize(weight: int, size: int, chars: str, tracking: int):
+def rasterize(weight: int, size: int, chars: str, tracking: float):
     font = ImageFont.truetype(str(SOURCE), size)
     font.set_variation_by_axes([weight])
     cap_top = font.getbbox("H", anchor="ls")[1]
@@ -70,9 +77,8 @@ def rasterize(weight: int, size: int, chars: str, tracking: int):
         if char in DIGITS:
             left += (digit_advance - advance) // 2
             advance = digit_advance
-        glyphs[char] = dict(
-            x=left, y=top - cap_top, w=width, h=height, advance=advance + tracking, pixels=pixels
-        )
+        advance = round(advance + tracking)
+        glyphs[char] = dict(x=left, y=top - cap_top, w=width, h=height, advance=advance, pixels=pixels)
     # Lift every box so no glyph starts above the face's top.
     lift = -min(g["y"] for g in glyphs.values() if g["w"])
     lift = max(lift, 0)
@@ -102,6 +108,8 @@ def emit() -> str:
     total = 0
     for name, weight, size, chars, tracking, doc in FACES:
         glyphs, height, lift = rasterize(weight, size, chars, tracking)
+        for char, advance in SHIPPED_ADVANCES.get(name, {}).items():
+            glyphs[char]["advance"] = advance
         bits = bytearray()
         entries = []
         for code in range(FIRST, LAST + 1):
@@ -122,7 +130,7 @@ def emit() -> str:
             f"/// {doc} Nunito {weight} at {size} px; {height} px tall.",
             f"pub static {name}: Face = Face {{",
             f"    height: {height},",
-            f"    cap: {glyphs['H']['h'] if 'H' in glyphs else glyphs['0']['h']},",
+            f"    cap: {next(glyphs[c]['h'] for c in 'H0EIKNT' if c in glyphs)},",
             f"    top: {lift},",
             f"    glyphs: &{name}_GLYPHS,",
             f"    bits: &{name}_BITS,",
@@ -135,6 +143,12 @@ def emit() -> str:
         for i in range(0, len(bits), 20):
             out.append("    " + " ".join(f"{b:#04x}," for b in bits[i : i + 20]))
         out += ["];", ""]
+    names = ", ".join(f"&{face[0]}" for face in FACES)
+    out += [
+        "/// Every face, for tools that read text back from frames.",
+        f"pub static FACES: [&Face; {len(FACES)}] = [{names}];",
+        "",
+    ]
     out.insert(3, f"// {total} bytes of glyph data and tables.")
     return "\n".join(out)
 

@@ -36,3 +36,16 @@ The mockups use these values on top of the palette in
 | Off-course marks | `AMBER` `#ff9f0a` | Rider puck, chevrons back, missed-junction ring |
 
 The typeface is Nunito at weights 800 and 900, as everywhere else in VANA.
+
+## Checking a screen against its mockup
+
+`cycling mockup-compare` compares each mockup with the simulator checkpoint a
+scenario names after it (`.local/sim/latest/<scenario>/NN-ride-turns.png`, run
+`cycling sim` first). Each element's interior must be its token exactly in
+RGB565, a colour's ink may reach at most one pixel past where the mockup draws
+it, and a sign's fill must fill exactly the mockup's box. `<screen>.rules.toml`
+names what a screen draws differently on purpose, each with its reason: the
+clock and page dots, readings whose digits change, text drawn in an existing
+face, and the illustrative roads. It writes `expected.png`, `actual.png` and
+`diff.png` per screen to `.local/mockup/`. `--checkpoint` compares one screen
+with any PNG or SVG.

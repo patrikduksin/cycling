@@ -19,7 +19,8 @@
 //! `app::climb_page`).
 use super::canvas::Canvas;
 use super::chrome::{self, Align, CONTENT, Rect};
-use super::workout::{Graphics, Scene, Text, View};
+use super::icons::SignForm;
+use super::workout::{Body, Graphics, Scene, Text, View};
 use crate::ride::laps::Lap;
 use crate::ride::zones::TrainingProfile;
 use crate::sensors::radar::{self, close};
@@ -54,7 +55,7 @@ pub(super) use chrome::{RED, WHITE};
 pub(super) const GRID: u16 = chrome::TERTIARY;
 
 /// The radar strip and its divider.
-const RADAR_WIDTH: usize = 28;
+pub(super) const RADAR_WIDTH: usize = 28;
 /// What a page draws into, beside the radar strip.
 pub(super) const BODY: Rect = Rect {
     left: CONTENT.left + RADAR_WIDTH,
@@ -77,7 +78,7 @@ const _: () = assert!(
     "a caption needs 6 clear rows over the value above it"
 );
 /// Without a radar the body moves left by this much, to the centre.
-const CENTRE_SHIFT: usize = RADAR_WIDTH / 2;
+pub(super) const CENTRE_SHIFT: usize = RADAR_WIDTH / 2;
 
 /// A ride page, in MOVE order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -204,6 +205,13 @@ impl PageChoice {
         }
     }
 
+    pub const fn showing(self, page: RidePage) -> Self {
+        match page.hide_bit() {
+            Some(bit) => Self(self.0 & !bit),
+            None => self,
+        }
+    }
+
     /// Show or hide `page`; the always-on pages stay on.
     pub fn toggled(self, page: RidePage) -> Self {
         match page.hide_bit() {
@@ -286,6 +294,7 @@ pub(super) type Labels = heapless::Vec<chrome::Label<12>, 14>;
 #[derive(Default, Hash)]
 pub struct Smooth {
     pub(super) labels: Labels,
+    pub(super) gauges: Option<[usize; 2]>,
     /// A workout target under a gauge: which gauge and its columns.
     pub(super) band: Option<(usize, core::ops::Range<usize>)>,
 }
@@ -293,6 +302,7 @@ pub struct Smooth {
 impl Smooth {
     pub const EMPTY: Self = Self {
         labels: heapless::Vec::new(),
+        gauges: None,
         band: None,
     };
 }
@@ -311,6 +321,11 @@ pub(super) fn prepare(view: &mut View) {
         // The app lays out the chart from its player: the workout stays there.
         RidePage::Workout => super::workout::fill(view, workout::prepare),
         RidePage::Map => super::workout::fill(view, map::prepare),
+    }
+    let banner = super::sign::on_page(view.ride_page, view.nav, view.radar_paired)
+        .filter(|sign| sign.form() == SignForm::Banner);
+    if let (Some(banner), Body::Canvas(canvas)) = (banner, &mut view.body) {
+        canvas.hide(banner.rect().top..banner.rect().bottom);
     }
 }
 

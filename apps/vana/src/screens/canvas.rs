@@ -239,6 +239,32 @@ impl Canvas {
         }
     }
 
+    /// Drop what `rows` covers, down to the first row it leaves clear, so
+    /// nothing shows cut off below it or stranded off its panel.
+    pub fn hide(&mut self, rows: core::ops::Range<usize>) {
+        let mut cut = rows.end;
+        while let Some(bottom) = self
+            .spans()
+            .filter(|&(top, bottom)| top < cut && cut < bottom)
+            .map(|(_, bottom)| bottom)
+            .max()
+        {
+            cut = bottom;
+        }
+        let shown = |top: usize, bottom: usize| bottom <= rows.start || cut <= top;
+        self.shapes.retain(|shape| {
+            let bounds = shape.bounds();
+            shown(bounds.top, bounds.bottom)
+        });
+        self.runs.retain(|run| shown(run.top, run.bottom()));
+    }
+
+    fn spans(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let shapes = self.shapes.iter().map(|shape| shape.bounds());
+        let shapes = shapes.map(|bounds| (bounds.top, bounds.bottom));
+        shapes.chain(self.runs.iter().map(|run| (run.top, run.bottom())))
+    }
+
     /// The per-pixel original of `paint`, over `background`.
     #[cfg(test)]
     pub fn pixel(&self, x: usize, y: usize, background: u16) -> u16 {

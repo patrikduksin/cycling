@@ -23,7 +23,7 @@ impl Runtime {
             None if self.ride.climbs.climbing().is_some() => Road::Climbing,
             None => Road::Clear,
         };
-        let choice = self.preferences.options.ride_pages;
+        let choice = self.page_choice_with_course_map();
         let navigation = &mut self.navigation;
         let before = core::mem::replace(&mut navigation.road, road);
         let seen = Seen::of(navigation, choice, before);

@@ -7,7 +7,7 @@ mod art;
 
 use super::chrome::{Rect, Row, blend};
 use crate::sensors::ant::device_type;
-pub use art::{ARROW, PLUS, REFRESH, Sensor};
+pub use art::{ARROW, PLUS, PUCK, REFRESH, Sensor, SignGlyph};
 
 /// One icon at one pixel size: coverage for the box its ink fills inside a
 /// `size` square, two columns a byte with the left one in the high nibble.
@@ -127,6 +127,33 @@ impl Icon {
     }
 }
 
+/// The course sign's three forms, as the mockups in
+/// `docs/design/course-navigation` draw them.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum SignForm {
+    /// Full width on a data page.
+    Banner,
+    /// Floating on the map.
+    Badge,
+    /// The square at the left of the main page's chip.
+    Chip,
+}
+
+/// A sign glyph in one form: its icon, whose square's top-left corner sits
+/// (`left`, `top`) from the top-left corner of the form's fill.
+#[derive(Debug)]
+pub struct SignArt {
+    pub left: u8,
+    pub top: u8,
+    pub icon: Icon,
+}
+
+impl SignGlyph {
+    pub fn art(self, form: SignForm) -> &'static SignArt {
+        &art::SIGN_GLYPHS[self as usize][form as usize]
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Size {
     /// Home's sensor card and NEARBY's rows.
@@ -180,7 +207,7 @@ impl Sensor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::chrome::{BLACK, CARD, WHITE};
+    use crate::screens::chrome::{BLACK, CARD, Rect, WHITE};
 
     const ALL: [Sensor; 10] = [
         Sensor::Heart,
@@ -198,7 +225,73 @@ mod tests {
     fn icons() -> impl Iterator<Item = &'static Icon> {
         ALL.into_iter()
             .flat_map(|sensor| [Size::Small, Size::Row, Size::Large].map(|size| sensor.icon(size)))
-            .chain([&PLUS, &REFRESH, &ARROW])
+            .chain([&PLUS, &REFRESH, &ARROW, &PUCK])
+            .chain(
+                SIGN_GLYPHS
+                    .into_iter()
+                    .flat_map(|glyph| FORMS.map(|form| &glyph.art(form).icon)),
+            )
+    }
+
+    const SIGN_GLYPHS: [SignGlyph; 8] = [
+        SignGlyph::Right,
+        SignGlyph::Left,
+        SignGlyph::SharpRight,
+        SignGlyph::SharpLeft,
+        SignGlyph::UTurnLeft,
+        SignGlyph::UTurnRight,
+        SignGlyph::Back,
+        SignGlyph::Flag,
+    ];
+    const FORMS: [SignForm; 3] = [SignForm::Banner, SignForm::Badge, SignForm::Chip];
+
+    fn ink(glyph: SignGlyph, form: SignForm) -> Rect {
+        let art = glyph.art(form);
+        art.icon.ink(usize::from(art.left), usize::from(art.top))
+    }
+
+    #[test]
+    fn every_sign_glyph_sits_inside_its_fill() {
+        for glyph in SIGN_GLYPHS {
+            for (form, width, height) in [
+                (SignForm::Banner, 240, 82),
+                (SignForm::Badge, 118, 60),
+                (SignForm::Chip, 28, 28),
+            ] {
+                let ink = ink(glyph, form);
+                assert!(ink.left > 0 && ink.top > 0, "{glyph:?} {form:?}");
+                assert!(
+                    ink.right < width && ink.bottom < height,
+                    "{glyph:?} {form:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn left_glyphs_mirror_their_right_twins_about_the_mockup_centre() {
+        let centres = [
+            (SignForm::Banner, 52.75),
+            (SignForm::Badge, 26.33),
+            (SignForm::Chip, 13.44),
+        ];
+        let pairs = [
+            (SignGlyph::Right, SignGlyph::Left),
+            (SignGlyph::SharpRight, SignGlyph::SharpLeft),
+            (SignGlyph::UTurnRight, SignGlyph::UTurnLeft),
+        ];
+        for (right, left) in pairs {
+            for (form, centre) in centres {
+                let (r, l) = (ink(right, form), ink(left, form));
+                let mirrored = (r.left + l.right) as f32 / 2.0;
+                assert!(
+                    (mirrored - centre).abs() <= 0.5,
+                    "{right:?} {form:?}: {mirrored}"
+                );
+                assert_eq!((r.top, r.bottom), (l.top, l.bottom));
+            }
+        }
+        assert_eq!(ink(SignGlyph::Right, SignForm::Banner).top, 63 - 22 - 30);
     }
 
     #[test]

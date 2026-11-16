@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Host tools for cycling firmware development"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = ["esptool==5.6.0"]
+dependencies = [
+    "esptool==5.6.0",
+    "pillow==13.0.0",
+    "resvg-py==0.5.0",
+]
 
 [dependency-groups]
 dev = [

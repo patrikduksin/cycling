@@ -1094,6 +1094,74 @@ mod tests {
     }
 
     #[test]
+    fn reads_each_sign_and_totals_face_as_itself() {
+        use firmware_shell::rendering::font::{
+            BODY, FOOT_20, SIGN_13, SIGN_14, SIGN_18, SIGN_20, SIGN_27, SIGN_32, SIGN_50, TITLE,
+            TOTAL_11, TOTAL_30, TOTAL_60,
+        };
+        const TURN: u16 = 0x0b7c;
+        const OFF_COURSE: u16 = 0xd3a0;
+        const ARRIVED: u16 = 0x1cc8;
+        let cases: [(&Face, u16, &str); 20] = [
+            (&SIGN_50, TURN, "120"),
+            (&SIGN_50, OFF_COURSE, "1.4"),
+            (&SIGN_32, TURN, "250"),
+            (&SIGN_32, TURN, "40"),
+            (&SIGN_27, ARRIVED, "ARRIVED"),
+            (&SIGN_20, TURN, "M"),
+            (&SIGN_20, TURN, "KM"),
+            (&SIGN_20, BG, "6.4"),
+            (&SIGN_20, ARRIVED, "ARRIVED"),
+            (&SIGN_18, OFF_COURSE, "TURN BACK"),
+            (&SIGN_14, OFF_COURSE, "TURN BACK"),
+            (&SIGN_14, TURN, "KM"),
+            (&SIGN_13, BG, "KM"),
+            (&TOTAL_60, 0, "56.20"),
+            (&TOTAL_30, 0, "27.1"),
+            (&TOTAL_30, 0, "168"),
+            (&TOTAL_11, 0, "AVG KM/H"),
+            (&TOTAL_11, 0, "RIDE TIME"),
+            (&FOOT_20, 0, "12.4"),
+            (&FOOT_20, 0, "0.8"),
+        ];
+        let index = |face: &Face| FACES.iter().position(|&f| core::ptr::eq(f, face)).unwrap();
+        for (face, fill, text) in cases {
+            let mut p = canvas(fill);
+            smooth(&mut p, 12, 30, face, WHITE, text);
+            let texts: Vec<_> = fresh(&p).into_iter().map(|r| r.text).collect();
+            assert_eq!(texts, [text], "{text} in face {}", index(face));
+            let glyphs = frame(&p).smooth_glyphs();
+            let spelled = glyphs
+                .iter()
+                .filter(|g| text.as_bytes().contains(&g.character));
+            assert_eq!(spelled.clone().count(), text.replace(' ', "").len());
+            assert!(
+                spelled.clone().all(|g| g.scale == FACE_SCALE + index(face)),
+                "{text} in face {} reads as its own face",
+                index(face)
+            );
+        }
+        for (face, other, text) in [(&SIGN_32, &TITLE, "250"), (&SIGN_20, &BODY, "6.4 KM")] {
+            let mut p = canvas(0);
+            smooth(&mut p, 12, 30, face, WHITE, text);
+            smooth(&mut p, 12, 120, other, WHITE, text);
+            let faces: Vec<_> = frame(&p)
+                .smooth_glyphs()
+                .iter()
+                .filter(|g| text.as_bytes().contains(&g.character))
+                .map(|g| (g.y < 100, g.scale - FACE_SCALE))
+                .collect();
+            assert!(faces.contains(&(true, index(face))));
+            assert!(faces.contains(&(false, index(other))));
+            assert!(
+                faces
+                    .iter()
+                    .all(|&(top, f)| f == if top { index(face) } else { index(other) })
+            );
+        }
+    }
+
+    #[test]
     fn table_matches_shared_font() {
         for byte in 0..=255_u8 {
             let rows = GLYPHS

@@ -11,13 +11,13 @@ use super::row::Row;
 use super::work;
 use core::ops::Range;
 
-pub use faces::{BODY, CAPTION, HERO, LARGE, TITLE, VALUE};
+pub use faces::{
+    BODY, CAPTION, FACES, FOOT_20, HERO, LARGE, SIGN_13, SIGN_14, SIGN_18, SIGN_20, SIGN_27,
+    SIGN_32, SIGN_50, TITLE, TOTAL_11, TOTAL_30, TOTAL_60, VALUE,
+};
 
 /// Anti-aliased glyphs may cover this many columns past a line's advance width.
 pub const SPILL: usize = 2;
-
-/// Every face, smallest first, for tools that read text back from frames.
-pub static FACES: [&Face; 6] = [&CAPTION, &BODY, &TITLE, &VALUE, &LARGE, &HERO];
 
 /// One glyph's box relative to its pen position and the face's top line.
 #[derive(Clone, Copy, Debug)]
@@ -41,7 +41,8 @@ impl Glyph {
     };
 }
 
-/// One weight at one size, covering ASCII from space to underscore.
+/// One weight at one size, covering ASCII from space to underscore or only
+/// the characters its screens draw.
 pub struct Face {
     /// Line height from the top of the tallest glyph to the lowest descent.
     pub height: u8,
@@ -498,6 +499,30 @@ mod tests {
             assert!((b'A'..=b'Z').all(|c| face.glyph(c).w > 0));
             assert_eq!(face.glyph(b'a').advance, face.glyph(b'A').advance);
         }
+    }
+
+    #[test]
+    fn each_sign_and_totals_face_draws_its_texts() {
+        let draws: [(&Face, &[u8]); 11] = [
+            (&SIGN_50, b"0123456789."),
+            (&SIGN_32, b"0123456789."),
+            (&SIGN_27, b"ARRIVED"),
+            (&SIGN_20, b"0123456789. KM ARRIVED"),
+            (&SIGN_18, b"TURN BACK"),
+            (&SIGN_14, b"TURN BACK KM"),
+            (&SIGN_13, b"KM"),
+            (&TOTAL_60, b"0123456789."),
+            (&TOTAL_30, b"0123456789.:"),
+            (&TOTAL_11, b"DISTANCE RIDE TIME AVG KM/H W BPM"),
+            (&FOOT_20, b"0123456789."),
+        ];
+        for (face, text) in draws {
+            assert!(text.iter().all(|&c| c == b' ' || face.glyph(c).w > 0));
+            assert!(face.glyph(b' ').advance > 0);
+            assert!(face.cap <= face.height);
+        }
+        assert_eq!(SIGN_27.glyph(b'0').w, 0);
+        assert_eq!(SIGN_50.glyph(b'M').w, 0);
     }
 
     /// `Label::paint_row` holds only `SPILL` columns of a glyph for the next.

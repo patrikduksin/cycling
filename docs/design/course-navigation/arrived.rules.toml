@@ -1,0 +1,27 @@
+# The status bar. The clock shows the scenario's time; the page dots match
+# the code (five pages on a free ride after #388), not the six drawn here.
+[[mask]]
+region = [189, 0, 240, 22]
+why = "the status clock, whose width changes with the time"
+
+[[mask]]
+region = [55, 4, 124, 18]
+why = "page dots: the code's count and current page"
+
+# REC and GPS are drawn 800 at 12 px; the screen draws them in CAPTION (800/13).
+[[text]]
+match = 'font-size="12"'
+why = "REC and GPS in CAPTION"
+
+# Totals are the ride's own: digits and width are free.
+[[text]]
+match = 'font-weight="700"'
+why = "distance, ride time and averages"
+
+[[text]]
+match = 'font-size="11"'
+why = "captions' letter-spacing rounded per glyph"
+
+[[text]]
+match = 'font-weight="800" font-size="13"'
+why = "KM in CAPTION"

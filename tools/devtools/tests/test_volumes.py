@@ -1,4 +1,6 @@
 import hashlib
+import io
+import json
 import os
 import struct
 import sys
@@ -418,6 +420,18 @@ class VolumesTests(unittest.TestCase):
         device.store = {}
         with self.assertRaisesRegex(ValueError, 'no file in traces/'):
             volumes.trace_pull(transfer, directory=Path('unused'))
+
+    def test_trace_pull_prints_one_json_document_with_or_without_json(self):
+        result = {'name': 'traces/000010-0000bbbb.trace', 'records': 2, 'bytes': 3, 'path': 'x.trace'}
+        for argv in (['volumes', 'trace-pull', '--json'], ['volumes', 'trace-pull']):
+            with (
+                mock.patch.object(sys, 'argv', argv),
+                mock.patch.object(volumes, 'selected_port', return_value='port'),
+                mock.patch.object(volumes, 'run', return_value=result),
+                mock.patch('sys.stdout', new_callable=io.StringIO) as out,
+            ):
+                volumes.main()
+            self.assertEqual(json.loads(out.getvalue()), result, argv)
 
     def run_main(self, argv, result, message):
         with (

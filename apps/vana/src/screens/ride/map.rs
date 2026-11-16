@@ -44,6 +44,9 @@ pub struct Track<'a> {
     /// Following the course: what is ahead is its first points up to this
     /// index, from its end, and then the matched point if any.
     pub ahead: Option<(usize, Option<Point>)>,
+    /// The course is placed and following may still start: marks on its
+    /// line show which way it runs.
+    pub joinable: bool,
     pub guidance: Option<Guidance>,
     /// Metres left to the course's end, while following it.
     pub left_m: Option<u32>,
@@ -64,6 +67,7 @@ pub struct Key {
     placement: Placement,
     ahead: Option<(usize, Option<(u32, u32)>)>,
     leg: Option<usize>,
+    joinable: bool,
     sign: Option<Sign>,
     turn: Option<u32>,
     junction: Option<u32>,
@@ -87,6 +91,7 @@ impl Track<'_> {
                 .ahead
                 .map(|(segment, matched)| (segment, matched.map(bits))),
             leg,
+            joinable: self.joinable,
             sign: self.guidance.map(|g| g.sign),
             turn: self.turn_on_course().map(|(spot, _)| spot.along_mm),
             junction: self.junction().map(|j| j.along_mm),
@@ -149,17 +154,22 @@ impl Track<'_> {
         Some((leg.end, leg.at))
     }
 
+    fn metres_to_end_at(&self, (end, at): (usize, Point)) -> f32 {
+        let next = self.course[end - 1];
+        next.along + distance(at, (next.east, next.north))
+    }
+
     fn ahead_points(
         &self,
-        (end, at): (usize, Point),
+        place: (usize, Point),
         reach_m: f32,
     ) -> impl Iterator<Item = (Point, bool)> + '_ {
+        let (end, at) = place;
         let turn = self
             .turn_on_course()
             .map(|(spot, _)| self.metres_to_end(spot));
         let before = move |along: f32| turn.is_none_or(|t| along > t);
-        let next = self.course[end - 1];
-        let start = (at, next.along + distance(at, (next.east, next.north)));
+        let start = (at, self.metres_to_end_at(place));
         let stop = start.1 - reach_m;
         let first = self.course[..end].partition_point(|c| c.along < stop);
         let walked = |c: &Crumb| ((c.east, c.north), c.along);
@@ -303,7 +313,7 @@ impl HeldLeg {
         let counted_from = *self.counted_from.get_or_insert(fix.at);
         let travelled_from = |from: Point| distance(from, fix.at) >= MOVING_M;
         let motion = match speed_mm_s {
-            Some(v) if !pose::moving(v) => Motion::Stopped,
+            Some(v) if !follow::moving(v) => Motion::Stopped,
             Some(_) if travelled_from(counted_from) => Motion::Moving,
             Some(_) => Motion::TooSlowToTell,
             None if last.is_some_and(|last| travelled_from(last.at)) => Motion::Moving,
@@ -499,6 +509,13 @@ const CHEVRON_PITCH: f32 = 15.0;
 const CHEVRON_DEPTH: f32 = 6.0;
 const CHEVRON_HALF: f32 = 5.0;
 const CHEVRON_STROKE: f32 = 1.75;
+const MARKS: usize = 8;
+const MARK_STEP_M: f32 = 25.0;
+const MARK_PITCH_PX: f32 = 40.0;
+const MARK_REACH_PX: f32 = 320.0;
+const MARK_DEPTH: f32 = 3.5;
+const MARK_HALF: f32 = 3.5;
+const MARK_STROKE: f32 = 1.0;
 const PUCK_RINGS_QUARTER_PX: [(i32, u16); 2] = [(58, BLACK), (50, WHITE)];
 const PUCK_CLEAR: f32 = 14.5;
 const JUNCTION_CLEAR: f32 = 12.0;
@@ -589,6 +606,8 @@ pub struct Frame {
     arrow: Arrow,
     chevrons: [Stroke; 2 * CHEVRONS],
     chevron_count: usize,
+    marks: [Stroke; 2 * MARKS],
+    mark_count: usize,
     junction_quarter_px: Option<(i32, i32)>,
     puck: Option<Puck>,
     has_track: bool,
@@ -613,6 +632,8 @@ impl Default for Frame {
             arrow: Arrow::default(),
             chevrons: [Stroke::default(); 2 * CHEVRONS],
             chevron_count: 0,
+            marks: [Stroke::default(); 2 * MARKS],
+            mark_count: 0,
             junction_quarter_px: None,
             puck: None,
             has_track: false,
@@ -773,6 +794,7 @@ fn fill(frame: &mut Frame, track: &Track) {
     frame.counts = [0; 2];
     frame.arrow.strokes = 0;
     frame.chevron_count = 0;
+    frame.mark_count = 0;
     frame.junction_quarter_px = None;
     frame.puck = None;
     frame.left_m = track.left_m.filter(|_| track.following());
@@ -800,6 +822,19 @@ fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
             let reach_m = ROUTE_REACH * pose.reach.ahead_m() + to_junction;
             let ahead = track.ahead_points(place, reach_m);
             frame.add(Line::Route, &at, ahead.map(|(p, _)| p));
+            if track.joinable {
+                let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
+                let from_end_m = track.metres_to_end_at(place);
+                let ahead_m = (from_end_m - reach_m)..from_end_m;
+                marks(
+                    frame,
+                    &at,
+                    track.course,
+                    ahead_m,
+                    pose.reach.px_per_m(),
+                    rider,
+                );
+            }
         }
         None => frame.add(Line::Ridden, &at, track.crumbs_back()),
     }
@@ -908,6 +943,71 @@ fn chevron_wings(
     wings
 }
 
+fn marks(
+    frame: &mut Frame,
+    at: &Projection,
+    course: &[Crumb],
+    ahead_m: core::ops::Range<f32>,
+    px_per_m: f32,
+    rider: Point,
+) {
+    let total = course.last().map_or(0.0, |c| c.along);
+    let (pitch, nudge) = (mark_pitch_m(px_per_m), 1.0 / px_per_m);
+    let furthest = ahead_m.start.max(ahead_m.end - MARK_REACH_PX / px_per_m);
+    let first = libm::ceilf(furthest / pitch).max(0.0) as u32;
+    let last = libm::floorf(ahead_m.end.min(total - nudge) / pitch);
+    for k in first..=last.max(0.0) as u32 {
+        let along = k as f32 * pitch;
+        let tip = at.at(point_at_metres_to_end(course, along));
+        let behind = at.at(point_at_metres_to_end(course, along + nudge));
+        let (dx, dy) = (tip.0 - behind.0, tip.1 - behind.1);
+        let length = libm::sqrtf(dx * dx + dy * dy);
+        let clear = distance(tip, rider) > PUCK_CLEAR + MARK_HALF;
+        if length <= 0.0 || !clear || !visible(tip, tip, MARK_HALF) {
+            continue;
+        }
+        if frame.mark_count + 2 > frame.marks.len() {
+            return;
+        }
+        let (ux, uy) = (dx / length, dy / length);
+        let tip = (tip.0 + ux * MARK_DEPTH / 2.0, tip.1 + uy * MARK_DEPTH / 2.0);
+        for side in [-1.0, 1.0] {
+            let wing = (
+                tip.0 - ux * MARK_DEPTH - uy * MARK_HALF * side,
+                tip.1 - uy * MARK_DEPTH + ux * MARK_HALF * side,
+            );
+            frame.marks[frame.mark_count] = Stroke::new(wing, tip);
+            frame.mark_count += 1;
+        }
+    }
+}
+
+/// Marks sit every `MARK_STEP_M` along the course, or every second, fourth
+/// and so on of those, the fewest at least `MARK_PITCH_PX` apart: as the
+/// scale eases they stay put, and thin out or fill in only where it doubles.
+fn mark_pitch_m(px_per_m: f32) -> f32 {
+    let mut pitch = MARK_STEP_M;
+    while pitch * px_per_m < MARK_PITCH_PX {
+        pitch *= 2.0;
+    }
+    pitch
+}
+
+fn point_at_metres_to_end(course: &[Crumb], along: f32) -> Point {
+    let end = course
+        .partition_point(|c| c.along < along)
+        .clamp(1, course.len() - 1);
+    let (a, b) = (course[end - 1], course[end]);
+    let t = match b.along > a.along {
+        true => ((along - a.along) / (b.along - a.along)).clamp(0.0, 1.0),
+        false => 0.0,
+    };
+    (
+        a.east + t * (b.east - a.east),
+        a.north + t * (b.north - a.north),
+    )
+}
+
 fn bands(stroke: &Stroke, half: f32) -> Option<(usize, usize)> {
     let (top, bottom) = stroke.rows(half);
     let low = (top - 1.0).max(GROUND.start as f32);
@@ -978,6 +1078,10 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
             cover.paint(row, color);
         }
     }
+    for stroke in &frame.marks[..frame.mark_count] {
+        cover.stroke(stroke, MARK_STROKE);
+    }
+    cover.paint(row, CASING);
     let arrow = &frame.arrow;
     let centre = y as f32 + 0.5;
     if arrow.strokes > 0 && (arrow.rows.0..=arrow.rows.1).contains(&centre) {
@@ -1046,6 +1150,12 @@ pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
             color = over(color, paint, c);
         }
     }
+    let c = frame.marks[..frame.mark_count]
+        .iter()
+        .map(|s| raster::coverage(s, MARK_STROKE, x, y))
+        .max()
+        .unwrap_or(0);
+    color = over(color, CASING, c);
     let arrow = &frame.arrow;
     if arrow.strokes > 0 {
         for ArrowLayer {

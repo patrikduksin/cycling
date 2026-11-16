@@ -42,7 +42,7 @@ fn angle(e7: i32, degrees: usize, [positive, negative]: [char; 2]) -> String {
 impl Rider<'_> {
     fn hear(&mut self, gps: &Snapshot, now: u64) -> Option<Event> {
         let fix = self.homing.observe(Reported::fresh(gps, now), now);
-        self.follower.observe(fix, now, None)
+        self.follower.observe(fix, now, None, false)
     }
 }
 

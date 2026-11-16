@@ -30,6 +30,7 @@ struct Rider<'t> {
     now_ms: u64,
     speed_mm_s: Option<u32>,
     joined: bool,
+    paused: bool,
 }
 
 impl<'t> Rider<'t> {
@@ -40,6 +41,7 @@ impl<'t> Rider<'t> {
             now_ms: 0,
             speed_mm_s,
             joined: false,
+            paused: false,
         }
     }
 
@@ -57,6 +59,7 @@ impl<'t> Rider<'t> {
             here: (off_m, along_m),
             forward,
             speed_mm_s: self.speed_mm_s,
+            paused: self.paused,
         }
     }
 
@@ -609,4 +612,61 @@ pub(crate) fn ride_with(
         heard.extend(told.map(|said| (metres as u32, said)));
     }
     heard
+}
+
+#[test]
+fn a_held_back_turn_now_holds_only_until_its_turn_is_passed() {
+    let turns = [corner(500.0, RIGHT), corner(900.0, LEFT)];
+    let mut rider = Rider::new(&turns, None);
+    let heard = rider.ride(0.0, 480.0, 5.0);
+    assert!(
+        heard.iter().any(|&(_, event)| event == Event::TurnNow),
+        "{heard:?}"
+    );
+    assert!(rider.nav.holds(Navigation::TurnNow, &turns));
+    rider.ride(485.0, 560.0, 5.0);
+    assert!(!rider.nav.holds(Navigation::TurnNow, &turns));
+}
+
+#[test]
+fn a_held_back_off_course_holds_only_while_off_course() {
+    let mut rider = Rider::new(&[], None);
+    rider.ride(0.0, 100.0, 5.0);
+    let heard: Vec<_> = (0..7)
+        .filter_map(|_| rider.fix(100.0, 60.0, true))
+        .collect();
+    assert_eq!(heard, [Event::OffCourse]);
+    assert!(rider.nav.holds(Navigation::OffCourse, &[]));
+    assert!(!rider.nav.holds(Navigation::OnCourse, &[]));
+    assert_eq!(rider.at(105.0), Some(Event::OnCourse));
+    assert!(!rider.nav.holds(Navigation::OffCourse, &[]));
+}
+
+#[test]
+fn paused_fixes_never_confirm_or_remind_of_off_course() {
+    let mut rider = Rider::new(&[], None);
+    rider.ride(0.0, 100.0, 5.0);
+    rider.paused = true;
+    let heard: Vec<_> = (0..60)
+        .filter_map(|_| rider.fix(100.0, 44.0, true))
+        .collect();
+    assert!(heard.is_empty(), "{heard:?}");
+    assert!(!matches!(
+        rider.nav.sign(&[], rider.now_ms),
+        Sign::OffCourse { .. }
+    ));
+    rider.paused = false;
+    let heard: Vec<_> = (0..7)
+        .filter_map(|_| rider.fix(100.0, 44.0, true))
+        .collect();
+    assert_eq!(heard, [Event::OffCourse], "resumed still off");
+    rider.paused = true;
+    let heard: Vec<_> = (0..30)
+        .filter_map(|_| rider.fix(100.0, 44.0, true))
+        .collect();
+    assert!(heard.is_empty(), "no reminder while paused: {heard:?}");
+    assert!(matches!(
+        rider.nav.sign(&[], rider.now_ms),
+        Sign::OffCourse { .. }
+    ));
 }

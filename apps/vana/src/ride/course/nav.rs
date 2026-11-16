@@ -8,7 +8,8 @@
 //! `GRACE_MM` past the turn, or longer while the turns are `dense`. Its
 //! sound plays only when it opens, and the beep `BEEP_MM` before each
 //! turn plays once. Off course is more than `OFF_M` off on fixes at least
-//! `CONFIRM_MS` apart, with none nearer between. It holds until the rider
+//! `CONFIRM_MS` apart, with none nearer between and none while the ride is
+//! paused, when the bike may be wheeled anywhere. It holds until the rider
 //! is back within `ON_M`, riding the course's way, however far off they
 //! went. The way back leads to where they left the course (`Spot`),
 //! which never moves. Each step returns at most one `Event`. A second one
@@ -56,6 +57,7 @@ pub struct MatchedFix {
     pub forward: bool,
     /// The ride's live speed; without one the banner opens at its least.
     pub speed_mm_s: Option<u32>,
+    pub paused: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +72,24 @@ pub enum Event {
     StillOff,
     OnCourse,
     Arrived,
+}
+
+/// A navigation sound that may wait for the buzzer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Navigation {
+    OffCourse,
+    OnCourse,
+    TurnNow,
+    TurnSoon,
+}
+
+impl Navigation {
+    pub const BY_URGENCY: [Self; 4] = [
+        Self::OffCourse,
+        Self::OnCourse,
+        Self::TurnNow,
+        Self::TurnSoon,
+    ];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -166,6 +186,8 @@ pub enum Sign {
     OffCourse { back: Distance },
     /// The `ARRIVED_MS` after the end (green).
     Arrived,
+    /// Not yet following, and riding against the course beside it (amber).
+    TurnAround,
 }
 
 const _: () = assert!(core::mem::size_of::<Sign>() == 4, "View has no spare bytes");
@@ -200,6 +222,7 @@ enum Place {
         since_ms: u64,
         junction: Spot,
         reminded: bool,
+        paused_since_sound: bool,
     },
 }
 
@@ -322,7 +345,7 @@ impl Navigator {
             }
             Observed::Fix(fix) => self.fix(fix, turns, &locate, &mut due),
         }
-        if let Some(parked) = parked.filter(|&raised| self.holds(raised, turns)) {
+        if let Some(parked) = parked.filter(|&raised| self.still_due(raised, turns)) {
             due.raise(parked);
         }
         self.pending = due.second;
@@ -342,7 +365,8 @@ impl Navigator {
             .is_some_and(|last| fix.taken_loop_ms.saturating_sub(last.taken_loop_ms) > LOST_MS);
         let now = fix.taken_loop_ms;
         self.place = match self.place {
-            Place::On if fix.off_m > OFF_M => Place::Leaving {
+            Place::Leaving { .. } if fix.paused => Place::On,
+            Place::On if fix.off_m > OFF_M && !fix.paused => Place::Leaving {
                 since_ms: now,
                 junction: self.junction(turns, fix.along_mm, locate),
             },
@@ -357,6 +381,7 @@ impl Navigator {
                     since_ms: now,
                     junction,
                     reminded: false,
+                    paused_since_sound: false,
                 }
             }
             Place::Off { .. } if fix.off_m <= ON_M && fix.forward => {
@@ -367,14 +392,27 @@ impl Navigator {
                 since_ms,
                 junction,
                 reminded: false,
-            } if now.saturating_sub(since_ms) >= REMIND_MS => {
+                ..
+            } if now.saturating_sub(since_ms) >= REMIND_MS && !fix.paused => {
                 due.raise(Raised::StillOff);
                 Place::Off {
                     since_ms,
                     junction,
                     reminded: true,
+                    paused_since_sound: false,
                 }
             }
+            Place::Off {
+                since_ms,
+                junction,
+                reminded,
+                ..
+            } if fix.paused => Place::Off {
+                since_ms,
+                junction,
+                reminded,
+                paused_since_sound: true,
+            },
             off => off,
         };
         if self.place == Place::On {
@@ -480,11 +518,19 @@ impl Navigator {
         None
     }
 
-    fn holds(&self, raised: Raised, turns: &[Turn]) -> bool {
+    fn still_due(&self, raised: Raised, turns: &[Turn]) -> bool {
         let is = |k: usize, turn: TurnId| turns.get(k).is_some_and(|t| t.id() == turn);
         match raised {
             Raised::Following | Raised::OnCourse => self.place == Place::On,
-            Raised::OffCourse | Raised::StillOff => matches!(self.place, Place::Off { .. }),
+            Raised::OffCourse | Raised::StillOff => {
+                matches!(
+                    self.place,
+                    Place::Off {
+                        paused_since_sound: false,
+                        ..
+                    }
+                )
+            }
             Raised::TurnSoon { turn } => self
                 .banner
                 .is_some_and(|k| is(k, turn) && self.last_beeped < Some(k)),
@@ -495,6 +541,24 @@ impl Navigator {
                     && self.last_beeped == next
             }
         }
+    }
+
+    /// Whether `cue`, raised earlier and still unheard, is still so: the
+    /// turn it is of not yet passed, the rider still off course or on it.
+    pub fn holds(&self, cue: Navigation, turns: &[Turn]) -> bool {
+        let raised = match cue {
+            Navigation::OnCourse => Raised::OnCourse,
+            Navigation::OffCourse => Raised::OffCourse,
+            Navigation::TurnSoon => match self.last_sounded.and_then(|k| turns.get(k)) {
+                Some(turn) => Raised::TurnSoon { turn: turn.id() },
+                None => return false,
+            },
+            Navigation::TurnNow => match self.last_beeped.and_then(|k| turns.get(k)) {
+                Some(turn) => Raised::TurnNow { turn: turn.id() },
+                None => return false,
+            },
+        };
+        self.still_due(raised, turns)
     }
 
     pub fn sign(&self, turns: &[Turn], now_ms: u64) -> Sign {

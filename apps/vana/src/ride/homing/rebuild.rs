@@ -424,7 +424,7 @@ mod tests {
         let mut events = Vec::new();
         for (i, &fix) in square(3)[0..40].iter().enumerate() {
             let now = (i as u64 + 1) * 1_000;
-            events.extend(follower.observe(homing.observe(taken(fix, now), now), now, None));
+            events.extend(follower.observe(homing.observe(taken(fix, now), now), now, None, false));
         }
         assert!(events.contains(&Event::Following), "{events:?}");
         assert!(follower.following());

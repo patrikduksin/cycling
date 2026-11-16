@@ -232,10 +232,20 @@ keeps on its memory card until the next one replaces it or the page clears
 it. Riding along the course in its direction, within 25 m of it for a few
 fixes, follows it: FOLLOWING COURSE and the rising cue.
 Crossing it, or riding it the wrong way, follows nothing, and a course far
-from the ride says nothing. While following, the rider is off course once
-they are more than 40 m from it on two fixes at least 5 s apart, with no
-fix nearer between: two falling tones, and once more 15 s later. A fix lost
-for 5 s starts that count again. However far off they ride, the course stays
+from the ride says nothing. Riding the wrong way within 25 m of it for three
+moving fixes says TURN AROUND (below), silently, until the rider rides its
+way, leaves it or loses the fix. A moving fix is at least 2 m on from the
+last one, at 5 km/h or more when the ride's speed is known, so a fix
+jittering at a stop never counts. Until following starts, the map draws small
+arrows on the course's line near the rider, the way it runs, so a rider
+standing at a junction sees which way to go. Riding another part of the same
+course follows from wherever the rider joins it, as before. While following,
+the rider is off course once they are more than 40 m from it on two fixes at
+least 5 s apart, with no fix nearer between: two falling tones, and once more
+15 s later. A fix lost for 5 s starts that count again. While the ride is
+paused, by hand or by itself, nothing confirms or repeats off course, since
+the bike may be wheeled anywhere; after the ride resumes the count starts
+again from the next fix. However far off they ride, the course stays
 followed and off course until they are back within 25 m of it, riding its
 way: one rising pair of tones. Near its end, along it, following ends with
 the ride-start chime. After that, or after the rider stops it on MAP, the
@@ -250,7 +260,12 @@ of the run beeps 30 m before it. A turn first met nearer than 300 m sounds its
 rising beeps at once, and one the rider is already in sounds nothing. At most
 one navigation sound plays per fix: another due on the same fix waits for the
 next, and is dropped if it no longer holds, so a turn beeping 30 m ahead
-right after rejoining the course drops its rising beeps.
+right after rejoining the course drops its rising beeps. A navigation sound
+raised while a radar alarm or another sound plays waits and plays after it,
+however long that takes, unless by then its turn is passed or the off-course
+state it told of has ended. One of each kind waits at once; together they
+play OFF COURSE first, then ON COURSE, the beep at a turn and the turn
+ahead. A sound whose turn passes before the buzzer starts it never plays.
 A turn is where the course turns by 60 degrees or more, turning at least as
 sharply as 60 degrees in 50 m: LEFT or RIGHT, SHARP LEFT or SHARP RIGHT past
 120 degrees, and U-TURN past 150. A bend gentler than that sounds nothing.
@@ -262,6 +277,28 @@ roundabout of up to about 40 m radius is one turn, named by the way it
 leaves, and straight over one sounds nothing.
 A course's turns are found once, as it loads from the phone, from every
 point of the file, so a long course thinned to fit names them as drawn.
+A spur is where the course goes into a dead end and comes straight back
+along it, as a waypoint just off the road draws it. VANA leaves a spur out
+only where it is sure the dead end is a planner's artifact: the way back
+retraces the way out to within 1 m, the dead end is 13 to 150 m deep, and the
+way in, the spur and the way on leave its base at least 30 degrees apart.
+There the course says what it would say with the spur's out-and-back taken
+out: no turn into it, no U-TURN at its end and no turn out of it, each turn
+after it as much further on as the spur is long. Wherever VANA is not sure,
+the course says what it said before spurs were found: the turn in, the
+U-TURN and the turn out. So at every spur the course says one or the other,
+never a turn that neither says, and never leaves out a turn that both say.
+VANA is not sure of a way back that drifts more than 1 m off the way out, a
+dead end under 13 m or over 150 m deep, a fork narrower than 30 degrees, or
+the far end of a longer out-and-back, where the way on runs back along the
+way in. Nor is it sure of spurs within 250 m of one another, sure of each or
+not, or of a spur within 250 m of an out-and-back's far end: it leaves every
+one of them as drawn. The course keeps a spur's points and its length, so
+distance along it and arrival are unchanged. Riding straight past the base
+of a spur left out is not off course, and riding into it and back sounds
+nothing either. Roads side by side about 8 m apart, a hairpin and a
+roundabout keep their turns. Turns stored with a course loaded before this
+keep its spurs until the course is loaded again.
 Where the course is drawn coarsely, as a planner's route is, or it was loaded
 before turns were found this way, a turn of several corners is named only
 roughly: LEFT or RIGHT from about 80 degrees, U-TURN from about 160, never
@@ -295,6 +332,9 @@ it had, with the large speed.
 - **Off course**, the banner turns amber with a U-turn arrow, the straight-line
   distance back to where the rider left the course, and TURN BACK. Rejoining
   clears it.
+- **Turn around.** Before following starts, riding against the course beside
+  it turns the banner amber with the U-turn arrow and TURN over AROUND, on
+  main, stats and climb, and as the map's badge. It sounds nothing.
 - **Arrived.** For 60 s after the end, the banner is green with a flag and
   ARRIVED, and main shows the ride's totals instead of live readings:
   DISTANCE, RIDE TIME, then AVG KM/H, AVG W and AVG BPM. Then the sign is

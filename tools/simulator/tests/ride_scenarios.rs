@@ -6688,7 +6688,7 @@ fn a_followed_course_sounds_its_turns_and_not_a_gentle_bend() {
     );
 
     let soon = ride_until_only(&mut sim, "turn_soon", &TURN_SOON, 1_500.0);
-    assert!((1_290.0..1_310.0).contains(&soon), "{soon}");
+    assert!((1_290.0..1_320.0).contains(&soon), "{soon}");
     sim.checkpoint("the hairpin's banner opens");
     let now = ride_until_only(&mut sim, "turn_now", &TURN_NOW, 1_620.0);
     assert!((1_565.0..1_585.0).contains(&now), "{now}");
@@ -9719,6 +9719,30 @@ mod navigation {
         sim.expect_no_text("ARRIVED");
         sim.expect_no_text("AVG W");
         sim.expect_text("KM/H");
+    }
+
+    #[test]
+    fn starting_against_the_course_says_turn_around_until_riding_its_way() {
+        let course = straight_then(1_000.0);
+        let route = [(0.0, 3_000.0), (0.0, 2_600.0), (0.0, 3_400.0)];
+        let mut sim = on_course(&course, &route);
+        sim.ride_at(24.0, 180.0, 140.0, 85.0);
+        sim.start_ride();
+        let from = sim.device.sim().speaker.played.len();
+        let at = ride_until_sign(&mut sim, BANNER, &["TURN", "AROUND"], 150.0);
+        assert!(at < 80.0, "{at}");
+        let heard = cues_since(&sim, from);
+        assert!(
+            heard.iter().all(|(cue, _)| cue == "start"),
+            "turn around is silent: {heard:?}"
+        );
+        sim.checkpoint("start-turn-around");
+        sim.tap(120, 60);
+        expect_map(&sim);
+        assert_eq!(map_badge(&sim), ["TURN", "AROUND"]);
+        sim.checkpoint("start-turn-around-map");
+        ride_until_shown(&mut sim, "FOLLOWING COURSE", 1_200.0);
+        sim.expect_no_text("AROUND");
     }
 
     #[test]

@@ -108,7 +108,7 @@ fn the_data_pages_show_a_banner_and_only_main_the_chip() {
         assert_eq!(form(page, at_rest), None, "{page:?}");
     }
     assert_eq!(form(RidePage::Lap, banner), None);
-    for sign in [at_rest, banner, off(80), Sign::Arrived] {
+    for sign in [at_rest, banner, off(80), Sign::Arrived, Sign::TurnAround] {
         assert_eq!(form(RidePage::Map, sign), Some(SignForm::Badge), "{sign:?}");
     }
     assert_eq!(form(RidePage::Map, Sign::None), None);
@@ -124,6 +124,7 @@ fn painted_signs_match_the_per_pixel_reference() {
         turn(Glyph::Finish, 12_000),
         off(140),
         Sign::Arrived,
+        Sign::TurnAround,
     ];
     let under = |x: usize, y: usize| if (x + y) % 7 < 3 { RAISED } else { BLACK };
     for sign in signs {
@@ -147,6 +148,37 @@ fn painted_signs_match_the_per_pixel_reference() {
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn turn_around_is_an_amber_u_turn_whose_words_stay_inside_it() {
+    for page in [RidePage::Main, RidePage::Stats, RidePage::Climb] {
+        assert_eq!(
+            form(page, Sign::TurnAround),
+            Some(SignForm::Banner),
+            "{page:?}"
+        );
+    }
+    assert!(place(Sign::TurnAround, SignForm::Chip, false).is_none());
+    for form in [SignForm::Banner, SignForm::Badge] {
+        for radar in [false, true] {
+            let placed = place(Sign::TurnAround, form, radar).unwrap();
+            let bounds = placed.rect();
+            assert!(bounds.right <= WIDTH, "{form:?} radar {radar}: {bounds:?}");
+            let inked = |x: usize, y: usize| placed.pixel(x, y, BLACK) != Some(OFF_FILL);
+            let edge = bounds.right - 8;
+            let words_left = bounds.left + 50;
+            for y in bounds.top + 4..bounds.bottom - 4 {
+                for x in edge..bounds.right - BADGE_RADIUS {
+                    assert!(!inked(x, y), "{form:?} radar {radar}: ink at ({x}, {y})");
+                }
+            }
+            let rows: Vec<usize> = (bounds.top..bounds.bottom)
+                .filter(|&y| (words_left..edge).any(|x| inked(x, y)))
+                .collect();
+            assert!(rows.len() > 30, "{form:?}: two lines of words, {rows:?}");
         }
     }
 }

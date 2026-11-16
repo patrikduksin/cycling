@@ -1,7 +1,7 @@
 use crate::ride::course::nav::{
-    self, Event, Guidance, MatchedFix, Navigator, OFF_M, ON_M, Observed, Sign,
+    self, Event, Guidance, MatchedFix, Navigation, Navigator, OFF_M, ON_M, Observed, Sign,
 };
-use crate::ride::course::turns::{SCAN_STEPS, Scan, Turn};
+use crate::ride::course::turns::{PlacedScan, SCAN_STEPS, Turn};
 use crate::ride::course::{self, along_m};
 use crate::ride::homing::{Crumb, Fix, Frame, TURN, bearing, distance};
 use crate::ride::thin::off_segment;
@@ -25,8 +25,24 @@ const AGAINST_M: f32 = 5.0;
 const HOP_M: f32 = 40.0;
 const GAP_MS: u64 = 5_000;
 const JOIN_FIXES: u8 = 5;
+const TURN_AROUND_FIXES: u8 = 3;
+const MOVING_M: f32 = 2.0;
+pub(crate) const MOVING_FROM_MM_S: u32 = 5 * 1_000_000 / 3_600;
+const MORE_THAN_45_DEG_OFF: core::ops::RangeInclusive<u16> = TURN / 8..=TURN * 7 / 8;
+const MORE_THAN_135_DEG_OFF: core::ops::Range<u16> = TURN * 3 / 8 + 1..TURN * 5 / 8;
 
 type Point = (f32, f32);
+
+/// A fix this far on from the last one, at least this fast when the ride's
+/// speed is known: a stop's jitter passes only by jumping that far with no
+/// speed known.
+fn fix_moving(travelled_m: Option<f32>, speed_mm_s: Option<u32>) -> bool {
+    travelled_m.is_some_and(|m| m >= MOVING_M) && speed_mm_s.is_none_or(moving)
+}
+
+pub(crate) fn moving(speed_mm_s: u32) -> bool {
+    speed_mm_s >= MOVING_FROM_MM_S
+}
 
 pub(crate) fn project(p: Point, a: Point, b: Point) -> (Point, f32) {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
@@ -91,6 +107,15 @@ impl Placement {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Riding {
+    /// Along the segment ending at this point: the first pass ridden its way.
+    Along(usize),
+    Against,
+    Across,
+    Away,
+}
+
 pub struct Follower<'a> {
     line: &'a mut [Crumb],
     len: usize,
@@ -99,6 +124,8 @@ pub struct Follower<'a> {
     held: bool,
     join_fixes: u8,
     join_end: usize,
+    turn_around_fixes: u8,
+    last_fix: Option<Point>,
     following: bool,
     segment: usize,
     matched: Option<Point>,
@@ -110,7 +137,7 @@ pub struct Follower<'a> {
     taken_loop_ms: u64,
     turns: &'a mut [Turn],
     turn_count: usize,
-    scan: Scan,
+    scan: PlacedScan,
     nav: Navigator,
 }
 
@@ -126,6 +153,8 @@ impl<'a> Follower<'a> {
             held: false,
             join_fixes: 0,
             join_end: 0,
+            turn_around_fixes: 0,
+            last_fix: None,
             following: false,
             segment: 0,
             matched: None,
@@ -137,7 +166,7 @@ impl<'a> Follower<'a> {
             taken_loop_ms: 0,
             turns,
             turn_count: 0,
-            scan: Scan::default(),
+            scan: PlacedScan::default(),
             nav: Navigator::default(),
         }
     }
@@ -150,6 +179,8 @@ impl<'a> Follower<'a> {
         self.placement = self.placement.next();
         self.held = false;
         self.join_fixes = 0;
+        self.turn_around_fixes = 0;
+        self.last_fix = None;
         self.following = false;
         self.matched = None;
         self.search_whole_course = false;
@@ -165,6 +196,7 @@ impl<'a> Follower<'a> {
         self.len = 0;
         self.placement = self.placement.next();
         self.join_fixes = 0;
+        self.turn_around_fixes = 0;
         let n = points.len().min(self.line.len());
         self.unplaced = n >= 2 && frame.is_none();
         let Some(frame) = frame.filter(|_| n >= 2) else {
@@ -187,7 +219,7 @@ impl<'a> Follower<'a> {
             };
         }
         self.len = n;
-        (self.scan, self.turn_count) = (Scan::default(), 0);
+        (self.scan, self.turn_count) = (PlacedScan::default(), 0);
     }
 
     /// A course is loaded and waits for the ride's first fix to be placed.
@@ -212,7 +244,7 @@ impl<'a> Follower<'a> {
         }
         let Some((count, more)) = fill(self.turns).filter(|&(count, _)| count <= self.turns.len())
         else {
-            (self.scan, self.turn_count) = (Scan::default(), 0);
+            (self.scan, self.turn_count) = (PlacedScan::default(), 0);
             return;
         };
         let line = &self.line[..len];
@@ -245,8 +277,8 @@ impl<'a> Follower<'a> {
             }
         }
         self.scan = match more {
-            true => Scan::after(&self.turns[..count]),
-            false => Scan::finished(),
+            true => PlacedScan::after(&self.turns[..count]),
+            false => PlacedScan::finished(),
         };
         self.turn_count = count;
         self.nav = Navigator::default();
@@ -255,12 +287,16 @@ impl<'a> Follower<'a> {
     /// The turn list, to find a course's turns into while it uploads. Only
     /// while no course is placed: placing one finds its own.
     pub fn turn_room(&mut self) -> &mut [Turn] {
-        (self.scan, self.turn_count) = (Scan::finished(), 0);
+        (self.scan, self.turn_count) = (PlacedScan::finished(), 0);
         self.turns
     }
 
     pub fn following(&self) -> bool {
         self.following
+    }
+
+    pub fn joinable(&self) -> bool {
+        !self.following && !self.held && self.len >= 2
     }
 
     /// If following, stop for the rest of the ride.
@@ -301,7 +337,15 @@ impl<'a> Follower<'a> {
     }
 
     pub fn sign(&self, now: u64) -> Sign {
+        let fresh = now.saturating_sub(self.taken_loop_ms) <= nav::LOST_MS;
+        if self.joinable() && self.turn_around_fixes >= TURN_AROUND_FIXES && fresh {
+            return Sign::TurnAround;
+        }
         self.nav.sign(&self.turns[..self.turn_count], now)
+    }
+
+    pub fn holds(&self, cue: Navigation) -> bool {
+        self.following && self.nav.holds(cue, &self.turns[..self.turn_count])
     }
 
     pub fn guidance(&self, now: u64) -> Option<Guidance> {
@@ -318,6 +362,7 @@ impl<'a> Follower<'a> {
         fix: Option<Fix>,
         now: u64,
         speed_mm_s: Option<u32>,
+        paused: bool,
     ) -> Option<Event> {
         self.scan_turns();
         let Some(fix) = fix else {
@@ -329,7 +374,12 @@ impl<'a> Follower<'a> {
         }
         self.taken_loop_ms = fix.taken_loop_ms;
         self.heading = fix.heading;
-        let joined = !self.following && fix.moved && self.joining(fix.at);
+        let travelled_m = self
+            .last_fix
+            .replace(fix.at)
+            .map(|last| distance(last, fix.at));
+        let moving = fix_moving(travelled_m, speed_mm_s);
+        let joined = !self.following && fix.moved && self.joining(fix.at, moving);
         if joined {
             self.follow_from(self.join_end);
         }
@@ -350,6 +400,7 @@ impl<'a> Follower<'a> {
                     forward: self.heading.is_some()
                         && !self.against(&line[near.end - 1], &line[near.end]),
                     speed_mm_s,
+                    paused,
                 };
                 match joined {
                     true => Observed::Joined(fixed),
@@ -368,24 +419,47 @@ impl<'a> Follower<'a> {
             })
     }
 
-    /// Where the course passes twice, the first pass ridden its way is joined.
-    fn joining(&mut self, p: Point) -> bool {
-        let heading = self.heading.filter(|_| !self.held && self.len >= 2);
-        let joined = heading.and_then(|heading| {
-            (1..self.len).rev().find(|&end| {
-                let (a, b) = (self.line[end - 1], self.line[end]);
-                let (a, b) = ((a.east, a.north), (b.east, b.north));
-                let turn = (heading + TURN - bearing(b, a)) % TURN;
-                off_segment(p, a, b) < ON_M && !(TURN / 8..=TURN * 7 / 8).contains(&turn)
-            })
-        });
-        let Some(end) = joined else {
+    /// Where the course passes twice, the first pass ridden its way is
+    /// joined. Only a `moving` fix counts towards TURN AROUND.
+    fn joining(&mut self, p: Point, moving: bool) -> bool {
+        let Some(heading) = self.heading.filter(|_| !self.held && self.len >= 2) else {
+            self.join_fixes = 0;
+            return false;
+        };
+        let riding = self.riding(p, heading);
+        self.turn_around_fixes = match riding {
+            Riding::Against if moving => self.turn_around_fixes.saturating_add(1),
+            Riding::Against | Riding::Across => self.turn_around_fixes,
+            Riding::Along(_) | Riding::Away => 0,
+        };
+        let Riding::Along(end) = riding else {
             self.join_fixes = 0;
             return false;
         };
         self.join_end = end;
         self.join_fixes = self.join_fixes.saturating_add(1);
         self.join_fixes >= JOIN_FIXES
+    }
+
+    fn riding(&self, p: Point, heading: u16) -> Riding {
+        let mut riding = Riding::Away;
+        for end in (1..self.len).rev() {
+            let (a, b) = (self.line[end - 1], self.line[end]);
+            let (a, b) = ((a.east, a.north), (b.east, b.north));
+            if off_segment(p, a, b) >= ON_M {
+                continue;
+            }
+            let off_its_way = (heading + TURN - bearing(b, a)) % TURN;
+            if !MORE_THAN_45_DEG_OFF.contains(&off_its_way) {
+                return Riding::Along(end);
+            }
+            if MORE_THAN_135_DEG_OFF.contains(&off_its_way) {
+                riding = Riding::Against;
+            } else if riding == Riding::Away {
+                riding = Riding::Across;
+            }
+        }
+        riding
     }
 
     fn follow_from(&mut self, end: usize) {

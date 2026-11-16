@@ -72,6 +72,7 @@ fn following(course: &[Crumb], here: Point, along_m: f32, junction: Option<Spot>
         speed_mm_s: None,
         course,
         ahead: Some((end, Some(here))),
+        joinable: false,
         guidance: Some(Guidance {
             sign,
             turn: Some((
@@ -278,6 +279,158 @@ fn far_off_course_in_every_direction_three_chevrons_lead_back_clear_of_the_badge
     }
 }
 
+fn waiting_to_join(course: &[Crumb], here: Point, heading: u16) -> Track<'_> {
+    Track {
+        available: true,
+        here: Some(here),
+        heading: Some(heading),
+        course,
+        joinable: true,
+        ..Track::default()
+    }
+}
+
+#[derive(Debug)]
+struct Mark {
+    tip: Point,
+    wings_mid: Point,
+}
+
+fn marks(frame: &Frame) -> std::vec::Vec<Mark> {
+    frame.marks[..frame.mark_count]
+        .chunks(2)
+        .map(|wings| {
+            let (a, b) = (wings[0].a, wings[1].a);
+            Mark {
+                tip: wings[0].b,
+                wings_mid: ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn before_joining_marks_on_the_course_ahead_point_the_way_it_runs() {
+    let c = follower_course(&MOCKUP_COURSE);
+    for (heading, up, least) in [(0, true, 3), (TURN / 2, false, 1)] {
+        let frame = filled(&waiting_to_join(&c, (0.0, -100.0), heading));
+        let rider = frame.last_pose.rider;
+        let shown = marks(&frame);
+        assert!(shown.len() >= least, "heading {heading}: {shown:?}");
+        for &Mark { tip, wings_mid } in &shown {
+            assert!(
+                (tip.0 - f32::from(rider.0)).abs() < 3.0,
+                "on the line: {tip:?}"
+            );
+            assert_eq!(
+                tip.1 < f32::from(rider.1),
+                up,
+                "heading {heading}: only on the course ahead of the rider's place, {tip:?}"
+            );
+            assert_eq!(
+                tip.1 < wings_mid.1,
+                up,
+                "heading {heading}: {tip:?} {wings_mid:?}"
+            );
+            let gap = distance(tip, (f32::from(rider.0), f32::from(rider.1)));
+            assert!(gap > PUCK_CLEAR, "clear of the puck: {tip:?}");
+        }
+        let tip = shown[0].tip;
+        let (x, y) = (
+            tip.0 as usize,
+            (tip.1 + if up { 1.5 } else { -1.5 }) as usize,
+        );
+        assert_eq!(
+            pixel(&frame, x, y, BLACK),
+            CASING,
+            "in the casing's colour at {x},{y}"
+        );
+    }
+    let still = filled(&waiting_to_join(&c, (0.0, -100.0), 0));
+    let moved = filled(&waiting_to_join(&c, (0.0, -96.0), 0));
+    let px = still.last_pose.reach.px_per_m() * 4.0;
+    let kept = marks(&still)
+        .iter()
+        .filter(|still| {
+            marks(&moved)
+                .iter()
+                .any(|m| (m.tip.1 - still.tip.1 - px).abs() < 0.5)
+        })
+        .count();
+    assert!(kept >= 2, "they stay on the ground as the rider moves");
+}
+
+/// Metres north of the rider's of each mark drawn on a course running
+/// north through the puck: the runs of the casing's colour along the
+/// route's middle.
+fn marks_north(frame: &Frame) -> std::vec::Vec<f32> {
+    let (x, rider_y) = (frame.last_pose.rider.0 as usize, frame.last_pose.rider.1);
+    let px_per_m = frame.last_pose.reach.px_per_m();
+    let casing: std::vec::Vec<bool> = GROUND
+        .map(|y| pixel(frame, x, y, BLACK) == CASING)
+        .collect();
+    let mut marks = std::vec::Vec::new();
+    let mut run = None;
+    for (k, &on) in casing.iter().chain([&false]).enumerate() {
+        match (on, run) {
+            (true, None) => run = Some(k),
+            (false, Some(start)) => {
+                let y = GROUND.start as f32 + (start + k - 1) as f32 / 2.0;
+                marks.push((f32::from(rider_y) - y) / px_per_m);
+                run = None;
+            }
+            _ => {}
+        }
+    }
+    marks
+}
+
+#[test]
+fn marks_stay_on_the_ground_as_the_scale_eases() {
+    let c = follower_course(&MOCKUP_COURSE);
+    let mut zoom = Zoom::default();
+    let mut track = waiting_to_join(&c, (0.0, -100.0), 0);
+    let mut seen = std::vec::Vec::new();
+    for _ in 0..4 {
+        track.reach = zoom.reach();
+        seen.push((track.reach, marks_north(&filled(&track))));
+        zoom.observe_riding_at(6_500);
+    }
+    let (first, before) = &seen[0];
+    assert!(before.len() >= 3, "{first:?}: {before:?}");
+    for (reach, marks) in &seen[1..] {
+        assert!(marks.len() >= 3, "{reach:?}: {marks:?}");
+        for north in marks {
+            let moved = before
+                .iter()
+                .map(|b| (b - north).abs())
+                .fold(f32::MAX, f32::min);
+            assert!(
+                moved < 2.0,
+                "{reach:?}: {north} m moved {moved} m: {before:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn following_or_done_with_the_course_shows_no_marks() {
+    let c = follower_course(&MOCKUP_COURSE);
+    let waiting = waiting_to_join(&c, (0.0, -100.0), 0);
+    assert!(marks_north(&filled(&waiting)).len() >= 3);
+    let following = Track {
+        ahead: Some((c.len() - 1, Some((0.0, -100.0)))),
+        joinable: false,
+        ..waiting_to_join(&c, (0.0, -100.0), 0)
+    };
+    assert_eq!(marks_north(&filled(&following)), []);
+    let done = Track {
+        joinable: false,
+        ..waiting_to_join(&c, (0.0, -100.0), 0)
+    };
+    assert_eq!(marks_north(&filled(&done)), []);
+}
+
 #[test]
 fn without_a_course_the_ride_is_drawn_ridden_behind_the_rider() {
     let c = track_crumbs(&[(0.0, 0.0), (0.0, 300.0), (0.0, 500.0)]);
@@ -342,6 +495,7 @@ fn rows_paint_what_the_per_pixel_original_says() {
         following(&c, (0.0, 210.0), 610.0, None),
         off_course(&c),
         turning,
+        waiting_to_join(&c, (0.0, -100.0), 300),
     ];
     for (n, track) in cases.iter().enumerate() {
         let frame = filled(track);
@@ -1291,6 +1445,7 @@ mod santiago {
                 course: &self.course,
                 placement: Placement::default(),
                 ahead: Some((end, Some(self.here))),
+                joinable: false,
                 guidance: Some(Guidance {
                     sign: Sign::Chip {
                         glyph: Glyph::Right,

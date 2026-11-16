@@ -177,7 +177,7 @@ async fn zeroed_external(layout: core::alloc::Layout) -> *mut u8 {
 
 /// The ride's breadcrumb (48 KiB), the loaded course (16 KiB), the
 /// course in the ride's frame (24 KiB), its turns (16 KiB), what finds them
-/// while a course uploads (12 KiB) and their state live in PSRAM: main's
+/// while a course uploads (48 KiB) and their state live in PSRAM: main's
 /// stack shares DRAM with `Runtime`'s static future and cannot spare them.
 /// Without PSRAM the map says NO TRACK and no course loads; false then.
 async fn attach_track(sdk: &mut vana::app::Runtime) -> bool {

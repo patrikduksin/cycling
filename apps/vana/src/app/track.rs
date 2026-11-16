@@ -2,7 +2,7 @@ use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Medium, Outing, Ride};
 use crate::ride::course::follow::Follower;
-use crate::ride::course::nav::{Event, Sign};
+use crate::ride::course::nav::{Event, Navigation, Sign};
 use crate::ride::course::stored::{self, Finder, Finding};
 use crate::ride::course::{self, Course};
 use crate::ride::homing::rebuild::Rebuild;
@@ -330,7 +330,7 @@ impl Runtime {
         if let (Some(Fix { moved: true, .. }), Some(speed), false) = (fix, speed, paused) {
             state.zoom.observe_riding_at(speed);
         }
-        let event = state.follower.observe(fix, now, speed);
+        let event = state.follower.observe(fix, now, speed, paused);
         state.place_course(bulk);
         if state.homing.take_pass() {
             self.ride.passed_start(now);
@@ -384,6 +384,7 @@ pub(super) fn refresh_map(
         course: state.follower.course(),
         placement: state.follower.placement(),
         ahead: state.follower.ahead(),
+        joinable: state.follower.joinable(),
         guidance: state.follower.guidance(now),
         left_m: state.follower.to_end_m(),
         reach: state.zoom.reach(),
@@ -393,6 +394,12 @@ pub(super) fn refresh_map(
     if state.map.update(&drawn) {
         state.timed(started, clock, |work| &mut work.fill);
     }
+}
+
+pub(super) fn holds(track: &Option<&'static mut RideTrack>, cue: Navigation) -> bool {
+    track
+        .as_deref()
+        .is_some_and(|state| state.follower.holds(cue))
 }
 
 pub(super) fn sign_of(track: &Option<&'static mut RideTrack>, now: u64) -> Sign {

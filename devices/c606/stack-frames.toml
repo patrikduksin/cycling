@@ -1,5 +1,5 @@
 # The largest stack frame, in bytes, each firmware function may open.
-# build.sh reads the frames from the release ELF's `entry a1, N` prologues
+# devices/build.sh reads the frames from the release ELF's `entry a1, N` prologues
 # and fails on a frame over its budget. The first rule that matches a
 # demangled name applies; `*` matches any text, and the last rule bounds
 # every frame not named above it. Each budget is the measured frame plus

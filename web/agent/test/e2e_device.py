@@ -21,8 +21,11 @@ import tempfile
 import time
 from pathlib import Path
 
+from cycling_devtools import devices
 from cycling_devtools.device import firmware
 from cycling_devtools.workspace import ROOT
+
+LAYOUT = firmware.Layout.of(devices.selected())
 
 SCRATCH_REGION = 0xF00000
 SCRATCH_BYTES = 0x40000
@@ -63,12 +66,12 @@ def main(mode, scratch):
         cli_flow(scratch)
     if mode == 'cli':
         try:
-            firmware.Device(firmware.flasher_for(port, lambda: port, firmware.LOCAL)).connect()
+            firmware.Device(firmware.flasher_for(port, lambda: port, firmware.LOCAL), LAYOUT).connect()
         except RuntimeError as error:
             step('device refuses', reason=str(error))
             return
         raise SystemExit('Device accepted a chip whose security is unknown')
-    device = firmware.Device(firmware.flasher_for(port, lambda: port, firmware.LOCAL))
+    device = firmware.Device(firmware.flasher_for(port, lambda: port, firmware.LOCAL), LAYOUT)
     started = time.monotonic()
     metadata, identity = device.connect(strict=True)
     step('enter', seconds=round(time.monotonic() - started, 2), identity_length=len(identity))
@@ -82,7 +85,7 @@ def main(mode, scratch):
         return
     if mode == 'long-read':
         (Path(scratch) / 'pid').write_text(str(os.getpid()))
-        device.read(0, firmware.FLASH_SIZE, 'flash.bin')
+        device.read(0, LAYOUT.flash_size, 'flash.bin')
         step('long read finished')
         return
     image = Path(scratch) / 'scratch.bin'

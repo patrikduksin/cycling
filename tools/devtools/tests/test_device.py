@@ -16,15 +16,17 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import cycling_devtools.device.firmware as device
+from cycling_devtools import devices
 from cycling_devtools.device.flasher import FlasherError, Security
 from memory_flasher import MemoryFlasher
 
 IDENTITY = 'aa:bb:cc:dd:ee:ff'
+C606 = device.Layout.of(devices.selected('c606'))
 # Workspace tests patch console_info; attachment tests call the real one.
 REAL_CONSOLE_INFO = device.console_info
 
 
-def image(project=device.PROJECT, extra=0, marker=0, version=b'0.1.0'):
+def image(project=C606.project, extra=0, marker=0, version=b'0.1.0'):
     """A valid ESP32-S3 image whose application descriptor names project."""
     segment = bytearray(0x60 + extra)
     struct.pack_into('<I', segment, 0, device.APP_DESC_MAGIC)
@@ -67,12 +69,12 @@ def metadata(sequences=((0x5000, 3), (0x6000, 2))):
 
 def stock_flash():
     """A 16 MiB stock layout: bootloader, partitions, stock in A, stock leftovers in B, selection on A."""
-    flash = bytearray(b'\xff' * device.FLASH_SIZE)
+    flash = bytearray(b'\xff' * C606.flash_size)
     flash[:0x8000] = bytes(range(256)) * 0x80
     flash[0x8000:0x10000] = metadata()
     stock = stock_image()
-    flash[device.SLOTS[0] : device.SLOTS[0] + len(stock)] = stock
-    flash[device.SLOTS[1] : device.SLOTS[1] + 0x3000] = b'\x5a' * 0x3000
+    flash[C606.slots[0] : C606.slots[0] + len(stock)] = stock
+    flash[C606.slots[1] : C606.slots[1] + 0x3000] = b'\x5a' * 0x3000
     return bytes(flash), stock
 
 
@@ -97,10 +99,10 @@ class Workspace(unittest.TestCase):
         }
         (self.local / 'manifest.json').write_text(json.dumps(self.manifest))
         self.flasher = MemoryFlasher(self.backup, IDENTITY)
-        self.target = device.Device(self.flasher)
+        self.target = device.Device(self.flasher, C606)
         # Cycling data recorded since the backup: rides and settings at the end of slot B.
-        self.flasher.memory[device.OWNED[0] : device.OWNED[0] + 0x2000] = b'\x11' * 0x2000
-        settings = device.SLOTS[1] + device.APP_SIZE + device.RIDE_SIZE
+        self.flasher.memory[C606.owned[0] : C606.owned[0] + 0x2000] = b'\x11' * 0x2000
+        settings = 0xE98000
         self.flasher.memory[settings : settings + 0x1000] = b'\x22' * 0x1000
         self.rides = self.owned()
         self.booting = lambda slot: {'slot': device.NAMES[slot], 'commit': 'abc'}
@@ -134,13 +136,13 @@ class Workspace(unittest.TestCase):
         return output.getvalue()
 
     def slot(self, slot, length):
-        return bytes(self.flasher.memory[device.SLOTS[slot] : device.SLOTS[slot] + length])
+        return bytes(self.flasher.memory[C606.slots[slot] : C606.slots[slot] + length])
 
     def selected(self):
-        return device.selected_slot(bytes(self.flasher.memory[0x8000:0x10000]))
+        return device.selected_slot(bytes(self.flasher.memory[0x8000:0x10000]), C606)
 
     def owned(self):
-        return bytes(self.flasher.memory[device.OWNED[0] : device.OWNED[0] + device.OWNED[1]])
+        return bytes(self.flasher.memory[C606.owned[0] : C606.owned[0] + C606.owned[1]])
 
 
 class Formats(unittest.TestCase):
@@ -152,7 +154,7 @@ class Formats(unittest.TestCase):
         self.addCleanup(patcher.stop)
         flasher = MemoryFlasher(b'', IDENTITY)
         flasher.boot_output = boot_output
-        return flasher, device.Device(flasher), Path(temporary.name)
+        return flasher, device.Device(flasher, C606), Path(temporary.name)
 
     def test_reboot_resets_and_keeps_the_boot_capture_privately(self):
         flasher, target, local = self.rebooting(b'boot: ota_1\r\n')
@@ -226,48 +228,47 @@ class Formats(unittest.TestCase):
                 device.image_length(image()[:length])
 
     def test_only_cycling_images_are_candidates(self):
-        device.validate_cycling(image())
-        self.assertTrue(device.is_cycling(image()))
-        self.assertFalse(device.is_cycling(stock_image()))
+        device.validate_cycling(image(), C606)
+        self.assertTrue(device.is_cycling(image(), C606))
+        self.assertFalse(device.is_cycling(stock_image(), C606))
         with self.assertRaisesRegex(RuntimeError, 'not cycling firmware'):
-            device.validate_cycling(stock_image())
+            device.validate_cycling(stock_image(), C606)
 
     def test_application_cap_reserves_ride_region_and_settings_tail_in_both_slots(self):
-        self.assertEqual(device.APP_SIZE, 0x638000)
-        self.assertEqual(device.SLOTS[1] + device.APP_SIZE, 0xD98000)
-        self.assertEqual(device.OWNED, (0xD98000, device.RIDE_SIZE + device.SETTINGS_SIZE))
-        self.assertEqual(device.SLOTS[1] + device.APP_SIZE + device.RIDE_SIZE, 0xE98000)
-        self.assertEqual(device.SLOTS[1] + device.SLOT_SIZE, 0xE9A000)
-        self.assertLessEqual(device.SLOTS[0] + device.APP_SIZE, device.SLOTS[1])
-        with patch.object(device, 'image_length', return_value=device.APP_SIZE), patch.object(device, 'is_cycling'):
-            device.validate_cycling(bytes(device.APP_SIZE))
-        with patch.object(device, 'image_length', return_value=device.APP_SIZE + 1), patch.object(device, 'is_cycling'):
+        self.assertEqual(C606.app_size, 0x638000)
+        self.assertEqual(C606.slots[1] + C606.app_size, 0xD98000)
+        self.assertEqual(C606.owned, (0xD98000, 0x102000))
+        self.assertEqual(C606.slots[1] + C606.slot_size, 0xE9A000)
+        self.assertLessEqual(C606.slots[0] + C606.app_size, C606.slots[1])
+        with patch.object(device, 'image_length', return_value=C606.app_size), patch.object(device, 'is_cycling'):
+            device.validate_cycling(bytes(C606.app_size), C606)
+        with patch.object(device, 'image_length', return_value=C606.app_size + 1), patch.object(device, 'is_cycling'):
             with self.assertRaises(RuntimeError):
-                device.validate_cycling(bytes(device.APP_SIZE + 1))
+                device.validate_cycling(bytes(C606.app_size + 1), C606)
 
     def test_partition_table_digest_is_required(self):
         good = metadata()
-        device.partitions(good)
+        device.partitions(good, C606)
         bad = bytearray(good)
         bad[20] ^= 1
         with self.assertRaises(RuntimeError):
-            device.partitions(bad)
+            device.partitions(bad, C606)
 
     def test_different_partition_layout_is_rejected(self):
         bad = bytearray(metadata())
         struct.pack_into('<I', bad, 4 * 32 + 4, 0x30000)
         bad[208:224] = hashlib.md5(bad[:192]).digest()
         with self.assertRaises(RuntimeError):
-            device.partitions(bad)
+            device.partitions(bad, C606)
 
     def test_invalid_record_is_excluded(self):
         bad = bytearray(metadata())
         struct.pack_into('<I', bad, 0x5000 + 24, 3)
-        self.assertEqual(device.records(bad), [(2, 0x6000)])
+        self.assertEqual(device.records(bad, C606), [(2, 0x6000)])
 
     def test_highest_valid_sequence_selects_the_slot(self):
-        self.assertEqual(device.selected_slot(metadata()), 0)
-        self.assertEqual(device.selected_slot(metadata(((0x5000, 3), (0x6000, 4)))), 1)
+        self.assertEqual(device.selected_slot(metadata(), C606), 0)
+        self.assertEqual(device.selected_slot(metadata(((0x5000, 3), (0x6000, 4))), C606), 1)
 
     def test_selection_changes_only_one_sector_and_alternates(self):
         flash, _ = stock_flash()
@@ -277,12 +278,12 @@ class Formats(unittest.TestCase):
             patch.object(device, 'LOCAL', Path(temp)),
             contextlib.redirect_stdout(io.StringIO()),
         ):
-            target = device.Device(flasher)
-            current = metadata()
+            target = device.Device(flasher, C606)
+            current = metadata()[: C606.metadata[1]]
             for slot in [1, 0, 1, 1, 0]:
                 current = target.select(current, slot)
-                self.assertEqual(device.selected_slot(current), slot)
-                self.assertEqual(bytes(flasher.memory[0x8000:0x10000]), current)
+                self.assertEqual(device.selected_slot(current, C606), slot)
+                self.assertEqual(bytes(flasher.memory[0x8000 : 0x8000 + len(current)]), current)
                 self.assertEqual(bytes(flasher.memory[:0xD000]), flash[:0xD000])
                 self.assertEqual(bytes(flasher.memory[0xF000:]), flash[0xF000:])
         self.assertEqual(flasher.reboots, 5)
@@ -292,7 +293,7 @@ class Formats(unittest.TestCase):
 class RestorePlanTests(unittest.TestCase):
     def test_identical_flash_needs_no_writes(self):
         backup, _ = stock_flash()
-        self.assertEqual(device.restore_plan(backup, backup), [])
+        self.assertEqual(device.restore_plan(backup, backup, C606), [])
 
     def test_plan_reproduces_backup_with_application_first_and_bootloader_last(self):
         backup, _ = stock_flash()
@@ -300,7 +301,7 @@ class RestorePlanTests(unittest.TestCase):
         changes = [0x0, 0x1000, 0xD000, 0x20000, 0x23000, 0x40000, 0xD98000, 0xE99000]
         for offset in changes:
             current[offset] ^= 0xFF
-        plan = device.restore_plan(bytes(current), backup)
+        plan = device.restore_plan(bytes(current), backup, C606)
         application = [(0x20000, 0x4000), (0x40000, 0x1000), (0xD98000, 0x1000), (0xE99000, 0x1000)]
         self.assertEqual(plan, [*application, (0xD000, 0x1000), (0x0, 0x2000)])
         for address, length in plan:
@@ -312,17 +313,17 @@ class RestorePlanTests(unittest.TestCase):
         current = bytearray(backup)
         current[0x0] ^= 1
         current[0x8000] ^= 1
-        plan = device.restore_plan(bytes(current), backup)
+        plan = device.restore_plan(bytes(current), backup, C606)
         self.assertEqual(plan, [(0x8000, 0x1000), (0x0, 0x1000)])
 
     def test_partial_images_are_refused(self):
         with self.assertRaises(RuntimeError):
-            device.restore_plan(b'', b'')
+            device.restore_plan(b'', b'', C606)
 
 
 class VerifiedBackupTests(Workspace):
     def test_consistent_backup_is_accepted(self):
-        manifest, backup = device.verified_backup()
+        manifest, backup = device.verified_backup(C606)
         self.assertEqual(manifest['identity'], IDENTITY)
         self.assertEqual(backup, self.backup)
 
@@ -353,19 +354,19 @@ class VerifiedBackupTests(Workspace):
                 (self.local / 'manifest.json').write_text(json.dumps(self.manifest))
                 damage()
                 with self.assertRaisesRegex(RuntimeError, message):
-                    device.verified_backup()
+                    device.verified_backup(C606)
 
     def test_missing_backup_refuses(self):
         (self.local / 'manifest.json').unlink()
         with self.assertRaisesRegex(RuntimeError, 'No private backup'):
-            device.verified_backup()
+            device.verified_backup(C606)
 
 
 class BaselineTests(Workspace):
     """Device.baseline must prove device, backup and protected boot regions before any write."""
 
     def test_matching_device_passes_without_requiring_stock_in_slot_a(self):
-        self.flasher.memory[device.SLOTS[0] : device.SLOTS[0] + 0x1000] = b'\0' * 0x1000
+        self.flasher.memory[C606.slots[0] : C606.slots[0] + 0x1000] = b'\0' * 0x1000
         self.target.baseline(IDENTITY, metadata())
 
     def test_missing_backup_manifest_refuses_before_device_access(self):
@@ -419,11 +420,11 @@ class AbFlashTests(Workspace):
 
         self.assertEqual(self.owned(), self.rides)
         self.assertEqual(bytes(self.flasher.memory[:0xD000]), self.backup[:0xD000])
-        self.assertEqual(bytes(self.flasher.memory[0xF000 : device.SLOTS[0]]), self.backup[0xF000 : device.SLOTS[0]])
+        self.assertEqual(bytes(self.flasher.memory[0xF000 : C606.slots[0]]), self.backup[0xF000 : C606.slots[0]])
         for address, length in self.flasher.writes:
             end = address + length
-            self.assertTrue(end <= device.OWNED[0] or address >= device.OWNED[0] + device.OWNED[1])
-            self.assertTrue(address >= device.SLOTS[0] or address in (0xD000, 0xE000))
+            self.assertTrue(end <= C606.owned[0] or address >= C606.owned[0] + C606.owned[1])
+            self.assertTrue(address >= C606.slots[0] or address in (0xD000, 0xE000))
 
     def test_a_flash_that_changes_rides_or_settings_refuses_to_boot(self):
         self.candidate(image())
@@ -431,7 +432,7 @@ class AbFlashTests(Workspace):
 
         def write(address, path):
             original(address, path)
-            self.flasher.memory[device.OWNED[0]] ^= 1
+            self.flasher.memory[C606.owned[0]] ^= 1
 
         self.flasher.write = write
         with self.assertRaisesRegex(RuntimeError, 'changed the ride and settings reservations'):
@@ -479,7 +480,7 @@ class AbFlashTests(Workspace):
 
     def test_large_image_is_read_back_in_steps(self):
         large = image(extra=0x180000)
-        self.flasher.memory[device.SLOTS[0] : device.SLOTS[0] + len(large)] = large
+        self.flasher.memory[C606.slots[0] : C606.slots[0] + len(large)] = large
         reads = []
         original = self.flasher.read
         self.flasher.read = lambda address, size, path: (reads.append(size), original(address, size, path))[1]
@@ -490,9 +491,9 @@ class AbFlashTests(Workspace):
 class ReviewFixTests(Workspace):
     def test_maintenance_build_is_probed_with_the_maintenance_protocol(self):
         maintenance = image(version=b'0.1.0+maintenance')
-        self.assertTrue(device.speaks_maintenance(maintenance))
-        self.assertFalse(device.speaks_maintenance(image()))
-        self.assertFalse(device.speaks_maintenance(stock_image()))
+        self.assertTrue(device.speaks_maintenance(maintenance, C606))
+        self.assertFalse(device.speaks_maintenance(image(), C606))
+        self.assertFalse(device.speaks_maintenance(stock_image(), C606))
         self.candidate(maintenance)
         self.main('flash')
         self.assertEqual(self.selected(), 1)
@@ -661,7 +662,7 @@ class StockTests(Workspace):
 
     def test_restore_readback_mismatch_fails_without_reset(self):
         write = self.flasher.write
-        self.flasher.memory[device.SLOTS[1]] ^= 1
+        self.flasher.memory[C606.slots[1]] ^= 1
         self.flasher.write = lambda address, path: (write(address, path), self.flasher.memory.__setitem__(address, 0))
         with self.assertRaisesRegex(RuntimeError, r'sectors differ from the backup, first at 0x760000'):
             self.main('stock', '--confirm-restore')

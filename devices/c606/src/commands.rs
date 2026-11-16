@@ -109,7 +109,7 @@ pub fn execute(
         ) {
             let _ = write!(
                 output,
-                " ordinary=HELP,INFO,STATUS,POWER,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,MMC,VOLUME,TERRAIN,FILES,STORE,SOUND,GNSS,PRESSURE,MOTION,COMPANION,STORAGE,DISPLAY,RESTART,TEST"
+                " ordinary=HELP,INFO,STATUS,POWER,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,MMC,VOLUME,TERRAIN,FILES,STORE,SOUND,GNSS,PRESSURE,MOTION,COMPANION,STORAGE,FITTED,DISPLAY,RESTART,TEST"
             );
             {
                 let _ = write!(output, ",RIDE,EXPORT,RADAR,PROFILE,WORKOUT,PHONE");
@@ -240,7 +240,7 @@ pub fn execute(
             );
             let _ = write!(
                 output,
-                "CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|AUTO|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ|CAPABILITIES|OPERATION id|SEND type number transmission generation hex16]|RADAR [SENSORS] (SDK)|PROFILE [FTP watts|LTHR bpm|OVERWRITE] (SDK)|PHONE [START [HOME]|STOP] (SDK)|STORAGE|DISPLAY rgb565hex|RESTART|CRASH [CLEAR]|TEST n"
+                "CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|AUTO|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ|CAPABILITIES|OPERATION id|SEND type number transmission generation hex16]|RADAR [SENSORS] (SDK)|PROFILE [FTP watts|LTHR bpm|OVERWRITE] (SDK)|PHONE [START [HOME]|STOP] (SDK)|STORAGE|FITTED|DISPLAY rgb565hex|RESTART|CRASH [CLEAR]|TEST n"
             );
         }
         Command::Info => {
@@ -515,6 +515,7 @@ pub fn execute(
         Command::Storage => {
             let _ = write!(output, "{:?}", system.data_storage().geometry());
         }
+        Command::Fitted => fitted(system, &mut output),
 
         Command::Restart => {
             terminal.schedule_reboot(now, false);
@@ -822,5 +823,41 @@ pub async fn transfer(
         spent.sending_us = spent
             .sending_us
             .saturating_add(micros((last - sending).as_micros()));
+    }
+}
+
+fn fitted(system: &mut crate::FirmwareShell, output: &mut Text) {
+    use device_api::input::InputSource as _;
+    use device_api::observation::Availability;
+    let panel = system.display_geometry();
+    let controls = system.input_source().controls();
+    let touch = match controls.touch {
+        Availability::Unsupported => "unsupported",
+        Availability::Initializing => "initializing",
+        Availability::Unconfigured => "unconfigured",
+        Availability::Ready => "ready",
+        Availability::Failed => "failed",
+    };
+    let _ = write!(
+        output,
+        "device={} width={} height={} touch={} buttons=",
+        device::fitted::NAME,
+        panel.width,
+        panel.height,
+        touch
+    );
+    for (index, button) in controls.buttons.iter().enumerate() {
+        let separator = if index == 0 { "" } else { "," };
+        let _ = write!(output, "{}{}", separator, button.index());
+    }
+    for &(name, region) in device::fitted::REGIONS {
+        let geometry = system.owned_geometry(region);
+        let _ = write!(
+            output,
+            " {name}_offset={:#x} {name}_size={:#x} {name}_erase={:#x}",
+            device::fitted::owned(region).0,
+            geometry.capacity,
+            geometry.erase_size
+        );
     }
 }

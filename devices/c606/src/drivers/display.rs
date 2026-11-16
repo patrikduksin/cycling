@@ -11,8 +11,8 @@ use esp_hal::dma::DmaTxBuf;
 use esp_hal::lcd_cam::lcd::i8080::I8080;
 use esp_hal::lcd_cam::lcd::i8080::I8080Transfer;
 
-const PANEL_WIDTH: usize = 240;
-const PANEL_HEIGHT: usize = 320;
+use crate::fitted::PANEL_HEIGHT;
+use crate::fitted::PANEL_WIDTH;
 /// Physical rows per DMA transfer. Fewer, larger strips cost fewer bus
 /// commands and DMA restarts; two strips must still fit internal DMA RAM.
 const STRIP_ROWS: usize = 16;

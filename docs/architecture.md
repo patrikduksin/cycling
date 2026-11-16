@@ -15,7 +15,7 @@ details into this document.
 | Path | Owns |
 | --- | --- |
 | `apps/vana` (`vana`) | Cycling behavior and its presentation: sensor selection and profiles, workout screens, ride state, metrics, recording, recovery, export and app preferences. |
-| `devices/c606` (`c606-firmware`) | C606 hardware and the firmware assembled for it. Drivers, wiring, HAL resources, interrupts, DMA, memory placement, startup and board quirks live here. Sanitized device research lives in `research/`. |
+| `devices/c606` (`c606-firmware`) | C606 hardware and the firmware assembled for it. Drivers, wiring, HAL resources, interrupts, DMA, memory placement, startup and board quirks live here. Sanitized device research lives in `research/`. Its `device.toml` declares the model's build, flash layout, panel and buttons once; `cycling devices` generates `src/fitted.rs` from it for the drivers, and devtools read it for build and flash. |
 | `packages/device-api` (`device-api`) | Hardware-independent capability contracts and the observations needed to use them. |
 | `packages/shell` (`firmware-shell`) | Foreground presentation, physical-input routing, shared rendering, preferences and inactivity policy. |
 | `packages/services` (`firmware-services`) | Portable acquisition, transport and persistence mechanisms with no board, presentation or cycling policy. |

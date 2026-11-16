@@ -268,7 +268,6 @@ const LCD_WR_MHZ: u32 = 15;
 pub struct Input;
 impl device_api::input::InputSource for Input {
     fn controls(&self) -> device_api::input::Controls {
-        use device_api::input::Button;
         use device_api::input::Controls;
         use device_api::observation::Availability;
         Controls {
@@ -278,7 +277,7 @@ impl device_api::input::InputSource for Input {
                 Some(_) => Availability::Failed,
                 None => Availability::Initializing,
             },
-            buttons: &[Button::TopLeft, Button::BottomLeft, Button::BottomRight],
+            buttons: crate::fitted::BUTTONS,
         }
     }
     fn take_edge(&mut self) -> Option<device_api::input::Edge> {

@@ -32,18 +32,32 @@ class Task:
     steps: tuple[str, ...] = ()
     needs: tuple[str, ...] = ()
     alias: str | None = None
+    takes_device: bool = False
 
 
-def task(name, help, *steps, needs=(), alias=None):
-    return Task(name, help, steps, tuple(needs), alias)
+def task(name, help, *steps, needs=(), alias=None, takes_device=False):
+    return Task(name, help, steps, tuple(needs), alias, takes_device)
 
 
 TASKS = [
-    task('build', 'Build C606 firmware and its application image', 'bash devices/c606/build.sh'),
+    task(
+        'build',
+        "Build a device's firmware and its application image; --variant NAME adds a [build].variants image",
+        'bash devices/build.sh',
+        takes_device=True,
+    ),
     task(
         'build-maintenance',
         'Build the MMC maintenance image (binary USB protocol, no console) into .local/cycling.bin',
-        'bash devices/c606/build.sh maintenance',
+        'bash devices/build.sh --variant maintenance',
+        takes_device=True,
+    ),
+    task(
+        'devices',
+        'Check every devices/*/device.toml and write the files generated from it; --locked fails on stale ones, '
+        "--check compares the attached unit's FITTED reply with its manifest",
+        f'{DEV}devices',
+        takes_device=True,
     ),
     task(
         'test',
@@ -75,8 +89,9 @@ TASKS = [
     ),
     task(
         'stack-frames',
-        "Report a firmware ELF's largest stack frames against devices/c606/stack-frames.toml; --suggest prints new budgets",
+        "Report a firmware ELF's largest stack frames against its device's stack-frames.toml; --suggest prints new budgets",
         f'{DEV}stack_frames',
+        takes_device=True,
     ),
     task(
         'verify',
@@ -107,6 +122,7 @@ TASKS = [
         'check',
         'Check formatting and lint host code',
         'uv run --script tools/check-boundaries.py',
+        f'{DEV}devices --locked',
         'uv run --script apps/vana/web/build.py --check',
         'ruff format --check tools/devtools',
         'ruff check tools/devtools',
@@ -124,46 +140,58 @@ TASKS = [
     task(
         'web', 'Build the phone web client the device serves (apps/vana/web)', 'uv run --script apps/vana/web/build.py'
     ),
-    task('backup', 'Read and verify a private full-flash backup from stock', f'{DEV}device.firmware backup'),
+    task(
+        'backup',
+        'Read and verify a private full-flash backup from stock',
+        f'{DEV}device.firmware backup',
+        takes_device=True,
+    ),
     task(
         'flash',
         'Flash cycling into the inactive A/B slot, boot it, and reselect the old slot if its console stays silent',
         f'{DEV}device.firmware flash',
         needs=['build'],
+        takes_device=True,
     ),
     task(
         'flash-maintenance',
         'Build the MMC maintenance image and flash it into the inactive slot as flash does',
         f'{DEV}device.firmware flash',
         needs=['build-maintenance'],
+        takes_device=True,
     ),
     task(
         'flash-image',
         'Flash the already built .local/cycling.bin like flash does, without building (device hosts receive images)',
         f'{DEV}device.firmware flash',
+        takes_device=True,
     ),
     task(
         'device',
         'Run a device task on CYCLING_DEVICE_HOST, the machine with the C606 (device flash builds here, flashes there)',
         f'{DEV}device.remote',
+        takes_device=True,
     ),
     task(
         'rollback',
         'Boot the previous cycling image in the other A/B slot after validating it',
         f'{DEV}device.firmware rollback',
+        takes_device=True,
     ),
     task(
         'stock',
         'Restore the complete verified 16 MiB stock backup (confirmation required; cycling rides and settings are lost)',
         f'{DEV}device.firmware stock',
+        takes_device=True,
     ),
     task(
         'stock-select',
         'Boot stock in slot A without rewriting flash, while slot A still holds the verified stock image',
         f'{DEV}device.firmware stock-select',
         alias='boot-stock',
+        takes_device=True,
     ),
-    task('monitor', 'Read USB logs without resetting the device', f'{DEV}device.firmware monitor'),
+    task('monitor', 'Read USB logs without resetting the device', f'{DEV}device.firmware monitor', takes_device=True),
     task(
         'flasher',
         "Ask any ESP32 esptool detects, here or through a visitor's page: flasher info|read ADDR SIZE PATH|verify ADDR PATH|reboot",
@@ -430,6 +458,21 @@ def run_side_by_side(names, env):
     return next((code for code in codes if code), 0)
 
 
+def take_device(args):
+    rest, device = [], None
+    items = iter(args)
+    for arg in items:
+        if arg == '--device':
+            device = next(items, None)
+            if not device:
+                raise ValueError('--device needs a name from devices/<name>/device.toml')
+        elif arg.startswith('--device='):
+            device = arg.removeprefix('--device=')
+        else:
+            rest.append(arg)
+    return rest, device
+
+
 def usage():
     width = max(len(t.name) for t in TASKS)
     rows = [f'  {t.name:<{width}}  {t.help}' + (f' (alias: {t.alias})' if t.alias else '') for t in TASKS]
@@ -448,7 +491,16 @@ def main(argv=None):
     if name not in BY_NAME:
         print(f'cycling: unknown task {name!r}\n\n{usage()}', file=sys.stderr)
         return 2
-    return run(BY_NAME[name], args, replace=True)
+    task, env = BY_NAME[name], environment()
+    if task.takes_device:
+        try:
+            args, device = take_device(args)
+        except ValueError as error:
+            print(f'cycling {name}: {error}', file=sys.stderr)
+            return 2
+        if device:
+            env['CYCLING_DEVICE'] = device
+    return run(task, args, env=env, replace=True)
 
 
 if __name__ == '__main__':

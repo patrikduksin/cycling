@@ -1,4 +1,4 @@
-"""Check each firmware function's stack frame against its budget in devices/c606/stack-frames.toml.
+"""Check each firmware function's stack frame against its budget in its device's stack-frames.toml.
 
 Every windowed-ABI Xtensa function opens with `entry a1, N`, which moves the
 stack pointer down by its whole N-byte frame. LLVM caps that immediate at
@@ -18,9 +18,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from cycling_devtools.workspace import ROOT
+from cycling_devtools import devices
 
-BUDGETS = ROOT / 'devices' / 'c606' / 'stack-frames.toml'
 # Inlining shifts frames after unrelated edits, by about 300 B on the 16-20 KB
 # frames, while the frames worth catching (a page canvas, a boot View) are
 # kilobytes.
@@ -168,7 +167,7 @@ def disassemble(elf, objdump):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('elf', type=Path)
-    parser.add_argument('--budgets', type=Path, default=BUDGETS)
+    parser.add_argument('--budgets', type=Path, help="default: the selected device manifest's stack-frames.toml")
     parser.add_argument('--objdump', default=default_objdump())
     parser.add_argument('--top', type=int, default=10)
     parser.add_argument('--report', type=Path, help='also write the top-frame table here')
@@ -181,6 +180,10 @@ def main(argv=None):
         parser.error(f'no xtensa objdump at {args.objdump}; run inside the dev shell (nix develop) or pass --objdump')
     if not args.elf.is_file():
         parser.error(f'no ELF at {args.elf}')
+    try:
+        args.budgets = args.budgets or devices.selected().root / 'stack-frames.toml'
+    except devices.ManifestError as error:
+        parser.error(str(error))
     sizes = parse(disassemble(args.elf, args.objdump))
     rules = load_rules(args.budgets)
     frames = assess(sizes, rules)

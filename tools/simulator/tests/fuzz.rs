@@ -128,3 +128,20 @@ fn a_run_in_child_processes_adds_up_its_sessions() {
         "{stdout}"
     );
 }
+
+#[test]
+fn a_child_that_dies_is_a_finding_with_a_reproduce_line() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fuzz"))
+        .args(["--seeds", "1-1", "--no-corpus", "--jobs", "1"])
+        .env("RUST_MIN_STACK", "40000")
+        .output()
+        .expect("the fuzz run ends");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let all = format!("{stdout}{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.status.code(), Some(1), "{all}");
+    assert!(stdout.contains("check=\"the process died\""), "{all}");
+    assert!(
+        stdout.contains("reproduce: cycling fuzz --seed 0x0000000000000001 --no-corpus"),
+        "{all}"
+    );
+}

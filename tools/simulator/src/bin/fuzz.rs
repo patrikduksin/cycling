@@ -155,7 +155,7 @@ fn main() -> ExitCode {
     let coverage = match args.seeds {
         Seeds::One(seed) => {
             let plan = fuzz::draw(seed);
-            match fuzz::run(&plan, &corpus, true) {
+            match on_session_thread(|| fuzz::run(&plan, &corpus, true)) {
                 Ok(coverage) => {
                     println!("pass");
                     coverage
@@ -238,8 +238,9 @@ fn pool(
                         match serving.session(seed) {
                             Outcome::Pass(session) => coverage.merge(session),
                             Outcome::Found(text) => reported(report, seed, &text),
-                            Outcome::Died { started } => {
-                                reported(report, seed, &serving.died(seed, started, corpus));
+                            Outcome::Died(death) => {
+                                let text = serving.died(seed, death, corpus, args.out.as_deref());
+                                reported(report, seed, &text);
                                 continue;
                             }
                         }
@@ -270,9 +271,14 @@ enum Outcome {
     /// The finding as the child printed it.
     Found(String),
     /// The child exited before the seed's record ended.
-    Died {
-        started: bool,
-    },
+    Died(Death),
+}
+
+/// How far a dead child got with its seed.
+enum Death {
+    BeforeStart,
+    /// The corpus trace the session rode, if any.
+    Riding(Option<PathBuf>),
 }
 
 /// A `--child` process and the pipes to it.
@@ -280,7 +286,7 @@ enum Outcome {
 /// A child reads one decimal seed per line until EOF and writes a record per
 /// seed, one tab-separated line each:
 ///
-///   start  SEED
+///   start  SEED  COURSE          (COURSE: the corpus trace it rides, or -)
 ///   press  PAGE  BUTTON  N       (any number)
 ///   skip   CHECK  WHY  N         (any number)
 ///   pass   SIMULATED_MS  WORLD_LOG_DIGEST
@@ -308,7 +314,7 @@ impl Child {
             let mut stderr = stderr;
             let mut tail = VecDeque::new();
             while let Some(line) = read_line(&mut stderr) {
-                eprintln!("{line}");
+                let _ = writeln!(std::io::stderr().lock(), "{line}");
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -331,9 +337,9 @@ impl Child {
     fn session(&mut self, seed: u64) -> Outcome {
         self.sessions += 1;
         if writeln!(self.stdin, "{seed}").is_err() {
-            return Outcome::Died { started: false };
+            return Outcome::Died(Death::BeforeStart);
         }
-        let mut started = false;
+        let mut death = Death::BeforeStart;
         let mut coverage = Coverage::default();
         let mut said = String::new();
         while let Some(line) = read_line(&mut self.stdout) {
@@ -342,8 +348,19 @@ impl Child {
                 said.push('\n');
                 continue;
             }
+            if let Some(record) = line.strip_prefix("start\t") {
+                let (started, course) = record
+                    .split_once('\t')
+                    .unwrap_or_else(|| panic!("a fuzz child wrote {line:?} for a start"));
+                let started = number(started);
+                assert_eq!(
+                    started, seed,
+                    "a fuzz child started seed {started:#x} while its parent sent {seed:#x}"
+                );
+                death = Death::Riding((course != "-").then(|| course.into()));
+                continue;
+            }
             match line.split('\t').collect::<Vec<_>>()[..] {
-                ["start", started_seed] if number(started_seed) == seed => started = true,
                 ["press", page, button, n] => {
                     *coverage
                         .presses
@@ -363,7 +380,7 @@ impl Child {
                 _ => println!("{line}"),
             }
         }
-        Outcome::Died { started }
+        Outcome::Died(death)
     }
 
     fn finish(mut self) {
@@ -376,23 +393,39 @@ impl Child {
     }
 
     /// The finding for `seed`, whose record a dead child never ended.
-    fn died(mut self, seed: u64, started: bool, corpus: &Corpus) -> String {
+    fn died(mut self, seed: u64, death: Death, corpus: &Corpus, out: Option<&Path>) -> String {
         drop(self.stdin);
         let status = self.process.wait().expect("a child is waited on once");
         let tail = self.stderr.join().unwrap_or_default();
-        let course = fuzz::route(&fuzz::draw(seed).setup.course, corpus).1;
-        let when = if started {
-            ""
-        } else {
-            ", before its session started"
+        let (course, when) = match death {
+            Death::Riding(course) => (course, ""),
+            // The child never drew this seed's course; the parent's corpus is
+            // the nearest guess at it.
+            Death::BeforeStart => (
+                fuzz::route(&fuzz::draw(seed).setup.course, corpus).1,
+                ", before its session started",
+            ),
         };
         let mut text =
             format!("FAIL seed={seed:#018x} check=\"the process died\" ({status}{when})\n");
         for line in tail {
             text.push_str(&format!("  {line}\n"));
         }
+        let (course, wrote) = match (course, out) {
+            (Some(trace), Some(out)) => {
+                let dir = finding_dir(out, seed);
+                match keep_course(&dir, &trace) {
+                    Ok(copy) => (Some(copy), format!("\n  wrote {}", dir.display())),
+                    Err(error) => (
+                        Some(trace),
+                        format!("\n  could not write {}: {error}", dir.display()),
+                    ),
+                }
+            }
+            (course, _) => (course, String::new()),
+        };
         text.push_str(&format!(
-            "  reproduce: {}",
+            "  reproduce: {}{wrote}",
             fuzz::reproduce(seed, course.as_deref())
         ));
         text
@@ -431,39 +464,37 @@ fn name(text: &str) -> &'static str {
 
 /// A child's side: the seeds on stdin, a record each on stdout.
 fn serve(corpus: &Corpus, out: Option<&Path>) {
-    std::thread::scope(|scope| {
-        // Sessions ran on a pool thread before children, and a deep recursion
-        // must overflow at the same depth as it did there.
-        scope.spawn(|| {
-            for line in std::io::stdin().lock().lines() {
-                let line = line.expect("the parent writes text");
-                let seed: u64 = line
-                    .parse()
-                    .unwrap_or_else(|_| panic!("the parent wrote {line:?} for a seed"));
-                println!("start\t{seed}");
-                let plan = fuzz::draw(seed);
-                match fuzz::run(&plan, corpus, false) {
-                    Ok(coverage) => {
-                        for ((page, button), n) in &coverage.presses {
-                            println!("press\t{page}\t{button}\t{n}");
-                        }
-                        for ((check, why), n) in &coverage.skips {
-                            println!("skip\t{check}\t{why}\t{n}");
-                        }
-                        println!(
-                            "pass\t{}\t{}",
-                            coverage.simulated_ms, coverage.world_log_digests
-                        );
+    on_session_thread(|| {
+        for line in std::io::stdin().lock().lines() {
+            let line = line.expect("the parent writes text");
+            let seed: u64 = line
+                .parse()
+                .unwrap_or_else(|_| panic!("the parent wrote {line:?} for a seed"));
+            let plan = fuzz::draw(seed);
+            let course = fuzz::route(&plan.setup.course, corpus).1;
+            let course = course.map_or("-".into(), |trace| trace.display().to_string());
+            println!("start\t{seed}\t{course}");
+            match fuzz::run(&plan, corpus, false) {
+                Ok(coverage) => {
+                    for ((page, button), n) in &coverage.presses {
+                        println!("press\t{page}\t{button}\t{n}");
                     }
-                    Err(finding) => {
-                        for line in found(finding, &plan, out).lines() {
-                            println!("say\t{line}");
-                        }
-                        println!("found");
+                    for ((check, why), n) in &coverage.skips {
+                        println!("skip\t{check}\t{why}\t{n}");
                     }
+                    println!(
+                        "pass\t{}\t{}",
+                        coverage.simulated_ms, coverage.world_log_digests
+                    );
+                }
+                Err(finding) => {
+                    for line in found(finding, &plan, out).lines() {
+                        println!("say\t{line}");
+                    }
+                    println!("found");
                 }
             }
-        });
+        }
     });
 }
 
@@ -479,19 +510,13 @@ fn found(mut finding: Finding, plan: &Plan, out: Option<&Path>) -> String {
     let Some(out) = out else {
         return finding.to_string();
     };
-    let dir = out.join(format!("{:#018x}", finding.seed));
+    let dir = finding_dir(out, finding.seed);
     let written = (|| -> std::io::Result<()> {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("plan.txt"), format!("{plan:#?}\n"))?;
         std::fs::write(dir.join("world.trace"), &finding.world_log.0)?;
         if let Some(trace) = &finding.course_trace {
-            let course = std::path::absolute(dir.join("course.trace"))?;
-            // A replay's --corpus names this very file, and a copy onto
-            // itself would truncate it before reading.
-            let staged = dir.join("course.trace.new");
-            std::fs::copy(trace, &staged)?;
-            std::fs::rename(&staged, &course)?;
-            finding.course_trace = Some(course);
+            finding.course_trace = Some(keep_course(&dir, trace)?);
         }
         Ok(())
     })();
@@ -499,6 +524,36 @@ fn found(mut finding: Finding, plan: &Plan, out: Option<&Path>) -> String {
         Ok(()) => format!("{finding}\n  wrote {}", dir.display()),
         Err(error) => format!("{finding}\n  could not write {}: {error}", dir.display()),
     }
+}
+
+fn finding_dir(out: &Path, seed: u64) -> PathBuf {
+    out.join(format!("{seed:#018x}"))
+}
+
+/// Copies `trace` into `dir` and returns the copy, the corpus the finding's
+/// reproduce line names.
+fn keep_course(dir: &Path, trace: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let course = std::path::absolute(dir.join("course.trace"))?;
+    // A replay's --corpus names this very file, and a copy onto itself would
+    // truncate it before reading.
+    let staged = dir.join("course.trace.new");
+    std::fs::copy(trace, &staged)?;
+    std::fs::rename(&staged, &course)?;
+    Ok(course)
+}
+
+/// Runs `session` on a spawned thread with the default settings, the thread
+/// a child serves on, so a deep recursion overflows its stack at the same
+/// depth under --seed as in a run.
+fn on_session_thread<T: Send>(session: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .spawn_scoped(scope, session)
+            .expect("a session thread starts")
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
 }
 
 fn summary(coverage: &Coverage, findings: usize, wall: Duration, jobs: usize) {

@@ -77,6 +77,15 @@ pub enum Mode {
     Stimulus,
 }
 
+impl Mode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Stimulus => "stimulus",
+        }
+    }
+}
+
 /// A way a replay parted from its recording.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {

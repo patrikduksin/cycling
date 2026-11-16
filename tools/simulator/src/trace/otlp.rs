@@ -11,7 +11,9 @@ use crate::recording::json;
 use crate::trace::story::Story;
 use crate::trace::timeline::{Kind, Timeline, Window, field};
 use firmware_services::trace::{self, Health};
-use std::fmt::Write as _;
+use serde::Serialize;
+use serde_json::value::RawValue;
+use std::fmt;
 
 const SHOWN: [(&str, &str); 6] = [
     ("speed", "km/h"),
@@ -27,7 +29,22 @@ const NO_RECORDED_VALUE: u32 = 1;
 /// A metric's name, unit and how to read its value from one record.
 type Metric<T> = (&'static str, &'static str, fn(&T) -> Option<f64>);
 
-pub fn export(timeline: &Timeline, story: &Story) -> String {
+/// `cycling trace otlp`: in text one request per line, in JSON an object
+/// holding both.
+#[derive(Serialize)]
+pub struct Requests {
+    pub metrics: Box<RawValue>,
+    pub traces: Box<RawValue>,
+}
+
+impl fmt::Display for Requests {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}", self.traces.get())?;
+        writeln!(f, "{}", self.metrics.get())
+    }
+}
+
+pub fn export(timeline: &Timeline, story: &Story) -> Requests {
     let base_ms = timeline.utc_at_boot_ms.unwrap_or(0);
     let nanos = |ms: u64| json(&((base_ms + ms) as u128 * 1_000_000).to_string());
     let trace_id = fnv1a(&[
@@ -106,11 +123,10 @@ pub fn export(timeline: &Timeline, story: &Story) -> String {
             attributes.join(","),
         ));
     }
-    let mut out = format!(
+    let traces = format!(
         r#"{{"resourceSpans":[{{"resource":{resource},"scopeSpans":[{{"scope":{scope},"spans":[{}]}}]}}]}}"#,
         spans.join(",")
     );
-    out.push('\n');
 
     let mut metrics = Vec::new();
     for (name, unit) in SHOWN {
@@ -202,12 +218,15 @@ pub fn export(timeline: &Timeline, story: &Story) -> String {
     metrics.push(gauge("vana.activity.task.wakeups", "1/s", &wakeups));
     metrics.push(gauge("vana.activity.task.cpu", "1", &cpu));
     metrics.retain(|m| !m.is_empty());
-    let _ = writeln!(
-        out,
+    let metrics = format!(
         r#"{{"resourceMetrics":[{{"resource":{resource},"scopeMetrics":[{{"scope":{scope},"metrics":[{}]}}]}}]}}"#,
         metrics.join(",")
     );
-    out
+    let raw = |request| RawValue::from_string(request).expect("the export writes JSON");
+    Requests {
+        metrics: raw(metrics),
+        traces: raw(traces),
+    }
 }
 
 fn attribute(key: &str, value: &str) -> String {

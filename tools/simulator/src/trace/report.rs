@@ -45,27 +45,19 @@ pub struct Header<'a> {
     end_ms: u64,
     passes: u64,
     #[serde(serialize_with = "end_name")]
-    end: Option<End>,
+    end: End,
     #[serde(serialize_with = "media_name")]
     media: &'a Media,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     media_report: Vec<&'a str>,
 }
 
-fn end_name<S: Serializer>(end: &Option<End>, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(match end {
-        Some(End::Torn) => "torn",
-        Some(End::Corrupt) => "corrupt",
-        _ => "complete",
-    })
+fn end_name<S: Serializer>(end: &End, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(end.name())
 }
 
 fn media_name<S: Serializer>(media: &&Media, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(match media {
-        Media::Saved => "saved",
-        Media::Rebuilt(_) => "rebuilt",
-        Media::Blank => "blank",
-    })
+    serializer.serialize_str(media.name())
 }
 
 impl<'a> Header<'a> {
@@ -92,18 +84,17 @@ impl fmt::Display for Header<'_> {
         writeln!(f, "trace {}", self.trace)?;
         write!(
             f,
-            "build {}, boot {}, format {}, {} over {} passes, {}; media ",
+            "build {}, boot {}, format {}, {} over {} passes, {}{}; media ",
             self.build.unwrap_or("unknown"),
             self.boot,
             self.format,
             duration(self.end_ms),
             self.passes,
+            self.end.name(),
             match self.end {
-                Some(End::Torn) => "torn: the last block was cut short",
-                Some(End::Corrupt) => {
-                    "corrupt: a damaged block and everything after it were dropped"
-                }
-                _ => "complete",
+                End::Complete => "",
+                End::Torn => ": the last block was cut short",
+                End::Corrupt => ": a damaged block and everything after it were dropped",
             },
         )?;
         match self.media {
@@ -361,37 +352,6 @@ impl fmt::Display for Answers<'_> {
             0 => Ok(()),
             more => writeln!(f, "... {more} more (--limit)"),
         }
-    }
-}
-
-/// `cycling trace otlp`: two OTLP/JSON requests, one per line, or in JSON
-/// an object holding both.
-pub struct Otlp(pub String);
-
-impl fmt::Display for Otlp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl Serialize for Otlp {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::{Error, SerializeStruct};
-        let mut requests = self
-            .0
-            .lines()
-            .map(serde_json::from_str::<serde_json::Value>);
-        let mut next = || {
-            requests
-                .next()
-                .ok_or_else(|| S::Error::custom("the export holds two requests"))?
-                .map_err(|e| S::Error::custom(format!("the export is no JSON: {e}")))
-        };
-        let (traces, metrics) = (next()?, next()?);
-        let mut both = serializer.serialize_struct("Otlp", 2)?;
-        both.serialize_field("metrics", &metrics)?;
-        both.serialize_field("traces", &traces)?;
-        both.end()
     }
 }
 

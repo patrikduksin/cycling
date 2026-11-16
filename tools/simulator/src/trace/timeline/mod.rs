@@ -375,8 +375,9 @@ pub struct Timeline {
     pub passes: u64,
     /// The last pass's uptime.
     pub end_ms: u64,
-    /// The trace ends in a block that was cut short or failed its check.
-    pub end: Option<End>,
+    /// Why the events stopped: the trace ended, or a block was cut short or
+    /// failed its check.
+    pub end: End,
     /// UTC in ms at uptime zero, from the first GPS or Wi-Fi time.
     pub utc_at_boot_ms: Option<u64>,
     /// Stretches in which a sensor that had sent packets sent none, in

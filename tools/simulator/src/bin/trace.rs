@@ -7,7 +7,7 @@ use shell_simulator::sim::Sim;
 use shell_simulator::trace::file::{self, Media};
 use shell_simulator::trace::find::{Query, find};
 use shell_simulator::trace::report::{
-    Answers, Artifacts, Header, Listing, Otlp, Prose, Rebuilt, Replayed, Stub, Summary, Written,
+    Answers, Artifacts, Header, Listing, Prose, Rebuilt, Replayed, Stub, Summary, Written,
     in_window, render,
 };
 use shell_simulator::trace::story::tell;
@@ -214,7 +214,7 @@ fn run(args: &[String]) -> Result<String, String> {
     let mut decoded = None;
     let out = match command.as_str() {
         "summary" => {
-            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
+            let timeline = decode(&mut decoded, &capture.trace)?;
             render(json, &Summary::of(&path, timeline, &media))
         }
         "origin" => {
@@ -261,7 +261,7 @@ fn run(args: &[String]) -> Result<String, String> {
             )
         }
         "timeline" => {
-            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
+            let timeline = decode(&mut decoded, &capture.trace)?;
             let window = options.window(timeline)?;
             let kinds = Kind::parse_list(options.value("kinds").unwrap_or("default"))?;
             let listing = Listing::of(
@@ -274,7 +274,7 @@ fn run(args: &[String]) -> Result<String, String> {
             render(json, &listing)
         }
         "find" => {
-            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
+            let timeline = decode(&mut decoded, &capture.trace)?;
             let query = options
                 .positional
                 .get(1)
@@ -294,23 +294,23 @@ fn run(args: &[String]) -> Result<String, String> {
             render(json, &Answers::of(found, limit, options.has("hex")))
         }
         "otlp" => {
-            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
+            let timeline = decode(&mut decoded, &capture.trace)?;
             let requests = otlp::export(timeline, &tell(timeline));
             match options.value("out") {
                 Some(out) => {
-                    std::fs::write(out, requests).map_err(|e| format!("{out}: {e}"))?;
+                    std::fs::write(out, requests.to_string()).map_err(|e| format!("{out}: {e}"))?;
                     let out = std::fs::canonicalize(out).map_err(|e| format!("{out}: {e}"))?;
                     render(json, &Written { out })
                 }
-                None => render(json, &Otlp(requests)),
+                None => render(json, &requests),
             }
         }
         "replay" => {
-            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
+            let timeline = decode(&mut decoded, &capture.trace)?;
             render(json, &replay(&path, &capture, timeline, &media, &options)?)
         }
         "test-stub" => {
-            let timeline: &Timeline = decoded.insert(read(&capture.trace)?);
+            let timeline = decode(&mut decoded, &capture.trace)?;
             let at = options
                 .time(timeline, "at")?
                 .ok_or("test-stub needs --at")?;
@@ -345,11 +345,9 @@ fn run(args: &[String]) -> Result<String, String> {
     Ok(out)
 }
 
-fn mode_name(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Stimulus => "stimulus",
-        Mode::Strict => "strict",
-    }
+/// `trace` decoded into `slot`, which `run` forgets rather than frees.
+fn decode<'a>(slot: &'a mut Option<Timeline>, trace: &[u8]) -> Result<&'a Timeline, String> {
+    Ok(slot.insert(read(trace)?))
 }
 
 const DIRTY: &str = "-dirty";
@@ -524,7 +522,7 @@ fn replay<'a>(
     files.sort();
     Ok(Replayed {
         header: Header::of(path, timeline, media),
-        mode: mode_name(mode),
+        mode: mode.name(),
         why,
         from_ms: from,
         to_ms: to,

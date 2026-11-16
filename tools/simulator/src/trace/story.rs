@@ -6,7 +6,6 @@
 use crate::trace::timeline::{
     Entry, Kind, Moment, TOAST_CLEARED, Timeline, duration, session_clock,
 };
-use firmware_services::trace::End;
 use serde::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::fmt;
@@ -114,15 +113,7 @@ pub fn tell(timeline: &Timeline) -> Story {
             ),
             ("boot".into(), timeline.boot.to_string()),
             ("passes".into(), timeline.passes.to_string()),
-            (
-                "end".into(),
-                match timeline.end {
-                    End::Complete => "complete",
-                    End::Torn => "torn",
-                    End::Corrupt => "corrupt",
-                }
-                .into(),
-            ),
+            ("end".into(), timeline.end.name().into()),
         ],
         open: false,
     }];

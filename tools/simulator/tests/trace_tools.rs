@@ -488,7 +488,7 @@ fn each_note_names_the_cue_vana_played_it_for() {
 #[test]
 fn otlp_export_is_one_traces_and_one_metrics_request() {
     let timeline = timeline("power-dropout-after-descent");
-    let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline));
+    let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline)).to_string();
     let lines: Vec<&str> = json.lines().collect();
     assert_eq!(lines.len(), 2);
     assert!(
@@ -1183,7 +1183,7 @@ fn activity_and_health_are_found_by_kind_and_exported_per_task() {
         matches!(health.first(), Some(Found::Entry(entry)) if entry.text.starts_with("simulated, gps ")),
         "{health:?}"
     );
-    let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline));
+    let json = shell_simulator::trace::otlp::export(&timeline, &tell(&timeline)).to_string();
     let metrics = json.lines().nth(1).expect("a metrics request");
     assert!(
         metrics.contains(

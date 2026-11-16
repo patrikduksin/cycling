@@ -48,7 +48,7 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         boot: header.boot,
         passes: reader.passes,
         end_ms: reader.now,
-        end: events.end(),
+        end: events.end().expect("events stop only once they say why"),
         entries: reader.entries.list,
         clock: reader.clock,
         utc_at_boot_ms: reader.utc_at_boot_ms,
@@ -232,9 +232,7 @@ impl Reader {
             self.paged = true;
             for page in pass.iter_mut().filter(|e| e.kind == Kind::Page) {
                 page.cause = Some(cause.clone());
-                {
-                    page.shows = readings(&page.text);
-                }
+                page.shows = readings(&page.text);
             }
         }
         self.pass_start = self.entries.list.len();

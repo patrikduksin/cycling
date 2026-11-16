@@ -371,6 +371,7 @@ impl Default for Live {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trace::timeline::Kind;
 
     fn run(live: &mut Live, ms: u64) {
         for _ in 0..ms / 33 {
@@ -426,7 +427,7 @@ mod tests {
                 .expect("the session's own trace decodes")
                 .entries
                 .iter()
-                .filter(|entry| entry.text == "button BottomLeft code 1")
+                .filter(|entry| entry.kind == Kind::Input && entry.text.contains("BottomLeft"))
                 .count()
         };
         let before = count(live);

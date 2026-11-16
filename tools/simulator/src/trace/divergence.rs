@@ -161,10 +161,7 @@ pub fn summarize(
         "the rider saw what the recording saw; nothing here is a replay fault"
     };
     Divergences {
-        mode: match mode {
-            Mode::Stimulus => "stimulus",
-            Mode::Strict => "strict",
-        },
+        mode: mode.name(),
         from_ms: from,
         to_ms: to,
         meanings: by_meaning

@@ -1823,6 +1823,16 @@ pub enum End {
     Corrupt,
 }
 
+impl End {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Torn => "torn",
+            Self::Corrupt => "corrupt",
+        }
+    }
+}
+
 /// A position in a trace's events, to resume decoding later, also over the
 /// same trace grown since: the open block resealed longer, or more blocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

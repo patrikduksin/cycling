@@ -2,7 +2,7 @@ use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Medium, Outing, Ride};
 use crate::ride::course::follow::Follower;
-use crate::ride::course::nav::{Event, Sign};
+use crate::ride::course::nav::{Event, Navigation, Sign};
 use crate::ride::course::stored::{self, Finder, Finding};
 use crate::ride::course::{self, Course};
 use crate::ride::homing::rebuild::Rebuild;
@@ -396,17 +396,10 @@ pub(super) fn refresh_map(
     }
 }
 
-pub(super) fn holds(track: &Option<&'static mut RideTrack>, cue: Cue) -> bool {
-    let event = match cue {
-        Cue::OffCourse => Event::OffCourse,
-        Cue::OnCourse => Event::OnCourse,
-        Cue::TurnSoon => Event::TurnSoon,
-        Cue::TurnNow => Event::TurnNow,
-        _ => return true,
-    };
+pub(super) fn holds(track: &Option<&'static mut RideTrack>, cue: Navigation) -> bool {
     track
         .as_deref()
-        .is_some_and(|state| state.follower.holds(event))
+        .is_some_and(|state| state.follower.holds(cue))
 }
 
 pub(super) fn sign_of(track: &Option<&'static mut RideTrack>, now: u64) -> Sign {

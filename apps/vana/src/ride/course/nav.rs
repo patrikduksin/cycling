@@ -76,6 +76,24 @@ pub enum Event {
     Arrived,
 }
 
+/// A navigation sound that may wait for the buzzer, most urgent first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Navigation {
+    OffCourse,
+    OnCourse,
+    TurnNow,
+    TurnSoon,
+}
+
+impl Navigation {
+    pub const ALL: [Self; 4] = [
+        Self::OffCourse,
+        Self::OnCourse,
+        Self::TurnNow,
+        Self::TurnSoon,
+    ];
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Glyph {
     Left,
@@ -504,20 +522,17 @@ impl Navigator {
         }
     }
 
-    /// Whether `event`, raised earlier and still unheard, is still so: the
+    /// Whether `cue`, raised earlier and still unheard, is still so: the
     /// turn it is of not yet passed, the rider still off course or on it.
-    pub fn holds(&self, event: Event, turns: &[Turn]) -> bool {
-        let raised = match event {
-            Event::Following => Raised::Following,
-            Event::OnCourse => Raised::OnCourse,
-            Event::OffCourse => Raised::OffCourse,
-            Event::StillOff => Raised::StillOff,
-            Event::Arrived => return self.arrived_ms.is_some(),
-            Event::TurnSoon => match self.last_sounded.and_then(|k| turns.get(k)) {
+    pub fn holds(&self, cue: Navigation, turns: &[Turn]) -> bool {
+        let raised = match cue {
+            Navigation::OnCourse => Raised::OnCourse,
+            Navigation::OffCourse => Raised::OffCourse,
+            Navigation::TurnSoon => match self.last_sounded.and_then(|k| turns.get(k)) {
                 Some(turn) => Raised::TurnSoon { turn: turn.id() },
                 None => return false,
             },
-            Event::TurnNow => match self.last_beeped.and_then(|k| turns.get(k)) {
+            Navigation::TurnNow => match self.last_beeped.and_then(|k| turns.get(k)) {
                 Some(turn) => Raised::TurnNow { turn: turn.id() },
                 None => return false,
             },

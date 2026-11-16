@@ -623,9 +623,9 @@ fn a_held_back_turn_now_holds_only_until_its_turn_is_passed() {
         heard.iter().any(|&(_, event)| event == Event::TurnNow),
         "{heard:?}"
     );
-    assert!(rider.nav.holds(Event::TurnNow, &turns));
+    assert!(rider.nav.holds(Navigation::TurnNow, &turns));
     rider.ride(485.0, 560.0, 5.0);
-    assert!(!rider.nav.holds(Event::TurnNow, &turns));
+    assert!(!rider.nav.holds(Navigation::TurnNow, &turns));
 }
 
 #[test]
@@ -636,11 +636,10 @@ fn a_held_back_off_course_holds_only_while_off_course() {
         .filter_map(|_| rider.fix(100.0, 60.0, true))
         .collect();
     assert_eq!(heard, [Event::OffCourse]);
-    assert!(rider.nav.holds(Event::OffCourse, &[]));
-    assert!(!rider.nav.holds(Event::OnCourse, &[]));
+    assert!(rider.nav.holds(Navigation::OffCourse, &[]));
+    assert!(!rider.nav.holds(Navigation::OnCourse, &[]));
     assert_eq!(rider.at(105.0), Some(Event::OnCourse));
-    assert!(!rider.nav.holds(Event::OffCourse, &[]));
-    assert!(!rider.nav.holds(Event::StillOff, &[]));
+    assert!(!rider.nav.holds(Navigation::OffCourse, &[]));
 }
 
 #[test]

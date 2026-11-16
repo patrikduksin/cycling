@@ -164,4 +164,3 @@ fn hairpins_and_roundabouts_keep_their_turns() {
         assert_eq!(told(&ring(radius, 270.0, 5.0)), [[LEFT]; 2], "r{radius}");
     }
 }
-

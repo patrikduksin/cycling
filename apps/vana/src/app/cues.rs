@@ -8,6 +8,7 @@
 //! ask for the charger. A vehicle closing from behind sounds the alarm, then a
 //! low, middle or high note by how near it is. The rider can mute cues in
 //! Settings; the radar cues are safety cues and always sound.
+use crate::ride::course::nav::Navigation;
 use device_api::sound::{Pattern, Sound};
 use firmware_services::sound::Sequence;
 
@@ -131,11 +132,25 @@ impl Cue {
         )
     }
 
-    const fn navigation(self) -> bool {
-        matches!(
-            self,
-            Self::OffCourse | Self::OnCourse | Self::TurnSoon | Self::TurnNow
-        )
+    const fn navigation(self) -> Option<Navigation> {
+        match self {
+            Self::OffCourse => Some(Navigation::OffCourse),
+            Self::OnCourse => Some(Navigation::OnCourse),
+            Self::TurnNow => Some(Navigation::TurnNow),
+            Self::TurnSoon => Some(Navigation::TurnSoon),
+            _ => None,
+        }
+    }
+}
+
+impl From<Navigation> for Cue {
+    fn from(cue: Navigation) -> Self {
+        match cue {
+            Navigation::OffCourse => Self::OffCourse,
+            Navigation::OnCourse => Self::OnCourse,
+            Navigation::TurnNow => Self::TurnNow,
+            Navigation::TurnSoon => Self::TurnSoon,
+        }
     }
 }
 
@@ -178,7 +193,8 @@ pub(super) struct Played {
 #[derive(Default)]
 pub(super) struct Cues {
     pending: Option<(Cue, u64)>,
-    navigation_waiting: Option<Cue>,
+    /// Navigation cues waiting, one of each kind, by `Navigation::ALL`.
+    navigation_waiting: [bool; 4],
     playing: Option<Cue>,
     run: Sequence,
     note: u8,
@@ -188,15 +204,15 @@ pub(super) struct Cues {
 
 impl Cues {
     /// Sound `cue` soon. A later cue replaces an earlier one, except that
-    /// only another alarm replaces a safety alarm, and a navigation cue waits apart
-    /// until no other cue is waiting or sounding. `muted` keeps all but
-    /// safety alarms quiet.
+    /// only another alarm replaces a safety alarm, and a navigation cue
+    /// waits apart, beside one of each other kind, until no other cue is
+    /// waiting or sounding. `muted` keeps all but safety alarms quiet.
     pub(super) fn raise(&mut self, cue: Cue, muted: bool, now: u64) {
         if muted && !cue.safety() {
             return;
         }
-        if cue.navigation() {
-            self.navigation_waiting = Some(cue);
+        if let Some(cue) = cue.navigation() {
+            self.navigation_waiting[cue as usize] = true;
             return;
         }
         let busy = |held: Option<Cue>| held.is_some_and(Cue::safety);
@@ -209,28 +225,41 @@ impl Cues {
     }
 
     /// Start a raised cue and offer its notes to `sound`. Call once per loop.
-    /// A navigation cue that waited is dropped unless it `holds` still, and
-    /// one cut off before its last note waits again unless a newer one waits.
-    pub(super) fn play(&mut self, sound: &mut impl Sound, now: u64, holds: impl Fn(Cue) -> bool) {
+    /// Navigation cues waiting play most urgent first, each dropped unless
+    /// it `holds` still, until the buzzer takes its first note. One cut off
+    /// before its last note waits again.
+    pub(super) fn play(
+        &mut self,
+        sound: &mut impl Sound,
+        now: u64,
+        holds: impl Fn(Navigation) -> bool,
+    ) {
         let next = match self.pending.take() {
             Some((cue, at)) => (now.saturating_sub(at) < STALE_MS).then_some(cue),
-            None if !self.run.is_playing() => {
-                self.navigation_waiting.take().filter(|&cue| holds(cue))
-            }
+            None if !self.run.is_playing() => self.next_navigation(&holds),
             None => None,
         };
         if let Some(cue) = next {
             if let Some(cut) = self
                 .playing
-                .filter(|cue| cue.navigation() && self.run.is_playing())
+                .filter(|_| self.run.is_playing())
+                .and_then(Cue::navigation)
             {
-                self.navigation_waiting.get_or_insert(cut);
+                self.navigation_waiting[cut as usize] = true;
             }
             let notes = resolve(sound.patterns(), cue);
             self.run.start(&notes, now);
             self.playing = Some(cue);
             self.note = 0;
             self.of = notes.len() as u8;
+        }
+        let unheard = self.note == 0 && self.run.is_playing();
+        if let Some(cue) = self.playing.and_then(Cue::navigation)
+            && unheard
+            && !holds(cue)
+        {
+            self.run.clear();
+            self.playing = None;
         }
         if let (Some(pattern), Some(cue)) = (self.run.pump(sound, now), self.playing) {
             self.note += 1;
@@ -243,9 +272,16 @@ impl Cues {
         }
     }
 
+    fn next_navigation(&mut self, holds: &impl Fn(Navigation) -> bool) -> Option<Cue> {
+        Navigation::ALL.into_iter().find_map(|cue| {
+            let waited = core::mem::take(&mut self.navigation_waiting[cue as usize]);
+            (waited && holds(cue)).then_some(Cue::from(cue))
+        })
+    }
+
     /// A cue waits for the buzzer or is still sounding.
     pub(super) fn busy(&self) -> bool {
-        self.pending.is_some() || self.navigation_waiting.is_some() || self.run.is_playing()
+        self.pending.is_some() || self.navigation_waiting.contains(&true) || self.run.is_playing()
     }
 
     pub(super) fn take_played(&mut self) -> Option<Played> {
@@ -385,7 +421,11 @@ mod tests {
         assert_eq!(later.pending, Some((Cue::Saved, 10)));
     }
 
-    fn heard(cues: &mut Cues, until: u64, holds: impl Fn(Cue) -> bool) -> std::vec::Vec<Cue> {
+    fn heard(
+        cues: &mut Cues,
+        until: u64,
+        holds: impl Fn(Navigation) -> bool,
+    ) -> std::vec::Vec<Cue> {
         let mut heard = std::vec::Vec::new();
         for now in (0..until).step_by(50) {
             cues.play(&mut Open, now, &holds);
@@ -419,7 +459,7 @@ mod tests {
         cues.raise(Cue::RadarApproach, false, 0);
         cues.raise(Cue::TurnNow, false, 0);
         assert_eq!(
-            heard(&mut cues, 5_000, |cue| cue != Cue::TurnNow),
+            heard(&mut cues, 5_000, |cue| cue != Navigation::TurnNow),
             [Cue::RadarApproach]
         );
         let mut muted = Cues::default();
@@ -470,5 +510,49 @@ mod tests {
             heard.extend(cues.take_played().filter(|p| p.note == 1).map(|p| p.cue));
         }
         assert_eq!(heard.last(), Some(&Cue::OffCourse), "{heard:?}");
+    }
+
+    #[test]
+    fn a_turn_now_whose_turn_passes_before_the_buzzer_takes_it_never_sounds() {
+        let (mut cues, mut buzzer) = (Cues::default(), GuardedBuzzer { free_at_ms: 0 });
+        let mut heard = std::vec::Vec::new();
+        for now in (0..2_000).step_by(50) {
+            if now == 0 {
+                cues.raise(Cue::RadarPassing, false, now);
+            }
+            if now == 50 {
+                cues.raise(Cue::TurnNow, false, now);
+            }
+            cues.play(&mut buzzer, now, |_| now < 100);
+            heard.extend(cues.take_played().filter(|p| p.note == 1).map(|p| p.cue));
+        }
+        assert_eq!(heard, [Cue::RadarPassing]);
+    }
+
+    #[test]
+    fn navigation_cues_waiting_together_each_play_off_course_first() {
+        let mut cues = Cues::default();
+        cues.raise(Cue::RadarClear, false, 0);
+        cues.raise(Cue::OnCourse, false, 0);
+        cues.raise(Cue::TurnSoon, false, 0);
+        assert_eq!(
+            heard(&mut cues, 8_000, |_| true),
+            [Cue::RadarClear, Cue::OnCourse, Cue::TurnSoon]
+        );
+        let mut more = Cues::default();
+        more.raise(Cue::RadarApproach, false, 0);
+        for cue in [Cue::TurnSoon, Cue::TurnNow, Cue::OnCourse, Cue::OffCourse] {
+            more.raise(cue, false, 0);
+        }
+        assert_eq!(
+            heard(&mut more, 8_000, |_| true),
+            [
+                Cue::RadarApproach,
+                Cue::OffCourse,
+                Cue::OnCourse,
+                Cue::TurnNow,
+                Cue::TurnSoon
+            ]
+        );
     }
 }

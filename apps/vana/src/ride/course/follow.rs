@@ -1,5 +1,5 @@
 use crate::ride::course::nav::{
-    self, Event, Guidance, MatchedFix, Navigator, OFF_M, ON_M, Observed, Sign,
+    self, Event, Guidance, MatchedFix, Navigation, Navigator, OFF_M, ON_M, Observed, Sign,
 };
 use crate::ride::course::turns::{SCAN_STEPS, Scan, Turn};
 use crate::ride::course::{self, along_m};
@@ -330,8 +330,8 @@ impl<'a> Follower<'a> {
         self.nav.sign(&self.turns[..self.turn_count], now)
     }
 
-    pub fn holds(&self, event: Event) -> bool {
-        self.following && self.nav.holds(event, &self.turns[..self.turn_count])
+    pub fn holds(&self, cue: Navigation) -> bool {
+        self.following && self.nav.holds(cue, &self.turns[..self.turn_count])
     }
 
     pub fn guidance(&self, now: u64) -> Option<Guidance> {

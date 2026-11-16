@@ -22,8 +22,8 @@
 //! onto it within a chord after: that turn goes too when, with it, the
 //! course runs on as it came.
 use super::{Cursor, HALF_CHORD_M, Kind, TURN_DEG, Turn, distance, mm, swing, way};
-use libm::{fabsf, sqrtf};
 use crate::ride::thin::off_segment;
+use libm::{fabsf, sqrtf};
 
 /// The scan keeps this far of the course behind its chord's middle: a
 /// spur's whole way out and the way in before it.
@@ -89,7 +89,11 @@ impl Spur {
         else {
             return;
         };
-        let way_out = WayOut { trail, trail_m, tip: &tip };
+        let way_out = WayOut {
+            trail,
+            trail_m,
+            tip: &tip,
+        };
         let found = |base_m: f32, rejoin_m: f32| match way_out.deepest(base_m, at) >= SPUR_MIN_M {
             true => Self::Found { base_m, rejoin_m },
             false => Self::None,
@@ -182,7 +186,11 @@ impl WayOut<'_> {
         self.each(at, |a, b, a_m| {
             let along = distance(a, b);
             if !found && a_m + along >= m {
-                let t = if along > 0.0 { ((m - a_m) / along).max(0.0) } else { 0.0 };
+                let t = if along > 0.0 {
+                    ((m - a_m) / along).max(0.0)
+                } else {
+                    0.0
+                };
                 point = (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
                 found = true;
             }
@@ -208,7 +216,11 @@ impl WayOut<'_> {
         self.each(at, |a, b, a_m| {
             let along = distance(a, b);
             if base.is_none() && a_m + along >= base_m {
-                let t = if along > 0.0 { (base_m - a_m) / along } else { 0.0 };
+                let t = if along > 0.0 {
+                    (base_m - a_m) / along
+                } else {
+                    0.0
+                };
                 base = Some((a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1)));
             }
             if let Some(base) = base {

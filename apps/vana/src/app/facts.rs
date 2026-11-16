@@ -3,10 +3,8 @@
 //! rides list and FORM, and for a saved ride's summary.
 //!
 //! The table is read onto the `Shelf` the composition lends (PSRAM on the
-//! device), a few sectors per tick while no ride is open or being written:
-//! after boot, and again each time the card becomes ready. A save or a
-//! cleared journal then updates the shelf in place. Without a FILES volume or a shelf
-//! nothing is kept and every reader shows what it did before: stress at the
+//! device), a few sectors per tick while no ride is open or being written.
+//! Without a FILES volume or a shelf nothing is kept and every reader shows what it did before: stress at the
 //! FTP now, no HR recovery and no climbs.
 use super::Runtime;
 use super::recording::{Medium, Ride};
@@ -16,7 +14,6 @@ use crate::ride::zones::TrainingProfile;
 use device_api::bulk::ReadWrite;
 use firmware_services::{files, volume};
 
-/// A failed read of the table is tried again this long after.
 const RETRY_MS: u64 = 5_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,8 +91,6 @@ impl Kept {
         }
     }
 
-    /// Keep a record read from the table, unless the shelf holds its ride
-    /// from the same or a later start, as after a save.
     fn read(&mut self, record: Record) {
         if !matches!(record.journal, b'i' | b'b') {
             return;

@@ -202,7 +202,10 @@ impl Bests {
 const FILE: &str = "bests.dat";
 const MAGIC: &[u8; 4] = b"VBST";
 pub const VERSION: u8 = 1;
-const BODY: usize = 6 + Bests::ENCODED;
+const VERSION_AT: usize = 4;
+const BODY_LENGTH_AT: usize = 5;
+const FIELDS_AT: usize = 6;
+const BODY: usize = FIELDS_AT + Bests::ENCODED;
 const SIZE: usize = BODY + 4;
 
 /// Why bests could not be read or written.
@@ -244,9 +247,9 @@ fn open<'a, M: ReadWrite>(
 pub fn encode_file(bests: &Bests) -> [u8; SIZE] {
     let mut bytes = [0; SIZE];
     bytes[..4].copy_from_slice(MAGIC);
-    bytes[4] = VERSION;
-    bytes[5] = BODY as u8;
-    bytes[6..BODY].copy_from_slice(&bests.encode());
+    bytes[VERSION_AT] = VERSION;
+    bytes[BODY_LENGTH_AT] = BODY as u8;
+    bytes[FIELDS_AT..BODY].copy_from_slice(&bests.encode());
     let crc = crc32(&bytes[..BODY]);
     bytes[BODY..].copy_from_slice(&crc.to_le_bytes());
     bytes
@@ -256,13 +259,13 @@ pub fn encode_file(bests: &Bests) -> [u8; SIZE] {
 pub fn decode_file(bytes: &[u8]) -> Option<Bests> {
     let bytes: &[u8; SIZE] = bytes.try_into().ok()?;
     if bytes[..4] != *MAGIC
-        || bytes[4] != VERSION
-        || usize::from(bytes[5]) != BODY
+        || bytes[VERSION_AT] != VERSION
+        || usize::from(bytes[BODY_LENGTH_AT]) != BODY
         || crc32(&bytes[..BODY]).to_le_bytes() != bytes[BODY..]
     {
         return None;
     }
-    Bests::decode(&bytes[6..BODY])
+    Bests::decode(&bytes[FIELDS_AT..BODY])
 }
 
 /// The stored bests; none when the store has no file yet.
@@ -401,6 +404,14 @@ mod tests {
         assert_eq!(bests.merge(&limits, 9).power, [true; 4]);
     }
 
+    fn sealed(version: u8, fields: &[u8]) -> std::vec::Vec<u8> {
+        let length = (FIELDS_AT + fields.len()) as u8;
+        let mut bytes = [&MAGIC[..], &[version, length], fields].concat();
+        let crc = crc32(&bytes);
+        bytes.extend_from_slice(&crc.to_le_bytes());
+        bytes
+    }
+
     #[test]
     fn the_file_round_trips_and_a_foreign_one_is_refused() {
         let mut bests = Bests::default();
@@ -409,19 +420,11 @@ mod tests {
         assert_eq!(&bytes[..4], b"VBST");
         assert_eq!(bytes.len(), 42);
         assert_eq!(decode_file(&bytes), Some(bests));
-        // Another version, even one that only appended fields, is foreign.
-        let mut longer = [0u8; SIZE + 2];
-        longer[..BODY].copy_from_slice(&bytes[..BODY]);
-        longer[4] = 2;
-        longer[5] = (BODY + 2) as u8;
-        let crc = crc32(&longer[..BODY + 2]);
-        longer[BODY + 2..].copy_from_slice(&crc.to_le_bytes());
-        assert_eq!(decode_file(&longer), None);
-        let mut other = bytes;
-        other[4] = 2;
-        let crc = crc32(&other[..BODY]);
-        other[BODY..].copy_from_slice(&crc.to_le_bytes());
-        assert_eq!(decode_file(&other), None);
+        let fields = &bytes[FIELDS_AT..BODY];
+        assert_eq!(decode_file(&sealed(VERSION, fields)), Some(bests));
+        assert_eq!(decode_file(&sealed(VERSION + 1, fields)), None);
+        let appended = [fields, &[0, 0]].concat();
+        assert_eq!(decode_file(&sealed(VERSION + 1, &appended)), None);
         let mut torn = bytes;
         torn[10] ^= 1;
         assert_eq!(decode_file(&torn), None);

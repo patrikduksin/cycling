@@ -22,7 +22,6 @@ mod layout {
     pub const DIM_TIMEOUT: usize = 9;
     pub const DIM_BRIGHTNESS: usize = 11;
     pub const TIMEZONE: usize = 12;
-    /// Always zero.
     pub const RESERVED: usize = 14;
     pub const WIFI: usize = 15;
     pub const SSID_LEN: usize = 16;

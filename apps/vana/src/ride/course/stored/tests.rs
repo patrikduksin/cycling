@@ -306,8 +306,6 @@ fn a_course_without_its_own_turns_reads_none() {
     crate::ride::course::delete(&mut region).unwrap();
 }
 
-/// A turns file damaged in any way reads as none: a byte changed anywhere,
-/// cut short, longer, of another version or with an unknown flag.
 #[test]
 fn a_damaged_turns_file_reads_none() {
     let (course, turns) = uploaded(&extended(&ring(20.0, 270.0, 5.0), 0.0));

@@ -36,9 +36,8 @@ pub const FOLDER: &str = "rides/";
 const SUFFIX: &str = ".workout";
 pub const VERSION: u8 = 1;
 const MAGIC: &[u8; 4] = b"VWKO";
-/// Body bytes before the CRC.
-const BODY: usize = 66;
-pub const SIZE: usize = BODY + 4;
+const BODY_LENGTH: usize = 66;
+pub const SIZE: usize = BODY_LENGTH + 4;
 /// Records kept; saving another deletes the oldest.
 pub const KEEP: usize = 32;
 
@@ -77,7 +76,7 @@ pub fn encode(record: &Record) -> [u8; SIZE] {
     let summary = &record.summary;
     bytes[..4].copy_from_slice(MAGIC);
     bytes[4] = VERSION;
-    bytes[5] = BODY as u8;
+    bytes[5] = BODY_LENGTH as u8;
     bytes[6] = record.journal;
     bytes[7] = if summary.finished { FINISHED } else { 0 }
         | if record.started_utc_ms.is_some() {
@@ -104,8 +103,8 @@ pub fn encode(record: &Record) -> [u8; SIZE] {
     put_u32(&mut bytes, 56, millis(summary.under_ms));
     put_u32(&mut bytes, 60, millis(summary.over_ms));
     put_u16(&mut bytes, 64, summary.ftp.unwrap_or(0));
-    let crc = crc32(&bytes[..BODY]);
-    put_u32(&mut bytes, BODY, crc);
+    let crc = crc32(&bytes[..BODY_LENGTH]);
+    put_u32(&mut bytes, BODY_LENGTH, crc);
     bytes
 }
 
@@ -114,8 +113,8 @@ pub fn decode(bytes: &[u8]) -> Option<Record> {
     if bytes.len() != SIZE
         || bytes[..4] != *MAGIC
         || bytes[4] != VERSION
-        || usize::from(bytes[5]) != BODY
-        || crc32(&bytes[..BODY]) != get_u32(bytes, BODY)
+        || usize::from(bytes[5]) != BODY_LENGTH
+        || crc32(&bytes[..BODY_LENGTH]) != get_u32(bytes, BODY_LENGTH)
     {
         return None;
     }
@@ -152,7 +151,6 @@ pub fn decode(bytes: &[u8]) -> Option<Record> {
 
 const FOREIGN: LoadError = LoadError::Decode(super::codec::DecodeError::Version);
 
-/// The record in `entry`, or `FOREIGN` when it is not a current record.
 fn read(
     store: &mut impl ReadWrite,
     dir: &files::Dir,
@@ -259,7 +257,7 @@ pub fn load(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workout::library::tests::{formatted, put};
+    use crate::workout::library::tests::{Region, formatted, put};
 
     fn record(ride_id: u32) -> Record {
         Record {
@@ -302,31 +300,35 @@ mod tests {
     #[test]
     fn another_version_is_foreign() {
         let mut longer = [0u8; SIZE + 6];
-        longer[..BODY].copy_from_slice(&encode(&record(5))[..BODY]);
+        longer[..BODY_LENGTH].copy_from_slice(&encode(&record(5))[..BODY_LENGTH]);
         longer[4] = 2;
-        longer[5] = (BODY + 6) as u8;
-        let crc = crc32(&longer[..BODY + 6]);
-        put_u32(&mut longer, BODY + 6, crc);
+        longer[5] = (BODY_LENGTH + 6) as u8;
+        let crc = crc32(&longer[..BODY_LENGTH + 6]);
+        put_u32(&mut longer, BODY_LENGTH + 6, crc);
         assert_eq!(decode(&longer), None);
         let mut other = encode(&record(5));
         other[4] = 2;
-        let crc = crc32(&other[..BODY]);
-        put_u32(&mut other, BODY, crc);
+        let crc = crc32(&other[..BODY_LENGTH]);
+        put_u32(&mut other, BODY_LENGTH, crc);
         assert_eq!(decode(&other), None);
+    }
+
+    fn full_folder_whose_oldest_is_foreign() -> Region {
+        let mut region = formatted();
+        let mut foreign = encode(&record(1));
+        foreign[4] = VERSION + 1;
+        put(&mut region, file(b'b', 1).as_str(), &foreign);
+        for ride in 2..=KEEP as u32 {
+            save(&mut region, &record(ride)).unwrap();
+        }
+        region
     }
 
     #[test]
     fn a_save_never_replaces_or_rotates_out_a_foreign_file() {
-        let mut region = formatted();
-        let mut foreign = encode(&record(1));
-        foreign[4] = 2;
-        put(&mut region, file(b'b', 1).as_str(), &foreign);
+        let mut region = full_folder_whose_oldest_is_foreign();
         assert_eq!(save(&mut region, &record(1)), Err(FOREIGN));
         assert_eq!(load(&mut region, b'b', 1), Err(FOREIGN));
-        for ride in 2..=KEEP as u32 {
-            save(&mut region, &record(ride)).unwrap();
-        }
-        // The foreign file is the oldest of a full folder.
         assert_eq!(save(&mut region, &record(KEEP as u32 + 1)), Err(FOREIGN));
         assert_eq!(load(&mut region, b'b', 2), Ok(Some(record(2))));
         assert_eq!(load(&mut region, b'b', KEEP as u32 + 1), Ok(None));

@@ -197,8 +197,7 @@ pub fn decode(slot: &[u8]) -> Option<Record> {
     })
 }
 
-/// Whether `bytes` start with a current, sound header.
-fn ours(bytes: &[u8]) -> bool {
+fn starts_with_current_sound_header(bytes: &[u8]) -> bool {
     bytes.len() >= SLOT
         && bytes[..4] == MAGIC[..]
         && bytes[4] == TABLE_VERSION
@@ -209,13 +208,17 @@ fn ours(bytes: &[u8]) -> bool {
 /// Whether a table file of `length` bytes that starts with `head` is one
 /// this version reads and writes.
 fn writable_table(head: &[u8], length: usize) -> bool {
-    ours(head) && length.is_multiple_of(SLOT) && length <= MAX_BYTES
+    starts_with_current_sound_header(head) && length.is_multiple_of(SLOT) && length <= MAX_BYTES
 }
 
 /// The rides a whole table held in `bytes` hides; none for a table this
 /// version would not read.
 pub fn decode_table(bytes: &[u8]) -> impl Iterator<Item = Record> + '_ {
-    let slots = if ours(bytes) { bytes } else { &[] };
+    let slots = if starts_with_current_sound_header(bytes) {
+        bytes
+    } else {
+        &[]
+    };
     slots
         .as_chunks::<SLOT>()
         .0

@@ -72,13 +72,11 @@ const DEBOUNCE_MS: u64 = 2_000;
 const RETRY_MS: u64 = 5_000;
 const AUTO_PAUSE: u8 = 1 << 0;
 const SOUNDS: u8 = 1 << 1;
-/// Set when the rider turned the sunset alert off.
 const SUNSET_OFF: u8 = 1 << 2;
 /// Where the hidden-page bits start in the flags.
 const PAGES_SHIFT: u32 = 3;
 /// The longest automatic lap a record may hold.
 pub const AUTO_LAP_MAX_KM: u8 = 100;
-/// The auto-lap byte for laps at the start point.
 const AUTO_LAP_AT_START: u8 = 255;
 const AUTO_LAP_FIRST_UNUSED: u8 = AUTO_LAP_MAX_KM + 1;
 
@@ -270,7 +268,7 @@ impl Options {
     /// A device that never saved preferences starts first-run setup here.
     pub const FIRST_RUN: u8 = 1;
 
-    fn encode(self) -> heapless::Vec<u8, OPTIONS_LENGTH> {
+    fn encode(self) -> [u8; OPTIONS_LENGTH] {
         let mut flags = 0;
         if self.auto_pause {
             flags |= AUTO_PAUSE;
@@ -282,22 +280,26 @@ impl Options {
             flags |= SUNSET_OFF;
         }
         flags |= self.ride_pages.bits() << PAGES_SHIFT;
-        let mut bytes = heapless::Vec::<u8, OPTIONS_LENGTH>::new();
-        // Cannot fail: the fields add up to the capacity.
-        let _ = bytes.extend_from_slice(&[
-            flags,
-            auto_lap_byte(self.auto_lap),
-            self.daylight.byte(),
-            self.setup,
-        ]);
-        let _ = bytes.extend_from_slice(&self.alerts);
-        let _ = bytes.push(self.theme.byte());
-        let _ = bytes.extend_from_slice(&self.zone.encode());
-        let _ = bytes.extend_from_slice(&self.wheel.encode());
-        let _ = bytes.extend_from_slice(&self.rider.encode());
-        let _ = bytes.extend_from_slice(&self.main_slots.encode());
-        let _ = bytes.push(self.mode.byte());
-        let _ = bytes.push(u8::from(self.auto_brightness));
+        let mut bytes = [0; OPTIONS_LENGTH];
+        let mut at = 0;
+        for field in [
+            &[
+                flags,
+                auto_lap_byte(self.auto_lap),
+                self.daylight.byte(),
+                self.setup,
+            ][..],
+            &self.alerts,
+            &[self.theme.byte()],
+            &self.zone.encode(),
+            &self.wheel.encode(),
+            &self.rider.encode(),
+            &self.main_slots.encode(),
+            &[self.mode.byte(), u8::from(self.auto_brightness)],
+        ] {
+            bytes[at..at + field.len()].copy_from_slice(field);
+            at += field.len();
+        }
         bytes
     }
 
@@ -415,12 +417,10 @@ fn decode_current(bytes: &[u8]) -> Option<Record> {
         u16::from_le_bytes([*ftp_low, *ftp_high]),
         u16::from_le_bytes([*lthr_low, *lthr_high]),
     )?;
-    // The sensor field's own count says where the options start.
-    let length = rest.first().map_or(0, |&count| 1 + 4 * usize::from(count));
-    let (sensors, options) = rest.split_at_checked(length)?;
+    let (sensors, options) = Saved::decode(rest).ok()?;
     Some(Record {
         profile,
-        sensors: Saved::decode(sensors).ok()?,
+        sensors,
         options: Options::decode(options)?,
     })
 }
@@ -994,7 +994,6 @@ mod tests {
         let mut first_run = Record::default();
         first_run.options.setup = Options::FIRST_RUN;
         assert_eq!(decode(&[]), (first_run, Stored::Missing));
-        // Another version, even one that only changed the version byte.
         let current = encode(&defaults);
         for version in [0, 1, 9, 11, 0xff] {
             let mut other = current.to_vec();
@@ -1014,28 +1013,29 @@ mod tests {
         ] {
             assert_eq!(decode(damaged), (defaults, Stored::Foreign), "{damaged:?}");
         }
-        // The sunset alert off is flag bit 2.
         let off = Options {
             sunset_alert: false,
             ..Options::default()
         };
-        assert_eq!(off.encode()[0], 0b111);
+        assert_eq!(off.encode()[0], AUTO_PAUSE | SOUNDS | SUNSET_OFF);
         assert_eq!(Options::decode(&off.encode()), Some(off));
         assert!(
             Options::decode(&Options::default().encode())
                 .unwrap()
                 .sunset_alert
         );
-        // Hidden ride pages are flag bits 3..7: a hidden STATS and LAP set
-        // bits 3 and 4.
-        assert_eq!(Options::default().encode()[0], 0b011);
+        assert_eq!(Options::default().encode()[0], AUTO_PAUSE | SOUNDS);
+        let stats_and_lap = PageChoice::default()
+            .toggled(RidePage::Stats)
+            .toggled(RidePage::Lap);
         let hidden = Options {
-            ride_pages: PageChoice::default()
-                .toggled(RidePage::Stats)
-                .toggled(RidePage::Lap),
+            ride_pages: stats_and_lap,
             ..Options::default()
         };
-        assert_eq!(hidden.encode()[0], 0b1_1011);
+        assert_eq!(
+            hidden.encode()[0],
+            AUTO_PAUSE | SOUNDS | stats_and_lap.bits() << PAGES_SHIFT
+        );
         assert_eq!(Options::decode(&hidden.encode()), Some(hidden));
         // AT START (byte 1) and hidden pages (flags) share a record.
         for ride_pages in [
@@ -1052,33 +1052,39 @@ mod tests {
             assert_eq!(bytes[0] >> PAGES_SHIFT, ride_pages.bits());
             assert_eq!(Options::decode(&bytes), Some(both));
         }
-        // Options one byte short or long, an unknown flag (bit 6 hid the
-        // removed BACK TO START), too long a lap, an unknown day/night, theme
-        // or zone, a damaged wheel or body, an unknown brightness choice, and
-        // an impossible FTP.
+        const FLAGS: usize = 0;
+        const AUTO_LAP: usize = 1;
+        const DAYLIGHT: usize = 2;
+        const THEME: usize = 4 + ALERTS_LENGTH;
+        const ZONE: usize = THEME + 1;
+        const WHEEL: usize = ZONE + ZONE_LENGTH;
+        const WHEEL_MANUAL: usize = WHEEL + 2;
+        const RIDER: usize = WHEEL + WHEEL_LENGTH;
+        const AUTO_BRIGHTNESS: usize = OPTIONS_LENGTH - 1;
+        const FTP: [u8; 2] = [250, 0];
         let good = Options::default().encode();
         let with = |at: usize, value: u8| {
-            let mut options = good.clone();
+            let mut options = good;
             options[at] = value;
             options.to_vec()
         };
-        for (profile, options) in [
-            ([250, 0], good[..OPTIONS_LENGTH - 1].to_vec()),
-            ([250, 0], [&good[..], &[0]].concat()),
-            ([250, 0], with(0, good[0] | 1 << 6)),
-            ([250, 0], with(1, AUTO_LAP_MAX_KM + 1)),
-            ([250, 0], with(2, 3)),
-            ([250, 0], with(13, 3)),
-            ([250, 0], with(14, 2)),
-            ([250, 0], with(16, 0xdb)),
-            ([250, 0], with(18, 2)),
-            ([250, 0], with(19, 29)),
-            ([250, 0], with(20, 100)),
-            ([250, 0], with(OPTIONS_LENGTH - 1, 3)),
-            ([0, 0], good.to_vec()),
+        for (case, profile, options) in [
+            ("one byte short", FTP, good[..OPTIONS_LENGTH - 1].to_vec()),
+            ("one byte long", FTP, [&good[..], &[0]].concat()),
+            ("unknown flag", FTP, with(FLAGS, good[FLAGS] | 1 << 6)),
+            ("lap too long", FTP, with(AUTO_LAP, AUTO_LAP_FIRST_UNUSED)),
+            ("unknown day/night", FTP, with(DAYLIGHT, 3)),
+            ("unknown theme", FTP, with(THEME, 3)),
+            ("unknown zone", FTP, with(ZONE, 2)),
+            ("implausible wheel", FTP, with(WHEEL, 0xdb)),
+            ("unknown wheel source", FTP, with(WHEEL_MANUAL, 2)),
+            ("rider weight out of range", FTP, with(RIDER, 29)),
+            ("rider age out of range", FTP, with(RIDER + 1, 100)),
+            ("unknown brightness choice", FTP, with(AUTO_BRIGHTNESS, 3)),
+            ("impossible FTP", [0, 0], good.to_vec()),
         ] {
             let damaged = [&[VERSION, profile[0], profile[1], 170, 0, 0][..], &options].concat();
-            assert_eq!(decode(&damaged), (defaults, Stored::Foreign), "{damaged:?}");
+            assert_eq!(decode(&damaged), (defaults, Stored::Foreign), "{case}");
         }
     }
 

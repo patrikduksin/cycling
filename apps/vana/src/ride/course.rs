@@ -398,7 +398,6 @@ fn decode_into<E>(
     }
     course.name[..name.len()].copy_from_slice(name);
     course.name_len = u32::from(name_len);
-    // Whole points per read, about a sector's worth.
     let mut chunk = [0u8; SECTOR_SIZE];
     let per = SECTOR_SIZE / POINT;
     let mut index = 0;

@@ -51,9 +51,7 @@ pub const TABLE: &str = "rides/facts.tbl";
 pub const VERSION: u8 = 1;
 const TABLE_MAGIC: &[u8; 4] = b"VFTB";
 const TABLE_VERSION: u8 = 1;
-/// Bytes a slot takes.
 pub const SLOT: usize = 32;
-/// Where the fields start in a slot.
 const FIELDS: usize = 2;
 /// Rides the table keeps: FORM's 120 days at eight rides a day, in 32 KB.
 pub const KEEP: usize = 1000;
@@ -212,7 +210,7 @@ pub fn decode_slot(slot: &[u8]) -> Option<Record> {
 /// The rides a whole table holds, oldest saved first, read as the firmware
 /// reads them; none if it would refuse the table.
 pub fn decode_table(bytes: &[u8]) -> impl Iterator<Item = Record> + '_ {
-    let slots = if check(bytes, bytes.len()).is_some() {
+    let slots = if header_state(bytes, bytes.len()) != Header::Foreign {
         bytes
     } else {
         &[]
@@ -225,22 +223,32 @@ pub fn decode_table(bytes: &[u8]) -> impl Iterator<Item = Record> + '_ {
         .filter_map(|slot| decode_slot(slot))
 }
 
-/// For a table whose first bytes are `bytes` and whose whole length is
-/// `length`: `None` if it is foreign, else whether its header is sound. A
-/// current table whose header fails its CRC keeps its slots.
-fn check(bytes: &[u8], length: usize) -> Option<bool> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Header {
+    Foreign,
+    Sound,
+    Damaged,
+}
+
+fn header_state(bytes: &[u8], length: usize) -> Header {
     let current = bytes.len() >= 8
         && bytes[..4] == TABLE_MAGIC[..]
         && bytes[4] == TABLE_VERSION
         && usize::from(get_u16(bytes, 6)) == SLOT
         && length.is_multiple_of(SLOT);
-    current.then(|| bytes.len() >= SLOT && crc32(&bytes[..SLOT - 4]) == get_u32(bytes, SLOT - 4))
+    if !current {
+        Header::Foreign
+    } else if bytes.len() >= SLOT && crc32(&bytes[..SLOT - 4]) == get_u32(bytes, SLOT - 4) {
+        Header::Sound
+    } else {
+        Header::Damaged
+    }
 }
 
 /// Whether a whole table held in `bytes` is current with a sound header: for
 /// a host taking a table back to the rides it held earlier.
 pub fn table_sound(bytes: &[u8]) -> bool {
-    check(bytes, bytes.len()) == Some(true)
+    header_state(bytes, bytes.len()) == Header::Sound
 }
 
 fn header(slot: &mut [u8]) {
@@ -251,17 +259,13 @@ fn header(slot: &mut [u8]) {
     seal(slot);
 }
 
-/// The table file.
 #[derive(Clone, Copy)]
 struct Table {
     entry: files::Entry,
-    /// The header passed its CRC; else a rewrite writes a fresh one.
     sound: bool,
 }
 
 impl Table {
-    /// The table, or `Error::Table` for a foreign file, which is not ours to
-    /// read or write over.
     fn open<M: ReadWrite>(
         store: &mut volume::Volume<'_, M>,
         dir: &files::Dir,
@@ -270,7 +274,11 @@ impl Table {
         bytes: &mut files::Sector,
     ) -> Result<Self, Error> {
         let read = dir.read(store, &entry, 0, bytes, sector)?;
-        let sound = check(&bytes[..read], entry.length as usize).ok_or(Error::Table)?;
+        let sound = match header_state(&bytes[..read], entry.length as usize) {
+            Header::Foreign => return Err(Error::Table),
+            Header::Sound => true,
+            Header::Damaged => false,
+        };
         Ok(Self { entry, sound })
     }
 
@@ -309,7 +317,6 @@ enum Slot<'a> {
     Ride(&'a [u8]),
 }
 
-/// What one rewrite of the table does.
 #[derive(Clone, Copy)]
 enum Change {
     Save(Record),
@@ -317,8 +324,6 @@ enum Change {
 }
 
 impl Change {
-    /// The ride in `slot` if the rewrite keeps it: it decodes and the change
-    /// does not drop it.
     fn keeps(&self, slot: &[u8]) -> Option<Record> {
         decode_slot(slot).filter(|record| match self {
             Self::Save(saved) => saved.key() != record.key(),
@@ -378,7 +383,10 @@ impl Out {
     }
 }
 
-/// Write the table again with `change`.
+fn can_add_file_keeping_one_entry_free(dir: &files::Dir) -> bool {
+    files::CAPACITY.saturating_sub(dir.len()) > 1
+}
+
 #[inline(never)]
 fn rewrite(media: &mut impl ReadWrite, change: Change) -> Result<(), Error> {
     let mut sector = [0; SECTOR_SIZE];
@@ -423,9 +431,7 @@ fn rewrite(media: &mut impl ReadWrite, change: Change) -> Result<(), Error> {
     if !dropped && saved.is_none() {
         return Ok(());
     }
-    // Never the last free entry, which the next workout record or the host
-    // may need.
-    if table.is_none() && files::CAPACITY.saturating_sub(dir.len()) <= 1 {
+    if table.is_none() && !can_add_file_keeping_one_entry_free(&dir) {
         return Err(files::Error::Full.into());
     }
     let total = kept + usize::from(saved.is_some());

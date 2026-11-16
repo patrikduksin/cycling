@@ -680,7 +680,6 @@ pub fn decode<E>(
         count,
         full: head[7] & FULL != 0,
     };
-    // Whole turns per read, about a sector's worth.
     let mut chunk = [0u8; SECTOR_SIZE];
     let per = SECTOR_SIZE / RECORD;
     let (mut index, mut valid) = (0, true);

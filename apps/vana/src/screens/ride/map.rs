@@ -841,7 +841,7 @@ fn arrow(frame: &mut Frame, at: &Projection, track: &Track, split: (usize, Point
     let Some(shape) = arrow_shape(&route, turn) else {
         return;
     };
-    frame.arrow.head = Triangle(shape.head);
+    frame.arrow.head = Triangle::new(shape.head);
     frame.arrow.strokes = 0;
     for pair in shape.shaft.windows(2) {
         frame.arrow.shaft[frame.arrow.strokes] = Stroke::new(pair[0], pair[1]);
@@ -851,7 +851,7 @@ fn arrow(frame: &mut Frame, at: &Projection, track: &Track, split: (usize, Point
     frame.arrow.rows = shape
         .shaft
         .iter()
-        .chain(&frame.arrow.head.0)
+        .chain(frame.arrow.head.corners())
         .fold((f32::INFINITY, f32::NEG_INFINITY), |(top, bottom), p| {
             (top.min(p.1 - reach), bottom.max(p.1 + reach))
         });

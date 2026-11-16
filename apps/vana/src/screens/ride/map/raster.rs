@@ -119,27 +119,59 @@ pub fn coverage(stroke: &Stroke, half: f32, x: usize, y: usize) -> u8 {
 
 /// A filled triangle, wound either way.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Triangle(pub [Point; 3]);
+pub struct Triangle {
+    corners: [Point; 3],
+    edges: [Edge; 3],
+    strokes: [Stroke; 3],
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Edge {
+    from: Point,
+    run: Point,
+    sign: f32,
+    k: f32,
+    per_k: f32,
+}
 
 impl Triangle {
-    fn edges(&self) -> [(Point, Point); 3] {
-        let [p, q, r] = self.0;
-        [(p, q), (q, r), (r, p)]
+    pub fn new(corners: [Point; 3]) -> Self {
+        let [p, q, r] = corners;
+        let cross = (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
+        let sign = if cross < 0.0 { -1.0 } else { 1.0 };
+        let sides = [(p, q), (q, r), (r, p)];
+        Self {
+            corners,
+            edges: sides.map(|(from, to)| {
+                let run = (to.0 - from.0, to.1 - from.1);
+                let k = -sign * run.1;
+                Edge {
+                    from,
+                    run,
+                    sign,
+                    k,
+                    per_k: if k.abs() < 1e-6 { 0.0 } else { 1.0 / k },
+                }
+            }),
+            strokes: sides.map(|(from, to)| Stroke::new(from, to)),
+        }
     }
 
-    fn winding(&self) -> f32 {
-        let [p, q, r] = self.0;
-        let cross = (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
-        if cross < 0.0 { -1.0 } else { 1.0 }
+    pub fn corners(&self) -> &[Point; 3] {
+        &self.corners
     }
 
     fn row_interval(&self, y: f32) -> Option<(f32, f32)> {
-        let sign = self.winding();
         let (mut left, mut right) = (f32::NEG_INFINITY, f32::INFINITY);
-        for (p, q) in self.edges() {
-            let k = -sign * (q.1 - p.1);
-            let c = sign * ((q.0 - p.0) * (y - p.1) + (q.1 - p.1) * p.0);
-            let per_k = if k.abs() < 1e-6 { 0.0 } else { 1.0 / k };
+        for Edge {
+            from: p,
+            run,
+            sign,
+            k,
+            per_k,
+        } in self.edges
+        {
+            let c = sign * (run.0 * (y - p.1) + run.1 * p.0);
             let (from, to) = solve_interval(k, per_k, c, 0.0, f32::INFINITY)?;
             left = left.max(from);
             right = right.min(to);
@@ -158,9 +190,9 @@ impl Triangle {
         if self.contains(x as f32 + 0.5, y as f32 + 0.5) {
             return 15;
         }
-        self.edges()
-            .into_iter()
-            .map(|(p, q)| coverage(&Stroke::new(p, q), outline, x, y))
+        self.strokes
+            .iter()
+            .map(|stroke| coverage(stroke, outline, x, y))
             .max()
             .unwrap_or(0)
     }
@@ -423,7 +455,7 @@ impl Cover {
 
     /// Add a triangle with its edges stroked by `outline`.
     pub fn triangle(&mut self, triangle: &Triangle, outline: f32) {
-        let ys = triangle.0.map(|p| p.1);
+        let ys = triangle.corners.map(|p| p.1);
         let y = self.y as f32 + 0.5;
         let reach = outline + 0.5;
         if y < ys[0].min(ys[1]).min(ys[2]) - reach || y > ys[0].max(ys[1]).max(ys[2]) + reach {
@@ -436,8 +468,8 @@ impl Cover {
                 self.solid(inside);
             }
         }
-        for (p, q) in triangle.edges() {
-            self.stroke(&Stroke::new(p, q), outline);
+        for stroke in &triangle.strokes {
+            self.stroke(stroke, outline);
         }
     }
 
@@ -685,7 +717,7 @@ mod tests {
 
     #[test]
     fn a_triangle_fills_inside_and_strokes_its_edges() {
-        let head = Triangle([(106.4, 17.1), (96.0, 25.1), (95.8, 9.4)]);
+        let head = Triangle::new([(106.4, 17.1), (96.0, 25.1), (95.8, 9.4)]);
         for y in 5..30 {
             let mut cover = Cover::new(y);
             cover.triangle(&head, 0.5);

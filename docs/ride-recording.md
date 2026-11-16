@@ -120,8 +120,7 @@ cycling ride-clear --medium bulk .local/exports/<export-id>
   [MMC volumes](mmc-volumes.md)). `RIDE BULK INIT` formats explicitly: it
   writes the volume table if the region has none (two sectors), then ten log
   metadata sectors. Media that is unformatted, foreign or corrupt is never
-  formatted implicitly. The whole-region log from before volumes reports
-  `state=needs_init layout=legacy` and stays untouched until `RIDE BULK INIT`. A
+  formatted implicitly. A
   corrupt store stays untouched and `corrupt` until someone runs `RIDE BULK INIT`.
   A store whose superblocks were lost while records remain is `corrupt`, not
   unformatted. Export and clear refuse an MMC without a recovered store
@@ -131,7 +130,7 @@ cycling ride-clear --medium bulk .local/exports/<export-id>
   `STATUS` and `HISTORY` default to the medium of the ride on screen, and START
   to the medium the next ride will use; `INIT`, `CLEAR` and `EXPORT` default to
   internal. START is refused while a ride is open on either medium. Bulk status adds `capacity`, `store`,
-  `generation`, `boot_reads` and `layout` (`volumes`, `blank`, `legacy`, `lost`
+  `generation`, `boot_reads` and `layout` (`volumes`, `blank`, `lost`
   or `foreign`).
 - The 1 GiB RIDES volume holds 2,097,136 records, about 2,330 h at 1 Hz, so the
   Ready screen shows `ROOM FOR 2330 H`.

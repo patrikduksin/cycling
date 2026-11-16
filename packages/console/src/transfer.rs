@@ -368,13 +368,12 @@ impl Session {
                 };
                 // Layout code, then region, generation, planned and
                 // unallocated sectors at 8..40, then 25-byte entries: name,
-                // a zero byte that once held the kind, start and sectors.
+                // a zero byte, start and sectors.
                 out[..TABLE_HEAD].fill(0);
                 put_u64(out, 8, region);
                 let mut length = TABLE_HEAD;
                 match volume::read(media, &mut sector) {
                     Ok(Layout::Blank) => out[0] = 0,
-                    Ok(Layout::Legacy) => out[0] = 1,
                     Ok(Layout::Lost) => out[0] = 4,
                     Ok(Layout::Table(table)) => {
                         out[0] = 2;

@@ -345,41 +345,6 @@ fn unformatted_missing_or_unsupported_media_is_never_written() {
 }
 
 #[test]
-fn the_whole_region_log_from_before_volumes_is_reported_and_only_initialize_replaces_it() {
-    // The bulk store as #164 left it: the log at relative sector 0.
-    let mut device = Device::new(CAPACITY);
-    let mut sector = [0u8; 512];
-    let initial = encode_catalog(&Catalog::default());
-    let mut old = sector_log::format(&mut device.media, TAG, 3, &initial, &mut sector).unwrap();
-    for _ in 0..4 {
-        old.append(&mut device.media, &[1; SLOT_SIZE], &mut sector)
-            .unwrap();
-    }
-    let writes = device.media.writes;
-    device.reboot();
-    assert_eq!(device.recorder.status(), Status::NeedsInit);
-    assert_eq!(device.state.region(), Region::Legacy);
-    assert!(!device.recorder.request(Action::Start, Source::Live, 0, 1));
-    device.run_until(10_000, 10);
-    assert_eq!(device.media.writes, writes);
-    // Initialize writes the volume table and a new log inside RIDES.
-    assert!(device.recorder.initialize(5));
-    device.service();
-    assert!(device.recorder.take_result().unwrap().ok);
-    assert_eq!(
-        device.media.writes,
-        writes + 2 + 2 + sector_log::RING as u32
-    );
-    device.reboot();
-    assert_eq!(device.state.region(), Region::Volumes);
-    assert_eq!(
-        (device.recorder.status(), device.recorder.next_slot()),
-        (Status::Ready, 0)
-    );
-    assert!(device.act(Action::Start));
-}
-
-#[test]
 fn a_volume_table_this_firmware_cannot_use_is_never_written() {
     let mut device = Device::initialized(CAPACITY);
     // A newer table version, resealed.

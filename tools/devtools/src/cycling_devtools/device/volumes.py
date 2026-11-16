@@ -77,7 +77,7 @@ STATUS = [
     'empty',
     'hole',
 ]
-LAYOUTS = {0: 'blank', 1: 'legacy', 2: 'volumes', 3: 'foreign', 4: 'lost'}
+LAYOUTS = {0: 'blank', 2: 'volumes', 3: 'foreign', 4: 'lost'}
 PACK_STATES = {0: 'empty', 1: 'writing', 2: 'ready'}
 NAME = 40
 ENTRY = 2 + NAME + 12
@@ -251,12 +251,11 @@ def inspect(transfer):
         }
     else:
         result['files'] = {'state': status}
-    status, _, _, data = transfer.call('store_status', allow=('uninitialized', 'foreign', 'corrupt', 'invalid'))
+    status, _, _, data = transfer.call('store_status', allow=('uninitialized', 'foreign', 'corrupt'))
     if status == 'ok':
         result['store'] = decode_store_status(data)
     else:
-        # Firmware from before STORE does not know the request.
-        result['store'] = {'state': 'unsupported' if status == 'invalid' else status}
+        result['store'] = {'state': status}
     return result
 
 
@@ -545,7 +544,6 @@ def store_get(transfer, name, output):
 
 LINE_ACTIONS = {
     ('init', None): 'VOLUME INIT',
-    ('add-store', None): 'VOLUME ADD STORE',
     ('store', 'format'): 'STORE FORMAT CONFIRM',
 }
 
@@ -609,11 +607,7 @@ def main():
     add_port_argument(parser)
     actions = parser.add_subparsers(dest='action', required=True)
     actions.add_parser('inspect', help='volume table, terrain pack and file store')
-    actions.add_parser('init', help='write the default volume table over a blank or legacy region')
-    actions.add_parser(
-        'add-store',
-        help='add the STORE volume to a table from before it, in the unallocated tail, and format its store',
-    )
+    actions.add_parser('init', help='write the default volume table over a blank region')
     write = actions.add_parser('terrain-write', help='install a terrain pack from a file (resumable)')
     write.add_argument('file', type=Path)
     write.add_argument('--tag', required=True, help='pack format tag, up to 16 ASCII characters')

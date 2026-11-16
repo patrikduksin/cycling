@@ -10,26 +10,13 @@
 //! unchanged inside it, and no access through a volume can reach another
 //! volume or the table.
 //!
-//! Before volumes existed the sector log owned the whole region; its
-//! superblocks sit where the table now does. Reading reports such a region as
-//! [`Layout::Legacy`] and never as a blank one. Only [`create`], an explicit
-//! initialize, writes a table, and it refuses a table it does not understand.
-//!
-//! The default plan ends with `STORE`, which takes the rest of the region. A
-//! table written before `STORE` existed gains it only through [`add_store`],
-//! an explicit migration that adds that one extent in the unallocated tail
-//! as a new generation and leaves every existing extent as it was. It formats
-//! an empty store there only when the volume never held one.
-//!
-//! A volume is its name; the mechanism inside checks its own format. Byte 8
-//! of an entry was once a kind code, and readers from before `STORE` reject a
-//! table holding any code but 1, 2 or 3, while they find volumes by name and
-//! ignore the others. So every table keeps writing those codes, `STORE` as 3,
-//! and a migrated table still opens RIDES, FILES and TERRAIN after a rollback.
+//! Only [`create`], an explicit initialize, writes a table, and it refuses a
+//! table it does not understand. The default plan ends with `STORE`, which
+//! takes the rest of the region. A volume is its name; the mechanism inside
+//! checks its own format.
 
 use crate::checksum::crc32;
 use crate::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
-use crate::store::Error as StoreError;
 use device_api::bulk::{Error as MediaError, OwnedInfo, ReadWrite, SECTOR_SIZE};
 
 pub type Sector = [u8; SECTOR_SIZE];
@@ -68,26 +55,18 @@ const ENTRY: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Media(MediaError),
-    /// A valid table this version cannot use: newer version, unknown kind
-    /// codes or extents that do not fit this region. Never overwritten.
+    /// A valid table this version cannot use: another version or extents
+    /// that do not fit this region. Never overwritten.
     Foreign,
     /// The named volume is not in the table, or there is no table.
     Missing,
-    /// The region is too small for any plan, or has no room for STORE.
+    /// The region is too small for any plan.
     Small,
 }
 
 impl From<MediaError> for Error {
     fn from(error: MediaError) -> Self {
         Self::Media(error)
-    }
-}
-
-fn kind_code(name: &Name) -> u8 {
-    match *name {
-        RIDES => 1,
-        TERRAIN => 2,
-        _ => 3,
     }
 }
 
@@ -159,7 +138,6 @@ impl Table {
         for (index, volume) in self.volumes().enumerate() {
             let entry = &mut sector[ENTRIES + index * ENTRY..][..ENTRY];
             entry[..8].copy_from_slice(&volume.name);
-            entry[8] = kind_code(&volume.name);
             put_u64(entry, 16, volume.start);
             put_u64(entry, 24, volume.sectors);
         }
@@ -174,10 +152,8 @@ impl Table {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
     Table(Table),
-    /// Neither copy is a table or a superblock: an unformatted region.
+    /// Neither copy is a table: an unformatted region.
     Blank,
-    /// The sector log from before volumes owns the whole region.
-    Legacy,
     /// Neither table copy validates, but the default plan's RIDES volume
     /// holds a log: the table was damaged. [`create`] rewrites the default
     /// table, which restores access when the region used it.
@@ -189,7 +165,6 @@ impl Layout {
         match self {
             Self::Table(_) => "volumes",
             Self::Blank => "blank",
-            Self::Legacy => "legacy",
             Self::Lost => "lost",
         }
     }
@@ -199,19 +174,11 @@ impl Layout {
 enum Replica {
     Table(Table),
     Foreign,
-    Legacy,
     Invalid,
 }
 
 fn decode(sector: &Sector, region: u64) -> Replica {
-    if sector[..16] != MAGIC[..] {
-        return if crate::sector_log::is_superblock(sector) {
-            Replica::Legacy
-        } else {
-            Replica::Invalid
-        };
-    }
-    if get_u32(sector, CRC) != crc32(&sector[..CRC]) {
+    if sector[..16] != MAGIC[..] || get_u32(sector, CRC) != crc32(&sector[..CRC]) {
         return Replica::Invalid;
     }
     let count = usize::from(get_u16(sector, 18));
@@ -233,7 +200,6 @@ fn decode(sector: &Sector, region: u64) -> Replica {
         let start = get_u64(entry, 16);
         let sectors = get_u64(entry, 24);
         if name[0] == 0
-            || !(1..=3).contains(&entry[8])
             || entry[9..16].iter().any(|b| *b != 0)
             || start < end
             || sectors == 0
@@ -283,7 +249,6 @@ pub fn read(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Layout, E
             }))
         }
         [Replica::Table(t), _] | [_, Replica::Table(t)] => Ok(Layout::Table(t)),
-        [Replica::Legacy, _] | [_, Replica::Legacy] => Ok(Layout::Legacy),
         [Replica::Invalid, Replica::Invalid] => {
             // Records of a lost table's log must not look like a blank region.
             let Ok(table) = plan(region) else {
@@ -337,11 +302,9 @@ pub fn plan(sectors: u64) -> Result<Table, Error> {
     Ok(table)
 }
 
-/// Write the default table over a blank, legacy or lost one and return it.
-/// An existing table is returned unchanged; a foreign one is refused. Writes
-/// two sectors when it creates a table; the legacy log's sectors stay
-/// unreadable behind it: its superblocks are gone and its store id never
-/// validates in a new log.
+/// Write the default table over a blank or lost one and return it. An
+/// existing table is returned unchanged; a foreign one is refused. Writes two
+/// sectors when it creates a table.
 pub fn create(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, Error> {
     let layout = read(media, sector)?;
     if let Layout::Table(table) = layout {
@@ -351,90 +314,6 @@ pub fn create(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, 
     table.encode(sector);
     for copy in [1, 0] {
         media.owned_write(copy, sector)?;
-    }
-    Ok(table)
-}
-
-/// Why [`add_store`] stopped. It writes nothing for any of these but a
-/// media error.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AddStoreError {
-    /// No table (blank, legacy or lost: `Missing`), a foreign one, no room
-    /// for STORE, or a media error.
-    Table(Error),
-    /// The STORE volume holds neither a store nor nothing: corrupt or foreign
-    /// metadata is never formatted over.
-    Store(StoreError),
-}
-
-impl From<Error> for AddStoreError {
-    fn from(error: Error) -> Self {
-        Self::Table(error)
-    }
-}
-
-impl From<MediaError> for AddStoreError {
-    fn from(error: MediaError) -> Self {
-        Self::Table(Error::Media(error))
-    }
-}
-
-impl From<StoreError> for AddStoreError {
-    fn from(error: StoreError) -> Self {
-        match error {
-            StoreError::Media(error) => Self::Table(Error::Media(error)),
-            error => Self::Store(error),
-        }
-    }
-}
-
-/// Add STORE and an empty store in it: the one migration a table from before
-/// STORE needs. STORE takes the unallocated tail as one more extent in the
-/// next generation; no existing extent moves or changes. The volume must
-/// hold a store or be blank ([`StoreError::Uninitialized`]), or nothing is
-/// written. The table goes first to the copy that does not hold the current
-/// table, then to the other, so a cut leaves the old table or the new one,
-/// and a blank volume is formatted last. Running it again converges: a table
-/// that has STORE is written only to a copy that does not hold it yet, and a
-/// store that exists is kept.
-pub fn add_store(media: &mut impl ReadWrite, sector: &mut Sector) -> Result<Table, AddStoreError> {
-    let current = match read(media, sector)? {
-        Layout::Table(table) => table,
-        Layout::Blank | Layout::Legacy | Layout::Lost => return Err(Error::Missing.into()),
-    };
-    let mut table = current;
-    let store = match table.find(&STORE) {
-        Some(store) => store,
-        None => {
-            let store = table.store_extent(media.owned_info()?.sectors);
-            let store = store.ok_or(Error::Small)?;
-            let slot = table.volumes.iter_mut().find(|v| v.is_none());
-            *slot.ok_or(Error::Small)? = Some(store);
-            table.generation += 1;
-            store
-        }
-    };
-    let blank = match crate::store::mount(&mut Volume::new(media, store), sector) {
-        Ok(_) => false,
-        Err(StoreError::Uninitialized) => true,
-        Err(error) => return Err(error.into()),
-    };
-    let mut copy = [0u8; SECTOR_SIZE];
-    media.owned_read(0, &mut copy)?;
-    let region = media.owned_info()?.sectors;
-    let first = match decode(&copy, region) {
-        Replica::Table(held) if held == current => 1,
-        _ => 0,
-    };
-    table.encode(sector);
-    for index in [first, 1 - first] {
-        media.owned_read(index, &mut copy)?;
-        if copy != *sector {
-            media.owned_write(index, sector)?;
-        }
-    }
-    if blank {
-        crate::store::format(&mut Volume::new(media, store), 0, sector)?;
     }
     Ok(table)
 }
@@ -450,7 +329,7 @@ pub fn open<'a, M: ReadWrite>(
             let extent = table.find(name).ok_or(Error::Missing)?;
             Ok(Volume::new(media, extent))
         }
-        Layout::Blank | Layout::Legacy | Layout::Lost => Err(Error::Missing),
+        Layout::Blank | Layout::Lost => Err(Error::Missing),
     }
 }
 

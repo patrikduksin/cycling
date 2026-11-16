@@ -367,7 +367,7 @@ TASKS = [
     ),
     task(
         'volumes',
-        'Inspect the MMC volume table, terrain pack and file store (inspect|init|add-store|terrain-write|terrain-verify|files)',
+        'Inspect the MMC volume table, terrain pack and file store (inspect|init|terrain-write|terrain-verify|files|store)',
         f'{DEV}device.volumes',
     ),
     task(

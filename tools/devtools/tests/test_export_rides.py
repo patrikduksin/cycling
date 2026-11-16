@@ -191,7 +191,7 @@ class RideExportTests(unittest.TestCase):
         self.assertEqual(invalid, [])
         self.assertEqual([lap['started_by'] for lap in rides[0]['laps']], ['ride', 'position'])
 
-    def test_a_ride_recorded_before_lap_marks_has_no_laps(self):
+    def test_a_ride_with_no_lap_marks_has_no_laps(self):
         rides, _ = rides_from_slots(self.fixture())
         self.assertIsNone(rides[0]['laps'])
         self.assertTrue(all(sample['lap'] is None for sample in rides[0]['samples']))

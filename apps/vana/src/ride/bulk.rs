@@ -10,8 +10,7 @@
 //!
 //! The log lives in the RIDES volume of the owned region's volume table
 //! (`firmware_services::volume`). The region starts unformatted. Only explicit
-//! initialize writes: the volume table when there is none (a blank region, or
-//! the log from before volumes, which then reports `layout=legacy`), then a
+//! initialize writes: the volume table when there is none, then a
 //! superblock; clear (after a verified export) starts a new epoch whose
 //! superblock makes older records unreachable without erasing them.
 
@@ -121,8 +120,6 @@ pub enum Region {
     /// A table with a RIDES volume.
     Volumes,
     Blank,
-    /// The whole-region log from before volumes; initialize replaces it.
-    Legacy,
     /// The table is damaged over a ride log; kept untouched for diagnosis.
     Lost,
     /// A table this firmware cannot use, or one without RIDES. Never written.
@@ -135,7 +132,6 @@ impl Region {
             Self::Unread => "unknown",
             Self::Volumes => "volumes",
             Self::Blank => "blank",
-            Self::Legacy => "legacy",
             Self::Lost => "lost",
             Self::Foreign => "foreign",
         }
@@ -205,7 +201,7 @@ impl<'a, B: ReadWrite> Bulk<'a, B> {
         });
         // The recorder's seed is clock based and can repeat across boots.
         let seed = seed ^ self.media.entropy();
-        // Creates the table over a blank or legacy region; refuses a foreign one.
+        // Creates the table over a blank region; refuses a foreign one.
         let rides = volume::create(self.media, &mut self.state.sector)
             .ok()
             .and_then(|table| table.find(&RIDES));
@@ -252,11 +248,6 @@ impl<B: ReadWrite> Bulk<'_, B> {
             },
             Ok(Layout::Blank) => {
                 self.state.region = Region::Blank;
-                Scan::Uninitialized
-            }
-            // Test data from before volumes: report it, write nothing.
-            Ok(Layout::Legacy) => {
-                self.state.region = Region::Legacy;
                 Scan::Uninitialized
             }
             // Rides may be there; only an explicit initialize writes.

@@ -45,15 +45,15 @@ const ALONG_M: f32 = 1.0;
 /// the first is ridden as drawn.
 const SKIPS: usize = 4;
 
-/// A spur's base, metres along, and where its way back last runs along its
-/// way out, `joined_m` along, beside the way out `join_m` along. A way back
-/// that ran along its way out for less than `SPUR_MIN_M` from the tip does
-/// so where it meets the course, beside the base.
+/// A spur's base, metres along; where its way back last runs along its way
+/// out, `rejoin_m` along, and the way out beside that. A way back that runs
+/// along its way out for less than `SPUR_MIN_M` from the tip does so where
+/// it meets the course, beside the base.
 #[derive(Clone, Copy, Debug)]
 struct Stretch {
     base_m: f32,
-    join_m: f32,
-    joined_m: f32,
+    beside_m: f32,
+    rejoin_m: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -128,15 +128,14 @@ impl Walk {
             back_m += WALK_M;
             let (off, along_m) = way_out.nearest(back.here, at);
             if off > RETRACE_M {
-                let rejoin_m = tip_m + back_m - WALK_M;
-                let (join_m, joined_m) = match along.0 >= SPUR_MIN_M {
-                    true => (along.1, tip_m + along.0),
-                    false => (beside_m, rejoin_m),
+                let (walked_m, out_m) = match along.0 >= SPUR_MIN_M {
+                    true => along,
+                    false => (back_m - WALK_M, beside_m),
                 };
                 let spur = Stretch {
                     base_m: beside_m,
-                    join_m,
-                    joined_m,
+                    beside_m: out_m,
+                    rejoin_m: tip_m + walked_m,
                 };
                 return Some(spur).filter(deep);
             }
@@ -148,8 +147,8 @@ impl Walk {
             if past_corner && way_out.turns_at(beside_m, at) {
                 corner = Some(Stretch {
                     base_m: beside_m,
-                    join_m: beside_m,
-                    joined_m: tip_m + back_m,
+                    beside_m,
+                    rejoin_m: tip_m + back_m,
                 });
             }
         }
@@ -197,8 +196,7 @@ pub(super) struct Spurs {
     walk: Walk,
     skips: [Skip; SKIPS],
     count: usize,
-    /// Metres cut by the spurs the scan is past.
-    cut_m: f32,
+    passed_cut_m: f32,
     started: bool,
     done: bool,
 }
@@ -210,17 +208,14 @@ impl Spurs {
         self.s.max(HALF_CHORD_M)
     }
 
-    /// Whether every spur before `m` along the course is found.
     pub(super) fn found_to(&self, m: f32) -> bool {
         self.done || m <= self.trail_m
     }
 
-    /// The first point it may still read.
     pub(super) fn oldest(&self) -> usize {
         self.behind.next.min(self.trail.next).saturating_sub(1)
     }
 
-    /// Read a step more of a course of `len` points.
     pub(super) fn step(&mut self, len: usize, at: &impl Fn(usize) -> (f32, f32)) {
         if self.done {
             return;
@@ -267,9 +262,9 @@ impl Spurs {
             on.on(len, at, m - self.trail_m);
             on
         };
-        let (into, on) = (along(spur.join_m), along(spur.joined_m));
+        let (into, on) = (along(spur.beside_m), along(spur.rejoin_m));
         let (first, base, last, rejoin) = (into.next, into.here, on.next, on.here);
-        (self.trail, self.trail_m) = (on, spur.joined_m);
+        (self.trail, self.trail_m) = (on, spur.rejoin_m);
         if self.count >= SKIPS || last <= first {
             return;
         }
@@ -283,8 +278,8 @@ impl Spurs {
             last,
             base,
             rejoin,
-            base_m: spur.join_m - self.cut_m - cut_m,
-            cut_m: spur.joined_m - spur.join_m - read_m,
+            base_m: spur.beside_m - self.passed_cut_m - cut_m,
+            cut_m: spur.rejoin_m - spur.beside_m - read_m,
         };
         self.count += 1;
     }
@@ -319,14 +314,13 @@ impl Spurs {
             .filter(|skip| read_m > skip.base_m)
             .map(|skip| skip.cut_m)
             .sum();
-        read_m + self.cut_m + cut_m
+        read_m + self.passed_cut_m + cut_m
     }
 
-    /// Metres of the course read past as spurs.
     #[cfg(test)]
     pub(super) fn spurs_m(&self) -> f32 {
         let skips = self.skips[..self.count].iter();
-        self.cut_m + skips.map(|skip| skip.cut_m).sum::<f32>()
+        self.passed_cut_m + skips.map(|skip| skip.cut_m).sum::<f32>()
     }
 
     /// The scan reads no point before `oldest` again.
@@ -335,7 +329,7 @@ impl Spurs {
             .iter()
             .take_while(|skip| skip.last <= oldest)
             .count();
-        self.cut_m += self.skips[..passed]
+        self.passed_cut_m += self.skips[..passed]
             .iter()
             .map(|skip| skip.cut_m)
             .sum::<f32>();

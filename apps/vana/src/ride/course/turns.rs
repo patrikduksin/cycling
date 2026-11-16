@@ -587,7 +587,6 @@ impl Scan {
         self.spurs.along_m()
     }
 
-    /// Metres of the course read past as spurs.
     #[cfg(test)]
     pub(crate) fn spurs_m(&self) -> f32 {
         self.spurs.spurs_m()

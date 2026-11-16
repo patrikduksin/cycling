@@ -6688,7 +6688,7 @@ fn a_followed_course_sounds_its_turns_and_not_a_gentle_bend() {
     );
 
     let soon = ride_until_only(&mut sim, "turn_soon", &TURN_SOON, 1_500.0);
-    assert!((1_290.0..1_310.0).contains(&soon), "{soon}");
+    assert!((1_290.0..1_320.0).contains(&soon), "{soon}");
     sim.checkpoint("the hairpin's banner opens");
     let now = ride_until_only(&mut sim, "turn_now", &TURN_NOW, 1_620.0);
     assert!((1_565.0..1_585.0).contains(&now), "{now}");

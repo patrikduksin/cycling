@@ -386,7 +386,10 @@ pub(crate) mod tests {
             &older,
             &older[..159],
         ] {
-            assert_eq!(decode(Some(foreign)), (Settings::default(), Source::Foreign));
+            assert_eq!(
+                decode(Some(foreign)),
+                (Settings::default(), Source::Foreign)
+            );
         }
         assert!(settings.with_timezone(330).is_some());
         assert!(settings.with_timezone(331).is_none());

@@ -217,7 +217,12 @@ pub fn decode_table(bytes: &[u8]) -> impl Iterator<Item = Record> + '_ {
     } else {
         &[]
     };
-    slots.chunks_exact(SLOT).skip(1).filter_map(decode_slot)
+    slots
+        .as_chunks::<SLOT>()
+        .0
+        .iter()
+        .skip(1)
+        .filter_map(|slot| decode_slot(slot))
 }
 
 /// For a table whose first bytes are `bytes` and whose whole length is
@@ -287,7 +292,7 @@ impl Table {
         for index in sectors.start..sectors.end.min(self.sectors()) {
             let at = (index * SECTOR_SIZE) as u32;
             let read = dir.read(store, &self.entry, at, bytes, sector)?;
-            for (n, slot) in bytes[..read].chunks_exact(SLOT).enumerate() {
+            for (n, slot) in bytes[..read].as_chunks::<SLOT>().0.iter().enumerate() {
                 if index == 0 && n == 0 {
                     visit(store, Slot::Header(slot));
                 } else {
@@ -549,7 +554,9 @@ pub fn digest(media: &mut impl ReadWrite) -> Result<Option<u32>, Error> {
 pub fn table_digest(bytes: &[u8]) -> Option<u32> {
     table_sound(bytes).then(|| {
         bytes
-            .chunks_exact(SLOT)
+            .as_chunks::<SLOT>()
+            .0
+            .iter()
             .fold(Crc32::new(), |crc, slot| crc.update(&slot[..SLOT - 4]))
             .finish()
     })

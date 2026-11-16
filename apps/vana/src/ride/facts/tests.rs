@@ -376,7 +376,12 @@ fn a_table_of_another_version_or_length_is_left_alone() {
     let mut longer = current.clone();
     longer.extend_from_slice(&[0; SLOT / 2]);
     let mut wider = std::vec![0u8; 64 * 4];
-    for (slot, wide) in current.chunks_exact(SLOT).zip(wider.chunks_exact_mut(64)) {
+    for (slot, wide) in current
+        .as_chunks::<SLOT>()
+        .0
+        .iter()
+        .zip(wider.as_chunks_mut::<64>().0)
+    {
         wide[..SLOT].copy_from_slice(slot);
     }
     put_u16(&mut wider, 6, 64);

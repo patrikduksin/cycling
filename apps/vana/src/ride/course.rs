@@ -409,7 +409,7 @@ fn decode_into<E>(
         crc = crc.update(bytes);
         for (slot, bytes) in course.points[index..index + n]
             .iter_mut()
-            .zip(bytes.chunks_exact(POINT))
+            .zip(bytes.as_chunks::<POINT>().0)
         {
             let (lat, lon) = (get_u32(bytes, 0) as i32, get_u32(bytes, 4) as i32);
             *slot = Point::new(lat, lon).ok_or(DecodeError::Damaged)?;

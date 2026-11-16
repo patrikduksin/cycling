@@ -692,7 +692,7 @@ pub fn decode<E>(
         crc = crc.update(bytes);
         for (slot, bytes) in turns[index..index + n]
             .iter_mut()
-            .zip(bytes.chunks_exact(RECORD))
+            .zip(bytes.as_chunks::<RECORD>().0)
         {
             let Some(turn) = Turn::from_record(bytes) else {
                 valid = false;

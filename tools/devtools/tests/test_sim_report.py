@@ -75,9 +75,10 @@ def test_comments_split_only_at_github_size_limit(tmp_path):
 
 
 class FakeGitHub:
-    def __init__(self, fail_uploads=False, fail_page=None):
+    def __init__(self, fail_uploads=False, fail_page=None, fail_edit=None):
         self.comments, self.next, self.uploads, self.fail_uploads = {}, 1, [], fail_uploads
         self.fail_page, self.pages = fail_page, 0
+        self.fail_edit, self.edits = fail_edit, 0
 
     def __call__(self, command, stdin=None):
         if command[:3] == ['gh', 'pr', 'comment']:
@@ -103,6 +104,9 @@ class FakeGitHub:
         if 'DELETE' in command:
             del self.comments[number]
         elif 'PATCH' in command:
+            self.edits += 1
+            if self.edits == self.fail_edit:
+                raise RuntimeError('HTTP 502: editing the comment failed')
             self.comments[number] = stdin
         else:
             return self.comments[number]
@@ -158,6 +162,16 @@ def test_a_failed_upload_leaves_one_short_note_and_no_pending_mark(tmp_path, mon
     assert sum(body.count(report.FAILED) for body in github.comments.values()) == len(attachments) + pages
     assert not job.exists(), 'the copies of a failed job stay behind'
     assert log.exists()
+
+
+def test_a_failed_last_edit_still_clears_the_pending_marks(tmp_path, monkeypatch):
+    github = FakeGitHub(fail_edit=3)
+    _, job = posted(tmp_path, monkeypatch, github)
+    with pytest.raises(RuntimeError):
+        report.publish(job)
+    [body] = github.comments.values()
+    assert report.PENDING not in body
+    assert body.count('attachments failed to upload') == 1
 
 
 def test_a_page_that_fails_to_post_leaves_no_earlier_page_pending(tmp_path, monkeypatch):

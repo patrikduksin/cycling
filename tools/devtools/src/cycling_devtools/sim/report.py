@@ -360,8 +360,8 @@ def publish(job):
             for page in pages:
                 if any(path in page['files'] for path in batch):
                     page['body'] = resolve(page['body'], batch, uploaded)
-                    page['files'] = [path for path in page['files'] if path not in batch]
                     edit(page['comment'], replace_media(page['body'], later))
+                    page['files'] = [path for path in page['files'] if path not in batch]
             remaining = later
     except Exception:
         give_up(pages, log)

@@ -541,6 +541,14 @@ pub enum Event<'a> {
         of: u8,
     },
     RideState(&'a str),
+    /// The rider held MOVE to mark a moment: the mark's number in the
+    /// session, from 1, when the hold's first report came, and the page
+    /// shown before it.
+    Mark {
+        count: u16,
+        pressed_ms: u64,
+        page: &'a str,
+    },
     /// The displayed fields, about once a second.
     Shown(&'a str),
     /// A digest of the pixels on the panel at the end of a pass, when they
@@ -625,6 +633,7 @@ mod tag {
     pub const SYNTHETIC: u8 = 70;
     pub const LOG: u8 = 69;
     pub const PANEL: u8 = 72;
+    pub const MARK: u8 = 73;
     pub const HEALTH: u8 = 80;
     pub const ACTIVITY: u8 = 81;
     pub const TASK: u8 = 82;
@@ -1408,6 +1417,7 @@ impl<'a> Event<'a> {
             Self::Toast(_) => tag::TOAST,
             Self::Sound { .. } => tag::SOUND,
             Self::RideState(_) => tag::RIDE_STATE,
+            Self::Mark { .. } => tag::MARK,
             Self::Shown(_) => tag::SHOWN,
             Self::Synthetic(_) => tag::SYNTHETIC,
             Self::Panel(_) => tag::PANEL,
@@ -1522,6 +1532,15 @@ impl<'a> Event<'a> {
                 cue.put(w);
                 note.put(w);
                 of.put(w);
+            }
+            Self::Mark {
+                count,
+                pressed_ms,
+                page,
+            } => {
+                count.put(w);
+                w.time(*pressed_ms);
+                page.put(w);
             }
             Self::TooLarge(pattern) => pattern.put(w),
             Self::Entropy(value) => value.put(w),
@@ -1653,6 +1672,11 @@ impl<'a> Event<'a> {
                 of: Wire::take(r),
             },
             tag::RIDE_STATE => Self::RideState(Wire::take(r)),
+            tag::MARK => Self::Mark {
+                count: Wire::take(r),
+                pressed_ms: r.time(),
+                page: Wire::take(r),
+            },
             tag::SHOWN => Self::Shown(Wire::take(r)),
             tag::SYNTHETIC => Self::Synthetic(Wire::take(r)),
             tag::PANEL => Self::Panel(Wire::take(r)),

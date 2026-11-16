@@ -387,6 +387,11 @@ fn sample() -> Vec<Event<'static>> {
             of: 0,
         },
         Event::RideState("recording"),
+        Event::Mark {
+            count: 2,
+            pressed_ms: 2_400,
+            page: "ride/main",
+        },
         Event::Shown("W=210 BPM=142 KM/H=28.0"),
         Event::Panel(0x0bad_f00d),
         Event::Synthetic(Input::Button {

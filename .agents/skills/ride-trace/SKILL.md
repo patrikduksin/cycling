@@ -45,9 +45,8 @@ text: start there, and open a PNG only to confirm what the text says.
   `.local/`. The pull prints what could not be rebuilt, one line each, and
   the `.origin` keeps that list, and `timing` says how long each transfer
   session paused VANA and where the device spent that time.
-  A trace whose format version this build does not read is refused with
-  the version and the versions it reads; read it with the build that
-  recorded it.
+  A build reads only its own trace format and refuses any other with
+  both formats named; read such a trace with the build that recorded it.
   When `CYCLING_DEVICE_HOST` is set, the device is on another machine:
   follow the remote device skill; `cycling device trace pull` brings
   `.local/` back with the kept pack, so the first pull of a pack copies it
@@ -232,9 +231,7 @@ line says which and why.
   `build` first. A stimulus replay does not compare the pixel digests.
   A frame sends only the rows that changed, but the digest (`Panel`) is
   of the whole panel, so a frame the device sent whole, such as one a
-  capture asked for, still matches. Traces recorded before frames sent
-  only changed rows hold `Frame` digests instead; strict replay checks
-  them against the simulator's whole panel.
+  capture asked for, still matches.
 
 The replay starts from the trace's `.origin`; the header line's `media`
 says which kind and, for a pulled device trace, what the rebuild could not

@@ -2,68 +2,9 @@ use super::*;
 pub(crate) use crate::ride::course::nav::tests::{Said, ride_with};
 use crate::ride::course::tests::{at as point_at, empty};
 use crate::ride::course::{Builder, Course, east_per_e7, metres};
+use crate::testing::{Share, split_in_eight};
 use std::vec;
 use std::vec::Vec;
-
-const SHARES_PER_SWEEP: usize = 8;
-
-/// One of a sweep's parts, split so nextest runs them on separate cores.
-pub(crate) struct Share {
-    k: usize,
-    seen: usize,
-}
-
-impl Share {
-    pub(crate) const fn new(k: usize) -> Self {
-        Self { k, seen: 0 }
-    }
-
-    pub(crate) fn takes(&mut self) -> bool {
-        self.seen += 1;
-        (self.seen - 1) % SHARES_PER_SWEEP == self.k
-    }
-}
-
-macro_rules! split_in_eight {
-    ($sweep:ident) => {
-        mod $sweep {
-            use $crate::ride::course::turns::tests::Share;
-            #[test]
-            fn share_0() {
-                super::$sweep(Share::new(0));
-            }
-            #[test]
-            fn share_1() {
-                super::$sweep(Share::new(1));
-            }
-            #[test]
-            fn share_2() {
-                super::$sweep(Share::new(2));
-            }
-            #[test]
-            fn share_3() {
-                super::$sweep(Share::new(3));
-            }
-            #[test]
-            fn share_4() {
-                super::$sweep(Share::new(4));
-            }
-            #[test]
-            fn share_5() {
-                super::$sweep(Share::new(5));
-            }
-            #[test]
-            fn share_6() {
-                super::$sweep(Share::new(6));
-            }
-            #[test]
-            fn share_7() {
-                super::$sweep(Share::new(7));
-            }
-        }
-    };
-}
-pub(crate) use split_in_eight;
 
 /// Points every `step` metres along straight legs between `corners`.
 pub(crate) fn path(corners: &[(f32, f32)], step: f32) -> Vec<(f32, f32)> {

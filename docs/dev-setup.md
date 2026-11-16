@@ -81,7 +81,7 @@ pin at once and belongs in its own PR with `cycling verify` results.
 - A test over 5 s on its own belongs in nextest's `slow` group
   (`.config/nextest.toml`), which `-E 'not group(slow)'` leaves out. Split a
   long VANA sweep into eight tests with `split_in_eight!`
-  (`apps/vana/src/ride/course/turns/tests.rs`) before adding it there.
+  (`apps/vana/src/testing.rs`) before adding it there.
 - `cycling playbook-audit --session ID` prints a session digest for the
   auditor brief in `docs/agents/playbook-auditor.md`.
 

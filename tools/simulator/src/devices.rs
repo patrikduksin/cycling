@@ -17,6 +17,7 @@ use firmware_services::input::Edges;
 use firmware_shell::rendering::work::{self, Work};
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 use std::vec;
 use std::vec::Vec;
@@ -49,9 +50,9 @@ impl Frame {
     }
 }
 fn hash(pixels: &[u16]) -> u64 {
-    pixels.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &pixel| {
-        (hash ^ u64::from(pixel)).wrapping_mul(0x0100_0000_01b3)
-    })
+    let mut hasher = DefaultHasher::new();
+    pixels.hash(&mut hasher);
+    hasher.finish()
 }
 impl DisplayDevice {
     pub fn new(width: usize, height: usize) -> Self {
@@ -106,6 +107,9 @@ impl Display for DisplayDevice {
         let mut painted = vec![0; frame.geometry.width];
         for (y, shown) in frame.pixels.chunks_exact(painted.len()).enumerate() {
             row(y, &mut painted);
+            if shown == painted {
+                continue;
+            }
             if let Some(x) = (0..shown.len()).find(|&x| shown[x] != painted[x]) {
                 panic!(
                     "the panel shows {:#06x} at {x},{y} but the frame paints {:#06x}: \

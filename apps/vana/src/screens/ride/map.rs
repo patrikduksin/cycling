@@ -11,20 +11,175 @@ use crate::ride::course::route_leg;
 use crate::ride::geo::{Frame as RideFrame, distance};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
-    ACCENT, AMBER, Align, BLACK, BODY as BODY_FACE, CASING, HEIGHT, Look, RIDDEN, Rect, Row,
-    SECONDARY, Shown, WHITE, WIDTH, paint_disc_over, rgb,
+    self, ACCENT, AMBER, Align, BLACK, CASING, Look, RIDDEN, Rect, Row, SECONDARY, Shown, WHITE,
+    paint_disc_over, rgb,
 };
-use crate::screens::icons::PUCK;
+use crate::screens::icons::StaticIcon;
+use crate::screens::limits;
 use crate::screens::look;
+use crate::screens::scaled::{Scaled, Track as Split};
 use crate::screens::workout::{Text, View};
 use arrow::{ARROW_OUTLINE_PX, ARROW_SHAFT_HALF_PX, ARROW_STROKES, arrow_shape};
-use firmware_shell::rendering::font::FOOT_20;
-pub use pose::{GROUND, Reach, Zoom};
+use firmware_shell::rendering::font::FaceRole;
 use pose::{Pose, Projection};
+pub use pose::{Reach, Zoom};
 use raster::{Bar, Class, Cover, Layer, Stroke, Triangle};
 use roads::{Roads, Source};
 
 type Point = (f32, f32);
+
+/// The map page on one panel: the ground the map covers, without a radar
+/// and beside one's strip, and the foot below it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    pub free: Ground,
+    pub beside_radar: Ground,
+    pub foot: Foot,
+}
+
+impl Regions {
+    pub const fn ground(&self, radar: bool) -> &Ground {
+        if radar {
+            &self.beside_radar
+        } else {
+            &self.free
+        }
+    }
+}
+
+/// Where the map draws in a frame, with or without a radar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Ground {
+    /// The rows the map covers, across the panel: lines and roads are kept
+    /// over all of it, under a radar's strip too.
+    pub drawn: Rect,
+    /// What of it shows: right of a radar's strip, or all of it.
+    pub shown: Rect,
+    /// The rider's arrow, inside its rings.
+    pub puck: StaticIcon,
+    /// Ring radii in quarter pixels, outermost first: the rider's, then a
+    /// junction's.
+    pub puck_rings: [i32; 2],
+    pub junction_rings: [i32; 4],
+}
+
+impl Ground {
+    fn puck_clear(&self) -> f32 {
+        self.puck_rings[0] as f32 / 4.0
+    }
+
+    fn junction_clear(&self) -> f32 {
+        self.junction_rings[0] as f32 / 4.0
+    }
+}
+
+/// The foot under the map: the scale bar and its label at the left, the
+/// distance and its unit at the right, on one baseline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Foot {
+    /// Across the panel: beside a radar it runs under the strip, which
+    /// ends above it.
+    pub rect: Rect,
+    /// The longest scale bar.
+    pub bar: Rect,
+    /// Between the bar and its label.
+    pub gap: usize,
+    pub baseline: usize,
+    pub distance_right: usize,
+    pub unit_right: usize,
+}
+
+const FOOT_ROWS: u16 = 30;
+const GROUND_ROWS: usize = ground_rows(limits::PANELS);
+const BAR_MAX_PX: u16 = 90;
+const PUCK_RINGS_QUARTER_PX: [usize; 2] = [58, 50];
+const PUCK_RING_COLOURS: [u16; 2] = [BLACK, WHITE];
+const JUNCTION_RINGS_QUARTER_PX: [usize; 4] = [48, 40, 22, 14];
+const JUNCTION_RING_COLOURS: [u16; 4] = [GROUND_COLOR, AMBER, BLACK, WHITE];
+
+/// The most rows the map's ground has on any of `panels`.
+const fn ground_rows(panels: &[(usize, usize)]) -> usize {
+    crate::screens::scaled::largest!(panels, |at| ground_and_foot(&at)[0].height())
+}
+
+const fn ground_and_foot(at: &Scaled) -> [Rect; 2] {
+    use Split::{Fr, Unit};
+    let below_bar = Rect {
+        top: chrome::regions(at).status_bar.bottom,
+        ..at.screen()
+    };
+    below_bar.rows([Fr(1), Unit(FOOT_ROWS)], Unit(0), at)
+}
+
+pub const fn regions(at: &Scaled) -> Regions {
+    use Split::{Fr, Unit};
+    let [drawn, foot] = ground_and_foot(at);
+    assert!(
+        drawn.height() <= GROUND_ROWS,
+        "the map's ground has more rows than its frame holds"
+    );
+    let [_, inner, _] = foot.cols([Unit(12), Fr(1), Unit(12)], Unit(0), at);
+    let [_, bar, _] = foot.rows([Unit(13), Unit(3), Fr(1)], Unit(0), at);
+    let bar = Rect {
+        right: inner.left + bar_max(at),
+        ..bar.with_columns(inner)
+    };
+    let body = super::frame(at).body;
+    Regions {
+        free: ground(at, drawn, drawn),
+        beside_radar: ground(at, drawn, drawn.with_columns(body)),
+        foot: Foot {
+            rect: foot,
+            bar,
+            gap: at.unit(6),
+            baseline: foot.top + at.unit(19),
+            distance_right: inner.right - unit_room(at),
+            unit_right: inner.right,
+        },
+    }
+}
+
+const fn bar_max(at: &Scaled) -> usize {
+    let need = foot_text(at);
+    let had = at.unit(foot_text(&crate::screens::scaled::BASE));
+    at.unit(BAR_MAX_PX as usize) - need.saturating_sub(had)
+}
+
+/// The C606's room for "KM" and the gap before it.
+const C606_KM_ROOM: usize = 25;
+
+const fn unit_room(at: &Scaled) -> usize {
+    km(at) + at.unit(C606_KM_ROOM - km(&crate::screens::scaled::BASE))
+}
+
+const fn km(at: &Scaled) -> usize {
+    at.face(FaceRole::Caption).width(b"KM")
+}
+
+const fn foot_text(at: &Scaled) -> usize {
+    let label = at.face(FaceRole::Caption).width(b"250 M");
+    label + at.face(FaceRole::Foot20).width(b"999.9") + km(at)
+}
+
+const fn ground(at: &Scaled, drawn: Rect, shown: Rect) -> Ground {
+    Ground {
+        drawn,
+        shown,
+        puck: StaticIcon(at.art.puck),
+        puck_rings: rings(at, PUCK_RINGS_QUARTER_PX),
+        junction_rings: rings(at, JUNCTION_RINGS_QUARTER_PX),
+    }
+}
+
+const fn rings<const N: usize>(at: &Scaled, quarter_px: [usize; N]) -> [i32; N] {
+    let mut out = [0; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = at.unit(quarter_px[i]) as i32;
+        i += 1;
+    }
+    out
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Track<'a> {
@@ -195,15 +350,17 @@ impl<'a> Cache<'a> {
         Self { frame, held: None }
     }
 
-    /// Fill the frame again if `track` or the roads changed; whether it did.
-    pub fn update(&mut self, track: &Track) -> bool {
+    /// Fill the frame again, laid out in `map`, if `track` or the roads
+    /// changed; whether it did. A cache serves one panel, so `map` is the
+    /// same every time.
+    pub fn update(&mut self, track: &Track, map: &'static Regions) -> bool {
         let key = Key {
             roads: self.frame.roads.generation(),
             ..track.key()
         };
         let stale = self.held != Some(key);
         if stale {
-            fill(self.frame, track);
+            fill(self.frame, track, map);
             self.held = Some(key);
         }
         stale
@@ -283,7 +440,7 @@ const GROUND_COLOR: u16 = rgb(0x10, 0x10, 0x12);
 const MINOR_ROAD: u16 = rgb(0x2a, 0x2a, 0x2d);
 const MAJOR_ROAD: u16 = rgb(0x44, 0x44, 0x48);
 const BAND_ROWS: usize = 16;
-const BAND_COUNT: usize = (GROUND.end - GROUND.start).div_ceil(BAND_ROWS);
+const BAND_COUNT: usize = GROUND_ROWS.div_ceil(BAND_ROWS);
 const STRAY_PX: f32 = 0.35;
 const STRAIGHT_RUN: usize = 16;
 const RIDDEN_SEGMENTS: usize = 255;
@@ -295,7 +452,6 @@ const ROUTE_REACH: f32 = 1.5;
 const ROAD_SEGMENTS: usize = 2_048;
 const MINOR_ROAD_HALF_PX: f32 = 2.5;
 const MAJOR_ROAD_HALF_PX: f32 = 4.5;
-const GROUND_ROWS: usize = GROUND.end - GROUND.start;
 const ROAD_FETCH_MARGIN: f32 = 0.25;
 struct ArrowLayer {
     shaft_half: f32,
@@ -326,25 +482,10 @@ const MARK_REACH_PX: f32 = 320.0;
 const MARK_DEPTH: f32 = 3.5;
 const MARK_HALF: f32 = 3.5;
 const MARK_STROKE: f32 = 1.0;
-const PUCK_RINGS_QUARTER_PX: [(i32, u16); 2] = [(58, BLACK), (50, WHITE)];
-const PUCK_CLEAR: f32 = 14.5;
-const JUNCTION_CLEAR: f32 = 12.0;
-const JUNCTION_RINGS_QUARTER_PX: [(i32, u16); 4] =
-    [(48, GROUND_COLOR), (40, AMBER), (22, BLACK), (14, WHITE)];
 const _: () = assert!(
     BAND_ENTRIES <= u16::MAX as usize,
     "strokes are bucketed as u16"
 );
-
-const FOOT_BASE: usize = 309;
-const BAR_LEFT: usize = 12;
-const BAR_TOP: usize = 303;
-const BAR_THICKNESS: usize = 3;
-const BAR_GAP: usize = 6;
-const DISTANCE_RIGHT: usize = 203;
-const UNIT_RIGHT: usize = 228;
-const MID_Y: usize = (GROUND.start + GROUND.end) / 2;
-const _: () = assert!(GROUND.end <= HEIGHT);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Show {
@@ -403,6 +544,7 @@ struct Arrow {
 #[derive(Clone)]
 pub struct Frame {
     show: Show,
+    ground: Option<&'static Ground>,
     last_pose: Pose,
     last_centre: Point,
     layer: Layer<GROUND_ROWS>,
@@ -428,9 +570,10 @@ impl Default for Frame {
     fn default() -> Self {
         Self {
             show: Show::Unfilled,
+            ground: None,
             last_pose: Pose::default(),
             last_centre: (0.0, 0.0),
-            layer: Layer::new(GROUND.start),
+            layer: Layer::new(0),
             pairs: [[Shown(0); 2]; 256],
             roads_drawn: [0; 2],
             strokes: [Stroke::default(); STROKES],
@@ -462,10 +605,16 @@ impl Frame {
         &self.items[usize::from(band_offsets[band])..usize::from(band_offsets[band + 1])]
     }
 
-    fn add(&mut self, line: Line, at: &Projection, points: impl Iterator<Item = Point>) {
+    fn add(
+        &mut self,
+        line: Line,
+        at: &Projection,
+        drawn: &Rect,
+        points: impl Iterator<Item = Point>,
+    ) {
         let room = line.room();
         let (strokes, count) = (&mut self.strokes, &mut self.counts[line as usize]);
-        project(at, line.reach(), points, |a, b| {
+        project(at, drawn, line.reach(), points, |a, b| {
             if *count == room.len() {
                 return false;
             }
@@ -476,14 +625,12 @@ impl Frame {
     }
 
     fn view(&self, margin: f32) -> Option<[Point; 4]> {
-        if self.show != Show::Map {
-            return None;
-        }
+        let drawn = self.ground.filter(|_| self.show == Show::Map)?.drawn;
         let at = self.last_pose.projection(self.last_centre);
-        let (wide, high) = (WIDTH as f32, (GROUND.end - GROUND.start) as f32);
+        let (wide, high) = (drawn.width() as f32, drawn.height() as f32);
         let (dx, dy) = (wide * margin, high * margin);
-        let (left, right) = (-dx, wide + dx);
-        let (top, bottom) = (GROUND.start as f32 - dy, GROUND.end as f32 + dy);
+        let (left, right) = (drawn.left as f32 - dx, drawn.right as f32 + dx);
+        let (top, bottom) = (drawn.top as f32 - dy, drawn.bottom as f32 + dy);
         Some([(left, top), (right, top), (right, bottom), (left, bottom)].map(|p| at.back(p)))
     }
 
@@ -509,6 +656,7 @@ impl Frame {
 
 fn project(
     at: &Projection,
+    drawn: &Rect,
     reach: f32,
     points: impl Iterator<Item = Point>,
     mut put: impl FnMut(Point, Point) -> bool,
@@ -519,7 +667,7 @@ fn project(
         return;
     };
     let mut passed: heapless::Vec<Point, STRAIGHT_RUN> = heapless::Vec::new();
-    let mut draw = |a: Point, b: Point| !visible(a, b, reach) || put(a, b);
+    let mut draw = |a: Point, b: Point| !visible(drawn, a, b, reach) || put(a, b);
     for p in points {
         let straight = !passed.is_full() && straight_past(anchor, p, &passed);
         if !straight {
@@ -550,9 +698,9 @@ fn straight_past(a: Point, b: Point, passed: &[Point]) -> bool {
     })
 }
 
-fn visible(a: Point, b: Point, reach: f32) -> bool {
-    let (left, right) = (-reach, WIDTH as f32 + reach);
-    let (top, bottom) = (GROUND.start as f32 - reach, GROUND.end as f32 + reach);
+fn visible(drawn: &Rect, a: Point, b: Point, reach: f32) -> bool {
+    let (left, right) = (drawn.left as f32 - reach, drawn.right as f32 + reach);
+    let (top, bottom) = (drawn.top as f32 - reach, drawn.bottom as f32 + reach);
     a.0.max(b.0) >= left && a.0.min(b.0) <= right && a.1.max(b.1) >= top && a.1.min(b.1) <= bottom
 }
 
@@ -560,7 +708,7 @@ fn quarter((x, y): Point) -> (i32, i32) {
     (libm::roundf(4.0 * x) as i32, libm::roundf(4.0 * y) as i32)
 }
 
-fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point, look: Look) {
+fn draw_roads(frame: &mut Frame, at: &Projection, drawn: &Rect, centre: Point, look: Look) {
     let Frame {
         roads,
         layer,
@@ -569,7 +717,7 @@ fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point, look: Look) {
         last_pose,
         ..
     } = frame;
-    layer.clear(GROUND.start);
+    layer.clear(drawn.top);
     *pairs = raster::pairs(
         look.ink(GROUND_COLOR),
         look.ink(MINOR_ROAD),
@@ -586,7 +734,7 @@ fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point, look: Look) {
         } else {
             (Class::Minor, MINOR_ROAD_HALF_PX)
         };
-        project(at, half, road.points(), |a, b| {
+        project(at, drawn, half, road.points(), |a, b| {
             layer.add(&Bar::new(a, b, half), class);
             roads_drawn[class as usize] += 1;
             room(roads_drawn)
@@ -594,7 +742,9 @@ fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point, look: Look) {
     }
 }
 
-fn fill(frame: &mut Frame, track: &Track) {
+fn fill(frame: &mut Frame, track: &Track, map: &'static Regions) {
+    let ground = map.ground(track.radar);
+    frame.ground = Some(ground);
     frame.show = if track.rider_or_last_crumb().is_none() {
         Show::NoGps
     } else {
@@ -615,22 +765,23 @@ fn fill(frame: &mut Frame, track: &Track) {
         return;
     };
     let heading = track.heading.unwrap_or(frame.last_pose.heading);
-    let pose = Pose::new(track.reach, map_left(track.radar), heading);
-    draw(frame, track, centre, pose);
+    let pose = Pose::new(track.reach, ground, heading);
+    draw(frame, track, ground, centre, pose);
 }
 
-fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
+fn draw(frame: &mut Frame, track: &Track, ground: &Ground, centre: Point, pose: Pose) {
     frame.last_pose = pose;
     frame.last_centre = centre;
     let place = track.place(centre);
     let at = pose.projection(centre);
-    draw_roads(frame, &at, centre, look::look(track.light));
+    let drawn = &ground.drawn;
+    draw_roads(frame, &at, drawn, centre, look::look(track.light));
     match place {
         Some(place) => {
             let to_junction = track.junction().map_or(0.0, |j| distance(centre, j.at));
             let reach_m = ROUTE_REACH * pose.reach.ahead_m() + to_junction;
             let ahead = track.ahead_points(place, reach_m);
-            frame.add(Line::Route, &at, ahead.map(|(p, _)| p));
+            frame.add(Line::Route, &at, drawn, ahead.map(|(p, _)| p));
             if track.joinable {
                 let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
                 let from_end_m = track.metres_to_end_at(place);
@@ -638,14 +789,15 @@ fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
                 marks(
                     frame,
                     &at,
+                    ground,
                     track.course,
                     ahead_m,
-                    pose.reach.px_per_m(),
+                    pose.px_per_m(),
                     rider,
                 );
             }
         }
-        None => frame.add(Line::Ridden, &at, track.crumbs_back()),
+        None => frame.add(Line::Ridden, &at, drawn, track.crumbs_back()),
     }
     frame.has_track = track.crumbs.len() >= 2 || place.is_some();
     if let (Some(place), Some((turn, _))) = (place, track.turn_on_course()) {
@@ -654,13 +806,15 @@ fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
     let rider = (f32::from(pose.rider.0), f32::from(pose.rider.1));
     if let Some(junction) = track.junction() {
         let junction = at.at(junction.at);
-        let reach = JUNCTION_RINGS_QUARTER_PX[0].0 as f32 / 4.0 + 1.0;
-        frame.junction_quarter_px = visible(junction, junction, reach).then(|| quarter(junction));
+        let reach = ground.junction_clear() + 1.0;
+        frame.junction_quarter_px =
+            visible(drawn, junction, junction, reach).then(|| quarter(junction));
         let ring = frame.junction_quarter_px.is_some();
         chevrons(
             frame,
+            ground,
             rider,
-            clipped(rider, junction, map_left(track.radar)),
+            clipped(rider, junction, &ground.shown),
             ring,
         );
     }
@@ -673,7 +827,7 @@ fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
         centre_quarter_px: quarter(rider),
         arrow: tint,
     });
-    bucket(frame);
+    bucket(frame, drawn);
 }
 
 fn arrow(frame: &mut Frame, at: &Projection, track: &Track, split: (usize, Point), turn: Point) {
@@ -701,27 +855,28 @@ fn arrow(frame: &mut Frame, at: &Projection, track: &Track, split: (usize, Point
         });
 }
 
-fn clipped(from: Point, to: Point, left: usize) -> Point {
-    let leaves = |from: f32, to: f32, low: f32, high: f32| match to - from {
-        d if d > 0.0 => (high - from) / d,
-        d if d < 0.0 => (low - from) / d,
+fn clipped(from: Point, to: Point, shown: &Rect) -> Point {
+    let leaves = |from: f32, to: f32, low: usize, high: usize| match to - from {
+        d if d > 0.0 => (high as f32 - from) / d,
+        d if d < 0.0 => (low as f32 - from) / d,
         _ => f32::INFINITY,
     };
-    let t = leaves(from.0, to.0, left as f32, WIDTH as f32)
-        .min(leaves(from.1, to.1, GROUND.start as f32, GROUND.end as f32))
+    let t = leaves(from.0, to.0, shown.left, shown.right)
+        .min(leaves(from.1, to.1, shown.top, shown.bottom))
         .min(1.0);
     (from.0 + t * (to.0 - from.0), from.1 + t * (to.1 - from.1))
 }
 
-fn chevrons(frame: &mut Frame, rider: Point, junction: Point, ring: bool) {
+fn chevrons(frame: &mut Frame, ground: &Ground, rider: Point, junction: Point, ring: bool) {
     frame.chevron_count = 0;
-    for (wing, tip) in chevron_wings(rider, junction, ring) {
+    for (wing, tip) in chevron_wings(ground, rider, junction, ring) {
         frame.chevrons[frame.chevron_count] = Stroke::new(wing, tip);
         frame.chevron_count += 1;
     }
 }
 
 fn chevron_wings(
+    ground: &Ground,
     rider: Point,
     towards: Point,
     ring: bool,
@@ -733,8 +888,9 @@ fn chevron_wings(
         return wings;
     }
     let (ux, uy) = (dx / length, dy / length);
-    let nearest = (length / 2.0 - CHEVRON_PITCH).max(PUCK_CLEAR + CHEVRON_STROKE + CHEVRON_DEPTH);
-    let furthest = length - CHEVRON_STROKE - if ring { JUNCTION_CLEAR } else { 0.0 };
+    let nearest =
+        (length / 2.0 - CHEVRON_PITCH).max(ground.puck_clear() + CHEVRON_STROKE + CHEVRON_DEPTH);
+    let furthest = length - CHEVRON_STROKE - if ring { ground.junction_clear() } else { 0.0 };
     for k in 0..CHEVRONS {
         let along = nearest + k as f32 * CHEVRON_PITCH;
         if along > furthest {
@@ -755,6 +911,7 @@ fn chevron_wings(
 fn marks(
     frame: &mut Frame,
     at: &Projection,
+    ground: &Ground,
     course: &[Crumb],
     ahead_m: core::ops::Range<f32>,
     px_per_m: f32,
@@ -771,8 +928,8 @@ fn marks(
         let behind = at.at(point_at_metres_to_end(course, along + nudge));
         let (dx, dy) = (tip.0 - behind.0, tip.1 - behind.1);
         let length = libm::sqrtf(dx * dx + dy * dy);
-        let clear = distance(tip, rider) > PUCK_CLEAR + MARK_HALF;
-        if length <= 0.0 || !clear || !visible(tip, tip, MARK_HALF) {
+        let clear = distance(tip, rider) > ground.puck_clear() + MARK_HALF;
+        if length <= 0.0 || !clear || !visible(&ground.drawn, tip, tip, MARK_HALF) {
             continue;
         }
         if frame.mark_count + 2 > frame.marks.len() {
@@ -817,18 +974,18 @@ fn point_at_metres_to_end(course: &[Crumb], along: f32) -> Point {
     )
 }
 
-fn bands(stroke: &Stroke, half: f32) -> Option<(usize, usize)> {
+fn bands(drawn: &Rect, stroke: &Stroke, half: f32) -> Option<(usize, usize)> {
     let (top, bottom) = stroke.rows(half);
-    let low = (top - 1.0).max(GROUND.start as f32);
-    let high = (bottom + 1.0).min((GROUND.end - 1) as f32);
+    let low = (top - 1.0).max(drawn.top as f32);
+    let high = (bottom + 1.0).min((drawn.bottom - 1) as f32);
     if low > high {
         return None;
     }
-    let band = |row: f32| (row as usize - GROUND.start) / BAND_ROWS;
+    let band = |row: f32| (row as usize - drawn.top) / BAND_ROWS;
     Some((band(low), band(high)))
 }
 
-fn bucket(frame: &mut Frame) {
+fn bucket(frame: &mut Frame, drawn: &Rect) {
     let mut at = 0usize;
     for line in [Line::Route, Line::Ridden] {
         let room = line.room();
@@ -836,7 +993,7 @@ fn bucket(frame: &mut Frame) {
         let mut entries = 0;
         let mut kept = 0;
         for stroke in frame.line(line) {
-            if let Some((first, last)) = bands(stroke, line.reach()) {
+            if let Some((first, last)) = bands(drawn, stroke, line.reach()) {
                 if at + entries + last - first + 1 > BAND_ENTRIES {
                     break;
                 }
@@ -854,7 +1011,7 @@ fn bucket(frame: &mut Frame) {
         band_offsets[BAND_COUNT] = at as u16;
         let mut next = *band_offsets;
         for i in room.start..room.start + kept {
-            if let Some((first, last)) = bands(&frame.strokes[i], line.reach()) {
+            if let Some((first, last)) = bands(drawn, &frame.strokes[i], line.reach()) {
                 for slot in &mut next[first..=last] {
                     frame.items[usize::from(*slot)] = i as u16;
                     *slot += 1;
@@ -864,14 +1021,20 @@ fn bucket(frame: &mut Frame) {
     }
 }
 
+fn ground_on(frame: &Frame, y: usize) -> Option<&'static Ground> {
+    frame.ground.filter(|ground| {
+        frame.show == Show::Map && (ground.drawn.top..ground.drawn.bottom).contains(&y)
+    })
+}
+
 pub(super) fn paint(frame: &Frame, row: &mut Row) {
     let y = row.y();
-    if frame.show != Show::Map || !GROUND.contains(&y) {
+    let Some(ground) = ground_on(frame, y) else {
         return;
-    }
+    };
     frame.layer.paint(row, &frame.pairs);
     let mut cover = Cover::new(y);
-    let band = (y - GROUND.start) / BAND_ROWS;
+    let band = (y - ground.drawn.top) / BAND_ROWS;
     for line in Line::ALL {
         let items = frame.band(line, band);
         for &(half, color) in line.layers() {
@@ -906,7 +1069,7 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
     }
     cover.paint(row, AMBER);
     if let Some(at) = frame.junction_quarter_px {
-        for (radius, color) in JUNCTION_RINGS_QUARTER_PX {
+        for (radius, color) in ground.junction_rings.into_iter().zip(JUNCTION_RING_COLOURS) {
             paint_disc_over(row, (at.0, at.1, radius), color);
         }
     }
@@ -915,29 +1078,25 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
         arrow: tint,
     }) = frame.puck
     {
-        for (radius, color) in PUCK_RINGS_QUARTER_PX {
+        for (radius, color) in ground.puck_rings.into_iter().zip(PUCK_RING_COLOURS) {
             paint_disc_over(row, (at.0, at.1, radius), color);
         }
-        let (left, top) = puck_top_left(at);
-        PUCK.paint(row, left, top, tint);
+        let (left, top) = puck_top_left(ground, at);
+        ground.puck.paint(row, left, top, tint);
     }
 }
 
-fn map_left(radar: bool) -> usize {
-    if radar { super::BODY.left } else { 0 }
-}
-
-fn puck_top_left((cx, cy): (i32, i32)) -> (usize, usize) {
-    let half = i32::from(PUCK.size) * 2;
+fn puck_top_left(ground: &Ground, (cx, cy): (i32, i32)) -> (usize, usize) {
+    let half = i32::from(ground.puck.size) * 2;
     (((cx - half) / 4) as usize, ((cy - half) / 4) as usize)
 }
 
 #[cfg(test)]
 pub(super) fn pixel(frame: &Frame, look: Look, x: usize, y: usize, under: Shown) -> Shown {
     use crate::screens::chrome::blend;
-    if frame.show != Show::Map || !GROUND.contains(&y) {
+    let Some(ground) = ground_on(frame, y) else {
         return under;
-    }
+    };
     let over = |color: Shown, paint: u16, coverage: u8| match coverage {
         0 => color,
         c => blend(look.ink(paint), color, c),
@@ -983,26 +1142,30 @@ pub(super) fn pixel(frame: &Frame, look: Look, x: usize, y: usize, under: Shown)
         .max()
         .unwrap_or(0);
     color = over(color, AMBER, c);
-    let rings = |color: Shown, (cx, cy): (i32, i32), rings: &[(i32, u16)]| {
-        rings.iter().fold(color, |color, &(radius, paint)| {
-            over(
-                color,
-                paint,
-                crate::screens::chrome::disc(x, y, cx, cy, radius),
-            )
-        })
+    let rings = |color: Shown, (cx, cy): (i32, i32), radii: &[i32], paints: &[u16]| {
+        radii
+            .iter()
+            .zip(paints)
+            .fold(color, |color, (&radius, &paint)| {
+                over(
+                    color,
+                    paint,
+                    crate::screens::chrome::disc(x, y, cx, cy, radius),
+                )
+            })
     };
     if let Some(at) = frame.junction_quarter_px {
-        color = rings(color, at, &JUNCTION_RINGS_QUARTER_PX);
+        color = rings(color, at, &ground.junction_rings, &JUNCTION_RING_COLOURS);
     }
     if let Some(Puck {
         centre_quarter_px: at,
         arrow: tint,
     }) = frame.puck
     {
-        color = rings(color, at, &PUCK_RINGS_QUARTER_PX);
-        let (left, top) = puck_top_left(at);
-        color = PUCK
+        color = rings(color, at, &ground.puck_rings, &PUCK_RING_COLOURS);
+        let (left, top) = puck_top_left(ground, at);
+        color = ground
+            .puck
             .pixel(x, y, left, top, look.ink(tint), color)
             .unwrap_or(color);
     }
@@ -1010,17 +1173,23 @@ pub(super) fn pixel(frame: &Frame, look: Look, x: usize, y: usize, under: Shown)
 }
 
 pub(super) fn prepare(view: &View) -> Canvas {
+    let layout = view.frame_layout();
+    let (at, map) = (&layout.scaled, &layout.map);
+    let shown = map.ground(view.radar_paired).shown;
+    let (width, cx) = (shown.width(), (shown.left + shown.right) / 2);
+    let middle = (shown.top + shown.bottom) / 2;
     let mut canvas = Canvas::default();
-    let edge = map_left(view.radar_paired);
-    let (width, cx) = (WIDTH - edge, (edge + WIDTH) / 2);
     let say = |canvas: &mut Canvas, text: &[u8]| {
-        canvas.fit(&[&BODY_FACE], text, width, cx, MID_Y, Align::Center, WHITE);
+        let face = at.face(FaceRole::Body);
+        canvas.fit(&[face], text, width, cx, middle, Align::Center, WHITE);
     };
     let frame = match view.map() {
         Some(frame) if frame.show == Show::Map => frame,
         Some(frame) if frame.show == Show::NoGps => {
             say(&mut canvas, b"NO GPS YET");
-            canvas.caption(b"MAP STARTS WITH GPS", width, cx, MID_Y + 24, Align::Center);
+            let below = middle + at.unit(24);
+            let words = b"MAP STARTS WITH GPS";
+            canvas.caption(at, words, width, cx, below, Align::Center);
             return canvas;
         }
         _ => {
@@ -1029,43 +1198,40 @@ pub(super) fn prepare(view: &View) -> Canvas {
         }
     };
     if !frame.has_track {
-        let below = usize::try_from(frame.last_pose.rider.1).unwrap_or(MID_Y) - 36;
-        canvas.caption(b"DRAWS AS YOU RIDE", width, cx, below, Align::Center);
+        let rider = usize::try_from(frame.last_pose.rider.1).unwrap_or(middle);
+        let above = rider - at.unit(36);
+        let words = b"DRAWS AS YOU RIDE";
+        canvas.caption(at, words, width, cx, above, Align::Center);
     }
-    let (bar, label) = frame.last_pose.reach.bar();
+    let foot = &map.foot;
+    let (bar, label) = frame.last_pose.bar(foot.bar.width());
     canvas.shape(Shape::Bar {
         rect: Rect {
-            left: BAR_LEFT,
-            top: BAR_TOP,
-            right: BAR_LEFT + bar,
-            bottom: BAR_TOP + BAR_THICKNESS,
+            right: foot.bar.left + bar,
+            ..foot.bar
         },
-        radius: 1,
+        radius: at.unit(1),
         color: SECONDARY,
     });
-    let left = BAR_LEFT + bar + BAR_GAP;
-    canvas.caption(label, DISTANCE_RIGHT - left, left, FOOT_BASE, Align::Left);
+    let left = foot.bar.left + bar + foot.gap;
+    let (baseline, right) = (foot.baseline, foot.distance_right);
+    canvas.caption(at, label, right - left, left, baseline, Align::Left);
     let mut distance = Text::<12>::new();
     let mm = frame
         .left_m
         .map_or(view.totals.distance_mm(), |m| u64::from(m) * 1000);
     kilometres(&mut distance, mm);
     canvas.fit(
-        &[&FOOT_20],
+        &[at.face(FaceRole::Foot20)],
         distance.as_bytes(),
-        DISTANCE_RIGHT - left,
-        DISTANCE_RIGHT,
-        FOOT_BASE,
+        right - left,
+        right,
+        baseline,
         Align::Right,
         WHITE,
     );
-    canvas.caption(
-        b"KM",
-        UNIT_RIGHT - DISTANCE_RIGHT,
-        UNIT_RIGHT,
-        FOOT_BASE,
-        Align::Right,
-    );
+    let unit = foot.unit_right;
+    canvas.caption(at, b"KM", unit - right, unit, baseline, Align::Right);
     canvas
 }
 

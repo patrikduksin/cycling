@@ -481,6 +481,7 @@ fn row_card(canvas: &mut Canvas, view: &View, index: usize, row: Row, focused: b
     });
     let (left, right) = (LEFT + INSET, RIGHT - INSET);
     canvas.caption(
+        &crate::screens::scaled::BASE,
         row.label().as_bytes(),
         right - left,
         left,
@@ -506,7 +507,14 @@ fn row_card(canvas: &mut Canvas, view: &View, index: usize, row: Row, focused: b
         .map_or(whole, |at| &whole[at + 2..]);
     for note in [whole, last] {
         if !note.is_empty() && Line::<24>::fit(&[&CAPTION], note, room).text().len() == note.len() {
-            canvas.caption(note, room, right, base, Align::Right);
+            canvas.caption(
+                &crate::screens::scaled::BASE,
+                note,
+                room,
+                right,
+                base,
+                Align::Right,
+            );
             break;
         }
     }
@@ -514,7 +522,14 @@ fn row_card(canvas: &mut Canvas, view: &View, index: usize, row: Row, focused: b
 
 /// The edited number on an accent field, with its note, then the pads.
 fn editor(canvas: &mut Canvas, view: &View, title: &str, row: Row) {
-    canvas.caption(title.as_bytes(), RIGHT - LEFT, LEFT, 44, Align::Left);
+    canvas.caption(
+        &crate::screens::scaled::BASE,
+        title.as_bytes(),
+        RIGHT - LEFT,
+        LEFT,
+        44,
+        Align::Left,
+    );
     let rect = Rect {
         left: LEFT,
         top: FIELD_TOP,

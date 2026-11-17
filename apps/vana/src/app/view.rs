@@ -6,7 +6,7 @@ use super::presentation::{
 };
 use crate::ride::elevation::Trace;
 use crate::ride::log::{Sample, Status};
-use crate::screens::chrome::{Toast, Tone};
+use crate::screens::chrome::{Rect, Toast, Tone};
 use crate::screens::power::Sheet as PowerSheet;
 use crate::screens::ride::summary::SummaryPage;
 use crate::screens::ride::{ElevationChart, Pixels, RidePage};
@@ -64,10 +64,10 @@ impl Chart {
         &self.chart
     }
 
-    fn refresh(&mut self, trace: &Trace) {
+    fn refresh(&mut self, trace: &Trace, rect: Rect) {
         if self.charted != Some(trace.generation()) {
             self.charted = Some(trace.generation());
-            self.chart.refresh(trace);
+            self.chart.refresh(trace, rect);
         }
     }
 }
@@ -241,6 +241,7 @@ impl Runtime {
                 now,
                 self.readings.live.speed_mm_s,
                 radar_paired,
+                &self.layout.map,
                 light,
                 self.micros_clock,
             );
@@ -270,7 +271,8 @@ impl Runtime {
             && SummaryPage::at(self.navigation.summary_page(), self.has_elevation())
                 == SummaryPage::Elevation;
         if showing {
-            self.chart.refresh(self.ride.trace());
+            let rect = self.layout.summary.elevation.chart;
+            self.chart.refresh(self.ride.trace(), rect);
         }
     }
 

@@ -209,7 +209,7 @@ const fn gauge_in(band: Rect, at: &Scaled) -> Gauge {
     Gauge::under(gap.bottom, at)
 }
 
-struct BaselinesBelowBandTopUnits {
+struct CapsBelowBandTopUnits {
     time: usize,
     speed: usize,
     power: usize,
@@ -217,15 +217,15 @@ struct BaselinesBelowBandTopUnits {
     lower: usize,
 }
 
-const COURSE_BASELINES: BaselinesBelowBandTopUnits = BaselinesBelowBandTopUnits {
-    time: 35,
-    speed: 46,
-    power: 39,
-    heart: 39,
-    lower: 27,
+const COURSE_CAPS: CapsBelowBandTopUnits = CapsBelowBandTopUnits {
+    time: 8,
+    speed: 7,
+    power: 0,
+    heart: 0,
+    lower: 0,
 };
 
-const COURSE_GAUGES_BELOW_BASELINE_UNITS: [usize; 2] = [8, 10];
+const COURSE_GAUGES_BELOW_BAND_TOP_UNITS: [usize; 2] = [47, 49];
 
 const fn baseline_below_body_units(mockup_last_cap_row: usize) -> usize {
     mockup_last_cap_row + 1 - CONTENT.top
@@ -252,6 +252,8 @@ struct Rows {
     large: &'static Face,
 }
 
+/// Out of line, so its working leaves `smooth`'s frame (#167).
+#[inline(never)]
 fn rows(course: bool, regions: &Regions, at: &Scaled) -> Rows {
     let face = |role| at.face(role);
     let (value, large) = (face(FaceRole::Value), face(FaceRole::Large));
@@ -268,23 +270,19 @@ fn rows(course: bool, regions: &Regions, at: &Scaled) -> Rows {
     };
     if course {
         let [time, _, speed, power, heart, lower] = regions.course;
-        let below_band_top = |band: Rect, units: usize| band.top + at.unit(units);
-        let units = COURSE_BASELINES;
-        let power = below_band_top(power, units.power);
-        let heart = below_band_top(heart, units.heart);
-        let [power_gauge, heart_gauge] = COURSE_GAUGES_BELOW_BASELINE_UNITS;
+        let caps = |band: Rect, units: usize, face| baseline(face, band.top + at.unit(units));
+        let gauge = |band: Rect, units: usize| Gauge::under(band.top + at.unit(units), at);
+        let units = COURSE_CAPS;
+        let [power_gauge, heart_gauge] = COURSE_GAUGES_BELOW_BAND_TOP_UNITS;
         return common(Rows {
-            time: below_band_top(time, units.time),
-            speed: below_band_top(speed, units.speed),
+            time: caps(time, units.time, value),
+            speed: caps(speed, units.speed, large),
             speed_faces: [large, value, value],
             speed_count: 2,
-            power,
-            heart,
-            lower: below_band_top(lower, units.lower),
-            gauges: [
-                Gauge::under(power + at.unit(power_gauge), at),
-                Gauge::under(heart + at.unit(heart_gauge), at),
-            ],
+            power: caps(power, units.power, large),
+            heart: caps(heart, units.heart, large),
+            lower: caps(lower, units.lower, value),
+            gauges: [gauge(power, power_gauge), gauge(heart, heart_gauge)],
             unit_gap: at.unit(6),
             lower_right: regions.text.right + at.unit(1),
             ..BLANK
@@ -840,7 +838,7 @@ fn gauge(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{BODY, LEFT, RIGHT};
+    use super::super::BODY;
     use super::*;
     use crate::ride::log::{Sample, Status};
     use crate::screens::scaled::BASE;
@@ -922,9 +920,9 @@ mod tests {
         let mut items: Vec<_> = view.smooth().labels.iter().filter_map(text).collect();
         for (i, gauge) in view.smooth().gauges.iter().flatten().enumerate() {
             let rect = Rect {
-                left: LEFT,
+                left: crate::screens::BASE.ride.text.left,
                 top: gauge.rows.0,
-                right: RIGHT,
+                right: crate::screens::BASE.ride.text.right,
                 bottom: gauge.rows.1,
             };
             items.push((std::format!("gauge {i}"), rect));
@@ -1243,7 +1241,7 @@ mod tests {
             );
             let mut items = items(&view);
             if let Some(form) = nav.and_then(|nav| sign::form(RidePage::Main, nav)) {
-                let placed = sign::place(view.nav, form, true).unwrap();
+                let placed = sign::place(view.nav, form, true, view.frame_layout()).unwrap();
                 items.push(("chip".into(), placed.rect()));
             }
             assert_apart(&items, bounds, &what);

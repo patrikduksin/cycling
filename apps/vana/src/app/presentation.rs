@@ -366,7 +366,11 @@ impl Runtime {
             view.training = readout.training;
             if view.ride_page == RidePage::Workout {
                 view.show_workout(match &self.training.player {
-                    Some(player) => crate::screens::ride::workout_chart(player, &view.profile),
+                    Some(player) => crate::screens::ride::workout_chart(
+                        player,
+                        &view.profile,
+                        &self.layout.workout,
+                    ),
                     None => Default::default(),
                 });
             }

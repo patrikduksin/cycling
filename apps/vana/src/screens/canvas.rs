@@ -7,13 +7,14 @@
 //! that tests hold `paint` to, and `assert_laid_out` is the layout sweep's
 //! check.
 use super::chrome::{
-    Align, CAPTION, Label, Line, Rect, Ring, Row, SECONDARY, blend, paint_disc_over,
-    paint_rounded_over, rounded,
+    Align, Label, Line, Rect, Ring, Row, SECONDARY, blend, paint_disc_over, paint_rounded_over,
+    rounded,
 };
 #[cfg(test)]
 use super::chrome::{Look, Shown, disc};
 use super::icons::StaticIcon;
-use firmware_shell::rendering::font::{Face, SPILL};
+use super::scaled::Scaled;
+use firmware_shell::rendering::font::{Face, FaceRole, SPILL};
 use firmware_shell::shell::Parts;
 use heapless::Vec;
 
@@ -210,16 +211,19 @@ impl Canvas {
         ))
     }
 
-    /// A `CAPTION` in `SECONDARY` whose capitals end on `base`, cut to `width`.
+    /// A caption in `SECONDARY` whose capitals end on `base`, cut to `width`,
+    /// in the caption face of `at`'s step.
     pub fn caption(
         &mut self,
+        at: &Scaled,
         text: &[u8],
         width: usize,
         x: usize,
         base: usize,
         align: Align,
     ) -> Run {
-        self.fit(&[&CAPTION], text, width, x, base, align, SECONDARY)
+        let face = at.face(FaceRole::Caption);
+        self.fit(&[face], text, width, x, base, align, SECONDARY)
     }
 
     pub fn paint(&self, row: &mut Row) {
@@ -305,9 +309,16 @@ impl Canvas {
     #[cfg(test)]
     #[track_caller]
     pub fn assert_laid_out(&self, bounds: Rect, want: &[&str], what: &str) {
-        use super::chrome::layout::{assert_apart, assert_shown, text};
+        self.assert_laid_out_at(&super::scaled::BASE, bounds, want, what);
+    }
+
+    /// `assert_laid_out`, with the word gap at `at`'s step.
+    #[cfg(test)]
+    #[track_caller]
+    pub fn assert_laid_out_at(&self, at: &Scaled, bounds: Rect, want: &[&str], what: &str) {
+        use super::chrome::layout::{assert_apart_at, assert_shown, text};
         let texts: std::vec::Vec<_> = self.runs.iter().filter_map(text).collect();
-        assert_apart(&texts, bounds, what);
+        assert_apart_at(at, &texts, bounds, what);
         // Bars may touch each other (a chart), so check each against text.
         for shape in &self.shapes {
             let b = shape.bounds();
@@ -323,7 +334,7 @@ impl Canvas {
                 };
                 let mut both = std::vec![(std::string::String::from("bar"), b)];
                 both.extend(texts.iter().filter(|(_, r)| !on(r)).cloned());
-                assert_apart(&both, bounds, what);
+                assert_apart_at(at, &both, bounds, what);
             }
         }
         assert_shown(&texts, want, what);

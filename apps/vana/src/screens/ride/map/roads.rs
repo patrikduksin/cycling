@@ -1,4 +1,4 @@
-use super::pose::{CLOSEST, Reach};
+use super::pose::{CLOSEST, Pose, Reach};
 use crate::ride::geo::Frame as RideFrame;
 use terrain::{PackId, Road, RoadClass, TileKey};
 
@@ -46,9 +46,13 @@ impl Detail {
             Self::Streets => CLOSEST,
             Self::Town => TOWN_CLOSEST,
         };
-        0.5 / closest.px_per_m()
+        0.5 / Pose::new(closest, &ROADS_FETCHED_FOR, 0).px_per_m()
     }
 }
+
+/// Roads are fetched once for any panel, as finely as the base canvas shows
+/// them.
+const ROADS_FETCHED_FOR: super::Ground = crate::screens::BASE.map.free;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Held {

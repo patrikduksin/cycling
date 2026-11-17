@@ -1,4 +1,5 @@
-use crate::screens::chrome::{Row, Shown, WIDTH, blend};
+use crate::screens::chrome::{Row, Shown, blend};
+use crate::screens::limits::WIDTH;
 
 pub type Point = (f32, f32);
 

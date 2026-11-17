@@ -123,7 +123,14 @@ pub fn prepare(view: &View) -> Canvas {
     ];
     for (row, (label, value, color)) in rows.into_iter().enumerate() {
         let base = FIRST + row * PITCH;
-        canvas.caption(label, RIGHT - LEFT, LEFT, base - 14, Align::Left);
+        canvas.caption(
+            &crate::screens::scaled::BASE,
+            label,
+            RIGHT - LEFT,
+            LEFT,
+            base - 14,
+            Align::Left,
+        );
         canvas.fit(
             &[&BODY, &CAPTION],
             value.as_bytes(),
@@ -172,8 +179,22 @@ pub fn prepare(view: &View) -> Canvas {
             color: verdict(value).1,
         });
     }
-    canvas.caption(b"6 WEEKS AGO", RIGHT - LEFT, LEFT, ENDS_BASE, Align::Left);
-    canvas.caption(b"NOW", 60, RIGHT, ENDS_BASE, Align::Right);
+    canvas.caption(
+        &crate::screens::scaled::BASE,
+        b"6 WEEKS AGO",
+        RIGHT - LEFT,
+        LEFT,
+        ENDS_BASE,
+        Align::Left,
+    );
+    canvas.caption(
+        &crate::screens::scaled::BASE,
+        b"NOW",
+        60,
+        RIGHT,
+        ENDS_BASE,
+        Align::Right,
+    );
     let note: &[&[u8]] = if left_out {
         &[b"RIDES WITHOUT POWER", b"ARE LEFT OUT"]
     } else {
@@ -181,6 +202,7 @@ pub fn prepare(view: &View) -> Canvas {
     };
     for (line, text) in note.iter().enumerate() {
         canvas.caption(
+            &crate::screens::scaled::BASE,
             text,
             RIGHT - LEFT,
             WIDTH / 2,

@@ -11,3 +11,10 @@ pub const HEIGHT: usize = 320;
 pub const WIDTH: usize = 240;
 #[cfg(any(test, feature = "invariants"))]
 pub const HEIGHT: usize = 400;
+
+/// Every panel a device declares, as width and height.
+#[cfg(not(any(test, feature = "invariants")))]
+pub const PANELS: &[(usize, usize)] = &[(240, 320)];
+/// Every panel any model declares, the simulator's test models too.
+#[cfg(any(test, feature = "invariants"))]
+pub const PANELS: &[(usize, usize)] = &[(180, 240), (240, 320), (240, 400)];

@@ -1,10 +1,10 @@
 //! Recovers text from an RGB565 frame drawn with the shared 5x7 bitmap font
 //! or the anti-aliased faces of `firmware_shell::rendering::font`.
-use firmware_shell::rendering::font::{FACES, Face, blend};
+use firmware_shell::rendering::font::{Face, Faces, SCALE_1, blend};
 use firmware_shell::rendering::row::{Look, Shown};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// Mirrors the private glyph table in `firmware_shell::rendering::text`; a unit
 /// test compares both so drift is caught. Rows use five low bits, leftmost dot
@@ -114,6 +114,8 @@ pub struct Frame<'a> {
     pub height: usize,
     pub pixels: &'a [u16],
     pub look: Look,
+    /// The faces of the panel's scale step, which its smooth text is read in.
+    pub faces: &'static Faces,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,7 +168,6 @@ struct Template {
     ink: u32,
 }
 
-/// Every face's templates, by the solid run right of and below the anchor.
 struct Templates {
     exact: HashMap<(usize, usize), Vec<Template>>,
     /// Keys by `down`, longest `right` first: a run that continues into the
@@ -174,82 +175,104 @@ struct Templates {
     by_down: HashMap<usize, Vec<(usize, usize)>>,
 }
 
-fn templates() -> &'static Templates {
-    static TEMPLATES: OnceLock<Templates> = OnceLock::new();
-    TEMPLATES.get_or_init(|| {
-        let mut map: HashMap<(usize, usize), Vec<Template>> = HashMap::new();
-        for (face_index, face) in FACES.iter().enumerate() {
-            for character in 0x21..=0x5f_u8 {
-                let glyph = face.glyph(character);
-                let (w, h) = (usize::from(glyph.w), usize::from(glyph.h));
-                if w == 0 {
-                    continue;
-                }
-                let at = |x: usize, y: usize| {
-                    face.coverage(
-                        character,
-                        x as i32 + i32::from(glyph.x),
-                        y as i32 + i32::from(glyph.y),
-                    )
-                };
-                let coverage: Vec<u8> = (0..h)
-                    .flat_map(|y| (0..w).map(move |x| (x, y)))
-                    .map(|(x, y)| at(x, y))
-                    .collect();
-                let solid: Vec<bool> = coverage.iter().map(|&c| c == 15).collect();
-                let Some(first) = solid.iter().position(|&s| s) else {
-                    continue;
-                };
-                let anchor = (first % w, first / w);
-                let right = (anchor.0..w)
-                    .take_while(|&x| solid[anchor.1 * w + x])
-                    .count();
-                let down = (anchor.1..h)
-                    .take_while(|&y| solid[y * w + anchor.0])
-                    .count();
-                let solids: Vec<usize> = (0..w * h).filter(|&i| solid[i]).collect();
-                let ink = solids.len() as u32;
-                let edges = (0..w * h)
-                    .filter(|&i| (1..15).contains(&coverage[i]))
-                    .collect();
-                let clear = (0..w * h).filter(|&i| coverage[i] == 0).collect();
-                map.entry((right, down)).or_default().push(Template {
-                    character,
-                    face: face_index,
-                    anchor,
-                    offset: (i32::from(glyph.x), i32::from(glyph.y)),
-                    size: (w, h),
-                    solid,
-                    solids,
-                    coverage,
-                    edges,
-                    clear,
-                    ink,
-                });
+fn templates(faces: &'static Faces) -> &'static Templates {
+    static SETS: Mutex<Vec<(&'static Faces, &'static Templates)>> = Mutex::new(Vec::new());
+    let mut sets = SETS.lock().expect("template sets");
+    if let Some(&(_, built)) = sets.iter().find(|(set, _)| *set == faces) {
+        return built;
+    }
+    let built = Box::leak(Box::new(build_templates(faces)));
+    sets.push((faces, built));
+    built
+}
+
+fn build_templates(faces: &Faces) -> Templates {
+    let mut map: HashMap<(usize, usize), Vec<Template>> = HashMap::new();
+    for (face_index, face) in faces.0.iter().enumerate() {
+        for character in 0x21..=0x5f_u8 {
+            let glyph = face.glyph(character);
+            let (w, h) = (usize::from(glyph.w), usize::from(glyph.h));
+            if w == 0 {
+                continue;
             }
+            let at = |x: usize, y: usize| {
+                face.coverage(
+                    character,
+                    x as i32 + i32::from(glyph.x),
+                    y as i32 + i32::from(glyph.y),
+                )
+            };
+            let coverage: Vec<u8> = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .map(|(x, y)| at(x, y))
+                .collect();
+            let solid: Vec<bool> = coverage.iter().map(|&c| c == 15).collect();
+            let Some(first) = solid.iter().position(|&s| s) else {
+                continue;
+            };
+            let anchor = (first % w, first / w);
+            let right = (anchor.0..w)
+                .take_while(|&x| solid[anchor.1 * w + x])
+                .count();
+            let down = (anchor.1..h)
+                .take_while(|&y| solid[y * w + anchor.0])
+                .count();
+            let solids: Vec<usize> = (0..w * h).filter(|&i| solid[i]).collect();
+            let ink = solids.len() as u32;
+            let edges = (0..w * h)
+                .filter(|&i| (1..15).contains(&coverage[i]))
+                .collect();
+            let clear = (0..w * h).filter(|&i| coverage[i] == 0).collect();
+            map.entry((right, down)).or_default().push(Template {
+                character,
+                face: face_index,
+                anchor,
+                offset: (i32::from(glyph.x), i32::from(glyph.y)),
+                size: (w, h),
+                solid,
+                solids,
+                coverage,
+                edges,
+                clear,
+                ink,
+            });
         }
-        for list in map.values_mut() {
-            list.sort_by_key(|t| std::cmp::Reverse(t.ink));
-        }
-        let mut by_down: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
-        for &(right, down) in map.keys() {
-            by_down.entry(down).or_default().push((right, down));
-        }
-        for keys in by_down.values_mut() {
-            keys.sort_unstable_by_key(|&(right, _)| std::cmp::Reverse(right));
-        }
-        Templates {
-            exact: map,
-            by_down,
-        }
-    })
+    }
+    for list in map.values_mut() {
+        list.sort_by_key(|t| std::cmp::Reverse(t.ink));
+    }
+    let mut by_down: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+    for &(right, down) in map.keys() {
+        by_down.entry(down).or_default().push((right, down));
+    }
+    for keys in by_down.values_mut() {
+        keys.sort_unstable_by_key(|&(right, _)| std::cmp::Reverse(right));
+    }
+    Templates {
+        exact: map,
+        by_down,
+    }
 }
 
-fn face(index: usize) -> &'static Face {
-    FACES[index]
-}
+impl<'a> Frame<'a> {
+    /// A frame read in the faces of its panel's scale step, or at scale 1 on
+    /// a panel VANA cannot lay out.
+    pub fn new(width: usize, height: usize, pixels: &'a [u16], look: Look) -> Self {
+        let faces = vana::screens::scaled::Scaled::fitting(width, height)
+            .map_or(&SCALE_1, |scaled| scaled.faces);
+        Self {
+            width,
+            height,
+            pixels,
+            look,
+            faces,
+        }
+    }
 
-impl Frame<'_> {
+    fn face(&self, index: usize) -> &'static Face {
+        self.faces.0[index]
+    }
+
     /// Every text run on screen, top-to-bottom then left-to-right.
     pub fn read(&self) -> Vec<TextRun> {
         if self.pixels.len() < self.width * self.height {
@@ -421,7 +444,7 @@ impl Frame<'_> {
     /// Anti-aliased glyphs: each starts at a solid pixel with no solid pixel of
     /// its colour to the left or above, and matches a template exactly.
     fn smooth_glyphs(&self) -> Vec<Glyph> {
-        let templates = templates();
+        let templates = templates(self.faces);
         let (width, height) = (self.width, self.height);
         let blank = self.look.ink(0).0;
         let mut claimed = vec![false; width * height];
@@ -466,7 +489,7 @@ impl Frame<'_> {
                             }
                         }
                     }
-                    let glyph = face(template.face).glyph(template.character);
+                    let glyph = self.face(template.face).glyph(template.character);
                     found.push(Glyph {
                         character: template.character,
                         x: (left as i32 - template.offset.0) as usize,
@@ -683,7 +706,7 @@ impl Frame<'_> {
                 let step = glyph.x.wrapping_sub(previous.x);
                 let s = glyph.scale;
                 if same && s >= FACE_SCALE {
-                    let space = usize::from(face(s - FACE_SCALE).glyph(b' ').advance);
+                    let space = usize::from(self.face(s - FACE_SCALE).glyph(b' ').advance);
                     let gap = step.wrapping_sub(previous.advance);
                     if gap == 0 || gap == space || gap == 2 * space {
                         for _ in 0..gap / space.max(1) {
@@ -716,7 +739,7 @@ impl Frame<'_> {
                 y: glyph.y,
                 // A face reads as the 5x7 scale of similar capital height.
                 scale: if glyph.scale >= FACE_SCALE {
-                    (usize::from(face(glyph.scale - FACE_SCALE).cap) / 7).max(1)
+                    (usize::from(self.face(glyph.scale - FACE_SCALE).cap) / 7).max(1)
                 } else {
                     glyph.scale
                 },
@@ -899,12 +922,7 @@ mod tests {
     }
 
     fn frame(pixels: &[u16]) -> Frame<'_> {
-        Frame {
-            width: W,
-            height: H,
-            pixels,
-            look: Look::PLAIN,
-        }
+        Frame::new(W, H, pixels, Look::PLAIN)
     }
 
     fn run(text: &str, x: usize, y: usize, scale: usize, color: u16) -> TextRun {
@@ -926,6 +944,18 @@ mod tests {
         color: u16,
         label: &str,
     ) {
+        smooth_on(pixels, W, x, y, face, color, label);
+    }
+
+    fn smooth_on(
+        pixels: &mut [u16],
+        width: usize,
+        x: usize,
+        y: usize,
+        face: &'static Face,
+        color: u16,
+        label: &str,
+    ) {
         use firmware_shell::rendering::font::{Align, Label, Line};
         let label = Label::new(
             Line::<24>::new(face, label.as_bytes()),
@@ -936,9 +966,9 @@ mod tests {
         );
         for py in y..label.bottom() {
             for px in x..label.right() + 2 {
-                let bg = pixels[py * W + px];
+                let bg = pixels[py * width + px];
                 if let Some(c) = label.pixel(Look::PLAIN, px, py, Shown(bg)) {
-                    pixels[py * W + px] = c.0;
+                    pixels[py * width + px] = c.0;
                 }
             }
         }
@@ -1027,6 +1057,39 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_small_panel_in_its_scale_steps_faces() {
+        use firmware_shell::rendering::font::{FaceRole, SCALE_0_75};
+        let (width, height) = (180, 240);
+        let mut p = vec![0; width * height];
+        let face = |role| SCALE_0_75.get(role);
+        smooth_on(
+            &mut p,
+            width,
+            8,
+            4,
+            face(FaceRole::Caption),
+            WHITE,
+            "REC 100%",
+        );
+        smooth_on(&mut p, width, 8, 40, face(FaceRole::Hero), CYAN, "29.9");
+        smooth_on(&mut p, width, 8, 110, face(FaceRole::Body), WHITE, "KM/H");
+        smooth_on(
+            &mut p,
+            width,
+            8,
+            150,
+            face(FaceRole::Value),
+            GREEN,
+            "01:02:05",
+        );
+        let frame = Frame::new(width, height, &p, Look::PLAIN);
+        assert!(core::ptr::eq(frame.faces, &SCALE_0_75));
+        let texts: Vec<_> = frame.read().into_iter().map(|r| r.text).collect();
+        assert_eq!(texts, ["REC 100%", "29.9", "KM/H", "01:02:05"]);
+        assert!(frame.contains("KM/H"));
+    }
+
+    #[test]
     fn reads_each_sign_and_totals_face_as_itself() {
         use firmware_shell::rendering::font::{
             BODY, FOOT_20, SIGN_13, SIGN_14, SIGN_18, SIGN_20, SIGN_27, SIGN_32, SIGN_50, TITLE,
@@ -1060,7 +1123,13 @@ mod tests {
             (&FOOT_20, 0, "12.4"),
             (&FOOT_20, 0, "0.8"),
         ];
-        let index = |face: &Face| FACES.iter().position(|&f| core::ptr::eq(f, face)).unwrap();
+        let index = |face: &Face| {
+            SCALE_1
+                .0
+                .iter()
+                .position(|&f| core::ptr::eq(f, face))
+                .unwrap()
+        };
         for (face, fill, text) in cases {
             let mut p = canvas(fill);
             smooth(&mut p, 12, 30, face, WHITE, text);

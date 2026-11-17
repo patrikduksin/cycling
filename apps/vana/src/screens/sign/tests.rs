@@ -1,5 +1,8 @@
 use super::*;
-use crate::screens::chrome::{BLACK, HEIGHT, Shown, WIDTH};
+use crate::screens::chrome::{BLACK, Shown};
+use crate::screens::panels::ALL;
+use crate::screens::workout::{Page, View};
+use crate::screens::{BASE, ride::ClimbLent};
 use std::vec::Vec;
 
 fn turn(glyph: Glyph, metres: u32) -> Sign {
@@ -22,8 +25,29 @@ fn off(metres: u32) -> Sign {
     }
 }
 
+fn signs() -> [Sign; 10] {
+    [
+        chip(Glyph::Right, 6_400),
+        chip(Glyph::SharpLeft, 990),
+        chip(Glyph::Finish, 999_000),
+        turn(Glyph::Left, 120),
+        turn(Glyph::UTurn, 990),
+        turn(Glyph::Finish, 999_000),
+        off(140),
+        off(999_000),
+        Sign::Arrived,
+        Sign::TurnAround,
+    ]
+}
+
+const FORMS: [SignForm; 3] = [SignForm::Banner, SignForm::Badge, SignForm::Chip];
+
+fn on_c606(sign: Sign, form: SignForm, radar: bool) -> Option<Placed> {
+    place(sign, form, radar, &BASE)
+}
+
 fn width(sign: Sign, form: SignForm) -> usize {
-    place(sign, form, false).unwrap().rect().width()
+    on_c606(sign, form, false).unwrap().rect().width()
 }
 
 #[test]
@@ -36,7 +60,7 @@ fn fitted_signs_are_as_wide_as_their_mockups() {
 
 #[test]
 fn each_form_sits_where_its_mockup_draws_it() {
-    let rect = |sign, form, radar| place(sign, form, radar).unwrap().rect();
+    let rect = |sign, form, radar| on_c606(sign, form, radar).unwrap().rect();
     let banner = rect(turn(Glyph::Left, 120), SignForm::Banner, false);
     assert_eq!(
         (banner.left, banner.top, banner.right, banner.bottom),
@@ -56,37 +80,97 @@ fn each_form_sits_where_its_mockup_draws_it() {
 
 #[test]
 fn a_paired_radar_moves_the_content_by_half_its_strip() {
-    for sign in [turn(Glyph::Left, 120), off(140), Sign::Arrived] {
-        let alone = place(sign, SignForm::Banner, false).unwrap();
-        let paired = place(sign, SignForm::Banner, true).unwrap();
-        assert_eq!(paired.glyph_at.0, alone.glyph_at.0 + RADAR_SHIFT);
-        let lefts = |placed: &Placed| placed.lines.iter().map(|l| l.left).collect::<Vec<_>>();
-        let shifted: Vec<_> = lefts(&alone).iter().map(|x| x + RADAR_SHIFT).collect();
-        assert_eq!(lefts(&paired), shifted);
+    for layout in ALL {
+        let shift = layout.ride.centre_shift;
+        for sign in [turn(Glyph::Left, 120), off(140), Sign::Arrived] {
+            let alone = place(sign, SignForm::Banner, false, layout).unwrap();
+            let paired = place(sign, SignForm::Banner, true, layout).unwrap();
+            assert_eq!(paired.glyph_at.0, alone.glyph_at.0 + shift);
+            let lefts = |placed: &Placed| placed.lines.iter().map(|l| l.left).collect::<Vec<_>>();
+            let shifted: Vec<_> = lefts(&alone).iter().map(|x| x + shift).collect();
+            assert_eq!(lefts(&paired), shifted, "{:?}", layout.scaled);
+            assert_eq!(
+                paired.rect().left,
+                layout.ride.body.left,
+                "beside the strip"
+            );
+        }
     }
 }
 
 #[test]
-fn beside_a_radar_the_badge_keeps_8_px_from_the_map_s_edge() {
-    for sign in [turn(Glyph::Right, 250), off(140), Sign::Arrived] {
-        let alone = place(sign, SignForm::Badge, false).unwrap();
-        let paired = place(sign, SignForm::Badge, true).unwrap();
-        assert_eq!(paired.rect().left, RADAR + 8, "{sign:?}");
-        assert_eq!(
-            paired.rect().right - paired.rect().left,
-            alone.rect().right - alone.rect().left,
-            "{sign:?}"
-        );
-        assert_eq!(paired.glyph_at.0, alone.glyph_at.0 + RADAR, "{sign:?}");
+fn beside_a_radar_the_badge_keeps_8_units_from_the_map_s_edge() {
+    for layout in ALL {
+        let map = layout.ride.body.left;
+        let what = |sign| std::format!("{sign:?} on {:?}", layout.scaled);
+        for sign in [turn(Glyph::Right, 250), off(140), Sign::Arrived] {
+            let alone = place(sign, SignForm::Badge, false, layout).unwrap();
+            let paired = place(sign, SignForm::Badge, true, layout).unwrap();
+            let inset = layout.scaled.unit(8);
+            assert_eq!(alone.rect().left, inset, "{}", what(sign));
+            assert_eq!(paired.rect().left, map + inset, "{}", what(sign));
+            assert_eq!(
+                paired.rect().width(),
+                alone.rect().width(),
+                "{}",
+                what(sign)
+            );
+            assert_eq!(paired.glyph_at.0, alone.glyph_at.0 + map, "{}", what(sign));
+        }
     }
+}
+
+#[test]
+fn every_sign_s_ink_stays_inside_it_on_every_panel() {
+    for layout in ALL {
+        for radar in [false, true] {
+            for form in FORMS {
+                for sign in signs() {
+                    let Some(placed) = place(sign, form, radar, layout) else {
+                        continue;
+                    };
+                    let what =
+                        std::format!("{sign:?} {form:?} radar {radar} on {:?}", layout.scaled);
+                    let (bounds, spot) = (placed.rect(), placed.spot);
+                    assert!(
+                        contains(spot.fill, bounds),
+                        "{what}: {bounds:?} leaves {spot:?}"
+                    );
+                    let (left, top) = placed.glyph_at;
+                    let glyph = placed.glyph.ink(left, top);
+                    let fill = placed.fill_rect().0;
+                    assert!(
+                        contains(fill, glyph),
+                        "{what}: glyph {glyph:?} leaves {fill:?}"
+                    );
+                    for label in &placed.lines {
+                        let ink = Rect {
+                            left: label.left,
+                            top: label.top,
+                            right: label.columns().end,
+                            bottom: label.bottom(),
+                        };
+                        assert!(contains(bounds, ink), "{what}: {ink:?} leaves {bounds:?}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn contains(outer: Rect, inner: Rect) -> bool {
+    outer.left <= inner.left
+        && outer.top <= inner.top
+        && inner.right <= outer.right
+        && inner.bottom <= outer.bottom
 }
 
 #[test]
 fn the_chip_only_shows_the_next_turn_at_rest() {
-    assert!(place(turn(Glyph::Right, 120), SignForm::Chip, false).is_none());
-    assert!(place(off(140), SignForm::Chip, false).is_none());
-    assert!(place(Sign::Arrived, SignForm::Chip, false).is_none());
-    assert!(place(Sign::None, SignForm::Banner, false).is_none());
+    assert!(on_c606(turn(Glyph::Right, 120), SignForm::Chip, false).is_none());
+    assert!(on_c606(off(140), SignForm::Chip, false).is_none());
+    assert!(on_c606(Sign::Arrived, SignForm::Chip, false).is_none());
+    assert!(on_c606(Sign::None, SignForm::Banner, false).is_none());
 }
 
 #[test]
@@ -116,36 +200,27 @@ fn the_data_pages_show_a_banner_and_only_main_the_chip() {
 
 #[test]
 fn painted_signs_match_the_per_pixel_reference() {
-    let signs = [
-        chip(Glyph::Right, 6_400),
-        chip(Glyph::SharpLeft, 90),
-        turn(Glyph::Left, 120),
-        turn(Glyph::UTurn, 20),
-        turn(Glyph::Finish, 12_000),
-        off(140),
-        Sign::Arrived,
-        Sign::TurnAround,
-    ];
     let under = |x: usize, y: usize| if (x + y) % 7 < 3 { RAISED } else { BLACK };
-    for sign in signs {
-        for form in [SignForm::Banner, SignForm::Badge, SignForm::Chip] {
-            for radar in [false, true] {
-                let Some(placed) = place(sign, form, radar) else {
-                    continue;
-                };
-                for y in 0..HEIGHT {
-                    let mut pixels = [0u16; WIDTH];
-                    for (x, pixel) in pixels.iter_mut().enumerate() {
-                        *pixel = under(x, y);
-                    }
-                    placed.paint(&mut Row::new(y, &mut pixels));
-                    for (x, &painted) in pixels.iter().enumerate() {
-                        let under = Shown(under(x, y));
-                        let want = placed.pixel(x, y, under).unwrap_or(under).0;
-                        assert_eq!(
-                            painted, want,
-                            "{sign:?} {form:?} radar {radar} at ({x}, {y})"
-                        );
+    for layout in ALL {
+        let panel = layout.scaled.panel;
+        for sign in signs() {
+            for form in FORMS {
+                for radar in [false, true] {
+                    let Some(placed) = place(sign, form, radar, layout) else {
+                        continue;
+                    };
+                    for y in 0..panel.height {
+                        let mut pixels: Vec<u16> = (0..panel.width).map(|x| under(x, y)).collect();
+                        placed.paint(&mut Row::new(y, &mut pixels));
+                        for (x, &painted) in pixels.iter().enumerate() {
+                            let under = Shown(under(x, y));
+                            let want = placed.pixel(x, y, under).unwrap_or(under).0;
+                            assert_eq!(
+                                painted, want,
+                                "{sign:?} {form:?} radar {radar} on {:?} at ({x}, {y})",
+                                layout.scaled
+                            );
+                        }
                     }
                 }
             }
@@ -162,18 +237,21 @@ fn turn_around_is_an_amber_u_turn_whose_words_stay_inside_it() {
             "{page:?}"
         );
     }
-    assert!(place(Sign::TurnAround, SignForm::Chip, false).is_none());
+    assert!(on_c606(Sign::TurnAround, SignForm::Chip, false).is_none());
     for form in [SignForm::Banner, SignForm::Badge] {
         for radar in [false, true] {
-            let placed = place(Sign::TurnAround, form, radar).unwrap();
+            let placed = on_c606(Sign::TurnAround, form, radar).unwrap();
             let bounds = placed.rect();
-            assert!(bounds.right <= WIDTH, "{form:?} radar {radar}: {bounds:?}");
+            assert!(
+                bounds.right <= chrome::WIDTH,
+                "{form:?} radar {radar}: {bounds:?}"
+            );
             let inked =
                 |x: usize, y: usize| placed.pixel(x, y, Shown(BLACK)) != Some(Shown(OFF_FILL));
             let edge = bounds.right - 8;
             let words_left = bounds.left + 50;
             for y in bounds.top + 4..bounds.bottom - 4 {
-                for x in edge..bounds.right - BADGE_RADIUS {
+                for x in edge..bounds.right - placed.spot.radius {
                     assert!(!inked(x, y), "{form:?} radar {radar}: ink at ({x}, {y})");
                 }
             }
@@ -181,6 +259,35 @@ fn turn_around_is_an_amber_u_turn_whose_words_stay_inside_it() {
                 .filter(|&y| (words_left..edge).any(|x| inked(x, y)))
                 .collect();
             assert!(rows.len() > 30, "{form:?}: two lines of words, {rows:?}");
+        }
+    }
+}
+
+#[test]
+fn every_ride_page_keeps_its_layout_under_a_sign_on_every_panel() {
+    for layout in ALL {
+        for radar in [false, true] {
+            for page in [
+                RidePage::Main,
+                RidePage::Stats,
+                RidePage::Climb,
+                RidePage::Map,
+            ] {
+                for sign in signs() {
+                    let mut view = View::new(Page::Ride, 0, None);
+                    view.layout = layout;
+                    view.ride_page = page;
+                    view.course = true;
+                    view.nav = sign;
+                    view.radar_paired = radar;
+                    match page {
+                        RidePage::Climb => view.show_climb(ClimbLent::NONE),
+                        RidePage::Map => view.show_map(None),
+                        _ => {}
+                    }
+                    view.prepare().check_layout();
+                }
+            }
         }
     }
 }

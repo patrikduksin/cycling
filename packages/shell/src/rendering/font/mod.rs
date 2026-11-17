@@ -43,6 +43,27 @@ pub enum FaceRole {
 /// Every role's face at one scale step.
 pub struct Faces(pub [&'static Face; 17]);
 
+/// Each step has one set: sets are the same only when they are one static,
+/// and a set adds nothing to a hash that its step does not.
+impl PartialEq for Faces {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(self, other)
+    }
+}
+
+impl Eq for Faces {}
+
+impl core::hash::Hash for Faces {
+    fn hash<H: core::hash::Hasher>(&self, _: &mut H) {}
+}
+
+impl core::fmt::Debug for Faces {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let value = self.0[FaceRole::Value as usize];
+        write!(f, "Faces({} px values)", value.height)
+    }
+}
+
 impl Faces {
     pub const fn get(&self, role: FaceRole) -> &'static Face {
         self.0[role as usize]

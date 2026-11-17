@@ -41,8 +41,17 @@ const _: () = assert!(
 pub struct Layout {
     pub scaled: scaled::Scaled,
     pub chrome: chrome::Regions,
+    pub sign: sign::Regions,
     pub ride: ride::Frame,
     pub main: ride::MainRegions,
+    pub stats: ride::StatsRegions,
+    pub lap: ride::LapRegions,
+    pub map: ride::MapRegions,
+    pub climb: ride::ClimbRegions,
+    pub summary: ride::summary::Regions,
+    pub workout: ride::WorkoutRegions,
+    pub paused: ride::PausedRegions,
+    pub end: ride::EndRegions,
 }
 
 impl Layout {
@@ -50,11 +59,37 @@ impl Layout {
         Self {
             scaled,
             chrome: chrome::regions(&scaled),
+            sign: sign::regions(&scaled),
             ride: ride::frame(&scaled),
             main: ride::main_regions(&scaled),
+            stats: ride::stats_regions(&scaled),
+            lap: ride::lap_regions(&scaled),
+            map: ride::map_regions(&scaled),
+            climb: ride::climb_regions(&scaled),
+            summary: ride::summary::regions(&scaled),
+            workout: ride::workout_regions(&scaled),
+            paused: ride::paused_regions(&scaled),
+            end: ride::end_regions(&scaled),
         }
     }
 }
 
 /// The layout of the 240 × 320 canvas.
 pub static BASE: Layout = Layout::of(scaled::BASE);
+
+/// The simulator's test panels, for screens' own tests.
+#[cfg(test)]
+pub(crate) mod panels {
+    use super::{Layout, scaled::Scaled};
+
+    pub(crate) static WIDE: Layout = Layout::of(Scaled::of(240, 400));
+    pub(crate) static SMALL: Layout = Layout::of(Scaled::of(180, 240));
+    pub(crate) static ALL: [&Layout; 3] = [&super::BASE, &WIDE, &SMALL];
+
+    /// The probe panel: 3/4, and taller than 3/4 of the C606.
+    #[test]
+    fn a_panel_taller_than_its_scale_lays_out() {
+        let probe = Layout::of(Scaled::of(180, 320));
+        assert_eq!(probe.map.free.drawn.height(), 280);
+    }
+}

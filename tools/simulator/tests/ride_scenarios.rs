@@ -3897,7 +3897,7 @@ fn a_structured_workout_runs_its_steps_with_targets_beeps_and_laps() {
     // A tap on the time left adds a minute to the interval.
     follow(&mut sim, 10, on_target);
     let left: u64 = sim.workout()["left_s"].parse().unwrap();
-    let y = vana::screens::ride::EXTEND_ROWS.start as u16 + 12;
+    let y = vana::screens::BASE.workout.extend.top as u16 + 12;
     sim.tap(120, y);
     sim.expect_text("+1 MIN");
     let extended: u64 = sim.workout()["left_s"].parse().unwrap();

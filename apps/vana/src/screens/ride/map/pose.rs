@@ -1,23 +1,17 @@
+use super::Ground;
 use super::roads::Detail;
 use crate::ride::course::follow::moving;
 use crate::ride::geo::rotation;
-use core::ops::Range;
 use libm::roundf;
 
 pub type Point = (f32, f32);
 
-pub const WIDTH: f32 = crate::screens::chrome::WIDTH as f32;
-/// The map's rows; the footer is below.
-pub const GROUND: Range<usize> = 22..290;
-pub const RIDER_Y: i16 = (GROUND.start + (GROUND.end - GROUND.start) * 3 / 4) as i16;
-const ROWS_AHEAD: f32 = (RIDER_Y as usize - GROUND.start) as f32;
 const START_AHEAD_M: f32 = 300.0;
 const AHEAD_S: f32 = 40.0;
 const NEAREST_AHEAD_M: f32 = 150.0;
 pub(super) const CLOSEST: Reach = Reach::new(NEAREST_AHEAD_M as u16, Detail::Streets);
 const FURTHEST_AHEAD_M: f32 = 1_000.0;
 const EASE_PER_FIX: f32 = 0.2;
-const BAR_MAX_PX: f32 = 90.0;
 const BARS: [(f32, &[u8]); 3] = [(250.0, b"250 M"), (100.0, b"100 M"), (50.0, b"50 M")];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -43,19 +37,6 @@ impl Reach {
 
     pub(super) fn detail(self) -> Detail {
         self.detail
-    }
-
-    pub fn px_per_m(self) -> f32 {
-        ROWS_AHEAD / f32::from(self.ahead_m)
-    }
-
-    pub fn bar(self) -> (usize, &'static [u8]) {
-        let s = self.px_per_m();
-        let (m, label) = BARS
-            .into_iter()
-            .find(|&(m, _)| m * s <= BAR_MAX_PX)
-            .unwrap_or(BARS[BARS.len() - 1]);
-        (roundf(m * s) as usize, label)
     }
 }
 
@@ -95,6 +76,8 @@ pub struct Pose {
     pub reach: Reach,
     /// The rider's screen position.
     pub rider: (i16, i16),
+    /// Rows from the ground's top down to the rider: `reach` ahead.
+    pub ahead_px: i16,
     /// The heading that is up, in `TURN`ths clockwise from north.
     pub heading: u16,
 }
@@ -110,12 +93,35 @@ pub struct Projection {
 }
 
 impl Pose {
-    pub fn new(reach: Reach, map_left: usize, heading: u16) -> Self {
+    /// The rider in the middle of what `ground` shows, three quarters of
+    /// the way down it.
+    pub fn new(reach: Reach, ground: &Ground, heading: u16) -> Self {
+        let (drawn, shown) = (ground.drawn, ground.shown);
+        let ahead_px = drawn.height() * 3 / 4;
         Self {
             reach,
-            rider: (((map_left + WIDTH as usize) / 2) as i16, RIDER_Y),
+            rider: (
+                ((shown.left + shown.right) / 2) as i16,
+                (drawn.top + ahead_px) as i16,
+            ),
+            ahead_px: ahead_px as i16,
             heading,
         }
+    }
+
+    pub fn px_per_m(&self) -> f32 {
+        f32::from(self.ahead_px) / f32::from(self.reach.ahead_m)
+    }
+
+    /// The scale bar: the longest round distance that fits `max_px`, its
+    /// length in pixels and its label.
+    pub fn bar(&self, max_px: usize) -> (usize, &'static [u8]) {
+        let s = self.px_per_m();
+        let (m, label) = BARS
+            .into_iter()
+            .find(|&(m, _)| m * s <= max_px as f32)
+            .unwrap_or(BARS[BARS.len() - 1]);
+        (roundf(m * s) as usize, label)
     }
 
     pub fn projection(&self, here: Point) -> Projection {
@@ -124,7 +130,7 @@ impl Pose {
             here,
             sin,
             cos,
-            scale: self.reach.px_per_m(),
+            scale: self.px_per_m(),
             rider: (f32::from(self.rider.0), f32::from(self.rider.1)),
         }
     }
@@ -158,6 +164,7 @@ mod tests {
     use super::*;
     use crate::ride::course::follow::MOVING_FROM_MM_S;
     use crate::ride::geo::TURN;
+    use crate::screens::BASE;
 
     const KMH: f32 = 1_000_000.0 / 3_600.0;
 
@@ -171,7 +178,7 @@ mod tests {
 
     #[test]
     fn a_projection_puts_the_heading_up_and_the_rider_where_posed() {
-        let pose = Pose::new(Reach::new(335, Detail::Streets), 0, TURN / 4);
+        let pose = Pose::new(Reach::new(335, Detail::Streets), &BASE.map.free, TURN / 4);
         assert_eq!(pose.rider, (120, 223));
         let at = pose.projection((100.0, 50.0));
         assert_eq!(at.at((100.0, 50.0)), (120.0, 223.0));
@@ -184,7 +191,7 @@ mod tests {
     #[test]
     fn beside_a_radar_the_rider_is_in_the_middle_of_what_is_left() {
         assert_eq!(
-            Pose::new(Reach::new(300, Detail::Streets), 28, 0).rider,
+            Pose::new(Reach::new(300, Detail::Streets), &BASE.map.beside_radar, 0).rider,
             (134, 223)
         );
     }
@@ -265,7 +272,8 @@ mod tests {
 
     #[test]
     fn the_scale_bar_reads_a_round_distance_up_to_90_px() {
-        let bar = |ahead_m| Reach::new(ahead_m, Detail::Streets).bar();
+        let bar =
+            |ahead_m| Pose::new(Reach::new(ahead_m, Detail::Streets), &BASE.map.free, 0).bar(90);
         assert_eq!(bar(150), (67, &b"50 M"[..]));
         assert_eq!(bar(278), (72, &b"100 M"[..]));
         assert_eq!(bar(335), (60, &b"100 M"[..]));

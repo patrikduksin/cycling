@@ -18,66 +18,176 @@
 //!
 //! `frame` precomputes every chart column once per frame; `paint_chart` only
 //! looks them up, and the canvas paints the text, the bar and the rider.
-use super::{BODY, CELL_PITCH, GRID, LEFT, MIDDLE, RIGHT, cell, grade, kilometres, whole};
+use super::{GRID, cell, grade, kilometres, whole};
 use crate::ride::climb::{Category, Climbs, PROFILE_LEN, ProfileSample, STEP_MM, Steepness};
 use crate::ride::climb_ahead::{Forecast, Pinned};
 use crate::ride::elevation::Trace;
+use crate::screens::Layout;
 use crate::screens::canvas::{Canvas, Shape};
 #[cfg(test)]
 use crate::screens::chrome::BLACK;
 use crate::screens::chrome::{
-    ACCENT, Align, BLACK as DIM_UNDER, BODY as BODY_FACE, CAPTION, GRADE, LARGE, Rect, Row,
-    SECONDARY, VALUE, WHITE, ZONES, mix, zone_color,
+    ACCENT, Align, BLACK as DIM_UNDER, GRADE, Rect, Row, SECONDARY, WHITE, ZONES, mix, zone_color,
 };
+use crate::screens::scaled::{Scaled, Track};
 use crate::screens::workout::{Text, View};
 use core::fmt::Write;
-use firmware_shell::rendering::font::{Face, Line};
+use firmware_shell::rendering::font::{FaceRole, Line};
+use firmware_shell::shell::Parts;
 
-/// The title and the category share this baseline.
-const HEAD: usize = 40;
-/// The grade's box, under the title, beside power and heart rate.
-const BOX_TOP: usize = HEAD + 6;
-/// Power and heart rate: caption and value baselines, stacked on the right.
-const POWER_CAPTION: usize = HEAD + 18;
-const POWER_BASE: usize = POWER_CAPTION + 8 + BODY_FACE.cap as usize;
-const HEART_CAPTION: usize = POWER_BASE + 16;
-const HEART_BASE: usize = HEART_CAPTION + 8 + BODY_FACE.cap as usize;
-/// Where power and heart rate's values may start; the grade has the rest
-/// of the box.
-const READINGS: usize = RIGHT - 62;
-/// The grade starts a little left of the cells, so a grade like 6.0% keeps
-/// the large face beside the readings.
-const GRADE_LEFT: usize = BODY.left + 6;
-/// A zone chip: its width and how far it reaches above and below the
-/// value's baseline.
-const CHIP_WIDTH: usize = 22;
-const CHIP_ABOVE: usize = BODY_FACE.cap as usize + 2;
-const CHIP_BELOW: usize = 3;
-/// The steepness band under the grade and the readings.
-const BAND_TOP: usize = HEART_BASE + 6;
-const BAND_HEIGHT: usize = 5;
-/// The road's two readings.
-const CELLS: usize = BAND_TOP + BAND_HEIGHT + 4;
-/// One chart column per profile sample, ending at the body's right margin.
-const CHART_RIGHT: usize = BODY.right - 6;
-const CHART_LEFT: usize = CHART_RIGHT - PROFILE_LEN;
-const _: () = assert!(CHART_LEFT >= BODY.left, "the profile needs 200 columns");
-const CHART_TOP: usize = CELLS + CELL_PITCH - 4;
-/// Without a progress bar the fill runs to the screen's edge, into the toast
-/// band, where a toast covers it for a moment.
-const CHART_BOTTOM: usize = BODY.bottom;
-/// With a progress bar under the chart, and FOOT, the share and TOP under it.
-const BAR_LABELS: usize = BODY.bottom - 3;
-const BAR_BOTTOM: usize = BAR_LABELS - CAPTION.cap as usize - 4;
-const BAR_HEIGHT: usize = 6;
-const BARRED_BOTTOM: usize = BAR_BOTTOM - BAR_HEIGHT - 5;
-const _: () = assert!(BARRED_BOTTOM - CHART_TOP >= 64 && CHART_BOTTOM - CHART_TOP < EMPTY as usize);
+/// The climb page on one panel. A text row's bottom is its baseline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    /// The title on the left and the category on the right.
+    pub head: Rect,
+    /// The grade's box, under the title, beside power and heart rate.
+    pub grade: Rect,
+    /// Power's and heart rate's captions, right-aligned across the text
+    /// margins: a caption may reach left over the grade's box, above the
+    /// grade itself.
+    pub captions: [Rect; 2],
+    /// Power's and heart rate's values, left of their zone chips.
+    pub values: [Rect; 2],
+    pub chips: [Rect; 2],
+    /// The steepness band under the grade and the readings.
+    pub band: Rect,
+    /// The road's two readings: one band of cells.
+    pub cells: Rect,
+    /// One column per profile sample at scale 1, ending at the body's right
+    /// margin. Without a progress bar the fill runs to the screen's edge,
+    /// into the toast band, where a toast covers it for a moment. A taller
+    /// panel gives the chart its spare rows.
+    pub chart: Rect,
+    /// With a progress bar the chart ends at `barred`'s bottom, the bar
+    /// follows, and FOOT, the share and TOP under it.
+    pub barred: Rect,
+    pub bar: Rect,
+    pub labels: Rect,
+}
+
+const VALUE_WIDTH: u16 = 36;
+const CHIP_GAP: u16 = 4;
+const CHIP_WIDTH: u16 = 22;
+/// The grade's box starts left of the text margin, so a grade like 6.0%
+/// keeps the large face beside the readings.
+const GRADE_INSET: u16 = 6;
+/// What the cells keep right of the grade's box: a gap, a value and its
+/// zone chip, and the text's right margin.
+const BESIDE_GRADE: u16 = 6 + VALUE_WIDTH + CHIP_GAP + CHIP_WIDTH + super::TEXT_RIGHT;
+
+pub const fn regions(at: &Scaled) -> Regions {
+    use FaceRole::{Body, Caption};
+    use Track::{Cap, Fr, Unit};
+    let frame = super::frame(at);
+    let (body, text) = (frame.body, frame.text);
+    let [
+        head,
+        _,
+        power_caption,
+        _,
+        power,
+        heart_caption,
+        _,
+        heart,
+        _,
+        under_grade,
+        band,
+        _,
+        cells,
+        chart,
+    ] = body.rows(
+        [
+            Unit(16),
+            Unit(6),
+            Unit(12),
+            Unit(8),
+            Cap(Body),
+            Unit(16),
+            Unit(8),
+            Cap(Body),
+            Unit(2),
+            Unit(4),
+            Unit(5),
+            Unit(4),
+            Unit(super::CELL_PITCH as u16 - 4),
+            Fr(1),
+        ],
+        Unit(0),
+        at,
+    );
+    let [_, values, _, chip] = text.cols(
+        [Fr(1), Unit(VALUE_WIDTH), Unit(CHIP_GAP), Unit(CHIP_WIDTH)],
+        Unit(0),
+        at,
+    );
+    let [_, grade, _] = body.cols([Unit(GRADE_INSET), Fr(1), Unit(BESIDE_GRADE)], Unit(0), at);
+    let chart = chart.with_columns(chart_columns(at));
+    let [barred, _, bar, _, labels, _] = chart.rows(
+        [Fr(1), Unit(5), Unit(6), Unit(4), Cap(Caption), Unit(3)],
+        Unit(0),
+        at,
+    );
+    assert!(
+        chart.width() <= COLUMNS,
+        "the chart has more columns than its frame"
+    );
+    assert!(
+        chart.height() < EMPTY as usize && barred.height() >= at.unit(64),
+        "the chart's rows do not fit a column's top, or leave no room over the bar"
+    );
+    Regions {
+        head: head.with_columns(text),
+        grade: Rect {
+            top: power_caption.top,
+            bottom: under_grade.top,
+            ..grade
+        },
+        captions: [
+            power_caption.with_columns(text),
+            heart_caption.with_columns(text),
+        ],
+        values: [power.with_columns(values), heart.with_columns(values)],
+        chips: [
+            chip_beside(power.with_columns(chip), at),
+            chip_beside(heart.with_columns(chip), at),
+        ],
+        band: band.with_columns(text),
+        cells: cells.with_columns(text),
+        chart,
+        barred,
+        bar,
+        labels,
+    }
+}
+
+const fn chip_beside(value: Rect, at: &Scaled) -> Rect {
+    Rect {
+        top: value.top - at.unit(2),
+        bottom: value.bottom + at.unit(3),
+        ..value
+    }
+}
+
+const fn chart_columns(at: &Scaled) -> Rect {
+    use Track::{Fr, Unit};
+    let body = super::frame(at).body;
+    let [_, columns, _] = body.cols([Fr(1), Unit(PROFILE_LEN as u16), Unit(6)], Unit(0), at);
+    columns
+}
+
+/// The most columns the chart has on any of `panels`.
+const fn columns(panels: &[(usize, usize)]) -> usize {
+    crate::screens::scaled::largest!(panels, |at| chart_columns(&at).width())
+}
+
+const COLUMNS: usize = columns(crate::screens::limits::PANELS);
+const _: () = assert!(COLUMNS < EMPTY as usize, "a column's index is a u8");
 /// A flat road spans at least 20 m of chart height, so it stays flat.
 pub(super) const MIN_SPAN_DM: i32 = 200;
 /// A column with no profile sample yet.
 const EMPTY: u8 = u8::MAX;
 /// The rider's disc: 6 px across, in quarter pixels.
-const RIDER_RADIUS: i32 = 12;
+const RIDER_RADIUS: usize = 12;
 /// The map's road past the top: a tenth of the climb, at least 200 m.
 const AFTER_MIN_MM: u64 = 200_000;
 
@@ -147,14 +257,11 @@ fn situation<'a>(view: &View<'a>) -> Situation<'a> {
 /// What the climb page precomputes for one frame.
 #[derive(Clone, Hash)]
 pub struct Frame {
-    /// The chart's baseline row: `CHART_BOTTOM`, or `BARRED_BOTTOM` over a
-    /// progress bar.
     bottom: usize,
-    /// Rows below `CHART_TOP` where each column's fill starts, or `EMPTY`.
-    tops: [u8; PROFILE_LEN],
-    bands: [Steepness; PROFILE_LEN],
+    tops: [u8; COLUMNS],
+    bands: [Steepness; COLUMNS],
     /// Columns drawn at 25%: road outside the climb, or already climbed.
-    dim: [bool; PROFILE_LEN],
+    dim: [bool; COLUMNS],
     /// The rider's column, or `EMPTY`.
     rider: u8,
     /// The share of the climb climbed, 0..=1000, for the progress bar.
@@ -163,19 +270,13 @@ pub struct Frame {
 
 impl Frame {
     pub const EMPTY: Self = Self {
-        bottom: CHART_BOTTOM,
-        tops: [EMPTY; PROFILE_LEN],
-        bands: [Steepness::Easy; PROFILE_LEN],
-        dim: [false; PROFILE_LEN],
+        bottom: regions(&crate::screens::scaled::BASE).chart.bottom,
+        tops: [EMPTY; COLUMNS],
+        bands: [Steepness::Easy; COLUMNS],
+        dim: [false; COLUMNS],
         rider: EMPTY,
         done: None,
     };
-}
-
-impl Default for Frame {
-    fn default() -> Self {
-        Self::EMPTY
-    }
 }
 
 fn metres(value: &mut Text<12>, dm: i32) {
@@ -190,46 +291,53 @@ fn tenths_km(value: &mut Text<12>, mm: u64) {
 
 /// The text, the band, the bar and the rider; `frame` must be prepared.
 pub(super) fn prepare(view: &View) -> Canvas {
+    let layout = view.frame_layout();
     let mut canvas = Canvas::default();
     let situation = situation(view);
-    head(&mut canvas, view, situation);
-    readings(&mut canvas, view);
+    head(&mut canvas, layout, view, situation);
+    readings(&mut canvas, layout, view);
     let steepness = view
         .sample
         .gradient_tenths
         .map(|tenths| Steepness::of(i32::from(tenths)));
     canvas.shape(Shape::Bar {
-        rect: Rect {
-            left: LEFT,
-            top: BAND_TOP,
-            right: RIGHT,
-            bottom: BAND_TOP + BAND_HEIGHT,
-        },
-        radius: 2,
+        rect: layout.climb.band,
+        radius: layout.scaled.unit(2),
         color: steepness.map_or(GRID, color),
     });
 
-    cells(&mut canvas, view, situation);
-    finish(&mut canvas, view);
+    cells(&mut canvas, layout, view, situation);
+    finish(&mut canvas, layout, view);
     canvas
 }
 
 /// The road's two readings under power and heart rate.
 #[inline(never)]
-fn cells(canvas: &mut Canvas, view: &View, situation: Situation) {
+fn cells(canvas: &mut Canvas, layout: &Layout, view: &View, situation: Situation) {
     let odometer = view.totals.distance_mm();
+    let top = layout.climb.cells.top;
     let mut values: [Text<12>; 2] = core::array::from_fn(|_| Text::new());
     let labels: [(&[u8], u16); 2] = match situation {
         Situation::Ahead(pin) => {
             let climb = pin.summary();
             kilometres(&mut values[0], climb.length_mm);
-            cell(canvas, 0, CELLS, b"LENGTH KM", values[0].as_bytes(), WHITE);
+            cell(
+                canvas,
+                layout,
+                0,
+                top,
+                b"LENGTH KM",
+                values[0].as_bytes(),
+                WHITE,
+            );
             let mut average = Text::<12>::new();
             grade(&mut average, climb.grade_tenths());
             let mut gain = Text::<12>::new();
             metres(&mut gain, climb.gain_dm as i32);
-            stacked(canvas, b"AVG", &average, CELLS + 16);
-            stacked(canvas, b"GAIN M", &gain, CELLS + 41);
+            let at = &layout.scaled;
+            stacked(canvas, layout, b"AVG", &average, top + at.unit(16));
+            let value = top + layout.ride.cells.value;
+            stacked(canvas, layout, b"GAIN M", &gain, value);
             return;
         }
         Situation::OnMap(pin) => {
@@ -253,58 +361,65 @@ fn cells(canvas: &mut Canvas, view: &View, situation: Situation) {
         }
     };
     for (column, ((caption, color), value)) in labels.iter().zip(&values).enumerate() {
-        cell(canvas, column, CELLS, caption, value.as_bytes(), *color);
+        cell(
+            canvas,
+            layout,
+            column,
+            top,
+            caption,
+            value.as_bytes(),
+            *color,
+        );
     }
 }
 
 /// The progress bar under the chart, FOOT to TOP, and the rider's disc.
 #[inline(never)]
-fn finish(canvas: &mut Canvas, view: &View) {
+fn finish(canvas: &mut Canvas, layout: &Layout, view: &View) {
+    let (at, regions) = (&layout.scaled, &layout.climb);
     let frame = view.climb();
     if let Some(done) = frame.done {
-        let track = Rect {
-            left: CHART_LEFT,
-            top: BAR_BOTTOM - BAR_HEIGHT,
-            right: CHART_RIGHT,
-            bottom: BAR_BOTTOM,
-        };
+        let (chart, track) = (regions.chart, regions.bar);
+        let radius = at.unit(3);
         canvas.shape(Shape::Bar {
             rect: track,
-            radius: 3,
+            radius,
             color: GRID,
         });
-        let filled = (CHART_RIGHT - CHART_LEFT) * usize::from(done) / 1000;
-        if filled >= BAR_HEIGHT {
+        let filled = chart.width() * usize::from(done) / 1000;
+        if filled >= track.height() {
             canvas.shape(Shape::Bar {
                 rect: Rect {
-                    right: CHART_LEFT + filled,
+                    right: chart.left + filled,
                     ..track
                 },
-                radius: 3,
+                radius,
                 color: WHITE,
             });
         }
-        let width = (CHART_RIGHT - CHART_LEFT) / 3;
-        canvas.caption(b"FOOT", width, CHART_LEFT, BAR_LABELS, Align::Left);
+        let width = chart.width() / 3;
+        let base = regions.labels.bottom;
+        canvas.caption(at, b"FOOT", width, chart.left, base, Align::Left);
         let mut share = Text::<12>::new();
         let _ = write!(share, "{}% UP", (done + 5) / 10);
         canvas.fit(
-            &[&CAPTION],
+            &[at.face(FaceRole::Caption)],
             share.as_bytes(),
             width,
-            (CHART_LEFT + CHART_RIGHT) / 2,
-            BAR_LABELS,
+            (chart.left + chart.right) / 2,
+            base,
             Align::Center,
             WHITE,
         );
-        canvas.caption(b"TOP", width, CHART_RIGHT, BAR_LABELS, Align::Right);
+        canvas.caption(at, b"TOP", width, chart.right, base, Align::Right);
     }
-    rider(canvas, frame);
+    rider(canvas, layout, frame);
 }
 
 /// The title on the left and the category, or NO MAP, on the right.
 #[inline(never)]
-fn head(canvas: &mut Canvas, view: &View, situation: Situation) {
+fn head(canvas: &mut Canvas, layout: &Layout, view: &View, situation: Situation) {
+    let (at, head) = (&layout.scaled, layout.climb.head);
     let odometer = view.totals.distance_mm();
     let mut title = Text::<24>::new();
     let (category, color) = match situation {
@@ -332,12 +447,13 @@ fn head(canvas: &mut Canvas, view: &View, situation: Situation) {
         Situation::Clear => SECONDARY,
         _ => ACCENT,
     };
+    let caption = [at.face(FaceRole::Caption)];
     let title = canvas.fit(
-        &[&CAPTION],
+        &caption,
         title.as_bytes(),
-        RIGHT - LEFT,
-        LEFT,
-        HEAD,
+        head.width(),
+        head.left,
+        head.bottom,
         Align::Left,
         title_color,
     );
@@ -349,11 +465,11 @@ fn head(canvas: &mut Canvas, view: &View, situation: Situation) {
     };
     if let Some((text, color)) = right {
         canvas.fit(
-            &[&CAPTION],
+            &caption,
             text,
-            RIGHT.saturating_sub(title.right() + 8),
-            RIGHT,
-            HEAD,
+            head.right.saturating_sub(title.right() + at.unit(8)),
+            head.right,
+            head.bottom,
             Align::Right,
             color,
         );
@@ -374,16 +490,18 @@ fn category(gain_dm: u32, grade_tenths: Option<i32>) -> (Option<&'static [u8]>, 
 /// The grade, centred down its box, and power and heart rate stacked
 /// beside it, each with its zone on a chip.
 #[inline(never)]
-fn readings(canvas: &mut Canvas, view: &View) {
+fn readings(canvas: &mut Canvas, layout: &Layout, view: &View) {
+    let (at, regions) = (&layout.scaled, &layout.climb);
     let mut now = Text::<12>::new();
     grade(&mut now, view.sample.gradient_tenths.map(i32::from));
-    let faces: [&'static Face; 2] = [&LARGE, &VALUE];
-    let line = Line::<24>::fit(&faces, now.as_bytes(), READINGS - 6 - GRADE_LEFT);
+    let box_ = regions.grade;
+    let faces = [at.face(FaceRole::Large), at.face(FaceRole::Value)];
+    let line = Line::<24>::fit(&faces, now.as_bytes(), box_.width());
     let cap = line.face().cap as usize;
-    let base = (BOX_TOP + BAND_TOP - 4 + cap) / 2;
+    let base = (box_.top + box_.bottom + cap) / 2;
     canvas.run(crate::screens::canvas::on_baseline(
         line,
-        GRADE_LEFT,
+        box_.left,
         base,
         Align::Left,
         GRADE,
@@ -395,29 +513,31 @@ fn readings(canvas: &mut Canvas, view: &View) {
             &b"POWER 3S"[..],
             power,
             power.map_or(0, |w| view.profile.power_zone(w)),
-            POWER_CAPTION,
-            POWER_BASE,
         ),
         (
             &b"HEART"[..],
             heart,
             heart.map_or(0, |bpm| view.profile.heart_zone(bpm)),
-            HEART_CAPTION,
-            HEART_BASE,
         ),
     ];
-    for (caption, value, zone, caption_base, base) in rows {
-        // Right-aligned: a caption may reach left over the grade's box,
-        // above the grade itself.
-        canvas.caption(caption, RIGHT - LEFT, RIGHT, caption_base, Align::Right);
+    let caption_face = at.face(FaceRole::Caption);
+    for (index, (caption, value, zone)) in rows.into_iter().enumerate() {
+        let (above, values, chip) = (
+            regions.captions[index],
+            regions.values[index],
+            regions.chips[index],
+        );
+        canvas.caption(
+            at,
+            caption,
+            above.width(),
+            above.right,
+            above.bottom,
+            Align::Right,
+        );
         canvas.shape(Shape::Bar {
-            rect: Rect {
-                left: RIGHT - CHIP_WIDTH,
-                top: base - CHIP_ABOVE,
-                right: RIGHT,
-                bottom: base + CHIP_BELOW,
-            },
-            radius: 4,
+            rect: chip,
+            radius: at.unit(4),
             color: zone_color(zone),
         });
         let mut name = Text::<12>::new();
@@ -426,22 +546,22 @@ fn readings(canvas: &mut Canvas, view: &View) {
             z => write!(name, "Z{z}"),
         };
         canvas.fit(
-            &[&CAPTION],
+            &[caption_face],
             name.as_bytes(),
-            CHIP_WIDTH,
-            RIGHT - CHIP_WIDTH / 2,
-            base,
+            chip.width(),
+            chip.right - chip.width() / 2,
+            values.bottom,
             Align::Center,
             DIM_UNDER,
         );
         let mut text = Text::<12>::new();
         whole(&mut text, value);
         canvas.fit(
-            &[&BODY_FACE, &CAPTION],
+            &[at.face(FaceRole::Body), caption_face],
             text.as_bytes(),
-            RIGHT - CHIP_WIDTH - 4 - READINGS,
-            RIGHT - CHIP_WIDTH - 4,
-            base,
+            values.width(),
+            values.right,
+            values.bottom,
             Align::Right,
             WHITE,
         );
@@ -450,38 +570,41 @@ fn readings(canvas: &mut Canvas, view: &View) {
 
 /// A caption and its value on one line of the right column: two of them
 /// stack where one cell would be.
-fn stacked(canvas: &mut Canvas, caption: &[u8], value: &Text<12>, base: usize) {
-    let width = RIGHT - MIDDLE;
+fn stacked(canvas: &mut Canvas, layout: &Layout, caption: &[u8], value: &Text<12>, base: usize) {
+    let at = &layout.scaled;
+    let (middle, right) = layout.ride.cells.columns[1];
     let run = canvas.fit(
-        &[&BODY_FACE],
+        &[at.face(FaceRole::Body)],
         value.as_bytes(),
-        width,
-        RIGHT,
+        right - middle,
+        right,
         base,
         Align::Right,
         GRADE,
     );
     canvas.caption(
+        at,
         caption,
-        run.left.saturating_sub(MIDDLE + 4),
-        MIDDLE,
+        run.left.saturating_sub(middle + at.unit(4)),
+        middle,
         base,
         Align::Left,
     );
 }
 
 /// The rider's disc on the chart.
-fn rider(canvas: &mut Canvas, frame: &Frame) {
+fn rider(canvas: &mut Canvas, layout: &Layout, frame: &Frame) {
     if frame.rider == EMPTY {
         return;
     }
+    let chart = layout.climb.chart;
     let column = usize::from(frame.rider);
     let top = frame.tops[column];
     if top != EMPTY {
         canvas.shape(Shape::Disc {
-            cx: 4 * (CHART_LEFT + column) as i32 + 2,
-            cy: 4 * (CHART_TOP + usize::from(top)) as i32 + 2,
-            radius: RIDER_RADIUS,
+            cx: 4 * (chart.left + column) as i32 + 2,
+            cy: 4 * (chart.top + usize::from(top)) as i32 + 2,
+            radius: layout.scaled.unit(RIDER_RADIUS) as i32,
             color: WHITE,
         });
     }
@@ -501,7 +624,7 @@ fn shade(frame: &Frame, column: usize) -> u16 {
 type Column = (i32, Steepness, bool);
 
 /// Scale `columns` (from `first` on) into the frame's rows.
-fn fill(frame: &mut Frame, first: usize, columns: &[Column]) {
+fn fill(frame: &mut Frame, layout: &Layout, first: usize, columns: &[Column]) {
     let (Some(low), Some(high)) = (
         columns.iter().map(|c| c.0).min(),
         columns.iter().map(|c| c.0).max(),
@@ -512,9 +635,9 @@ fn fill(frame: &mut Frame, first: usize, columns: &[Column]) {
     let span = range.max(MIN_SPAN_DM);
     // A range smaller than the minimum span sits in the lower part, as a road.
     let floor = low - (span - range) / 4;
-    let height = (frame.bottom - CHART_TOP) as i32;
+    let height = (frame.bottom - layout.climb.chart.top) as i32;
     // Leave room above the highest point for the rider's disc.
-    let rows = height - 4;
+    let rows = height - layout.scaled.unit(4) as i32;
     for (index, &(z, steepness, dim)) in columns.iter().enumerate() {
         let filled = 1 + (z - floor) * rows / span;
         frame.tops[first + index] = (height - filled) as u8;
@@ -523,16 +646,40 @@ fn fill(frame: &mut Frame, first: usize, columns: &[Column]) {
     }
 }
 
+/// Picks one of the profile's `len` samples, held at the front of
+/// `columns`, for each of `count` chart columns, newest last, and moves the
+/// picks to the front in place. Returns the first column with a sample.
+fn spread_profile(columns: &mut [Column; PROFILE_LEN], len: usize, count: usize) -> Option<usize> {
+    let missing = PROFILE_LEN - len;
+    let sample = |column: usize| column * (PROFILE_LEN - 1) / (count - 1);
+    let first = (0..count).find(|&column| sample(column) >= missing)?;
+    for column in first..count {
+        let (into, pick) = (column - first, sample(column) - missing);
+        debug_assert!(
+            pick >= into,
+            "column {into} reads sample {pick} after overwriting it"
+        );
+        columns[into] = columns[pick];
+    }
+    Some(first)
+}
+
 /// Precompute every chart column for the road the page shows.
 pub(super) fn frame(view: &View) -> Frame {
-    let mut frame = Frame::default();
+    let layout = view.frame_layout();
+    let chart = layout.climb.chart;
+    let count = chart.width();
+    let mut frame = Frame {
+        bottom: chart.bottom,
+        ..Frame::EMPTY
+    };
     let lent = view.climb_lent();
     let odometer = view.totals.distance_mm();
     let mut columns = [(0, Steepness::Easy, false); PROFILE_LEN];
     match situation(view) {
         Situation::Ahead(pin) | Situation::OnMap(pin) => {
             let on = odometer >= pin.foot_mm;
-            frame.bottom = BARRED_BOTTOM;
+            frame.bottom = layout.climb.barred.bottom;
             frame.done = Some(if on {
                 pin.done_permille(odometer) as u16
             } else {
@@ -545,8 +692,8 @@ pub(super) fn frame(view: &View) -> Frame {
             let end = (pin.top_mm + after)
                 .min(pin.span_mm().1)
                 .max(start + STEP_MM);
-            let last = PROFILE_LEN as u64 - 1;
-            for (column, slot) in columns.iter_mut().enumerate() {
+            let last = count as u64 - 1;
+            for (column, slot) in columns[..count].iter_mut().enumerate() {
                 let at = start + column as u64 * (end - start) / last;
                 let outside = at < pin.foot_mm || at > pin.top_mm;
                 *slot = (
@@ -557,7 +704,7 @@ pub(super) fn frame(view: &View) -> Frame {
             }
             let rider = odometer.saturating_sub(start) * last / (end - start);
             frame.rider = rider.min(last) as u8;
-            fill(&mut frame, 0, &columns);
+            fill(&mut frame, layout, 0, &columns[..count]);
         }
         Situation::OnClimb { length_mm, .. } => {
             let mut samples = [ProfileSample::default(); PROFILE_LEN];
@@ -572,9 +719,9 @@ pub(super) fn frame(view: &View) -> Frame {
                     index + climbed < len.saturating_sub(1),
                 );
             }
-            if len > 0 {
-                frame.rider = (PROFILE_LEN - 1) as u8;
-                fill(&mut frame, PROFILE_LEN - len, &columns[..len]);
+            if let Some(first) = spread_profile(&mut columns, len, count) {
+                frame.rider = (count - 1) as u8;
+                fill(&mut frame, layout, first, &columns[..count - first]);
             }
         }
         Situation::Clear => {
@@ -586,8 +733,8 @@ pub(super) fn frame(view: &View) -> Frame {
             // A column's grade spans the road 100 m each side.
             let reach = (100_000 / trace.step_mm()).max(1) as usize;
             let mut band = None;
-            let last = PROFILE_LEN - 1;
-            for (column, slot) in columns.iter_mut().enumerate() {
+            let last = count - 1;
+            for (column, slot) in columns[..count].iter_mut().enumerate() {
                 let at = column * (len - 1);
                 let (index, into) = (at / last, (at % last) as i32);
                 let next = (index + 1).min(len - 1);
@@ -606,28 +753,29 @@ pub(super) fn frame(view: &View) -> Frame {
                 *slot = (a + (b - a) * into / last as i32, steepness, false);
             }
             frame.rider = last as u8;
-            fill(&mut frame, 0, &columns);
+            fill(&mut frame, layout, 0, &columns[..count]);
         }
     }
     frame
 }
 
-pub(super) fn chart_parts(frame: &Frame, parts: &mut firmware_shell::shell::Parts) {
-    parts.add(CHART_TOP..frame.bottom + 1, frame);
+pub(super) fn chart_parts(frame: &Frame, regions: &Regions, parts: &mut Parts) {
+    parts.add(regions.chart.top..frame.bottom + 1, frame);
 }
 
-pub(super) fn paint_chart(frame: &Frame, row: &mut Row) {
+pub(super) fn paint_chart(frame: &Frame, regions: &Regions, row: &mut Row) {
+    let chart = regions.chart;
     let y = row.y();
     if y == frame.bottom {
-        row.span(CHART_LEFT..CHART_RIGHT, GRID);
+        row.span(chart.left..chart.right, GRID);
     }
-    if !(CHART_TOP..frame.bottom).contains(&y) {
+    if !(chart.top..frame.bottom).contains(&y) {
         return;
     }
-    let line = y - CHART_TOP;
+    let line = y - chart.top;
     // Runs of one colour fill as spans.
     let mut column = 0;
-    while column < PROFILE_LEN {
+    while column < chart.width() {
         let filled = |c: usize| frame.tops[c] != EMPTY && line >= usize::from(frame.tops[c]);
         if !filled(column) {
             column += 1;
@@ -635,28 +783,29 @@ pub(super) fn paint_chart(frame: &Frame, row: &mut Row) {
         }
         let shade_of = shade(frame, column);
         let start = column;
-        while column < PROFILE_LEN && filled(column) && shade(frame, column) == shade_of {
+        while column < chart.width() && filled(column) && shade(frame, column) == shade_of {
             column += 1;
         }
-        row.span(CHART_LEFT + start..CHART_LEFT + column, shade_of);
+        row.span(chart.left + start..chart.left + column, shade_of);
     }
 }
 
 /// The per-pixel original of `paint_chart`.
 #[cfg(test)]
-pub(super) fn chart_pixel(frame: &Frame, x: usize, y: usize) -> u16 {
-    if !(CHART_LEFT..CHART_RIGHT).contains(&x) {
+pub(super) fn chart_pixel(frame: &Frame, regions: &Regions, x: usize, y: usize) -> u16 {
+    let chart = regions.chart;
+    if !(chart.left..chart.right).contains(&x) {
         return BLACK;
     }
     if y == frame.bottom {
         return GRID;
     }
-    if !(CHART_TOP..frame.bottom).contains(&y) {
+    if !(chart.top..frame.bottom).contains(&y) {
         return BLACK;
     }
-    let column = x - CHART_LEFT;
+    let column = x - chart.left;
     let top = frame.tops[column];
-    if top != EMPTY && y - CHART_TOP >= usize::from(top) {
+    if top != EMPTY && y - chart.top >= usize::from(top) {
         shade(frame, column)
     } else {
         BLACK
@@ -667,8 +816,11 @@ pub(super) fn chart_pixel(frame: &Frame, x: usize, y: usize) -> u16 {
 mod tests {
     use super::*;
     use crate::ride::climb_ahead::{self, tests::ahead};
+    use crate::screens::scaled::BASE_PANEL;
     use crate::screens::workout::Page;
     use std::boxed::Box;
+
+    const REGIONS: Regions = crate::screens::BASE.climb;
 
     /// What a climb page view borrows; tests leak it.
     struct Ride {
@@ -735,6 +887,11 @@ mod tests {
         }
     }
 
+    /// The per-pixel reference models only the 240 × 320 ride page.
+    fn has_reference(layout: &crate::screens::Layout) -> bool {
+        layout.scaled.panel == BASE_PANEL
+    }
+
     /// Every painted row equals the per-pixel reference.
     fn assert_paints_reference(view: &mut View) {
         let scene = view.prepare();
@@ -794,7 +951,7 @@ mod tests {
         )));
         // The grade sits in the middle of its box.
         let grade = canvas.find("10.5%").unwrap();
-        let middle = (BOX_TOP + BAND_TOP - 4) / 2;
+        let middle = (REGIONS.grade.top + REGIONS.grade.bottom) / 2;
         let centre =
             grade.top + grade.line.face().top as usize + grade.line.face().cap as usize / 2;
         assert!(centre.abs_diff(middle) <= 1, "{centre} vs {middle}");
@@ -811,7 +968,7 @@ mod tests {
         assert_eq!(usize::from(frame.rider), PROFILE_LEN - 1);
         assert_eq!(frame.done, None);
         assert!(frame.dim.iter().all(|&d| !d));
-        let height = CHART_BOTTOM - CHART_TOP;
+        let height = REGIONS.chart.height();
         assert_eq!(
             usize::from(frame.tops[10]),
             height - 1,
@@ -867,7 +1024,7 @@ mod tests {
         let frame = view.climb();
         assert_eq!(frame.rider, 0);
         assert_eq!(frame.done, Some(0));
-        assert_eq!(frame.bottom, BARRED_BOTTOM);
+        assert_eq!(frame.bottom, REGIONS.barred.bottom);
         // The road to the foot is dim, the climb in full colour.
         let foot = 300 * (PROFILE_LEN - 1) / 1500;
         assert!(frame.dim[..foot - 2].iter().all(|&d| d));
@@ -911,9 +1068,9 @@ mod tests {
         );
         assert_eq!(frame.done, Some(600));
         // The rider's disc sits on the profile at the rider's column.
-        let x = CHART_LEFT + rider;
+        let x = REGIONS.chart.left + rider;
         assert_eq!(
-            scene.pixel(x, CHART_TOP + usize::from(frame.tops[rider])),
+            scene.pixel(x, REGIONS.chart.top + usize::from(frame.tops[rider])),
             WHITE
         );
         // The bar is filled to the share climbed.
@@ -922,25 +1079,25 @@ mod tests {
             _ => None,
         });
         let fill = fill.expect("the climbed part of the bar");
-        assert_eq!(fill.left, CHART_LEFT);
+        assert_eq!(fill.left, REGIONS.chart.left);
         assert_eq!(
-            fill.right - CHART_LEFT,
-            (CHART_RIGHT - CHART_LEFT) * 600 / 1000
+            fill.right - REGIONS.chart.left,
+            REGIONS.chart.width() * 600 / 1000
         );
         assert!(canvas.shows("FOOT") && canvas.shows("TOP"));
         assert_paints_reference(&mut view);
     }
 
-    /// Every road, with the widest values, lays out whole.
     #[test]
     fn extreme_climbs_never_overlap_or_clip() {
         type Case = (&'static str, fn() -> Ride);
-        let cases: [Case; 7] = [
+        let cases: [Case; 8] = [
             ("nothing ridden", Ride::new),
             ("flat", || Ride::new().ridden(4000, |_| 5000)),
             ("climbing 25%", || {
                 Ride::new().ridden(4000, |m| m as i32 * 25 / 10)
             }),
+            ("climb under way", || Ride::new().ridden(1300, hill)),
             ("far HC", || {
                 Ride::new().mapped(1, 10, |m| (m - 450.0).max(0.0) * 0.25)
             }),
@@ -961,21 +1118,35 @@ mod tests {
                 (Some(255), Some(85), Some(60)),
                 (Some(999), Some(999), Some(199)),
             ] {
-                let mut view = ride().view();
-                view.sample.gradient_tenths = tenths;
-                view.power_3s = watts;
-                view.sample.heart_bpm = bpm;
-                view.prepare();
-                view.canvas().assert_laid_out(
-                    BODY,
-                    &["POWER 3S", "HEART"],
-                    &std::format!("{what} {tenths:?}"),
-                );
-                assert_paints_reference(&mut view);
+                for layout in crate::screens::panels::ALL {
+                    for radar in [false, true] {
+                        let mut view = ride().view();
+                        view.layout = layout;
+                        view.radar_paired = radar;
+                        view.sample.gradient_tenths = tenths;
+                        view.power_3s = watts;
+                        view.sample.heart_bpm = bpm;
+                        view.prepare().check_layout();
+                        let panel = layout.scaled.panel;
+                        let what = std::format!("{what} {tenths:?} on {panel:?}");
+                        let canvas = view.canvas();
+                        assert!(canvas.shows("POWER 3S") && canvas.shows("HEART"), "{what}");
+                        let frame = view.climb();
+                        let columns = layout.climb.chart.width();
+                        assert!(frame.tops[columns..].iter().all(|&top| top == EMPTY));
+                        if frame.rider != EMPTY {
+                            assert!(usize::from(frame.rider) < columns, "{what}");
+                        }
+                        let want = ["POWER 3S", "HEART"];
+                        canvas.assert_laid_out_at(&layout.scaled, layout.ride.body, &want, &what);
+                        if has_reference(layout) {
+                            assert_paints_reference(&mut view);
+                        }
+                    }
+                }
             }
         }
     }
-
     #[test]
     fn an_unsure_forecast_pins_nothing() {
         let mut ride = Ride::new();
@@ -988,5 +1159,22 @@ mod tests {
         view.prepare();
         assert!(view.canvas().shows("NO CLIMB"));
         assert!(!view.canvas().shows("NO MAP"));
+    }
+
+    #[test]
+    fn the_chart_is_bounded_by_each_panels_own_layout() {
+        assert_eq!(
+            columns(&[(240, 320)]),
+            200,
+            "the C606's frame keeps its columns"
+        );
+        for (width, height) in [(180, 320), (240, 300)] {
+            let own = chart_columns(&Scaled::of(width, height)).width();
+            assert_eq!(
+                columns(&[(240, 320), (width, height)]),
+                own.max(200),
+                "{width} × {height}"
+            );
+        }
     }
 }

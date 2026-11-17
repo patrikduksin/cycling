@@ -156,6 +156,7 @@ pub fn prepare(view: &View) -> Canvas {
             let mut per_kg = Text::<12>::new();
             let _ = write!(per_kg, "{}.{} W/KG", tenths / 10, tenths % 10);
             canvas.caption(
+                &crate::screens::scaled::BASE,
                 per_kg.as_bytes(),
                 PER_KG_WIDTH,
                 RIGHT - PER_KG_WIDTH,
@@ -199,7 +200,14 @@ pub fn prepare(view: &View) -> Canvas {
 /// the metric's colour on the right.
 fn line(canvas: &mut Canvas, row: usize, label: &[u8], value: &Text<12>, mark: Mark, color: u16) {
     let base = FIRST + row * PITCH;
-    canvas.caption(label, RIGHT - LEFT, LEFT, base - 14, Align::Left);
+    canvas.caption(
+        &crate::screens::scaled::BASE,
+        label,
+        RIGHT - LEFT,
+        LEFT,
+        base - 14,
+        Align::Left,
+    );
     if mark.value == 0 {
         canvas.fit(&[&BODY], b"--", 60, RIGHT, base - 3, Align::Right, TERTIARY);
         return;
@@ -216,6 +224,7 @@ fn line(canvas: &mut Canvas, row: usize, label: &[u8], value: &Text<12>, mark: M
     if mark.day != 0 {
         let day = date(mark.day);
         canvas.caption(
+            &crate::screens::scaled::BASE,
             day.as_bytes(),
             RIGHT - LEFT - VALUE_WIDTH,
             LEFT,

@@ -4,34 +4,69 @@
 //! A difference carries its sign: green and "+" for faster or harder, plain
 //! `SECONDARY` and "-" for slower or easier. An easy lap is not an error, so
 //! it is never red.
-use super::{CELL_PITCH, LEFT, RIGHT, cell, kilometres, lap_time, speed, whole};
+use super::{cell, kilometres, lap_time, speed, whole};
 use crate::ride::laps::{HISTORY, Lap};
+use crate::screens::Layout;
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
-    ACCENT, Align, BLACK, BODY, GREEN, HEART, LARGE, POWER, Rect, SECONDARY, SPEED, VALUE, WHITE,
-    mix,
+    ACCENT, Align, BLACK, GREEN, HEART, POWER, Rect, SECONDARY, SPEED, WHITE, mix,
 };
+use crate::screens::scaled::{Scaled, Track};
 use crate::screens::workout::{Text, View};
 use core::fmt::Write;
+use firmware_shell::rendering::font::FaceRole;
 
-/// The lap time's caption and the lap number share this baseline.
-const HEAD: usize = 40;
-/// The lap time's baseline, under its caption.
-const TIME: usize = HEAD + 4 + LARGE.cap as usize;
-/// The first band of cells; four follow.
-const FIRST: usize = TIME + 9;
-/// Lap bars stand on the screen's edge, in the toast band: a toast covers
-/// them for a moment.
-const CHART_BOTTOM: usize = super::BODY.bottom;
-const CHART_TOP: usize = FIRST + 3 * CELL_PITCH + 41 + 8;
-const CHART_HEIGHT: usize = CHART_BOTTOM - CHART_TOP;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    /// The lap time's caption and the lap number share this baseline.
+    pub head: usize,
+    /// The lap time's baseline, under its caption.
+    pub time: usize,
+    /// Four bands of cells.
+    pub bands: [Rect; 4],
+    /// Lap bars stand on the screen's edge, in the toast band: a toast
+    /// covers them for a moment.
+    pub chart: Rect,
+}
+
+/// Rows the last band keeps under its value's baseline.
+const UNDER_LAST_BAND: u16 = 8;
+
+pub const fn regions(at: &Scaled) -> Regions {
+    use Track::{Cap, Fr, Unit};
+    let frame = super::frame(at);
+    let pitch = super::CELL_PITCH as u16;
+    let [head, _, time, _, cells, chart] = frame.body.rows(
+        [
+            Unit(16),
+            Unit(4),
+            Cap(FaceRole::Large),
+            Unit(9),
+            Unit(3 * pitch + super::VALUE_BASELINE + UNDER_LAST_BAND),
+            Fr(1),
+        ],
+        Unit(0),
+        at,
+    );
+    let bands = cells.rows([Unit(pitch), Unit(pitch), Unit(pitch), Fr(1)], Unit(0), at);
+    Regions {
+        head: head.bottom,
+        time: time.bottom,
+        bands,
+        chart: chart.with_columns(frame.text),
+    }
+}
+
 /// Each lap gets an equal slot of the width; its bar is centred in it.
 const BAR_GAP: usize = 3;
 const MAX_BAR_WIDTH: usize = 24;
 /// The open lap and the finished laps kept.
 const BARS: usize = HISTORY + 1;
-const _: () = assert!((RIGHT - LEFT) / BARS > BAR_GAP + 4, "every lap's bar shows");
-const _: () = assert!(CHART_HEIGHT >= 24);
+const _: () = {
+    let chart = regions(&crate::screens::scaled::BASE).chart;
+    assert!(chart.width() / BARS > BAR_GAP + 4, "every lap's bar shows");
+    assert!(chart.height() >= 24);
+};
 
 /// What a lap's bar shows: its average power, or its speed without power.
 #[derive(Clone, Copy, Debug, Default)]
@@ -53,29 +88,40 @@ impl From<Lap> for LapBar {
 pub type LapBars = heapless::Vec<LapBar, HISTORY>;
 
 pub(super) fn prepare(view: &View) -> Canvas {
+    let layout = view.frame_layout();
+    let (at, regions) = (&layout.scaled, &layout.lap);
+    let text_box = layout.ride.text;
+    let (left, right) = (text_box.left, text_box.right);
     let mut canvas = Canvas::default();
     let lap = view.lap();
-    let width = RIGHT - LEFT;
+    let width = right - left;
     let mut text = Text::<12>::new();
     let _ = write!(text, "LAP {}", lap.number);
     let number = canvas.fit(
-        &[&BODY],
+        &[at.face(FaceRole::Body)],
         text.as_bytes(),
         width,
-        RIGHT,
-        HEAD,
+        right,
+        regions.head,
         Align::Right,
         ACCENT,
     );
-    canvas.caption(b"LAP TIME", number.left - LEFT, LEFT, HEAD, Align::Left);
+    canvas.caption(
+        at,
+        b"LAP TIME",
+        number.left - left,
+        left,
+        regions.head,
+        Align::Left,
+    );
     let mut time = Text::<12>::new();
     lap_time(&mut time, lap.time_ms / 1000);
     canvas.fit(
-        &[&LARGE, &VALUE],
+        &[at.face(FaceRole::Large), at.face(FaceRole::Value)],
         time.as_bytes(),
         width,
-        LEFT,
-        TIME,
+        left,
+        regions.time,
         Align::Left,
         WHITE,
     );
@@ -85,10 +131,11 @@ pub(super) fn prepare(view: &View) -> Canvas {
         write(&mut value);
         value
     };
-    let band = |index: usize| FIRST + index * CELL_PITCH;
+    let band = |index: usize| regions.bands[index].top;
     let distance = value(&|v| kilometres(v, lap.distance_mm));
     cell(
         &mut canvas,
+        layout,
         0,
         band(0),
         b"LAP KM",
@@ -96,11 +143,35 @@ pub(super) fn prepare(view: &View) -> Canvas {
         WHITE,
     );
     let power = value(&|v| whole(v, lap.avg_power()));
-    cell(&mut canvas, 1, band(0), b"LAP W", power.as_bytes(), POWER);
+    cell(
+        &mut canvas,
+        layout,
+        1,
+        band(0),
+        b"LAP W",
+        power.as_bytes(),
+        POWER,
+    );
     let pace = value(&|v| speed(v, lap.avg_speed_mm_s()));
-    cell(&mut canvas, 0, band(1), b"LAP KM/H", pace.as_bytes(), SPEED);
+    cell(
+        &mut canvas,
+        layout,
+        0,
+        band(1),
+        b"LAP KM/H",
+        pace.as_bytes(),
+        SPEED,
+    );
     let heart = value(&|v| whole(v, lap.avg_heart_bpm()));
-    cell(&mut canvas, 1, band(1), b"LAP BPM", heart.as_bytes(), HEART);
+    cell(
+        &mut canvas,
+        layout,
+        1,
+        band(1),
+        b"LAP BPM",
+        heart.as_bytes(),
+        HEART,
+    );
 
     // The last finished lap by its number, as the toast named it.
     let previous = view.previous_lap();
@@ -125,6 +196,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     };
     cell(
         &mut canvas,
+        layout,
         0,
         band(2),
         name.as_bytes(),
@@ -133,6 +205,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     );
     cell(
         &mut canvas,
+        layout,
         1,
         band(2),
         watts_name.as_bytes(),
@@ -142,6 +215,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     let color = delta_color(&faster);
     cell(
         &mut canvas,
+        layout,
         0,
         band(3),
         b"KM/H DIFF",
@@ -149,9 +223,17 @@ pub(super) fn prepare(view: &View) -> Canvas {
         color,
     );
     let color = delta_color(&harder);
-    cell(&mut canvas, 1, band(3), b"W DIFF", harder.as_bytes(), color);
+    cell(
+        &mut canvas,
+        layout,
+        1,
+        band(3),
+        b"W DIFF",
+        harder.as_bytes(),
+        color,
+    );
 
-    chart(&mut canvas, view.lap_bars(), lap.into());
+    chart(&mut canvas, layout, view.lap_bars(), lap.into());
     canvas
 }
 
@@ -159,7 +241,8 @@ pub(super) fn prepare(view: &View) -> Canvas {
 /// lap on the right, its height the lap's average power (or speed on a ride
 /// without power). Finished laps are dim, the open lap is in full colour,
 /// and the best gets a white cap.
-fn chart(canvas: &mut Canvas, finished: &[LapBar], open: LapBar) {
+fn chart(canvas: &mut Canvas, layout: &Layout, finished: &[LapBar], open: LapBar) {
+    let (at, area) = (&layout.scaled, layout.lap.chart);
     let with_power = finished
         .iter()
         .chain([&open])
@@ -181,29 +264,29 @@ fn chart(canvas: &mut Canvas, finished: &[LapBar], open: LapBar) {
         if amount == 0 {
             continue;
         }
-        let height = (amount as usize * CHART_HEIGHT / best as usize).max(2);
-        let (left, width) = slot(index, count);
+        let height = (amount as usize * area.height() / best as usize).max(at.unit(2));
+        let (left, width) = slot(at, area, index, count);
         let rect = Rect {
             left,
-            top: CHART_BOTTOM - height,
+            top: area.bottom - height,
             right: left + width,
-            bottom: CHART_BOTTOM,
+            bottom: area.bottom,
         };
         let open = index + 1 == count;
         let shade = if open { color } else { mix(color, BLACK, 4) };
         canvas.shape(Shape::Bar {
             rect,
-            radius: 2,
+            radius: at.unit(2),
             color: shade,
         });
         if amount == best && !capped && count > 1 {
             capped = true;
             canvas.shape(Shape::Bar {
                 rect: Rect {
-                    bottom: rect.top + 2,
+                    bottom: rect.top + at.unit(2),
                     ..rect
                 },
-                radius: 1,
+                radius: at.unit(1),
                 color: WHITE,
             });
         }
@@ -211,12 +294,12 @@ fn chart(canvas: &mut Canvas, finished: &[LapBar], open: LapBar) {
 }
 
 /// Lap `index` of `count`: its bar's left column and width, centred in an
-/// equal share of the page's width.
-fn slot(index: usize, count: usize) -> (usize, usize) {
-    let span = RIGHT - LEFT;
+/// equal share of the chart's width.
+fn slot(at: &Scaled, area: Rect, index: usize, count: usize) -> (usize, usize) {
+    let span = area.width();
     let (start, end) = (span * index / count, span * (index + 1) / count);
-    let width = (end - start - BAR_GAP).min(MAX_BAR_WIDTH);
-    (LEFT + start + (end - start - width) / 2, width)
+    let width = (end - start - at.unit(BAR_GAP)).min(at.unit(MAX_BAR_WIDTH));
+    (area.left + start + (end - start - width) / 2, width)
 }
 
 /// The speed difference in tenths of km/h, truncated per side as the speed
@@ -270,6 +353,12 @@ mod tests {
     use crate::screens::ride::{BODY as PAGE, RidePage};
     use crate::screens::workout::Page;
 
+    const AT: &Scaled = &crate::screens::scaled::BASE;
+    const CHART: Rect = regions(AT).chart;
+    const CHART_HEIGHT: usize = CHART.height();
+    const LEFT: usize = CHART.left;
+    const RIGHT: usize = CHART.right;
+
     fn steady(watts: Option<u16>, speed_mm_s: u32, bpm: u16) -> Sample {
         Sample {
             speed_mm_s: Some(speed_mm_s),
@@ -281,6 +370,15 @@ mod tests {
 
     /// `laps` finished laps of `seconds` each, then the open lap's.
     fn ridden(laps: &[(u64, Sample)], open: (u64, Sample)) -> View<'static> {
+        ridden_on(&crate::screens::BASE, true, laps, open)
+    }
+
+    fn ridden_on(
+        layout: &'static crate::screens::Layout,
+        radar: bool,
+        laps: &[(u64, Sample)],
+        open: (u64, Sample),
+    ) -> View<'static> {
         let mut ride = Laps::default();
         let mut now = 0;
         for (index, &(seconds, sample)) in laps.iter().chain([&open]).enumerate() {
@@ -294,16 +392,32 @@ mod tests {
             }
         }
         let mut view = View::new(Page::Ride, 0, None);
+        view.layout = layout;
         view.ride_page = RidePage::Lap;
-        view.radar_paired = true;
+        view.radar_paired = radar;
         let kept = (0..HISTORY).rev().filter_map(|back| ride.finished(back));
         view.show_laps(
             kept.map(LapBar::from).collect(),
             ride.current(),
             ride.previous(),
         );
-        view.prepare();
+        view.prepare().check_layout();
         view
+    }
+
+    #[test]
+    fn long_laps_fit_every_panel() {
+        let fast = steady(Some(1999), 33_333, 220);
+        let slow = steady(Some(1), 300, 40);
+        let mut laps = std::vec![(35_999, fast); HISTORY];
+        laps[0] = (60, slow);
+        for layout in crate::screens::panels::ALL {
+            for radar in [false, true] {
+                let view = ridden_on(layout, radar, &laps, (359_999, fast));
+                view.canvas()
+                    .assert_laid_out(layout.ride.body, &["LAP TIME"], "long laps");
+            }
+        }
     }
 
     fn bars(view: &View) -> std::vec::Vec<(usize, usize, u16)> {
@@ -355,7 +469,7 @@ mod tests {
         assert!(view.canvas().shows("PREV LAP"));
         assert!(bars(&view).is_empty(), "nothing ridden, nothing charted");
         let view = ridden(&[], (60, steady(Some(200), 8334, 150)));
-        let one = slot(0, 1);
+        let one = slot(AT, CHART, 0, 1);
         assert_eq!(bars(&view), [(one.0, CHART_HEIGHT, POWER)]);
         assert_eq!(one, ((LEFT + RIGHT - MAX_BAR_WIDTH) / 2, MAX_BAR_WIDTH));
     }
@@ -369,7 +483,7 @@ mod tests {
         ];
         let view = ridden(&laps, (60, steady(Some(240), 8334, 150)));
         let dim = mix(POWER, BLACK, 4);
-        let lefts = |index: usize| slot(index, 4).0;
+        let lefts = |index: usize| slot(AT, CHART, index, 4).0;
         assert_eq!(
             bars(&view),
             [
@@ -388,7 +502,7 @@ mod tests {
         for count in 1..=BARS {
             let mut right = LEFT;
             for index in 0..count {
-                let (left, width) = slot(index, count);
+                let (left, width) = slot(AT, CHART, index, count);
                 assert!(left >= right && width >= 4, "{index} of {count}");
                 right = left + width + BAR_GAP;
             }

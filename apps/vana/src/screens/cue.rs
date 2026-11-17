@@ -8,8 +8,9 @@
 //! stepping back or ending, a `RED` one for throwing a ride away. See
 //! `docs/ui.md`, "Button cues".
 use super::chrome::{
-    BLACK, GREEN, HEIGHT, Look, RAISED, RED, Row, Shown, WHITE, blend, disc, paint_disc_over,
+    BLACK, GREEN, Look, RAISED, RED, Row, Shown, WHITE, blend, disc, paint_disc_over,
 };
+use super::scaled::{Panel, Track};
 
 /// Which button a cue sits beside.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -40,6 +41,10 @@ pub enum Icon {
     Calibrate,
 }
 
+/// Columns across a cue screen that keep its text clear of the cues on both
+/// sides.
+pub const CLEAR_OF_CUES: [Track; 3] = [Track::Unit(24), Track::Fr(1), Track::Unit(24)];
+
 /// The visible quarter disc's radius.
 pub const RADIUS: usize = 42;
 /// The icon's centre, this far in from both edges of its corner.
@@ -68,44 +73,41 @@ impl Cue {
         }
     }
 
-    /// The disc's centre: the screen corner, in pixels.
-    const fn corner_xy(&self) -> (i32, i32) {
+    const fn corner_xy(&self, panel: Panel) -> (i32, i32) {
+        let (width, height) = (panel.width as i32, panel.height as i32);
         match self.corner {
             Corner::TopLeft => (0, 0),
-            Corner::BottomRight => (super::chrome::WIDTH as i32, HEIGHT as i32),
-            Corner::BottomLeft => (0, HEIGHT as i32),
+            Corner::BottomRight => (width, height),
+            Corner::BottomLeft => (0, height),
         }
     }
 
-    const fn icon_xy(&self) -> (i32, i32) {
+    const fn icon_xy(&self, panel: Panel) -> (i32, i32) {
+        let (width, height) = (panel.width as i32, panel.height as i32);
         match self.corner {
             Corner::TopLeft => (ICON_INSET, ICON_INSET),
-            Corner::BottomRight => (
-                super::chrome::WIDTH as i32 - ICON_INSET,
-                HEIGHT as i32 - ICON_INSET,
-            ),
-            Corner::BottomLeft => (ICON_INSET, HEIGHT as i32 - ICON_INSET),
+            Corner::BottomRight => (width - ICON_INSET, height - ICON_INSET),
+            Corner::BottomLeft => (ICON_INSET, height - ICON_INSET),
         }
     }
 
-    /// Rows the cue covers.
-    pub const fn rows(&self) -> core::ops::Range<usize> {
+    pub const fn rows(&self, panel: Panel) -> core::ops::Range<usize> {
         match self.corner {
             Corner::TopLeft => 0..RADIUS + 1,
-            Corner::BottomRight | Corner::BottomLeft => HEIGHT - RADIUS - 1..HEIGHT,
+            Corner::BottomRight | Corner::BottomLeft => panel.height - RADIUS - 1..panel.height,
         }
     }
 
-    pub fn paint(&self, row: &mut Row) {
+    pub fn paint(&self, row: &mut Row, panel: Panel) {
         let y = row.y();
-        if !self.rows().contains(&y) {
+        if !self.rows(panel).contains(&y) {
             return;
         }
         let (fill, ink) = self.colors();
-        let (cx, cy) = self.corner_xy();
+        let (cx, cy) = self.corner_xy(panel);
         let disc = (4 * cx, 4 * cy, 4 * RADIUS as i32);
         paint_disc_over(row, disc, fill);
-        let (ix, iy) = self.icon_xy();
+        let (ix, iy) = self.icon_xy(panel);
         if (y as i32 - iy).abs() > ICON_REACH {
             return;
         }
@@ -119,16 +121,16 @@ impl Cue {
     }
 
     /// The per-pixel original of `paint`, over `under`, as `look` shows it.
-    pub fn pixel(&self, look: Look, x: usize, y: usize, under: Shown) -> Shown {
+    pub fn pixel(&self, look: Look, x: usize, y: usize, under: Shown, panel: Panel) -> Shown {
         let (fill, ink) = self.colors();
         let (fill, ink) = (look.ink(fill), look.ink(ink));
-        let (cx, cy) = self.corner_xy();
+        let (cx, cy) = self.corner_xy(panel);
         let coverage = disc(x, y, 4 * cx, 4 * cy, 4 * RADIUS as i32);
         if coverage == 0 {
             return under;
         }
         let mut color = blend(fill, under, coverage);
-        let (ix, iy) = self.icon_xy();
+        let (ix, iy) = self.icon_xy(panel);
         let (dx, dy) = (x as i32 - ix, y as i32 - iy);
         if dx.abs() <= ICON_REACH && dy.abs() <= ICON_REACH {
             let icon = icon(self.icon, 4 * dx + 2, 4 * dy + 2);
@@ -292,7 +294,6 @@ fn stroke(x: i32, y: i32, points: &[(i32, i32)], half: i32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::chrome::WIDTH;
 
     #[test]
     fn strokes_through_a_repeated_point_draw_as_without_it() {
@@ -326,7 +327,13 @@ mod tests {
 
     #[test]
     fn cues_sit_in_their_corner_and_paint_their_reference() {
-        for corner in [Corner::TopLeft, Corner::BottomRight, Corner::BottomLeft] {
+        let panels = [(240, 320), (240, 400), (180, 240)];
+        let corners = [Corner::TopLeft, Corner::BottomRight, Corner::BottomLeft];
+        for ((width, height), corner) in panels
+            .into_iter()
+            .flat_map(|panel| corners.map(|corner| (panel, corner)))
+        {
+            let panel = Panel { width, height };
             let icons = [
                 Icon::Play,
                 Icon::Stop,
@@ -340,13 +347,13 @@ mod tests {
                 let cue = Cue::new(corner, icon);
                 let (fill, ink) = cue.colors();
                 let mut inked = 0;
-                for y in 0..HEIGHT {
-                    let mut pixels = [BLACK; WIDTH];
-                    cue.paint(&mut Row::new(y, &mut pixels));
+                for y in 0..height {
+                    let mut pixels = std::vec![BLACK; width];
+                    cue.paint(&mut Row::new(y, &mut pixels), panel);
                     for (x, &pixel) in pixels.iter().enumerate() {
                         assert_eq!(
                             pixel,
-                            cue.pixel(Look::PLAIN, x, y, Shown(BLACK)).0,
+                            cue.pixel(Look::PLAIN, x, y, Shown(BLACK), panel).0,
                             "{cue:?} at {x},{y}"
                         );
                         inked += usize::from(pixel == ink);
@@ -355,21 +362,21 @@ mod tests {
                 assert!(inked > 20, "{cue:?} draws its icon: {inked}");
                 let (x, y) = match corner {
                     Corner::TopLeft => (2, 2),
-                    Corner::BottomRight => (WIDTH - 3, HEIGHT - 3),
-                    Corner::BottomLeft => (2, HEIGHT - 3),
+                    Corner::BottomRight => (width - 3, height - 3),
+                    Corner::BottomLeft => (2, height - 3),
                 };
                 assert_eq!(
-                    cue.pixel(Look::PLAIN, x, y, Shown(BLACK)).0,
+                    cue.pixel(Look::PLAIN, x, y, Shown(BLACK), panel).0,
                     fill,
                     "{cue:?} fills its corner"
                 );
                 let (far_x, far_y) = match corner {
                     Corner::TopLeft => (RADIUS + 2, 2),
-                    Corner::BottomRight => (WIDTH - RADIUS - 3, HEIGHT - 3),
-                    Corner::BottomLeft => (RADIUS + 2, HEIGHT - 3),
+                    Corner::BottomRight => (width - RADIUS - 3, height - 3),
+                    Corner::BottomLeft => (RADIUS + 2, height - 3),
                 };
                 assert_eq!(
-                    cue.pixel(Look::PLAIN, far_x, far_y, Shown(BLACK)).0,
+                    cue.pixel(Look::PLAIN, far_x, far_y, Shown(BLACK), panel).0,
                     BLACK,
                     "{cue:?} stays small"
                 );

@@ -247,11 +247,13 @@ pub struct Scene<'v> {
 #[derive(Clone, Copy, Debug, Hash)]
 enum Kind {
     Canvas,
+    Panel,
     Home,
     Ride(RidePage),
     Phone,
     Summary {
         elevation: bool,
+        from_panel: bool,
     },
     List {
         layout: &'static super::scroll::Layout,
@@ -328,7 +330,11 @@ struct WholePage<'v> {
 
 impl firmware_shell::shell::Picture for Scene<'_> {
     fn size(&self) -> (usize, usize) {
-        let panel = self.layout.scaled.panel;
+        let panel = if super::scaled::ONLY_BASE {
+            super::scaled::BASE_PANEL
+        } else {
+            self.layout.scaled.panel
+        };
         (panel.width, panel.height)
     }
 
@@ -378,7 +384,7 @@ impl<'v> Scene<'v> {
             return;
         }
         match self.kind {
-            Kind::Canvas => self.canvas().paint(row),
+            Kind::Canvas | Kind::Panel => self.canvas().paint(row),
             Kind::Home => {
                 if let Some(home) = self.home() {
                     home.paint(row);
@@ -389,9 +395,9 @@ impl<'v> Scene<'v> {
                 self.canvas().paint(row);
                 super::phone::paint(self, row);
             }
-            Kind::Summary { elevation } => {
+            Kind::Summary { elevation, .. } => {
                 if let Some(chart) = self.elevation_chart().filter(|_| elevation) {
-                    ride::elevation::paint(chart, row);
+                    ride::elevation::paint(chart, self.layout.summary.elevation.chart, row);
                 }
                 self.canvas().paint(row);
             }
@@ -405,7 +411,7 @@ impl<'v> Scene<'v> {
             badge.paint(row);
         }
         for cue in self.cues {
-            cue.paint(row);
+            cue.paint(row, self.layout.scaled.panel);
         }
         if let Some(toast) = self.toast {
             toast.paint(row);
@@ -493,16 +499,18 @@ impl<'v> Scene<'v> {
             return color;
         }
         let mut color = match self.kind {
-            Kind::Canvas => self.canvas().pixel(look, x, y, black),
+            Kind::Canvas | Kind::Panel => self.canvas().pixel(look, x, y, black),
             Kind::Home => self.home().map_or(black, |home| home.pixel(look, x, y)),
             Kind::Ride(page) => ride::reference_pixel(self, page, x, y),
             Kind::Phone => super::phone::pixel(self, x, y)
                 .unwrap_or_else(|| self.canvas().pixel(look, x, y, black)),
-            Kind::Summary { elevation } => {
+            Kind::Summary { elevation, .. } => {
                 let under = self
                     .elevation_chart()
                     .filter(|_| elevation)
-                    .and_then(|chart| ride::elevation::pixel(chart, x, y))
+                    .and_then(|chart| {
+                        ride::elevation::pixel(chart, self.layout.summary.elevation.chart, x, y)
+                    })
                     .map_or(black, |color| look.ink(color));
                 self.canvas().pixel(look, x, y, under)
             }
@@ -514,7 +522,7 @@ impl<'v> Scene<'v> {
             color = badge.pixel(look, x, y, color);
         }
         for cue in self.cues {
-            color = cue.pixel(look, x, y, color);
+            color = cue.pixel(look, x, y, color, self.layout.scaled.panel);
         }
         color
     }
@@ -533,6 +541,44 @@ impl Scene<'_> {
             return;
         }
         let panel = self.layout.scaled.screen();
+        if let Kind::Ride(page) = self.kind
+            && page != RidePage::Main
+            && ride::from_panel(page)
+        {
+            let breaks = self.canvas_breaks(page);
+            assert!(
+                breaks.is_empty(),
+                "{} on {:?} breaks its layout:\n{}",
+                page.name(),
+                self.layout.scaled,
+                breaks.join("\n")
+            );
+            return;
+        }
+        if let Kind::Summary {
+            elevation,
+            from_panel: true,
+        } = self.kind
+        {
+            let breaks = self.summary_breaks(elevation);
+            assert!(
+                breaks.is_empty(),
+                "the summary on {:?} breaks its layout:\n{}",
+                self.layout.scaled,
+                breaks.join("\n")
+            );
+            return;
+        }
+        if let Kind::Panel = self.kind {
+            let breaks = self.breaks_within(std::vec![("screen", panel)], 0);
+            assert!(
+                breaks.is_empty(),
+                "a whole-screen canvas on {:?} breaks its layout:\n{}",
+                self.layout.scaled,
+                breaks.join("\n")
+            );
+            return;
+        }
         if !matches!(self.kind, Kind::Ride(RidePage::Main)) {
             if check::recording() {
                 let inks: Vec<_> = self
@@ -621,9 +667,130 @@ impl Scene<'_> {
     }
 }
 
+#[cfg(any(test, feature = "invariants"))]
 impl Scene<'_> {
+    fn canvas_breaks(&self, page: RidePage) -> std::vec::Vec<std::string::String> {
+        let mut regions = std::vec::Vec::new();
+        regions.push(("status bar", self.layout.chrome.status_bar));
+        let page_first = regions.len() + usize::from(self.radar.is_some());
+        regions.extend(ride::canvas_regions(self, page));
+        self.breaks_within(regions, page_first)
+    }
+
+    fn breaks_within(
+        &self,
+        regions: std::vec::Vec<(&str, super::chrome::Rect)>,
+        page_first: usize,
+    ) -> std::vec::Vec<std::string::String> {
+        use super::check::{self, Placed};
+        use std::vec::Vec;
+        let region = |rect: super::chrome::Rect| {
+            (page_first..regions.len())
+                .find(|&i| check::inside(rect, regions[i].1))
+                .unwrap_or(page_first)
+        };
+        let canvas = self.canvas();
+        let inks: Vec<_> = canvas
+            .runs
+            .iter()
+            .filter_map(super::chrome::layout::text)
+            .collect();
+        let panel = self.layout.scaled.screen();
+        let shapes = canvas.shapes.iter().map(|shape| {
+            let rect = shape.bounds().clipped(panel);
+            Placed {
+                name: std::format!("{shape:?}"),
+                rect,
+                region: region(rect),
+            }
+        });
+        let placed: Vec<Placed> = inks
+            .iter()
+            .map(|(name, rect)| Placed {
+                name: name.clone(),
+                rect: *rect,
+                region: region(*rect),
+            })
+            .chain(shapes)
+            .collect();
+        let targets: Vec<_> = self.sign.iter().map(|sign| ("sign", sign.rect())).collect();
+        let mut breaks = check::region_breaks(panel, &regions, &placed, &targets);
+        breaks.extend(check::overlaps(&inks));
+        breaks
+    }
+
+    fn summary_breaks(&self, elevation: bool) -> std::vec::Vec<std::string::String> {
+        use super::check::{self, Placed};
+        use super::chrome::Rect;
+        use std::string::String;
+        use std::vec::Vec;
+        let panel = self.layout.scaled.screen();
+        let mut regions = Vec::new();
+        let page = if self.bar.is_some() {
+            regions.push(("status bar", self.layout.chrome.status_bar));
+            self.layout.chrome.content
+        } else {
+            panel
+        };
+        let region = regions.len();
+        regions.push(("page", page));
+        let canvas = self.canvas();
+        let mut inks: Vec<(String, Rect)> = canvas
+            .runs
+            .iter()
+            .filter_map(super::chrome::layout::text)
+            .collect();
+        if let Some(badge) = self.badge {
+            let (cx, cy, radius) = (badge.cx, badge.cy, badge.radius);
+            inks.push((
+                String::from("badge"),
+                Rect {
+                    left: cx - radius,
+                    top: cy - radius,
+                    right: cx + radius + 1,
+                    bottom: cy + radius + 1,
+                },
+            ));
+        }
+        if elevation && self.elevation_chart().is_some() {
+            let chart = self.layout.summary.elevation.chart;
+            let with_baseline = Rect {
+                bottom: chart.bottom + 1,
+                ..chart
+            };
+            inks.push((String::from("elevation chart"), with_baseline));
+        }
+        let shapes = canvas.shapes.iter().map(|shape| Placed {
+            name: std::format!("{shape:?}"),
+            rect: shape.bounds().clipped(panel),
+            region,
+        });
+        let placed: Vec<Placed> = inks
+            .iter()
+            .map(|(name, rect)| Placed {
+                name: name.clone(),
+                rect: *rect,
+                region,
+            })
+            .chain(shapes)
+            .collect();
+        let mut breaks = check::region_breaks(panel, &regions, &placed, &[]);
+        breaks.extend(check::overlaps(&inks));
+        breaks
+    }
+}
+
+impl Scene<'_> {
+    pub(super) fn layout(&self) -> &'static Layout {
+        self.layout
+    }
+
     pub(super) fn frame(&self) -> &ride::Frame {
         &self.layout.ride
+    }
+
+    pub(super) fn map_regions(&self) -> &ride::MapRegions {
+        &self.layout.map
     }
 }
 
@@ -1075,12 +1242,14 @@ impl<'a> View<'a> {
             Page::Phone => Kind::Phone,
             Page::Summary | Page::PastRide => Kind::Summary {
                 elevation: summary::shows_elevation(self),
+                from_panel: summary::from_panel(self),
             },
             _ => match self.layout() {
                 Some(layout) => Kind::List {
                     layout,
                     scroll: self.scroll,
                 },
+                None if self.lays_out_from_panel() => Kind::Panel,
                 None => Kind::Canvas,
             },
         };
@@ -1111,7 +1280,7 @@ impl<'a> View<'a> {
             badge: self.badge.as_ref().filter(|_| !sheet),
             toast: self.toast.as_ref().filter(|_| !sheet),
             sign: match kind {
-                Kind::Ride(page) => sign::on_page(page, self.nav, self.radar_paired),
+                Kind::Ride(page) => sign::on_page(page, self.nav, self.radar_paired, layout),
                 _ => None,
             },
         }
@@ -1127,10 +1296,14 @@ impl<'a> View<'a> {
     }
 
     fn lays_out_from_panel(&self) -> bool {
-        self.page == Page::Ride
-            && !self.pause_screen
-            && self.ride_page == RidePage::Main
-            && self.ftp_offer.is_none()
+        if summary::from_panel(self) {
+            return self.ftp_offer.is_none();
+        }
+        let ride_page =
+            self.page == Page::Ride && !self.pause_screen && ride::from_panel(self.ride_page);
+        let ending =
+            self.paused_screen_shown() || matches!(self.page, Page::EndRide | Page::DiscardRide);
+        (ride_page || ending) && self.ftp_offer.is_none()
     }
 
     /// The layout this frame draws.
@@ -1619,7 +1792,9 @@ mod tests {
                 let what = std::format!("{page:?} radar {radar_paired}");
                 let bare = view(page, Sign::None, radar_paired);
                 let under = view(page, turn, radar_paired);
-                let banner = sign::on_page(page, turn, radar_paired).unwrap().rect();
+                let banner = sign::on_page(page, turn, radar_paired, under.frame_layout())
+                    .unwrap()
+                    .rect();
                 let canvas = bare.canvas();
                 let shapes = canvas.shapes.iter().map(|shape| shape.bounds());
                 let runs = canvas.runs.iter().map(|run| Rect {
@@ -1682,7 +1857,9 @@ mod tests {
             rows(&view)
         };
         let (dark, light) = (page(false), page(true));
-        let rect = sign::on_page(RidePage::Stats, turn, false).unwrap().rect();
+        let rect = sign::on_page(RidePage::Stats, turn, false, &crate::screens::BASE)
+            .unwrap()
+            .rect();
         let banner = rect.top..rect.bottom;
         let pixels = |rows: &[[u16; WIDTH]]| {
             rows[banner.clone()]
@@ -2037,7 +2214,7 @@ mod tests {
             trace.add(metres * 1000, Some(6000 + (metres as i32 % 1500) / 2));
         }
         let mut chart = ride::ElevationChart::default();
-        chart.refresh(&trace);
+        chart.refresh(&trace, crate::screens::BASE.summary.elevation.chart);
         for elevation in [false, true] {
             for saving in [Saving::Writing, Saving::Saved, Saving::Failed] {
                 for page in 0..crate::screens::ride::summary::pages(elevation) {

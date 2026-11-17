@@ -72,12 +72,7 @@ pub struct Screen {
 
 impl Screen {
     pub fn frame(&self) -> Frame<'_> {
-        Frame {
-            width: self.width,
-            height: self.height,
-            pixels: &self.pixels,
-            look: self.look,
-        }
+        Frame::new(self.width, self.height, &self.pixels, self.look)
     }
 
     pub fn text(&self) -> String {
@@ -163,9 +158,9 @@ impl Screen {
     /// The status bar's page dots as "2/3": the lit dot and the count.
     pub fn page(&self) -> Option<String> {
         use vana::screens::chrome::{DOT_SIZE, DOTS_Y, TERTIARY, WHITE};
-        let row = self
-            .pixels
-            .get(DOTS_Y * self.width..(DOTS_Y + 1) * self.width)?;
+        let at = vana::screens::scaled::Scaled::fitting(self.width, self.height);
+        let y = at.map_or(DOTS_Y, |at| at.unit(DOTS_Y));
+        let row = self.pixels.get(y * self.width..(y + 1) * self.width)?;
         let mut dots = Vec::new();
         let mut x = 0;
         // Dots sit left of the GPS mark, which starts past two thirds of the

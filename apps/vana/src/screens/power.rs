@@ -109,7 +109,14 @@ fn confirm(canvas: &mut Canvas) {
         SECONDARY,
     );
     // BACK sits by its button, top left.
-    canvas.caption(b"BACK", 60, 8, 20, Align::Left);
+    canvas.caption(
+        &crate::screens::scaled::BASE,
+        b"BACK",
+        60,
+        8,
+        20,
+        Align::Left,
+    );
     // ACT, bottom right, turns off: its corner is lit.
     for rect in [
         Rect {

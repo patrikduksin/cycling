@@ -358,8 +358,14 @@ impl Drawing<'_> {
             let _ = caption.push_str("NOT SEEN");
         }
         let caption = caption.as_bytes();
-        self.canvas
-            .caption(caption, width, NEARBY_TEXT, top + 39, Align::Left);
+        self.canvas.caption(
+            &crate::screens::scaled::BASE,
+            caption,
+            width,
+            NEARBY_TEXT,
+            top + 39,
+            Align::Left,
+        );
     }
 
     fn detail(&mut self, selected: Selected, calibratable: bool) {
@@ -383,6 +389,7 @@ impl Drawing<'_> {
         );
         let caption = |canvas: &mut Canvas, text: &[u8], left: usize| {
             canvas.caption(
+                &crate::screens::scaled::BASE,
                 text,
                 ID_LEFT - BATTERY_LEFT - 8,
                 left,
@@ -419,8 +426,14 @@ impl Drawing<'_> {
             );
             if let Some(hint) = note.hint() {
                 let hint = hint.as_bytes();
-                self.canvas
-                    .caption(hint, width, MID, HINT_BASE, Align::Center);
+                self.canvas.caption(
+                    &crate::screens::scaled::BASE,
+                    hint,
+                    width,
+                    MID,
+                    HINT_BASE,
+                    Align::Center,
+                );
             }
         }
     }
@@ -495,8 +508,14 @@ impl Drawing<'_> {
         let _ = name.push_str(core::str::from_utf8(kind(identity.device_type)).unwrap_or(""));
         let _ = write!(name, " {}", state.identity_label(identity).as_str());
         let name = name.as_bytes();
-        self.canvas
-            .caption(name, width, MID, FORGET_NAME_BASE, Align::Center);
+        self.canvas.caption(
+            &crate::screens::scaled::BASE,
+            name,
+            width,
+            MID,
+            FORGET_NAME_BASE,
+            Align::Center,
+        );
     }
 
     /// The saved sensor on the left, the one that would replace it on the
@@ -515,8 +534,14 @@ impl Drawing<'_> {
             Align::Center,
             WHITE,
         );
-        self.canvas
-            .caption(b"REPLACE SENSOR", width, MID, 132, Align::Center);
+        self.canvas.caption(
+            &crate::screens::scaled::BASE,
+            b"REPLACE SENSOR",
+            width,
+            MID,
+            132,
+            Align::Center,
+        );
         self.icon(&ARROW, MID - 14, 142, ACCENT);
         let current = state.selected_identity(identity.device_type);
         let sides = [
@@ -524,7 +549,14 @@ impl Drawing<'_> {
             (Some(identity), b"NEW", 180),
         ];
         for (peer, label, center) in sides {
-            self.canvas.caption(label, 100, center, 200, Align::Center);
+            self.canvas.caption(
+                &crate::screens::scaled::BASE,
+                label,
+                100,
+                center,
+                200,
+                Align::Center,
+            );
             let Some(peer) = peer else { continue };
             let mut number = Text::<6>::new();
             let _ = write!(number, "{}", peer.device_number);

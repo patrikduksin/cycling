@@ -249,6 +249,48 @@ def console_reach(text, path):
     return sorted(findings)
 
 
+SCREENS = 'apps/vana/src/screens/'
+REGIONS_FN = re.compile(r'\bconst\s+fn\s+regions\s*\(')
+RECT_LITERAL = re.compile(r'(?<![\w:])Rect\s*\{')
+NUMERIC_FIELD = re.compile(r'\b(?:left|top|right|bottom)\s*:\s*\d[\d_]*(?:usize)?\s*[,}]')
+PIXEL_RULE = ('a numeric `Rect { … }` in a screen laid out from `regions`: make it a `Track` in a `const fn` '
+              'of `&Scaled` (`regions`), or measure a lone offset with `at.unit(n)` from a region\'s edge')
+
+
+def brace_end(code, start):
+    """The index just past the brace that closes the one at `start`."""
+    depth = 0
+    for index in range(start, len(code)):
+        depth += {'{': 1, '}': -1}.get(code[index], 0)
+        if not depth:
+            return index + 1
+    return len(code)
+
+
+def pixel_rects(text, path):
+    """In a screen file with a `const fn regions`, a `Rect` literal with an edge at a number, outside a
+    `const fn` (where layouts are built from tracks) and outside test modules, is a hand-placed pixel."""
+    if not path.startswith(SCREENS):
+        return []
+    code = STRING.sub(lambda match: blank(match.group()), without_comments(text))
+    if not REGIONS_FN.search(code):
+        return []
+    allowed = []
+    for match in re.finditer(r'\bconst\s+fn\b[^{;]*\{|#\[cfg\(test\)\]\s*mod\s+\w+\s*\{', code):
+        allowed.append((match.start(), brace_end(code, match.end() - 1)))
+    findings = []
+    for match in RECT_LITERAL.finditer(code):
+        before = code[:match.start()].split()
+        if before and before[-1] in ('struct', 'impl', 'for', 'enum'):
+            continue
+        if any(start <= match.start() < end for start, end in allowed):
+            continue
+        body = code[match.end() - 1:brace_end(code, match.end() - 1)]
+        if NUMERIC_FIELD.search(body):
+            findings.append((code.count('\n', 0, match.start()) + 1, PIXEL_RULE))
+    return findings
+
+
 def rust_tokens(text):
     code = STRING.sub(lambda match: blank(match.group()), without_comments(text))
     tokens, line, offset = [], 1, 0
@@ -566,6 +608,15 @@ ui = { package = "firmware-shell", path = "../shell" }
                            'devices/c606/src/main.rs')
     assert not owner_reach('bind(&mut sim.ant)', 'tools/simulator/src/sim.rs')
     assert not owner_reach('bind(&mut world.ant)', 'devices/c606/src/drivers/world.rs')
+    page = SCREENS + 'ride/page.rs'
+    laid_out = 'pub const fn regions(at: &Scaled) -> Regions {\n    let r = Rect { left: 0, ..x };\n}\n'
+    assert not pixel_rects(laid_out, page)
+    assert [line for line, _ in pixel_rects(laid_out + 'fn paint() {\n    let r = Rect { top: 22, ..z };\n}\n', page)] == [5]
+    assert pixel_rects(laid_out + 'fn paint() { let r = Rect { left: 0, top, right: 240, bottom }; }', page)
+    assert not pixel_rects(laid_out + 'fn paint() { let r = Rect { top: y + at.unit(4), ..z }; }', page)
+    assert not pixel_rects(laid_out + '#[cfg(test)]\nmod tests {\n    const R: Rect = Rect { left: 1, top: 2, right: 3, bottom: 4 };\n}\n', page)
+    assert not pixel_rects('fn paint() { let r = Rect { top: 4, ..y }; }', page), 'a file without regions is not laid out yet'
+    assert not pixel_rects(laid_out + 'pub struct Rect {\n    pub left: usize,\n}\n// Rect { left: 3 }\n', page)
     wifi = STACK_STATE_WAITER[0]
     publisher = 'async fn network(stack: Stack) {\n    loop {\n        stack.wait_config_up().await;\n' \
                 '        stack\n            .wait_config_down()\n            .await;\n    }\n}\n'
@@ -607,12 +658,12 @@ def main():
                             for line, reason in layer_findings(path.read_text(), path.relative_to(ROOT).as_posix()))
             failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                             for line, reason in foreign_stack_waits(path.read_text(), path.relative_to(ROOT).as_posix()))
-            for check in (unmarked_capabilities, console_reach, owner_reach):
+            for check in (unmarked_capabilities, console_reach, owner_reach, pixel_rects):
                 failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                                 for line, reason in check(path.read_text(), path.relative_to(ROOT).as_posix()))
     if failures:
         raise SystemExit('\n'.join(failures))
-    print(f'Boundaries, layers, the stack waiter, capabilities, the console and the device owners passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
+    print(f'Boundaries, layers, the stack waiter, capabilities, the console, the device owners and laid-out screens passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
 
 
 if __name__ == '__main__':

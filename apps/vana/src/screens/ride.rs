@@ -2,7 +2,7 @@
 //!
 //! The shared chrome draws the status bar (ride state, clock, page dots) and
 //! toasts. This frame adds the radar strip on the left while a radar is
-//! paired. A page owns [`BODY`] and lays out its text and shapes once per
+//! paired. A page owns [`Frame::body`] and lays out its text and shapes once per
 //! frame; without a radar the frame centres the body, so pages never move
 //! their own coordinates. Keep the least important readings at the bottom:
 //! toasts cover `chrome::TOAST` for a moment.
@@ -19,7 +19,9 @@ use super::Layout;
 use super::canvas::Canvas;
 use super::chrome::{self, Align, Rect};
 use super::icons::SignForm;
-use super::scaled::{self, BASE, Scaled};
+#[cfg(test)]
+use super::scaled::BASE;
+use super::scaled::{self, Scaled};
 use super::workout::{Body, Graphics, Scene, Text, View};
 use crate::ride::laps::Lap;
 use crate::ride::zones::TrainingProfile;
@@ -49,10 +51,14 @@ pub use lap::{LapBar, LapBars};
 pub use map::{
     Cache as MapCache, Fetched, Filled as FilledMap, Frame as MapFrame, Track, Zoom as MapZoom,
 };
-pub use workout::{Chart as WorkoutChart, EXTEND_ROWS, Training, chart as workout_chart};
+pub use workout::{
+    Chart as WorkoutChart, Regions as WorkoutRegions, Training, chart as workout_chart,
+    regions as workout_regions,
+};
 
-use chrome::{ACCENT, AMBER, BODY as BODY_FACE, POWER, Row, VALUE};
+use chrome::{ACCENT, AMBER, POWER, Row};
 pub(super) use chrome::{RED, WHITE};
+use firmware_shell::rendering::font::FaceRole;
 
 pub(super) const GRID: u16 = chrome::TERTIARY;
 
@@ -68,6 +74,21 @@ pub struct Frame {
     pub strip: Strip,
     /// Without a radar the body moves left by this much, to the centre.
     pub centre_shift: usize,
+    /// Text margins inside the body, as on the main page.
+    pub text: Rect,
+    pub cells: Cells,
+}
+
+/// A page's two columns of cells: a caption over its value, one band per
+/// `pitch` rows. The next caption clears the value above it by 7 rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Cells {
+    /// Each column's left and right edge.
+    pub columns: [(usize, usize); 2],
+    /// The caption's and the value's baselines below the band's top.
+    pub caption: usize,
+    pub value: usize,
+    pub pitch: usize,
 }
 
 pub const fn frame(at: &Scaled) -> Frame {
@@ -76,9 +97,21 @@ pub const fn frame(at: &Scaled) -> Frame {
     let content = chrome.content;
     let [radar, body] = content.cols([Unit(RADAR_WIDTH as u16), Fr(1)], Unit(0), at);
     let radius = at.unit(5);
+    let [_, text, _] = body.cols([Unit(10), Fr(1), Unit(TEXT_RIGHT)], Unit(0), at);
+    let middle = (text.left + text.right) / 2 + at.unit(4);
     Frame {
         radar,
         body,
+        text,
+        cells: Cells {
+            columns: [
+                (text.left, middle - at.unit(COLUMN_GAP)),
+                (middle, text.right),
+            ],
+            caption: at.unit(12),
+            value: at.unit(VALUE_BASELINE as usize),
+            pitch: at.unit(CELL_PITCH),
+        },
         strip: Strip {
             arrow_top: content.top + at.unit(8),
             track_top: content.top + at.unit(22),
@@ -91,24 +124,90 @@ pub const fn frame(at: &Scaled) -> Frame {
     }
 }
 
-/// What a page draws into, beside the radar strip.
+/// What a page draws into on the 240 x 320 canvas, for tests.
+#[cfg(test)]
 pub(super) const BODY: Rect = frame(&BASE).body;
-/// Text margins inside the body, as on the main page.
-pub(super) const LEFT: usize = BODY.left + 10;
-pub(super) const RIGHT: usize = BODY.right - 8;
-/// Where a page's right column of cells starts.
-pub(super) const MIDDLE: usize = (LEFT + RIGHT) / 2 + 4;
+/// The text's margin from the body's right edge.
+pub(super) const TEXT_RIGHT: u16 = 8;
+/// A cell value's baseline below its band's top.
+pub(super) const VALUE_BASELINE: u16 = 41;
 /// Clear columns between a left cell's ink and the right column.
 const COLUMN_GAP: usize = 8;
 /// A caption over its value: one band of cells. The next caption clears the
 /// value above it by 7 rows.
 pub(super) const CELL_PITCH: usize = 48;
 const _: () = assert!(
-    CELL_PITCH + 12 - chrome::CAPTION.cap as usize > 41 + 6,
+    CELL_PITCH + 12 - chrome::CAPTION.cap as usize > VALUE_BASELINE as usize + 6,
     "a caption needs 6 clear rows over the value above it"
 );
 /// Without a radar the body moves left by this much, to the centre.
+#[cfg(test)]
 pub(super) const CENTRE_SHIFT: usize = RADAR_WIDTH / 2;
+
+/// The pages laid out from the panel; the others still draw the 240 x 320
+/// canvas, which the shell fits to the panel.
+pub(super) const fn from_panel(page: RidePage) -> bool {
+    match page {
+        RidePage::Main => true,
+        RidePage::Stats => true,
+        RidePage::Lap => true,
+        RidePage::Climb => true,
+        RidePage::Workout => true,
+        RidePage::Map => true,
+    }
+}
+
+/// The layout `page` draws with on a panel laid out as `panel`.
+pub fn page_layout(page: RidePage, panel: &'static Layout) -> &'static Layout {
+    if from_panel(page) {
+        panel
+    } else {
+        &super::BASE
+    }
+}
+
+/// The regions a page drawn from a canvas lays out in, named, in its
+/// canvas's columns: the radar strip while a radar is paired, then the
+/// page's own. A page lays out in the body, which the frame centres without
+/// a radar. The map spans the strip's columns without a radar; beside one,
+/// its foot still spans them, under the strip, which ends above it.
+#[cfg(any(test, feature = "invariants"))]
+pub(super) fn canvas_regions(
+    scene: &Scene,
+    page: RidePage,
+) -> heapless::Vec<(&'static str, Rect), 3> {
+    let frame = scene.frame();
+    let foot = scene.map_regions().foot.rect;
+    let regions = match (page, &scene.radar) {
+        (RidePage::Map, None) => heapless::Vec::from_slice(&[(
+            "page",
+            Rect {
+                left: frame.radar.left,
+                ..frame.body
+            },
+        )]),
+        (RidePage::Map, Some(_)) => heapless::Vec::from_slice(&[
+            (
+                "radar",
+                Rect {
+                    bottom: foot.top,
+                    ..frame.radar
+                },
+            ),
+            (
+                "page",
+                Rect {
+                    bottom: foot.top,
+                    ..frame.body
+                },
+            ),
+            ("foot", foot),
+        ]),
+        (_, None) => heapless::Vec::from_slice(&[("page", frame.body)]),
+        (_, Some(_)) => heapless::Vec::from_slice(&[("radar", frame.radar), ("page", frame.body)]),
+    };
+    regions.unwrap_or_default()
+}
 
 /// A ride page, in MOVE order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -405,7 +504,8 @@ pub(super) fn prepare(view: &mut View) {
         RidePage::Workout => super::workout::fill(view, workout::prepare),
         RidePage::Map => super::workout::fill(view, map::prepare),
     }
-    let banner = super::sign::on_page(view.ride_page, view.nav, view.radar_paired)
+    let layout = view.frame_layout();
+    let banner = super::sign::on_page(view.ride_page, view.nav, view.radar_paired, layout)
         .filter(|sign| sign.form() == SignForm::Banner);
     if let (Some(banner), Body::Canvas(canvas)) = (banner, &mut view.body) {
         canvas.hide(banner.rect().top..banner.rect().bottom);
@@ -426,30 +526,28 @@ fn climb_frame(view: &mut View) {
     view.set_climb_frame(climb);
 }
 
-/// A caption over its value in `column` (0 or 1) of the band whose caption
-/// top is `top`. The value steps down to `BODY` before it would leave its
+/// A caption over its value in `column` (0 or 1) of the band whose top is
+/// `top`. The value steps down to the body face before it would leave its
 /// column.
 pub(super) fn cell(
     canvas: &mut Canvas,
+    layout: &Layout,
     column: usize,
     top: usize,
     caption: &[u8],
     value: &[u8],
     color: u16,
 ) {
-    let (left, right) = if column == 0 {
-        (LEFT, MIDDLE - COLUMN_GAP)
-    } else {
-        (MIDDLE, RIGHT)
-    };
+    let (at, cells) = (&layout.scaled, &layout.ride.cells);
+    let (left, right) = cells.columns[column];
     let width = right - left;
-    canvas.caption(caption, width, left, top + 12, Align::Left);
+    canvas.caption(at, caption, width, left, top + cells.caption, Align::Left);
     canvas.fit(
-        &[&VALUE, &BODY_FACE],
+        &[at.face(FaceRole::Value), at.face(FaceRole::Body)],
         value,
         width,
         left,
-        top + 41,
+        top + cells.value,
         Align::Left,
         color,
     );
@@ -496,9 +594,12 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
     match page {
         RidePage::Main => main::parts(scene, parts),
         RidePage::Stats | RidePage::Lap => {}
-        RidePage::Workout => workout::chart_parts(scene.chart(), parts),
-        RidePage::Climb => climb::chart_parts(scene.climb(), parts),
-        RidePage::Map => parts.add(map::GROUND, &scene.map()),
+        RidePage::Workout => workout::chart_parts(scene.chart(), &scene.layout().workout, parts),
+        RidePage::Climb => climb::chart_parts(scene.climb(), &scene.layout().climb, parts),
+        RidePage::Map => {
+            let drawn = scene.map_regions().free.drawn;
+            parts.add(drawn.top..drawn.bottom, &scene.map());
+        }
     }
     if page != RidePage::Main {
         scene.canvas().parts(parts);
@@ -510,11 +611,11 @@ fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
         RidePage::Main => main::paint(scene, row),
         RidePage::Stats | RidePage::Lap => scene.canvas().paint(row),
         RidePage::Workout => {
-            workout::paint_chart(scene.chart(), row);
+            workout::paint_chart(scene.chart(), &scene.layout().workout, row);
             scene.canvas().paint(row);
         }
         RidePage::Climb => {
-            climb::paint_chart(scene.climb(), row);
+            climb::paint_chart(scene.climb(), &scene.layout().climb, row);
             scene.canvas().paint(row);
         }
         RidePage::Map => paint_map(scene, row),
@@ -523,8 +624,8 @@ fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
 
 fn paint_map(scene: &Scene, row: &mut Row) {
     if let Some(map) = scene.map() {
-        let left = if scene.radar.is_some() { BODY.left } else { 0 };
-        map::paint(map.frame(), &mut row.within(left..chrome::WIDTH));
+        let shown = scene.map_regions().ground(scene.radar.is_some()).shown;
+        map::paint(map.frame(), &mut row.within(shown.left..shown.right));
     }
     scene.canvas().paint(row);
 }
@@ -555,7 +656,7 @@ pub struct Pixels {
 }
 
 /// The glides of the main page as `layout` places it.
-pub fn pixels(graphics: &Graphics, profile: &TrainingProfile, layout: &Layout) -> Pixels {
+pub fn pixels(graphics: &Graphics, profile: &TrainingProfile, layout: &'static Layout) -> Pixels {
     let [power, heart] = zones::gauges(graphics, profile);
     let span = main::Span::of(&layout.main, &layout.scaled);
     Pixels {
@@ -567,22 +668,28 @@ pub fn pixels(graphics: &Graphics, profile: &TrainingProfile, layout: &Layout) -
     }
 }
 
+pub use climb::{Regions as ClimbRegions, regions as climb_regions};
+pub use end::{Regions as EndRegions, regions as end_regions};
+pub use lap::{Regions as LapRegions, regions as lap_regions};
 pub use main::{Band as MainBand, Regions as MainRegions, regions as main_regions};
+pub use map::{Regions as MapRegions, regions as map_regions};
+pub use paused::{Regions as PausedRegions, regions as paused_regions};
+pub use stats::{Regions as StatsRegions, regions as stats_regions};
 
 #[derive(Clone, Copy, Debug, Hash)]
 pub struct Radar {
     track: u16,
     markers: [Option<(u16, bool)>; 8],
-    strip: Strip,
+    strip: &'static Strip,
 }
 
-pub(super) fn radar(snapshot: &radar::Snapshot, strip: &Strip) -> Radar {
+pub(super) fn radar(snapshot: &radar::Snapshot, strip: &'static Strip) -> Radar {
     Radar {
         track: track_color(snapshot.status),
         markers: snapshot
             .targets
             .map(|target| target.map(|target| (target_y(target, strip), close(target)))),
-        strip: *strip,
+        strip,
     }
 }
 
@@ -632,12 +739,13 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
     let look = scene.look();
     let black = look.ink(chrome::BLACK);
     if page == RidePage::Map {
+        let frame = scene.frame();
         return match &scene.radar {
-            Some(radar) if x < RADAR_WIDTH - 2 => {
+            Some(radar) if x < frame.radar.right - frame.strip.divider => {
                 let under = look.ink(reference_radar_pixel(radar, x, y));
                 scene.canvas().pixel(look, x, y, under)
             }
-            Some(_) if x < BODY.left => scene.canvas().pixel(look, x, y, black),
+            Some(_) if x < frame.body.left => scene.canvas().pixel(look, x, y, black),
             _ => reference_map_pixel(scene, x, y),
         };
     }
@@ -656,11 +764,17 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
         RidePage::Main => main::reference_pixel(scene, x, y),
         RidePage::Stats | RidePage::Lap => scene.canvas().pixel(look, x, y, black),
         RidePage::Workout => {
-            let under = look.ink(workout::chart_pixel(scene.chart(), x, y));
+            let chart = workout::chart_pixel(scene.chart(), &scene.layout().workout, x, y);
+            let under = look.ink(chart);
             scene.canvas().pixel(look, x, y, under)
         }
         RidePage::Climb => {
-            let under = look.ink(climb::chart_pixel(scene.climb(), x, y));
+            let under = look.ink(climb::chart_pixel(
+                scene.climb(),
+                &scene.layout().climb,
+                x,
+                y,
+            ));
             scene.canvas().pixel(look, x, y, under)
         }
         RidePage::Map => reference_map_pixel(scene, x, y),
@@ -849,7 +963,7 @@ mod tests {
         };
         let frame = Box::leak(Box::default());
         let mut map = MapCache::new(frame);
-        map.update(&track);
+        map.update(&track, &crate::screens::BASE.map);
         match page {
             Some(RidePage::Lap) => view.show_laps(heapless::Vec::new(), Lap::default(), None),
             Some(RidePage::Climb) => view.show_climb(ClimbLent {
@@ -1032,15 +1146,15 @@ mod tests {
                 range_mm,
                 closing_speed_cm_s: 0,
             };
-            let strip = frame(&BASE).strip;
-            let bottom = usize::from(target_y(target, &strip)) + strip.radius;
+            let strip = &crate::screens::BASE.ride.strip;
+            let bottom = usize::from(target_y(target, strip)) + strip.radius;
             assert!(bottom < chrome::TOAST.top, "{range_mm} mm");
             let mut snapshot = radar::Snapshot::default();
             snapshot.targets[0] = Some(target);
             for y in chrome::TOAST.top..chrome::HEIGHT {
                 for x in 0..RADAR_WIDTH {
                     assert_eq!(
-                        reference_radar_pixel(&radar(&snapshot, &strip), x, y),
+                        reference_radar_pixel(&radar(&snapshot, strip), x, y),
                         chrome::BLACK,
                         "({x}, {y})"
                     );

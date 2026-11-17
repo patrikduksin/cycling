@@ -370,6 +370,10 @@ def emit(faint: FaintIcons) -> str:
         f"// {total} bytes of coverage and tables.",
         "use super::{Icon, SignArt};",
         "",
+    ]
+    if OUTPUT.name != "art.rs":
+        return "\n".join(head + body)
+    head += [
         "/// A sensor's icon, one per kind of sensor VANA draws.",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]",
         "pub enum Sensor {",

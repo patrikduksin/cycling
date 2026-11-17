@@ -1,27 +1,56 @@
 //! The ride totals page: what this ride has added up so far, kept after stop,
 //! above bars of the time spent in each power and heart rate zone.
 use super::zones::{BAR_WIDTH, Bar, COLOURS};
-use super::{CELL_PITCH, LEFT, RIGHT, cell, kilometres, lap_time, speed, whole};
+use super::{cell, kilometres, lap_time, speed, whole};
+use crate::screens::Layout;
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{Align, GRADE, HEART, POWER, Rect, SPEED, TERTIARY, WHITE};
+use crate::screens::scaled::{Scaled, Track};
 use crate::screens::workout::{Text, View};
-use firmware_shell::rendering::font::SPILL;
+use firmware_shell::rendering::font::{FaceRole, SPILL};
 
-/// The first band's caption top; five bands of two cells follow. Work, peak
-/// power and peak heart rate stay in the saved ride, and the main page shows
-/// cadence live; the page keeps room between readings instead.
-const FIRST: usize = 25;
-/// Time-in-zone bars, in the toast band: a toast covers them for a moment.
-const POWER_BAR: usize = 286;
-const HEART_BAR: usize = 302;
-const BAR_HEIGHT: usize = 8;
-/// "PWR" and "HR" sit left of the bars.
-const BAR_LEFT: usize = RIGHT - BAR_WIDTH;
-const _: () = assert!(BAR_LEFT >= LEFT + 36 + SPILL + 8, "PWR needs 36 columns");
-const _: () = assert!(
-    FIRST + 4 * CELL_PITCH + 41 + 8 < POWER_BAR,
-    "the bars clear the cells"
-);
+/// The stats page on one panel: five bands of two cells, then the
+/// time-in-zone bars.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    pub bands: [Rect; 5],
+    /// Time-in-zone bars, in the toast band: a toast covers them for a
+    /// moment. "PWR" and "HR" sit left of them.
+    pub power_bar: Rect,
+    pub heart_bar: Rect,
+}
+
+pub const fn regions(at: &Scaled) -> Regions {
+    use Track::{Fr, Unit};
+    let frame = super::frame(at);
+    let [_, cells, _, power, _, heart, _] = frame.body.rows(
+        [
+            Unit(1),
+            Unit(5 * super::CELL_PITCH as u16),
+            Fr(1),
+            Unit(BAR_HEIGHT),
+            Unit(8),
+            Unit(BAR_HEIGHT),
+            Unit(10),
+        ],
+        Unit(0),
+        at,
+    );
+    let pitch = Unit(super::CELL_PITCH as u16);
+    let bands = cells.rows([pitch; 5], Unit(0), at);
+    let caption = at.face(FaceRole::Caption).width(b"PWR") + SPILL;
+    let bar = Rect {
+        left: frame.text.left + caption + at.unit(8),
+        ..frame.text
+    };
+    Regions {
+        bands,
+        power_bar: power.with_columns(bar),
+        heart_bar: heart.with_columns(bar),
+    }
+}
+
+const BAR_HEIGHT: u16 = 8;
 /// Black between zone segments.
 const SEGMENT_GAP: usize = 2;
 
@@ -66,11 +95,14 @@ pub(super) fn prepare(view: &View) -> Canvas {
     whole(avg_heart, totals.avg_heart_bpm());
     whole(ascent, Some((totals.ascent_dm() + 5) / 10));
 
+    let layout = view.frame_layout();
+    let regions = &layout.stats;
     let mut canvas = Canvas::default();
     for (index, ((caption, color), value)) in CELLS.iter().zip(&values).enumerate() {
-        let top = FIRST + index / 2 * CELL_PITCH;
+        let top = regions.bands[index / 2].top;
         cell(
             &mut canvas,
+            layout,
             index % 2,
             top,
             caption,
@@ -79,18 +111,21 @@ pub(super) fn prepare(view: &View) -> Canvas {
         );
     }
     let marks = &view.marks;
+    let left = layout.ride.text.left;
     zone_bar(
         &mut canvas,
+        layout,
         b"PWR",
-        (LEFT, BAR_LEFT),
-        POWER_BAR,
+        left,
+        regions.power_bar,
         marks.power_time,
     );
     zone_bar(
         &mut canvas,
+        layout,
         b"HR",
-        (LEFT, BAR_LEFT),
-        HEART_BAR,
+        left,
+        regions.heart_bar,
         marks.heart_time,
     );
     canvas
@@ -105,38 +140,43 @@ fn hundredths(value: &mut Text<12>, reading: Option<u16>) {
     };
 }
 
-/// A caption at `caption_left`, then from `bar_left` one segment per zone
+/// A caption at `caption_left`, then across `rect` one segment per zone
 /// ridden, in zone colours with black between them; a `TERTIARY` track
 /// before any time is recorded.
 pub(super) fn zone_bar<const N: usize>(
     canvas: &mut Canvas,
+    layout: &Layout,
     caption: &[u8],
-    (caption_left, bar_left): (usize, usize),
-    top: usize,
+    caption_left: usize,
+    rect: Rect,
     bar: Bar<N>,
 ) {
+    let at = &layout.scaled;
     // The caption's capitals centre on the bar.
     canvas.caption(
+        at,
         caption,
-        bar_left - 8 - caption_left,
+        rect.left - at.unit(8) - caption_left,
         caption_left,
-        top + 10,
+        rect.top + at.unit(10),
         Align::Left,
     );
+    let radius = at.unit(2);
     let bar_rect = |left: usize, right: usize| Rect {
-        left: bar_left + left,
-        top,
-        right: bar_left + right,
-        bottom: top + BAR_HEIGHT,
+        left: rect.left + left,
+        right: rect.left + right,
+        ..rect
     };
     let Some(ends) = bar else {
         canvas.shape(Shape::Bar {
-            rect: bar_rect(0, BAR_WIDTH),
-            radius: 2,
+            rect,
+            radius,
             color: TERTIARY,
         });
         return;
     };
+    let ends = ends.map(|end| end * rect.width() / BAR_WIDTH);
+    let gap = at.unit(SEGMENT_GAP);
     // The last zone with time ends the bar; no gap follows it.
     let last = (0..N)
         .rposition(|zone| ends[zone] > zone.checked_sub(1).map_or(0, |before| ends[before]))
@@ -146,12 +186,12 @@ pub(super) fn zone_bar<const N: usize>(
         let right = if zone == last {
             end
         } else {
-            end.saturating_sub(SEGMENT_GAP)
+            end.saturating_sub(gap)
         };
         if right > start {
             canvas.shape(Shape::Bar {
                 rect: bar_rect(start, right),
-                radius: 2,
+                radius,
                 color: COLOURS[zone],
             });
         }
@@ -167,6 +207,8 @@ mod tests {
     use crate::screens::chrome::zone_color;
     use crate::screens::ride::{BODY, RidePage};
     use crate::screens::workout::Page;
+
+    const REGIONS: Regions = crate::screens::BASE.stats;
 
     fn stats(minutes: u64, sample: &Sample) -> View<'static> {
         let mut view = View::new(Page::Ride, 0, None);
@@ -211,8 +253,8 @@ mod tests {
         assert_eq!(
             bars,
             [
-                (POWER_BAR, BAR_WIDTH, zone_color(4)),
-                (HEART_BAR, BAR_WIDTH, zone_color(1))
+                (REGIONS.power_bar.top, BAR_WIDTH, zone_color(4)),
+                (REGIONS.heart_bar.top, BAR_WIDTH, zone_color(1))
             ]
         );
         assert_eq!(color("0.93"), Some(POWER), "IF at the default FTP of 215 W");
@@ -244,7 +286,7 @@ mod tests {
             .shapes
             .iter()
             .filter_map(|shape| match shape {
-                Shape::Bar { rect, .. } if rect.top == POWER_BAR => Some(*rect),
+                Shape::Bar { rect, .. } if rect.top == REGIONS.power_bar.top => Some(*rect),
                 _ => None,
             })
             .collect();
@@ -252,7 +294,7 @@ mod tests {
         for pair in segments.windows(2) {
             assert_eq!(pair[1].left - pair[0].right, SEGMENT_GAP);
         }
-        assert_eq!(segments[2].right, RIGHT);
+        assert_eq!(segments[2].right, REGIONS.power_bar.right);
     }
 
     /// The widest totals a ride can reach still fit their cells whole.
@@ -270,14 +312,20 @@ mod tests {
             view.canvas()
                 .assert_laid_out(BODY, &[], &std::format!("{minutes} min"));
         }
-        // A long ride: 1000 km over 99:59:59 with a full ascent.
-        let mut view = View::new(Page::Ride, 0, None);
-        view.ride_page = RidePage::Stats;
-        for _ in 0..36 {
-            view.totals
-                .add(9_999_000, 1_000_000_000 / 36, &fast, Some(88_000));
+        for layout in crate::screens::panels::ALL {
+            for radar in [false, true] {
+                let mut view = View::new(Page::Ride, 0, None);
+                view.layout = layout;
+                view.ride_page = RidePage::Stats;
+                view.radar_paired = radar;
+                for _ in 0..36 {
+                    view.totals
+                        .add(9_999_000, 1_000_000_000 / 36, &fast, Some(88_000));
+                }
+                view.prepare().check_layout();
+                let body = layout.ride.body;
+                view.canvas().assert_laid_out(body, &[], "long ride");
+            }
         }
-        view.prepare();
-        view.canvas().assert_laid_out(BODY, &[], "long ride");
     }
 }

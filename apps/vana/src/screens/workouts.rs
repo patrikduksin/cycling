@@ -153,6 +153,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
         WHITE,
     );
     canvas.caption(
+        &crate::screens::scaled::BASE,
         position.as_bytes(),
         60,
         CONTENT.right - MARGIN,
@@ -206,6 +207,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
             if focused { WHITE } else { super::chrome::MUTED },
         );
         canvas.caption(
+            &crate::screens::scaled::BASE,
             choice.detail.as_bytes(),
             text_right - left,
             left,
@@ -272,7 +274,14 @@ pub fn ftp_sheet(new: u16, old: u16) -> Canvas {
         WHITE,
     );
     // BACK keeps the old FTP, by its button; ACT saves, its corner lit.
-    canvas.caption(b"KEEP", 60, 8, 20, Align::Left);
+    canvas.caption(
+        &crate::screens::scaled::BASE,
+        b"KEEP",
+        60,
+        8,
+        20,
+        Align::Left,
+    );
     for rect in [
         Rect {
             left: SCREEN - 70,

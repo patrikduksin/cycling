@@ -4,6 +4,7 @@
 //! and painted like a glyph run: one colour blended over what the row already
 //! holds, so the same icon sits on black, a card or a focused card.
 mod art;
+mod art_0_75;
 
 use super::chrome::{Rect, Row, Shown, blend};
 use crate::sensors::ant::device_type;
@@ -29,6 +30,15 @@ impl core::hash::Hash for StaticIcon {
         core::ptr::hash(self.0, state);
     }
 }
+
+/// An icon is one static: icons are the same only when they are one.
+impl PartialEq for StaticIcon {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(self.0, other.0)
+    }
+}
+
+impl Eq for StaticIcon {}
 
 impl core::ops::Deref for StaticIcon {
     type Target = Icon;
@@ -155,11 +165,67 @@ pub struct SignArt {
     pub icon: Icon,
 }
 
-impl SignGlyph {
-    pub fn art(self, form: SignForm) -> &'static SignArt {
-        &art::SIGN_GLYPHS[self as usize][form as usize]
+/// Every icon at one scale step, as `Faces` holds every face.
+pub struct Art {
+    sensors: [&'static [Icon; 10]; 3],
+    pub refresh: &'static Icon,
+    pub plus: &'static Icon,
+    pub arrow: &'static Icon,
+    pub puck: &'static Icon,
+    signs: &'static [[SignArt; 3]; 8],
+}
+
+impl Art {
+    pub fn sign(&self, glyph: SignGlyph, form: SignForm) -> &'static SignArt {
+        &self.signs[glyph as usize][form as usize]
+    }
+
+    pub fn sensor(&self, sensor: Sensor, size: Size) -> &'static Icon {
+        &self.sensors[size as usize][sensor as usize]
     }
 }
+
+/// Each step has one set, so sets compare by address, and a set adds
+/// nothing to a hash that its step does not.
+impl PartialEq for Art {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(self, other)
+    }
+}
+
+impl Eq for Art {}
+
+impl core::hash::Hash for Art {
+    fn hash<H: core::hash::Hasher>(&self, _: &mut H) {}
+}
+
+impl core::fmt::Debug for Art {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Art({} px puck)", self.puck.size)
+    }
+}
+
+pub static ART_1: Art = Art {
+    sensors: [&art::SENSORS_22, &art::SENSORS_26, &art::SENSORS_34],
+    refresh: &art::REFRESH,
+    plus: &art::PLUS,
+    arrow: &art::ARROW,
+    puck: &art::PUCK,
+    signs: &art::SIGN_GLYPHS,
+};
+
+pub static ART_0_75: Art = Art {
+    sensors: [
+        &art_0_75::SENSORS_17,
+        &art_0_75::SENSORS_20,
+        &art_0_75::SENSORS_26,
+    ],
+    refresh: &art_0_75::REFRESH,
+    plus: &art_0_75::PLUS,
+    arrow: &art_0_75::ARROW,
+    puck: &art_0_75::PUCK,
+    signs: &art_0_75::SIGN_GLYPHS,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Size {
@@ -187,12 +253,7 @@ impl Sensor {
     }
 
     pub fn icon(self, size: Size) -> &'static Icon {
-        let set = match size {
-            Size::Small => &art::SENSORS_22,
-            Size::Row => &art::SENSORS_26,
-            Size::Large => &art::SENSORS_34,
-        };
-        &set[self as usize]
+        ART_1.sensor(self, size)
     }
 
     /// The colour of the metric the sensor measures, or white for one that
@@ -236,7 +297,7 @@ mod tests {
             .chain(
                 SIGN_GLYPHS
                     .into_iter()
-                    .flat_map(|glyph| FORMS.map(|form| &glyph.art(form).icon)),
+                    .flat_map(|glyph| FORMS.map(|form| &ART_1.sign(glyph, form).icon)),
             )
     }
 
@@ -253,7 +314,7 @@ mod tests {
     const FORMS: [SignForm; 3] = [SignForm::Banner, SignForm::Badge, SignForm::Chip];
 
     fn ink(glyph: SignGlyph, form: SignForm) -> Rect {
-        let art = glyph.art(form);
+        let art = ART_1.sign(glyph, form);
         art.icon.ink(usize::from(art.left), usize::from(art.top))
     }
 
@@ -314,6 +375,21 @@ mod tests {
         }
         assert_eq!(Sensor::Generic.icon(Size::Row).size, 26);
         assert_eq!(Sensor::Heart.icon(Size::Large).size, 34);
+    }
+
+    #[test]
+    fn the_ride_icons_have_solid_ink_at_three_quarters() {
+        let signs = SIGN_GLYPHS
+            .into_iter()
+            .flat_map(|glyph| FORMS.map(|form| &ART_0_75.sign(glyph, form).icon));
+        for icon in signs.chain([ART_0_75.puck]) {
+            let size = usize::from(icon.size);
+            assert!(usize::from(icon.left + icon.width) <= size);
+            assert!(usize::from(icon.top + icon.height) <= size);
+            let solid = (0..size).any(|y| (0..size).any(|x| icon.coverage(x, y) == 15));
+            assert!(solid, "an icon of {size} px has a solid pixel");
+        }
+        assert_eq!((ART_1.puck.size, ART_0_75.puck.size), (20, 15));
     }
 
     #[test]

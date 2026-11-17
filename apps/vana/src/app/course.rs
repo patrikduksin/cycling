@@ -19,7 +19,7 @@ use crate::ride::medium::Medium;
 use crate::ride::turn_back::Leg;
 use crate::screens::chrome::{Toast, Tone};
 pub use crate::screens::ride::MapFrame;
-use crate::screens::ride::{Fetched, FilledMap, MapCache, MapZoom, Track};
+use crate::screens::ride::{Fetched, FilledMap, MapCache, MapRegions, MapZoom, Track};
 use device_api::bulk::ReadWrite;
 
 pub use crate::ride::breadcrumb::Crumb;
@@ -436,6 +436,7 @@ pub(super) fn refresh_map(
     now: u64,
     speed_mm_s: Option<u32>,
     radar: bool,
+    map: &'static MapRegions,
     light: bool,
     clock: Option<fn() -> u64>,
 ) {
@@ -460,7 +461,7 @@ pub(super) fn refresh_map(
         light,
     };
     let started = clock.map(|clock| clock());
-    if state.map.update(&drawn) {
+    if state.map.update(&drawn, map) {
         state.timed(started, clock, |work| &mut work.fill);
     }
 }

@@ -64,6 +64,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
     let width = RIGHT - LEFT;
     canvas.caption(
+        &crate::screens::scaled::BASE,
         lines[STEP].as_bytes(),
         width,
         WIDTH / 2,
@@ -110,6 +111,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
         WHITE,
     );
     canvas.caption(
+        &crate::screens::scaled::BASE,
         lines[NOTE].as_bytes(),
         width,
         WIDTH / 2,

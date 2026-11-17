@@ -69,7 +69,7 @@ pub(super) const fn scrolling_bounds(panel: Rect) -> Rect {
     }
 }
 
-const fn inside(rect: Rect, bounds: Rect) -> bool {
+pub(super) const fn inside(rect: Rect, bounds: Rect) -> bool {
     rect.left >= bounds.left
         && rect.top >= bounds.top
         && rect.right <= bounds.right
@@ -118,6 +118,20 @@ pub(super) fn region_breaks(
         for &(other, against) in &targets[i + 1..] {
             if overlap(rect, against) {
                 breaks.push(format!("targets {name} and {other} overlap"));
+            }
+        }
+    }
+    breaks
+}
+
+/// Text that overlaps other text: runs only meet by design within
+/// `font::SPILL` beside each other, never over each other's ink.
+pub(super) fn overlaps(inks: &[(String, Rect)]) -> Vec<String> {
+    let mut breaks = Vec::new();
+    for (i, (name, rect)) in inks.iter().enumerate() {
+        for (other, against) in &inks[i + 1..] {
+            if overlap(*rect, *against) {
+                breaks.push(format!("{name:?} {rect:?} overlaps {other:?} {against:?}"));
             }
         }
     }

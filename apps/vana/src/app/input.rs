@@ -274,7 +274,7 @@ impl Runtime {
             // Adding a minute to a step changes no ride state, so a tap may.
             Page::Ride
                 if navigation.ride_page() == RidePage::Workout
-                    && crate::screens::ride::EXTEND_ROWS.contains(&y) =>
+                    && self.layout.workout.extend.contains(x, y) =>
             {
                 Some(Control::ExtendStep)
             }
@@ -309,7 +309,9 @@ impl Runtime {
 
     fn sign_at(&self, x: usize, y: usize, now: u64, radar: bool) -> bool {
         let sign = super::course::sign_of(&self.track, now);
-        crate::screens::sign::on_page(self.navigation.ride_page(), sign, radar)
+        let page = self.navigation.ride_page();
+        let layout = crate::screens::ride::page_layout(page, self.layout);
+        crate::screens::sign::on_page(page, sign, radar, layout)
             .is_some_and(|placed| placed.rect().contains(x, y))
     }
 

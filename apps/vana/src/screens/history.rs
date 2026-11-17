@@ -133,6 +133,7 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
             WHITE,
         );
         canvas.caption(
+            &crate::screens::scaled::BASE,
             b"SAVED RIDES SHOW HERE",
             RIGHT - LEFT,
             centre,
@@ -158,7 +159,14 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
             Align::Left,
             WHITE,
         );
-        canvas.caption(count.as_bytes(), 80, RIGHT - 4, PIN_BASE, Align::Right);
+        canvas.caption(
+            &crate::screens::scaled::BASE,
+            count.as_bytes(),
+            80,
+            RIGHT - 4,
+            PIN_BASE,
+            Align::Right,
+        );
         // A hairline where the cards pass under the band.
         canvas.shape(Shape::Bar {
             rect: Rect {
@@ -228,6 +236,7 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
             if focused { WHITE } else { SECONDARY },
         );
         canvas.caption(
+            &crate::screens::scaled::BASE,
             row.detail.as_bytes(),
             width,
             rect.left + INSET,
@@ -260,8 +269,22 @@ pub fn date(days: u16) -> Text<20> {
 /// it has found so far shows.
 fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]) {
     let left = LEFT + 4;
-    let title = canvas.caption(b"THIS WEEK", 100, left, AT + CAPTION_BASE, Align::Left);
-    let place = canvas.caption(count, 80, RIGHT - 4, AT + CAPTION_BASE, Align::Right);
+    let title = canvas.caption(
+        &crate::screens::scaled::BASE,
+        b"THIS WEEK",
+        100,
+        left,
+        AT + CAPTION_BASE,
+        Align::Left,
+    );
+    let place = canvas.caption(
+        &crate::screens::scaled::BASE,
+        count,
+        80,
+        RIGHT - 4,
+        AT + CAPTION_BASE,
+        Align::Right,
+    );
     let weeks = list.weeks.as_ref();
     // Nothing found yet while reading is not a quiet week.
     let known = weeks.filter(|weeks| !list.reading || weeks.this.rides > 0);
@@ -326,6 +349,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             }
         );
         canvas.caption(
+            &crate::screens::scaled::BASE,
             rides.as_bytes(),
             place.left.saturating_sub(title.right() + 12 + 8),
             title.right() + 12,
@@ -341,6 +365,7 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             (weeks.last.distance_mm + 500_000) / 1_000_000
         );
         canvas.caption(
+            &crate::screens::scaled::BASE,
             last.as_bytes(),
             RIGHT - left,
             left,

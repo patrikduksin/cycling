@@ -52,6 +52,18 @@ impl Rect {
             bottom: self.bottom - by,
         }
     }
+
+    /// The part of the box inside `bounds`; empty, at `bounds`' edge, when
+    /// none is.
+    pub fn clipped(&self, bounds: Rect) -> Self {
+        let clamp = |v: usize, low: usize, high: usize| v.clamp(low, high);
+        Self {
+            left: clamp(self.left, bounds.left, bounds.right),
+            top: clamp(self.top, bounds.top, bounds.bottom),
+            right: clamp(self.right, bounds.left, bounds.right),
+            bottom: clamp(self.bottom, bounds.top, bounds.bottom),
+        }
+    }
 }
 
 /// Where the chrome sits on a panel.
@@ -1262,6 +1274,8 @@ impl Toast {
 /// on a screen overlaps or leaves its region.
 #[cfg(any(test, feature = "invariants"))]
 pub(crate) mod layout {
+    #[cfg(test)]
+    use super::{BASE, Scaled};
     use super::{Label, Rect};
     use std::string::String;
     #[cfg(test)]
@@ -1296,24 +1310,29 @@ pub(crate) mod layout {
         ink(label).map(|rect| (name, rect))
     }
 
-    /// Clear columns between two items on the same line: less reads as one
+    /// Clear units between two items on the same line: less reads as one
     /// word.
     pub(crate) const WORD_GAP: usize = 4;
 
-    /// Whether two inks overlap, or sit on one line closer than `WORD_GAP`.
+    /// Whether two inks overlap, or sit on one line closer than `gap`.
     #[cfg(test)]
-    const fn meet(a: Rect, b: Rect) -> bool {
-        a.left < b.right + WORD_GAP
-            && b.left < a.right + WORD_GAP
-            && a.top < b.bottom
-            && b.top < a.bottom
+    const fn meet(a: Rect, b: Rect, gap: usize) -> bool {
+        a.left < b.right + gap && b.left < a.right + gap && a.top < b.bottom && b.top < a.bottom
     }
 
-    /// No two items overlap or run together on a line, and every item lies
-    /// inside `bounds`.
+    /// `assert_apart_at` on the 240 × 320 canvas.
     #[cfg(test)]
     #[track_caller]
     pub(crate) fn assert_apart(items: &[(String, Rect)], bounds: Rect, what: &str) {
+        assert_apart_at(&BASE, items, bounds, what);
+    }
+
+    /// No two items overlap or run together on a line, `WORD_GAP` at `at`'s
+    /// step, and every item lies inside `bounds`.
+    #[cfg(test)]
+    #[track_caller]
+    pub(crate) fn assert_apart_at(at: &Scaled, items: &[(String, Rect)], bounds: Rect, what: &str) {
+        let gap = at.unit(WORD_GAP);
         for (i, (name, rect)) in items.iter().enumerate() {
             let inside = rect.left >= bounds.left
                 && rect.top >= bounds.top
@@ -1322,7 +1341,7 @@ pub(crate) mod layout {
             assert!(inside, "{what}: {name:?} {rect:?} leaves {bounds:?}");
             for (other, against) in &items[i + 1..] {
                 assert!(
-                    !meet(*rect, *against),
+                    !meet(*rect, *against, gap),
                     "{what}: {name:?} {rect:?} overlaps or touches {other:?} {against:?}"
                 );
             }

@@ -135,6 +135,7 @@ pub(super) fn prepare(view: &View, step: Step) -> Canvas {
     );
     for (i, line) in step.text().iter().enumerate() {
         canvas.caption(
+            &crate::screens::scaled::BASE,
             line.as_bytes(),
             RIGHT - LEFT,
             LEFT,

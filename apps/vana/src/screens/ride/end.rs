@@ -7,9 +7,11 @@
 //! same layout: ACT (red trash cue beside ACT) discards the ride, BACK
 //! returns to END RIDE?.
 use crate::screens::canvas::Canvas;
-use crate::screens::chrome::{Align, BODY, CAPTION, LARGE, SECONDARY, TITLE, VALUE, WHITE, WIDTH};
+use crate::screens::chrome::{Align, Rect, SECONDARY, WHITE};
 use crate::screens::cue::{Corner, Cue, Icon};
+use crate::screens::scaled::{Scaled, Track};
 use crate::screens::workout::{Text, View};
+use firmware_shell::rendering::font::FaceRole;
 
 const BACK: Cue = Cue::new(Corner::TopLeft, Icon::Back);
 
@@ -23,8 +25,42 @@ pub const DISCARD_CUES: [Cue; 3] = [
 /// A question whose ACT throws a ride away: DISCARD RIDE?, DELETE RIDE?.
 pub const TRASH_CUES: [Cue; 2] = [BACK, Cue::new(Corner::BottomRight, Icon::Trash)];
 
-const CENTRE: usize = WIDTH / 2;
-const TEXT_WIDTH: usize = WIDTH - 2 * 24;
+/// A question about a ride on one panel, centred down it: rows of text whose
+/// capitals end on their bottoms, between the cues.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    pub title: Rect,
+    pub time: Rect,
+    pub distance: Rect,
+    /// What the answer does, wider than the rows above it.
+    pub line: Rect,
+}
+
+pub const fn regions(at: &Scaled) -> Regions {
+    use Track::{Fr, Unit};
+    let screen = at.screen();
+    let [_, text, _] = screen.cols(crate::screens::cue::CLEAR_OF_CUES, Unit(0), at);
+    let [_, wide, _] = screen.cols([Unit(10), Fr(1), Unit(10)], Unit(0), at);
+    let [_, title, time, distance, line, _, _] = text.rows(
+        [
+            Fr(1),
+            Unit(112),
+            Unit(66),
+            Unit(28),
+            Unit(38),
+            Unit(76),
+            Fr(1),
+        ],
+        Unit(0),
+        at,
+    );
+    Regions {
+        title,
+        time,
+        distance,
+        line: line.with_columns(wide),
+    }
+}
 
 pub fn prepare(view: &View) -> Canvas {
     question(view, b"END RIDE?", b"YOUR RIDE WILL BE SAVED")
@@ -37,88 +73,84 @@ pub fn discard(view: &View) -> Canvas {
 /// A question about a ride: `title`, the ride time, the distance and a grey
 /// `line` saying what the answer does.
 pub fn question(view: &View, title: &[u8], line: &[u8]) -> Canvas {
+    let layout = view.frame_layout();
+    let (at, regions) = (&layout.scaled, &layout.end);
+    let face = |role| at.face(role);
     let mut canvas = Canvas::default();
-    canvas.fit(
-        &[&TITLE, &BODY],
-        title,
-        TEXT_WIDTH,
-        CENTRE,
-        112,
-        Align::Center,
-        WHITE,
-    );
+    let mut centred = |faces: &[_], text: &[u8], row: Rect, color| {
+        canvas.fit(
+            faces,
+            text,
+            row.width(),
+            row.center_x(),
+            row.bottom,
+            Align::Center,
+            color,
+        );
+    };
+    let title_faces = [face(FaceRole::Title), face(FaceRole::Body)];
+    centred(&title_faces, title, regions.title, WHITE);
     let mut time = Text::<12>::new();
     super::elapsed(&mut time, view.active_secs);
-    canvas.fit(
-        &[&LARGE, &VALUE],
-        time.as_bytes(),
-        TEXT_WIDTH,
-        CENTRE,
-        178,
-        Align::Center,
-        WHITE,
-    );
+    let large = [face(FaceRole::Large), face(FaceRole::Value)];
+    centred(&large, time.as_bytes(), regions.time, WHITE);
     let mut distance = Text::<12>::new();
     super::kilometres(&mut distance, view.totals.distance_mm());
     let _ = core::fmt::Write::write_str(&mut distance, " KM");
-    canvas.fit(
-        &[&BODY],
+    centred(
+        &[face(FaceRole::Body)],
         distance.as_bytes(),
-        TEXT_WIDTH,
-        CENTRE,
-        206,
-        Align::Center,
+        regions.distance,
         WHITE,
     );
-    canvas.fit(
-        &[&CAPTION],
-        line,
-        WIDTH - 20,
-        CENTRE,
-        244,
-        Align::Center,
-        SECONDARY,
-    );
+    centred(&[face(FaceRole::Caption)], line, regions.line, SECONDARY);
     canvas
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::chrome::{HEIGHT, Rect};
     use crate::screens::workout::Page;
 
     #[test]
     fn the_question_and_the_longest_ride_lay_out_whole() {
-        let mut view = View::new(Page::EndRide, 0, None);
-        view.active_secs = 359_999;
-        let sample = crate::ride::log::Sample::default();
-        view.totals.add(1000, 999_999_999, &sample, None);
-        let screen = Rect {
-            left: 0,
-            top: 50,
-            right: WIDTH,
-            bottom: HEIGHT - 50,
-        };
-        prepare(&view).assert_laid_out(
-            screen,
-            &[
-                "END RIDE?",
-                "99:59:59",
-                "1000.0 KM",
-                "YOUR RIDE WILL BE SAVED",
-            ],
-            "end ride",
-        );
-        discard(&view).assert_laid_out(
-            screen,
-            &[
-                "DISCARD RIDE?",
-                "99:59:59",
-                "1000.0 KM",
-                "IT WILL NOT BE SAVED",
-            ],
-            "discard ride",
-        );
+        for layout in crate::screens::panels::ALL {
+            for (page, words) in [
+                (
+                    Page::EndRide,
+                    [
+                        "END RIDE?",
+                        "99:59:59",
+                        "1000.0 KM",
+                        "YOUR RIDE WILL BE SAVED",
+                    ],
+                ),
+                (
+                    Page::DiscardRide,
+                    [
+                        "DISCARD RIDE?",
+                        "99:59:59",
+                        "1000.0 KM",
+                        "IT WILL NOT BE SAVED",
+                    ],
+                ),
+            ] {
+                let mut view = View::new(page, 0, None);
+                view.layout = layout;
+                view.active_secs = 359_999;
+                let sample = crate::ride::log::Sample::default();
+                view.totals.add(1000, 999_999_999, &sample, None);
+                view.prepare().check_layout();
+                let at = &layout.scaled;
+                let screen = at.screen();
+                let clear = Rect {
+                    top: at.unit(50),
+                    bottom: screen.bottom - at.unit(50),
+                    ..screen
+                };
+                let what = std::format!("{} on {:?}", words[0], at.panel);
+                view.canvas().assert_laid_out(clear, &words, &what);
+            }
+        }
     }
 }

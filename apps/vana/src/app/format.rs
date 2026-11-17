@@ -574,11 +574,11 @@ impl Runtime {
         self.ride.forget_moved_ride();
         match self.card_access() {
             CardAccess::Out => Ok(()),
-            CardAccess::Writable => crate::kept::forget_journal(
+            CardAccess::Writable => crate::ride::settle::reset(
+                Medium::Internal,
                 &mut self.facts,
                 &mut self.deleted,
                 bulk,
-                Medium::Internal,
                 now,
             ),
         }

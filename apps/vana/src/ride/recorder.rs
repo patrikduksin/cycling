@@ -1005,7 +1005,12 @@ impl Recorder {
                 }
                 self.lifecycle = Lifecycle::Recovered;
             }
-            (Record::Event { .. }, ..) => {}
+            (Record::Event { kind, .. }, ..) => {
+                unreachable!(
+                    "step appends no {kind:?} record in {}",
+                    self.status().name()
+                )
+            }
         }
     }
 

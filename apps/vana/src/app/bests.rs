@@ -1,6 +1,5 @@
-//! Personal bests in the app: merging a saved ride into the rider's bests,
-//! announcing them on the summary, the FTP offer they can lead to and the
-//! BESTS view under Settings, PROFILE.
+//! Personal bests in the app: announcing them on the summary, the FTP offer
+//! they can lead to and the BESTS view under Settings, PROFILE.
 //!
 //! The bests live in a small file beside the workout outcomes
 //! (`kept::bests`), not in the preference record. A ride
@@ -10,11 +9,8 @@
 //! the next write keeps them). A read that failed only this time is tried
 //! again, with the ride's outcome waiting.
 use super::Runtime;
-use super::recording::Ride;
-use crate::clock::Zone;
-use crate::kept::bests::{Bests, Found, Kept, Outcome, Seen, Store, suggest_ftp};
+use crate::kept::bests::{Bests, Found, Kept, Seen, Store, suggest_ftp};
 use crate::ride::log::Status;
-use crate::ride::medium::Medium;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::bests::Mode;
 use crate::screens::chrome::Tone;
@@ -49,54 +45,6 @@ impl Kept {
             Store::NotSaved => Mode::NotSaved,
             _ => Mode::List,
         }
-    }
-}
-
-/// What a live ride that just finished on `medium` adds up to, and the day
-/// it started (0 when the clock was unknown).
-fn outcome(ride: &Ride, medium: Medium, zone: Zone, now: u64) -> Option<(Outcome, u16)> {
-    let saved = ride
-        .recorder(medium)
-        .summaries()
-        .iter()
-        .flatten()
-        .last()
-        .copied()?;
-    let day = saved.first_utc_ms.map_or(0, |utc| {
-        (zone.local(utc / 1000).0 / 86_400).min(u64::from(u16::MAX)) as u16
-    });
-    let clamp = |value: u64| value.min(u64::from(u32::MAX)) as u32;
-    let totals = &ride.totals;
-    let outcome = Outcome {
-        power: ride.efforts.best(),
-        distance_m: clamp(totals.distance_mm() / 1000),
-        time_s: clamp(ride.active_ms(now) / 1000),
-        // As the summary shows it: whole metres.
-        ascent_m: (totals.ascent_dm() + 5) / 10,
-    };
-    Some((outcome, day))
-}
-
-/// Merge the ride that just finished on `medium` into the stored bests,
-/// keeping what it set for the summary and its 20 min best for the FTP
-/// offer. A ride that could not be stored claims no best.
-pub(super) fn settle(
-    ride: &mut Ride,
-    kept: &mut Kept,
-    media: &mut impl ReadWrite,
-    medium: Medium,
-    zone: Zone,
-    now: u64,
-) {
-    ride.bests_found = Found::default();
-    ride.ftp_suggestion = None;
-    let Some((outcome, day)) = outcome(ride, medium, zone, now) else {
-        return;
-    };
-    let found = kept.merge(media, outcome, day, now);
-    ride.bests_found = found;
-    if found.power[3] {
-        ride.ftp_suggestion = Some(kept.bests.power[3].value.min(u32::from(u16::MAX)) as u16);
     }
 }
 

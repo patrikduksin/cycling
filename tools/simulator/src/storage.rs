@@ -112,10 +112,11 @@ pub struct FlashImage {
     pub configuration: Vec<u8>,
     pub data: Vec<u8>,
     pub intent: Vec<u8>,
-    /// Bytes of the intent's word programs cut by power, with the value a
-    /// whole program leaves. A boot reads each such word whole or as the
-    /// cut left it, until a program completes over it or an erase clears
-    /// it. The other regions keep a cut word as it was left.
+    /// Bytes of the intent's and the ride journal's word programs cut short,
+    /// with the value a whole program leaves. A boot reads each such word
+    /// whole or as the cut left it, until a program completes over it or an
+    /// erase clears it. The configuration region keeps a cut word as it was
+    /// left.
     pub marginal: Vec<(Region, usize, u8)>,
 }
 
@@ -370,7 +371,11 @@ impl FileFlash {
                     if index < touched {
                         *dst = landed(*dst, bytes[index], offset + index);
                     }
-                    if r == Region::Intent && !erase && bytes.len() == 4 && *dst != whole {
+                    if matches!(r, Region::Intent | Region::Data)
+                        && !erase
+                        && bytes.len() == 4
+                        && *dst != whole
+                    {
                         cut.push((r, offset + index, whole));
                     }
                 }

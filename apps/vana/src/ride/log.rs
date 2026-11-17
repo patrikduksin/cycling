@@ -346,6 +346,19 @@ pub fn commit_word() -> Commit {
     Commit(COMMITTED.to_le_bytes())
 }
 
+pub fn recommittable(slot: &Slot) -> Option<Entry> {
+    if get_u32(&slot.0, COMMIT_OFFSET) & COMMITTED != COMMITTED {
+        return None;
+    }
+    let mut whole = slot.clone();
+    whole.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
+    decode(&whole)
+}
+
+pub fn tear(slot: &mut [u8]) {
+    slot[COMMIT_OFFSET..SLOT_SIZE].fill(0xff);
+}
+
 pub fn erased(slot: &[u8]) -> bool {
     slot.iter().all(|byte| *byte == 0xff)
 }
@@ -637,6 +650,7 @@ pub struct Scanner {
     foreign_slot: bool,
     /// The ride the last accepted slot completed, for the ride index.
     completed_now: Option<Summary>,
+    newest: Option<usize>,
 }
 
 impl Scanner {
@@ -684,7 +698,12 @@ impl Scanner {
             last_ride_id: catalog.next_ride_id.wrapping_sub(1),
             foreign_slot: catalog.foreign_slot,
             completed_now: None,
+            newest: None,
         }
+    }
+
+    pub fn newest(&self) -> Option<usize> {
+        self.newest
     }
 
     /// Scan one slot at `index`; erased slots are unused, not gaps.
@@ -704,6 +723,7 @@ impl Scanner {
             self.gap(1);
             return;
         };
+        self.newest = Some(index);
         self.apply(entry, load);
     }
 

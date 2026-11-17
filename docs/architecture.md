@@ -51,9 +51,11 @@ bests' machine, `bests::Kept::service`, takes what it needs from other owners
 as a `Seen` value and returns an `Out` of domain facts, which the glue turns
 into a toast and a redraw. `kept/` also holds `StoreError`, the typed failure
 of the bests and course files, and the one `RETRY_MS` that FILES and the
-preference record wait before trying again. The application layer, `app/`,
-holds `Runtime` and the glue that turns domain state into pages, toasts and
-redraws; `screens/` draws them. Domain code never imports `crate::app` or
+preference record wait before trying again. `ride/settle.rs` is the save
+protocol, the only code that writes FILES after a recorder result: it hides a
+discarded ride, then saves bests, the workout record and facts, in that order.
+The application layer, `app/`, holds `Runtime` and the glue that turns domain
+state into pages, toasts and redraws; `screens/` draws them. Domain code never imports `crate::app` or
 `crate::screens` and takes what it needs as arguments.
 `tools/check-boundaries.py` enforces this rule in `cycling check`. Its one
 exception, `sensors/scan.rs`, is listed there.
@@ -231,8 +233,8 @@ scan, gets one file named for the behavior beside its owner.
   the probe names, such as a full batch flushed while recording.
   A FORMAT wipe of that journal is an outside event there. It finishes, fails
   with or without the erase, or is cut and finished at the next boot. While
-  FORMAT holds storage with no wipe waiting in the recorder, the search makes
-  only the recorder calls the app makes.
+  FORMAT holds storage, the search makes only the recorder calls the app
+  makes.
   Its always-on search starts first in each test run, in nextest's `slow`
   group, which `cycling quick` leaves out.
   Run its ignored `WIDE` and full-batch tests on any PR that touches

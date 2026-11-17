@@ -430,6 +430,10 @@ impl Kept {
         }
     }
 
+    pub(crate) fn best_20_min(&self) -> u16 {
+        self.bests.power[3].value.min(u32::from(u16::MAX)) as u16
+    }
+
     /// Write the bests; if the store refuses, keep them in memory.
     fn write(&mut self, media: &mut impl ReadWrite, now: u64) {
         match save(media, &self.bests) {

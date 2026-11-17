@@ -415,7 +415,7 @@ impl Runtime {
             utc_ms / 60_000,
             self.preferences.options.zone,
             self.preferences.profile.ftp_watts,
-            self.facts.revision,
+            self.facts.revision(),
             self.rides(),
         )
     }
@@ -431,7 +431,7 @@ impl Runtime {
             )
         };
         (
-            self.deleted.revision,
+            self.deleted.revision(),
             [ids(Medium::Internal), ids(Medium::Bulk)],
         )
     }

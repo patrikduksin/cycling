@@ -2,14 +2,8 @@
 //! and FORM totals and the phone leave out the rides `kept::deleted` hides.
 //! Without a FILES volume or a shelf nothing is hidden, and neither the
 //! discard cue nor the delete page shows.
-//!
-//! A discarded ride is saved as any other, with a Finish record, and then
-//! hidden; once hidden, its bests, facts and workout record are never
-//! written. One that could not be hidden is kept with them, and a cut
-//! between the two leaves a saved ride, which the rider can delete later. A delete from a saved ride's last page waits for the next service,
-//! which holds the card.
 use super::Runtime;
-use crate::kept::deleted::{Reason, Record, Ride, Scan, Seen, Shelf};
+use crate::kept::deleted::{Reason, Record, Ride, Seen, Shelf};
 use crate::ride::log::{Status, Summary};
 use crate::ride::medium::Medium;
 use crate::screens::chrome::Tone;
@@ -20,13 +14,12 @@ impl Runtime {
     /// Lend storage for the hidden rides in memory,
     /// [`SHELF_BYTES`](crate::kept::deleted::SHELF_BYTES).
     pub fn attach_deleted_rides(&mut self, slots: &'static mut [u8]) {
-        self.deleted.shelf = Some(Shelf::new(slots));
-        self.deleted.scan = Scan::Unread;
+        self.deleted.attach(Shelf::new(slots));
     }
 
     /// The bulk log's store id, which a new log on the card changes; 0 for
     /// the internal journal.
-    fn store(&self, medium: Medium) -> u64 {
+    pub(super) fn store(&self, medium: Medium) -> u64 {
         match medium {
             Medium::Internal => 0,
             Medium::Bulk => self.ride.bulk_media.log().map_or(0, |log| log.store_id()),
@@ -79,26 +72,6 @@ impl Runtime {
                 .map_or(0, |ms| u32::try_from(ms / 1000).unwrap_or(0)),
         };
         self.deleted.save(bulk, &record).is_ok()
-    }
-
-    /// Hide the ride `medium` just saved, which the rider discarded; Home
-    /// then shows no last ride. Returns whether it was hidden: one that was
-    /// not is kept as any other saved ride.
-    pub(super) fn ride_discarded(&mut self, bulk: &mut impl ReadWrite, medium: Medium) -> bool {
-        let saved = self
-            .ride
-            .recorder(medium)
-            .summaries()
-            .iter()
-            .flatten()
-            .last()
-            .copied();
-        let hidden = saved.is_some_and(|saved| self.hide(bulk, medium, &saved, Reason::Discarded));
-        if hidden {
-            self.history.home_last = Some(0);
-        }
-        self.ride.discard = super::recording::Discard::Saved { hidden };
-        hidden
     }
 
     /// Delete the saved ride on the summary's pages at the next service.

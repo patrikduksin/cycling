@@ -24,6 +24,7 @@ pub mod recorder;
 pub mod recovery;
 pub mod replay;
 pub mod rider;
+pub mod settle;
 pub mod storage;
 pub mod thin;
 pub mod totals;

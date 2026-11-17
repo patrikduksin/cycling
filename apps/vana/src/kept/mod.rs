@@ -5,9 +5,6 @@ pub mod course;
 pub mod deleted;
 pub mod facts;
 
-use crate::ride::medium::Medium;
-use device_api::bulk::ReadWrite;
-
 pub(crate) const RETRY_MS: u64 = 5_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,25 +36,6 @@ pub(crate) fn refusal(error: impl CardError) -> Result<(), CardRefused> {
         Some(Failed | Range) => Err(CardRefused),
         _ => Ok(()),
     }
-}
-
-/// Old FILES records would attach to new rides that reuse the ids.
-/// `#[inline(never)]` keeps the FILES buffers out of the callers' frames.
-#[inline(never)]
-pub(crate) fn forget_journal(
-    facts: &mut facts::store::Kept,
-    deleted: &mut deleted::Hidden,
-    bulk: &mut impl ReadWrite,
-    medium: Medium,
-    now: u64,
-) -> Result<(), CardRefused> {
-    let history = crate::workout::history::forget(bulk, medium.journal()).or_else(|error| {
-        log::warn!(target: "sdk.workout", "history_forget_failed error={}", error.name());
-        refusal(error)
-    });
-    let facts = facts.forget(bulk, medium);
-    let deleted = deleted.forget(bulk, medium, now);
-    history.and(facts).and(deleted)
 }
 
 /// Why a file on FILES could not be read or written.

@@ -580,7 +580,7 @@ pub fn forget(media: &mut impl ReadWrite, shelf: &mut Shelf, journal: u8) -> Res
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Scan {
+enum Scan {
     #[default]
     Unread,
     Retry {
@@ -607,11 +607,9 @@ pub(crate) struct Seen {
 
 #[derive(Default)]
 pub(crate) struct Hidden {
-    pub(crate) shelf: Option<Shelf>,
-    pub(crate) scan: Scan,
-    /// Changes with the shelf, so lists and totals made from it are made
-    /// again.
-    pub(crate) revision: u32,
+    shelf: Option<Shelf>,
+    scan: Scan,
+    revision: u32,
     /// The bulk medium was usable at the last service.
     card_ready: bool,
     /// A card is in and has not failed, whatever its ride log's state.
@@ -623,6 +621,15 @@ pub(crate) struct Hidden {
 }
 
 impl Hidden {
+    pub(crate) fn attach(&mut self, shelf: Shelf) {
+        self.shelf = Some(shelf);
+        self.scan = Scan::Unread;
+    }
+
+    pub(crate) fn revision(&self) -> u32 {
+        self.revision
+    }
+
     pub(crate) fn shelf(&self) -> Option<&Shelf> {
         self.shelf.as_ref().filter(|_| self.scan == Scan::Read)
     }

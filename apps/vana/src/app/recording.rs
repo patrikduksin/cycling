@@ -19,6 +19,7 @@ use crate::ride::log::{Altitude, Sample, Status};
 use crate::ride::medium::Medium;
 use crate::ride::metrics::Step;
 use crate::ride::recorder::{Action, Recorder, Refused, ResultEvent};
+use crate::ride::settle::{self, End, Hide, Saved};
 use crate::ride::storage::RideStorage;
 use crate::ride::totals::{Efforts, Totals};
 use crate::ride::zones::{TrainingProfile, ZoneTime};
@@ -817,13 +818,7 @@ impl Runtime {
             if reset && self.ride.recorder(medium).status() == Status::Ready {
                 // The reset has reported its outcome already; a card that
                 // refuses keeps the old records, as a card that is out does.
-                let _ = crate::kept::forget_journal(
-                    &mut self.facts,
-                    &mut self.deleted,
-                    bulk,
-                    medium,
-                    now,
-                );
+                let _ = settle::reset(medium, &mut self.facts, &mut self.deleted, bulk, now);
             }
         }
         let ride = &mut self.ride;
@@ -889,9 +884,8 @@ impl Runtime {
             };
             ride.settled = Some((sample, step, None));
         }
-        let mut finished = None;
-        let mut discarded = None;
-        for medium in [Medium::Internal, Medium::Bulk] {
+        let mut ended = [None; 2];
+        for (index, medium) in [Medium::Internal, Medium::Bulk].into_iter().enumerate() {
             let Some(result) = ride.recorder_mut(medium).take_result() else {
                 continue;
             };
@@ -900,11 +894,7 @@ impl Runtime {
                 ride.discard = Discard::Failed;
             }
             if result.ok && result.action == Some(Action::Finish) {
-                if discard {
-                    discarded = Some(medium);
-                } else {
-                    finished = Some(medium);
-                }
+                ended[index] = Some((medium, discard));
             }
             if result.token != 0 {
                 // A ride the rider or host asked for that failed to start is
@@ -923,49 +913,54 @@ impl Runtime {
                 ride.give_up_continuation();
             }
         }
-        // A discarded ride, once hidden, sets no bests and keeps no facts or
-        // workout record; one that could not be hidden is kept with them.
-        if let Some(medium) = discarded
-            && !self.ride_discarded(bulk, medium)
-        {
-            finished = Some(medium);
-        }
-        let ride = &mut self.ride;
-        if let Some(medium) = finished {
-            super::bests::settle(
-                ride,
-                &mut self.bests,
-                bulk,
-                medium,
-                self.preferences.options.zone,
-                now,
-            );
-        }
-        // A saved ride keeps how its workout went beside it on FILES.
-        if let (Some(medium), Some(player)) = (finished, ride.workout.as_ref())
-            && let Some(saved) = ride.recorder(medium).summaries().iter().flatten().last()
-        {
-            let record = crate::workout::history::Record {
-                journal: medium.journal(),
-                ride_id: saved.ride_id,
-                started_utc_ms: saved.first_utc_ms,
-                name: player.workout().name,
-                test: player.workout().test,
-                summary: player.summary(),
-            };
-            if let Err(error) = crate::workout::history::save(bulk, &record) {
-                log::warn!(target: "sdk.workout", "history_failed error={}", error.name());
+        let ride = &self.ride;
+        let saved = |medium: Medium| Saved {
+            medium,
+            summary: ride
+                .recorder(medium)
+                .summaries()
+                .iter()
+                .flatten()
+                .last()
+                .copied(),
+            store_id: self.store(medium),
+            totals: &ride.totals,
+            efforts: &ride.efforts,
+            climbing: ride.climbing,
+            active_ms: ride.active_ms(now),
+            player: ride.workout.as_ref(),
+            zone: self.preferences.options.zone,
+            profile: self.preferences.profile,
+            recovery: self.recovery.reading(now),
+            utc_ms: self.readings.live.utc_ms,
+            now,
+        };
+        let end = |(medium, discard)| {
+            if discard {
+                End::Discarded(saved(medium))
+            } else {
+                End::Finished(saved(medium))
             }
+        };
+        let settled = settle::settle(
+            ended.map(|ended| ended.map(end)),
+            &mut self.bests,
+            &mut self.facts,
+            &mut self.deleted,
+            bulk,
+        );
+        let ride = &mut self.ride;
+        match settled.hide {
+            Hide::NotAsked => {}
+            Hide::Hidden => {
+                self.history.home_last = Some(0);
+                ride.discard = Discard::Saved { hidden: true };
+            }
+            Hide::Kept => ride.discard = Discard::Saved { hidden: false },
         }
-        // After the workout record: facts give way when FILES is full.
-        if let Some(medium) = finished {
-            self.facts.ride_saved(
-                bulk,
-                ride,
-                medium,
-                self.preferences.profile,
-                self.recovery.reading(now),
-            );
+        if let Some(claimed) = settled.claimed {
+            ride.bests_found = claimed.found;
+            ride.ftp_suggestion = claimed.ftp;
         }
         // A ride lost while paused continues paused; automation waits until
         // it is, so an automatic pause stays automatic.

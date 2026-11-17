@@ -11,7 +11,7 @@ use device_api::bulk::ReadWrite;
 use firmware_services::{files, volume};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Scan {
+enum Scan {
     /// The next piece of the table, and the table's revision as of the first
     /// piece; a table written since is read again from the start.
     Table {
@@ -27,7 +27,7 @@ pub(crate) enum Scan {
 }
 
 impl Scan {
-    pub(crate) const START: Self = Self::Table {
+    const START: Self = Self::Table {
         piece: 0,
         revision: None,
     };
@@ -41,7 +41,7 @@ impl Default for Scan {
 
 /// The ride just saved, until its heart-rate recovery is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Awaiting {
+enum Awaiting {
     /// Saved before the summary started measuring, as when the host ends a
     /// ride.
     Finish(Record),
@@ -50,16 +50,24 @@ pub(crate) enum Awaiting {
 
 #[derive(Default)]
 pub(crate) struct Kept {
-    pub(crate) shelf: Option<Shelf>,
-    pub(crate) scan: Scan,
-    /// Changes with the shelf, so totals made from it are made again.
-    pub(crate) revision: u32,
-    pub(crate) awaiting: Option<Awaiting>,
+    shelf: Option<Shelf>,
+    scan: Scan,
+    revision: u32,
+    awaiting: Option<Awaiting>,
     /// The bulk medium was usable at the last service.
     card_ready: bool,
 }
 
 impl Kept {
+    pub(crate) fn attach(&mut self, shelf: Shelf) {
+        self.shelf = Some(shelf);
+        self.scan = Scan::START;
+    }
+
+    pub(crate) fn revision(&self) -> u32 {
+        self.revision
+    }
+
     /// What the saved ride `ride_id` of `medium`, started at `started_utc_ms`,
     /// keeps beside its journal; nothing for an undated ride.
     pub(crate) fn find(
@@ -96,11 +104,28 @@ impl Kept {
         }
     }
 
-    pub(crate) fn write(&mut self, bulk: &mut impl ReadWrite, record: Record) {
+    fn write(&mut self, bulk: &mut impl ReadWrite, record: Record) {
         match save(bulk, &record) {
             Ok(()) => self.saved(record),
             Err(error) => log::warn!(target: "sdk.facts", "save_failed error={error:?}"),
         }
+    }
+
+    pub(crate) fn ride_saved(
+        &mut self,
+        bulk: &mut impl ReadWrite,
+        mut record: Record,
+        recovery: Option<Reading>,
+    ) {
+        self.awaiting = match recovery {
+            Some(Reading::Recovered(bpm)) => {
+                record.facts.recovery_bpm = Some(bpm);
+                None
+            }
+            Some(Reading::Measuring(_)) => Some(Awaiting::Measuring(record)),
+            None => Some(Awaiting::Finish(record)),
+        };
+        self.write(bulk, record);
     }
 
     /// A cleared or initialized journal numbers its rides from 1 again.

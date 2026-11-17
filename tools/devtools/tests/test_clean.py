@@ -340,6 +340,18 @@ class IdleBuildDirTests(CleanCase):
         self.assertEqual(rows['target'].action, R)
         self.assertEqual(rows['vendor/trouble-host/target'].action, K)
 
+    def test_an_idle_target_that_holds_a_worktree_is_kept(self):
+        kept = self.add_worktree('kept')
+        (kept / 'target').mkdir()
+        git(self.primary, 'worktree', 'add', '-q', '-b', 'inner', str(kept / 'target' / 'inner'), 'origin/main')
+        self.age(kept / 'target', 30)
+        rows = {d.relative_to(kept).as_posix(): v for d, v in self.verdicts(kept).items()}
+        self.assertEqual(rows['target'].action, K)
+        self.assertIn('contains worktree inner', rows['target'].reason)
+
+    def test_a_path_too_shallow_for_a_build_dir_has_no_owner(self):
+        self.assertIsNone(clean.owner(Path('/target')))
+
     def test_hard_links_count_once_and_symlinked_dirs_are_skipped(self):
         kept = self.add_worktree('kept')
         (kept / '.local/firmware').mkdir(parents=True)

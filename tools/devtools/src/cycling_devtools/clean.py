@@ -4,9 +4,9 @@ A worktree is removed only when it is provably dead: its
 branch is merged, it has commits of its own, its tree is clean and quiet, it holds
 no ignored file outside the regenerable build dirs, it contains no other worktree
 and no process works inside it. Build directories of the worktrees that stay are
-deleted when nothing in them changed for --idle-hours. The primary checkout and
-its .local/elf archive are never touched. Every row is judged again right before
-it is deleted.
+deleted when nothing in them changed for --idle-hours; the primary checkout is
+never removed, though its idle build directories are. Every row is judged again
+right before it is deleted.
 
 Live agents are found by the cwd of each /proc/<pid>. Another user's processes
 expose no cwd to us and are not seen, so run this as the user who runs the agents.
@@ -183,14 +183,18 @@ def dirty(path):
     return out.returncode != 0 or bool(out.stdout.strip())
 
 
+def matches(parts, patterns):
+    return any(
+        len(parts) > pattern.count('/') and fnmatch.fnmatchcase('/'.join(parts[: pattern.count('/') + 1]), pattern)
+        for pattern in patterns
+    )
+
+
 def is_build(parts):
     """Whether a path relative to the worktree is regenerable ignored content."""
     if any(name in CACHE_NAMES for name in parts):
         return True
-    if any(
-        fnmatch.fnmatchcase('/'.join(parts[: pattern.count('/') + 1]), pattern)
-        for pattern in (*BUILD_DIRS, *BUILD_OUTPUTS)
-    ):
+    if matches(parts, (*BUILD_DIRS, *BUILD_OUTPUTS)):
         return True
     return parts[:2] == ('.local', 'sim') and len(parts) > 2 and parts[2] not in KEEP_IN_SIM
 
@@ -359,9 +363,11 @@ def build_dirs(tree):
 
 def owner(directory):
     for pattern in BUILD_DIRS:
-        tree = directory.parents[pattern.count('/')]
-        relative = directory.relative_to(tree).as_posix()
-        if fnmatch.fnmatchcase(relative, pattern) and (tree / '.git').exists():
+        depth = pattern.count('/')
+        if depth >= len(directory.parents):
+            continue
+        tree = directory.parents[depth]
+        if matches(directory.relative_to(tree).parts, (pattern,)) and (tree / '.git').exists():
             return tree
     return None
 
@@ -370,6 +376,8 @@ def judge_dir(tree, directory, ctx):
     """(size, decision) for one build dir of a kept worktree."""
     size, newest = measure(directory)
     idle = (ctx.now - newest) / 3600
+    if nested := [other for other in ctx.trees if inside(other.path, directory)]:
+        return size, keep(f'contains worktree {nested[0].path.name}')
     if direct_occupants(tree, ctx) or occupants(directory, ctx):
         return size, keep('live process in worktree')
     if idle < ctx.idle_hours:

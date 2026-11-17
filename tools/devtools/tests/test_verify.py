@@ -427,7 +427,8 @@ def test_results_for_a_pull_request_are_refused_inside_the_run_when_the_tree_is_
 
 def alive(pid):
     try:
-        return Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[0] != 'Z'
+        # A reaped process passes through X (dead) between Z and leaving /proc.
+        return Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[0] not in ('Z', 'X')
     except OSError:
         return False
 

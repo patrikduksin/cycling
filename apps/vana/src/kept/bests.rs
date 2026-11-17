@@ -29,7 +29,7 @@
 //! The ride bests need a ride of `MIN_RIDE_S`, so a test press of a few
 //! seconds does not become "the longest ride". A power above
 //! `PLAUSIBLE_WATTS` for its window is a sensor glitch and never a best.
-use super::bests;
+use super::{RETRY_MS, StoreError};
 use crate::ride::{Contents, another_version};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::crc32;
@@ -211,41 +211,23 @@ const FIELDS_AT: usize = 6;
 const BODY: usize = FIELDS_AT + Bests::ENCODED;
 const SIZE: usize = BODY + 4;
 
-/// Why bests could not be read or written.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error {
-    /// No card, no FILES volume or no formatted file store: nothing to keep
-    /// bests in.
-    Unavailable,
-    /// The medium failed this time; trying again may work.
-    Media,
-    /// A file is there but does not decode.
-    Damaged,
-    /// The file is of another version: kept, and never written over.
-    Foreign,
-    /// The store has no room for the file.
-    Full,
-}
-
-impl From<files::Error> for Error {
-    fn from(error: files::Error) -> Self {
-        use device_api::bulk::Error as Media;
-        match error {
-            files::Error::Media(Media::Failed) | files::Error::Stale => Self::Media,
-            files::Error::Media(_) => Self::Unavailable,
-            files::Error::Full | files::Error::TooLarge => Self::Full,
-            _ => Self::Unavailable,
-        }
+fn error(error: files::Error) -> StoreError {
+    use device_api::bulk::Error as Media;
+    match error {
+        files::Error::Media(Media::Failed) | files::Error::Stale => StoreError::Media,
+        files::Error::Media(_) => StoreError::Unavailable,
+        files::Error::Full | files::Error::TooLarge => StoreError::Full,
+        _ => StoreError::Unavailable,
     }
 }
 
 fn open<'a, M: ReadWrite>(
     media: &'a mut M,
     sector: &mut files::Sector,
-) -> Result<volume::Volume<'a, M>, Error> {
+) -> Result<volume::Volume<'a, M>, StoreError> {
     volume::open(media, &volume::FILES, sector).map_err(|error| match error {
-        volume::Error::Media(device_api::bulk::Error::Failed) => Error::Media,
-        _ => Error::Unavailable,
+        volume::Error::Media(device_api::bulk::Error::Failed) => StoreError::Media,
+        _ => StoreError::Unavailable,
     })
 }
 
@@ -280,17 +262,18 @@ enum File {
     Foreign,
 }
 
-fn read(media: &mut impl ReadWrite) -> Result<File, Error> {
+fn read(media: &mut impl ReadWrite) -> Result<File, StoreError> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = open(media, &mut sector)?;
-    let dir = files::mount(&mut store, &mut sector)?;
-    let name = files::Name::new(FILE)?;
-    let Some(entry) = dir.find(&mut store, &name, &mut sector)? else {
+    let dir = files::mount(&mut store, &mut sector).map_err(error)?;
+    let name = files::Name::new(FILE).map_err(error)?;
+    let Some(entry) = dir.find(&mut store, &name, &mut sector).map_err(error)? else {
         return Ok(File::Missing);
     };
     let mut bytes = [0; SIZE];
     let length = (entry.length as usize).min(SIZE);
-    dir.read(&mut store, &entry, 0, &mut bytes[..length], &mut sector)?;
+    dir.read(&mut store, &entry, 0, &mut bytes[..length], &mut sector)
+        .map_err(error)?;
     let bytes = &bytes[..length];
     Ok(if another_version(bytes, MAGIC, VERSION) {
         File::Foreign
@@ -301,7 +284,7 @@ fn read(media: &mut impl ReadWrite) -> Result<File, Error> {
     })
 }
 
-pub fn contents(media: &mut impl ReadWrite) -> Result<Contents, Error> {
+pub fn contents(media: &mut impl ReadWrite) -> Result<Contents, StoreError> {
     Ok(match read(media)? {
         File::Missing => Contents::Missing,
         File::Current(_) => Contents::Current,
@@ -311,26 +294,26 @@ pub fn contents(media: &mut impl ReadWrite) -> Result<Contents, Error> {
 }
 
 /// The stored bests; none when the store has no file yet.
-pub fn load(media: &mut impl ReadWrite) -> Result<Bests, Error> {
+pub fn load(media: &mut impl ReadWrite) -> Result<Bests, StoreError> {
     match read(media)? {
         File::Missing => Ok(Bests::default()),
         File::Current(bests) => Ok(bests),
-        File::Damaged => Err(Error::Damaged),
-        File::Foreign => Err(Error::Foreign),
+        File::Damaged => Err(StoreError::Damaged),
+        File::Foreign => Err(StoreError::Foreign),
     }
 }
 
 /// Store `bests`, replacing a current or damaged file in one atomic commit.
 /// A store the host has not formatted is not formatted here.
-pub fn save(media: &mut impl ReadWrite, bests: &Bests) -> Result<(), Error> {
+pub fn save(media: &mut impl ReadWrite, bests: &Bests) -> Result<(), StoreError> {
     if contents(media)? == Contents::Foreign {
-        return Err(Error::Foreign);
+        return Err(StoreError::Foreign);
     }
     let mut sector = [0; SECTOR_SIZE];
     let mut store = open(media, &mut sector)?;
-    files::mount(&mut store, &mut sector)?;
-    let name = files::Name::new(FILE)?;
-    files::write(&mut store, &name, &encode_file(bests), &mut sector)?;
+    files::mount(&mut store, &mut sector).map_err(error)?;
+    let name = files::Name::new(FILE).map_err(error)?;
+    files::write(&mut store, &name, &encode_file(bests), &mut sector).map_err(error)?;
     Ok(())
 }
 
@@ -357,27 +340,43 @@ pub(crate) enum Store {
     NotSaved,
 }
 
-/// A failed read or write is tried again this long after.
-pub(crate) const RETRY_MS: u64 = 5_000;
-
 /// The bests in force and what the BESTS view is doing with them.
 #[derive(Default)]
 pub(crate) struct Kept {
     pub(crate) bests: Bests,
     pub(crate) store: Store,
     /// BESTS is on screen, so it reads the file again once on opening.
-    pub(crate) open: bool,
+    open: bool,
     /// ACT asked to clear them; the rider has yet to confirm.
     pub(crate) confirming: bool,
     /// The rider confirmed: the next service clears the file.
     pub(crate) clear: bool,
     /// A finished ride's outcome whose read failed this time.
-    pub(crate) pending: Option<(Outcome, u16)>,
+    pending: Option<(Outcome, u16)>,
     /// `bests` hold a merge the store has not taken yet.
-    pub(crate) unsaved: bool,
-    pub(crate) retry_at: u64,
+    unsaved: bool,
+    retry_at: u64,
     /// The bulk medium was usable at the last service.
-    pub(crate) card_ready: bool,
+    card_ready: bool,
+}
+
+/// What the bests' service sees of the rest of the device.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Seen {
+    /// BESTS is on screen.
+    pub(crate) open: bool,
+    /// The bulk medium is usable.
+    pub(crate) ready: bool,
+    /// A ride is open or being written: the file waits.
+    pub(crate) busy: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Out {
+    /// What BESTS and the BESTS row show may have changed.
+    pub(crate) changed: bool,
+    /// The confirmed clear did not reach the store.
+    pub(crate) clear_failed: bool,
 }
 
 impl Kept {
@@ -393,21 +392,21 @@ impl Kept {
         let base = if self.unsaved {
             Ok(self.bests)
         } else {
-            bests::load(media)
+            load(media)
         };
         let mut bests = match base {
             Ok(bests) => bests,
-            Err(bests::Error::Media) => {
+            Err(StoreError::Media) => {
                 log::warn!(target: "sdk.bests", "load_failed error=Media");
                 self.pending = Some((outcome, day));
                 self.retry_at = now.saturating_add(RETRY_MS);
                 return Found::default();
             }
-            Err(bests::Error::Damaged) => {
+            Err(StoreError::Damaged) => {
                 self.store = Store::Damaged;
                 return Found::default();
             }
-            Err(bests::Error::Foreign) => {
+            Err(StoreError::Foreign) => {
                 self.store = Store::Foreign;
                 return Found::default();
             }
@@ -432,14 +431,14 @@ impl Kept {
     }
 
     /// Write the bests; if the store refuses, keep them in memory.
-    pub(crate) fn write(&mut self, media: &mut impl ReadWrite, now: u64) {
-        match bests::save(media, &self.bests) {
+    fn write(&mut self, media: &mut impl ReadWrite, now: u64) {
+        match save(media, &self.bests) {
             Ok(()) => {
                 self.store = Store::Kept;
                 self.unsaved = false;
             }
-            Err(bests::Error::Unavailable) => self.store = Store::Unavailable,
-            Err(bests::Error::Foreign) => self.store = Store::Foreign,
+            Err(StoreError::Unavailable) => self.store = Store::Unavailable,
+            Err(StoreError::Foreign) => self.store = Store::Foreign,
             Err(error) => {
                 log::warn!(target: "sdk.bests", "save_failed error={error:?}");
                 self.store = Store::NotSaved;
@@ -447,6 +446,70 @@ impl Kept {
                 self.retry_at = now.saturating_add(RETRY_MS);
             }
         }
+    }
+
+    pub(crate) fn service(&mut self, seen: Seen, media: &mut impl ReadWrite, now: u64) -> Out {
+        let Seen { open, ready, busy } = seen;
+        let mut out = Out::default();
+        if open && !self.open {
+            if self.unsaved {
+                self.retry_at = 0;
+            } else {
+                self.store = Store::Unread;
+            }
+        }
+        if ready && !self.card_ready && self.store == Store::Unavailable {
+            self.store = Store::Unread;
+        }
+        self.card_ready = ready;
+        self.open = open;
+        if !open {
+            self.confirming = false;
+        }
+        if busy {
+            return out;
+        }
+        if self.clear {
+            self.clear = false;
+            match save(media, &Bests::default()) {
+                Ok(()) => {
+                    *self = Kept {
+                        store: Store::Kept,
+                        open,
+                        card_ready: ready,
+                        ..Kept::default()
+                    };
+                }
+                Err(error) => {
+                    log::warn!(target: "sdk.bests", "clear_failed error={error:?}");
+                    out.clear_failed = true;
+                }
+            }
+            out.changed = true;
+        }
+        if now < self.retry_at {
+            return out;
+        }
+        if self.unsaved && self.pending.is_none() && open {
+            self.write(media, now);
+            out.changed = true;
+        } else if let Some((outcome, day)) = self.pending {
+            self.merge(media, outcome, day, now);
+            out.changed = true;
+        } else if self.store == Store::Unread {
+            match load(media) {
+                Ok(bests) => {
+                    self.bests = bests;
+                    self.store = Store::Kept;
+                }
+                Err(StoreError::Media) => self.retry_at = now.saturating_add(RETRY_MS),
+                Err(StoreError::Damaged) => self.store = Store::Damaged,
+                Err(StoreError::Foreign) => self.store = Store::Foreign,
+                Err(_) => self.store = Store::Unavailable,
+            }
+            out.changed = true;
+        }
+        out
     }
 }
 
@@ -482,9 +545,9 @@ mod tests {
         let mut damaged = encode_file(&bests);
         damaged[FIELDS_AT] ^= 1;
         put(&mut region, FILE, &damaged);
-        assert_eq!(load(&mut region), Err(Error::Damaged));
+        assert_eq!(load(&mut region), Err(StoreError::Damaged));
         put(&mut region, FILE, b"VBST");
-        assert_eq!(load(&mut region), Err(Error::Damaged));
+        assert_eq!(load(&mut region), Err(StoreError::Damaged));
         save(&mut region, &Bests::default()).unwrap();
         assert_eq!(load(&mut region), Ok(Bests::default()));
 
@@ -493,8 +556,11 @@ mod tests {
         foreign.extend_from_slice(&[0; 8]);
         put(&mut region, FILE, &foreign);
         assert_eq!(contents(&mut region), Ok(Contents::Foreign));
-        assert_eq!(load(&mut region), Err(Error::Foreign));
-        assert_eq!(save(&mut region, &Bests::default()), Err(Error::Foreign));
+        assert_eq!(load(&mut region), Err(StoreError::Foreign));
+        assert_eq!(
+            save(&mut region, &Bests::default()),
+            Err(StoreError::Foreign)
+        );
         assert_eq!(stored(&mut region), Some(foreign), "left as it was");
     }
 
@@ -631,5 +697,178 @@ mod tests {
         assert_eq!(suggest_ftp(265, 245), None);
         assert_eq!(suggest_ftp(200, 215), None);
         assert_eq!(suggest_ftp(0, 215), None);
+    }
+
+    #[derive(Default)]
+    struct Card {
+        region: Region,
+        reads: usize,
+        writes: usize,
+        fail_reads: bool,
+        fail_writes: bool,
+    }
+
+    fn fails(failing: bool) -> Result<(), device_api::bulk::Error> {
+        if failing {
+            Err(device_api::bulk::Error::Failed)
+        } else {
+            Ok(())
+        }
+    }
+
+    impl ReadWrite for Card {
+        fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
+            self.region.owned_info()
+        }
+        fn owned_read(
+            &mut self,
+            sector: u64,
+            output: &mut [u8; SECTOR_SIZE],
+        ) -> Result<(), device_api::bulk::Error> {
+            self.reads += 1;
+            fails(self.fail_reads)?;
+            self.region.owned_read(sector, output)
+        }
+        fn owned_write(
+            &mut self,
+            sector: u64,
+            input: &[u8; SECTOR_SIZE],
+        ) -> Result<(), device_api::bulk::Error> {
+            self.writes += 1;
+            fails(self.fail_writes)?;
+            self.region.owned_write(sector, input)
+        }
+    }
+
+    const IDLE: Seen = Seen {
+        open: false,
+        ready: true,
+        busy: false,
+    };
+    const OPEN: Seen = Seen { open: true, ..IDLE };
+    const CHANGED: Out = Out {
+        changed: true,
+        clear_failed: false,
+    };
+
+    #[test]
+    fn the_store_is_read_once_retried_after_a_failure_and_left_alone_during_a_ride() {
+        let mut card = Card {
+            region: formatted(),
+            ..Card::default()
+        };
+        let set = Bests {
+            time_s: mark(3600, 8),
+            ..Bests::default()
+        };
+        save(&mut card, &set).unwrap();
+        let mut kept = Kept::default();
+
+        let busy = Seen { busy: true, ..IDLE };
+        let reads = card.reads;
+        assert_eq!(kept.service(busy, &mut card, 0), Out::default());
+        assert_eq!(
+            (card.reads, kept.store),
+            (reads, Store::Unread),
+            "not during a ride"
+        );
+
+        card.fail_reads = true;
+        assert_eq!(kept.service(IDLE, &mut card, 0), CHANGED);
+        assert_eq!(kept.store, Store::Unread, "a failed read is tried again");
+        card.fail_reads = false;
+        let reads = card.reads;
+        assert_eq!(kept.service(IDLE, &mut card, RETRY_MS - 1), Out::default());
+        assert_eq!(card.reads, reads, "not before the retry");
+        assert_eq!(kept.service(IDLE, &mut card, RETRY_MS), CHANGED);
+        assert_eq!((kept.store, kept.bests), (Store::Kept, set));
+
+        let reads = card.reads;
+        assert_eq!(kept.service(IDLE, &mut card, RETRY_MS), Out::default());
+        assert_eq!(card.reads, reads, "read once");
+        assert_eq!(kept.service(OPEN, &mut card, RETRY_MS), CHANGED);
+        assert!(card.reads > reads, "opening BESTS reads the file again");
+
+        put(&mut card.region, FILE, b"VBST");
+        assert_eq!(kept.service(IDLE, &mut card, RETRY_MS), Out::default());
+        assert_eq!(kept.service(OPEN, &mut card, RETRY_MS), CHANGED);
+        assert_eq!(kept.store, Store::Damaged);
+    }
+
+    #[test]
+    fn a_confirmed_clear_empties_the_file_or_says_it_failed() {
+        let mut card = Card {
+            region: formatted(),
+            ..Card::default()
+        };
+        save(
+            &mut card,
+            &Bests {
+                time_s: mark(3600, 8),
+                ..Bests::default()
+            },
+        )
+        .unwrap();
+        let mut kept = Kept::default();
+        kept.service(OPEN, &mut card, 0);
+
+        kept.confirming = true;
+        kept.clear = true;
+        card.fail_writes = true;
+        let out = kept.service(OPEN, &mut card, 0);
+        assert_eq!(
+            out,
+            Out {
+                changed: true,
+                clear_failed: true,
+            }
+        );
+        assert!(!kept.clear, "a failed clear is not tried again by itself");
+        assert_eq!(load(&mut card.region).map(|bests| bests.count()), Ok(1));
+
+        card.fail_writes = false;
+        kept.clear = true;
+        assert_eq!(kept.service(OPEN, &mut card, 0), CHANGED);
+        assert_eq!(load(&mut card), Ok(Bests::default()));
+        assert_eq!((kept.store, kept.bests.count()), (Store::Kept, 0));
+        assert!(
+            kept.open && kept.card_ready,
+            "the view stays open on a ready card"
+        );
+    }
+
+    #[test]
+    fn a_merge_the_store_refused_waits_for_bests_to_open_and_one_it_could_not_read_retries() {
+        let mut card = Card {
+            region: formatted(),
+            ..Card::default()
+        };
+        let mut kept = Kept::default();
+        kept.service(IDLE, &mut card, 0);
+        let outcome = ride([Some(400); 4], 40, 90, 500);
+
+        card.fail_reads = true;
+        kept.merge(&mut card, outcome, 9, 0);
+        card.fail_reads = false;
+        assert_eq!(kept.service(IDLE, &mut card, RETRY_MS - 1), Out::default());
+        assert_eq!(kept.service(IDLE, &mut card, RETRY_MS), CHANGED);
+        assert_eq!(
+            load(&mut card).map(|bests| bests.count()),
+            Ok(7),
+            "the read retried"
+        );
+
+        let better = ride([Some(500); 4], 40, 90, 500);
+        card.fail_writes = true;
+        kept.merge(&mut card, better, 10, RETRY_MS);
+        card.fail_writes = false;
+        assert_eq!(kept.store, Store::NotSaved);
+        let later = 3 * RETRY_MS;
+        let writes = card.writes;
+        assert_eq!(kept.service(IDLE, &mut card, later), Out::default());
+        assert_eq!(card.writes, writes, "not until BESTS opens");
+        assert_eq!(kept.service(OPEN, &mut card, later), CHANGED);
+        assert_eq!(kept.store, Store::Kept);
+        assert_eq!(load(&mut card).map(|bests| bests.power[0].value), Ok(500));
     }
 }

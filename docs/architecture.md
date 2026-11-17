@@ -46,7 +46,12 @@ input model, described in [ui](ui.md).
 Inside VANA, the domain lives in `ride/`, `kept/`, `sensors/` and `workout/`.
 `kept/` holds what VANA keeps on FILES beside the ride journals: the bests,
 each saved ride's facts and the rides the rider hid. Each has its record, its
-codec and the state that reads it into memory. The application layer, `app/`,
+codec and the state machine that reads it into memory and writes it back. The
+bests' machine, `bests::Kept::service`, takes what it needs from other owners
+as a `Seen` value and returns an `Out` of domain facts, which the glue turns
+into a toast and a redraw. `kept/` also holds `StoreError`, the typed failure
+of the bests and course files, and the one `RETRY_MS` that FILES and the
+preference record wait before trying again. The application layer, `app/`,
 holds `Runtime` and the glue that turns domain state into pages, toasts and
 redraws; `screens/` draws them. Domain code never imports `crate::app` or
 `crate::screens` and takes what it needs as arguments.
@@ -196,8 +201,8 @@ delivery when an upstream queue can hide lag.
 
 Acceptance into a queue does not mean a mutation completed. Expose completion and
 failure so callers can make the next decision. After an ambiguous write failure,
-inspect or rescan before retrying. Keep reply and log output bounded, with one
-owner serializing output and prioritizing replies.
+inspect or rescan before retrying. Give each outcome its own variant. Keep reply and log
+output bounded, with one owner serializing output and prioritizing replies.
 
 Memory-region, alignment and cache constraints belong to device code. Preserve
 buffer ownership through DMA completion, failure and cancellation. Blocking flash

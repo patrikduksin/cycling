@@ -12,7 +12,7 @@
 use super::Runtime;
 use super::recording::Ride;
 use crate::clock::Zone;
-use crate::kept::bests::{self, Bests, Found, Kept, Outcome, RETRY_MS, Store, suggest_ftp};
+use crate::kept::bests::{Bests, Found, Kept, Outcome, Seen, Store, suggest_ftp};
 use crate::ride::log::Status;
 use crate::ride::medium::Medium;
 use crate::ride::zones::TrainingProfile;
@@ -216,70 +216,17 @@ impl Runtime {
         }
     }
 
-    /// Read the bests at boot, again when BESTS opens or the card becomes
-    /// ready, and retry what failed; clear them once confirmed. Never during
-    /// a ride.
     pub(super) fn service_bests(&mut self, media: &mut impl ReadWrite, now: u64) {
-        let open = self.navigation.page == Page::Bests;
-        let ready = self.ride.bulk.status().usable();
-        let kept = &mut self.bests;
-        if open && !kept.open {
-            if kept.unsaved {
-                kept.retry_at = 0;
-            } else {
-                kept.store = Store::Unread;
-            }
+        let seen = Seen {
+            open: self.navigation.page == Page::Bests,
+            ready: self.ride.bulk.status().usable(),
+            busy: self.ride.pending() || self.ride.open(),
+        };
+        let out = self.bests.service(seen, media, now);
+        if out.clear_failed {
+            self.navigation.toast("CLEAR FAILED", Tone::Alert, now);
         }
-        if ready && !kept.card_ready && kept.store == Store::Unavailable {
-            kept.store = Store::Unread;
-        }
-        kept.card_ready = ready;
-        kept.open = open;
-        if !open {
-            kept.confirming = false;
-        }
-        if self.ride.pending() || self.ride.open() {
-            return;
-        }
-        if kept.clear {
-            kept.clear = false;
-            match bests::save(media, &Bests::default()) {
-                Ok(()) => {
-                    *kept = Kept {
-                        store: Store::Kept,
-                        open,
-                        card_ready: ready,
-                        ..Kept::default()
-                    };
-                }
-                Err(error) => {
-                    log::warn!(target: "sdk.bests", "clear_failed error={error:?}");
-                    self.navigation.toast("CLEAR FAILED", Tone::Alert, now);
-                }
-            }
-            self.display.redraw();
-        }
-        let kept = &mut self.bests;
-        if now < kept.retry_at {
-            return;
-        }
-        if kept.unsaved && kept.pending.is_none() && open {
-            kept.write(media, now);
-            self.display.redraw();
-        } else if let Some((outcome, day)) = kept.pending {
-            kept.merge(media, outcome, day, now);
-            self.display.redraw();
-        } else if kept.store == Store::Unread {
-            match bests::load(media) {
-                Ok(bests) => {
-                    kept.bests = bests;
-                    kept.store = Store::Kept;
-                }
-                Err(bests::Error::Media) => kept.retry_at = now.saturating_add(RETRY_MS),
-                Err(bests::Error::Damaged) => kept.store = Store::Damaged,
-                Err(bests::Error::Foreign) => kept.store = Store::Foreign,
-                Err(_) => kept.store = Store::Unavailable,
-            }
+        if out.changed {
             self.display.redraw();
         }
     }

@@ -9,7 +9,7 @@
 //! between the two leaves a saved ride, which the rider can delete later. A delete from a saved ride's last page waits for the next service,
 //! which holds the card.
 use super::Runtime;
-use crate::kept::deleted::{Reason, Record, Ride, Scan, Shelf};
+use crate::kept::deleted::{Reason, Record, Ride, Scan, Seen, Shelf};
 use crate::ride::log::{Status, Summary};
 use crate::ride::medium::Medium;
 use crate::screens::chrome::Tone;
@@ -117,7 +117,15 @@ impl Runtime {
         );
         let busy = self.ride.pending();
         let asking = matches!(self.navigation.page, Page::EndRide | Page::History);
-        self.deleted.scan_step(bulk, now, (ready, busy, asking));
+        self.deleted.scan_step(
+            bulk,
+            now,
+            Seen {
+                ready,
+                busy,
+                asking,
+            },
+        );
         let Some((medium, summary)) = self.deleted.delete.take() else {
             return;
         };

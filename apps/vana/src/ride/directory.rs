@@ -14,6 +14,7 @@
 //! worked out against an FTP when it is shown.
 //!
 //! Nothing is persisted: the index is rebuilt after every boot.
+use super::journal::Read;
 use super::load::{Effort, PowerLoad};
 use super::log::{Scanner, Slot, Summary};
 use firmware_services::le::{get_u16, get_u32, put_u16, put_u32};
@@ -27,16 +28,6 @@ const UNKNOWN: u32 = u32::MAX;
 const RECOVERED: u8 = 1;
 const FULL: u8 = 2;
 const GAP: u8 = 4;
-
-/// What a slot read gave.
-pub enum Read {
-    /// The slot's bytes are in the caller's slot.
-    Slot,
-    /// The medium's container around the slot is invalid: a gap.
-    Invalid,
-    /// The medium failed; try again later.
-    Failed,
-}
 
 /// A ride's line in the index.
 fn encode(summary: &Summary, effort: Option<Effort>, bytes: &mut [u8]) {

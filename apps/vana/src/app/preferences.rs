@@ -42,6 +42,7 @@
 use super::Runtime;
 use super::mode::DisplayMode;
 use crate::clock::Zone;
+use crate::kept::RETRY_MS;
 use crate::ride::laps::AutoLap;
 use crate::ride::rider::{self, Rider};
 use crate::ride::wheel_size::PLAUSIBLE_MM;
@@ -68,7 +69,6 @@ const OPTIONS_LENGTH: usize =
 const RECORD_CAPACITY: usize = PROFILE_LENGTH + FIELD_CAPACITY + OPTIONS_LENGTH;
 /// Edits settle this long before a flash write, so a run of presses saves once.
 const DEBOUNCE_MS: u64 = 2_000;
-const RETRY_MS: u64 = 5_000;
 const AUTO_PAUSE: u8 = 1 << 0;
 const SOUNDS: u8 = 1 << 1;
 const SUNSET: u8 = 1 << 2;

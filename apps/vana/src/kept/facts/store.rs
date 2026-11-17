@@ -3,13 +3,12 @@
 //! ride is open or being written. Without a FILES volume or a shelf nothing is
 //! kept and every reader shows what it did before: stress at the FTP now, no
 //! HR recovery and no climbs.
-use super::record::{self as facts, Error, Facts, Record, Shelf};
+use super::record::{Error, Facts, Piece, Record, Shelf, forget, read, save};
+use crate::kept::RETRY_MS;
 use crate::ride::medium::Medium;
 use crate::ride::recovery::Reading;
 use device_api::bulk::ReadWrite;
 use firmware_services::{files, volume};
-
-const RETRY_MS: u64 = 5_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Scan {
@@ -98,7 +97,7 @@ impl Kept {
     }
 
     pub(crate) fn write(&mut self, bulk: &mut impl ReadWrite, record: Record) {
-        match facts::save(bulk, &record) {
+        match save(bulk, &record) {
             Ok(()) => self.saved(record),
             Err(error) => log::warn!(target: "sdk.facts", "save_failed error={error:?}"),
         }
@@ -116,7 +115,7 @@ impl Kept {
             self.awaiting = None;
         }
         self.changed();
-        if let Err(error) = facts::forget(bulk, journal) {
+        if let Err(error) = forget(bulk, journal) {
             log::warn!(target: "sdk.facts", "forget_failed error={error:?}");
         }
     }
@@ -175,11 +174,11 @@ impl Kept {
         };
         let next = match step {
             Scan::Table { piece, revision } => {
-                match facts::read(bulk, piece, |record| self.read(record)) {
+                match read(bulk, piece, |record| self.read(record)) {
                     Ok(Some(read)) if revision.is_some_and(|r| r != read.revision) => {
                         Ok(Scan::START)
                     }
-                    Ok(Some(facts::Piece {
+                    Ok(Some(Piece {
                         revision,
                         next: Some(piece),
                     })) => Ok(Scan::Table {
@@ -224,6 +223,7 @@ fn absent(error: Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kept::facts::record::{PIECE, SHELF_BYTES, SLOT};
 
     const START: u64 = 1_760_000_000_000;
 
@@ -241,7 +241,7 @@ mod tests {
 
     fn kept() -> Kept {
         Kept {
-            shelf: Some(Shelf::new(std::vec![0; facts::SHELF_BYTES].leak())),
+            shelf: Some(Shelf::new(std::vec![0; SHELF_BYTES].leak())),
             ..Kept::default()
         }
     }
@@ -283,7 +283,7 @@ mod tests {
 
         let mut card = formatted();
         for ride in 1..=200 {
-            facts::save(&mut card, &record(ride, Some(12))).unwrap();
+            save(&mut card, &record(ride, Some(12))).unwrap();
         }
         kept.scan_step(&mut card, 0, true, true);
         assert_eq!(kept.scan, Scan::START, "a ready card starts over");
@@ -292,7 +292,7 @@ mod tests {
             kept.scan_step(&mut card, 0, true, false);
             steps += 1;
         }
-        let pieces = (facts::SLOT * 201).div_ceil(facts::PIECE * 512);
+        let pieces = (SLOT * 201).div_ceil(PIECE * 512);
         assert_eq!(steps, pieces);
         for ride in [1, 200] {
             let found = kept.find(Medium::Bulk, ride, Some(START));
@@ -304,12 +304,12 @@ mod tests {
     fn a_table_written_during_the_scan_is_read_again() {
         let mut card = crate::workout::library::tests::formatted();
         for ride in 1..=200 {
-            facts::save(&mut card, &record(ride, None)).unwrap();
+            save(&mut card, &record(ride, None)).unwrap();
         }
         let mut kept = kept();
         kept.scan_step(&mut card, 0, true, false);
         assert!(matches!(kept.scan, Scan::Table { piece: 1, .. }));
-        facts::save(&mut card, &record(1, Some(40))).unwrap();
+        save(&mut card, &record(1, Some(40))).unwrap();
         kept.scan_step(&mut card, 0, true, false);
         assert_eq!(kept.scan, Scan::START);
         while kept.scan != Scan::Done {

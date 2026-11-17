@@ -244,11 +244,11 @@ fn a_damaged_file_or_a_missing_store_says_so() {
     bytes[HEADER + 3] ^= 0x40;
     put(&mut region, "course.dat", &bytes);
     let mut back = built(square(100.0, 10.0));
-    assert_eq!(load(&mut region, &mut back), Err(Error::Damaged));
+    assert_eq!(load(&mut region, &mut back), Err(StoreError::Damaged));
     assert!(back.is_empty(), "a damaged file loads nothing");
     let mut blank = Region::default();
-    assert_eq!(load(&mut blank, &mut back), Err(Error::Unavailable));
-    assert_eq!(save(&mut blank, &course), Err(Error::Unavailable));
+    assert_eq!(load(&mut blank, &mut back), Err(StoreError::Unavailable));
+    assert_eq!(save(&mut blank, &course), Err(StoreError::Unavailable));
 }
 
 fn read(region: &mut Region, name: &str) -> Vec<u8> {

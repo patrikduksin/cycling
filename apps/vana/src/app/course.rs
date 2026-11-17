@@ -1,11 +1,9 @@
 //! An upload empties the course while it streams in, so one that fails or is
 //! cut off reads the stored course back.
 use super::Runtime;
+use crate::kept::{RETRY_MS, StoreError};
 use crate::ride::course::{self, Course};
 use device_api::bulk::ReadWrite;
-
-/// A failed read is tried again this long after.
-const RETRY_MS: u64 = 5_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Store {
@@ -41,15 +39,18 @@ pub(super) struct Kept {
 
 impl Kept {
     /// The result of reading or writing the stored course.
-    pub(super) fn took(&mut self, result: Result<(), course::Error>, now: u64) {
+    pub(super) fn took(&mut self, result: Result<(), StoreError>, now: u64) {
         self.store = match result {
             Ok(()) => Store::Kept,
-            Err(course::Error::Media) => {
+            Err(StoreError::Media) => {
                 self.retry_at = now.saturating_add(RETRY_MS);
                 Store::Unread
             }
-            Err(course::Error::Damaged) => Store::Damaged,
-            Err(course::Error::Unavailable | course::Error::Full) => Store::Unavailable,
+            Err(StoreError::Damaged) => Store::Damaged,
+            // The course never reads `Foreign`.
+            Err(StoreError::Unavailable | StoreError::Full | StoreError::Foreign) => {
+                Store::Unavailable
+            }
         };
     }
 }

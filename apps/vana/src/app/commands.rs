@@ -7,6 +7,7 @@
 use super::Runtime;
 use super::pace::Touched;
 use super::recording::Request;
+use crate::ride::journal::Read;
 use crate::ride::log::{SLOT_SIZE, Slot, VERSION, transport_checksum};
 use crate::ride::medium::Medium;
 use crate::ride::recorder::{Action, Recorder, Refused};
@@ -476,8 +477,10 @@ impl Runtime {
             return "BOUNDS";
         }
         let mut slot = Slot::default();
-        let Some(valid) = self.ride.read_slot(medium, store, bulk, index, &mut slot) else {
-            return "READ";
+        let valid = match self.ride.read_slot(medium, store, bulk, index, &mut slot) {
+            Read::Slot => true,
+            Read::Invalid => false,
+            Read::Failed => return "READ",
         };
         if write!(
             output,

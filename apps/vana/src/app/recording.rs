@@ -13,7 +13,7 @@ use crate::ride::auto::Auto;
 use crate::ride::bulk::{Bulk, BulkState};
 use crate::ride::climb::{Climbs, Event as ClimbEvent};
 use crate::ride::elevation::Trace;
-use crate::ride::journal::{Internal, InternalState};
+use crate::ride::journal::{Internal, InternalState, Read};
 use crate::ride::laps::{AutoLap, Lap, Laps};
 use crate::ride::log::{Altitude, Sample, Status};
 use crate::ride::medium::Medium;
@@ -543,12 +543,12 @@ impl Ride {
         }
         let next = self.internal.next_slot();
         let mut slot = crate::ride::log::Slot::default();
-        let last = next
-            .checked_sub(1)
-            .and_then(|index| {
-                Internal::new(&mut self.internal_media, store).read_slot(index, &mut slot)
-            })
-            .map(|_| crc32(&slot.0));
+        let last = next.checked_sub(1).and_then(|index| {
+            match Internal::new(&mut self.internal_media, store).read_slot(index, &mut slot) {
+                Read::Slot | Read::Invalid => Some(crc32(&slot.0)),
+                Read::Failed => None,
+            }
+        });
         origin::Journal::Scanned {
             next: u32::try_from(next).unwrap_or(u32::MAX),
             last,
@@ -572,8 +572,6 @@ impl Ride {
         }
     }
 
-    /// Read one slot of `medium` for export; `Some(false)` marks an invalid
-    /// bulk container, whose slot bytes are zeroed.
     pub(super) fn read_slot(
         &mut self,
         medium: Medium,
@@ -581,7 +579,7 @@ impl Ride {
         bulk: &mut impl ReadWrite,
         index: usize,
         output: &mut crate::ride::log::Slot,
-    ) -> Option<bool> {
+    ) -> Read {
         use crate::ride::journal::Journal;
         match medium {
             Medium::Internal => {
@@ -613,13 +611,13 @@ impl Ride {
         let (internal, bulk_media) = (&mut self.internal_media, &mut self.bulk_media);
         let mut slot = crate::ride::log::Slot::default();
         replay.step(budget, profile, &mut sums, |index| {
-            let valid = match medium {
+            let read = match medium {
                 Medium::Internal => Internal::new(internal, store).read_slot(index, &mut slot),
                 Medium::Bulk => Bulk::new(bulk_media, bulk).read_slot(index, &mut slot),
             };
-            match valid {
-                Some(true) => crate::ride::log::decode(&slot),
-                _ => None,
+            match read {
+                Read::Slot => crate::ride::log::decode(&slot),
+                Read::Invalid | Read::Failed => None,
             }
         });
     }
@@ -648,17 +646,11 @@ impl Ride {
         store: &mut impl RideStorage,
         bulk: &mut impl ReadWrite,
     ) -> bool {
-        use crate::ride::directory::Read;
         use crate::ride::journal::Journal;
         if self.internal.riding() || self.bulk.riding() {
             return false;
         }
         let mut slot = crate::ride::log::Slot::default();
-        let read = |valid: Option<bool>| match valid {
-            Some(true) => Read::Slot,
-            Some(false) => Read::Invalid,
-            None => Read::Failed,
-        };
         let mut added = false;
         if self.internal.exportable() {
             let media = &mut self.internal_media;
@@ -666,7 +658,7 @@ impl Ride {
                 self.internal.next_slot(),
                 INDEX_INTERNAL_BUDGET,
                 &mut slot,
-                |i, out| read(Internal::new(media, store).read_slot(i, out)),
+                |i, out| Internal::new(media, store).read_slot(i, out),
             );
         }
         if self.bulk.exportable() {
@@ -675,7 +667,7 @@ impl Ride {
                 self.bulk.next_slot(),
                 INDEX_BULK_BUDGET,
                 &mut slot,
-                |i, out| read(Bulk::new(media, bulk).read_slot(i, out)),
+                |i, out| Bulk::new(media, bulk).read_slot(i, out),
             );
         }
         added

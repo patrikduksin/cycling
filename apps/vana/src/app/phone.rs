@@ -26,6 +26,7 @@ use super::pace::Touched;
 use crate::ride::course::{self, gpx};
 use crate::ride::fit::{self, Export, Flow, Plan, Refusal};
 use crate::ride::index::{Activity, Index};
+use crate::ride::journal::Read;
 use crate::ride::log::Slot;
 use crate::ride::medium::Medium;
 use crate::ride::rider::Rider;
@@ -505,10 +506,10 @@ impl Runtime {
                 }
                 budget -= 1;
                 match self.ride.read_slot(medium, store, bulk, next, &mut slot) {
-                    Some(true) => self.phone.w().indexes[index].accept(Some(&slot)),
-                    Some(false) => self.phone.w().indexes[index].accept(None),
+                    Read::Slot => self.phone.w().indexes[index].accept(Some(&slot)),
+                    Read::Invalid => self.phone.w().indexes[index].accept(None),
                     // The medium failed: list what was read.
-                    None => self.phone.w().indexes[index].finish(),
+                    Read::Failed => self.phone.w().indexes[index].finish(),
                 }
             }
         }
@@ -976,8 +977,8 @@ impl Runtime {
             Err(error) => {
                 log::warn!(target: "phone", "VANA_PHONE course_not_saved error={error:?}");
                 let (status, json) = match error {
-                    course::Error::Full => (507, r#"{"error":"full"}"#),
-                    course::Error::Media => (503, r#"{"error":"storage"}"#),
+                    crate::kept::StoreError::Full => (507, r#"{"error":"full"}"#),
+                    crate::kept::StoreError::Media => (503, r#"{"error":"storage"}"#),
                     _ => (
                         503,
                         r#"{"error":"unavailable","detail":"no formatted memory card to keep a course on"}"#,
@@ -1291,9 +1292,9 @@ impl Runtime {
                         .ride
                         .read_slot(job.medium, store, bulk, job.next_slot, &mut slot)
                     {
-                        Some(true) => {}
-                        Some(false) => slot.0.fill(0),
-                        None => return self.reply(id, 503, Some(r#"{"error":"storage"}"#)),
+                        Read::Slot => {}
+                        Read::Invalid => slot.0.fill(0),
+                        Read::Failed => return self.reply(id, 503, Some(r#"{"error":"storage"}"#)),
                     }
                     job.next_slot += 1;
                     if export.slot(&slot, counter) == Flow::End {
@@ -1345,10 +1346,10 @@ impl Runtime {
                         .ride
                         .read_slot(job.medium, store, bulk, job.next_slot, &mut slot)
                     {
-                        Some(true) => {}
-                        Some(false) => slot.0.fill(0),
+                        Read::Slot => {}
+                        Read::Invalid => slot.0.fill(0),
                         // A truncated body: the length tells the client.
-                        None => return server.finish(id),
+                        Read::Failed => return server.finish(id),
                     }
                     job.next_slot += 1;
                     let mut out = Out {

@@ -45,7 +45,8 @@
 //! U-turn) and flags (1 two corners, 2 cornered). A file of another version
 //! or shape reads as one that does not decode.
 use super::turns::{RECORD, Scan, Spurs, TURNS, Turn, distance, starts_at};
-use super::{Error, Follow, POINTS, Point, east_per_e7, metres};
+use super::{Follow, POINTS, Point, east_per_e7, error, metres};
+use crate::kept::StoreError;
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::Crc32;
 use firmware_services::files;
@@ -716,11 +717,11 @@ pub fn load(
     media: &mut impl ReadWrite,
     key: u32,
     turns: &mut [Turn],
-) -> Result<Option<Stored>, Error> {
+) -> Result<Option<Stored>, StoreError> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = super::open(media, &mut sector)?;
-    let dir = files::mount(&mut store, &mut sector)?;
-    let Some(entry) = dir.find(&mut store, &name(), &mut sector)? else {
+    let dir = files::mount(&mut store, &mut sector).map_err(error)?;
+    let Some(entry) = dir.find(&mut store, &name(), &mut sector).map_err(error)? else {
         return Ok(None);
     };
     let read = |offset: u32, out: &mut [u8]| -> Result<(), files::Error> {
@@ -735,18 +736,23 @@ pub fn load(
     match decode(entry.length, read, turns) {
         Ok(stored) => Ok(stored.filter(|stored| stored.key == key)),
         Err(files::Error::Range) => Ok(None),
-        Err(error) => Err(error.into()),
+        Err(failed) => Err(error(failed)),
     }
 }
 
 /// Store `turns` of the course `key`, replacing the file there in one
 /// atomic commit.
-pub fn save(media: &mut impl ReadWrite, key: u32, turns: &[Turn], full: bool) -> Result<(), Error> {
+pub fn save(
+    media: &mut impl ReadWrite,
+    key: u32,
+    turns: &[Turn],
+    full: bool,
+) -> Result<(), StoreError> {
     super::write(media, &name(), |put| encode(key, turns, full, put))
 }
 
 /// Remove the stored turns.
-pub fn delete(media: &mut impl ReadWrite) -> Result<(), Error> {
+pub fn delete(media: &mut impl ReadWrite) -> Result<(), StoreError> {
     super::remove(media, &name())
 }
 

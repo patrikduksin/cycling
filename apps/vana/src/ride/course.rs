@@ -31,6 +31,7 @@
 //!
 //! A file of another version or shape reads as damaged, never as part of a
 //! course, and is left alone until an upload replaces it.
+use crate::kept::StoreError;
 use crate::ride::thin;
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::Crc32;
@@ -284,28 +285,13 @@ pub(crate) fn along_m(points: &[Point]) -> impl Iterator<Item = f32> + '_ {
     })
 }
 
-/// Why a course could not be read or written.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error {
-    /// No card, no FILES volume or no formatted file store.
-    Unavailable,
-    /// The medium failed this time; trying again may work.
-    Media,
-    /// A file is there but does not decode.
-    Damaged,
-    /// The store has no room for the file.
-    Full,
-}
-
-impl From<files::Error> for Error {
-    fn from(error: files::Error) -> Self {
-        use device_api::bulk::Error as Media;
-        match error {
-            files::Error::Media(Media::Failed) | files::Error::Stale => Self::Media,
-            files::Error::Full | files::Error::TooLarge => Self::Full,
-            files::Error::Mismatch => Self::Damaged,
-            _ => Self::Unavailable,
-        }
+fn error(error: files::Error) -> StoreError {
+    use device_api::bulk::Error as Media;
+    match error {
+        files::Error::Media(Media::Failed) | files::Error::Stale => StoreError::Media,
+        files::Error::Full | files::Error::TooLarge => StoreError::Full,
+        files::Error::Mismatch => StoreError::Damaged,
+        _ => StoreError::Unavailable,
     }
 }
 
@@ -427,10 +413,10 @@ fn decode_into<E>(
 fn open<'a, M: ReadWrite>(
     media: &'a mut M,
     sector: &mut files::Sector,
-) -> Result<volume::Volume<'a, M>, Error> {
+) -> Result<volume::Volume<'a, M>, StoreError> {
     volume::open(media, &volume::FILES, sector).map_err(|error| match error {
-        volume::Error::Media(device_api::bulk::Error::Failed) => Error::Media,
-        _ => Error::Unavailable,
+        volume::Error::Media(device_api::bulk::Error::Failed) => StoreError::Media,
+        _ => StoreError::Unavailable,
     })
 }
 
@@ -439,12 +425,12 @@ fn name() -> files::Name {
 }
 
 /// The stored course into `course`; empty when the store has none.
-pub fn load(media: &mut impl ReadWrite, course: &mut Course) -> Result<(), Error> {
+pub fn load(media: &mut impl ReadWrite, course: &mut Course) -> Result<(), StoreError> {
     course.clear();
     let mut sector = [0; SECTOR_SIZE];
     let mut store = open(media, &mut sector)?;
-    let dir = files::mount(&mut store, &mut sector)?;
-    let Some(entry) = dir.find(&mut store, &name(), &mut sector)? else {
+    let dir = files::mount(&mut store, &mut sector).map_err(error)?;
+    let Some(entry) = dir.find(&mut store, &name(), &mut sector).map_err(error)? else {
         return Ok(());
     };
     let read = |offset: u32, out: &mut [u8]| -> Result<(), files::Error> {
@@ -459,15 +445,15 @@ pub fn load(media: &mut impl ReadWrite, course: &mut Course) -> Result<(), Error
     match decode(entry.length, read, course) {
         Ok(()) => Ok(()),
         Err(DecodeError::Read(files::Error::Range)) | Err(DecodeError::Damaged) => {
-            Err(Error::Damaged)
+            Err(StoreError::Damaged)
         }
-        Err(DecodeError::Read(error)) => Err(error.into()),
+        Err(DecodeError::Read(read)) => Err(error(read)),
     }
 }
 
 /// Store `course`, replacing the file there in one atomic commit. A store
 /// the host has not formatted is not formatted here.
-pub fn save(media: &mut impl ReadWrite, course: &Course) -> Result<(), Error> {
+pub fn save(media: &mut impl ReadWrite, course: &Course) -> Result<(), StoreError> {
     write(media, &name(), |put| encode(course, put))
 }
 
@@ -477,7 +463,7 @@ fn write(
     media: &mut impl ReadWrite,
     name: &files::Name,
     encode: impl Fn(&mut dyn FnMut(&[u8])),
-) -> Result<(), Error> {
+) -> Result<(), StoreError> {
     let mut length = 0u32;
     let mut crc = Crc32::new();
     encode(&mut |bytes| {
@@ -486,8 +472,10 @@ fn write(
     });
     let mut sector = [0; SECTOR_SIZE];
     let mut store = open(media, &mut sector)?;
-    let dir = files::mount(&mut store, &mut sector)?;
-    let mut writer = dir.begin(&mut store, name, length, &mut sector)?;
+    let dir = files::mount(&mut store, &mut sector).map_err(error)?;
+    let mut writer = dir
+        .begin(&mut store, name, length, &mut sector)
+        .map_err(error)?;
     // Whole sectors to the writer, and the short last one at the end.
     let mut held = [0u8; SECTOR_SIZE];
     let mut filled = 0;
@@ -504,17 +492,19 @@ fn write(
             }
         }
     });
-    if let Some(error) = failed {
-        return Err(error.into());
+    if let Some(failed) = failed {
+        return Err(error(failed));
     }
-    writer.write(&mut store, &held[..filled])?;
-    writer.commit(&mut store, crc.finish(), &mut sector)?;
+    writer.write(&mut store, &held[..filled]).map_err(error)?;
+    writer
+        .commit(&mut store, crc.finish(), &mut sector)
+        .map_err(error)?;
     Ok(())
 }
 
 /// Remove the course, and then the turns stored beside it. A cut between
 /// leaves turns that name no course.
-pub fn delete(media: &mut impl ReadWrite) -> Result<(), Error> {
+pub fn delete(media: &mut impl ReadWrite) -> Result<(), StoreError> {
     remove(media, &name())?;
     if let Err(error) = stored::delete(media) {
         log::warn!(target: "sdk.course", "turns_not_deleted error={error:?}");
@@ -522,12 +512,12 @@ pub fn delete(media: &mut impl ReadWrite) -> Result<(), Error> {
     Ok(())
 }
 
-fn remove(media: &mut impl ReadWrite, name: &files::Name) -> Result<(), Error> {
+fn remove(media: &mut impl ReadWrite, name: &files::Name) -> Result<(), StoreError> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = open(media, &mut sector)?;
     match files::delete(&mut store, name, &mut sector) {
         Ok(()) | Err(files::Error::NotFound) => Ok(()),
-        Err(error) => Err(error.into()),
+        Err(failed) => Err(error(failed)),
     }
 }
 

@@ -116,14 +116,9 @@ impl Journal for Probe<'_> {
     fn clear(&mut self, step: usize, seed: u64) -> Progress {
         self.bulk.clear(step, seed)
     }
-    fn append(
-        &mut self,
-        index: usize,
-        entry: &crate::ride::log::Entry,
-        terminal: bool,
-    ) -> Option<bool> {
+    fn append(&mut self, index: usize, entry: &crate::ride::log::Entry, terminal: bool) -> Append {
         let appended = self.bulk.append(index, entry, terminal);
-        if appended.is_some() {
+        if matches!(appended, Append::Verified { .. }) {
             self.acknowledged.push((index, *entry));
         }
         appended
@@ -131,10 +126,10 @@ impl Journal for Probe<'_> {
     fn checkpoint_overdue(&self) -> bool {
         self.bulk.checkpoint_overdue()
     }
-    fn checkpoint(&mut self, catalog: &Catalog) -> bool {
+    fn checkpoint(&mut self, catalog: &Catalog) -> Checkpoint {
         self.bulk.checkpoint(catalog)
     }
-    fn read_slot(&mut self, index: usize, output: &mut Slot) -> Option<bool> {
+    fn read_slot(&mut self, index: usize, output: &mut Slot) -> Read {
         self.bulk.read_slot(index, output)
     }
 }
@@ -226,10 +221,9 @@ impl Device {
         let mut scanner = Scanner::default();
         let mut slot = Slot::default();
         for index in 0..self.recorder.next_slot() {
-            let valid = Bulk::new(&mut self.state, &mut self.media)
-                .read_slot(index, &mut slot)
-                .unwrap();
-            if valid {
+            let read = Bulk::new(&mut self.state, &mut self.media).read_slot(index, &mut slot);
+            assert_ne!(read, Read::Failed);
+            if read == Read::Slot {
                 scanner.accept_slot(index, &slot.0);
             } else {
                 scanner.skip(index, index + 1);
@@ -530,9 +524,10 @@ fn power_loss_at_every_write_of_a_ride_keeps_what_was_acknowledged() {
             let recovered: u32 = (0..device.recorder.next_slot())
                 .filter_map(|index| {
                     let mut slot = Slot::default();
-                    Bulk::new(&mut device.state, &mut device.media)
-                        .read_slot(index, &mut slot)
-                        .unwrap()
+                    let read =
+                        Bulk::new(&mut device.state, &mut device.media).read_slot(index, &mut slot);
+                    assert_ne!(read, Read::Failed);
+                    (read == Read::Slot)
                         .then(|| crate::ride::log::decode(&slot))
                         .flatten()
                 })
@@ -622,17 +617,23 @@ fn a_reformat_after_lost_superblocks_never_revives_an_older_store() {
     let mut bulk = Bulk::new(&mut state, &mut media);
     assert_eq!(bulk.initialize(0, 7), Progress::Done);
     for index in 0..200 {
-        assert!(bulk.append(index, &entry, false).is_some());
+        assert!(matches!(
+            bulk.append(index, &entry, false),
+            Append::Verified { .. }
+        ));
     }
     let a = state.log().unwrap().store_id();
     // Cleared to store B, which overwrites the first records and the ring.
     let mut bulk = Bulk::new(&mut state, &mut media);
     assert_eq!(bulk.clear(0, 99), Progress::Done);
     for index in 0..3 {
-        assert!(bulk.append(index, &entry, false).is_some());
+        assert!(matches!(
+            bulk.append(index, &entry, false),
+            Append::Verified { .. }
+        ));
     }
     for _ in 0..sector_log::RING {
-        assert!(bulk.checkpoint(&Catalog::default()));
+        assert_eq!(bulk.checkpoint(&Catalog::default()), Checkpoint::Written);
     }
     // Both superblocks are lost; the clock seed repeats after a reboot.
     media.written.insert(V, [0; 512]);
@@ -763,8 +764,8 @@ fn an_unproven_end_is_corrupt_and_exportable_but_never_written_or_cleared() {
     assert!(device.recorder.exportable());
     let mut slot = Slot::default();
     let mut bulk = Bulk::new(&mut device.state, &mut device.media);
-    assert_eq!(bulk.read_slot(upper - 4, &mut slot), Some(false));
-    assert_eq!(bulk.read_slot(upper - 1, &mut slot), Some(true));
+    assert_eq!(bulk.read_slot(upper - 4, &mut slot), Read::Invalid);
+    assert_eq!(bulk.read_slot(upper - 1, &mut slot), Read::Slot);
     // Nothing starts, appends or clears; only an explicit initialize may.
     let writes = device.media.writes;
     assert!(!device.recorder.request(Action::Start, 0, 1));
@@ -820,7 +821,7 @@ fn check(device: &mut Device, seed: u64) {
     for (index, entry) in device.acknowledged.clone() {
         let mut slot = Slot::default();
         let readable = Bulk::new(&mut device.state, &mut device.media).read_slot(index, &mut slot);
-        assert_eq!(readable, Some(true), "seed {seed}: slot {index}");
+        assert_eq!(readable, Read::Slot, "seed {seed}: slot {index}");
         assert_eq!(
             crate::ride::log::decode(&slot),
             Some(entry),

@@ -14,7 +14,7 @@
 //! superblock; clear (after a verified export) starts a new epoch whose
 //! superblock makes older records unreachable without erasing them.
 
-use crate::ride::journal::{Journal, Progress, Scan};
+use crate::ride::journal::{Append, Checkpoint, Journal, Progress, Read, Scan};
 use crate::ride::log::{
     Catalog, Entry, HISTORY_CAPACITY, RECORDED_LIVE, Recovery, SLOT_SIZE, Scanner, Slot, Summary,
 };
@@ -391,51 +391,64 @@ impl<B: ReadWrite> Journal for Bulk<'_, B> {
         self.format(seed)
     }
 
-    fn append(&mut self, index: usize, entry: &Entry, terminal: bool) -> Option<bool> {
-        let log = self.state.log.as_mut()?;
+    fn append(&mut self, index: usize, entry: &Entry, terminal: bool) -> Append {
+        let Some(log) = self.state.log.as_mut() else {
+            return Append::Uncertain;
+        };
         if log.head() != index as u64 {
-            return None;
+            return Append::Uncertain;
         }
         let mut slot = crate::ride::log::encode(entry);
         slot.0[SLOT_SIZE - 4..].copy_from_slice(&crate::ride::log::commit_word().0);
-        let mut media = Volume::new(self.media, self.state.rides?);
-        log.append(&mut media, &slot.0, &mut self.state.sector)
-            .ok()?;
+        let Some(rides) = self.state.rides else {
+            return Append::Uncertain;
+        };
+        let mut media = Volume::new(self.media, rides);
+        if log
+            .append(&mut media, &slot.0, &mut self.state.sector)
+            .is_err()
+        {
+            return Append::Uncertain;
+        }
         self.state.since_checkpoint += 1;
-        Some(terminal || self.state.since_checkpoint >= CHECKPOINT_RECORDS)
+        Append::Verified {
+            checkpoint_due: terminal || self.state.since_checkpoint >= CHECKPOINT_RECORDS,
+        }
     }
 
     fn checkpoint_overdue(&self) -> bool {
         self.state.since_checkpoint >= CHECKPOINT_RECORDS
     }
 
-    fn checkpoint(&mut self, catalog: &Catalog) -> bool {
+    fn checkpoint(&mut self, catalog: &Catalog) -> Checkpoint {
         let (Some(log), Some(rides)) = (self.state.log.as_mut(), self.state.rides) else {
-            return false;
+            return Checkpoint::Failed;
         };
         let mut media = Volume::new(self.media, rides);
-        let ok = log
-            .checkpoint(&mut media, &encode_catalog(catalog), &mut self.state.sector)
-            .is_ok();
-        if ok {
-            self.state.since_checkpoint = 0;
+        match log.checkpoint(&mut media, &encode_catalog(catalog), &mut self.state.sector) {
+            Ok(()) => {
+                self.state.since_checkpoint = 0;
+                Checkpoint::Written
+            }
+            Err(_) => Checkpoint::Failed,
         }
-        ok
     }
 
-    fn read_slot(&mut self, index: usize, output: &mut Slot) -> Option<bool> {
-        let log = self.state.log?;
-        let mut media = Volume::new(self.media, self.state.rides?);
+    fn read_slot(&mut self, index: usize, output: &mut Slot) -> Read {
+        let (Some(log), Some(rides)) = (self.state.log, self.state.rides) else {
+            return Read::Failed;
+        };
+        let mut media = Volume::new(self.media, rides);
         match log.read(&mut media, index as u64, &mut self.state.sector) {
             Ok(Some(payload)) if payload.len() == SLOT_SIZE => {
                 output.0.copy_from_slice(payload);
-                Some(true)
+                Read::Slot
             }
             Ok(_) => {
                 output.0.fill(0);
-                Some(false)
+                Read::Invalid
             }
-            Err(_) => None,
+            Err(_) => Read::Failed,
         }
     }
 }

@@ -7,6 +7,7 @@ use crate::ride::course::stored::{self, Finder, Finding};
 use crate::ride::course::{self, Course};
 use crate::ride::homing::rebuild::Rebuild;
 use crate::ride::homing::{Fix, Homing};
+use crate::ride::journal::Read;
 use crate::ride::log::{Slot, Status, decode};
 use crate::ride::medium::Medium;
 use crate::ride::turn_back::Leg;
@@ -305,8 +306,8 @@ impl Runtime {
                 let (ride, mut slot) = (&mut self.ride, Slot::default());
                 let read = rebuild.step(&mut state.homing, upper, budget, |index| {
                     match ride.read_slot(medium, store, bulk, index, &mut slot) {
-                        Some(true) => decode(&slot),
-                        _ => None,
+                        Read::Slot => decode(&slot),
+                        Read::Invalid | Read::Failed => None,
                     }
                 });
                 read || match fix {

@@ -40,7 +40,7 @@
 //!
 //! `Hidden` reads the table onto the shelf the composition lends (PSRAM on the
 //! device) once after boot, and again each time the card becomes ready.
-use super::deleted;
+use super::RETRY_MS;
 use crate::ride::log::Summary;
 use crate::ride::medium::Medium;
 use crate::ride::{Contents, another_version};
@@ -577,9 +577,6 @@ pub fn forget(media: &mut impl ReadWrite, shelf: &mut Shelf, journal: u8) -> Res
     rewrite(media, shelf, None, |ride| ride.journal == journal)
 }
 
-/// A failed read of the table is tried again this long after.
-const RETRY_MS: u64 = 5_000;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Scan {
     #[default]
@@ -593,6 +590,17 @@ pub(crate) enum Scan {
     Absent,
     /// A table this version does not write: it hides nothing and stays.
     Foreign,
+}
+
+/// What the table's scan sees of the rest of the device.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Seen {
+    /// The bulk medium is usable.
+    pub(crate) ready: bool,
+    /// A ride is being written: the table waits.
+    pub(crate) busy: bool,
+    /// The page asks about rides: END RIDE? or the list.
+    pub(crate) asking: bool,
 }
 
 #[derive(Default)]
@@ -638,7 +646,7 @@ impl Hidden {
         let Some(shelf) = shelf else {
             return Err(Error::Table);
         };
-        let saved = deleted::save(bulk, shelf, record);
+        let saved = save(bulk, shelf, record);
         self.revision = self.revision.wrapping_add(1);
         if let Err(error) = saved {
             log::warn!(target: "sdk.deleted", "save_failed error={error:?}");
@@ -655,7 +663,7 @@ impl Hidden {
         let Some(shelf) = self.shelf.as_mut().filter(|_| self.scan == Scan::Read) else {
             return;
         };
-        if let Err(error) = deleted::forget(bulk, shelf, medium.journal()) {
+        if let Err(error) = forget(bulk, shelf, medium.journal()) {
             log::warn!(target: "sdk.deleted", "forget_failed error={error:?}");
         }
         self.revision = self.revision.wrapping_add(1);
@@ -665,12 +673,12 @@ impl Hidden {
     /// that became ready is read again, and so is one without a table this
     /// version writes once a page that asks about rides opens: the host may
     /// have made FILES since.
-    pub(crate) fn scan_step(
-        &mut self,
-        bulk: &mut impl ReadWrite,
-        now: u64,
-        (ready, busy, asking): (bool, bool, bool),
-    ) {
+    pub(crate) fn scan_step(&mut self, bulk: &mut impl ReadWrite, now: u64, seen: Seen) {
+        let Seen {
+            ready,
+            busy,
+            asking,
+        } = seen;
         let opened = asking && !self.asking;
         self.asking = asking;
         if ready && !self.card_ready || opened && matches!(self.scan, Scan::Absent | Scan::Foreign)
@@ -694,7 +702,7 @@ impl Hidden {
             return;
         };
         let before = self.scan;
-        self.scan = match deleted::read(bulk, shelf) {
+        self.scan = match read(bulk, shelf) {
             Ok(_) => Scan::Read,
             Err(Error::Table) => Scan::Foreign,
             Err(error) if absent(error) => Scan::Absent,
@@ -740,7 +748,7 @@ mod hidden_tests {
 
     fn hidden() -> Hidden {
         Hidden {
-            shelf: Some(Shelf::new(std::vec![0; deleted::SHELF_BYTES].leak())),
+            shelf: Some(Shelf::new(std::vec![0; SHELF_BYTES].leak())),
             ..Hidden::default()
         }
     }
@@ -759,25 +767,65 @@ mod hidden_tests {
         let mut kept = hidden();
         kept.card_in = true;
         assert!(!kept.settled());
-        kept.scan_step(&mut card, 0, (true, true, false));
+        kept.scan_step(
+            &mut card,
+            0,
+            Seen {
+                ready: true,
+                busy: true,
+                asking: false,
+            },
+        );
         assert!(!kept.settled(), "not while a ride is being written");
-        kept.scan_step(&mut card, 0, (true, false, false));
+        kept.scan_step(
+            &mut card,
+            0,
+            Seen {
+                ready: true,
+                busy: false,
+                asking: false,
+            },
+        );
         assert!(kept.settled() && kept.writable(), "no table yet");
         kept.save(&mut card, &record(4)).unwrap();
         assert!(kept.hides(&record(4).ride));
 
         let mut again = hidden();
-        again.scan_step(&mut card, 0, (true, false, false));
+        again.scan_step(
+            &mut card,
+            0,
+            Seen {
+                ready: true,
+                busy: false,
+                asking: false,
+            },
+        );
         assert!(again.hides(&record(4).ride), "read back");
 
         let mut blank = crate::workout::library::tests::Region::default();
         let mut none = hidden();
-        none.scan_step(&mut blank, 0, (false, false, false));
+        none.scan_step(
+            &mut blank,
+            0,
+            Seen {
+                ready: false,
+                busy: false,
+                asking: false,
+            },
+        );
         assert_eq!(none.scan, Scan::Absent);
         assert!(none.settled() && !none.writable());
         assert!(none.save(&mut blank, &record(1)).is_err());
         none.card_in = true;
-        none.scan_step(&mut card, 0, (false, false, true));
+        none.scan_step(
+            &mut card,
+            0,
+            Seen {
+                ready: false,
+                busy: false,
+                asking: true,
+            },
+        );
         assert!(
             none.hides(&record(4).ride),
             "FILES made since, read as END RIDE? opens"
@@ -797,7 +845,15 @@ mod hidden_tests {
     fn without_a_shelf_nothing_is_hidden_and_the_list_counts_at_once() {
         let mut card = formatted();
         let mut bare = Hidden::default();
-        bare.scan_step(&mut card, 0, (true, false, false));
+        bare.scan_step(
+            &mut card,
+            0,
+            Seen {
+                ready: true,
+                busy: false,
+                asking: false,
+            },
+        );
         assert!(bare.settled());
         assert!(!bare.writable());
         assert!(!bare.hides(&record(1).ride));

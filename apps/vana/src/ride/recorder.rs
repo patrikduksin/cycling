@@ -22,7 +22,7 @@
 //! waiting mark, at the stop, to carry them.
 //! One operation and its unconsumed completion exclude further mutations.
 
-use crate::ride::journal::{Journal, Progress, Scan};
+use crate::ride::journal::{Append, Checkpoint, Journal, Progress, Scan};
 use crate::ride::laps::Marks;
 use crate::ride::log::Catalog;
 use crate::ride::log::Entry;
@@ -384,7 +384,7 @@ impl Recorder {
         if self.checkpoint_due {
             self.checkpoint_due = false;
             let catalog = self.checkpoint_catalog();
-            if !journal.checkpoint(&catalog) {
+            if journal.checkpoint(&catalog) == Checkpoint::Failed {
                 self.freeze(now);
                 self.status = Status::Error;
                 return self.service_inner(journal, now, sample, clock);
@@ -748,14 +748,14 @@ impl Recorder {
         let elapsed = clock().saturating_sub(started).min(u64::from(u32::MAX)) as u32;
         self.max_write_ms = self.max_write_ms.max(elapsed);
         match appended {
-            Some(checkpoint) => {
+            Append::Verified { checkpoint_due } => {
                 self.catalog.next_slot += 1;
                 self.catalog.valid_slots = self.catalog.valid_slots.saturating_add(1);
                 self.committed_ms = entry.active_ms;
-                self.checkpoint_due |= checkpoint;
+                self.checkpoint_due |= checkpoint_due;
                 true
             }
-            None => {
+            Append::Uncertain => {
                 // The commit may have reached the medium even when verification
                 // could not complete. Stop and let the boot scan reconcile it.
                 self.freeze(now);
@@ -781,7 +781,7 @@ impl Recorder {
 fn forget_paused_recovery(mut catalog: Catalog, journal: &mut impl Journal) -> Catalog {
     let mut last = crate::ride::log::Slot::default();
     let paused = catalog.next_slot > 0
-        && journal.read_slot(catalog.next_slot - 1, &mut last) == Some(true)
+        && journal.read_slot(catalog.next_slot - 1, &mut last) == crate::ride::journal::Read::Slot
         && crate::ride::log::decode(&last).is_some_and(|e| e.kind == Kind::Pause);
     if paused {
         catalog.recovery = None;
@@ -798,7 +798,7 @@ mod properties;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ride::journal::{Internal, InternalState};
+    use crate::ride::journal::{Internal, InternalState, Read};
     use crate::ride::log::Slot;
     use crate::ride::storage::RideStorage;
     use std::vec;
@@ -831,13 +831,13 @@ mod tests {
         fn clear(&mut self, step: usize, seed: u64) -> Progress {
             Internal::new(&mut self.state, &mut self.flash).clear(step, seed)
         }
-        fn append(&mut self, index: usize, entry: &Entry, terminal: bool) -> Option<bool> {
+        fn append(&mut self, index: usize, entry: &Entry, terminal: bool) -> Append {
             Internal::new(&mut self.state, &mut self.flash).append(index, entry, terminal)
         }
-        fn checkpoint(&mut self, catalog: &Catalog) -> bool {
+        fn checkpoint(&mut self, catalog: &Catalog) -> Checkpoint {
             Internal::new(&mut self.state, &mut self.flash).checkpoint(catalog)
         }
-        fn read_slot(&mut self, index: usize, output: &mut Slot) -> Option<bool> {
+        fn read_slot(&mut self, index: usize, output: &mut Slot) -> Read {
             Internal::new(&mut self.state, &mut self.flash).read_slot(index, output)
         }
     }
@@ -1371,7 +1371,7 @@ mod tests {
         assert_eq!(recorder.status(), Status::Recording);
         assert_eq!(recorder.written_samples(), 4);
         let mut slot = Slot::default();
-        media.read_slot(1, &mut slot).unwrap();
+        assert_ne!(media.read_slot(1, &mut slot), Read::Failed);
         let batch = crate::ride::log::decode(&slot).unwrap();
         assert_eq!(batch.samples[0].battery_percent, None);
         assert_eq!(batch.samples[0].power_watts, Some(180));

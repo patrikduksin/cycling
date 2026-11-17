@@ -42,6 +42,32 @@ pub enum Progress {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Append {
+    /// The entry is programmed and reads back; `checkpoint_due` asks for the
+    /// recovery state to be saved.
+    Verified { checkpoint_due: bool },
+    /// The outcome is unknown: stop and rescan before writing.
+    Uncertain,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Checkpoint {
+    Written,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Read {
+    /// The slot's bytes are in the caller's slot.
+    Slot,
+    /// The medium's container around the slot is invalid: a gap, with the
+    /// caller's slot zeroed.
+    Invalid,
+    /// The medium failed; try again later.
+    Failed,
+}
+
 pub trait Journal {
     /// Slots this medium holds, including the final slot reserved for a
     /// terminal record. Zero until a scan has found the medium.
@@ -56,22 +82,18 @@ pub trait Journal {
     }
     /// Step `step` (from zero) of an explicit clear after a verified export.
     fn clear(&mut self, step: usize, seed: u64) -> Progress;
-    /// Program `entry` at `index` and verify it. `Some(checkpoint)` once it
-    /// verified, where `checkpoint` asks for the recovery state to be saved.
-    /// `None` leaves the outcome uncertain: stop and rescan before writing.
-    fn append(&mut self, index: usize, entry: &Entry, terminal: bool) -> Option<bool>;
+    /// Program `entry` at `index` and verify it.
+    fn append(&mut self, index: usize, entry: &Entry, terminal: bool) -> Append;
     /// Save recovery state so boot need not scan what it covers.
-    fn checkpoint(&mut self, catalog: &Catalog) -> bool;
+    fn checkpoint(&mut self, catalog: &Catalog) -> Checkpoint;
     /// The records since the last checkpoint already reach its cadence, as a
     /// boot can find after power was cut before a due checkpoint. One must be
     /// written before anything else is appended.
     fn checkpoint_overdue(&self) -> bool {
         false
     }
-    /// The slot at `index` for export, or `None` when the medium fails.
-    /// `Some(false)`, with zeroed output, when the medium's container around
-    /// the slot is invalid.
-    fn read_slot(&mut self, index: usize, output: &mut Slot) -> Option<bool>;
+    /// The slot at `index` for export.
+    fn read_slot(&mut self, index: usize, output: &mut Slot) -> Read;
 }
 
 /// Scan, initialize and clear progress of the internal 1 MiB journal.
@@ -182,12 +204,12 @@ impl<S: RideStorage> Journal for Internal<'_, S> {
         }
     }
 
-    fn append(&mut self, index: usize, entry: &Entry, _: bool) -> Option<bool> {
+    fn append(&mut self, index: usize, entry: &Entry, _: bool) -> Append {
         let mut verify = Slot::default();
         if self.store.ride_read_slot(index, &mut verify).is_err()
             || !crate::ride::log::erased(&verify.0)
         {
-            return None;
+            return Append::Uncertain;
         }
         let slot = crate::ride::log::encode(entry);
         let _write = self.store.ride_write_slot(index, &slot).and_then(|()| {
@@ -198,14 +220,23 @@ impl<S: RideStorage> Journal for Internal<'_, S> {
         // complete; the boot scanner reconciles this slot.
         let verified = self.store.ride_read_slot(index, &mut verify).is_ok()
             && crate::ride::log::decode(&verify).as_ref() == Some(entry);
-        verified.then_some(false)
+        if verified {
+            Append::Verified {
+                checkpoint_due: false,
+            }
+        } else {
+            Append::Uncertain
+        }
     }
 
-    fn checkpoint(&mut self, _: &Catalog) -> bool {
-        true
+    fn checkpoint(&mut self, _: &Catalog) -> Checkpoint {
+        Checkpoint::Written
     }
 
-    fn read_slot(&mut self, index: usize, output: &mut Slot) -> Option<bool> {
-        self.store.ride_read_slot(index, output).ok().map(|()| true)
+    fn read_slot(&mut self, index: usize, output: &mut Slot) -> Read {
+        match self.store.ride_read_slot(index, output) {
+            Ok(()) => Read::Slot,
+            Err(_) => Read::Failed,
+        }
     }
 }

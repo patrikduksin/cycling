@@ -8,7 +8,7 @@
 //! slot, and recover one consistent ride.
 
 use super::*;
-use crate::ride::journal::{Internal, InternalState, wipe_sector};
+use crate::ride::journal::{Internal, InternalState, Read, wipe_sector};
 use crate::ride::log::{
     LapStart, SECTOR_SIZE, SECTORS, SLOT_SIZE, SLOTS, Sector, Slot, commit_word, decode, encode,
     erased,
@@ -185,20 +185,20 @@ impl Journal for Probe {
     fn clear(&mut self, step: usize, seed: u64) -> Progress {
         Internal::new(&mut self.state, &mut self.nor).clear(step, seed)
     }
-    fn append(&mut self, index: usize, entry: &Entry, terminal: bool) -> Option<bool> {
+    fn append(&mut self, index: usize, entry: &Entry, terminal: bool) -> Append {
         self.attempt = Some((index, *entry));
         self.history.push(*entry);
         let appended = Internal::new(&mut self.state, &mut self.nor).append(index, entry, terminal);
-        if appended.is_some() {
+        if matches!(appended, Append::Verified { .. }) {
             self.acknowledged.push((index, *entry));
             self.attempt = None;
         }
         appended
     }
-    fn checkpoint(&mut self, catalog: &Catalog) -> bool {
+    fn checkpoint(&mut self, catalog: &Catalog) -> Checkpoint {
         Internal::new(&mut self.state, &mut self.nor).checkpoint(catalog)
     }
-    fn read_slot(&mut self, index: usize, output: &mut Slot) -> Option<bool> {
+    fn read_slot(&mut self, index: usize, output: &mut Slot) -> Read {
         Internal::new(&mut self.state, &mut self.nor).read_slot(index, output)
     }
 }

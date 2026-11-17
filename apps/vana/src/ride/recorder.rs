@@ -34,6 +34,7 @@ use crate::ride::log::Status;
 use crate::ride::log::Summary;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(test, derive(Hash))]
 pub enum Action {
     Start,
     Pause,
@@ -42,6 +43,7 @@ pub enum Action {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Hash))]
 enum Pending {
     Ride(Action, u64, u32),
     Initialize(u32),
@@ -56,12 +58,14 @@ pub enum Refused {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
 pub struct ResultEvent {
     pub action: Option<Action>,
     pub token: u32,
     pub ok: bool,
 }
 
+#[cfg_attr(test, derive(Clone, Hash))]
 pub struct Recorder {
     catalog: Catalog,
     status: Status,
@@ -832,6 +836,9 @@ fn forget_paused_recovery(mut catalog: Catalog, journal: &mut impl Journal) -> C
 
 #[cfg(any(test, feature = "invariants"))]
 pub mod invariants;
+
+#[cfg(test)]
+mod explore;
 
 #[cfg(test)]
 mod properties;

@@ -183,6 +183,32 @@ scan, gets one file named for the behavior beside its owner.
   including rows that must do nothing. Runtime tests assert what a rider or the
   host sees (page, status, toasts, journal and `RIDE STATUS`), never variants.
   Simulator scenarios stay the acceptance check.
+- Search a machine whose bounded configuration is small with `explore` in
+  [`testing.rs`](../apps/vana/src/testing.rs). It runs the real code breadth
+  first from every starting state, checks each named state rule on every state
+  it reaches and each transition rule on every edge, and returns the shortest
+  path to each broken rule. Its visited set keeps a 128-bit fingerprint of each
+  complete state, never an abstraction. A search that closed within its budget
+  claims every reachable state of that configuration, up to a fingerprint
+  collision. A truncated search claims nothing, so its test fails; shrink the
+  bounds instead. The [recorder's search](../apps/vana/src/ride/recorder/explore.rs)
+  runs over a six-slot fake journal whose bytes are part of the state.
+  `Env` holds everything outside the recorder: that journal, the time, the
+  counts that bound a path, and FORMAT's wipe. `drive` makes one event's calls
+  into the recorder, and `observe` reads it through public methods only. A
+  second recorder adds its own `drive` and `observe`, with no shared trait, and
+  the differential search gives both recorders every edge over one `Env`.
+  A scan answers `More` before its last answer, as the real journals do, and
+  two starting volumes answer `Foreign` and `Corrupt` with no catalog. A probe
+  is a rule the search must break, because the edge that breaks it reaches what
+  the probe names, such as a full batch flushed while recording.
+  A FORMAT wipe of that journal is an outside event there. It finishes, fails
+  with or without the erase, or is cut and finished at the next boot. While
+  FORMAT holds storage with no wipe waiting in the recorder, the search makes
+  only the recorder calls the app makes.
+  Run its ignored `WIDE` and full-batch tests on any PR that touches
+  `ride/recorder*` or `ride/journal.rs`.
+  Capacities beyond the bounds stay covered by targeted and property tests.
 - Enforce a single writer by adding the value and its owner to `SINGLE_WRITERS`
   in `tools/check-boundaries.py`, which `cycling check` runs.
 

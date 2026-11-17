@@ -37,6 +37,7 @@ pub const WAITING: usize = 4;
 /// can close within one sample period, but not many more, so few wait; past
 /// `WAITING` the newest replaces the last.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(Hash))]
 pub struct Marks {
     starts: [Option<LapStart>; WAITING],
 }

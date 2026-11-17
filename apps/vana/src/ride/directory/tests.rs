@@ -1,11 +1,8 @@
 use super::*;
-use crate::ride::log::{Entry, Kind, Sample, commit_word, encode as encode_slot};
+use crate::ride::log::{COMMIT_OFFSET, Entry, Kind, Sample, commit_word, encode as encode_slot};
 use std::boxed::Box;
 use std::vec;
 use std::vec::Vec;
-
-/// Where a slot's commit word goes.
-const COMMIT_OFFSET: usize = 252;
 
 fn sample(active_ms: u64, utc_ms: u64, heart: u16) -> Sample {
     Sample {

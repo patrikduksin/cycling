@@ -11,4 +11,4 @@ fi
 mkdir -p .local
 nix develop --profile .local/dev-shell . --command bash -c \
   'unset TMP TMPDIR TEMP TEMPDIR NIX_BUILD_TOP shellHook; export -n PWD OLDPWD SHLVL _; export -p' \
-  >>"$CLAUDE_ENV_FILE" || echo "nix develop failed in $PWD; prefix commands with 'nix develop -c'." >&2
+  >"$CLAUDE_ENV_FILE" || echo "nix develop failed in $PWD; prefix commands with 'nix develop -c'." >&2

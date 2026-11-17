@@ -1,4 +1,5 @@
 //! Physical sensor observations. Motion scaling and axes remain unverified.
+use crate::capability::capability;
 use crate::observation::{Error, Observation};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pressure {
@@ -117,11 +118,18 @@ impl IdentityQuery {
 
 /// Optional physical sensor observations; motion remains explicitly unscaled
 /// until fitted hardware and axes are established.
+#[capability(id = 13)]
 pub trait Sensors {
+    #[observe]
     fn startup_status(&self) -> Startup;
+    #[observe]
     fn startup_reason(&self) -> Option<u8>;
-    fn snapshot(&self, now: u64) -> crate::sensors::Snapshot;
-    fn light(&self, now: u64) -> Observation<Light>;
+    #[observe]
+    fn snapshot(&self, #[clock] now: u64) -> crate::sensors::Snapshot;
+    #[observe]
+    fn light(&self, #[clock] now: u64) -> Observation<Light>;
+    #[observe]
     fn identity_status(&self) -> IdentityQuery;
-    fn query_identity(&mut self, now: u64) -> Result<(), Error>;
+    #[request(refreshes)]
+    fn query_identity(&mut self, #[clock] now: u64) -> Result<(), Error>;
 }

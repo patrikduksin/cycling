@@ -3,9 +3,12 @@
 #[cfg(test)]
 extern crate std;
 
+extern crate self as device_api;
+
 pub mod ant;
 pub mod ble_transport;
 pub mod bulk;
+pub mod capability;
 pub mod connectivity;
 pub mod console;
 pub mod crash;

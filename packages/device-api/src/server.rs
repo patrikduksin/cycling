@@ -8,6 +8,8 @@
 //! bounded pieces whenever there is room, then finishes it. The transport
 //! closes the connection after each response.
 
+use crate::capability::capability;
+
 /// Request methods the transport recognizes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {
@@ -52,24 +54,31 @@ impl Request {
 }
 
 /// The application side of a local HTTP server.
+#[capability(id = 15)]
 pub trait Server {
     /// Accept connections. Off by default: nothing is reachable until the
     /// application opens a session.
+    #[request(refreshes)]
     fn listen(&mut self, on: bool);
     /// The request waiting for an answer. It stays until `finish`, or until
     /// the peer goes away, after which it is `None` (or the next request,
     /// with another id) and writes for it are dropped.
+    #[observe(redact)]
     fn request(&self) -> Option<Request>;
     /// Move body bytes of request `id` that have arrived into `out`; returns
     /// how many. Zero while none are waiting, once the whole body was read,
     /// or once that request is gone. A body is read in order, exactly once.
-    fn read(&mut self, id: u32, out: &mut [u8]) -> usize;
+    #[take(refreshes)]
+    fn read(&mut self, id: u32, #[out] out: &mut [u8]) -> usize;
     /// Bytes that `write` accepts now.
+    #[observe]
     fn room(&self) -> usize;
     /// Queue response bytes for request `id`; returns how many were taken,
     /// zero once that request is gone.
-    fn write(&mut self, id: u32, bytes: &[u8]) -> usize;
+    #[sink(refreshes)]
+    fn write(&mut self, id: u32, #[input] bytes: &[u8]) -> usize;
     /// The response to request `id` is complete.
+    #[request(refreshes)]
     fn finish(&mut self, id: u32);
 }
 
@@ -121,11 +130,17 @@ pub struct Reach {
 
 /// A soft access point that takes the radio from the station while it is up.
 /// Requests are accepted, not completed: read `state` for the outcome.
+#[capability(id = 14)]
 pub trait AccessPoint {
+    #[request(refreshes, redact)]
     fn start(&mut self, config: AccessPointConfig) -> Result<(), crate::observation::Error>;
+    #[request(refreshes)]
     fn stop(&mut self) -> Result<(), crate::observation::Error>;
+    #[observe]
     fn state(&self) -> AccessPointState;
+    #[observe]
     fn reach(&self) -> Reach;
     /// Hardware random words for passwords and tokens; 0 without a source.
+    #[take(redact)]
     fn entropy(&mut self) -> u32;
 }

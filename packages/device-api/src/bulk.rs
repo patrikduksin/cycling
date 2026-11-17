@@ -1,5 +1,7 @@
 //! Raw read-only media and explicitly marked application-owned block storage.
 
+use crate::capability::capability;
+
 pub const SECTOR_SIZE: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,10 +25,19 @@ pub struct Info {
 
 /// Reads complete synchronously, including DMA cleanup on failure. Failed reads
 /// never publish partial bytes. No write, erase, format or partition switch exists.
+#[capability(id = 3)]
 pub trait Read {
+    #[observe]
     fn info(&self) -> Result<Info, Error>;
-    fn read(&mut self, sector: u64, output: &mut [u8; SECTOR_SIZE]) -> Result<(), Error>;
+    #[media(read)]
+    fn read(
+        &mut self,
+        #[at] sector: u64,
+        #[out] output: &mut [u8; SECTOR_SIZE],
+    ) -> Result<(), Error>;
+    #[request(refreshes)]
     fn clock(&mut self, hz: u32) -> Result<(), Error>;
+    #[request(refreshes)]
     fn recover(&mut self) -> Result<(), Error>;
 }
 
@@ -49,12 +60,25 @@ impl OwnedInfo {
 /// No implicit initialization or formatting. Implementations validate ownership
 /// before writes; completion means programming finished and readback matched.
 /// A failed write may have changed the sector and must never be retried blindly.
+#[capability(id = 4)]
 pub trait ReadWrite {
+    #[request]
     fn owned_info(&mut self) -> Result<OwnedInfo, Error>;
-    fn owned_read(&mut self, sector: u64, output: &mut [u8; SECTOR_SIZE]) -> Result<(), Error>;
-    fn owned_write(&mut self, sector: u64, input: &[u8; SECTOR_SIZE]) -> Result<(), Error>;
+    #[media(read)]
+    fn owned_read(
+        &mut self,
+        #[at] sector: u64,
+        #[out] output: &mut [u8; SECTOR_SIZE],
+    ) -> Result<(), Error>;
+    #[media(write)]
+    fn owned_write(
+        &mut self,
+        #[at] sector: u64,
+        #[input] input: &[u8; SECTOR_SIZE],
+    ) -> Result<(), Error>;
     /// Unpredictable bits for naming a new store on this medium, so a
     /// reformat never reuses an identity whose sectors may remain. Boards
     /// without a hardware random source return 0.
+    #[take]
     fn entropy(&mut self) -> u64;
 }

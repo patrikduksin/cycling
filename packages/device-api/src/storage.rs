@@ -1,3 +1,5 @@
+use crate::capability::capability;
+
 /// Physical geometry of an exclusively owned byte reservation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Geometry {
@@ -42,18 +44,42 @@ pub enum Region {
     Intent,
 }
 
+impl Region {
+    pub const ALL: [Region; 4] = [Self::Configuration, Self::Data, Self::Crash, Self::Intent];
+}
+
 /// Sole physical owner of independently bounded reservations. Every operation
 /// uses relative byte offsets; no caller can select a physical flash address.
 /// Return means completed hardware access, including on failure. A failed
 /// mutation may have changed bytes: inspect/rescan before deciding to retry.
+#[capability(id = 17)]
 pub trait OwnedFlash {
     type Error;
+    #[observe(keys = Region::ALL)]
     fn availability(&self, region: Region) -> crate::observation::Availability;
+    #[observe(keys = Region::ALL)]
     fn geometry(&self, region: Region) -> Geometry;
-    fn read(&mut self, region: Region, offset: usize, output: &mut [u8])
-    -> Result<(), Self::Error>;
-    fn program(&mut self, region: Region, offset: usize, bytes: &[u8]) -> Result<(), Self::Error>;
-    fn erase(&mut self, region: Region, offset: usize, length: usize) -> Result<(), Self::Error>;
+    #[media(read)]
+    fn read(
+        &mut self,
+        #[at] region: Region,
+        #[at] offset: usize,
+        #[out] output: &mut [u8],
+    ) -> Result<(), Self::Error>;
+    #[media(write)]
+    fn program(
+        &mut self,
+        #[at] region: Region,
+        #[at] offset: usize,
+        #[input] bytes: &[u8],
+    ) -> Result<(), Self::Error>;
+    #[media(erase)]
+    fn erase(
+        &mut self,
+        #[at] region: Region,
+        #[at] offset: usize,
+        #[len] length: usize,
+    ) -> Result<(), Self::Error>;
 }
 
 impl<T: OwnedFlash + ?Sized> OwnedFlash for &mut T {

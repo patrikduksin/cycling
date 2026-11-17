@@ -1,5 +1,6 @@
 //! Position acquisition state. Publication replaces old state; consumers do not
 //! acknowledge updates and cannot backpressure the receiver.
+use crate::capability::capability;
 use crate::gps;
 use crate::observation::Availability;
 
@@ -33,7 +34,10 @@ pub struct Snapshot {
     pub fault_at_ms: Option<u64>,
 }
 
+#[capability(id = 10)]
 pub trait Positioning {
+    #[observe]
     fn availability(&self) -> Availability;
-    fn snapshot(&self, now_ms: u64) -> Option<crate::positioning::Snapshot>;
+    #[observe]
+    fn snapshot(&self, #[clock] now_ms: u64) -> Option<crate::positioning::Snapshot>;
 }

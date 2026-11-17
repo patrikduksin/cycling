@@ -198,6 +198,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "capability"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "cc"
 version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -446,6 +455,7 @@ dependencies = [
 name = "device-api"
 version = "0.1.0"
 dependencies = [
+ "capability",
  "heapless 0.9.3",
 ]
 

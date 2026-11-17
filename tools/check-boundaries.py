@@ -66,6 +66,15 @@ STACK_STATE_WAIT = re.compile(r'(?:\.|::)\s*(wait_(?:config|link)_(?:up|down))\s
 FUNCTION = re.compile(r'\bfn\s+(\w+)')
 
 
+CAPABILITY_SOURCE = 'packages/device-api/src/'
+CAPABILITY_RULE = ('a device-api trait declares how each method is recorded: mark it #[capability(id = N)] '
+                   '(packages/device-api/src/capability.rs)')
+CONSOLE_READERS = ('apps/vana/', 'packages/shell/')
+CONSOLE_RULE = ("device_api::console is the terminal task's byte pipe, outside the recorded world: "
+                'VANA and the shell reach the console only through commands')
+ALIAS_RULE = 'write `device_api::` in full in VANA and the shell: an alias hides a reach to the console'
+
+
 # A Rust lifetime is not a character literal; do not blank code between two
 # lifetimes such as &'a and &'b when scanning an import or qualified expression.
 STRING = re.compile(
@@ -168,6 +177,60 @@ def foreign_stack_waits(text, path):
             findings.append((line, f'{match[1]} outside `network`: embassy-net wakes one task per stack, and a '
                                    f'second one makes both spin; use config_up or config_down in {STACK_STATE_WAITER[0]} (at most CONFIG_WAITERS of them at once)'))
     return findings
+
+
+def outer_attributes(code, offset):
+    before = code[:offset].rstrip()
+    while before.endswith(']'):
+        depth, index = 0, len(before)
+        while index:
+            index -= 1
+            depth += {']': 1, '[': -1}.get(before[index], 0)
+            if not depth:
+                break
+        hash_mark = re.search(r'#\s*$', before[:index])
+        if not hash_mark:
+            return
+        yield before[hash_mark.start():]
+        before = before[:hash_mark.start()].rstrip()
+
+
+def unmarked_capabilities(text, path):
+    if not path.startswith(CAPABILITY_SOURCE):
+        return []
+    code = STRING.sub(lambda match: blank(match.group()), without_comments(text))
+    return [(code.count('\n', 0, match.start()) + 1, f'`{match[1]}`: {CAPABILITY_RULE}')
+            for match in re.finditer(r'\bpub\b(?:\s*\([^)]*\))?\s*(?:unsafe\s+)?trait\s+(\w+)', code)
+            if not any(re.match(r'#\s*\[\s*capability\s*\(', attribute)
+                       for attribute in outer_attributes(code, match.start()))]
+
+
+def console_reach(text, path):
+    """A mistake guard, not a resolver: it flags the literal path `device_api::console`, a glob import of
+    `device_api`, and any rename of `device_api` (which is forbidden here so that the literal check is enough);
+    a reach through a re-export or alias in another file is out of scope."""
+    if not path.startswith(CONSOLE_READERS):
+        return []
+    tokens = rust_tokens(text) + [(';', 0)] * 5
+    findings = set()
+    for index, (word, line) in enumerate(tokens):
+        if word == 'use':
+            leaves = []
+            use_tree(tokens, index + 1, [], (), leaves)
+            for leaf in leaves:
+                names = [name for name, _ in leaf.segments if name != '::']
+                if 'device_api' not in names:
+                    continue
+                names = names[names.index('device_api'):]
+                if leaf.alias and names[1:] in ([], ['self']):
+                    findings.add((line, ALIAS_RULE))
+                elif names[1:2] == ['console'] or leaf.glob and len(names) == 1:
+                    findings.add((line, CONSOLE_RULE))
+        elif [w for w, _ in tokens[index:index + 3]] == ['extern', 'crate', 'device_api'] and tokens[index + 3][0] == 'as':
+            findings.add((line, ALIAS_RULE))
+        elif word == 'device_api' and tokens[index + 1][0] == '::' and tokens[index + 2][0] == 'console':
+            findings.add((line, CONSOLE_RULE))
+    return sorted(findings)
 
 
 def rust_tokens(text):
@@ -437,6 +500,39 @@ ui = { package = "firmware-shell", path = "../shell" }
     assert [line for line, _ in layer_findings('use crate::app::Runtime;', 'apps/vana/src/kept/bests.rs')] == [1]
     assert domain_module(Path('src/app/input.rs')) is None
     assert domain_module(Path('tests/ride.rs')) is None
+    flash = 'packages/device-api/src/lamp.rs'
+    assert [line for line, _ in unmarked_capabilities('pub trait Lamp {\n    fn level(&self) -> u8;\n}', flash)] == [1]
+    assert [line for line, _ in unmarked_capabilities(
+        '#[capability(id = 1)]\npub trait A {}\n\npub trait B {}', flash)] == [4]
+    for source in ['/// Doc.\n#[capability(id = 1)]\n#[allow(unused)]\npub trait Lamp {}',
+                   '#[capability(\n    id = 5,\n    outside = "a pipe [not] recorded",\n)]\npub trait Console {}',
+                   '#[capability(id = 1)] /* between */ pub trait Lamp {}']:
+        assert not unmarked_capabilities(source, flash), source
+    for source in ['pub(crate) trait Lamp {}', 'pub unsafe trait Lamp {}', 'pub(in crate::bulk) unsafe trait Lamp {}']:
+        assert [line for line, _ in unmarked_capabilities(source, flash)] == [1], source
+        assert not unmarked_capabilities('#[capability(id = 1)]\n' + source, flash), source
+    for source in ['/// #[capability(id = 1)]\npub trait Lamp {}', '#[capabilities(id = 1)]\npub trait Lamp {}',
+                   '#[cfg(test)]\npub trait Lamp {}', 'const DOC: &str = "#[capability(id = 1)]";\npub trait Lamp {}']:
+        assert unmarked_capabilities(source, flash), source
+    assert not unmarked_capabilities('pub trait Lamp {}', 'packages/services/src/lamp.rs')
+    for path in ['apps/vana/src/app/cues.rs', 'packages/shell/src/lib.rs']:
+        for source in ['use device_api::console::Console;', 'use device_api::{display, console};',
+                       'use ::device_api::{console::{self}};', 'use device_api::*;',
+                       'fn f(c: &mut impl device_api::console::Console) {}',
+                       'mod bridge { pub use device_api; }\nuse bridge::device_api::{console::Console};']:
+            assert [reason for _, reason in console_reach(source, path)] == [CONSOLE_RULE], (path, source)
+        for source in ['use device_api as d;', 'use device_api::{self as d};', 'use ::device_api as d;',
+                       'extern crate device_api as d;', 'extern crate device_api;\nuse self::device_api as d;',
+                       'use crate::device_api as d;', 'use super::device_api::{self as d};',
+                       'mod bridge { pub use device_api; }\nuse bridge::{device_api as d};']:
+            assert [reason for _, reason in console_reach(source, path)] == [ALIAS_RULE], (path, source)
+        for source in ['use device_api::display;', '// use device_api::console;', 'let s = "device_api::console";',
+                       'use device_api::display::*;', 'mod console { use device_api::sound; }',
+                       'use other as d;\nuse d::console;', 'use device_api::display as d;',
+                       'mod local {\n    mod d { pub mod console { pub struct Local; } }\n'
+                       '    use self::d::console::Local;\n}']:
+            assert not console_reach(source, path), (path, source)
+    assert not console_reach('use device_api::console::Console;', 'packages/console/src/session.rs')
     wifi = STACK_STATE_WAITER[0]
     publisher = 'async fn network(stack: Stack) {\n    loop {\n        stack.wait_config_up().await;\n' \
                 '        stack\n            .wait_config_down()\n            .await;\n    }\n}\n'
@@ -480,9 +576,12 @@ def main():
                             for line, reason in layer_findings(path.read_text(), path.relative_to(ROOT).as_posix()))
             failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                             for line, reason in foreign_stack_waits(path.read_text(), path.relative_to(ROOT).as_posix()))
+            for check in (unmarked_capabilities, console_reach):
+                failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
+                                for line, reason in check(path.read_text(), path.relative_to(ROOT).as_posix()))
     if failures:
         raise SystemExit('\n'.join(failures))
-    print(f'Boundaries, layers, single writers and the stack waiter passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
+    print(f'Boundaries, layers, single writers, the stack waiter, capabilities and the console passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
 
 
 if __name__ == '__main__':

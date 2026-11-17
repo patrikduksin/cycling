@@ -1,4 +1,5 @@
 //! One-peer BLE data capabilities. Payload interpretation belongs to consumers.
+use crate::capability::capability;
 use crate::observation::{Availability, Error};
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Link {
@@ -97,14 +98,22 @@ pub struct Discovery {
     pub rssi: i8,
 }
 
+#[capability(id = 2)]
 pub trait Ble {
+    #[request(refreshes)]
     fn request(&mut self, operation: crate::ble_transport::Operation) -> Result<(), Error>;
+    #[observe]
     fn control(&self) -> crate::connectivity::ControlStatus;
+    #[observe]
     fn discoveries(&self) -> [Option<crate::ble_transport::Discovery>; 8];
+    #[observe]
     fn availability(&self) -> Availability;
+    #[observe]
     fn snapshot(&self) -> crate::ble_transport::Snapshot;
+    #[take]
     fn take_packet(&mut self) -> Option<crate::ble_transport::Packet>;
     /// The newest Battery Level read since the last call. A peer without the
     /// Battery Service, or a transport that does not read it, yields none.
+    #[take]
     fn take_battery(&mut self) -> Option<crate::ble_transport::BatteryLevel>;
 }

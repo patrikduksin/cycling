@@ -3,6 +3,7 @@
 //! The device translates control requests and classifies transport messages. Data
 //! has no sender identifier, so it is admitted only after a matching connection
 //! event and only for the selected device type. Profiles belong to consumers.
+use crate::capability::capability;
 use crate::observation::Availability;
 
 pub const DISCOVERY_CAPACITY: usize = 8;
@@ -210,20 +211,38 @@ pub fn channel(channels: [Option<Snapshot>; CHANNEL_CAPACITY], kind: u8) -> Opti
         .find(|s| s.selected.is_some_and(|p| p.device_type == kind))
 }
 
+#[capability(id = 1)]
 pub trait Ant {
+    #[observe]
     fn scanning(&self) -> bool;
+    #[observe]
     fn discoveries(&self) -> [Option<crate::ant::Discovery>; 8];
-    fn request(&mut self, operation: AntOperation, now_ms: u64) -> Result<Admission, Error>;
+    #[request(refreshes)]
+    fn request(
+        &mut self,
+        operation: AntOperation,
+        #[clock] now_ms: u64,
+    ) -> Result<Admission, Error>;
+    #[observe]
     fn capabilities(&self) -> Capabilities;
+    #[observe]
     fn scan(&self) -> ScanSnapshot;
     /// One outstanding send and one retained observation. Local IDs never correlate wire replies.
+    #[observe(keyed)]
     fn send_status(&self, id: OperationId) -> Option<SendObservation>;
     /// Independent bounded diagnostic stream; never consumes the production stream.
+    #[take]
     fn take_diagnostic_packet(&mut self) -> Option<Packet>;
-    fn channel(&self, kind: u8, now_ms: u64) -> Option<crate::ant::Snapshot>;
+    #[derived]
+    fn channel(&self, kind: u8, #[clock] now_ms: u64) -> Option<crate::ant::Snapshot>;
+    #[observe]
     fn availability(&self) -> Availability;
-    fn channels(&self, now_ms: u64)
-    -> [Option<crate::ant::Snapshot>; crate::ant::CHANNEL_CAPACITY];
+    #[observe]
+    fn channels(
+        &self,
+        #[clock] now_ms: u64,
+    ) -> [Option<crate::ant::Snapshot>; crate::ant::CHANNEL_CAPACITY];
     /// The production consumer owns this destructive receive stream.
+    #[take]
     fn take_packet(&mut self) -> Option<crate::ant::Packet>;
 }

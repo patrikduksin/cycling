@@ -1,4 +1,5 @@
 //! Hardware power contracts. Timeouts, gestures and recording policy belong to callers.
+use crate::capability::capability;
 use crate::observation::{Availability, Error};
 pub const MAX_DELAY_MS: u32 = 30_000;
 
@@ -120,14 +121,19 @@ pub enum PeripheralState {
     Failed,
 }
 
+#[capability(id = 12)]
 pub trait PowerControl {
+    #[observe]
     fn capabilities(&self) -> Capabilities;
+    #[observe]
     fn status(&self) -> Status;
     /// Acceptance is not completion. Callers finish their durable domain work
     /// before requesting; the device separately protects accepted hardware IO.
+    #[request(refreshes)]
     fn request(&mut self, operation: Operation) -> Result<(), crate::observation::Error>;
     /// Close hardware IO admission immediately, then wait before preparation.
     /// Only shutdown permits a delay, bounded by MAX_DELAY_MS.
+    #[request(refreshes)]
     fn request_after(
         &mut self,
         operation: Operation,
@@ -149,10 +155,14 @@ pub fn request_now_only(
     }
 }
 
+#[capability(id = 11)]
 pub trait Power {
+    #[observe]
     fn availability(&self) -> Availability;
+    #[observe]
     fn battery(&self) -> Option<(u8, u16, u64)>;
     /// Accept a brightness target. A device task may apply it asynchronously;
     /// subsequent driver failure must be exposed through availability.
+    #[sink]
     fn brightness(&mut self, percent: u8) -> Result<(), Error>;
 }

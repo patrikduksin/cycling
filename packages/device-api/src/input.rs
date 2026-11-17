@@ -1,4 +1,5 @@
 //! Physical input observations, without gesture policy.
+use crate::capability::capability;
 use crate::observation::{Availability, Observation};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,8 +33,11 @@ pub struct Controls {
     pub buttons: &'static [Button],
 }
 
+#[capability(id = 7)]
 pub trait InputSource {
+    #[observe]
     fn controls(&self) -> Controls;
+    #[take]
     fn take_edge(&mut self) -> Option<Edge>;
 }
 
@@ -50,8 +54,10 @@ pub struct InputSnapshot {
     pub input_lost: u32,
 }
 
+#[capability(id = 8)]
 pub trait InputObservation {
-    fn snapshot(&self, now_ms: u64) -> Option<InputSnapshot>;
+    #[observe]
+    fn snapshot(&self, #[clock] now_ms: u64) -> Option<InputSnapshot>;
 }
 
 /// A contact with no report for this long is over (see [`Input::Cancel`]).

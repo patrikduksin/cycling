@@ -96,6 +96,7 @@ ble_transport::Discovery: name address random rssi
 connectivity::ControlStatus: sequence operation error
 power::WakeSources: button usb timer
 power::Capabilities: shutdown sleep sleep_timer_ms wake shutdown_wake sleep_wake
+sound::Pattern: id frequency_hz nominal_ms guard_ms
 crate::network_time::Snapshot: unix_seconds millis local_minutes age_ms status
 AntRadio<'a>: availability capabilities scanning scan
 ServerRequest<'a>: id method path query session gzip body
@@ -302,6 +303,16 @@ fn power_capabilities_and_battery_round_trip() {
 }
 
 #[test]
+fn sound_patterns_round_trip() {
+    same(device_api::sound::Pattern {
+        id: 3,
+        frequency_hz: 2_700,
+        nominal_ms: 80,
+        guard_ms: 20,
+    });
+}
+
+#[test]
 fn sizes_round_trip() {
     same(usize::MAX);
     same(0usize);
@@ -333,4 +344,29 @@ fn text_longer_than_its_room_is_refused() {
     Text::<2>::take(&mut r);
     assert!(!r.ok());
     same(text::<32>(""));
+}
+
+trait Encoded {}
+impl<T: for<'a> Wire<'a>> Encoded for T {}
+impl Encoded for device_api::ant::Capabilities where
+    for<'a> crate::trace::AntCapabilities<'a>: Wire<'a>
+{
+}
+// Each secret below overlaps the blanket impl, so a `Wire` impl for it fails
+// to compile (E0119).
+impl Encoded for device_api::server::AccessPointConfig {}
+impl Encoded for Option<device_api::server::Request> {}
+
+trait EachEncoded {}
+impl EachEncoded for () {}
+impl<T: Encoded, Rest: EachEncoded> EachEncoded for (T, Rest) {}
+
+trait EveryCapability {}
+impl EveryCapability for () {}
+impl<Types: EachEncoded, Rest: EveryCapability> EveryCapability for (Types, Rest) {}
+
+#[test]
+fn every_recorded_type_has_a_wire_encoding_or_a_named_exception() {
+    fn encoded<T: EveryCapability>() {}
+    encoded::<device_api::capability::Recorded>();
 }

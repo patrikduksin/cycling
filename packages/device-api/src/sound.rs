@@ -1,4 +1,6 @@
 //! Bounded sound operations. Elapsed time is not an acoustic acknowledgment.
+use crate::capability::capability;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pattern {
     pub id: u8,
@@ -24,9 +26,14 @@ pub struct Snapshot {
     pub submitted_ms: Option<u64>,
     pub until_ms: u64,
 }
+#[capability(id = 16)]
 pub trait Sound {
+    #[observe]
     fn patterns(&self) -> &'static [Pattern];
+    #[observe]
     fn snapshot(&self) -> Snapshot;
-    fn play(&mut self, id: u8, now: u64) -> Result<(), crate::observation::Error>;
-    fn stop(&mut self, now: u64) -> Result<(), crate::observation::Error>;
+    #[request(refreshes)]
+    fn play(&mut self, id: u8, #[clock] now: u64) -> Result<(), crate::observation::Error>;
+    #[request(refreshes)]
+    fn stop(&mut self, #[clock] now: u64) -> Result<(), crate::observation::Error>;
 }

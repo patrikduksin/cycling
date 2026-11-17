@@ -8,4 +8,5 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+capability = { path = "../capability" }
 heapless.workspace = true

@@ -157,6 +157,7 @@ record! {
     connectivity::ControlStatus { sequence, operation, error }
     power::WakeSources { button, usb, timer }
     power::Capabilities { shutdown, sleep, sleep_timer_ms, wake, shutdown_wake, sleep_wake }
+    sound::Pattern { id, frequency_hz, nominal_ms, guard_ms }
 }
 
 impl Wire<'_> for sensors::Light {

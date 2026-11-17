@@ -1,4 +1,5 @@
 //! Synchronous display submission and geometry.
+use crate::capability::capability;
 use crate::observation::{Availability, Error};
 use core::ops::Range;
 
@@ -82,19 +83,25 @@ impl core::ops::BitOr for Rows {
 
 /// Submission is synchronous. Return, including error, means all DMA access has
 /// ended and the device owns its buffers again. No cancellable future is exposed.
+#[capability(id = 6)]
 pub trait Display {
+    #[observe]
     fn availability(&self) -> Availability;
+    #[observe]
     fn geometry(&self) -> Geometry;
+    #[observe]
     fn format(&self) -> Format;
     /// One frame: calls `row(y, pixels)` for each row of `rows` on the panel,
     /// top to bottom, with `geometry().width` pixels to fill completely;
     /// their prior contents are unspecified. Rows are requested in order so
     /// a device can transfer earlier rows while later ones render. The other
     /// rows keep what the panel showed.
+    #[sink]
     fn submit(&mut self, rows: Rows, row: impl FnMut(usize, &mut [u16])) -> Result<(), Error>;
     /// Called with the frame the shell believes the panel shows, every row
     /// in turn. A display that keeps its pixels, such as a simulator, can
     /// check that they match; a panel has nothing to compare.
+    #[unrecorded("a simulator's self-check; a panel ignores it")]
     fn check(&mut self, row: impl FnMut(usize, &mut [u16]));
 }
 

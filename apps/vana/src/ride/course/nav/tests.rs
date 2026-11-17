@@ -1,4 +1,5 @@
 use super::*;
+use crate::ride::course::bits::{Bits, fields};
 extern crate std;
 use std::format;
 use std::vec::Vec;
@@ -669,4 +670,72 @@ fn paused_fixes_never_confirm_or_remind_of_off_course() {
         rider.nav.sign(&[], rider.now_ms),
         Sign::OffCourse { .. }
     ));
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Latches {
+    pub furthest_mm: u32,
+    pub banner: Option<usize>,
+    pub last_sounded: Option<usize>,
+    pub last_beeped: Option<usize>,
+    pub arrived_ms: Option<u64>,
+}
+
+pub(crate) fn latches(nav: &Navigator) -> Latches {
+    Latches {
+        furthest_mm: nav.furthest_mm,
+        banner: nav.banner,
+        last_sounded: nav.last_sounded,
+        last_beeped: nav.last_beeped,
+        arrived_ms: nav.arrived_ms,
+    }
+}
+
+fields! {
+    Navigator {
+        cursor, furthest_mm, banner, last_sounded, last_beeped, place, last, arrived_ms, lost,
+        pending
+    }
+    MatchedFix { taken_loop_ms, along_mm, to_end_mm, off_m, here, forward, speed_mm_s, paused }
+    Spot { along_mm, at }
+}
+
+impl Bits for Place {
+    fn bits(&self, into: &mut dyn core::hash::Hasher) {
+        match *self {
+            Place::On => 0u8.bits(into),
+            Place::Leaving { since_ms, junction } => {
+                1u8.bits(into);
+                since_ms.bits(into);
+                junction.bits(into);
+            }
+            Place::Off {
+                since_ms,
+                junction,
+                reminded,
+                paused_since_sound,
+            } => {
+                2u8.bits(into);
+                since_ms.bits(into);
+                junction.bits(into);
+                reminded.bits(into);
+                paused_since_sound.bits(into);
+            }
+        }
+    }
+}
+
+impl Bits for Raised {
+    fn bits(&self, into: &mut dyn core::hash::Hasher) {
+        let (tag, TurnId(turn)) = match *self {
+            Raised::Following => (0u8, TurnId(0)),
+            Raised::TurnSoon { turn } => (1, turn),
+            Raised::TurnNow { turn } => (2, turn),
+            Raised::OffCourse => (3, TurnId(0)),
+            Raised::StillOff => (4, TurnId(0)),
+            Raised::OnCourse => (5, TurnId(0)),
+        };
+        tag.bits(into);
+        turn.bits(into);
+    }
 }

@@ -890,3 +890,57 @@ fn spurs_drawn_at_random_say_what_they_say_without_them_or_uncut(mut share: Shar
 fn spurs_drawn_at_random_say_what_they_say_without_them_or_uncut_at_length() {
     judged_at_random(0..100_000);
 }
+
+use super::super::{Bend, Cursor, Open, Scan};
+use super::{Cluster, Skip, Span, Spurs, Stretch, Walk};
+use crate::ride::course::bits::{Bits, fields};
+
+fields! {
+    Cursor { next, here }
+    Bend { start, last, before, sparse, peak, right, tail, tail_m }
+    Open {
+        start, last, before, swung, right, most_right, most_left, all_right, all_left,
+        turning, first_right, bent, bent_m, ring, joined, sparse, tail, tail_m
+    }
+    Scan {
+        behind, ahead, tail, tail_m, s, heading, total, bend, open, last, from_mm, started,
+        waiting, done
+    }
+    Stretch { base_m, rejoin, rejoin_m }
+    Span { from_m, to_m }
+    Cluster { span, any_sure }
+    Skip { first, last, out, back, from_m, rejoin_m, cut_from_m, cut_m }
+    Spurs {
+        behind, ahead, s, heading, chord_swings, way_out, way_out_m, held, held_m, walk,
+        reversals, reversed, skips, count, cluster, passed_cut_m, started, done
+    }
+    PlacedScan { spurs, scan }
+}
+
+impl Bits for Walk {
+    fn bits(&self, into: &mut dyn core::hash::Hasher) {
+        match self {
+            Walk::None => false.bits(into),
+            Walk::Back {
+                tip_m,
+                tip,
+                back,
+                back_m,
+                step_end_m,
+                furthest_back,
+                left_m,
+                loose,
+            } => {
+                true.bits(into);
+                tip_m.bits(into);
+                tip.bits(into);
+                back.bits(into);
+                back_m.bits(into);
+                step_end_m.bits(into);
+                furthest_back.bits(into);
+                left_m.bits(into);
+                loose.bits(into);
+            }
+        }
+    }
+}

@@ -7,11 +7,13 @@ extern crate std;
 use std::vec;
 use std::vec::Vec;
 
+mod explore;
 mod joining;
 mod many;
 mod passes;
 mod receiver;
 mod spurs;
+mod turn_list;
 
 struct Rider<'a> {
     breadcrumb: Breadcrumb<'a>,

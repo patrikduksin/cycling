@@ -21,16 +21,16 @@ type Point = (f32, f32);
 
 pub const OFF_M: f32 = 40.0;
 pub const ON_M: f32 = 25.0;
-const CONFIRM_MS: u64 = 5_000;
+pub(crate) const CONFIRM_MS: u64 = 5_000;
 pub const LOST_MS: u64 = 5_000;
-const REMIND_MS: u64 = 15_000;
+pub(crate) const REMIND_MS: u64 = 15_000;
 const WINDOW_MM: u32 = 300_000;
 const GRACE_MM: u32 = 40_000;
 const DENSE_S: u32 = 25;
 const BEEP_MM: u32 = 30_000;
 const REWIND_MM: u32 = 30_000;
 const MISSED_MM: u32 = 60_000;
-const ARRIVED_MS: u64 = 60_000;
+pub(crate) const ARRIVED_MS: u64 = 60_000;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Observed {

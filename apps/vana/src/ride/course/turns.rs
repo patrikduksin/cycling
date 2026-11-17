@@ -105,12 +105,14 @@ pub const TURNS: usize = 1024;
 pub const SCAN_STEPS: usize = 1_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Hash))]
 pub enum Side {
     Left,
     Right,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Hash))]
 pub enum Kind {
     Turn(Side),
     Sharp(Side),
@@ -157,6 +159,7 @@ impl Kind {
 /// start; a turn when it has a `kind`. All zero bytes are a valid `Turn`, so
 /// composition may hand over zeroed memory.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(Hash))]
 pub struct Turn {
     pub start_mm: u32,
     pub end_mm: u32,

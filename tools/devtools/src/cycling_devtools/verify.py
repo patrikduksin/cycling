@@ -240,7 +240,11 @@ def main(argv=None):
     )
     parser.add_argument('--all', action='store_true', help='every gate, whatever paths changed')
     parser.add_argument('--fresh', action='store_true', help='run every selected gate again, ignoring cached passes')
-    parser.add_argument('--deep', action='store_true', help='tier 2 only: the fixed fuzz seeds and the planted bug')
+    parser.add_argument(
+        '--deep',
+        action='store_true',
+        help='tier 2 only: the fixed fuzz seeds, the planted bug and the large Follower searches',
+    )
     args = parser.parse_args(argv)
     warn_if_low_disk()
     runner.unwind_on_termination()

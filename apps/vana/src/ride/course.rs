@@ -391,4 +391,6 @@ fn decode_into<E>(
 }
 
 #[cfg(test)]
+pub(crate) mod bits;
+#[cfg(test)]
 pub(crate) mod tests;

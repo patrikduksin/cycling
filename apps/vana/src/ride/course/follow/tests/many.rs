@@ -1,7 +1,9 @@
 //! Courses with more turns than the list holds.
+use super::turn_list::{TURN_LIST, View};
 use super::*;
 use crate::ride::course::nav::tests::said as told;
 use crate::ride::course::stored::tests::found;
+use crate::ride::course::stored::tests::uploaded;
 use crate::ride::course::turns::tests::bends;
 use crate::ride::course::turns::{Kind, Side, TURNS, Turn};
 
@@ -101,5 +103,52 @@ fn the_corner_just_after_the_stored_turns_is_named() {
             right_left(33),
             "{apart} m apart"
         );
+    }
+}
+
+#[test]
+fn compacting_the_turn_list_keeps_its_order_and_indices() {
+    let corners: Vec<(f32, f32)> = (0..60)
+        .map(|k| {
+            (
+                400.0 + 100.0 * k as f32,
+                if k % 2 == 0 { 90.0 } else { -90.0 },
+            )
+        })
+        .collect();
+    let line = bends(1_000.0, &corners);
+    let (course, all) = uploaded(&line);
+    for (room, stored) in [(16, None), (16, Some(16)), (TURNS, None)] {
+        let (mut crumbs, mut kept) = (vec![Crumb::default(); 64], vec![Crumb::default(); 2048]);
+        let mut list = vec![Turn::default(); room];
+        let mut rider = Rider::new(&mut crumbs, &mut kept, &mut list);
+        rider.set_course(course.points());
+        let length: f32 = line.windows(2).map(|w| distance(w[0], w[1])).sum();
+        let (mut now, mut waited, mut compacted) = (0, false, false);
+        for k in 0..(length / 7.0) as usize {
+            let first = (rider.follower.turn_count > 0).then(|| rider.follower.turns[0].start_mm);
+            let (east, north) = along_line(&line, k as f32 * 7.0);
+            now += 1_000;
+            rider.observe(Some(at(east, north)), now);
+            waited |= rider.follower.scan.waiting();
+            compacted |= first.is_some_and(|first| rider.follower.turns[0].start_mm > first);
+            if rider.needs_course() {
+                rider.set_course(course.points());
+                if let Some(count) = stored {
+                    rider.follower.take_turns(course.points(), |list| {
+                        list[..count].copy_from_slice(&all[..count]);
+                        Some((count, true))
+                    });
+                }
+            }
+            let view = View::of(&rider.follower);
+            for (rule, keeps) in TURN_LIST {
+                assert!(keeps(&view), "{rule} broken at {k} in a room of {room}");
+            }
+        }
+        assert!(rider.follower.scan.done());
+        if room < TURNS {
+            assert!(waited && compacted, "room {room}: {waited} {compacted}");
+        }
     }
 }

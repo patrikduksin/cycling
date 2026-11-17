@@ -38,6 +38,11 @@ ALONE = (Gate('harness-virtual', 'cycling harness-virtual'),)
 DEEP = (
     Gate('fuzz', 'nice -n 19 cycling fuzz --fixed'),
     Gate('planted', 'nice -n 19 cycling fuzz-planted'),
+    Gate(
+        'explore',
+        'nice -n 19 cargo nextest run --locked --no-default-features -p vana --lib --run-ignored only'
+        " -E 'test(/^ride::course::follow::tests::explore::deep::/)'",
+    ),
 )
 
 EVERY = frozenset(gate.name for lane in (*LANES, ALONE) for gate in lane)

@@ -96,8 +96,10 @@ pin at once and belongs in its own PR with `cycling verify` results.
   changed screens on a PR, and refuses a tree that is not its commit;
   `--video` adds before and after videos of changed scenarios. Logs go to `.local/verify/<tree>/`, and a `tests-passed` file
   appears there when the test gates have passed. `--deep` runs tier 2 alone,
-  at nice 19 and without a slot: `cycling fuzz --fixed` and
-  `cycling fuzz-planted`.
+  at nice 19 and without a slot: `cycling fuzz --fixed`,
+  `cycling fuzz-planted`, and the course Follower's large `explore` searches
+  (`#[ignore]`d in `ride/course/follow/tests/explore/deep.rs`, so tier 1
+  runs only its small ones).
 - A verify with gates to run takes one of the machine's slots first, one per
   ten cores (`tools/devtools/src/cycling_devtools/admission.py`), and waits
   when none is free. Its time in the table includes the wait and names it. It

@@ -22,8 +22,6 @@
 //! waiting mark, at the stop, to carry them.
 //! One operation and its unconsumed completion exclude further mutations.
 
-use crate::ride::control::Action;
-
 use crate::ride::journal::{Journal, Progress, Scan};
 use crate::ride::laps::Marks;
 use crate::ride::log::Catalog;
@@ -34,6 +32,14 @@ use crate::ride::log::Recovery;
 use crate::ride::log::Sample;
 use crate::ride::log::Status;
 use crate::ride::log::Summary;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Action {
+    Start,
+    Pause,
+    Resume,
+    Finish,
+}
 
 #[derive(Clone, Copy)]
 enum Pending {

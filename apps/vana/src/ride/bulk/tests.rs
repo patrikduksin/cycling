@@ -1,7 +1,6 @@
 use super::*;
-use crate::ride::control::Action;
 use crate::ride::log::{SAMPLES_PER_BATCH, Sample, Status};
-use crate::ride::recorder::{Recorder, Refused};
+use crate::ride::recorder::{Action, Recorder, Refused};
 use device_api::bulk::OwnedInfo;
 use std::collections::BTreeMap;
 use std::vec::Vec;

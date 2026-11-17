@@ -147,19 +147,19 @@ fn back_on_home_asks_then_act_turns_off_after_the_last_frame() {
     let mut runtime = home(&mut journal, &mut radio, &mut screen);
     let mut switch = Switch::new(true);
 
-    runtime.input(press(Button::TopLeft), 1_000, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 1_000, 1_000, &mut radio);
     assert_eq!(runtime.power.sheet, Sheet::Confirm { since: 1_000 });
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_000);
     assert!(screen.panel.shows_sheet(View::Confirm));
 
     // BACK returns to Home without turning off.
-    runtime.input(press(Button::TopLeft), 1_500, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 1_500, 1_500, &mut radio);
     assert_eq!(runtime.power.sheet, Sheet::Closed);
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_500);
     assert_eq!(runtime.home_status(1_500).0, "READY TO RIDE");
 
-    runtime.input(press(Button::TopLeft), 2_500, &mut radio);
-    runtime.input(press(Button::BottomRight), 3_000, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 2_500, 2_500, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 3_000, 3_000, &mut radio);
     assert_eq!(runtime.power.sheet, super::super::power::TURNING_OFF);
     // The request waits until the farewell's last frame reached the panel.
     runtime.power(&mut screen.shell, &mut switch, 3_000);
@@ -201,8 +201,8 @@ fn a_refused_or_failed_turn_off_says_so_on_home() {
     let mut screen = Screen::new();
     let mut runtime = home(&mut journal, &mut radio, &mut screen);
     let mut refusing = Switch::new(false);
-    runtime.input(press(Button::TopLeft), 1_000, &mut radio);
-    runtime.input(press(Button::BottomRight), 1_500, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 1_000, 1_000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1_500, 1_500, &mut radio);
     pass(&mut runtime, &mut screen, &radio, &mut refusing, 1_500);
     pass(
         &mut runtime,
@@ -219,8 +219,8 @@ fn a_refused_or_failed_turn_off_says_so_on_home() {
 
     // An accepted request the device later abandons also comes back.
     let mut switch = Switch::new(true);
-    runtime.input(press(Button::TopLeft), 10_000, &mut radio);
-    runtime.input(press(Button::BottomRight), 10_500, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 10_000, 10_000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 10_500, 10_500, &mut radio);
     pass(&mut runtime, &mut screen, &radio, &mut switch, 10_500);
     pass(
         &mut runtime,
@@ -248,13 +248,13 @@ fn turning_off_is_out_of_reach_while_a_ride_is_open() {
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     runtime.navigation.page = Page::Ride;
-    runtime.input(press(Button::BottomRight), 1_000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1_000, 1_000, &mut radio);
     for step in 0..20 {
         tick(&mut runtime, &mut journal, &mut radio, 1_000 + step * 100);
     }
     assert_eq!(runtime.ride.internal.status(), Status::Recording);
     // BACK during a recording ride does not leave the ride.
-    runtime.input(press(Button::TopLeft), 4_000, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 4_000, 4_000, &mut radio);
     assert_eq!(runtime.navigation.page, Page::Ride);
     // Even asked directly, the sheet refuses an open ride.
     runtime.open_power_sheet(4_500);
@@ -276,7 +276,7 @@ fn holding_top_left_through_power_on_does_not_ask_to_turn_off() {
     screen.present(&mut runtime, &radio, 0);
     // The rider still holds TopLeft from turning on: reports every 100 ms.
     for at in (100..3_000).step_by(100) {
-        runtime.input(press(Button::TopLeft), at, &mut radio);
+        runtime.input_received(press(Button::TopLeft), at, at, &mut radio);
         assert_eq!(runtime.power.sheet, Sheet::Closed, "at {at} ms");
     }
     assert_eq!(
@@ -285,7 +285,7 @@ fn holding_top_left_through_power_on_does_not_ask_to_turn_off() {
         "the press skipped the brand"
     );
     // A fresh press after release asks.
-    runtime.input(press(Button::TopLeft), 3_500, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 3_500, 3_500, &mut radio);
     assert!(matches!(runtime.power.sheet, Sheet::Confirm { .. }));
 }
 
@@ -296,7 +296,7 @@ fn an_unanswered_sheet_closes_and_an_idle_device_warns_then_turns_off() {
     let mut screen = Screen::new();
     let mut runtime = home(&mut journal, &mut radio, &mut screen);
     let mut switch = Switch::new(true);
-    runtime.input(press(Button::TopLeft), 1_000, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 1_000, 1_000, &mut radio);
     pass(&mut runtime, &mut screen, &radio, &mut switch, 8_999);
     assert!(matches!(runtime.power.sheet, Sheet::Confirm { .. }));
     pass(&mut runtime, &mut screen, &radio, &mut switch, 9_000);
@@ -416,7 +416,7 @@ fn press_to_frame_latency_includes_the_time_spent_drawing() {
     let mut runtime = home(&mut journal, &mut radio, &mut screen);
     runtime.set_latency_clock(|| CLOCK.load(Ordering::Relaxed));
     runtime.navigation.page = Page::Ride;
-    runtime.input(press(Button::BottomLeft), 10_000, &mut radio);
+    runtime.input_received(press(Button::BottomLeft), 10_000, 10_000, &mut radio);
     // The pass started at 10 000 ms; the frame finished 800 ms later.
     CLOCK.store(10_800, Ordering::Relaxed);
     assert!(screen.present(&mut runtime, &radio, 10_000));
@@ -458,8 +458,8 @@ fn a_rejected_turning_off_frame_is_drawn_again_before_shutdown() {
     let mut screen = Screen::new();
     let mut runtime = home(&mut journal, &mut radio, &mut screen);
     let mut switch = Switch::new(true);
-    runtime.input(press(Button::TopLeft), 1_000, &mut radio);
-    runtime.input(press(Button::BottomRight), 1_500, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 1_000, 1_000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1_500, 1_500, &mut radio);
     // The panel rejects the first TURNING OFF frame: no shutdown yet.
     screen.panel.1.set(1);
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_500);
@@ -498,8 +498,8 @@ fn a_panel_that_keeps_rejecting_frames_still_turns_off() {
     let mut screen = Screen::new();
     let mut runtime = home(&mut journal, &mut radio, &mut screen);
     let mut switch = Switch::new(true);
-    runtime.input(press(Button::TopLeft), 1_000, &mut radio);
-    runtime.input(press(Button::BottomRight), 1_500, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 1_000, 1_000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1_500, 1_500, &mut radio);
     screen.panel.1.set(u32::MAX);
     for step in 0..2 {
         pass(
@@ -528,7 +528,7 @@ fn recording_is_confirmed_after_the_start_write_finishes() {
     runtime.set_latency_clock(|| WRITE_CLOCK.load(Ordering::Relaxed));
     runtime.navigation.page = Page::Ride;
     WRITE_CLOCK.store(1_000, Ordering::Relaxed);
-    runtime.input(press(Button::BottomRight), 1_000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1_000, 1_000, &mut radio);
     // The pass starts at 1 000 ms; the start write and commit end 300 ms later.
     WRITE_CLOCK.store(1_300, Ordering::Relaxed);
     let mut step = 0;
@@ -621,7 +621,7 @@ fn rejected_frames_are_not_milestones_and_do_not_answer_a_press() {
     );
 
     runtime.navigation.page = Page::Ride;
-    runtime.input(press(Button::BottomLeft), 1_000, &mut radio);
+    runtime.input_received(press(Button::BottomLeft), 1_000, 1_000, &mut radio);
     screen.panel.1.set(1);
     assert!(screen.present(&mut runtime, &radio, 1_000));
     assert!(
@@ -649,8 +649,8 @@ fn a_profile_edit_that_cannot_be_saved_is_reported_before_turning_off() {
     // An FTP edit is still settling; this test shell cannot write settings.
     let edited = crate::ride::zones::TrainingProfile::new(225, 185).unwrap();
     runtime.preferences.set(edited, 1_000);
-    runtime.input(press(Button::TopLeft), 1_200, &mut radio);
-    runtime.input(press(Button::BottomRight), 1_600, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 1_200, 1_200, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1_600, 1_600, &mut radio);
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_600);
     pass(
         &mut runtime,
@@ -668,8 +668,8 @@ fn a_profile_edit_that_cannot_be_saved_is_reported_before_turning_off() {
     pass(&mut runtime, &mut screen, &radio, &mut switch, 1_700);
     assert_eq!(runtime.home_status(1_700), ("CHANGES NOT SAVED", true));
     // Told once, turning off again goes ahead.
-    runtime.input(press(Button::TopLeft), 3_000, &mut radio);
-    runtime.input(press(Button::BottomRight), 3_400, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 3_000, 3_000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 3_400, 3_400, &mut radio);
     pass(&mut runtime, &mut screen, &radio, &mut switch, 3_400);
     pass(
         &mut runtime,

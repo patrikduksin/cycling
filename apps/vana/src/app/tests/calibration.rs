@@ -156,11 +156,12 @@ fn a_request_held_by_a_busy_radio_never_goes_out_once_a_ride_records() {
     assert_eq!(note(&runtime), Some(CalibrationNote::WaitingForRadio));
     feed(&mut runtime, &mut journal, &mut radio, 24_000, 27_000);
     runtime.navigation.page = crate::screens::workout::Page::Ride;
-    runtime.input(
+    runtime.input_received(
         device_api::input::Input::Button {
             button: device_api::input::Button::BottomRight,
             code: 1,
         },
+        27_000,
         27_000,
         &mut radio,
     );

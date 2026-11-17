@@ -259,7 +259,7 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     fn press(s: &mut Session, button: Button) {
         s.advance(400).unwrap();
         s.sdk
-            .input(Input::Button { button, code: 1 }, s.now, &mut NoAnt);
+            .input_received(Input::Button { button, code: 1 }, s.now, s.now, &mut NoAnt);
         s.advance(100).unwrap();
     }
     fn state(s: &mut Session, expected: &str) -> String {

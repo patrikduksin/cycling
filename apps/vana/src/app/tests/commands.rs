@@ -185,11 +185,12 @@ fn ride_status_reports_the_page_and_home_selection() {
     );
     assert!(out.contains(" page=home home_cursor=2 pending=0"), "{out}");
     // A power sheet covers Home: a harness must not press through it.
-    runtime.input(
+    runtime.input_received(
         Input::Button {
             button: Button::TopLeft,
             code: 1,
         },
+        1_000,
         1_000,
         &mut radio,
     );

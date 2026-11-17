@@ -283,8 +283,6 @@ impl Default for Navigation {
     }
 }
 
-impl Navigation {}
-
 /// Foreground drawing. Once the terminal takes over the panel it stays suspended.
 #[derive(Clone, Copy)]
 pub(super) enum Display {

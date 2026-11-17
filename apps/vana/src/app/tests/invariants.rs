@@ -43,7 +43,7 @@ fn at_summary() -> Runtime {
         tick(runtime, &mut journal, &mut radio, now);
         assert_eq!(runtime.broken(), None, "at {now} ms");
     };
-    runtime.input(press(Button::BottomRight), 1000, &mut Radio::new());
+    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut Radio::new());
     let mut now = 1000;
     while now < 10_000 {
         step(&mut runtime, now);
@@ -55,7 +55,7 @@ fn at_summary() -> Runtime {
         (Button::TopLeft, now + 400),
         (Button::BottomRight, now + 800),
     ] {
-        runtime.input(press(button), at, &mut Radio::new());
+        runtime.input_received(press(button), at, at, &mut Radio::new());
         assert_eq!(runtime.broken(), None, "{button:?} at {at} ms");
         for pass in 0..20 {
             step(&mut runtime, at + pass * 20);

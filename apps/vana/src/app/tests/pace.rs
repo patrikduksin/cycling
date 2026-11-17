@@ -51,7 +51,7 @@ fn each_kind_of_work_alone_keeps_the_busy_pace() {
     type Start = fn(&mut Runtime, &mut Radio);
     let work: [(&str, Start); 5] = [
         ("a finger down", |runtime, radio| {
-            runtime.input(Input::Touch(Point { x: 120, y: 4 }), NOW, radio);
+            runtime.input_received(Input::Touch(Point { x: 120, y: 4 }), NOW, NOW, radio);
         }),
         ("the turn-off sheet", |runtime, _| {
             runtime.open_power_sheet(NOW)
@@ -80,7 +80,7 @@ fn ride_drawn(at: u64) -> (Runtime, Screen, Radio, Journal) {
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     radio.connected(HEART_RATE, NOW - 1000);
     runtime.navigation.page = Page::Ride;
-    runtime.input(press(Button::BottomRight), NOW, &mut radio);
+    runtime.input_received(press(Button::BottomRight), NOW, NOW, &mut radio);
     for now in [NOW, NOW + 10, at - 10, at] {
         tick(&mut runtime, &mut journal, &mut radio, now);
     }
@@ -159,8 +159,9 @@ fn a_new_number_the_page_does_not_show_asks_for_no_more_frames() {
 #[test]
 fn a_finger_or_a_cue_on_a_recording_ride_keeps_the_busy_pace() {
     let (mut runtime, screen, mut radio, _) = ride_drawn(NOW + 100);
-    runtime.input(
+    runtime.input_received(
         Input::Touch(Point { x: 120, y: 150 }),
+        NOW + 100,
         NOW + 100,
         &mut radio,
     );

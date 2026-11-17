@@ -7,9 +7,19 @@ use device_api::input::Point;
 
 fn touch(runtime: &mut Runtime, radio: &mut Radio, points: &[(u16, u16)], now: u64) {
     for (i, &(x, y)) in points.iter().enumerate() {
-        runtime.input(Input::Touch(Point { x, y }), now + 30 * i as u64, radio);
+        runtime.input_received(
+            Input::Touch(Point { x, y }),
+            now + 30 * i as u64,
+            now + 30 * i as u64,
+            radio,
+        );
     }
-    runtime.input(Input::Release, now + 30 * points.len() as u64, radio);
+    runtime.input_received(
+        Input::Release,
+        now + 30 * points.len() as u64,
+        now + 30 * points.len() as u64,
+        radio,
+    );
 }
 
 #[test]
@@ -32,7 +42,7 @@ fn swipes_change_ride_pages_and_touch_never_controls_the_ride() {
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     runtime.navigation.page = Page::Ride;
-    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 1000);
     assert_eq!(runtime.ride.active().status(), Status::Recording);
 
@@ -75,7 +85,7 @@ fn state_changes_are_announced_once_in_a_toast() {
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     runtime.navigation.page = Page::Ride;
-    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 1000);
     // Wheel speed, so auto-pause has nothing to say.
     runtime.readings.live.speed_mm_s = Some(5_000);
@@ -91,10 +101,10 @@ fn state_changes_are_announced_once_in_a_toast() {
     runtime.navigation.announce(Status::Recording, 1500);
     assert_eq!(text(&mut runtime, 3100), None, "expired and not repeated");
     // A lap outranks the confirmation it follows.
-    runtime.input(press(Button::TopLeft), 3200, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 3200, 3200, &mut radio);
     let lap = text(&mut runtime, 3200).unwrap();
     assert!(lap.starts_with("LAP 1 "), "{lap}");
-    runtime.input(press(Button::BottomRight), 6000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 6000, 6000, &mut radio);
     for step in 0..4 {
         tick(&mut runtime, &mut journal, &mut radio, 6000 + step * 50);
     }
@@ -110,7 +120,7 @@ fn a_ride_without_wheel_speed_notes_auto_pause_is_off_once() {
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     runtime.navigation.page = Page::Ride;
-    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 1000);
     assert_eq!(runtime.ride.active().status(), Status::Recording);
     let text = |runtime: &mut Runtime, now| {
@@ -127,7 +137,7 @@ fn a_contact_never_completes_on_another_screen() {
     let mut radio = Radio::new();
     let mut runtime = Runtime::new(Profile::HeartRate);
     let down = |runtime: &mut Runtime, radio: &mut Radio, (x, y), now| {
-        runtime.input(Input::Touch(Point { x, y }), now, radio)
+        runtime.input_received(Input::Touch(Point { x, y }), now, now, radio)
     };
     let sensors = (120, (SENSORS_TILE.top + 20) as u16);
 
@@ -135,28 +145,28 @@ fn a_contact_never_completes_on_another_screen() {
     // card: Home never saw it begin, so it opens nothing.
     runtime.navigation.page = Page::Sensors;
     down(&mut runtime, &mut radio, (120, 40), 1000);
-    runtime.input(press(Button::TopLeft), 1100, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 1100, 1100, &mut radio);
     assert!(runtime.navigation.page == Page::Home);
-    runtime.input(Input::Release, 1200, &mut radio);
+    runtime.input_received(Input::Release, 1200, 1200, &mut radio);
     assert!(runtime.navigation.page == Page::Home);
 
     // A contact that began on Home ends while the TURN OFF sheet is open;
     // after the sheet is dismissed the very next tap counts.
     down(&mut runtime, &mut radio, sensors, 2000);
-    runtime.input(press(Button::TopLeft), 2100, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 2100, 2100, &mut radio);
     assert!(runtime.power.view().is_some());
-    runtime.input(Input::Release, 2200, &mut radio);
+    runtime.input_received(Input::Release, 2200, 2200, &mut radio);
     down(&mut runtime, &mut radio, sensors, 2300);
-    runtime.input(press(Button::BottomLeft), 2600, &mut radio);
+    runtime.input_received(press(Button::BottomLeft), 2600, 2600, &mut radio);
     assert!(runtime.power.view().is_none());
-    runtime.input(Input::Release, 2700, &mut radio);
+    runtime.input_received(Input::Release, 2700, 2700, &mut radio);
     assert!(runtime.navigation.page == Page::Home, "began on the sheet");
     touch(&mut runtime, &mut radio, &[sensors], 3000);
     assert!(runtime.navigation.page == Page::Sensors);
 
     // An idle Cancel, as on companion framing loss, loses no later tap.
     runtime.navigation.page = Page::Home;
-    runtime.input(Input::Cancel, 4000, &mut radio);
+    runtime.input_received(Input::Cancel, 4000, 4000, &mut radio);
     touch(&mut runtime, &mut radio, &[sensors], 4100);
     assert!(runtime.navigation.page == Page::Sensors);
 }
@@ -183,11 +193,11 @@ fn drag(
         };
         let time = now + step * 10;
         runtime.navigation.touches.tick(time);
-        runtime.input(Input::Touch(point), time, radio);
+        runtime.input_received(Input::Touch(point), time, time, radio);
     }
     let lift = now + steps * 10 + hold_ms;
     runtime.navigation.touches.tick(lift);
-    runtime.input(Input::Release, lift, radio);
+    runtime.input_received(Input::Release, lift, lift, radio);
     lift
 }
 
@@ -219,7 +229,12 @@ fn scrolling_from_a_card_never_focuses_or_chooses_it() {
     let (mut runtime, mut radio) = workouts();
     let start = card_y(2, 0);
     // The finger rests on the third card until it lights up...
-    runtime.input(Input::Touch(Point { x: 120, y: start }), 1000, &mut radio);
+    runtime.input_received(
+        Input::Touch(Point { x: 120, y: start }),
+        1000,
+        1000,
+        &mut radio,
+    );
     runtime.navigation.touches.tick(1000 + 160);
     assert_eq!(
         runtime.navigation.touches.pressed(),
@@ -268,7 +283,12 @@ fn a_press_first_brings_a_focus_that_scrolled_away_back() {
     let layout = workouts::LAYOUT;
     assert!(!layout.whole(0, offset), "the focus scrolled away");
     // ACT scrolls the focus back into view and chooses nothing.
-    runtime.input(press(Button::BottomRight), lift + 2100, &mut radio);
+    runtime.input_received(
+        press(Button::BottomRight),
+        lift + 2100,
+        lift + 2100,
+        &mut radio,
+    );
     assert!(runtime.navigation.page == Page::Workouts);
     runtime.list_frame(lift + 4000);
     assert_eq!(runtime.list_offset(List::Workouts, lift + 4000), 0);
@@ -286,11 +306,21 @@ fn a_press_first_brings_a_focus_that_scrolled_away_back() {
     runtime.list_frame(lift + 2000);
     let offset = runtime.list_offset(List::Workouts, lift + 2000);
     let first = layout.first_whole(runtime.training.rows(), offset).unwrap();
-    runtime.input(press(Button::BottomLeft), lift + 2100, &mut radio);
+    runtime.input_received(
+        press(Button::BottomLeft),
+        lift + 2100,
+        lift + 2100,
+        &mut radio,
+    );
     assert_eq!(runtime.training.picker_cursor, first);
     runtime.list_frame(lift + 3000);
     assert_eq!(runtime.list_offset(List::Workouts, lift + 3000), offset);
-    runtime.input(press(Button::BottomRight), lift + 3500, &mut radio);
+    runtime.input_received(
+        press(Button::BottomRight),
+        lift + 3500,
+        lift + 3500,
+        &mut radio,
+    );
     assert!(runtime.navigation.page == Page::Ready);
 }
 

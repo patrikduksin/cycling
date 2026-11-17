@@ -1,7 +1,7 @@
 use super::Runtime;
 use super::power::Sheet;
 use super::recording::Medium;
-use crate::ride::control::Action;
+use crate::ride::recorder::Action;
 use crate::ride::recorder::invariants as recorder;
 use crate::screens::workout::Page;
 

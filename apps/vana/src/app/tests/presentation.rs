@@ -143,7 +143,7 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
     assert!(!screen.present(&mut runtime, &radio, 7000));
     assert!(!screen.present(&mut runtime, &radio, 7999));
     // Input redraws immediately.
-    runtime.input(press(Button::BottomLeft), 7999, &mut radio);
+    runtime.input_received(press(Button::BottomLeft), 7999, 7999, &mut radio);
     assert!(screen.present(&mut runtime, &radio, 7999));
     runtime.set_startup_status(device_api::sensors::Startup::Probing);
     assert!(!screen.present(&mut runtime, &radio, 8000));
@@ -154,7 +154,7 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
 
     runtime.suspend_display();
     assert!(!runtime.input_active());
-    runtime.input(press(Button::BottomLeft), 9000, &mut radio);
+    runtime.input_received(press(Button::BottomLeft), 9000, 9000, &mut radio);
     assert_eq!(
         runtime.navigation.home_cursor, 1,
         "input is ignored while suspended"
@@ -170,8 +170,8 @@ fn a_new_startup_status_draws_at_once_where_it_shows() {
     let mut radio = Radio::new();
     assert!(screen.present(&mut runtime, &radio, 3000));
     assert!(screen.present(&mut runtime, &radio, 3400));
-    runtime.input(press(Button::BottomLeft), 4000, &mut radio);
-    runtime.input(press(Button::BottomRight), 4400, &mut radio);
+    runtime.input_received(press(Button::BottomLeft), 4000, 4000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 4400, 4400, &mut radio);
     assert!(screen.present(&mut runtime, &radio, 4400));
     assert!(runtime.navigation.page == Page::Sensors);
     runtime.set_startup_status(device_api::sensors::Startup::Probing);
@@ -194,7 +194,7 @@ fn ride_opens_ready_which_waits_for_act_to_start() {
     assert!(screen.present(&mut runtime, &radio, 6000));
     assert!(screen.present(&mut runtime, &radio, 6500));
     assert!(runtime.navigation.page == Page::Home);
-    runtime.input(press(Button::BottomRight), 7000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 7000, 7000, &mut radio);
     assert!(runtime.navigation.page == Page::Ready);
 
     assert!(screen.present(&mut runtime, &radio, 7000));
@@ -228,7 +228,7 @@ fn ride_opens_ready_which_waits_for_act_to_start() {
     // Ready stays until the rider acts: no timer moves on.
     assert!(screen.present(&mut runtime, &radio, 30_000));
     assert!(runtime.navigation.page == Page::Ready);
-    runtime.input(press(Button::TopLeft), 30_500, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 30_500, 30_500, &mut radio);
     assert!(runtime.navigation.page == Page::Home);
 }
 
@@ -318,19 +318,19 @@ fn a_touch_lifted_after_leaving_settings_does_not_swallow_the_next_tap() {
     // A tap on FTP edits it. A finger on the minus pad lowers it once and
     // stays down while TopLeft finishes and TopLeft leaves Settings; it
     // lifts on Home.
-    runtime.input(touch(120, 86), 1000, &mut radio);
-    runtime.input(Input::Release, 1050, &mut radio);
+    runtime.input_received(touch(120, 86), 1000, 1000, &mut radio);
+    runtime.input_received(Input::Release, 1050, 1050, &mut radio);
     assert!(runtime.navigation.settings_editing);
-    runtime.input(touch(60, 237), 1500, &mut radio);
+    runtime.input_received(touch(60, 237), 1500, 1500, &mut radio);
     assert_eq!(runtime.preferences.profile.ftp_watts, 210);
-    runtime.input(press(Button::TopLeft), 2000, &mut radio);
-    runtime.input(press(Button::TopLeft), 3000, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 2000, 2000, &mut radio);
+    runtime.input_received(press(Button::TopLeft), 3000, 3000, &mut radio);
     assert!(runtime.navigation.page == Page::Home);
-    runtime.input(Input::Release, 3500, &mut radio);
+    runtime.input_received(Input::Release, 3500, 3500, &mut radio);
     // Back in Settings, the first tap counts.
     runtime.navigation.page = Page::Settings;
-    runtime.input(touch(120, 140), 4000, &mut radio);
-    runtime.input(Input::Release, 4050, &mut radio);
+    runtime.input_received(touch(120, 140), 4000, 4000, &mut radio);
+    runtime.input_received(Input::Release, 4050, 4050, &mut radio);
     assert_eq!(runtime.navigation.settings_field, 1);
     assert!(runtime.navigation.settings_editing);
 }

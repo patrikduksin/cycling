@@ -1,5 +1,4 @@
-use super::{Pending, Recorder};
-use crate::ride::control::Action;
+use super::{Action, Pending, Recorder};
 use crate::ride::log::{SAMPLES_PER_BATCH, Status};
 
 invariants! {

@@ -7,8 +7,8 @@
 use super::Runtime;
 use super::pace::Touched;
 use super::recording::{Medium, Request};
-use crate::ride::control::Action;
 use crate::ride::log::{SLOT_SIZE, Slot, VERSION, transport_checksum};
+use crate::ride::recorder::Action;
 use crate::ride::recorder::{Recorder, Refused};
 use crate::ride::storage::RideStorage;
 use core::fmt::Write;

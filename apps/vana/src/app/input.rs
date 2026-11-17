@@ -45,11 +45,7 @@ impl Runtime {
         self.display.is_active()
     }
 
-    pub fn input(&mut self, input: Input, now: u64, ant: &mut impl Ant) {
-        self.input_received(input, now, now, ant);
-    }
-
-    /// `input` as the device received it at `received_ms`, handled at `now`.
+    /// An input as the device received it at `received_ms`, handled at `now`.
     /// Every input-timing decision (hold continuity, debounce, double-press
     /// windows, press-to-frame and ride-start latency) uses reception, so
     /// time the edge spent queued behind rendering or storage work neither

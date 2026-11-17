@@ -131,19 +131,19 @@ fn saved_ride(journal: &mut Journal) -> (Runtime, super::Radio, u64) {
     let mut runtime = ready_runtime(journal, &mut radio);
     runtime.navigation.page = crate::screens::workout::Page::Ride;
     radio.connected(HEART_RATE, 0);
-    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     let mut now = 1000;
     while now < 10_000 {
         radio.data(HEART_RATE, HEART_72, now);
         tick(&mut runtime, journal, &mut radio, now);
         now += 250;
     }
-    runtime.input(press(Button::BottomRight), now, &mut radio);
+    runtime.input_received(press(Button::BottomRight), now, now, &mut radio);
     for step in 0..4 {
         tick(&mut runtime, journal, &mut radio, now + step * 50);
     }
-    runtime.input(press(Button::TopLeft), now + 400, &mut radio);
-    runtime.input(press(Button::BottomRight), now + 800, &mut radio);
+    runtime.input_received(press(Button::TopLeft), now + 400, now + 400, &mut radio);
+    runtime.input_received(press(Button::BottomRight), now + 800, now + 800, &mut radio);
     for step in 0..20 {
         tick(&mut runtime, journal, &mut radio, now + 800 + step * 100);
     }
@@ -377,7 +377,7 @@ fn a_session_does_not_open_during_a_ride() {
     let mut radio = super::Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     runtime.navigation.page = crate::screens::workout::Page::Ride;
-    runtime.input(press(Button::BottomRight), 1000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     for step in 0..8 {
         tick(&mut runtime, &mut journal, &mut radio, 1000 + step * 250);
     }
@@ -419,7 +419,12 @@ fn connect_phone_opens_from_settings_and_moves_to_the_page_code_once_a_phone_joi
     attach(&mut runtime);
     runtime.navigation.page = Page::Settings;
     runtime.navigation.settings_field = Row::Phone.index();
-    runtime.input(press(Button::BottomRight), now + 1600, &mut radio);
+    runtime.input_received(
+        press(Button::BottomRight),
+        now + 1600,
+        now + 1600,
+        &mut radio,
+    );
     assert_eq!(runtime.navigation.page, Page::Phone);
     let (lines, code) = phone_lines(&mut runtime);
     assert_eq!(lines[TITLE_LINE], "STARTING WI-FI");
@@ -451,17 +456,23 @@ fn connect_phone_opens_from_settings_and_moves_to_the_page_code_once_a_phone_joi
     assert_eq!(lines[NAME], "192.168.4.1");
     assert!(code.is_some());
     // The rider can go back to the join code for a second phone.
-    phone
-        .runtime
-        .input(press(Button::BottomLeft), phone.now + 400, &mut radio);
+    phone.runtime.input_received(
+        press(Button::BottomLeft),
+        phone.now + 400,
+        phone.now + 400,
+        &mut radio,
+    );
     let (lines, _) = phone_lines(phone.runtime);
     assert_eq!(lines[STEP], "STEP 1 OF 2");
     assert_eq!(lines[NOTE], "1 JOINED");
 
     // BACK ends the session and the access point stops.
-    phone
-        .runtime
-        .input(press(Button::TopLeft), phone.now + 800, &mut radio);
+    phone.runtime.input_received(
+        press(Button::TopLeft),
+        phone.now + 800,
+        phone.now + 800,
+        &mut radio,
+    );
     assert_eq!(phone.runtime.navigation.page, Page::Home);
     phone.step();
     phone.step();

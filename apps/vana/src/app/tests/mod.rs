@@ -349,7 +349,7 @@ fn choose_sensor(runtime: &mut Runtime, radio: &mut Radio, peer: device_api::ant
     runtime.navigation.page = crate::screens::workout::Page::Sensors;
     let mut now = 600;
     let mut step = |runtime: &mut Runtime, radio: &mut Radio, button| {
-        runtime.input(press(button), now, radio);
+        runtime.input_received(press(button), now, now, radio);
         now += 400;
     };
     runtime.refresh_sensor_menu(radio, 1);
@@ -382,10 +382,10 @@ fn forget_sensor(runtime: &mut Runtime, radio: &mut Radio, kind: u8, mut now: u6
             break;
         }
         now += 400;
-        runtime.input(press(Button::BottomLeft), now, radio);
+        runtime.input_received(press(Button::BottomLeft), now, now, radio);
     }
     now += 400;
-    runtime.input(press(Button::BottomRight), now, radio);
+    runtime.input_received(press(Button::BottomRight), now, now, radio);
     assert_eq!(runtime.menu.diagnostics().page, Page::Detail);
     now += crate::screens::sensors::SETTLE_MS;
     let trash = if kind == crate::sensors::ant::device_type::POWER {
@@ -393,9 +393,9 @@ fn forget_sensor(runtime: &mut Runtime, radio: &mut Radio, kind: u8, mut now: u6
     } else {
         Button::BottomRight
     };
-    runtime.input(press(trash), now, radio);
+    runtime.input_received(press(trash), now, now, radio);
     assert_eq!(runtime.menu.diagnostics().page, Page::Forget);
     now += crate::screens::sensors::SETTLE_MS;
-    runtime.input(press(Button::BottomRight), now, radio);
+    runtime.input_received(press(Button::BottomRight), now, now, radio);
     now
 }

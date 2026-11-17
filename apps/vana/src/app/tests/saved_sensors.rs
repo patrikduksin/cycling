@@ -381,9 +381,9 @@ fn discovery_waits_for_a_search_in_progress_and_reconnects_after_it() {
     run(&mut runtime, &mut radio, 0, 15_000);
     runtime.navigation.page = Page::Home;
     runtime.navigation.home_cursor = 1;
-    runtime.input(press(Button::BottomRight), 15_000, &mut radio);
-    runtime.input(press(Button::BottomLeft), 15_400, &mut radio);
-    runtime.input(press(Button::BottomRight), 15_800, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 15_000, 15_000, &mut radio);
+    runtime.input_received(press(Button::BottomLeft), 15_400, 15_400, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 15_800, 15_800, &mut radio);
     run(&mut runtime, &mut radio, 15_800, 26_000);
     let scan = radio
         .requests
@@ -413,7 +413,7 @@ fn save_problems_stay_visible_while_discovery_runs() {
     // Opening Sensors starts a search whose progress replaces page messages.
     runtime.navigation.page = Page::Home;
     runtime.navigation.home_cursor = 1;
-    runtime.input(press(Button::BottomRight), 1_000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1_000, 1_000, &mut radio);
     for (from, to) in [(1_000, 1_500), (1_500, 4_000), (4_000, 20_000)] {
         run(&mut runtime, &mut radio, from, to);
         assert_eq!(
@@ -435,7 +435,7 @@ fn save_problems_stay_visible_while_discovery_runs() {
     run(&mut runtime, &mut radio, 0, 1_000);
     runtime.navigation.page = Page::Home;
     runtime.navigation.home_cursor = 1;
-    runtime.input(press(Button::BottomRight), 1_000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1_000, 1_000, &mut radio);
     run(&mut runtime, &mut radio, 1_000, 1_200);
     runtime.preferences.save_failed(1_200);
     run(&mut runtime, &mut radio, 1_200, 6_000);
@@ -508,7 +508,7 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     let heart = peer(HEART, 4242);
     let touch = |runtime: &mut Runtime, radio: &mut Radio, now| {
         let point = device_api::input::Point { x: 232, y: 312 };
-        runtime.input(Input::Touch(point), now, radio)
+        runtime.input_received(Input::Touch(point), now, now, radio)
     };
     let saved = |runtime: &Runtime| runtime.preferences.sensors.of_type(HEART).is_some();
 
@@ -517,16 +517,16 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     advance(&mut runtime, &mut radio, 0);
     runtime.open_sensors(&mut radio, 1000);
     touch(&mut runtime, &mut radio, 1300);
-    runtime.input(press(Button::BottomRight), 1400, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1400, 1400, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
-    runtime.input(Input::Release, 1500, &mut radio);
+    runtime.input_received(Input::Release, 1500, 1500, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
     touch(&mut runtime, &mut radio, 2500);
-    runtime.input(Input::Release, 2600, &mut radio);
+    runtime.input_received(Input::Release, 2600, 2600, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Forget);
     assert!(saved(&runtime));
     touch(&mut runtime, &mut radio, 3600);
-    runtime.input(Input::Release, 3700, &mut radio);
+    runtime.input_received(Input::Release, 3700, 3700, &mut radio);
     assert!(!saved(&runtime));
 
     // A Cancel reaches the menu: ACT then waits for MOVE to reconfirm.
@@ -534,14 +534,14 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     let mut radio = Radio::quiet();
     advance(&mut runtime, &mut radio, 0);
     runtime.open_sensors(&mut radio, 1000);
-    runtime.input(press(Button::BottomRight), 1400, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 1400, 1400, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
-    runtime.input(Input::Cancel, 1600, &mut radio);
+    runtime.input_received(Input::Cancel, 1600, 1600, &mut radio);
     assert_eq!(
         runtime.menu.diagnostics().message,
         Some(MenuMessage::InputLost)
     );
-    runtime.input(press(Button::BottomRight), 3000, &mut radio);
+    runtime.input_received(press(Button::BottomRight), 3000, 3000, &mut radio);
     assert_eq!(
         runtime.menu.diagnostics().page,
         SensorPage::Detail,

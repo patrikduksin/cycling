@@ -1,7 +1,7 @@
 use super::follow::{self, MORE_THAN_135_DEG_OFF, MOVING_M, Placement, TURN_AROUND_FIXES};
 use super::nav::Spot;
 use crate::ride::breadcrumb::Crumb;
-use crate::ride::geo::{TURN, bearing, distance, rotation};
+use crate::ride::geo::{TURN, bearing, box_gap, distance, rotation};
 
 const JOIN_WITHIN_M: f32 = 25.0;
 const JOIN_SWITCH_M: f32 = 10.0;
@@ -222,13 +222,6 @@ fn leg(course: &[Crumb], centre: Point, end: usize) -> Leg {
     }
 }
 
-/// Margin on the box test for the rounding of a projection, which can land
-/// outside its leg's box by a few ulps of the coordinates involved: a metre,
-/// plus a bound that grows with their size, so a course far from the ride's
-/// origin is never pruned wrongly.
-const ROUNDING_M: f32 = 1.0;
-const ROUNDING_ULPS: f32 = 64.0 * f32::EPSILON;
-
 fn nearest(
     course: &[Crumb],
     centre: Point,
@@ -248,14 +241,7 @@ fn nearest(
     let mut ours = seed.filter(joins);
     for end in 1..course.len() {
         let (a, b) = (course[end - 1], course[end]);
-        let off = (a.east.min(b.east) - centre.0)
-            .max(centre.0 - a.east.max(b.east))
-            .max(a.north.min(b.north) - centre.1)
-            .max(centre.1 - a.north.max(b.north));
-        let scale = [a.east, a.north, b.east, b.north, centre.0, centre.1]
-            .into_iter()
-            .fold(0.0f32, |m, v| m.max(v.abs()));
-        let slack = ROUNDING_M + ROUNDING_ULPS * scale;
+        let (off, slack) = box_gap(centre, (a.east, a.north), (b.east, b.north));
         let any_reach = any.map_or(f32::INFINITY, |leg| leg.gap_m);
         let ours_reach = ours.map_or(JOIN_WITHIN_M, |leg| leg.gap_m);
         if off > any_reach + slack && (off > ours_reach + slack || !our_way(end)) {
@@ -305,4 +291,4 @@ enum Motion {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

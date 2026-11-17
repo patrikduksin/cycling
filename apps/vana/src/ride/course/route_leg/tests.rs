@@ -69,7 +69,7 @@ fn answer(joining: Option<Joining>) -> Option<(Option<Bits>, Bits, bool, bool)> 
     })
 }
 
-struct Random(u64);
+pub(crate) struct Random(pub(crate) u64);
 
 impl Random {
     fn next(&mut self) -> u64 {
@@ -80,16 +80,16 @@ impl Random {
         z ^ (z >> 31)
     }
 
-    fn below(&mut self, n: u64) -> u64 {
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
         self.next() % n
     }
 
-    fn within(&mut self, lo: f32, hi: f32) -> f32 {
+    pub(crate) fn within(&mut self, lo: f32, hi: f32) -> f32 {
         lo + (hi - lo) * (self.next() >> 40) as f32 / (1u64 << 24) as f32
     }
 }
 
-fn crumbs(points: &[Point]) -> Vec<Crumb> {
+pub(crate) fn crumbs(points: &[Point]) -> Vec<Crumb> {
     let mut along = 0.0;
     let mut course = Vec::new();
     for (k, &p) in points.iter().enumerate() {
@@ -105,7 +105,7 @@ fn crumbs(points: &[Point]) -> Vec<Crumb> {
     course
 }
 
-fn wander(random: &mut Random, origin: Point, n: usize) -> Vec<Point> {
+pub(crate) fn wander(random: &mut Random, origin: Point, n: usize) -> Vec<Point> {
     let mut at = origin;
     let mut bearing = random.within(0.0, core::f32::consts::TAU);
     let mut points = std::vec![at];
@@ -123,7 +123,7 @@ fn wander(random: &mut Random, origin: Point, n: usize) -> Vec<Point> {
     points
 }
 
-fn out_and_back(random: &mut Random, origin: Point) -> Vec<Point> {
+pub(crate) fn out_and_back(random: &mut Random, origin: Point) -> Vec<Point> {
     let n = 30 + random.below(60) as usize;
     let mut points = wander(random, origin, n);
     let beside = match random.below(3) {
@@ -139,7 +139,7 @@ fn out_and_back(random: &mut Random, origin: Point) -> Vec<Point> {
     points
 }
 
-fn lanes(random: &mut Random, origin: Point) -> Vec<Point> {
+pub(crate) fn lanes(random: &mut Random, origin: Point) -> Vec<Point> {
     let gap = random.within(5.0, 30.0);
     let length = random.within(100.0, 600.0);
     let mut points = Vec::new();
@@ -156,7 +156,7 @@ fn lanes(random: &mut Random, origin: Point) -> Vec<Point> {
     points
 }
 
-fn crossing(random: &mut Random, origin: Point) -> Vec<Point> {
+pub(crate) fn crossing(random: &mut Random, origin: Point) -> Vec<Point> {
     let r = random.within(30.0, 400.0);
     let n = 16 + random.below(48) as usize;
     (0..=n)

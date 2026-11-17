@@ -7106,6 +7106,11 @@ fn an_auto_pause_before_following_keeps_the_direction_in_sight() {
     sim.wait_for("AUTO PAUSED", seconds(15)).unwrap();
     sim.advance(seconds(10));
     assert_eq!(sim.ride_state(), "paused");
+    let pages = traced(&sim, Traced::Page);
+    assert!(
+        !pages.iter().any(|page| page == "ride/paused"),
+        "not even for the passes before the next frame: {pages:?}"
+    );
     assert_eq!(
         sim.screen().page().as_deref(),
         Some("1/5"),

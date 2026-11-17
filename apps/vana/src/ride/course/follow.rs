@@ -4,7 +4,7 @@ use crate::ride::course::nav::{
 };
 use crate::ride::course::turns::{PlacedScan, SCAN_STEPS, Turn};
 use crate::ride::course::{self, along_m};
-use crate::ride::geo::{Frame, TURN, bearing, distance};
+use crate::ride::geo::{Frame, TURN, bearing, box_gap, distance};
 use crate::ride::thin::off_segment;
 
 const END_M: f32 = 30.0;
@@ -600,7 +600,8 @@ fn riding(line: &[Crumb], p: Point, heading: u16) -> Riding {
     for end in (1..line.len()).rev() {
         let (a, b) = (line[end - 1], line[end]);
         let (a, b) = ((a.east, a.north), (b.east, b.north));
-        if off_segment(p, a, b) >= ON_M {
+        let (off, slack) = box_gap(p, a, b);
+        if off > ON_M + slack || off_segment(p, a, b) >= ON_M {
             continue;
         }
         let off_its_way = (heading + TURN - bearing(b, a)) % TURN;

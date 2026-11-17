@@ -98,12 +98,23 @@ impl Runtime {
         position: &impl Positioning,
     ) {
         self.follow_daylight(now, position);
+        self.announce_ride(now);
         system.set_curve(
             self.preferences
                 .options
                 .auto_brightness
                 .then_some(self.policy().light_curve),
         );
+    }
+
+    fn announce_ride(&mut self, now: u64) {
+        if self.power.view().is_some() || self.navigation.page() == Page::Boot {
+            return;
+        }
+        let pages_over_pause =
+            self.ride.auto().paused() && super::course::course_placed(&self.track);
+        self.navigation
+            .announce(self.ride.active().status(), pages_over_pause, now);
     }
 
     #[inline(never)]
@@ -197,14 +208,10 @@ impl Runtime {
         }
         // A ride opens on its first page: the workout page during a workout.
         let first = self.first_ride_page();
-        let navigation = &mut self.navigation;
-        navigation.set_first_page(first);
+        self.navigation.set_first_page(first);
+        self.announce_ride(now);
         let status = self.ride.active().status();
-        let pages_over_pause =
-            self.ride.auto().paused() && super::course::course_placed(&self.track);
-        if navigation.page() != Page::Boot {
-            navigation.announce(status, pages_over_pause, now);
-        }
+        let navigation = &mut self.navigation;
         // The ride is over: tell the rider once what the calibration set, over
         // the ride's own saved toast.
         if status != Status::Saved && !self.ride.open() {

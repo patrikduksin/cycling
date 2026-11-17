@@ -2,6 +2,9 @@ use super::*;
 use crate::ride::breadcrumb::Breadcrumb;
 use crate::ride::breadcrumb::tests::{at, path, taken};
 use crate::ride::course::nav::tests::{Said, said};
+use crate::ride::course::route_leg::tests::{
+    Random, crossing, crumbs, lanes, out_and_back, wander,
+};
 use crate::ride::course::turns;
 extern crate std;
 use std::vec;
@@ -531,4 +534,63 @@ fn placing_the_same_course_again_or_starting_a_ride_is_a_new_placement() {
     for (k, a) in seen.iter().enumerate() {
         assert!(!seen[k + 1..].contains(a), "{seen:?}");
     }
+}
+
+fn riding_by_every_leg(line: &[Crumb], p: Point, heading: u16) -> Riding {
+    let mut riding = Riding::Away;
+    for end in (1..line.len()).rev() {
+        let (a, b) = (line[end - 1], line[end]);
+        let (a, b) = ((a.east, a.north), (b.east, b.north));
+        if off_segment(p, a, b) >= ON_M {
+            continue;
+        }
+        let off_its_way = (heading + TURN - bearing(b, a)) % TURN;
+        if !MORE_THAN_45_DEG_OFF.contains(&off_its_way) {
+            return Riding::Along(end);
+        }
+        if MORE_THAN_135_DEG_OFF.contains(&off_its_way) {
+            riding = Riding::Against;
+        } else if riding == Riding::Away {
+            riding = Riding::Across;
+        }
+    }
+    riding
+}
+
+#[test]
+fn riding_finds_what_measuring_every_leg_would() {
+    let mut random = Random(0x5EED_0473);
+    let mut compared = 0;
+    for course_no in 0..240 {
+        let origin = match course_no % 3 {
+            0 => (0.0, 0.0),
+            1 => (random.within(-5e3, 5e3), random.within(-5e3, 5e3)),
+            _ => (random.within(-2e5, 2e5), random.within(-2e5, 2e5)),
+        };
+        let points = match course_no % 4 {
+            0 => {
+                let n = 2 + random.below(200) as usize;
+                wander(&mut random, origin, n)
+            }
+            1 => out_and_back(&mut random, origin),
+            2 => lanes(&mut random, origin),
+            _ => crossing(&mut random, origin),
+        };
+        let line = crumbs(&points);
+        for _ in 0..120 {
+            let near = points[random.below(points.len() as u64) as usize];
+            let reach = [0.0, 30.0, 500.0][random.below(3) as usize];
+            let p = (
+                near.0 + random.within(-reach, reach),
+                near.1 + random.within(-reach, reach),
+            );
+            let heading = random.below(u64::from(TURN)) as u16;
+            assert!(
+                riding(&line, p, heading) == riding_by_every_leg(&line, p, heading),
+                "course {course_no}, rider {p:?}, heading {heading}"
+            );
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, 240 * 120);
 }

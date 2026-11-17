@@ -372,7 +372,9 @@ Only one toast shows at a time. From highest priority to lowest:
    INT, AUTO PAUSED INT, SAVED INT or RECOVERED INT. After a recovery, RIDE
    RECOVERED stays until recording resumes.
 6. Auto-pause: AUTO PAUSED stays while the rider looks at ride pages during
-   an automatic pause (the paused screen names it itself). A
+   an automatic pause (the paused screen names it itself). With a course
+   placed, an automatic pause starts on the ride pages rather than the paused
+   screen, so the sign and the map's direction stay in sight. A
    ride recording without wheel or GPS speed shows AUTO PAUSE OFF for its first 8 s
    of active time, not for the whole ride.
 
@@ -684,7 +686,7 @@ Three buttons control everything. Touch is a shortcut for navigation only.
 | Button | Home | Sensors | Settings | Workouts | Ride |
 | --- | --- | --- | --- | --- | --- |
 | BottomRight (ACT) | Open the focused card | Open the focused row; on a sensor's page, zero a power meter or ask FORGET SENSOR?; answer a question | Act on the row (edit, step a choice, open); while editing, raise it | Choose the focused workout, then Ready | Pause, resume; on the NEW FTP sheet, save it |
-| BottomLeft (MOVE) | Focus the next card; held 1.5 s: mark the moment (MARK n) | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages; held 1.5 s: mark the moment (MARK n) |
+| BottomLeft (MOVE) | Focus the next card; held 1.5 s: mark the moment (MARK n) | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages (a manual pause, or an automatic one without a course, opens on it; an automatic pause on a course opens on the ride page); held 1.5 s: mark the moment (MARK n) |
 | TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back a page: SENSORS, then where Sensors opened from | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
 
 | Button | Ready | End ride? | Summary | Rides | Saved ride |

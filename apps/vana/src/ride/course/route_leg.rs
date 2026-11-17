@@ -58,9 +58,14 @@ impl RouteLeg {
             self.hold(end);
             return;
         }
-        if let (Some(fix), Some(motion)) = (fix, motion)
-            && let Some(joining) = joining(input.course, input.heading, fix.at, self.end)
-        {
+        let (Some(fix), Some(motion)) = (fix, motion) else {
+            return;
+        };
+        if valid(input.course, self.end).is_some() && motion != Motion::Moving {
+            self.count(motion, false, false);
+            return;
+        }
+        if let Some(joining) = joining(input.course, input.heading, fix.at, self.end) {
             self.choose(joining, motion);
         }
     }
@@ -105,6 +110,13 @@ impl RouteLeg {
             self.hold(best.end);
             return;
         }
+        self.count(motion, heading_against_held, held_leg_too_far);
+        if self.against_fixes >= TURN_AROUND_FIXES || self.too_far_fixes >= TOO_FAR_FIXES {
+            self.hold(best.end);
+        }
+    }
+
+    fn count(&mut self, motion: Motion, heading_against_held: bool, held_leg_too_far: bool) {
         let count = |n: u8, holds: bool| match motion {
             Motion::Moving if holds => n.saturating_add(1),
             Motion::TooSlowToTell => n,
@@ -112,9 +124,6 @@ impl RouteLeg {
         };
         self.against_fixes = count(self.against_fixes, heading_against_held);
         self.too_far_fixes = count(self.too_far_fixes, held_leg_too_far);
-        if self.against_fixes >= TURN_AROUND_FIXES || self.too_far_fixes >= TOO_FAR_FIXES {
-            self.hold(best.end);
-        }
     }
 }
 
@@ -126,8 +135,10 @@ pub fn at(
     centre: Point,
     held: Option<usize>,
 ) -> Option<(usize, Point)> {
-    let joining = joining(course, heading, centre, held)?;
-    let leg = joining.held.unwrap_or(joining.best);
+    let leg = match valid(course, held) {
+        Some(end) => leg(course, centre, end),
+        None => joining(course, heading, centre, None)?.best,
+    };
     Some((leg.end, leg.at))
 }
 
@@ -163,19 +174,9 @@ fn joining(
     centre: Point,
     held: Option<usize>,
 ) -> Option<Joining> {
-    let legs = 1..course.len();
-    let leg = |end: usize| {
-        let (a, b) = (course[end - 1], course[end]);
-        let at = follow::project(centre, (a.east, a.north), (b.east, b.north)).0;
-        Leg {
-            end,
-            at,
-            gap_m: distance(at, centre),
-        }
-    };
-    let held = held.filter(|end| legs.contains(end)).map(leg);
+    let held = valid(course, held).map(|end| leg(course, centre, end));
     let Some(heading) = heading else {
-        let best = held.or_else(|| closest(legs.map(leg)))?;
+        let best = held.or_else(|| nearest(course, centre, |_| false, None).any)?;
         return Some(Joining {
             held,
             best,
@@ -184,12 +185,12 @@ fn joining(
         });
     };
     let (sin, cos) = rotation(heading);
-    let our_way = |&end: &usize| {
+    let our_way = |end: usize| {
         let (a, b) = (course[end - 1], course[end]);
         (a.east - b.east) * sin + (a.north - b.north) * cos > 0.0
     };
-    let ours = closest(legs.clone().filter(our_way).map(leg)).filter(|l| l.gap_m <= JOIN_WITHIN_M);
-    let best = ours.or_else(|| closest(legs.map(leg)))?;
+    let nearest = nearest(course, centre, our_way, held);
+    let best = nearest.ours.or(nearest.any)?;
     let heading_against_held = held.is_some_and(|held| {
         let (a, b) = (course[held.end - 1], course[held.end]);
         let off_its_way = (heading + TURN - bearing((b.east, b.north), (a.east, a.north))) % TURN;
@@ -207,6 +208,70 @@ fn joining(
     })
 }
 
+fn valid(course: &[Crumb], held: Option<usize>) -> Option<usize> {
+    held.filter(|end| (1..course.len()).contains(end))
+}
+
+fn leg(course: &[Crumb], centre: Point, end: usize) -> Leg {
+    let (a, b) = (course[end - 1], course[end]);
+    let at = follow::project(centre, (a.east, a.north), (b.east, b.north)).0;
+    Leg {
+        end,
+        at,
+        gap_m: distance(at, centre),
+    }
+}
+
+/// Margin on the box test for the rounding of a projection, which can land
+/// outside its leg's box by a few ulps of the coordinates involved: a metre,
+/// plus a bound that grows with their size, so a course far from the ride's
+/// origin is never pruned wrongly.
+const ROUNDING_M: f32 = 1.0;
+const ROUNDING_ULPS: f32 = 64.0 * f32::EPSILON;
+
+fn nearest(
+    course: &[Crumb],
+    centre: Point,
+    our_way: impl Fn(usize) -> bool,
+    seed: Option<Leg>,
+) -> Nearest {
+    let nearer = |leg: &Leg, than: Option<Leg>| {
+        than.is_none_or(|than| {
+            leg.gap_m
+                .total_cmp(&than.gap_m)
+                .then(leg.end.cmp(&than.end))
+                .is_lt()
+        })
+    };
+    let joins = |leg: &Leg| leg.gap_m <= JOIN_WITHIN_M && our_way(leg.end);
+    let mut any = seed;
+    let mut ours = seed.filter(joins);
+    for end in 1..course.len() {
+        let (a, b) = (course[end - 1], course[end]);
+        let off = (a.east.min(b.east) - centre.0)
+            .max(centre.0 - a.east.max(b.east))
+            .max(a.north.min(b.north) - centre.1)
+            .max(centre.1 - a.north.max(b.north));
+        let scale = [a.east, a.north, b.east, b.north, centre.0, centre.1]
+            .into_iter()
+            .fold(0.0f32, |m, v| m.max(v.abs()));
+        let slack = ROUNDING_M + ROUNDING_ULPS * scale;
+        let any_reach = any.map_or(f32::INFINITY, |leg| leg.gap_m);
+        let ours_reach = ours.map_or(JOIN_WITHIN_M, |leg| leg.gap_m);
+        if off > any_reach + slack && (off > ours_reach + slack || !our_way(end)) {
+            continue;
+        }
+        let leg = leg(course, centre, end);
+        if nearer(&leg, any) {
+            any = Some(leg);
+        }
+        if joins(&leg) && nearer(&leg, ours) {
+            ours = Some(leg);
+        }
+    }
+    Nearest { any, ours }
+}
+
 #[derive(Clone, Copy)]
 struct Leg {
     end: usize,
@@ -221,8 +286,9 @@ struct Joining {
     held_leg_too_far: bool,
 }
 
-fn closest(legs: impl Iterator<Item = Leg>) -> Option<Leg> {
-    legs.min_by(|a, b| a.gap_m.total_cmp(&b.gap_m))
+struct Nearest {
+    any: Option<Leg>,
+    ours: Option<Leg>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -237,3 +303,6 @@ enum Motion {
     TooSlowToTell,
     Stopped,
 }
+
+#[cfg(test)]
+mod tests;

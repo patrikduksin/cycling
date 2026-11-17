@@ -435,6 +435,9 @@ repeats: only after the margin has stayed above 30 minutes for 10 minutes.
 
 A pause, by ACT or by auto-pause, fills the screen: two amber bars, PAUSED or
 AUTO PAUSED, how long the pause has lasted, the ride time and the distance.
+With a course placed, an automatic pause leaves the ride page up instead,
+with the AUTO PAUSED toast, so a rider standing at the start still sees which
+way to go; the paused screen is past the last ride page.
 The pause chime plays once. An automatic pause adds RIDE ON TO RESUME, and
 rolling on resumes it with AUTO RESUME. ACT resumes (RESUMED toast and the
 start chime). Riding on after a pause by ACT never resumes the ride, but VANA

@@ -117,7 +117,6 @@ pub(super) struct Navigation {
     announced: Status,
     /// When the ride was last paused, for the paused screen's timer.
     paused_since: Option<u64>,
-    /// The rider paged from the paused screen to the ride pages.
     pause_hidden: bool,
     /// The ride page a ride opens on.
     first_page: RidePage,
@@ -447,7 +446,7 @@ impl Navigation {
         self.toast = Some((toast, now.saturating_add(ms)));
     }
 
-    pub(super) fn announce(&mut self, status: Status, now: u64) {
+    pub(super) fn announce(&mut self, status: Status, pages_over_pause: bool, now: u64) {
         let before = core::mem::replace(&mut self.announced, status);
         if before == status {
             return;
@@ -465,10 +464,9 @@ impl Navigation {
                 self.chime = Some(Cue::Start);
                 ("RECORDING", Tone::Good)
             }
-            // The paused screen says it, whoever paused.
             (_, Status::Paused) => {
                 self.paused_since = Some(now);
-                self.pause_hidden = false;
+                self.pause_hidden = pages_over_pause;
                 self.pause_wrapped = false;
                 self.chime = Some(Cue::Pause);
                 return;

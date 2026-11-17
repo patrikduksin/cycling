@@ -492,6 +492,12 @@ pub(super) fn sign_of(track: &Option<&'static mut RideTrack>, now: u64) -> Sign 
         .map_or(Sign::None, |state| state.follower.shown(now).sign)
 }
 
+pub(super) fn course_placed(track: &Option<&'static mut RideTrack>) -> bool {
+    track
+        .as_deref()
+        .is_some_and(|state| !state.follower.course().is_empty())
+}
+
 pub(super) fn map_of<'a>(track: &'a Option<&'static mut RideTrack>) -> Option<FilledMap<'a>> {
     track.as_deref()?.map.filled()
 }

@@ -2367,9 +2367,9 @@ fn traffic_light_stop(sim: &mut Sim) {
     let latency = sim.wait_for("AUTO PAUSED", seconds(15)).unwrap();
     assert!(latency <= seconds(5), "auto-pause took {latency} ms");
     println!("auto-pause latency {latency} ms");
-    // The paused screen names an automatic pause in amber.
     let paused = sim.screen().run("AUTO PAUSED").expect("AUTO PAUSED");
     assert_eq!(paused.color, AMBER);
+    sim.expect_text("RIDE TIME");
     sim.expect_text("RIDE ON TO RESUME");
     sim.checkpoint("auto paused at the light");
     sim.advance(seconds(60));
@@ -7090,6 +7090,53 @@ fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
         sim.expect_no_text("FOLLOWING COURSE");
     }
     sim.stop_ride();
+}
+
+#[test]
+fn an_auto_pause_before_following_keeps_the_direction_in_sight() {
+    let course = gpx_through("straight", &[(0.0, 0.0), (0.0, 7_000.0)]);
+    let mut sim = with_a_course(&course);
+    let wrong_way = gpx_through("wrong way", &[(0.0, 3_000.0), (0.0, 2_000.0)]);
+    sim.ride_route(Route::from_gpx(&wrong_way).unwrap());
+    sim.pair(&["POWER METER", "SPEED/CAD"]);
+    sim.ride_at(24.0, 180.0, 0.0, 85.0);
+    sim.start_ride();
+    ride_until_shown(&mut sim, "AROUND", 150.0);
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.wait_for("AUTO PAUSED", seconds(15)).unwrap();
+    sim.advance(seconds(10));
+    assert_eq!(sim.ride_state(), "paused");
+    assert_eq!(
+        sim.screen().page().as_deref(),
+        Some("1/5"),
+        "the ride page, not the paused screen:\n{}",
+        sim.screen().text()
+    );
+    sim.expect_no_text("RIDE TIME");
+    sim.expect_text("AROUND");
+    sim.expect_text("AUTO PAUSED");
+    sim.checkpoint("auto paused before following, turn around in sight");
+
+    sim.ride_page("5/5");
+    expect_map(&sim);
+    assert_eq!(map_badge(&sim), ["TURN", "AROUND"]);
+    sim.checkpoint("auto paused before following, on the map");
+    sim.press(Button::BottomLeft);
+    sim.expect_text("RIDE TIME");
+    assert_eq!(sim.vana_page(), "ride");
+    sim.press(Button::BottomLeft);
+    sim.expect_no_text("RIDE TIME");
+    sim.press(Button::TopLeft);
+    sim.expect_text("END RIDE?");
+    sim.press(Button::TopLeft);
+    sim.expect_no_text("END RIDE?");
+
+    sim.ride_at(24.0, 180.0, 0.0, 85.0);
+    sim.press(Button::BottomRight);
+    sim.wait_for("RESUMED", seconds(3)).unwrap();
+    sim.advance(seconds(5));
+    sim.pause_ride();
+    sim.expect_text("RIDE TIME");
 }
 
 /// A course with a right-angle turn after 600 m, a gentle bend 45 degrees

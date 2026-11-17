@@ -97,9 +97,9 @@ fn state_changes_are_announced_once_in_a_toast() {
     };
     runtime
         .navigation
-        .announce(runtime.ride.active().status(), 1000);
+        .announce(runtime.ride.active().status(), false, 1000);
     assert_eq!(text(&mut runtime, 1000).as_deref(), Some("RECORDING"));
-    runtime.navigation.announce(Status::Recording, 1500);
+    runtime.navigation.announce(Status::Recording, false, 1500);
     assert_eq!(text(&mut runtime, 3100), None, "expired and not repeated");
     // A lap outranks the confirmation it follows.
     runtime.input_received(press(Button::TopLeft), 3200, 3200, &mut radio);
@@ -111,7 +111,7 @@ fn state_changes_are_announced_once_in_a_toast() {
     }
     assert_eq!(runtime.ride.active().status(), Status::Paused);
     // The paused screen says PAUSED; no toast repeats it.
-    runtime.navigation.announce(Status::Paused, 6300);
+    runtime.navigation.announce(Status::Paused, false, 6300);
     assert_eq!(text(&mut runtime, 6300), None);
 }
 

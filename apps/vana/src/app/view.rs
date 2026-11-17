@@ -200,8 +200,10 @@ impl Runtime {
         let navigation = &mut self.navigation;
         navigation.set_first_page(first);
         let status = self.ride.active().status();
+        let pages_over_pause =
+            self.ride.auto().paused() && super::course::course_placed(&self.track);
         if navigation.page() != Page::Boot {
-            navigation.announce(status, now);
+            navigation.announce(status, pages_over_pause, now);
         }
         // The ride is over: tell the rider once what the calibration set, over
         // the ride's own saved toast.

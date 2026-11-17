@@ -513,7 +513,7 @@ fn the_paused_screen_comes_first_and_paging_returns_to_it() {
     runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 1000);
     pause(&mut runtime, &mut journal, &mut radio, 2000);
-    runtime.navigation.announce(Status::Paused, 2200);
+    runtime.navigation.announce(Status::Paused, false, 2200);
     assert!(
         !runtime.navigation.pause_hidden(),
         "the paused screen shows"
@@ -1096,7 +1096,7 @@ fn roll_heard(
         }
         tick(runtime, journal, radio, now);
         let status = runtime.ride.active().status();
-        runtime.navigation.announce(status, now);
+        runtime.navigation.announce(status, false, now);
         runtime.alert(speaker, now);
     }
     from + seconds * 1000

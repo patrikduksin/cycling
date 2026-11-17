@@ -54,7 +54,9 @@ not read or a tool that did not build, is `{"error": ...}` with exit status 2;
   When `CYCLING_DEVICE_HOST` is set, the device is on another machine:
   follow the remote device skill; `cycling device trace pull` brings
   `.local/` back with the kept pack, so the first pull of a pack copies it
-  across. Keep device traces and their `.origin`
+  across. An `.origin` saved before the intent region (`ORIGIN1`) does
+  not load: `cycling trace upgrade <trace>...` rewrites each as
+  `ORIGIN2`, with a blank intent region. Keep device traces and their `.origin`
   and `.media/` under `.local/` and never commit them: they record the
   rider's location.
 - What a rebuilt origin holds: the settings, VANA's saved sensors and
@@ -83,7 +85,9 @@ not read or a tool that did not build, is `{"error": ...}` with exit status 2;
   32 records. After a power cut the device's checkpoints can sit
   elsewhere, so boot recovery in the replay reads a different number of
   records, but it recovers the same rides. STORE starts empty, since VANA
-  reads nothing in it.
+  reads nothing in it. The intent region starts blank: the header does not
+  record it, so a boot that finished a wipe a power cut left replays as a
+  boot with no wipe due, and a strict replay reports where the two part.
 - What a device trace holds: the C606 redacts secrets as it records (each
   `WIFI CONFIG` password, the phone session's token and Wi-Fi password), and
   a replay runs on placeholders. The file ends with the pass before VANA

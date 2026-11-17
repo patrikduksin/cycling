@@ -14,7 +14,7 @@ use crate::ride::log::{
     erased,
 };
 use crate::ride::storage::RideStorage;
-use crate::testing::{Draw, Rng};
+use crate::testing::{Draw, EraseTear, Rng};
 use std::vec;
 use std::vec::Vec;
 
@@ -38,32 +38,6 @@ struct Nor {
     off: bool,
     /// Slots before this one were programmed; later ones are still erased.
     used: usize,
-}
-
-/// How an interrupted sector erase leaves its sector; NOR erase only ever
-/// sets bits, so each byte is still old or erased.
-#[derive(Clone, Copy)]
-enum EraseTear {
-    Old,
-    /// The first `n` bytes were erased.
-    Prefix(usize),
-    /// Each byte of the sector was erased or not, drawn from this seed.
-    Scattered(u64),
-}
-
-impl EraseTear {
-    fn apply(self, stored: &mut [u8]) {
-        match self {
-            Self::Old => {}
-            Self::Prefix(n) => stored[..n].fill(0xff),
-            Self::Scattered(seed) => {
-                let mut rng = Rng::new(seed);
-                for byte in stored.iter_mut().filter(|_| rng.one_in(2)) {
-                    *byte = 0xff;
-                }
-            }
-        }
-    }
 }
 
 impl Nor {
@@ -228,6 +202,9 @@ struct Rig {
     extreme: bool,
     /// Also clear the journal, with power cut during the erases.
     clears: bool,
+    /// Models an intent already durable; the intent journal's own cut tests
+    /// are in app::intent.
+    clear_due: bool,
     seed: u64,
 }
 
@@ -246,6 +223,7 @@ impl Rig {
             live_from: 0,
             extreme: false,
             clears: false,
+            clear_due: false,
             now: 0,
             boot_from: 0,
             seed,
@@ -299,6 +277,13 @@ impl Rig {
         self.probe.nor.off = false;
         self.probe.nor.cut = None;
         self.probe.nor.erase_cut = None;
+        if self.clear_due {
+            for sector in 0..SECTORS {
+                assert!(wipe_sector(&mut self.probe.nor, sector), "seed {seed}");
+            }
+            self.clear_due = false;
+            self.probe.nor.torn_erase = false;
+        }
         self.boot_from = self.probe.acknowledged.len();
         self.now = 0;
         let mut steps = 0;
@@ -368,11 +353,8 @@ impl Rig {
             "seed {seed}"
         );
         let status = self.recorder.status();
-        let torn_clear_reads_foreign_427 =
-            status == Status::Foreign && nor.torn_erase && entries.is_empty();
         assert!(
-            matches!(status, Status::Ready | Status::Recovered | Status::Full)
-                || torn_clear_reads_foreign_427,
+            matches!(status, Status::Ready | Status::Recovered | Status::Full),
             "seed {seed}: {status:?} at slot {}",
             catalog.next_slot
         );
@@ -476,32 +458,27 @@ impl Rig {
         self.rng.pick(&[10, 30, 250, 999, 1_000, 1_001, 3_500])
     }
 
-    /// Clear the journal, cutting power at one of its erases half the time.
-    fn clear(&mut self) {
+    fn wipe(&mut self) {
         let upper = self.recorder.next_slot();
-        if self.recorder.clear(upper, 1).is_err() {
+        if self.recorder.await_wipe(upper, 1).is_err() {
             return;
         }
+        self.clear_due = true;
         self.live_from = self.probe.acknowledged.len();
         if self.rng.one_in(2) {
             let at = self.probe.nor.erased + self.rng.below(crate::ride::log::SECTORS as u64);
-            let tear = match self.rng.below(3) {
-                0 => EraseTear::Old,
-                1 => EraseTear::Prefix(self.rng.below(SECTOR_SIZE as u64 + 1) as usize),
-                _ => EraseTear::Scattered(self.rng.next()),
-            };
+            let tear = EraseTear::draw(&mut self.rng);
             self.probe.nor.erase_cut = Some((at, tear));
         }
-        for _ in 0..=crate::ride::log::SECTORS {
-            if self.recorder.status() != Status::Clearing {
-                break;
-            }
-            self.service();
-        }
+        let wiped = (0..SECTORS).all(|sector| wipe_sector(&mut self.probe.nor, sector));
         if self.probe.nor.off {
+            self.boot();
             return;
         }
         let seed = self.seed;
+        assert!(wiped, "seed {seed}");
+        self.recorder.wiped();
+        self.clear_due = false;
         assert!(self.recorder.take_result().unwrap().ok, "seed {seed}");
         assert!(
             self.probe.nor.bytes.iter().all(|&byte| byte == 0xff),
@@ -550,7 +527,7 @@ impl Rig {
             }
             21 => self.boot(),
             22..=23 => self.service(),
-            24..=25 if self.clears => self.clear(),
+            24..=25 if self.clears => self.wipe(),
             _ => self.service(),
         }
         // Only power loss fails an append: no reading makes a record that
@@ -683,11 +660,11 @@ fn power_cut_during_a_clear_never_revives_a_ride_or_hides_data() {
         rig.boot();
         rig.service();
         let upper = rig.recorder.next_slot();
-        if rig.recorder.clear(upper, 2).is_ok() {
+        if rig.recorder.await_wipe(upper, 2).is_ok() {
             rig.live_from = rig.probe.acknowledged.len();
-            for _ in 0..=crate::ride::log::SECTORS {
-                rig.service();
-            }
+            let wiped = (0..SECTORS).all(|sector| wipe_sector(&mut rig.probe.nor, sector));
+            assert!(wiped, "seed {seed}");
+            rig.recorder.wiped();
             assert!(rig.recorder.take_result().unwrap().ok, "seed {seed}");
             assert!(
                 rig.probe.nor.bytes.iter().all(|&byte| byte == 0xff),
@@ -729,11 +706,7 @@ fn power_cut_during_the_format_wipe_keeps_foreign_data_until_it_finishes() {
         assert_eq!(rig.recorder.initialize(1), Err(Refused::Foreign));
         for _ in 0..rig.rng.below(3) {
             let at = rig.rng.below(SECTORS as u64);
-            let tear = match rig.rng.below(3) {
-                0 => EraseTear::Old,
-                1 => EraseTear::Prefix(rig.rng.below(SECTOR_SIZE as u64 + 1) as usize),
-                _ => EraseTear::Scattered(rig.rng.next()),
-            };
+            let tear = EraseTear::draw(&mut rig.rng);
             rig.probe.nor.erase_cut = Some((rig.probe.nor.erased + at, tear));
             let finished = wipe(&mut rig);
             rig.probe.nor.erase_cut = None;
@@ -770,12 +743,9 @@ fn an_erase_that_reports_success_over_programmed_bytes_fails_the_format_wipe() {
         }
         rig.probe.nor.used = SLOTS;
         let sector = rig.rng.below(SECTORS as u64) as usize;
-        let tear = match rig.rng.below(3) {
-            0 => EraseTear::Old,
-            1 => EraseTear::Prefix(rig.rng.below(SECTOR_SIZE as u64) as usize),
-            _ => EraseTear::Scattered(rig.rng.next()),
-        };
-        rig.probe.nor.erase_lie = Some((sector as u64, tear));
+        let tear = EraseTear::draw(&mut rig.rng);
+        let progress = tear.progress.min(255);
+        rig.probe.nor.erase_lie = Some((sector as u64, EraseTear { progress, ..tear }));
         let finished = (0..SECTORS).all(|index| wipe_sector(&mut rig.probe.nor, index));
         assert!(!finished, "seed {seed}");
         assert!(rig.probe.nor.erase_lie.is_none(), "seed {seed}");

@@ -593,17 +593,19 @@ class ReviewFixTests(Workspace):
 
 
 class CrashJournalTests(Workspace):
-    def test_a_written_crash_journal_never_blocks_or_meets_flash_rollback_and_stock(self):
-        journal = b'CRJ1' + bytes(range(256)) * 31 + b'\xa5' * 0x1000
-        self.flasher.memory[0x1E000:0x20000] = journal[:0x2000]
+    def test_written_crash_and_intent_journals_never_block_or_meet_flash_rollback_and_stock(self):
+        intent = (b'C606\x02' * 0x700)[:0x2000]
+        crash = (b'CRJ1' + bytes(range(256)) * 31 + b'\xa5' * 0x1000)[:0x2000]
+        journals = intent + crash
+        self.flasher.memory[0x1C000:0x20000] = journals
         self.candidate(image(marker=1))
         self.main('flash')
         self.candidate(image(marker=2))
         self.main('flash')
         self.main('rollback')
-        self.assertEqual(bytes(self.flasher.memory[0x1E000:0x20000]), journal[:0x2000])
+        self.assertEqual(bytes(self.flasher.memory[0x1C000:0x20000]), journals)
         for address, length in self.flasher.writes:
-            self.assertTrue(address + length <= 0x1E000 or address >= 0x20000)
+            self.assertTrue(address + length <= 0x1C000 or address >= 0x20000)
         self.main('stock', '--confirm-restore')
         self.assertEqual(bytes(self.flasher.memory), self.backup)
 

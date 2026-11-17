@@ -314,7 +314,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         })
     }
     /// Borrow application-owned bytes without exposing the preferences journal.
-    pub fn data_storage(&mut self) -> firmware_services::storage::RegionAccess<'_, B> {
+    pub fn data_storage(&mut self) -> firmware_services::storage::AppStorage<'_, B> {
         self.store.data()
     }
     /// Borrow the device's panic journal for `CRASH`.

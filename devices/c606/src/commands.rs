@@ -154,7 +154,7 @@ pub fn execute(
         }
         Command::Volume(command) => {
             use firmware_console::commands::volumes;
-            if sdk.owns_storage() {
+            if sdk.holds_storage() {
                 terminal.reply(request.id, "BUSY", "formatting", now);
                 return;
             }
@@ -474,7 +474,7 @@ pub fn execute(
             }
         }
         Command::Storage => {
-            let _ = write!(output, "{:?}", system.data_storage().geometry());
+            let _ = write!(output, "{:?}", system.data_storage().data().geometry());
         }
         Command::Fitted => fitted(system, &mut output),
 

@@ -331,7 +331,7 @@ fn a_session_opened_while_the_journal_scans_lists_its_rides() {
     let mut journal = Journal::erased();
     let _ = saved_ride(&mut journal);
     // A restart: the journal is scanned again before rides can be read.
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     attach(&mut runtime);
     runtime.open_phone(PhoneMode::Home);
     let mut radio = super::Radio::new();
@@ -666,7 +666,7 @@ fn a_phone_loads_a_course_that_is_kept_on_the_card() {
     );
 
     // After a restart the course is read back from the card.
-    let mut runtime = Runtime::new(crate::sensors::ble_profile::Profile::HeartRate);
+    let mut runtime = booted(crate::sensors::ble_profile::Profile::HeartRate);
     attach_course_room(&mut runtime);
     runtime.service_course(&mut phone.files, 0);
     let restarted = runtime.course().unwrap().points().to_vec();

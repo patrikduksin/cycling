@@ -100,9 +100,21 @@ cycling ride-clear .local/exports/<export-id>
 - Clear erases and read-verifies only the owned ride reservation; settings and
   other regions are outside it. Success requires every sector to verify erased.
   Invalid remnants are cleared through the same fresh-export workflow.
-- After failure or timeout, restart, wait for scanning, inspect status and export
-  again before deciding whether to clear. Never automatically resend clear; a
-  power interruption can leave part of the old journal intact.
+- An internal Clear runs FORMAT's wipe of the internal journal
+  ([FORMAT](mmc-volumes.md#format)), and refuses with `STATE` while a ride is
+  open on either medium. It records the wipe intent before its first erase,
+  shows `CHECKING STORAGE` while storage commands answer `BUSY` and
+  `RIDE STATUS` reports its token pending, forgets the records `FILES` keeps
+  of the journal's rides, and completes once the intent is settled; the first
+  page then shows, with no restart. A boot after a power cut finishes it the
+  same way, and the host, which got no completion, reads an empty journal. A
+  Clear whose write fails, the card's included while its records go, leaves
+  `FORMAT` failed until the next boot and completes with `result=FAILED`.
+- An internal `RIDE INIT`, which only a journal that needs one or is corrupt
+  accepts, still erases through the recorder, with no intent.
+- After a bulk Clear's failure or timeout, restart, wait for scanning, inspect
+  status and export again before deciding whether to clear. Never automatically
+  resend clear; a power interruption can leave part of the old journal intact.
 
 ## Bulk MMC storage
 

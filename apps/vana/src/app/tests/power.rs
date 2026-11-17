@@ -547,7 +547,7 @@ fn recording_is_confirmed_after_the_start_write_finishes() {
 fn storage_is_ready_when_its_scan_finishes_not_when_vana_first_ticks() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     // The journal is scanned while the companion still starts.
     let mut now = 100;
     while runtime.ride.internal.status() == Status::Scanning {
@@ -704,7 +704,7 @@ impl device_api::ble_transport::Ble for Notifying {
 fn a_ble_cadence_sensor_reports_its_first_live_data() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
-    let mut runtime = Runtime::new(Profile::Cadence);
+    let mut runtime = booted(Profile::Cadence);
     for _ in 0..crate::ride::log::SECTORS {
         tick(&mut runtime, &mut journal, &mut radio, 0);
     }
@@ -753,7 +753,7 @@ fn a_ble_cadence_sensor_reports_its_first_live_data() {
 
 #[test]
 fn a_failed_journal_scan_is_reported_not_stamped_as_ready() {
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     let mut now = 100;
     while runtime.ride.internal.status() == Status::Scanning {
         assert!(now < 10_000, "scan never ended");

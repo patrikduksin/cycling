@@ -1,8 +1,12 @@
 use super::Runtime;
 use super::input::HOLD_GAP_MS;
+use super::intent::{self, Found};
 use super::preferences::Stored;
 use super::storage::{Health, StorageHealth, Store};
+use crate::kept::CardRefused;
 use crate::ride::log::{SECTORS, Status};
+use crate::ride::medium::Medium;
+use crate::ride::storage::RideStorage;
 use crate::screens::format::{Goes, Shows};
 use crate::screens::workout::Page;
 use device_api::bulk::ReadWrite;
@@ -17,29 +21,66 @@ use firmware_shell::shell::Shell;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Format {
     #[default]
+    Unread,
     Idle,
     Offered {
         drawn_at: Option<u64>,
         scope: Scope,
     },
     Declined,
+    Resuming {
+        scope: Scope,
+    },
     Running {
         stage: Stage,
         scope: Scope,
+        /// The wipe began on an earlier boot, whose cut erase can leave
+        /// cells that read erased yet hold weakly.
+        resumed: bool,
     },
     Failed,
     Done,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Scope(u8);
+pub(crate) struct Scope(u8);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CardAccess {
+    Writable,
+    /// Missing or failing.
+    Out,
+}
 
 impl Scope {
-    pub(super) fn of(stores: impl IntoIterator<Item = Store>) -> Option<Self> {
+    pub(crate) fn of(stores: impl IntoIterator<Item = Store>) -> Option<Self> {
         let bits = stores
             .into_iter()
             .fold(0, |bits, store| bits | 1 << store as u8);
         (bits != 0).then_some(Self(bits))
+    }
+
+    pub(crate) const fn one(store: Store) -> Self {
+        Self(1 << store as u8)
+    }
+
+    pub(super) fn bits(self) -> u8 {
+        self.0
+    }
+
+    pub(super) fn covers(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The stores a wipe can reach: none on a card that is missing or
+    /// failing, as the boot flash's stores must still go.
+    fn reachable(self, card: CardAccess) -> Option<Self> {
+        Self::from_bits(self.0 & Self::every(card).0)
+    }
+
+    pub(super) fn from_bits(bits: u8) -> Option<Self> {
+        let every = Self::every(CardAccess::Writable).0;
+        (bits != 0 && bits & !every == 0).then_some(Self(bits))
     }
 
     pub(super) fn foreign(health: &StorageHealth) -> Option<Self> {
@@ -51,13 +92,19 @@ impl Scope {
         )
     }
 
-    fn every(card: bool) -> Self {
+    fn every(card: CardAccess) -> Self {
         Self::of(
             Store::ALL
                 .into_iter()
-                .filter(|store| card || !store.on_card()),
+                .filter(|store| card == CardAccess::Writable || !store.on_card()),
         )
         .expect("the boot flash always holds stores")
+    }
+
+    /// Every other store's state was read at boot, so wiping one needs a
+    /// restart; the internal journal's recorder is emptied in place.
+    fn ends_without_restart(self) -> bool {
+        self == Self::one(Store::Internal)
     }
 
     fn holds(self, store: Store) -> bool {
@@ -104,9 +151,12 @@ impl Scope {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Stage {
+    RecordIntent,
     Card(Card),
     JournalSector(usize),
+    ForgetInternalRides,
     Settings,
+    SettleIntent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,28 +168,38 @@ pub(super) enum Card {
 }
 
 impl Stage {
-    const FIRST: Self = Self::Card(Card::Table);
+    const FIRST: Self = Self::RecordIntent;
+    /// A resumed wipe's commit was completed at boot, by `intent::at_boot`.
+    const RESUMED: Self = Self::Card(Card::Table);
 
     fn next(self) -> Option<Self> {
         Some(match self {
+            Self::RecordIntent => Self::Card(Card::Table),
             Self::Card(Card::Table) => Self::Card(Card::Rides),
             Self::Card(Card::Rides) => Self::Card(Card::Files),
             Self::Card(Card::Files) => Self::Card(Card::Traces),
             Self::Card(Card::Traces) => Self::JournalSector(0),
             Self::JournalSector(index) if index + 1 < SECTORS => Self::JournalSector(index + 1),
-            Self::JournalSector(_) => Self::Settings,
-            Self::Settings => return None,
+            Self::JournalSector(_) => Self::ForgetInternalRides,
+            Self::ForgetInternalRides => Self::Settings,
+            Self::Settings => Self::SettleIntent,
+            Self::SettleIntent => return None,
         })
     }
 
-    fn runs_for(self) -> &'static [Store] {
+    fn runs_for(self, scope: Scope) -> bool {
+        use Store::*;
         match self {
-            Self::Card(Card::Table) => &[Store::Table],
-            Self::Card(Card::Rides) => &[Store::Table, Store::Rides],
-            Self::Card(Card::Files) => &[Store::Table, Store::Files, Store::Records],
-            Self::Card(Card::Traces) => &[Store::Table, Store::Traces],
-            Self::JournalSector(_) => &[Store::Internal],
-            Self::Settings => &[Store::Settings],
+            Self::RecordIntent | Self::SettleIntent => true,
+            Self::Card(Card::Table) => scope.holds(Table),
+            Self::Card(Card::Rides) => scope.holds_any(&[Table, Rides]),
+            Self::Card(Card::Files) => scope.holds_any(&[Table, Files, Records]),
+            Self::Card(Card::Traces) => scope.holds_any(&[Table, Traces]),
+            Self::JournalSector(_) => scope.holds(Internal),
+            Self::ForgetInternalRides => {
+                scope.holds(Internal) && !Self::Card(Card::Files).runs_for(scope)
+            }
+            Self::Settings => scope.holds(Settings),
         }
     }
 }
@@ -147,9 +207,11 @@ impl Stage {
 impl Format {
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Unread => "unread",
             Self::Idle => "idle",
             Self::Offered { .. } => "offered",
             Self::Declined => "declined",
+            Self::Resuming { .. } => "resuming",
             Self::Running { .. } => "running",
             Self::Failed => "failed",
             Self::Done => "done",
@@ -160,6 +222,10 @@ impl Format {
         matches!(self, Self::Running { .. } | Self::Failed | Self::Done)
     }
 
+    pub(super) fn holds_storage(self) -> bool {
+        !matches!(self, Self::Idle | Self::Offered { .. } | Self::Declined)
+    }
+
     pub(super) fn shows(self) -> Shows {
         match self {
             Self::Offered { scope, .. } => Shows::Question(scope.goes()),
@@ -167,10 +233,14 @@ impl Format {
         }
     }
 
-    fn from_stage(stage: Option<Stage>, scope: Scope) -> Self {
+    fn from_stage(stage: Option<Stage>, scope: Scope, resumed: bool) -> Self {
         core::iter::successors(stage, |stage| stage.next())
-            .find(|stage| scope.holds_any(stage.runs_for()))
-            .map_or(Self::Done, |stage| Self::Running { stage, scope })
+            .find(|stage| stage.runs_for(scope))
+            .map_or(Self::Done, |stage| Self::Running {
+                stage,
+                scope,
+                resumed,
+            })
     }
 
     pub(super) fn admits_rides(self) -> bool {
@@ -180,10 +250,22 @@ impl Format {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Event {
-    Read { foreign: Option<Scope>, hub: bool },
+    IntentAtBoot(Found),
+    /// Storage health settled.
+    Read {
+        foreign: Option<Scope>,
+        hub: bool,
+        card: CardAccess,
+    },
     Drawn(u64),
-    Report { button: Button, held: bool, at: u64 },
+    Report {
+        button: Button,
+        held: bool,
+        at: u64,
+    },
     Confirm(Scope),
+    IntentRecorded(Scope),
+    IntentNotRecorded,
     Wrote,
     WriteFailed,
 }
@@ -194,6 +276,7 @@ pub(super) enum Go {
     Question,
     FirstPage,
     Ready,
+    JournalEmptied,
 }
 
 fn began_after_drawn(drawn: u64, at: u64) -> bool {
@@ -203,11 +286,24 @@ fn began_after_drawn(drawn: u64, at: u64) -> bool {
 pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go) {
     use Format::*;
     match (format, event) {
+        (Unread, Event::IntentAtBoot(Found::Idle)) => (Idle, Go::Stay),
+        (Unread, Event::IntentAtBoot(Found::Pending(scope))) => (Resuming { scope }, Go::Stay),
+        // An unread intent may still name a pending wipe, so rides stay
+        // blocked until a boot reads it.
+        (Unread, Event::Read { .. }) => (Failed, Go::Ready),
+        (Resuming { scope }, Event::Read { card, .. }) => {
+            let resumed = match scope.reachable(card) {
+                Some(reachable) => Format::from_stage(Some(Stage::RESUMED), reachable, true),
+                None => Format::from_stage(Some(Stage::SettleIntent), scope, true),
+            };
+            (resumed, Go::Question)
+        }
         (
             Idle,
             Event::Read {
                 foreign: Some(scope),
                 hub: true,
+                ..
             },
         ) => (
             Offered {
@@ -240,29 +336,59 @@ pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go
                 at,
             },
         ) if began_after_drawn(drawn, at) => match button {
-            Button::BottomRight if !ride_open => {
-                (Format::from_stage(Some(Stage::FIRST), scope), Go::Question)
-            }
+            Button::BottomRight if !ride_open => (
+                Format::from_stage(Some(Stage::FIRST), scope, false),
+                Go::Question,
+            ),
             Button::TopLeft => (Declined, Go::FirstPage),
             Button::BottomRight | Button::BottomLeft | Button::Center => (format, Go::Stay),
         },
-        (Idle | Offered { .. } | Declined | Failed, Event::Confirm(scope)) if !ride_open => {
-            (Format::from_stage(Some(Stage::FIRST), scope), Go::Question)
+        (Idle | Offered { .. } | Declined | Failed, Event::Confirm(scope)) if !ride_open => (
+            Format::from_stage(Some(Stage::FIRST), scope, false),
+            Go::Question,
+        ),
+        (Running { stage, resumed, .. }, Event::IntentRecorded(scope)) => {
+            (Format::from_stage(stage.next(), scope, resumed), Go::Stay)
         }
-        (Running { stage, scope }, Event::Wrote) => {
-            (Format::from_stage(stage.next(), scope), Go::Stay)
-        }
-        (Running { .. }, Event::WriteFailed) => (Failed, Go::Ready),
+        (
+            Running {
+                stage,
+                scope,
+                resumed,
+            },
+            Event::Wrote,
+        ) => match Format::from_stage(stage.next(), scope, resumed) {
+            Done if scope.ends_without_restart() => (Idle, Go::JournalEmptied),
+            next => (next, Go::Stay),
+        },
+        (Running { .. }, Event::WriteFailed | Event::IntentNotRecorded) => (Failed, Go::Ready),
         _ => (format, Go::Stay),
     }
 }
 
 impl Runtime {
-    /// From the first FORMAT write until the restart, nothing but FORMAT
-    /// reaches storage: no ride starts, the trace stops, and storage
-    /// commands answer `BUSY`.
+    /// From the first FORMAT write until the restart, or until a wipe of
+    /// the internal journal alone ends, the app's own storage work stops:
+    /// boot scans, recording and indexing. A resumed wipe lets the boot
+    /// scans run, as its scope on the card depends on them. Trace writes go
+    /// on unless `wipes_traces`.
     pub fn owns_storage(&self) -> bool {
         self.format.owns_storage()
+    }
+
+    /// From boot until the intent is read, through a resumed wipe, and from
+    /// the first FORMAT write until the restart or a Clear's wipe ends,
+    /// storage work from outside the app waits: console and host storage
+    /// commands answer `BUSY`, and neither the phone nor the look-ahead is
+    /// served.
+    pub fn holds_storage(&self) -> bool {
+        self.format.holds_storage()
+    }
+
+    /// The wipe running takes STORE, and the trace file goes with it. The
+    /// trace writes nothing else, so it goes on through any other wipe.
+    pub fn wipes_traces(&self) -> bool {
+        matches!(self.format, Format::Running { scope, .. } if Stage::Card(Card::Traces).runs_for(scope))
     }
 
     pub fn restart_due(&self) -> bool {
@@ -276,10 +402,18 @@ impl Runtime {
             Go::Stay => return self.display_after(format),
             Go::Question => Page::Format,
             Go::FirstPage => self.first_page(),
-            Go::Ready => Page::Ready,
+            Go::Ready => {
+                self.ride.wipe_failed();
+                Page::Ready
+            }
+            Go::JournalEmptied => {
+                self.ride.internal.wiped();
+                self.first_page()
+            }
         };
-        let brand_leads_to_question = go == Go::Question && self.navigation.page == Page::Boot;
-        if !brand_leads_to_question {
+        let brand_leads_on =
+            matches!(go, Go::Question | Go::JournalEmptied) && self.navigation.page == Page::Boot;
+        if !brand_leads_on {
             self.navigation.page = page;
             self.navigation.page_since = now;
         }
@@ -289,6 +423,13 @@ impl Runtime {
     fn display_after(&mut self, format: Format) {
         if format == Format::Done {
             self.display.redraw();
+        }
+    }
+
+    pub(super) fn card_access(&self) -> CardAccess {
+        match self.ride.bulk.status() {
+            Status::Unsupported | Status::Unavailable | Status::Error => CardAccess::Out,
+            _ => CardAccess::Writable,
         }
     }
 
@@ -311,11 +452,8 @@ impl Runtime {
                 "OK"
             }
             "CONFIRM" => {
-                let card = !matches!(
-                    self.ride.bulk.status(),
-                    Status::Unsupported | Status::Unavailable
-                );
-                self.format_event(Event::Confirm(Scope::every(card)), now);
+                let scope = Scope::every(self.card_access());
+                self.format_event(Event::Confirm(scope), now);
                 if matches!(self.format, Format::Running { .. }) {
                     "ACCEPTED"
                 } else {
@@ -333,46 +471,94 @@ impl Runtime {
         bulk: &mut impl ReadWrite,
         now: u64,
     ) {
-        if self.format == Format::Idle {
+        if self.format == Format::Unread {
+            let found = intent::at_boot(system.data_storage().intent());
+            self.format_event(Event::IntentAtBoot(found), now);
+        }
+        if matches!(
+            self.format,
+            Format::Unread | Format::Idle | Format::Resuming { .. }
+        ) {
             self.probe_storage(bulk);
             let health = self.storage_health();
             if health.settled() {
                 let hub = matches!(self.navigation.page, Page::Boot | Page::Home | Page::Setup)
                     && !self.ride.open();
                 let foreign = Scope::foreign(&health);
-                self.format_event(Event::Read { foreign, hub }, now);
+                let card = self.card_access();
+                self.format_event(Event::Read { foreign, hub, card }, now);
             }
         }
-        let Format::Running { stage, .. } = self.format else {
+        let Format::Running {
+            stage,
+            scope,
+            resumed,
+        } = self.format
+        else {
             return;
         };
-        let event = if self.write(stage, system, bulk, now) {
-            Event::Wrote
-        } else {
-            Event::WriteFailed
-        };
+        let event = self.write(stage, scope, resumed, system, bulk, now);
+        // A dead card must not hold every boot in a wipe. An intent that was
+        // not recorded may still name a wipe begun earlier, so it is not
+        // settled.
+        if event == Event::WriteFailed {
+            intent::settle(system.data_storage().intent());
+        }
         self.format_event(event, now);
     }
 
     fn write<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,
         stage: Stage,
+        scope: Scope,
+        resumed: bool,
         system: &mut Shell<D, I, P, B>,
         bulk: &mut impl ReadWrite,
         now: u64,
-    ) -> bool {
-        match stage {
+    ) -> Event {
+        let wrote = match stage {
+            Stage::RecordIntent => {
+                return intent::begin(system.data_storage().intent(), scope)
+                    .map_or(Event::IntentNotRecorded, Event::IntentRecorded);
+            }
+            Stage::SettleIntent => intent::settle(system.data_storage().intent()),
             Stage::Card(card) => {
                 let seed = now ^ bulk.entropy();
                 wipe(card, bulk, seed).is_some()
             }
             Stage::JournalSector(index) => {
-                crate::ride::journal::wipe_sector(&mut system.data_storage(), index)
+                let store = &mut system.data_storage();
+                (!resumed || store.ride_erase_sector(index).is_ok())
+                    && crate::ride::journal::wipe_sector(store, index)
             }
+            Stage::ForgetInternalRides => self.forget_internal_rides(bulk, now).is_ok(),
             Stage::Settings => {
                 self.preferences.stored = Stored::Foreign;
                 system.erase_settings()
             }
+        };
+        if wrote {
+            Event::Wrote
+        } else {
+            Event::WriteFailed
+        }
+    }
+
+    fn forget_internal_rides(
+        &mut self,
+        bulk: &mut impl ReadWrite,
+        now: u64,
+    ) -> Result<(), CardRefused> {
+        self.ride.forget_moved_ride();
+        match self.card_access() {
+            CardAccess::Out => Ok(()),
+            CardAccess::Writable => crate::kept::forget_journal(
+                &mut self.facts,
+                &mut self.deleted,
+                bulk,
+                Medium::Internal,
+                now,
+            ),
         }
     }
 }
@@ -437,191 +623,4 @@ fn in_volume<B: ReadWrite>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use Button::{BottomLeft as MOVE, BottomRight as ACT, TopLeft as BACK};
-    use Format::*;
-    use std::vec;
-    use std::vec::Vec;
-
-    fn scope(stores: &[Store]) -> Scope {
-        Scope::of(stores.iter().copied()).unwrap()
-    }
-
-    const RIDES: Scope = Scope(1 << Store::Rides as u8);
-    const ASKED: Format = Offered {
-        drawn_at: Some(1_000),
-        scope: RIDES,
-    };
-    const UNDRAWN: Format = Offered {
-        drawn_at: None,
-        scope: RIDES,
-    };
-
-    fn press(button: Button, at: u64) -> Event {
-        Event::Report {
-            button,
-            held: false,
-            at,
-        }
-    }
-
-    fn held(button: Button, at: u64) -> Event {
-        Event::Report {
-            button,
-            held: true,
-            at,
-        }
-    }
-
-    fn read(foreign: bool, hub: bool) -> Event {
-        Event::Read {
-            foreign: foreign.then_some(RIDES),
-            hub,
-        }
-    }
-
-    fn running(stage: Stage, scope: Scope) -> Format {
-        Running { stage, scope }
-    }
-
-    #[test]
-    fn every_state_and_event_steps_as_the_table_says() {
-        let every = Scope::every(true);
-        let wiping = running(Stage::FIRST, every);
-        let rides = running(Stage::Card(Card::Rides), RIDES);
-        let rows = [
-            (Idle, read(true, true), UNDRAWN, Go::Question),
-            (Idle, read(false, true), Idle, Go::Stay),
-            (Idle, read(true, false), Idle, Go::Stay),
-            (Declined, read(true, true), Declined, Go::Stay),
-            (Failed, read(true, true), Failed, Go::Stay),
-            (UNDRAWN, Event::Drawn(1_000), ASKED, Go::Stay),
-            (ASKED, Event::Drawn(5_000), ASKED, Go::Stay),
-            (UNDRAWN, press(ACT, 9_000), UNDRAWN, Go::Stay),
-            (ASKED, press(ACT, 900), ASKED, Go::Stay),
-            (ASKED, press(ACT, 1_249), ASKED, Go::Stay),
-            (ASKED, held(ACT, 9_000), ASKED, Go::Stay),
-            (ASKED, held(BACK, 9_000), ASKED, Go::Stay),
-            (ASKED, press(BACK, 1_100), ASKED, Go::Stay),
-            (ASKED, press(MOVE, 9_000), ASKED, Go::Stay),
-            (ASKED, press(ACT, 1_250), rides, Go::Question),
-            (ASKED, press(BACK, 1_250), Declined, Go::FirstPage),
-            (Idle, Event::Confirm(every), wiping, Go::Question),
-            (ASKED, Event::Confirm(every), wiping, Go::Question),
-            (Declined, Event::Confirm(every), wiping, Go::Question),
-            (Failed, Event::Confirm(every), wiping, Go::Question),
-            (wiping, Event::Confirm(every), wiping, Go::Stay),
-            (wiping, press(ACT, 9_000), wiping, Go::Stay),
-            (
-                wiping,
-                Event::Wrote,
-                running(Stage::Card(Card::Rides), every),
-                Go::Stay,
-            ),
-            (rides, Event::Wrote, Done, Go::Stay),
-            (
-                running(Stage::Settings, every),
-                Event::Wrote,
-                Done,
-                Go::Stay,
-            ),
-            (wiping, Event::WriteFailed, Failed, Go::Ready),
-            (Done, Event::Confirm(every), Done, Go::Stay),
-            (Done, read(true, true), Done, Go::Stay),
-        ];
-        for (format, event, after, go) in rows {
-            assert_eq!(
-                step(format, event, false),
-                (after, go),
-                "{format:?} {event:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn nothing_starts_a_wipe_under_an_open_ride() {
-        let every = Event::Confirm(Scope::every(true));
-        for (format, event) in [
-            (ASKED, press(ACT, 1_250)),
-            (Idle, every),
-            (UNDRAWN, every),
-            (Declined, every),
-            (Failed, every),
-        ] {
-            assert_eq!(step(format, event, true), (format, Go::Stay), "{format:?}");
-        }
-        assert_eq!(
-            step(ASKED, press(BACK, 1_250), true),
-            (Declined, Go::FirstPage)
-        );
-    }
-
-    #[test]
-    fn a_wipe_takes_the_stages_of_the_stores_it_is_for_in_order() {
-        use Card::{Files, Rides, Table, Traces};
-        let journal = || (0..SECTORS).map(Stage::JournalSector);
-        let card = [Table, Rides, Files, Traces].map(Stage::Card);
-        let cases: [(Scope, Vec<Stage>); 10] = [
-            (scope(&[Store::Table]), card.to_vec()),
-            (scope(&[Store::Rides]), vec![Stage::Card(Rides)]),
-            (scope(&[Store::Files]), vec![Stage::Card(Files)]),
-            (scope(&[Store::Records]), vec![Stage::Card(Files)]),
-            (scope(&[Store::Traces]), vec![Stage::Card(Traces)]),
-            (scope(&[Store::Internal]), journal().collect()),
-            (scope(&[Store::Settings]), vec![Stage::Settings]),
-            (
-                scope(&[Store::Settings, Store::Rides]),
-                vec![Stage::Card(Rides), Stage::Settings],
-            ),
-            (
-                Scope::every(true),
-                card.into_iter()
-                    .chain(journal())
-                    .chain([Stage::Settings])
-                    .collect(),
-            ),
-            (
-                Scope::every(false),
-                journal().chain([Stage::Settings]).collect(),
-            ),
-        ];
-        for (scope, stages) in cases {
-            let mut taken = Vec::new();
-            let mut format = step(Idle, Event::Confirm(scope), false).0;
-            while let Running { stage, .. } = format {
-                taken.push(stage);
-                format = step(format, Event::Wrote, false).0;
-            }
-            assert_eq!(format, Done, "{scope:?}");
-            assert_eq!(taken, stages, "{scope:?}");
-        }
-    }
-
-    #[test]
-    fn the_question_names_what_goes_by_the_gravest_store() {
-        use Store::*;
-        let cases: [(&[Store], Goes); 17] = [
-            (&[Rides, Settings], Goes::RidesAndSettings),
-            (&[Table, Settings, Internal], Goes::RidesAndSettings),
-            (&[Table], Goes::WholeCard),
-            (&[Rides], Goes::CardRides),
-            (&[Files], Goes::CardFiles),
-            (&[Records], Goes::CardFiles),
-            (&[Files, Records], Goes::CardFiles),
-            (&[Traces], Goes::Traces),
-            (&[Internal], Goes::RideLog),
-            (&[Settings], Goes::Settings),
-            (&[Rides, Internal], Goes::RidesAndMore),
-            (&[Table, Rides], Goes::RidesAndMore),
-            (&[Settings, Records], Goes::SettingsAndMore),
-            (&[Settings, Traces], Goes::SettingsAndMore),
-            (&[Files, Internal], Goes::FilesAndMore),
-            (&[Records, Traces], Goes::FilesAndMore),
-            (&[Internal, Traces], Goes::RideLogAndMore),
-        ];
-        for (stores, goes) in cases {
-            assert_eq!(scope(stores).goes(), goes, "{stores:?}");
-        }
-    }
-}
+mod tests;

@@ -88,7 +88,7 @@ fn name() -> Name {
 struct Session {
     disk: Stalling,
     recorder: Spooled<Vec<u8>, Vec<u8>>,
-    drain: Drain<Vec<u8>>,
+    drain: Drain,
     kept: Recorder<Vec<u8>, Kept>,
     sector: Sector,
     now: u64,
@@ -119,7 +119,7 @@ impl Session {
         let mut sector = [0u8; SECTOR_SIZE];
         let store = store::format(&mut disk, 11, &mut sector).unwrap();
         let traces = Dir::new("traces/").unwrap();
-        let drain = Drain::create(&mut disk, store, name(), traces, header(), 0, &mut sector);
+        let drain = Drain::create(&mut disk, store, name(), traces, &header(), 0, &mut sector);
         disk.take_ms();
         Self {
             disk,
@@ -468,7 +468,7 @@ mod file {
         Recorder::new(vec![0u8; 4096], Spool::new(vec![0u8; 64 * 1024]))
     }
 
-    fn opened(file: &File<Vec<u8>>) -> String {
+    fn opened(file: &File) -> String {
         match file {
             File::Open(_, _, drain) => String::from(drain.name().as_str()),
             _ => panic!("no open file"),
@@ -491,17 +491,17 @@ mod file {
     #[test]
     fn a_card_without_a_store_records_nothing_and_says_why() {
         let mut sector = [0u8; SECTOR_SIZE];
-        let blank: File<Vec<u8>> = File::stage(&mut Media::new(REGION), &mut sector);
+        let blank: File = File::stage(&mut Media::new(REGION), &mut sector);
         assert!(matches!(blank, File::Off("no volume table")));
         let (mut media, mut sector) = card(false);
-        let unformatted: File<Vec<u8>> = File::stage(&mut media, &mut sector);
+        let unformatted: File = File::stage(&mut media, &mut sector);
         assert!(matches!(unformatted, File::Off("STORE does not mount")));
     }
 
     #[test]
     fn the_file_opens_with_its_header_once_the_header_is_known() {
         let (mut media, mut sector) = card(true);
-        let mut file: File<Vec<u8>> = File::stage(&mut media, &mut sector);
+        let mut file: File = File::stage(&mut media, &mut sector);
         assert!(matches!(file, File::Staging(..)));
         let mut recorder = recorder();
         recorder.record(&Event::Pass { now_ms: 10 });
@@ -509,7 +509,7 @@ mod file {
             &mut recorder,
             &mut media,
             Card::Riding,
-            || None,
+            || None::<(Vec<u8>, u32)>,
             10,
             &mut sector,
         )
@@ -526,9 +526,14 @@ mod file {
             &mut sector,
         )
         .unwrap();
+        let name = opened(&file);
+        let cut_off = read(&mut media, &mut sector, &name);
+        assert!(
+            crate::trace::decode(&cut_off).is_ok(),
+            "a file cut off before its first sync holds its header"
+        );
         file.sync(&mut recorder, &mut media, 30, &mut sector)
             .unwrap();
-        let name = opened(&file);
         assert_eq!(name, "traces/000001-00000007.trace");
         let bytes = read(&mut media, &mut sector, &name);
         assert_eq!(
@@ -540,7 +545,7 @@ mod file {
     #[test]
     fn a_host_write_to_files_ends_the_trace_and_says_so_a_store_change_reopens_it() {
         let (mut media, mut sector) = card(true);
-        let mut file: File<Vec<u8>> = File::stage(&mut media, &mut sector);
+        let mut file: File = File::stage(&mut media, &mut sector);
         let mut recorder = recorder();
         recorder.record(&Event::Pass { now_ms: 10 });
         let known = || Some((header(), 7));

@@ -265,6 +265,15 @@ impl RideStorage for Journal {
     }
 }
 
+fn booted(profile: Profile) -> Runtime {
+    let mut runtime = Runtime::new(profile);
+    runtime.format_event(
+        super::format::Event::IntentAtBoot(super::intent::Found::Idle),
+        0,
+    );
+    runtime
+}
+
 fn press(button: Button) -> Input {
     Input::Button { button, code: 1 }
 }
@@ -310,7 +319,7 @@ fn restored(peers: &[Identity]) -> Runtime {
         sensors: saved,
         ..preferences::Record::default()
     });
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     runtime.load_preferences(
         &firmware_shell::preferences::AppPreferences::new(&record).unwrap(),
         firmware_shell::preferences::Source::Current,
@@ -320,7 +329,7 @@ fn restored(peers: &[Identity]) -> Runtime {
 
 /// A runtime whose recorder finished scanning an erased journal.
 fn ready_runtime(journal: &mut Journal, radio: &mut Radio) -> Runtime {
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     for _ in 0..SECTORS {
         tick(&mut runtime, journal, radio, 0);
     }

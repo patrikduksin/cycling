@@ -84,7 +84,7 @@ pub struct Trace {
     pub access_point: FrozenAccessPoint,
     pub server: FrozenServer,
     pub log: &'static firmware_services::trace::shell::PassLog,
-    file: File<&'static [u8]>,
+    file: File,
     start: Option<Start>,
     sector: [u8; device_api::bulk::SECTOR_SIZE],
     vitals: Vitals,

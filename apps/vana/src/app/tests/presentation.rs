@@ -129,7 +129,7 @@ impl Screen {
 #[test]
 fn frames_follow_page_cadence_and_stop_once_suspended() {
     let mut screen = Screen::new();
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     let mut radio = Radio::new();
     // The brand flashes from VANA's first frame, whenever the device lets it run.
     assert!(screen.present(&mut runtime, &radio, 3000));
@@ -170,7 +170,7 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
 #[test]
 fn a_new_startup_status_draws_at_once_where_it_shows() {
     let mut screen = Screen::new();
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     let mut radio = Radio::new();
     assert!(screen.present(&mut runtime, &radio, 3000));
     assert!(screen.present(&mut runtime, &radio, 3400));
@@ -315,7 +315,7 @@ fn radar_beeps_sound_only_on_the_ride_page() {
 
 #[test]
 fn a_touch_lifted_after_leaving_settings_does_not_swallow_the_next_tap() {
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     let mut radio = Radio::new();
     let touch = |x, y| Input::Touch(device_api::input::Point { x, y });
     runtime.navigation.page = Page::Settings;
@@ -370,7 +370,7 @@ fn an_ant_sensor_stands_for_the_ble_role_in_the_order_the_ride_prefers() {
 fn a_brightness_choice_from_the_terminal_holds_a_percent_or_follows_the_light() {
     use firmware_shell::shell::BrightnessChoice;
     let mut screen = Screen::new();
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     let radio = Radio::new();
     screen.present(&mut runtime, &radio, 3000);
     assert!(screen.shell.auto(), "a new rider starts on AUTO");

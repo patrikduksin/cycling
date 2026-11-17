@@ -37,6 +37,9 @@ pub enum Region {
     Data,
     /// The device's copy of its last panic record, kept across power-off.
     Crash,
+    /// Where the application records a wipe of its stores before the first
+    /// write, outside every store, so a wipe cut by power is finished at boot.
+    Intent,
 }
 
 /// Sole physical owner of independently bounded reservations. Every operation
@@ -53,6 +56,25 @@ pub trait OwnedFlash {
     -> Result<(), Self::Error>;
     fn program(&mut self, region: Region, offset: usize, bytes: &[u8]) -> Result<(), Self::Error>;
     fn erase(&mut self, region: Region, offset: usize, length: usize) -> Result<(), Self::Error>;
+}
+
+impl<T: OwnedFlash + ?Sized> OwnedFlash for &mut T {
+    type Error = T::Error;
+    fn availability(&self, region: Region) -> crate::observation::Availability {
+        (**self).availability(region)
+    }
+    fn geometry(&self, region: Region) -> Geometry {
+        (**self).geometry(region)
+    }
+    fn read(&mut self, region: Region, offset: usize, output: &mut [u8]) -> Result<(), T::Error> {
+        (**self).read(region, offset, output)
+    }
+    fn program(&mut self, region: Region, offset: usize, bytes: &[u8]) -> Result<(), T::Error> {
+        (**self).program(region, offset, bytes)
+    }
+    fn erase(&mut self, region: Region, offset: usize, length: usize) -> Result<(), T::Error> {
+        (**self).erase(region, offset, length)
+    }
 }
 
 #[cfg(test)]

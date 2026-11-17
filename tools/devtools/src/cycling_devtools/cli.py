@@ -393,7 +393,7 @@ TASKS = [
     task(
         'trace',
         'Read a ride trace as text, or one JSON document with --json: summary, timeline, find, otlp, replay, '
-        'test-stub (--help; skill: ride-trace); pull [file] copies the newest or a named device trace into '
+        'test-stub, upgrade (--help; skill: ride-trace); pull [file] copies the newest or a named device trace into '
         '.local/traces/ and rebuilds the media it started on beside it (.origin)',
         f'{TRACE} trace',
     ),

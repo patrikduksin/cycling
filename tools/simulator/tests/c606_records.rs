@@ -132,6 +132,7 @@ fn a_failed_card_operation_has_the_number_the_simulator_gives_it() {
     card.fail(BulkFault {
         after: 2,
         partial: 100,
+        power_cut: false,
     });
     let kept = RefCell::new(Kept::default());
     let sector = [5u8; 512];
@@ -167,6 +168,7 @@ fn a_pass_records_refusals_and_faults_in_the_order_the_simulator_does() {
     card.fail(BulkFault {
         after: 0,
         partial: 0,
+        power_cut: false,
     });
     log.begin_pass(Availability::Ready, &CompanionView(None));
     let mut inner = card.untapped();

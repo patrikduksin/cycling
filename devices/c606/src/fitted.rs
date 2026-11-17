@@ -11,6 +11,7 @@ pub const REGIONS: &[(&str, Region)] = &[
     ("configuration", Region::Configuration),
     ("data", Region::Data),
     ("crash", Region::Crash),
+    ("intent", Region::Intent),
 ];
 
 pub const fn owned(region: Region) -> (u32, usize) {
@@ -18,5 +19,6 @@ pub const fn owned(region: Region) -> (u32, usize) {
         Region::Configuration => (0xe98000, 0x2000),
         Region::Data => (0xd98000, 0x100000),
         Region::Crash => (0x1e000, 0x2000),
+        Region::Intent => (0x1c000, 0x2000),
     }
 }

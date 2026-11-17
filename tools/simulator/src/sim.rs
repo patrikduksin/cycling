@@ -194,6 +194,11 @@ pub struct Sim {
     power_hold: u32,
 }
 
+pub struct Media {
+    flash: crate::storage::FlashImage,
+    bulk: crate::bulk::Image,
+}
+
 impl Sim {
     /// A powered-off C606 with VANA, an ANT radio and empty memory media.
     pub fn new() -> Self {
@@ -956,6 +961,22 @@ impl Sim {
         self.wait_usable();
     }
 
+    /// Everything the device's media hold, to put back with `restore_media`.
+    pub fn media(&self) -> Media {
+        Media {
+            flash: self.device.media.image().expect("memory media").1,
+            bulk: self.device.bulk.image(),
+        }
+    }
+
+    /// Put `media` back, then cut the power, so the device boots from them
+    /// as if they had never changed since.
+    pub fn restore_media(&mut self, media: &Media) {
+        self.device.media.restore(&media.flash);
+        self.device.bulk.restore(&media.bulk);
+        self.cut_power();
+    }
+
     /// Cut power without warning; the device starts booting at once.
     pub fn cut_power(&mut self) {
         self.note(NoteKind::Device, "power lost; rebooting");
@@ -971,6 +992,40 @@ impl Sim {
         let mut fault = self.device.media.fault.borrow_mut();
         fault.after = Some(after);
         fault.partial = partial;
+    }
+
+    /// Fail every read of internal flash `region` until the next boot.
+    pub fn fail_flash_reads(&mut self, region: device_api::storage::Region) {
+        self.note(NoteKind::Device, format!("{region:?} reads fail"));
+        self.device.media.fault.borrow_mut().unreadable = Some(region);
+    }
+
+    /// Lose power at the internal flash mutation after `after` succeed, cut
+    /// with `partial` of its length done: a program lands that far and an
+    /// erase sets each bit with odds `partial / length`. From it on, neither
+    /// internal flash nor the card takes or gives anything until `cut_power`
+    /// boots again.
+    pub fn lose_power_at_flash_write(&mut self, after: u32, partial: usize) {
+        self.fail_storage(after, partial);
+        self.device.media.fault.borrow_mut().power_cut = true;
+    }
+
+    /// As `lose_power_at_flash_write`, at the card write after `after`.
+    pub fn lose_power_at_card_write(&mut self, after: u32, partial: usize) {
+        self.note(
+            NoteKind::Device,
+            format!("power lost at card write {after}"),
+        );
+        self.device.bulk.fail(crate::bulk::BulkFault {
+            after,
+            partial,
+            power_cut: true,
+        });
+    }
+
+    /// Power was lost at an armed write this boot.
+    pub fn power_lost(&self) -> bool {
+        self.device.media.power_lost().get()
     }
 
     /// Disarm a storage fault `fail_storage` armed that has not fired.
@@ -995,9 +1050,11 @@ impl Sim {
             NoteKind::Device,
             format!("bulk media fails after {after} writes"),
         );
-        self.device
-            .bulk
-            .fail(crate::bulk::BulkFault { after, partial });
+        self.device.bulk.fail(crate::bulk::BulkFault {
+            after,
+            partial,
+            power_cut: false,
+        });
     }
 
     /// Explicitly format the bulk ride log, as a host would, and wait for it.

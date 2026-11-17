@@ -24,11 +24,13 @@ pub enum Presence {
 }
 
 /// Fail the write after `after` succeed: `partial` bytes reach the sector,
-/// then the controller stays failed until the next boot.
+/// then the controller stays failed until the next boot. With `power_cut`
+/// the device lost power there, and internal flash fails with it.
 #[derive(Clone, Copy, Debug)]
 pub struct BulkFault {
     pub after: u32,
     pub partial: usize,
+    pub power_cut: bool,
 }
 
 #[derive(Clone)]
@@ -38,6 +40,7 @@ struct Region {
     written: HashMap<u64, Box<[u8; SECTOR_SIZE]>>,
     fault: Option<BulkFault>,
     failed: bool,
+    lost: crate::storage::PowerLost,
     reads: u64,
     writes: u64,
     /// Entropy state; it survives reboots like a hardware source would not repeat.
@@ -68,6 +71,7 @@ impl Default for SimBulk {
                 written: HashMap::new(),
                 fault: None,
                 failed: false,
+                lost: Default::default(),
                 reads: 0,
                 writes: 0,
                 entropy: 0x5eed,
@@ -117,18 +121,20 @@ impl SimBulk {
 
     pub fn from_image(image: Image) -> Self {
         let bulk = Self::default();
-        {
-            let mut region = bulk.region.borrow_mut();
-            region.presence = image.presence;
-            region.sectors = image.sectors;
-            region.entropy = image.entropy;
-            region.written = image
-                .written
-                .into_iter()
-                .map(|(sector, bytes)| (sector, Box::new(bytes)))
-                .collect();
-        }
+        bulk.restore(&image);
         bulk
+    }
+
+    pub fn restore(&self, image: &Image) {
+        let mut region = self.region.borrow_mut();
+        region.presence = image.presence;
+        region.sectors = image.sectors;
+        region.entropy = image.entropy;
+        region.written = image
+            .written
+            .iter()
+            .map(|&(sector, bytes)| (sector, Box::new(bytes)))
+            .collect();
     }
 
     /// A separate region holding the same sectors and state.
@@ -157,6 +163,7 @@ impl SimBulk {
             region.presence = Presence::Ready;
             region.fault = None;
             region.failed = false;
+            region.lost = Default::default();
         }
         Self::on(copy.region, Actor::Host)
     }
@@ -179,6 +186,7 @@ impl SimBulk {
         region.script = Some(VecDeque::new());
         region.fault = None;
         region.failed = false;
+        region.lost = Default::default();
         drop(region);
         copy
     }
@@ -220,6 +228,10 @@ impl SimBulk {
 
     pub fn fail(&self, fault: BulkFault) {
         self.region.borrow_mut().fault = Some(fault);
+    }
+
+    pub(crate) fn share_power(&self, lost: crate::storage::PowerLost) {
+        self.region.borrow_mut().lost = lost;
     }
 
     /// Power returns: the controller recovers and faults clear.
@@ -310,6 +322,7 @@ impl SimBulk {
                 .position(|f| (f.attempt, f.op, f.at) == (attempt, op, sector))
                 .and_then(|index| script.remove(index)),
             None => match region.presence {
+                _ if region.lost.get() => Some(failure(Error::Unavailable)),
                 Presence::Absent => Some(failure(Error::Unsupported)),
                 Presence::Missing => Some(failure(Error::Unavailable)),
                 Presence::Ready if region.failed => Some(failure(Error::Failed)),
@@ -384,6 +397,8 @@ impl SimBulk {
         if let Some(fault) = region.fault.as_mut() {
             if fault.after == 0 {
                 let partial = fault.partial.min(SECTOR_SIZE);
+                let power_cut = fault.power_cut;
+                region.lost.set(power_cut);
                 region.fault = None;
                 region.failed = true;
                 if self.actor == Actor::Device {

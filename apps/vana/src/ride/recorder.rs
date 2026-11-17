@@ -46,6 +46,7 @@ enum Pending {
     Ride(Action, u64, u32),
     Initialize(u32),
     Clear(u32),
+    Wipe(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,7 +282,7 @@ impl Recorder {
         Ok(())
     }
 
-    pub fn clear(&mut self, expected_upper: usize, token: u32) -> Result<(), Refused> {
+    fn clearable(&self, expected_upper: usize) -> Result<(), Refused> {
         if self.status == Status::Foreign {
             return Err(Refused::Foreign);
         }
@@ -294,10 +295,60 @@ impl Recorder {
         ) {
             return Err(Refused::State);
         }
+        Ok(())
+    }
+
+    pub fn clear(&mut self, expected_upper: usize, token: u32) -> Result<(), Refused> {
+        self.clearable(expected_upper)?;
         self.pending = Some(Pending::Clear(token));
         self.step = 0;
         self.status = Status::Clearing;
         Ok(())
+    }
+
+    /// Hold a Clear's token while something else wipes this journal;
+    /// `wiped` completes it.
+    pub fn await_wipe(&mut self, expected_upper: usize, token: u32) -> Result<(), Refused> {
+        self.clearable(expected_upper)?;
+        self.pending = Some(Pending::Wipe(token));
+        Ok(())
+    }
+
+    /// The journal was wiped: it holds no rides, and a Clear waiting on the
+    /// wipe completes.
+    pub fn wiped(&mut self) {
+        self.emptied();
+        self.end_wipe(true);
+    }
+
+    /// The wipe stopped short, and a Clear waiting on it fails.
+    pub fn wipe_failed(&mut self) {
+        self.end_wipe(false);
+    }
+
+    fn end_wipe(&mut self, ok: bool) {
+        if let Some(Pending::Wipe(token)) = self.pending {
+            self.pending = None;
+            self.result = Some(ResultEvent {
+                action: None,
+                token,
+                ok,
+            });
+        }
+    }
+
+    fn emptied(&mut self) {
+        self.catalog = Catalog {
+            next_ride_id: 1,
+            ..Catalog::default()
+        };
+        self.ride_id = 0;
+        self.sequence = 0;
+        self.accumulated_ms = 0;
+        self.committed_ms = 0;
+        self.open_ride = false;
+        self.sample_count = 0;
+        self.status = Status::Ready;
     }
 
     /// A lap closed: a sample this ride stores, after those of laps already
@@ -451,7 +502,7 @@ impl Recorder {
         if let Some(Pending::Initialize(_)) = self.pending {
             return false;
         }
-        if let Some(Pending::Clear(_)) = self.pending {
+        if let Some(Pending::Clear(_) | Pending::Wipe(_)) = self.pending {
             return false;
         }
         if let Some(Pending::Ride(action, action_ms, token)) = self.pending {
@@ -651,17 +702,7 @@ impl Recorder {
         };
         if ok {
             self.slots = journal.slots();
-            self.catalog = Catalog {
-                next_ride_id: 1,
-                ..Catalog::default()
-            };
-            self.ride_id = 0;
-            self.sequence = 0;
-            self.accumulated_ms = 0;
-            self.committed_ms = 0;
-            self.open_ride = false;
-            self.sample_count = 0;
-            self.status = Status::Ready;
+            self.emptied();
         } else {
             self.status = Status::Error;
         }

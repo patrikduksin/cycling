@@ -282,3 +282,39 @@ fn a_deleted_ride_leaves_the_list_the_count_the_week_and_the_phone() {
     home_frame(&mut sim);
     assert_eq!(rides_line(&sim), "WEEK 9 KM", "hidden after a restart");
 }
+
+fn ride_status_field(status: &str, name: &str) -> String {
+    status
+        .split_whitespace()
+        .find_map(|f| f.strip_prefix(name).and_then(|f| f.strip_prefix('=')))
+        .unwrap_or_else(|| panic!("{name} in {status}"))
+        .to_string()
+}
+
+#[test]
+fn a_clear_whose_card_refuses_the_forget_reports_failed() {
+    let mut sim = rider("clear_forget_refused", true);
+    ride(&mut sim, 0.0, 0.0, seconds(30));
+    sim.home("RIDES");
+    sim.advance(seconds(5));
+    sim.press(Button::BottomRight);
+    to_delete_page(&mut sim);
+    sim.press(Button::BottomRight);
+    sim.wait_for("RIDE DELETED", seconds(5)).unwrap();
+    assert_eq!(hidden(&mut sim).len(), 1);
+    sim.press(Button::TopLeft);
+    while !sim.on_home() {
+        sim.press(Button::TopLeft);
+    }
+
+    let (_, status) = sim.command("RIDE INTERNAL STATUS");
+    let slots = ride_status_field(&status, "slot");
+    sim.fail_bulk(0, 0);
+    let (reply, out) = sim.command(&format!("RIDE CLEAR CONFIRM {slots}"));
+    assert_eq!(reply, "ACCEPTED", "{out}");
+    let token = ride_status_field(&out, "token");
+    sim.advance(seconds(10));
+    let (_, status) = sim.command("RIDE INTERNAL STATUS");
+    assert_eq!(ride_status_field(&status, "completed"), token, "{status}");
+    assert_eq!(ride_status_field(&status, "result"), "FAILED", "{status}");
+}

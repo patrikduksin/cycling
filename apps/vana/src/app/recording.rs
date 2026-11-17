@@ -378,6 +378,17 @@ impl Ride {
         self.pending_token().is_some()
     }
 
+    /// The wipe a host's Clear waits on stopped short. Storage stays held,
+    /// so `record` will not pass the outcome on: it goes to the host here.
+    pub(super) fn wipe_failed(&mut self) {
+        self.internal.wipe_failed();
+        if let Some(result) = self.internal.take_result()
+            && matches!(self.host, Request::Pending(token) if token == result.token)
+        {
+            self.host = Request::Completed(result);
+        }
+    }
+
     /// The token of the queued operation, whichever actor asked for it.
     pub(super) fn pending_token(&self) -> Option<u32> {
         match (self.host, self.request) {
@@ -553,6 +564,11 @@ impl Ride {
             next: u32::try_from(next).unwrap_or(u32::MAX),
             last,
         }
+    }
+
+    pub(super) fn forget_moved_ride(&mut self) {
+        self.carried_ms = 0;
+        self.moved = false;
     }
 
     /// The card's ride log where its boot scan ended. A scan that could not
@@ -789,27 +805,26 @@ impl Runtime {
         if ride.scanned.bulk.is_none() && ride.bulk.status() != Status::Scanning {
             ride.scanned.bulk = Some(ride.bulk_at_boot());
         }
-        // Clearing or initializing internal flash removes the ride a moved
-        // ride continued as, and with it the bulk time carried into it.
         if internal_reset && !resetting(ride.internal.status()) {
-            ride.carried_ms = 0;
-            ride.moved = false;
+            ride.forget_moved_ride();
         }
-        // A cleared or initialized journal numbers its rides from 1 again:
-        // its old workout records and facts would name rides that are gone.
-        // One that failed keeps its rides and their ids.
         for (reset, medium) in [
             (internal_reset, Medium::Internal),
             (bulk_reset, Medium::Bulk),
         ] {
-            if reset && ride.recorder(medium).status() == Status::Ready {
-                if let Err(error) = crate::workout::history::forget(bulk, medium.journal()) {
-                    log::warn!(target: "sdk.workout", "history_forget_failed error={}", error.name());
-                }
-                self.facts.forget(bulk, medium);
-                self.deleted.forget(bulk, medium, now);
+            if reset && self.ride.recorder(medium).status() == Status::Ready {
+                // The reset has reported its outcome already; a card that
+                // refuses keeps the old records, as a card that is out does.
+                let _ = crate::kept::forget_journal(
+                    &mut self.facts,
+                    &mut self.deleted,
+                    bulk,
+                    medium,
+                    now,
+                );
             }
         }
+        let ride = &mut self.ride;
         if let Some(paused) = lost_paused
             && matches!(ride.bulk.status(), Status::Error | Status::Full)
         {

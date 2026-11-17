@@ -125,6 +125,8 @@ pub enum Error {
     Table,
 }
 
+crate::kept::card_error!(Error);
+
 impl From<volume::Error> for Error {
     fn from(error: volume::Error) -> Self {
         Self::Volume(error)

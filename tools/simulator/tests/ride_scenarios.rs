@@ -3594,8 +3594,8 @@ fn clearing_the_internal_journal_drops_a_moved_rides_carried_time() {
     sim.advance(seconds(10));
     let (_, internal) = sim.command("RIDE INTERNAL STATUS");
     assert_eq!(status_field(&internal, "slot"), "0", "{internal}");
+    assert!(sim.on_home(), "the Clear ends on the first page");
     sim.checkpoint("internal journal cleared after a moved ride: no carried time");
-    assert_eq!(sim.screen().elapsed().unwrap(), "0:00:00");
     let (_, status) = sim.command("RIDE STATUS");
     assert_eq!(status_field(&status, "moved"), "0", "{status}");
 }

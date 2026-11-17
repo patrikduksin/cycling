@@ -31,18 +31,20 @@ impl Health {
     }
 }
 
+/// The discriminants are persisted: each is a store's bit in the intent
+/// journal's `Scope`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Store {
-    Table,
-    Rides,
-    Files,
+    Table = 0,
+    Rides = 1,
+    Files = 2,
     /// The tables VANA writes into FILES: facts, deleted rides, bests and
     /// workout outcomes.
-    Records,
+    Records = 3,
     /// The STORE volume.
-    Traces,
-    Internal,
-    Settings,
+    Traces = 4,
+    Internal = 5,
+    Settings = 6,
 }
 
 impl Store {

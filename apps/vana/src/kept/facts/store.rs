@@ -4,7 +4,7 @@
 //! kept and every reader shows what it did before: stress at the FTP now, no
 //! HR recovery and no climbs.
 use super::record::{Error, Facts, Piece, Record, Shelf, forget, read, save};
-use crate::kept::RETRY_MS;
+use crate::kept::{CardRefused, RETRY_MS};
 use crate::ride::medium::Medium;
 use crate::ride::recovery::Reading;
 use device_api::bulk::ReadWrite;
@@ -104,7 +104,11 @@ impl Kept {
     }
 
     /// A cleared or initialized journal numbers its rides from 1 again.
-    pub(crate) fn forget(&mut self, bulk: &mut impl ReadWrite, medium: Medium) {
+    pub(crate) fn forget(
+        &mut self,
+        bulk: &mut impl ReadWrite,
+        medium: Medium,
+    ) -> Result<(), CardRefused> {
         let journal = medium.journal();
         if let Some(shelf) = &mut self.shelf {
             shelf.forget(journal);
@@ -115,9 +119,10 @@ impl Kept {
             self.awaiting = None;
         }
         self.changed();
-        if let Err(error) = forget(bulk, journal) {
+        forget(bulk, journal).or_else(|error| {
             log::warn!(target: "sdk.facts", "forget_failed error={error:?}");
-        }
+            crate::kept::refusal(error)
+        })
     }
 
     /// Follow the summary's heart-rate recovery for the ride just saved, and
@@ -353,9 +358,9 @@ mod tests {
             awaiting: Some(Awaiting::Measuring(internal)),
             ..kept()
         };
-        kept.forget(&mut region, Medium::Bulk);
+        let _ = kept.forget(&mut region, Medium::Bulk);
         assert!(kept.awaiting.is_some());
-        kept.forget(&mut region, Medium::Internal);
+        let _ = kept.forget(&mut region, Medium::Internal);
         assert_eq!(kept.awaiting, None);
     }
 }

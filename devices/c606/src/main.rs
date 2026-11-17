@@ -412,6 +412,7 @@ async fn console(
             );
         }
         if sdk.restart_due() {
+            trace.sync(&mut devices.bulk, now);
             commands::Diagnostics::restart(&FirmwareDiagnostics, false);
         }
         if let Some(panic) = terminal.reboot_due(now) {
@@ -625,7 +626,7 @@ fn traced_pass(
     trace.log.record(&trace.record);
     trace.seen(sdk, system.take_frame(), now);
     stage_ended(Stage::Seen);
-    if sdk.owns_storage() {
+    if sdk.wipes_traces() {
         trace.storage_formatted();
     }
     trace.drain(

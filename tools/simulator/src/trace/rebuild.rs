@@ -425,19 +425,21 @@ fn ends(slot: &[u8; SLOT_SIZE]) -> Option<u32> {
         .map(|entry| entry.ride_id)
 }
 
-/// The shell's settings record and the internal journal's slots.
+/// The intent region stays blank: the header does not record it.
 fn internal_flash(boot: u32, settings: &[u8], journal: Option<&[u8]>) -> Result<FileFlash, String> {
     let blank = FileFlash::memory();
     let (settings, _) = firmware_shell::preferences::decode(Some(settings));
     firmware_shell::storage::Store::new(blank.untapped())
         .save(settings)
         .map_err(|error| format!("the settings do not save: {error:?}"))?;
-    let (_, configuration, mut data) = blank.image().expect("memory media");
+    let (_, mut image) = blank.image().expect("memory media");
     let journal = journal.unwrap_or_default();
-    data.get_mut(..journal.len())
+    image
+        .data
+        .get_mut(..journal.len())
         .ok_or("the internal journal is larger than its region")?
         .copy_from_slice(journal);
-    Ok(FileFlash::from_image(boot - 1, configuration, data))
+    Ok(FileFlash::from_image(boot - 1, image))
 }
 
 /// The log of `log`'s epoch holding `slots`, checkpointed as VANA does

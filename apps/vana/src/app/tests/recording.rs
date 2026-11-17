@@ -1477,7 +1477,7 @@ fn riding_off_auto_starts_and_storage_not_ready_does_not() {
     // Storage still scanning: the request is refused and reported, not forced.
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     on_ride_page(&mut runtime);
     radio.connected(SPEED, 0);
     let mut wheel = Wheel { time: 0, count: 0 };
@@ -1858,7 +1858,7 @@ fn a_ride_moving_to_internal_flash_counts_as_active_work() {
         sectors: std::collections::BTreeMap::new(),
         fail: false,
     };
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     let mut now = 0;
     while runtime.ride.internal.status() == Status::Scanning
         || runtime.ride.bulk.status() == Status::Scanning
@@ -1913,7 +1913,7 @@ fn rides_falling_back_to_internal_flash_carry_a_warning_toast() {
         sectors: std::collections::BTreeMap::new(),
         fail: false,
     };
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     let mut now = 0;
     while runtime.ride.internal.status() == Status::Scanning
         || runtime.ride.bulk.status() == Status::Scanning
@@ -1981,7 +1981,7 @@ fn a_continuation_waits_for_internal_recovery_to_close_the_interrupted_ride() {
     };
     let mut out = String::new();
     // An internal ride is open when the power fails; the MMC holds a store.
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     let mut now = 0;
     while runtime.ride.internal.status() == Status::Scanning
         || runtime.ride.bulk.status() == Status::Scanning
@@ -2013,7 +2013,7 @@ fn a_continuation_waits_for_internal_recovery_to_close_the_interrupted_ride() {
     assert_eq!(runtime.ride.internal.status(), Status::Recording);
 
     // After the restart the MMC is ready first, and a ride starts there.
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     let mut now = 0;
     while runtime.ride.bulk.status() == Status::Scanning {
         now += 250;
@@ -2109,7 +2109,7 @@ fn a_failed_host_pause_on_mmc_is_the_hosts_and_the_ride_continues_internally() {
         sectors: std::collections::BTreeMap::new(),
         fail: false,
     };
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     let mut now = 0;
     while runtime.ride.internal.status() == Status::Scanning
         || runtime.ride.bulk.status() == Status::Scanning

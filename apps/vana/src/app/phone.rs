@@ -426,7 +426,7 @@ impl Runtime {
         bulk: &mut impl ReadWrite,
         now: u64,
     ) {
-        if self.format.owns_storage() {
+        if self.format.holds_storage() {
             return;
         }
         // Wrapped as `tick` wraps them, so the storage code both reach is

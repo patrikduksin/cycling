@@ -608,6 +608,35 @@ fn a_trace_outside_the_fixtures_gets_the_steps_that_make_it_one() {
 }
 
 #[test]
+fn an_origin1_origin_is_named_on_load_and_upgrades_to_replay_exactly() {
+    let dir = std::env::temp_dir().join(format!("trace-origin1-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let trace = dir.join("laps-and-a-menu.trace");
+    std::fs::copy(fixture("laps-and-a-menu"), &trace).unwrap();
+    let saved_before_the_intent_region =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/traces/origin1/laps-and-a-menu.origin");
+    std::fs::copy(saved_before_the_intent_region, file::origin_path(&trace)).unwrap();
+    let error = file::load(&trace)
+        .err()
+        .expect("an ORIGIN1 origin is refused");
+    assert!(
+        error.to_string().contains("ORIGIN1") && error.to_string().contains("upgrade"),
+        "{error}"
+    );
+    assert!(file::upgrade(&trace).unwrap(), "upgraded");
+    assert!(!file::upgrade(&trace).unwrap(), "upgraded once");
+    assert_eq!(
+        std::fs::read(file::origin_path(&trace)).unwrap(),
+        std::fs::read(file::origin_path(&fixture("laps-and-a-menu"))).unwrap(),
+        "as this build saves it"
+    );
+    let (capture, _) = file::load(&trace).unwrap();
+    let report = Sim::replay(&capture).device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn a_stimulus_replay_of_a_fixture_shows_what_the_recording_showed() {
     let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
     let sim = Sim::replay_as(&capture, Mode::Stimulus, |_| {});

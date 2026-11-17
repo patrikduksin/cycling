@@ -174,7 +174,7 @@ impl RecorderTap for Tap {
 /// whole, and the files of those volumes by name and bytes.
 pub fn media(flash: &mut FileFlash, bulk: &SimBulk) -> String {
     let mut digest = Sha256::new();
-    for region in [Region::Configuration, Region::Data] {
+    for region in [Region::Configuration, Region::Data, Region::Intent] {
         fold(&mut digest, b'f', &flash.contents(region));
     }
     let image = bulk.image();

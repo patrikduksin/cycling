@@ -92,23 +92,74 @@ version from its own torn appends, so data it cannot read is `foreign`, raises
 the offer, and only FORMAT erases it.
 
 From its first write until the restart, the wipe owns storage: no ride starts
-(`STORAGE NOT READY`), the trace file ends, and storage commands answer
-`BUSY`. Once it erases the settings, nothing saves them until the restart.
+(`STORAGE NOT READY`) and storage commands answer `BUSY`; `RIDE STATUS`
+still answers. The trace file ends only when the wipe takes `STORE`; the
+trace writes nothing else, so it goes on through any other wipe. Once it erases the settings, nothing
+saves them until the restart. A wipe of the internal journal alone ends
+without a restart: the journal starts empty and the first page shows.
 
-A power cut during the wipe never touches a store it was not for. The internal
-journal, the settings and the records in `FILES` read foreign until their wipe
-is done, so a cut there leads back to the offer. The table is written after
-the terrain pack is erased, so a cut between still finds the old table. A cut
-inside the `RIDES`, `FILES` or `STORE` wipe can leave that volume blank, and
-one inside the `RIDES` wipe can leave a corrupt ride log: neither raises the
-offer again, and `RIDE BULK INIT`, `FILES FORMAT CONFIRM` or
-`STORE FORMAT CONFIRM` starts it.
-A wipe whose write fails stops and shows the ready page with
-`STORAGE NOT FORMATTED`; the next boot offers it again for whatever still
-reads foreign.
+Before its first write, the wipe records which stores it takes in the
+intent journal, and it settles that journal only after its last stage. A power cut during the wipe never touches
+a store it was not for, and the next boot finishes it. Until a boot has read
+the intent, no ride starts, no question is asked and storage commands answer
+`BUSY`. With a wipe due, the boot programs the commit word of every pending
+record that reads whole again, in place, and reads each back (a recommit).
+It runs the wipe's stages only once every recommit returned, once storage
+has been read, and restarts, or for the internal journal alone, shows the
+first page. A boot that cannot read or recommit the intent tries again each
+pass, as one that cannot read it does. A card that is missing or failing
+when the wipe resumes is left out of it, as `FORMAT CONFIRM` leaves it out,
+so the boot-flash stores still go. The screen goes from the brand
+to `CHECKING STORAGE`, unless the wipe is done before the brand ends, and to
+first-run setup afterwards only when the settings went. Every stage converges
+from any cut state of itself. A cut before the intent is recorded leaves
+everything as it was, and the offer comes back. `RIDE CLEAR CONFIRM` on the
+internal journal runs this wipe for the journal alone, so a Clear cut by
+power is finished at the next boot and never reads as another version's.
+
+A wipe of the internal journal also forgets what `FILES` records of its rides
+(workout outcomes, facts and deleted rides), since its next rides number from
+1 again, unless `FILES` goes in the same wipe. A card that is missing,
+foreign or unusable during the wipe keeps those records, and a new ride of
+the same number, start and length may show as deleted. A card that refuses
+a read or write while the records go fails the wipe, as any card stage does,
+and the records it kept do the same.
+
+A wipe whose write fails, as a dead card's does, settles the intent, stops
+and shows the ready page with `STORAGE NOT FORMATTED`, and a Clear waiting
+on it completes with `result=FAILED`; the next boot offers
+it again for whatever still reads foreign. Only a wipe that ended this boot
+settles: one whose intent could not be recorded, or a boot that cannot read
+the intent, leaves it for the next boot. A boot that still cannot read the
+intent once storage has been read shows the same ready page, and a power
+cycle reads it again.
+
+The intent journal is two sectors of internal flash at `0x1C000`, below the
+crash record, outside every store. Its one record is a version byte and the
+set of stores still to wipe, empty when none is due. A wipe is due when
+either sector holds a committed record that names a store: a commit word cut
+by power may read whole on one boot and torn on the next, so the newest
+record alone does not decide.
+
+Stages run only behind a commit that completed: the begin's own, or a
+recommit. NOR programming only clears bits, so programming the same commit
+word over a marginal one completes it and changes nothing else, and a
+completed commit never reads torn later. A record that a boot reads torn
+therefore had no stage behind it, and dropping it drops a wipe that never
+began. A begin never saves beside a pending record, since a save erases a
+sector that may hold its only copy: it recommits the pending records and
+runs them when they cover what it was asked for, and otherwise records
+nothing and fails. A settle leaves both sectors blank or idle.
+
+The intent journal is the deliberate exception to the rule on foreign data: bytes it cannot read, the
+stock image's or another version's, read as no wipe due, and every boot
+writes over them. `FORMAT CONFIRM` never wipes it, and flash and rollback
+never write it; a full stock restore (`cycling stock --confirm-restore`)
+writes the backup's `0xff` over it.
 
 The code is `apps/vana/src/app/storage.rs` (what each store holds) and
-`apps/vana/src/app/format.rs` (the offer and the wipe). The only functions that
+`apps/vana/src/app/format.rs` (the offer and the wipe), and
+`apps/vana/src/app/intent.rs` (the intent journal). The only functions that
 write over a foreign store are `erase` in the sector log, files, store and
 pack, `volume::replace`, `ride::bulk::wipe`, `ride::journal::wipe_sector` and
 the settings journal's `erase`.
@@ -157,7 +208,8 @@ owner closes the card from the moment it accepts a power request until
 the device is ready again, and in charging standby, so the trace touches
 the card only while it is open: it stages at the first such pass, and the
 file opens once VANA's boot scans end, so the header can name the media
-they found. A pass drains one record into it while a ride records, and up
+they found. The header is synced as the file is made, so a file cut off at
+once still decodes. A pass drains one record into it while a ride records, and up
 to 16 otherwise, to keep up with a phone upload; the file syncs every
 5 s, before a transfer session, a restart and a terminal power request,
 and in the pass before VANA asks to turn off: the file ends with the pass

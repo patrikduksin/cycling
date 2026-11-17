@@ -17,11 +17,8 @@ const NOW: u64 = 5_000;
 
 /// Home drawn at `NOW`, with nothing to do.
 fn still_home() -> (Runtime, Screen, Radio) {
-    let (mut runtime, mut screen, mut radio) = (
-        Runtime::new(Profile::HeartRate),
-        Screen::new(),
-        Radio::new(),
-    );
+    let (mut runtime, mut screen, mut radio) =
+        (booted(Profile::HeartRate), Screen::new(), Radio::new());
     runtime.navigation.page = Page::Home;
     // The first pass looks for the ride journal; later ones read nothing.
     advance(&mut runtime, &mut radio, NOW - 10);

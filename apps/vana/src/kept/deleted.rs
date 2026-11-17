@@ -40,7 +40,7 @@
 //!
 //! `Hidden` reads the table onto the shelf the composition lends (PSRAM on the
 //! device) once after boot, and again each time the card becomes ready.
-use super::RETRY_MS;
+use super::{CardRefused, RETRY_MS};
 use crate::ride::log::Summary;
 use crate::ride::medium::Medium;
 use crate::ride::{Contents, another_version};
@@ -128,6 +128,8 @@ pub enum Error {
     /// The table holds [`KEEP`] rides.
     Full,
 }
+
+crate::kept::card_error!(Error);
 
 impl From<volume::Error> for Error {
     fn from(error: volume::Error) -> Self {
@@ -656,17 +658,26 @@ impl Hidden {
 
     /// A cleared or initialized journal numbers its rides from 1 again. A
     /// table not read yet is read first, so its records of that journal go.
-    pub(crate) fn forget(&mut self, bulk: &mut impl ReadWrite, medium: Medium, now: u64) {
+    /// A table that cannot be read must not block a Clear: it keeps them and
+    /// is read again later.
+    pub(crate) fn forget(
+        &mut self,
+        bulk: &mut impl ReadWrite,
+        medium: Medium,
+        now: u64,
+    ) -> Result<(), CardRefused> {
         if matches!(self.scan, Scan::Unread | Scan::Retry { .. }) {
             self.read(bulk, now);
         }
         let Some(shelf) = self.shelf.as_mut().filter(|_| self.scan == Scan::Read) else {
-            return;
+            return Ok(());
         };
-        if let Err(error) = forget(bulk, shelf, medium.journal()) {
-            log::warn!(target: "sdk.deleted", "forget_failed error={error:?}");
-        }
+        let forgot = forget(bulk, shelf, medium.journal());
         self.revision = self.revision.wrapping_add(1);
+        forgot.or_else(|error| {
+            log::warn!(target: "sdk.deleted", "forget_failed error={error:?}");
+            super::refusal(error)
+        })
     }
 
     /// Read the table when it is due and no ride is being written. A card
@@ -839,6 +850,26 @@ mod hidden_tests {
             !none.writable() && none.hides(&record(4).ride),
             "card pulled"
         );
+    }
+
+    #[test]
+    fn a_table_that_does_not_read_is_read_again_later_and_refuses_no_clear() {
+        use device_api::bulk::{Error as MediaError, OwnedInfo};
+        struct Unreadable;
+        impl ReadWrite for Unreadable {
+            fn owned_info(&mut self) -> Result<OwnedInfo, MediaError> {
+                crate::workout::library::tests::Region::default().owned_info()
+            }
+            fn owned_read(&mut self, _: u64, _: &mut [u8; SECTOR_SIZE]) -> Result<(), MediaError> {
+                Err(MediaError::Failed)
+            }
+            fn owned_write(&mut self, _: u64, _: &[u8; SECTOR_SIZE]) -> Result<(), MediaError> {
+                Err(MediaError::Failed)
+            }
+        }
+        let mut kept = hidden();
+        assert_eq!(kept.forget(&mut Unreadable, Medium::Internal, 0), Ok(()));
+        assert!(matches!(kept.scan, Scan::Retry { .. }), "{:?}", kept.scan);
     }
 
     #[test]

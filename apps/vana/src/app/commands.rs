@@ -5,8 +5,10 @@
 //! ride uses, while `INIT`, `CLEAR` and `EXPORT` keep addressing the internal
 //! journal, so existing tools never act on bulk media by accident.
 use super::Runtime;
+use super::format::Event;
 use super::pace::Touched;
 use super::recording::Request;
+use super::{Scope, Store};
 use crate::ride::journal::Read;
 use crate::ride::log::{SLOT_SIZE, Slot, VERSION, transport_checksum};
 use crate::ride::medium::Medium;
@@ -25,6 +27,26 @@ use firmware_shell::shell::Shell;
 /// Terminal replies older than this report no current sensor reading.
 const SENSOR_REPLY_FRESH_MS: u64 = 3000;
 
+#[derive(Clone, Copy)]
+enum NotQueued {
+    Busy,
+    Output,
+    Foreign,
+    State,
+}
+
+impl NotQueued {
+    fn reply(queued: Result<(), Self>) -> &'static str {
+        match queued {
+            Ok(()) => "ACCEPTED",
+            Err(Self::Busy) => "BUSY",
+            Err(Self::Output) => "OUTPUT",
+            Err(Self::Foreign) => "FOREIGN",
+            Err(Self::State) => "STATE",
+        }
+    }
+}
+
 impl Runtime {
     /// Single-line payload for the ordinary terminal's correlated reply.
     /// Mutations return ACCEPTED; RIDE STATUS reports the retained completion.
@@ -42,27 +64,32 @@ impl Runtime {
         if let Some(argument) = words.strip_prefix("FORMAT") {
             return self.format_command(argument.trim(), now, output);
         }
-        if self.format.owns_storage() {
+        let mut parts = words.split_ascii_whitespace().peekable();
+        let domain = parts.next();
+        let named = match parts.peek() {
+            Some(&"BULK") => Some(Medium::Bulk),
+            Some(&"INTERNAL") => Some(Medium::Internal),
+            _ => None,
+        };
+        if named.is_some() {
+            parts.next();
+        }
+        let operation = parts.next();
+        let argument = parts.next();
+        let bound = parts.next();
+        let more = parts.next().is_some();
+        // `RIDE [BULK|INTERNAL] STATUS` reads no storage, so a host
+        // following a Clear reads it while the wipe holds storage.
+        let status = (domain, operation, argument, bound, more)
+            == (Some("RIDE"), Some("STATUS"), None, None, false);
+        if self.format.holds_storage() && !status {
             return "BUSY";
         }
         let mut workout = words.split_ascii_whitespace();
         if workout.next() == Some("WORKOUT") {
             return self.workout_command(&mut workout, bulk, now, output);
         }
-        let mut words = words.split_ascii_whitespace().peekable();
-        let domain = words.next();
-        let named = match words.peek() {
-            Some(&"BULK") => Some(Medium::Bulk),
-            Some(&"INTERNAL") => Some(Medium::Internal),
-            _ => None,
-        };
-        if named.is_some() {
-            words.next();
-        }
-        let operation = words.next();
-        let argument = words.next();
-        let bound = words.next();
-        if words.next().is_some() {
+        if more {
             return "INVALID";
         }
         if domain == Some("PHONE") {
@@ -85,9 +112,15 @@ impl Runtime {
             if !self.verified_store(stored) {
                 return "STATE";
             }
-            return self.submit(stored, output, |recorder, token| {
-                recorder.clear(bound, token)
-            });
+            if !self.format.admits_rides() {
+                return "BUSY";
+            }
+            if stored == Medium::Bulk {
+                return self.submit(stored, output, |recorder, token| {
+                    recorder.clear(bound, token)
+                });
+            }
+            return NotQueued::reply(self.clear_internal(bound, now, output));
         }
         if bound.is_some() {
             return "INVALID";
@@ -148,6 +181,22 @@ impl Runtime {
         }
     }
 
+    fn clear_internal(
+        &mut self,
+        bound: usize,
+        now: u64,
+        output: &mut impl Write,
+    ) -> Result<(), NotQueued> {
+        if self.ride.open() {
+            return Err(NotQueued::State);
+        }
+        self.queue(Medium::Internal, output, |recorder, token| {
+            recorder.await_wipe(bound, token)
+        })?;
+        self.format_event(Event::Confirm(Scope::one(Store::Internal)), now);
+        Ok(())
+    }
+
     /// Queue a recorder mutation, reporting its token before changing state so
     /// an undersized reply cannot hide that a command was queued. The host's
     /// previous outcome must be read first; a rider's never holds it up.
@@ -157,22 +206,32 @@ impl Runtime {
         output: &mut impl Write,
         start: impl FnOnce(&mut Recorder, u32) -> Result<(), Refused>,
     ) -> &'static str {
+        NotQueued::reply(self.queue(medium, output, start))
+    }
+
+    fn queue(
+        &mut self,
+        medium: Medium,
+        output: &mut impl Write,
+        start: impl FnOnce(&mut Recorder, u32) -> Result<(), Refused>,
+    ) -> Result<(), NotQueued> {
         if !matches!(self.ride.host, Request::Idle) || self.ride.pending() {
-            return "BUSY";
+            return Err(NotQueued::Busy);
         }
         if write!(output, "token={}", self.ride.next_token()).is_err() {
-            return "OUTPUT";
+            return Err(NotQueued::Output);
         }
-        match self.ride.submit_host(medium, start) {
-            Ok(()) => {}
-            Err(Refused::Foreign) => return "FOREIGN",
-            Err(Refused::State) => return "STATE",
-        }
+        self.ride
+            .submit_host(medium, start)
+            .map_err(|refused| match refused {
+                Refused::Foreign => NotQueued::Foreign,
+                Refused::State => NotQueued::State,
+            })?;
         // A host action replaces the rider's last notice, as a rider's does.
         if matches!(self.ride.request, Request::Completed(_)) {
             self.ride.request = Request::Idle;
         }
-        "ACCEPTED"
+        Ok(())
     }
 
     fn profile_command(

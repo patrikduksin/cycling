@@ -1,23 +1,12 @@
-use device_api::input::Button;
+mod wipes;
+
 use device_api::storage::Region;
-use firmware_services::volume::{self, Table};
+use firmware_services::volume::Table;
 use shell_simulator::bulk::Presence;
 use shell_simulator::sim::{Sim, seconds};
-use std::collections::BTreeMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
-use vana::app::{HOLD_GAP_MS, Store};
+use vana::app::Store;
 use vana::screens::workout::Page;
-
-const ACT: Button = Button::BottomRight;
-const BACK: Button = Button::TopLeft;
-const MOVE: Button = Button::BottomLeft;
-
-fn field<'a>(status: &'a str, name: &str) -> &'a str {
-    status
-        .split_whitespace()
-        .find_map(|f| f.strip_prefix(name).and_then(|f| f.strip_prefix('=')))
-        .unwrap_or_else(|| panic!("{name} in {status}"))
-}
+use wipes::*;
 
 fn device_with_foreign(name: &str, stores: &[Store]) -> Sim {
     let mut sim = Sim::named(name);
@@ -28,138 +17,6 @@ fn device_with_foreign(name: &str, stores: &[Store]) -> Sim {
     sim.make_foreign(stores);
     sim.cut_power();
     sim
-}
-
-fn flash(sim: &mut Sim) -> (Vec<u8>, Vec<u8>) {
-    (
-        sim.device.media.contents(Region::Configuration),
-        sim.device.media.contents(Region::Data),
-    )
-}
-
-struct Stored {
-    digests: BTreeMap<&'static str, u64>,
-    traces: BTreeMap<String, Vec<u8>>,
-}
-
-fn stored(sim: &mut Sim, table: &Table) -> Stored {
-    let mut traces = BTreeMap::new();
-    if let Some(names) = store_names(sim) {
-        for name in names {
-            let bytes = sim.store_file(&name).expect("a trace reads whole");
-            traces.insert(name, bytes);
-        }
-    }
-    let mut held: BTreeMap<_, DefaultHasher> = BTreeMap::new();
-    for (sector, bytes) in sim.device.bulk.image().written {
-        let name = match table
-            .volumes()
-            .find(|v| (v.start..v.start + v.sectors).contains(&sector))
-            .map(|v| v.name)
-        {
-            Some(volume::RIDES) => "rides",
-            Some(volume::FILES) => "files",
-            Some(volume::STORE) => "traces",
-            Some(volume::TERRAIN) => "terrain",
-            _ => "table",
-        };
-        (sector, bytes).hash(held.entry(name).or_default());
-    }
-    let (settings, internal) = flash(sim);
-    settings.hash(held.entry("settings").or_default());
-    internal.hash(held.entry("internal").or_default());
-    Stored {
-        digests: held
-            .into_iter()
-            .map(|(name, h)| (name, h.finish()))
-            .collect(),
-        traces,
-    }
-}
-
-fn store_names(sim: &mut Sim) -> Option<Vec<String>> {
-    use firmware_services::store;
-    let mut sector = [0u8; 512];
-    let mut media = sim.device.bulk.host();
-    let mut traces = volume::open(&mut media, &volume::STORE, &mut sector).ok()?;
-    let mounted = store::mount(&mut traces, &mut sector).ok()?;
-    let mut names = Vec::new();
-    mounted
-        .list(&mut traces, &store::Dir::ROOT, &mut sector, |entry| {
-            names.push(entry.name.as_str().to_string())
-        })
-        .ok()?;
-    Some(names)
-}
-
-fn held_in(store: Store) -> &'static str {
-    match store {
-        Store::Table => "table",
-        Store::Rides => "rides",
-        Store::Files | Store::Records => "files",
-        Store::Traces => "traces",
-        Store::Internal => "internal",
-        Store::Settings => "settings",
-    }
-}
-
-fn wiped_for(store: Store) -> &'static [&'static str] {
-    match store {
-        Store::Table => &["table", "terrain", "rides", "files", "traces"],
-        Store::Rides => &["rides"],
-        Store::Files | Store::Records => &["files"],
-        Store::Traces => &["traces"],
-        Store::Internal => &["internal"],
-        Store::Settings => &["settings"],
-    }
-}
-
-#[track_caller]
-fn assert_kept(before: &Stored, after: &Stored, stores: &[Store], what: &str) {
-    let wiped: Vec<&str> = stores
-        .iter()
-        .flat_map(|&store| wiped_for(store))
-        .copied()
-        .collect();
-    for (name, held) in &before.digests {
-        // The device's own trace keeps appending to STORE; its files are compared below.
-        if !wiped.contains(name) && *name != "traces" {
-            assert_eq!(
-                after.digests.get(name),
-                Some(held),
-                "{what}: {name} changed"
-            );
-        }
-    }
-    if !wiped.contains(&"traces") {
-        for (name, bytes) in &before.traces {
-            let kept = after.traces.get(name).is_some_and(|a| a.starts_with(bytes));
-            assert!(kept, "{what}: trace {name} changed");
-        }
-    }
-}
-
-fn wait_for_offer(sim: &mut Sim) {
-    sim.wait_for("FORMAT STORAGE?", seconds(20))
-        .expect("the offer");
-    sim.advance(2 * HOLD_GAP_MS);
-}
-
-fn wait_for_restart(sim: &mut Sim, boot: u32) {
-    for _ in 0..seconds(60) / 100 {
-        if sim.device.boot != boot {
-            sim.wait_usable();
-            return;
-        }
-        sim.advance(100);
-    }
-    panic!("no restart; screen:\n{}", sim.screen().text());
-}
-
-fn health(sim: &mut Sim) -> String {
-    let (status, health) = sim.command("FORMAT");
-    assert_eq!(status, "OK");
-    health
 }
 
 #[test]
@@ -236,7 +93,11 @@ fn act_over_a_ride_log_of_another_version_keeps_the_card_rides_and_the_settings(
     sim.checkpoint("the offer names the ride log");
     let boot = sim.device.boot;
     sim.press(ACT);
-    wait_for_restart(&mut sim, boot);
+    assert_eq!(
+        wait_for_the_wipe(&mut sim, boot),
+        WipeEnded::JournalEmptied,
+        "no restart"
+    );
     assert_eq!(sim.device.sdk.page(), Page::Home, "the settings are kept");
     assert_eq!(flash(&mut sim).0, settings, "the settings are kept");
     let health = health(&mut sim);
@@ -254,23 +115,7 @@ fn act_over_a_ride_log_of_another_version_keeps_the_card_rides_and_the_settings(
 }
 
 fn used_device_with_foreign(name: &str, stores: &[Store]) -> (Sim, Table) {
-    let mut sim = Sim::named(name);
-    sim.discard_recording();
-    sim.fit_bulk(Presence::Ready);
-    sim.format_rides();
-    sim.format_files();
-    sim.format_store();
-    sim.install_terrain(b"CHILE-TERRAIN-V1", &[7; 600]);
-    sim.put_file("workouts/a.vw", b"host file");
-    let table = sim.init_volumes();
-    let mut sim = sim.boot();
-    sim.start_ride();
-    sim.ride_at(30.0, 200.0, 140.0, 90.0);
-    sim.advance(seconds(30));
-    sim.stop_ride();
-    sim.done();
-    sim.make_foreign(stores);
-    sim.cut_power();
+    let (mut sim, table) = used_device(name, stores);
     wait_for_offer(&mut sim);
     (sim, table)
 }
@@ -282,7 +127,12 @@ fn act_writes_over_only_the_store_of_another_version() {
         let before = stored(&mut sim, &table);
         let boot = sim.device.boot;
         sim.press(ACT);
-        wait_for_restart(&mut sim, boot);
+        let ended = if store == Store::Internal {
+            WipeEnded::JournalEmptied
+        } else {
+            WipeEnded::Restarted
+        };
+        assert_eq!(wait_for_the_wipe(&mut sim, boot), ended, "{}", store.name());
         assert_kept(&before, &stored(&mut sim, &table), &[store], store.name());
         let health = health(&mut sim);
         assert_eq!(field(&health, "state"), "idle", "{health}");
@@ -424,71 +274,6 @@ fn a_terrain_pack_of_another_version_alone_raises_no_offer() {
     assert_eq!(field(&health(&mut sim), "state"), "idle");
 }
 
-fn wipe_cut_short(stores: &[Store], flash: bool, cut: u32) -> bool {
-    let what = format!("{stores:?} cut {cut} flash {flash}");
-    let (mut sim, table) = used_device_with_foreign("format-cut", stores);
-    let before = stored(&mut sim, &table);
-    if flash {
-        sim.fail_storage(cut, 2);
-    } else {
-        sim.fail_bulk(cut, 100);
-    }
-    let boot = sim.device.boot;
-    sim.press(ACT);
-    sim.advance(seconds(10));
-    let cut_short = sim.device.boot == boot;
-    if cut_short {
-        sim.cut_power();
-        if sim.wait_for("FORMAT STORAGE?", seconds(20)).is_ok() {
-            sim.advance(2 * HOLD_GAP_MS);
-            let boot = sim.device.boot;
-            sim.press(ACT);
-            wait_for_restart(&mut sim, boot);
-        }
-    }
-    assert_kept(&before, &stored(&mut sim, &table), stores, &what);
-    let health = health(&mut sim);
-    assert_eq!(field(&health, "state"), "idle", "{what}: {health}");
-    for store in Store::ALL {
-        let held = field(&health, store.name());
-        let wiped = stores
-            .iter()
-            .any(|&foreign| wiped_for(foreign).contains(&held_in(store)));
-        if wiped {
-            assert!(matches!(held, "current" | "blank"), "{what}: {health}");
-        } else {
-            assert_eq!(held, "current", "{what}: {health}");
-        }
-    }
-    let (_, bulk) = sim.command("RIDE BULK STATUS");
-    let rides_wiped = stores
-        .iter()
-        .any(|&foreign| wiped_for(foreign).contains(&"rides"));
-    let rides_log_cut_corrupt_427 = cut_short && rides_wiped && field(&bulk, "state") == "corrupt";
-    assert!(
-        matches!(field(&bulk, "state"), "ready" | "needs_init") || rides_log_cut_corrupt_427,
-        "{what}: {bulk}"
-    );
-    if stores.contains(&Store::Table) {
-        let (_, terrain) = sim.command("TERRAIN STATUS");
-        assert_eq!(field(&terrain, "state"), "empty", "{what}");
-    }
-    cut_short
-}
-
-#[test]
-fn a_wipe_cut_at_any_write_keeps_the_other_stores_and_leaves_none_foreign_or_unusable() {
-    let scopes = Store::ALL.map(|store| vec![store]).into_iter();
-    for stores in scopes.chain([Store::ALL.to_vec()]) {
-        for flash in [false, true] {
-            let mut cut = 0;
-            while wipe_cut_short(&stores, flash, cut) {
-                cut += 1;
-            }
-        }
-    }
-}
-
 #[test]
 fn a_wipe_that_fails_says_so_on_the_ready_page() {
     let mut sim = device_with_foreign("format-failed", &Store::ALL);
@@ -590,5 +375,445 @@ fn starts_torn_on_internal_flash_raise_no_offer_and_keep_the_card_rides() {
         sim.bulk_rides().len(),
         rides.len() + 1,
         "a new ride records"
+    );
+}
+
+#[test]
+fn a_resumed_clear_takes_the_brand_then_checking_storage_then_home() {
+    let (mut sim, slots) = device_with_a_full_internal_journal("clear-resumed");
+    sim.lose_power_at_flash_write(3, 128);
+    assert_eq!(
+        sim.command(&format!("RIDE CLEAR CONFIRM {slots}")).0,
+        "ACCEPTED"
+    );
+    sim.advance(seconds(10));
+    assert!(sim.power_lost());
+    let boot = sim.device.boot;
+    sim.cut_power();
+    let cut = sim.now();
+    sim.wait_for("CHECKING STORAGE", seconds(20))
+        .expect("the resume says so");
+    sim.checkpoint("a Clear cut by power finishes at boot");
+    for _ in 0..2 {
+        sim.press(BACK);
+        sim.press(ACT);
+    }
+    assert!(!sim.device.sdk.recording(), "no ride starts");
+    while sim.device.sdk.page() != Page::Home {
+        assert!(sim.now() - cut < seconds(60), "the resume never ends");
+        sim.expect_no_text("FORMAT STORAGE?");
+        sim.advance(10);
+    }
+    assert_eq!(sim.device.boot, boot + 1, "no restart");
+    assert_eq!(internal_slots(&mut sim), "0");
+    assert_intent_settled(&mut sim, "after the resume");
+}
+
+/// A cut erase can leave cells that read erased yet hold weakly: here the
+/// twin's tear lands every bit, so the cut sector reads erased.
+#[test]
+fn a_resumed_clear_erases_again_a_sector_its_cut_erase_left_reading_erased() {
+    let (mut sim, slots) = device_with_a_full_internal_journal("clear-resumed-erases");
+    const FIRST_SECTOR_ERASE: u32 = 3;
+    sim.lose_power_at_flash_write(FIRST_SECTOR_ERASE, 4096);
+    sim.command(&format!("RIDE CLEAR CONFIRM {slots}"));
+    sim.advance(seconds(10));
+    assert!(sim.power_lost());
+    let data = sim.device.media.contents(Region::Data);
+    assert!(
+        data[..4096].iter().all(|&b| b == 0xff),
+        "the cut sector reads erased"
+    );
+    assert!(
+        data[4096..].iter().any(|&b| b != 0xff),
+        "the rest is not wiped"
+    );
+    sim.cut_power();
+    sim.wait_usable();
+    assert_eq!(internal_slots(&mut sim), "0", "the wipe finished");
+    let erased = sim.device.media.fault.borrow().erased.clone();
+    for sector in 0..vana::ride::log::SECTORS {
+        let offset = sector * vana::ride::log::SECTOR_SIZE;
+        assert!(
+            erased.contains(&(Region::Data, offset)),
+            "sector {sector} was erased again"
+        );
+    }
+}
+
+/// A commit word the cut left marginal reads whole on some boots and torn
+/// on others, so a saved capture keeps it to replay its boot as it ran.
+#[test]
+fn a_boot_over_a_marginal_intent_word_replays_the_same_after_a_save_and_load() {
+    use shell_simulator::trace::file;
+    let (mut sim, slots) = device_with_a_ride_on_internal_flash("intent-marginal-saved");
+    sim.discard_recording();
+    for boot in 0..8 {
+        let media = sim.media();
+        sim.lose_power_at_flash_write(2, 2);
+        sim.command(&format!("RIDE CLEAR CONFIRM {slots}"));
+        sim.advance(seconds(10));
+        assert!(sim.power_lost(), "boot {boot}: the commit word was cut");
+        sim.cut_power();
+        sim.advance(seconds(10));
+        let capture = sim.capture();
+        assert_eq!(Sim::replay(&capture).device.report().unwrap().first, None);
+        let path = std::env::temp_dir()
+            .join(format!("intent-marginal-{}", std::process::id()))
+            .join(format!("boot-{boot}.trace"));
+        file::save(&capture, &path).expect("the capture saves");
+        let (loaded, _) = file::load(&path).expect("the capture loads");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        let report = Sim::replay(&loaded).device.report().unwrap();
+        assert_eq!(report.first, None, "boot {boot}: {:?}", report.counts);
+        sim.restore_media(&media);
+        sim.wait_usable();
+    }
+}
+
+#[test]
+fn a_resuming_wipe_answers_the_console_s_volume_commands_busy() {
+    let (mut sim, slots) = device_with_a_ride_on_internal_flash("clear-resumed-busy");
+    let files = sim.device.bulk.image().written;
+    sim.lose_power_at_flash_write(3, 128);
+    sim.command(&format!("RIDE CLEAR CONFIRM {slots}"));
+    sim.advance(seconds(10));
+    assert!(sim.power_lost());
+    // With no companion to wait for, the console answers from boot on.
+    sim.device.sim_mut().startup = device_api::sensors::Startup::Unsupported;
+    sim.cut_power();
+    while field(&health(&mut sim), "state") != "resuming" {
+        assert_eq!(sim.device.sdk.page(), Page::Boot, "the resume began");
+        sim.advance(1);
+    }
+    assert_eq!(sim.command("FILES FORMAT CONFIRM").0, "BUSY");
+    assert_eq!(sim.command("STORE FORMAT CONFIRM").0, "BUSY");
+    assert!(
+        sim.device.bulk.image().written == files,
+        "the card is untouched"
+    );
+    sim.wait_usable();
+    assert_eq!(internal_slots(&mut sim), "0", "the wipe finished");
+}
+
+#[test]
+fn an_intent_region_this_version_cannot_read_raises_nothing_and_settles() {
+    use device_api::storage::OwnedFlash;
+    let foreign: [&[u8]; 3] = [&[0x5a; 8192], b"C606\x02\x00\x18\x00", &[0; 4]];
+    for (case, bytes) in foreign.into_iter().enumerate() {
+        let what = format!("case {case}");
+        let (mut sim, slots) = device_with_a_ride_on_internal_flash("intent-unreadable");
+        let card: Vec<_> = sim.bulk_rides().into_iter().map(|r| r.entries).collect();
+        let mut media = sim.device.media.untapped();
+        media.erase(Region::Intent, 0, 8192).unwrap();
+        media.program(Region::Intent, 0, bytes).unwrap();
+        sim.cut_power();
+        assert_eq!(
+            boots_after_a_cut(&mut sim, &what),
+            AfterCut::Usable { resumed: false },
+            "{what}"
+        );
+        assert_intent_settled(&mut sim, &what);
+        assert_eq!(internal_slots(&mut sim), slots, "{what}");
+        let kept: Vec<_> = sim.bulk_rides().into_iter().map(|r| r.entries).collect();
+        assert!(kept == card, "{what}: the card's rides are kept");
+    }
+}
+
+#[test]
+fn settings_and_rides_written_before_the_intent_region_survive_with_no_offer() {
+    let (mut sim, slots) = device_with_a_ride_on_internal_flash("intent-first-boot");
+    assert_eq!(sim.command("PROFILE FTP 225").0, "OK");
+    sim.advance(seconds(5));
+    let card: Vec<_> = sim.bulk_rides().into_iter().map(|r| r.entries).collect();
+    let (settings, internal) = flash(&mut sim);
+    {
+        use device_api::storage::OwnedFlash;
+        let mut media = sim.device.media.untapped();
+        media.erase(Region::Intent, 0, 8192).unwrap();
+    }
+    sim.cut_power();
+    assert_eq!(
+        boots_after_a_cut(&mut sim, "first boot"),
+        AfterCut::Usable { resumed: false }
+    );
+    assert_eq!(health(&mut sim).matches("current").count(), 7);
+    assert_eq!(flash(&mut sim), (settings, internal), "nothing rewritten");
+    assert_eq!(internal_slots(&mut sim), slots);
+    let kept: Vec<_> = sim.bulk_rides().into_iter().map(|r| r.entries).collect();
+    assert!(kept == card, "the card's rides are kept");
+    assert!(
+        sim.device
+            .media
+            .contents(Region::Intent)
+            .iter()
+            .all(|&b| b == 0xff),
+        "a blank intent region needs no write"
+    );
+}
+
+#[test]
+fn format_confirm_over_a_card_that_failed_wipes_the_boot_flash_and_leaves_the_card() {
+    let (mut sim, _) = device_with_a_ride_on_internal_flash("format-confirm-failed-card");
+    let card = sim.bulk_rides()[0].entries.clone();
+    sim.start_ride();
+    sim.advance(seconds(10));
+    sim.fail_bulk(0, 0);
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    sim.done();
+    let (_, bulk) = sim.command("RIDE BULK STATUS");
+    assert_eq!(field(&bulk, "state"), "error", "{bulk}");
+    let boot = sim.device.boot;
+    assert_eq!(sim.command("FORMAT CONFIRM").0, "ACCEPTED");
+    wait_for_restart(&mut sim, boot);
+    assert_eq!(sim.device.sdk.page(), Page::Setup, "the settings went");
+    assert_eq!(internal_slots(&mut sim), "0");
+    assert!(
+        sim.bulk_rides()[0].entries == card,
+        "the card's ride is kept"
+    );
+    assert_intent_settled(&mut sim, "after the wipe");
+}
+
+#[test]
+fn an_intent_a_boot_cannot_read_holds_off_rides_and_the_next_boot_finishes_its_wipe() {
+    let (mut sim, slots) = device_with_a_ride_on_internal_flash("intent-unreadable-boot");
+    sim.lose_power_at_flash_write(2, 4);
+    sim.command(&format!("RIDE CLEAR CONFIRM {slots}"));
+    sim.advance(seconds(10));
+    assert!(
+        sim.power_lost(),
+        "the Clear was cut at its intent's commit word"
+    );
+    assert_eq!(intent_pending(&mut sim), 1 << Store::Internal as u8);
+    sim.fit_bulk(Presence::Missing);
+    sim.cut_power();
+    sim.fail_flash_reads(Region::Intent);
+    sim.advance(seconds(10));
+    assert_eq!(
+        sim.command("RIDE START").0,
+        "BUSY",
+        "no ride on a journal a wipe is due on"
+    );
+    assert!(!sim.device.sdk.recording());
+    assert_eq!(field(&health(&mut sim), "state"), "failed");
+    sim.expect_text("OFF AND ON TO FORMAT");
+    sim.checkpoint("the intent cannot be read");
+    assert_eq!(internal_slots(&mut sim), slots, "nothing wiped yet");
+    assert_eq!(
+        intent_pending(&mut sim),
+        1 << Store::Internal as u8,
+        "the wipe is still due"
+    );
+
+    sim.cut_power();
+    sim.wait_usable();
+    assert_eq!(internal_slots(&mut sim), "0", "the wipe finished");
+    assert_intent_settled(&mut sim, "after the resume");
+    sim.start_ride();
+    sim.advance(seconds(20));
+    sim.stop_ride();
+    sim.done();
+    let recorded = internal_slots(&mut sim);
+    assert_ne!(recorded, "0");
+    sim.power_loss();
+    assert_eq!(internal_slots(&mut sim), recorded, "the new ride is kept");
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Wipe {
+    Clear,
+    ClearCut,
+    Offer,
+}
+
+fn device_with_a_deleted_internal_ride(name: &str) -> Sim {
+    let mut sim = Sim::named(name);
+    sim.discard_recording();
+    sim.fit_bulk(Presence::Ready);
+    sim.format_files();
+    let mut sim = sim.boot();
+    sim.start_ride();
+    sim.advance(seconds(30));
+    sim.stop_ride();
+    sim.done();
+    assert_eq!(internal_rides(&mut sim), 1);
+    sim.home("RIDES");
+    sim.advance(seconds(5));
+    sim.expect_text("1/1");
+    sim.press(ACT);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    for _ in 0..6 {
+        if sim.screen().contains("DELETE RIDE?") {
+            break;
+        }
+        sim.press(MOVE);
+    }
+    sim.press(ACT);
+    sim.wait_for("RIDE DELETED", seconds(5)).unwrap();
+    assert_eq!(hidden_internal_rides(&mut sim), 1);
+    while !sim.on_home() {
+        sim.press(BACK);
+    }
+    sim
+}
+
+fn internal_rides(sim: &mut Sim) -> usize {
+    let (_, history) = sim.command("RIDE INTERNAL HISTORY");
+    field(&history, "count").parse().unwrap()
+}
+
+fn hidden_internal_rides(sim: &mut Sim) -> usize {
+    use vana::kept::deleted;
+    let table = sim.file(deleted::TABLE).unwrap_or_default();
+    deleted::decode_table(&table)
+        .filter(|record| record.ride.journal == b'i')
+        .count()
+}
+
+fn a_wipe_of_the_ride_log_alone_ends_on_the_first_page_and_its_next_ride_shows(wipe: Wipe) {
+    {
+        let what = format!("{wipe:?}");
+        let mut sim = device_with_a_deleted_internal_ride("ride-log-wipe");
+        let slots = internal_slots(&mut sim);
+        let boot = match wipe {
+            Wipe::Clear => {
+                let boot = sim.device.boot;
+                let (reply, out) = sim.command(&format!("RIDE CLEAR CONFIRM {slots}"));
+                assert_eq!(reply, "ACCEPTED", "{out}");
+                boot
+            }
+            Wipe::ClearCut => {
+                sim.lose_power_at_flash_write(3, 128);
+                sim.command(&format!("RIDE CLEAR CONFIRM {slots}"));
+                sim.advance(seconds(10));
+                assert!(sim.power_lost(), "{what}");
+                sim.cut_power();
+                sim.device.boot
+            }
+            Wipe::Offer => {
+                use device_api::storage::OwnedFlash;
+                let mut media = sim.device.media.untapped();
+                media.erase(Region::Data, 0, 4096).unwrap();
+                sim.make_foreign(&[Store::Internal]);
+                sim.cut_power();
+                wait_for_offer(&mut sim);
+                sim.expect_text("DEVICE RIDE LOG GOES");
+                let boot = sim.device.boot;
+                sim.press(ACT);
+                boot
+            }
+        };
+        sim.wait_for("CHECKING STORAGE", seconds(20))
+            .unwrap_or_else(|error| panic!("{what}: {error}"));
+        sim.wait_usable();
+        assert_eq!(sim.device.boot, boot, "{what}: no restart");
+        assert_eq!(sim.device.sdk.page(), Page::Home, "{what}");
+        assert_eq!(field(&health(&mut sim), "state"), "idle", "{what}");
+        assert_eq!(internal_rides(&mut sim), 0, "{what}");
+        assert_eq!(hidden_internal_rides(&mut sim), 0, "{what}: forgotten");
+        assert_intent_settled(&mut sim, &what);
+
+        sim.start_ride();
+        sim.advance(seconds(30));
+        sim.stop_ride();
+        sim.done();
+        sim.home("RIDES");
+        sim.advance(seconds(5));
+        sim.expect_no_text("NO RIDES YET");
+        sim.expect_text("1/1");
+    }
+}
+
+#[test]
+fn a_clear_ends_on_the_first_page_and_its_next_ride_shows() {
+    a_wipe_of_the_ride_log_alone_ends_on_the_first_page_and_its_next_ride_shows(Wipe::Clear);
+}
+
+#[test]
+fn a_clear_cut_by_power_ends_on_the_first_page_and_its_next_ride_shows() {
+    a_wipe_of_the_ride_log_alone_ends_on_the_first_page_and_its_next_ride_shows(Wipe::ClearCut);
+}
+
+#[test]
+fn an_accepted_ride_log_offer_ends_on_the_first_page_and_its_next_ride_shows() {
+    a_wipe_of_the_ride_log_alone_ends_on_the_first_page_and_its_next_ride_shows(Wipe::Offer);
+}
+
+#[test]
+fn a_clear_holds_storage_while_it_wipes_and_reports_to_the_host() {
+    let (mut sim, slots) = device_with_a_ride_on_internal_flash("clear-host");
+    let boot = sim.device.boot;
+    let (reply, out) = sim.command(&format!("RIDE CLEAR CONFIRM {slots}"));
+    assert_eq!(reply, "ACCEPTED", "{out}");
+    let token = field(&out, "token").to_string();
+    sim.advance(100);
+    sim.expect_text("CHECKING STORAGE");
+    assert_eq!(field(&health(&mut sim), "state"), "running");
+    assert_eq!(sim.command("RIDE START").0, "BUSY");
+    assert_eq!(sim.command("RIDE BULK INIT").0, "BUSY");
+    let (status, during) = sim.command("RIDE INTERNAL STATUS");
+    assert_eq!(status, "OK", "{during}");
+    assert_eq!(field(&during, "pending"), token, "{during}");
+    sim.wait_usable();
+    assert_eq!(sim.device.boot, boot, "no restart");
+    sim.advance(100);
+    let (_, after) = sim.command("RIDE INTERNAL STATUS");
+    assert_eq!(field(&after, "completed"), token, "{after}");
+    assert_eq!(field(&after, "result"), "OK", "{after}");
+    assert_eq!(field(&after, "state"), "ready", "{after}");
+    assert_eq!(field(&after, "slot"), "0", "{after}");
+}
+
+#[test]
+fn a_clear_whose_write_fails_holds_storage_until_the_next_boot() {
+    let (mut sim, slots) = device_with_a_ride_on_internal_flash("clear-fails");
+    let media = sim.media();
+    const INTENT_ERASE: u32 = 0;
+    const FIRST_SECTOR_ERASE: u32 = 3;
+    const SECOND_SECTOR_ERASE: u32 = 4;
+    for fails in [INTENT_ERASE, FIRST_SECTOR_ERASE, SECOND_SECTOR_ERASE] {
+        let what = format!("write {fails} fails");
+        sim.restore_media(&media);
+        sim.wait_usable();
+        sim.fail_storage(fails, 0);
+        let (reply, out) = sim.command(&format!("RIDE CLEAR CONFIRM {slots}"));
+        assert_eq!(reply, "ACCEPTED", "{what}: {out}");
+        let token = field(&out, "token").to_string();
+        sim.advance(seconds(5));
+        assert_eq!(field(&health(&mut sim), "state"), "failed", "{what}");
+        assert_eq!(sim.command("RIDE START").0, "BUSY", "{what}");
+        let (_, status) = sim.command("RIDE INTERNAL STATUS");
+        assert_eq!(field(&status, "pending"), "0", "{what}: {status}");
+        assert_eq!(field(&status, "completed"), token, "{what}: {status}");
+        assert_eq!(field(&status, "result"), "FAILED", "{what}: {status}");
+        assert_intent_settled(&mut sim, &what);
+        sim.power_loss();
+        assert_eq!(field(&health(&mut sim), "state"), "idle", "{what}");
+        if fails < SECOND_SECTOR_ERASE {
+            assert_eq!(
+                internal_slots(&mut sim),
+                slots,
+                "{what}: nothing was erased"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_clear_waits_for_a_ride_on_the_card_to_end() {
+    let (mut sim, slots) = device_with_a_ride_on_internal_flash("clear-under-a-ride");
+    sim.start_ride();
+    sim.advance(seconds(5));
+    assert_eq!(
+        sim.command(&format!("RIDE CLEAR CONFIRM {slots}")).0,
+        "STATE"
+    );
+    sim.stop_ride();
+    sim.done();
+    assert_eq!(
+        sim.command(&format!("RIDE CLEAR CONFIRM {slots}")).0,
+        "ACCEPTED"
     );
 }

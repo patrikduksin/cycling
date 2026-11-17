@@ -330,7 +330,7 @@ struct Trace {
     access_point: FrozenAccessPoint,
     server: FrozenServer,
     start: Start,
-    file: spool::File<Vec<u8>>,
+    file: spool::File,
     spooling: bool,
     vitals: Vitals,
     window: Window,
@@ -475,7 +475,7 @@ impl Trace {
     fn spool(&mut self, bulk: &crate::bulk::SimBulk) {
         self.spooling = true;
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
-        let file: spool::File<Vec<u8>> = spool::File::stage(&mut bulk.host(), &mut sector);
+        let file = spool::File::stage(&mut bulk.host(), &mut sector);
         if let spool::File::Staging(..) = file {
             self.recorder.borrow_mut().sink_mut().spool =
                 Some(Spool::new(vec![0u8; spool::RING_BYTES]));
@@ -853,6 +853,7 @@ impl Session {
         let media = media.tapped(tap.clone());
         let bulk = bulk.tapped(tap.clone());
         let boot = media.begin_boot()?;
+        bulk.share_power(media.power_lost());
         let display = DisplayDevice::new(width, height);
         let input = model.input();
         let power = PowerDevice::new(Availability::Ready);
@@ -1145,7 +1146,7 @@ impl Session {
             self.sdk.recording(),
             self.sdk.shutdown_due(),
         );
-        if self.sdk.owns_storage() {
+        if self.sdk.wipes_traces() {
             self.trace.file.formatted();
             self.trace.recorder.borrow_mut().sink_mut().spool = None;
         }
@@ -1767,7 +1768,7 @@ impl Session {
             Command::Volume(firmware_console::commands::volumes::Command::Transfer) => {
                 return "UNSUPPORTED";
             }
-            Command::Volume(_) if self.sdk.owns_storage() => return "BUSY",
+            Command::Volume(_) if self.sdk.holds_storage() => return "BUSY",
             Command::Volume(command) => {
                 return firmware_console::commands::volumes::execute(
                     command,
@@ -1790,7 +1791,7 @@ impl Session {
                 firmware_console::commands::shell::status(&self.shell, self.now, out)
             }
             Command::Storage => {
-                let _ = write!(out, "{:?}", self.shell.data_storage().geometry());
+                let _ = write!(out, "{:?}", self.shell.data_storage().data().geometry());
             }
             Command::Wifi => {
                 let _ = write!(

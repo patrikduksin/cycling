@@ -1,5 +1,5 @@
 use device_api::storage::{OwnedFlash, Region};
-use firmware_services::storage::{CAPACITY, Journal, Record, RegionAccess};
+use firmware_services::storage::{AppStorage, CAPACITY, Journal, Record, RegionAccess};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error<E> {
     Journal(firmware_services::storage::Error<E>),
@@ -105,8 +105,8 @@ impl<B: OwnedFlash> Store<B> {
         Ok(self.journal.erase()?)
     }
 
-    pub fn data(&mut self) -> RegionAccess<'_, B> {
-        RegionAccess::new(self.journal.flash_mut(), Region::Data)
+    pub fn data(&mut self) -> AppStorage<'_, B> {
+        AppStorage::new(self.journal.flash_mut())
     }
 
     pub fn crash(&mut self) -> RegionAccess<'_, B> {

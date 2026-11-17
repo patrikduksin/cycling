@@ -74,6 +74,7 @@ def test_fitted_rs_holds_the_driver_literals_it_replaced(c606):
         'Configuration': (0x00E9_8000, 2 * 4096),
         'Data': (0x00D9_8000, 0x10_0000),
         'Crash': (0x0001_E000, 2 * 4096),
+        'Intent': (0x0001_C000, 2 * 4096),
     }
 
 

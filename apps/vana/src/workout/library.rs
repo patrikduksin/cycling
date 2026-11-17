@@ -364,6 +364,8 @@ pub enum LoadError {
     Decode(codec::DecodeError),
 }
 
+crate::kept::card_error!(LoadError);
+
 impl LoadError {
     /// Short reason for a terminal reply.
     pub const fn name(self) -> &'static str {

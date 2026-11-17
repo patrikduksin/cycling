@@ -25,7 +25,7 @@ fn touch(runtime: &mut Runtime, radio: &mut Radio, points: &[(u16, u16)], now: u
 #[test]
 fn tapping_a_home_tile_opens_it() {
     let mut radio = Radio::new();
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     runtime.navigation.page = Page::Home;
     touch(&mut runtime, &mut radio, &[(120, 40)], 1000);
     assert!(runtime.navigation.page == Page::Ready);
@@ -135,7 +135,7 @@ fn a_ride_without_wheel_speed_notes_auto_pause_is_off_once() {
 #[test]
 fn a_contact_never_completes_on_another_screen() {
     let mut radio = Radio::new();
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     let down = |runtime: &mut Runtime, radio: &mut Radio, (x, y), now| {
         runtime.input_received(Input::Touch(Point { x, y }), now, now, radio)
     };
@@ -204,7 +204,7 @@ fn drag(
 /// The Workouts page from its top, with its built-in workouts.
 fn workouts() -> (Runtime, Radio) {
     let radio = Radio::new();
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     runtime.navigation.page = Page::Workouts;
     runtime.show_focus(List::Workouts, 0);
     assert!(

@@ -25,6 +25,7 @@ mod form;
 mod format;
 mod history;
 mod input;
+pub(crate) mod intent;
 #[cfg(any(test, feature = "invariants"))]
 mod invariants;
 mod lists;
@@ -48,6 +49,7 @@ mod ride_control;
 mod seen;
 mod setup;
 mod storage;
+pub(crate) use format::Scope;
 pub use input::HOLD_GAP_MS;
 pub use recording::Journals;
 pub use seen::Seen;
@@ -63,6 +65,8 @@ pub use phone::{
     Closed as PhoneClosed, Mode as PhoneMode, Status as PhoneStatus, Work as PhoneWork,
 };
 
+#[cfg(any(test, feature = "invariants"))]
+pub use intent::IDLE_RECORD as INTENT_IDLE_RECORD;
 #[cfg(any(test, feature = "invariants"))]
 pub use invariants::Broken;
 

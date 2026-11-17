@@ -11,6 +11,7 @@ use std::{
     rc::Rc,
 };
 const DATA_BYTES: usize = 1024 * 1024;
+const JOURNAL_BYTES: usize = 8192;
 /// Tear the mutation after `after` succeed, leaving `partial` bytes of it.
 /// Every failure is logged for the trace; a replay fails exactly the
 /// operations its trace scripts.
@@ -18,10 +19,20 @@ const DATA_BYTES: usize = 1024 * 1024;
 pub struct Fault {
     pub after: Option<u32>,
     pub partial: usize,
+    /// The torn mutation is where power was lost: from it on, no access to
+    /// internal flash or the card reaches either until the next boot.
+    pub power_cut: bool,
+    pub unreadable: Option<Region>,
     pub log: Vec<StorageFault>,
+    /// Each erase this boot that completed, by region and offset.
+    pub erased: Vec<(Region, usize)>,
     pub script: std::collections::VecDeque<StorageFault>,
     attempts: u32,
+    lost: PowerLost,
 }
+
+/// Whether power was lost this boot, shared by every medium of a device.
+pub type PowerLost = Rc<std::cell::Cell<bool>>;
 impl Fault {
     pub fn begin_pass(&mut self) {
         self.attempts = 0;
@@ -36,11 +47,31 @@ impl Fault {
     ) -> Option<StorageFault> {
         let attempt = self.attempts;
         self.attempts += 1;
+        if self.lost.get() {
+            let fault = StorageFault {
+                medium: region.into(),
+                attempt,
+                op,
+                at: at as u64,
+                landed: 0,
+                error: StorageError::Unavailable,
+            };
+            self.log.push(fault);
+            return Some(fault);
+        }
         let scripted = self.script.iter().position(|f| {
             (f.medium, f.attempt, f.op, f.at) == (region.into(), attempt, op, at as u64)
         });
         let fault = match scripted {
             Some(index) => self.script.remove(index)?,
+            None if op == StorageOp::Read && self.unreadable == Some(region) => StorageFault {
+                medium: region.into(),
+                attempt,
+                op,
+                at: at as u64,
+                landed: 0,
+                error: StorageError::Failed,
+            },
             None if op == StorageOp::Read => return None,
             None => {
                 let injected = self.after == Some(0);
@@ -51,6 +82,7 @@ impl Fault {
                     return None;
                 }
                 self.after = None;
+                self.lost.set(self.power_cut);
                 StorageFault {
                     medium: region.into(),
                     attempt,
@@ -72,8 +104,48 @@ enum Backing {
 }
 struct MemoryMedia {
     boot: u32,
-    configuration: Vec<u8>,
-    data: Vec<u8>,
+    image: FlashImage,
+}
+
+#[derive(Clone)]
+pub struct FlashImage {
+    pub configuration: Vec<u8>,
+    pub data: Vec<u8>,
+    pub intent: Vec<u8>,
+    /// Bytes of the intent's word programs cut by power, with the value a
+    /// whole program leaves. A boot reads each such word whole or as the
+    /// cut left it, until a program completes over it or an erase clears
+    /// it. The other regions keep a cut word as it was left.
+    pub marginal: Vec<(Region, usize, u8)>,
+}
+
+impl FlashImage {
+    pub fn erased() -> Self {
+        Self {
+            configuration: vec![0xff; JOURNAL_BYTES],
+            data: vec![0xff; DATA_BYTES],
+            intent: vec![0xff; JOURNAL_BYTES],
+            marginal: Vec::new(),
+        }
+    }
+
+    fn region(&self, r: Region) -> &[u8] {
+        match r {
+            Region::Configuration => &self.configuration,
+            Region::Data => &self.data,
+            Region::Intent => &self.intent,
+            Region::Crash => &[],
+        }
+    }
+
+    fn region_mut(&mut self, r: Region) -> &mut [u8] {
+        match r {
+            Region::Configuration => &mut self.configuration,
+            Region::Data => &mut self.data,
+            Region::Intent => &mut self.intent,
+            Region::Crash => &mut [],
+        }
+    }
 }
 pub struct FileFlash {
     backing: Backing,
@@ -87,6 +159,10 @@ impl FileFlash {
             fault: Rc::default(),
             tap: None,
         }
+    }
+    /// Whether power was lost this boot, to share with the card.
+    pub(crate) fn power_lost(&self) -> PowerLost {
+        self.fault.borrow().lost.clone()
     }
     pub(crate) fn tapped(self, tap: Option<crate::compare::Tap>) -> Self {
         Self { tap, ..self }
@@ -117,7 +193,12 @@ impl FileFlash {
     }
     /// Reset injected faults and advance the persisted session generation.
     pub(crate) fn begin_boot(&self) -> io::Result<u32> {
-        *self.fault.borrow_mut() = Fault::default();
+        let lost = self.power_lost();
+        lost.set(false);
+        *self.fault.borrow_mut() = Fault {
+            lost,
+            ..Fault::default()
+        };
         let root = match &self.backing {
             Backing::Files { root, .. } => root,
             Backing::Memory(media) => {
@@ -154,8 +235,9 @@ impl FileFlash {
             .open(root.join("session.lock"))?;
         lock.try_lock()
             .map_err(|e| io::Error::other(std::format!("virtual media already owned: {e}")))?;
-        for (name, size) in [("configuration.bin", 8192), ("data.bin", DATA_BYTES)] {
-            let path = root.join(name);
+        for r in [Region::Configuration, Region::Data, Region::Intent] {
+            let size = Self::capacity(r);
+            let path = Self::path(root, r);
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut f) => {
                     f.write_all(&vec![0xff; size])?;
@@ -179,11 +261,7 @@ impl FileFlash {
     }
     /// Erased media that lives as long as any clone, for fast scenarios.
     pub fn memory() -> Self {
-        Self::on(Backing::Memory(Rc::new(RefCell::new(MemoryMedia {
-            boot: 0,
-            configuration: vec![0xff; 8192],
-            data: vec![0xff; DATA_BYTES],
-        }))))
+        Self::from_image(0, FlashImage::erased())
     }
     /// Separate memory media holding these bytes, whose next boot is
     /// `boot`. `None` for file-backed media.
@@ -192,28 +270,27 @@ impl FileFlash {
             return None;
         };
         let media = media.borrow();
-        Some(Self::on(Backing::Memory(Rc::new(RefCell::new(
-            MemoryMedia {
-                boot: boot.checked_sub(1)?,
-                configuration: media.configuration.clone(),
-                data: media.data.clone(),
-            },
-        )))))
+        Some(Self::from_image(boot.checked_sub(1)?, media.image.clone()))
     }
-    /// Memory media's boot counter, configuration and data bytes, to save
-    /// them; `None` for file-backed media.
-    pub fn image(&self) -> Option<(u32, Vec<u8>, Vec<u8>)> {
+    /// Memory media's boot counter and bytes, to save them; `None` for
+    /// file-backed media.
+    pub fn image(&self) -> Option<(u32, FlashImage)> {
         let Backing::Memory(media) = &self.backing else {
             return None;
         };
         let media = media.borrow();
-        Some((media.boot, media.configuration.clone(), media.data.clone()))
+        Some((media.boot, media.image.clone()))
     }
-    pub fn from_image(boot: u32, configuration: Vec<u8>, data: Vec<u8>) -> Self {
+    /// Put `image` back on memory media in place, keeping its boot counter.
+    pub fn restore(&self, image: &FlashImage) {
+        if let Backing::Memory(media) = &self.backing {
+            media.borrow_mut().image = image.clone();
+        }
+    }
+    pub fn from_image(boot: u32, image: FlashImage) -> Self {
         Self::on(Backing::Memory(Rc::new(RefCell::new(MemoryMedia {
             boot,
-            configuration,
-            data,
+            image,
         }))))
     }
     /// A copy of a region's bytes, for inspection after a scenario.
@@ -223,11 +300,18 @@ impl FileFlash {
         bytes
     }
     fn path(root: &Path, r: Region) -> PathBuf {
-        root.join(if r == Region::Configuration {
-            "configuration.bin"
-        } else {
-            "data.bin"
+        root.join(match r {
+            Region::Configuration => "configuration.bin",
+            Region::Intent => "intent.bin",
+            Region::Data | Region::Crash => "data.bin",
         })
+    }
+    fn capacity(r: Region) -> usize {
+        match r {
+            Region::Configuration | Region::Intent => JOURNAL_BYTES,
+            Region::Data => DATA_BYTES,
+            Region::Crash => 0,
+        }
     }
     fn check(
         &self,
@@ -257,21 +341,43 @@ impl FileFlash {
         } else {
             StorageOp::Write
         };
-        let fault = self.fault.borrow_mut().fails(r, op, offset, bytes.len());
+        let fault = {
+            let mut faults = self.fault.borrow_mut();
+            let fault = faults.fails(r, op, offset, bytes.len());
+            if erase && fault.is_none() {
+                faults.erased.push((r, offset));
+            }
+            fault
+        };
         let count = fault.map_or(bytes.len(), |fault| fault.landed as usize);
         let failed = fault.map(|fault| fault.error.flash());
+        let torn = erase && fault.is_some();
+        let touched = if torn { bytes.len() } else { count };
+        let landed = |old: u8, new: u8, at: usize| match (erase, torn) {
+            (true, true) => old | erase_tear(offset, count, bytes.len(), at),
+            (true, false) => new,
+            (false, _) => old & new,
+        };
         let root = match &self.backing {
             Backing::Files { root, .. } => root,
             Backing::Memory(media) => {
                 let mut media = media.borrow_mut();
-                let region = if r == Region::Configuration {
-                    &mut media.configuration
-                } else {
-                    &mut media.data
-                };
-                for (dst, src) in region[offset..offset + count].iter_mut().zip(bytes) {
-                    *dst = if erase { *src } else { *dst & *src };
+                let image = &mut media.image;
+                let region = image.region_mut(r);
+                let mut cut = Vec::new();
+                for (index, dst) in region[offset..offset + bytes.len()].iter_mut().enumerate() {
+                    let whole = *dst & bytes[index];
+                    if index < touched {
+                        *dst = landed(*dst, bytes[index], offset + index);
+                    }
+                    if r == Region::Intent && !erase && bytes.len() == 4 && *dst != whole {
+                        cut.push((r, offset + index, whole));
+                    }
                 }
+                image.marginal.retain(|&(region, at, _)| {
+                    region != r || !(offset..offset + bytes.len()).contains(&at)
+                });
+                image.marginal.extend(cut);
                 return failed.map_or(Ok(()), Err);
             }
         };
@@ -280,12 +386,12 @@ impl FileFlash {
             .write(true)
             .open(Self::path(root, r))
             .map_err(|_| Error::Failed)?;
-        let mut result = vec![0; count];
+        let mut result = vec![0; touched];
         file.seek(SeekFrom::Start(offset as u64))
             .map_err(|_| Error::Failed)?;
         file.read_exact(&mut result).map_err(|_| Error::Failed)?;
-        for (dst, src) in result.iter_mut().zip(bytes) {
-            *dst = if erase { *src } else { *dst & *src };
+        for (index, dst) in result.iter_mut().enumerate() {
+            *dst = landed(*dst, bytes[index], offset + index);
         }
         file.seek(SeekFrom::Start(offset as u64))
             .map_err(|_| Error::Failed)?;
@@ -295,6 +401,32 @@ impl FileFlash {
         failed.map_or(Ok(()), Err)
     }
 }
+/// Whether boot `boot` reads the marginal word holding byte `at` whole: the
+/// same answer for every read of a boot, so a replay reads what its
+/// recording read.
+fn reads_whole(boot: u32, at: usize) -> bool {
+    let mut hash = u64::from(boot) << 32 ^ (at / 4) as u64;
+    hash = (hash ^ hash >> 30).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash = (hash ^ hash >> 27).wrapping_mul(0x94d0_49bb_1331_11eb);
+    (hash ^ hash >> 31) & 1 == 1
+}
+
+/// The bits an erase of `len` bytes at `offset`, cut by power after
+/// `landed` of them, set in the byte at `at`. A NOR sector erase cut short
+/// leaves cells across the whole sector partly erased, not a clean prefix:
+/// each bit is erased with odds `landed / len`, in a pattern fixed by the
+/// erase's place and progress, so a replay tears it the same way.
+pub fn erase_tear(offset: usize, landed: usize, len: usize, at: usize) -> u8 {
+    let threshold = landed.min(len) * 256 / len.max(1);
+    let mut hash = (offset as u64) << 32 ^ (landed as u64) << 16 ^ at as u64;
+    hash = (hash ^ hash >> 30).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash = (hash ^ hash >> 27).wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash ^= hash >> 31;
+    (0..8)
+        .filter(|bit| ((hash >> (8 * bit)) & 0xff) < threshold as u64)
+        .fold(0, |mask, bit| mask | 1 << bit)
+}
+
 impl OwnedFlash for FileFlash {
     type Error = Error;
     fn availability(&self, _: Region) -> Availability {
@@ -302,12 +434,7 @@ impl OwnedFlash for FileFlash {
     }
     fn geometry(&self, r: Region) -> device_api::storage::Geometry {
         device_api::storage::Geometry {
-            capacity: match r {
-                Region::Configuration => 8192,
-                Region::Data => DATA_BYTES,
-                // The simulator never panics into a record.
-                Region::Crash => 0,
-            },
+            capacity: Self::capacity(r),
             program_size: 4,
             erase_size: 4096,
         }
@@ -347,12 +474,16 @@ impl FileFlash {
             Backing::Files { root, .. } => root,
             Backing::Memory(media) => {
                 let media = media.borrow();
-                let region = if r == Region::Configuration {
-                    &media.configuration
-                } else {
-                    &media.data
-                };
+                let region = media.image.region(r);
                 out.copy_from_slice(&region[offset..offset + out.len()]);
+                for &(region, at, whole) in &media.image.marginal {
+                    if let Some(byte) = at.checked_sub(offset).and_then(|i| out.get_mut(i))
+                        && region == r
+                        && reads_whole(media.boot, at)
+                    {
+                        *byte = whole;
+                    }
+                }
                 return Ok(());
             }
         };

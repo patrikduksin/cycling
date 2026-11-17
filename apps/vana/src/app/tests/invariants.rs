@@ -19,7 +19,7 @@ fn recording(mut runtime: Runtime) -> Runtime {
 }
 
 fn with_phone_open() -> Runtime {
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     attach(&mut runtime);
     runtime.open_phone(PhoneMode::AccessPoint);
     runtime.serve_phone(
@@ -66,7 +66,7 @@ fn at_summary() -> Runtime {
 }
 
 fn violating(rule: Rule) -> Runtime {
-    let mut runtime = Runtime::new(Profile::HeartRate);
+    let mut runtime = booted(Profile::HeartRate);
     match rule {
         Rule::PhoneWhileRecording => runtime = recording(with_phone_open()),
         Rule::TurningOffWhileRecording => {
@@ -126,14 +126,14 @@ fn each_cross_owner_rule_is_broken_by_its_own_state() {
 #[test]
 fn a_broken_recorder_on_either_medium_names_its_medium() {
     for rule in recorder::Rule::ALL {
-        let mut internal = Runtime::new(Profile::HeartRate);
+        let mut internal = booted(Profile::HeartRate);
         internal.ride.internal = Recorder::violating(*rule);
         assert_eq!(
             internal.broken(),
             Some(Broken::Recorder(Medium::Internal, *rule)),
             "{rule}"
         );
-        let mut bulk = Runtime::new(Profile::HeartRate);
+        let mut bulk = booted(Profile::HeartRate);
         bulk.ride.bulk = Recorder::violating(*rule);
         assert_eq!(
             bulk.broken(),
@@ -149,10 +149,10 @@ fn a_broken_recorder_on_either_medium_names_its_medium() {
 
 #[test]
 fn consistent_runtimes_hold() {
-    assert_eq!(Runtime::new(Profile::HeartRate).broken(), None);
+    assert_eq!(booted(Profile::HeartRate).broken(), None);
     assert_eq!(with_phone_open().broken(), None);
-    assert_eq!(recording(Runtime::new(Profile::HeartRate)).broken(), None);
-    let mut known = Runtime::new(Profile::HeartRate);
+    assert_eq!(recording(booted(Profile::HeartRate)).broken(), None);
+    let mut known = booted(Profile::HeartRate);
     known.startup_status = known.startup.name();
     assert_eq!(known.broken(), None);
 }

@@ -6,7 +6,7 @@ use crate::ride::log::Slot;
 use device_api::storage::AccessError;
 use device_api::storage::OwnedFlash;
 use device_api::storage::checked_range;
-use firmware_services::storage::RegionAccess;
+use firmware_services::storage::AppStorage;
 
 pub trait RideStorage {
     type Error;
@@ -31,52 +31,57 @@ fn offset<E>(
     Ok(offset)
 }
 
-impl<B: OwnedFlash> RideStorage for RegionAccess<'_, B> {
+impl<B: OwnedFlash> RideStorage for AppStorage<'_, B> {
     type Error = AccessError<B::Error>;
     fn ride_read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), Self::Error> {
-        self.read(
-            offset(sector, crate::ride::log::SECTOR_SIZE, 0, output.0.len())?,
-            &mut output.0,
-        )
-        .map_err(AccessError::Device)
+        self.data()
+            .read(
+                offset(sector, crate::ride::log::SECTOR_SIZE, 0, output.0.len())?,
+                &mut output.0,
+            )
+            .map_err(AccessError::Device)
     }
     fn ride_read_slot(&mut self, slot: usize, output: &mut Slot) -> Result<(), Self::Error> {
-        self.read(
-            offset(slot, crate::ride::log::SLOT_SIZE, 0, output.0.len())?,
-            &mut output.0,
-        )
-        .map_err(AccessError::Device)
+        self.data()
+            .read(
+                offset(slot, crate::ride::log::SLOT_SIZE, 0, output.0.len())?,
+                &mut output.0,
+            )
+            .map_err(AccessError::Device)
     }
     fn ride_erase_sector(&mut self, sector: usize) -> Result<(), Self::Error> {
-        self.erase(
-            offset(
-                sector,
+        self.data()
+            .erase(
+                offset(
+                    sector,
+                    crate::ride::log::SECTOR_SIZE,
+                    0,
+                    crate::ride::log::SECTOR_SIZE,
+                )?,
                 crate::ride::log::SECTOR_SIZE,
-                0,
-                crate::ride::log::SECTOR_SIZE,
-            )?,
-            crate::ride::log::SECTOR_SIZE,
-        )
-        .map_err(AccessError::Device)
+            )
+            .map_err(AccessError::Device)
     }
     fn ride_write_slot(&mut self, slot: usize, data: &Slot) -> Result<(), Self::Error> {
-        self.program(
-            offset(slot, crate::ride::log::SLOT_SIZE, 0, data.0.len())?,
-            &data.0,
-        )
-        .map_err(AccessError::Device)
+        self.data()
+            .program(
+                offset(slot, crate::ride::log::SLOT_SIZE, 0, data.0.len())?,
+                &data.0,
+            )
+            .map_err(AccessError::Device)
     }
     fn ride_commit_slot(&mut self, slot: usize, commit: &Commit) -> Result<(), Self::Error> {
-        self.program(
-            offset(
-                slot,
-                crate::ride::log::SLOT_SIZE,
-                crate::ride::log::SLOT_SIZE - 4,
-                commit.0.len(),
-            )?,
-            &commit.0,
-        )
-        .map_err(AccessError::Device)
+        self.data()
+            .program(
+                offset(
+                    slot,
+                    crate::ride::log::SLOT_SIZE,
+                    crate::ride::log::SLOT_SIZE - 4,
+                    commit.0.len(),
+                )?,
+                &commit.0,
+            )
+            .map_err(AccessError::Device)
     }
 }
 
@@ -118,7 +123,7 @@ mod tests {
     #[test]
     fn invalid_ride_indices_never_reach_the_backend() {
         let mut backend = Backend;
-        let mut store = RegionAccess::new(&mut backend, device_api::storage::Region::Data);
+        let mut store = AppStorage::new(&mut backend);
         for index in [crate::ride::log::SLOTS, usize::MAX] {
             assert_eq!(
                 store.ride_read_slot(index, &mut Slot::default()),

@@ -186,41 +186,41 @@ impl<R: AsRef<[u8]> + AsMut<[u8]>> Staging for Spool<R> {
 }
 
 /// The trace file a spool drains into: its header, then the blocks.
-pub struct Drain<H> {
+pub struct Drain {
     store: Store,
     appender: Appender,
     name: Name,
     rollover: Dir,
-    header: H,
-    header_written: usize,
     flushed_ms: u64,
     synced_ms: u64,
     written: u64,
 }
 
-impl<H: AsRef<[u8]>> Drain<H> {
-    /// Create `name` empty, deleting the oldest file in `rollover` when the
-    /// store is full. `header` goes ahead of the blocks.
+impl Drain {
+    /// Create `name` holding `header`, deleting the oldest file in
+    /// `rollover` when the store is full. The header is synced at once: a
+    /// file cut off before its first sync would stay empty, and an empty
+    /// trace does not decode.
     pub fn create(
         media: &mut impl ReadWrite,
         mut store: Store,
         name: Name,
         rollover: Dir,
-        header: H,
+        header: &[u8],
         now: u64,
         sector: &mut Sector,
     ) -> Result<Self, Error> {
-        let appender = store.create(media, &name, Some(rollover), sector)?;
+        let mut appender = store.create(media, &name, Some(rollover), sector)?;
+        appender.append(&mut store, media, header, sector)?;
+        appender.sync(&mut store, media, sector)?;
         Ok(Self {
             store,
             appender,
             name,
             rollover,
-            header,
-            header_written: 0,
             flushed_ms: now,
             synced_ms: now,
-            written: 0,
+            written: header.len() as u64,
         })
     }
 
@@ -258,7 +258,7 @@ impl<H: AsRef<[u8]>> Drain<H> {
         let mut written = 0;
         while written < records {
             let room = self.appender.room();
-            if self.header_left() + spool.len() < room {
+            if spool.len() < room {
                 break;
             }
             self.append(spool, room, media, sector)?;
@@ -267,7 +267,7 @@ impl<H: AsRef<[u8]>> Drain<H> {
         if written > 0 {
             return Ok(());
         }
-        let pending = self.header_left() + spool.len();
+        let pending = spool.len();
         if now.saturating_sub(self.synced_ms) >= SYNC_MS {
             self.append(spool, pending, media, sector)?;
             self.appender.sync(&mut self.store, media, sector)?;
@@ -288,7 +288,7 @@ impl<H: AsRef<[u8]>> Drain<H> {
     ) -> Result<(), Error> {
         recorder.flush();
         let spool = recorder.sink_mut().spool();
-        let pending = self.header_left() + spool.len();
+        let pending = spool.len();
         self.append(spool, pending, media, sector)?;
         self.appender.sync(&mut self.store, media, sector)?;
         (self.flushed_ms, self.synced_ms) = (now, now);
@@ -309,10 +309,6 @@ impl<H: AsRef<[u8]>> Drain<H> {
         Ok(())
     }
 
-    fn header_left(&self) -> usize {
-        self.header.as_ref().len() - self.header_written
-    }
-
     fn append<R: AsRef<[u8]> + AsMut<[u8]>>(
         &mut self,
         spool: &mut Spool<R>,
@@ -321,20 +317,10 @@ impl<H: AsRef<[u8]>> Drain<H> {
         sector: &mut Sector,
     ) -> Result<(), Error> {
         while n > 0 {
-            let left = self.header_left();
-            let taken = if left > 0 {
-                let at = self.header_written;
-                let part = &self.header.as_ref()[at..at + left.min(n)];
-                self.appender.append(&mut self.store, media, part, sector)?;
-                self.header_written += part.len();
-                part.len()
-            } else {
-                let part = spool.front(n);
-                self.appender.append(&mut self.store, media, part, sector)?;
-                let taken = part.len();
-                spool.consume(taken);
-                taken
-            };
+            let part = spool.front(n);
+            self.appender.append(&mut self.store, media, part, sector)?;
+            let taken = part.len();
+            spool.consume(taken);
             n -= taken;
             self.written += taken as u64;
         }
@@ -347,19 +333,19 @@ impl<H: AsRef<[u8]>> Drain<H> {
 /// composition keeps its state (PSRAM on the C606), so the open file's
 /// record buffer stays inline: there is no allocator to box it.
 #[allow(clippy::large_enum_variant)]
-pub enum File<H> {
+pub enum File {
     /// From power-on until the card admits work: nothing read from it yet.
     Waiting,
     /// No file this session, and why.
     Off(&'static str),
     /// Blocks wait in the spool; the file opens once its header is known.
     Staging(Extent, Generations),
-    Open(Extent, Generations, Drain<H>),
+    Open(Extent, Generations, Drain),
     /// The file ended mid-session, and why.
     Ended(&'static str),
 }
 
-impl<H: AsRef<[u8]>> File<H> {
+impl File {
     /// At the first pass the card admits work: staging when the owned
     /// region `bulk` has a STORE volume that mounts.
     pub fn stage(bulk: &mut impl ReadWrite, sector: &mut Sector) -> Self {
@@ -383,7 +369,7 @@ impl<H: AsRef<[u8]>> File<H> {
     /// This pass's share of the spool, as `card` allows. The file opens at
     /// the first open pass `header` gives the header and the boot id, named
     /// by [`next_name`]. An error ends the file and says why.
-    pub fn pass<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
+    pub fn pass<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging, H: AsRef<[u8]>>(
         &mut self,
         recorder: &mut Recorder<B, S>,
         bulk: &mut impl ReadWrite,
@@ -405,7 +391,15 @@ impl<H: AsRef<[u8]>> File<H> {
             let opened = store::mount(&mut volume, sector).and_then(|mounted| {
                 let name = next_name(&mounted, &mut volume, boot, sector)?;
                 let traces = Dir::new(TRACES)?;
-                Drain::create(&mut volume, mounted, name, traces, header, now, sector)
+                Drain::create(
+                    &mut volume,
+                    mounted,
+                    name,
+                    traces,
+                    header.as_ref(),
+                    now,
+                    sector,
+                )
             });
             match opened {
                 Ok(drain) => *self = Self::Open(extent, generations, drain),

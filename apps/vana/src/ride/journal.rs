@@ -7,7 +7,6 @@
 //! state and the borrowed storage handle.
 
 use crate::ride::log::{Catalog, Entry, SLOTS, SLOTS_PER_SECTOR, Scanner, Sector, Slot};
-use crate::ride::reclaim::{Clear, Media, Progress as ClearProgress};
 use crate::ride::storage::RideStorage;
 
 /// What one scan step found.
@@ -81,7 +80,10 @@ pub trait Journal {
         Progress::Failed
     }
     /// Step `step` (from zero) of an explicit clear after a verified export.
-    fn clear(&mut self, step: usize, seed: u64) -> Progress;
+    /// FORMAT wipes the internal journal instead, so it keeps this refusal.
+    fn clear(&mut self, _step: usize, _seed: u64) -> Progress {
+        Progress::Failed
+    }
     /// Program `entry` at `index` and verify it.
     fn append(&mut self, index: usize, entry: &Entry, terminal: bool) -> Append;
     /// Save recovery state so boot need not scan what it covers.
@@ -96,11 +98,10 @@ pub trait Journal {
     fn read_slot(&mut self, index: usize, output: &mut Slot) -> Read;
 }
 
-/// Scan, initialize and clear progress of the internal 1 MiB journal.
+/// Scan progress of the internal 1 MiB journal.
 pub struct InternalState {
     scanner: Option<Scanner>,
     sector: Sector,
-    clear: Clear,
 }
 
 impl Default for InternalState {
@@ -108,7 +109,6 @@ impl Default for InternalState {
         Self {
             scanner: Some(Scanner::default()),
             sector: Sector::default(),
-            clear: Clear::default(),
         }
     }
 }
@@ -172,35 +172,6 @@ impl<S: RideStorage> Journal for Internal<'_, S> {
                 Scan::Done(catalog)
             }
             None => Scan::More,
-        }
-    }
-
-    fn clear(&mut self, step: usize, _: u64) -> Progress {
-        struct StoreMedia<'a, S>(&'a mut S);
-        impl<S: RideStorage> Media for StoreMedia<'_, S> {
-            type Error = ();
-            fn erase_sector(&mut self, sector: usize) -> Result<(), Self::Error> {
-                self.0.ride_erase_sector(sector).map_err(|_| ())
-            }
-            fn read_sector(
-                &mut self,
-                sector: usize,
-                output: &mut Sector,
-            ) -> Result<(), Self::Error> {
-                self.0.ride_read_sector(sector, output).map_err(|_| ())
-            }
-        }
-        if step == 0 {
-            self.state.clear = Clear::default();
-        }
-        match self
-            .state
-            .clear
-            .service(&mut StoreMedia(&mut *self.store), &mut self.state.sector)
-        {
-            Ok(ClearProgress::More) => Progress::More,
-            Ok(ClearProgress::Complete) => Progress::Done,
-            Err(_) => Progress::Failed,
         }
     }
 

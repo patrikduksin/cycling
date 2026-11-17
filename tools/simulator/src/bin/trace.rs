@@ -73,6 +73,10 @@ commands:
       STORE GENERATION, or files unreadable card|table|volume; file NAME
       LENGTH CRC per file; terrain LENGTH SHA256 ready|writing TAG, or
       terrain unreadable card|table|volume.
+  upgrade <trace>...
+      Rewrite each trace's ORIGIN1 .origin, saved before the intent region,
+      as ORIGIN2: a blank intent region and no marginal words, as that
+      device had. An ORIGIN2 one is left as it is.
   rebuild <trace> --pulled DIR
       Write <trace>.origin from the header and the media pulled after the
       session into DIR (the layout `cycling trace pull` writes; see
@@ -210,6 +214,28 @@ fn run(args: &[String]) -> Result<String, String> {
             .first()
             .ok_or(format!("{command} needs a trace file"))?,
     );
+    if command == "upgrade" {
+        let mut lines = String::new();
+        for trace in &options.positional {
+            let path = Path::new(trace);
+            let origin = file::origin_path(path);
+            let upgraded =
+                file::upgrade(path).map_err(|error| format!("{}: {error}", origin.display()))?;
+            let done = if upgraded {
+                "upgraded from ORIGIN1"
+            } else {
+                "already ORIGIN2"
+            };
+            let _ = writeln!(lines, "{}: {done}", origin.display());
+        }
+        return render(
+            json,
+            &Prose {
+                lines,
+                origin: None,
+            },
+        );
+    }
     let (capture, media) =
         file::load(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut decoded = None;

@@ -21,8 +21,15 @@ mod tests {
             let display = DisplayDevice::new(width, height);
             let input = InputDevice::new(buttons, Availability::Ready);
             let power = PowerDevice::new(Availability::Ready);
-            let mut shell =
-                Shell::new(display.clone(), input.clone(), power, Memory::default(), 0).unwrap();
+            let mut shell = Shell::new(
+                display.clone(),
+                input.clone(),
+                power,
+                Memory::default(),
+                Memory::default().journal(),
+                0,
+            )
+            .unwrap();
             shell.settings.dim_timeout_secs = 1;
             shell.present();
             assert_eq!(display.0.borrow().pixels[0], 0x0843);
@@ -77,6 +84,7 @@ mod tests {
             input.clone(),
             PowerDevice::new(Availability::Ready),
             Memory::default(),
+            Memory::default().journal(),
             0,
         )
         .unwrap();
@@ -134,14 +142,17 @@ mod tests {
         let display = DisplayDevice::new(64, 64);
         let input = InputDevice::new(&[Button::Center], Availability::Ready);
         let power = PowerDevice::new(Availability::Unsupported);
+        let memory = Memory {
+            available: Availability::Unsupported,
+            ..Memory::default()
+        };
+        let journal = memory.journal();
         let mut shell = Shell::new(
             display.clone(),
             input.clone(),
             power.clone(),
-            Memory {
-                available: Availability::Unsupported,
-                ..Memory::default()
-            },
+            memory,
+            journal,
             0,
         )
         .unwrap();
@@ -183,6 +194,7 @@ mod tests {
             input.clone(),
             power.clone(),
             Memory::default(),
+            Memory::default().journal(),
             0,
         )
         .unwrap();
@@ -228,7 +240,15 @@ mod tests {
         let display = DisplayDevice::new(240, 320);
         let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
         let power = PowerDevice::new(Availability::Ready);
-        let mut shell = Shell::new(display, input, power, Memory::default(), 0).unwrap();
+        let mut shell = Shell::new(
+            display,
+            input,
+            power,
+            Memory::default(),
+            Memory::default().journal(),
+            0,
+        )
+        .unwrap();
         let draw = |shell: &mut Shell<_, _, _, _>, flipped: &[usize]| {
             shell.draw_rows(|y, pixels| {
                 for (x, pixel) in pixels.iter_mut().enumerate() {
@@ -289,8 +309,15 @@ mod tests {
         let display = DisplayDevice::new(240, 320);
         let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
         let power = PowerDevice::new(Availability::Ready);
-        let mut shell =
-            Shell::new(display.clone(), input.clone(), power, Memory::default(), 0).unwrap();
+        let mut shell = Shell::new(
+            display.clone(),
+            input.clone(),
+            power,
+            Memory::default(),
+            Memory::default().journal(),
+            0,
+        )
+        .unwrap();
         shell.set_app_active(true);
         let submissions = || display.0.borrow().submissions;
         assert_eq!(shell.draw(&solid(1), 0), Drawn::Sent, "the first picture");
@@ -362,8 +389,15 @@ mod tests {
         let shell = |display: &DisplayDevice| {
             let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
             let power = PowerDevice::new(Availability::Ready);
-            let mut shell =
-                Shell::new(display.clone(), input, power, Memory::default(), 0).unwrap();
+            let mut shell = Shell::new(
+                display.clone(),
+                input,
+                power,
+                Memory::default(),
+                Memory::default().journal(),
+                0,
+            )
+            .unwrap();
             shell.set_app_active(true);
             shell
         };
@@ -410,7 +444,15 @@ mod tests {
         let display = DisplayDevice::new(240, 320);
         let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
         let power = PowerDevice::new(Availability::Ready);
-        let mut shell = Shell::new(display, input, power, Memory::default(), 0).unwrap();
+        let mut shell = Shell::new(
+            display,
+            input,
+            power,
+            Memory::default(),
+            Memory::default().journal(),
+            0,
+        )
+        .unwrap();
         assert!(shell.save());
         assert_eq!(shell.settings_source, Source::Current);
         assert!(shell.erase_settings());
@@ -428,7 +470,15 @@ mod tests {
         let display = DisplayDevice::new(240, 320);
         let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
         let power = PowerDevice::new(Availability::Ready);
-        let mut shell = Shell::new(display, input, power, Memory::default(), 0).unwrap();
+        let mut shell = Shell::new(
+            display,
+            input,
+            power,
+            Memory::default(),
+            Memory::default().journal(),
+            0,
+        )
+        .unwrap();
         let lying = |color| Solid {
             color,
             hashes_color: false,

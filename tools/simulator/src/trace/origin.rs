@@ -5,6 +5,7 @@ use crate::replay::Capture;
 use crate::trace::file::Media;
 use crate::trace::timeline::{duration, sensor};
 use device_api::storage::Region;
+use firmware_shell::storage::Settings as _;
 use std::fmt::Write as _;
 
 pub fn describe(capture: &Capture, media: Media, origin: &str) -> String {
@@ -15,11 +16,8 @@ pub fn describe(capture: &Capture, media: Media, origin: &str) -> String {
         "{}; the replay starts at power-on {}",
         match media {
             Media::Saved => format!("origin {origin}: the media as the session found it"),
-            Media::Rebuilt(_) => format!(
-                "origin {origin}: rebuilt from the trace's header and the media pulled after the session"
-            ),
             Media::Blank =>
-                "no .origin beside the trace: blank media, erased flash and no bulk card, so rides and settings saved before this power-on are absent".into(),
+                "no .origin beside the trace: a strict replay takes its media from the trace, and a stimulus replay runs on blank media, erased flash and no bulk card, so rides and settings saved before this power-on are absent".into(),
         },
         start.boot
     );
@@ -116,9 +114,6 @@ pub fn describe(capture: &Capture, media: Media, origin: &str) -> String {
         }
     };
     let _ = writeln!(out, "bulk card: {card}");
-    if let Media::Rebuilt(report) = media {
-        let _ = write!(out, "rebuild: {report}");
-    }
     out
 }
 

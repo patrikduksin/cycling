@@ -6,6 +6,8 @@ use crate::sensors::ant::device_type::{HEART_RATE, RADAR};
 use device_api::display::Geometry;
 use firmware_shell::rendering::row::Shown;
 use firmware_shell::shell::Shell;
+use firmware_shell::storage::Store;
+use std::boxed::Box;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::vec;
@@ -126,7 +128,15 @@ impl Screen {
             Rc::new(RefCell::new(vec![0; WIDTH * HEIGHT])),
             Rc::default(),
         );
-        let shell = Shell::new(panel.clone(), Keys, NoPower, NoFlash, 0).expect("display is ready");
+        let shell = Shell::new(
+            panel.clone(),
+            Keys,
+            NoPower,
+            NoFlash,
+            Box::leak(Box::new(Store::new(NoFlash))),
+            0,
+        )
+        .expect("display is ready");
         Self { panel, shell }
     }
 

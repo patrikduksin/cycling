@@ -59,17 +59,13 @@ fn main() {
         let display = DisplayDevice::new(width, height);
         let input = InputDevice::new(buttons, Availability::Unsupported);
         let power = PowerDevice::new(Availability::Unsupported);
-        let mut shell = Shell::new(
-            display.clone(),
-            input.clone(),
-            power,
-            Memory {
-                available: Availability::Unsupported,
-                ..Memory::default()
-            },
-            0,
-        )
-        .unwrap();
+        let memory = Memory {
+            available: Availability::Unsupported,
+            ..Memory::default()
+        };
+        let journal = memory.journal();
+        let mut shell =
+            Shell::new(display.clone(), input.clone(), power, memory, journal, 0).unwrap();
         shell.observe_position(&shell_simulator::devices::NoPosition, 0);
         shell.tick(0);
         shell.present();

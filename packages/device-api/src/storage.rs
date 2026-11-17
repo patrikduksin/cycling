@@ -82,25 +82,6 @@ pub trait OwnedFlash {
     ) -> Result<(), Self::Error>;
 }
 
-impl<T: OwnedFlash + ?Sized> OwnedFlash for &mut T {
-    type Error = T::Error;
-    fn availability(&self, region: Region) -> crate::observation::Availability {
-        (**self).availability(region)
-    }
-    fn geometry(&self, region: Region) -> Geometry {
-        (**self).geometry(region)
-    }
-    fn read(&mut self, region: Region, offset: usize, output: &mut [u8]) -> Result<(), T::Error> {
-        (**self).read(region, offset, output)
-    }
-    fn program(&mut self, region: Region, offset: usize, bytes: &[u8]) -> Result<(), T::Error> {
-        (**self).program(region, offset, bytes)
-    }
-    fn erase(&mut self, region: Region, offset: usize, length: usize) -> Result<(), T::Error> {
-        (**self).erase(region, offset, length)
-    }
-}
-
 #[cfg(test)]
 mod bounds_tests {
     use super::*;

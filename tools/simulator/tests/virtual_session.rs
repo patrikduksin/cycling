@@ -196,6 +196,7 @@ fn foreground_app_receives_only_forwarded_edges_and_transitions_clear_queue() {
         input.clone(),
         PowerDevice::new(Availability::Ready),
         Memory::default(),
+        Memory::default().journal(),
         0,
     )
     .unwrap();
@@ -245,15 +246,22 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     use device_api::input::Button;
     use device_api::input::Input;
 
+    use device_api::observation::Availability;
+    use device_api::positioning::{Positioning, Snapshot};
     use shell_simulator::session::NoAnt;
     use vana::ride::log::Kind;
+    struct Position(Availability, Option<Snapshot>);
+    impl Positioning for Position {
+        fn availability(&self) -> Availability {
+            self.0
+        }
+        fn snapshot(&self, _: u64) -> Option<Snapshot> {
+            self.1
+        }
+    }
     fn present(s: &mut Session) {
-        use device_api::positioning::Positioning;
         let fixture = &s.sim().position;
-        let position = firmware_services::trace::frozen::PositionView {
-            availability: fixture.availability(),
-            snapshot: fixture.snapshot(s.now),
-        };
+        let position = Position(fixture.availability(), fixture.snapshot(s.now));
         s.sdk.frame(&mut s.shell, s.now, &NoAnt, &position);
     }
     fn press(s: &mut Session, button: Button) {
@@ -418,6 +426,7 @@ fn an_app_edge_keeps_the_time_the_device_received_it() {
         input.clone(),
         PowerDevice::new(Availability::Ready),
         Memory::default(),
+        Memory::default().journal(),
         0,
     )
     .unwrap();

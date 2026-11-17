@@ -1,15 +1,11 @@
-use core::cell::RefCell;
-use device_api::ble_transport::{Ble, Operation, Selection};
 use device_api::bulk::ReadWrite;
-use device_api::connectivity::Text;
 use device_api::input::Button;
 use firmware_services::trace::Event;
-use firmware_services::trace::frozen::{FrozenBle, Record, Recorder, Sink};
+use firmware_services::trace::recorder::{Record, Recorder, Sink};
 use firmware_services::{files, store, volume};
 use shell_simulator::bulk::Presence;
 use shell_simulator::compare::{MARKER, Tap};
 use shell_simulator::recording::Recording;
-use shell_simulator::session::BleFixture;
 use shell_simulator::sim::{Sim, minutes, seconds};
 use shell_simulator::trace::timeline::read;
 
@@ -115,62 +111,6 @@ fn an_event_larger_than_any_block_counts_whole() {
     let long = |last: char| format!("{}{last}", "w".repeat(70_000));
     let (a, b) = (long('a'), long('b'));
     assert_ne!(refused_blocks_hash(&a).0, refused_blocks_hash(&b).0);
-}
-
-fn ble_calls_hash(calls: &[Operation]) -> String {
-    let tap = Tap::default();
-    let mut recorder = Recorder::new(vec![0u8; 4096].into_boxed_slice(), Refusing::default());
-    recorder.tap(Box::new(tap.clone()));
-    let recorder = RefCell::new(recorder);
-    let (mut frozen, mut fixture) = (FrozenBle::default(), BleFixture::default());
-    let mut ble = frozen.bind(&mut fixture, 0, &recorder);
-    for &call in calls {
-        let _ = ble.request(call);
-    }
-    tap.hashes(String::new()).trace
-}
-
-#[test]
-fn ble_requests_the_trace_passes_through_count_in_order() {
-    let scan_then_connect = ble_calls_hash(&[Operation::Scan, Operation::Connect]);
-    assert_ne!(scan_then_connect, ble_calls_hash(&[Operation::Scan]));
-    assert_ne!(
-        scan_then_connect,
-        ble_calls_hash(&[Operation::Connect, Operation::Scan])
-    );
-}
-
-#[test]
-fn every_part_of_a_ble_selection_counts() {
-    let strap = Selection {
-        name: Text::new(b"STRAP").unwrap(),
-        address: Some([1, 2, 3, 4, 5, 6]),
-        service: 0x180d,
-        characteristic: 0x2a37,
-    };
-    let select = |selection| ble_calls_hash(&[Operation::Select(Some(selection))]);
-    let other_name = Selection {
-        name: Text::new(b"OTHER").unwrap(),
-        ..strap
-    };
-    let other_address = Selection {
-        address: Some([1, 2, 3, 4, 5, 7]),
-        ..strap
-    };
-    let other_service = Selection {
-        service: 0x1816,
-        ..strap
-    };
-    let hashes = [
-        select(strap),
-        select(other_name),
-        select(other_address),
-        select(other_service),
-        ble_calls_hash(&[Operation::Select(None)]),
-    ];
-    for (at, hash) in hashes.iter().enumerate() {
-        assert!(!hashes[at + 1..].contains(hash), "selection {at}");
-    }
 }
 
 #[test]

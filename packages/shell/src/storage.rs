@@ -1,14 +1,26 @@
+use device_api::capability::capability;
 use device_api::storage::{OwnedFlash, Region};
-use firmware_services::storage::{AppStorage, CAPACITY, Journal, Record, RegionAccess};
+use firmware_services::storage::{CAPACITY, Journal, Record};
+
+/// `Flash(())` drops the medium's error so every medium fits one `dyn Settings`; the trace records that the load or save failed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Error<E> {
-    Journal(firmware_services::storage::Error<E>),
+pub enum Error {
+    Journal(firmware_services::storage::Error<()>),
     /// The journal is valid but the preference schema cannot safely be replaced.
     UnrecognizedSettings,
 }
-impl<E> From<firmware_services::storage::Error<E>> for Error<E> {
+impl<E> From<firmware_services::storage::Error<E>> for Error {
     fn from(error: firmware_services::storage::Error<E>) -> Self {
-        Self::Journal(error)
+        use firmware_services::storage::Error as Journal;
+        Self::Journal(match error {
+            Journal::Flash(_) => Journal::Flash(()),
+            Journal::PayloadTooLarge => Journal::PayloadTooLarge,
+            Journal::OutputTooSmall => Journal::OutputTooSmall,
+            Journal::ReadbackFailed => Journal::ReadbackFailed,
+            Journal::UnrecognizedJournal => Journal::UnrecognizedJournal,
+            Journal::UnsupportedGeometry => Journal::UnsupportedGeometry,
+            Journal::NoRecord => Journal::NoRecord,
+        })
     }
 }
 pub struct Loaded {
@@ -18,7 +30,29 @@ pub struct Loaded {
     pub length: usize,
 }
 
-/// Settings journal and generic owned bytes. No application format or reclaim policy.
+/// The shell's settings at the decoded level: what was loaded and what each
+/// save made of it, never the journal's sectors, whose pick depends on the
+/// medium. The settings hold the Wi-Fi password, so what carries them is
+/// redacted.
+#[capability(id = 19)]
+pub trait Settings {
+    #[request(redact)]
+    fn load(&mut self) -> Result<Loaded, Error>;
+    #[request(redact)]
+    fn save(&mut self, settings: crate::preferences::Settings) -> Result<Record, Error>;
+    /// Replace only the application's preferences in the stored record, so
+    /// temporary display preferences are not persisted along with them.
+    #[request]
+    fn save_app(&mut self, app: crate::preferences::AppPreferences) -> Result<Record, Error>;
+    /// Replace only the stored Wi-Fi, BLE and BLE profile settings, from `current`.
+    #[request(redact)]
+    fn save_connectivity(&mut self, current: crate::preferences::Settings)
+    -> Result<Record, Error>;
+    #[request]
+    fn erase(&mut self) -> Result<(), Error>;
+}
+
+/// No application format or reclaim policy.
 /// Calls are synchronous: the caller yields between bounded media operations.
 /// Media programming/erase can suspend interrupts and acquisition. Callers
 /// must retain transport loss detection and reset parsing after detected gaps.
@@ -33,8 +67,10 @@ impl<B: OwnedFlash> Store<B> {
             journal: Journal::new(backend, Region::Configuration),
         }
     }
+}
 
-    pub fn load(&mut self) -> Result<Loaded, Error<B::Error>> {
+impl<B: OwnedFlash> Settings for Store<B> {
+    fn load(&mut self) -> Result<Loaded, Error> {
         let mut payload = [0u8; CAPACITY];
         let record = match self.journal.load(&mut payload) {
             Err(firmware_services::storage::Error::UnrecognizedJournal) => {
@@ -57,10 +93,7 @@ impl<B: OwnedFlash> Store<B> {
         })
     }
 
-    pub fn save(
-        &mut self,
-        settings: crate::preferences::Settings,
-    ) -> Result<Record, Error<B::Error>> {
+    fn save(&mut self, settings: crate::preferences::Settings) -> Result<Record, Error> {
         if self.load()?.source == crate::preferences::Source::Foreign {
             return Err(Error::UnrecognizedSettings);
         }
@@ -78,22 +111,16 @@ impl<B: OwnedFlash> Store<B> {
         }
     }
 
-    /// Replace only the application's preferences in the stored record, so
-    /// temporary display preferences are not persisted along with them.
-    pub fn save_app(
-        &mut self,
-        app: crate::preferences::AppPreferences,
-    ) -> Result<Record, Error<B::Error>> {
+    fn save_app(&mut self, app: crate::preferences::AppPreferences) -> Result<Record, Error> {
         let mut settings = self.load()?.settings;
         settings.app = app;
         self.save(settings)
     }
 
-    /// Connectivity provisioning must not accidentally persist temporary display preferences.
-    pub fn save_connectivity(
+    fn save_connectivity(
         &mut self,
         current: crate::preferences::Settings,
-    ) -> Result<Record, Error<B::Error>> {
+    ) -> Result<Record, Error> {
         let mut settings = self.load()?.settings;
         settings.wifi = current.wifi;
         settings.ble = current.ble;
@@ -101,20 +128,8 @@ impl<B: OwnedFlash> Store<B> {
         self.save(settings)
     }
 
-    pub fn erase(&mut self) -> Result<(), Error<B::Error>> {
+    fn erase(&mut self) -> Result<(), Error> {
         Ok(self.journal.erase()?)
-    }
-
-    pub fn data(&mut self) -> AppStorage<'_, B> {
-        AppStorage::new(self.journal.flash_mut())
-    }
-
-    pub fn crash(&mut self) -> RegionAccess<'_, B> {
-        RegionAccess::new(self.journal.flash_mut(), Region::Crash)
-    }
-
-    pub fn geometry(&mut self, region: Region) -> device_api::storage::Geometry {
-        self.journal.flash_mut().geometry(region)
     }
 }
 
@@ -245,7 +260,28 @@ mod tests {
             assert_eq!(store.journal.flash_mut().bytes, before, "seed {seed}");
         }
     }
+    #[test]
+    fn settings_takes_the_next_capability_id_and_redacts_what_carries_secrets() {
+        use device_api::capability::{ALL, Kind};
+        assert_eq!(CAPABILITY_SETTINGS.id, ALL.last().unwrap().id + 1);
+        let request = Kind::Request {
+            refreshes: false,
+            repeats: false,
+        };
+        let declared = CAPABILITY_SETTINGS
+            .methods
+            .iter()
+            .map(|method| (method.name, method.kind, method.redacted));
+        assert!(declared.eq([
+            ("load", request, true),
+            ("save", request, true),
+            ("save_app", request, false),
+            ("save_connectivity", request, true),
+            ("erase", request, false),
+        ]));
+    }
 }
 
 #[cfg(test)]
 mod memory;
+pub mod recorded;

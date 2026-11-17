@@ -284,67 +284,51 @@ impl Wire<'_> for ant::SendStage {
     }
 }
 
-impl Wire<'_> for Result<ant::Admission, ant::Error> {
+impl Wire<'_> for ant::Admission {
     fn put(&self, w: &mut Writer) {
         match self {
-            Ok(ant::Admission::Accepted) => w.byte(0),
-            Ok(ant::Admission::SendQueued(id)) => {
+            Self::Accepted => w.byte(0),
+            Self::SendQueued(id) => {
                 w.byte(1);
                 id.put(w);
-            }
-            Err(error) => {
-                w.byte(2);
-                error.put(w);
             }
         }
     }
     fn take(r: &mut Reader<'_>) -> Self {
         match r.byte() {
-            0 => Ok(ant::Admission::Accepted),
-            1 => Ok(ant::Admission::SendQueued(ant::OperationId::take(r))),
-            2 => Err(ant::Error::take(r)),
+            0 => Self::Accepted,
+            1 => Self::SendQueued(ant::OperationId::take(r)),
             _ => {
                 r.fail();
-                Err(ant::Error::Uncertain)
+                Self::Accepted
             }
         }
     }
 }
 
-macro_rules! results {
-    ($($ok:ty, $error:ty;)*) => {$(
-        impl Wire<'_> for Result<$ok, $error> {
-            fn put(&self, w: &mut Writer) {
-                match self {
-                    Ok(value) => {
-                        w.byte(0);
-                        value.put(w);
-                    }
-                    Err(error) => {
-                        w.byte(1);
-                        error.put(w);
-                    }
-                }
+impl<'a, T: Wire<'a>, E: Wire<'a>> Wire<'a> for Result<T, E> {
+    fn put(&self, w: &mut Writer) {
+        match self {
+            Ok(value) => {
+                w.byte(0);
+                value.put(w);
             }
-            fn take(r: &mut Reader<'_>) -> Self {
-                match r.byte() {
-                    0 => Ok(Wire::take(r)),
-                    1 => Err(Wire::take(r)),
-                    _ => {
-                        r.fail();
-                        Err(Wire::take(r))
-                    }
-                }
+            Err(error) => {
+                w.byte(1);
+                error.put(w);
             }
         }
-    )*};
-}
-
-results! {
-    (), device_api::observation::Error;
-    (), bulk::Error;
-    bulk::Info, bulk::Error;
-    bulk::OwnedInfo, bulk::Error;
+    }
+    fn take(r: &mut Reader<'a>) -> Self {
+        match r.byte() {
+            0 => Ok(Wire::take(r)),
+            1 => Err(Wire::take(r)),
+            _ => {
+                r.fail();
+                Err(Wire::take(r))
+            }
+        }
+    }
 }
 
 impl Wire<'_> for AccessPointState {

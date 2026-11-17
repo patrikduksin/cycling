@@ -270,5 +270,16 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     for pc in &pcs[..frames] {
         esp_println::println!("0x{:x}", pc);
     }
+    // The trace's spool sits in PSRAM behind the data cache, and the reset
+    // drops what the cache has not written back; the next boot salvages
+    // what PSRAM holds (`drivers::psram`).
+    // SAFETY: the ROM routine writes every dirty line back and returns; no
+    // task or interrupt touches PSRAM from here to the reset.
+    unsafe { Cache_WriteBack_All() };
     esp_hal::system::software_reset()
+}
+
+unsafe extern "C" {
+    /// The ESP32-S3 ROM's data cache write-back (`esp32s3.rom.ld`).
+    fn Cache_WriteBack_All();
 }

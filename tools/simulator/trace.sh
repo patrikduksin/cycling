@@ -27,6 +27,10 @@ fi
     read -r commit
 } < <(git rev-parse --show-toplevel --path-format=absolute --git-common-dir HEAD)
 
+# A strict replay of a device's trace reads the TERRAIN pack its header
+# names from the primary checkout's packs, as worktrees share its `.local`.
+export CYCLING_TERRAIN_PACKS="${CYCLING_TERRAIN_PACKS:-$(dirname "$common")/.local/terrain}"
+
 if [ "${1:-}" = pull ]; then
     shift
     exec uv run --project "$root/tools/devtools" --locked \

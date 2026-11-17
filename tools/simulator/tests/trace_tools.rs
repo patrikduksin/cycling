@@ -118,22 +118,38 @@ fn no_committed_fixture_holds_a_wifi_password_or_a_phone_token() {
 #[test]
 fn secrets_finds_a_wifi_password_a_phone_token_and_saved_credentials() {
     use shell_simulator::trace::secret::secrets;
-    let mut sim = Sim::new().boot();
-    sim.discard_recording();
-    sim.advance(seconds(5));
-    sim.device
-        .command(
-            b"CMD 1 WIFI CONFIG WPA2 54657374 70617373776f7264",
-            &mut String::new(),
-        )
-        .expect("the command parses");
-    sim.advance(seconds(1));
-    sim.connect_phone();
-    sim.phone_request(device_api::server::Method::Get, "/api/workouts", b"");
+    let configure = b"CMD 1 WIFI CONFIG WPA2 54657374 70617373776f7264";
+    let session = |redacting: bool| {
+        let mut sim = Sim::new().boot();
+        sim.discard_recording();
+        if redacting {
+            sim.device.redact_secrets();
+        }
+        sim.advance(seconds(5));
+        sim.device
+            .command(configure, &mut String::new())
+            .expect("the command parses");
+        sim.advance(seconds(1));
+        sim.connect_phone();
+        sim.phone_request(device_api::server::Method::Get, "/api/workouts", b"");
+        sim
+    };
+    let mut sim = session(false);
     let found = secrets(&sim.capture());
-    assert_eq!(found.len(), 2, "{found:?}");
-    assert!(found[0].ends_with("a Wi-Fi password"), "{found:?}");
-    assert!(found[1].ends_with("a phone session token"), "{found:?}");
+    let what: Vec<&str> = found
+        .iter()
+        .map(|found| found.split_once(": ").expect("where and what").1)
+        .collect();
+    assert_eq!(
+        what,
+        [
+            "a Wi-Fi password",
+            "a Wi-Fi password in the shell's settings",
+            "a Wi-Fi password in a radio request",
+            "a phone session token",
+        ],
+        "{found:?}"
+    );
 
     sim.device
         .power_cycle()
@@ -141,7 +157,24 @@ fn secrets_finds_a_wifi_password_a_phone_token_and_saved_credentials() {
     sim.advance(seconds(5));
     assert_eq!(
         secrets(&sim.capture()),
-        ["the origin's settings: saved Wi-Fi credentials"]
+        [
+            "the origin's settings: saved Wi-Fi credentials",
+            "the pass at 00:00.000: a Wi-Fi password in the shell's settings",
+        ],
+        "the settings the shell loads at boot"
+    );
+
+    let mut redacting = session(true);
+    assert_eq!(secrets(&redacting.capture()), [] as [&str; 0]);
+    redacting
+        .device
+        .power_cycle()
+        .expect("the device powers on again");
+    redacting.advance(seconds(5));
+    assert_eq!(
+        secrets(&redacting.capture()),
+        ["the origin's settings: saved Wi-Fi credentials"],
+        "a redacting trace holds no secret; its media still does"
     );
 }
 
@@ -593,12 +626,6 @@ fn a_trace_outside_the_fixtures_gets_the_steps_that_make_it_one() {
         "{steps}"
     );
 
-    file::save_rebuilt(&capture.origin, "file bests.dat: gone\n", &outside).unwrap();
-    let (capture, media) = file::load(&outside).unwrap();
-    assert_eq!(media, file::Media::Rebuilt("file bests.dat: gone\n".into()));
-    let steps = to_fixture(&outside, &capture, &media).unwrap();
-    assert!(steps.contains("device trace"), "a rebuilt origin: {steps}");
-
     std::fs::remove_file(file::origin_path(&outside)).unwrap();
     let (capture, media) = file::load(&outside).unwrap();
     let steps = to_fixture(&outside, &capture, &media).unwrap();
@@ -659,7 +686,7 @@ fn a_strict_replay_of_a_fixture_shows_the_recorded_frames() {
 
 #[test]
 fn a_strict_replay_holds_a_fixture_to_its_panel_digests() {
-    use firmware_services::trace::frozen::{Record, Recorder};
+    use firmware_services::trace::recorder::{Record, Recorder};
     use firmware_services::trace::{Event, decode, encode_header};
     let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
     let (header, events) = decode(&capture.trace).unwrap();
@@ -1424,7 +1451,6 @@ fn every_other_trace_command_answers_in_one_json_document() {
     let origin = trace_json(&["origin", trace]);
     assert!(origin["origin"].as_str().unwrap().ends_with(".origin"));
     assert!(origin["lines"][0].as_str().unwrap().starts_with("origin "));
-    assert_eq!(trace_json(&["media", trace])["lines"][0], "boot 1");
     let otlp = trace_json(&["otlp", trace]);
     assert!(otlp["traces"]["resourceSpans"].is_array(), "{otlp}");
     assert!(otlp["metrics"]["resourceMetrics"].is_array());
@@ -1434,29 +1460,6 @@ fn every_other_trace_command_answers_in_one_json_document() {
         "a committed fixture needs no steps"
     );
     assert!(stub["test"].as_str().unwrap().contains("#[test]"));
-
-    let dir = scratch("rebuild-json");
-    let copy = dir.join("copy.trace");
-    std::fs::copy(fixture("laps-and-a-menu"), &copy).unwrap();
-    std::fs::create_dir(dir.join("pulled")).unwrap();
-    let rebuilt = trace_json(&[
-        "rebuild",
-        path_of(&copy),
-        "--pulled",
-        path_of(&dir.join("pulled")),
-    ]);
-    assert_eq!(
-        rebuilt["origin"],
-        path_of(&std::fs::canonicalize(dir.join("copy.origin")).unwrap())
-    );
-    assert!(
-        rebuilt["not_rebuilt"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|gap| gap.as_str().unwrap().contains("not pulled")),
-        "{rebuilt}"
-    );
 
     let failed = std::process::Command::new(env!("CARGO_BIN_EXE_trace"))
         .args(["summary", "no-such.trace", "--json"])

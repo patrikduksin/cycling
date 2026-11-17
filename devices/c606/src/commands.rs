@@ -43,31 +43,17 @@ pub trait Diagnostics {
     fn set_fault(&self, fault: u8);
     fn stall(&self);
 }
-/// Capability handles owned by the console task and shared with the terminal.
-pub struct Devices {
-    pub ant: device::board::Ant,
-    pub ble: device::board::Ble,
-    pub position: device::board::Positioning,
-    pub bulk: device::board::Bulk,
-    pub sound: device::board::Sound,
-    pub sensors: device::board::Sensors,
-    pub server: device::drivers::http::Server,
-    pub access_point: device::board::AccessPoint,
-    pub input: device::board::Input,
-    pub power: device::board::Power,
-}
-
 pub fn execute<C: device_api::console::Console>(
     terminal: &mut Terminal<C>,
     request: Request,
     system: &mut crate::FirmwareShell,
     now: u64,
-    devices: &mut Devices,
+    world: &mut crate::world::World,
     diagnostics: &impl Diagnostics,
     sdk: &mut vana::app::Runtime,
     trace: &mut crate::trace::Trace,
 ) {
-    let Devices {
+    let crate::world::Console {
         ant,
         ble,
         position,
@@ -76,19 +62,22 @@ pub fn execute<C: device_api::console::Console>(
         sensors,
         input,
         power,
-        // The phone session serves through VANA's loop, not commands.
-        server: _,
-        access_point: _,
-    } = devices;
+    } = world.unrecorded_console();
     let started = embassy_time::Instant::now();
     let mut output = Text::new();
+    // The radios' control status decides what a SELECT, FORGET or CONFIG
+    // answers, so the world log holds what the command read of them, as
+    // the simulator's session records it.
+    let (log, observed) = (trace.log, trace.observed);
+    let mut ble = device_api::ble_transport::BleRecorder::new(ble, log, &observed.ble);
+    let mut wifi = device_api::connectivity::WifiRecorder::new(Station, log, &observed.wifi);
     let status = firmware_console::commands::execute(
         request.command,
         now,
         Capabilities {
             ant,
-            ble,
-            wifi: &mut Station,
+            ble: &mut ble,
+            wifi: &mut wifi,
             power,
             input,
         },
@@ -158,11 +147,14 @@ struct TracedCard<'a> {
 
 impl Card for TracedCard<'_> {
     fn media(&mut self) -> impl device_api::bulk::ReadWrite + '_ {
-        firmware_services::trace::frozen::RecordedBulk::counted(
+        device_api::bulk::ReadWriteRecorder::new(
             &mut *self.bulk,
-            &self.trace.record,
             self.trace.log,
+            &self.trace.observed.bulk,
         )
+    }
+    fn store(&mut self) -> impl device_api::bulk::ReadWrite + '_ {
+        &mut *self.bulk
     }
     fn trace_in_store(&self) -> bool {
         self.trace.open()
@@ -172,6 +164,10 @@ impl Card for TracedCard<'_> {
     }
     fn after_volume(&mut self, now: u64) {
         self.trace.after_host(&mut *self.bulk, false, now);
+        let (log, observed) = (self.trace.log, self.trace.observed);
+        let mut media =
+            device_api::bulk::ReadWriteRecorder::new(&mut *self.bulk, log, &observed.bulk);
+        self.trace.read_volumes(&mut media);
     }
     fn sync_trace(&mut self, now: u64) {
         self.trace.sync(&mut *self.bulk, now);
@@ -241,22 +237,31 @@ impl<C: device_api::console::Console, G: Diagnostics> Board<crate::FirmwareShell
         mut out: &mut dyn Write,
     ) -> &'static str {
         match command {
-            Command::Peripheral(command) => firmware_console::commands::peripherals::execute(
-                command,
-                now,
-                &mut *self.bulk,
-                &mut *self.sound,
-                &mut *self.position,
-                &mut *self.sensors,
-                &mut out,
-            ),
+            Command::Peripheral(command) => {
+                use firmware_console::commands::peripherals;
+                let status = peripherals::execute(
+                    command,
+                    now,
+                    &mut *self.bulk,
+                    &mut *self.sound,
+                    &mut *self.position,
+                    &mut *self.sensors,
+                    &mut out,
+                );
+                // The test wrote the card unseen by the trace.
+                if let peripherals::Command::MmcOwnedTest { .. } = command {
+                    self.trace.forget_card();
+                    self.card().after_volume(now);
+                }
+                status
+            }
             Command::Fitted => {
                 fitted(system, out);
                 "OK"
             }
             Command::Crash => crash(system, out),
             Command::CrashClear => {
-                match crate::device::drivers::crash_rtc::clear(&mut system.crash_storage()) {
+                match crate::device::drivers::crash_rtc::clear(&mut crash_journal(system)) {
                     Ok(()) => "OK",
                     Err(device_api::storage::AccessError::Unavailable) => "UNAVAILABLE",
                     Err(_) => "FAILED",
@@ -290,8 +295,20 @@ impl<C: device_api::console::Console, G: Diagnostics> Board<crate::FirmwareShell
     }
 }
 
+/// The panic journal, read past the shell's recorder: `CRASH` and `FITTED`
+/// answer on this device only, so a replay asks its world for none of what
+/// they read.
+fn crash_journal(
+    system: &mut crate::FirmwareShell,
+) -> firmware_services::storage::RegionAccess<'_, crate::SharedFlash> {
+    firmware_services::storage::RegionAccess::new(
+        system.flash().unrecorded_mut(),
+        device_api::storage::Region::Crash,
+    )
+}
+
 fn crash(system: &mut crate::FirmwareShell, out: &mut dyn Write) -> &'static str {
-    let record = match crate::device::drivers::crash_rtc::last(&mut system.crash_storage()) {
+    let record = match crate::device::drivers::crash_rtc::last(&mut crash_journal(system)) {
         Err(device_api::storage::AccessError::Unavailable) => return "UNAVAILABLE",
         Err(_) => return "FAILED",
         Ok(None) => {
@@ -565,8 +582,9 @@ pub async fn transfer(
 fn fitted(system: &mut crate::FirmwareShell, output: &mut dyn Write) {
     use device_api::input::InputSource as _;
     use device_api::observation::Availability;
+    use device_api::storage::OwnedFlash as _;
     let panel = system.display_geometry();
-    let controls = system.input_source().controls();
+    let controls = system.input_source().unrecorded().controls();
     let touch = match controls.touch {
         Availability::Unsupported => "unsupported",
         Availability::Initializing => "initializing",
@@ -587,7 +605,7 @@ fn fitted(system: &mut crate::FirmwareShell, output: &mut dyn Write) {
         let _ = write!(output, "{}{}", separator, button.index());
     }
     for &(name, region) in device::fitted::REGIONS {
-        let geometry = system.owned_geometry(region);
+        let geometry = system.flash().unrecorded().geometry(region);
         let _ = write!(
             output,
             " {name}_offset={:#x} {name}_size={:#x} {name}_erase={:#x}",

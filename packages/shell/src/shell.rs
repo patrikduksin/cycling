@@ -6,7 +6,6 @@ use crate::idle::Idle;
 use crate::preferences::Settings;
 use crate::preferences::Source;
 use crate::rendering::row::Row;
-use crate::storage::Store;
 use device_api::display::BAND_ROWS;
 use device_api::display::Display;
 use device_api::display::Rows;
@@ -176,7 +175,8 @@ pub struct Shell<D, I, P, B> {
     synthetic: Synthetic,
     pub boot_id: u32,
     pub synthetic_events: u32,
-    store: Store<B>,
+    flash: B,
+    store: &'static mut dyn crate::storage::Settings,
     pub settings: Settings,
     pub settings_source: Source,
     pub settings_error: bool,
@@ -228,7 +228,14 @@ pub struct Shell<D, I, P, B> {
     dev_frame: u8,
 }
 impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> Shell<D, I, P, B> {
-    pub fn new(display: D, input: I, power: P, backend: B, now: u64) -> Result<Self, Error> {
+    pub fn new(
+        display: D,
+        input: I,
+        power: P,
+        flash: B,
+        store: &'static mut dyn crate::storage::Settings,
+        now: u64,
+    ) -> Result<Self, Error> {
         match display.availability() {
             Availability::Ready => {}
             Availability::Unsupported => return Err(Error::Unsupported),
@@ -249,8 +256,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             return Err(Error::Unavailable);
         }
         let next_button = controls.buttons.first().copied();
-        let storage_available = backend.availability(device_api::storage::Region::Configuration);
-        let mut store = Store::new(backend);
+        let storage_available = flash.availability(device_api::storage::Region::Configuration);
         let loaded = if storage_available == Availability::Ready {
             Some(store.load())
         } else {
@@ -274,6 +280,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             panel: None,
             shown: None,
             taken: None,
+            flash,
             store,
             settings,
             settings_source: source,
@@ -319,11 +326,11 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     }
     /// Borrow application-owned bytes without exposing the preferences journal.
     pub fn data_storage(&mut self) -> firmware_services::storage::AppStorage<'_, B> {
-        self.store.data()
+        firmware_services::storage::AppStorage::new(&mut self.flash)
     }
-    /// Borrow the device's panic journal for `CRASH`.
-    pub fn crash_storage(&mut self) -> firmware_services::storage::RegionAccess<'_, B> {
-        self.store.crash()
+    /// The owned flash, for a composition's own diagnostics.
+    pub fn flash(&mut self) -> &mut B {
+        &mut self.flash
     }
 
     pub fn activity(&mut self, now: u64) {
@@ -357,12 +364,6 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     }
     pub fn display_geometry(&self) -> device_api::display::Geometry {
         self.display.geometry()
-    }
-    pub fn owned_geometry(
-        &mut self,
-        region: device_api::storage::Region,
-    ) -> device_api::storage::Geometry {
-        self.store.geometry(region)
     }
     /// The physical input source, for composition that records what `tick` took.
     pub fn input_source(&mut self) -> &mut I {
@@ -616,12 +617,15 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         self.store_settings(|store, settings| store.save(settings))
     }
 
-    fn store_settings<E>(
+    fn store_settings(
         &mut self,
-        save: impl FnOnce(&mut Store<B>, Settings) -> Result<firmware_services::storage::Record, E>,
+        save: impl FnOnce(
+            &mut dyn crate::storage::Settings,
+            Settings,
+        ) -> Result<firmware_services::storage::Record, crate::storage::Error>,
     ) -> bool {
         let saved =
-            self.settings_source != Source::Foreign && save(&mut self.store, self.settings).is_ok();
+            self.settings_source != Source::Foreign && save(self.store, self.settings).is_ok();
         self.operations = self.operations.saturating_add(1);
         self.settings_error = !saved;
         if saved {

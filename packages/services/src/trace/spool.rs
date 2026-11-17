@@ -16,15 +16,41 @@
 //! A block the spool has no room for is lost; the recorder names it in the
 //! next block the spool takes, as [`super::Event::Lost`], so a full ring
 //! leaves a gap a reader sees.
-use super::frozen::{Record, Recorder, Sink};
+use super::Medium;
+use super::log::Log;
+use super::media::Memory;
 use super::origin::{self, Generations};
+use super::recorder::{Recorder, Sink};
+use super::tail;
 use crate::store::{self, Appender, Dir, Error, Name, Sector, Store};
 use crate::volume::{self, Extent, Layout, Volume};
+use core::ops::DerefMut;
 use device_api::bulk::ReadWrite;
 
 /// The directory traces live in; the oldest rolls over when the store is
 /// full.
 pub const TRACES: &str = "traces/";
+
+/// The newest trace in [`TRACES`], the one with the highest sequence
+/// number, and that number.
+pub fn newest(
+    store: &Store,
+    media: &mut impl ReadWrite,
+    sector: &mut Sector,
+) -> Result<Option<(u32, Name)>, Error> {
+    let mut newest: Option<(u32, Name)> = None;
+    store.list(media, &Dir::new(TRACES)?, sector, |entry| {
+        let sequence = entry.name.as_str().strip_prefix(TRACES);
+        if let Some(sequence) = sequence.and_then(|rest| rest.get(..6)?.parse::<u32>().ok())
+            && newest
+                .as_ref()
+                .is_none_or(|(highest, _)| sequence > *highest)
+        {
+            newest = Some((sequence, entry.name));
+        }
+    })?;
+    Ok(newest)
+}
 
 /// The name of the next power-on session's trace: one past the highest
 /// sequence number in [`TRACES`], then the boot id, as in
@@ -35,17 +61,34 @@ pub fn next_name(
     boot: u32,
     sector: &mut Sector,
 ) -> Result<Name, Error> {
+    let highest = newest(store, media, sector)?.map_or(0, |(sequence, _)| sequence);
+    name_after(highest, boot)
+}
+
+fn name_after(sequence: u32, boot: u32) -> Result<Name, Error> {
     use core::fmt::Write;
-    let mut highest = 0u32;
-    store.list(media, &Dir::new(TRACES)?, sector, |entry| {
-        let sequence = entry.name.as_str().strip_prefix(TRACES);
-        if let Some(sequence) = sequence.and_then(|rest| rest.get(..6)?.parse::<u32>().ok()) {
-            highest = highest.max(sequence);
-        }
-    })?;
     let mut text = heapless::String::<{ store::NAME }>::new();
-    write!(text, "{TRACES}{:06}-{boot:08x}.trace", highest + 1).map_err(|_| Error::Name)?;
+    write!(text, "{TRACES}{:06}-{boot:08x}.trace", sequence + 1).map_err(|_| Error::Name)?;
     Name::new(&text)
+}
+
+/// The durable horizon of the trace before a session's: see
+/// [`super::Event::Horizon`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Horizon {
+    pub previous: Name,
+    pub last_pass_ms: Option<u64>,
+    pub blocks: u32,
+}
+
+impl Horizon {
+    pub fn event(&self) -> super::Event<'_> {
+        super::Event::Horizon {
+            previous: self.previous.as_str(),
+            last_pass_ms: self.last_pass_ms,
+            blocks: self.blocks,
+        }
+    }
 }
 
 /// How often the drain makes the trace durable.
@@ -162,6 +205,12 @@ impl<R: AsRef<[u8]> + AsMut<[u8]>> Spool<R> {
         self.refused
     }
 
+    /// The ring as memory holds it, bytes already drained included: what a
+    /// crash leaves of it (see [`tail::Remains`]).
+    pub fn memory(&self) -> &[u8] {
+        self.ring.as_ref()
+    }
+
     /// The oldest bytes, at most `max`, that lie together in the ring.
     fn front(&self, max: usize) -> &[u8] {
         let together = self.len.min(self.capacity() - self.start).min(max);
@@ -223,6 +272,8 @@ pub struct Drain {
     synced_ms: u64,
     written: u64,
     booting: bool,
+    /// The trace before this one, until its horizon is read.
+    previous: Option<Name>,
 }
 
 impl Drain {
@@ -251,6 +302,7 @@ impl Drain {
             synced_ms: now,
             written: header.len() as u64,
             booting: true,
+            previous: None,
         })
     }
 
@@ -405,6 +457,66 @@ impl File {
         matches!(self, Self::Open(..))
     }
 
+    /// After a panic or a watchdog reset, while the file stages: append to
+    /// the newest trace what `remains` holds after its end, and sync it
+    /// (see [`tail`]). The blocks appended. `window` is as [`tail::tail`]
+    /// takes it.
+    pub fn salvage(
+        &self,
+        bulk: &mut impl ReadWrite,
+        remains: tail::Remains<'_>,
+        window: &mut [u8],
+        sector: &mut Sector,
+    ) -> Result<u32, &'static str> {
+        let Self::Staging(extent, _) = *self else {
+            return Ok(0);
+        };
+        let mut volume = Volume::new(&mut *bulk, extent);
+        let mut store = store::mount(&mut volume, sector).map_err(|_| "STORE does not mount")?;
+        let newest = newest(&store, &mut volume, sector).map_err(|_| "STORE does not list")?;
+        let Some((_, name)) = newest else {
+            return Ok(0);
+        };
+        let rollover = Dir::new(TRACES).ok();
+        tail::salvage(
+            &mut store,
+            &mut volume,
+            &name,
+            rollover,
+            remains,
+            window,
+            sector,
+        )
+        .map_err(|_| "the store failed")
+    }
+
+    /// Once, in a pass after the file opened: the durable horizon of the
+    /// trace before it, when there is one that reads. `window` is as
+    /// [`tail::tail`] takes it.
+    pub fn horizon(
+        &mut self,
+        bulk: &mut impl ReadWrite,
+        window: &mut [u8],
+        sector: &mut Sector,
+    ) -> Option<Horizon> {
+        let Self::Open(extent, _, drain) = self else {
+            return None;
+        };
+        let previous = drain.previous.take()?;
+        let mut volume = Volume::new(&mut *bulk, *extent);
+        let tail = tail::tail(&drain.store, &mut volume, &previous, window, sector).ok()?;
+        Some(Horizon {
+            previous,
+            last_pass_ms: tail.last_pass_ms,
+            blocks: tail.blocks,
+        })
+    }
+
+    /// Whether [`File::horizon`] has a trace to read.
+    pub fn horizon_due(&self) -> bool {
+        matches!(self, Self::Open(_, _, drain) if drain.previous.is_some())
+    }
+
     /// This pass's share of the spool, as `card` allows. The file opens at
     /// the first open pass `header` gives the header and the boot id, named
     /// by [`next_name`]. An error ends the file and says why.
@@ -426,9 +538,11 @@ impl File {
             };
             let mut volume = Volume::new(&mut *bulk, extent);
             let opened = store::mount(&mut volume, sector).and_then(|mounted| {
-                let name = next_name(&mounted, &mut volume, boot, sector)?;
+                let previous = newest(&mounted, &mut volume, sector)?;
+                let sequence = previous.map_or(0, |(sequence, _)| sequence);
+                let name = name_after(sequence, boot)?;
                 let traces = Dir::new(TRACES)?;
-                Drain::create(
+                let mut drain = Drain::create(
                     &mut volume,
                     mounted,
                     name,
@@ -436,7 +550,9 @@ impl File {
                     header.as_ref(),
                     now,
                     sector,
-                )
+                )?;
+                drain.previous = previous.map(|(_, name)| name);
+                Ok(drain)
             });
             match opened {
                 Ok(drain) => *self = Self::Open(extent, generations, drain),
@@ -493,39 +609,49 @@ impl File {
         Ok(())
     }
 
-    /// After a host had the card: in a transfer session (`unseen`), a write
-    /// to what VANA reads, FILES or TERRAIN, records
-    /// [`super::Event::HostWrote`] and ends the file; so does a moved STORE
+    /// After a host had the card. A transfer session (`unseen`) that wrote
+    /// what VANA reads, FILES or TERRAIN, makes `log` forget the card, so
+    /// the next read of it records its bytes again: true then, and the
+    /// caller reads the volume table again. A moved STORE ends the file,
     /// after a recorded volume command too. A store that changed otherwise
     /// opens the file again.
-    pub fn after_host<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
+    pub fn after_host<B, S, M>(
         &mut self,
-        recorder: &mut Recorder<B, S>,
+        log: &mut Log<B, S, M>,
         bulk: &mut impl ReadWrite,
         unseen: bool,
         now: u64,
         sector: &mut Sector,
-    ) -> Result<(), &'static str> {
+    ) -> Result<bool, &'static str>
+    where
+        B: AsRef<[u8]> + AsMut<[u8]>,
+        S: Staging,
+        M: DerefMut<Target = Memory>,
+    {
         let (Self::Staging(extent, generations) | Self::Open(extent, generations, _)) = *self
         else {
-            return Ok(());
+            return Ok(false);
         };
-        let wrote = unseen && origin::generations(bulk, sector) != generations;
         let table = volume::read(bulk, sector);
         let moved = !matches!(table, Ok(Layout::Table(table)) if table.find(&volume::STORE) == Some(extent));
-        if wrote || moved {
-            recorder.record(&super::Event::HostWrote);
-            self.sync(recorder, bulk, now, sector)?;
-            return self.end("the host wrote the card");
+        if moved {
+            if let Some(recorder) = &mut log.recorder {
+                self.sync(recorder, bulk, now, sector)?;
+            }
+            return self.end("STORE moved").map(|()| false);
+        }
+        let wrote = unseen && origin::generations(bulk, sector) != generations;
+        if wrote {
+            log.forget(Medium::Bulk);
         }
         if let Self::Open(_, _, drain) = self
             && drain
                 .resume(&mut Volume::new(&mut *bulk, extent), sector)
                 .is_err()
         {
-            return self.end("the host deleted the trace");
+            return self.end("the host deleted the trace").map(|()| false);
         }
-        Ok(())
+        Ok(wrote)
     }
 
     /// ` trace=STATE ...` for `STORE STATUS`, with the spool's fill when one

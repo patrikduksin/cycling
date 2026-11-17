@@ -19,6 +19,7 @@ log = { version = "=0.4.35", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive"] }
 serde-json-core = { version = "=0.7.0", default-features = false }
 libm = "0.2.16"
+heapless.workspace = true
 esp-hal = { version = "=1.2.2", features = ["esp32s3", "unstable"], optional = true }
 esp32s3 = { version = "=0.37.0", optional = true }
 esp-backtrace = { version = "0.20.0", default-features = false, features = ["esp32s3", "println"], optional = true }

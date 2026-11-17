@@ -97,6 +97,9 @@ pub struct Divergences {
     #[serde(serialize_with = "by_kind")]
     pub before: Counts,
     pub verdict: &'static str,
+    /// What a strict replay proved by recording the world again, and what
+    /// that leaves out, a line each.
+    pub guarantees: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -188,6 +191,15 @@ pub fn summarize(
         }),
         before: before.clone(),
         verdict,
+        guarantees: (report.faithful.iter())
+            .flat_map(|faithful| {
+                faithful
+                    .to_string()
+                    .lines()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect(),
     }
 }
 
@@ -237,7 +249,10 @@ impl fmt::Display for Divergences {
                 _ => format!("{earlier} ({})", counts_text(&self.before)),
             }
         )?;
-        writeln!(f, "verdict: {}", self.verdict)
+        writeln!(f, "verdict: {}", self.verdict)?;
+        self.guarantees
+            .iter()
+            .try_for_each(|line| writeln!(f, "{line}"))
     }
 }
 
@@ -270,6 +285,7 @@ mod tests {
             health: Vec::new(),
             frame_times: Vec::new(),
             activity: Vec::new(),
+            before: Default::default(),
         }
     }
 

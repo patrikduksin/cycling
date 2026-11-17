@@ -1,8 +1,8 @@
 //! A capture on disk: `<name>.trace` holds the trace as the device writes
 //! it, and beside it `<name>.origin` holds the media the session started
-//! on: saved by the simulator, or rebuilt for a device trace from its
-//! header and the media `cycling trace pull` copied. A trace without one
-//! replays on blank media.
+//! on, saved by the simulator. A device's trace has none. A strict replay
+//! takes its media from the world records, with the card and the TERRAIN
+//! pack `trace::card` finds for it; a stimulus replay runs on blank media.
 use crate::bulk::{Image, Presence, SimBulk};
 use crate::replay::{Capture, Origin};
 use crate::storage::{FileFlash, FlashImage};
@@ -21,9 +21,6 @@ const PAGE: usize = 4096;
 pub enum Media {
     /// The `.origin` the simulator saved beside the trace.
     Saved,
-    /// The `.origin` rebuilt for a device trace, with what it could not
-    /// rebuild, one line each, or that nothing is missing.
-    Rebuilt(String),
     /// None was saved: erased flash and no bulk medium.
     Blank,
 }
@@ -32,7 +29,6 @@ impl Media {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Saved => "saved",
-            Self::Rebuilt(_) => "rebuilt",
             Self::Blank => "blank",
         }
     }
@@ -48,13 +44,7 @@ pub fn save(capture: &Capture, trace: &Path) -> io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(trace, &capture.trace)?;
-    std::fs::write(origin_path(trace), encode(&capture.origin, None)?)
-}
-
-/// Write `origin`, rebuilt for the device trace at `trace`, beside it with
-/// `report`, what it could not rebuild.
-pub fn save_rebuilt(origin: &Origin, report: &str, trace: &Path) -> io::Result<()> {
-    std::fs::write(origin_path(trace), encode(origin, Some(report))?)
+    std::fs::write(origin_path(trace), encode(&capture.origin)?)
 }
 
 /// Read the trace at `trace` and the media it started on.
@@ -70,14 +60,14 @@ pub fn load(trace: &Path) -> io::Result<(Capture, Media)> {
                 trace.display()
             )));
         }
-        let (origin, report) = decode(&saved, MAGIC)
+        let origin = decode(&saved, MAGIC)
             .ok_or_else(|| io::Error::other(format!("{} is malformed", origin.display())))?;
         return Ok((
             Capture {
                 origin,
                 trace: bytes,
             },
-            report.map_or(Media::Saved, Media::Rebuilt),
+            Media::Saved,
         ));
     }
     let boot = firmware_services::trace::decode(&bytes)
@@ -107,9 +97,9 @@ pub fn upgrade(trace: &Path) -> io::Result<bool> {
     if bytes.starts_with(MAGIC) {
         return Ok(false);
     }
-    let (origin, report) = decode(&bytes, MAGIC_ONE)
+    let origin = decode(&bytes, MAGIC_ONE)
         .ok_or_else(|| io::Error::other(format!("{} is malformed", path.display())))?;
-    std::fs::write(&path, encode(&origin, report.as_deref())?)?;
+    std::fs::write(&path, encode(&origin)?)?;
     Ok(true)
 }
 
@@ -120,7 +110,7 @@ const REGIONS: [Region; 4] = [
     Region::Crash,
 ];
 
-fn encode(origin: &Origin, report: Option<&str>) -> io::Result<Vec<u8>> {
+fn encode(origin: &Origin) -> io::Result<Vec<u8>> {
     let (_, flash) = origin.flash.image().ok_or_else(|| {
         io::Error::other("the capture's media is file-backed and cannot be saved")
     })?;
@@ -160,14 +150,10 @@ fn encode(origin: &Origin, report: Option<&str>) -> io::Result<Vec<u8>> {
         out.extend_from_slice(&sector.to_le_bytes());
         out.extend_from_slice(bytes);
     }
-    if let Some(report) = report {
-        out.extend_from_slice(&(report.len() as u32).to_le_bytes());
-        out.extend_from_slice(report.as_bytes());
-    }
     Ok(out)
 }
 
-fn decode(bytes: &[u8], magic: &[u8; 12]) -> Option<(Origin, Option<String>)> {
+fn decode(bytes: &[u8], magic: &[u8; 12]) -> Option<Origin> {
     let mut r = Bytes(bytes.strip_prefix(magic)?);
     let boot = r.u32()?;
     let mut flash = FlashImage::erased();
@@ -203,16 +189,10 @@ fn decode(bytes: &[u8], magic: &[u8; 12]) -> Option<(Origin, Option<String>)> {
         let sector = r.u64()?;
         written.push((sector, r.take(SECTOR_SIZE)?.try_into().ok()?));
     }
-    let report = if r.0.is_empty() {
-        None
-    } else {
-        let len = r.u32()? as usize;
-        Some(String::from_utf8(r.take(len)?.to_vec()).ok()?)
-    };
     if !r.0.is_empty() {
         return None;
     }
-    let origin = Origin {
+    Some(Origin {
         flash: FileFlash::from_image(boot.checked_sub(1)?, flash),
         bulk: SimBulk::from_image(Image {
             presence,
@@ -221,8 +201,7 @@ fn decode(bytes: &[u8], magic: &[u8; 12]) -> Option<(Origin, Option<String>)> {
             written,
         }),
         boot,
-    };
-    Some((origin, report))
+    })
 }
 
 struct Bytes<'a>(&'a [u8]);

@@ -9,7 +9,7 @@ pub const DEBOUNCE_MS: u64 = 1_000;
 pub const RETRY_MS: u64 = 5_000;
 const PREFIX: &[u8] = b"cycling";
 const VERSION: u8 = 7;
-const LENGTH: usize = layout::APP + APP_CAPACITY;
+pub const LENGTH: usize = layout::APP + APP_CAPACITY;
 /// Bytes reserved for the application's own versioned preference record.
 pub const APP_CAPACITY: usize = 96;
 

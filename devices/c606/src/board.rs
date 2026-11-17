@@ -105,11 +105,15 @@ fn init() -> Resources {
     // more stack gives frames room. build.sh fails when statics squeeze the
     // stack below its budget.
     esp_alloc::heap_allocator!(size: 80 * 1024);
-    let psram = psram::init(p.PSRAM);
+    let crashed = reset == device_api::crash::Reset::Watchdog
+        || (reset == device_api::crash::Reset::Software
+            && matches!(crash, device_api::crash::Marker::Valid(_)));
+    let psram = psram::init(p.PSRAM, crashed);
     println!(
-        "CYCLING_PSRAM ready mode=quad ram_mhz=40 capacity={} tested={} passes={} internal_before={} internal_after={} external_free={} allocator_probe={} allocator_alignment={}",
+        "CYCLING_PSRAM ready mode=quad ram_mhz=40 capacity={} tested={} kept={} passes={} internal_before={} internal_after={} external_free={} allocator_probe={} allocator_alignment={}",
         psram.capacity,
         psram.tested,
+        psram.kept,
         psram.passes,
         psram.internal_before,
         psram.internal_after,

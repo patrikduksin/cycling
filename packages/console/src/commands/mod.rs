@@ -37,6 +37,9 @@ pub struct Identity {
 pub trait Card {
     /// The card as VANA's storage reaches it, recorded into the trace.
     fn media(&mut self) -> impl ReadWrite + '_;
+    /// The card as a STORE command reaches it, unrecorded: the trace does
+    /// not see its own store's files, and a replay answers from its own.
+    fn store(&mut self) -> impl ReadWrite + '_;
     fn trace_in_store(&self) -> bool;
     /// ` trace=…` for `STORE STATUS`.
     fn trace_status(&self, out: &mut dyn Write);
@@ -370,7 +373,12 @@ fn volume<System>(
         let _ = out.write_str(why);
         return "BUSY";
     }
-    let status = volumes::execute(command, &mut card.media(), out);
+    let status = match command {
+        volumes::Command::Store
+        | volumes::Command::StoreFormat
+        | volumes::Command::StoreList(_) => volumes::execute(command, &mut card.store(), out),
+        _ => volumes::execute(command, &mut card.media(), out),
+    };
     if command == volumes::Command::Store {
         card.trace_status(out);
     }

@@ -474,7 +474,6 @@ fn a_boot_over_a_marginal_intent_word_replays_the_same_after_a_save_and_load() {
 #[test]
 fn a_resuming_wipe_answers_the_console_s_volume_commands_busy() {
     let (mut sim, slots) = device_with_a_ride_on_internal_flash("clear-resumed-busy");
-    let files = sim.device.bulk.image().written;
     sim.lose_power_at_flash_write(3, 128);
     sim.command(&format!("RIDE CLEAR CONFIRM {slots}"));
     sim.advance(seconds(10));
@@ -486,6 +485,7 @@ fn a_resuming_wipe_answers_the_console_s_volume_commands_busy() {
         assert_eq!(sim.device.sdk.page(), Page::Boot, "the resume began");
         sim.advance(1);
     }
+    let files = sim.device.bulk.image().written;
     assert_eq!(sim.command("FILES FORMAT CONFIRM").0, "BUSY");
     assert_eq!(sim.command("STORE FORMAT CONFIRM").0, "BUSY");
     assert!(

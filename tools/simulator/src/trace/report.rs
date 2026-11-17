@@ -6,10 +6,9 @@ use crate::trace::battery;
 use crate::trace::divergence::Divergences;
 use crate::trace::file::Media;
 use crate::trace::find::Found;
-use crate::trace::rebuild::{self, Gap};
 use crate::trace::story::{Point, Span, tell};
 use crate::trace::timeline::{
-    Entry, Kind, Moment, SILENCE_MS, Silence, Timeline, duration, session_clock,
+    Before, Entry, Kind, Moment, SILENCE_MS, Silence, Timeline, duration, session_clock,
 };
 use firmware_services::trace::{self, End};
 use serde::{Serialize, Serializer};
@@ -30,13 +29,6 @@ fn as_lines<S: Serializer>(text: &str, serializer: S) -> Result<S::Ok, S::Error>
     serializer.collect_seq(text.lines())
 }
 
-fn as_strings<T: fmt::Display, S: Serializer>(
-    items: &[T],
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.collect_seq(items.iter().map(ToString::to_string))
-}
-
 #[derive(Serialize)]
 pub struct Header<'a> {
     trace: String,
@@ -49,8 +41,6 @@ pub struct Header<'a> {
     end: End,
     #[serde(serialize_with = "media_name")]
     media: &'a Media,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    media_report: Vec<&'a str>,
 }
 
 fn end_name<S: Serializer>(end: &End, serializer: S) -> Result<S::Ok, S::Error> {
@@ -76,10 +66,6 @@ impl<'a> Header<'a> {
             passes: timeline.passes,
             end: timeline.end,
             media,
-            media_report: match media {
-                Media::Rebuilt(report) => report.lines().collect(),
-                _ => Vec::new(),
-            },
         }
     }
 }
@@ -104,12 +90,10 @@ impl fmt::Display for Header<'_> {
         )?;
         match self.media {
             Media::Saved => writeln!(f, "saved beside it (.origin)"),
-            Media::Rebuilt(_) => writeln!(
+            Media::Blank => writeln!(
                 f,
-                "rebuilt from its header and the pulled media (.origin); {}",
-                self.media_report.join("; ")
+                "not saved: a strict replay reads them from the trace, a stimulus replay starts on blank media"
             ),
-            Media::Blank => writeln!(f, "not saved: replays start on blank media"),
         }
     }
 }
@@ -117,6 +101,7 @@ impl fmt::Display for Header<'_> {
 #[derive(Serialize)]
 pub struct Summary<'a> {
     header: Header<'a>,
+    before: &'a Before,
     silences: &'a [Silence],
     spans: Vec<Span>,
     events: Vec<Point>,
@@ -148,6 +133,7 @@ impl<'a> Summary<'a> {
             .collect();
         Self {
             header: Header::of(path, timeline, media),
+            before: &timeline.before,
             silences: &timeline.silences,
             spans: story.spans,
             events: story.events,
@@ -160,6 +146,9 @@ impl<'a> Summary<'a> {
 impl fmt::Display for Summary<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.header)?;
+        if self.before.horizon.is_some() || self.before.salvaged.is_some() {
+            writeln!(f, "{}", self.before)?;
+        }
         write!(
             f,
             "sensor silences (no ANT+ packet for over {}): ",
@@ -234,20 +223,6 @@ pub struct Prose {
 impl fmt::Display for Prose {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.lines)
-    }
-}
-
-#[derive(Serialize)]
-pub struct Rebuilt {
-    #[serde(serialize_with = "as_strings")]
-    pub not_rebuilt: Vec<Gap>,
-    pub origin: PathBuf,
-}
-
-impl fmt::Display for Rebuilt {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "origin {}", self.origin.display())?;
-        f.write_str(&rebuild::report(&self.not_rebuilt))
     }
 }
 

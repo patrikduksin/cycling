@@ -1,4 +1,5 @@
 use crate::route::{Point, Route, distance_m, from_e7};
+use crate::trace::world::{self, World};
 use device_api::gps::FixState;
 use firmware_services::trace::{Event, decode};
 use std::path::{Path, PathBuf};
@@ -77,11 +78,10 @@ fn track(bytes: &[u8]) -> Result<Route, String> {
     let (_, events) = decode(bytes).map_err(|e| e.to_string())?;
     let mut points: Vec<Point> = Vec::new();
     for event in events {
-        let Event::Position {
-            snapshot: Some(snapshot),
-            ..
-        } = event
-        else {
+        let Event::Call(call) = event else {
+            continue;
+        };
+        let Some(World::Position(Some(snapshot))) = world::read(&call) else {
             continue;
         };
         let gps = snapshot.gps;

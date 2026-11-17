@@ -22,6 +22,7 @@ fn shell(w: usize, h: usize) -> (TestShell, DisplayDevice, InputDevice) {
         i.clone(),
         PowerDevice::new(Availability::Ready),
         Memory::default(),
+        Memory::default().journal(),
         0,
     )
     .unwrap();

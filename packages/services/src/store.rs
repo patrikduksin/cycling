@@ -1253,6 +1253,11 @@ pub struct Reader {
 }
 
 impl Reader {
+    /// The chunks the file holds.
+    pub fn chunks(&self) -> u32 {
+        self.chunks
+    }
+
     /// The record [`Reader::next`] reads.
     pub fn record(&self, store: &Store) -> u32 {
         self.position * store.head.chunk + self.index

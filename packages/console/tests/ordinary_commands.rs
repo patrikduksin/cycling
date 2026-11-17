@@ -286,6 +286,9 @@ impl Card for &mut Traced {
     fn media(&mut self) -> impl device_api::bulk::ReadWrite + '_ {
         CardMedia(&mut self.card)
     }
+    fn store(&mut self) -> impl device_api::bulk::ReadWrite + '_ {
+        CardMedia(&mut self.card)
+    }
     fn trace_in_store(&self) -> bool {
         self.trace_open
     }
@@ -372,6 +375,10 @@ impl<B: Board<System>> Device<B> {
             Keys,
             Backlight,
             Flash(vec![0xff; SECTOR * SECTORS]),
+            Box::leak(Box::new(firmware_shell::storage::Store::new(Flash(vec![
+                0xff;
+                SECTOR * SECTORS
+            ])))),
             0,
         )
         .expect("the panel is ready");

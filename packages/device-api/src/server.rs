@@ -58,7 +58,7 @@ impl Request {
 pub trait Server {
     /// Accept connections. Off by default: nothing is reachable until the
     /// application opens a session.
-    #[request(refreshes)]
+    #[request(refreshes, repeats)]
     fn listen(&mut self, on: bool);
     /// The request waiting for an answer. It stays until `finish`, or until
     /// the peer goes away, after which it is `None` (or the next request,

@@ -21,5 +21,5 @@
 "vana::screens::ride::climb_frame" = 4208
 "vana::screens::ride::smooth" = 3024
 "<vana::app::Runtime>::history_canvas" = 5424
-"<firmware_shell::storage::Store<*>>::load" = 5792
+"<firmware_shell::storage::Store<*> as firmware_shell::storage::Settings>::load" = 5792
 "*" = 5520

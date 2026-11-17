@@ -2,13 +2,15 @@
 //! summary needs beside them.
 use super::text::{bytes, duration, hex, micros, millis, percent, rate, sensor, session_clock};
 use super::{
-    Anchor, Cause, Entry, Kind, Moment, SILENCE_MS, Silence, StageTime, TOAST_CLEARED, TaskTime,
-    Timeline, Window, field, parse_ms,
+    Anchor, Before, Cause, Entry, Horizon, Kind, Moment, SILENCE_MS, Silence, StageTime,
+    TOAST_CLEARED, TaskTime, Timeline, Window, field, parse_ms,
 };
 use crate::trace::ant_page::Pages;
+use crate::trace::world::{self, World};
 use device_api::ant;
 use device_api::input::Input;
 use device_api::observation::Observation;
+use device_api::server::{AccessPointState, Reach};
 use firmware_services::trace::{self, Event, Level};
 use std::fmt::{self, Write as _};
 
@@ -41,6 +43,7 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
     for event in events.by_ref() {
         reader.event(&event);
     }
+    reader.settle();
     reader.end_pass();
     reader.sensors.silent_at_end(reader.now);
     Ok(Timeline {
@@ -57,6 +60,7 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
         health: reader.health,
         frame_times: reader.frame_times,
         activity: reader.activity,
+        before: reader.before,
     })
 }
 
@@ -192,8 +196,48 @@ struct Reader {
     frame_times: Vec<(u64, trace::FrameTime)>,
     frame_time_awaiting_health: Option<trace::FrameTime>,
     activity: Vec<Window>,
+    before: Before,
     /// The activity window of this pass, while its tasks are read.
     window: Option<Window>,
+    told: Told,
+}
+
+/// What the trace records in parts and the timeline tells in one line: the
+/// parts as last read, and which lines have a part that changed.
+struct Told {
+    changed: u8,
+    radio: (device_api::observation::Availability, bool),
+    found: [Option<ant::Discovery>; ant::DISCOVERY_CAPACITY],
+    ble: (
+        device_api::observation::Availability,
+        device_api::ble_transport::Link,
+    ),
+    access_point: (AccessPointState, Reach),
+    server: (Option<String>, usize),
+}
+
+impl Told {
+    const RADIO: u8 = 1;
+    const FOUND: u8 = 2;
+    const BLE: u8 = 4;
+    const ACCESS_POINT: u8 = 8;
+    const SERVER: u8 = 16;
+}
+
+impl Default for Told {
+    fn default() -> Self {
+        Self {
+            changed: 0,
+            radio: (device_api::observation::Availability::Unsupported, false),
+            found: [None; ant::DISCOVERY_CAPACITY],
+            ble: (
+                device_api::observation::Availability::Unsupported,
+                device_api::ble_transport::Link::Off,
+            ),
+            access_point: (AccessPointState::Off, Reach::default()),
+            server: (None, 0),
+        }
+    }
 }
 
 impl Reader {
@@ -270,6 +314,13 @@ impl Reader {
         if !matches!(event, Event::FrameTime(_) | Event::Health(_)) {
             self.frame_time_awaiting_health = None;
         }
+        let world = match event {
+            Event::Call(call) => world::read(call),
+            _ => None,
+        };
+        if !world.as_ref().is_some_and(|world| self.gathers(world)) {
+            self.settle();
+        }
         match *event {
             Event::Pass { now_ms } => {
                 self.end_pass();
@@ -290,9 +341,12 @@ impl Reader {
                 self.now = now_ms;
                 self.passes += 1;
             }
-            Event::Input(edge) => {
-                self.push_with(Kind::Input, 0, |line| line.write_str(&input(edge.input)))
-            }
+            Event::Call(_) => match world {
+                Some(world) => self.world(world),
+                None => self.push_with(Kind::Trace, 0, |line| {
+                    line.write_str("a world record that does not decode")
+                }),
+            },
             Event::Synthetic(pressed) => self.push_with(Kind::Input, 0, |line| {
                 write!(line, "synthetic {}", input(pressed))
             }),
@@ -300,114 +354,6 @@ impl Reader {
             Event::Command(command) => self.push_with(Kind::Command, 0, |line| {
                 line.write_str(&crate::trace::secret::shown_command(command))
             }),
-            Event::Startup(startup) => self.push_with(Kind::Startup, 0, |line| {
-                write!(line, "companion {}", startup.name())
-            }),
-            Event::AntRadio(radio) => self.push_with(Kind::Ant, 0, |line| {
-                write_lower(
-                    line,
-                    format_args!(
-                        "radio {:?}{}",
-                        radio.availability,
-                        if radio.scanning { " scanning" } else { "" }
-                    ),
-                )
-            }),
-            Event::AntDiscoveries(found) => self.push_with(Kind::Ant, 0, |line| {
-                for (i, d) in found.iter().flatten().enumerate() {
-                    write!(
-                        line,
-                        "{}{} rssi {}",
-                        if i == 0 { "found " } else { ", " },
-                        sensor(d.identity),
-                        d.rssi
-                    )?;
-                }
-                if line.is_empty() {
-                    line.push_str("found nothing");
-                }
-                Ok(())
-            }),
-            Event::AntLink { channel, snapshot } => {
-                self.push_with(Kind::Ant, channel, |line| ant_link(line, channel, snapshot))
-            }
-            Event::AntPacket(packet) => {
-                let now = self.now;
-                let entry = self
-                    .entries
-                    .push_with(self.at(), Kind::AntPacket, 0, |line| {
-                        self.sensors.packet(now, packet.identity, packet.data, line);
-                        Ok(())
-                    });
-                entry.bytes = Some(packet.data);
-            }
-            Event::AntRequest { operation, result } => {
-                self.push_with(Kind::AntRequest, 0, |line| {
-                    write!(
-                        line,
-                        "{} -> {}",
-                        ant_operation(operation),
-                        ant_result(result)
-                    )
-                })
-            }
-            Event::AntSend(send) => self.push_with(Kind::AntRequest, 0, |line| {
-                write!(line, "send status {send:?}")
-            }),
-            Event::BleLink {
-                availability,
-                snapshot,
-            } => self.push_with(Kind::Ble, 0, |line| {
-                write!(line, "link {}", snapshot.link.name())?;
-                if availability != device_api::observation::Availability::Ready {
-                    let start = line.len();
-                    write!(line, " ({availability:?})")?;
-                    lowercase_from(line, start);
-                }
-                Ok(())
-            }),
-            Event::BlePacket(packet) => self.push_with(Kind::BlePacket, 0, |line| {
-                write!(
-                    line,
-                    "connection {} seq {} data {}",
-                    packet.connection,
-                    packet.sequence,
-                    hex(packet.data().unwrap_or(&[]))
-                )
-            }),
-            Event::BleBattery(level) => self.push_with(Kind::Ble, 0, |line| {
-                write!(line, "sensor battery raw {}", level.raw)
-            }),
-            Event::Position {
-                availability: _,
-                snapshot,
-            } => {
-                if let Some(utc) = snapshot.and_then(|s| s.gps.utc_ms) {
-                    self.learn_utc(utc);
-                }
-                self.push_with(Kind::Gps, 0, |line| gps(line, snapshot));
-            }
-            Event::Physical(snapshot) => self.push_with(Kind::Sensors, 0, |line| {
-                line.write_str(match snapshot.pressure {
-                    Observation::Unavailable => "barometer unavailable",
-                    Observation::Fresh { .. } => "barometer fresh",
-                    Observation::Stale { .. } => "barometer stale",
-                })
-            }),
-            Event::Light(light) => match light {
-                Observation::Unavailable => self.push_with(Kind::Sensors, 0, |line| {
-                    line.write_str("ambient light unavailable")
-                }),
-                Observation::Fresh { value, .. } => self.push_with(Kind::Sensors, 0, |line| {
-                    write!(line, "ambient light {}", value.0)
-                }),
-                Observation::Stale { value, .. } => self.push_with(Kind::Sensors, 0, |line| {
-                    write!(line, "ambient light {} stale", value.0)
-                }),
-            },
-            Event::Power(snapshot) => {
-                self.push_with(Kind::Battery, 0, |line| battery(line, snapshot))
-            }
             Event::NetworkTime(snapshot) => {
                 if let Some(unix) = snapshot.unix_seconds {
                     self.learn_utc(unix * 1000 + u64::from(snapshot.millis));
@@ -423,18 +369,6 @@ impl Reader {
                         write_lower(line, format_args!("wifi utc none ({:?})", snapshot.status))
                     }),
                 }
-            }
-            Event::StorageFault(fault) => self.push_with(Kind::Storage, 0, |line| {
-                write_lower(
-                    line,
-                    format_args!(
-                        "{:?} {:?} failed at {}: {:?}",
-                        fault.medium, fault.op, fault.at, fault.error
-                    ),
-                )
-            }),
-            Event::Entropy(value) => {
-                self.push_with(Kind::Entropy, 0, |line| write!(line, "{value:#018x}"))
             }
             Event::Page(page) => self.push_with(Kind::Page, 0, |line| line.write_str(page)),
             Event::Toast(text) => self.push_with(Kind::Toast, 0, |line| {
@@ -504,104 +438,53 @@ impl Reader {
                     )
                 },
             ),
-            Event::AccessPoint { state, reach } => self.push_with(Kind::Phone, 0, |line| {
-                write_lower(line, format_args!("access point {state:?}, {reach:?}"))
-            }),
-            Event::AccessPointRequest { start, result } => self.push_with(Kind::Phone, 0, |line| {
-                write!(
-                    line,
-                    "access point {} -> {}",
-                    if start { "start" } else { "stop" },
-                    answer(result)
-                )
-            }),
-            Event::Server { request, room } => self.push_with(Kind::Phone, 0, |line| {
-                line.write_str(&match request {
-                    Some(request) => format!(
-                        "server holds #{} {:?} {}{}{} body {} B, room {room} B",
-                        request.id,
-                        request.method,
-                        request.path,
-                        if request.query.is_empty() { "" } else { "?" },
-                        crate::trace::secret::shown_query(request.query),
-                        request.body
-                    ),
-                    None => format!("server holds nothing, room {room} B"),
-                })
-            }),
-            Event::ServerListen(listen) => self.push_with(Kind::Phone, 0, |line| {
-                line.write_str(if listen {
-                    "server listen"
-                } else {
-                    "server stop"
-                })
-            }),
-            Event::ServerFinish(id) => {
-                self.push_with(Kind::Phone, 0, |line| write!(line, "server finish #{id}"))
-            }
-            Event::ServerRead { id, part, more } => self.push_with(Kind::Phone, 0, |line| {
-                write!(
-                    line,
-                    "server read #{id} {} B{}",
-                    part.len(),
-                    if more { ", more" } else { "" }
-                )
-            }),
-            Event::ServerWrite { id, taken } => self.push_with(Kind::Phone, 0, |line| {
-                write!(line, "server write #{id} took {taken} B")
-            }),
-            Event::PowerControl(status) => {
-                self.power.push((self.now, status.state));
-                self.push_with(Kind::Power, 0, |line| {
-                    write_lower(
-                        line,
-                        format_args!("{:?} {:?}", status.state, status.operation),
-                    )
-                })
-            }
-            Event::PowerRequest {
-                operation,
-                delay_ms,
-                result,
-            } => self.push_with(Kind::Power, 0, |line| {
-                write!(
-                    line,
-                    "{} in {delay_ms} ms -> {}",
-                    format!("{operation:?}").to_lowercase(),
-                    answer(result)
-                )
-            }),
             Event::PoweredOff => {
                 self.push_with(Kind::Power, 0, |line| line.write_str("powered off"))
             }
-            Event::Backlight(availability) => self.push_with(Kind::Display, 0, |line| {
-                write_lower(line, format_args!("backlight {availability:?}"))
-            }),
-            Event::Refused { output, attempt } => self.push_with(Kind::Display, 0, |line| {
-                write_lower(line, format_args!("{output:?} refused, attempt {attempt}"))
-            }),
-            Event::SoundState(snapshot) => self.push_with(Kind::Buzzer, 0, |line| {
-                write_lower(
-                    line,
-                    format_args!("{:?} {:?}", snapshot.state, snapshot.pattern),
-                )
-            }),
-            Event::SoundRequest { play, result } => self.push_with(Kind::Buzzer, 0, |line| {
+            Event::TooLarge {
+                capability,
+                operation,
+            } => self.push_with(Kind::Trace, 0, |line| {
                 write!(
                     line,
-                    "{} -> {}",
-                    match play {
-                        Some(pattern) => format!("play {pattern}"),
-                        None => "stop".into(),
-                    },
-                    answer(result)
+                    "a record of {capability}.{operation} was too large and left out"
                 )
             }),
-            Event::TooLarge(tag) => self.push_with(Kind::Trace, 0, |line| {
-                write!(line, "a record tagged {tag} was too large and left out")
+            Event::Forget(medium) => self.push_with(Kind::Trace, 0, |line| {
+                write_lower(
+                    line,
+                    format_args!(
+                        "a host wrote {medium:?} unseen; the trace holds none of it from here"
+                    ),
+                )
             }),
-            Event::HostWrote => self.push_with(Kind::Trace, 0, |line| {
-                line.write_str("a host wrote FILES or TERRAIN; the trace ends here")
+            Event::Cost(_) | Event::Repeated { .. } => {}
+            Event::Horizon {
+                previous,
+                last_pass_ms,
+                blocks,
+            } => {
+                let horizon = Horizon {
+                    trace: previous.to_string(),
+                    last_pass_ms,
+                    blocks,
+                };
+                self.push_with(Kind::Trace, 0, |line| {
+                    write!(line, "trace before: {horizon}")
+                });
+                self.before.horizon = Some(horizon);
+            }
+            Event::Salvaged { blocks } => {
+                self.push_with(Kind::Trace, 0, |line| {
+                    write!(
+                        line,
+                        "after a crash, {blocks} blocks the trace before lacked were appended to it"
+                    )
+                });
+                self.before.salvaged = Some(blocks);
+            }
+            Event::Session { memory, redacted } => self.push_with(Kind::Trace, 0, |line| {
+                line.write_str(&session(memory, redacted))
             }),
             Event::Lost { blocks, bytes } => self.push_with(Kind::Trace, 0, |line| {
                 write!(
@@ -656,6 +539,298 @@ impl Reader {
                 }
             }
         }
+    }
+
+    /// Whether `world` is one part of a line told once its other parts are
+    /// read: it is kept until then.
+    fn gathers(&mut self, world: &World<'_>) -> bool {
+        let told = match *world {
+            World::AntAvailability(availability) => {
+                self.told.radio.0 = availability;
+                Told::RADIO
+            }
+            World::AntScanning(scanning) => {
+                self.told.radio.1 = scanning;
+                Told::RADIO
+            }
+            World::AntDiscovery { slot, found } => {
+                if let Some(kept) = self.told.found.get_mut(usize::from(slot)) {
+                    *kept = found;
+                }
+                Told::FOUND
+            }
+            World::BleAvailability(availability) => {
+                self.told.ble.0 = availability;
+                Told::BLE
+            }
+            World::BleLink(snapshot) => {
+                self.told.ble.1 = snapshot.link;
+                Told::BLE
+            }
+            World::AccessPointState(state) => {
+                self.told.access_point.0 = state;
+                Told::ACCESS_POINT
+            }
+            World::AccessPointReach(reach) => {
+                self.told.access_point.1 = reach;
+                Told::ACCESS_POINT
+            }
+            World::ServerRequest(request) => {
+                self.told.server.0 = request.map(|request| {
+                    format!(
+                        "#{} {:?} {}{}{} body {} B",
+                        request.id,
+                        request.method,
+                        request.path,
+                        if request.query.is_empty() { "" } else { "?" },
+                        crate::trace::secret::shown_query(request.query),
+                        request.body
+                    )
+                });
+                Told::SERVER
+            }
+            World::ServerRoom(room) => {
+                self.told.server.1 = room;
+                Told::SERVER
+            }
+            _ => return false,
+        };
+        self.told.changed |= told;
+        true
+    }
+
+    fn settle(&mut self) {
+        let changed = core::mem::take(&mut self.told.changed);
+        if changed & Told::RADIO != 0 {
+            let (availability, scanning) = self.told.radio;
+            self.push_with(Kind::Ant, 0, |line| {
+                write_lower(
+                    line,
+                    format_args!(
+                        "radio {availability:?}{}",
+                        if scanning { " scanning" } else { "" }
+                    ),
+                )
+            });
+        }
+        if changed & Told::FOUND != 0 {
+            let found = self.told.found;
+            self.push_with(Kind::Ant, 0, |line| {
+                for (i, d) in found.iter().flatten().enumerate() {
+                    write!(
+                        line,
+                        "{}{} rssi {}",
+                        if i == 0 { "found " } else { ", " },
+                        sensor(d.identity),
+                        d.rssi
+                    )?;
+                }
+                if line.is_empty() {
+                    line.push_str("found nothing");
+                }
+                Ok(())
+            });
+        }
+        if changed & Told::BLE != 0 {
+            let (availability, link) = self.told.ble;
+            self.push_with(Kind::Ble, 0, |line| {
+                write!(line, "link {}", link.name())?;
+                if availability != device_api::observation::Availability::Ready {
+                    let start = line.len();
+                    write!(line, " ({availability:?})")?;
+                    lowercase_from(line, start);
+                }
+                Ok(())
+            });
+        }
+        if changed & Told::ACCESS_POINT != 0 {
+            let (state, reach) = self.told.access_point;
+            self.push_with(Kind::Phone, 0, |line| {
+                write_lower(line, format_args!("access point {state:?}, {reach:?}"))
+            });
+        }
+        if changed & Told::SERVER != 0 {
+            let (request, room) = self.told.server.clone();
+            self.push_with(Kind::Phone, 0, |line| match request {
+                Some(request) => write!(line, "server holds {request}, room {room} B"),
+                None => write!(line, "server holds nothing, room {room} B"),
+            });
+        }
+    }
+
+    fn world(&mut self, world: World<'_>) {
+        match world {
+            World::Edge(edge) => {
+                self.push_with(Kind::Input, 0, |line| line.write_str(&input(edge.input)))
+            }
+            World::Startup(startup) => self.push_with(Kind::Startup, 0, |line| {
+                write!(line, "companion {}", startup.name())
+            }),
+            World::AntLink { channel, snapshot } => {
+                self.push_with(Kind::Ant, channel, |line| ant_link(line, channel, snapshot))
+            }
+            World::AntPacket(packet) => {
+                let now = self.now;
+                let entry = self
+                    .entries
+                    .push_with(self.at(), Kind::AntPacket, 0, |line| {
+                        self.sensors.packet(now, packet.identity, packet.data, line);
+                        Ok(())
+                    });
+                entry.bytes = Some(packet.data);
+            }
+            World::AntRequest { operation, result } => {
+                self.push_with(Kind::AntRequest, 0, |line| {
+                    write!(
+                        line,
+                        "{} -> {}",
+                        ant_operation(operation),
+                        ant_result(result)
+                    )
+                })
+            }
+            World::AntSend(send) => self.push_with(Kind::AntRequest, 0, |line| {
+                write!(line, "send status {send:?}")
+            }),
+            World::BlePacket(packet) => self.push_with(Kind::BlePacket, 0, |line| {
+                write!(
+                    line,
+                    "connection {} seq {} data {}",
+                    packet.connection,
+                    packet.sequence,
+                    hex(packet.data().unwrap_or(&[]))
+                )
+            }),
+            World::BleBattery(level) => self.push_with(Kind::Ble, 0, |line| {
+                write!(line, "sensor battery raw {}", level.raw)
+            }),
+            World::Position(snapshot) => {
+                if let Some(utc) = snapshot.and_then(|s| s.gps.utc_ms) {
+                    self.learn_utc(utc);
+                }
+                self.push_with(Kind::Gps, 0, |line| gps(line, snapshot));
+            }
+            World::Physical(snapshot) => self.push_with(Kind::Sensors, 0, |line| {
+                line.write_str(match snapshot.pressure {
+                    Observation::Unavailable => "barometer unavailable",
+                    Observation::Fresh { .. } => "barometer fresh",
+                    Observation::Stale { .. } => "barometer stale",
+                })
+            }),
+            World::Light(light) => match light {
+                Observation::Unavailable => self.push_with(Kind::Sensors, 0, |line| {
+                    line.write_str("ambient light unavailable")
+                }),
+                Observation::Fresh { value, .. } => self.push_with(Kind::Sensors, 0, |line| {
+                    write!(line, "ambient light {}", value.0)
+                }),
+                Observation::Stale { value, .. } => self.push_with(Kind::Sensors, 0, |line| {
+                    write!(line, "ambient light {} stale", value.0)
+                }),
+            },
+            World::Companion(snapshot) => {
+                self.push_with(Kind::Battery, 0, |line| battery(line, snapshot))
+            }
+            World::Media(op, access) => {
+                if let Some(error) = access.fault {
+                    let (medium, at) = (access.span.medium, access.span.start);
+                    self.storage_fault(format_args!("{medium:?} {op:?} failed at {at}: {error:?}"));
+                }
+            }
+            World::NoCard(error) => {
+                self.storage_fault(format_args!("Bulk Info failed at 0: {error:?}"))
+            }
+            World::Entropy(value) | World::AccessPointEntropy(value) => {
+                self.push_with(Kind::Entropy, 0, |line| write!(line, "{value:#018x}"))
+            }
+            World::AccessPointRequest { start, result } => self.push_with(Kind::Phone, 0, |line| {
+                write!(
+                    line,
+                    "access point {} -> {}",
+                    if start { "start" } else { "stop" },
+                    answer(result)
+                )
+            }),
+            World::ServerListen(listen) => self.push_with(Kind::Phone, 0, |line| {
+                line.write_str(if listen {
+                    "server listen"
+                } else {
+                    "server stop"
+                })
+            }),
+            World::ServerFinish(id) => {
+                self.push_with(Kind::Phone, 0, |line| write!(line, "server finish #{id}"))
+            }
+            World::ServerRead { id, part, more } => self.push_with(Kind::Phone, 0, |line| {
+                write!(
+                    line,
+                    "server read #{id} {} B{}",
+                    part.len(),
+                    if more { ", more" } else { "" }
+                )
+            }),
+            World::ServerWrite { id, taken } => self.push_with(Kind::Phone, 0, |line| {
+                write!(line, "server write #{id} took {taken} B")
+            }),
+            World::PowerControl(status) => {
+                self.power.push((self.now, status.state));
+                self.push_with(Kind::Power, 0, |line| {
+                    write_lower(
+                        line,
+                        format_args!("{:?} {:?}", status.state, status.operation),
+                    )
+                })
+            }
+            World::PowerRequest {
+                operation,
+                delay_ms,
+                result,
+            } => self.push_with(Kind::Power, 0, |line| {
+                write!(
+                    line,
+                    "{} in {delay_ms} ms -> {}",
+                    format!("{operation:?}").to_lowercase(),
+                    answer(result)
+                )
+            }),
+            World::Backlight(availability) => self.push_with(Kind::Display, 0, |line| {
+                write_lower(line, format_args!("backlight {availability:?}"))
+            }),
+            World::Refused { output, attempt } => self.push_with(Kind::Display, 0, |line| {
+                write_lower(line, format_args!("{output:?} refused, attempt {attempt}"))
+            }),
+            World::SoundState(snapshot) => self.push_with(Kind::Buzzer, 0, |line| {
+                write_lower(
+                    line,
+                    format_args!("{:?} {:?}", snapshot.state, snapshot.pattern),
+                )
+            }),
+            World::SoundRequest { play, result } => self.push_with(Kind::Buzzer, 0, |line| {
+                write!(
+                    line,
+                    "{} -> {}",
+                    match play {
+                        Some(pattern) => format!("play {pattern}"),
+                        None => "stop".into(),
+                    },
+                    answer(result)
+                )
+            }),
+            World::PositionAvailability(_) | World::Other => {}
+            World::AntAvailability(_)
+            | World::AntScanning(_)
+            | World::AntDiscovery { .. }
+            | World::BleAvailability(_)
+            | World::BleLink(_)
+            | World::AccessPointState(_)
+            | World::AccessPointReach(_)
+            | World::ServerRequest(_)
+            | World::ServerRoom(_) => {}
+        }
+    }
+
+    fn storage_fault(&mut self, fault: fmt::Arguments<'_>) {
+        self.push_with(Kind::Storage, 0, |line| write_lower(line, fault));
     }
 }
 
@@ -805,6 +980,29 @@ fn battery(out: &mut String, snapshot: Option<device_api::input::InputSnapshot>)
         Observation::Unavailable => "",
         _ => " on battery",
     })
+}
+
+fn session(memory: firmware_services::trace::origin::Memory, redacted: bool) -> String {
+    let blocks = [
+        ("terrain cache", memory.terrain),
+        ("ride track", memory.track),
+        ("phone session", memory.phone),
+        ("ride index", memory.ride_index),
+        ("ride facts", memory.ride_facts),
+    ];
+    let missing: Vec<&str> = blocks
+        .into_iter()
+        .filter_map(|(name, held)| (!held).then_some(name))
+        .collect();
+    let memory = match missing.is_empty() {
+        true => "all its working memory".to_owned(),
+        false => format!("no memory for its {}", missing.join(", ")),
+    };
+    let secrets = match redacted {
+        true => "replaced",
+        false => "recorded as they are",
+    };
+    format!("session: VANA has {memory}; secrets are {secrets}")
 }
 
 /// A health record as one timeline line.

@@ -82,9 +82,9 @@ pub fn to_fixture(path: &Path, capture: &Capture, media: &Media) -> Option<Strin
         source.display()
     );
     let found = secrets(capture);
-    if matches!(media, Media::Blank | Media::Rebuilt(_)) {
+    if *media == Media::Blank {
         out.push_str(
-            "// It is a device trace (no .origin, or one `cycling trace pull` rebuilt): it records\n\
+            "// It is a device trace (no .origin beside it): it records\n\
              // where the rider rode and is never committed. Write a simulator scenario that gives\n\
              // VANA the same inputs and record it as a fixture instead (ride-trace skill, step 5).\n",
         );

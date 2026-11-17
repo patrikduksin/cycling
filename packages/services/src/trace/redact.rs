@@ -18,6 +18,8 @@
 //! What the rider saw of the credentials, the phone page's codes and text,
 //! differs from the recording; every request is answered as it was.
 
+use device_api::connectivity::Text;
+
 /// The entropy word a redacting trace records for the access point's.
 pub const ENTROPY: u64 = 0;
 /// Each byte of the open session's token, redacted.
@@ -53,10 +55,9 @@ pub fn command<'a>(line: &'a str, out: &'a mut [u8; 256]) -> &'a str {
 }
 
 /// A Wi-Fi password as a redacting trace records it: `x` repeated.
-pub fn password(password: &[u8], out: &mut [u8; 63]) -> usize {
-    let len = password.len().min(out.len());
-    out[..len].fill(b'x');
-    len
+pub fn wifi_password(password: Text<63>) -> Text<63> {
+    let hidden = [b'x'; 63];
+    Text::new(&hidden[..password.bytes().len()]).expect("63 x bytes are a Text<63>")
 }
 
 /// A request's session token as a redacting trace records it, given the
@@ -93,6 +94,21 @@ pub fn query<const N: usize>(query: &str, token: Option<&[u8]>) -> heapless::Str
         }
     }
     out
+}
+
+/// Whether a recorded Wi-Fi password is a redacted one.
+pub fn is_password(password: &[u8]) -> bool {
+    password.iter().all(|&byte| byte == b'x')
+}
+
+/// Whether a recorded `WIFI CONFIG` password is a redacted one.
+pub fn is_command_password(password: &[u8]) -> bool {
+    password.chunks(2).all(|pair| pair == PASSWORD)
+}
+
+/// Whether every byte of a recorded session token is redacted.
+pub fn is_redacted_session(session: &str) -> bool {
+    session.bytes().all(|byte| byte == TOKEN || byte == OTHER)
 }
 
 /// Whether a recorded session token is the open session's, redacted.

@@ -16,7 +16,13 @@ pub struct Writer<'b> {
 }
 
 impl<'b> Writer<'b> {
-    pub(super) fn new(buf: &'b mut [u8], now: u64) -> Self {
+    /// How much it wrote, or `None` when the buffer was too small.
+    pub fn written(&self) -> Option<usize> {
+        (!self.overflow).then_some(self.len)
+    }
+
+    /// A writer of a record body recorded in the pass at `now`.
+    pub fn new(buf: &'b mut [u8], now: u64) -> Self {
         Self {
             buf,
             len: 0,
@@ -98,7 +104,8 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    pub(super) fn new(bytes: &'a [u8], now: u64) -> Self {
+    /// A reader of a record body recorded in the pass at `now`.
+    pub fn new(bytes: &'a [u8], now: u64) -> Self {
         Self {
             bytes,
             at: 0,
@@ -113,6 +120,12 @@ impl<'a> Reader<'a> {
 
     pub(super) fn ok(&self) -> bool {
         !self.failed
+    }
+
+    /// How far into the body it has read, or `None` once a value did not
+    /// decode.
+    pub fn read(&self) -> Option<usize> {
+        self.ok().then_some(self.at)
     }
 
     pub fn byte(&mut self) -> u8 {

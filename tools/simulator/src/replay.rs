@@ -1,31 +1,35 @@
-//! A recorded trace standing in for the world: every device VANA and the
-//! shell read reports what it reported when it was recorded, and the session
-//! runs one pass at each recorded uptime. A read the trace holds no answer
-//! for is a divergence, never a guess from a model.
+//! A recorded trace standing in for the world, and how a replay parted
+//! from it.
 //!
 //! A strict replay runs the build that recorded the trace and must answer
-//! every call from it. A stimulus replay runs another build against the
-//! same world: inputs arrive at their recorded pass whatever VANA asks, and
-//! the ANT radio is a model that hears the recorded sensors. Either way the
-//! replay keeps a [`Report`] of where it parted from the recording.
+//! every call from it: `crate::twin` serves it. A stimulus replay, here,
+//! runs another build against the same world: the trace's world records
+//! arrive at their recorded pass whatever VANA asks, the session runs one
+//! pass at each recorded uptime, and the ANT radio is a model that hears
+//! the recorded sensors. Either way the replay keeps a [`Report`] of where
+//! it parted from the recording.
 use crate::ant::{AntSensor, SimulatedAnt, ZeroReply};
 use crate::bulk::SimBulk;
 use crate::devices::{DisplayDevice, InputDevice, PowerDevice};
 use crate::storage::FileFlash;
+use crate::storage::StorageFault;
+use crate::trace::world::Output;
+use crate::trace::world::{self, World};
 use device_api::ant::{
     self, Admission, Ant, AntOperation, CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Identity, LinkState,
 };
 use device_api::ble_transport::{self, Ble};
 use device_api::bulk::{self, ReadWrite};
 use device_api::input::{InputObservation, InputSnapshot};
+use device_api::journal::{Aging, Latest};
 use device_api::observation::{Availability, Error, Observation};
 use device_api::positioning::{self, Positioning};
 use device_api::power::{self, PowerControl};
 use device_api::sensors;
 use device_api::server::{self, AccessPoint, AccessPointConfig, AccessPointState, Reach, Server};
 use device_api::sound::{self, Sound};
-use firmware_services::trace::frozen::{Aging, Latest, Sink};
-use firmware_services::trace::{self, Cursor, End, Event, Events, Medium, Output};
+use firmware_services::trace::recorder::Sink;
+use firmware_services::trace::{self, Cursor, End, Event, Events, Medium, StorageOp};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -75,8 +79,8 @@ pub enum Next {
 /// How a replay treats the recording.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// The build that recorded it: VANA's calls are answered in recorded
-    /// order, and any call or answer that differs is a divergence.
+    /// The build that recorded it: every call VANA makes is answered from
+    /// the trace, and one it holds no answer for ends the replay.
     Strict,
     /// Another build: the recording is the world. Queued inputs arrive at
     /// their recorded pass and wait until VANA takes them; latest values
@@ -168,7 +172,98 @@ pub struct Report {
     pub mode: Mode,
     pub first: Option<Divergence>,
     pub counts: BTreeMap<Kind, u32>,
-    now: u64,
+    /// What a strict replay proved, once it ended.
+    pub faithful: Option<Faithful>,
+    pub(crate) now: u64,
+}
+
+/// Counts of matching media and settings records from the replayed prefix. Media checks compare
+/// inline bytes or CRC32 digests; settings checks compare decoded records. `ended` identifies the
+/// first mismatch or early stop, and `exclusions` lists gaps in coverage.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Faithful {
+    /// Media records that matched.
+    pub physical: u64,
+    /// Settings records that matched.
+    pub semantic: u64,
+    /// The pass the replay ended in before the trace did, and why: the
+    /// guarantees hold up to it.
+    pub ended: Option<(u64, String)>,
+    pub exclusions: Vec<Exclusion>,
+}
+
+/// What a guarantee does not cover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Exclusion {
+    /// Frames of the phone page, whose credentials the trace replaced.
+    RedactedFrames(u32),
+    /// Frames the panel refused: replayed as refused, so no panel digest
+    /// stands for them.
+    RefusedFrames(u32),
+    /// The settings journal did not load whole. The replay loads the
+    /// decoded record the device made of it, not its sectors.
+    SettingsJournal(String),
+    /// TERRAIN reads the trace holds a digest of: served from the pack.
+    TerrainByDigest(u32),
+    /// Accesses the trace does not record: STORE, which holds the trace
+    /// itself, and the settings region.
+    Outside(u32),
+    /// The recording lost world records here: nothing after is replayed.
+    Lost { pass_ms: u64 },
+}
+
+impl fmt::Display for Faithful {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let until = match &self.ended {
+            Some((pass_ms, _)) => format!(" up to the pass at {pass_ms} ms"),
+            None => String::new(),
+        };
+        writeln!(
+            f,
+            "physical: {} media records gave the bytes the trace holds{until}",
+            self.physical
+        )?;
+        writeln!(
+            f,
+            "semantic: {} settings records gave the values the trace holds{until}",
+            self.semantic
+        )?;
+        if let Some((pass_ms, why)) = &self.ended {
+            writeln!(f, "ended at {pass_ms} ms: {why}")?;
+        }
+        if self.exclusions.is_empty() {
+            return writeln!(f, "excluded: nothing");
+        }
+        for exclusion in &self.exclusions {
+            match exclusion {
+                Exclusion::RedactedFrames(frames) => writeln!(
+                    f,
+                    "excluded: {frames} frames of the phone page, whose credentials the trace redacted"
+                )?,
+                Exclusion::RefusedFrames(frames) => writeln!(
+                    f,
+                    "excluded: {frames} frames the panel refused, replayed as refused"
+                )?,
+                Exclusion::SettingsJournal(how) => writeln!(
+                    f,
+                    "excluded: the settings journal ({how}), replayed as the record the device decoded"
+                )?,
+                Exclusion::TerrainByDigest(reads) => writeln!(
+                    f,
+                    "excluded: {reads} TERRAIN reads, served from the pack and checked by digest"
+                )?,
+                Exclusion::Outside(accesses) => writeln!(
+                    f,
+                    "excluded: {accesses} accesses outside the recorded world (the settings region)"
+                )?,
+                Exclusion::Lost { pass_ms } => writeln!(
+                    f,
+                    "excluded: everything from {pass_ms} ms, where the recording lost world records"
+                )?,
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Report {
@@ -177,6 +272,7 @@ impl Report {
             mode,
             first: None,
             counts: BTreeMap::new(),
+            faithful: None,
             now: 0,
         }
     }
@@ -185,7 +281,7 @@ impl Report {
     pub fn header(&self) -> &'static str {
         match self.mode {
             Mode::Strict => {
-                "strict replay: every input VANA and the shell read came from the trace"
+                "strict replay: every input VANA and the shell read came from the trace's world records"
             }
             Mode::Stimulus => {
                 "stimulus replay: every input VANA and the shell read came from the trace, except \
@@ -198,7 +294,7 @@ impl Report {
         self.counts.get(&kind).copied().unwrap_or(0)
     }
 
-    fn note(&mut self, kind: Kind, count: usize, detail: impl FnOnce() -> String) {
+    pub(crate) fn note(&mut self, kind: Kind, count: usize, detail: impl FnOnce() -> String) {
         if count == 0 {
             return;
         }
@@ -229,7 +325,10 @@ impl fmt::Display for Report {
         for (kind, count) in &self.counts {
             writeln!(f, "{kind:?} {count}")?;
         }
-        Ok(())
+        match &self.faithful {
+            Some(faithful) => write!(f, "{faithful}"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -247,10 +346,6 @@ impl Ledger {
 
     fn now(&self) -> u64 {
         self.0.borrow().now
-    }
-
-    fn mode(&self) -> Mode {
-        self.0.borrow().mode
     }
 }
 
@@ -305,40 +400,12 @@ impl<C: fmt::Debug, V> Calls<C, V> {
         self.queue.back_mut().map(|(call, _)| call)
     }
 
-    fn change(&mut self, change: V) -> Option<V> {
-        match self.queue.back_mut() {
-            Some((_, after)) => {
-                after.push(change);
-                None
-            }
-            None => Some(change),
-        }
-    }
-
-    fn take(
-        &mut self,
-        asked: impl fmt::Debug,
-        matches: impl Fn(&C) -> bool,
-    ) -> Option<(C, Vec<V>)> {
-        let index = match self.ledger.mode() {
-            Mode::Strict => (!self.queue.is_empty()).then_some(0),
-            Mode::Stimulus => self.queue.iter().position(|(call, _)| matches(call)),
-        };
-        let Some(taken) = index.and_then(|index| self.queue.remove(index)) else {
+    fn take(&mut self, matches: impl Fn(&C) -> bool) -> Option<(C, Vec<V>)> {
+        let found = self.take_first(matches);
+        if found.is_none() {
             self.ledger.unrecorded(self.input);
-            return None;
-        };
-        if !matches(&taken.0) {
-            self.ledger.note(Kind::OtherRequest, 1, || {
-                format!("VANA asked {asked:?}, the recording {:?}", taken.0)
-            });
         }
-        Some(taken)
-    }
-
-    fn take_if_next(&mut self, matches: impl Fn(&C) -> bool) -> Option<(C, Vec<V>)> {
-        let front = self.queue.front().is_some_and(|(call, _)| matches(call));
-        front.then(|| self.queue.pop_front()).flatten()
+        found
     }
 
     fn take_first(&mut self, matches: impl Fn(&C) -> bool) -> Option<(C, Vec<V>)> {
@@ -346,21 +413,23 @@ impl<C: fmt::Debug, V> Calls<C, V> {
         self.queue.remove(index)
     }
 
-    fn drained(&mut self) -> Vec<V> {
+    fn drained(&mut self) {
         let left = self.queue.len();
-        let kind = match self.ledger.mode() {
-            Mode::Strict => Kind::LeftOver,
-            Mode::Stimulus => Kind::NotRequested,
-        };
         let (input, queue) = (self.input, &self.queue);
-        self.ledger.note(kind, left, || {
+        self.ledger.note(Kind::NotRequested, left, || {
             let calls: Vec<_> = queue.iter().map(|(call, _)| call).collect();
             format!("{left} {input} answers VANA did not ask for: {calls:?}")
         });
-        let after: Vec<V> = self.queue.drain(..).flat_map(|(_, after)| after).collect();
-        match self.ledger.mode() {
-            Mode::Strict => after,
-            Mode::Stimulus => Vec::new(),
+        self.queue.clear();
+    }
+
+    fn change(&mut self, change: V) -> Option<V> {
+        match self.queue.back_mut() {
+            Some((_, after)) => {
+                after.push(change);
+                None
+            }
+            None => Some(change),
         }
     }
 }
@@ -401,30 +470,19 @@ pub struct Replay {
     cursor: Cursor,
     pub sources: Sources,
     seen: Vec<Seen>,
-    /// The page the recording last showed.
-    page: String,
-    /// The trace replaced secrets as it recorded them.
-    redacted: bool,
 }
 
 impl Replay {
-    pub fn new(bytes: Vec<u8>, shelled: Shelled, mode: Mode) -> Result<Self, trace::Error> {
-        let (header, events) = trace::decode(&bytes)?;
-        let redacted =
-            trace::origin::Config::decode(header.config).is_some_and(|config| config.redacted);
+    pub fn new(bytes: Vec<u8>, shelled: Shelled) -> Result<Self, trace::Error> {
+        let (_, events) = trace::decode(&bytes)?;
         let cursor = events.cursor();
-        let ledger = Ledger(Rc::new(RefCell::new(Report::new(mode))));
-        let ant = match mode {
-            Mode::Strict => AntSource::Recorded(Box::new(RecordedAnt::new(&ledger))),
-            Mode::Stimulus => AntSource::Model(Box::new(ModelAnt::hearing(events, &ledger))),
-        };
+        let ledger = Ledger(Rc::new(RefCell::new(Report::new(Mode::Stimulus))));
+        let ant = ModelAnt::hearing(events, &ledger);
         Ok(Self {
             sources: Sources::new(ant, shelled, ledger),
             bytes,
             cursor,
             seen: Vec::new(),
-            page: String::new(),
-            redacted,
         })
     }
 
@@ -508,61 +566,21 @@ impl Replay {
         self.sources.ledger.now()
     }
 
-    /// What the rider saw in the pass just run, against the recording. A
-    /// stimulus replay can run another build, which may draw the same
-    /// things in other pixels, so it leaves the frames out.
+    /// What the rider saw in the pass just run, against the recording.
+    /// Another build may draw the same things in other pixels, so the
+    /// frames are left out.
     pub fn saw(&mut self, seen: &[Seen]) {
         let recorded = core::mem::take(&mut self.seen);
-        if let Some(page) = recorded.iter().rev().find_map(|seen| match seen {
-            Seen::Page(page) => Some(page),
-            _ => None,
-        }) {
-            self.page.clone_from(page);
-        }
-        let strict = self.sources.ledger.mode() == Mode::Strict;
-        let frame = |seen: &&Seen| matches!(seen, Seen::Panel(_));
-        let (kind, how) = if !seen
-            .iter()
-            .filter(|s| !frame(s))
-            .eq(recorded.iter().filter(|s| !frame(s)))
-        {
-            (Kind::Seen, "")
-        } else if !strict || seen.iter().filter(frame).eq(recorded.iter().filter(frame)) {
-            return;
-        } else if self.redacted && self.page == "phone" {
-            (
-                Kind::Redacted,
-                ": the same, in other pixels, on the phone page whose credentials the trace redacted",
-            )
-        } else {
-            (Kind::Seen, ": the same, in other pixels")
-        };
         let compared = |seen: &[Seen]| -> Vec<Seen> {
-            seen.iter()
-                .filter(|seen| strict || !frame(seen))
+            (seen.iter().filter(|seen| !matches!(seen, Seen::Panel(_))))
                 .cloned()
                 .collect()
         };
-        self.sources.ledger.note(kind, 1, || {
-            format!(
-                "the rider saw {:?}, the recording {:?}{how}",
-                compared(seen),
-                compared(&recorded)
-            )
-        });
-    }
-
-    /// A strict replay hands VANA what the trace holds, so recording it
-    /// again gives the trace back. Where it does not, VANA was handed a
-    /// value from elsewhere or the trace held one VANA never took. Frames
-    /// are left to `saw`, which knows the ones a redacted trace changes.
-    pub fn rerecorded(&mut self, trace: &[u8]) {
-        if self.sources.ledger.mode() != Mode::Strict {
-            return;
-        }
-        let compared = |event: &Event<'_>| !measured(event) && !matches!(event, Event::Panel(_));
-        if let Some(difference) = first_difference_of(&self.bytes, trace, compared) {
-            self.sources.ledger.note(Kind::Rerecorded, 1, || difference);
+        let (seen, recorded) = (compared(seen), compared(&recorded));
+        if seen != recorded {
+            self.sources.ledger.note(Kind::Seen, 1, || {
+                format!("the rider saw {seen:?}, the recording {recorded:?}")
+            });
         }
     }
 
@@ -675,7 +693,7 @@ pub(crate) fn measured(event: &Event<'_>) -> bool {
 
 /// The devices as the trace reports them, one pass at a time.
 pub struct Sources {
-    pub ant: AntSource,
+    pub ant: ModelAnt,
     pub ble: ReplayBle,
     pub position: ReplayPosition,
     pub companion: ReplayCompanion,
@@ -684,38 +702,46 @@ pub struct Sources {
     pub server: ReplayServer,
     pub sound: ReplaySound,
     pub power: ReplayPowerControl,
-    entropy: Entropy,
     startup: Served<sensors::Startup>,
     physical: Served<sensors::Snapshot>,
     light: Served<Observation<sensors::Light>>,
     network_time: Served<firmware_services::network_time::Snapshot>,
     backlight: Served<Availability>,
+    /// Where the last failed access recorded ended: a failed read's bytes
+    /// may follow in further records, which are no further faults.
+    fault_end: Option<(Medium, u32)>,
     shelled: Shelled,
     ledger: Ledger,
 }
 
 impl Sources {
-    fn new(ant: AntSource, shelled: Shelled, ledger: Ledger) -> Self {
-        let entropy = Entropy {
-            values: Rc::default(),
+    fn new(ant: ModelAnt, shelled: Shelled, ledger: Ledger) -> Self {
+        let entropy = |input| Entropy {
+            values: VecDeque::new(),
+            input,
             ledger: ledger.clone(),
         };
         Self {
             ant,
             ble: ReplayBle::new(&ledger),
-            position: ReplayPosition(Served::new("position", &ledger)),
+            position: ReplayPosition {
+                availability: Served::new("position", &ledger),
+                snapshot: Served::new("position", &ledger),
+            },
             companion: ReplayCompanion(Served::new("companion report", &ledger)),
             bulk: ReplayBulk {
                 media: shelled.bulk.untapped(),
-                entropy: entropy.clone(),
+                entropy: entropy("entropy"),
             },
             access_point: ReplayAccessPoint {
                 view: Served::new("access point", &ledger),
+                latest: (AccessPointState::Off, Reach::default()),
                 calls: Calls::new("access point", &ledger),
-                entropy: entropy.clone(),
+                entropy: entropy("access point entropy"),
             },
             server: ReplayServer {
                 view: Served::new("phone server", &ledger),
+                latest: (None, 0),
                 calls: Calls::new("phone server", &ledger),
                 token: None,
             },
@@ -729,27 +755,24 @@ impl Sources {
                 off: false,
                 ledger: ledger.clone(),
             },
-            entropy,
             startup: Served::new("companion startup", &ledger),
             physical: Served::new("barometer and motion", &ledger),
             light: Served::new("ambient light", &ledger),
             network_time: Served::new("network time", &ledger),
             backlight: Served::new("backlight", &ledger),
+            fault_end: None,
             shelled,
             ledger,
         }
     }
 
     /// A changed build's ANT adapter, answering a request itself before
-    /// the model sees it when it returns an answer. Stimulus replays only.
+    /// the model sees it when it returns an answer.
     pub fn adapt_ant(
         &mut self,
         adapter: impl FnMut(&AntOperation, u64) -> Option<Result<Admission, ant::Error>> + 'static,
     ) {
-        match &mut self.ant {
-            AntSource::Model(model) => model.adapter = Some(Box::new(adapter)),
-            AntSource::Recorded(_) => panic!("a strict replay answers from the recording"),
-        }
+        self.ant.adapter = Some(Box::new(adapter));
     }
 
     /// Something read an input the trace holds no value for.
@@ -773,195 +796,82 @@ impl Sources {
     fn begin(&mut self, now: u64) {
         self.ledger.0.borrow_mut().now = now;
         self.power.off = false;
+        self.fault_end = None;
     }
 
     fn ready(&mut self) {
         if let Some(available) = self.backlight.latest.at(self.ledger.now()) {
             self.shelled.power.0.borrow_mut().available = available;
         }
-        if let AntSource::Model(model) = &mut self.ant {
-            model.step();
-        }
+        self.ant.step();
     }
 
+    /// The pass ended: what it queued and VANA did not take waits, and what
+    /// it scripted and nothing met is counted.
     fn drained(&mut self) {
-        let mode = self.ledger.mode();
         let queued = [
             ("BLE packets", self.ble.packets.len()),
             ("BLE battery levels", self.ble.battery.len()),
             ("input edges", self.shelled.input.replayed.borrow().len()),
         ];
-        let kind = match mode {
-            Mode::Strict => Kind::LeftOver,
-            Mode::Stimulus => Kind::Carried,
-        };
         for (what, count) in queued {
-            self.ledger.note(kind, count, || format!("{count} {what}"));
-        }
-        let unused = match mode {
-            Mode::Strict => Kind::LeftOver,
-            Mode::Stimulus => Kind::NotRequested,
-        };
-        if mode == Mode::Strict {
-            let left = self.entropy.values.borrow().len();
             self.ledger
-                .note(Kind::LeftOver, left, || format!("{left} entropy values"));
-            self.ble.packets.clear();
-            self.ble.battery.clear();
-            self.shelled.input.replayed.borrow_mut().clear();
-            self.entropy.values.borrow_mut().clear();
+                .note(Kind::Carried, count, || format!("{count} {what}"));
         }
         let panel = core::mem::take(&mut self.shelled.display.0.borrow_mut().refusals.scripted);
         let backlight = core::mem::take(&mut self.shelled.power.0.borrow_mut().refusals.scripted);
         for (what, left) in [("panel", panel.len()), ("backlight", backlight.len())] {
-            self.ledger.note(unused, left, || {
+            self.ledger.note(Kind::NotRequested, left, || {
                 format!("{left} {what} refusals no attempt met")
             });
         }
         let flash = core::mem::take(&mut self.shelled.flash.fault.borrow_mut().script);
         let bulk = self.shelled.bulk.unmet();
         for fault in flash.iter().chain(&bulk) {
-            self.ledger.note(unused, 1, || {
+            self.ledger.note(Kind::NotRequested, 1, || {
                 format!("a storage fault no operation met: {fault:?}")
             });
         }
-        for view in self.access_point.calls.drained() {
-            self.access_point.view.set(view);
-        }
-        for view in self.server.calls.drained() {
-            self.server.view.set(view);
-        }
-        for view in self.sound.calls.drained() {
-            self.sound.view.set(view);
-        }
-        for view in self.power.calls.drained() {
-            self.power.view.set(view);
-        }
-        if let AntSource::Recorded(ant) = &mut self.ant {
-            ant.drained();
-        }
+        self.access_point.calls.drained();
+        self.server.calls.drained();
+        self.sound.calls.drained();
+        self.power.calls.drained();
     }
 
     fn ended(&mut self) {
-        if let AntSource::Model(model) = &mut self.ant {
-            model.expire(u64::MAX);
-        }
+        self.ant.expire(u64::MAX);
     }
 
     fn apply(&mut self, event: Event<'_>) {
         match event {
-            Event::Input(edge) => self.shelled.input.replayed.borrow_mut().push_back(edge),
-            Event::AntRadio(_)
-            | Event::AntDiscoveries(_)
-            | Event::AntLink { .. }
-            | Event::AntPacket(_)
-            | Event::AntRequest { .. }
-            | Event::AntSend(_) => self.ant.apply(event),
-            Event::BleLink {
-                availability,
-                snapshot,
-            } => self.ble.link.set((availability, snapshot)),
-            Event::BlePacket(packet) => self.ble.packets.push_back(packet),
-            Event::BleBattery(level) => self.ble.battery.push_back(level),
-            Event::Position {
-                availability,
-                snapshot,
-            } => self.position.0.set((availability, snapshot)),
-            Event::Physical(snapshot) => self.physical.set(snapshot),
-            Event::Light(light) => self.light.set(light),
-            Event::Power(snapshot) => self.companion.0.set(snapshot),
-            Event::NetworkTime(snapshot) => self.network_time.set(snapshot),
-            Event::Startup(startup) => self.startup.set(startup),
-            Event::Entropy(value) => self.entropy.values.borrow_mut().push_back(value),
-            Event::StorageFault(fault) => match fault.medium {
-                Medium::Bulk => self.shelled.bulk.script(fault),
-                _ => self
-                    .shelled
-                    .flash
-                    .fault
-                    .borrow_mut()
-                    .script
-                    .push_back(fault),
-            },
-            Event::Refused { output, attempt } => match output {
-                Output::Panel => self
-                    .shelled
-                    .display
-                    .0
-                    .borrow_mut()
-                    .refusals
-                    .scripted
-                    .push(attempt),
-                Output::Backlight => self
-                    .shelled
-                    .power
-                    .0
-                    .borrow_mut()
-                    .refusals
-                    .scripted
-                    .push(attempt),
-            },
-            Event::Backlight(availability) => self.backlight.set(availability),
-            Event::AccessPoint { state, reach } => {
-                if let Some(view) = self.access_point.calls.change((state, reach)) {
-                    self.access_point.view.set(view);
-                }
-            }
-            Event::AccessPointRequest { start, result } => {
-                self.access_point.calls.push((start, result))
-            }
-            Event::Server { request, room } => {
-                let view = (request.map(|request| request.to_request()), room as usize);
-                if let Some(view) = self.server.calls.change(view) {
-                    self.server.view.set(view);
-                }
-            }
-            Event::ServerListen(on) => self.server.calls.push(ServerCall::Listen(on)),
-            Event::ServerFinish(id) => self.server.calls.push(ServerCall::Finish(id)),
-            Event::ServerRead { id, part, more } => match self.server.calls.last() {
-                Some(ServerCall::Read {
-                    id: read,
-                    bytes,
-                    more: pending @ true,
-                }) if *read == id => {
-                    bytes.extend_from_slice(part);
-                    *pending = more;
-                }
-                _ => self.server.calls.push(ServerCall::Read {
-                    id,
-                    bytes: part.to_vec(),
-                    more,
+            Event::Call(call) => match world::read(&call) {
+                Some(world) => self.world(world),
+                None => self.ledger.note(Kind::Unreplayable, 1, || {
+                    format!(
+                        "a record of {} that does not decode",
+                        crate::twin::script::Named(call.method)
+                    )
                 }),
             },
-            Event::ServerWrite { id, taken } => {
-                self.server.calls.push(ServerCall::Write { id, taken })
-            }
-            Event::SoundState(snapshot) => {
-                if let Some(view) = self.sound.calls.change(snapshot) {
-                    self.sound.view.set(view);
-                }
-            }
-            Event::SoundRequest { play, result } => self.sound.calls.push((play, result)),
-            Event::PowerControl(status) => {
-                if let Some(view) = self.power.calls.change(status) {
-                    self.power.view.set(view);
-                }
-            }
-            Event::PowerRequest {
-                operation,
-                delay_ms,
-                result,
-            } => self.power.calls.push((operation, delay_ms, result)),
+            Event::NetworkTime(snapshot) => self.network_time.set(snapshot),
             Event::PoweredOff => self.power.off = true,
-            Event::TooLarge(tag) => self
-                .ledger
-                .unrecorded(&format!("a record with tag {tag}, too large for a block")),
-            Event::HostWrote => self.ledger.note(Kind::Unreplayable, 1, || {
-                "a host wrote the card here; the media after it are not the header's".into()
+            Event::TooLarge {
+                capability,
+                operation,
+            } => self.ledger.unrecorded(&format!(
+                "a record of {capability}.{operation}, too large for a block"
+            )),
+            Event::Forget(medium) => self.ledger.note(Kind::Unreplayable, 1, || {
+                format!("a host wrote {medium:?} here; the media after it are not the origin's")
             }),
             Event::Lost { blocks, bytes } => self.ledger.note(Kind::Lost, 1, || {
                 format!("the recording lost {blocks} blocks, {bytes} bytes, of events here")
             }),
+            Event::Cost(_)
+            | Event::Repeated { .. }
+            | Event::Session { .. }
+            | Event::Horizon { .. }
+            | Event::Salvaged { .. } => {}
             Event::Pass { .. }
             | Event::Command(_)
             | Event::Page(_)
@@ -980,6 +890,130 @@ impl Sources {
             | Event::Synthetic(_) => self.ledger.note(Kind::Unreplayable, 1, || {
                 format!("{event:?} where an input belongs")
             }),
+        }
+    }
+
+    fn world(&mut self, world: World<'_>) {
+        match world {
+            World::Edge(edge) => self.shelled.input.replayed.borrow_mut().push_back(edge),
+            World::AntAvailability(_)
+            | World::AntPacket(_)
+            | World::AntRequest { .. }
+            | World::AntScanning(_)
+            | World::AntDiscovery { .. }
+            | World::AntLink { .. }
+            | World::AntSend(_) => self.ant.apply(world),
+            World::BleAvailability(availability) => self.ble.availability.set(availability),
+            World::BleLink(snapshot) => self.ble.link.set(snapshot),
+            World::BlePacket(packet) => self.ble.packets.push_back(packet),
+            World::BleBattery(level) => self.ble.battery.push_back(level),
+            World::PositionAvailability(availability) => {
+                self.position.availability.set(availability)
+            }
+            World::Position(snapshot) => self.position.snapshot.set(snapshot),
+            World::Physical(snapshot) => self.physical.set(snapshot),
+            World::Light(light) => self.light.set(light),
+            World::Companion(snapshot) => self.companion.0.set(snapshot),
+            World::Startup(startup) => self.startup.set(startup),
+            World::Entropy(value) => self.bulk.entropy.values.push_back(value),
+            World::AccessPointEntropy(value) => self.access_point.entropy.values.push_back(value),
+            World::Media(op, access) => {
+                let Some(error) = access.fault else {
+                    return;
+                };
+                let span = access.span;
+                let continues = self.fault_end == Some((span.medium, span.start));
+                self.fault_end = Some((span.medium, span.start.saturating_add(span.count)));
+                if !continues {
+                    self.fault(StorageFault {
+                        medium: span.medium,
+                        attempt: 0,
+                        op,
+                        at: span.start.into(),
+                        landed: 0,
+                        error,
+                    });
+                }
+            }
+            World::NoCard(error) => self.fault(StorageFault {
+                medium: Medium::Bulk,
+                attempt: 0,
+                op: StorageOp::Info,
+                at: 0,
+                landed: 0,
+                error,
+            }),
+            World::Refused { output, attempt } => {
+                let refusals = match output {
+                    Output::Panel => &mut self.shelled.display.0.borrow_mut().refusals.scripted,
+                    Output::Backlight => &mut self.shelled.power.0.borrow_mut().refusals.scripted,
+                };
+                refusals.push(attempt);
+            }
+            World::Backlight(availability) => self.backlight.set(availability),
+            World::AccessPointState(state) => {
+                self.access_point.latest.0 = state;
+                self.access_point.changed();
+            }
+            World::AccessPointReach(reach) => {
+                self.access_point.latest.1 = reach;
+                self.access_point.changed();
+            }
+            World::AccessPointRequest { start, result } => {
+                self.access_point.calls.push((start, result))
+            }
+            World::ServerRequest(request) => {
+                self.server.latest.0 = request.map(|request| request.to_request());
+                self.server.view_changed();
+            }
+            World::ServerRoom(room) => {
+                self.server.latest.1 = room;
+                self.server.view_changed();
+            }
+            World::ServerListen(on) => self.server.calls.push(ServerCall::Listen(on)),
+            World::ServerFinish(id) => self.server.calls.push(ServerCall::Finish(id)),
+            World::ServerRead { id, part, more } => match self.server.calls.last() {
+                Some(ServerCall::Read {
+                    id: read,
+                    bytes,
+                    more: pending @ true,
+                }) if *read == id => {
+                    bytes.extend_from_slice(part);
+                    *pending = more;
+                }
+                _ => self.server.calls.push(ServerCall::Read {
+                    id,
+                    bytes: part.to_vec(),
+                    more,
+                }),
+            },
+            World::ServerWrite { id, taken } => {
+                self.server.calls.push(ServerCall::Write { id, taken })
+            }
+            World::SoundState(snapshot) => {
+                if let Some(view) = self.sound.calls.change(snapshot) {
+                    self.sound.view.set(view);
+                }
+            }
+            World::SoundRequest { play, result } => self.sound.calls.push((play, result)),
+            World::PowerControl(status) => {
+                if let Some(view) = self.power.calls.change(status) {
+                    self.power.view.set(view);
+                }
+            }
+            World::PowerRequest {
+                operation,
+                delay_ms,
+                result,
+            } => self.power.calls.push((operation, delay_ms, result)),
+            World::Other => {}
+        }
+    }
+
+    fn fault(&mut self, fault: StorageFault) {
+        match fault.medium {
+            Medium::Bulk => self.shelled.bulk.script(fault),
+            _ => (self.shelled.flash.fault.borrow_mut().script).push_back(fault),
         }
     }
 
@@ -1007,254 +1041,6 @@ impl Sources {
 
     pub fn network_time(&self) -> firmware_services::network_time::Snapshot {
         self.network_time.read().unwrap_or_default()
-    }
-}
-
-fn intern(types: &[u8]) -> &'static [u8] {
-    static KNOWN: std::sync::Mutex<Vec<&'static [u8]>> = std::sync::Mutex::new(Vec::new());
-    let mut known = KNOWN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(&list) = known.iter().find(|list| **list == types) {
-        return list;
-    }
-    let list: &'static [u8] = Vec::leak(types.to_vec());
-    known.push(list);
-    list
-}
-
-/// The ANT radio a replay presents: the recording's answers, or a model.
-pub enum AntSource {
-    Recorded(Box<RecordedAnt>),
-    Model(Box<ModelAnt>),
-}
-
-impl AntSource {
-    fn apply(&mut self, event: Event<'_>) {
-        match self {
-            Self::Recorded(ant) => ant.apply(event),
-            Self::Model(model) => model.apply(event),
-        }
-    }
-
-    fn radio(&self) -> &dyn Ant {
-        match self {
-            Self::Recorded(ant) => ant.as_ref(),
-            Self::Model(model) => &model.radio,
-        }
-    }
-}
-
-impl Ant for AntSource {
-    fn take_diagnostic_packet(&mut self) -> Option<ant::Packet> {
-        None
-    }
-    fn channel(&self, kind: u8, now_ms: u64) -> Option<ant::Snapshot> {
-        ant::channel(self.channels(now_ms), kind)
-    }
-    fn scanning(&self) -> bool {
-        self.radio().scanning()
-    }
-    fn discoveries(&self) -> [Option<ant::Discovery>; DISCOVERY_CAPACITY] {
-        self.radio().discoveries()
-    }
-    fn request(&mut self, operation: AntOperation, now: u64) -> Result<Admission, ant::Error> {
-        match self {
-            Self::Recorded(ant) => ant.request(operation, now),
-            Self::Model(model) => model.request(operation, now),
-        }
-    }
-    fn capabilities(&self) -> ant::Capabilities {
-        self.radio().capabilities()
-    }
-    fn scan(&self) -> ant::ScanSnapshot {
-        self.radio().scan()
-    }
-    fn send_status(&self, id: ant::OperationId) -> Option<ant::SendObservation> {
-        self.radio().send_status(id)
-    }
-    fn availability(&self) -> Availability {
-        self.radio().availability()
-    }
-    fn channels(&self, now: u64) -> [Option<ant::Snapshot>; CHANNEL_CAPACITY] {
-        self.radio().channels(now)
-    }
-    fn take_packet(&mut self) -> Option<ant::Packet> {
-        match self {
-            Self::Recorded(ant) => ant.take_packet(),
-            Self::Model(model) => model.radio.take_packet(),
-        }
-    }
-}
-
-type Radio = ((Availability, ant::Capabilities), (bool, ant::ScanSnapshot));
-
-enum AntChange {
-    Radio(Radio),
-    Discoveries([Option<ant::Discovery>; DISCOVERY_CAPACITY]),
-    Link(usize, Option<ant::Snapshot>),
-}
-
-struct Answer {
-    operation: AntOperation,
-    result: Result<Admission, ant::Error>,
-    after: Vec<AntChange>,
-}
-
-/// The radio exactly as recorded: each request takes the next recorded
-/// answer, and the changes recorded after it.
-pub struct RecordedAnt {
-    radio: Served<Radio>,
-    discoveries: Served<[Option<ant::Discovery>; DISCOVERY_CAPACITY]>,
-    channels: [Served<Option<ant::Snapshot>>; CHANNEL_CAPACITY],
-    packets: VecDeque<ant::Packet>,
-    admissions: VecDeque<Answer>,
-    sends: RefCell<VecDeque<Option<ant::SendObservation>>>,
-    ledger: Ledger,
-}
-
-impl RecordedAnt {
-    fn new(ledger: &Ledger) -> Self {
-        Self {
-            radio: Served::new("ANT radio", ledger),
-            discoveries: Served::new("ANT discoveries", ledger),
-            channels: core::array::from_fn(|_| Served::new("ANT channel", ledger)),
-            packets: VecDeque::new(),
-            admissions: VecDeque::new(),
-            sends: RefCell::default(),
-            ledger: ledger.clone(),
-        }
-    }
-
-    fn apply(&mut self, event: Event<'_>) {
-        match event {
-            Event::AntRadio(radio) => {
-                let types = intern(radio.capabilities.supported_types);
-                let capabilities = radio.capabilities.with_types(types);
-                self.change(AntChange::Radio((
-                    (radio.availability, capabilities),
-                    (radio.scanning, radio.scan),
-                )));
-            }
-            Event::AntDiscoveries(found) => self.change(AntChange::Discoveries(found)),
-            Event::AntLink { channel, snapshot } if usize::from(channel) < CHANNEL_CAPACITY => {
-                self.change(AntChange::Link(channel.into(), snapshot));
-            }
-            Event::AntPacket(packet) => self.packets.push_back(packet),
-            Event::AntRequest { operation, result } => self.admissions.push_back(Answer {
-                operation,
-                result,
-                after: Vec::new(),
-            }),
-            Event::AntSend(status) => self.sends.borrow_mut().push_back(status),
-            event => self
-                .ledger
-                .note(Kind::Unreplayable, 1, || format!("{event:?}")),
-        }
-    }
-
-    fn change(&mut self, change: AntChange) {
-        match self.admissions.back_mut() {
-            Some(answer) => answer.after.push(change),
-            None => self.apply_change(change),
-        }
-    }
-
-    fn apply_change(&mut self, change: AntChange) {
-        match change {
-            AntChange::Radio(radio) => self.radio.set(radio),
-            AntChange::Discoveries(found) => self.discoveries.set(found),
-            AntChange::Link(channel, snapshot) => self.channels[channel].set(snapshot),
-        }
-    }
-
-    fn drained(&mut self) {
-        let left = [
-            ("ANT packets", self.packets.len()),
-            ("ANT answers", self.admissions.len()),
-            ("ANT send states", self.sends.borrow().len()),
-        ];
-        for (what, count) in left {
-            self.ledger
-                .note(Kind::LeftOver, count, || format!("{count} {what}"));
-        }
-        self.packets.clear();
-        self.sends.borrow_mut().clear();
-        for answer in core::mem::take(&mut self.admissions) {
-            for change in answer.after {
-                self.apply_change(change);
-            }
-        }
-    }
-
-    fn radio(&self) -> Radio {
-        self.radio.read().unwrap_or((
-            (Availability::Unsupported, ant::Capabilities::UNAVAILABLE),
-            (
-                false,
-                ant::ScanSnapshot {
-                    state: ant::ScanState::Idle,
-                    generation: 0,
-                    discovery_overflows: 0,
-                },
-            ),
-        ))
-    }
-}
-
-impl Ant for RecordedAnt {
-    fn take_diagnostic_packet(&mut self) -> Option<ant::Packet> {
-        None
-    }
-    fn channel(&self, kind: u8, now_ms: u64) -> Option<ant::Snapshot> {
-        ant::channel(self.channels(now_ms), kind)
-    }
-    fn scanning(&self) -> bool {
-        self.radio().1.0
-    }
-    fn discoveries(&self) -> [Option<ant::Discovery>; DISCOVERY_CAPACITY] {
-        self.discoveries
-            .read()
-            .unwrap_or([None; DISCOVERY_CAPACITY])
-    }
-    fn request(&mut self, operation: AntOperation, _: u64) -> Result<Admission, ant::Error> {
-        let Some(answer) = self.admissions.pop_front() else {
-            self.ledger.unrecorded("ANT request");
-            return Err(ant::Error::Unavailable);
-        };
-        if answer.operation != operation {
-            self.ledger.note(Kind::OtherRequest, 1, || {
-                format!(
-                    "VANA asked {operation:?}, the recording {:?}",
-                    answer.operation
-                )
-            });
-        }
-        for change in answer.after {
-            self.apply_change(change);
-        }
-        answer.result
-    }
-    fn capabilities(&self) -> ant::Capabilities {
-        self.radio().0.1
-    }
-    fn scan(&self) -> ant::ScanSnapshot {
-        self.radio().1.1
-    }
-    fn send_status(&self, _: ant::OperationId) -> Option<ant::SendObservation> {
-        self.sends.borrow_mut().pop_front().unwrap_or_else(|| {
-            self.ledger.unrecorded("ANT send status");
-            None
-        })
-    }
-    fn availability(&self) -> Availability {
-        self.radio().0.0
-    }
-    fn channels(&self, _: u64) -> [Option<ant::Snapshot>; CHANNEL_CAPACITY] {
-        core::array::from_fn(|channel| self.channels[channel].read().flatten())
-    }
-    fn take_packet(&mut self) -> Option<ant::Packet> {
-        self.packets.pop_front()
     }
 }
 
@@ -1306,27 +1092,29 @@ impl ModelAnt {
         for event in events {
             match event {
                 Event::Pass { now_ms } => now = now_ms,
-                Event::AntDiscoveries(found) => {
-                    for discovery in found.into_iter().flatten() {
-                        evidence(
-                            &mut radio,
-                            discovery.identity,
-                            discovery.seen_ms,
-                            Some(discovery.rssi),
-                        );
+                Event::Call(call) => match world::read(&call) {
+                    Some(World::AntDiscovery {
+                        found: Some(discovery),
+                        ..
+                    }) => evidence(
+                        &mut radio,
+                        discovery.identity,
+                        discovery.seen_ms,
+                        Some(discovery.rssi),
+                    ),
+                    Some(World::AntPacket(packet)) => {
+                        evidence(&mut radio, packet.identity, packet.received_ms, None)
                     }
-                }
-                Event::AntPacket(packet) => {
-                    evidence(&mut radio, packet.identity, packet.received_ms, None)
-                }
-                Event::AntLink {
-                    snapshot: Some(snapshot),
-                    ..
-                } if snapshot.link == LinkState::Connected && !snapshot.stale => {
-                    if let Some(identity) = snapshot.selected {
-                        evidence(&mut radio, identity, now, None);
+                    Some(World::AntLink {
+                        snapshot: Some(snapshot),
+                        ..
+                    }) if snapshot.link == LinkState::Connected && !snapshot.stale => {
+                        if let Some(identity) = snapshot.selected {
+                            evidence(&mut radio, identity, now, None);
+                        }
                     }
-                }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -1343,11 +1131,11 @@ impl ModelAnt {
         }
     }
 
-    fn apply(&mut self, event: Event<'_>) {
-        match event {
-            Event::AntRadio(radio) => self.radio.availability = radio.availability,
-            Event::AntPacket(packet) => self.pages.push((packet.identity, packet.data)),
-            Event::AntRequest { operation, result } => self.recorded.push_back(Recorded {
+    fn apply(&mut self, world: World<'_>) {
+        match world {
+            World::AntAvailability(availability) => self.radio.availability = availability,
+            World::AntPacket(packet) => self.pages.push((packet.identity, packet.data)),
+            World::AntRequest { operation, result } => self.recorded.push_back(Recorded {
                 at_ms: self.ledger.now(),
                 operation,
                 result,
@@ -1384,7 +1172,7 @@ impl ModelAnt {
         }
     }
 
-    fn request(&mut self, operation: AntOperation, now: u64) -> Result<Admission, ant::Error> {
+    fn answer(&mut self, operation: AntOperation, now: u64) -> Result<Admission, ant::Error> {
         if let Some(adapter) = &mut self.adapter
             && let Some(answer) = adapter(&operation, now)
         {
@@ -1411,6 +1199,42 @@ impl ModelAnt {
     }
 }
 
+impl Ant for ModelAnt {
+    fn take_diagnostic_packet(&mut self) -> Option<ant::Packet> {
+        None
+    }
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<ant::Snapshot> {
+        ant::channel(self.channels(now_ms), kind)
+    }
+    fn scanning(&self) -> bool {
+        self.radio.scanning()
+    }
+    fn discoveries(&self) -> [Option<ant::Discovery>; DISCOVERY_CAPACITY] {
+        self.radio.discoveries()
+    }
+    fn request(&mut self, operation: AntOperation, now: u64) -> Result<Admission, ant::Error> {
+        self.answer(operation, now)
+    }
+    fn capabilities(&self) -> ant::Capabilities {
+        self.radio.capabilities()
+    }
+    fn scan(&self) -> ant::ScanSnapshot {
+        self.radio.scan()
+    }
+    fn send_status(&self, id: ant::OperationId) -> Option<ant::SendObservation> {
+        self.radio.send_status(id)
+    }
+    fn availability(&self) -> Availability {
+        self.radio.availability()
+    }
+    fn channels(&self, now: u64) -> [Option<ant::Snapshot>; CHANNEL_CAPACITY] {
+        self.radio.channels(now)
+    }
+    fn take_packet(&mut self) -> Option<ant::Packet> {
+        self.radio.take_packet()
+    }
+}
+
 fn same_request(a: &AntOperation, b: &AntOperation) -> bool {
     match (a, b) {
         (
@@ -1425,7 +1249,8 @@ fn same_request(a: &AntOperation, b: &AntOperation) -> bool {
 }
 
 pub struct ReplayBle {
-    link: Served<(Availability, ble_transport::Snapshot)>,
+    availability: Served<Availability>,
+    link: Served<ble_transport::Snapshot>,
     packets: VecDeque<ble_transport::Packet>,
     battery: VecDeque<ble_transport::BatteryLevel>,
     ledger: Ledger,
@@ -1434,6 +1259,7 @@ pub struct ReplayBle {
 impl ReplayBle {
     fn new(ledger: &Ledger) -> Self {
         Self {
+            availability: Served::new("BLE link", ledger),
             link: Served::new("BLE link", ledger),
             packets: VecDeque::new(),
             battery: VecDeque::new(),
@@ -1444,12 +1270,12 @@ impl ReplayBle {
 
 impl Ble for ReplayBle {
     fn availability(&self) -> Availability {
-        self.link
+        self.availability
             .read()
-            .map_or(Availability::Unsupported, |link| link.0)
+            .unwrap_or(Availability::Unsupported)
     }
     fn snapshot(&self) -> ble_transport::Snapshot {
-        self.link.read().map(|link| link.1).unwrap_or_default()
+        self.link.read().unwrap_or_default()
     }
     fn take_packet(&mut self) -> Option<ble_transport::Packet> {
         self.packets.pop_front()
@@ -1471,16 +1297,19 @@ impl Ble for ReplayBle {
     }
 }
 
-pub struct ReplayPosition(Served<(Availability, Option<positioning::Snapshot>)>);
+pub struct ReplayPosition {
+    availability: Served<Availability>,
+    snapshot: Served<Option<positioning::Snapshot>>,
+}
 
 impl Positioning for ReplayPosition {
     fn availability(&self) -> Availability {
-        self.0
+        self.availability
             .read()
-            .map_or(Availability::Unsupported, |position| position.0)
+            .unwrap_or(Availability::Unsupported)
     }
     fn snapshot(&self, _: u64) -> Option<positioning::Snapshot> {
-        self.0.read().and_then(|position| position.1)
+        self.snapshot.read().flatten()
     }
 }
 
@@ -1492,17 +1321,17 @@ impl InputObservation for ReplayCompanion {
     }
 }
 
-#[derive(Clone)]
+/// Unused entropy stays queued across passes so a changed build can request it later.
 struct Entropy {
-    values: Rc<RefCell<VecDeque<u64>>>,
+    values: VecDeque<u64>,
+    input: &'static str,
     ledger: Ledger,
 }
 
 impl Entropy {
-    fn take(&self) -> u64 {
-        let value = self.values.borrow_mut().pop_front();
-        value.unwrap_or_else(|| {
-            self.ledger.unrecorded("entropy");
+    fn take(&mut self) -> u64 {
+        self.values.pop_front().unwrap_or_else(|| {
+            self.ledger.unrecorded(self.input);
             0
         })
     }
@@ -1542,14 +1371,21 @@ impl ReadWrite for ReplayBulk {
 /// VANA's start and stop.
 pub struct ReplayAccessPoint {
     view: Served<(AccessPointState, Reach)>,
+    /// The state and reach as last recorded: the trace holds each alone.
+    latest: (AccessPointState, Reach),
     calls: Calls<(bool, Result<(), Error>), (AccessPointState, Reach)>,
     entropy: Entropy,
 }
 
 impl ReplayAccessPoint {
+    fn changed(&mut self) {
+        if let Some(view) = self.calls.change(self.latest) {
+            self.view.set(view);
+        }
+    }
+
     fn answer(&mut self, start: bool) -> Result<(), Error> {
-        let asked = if start { "start" } else { "stop" };
-        let Some(((_, result), after)) = self.calls.take(asked, |call| call.0 == start) else {
+        let Some(((_, result), after)) = self.calls.take(|call| call.0 == start) else {
             return Err(Error::Unavailable);
         };
         for view in after {
@@ -1584,7 +1420,7 @@ enum ServerCall {
     Listen(bool),
     Finish(u32),
     Read { id: u32, bytes: Vec<u8>, more: bool },
-    Write { id: u32, taken: u32 },
+    Write { id: u32, taken: usize },
 }
 
 type ServerView = (Option<server::Request>, usize);
@@ -1593,6 +1429,8 @@ type ServerView = (Option<server::Request>, usize);
 /// read gave and what each write took.
 pub struct ReplayServer {
     view: Served<ServerView>,
+    /// The request and room as last recorded: the trace holds each alone.
+    latest: ServerView,
     calls: Calls<ServerCall, ServerView>,
     /// The open phone session's token, which a redacted recording's
     /// placeholder for its own session's token stands for.
@@ -1600,24 +1438,25 @@ pub struct ReplayServer {
 }
 
 impl ReplayServer {
+    fn view_changed(&mut self) {
+        if let Some(view) = self.calls.change(self.latest.clone()) {
+            self.view.set(view);
+        }
+    }
+
     fn changed(&mut self, after: Vec<ServerView>) {
         for view in after {
             self.view.set(view);
         }
     }
 
-    /// The recorded listen or finish that answers VANA's: the next call in
-    /// a strict replay, the first such call of the pass in a stimulus one.
-    /// Either is recorded only when it changed the request the server
-    /// holds, so VANA's call meets none when it changed nothing there; one
-    /// that would hide the held request and meets none parts from the
-    /// recording.
+    /// The recorded listen or finish that answers VANA's: the first such
+    /// call of the pass. A listen is recorded only when it differs from the
+    /// one before or changed what the server holds, so VANA's call may meet
+    /// none; one that would hide the held request and meets none parts
+    /// from the recording.
     fn changes(&mut self, call: ServerCall, hides: bool) {
-        let found = match self.calls.ledger.mode() {
-            Mode::Strict => self.calls.take_if_next(|next| *next == call),
-            Mode::Stimulus => self.calls.take_first(|next| *next == call),
-        };
-        match found {
+        match self.calls.take_first(|next| *next == call) {
             Some((_, after)) => self.changed(after),
             None if hides => self.calls.ledger.note(Kind::OtherRequest, 1, || {
                 format!("VANA's {call:?} hides the request the recording kept")
@@ -1652,7 +1491,7 @@ impl Server for ReplayServer {
     fn read(&mut self, id: u32, out: &mut [u8]) -> usize {
         let read =
             |call: &ServerCall| matches!(call, ServerCall::Read { id: read, .. } if *read == id);
-        let Some((call, after)) = self.calls.take(("read", id), read) else {
+        let Some((call, after)) = self.calls.take(read) else {
             return 0;
         };
         self.changed(after);
@@ -1678,12 +1517,12 @@ impl Server for ReplayServer {
     fn write(&mut self, id: u32, bytes: &[u8]) -> usize {
         let write =
             |call: &ServerCall| matches!(call, ServerCall::Write { id: write, .. } if *write == id);
-        let Some((call, after)) = self.calls.take(("write", id, bytes.len()), write) else {
+        let Some((call, after)) = self.calls.take(write) else {
             return 0;
         };
         self.changed(after);
         match call {
-            ServerCall::Write { taken, .. } => (taken as usize).min(bytes.len()),
+            ServerCall::Write { taken, .. } => taken.min(bytes.len()),
             _ => 0,
         }
     }
@@ -1702,7 +1541,7 @@ pub struct ReplaySound {
 
 impl ReplaySound {
     fn answer(&mut self, play: Option<u8>) -> Result<(), Error> {
-        let Some(((_, result), after)) = self.calls.take(play, |call| call.0 == play) else {
+        let Some(((_, result), after)) = self.calls.take(|call| call.0 == play) else {
             return Err(Error::Unavailable);
         };
         for view in after {
@@ -1753,7 +1592,7 @@ impl ReplayPowerControl {
     fn answer(&mut self, operation: power::Operation, delay_ms: u32) -> Result<(), Error> {
         let asked = (operation, delay_ms);
         let same = |call: &PowerCall| (call.0, call.1) == asked;
-        let Some(((_, _, result), after)) = self.calls.take(asked, same) else {
+        let Some(((_, _, result), after)) = self.calls.take(same) else {
             return Err(Error::Unavailable);
         };
         for view in after {
@@ -1787,9 +1626,12 @@ impl PowerControl for ReplayPowerControl {
 mod tests {
     use super::*;
     use device_api::input::Button;
-    use device_api::server::Method;
+    use device_api::journal::PART;
+    use device_api::server::{Method, ServerObserved, ServerRecorder};
     use firmware_services::trace::Header;
-    use firmware_services::trace::frozen::{FrozenServer, READ_PART, Record, Recorder};
+    use firmware_services::trace::log::Log;
+    use firmware_services::trace::media::Memory;
+    use firmware_services::trace::recorder::Recorder;
 
     struct Transport {
         request: server::Request,
@@ -1819,29 +1661,32 @@ mod tests {
         fn finish(&mut self, _: u32) {}
     }
 
-    fn recorder() -> RefCell<Recorder<Box<[u8]>, Blocks>> {
+    type Journal = RefCell<Log<Box<[u8]>, Blocks, Box<Memory>>>;
+
+    fn journal() -> Journal {
         recorded_by([0; 20])
     }
 
-    fn recorded_by(build: [u8; 20]) -> RefCell<Recorder<Box<[u8]>, Blocks>> {
+    fn recorded_by(build: [u8; 20]) -> Journal {
         let header = Header {
             build,
             device: "c606",
             boot: 1,
-            profile: 0,
-            config: &[],
-            media: &[],
+            terrain: trace::origin::Found::Absent,
         };
         let mut file = vec![0u8; 4096];
         let len = trace::encode_header(&header, &mut file).unwrap();
         file.truncate(len);
         let buffer = vec![0u8; 4096].into_boxed_slice();
-        RefCell::new(Recorder::new(buffer, Blocks(file)))
+        let recorder = Recorder::new(buffer, Blocks(file));
+        RefCell::new(Log::new(Some(recorder), Box::default()))
     }
 
-    fn bytes(recorder: &RefCell<Recorder<Box<[u8]>, Blocks>>) -> Vec<u8> {
-        let mut bytes = recorder.borrow().sink().0.clone();
-        bytes.extend_from_slice(recorder.borrow_mut().open_block());
+    fn bytes(journal: &Journal) -> Vec<u8> {
+        let mut journal = journal.borrow_mut();
+        let recorder = journal.recorder.as_mut().unwrap();
+        let mut bytes = recorder.sink().0.clone();
+        bytes.extend_from_slice(recorder.open_block());
         bytes
     }
 
@@ -1863,15 +1708,15 @@ mod tests {
             flash: FileFlash::memory(),
             bulk: SimBulk::default().scripted(),
         };
-        Replay::new(bytes, shelled, Mode::Strict).unwrap()
+        Replay::new(bytes, shelled).unwrap()
     }
 
     #[test]
     fn traces_that_part_only_in_their_build_do_not_differ() {
         let traced = |build: [u8; 20], page: &str| {
-            let recorder = recorded_by(build);
-            recorder.borrow_mut().record(&Event::Page(page));
-            bytes(&recorder)
+            let journal = recorded_by(build);
+            journal.borrow_mut().record(&Event::Page(page));
+            bytes(&journal)
         };
         assert_eq!(
             first_difference(&traced([1; 20], "home"), &traced([2; 20], "home")),
@@ -1884,11 +1729,11 @@ mod tests {
     fn a_warning_only_the_device_logged_parts_no_replay_from_its_recording() {
         use firmware_services::trace::Level;
         let traced = |events: &[Event<'_>]| {
-            let recorder = recorder();
+            let journal = journal();
             for event in events {
-                recorder.borrow_mut().record(event);
+                journal.borrow_mut().record(event);
             }
-            bytes(&recorder)
+            bytes(&journal)
         };
         let pass = Event::Pass { now_ms: 10 };
         let warned = Event::Log {
@@ -1905,19 +1750,23 @@ mod tests {
 
     #[test]
     fn a_read_recorded_in_parts_replays_whole() {
-        let recorder = recorder();
-        let body: Vec<u8> = (0..3 * READ_PART + 100).map(|i| i as u8).collect();
-        let mut transport = transport(&body);
-        recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
-        let mut frozen = FrozenServer::default();
+        let journal = journal();
+        let observed = RefCell::new(ServerObserved::default());
+        let body: Vec<u8> = (0..3 * PART + 100).map(|i| i as u8).collect();
+        journal.borrow_mut().begin_pass(10, false);
+        let mut server = ServerRecorder::new(transport(&body), &journal, &observed);
         let mut out = vec![0u8; 4096];
-        let n = frozen.bind(&mut transport, 10, &recorder).read(9, &mut out);
-        assert_eq!(n, body.len());
-        let bytes = bytes(&recorder);
+        assert_eq!(server.read(9, &mut out), body.len());
+        let bytes = bytes(&journal);
         let parts = {
             let (_, events) = trace::decode(&bytes).unwrap();
             events
-                .filter(|event| matches!(event, Event::ServerRead { .. }))
+                .filter(|event| match event {
+                    Event::Call(call) => {
+                        matches!(world::read(call), Some(World::ServerRead { .. }))
+                    }
+                    _ => false,
+                })
                 .count()
         };
         assert_eq!(parts, 4);
@@ -1933,18 +1782,18 @@ mod tests {
 
     #[test]
     fn a_request_appears_only_after_the_listen_that_revealed_it() {
-        let recorder = recorder();
+        let journal = journal();
+        let observed = RefCell::new(ServerObserved::default());
         let mut transport = transport(b"");
         transport.listening = false;
-        recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
-        let mut frozen = FrozenServer::default();
+        journal.borrow_mut().begin_pass(10, false);
         {
-            let mut pass = frozen.bind(&mut transport, 10, &recorder);
-            assert_eq!(pass.request(), None);
-            pass.listen(true);
-            assert_eq!(pass.request().map(|request| request.id), Some(9));
+            let mut server = ServerRecorder::new(&mut transport, &journal, &observed);
+            assert_eq!(server.request(), None);
+            server.listen(true);
+            assert_eq!(server.request().map(|request| request.id), Some(9));
         }
-        let mut replay = replay(bytes(&recorder));
+        let mut replay = replay(bytes(&journal));
         assert!(matches!(replay.step(), Next::Pass));
         replay.load_pass();
         let server = &mut replay.sources.server;
@@ -1956,14 +1805,14 @@ mod tests {
 
     #[test]
     fn events_the_recording_lost_are_reported_where_they_were_lost() {
-        let recorder = recorder();
-        recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
-        recorder.borrow_mut().record(&Event::Lost {
+        let journal = journal();
+        journal.borrow_mut().begin_pass(10, false);
+        journal.borrow_mut().record(&Event::Lost {
             blocks: 2,
             bytes: 8_000,
         });
-        recorder.borrow_mut().record(&Event::Pass { now_ms: 20 });
-        let mut replay = replay(bytes(&recorder));
+        journal.borrow_mut().begin_pass(20, false);
+        let mut replay = replay(bytes(&journal));
         assert!(matches!(replay.step(), Next::Pass));
         assert_eq!(replay.load_pass(), 10);
         let report = replay.sources.report();
@@ -1973,30 +1822,22 @@ mod tests {
 
     #[test]
     fn a_finish_or_listen_that_hides_the_held_request_unrecorded_is_reported() {
-        let recorder = recorder();
-        let mut transport = transport(b"");
-        recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
-        let mut frozen = FrozenServer::default();
-        frozen.bind(&mut transport, 10, &recorder);
-        for mode in [Mode::Strict, Mode::Stimulus] {
-            let hides: [fn(&mut ReplayServer); 2] =
-                [|server| server.finish(9), |server| server.listen(false)];
-            for hide in hides {
-                let mut replay = replay(bytes(&recorder));
-                replay.sources.ledger.0.borrow_mut().mode = mode;
-                assert!(matches!(replay.step(), Next::Pass));
-                replay.load_pass();
-                let server = &mut replay.sources.server;
-                server.finish(8);
-                server.listen(true);
-                assert_eq!(replay.sources.report().first, None, "{mode:?}");
-                hide(&mut replay.sources.server);
-                assert_eq!(
-                    replay.sources.report().count(Kind::OtherRequest),
-                    1,
-                    "{mode:?}"
-                );
-            }
+        let journal = journal();
+        let observed = RefCell::new(ServerObserved::default());
+        journal.borrow_mut().begin_pass(10, false);
+        ServerRecorder::new(transport(b""), &journal, &observed).sample();
+        let hides: [fn(&mut ReplayServer); 2] =
+            [|server| server.finish(9), |server| server.listen(false)];
+        for hide in hides {
+            let mut replay = replay(bytes(&journal));
+            assert!(matches!(replay.step(), Next::Pass));
+            replay.load_pass();
+            let server = &mut replay.sources.server;
+            server.finish(8);
+            server.listen(true);
+            assert_eq!(replay.sources.report().first, None);
+            hide(&mut replay.sources.server);
+            assert_eq!(replay.sources.report().count(Kind::OtherRequest), 1);
         }
     }
 }

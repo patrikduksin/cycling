@@ -561,7 +561,7 @@ fn health(timeline: &Timeline, out: &mut String) {
 mod tests {
     use super::*;
     use crate::trace::timeline::read;
-    use firmware_services::trace::frozen::{Record, Recorder, Sink};
+    use firmware_services::trace::recorder::{Record, Recorder, Sink};
     use firmware_services::trace::{self, Activity, Consumers, Event, FrameTime, Header};
 
     struct Blocks(Vec<u8>);
@@ -579,9 +579,7 @@ mod tests {
             build: [0; 20],
             device: "c606",
             boot: 1,
-            profile: 0,
-            config: &[],
-            media: &[],
+            terrain: trace::origin::Found::Absent,
         };
         let mut file = vec![0u8; 4096];
         let len = trace::encode_header(&header, &mut file).unwrap();
@@ -631,8 +629,10 @@ mod tests {
         ]
     }
 
-    fn charging() -> Event<'static> {
-        Event::PowerControl(device_api::power::Status {
+    /// The power status a pass at `now_ms` read, as its world record.
+    fn charging(now_ms: u64) -> Event<'static> {
+        use firmware_services::trace::wire::{Wire, Writer};
+        let status = device_api::power::Status {
             sequence: 1,
             operation: None,
             state: Power::Charging,
@@ -640,6 +640,15 @@ mod tests {
             prepare_at_ms: None,
             failure: None,
             ready: false,
+        };
+        let mut body = [0u8; 32];
+        let mut w = Writer::new(&mut body, now_ms);
+        status.put(&mut w);
+        let len = w.written().expect("a status fits");
+        Event::Call(trace::Call {
+            method: crate::twin::script::named("PowerControl", "status").unwrap(),
+            now_ms,
+            body: Vec::leak(body[..len].to_vec()),
         })
     }
 
@@ -648,7 +657,7 @@ mod tests {
         let timeline = timeline(&[
             (5_000, window(80, (1_000, 50_000))),
             (10_000, window(80, (1_000, 50_000))),
-            (12_000, vec![charging()]),
+            (12_000, vec![charging(12_000)]),
             (15_000, window(0, (1_000, 100_000))),
         ]);
         let summary = summary(&timeline);

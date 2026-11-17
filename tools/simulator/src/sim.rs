@@ -675,8 +675,8 @@ impl Sim {
         Self::replay_as(capture, crate::replay::Mode::Strict, |_| {})
     }
 
-    /// As `replay`, in `mode`, with the replay's devices as `setup` leaves
-    /// them before the first pass.
+    /// As `replay`, in `mode`. A stimulus replay's devices are as `setup`
+    /// leaves them before the first pass; a strict one has none to set up.
     pub fn replay_as(
         capture: &crate::replay::Capture,
         mode: crate::replay::Mode,
@@ -684,7 +684,9 @@ impl Sim {
     ) -> Self {
         let mut sim = Self::replaying(capture, mode, None).expect("a replayable capture");
         sim.hash_frames();
-        setup(sim.device.replay_sources().expect("a replay"));
+        if let Some(sources) = sim.device.replay_sources() {
+            setup(sources);
+        }
         sim.replay_until(u64::MAX);
         sim
     }
@@ -985,6 +987,13 @@ impl Sim {
     pub fn cut_power(&mut self) {
         self.note(NoteKind::Device, "power lost; rebooting");
         self.device.power_cycle().expect("memory media reopens");
+    }
+
+    /// A panic or a watchdog reset: the main CPU restarts without
+    /// warning, and the trace salvages what memory held of its spool.
+    pub fn crash(&mut self) {
+        self.note(NoteKind::Device, "panic; rebooting");
+        self.device.crash().expect("memory media reopens");
     }
 
     /// Fail the next storage mutations after `after` succeed, tearing the failed one.

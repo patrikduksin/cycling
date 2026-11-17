@@ -49,10 +49,10 @@ fn the_light_a_ride_saw_is_in_its_trace_and_replays_exactly() {
 }
 
 #[test]
-fn a_trace_recorded_before_ambient_light_was_traced_still_replays_exactly() {
+fn a_trace_of_a_ride_with_no_light_feed_replays_exactly() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/traces/laps-and-a-menu.trace");
     let (capture, _) = file::load(&path).expect("the fixture loads");
-    assert_eq!(light_lines(&capture.trace), Vec::<String>::new());
+    assert_eq!(light_lines(&capture.trace), ["ambient light unavailable"]);
     let replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
     assert_eq!(report.first, None, "{:?}", report.counts);

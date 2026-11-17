@@ -9,6 +9,7 @@ Keep Rust source in ordinary modules: path attributes and include! would let a
 package compile another owner's files without declaring that dependency.
 The ANT host test has two explicit source seams to substitute UART and locking.
 """
+from collections import namedtuple
 from enum import Enum
 from pathlib import Path
 import re
@@ -28,7 +29,7 @@ OWNERS = {
 }
 HARDWARE = {"esp_hal", "esp32s3", "esp_radio", "esp_rtos", "esp_storage", "esp_alloc", "esp_println", "esp_backtrace", "esp_bootloader_esp_idf", "c606_firmware", "shell_simulator"}
 CONSUMERS = {"firmware_shell", "firmware_console", "vana", "shell_simulator"}
-DEVICE_COMPOSITION = {"src/main.rs", "src/commands.rs", "src/logging.rs", "src/trace.rs"}
+DEVICE_COMPOSITION = {"src/main.rs", "src/commands.rs", "src/logging.rs", "src/trace.rs", "src/world.rs"}
 
 
 # The host ANT regression compiles the production owner against fake UART and
@@ -52,8 +53,19 @@ FUNCTION = re.compile(r'\bfn\s+(\w+)')
 
 
 CAPABILITY_SOURCE = 'packages/device-api/src/'
+RECORDING_SOURCE = 'packages/device-api/src/journal'
 CAPABILITY_RULE = ('a device-api trait declares how each method is recorded: mark it #[capability(id = N)] '
                    '(packages/device-api/src/capability.rs)')
+Owner = namedtuple('Owner', 'name holders')
+DEVICE_OWNERS = {
+    'devices/c606/src/': Owner('World', {'world'}),
+    'tools/simulator/src/session.rs': Owner('Devices', {'sim', 'sources'}),
+}
+RAW_DEVICES = ('access_point', 'ant', 'battery', 'ble', 'bulk', 'companion', 'input', 'phone_server', 'position',
+               'power', 'sensors', 'server', 'sound', 'speaker', 'switch', 'wifi')
+OWNER_RULE = ('a composition borrows or moves a raw device only inside `impl {owner}`, which binds it to its recorder '
+              'for the pass (`unrecorded_bulk` is the named way around it); outside, call the device\'s methods')
+OWNER_FIELDS_RULE = '`{owner}` keeps its devices private, so only its impl hands them out'
 CONSOLE_READERS = ('apps/vana/', 'packages/shell/')
 CONSOLE_RULE = ("device_api::console is the terminal task's byte pipe, outside the recorded world: "
                 'VANA and the shell reach the console only through commands')
@@ -170,13 +182,43 @@ def outer_attributes(code, offset):
 
 
 def unmarked_capabilities(text, path):
-    if not path.startswith(CAPABILITY_SOURCE):
+    if not path.startswith(CAPABILITY_SOURCE) or path.startswith(RECORDING_SOURCE):
         return []
     code = STRING.sub(lambda match: blank(match.group()), without_comments(text))
     return [(code.count('\n', 0, match.start()) + 1, f'`{match[1]}`: {CAPABILITY_RULE}')
             for match in re.finditer(r'\bpub\b(?:\s*\([^)]*\))?\s*(?:unsafe\s+)?trait\s+(\w+)', code)
             if not any(re.match(r'#\s*\[\s*capability\s*\(', attribute)
                        for attribute in outer_attributes(code, match.start()))]
+
+
+def braced(code, open_brace):
+    depth, end = 0, open_brace
+    while end < len(code):
+        depth += {'{': 1, '}': -1}.get(code[end], 0)
+        end += 1
+        if not depth:
+            break
+    return open_brace, end
+
+
+def owner_reach(text, path):
+    """A mistake guard, not a resolver: the composition's names for a device holder are listed, so a device
+    reached through another binding is out of scope. Rust privacy keeps the c606 owner's fields its own."""
+    owner = next((owner for prefix, owner in DEVICE_OWNERS.items()
+                  if path == prefix or prefix.endswith('/') and path.startswith(prefix)
+                  and '/' not in path[len(prefix):]), None)
+    if owner is None:
+        return []
+    code = STRING.sub(lambda match: blank(match.group()), without_comments(text))
+    line = lambda offset: code.count('\n', 0, offset) + 1
+    inside = [braced(code, match.end() - 1) for match in re.finditer(rf'\bimpl\s+{owner.name}\s*\{{', code)]
+    findings = [(line(match.start()), OWNER_FIELDS_RULE.format(owner=owner.name))
+                for match in re.finditer(rf'\bstruct\s+{owner.name}\s*\{{', code)
+                if re.search(r'\bpub\b', code[slice(*braced(code, match.end() - 1))])]
+    reach = re.compile(rf'\b(?:{"|".join(owner.holders)})\s*\.\s*(?:{"|".join(RAW_DEVICES)})\b(?!\s*(?:[.(\[]|=(?!=)))')
+    findings += [(line(match.start()), OWNER_RULE.format(owner=owner.name)) for match in reach.finditer(code)
+                 if not any(start <= match.start() < end for start, end in inside)]
+    return sorted(findings)
 
 
 def console_reach(text, path):
@@ -362,7 +404,7 @@ def dependencies(manifest, workspace=None):
 def source_rules(owner, relative, aliases):
     if owner == 'c606-firmware':
         composition = relative.as_posix() in DEVICE_COMPOSITION or relative.parts[0] == 'tests'
-        forbidden = set() if composition else CONSUMERS | {'main', 'commands', 'logging', 'trace'}
+        forbidden = set() if composition else CONSUMERS | {'main', 'commands', 'logging', 'trace', 'world'}
         portable = False
     elif owner == 'shell-simulator':
         forbidden, portable = {'c606_firmware'}, False
@@ -497,6 +539,33 @@ ui = { package = "firmware-shell", path = "../shell" }
                        '    use self::d::console::Local;\n}']:
             assert not console_reach(source, path), (path, source)
     assert not console_reach('use device_api::console::Console;', 'packages/console/src/session.rs')
+    session, world = 'tools/simulator/src/session.rs', 'devices/c606/src/world.rs'
+    owned = 'impl Devices {\n    fn handles(&mut self) {\n        if let Devices::Simulated(sim) = self {\n' \
+            '            bind(&mut sim.ant, &mut sim.speaker);\n        }\n    }\n}\n'
+    assert not owner_reach(owned, session)
+    for source in ['fn pass(sim: &mut Simulated) {\n    bind(&mut sim.ant);\n}',
+                   'fn pass(replay: &mut Replay) { let ant = &mut replay.sources\n        .ant; }',
+                   'fn freeze(sim: &Simulated) -> u8 { frozen.freeze(&sim.position) }',
+                   owned + 'fn pass(sim: &mut Simulated) { bind(sim.ble) }',
+                   'fn same(sim: &Simulated) -> bool { sim.ble == other }']:
+        assert [reason for _, reason in owner_reach(source, session)] == [OWNER_RULE.format(owner='Devices')], source
+    assert [line for line, _ in owner_reach(owned + 'fn pass(sim: &mut Simulated) { bind(&mut sim.ant) }',
+                                            session)] == [8]
+    for source in ['fn vitals(sim: &Simulated) -> u8 { sim.ble.snapshot().link + sim.ant.channels(now)[0] }',
+                   'fn tick(&mut self) { strap.tick(&mut self.ble) }', '// bind(&mut sim.ant)',
+                   'let doc = "&mut sim.ant";', 'fn pass(trace: &mut Trace) { trace.ant.bind(ant) }',
+                   'fn pass(sim: &mut Simulated) { sim.ble.snapshot = Snapshot::default(); }',
+                   'fn fixture(sim: &mut Simulated) { sim.position = PositionFixture::default(); }']:
+        assert not owner_reach(source, session), source
+    assert [reason for _, reason in owner_reach('pub struct World {\n    pub ant: Ant,\n}', world)] == \
+        [OWNER_FIELDS_RULE.format(owner='World')]
+    assert not owner_reach('pub struct World {\n    ant: Ant,\n}\nimpl World {\n    fn bulk(&mut self) '
+                           '-> &mut Bulk { &mut self.bulk }\n}', world)
+    assert owner_reach('fn drain(world: &mut World) { trace.drain(&mut world.bulk) }', 'devices/c606/src/main.rs')
+    assert not owner_reach('fn drain(world: &mut World) { trace.drain(world.unrecorded_bulk()) }',
+                           'devices/c606/src/main.rs')
+    assert not owner_reach('bind(&mut sim.ant)', 'tools/simulator/src/sim.rs')
+    assert not owner_reach('bind(&mut world.ant)', 'devices/c606/src/drivers/world.rs')
     wifi = STACK_STATE_WAITER[0]
     publisher = 'async fn network(stack: Stack) {\n    loop {\n        stack.wait_config_up().await;\n' \
                 '        stack\n            .wait_config_down()\n            .await;\n    }\n}\n'
@@ -538,12 +607,12 @@ def main():
                             for line, reason in layer_findings(path.read_text(), path.relative_to(ROOT).as_posix()))
             failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                             for line, reason in foreign_stack_waits(path.read_text(), path.relative_to(ROOT).as_posix()))
-            for check in (unmarked_capabilities, console_reach):
+            for check in (unmarked_capabilities, console_reach, owner_reach):
                 failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                                 for line, reason in check(path.read_text(), path.relative_to(ROOT).as_posix()))
     if failures:
         raise SystemExit('\n'.join(failures))
-    print(f'Boundaries, layers, the stack waiter, capabilities and the console passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
+    print(f'Boundaries, layers, the stack waiter, capabilities, the console and the device owners passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
 
 
 if __name__ == '__main__':

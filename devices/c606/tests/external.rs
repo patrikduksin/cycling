@@ -2,7 +2,7 @@ use c606_firmware::drivers::external::Owned;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use firmware_services::trace::Event;
-use firmware_services::trace::frozen::{Record, Recorder};
+use firmware_services::trace::recorder::{Record, Recorder};
 use firmware_services::trace::spool::Spool;
 
 static HELD: AtomicUsize = AtomicUsize::new(0);

@@ -100,11 +100,11 @@ power::WakeSources: button usb timer
 power::Capabilities: shutdown sleep sleep_timer_ms wake shutdown_wake sleep_wake
 sound::Pattern: id frequency_hz nominal_ms guard_ms
 crate::network_time::Snapshot: unix_seconds millis local_minutes age_ms status
-AntRadio<'a>: availability capabilities scanning scan
+crate::storage::Record: sequence length
 ServerRequest<'a>: id method path query session gzip body
-StorageFault: medium attempt op at landed error
 AntCapabilities<'a>: supported_types connection_capacity one_peer_per_type concurrent_scan acknowledged_send radio_delivery_feedback burst max_pending_sends
 FrameTime: frames mean_us
+Cost: evictions high_water
 Health: simulated heap_free heap_min psram_free frame_max_us pass_max_us gps_sentences gps_overflows gps_uart_errors companion_errors card_write_max_us card_recoveries spool_used spool_size wifi wifi_rssi ble_rssi
 Consumers: cpu_mhz backlight frames gnss wifi access_point ble ant ant_scanning ant_channels slept_ms
 Activity: simulated window_ms wakes awake_us main_us radio_us idle_us switches ticks hooks_us consumers";

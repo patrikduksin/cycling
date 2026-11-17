@@ -7,14 +7,13 @@ use shell_simulator::sim::Sim;
 use shell_simulator::trace::file::{self, Media};
 use shell_simulator::trace::find::{Query, find};
 use shell_simulator::trace::report::{
-    Answers, Artifacts, Header, Listing, Prose, Rebuilt, Replayed, Stub, Summary, Written,
-    in_window, render,
+    Answers, Artifacts, Header, Listing, Prose, Replayed, Stub, Summary, Written, in_window, render,
 };
 use shell_simulator::trace::story::tell;
 use shell_simulator::trace::timeline::{
     At, Entry, Kind, Timeline, build_name, read, session_clock,
 };
-use shell_simulator::trace::{divergence, origin, otlp, rebuild, stub};
+use shell_simulator::trace::{divergence, origin, otlp, stub};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -25,7 +24,7 @@ usage: cycling trace <command> <trace> [options] [--json]
        cycling replay <trace> [options] [--json]
 
 Read a ride trace (<name>.trace; the media it started on are in <name>.origin
-beside it: saved by the simulator, or rebuilt for a device trace by pull). Times are the session clock, mm:ss.mmm since power-on,
+beside it when the simulator saved it). Times are the session clock, mm:ss.mmm since power-on,
 and the ride clock, which runs only while a ride records; every line starts
 `<session> ride <ride>`. Time options take 40:00, 1:02:03, 90s, 40m or 2500ms,
 and r40:00 for a ride time.
@@ -39,10 +38,9 @@ events, battery, entries (per kind {new, repeats})}; timeline {from_ms,
 to_ms, entries, hidden}; find {found, total}, each found an entry with type
 entry or {type stretch, from, to, first}, at most --limit of them; replay
 {header, mode, why, from_ms, to_ms, reached, trace_ended, divergence,
-artifacts}; origin {origin, lines} and media {lines}; rebuild {origin,
-not_rebuilt}; otlp {traces, metrics}, or {out} with --out; test-stub
-{fixture_steps, test}. The summary's battery and the lines of origin and
-media are prose, the text's own lines, with no fields to parse.
+artifacts}; origin {origin, lines}; otlp {traces, metrics}, or {out} with
+--out; test-stub {fixture_steps, test}. The summary's battery and the lines
+of origin are prose, the text's own lines, with no fields to parse.
 
 commands:
   summary <trace>
@@ -64,23 +62,11 @@ commands:
   origin <trace>
       The media a replay starts from, in words: power-on number, shell
       settings and VANA's preferences (saved sensors), rides on internal
-      flash, and the bulk card; for a rebuilt .origin, what it could not
-      rebuild. A trace without .origin starts blank.
-  media <trace>
-      The media the trace's header names, one line each, as `cycling trace
-      pull` reads them: boot N; journal SLOTS, or journal unusable; rides
-      log|uncertain STORE HEAD, or rides unusable|uninitialized; files
-      STORE GENERATION, or files unreadable card|table|volume; file NAME
-      LENGTH CRC per file; terrain LENGTH SHA256 ready|writing TAG, or
-      terrain unreadable card|table|volume.
+      flash, and the bulk card. A trace without .origin starts blank.
   upgrade <trace>...
       Rewrite each trace's ORIGIN1 .origin, saved before the intent region,
       as ORIGIN2: a blank intent region and no marginal words, as that
       device had. An ORIGIN2 one is left as it is.
-  rebuild <trace> --pulled DIR
-      Write <trace>.origin from the header and the media pulled after the
-      session into DIR (the layout `cycling trace pull` writes; see
-      shell_simulator::trace::rebuild), and say what could not be rebuilt.
   timeline <trace> [--from T] [--to T] [--kinds LIST] [--all] [--hex]
       Every event in the window, inputs and what the rider saw. Kinds: gap,
       input, command, startup, ant, ant.packet, ant.request, ble, ble.packet,
@@ -255,35 +241,6 @@ fn run(args: &[String]) -> Result<String, String> {
                 &Prose {
                     lines,
                     origin: Some(origin),
-                },
-            )
-        }
-        "media" => {
-            let lines = rebuild::media(&capture.trace)?;
-            render(
-                json,
-                &Prose {
-                    lines,
-                    origin: None,
-                },
-            )
-        }
-        "rebuild" => {
-            let dir = options
-                .value("pulled")
-                .ok_or("rebuild needs --pulled DIR")?;
-            let pulled =
-                rebuild::Pulled::read(Path::new(dir)).map_err(|e| format!("{dir}: {e}"))?;
-            let (origin, not_rebuilt) = rebuild::rebuild(&capture.trace, &pulled)?;
-            file::save_rebuilt(&origin, &rebuild::report(&not_rebuilt), &path)
-                .map_err(|e| format!("{}: {e}", file::origin_path(&path).display()))?;
-            let origin = std::fs::canonicalize(file::origin_path(&path))
-                .map_err(|e| format!("{}: {e}", path.display()))?;
-            render(
-                json,
-                &Rebuilt {
-                    not_rebuilt,
-                    origin,
                 },
             )
         }
@@ -517,11 +474,7 @@ fn replay<'a>(
     let recording = Recording::at(dir.clone(), stem, model.name, model.width, model.height)
         .with_video(options.has("video"));
     let mut ran = sim.replay_until(from);
-    let before = sim
-        .device
-        .replay_sources()
-        .map(|sources| sources.open_window())
-        .unwrap_or_default();
+    let before = sim.device.open_replay_window();
     sim.attach_recording(recording);
     let shots = (0..).map(|i| from + i * every).take_while(|at| *at <= to);
     let changes = in_window(timeline, from, to)

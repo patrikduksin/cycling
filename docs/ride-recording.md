@@ -739,8 +739,7 @@ written.
   delete past that says NOT DELETED, as does any write the store refuses.
 - A save writes the table again, copy-on-write, its slots byte for byte and
   in their order with the new one last. A table that only gains rides
-  therefore only grows at its end, and a ride trace's rebuild cuts it back to
-  its length at power-on. A cut leaves the old table or the new one.
+  therefore only grows at its end. A cut leaves the old table or the new one.
 - Without a card, a FILES volume or a store the host formatted, nothing is
   hidden, END RIDE? has no discard cue and a saved ride has no delete page.
   Neither shows once the table is full or the card is out or has failed. A

@@ -642,7 +642,7 @@ def main():
     fmt.add_argument('--confirm', action='store_true')
     pull = actions.add_parser(
         'trace-pull',
-        help='pull a ride trace from STORE into .local/traces/ and rebuild the media it started on beside it',
+        help='pull a ride trace from STORE into .local/traces/',
     )
     pull.add_argument('name', nargs='?', help='the trace, such as 000042-1a2b3c4d.trace; the newest by default')
     pull.add_argument(

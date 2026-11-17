@@ -2,8 +2,9 @@
 //! a power loss; never-written sectors return stale bytes, as the partition
 //! reused an old filesystem. Like the device, a failed write leaves the
 //! controller failed until the next boot, and every write is verified.
+use crate::storage::StorageFault;
 use device_api::bulk::{Error, OwnedInfo, ReadWrite, SECTOR_SIZE};
-use firmware_services::trace::{Medium, StorageError, StorageFault, StorageOp};
+use firmware_services::trace::{Medium, StorageError, StorageOp};
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
@@ -45,7 +46,6 @@ struct Region {
     writes: u64,
     /// Entropy state; it survives reboots like a hardware source would not repeat.
     entropy: u64,
-    log: Vec<StorageFault>,
     script: Option<VecDeque<StorageFault>>,
     attempts: u32,
 }
@@ -75,7 +75,6 @@ impl Default for SimBulk {
                 reads: 0,
                 writes: 0,
                 entropy: 0x5eed,
-                log: Vec::new(),
                 script: None,
                 attempts: 0,
             })),
@@ -207,9 +206,8 @@ impl SimBulk {
             .map_or_else(Vec::new, |script| script.drain(..).collect())
     }
 
-    /// The failures answered since the last call.
-    pub fn take_log(&self) -> Vec<StorageFault> {
-        core::mem::take(&mut self.region.borrow_mut().log)
+    pub fn presence(&self) -> Presence {
+        self.region.borrow().presence
     }
 
     pub fn set_presence(&self, presence: Presence) {
@@ -319,7 +317,7 @@ impl SimBulk {
             Some(_) if self.actor == Actor::Host => None,
             Some(script) => script
                 .iter()
-                .position(|f| (f.attempt, f.op, f.at) == (attempt, op, sector))
+                .position(|f| (f.op, f.at) == (op, sector))
                 .and_then(|index| script.remove(index)),
             None => match region.presence {
                 _ if region.lost.get() => Some(failure(Error::Unavailable)),
@@ -330,9 +328,6 @@ impl SimBulk {
             },
         };
         if let Some(fault) = fault {
-            if self.actor == Actor::Device {
-                region.log.push(fault);
-            }
             return Err(fault);
         }
         if op != StorageOp::Info && sector >= region.sectors {
@@ -401,17 +396,6 @@ impl SimBulk {
                 region.lost.set(power_cut);
                 region.fault = None;
                 region.failed = true;
-                if self.actor == Actor::Device {
-                    let attempt = region.attempts - 1;
-                    region.log.push(StorageFault {
-                        medium: Medium::Bulk,
-                        attempt,
-                        op: StorageOp::Write,
-                        at: sector,
-                        landed: partial as u32,
-                        error: StorageError::Failed,
-                    });
-                }
                 drop(region);
                 self.tear(sector, input, partial);
                 return Err(Error::Failed);

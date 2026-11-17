@@ -3,14 +3,15 @@
 //! test that replays it. `src/bin/trace.rs` is the command line.
 pub mod ant_page;
 pub mod battery;
+pub mod card;
 pub mod divergence;
 pub mod file;
 pub mod find;
 pub mod origin;
 pub mod otlp;
-pub mod rebuild;
 pub mod report;
 pub mod secret;
 pub mod story;
 pub mod stub;
 pub mod timeline;
+pub mod world;

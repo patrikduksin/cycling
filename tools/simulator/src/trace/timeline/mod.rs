@@ -390,6 +390,57 @@ pub struct Timeline {
     pub frame_times: Vec<(u64, trace::FrameTime)>,
     /// Each activity window, in order.
     pub activity: Vec<Window>,
+    /// What this session's boot found of the trace before it.
+    pub before: Before,
+}
+
+/// What a boot found of the trace before its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Before {
+    pub horizon: Option<Horizon>,
+    /// The blocks the boot appended to it after a panic or a watchdog
+    /// reset.
+    pub salvaged: Option<u32>,
+}
+
+/// How far the trace before survived on the card.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Horizon {
+    pub trace: String,
+    /// Its last pass whose records survived; none when it holds none.
+    pub last_pass_ms: Option<u64>,
+    /// Its whole blocks after its last synced record.
+    pub blocks: u32,
+}
+
+impl fmt::Display for Before {
+    /// `trace before: traces/000041-1a2b3c4d.trace survived to 12:00.000,
+    /// 2 blocks after its last sync; 5 blocks salvaged into it after the
+    /// crash`, or nothing when the boot found no trace before.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(horizon) = &self.horizon {
+            write!(f, "trace before: {horizon}")?;
+            if let Some(blocks) = self.salvaged {
+                write!(f, "; {blocks} blocks salvaged into it after the crash")?;
+            }
+        } else if let Some(blocks) = self.salvaged {
+            write!(
+                f,
+                "trace before: {blocks} blocks salvaged into it after the crash"
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Horizon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.last_pass_ms {
+            Some(ms) => write!(f, "{} survived to {}", self.trace, session_clock(ms))?,
+            None => write!(f, "{} holds no pass", self.trace)?,
+        }
+        write!(f, ", {} blocks after its last sync", self.blocks)
+    }
 }
 
 /// Where the CPU time went in the window that ended at `end_ms`.

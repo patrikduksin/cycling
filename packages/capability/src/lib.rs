@@ -6,6 +6,9 @@ use syn::{
     TraitItemFn, Type,
 };
 
+mod recorder;
+mod replay;
+
 const KINDS: &str = "#[observe], #[take], #[request], #[sink], #[media(..)], #[command], #[derived] or #[unrecorded(\"reason\")]";
 const ROLES: &str = "#[clock], #[at], #[out], #[input] or #[len]";
 const PASSTHROUGH: [&str; 6] = ["doc", "allow", "expect", "warn", "deny", "must_use"];
@@ -13,7 +16,10 @@ const CONDITIONAL: [&str; 2] = ["cfg", "cfg_attr"];
 
 /// Declares a device capability: `#[capability(id = N)]`, or
 /// `#[capability(id = N, outside = "reason")]` for one that stays out of the
-/// recorded world.
+/// recorded world. Beside the trait it emits the capability's table, the
+/// trait for `&mut T` and, for a recorded capability, `<Trait>Recorder`.
+/// `<Trait>Replay` is emitted too, unless the trait has an associated type,
+/// a callback or an unrecorded method.
 #[proc_macro_attribute]
 pub fn capability(
     attr: proc_macro::TokenStream,
@@ -37,10 +43,20 @@ enum Media {
     Erase,
 }
 
+impl Media {
+    fn role(&self) -> Role {
+        match self {
+            Media::Read => Role::Out,
+            Media::Write => Role::Input,
+            Media::Erase => Role::Len,
+        }
+    }
+}
+
 enum Kind {
     Observe(Keys),
     Take { refreshes: bool },
-    Request { refreshes: bool },
+    Request { refreshes: bool, repeats: bool },
     Sink { refreshes: bool },
     Media(Media),
     Command,
@@ -76,6 +92,13 @@ struct Method {
     redacted: bool,
     args: Vec<Arg>,
     returns: Type,
+    sig: syn::Signature,
+}
+
+impl Method {
+    fn args_in(&self, role: Role) -> impl Iterator<Item = &Arg> {
+        self.args.iter().filter(move |arg| arg.role == role)
+    }
 }
 
 #[derive(Default)]
@@ -140,6 +163,14 @@ fn expand(attr: TokenStream, mut item: ItemTrait) -> syn::Result<TokenStream> {
             }
         }
     }
+    let (recorder, replay) = match outside {
+        Some(_) => (TokenStream::new(), TokenStream::new()),
+        None => (
+            recorder::expand(&item, id, &methods, &mut errors),
+            replay::expand(&item, id, &methods),
+        ),
+    };
+    let borrowed = recorder::borrowed(&item);
     errors.finish()?;
 
     let api = quote!(::device_api::capability);
@@ -182,6 +213,9 @@ fn expand(attr: TokenStream, mut item: ItemTrait) -> syn::Result<TokenStream> {
         #[doc = #types_doc]
         #vis type #types = #list;
         #(#enumerators)*
+        #borrowed
+        #recorder
+        #replay
     })
 }
 
@@ -358,6 +392,7 @@ fn strip_method(function: &mut TraitItemFn, outside: bool) -> syn::Result<Option
         redacted,
         args,
         returns,
+        sig: sig.clone(),
     }))
 }
 
@@ -393,7 +428,8 @@ fn parse_kind(attr: &Attribute) -> syn::Result<Declaration> {
     }
     let allowed: &[&str] = match name.as_str() {
         "observe" => &["keyed", "keys", "redact"],
-        "take" | "request" | "sink" => &["refreshes", "redact"],
+        "take" | "sink" => &["refreshes", "redact"],
+        "request" => &["refreshes", "repeats", "redact"],
         "command" => &["redact"],
         "media" => &["read", "write", "erase"],
         "derived" => &[],
@@ -460,7 +496,16 @@ fn parse_kind(attr: &Attribute) -> syn::Result<Declaration> {
             }
         }),
         "take" => Kind::Take { refreshes },
-        "request" => Kind::Request { refreshes },
+        "request" => {
+            let repeats = has("repeats");
+            if repeats && (!refreshes || has("redact")) {
+                return Err(Error::new(
+                    attr.span(),
+                    "a request that `repeats` also `refreshes`, and has no secret to `redact`",
+                ));
+            }
+            Kind::Request { refreshes, repeats }
+        }
         "sink" => Kind::Sink { refreshes },
         "command" => Kind::Command,
         "derived" => Kind::Derived,
@@ -525,12 +570,12 @@ fn check(kind: &Kind, mutable: bool, args: &[Arg], name: &Ident, errors: &mut Er
             if count(Role::At) == 0 {
                 errors.at(name, "a media method marks its address with #[at]");
             }
-            let (role, needs) = match media {
-                Media::Read => (Role::Out, "#[out] buffer"),
-                Media::Write => (Role::Input, "#[input] buffer"),
-                Media::Erase => (Role::Len, "#[len]"),
+            let needs = match media {
+                Media::Read => "#[out] buffer",
+                Media::Write => "#[input] buffer",
+                Media::Erase => "#[len]",
             };
-            if count(role) != 1 {
+            if count(media.role()) != 1 {
                 errors.at(name, format!("this media method takes exactly one {needs}"));
             }
         }
@@ -626,7 +671,9 @@ fn row(api: &TokenStream, method: &Method) -> TokenStream {
             quote!(#api::Kind::Observe(#api::Keys::All(#keys)))
         }
         Kind::Take { refreshes } => quote!(#api::Kind::Take { refreshes: #refreshes }),
-        Kind::Request { refreshes } => quote!(#api::Kind::Request { refreshes: #refreshes }),
+        Kind::Request { refreshes, repeats } => {
+            quote!(#api::Kind::Request { refreshes: #refreshes, repeats: #repeats })
+        }
         Kind::Sink { refreshes } => quote!(#api::Kind::Sink { refreshes: #refreshes }),
         Kind::Media(Media::Read) => quote!(#api::Kind::Media(#api::Media::Read)),
         Kind::Media(Media::Write) => quote!(#api::Kind::Media(#api::Media::Write)),

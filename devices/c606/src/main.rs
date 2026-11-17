@@ -10,6 +10,7 @@ mod bringup;
 mod commands;
 mod logging;
 mod trace;
+mod world;
 use esp_backtrace as _;
 #[cfg(not(feature = "bulk-maintenance"))]
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -29,22 +30,76 @@ esp_bootloader_esp_idf::esp_app_desc!(
 );
 
 type FirmwareShell = firmware_shell::shell::Shell<
-    firmware_services::trace::shell::ShellDisplay<device::drivers::display::Display<'static>>,
-    ShellInput,
-    firmware_services::trace::shell::ShellPower<device::board::Power>,
-    firmware_services::trace::shell::ShellFlash<device::drivers::storage::Backend<'static>>,
+    device_api::display::DisplayRecorder<
+        device::drivers::display::Display<'static>,
+        trace::Journal,
+        trace::Kept<device_api::display::DisplayObserved>,
+    >,
+    device_api::input::InputSourceRecorder<
+        device::board::Input,
+        trace::Journal,
+        trace::Kept<device_api::input::InputSourceObserved>,
+    >,
+    device_api::power::PowerRecorder<
+        device::board::Power,
+        trace::Journal,
+        trace::Kept<device_api::power::PowerObserved>,
+    >,
+    ShellFlash,
 >;
 
-struct ShellInput(
-    &'static mut firmware_services::trace::frozen::RecordedEdges<device::board::Input>,
-);
+type ShellFlash = device_api::storage::OwnedFlashRecorder<
+    SharedFlash,
+    trace::Journal,
+    trace::Kept<device_api::storage::OwnedFlashObserved>,
+>;
 
-impl device_api::input::InputSource for ShellInput {
-    fn controls(&self) -> device_api::input::Controls {
-        self.0.controls()
+/// The settings journal on the flash itself: the log records what a load
+/// and a save gave, not the sectors behind them.
+type ShellSettings = firmware_shell::storage::SettingsRecorder<
+    firmware_shell::storage::Store<SharedFlash>,
+    trace::Journal,
+    trace::Kept<firmware_shell::storage::SettingsObserved>,
+>;
+
+/// The one flash driver, shared by the shell's owned bytes and its settings
+/// journal. Both run on the console task, one call at a time.
+struct SharedFlash(&'static core::cell::RefCell<device::drivers::storage::Backend<'static>>);
+
+impl device_api::storage::OwnedFlash for SharedFlash {
+    type Error = device::drivers::storage::Error;
+    fn availability(
+        &self,
+        region: device_api::storage::Region,
+    ) -> device_api::observation::Availability {
+        self.0.borrow().availability(region)
     }
-    fn take_edge(&mut self) -> Option<device_api::input::Edge> {
-        self.0.take_edge()
+    fn geometry(&self, region: device_api::storage::Region) -> device_api::storage::Geometry {
+        self.0.borrow().geometry(region)
+    }
+    fn read(
+        &mut self,
+        region: device_api::storage::Region,
+        offset: usize,
+        output: &mut [u8],
+    ) -> Result<(), Self::Error> {
+        self.0.borrow_mut().read(region, offset, output)
+    }
+    fn program(
+        &mut self,
+        region: device_api::storage::Region,
+        offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), Self::Error> {
+        self.0.borrow_mut().program(region, offset, bytes)
+    }
+    fn erase(
+        &mut self,
+        region: device_api::storage::Region,
+        offset: usize,
+        length: usize,
+    ) -> Result<(), Self::Error> {
+        self.0.borrow_mut().erase(region, offset, length)
     }
 }
 
@@ -58,51 +113,56 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     logging::init(boot);
     logging::metadata(false);
     device::activity::calibrate();
-    let pass_log: &'static firmware_services::trace::shell::PassLog = external(Default::default);
+    // Composition reserves the harness's capture storage in external RAM.
+    // The library receives only an owned byte slice; DMA still uses
+    // device-owned strips.
+    let capture = zeroed_external(
+        core::alloc::Layout::from_size_align(firmware_shell::harness::CAPTURE_BYTES, 4).unwrap(),
+    )
+    .await;
+    // VANA's working memory comes before the trace, which opens by saying
+    // what of it there is, and the trace before the shell, so that it
+    // holds the settings the shell loads, with their secrets replaced.
+    let working = working_memory().await;
+    let trace = external(|| trace::Trace::start(boot, working.memory()));
     // Passed by value, the shell would sit in internal RAM three times:
     // twice in the console task's future (rust-lang/rust#62958) and once
     // in main's (#375).
     static SHELL: static_cell::StaticCell<FirmwareShell> = static_cell::StaticCell::new();
+    static FLASH: static_cell::StaticCell<
+        core::cell::RefCell<device::drivers::storage::Backend<'static>>,
+    > = static_cell::StaticCell::new();
+    static SETTINGS: static_cell::StaticCell<ShellSettings> = static_cell::StaticCell::new();
     let system = SHELL.init_with(|| {
-        use firmware_services::trace::shell::{ShellDisplay, ShellFlash, ShellPower};
-        let input = ShellInput(external(|| {
-            firmware_services::trace::frozen::RecordedEdges::new(board.input)
-        }));
+        let (log, observed) = (trace.log, trace.observed);
+        let flash = &*FLASH.init(core::cell::RefCell::new(board.storage));
+        let settings = SETTINGS.init_with(|| {
+            firmware_shell::storage::SettingsRecorder::new(
+                firmware_shell::storage::Store::new(SharedFlash(flash)),
+                log,
+                &observed.settings,
+            )
+        });
         firmware_shell::shell::Shell::new(
-            ShellDisplay::new(board.display, pass_log),
-            input,
-            ShellPower::new(board.power, pass_log),
-            ShellFlash::new(board.storage, pass_log),
+            device_api::display::DisplayRecorder::new(board.display, log, &observed.display),
+            device_api::input::InputSourceRecorder::new(board.input, log, &observed.input),
+            device_api::power::PowerRecorder::new(board.power, log, &observed.backlight),
+            device_api::storage::OwnedFlashRecorder::new(SharedFlash(flash), log, &observed.flash),
+            settings,
             embassy_time::Instant::now().as_millis(),
         )
         .unwrap()
     });
-    {
-        system.harness = firmware_shell::harness::State::new(boot);
-        system.harness.clock = Some(|| embassy_time::Instant::now().as_millis());
-        // Composition reserves capture storage in external RAM. The library
-        // receives only an owned byte slice; DMA still uses device-owned strips.
-        let layout =
-            core::alloc::Layout::from_size_align(firmware_shell::harness::CAPTURE_BYTES, 4)
-                .unwrap();
-        // SAFETY: the layout has a non-zero size; the block is never freed.
-        let pointer = unsafe { device::drivers::psram::allocate_external(layout) };
-        if !pointer.is_null() {
-            // Zero in chunks and yield between them: one blocking 600 KB PSRAM
-            // write starves the companion UART during its startup probe.
-            for offset in (0..layout.size()).step_by(4096) {
-                let len = (layout.size() - offset).min(4096);
-                // SAFETY: the allocator returned `layout.size()` writable bytes
-                // at `pointer`; `offset + len` stays within them.
-                unsafe { core::ptr::write_bytes(pointer.add(offset), 0, len) };
-                embassy_futures::yield_now().await;
-            }
-            // SAFETY: every byte was initialized above. The block is never
-            // deallocated and this is its only reference, so a 'static
-            // exclusive slice is sound.
-            let capture = unsafe { core::slice::from_raw_parts_mut(pointer, layout.size()) };
-            system.harness.buffer = Some(firmware_shell::harness::CaptureBuffer::Borrowed(capture));
-        }
+    system.harness = firmware_shell::harness::State::new(boot);
+    system.harness.clock = Some(|| embassy_time::Instant::now().as_millis());
+    if !capture.is_null() {
+        // SAFETY: `zeroed_external` returned `CAPTURE_BYTES` initialized
+        // bytes. The block is never deallocated and this is its only
+        // reference, so a 'static exclusive slice is sound.
+        let capture = unsafe {
+            core::slice::from_raw_parts_mut(capture, firmware_shell::harness::CAPTURE_BYTES)
+        };
+        system.harness.buffer = Some(firmware_shell::harness::CaptureBuffer::Borrowed(capture));
     }
     system.boot_id = boot;
     system.clock = Some(|| embassy_time::Instant::now().as_millis());
@@ -133,20 +193,21 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         console(
             board.terminal,
             system,
-            commands::Devices {
-                ant: board.ant,
-                ble: board.ble,
-                position: board.positioning,
-                bulk: board.bulk,
-                sound: board.sound,
-                sensors: board.sensors,
-                server: board.server,
-                access_point: board.access_point,
-                input: board.input_observation,
-                power: board.power_control,
-            },
+            world::World::new(
+                board.ant,
+                board.ble,
+                board.positioning,
+                board.bulk,
+                board.sound,
+                board.sensors,
+                board.server,
+                board.access_point,
+                board.input_observation,
+                board.power_control,
+            ),
             profile,
-            pass_log,
+            trace,
+            working,
         )
         .unwrap(),
     );
@@ -178,41 +239,41 @@ async fn zeroed_external(layout: core::alloc::Layout) -> *mut u8 {
 /// course in the ride's frame (24 KiB), its turns (16 KiB), what finds them
 /// while a course uploads (48 KiB) and their state live in PSRAM: main's
 /// stack shares DRAM with `Runtime`'s static future and cannot spare them.
-/// Without PSRAM the map says NO TRACK and no course loads; false then.
-async fn attach_track(sdk: &mut vana::app::Runtime) -> bool {
+/// Without PSRAM the map says NO TRACK and no course loads; `None` then.
+async fn ride_track() -> Option<&'static mut vana::app::RideTrack> {
     use vana::app::{
         COURSE_POINTS, COURSE_TURNS, Course, CourseFinder, Crumb, MapFrame, RideTrack,
         TRACK_CRUMBS, Turn,
     };
     let Ok(layout) = core::alloc::Layout::array::<Crumb>(TRACK_CRUMBS) else {
-        return false;
+        return None;
     };
     let pointer = zeroed_external(layout).await;
     if pointer.is_null() {
         log::warn!("ride track: no PSRAM for the breadcrumb");
-        return false;
+        return None;
     }
     // SAFETY: the block holds TRACK_CRUMBS crumbs at the allocator's
     // alignment for `Crumb`, all zero bytes, which is a valid `Crumb`. It is
     // never deallocated and this is its only reference.
     let crumbs = unsafe { core::slice::from_raw_parts_mut(pointer.cast::<Crumb>(), TRACK_CRUMBS) };
     let Ok(layout) = core::alloc::Layout::array::<Crumb>(COURSE_POINTS) else {
-        return false;
+        return None;
     };
     let line = zeroed_external(layout).await;
     if line.is_null() {
         log::warn!("ride track: no PSRAM for the course's line");
-        return false;
+        return None;
     }
     // SAFETY: as for the breadcrumb, with COURSE_POINTS crumbs.
     let line = unsafe { core::slice::from_raw_parts_mut(line.cast::<Crumb>(), COURSE_POINTS) };
     let Ok(layout) = core::alloc::Layout::array::<Turn>(COURSE_TURNS) else {
-        return false;
+        return None;
     };
     let turns = zeroed_external(layout).await;
     if turns.is_null() {
         log::warn!("ride track: no PSRAM for the course's turns");
-        return false;
+        return None;
     }
     // SAFETY: as for the breadcrumb, with COURSE_TURNS turns; all zero bytes
     // are a valid `Turn`.
@@ -221,7 +282,7 @@ async fn attach_track(sdk: &mut vana::app::Runtime) -> bool {
     let map = zeroed_external(core::alloc::Layout::new::<MapFrame>()).await;
     if map.is_null() {
         log::warn!("ride track: no PSRAM for the map");
-        return false;
+        return None;
     }
     // SAFETY: the block holds a `MapFrame` at its alignment, all zero bytes,
     // which is a valid `MapFrame`. It is never deallocated and this is its
@@ -230,7 +291,7 @@ async fn attach_track(sdk: &mut vana::app::Runtime) -> bool {
     let course = zeroed_external(core::alloc::Layout::new::<Course>()).await;
     if course.is_null() {
         log::warn!("ride track: no PSRAM for the course");
-        return false;
+        return None;
     }
     // SAFETY: the block holds a `Course` at its alignment, all zero bytes,
     // which is an empty `Course`. It is never deallocated and this is its
@@ -239,7 +300,7 @@ async fn attach_track(sdk: &mut vana::app::Runtime) -> bool {
     let finder = zeroed_external(core::alloc::Layout::new::<CourseFinder>()).await;
     if finder.is_null() {
         log::warn!("ride track: no PSRAM for the course's turn finder");
-        return false;
+        return None;
     }
     // SAFETY: the block holds a `CourseFinder` at its alignment, all zero
     // bytes, which is a valid `CourseFinder`. It is never deallocated and
@@ -250,7 +311,7 @@ async fn attach_track(sdk: &mut vana::app::Runtime) -> bool {
     let track = unsafe { device::drivers::psram::allocate_external(state) }.cast::<RideTrack>();
     if track.is_null() {
         log::warn!("ride track: no PSRAM for its state");
-        return false;
+        return None;
     }
     // SAFETY: the allocator returned a block with `RideTrack`'s size and
     // alignment. It is initialized by this write, never deallocated, and
@@ -259,8 +320,108 @@ async fn attach_track(sdk: &mut vana::app::Runtime) -> bool {
         track.write(RideTrack::new(crumbs, line, turns, map, course, finder));
         &mut *track
     };
-    sdk.attach_track(track);
-    true
+    Some(track)
+}
+
+/// The working memory VANA runs on, in PSRAM. Without a block VANA does
+/// without its feature: the trace says which it has.
+struct Working {
+    /// Every saved ride of both journals, for ride history: about 20 KB
+    /// per journal; VANA keeps only the pointer.
+    index: Option<&'static mut vana::ride::directory::RideIndex>,
+    /// Each saved ride's facts, 32 KB.
+    facts: Option<&'static mut [u8]>,
+    /// The rides the rider discarded or deleted, 8 KB.
+    deleted: Option<&'static mut [u8]>,
+    terrain: Option<&'static mut vana::app::Terrain>,
+    track: Option<&'static mut vana::app::RideTrack>,
+    phone: Option<&'static mut vana::app::PhoneWork>,
+}
+
+impl Working {
+    fn memory(&self) -> firmware_services::trace::origin::Memory {
+        firmware_services::trace::origin::Memory {
+            terrain: self.terrain.is_some(),
+            track: self.track.is_some(),
+            phone: self.phone.is_some(),
+            ride_index: self.index.is_some(),
+            ride_facts: self.facts.is_some(),
+        }
+    }
+
+    fn attach(&mut self, sdk: &mut vana::app::Runtime) {
+        if let Some(index) = self.index.take() {
+            sdk.attach_ride_index(index);
+        }
+        if let Some(facts) = self.facts.take() {
+            sdk.attach_ride_facts(facts);
+        }
+        if let Some(deleted) = self.deleted.take() {
+            sdk.attach_deleted_rides(deleted);
+        }
+        if let Some(terrain) = self.terrain.take() {
+            sdk.attach_terrain(terrain);
+        }
+        if let Some(track) = self.track.take() {
+            sdk.attach_track(track);
+        }
+        if let Some(work) = self.phone.take() {
+            sdk.attach_phone(work);
+        }
+    }
+}
+
+async fn working_memory() -> &'static mut Working {
+    use vana::ride::directory::{ENTRY, RIDES, RideIndex};
+    let index =
+        external(|| RideIndex::new(external_bytes(RIDES * ENTRY), external_bytes(RIDES * ENTRY)));
+    let facts = external_bytes(vana::kept::facts::record::SHELF_BYTES);
+    let deleted = external_bytes(vana::kept::deleted::SHELF_BYTES);
+    let terrain = terrain().await;
+    let track = ride_track().await;
+    // The phone session's indexes and response state are copied from a
+    // constant, so they cost no task stack.
+    const PHONE_WORK: vana::app::PhoneWork = vana::app::PhoneWork::new();
+    let phone = device::drivers::psram::place(PHONE_WORK);
+    external(|| Working {
+        index: Some(index),
+        facts: Some(facts),
+        deleted: Some(deleted),
+        terrain,
+        track,
+        phone,
+    })
+}
+
+/// The terrain look-ahead and its tile cache. Without them the climb page
+/// says "NO MAP" and keeps to the barometer.
+async fn terrain() -> Option<&'static mut vana::app::Terrain> {
+    let layout = core::alloc::Layout::from_size_align(vana::app::TERRAIN_ARENA_BYTES, 4).unwrap();
+    let pointer = zeroed_external(layout).await;
+    if pointer.is_null() {
+        log::warn!("terrain: no PSRAM for the tile cache");
+        return None;
+    }
+    // SAFETY: `zeroed_external` returned `layout.size()` initialized bytes.
+    // The block is never deallocated and this is its only reference.
+    let arena = unsafe { core::slice::from_raw_parts_mut(pointer, layout.size()) };
+    // Allocate the roughly 7 KB look-ahead state in PSRAM to conserve internal RAM. Allocation
+    // failure disables terrain instead of aborting boot.
+    let state = core::alloc::Layout::new::<vana::app::Terrain>();
+    // SAFETY: `Terrain` has a non-zero size; the block is never freed.
+    let terrain =
+        unsafe { device::drivers::psram::allocate_external(state) }.cast::<vana::app::Terrain>();
+    if terrain.is_null() {
+        log::warn!("terrain: no PSRAM for the look-ahead");
+        return None;
+    }
+    // SAFETY: the allocator returned a block with `Terrain`'s size and
+    // alignment. It is initialized by this write, never deallocated, and
+    // this is its only reference.
+    Some(unsafe {
+        terrain.write(vana::app::Terrain::new(arena));
+        &mut *terrain
+    })
 }
 
 static LAYOUT: vana::screens::Layout = vana::screens::Layout::of(
@@ -271,92 +432,20 @@ static LAYOUT: vana::screens::Layout = vana::screens::Layout::of(
 async fn console(
     usb: device::drivers::usb::Usb,
     system: &'static mut FirmwareShell,
-    mut devices: commands::Devices,
+    mut world: world::World,
     profile: vana::sensors::ble_profile::Profile,
-    pass_log: &'static firmware_services::trace::shell::PassLog,
+    trace: &'static mut trace::Trace,
+    working: &'static mut Working,
 ) {
     let mut terminal = firmware_console::session::Terminal::new(usb);
     let mut next_health = 0;
     let sdk = external(|| vana::app::Runtime::new(profile, &LAYOUT));
     device::capabilities::ant::wake_on(vana::app::WAKING_ANT_TYPE);
-    {
-        // Every saved ride of both journals, for ride history: about 20 KB
-        // per journal, in PSRAM; VANA keeps only the pointer.
-        use vana::ride::directory::{ENTRY, RIDES, RideIndex};
-        let index = external(|| {
-            RideIndex::new(external_bytes(RIDES * ENTRY), external_bytes(RIDES * ENTRY))
-        });
-        sdk.attach_ride_index(index);
-        // Each saved ride's facts, 32 KB in PSRAM.
-        sdk.attach_ride_facts(external_bytes(vana::kept::facts::record::SHELF_BYTES));
-        // The rides the rider discarded or deleted, 8 KB in PSRAM.
-        sdk.attach_deleted_rides(external_bytes(vana::kept::deleted::SHELF_BYTES));
-    }
-    let mut memory = firmware_services::trace::origin::Memory {
-        ride_index: true,
-        ride_facts: true,
-        ..Default::default()
-    };
-    {
-        sdk.load_preferences(&system.settings.app, system.settings_source);
-        sdk.set_latency_clock(|| embassy_time::Instant::now().as_millis());
-        sdk.set_micros_clock(|| embassy_time::Instant::now().as_micros());
-        sdk.draw_boot(system);
-        // The terrain look-ahead's tile cache lives in PSRAM. Without it
-        // the climb page says "NO MAP" and keeps to the barometer.
-        let layout =
-            core::alloc::Layout::from_size_align(vana::app::TERRAIN_ARENA_BYTES, 4).unwrap();
-        // SAFETY: the layout has a non-zero size; the block is never freed.
-        let pointer = unsafe { device::drivers::psram::allocate_external(layout) };
-        if pointer.is_null() {
-            log::warn!("terrain: no PSRAM for the tile cache");
-        } else {
-            // Zero in chunks and yield between them, as for the harness
-            // capture, so the companion UART is never starved.
-            for offset in (0..layout.size()).step_by(4096) {
-                let len = (layout.size() - offset).min(4096);
-                // SAFETY: the allocator returned `layout.size()` writable
-                // bytes at `pointer`; `offset + len` stays within them.
-                unsafe { core::ptr::write_bytes(pointer.add(offset), 0, len) };
-                embassy_futures::yield_now().await;
-            }
-            // SAFETY: every byte was initialized above. The block is never
-            // deallocated and this is its only reference.
-            let arena = unsafe { core::slice::from_raw_parts_mut(pointer, layout.size()) };
-            // The look-ahead's state (about 7 KB) gets a block of its own,
-            // like `Runtime`, but a missing one only means "NO MAP" (unlike
-            // `external`, which panics).
-            let state = core::alloc::Layout::new::<vana::app::Terrain>();
-            // SAFETY: `Terrain` has a non-zero size; the block is never freed.
-            let terrain = unsafe { device::drivers::psram::allocate_external(state) }
-                .cast::<vana::app::Terrain>();
-            if terrain.is_null() {
-                log::warn!("terrain: no PSRAM for the look-ahead");
-            } else {
-                // SAFETY: the allocator returned a block with `Terrain`'s size
-                // and alignment. It is initialized by this write, never
-                // deallocated, and this is its only reference.
-                let terrain = unsafe {
-                    terrain.write(vana::app::Terrain::new(arena));
-                    &mut *terrain
-                };
-                sdk.attach_terrain(terrain);
-                memory.terrain = true;
-            }
-        }
-        memory.track = attach_track(sdk).await;
-        // The phone session's indexes and response state live in external
-        // RAM, copied from a constant, so they cost no task stack.
-        const PHONE_WORK: vana::app::PhoneWork = vana::app::PhoneWork::new();
-        if let Some(work) = device::drivers::psram::place(PHONE_WORK) {
-            sdk.attach_phone(work);
-            memory.phone = true;
-        }
-        sdk.draw_boot(system);
-    }
-    // This session's trace, staged in PSRAM from the first pass; it takes
-    // what PSRAM VANA left.
-    let trace = external(|| trace::Trace::start(system.boot_id, system.settings, memory, pass_log));
+    working.attach(sdk);
+    sdk.load_preferences(&system.settings.app, system.settings_source);
+    sdk.set_latency_clock(|| embassy_time::Instant::now().as_millis());
+    sdk.set_micros_clock(|| embassy_time::Instant::now().as_micros());
+    sdk.draw_boot(system);
     let mut terrain_step_max_us = 0u64;
     let ble_selection = system.settings.ble.and_then(|saved| {
         vana::sensors::ble::selection(
@@ -369,7 +458,7 @@ async fn console(
         embassy_time::Instant::now().as_millis(),
         system.settings.wifi,
         ble_selection,
-        &mut devices.ble,
+        world.ble_mut(),
     );
     system.set_app_active(sdk.input_active());
     let started = embassy_time::Instant::now();
@@ -381,18 +470,18 @@ async fn console(
         device::capabilities::io::pass_began();
         let now = embassy_time::Instant::now().as_millis();
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
-        bringup.poll(now, &mut devices.ble);
+        bringup.poll(now, world.ble_mut());
         stage_ended(Stage::Bringup);
         {
             let quiet = traced_pass(
                 sdk,
                 trace,
                 system,
-                &mut devices,
+                &mut world,
                 now,
                 &mut terrain_step_max_us,
             );
-            trace.vitals(&devices, system.heap_min_sampled, now, quiet, || {
+            trace.vitals(&world, system.heap_min_sampled, now, quiet, || {
                 sdk.take_map_work()
             });
             stage_ended(Stage::Vitals);
@@ -403,24 +492,23 @@ async fn console(
         if terminal.transfer_due() {
             let handing = embassy_time::Instant::now();
             // The trace is whole on the card before the host can read it.
-            trace.before_host(&mut devices.bulk, now);
+            trace.before_host(world.unrecorded_bulk(), now);
             // The ACCEPTED reply went out; the host now speaks binary frames.
             let handover_us = handing.elapsed().as_micros();
-            commands::transfer(terminal.transport(), &mut devices.bulk, handover_us).await;
+            commands::transfer(terminal.transport(), world.unrecorded_bulk(), handover_us).await;
             terminal.end_transfer();
             device::activity::pass_began();
-            trace.after_host(
-                &mut devices.bulk,
-                true,
-                embassy_time::Instant::now().as_millis(),
-            );
+            let after = embassy_time::Instant::now().as_millis();
+            if trace.after_host(world.unrecorded_bulk(), true, after) {
+                trace.read_volumes(&mut world.recorded_bulk(trace.log, trace.observed));
+            }
         }
         if sdk.restart_due() {
-            trace.sync(&mut devices.bulk, now);
+            trace.sync(world.unrecorded_bulk(), now);
             commands::Diagnostics::restart(&FirmwareDiagnostics, false);
         }
         if let Some(panic) = terminal.reboot_due(now) {
-            trace.sync(&mut devices.bulk, now);
+            trace.sync(world.unrecorded_bulk(), now);
             commands::Diagnostics::restart(&FirmwareDiagnostics, panic);
         }
         let request = terminal.request(now);
@@ -428,21 +516,18 @@ async fn console(
         if let Some(request) = request {
             // The trace holds the line and the power status the command's
             // gate reads, as the simulator records them.
-            {
-                trace.command(terminal.line());
-                trace.power.freeze(&devices.power, now, &trace.record);
-            }
+            trace.command(terminal.line());
+            trace.status = world.power(trace);
             commands::execute(
                 &mut terminal,
                 request,
                 system,
                 now,
-                &mut devices,
+                &mut world,
                 &FirmwareDiagnostics,
                 sdk,
                 trace,
             );
-            trace.log.record(&trace.record);
             stage_ended(Stage::Command);
         }
         if now >= next_health {
@@ -478,7 +563,7 @@ async fn console(
         device::activity::pass_ended();
         let rest_ms = sdk.pass_rest_ms(
             system,
-            trace.power.frozen().state,
+            trace.status.state,
             terminal.take_traffic(),
             embassy_time::Instant::now().as_millis(),
         );
@@ -493,41 +578,38 @@ fn traced_pass(
     sdk: &mut vana::app::Runtime,
     trace: &mut trace::Trace,
     system: &mut FirmwareShell,
-    devices: &mut commands::Devices,
+    world: &mut world::World,
     now: u64,
     terrain_step_max_us: &mut u64,
 ) -> bool {
-    use device_api::power::{Power as _, State};
-    use device_api::sensors::Sensors as _;
+    use device_api::power::State;
     use firmware_services::trace::Event;
-    use firmware_services::trace::frozen::RecordedBulk;
     // In dark charging standby a pass reads only the startup and power
     // status, and only a change records it, so hours of standby fit the
     // spool; the simulator runs the same quiet pass.
-    let quiet = trace.power.frozen().state == State::Charging && sdk.standby_dark();
-    if quiet {
-        trace.quiet_pass(now);
-    } else {
-        trace.record(&Event::Pass { now_ms: now });
-    }
-    let record = &trace.record;
-    let companion = (!quiet).then(|| trace.companion.freeze(&devices.input, now, record));
-    let startup = devices.sensors.startup_status();
-    let startup = trace.startup.observe(startup, now, record, Event::Startup);
-    let power = trace.power.freeze(&devices.power, now, record);
+    let quiet = trace.status.state == State::Charging && sdk.standby_dark();
+    trace.begin_pass(now, quiet);
+    let companion = (!quiet).then(|| world.companion(trace, now));
+    let startup = world.startup(trace);
+    let power = world.power(trace);
+    trace.status = power;
     if quiet && power.state == State::Charging {
         stage_ended(Stage::Inputs);
         return quiet;
     }
-    let companion =
-        companion.unwrap_or_else(|| trace.companion.freeze(&devices.input, now, record));
-    let backlight = device::board::Power.availability();
-    trace.log.begin_pass(backlight, &companion);
+    let companion = companion.unwrap_or_else(|| world.companion(trace, now));
+    // Before VANA first reads the card, the trace stages its file there and
+    // the log learns which sectors are TERRAIN and STORE.
+    let admits = power.ready || power.state == State::Initializing;
+    if admits && trace.waiting() && !device::capabilities::power::ACCESS.closed() {
+        trace.stage(world.unrecorded_bulk());
+        trace.read_volumes(&mut world.recorded_bulk(trace.log, trace.observed));
+    }
     stage_ended(Stage::Inputs);
     // While the companion starts, VANA scans its ride journal so Home
     // opens with storage ready. Charging standby and transitions skip it.
     if power.state == State::Initializing {
-        let mut bulk = RecordedBulk::counted(&mut devices.bulk, record, trace.log);
+        let mut bulk = world.recorded_bulk(trace.log, trace.observed);
         sdk.prepare(&mut system.data_storage(), &mut bulk, now);
     }
     // On USB power with VANA off, VANA shows the charge for a while,
@@ -544,38 +626,16 @@ fn traced_pass(
     // Diagnostic power requests enter only with no active domain work.
     // Keep USB observations alive while device owners complete the transition.
     if power.ready {
-        trace
-            .backlight
-            .observe(backlight, now, record, Event::Backlight);
-        let position = trace.position.freeze(&devices.position, now, record);
-        let physical = devices.sensors.snapshot(now);
-        let physical = trace
-            .physical
-            .observe(physical, now, record, Event::Physical);
-        let light = trace
-            .light
-            .observe(devices.sensors.light(now), now, record, Event::Light);
+        let position = world.position(trace, now);
+        let (physical, light) = world.sensed(trace, now);
         let online = device::drivers::wifi::online();
         let network_time = firmware_services::network_time::snapshot(now, 0, online);
-        let network_time =
-            trace
-                .network_time
-                .observe(network_time, now, record, Event::NetworkTime);
+        trace.network_time(network_time, now);
         let token = sdk.phone_status().map(|status| status.token);
-        trace
-            .server
-            .redact(token.as_ref().map(|token| token.bytes()));
-        let handles = vana::app::Handles {
-            ant: trace.ant.bind(&mut devices.ant, now, record),
-            ble: trace.ble.bind(&mut devices.ble, now, record),
-            bulk: RecordedBulk::counted(&mut devices.bulk, record, trace.log),
-            access_point: trace
-                .access_point
-                .bind(&mut devices.access_point, now, record),
-            server: trace.server.bind(&mut devices.server, now, record),
-            sound: trace.sound.bind(&mut devices.sound, now, record),
-            control: trace.power.bind(&mut devices.power, now, record),
-        };
+        let log = trace.log;
+        log.borrow_mut()
+            .session_token(token.as_ref().map(|token| token.bytes()));
+        let handles = world.handles(log, trace.observed, &mut trace.started);
         stage_ended(Stage::Observe);
         let mut started = embassy_time::Instant::MIN;
         vana::app::pass(
@@ -593,12 +653,8 @@ fn traced_pass(
             handles,
             &mut |point, system| match point {
                 vana::app::Point::InputsReady => {
-                    system.input_source().0.record(&mut *record.borrow_mut());
                     for input in system.take_synthetic() {
-                        firmware_services::trace::frozen::Record::record(
-                            &mut *record.borrow_mut(),
-                            &Event::Synthetic(input),
-                        );
+                        log.borrow_mut().record(&Event::Synthetic(input));
                     }
                 }
                 vana::app::Point::Shell => {
@@ -626,16 +682,15 @@ fn traced_pass(
                 vana::app::Point::VanaAfter => stage_ended(Stage::VanaAfter),
             },
         );
+        trace.status = world.power(trace);
     }
-    trace.log.record(&trace.record);
     trace.seen(sdk, system.take_frame(), now);
     stage_ended(Stage::Seen);
     if sdk.wipes_traces() {
         trace.storage_formatted();
     }
     trace.drain(
-        &mut devices.bulk,
-        sdk.journals_at_boot(),
+        world.unrecorded_bulk(),
         firmware_services::trace::spool::Card::of(
             !device::capabilities::power::ACCESS.closed(),
             sdk.recording(),

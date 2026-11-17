@@ -4,7 +4,10 @@
 //! carries its kind. Arguments carry a role where one applies; an argument
 //! without one is part of the call's canonical identity. The attribute
 //! emits the capability's table beside the trait. The table's `ty` and
-//! `returns` are display strings for reading, not for parsing.
+//! `returns` are display strings for reading, not for parsing. It also
+//! emits the trait for `&mut T` and, for a recorded capability, a
+//! `<Trait>Recorder` that records each call into a
+//! [`Journal`](crate::journal::Journal).
 //!
 //! ```
 //! use device_api::capability::capability;
@@ -504,6 +507,27 @@ pub use ::capability::capability;
 /// }
 /// ```
 ///
+/// A request that `repeats` is recorded when it differs from its last
+/// record or changes an observation, so it `refreshes`.
+///
+/// ```compile_fail
+/// # use device_api::capability::capability;
+/// #[capability(id = 200)]
+/// pub trait Lamp {
+///     #[request(repeats)]
+///     fn keep(&mut self, level: u8) -> bool;
+/// }
+/// ```
+///
+/// ```
+/// # use device_api::capability::capability;
+/// #[capability(id = 200)]
+/// pub trait Lamp {
+///     #[request(refreshes, repeats)]
+///     fn keep(&mut self, level: u8) -> bool;
+/// }
+/// ```
+///
 /// A method exists in every build: `#[cfg]` would leave the table listing a method the trait lacks.
 ///
 /// ```compile_fail
@@ -564,6 +588,9 @@ pub use ::capability::capability;
 ///     #[derived]
 ///     fn next(&self) -> Option<u8>;
 /// }
+/// fn derived_next(_: &(impl Lamp + ?Sized)) -> Option<u8> {
+///     None
+/// }
 /// ```
 ///
 /// A derived method is never recorded, so it has nothing to redact.
@@ -610,7 +637,9 @@ pub use ::capability::capability;
 ///
 /// ```compile_fail
 /// # use device_api::capability::capability;
+/// #[derive(Clone, PartialEq)]
 /// pub struct Secret;
+/// impl device_api::journal::Aging for Secret {}
 /// #[capability(id = 200)]
 /// pub trait Lamp {
 ///     #[observe]
@@ -629,7 +658,9 @@ pub use ::capability::capability;
 ///
 /// ```
 /// # use device_api::capability::capability;
+/// #[derive(Clone, PartialEq)]
 /// pub struct Secret;
+/// impl device_api::journal::Aging for Secret {}
 /// #[capability(id = 200)]
 /// pub trait Lamp {
 ///     #[observe(redact)]
@@ -753,9 +784,13 @@ pub enum Kind {
     Take {
         refreshes: bool,
     },
-    /// An effect on the device, matched by identity.
+    /// An effect on the device, matched by identity. One that `repeats` is
+    /// made pass after pass with the same arguments: a call is recorded
+    /// only when it differs from the method's last recorded call, or
+    /// changes what the capability observes.
     Request {
         refreshes: bool,
+        repeats: bool,
     },
     /// Output to the device, recorded as a digest and its outcome.
     Sink {
@@ -764,7 +799,8 @@ pub enum Kind {
     Media(Media),
     /// A console command and its reply.
     Command,
-    /// Computed from other methods of the same capability; never recorded.
+    /// Computed from other methods of the same capability by the free
+    /// function `derived_<method>` beside the trait; never recorded.
     Derived,
     /// Forwarded to the device and never recorded, for the reason given.
     Unrecorded(&'static str),
@@ -854,7 +890,7 @@ mod tests {
             Kind::Observe(Keys::Asked) => ("observe", false, vec!["keyed".into()]),
             Kind::Observe(Keys::All(keys)) => ("observe", false, vec![format!("keys = {keys}")]),
             Kind::Take { refreshes } => ("take", refreshes, Vec::new()),
-            Kind::Request { refreshes } => ("request", refreshes, Vec::new()),
+            Kind::Request { refreshes, .. } => ("request", refreshes, Vec::new()),
             Kind::Sink { refreshes } => ("sink", refreshes, Vec::new()),
             Kind::Media(Media::Read) => ("media", false, vec!["read".into()]),
             Kind::Media(Media::Write) => ("media", false, vec!["write".into()]),
@@ -864,6 +900,9 @@ mod tests {
             Kind::Unrecorded(why) => ("unrecorded", false, vec![format!("{why:?}")]),
         };
         options.extend(refreshes.then(|| "refreshes".into()));
+        if let Kind::Request { repeats: true, .. } = method.kind {
+            options.push("repeats".into());
+        }
         options.extend(method.redacted.then(|| "redact".into()));
         let mut out = format!("{} {kind}", method.name);
         if !options.is_empty() {
@@ -915,6 +954,9 @@ mod tests {
             {
                 if path.is_dir() {
                     dirs.push(path);
+                    continue;
+                }
+                if path.ends_with("tests.rs") {
                     continue;
                 }
                 let mut marked = false;
@@ -987,7 +1029,7 @@ mod tests {
 12 PowerControl: capabilities observe, status observe, request request(refreshes), request_after request(refreshes)
 13 Sensors: startup_status observe, startup_reason observe, snapshot observe, light observe, identity_status observe, query_identity request(refreshes)
 14 AccessPoint: start request(refreshes, redact), stop request(refreshes), state observe, reach observe, entropy take(redact)
-15 Server: listen request(refreshes), request observe(redact), read take(refreshes) [out], room observe, write sink(refreshes) [input], finish request(refreshes)
+15 Server: listen request(refreshes, repeats), request observe(redact), read take(refreshes) [out], room observe, write sink(refreshes) [input], finish request(refreshes)
 16 Sound: patterns observe, snapshot observe, play request(refreshes), stop request(refreshes)
 17 OwnedFlash: availability observe(keys = Region::ALL), geometry observe(keys = Region::ALL), read media(read) [out], program media(write) [input], erase media(erase)
 18 Wifi: request request(refreshes, redact), control observe, discoveries observe, state observe, online observe, stats observe"

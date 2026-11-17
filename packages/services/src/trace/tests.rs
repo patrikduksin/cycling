@@ -1,7 +1,5 @@
 use super::*;
-use device_api::ant::{Admission, Discovery, Identity, LinkState, OperationId, ScanState};
-use device_api::gps::FixState;
-use device_api::input::{Button, Point};
+use device_api::input::Button;
 use std::string::{String, ToString};
 use std::vec::Vec;
 
@@ -9,9 +7,7 @@ const HEADER: Header<'static> = Header {
     build: [7; 20],
     device: "c606",
     boot: 42,
-    profile: 1,
-    config: b"prefs",
-    media: b"rides@1234",
+    terrain: origin::Found::Absent,
 };
 
 fn encode(events: &[Event<'_>], block: usize) -> Vec<u8> {
@@ -37,238 +33,12 @@ fn decoded(bytes: &[u8]) -> (Vec<Event<'_>>, Option<End>) {
     (list, events.end())
 }
 
-fn identity(device_type: u8) -> Identity {
-    Identity {
-        device_type,
-        device_number: 4242,
-        transmission_type: 1,
-    }
-}
-
-fn gps() -> device_api::gps::Snapshot {
-    device_api::gps::Snapshot {
-        state: FixState::Fresh,
-        latitude_e7: Some(-334_500_000),
-        longitude_e7: Some(-706_600_000),
-        satellites: Some(9),
-        hdop_tenths: Some(8),
-        speed_mm_s: Some(7_800),
-        epoch_ms: Some(43_200_000),
-        utc: Some([12, 0, 0, 1, 11, 26]),
-        utc_ms: Some(1_793_534_400_000),
-        age_ms: Some(120),
-        bytes: 123_456,
-        valid_sentences: 3_000,
-        ..Default::default()
-    }
-}
-
 fn sample() -> Vec<Event<'static>> {
     let mut ble = [0u8; 60];
     ble[..2].copy_from_slice(&[0, 142]);
     std::vec![
         Event::Pass { now_ms: 3_300 },
-        Event::Startup(sensors::Startup::Ready),
-        Event::Input(Edge {
-            sequence: 1,
-            received_ms: 3_295,
-            input: Input::Button {
-                button: Button::BottomRight,
-                code: 1,
-            },
-        }),
-        Event::Input(Edge {
-            sequence: 2,
-            received_ms: 3_300,
-            input: Input::Touch(Point { x: 120, y: 300 }),
-        }),
-        Event::Input(Edge {
-            sequence: 3,
-            received_ms: 3_301,
-            input: Input::Release,
-        }),
-        Event::Input(Edge {
-            sequence: 4,
-            received_ms: 3_301,
-            input: Input::Cancel,
-        }),
-        Event::AntRadio(AntRadio {
-            availability: Availability::Ready,
-            capabilities: AntCapabilities {
-                supported_types: &[11, 120, 121],
-                connection_capacity: 10,
-                one_peer_per_type: true,
-                concurrent_scan: true,
-                acknowledged_send: true,
-                radio_delivery_feedback: false,
-                burst: false,
-                max_pending_sends: 1,
-            },
-            scanning: true,
-            scan: ant::ScanSnapshot {
-                state: ScanState::Active,
-                generation: 3,
-                discovery_overflows: 0,
-            },
-        }),
-        Event::AntDiscoveries([
-            Some(Discovery {
-                identity: identity(11),
-                rssi: -55,
-                seen_ms: 3_000,
-            }),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ]),
         Event::Pass { now_ms: 3_310 },
-        Event::AntLink {
-            channel: 2,
-            snapshot: Some(ant::Snapshot {
-                scanning: false,
-                link: LinkState::Connected,
-                selected: Some(identity(120)),
-                generation: 7,
-                packets: 1_000,
-                dropped_packets: 2,
-                discovery_overflows: 0,
-                transport_losses: 1,
-                tx_failures: 0,
-                age_ms: Some(240),
-                stale: false,
-            }),
-        },
-        Event::AntLink {
-            channel: 3,
-            snapshot: None,
-        },
-        Event::AntPacket(ant::Packet {
-            identity: identity(11),
-            data: [0x10, 1, 2, 3, 4, 5, 6, 7],
-            received_ms: 3_312,
-            generation: 7,
-            loss_count: 0,
-        }),
-        Event::AntRequest {
-            operation: ant::AntOperation::Scan(10_000),
-            result: Ok(Admission::Accepted),
-        },
-        Event::AntRequest {
-            operation: ant::AntOperation::Send {
-                target: ant::Target {
-                    identity: identity(11),
-                    generation: 7,
-                },
-                data: [0x01, 0xaa, 0, 0, 0, 0, 0, 0],
-            },
-            result: Ok(Admission::SendQueued(OperationId(9))),
-        },
-        Event::AntRequest {
-            operation: ant::AntOperation::Connect(identity(120)),
-            result: Err(ant::Error::Busy),
-        },
-        Event::AntRequest {
-            operation: ant::AntOperation::Disconnect(121),
-            result: Err(ant::Error::Disconnected),
-        },
-        Event::AntRequest {
-            operation: ant::AntOperation::StopScan,
-            result: Ok(Admission::Accepted),
-        },
-        Event::AntSend(Some(ant::SendObservation {
-            id: OperationId(9),
-            target: ant::Target {
-                identity: identity(11),
-                generation: 7,
-            },
-            stage: ant::SendStage::BridgeReplied { accepted: true },
-        })),
-        Event::AntSend(None),
-        Event::BleLink {
-            availability: Availability::Ready,
-            snapshot: ble_transport::Snapshot {
-                link: ble_transport::Link::Connected,
-                connections: 1,
-                disconnections: 0,
-                notifications: 60,
-                dropped: 0,
-                scan_reports: 3,
-            },
-        },
-        Event::BlePacket(ble_transport::Packet {
-            connection: 1,
-            sequence: 60,
-            dropped: 0,
-            received_ms: 3_310,
-            bytes: ble,
-            length: 2,
-        }),
-        Event::BleBattery(ble_transport::BatteryLevel {
-            connection: 1,
-            raw: 87,
-            received_ms: 3_000,
-        }),
-        Event::Position {
-            availability: Availability::Ready,
-            snapshot: Some(positioning::Snapshot {
-                gps: gps(),
-                transport: positioning::Transport::Receiving,
-                sequence: 120,
-                received_at_ms: Some(3_200),
-                fault_at_ms: None,
-            }),
-        },
-        Event::Physical(sensors::Snapshot {
-            pressure: Observation::Fresh {
-                value: sensors::Pressure {
-                    pressure_centi_pa: 10_132_500,
-                    temperature_centi_c: -150,
-                },
-                received_ms: 3_310,
-            },
-            motion: [
-                Observation::Stale {
-                    value: sensors::Motion { axes: [1, -2, 3] },
-                    received_ms: 100,
-                },
-                Observation::Unavailable,
-            ],
-            identity: Observation::Unavailable,
-            reports: 12,
-            invalid_reports: 1,
-            losses: 0,
-        }),
-        Event::Light(Observation::Unavailable),
-        Event::Light(Observation::Fresh {
-            value: sensors::Light(1_557),
-            received_ms: 3_330,
-        }),
-        Event::Light(Observation::Stale {
-            value: sensors::Light(65),
-            received_ms: 3_330,
-        }),
-        Event::Power(Some(InputSnapshot {
-            battery: Observation::Fresh {
-                value: (80, 4020),
-                received_ms: 3_000,
-            },
-            power: Observation::Fresh {
-                value: 7,
-                received_ms: 3_000,
-            },
-            button_counts: [1, 2, 3],
-            touch_available: true,
-            touch_errors: 0,
-            companion_valid: 99,
-            companion_bad_crc: 1,
-            uart_errors: 0,
-            input_lost: 0,
-        })),
-        Event::Power(None),
         Event::NetworkTime(crate::network_time::Snapshot {
             unix_seconds: Some(1_793_534_400),
             millis: 250,
@@ -277,103 +47,11 @@ fn sample() -> Vec<Event<'static>> {
             status: crate::network_time::Status::Fresh,
         }),
         Event::Command("RIDE STATUS"),
-        Event::StorageFault(StorageFault {
-            medium: Medium::Bulk,
-            attempt: 3,
-            op: StorageOp::Write,
-            at: 1_955_841,
-            landed: 300,
-            error: StorageError::Failed,
-        }),
-        Event::StorageFault(StorageFault {
-            medium: Medium::Data,
-            attempt: 0,
-            op: StorageOp::Erase,
-            at: 65_536,
-            landed: 0,
-            error: StorageError::Invalid,
-        }),
-        Event::AccessPoint {
-            state: device_api::server::AccessPointState::Up { clients: 2 },
-            reach: device_api::server::Reach {
-                access_point: Some([192, 168, 4, 1]),
-                station: None,
-            },
-        },
-        Event::AccessPointRequest {
-            start: true,
-            result: Err(device_api::observation::Error::Unavailable),
-        },
-        Event::Server {
-            request: Some(ServerRequest {
-                id: 7,
-                method: device_api::server::Method::Put,
-                path: "/courses/alps.gpx",
-                query: "t=1",
-                session: "c0ffee",
-                gzip: true,
-                body: 48_000,
-            }),
-            room: 4096,
-        },
-        Event::Server {
-            request: None,
-            room: 0,
-        },
-        Event::ServerListen(true),
-        Event::ServerRead {
-            id: 7,
-            part: b"<gpx><trk>",
-            more: true,
-        },
-        Event::ServerRead {
-            id: 7,
-            part: b"",
-            more: false,
-        },
-        Event::ServerWrite { id: 7, taken: 512 },
-        Event::ServerFinish(7),
-        Event::SoundState(device_api::sound::Snapshot {
-            state: device_api::sound::State::Submitted,
-            pattern: Some(10),
-            requested_ms: 3_490,
-            submitted_ms: Some(3_500),
-            until_ms: 4_000,
-        }),
-        Event::SoundRequest {
-            play: Some(10),
-            result: Ok(()),
-        },
-        Event::SoundRequest {
-            play: None,
-            result: Err(device_api::observation::Error::Unavailable),
-        },
-        Event::PowerControl(device_api::power::Status {
-            sequence: 3,
-            operation: Some(device_api::power::Operation::Shutdown),
-            state: device_api::power::State::Requested,
-            at_ms: 3_400,
-            prepare_at_ms: Some(3_450),
-            failure: Some(device_api::power::Failure::Storage),
-            ready: false,
-        }),
-        Event::PowerRequest {
-            operation: device_api::power::Operation::Shutdown,
-            delay_ms: 1_500,
-            result: Ok(()),
-        },
         Event::PoweredOff,
-        Event::HostWrote,
         Event::Lost {
             blocks: 3,
             bytes: 12_000,
         },
-        Event::Backlight(Availability::Failed),
-        Event::Refused {
-            output: Output::Panel,
-            attempt: 2,
-        },
-        Event::Entropy(0x9e37_79b9_7f4a_7c15),
         Event::Page("ride"),
         Event::Toast("LAP 1 05:00"),
         Event::Sound {
@@ -559,6 +237,7 @@ fn a_record_with_an_unknown_tag_ends_the_trace_as_corrupt() {
     let mut payload = std::vec![0u8; 64];
     let mut w = Writer::new(&mut payload, 0);
     w.byte(SHORT_PASS | 10);
+    w.byte(0);
     w.record(120, |w| w.bytes(b"no such record"));
     w.byte(SHORT_PASS | 10);
     let len = w.len;
@@ -652,8 +331,9 @@ fn bytes_past_the_known_fields_are_refused() {
     let header_end = encode_header(&HEADER, &mut bytes).unwrap();
     let mut w = Writer::new(&mut bytes[header_end + 2..], 0);
     w.byte(SHORT_PASS | 10);
-    w.record(tag::ENTROPY, |w| {
-        w.varint(7);
+    w.byte(0);
+    w.record(tag::FORGET, |w| {
+        Medium::Bulk.put(w);
         w.bytes(b"an extra field");
     });
     let len = w.len;
@@ -695,8 +375,13 @@ fn a_ble_packet_keeps_a_length_past_its_buffer() {
         bytes: [9; 60],
         length: 61,
     };
-    let events = [Event::Pass { now_ms: 5 }, Event::BlePacket(packet)];
-    assert_eq!(decoded(&encode(&events, 4096)).0, events);
+    let mut bytes = [0u8; 128];
+    let mut w = Writer::new(&mut bytes, 5);
+    packet.put(&mut w);
+    let len = w.len;
+    let mut r = Reader::new(&bytes[..len], 5);
+    assert_eq!(device_api::ble_transport::Packet::take(&mut r), packet);
+    assert_eq!(r.read(), Some(len));
 }
 
 #[test]
@@ -715,30 +400,8 @@ fn a_pass_ten_milliseconds_on_is_one_byte() {
     let passes: Vec<_> = (1..=1000).map(|i| Event::Pass { now_ms: i * 10 }).collect();
     let bytes = encode(&passes, 4096);
     let header = block(&bytes, 0).unwrap().1;
-    let opening = 2 + 4 + 1 + 1 + 1;
+    let opening = 2 + 4 + 1 + 1 + 1 + 1;
     assert_eq!(bytes.len() - header, 1000 + opening);
-}
-
-#[test]
-fn an_ambient_light_reading_costs_a_few_bytes() {
-    let readings: Vec<_> = (1..=300u64)
-        .flat_map(|i| {
-            [
-                Event::Pass { now_ms: i * 333 },
-                Event::Light(Observation::Fresh {
-                    value: sensors::Light(1_000 + (i % 40) as u16),
-                    received_ms: i * 333,
-                }),
-            ]
-        })
-        .collect();
-    let bytes = encode(&readings, 4096);
-    let header = block(&bytes, 0).unwrap().1;
-    let per_reading = (bytes.len() - header) as f64 / 300.0;
-    assert!(
-        per_reading < 12.0,
-        "{per_reading} bytes a reading with its pass"
-    );
 }
 
 #[test]

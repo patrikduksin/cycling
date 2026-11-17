@@ -204,6 +204,11 @@ pub enum AntOperation {
     Send { target: Target, data: [u8; 8] },
 }
 
+/// [`Ant::channel`] of a recorded radio, from the channels its pass sampled.
+pub fn derived_channel(ant: &(impl Ant + ?Sized), kind: u8, now_ms: u64) -> Option<Snapshot> {
+    channel(ant.channels(now_ms), kind)
+}
+
 pub fn channel(channels: [Option<Snapshot>; CHANNEL_CAPACITY], kind: u8) -> Option<Snapshot> {
     channels
         .into_iter()

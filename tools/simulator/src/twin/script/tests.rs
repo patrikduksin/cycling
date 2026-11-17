@@ -1,7 +1,7 @@
 use super::*;
 
 fn method(capability: &str, name: &str) -> MethodId {
-    MethodId::named(capability, name).unwrap()
+    named(capability, name).unwrap()
 }
 
 fn connect() -> MethodId {
@@ -23,17 +23,23 @@ fn channels() -> MethodId {
 fn called(method: MethodId, args: &[u8], outcome: &[u8]) -> Record {
     Record::Called {
         method,
-        args: args.to_vec(),
-        outcome: outcome.to_vec(),
+        body: [args, outcome].concat(),
     }
 }
 
 fn observed(method: MethodId, value: &[u8]) -> Record {
-    Record::Observed(Observed {
+    Record::Observed {
         method,
-        key: Vec::new(),
-        value: value.to_vec(),
-    })
+        body: value.to_vec(),
+    }
+}
+
+fn left(method: MethodId, args: &[u8], outcome: &[u8], epoch: u32) -> Left {
+    Left {
+        method,
+        body: [args, outcome].concat(),
+        epoch,
+    }
 }
 
 fn identity(method: MethodId, args: &[u8], occurrence: u32, epoch: u32) -> Identity {
@@ -64,13 +70,13 @@ fn recorded() -> Pass {
 fn the_calls_the_device_made_replay_and_the_epoch_advances_when_an_answer_matches() {
     let mut pass = recorded();
     assert_eq!(
-        pass.observe(channels(), &[]).map(|seen| &seen.value[..]),
-        Some(&b"closed"[..])
+        pass.observe(channels(), &[]).map(|seen| seen.value),
+        Some(b"closed".to_vec())
     );
     assert_eq!(pass.answer(connect(), &[1]), Ok(b"ok".to_vec()));
     assert_eq!(
-        pass.observe(channels(), &[]).map(|seen| &seen.value[..]),
-        Some(&b"open"[..])
+        pass.observe(channels(), &[]).map(|seen| seen.value),
+        Some(b"open".to_vec())
     );
     assert_eq!(pass.answer(play(), &[7]), Ok(b"played".to_vec()));
     assert_eq!(pass.poll(packet()), Some(b"first".to_vec()));
@@ -86,7 +92,7 @@ fn a_request_the_twin_never_makes_is_unconsumed_at_the_end_of_the_pass() {
     pass.poll(packet());
     assert_eq!(
         pass.end(),
-        Err(Stop::Unconsumed(vec![identity(play(), &[7], 0, 0)]))
+        Err(Stop::Unconsumed(vec![left(play(), &[7], b"played", 0)]))
     );
 }
 
@@ -142,7 +148,7 @@ fn a_request_delayed_to_the_next_pass_is_unconsumed_in_its_own() {
     );
     assert_eq!(
         first.end(),
-        Err(Stop::Unconsumed(vec![identity(play(), &[7], 0, 0)]))
+        Err(Stop::Unconsumed(vec![left(play(), &[7], b"played", 0)]))
     );
     assert_eq!(
         next.answer(play(), &[7]),
@@ -190,7 +196,7 @@ fn a_take_that_must_answer_and_has_no_record_is_unanswered() {
 
 #[test]
 fn an_observation_the_twin_has_not_reached_is_not_served() {
-    let pass = Pass::new(
+    let mut pass = Pass::new(
         1_000,
         View::default(),
         [
@@ -209,7 +215,7 @@ fn items_the_twin_polls_for_fewer_times_than_the_device_are_unconsumed() {
     assert_eq!(pass.poll(packet()), Some(b"first".to_vec()));
     assert_eq!(
         pass.end(),
-        Err(Stop::Unconsumed(vec![identity(packet(), &[], 1, 1)]))
+        Err(Stop::Unconsumed(vec![left(packet(), &[], b"second", 1)]))
     );
 }
 
@@ -224,10 +230,10 @@ fn an_observation_that_did_not_change_is_served_in_the_next_pass_with_the_time_i
         ],
     );
     assert_eq!(first.answer(connect(), &[1]), Ok(b"ok".to_vec()));
-    let next = Pass::new(2_000, first.end().unwrap(), []);
+    let mut next = Pass::new(2_000, first.end().unwrap(), []);
     assert_eq!(
         next.observe(channels(), &[]),
-        Some(&Seen {
+        Some(Seen {
             value: b"open".to_vec(),
             at_ms: 1_000,
         }),
@@ -245,17 +251,16 @@ fn an_observation_rides_with_its_capabilitys_refresh_not_the_call_before_it() {
             called(connect(), &[1], b"ok"),
             called(packet(), &[], b"taken"),
             called(play(), &[7], b"played"),
-            Record::Observed(Observed {
+            Record::Observed {
                 method: status,
-                key: vec![3],
-                value: b"sent".to_vec(),
-            }),
+                body: [&[3][..], b"sent"].concat(),
+            },
         ],
     );
     assert_eq!(pass.answer(connect(), &[1]), Ok(b"ok".to_vec()));
     assert_eq!(
-        pass.observe(status, &[3]).map(|seen| &seen.value[..]),
-        Some(&b"sent"[..])
+        pass.observe(status, &[3]).map(|seen| seen.value),
+        Some(b"sent".to_vec())
     );
 }
 
@@ -272,8 +277,85 @@ fn calls_left_unconsumed_are_named_in_the_order_the_device_made_them() {
     assert_eq!(
         pass.end(),
         Err(Stop::Unconsumed(vec![
-            identity(play(), &[7], 0, 0),
-            identity(connect(), &[1], 0, 0),
+            left(play(), &[7], b"played", 0),
+            left(connect(), &[1], b"ok", 0),
         ]))
     );
+}
+
+#[test]
+fn an_observation_is_found_by_its_key_and_the_newest_one_under_it_wins() {
+    let mut pass = Pass::new(
+        1_000,
+        View::default(),
+        [
+            Record::Observed {
+                method: channels(),
+                body: [&[0][..], b"idle"].concat(),
+            },
+            Record::Observed {
+                method: channels(),
+                body: [&[1][..], b"open"].concat(),
+            },
+            Record::Observed {
+                method: channels(),
+                body: [&[0][..], b"searching"].concat(),
+            },
+        ],
+    );
+    let value = |pass: &mut Pass, key: u8| pass.observe(channels(), &[key]).map(|seen| seen.value);
+    assert_eq!(value(&mut pass, 0), Some(b"searching".to_vec()));
+    assert_eq!(value(&mut pass, 1), Some(b"open".to_vec()));
+    assert_eq!(value(&mut pass, 0), Some(b"searching".to_vec()));
+    assert_eq!(value(&mut pass, 2), None);
+}
+
+#[test]
+fn a_call_is_found_by_its_arguments_whatever_it_gave() {
+    let mut pass = Pass::new(
+        1_000,
+        View::default(),
+        [
+            called(play(), &[7], b"played"),
+            called(play(), &[9], b"refused"),
+        ],
+    );
+    assert_eq!(
+        pass.answer(play(), &[9]),
+        Err(Stop::Unanswered(identity(play(), &[9], 0, 0)))
+    );
+    assert_eq!(pass.answer(play(), &[7]), Ok(b"played".to_vec()));
+    assert_eq!(pass.answer(play(), &[9]), Ok(b"refused".to_vec()));
+}
+
+#[test]
+fn a_record_after_calls_the_device_left_out_is_passed_by_that_many_times() {
+    let (listen, request) = (method("Server", "listen"), method("Server", "request"));
+    let mut pass = Pass::new(
+        1_000,
+        View::default(),
+        [
+            observed(request, b"none"),
+            called(listen, &[1], b""),
+            observed(request, b"held"),
+            Record::Repeated {
+                method: listen,
+                count: 2,
+            },
+        ],
+    );
+    for _ in 0..2 {
+        assert!(pass.answer(listen, &[1]).is_err());
+        assert_eq!(
+            pass.observe(request, &[]).map(|seen| seen.value),
+            Some(b"none".to_vec()),
+            "the request the third call revealed is not seen before it"
+        );
+    }
+    assert_eq!(pass.answer(listen, &[1]), Ok(Vec::new()));
+    assert_eq!(
+        pass.observe(request, &[]).map(|seen| seen.value),
+        Some(b"held".to_vec())
+    );
+    assert!(pass.end().is_ok());
 }

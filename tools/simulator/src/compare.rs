@@ -23,7 +23,7 @@ use crate::bulk::{Presence, SimBulk};
 use crate::logs::Line;
 use crate::storage::FileFlash;
 use device_api::storage::Region;
-use firmware_services::trace::frozen::{Passed, Tap as RecorderTap};
+use firmware_services::trace::recorder::Tap as RecorderTap;
 use firmware_services::trace::{Event, Medium, StorageError, StorageOp, spool, tapped};
 use firmware_services::{files, store, volume};
 use sha2::{Digest, Sha256};
@@ -157,14 +157,6 @@ impl RecorderTap for Tap {
             &mut self.0.borrow_mut().session,
             b'e',
             &tapped::event(event),
-        );
-    }
-
-    fn passed(&mut self, call: Passed) {
-        fold(
-            &mut self.0.borrow_mut().session,
-            b'p',
-            &tapped::passed(call),
         );
     }
 }

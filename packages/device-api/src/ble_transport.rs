@@ -90,7 +90,7 @@ pub enum Operation {
     Disconnect,
     Echo,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Discovery {
     pub name: crate::connectivity::Text<32>,
     pub address: [u8; 6],

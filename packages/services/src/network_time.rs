@@ -107,6 +107,34 @@ pub struct Snapshot {
     pub status: Status,
 }
 
+/// A snapshot read `ms` later: its clock ran on, and it went stale with age.
+impl device_api::journal::Aging for Snapshot {
+    fn aged(self, ms: u64) -> Self {
+        let Some(seconds) = self.unix_seconds else {
+            return self;
+        };
+        let total_ms = seconds
+            .saturating_mul(1_000)
+            .saturating_add(u64::from(self.millis))
+            .saturating_add(ms);
+        let current = total_ms / 1_000;
+        let age_ms = self.age_ms.map(|age| age.saturating_add(ms));
+        Self {
+            unix_seconds: Some(current),
+            millis: (total_ms % 1_000) as u16,
+            local_minutes: self.local_minutes.map(|minutes| {
+                ((u64::from(minutes) + current / 60 - seconds / 60) % (24 * 60)) as u16
+            }),
+            age_ms,
+            status: if age_ms.is_some_and(|age| age >= STALE_AFTER_MS) {
+                Status::Stale
+            } else {
+                self.status
+            },
+        }
+    }
+}
+
 impl Default for Snapshot {
     fn default() -> Self {
         Self {

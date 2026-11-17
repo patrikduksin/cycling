@@ -1,9 +1,7 @@
 //! Bytes a test tap folds into its digests, in the trace's own codes, so a
 //! rename of a Rust type changes no digest. Each value is encoded alone and
 //! whole, however large.
-use super::frozen::Passed;
 use super::{Event, Medium, StorageError, StorageOp, Wire, Writer};
-use device_api::ble_transport::Operation;
 use std::vec::Vec;
 
 fn grown(put: impl Fn(&mut Writer)) -> Vec<u8> {
@@ -23,7 +21,7 @@ fn grown(put: impl Fn(&mut Writer)) -> Vec<u8> {
 
 /// The event as a block records it, its pass clock absolute.
 pub fn event(event: &Event<'_>) -> Vec<u8> {
-    grown(|w| w.record(event.tag(), |w| event.put_body(w, 0)))
+    grown(|w| event.put_record(w, 0))
 }
 
 pub fn storage(
@@ -44,31 +42,6 @@ pub fn storage(
                 w.byte(1);
                 error.put(w);
             }
-        }
-    })
-}
-
-pub fn passed(call: Passed) -> Vec<u8> {
-    grown(|w| match call {
-        Passed::BleRequest(operation, result) => {
-            w.byte(0);
-            match operation {
-                Operation::Scan => w.byte(0),
-                Operation::Select(selection) => {
-                    w.byte(1);
-                    w.byte(selection.is_some().into());
-                    if let Some(selection) = selection {
-                        selection.name.bytes().put(w);
-                        selection.address.put(w);
-                        selection.service.put(w);
-                        selection.characteristic.put(w);
-                    }
-                }
-                Operation::Connect => w.byte(2),
-                Operation::Disconnect => w.byte(3),
-                Operation::Echo => w.byte(4),
-            }
-            result.put(w);
         }
     })
 }

@@ -51,6 +51,12 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     Crc32::new().update(bytes).finish()
 }
 
+/// The CRC32 of some bytes followed by `bytes`, from the CRC32 of the
+/// first: zero for none.
+pub fn crc32_more(crc: u32, bytes: &[u8]) -> u32 {
+    Crc32(!crc).update(bytes).finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,5 +69,6 @@ mod tests {
             0xcbf4_3926
         );
         assert_eq!(crc32(&[]), 0);
+        assert_eq!(crc32_more(crc32(b"1234"), b"56789"), 0xcbf4_3926);
     }
 }

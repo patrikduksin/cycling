@@ -1,13 +1,24 @@
 use super::*;
 use crate::store::{DATA, Next, PAYLOAD};
 use crate::testing::Media;
-use crate::trace::frozen::Record;
+use crate::trace::recorder::Record;
 use crate::trace::{Event, Header, decode, encode_header};
 use device_api::bulk::{self, OwnedInfo, SECTOR_SIZE};
 use std::format;
 use std::string::String;
 use std::vec;
 use std::vec::Vec;
+
+fn upload_read(part: &[u8]) -> Event<'_> {
+    Event::Call(crate::trace::Call {
+        method: device_api::journal::MethodId {
+            capability: 3,
+            operation: 4,
+        },
+        now_ms: 0,
+        body: part,
+    })
+}
 
 /// One C606 MMC operation in physical sector operations: every owned
 /// operation reads the MBR and the ownership marker again, and a write is
@@ -67,9 +78,7 @@ const HEADER: Header<'static> = Header {
     build: [0; 20],
     device: "c606",
     boot: 7,
-    profile: 0,
-    config: &[1; 300],
-    media: &[2; 900],
+    terrain: crate::trace::origin::Found::Absent,
 };
 
 fn header() -> Vec<u8> {
@@ -192,11 +201,7 @@ impl Session {
                 if n == 0 {
                     break;
                 }
-                reads.push(Event::ServerRead {
-                    id: 1,
-                    part: &piece[..n],
-                    more: false,
-                });
+                reads.push(upload_read(&piece[..n]));
                 left -= n;
             }
             self.pass(&reads);
@@ -543,14 +548,14 @@ mod file {
     }
 
     #[test]
-    fn a_host_write_to_files_ends_the_trace_and_says_so_a_store_change_reopens_it() {
+    fn a_host_write_to_files_forgets_the_card_and_the_trace_goes_on() {
         let (mut media, mut sector) = card(true);
         let mut file: File = File::stage(&mut media, &mut sector);
-        let mut recorder = recorder();
-        recorder.record(&Event::Pass { now_ms: 10 });
+        let mut log = Log::new(Some(recorder()), std::boxed::Box::<Memory>::default());
+        log.record(&Event::Pass { now_ms: 10 });
         let known = || Some((header(), 7));
         file.pass(
-            &mut recorder,
+            log.recorder.as_mut().unwrap(),
             &mut media,
             Card::Riding,
             known,
@@ -566,36 +571,51 @@ mod file {
         let notes = Name::new("notes").unwrap();
         host.create(&mut host_store, &notes, None, &mut sector)
             .unwrap();
-        file.after_host(&mut recorder, &mut media, true, 20, &mut sector)
-            .unwrap();
-        assert!(file.is_open(), "the store changed; the file goes on");
-        recorder.record(&Event::Pass { now_ms: 30 });
+        let after = file.after_host(&mut log, &mut media, true, 20, &mut sector);
+        assert_eq!(after, Ok(false), "the store changed; the file goes on");
+        assert!(file.is_open());
+        log.record(&Event::Pass { now_ms: 30 });
 
         let course = crate::files::Name::new("course").unwrap();
         let mut seen = Volume::new(&mut media, files_extent);
         crate::files::write(&mut seen, &course, b"gpx", &mut sector).unwrap();
-        file.after_host(&mut recorder, &mut media, false, 35, &mut sector)
+        let after = file.after_host(&mut log, &mut media, false, 35, &mut sector);
+        assert_eq!(after, Ok(false), "a recorded command's write replays");
+        file.before_host(log.recorder.as_mut().unwrap(), &mut media, 36, &mut sector)
             .unwrap();
-        assert!(file.is_open(), "a recorded command's write replays");
-        file.before_host(&mut recorder, &mut media, 36, &mut sector)
-            .unwrap();
-        file.after_host(&mut recorder, &mut media, true, 37, &mut sector)
-            .unwrap();
-        assert!(file.is_open(), "a transfer that wrote nothing VANA reads");
+        let after = file.after_host(&mut log, &mut media, true, 37, &mut sector);
+        assert_eq!(after, Ok(false), "a transfer that wrote nothing VANA reads");
 
         let mut host_files = Volume::new(&mut media, files_extent);
         crate::files::write(&mut host_files, &course, b"gpx 2", &mut sector).unwrap();
         let name = opened(&file);
-        assert_eq!(
-            file.after_host(&mut recorder, &mut media, true, 40, &mut sector),
-            Err("the host wrote the card")
-        );
-        assert!(matches!(file, File::Ended(_)));
+        let after = file.after_host(&mut log, &mut media, true, 40, &mut sector);
+        assert_eq!(after, Ok(true), "the host wrote FILES");
+        assert!(file.is_open());
+        file.sync(log.recorder.as_mut().unwrap(), &mut media, 41, &mut sector)
+            .unwrap();
         let bytes = read(&mut media, &mut sector, &name);
         assert_eq!(
             events(&bytes),
-            ["Pass { now_ms: 10 }", "Pass { now_ms: 30 }", "HostWrote"]
+            ["Pass { now_ms: 10 }", "Pass { now_ms: 30 }", "Forget(Bulk)"]
         );
+    }
+
+    #[test]
+    fn a_moved_store_ends_the_trace() {
+        let (mut media, mut sector) = card(true);
+        let mut file: File = File::stage(&mut media, &mut sector);
+        let mut log = Log::new(Some(recorder()), std::boxed::Box::<Memory>::default());
+        log.record(&Event::Pass { now_ms: 10 });
+        let known = || Some((header(), 7));
+        let recorder = log.recorder.as_mut().unwrap();
+        file.pass(recorder, &mut media, Card::Riding, known, 10, &mut sector)
+            .unwrap();
+        media.set(0, [0; SECTOR_SIZE]);
+        media.set(1, [0; SECTOR_SIZE]);
+        let after = file.after_host(&mut log, &mut media, false, 20, &mut sector);
+        assert_eq!(after, Err("STORE moved"));
+        assert!(matches!(file, File::Ended(_)));
     }
 
     struct Boot {
@@ -625,11 +645,7 @@ mod file {
             let piece = [b'b'; 512];
             self.recorder.record(&Event::Pass { now_ms: self.now });
             for _ in 0..recorded_kib * 2 {
-                self.recorder.record(&Event::ServerRead {
-                    id: 1,
-                    part: &piece,
-                    more: true,
-                });
+                self.recorder.record(&upload_read(&piece));
             }
             let known = || Some((header(), 7));
             self.file

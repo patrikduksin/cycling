@@ -9,58 +9,78 @@
 //! that refresh it, both in this pass. So a request the twin makes later
 //! than the device did still replays, unless a refreshing call of the same
 //! capability came between.
-use device_api::capability::{self, Capability, Kind};
+//!
+//! A request that repeats is recorded only when it differs from the
+//! method's last record or changes an observation, so a call with no record
+//! in its epoch is one the device left out. Where a record follows such
+//! calls in its own epoch, the log says how many, and that many of the
+//! twin's calls pass the record by.
+//!
+//! A record's body opens with its arguments, or an observation's key, as
+//! the recorder put them. The log does not say where they end, so the twin
+//! matches a record by that prefix: one method's arguments are always the
+//! same types, and no encoding of them is the start of another.
+use device_api::capability::{Capability, Kind};
+use device_api::journal::MethodId;
 use std::collections::BTreeMap;
 use std::fmt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MethodId {
-    pub capability: u8,
-    pub index: u8,
+/// The capabilities a world log can hold: the device's and the shell's
+/// settings.
+pub fn capabilities() -> impl Iterator<Item = &'static Capability> {
+    device_api::capability::ALL
+        .iter()
+        .copied()
+        .chain([&firmware_shell::storage::CAPABILITY_SETTINGS])
 }
 
-impl MethodId {
-    pub fn named(capability: &str, method: &str) -> Option<Self> {
-        let table = capability::ALL
-            .iter()
-            .find(|table| table.name == capability)?;
-        let index = table.methods.iter().position(|m| m.name == method)?;
-        Some(Self {
-            capability: table.id,
-            index: index as u8,
-        })
-    }
-
-    fn table(&self) -> Option<&'static Capability> {
-        capability::ALL
-            .iter()
-            .copied()
-            .find(|table| table.id == self.capability)
-    }
-
-    fn refreshes(&self) -> bool {
-        let method = self
-            .table()
-            .and_then(|table| table.methods.get(usize::from(self.index)));
-        matches!(
-            method.map(|method| method.kind),
-            Some(
-                Kind::Take { refreshes: true }
-                    | Kind::Request { refreshes: true }
-                    | Kind::Sink { refreshes: true }
-            )
-        )
-    }
+pub fn declared(
+    method: MethodId,
+) -> Option<(&'static Capability, &'static device_api::capability::Method)> {
+    let table = capabilities().find(|table| table.id == method.capability)?;
+    Some((table, table.methods.get(usize::from(method.operation))?))
 }
 
-impl fmt::Display for MethodId {
+pub fn named(capability: &str, method: &str) -> Option<MethodId> {
+    let table = capabilities().find(|table| table.name == capability)?;
+    let operation = table.methods.iter().position(|m| m.name == method)?;
+    Some(MethodId {
+        capability: table.id,
+        operation: operation as u8,
+    })
+}
+
+/// A method as a person reads it: `Ant::request`.
+pub struct Named(pub MethodId);
+
+impl fmt::Display for Named {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let table = self.table();
-        let method = table.and_then(|table| table.methods.get(usize::from(self.index)));
-        match (table, method) {
-            (Some(table), Some(method)) => write!(f, "{}::{}", table.name, method.name),
-            _ => write!(f, "{}.{}", self.capability, self.index),
+        match declared(self.0) {
+            Some((table, method)) => write!(f, "{}::{}", table.name, method.name),
+            None => write!(f, "{}.{}", self.0.capability, self.0.operation),
         }
+    }
+}
+
+fn refreshes(method: MethodId) -> bool {
+    matches!(
+        declared(method).map(|(_, method)| method.kind),
+        Some(
+            Kind::Take { refreshes: true }
+                | Kind::Request {
+                    refreshes: true,
+                    ..
+                }
+                | Kind::Sink { refreshes: true }
+        )
+    )
+}
+
+pub(crate) struct Hex<'a>(pub(crate) &'a [u8]);
+
+impl fmt::Display for Hex<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
     }
 }
 
@@ -74,42 +94,42 @@ pub struct Identity {
 
 impl fmt::Display for Identity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}(", self.method)?;
-        for byte in &self.args {
-            write!(f, "{byte:02x}")?;
-        }
-        write!(f, ") #{} in epoch {}", self.occurrence, self.epoch)
+        write!(
+            f,
+            "{}({}) #{} in epoch {}",
+            Named(self.method),
+            Hex(&self.args),
+            self.occurrence,
+            self.epoch
+        )
     }
 }
 
+/// A recorded call the twin never made: its body is its arguments and
+/// what it gave.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Observed {
+pub struct Left {
     pub method: MethodId,
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Answer {
-    outcome: Vec<u8>,
-    observed: Vec<Observed>,
+    pub body: Vec<u8>,
+    pub epoch: u32,
 }
 
 /// One record of a pass, in the order the device wrote them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Record {
-    Called {
-        method: MethodId,
-        args: Vec<u8>,
-        outcome: Vec<u8>,
-    },
-    Observed(Observed),
+    /// A call: its arguments, then what it gave.
+    Called { method: MethodId, body: Vec<u8> },
+    /// An observation: its key, then its value.
+    Observed { method: MethodId, body: Vec<u8> },
+    /// The last call of `method` came after `count` calls of it the device
+    /// did not record.
+    Repeated { method: MethodId, count: u8 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stop {
     Unanswered(Identity),
-    Unconsumed(Vec<Identity>),
+    Unconsumed(Vec<Left>),
 }
 
 impl fmt::Display for Stop {
@@ -118,11 +138,17 @@ impl fmt::Display for Stop {
             Self::Unanswered(identity) => {
                 write!(f, "left the recorded world: {identity} has no answer")
             }
-            Self::Unconsumed(identities) => {
+            Self::Unconsumed(left) => {
                 write!(f, "left the recorded world: the twin never made")?;
-                for (index, identity) in identities.iter().enumerate() {
+                for (index, call) in left.iter().enumerate() {
                     let separator = if index == 0 { " " } else { ", " };
-                    write!(f, "{separator}{identity}")?;
+                    write!(
+                        f,
+                        "{separator}{} {} in epoch {}",
+                        Named(call.method),
+                        Hex(&call.body),
+                        call.epoch
+                    )?;
                 }
                 Ok(())
             }
@@ -137,6 +163,10 @@ struct Counts {
 }
 
 impl Counts {
+    fn epoch(&self, capability: u8) -> u32 {
+        self.epochs.get(&capability).copied().unwrap_or(0)
+    }
+
     fn identity(&self, method: MethodId, args: &[u8]) -> Identity {
         Identity {
             method,
@@ -146,13 +176,13 @@ impl Counts {
                 .get(&(method, args.to_vec()))
                 .copied()
                 .unwrap_or(0),
-            epoch: self.epochs.get(&method.capability).copied().unwrap_or(0),
+            epoch: self.epoch(method.capability),
         }
     }
 
     fn called(&mut self, method: MethodId, args: &[u8]) {
         *self.occurrences.entry((method, args.to_vec())).or_default() += 1;
-        if method.refreshes() {
+        if refreshes(method) {
             *self.epochs.entry(method.capability).or_default() += 1;
         }
     }
@@ -163,7 +193,7 @@ impl Counts {
 /// only when it differs from the last one aged to now, so the view carries
 /// from one pass to the next, and a value that ages is aged from `at_ms`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct View(BTreeMap<(MethodId, Vec<u8>), Seen>);
+pub struct View(BTreeMap<MethodId, Vec<(Vec<u8>, u64)>>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seen {
@@ -172,20 +202,43 @@ pub struct Seen {
 }
 
 impl View {
-    pub fn get(&self, method: MethodId, key: &[u8]) -> Option<&Seen> {
-        self.0.get(&(method, key.to_vec()))
+    /// The latest observation of `method` under `key`. Older ones under
+    /// the same key are dropped: nothing reads them again.
+    pub fn get(&mut self, method: MethodId, key: &[u8]) -> Option<Seen> {
+        let bodies = self.0.get_mut(&method)?;
+        let latest = bodies.iter().rposition(|(body, _)| body.starts_with(key))?;
+        let mut index = 0;
+        bodies.retain(|(body, _)| {
+            index += 1;
+            index > latest || !body.starts_with(key)
+        });
+        let (body, at_ms) = bodies.iter().rfind(|(body, _)| body.starts_with(key))?;
+        Some(Seen {
+            value: body[key.len()..].to_vec(),
+            at_ms: *at_ms,
+        })
     }
 
-    fn install(&mut self, observed: Vec<Observed>, at_ms: u64) {
-        for Observed { method, key, value } in observed {
-            self.0.insert((method, key), Seen { value, at_ms });
+    fn install(&mut self, observed: Vec<(MethodId, Vec<u8>)>, at_ms: u64) {
+        for (method, body) in observed {
+            self.0.entry(method).or_default().push((body, at_ms));
         }
     }
 }
 
+struct Call {
+    method: MethodId,
+    body: Vec<u8>,
+    epoch: u32,
+    consumed: bool,
+    observed: Vec<(MethodId, Vec<u8>)>,
+    /// Calls the device made before this one and did not record: that many
+    /// of the twin's calls pass it by.
+    unrecorded: u8,
+}
+
 pub struct Pass {
-    answers: BTreeMap<Identity, Answer>,
-    recorded: Vec<Identity>,
+    calls: Vec<Call>,
     counts: Counts,
     view: View,
     now_ms: u64,
@@ -195,50 +248,46 @@ impl Pass {
     /// An observation rides with the last call before it that refreshes its
     /// capability, which started the epoch it was read in.
     pub fn new(now_ms: u64, mut view: View, records: impl IntoIterator<Item = Record>) -> Self {
-        let mut answers = BTreeMap::new();
-        let mut recorded = Vec::new();
-        let mut counts = Counts::default();
+        let mut calls: Vec<Call> = Vec::new();
+        let mut epochs = Counts::default();
         let mut last = BTreeMap::new();
         for record in records {
             match record {
-                Record::Called {
-                    method,
-                    args,
-                    outcome,
-                } => {
-                    let identity = counts.identity(method, &args);
-                    counts.called(method, &args);
-                    answers.insert(
-                        identity.clone(),
-                        Answer {
-                            outcome,
-                            observed: Vec::new(),
-                        },
-                    );
-                    if method.refreshes() {
-                        last.insert(method.capability, identity.clone());
+                Record::Called { method, body } => {
+                    let epoch = epochs.epoch(method.capability);
+                    epochs.called(method, &[]);
+                    if refreshes(method) {
+                        last.insert(method.capability, calls.len());
                     }
-                    recorded.push(identity);
+                    calls.push(Call {
+                        method,
+                        body,
+                        epoch,
+                        consumed: false,
+                        observed: Vec::new(),
+                        unrecorded: 0,
+                    });
                 }
-                Record::Observed(observed) => match last.get(&observed.method.capability) {
-                    Some(identity) => answers
-                        .get_mut(identity)
-                        .expect("the call it follows was just added")
-                        .observed
-                        .push(observed),
-                    None => view.install(vec![observed], now_ms),
+                Record::Repeated { method, count } => {
+                    if let Some(call) = calls.iter_mut().rfind(|call| call.method == method) {
+                        call.unrecorded = count;
+                    }
+                }
+                Record::Observed { method, body } => match last.get(&method.capability) {
+                    Some(&call) => calls[call].observed.push((method, body)),
+                    None => view.install(vec![(method, body)], now_ms),
                 },
             }
         }
         Self {
-            answers,
-            recorded,
+            calls,
             counts: Counts::default(),
             view,
             now_ms,
         }
     }
 
+    /// What the call of `method` with `args` gave: the rest of its record.
     pub fn answer(&mut self, method: MethodId, args: &[u8]) -> Result<Vec<u8>, Stop> {
         self.matched(method, args)
             .ok_or_else(|| Stop::Unanswered(self.counts.identity(method, args)))
@@ -248,29 +297,47 @@ impl Pass {
         self.matched(method, &[])
     }
 
-    pub fn observe(&self, method: MethodId, key: &[u8]) -> Option<&Seen> {
+    pub fn observe(&mut self, method: MethodId, key: &[u8]) -> Option<Seen> {
         self.view.get(method, key)
     }
 
     /// The view the next pass starts from, or the calls the twin never
     /// made, in the order the device made them.
     pub fn end(self) -> Result<View, Stop> {
-        if self.answers.is_empty() {
-            return Ok(self.view);
+        let left: Vec<Left> = self
+            .calls
+            .into_iter()
+            .filter(|call| !call.consumed)
+            .map(|call| Left {
+                method: call.method,
+                body: call.body,
+                epoch: call.epoch,
+            })
+            .collect();
+        match left.is_empty() {
+            true => Ok(self.view),
+            false => Err(Stop::Unconsumed(left)),
         }
-        let left = self.recorded.into_iter();
-        Err(Stop::Unconsumed(
-            left.filter(|identity| self.answers.contains_key(identity))
-                .collect(),
-        ))
     }
 
     fn matched(&mut self, method: MethodId, args: &[u8]) -> Option<Vec<u8>> {
         let identity = self.counts.identity(method, args);
-        let answer = self.answers.remove(&identity)?;
+        let call = self
+            .calls
+            .iter_mut()
+            .filter(|call| call.method == method && call.body.starts_with(args))
+            .nth(identity.occurrence as usize)
+            .filter(|call| call.epoch == identity.epoch && !call.consumed)?;
+        if call.unrecorded > 0 {
+            call.unrecorded -= 1;
+            return None;
+        }
+        call.consumed = true;
+        let outcome = call.body[args.len()..].to_vec();
+        let observed = core::mem::take(&mut call.observed);
         self.counts.called(method, args);
-        self.view.install(answer.observed, self.now_ms);
-        Some(answer.outcome)
+        self.view.install(observed, self.now_ms);
+        Some(outcome)
     }
 }
 

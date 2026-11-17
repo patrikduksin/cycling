@@ -19,17 +19,7 @@ const SCRIPT: [&str; 13] = [
     "POWER SHUTDOWN",
 ];
 
-const UNRECORDED: [&str; 9] = [
-    "POWER STATUS",
-    "WIFI",
-    "WIFI NETWORKS",
-    "BLE",
-    "BLE PEERS",
-    "TIME",
-    "INPUT",
-    "BATTERY",
-    "POWER SHUTDOWN",
-];
+const UNRECORDED: [&str; 5] = ["POWER STATUS", "TIME", "INPUT", "BATTERY", "POWER SHUTDOWN"];
 
 fn recorded() -> (
     shell_simulator::replay::Capture,
@@ -75,7 +65,7 @@ fn a_replay_answers_each_console_line_as_the_recording_did() {
     assert!(on_device[time].1.contains("Fresh"), "{}", on_device[time].1);
     let (sim, on_replay) = replayed(&capture);
     let report = sim.device.report().expect("a replay");
-    assert_eq!(on_replay.len(), SCRIPT.len());
+    assert_eq!(on_replay.len(), SCRIPT.len(), "{report}");
     for ((line, recorded), (replayed_line, status, reply)) in
         SCRIPT.iter().zip(&on_device).zip(&on_replay)
     {

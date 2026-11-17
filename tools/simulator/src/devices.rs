@@ -7,6 +7,7 @@ use device_api::input::Controls;
 use device_api::input::Edge;
 use device_api::input::Input;
 use device_api::input::InputSource;
+use device_api::journal::{MethodId, Script as _};
 use device_api::observation::Availability;
 use device_api::observation::Error;
 use device_api::positioning::Positioning;
@@ -14,6 +15,7 @@ use device_api::power::Power;
 use device_api::storage::OwnedFlash;
 use device_api::storage::Region;
 use firmware_services::input::Edges;
+use firmware_services::trace::wire::{Wire as _, Writer};
 use firmware_shell::rendering::record::{self, Kind};
 use firmware_shell::rendering::work::{self, Work};
 use std::cell::RefCell;
@@ -88,8 +90,8 @@ impl Display for DisplayDevice {
     fn submit(&mut self, rows: Rows, mut row: impl FnMut(usize, &mut [u16])) -> Result<(), Error> {
         let mut frame = self.0.borrow_mut();
         let injected = core::mem::take(&mut frame.fail_next);
-        if frame.refusals.refuse(injected) {
-            return Err(Error::Failed);
+        if let Some(error) = frame.refusals.refuse(injected, |w| rows.put(w)) {
+            return Err(error);
         }
         let (width, height) = (frame.geometry.width, frame.geometry.height);
         if let Some(request) = &mut frame.bench {
@@ -170,6 +172,9 @@ pub struct InputDevice {
     /// Edges a trace recorded, delivered as they were taken.
     pub replayed: Rc<RefCell<VecDeque<Edge>>>,
     pub controls: Controls,
+    /// The recorded world a strict replay takes its edges from, and that
+    /// method in it.
+    pub twin: Option<(Scripted, MethodId)>,
 }
 impl InputDevice {
     pub fn new(buttons: &'static [Button], touch: Availability) -> Self {
@@ -177,6 +182,7 @@ impl InputDevice {
             edges: Rc::new(RefCell::new(Edges::new())),
             replayed: Rc::default(),
             controls: Controls { touch, buttons },
+            twin: None,
         }
     }
     pub fn push(&self, now: u64, event: Input) {
@@ -185,9 +191,16 @@ impl InputDevice {
 }
 impl InputSource for InputDevice {
     fn controls(&self) -> Controls {
-        self.controls
+        let recorded = self.twin.as_ref().and_then(|(world, _)| {
+            let method = crate::twin::script::named("InputSource", "controls")?;
+            world.borrow_mut().observation::<Controls>(method, &[])
+        });
+        recorded.unwrap_or(self.controls)
     }
     fn take_edge(&mut self) -> Option<Edge> {
+        if let Some((world, method)) = &self.twin {
+            return world.borrow_mut().edge(*method);
+        }
         let replayed = self.replayed.borrow_mut().pop_front();
         replayed.or_else(|| self.edges.borrow_mut().pop())
     }
@@ -201,6 +214,9 @@ pub struct PowerState {
     pub writes: u32,
     pub fail: bool,
     pub refusals: Refusals,
+    /// The recorded world a strict replay reads the backlight's
+    /// availability from, and that method in it.
+    pub twin: Option<(Scripted, MethodId)>,
 }
 impl PowerDevice {
     pub fn new(available: Availability) -> Self {
@@ -211,12 +227,17 @@ impl PowerDevice {
             writes: 0,
             fail: false,
             refusals: Refusals::default(),
+            twin: None,
         })))
     }
 }
 impl Power for PowerDevice {
     fn availability(&self) -> Availability {
-        self.0.borrow().available
+        let state = self.0.borrow();
+        let recorded = state.twin.as_ref().and_then(|(world, method)| {
+            world.borrow_mut().observation::<Availability>(*method, &[])
+        });
+        recorded.unwrap_or(state.available)
     }
     fn battery(&self) -> Option<(u8, u16, u64)> {
         self.0.borrow().battery
@@ -228,8 +249,8 @@ impl Power for PowerDevice {
             return Err(Error::Unsupported);
         }
         let injected = state.fail;
-        if state.refusals.refuse(injected) {
-            return Err(Error::Failed);
+        if let Some(error) = state.refusals.refuse(injected, |w| percent.put(w)) {
+            return Err(error);
         }
         state.brightness = percent;
         Ok(())
@@ -243,21 +264,35 @@ pub struct Refusals {
     attempts: u8,
     pub refused: Vec<u8>,
     pub scripted: Vec<u8>,
+    /// The recorded world a strict replay asks instead, and the sink's
+    /// method in it.
+    pub twin: Option<(Scripted, MethodId)>,
+    recorded: device_api::journal::Sampled,
 }
+
+/// The recorded world of a strict replay, as its devices hold it.
+pub type Scripted = Rc<RefCell<crate::twin::world::Recorded>>;
 impl Refusals {
     /// A new pass: attempts count from zero again.
     pub fn begin_pass(&mut self) {
         self.attempts = 0;
     }
-    fn refuse(&mut self, injected: bool) -> bool {
+    /// The error this attempt is refused with, if it is. `args` are the
+    /// sink's arguments as its recorder writes them.
+    fn refuse(&mut self, injected: bool, args: impl FnOnce(&mut Writer)) -> Option<Error> {
         let attempt = self.attempts;
         self.attempts = attempt.saturating_add(1);
         let scripted = self.scripted.iter().position(|&at| at == attempt);
         if let Some(index) = scripted {
             self.scripted.remove(index);
         }
-        let refused = injected || scripted.is_some();
-        if refused {
+        let recorded = self.twin.as_ref().and_then(|(world, method)| {
+            let mut world = world.borrow_mut();
+            self.recorded.enter(world.pass().number);
+            world.refused(*method, self.recorded.attempt(0), args)
+        });
+        let refused = recorded.or((injected || scripted.is_some()).then_some(Error::Failed));
+        if refused.is_some() {
             self.refused.push(attempt);
         }
         refused
@@ -273,6 +308,7 @@ impl Positioning for NoPosition {
         None
     }
 }
+#[derive(Clone)]
 pub struct Memory {
     pub sectors: [[u8; 4096]; 2],
     pub available: Availability,
@@ -288,6 +324,11 @@ impl Default for Memory {
     }
 }
 impl Memory {
+    /// A settings journal over a copy of this medium, lent for the
+    /// process: the shell holds it `'static`.
+    pub fn journal(&self) -> &'static mut firmware_shell::storage::Store<Memory> {
+        Box::leak(Box::new(firmware_shell::storage::Store::new(self.clone())))
+    }
     fn check(&self) -> Result<(), Error> {
         match self.available {
             Availability::Unsupported => Err(Error::Unsupported),

@@ -3,41 +3,47 @@
 //!
 //! A trace is a run of blocks, each `[payload length: u16 LE][payload][CRC32
 //! LE of the payload]`. The first block holds the [`Header`]; every later one
-//! holds whole event records. A block cut short or failing its CRC ends the
+//! holds whole records. A block cut short or failing its CRC ends the
 //! trace, so a torn tail is dropped rather than misread. Each event block opens
 //! with the pass clock, so a block decodes without the ones before it.
 //!
 //! A record byte with the top bit set is a [`Event::Pass`] 0 to 127 ms after
-//! the previous pass. Any other record is a tag byte, the body length as a
-//! varint and the body. Times inside a record are stored relative to the
+//! the previous pass. Any other record is a capability id, an operation, the
+//! body length as a varint and the body. Capability 1 to 127 is a device
+//! capability and the operation is the method's place in its table
+//! (`device_api::capability`): the record is an [`Event::Call`], what one
+//! call of that method gave VANA, laid out as the method's kind says
+//! (`device_api::journal`). Capability 0 is the trace's own records and the
+//! operation is their tag. Times inside a record are stored relative to the
 //! current pass.
 use crate::checksum::crc32;
 use device_api::ant;
 use device_api::ble_transport;
-use device_api::input::{Edge, Input, InputSnapshot};
-use device_api::observation::{Availability, Observation};
-use device_api::positioning;
-use device_api::power;
-use device_api::sensors;
-use device_api::server::{self, AccessPointState, Method, Reach};
-use device_api::sound;
+use device_api::input::Input;
+use device_api::observation::Availability;
+use device_api::server::{self, AccessPointState, Method};
 
 pub mod determined;
-pub mod frozen;
+pub mod log;
+pub mod media;
 pub mod origin;
+pub mod recorder;
 pub mod redact;
-pub mod shell;
+#[cfg(feature = "testing")]
+pub mod replayed;
 pub mod spool;
+pub mod tail;
 #[cfg(feature = "testing")]
 pub mod tapped;
 #[cfg(test)]
 mod tests;
 pub mod wire;
 
+use device_api::journal::MethodId;
 use wire::{Reader, Wire, Writer};
 
 /// The header's first byte.
-pub const VERSION: u8 = 5;
+pub const VERSION: u8 = 6;
 pub const MAX_BLOCK: usize = u16::MAX as usize + FRAME;
 const FRAME: usize = 2 + 4;
 
@@ -50,12 +56,9 @@ pub struct Header<'a> {
     /// The manifest name of the device that recorded it, such as `c606`.
     pub device: &'a str,
     pub boot: u32,
-    /// The BLE profile selector the shell settings stored.
-    pub profile: u8,
-    /// Preferences, shell settings and saved sensors, as the owners encode them.
-    pub config: &'a [u8],
-    /// Where each journal and file store stood at power-on.
-    pub media: &'a [u8],
+    /// The TERRAIN pack the session found. The trace holds only digests of
+    /// what VANA read of it, so a replay reads the pack this names.
+    pub terrain: origin::Found<origin::Terrain>,
 }
 
 /// The ANT radio's capabilities; the decoded type list borrows the trace.
@@ -100,15 +103,6 @@ impl AntCapabilities<'_> {
             max_pending_sends: self.max_pending_sends,
         }
     }
-}
-
-/// The radio-wide ANT state VANA reads, recorded when it changes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AntRadio<'a> {
-    pub availability: Availability,
-    pub capabilities: AntCapabilities<'a>,
-    pub scanning: bool,
-    pub scan: ant::ScanSnapshot,
 }
 
 /// A request head as the phone server presents it; its text borrows the trace.
@@ -173,6 +167,16 @@ pub enum Medium {
     Intent,
 }
 
+impl Medium {
+    /// Bytes in one unit of a span on this medium.
+    pub fn unit(self) -> usize {
+        match self {
+            Medium::Bulk => device_api::bulk::SECTOR_SIZE,
+            _ => 1,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageOp {
     Read,
@@ -190,20 +194,6 @@ pub enum StorageError {
     Failed,
     Invalid,
     Range,
-}
-
-/// A storage operation that failed, and how many of its bytes reached the
-/// medium first. `attempt` is its place among the medium's operations since
-/// the pass began; `at` is a byte offset into a flash region, or a sector of
-/// the bulk medium.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StorageFault {
-    pub medium: Medium,
-    pub attempt: u32,
-    pub op: StorageOp,
-    pub at: u64,
-    pub landed: u32,
-    pub error: StorageError,
 }
 
 impl From<device_api::storage::Region> for Medium {
@@ -260,13 +250,6 @@ impl StorageError {
             Self::Failed => Error::Failed,
         }
     }
-}
-
-/// An output the shell drives that can refuse.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Output {
-    Panel,
-    Backlight,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -433,21 +416,20 @@ wire::codes! {
     Medium { Configuration = 0, Data = 1, Crash = 2, Bulk = 3, Intent = 4 }
     StorageOp { Read = 0, Write = 1, Erase = 2, Info = 3 }
     StorageError { Unsupported = 0, Unavailable = 1, Failed = 2, Invalid = 3, Range = 4 }
-    Output { Panel = 0, Backlight = 1 }
     Level { Error = 0, Warn = 1 }
     Gnss { Off = 0, Receiving = 1, Paused = 2, Failed = 3 }
 }
 
 wire::record! {
     crate::network_time::Snapshot { unix_seconds, millis, local_minutes, age_ms, status }
-    AntRadio<'a> { availability, capabilities, scanning, scan }
+    crate::storage::Record { sequence, length }
     ServerRequest<'a> { id, method, path, query, session, gzip, body }
-    StorageFault { medium, attempt, op, at, landed, error }
     AntCapabilities<'a> {
         supported_types, connection_capacity, one_peer_per_type, concurrent_scan,
         acknowledged_send, radio_delivery_feedback, burst, max_pending_sends,
     }
     FrameTime { frames, mean_us }
+    Cost { evictions, high_water }
     Health {
         simulated, heap_free, heap_min, psram_free, frame_max_us, pass_max_us, gps_sentences,
         gps_overflows, gps_uart_errors, companion_errors, card_write_max_us, card_recoveries,
@@ -463,115 +445,88 @@ wire::record! {
     }
 }
 
+/// What one call of a capability method gave VANA.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Call<'a> {
+    pub method: MethodId,
+    /// The pass it was recorded in: times in the body are relative to it.
+    pub now_ms: u64,
+    pub body: &'a [u8],
+}
+
+impl<'a> Call<'a> {
+    /// The body as a `T`; `None` unless it is exactly one.
+    pub fn decode<T: Wire<'a>>(&self) -> Option<T> {
+        let mut r = Reader::new(self.body, self.now_ms);
+        let value = T::take(&mut r);
+        (r.ok() && r.at == self.body.len()).then_some(value)
+    }
+}
+
+/// What the determined set cost so far: see [`determined::Determined`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cost {
+    pub evictions: u32,
+    pub high_water: u16,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event<'a> {
     /// One main-loop pass began at this uptime.
     Pass {
         now_ms: u64,
     },
-    Input(Edge),
-    AntRadio(AntRadio<'a>),
-    AntDiscoveries([Option<ant::Discovery>; ant::DISCOVERY_CAPACITY]),
-    AntLink {
-        channel: u8,
-        snapshot: Option<ant::Snapshot>,
+    Call(Call<'a>),
+    /// A host wrote this medium unseen: the trace determines none of it
+    /// from here on, and the next read of it records its bytes.
+    Forget(Medium),
+    Cost(Cost),
+    /// The last record of this method came after `count` calls of it in
+    /// the pass that were not recorded: each repeated the method's record
+    /// before them and changed nothing its capability observes.
+    Repeated {
+        method: MethodId,
+        count: u8,
     },
-    AntPacket(ant::Packet),
-    /// An ANT request VANA made and the radio's answer.
-    AntRequest {
-        operation: ant::AntOperation,
-        result: Result<ant::Admission, ant::Error>,
+    /// What composition gave this session, recorded as the trace opens and
+    /// again when it changes: the working memory VANA has, and whether
+    /// secrets are replaced as they are recorded (see [`redact`]).
+    Session {
+        memory: origin::Memory,
+        redacted: bool,
     },
-    /// The answer to the pass's next send status query.
-    AntSend(Option<ant::SendObservation>),
-    BleLink {
-        availability: Availability,
-        snapshot: ble_transport::Snapshot,
-    },
-    BlePacket(ble_transport::Packet),
-    BleBattery(ble_transport::BatteryLevel),
-    Position {
-        availability: Availability,
-        snapshot: Option<positioning::Snapshot>,
-    },
-    Physical(sensors::Snapshot),
-    Light(Observation<sensors::Light>),
-    Power(Option<InputSnapshot>),
     /// UTC from Wi-Fi synchronization, recorded when it no longer reads as
     /// the last recorded value advanced to this pass.
     NetworkTime(crate::network_time::Snapshot),
-    Startup(sensors::Startup),
     /// A terminal request line, executed after the pass before it.
     Command(&'a str),
-    StorageFault(StorageFault),
-    /// A hardware random value VANA consumed, in the order it asked.
-    Entropy(u64),
-    /// A record with this tag was larger than a block and left out.
-    TooLarge(u8),
-    /// A host wrote media VANA reads, such as FILES or TERRAIN in a
-    /// transfer session. The trace ends here: what follows ran on media no
-    /// header names.
-    HostWrote,
+    /// A record of this capability and operation was larger than a block
+    /// and left out.
+    TooLarge {
+        capability: u8,
+        operation: u8,
+    },
     /// Blocks of events the recorder sealed and its sink had no room for,
     /// since the last block it took. They are missing just before this.
     Lost {
         blocks: u32,
         bytes: u32,
     },
-    /// What the phone access point reports, recorded when it changes.
-    AccessPoint {
-        state: AccessPointState,
-        reach: Reach,
-    },
-    /// The access point's answer to VANA starting or stopping it.
-    AccessPointRequest {
-        start: bool,
-        result: Result<(), device_api::observation::Error>,
-    },
-    /// The request the phone server holds and its room for the response,
-    /// recorded when either changes.
-    Server {
-        request: Option<ServerRequest<'a>>,
-        room: u32,
-    },
-    /// VANA's listen or finish, recorded when it changed what the server
-    /// holds; the change follows.
-    ServerListen(bool),
-    ServerFinish(u32),
-    /// Body bytes one read gave VANA, in parts that each fit a block; every
-    /// part but the last has `more`.
-    ServerRead {
-        id: u32,
-        part: &'a [u8],
-        more: bool,
-    },
-    /// How many response bytes the server took from one write.
-    ServerWrite {
-        id: u32,
-        taken: u32,
-    },
-    /// What the buzzer reports, recorded when it changes.
-    SoundState(sound::Snapshot),
-    /// VANA asked the buzzer to play a pattern, or to stop, and its answer.
-    SoundRequest {
-        play: Option<u8>,
-        result: Result<(), device_api::observation::Error>,
-    },
-    /// What power control reports, recorded when it changes.
-    PowerControl(power::Status),
-    PowerRequest {
-        operation: power::Operation,
-        delay_ms: u32,
-        result: Result<(), device_api::observation::Error>,
-    },
     /// The device's power went away after an accepted shutdown.
     PoweredOff,
-    /// Whether the backlight works, recorded when it changes.
-    Backlight(Availability),
-    /// The output refused the shell's request at this attempt of the pass.
-    Refused {
-        output: Output,
-        attempt: u8,
+    /// The durable horizon of the session's trace before this one, read
+    /// back once this one opened: `previous`'s last pass whose records
+    /// survived, and how many whole blocks it holds after its last synced
+    /// record (see [`tail`]).
+    Horizon {
+        previous: &'a str,
+        last_pass_ms: Option<u64>,
+        blocks: u32,
+    },
+    /// After a panic or a watchdog reset: the blocks this boot appended to
+    /// the trace before it, from what the crash left in memory.
+    Salvaged {
+        blocks: u32,
     },
     /// The page the rider sees, by its wire name.
     Page(&'a str),
@@ -635,42 +590,17 @@ pub enum Event<'a> {
 mod tag {
     pub const RESUME: u8 = 0;
     pub const PASS: u8 = 1;
-    pub const INPUT: u8 = 2;
-    pub const ANT_RADIO: u8 = 3;
-    pub const ANT_DISCOVERIES: u8 = 4;
-    pub const ANT_LINK: u8 = 5;
-    pub const ANT_PACKET: u8 = 6;
-    pub const ANT_REQUEST: u8 = 7;
-    pub const ANT_SEND: u8 = 8;
-    pub const BLE_LINK: u8 = 9;
-    pub const BLE_PACKET: u8 = 10;
-    pub const BLE_BATTERY: u8 = 11;
-    pub const POSITION: u8 = 12;
-    pub const PHYSICAL: u8 = 13;
-    pub const POWER: u8 = 14;
     pub const NETWORK_TIME: u8 = 16;
-    pub const STARTUP: u8 = 17;
     pub const COMMAND: u8 = 18;
-    pub const STORAGE_FAULT: u8 = 19;
-    pub const ENTROPY: u8 = 20;
     pub const TOO_LARGE: u8 = 21;
-    pub const ACCESS_POINT: u8 = 22;
-    pub const ACCESS_POINT_REQUEST: u8 = 23;
-    pub const SERVER: u8 = 24;
-    pub const SERVER_LISTEN: u8 = 25;
-    pub const SERVER_FINISH: u8 = 26;
-    pub const SERVER_READ: u8 = 27;
-    pub const SERVER_WRITE: u8 = 28;
-    pub const SOUND_STATE: u8 = 29;
-    pub const SOUND_REQUEST: u8 = 30;
-    pub const POWER_CONTROL: u8 = 31;
-    pub const POWER_REQUEST: u8 = 32;
     pub const POWERED_OFF: u8 = 33;
-    pub const BACKLIGHT: u8 = 34;
-    pub const REFUSED: u8 = 35;
     pub const LOST: u8 = 36;
-    pub const HOST_WROTE: u8 = 37;
-    pub const LIGHT: u8 = 38;
+    pub const FORGET: u8 = 39;
+    pub const COST: u8 = 40;
+    pub const HORIZON: u8 = 41;
+    pub const SALVAGED: u8 = 42;
+    pub const REPEATED: u8 = 43;
+    pub const SESSION: u8 = 44;
     pub const PAGE: u8 = 64;
     pub const TOAST: u8 = 65;
     pub const SOUND: u8 = 66;
@@ -695,9 +625,7 @@ impl<'a> Wire<'a> for Header<'a> {
         w.bytes(&self.build);
         self.device.put(w);
         self.boot.put(w);
-        self.profile.put(w);
-        self.config.put(w);
-        self.media.put(w);
+        self.terrain.put(w);
     }
     fn take(r: &mut Reader<'a>) -> Self {
         u8::take(r);
@@ -705,65 +633,46 @@ impl<'a> Wire<'a> for Header<'a> {
             build: <[u8; 20]>::take(r),
             device: <&str>::take(r),
             boot: u32::take(r),
-            profile: u8::take(r),
-            config: <&[u8]>::take(r),
-            media: <&[u8]>::take(r),
+            terrain: Wire::take(r),
         }
     }
 }
 
 impl<'a> Event<'a> {
     /// Whether the block holding this event is sealed as soon as it is
-    /// recorded: a button report, a named cue's first note, a page change
-    /// or a storage fault.
+    /// recorded: a named cue's first note or a page change. The world log
+    /// seals a button report and a storage fault itself.
     pub fn seals(&self) -> bool {
         match self {
-            Self::Input(edge) => matches!(edge.input, Input::Button { .. }),
             Self::Sound { cue, note, .. } => !cue.is_empty() && *note == 1,
-            Self::Page(_) | Self::StorageFault(_) => true,
+            Self::Page(_) => true,
             _ => false,
         }
     }
 
-    pub fn tag(&self) -> u8 {
+    /// The capability and operation its record opens with.
+    pub fn id(&self) -> (u8, u8) {
+        match self {
+            Self::Call(call) => (call.method.capability, call.method.operation),
+            _ => (0, self.tag()),
+        }
+    }
+
+    fn tag(&self) -> u8 {
         match self {
             Self::Pass { .. } => tag::PASS,
-            Self::Input(_) => tag::INPUT,
-            Self::AntRadio(_) => tag::ANT_RADIO,
-            Self::AntDiscoveries(_) => tag::ANT_DISCOVERIES,
-            Self::AntLink { .. } => tag::ANT_LINK,
-            Self::AntPacket(_) => tag::ANT_PACKET,
-            Self::AntRequest { .. } => tag::ANT_REQUEST,
-            Self::AntSend(_) => tag::ANT_SEND,
-            Self::BleLink { .. } => tag::BLE_LINK,
-            Self::BlePacket(_) => tag::BLE_PACKET,
-            Self::BleBattery(_) => tag::BLE_BATTERY,
-            Self::Position { .. } => tag::POSITION,
-            Self::Physical(_) => tag::PHYSICAL,
-            Self::Light(_) => tag::LIGHT,
-            Self::Power(_) => tag::POWER,
+            Self::Call(call) => call.method.operation,
+            Self::Forget(_) => tag::FORGET,
+            Self::Cost(_) => tag::COST,
+            Self::Repeated { .. } => tag::REPEATED,
+            Self::Session { .. } => tag::SESSION,
             Self::NetworkTime(_) => tag::NETWORK_TIME,
-            Self::Startup(_) => tag::STARTUP,
             Self::Command(_) => tag::COMMAND,
-            Self::StorageFault(_) => tag::STORAGE_FAULT,
-            Self::Entropy(_) => tag::ENTROPY,
-            Self::TooLarge(_) => tag::TOO_LARGE,
-            Self::AccessPoint { .. } => tag::ACCESS_POINT,
-            Self::AccessPointRequest { .. } => tag::ACCESS_POINT_REQUEST,
-            Self::Server { .. } => tag::SERVER,
-            Self::ServerListen(_) => tag::SERVER_LISTEN,
-            Self::ServerFinish(_) => tag::SERVER_FINISH,
-            Self::ServerRead { .. } => tag::SERVER_READ,
-            Self::ServerWrite { .. } => tag::SERVER_WRITE,
-            Self::SoundState(_) => tag::SOUND_STATE,
-            Self::SoundRequest { .. } => tag::SOUND_REQUEST,
-            Self::PowerControl(_) => tag::POWER_CONTROL,
-            Self::PowerRequest { .. } => tag::POWER_REQUEST,
+            Self::TooLarge { .. } => tag::TOO_LARGE,
             Self::PoweredOff => tag::POWERED_OFF,
-            Self::Backlight(_) => tag::BACKLIGHT,
-            Self::Refused { .. } => tag::REFUSED,
+            Self::Horizon { .. } => tag::HORIZON,
+            Self::Salvaged { .. } => tag::SALVAGED,
             Self::Lost { .. } => tag::LOST,
-            Self::HostWrote => tag::HOST_WROTE,
             Self::Page(_) => tag::PAGE,
             Self::Toast(_) => tag::TOAST,
             Self::Sound { .. } => tag::SOUND,
@@ -781,97 +690,47 @@ impl<'a> Event<'a> {
         }
     }
 
+    fn put_record(&self, w: &mut Writer, previous_pass: u64) {
+        let (capability, operation) = self.id();
+        w.byte(capability);
+        w.record(operation, |w| self.put_body(w, previous_pass));
+    }
+
     fn put_body(&self, w: &mut Writer, previous_pass: u64) {
         match self {
             Self::Pass { now_ms } => w.zigzag(now_ms.wrapping_sub(previous_pass) as i64),
-            Self::Input(edge) => edge.put(w),
-            Self::AntRadio(radio) => radio.put(w),
-            Self::AntDiscoveries(found) => found.put(w),
-            Self::AntLink { channel, snapshot } => {
-                channel.put(w);
-                snapshot.put(w);
+            Self::Call(call) => w.bytes(call.body),
+            Self::Forget(medium) => medium.put(w),
+            Self::Cost(cost) => cost.put(w),
+            Self::Repeated { method, count } => {
+                method.capability.put(w);
+                method.operation.put(w);
+                count.put(w);
             }
-            Self::AntPacket(packet) => packet.put(w),
-            Self::AntRequest { operation, result } => {
-                operation.put(w);
-                result.put(w);
+            Self::Session { memory, redacted } => {
+                memory.put(w);
+                redacted.put(w);
             }
-            Self::AntSend(observation) => observation.put(w),
-            Self::BleLink {
-                availability,
-                snapshot,
-            } => {
-                availability.put(w);
-                snapshot.put(w);
-            }
-            Self::BlePacket(packet) => packet.put(w),
-            Self::BleBattery(level) => level.put(w),
-            Self::Position {
-                availability,
-                snapshot,
-            } => {
-                availability.put(w);
-                snapshot.put(w);
-            }
-            Self::Physical(snapshot) => snapshot.put(w),
-            Self::Light(light) => light.put(w),
-            Self::Power(snapshot) => snapshot.put(w),
             Self::NetworkTime(snapshot) => snapshot.put(w),
-            Self::Startup(startup) => startup.put(w),
             Self::Command(text)
             | Self::Page(text)
             | Self::Toast(text)
             | Self::RideState(text)
             | Self::Shown(text) => text.put(w),
-            Self::StorageFault(fault) => fault.put(w),
-            Self::AccessPoint { state, reach } => {
-                state.put(w);
-                reach.put(w);
-            }
-            Self::AccessPointRequest { start, result } => {
-                start.put(w);
-                result.put(w);
-            }
-            Self::Server { request, room } => {
-                request.put(w);
-                room.put(w);
-            }
-            Self::ServerListen(on) => on.put(w),
-            Self::ServerFinish(id) => id.put(w),
-            Self::ServerRead { id, part, more } => {
-                id.put(w);
-                part.put(w);
-                more.put(w);
-            }
-            Self::ServerWrite { id, taken } => {
-                id.put(w);
-                taken.put(w);
-            }
-            Self::SoundState(snapshot) => snapshot.put(w),
-            Self::SoundRequest { play, result } => {
-                play.put(w);
-                result.put(w);
-            }
-            Self::PowerControl(status) => status.put(w),
-            Self::PowerRequest {
-                operation,
-                delay_ms,
-                result,
-            } => {
-                operation.put(w);
-                delay_ms.put(w);
-                result.put(w);
-            }
             Self::PoweredOff => {}
-            Self::Backlight(availability) => availability.put(w),
-            Self::HostWrote => {}
+            Self::Horizon {
+                previous,
+                last_pass_ms,
+                blocks,
+            } => {
+                previous.put(w);
+                last_pass_ms.put(w);
+                blocks.put(w);
+            }
+            Self::Salvaged { blocks } => blocks.put(w),
             Self::Lost { blocks, bytes } => {
                 blocks.put(w);
                 bytes.put(w);
-            }
-            Self::Refused { output, attempt } => {
-                output.put(w);
-                attempt.put(w);
             }
             Self::Sound {
                 pattern,
@@ -893,8 +752,13 @@ impl<'a> Event<'a> {
                 w.time(*pressed_ms);
                 page.put(w);
             }
-            Self::TooLarge(pattern) => pattern.put(w),
-            Self::Entropy(value) => value.put(w),
+            Self::TooLarge {
+                capability,
+                operation,
+            } => {
+                capability.put(w);
+                operation.put(w);
+            }
             Self::Log {
                 level,
                 target,
@@ -937,82 +801,37 @@ impl<'a> Event<'a> {
             tag::PASS => Self::Pass {
                 now_ms: r.now.wrapping_add(r.zigzag() as u64),
             },
-            tag::INPUT => Self::Input(Wire::take(r)),
-            tag::ANT_RADIO => Self::AntRadio(Wire::take(r)),
-            tag::ANT_DISCOVERIES => Self::AntDiscoveries(Wire::take(r)),
-            tag::ANT_LINK => Self::AntLink {
-                channel: Wire::take(r),
-                snapshot: Wire::take(r),
-            },
-            tag::ANT_PACKET => Self::AntPacket(Wire::take(r)),
-            tag::ANT_REQUEST => Self::AntRequest {
-                operation: Wire::take(r),
-                result: Wire::take(r),
-            },
-            tag::ANT_SEND => Self::AntSend(Wire::take(r)),
-            tag::BLE_LINK => Self::BleLink {
-                availability: Wire::take(r),
-                snapshot: Wire::take(r),
-            },
-            tag::BLE_PACKET => Self::BlePacket(Wire::take(r)),
-            tag::BLE_BATTERY => Self::BleBattery(Wire::take(r)),
-            tag::POSITION => Self::Position {
-                availability: Wire::take(r),
-                snapshot: Wire::take(r),
-            },
-            tag::PHYSICAL => Self::Physical(Wire::take(r)),
-            tag::LIGHT => Self::Light(Wire::take(r)),
-            tag::POWER => Self::Power(Wire::take(r)),
             tag::NETWORK_TIME => Self::NetworkTime(Wire::take(r)),
-            tag::STARTUP => Self::Startup(Wire::take(r)),
             tag::COMMAND => Self::Command(Wire::take(r)),
-            tag::STORAGE_FAULT => Self::StorageFault(Wire::take(r)),
-            tag::ACCESS_POINT => Self::AccessPoint {
-                state: Wire::take(r),
-                reach: Wire::take(r),
-            },
-            tag::ACCESS_POINT_REQUEST => Self::AccessPointRequest {
-                start: Wire::take(r),
-                result: Wire::take(r),
-            },
-            tag::SERVER => Self::Server {
-                request: Wire::take(r),
-                room: Wire::take(r),
-            },
-            tag::SERVER_LISTEN => Self::ServerListen(Wire::take(r)),
-            tag::SERVER_FINISH => Self::ServerFinish(Wire::take(r)),
-            tag::SERVER_READ => Self::ServerRead {
-                id: Wire::take(r),
-                part: Wire::take(r),
-                more: Wire::take(r),
-            },
-            tag::SERVER_WRITE => Self::ServerWrite {
-                id: Wire::take(r),
-                taken: Wire::take(r),
-            },
-            tag::SOUND_STATE => Self::SoundState(Wire::take(r)),
-            tag::SOUND_REQUEST => Self::SoundRequest {
-                play: Wire::take(r),
-                result: Wire::take(r),
-            },
-            tag::POWER_CONTROL => Self::PowerControl(Wire::take(r)),
-            tag::POWER_REQUEST => Self::PowerRequest {
-                operation: Wire::take(r),
-                delay_ms: Wire::take(r),
-                result: Wire::take(r),
-            },
             tag::POWERED_OFF => Self::PoweredOff,
-            tag::BACKLIGHT => Self::Backlight(Wire::take(r)),
-            tag::REFUSED => Self::Refused {
-                output: Wire::take(r),
-                attempt: Wire::take(r),
+            tag::HORIZON => Self::Horizon {
+                previous: Wire::take(r),
+                last_pass_ms: Wire::take(r),
+                blocks: Wire::take(r),
             },
-            tag::ENTROPY => Self::Entropy(Wire::take(r)),
-            tag::TOO_LARGE => Self::TooLarge(Wire::take(r)),
-            tag::HOST_WROTE => Self::HostWrote,
+            tag::SALVAGED => Self::Salvaged {
+                blocks: Wire::take(r),
+            },
+            tag::TOO_LARGE => Self::TooLarge {
+                capability: Wire::take(r),
+                operation: Wire::take(r),
+            },
+            tag::FORGET => Self::Forget(Wire::take(r)),
+            tag::COST => Self::Cost(Wire::take(r)),
+            tag::REPEATED => Self::Repeated {
+                method: MethodId {
+                    capability: Wire::take(r),
+                    operation: Wire::take(r),
+                },
+                count: Wire::take(r),
+            },
             tag::LOST => Self::Lost {
                 blocks: Wire::take(r),
                 bytes: Wire::take(r),
+            },
+            tag::SESSION => Self::Session {
+                memory: Wire::take(r),
+                redacted: Wire::take(r),
             },
             tag::PAGE => Self::Page(Wire::take(r)),
             tag::TOAST => Self::Toast(Wire::take(r)),
@@ -1112,10 +931,19 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> Encoder<B> {
     pub fn restart(&mut self) {
         let now = self.now;
         let mut w = Writer::new(self.payload(), now);
+        w.byte(0);
         w.record(tag::RESUME, |w| w.varint(now));
         let len = w.len;
         self.len = len;
         self.opening = len;
+        self.note_len();
+    }
+
+    /// Keep the block's length prefix current, so that memory a crash
+    /// leaves holds the open block's extent (see [`tail::Remains`]).
+    fn note_len(&mut self) {
+        let len = self.len as u16;
+        self.buf.as_mut()[..2].copy_from_slice(&len.to_le_bytes());
     }
 
     /// Append `event`, or leave the block untouched when it does not fit.
@@ -1126,7 +954,7 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> Encoder<B> {
             Event::Pass { now_ms } if now_ms.wrapping_sub(previous) < 0x80 => {
                 w.byte(SHORT_PASS | now_ms.wrapping_sub(previous) as u8);
             }
-            _ => w.record(event.tag(), |w| event.put_body(w, previous)),
+            _ => event.put_record(&mut w, previous),
         }
         if w.overflow {
             return Err(if self.is_empty() {
@@ -1136,10 +964,17 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> Encoder<B> {
             });
         }
         self.len += w.len;
+        self.note_len();
         if let Event::Pass { now_ms } = event {
             self.now = *now_ms;
         }
         Ok(())
+    }
+
+    /// The buffer as it stands: the length prefix is current, the CRC is
+    /// not.
+    pub fn memory(&self) -> &[u8] {
+        self.buf.as_ref()
     }
 
     /// Whether the block holds nothing beyond its opening clock.
@@ -1313,7 +1148,7 @@ impl<'a> Events<'a> {
             }
             _ => return Err(failed(self.bytes, c.block)),
         };
-        let Some(&first) = payload.get(c.at) else {
+        if c.at >= payload.len() {
             let next = c.block + FRAME + payload.len();
             if next >= self.bytes.len() {
                 return Err(End::Complete);
@@ -1322,34 +1157,96 @@ impl<'a> Events<'a> {
             c.at = 0;
             c.checked = None;
             return Ok(None);
-        };
-        if first & SHORT_PASS != 0 {
-            c.at += 1;
-            c.now = c.now.wrapping_add(u64::from(first & !SHORT_PASS));
-            return Ok(Some(Event::Pass { now_ms: c.now }));
         }
-        let mut r = Reader::new(&payload[c.at + 1..], c.now);
-        let len = r.narrow();
-        let body = r.bytes(len);
-        if !r.ok() {
-            return Err(End::Corrupt);
-        }
-        c.at += 1 + r.at;
-        let mut r = Reader::new(body, c.now);
-        let event = if first == tag::RESUME {
-            c.now = r.varint();
-            None
-        } else {
-            Some(Event::take_body(first, &mut r).ok_or(End::Corrupt)?)
-        };
-        if !r.ok() || r.at != body.len() {
-            return Err(End::Corrupt);
-        }
-        if let Some(Event::Pass { now_ms }) = event {
-            c.now = now_ms;
-        }
-        Ok(event)
+        next_record(payload, &mut c.at, &mut c.now)
     }
+}
+
+/// The record at `at` of a block's payload, read after the pass clock
+/// `now`; both move past it. `None` for the clock a block opens with.
+fn next_record<'a>(
+    payload: &'a [u8],
+    at: &mut usize,
+    now: &mut u64,
+) -> Result<Option<Event<'a>>, End> {
+    let Some(&first) = payload.get(*at) else {
+        return Err(End::Corrupt);
+    };
+    if first & SHORT_PASS != 0 {
+        *at += 1;
+        *now = now.wrapping_add(u64::from(first & !SHORT_PASS));
+        return Ok(Some(Event::Pass { now_ms: *now }));
+    }
+    let Some(&operation) = payload.get(*at + 1) else {
+        return Err(End::Corrupt);
+    };
+    let mut r = Reader::new(&payload[*at + 2..], *now);
+    let len = r.narrow();
+    let body = r.bytes(len);
+    if !r.ok() {
+        return Err(End::Corrupt);
+    }
+    *at += 2 + r.at;
+    if first != 0 {
+        return Ok(Some(Event::Call(Call {
+            method: MethodId {
+                capability: first,
+                operation,
+            },
+            now_ms: *now,
+            body,
+        })));
+    }
+    let mut r = Reader::new(body, *now);
+    let event = if operation == tag::RESUME {
+        *now = r.varint();
+        None
+    } else {
+        Some(Event::take_body(operation, &mut r).ok_or(End::Corrupt)?)
+    };
+    if !r.ok() || r.at != body.len() {
+        return Err(End::Corrupt);
+    }
+    if let Some(Event::Pass { now_ms }) = event {
+        *now = now_ms;
+    }
+    Ok(event)
+}
+
+/// What an event block says of its clock: the pass it opens at, the last
+/// pass it holds, and how many events it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Clocks {
+    pub opening: u64,
+    pub end: u64,
+    pub events: u32,
+    /// Its first event is [`Event::Lost`]: blocks before it are missing.
+    pub after_loss: bool,
+}
+
+/// The clocks of an event block's payload; `None` when it does not open
+/// with its clock or does not decode to its end.
+pub fn clocks(payload: &[u8]) -> Option<Clocks> {
+    if payload.get(..2)? != [0, tag::RESUME] {
+        return None;
+    }
+    let (mut at, mut now) = (0, 0);
+    next_record(payload, &mut at, &mut now).ok()?;
+    let mut clocks = Clocks {
+        opening: now,
+        end: now,
+        events: 0,
+        after_loss: false,
+    };
+    while at < payload.len() {
+        let event = next_record(payload, &mut at, &mut now).ok()?;
+        if clocks.events == 0 {
+            clocks.after_loss = matches!(event, Some(Event::Lost { .. }));
+        }
+        clocks.events += u32::from(event.is_some());
+    }
+    clocks.end = now;
+    Some(clocks)
 }
 
 impl<'a> Iterator for Events<'a> {

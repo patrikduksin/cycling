@@ -372,6 +372,7 @@ impl Default for Live {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trace::world::World;
     use firmware_services::trace::{self, Event};
 
     fn run(live: &mut Live, ms: u64) {
@@ -431,7 +432,13 @@ mod tests {
             let trace = live.sim.trace();
             let (_, events) = trace::decode(&trace).expect("the session's own trace decodes");
             events
-                .filter(|event| matches!(event, Event::Input(edge) if edge.input == move_report))
+                .filter(|event| match event {
+                    Event::Call(call) => matches!(
+                        crate::trace::world::read(call),
+                        Some(World::Edge(edge)) if edge.input == move_report
+                    ),
+                    _ => false,
+                })
                 .count()
         };
         let before = count(live);

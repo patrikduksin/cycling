@@ -206,10 +206,9 @@ The C606 records each power-on session into
 `traces/`. Blocks wait in a PSRAM spool from the first pass. The power
 owner closes the card from the moment it accepts a power request until
 the device is ready again, and in charging standby, so the trace touches
-the card only while it is open: it stages at the first such pass, and the
-file opens once VANA's boot scans end, so the header can name the media
-they found. The header is synced as the file is made, so a file cut off at
-once still decodes. A pass drains one record into it while a ride records, and up
+the card only while it is open: it stages at the first such pass, before
+VANA reads the card, and the file opens in that pass. The header is synced
+as the file is made, so a file cut off at once still decodes. A pass drains one record into it while a ride records, and up
 to 16 otherwise, to keep up with a phone upload; the file syncs every
 5 s, before a transfer session, a restart and a terminal power request,
 and in the pass before VANA asks to turn off: the file ends with the pass
@@ -220,9 +219,10 @@ the simulator records through it too.
   recording is off for the session, logged under the `trace` target with
   the reason, and nothing else changes.
 - After a transfer session, a host write to `FILES` or `TERRAIN`, which
-  the trace does not see, ends it with a `HostWrote` record; so does a
-  `STORE` volume that a volume command moved. Any other change to the
-  store reopens the file, which continues in a new chunk.
+  the trace does not see, makes the trace forget the card (a `Forget`
+  record): the next read of each sector records its bytes again. A `STORE`
+  volume that a host or a volume command moved ends the trace. Any other
+  change to the store reopens the file, which continues in a new chunk.
 - A burst the spool cannot hold is lost from the trace, which names the
   loss in its next block. A phone upload of the largest body the phone
   server takes (4 MiB) peaks the spool at about two blocks.
@@ -268,19 +268,16 @@ cycling terrain-verify pack.bin
 cycling files list | put NAME PATH | get NAME PATH | delete NAME | format --confirm
 cycling store list [traces/] | get NAME PATH | delete NAME | format --confirm
 cycling format [--confirm]                    # every store's health; --confirm wipes them all
-cycling trace pull [FILE]                     # a ride trace and the media it started on, read only
+cycling trace pull [FILE]                     # a ride trace, read only
 ```
 
-`cycling trace pull` copies a ride trace into `.local/traces/` and rebuilds
-the media it started on beside it, as `<name>.origin`, for a replay. It reads
-only: ride export up to the ends the trace header records, `files get` for
-each file the header lists, and a local terrain pack with the header's
-SHA-256. It prints its result as one JSON document, then on stderr the
-moments the rider marked by holding MOVE (`marks:` with one line each, or
-`marks: none`). With `--json` it prints only the document, and a failure it
-reports, bad arguments included, as `{"error": ...}` with exit status 2. The
-[ride-trace skill](../.agents/skills/ride-trace/SKILL.md) says what a rebuild
-cannot give back.
+`cycling trace pull` copies a ride trace into `.local/traces/`. The trace is
+a world log: it holds every byte of media VANA read, so a strict replay needs
+nothing else from the device. The pull only reads. It prints its result as
+one JSON document, then on stderr the moments the rider marked by holding
+MOVE (`marks:` with one line each, or `marks: none`). With `--json` it prints
+only the document, and a failure it reports, bad arguments included, as
+`{"error": ...}` with exit status 2.
 
 `cycling store get` pulls a file record by record. The session keeps the
 file open between requests, so a pull reads about one sector per 486 bytes,

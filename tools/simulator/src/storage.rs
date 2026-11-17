@@ -2,7 +2,7 @@
 //! torn writes. Memory media outlives a simulated power loss like flash does.
 use device_api::observation::{Availability, Error};
 use device_api::storage::{OwnedFlash, Region};
-use firmware_services::trace::{StorageError, StorageFault, StorageOp};
+use firmware_services::trace::{Medium, StorageError, StorageOp};
 use std::{
     cell::RefCell,
     fs::{self, OpenOptions},
@@ -12,9 +12,22 @@ use std::{
 };
 const DATA_BYTES: usize = 1024 * 1024;
 const JOURNAL_BYTES: usize = 8192;
+/// A storage operation that failed, and how many of its bytes reached the
+/// medium first. `attempt` is its place among the medium's operations since
+/// the pass began; `at` is a byte offset into a flash region, or a sector of
+/// the bulk medium.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageFault {
+    pub medium: Medium,
+    pub attempt: u32,
+    pub op: StorageOp,
+    pub at: u64,
+    pub landed: u32,
+    pub error: StorageError,
+}
+
 /// Tear the mutation after `after` succeed, leaving `partial` bytes of it.
-/// Every failure is logged for the trace; a replay fails exactly the
-/// operations its trace scripts.
+/// A stimulus replay fails exactly the operations its trace scripts.
 #[derive(Default)]
 pub struct Fault {
     pub after: Option<u32>,
@@ -23,7 +36,6 @@ pub struct Fault {
     /// internal flash or the card reaches either until the next boot.
     pub power_cut: bool,
     pub unreadable: Option<Region>,
-    pub log: Vec<StorageFault>,
     /// Each erase this boot that completed, by region and offset.
     pub erased: Vec<(Region, usize)>,
     pub script: std::collections::VecDeque<StorageFault>,
@@ -56,12 +68,10 @@ impl Fault {
                 landed: 0,
                 error: StorageError::Unavailable,
             };
-            self.log.push(fault);
             return Some(fault);
         }
-        let scripted = self.script.iter().position(|f| {
-            (f.medium, f.attempt, f.op, f.at) == (region.into(), attempt, op, at as u64)
-        });
+        let scripted = (self.script.iter())
+            .position(|f| (f.medium, f.op, f.at) == (region.into(), op, at as u64));
         let fault = match scripted {
             Some(index) => self.script.remove(index)?,
             None if op == StorageOp::Read && self.unreadable == Some(region) => StorageFault {
@@ -93,7 +103,6 @@ impl Fault {
                 }
             }
         };
-        self.log.push(fault);
         Some(fault)
     }
 }

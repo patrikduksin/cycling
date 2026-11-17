@@ -210,7 +210,7 @@ impl core::fmt::Debug for WifiStats {
             .fmt(f)
     }
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NetworkDiscovery {
     pub ssid: Text<32>,
     pub rssi: i8,

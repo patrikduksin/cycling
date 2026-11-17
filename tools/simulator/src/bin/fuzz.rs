@@ -599,5 +599,4 @@ fn summary(coverage: &Coverage, findings: usize, wall: Duration, jobs: usize) {
     for ((check, why), n) in &coverage.skips {
         println!("skipped: {check}: {why} x{n}");
     }
-    println!("broken(): not checked yet (#397 0b)");
 }

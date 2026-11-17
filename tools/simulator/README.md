@@ -134,7 +134,8 @@ the skipped guards, and `--fixed` runs the seed set that `cycling verify --deep`
 runs. `cycling fuzz-planted` proves the fuzzer: behind the `planted-bug`
 feature, VANA's recovery forgets a ride that lost power while paused, and the
 test finds that bug from a seed and finds it again from the same seed.
-`broken()` (#397 0b) joins the checks through the hook in `check.rs`.
+Every pass also checks VANA's `Runtime::broken()` (`apps/vana/src/app/invariants.rs`),
+so a rule broken in a session panics, and the panic is a finding.
 
 `cycling simulate` runs the shell alone on two display geometries and `cycling harness-virtual`
 the shared terminal scenarios. Terminal mode (`--terminal`) requires an explicit

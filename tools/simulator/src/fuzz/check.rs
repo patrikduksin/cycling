@@ -16,7 +16,6 @@ pub struct Observation {
     pub card: Vec<Ride>,
     /// A storage fault was armed or fired since this boot began.
     pub faulted: bool,
-    pub broken: Option<String>,
 }
 
 impl Observation {
@@ -57,7 +56,6 @@ pub fn observe(sim: &mut Sim, card: bool, previous: Option<&Observation>) -> Obs
         journal: sim.rides(),
         card: if card { card_rides(sim) } else { Vec::new() },
         faulted: armed || carried,
-        broken: broken(sim),
     }
 }
 
@@ -82,12 +80,6 @@ pub(super) fn card_rides(sim: &Sim) -> Vec<Ride> {
         }
     }
     crate::rides::read(&bytes)
-}
-
-/// #397 0b's `broken()` replaces this body.
-fn broken(sim: &Sim) -> Option<String> {
-    let _ = sim;
-    None
 }
 
 pub enum Verdict {
@@ -130,13 +122,6 @@ pub const CHECKS: &[Check] = &[
     Check {
         name: "keeps recording while riding",
         run: keeps_recording,
-    },
-    Check {
-        name: "broken() holds",
-        run: |moment| match &moment.after.broken {
-            Some(why) => Verdict::Fail(why.clone()),
-            None => Verdict::Pass,
-        },
     },
 ];
 

@@ -9,9 +9,11 @@ Keep Rust source in ordinary modules: path attributes and include! would let a
 package compile another owner's files without declaring that dependency.
 The ANT host test has two explicit source seams to substitute UART and locking.
 """
+from enum import Enum
 from pathlib import Path
 import re
 import tomllib
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 OWNERS = {
@@ -50,6 +52,14 @@ SINGLE_WRITERS = {
 }
 ASSIGNMENT = re.compile(r'(?<![=!<>])=\s*(?:\w+\s*::\s*)*(' + '|'.join(
     re.escape(value).replace('::', r'\s*::\s*') for value in SINGLE_WRITERS) + r')\b')
+
+DOMAIN = ('ride', 'sensors', 'workout')
+LAYERS = ('app', 'screens')
+LAYER_RULE = (f'domain code ({", ".join(d + "/" for d in DOMAIN)}) never reaches crate::app or crate::screens: '
+              'take what it needs as arguments')
+DOMAIN_EXCEPTIONS = {'apps/vana/src/sensors/scan.rs': {('screens', 'sensors', 'MenuMessage')}}
+ROOT_ALIAS_RULE = 'domain code may not alias the crate root: spell crate:: paths in full'
+TOKEN = re.compile(r'(?:r#)?[A-Za-z_]\w*|::|[^\s$]')
 
 STACK_STATE_WAITER = ('devices/c606/src/drivers/wifi.rs', 'network')
 STACK_STATE_WAIT = re.compile(r'(?:\.|::)\s*(wait_(?:config|link)_(?:up|down))\s*\(')
@@ -160,6 +170,146 @@ def foreign_stack_waits(text, path):
     return findings
 
 
+def rust_tokens(text):
+    code = STRING.sub(lambda match: blank(match.group()), without_comments(text))
+    tokens, line, offset = [], 1, 0
+    for match in TOKEN.finditer(code):
+        line += code.count('\n', offset, match.start())
+        offset = match.start()
+        word = match.group()
+        tokens.append((word[2:] if word.startswith('r#') and word[2:] not in {'use', 'mod', 'extern', 'as'} else word,
+                       line))
+    return tokens
+
+
+def lexical_modules(tokens, module):
+    stack, depth, paths = [], 0, []
+    for index, (word, _) in enumerate(tokens):
+        if word == '{':
+            depth += 1
+            if index >= 2 and tokens[index - 2][0] == 'mod':
+                stack.append((tokens[index - 1][0], depth))
+        paths.append(module + tuple(name for name, _ in stack))
+        if word == '}':
+            if stack and stack[-1][1] == depth:
+                stack.pop()
+            depth -= 1
+    return paths
+
+
+class Leaf(NamedTuple):
+    segments: list
+    alias: str | None
+    glob: bool
+    module: tuple
+
+
+class PlainFirstSegment(Enum):
+    CHILD_MODULE = 'child module'
+    UNRESOLVED = 'unresolved'
+
+
+def use_tree(tokens, index, prefix, module, leaves):
+    segments = list(prefix)
+    while tokens[index][0] != ';':
+        word = tokens[index][0]
+        if word == '{':
+            index += 1
+            while tokens[index][0] not in {'}', ';'}:
+                index = use_tree(tokens, index, segments, module, leaves)
+                if tokens[index][0] == ',':
+                    index += 1
+            return index + (tokens[index][0] == '}')
+        if word == '*':
+            leaves.append(Leaf(segments, None, True, module))
+            return index + 1
+        segments = segments + [tokens[index]]
+        index += 1
+        if word == '::' or tokens[index][0] == '::':
+            index += word != '::'
+            continue
+        alias = None
+        if tokens[index][0] == 'as':
+            alias, index = tokens[index + 1][0], index + 2
+        leaves.append(Leaf(segments, alias, False, module))
+        return index
+    return index
+
+
+def resolve(segments, module, plain):
+    path, line = None, segments[-1][1]
+    for position, (name, segment_line) in enumerate(segments):
+        if position == 0 and name not in {'crate', 'self', 'super'}:
+            if name == '::' or plain is PlainFirstSegment.UNRESOLVED:
+                return None
+            path = module
+        if name == 'crate':
+            path = ()
+        elif name == 'self':
+            path = module if position == 0 else path
+        elif name == 'super':
+            path = (module if position == 0 else path)[:-1]
+        else:
+            if not path:
+                line = segment_line
+            path = path + (name,)
+    return path, line
+
+
+def layer_imports(text, module, allowed=()):
+    tokens = rust_tokens(text) + [(';', 0)] * 5
+    modules = lexical_modules(tokens, module)
+    leaves, expressions, index = [], [], 0
+    while index < len(tokens):
+        word = tokens[index][0]
+        if word == 'use':
+            index = use_tree(tokens, index + 1, [], modules[index], leaves)
+            continue
+        if [w for w, _ in tokens[index:index + 4]] == ['extern', 'crate', 'self', 'as']:
+            leaves.append(Leaf([tokens[index + 1]], tokens[index + 4][0], False, modules[index]))
+            index += 5
+            continue
+        if re.match(r'\w', word) and tokens[index + 1][0] == '::' and (index == 0 or tokens[index - 1][0] != '::'):
+            end = index
+            while re.match(r'\w', tokens[end][0]) and tokens[end + 1][0] == '::':
+                end += 2
+            expressions.append(([token for token in tokens[index:end + 1] if token[0] != '::'], modules[index]))
+            index = end + 1
+            continue
+        index += 1
+
+    findings = []
+    paths = [(segments, alias, glob, scope, PlainFirstSegment.CHILD_MODULE) for segments, alias, glob, scope in leaves]
+    paths += [(segments, None, False, scope, PlainFirstSegment.UNRESOLVED) for segments, scope in expressions]
+    for segments, alias, glob, scope, plain in paths:
+        named = resolve(segments, scope, plain)
+        if named is None:
+            continue
+        path, line = named
+        if alias and path == ():
+            findings.append((line, f'`as {alias}`: {ROOT_ALIAS_RULE}'))
+        elif glob and path == ():
+            findings.append((line, f'a glob of the crate root brings crate::app and crate::screens in; {LAYER_RULE}'))
+        elif path and path[0] in LAYERS and path not in allowed:
+            findings.append((line, f'crate::{"::".join(path)}: {LAYER_RULE}'))
+    return sorted(set(findings))
+
+
+def layer_findings(text, repo_relative_path):
+    package = Path('apps/vana')
+    if not Path(repo_relative_path).is_relative_to(package):
+        return []
+    module = domain_module(Path(repo_relative_path).relative_to(package))
+    return layer_imports(text, module, DOMAIN_EXCEPTIONS.get(repo_relative_path, ())) if module else []
+
+
+def domain_module(relative):
+    parts = relative.with_suffix('').parts
+    if len(parts) < 2 or parts[0] != 'src' or parts[1] not in DOMAIN:
+        return None
+    return parts[1:-1] if parts[-1] == 'mod' else parts[1:]
+
+
 def dependencies(manifest, workspace=None):
     """Include aliased, optional, target, development and build dependencies."""
     for key, section in manifest.items():
@@ -241,6 +391,50 @@ ui = { package = "firmware-shell", path = "../shell" }
                    'let name = "page = Page::EndRide";', 'page = Page::EndRideLater;']:
         assert not foreign_writes(source, elsewhere), source
     assert not foreign_writes('self.navigation.page = Page::EndRide;', SINGLE_WRITERS['Page::EndRide'])
+    recorder, deeper = ('ride', 'recorder'), ('ride', 'recorder', 'invariants')
+    for source in ['use crate::app::Runtime;', 'let page = crate :: screens::workout::Page::Home;',
+                   'use crate::{ride::log, app::Medium};', 'use crate::{\n    screens::{sensors},\n};',
+                   'use super::super::app::Medium;', 'use super::super::{log, app};',
+                   'use super::{super::app::Runtime};', 'pub use crate::{{app::Runtime}};',
+                   'pub use crate::r#app::Runtime;', 'pub(crate) use crate::screens;', 'use crate::screens::{self};',
+                   'use crate::*;', 'use super::super::*;',
+                   'fn f() { crate::app::x(); }', 'fn f() { super::super::app::x(); }',
+                   'fn f() { <crate::app::Runtime as Default>::default(); }', 'fn f() { crate::r#screens::X; }',
+                   'mod inner { use super::super::super::app::Local; }']:
+        assert layer_imports(source, recorder), source
+    for source in ['use crate as root; pub use root::app::Runtime;', 'pub use root::app::Runtime; use crate as root;',
+                   'use crate::{self as root}; use root::screens::Shown;', 'use super::super as root; use root::app;',
+                   'extern crate self as root; fn f() { root::app::x(); }', 'use crate::{self as root};',
+                   'use crate as root; use self::root::app::X;', 'use crate as root; mod inner { use super::root::app::X; }',
+                   'use super::{super as root};', 'pub(crate) use crate as root;',
+                   'use crate as root; mod inner { use super::root as x; fn f() { x::app::Runtime; } }']:
+        assert any(ROOT_ALIAS_RULE in reason for _, reason in layer_imports(source, recorder)), source
+    local_alias = 'fn f() {\n    use crate as root;\n}\nmod root { pub mod app { pub fn local() {} } }\nfn g() { root::app::local(); }'
+    assert layer_imports(local_alias, recorder) == [(2, f'`as root`: {ROOT_ALIAS_RULE}')]
+    shadowed = 'fn f() { use crate as x; }\nmod x { pub mod app { pub struct Runtime; } }\nfn g() { let _ = x::app::Runtime; }'
+    assert layer_imports(shadowed, recorder) == [(1, f'`as x`: {ROOT_ALIAS_RULE}')]
+    for source in ['use super::super::{super::app};', 'use super::super::super::app::Runtime;']:
+        assert layer_imports(source, deeper), source
+    assert layer_imports('use super::*;', ('ride',))
+    assert layer_imports('use super::app::X;', ('ride',))
+    for source in ['use crate::ride::log::Status;', 'use super::journal::Journal;', 'use super::app::Local;',
+                   'use crate::{ride::{app}, sensors};', '// use crate::app::Runtime;', '/* use crate::app::X; */',
+                   'let doc = "crate::app";', 'use crate::application::X;', 'fn f() { crate::application::x(); }',
+                   'use super::*;', 'use super as ride;', 'use crate::ride as root;', 'use self::app::Local;', 'use app::Local;', 'use device_api::app::X;', 'self.app.x();',
+                   'fn f() -> impl Iterator<Item = u8> + use<> { todo!() }',
+                   'mod app { pub struct Local; } mod inner { mod deeper { use super::super::app::Local; } }']:
+        assert not layer_imports(source, recorder), source
+    assert [line for line, _ in layer_imports('use crate::{\n    ride::log,\n    app::\n        Medium,\n};', recorder)] == [3]
+    scan = 'apps/vana/src/sensors/scan.rs'
+    menu = 'use crate::screens::sensors::MenuMessage;\n'
+    assert not layer_findings(menu, scan)
+    assert [line for line, _ in layer_findings(menu + 'use crate::app::Runtime;', scan)] == [2]
+    assert [line for line, _ in layer_findings(menu, 'apps/vana/src/sensors/saved.rs')] == [1]
+    assert not layer_findings(menu, 'apps/vana/src/app/input.rs')
+    assert domain_module(Path('src/ride/recorder.rs')) == recorder
+    assert domain_module(Path('src/sensors/mod.rs')) == ('sensors',)
+    assert domain_module(Path('src/app/input.rs')) is None
+    assert domain_module(Path('tests/ride.rs')) is None
     wifi = STACK_STATE_WAITER[0]
     publisher = 'async fn network(stack: Stack) {\n    loop {\n        stack.wait_config_up().await;\n' \
                 '        stack\n            .wait_config_down()\n            .await;\n    }\n}\n'
@@ -281,10 +475,12 @@ def main():
             failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                             for line, reason in foreign_writes(path.read_text(), path.relative_to(ROOT).as_posix()))
             failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
+                            for line, reason in layer_findings(path.read_text(), path.relative_to(ROOT).as_posix()))
+            failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                             for line, reason in foreign_stack_waits(path.read_text(), path.relative_to(ROOT).as_posix()))
     if failures:
         raise SystemExit('\n'.join(failures))
-    print(f'Boundaries, single writers and the stack waiter passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
+    print(f'Boundaries, layers, single writers and the stack waiter passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
 
 
 if __name__ == '__main__':

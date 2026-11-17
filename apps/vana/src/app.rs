@@ -25,6 +25,8 @@ mod form;
 mod format;
 mod history;
 mod input;
+#[cfg(any(test, feature = "invariants"))]
+mod invariants;
 mod lists;
 mod lookahead;
 mod mark;
@@ -59,6 +61,9 @@ pub use phone::{
     Closed as PhoneClosed, Mode as PhoneMode, Status as PhoneStatus, Work as PhoneWork,
 };
 
+#[cfg(any(test, feature = "invariants"))]
+pub use invariants::Broken;
+
 pub use power::{
     AUTO_OFF_MS, AUTO_OFF_WARNING_MS, AutoOff, FAREWELL_MS, Idle, STANDBY_LIT_MS, auto_off,
 };
@@ -73,6 +78,8 @@ pub struct Observations<'a, P, I> {
     /// Companion sensors, including barometric pressure.
     pub physical: Snapshot,
 }
+
+const STARTUP_UNKNOWN: &str = "unknown";
 
 pub struct Runtime {
     navigation: presentation::Navigation,
@@ -122,7 +129,7 @@ impl Runtime {
             navigation: presentation::Navigation::default(),
             phone: phone::Phone::default(),
             display: presentation::Display::default(),
-            startup_status: "unknown",
+            startup_status: STARTUP_UNKNOWN,
             startup: device_api::sensors::Startup::Unsupported,
             menu: Menu::new(),
             discovery: sensor_links::Discovery::default(),

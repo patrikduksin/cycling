@@ -783,6 +783,9 @@ fn forget_paused_recovery(mut catalog: Catalog, journal: &mut impl Journal) -> C
     catalog
 }
 
+#[cfg(any(test, feature = "invariants"))]
+pub mod invariants;
+
 #[cfg(test)]
 mod properties;
 

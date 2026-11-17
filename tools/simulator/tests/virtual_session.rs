@@ -452,3 +452,19 @@ fn a_sized_session_records_a_device_no_model_replays() {
     assert_eq!(header.device, shell_simulator::session::VIRTUAL);
     assert!(shell_simulator::devices::Model::named(header.device).is_none());
 }
+
+#[test]
+fn a_broken_rule_stops_the_session_naming_the_rule_boot_and_pass() {
+    let mut s = Session::device(shell_simulator::models::C606).unwrap();
+    for _ in 0..3 {
+        s.tick();
+    }
+    s.restart().unwrap();
+    s.tick();
+    s.sdk.break_auto_lap_rule();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.tick())).unwrap_err();
+    assert_eq!(
+        panic.downcast_ref::<String>().map(String::as_str),
+        Some("broken after pass 5 (boot 2): auto lap disagrees with options")
+    );
+}

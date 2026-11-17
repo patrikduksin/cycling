@@ -12,7 +12,7 @@ const ROOM: usize = 4096;
 
 /// One request at a time; the test drains what VANA wrote after each step.
 #[derive(Default)]
-struct Transport {
+pub(super) struct Transport {
     listening: bool,
     request: Option<Request>,
     /// The body still to be read, and the most each `read` hands over.
@@ -84,7 +84,7 @@ impl Server for Transport {
 }
 
 #[derive(Default)]
-struct Radio2 {
+pub(super) struct Radio2 {
     started: Option<AccessPointConfig>,
     clients: u8,
     stops: u32,
@@ -192,7 +192,7 @@ impl Phone<'_> {
     }
 }
 
-fn attach(runtime: &mut Runtime) {
+pub(super) fn attach(runtime: &mut Runtime) {
     runtime.attach_phone(std::boxed::Box::leak(
         std::boxed::Box::new(PhoneWork::new()),
     ));

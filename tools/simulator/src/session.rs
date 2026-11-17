@@ -784,6 +784,7 @@ pub struct Session {
     host: bool,
     devices: Devices,
     pub(crate) tap: Option<Tap>,
+    passes_since_start: u64,
 }
 impl Session {
     pub fn new(root: &Path, width: usize, height: usize) -> io::Result<Self> {
@@ -805,6 +806,7 @@ impl Session {
             crate::bulk::SimBulk::default(),
             Memory::ALL,
             None,
+            0,
         )
     }
     /// A `model` on memory media whose companion and ANT radio start
@@ -823,6 +825,7 @@ impl Session {
             crate::bulk::SimBulk::default(),
             Memory::ALL,
             tap,
+            0,
         )?;
         let sim = session.sim_mut();
         sim.companion_starting(Availability::Ready);
@@ -851,6 +854,7 @@ impl Session {
         bulk: crate::bulk::SimBulk,
         memory: Memory,
         tap: Option<Tap>,
+        passes_since_start: u64,
     ) -> io::Result<Self> {
         let (width, height) = (model.width, model.height);
         crate::logs::install();
@@ -943,7 +947,7 @@ impl Session {
         if let Some(tap) = &tap {
             trace.recorder.borrow_mut().tap(Box::new(tap.clone()));
         }
-        Ok(Self {
+        let session = Self {
             model,
             shell,
             now: 0,
@@ -964,7 +968,19 @@ impl Session {
             host: false,
             devices: Devices::Simulated(Box::new(Simulated::new())),
             tap,
-        })
+            passes_since_start,
+        };
+        session.assert_invariants();
+        Ok(session)
+    }
+
+    fn assert_invariants(&self) {
+        if let Some(broken) = self.sdk.broken() {
+            panic!(
+                "broken after pass {} (boot {}): {broken}",
+                self.passes_since_start, self.boot
+            );
+        }
     }
 
     /// Drive it with `replay_step`.
@@ -988,7 +1004,7 @@ impl Session {
         })?;
         let config = Config::decode(header.config);
         let memory = config.map_or(Memory::ALL, |config| config.memory);
-        let mut session = Self::with_media(model, flash, origin.bulk.scripted(), memory, None)?;
+        let mut session = Self::with_media(model, flash, origin.bulk.scripted(), memory, None, 0)?;
         if config.is_some_and(|config| config.redacted) {
             session.redact_secrets();
         }
@@ -1116,6 +1132,8 @@ impl Session {
             };
         }
         self.trace.window.passes += 1;
+        self.passes_since_start += 1;
+        self.assert_invariants();
         if !self.off && self.trace.vitals.due(self.now, quiet) {
             self.record_vitals();
         }
@@ -2085,6 +2103,7 @@ impl Session {
             self.bulk.untapped(),
             Memory::ALL,
             self.tap.clone(),
+            self.passes_since_start,
         )?;
         if self.display.0.borrow().hashes.is_some() {
             next.display.0.borrow_mut().hashes = Some(Vec::new());

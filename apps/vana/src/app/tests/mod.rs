@@ -10,6 +10,7 @@ use std::vec::Vec;
 
 mod calibration;
 mod commands;
+mod invariants;
 mod pace;
 mod phone;
 mod power;

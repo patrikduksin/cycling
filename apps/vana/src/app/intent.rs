@@ -25,10 +25,10 @@ pub(crate) enum Found {
     ReadFailed,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Settles {
-    ForeignBytesOnly,
-    AnyRecord,
+#[derive(Clone, Copy)]
+struct Scan {
+    pending: [u8; 2],
+    foreign: bool,
 }
 
 /// The wipe this boot must finish, committed again so its stages may run;
@@ -36,14 +36,23 @@ enum Settles {
 #[inline(never)]
 pub(crate) fn at_boot(flash: impl OwnedFlash) -> Found {
     let mut journal = Journal::new(flash, Region::Intent);
-    let found = match found(&mut journal) {
-        Found::ForeignBytes if settle_in(&mut journal, Settles::ForeignBytesOnly) => Found::Idle,
-        Found::ForeignBytes => found(&mut journal),
-        found => found,
-    };
-    match found {
-        Found::Pending(_) => recommit(&mut journal).map_or(Found::ReadFailed, Found::Pending),
-        found => found,
+    let read = scan(&mut journal);
+    match (found(read), read) {
+        (Found::Pending(_), Some(read)) => {
+            return recommit(&mut journal, read).map_or(Found::ReadFailed, Found::Pending);
+        }
+        (Found::ForeignBytes, _) => {}
+        (found, _) => return found,
+    }
+    if settle_in(&mut journal) {
+        return Found::Idle;
+    }
+    let read = scan(&mut journal);
+    match (found(read), read) {
+        (Found::Pending(_), Some(read)) => {
+            recommit(&mut journal, read).map_or(Found::ReadFailed, Found::Pending)
+        }
+        (found, _) => found,
     }
 }
 
@@ -53,28 +62,22 @@ pub(crate) fn at_boot(flash: impl OwnedFlash) -> Found {
 #[inline(never)]
 pub(crate) fn begin(flash: impl OwnedFlash, scope: Scope) -> Option<Scope> {
     let mut journal = Journal::new(flash, Region::Intent);
-    match found(&mut journal) {
-        Found::ReadFailed => None,
-        Found::Pending(_) => recommit(&mut journal).filter(|pending| pending.covers(scope)),
-        Found::Idle | Found::ForeignBytes => {
-            journal.save(&[VERSION, scope.bits()]).ok().map(|_| scope)
-        }
+    let read = scan(&mut journal)?;
+    match found(Some(read)) {
+        Found::Pending(_) => recommit(&mut journal, read).filter(|pending| pending.covers(scope)),
+        _ => journal.save(&[VERSION, scope.bits()]).ok().map(|_| scope),
     }
 }
 
 #[inline(never)]
 pub(crate) fn settle(flash: impl OwnedFlash) -> bool {
-    settle_in(&mut Journal::new(flash, Region::Intent), Settles::AnyRecord)
+    settle_in(&mut Journal::new(flash, Region::Intent))
 }
 
-fn settle_in<F: OwnedFlash>(journal: &mut Journal<F>, settles: Settles) -> bool {
+fn settle_in<F: OwnedFlash>(journal: &mut Journal<F>) -> bool {
     for _ in 0..SETTLE_ATTEMPTS {
-        match found(journal) {
-            Found::Idle => return true,
-            Found::Pending(_) | Found::ReadFailed if settles == Settles::ForeignBytesOnly => {
-                return false;
-            }
-            Found::ForeignBytes | Found::Pending(_) | Found::ReadFailed => {}
+        if found(scan(journal)) == Found::Idle {
+            return true;
         }
         let saved = match journal.save(&IDLE_RECORD) {
             Err(Error::UnrecognizedJournal) => journal.erase(),
@@ -84,49 +87,57 @@ fn settle_in<F: OwnedFlash>(journal: &mut Journal<F>, settles: Settles) -> bool 
             return false;
         }
     }
-    found(journal) == Found::Idle
+    found(scan(journal)) == Found::Idle
 }
 
-fn recommit<F: OwnedFlash>(journal: &mut Journal<F>) -> Option<Scope> {
+/// Commit each pending sector again. One that no longer reads as begun is
+/// left, as a torn commit word had no stage behind it.
+fn recommit<F: OwnedFlash>(journal: &mut Journal<F>, read: Scan) -> Option<Scope> {
     let mut pending = 0;
-    for sector in 0..2 {
-        let mut payload = [0; 2];
-        match journal.held(sector, &mut payload) {
-            Ok(Held::Committed(record)) if pending_in(record.length, payload).is_some() => {
-                journal.recommit(sector).ok()?;
-                pending |= payload[1];
-            }
-            Err(Error::Flash(_)) => return None,
-            _ => {}
+    for (sector, bits) in read.pending.into_iter().enumerate() {
+        if bits == 0 {
+            continue;
+        }
+        match journal.recommit(sector) {
+            Ok(_) => pending |= bits,
+            Err(Error::NoRecord) => {}
+            Err(_) => return None,
         }
     }
     Scope::from_bits(pending)
 }
 
-fn pending_in(length: usize, payload: [u8; 2]) -> Option<Scope> {
-    (length == 2 && payload[0] == VERSION)
-        .then(|| Scope::from_bits(payload[1]))
-        .flatten()
-}
-
-fn found<F: OwnedFlash>(journal: &mut Journal<F>) -> Found {
-    let mut pending = 0;
-    let mut foreign = false;
+fn scan<F: OwnedFlash>(journal: &mut Journal<F>) -> Option<Scan> {
+    let mut read = Scan {
+        pending: [0; 2],
+        foreign: false,
+    };
     for sector in 0..2 {
         let mut payload = [0; 2];
         match journal.held(sector, &mut payload) {
             Ok(Held::Blank) | Err(Error::UnsupportedGeometry) => {}
-            Err(Error::Flash(_)) => return Found::ReadFailed,
+            Err(Error::Flash(_)) => return None,
             Ok(Held::Committed(record)) if record.length == 2 && payload == IDLE_RECORD => {}
-            Ok(Held::Committed(record)) if pending_in(record.length, payload).is_some() => {
-                pending |= payload[1];
+            Ok(Held::Committed(record))
+                if record.length == 2
+                    && payload[0] == VERSION
+                    && Scope::from_bits(payload[1]).is_some() =>
+            {
+                read.pending[sector] = payload[1];
             }
-            _ => foreign = true,
+            _ => read.foreign = true,
         }
     }
-    match Scope::from_bits(pending) {
+    Some(read)
+}
+
+fn found(read: Option<Scan>) -> Found {
+    let Some(read) = read else {
+        return Found::ReadFailed;
+    };
+    match Scope::from_bits(read.pending[0] | read.pending[1]) {
         Some(scope) => Found::Pending(scope),
-        None if foreign => Found::ForeignBytes,
+        None if read.foreign => Found::ForeignBytes,
         None => Found::Idle,
     }
 }
@@ -138,7 +149,7 @@ mod tests {
     use crate::testing::{Cut, IntentFlash, Rng};
 
     fn read(flash: &mut IntentFlash) -> Found {
-        found(&mut Journal::new(flash, Region::Intent))
+        found(scan(&mut Journal::new(flash, Region::Intent)))
     }
 
     fn scope(rng: &mut Rng) -> Scope {

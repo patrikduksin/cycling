@@ -268,7 +268,7 @@ impl Runtime {
             && SummaryPage::at(self.navigation.summary_page(), self.has_elevation())
                 == SummaryPage::Elevation;
         if showing {
-            self.chart.refresh(&self.ride.trace);
+            self.chart.refresh(self.ride.trace());
         }
     }
 

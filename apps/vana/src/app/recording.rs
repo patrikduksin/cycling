@@ -1,728 +1,24 @@
-//! Ride recorder ownership, storage media, request tokens and bounded
-//! recording work.
-//!
-//! Two recorders run side by side: the bulk MMC log takes new rides whenever it
-//! is ready and has room, and the internal journal takes them otherwise. Both
-//! keep their own rides and recover them independently. If the bulk medium
-//! fails or fills while a ride is running, the ride continues on the internal
-//! journal as a new ride; the bulk part stays exportable.
 use super::Runtime;
 use super::navigation::To;
-use crate::kept::bests::Found;
-use crate::kept::facts::record::Climbing;
-use crate::ride::auto::Auto;
-use crate::ride::bulk::{Bulk, BulkState};
-use crate::ride::climb::{Climbs, Event as ClimbEvent};
-use crate::ride::elevation::Trace;
-use crate::ride::journal::{Internal, InternalState, Read};
-use crate::ride::laps::{AutoLap, Lap, Laps};
-use crate::ride::log::{Altitude, Sample, Status};
+use crate::ride::current::Ended;
+use crate::ride::log::{Sample, Status};
 use crate::ride::medium::Medium;
-use crate::ride::metrics::Step;
-use crate::ride::recorder::{Action, Recorder, Refused, ResultEvent};
 use crate::ride::settle::{self, End, Hide, Saved};
 use crate::ride::storage::RideStorage;
-use crate::ride::totals::{Efforts, Totals};
-use crate::ride::zones::{TrainingProfile, ZoneTime};
 use crate::screens::workout::Page;
+use crate::workout::ftp::Source;
 use device_api::bulk::ReadWrite;
-use firmware_services::checksum::crc32;
-use firmware_services::trace::origin;
-
-/// A finished lap shows in the status row this long.
-const LAP_TOAST_MS: u64 = 2000;
-
-/// How long the brief notice of an automatic action stays up.
-const TOAST_MS: u64 = 3000;
-
-/// Slots the ride index reads per tick: internal flash reads are quick, each
-/// MMC read is three card reads (ownership checks, then the record).
-const INDEX_INTERNAL_BUDGET: usize = 32;
-const INDEX_BULK_BUDGET: usize = 4;
-
-/// One actor's latest recorder operation: queued under its token, then its
-/// result.
-#[derive(Clone, Copy)]
-pub(super) enum Request {
-    Idle,
-    Pending(u32),
-    Completed(ResultEvent),
-}
-
-/// Ride-page feedback that does not come from the recorder state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum RideMessage {
-    Clear,
-    StorageNotReady,
-}
-
-/// One ride as the rider rides it. A move from the card to internal memory
-/// keeps it, though the journals hold two rides.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct Outing(u32);
-
-pub(super) struct Ride {
-    pub(super) internal: Recorder,
-    pub(super) bulk: Recorder,
-    internal_media: InternalState,
-    pub(super) bulk_media: BulkState,
-    /// The rider's latest operation, from a button or an automatic action;
-    /// the ride screen shows its outcome until the next one.
-    pub(super) request: Request,
-    /// The medium whose recorder completed `request`.
-    pub(super) request_on: Medium,
-    /// The host's latest command, until `RIDE STATUS` reports its outcome.
-    /// Rider operations never replace it.
-    pub(super) host: Request,
-    next_token: u32,
-    pub(super) message: RideMessage,
-    /// What this ride has added up so far; kept after stop until the next start.
-    pub(super) totals: Totals,
-    /// Recorder active time the totals already cover.
-    counted_ms: u64,
-    /// This ride's laps, reset with the totals.
-    pub(super) laps: Laps,
-    /// The last finished lap and when it closed, for the status-row toast.
-    lap_toast: Option<(u64, Lap)>,
-    /// Time in each training zone, kept and reset with `totals`.
-    pub(super) zone_time: ZoneTime,
-    /// Best power over 5 s to 20 min, kept and reset with `totals`.
-    pub(super) efforts: Efforts,
-    /// Altitude over distance for the summary's chart, kept and reset with
-    /// `totals`.
-    pub(super) trace: Trace,
-    pub(super) bests_found: Found,
-    /// Climbs finished this ride.
-    pub(super) climbing: Climbing,
-    /// A lap closed since the last chime.
-    pub(super) lap_chime: bool,
-    /// Climb detection and the elevation profile, fed and reset with `totals`.
-    pub(super) climbs: Climbs,
-    /// The last step wholly inside active time. A step cut short by an accepted
-    /// pause or finish is settled with these readings, not those that arrived
-    /// after the stop.
-    settled: Option<(Sample, Step, Option<u32>)>,
-    /// The last `count` took a fresh pressure reading into the totals' altitude.
-    altitude_fresh: bool,
-    /// Auto-pause and auto-start state.
-    pub(super) auto: Auto,
-    /// The last automatic action and when it happened, shown briefly.
-    pub(super) auto_toast: Option<(&'static str, u64)>,
-    /// Active time the bulk medium recorded before this ride moved to internal.
-    carried_ms: u64,
-    /// Bulk active time awaiting the internal continuation; carried only once
-    /// it starts, dropped if it cannot.
-    carry_ms: u64,
-    /// Bulk media failed mid-ride; the next internal start continues the ride.
-    continuing: bool,
-    /// The current ride moved from bulk to internal media.
-    pub(super) moved: bool,
-    /// The bulk ride was paused when lost; pause its continuation once it runs.
-    pause_continuation: bool,
-    /// The medium of the latest ride, whose outcome the rider sees until the
-    /// next ride starts, even when the next ride will use the other medium.
-    last: Option<Medium>,
-    /// The latest ride started, open or not.
-    outing: Outing,
-    pub(super) latency_clock: Option<fn() -> u64>,
-    /// The workout this ride plays, kept after it ends until the rider
-    /// leaves the ride screen or starts the next ride.
-    pub(super) workout: Option<crate::workout::player::Player>,
-    /// What the player reported during the last steps, for the runtime.
-    pub(super) workout_events: crate::workout::player::Events,
-    /// Where each journal stood when its boot scan ended.
-    scanned: Scanned,
-    /// Where the rider's answer to DISCARD RIDE? stands.
-    pub(super) discard: Discard,
-}
-
-/// The rider's answer to DISCARD RIDE?: the ride is saved as any other, then
-/// hidden.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum Discard {
-    #[default]
-    Idle,
-    /// The Finish under this token is being written.
-    Asked(u32),
-    /// The ride was saved, and hidden or not.
-    Saved { hidden: bool },
-    /// The Finish failed: the ride is still open.
-    Failed,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct Scanned {
-    internal: Option<origin::Journal>,
-    bulk: Option<origin::RideLog>,
-}
-
-/// Where both ride journals stood when their boot scans ended, before VANA
-/// wrote to either: what a trace records so that a replay can start from
-/// the media as they were at power-on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Journals {
-    pub internal: origin::Journal,
-    pub bulk: origin::RideLog,
-}
-
-impl Default for Ride {
-    fn default() -> Self {
-        Self {
-            internal: Recorder::default(),
-            bulk: Recorder::default(),
-            internal_media: InternalState::default(),
-            bulk_media: BulkState::default(),
-            request: Request::Idle,
-            request_on: Medium::Internal,
-            host: Request::Idle,
-            next_token: 1,
-            message: RideMessage::Clear,
-            totals: Totals::default(),
-            counted_ms: 0,
-            laps: Laps::default(),
-            lap_toast: None,
-            zone_time: ZoneTime::default(),
-            efforts: Efforts::default(),
-            trace: Trace::default(),
-            bests_found: Found::default(),
-            climbing: Climbing::default(),
-            lap_chime: false,
-            climbs: Climbs::default(),
-            settled: None,
-            altitude_fresh: false,
-            auto: Auto::default(),
-            auto_toast: None,
-            carried_ms: 0,
-            carry_ms: 0,
-            continuing: false,
-            moved: false,
-            pause_continuation: false,
-            last: None,
-            outing: Outing(0),
-            latency_clock: None,
-            workout: None,
-            workout_events: crate::workout::player::Events::new(),
-            scanned: Scanned::default(),
-            discard: Discard::Idle,
-        }
-    }
-}
-
-impl Ride {
-    /// The medium the rider's ride is on, or the one a new ride would use:
-    /// bulk while it scans, or is ready with room; internal otherwise.
-    pub(super) fn medium(&self) -> Medium {
-        if self.internal.riding() || self.continuing {
-            return Medium::Internal;
-        }
-        if self.bulk.riding() {
-            return Medium::Bulk;
-        }
-        match self.bulk.status() {
-            Status::Scanning | Status::Formatting | Status::Clearing => Medium::Bulk,
-            status if status.usable() && self.bulk.remaining_secs() > 0 => Medium::Bulk,
-            _ => Medium::Internal,
-        }
-    }
-
-    pub(super) fn recorder(&self, medium: Medium) -> &Recorder {
-        match medium {
-            Medium::Internal => &self.internal,
-            Medium::Bulk => &self.bulk,
-        }
-    }
-
-    fn recorder_mut(&mut self, medium: Medium) -> &mut Recorder {
-        match medium {
-            Medium::Internal => &mut self.internal,
-            Medium::Bulk => &mut self.bulk,
-        }
-    }
-
-    /// The medium of the ride the rider sees: the open ride, else the
-    /// outcome of the latest one (saved, full or failed), else where the next
-    /// ride will go.
-    pub(super) fn shown(&self) -> Medium {
-        if self.internal.riding() || self.continuing {
-            return Medium::Internal;
-        }
-        if self.bulk.riding() {
-            return Medium::Bulk;
-        }
-        match self.last {
-            Some(medium)
-                if matches!(
-                    self.recorder(medium).status(),
-                    Status::Saved | Status::Full | Status::Error
-                ) =>
-            {
-                medium
-            }
-            _ => self.medium(),
-        }
-    }
-
-    pub(super) fn target(&self, action: Action) -> Medium {
-        if action == Action::Start {
-            self.medium()
-        } else {
-            self.shown()
-        }
-    }
-
-    /// The open ride is moving from bulk to internal media, and may still
-    /// have to be paused there.
-    fn moving(&self) -> bool {
-        self.continuing || self.pause_continuation
-    }
-
-    /// A ride is open on either medium, or moving between them.
-    pub(super) fn open(&self) -> bool {
-        self.internal.riding() || self.bulk.riding() || self.continuing
-    }
-
-    /// The ride open on either medium, or moving between them.
-    pub(super) fn outing(&self) -> Option<Outing> {
-        self.open().then_some(self.outing)
-    }
-
-    /// The recorder of the ride the rider sees.
-    pub(super) fn active(&self) -> &Recorder {
-        self.recorder(self.shown())
-    }
-
-    /// Active time of the rider's ride, across a move to internal media.
-    pub(super) fn active_ms(&self, now: u64) -> u64 {
-        let waiting = if self.continuing { self.carry_ms } else { 0 };
-        self.carried_ms + waiting + self.active().active_ms(now)
-    }
-
-    /// The continuation cannot start: the bulk ride stays the rider's ride.
-    fn give_up_continuation(&mut self) {
-        self.continuing = false;
-        self.pause_continuation = false;
-        self.carry_ms = 0;
-    }
-
-    /// Bulk media should take rides but cannot, so they go to internal flash:
-    /// it is unformatted, missing, damaged, failed, or has no room left.
-    pub(super) fn fallback(&self) -> bool {
-        let status = self.bulk.status();
-        self.medium() == Medium::Internal
-            && (matches!(
-                status,
-                Status::NeedsInit
-                    | Status::Foreign
-                    | Status::Unavailable
-                    | Status::Corrupt
-                    | Status::Error
-                    | Status::Full
-            ) || (status.usable() && self.bulk.remaining_secs() == 0))
-    }
-
-    /// The token the next submitted operation will carry.
-    pub(super) fn next_token(&self) -> u32 {
-        self.next_token
-    }
-
-    /// Start a rider operation under the next token. `start` reports
-    /// whether the recorder accepted it; only then is the token consumed.
-    pub(super) fn submit(
-        &mut self,
-        medium: Medium,
-        start: impl FnOnce(&mut Recorder, u32) -> bool,
-    ) -> bool {
-        let Ok(token) = self.start(medium, |recorder, token| {
-            start(recorder, token).then_some(()).ok_or(())
-        }) else {
-            return false;
-        };
-        self.request = Request::Pending(token);
-        true
-    }
-
-    /// Start a host command under the next token, as `submit` does.
-    pub(super) fn submit_host(
-        &mut self,
-        medium: Medium,
-        start: impl FnOnce(&mut Recorder, u32) -> Result<(), Refused>,
-    ) -> Result<(), Refused> {
-        self.host = Request::Pending(self.start(medium, start)?);
-        Ok(())
-    }
-
-    fn start<E>(
-        &mut self,
-        medium: Medium,
-        start: impl FnOnce(&mut Recorder, u32) -> Result<(), E>,
-    ) -> Result<u32, E> {
-        let token = self.next_token;
-        start(self.recorder_mut(medium), token)?;
-        self.next_token = token.wrapping_add(1).max(1);
-        Ok(token)
-    }
-
-    /// An operation of either actor is queued: the recorders take one at a
-    /// time, so nothing else is submitted until it completes.
-    pub(super) fn pending(&self) -> bool {
-        self.pending_token().is_some()
-    }
-
-    pub(super) fn wipe_failed(&mut self, clear: Option<u32>) {
-        let failed = clear.map(|token| ResultEvent {
-            action: None,
-            token,
-            ok: false,
-        });
-        if let Some(result) = self.internal.take_result().or(failed)
-            && matches!(self.host, Request::Pending(token) if token == result.token)
-        {
-            self.host = Request::Completed(result);
-        }
-    }
-
-    /// The token of the queued operation, whichever actor asked for it.
-    pub(super) fn pending_token(&self) -> Option<u32> {
-        match (self.host, self.request) {
-            (Request::Pending(token), _) | (_, Request::Pending(token)) => Some(token),
-            _ => None,
-        }
-    }
-
-    pub(super) fn clear_lap_toast(&mut self) {
-        self.lap_toast = None;
-    }
-
-    /// The notice of a recent automatic action, if any.
-    pub(super) fn auto_toast(&self, now: u64) -> &'static str {
-        match self.auto_toast {
-            Some((text, at)) if now.saturating_sub(at) <= TOAST_MS => text,
-            _ => "",
-        }
-    }
-
-    /// The altitude to record with a sample: the totals' smoothed one, only
-    /// while the last step took a fresh reading into it and `pressure` is
-    /// still fresh, so it is never older than a step. Kept to the journal's
-    /// resolution.
-    pub(super) fn recorded_altitude(&self, pressure_centi_pa: Option<u32>) -> Option<Altitude> {
-        pressure_centi_pa?;
-        self.altitude_fresh
-            .then(|| self.totals.altitude_dm().map(Altitude::from_dm))
-            .flatten()
-    }
-
-    /// Add an odometer step to the totals, clipped to the active time the
-    /// recorder accrued since the last step. An accepted pause or finish
-    /// freezes active time at once, though the status stays Recording until
-    /// its flush completes; nothing after that moment counts. Climbs follow
-    /// the totals' smoothed altitude; returns what changed about climbing.
-    pub(super) fn count(
-        &mut self,
-        now: u64,
-        step: Step,
-        sample: &Sample,
-        pressure_centi_pa: Option<u32>,
-        profile: &TrainingProfile,
-        auto_lap: AutoLap,
-    ) -> Option<ClimbEvent> {
-        self.altitude_fresh = false;
-        let recorder = self.active();
-        if recorder.status() != Status::Recording {
-            return None;
-        }
-        let active = recorder.active_ms(now);
-        let credited = active.saturating_sub(self.counted_ms).min(step.elapsed_ms);
-        self.counted_ms = active;
-        if credited == 0 {
-            return None;
-        }
-        let cut_short = credited < step.elapsed_ms && self.active().stopping();
-        let (sample, step, pressure_centi_pa) = if !cut_short {
-            self.settled = Some((*sample, step, pressure_centi_pa));
-            (*sample, step, pressure_centi_pa)
-        } else {
-            // Cut short by a stop: the readings of this step describe the time
-            // after it, so the credited part takes the last full step's.
-            self.settled?
-        };
-        let distance_mm = step.distance_mm * credited / step.elapsed_ms;
-        self.totals
-            .add(credited, distance_mm, &sample, pressure_centi_pa);
-        self.zone_time.add(credited, &sample, profile);
-        if let Some(watts) = sample.power_watts
-            && !cut_short
-        {
-            self.efforts.add_ms(watts, credited);
-        }
-        // Only a fresh reading is altitude for the climbs; the totals keep
-        // their last one through a gap, which would read as a level road.
-        let altitude = pressure_centi_pa.and(self.totals.altitude_dm());
-        self.altitude_fresh = altitude.is_some();
-        self.trace.add(self.totals.distance_mm(), altitude);
-        let climb = self.climbs.add(credited, distance_mm, altitude);
-        if let Some(ClimbEvent::Finished(climb)) = climb {
-            self.climbing.add(climb.gain_dm);
-        }
-        let Some(player) = &mut self.workout else {
-            if let Some(lap) =
-                self.laps
-                    .add_every(credited, distance_mm, &sample, now, auto_lap.every_mm())
-            {
-                self.lap_closed(lap, now);
-            }
-            return climb;
-        };
-        // Each workout step's part of this update goes in that step's lap.
-        player.read(&sample);
-        let (mut ms, mut mm) = (credited, distance_mm);
-        for _ in 0..=crate::workout::model::MAX_PLAYED {
-            if ms == 0 {
-                break;
-            }
-            let (part_ms, part_mm) = player.until_end(ms, mm);
-            let distance_step = player.distance_step();
-            ms -= part_ms;
-            mm -= part_mm;
-            // A workout ride has no distance laps; its steps close them.
-            let _ = self.laps.add(part_ms, part_mm, &sample, now);
-            let events = player.ride_part(part_ms, part_mm, &sample, profile);
-            if events.iter().any(|event| {
-                matches!(
-                    event,
-                    crate::workout::player::Event::Started(_)
-                        | crate::workout::player::Event::Finished
-                )
-            }) {
-                let _ = self.laps.split(now, distance_step);
-            }
-            for event in events {
-                let _ = self.workout_events.push(event);
-            }
-        }
-        climb
-    }
-
-    /// The rider passed the ride's start: close a lap if they chose laps
-    /// there and no workout is playing.
-    pub(super) fn passed_start(&mut self, auto_lap: AutoLap, now: u64) {
-        // A paused ride is standing still: a pass then is not a lap.
-        if auto_lap != AutoLap::AtStart
-            || self.workout.is_some()
-            || self.active().status() != crate::ride::log::Status::Recording
-        {
-            return;
-        }
-        if let Some(lap) = self.laps.at_start(now) {
-            self.lap_closed(lap, now);
-        }
-    }
-
-    /// Show a finished lap in the status row.
-    pub(super) fn lap_closed(&mut self, lap: Lap, now: u64) {
-        self.lap_toast = Some((now, lap));
-        self.lap_chime = true;
-    }
-
-    /// The finished lap the status row shows at `now`, for `LAP_TOAST_MS`.
-    pub(super) fn lap_toast(&self, now: u64) -> Option<Lap> {
-        self.lap_toast
-            .filter(|(at, _)| now.saturating_sub(*at) < LAP_TOAST_MS)
-            .map(|(_, lap)| lap)
-    }
-
-    /// The internal journal where its boot scan ended. Not inlined, so its
-    /// slot stays out of `record`'s frame.
-    #[inline(never)]
-    fn internal_at_boot(&mut self, store: &mut impl RideStorage) -> origin::Journal {
-        use crate::ride::journal::Journal;
-        if matches!(
-            self.internal.status(),
-            Status::Error | Status::Unavailable | Status::Unsupported
-        ) {
-            return origin::Journal::Unusable;
-        }
-        let next = self.internal.next_slot();
-        let mut slot = crate::ride::log::Slot::default();
-        let last = next.checked_sub(1).and_then(|index| {
-            match Internal::new(&mut self.internal_media, store).read_slot(index, &mut slot) {
-                Read::Slot | Read::Invalid => Some(crc32(&slot.0)),
-                Read::Failed => None,
-            }
-        });
-        origin::Journal::Scanned {
-            next: u32::try_from(next).unwrap_or(u32::MAX),
-            last,
-        }
-    }
-
-    pub(super) fn forget_moved_ride(&mut self) {
-        self.carried_ms = 0;
-        self.moved = false;
-    }
-
-    /// The card's ride log where its boot scan ended. A scan that could not
-    /// prove the log's end keeps it, read only, and reports it corrupt.
-    fn bulk_at_boot(&self) -> origin::RideLog {
-        match (self.bulk.status(), self.bulk_media.log()) {
-            (Status::Corrupt, Some(log)) => origin::RideLog::Uncertain {
-                store: log.store_id(),
-                head: log.head(),
-            },
-            (_, Some(log)) => origin::RideLog::Log {
-                store: log.store_id(),
-                head: log.head(),
-            },
-            (Status::NeedsInit, None) => origin::RideLog::Uninitialized,
-            (_, None) => origin::RideLog::Unusable,
-        }
-    }
-
-    pub(super) fn read_slot(
-        &mut self,
-        medium: Medium,
-        store: &mut impl RideStorage,
-        bulk: &mut impl ReadWrite,
-        index: usize,
-        output: &mut crate::ride::log::Slot,
-    ) -> Read {
-        use crate::ride::journal::Journal;
-        match medium {
-            Medium::Internal => {
-                Internal::new(&mut self.internal_media, store).read_slot(index, output)
-            }
-            Medium::Bulk => Bulk::new(&mut self.bulk_media, bulk).read_slot(index, output),
-        }
-    }
-
-    /// Read up to `budget` more slots of a saved ride of `medium` into the
-    /// ride sums, through the export path's reader.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn replay(
-        &mut self,
-        medium: Medium,
-        store: &mut impl RideStorage,
-        bulk: &mut impl ReadWrite,
-        replay: &mut crate::ride::replay::Replay,
-        budget: usize,
-        profile: &TrainingProfile,
-    ) {
-        use crate::ride::journal::Journal;
-        let mut sums = crate::ride::replay::Sums {
-            totals: &mut self.totals,
-            zone_time: &mut self.zone_time,
-            efforts: &mut self.efforts,
-            trace: &mut self.trace,
-        };
-        let (internal, bulk_media) = (&mut self.internal_media, &mut self.bulk_media);
-        let mut slot = crate::ride::log::Slot::default();
-        replay.step(budget, profile, &mut sums, |index| {
-            let read = match medium {
-                Medium::Internal => Internal::new(internal, store).read_slot(index, &mut slot),
-                Medium::Bulk => Bulk::new(bulk_media, bulk).read_slot(index, &mut slot),
-            };
-            match read {
-                Read::Slot => crate::ride::log::decode(&slot),
-                Read::Invalid | Read::Failed => None,
-            }
-        });
-    }
-
-    /// Index a few more saved rides of each journal, through the export
-    /// path's reader, while no ride is open. Returns whether any was added.
-    /// Whether the index has read every slot both journals hold; a journal
-    /// that cannot be read yet holds nothing to count.
-    pub(super) fn directory_done(&self, index: &crate::ride::directory::RideIndex) -> bool {
-        let caught_up =
-            |exportable: bool, scanned: usize, next: usize| !exportable || scanned >= next;
-        caught_up(
-            self.internal.exportable(),
-            index.internal.scanned(),
-            self.internal.next_slot(),
-        ) && caught_up(
-            self.bulk.exportable(),
-            index.bulk.scanned(),
-            self.bulk.next_slot(),
-        )
-    }
-
-    pub(super) fn directory_step(
-        &mut self,
-        index: &mut crate::ride::directory::RideIndex,
-        store: &mut impl RideStorage,
-        bulk: &mut impl ReadWrite,
-    ) -> bool {
-        use crate::ride::journal::Journal;
-        if self.internal.riding() || self.bulk.riding() {
-            return false;
-        }
-        let mut slot = crate::ride::log::Slot::default();
-        let mut added = false;
-        if self.internal.exportable() {
-            let media = &mut self.internal_media;
-            added |= index.internal.step(
-                self.internal.next_slot(),
-                INDEX_INTERNAL_BUDGET,
-                &mut slot,
-                |i, out| Internal::new(media, store).read_slot(i, out),
-            );
-        }
-        if self.bulk.exportable() {
-            let media = &mut self.bulk_media;
-            added |= index.bulk.step(
-                self.bulk.next_slot(),
-                INDEX_BULK_BUDGET,
-                &mut slot,
-                |i, out| Bulk::new(media, bulk).read_slot(i, out),
-            );
-        }
-        added
-    }
-
-    /// Start the internal continuation of a ride the bulk medium lost. Waits
-    /// for the internal scan; gives up if that journal cannot take a ride.
-    fn continue_internally(&mut self, now: u64) {
-        if !self.continuing || self.internal.riding() || self.internal.busy() {
-            return;
-        }
-        // Wait for the scan, and for recovery to close an interrupted ride:
-        // START is refused only until that record is appended.
-        if self.internal.status() == Status::Scanning || self.internal.recovering() {
-            return;
-        }
-        // Token 0: no rider or host waits for this start.
-        if !self.internal.request(Action::Start, now, 0) {
-            self.give_up_continuation();
-        }
-    }
-}
 
 impl Runtime {
     /// Where both ride journals stood when their boot scans ended; `None`
     /// while either still scans. A scan step writes nothing, so this is the
     /// media as they were at power-on.
-    pub fn journals_at_boot(&self) -> Option<Journals> {
-        let Scanned { internal, bulk } = self.ride.scanned;
-        Some(Journals {
-            internal: internal?,
-            bulk: bulk?,
-        })
+    pub fn journals_at_boot(&self) -> Option<crate::ride::current::Journals> {
+        self.ride.journals_at_boot()
     }
 
     pub fn recording(&self) -> bool {
-        // Protect accepted writes and active/paused rides from host-triggered
-        // restart, including a ride moving to internal media whose start or
-        // pause is queued but not yet written.
-        self.ride.pending()
-            || self.ride.open()
-            || self.ride.moving()
-            || [&self.ride.internal, &self.ride.bulk].iter().any(|r| {
-                r.pending_action().is_some()
-                    || matches!(
-                        r.status(),
-                        Status::Recording | Status::Paused | Status::Formatting | Status::Clearing
-                    )
-            })
+        self.ride.recording()
     }
 
     /// Pause, resume or start the ride from its speed source (see `ride::auto`),
@@ -736,10 +32,9 @@ impl Runtime {
         }
         // Rolling off starts a ride from Ready or the ride screen.
         let ready = matches!(self.navigation.page(), Page::Ride | Page::Ready);
-        let status = self.ride.active().status();
         let motion = self.readings.motion;
         let automatic = self.preferences.options.auto_pause;
-        if let Some(call) = self.ride.auto.update(now, status, motion, ready, automatic) {
+        if let Some(call) = self.ride.auto_update(now, motion, ready, automatic) {
             self.ride_auto(call, now);
         }
     }
@@ -751,158 +46,37 @@ impl Runtime {
         now: u64,
         sample: Sample,
     ) {
-        let clock = self.ride.latency_clock;
+        let clock = self.latency_clock;
         let clock = &|| clock.map_or(now, |clock| clock());
-        let ride = &mut self.ride;
-        let before = ride.active().status();
-        let was_scanning =
-            ride.internal.status() == Status::Scanning || ride.bulk.status() == Status::Scanning;
-        let resetting = |status| matches!(status, Status::Clearing | Status::Formatting);
-        let internal_reset = resetting(ride.internal.status());
-        let bulk_reset = resetting(ride.bulk.status());
-        // An open bulk ride that the rider is not finishing continues on
-        // internal media if the bulk medium fails; `Some(true)` if paused.
-        let lost_paused = if ride.bulk.riding() {
-            match ride.bulk.pending_action() {
-                Some(Action::Finish) => None,
-                Some(Action::Resume) => Some(false),
-                Some(Action::Pause) => Some(true),
-                _ => Some(ride.bulk.status() == Status::Paused),
-            }
-        } else {
-            None
-        };
-        ride.continue_internally(now);
-        while let Some(start) = ride.laps.take_closed() {
-            ride.internal.mark_lap(start);
-            ride.bulk.mark_lap(start);
+        let serviced = self.ride.service(store, bulk, now, sample, clock);
+        for medium in serviced.reset.into_iter().flatten() {
+            // The reset has reported its outcome already; a card that
+            // refuses keeps the old records, as a card that is out does.
+            let _ = settle::reset(medium, &mut self.facts, &mut self.deleted, bulk, now);
         }
-        ride.internal.service(
-            &mut Internal::new(&mut ride.internal_media, store),
-            now,
-            sample,
-            clock,
-        );
-        if ride.scanned.internal.is_none() && ride.internal.status() != Status::Scanning {
-            ride.scanned.internal = Some(ride.internal_at_boot(store));
-        }
-        ride.bulk.service(
-            &mut Bulk::new(&mut ride.bulk_media, bulk),
-            now,
-            sample,
-            clock,
-        );
-        if ride.scanned.bulk.is_none() && ride.bulk.status() != Status::Scanning {
-            ride.scanned.bulk = Some(ride.bulk_at_boot());
-        }
-        if internal_reset && !resetting(ride.internal.status()) {
-            ride.forget_moved_ride();
-        }
-        for (reset, medium) in [
-            (internal_reset, Medium::Internal),
-            (bulk_reset, Medium::Bulk),
-        ] {
-            if reset && self.ride.recorder(medium).status() == Status::Ready {
-                // The reset has reported its outcome already; a card that
-                // refuses keeps the old records, as a card that is out does.
-                let _ = settle::reset(medium, &mut self.facts, &mut self.deleted, bulk, now);
-            }
-        }
-        let ride = &mut self.ride;
-        if let Some(paused) = lost_paused
-            && matches!(ride.bulk.status(), Status::Error | Status::Full)
-        {
-            ride.carry_ms = ride.bulk.active_ms(now);
-            ride.continuing = true;
-            ride.pause_continuation = paused;
-            log::warn!(target: "sdk.recorder", "bulk_lost state={} continuing=internal", ride.bulk.status().name());
-            ride.continue_internally(now);
-        }
-        // A new ride, from any source, starts its totals and laps from zero;
-        // resume and a move to internal media keep them.
-        if ride.active().status() == Status::Recording
-            && !matches!(before, Status::Recording | Status::Paused)
-        {
-            ride.last = Some(ride.shown());
-            if ride.continuing {
-                ride.continuing = false;
-                ride.carried_ms += core::mem::take(&mut ride.carry_ms);
-                ride.moved = true;
-            } else {
-                ride.outing = Outing(ride.outing.0.wrapping_add(1));
-                ride.totals = Totals::default();
-                ride.carried_ms = 0;
-                ride.moved = false;
-                ride.laps = Laps::default();
-                ride.lap_toast = None;
-                ride.zone_time = ZoneTime::default();
-                ride.efforts = Efforts::default();
-                ride.trace.reset();
-                ride.bests_found = Found::default();
-                self.training
-                    .ftp
-                    .answered(crate::workout::ftp::Source::RideSummary);
-                ride.climbing = Climbing::default();
-                ride.climbs = Climbs::default();
-                self.navigation.go(To::RideStarted);
-                // The chosen workout starts with the ride, its steps read
-                // now; its steps lap it. One that cannot be read rides free.
-                ride.workout = match self.training.load_chosen(bulk) {
-                    Ok(player) => player,
-                    Err(error) => {
-                        log::warn!(target: "sdk.workout", "load_failed error={}", error.name());
-                        self.training.selected = None;
-                        self.training.missing = true;
-                        None
-                    }
-                };
-                ride.workout_events.clear();
-                // The last workout's summary belongs to the ride it ended with.
-                self.training.last = None;
-                ride.laps.by_distance = ride.workout.is_none();
-            }
-            ride.counted_ms = 0;
-        }
-        // A started or resumed segment settles with its own readings, not those
-        // from before the pause, or none at all before its first full step.
-        if before != Status::Recording && ride.active().status() == Status::Recording {
-            let distance_mm = u64::from(sample.speed_mm_s.unwrap_or(0));
-            let step = Step {
-                elapsed_ms: 1000,
-                distance_mm,
-            };
-            ride.settled = Some((sample, step, None));
-        }
-        let mut ended = [None; 2];
-        for (index, medium) in [Medium::Internal, Medium::Bulk].into_iter().enumerate() {
-            let Some(result) = ride.recorder_mut(medium).take_result() else {
-                continue;
-            };
-            let discard = result.token != 0 && ride.discard == Discard::Asked(result.token);
-            if discard && !result.ok {
-                ride.discard = Discard::Failed;
-            }
-            if result.ok && result.action == Some(Action::Finish) {
-                ended[index] = Some((medium, discard));
-            }
-            if result.token != 0 {
-                // A ride the rider or host asked for that failed to start is
-                // the latest ride, so its storage error is what shows.
-                if result.action == Some(Action::Start) && !result.ok {
-                    ride.last = Some(medium);
+        if self.ride.open_pass(&serviced, now, &sample) {
+            self.notices.clear_lap_toast();
+            self.training.ftp.answered(Source::RideSummary);
+            self.navigation.go(To::RideStarted);
+            // The chosen workout starts with the ride, its steps read
+            // now; its steps lap it. One that cannot be read rides free.
+            self.training.player = match self.training.load_chosen(bulk) {
+                Ok(player) => player,
+                Err(error) => {
+                    log::warn!(target: "sdk.workout", "load_failed error={}", error.name());
+                    self.training.selected = None;
+                    self.training.missing = true;
+                    None
                 }
-                // Each actor reads only its own outcome.
-                if matches!(ride.host, Request::Pending(token) if token == result.token) {
-                    ride.host = Request::Completed(result);
-                } else {
-                    ride.request = Request::Completed(result);
-                    ride.request_on = medium;
-                }
-            } else if !result.ok {
-                ride.give_up_continuation();
-            }
+            };
+            self.training.events.clear();
+            // The last workout's summary belongs to the ride it ended with.
+            self.training.last = None;
+            self.ride
+                .set_laps_by_distance(self.training.player.is_none());
         }
-        let ride = &self.ride;
+        let ended = self.ride.finish_pass();
+        let (ride, player) = (&self.ride, self.training.player.as_ref());
         let saved = |medium: Medium| Saved {
             medium,
             summary: ride
@@ -913,19 +87,19 @@ impl Runtime {
                 .last()
                 .copied(),
             store_id: self.store(medium),
-            totals: &ride.totals,
-            efforts: &ride.efforts,
-            climbing: ride.climbing,
+            totals: ride.totals(),
+            efforts: ride.efforts(),
+            climbing: ride.climbing(),
             active_ms: ride.active_ms(now),
-            player: ride.workout.as_ref(),
+            player,
             zone: self.preferences.options.zone,
             profile: self.preferences.profile,
             recovery: self.recovery.reading(now),
             utc_ms: self.readings.live.utc_ms,
             now,
         };
-        let end = |(medium, discard)| {
-            if discard {
+        let end = |Ended { medium, discarded }| {
+            if discarded {
                 End::Discarded(saved(medium))
             } else {
                 End::Finished(saved(medium))
@@ -938,42 +112,18 @@ impl Runtime {
             &mut self.deleted,
             bulk,
         );
-        let ride = &mut self.ride;
-        match settled.hide {
-            Hide::NotAsked => {}
-            Hide::Hidden => {
-                self.history.home_last = Some(0);
-                ride.discard = Discard::Saved { hidden: true };
-            }
-            Hide::Kept => ride.discard = Discard::Saved { hidden: false },
+        if settled.hide == Hide::Hidden {
+            self.history.home_last = Some(0);
         }
         if let Some(claimed) = settled.claimed {
-            ride.bests_found = claimed.found;
-            self.training
-                .ftp
-                .set(crate::workout::ftp::Source::RideSummary, claimed.ftp);
+            self.training.ftp.set(Source::RideSummary, claimed.ftp);
         }
-        // A ride lost while paused continues paused; automation waits until
-        // it is, so an automatic pause stays automatic.
-        if ride.pause_continuation && !ride.continuing {
-            match ride.internal.status() {
-                Status::Paused => ride.pause_continuation = false,
-                Status::Recording => {
-                    if ride.internal.pending_action().is_none() {
-                        ride.internal.request(Action::Pause, now, 0);
-                    }
-                }
-                _ if !ride.internal.riding() => ride.pause_continuation = false,
-                _ => {}
-            }
-        }
+        self.ride.after_settle(&settled, now);
         // Stamp milestones after the synchronous writes, so their cost shows:
         // storage once neither journal scans, recording once the ride does.
         let done = clock().max(now);
-        let scanning = |ride: &Ride| {
-            ride.internal.status() == Status::Scanning || ride.bulk.status() == Status::Scanning
-        };
-        if was_scanning && !scanning(ride) {
+        let ride = &self.ride;
+        if serviced.was_scanning && !ride.scanning() {
             let status = ride.recorder(ride.medium()).status();
             self.timing
                 .storage(done, status.name(), status != Status::Error);
@@ -981,6 +131,6 @@ impl Runtime {
         if ride.active().status() == Status::Recording {
             self.timing.recording(done);
         }
-        self.ride_serviced(before, now);
+        self.ride_serviced(serviced.before, now);
     }
 }

@@ -22,7 +22,7 @@ impl Runtime {
     pub(super) fn store(&self, medium: Medium) -> u64 {
         match medium {
             Medium::Internal => 0,
-            Medium::Bulk => self.ride.bulk_media.log().map_or(0, |log| log.store_id()),
+            Medium::Bulk => self.ride.bulk_media().log().map_or(0, |log| log.store_id()),
         }
     }
 
@@ -82,7 +82,7 @@ impl Runtime {
     /// Read the table when it is due, and carry out a delete the rider asked
     /// for.
     pub(super) fn service_deleted(&mut self, bulk: &mut impl ReadWrite, now: u64) {
-        let status = self.ride.bulk.status();
+        let status = self.ride.bulk().status();
         let ready = status.usable();
         self.deleted.card_in = !matches!(
             status,

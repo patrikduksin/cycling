@@ -69,7 +69,7 @@ impl super::Runtime {
             self.reported.toast = toast;
         }
         let ride = match self.ride.active().status() {
-            Status::Paused if self.ride.auto.paused() => "auto_paused",
+            Status::Paused if self.ride.auto().paused() => "auto_paused",
             status => status.name(),
         };
         if self.reported.ride != ride {

@@ -1,10 +1,11 @@
 //! Foreground scheduling, view preparation and radar alerts.
 use super::Runtime;
 use super::cues::Cue;
-use super::recording::{Request, RideMessage};
+use super::ride_control::RideMessage;
 use super::view::{Presented, Shows};
 use crate::clock::Zone;
 use crate::ride::alerts::{Alert, Cue as AlertSound};
+use crate::ride::current::Request;
 use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
 use crate::ride::medium::Medium;
@@ -143,7 +144,7 @@ impl Runtime {
     /// a toast on the ride pages. A cue waits for the buzzer to be free, for
     /// up to a second. Call once per loop.
     pub fn alert(&mut self, sound: &mut impl Sound, now: u64) {
-        if core::mem::take(&mut self.ride.lap_chime) {
+        if self.notices.take_lap_chime() {
             self.cue(Cue::Lap, now);
         }
         if let Some(cue) = self.navigation.take_chime() {
@@ -172,8 +173,8 @@ impl Runtime {
         let leg = self.track.as_deref().and_then(|track| {
             super::course::way_home(
                 track,
-                self.ride.totals.avg_speed_mm_s(),
-                self.ride.totals.moving_ms(),
+                self.ride.totals().avg_speed_mm_s(),
+                self.ride.totals().moving_ms(),
             )
         });
         let turn = sun
@@ -201,8 +202,8 @@ impl Runtime {
             }
             let alert = alert.or_else(|| {
                 let ride_left = self
-                    .ride
-                    .workout
+                    .training
+                    .player
                     .as_ref()
                     .and_then(|player| player.remaining_secs())
                     .map(|secs| secs.div_ceil(60));
@@ -275,10 +276,7 @@ impl Runtime {
     /// When the frame just submitted reached the panel: the monotonic clock
     /// after submission, so slow rendering shows up in press-to-frame latency.
     pub(super) fn drawn_at(&self, now: u64) -> u64 {
-        self.ride
-            .latency_clock
-            .map_or(now, |clock| clock())
-            .max(now)
+        self.latency_clock.map_or(now, |clock| clock()).max(now)
     }
 
     pub fn suspend_display(&mut self) {
@@ -342,7 +340,7 @@ impl Runtime {
         view.power_3s = sample.power_watts;
         view.sample = self.shown.live();
         view.radar_paired = radar_paired;
-        view.auto_paused = self.ride.auto.paused();
+        view.auto_paused = self.ride.auto().paused();
         view.ride_page = navigation.ride_page();
         view.ride_pages = choice;
         view.nav = super::course::sign_of(&self.track, now);
@@ -352,7 +350,7 @@ impl Runtime {
         let (climbing, paused_secs) = (readout.climbing, readout.paused_secs);
         view.totals = readout.totals;
         if page == Page::Ride && view.ride_page == RidePage::Lap {
-            let laps = &self.ride.laps;
+            let laps = self.ride.laps();
             let kept = (0..crate::ride::laps::HISTORY).rev();
             let bars = kept
                 .filter_map(|back| laps.finished(back))
@@ -366,7 +364,7 @@ impl Runtime {
         if page == Page::Ride {
             view.training = readout.training;
             if view.ride_page == RidePage::Workout {
-                view.show_workout(match &self.ride.workout {
+                view.show_workout(match &self.training.player {
                     Some(player) => crate::screens::ride::workout_chart(player, &view.profile),
                     None => Default::default(),
                 });
@@ -433,7 +431,7 @@ impl Runtime {
             }
             Page::Format => view.format = self.format.shows(),
             Page::EndRide | Page::DiscardRide => {
-                view.discard = if self.ride.discard != super::recording::Discard::Idle {
+                view.discard = if self.ride.discard() != crate::ride::current::Discard::Idle {
                     crate::screens::workout::Discard::Answered
                 } else if self.deleted.writable() {
                     crate::screens::workout::Discard::Offered
@@ -463,9 +461,9 @@ impl Runtime {
         if page == Page::Ride && view.ride_page == RidePage::Climb {
             // Borrowed from the ride and the look-ahead's own block, not copied.
             view.show_climb(crate::screens::ride::ClimbLent {
-                climbs: &self.ride.climbs,
+                climbs: self.ride.climbs(),
                 climbing,
-                trace: &self.ride.trace,
+                trace: self.ride.trace(),
                 forecast: super::lookahead::forecast_of(&self.lookahead),
                 pinned: super::lookahead::pinned_of(&self.lookahead),
             });
@@ -489,8 +487,8 @@ impl Runtime {
         if let Some(notice) = self.power.notice(now) {
             return (notice.text(), true);
         }
-        let status = if self.ride.internal.status() == Status::Scanning
-            || self.ride.bulk.status() == Status::Scanning
+        let status = if self.ride.internal().status() == Status::Scanning
+            || self.ride.bulk().status() == Status::Scanning
         {
             "CHECKING STORAGE"
         } else if matches!(
@@ -569,10 +567,10 @@ impl Runtime {
     /// confirmation, then ride problems and low storage, which last until
     /// they are resolved, then what auto-pause is doing.
     pub(super) fn toast_at(&self, now: u64) -> Option<Toast> {
-        if let Some(lap) = self.ride.lap_toast(now) {
+        if let Some(lap) = self.notices.lap_toast(now) {
             return Some(Toast::new(ride::lap_toast(lap).as_str(), Tone::Info));
         }
-        let auto = self.ride.auto_toast(now);
+        let auto = self.notices.auto_toast(now);
         if !auto.is_empty() {
             return Some(Toast::new(auto, Tone::Info));
         }
@@ -585,17 +583,20 @@ impl Runtime {
         if navigation.page() != Page::Ride {
             return None;
         }
-        let problem = match (self.ride.request, self.ride.active().status()) {
+        let problem = match (self.ride.request(), self.ride.active().status()) {
             (_, Status::Error) => "STORAGE ERROR",
             (_, Status::Full) => "STORAGE FULL",
             // A failed write always shows, except the bulk failure that moved
             // the ride to internal flash: the fallback toast names that one.
             (Request::Completed(result), _)
-                if !result.ok && !(self.falling_back() && self.ride.request_on == Medium::Bulk) =>
+                if !result.ok
+                    && !(self.falling_back() && self.ride.request_on() == Medium::Bulk) =>
             {
                 "WRITE FAILED"
             }
-            _ if matches!(self.ride.message, RideMessage::StorageNotReady) => "STORAGE NOT READY",
+            _ if matches!(self.notices.message(), RideMessage::StorageNotReady) => {
+                "STORAGE NOT READY"
+            }
             (_, status) => {
                 return self
                     .storage_toast(status)
@@ -626,7 +627,7 @@ impl Runtime {
         if self.falling_back() {
             let text = match status {
                 Status::Recording => "RECORDING INT",
-                Status::Paused if self.ride.auto.paused() => "AUTO PAUSED INT",
+                Status::Paused if self.ride.auto().paused() => "AUTO PAUSED INT",
                 Status::Paused => "PAUSED INT",
                 Status::Saved => "SAVED INT",
                 Status::Recovered => "RECOVERED INT",
@@ -650,7 +651,7 @@ impl Runtime {
     /// rather than for the whole ride.
     fn auto_pause_toast(&self, status: Status, now: u64) -> Option<Toast> {
         let text = match status {
-            Status::Paused if self.ride.auto.paused() && self.navigation.pause_hidden() => {
+            Status::Paused if self.ride.auto().paused() && self.navigation.pause_hidden() => {
                 "AUTO PAUSED"
             }
             Status::Recording
@@ -676,7 +677,7 @@ impl Runtime {
     /// The summary has an elevation page: the ride, live or read back, charted
     /// altitude.
     pub(super) fn has_elevation(&self) -> bool {
-        self.ride.trace.len() >= 2
+        self.ride.trace().len() >= 2
     }
 
     /// What the summary shows beyond the totals.
@@ -691,14 +692,14 @@ impl Runtime {
         After {
             page: self.navigation.summary_page(),
             saving,
-            best: self.ride.efforts.best(),
-            climbs: Some(self.ride.climbing.count),
+            best: self.ride.efforts().best(),
+            climbs: Some(self.ride.climbing().count),
             // The open lap counts: a ride without a lap press is one lap.
-            laps: Some(self.ride.laps.count().saturating_add(1)),
+            laps: Some(self.ride.laps().count().saturating_add(1)),
             past: false,
             delete: false,
             elevation: self.has_elevation(),
-            found: self.ride.bests_found,
+            found: self.ride.bests_found(),
             offer: self.summary_offer(),
             recovery: self.recovery.reading(now),
         }
@@ -800,7 +801,7 @@ impl Runtime {
     /// Room for the ride about to start, wherever it will go.
     fn storage_check(&self) -> Check {
         const UNFORMATTED: (&str, &str) = ("STORAGE NOT FORMATTED", "OFF AND ON TO FORMAT");
-        if self.format.owns_storage() {
+        if self.format.stops_own_storage() {
             return Check::new(Level::Problem, UNFORMATTED.0, UNFORMATTED.1);
         }
         let medium = self.ride.medium();
@@ -1071,7 +1072,7 @@ impl Runtime {
             Row::Bests => value.push_str(self.bests.summary().as_str()),
             Row::Form => value.push_str(self.form.summary().as_str()),
             Row::Storage => {
-                if self.ride.bulk.status() != Status::Unsupported {
+                if self.ride.bulk().status() != Status::Unsupported {
                     let _ = write!(note, "{}", self.ride.medium().label());
                 }
                 let recorder = self.ride.recorder(self.ride.medium());
@@ -1123,19 +1124,19 @@ impl Runtime {
             second,
             page: self.navigation.page(),
             ride_page: self.navigation.ride_page(),
-            lap: self.ride.laps.current().number,
-            climbing: self.ride.climbs.climbing().is_some(),
+            lap: self.ride.laps().current().number,
+            climbing: self.ride.climbs().climbing().is_some(),
         };
         if self.shown.stale(self.policy().numbers, moment) {
             let ride = &self.ride;
             let readout = Readout {
                 live: self.readings.live,
                 power_3s_watts: self.readings.power_3s_watts,
-                totals: ride.totals,
-                zone_time: ride.zone_time,
-                lap: ride.laps.current(),
-                previous_lap: ride.laps.previous(),
-                climbing: ride.climbs.climbing(),
+                totals: *ride.totals(),
+                zone_time: *ride.zone_time(),
+                lap: ride.laps().current(),
+                previous_lap: ride.laps().previous(),
+                climbing: ride.climbs().climbing(),
                 training: self.shown_workout(&self.preferences.profile),
                 paused_secs: self.navigation.paused_since().map_or(0, |since| {
                     (now.saturating_sub(since) / 1000).min(u64::from(u32::MAX)) as u32

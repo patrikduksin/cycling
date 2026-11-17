@@ -17,7 +17,7 @@ use crate::clock::Zone;
 use crate::ride::directory::{Journal, RideIndex};
 use crate::ride::log::{Status, Summary};
 use crate::ride::medium::Medium;
-use crate::ride::replay::{Progress, Replay, Sums};
+use crate::ride::replay::{Progress, Replay};
 use crate::ride::week::Weeks;
 use crate::screens::history::{self, List, Row};
 use crate::screens::kinetic::Kinetic;
@@ -307,24 +307,14 @@ impl Runtime {
         }
         // The sums are about to hold this ride: keep Home's last ride.
         if self.history.home_last.is_none() {
-            let totals = &self.ride.totals;
+            let totals = self.ride.totals();
             self.history.home_last = Some(totals.distance_mm());
         }
-        self.sums().clear();
+        self.ride.clear_sums();
         self.history.cursor = index;
         let upper = self.ride.recorder(medium).next_slot();
         self.history.open = Some((medium, Replay::new(ride_id, upper), summary));
         self.navigation.go(To::PastRide);
-    }
-
-    fn sums(&mut self) -> Sums<'_> {
-        let ride = &mut self.ride;
-        Sums {
-            totals: &mut ride.totals,
-            zone_time: &mut ride.zone_time,
-            efforts: &mut ride.efforts,
-            trace: &mut ride.trace,
-        }
     }
 
     /// MOVE turns the page, BACK returns to the list, ACT sends the ride to
@@ -570,14 +560,14 @@ impl Runtime {
             Progress::Done => Saving::Saved,
             Progress::Missing => Saving::Unreadable,
         };
-        view.totals = replay.totals(self.ride.totals);
-        view.zone_time = self.ride.zone_time;
+        view.totals = replay.totals(*self.ride.totals());
+        view.zone_time = *self.ride.zone_time();
         let active_ms = summary.map_or(0, |s| s.active_ms).max(replay.active_ms);
         view.active_secs = active_ms / 1000;
         let after = After {
             page: self.navigation.summary_page(),
             saving,
-            best: self.ride.efforts.best(),
+            best: self.ride.efforts().best(),
             climbs: facts
                 .and_then(|facts| facts.climbing)
                 .map(|climbing| climbing.count),
@@ -607,7 +597,7 @@ impl Runtime {
         let distance = self
             .history
             .home_last
-            .unwrap_or_else(|| self.ride.totals.distance_mm());
+            .unwrap_or_else(|| self.ride.totals().distance_mm());
         if !self.recording() && distance > 0 {
             return crate::screens::home::last_ride(distance);
         }

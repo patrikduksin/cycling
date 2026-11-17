@@ -50,9 +50,9 @@ mod ride_control;
 mod seen;
 mod setup;
 mod storage;
+pub use crate::ride::current::Journals;
 pub(crate) use format::Scope;
 pub use input::HOLD_GAP_MS;
-pub use recording::Journals;
 pub use seen::Seen;
 pub use storage::{Health, StorageHealth, Store};
 mod phone;
@@ -98,7 +98,8 @@ pub struct Runtime {
     calibration: calibration::Phase,
     readings: readings::Readings,
     sensors: Client,
-    ride: recording::Ride,
+    ride: crate::ride::current::Ride,
+    notices: ride_control::Notices,
     /// The summary's heart-rate recovery, measured after the finish.
     recovery: crate::ride::recovery::Recovery,
     preferences: preferences::Preferences,
@@ -126,6 +127,7 @@ pub struct Runtime {
     /// This pass's `tick` or `look_ahead` read or wrote storage.
     storage_worked: bool,
     micros_clock: Option<fn() -> u64>,
+    latency_clock: Option<fn() -> u64>,
 }
 
 impl Runtime {
@@ -141,7 +143,8 @@ impl Runtime {
             calibration: calibration::Phase::Idle,
             readings: readings::Readings::default(),
             sensors: Client::new(profile),
-            ride: recording::Ride::default(),
+            ride: crate::ride::current::Ride::default(),
+            notices: ride_control::Notices::default(),
             recovery: crate::ride::recovery::Recovery::default(),
             preferences: preferences::Preferences::default(),
             bests: crate::kept::bests::Kept::default(),
@@ -166,6 +169,7 @@ impl Runtime {
             reported: seen::Reported::default(),
             storage_worked: false,
             micros_clock: None,
+            latency_clock: None,
         }
     }
 
@@ -210,7 +214,7 @@ impl Runtime {
     /// and recording milestones (`RIDE TIMING`, `sdk.timing` logs). Nothing a
     /// rider sees or the journal holds reads it, so a replay need not.
     pub fn set_latency_clock(&mut self, clock: fn() -> u64) {
-        self.ride.latency_clock = Some(clock);
+        self.latency_clock = Some(clock);
     }
 
     /// Supply a monotonic microsecond clock that times the map's fills and
@@ -240,11 +244,11 @@ impl Runtime {
         now: u64,
     ) {
         use crate::ride::log::Status;
-        if self.format.owns_storage() {
+        if self.format.stops_own_storage() {
             return;
         }
-        if self.ride.internal.status() == Status::Scanning
-            || self.ride.bulk.status() == Status::Scanning
+        if self.ride.internal().status() == Status::Scanning
+            || self.ride.bulk().status() == Status::Scanning
         {
             // Wrapped as `tick` wraps them, so `record` is built once.
             self.record(
@@ -363,7 +367,7 @@ impl Runtime {
             self.display.redraw();
         }
         self.note_milestones(now, ant, &sample);
-        if self.format.owns_storage() {
+        if self.format.stops_own_storage() {
             return;
         }
         self.record(store, bulk, now, sample);

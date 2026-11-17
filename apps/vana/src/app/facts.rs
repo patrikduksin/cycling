@@ -18,7 +18,7 @@ impl Runtime {
     pub(super) fn service_facts(&mut self, bulk: &mut impl ReadWrite, now: u64) {
         let riding = self.ride.active().riding();
         self.facts.follow(bulk, self.recovery.reading(now), riding);
-        let ready = self.ride.bulk.status().usable();
+        let ready = self.ride.bulk().status().usable();
         let busy = self.ride.pending() || self.ride.open();
         self.facts.scan_step(bulk, now, ready, busy);
     }

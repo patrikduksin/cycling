@@ -7,12 +7,12 @@
 use super::Runtime;
 use super::format::Event;
 use super::pace::Touched;
-use super::recording::Request;
 use super::{Scope, Store};
+use crate::ride::current::{Op, Request};
 use crate::ride::journal::Read;
 use crate::ride::log::{SLOT_SIZE, Slot, VERSION, transport_checksum};
 use crate::ride::medium::Medium;
-use crate::ride::recorder::{Action, Recorder, Refused};
+use crate::ride::recorder::{Action, Refused};
 use crate::ride::storage::RideStorage;
 use crate::sensors::ble_profile::Profile;
 use core::fmt::Write;
@@ -82,7 +82,7 @@ impl Runtime {
         // following a Clear reads it while the wipe holds storage.
         let status = (domain, operation, argument, bound, more)
             == (Some("RIDE"), Some("STATUS"), None, None, false);
-        if self.format.holds_storage() && !status {
+        if self.format.holds_host_storage() && !status {
             return "BUSY";
         }
         let mut workout = words.split_ascii_whitespace();
@@ -116,9 +116,7 @@ impl Runtime {
                 return "BUSY";
             }
             if stored == Medium::Bulk {
-                return self.submit(stored, output, |recorder, token| {
-                    recorder.clear(bound, token)
-                });
+                return self.submit(stored, output, Op::Clear(bound));
             }
             return NotQueued::reply(self.clear_internal(bound, output));
         }
@@ -133,9 +131,7 @@ impl Runtime {
         }
         let riding = named.unwrap_or(self.ride.shown());
         match (domain, operation, argument) {
-            (Some("RIDE"), Some("INIT"), None) => {
-                self.submit(stored, output, |recorder, token| recorder.initialize(token))
-            }
+            (Some("RIDE"), Some("INIT"), None) => self.submit(stored, output, Op::Initialize),
             (Some("RIDE"), Some("SENSORS"), None) if named.is_none() => {
                 self.ble_sensors(now, output)
             }
@@ -166,12 +162,7 @@ impl Runtime {
                     return "BUSY";
                 }
                 let medium = named.unwrap_or(self.ride.target(action));
-                self.submit(medium, output, |recorder, token| {
-                    recorder
-                        .request(action, now, token)
-                        .then_some(())
-                        .ok_or(Refused::State)
-                })
+                self.submit(medium, output, Op::Request(action, now))
             }
             (Some("EXPORT"), Some("INFO"), None) => self.export_info(stored, output),
             (Some("EXPORT"), Some("SLOT"), Some(index)) => {
@@ -185,51 +176,35 @@ impl Runtime {
         if self.ride.open() {
             return Err(NotQueued::State);
         }
-        let mut clear = None;
-        self.queue(Medium::Internal, output, |recorder, token| {
-            clear = Some(token);
-            recorder.clearable(bound)
-        })?;
+        let clear = self.queue(Medium::Internal, output, Op::Clearable(bound))?;
         let scope = Scope::one(Store::Internal);
-        self.format_event(Event::Confirm { scope, clear });
+        self.format_event(Event::Confirm {
+            scope,
+            clear: Some(clear),
+        });
         Ok(())
     }
 
     /// Queue a recorder mutation, reporting its token before changing state so
     /// an undersized reply cannot hide that a command was queued. The host's
     /// previous outcome must be read first; a rider's never holds it up.
-    fn submit(
-        &mut self,
-        medium: Medium,
-        output: &mut impl Write,
-        start: impl FnOnce(&mut Recorder, u32) -> Result<(), Refused>,
-    ) -> &'static str {
-        NotQueued::reply(self.queue(medium, output, start))
+    fn submit(&mut self, medium: Medium, output: &mut impl Write, op: Op) -> &'static str {
+        NotQueued::reply(self.queue(medium, output, op).map(drop))
     }
 
-    fn queue(
-        &mut self,
-        medium: Medium,
-        output: &mut impl Write,
-        start: impl FnOnce(&mut Recorder, u32) -> Result<(), Refused>,
-    ) -> Result<(), NotQueued> {
-        if !matches!(self.ride.host, Request::Idle) || self.ride.pending() {
+    fn queue(&mut self, medium: Medium, output: &mut impl Write, op: Op) -> Result<u32, NotQueued> {
+        if !matches!(self.ride.host(), Request::Idle) || self.ride.pending() {
             return Err(NotQueued::Busy);
         }
         if write!(output, "token={}", self.ride.next_token()).is_err() {
             return Err(NotQueued::Output);
         }
         self.ride
-            .submit_host(medium, start)
+            .submit_host(medium, op)
             .map_err(|refused| match refused {
                 Refused::Foreign => NotQueued::Foreign,
                 Refused::State => NotQueued::State,
-            })?;
-        // A host action replaces the rider's last notice, as a rider's does.
-        if matches!(self.ride.request, Request::Completed(_)) {
-            self.ride.request = Request::Idle;
-        }
-        Ok(())
+            })
     }
 
     fn profile_command(
@@ -398,15 +373,15 @@ impl Runtime {
             return "OUTPUT";
         }
         if medium == Medium::Bulk {
-            let log = self.ride.bulk_media.log();
+            let log = self.ride.bulk_media().log();
             if write!(
                 output,
                 " capacity={} store={:016x} generation={} boot_reads={} layout={}",
                 recorder.slots(),
                 log.map_or(0, |log| log.store_id()),
                 log.map_or(0, |log| log.generation()),
-                self.ride.bulk_media.boot_reads(),
-                self.ride.bulk_media.region().name()
+                self.ride.bulk_media().boot_reads(),
+                self.ride.bulk_media().region().name()
             )
             .is_err()
             {
@@ -418,7 +393,7 @@ impl Runtime {
             output,
             " fallback={} moved={} page={} home_cursor={} pending={}",
             u8::from(fallback),
-            u8::from(self.ride.moved),
+            u8::from(self.ride.moved()),
             if self.power.view().is_some() {
                 "power"
             } else {
@@ -431,12 +406,12 @@ impl Runtime {
         {
             return "OUTPUT";
         }
-        if let Request::Completed(result) = self.ride.host {
+        if let Request::Completed(result) = self.ride.host() {
             let outcome = if result.ok { "OK" } else { "FAILED" };
             if write!(output, " completed={} result={outcome}", result.token).is_err() {
                 return "OUTPUT";
             }
-            self.ride.host = Request::Idle;
+            self.ride.host_reported();
         }
         "OK"
     }
@@ -470,7 +445,7 @@ impl Runtime {
     /// without a recovered epoch (unformatted, or its metadata lost) has no
     /// verifiable upper bound, so it is neither empty nor clearable.
     fn verified_store(&self, medium: Medium) -> bool {
-        medium == Medium::Internal || self.ride.bulk_media.log().is_some()
+        medium == Medium::Internal || self.ride.bulk_media().log().is_some()
     }
 
     fn export_info(&self, medium: Medium, output: &mut impl Write) -> &'static str {
@@ -494,7 +469,7 @@ impl Runtime {
             return "OUTPUT";
         }
         if medium == Medium::Bulk {
-            let log = self.ride.bulk_media.log();
+            let log = self.ride.bulk_media().log();
             if write!(
                 output,
                 " {:016x} {} {}",

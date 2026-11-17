@@ -349,7 +349,7 @@ fn a_session_opened_while_the_journal_scans_lists_its_rides() {
         phone.step();
     }
     assert_eq!(
-        phone.runtime.ride.internal.status(),
+        phone.runtime.ride.internal().status(),
         crate::ride::log::Status::Scanning
     );
     let token = phone.token();

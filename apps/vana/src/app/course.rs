@@ -2,7 +2,6 @@
 //! cut off reads the stored course back.
 use super::Runtime;
 use super::cues::Cue;
-use super::recording::{Outing, Ride};
 use crate::kept;
 use crate::kept::course::{Kept, Seen};
 use crate::ride::breadcrumb::rebuild::Rebuild;
@@ -13,6 +12,7 @@ use crate::ride::course::route_leg::{self, RouteLeg};
 use crate::ride::course::stored::{self, Finder, Finding};
 use crate::ride::course::turns::Turn;
 use crate::ride::course::{self, Course};
+use crate::ride::current::{Outing, Ride};
 use crate::ride::journal::Read;
 use crate::ride::log::{Slot, Status, decode};
 use crate::ride::medium::Medium;
@@ -178,7 +178,7 @@ impl Runtime {
     /// replacing it.
     pub(super) fn service_course(&mut self, media: &mut impl ReadWrite, now: u64) {
         let seen = Seen {
-            ready: self.ride.bulk.status().usable(),
+            ready: self.ride.bulk().status().usable(),
             uploading: self.phone_uploading(),
         };
         let Some(track) = self.track.as_deref_mut() else {
@@ -305,8 +305,13 @@ impl Runtime {
         });
         place_course(state, bulk);
         if state.breadcrumb.take_pass() {
-            self.ride
-                .passed_start(self.preferences.options.auto_lap, now);
+            let playing = self.training.player.is_some();
+            if let Some(lap) =
+                self.ride
+                    .passed_start(self.preferences.options.auto_lap, playing, now)
+            {
+                self.notices.lap_closed(lap, now);
+            }
             self.display.redraw();
         }
         let Some(event) = event else {

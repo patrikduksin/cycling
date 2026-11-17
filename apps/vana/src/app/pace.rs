@@ -132,7 +132,7 @@ impl Runtime {
     /// VANA's own next deadline: while a ride records, its next 1 Hz sample
     /// and odometer step; on the ride page, the radar's next repeat beep.
     fn due_ms(&self) -> Option<u64> {
-        let recording = [&self.ride.internal, &self.ride.bulk]
+        let recording = [self.ride.internal(), self.ride.bulk()]
             .into_iter()
             .filter_map(|recorder| recorder.sample_due_ms())
             .min()

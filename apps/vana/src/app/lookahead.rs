@@ -140,7 +140,7 @@ impl Runtime {
     /// One bounded step of the look-ahead against the TERRAIN volume of the
     /// owned region `media`.
     pub fn look_ahead(&mut self, media: &mut impl ReadWrite, now: u64) -> terrain::Status {
-        if self.format.holds_storage() {
+        if self.format.holds_host_storage() {
             return terrain::Status::NoPack;
         }
         let Some(state) = self.lookahead.as_deref_mut() else {
@@ -219,7 +219,7 @@ impl Runtime {
     /// ride, so no pin outlives one.
     pub(super) fn pin_climb(&mut self, fresh: bool) {
         let recording = self.recording();
-        let odometer = self.ride.totals.distance_mm();
+        let odometer = self.ride.totals().distance_mm();
         let Some(state) = self.lookahead.as_deref_mut() else {
             return;
         };
@@ -250,7 +250,7 @@ impl Runtime {
     /// stand in for the engine.
     #[cfg(test)]
     pub(super) fn pin_for_test(&mut self, fresh: bool) {
-        let odometer = self.ride.totals.distance_mm();
+        let odometer = self.ride.totals().distance_mm();
         let state = self
             .lookahead
             .as_deref_mut()

@@ -350,7 +350,7 @@ fn volume<System>(
     out: &mut impl Write,
 ) -> &'static str {
     let mut card = board.card();
-    let refused = if sdk.holds_storage() {
+    let refused = if sdk.holds_host_storage() {
         Some("formatting")
     // A transfer pauses the app, and a STORE format erases every file in
     // STORE; refuse both while a ride records. Other volume writes never

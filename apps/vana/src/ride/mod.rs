@@ -6,6 +6,7 @@ pub mod bulk;
 pub mod climb;
 pub mod climb_ahead;
 pub mod course;
+pub mod current;
 pub mod directory;
 pub mod elevation;
 pub mod fit;

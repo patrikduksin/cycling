@@ -162,7 +162,7 @@ impl Runtime {
     pub(super) fn service_bests(&mut self, media: &mut impl ReadWrite, now: u64) {
         let seen = Seen {
             open: self.navigation.page() == Page::Bests,
-            ready: self.ride.bulk.status().usable(),
+            ready: self.ride.bulk().status().usable(),
             busy: self.ride.pending() || self.ride.open(),
         };
         let out = self.bests.service(seen, media, now);

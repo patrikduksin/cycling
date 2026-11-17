@@ -30,7 +30,7 @@ const INTENT_WRITES: u32 = 3;
 
 /// The trace goes on writing the card after a wipe of the boot flash alone.
 fn cut_during_the_wipe(sim: &Sim, boot: u32) -> bool {
-    sim.device.boot == boot && sim.device.sdk.owns_storage()
+    sim.device.boot == boot && sim.device.sdk.stops_own_storage()
 }
 
 fn a_wipe_cut_at_every_write(foreign: &[Store], start: Start, at: CutAt) {

@@ -200,7 +200,7 @@ impl Runtime {
         if self.card_probe.is_some() {
             return;
         }
-        self.card_probe = match self.ride.bulk.status() {
+        self.card_probe = match self.ride.bulk().status() {
             Status::Scanning => None,
             Status::Unsupported | Status::Unavailable | Status::Error => {
                 Some(StorageHealth::card(Health::Unusable))
@@ -213,7 +213,7 @@ impl Runtime {
         let mut health = self.card_probe.unwrap_or_default();
         health.set(
             Store::Internal,
-            match self.ride.internal.status() {
+            match self.ride.internal().status() {
                 Status::Scanning => Health::Unread,
                 Status::NeedsInit => Health::Blank,
                 Status::Foreign => Health::Foreign,

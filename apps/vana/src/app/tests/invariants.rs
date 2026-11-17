@@ -15,7 +15,7 @@ fn riding() -> Recorder {
 }
 
 fn recording(mut runtime: Runtime) -> Runtime {
-    runtime.ride.internal = riding();
+    *runtime.ride.internal_mut() = riding();
     runtime
 }
 
@@ -50,7 +50,7 @@ fn at_summary() -> Runtime {
         step(&mut runtime, now);
         now += 250;
     }
-    assert!(runtime.ride.internal.riding());
+    assert!(runtime.ride.internal().riding());
     for (button, at) in [
         (Button::BottomRight, now),
         (Button::TopLeft, now + 400),
@@ -85,7 +85,9 @@ fn violating(rule: Rule) -> Runtime {
             runtime.power.sheet = Sheet::Confirm { since: 0 };
         }
         Rule::SummaryWhileRiding => runtime = recording(at_summary()),
-        Rule::HostTokenOwned => runtime.ride.host = crate::app::recording::Request::Pending(9),
+        Rule::HostTokenOwned => runtime
+            .ride
+            .set_host(crate::ride::current::Request::Pending(9)),
         Rule::PageWhileWiping => {
             runtime.format = crate::app::format::Format::Running {
                 stage: crate::app::format::Stage::SettleIntent,
@@ -97,8 +99,8 @@ fn violating(rule: Rule) -> Runtime {
         }
         Rule::EditingOffSettings => runtime.navigation.edit_off_settings(),
         Rule::TwoRidingRides => {
-            runtime.ride.internal = riding();
-            runtime.ride.bulk = riding();
+            *runtime.ride.internal_mut() = riding();
+            *runtime.ride.bulk_mut() = riding();
         }
     }
     runtime
@@ -119,14 +121,14 @@ fn each_cross_owner_rule_is_broken_by_its_own_state() {
 fn a_broken_recorder_on_either_medium_names_its_medium() {
     for rule in recorder::Rule::ALL {
         let mut internal = booted(Profile::HeartRate);
-        internal.ride.internal = Recorder::violating(*rule);
+        *internal.ride.internal_mut() = Recorder::violating(*rule);
         assert_eq!(
             internal.broken(),
             Some(Broken::Recorder(Medium::Internal, *rule)),
             "{rule}"
         );
         let mut bulk = booted(Profile::HeartRate);
-        bulk.ride.bulk = Recorder::violating(*rule);
+        *bulk.ride.bulk_mut() = Recorder::violating(*rule);
         assert_eq!(
             bulk.broken(),
             Some(Broken::Recorder(Medium::Bulk, *rule)),
@@ -149,7 +151,7 @@ fn consistent_runtimes_hold() {
 #[test]
 fn a_ride_from_start_to_summary_holds_after_every_step() {
     let runtime = at_summary();
-    assert_eq!(runtime.ride.internal.status(), Status::Saved);
+    assert_eq!(runtime.ride.internal().status(), Status::Saved);
 }
 
 #[test]

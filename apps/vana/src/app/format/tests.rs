@@ -357,13 +357,13 @@ fn no_ride_starts_before_the_intent_is_read_or_while_a_wipe_resumes() {
     assert!(Idle.admits_rides());
     assert!(Declined.admits_rides());
     for format in [Unread, Resuming { scope: every }, Failed, Done] {
-        assert!(format.holds_storage(), "{format:?}");
+        assert!(format.holds_host_storage(), "{format:?}");
     }
     for format in [Idle, ASKED, Declined] {
-        assert!(!format.holds_storage(), "{format:?}");
+        assert!(!format.holds_host_storage(), "{format:?}");
     }
     assert!(
-        !Resuming { scope: every }.owns_storage(),
+        !Resuming { scope: every }.stops_own_storage(),
         "boot scans go on"
     );
 }

@@ -377,7 +377,7 @@ impl<B: Board<System>> Device<B> {
         .expect("the panel is ready");
         let mut sdk = vana::app::Runtime::new(Default::default());
         sdk.service_format(&mut system, &mut card(), 0);
-        assert!(!sdk.holds_storage(), "the boot read its format intent");
+        assert!(!sdk.holds_host_storage(), "the boot read its format intent");
         Self {
             system,
             sdk,

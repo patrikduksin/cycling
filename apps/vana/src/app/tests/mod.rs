@@ -365,7 +365,7 @@ fn ready_runtime(journal: &mut Journal, radio: &mut Radio) -> Runtime {
         tick(&mut runtime, journal, radio, 0);
     }
     assert_eq!(
-        runtime.ride.internal.status(),
+        runtime.ride.internal().status(),
         crate::ride::log::Status::Ready
     );
     runtime

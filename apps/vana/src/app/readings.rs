@@ -587,10 +587,20 @@ impl Runtime {
             let profile = self.preferences.profile;
             // The climb page reads the climb under way; `follow_road` looks.
             let auto_lap = self.preferences.options.auto_lap;
-            let _ = self
-                .ride
-                .count(now, step, &sample, pressure, &profile, auto_lap);
-            if !self.ride.workout_events.is_empty() {
+            let training = &mut self.training;
+            if let Some(lap) = self.ride.count(
+                now,
+                step,
+                &sample,
+                pressure,
+                &profile,
+                auto_lap,
+                training.player.as_mut(),
+                &mut training.events,
+            ) {
+                self.notices.lap_closed(lap, now);
+            }
+            if !self.training.events.is_empty() {
                 self.workout_events(now);
             }
         }

@@ -1,8 +1,9 @@
 use super::Runtime;
 use super::cues::Cue;
 use super::navigation::To;
-use super::recording::{Discard, Request, RideMessage};
 use crate::ride::auto::{Call, Decision};
+use crate::ride::current::Discard;
+use crate::ride::laps::Lap;
 use crate::ride::log::Status;
 use crate::ride::recorder::Action;
 use crate::screens::chrome::Tone;
@@ -12,6 +13,65 @@ use device_api::input::Button;
 const ACT: Button = Button::BottomRight;
 const BACK: Button = Button::TopLeft;
 const MOVE: Button = Button::BottomLeft;
+
+/// A finished lap shows in the status row this long.
+const LAP_TOAST_MS: u64 = 2000;
+
+/// How long the brief notice of an automatic action stays up.
+const TOAST_MS: u64 = 3000;
+
+/// Ride-page feedback that does not come from the recorder state.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum RideMessage {
+    #[default]
+    Clear,
+    StorageNotReady,
+}
+
+#[derive(Default)]
+pub(super) struct Notices {
+    message: RideMessage,
+    /// The last finished lap and when it closed, for the status-row toast.
+    lap_toast: Option<(u64, Lap)>,
+    /// A lap closed since the last chime.
+    lap_chime: bool,
+    /// The last automatic action and when it happened, shown briefly.
+    auto_toast: Option<(&'static str, u64)>,
+}
+
+impl Notices {
+    pub(super) fn message(&self) -> RideMessage {
+        self.message
+    }
+
+    pub(super) fn lap_closed(&mut self, lap: Lap, now: u64) {
+        self.lap_toast = Some((now, lap));
+        self.lap_chime = true;
+    }
+
+    pub(super) fn clear_lap_toast(&mut self) {
+        self.lap_toast = None;
+    }
+
+    /// The finished lap the status row shows at `now`, for `LAP_TOAST_MS`.
+    pub(super) fn lap_toast(&self, now: u64) -> Option<Lap> {
+        self.lap_toast
+            .filter(|(at, _)| now.saturating_sub(*at) < LAP_TOAST_MS)
+            .map(|(_, lap)| lap)
+    }
+
+    pub(super) fn take_lap_chime(&mut self) -> bool {
+        core::mem::take(&mut self.lap_chime)
+    }
+
+    /// The notice of a recent automatic action, if any.
+    pub(super) fn auto_toast(&self, now: u64) -> &'static str {
+        match self.auto_toast {
+            Some((text, at)) if now.saturating_sub(at) <= TOAST_MS => text,
+            _ => "",
+        }
+    }
+}
 
 impl Runtime {
     pub(super) fn ride_press(&mut self, button: Button, held: bool, pressed_at: u64, now: u64) {
@@ -291,16 +351,16 @@ impl Runtime {
             ride: self.ride.active().status(),
             next: self.ride.recorder(self.ride.medium()).status(),
             pending: self.ride.pending(),
-            auto_paused: self.ride.auto.paused(),
+            auto_paused: self.ride.auto().paused(),
             recording: self.recording(),
             can_discard: self.deleted.writable(),
-            discard: self.ride.discard,
+            discard: self.ride.discard(),
         }
     }
 
     fn apply(&mut self, step: Step, now: u64) {
         if let Some(note) = step.note {
-            self.ride.message = note;
+            self.notices.message = note;
         }
         match step.go {
             None => {}
@@ -309,11 +369,11 @@ impl Runtime {
                 self.navigation.go(To::Ride);
             }
             Some(Go::BackToRide) => {
-                self.ride.discard = Discard::Idle;
+                self.ride.clear_discard();
                 self.navigation.go(To::Page(Page::Ride));
             }
             Some(Go::EndRide) => {
-                self.ride.clear_lap_toast();
+                self.notices.clear_lap_toast();
                 self.navigation.go(To::Page(Page::EndRide));
             }
             Some(Go::DiscardRide) => self.navigation.go(To::Page(Page::DiscardRide)),
@@ -323,13 +383,13 @@ impl Runtime {
                 if self.navigation.page() != Page::Summary {
                     self.recovery.finish(now);
                 }
-                let news = super::bests::news(&self.ride.bests_found, &self.bests.bests);
+                let news = super::bests::news(&self.ride.bests_found(), &self.bests.bests);
                 self.navigation.go(To::Summary { news });
             }
             Some(Go::Home) => self.ride_left(),
             Some(Go::Discarded) => {
-                let hidden = self.ride.discard == Discard::Saved { hidden: true };
-                self.ride.discard = Discard::Idle;
+                let hidden = self.ride.discard() == Discard::Saved { hidden: true };
+                self.ride.clear_discard();
                 self.ride_left();
                 if hidden {
                     self.navigation.discarded("RIDE DISCARDED", Tone::Info, now);
@@ -341,12 +401,12 @@ impl Runtime {
         }
         match step.effect {
             Effect::None => {}
-            Effect::TakeOverPause => self.ride.auto.manual(),
+            Effect::TakeOverPause => self.ride.auto_manual(),
             Effect::Lap => {
-                if let Some(lap) = self.ride.laps.lap(now)
+                if let Some(lap) = self.ride.lap(now)
                     && !self.workout_lap(now)
                 {
-                    self.ride.lap_closed(lap, now);
+                    self.notices.lap_closed(lap, now);
                 }
             }
             Effect::NotReadyToast => self.navigation.toast("STORAGE NOT READY", Tone::Alert, now),
@@ -362,39 +422,32 @@ impl Runtime {
     }
 
     fn submit_ride(&mut self, action: Action, origin: Origin, now: u64) -> bool {
-        self.ride.request = Request::Idle;
+        self.ride.clear_request();
         let medium = self.ride.target(action);
-        let accepted = self.format.admits_rides()
-            && self.ride.submit(medium, |recorder, token| {
-                recorder.request(action, now, token)
-            });
-        if accepted
-            && action == Action::Finish
-            && self.navigation.page() == Page::DiscardRide
-            && let Request::Pending(token) = self.ride.request
-        {
-            self.ride.discard = Discard::Asked(token);
+        let accepted = self.format.admits_rides() && self.ride.submit(medium, action, now);
+        if accepted && action == Action::Finish && self.navigation.page() == Page::DiscardRide {
+            self.ride.ask_discard();
         }
         match (origin, accepted) {
             (Origin::Rider { pressed_at }, true) => {
-                self.ride.auto.manual();
-                self.ride.auto_toast = None;
+                self.ride.auto_manual();
+                self.notices.auto_toast = None;
                 if action == Action::Start {
                     self.timing.ride_press(pressed_at);
                 }
             }
             (Origin::Rider { .. }, false) => {}
             (Origin::Auto(decision), true) => {
-                self.ride.auto.accepted(decision);
+                self.ride.auto_accepted(decision);
                 let toast = match decision {
                     Decision::Pause => "",
                     Decision::Resume => "AUTO RESUME",
                     Decision::Start => "AUTO START",
                 };
-                self.ride.auto_toast = Some((toast, now));
+                self.notices.auto_toast = Some((toast, now));
                 self.display.redraw();
             }
-            (Origin::Auto(_), false) => self.ride.auto.declined(),
+            (Origin::Auto(_), false) => self.ride.auto_declined(),
         }
         accepted
     }

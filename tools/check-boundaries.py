@@ -39,13 +39,6 @@ TEST_SOURCE_SEAMS = {
     },
 }
 
-SINGLE_WRITERS = {
-    "RideMessage::Clear": "apps/vana/src/app/ride_control.rs",
-    "RideMessage::StorageNotReady": "apps/vana/src/app/ride_control.rs",
-}
-ASSIGNMENT = re.compile(r'(?<![=!<>])=\s*(?:\w+\s*::\s*)*(' + '|'.join(
-    re.escape(value).replace('::', r'\s*::\s*') for value in SINGLE_WRITERS) + r')\b')
-
 DOMAIN = ('ride', 'kept', 'sensors', 'workout')
 LAYERS = ('app', 'screens')
 LAYER_RULE = (f'domain code ({", ".join(d + "/" for d in DOMAIN)}) never reaches crate::app or crate::screens: '
@@ -146,17 +139,6 @@ def violations(text, forbidden, portable=False, allowed_paths=()):
         if portable and re.search(r'c606|esp32|magene', condition, re.I):
             report(match.start(), 'board-specific condition in portable code')
     return sorted(findings)
-
-
-def foreign_writes(text, path):
-    code = STRING.sub(lambda match: blank(match.group()), without_comments(text))
-    findings = []
-    for match in ASSIGNMENT.finditer(code):
-        value = re.sub(r'\s', '', match[1])
-        if path != SINGLE_WRITERS[value]:
-            line = code.count('\n', 0, match.start()) + 1
-            findings.append((line, f'only {SINGLE_WRITERS[value]} assigns {value}; raise its event instead'))
-    return findings
 
 
 def foreign_stack_waits(text, path):
@@ -438,14 +420,6 @@ ui = { package = "firmware-shell", path = "../shell" }
     assert violations('use crate::{commands as dispatch};', *rules)
     assert not violations('use firmware_shell::Shell;', *source_rules('c606-firmware', Path('src/main.rs'), aliases))
     assert violations('use board::Board;', *source_rules('firmware-shell', Path('src/lib.rs'), aliases))
-    elsewhere = 'apps/vana/src/app/input.rs'
-    for source in ['self.ride.message = RideMessage::Clear;', 'message = crate::app::recording::RideMessage::Clear;',
-                   'ride.message=RideMessage :: StorageNotReady']:
-        assert foreign_writes(source, elsewhere), source
-    for source in ['if message == RideMessage::Clear {}', 'message != RideMessage::Clear', '// message = RideMessage::Clear',
-                   'let name = "message = RideMessage::Clear";', 'message = RideMessage::ClearLater;']:
-        assert not foreign_writes(source, elsewhere), source
-    assert not foreign_writes('self.ride.message = RideMessage::Clear;', SINGLE_WRITERS['RideMessage::Clear'])
     recorder, deeper = ('ride', 'recorder'), ('ride', 'recorder', 'invariants')
     for source in ['use crate::app::Runtime;', 'let page = crate :: screens::workout::Page::Home;',
                    'use crate::{ride::log, app::Medium};', 'use crate::{\n    screens::{sensors},\n};',
@@ -561,8 +535,6 @@ def main():
                             for line, item in violations(path.read_text(), *rules,
                                 allowed_paths=TEST_SOURCE_SEAMS.get(path.relative_to(ROOT).as_posix(), ())))
             failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
-                            for line, reason in foreign_writes(path.read_text(), path.relative_to(ROOT).as_posix()))
-            failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                             for line, reason in layer_findings(path.read_text(), path.relative_to(ROOT).as_posix()))
             failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                             for line, reason in foreign_stack_waits(path.read_text(), path.relative_to(ROOT).as_posix()))
@@ -571,7 +543,7 @@ def main():
                                 for line, reason in check(path.read_text(), path.relative_to(ROOT).as_posix()))
     if failures:
         raise SystemExit('\n'.join(failures))
-    print(f'Boundaries, layers, single writers, the stack waiter, capabilities and the console passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
+    print(f'Boundaries, layers, the stack waiter, capabilities and the console passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
 
 
 if __name__ == '__main__':

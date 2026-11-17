@@ -221,11 +221,11 @@ impl Format {
         }
     }
 
-    pub(super) fn owns_storage(self) -> bool {
+    pub(super) fn stops_own_storage(self) -> bool {
         matches!(self, Self::Running { .. } | Self::Failed | Self::Done)
     }
 
-    pub(super) fn holds_storage(self) -> bool {
+    pub(super) fn holds_host_storage(self) -> bool {
         !matches!(self, Self::Idle | Self::Offered { .. } | Self::Declined)
     }
 
@@ -420,8 +420,8 @@ impl Runtime {
     /// boot scans, recording and indexing. A resumed wipe lets the boot
     /// scans run, as its scope on the card depends on them. Trace writes go
     /// on unless `wipes_traces`.
-    pub fn owns_storage(&self) -> bool {
-        self.format.owns_storage()
+    pub fn stops_own_storage(&self) -> bool {
+        self.format.stops_own_storage()
     }
 
     /// From boot until the intent is read, through a resumed wipe, and from
@@ -429,8 +429,8 @@ impl Runtime {
     /// storage work from outside the app waits: console and host storage
     /// commands answer `BUSY`, and neither the phone nor the look-ahead is
     /// served.
-    pub fn holds_storage(&self) -> bool {
-        self.format.holds_storage()
+    pub fn holds_host_storage(&self) -> bool {
+        self.format.holds_host_storage()
     }
 
     /// The wipe running takes STORE, and the trace file goes with it. The
@@ -455,7 +455,7 @@ impl Runtime {
                 Page::Ready
             }
             Go::JournalEmptied { clear } => {
-                self.ride.internal.wiped(clear);
+                self.ride.wiped(clear);
                 self.first_page()
             }
         };
@@ -474,7 +474,7 @@ impl Runtime {
     }
 
     pub(super) fn card_access(&self) -> CardAccess {
-        match self.ride.bulk.status() {
+        match self.ride.bulk().status() {
             Status::Unsupported | Status::Unavailable | Status::Error => CardAccess::Out,
             _ => CardAccess::Writable,
         }

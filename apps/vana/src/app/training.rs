@@ -35,7 +35,7 @@ use crate::workout::ftp::{Candidates, Question, Source};
 use crate::workout::history;
 use crate::workout::library::{Id, Library, LoadError, Outline};
 use crate::workout::model::{Length, Name, Played};
-use crate::workout::player::{Event, Player, Summary};
+use crate::workout::player::{Event, Events, Player, Summary};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
 use device_api::input::Button;
@@ -69,6 +69,11 @@ pub(super) struct Training {
     pub(super) missing: bool,
     /// The last workout ridden and how it went, once its ride is closed.
     pub(super) last: Option<(Name, Summary)>,
+    /// The workout this ride plays, kept after it ends until the rider
+    /// leaves the ride screen or starts the next ride.
+    pub(super) player: Option<Player>,
+    /// What the player reported during the last steps, for the runtime.
+    pub(super) events: Events,
 }
 
 impl Training {
@@ -160,8 +165,8 @@ impl Runtime {
     /// steps done and skipped, time on, under and over target, and a test's
     /// FTP. `None` after a free ride.
     pub fn workout_summary(&self) -> Option<(Name, Summary)> {
-        self.ride
-            .workout
+        self.training
+            .player
             .as_ref()
             .map(|player| (player.workout().name, player.summary()))
             .or(self.training.last)
@@ -169,13 +174,13 @@ impl Runtime {
 
     /// The workout the ride screen shows: the one this ride plays.
     pub(super) fn shown_workout(&self, profile: &TrainingProfile) -> Option<Shown> {
-        let player = self.ride.workout.as_ref()?;
+        let player = self.training.player.as_ref()?;
         Some(Shown::of(player, profile))
     }
 
     /// The ride screen has a workout page.
     pub(super) fn workout_pages(&self) -> bool {
-        self.ride.workout.is_some() || self.training.selected.is_some()
+        self.training.player.is_some() || self.training.selected.is_some()
     }
 
     /// List the uploads when the library is out of date: at boot and when
@@ -217,7 +222,7 @@ impl Runtime {
     /// Leaving the ride screen: the workout's summary stays readable, the
     /// next ride is free unless a workout is chosen again.
     pub(super) fn leave_workout(&mut self) {
-        if let Some(player) = self.ride.workout.take() {
+        if let Some(player) = self.training.player.take() {
             self.training.last = Some((player.workout().name, player.summary()));
         }
         self.training.selected = None;
@@ -301,12 +306,12 @@ impl Runtime {
     /// MARK during a workout: the lap the press closed ends the step too.
     /// Returns whether the workout took the press.
     pub(super) fn workout_lap(&mut self, now: u64) -> bool {
-        let Some(player) = self.ride.workout.as_mut().filter(|p| !p.done()) else {
+        let Some(player) = self.training.player.as_mut().filter(|p| !p.done()) else {
             return false;
         };
         let events = player.skip();
         for event in events {
-            let _ = self.ride.workout_events.push(event);
+            let _ = self.training.events.push(event);
         }
         self.workout_events(now);
         true
@@ -314,7 +319,7 @@ impl Runtime {
 
     /// A tap on the workout page's time left adds to the step.
     pub(super) fn extend_step(&mut self, now: u64) {
-        let Some(player) = self.ride.workout.as_mut() else {
+        let Some(player) = self.training.player.as_mut() else {
             return;
         };
         let length = player.now(&self.preferences.profile).played.step.length;
@@ -329,7 +334,7 @@ impl Runtime {
 
     /// Act on what the player reported: beeps, laps, toasts, the FTP sheet.
     pub(super) fn workout_events(&mut self, now: u64) {
-        let events = core::mem::take(&mut self.ride.workout_events);
+        let events = core::mem::take(&mut self.training.events);
         for event in events {
             match event {
                 Event::Countdown(_) => self.training.beep(Beep::Count, now),
@@ -338,8 +343,8 @@ impl Runtime {
                     self.training.beep(Beep::Step, now);
                     let profile = self.preferences.profile;
                     let played = self
-                        .ride
-                        .workout
+                        .training
+                        .player
                         .as_ref()
                         .filter(|player| !player.done())
                         .map(|player| player.now(&profile).played);
@@ -511,7 +516,7 @@ impl Runtime {
             output,
             "workout={} running={} step={}/{} index={} repetition={} done={}",
             Underscored(shown.name),
-            u8::from(self.ride.workout.is_some()),
+            u8::from(self.training.player.is_some()),
             now.position + 1,
             now.steps,
             now.played.index,
@@ -533,15 +538,15 @@ impl Runtime {
             write!(output, " compliance={compliance:?}")?;
         }
         let summary = self
-            .ride
-            .workout
+            .training
+            .player
             .as_ref()
             .map(Player::summary)
             .unwrap_or_default();
         write!(
             output,
             " laps={} skipped={} in_pct={} ftp={} offer={}",
-            self.ride.laps.count(),
+            self.ride.laps().count(),
             summary.skipped,
             summary.in_target_pct().map_or(-1, i16::from),
             summary.ftp.unwrap_or(0),

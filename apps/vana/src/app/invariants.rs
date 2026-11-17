@@ -1,7 +1,7 @@
 use super::Runtime;
 use super::format::Format;
 use super::power::Sheet;
-use super::recording::Request;
+use crate::ride::current::Request;
 use crate::ride::medium::Medium;
 use crate::ride::recorder::Action;
 use crate::ride::recorder::invariants as recorder;
@@ -20,7 +20,7 @@ invariants! {
                 && runtime.ride.active().riding()
                 && runtime.ride.active().pending_action() != Some(Action::Finish),
         TwoRidingRides: "both journals riding"
-            if runtime.ride.internal.riding() && runtime.ride.bulk.riding(),
+            if runtime.ride.internal().riding() && runtime.ride.bulk().riding(),
         HostTokenOwned: "a host operation waits without exactly one owner of its token"
             if runtime.host_token_unowned(),
         PageWhileWiping: "a page other than FORMAT or the brand shown while a wipe runs"
@@ -48,7 +48,7 @@ impl core::fmt::Display for Broken {
 
 impl Runtime {
     fn host_token_unowned(&self) -> bool {
-        let host = match self.ride.host {
+        let host = match self.ride.host() {
             Request::Pending(token) => Some(token),
             Request::Idle | Request::Completed(_) => None,
         };
@@ -80,6 +80,6 @@ impl Runtime {
     #[cfg(any(test, feature = "invariants"))]
     #[doc(hidden)]
     pub fn break_a_rule(&mut self) {
-        self.ride.host = Request::Pending(9);
+        self.ride.set_host(Request::Pending(9));
     }
 }

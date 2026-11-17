@@ -15,11 +15,11 @@ impl Runtime {
     /// Look at the road and follow it; once per pass, from the ride's tick
     /// and after the look-ahead's step.
     pub(super) fn follow_road(&mut self) {
-        let odometer = self.ride.totals.distance_mm();
+        let odometer = self.ride.totals().distance_mm();
         let road = match self.pinned() {
             Some(pin) if odometer < pin.foot_mm => Road::Ahead,
             Some(_) => Road::Climbing,
-            None if self.ride.climbs.climbing().is_some() => Road::Climbing,
+            None if self.ride.climbs().climbing().is_some() => Road::Climbing,
             None => Road::Clear,
         };
         let page_on = self.page_choice_with_course_map().shows(RidePage::Climb);

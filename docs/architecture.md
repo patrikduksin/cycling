@@ -54,6 +54,21 @@ of the bests and course files, and the one `RETRY_MS` that FILES and the
 preference record wait before trying again. `ride/settle.rs` is the save
 protocol, the only code that writes FILES after a recorder result: it hides a
 discarded ride, then saves bests, the workout record and facts, in that order.
+[`ride/current.rs`](../apps/vana/src/ride/current.rs) holds `Ride`, the
+rider's ride: both recorders and their media, the request tokens, the ride's
+sums, laps and climbs, automation, and `Continuation`, the ride's move from
+the card to internal flash. Its fields are private. Readers use its getters,
+and every write is a method. One pass of recording is three `Ride` steps with
+the glue in `app/recording.rs` between them, in the order the trace hash
+fixes:
+`service` runs the recorders, the glue resets the stores of a wiped medium,
+`open_pass` continues a lost bulk ride or opens a new ride's sums, the glue
+loads the new ride's workout and opens its pages, `finish_pass` hands each
+recorder's result to the rider or the host, the glue settles the ended
+rides, and `after_settle` takes the outcome and pauses a continuation. The
+workout player belongs to `Training`. The ride page's message, the lap and
+automation toasts and the lap chime are `Notices` in `app/ride_control.rs`,
+the only file that writes the message.
 The application layer, `app/`, holds `Runtime` and the glue that turns domain
 state into pages, toasts and redraws; `screens/` draws them. Domain code never imports `crate::app` or
 `crate::screens` and takes what it needs as arguments.
@@ -168,7 +183,7 @@ scan, gets one file named for the behavior beside its owner.
 - Find the fields that already hold the state, and read them into a fresh
   `Seen` value for each step. A new enum holds only what no owner knows. Ride
   control needs none, because its state is `Navigation.page` and
-  `Ride.message`.
+  `Notices.message`.
 - Keep data that is valid in one state inside that variant. A `bool` or
   `Option` that means "in state X" is a second copy, and it drifts.
 - Decide in one pure `step(state, Seen, Event) -> Step` that does no IO and
@@ -249,8 +264,7 @@ scan, gets one file named for the behavior beside its owner.
   `To` variant moves exactly what one kind of site moved before, so a reader
   finds every page change by searching for `To::`. `go` also ends a Settings
   edit on every move off Settings, which makes the `EditingOffSettings` rule
-  hold by construction. Until a value can be private, list it and its owner in
-  `SINGLE_WRITERS` in `tools/check-boundaries.py`, which `cycling check` runs.
+  hold by construction.
 
 ## The frame writes in tiers and draws read-only
 

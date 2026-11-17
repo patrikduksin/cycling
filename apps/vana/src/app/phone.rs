@@ -428,7 +428,7 @@ impl Runtime {
         bulk: &mut impl ReadWrite,
         now: u64,
     ) {
-        if self.format.holds_storage() {
+        if self.format.holds_host_storage() {
             return;
         }
         // Wrapped as `tick` wraps them, so the storage code both reach is
@@ -522,7 +522,7 @@ impl Runtime {
     fn indexable(&self, medium: Medium) -> Readiness {
         use crate::ride::log::Status;
         let recorder = self.ride.recorder(medium);
-        let known = medium == Medium::Internal || self.ride.bulk_media.log().is_some();
+        let known = medium == Medium::Internal || self.ride.bulk_media().log().is_some();
         if known && recorder.exportable() {
             return Readiness::Ready(recorder.next_slot());
         }

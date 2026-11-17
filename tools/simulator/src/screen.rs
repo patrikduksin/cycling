@@ -1,7 +1,7 @@
 //! Recovers text from an RGB565 frame drawn with the shared 5x7 bitmap font
 //! or the anti-aliased faces of `firmware_shell::rendering::font`.
 use firmware_shell::rendering::font::{FACES, Face, blend};
-use firmware_shell::rendering::row::Look;
+use firmware_shell::rendering::row::{Look, Shown};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -423,7 +423,7 @@ impl Frame<'_> {
     fn smooth_glyphs(&self) -> Vec<Glyph> {
         let templates = templates();
         let (width, height) = (self.width, self.height);
-        let blank = self.look.ink(0);
+        let blank = self.look.ink(0).0;
         let mut claimed = vec![false; width * height];
         let mut found = Vec::new();
         for y in 0..height {
@@ -552,7 +552,10 @@ impl Frame<'_> {
             .map_or(outside, |(c, _)| c);
         let blended = edges
             .iter()
-            .filter(|&&i| pixel(i) == blend(color, background, template.coverage[i]))
+            .filter(|&&i| {
+                let mixed = blend(Shown(color), Shown(background), template.coverage[i]);
+                pixel(i) == mixed.0
+            })
             .count();
         (blended * 4 >= edges.len() * 3).then_some((left, top))
     }
@@ -934,8 +937,8 @@ mod tests {
         for py in y..label.bottom() {
             for px in x..label.right() + 2 {
                 let bg = pixels[py * W + px];
-                if let Some(c) = label.pixel(Look::PLAIN, px, py, bg) {
-                    pixels[py * W + px] = c;
+                if let Some(c) = label.pixel(Look::PLAIN, px, py, Shown(bg)) {
+                    pixels[py * W + px] = c.0;
                 }
             }
         }

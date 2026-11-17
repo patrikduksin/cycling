@@ -31,7 +31,6 @@ pub(super) mod end;
 mod lap;
 mod main;
 mod map;
-pub(super) use map::{CASING, RIDDEN};
 pub(super) mod paused;
 pub use paused::READINGS as PAUSED_READINGS;
 pub mod slots;
@@ -50,7 +49,7 @@ pub use map::{
 };
 pub use workout::{Chart as WorkoutChart, EXTEND_ROWS, Training, chart as workout_chart};
 
-use chrome::{ACCENT, AMBER, BLACK, BODY as BODY_FACE, POWER, Row, VALUE};
+use chrome::{ACCENT, AMBER, BODY as BODY_FACE, POWER, Row, VALUE};
 pub(super) use chrome::{RED, WHITE};
 
 pub(super) const GRID: u16 = chrome::TERTIARY;
@@ -386,21 +385,10 @@ pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
         paint_page(scene, page, &mut row.within(BODY.left..BODY.right));
         return;
     }
-    // Paint the page where it sits beside a radar, then move it to the centre.
-    let mut body = [BLACK; chrome::WIDTH];
-    let mut beside = Row::new(row.y(), &mut body);
-    let mut page_row = beside.looked(row.look());
-    let mut page_row = page_row.within(BODY.left..BODY.right);
-    // A second pass over the body costs every row; only a look that shows
-    // black as another colour needs it.
-    if page_row.ink(BLACK) != BLACK {
-        page_row.fill(BLACK);
-    }
-    paint_page(scene, page, &mut page_row);
-    row.copy(
-        BODY.left - CENTRE_SHIFT..BODY.right - CENTRE_SHIFT,
-        &beside,
-        CENTRE_SHIFT,
+    paint_page(
+        scene,
+        page,
+        &mut row.shifted(CENTRE_SHIFT).within(BODY.left..BODY.right),
     );
 }
 
@@ -531,9 +519,9 @@ fn paint_radar(radar: &Radar, row: &mut Row) {
 
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
-pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize) -> u16 {
+pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize) -> chrome::Shown {
     let look = scene.look();
-    let black = look.ink(BLACK);
+    let black = look.ink(chrome::BLACK);
     if page == RidePage::Map {
         return match &scene.radar {
             Some(radar) if x < RADAR_WIDTH - 2 => {
@@ -571,9 +559,9 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
 }
 
 #[cfg(test)]
-fn reference_map_pixel(scene: &Scene, x: usize, y: usize) -> u16 {
+fn reference_map_pixel(scene: &Scene, x: usize, y: usize) -> chrome::Shown {
     let look = scene.look();
-    let black = look.ink(BLACK);
+    let black = look.ink(chrome::BLACK);
     let under = scene
         .map()
         .map_or(black, |map| map::pixel(map.frame(), look, x, y, black));
@@ -596,7 +584,7 @@ fn reference_radar_pixel(radar: &Radar, x: usize, y: usize) -> u16 {
     if (top..top + 11).contains(&y) && (x as i32 - 12).abs() <= (y - top) as i32 / 2 {
         return WHITE;
     }
-    BLACK
+    chrome::BLACK
 }
 
 /// A finished lap's toast: number, time and average power.
@@ -939,7 +927,7 @@ mod tests {
                 for x in 0..RADAR_WIDTH {
                     assert_eq!(
                         reference_radar_pixel(&radar(&snapshot), x, y),
-                        BLACK,
+                        chrome::BLACK,
                         "({x}, {y})"
                     );
                 }

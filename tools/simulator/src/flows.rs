@@ -482,7 +482,7 @@ fn row_live(screen: &crate::sim::Screen, kind: &str) -> bool {
 /// A sensor row has the focus: the accent ring runs down its left edge.
 fn focused(screen: &crate::sim::Screen, run: &crate::screen::TextRun) -> bool {
     let accent = vana::screens::chrome::ACCENT;
-    let accent = screen.look.ink(accent);
+    let accent = screen.look.ink(accent).0;
     let y = run.y + 8;
     screen.pixels.get(y * screen.width + 9) == Some(&accent)
 }

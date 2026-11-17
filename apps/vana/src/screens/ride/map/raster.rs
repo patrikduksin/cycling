@@ -1,4 +1,4 @@
-use crate::screens::chrome::{Row, WIDTH, blend};
+use crate::screens::chrome::{Row, Shown, WIDTH, blend};
 
 pub type Point = (f32, f32);
 
@@ -295,7 +295,7 @@ impl Class {
     }
 }
 
-pub fn pairs(ground: u16, minor: u16, major: u16) -> [[u16; 2]; 256] {
+pub fn pairs(ground: Shown, minor: Shown, major: Shown) -> [[Shown; 2]; 256] {
     let colour = |nibble: u8| {
         let step = |shift: u32| (nibble >> shift & 3) * 5;
         blend(major, blend(minor, ground, step(0)), step(2))
@@ -361,7 +361,7 @@ impl<const ROWS: usize> Layer<ROWS> {
         }
     }
 
-    pub fn paint(&self, row: &mut Row, pairs: &[[u16; 2]; 256]) {
+    pub fn paint(&self, row: &mut Row, pairs: &[[Shown; 2]; 256]) {
         let Some(bytes) = row
             .y()
             .checked_sub(self.top)
@@ -374,22 +374,22 @@ impl<const ROWS: usize> Layer<ROWS> {
         if first >= end {
             return;
         }
-        let mut row = row.computed();
-        let pixels = row.pixels_mut(0..end);
-        let (whole_from, whole_to) = (first.div_ceil(2), end / 2);
-        if whole_from < whole_to {
-            let (chunks, _) = pixels[2 * whole_from..2 * whole_to].as_chunks_mut::<2>();
-            for (chunk, &byte) in chunks.iter_mut().zip(&bytes[whole_from..whole_to]) {
-                *chunk = pairs[usize::from(byte)];
+        row.worked_out(first..end, |pixels| {
+            let (whole_from, whole_to) = (first.div_ceil(2), end / 2);
+            if whole_from < whole_to {
+                let whole = 2 * whole_from - first..2 * whole_to - first;
+                let (chunks, _) = pixels[whole].as_chunks_mut::<2>();
+                for (chunk, &byte) in chunks.iter_mut().zip(&bytes[whole_from..whole_to]) {
+                    *chunk = pairs[usize::from(byte)];
+                }
             }
-        }
-        if first % 2 == 1 {
-            pixels[first] = pairs[usize::from(bytes[first / 2])][1];
-        }
-        if end % 2 == 1 {
-            pixels[end - 1] = pairs[usize::from(bytes[end / 2])][0];
-        }
-        row.wrote(first..end, |_| 15);
+            if first % 2 == 1 {
+                pixels[0] = pairs[usize::from(bytes[first / 2])][1];
+            }
+            if end % 2 == 1 {
+                pixels[end - 1 - first] = pairs[usize::from(bytes[end / 2])][0];
+            }
+        });
     }
 }
 
@@ -640,15 +640,15 @@ mod tests {
         );
     }
 
-    fn pixels_of(layer: &Layer<20>, y: usize, pairs: &[[u16; 2]; 256]) -> [u16; WIDTH] {
-        core::array::from_fn(|x| pairs[usize::from(layer.nibble(x, y))][0])
+    fn pixels_of(layer: &Layer<20>, y: usize, pairs: &[[Shown; 2]; 256]) -> [u16; WIDTH] {
+        core::array::from_fn(|x| pairs[usize::from(layer.nibble(x, y))][0].0)
     }
 
     #[test]
     fn a_clip_of_any_width_and_parity_paints_just_its_columns() {
         let mut layer = std::boxed::Box::new(Layer::<1>::new(0));
         layer.add(&Bar::new((4.0, -5.0), (4.0, 5.0), 1.2), Class::Major);
-        let pairs = pairs(0x1082, 0x2945, 0x4229);
+        let pairs = pairs(Shown(0x1082), Shown(0x2945), Shown(0x4229));
         let mut whole = [0x1234u16; WIDTH];
         layer.paint(&mut Row::new(0, &mut whole), &pairs);
         for start in 0..6 {
@@ -669,12 +669,12 @@ mod tests {
         let mut layer = std::boxed::Box::new(Layer::<20>::new(20));
         layer.add(&Bar::new((50.0, 0.0), (50.0, 40.0), 2.5), Class::Minor);
         layer.add(&Bar::new((0.0, 25.0), (240.0, 25.0), 4.5), Class::Major);
-        let pairs = pairs(0x1082, 0x2945, 0x4229);
+        let pairs = pairs(Shown(0x1082), Shown(0x2945), Shown(0x4229));
         let mut pixels = [0x1234u16; WIDTH];
         layer.paint(&mut Row::new(35, &mut pixels), &pairs);
         assert_eq!((pixels[10], pixels[50]), (0x1082, 0x2945));
         assert_eq!(
-            pixels[47], pairs[2][0],
+            pixels[47], pairs[2][0].0,
             "an edge half covered rounds to two steps"
         );
         assert_eq!(pixels, pixels_of(&layer, 35, &pairs));

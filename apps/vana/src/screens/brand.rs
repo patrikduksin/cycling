@@ -6,7 +6,7 @@
 //! Progress is in thousandths. Each frame is a canvas of one ring and two
 //! runs, so a frame costs about what a static sheet does.
 use super::canvas::{Canvas, Shape};
-use super::chrome::{ACCENT, Align, BLACK, CAPTION, Ring, TITLE, TURN, WHITE, WIDTH, blend};
+use super::chrome::{ACCENT, Align, BLACK, CAPTION, Ring, TITLE, TURN, WHITE, WIDTH, mix};
 
 /// Where the mark sits: a little above the middle of the screen.
 pub const CENTRE: (usize, usize) = (WIDTH / 2, 150);
@@ -35,7 +35,7 @@ const fn turns(progress: u16) -> u16 {
 /// `color` faded to black by `progress`: whole at 0, gone at `DONE`.
 pub fn fade(color: u16, progress: u16) -> u16 {
     let progress = if progress > DONE { DONE } else { progress };
-    blend(
+    mix(
         color,
         BLACK,
         (15 * (DONE - progress) as u32 / DONE as u32) as u8,
@@ -68,7 +68,7 @@ pub fn farewell(canvas: &mut Canvas, progress: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::chrome::{HEIGHT, Look, Rect, Row};
+    use crate::screens::chrome::{HEIGHT, Look, Rect, Row, Shown};
 
     const SCREEN: Rect = Rect {
         left: 0,
@@ -85,7 +85,7 @@ mod tests {
                 for (x, &pixel) in pixels.iter().enumerate() {
                     assert_eq!(
                         pixel,
-                        canvas.pixel(Look::PLAIN, x, y, BLACK),
+                        canvas.pixel(Look::PLAIN, x, y, Shown(BLACK)).0,
                         "paint at {x},{y}"
                     );
                 }
@@ -119,8 +119,8 @@ mod tests {
         farewell(&mut end, DONE);
         assert!(lit(&start, ACCENT) > 1000);
         assert!(lit(&start, WHITE) > 100);
-        let dark =
-            (0..HEIGHT).all(|y| (0..WIDTH).all(|x| end.pixel(Look::PLAIN, x, y, BLACK) == BLACK));
+        let dark = (0..HEIGHT)
+            .all(|y| (0..WIDTH).all(|x| end.pixel(Look::PLAIN, x, y, Shown(BLACK)).0 == BLACK));
         assert!(dark, "the last frame is black");
     }
 }

@@ -34,7 +34,7 @@ pub(crate) fn paint(row: &mut Row, frame: u8) {
     }
     if y < 78 && y.is_multiple_of(7) {
         let first = 189 + (7 - (189 + y / 2) % 7) % 7;
-        for x in (first..row.width()).step_by(7) {
+        for x in (first..row.clip().end).step_by(7) {
             row.set(x, 0x4810);
         }
     }
@@ -66,13 +66,14 @@ pub(crate) fn paint(row: &mut Row, frame: u8) {
     }
     // The crooked label's rows slant with x, so it keeps a per-pixel test.
     if (236..276).contains(&y) {
+        let (ink, yellow) = (row.ink(INK), row.ink(YELLOW));
         row.each(24..216, |x| {
             let label_y = y + x / 24;
             (244..276).contains(&label_y).then(|| {
                 if text(x, label_y, 49, 253, 3, b"DEV MODE") {
-                    INK
+                    ink
                 } else {
-                    YELLOW
+                    yellow
                 }
             })
         });

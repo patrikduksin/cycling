@@ -15,7 +15,7 @@ use crate::ride::zones::TrainingProfile;
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
     AMBER, Align, BLACK, BODY as BODY_FACE, CADENCE, CAPTION, GREEN, HEART, HERO, LARGE, POWER,
-    Rect, Row, SECONDARY, TERTIARY, VALUE, WHITE, blend, zone_color,
+    Rect, Row, SECONDARY, TERTIARY, VALUE, WHITE, mix, zone_color,
 };
 use crate::screens::workout::View;
 use crate::workout::model::{Intensity, Length, Metric, Name, Played, Ramp, Target, Test, Workout};
@@ -484,7 +484,7 @@ fn gauge(canvas: &mut Canvas, now: &Now, color: u16) {
     canvas.shape(Shape::Bar {
         rect: rect(from, to.min(RIGHT)),
         radius: 4,
-        color: blend(color, BLACK, 11),
+        color: mix(color, BLACK, 11),
     });
     if let Some(reading) = now.reading {
         let cx = x(reading.into()).clamp(LEFT + 5, RIGHT - 5);
@@ -590,7 +590,7 @@ pub fn chart(player: &Player, profile: &TrainingProfile) -> Chart {
                 }
                 None => (color, pct, ahead),
             };
-            let color = if dim { blend(color, BLACK, 4) } else { color };
+            let color = if dim { mix(color, BLACK, 4) } else { color };
             let height = (pct.min(FULL_PCT) as usize * CHART_HEIGHT / FULL_PCT as usize).max(3);
             chart.tops[column] = (CHART_HEIGHT - height) as u8;
             chart.colors[column] = chart.index(color);
@@ -777,7 +777,7 @@ mod tests {
         player.skip();
         ride(&mut player, 130, 140);
         let chart = chart(&player, &profile);
-        let ahead = blend(zone_color(profile.power_zone(147)), BLACK, 4);
+        let ahead = mix(zone_color(profile.power_zone(147)), BLACK, 4);
         let to = (0..CHART_WIDTH)
             .position(|c| chart.tops[c] != EMPTY && chart.color(c) == ahead)
             .expect("a dim stair ahead");

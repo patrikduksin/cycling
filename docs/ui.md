@@ -122,9 +122,11 @@ dark at night. The row's note says LIGHT NOW or DARK NOW.
 
 The light look is derived from the one palette by `light`, applied to each
 colour as it is painted. A screen paints through a row that carries the
-look (`Row::looked`). The row's paint calls take palette colours and map
-each once per call. An anti-aliased edge blends colours already mapped, so
-it ramps between the two colours shown. `screens::look::light` inverts
+look (`Row::looked`). The row's paint calls take palette colours, bare
+`u16`s, and map each once per call. A colour as shown is a `Shown`, which
+`Row::ink` returns and `blend`, `span_shown`, `each` and `each_over` take,
+so a colour mapped twice or never does not compile. An anti-aliased edge
+blends colours already mapped, so it ramps between the two colours shown. `screens::look::light` inverts
 luminance and keeps hue: `Y = (2r + 5g + b) / 8`, then each channel moves
 by `255 - 2Y` and is clamped. Greys swap ends (`BLACK` becomes white,
 `WHITE` becomes black). Bright colours such as `POWER` and `SPEED` turn

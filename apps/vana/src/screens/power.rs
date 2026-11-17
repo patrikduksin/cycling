@@ -10,7 +10,7 @@ use super::brand;
 use super::canvas::{Canvas, Shape};
 use super::chrome::{
     ACCENT, AMBER, Align, BLACK, BODY, Battery, CAPTION, GREEN, HERO, LARGE, Rect, Ring, Row,
-    SECONDARY, TITLE, TURN, WHITE, blend,
+    SECONDARY, TITLE, TURN, WHITE, mix,
 };
 use core::fmt::Write;
 use firmware_shell::rendering::font::Face;
@@ -136,7 +136,7 @@ fn confirm(canvas: &mut Canvas) {
 /// The seconds left inside an amber ring that empties with them.
 fn warning(canvas: &mut Canvas, seconds: u64) {
     let cy = 168;
-    let track = blend(AMBER, BLACK, 4);
+    let track = mix(AMBER, BLACK, 4);
     canvas.shape(Shape::ring(ring(cy, 70, 8, 0, TURN), track));
     let left = seconds.min(WARNING_SECONDS) as u32;
     let sweep = (left * u32::from(TURN) / WARNING_SECONDS as u32) as u16;
@@ -172,7 +172,7 @@ fn charging(canvas: &mut Canvas, battery: Battery, known: bool) {
     let (radius, width) = (84, 14);
     canvas.shape(Shape::ring(
         ring(cy, radius, width, 0, TURN),
-        blend(GREEN, BLACK, 4),
+        mix(GREEN, BLACK, 4),
     ));
     let level = if known {
         u32::from(battery.percent.min(100))
@@ -183,7 +183,7 @@ fn charging(canvas: &mut Canvas, battery: Battery, known: bool) {
         let climbing = share(u32::from(battery.fill()));
         canvas.shape(Shape::ring(
             ring(cy, radius, width, 0, climbing),
-            blend(GREEN, BLACK, 8),
+            mix(GREEN, BLACK, 8),
         ));
     }
     canvas.shape(Shape::ring(ring(cy, radius, width, 0, share(level)), GREEN));
@@ -218,8 +218,8 @@ fn centred(canvas: &mut Canvas, faces: &[&'static Face], text: &[u8], base: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::chrome::Look;
     use crate::screens::chrome::{HEIGHT, Rect as Bounds};
+    use crate::screens::chrome::{Look, Shown};
 
     const SCREEN: Bounds = Bounds {
         left: 0,
@@ -236,7 +236,7 @@ mod tests {
                 Sheet::paint(&canvas, &mut Row::new(y, &mut pixels).looked(look));
                 for (x, &pixel) in pixels.iter().enumerate() {
                     let want = canvas.pixel(look, x, y, look.ink(BLACK));
-                    assert_eq!(pixel, want, "{sheet:?} at {x},{y}");
+                    assert_eq!(Shown(pixel), want, "{sheet:?} at {x},{y}");
                 }
             }
         }
@@ -291,8 +291,8 @@ mod tests {
             progress: brand::DONE,
         }
         .canvas();
-        let dark =
-            (0..HEIGHT).all(|y| (0..240).all(|x| canvas.pixel(Look::PLAIN, x, y, BLACK) == BLACK));
+        let dark = (0..HEIGHT)
+            .all(|y| (0..240).all(|x| canvas.pixel(Look::PLAIN, x, y, Shown(BLACK)).0 == BLACK));
         assert!(dark);
     }
 
@@ -300,16 +300,22 @@ mod tests {
     fn confirm_marks_act_and_draws_the_power_symbol() {
         let confirm = Sheet::Confirm.canvas();
         assert_eq!(
-            confirm.pixel(Look::PLAIN, 239, 319, BLACK),
+            confirm.pixel(Look::PLAIN, 239, 319, Shown(BLACK)).0,
             ACCENT,
             "ACT corner marker"
         );
         assert_eq!(confirm.find("TURN OFF").map(|run| run.color), Some(WHITE));
         // The ring's left side and the bar through its gap are white.
-        assert_eq!(confirm.pixel(Look::PLAIN, CENTRE - 32, 118, BLACK), WHITE);
-        assert_eq!(confirm.pixel(Look::PLAIN, CENTRE, 80, BLACK), WHITE);
         assert_eq!(
-            confirm.pixel(Look::PLAIN, CENTRE + 12, 87, BLACK),
+            confirm.pixel(Look::PLAIN, CENTRE - 32, 118, Shown(BLACK)).0,
+            WHITE
+        );
+        assert_eq!(
+            confirm.pixel(Look::PLAIN, CENTRE, 80, Shown(BLACK)).0,
+            WHITE
+        );
+        assert_eq!(
+            confirm.pixel(Look::PLAIN, CENTRE + 12, 87, Shown(BLACK)).0,
             BLACK,
             "the gap"
         );
@@ -321,7 +327,7 @@ mod tests {
             let canvas = Sheet::Warning { seconds }.canvas();
             (0..HEIGHT)
                 .flat_map(|y| (0..240).map(move |x| (x, y)))
-                .filter(|&(x, y)| canvas.pixel(Look::PLAIN, x, y, BLACK) == AMBER)
+                .filter(|&(x, y)| canvas.pixel(Look::PLAIN, x, y, Shown(BLACK)).0 == AMBER)
                 .count()
         };
         let (full, half) = (amber(30), amber(15));
@@ -337,7 +343,9 @@ mod tests {
             let canvas = sheet.canvas();
             (0..HEIGHT)
                 .flat_map(|y| (0..240).map(move |x| (x, y)))
-                .filter(|&(x, y)| canvas.pixel(Look::PLAIN, x, y, BLACK) == blend(GREEN, BLACK, 8))
+                .filter(|&(x, y)| {
+                    canvas.pixel(Look::PLAIN, x, y, Shown(BLACK)).0 == mix(GREEN, BLACK, 8)
+                })
                 .count()
         };
         assert!(
@@ -350,7 +358,13 @@ mod tests {
         assert!(!charge(40, false, 1).animated());
         // The same arc on the right of the ring, 25% charge, is lit green.
         let canvas = charge(25, false, 0).canvas();
-        assert_eq!(canvas.pixel(Look::PLAIN, CENTRE + 84, 146, BLACK), GREEN);
-        assert_ne!(canvas.pixel(Look::PLAIN, CENTRE - 84, 146, BLACK), GREEN);
+        assert_eq!(
+            canvas.pixel(Look::PLAIN, CENTRE + 84, 146, Shown(BLACK)).0,
+            GREEN
+        );
+        assert_ne!(
+            canvas.pixel(Look::PLAIN, CENTRE - 84, 146, Shown(BLACK)).0,
+            GREEN
+        );
     }
 }

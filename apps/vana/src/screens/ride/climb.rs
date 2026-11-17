@@ -27,7 +27,7 @@ use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::BLACK;
 use crate::screens::chrome::{
     ACCENT, Align, BLACK as DIM_UNDER, BODY as BODY_FACE, CAPTION, GRADE, LARGE, Rect, Row,
-    SECONDARY, VALUE, WHITE, ZONES, blend, zone_color,
+    SECONDARY, VALUE, WHITE, ZONES, mix, zone_color,
 };
 use crate::screens::workout::{Text, View};
 use core::fmt::Write;
@@ -491,7 +491,7 @@ fn rider(canvas: &mut Canvas, frame: &Frame) {
 fn shade(frame: &Frame, column: usize) -> u16 {
     let full = color(frame.bands[column]);
     if frame.dim[column] {
-        blend(full, DIM_UNDER, 4)
+        mix(full, DIM_UNDER, 4)
     } else {
         full
     }
@@ -742,7 +742,7 @@ mod tests {
             let mut pixels = [0x5555; crate::screens::chrome::WIDTH];
             firmware_shell::shell::Picture::paint(&scene, &mut Row::new(y, &mut pixels));
             for (x, &pixel) in pixels.iter().enumerate() {
-                assert_eq!(pixel, scene.reference_pixel(x, y), "{x},{y}");
+                assert_eq!(pixel, scene.reference_pixel(x, y).0, "{x},{y}");
             }
         }
     }

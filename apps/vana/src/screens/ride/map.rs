@@ -11,8 +11,8 @@ use crate::ride::course::route_leg;
 use crate::ride::geo::{Frame as RideFrame, distance};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
-    ACCENT, AMBER, Align, BLACK, BODY as BODY_FACE, HEIGHT, Look, Rect, Row, SECONDARY, WHITE,
-    WIDTH, paint_disc_over, rgb,
+    ACCENT, AMBER, Align, BLACK, BODY as BODY_FACE, CASING, HEIGHT, Look, RIDDEN, Rect, Row,
+    SECONDARY, Shown, WHITE, WIDTH, paint_disc_over, rgb,
 };
 use crate::screens::icons::PUCK;
 use crate::screens::look;
@@ -282,8 +282,6 @@ impl core::hash::Hash for Filled<'_> {
 const GROUND_COLOR: u16 = rgb(0x10, 0x10, 0x12);
 const MINOR_ROAD: u16 = rgb(0x2a, 0x2a, 0x2d);
 const MAJOR_ROAD: u16 = rgb(0x44, 0x44, 0x48);
-pub(in crate::screens) const RIDDEN: u16 = rgb(0x1f, 0x4a, 0x78);
-pub(in crate::screens) const CASING: u16 = rgb(0x04, 0x26, 0x4c);
 const BAND_ROWS: usize = 16;
 const BAND_COUNT: usize = (GROUND.end - GROUND.start).div_ceil(BAND_ROWS);
 const STRAY_PX: f32 = 0.35;
@@ -408,7 +406,7 @@ pub struct Frame {
     last_pose: Pose,
     last_centre: Point,
     layer: Layer<GROUND_ROWS>,
-    pairs: [[u16; 2]; 256],
+    pairs: [[Shown; 2]; 256],
     roads_drawn: [usize; 2],
     strokes: [Stroke; STROKES],
     counts: [usize; 2],
@@ -433,7 +431,7 @@ impl Default for Frame {
             last_pose: Pose::default(),
             last_centre: (0.0, 0.0),
             layer: Layer::new(GROUND.start),
-            pairs: [[0; 2]; 256],
+            pairs: [[Shown(0); 2]; 256],
             roads_drawn: [0; 2],
             strokes: [Stroke::default(); STROKES],
             counts: [0; 2],
@@ -935,12 +933,12 @@ fn puck_top_left((cx, cy): (i32, i32)) -> (usize, usize) {
 }
 
 #[cfg(test)]
-pub(super) fn pixel(frame: &Frame, look: Look, x: usize, y: usize, under: u16) -> u16 {
+pub(super) fn pixel(frame: &Frame, look: Look, x: usize, y: usize, under: Shown) -> Shown {
     use crate::screens::chrome::blend;
     if frame.show != Show::Map || !GROUND.contains(&y) {
         return under;
     }
-    let over = |color: u16, paint: u16, coverage: u8| match coverage {
+    let over = |color: Shown, paint: u16, coverage: u8| match coverage {
         0 => color,
         c => blend(look.ink(paint), color, c),
     };
@@ -985,7 +983,7 @@ pub(super) fn pixel(frame: &Frame, look: Look, x: usize, y: usize, under: u16) -
         .max()
         .unwrap_or(0);
     color = over(color, AMBER, c);
-    let rings = |color: u16, (cx, cy): (i32, i32), rings: &[(i32, u16)]| {
+    let rings = |color: Shown, (cx, cy): (i32, i32), rings: &[(i32, u16)]| {
         rings.iter().fold(color, |color, &(radius, paint)| {
             over(
                 color,

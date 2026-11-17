@@ -11,7 +11,7 @@ use super::chrome::{
     paint_rounded_over, rounded,
 };
 #[cfg(test)]
-use super::chrome::{Look, disc};
+use super::chrome::{Look, Shown, disc};
 use super::icons::StaticIcon;
 use firmware_shell::rendering::font::{Face, SPILL};
 use firmware_shell::shell::Parts;
@@ -127,7 +127,7 @@ impl Shape {
     }
 
     #[cfg(test)]
-    fn pixel(&self, look: Look, x: usize, y: usize, under: u16) -> Option<u16> {
+    fn pixel(&self, look: Look, x: usize, y: usize, under: Shown) -> Option<Shown> {
         let (coverage, color) = match *self {
             Self::Panel {
                 rect,
@@ -268,7 +268,7 @@ impl Canvas {
     }
 
     #[cfg(test)]
-    pub fn pixel(&self, look: Look, x: usize, y: usize, background: u16) -> u16 {
+    pub fn pixel(&self, look: Look, x: usize, y: usize, background: Shown) -> Shown {
         let mut color = background;
         for shape in &self.shapes {
             if let Some(pixel) = shape.pixel(look, x, y, color) {
@@ -382,9 +382,10 @@ mod tests {
         let (black, white, power) = (look.ink(BLACK), look.ink(WHITE), look.ink(POWER));
         let mut edges = 0;
         for y in 0..40 {
-            let mut pixels = [black; 40];
+            let mut pixels = [black.0; 40];
             canvas.paint(&mut Row::new(y, &mut pixels).looked(look));
             for (x, &painted) in pixels.iter().enumerate() {
+                let painted = Shown(painted);
                 assert_eq!(painted, canvas.pixel(look, x, y, black), "({x}, {y})");
                 let coverage = canvas.shapes[1..]
                     .iter()

@@ -112,10 +112,10 @@ fn every_screen_paints_its_colours_through_the_light_look() {
             continue;
         };
         let lit = sim.screen();
-        assert_eq!(lit.look.ink(0), 0xffff, "{name}: read in the light look");
+        assert_eq!(lit.look.ink(0).0, 0xffff, "{name}: read in the light look");
         let dark = paint(&mut sim, false).expect("the dark frame at the same instant");
         let unlit = sim.screen();
-        assert_eq!(unlit.look.ink(0), 0, "{name}: read in the dark look");
+        assert_eq!(unlit.look.ink(0).0, 0, "{name}: read in the dark look");
         let width = unlit.width;
         let code = (sim.device.sdk.page() == Page::Phone)
             .then(|| panel(&dark.pixels, width))

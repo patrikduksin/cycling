@@ -138,7 +138,7 @@ impl Screen {
     /// Whether `text` is painted white, as VANA's focused titles are; the
     /// light look shows them black.
     pub fn white(&self, text: &str) -> bool {
-        let white = self.look.ink(0xffff);
+        let white = self.look.ink(0xffff).0;
         self.run(text).is_some_and(|run| run.color == white)
     }
 

@@ -1,5 +1,5 @@
 use super::*;
-use crate::screens::chrome::{BLACK, HEIGHT, WIDTH};
+use crate::screens::chrome::{BLACK, HEIGHT, Shown, WIDTH};
 use std::vec::Vec;
 
 fn turn(glyph: Glyph, metres: u32) -> Sign {
@@ -140,7 +140,8 @@ fn painted_signs_match_the_per_pixel_reference() {
                     }
                     placed.paint(&mut Row::new(y, &mut pixels));
                     for (x, &painted) in pixels.iter().enumerate() {
-                        let want = placed.pixel(x, y, under(x, y)).unwrap_or(under(x, y));
+                        let under = Shown(under(x, y));
+                        let want = placed.pixel(x, y, under).unwrap_or(under).0;
                         assert_eq!(
                             painted, want,
                             "{sign:?} {form:?} radar {radar} at ({x}, {y})"
@@ -167,7 +168,8 @@ fn turn_around_is_an_amber_u_turn_whose_words_stay_inside_it() {
             let placed = place(Sign::TurnAround, form, radar).unwrap();
             let bounds = placed.rect();
             assert!(bounds.right <= WIDTH, "{form:?} radar {radar}: {bounds:?}");
-            let inked = |x: usize, y: usize| placed.pixel(x, y, BLACK) != Some(OFF_FILL);
+            let inked =
+                |x: usize, y: usize| placed.pixel(x, y, Shown(BLACK)) != Some(Shown(OFF_FILL));
             let edge = bounds.right - 8;
             let words_left = bounds.left + 50;
             for y in bounds.top + 4..bounds.bottom - 4 {

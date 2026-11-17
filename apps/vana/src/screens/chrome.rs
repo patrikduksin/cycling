@@ -6,9 +6,9 @@
 use super::workout::Text;
 use core::ops::Range;
 pub use firmware_shell::rendering::font::{
-    Align, BODY, CAPTION, HERO, LARGE, Label, Line, TITLE, VALUE, blend,
+    Align, BODY, CAPTION, HERO, LARGE, Label, Line, TITLE, VALUE, blend, mix,
 };
-pub use firmware_shell::rendering::row::{Look, Row};
+pub use firmware_shell::rendering::row::{Look, Row, Shown};
 
 pub const WIDTH: usize = 240;
 pub const HEIGHT: usize = 320;
@@ -104,6 +104,10 @@ pub const GREEN: u16 = rgb(0x30, 0xd1, 0x58);
 pub const AMBER: u16 = rgb(0xff, 0x9f, 0x0a);
 /// Recording, danger, failure.
 pub const RED: u16 = rgb(0xff, 0x45, 0x3a);
+/// The map's ridden track.
+pub const RIDDEN: u16 = rgb(0x1f, 0x4a, 0x78);
+/// The dark edge around the map's route and marks.
+pub const CASING: u16 = rgb(0x04, 0x26, 0x4c);
 
 // Signature colours: each metric's value always has its own.
 pub const SPEED: u16 = rgb(0x64, 0xd2, 0xff);
@@ -178,10 +182,10 @@ pub fn card(
     radius: usize,
     x: usize,
     y: usize,
-    fill: u16,
-    ring: Option<u16>,
-    black: u16,
-) -> Option<u16> {
+    fill: Shown,
+    ring: Option<Shown>,
+    black: Shown,
+) -> Option<Shown> {
     let outer = rounded(rect, radius, x, y);
     if outer == 0 {
         return None;
@@ -198,14 +202,14 @@ pub fn card(
 /// look shows them, mapped once a row rather than once a pixel.
 #[derive(Clone, Copy)]
 pub struct Inks {
-    pub black: u16,
-    pub white: u16,
-    pub card: u16,
-    pub raised: u16,
-    pub accent: u16,
-    pub green: u16,
-    pub secondary: u16,
-    pub tertiary: u16,
+    pub black: Shown,
+    pub white: Shown,
+    pub card: Shown,
+    pub raised: Shown,
+    pub accent: Shown,
+    pub green: Shown,
+    pub secondary: Shown,
+    pub tertiary: Shown,
 }
 
 impl Inks {
@@ -237,7 +241,7 @@ pub fn paint_rounded(
     rect: Rect,
     radius: usize,
     edge: usize,
-    pixel: impl Fn(usize, usize) -> Option<u16>,
+    pixel: impl Fn(usize, usize) -> Option<Shown>,
 ) {
     paint_rounded_over(row, rect, radius, edge, |x, y, _| pixel(x, y));
 }
@@ -251,7 +255,7 @@ pub fn paint_rounded_over(
     rect: Rect,
     radius: usize,
     edge: usize,
-    pixel: impl Fn(usize, usize, u16) -> Option<u16>,
+    pixel: impl Fn(usize, usize, Shown) -> Option<Shown>,
 ) {
     let y = row.y();
     if y < rect.top || y >= rect.bottom {
@@ -260,7 +264,6 @@ pub fn paint_rounded_over(
     let radius = radius.min(rect.width() / 2);
     let corner = y < rect.top + radius || y >= rect.bottom - radius;
     let black = row.ink(BLACK);
-    let row = &mut row.computed();
     if corner && radius > 0 {
         paint_corner_row(row, rect, radius, edge, black, &pixel);
         return;
@@ -270,19 +273,19 @@ pub fn paint_rounded_over(
     if !middle.is_empty()
         && let Some(color) = pixel(middle.start, y, under(row, middle.start, black))
     {
-        row.span(middle.clone(), color);
+        row.span_shown(middle.clone(), color);
     }
     if side > 0 {
         for ring in [rect.left..middle.start, middle.end..rect.right] {
             if let Some(color) = pixel(ring.start, y, under(row, ring.start, black)) {
-                row.span(ring, color);
+                row.span_shown(ring, color);
             }
         }
     }
 }
 
-fn under(row: &Row, x: usize, black: u16) -> u16 {
-    row.pixels().get(x).copied().unwrap_or(black)
+fn under(row: &Row, x: usize, black: Shown) -> Shown {
+    row.shown(x).unwrap_or(black)
 }
 
 /// A row through a rounded shape's corners. Each corner is a quarter of a
@@ -294,8 +297,8 @@ fn paint_corner_row(
     rect: Rect,
     radius: usize,
     edge: usize,
-    black: u16,
-    pixel: &impl Fn(usize, usize, u16) -> Option<u16>,
+    black: Shown,
+    pixel: &impl Fn(usize, usize, Shown) -> Option<Shown>,
 ) {
     let y = row.y();
     let cy = if y < rect.top + radius {
@@ -358,7 +361,7 @@ fn paint_corner_row(
     }
     let fringe_start = fringe_start.clamp(middle.end, end.max(middle.end));
     if let Some(color) = color {
-        row.span(fringe_end..fringe_start, color);
+        row.span_shown(fringe_end..fringe_start, color);
     }
     match inner {
         Some((_, touched_inner)) if !solid.is_empty() && !touched_inner.is_empty() => {
@@ -376,8 +379,8 @@ fn paint_ringed_fringe(
     row: &mut Row,
     fringe: Range<usize>,
     ring: Range<usize>,
-    black: u16,
-    pixel: &impl Fn(usize, usize, u16) -> Option<u16>,
+    black: Shown,
+    pixel: &impl Fn(usize, usize, Shown) -> Option<Shown>,
 ) {
     let y = row.y();
     if ring.is_empty() {
@@ -386,7 +389,7 @@ fn paint_ringed_fringe(
     }
     row.each_over(fringe.start..ring.start, |x, under| pixel(x, y, under));
     if let Some(color) = pixel(ring.start, y, under(row, ring.start, black)) {
-        row.span(ring.clone(), color);
+        row.span_shown(ring.clone(), color);
     }
     row.each_over(ring.end..fringe.end, |x, under| pixel(x, y, under));
 }
@@ -423,7 +426,7 @@ pub fn paint_disc(
     row: &mut Row,
     (cx, cy, radius): (i32, i32, i32),
     solid: u16,
-    fringe: impl Fn(usize, u8, u16, u16) -> Option<u16>,
+    fringe: impl Fn(usize, u8, Shown, Shown) -> Option<Shown>,
 ) {
     let y = row.y();
     let (inside, touched) = disc_row(y, cx, cy, radius);
@@ -579,7 +582,7 @@ impl Ring {
         }
         let color = row.ink(color);
         let (hole, _) = disc_row(y, self.cx, self.cy, self.inner() - 4);
-        let pixel = |x: usize, under: u16| match self.coverage(x, y, ends) {
+        let pixel = |x: usize, under: Shown| match self.coverage(x, y, ends) {
             0 => None,
             coverage => Some(blend(color, under, coverage)),
         };
@@ -921,7 +924,7 @@ impl StatusBar {
     }
 
     /// Pixels for y below `CONTENT.top`, as `look` shows them.
-    pub fn pixel(&self, look: Look, x: usize, y: usize) -> u16 {
+    pub fn pixel(&self, look: Look, x: usize, y: usize) -> Shown {
         let inks = Inks::of(look);
         let text = |label: &Small| {
             (label.left..label.right() + SPILL)
@@ -974,7 +977,7 @@ impl StatusBar {
         items
     }
 
-    fn icon_pixel(&self, inks: Inks, mark: u16, x: usize, y: usize) -> u16 {
+    fn icon_pixel(&self, inks: Inks, mark: Shown, x: usize, y: usize) -> Shown {
         let coverage = match self.mark {
             Mark::None => 0,
             // A dot of radius 4.5 centred in a 10 × 10 cell.
@@ -1002,7 +1005,7 @@ impl StatusBar {
         self.battery_left - bolt..self.battery_left + BATTERY_WIDTH
     }
 
-    fn battery_pixel(&self, inks: Inks, fill: u16, x: usize, y: usize) -> u16 {
+    fn battery_pixel(&self, inks: Inks, fill: Shown, x: usize, y: usize) -> Shown {
         let battery = self.battery.unwrap_or_default();
         let left = self.battery_left;
         if x < left {
@@ -1038,7 +1041,7 @@ impl StatusBar {
         blend(inks.secondary, inks.black, shell)
     }
 
-    fn dots_pixel(&self, inks: Inks, x: usize, y: usize) -> u16 {
+    fn dots_pixel(&self, inks: Inks, x: usize, y: usize) -> Shown {
         let (index, count) = self.pages;
         let Some((left, pitch)) = self.dots else {
             return inks.black;
@@ -1165,7 +1168,7 @@ impl Toast {
 
     /// The toast's pixel as `look` shows it, or none where content shows
     /// through.
-    pub fn pixel(&self, look: Look, x: usize, y: usize) -> Option<u16> {
+    pub fn pixel(&self, look: Look, x: usize, y: usize) -> Option<Shown> {
         if y < self.pill.top {
             return None;
         }
@@ -1283,7 +1286,7 @@ mod tests {
     }
 
     fn lit(bar: &StatusBar, color: u16, xs: core::ops::Range<usize>) -> bool {
-        (0..STATUS_BAR.bottom).any(|y| xs.clone().any(|x| bar.pixel(Look::PLAIN, x, y) == color))
+        (0..STATUS_BAR.bottom).any(|y| xs.clone().any(|x| bar.pixel(Look::PLAIN, x, y).0 == color))
     }
 
     #[test]
@@ -1308,12 +1311,11 @@ mod tests {
         assert!(edge > 0 && edge < 15, "{edge}");
         assert_eq!(disc(20, 20, 82, 82, 16), 15);
         assert_eq!(disc(30, 20, 82, 82, 16), 0);
-        assert_eq!(
-            card(rect, 6, 30, 10, CARD, Some(ACCENT), BLACK),
-            Some(ACCENT)
-        );
-        assert_eq!(card(rect, 6, 30, 20, CARD, Some(ACCENT), BLACK), Some(CARD));
-        assert_eq!(card(rect, 6, 5, 20, CARD, None, BLACK), None);
+        let [card_, accent, black] = [CARD, ACCENT, BLACK].map(Shown);
+        let ringed = |x, y| card(rect, 6, x, y, card_, Some(accent), black);
+        assert_eq!(ringed(30, 10), Some(accent));
+        assert_eq!(ringed(30, 20), Some(card_));
+        assert_eq!(card(rect, 6, 5, 20, card_, None, black), None);
     }
 
     #[test]
@@ -1327,7 +1329,7 @@ mod tests {
         // The second of three dots is lit.
         let (left, pitch) = bar.dots.expect("three dots fit");
         let centre = |i: usize| left + i * pitch + DOT_SIZE / 2;
-        let dots: [u16; 3] = core::array::from_fn(|i| bar.pixel(Look::PLAIN, centre(i), DOTS_Y));
+        let dots: [u16; 3] = core::array::from_fn(|i| bar.pixel(Look::PLAIN, centre(i), DOTS_Y).0);
         assert_eq!(dots, [TERTIARY, WHITE, TERTIARY]);
         assert!(bar.percent.is_some(), "low battery shows its percentage");
 
@@ -1358,7 +1360,7 @@ mod tests {
         let green = |bar: &StatusBar| {
             (0..STATUS_BAR.bottom)
                 .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
-                .filter(|&(x, y)| bar.pixel(Look::PLAIN, x, y) == GREEN)
+                .filter(|&(x, y)| bar.pixel(Look::PLAIN, x, y).0 == GREEN)
                 .count()
         };
         let first = green(&low);
@@ -1403,7 +1405,7 @@ mod tests {
                 let want = if coverage == 0 {
                     UNDER
                 } else {
-                    blend(WHITE, UNDER, coverage)
+                    blend(Shown(WHITE), Shown(UNDER), coverage).0
                 };
                 assert_eq!(pixel, want, "{x},{y}");
                 lit += usize::from(pixel == WHITE);
@@ -1486,7 +1488,7 @@ mod tests {
             for (x, &pixel) in pixels.iter().enumerate() {
                 assert_eq!(
                     pixel,
-                    bar.pixel(Look::PLAIN, x, y),
+                    bar.pixel(Look::PLAIN, x, y).0,
                     "{what}: paint at {x},{y}"
                 );
                 if pixel != BLACK {
@@ -1508,7 +1510,7 @@ mod tests {
         assert_eq!(toast.pixel(Look::PLAIN, 120, TOAST.top - 1), None);
         let short = Toast::new("PAUSED", Tone::Warn);
         let dot = (short.pill.left + 16, short.pill.top + 15);
-        assert_eq!(short.pixel(Look::PLAIN, dot.0, dot.1), Some(AMBER));
+        assert_eq!(short.pixel(Look::PLAIN, dot.0, dot.1), Some(Shown(AMBER)));
         assert_eq!(
             short.pixel(Look::PLAIN, 2, short.pill.top + 15),
             None,
@@ -1531,7 +1533,7 @@ mod tests {
             for y in 0..STATUS_BAR.bottom {
                 let mut pixels = [0x1234; WIDTH];
                 bar.paint(&mut Row::new(y, &mut pixels));
-                let want: [u16; WIDTH] = core::array::from_fn(|x| bar.pixel(Look::PLAIN, x, y));
+                let want: [u16; WIDTH] = core::array::from_fn(|x| bar.pixel(Look::PLAIN, x, y).0);
                 assert_eq!(pixels, want, "{clock_text} row {y}");
             }
         }
@@ -1546,7 +1548,7 @@ mod tests {
                 let mut pixels = [UNDER; WIDTH];
                 toast.paint(&mut Row::new(y, &mut pixels));
                 let want: [u16; WIDTH] =
-                    core::array::from_fn(|x| toast.pixel(Look::PLAIN, x, y).unwrap_or(UNDER));
+                    core::array::from_fn(|x| toast.pixel(Look::PLAIN, x, y).map_or(UNDER, |p| p.0));
                 assert_eq!(pixels, want, "{message} row {y}");
             }
         }
@@ -1557,15 +1559,16 @@ mod tests {
             bottom: 90,
         };
         for radius in [3, 4, 7, 12, 16, 18, 29] {
-            for ring in [None, Some(ACCENT)] {
+            for ring in [None, Some(Shown(ACCENT))] {
                 for y in 25..95 {
                     let mut pixels = [UNDER; WIDTH];
                     let edge = if ring.is_some() { 3 } else { 0 };
                     paint_rounded(&mut Row::new(y, &mut pixels), rect, radius, edge, |x, y| {
-                        card(rect, radius, x, y, RAISED, ring, BLACK)
+                        card(rect, radius, x, y, Shown(RAISED), ring, Shown(BLACK))
                     });
                     let want: [u16; WIDTH] = core::array::from_fn(|x| {
-                        card(rect, radius, x, y, RAISED, ring, BLACK).unwrap_or(UNDER)
+                        card(rect, radius, x, y, Shown(RAISED), ring, Shown(BLACK))
+                            .map_or(UNDER, |p| p.0)
                     });
                     assert_eq!(pixels, want, "card of radius {radius}, row {y}");
                 }

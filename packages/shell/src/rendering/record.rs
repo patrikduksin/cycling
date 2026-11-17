@@ -14,12 +14,12 @@ pub enum Kind {
     Unwritten,
     /// An entry point wrote a palette colour through the row's look.
     Mapped,
-    /// Written as given on a row without a look, such as `Row::plain`: a
-    /// colour that reads the same in every look.
+    /// Written on a row without a look, such as `Row::plain`, by an entry
+    /// point or `span_shown`: a colour that reads the same in every look.
     Fixed,
     /// A colour worked out per pixel or from colours already shown: `each`,
-    /// `each_over`, and under a look `Row::computed` and the blended pixels
-    /// `Row::wrote` reports.
+    /// `each_over`, `worked_out`, the blended pixels a `pixels_mut` paint
+    /// reports, and under a look `span_shown`.
     Computed,
 }
 
@@ -93,14 +93,6 @@ mod recording {
         });
     }
 
-    pub fn copy((from, start): (*const u16, usize), (to, x): (*const u16, Range<usize>)) {
-        let mut copied = Vec::new();
-        write(from, |kinds| {
-            copied.extend_from_slice(&kinds[start..start + x.len()])
-        });
-        write(to, |kinds| kinds[x].copy_from_slice(&copied));
-    }
-
     pub fn of(pixels: &[u16]) -> Option<Vec<Kind>> {
         let mut found = None;
         with(pixels.as_ptr(), |kinds| {
@@ -140,12 +132,6 @@ pub(crate) fn mark_each(
 ) {
     #[cfg(any(test, feature = "paint-record"))]
     recording::mark_each(_buffer, _x, _kind);
-}
-
-#[inline(always)]
-pub(crate) fn copy(_from: (*const u16, usize), _to: (*const u16, core::ops::Range<usize>)) {
-    #[cfg(any(test, feature = "paint-record"))]
-    recording::copy(_from, _to);
 }
 
 /// How each pixel of a buffer rows were painted into was last written, or

@@ -293,22 +293,23 @@ impl Placed {
     }
 
     #[cfg(test)]
-    pub fn pixel(&self, x: usize, y: usize, under: u16) -> Option<u16> {
+    pub fn pixel(&self, x: usize, y: usize, under: chrome::Shown) -> Option<chrome::Shown> {
         if !self.bounds.contains(x, y) {
             return None;
         }
+        let ink = |color| chrome::Look::PLAIN.ink(color);
         let (fill, radius) = self.fill_rect();
         let mut color = under;
         if self.form == SignForm::Chip {
-            color = blend(RAISED, color, rounded(self.bounds, radius, x, y));
+            color = blend(ink(RAISED), color, rounded(self.bounds, radius, x, y));
         }
         if fill.contains(x, y) {
-            color = blend(self.fill, color, rounded(fill, radius, x, y));
+            color = blend(ink(self.fill), color, rounded(fill, radius, x, y));
         }
         let (left, top) = self.glyph_at;
         color = self
             .glyph
-            .pixel(x, y, left, top, WHITE, color)
+            .pixel(x, y, left, top, ink(WHITE), color)
             .unwrap_or(color);
         for label in &self.lines {
             color = label
@@ -342,6 +343,7 @@ impl Placed {
 }
 
 fn paint_block(row: &mut Row, rect: Rect, radius: usize, color: u16) {
+    let color = row.ink(color);
     paint_rounded_over(row, rect, radius, 0, |x, y, under| {
         match rounded(rect, radius, x, y) {
             0 => None,

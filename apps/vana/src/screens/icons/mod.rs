@@ -5,7 +5,7 @@
 //! holds, so the same icon sits on black, a card or a focused card.
 mod art;
 
-use super::chrome::{Rect, Row, blend};
+use super::chrome::{Rect, Row, Shown, blend};
 use crate::sensors::ant::device_type;
 pub use art::{ARROW, PLUS, PUCK, REFRESH, Sensor, SignGlyph};
 
@@ -67,9 +67,9 @@ impl Icon {
         y: usize,
         left: usize,
         top: usize,
-        color: u16,
-        background: u16,
-    ) -> Option<u16> {
+        color: Shown,
+        background: Shown,
+    ) -> Option<Shown> {
         let coverage = self.coverage(x.checked_sub(left)?, y.checked_sub(top)?);
         (coverage > 0).then(|| blend(color, background, coverage))
     }
@@ -101,17 +101,20 @@ impl Icon {
             }
         };
         let color = row.ink(color);
-        for (column, pixel) in row.pixels_mut(start..end).iter_mut().enumerate() {
-            if start + column < clip.start {
-                continue;
-            }
-            match coverage(column) {
-                0 => {}
-                15 => *pixel = color,
-                coverage => *pixel = blend(color, *pixel, coverage),
-            }
-        }
-        row.wrote(start..end, |x| coverage(x - start));
+        row.pixels_mut(
+            start..end,
+            |x| coverage(x - start),
+            |pixels| {
+                let skipped = clip.start.saturating_sub(start);
+                for (column, pixel) in (skipped..).zip(pixels) {
+                    match coverage(column) {
+                        0 => {}
+                        15 => *pixel = color,
+                        coverage => *pixel = blend(color, *pixel, coverage),
+                    }
+                }
+            },
+        );
     }
 
     /// The box the icon's ink fills with its square's top-left corner at
@@ -345,8 +348,8 @@ mod tests {
                     let mut pixels = [background; 60];
                     icon.paint(&mut Row::new(y + 9, &mut pixels), 7, 9, WHITE);
                     for (x, &got) in pixels.iter().enumerate() {
-                        let want = icon.pixel(x, y + 9, 7, 9, WHITE, background);
-                        assert_eq!(got, want.unwrap_or(background), "{x},{y}");
+                        let want = icon.pixel(x, y + 9, 7, 9, Shown(WHITE), Shown(background));
+                        assert_eq!(Shown(got), want.unwrap_or(Shown(background)), "{x},{y}");
                     }
                 }
             }

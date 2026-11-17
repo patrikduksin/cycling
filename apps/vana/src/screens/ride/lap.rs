@@ -9,7 +9,7 @@ use crate::ride::laps::{HISTORY, Lap};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
     ACCENT, Align, BLACK, BODY, GREEN, HEART, LARGE, POWER, Rect, SECONDARY, SPEED, VALUE, WHITE,
-    blend,
+    mix,
 };
 use crate::screens::workout::{Text, View};
 use core::fmt::Write;
@@ -190,7 +190,7 @@ fn chart(canvas: &mut Canvas, finished: &[LapBar], open: LapBar) {
             bottom: CHART_BOTTOM,
         };
         let open = index + 1 == count;
-        let shade = if open { color } else { blend(color, BLACK, 4) };
+        let shade = if open { color } else { mix(color, BLACK, 4) };
         canvas.shape(Shape::Bar {
             rect,
             radius: 2,
@@ -368,7 +368,7 @@ mod tests {
             (60, steady(Some(150), 8334, 150)),
         ];
         let view = ridden(&laps, (60, steady(Some(240), 8334, 150)));
-        let dim = blend(POWER, BLACK, 4);
+        let dim = mix(POWER, BLACK, 4);
         let lefts = |index: usize| slot(index, 4).0;
         assert_eq!(
             bars(&view),

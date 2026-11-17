@@ -9,7 +9,7 @@ use super::{BODY, Labels, RidePage, Smooth, Text, elapsed, kilometres, speed, wh
 use crate::ride::course::nav::Sign;
 use crate::screens::chrome::{
     Align, BLACK, BODY as BODY_FACE, CAPTION, GRADE, HEART, HERO, LARGE, Label, Line, POWER, Rect,
-    Row, SECONDARY, SPEED, TERTIARY, VALUE, WHITE, blend, rounded, zone_color,
+    Row, SECONDARY, SPEED, Shown, TERTIARY, VALUE, WHITE, blend, rounded, zone_color,
 };
 use crate::screens::icons::SignForm;
 use crate::screens::sign::{self, baseline_under_mockup};
@@ -441,7 +441,7 @@ pub(super) fn paint(scene: &Scene, row: &mut Row) {
 
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
-pub(super) fn reference_pixel(scene: &Scene, x: usize, y: usize) -> u16 {
+pub(super) fn reference_pixel(scene: &Scene, x: usize, y: usize) -> Shown {
     let look = scene.look();
     let black = look.ink(BLACK);
     let smooth = scene.smooth();
@@ -485,7 +485,7 @@ fn paint_gauge(row: &mut Row, zone: u8, fill: usize, segments: usize, top: usize
     let width = pitch - GAUGE_GAP;
     let lit = usize::from(zone);
     let black = row.ink(BLACK);
-    let inks: [[u16; 2]; MOST_SEGMENTS] = core::array::from_fn(|segment| {
+    let inks: [[Shown; 2]; MOST_SEGMENTS] = core::array::from_fn(|segment| {
         [false, true].map(|lit| row.ink(segment_color(segment, lit)))
     });
     for (segment, &[track, color]) in inks.iter().enumerate().take(segments) {

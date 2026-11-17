@@ -231,10 +231,7 @@ impl<'a> Extra<'a> {
 #[derive(Hash)]
 pub struct Scene<'v> {
     kind: Kind,
-    light: bool,
-    /// What the look shows black as, mapped once a frame rather than for the
-    /// fill that starts every row.
-    black: u16,
+    look: Look,
     bar: Option<&'v StatusBar>,
     body: &'v Body,
     painted: Painted<'v>,
@@ -322,7 +319,7 @@ impl Extra<'_> {
 #[derive(Hash)]
 struct WholePage<'v> {
     kind: Kind,
-    light: bool,
+    look: Look,
     radar: bool,
     cues: &'static [Cue],
     badge: Option<&'v Badge>,
@@ -332,8 +329,8 @@ impl firmware_shell::shell::Picture for Scene<'_> {
     const SIZE: (usize, usize) = (WIDTH, HEIGHT);
 
     fn paint(&self, row: &mut Row) {
-        let row = &mut row.looked(self.look());
-        row.span_shown(0..usize::MAX, self.black);
+        let row = &mut row.looked(self.look);
+        row.fill(BLACK);
         self.paint_content(row);
         if let Some(sign) = &self.sign {
             sign.paint(&mut row.plain());
@@ -349,7 +346,7 @@ impl firmware_shell::shell::Picture for Scene<'_> {
             0..HEIGHT,
             &WholePage {
                 kind: self.kind,
-                light: self.light,
+                look: self.look,
                 radar: self.radar.is_some(),
                 cues: self.cues,
                 badge: self.badge,
@@ -409,12 +406,9 @@ impl<'v> Scene<'v> {
         }
     }
 
-    pub(super) fn light(&self) -> bool {
-        self.light
-    }
-
+    #[cfg(test)]
     pub(super) fn look(&self) -> Look {
-        super::look::look(self.light)
+        self.look
     }
 
     fn bar_rows(&self) -> usize {
@@ -472,7 +466,7 @@ impl<'v> Scene<'v> {
     }
 
     #[cfg(test)]
-    pub(super) fn reference_pixel(&self, x: usize, y: usize) -> u16 {
+    pub(super) fn reference_pixel(&self, x: usize, y: usize) -> super::chrome::Shown {
         let color = self.reference_content(x, y);
         self.sign
             .as_ref()
@@ -481,7 +475,7 @@ impl<'v> Scene<'v> {
     }
 
     #[cfg(test)]
-    fn reference_content(&self, x: usize, y: usize) -> u16 {
+    fn reference_content(&self, x: usize, y: usize) -> super::chrome::Shown {
         let look = self.look();
         let black = look.ink(BLACK);
         if let Some(bar) = self.bar
@@ -987,8 +981,7 @@ impl<'a> View<'a> {
         };
         Scene {
             kind,
-            light: self.light,
-            black: super::look::look(self.light).ink(BLACK),
+            look: super::look::look(self.light),
             bar: (!sheet && !self.full_screen()).then_some(&self.bar),
             body: &self.body,
             painted: self.extra.painted(),
@@ -1650,7 +1643,7 @@ mod tests {
             let scene = view.scene();
             firmware_shell::shell::Picture::paint(&scene, &mut Row::new(y, &mut pixels));
             for (x, &pixel) in pixels.iter().enumerate() {
-                let want = scene.reference_pixel(x, y);
+                let want = scene.reference_pixel(x, y).0;
                 assert_eq!(
                     pixel, want,
                     "{what} at {x},{y}: {pixel:#06x} != {want:#06x}"

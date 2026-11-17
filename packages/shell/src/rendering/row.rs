@@ -4,19 +4,47 @@
 //! whole row; writes outside its clip range are dropped.
 //!
 //! A row may carry a look, a map from palette colours to the colours shown.
-//! The entry points (`fill`, `span`, `set`, `bits`, `bits_scaled`, `text`)
-//! take palette colours and map them once a call. Colours already worked
-//! out, such as blends and colours read back from the row, are written as
-//! given: `each` and `each_over` write their results unmapped, and a span of
-//! one goes through `computed`.
+//! Palette colours are bare `u16`s and shown ones are [`Shown`], so a colour
+//! mapped twice or never fails to compile. The entry points (`fill`, `span`,
+//! `set`, `bits`, `bits_scaled`, `text`) take palette colours and map them
+//! once a call; `span_shown`, `each`, `each_over` and `pixels_mut` write
+//! colours already shown.
 use super::record::{self, Kind};
 use super::text::glyph;
 use super::work;
 use core::ops::Range;
 
+/// A colour as the display shows it: a palette colour through a look, or
+/// one worked out from such colours. A palette colour does not pass for one:
+///
+/// ```compile_fail
+/// # use firmware_shell::rendering::row::Row;
+/// let mut pixels = [0u16; 4];
+/// Row::new(0, &mut pixels).span_shown(0..1, 0xffff);
+/// ```
+///
+/// nor one for a palette colour:
+///
+/// ```compile_fail
+/// # use firmware_shell::rendering::row::Row;
+/// let mut pixels = [0u16; 4];
+/// let mut row = Row::new(0, &mut pixels);
+/// let white = row.ink(0xffff);
+/// row.span(0..1, white);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct Shown(pub u16);
+
+impl core::fmt::LowerHex for Shown {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
 /// A map from palette colours to the colours a row shows; `PLAIN` shows
 /// them as they are.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Hash)]
 pub struct Look(Option<fn(u16) -> u16>);
 
 impl Look {
@@ -28,23 +56,28 @@ impl Look {
 
     /// The colour shown for palette colour `color`.
     #[inline]
-    pub fn ink(self, color: u16) -> u16 {
-        match self.0 {
+    pub fn ink(self, color: u16) -> Shown {
+        Shown(match self.0 {
             Some(map) => map(color),
             None => color,
-        }
+        })
     }
+}
+
+fn shown_mut(pixels: &mut [u16]) -> &mut [Shown] {
+    // SAFETY: `Shown` is `repr(transparent)` over `u16`, so the two slices
+    // share layout, and every `u16` is a valid `Shown`.
+    unsafe { &mut *(core::ptr::from_mut(pixels) as *mut [Shown]) }
 }
 
 pub struct Row<'a> {
     y: usize,
-    /// Pixels before this column are outside the clip; the slice ends at the other edge.
+    /// Columns before this one are outside the clip; the slice ends at the other edge.
     start: usize,
+    /// The column `pixels[0]` holds: paints placed at `x` land at `x - origin`.
+    origin: usize,
     pixels: &'a mut [u16],
     look: Look,
-    /// How a write without a look is recorded: `Fixed`, or `Computed` for
-    /// a `computed` row.
-    plain_kind: Kind,
 }
 
 impl<'a> Row<'a> {
@@ -53,43 +86,54 @@ impl<'a> Row<'a> {
         Self {
             y,
             start: 0,
+            origin: 0,
             pixels,
             look: Look::PLAIN,
-            plain_kind: Kind::Fixed,
         }
     }
     pub fn y(&self) -> usize {
         self.y
     }
-    pub fn width(&self) -> usize {
-        self.pixels.len()
-    }
-    pub fn pixels(&self) -> &[u16] {
-        self.pixels
-    }
     /// Columns this row may write.
     pub fn clip(&self) -> Range<usize> {
-        self.start..self.pixels.len()
+        self.start..self.pixels.len() + self.origin
     }
-    /// Columns `x` of the row, from `x.start`, for paints that read what lies
-    /// beneath, such as blended glyph runs. Such paints must respect `clip()`,
-    /// take their palette colours through `ink`, and report what they wrote
-    /// through `wrote`.
-    pub fn pixels_mut(&mut self, x: Range<usize>) -> &mut [u16] {
-        &mut self.pixels[x]
+    pub fn shown(&self, x: usize) -> Option<Shown> {
+        let i = x.checked_sub(self.origin)?;
+        self.pixels.get(i).map(|&pixel| Shown(pixel))
     }
-    /// Record a paint through `pixels_mut` over columns `x`: `coverage(x)`
-    /// is how much of the paint's colour column `x` took, 15 for exactly
-    /// that colour, less for a blend over what lay beneath, and 0 for none,
-    /// which keeps the pixel's record.
-    pub fn wrote(&self, x: Range<usize>, coverage: impl Fn(usize) -> u8) {
-        let (full, blended) = (self.written(), self.derived());
-        let x = x.start.max(self.start)..x.end.min(self.pixels.len());
-        record::mark_each(self.pixels.as_ptr(), x, |x| match coverage(x) {
+    fn indices(&self, x: Range<usize>) -> Range<usize> {
+        let start = x.start.max(self.start) - self.origin;
+        let end = x.end.saturating_sub(self.origin).min(self.pixels.len());
+        start.min(end)..end
+    }
+    /// Paint the columns of `x` inside `clip()`, for paints that read what
+    /// lies beneath, such as blended glyph runs. `paint` gets them from
+    /// `x.start.max(clip().start)` on, and takes its palette colours through
+    /// `ink`. `coverage(x)` is how much of the paint's colour column `x` took: 15
+    /// for exactly that colour, less for a blend over what lay beneath, and
+    /// 0 for none, which keeps the pixel's record.
+    pub fn pixels_mut(
+        &mut self,
+        x: Range<usize>,
+        coverage: impl Fn(usize) -> u8,
+        paint: impl FnOnce(&mut [Shown]),
+    ) {
+        let x = self.indices(x);
+        paint(shown_mut(&mut self.pixels[x.clone()]));
+        let (ink, origin) = (self.palette_kind(), self.origin);
+        record::mark_each(self.pixels.as_ptr(), x, |i| match coverage(i + origin) {
             0 => None,
-            15.. => Some(full),
-            _ => Some(blended),
+            15.. => Some(ink),
+            _ => Some(Kind::Computed),
         });
+    }
+    /// `pixels_mut` for a paint that works out every column of `x` from
+    /// shown colours, such as a map raster from its colour table.
+    pub fn worked_out(&mut self, x: Range<usize>, paint: impl FnOnce(&mut [Shown])) {
+        let x = self.indices(x);
+        paint(shown_mut(&mut self.pixels[x.clone()]));
+        record::mark(self.pixels.as_ptr(), x, Kind::Computed);
     }
     /// The row's look, for paints that work out colours from palette ones.
     pub fn look(&self) -> Look {
@@ -97,102 +141,85 @@ impl<'a> Row<'a> {
     }
     /// The colour this row shows for palette colour `color`.
     #[inline]
-    pub fn ink(&self, color: u16) -> u16 {
+    pub fn ink(&self, color: u16) -> Shown {
         self.look.ink(color)
     }
-    fn reborrow(&mut self, y: usize, start: usize, end: usize) -> Row<'_> {
+    fn reborrow(&mut self, y: usize, start: usize, end: usize, origin: usize) -> Row<'_> {
         Row {
             y,
             start,
+            origin,
             pixels: &mut self.pixels[..end],
             look: self.look,
-            plain_kind: self.plain_kind,
         }
     }
     /// The same row clipped further to `x`, for regions that own their pixels.
     pub fn within(&mut self, x: Range<usize>) -> Row<'_> {
-        let end = x.end.min(self.pixels.len());
-        self.reborrow(self.y, self.start.max(x.start), end)
+        let end = x.end.saturating_sub(self.origin).min(self.pixels.len());
+        self.reborrow(self.y, self.start.max(x.start), end, self.origin)
     }
     /// The same pixels as row `y` of content that scrolls: paints placed for
     /// `y` land on this display row.
     pub fn at(&mut self, y: usize) -> Row<'_> {
-        self.reborrow(y, self.start, self.pixels.len())
+        self.reborrow(y, self.start, self.pixels.len(), self.origin)
+    }
+    /// The same pixels for content placed `shift` columns right of where it
+    /// shows: paints placed at `x` land at `x - shift`.
+    pub fn shifted(&mut self, shift: usize) -> Row<'_> {
+        let len = self.pixels.len();
+        self.reborrow(self.y, self.start + shift, len, self.origin + shift)
     }
     /// The same row, showing palette colours through `look`.
     pub fn looked(&mut self, look: Look) -> Row<'_> {
-        let mut row = self.reborrow(self.y, self.start, self.pixels.len());
+        let mut row = self.at(self.y);
         row.look = look;
         row
     }
     /// The same row without a look, for colours that read the same in every
     /// look.
     pub fn plain(&mut self) -> Row<'_> {
-        self.unmapped(Kind::Fixed)
+        self.looked(Look::PLAIN)
     }
-    /// The same row without a look, for colours already worked out from the
-    /// colours it shows.
-    pub fn computed(&mut self) -> Row<'_> {
-        self.unmapped(self.derived())
-    }
-    fn unmapped(&mut self, kind: Kind) -> Row<'_> {
-        let mut row = self.looked(Look::PLAIN);
-        row.plain_kind = kind;
-        row
-    }
-    fn written(&self) -> Kind {
+    fn palette_kind(&self) -> Kind {
         match self.look.0 {
             Some(_) => Kind::Mapped,
-            None => self.plain_kind,
-        }
-    }
-    fn derived(&self) -> Kind {
-        if self.look.0.is_some() {
-            Kind::Computed
-        } else {
-            self.written()
-        }
-    }
-    /// Copy columns `x` from `from`'s columns `shift` further right, which
-    /// already hold shown colours.
-    pub fn copy(&mut self, x: Range<usize>, from: &Row, shift: usize) {
-        let start = x.start.max(self.start);
-        let end = x.end.min(self.pixels.len());
-        if start < end {
-            self.pixels[start..end].copy_from_slice(&from.pixels[start + shift..end + shift]);
-            record::copy(
-                (from.pixels.as_ptr(), start + shift),
-                (self.pixels.as_ptr(), start..end),
-            );
+            None => Kind::Fixed,
         }
     }
     pub fn fill(&mut self, color: u16) {
         self.span(0..usize::MAX, color);
     }
     pub fn span(&mut self, x: Range<usize>, color: u16) {
-        self.span_shown(x, self.ink(color));
+        self.write_span(x, self.ink(color), self.palette_kind());
     }
-    /// `span` for a colour `ink` already gave, so a paint that also blends
-    /// the colour maps it once.
-    pub fn span_shown(&mut self, x: Range<usize>, color: u16) {
-        let start = x.start.max(self.start);
-        let end = x.end.min(self.pixels.len());
-        if start < end {
-            fill(&mut self.pixels[start..end], color);
-            record::mark(self.pixels.as_ptr(), start..end, self.written());
+    /// `span` for a colour already shown, so a paint that also blends the
+    /// colour maps it once.
+    pub fn span_shown(&mut self, x: Range<usize>, color: Shown) {
+        let kind = match self.look.0 {
+            Some(_) => Kind::Computed,
+            None => Kind::Fixed,
+        };
+        self.write_span(x, color, kind);
+    }
+    fn write_span(&mut self, x: Range<usize>, color: Shown, kind: Kind) {
+        let x = self.indices(x);
+        if !x.is_empty() {
             work::add(|work| {
                 work.spans += 1;
-                work.span_pixels += (end - start) as u64;
+                work.span_pixels += x.len() as u64;
             });
+            fill(&mut self.pixels[x.clone()], color.0);
+            record::mark(self.pixels.as_ptr(), x, kind);
         }
     }
     pub fn set(&mut self, x: usize, color: u16) {
         let color = self.ink(color);
         if x >= self.start
-            && let Some(pixel) = self.pixels.get_mut(x)
+            && let Some(pixel) = self.pixels.get_mut(x - self.origin)
         {
-            *pixel = color;
-            record::mark(self.pixels.as_ptr(), x..x + 1, self.written());
+            *pixel = color.0;
+            let i = x - self.origin;
+            record::mark(self.pixels.as_ptr(), i..i + 1, self.palette_kind());
         }
     }
     /// Paint `left + i` for every set bit `i` of a bitmap row.
@@ -203,10 +230,11 @@ impl<'a> Row<'a> {
     pub fn bits_scaled(&mut self, left: usize, bits: u32, scale: usize, color: u16) {
         self.bits_shown(left, bits, scale, self.ink(color));
     }
-    fn bits_shown(&mut self, left: usize, mut bits: u32, scale: usize, color: u16) {
+    fn bits_shown(&mut self, left: usize, mut bits: u32, scale: usize, color: Shown) {
+        let kind = self.palette_kind();
         while bits != 0 {
             let x = left + bits.trailing_zeros() as usize * scale;
-            self.span_shown(x..x + scale, color);
+            self.write_span(x..x + scale, color, kind);
             bits &= bits - 1;
         }
     }
@@ -218,9 +246,10 @@ impl<'a> Row<'a> {
         let color = self.ink(color);
         let line = (self.y - top) / scale;
         let advance = 6 * scale;
+        let end = self.clip().end;
         for (i, &character) in label.iter().enumerate() {
             let start = left + i * advance;
-            if start >= self.pixels.len() {
+            if start >= end {
                 break;
             }
             // Glyph rows put the leftmost of five dots in bit four.
@@ -229,31 +258,27 @@ impl<'a> Row<'a> {
         }
     }
     /// Per-pixel fallback for shapes without a cheaper row form; `None` keeps
-    /// the pixel. Colours are written as given, so palette ones go through
-    /// `ink` first.
-    pub fn each(&mut self, x: Range<usize>, mut pixel: impl FnMut(usize) -> Option<u16>) {
-        let start = x.start.max(self.start);
-        let end = x.end.min(self.pixels.len());
-        work::add(|work| work.evaluations += end.saturating_sub(start) as u64);
-        let buffer = self.pixels.as_ptr();
-        for (x, out) in self.pixels.iter_mut().enumerate().take(end).skip(start) {
-            if let Some(color) = pixel(x) {
-                *out = color;
-                record::mark(buffer, x..x + 1, Kind::Computed);
-            }
-        }
+    /// the pixel.
+    pub fn each(&mut self, x: Range<usize>, mut pixel: impl FnMut(usize) -> Option<Shown>) {
+        self.each_over(x, |x, _| pixel(x));
     }
     /// `each`, given what the row already holds at each pixel, for edges
     /// that blend over it.
-    pub fn each_over(&mut self, x: Range<usize>, mut pixel: impl FnMut(usize, u16) -> Option<u16>) {
-        let start = x.start.max(self.start);
-        let end = x.end.min(self.pixels.len());
-        work::add(|work| work.evaluations += end.saturating_sub(start) as u64);
-        let buffer = self.pixels.as_ptr();
-        for (x, out) in self.pixels.iter_mut().enumerate().take(end).skip(start) {
-            if let Some(color) = pixel(x, *out) {
+    pub fn each_over(
+        &mut self,
+        x: Range<usize>,
+        mut pixel: impl FnMut(usize, Shown) -> Option<Shown>,
+    ) {
+        let x = self.indices(x);
+        work::add(|work| work.evaluations += x.len() as u64);
+        let (buffer, origin) = (self.pixels.as_ptr(), self.origin);
+        for (i, out) in shown_mut(&mut self.pixels[x.clone()])
+            .iter_mut()
+            .enumerate()
+        {
+            if let Some(color) = pixel(x.start + i + origin, *out) {
                 *out = color;
-                record::mark(buffer, x..x + 1, Kind::Computed);
+                record::mark(buffer, x.start + i..x.start + i + 1, Kind::Computed);
             }
         }
     }
@@ -279,7 +304,7 @@ fn fill(pixels: &mut [u16], color: u16) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Look, Row};
+    use super::{Look, Row, Shown};
     use crate::rendering::text::text;
 
     #[test]
@@ -329,7 +354,8 @@ mod tests {
         row.set(8, 2);
         row.bits(5, 0b1001, 3);
         row.text(7, 0, 2, b"W", 4);
-        row.each(7..30, |_| Some(5));
+        row.each(7..30, |_| Some(Shown(5)));
+        row.each(30..40, |_| Some(Shown(9)));
         let mut middle = row.within(2..4);
         assert_eq!(middle.clip(), 2..4);
         middle.fill(6);
@@ -343,26 +369,24 @@ mod tests {
     }
 
     fn paint_every_write(pixels: &mut [u16; 14]) {
-        let mut source = [0u16; 12];
-        let mut beside = Row::new(0, &mut source);
-        beside.looked(Look::new(plus_one)).span(11..12, 89);
         let mut row = Row::new(0, pixels);
         let mut row = row.looked(Look::new(plus_one));
         row.plain().span(13..14, 120);
         let ink = row.ink(100);
-        let blended = &mut row.pixels_mut(11..14)[..2];
-        blended.copy_from_slice(&[ink, ink - 1]);
-        row.wrote(11..14, |x| [15, 7, 0][x - 11]);
+        let coverage = |x: usize| [15, 7, 0][x - 11];
+        row.pixels_mut(11..14, coverage, |blended| {
+            blended[..2].copy_from_slice(&[ink, Shown(ink.0 - 1)]);
+        });
         row.span(0..2, 10);
         row.set(2, 20);
         row.bits(3, 0b1, 30);
         row.within(4..5).fill(40);
         row.at(7).set(5, 50);
-        row.each(6..7, |_| Some(60));
-        row.each_over(7..8, |_, under| Some(under + 1));
+        row.each(6..7, |_| Some(Shown(60)));
+        row.each_over(7..8, |_, under| Some(Shown(under.0 + 1)));
         row.plain().span(8..9, 70);
-        row.computed().span(9..10, 80);
-        row.copy(10..11, &beside, 1);
+        row.span_shown(9..10, Shown(80));
+        row.shifted(3).set(13, 90);
     }
 
     #[test]
@@ -371,7 +395,7 @@ mod tests {
         paint_every_write(&mut pixels);
         assert_eq!(
             pixels,
-            [11, 11, 21, 31, 41, 51, 60, 1, 70, 80, 90, 101, 100, 120]
+            [11, 11, 21, 31, 41, 51, 60, 1, 70, 80, 91, 101, 100, 120]
         );
         let mut pixels = [0u16; 24];
         Row::new(1, &mut pixels)
@@ -379,6 +403,20 @@ mod tests {
             .text(0, 0, 1, b"WM", 50);
         let lit: std::vec::Vec<_> = pixels.into_iter().filter(|&p| p != 0).collect();
         assert!(lit.len() > 2 && lit.iter().all(|&p| p == 51), "{lit:?}");
+    }
+
+    #[test]
+    fn a_shifted_row_lands_paints_left_and_keeps_its_clip() {
+        let mut pixels = [0u16; 10];
+        let mut row = Row::new(0, &mut pixels);
+        let mut body = row.within(2..8);
+        let mut shifted = body.shifted(3);
+        assert_eq!(shifted.clip(), 5..11);
+        shifted.span(0..20, 1);
+        shifted.each_over(9..10, |x, under| Some(Shown(under.0 + x as u16)));
+        shifted.within(6..8).set(7, 2);
+        assert_eq!(shifted.shown(9), Some(Shown(10)));
+        assert_eq!(pixels, [0, 0, 1, 1, 2, 1, 10, 1, 0, 0]);
     }
 
     #[test]

@@ -3,6 +3,7 @@ use device_api::input::Input;
 use device_api::observation::Availability;
 
 use firmware_shell::harness::Operation;
+use firmware_shell::rendering::row::Shown;
 use firmware_shell::shell::Shell;
 use shell_simulator::devices::DisplayDevice;
 use shell_simulator::devices::InputDevice;
@@ -560,7 +561,7 @@ fn canvas_rows_are_fitted_to_any_panel_geometry() {
         let (mut s, d, _) = shell(w, h);
         s.draw_canvas(240, 320, |row| {
             let y = row.y();
-            row.each(0..240, |x| Some(logical(x, y)));
+            row.each(0..240, |x| Some(Shown(logical(x, y))));
         });
         assert!(!s.display_error);
         let frame = d.0.borrow();

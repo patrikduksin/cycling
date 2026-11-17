@@ -7,7 +7,7 @@
 use super::chrome::Look;
 use super::chrome::{
     AMBER, Align, BLACK, BODY, CAPTION, CONTENT, GREEN, Inks, Label, Line, MUTED, Rect, Row,
-    SECONDARY, TITLE, WHITE, blend, card, paint_disc, paint_rounded,
+    SECONDARY, Shown, TITLE, WHITE, blend, card, paint_disc, paint_rounded,
 };
 
 /// The width of a card's focus ring, which `paint_rounded` fills as spans
@@ -349,7 +349,7 @@ impl Home {
     }
 
     /// The green start button with a black play triangle, 26 tall, inside it.
-    fn play(inks: Inks, x: usize, y: usize, button: u8, fill: u16) -> u16 {
+    fn play(inks: Inks, x: usize, y: usize, button: u8, fill: Shown) -> Shown {
         let (cx, cy, _) = PLAY;
         let gx = x as i32 - (cx as i32 - 6);
         let gy = y as i32 - (cy as i32 - 12);
@@ -363,7 +363,7 @@ impl Home {
     }
 
     #[cfg(test)]
-    pub fn pixel(&self, look: Look, x: usize, y: usize) -> u16 {
+    pub fn pixel(&self, look: Look, x: usize, y: usize) -> Shown {
         let inks = Inks::of(look);
         if y < RIDE_TILE.bottom {
             return self.ride_pixel(look, x, y);
@@ -395,7 +395,7 @@ impl Home {
     }
 
     /// Fill and focus ring: the focused card is raised and ringed.
-    fn surface(inks: Inks, focused: bool, rect: Rect, x: usize, y: usize) -> Option<u16> {
+    fn surface(inks: Inks, focused: bool, rect: Rect, x: usize, y: usize) -> Option<Shown> {
         Self::surface_of(inks, focused, rect, RADIUS, x, y)
     }
 
@@ -406,7 +406,7 @@ impl Home {
         radius: usize,
         x: usize,
         y: usize,
-    ) -> Option<u16> {
+    ) -> Option<Shown> {
         if focused {
             card(
                 rect,
@@ -423,7 +423,7 @@ impl Home {
     }
 
     #[cfg(test)]
-    fn ride_pixel(&self, look: Look, x: usize, y: usize) -> u16 {
+    fn ride_pixel(&self, look: Look, x: usize, y: usize) -> Shown {
         let inks = Inks::of(look);
         let Some(fill) = Self::surface(inks, self.cursor == 0, RIDE_TILE, x, y) else {
             return inks.black;
@@ -442,7 +442,7 @@ impl Home {
     }
 
     #[cfg(test)]
-    fn sensors_pixel(&self, look: Look, x: usize, y: usize) -> u16 {
+    fn sensors_pixel(&self, look: Look, x: usize, y: usize) -> Shown {
         let inks = Inks::of(look);
         let Some(fill) = Self::surface(inks, self.cursor == 1, SENSORS_TILE, x, y) else {
             return inks.black;
@@ -531,24 +531,26 @@ mod tests {
     fn focus_raises_and_rings_the_card_and_taps_find_cards() {
         let home = Home::new(0, true, &[], Text::new());
         let inside = (RIDE_TILE.right - 24, RIDE_TILE.bottom - 24);
-        assert_eq!(home.pixel(Look::PLAIN, inside.0, inside.1), RAISED);
+        assert_eq!(home.pixel(Look::PLAIN, inside.0, inside.1).0, RAISED);
         assert_eq!(
-            home.pixel(Look::PLAIN, RIDE_TILE.center_x(), RIDE_TILE.top),
+            home.pixel(Look::PLAIN, RIDE_TILE.center_x(), RIDE_TILE.top)
+                .0,
             ACCENT
         );
         let sensors_inside = (SENSORS_TILE.right - 24, SENSORS_TILE.bottom - 24);
         assert_eq!(
-            home.pixel(Look::PLAIN, sensors_inside.0, sensors_inside.1),
+            home.pixel(Look::PLAIN, sensors_inside.0, sensors_inside.1)
+                .0,
             CARD
         );
         assert_eq!(
-            home.pixel(Look::PLAIN, RIDE_TILE.left, RIDE_TILE.top),
+            home.pixel(Look::PLAIN, RIDE_TILE.left, RIDE_TILE.top).0,
             BLACK,
             "rounded"
         );
-        assert_eq!(home.pixel(Look::PLAIN, PLAY.0 + 20, PLAY.1), GREEN);
+        assert_eq!(home.pixel(Look::PLAIN, PLAY.0 + 20, PLAY.1).0, GREEN);
         assert_eq!(
-            home.pixel(Look::PLAIN, PLAY.0, PLAY.1),
+            home.pixel(Look::PLAIN, PLAY.0, PLAY.1).0,
             BLACK,
             "play triangle"
         );
@@ -556,7 +558,7 @@ mod tests {
         let sensors = Home::new(1, true, &[], Text::new());
         assert_eq!(sensors.ride.color, MUTED);
         let top = (SENSORS_TILE.center_x(), SENSORS_TILE.top);
-        assert_eq!(sensors.pixel(Look::PLAIN, top.0, top.1), ACCENT);
+        assert_eq!(sensors.pixel(Look::PLAIN, top.0, top.1).0, ACCENT);
         assert_eq!(Home::tile_at(120, RIDE_TILE.top + 1), Some(Tile::Ride));
         assert_eq!(
             Home::tile_at(120, SENSORS_TILE.bottom - 1),
@@ -573,12 +575,12 @@ mod tests {
         );
         let workouts = Home::new(2, true, &[], Text::new());
         let top = (WORKOUTS_TILE.center_x(), WORKOUTS_TILE.top);
-        assert_eq!(workouts.pixel(Look::PLAIN, top.0, top.1), ACCENT);
+        assert_eq!(workouts.pixel(Look::PLAIN, top.0, top.1).0, ACCENT);
         assert_eq!(workouts.workouts_title.color, WHITE);
         assert_eq!(workouts.settings_title.color, MUTED);
         let settings = Home::new(3, true, &[], Text::new());
         let top = (SETTINGS_TILE.center_x(), SETTINGS_TILE.top);
-        assert_eq!(settings.pixel(Look::PLAIN, top.0, top.1), ACCENT);
+        assert_eq!(settings.pixel(Look::PLAIN, top.0, top.1).0, ACCENT);
         assert_eq!(settings.settings_title.color, WHITE);
         assert_eq!(Home::tile_at(2, 100), None);
     }
@@ -617,9 +619,9 @@ mod tests {
         low[0].battery = Some(crate::sensors::ant::BatteryStatus::Ok);
         assert_eq!(Home::new(0, false, &low, Text::new()).count.color, GREEN);
         let left = SENSORS_TILE.left + INSET;
-        assert_eq!(home.pixel(Look::PLAIN, left + 25, ICON_TOP), GREEN);
+        assert_eq!(home.pixel(Look::PLAIN, left + 25, ICON_TOP).0, GREEN);
         assert_eq!(
-            home.pixel(Look::PLAIN, left + ICON_PITCH + 25, ICON_TOP),
+            home.pixel(Look::PLAIN, left + ICON_PITCH + 25, ICON_TOP).0,
             0xfd20
         );
         assert_eq!(home.last.line.text(), b"5.00 KM");
@@ -629,7 +631,9 @@ mod tests {
         // The RIDES card takes the focus and a tap.
         let rides = Home::new(4, false, &[], Text::new());
         assert_eq!(
-            rides.pixel(Look::PLAIN, RIDES_TILE.center_x(), RIDES_TILE.top),
+            rides
+                .pixel(Look::PLAIN, RIDES_TILE.center_x(), RIDES_TILE.top)
+                .0,
             ACCENT
         );
         assert_eq!(Home::tile_at(120, RIDES_TILE.top + 4), Some(Tile::Rides));

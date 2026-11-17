@@ -7,7 +7,7 @@
 //! `packages/shell/fonts/generate.py`; see `docs/ui.md` for when to use each.
 mod faces;
 
-use super::row::{Look, Row};
+use super::row::{Look, Row, Shown};
 use super::work;
 use core::ops::Range;
 
@@ -243,9 +243,17 @@ fn nibble(bits: &[u8], x: usize) -> u8 {
     }
 }
 
-/// Mix `color` over `background` by a 4-bit coverage. Full coverage is
-/// exactly `color`, so the simulator can recognise solid glyph pixels.
-pub fn blend(color: u16, background: u16, coverage: u8) -> u16 {
+/// Mix shown `color` over shown `background` by a 4-bit coverage. Full
+/// coverage is exactly `color`, so the simulator can recognise solid glyph
+/// pixels.
+#[inline]
+pub fn blend(color: Shown, background: Shown, coverage: u8) -> Shown {
+    Shown(mix(color.0, background.0, coverage))
+}
+
+/// `blend` for palette colours, such as a dimmed zone colour, mixed before
+/// a look maps the result.
+pub fn mix(color: u16, background: u16, coverage: u8) -> u16 {
     match coverage {
         0 => background,
         15.. => color,
@@ -264,27 +272,27 @@ pub fn blend(color: u16, background: u16, coverage: u8) -> u16 {
 /// One colour's blends over the background last seen, each coverage mixed
 /// once: a label's anti-aliased edges mostly lie over one background.
 struct Blends {
-    color: u16,
-    under: u16,
+    color: Shown,
+    under: Shown,
     /// Bit `a` is set once `mixed[a]` holds the blend at coverage `a`.
     known: u16,
-    mixed: [u16; 16],
+    mixed: [Shown; 16],
     mixes: u32,
 }
 
 impl Blends {
-    const fn new(color: u16) -> Self {
+    const fn new(color: Shown) -> Self {
         Self {
             color,
-            under: 0,
+            under: Shown(0),
             known: 0,
-            mixed: [0; 16],
+            mixed: [Shown(0); 16],
             mixes: 0,
         }
     }
 
     #[inline]
-    fn over(&mut self, under: u16, coverage: u8) -> u16 {
+    fn over(&mut self, under: Shown, coverage: u8) -> Shown {
         if under != self.under {
             self.under = under;
             self.known = 0;
@@ -299,7 +307,7 @@ impl Blends {
     }
 
     #[inline(always)]
-    fn put(&mut self, pixel: &mut u16, coverage: u8) {
+    fn put(&mut self, pixel: &mut Shown, coverage: u8) {
         match coverage {
             0 => {}
             15.. => *pixel = self.color,
@@ -320,10 +328,17 @@ impl Held {
     /// Paint the held columns, each at the larger of its coverage and
     /// `next`'s, and hold none.
     #[inline(always)]
-    fn paint(&mut self, pixels: &mut [u16], blends: &mut Blends, next: impl Fn(usize) -> u8) {
+    /// `pixels` starts at column `from`.
+    fn paint(
+        &mut self,
+        pixels: &mut [Shown],
+        from: usize,
+        blends: &mut Blends,
+        next: impl Fn(usize) -> u8,
+    ) {
         for x in self.columns.clone() {
             let held = self.coverage.get(x - self.columns.start).copied();
-            blends.put(&mut pixels[x], held.unwrap_or(0).max(next(x)));
+            blends.put(&mut pixels[x - from], held.unwrap_or(0).max(next(x)));
         }
         self.columns = 0..0;
     }
@@ -403,8 +418,8 @@ impl<const N: usize> Label<N> {
         }
         let color = row.ink(self.color);
         // Columns from here on count from the label's left edge.
-        let pixels = row.pixels_mut(self.left..end);
-        let (from, to) = (clip.start.saturating_sub(self.left), pixels.len());
+        let left = self.left;
+        let (from, to) = (clip.start.saturating_sub(left), end - left);
         let line = &self.line;
         let y = y - self.top;
         let starts = &line.starts[..usize::from(line.len)];
@@ -416,50 +431,55 @@ impl<const N: usize> Label<N> {
         };
         let mut blends = Blends::new(color);
         let mut columns = 0;
-        let mut held = Held::default();
-        for (i, (&start, &character)) in starts.iter().zip(&line.chars).enumerate() {
-            let glyph = line.face.glyph(character);
-            let gy = y.wrapping_sub(usize::from(glyph.y));
-            if gy >= usize::from(glyph.h) {
-                held.paint(pixels, &mut blends, |_| 0);
-                continue;
-            }
-            let start = usize::from(start);
-            let ink = start as isize + isize::from(glyph.x);
-            let first = start.max(ink.max(0) as usize).max(from);
-            let last = ((ink + isize::from(glyph.w)).max(0) as usize).min(cell(i + 2));
-            let stride = usize::from(glyph.w).div_ceil(2);
-            let base = usize::from(glyph.offset) + gy * stride;
-            let bits = &line.face.bits[base..base + stride];
-            let skip = |x: usize| (x as isize - ink) as usize;
-            // A glyph's ink starts in its own cell, where the held columns start.
-            let own = first.max(held.columns.end);
-            held.paint(pixels, &mut blends, |x| {
-                if (first..last).contains(&x) {
-                    nibble(bits, skip(x))
-                } else {
-                    0
+        let coverage = |x: usize| line.coverage(x - left, y);
+        row.pixels_mut(left..end, coverage, |pixels| {
+            let mut held = Held::default();
+            for (i, (&start, &character)) in starts.iter().zip(&line.chars).enumerate() {
+                let glyph = line.face.glyph(character);
+                let gy = y.wrapping_sub(usize::from(glyph.y));
+                if gy >= usize::from(glyph.h) {
+                    held.paint(pixels, from, &mut blends, |_| 0);
+                    continue;
                 }
-            });
-            let next = cell(i + 1);
-            let own = own..last.min(next);
-            if !own.is_empty() {
-                columns += own.len();
-                unpack(bits, skip(own.start), &mut pixels[own], |pixel, a| {
-                    blends.put(pixel, a)
+                let start = usize::from(start);
+                let ink = start as isize + isize::from(glyph.x);
+                let first = start.max(ink.max(0) as usize).max(from);
+                let last = ((ink + isize::from(glyph.w)).max(0) as usize).min(cell(i + 2));
+                let stride = usize::from(glyph.w).div_ceil(2);
+                let base = usize::from(glyph.offset) + gy * stride;
+                let bits = &line.face.bits[base..base + stride];
+                let skip = |x: usize| (x as isize - ink) as usize;
+                // A glyph's ink starts in its own cell, where the held columns start.
+                let own = first.max(held.columns.end);
+                held.paint(pixels, from, &mut blends, |x| {
+                    if (first..last).contains(&x) {
+                        nibble(bits, skip(x))
+                    } else {
+                        0
+                    }
                 });
-            }
-            if last > next {
-                held.columns = first.max(next)..last;
-                columns += held.columns.len();
-                for (x, slot) in held.columns.clone().zip(&mut held.coverage) {
-                    *slot = nibble(bits, skip(x));
+                let next = cell(i + 1);
+                let own = own..last.min(next);
+                if !own.is_empty() {
+                    columns += own.len();
+                    let own = own.start - from..own.end - from;
+                    unpack(
+                        bits,
+                        skip(own.start + from),
+                        &mut pixels[own],
+                        |pixel, a| blends.put(pixel, a),
+                    );
+                }
+                if last > next {
+                    held.columns = first.max(next)..last;
+                    columns += held.columns.len();
+                    for (x, slot) in held.columns.clone().zip(&mut held.coverage) {
+                        *slot = nibble(bits, skip(x));
+                    }
                 }
             }
-        }
-        held.paint(pixels, &mut blends, |_| 0);
-        let left = self.left;
-        row.wrote(left + from..left + to, |x| line.coverage(x - left, y));
+            held.paint(pixels, from, &mut blends, |_| 0);
+        });
         work::add(|work| {
             let inked = (from..to).filter(|&x| line.coverage(x, y) > 0);
             work.label_rows += 1;
@@ -470,7 +490,7 @@ impl<const N: usize> Label<N> {
     }
 
     /// The label over `background`, or none where it has no ink.
-    pub fn pixel(&self, look: Look, x: usize, y: usize, background: u16) -> Option<u16> {
+    pub fn pixel(&self, look: Look, x: usize, y: usize, background: Shown) -> Option<Shown> {
         if y < self.top || y >= self.bottom() || x < self.left {
             return None;
         }
@@ -561,11 +581,27 @@ mod tests {
 
     #[test]
     fn blending_keeps_full_coverage_exact_and_mixes_channels() {
-        assert_eq!(blend(0xf800, 0, 15), 0xf800);
-        assert_eq!(blend(0xf800, 0x07ff, 0), 0x07ff);
-        let half = blend(0xffff, 0, 8);
+        assert_eq!(mix(0xf800, 0, 15), 0xf800);
+        assert_eq!(mix(0xf800, 0x07ff, 0), 0x07ff);
+        let half = mix(0xffff, 0, 8);
         assert_eq!(half >> 11, (31 * 8 + 7) / 15);
-        assert_eq!(blend(0x07e0, 0, 15), 0x07e0);
+        assert_eq!(mix(0x07e0, 0, 15), 0x07e0);
+    }
+
+    #[test]
+    fn a_label_left_of_a_shifted_row_paints_only_its_clipped_part() {
+        let label = Label::new(Line::<8>::new(&BODY, b"HELLO"), 0, 0, Align::Left, 0xffff);
+        let mut lit = 0;
+        for y in 0..label.bottom() {
+            let mut pixels = [0u16; 240];
+            label.paint(&mut Row::new(y, &mut pixels).shifted(14).within(28..240));
+            for (x, &pixel) in pixels.iter().enumerate() {
+                let shown = (x + 14 >= 28).then(|| label.pixel(Look::PLAIN, x + 14, y, Shown(0)));
+                assert_eq!(pixel, shown.flatten().map_or(0, |p| p.0), "{x},{y}");
+                lit += usize::from(pixel != 0);
+            }
+        }
+        assert!(lit > 0, "the label reaches into the clip");
     }
 
     #[test]
@@ -575,11 +611,11 @@ mod tests {
         assert_eq!(right.right(), 100);
         let centre = Label::new(line, 100, 10, Align::Center, 0xffff);
         assert_eq!(centre.left, 100 - line.width() / 2);
-        assert_eq!(right.pixel(Look::PLAIN, 50, 10, 0), None);
-        assert_eq!(right.pixel(Look::PLAIN, right.left + 1, 9, 0), None);
+        assert_eq!(right.pixel(Look::PLAIN, 50, 10, Shown(0)), None);
+        assert_eq!(right.pixel(Look::PLAIN, right.left + 1, 9, Shown(0)), None);
         let lit = (10..right.bottom())
             .flat_map(|y| (right.left..right.right()).map(move |x| (x, y)))
-            .filter(|&(x, y)| right.pixel(Look::PLAIN, x, y, 0) == Some(0xffff))
+            .filter(|&(x, y)| right.pixel(Look::PLAIN, x, y, Shown(0)) == Some(Shown(0xffff)))
             .count();
         assert!(lit > 10);
     }
@@ -611,7 +647,9 @@ mod tests {
                     let under = background(x, y);
                     assert_eq!(
                         pixel,
-                        label.pixel(Look::PLAIN, x, y, under).unwrap_or(under),
+                        label
+                            .pixel(Look::PLAIN, x, y, Shown(under))
+                            .map_or(under, |p| p.0),
                         "{x},{y}"
                     );
                 }
@@ -641,8 +679,8 @@ mod tests {
                             label.paint(&mut Row::new(y, &mut pixels));
                             for x in label.columns() {
                                 let want = label
-                                    .pixel(Look::PLAIN, x, y, BACKGROUND)
-                                    .unwrap_or(BACKGROUND);
+                                    .pixel(Look::PLAIN, x, y, Shown(BACKGROUND))
+                                    .map_or(BACKGROUND, |p| p.0);
                                 assert_eq!(pixels[x], want, "{text:?} at {x},{y}");
                             }
                         }
@@ -671,8 +709,8 @@ mod tests {
                         label.paint(&mut Row::new(y, &mut pixels));
                         for (x, &pixel) in pixels.iter().enumerate() {
                             let want = label
-                                .pixel(Look::PLAIN, x, y, BACKGROUND)
-                                .unwrap_or(BACKGROUND);
+                                .pixel(Look::PLAIN, x, y, Shown(BACKGROUND))
+                                .map_or(BACKGROUND, |p| p.0);
                             assert_eq!(pixel, want, "{:?} at {x},{y}", text);
                         }
                         // A clipped row keeps the pixels outside its clip.
@@ -681,8 +719,8 @@ mod tests {
                         for (x, &pixel) in pixels.iter().enumerate() {
                             let want = if (100..140).contains(&x) {
                                 label
-                                    .pixel(Look::PLAIN, x, y, BACKGROUND)
-                                    .unwrap_or(BACKGROUND)
+                                    .pixel(Look::PLAIN, x, y, Shown(BACKGROUND))
+                                    .map_or(BACKGROUND, |p| p.0)
                             } else {
                                 BACKGROUND
                             };

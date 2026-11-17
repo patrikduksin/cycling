@@ -19,6 +19,10 @@ const MOCKUP_COURSE: [Point; 9] = [
 ];
 const TURN_MM: u32 = 650_000;
 
+fn pixel(frame: &Frame, look: Look, x: usize, y: usize, under: u16) -> u16 {
+    super::pixel(frame, look, x, y, Shown(under)).0
+}
+
 fn track_crumbs(points: &[Point]) -> std::vec::Vec<Crumb> {
     let mut along = 0.0;
     let mut last = points[0];
@@ -1594,7 +1598,7 @@ mod santiago {
                     );
                 }
             }
-            let count = |color: u16| screen.iter().filter(|&&p| p == look.ink(color)).count();
+            let count = |color| screen.iter().filter(|&&p| p == look.ink(color).0).count();
             assert!(count(MINOR_ROAD) > 2_000 && count(MAJOR_ROAD) > 1_000);
             let (rider_x, rider_y) = (
                 frame.last_pose.rider.0 as usize,
@@ -1603,7 +1607,7 @@ mod santiago {
             let under_route = screen[(rider_y - 40) * WIDTH + rider_x];
             assert_eq!(
                 under_route,
-                look.ink(ACCENT),
+                look.ink(ACCENT).0,
                 "the route paints over the roads"
             );
         }

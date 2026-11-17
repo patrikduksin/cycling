@@ -4,6 +4,7 @@ use crate::screens::sensors::MenuMessage;
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::{HEART_RATE, RADAR};
 use device_api::display::Geometry;
+use firmware_shell::rendering::row::Shown;
 use firmware_shell::shell::Shell;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -56,7 +57,10 @@ impl Panel {
         let canvas = sheet.canvas();
         (0..HEIGHT).all(|y| {
             (0..WIDTH).all(|x| {
-                self.pixel(x, y) == canvas.pixel(crate::screens::chrome::Look::PLAIN, x, y, 0)
+                self.pixel(x, y)
+                    == canvas
+                        .pixel(crate::screens::chrome::Look::PLAIN, x, y, Shown(0))
+                        .0
             })
         })
     }

@@ -8,7 +8,7 @@
 //! stepping back or ending, a `RED` one for throwing a ride away. See
 //! `docs/ui.md`, "Button cues".
 use super::chrome::{
-    BLACK, GREEN, HEIGHT, Look, RAISED, RED, Row, WHITE, blend, disc, paint_disc_over,
+    BLACK, GREEN, HEIGHT, Look, RAISED, RED, Row, Shown, WHITE, blend, disc, paint_disc_over,
 };
 
 /// Which button a cue sits beside.
@@ -119,7 +119,7 @@ impl Cue {
     }
 
     /// The per-pixel original of `paint`, over `under`, as `look` shows it.
-    pub fn pixel(&self, look: Look, x: usize, y: usize, under: u16) -> u16 {
+    pub fn pixel(&self, look: Look, x: usize, y: usize, under: Shown) -> Shown {
         let (fill, ink) = self.colors();
         let (fill, ink) = (look.ink(fill), look.ink(ink));
         let (cx, cy) = self.corner_xy();
@@ -175,7 +175,7 @@ impl Badge {
         });
     }
 
-    pub fn pixel(&self, look: Look, x: usize, y: usize, under: u16) -> u16 {
+    pub fn pixel(&self, look: Look, x: usize, y: usize, under: Shown) -> Shown {
         let (cx, cy) = (self.cx as i32, self.cy as i32);
         let coverage = disc(x, y, 4 * cx, 4 * cy, 4 * self.radius as i32);
         if coverage == 0 {
@@ -346,7 +346,7 @@ mod tests {
                     for (x, &pixel) in pixels.iter().enumerate() {
                         assert_eq!(
                             pixel,
-                            cue.pixel(Look::PLAIN, x, y, BLACK),
+                            cue.pixel(Look::PLAIN, x, y, Shown(BLACK)).0,
                             "{cue:?} at {x},{y}"
                         );
                         inked += usize::from(pixel == ink);
@@ -359,7 +359,7 @@ mod tests {
                     Corner::BottomLeft => (2, HEIGHT - 3),
                 };
                 assert_eq!(
-                    cue.pixel(Look::PLAIN, x, y, BLACK),
+                    cue.pixel(Look::PLAIN, x, y, Shown(BLACK)).0,
                     fill,
                     "{cue:?} fills its corner"
                 );
@@ -369,7 +369,7 @@ mod tests {
                     Corner::BottomLeft => (RADIUS + 2, HEIGHT - 3),
                 };
                 assert_eq!(
-                    cue.pixel(Look::PLAIN, far_x, far_y, BLACK),
+                    cue.pixel(Look::PLAIN, far_x, far_y, Shown(BLACK)).0,
                     BLACK,
                     "{cue:?} stays small"
                 );

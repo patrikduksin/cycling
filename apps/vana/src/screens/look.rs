@@ -1,10 +1,9 @@
 //! The light look: screens paint with the one dark palette, and in the light
 //! look each palette colour goes through `light` as it is painted.
 use super::chrome::{
-    ACCENT, AMBER, BLACK, CARD, GREEN, HEART, MUTED, POWER, PRESSED, RAISED, RED, SECONDARY, SPEED,
-    TERTIARY, WHITE, ZONES, rgb,
+    ACCENT, AMBER, BLACK, CARD, CASING, GREEN, HEART, MUTED, POWER, PRESSED, RAISED, RED, RIDDEN,
+    SECONDARY, SPEED, TERTIARY, WHITE, ZONES, rgb,
 };
-use super::ride::{CASING, RIDDEN};
 use firmware_shell::rendering::row::Look;
 
 pub const fn look(light: bool) -> Look {

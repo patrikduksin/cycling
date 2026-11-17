@@ -38,12 +38,9 @@ pub const RADIUS: usize = 10;
 const PAPER: u16 = WHITE;
 const INK: u16 = BLACK;
 
-fn code_colors(light_look: bool) -> (u16, u16) {
-    if light_look {
-        (light(PAPER), light(INK))
-    } else {
-        (PAPER, INK)
-    }
+/// The palette colour a look shows as `PAPER`.
+fn paper(light_look: bool) -> u16 {
+    if light_look { light(PAPER) } else { PAPER }
 }
 
 /// Where the code sits for `qr`.
@@ -88,7 +85,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
             canvas.shape(Shape::Bar {
                 rect: code.panel(),
                 radius: RADIUS,
-                color: code_colors(view.light).0,
+                color: paper(view.light),
             });
             code.panel().bottom
         }
@@ -122,17 +119,24 @@ pub(super) fn prepare(view: &View) -> Canvas {
     canvas
 }
 
-/// The code's modules over the panel the canvas painted.
+/// The code's modules over the panel the canvas painted, shown as `INK` in
+/// every look: the light look shows `light(INK)` as `INK`.
 pub(super) fn paint(scene: &Scene, row: &mut super::chrome::Row) {
     if let Some(code) = scene.qr() {
-        code.paint(row, code_colors(scene.light()).1);
+        let ink = if row.ink(INK).0 == INK {
+            INK
+        } else {
+            light(INK)
+        };
+        code.paint(row, ink);
     }
 }
 
 #[cfg(test)]
-pub(super) fn pixel(scene: &Scene, x: usize, y: usize) -> Option<u16> {
+pub(super) fn pixel(scene: &Scene, x: usize, y: usize) -> Option<super::chrome::Shown> {
     let code = scene.qr()?;
-    code.pixel(x, y).map(|dark| if dark { INK } else { PAPER })
+    code.pixel(x, y)
+        .map(|dark| super::chrome::Shown(if dark { INK } else { PAPER }))
 }
 
 #[cfg(test)]

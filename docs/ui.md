@@ -60,8 +60,8 @@ Every face costs flash: all six take about 50 KB together.
 
 ## Palette
 
-Screens paint on `BLACK`. The light look (see Light below) turns the whole frame
-white on its way to the panel; no screen paints a second palette.
+Screens paint on `BLACK`. The light look (see Light below) maps each colour
+as it is painted, so `BLACK` shows white; no screen paints a second palette.
 
 | Name | Meaning |
 | --- | --- |
@@ -120,21 +120,23 @@ THEME in Settings → Display chooses DARK, LIGHT or AUTO. DARK is the default.
 In AUTO the light look follows the day and night decision above: light by day,
 dark at night. The row's note says LIGHT NOW or DARK NOW.
 
-The light look is a transform at the output, not a second palette. Screens
-paint as usual, then every painted row goes through `screens::look::light`.
-It inverts luminance and keeps hue: `Y = (2r + 5g + b) / 8`, then each channel
-moves by `255 - 2Y` and is clamped. Greys swap ends (`BLACK` becomes white,
-`WHITE` becomes black). Bright colours such as `POWER` and `SPEED` turn dark
-enough to read on white. Mid-bright colours such as `RED`, `HEART` and
-`ACCENT` barely move under the inversion, so a saturated colour is also pulled
-down towards a luma of 90, about 4:1 against white, in proportion to its
-chroma. Greys keep the plain inversion, and anti-aliased edges stay
-continuous. The brand frame at power on takes the look too. Dark mode runs no
-pass at all.
+The light look is derived from the one palette by `light`, applied to each
+colour as it is painted. A screen paints through a row that carries the
+look (`Row::looked`). The row's paint calls take palette colours and map
+each once per call. An anti-aliased edge blends colours already mapped, so
+it ramps between the two colours shown. `screens::look::light` inverts
+luminance and keeps hue: `Y = (2r + 5g + b) / 8`, then each channel moves
+by `255 - 2Y` and is clamped. Greys swap ends (`BLACK` becomes white,
+`WHITE` becomes black). Bright colours such as `POWER` and `SPEED` turn
+dark enough to read on white. Mid-bright colours such as `RED`, `HEART` and
+`ACCENT` barely move under the inversion, so a saturated colour is also
+pulled down towards a luma of 90, about 4:1 against white, in proportion to
+its chroma. Greys keep the plain inversion. The brand frame at power on and
+the power sheets take the look too. In dark mode the row maps nothing.
 
 QR codes stay dark modules on a light panel. The Connect phone screen paints
-its panel and modules pre-inverted in the light look, so the transform turns
-them back.
+its panel and modules pre-inverted in the light look, so the look maps them
+back.
 
 ### Metric colours
 
@@ -396,8 +398,8 @@ While a course is followed, one sign tells the rider the next turn
 while the rider rides against the course beside it. Its geometry is the mockups' in
 `docs/design/course-navigation`, laid out from their fractional positions;
 `cycling mockup-compare` checks the data-page screens against them. Every
-fill takes white ink, digits and units alike, and the sign paints after the
-light look, so it is the same in both looks. Its digits jump to each new
+fill takes white ink, digits and units alike, and the sign paints without
+the light look (`Row::plain`), so it is the same in both looks. Its digits jump to each new
 distance: 10 m steps under 1 km, then 0.1 km, then whole km.
 
 | Form | Where | Box | Content |

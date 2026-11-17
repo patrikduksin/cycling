@@ -6,12 +6,12 @@
 //! only fills spans and blends glyph runs. `pixel` is the per-pixel original
 //! that tests hold `paint` to, and `assert_laid_out` is the layout sweep's
 //! check.
-#[cfg(test)]
-use super::chrome::disc;
 use super::chrome::{
     Align, CAPTION, Label, Line, Rect, Ring, Row, SECONDARY, blend, paint_disc_over,
     paint_rounded_over, rounded,
 };
+#[cfg(test)]
+use super::chrome::{Look, disc};
 use super::icons::StaticIcon;
 use firmware_shell::rendering::font::{Face, SPILL};
 use firmware_shell::shell::Parts;
@@ -100,7 +100,11 @@ impl Shape {
                 radius,
                 color,
             } => {
+                if !(rect.top..rect.bottom).contains(&row.y()) {
+                    return;
+                }
                 let radius = fitted(rect, radius);
+                let color = row.ink(color);
                 paint_rounded_over(row, rect, radius, 0, |x, y, under| {
                     let coverage = rounded(rect, radius, x, y);
                     (coverage > 0).then(|| blend(color, under, coverage))
@@ -111,9 +115,7 @@ impl Shape {
                 cy,
                 radius,
                 color,
-            } => paint_disc_over(row, (cx, cy, radius), color, |_, coverage, under| {
-                Some(blend(color, under, coverage))
-            }),
+            } => paint_disc_over(row, (cx, cy, radius), color),
             Self::Ring { ring, ends, color } => ring.paint(row, &ends, color),
             Self::Icon {
                 icon,
@@ -125,7 +127,7 @@ impl Shape {
     }
 
     #[cfg(test)]
-    fn pixel(&self, x: usize, y: usize, under: u16) -> Option<u16> {
+    fn pixel(&self, look: Look, x: usize, y: usize, under: u16) -> Option<u16> {
         let (coverage, color) = match *self {
             Self::Panel {
                 rect,
@@ -149,9 +151,9 @@ impl Shape {
                 left,
                 top,
                 color,
-            } => return icon.pixel(x, y, left, top, color, under),
+            } => return icon.pixel(x, y, left, top, look.ink(color), under),
         };
-        (coverage > 0).then(|| blend(color, under, coverage))
+        (coverage > 0).then(|| blend(look.ink(color), under, coverage))
     }
 }
 
@@ -265,17 +267,16 @@ impl Canvas {
         shapes.chain(self.runs.iter().map(|run| (run.top, run.bottom())))
     }
 
-    /// The per-pixel original of `paint`, over `background`.
     #[cfg(test)]
-    pub fn pixel(&self, x: usize, y: usize, background: u16) -> u16 {
+    pub fn pixel(&self, look: Look, x: usize, y: usize, background: u16) -> u16 {
         let mut color = background;
         for shape in &self.shapes {
-            if let Some(pixel) = shape.pixel(x, y, color) {
+            if let Some(pixel) = shape.pixel(look, x, y, color) {
                 color = pixel;
             }
         }
         for run in &self.runs {
-            if let Some(pixel) = run.pixel(x, y, color) {
+            if let Some(pixel) = run.pixel(look, x, y, color) {
                 color = pixel;
             }
         }
@@ -340,10 +341,8 @@ pub fn on_baseline(line: Line<24>, x: usize, base: usize, align: Align, color: u
 mod tests {
     use super::*;
     use crate::screens::chrome::{BLACK, POWER, WHITE};
+    use crate::screens::look::look;
 
-    /// A shape's anti-aliased edge mixes its colour with what lies under it,
-    /// such as the rider's disc on the climb profile or a lap bar's cap,
-    /// never with black; `paint` and `pixel` agree.
     #[test]
     fn shape_edges_blend_over_the_shapes_beneath() {
         let fill = Rect {
@@ -374,12 +373,19 @@ mod tests {
             radius: 1,
             color: WHITE,
         });
+        for light in [false, true] {
+            assert_edges_blend_over_the_shapes_beneath(&canvas, look(light));
+        }
+    }
+
+    fn assert_edges_blend_over_the_shapes_beneath(canvas: &Canvas, look: Look) {
+        let (black, white, power) = (look.ink(BLACK), look.ink(WHITE), look.ink(POWER));
         let mut edges = 0;
         for y in 0..40 {
-            let mut pixels = [BLACK; 40];
-            canvas.paint(&mut Row::new(y, &mut pixels));
+            let mut pixels = [black; 40];
+            canvas.paint(&mut Row::new(y, &mut pixels).looked(look));
             for (x, &painted) in pixels.iter().enumerate() {
-                assert_eq!(painted, canvas.pixel(x, y, BLACK), "({x}, {y})");
+                assert_eq!(painted, canvas.pixel(look, x, y, black), "({x}, {y})");
                 let coverage = canvas.shapes[1..]
                     .iter()
                     .map(|shape| match *shape {
@@ -393,8 +399,8 @@ mod tests {
                     .unwrap_or(0);
                 if (1..15).contains(&coverage) {
                     edges += 1;
-                    assert_eq!(painted, blend(WHITE, POWER, coverage), "({x}, {y})");
-                    assert_ne!(painted, blend(WHITE, BLACK, coverage), "({x}, {y})");
+                    assert_eq!(painted, blend(white, power, coverage), "({x}, {y})");
+                    assert_ne!(painted, blend(white, black, coverage), "({x}, {y})");
                 }
             }
         }

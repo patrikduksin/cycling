@@ -5,11 +5,12 @@ use crate::compare::Tap;
 use crate::devices::Model;
 use crate::recording::{Outcome, Recording};
 use crate::route::Route;
-use crate::screen::{Frame, Look, TextRun};
+use crate::screen::{Frame, TextRun};
 use crate::session::Session;
 use crate::world::{Vehicle, World};
 use device_api::input::{Button, Input, Point};
 use device_api::storage::Region;
+use firmware_shell::rendering::row::Look;
 use std::fmt::Write as _;
 use vana::app::Store;
 
@@ -66,7 +67,7 @@ pub struct Screen {
     pub width: usize,
     pub height: usize,
     pub pixels: Vec<u16>,
-    pub look: Option<&'static Look>,
+    pub look: Look,
 }
 
 impl Screen {
@@ -137,7 +138,7 @@ impl Screen {
     /// Whether `text` is painted white, as VANA's focused titles are; the
     /// light look shows them black.
     pub fn white(&self, text: &str) -> bool {
-        let white = self.look.map_or(0xffff, |look| look.shown(0xffff));
+        let white = self.look.ink(0xffff);
         self.run(text).is_some_and(|run| run.color == white)
     }
 
@@ -526,12 +527,8 @@ impl Sim {
         }
     }
 
-    /// VANA paints every frame dark and maps it through the light look when
-    /// that is in force.
-    fn look(&self) -> Option<&'static Look> {
-        static LIGHT: std::sync::LazyLock<Look> =
-            std::sync::LazyLock::new(|| Look::new(vana::screens::look::light));
-        self.device.sdk.light().then(|| &*LIGHT)
+    fn look(&self) -> Look {
+        vana::screens::look::look(self.device.sdk.light())
     }
 
     /// Advance until `needle` is on screen. Returns the waiting time, or the

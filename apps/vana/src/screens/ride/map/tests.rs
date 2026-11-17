@@ -121,7 +121,7 @@ fn on_course(course: &[Crumb], here: Point, along_m: f32) -> Track<'_> {
 
 fn blue_runs(frame: &Frame, y: usize) -> usize {
     (0..WIDTH)
-        .map(|x| pixel(frame, x, y, BLACK) == ACCENT)
+        .map(|x| pixel(frame, Look::PLAIN, x, y, BLACK) == ACCENT)
         .fold((0, false), |(runs, was), is| {
             (runs + usize::from(is && !was), is)
         })
@@ -130,7 +130,7 @@ fn blue_runs(frame: &Frame, y: usize) -> usize {
 
 fn route_in(frame: &Frame, rows: core::ops::Range<usize>) -> Option<(usize, usize)> {
     rows.flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
-        .find(|&(x, y)| matches!(pixel(frame, x, y, BLACK), ACCENT | CASING))
+        .find(|&(x, y)| matches!(pixel(frame, Look::PLAIN, x, y, BLACK), ACCENT | CASING))
 }
 
 const BEHIND_THE_PUCK: core::ops::Range<usize> = 240..GROUND.end;
@@ -157,7 +157,7 @@ fn the_course_ahead_is_blue_on_its_casing_and_nothing_is_drawn_behind_the_puck()
     let c = follower_course(&MOCKUP_COURSE);
     let frame = filled(&approach(&c));
     assert_eq!(frame.last_pose.rider, (120, 223));
-    let at = |x, y| pixel(&frame, x, y, BLACK);
+    let at = |x, y| pixel(&frame, Look::PLAIN, x, y, BLACK);
     assert_eq!(at(120, 150), ACCENT, "the route ahead");
     assert_eq!(at(127, 150), CASING, "its casing");
     assert_eq!(at(131, 150), GROUND_COLOR, "the ground beside it");
@@ -185,7 +185,7 @@ fn off_course_chevrons_lead_back_to_the_junction_and_the_puck_turns_amber() {
     let track = off_course(&c);
     let frame = filled(&track);
     assert_eq!(frame.last_pose.rider, (120, 223));
-    let at = |(x, y): Point| pixel(&frame, x as usize, y as usize, BLACK);
+    let at = |(x, y): Point| pixel(&frame, Look::PLAIN, x as usize, y as usize, BLACK);
     let ring = frame
         .last_pose
         .projection(track.here.unwrap())
@@ -248,7 +248,7 @@ fn far_off_course_in_every_direction_three_chevrons_lead_back_clear_of_the_badge
                 let chevrons: std::vec::Vec<(usize, usize)> = GROUND
                     .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
                     .filter(|&p| away(p, rider) > PUCK_CLEAR + 1.0)
-                    .filter(|&(x, y)| pixel(&frame, x, y, BLACK) == AMBER)
+                    .filter(|&(x, y)| pixel(&frame, Look::PLAIN, x, y, BLACK) == AMBER)
                     .collect();
                 let along: std::vec::Vec<f32> = chevrons
                     .iter()
@@ -341,7 +341,7 @@ fn before_joining_marks_on_the_course_ahead_point_the_way_it_runs() {
             (tip.1 + if up { 1.5 } else { -1.5 }) as usize,
         );
         assert_eq!(
-            pixel(&frame, x, y, BLACK),
+            pixel(&frame, Look::PLAIN, x, y, BLACK),
             CASING,
             "in the casing's colour at {x},{y}"
         );
@@ -367,7 +367,7 @@ fn marks_north(frame: &Frame) -> std::vec::Vec<f32> {
     let (x, rider_y) = (frame.last_pose.rider.0 as usize, frame.last_pose.rider.1);
     let px_per_m = frame.last_pose.reach.px_per_m();
     let casing: std::vec::Vec<bool> = GROUND
-        .map(|y| pixel(frame, x, y, BLACK) == CASING)
+        .map(|y| pixel(frame, Look::PLAIN, x, y, BLACK) == CASING)
         .collect();
     let mut marks = std::vec::Vec::new();
     let mut run = None;
@@ -436,8 +436,16 @@ fn without_a_course_the_ride_is_drawn_ridden_behind_the_rider() {
     let c = track_crumbs(&[(0.0, 0.0), (0.0, 300.0), (0.0, 500.0)]);
     let frame = filled(&free(&c));
     assert_eq!(frame.last_pose.rider, (120, 223));
-    assert_eq!(pixel(&frame, 120, 270, BLACK), RIDDEN, "70 m behind");
-    assert_eq!(pixel(&frame, 120, 223, BLACK), ACCENT, "the puck");
+    assert_eq!(
+        pixel(&frame, Look::PLAIN, 120, 270, BLACK),
+        RIDDEN,
+        "70 m behind"
+    );
+    assert_eq!(
+        pixel(&frame, Look::PLAIN, 120, 223, BLACK),
+        ACCENT,
+        "the puck"
+    );
 }
 
 #[test]
@@ -462,7 +470,7 @@ fn the_course_ahead_moves_neither_the_scale_nor_the_rider() {
                 let frame = filled(&track);
                 let puck = (100..150)
                     .flat_map(|x| (200..250).map(move |y| (x, y)))
-                    .map(|(x, y)| pixel(&frame, x, y, BLACK))
+                    .map(|(x, y)| pixel(&frame, Look::PLAIN, x, y, BLACK))
                     .filter(|&c| c == WHITE || c == BLACK)
                     .count();
                 (radar, frame.last_pose, puck)
@@ -503,7 +511,11 @@ fn rows_paint_what_the_per_pixel_original_says() {
             let mut pixels = [0x1234u16; WIDTH];
             paint(&frame, &mut Row::new(y, &mut pixels));
             for (x, &got) in pixels.iter().enumerate() {
-                assert_eq!(got, pixel(&frame, x, y, 0x1234), "case {n} at {x},{y}");
+                assert_eq!(
+                    got,
+                    pixel(&frame, Look::PLAIN, x, y, 0x1234),
+                    "case {n} at {x},{y}"
+                );
             }
         }
     }
@@ -615,7 +627,7 @@ fn a_junction_far_off_the_screen_paints_nothing_of_it() {
         let mut pixels = [BLACK; WIDTH];
         paint(&frame, &mut Row::new(y, &mut pixels));
         for (x, &got) in pixels.iter().enumerate() {
-            assert_eq!(got, pixel(&frame, x, y, BLACK), "at {x},{y}");
+            assert_eq!(got, pixel(&frame, Look::PLAIN, x, y, BLACK), "at {x},{y}");
         }
     }
 }
@@ -632,9 +644,13 @@ fn on_an_out_and_back_only_the_way_out_is_blue_and_nothing_behind_the_puck() {
     for y in [40, 100, 150, 200] {
         assert_eq!(blue_runs(&frame, y), 1, "one blue line at row {y}");
     }
-    assert_eq!(pixel(&frame, 120, 150, BLACK), ACCENT, "the way out");
     assert_eq!(
-        pixel(&frame, 140, 150, BLACK),
+        pixel(&frame, Look::PLAIN, 120, 150, BLACK),
+        ACCENT,
+        "the way out"
+    );
+    assert_eq!(
+        pixel(&frame, Look::PLAIN, 140, 150, BLACK),
         GROUND_COLOR,
         "not the way back"
     );
@@ -651,10 +667,14 @@ fn a_loop_finishing_across_the_rider_draws_no_second_line() {
         (-500.0, 0.0),
     ]);
     let frame = filled(&on_course(&c, (0.0, 0.0), 200.0));
-    assert_eq!(pixel(&frame, 120, 150, BLACK), ACCENT, "the course ahead");
+    assert_eq!(
+        pixel(&frame, Look::PLAIN, 120, 150, BLACK),
+        ACCENT,
+        "the course ahead"
+    );
     for x in [40, 70, 170, 200] {
         assert_eq!(
-            pixel(&frame, x, 223, BLACK),
+            pixel(&frame, Look::PLAIN, x, 223, BLACK),
             GROUND_COLOR,
             "the finish across the puck's row at x {x}"
         );
@@ -667,7 +687,7 @@ fn before_joining_the_course_runs_only_its_own_way_from_the_nearest_point() {
     let north = follower_course(&[(0.0, -1_000.0), (0.0, 1_000.0)]);
     let frame = filled(&joining(&north, (0.0, 0.0)));
     assert_eq!(
-        pixel(&frame, 120, 150, BLACK),
+        pixel(&frame, Look::PLAIN, 120, 150, BLACK),
         ACCENT,
         "ahead, the course's way"
     );
@@ -675,7 +695,7 @@ fn before_joining_the_course_runs_only_its_own_way_from_the_nearest_point() {
     let south = follower_course(&[(0.0, 1_000.0), (0.0, -1_000.0)]);
     let frame = filled(&joining(&south, (0.0, 0.0)));
     assert_eq!(
-        pixel(&frame, 120, 270, BLACK),
+        pixel(&frame, Look::PLAIN, 120, 270, BLACK),
         ACCENT,
         "behind, the course's way"
     );
@@ -694,7 +714,7 @@ fn off_course_the_line_starts_at_the_junction_and_runs_on_from_it() {
     let at = frame.last_pose.projection(track.here.unwrap());
     let shown = |p: Point| {
         let (x, y) = at.at(p);
-        pixel(&frame, x as usize, y as usize, BLACK)
+        pixel(&frame, Look::PLAIN, x as usize, y as usize, BLACK)
     };
     assert_eq!(shown((60.0, 260.0)), ACCENT, "on from the junction");
     for north in [100.0, 150.0, 200.0] {
@@ -718,7 +738,7 @@ fn the_ridden_track_is_drawn_only_without_a_course() {
         let frame = filled(track);
         GROUND
             .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
-            .filter(|&(x, y)| pixel(&frame, x, y, BLACK) == RIDDEN)
+            .filter(|&(x, y)| pixel(&frame, Look::PLAIN, x, y, BLACK) == RIDDEN)
             .count()
     };
     assert_eq!(ridden_px(&before), 0, "before joining");
@@ -731,13 +751,13 @@ const SOUTH: u16 = TURN / 2;
 
 fn blue_columns(frame: &Frame, y: usize) -> std::vec::Vec<usize> {
     (0..WIDTH)
-        .filter(|&x| pixel(frame, x, y, BLACK) == ACCENT)
+        .filter(|&x| pixel(frame, Look::PLAIN, x, y, BLACK) == ACCENT)
         .collect()
 }
 
 fn blue_in(frame: &Frame, xs: core::ops::Range<usize>, ys: core::ops::Range<usize>) -> usize {
     ys.flat_map(|y| xs.clone().map(move |x| (x, y)))
-        .filter(|&(x, y)| pixel(frame, x, y, BLACK) == ACCENT)
+        .filter(|&(x, y)| pixel(frame, Look::PLAIN, x, y, BLACK) == ACCENT)
         .count()
 }
 
@@ -860,7 +880,11 @@ fn a_route_that_jogs_after_its_turn_still_reaches_the_top_edge() {
 fn a_turn_back_beyond_the_top_of_the_map_draws_none_of_its_way_back() {
     let c = follower_course(&[(0.0, -100.0), (0.0, 400.0), (20.0, -100.0)]);
     let frame = filled(&on_course(&c, (0.0, 0.0), 100.0));
-    assert_eq!(pixel(&frame, 120, 150, BLACK), ACCENT, "the way to it");
+    assert_eq!(
+        pixel(&frame, Look::PLAIN, 120, 150, BLACK),
+        ACCENT,
+        "the way to it"
+    );
     assert_eq!(route_in(&frame, BEHIND_THE_PUCK), None, "the way back");
 }
 
@@ -868,7 +892,11 @@ fn a_turn_back_beyond_the_top_of_the_map_draws_none_of_its_way_back() {
 fn a_turn_back_on_the_map_draws_its_way_back() {
     let c = follower_course(&[(0.0, -100.0), (0.0, 150.0), (20.0, -100.0)]);
     let frame = filled(&on_course(&c, (0.0, 0.0), 100.0));
-    assert_eq!(pixel(&frame, 120, 150, BLACK), ACCENT, "the way to it");
+    assert_eq!(
+        pixel(&frame, Look::PLAIN, 120, 150, BLACK),
+        ACCENT,
+        "the way to it"
+    );
     assert!(
         route_in(&frame, BEHIND_THE_PUCK).is_some(),
         "the way back, past the puck"
@@ -887,7 +915,11 @@ fn off_course_from_a_junction_below_the_map_the_route_runs_up_past_the_rider() {
         frame.junction_quarter_px, None,
         "the junction is off the map"
     );
-    assert_eq!(pixel(&frame, 120, 150, BLACK), ACCENT, "the course ahead");
+    assert_eq!(
+        pixel(&frame, Look::PLAIN, 120, 150, BLACK),
+        ACCENT,
+        "the course ahead"
+    );
 }
 
 #[test]
@@ -1463,6 +1495,7 @@ mod santiago {
                 left_m: Some(8_000),
                 reach: Reach::default(),
                 radar: false,
+                light: false,
             }
         }
     }
@@ -1481,50 +1514,62 @@ mod santiago {
     }
 
     fn painted(frame: &Frame) -> Vec<u16> {
+        painted_in(frame, Look::PLAIN)
+    }
+
+    fn painted_in(frame: &Frame, look: Look) -> Vec<u16> {
         let mut screen = std::vec![0x1234u16; WIDTH * HEIGHT];
         for (y, pixels) in screen.as_chunks_mut::<WIDTH>().0.iter_mut().enumerate() {
-            paint(frame, &mut Row::new(y, pixels));
+            paint(frame, &mut Row::new(y, pixels).looked(look));
         }
         screen
     }
 
     #[test]
     fn central_santiago_paints_its_roads_under_the_route_as_the_reference_does() {
-        let mut arena = std::vec![0u8; 64 * PAGE_BYTES];
-        let mut engine = cached(&mut arena);
-        let ride = RideFrame::at(PLAZA);
-        let approach = Approach::new((0.0, -150.0), 0, 250.0);
-        let track = Track {
-            reach: settled_at(8_375),
-            ..approach.track()
-        };
-        let mut frame = Box::new(Frame::default());
-        let mut cache = Cache::new(&mut frame);
-        settle(&mut cache, &mut engine, ride, &track);
-        let frame = &*cache.frame;
-        assert!(
-            frame.roads_drawn[0] > 10 && frame.roads_drawn[1] > 2,
-            "{:?}",
-            frame.roads_drawn
-        );
-        let screen = painted(frame);
-        for y in GROUND.start..GROUND.end {
-            for x in 0..WIDTH {
-                assert_eq!(
-                    screen[y * WIDTH + x],
-                    pixel(frame, x, y, 0x1234),
-                    "at {x},{y}"
-                );
+        for light in [false, true] {
+            let mut arena = std::vec![0u8; 64 * PAGE_BYTES];
+            let mut engine = cached(&mut arena);
+            let ride = RideFrame::at(PLAZA);
+            let approach = Approach::new((0.0, -150.0), 0, 250.0);
+            let track = Track {
+                reach: settled_at(8_375),
+                light,
+                ..approach.track()
+            };
+            let mut frame = Box::new(Frame::default());
+            let mut cache = Cache::new(&mut frame);
+            settle(&mut cache, &mut engine, ride, &track);
+            let frame = &*cache.frame;
+            assert!(
+                frame.roads_drawn[0] > 10 && frame.roads_drawn[1] > 2,
+                "{:?}",
+                frame.roads_drawn
+            );
+            let look = look::look(light);
+            let screen = painted_in(frame, look);
+            for y in GROUND.start..GROUND.end {
+                for x in 0..WIDTH {
+                    assert_eq!(
+                        screen[y * WIDTH + x],
+                        pixel(frame, look, x, y, 0x1234),
+                        "light {light} at {x},{y}"
+                    );
+                }
             }
+            let count = |color: u16| screen.iter().filter(|&&p| p == look.ink(color)).count();
+            assert!(count(MINOR_ROAD) > 2_000 && count(MAJOR_ROAD) > 1_000);
+            let (rider_x, rider_y) = (
+                frame.last_pose.rider.0 as usize,
+                frame.last_pose.rider.1 as usize,
+            );
+            let under_route = screen[(rider_y - 40) * WIDTH + rider_x];
+            assert_eq!(
+                under_route,
+                look.ink(ACCENT),
+                "the route paints over the roads"
+            );
         }
-        let count = |color: u16| screen.iter().filter(|&&p| p == color).count();
-        assert!(count(MINOR_ROAD) > 2_000 && count(MAJOR_ROAD) > 1_000);
-        let (rider_x, rider_y) = (
-            frame.last_pose.rider.0 as usize,
-            frame.last_pose.rider.1 as usize,
-        );
-        let under_route = screen[(rider_y - 40) * WIDTH + rider_x];
-        assert_eq!(under_route, ACCENT, "the route paints over the roads");
     }
 
     #[test]

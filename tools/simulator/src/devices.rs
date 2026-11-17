@@ -14,6 +14,7 @@ use device_api::power::Power;
 use device_api::storage::OwnedFlash;
 use device_api::storage::Region;
 use firmware_services::input::Edges;
+use firmware_shell::rendering::record::{self, Kind};
 use firmware_shell::rendering::work::{self, Work};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -27,6 +28,10 @@ pub struct DisplayDevice(pub Rc<RefCell<Frame>>);
 pub struct Frame {
     pub geometry: Geometry,
     pub pixels: Vec<u16>,
+    /// How each shown pixel was painted, with the shell's `paint-record`
+    /// feature once the painting thread called `record::start`; empty
+    /// otherwise.
+    pub kinds: Vec<Kind>,
     pub submissions: u32,
     pub fail_next: bool,
     pub refusals: Refusals,
@@ -59,6 +64,7 @@ impl DisplayDevice {
         Self(Rc::new(RefCell::new(Frame {
             geometry: Geometry { width, height },
             pixels: vec![0; width * height],
+            kinds: Vec::new(),
             submissions: 0,
             fail_next: false,
             refusals: Refusals::default(),
@@ -84,10 +90,16 @@ impl Display for DisplayDevice {
             request.run((width, height), &mut row);
         }
         let counted = frame.probe.is_some();
-        let pixels = &mut frame.pixels;
+        let Frame { pixels, kinds, .. } = &mut *frame;
         let mut paint = || {
             for y in rows.runs(height).flatten() {
-                row(y, &mut pixels[y * width..(y + 1) * width]);
+                let shown = &mut pixels[y * width..(y + 1) * width];
+                record::open(shown);
+                row(y, shown);
+                if let Some(painted) = record::of(shown) {
+                    kinds.resize(width * height, Kind::Unwritten);
+                    kinds[y * width..(y + 1) * width].copy_from_slice(&painted);
+                }
             }
         };
         let work = if counted {

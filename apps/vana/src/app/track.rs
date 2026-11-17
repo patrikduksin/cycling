@@ -369,6 +369,7 @@ pub(super) fn refresh_map(
     now: u64,
     speed_mm_s: Option<u32>,
     radar: bool,
+    light: bool,
     clock: Option<fn() -> u64>,
 ) {
     let Some(state) = track.as_deref_mut() else {
@@ -389,6 +390,7 @@ pub(super) fn refresh_map(
         left_m: state.follower.to_end_m(),
         reach: state.zoom.reach(),
         radar,
+        light,
     };
     let started = clock.map(|clock| clock());
     if state.map.update(&drawn) {

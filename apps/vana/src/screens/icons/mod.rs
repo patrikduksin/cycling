@@ -58,8 +58,9 @@ impl Icon {
         }
     }
 
-    /// The icon in `color` at (`x`, `y`) with its square's top-left corner at
-    /// (`left`, `top`), over `background`; `None` outside its ink.
+    /// The icon in shown colour `color` at (`x`, `y`) with its square's
+    /// top-left corner at (`left`, `top`), over `background`; `None` outside
+    /// its ink.
     pub fn pixel(
         &self,
         x: usize,
@@ -86,28 +87,31 @@ impl Icon {
         };
         let start = left + usize::from(self.left);
         let clip = row.clip();
+        let end = (start + usize::from(self.width)).min(clip.end);
+        if start >= end {
+            return;
+        }
         let bits = &self.bits[y * self.stride()..][..self.stride()];
-        let pixels = row.pixels_mut();
-        for column in 0..usize::from(self.width) {
-            let x = start + column;
-            if x < clip.start {
-                continue;
-            }
-            let Some(pixel) = pixels.get_mut(x) else {
-                break;
-            };
+        let coverage = |column: usize| {
             let byte = bits[column / 2];
-            let coverage = if column.is_multiple_of(2) {
+            if column.is_multiple_of(2) {
                 byte >> 4
             } else {
                 byte & 0x0f
-            };
-            match coverage {
+            }
+        };
+        let color = row.ink(color);
+        for (column, pixel) in row.pixels_mut(start..end).iter_mut().enumerate() {
+            if start + column < clip.start {
+                continue;
+            }
+            match coverage(column) {
                 0 => {}
                 15 => *pixel = color,
                 coverage => *pixel = blend(color, *pixel, coverage),
             }
         }
+        row.wrote(start..end, |x| coverage(x - start));
     }
 
     /// The box the icon's ink fills with its square's top-left corner at

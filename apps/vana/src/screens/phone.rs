@@ -33,13 +33,11 @@ const TITLE_BASE: usize = 64;
 /// The code's light panel.
 const CODE_TOP: usize = 72;
 const CODE_WIDTH: usize = 168;
-const RADIUS: usize = 10;
+pub const RADIUS: usize = 10;
 /// A light panel: phone cameras want dark modules on light.
 const PAPER: u16 = WHITE;
 const INK: u16 = BLACK;
 
-/// The panel and module colours to paint: the light look inverts the whole
-/// frame, so these are pre-inverted to come out dark on light.
 fn code_colors(light_look: bool) -> (u16, u16) {
     if light_look {
         (light(PAPER), light(INK))

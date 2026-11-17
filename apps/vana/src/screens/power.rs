@@ -218,6 +218,7 @@ fn centred(canvas: &mut Canvas, faces: &[&'static Face], text: &[u8], base: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screens::chrome::Look;
     use crate::screens::chrome::{HEIGHT, Rect as Bounds};
 
     const SCREEN: Bounds = Bounds {
@@ -227,14 +228,16 @@ mod tests {
         bottom: HEIGHT,
     };
 
-    /// Every row the sheet paints equals the canvas's per-pixel reference.
     fn assert_paints_reference(sheet: Sheet) {
         let canvas = sheet.canvas();
-        for y in 0..HEIGHT {
-            let mut pixels = [0x5555; 240];
-            Sheet::paint(&canvas, &mut Row::new(y, &mut pixels));
-            for (x, &pixel) in pixels.iter().enumerate() {
-                assert_eq!(pixel, canvas.pixel(x, y, BLACK), "{sheet:?} at {x},{y}");
+        for look in [false, true].map(crate::screens::look::look) {
+            for y in 0..HEIGHT {
+                let mut pixels = [0x5555; 240];
+                Sheet::paint(&canvas, &mut Row::new(y, &mut pixels).looked(look));
+                for (x, &pixel) in pixels.iter().enumerate() {
+                    let want = canvas.pixel(look, x, y, look.ink(BLACK));
+                    assert_eq!(pixel, want, "{sheet:?} at {x},{y}");
+                }
             }
         }
     }
@@ -288,19 +291,28 @@ mod tests {
             progress: brand::DONE,
         }
         .canvas();
-        let dark = (0..HEIGHT).all(|y| (0..240).all(|x| canvas.pixel(x, y, BLACK) == BLACK));
+        let dark =
+            (0..HEIGHT).all(|y| (0..240).all(|x| canvas.pixel(Look::PLAIN, x, y, BLACK) == BLACK));
         assert!(dark);
     }
 
     #[test]
     fn confirm_marks_act_and_draws_the_power_symbol() {
         let confirm = Sheet::Confirm.canvas();
-        assert_eq!(confirm.pixel(239, 319, BLACK), ACCENT, "ACT corner marker");
+        assert_eq!(
+            confirm.pixel(Look::PLAIN, 239, 319, BLACK),
+            ACCENT,
+            "ACT corner marker"
+        );
         assert_eq!(confirm.find("TURN OFF").map(|run| run.color), Some(WHITE));
         // The ring's left side and the bar through its gap are white.
-        assert_eq!(confirm.pixel(CENTRE - 32, 118, BLACK), WHITE);
-        assert_eq!(confirm.pixel(CENTRE, 80, BLACK), WHITE);
-        assert_eq!(confirm.pixel(CENTRE + 12, 87, BLACK), BLACK, "the gap");
+        assert_eq!(confirm.pixel(Look::PLAIN, CENTRE - 32, 118, BLACK), WHITE);
+        assert_eq!(confirm.pixel(Look::PLAIN, CENTRE, 80, BLACK), WHITE);
+        assert_eq!(
+            confirm.pixel(Look::PLAIN, CENTRE + 12, 87, BLACK),
+            BLACK,
+            "the gap"
+        );
     }
 
     #[test]
@@ -309,7 +321,7 @@ mod tests {
             let canvas = Sheet::Warning { seconds }.canvas();
             (0..HEIGHT)
                 .flat_map(|y| (0..240).map(move |x| (x, y)))
-                .filter(|&(x, y)| canvas.pixel(x, y, BLACK) == AMBER)
+                .filter(|&(x, y)| canvas.pixel(Look::PLAIN, x, y, BLACK) == AMBER)
                 .count()
         };
         let (full, half) = (amber(30), amber(15));
@@ -325,7 +337,7 @@ mod tests {
             let canvas = sheet.canvas();
             (0..HEIGHT)
                 .flat_map(|y| (0..240).map(move |x| (x, y)))
-                .filter(|&(x, y)| canvas.pixel(x, y, BLACK) == blend(GREEN, BLACK, 8))
+                .filter(|&(x, y)| canvas.pixel(Look::PLAIN, x, y, BLACK) == blend(GREEN, BLACK, 8))
                 .count()
         };
         assert!(
@@ -338,7 +350,7 @@ mod tests {
         assert!(!charge(40, false, 1).animated());
         // The same arc on the right of the ring, 25% charge, is lit green.
         let canvas = charge(25, false, 0).canvas();
-        assert_eq!(canvas.pixel(CENTRE + 84, 146, BLACK), GREEN);
-        assert_ne!(canvas.pixel(CENTRE - 84, 146, BLACK), GREEN);
+        assert_eq!(canvas.pixel(Look::PLAIN, CENTRE + 84, 146, BLACK), GREEN);
+        assert_ne!(canvas.pixel(Look::PLAIN, CENTRE - 84, 146, BLACK), GREEN);
     }
 }

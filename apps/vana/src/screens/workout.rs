@@ -1,11 +1,11 @@
 //! VANA workout rendering: the chrome around whichever screen is shown.
 use super::canvas::Canvas;
 use super::chrome::{
-    BLACK, Battery, CONTENT, Gps, HEIGHT, Mark, Row, STATUS_BAR, StatusBar, TOAST, Toast, WIDTH,
+    BLACK, Battery, CONTENT, Gps, HEIGHT, Look, Mark, Row, STATUS_BAR, StatusBar, TOAST, Toast,
+    WIDTH,
 };
 use super::cue::{Badge, Cue};
 use super::home::Home;
-use super::look::Look;
 use super::ready::Readiness;
 use super::ride::summary::{self, After};
 use super::ride::{self, ClimbFrame, ClimbLent, Marks, RidePage, Smooth};
@@ -232,6 +232,9 @@ impl<'a> Extra<'a> {
 pub struct Scene<'v> {
     kind: Kind,
     light: bool,
+    /// What the look shows black as, mapped once a frame rather than for the
+    /// fill that starts every row.
+    black: u16,
     bar: Option<&'v StatusBar>,
     body: &'v Body,
     painted: Painted<'v>,
@@ -241,7 +244,6 @@ pub struct Scene<'v> {
     badge: Option<&'v Badge>,
     toast: Option<&'v Toast>,
     sign: Option<sign::Placed>,
-    look: Look,
 }
 
 #[derive(Clone, Copy, Debug, Hash)]
@@ -330,13 +332,11 @@ impl firmware_shell::shell::Picture for Scene<'_> {
     const SIZE: (usize, usize) = (WIDTH, HEIGHT);
 
     fn paint(&self, row: &mut Row) {
-        row.fill(BLACK);
+        let row = &mut row.looked(self.look());
+        row.span_shown(0..usize::MAX, self.black);
         self.paint_content(row);
-        if self.light {
-            self.look.apply(row.pixels_mut());
-        }
         if let Some(sign) = &self.sign {
-            sign.paint(row);
+            sign.paint(&mut row.plain());
         }
     }
 
@@ -413,6 +413,10 @@ impl<'v> Scene<'v> {
         self.light
     }
 
+    pub(super) fn look(&self) -> Look {
+        super::look::look(self.light)
+    }
+
     fn bar_rows(&self) -> usize {
         match self.kind {
             Kind::Ride(RidePage::Map) => STATUS_BAR.bottom,
@@ -470,11 +474,6 @@ impl<'v> Scene<'v> {
     #[cfg(test)]
     pub(super) fn reference_pixel(&self, x: usize, y: usize) -> u16 {
         let color = self.reference_content(x, y);
-        let color = if self.light {
-            super::look::light(color)
-        } else {
-            color
-        };
         self.sign
             .as_ref()
             .and_then(|sign| sign.pixel(x, y, color))
@@ -483,38 +482,39 @@ impl<'v> Scene<'v> {
 
     #[cfg(test)]
     fn reference_content(&self, x: usize, y: usize) -> u16 {
+        let look = self.look();
+        let black = look.ink(BLACK);
         if let Some(bar) = self.bar
             && y < self.bar_rows()
         {
-            return bar.pixel(x, y);
+            return bar.pixel(look, x, y);
         }
-        if let Some(color) = self.toast.and_then(|toast| toast.pixel(x, y)) {
+        if let Some(color) = self.toast.and_then(|toast| toast.pixel(look, x, y)) {
             return color;
         }
         let mut color = match self.kind {
-            Kind::Canvas => self.canvas().pixel(x, y, BLACK),
-            Kind::Home => self.home().map_or(BLACK, |home| home.pixel(x, y)),
+            Kind::Canvas => self.canvas().pixel(look, x, y, black),
+            Kind::Home => self.home().map_or(black, |home| home.pixel(look, x, y)),
             Kind::Ride(page) => ride::reference_pixel(self, page, x, y),
-            Kind::Phone => {
-                super::phone::pixel(self, x, y).unwrap_or_else(|| self.canvas().pixel(x, y, BLACK))
-            }
+            Kind::Phone => super::phone::pixel(self, x, y)
+                .unwrap_or_else(|| self.canvas().pixel(look, x, y, black)),
             Kind::Summary { elevation } => {
                 let under = self
                     .elevation_chart()
                     .filter(|_| elevation)
                     .and_then(|chart| ride::elevation::pixel(chart, x, y))
-                    .unwrap_or(BLACK);
-                self.canvas().pixel(x, y, under)
+                    .map_or(black, |color| look.ink(color));
+                self.canvas().pixel(look, x, y, under)
             }
             Kind::List { layout, scroll } => layout
                 .canvas_row(y, scroll)
-                .map_or(BLACK, |at| self.canvas().pixel(x, at, BLACK)),
+                .map_or(black, |at| self.canvas().pixel(look, x, at, black)),
         };
         if let Some(badge) = self.badge {
-            color = badge.pixel(x, y, color);
+            color = badge.pixel(look, x, y, color);
         }
         for cue in self.cues {
-            color = cue.pixel(x, y, color);
+            color = cue.pixel(look, x, y, color);
         }
         color
     }
@@ -595,7 +595,7 @@ pub struct View<'a> {
     pub scroll: i32,
     pub time: Text<8>,
     /// The light look is in force: the QR panel is painted inverted so the
-    /// output pass turns it back to dark modules on light.
+    /// look turns it back to dark modules on light.
     pub light: bool,
     /// How long the ride has been paused.
     /// A u32 of seconds is 136 years; the room it leaves holds `scroll`.
@@ -988,6 +988,7 @@ impl<'a> View<'a> {
         Scene {
             kind,
             light: self.light,
+            black: super::look::look(self.light).ink(BLACK),
             bar: (!sheet && !self.full_screen()).then_some(&self.bar),
             body: &self.body,
             painted: self.extra.painted(),
@@ -1000,7 +1001,6 @@ impl<'a> View<'a> {
                 Kind::Ride(page) => sign::on_page(page, self.nav, self.radar_paired),
                 _ => None,
             },
-            look: Look::default(),
         }
     }
 
@@ -1791,16 +1791,20 @@ mod tests {
                 );
             }
         }
-        for (page, editing) in [
+        for ((page, editing), light) in [
             (Page::Settings, false),
             (Page::Settings, true),
             (Page::Sensors, false),
             (Page::Phone, false),
             (Page::Bests, false),
             (Page::Form, false),
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|page| [(page, false), (page, true)])
+        {
             let mut view = View::new(page, 1, None);
             view.editing = editing;
+            view.light = light;
             let lines = match page {
                 Page::Settings => Some(view.show_settings().as_mut_slice()),
                 Page::Phone => Some(view.show_phone().1.as_mut_slice()),
@@ -1826,9 +1830,12 @@ mod tests {
             view.prepare();
             assert_paints_reference(&view, "text page");
         }
-        let mut view = View::new(Page::Boot, 0, None);
-        view.prepare();
-        assert_paints_reference(&view, "boot");
+        for light in [false, true] {
+            let mut view = View::new(Page::Boot, 0, None);
+            view.light = light;
+            view.prepare();
+            assert_paints_reference(&view, "boot");
+        }
     }
 
     /// The ride lifecycle screens: Ready, paused, end ride and the summary

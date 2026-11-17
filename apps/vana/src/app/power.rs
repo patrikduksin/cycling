@@ -466,13 +466,9 @@ impl Runtime {
             known: percent.is_some(),
         };
         let canvas = sheet.canvas();
-        let light = self.light();
-        let look = crate::screens::look::Look::default();
+        let look = crate::screens::look::look(self.light());
         system.draw_canvas(240, 320, |row| {
-            View::paint(&canvas, row);
-            if light {
-                look.apply(row.pixels_mut());
-            }
+            View::paint(&canvas, &mut row.looked(look));
         });
         true
     }

@@ -374,7 +374,8 @@ impl<const ROWS: usize> Layer<ROWS> {
         if first >= end {
             return;
         }
-        let pixels = row.pixels_mut();
+        let mut row = row.computed();
+        let pixels = row.pixels_mut(0..end);
         let (whole_from, whole_to) = (first.div_ceil(2), end / 2);
         if whole_from < whole_to {
             let (chunks, _) = pixels[2 * whole_from..2 * whole_to].as_chunks_mut::<2>();
@@ -388,6 +389,7 @@ impl<const ROWS: usize> Layer<ROWS> {
         if end % 2 == 1 {
             pixels[end - 1] = pairs[usize::from(bytes[end / 2])][0];
         }
+        row.wrote(first..end, |_| 15);
     }
 }
 
@@ -477,6 +479,11 @@ impl Cover {
     /// blended over what the row holds. Then start over for the next colour.
     pub fn paint(&mut self, row: &mut Row, color: u16) {
         let (first, end) = (self.first as usize, self.end as usize);
+        if first >= end {
+            (self.first, self.end) = (WIDTH as i32, 0);
+            return;
+        }
+        let shown = row.ink(color);
         let cells = &self.cells;
         let mut x = first;
         while x < end {
@@ -486,17 +493,15 @@ impl Cover {
                 x += 1;
             }
             if solid {
-                row.span(start..x, color);
+                row.span_shown(start..x, shown);
             } else {
                 row.each_over(start..x, |x, under| match cells[x] {
                     0 => None,
-                    c => Some(blend(color, under, c)),
+                    c => Some(blend(shown, under, c)),
                 });
             }
         }
-        if first < end {
-            self.cells[first..end].fill(0);
-        }
+        self.cells[first..end].fill(0);
         (self.first, self.end) = (WIDTH as i32, 0);
     }
 }

@@ -8,7 +8,7 @@ use core::ops::Range;
 pub use firmware_shell::rendering::font::{
     Align, BODY, CAPTION, HERO, LARGE, Label, Line, TITLE, VALUE, blend,
 };
-pub use firmware_shell::rendering::row::Row;
+pub use firmware_shell::rendering::row::{Look, Row};
 
 pub const WIDTH: usize = 240;
 pub const HEIGHT: usize = 320;
@@ -171,7 +171,8 @@ pub const fn rounded(rect: Rect, radius: usize, x: usize, y: usize) -> u8 {
     disc(x, y, 4 * cx as i32, 4 * cy as i32, 4 * radius as i32)
 }
 
-/// A rounded card filled with `fill`, ringed by `ring` when focused.
+/// A rounded card filled with `fill`, ringed by `ring` when focused, over
+/// `black`: colours as shown.
 pub fn card(
     rect: Rect,
     radius: usize,
@@ -179,20 +180,51 @@ pub fn card(
     y: usize,
     fill: u16,
     ring: Option<u16>,
+    black: u16,
 ) -> Option<u16> {
     let outer = rounded(rect, radius, x, y);
     if outer == 0 {
         return None;
     }
     let Some(ring) = ring else {
-        return Some(blend(fill, BLACK, outer));
+        return Some(blend(fill, black, outer));
     };
     let inside = rounded(rect.inset(3), radius.saturating_sub(3), x, y);
-    let edge = blend(ring, BLACK, outer);
+    let edge = blend(ring, black, outer);
     Some(blend(fill, edge, inside))
 }
 
-/// Paint a rounded shape whose pixels `pixel` gives. A rounded shape's row
+/// The palette colours that paints worked out per pixel use, as a row's
+/// look shows them, mapped once a row rather than once a pixel.
+#[derive(Clone, Copy)]
+pub struct Inks {
+    pub black: u16,
+    pub white: u16,
+    pub card: u16,
+    pub raised: u16,
+    pub accent: u16,
+    pub green: u16,
+    pub secondary: u16,
+    pub tertiary: u16,
+}
+
+impl Inks {
+    pub fn of(look: Look) -> Self {
+        Self {
+            black: look.ink(BLACK),
+            white: look.ink(WHITE),
+            card: look.ink(CARD),
+            raised: look.ink(RAISED),
+            accent: look.ink(ACCENT),
+            green: look.ink(GREEN),
+            secondary: look.ink(SECONDARY),
+            tertiary: look.ink(TERTIARY),
+        }
+    }
+}
+
+/// Paint a rounded shape whose pixels `pixel` gives, as shown: take palette
+/// colours through the row's look. A rounded shape's row
 /// is uniform between its corner columns, and so is a ring `edge` wide (a
 /// focus ring) wherever it is solid, so those parts are one span; only the
 /// anti-aliased edges are asked per pixel.
@@ -227,29 +259,30 @@ pub fn paint_rounded_over(
     }
     let radius = radius.min(rect.width() / 2);
     let corner = y < rect.top + radius || y >= rect.bottom - radius;
+    let black = row.ink(BLACK);
+    let row = &mut row.computed();
     if corner && radius > 0 {
-        paint_corner_row(row, rect, radius, edge, &pixel);
+        paint_corner_row(row, rect, radius, edge, black, &pixel);
         return;
     }
     let side = edge.min(radius);
     let middle = rect.left + side..rect.right - side;
     if !middle.is_empty()
-        && let Some(color) = pixel(middle.start, y, under(row, middle.start))
+        && let Some(color) = pixel(middle.start, y, under(row, middle.start, black))
     {
         row.span(middle.clone(), color);
     }
     if side > 0 {
         for ring in [rect.left..middle.start, middle.end..rect.right] {
-            if let Some(color) = pixel(ring.start, y, under(row, ring.start)) {
+            if let Some(color) = pixel(ring.start, y, under(row, ring.start, black)) {
                 row.span(ring, color);
             }
         }
     }
 }
 
-/// What the row holds at `x`: black beyond its end.
-fn under(row: &Row, x: usize) -> u16 {
-    row.pixels().get(x).copied().unwrap_or(BLACK)
+fn under(row: &Row, x: usize, black: u16) -> u16 {
+    row.pixels().get(x).copied().unwrap_or(black)
 }
 
 /// A row through a rounded shape's corners. Each corner is a quarter of a
@@ -261,6 +294,7 @@ fn paint_corner_row(
     rect: Rect,
     radius: usize,
     edge: usize,
+    black: u16,
     pixel: &impl Fn(usize, usize, u16) -> Option<u16>,
 ) {
     let y = row.y();
@@ -273,7 +307,7 @@ fn paint_corner_row(
     let color = if middle.is_empty() {
         None
     } else {
-        pixel(middle.start, y, under(row, middle.start))
+        pixel(middle.start, y, under(row, middle.start, black))
     };
     let discs = |cx: usize| {
         let outer = disc_row(y, 4 * cx as i32, 4 * cy as i32, 4 * radius as i32);
@@ -302,7 +336,7 @@ fn paint_corner_row(
     match inner {
         Some((_, touched_inner)) if !solid.is_empty() && !touched_inner.is_empty() => {
             let ring = solid.start.max(start)..touched_inner.start.min(fringe_end);
-            paint_ringed_fringe(row, start..fringe_end, ring, pixel);
+            paint_ringed_fringe(row, start..fringe_end, ring, black, pixel);
         }
         _ => row.each_over(start..fringe_end, |x, under| pixel(x, y, under)),
     }
@@ -329,7 +363,7 @@ fn paint_corner_row(
     match inner {
         Some((_, touched_inner)) if !solid.is_empty() && !touched_inner.is_empty() => {
             let ring = touched_inner.end.max(fringe_start)..solid.end.min(end);
-            paint_ringed_fringe(row, fringe_start..end, ring, pixel);
+            paint_ringed_fringe(row, fringe_start..end, ring, black, pixel);
         }
         _ => row.each_over(fringe_start..end, |x, under| pixel(x, y, under)),
     }
@@ -342,6 +376,7 @@ fn paint_ringed_fringe(
     row: &mut Row,
     fringe: Range<usize>,
     ring: Range<usize>,
+    black: u16,
     pixel: &impl Fn(usize, usize, u16) -> Option<u16>,
 ) {
     let y = row.y();
@@ -350,7 +385,7 @@ fn paint_ringed_fringe(
         return;
     }
     row.each_over(fringe.start..ring.start, |x, under| pixel(x, y, under));
-    if let Some(color) = pixel(ring.start, y, under(row, ring.start)) {
+    if let Some(color) = pixel(ring.start, y, under(row, ring.start, black)) {
         row.span(ring.clone(), color);
     }
     row.each_over(ring.end..fringe.end, |x, under| pixel(x, y, under));
@@ -375,24 +410,20 @@ pub fn disc_row(y: usize, cx: i32, cy: i32, radius: i32) -> (Range<usize>, Range
     (columns(reach(inner)), columns(reach(outer)))
 }
 
-/// Paint a disc row: `solid` across its solid span and `fringe` per pixel,
-/// with its coverage, at the anti-aliased edge.
-pub fn paint_disc(
-    row: &mut Row,
-    disc: (i32, i32, i32),
-    solid: u16,
-    fringe: impl Fn(usize, u8) -> Option<u16>,
-) {
-    paint_disc_over(row, disc, solid, |x, coverage, _| fringe(x, coverage));
+pub fn paint_disc_over(row: &mut Row, disc: (i32, i32, i32), solid: u16) {
+    paint_disc(row, disc, solid, |_, coverage, shown, under| {
+        Some(blend(shown, under, coverage))
+    });
 }
 
-/// `paint_disc` for discs over something other than black: `fringe` is also
-/// given what the row already holds there, to blend the edge over.
-pub fn paint_disc_over(
+/// Paint a disc row: palette colour `solid` across its solid span, and at
+/// the anti-aliased edge the colour `fringe` gives for the pixel, its
+/// coverage, `solid` as shown and what the row holds there.
+pub fn paint_disc(
     row: &mut Row,
     (cx, cy, radius): (i32, i32, i32),
     solid: u16,
-    fringe: impl Fn(usize, u8, u16) -> Option<u16>,
+    fringe: impl Fn(usize, u8, u16, u16) -> Option<u16>,
 ) {
     let y = row.y();
     let (inside, touched) = disc_row(y, cx, cy, radius);
@@ -404,10 +435,11 @@ pub fn paint_disc_over(
     } else {
         inside
     };
-    row.span(inside.clone(), solid);
+    let shown = row.ink(solid);
+    row.span_shown(inside.clone(), shown);
     let pixel = |x, under| match disc(x, y, cx, cy, radius) {
         0 => None,
-        coverage => fringe(x, coverage, under),
+        coverage => fringe(x, coverage, shown, under),
     };
     row.each_over(touched.start..inside.start, pixel);
     row.each_over(inside.end..touched.end, pixel);
@@ -545,6 +577,7 @@ impl Ring {
         if touched.is_empty() {
             return;
         }
+        let color = row.ink(color);
         let (hole, _) = disc_row(y, self.cx, self.cy, self.inner() - 4);
         let pixel = |x: usize, under: u16| match self.coverage(x, y, ends) {
             0 => None,
@@ -858,35 +891,50 @@ impl StatusBar {
         let y = row.y();
         row.fill(BLACK);
         // The mark, battery and dots are drawn about the middle row.
-        let shapes = (MIDDLE - 6..MIDDLE + 6).contains(&y);
+        let shapes = (MIDDLE - 6..MIDDLE + 6)
+            .contains(&y)
+            .then(|| Inks::of(row.look()));
         self.mark_label.paint(row);
-        if shapes && self.mark != Mark::None {
-            row.each(EDGE..EDGE + MARK_ICON, |x| Some(self.icon_pixel(x, y)));
+        if let Some(inks) = shapes
+            && self.mark != Mark::None
+        {
+            let mark = row.ink(self.mark_label.color);
+            row.each(EDGE..EDGE + MARK_ICON, |x| {
+                Some(self.icon_pixel(inks, mark, x, y))
+            });
         }
         for label in [&self.percent, &self.gps].into_iter().flatten() {
             label.paint(row);
         }
-        if shapes && self.battery.is_some() {
-            row.each(self.battery_columns(), |x| Some(self.battery_pixel(x, y)));
+        if let Some(inks) = shapes
+            && let Some(battery) = self.battery
+        {
+            let fill = row.ink(battery.color());
+            row.each(self.battery_columns(), |x| {
+                Some(self.battery_pixel(inks, fill, x, y))
+            });
         }
         self.clock.paint(row);
-        if shapes {
-            row.each(self.dot_columns(), |x| Some(self.dots_pixel(x, y)));
+        if let Some(inks) = shapes {
+            row.each(self.dot_columns(), |x| Some(self.dots_pixel(inks, x, y)));
         }
     }
 
-    /// Pixels for y below `CONTENT.top`.
-    pub fn pixel(&self, x: usize, y: usize) -> u16 {
+    /// Pixels for y below `CONTENT.top`, as `look` shows them.
+    pub fn pixel(&self, look: Look, x: usize, y: usize) -> u16 {
+        let inks = Inks::of(look);
         let text = |label: &Small| {
             (label.left..label.right() + SPILL)
                 .contains(&x)
-                .then(|| label.pixel(x, y, BLACK).unwrap_or(BLACK))
+                .then(|| label.pixel(look, x, y, inks.black).unwrap_or(inks.black))
         };
         if let Some(pixel) = text(&self.clock) {
             return pixel;
         }
-        if self.battery.is_some() && self.battery_columns().contains(&x) {
-            return self.battery_pixel(x, y);
+        if let Some(battery) = self.battery
+            && self.battery_columns().contains(&x)
+        {
+            return self.battery_pixel(inks, look.ink(battery.color()), x, y);
         }
         for label in [&self.percent, &self.gps].into_iter().flatten() {
             if let Some(pixel) = text(label) {
@@ -894,12 +942,12 @@ impl StatusBar {
             }
         }
         if self.dot_columns().contains(&x) {
-            return self.dots_pixel(x, y);
+            return self.dots_pixel(inks, x, y);
         }
         if self.mark != Mark::None && (EDGE..EDGE + MARK_ICON).contains(&x) {
-            return self.icon_pixel(x, y);
+            return self.icon_pixel(inks, look.ink(self.mark_label.color), x, y);
         }
-        text(&self.mark_label).unwrap_or(BLACK)
+        text(&self.mark_label).unwrap_or(inks.black)
     }
 
     /// The columns each shown item covers, left to right, for layout checks.
@@ -926,7 +974,7 @@ impl StatusBar {
         items
     }
 
-    fn icon_pixel(&self, x: usize, y: usize) -> u16 {
+    fn icon_pixel(&self, inks: Inks, mark: u16, x: usize, y: usize) -> u16 {
         let coverage = match self.mark {
             Mark::None => 0,
             // A dot of radius 4.5 centred in a 10 × 10 cell.
@@ -944,7 +992,7 @@ impl StatusBar {
                 bar(EDGE + 1).max(bar(EDGE + 6))
             }
         };
-        blend(self.mark_label.color, BLACK, coverage)
+        blend(mark, inks.black, coverage)
     }
 
     /// The battery icon's columns, its bolt included while charging.
@@ -954,13 +1002,13 @@ impl StatusBar {
         self.battery_left - bolt..self.battery_left + BATTERY_WIDTH
     }
 
-    fn battery_pixel(&self, x: usize, y: usize) -> u16 {
+    fn battery_pixel(&self, inks: Inks, fill: u16, x: usize, y: usize) -> u16 {
         let battery = self.battery.unwrap_or_default();
         let left = self.battery_left;
         if x < left {
             let top = MIDDLE - BOLT.len() / 2;
             let coverage = bolt(left - BOLT_GAP - BOLT_WIDTH, top, x, y);
-            return blend(GREEN, BLACK, coverage);
+            return blend(inks.green, inks.black, coverage);
         }
         let body = Rect {
             left,
@@ -975,34 +1023,38 @@ impl StatusBar {
             bottom: MIDDLE + 2,
         };
         if nub.contains(x, y) {
-            return SECONDARY;
+            return inks.secondary;
         }
-        let color = battery.color();
-        let fill = Rect {
+        let level = Rect {
             left: body.left + 2,
             top: body.top + 2,
             right: body.left + 2 + battery.fill_columns(),
             bottom: body.bottom - 2,
         };
-        if fill.contains(x, y) {
-            return color;
+        if level.contains(x, y) {
+            return fill;
         }
         let shell = rounded(body, 3, x, y).saturating_sub(rounded(body.inset(1), 2, x, y));
-        blend(SECONDARY, BLACK, shell)
+        blend(inks.secondary, inks.black, shell)
     }
 
-    fn dots_pixel(&self, x: usize, y: usize) -> u16 {
+    fn dots_pixel(&self, inks: Inks, x: usize, y: usize) -> u16 {
         let (index, count) = self.pages;
         let Some((left, pitch)) = self.dots else {
-            return BLACK;
+            return inks.black;
         };
         if x < left || (x - left) / pitch >= count {
-            return BLACK;
+            return inks.black;
         }
         let dot = (x - left) / pitch;
         let cx = 4 * (left + dot * pitch) as i32 + 2 * DOT_SIZE as i32;
         let coverage = disc(x, y, cx, 4 * DOTS_Y as i32, 2 * DOT_SIZE as i32 - 2);
-        blend(if dot == index { WHITE } else { TERTIARY }, BLACK, coverage)
+        let color = if dot == index {
+            inks.white
+        } else {
+            inks.tertiary
+        };
+        blend(color, inks.black, coverage)
     }
 }
 
@@ -1091,25 +1143,29 @@ impl Toast {
             return;
         }
         let radius = TOAST_HEIGHT / 2;
+        let (raised, black) = (row.ink(RAISED), row.ink(BLACK));
         paint_rounded(row, self.pill, radius, 0, |x, y| {
             match rounded(self.pill, radius, x, y) {
                 0 => None,
-                coverage => Some(blend(RAISED, BLACK, coverage)),
+                coverage => Some(blend(raised, black, coverage)),
             }
         });
         if self.dot {
             let cx = 4 * (self.pill.left + 12) as i32 + 2 * TOAST_DOT as i32;
             let cy = 4 * (self.pill.top + TOAST_HEIGHT / 2) as i32;
-            let color = self.tone.color();
-            paint_disc(row, (cx, cy, 2 * TOAST_DOT as i32), color, |_, dot| {
-                Some(blend(color, RAISED, dot))
-            });
+            paint_disc(
+                row,
+                (cx, cy, 2 * TOAST_DOT as i32),
+                self.tone.color(),
+                |_, dot, shown, _| Some(blend(shown, raised, dot)),
+            );
         }
         self.label.paint(row);
     }
 
-    /// The toast's pixel, or none where content shows through.
-    pub fn pixel(&self, x: usize, y: usize) -> Option<u16> {
+    /// The toast's pixel as `look` shows it, or none where content shows
+    /// through.
+    pub fn pixel(&self, look: Look, x: usize, y: usize) -> Option<u16> {
         if y < self.pill.top {
             return None;
         }
@@ -1117,8 +1173,9 @@ impl Toast {
         if coverage == 0 {
             return None;
         }
+        let raised = look.ink(RAISED);
         if coverage < 15 {
-            return Some(blend(RAISED, BLACK, coverage));
+            return Some(blend(raised, look.ink(BLACK), coverage));
         }
         let cx = 4 * (self.pill.left + 12) as i32 + 2 * TOAST_DOT as i32;
         let cy = 4 * (self.pill.top + TOAST_HEIGHT / 2) as i32;
@@ -1128,9 +1185,9 @@ impl Toast {
             0
         };
         if dot > 0 {
-            return Some(blend(self.tone.color(), RAISED, dot));
+            return Some(blend(look.ink(self.tone.color()), raised, dot));
         }
-        Some(self.label.pixel(x, y, RAISED).unwrap_or(RAISED))
+        Some(self.label.pixel(look, x, y, raised).unwrap_or(raised))
     }
 }
 
@@ -1226,7 +1283,7 @@ mod tests {
     }
 
     fn lit(bar: &StatusBar, color: u16, xs: core::ops::Range<usize>) -> bool {
-        (0..STATUS_BAR.bottom).any(|y| xs.clone().any(|x| bar.pixel(x, y) == color))
+        (0..STATUS_BAR.bottom).any(|y| xs.clone().any(|x| bar.pixel(Look::PLAIN, x, y) == color))
     }
 
     #[test]
@@ -1251,9 +1308,12 @@ mod tests {
         assert!(edge > 0 && edge < 15, "{edge}");
         assert_eq!(disc(20, 20, 82, 82, 16), 15);
         assert_eq!(disc(30, 20, 82, 82, 16), 0);
-        assert_eq!(card(rect, 6, 30, 10, CARD, Some(ACCENT)), Some(ACCENT));
-        assert_eq!(card(rect, 6, 30, 20, CARD, Some(ACCENT)), Some(CARD));
-        assert_eq!(card(rect, 6, 5, 20, CARD, None), None);
+        assert_eq!(
+            card(rect, 6, 30, 10, CARD, Some(ACCENT), BLACK),
+            Some(ACCENT)
+        );
+        assert_eq!(card(rect, 6, 30, 20, CARD, Some(ACCENT), BLACK), Some(CARD));
+        assert_eq!(card(rect, 6, 5, 20, CARD, None, BLACK), None);
     }
 
     #[test]
@@ -1267,7 +1327,7 @@ mod tests {
         // The second of three dots is lit.
         let (left, pitch) = bar.dots.expect("three dots fit");
         let centre = |i: usize| left + i * pitch + DOT_SIZE / 2;
-        let dots: [u16; 3] = core::array::from_fn(|i| bar.pixel(centre(i), DOTS_Y));
+        let dots: [u16; 3] = core::array::from_fn(|i| bar.pixel(Look::PLAIN, centre(i), DOTS_Y));
         assert_eq!(dots, [TERTIARY, WHITE, TERTIARY]);
         assert!(bar.percent.is_some(), "low battery shows its percentage");
 
@@ -1298,7 +1358,7 @@ mod tests {
         let green = |bar: &StatusBar| {
             (0..STATUS_BAR.bottom)
                 .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
-                .filter(|&(x, y)| bar.pixel(x, y) == GREEN)
+                .filter(|&(x, y)| bar.pixel(Look::PLAIN, x, y) == GREEN)
                 .count()
         };
         let first = green(&low);
@@ -1424,7 +1484,11 @@ mod tests {
             let mut pixels = [0x1234; WIDTH];
             bar.paint(&mut Row::new(y, &mut pixels));
             for (x, &pixel) in pixels.iter().enumerate() {
-                assert_eq!(pixel, bar.pixel(x, y), "{what}: paint at {x},{y}");
+                assert_eq!(
+                    pixel,
+                    bar.pixel(Look::PLAIN, x, y),
+                    "{what}: paint at {x},{y}"
+                );
                 if pixel != BLACK {
                     assert!(
                         items.iter().any(|(_, columns)| columns.contains(&x)),
@@ -1441,12 +1505,12 @@ mod tests {
         assert_eq!(toast.text(), b"PRESS AGAIN TO SAVE");
         assert!(toast.pill.left > 0 && toast.pill.right < WIDTH);
         assert!(toast.pill.top >= TOAST.top);
-        assert_eq!(toast.pixel(120, TOAST.top - 1), None);
+        assert_eq!(toast.pixel(Look::PLAIN, 120, TOAST.top - 1), None);
         let short = Toast::new("PAUSED", Tone::Warn);
         let dot = (short.pill.left + 16, short.pill.top + 15);
-        assert_eq!(short.pixel(dot.0, dot.1), Some(AMBER));
+        assert_eq!(short.pixel(Look::PLAIN, dot.0, dot.1), Some(AMBER));
         assert_eq!(
-            short.pixel(2, short.pill.top + 15),
+            short.pixel(Look::PLAIN, 2, short.pill.top + 15),
             None,
             "content beside it"
         );
@@ -1467,7 +1531,7 @@ mod tests {
             for y in 0..STATUS_BAR.bottom {
                 let mut pixels = [0x1234; WIDTH];
                 bar.paint(&mut Row::new(y, &mut pixels));
-                let want: [u16; WIDTH] = core::array::from_fn(|x| bar.pixel(x, y));
+                let want: [u16; WIDTH] = core::array::from_fn(|x| bar.pixel(Look::PLAIN, x, y));
                 assert_eq!(pixels, want, "{clock_text} row {y}");
             }
         }
@@ -1482,7 +1546,7 @@ mod tests {
                 let mut pixels = [UNDER; WIDTH];
                 toast.paint(&mut Row::new(y, &mut pixels));
                 let want: [u16; WIDTH] =
-                    core::array::from_fn(|x| toast.pixel(x, y).unwrap_or(UNDER));
+                    core::array::from_fn(|x| toast.pixel(Look::PLAIN, x, y).unwrap_or(UNDER));
                 assert_eq!(pixels, want, "{message} row {y}");
             }
         }
@@ -1498,10 +1562,10 @@ mod tests {
                     let mut pixels = [UNDER; WIDTH];
                     let edge = if ring.is_some() { 3 } else { 0 };
                     paint_rounded(&mut Row::new(y, &mut pixels), rect, radius, edge, |x, y| {
-                        card(rect, radius, x, y, RAISED, ring)
+                        card(rect, radius, x, y, RAISED, ring, BLACK)
                     });
                     let want: [u16; WIDTH] = core::array::from_fn(|x| {
-                        card(rect, radius, x, y, RAISED, ring).unwrap_or(UNDER)
+                        card(rect, radius, x, y, RAISED, ring, BLACK).unwrap_or(UNDER)
                     });
                     assert_eq!(pixels, want, "card of radius {radius}, row {y}");
                 }

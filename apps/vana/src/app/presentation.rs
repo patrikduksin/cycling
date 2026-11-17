@@ -586,13 +586,9 @@ impl Runtime {
         self.power.animate(now);
         if let Some(sheet) = self.power.view() {
             let canvas = sheet.canvas();
-            let light = self.light();
-            let look = look::Look::default();
+            let look = look::look(self.light());
             system.draw_canvas(240, 320, |row| {
-                PowerSheet::paint(&canvas, row);
-                if light {
-                    look.apply(row.pixels_mut());
-                }
+                PowerSheet::paint(&canvas, &mut row.looked(look));
             });
             self.power_drawn(!system.display_error);
             if !system.display_error {
@@ -654,6 +650,7 @@ impl Runtime {
             };
             self.picker(self.list_offset(List::Workouts, now), pressed)
         });
+        let light = self.light();
         let navigation = &mut self.navigation;
         // A page the rider turned off, or the workout page once its workout
         // is gone, gives way to the main page.
@@ -693,6 +690,7 @@ impl Runtime {
                 now,
                 speed_mm_s,
                 view.radar_paired,
+                light,
                 self.micros_clock,
             );
         }
@@ -835,7 +833,6 @@ impl Runtime {
                 pinned: super::lookahead::pinned_of(&self.lookahead),
             });
         }
-        let light = self.light();
         view.light = light;
         if page == Page::Ride && view.ride_page == RidePage::Map {
             view.show_map(super::track::map_of(&self.track));

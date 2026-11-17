@@ -31,6 +31,7 @@ pub(super) mod end;
 mod lap;
 mod main;
 mod map;
+pub(super) use map::{CASING, RIDDEN};
 pub(super) mod paused;
 pub use paused::READINGS as PAUSED_READINGS;
 pub mod slots;
@@ -387,18 +388,20 @@ pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
     }
     // Paint the page where it sits beside a radar, then move it to the centre.
     let mut body = [BLACK; chrome::WIDTH];
-    paint_page(
-        scene,
-        page,
-        &mut Row::new(row.y(), &mut body).within(BODY.left..BODY.right),
-    );
-    let clip = row.clip();
-    let start = (BODY.left - CENTRE_SHIFT).max(clip.start);
-    let end = (BODY.right - CENTRE_SHIFT).min(clip.end);
-    if start < end {
-        row.pixels_mut()[start..end]
-            .copy_from_slice(&body[start + CENTRE_SHIFT..end + CENTRE_SHIFT]);
+    let mut beside = Row::new(row.y(), &mut body);
+    let mut page_row = beside.looked(row.look());
+    let mut page_row = page_row.within(BODY.left..BODY.right);
+    // A second pass over the body costs every row; only a look that shows
+    // black as another colour needs it.
+    if page_row.ink(BLACK) != BLACK {
+        page_row.fill(BLACK);
     }
+    paint_page(scene, page, &mut page_row);
+    row.copy(
+        BODY.left - CENTRE_SHIFT..BODY.right - CENTRE_SHIFT,
+        &beside,
+        CENTRE_SHIFT,
+    );
 }
 
 pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
@@ -529,47 +532,52 @@ fn paint_radar(radar: &Radar, row: &mut Row) {
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
 pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize) -> u16 {
+    let look = scene.look();
+    let black = look.ink(BLACK);
     if page == RidePage::Map {
         return match &scene.radar {
             Some(radar) if x < RADAR_WIDTH - 2 => {
-                scene
-                    .canvas()
-                    .pixel(x, y, reference_radar_pixel(radar, x, y))
+                let under = look.ink(reference_radar_pixel(radar, x, y));
+                scene.canvas().pixel(look, x, y, under)
             }
-            Some(_) if x < BODY.left => scene.canvas().pixel(x, y, BLACK),
+            Some(_) if x < BODY.left => scene.canvas().pixel(look, x, y, black),
             _ => reference_map_pixel(scene, x, y),
         };
     }
     let x = if let Some(radar) = &scene.radar {
         if x < RADAR_WIDTH - 2 {
-            return reference_radar_pixel(radar, x, y);
+            return look.ink(reference_radar_pixel(radar, x, y));
         }
         x
     } else {
         x + CENTRE_SHIFT
     };
     if !(BODY.left..BODY.right).contains(&x) {
-        return BLACK;
+        return black;
     }
     match page {
         RidePage::Main => main::reference_pixel(scene, x, y),
-        RidePage::Stats | RidePage::Lap => scene.canvas().pixel(x, y, BLACK),
-        RidePage::Workout => scene
-            .canvas()
-            .pixel(x, y, workout::chart_pixel(scene.chart(), x, y)),
-        RidePage::Climb => scene
-            .canvas()
-            .pixel(x, y, climb::chart_pixel(scene.climb(), x, y)),
+        RidePage::Stats | RidePage::Lap => scene.canvas().pixel(look, x, y, black),
+        RidePage::Workout => {
+            let under = look.ink(workout::chart_pixel(scene.chart(), x, y));
+            scene.canvas().pixel(look, x, y, under)
+        }
+        RidePage::Climb => {
+            let under = look.ink(climb::chart_pixel(scene.climb(), x, y));
+            scene.canvas().pixel(look, x, y, under)
+        }
         RidePage::Map => reference_map_pixel(scene, x, y),
     }
 }
 
 #[cfg(test)]
 fn reference_map_pixel(scene: &Scene, x: usize, y: usize) -> u16 {
+    let look = scene.look();
+    let black = look.ink(BLACK);
     let under = scene
         .map()
-        .map_or(BLACK, |map| map::pixel(map.frame(), x, y, BLACK));
-    scene.canvas().pixel(x, y, under)
+        .map_or(black, |map| map::pixel(map.frame(), look, x, y, black));
+    scene.canvas().pixel(look, x, y, under)
 }
 
 #[cfg(test)]

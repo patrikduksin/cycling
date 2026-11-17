@@ -274,6 +274,7 @@ fn round(value: f32) -> usize {
 
 impl Placed {
     /// Paint the sign over the row, writing every pixel of `bounds` it covers.
+    /// Its colours read the same in every look, so `row` takes none.
     pub fn paint(&self, row: &mut Row) {
         let y = row.y();
         if y < self.bounds.top || y >= self.bounds.bottom {
@@ -310,7 +311,9 @@ impl Placed {
             .pixel(x, y, left, top, WHITE, color)
             .unwrap_or(color);
         for label in &self.lines {
-            color = label.pixel(x, y, color).unwrap_or(color);
+            color = label
+                .pixel(chrome::Look::PLAIN, x, y, color)
+                .unwrap_or(color);
         }
         Some(color)
     }

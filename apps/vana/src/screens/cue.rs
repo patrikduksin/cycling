@@ -7,7 +7,9 @@
 //! action that moves forward (start, resume, save, done), a `RAISED` disc for
 //! stepping back or ending, a `RED` one for throwing a ride away. See
 //! `docs/ui.md`, "Button cues".
-use super::chrome::{BLACK, GREEN, HEIGHT, RAISED, RED, Row, WHITE, blend, disc, paint_disc_over};
+use super::chrome::{
+    BLACK, GREEN, HEIGHT, Look, RAISED, RED, Row, WHITE, blend, disc, paint_disc_over,
+};
 
 /// Which button a cue sits beside.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -102,24 +104,24 @@ impl Cue {
         let (fill, ink) = self.colors();
         let (cx, cy) = self.corner_xy();
         let disc = (4 * cx, 4 * cy, 4 * RADIUS as i32);
-        paint_disc_over(row, disc, fill, |_, coverage, under| {
-            Some(blend(fill, under, coverage))
-        });
+        paint_disc_over(row, disc, fill);
         let (ix, iy) = self.icon_xy();
         if (y as i32 - iy).abs() > ICON_REACH {
             return;
         }
         let left = (ix - ICON_REACH).max(0) as usize;
         let right = (ix + ICON_REACH + 1) as usize;
+        let ink = row.ink(ink);
         row.each_over(left..right, |x, under| {
             let coverage = icon(self.icon, 4 * (x as i32 - ix) + 2, 4 * (y as i32 - iy) + 2);
             (coverage > 0).then(|| blend(ink, under, coverage))
         });
     }
 
-    /// The per-pixel original of `paint`, over `under`.
-    pub fn pixel(&self, x: usize, y: usize, under: u16) -> u16 {
+    /// The per-pixel original of `paint`, over `under`, as `look` shows it.
+    pub fn pixel(&self, look: Look, x: usize, y: usize, under: u16) -> u16 {
         let (fill, ink) = self.colors();
+        let (fill, ink) = (look.ink(fill), look.ink(ink));
         let (cx, cy) = self.corner_xy();
         let coverage = disc(x, y, 4 * cx, 4 * cy, 4 * RADIUS as i32);
         if coverage == 0 {
@@ -159,35 +161,34 @@ impl Badge {
             4 * self.cy as i32,
             4 * self.radius as i32,
         );
-        paint_disc_over(row, disc, GREEN, |_, coverage, under| {
-            Some(blend(GREEN, under, coverage))
-        });
+        paint_disc_over(row, disc, GREEN);
         let dy = y as i32 - self.cy as i32;
         if dy.abs() > ICON_REACH {
             return;
         }
         let (cx, cy) = (self.cx as i32, self.cy as i32);
         let range = (cx - ICON_REACH).max(0) as usize..(cx + ICON_REACH + 1) as usize;
+        let black = row.ink(BLACK);
         row.each_over(range, |x, under| {
             let coverage = icon(self.icon, 4 * (x as i32 - cx) + 2, 4 * (y as i32 - cy) + 2);
-            (coverage > 0).then(|| blend(BLACK, under, coverage))
+            (coverage > 0).then(|| blend(black, under, coverage))
         });
     }
 
-    pub fn pixel(&self, x: usize, y: usize, under: u16) -> u16 {
+    pub fn pixel(&self, look: Look, x: usize, y: usize, under: u16) -> u16 {
         let (cx, cy) = (self.cx as i32, self.cy as i32);
         let coverage = disc(x, y, 4 * cx, 4 * cy, 4 * self.radius as i32);
         if coverage == 0 {
             return under;
         }
-        let color = blend(GREEN, under, coverage);
+        let color = blend(look.ink(GREEN), under, coverage);
         let (dx, dy) = (x as i32 - cx, y as i32 - cy);
         if dx.abs() > ICON_REACH || dy.abs() > ICON_REACH {
             return color;
         }
         match icon(self.icon, 4 * dx + 2, 4 * dy + 2) {
             0 => color,
-            ink => blend(BLACK, color, ink),
+            ink => blend(look.ink(BLACK), color, ink),
         }
     }
 }
@@ -343,7 +344,11 @@ mod tests {
                     let mut pixels = [BLACK; WIDTH];
                     cue.paint(&mut Row::new(y, &mut pixels));
                     for (x, &pixel) in pixels.iter().enumerate() {
-                        assert_eq!(pixel, cue.pixel(x, y, BLACK), "{cue:?} at {x},{y}");
+                        assert_eq!(
+                            pixel,
+                            cue.pixel(Look::PLAIN, x, y, BLACK),
+                            "{cue:?} at {x},{y}"
+                        );
                         inked += usize::from(pixel == ink);
                     }
                 }
@@ -353,13 +358,21 @@ mod tests {
                     Corner::BottomRight => (WIDTH - 3, HEIGHT - 3),
                     Corner::BottomLeft => (2, HEIGHT - 3),
                 };
-                assert_eq!(cue.pixel(x, y, BLACK), fill, "{cue:?} fills its corner");
+                assert_eq!(
+                    cue.pixel(Look::PLAIN, x, y, BLACK),
+                    fill,
+                    "{cue:?} fills its corner"
+                );
                 let (far_x, far_y) = match corner {
                     Corner::TopLeft => (RADIUS + 2, 2),
                     Corner::BottomRight => (WIDTH - RADIUS - 3, HEIGHT - 3),
                     Corner::BottomLeft => (RADIUS + 2, HEIGHT - 3),
                 };
-                assert_eq!(cue.pixel(far_x, far_y, BLACK), BLACK, "{cue:?} stays small");
+                assert_eq!(
+                    cue.pixel(Look::PLAIN, far_x, far_y, BLACK),
+                    BLACK,
+                    "{cue:?} stays small"
+                );
             }
         }
     }

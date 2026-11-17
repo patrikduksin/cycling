@@ -9,10 +9,11 @@ use crate::ride::course::nav::{Glyph, Guidance, Sign, Spot};
 use crate::ride::homing::{Crumb, Frame as RideFrame, TURN, bearing, distance};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
-    ACCENT, AMBER, Align, BLACK, BODY as BODY_FACE, HEIGHT, Rect, Row, SECONDARY, WHITE, WIDTH,
-    blend, paint_disc_over, rgb,
+    ACCENT, AMBER, Align, BLACK, BODY as BODY_FACE, HEIGHT, Look, Rect, Row, SECONDARY, WHITE,
+    WIDTH, paint_disc_over, rgb,
 };
 use crate::screens::icons::PUCK;
+use crate::screens::look;
 use crate::screens::workout::{Text, View};
 use arrow::{ARROW_OUTLINE_PX, ARROW_SHAFT_HALF_PX, ARROW_STROKES, arrow_shape};
 use firmware_shell::rendering::font::FOOT_20;
@@ -53,6 +54,9 @@ pub struct Track<'a> {
     pub reach: Reach,
     /// A radar's strip takes the screen's left edge.
     pub radar: bool,
+    /// The light look is in force: the roads' colours are mapped once, as
+    /// the frame is filled.
+    pub light: bool,
 }
 
 /// What a frame was filled from: refill it only when this changes, about
@@ -74,6 +78,7 @@ pub struct Key {
     left_m: Option<u32>,
     reach: Reach,
     radar: bool,
+    light: bool,
     roads: u32,
 }
 
@@ -98,6 +103,7 @@ impl Track<'_> {
             left_m: self.left_m,
             reach: self.reach,
             radar: self.radar,
+            light: self.light,
             roads: 0,
         }
     }
@@ -464,8 +470,8 @@ impl core::hash::Hash for Filled<'_> {
 const GROUND_COLOR: u16 = rgb(0x10, 0x10, 0x12);
 const MINOR_ROAD: u16 = rgb(0x2a, 0x2a, 0x2d);
 const MAJOR_ROAD: u16 = rgb(0x44, 0x44, 0x48);
-const RIDDEN: u16 = rgb(0x1f, 0x4a, 0x78);
-const CASING: u16 = rgb(0x04, 0x26, 0x4c);
+pub(in crate::screens) const RIDDEN: u16 = rgb(0x1f, 0x4a, 0x78);
+pub(in crate::screens) const CASING: u16 = rgb(0x04, 0x26, 0x4c);
 const BAND_ROWS: usize = 16;
 const BAND_COUNT: usize = (GROUND.end - GROUND.start).div_ceil(BAND_ROWS);
 const STRAY_PX: f32 = 0.35;
@@ -753,7 +759,7 @@ fn quarter((x, y): Point) -> (i32, i32) {
     (libm::roundf(4.0 * x) as i32, libm::roundf(4.0 * y) as i32)
 }
 
-fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point) {
+fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point, look: Look) {
     let Frame {
         roads,
         layer,
@@ -763,7 +769,11 @@ fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point) {
         ..
     } = frame;
     layer.clear(GROUND.start);
-    *pairs = raster::pairs(GROUND_COLOR, MINOR_ROAD, MAJOR_ROAD);
+    *pairs = raster::pairs(
+        look.ink(GROUND_COLOR),
+        look.ink(MINOR_ROAD),
+        look.ink(MAJOR_ROAD),
+    );
     *roads_drawn = [0; 2];
     let room = |drawn: &[usize; 2]| drawn[0] + drawn[1] < ROAD_SEGMENTS;
     for road in roads.each(last_pose.reach.detail(), centre) {
@@ -815,7 +825,7 @@ fn draw(frame: &mut Frame, track: &Track, centre: Point, pose: Pose) {
     frame.last_centre = centre;
     let place = track.place(centre, frame.route_leg.end);
     let at = pose.projection(centre);
-    draw_roads(frame, &at, centre);
+    draw_roads(frame, &at, centre, look::look(track.light));
     match place {
         Some(place) => {
             let to_junction = track.junction().map_or(0.0, |j| distance(centre, j.at));
@@ -1055,12 +1065,6 @@ fn bucket(frame: &mut Frame) {
     }
 }
 
-fn disc(row: &mut Row, (cx, cy): (i32, i32), radius: i32, color: u16) {
-    paint_disc_over(row, (cx, cy, radius), color, |_, coverage, under| {
-        Some(blend(color, under, coverage))
-    });
-}
-
 pub(super) fn paint(frame: &Frame, row: &mut Row) {
     let y = row.y();
     if frame.show != Show::Map || !GROUND.contains(&y) {
@@ -1104,7 +1108,7 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
     cover.paint(row, AMBER);
     if let Some(at) = frame.junction_quarter_px {
         for (radius, color) in JUNCTION_RINGS_QUARTER_PX {
-            disc(row, at, radius, color);
+            paint_disc_over(row, (at.0, at.1, radius), color);
         }
     }
     if let Some(Puck {
@@ -1113,7 +1117,7 @@ pub(super) fn paint(frame: &Frame, row: &mut Row) {
     }) = frame.puck
     {
         for (radius, color) in PUCK_RINGS_QUARTER_PX {
-            disc(row, at, radius, color);
+            paint_disc_over(row, (at.0, at.1, radius), color);
         }
         let (left, top) = puck_top_left(at);
         PUCK.paint(row, left, top, tint);
@@ -1130,13 +1134,14 @@ fn puck_top_left((cx, cy): (i32, i32)) -> (usize, usize) {
 }
 
 #[cfg(test)]
-pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
+pub(super) fn pixel(frame: &Frame, look: Look, x: usize, y: usize, under: u16) -> u16 {
+    use crate::screens::chrome::blend;
     if frame.show != Show::Map || !GROUND.contains(&y) {
         return under;
     }
     let over = |color: u16, paint: u16, coverage: u8| match coverage {
         0 => color,
-        c => blend(paint, color, c),
+        c => blend(look.ink(paint), color, c),
     };
     let mut color = frame.pairs[usize::from(frame.layer.nibble(x, y))][0];
     for line in Line::ALL {
@@ -1198,7 +1203,9 @@ pub(super) fn pixel(frame: &Frame, x: usize, y: usize, under: u16) -> u16 {
     {
         color = rings(color, at, &PUCK_RINGS_QUARTER_PX);
         let (left, top) = puck_top_left(at);
-        color = PUCK.pixel(x, y, left, top, tint, color).unwrap_or(color);
+        color = PUCK
+            .pixel(x, y, left, top, look.ink(tint), color)
+            .unwrap_or(color);
     }
     color
 }

@@ -7,7 +7,7 @@
 //! `packages/shell/fonts/generate.py`; see `docs/ui.md` for when to use each.
 mod faces;
 
-use super::row::Row;
+use super::row::{Look, Row};
 use super::work;
 use core::ops::Range;
 
@@ -401,8 +401,9 @@ impl<const N: usize> Label<N> {
         if self.left.max(clip.start) >= end {
             return;
         }
+        let color = row.ink(self.color);
         // Columns from here on count from the label's left edge.
-        let pixels = &mut row.pixels_mut()[self.left..end];
+        let pixels = row.pixels_mut(self.left..end);
         let (from, to) = (clip.start.saturating_sub(self.left), pixels.len());
         let line = &self.line;
         let y = y - self.top;
@@ -413,7 +414,7 @@ impl<const N: usize> Label<N> {
                 .get(i)
                 .map_or(to, |&start| usize::from(start).min(to))
         };
-        let mut blends = Blends::new(self.color);
+        let mut blends = Blends::new(color);
         let mut columns = 0;
         let mut held = Held::default();
         for (i, (&start, &character)) in starts.iter().zip(&line.chars).enumerate() {
@@ -457,6 +458,8 @@ impl<const N: usize> Label<N> {
             }
         }
         held.paint(pixels, &mut blends, |_| 0);
+        let left = self.left;
+        row.wrote(left + from..left + to, |x| line.coverage(x - left, y));
         work::add(|work| {
             let inked = (from..to).filter(|&x| line.coverage(x, y) > 0);
             work.label_rows += 1;
@@ -467,13 +470,13 @@ impl<const N: usize> Label<N> {
     }
 
     /// The label over `background`, or none where it has no ink.
-    pub fn pixel(&self, x: usize, y: usize, background: u16) -> Option<u16> {
+    pub fn pixel(&self, look: Look, x: usize, y: usize, background: u16) -> Option<u16> {
         if y < self.top || y >= self.bottom() || x < self.left {
             return None;
         }
         match self.line.coverage(x - self.left, y - self.top) {
             0 => None,
-            coverage => Some(blend(self.color, background, coverage)),
+            coverage => Some(blend(look.ink(self.color), background, coverage)),
         }
     }
 }
@@ -572,11 +575,11 @@ mod tests {
         assert_eq!(right.right(), 100);
         let centre = Label::new(line, 100, 10, Align::Center, 0xffff);
         assert_eq!(centre.left, 100 - line.width() / 2);
-        assert_eq!(right.pixel(50, 10, 0), None);
-        assert_eq!(right.pixel(right.left + 1, 9, 0), None);
+        assert_eq!(right.pixel(Look::PLAIN, 50, 10, 0), None);
+        assert_eq!(right.pixel(Look::PLAIN, right.left + 1, 9, 0), None);
         let lit = (10..right.bottom())
             .flat_map(|y| (right.left..right.right()).map(move |x| (x, y)))
-            .filter(|&(x, y)| right.pixel(x, y, 0) == Some(0xffff))
+            .filter(|&(x, y)| right.pixel(Look::PLAIN, x, y, 0) == Some(0xffff))
             .count();
         assert!(lit > 10);
     }
@@ -606,7 +609,11 @@ mod tests {
                 label.paint(&mut Row::new(y, &mut pixels));
                 for (x, &pixel) in pixels.iter().enumerate() {
                     let under = background(x, y);
-                    assert_eq!(pixel, label.pixel(x, y, under).unwrap_or(under), "{x},{y}");
+                    assert_eq!(
+                        pixel,
+                        label.pixel(Look::PLAIN, x, y, under).unwrap_or(under),
+                        "{x},{y}"
+                    );
                 }
             }
         }
@@ -633,7 +640,9 @@ mod tests {
                             let mut pixels = [BACKGROUND; 160];
                             label.paint(&mut Row::new(y, &mut pixels));
                             for x in label.columns() {
-                                let want = label.pixel(x, y, BACKGROUND).unwrap_or(BACKGROUND);
+                                let want = label
+                                    .pixel(Look::PLAIN, x, y, BACKGROUND)
+                                    .unwrap_or(BACKGROUND);
                                 assert_eq!(pixels[x], want, "{text:?} at {x},{y}");
                             }
                         }
@@ -661,7 +670,9 @@ mod tests {
                         let mut pixels = [BACKGROUND; 240];
                         label.paint(&mut Row::new(y, &mut pixels));
                         for (x, &pixel) in pixels.iter().enumerate() {
-                            let want = label.pixel(x, y, BACKGROUND).unwrap_or(BACKGROUND);
+                            let want = label
+                                .pixel(Look::PLAIN, x, y, BACKGROUND)
+                                .unwrap_or(BACKGROUND);
                             assert_eq!(pixel, want, "{:?} at {x},{y}", text);
                         }
                         // A clipped row keeps the pixels outside its clip.
@@ -669,7 +680,9 @@ mod tests {
                         label.paint(&mut Row::new(y, &mut pixels).within(100..140));
                         for (x, &pixel) in pixels.iter().enumerate() {
                             let want = if (100..140).contains(&x) {
-                                label.pixel(x, y, BACKGROUND).unwrap_or(BACKGROUND)
+                                label
+                                    .pixel(Look::PLAIN, x, y, BACKGROUND)
+                                    .unwrap_or(BACKGROUND)
                             } else {
                                 BACKGROUND
                             };

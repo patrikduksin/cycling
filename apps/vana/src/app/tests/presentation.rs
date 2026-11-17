@@ -46,7 +46,11 @@ impl Panel {
     /// The whole frame is `sheet`, pixel for pixel.
     pub(super) fn shows_sheet(&self, sheet: crate::screens::power::Sheet) -> bool {
         let canvas = sheet.canvas();
-        (0..HEIGHT).all(|y| (0..WIDTH).all(|x| self.pixel(x, y) == canvas.pixel(x, y, 0)))
+        (0..HEIGHT).all(|y| {
+            (0..WIDTH).all(|x| {
+                self.pixel(x, y) == canvas.pixel(crate::screens::chrome::Look::PLAIN, x, y, 0)
+            })
+        })
     }
 }
 

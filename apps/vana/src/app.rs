@@ -186,6 +186,20 @@ impl Runtime {
         valid
     }
 
+    /// Take the light look or the dark one from the next pass, as the THEME
+    /// setting does, and save it once edits settle.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_light(&mut self, light: bool, now: u64) {
+        let mut options = self.preferences.options;
+        options.theme = if light {
+            preferences::Theme::Light
+        } else {
+            preferences::Theme::Dark
+        };
+        self.set_options(options, now);
+        self.display.redraw();
+    }
+
     /// Supply the monotonic clock that times synchronous work within a pass:
     /// journal writes and erases (`RIDE STATUS write_ms`), and frames, storage
     /// and recording milestones (`RIDE TIMING`, `sdk.timing` logs). Nothing a

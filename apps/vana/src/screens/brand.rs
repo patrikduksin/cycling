@@ -68,7 +68,7 @@ pub fn farewell(canvas: &mut Canvas, progress: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::chrome::{HEIGHT, Rect, Row};
+    use crate::screens::chrome::{HEIGHT, Look, Rect, Row};
 
     const SCREEN: Rect = Rect {
         left: 0,
@@ -83,7 +83,11 @@ mod tests {
                 let mut pixels = [BLACK; WIDTH];
                 canvas.paint(&mut Row::new(y, &mut pixels));
                 for (x, &pixel) in pixels.iter().enumerate() {
-                    assert_eq!(pixel, canvas.pixel(x, y, BLACK), "paint at {x},{y}");
+                    assert_eq!(
+                        pixel,
+                        canvas.pixel(Look::PLAIN, x, y, BLACK),
+                        "paint at {x},{y}"
+                    );
                 }
                 pixels.iter().filter(|&&p| p == color).count()
             })
@@ -115,7 +119,8 @@ mod tests {
         farewell(&mut end, DONE);
         assert!(lit(&start, ACCENT) > 1000);
         assert!(lit(&start, WHITE) > 100);
-        let dark = (0..HEIGHT).all(|y| (0..WIDTH).all(|x| end.pixel(x, y, BLACK) == BLACK));
+        let dark =
+            (0..HEIGHT).all(|y| (0..WIDTH).all(|x| end.pixel(Look::PLAIN, x, y, BLACK) == BLACK));
         assert!(dark, "the last frame is black");
     }
 }

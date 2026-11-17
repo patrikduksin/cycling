@@ -12,6 +12,8 @@ default = []
 std = []
 # Count painter work for the host render benchmark (`rendering::work`).
 work-counters = ["std"]
+# Record how each painted pixel was written, for the light look check (`rendering::record`).
+paint-record = ["std"]
 
 [dependencies]
 device-api = { path = "../device-api" }

@@ -1,7 +1,19 @@
-//! The light look: every screen paints with the dark palette, and a light
-//! look maps each painted row through `light` on its way to the panel.
-use super::chrome::{BLACK, rgb};
-use core::cell::Cell;
+//! The light look: screens paint with the one dark palette, and in the light
+//! look each palette colour goes through `light` as it is painted.
+use super::chrome::{
+    ACCENT, AMBER, BLACK, CARD, GREEN, HEART, MUTED, POWER, PRESSED, RAISED, RED, SECONDARY, SPEED,
+    TERTIARY, WHITE, ZONES, rgb,
+};
+use super::ride::{CASING, RIDDEN};
+use firmware_shell::rendering::row::Look;
+
+pub const fn look(light: bool) -> Look {
+    if light {
+        Look::new(self::light)
+    } else {
+        Look::PLAIN
+    }
+}
 
 const fn channels(pixel: u16) -> (i32, i32, i32) {
     let (r, g, b) = (
@@ -28,7 +40,44 @@ const INK_LUMA: i32 = 90;
 /// under a plain inversion, so a saturated colour is also pulled down to
 /// `INK_LUMA`, in proportion to its chroma so anti-aliased edges, which blend
 /// towards grey, stay continuous.
-pub const fn light(pixel: u16) -> u16 {
+pub fn light(pixel: u16) -> u16 {
+    let (known, shown) = KNOWN[slot(pixel)];
+    if known == pixel { shown } else { shade(pixel) }
+}
+
+/// The colours paints map, several times a row: each keeps a slot of its
+/// own in `KNOWN`, so `light` answers it without working it out.
+const PALETTE: [u16; 18] = [
+    BLACK, WHITE, SECONDARY, MUTED, TERTIARY, CARD, RAISED, PRESSED, ACCENT, GREEN, AMBER, RED,
+    SPEED, POWER, HEART, ZONES[6], RIDDEN, CASING,
+];
+
+/// A colour and its answer in each slot: the palette's, and in the slots
+/// it leaves free colours of their own, so whatever a slot holds is right
+/// and a colour that finds another there is worked out instead.
+const KNOWN: [(u16, u16); SLOTS] = {
+    let mut known = [(0, 0); SLOTS];
+    let mut i = 0;
+    while i < SLOTS {
+        let free = (i << 1) as u16;
+        known[i] = (free, shade(free));
+        i += 1;
+    }
+    let mut i = 0;
+    while i < PALETTE.len() {
+        known[slot(PALETTE[i])] = (PALETTE[i], shade(PALETTE[i]));
+        i += 1;
+    }
+    known
+};
+
+const SLOTS: usize = 64;
+
+const fn slot(pixel: u16) -> usize {
+    (pixel >> 1) as usize % SLOTS
+}
+
+const fn shade(pixel: u16) -> u16 {
     let (r, g, b) = channels(pixel);
     let luma = luma(pixel);
     let mut target = 255 - luma;
@@ -59,54 +108,24 @@ const fn clamp(channel: i32) -> u8 {
     }
 }
 
-/// Maps painted rows to the light look. Rows are long runs of one colour and
-/// a screen holds few colours, so answers are kept across a frame's rows and
-/// the last one is reused while the pixel repeats.
-pub struct Look {
-    known: [Cell<(u16, u16)>; KNOWN],
-}
-
-impl Default for Look {
-    fn default() -> Self {
-        Self {
-            known: core::array::from_fn(|_| Cell::new((BLACK, LIGHT_BLACK))),
-        }
-    }
-}
-
-/// What a look has kept never changes the pixels it maps.
-impl core::hash::Hash for Look {
-    fn hash<H: core::hash::Hasher>(&self, _: &mut H) {}
-}
-
-impl Look {
-    pub fn apply(&self, pixels: &mut [u16]) {
-        let (mut from, mut to) = (BLACK, LIGHT_BLACK);
-        for pixel in pixels {
-            if *pixel != from {
-                from = *pixel;
-                let slot = &self.known[usize::from(from ^ from >> 5 ^ from >> 11) % KNOWN];
-                let (kept, mapped) = slot.get();
-                to = if kept == from {
-                    mapped
-                } else {
-                    let mapped = light(from);
-                    slot.set((from, mapped));
-                    mapped
-                };
-            }
-            *pixel = to;
-        }
-    }
-}
-
-const KNOWN: usize = 128;
-const LIGHT_BLACK: u16 = light(BLACK);
-
 #[cfg(test)]
 mod tests {
     use super::super::chrome::*;
     use super::*;
+
+    #[test]
+    fn every_colour_gets_the_answer_it_would_without_the_slots() {
+        for pixel in 0..=u16::MAX {
+            assert_eq!(light(pixel), shade(pixel), "{pixel:04x}");
+        }
+    }
+
+    #[test]
+    fn each_palette_colour_keeps_a_slot_of_its_own() {
+        for color in PALETTE {
+            assert_eq!(KNOWN[slot(color)].0, color, "{color:04x} shares a slot");
+        }
+    }
 
     #[test]
     fn black_and_white_trade_places() {
@@ -142,13 +161,5 @@ mod tests {
             assert!(luma(mapped) <= 100, "{colour:04x} maps to {mapped:04x}");
             assert_ne!(mapped, light(BLACK));
         }
-    }
-
-    #[test]
-    fn a_row_maps_pixel_by_pixel() {
-        let mut row = [BLACK, BLACK, WHITE, POWER, POWER, BLACK];
-        Look::default().apply(&mut row);
-        let expect = [BLACK, BLACK, WHITE, POWER, POWER, BLACK].map(light);
-        assert_eq!(row, expect);
     }
 }

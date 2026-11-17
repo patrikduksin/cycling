@@ -3,9 +3,11 @@
 //!
 //! MOVE (BottomLeft) moves focus down the cards, ACT (BottomRight) opens the
 //! focused one and a tap opens the card under the finger.
+#[cfg(test)]
+use super::chrome::Look;
 use super::chrome::{
-    ACCENT, AMBER, Align, BLACK, BODY, CAPTION, CARD, CONTENT, GREEN, Label, Line, MUTED, RAISED,
-    Rect, Row, SECONDARY, TITLE, WHITE, blend, card, paint_disc, paint_rounded,
+    AMBER, Align, BLACK, BODY, CAPTION, CONTENT, GREEN, Inks, Label, Line, MUTED, Rect, Row,
+    SECONDARY, TITLE, WHITE, blend, card, paint_disc, paint_rounded,
 };
 
 /// The width of a card's focus ring, which `paint_rounded` fills as spans
@@ -264,10 +266,11 @@ impl Home {
     /// Paint a row: the card it crosses, then what sits on the card.
     pub fn paint(&self, row: &mut Row) {
         let y = row.y();
+        let inks = Inks::of(row.look());
         if y < RIDE_TILE.bottom {
             let focused = self.cursor == 0;
             paint_rounded(row, RIDE_TILE, RADIUS, ring(focused), |x, y| {
-                Self::surface(focused, RIDE_TILE, x, y)
+                Self::surface(inks, focused, RIDE_TILE, x, y)
             });
             if y < RIDE_TILE.top {
                 return;
@@ -279,9 +282,9 @@ impl Home {
             }
             let (cx, cy, r) = PLAY;
             let disc = (4 * cx as i32, 4 * cy as i32, 4 * r as i32);
-            paint_disc(row, disc, GREEN, |x, button| {
-                let fill = Self::surface(focused, RIDE_TILE, x, y)?;
-                Some(Self::play(x, y, button, fill))
+            paint_disc(row, disc, GREEN, |x, button, _, _| {
+                let fill = Self::surface(inks, focused, RIDE_TILE, x, y)?;
+                Some(Self::play(inks, x, y, button, fill))
             });
             // The play triangle: 24 rows, 20 wide at the middle. Its centroid
             // (a third of the way from the flat side) sits on the disc's centre,
@@ -295,7 +298,7 @@ impl Home {
         } else if y < SENSORS_TILE.bottom {
             let focused = self.cursor == 1;
             paint_rounded(row, SENSORS_TILE, RADIUS, ring(focused), |x, y| {
-                Self::surface(focused, SENSORS_TILE, x, y)
+                Self::surface(inks, focused, SENSORS_TILE, x, y)
             });
             if y < SENSORS_TILE.top {
                 return;
@@ -303,7 +306,7 @@ impl Home {
             if let Some(none) = &self.none {
                 none.paint(row);
             } else if y >= ICON_SQUARE_TOP {
-                self.paint_icons(row, focused);
+                self.paint_icons(row, inks, focused);
                 for name in &self.names {
                     name.paint(row);
                 }
@@ -314,7 +317,7 @@ impl Home {
             for (index, tile) in [(2, WORKOUTS_TILE), (3, SETTINGS_TILE)] {
                 let focused = self.cursor == index;
                 paint_rounded(row, tile, RADIUS, ring(focused), |x, y| {
-                    Self::surface(focused, tile, x, y)
+                    Self::surface(inks, focused, tile, x, y)
                 });
             }
             self.workouts_title.paint(row);
@@ -322,7 +325,7 @@ impl Home {
         } else {
             let focused = self.cursor == 4;
             paint_rounded(row, RIDES_TILE, RIDES_RADIUS, ring(focused), |x, y| {
-                Self::surface_of(focused, RIDES_TILE, RIDES_RADIUS, x, y)
+                Self::surface_of(inks, focused, RIDES_TILE, RIDES_RADIUS, x, y)
             });
             self.rides_title.paint(row);
             self.last.paint(row);
@@ -330,15 +333,15 @@ impl Home {
     }
 
     /// Sensor icons in white, each with its status dot at the top right.
-    fn paint_icons(&self, row: &mut Row, focused: bool) {
+    fn paint_icons(&self, row: &mut Row, inks: Inks, focused: bool) {
         let y = row.y();
         let left = SENSORS_TILE.left + INSET;
         for (slot, glance) in self.sensors.iter().enumerate() {
             let slot_left = left + slot * ICON_PITCH;
             let dot = (4 * (slot_left + 25) as i32, 4 * ICON_TOP as i32 + 2, 10);
-            paint_disc(row, dot, glance.color, |x, dot| {
-                let fill = Self::surface(focused, SENSORS_TILE, x, y)?;
-                Some(blend(glance.color, fill, dot))
+            paint_disc(row, dot, glance.color, |x, dot, color, _| {
+                let fill = Self::surface(inks, focused, SENSORS_TILE, x, y)?;
+                Some(blend(color, fill, dot))
             });
             let icon = Sensor::of(glance.kind).icon(Size::Small);
             icon.paint(row, slot_left, ICON_SQUARE_TOP, WHITE);
@@ -346,27 +349,27 @@ impl Home {
     }
 
     /// The green start button with a black play triangle, 26 tall, inside it.
-    fn play(x: usize, y: usize, button: u8, fill: u16) -> u16 {
+    fn play(inks: Inks, x: usize, y: usize, button: u8, fill: u16) -> u16 {
         let (cx, cy, _) = PLAY;
         let gx = x as i32 - (cx as i32 - 6);
         let gy = y as i32 - (cy as i32 - 12);
         let inside =
             gx >= 0 && (0..24).contains(&gy) && gx < (20 * (24 - (2 * gy - 23).abs()) / 24).max(1);
         if inside {
-            BLACK
+            inks.black
         } else {
-            blend(GREEN, fill, button)
+            blend(inks.green, fill, button)
         }
     }
 
-    /// The per-pixel original of `paint`, kept as the reference it must match.
     #[cfg(test)]
-    pub fn pixel(&self, x: usize, y: usize) -> u16 {
+    pub fn pixel(&self, look: Look, x: usize, y: usize) -> u16 {
+        let inks = Inks::of(look);
         if y < RIDE_TILE.bottom {
-            return self.ride_pixel(x, y);
+            return self.ride_pixel(look, x, y);
         }
         if y < SENSORS_TILE.bottom {
-            return self.sensors_pixel(x, y);
+            return self.sensors_pixel(look, x, y);
         }
         if y < SETTINGS_TILE.bottom {
             let (index, tile, title) = if x < SETTINGS_TILE.left {
@@ -374,16 +377,17 @@ impl Home {
             } else {
                 (3, SETTINGS_TILE, &self.settings_title)
             };
-            let Some(fill) = Self::surface(self.cursor == index, tile, x, y) else {
-                return BLACK;
+            let Some(fill) = Self::surface(inks, self.cursor == index, tile, x, y) else {
+                return inks.black;
             };
-            return title.pixel(x, y, fill).unwrap_or(fill);
+            return title.pixel(look, x, y, fill).unwrap_or(fill);
         }
-        let Some(fill) = Self::surface_of(self.cursor == 4, RIDES_TILE, RIDES_RADIUS, x, y) else {
-            return BLACK;
+        let Some(fill) = Self::surface_of(inks, self.cursor == 4, RIDES_TILE, RIDES_RADIUS, x, y)
+        else {
+            return inks.black;
         };
         for label in [&self.rides_title, &self.last] {
-            if let Some(color) = label.pixel(x, y, fill) {
+            if let Some(color) = label.pixel(look, x, y, fill) {
                 return color;
             }
         }
@@ -391,30 +395,46 @@ impl Home {
     }
 
     /// Fill and focus ring: the focused card is raised and ringed.
-    fn surface(focused: bool, rect: Rect, x: usize, y: usize) -> Option<u16> {
-        Self::surface_of(focused, rect, RADIUS, x, y)
+    fn surface(inks: Inks, focused: bool, rect: Rect, x: usize, y: usize) -> Option<u16> {
+        Self::surface_of(inks, focused, rect, RADIUS, x, y)
     }
 
-    fn surface_of(focused: bool, rect: Rect, radius: usize, x: usize, y: usize) -> Option<u16> {
+    fn surface_of(
+        inks: Inks,
+        focused: bool,
+        rect: Rect,
+        radius: usize,
+        x: usize,
+        y: usize,
+    ) -> Option<u16> {
         if focused {
-            card(rect, radius, x, y, RAISED, Some(ACCENT))
+            card(
+                rect,
+                radius,
+                x,
+                y,
+                inks.raised,
+                Some(inks.accent),
+                inks.black,
+            )
         } else {
-            card(rect, radius, x, y, CARD, None)
+            card(rect, radius, x, y, inks.card, None, inks.black)
         }
     }
 
     #[cfg(test)]
-    fn ride_pixel(&self, x: usize, y: usize) -> u16 {
-        let Some(fill) = Self::surface(self.cursor == 0, RIDE_TILE, x, y) else {
-            return BLACK;
+    fn ride_pixel(&self, look: Look, x: usize, y: usize) -> u16 {
+        let inks = Inks::of(look);
+        let Some(fill) = Self::surface(inks, self.cursor == 0, RIDE_TILE, x, y) else {
+            return inks.black;
         };
         let (cx, cy, r) = PLAY;
         let button = super::chrome::disc(x, y, 4 * cx as i32, 4 * cy as i32, 4 * r as i32);
         if button > 0 {
-            return Self::play(x, y, button, fill);
+            return Self::play(inks, x, y, button, fill);
         }
         for label in [&self.ride, &self.gps].into_iter().chain(&self.status) {
-            if let Some(color) = label.pixel(x, y, fill) {
+            if let Some(color) = label.pixel(look, x, y, fill) {
                 return color;
             }
         }
@@ -422,20 +442,21 @@ impl Home {
     }
 
     #[cfg(test)]
-    fn sensors_pixel(&self, x: usize, y: usize) -> u16 {
-        let Some(fill) = Self::surface(self.cursor == 1, SENSORS_TILE, x, y) else {
-            return BLACK;
+    fn sensors_pixel(&self, look: Look, x: usize, y: usize) -> u16 {
+        let inks = Inks::of(look);
+        let Some(fill) = Self::surface(inks, self.cursor == 1, SENSORS_TILE, x, y) else {
+            return inks.black;
         };
         for label in [&self.sensors_title, &self.count] {
-            if let Some(color) = label.pixel(x, y, fill) {
+            if let Some(color) = label.pixel(look, x, y, fill) {
                 return color;
             }
         }
         if let Some(none) = &self.none {
-            return none.pixel(x, y, fill).unwrap_or(fill);
+            return none.pixel(look, x, y, fill).unwrap_or(fill);
         }
         for name in &self.names {
-            if let Some(color) = name.pixel(x, y, fill) {
+            if let Some(color) = name.pixel(look, x, y, fill) {
                 return color;
             }
         }
@@ -450,9 +471,9 @@ impl Home {
         let slot_left = left + slot * ICON_PITCH;
         let cx = 4 * (slot_left + 25) as i32;
         let dot = super::chrome::disc(x, y, cx, 4 * ICON_TOP as i32 + 2, 10);
-        let under = blend(glance.color, fill, dot);
+        let under = blend(look.ink(glance.color), fill, dot);
         let icon = Sensor::of(glance.kind).icon(Size::Small);
-        icon.pixel(x, y, slot_left, ICON_SQUARE_TOP, WHITE, under)
+        icon.pixel(x, y, slot_left, ICON_SQUARE_TOP, look.ink(WHITE), under)
             .unwrap_or(under)
     }
 }
@@ -504,23 +525,38 @@ pub fn this_week(distance_mm: u64) -> Text<20> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screens::chrome::{ACCENT, CARD, RAISED};
 
     #[test]
     fn focus_raises_and_rings_the_card_and_taps_find_cards() {
         let home = Home::new(0, true, &[], Text::new());
         let inside = (RIDE_TILE.right - 24, RIDE_TILE.bottom - 24);
-        assert_eq!(home.pixel(inside.0, inside.1), RAISED);
-        assert_eq!(home.pixel(RIDE_TILE.center_x(), RIDE_TILE.top), ACCENT);
+        assert_eq!(home.pixel(Look::PLAIN, inside.0, inside.1), RAISED);
+        assert_eq!(
+            home.pixel(Look::PLAIN, RIDE_TILE.center_x(), RIDE_TILE.top),
+            ACCENT
+        );
         let sensors_inside = (SENSORS_TILE.right - 24, SENSORS_TILE.bottom - 24);
-        assert_eq!(home.pixel(sensors_inside.0, sensors_inside.1), CARD);
-        assert_eq!(home.pixel(RIDE_TILE.left, RIDE_TILE.top), BLACK, "rounded");
-        assert_eq!(home.pixel(PLAY.0 + 20, PLAY.1), GREEN);
-        assert_eq!(home.pixel(PLAY.0, PLAY.1), BLACK, "play triangle");
+        assert_eq!(
+            home.pixel(Look::PLAIN, sensors_inside.0, sensors_inside.1),
+            CARD
+        );
+        assert_eq!(
+            home.pixel(Look::PLAIN, RIDE_TILE.left, RIDE_TILE.top),
+            BLACK,
+            "rounded"
+        );
+        assert_eq!(home.pixel(Look::PLAIN, PLAY.0 + 20, PLAY.1), GREEN);
+        assert_eq!(
+            home.pixel(Look::PLAIN, PLAY.0, PLAY.1),
+            BLACK,
+            "play triangle"
+        );
         assert_eq!(home.ride.color, WHITE);
         let sensors = Home::new(1, true, &[], Text::new());
         assert_eq!(sensors.ride.color, MUTED);
         let top = (SENSORS_TILE.center_x(), SENSORS_TILE.top);
-        assert_eq!(sensors.pixel(top.0, top.1), ACCENT);
+        assert_eq!(sensors.pixel(Look::PLAIN, top.0, top.1), ACCENT);
         assert_eq!(Home::tile_at(120, RIDE_TILE.top + 1), Some(Tile::Ride));
         assert_eq!(
             Home::tile_at(120, SENSORS_TILE.bottom - 1),
@@ -537,12 +573,12 @@ mod tests {
         );
         let workouts = Home::new(2, true, &[], Text::new());
         let top = (WORKOUTS_TILE.center_x(), WORKOUTS_TILE.top);
-        assert_eq!(workouts.pixel(top.0, top.1), ACCENT);
+        assert_eq!(workouts.pixel(Look::PLAIN, top.0, top.1), ACCENT);
         assert_eq!(workouts.workouts_title.color, WHITE);
         assert_eq!(workouts.settings_title.color, MUTED);
         let settings = Home::new(3, true, &[], Text::new());
         let top = (SETTINGS_TILE.center_x(), SETTINGS_TILE.top);
-        assert_eq!(settings.pixel(top.0, top.1), ACCENT);
+        assert_eq!(settings.pixel(Look::PLAIN, top.0, top.1), ACCENT);
         assert_eq!(settings.settings_title.color, WHITE);
         assert_eq!(Home::tile_at(2, 100), None);
     }
@@ -581,15 +617,21 @@ mod tests {
         low[0].battery = Some(crate::sensors::ant::BatteryStatus::Ok);
         assert_eq!(Home::new(0, false, &low, Text::new()).count.color, GREEN);
         let left = SENSORS_TILE.left + INSET;
-        assert_eq!(home.pixel(left + 25, ICON_TOP), GREEN);
-        assert_eq!(home.pixel(left + ICON_PITCH + 25, ICON_TOP), 0xfd20);
+        assert_eq!(home.pixel(Look::PLAIN, left + 25, ICON_TOP), GREEN);
+        assert_eq!(
+            home.pixel(Look::PLAIN, left + ICON_PITCH + 25, ICON_TOP),
+            0xfd20
+        );
         assert_eq!(home.last.line.text(), b"5.00 KM");
         assert_eq!(home.rides_title.line.text(), b"RIDES");
         let none = Home::new(0, false, &[], Text::new());
         assert!(none.none.is_some() && none.last.line.text().is_empty());
         // The RIDES card takes the focus and a tap.
         let rides = Home::new(4, false, &[], Text::new());
-        assert_eq!(rides.pixel(RIDES_TILE.center_x(), RIDES_TILE.top), ACCENT);
+        assert_eq!(
+            rides.pixel(Look::PLAIN, RIDES_TILE.center_x(), RIDES_TILE.top),
+            ACCENT
+        );
         assert_eq!(Home::tile_at(120, RIDES_TILE.top + 4), Some(Tile::Rides));
     }
 

@@ -27,6 +27,11 @@ const BAND_GAP: usize = 2;
 const BAND_HEIGHT: usize = 2;
 /// Power has seven zones, heart rate five.
 const SEGMENTS: [usize; 2] = [7, 5];
+const MOST_SEGMENTS: usize = if SEGMENTS[0] > SEGMENTS[1] {
+    SEGMENTS[0]
+} else {
+    SEGMENTS[1]
+};
 
 struct Rows {
     time: usize,
@@ -437,25 +442,31 @@ pub(super) fn paint(scene: &Scene, row: &mut Row) {
 /// The per-pixel original of `paint`, kept as the reference it must match.
 #[cfg(test)]
 pub(super) fn reference_pixel(scene: &Scene, x: usize, y: usize) -> u16 {
+    let look = scene.look();
+    let black = look.ink(BLACK);
     let smooth = scene.smooth();
     if let Some((rows, columns)) = band(smooth)
         && rows.contains(&y)
         && columns.contains(&x)
     {
-        return WHITE;
+        return look.ink(WHITE);
     }
     for (i, &top) in smooth.gauges.iter().flatten().enumerate() {
         if (top..top + GAUGE_HEIGHT).contains(&y) {
             let mark = scene.gauges[i].unwrap_or_default();
-            return gauge(mark.zone, mark.fill.into(), SEGMENTS[i], x, y, top);
+            let Some(at) = gauge(mark.zone, mark.fill.into(), SEGMENTS[i], x, y, top) else {
+                return black;
+            };
+            let color = segment_color(at.segment, at.lit);
+            return blend(look.ink(color), black, at.coverage);
         }
     }
     for label in &smooth.labels {
-        if let Some(color) = label.pixel(x, y, BLACK) {
+        if let Some(color) = label.pixel(look, x, y, black) {
             return color;
         }
     }
-    BLACK
+    black
 }
 
 /// The column where gauge `i`'s lit run ends for `mark`.
@@ -473,7 +484,11 @@ fn paint_gauge(row: &mut Row, zone: u8, fill: usize, segments: usize, top: usize
     let pitch = (RIGHT - LEFT + GAUGE_GAP) / segments;
     let width = pitch - GAUGE_GAP;
     let lit = usize::from(zone);
-    for segment in 0..segments {
+    let black = row.ink(BLACK);
+    let inks: [[u16; 2]; MOST_SEGMENTS] = core::array::from_fn(|segment| {
+        [false, true].map(|lit| row.ink(segment_color(segment, lit)))
+    });
+    for (segment, &[track, color]) in inks.iter().enumerate().take(segments) {
         let left = LEFT + segment * pitch;
         let split = if segment + 1 < lit {
             width
@@ -482,20 +497,45 @@ fn paint_gauge(row: &mut Row, zone: u8, fill: usize, segments: usize, top: usize
         } else {
             0
         };
-        row.span(left..left + split, zone_color(segment as u8 + 1));
-        row.span(left + split..left + width, TERTIARY);
-        let end = |x| Some(gauge(zone, fill, segments, x, y, top));
+        row.span_shown(left..left + split, color);
+        row.span_shown(left + split..left + width, track);
+        let end = |x| {
+            let at = gauge(zone, fill, segments, x, y, top)?;
+            let shown = inks[at.segment][usize::from(at.lit)];
+            Some(blend(shown, black, at.coverage))
+        };
         row.each(left..left + 2, end);
         row.each(left + width - 2..left + width, end);
+    }
+}
+
+struct GaugePixel {
+    segment: usize,
+    lit: bool,
+    coverage: u8,
+}
+
+fn segment_color(segment: usize, lit: bool) -> u16 {
+    if lit {
+        zone_color(segment as u8 + 1)
+    } else {
+        TERTIARY
     }
 }
 
 /// A row of rounded segments, one per zone: those below `zone` lit in their
 /// colours, the current one lit `fill` / `GAUGE_WIDTH` of the way through
 /// its range, the rest a dim track.
-fn gauge(zone: u8, fill: usize, segments: usize, x: usize, y: usize, top: usize) -> u16 {
+fn gauge(
+    zone: u8,
+    fill: usize,
+    segments: usize,
+    x: usize,
+    y: usize,
+    top: usize,
+) -> Option<GaugePixel> {
     if !(LEFT..RIGHT).contains(&x) {
-        return BLACK;
+        return None;
     }
     let pitch = (RIGHT - LEFT + GAUGE_GAP) / segments;
     let segment = (x - LEFT) / pitch;
@@ -509,12 +549,11 @@ fn gauge(zone: u8, fill: usize, segments: usize, x: usize, y: usize, top: usize)
     let zone = usize::from(zone);
     let width = pitch - GAUGE_GAP;
     let lit = segment + 1 < zone || (segment + 1 == zone && x - left < width * fill / GAUGE_WIDTH);
-    let color = if lit {
-        zone_color(segment as u8 + 1)
-    } else {
-        TERTIARY
-    };
-    blend(color, BLACK, rounded(rect, 2, x, y))
+    Some(GaugePixel {
+        segment,
+        lit,
+        coverage: rounded(rect, 2, x, y),
+    })
 }
 
 #[cfg(test)]

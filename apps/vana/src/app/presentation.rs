@@ -517,7 +517,7 @@ impl Runtime {
         }
         let track = &self.track;
         self.cues
-            .play(sound, now, |cue| super::track::holds(track, cue));
+            .play(sound, now, |cue| super::track::still_due(track, cue));
     }
 
     /// Show `alert` as a toast and raise its cue.

@@ -345,7 +345,7 @@ impl Navigator {
             }
             Observed::Fix(fix) => self.fix(fix, turns, &locate, &mut due),
         }
-        if let Some(parked) = parked.filter(|&raised| self.still_due(raised, turns)) {
+        if let Some(parked) = parked.filter(|&raised| self.due(raised, turns)) {
             due.raise(parked);
         }
         self.pending = due.second;
@@ -518,7 +518,7 @@ impl Navigator {
         None
     }
 
-    fn still_due(&self, raised: Raised, turns: &[Turn]) -> bool {
+    fn due(&self, raised: Raised, turns: &[Turn]) -> bool {
         let is = |k: usize, turn: TurnId| turns.get(k).is_some_and(|t| t.id() == turn);
         match raised {
             Raised::Following | Raised::OnCourse => self.place == Place::On,
@@ -545,7 +545,7 @@ impl Navigator {
 
     /// Whether `cue`, raised earlier and still unheard, is still so: the
     /// turn it is of not yet passed, the rider still off course or on it.
-    pub fn holds(&self, cue: Navigation, turns: &[Turn]) -> bool {
+    pub fn still_due(&self, cue: Navigation, turns: &[Turn]) -> bool {
         let raised = match cue {
             Navigation::OnCourse => Raised::OnCourse,
             Navigation::OffCourse => Raised::OffCourse,
@@ -558,7 +558,7 @@ impl Navigator {
                 None => return false,
             },
         };
-        self.still_due(raised, turns)
+        self.due(raised, turns)
     }
 
     pub fn sign(&self, turns: &[Turn], now_ms: u64) -> Sign {

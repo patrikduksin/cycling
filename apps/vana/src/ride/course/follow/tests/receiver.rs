@@ -42,7 +42,12 @@ fn angle(e7: i32, degrees: usize, [positive, negative]: [char; 2]) -> String {
 impl Rider<'_> {
     fn hear(&mut self, gps: &Snapshot, now: u64) -> Option<Event> {
         let fix = self.breadcrumb.observe(Reported::fresh(gps, now), now);
-        self.follower.observe(fix, now, None, false)
+        self.follower.handle(Input::Observe {
+            now,
+            fix,
+            speed_mm_s: None,
+            paused: false,
+        })
     }
 }
 
@@ -75,7 +80,7 @@ fn off_at(off_ms: &[u64]) -> Vec<Pass> {
         heard.push(Pass {
             now,
             event,
-            sign: rider.follower.sign(now),
+            sign: rider.sign(now),
         });
     }
     heard

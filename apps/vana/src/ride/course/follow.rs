@@ -117,29 +117,116 @@ enum Riding {
     Away,
 }
 
+#[derive(Clone, Copy)]
+enum Lifecycle {
+    NoCourse,
+    Unplaced,
+    Joining(Joining),
+    Following(Following),
+    Arrived { nav: Navigator },
+    LetGo { awaits_frame: bool },
+}
+
+impl Lifecycle {
+    fn nav(&self) -> Option<&Navigator> {
+        match self {
+            Self::Following(following) => Some(&following.nav),
+            Self::Arrived { nav } => Some(nav),
+            _ => None,
+        }
+    }
+
+    fn nav_mut(&mut self) -> Option<&mut Navigator> {
+        match self {
+            Self::Following(following) => Some(&mut following.nav),
+            Self::Arrived { nav } => Some(nav),
+            _ => None,
+        }
+    }
+
+    fn unplaced(&self) -> bool {
+        matches!(self, Self::Unplaced | Self::LetGo { awaits_frame: true })
+    }
+
+    fn cannot_join_again_this_ride(&self) -> bool {
+        matches!(
+            self,
+            Self::Following(_) | Self::Arrived { .. } | Self::LetGo { .. }
+        )
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct Joining {
+    fixes: u8,
+    against_fixes: u8,
+}
+
+enum Joined {
+    NotYet,
+    FromSegmentEndingAt(usize),
+}
+
+#[derive(Clone, Copy)]
+struct Following {
+    nav: Navigator,
+    segment: usize,
+    matched: Option<Point>,
+    matched_fix: Option<Point>,
+    to_end_m: f32,
+    furthest_to_end_m: f32,
+    search_whole_course: bool,
+}
+
 pub struct Follower<'a> {
     line: &'a mut [Crumb],
     len: usize,
     placement: Placement,
-    unplaced: bool,
-    held: bool,
-    join_fixes: u8,
-    join_end: usize,
-    turn_around_fixes: u8,
+    life: Lifecycle,
     last_fix: Option<Point>,
-    following: bool,
-    segment: usize,
-    matched: Option<Point>,
-    to_end_m: f32,
-    furthest_to_end_m: f32,
-    matched_fix: Option<Point>,
-    search_whole_course: bool,
     heading: Option<u16>,
     taken_loop_ms: u64,
     turns: &'a mut [Turn],
     turn_count: usize,
     scan: PlacedScan,
-    nav: Navigator,
+}
+
+pub enum Input<'c> {
+    NewRide,
+    /// The course to follow, start first; fewer than two points clear it.
+    /// It is placed in the ride's `frame` now if the ride has one, else it
+    /// waits (`unplaced`) to be given again once it does. Once placed,
+    /// `read` writes its stored turns into the list, in millimetres along
+    /// `points`, and returns how many and whether the course has more, or
+    /// `None` to scan for them.
+    Course {
+        points: &'c [course::Point],
+        frame: Option<Frame>,
+        read: &'c mut ReadStored<'c>,
+    },
+    /// This main-loop pass's fix, if the ride has a fresh one
+    /// (`Breadcrumb::observe`), and the ride's live speed.
+    Observe {
+        now: u64,
+        fix: Option<Fix>,
+        speed_mm_s: Option<u32>,
+        paused: bool,
+    },
+    /// The rider's long press on the map: if following, stop for the rest
+    /// of the ride.
+    LetGo,
+}
+
+pub type ReadStored<'r> = dyn FnMut(&mut [Turn]) -> Option<(usize, bool)> + 'r;
+
+enum Effect {
+    ReadTurns,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Shown {
+    pub sign: Sign,
+    pub guidance: Option<Guidance>,
 }
 
 impl<'a> Follower<'a> {
@@ -150,58 +237,71 @@ impl<'a> Follower<'a> {
             line,
             len: 0,
             placement: Placement::default(),
-            unplaced: false,
-            held: false,
-            join_fixes: 0,
-            join_end: 0,
-            turn_around_fixes: 0,
+            life: Lifecycle::NoCourse,
             last_fix: None,
-            following: false,
-            segment: 0,
-            matched: None,
-            to_end_m: 0.0,
-            furthest_to_end_m: 0.0,
-            matched_fix: None,
-            search_whole_course: false,
             heading: None,
             taken_loop_ms: 0,
             turns,
             turn_count: 0,
             scan: PlacedScan::default(),
-            nav: Navigator::default(),
         }
     }
 
-    /// A new ride: following may start again, and a loaded course waits
-    /// (`unplaced`) to be set again in the new ride's frame.
-    pub fn reset(&mut self) {
-        self.unplaced |= self.len >= 2;
-        self.len = 0;
-        self.placement = self.placement.next();
-        self.held = false;
-        self.join_fixes = 0;
-        self.turn_around_fixes = 0;
-        self.last_fix = None;
-        self.following = false;
-        self.matched = None;
-        self.search_whole_course = false;
-        self.heading = None;
-        self.nav = Navigator::default();
+    pub fn handle(&mut self, input: Input) -> Option<Event> {
+        match input {
+            Input::NewRide => self.new_ride(),
+            Input::Course {
+                points,
+                frame,
+                read,
+            } => {
+                if let Some(Effect::ReadTurns) = self.set_course(points, frame) {
+                    let stored = read(self.turns);
+                    self.move_stored_turns_into_frame(points, stored);
+                }
+            }
+            Input::Observe {
+                now,
+                fix,
+                speed_mm_s,
+                paused,
+            } => return self.observe(fix, now, speed_mm_s, paused),
+            Input::LetGo => self.let_go(),
+        }
+        None
     }
 
-    /// The course to follow, start first; fewer than two points clear it.
-    /// It is placed in the ride's `frame` now if the ride has one, else it
-    /// waits (`unplaced`) to be set again once it does.
-    pub fn set_course(&mut self, points: &[course::Point], frame: Option<Frame>) {
-        self.stop();
+    fn new_ride(&mut self) {
+        let waits = self.len >= 2 || self.life.unplaced();
+        self.len = 0;
+        (self.scan, self.turn_count) = (PlacedScan::finished(), 0);
+        self.placement = self.placement.next();
+        self.last_fix = None;
+        self.heading = None;
+        self.life = match waits {
+            true => Lifecycle::Unplaced,
+            false => Lifecycle::NoCourse,
+        };
+    }
+
+    fn set_course(&mut self, points: &[course::Point], frame: Option<Frame>) -> Option<Effect> {
+        let cannot_join = self.life.cannot_join_again_this_ride();
         self.len = 0;
         self.placement = self.placement.next();
-        self.join_fixes = 0;
-        self.turn_around_fixes = 0;
         let n = points.len().min(self.line.len());
-        self.unplaced = n >= 2 && frame.is_none();
-        let Some(frame) = frame.filter(|_| n >= 2) else {
-            return;
+        let unplaced = n >= 2 && frame.is_none();
+        let frame = frame.filter(|_| n >= 2);
+        self.life = match (cannot_join, frame) {
+            (true, _) => Lifecycle::LetGo {
+                awaits_frame: unplaced,
+            },
+            (false, Some(_)) => Lifecycle::Joining(Joining::default()),
+            (false, None) if unplaced => Lifecycle::Unplaced,
+            (false, None) => Lifecycle::NoCourse,
+        };
+        let Some(frame) = frame else {
+            (self.scan, self.turn_count) = (PlacedScan::finished(), 0);
+            return None;
         };
         for k in 0..n {
             let point = points[n - 1 - k];
@@ -221,30 +321,21 @@ impl<'a> Follower<'a> {
         }
         self.len = n;
         (self.scan, self.turn_count) = (PlacedScan::default(), 0);
+        (points.len() == n).then_some(Effect::ReadTurns)
     }
 
     /// A course is loaded and waits for the ride's first fix to be placed.
     pub fn unplaced(&self) -> bool {
-        self.unplaced
+        self.life.unplaced()
     }
 
-    /// The placed course's turns as stored, in place of the scan: `fill`
-    /// writes them into the list in millimetres along `points`, the course
-    /// as `set_course` was given it, and returns how many and whether the
-    /// course has more, or `None` to scan for them. They move into this
-    /// ride's frame, kept point by kept point, so the rider's place along
-    /// the course finds them; the scan finds any after them.
-    pub fn take_turns(
+    fn move_stored_turns_into_frame(
         &mut self,
         points: &[course::Point],
-        fill: impl FnOnce(&mut [Turn]) -> Option<(usize, bool)>,
+        stored: Option<(usize, bool)>,
     ) {
         let len = self.len;
-        if len < 2 || points.len() != len {
-            return;
-        }
-        let Some((count, more)) = fill(self.turns).filter(|&(count, _)| count <= self.turns.len())
-        else {
+        let Some((count, more)) = stored.filter(|&(count, _)| count <= self.turns.len()) else {
             (self.scan, self.turn_count) = (PlacedScan::default(), 0);
             return;
         };
@@ -282,35 +373,32 @@ impl<'a> Follower<'a> {
             false => PlacedScan::finished(),
         };
         self.turn_count = count;
-        self.nav = Navigator::default();
     }
 
     /// The turn list, to find a course's turns into while it uploads. Only
     /// while no course is placed: placing one finds its own.
-    pub fn turn_room(&mut self) -> &mut [Turn] {
+    pub fn upload_room(&mut self) -> &mut [Turn] {
+        debug_assert_eq!(
+            self.len, 0,
+            "the turn list is lent only while no course is placed"
+        );
         (self.scan, self.turn_count) = (PlacedScan::finished(), 0);
         self.turns
     }
 
     pub fn following(&self) -> bool {
-        self.following
+        matches!(self.life, Lifecycle::Following(_))
     }
 
     pub fn joinable(&self) -> bool {
-        !self.following && !self.held && self.len >= 2
-    }
-
-    /// If following, stop for the rest of the ride.
-    pub fn stop(&mut self) {
-        self.let_go();
-        self.nav = Navigator::default();
+        matches!(self.life, Lifecycle::Joining(_))
     }
 
     fn let_go(&mut self) {
-        if core::mem::take(&mut self.following) {
-            self.held = true;
-            self.matched = None;
-            self.search_whole_course = false;
+        if self.following() {
+            self.life = Lifecycle::LetGo {
+                awaits_frame: false,
+            };
         }
     }
 
@@ -328,37 +416,53 @@ impl<'a> Follower<'a> {
     /// from its end, and then this point on the stretch the rider is on, if
     /// matched yet.
     pub fn ahead(&self) -> Option<(usize, Option<(f32, f32)>)> {
-        self.following.then_some((self.segment, self.matched))
+        match &self.life {
+            Lifecycle::Following(following) => Some((following.segment, following.matched)),
+            _ => None,
+        }
     }
 
     /// Metres along the course to its end from where the rider was last
     /// matched, while following it.
     pub fn to_end_m(&self) -> Option<u32> {
-        self.matched.map(|_| (self.to_end_m + 0.5) as u32)
+        let Lifecycle::Following(following) = &self.life else {
+            return None;
+        };
+        following.matched.map(|_| (following.to_end_m + 0.5) as u32)
     }
 
-    pub fn sign(&self, now: u64) -> Sign {
+    pub fn shown(&self, now: u64) -> Shown {
         let fresh = now.saturating_sub(self.taken_loop_ms) <= nav::LOST_MS;
-        if self.joinable() && self.turn_around_fixes >= TURN_AROUND_FIXES && fresh {
-            return Sign::TurnAround;
+        if let Lifecycle::Joining(joining) = self.life
+            && joining.against_fixes >= TURN_AROUND_FIXES
+            && fresh
+        {
+            return Shown {
+                sign: Sign::TurnAround,
+                guidance: None,
+            };
         }
-        self.nav.sign(&self.turns[..self.turn_count], now)
+        let Some(nav) = self.life.nav() else {
+            return Shown::default();
+        };
+        let (line, turns) = (&self.line[..self.len], &self.turns[..self.turn_count]);
+        Shown {
+            sign: nav.sign(turns, now),
+            guidance: nav.guidance(turns, now, |mm| point_at(line, mm)),
+        }
     }
 
-    pub fn holds(&self, cue: Navigation) -> bool {
-        self.following && self.nav.holds(cue, &self.turns[..self.turn_count])
+    /// Whether `cue`, raised earlier and still unheard, is still due.
+    pub fn still_due(&self, cue: Navigation) -> bool {
+        match &self.life {
+            Lifecycle::Following(following) => {
+                following.nav.still_due(cue, &self.turns[..self.turn_count])
+            }
+            _ => false,
+        }
     }
 
-    pub fn guidance(&self, now: u64) -> Option<Guidance> {
-        let line = &self.line[..self.len];
-        self.nav
-            .guidance(&self.turns[..self.turn_count], now, |mm| point_at(line, mm))
-    }
-
-    /// This main-loop pass's fix, if the ride has a fresh one
-    /// (`Breadcrumb::observe`), and the ride's live speed. Every pass finds a
-    /// few more of the course's turns.
-    pub fn observe(
+    fn observe(
         &mut self,
         fix: Option<Fix>,
         now: u64,
@@ -366,12 +470,22 @@ impl<'a> Follower<'a> {
         paused: bool,
     ) -> Option<Event> {
         self.scan_turns();
+        let line = &self.line[..self.len];
+        let turns = &self.turns[..self.turn_count];
+        let locate = |mm| point_at(line, mm);
         let Some(fix) = fix else {
-            let lost = self.following && now.saturating_sub(self.taken_loop_ms) > nav::LOST_MS;
-            return lost.then(|| self.navigate(Observed::Lost)).flatten();
+            let Lifecycle::Following(following) = &mut self.life else {
+                return None;
+            };
+            let lost = now.saturating_sub(self.taken_loop_ms) > nav::LOST_MS;
+            return lost
+                .then(|| following.nav.step(Observed::Lost, turns, locate))
+                .flatten();
         };
-        if fix.taken_loop_ms.saturating_sub(self.taken_loop_ms) > GAP_MS {
-            self.matched_fix = None;
+        if fix.taken_loop_ms.saturating_sub(self.taken_loop_ms) > GAP_MS
+            && let Lifecycle::Following(following) = &mut self.life
+        {
+            following.matched_fix = None;
         }
         self.taken_loop_ms = fix.taken_loop_ms;
         self.heading = fix.heading;
@@ -380,98 +494,48 @@ impl<'a> Follower<'a> {
             .replace(fix.at)
             .map(|last| distance(last, fix.at));
         let moving = fix_moving(travelled_m, speed_mm_s);
-        let joined = !self.following && fix.moved && self.joining(fix.at, moving);
-        if joined {
-            self.follow_from(self.join_end);
+        let joined_at = match &mut self.life {
+            Lifecycle::Joining(joining) if fix.moved => {
+                match joining.observe(line, self.heading, fix.at, moving) {
+                    Joined::FromSegmentEndingAt(end) => Some(end),
+                    Joined::NotYet => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(end) = joined_at {
+            self.life = Lifecycle::Following(Following::from(line, end));
         }
-        if !self.following {
+        let Lifecycle::Following(following) = &mut self.life else {
             return None;
-        }
-        let observed = match self.update(fix.at)? {
-            Matched::End => Observed::Arrived { now_ms: now },
+        };
+        let observed = match following.update(line, self.heading, fix.at)? {
+            Matched::End => {
+                let mut nav = following.nav;
+                let event = nav.step(Observed::Arrived { now_ms: now }, turns, locate);
+                self.life = Lifecycle::Arrived { nav };
+                return event;
+            }
             Matched::On(near) => {
-                let line = self.course();
                 let fixed = MatchedFix {
                     taken_loop_ms: fix.taken_loop_ms,
                     // A float cast saturates, so no position overflows.
-                    along_mm: ((line[self.len - 1].along - near.to_end_m) * 1000.0) as u32,
+                    along_mm: ((line[line.len() - 1].along - near.to_end_m) * 1000.0) as u32,
                     to_end_mm: (near.to_end_m * 1000.0) as u32,
                     off_m: near.off,
                     here: fix.at,
                     forward: self.heading.is_some()
-                        && !self.against(&line[near.end - 1], &line[near.end]),
+                        && !against(self.heading, &line[near.end - 1], &line[near.end]),
                     speed_mm_s,
                     paused,
                 };
-                match joined {
-                    true => Observed::Joined(fixed),
-                    false => Observed::Fix(fixed),
+                match joined_at {
+                    Some(_) => Observed::Joined(fixed),
+                    None => Observed::Fix(fixed),
                 }
             }
         };
-        self.navigate(observed)
-    }
-
-    fn navigate(&mut self, observed: Observed) -> Option<Event> {
-        let line = &self.line[..self.len];
-        self.nav
-            .step(observed, &self.turns[..self.turn_count], |mm| {
-                point_at(line, mm)
-            })
-    }
-
-    /// Where the course passes twice, the first pass ridden its way is
-    /// joined. Only a `moving` fix counts towards TURN AROUND.
-    fn joining(&mut self, p: Point, moving: bool) -> bool {
-        let Some(heading) = self.heading.filter(|_| !self.held && self.len >= 2) else {
-            self.join_fixes = 0;
-            return false;
-        };
-        let riding = self.riding(p, heading);
-        self.turn_around_fixes = match riding {
-            Riding::Against if moving => self.turn_around_fixes.saturating_add(1),
-            Riding::Against | Riding::Across => self.turn_around_fixes,
-            Riding::Along(_) | Riding::Away => 0,
-        };
-        let Riding::Along(end) = riding else {
-            self.join_fixes = 0;
-            return false;
-        };
-        self.join_end = end;
-        self.join_fixes = self.join_fixes.saturating_add(1);
-        self.join_fixes >= JOIN_FIXES
-    }
-
-    fn riding(&self, p: Point, heading: u16) -> Riding {
-        let mut riding = Riding::Away;
-        for end in (1..self.len).rev() {
-            let (a, b) = (self.line[end - 1], self.line[end]);
-            let (a, b) = ((a.east, a.north), (b.east, b.north));
-            if off_segment(p, a, b) >= ON_M {
-                continue;
-            }
-            let off_its_way = (heading + TURN - bearing(b, a)) % TURN;
-            if !MORE_THAN_45_DEG_OFF.contains(&off_its_way) {
-                return Riding::Along(end);
-            }
-            if MORE_THAN_135_DEG_OFF.contains(&off_its_way) {
-                riding = Riding::Against;
-            } else if riding == Riding::Away {
-                riding = Riding::Across;
-            }
-        }
-        riding
-    }
-
-    fn follow_from(&mut self, end: usize) {
-        self.following = true;
-        self.join_fixes = 0;
-        self.to_end_m = self.course().get(end).map_or(0.0, |c| c.along);
-        self.furthest_to_end_m = self.to_end_m;
-        self.matched_fix = None;
-        self.segment = end;
-        self.matched = None;
-        self.search_whole_course = false;
+        following.nav.step(observed, turns, locate)
     }
 
     fn scan_turns(&mut self) {
@@ -480,13 +544,15 @@ impl<'a> Follower<'a> {
         }
         if self.scan.waiting() {
             let (count, room) = (self.turn_count, self.turns.len());
-            let passed = self.nav.passed().min(count);
+            let passed = self.life.nav().map_or(0, Navigator::passed).min(count);
             if passed < room / 2 {
                 return;
             }
             self.turns.copy_within(passed..count, 0);
             self.turn_count -= passed;
-            self.nav.forget(passed);
+            if let Some(nav) = self.life.nav_mut() {
+                nav.forget(passed);
+            }
         }
         let len = self.len;
         let line = &self.line[..len];
@@ -498,30 +564,138 @@ impl<'a> Follower<'a> {
             .scan
             .step(len, at, SCAN_STEPS, self.turns, self.turn_count);
     }
+}
 
-    fn nearest(&self, p: Point, ends: core::ops::RangeInclusive<usize>) -> Option<Nearest> {
+impl Joining {
+    fn observe(&mut self, line: &[Crumb], heading: Option<u16>, p: Point, moving: bool) -> Joined {
+        let Some(heading) = heading else {
+            self.fixes = 0;
+            return Joined::NotYet;
+        };
+        let riding = riding(line, p, heading);
+        self.against_fixes = match riding {
+            Riding::Against if moving => self.against_fixes.saturating_add(1),
+            Riding::Against | Riding::Across => self.against_fixes,
+            Riding::Along(_) | Riding::Away => 0,
+        };
+        let Riding::Along(end) = riding else {
+            self.fixes = 0;
+            return Joined::NotYet;
+        };
+        self.fixes = self.fixes.saturating_add(1);
+        match self.fixes >= JOIN_FIXES {
+            true => Joined::FromSegmentEndingAt(end),
+            false => Joined::NotYet,
+        }
+    }
+}
+
+fn riding(line: &[Crumb], p: Point, heading: u16) -> Riding {
+    let mut riding = Riding::Away;
+    for end in (1..line.len()).rev() {
+        let (a, b) = (line[end - 1], line[end]);
+        let (a, b) = ((a.east, a.north), (b.east, b.north));
+        if off_segment(p, a, b) >= ON_M {
+            continue;
+        }
+        let off_its_way = (heading + TURN - bearing(b, a)) % TURN;
+        if !MORE_THAN_45_DEG_OFF.contains(&off_its_way) {
+            return Riding::Along(end);
+        }
+        if MORE_THAN_135_DEG_OFF.contains(&off_its_way) {
+            riding = Riding::Against;
+        } else if riding == Riding::Away {
+            riding = Riding::Across;
+        }
+    }
+    riding
+}
+
+fn against(heading: Option<u16>, a: &Crumb, b: &Crumb) -> bool {
+    let way = bearing((b.east, b.north), (a.east, a.north));
+    heading
+        .is_some_and(|heading| (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN)))
+}
+
+fn nearest_within(
+    line: &[Crumb],
+    p: Point,
+    ends: core::ops::RangeInclusive<usize>,
+    floor: f32,
+    ceiling: f32,
+    cost: impl Fn(&Nearest, &Crumb, &Crumb) -> Option<f32>,
+) -> Option<Nearest> {
+    let mut best: Option<(Nearest, f32)> = None;
+    for end in ends.rev() {
+        let (a, b) = (line[end - 1], line[end]);
+        if b.along < floor || a.along > ceiling {
+            continue;
+        }
+        let near = nearest_on(line, p, end);
+        let Some(cost) = cost(&near, &a, &b) else {
+            continue;
+        };
+        if best.is_none_or(|(_, best)| cost < best) {
+            best = Some((near, cost));
+        }
+    }
+    best.map(|(near, _)| near)
+}
+
+impl Following {
+    fn from(line: &[Crumb], end: usize) -> Self {
+        let to_end_m = line.get(end).map_or(0.0, |c| c.along);
+        Self {
+            nav: Navigator::default(),
+            segment: end,
+            matched: None,
+            matched_fix: None,
+            to_end_m,
+            furthest_to_end_m: to_end_m,
+            search_whole_course: false,
+        }
+    }
+
+    fn nearest(
+        &self,
+        line: &[Crumb],
+        heading: Option<u16>,
+        p: Point,
+        ends: core::ops::RangeInclusive<usize>,
+    ) -> Option<Nearest> {
         let plain = |near: &Nearest, _: &Crumb, _: &Crumb| Some(near.off);
         let (to_end_m, furthest) = (self.to_end_m, self.furthest_to_end_m);
         if self.after_gap(p) {
-            return self.nearest_within(p, ends, to_end_m - JUMP_M, to_end_m + BACK_M, plain);
+            return nearest_within(line, p, ends, to_end_m - JUMP_M, to_end_m + BACK_M, plain);
         }
         let on = |near: &Nearest, a: &Crumb, b: &Crumb| {
             let back = (near.to_end_m - furthest - SLIP_M).max(0.0);
-            let against = if self.against(a, b) { AGAINST_M } else { 0.0 };
+            let against = if against(heading, a, b) {
+                AGAINST_M
+            } else {
+                0.0
+            };
             (near.off <= ON_M).then_some(near.off + back + against)
         };
-        let Some(near) =
-            self.nearest_within(p, ends.clone(), to_end_m - NEAR_M, to_end_m + BACK_M, on)
-        else {
-            return self.nearest_within(p, ends, to_end_m - JUMP_M, to_end_m + BACK_M, plain);
+        let Some(near) = nearest_within(
+            line,
+            p,
+            ends.clone(),
+            to_end_m - NEAR_M,
+            to_end_m + BACK_M,
+            on,
+        ) else {
+            return nearest_within(line, p, ends, to_end_m - JUMP_M, to_end_m + BACK_M, plain);
         };
-        let line = self.course();
-        if near.to_end_m > furthest + SLIP_M && self.against(&line[near.end - 1], &line[near.end]) {
+        if near.to_end_m > furthest + SLIP_M
+            && against(heading, &line[near.end - 1], &line[near.end])
+        {
             let ahead = |near: &Nearest, a: &Crumb, b: &Crumb| {
-                (near.off <= ON_M && !self.against(a, b)).then_some(near.off)
+                (near.off <= ON_M && !against(heading, a, b)).then_some(near.off)
             };
             let window = to_end_m - JUMP_M..=to_end_m + BACK_M;
-            if let Some(ahead) = self.nearest_within(p, ends, *window.start(), *window.end(), ahead)
+            if let Some(ahead) =
+                nearest_within(line, p, ends, *window.start(), *window.end(), ahead)
             {
                 return Some(ahead);
             }
@@ -533,52 +707,18 @@ impl<'a> Follower<'a> {
         self.matched_fix.is_none_or(|fix| distance(fix, p) > HOP_M)
     }
 
-    fn against(&self, a: &Crumb, b: &Crumb) -> bool {
-        let way = bearing((b.east, b.north), (a.east, a.north));
-        self.heading.is_some_and(|heading| {
-            (TURN / 4..=TURN * 3 / 4).contains(&((heading + TURN - way) % TURN))
-        })
-    }
-
-    fn nearest_within(
-        &self,
-        p: Point,
-        ends: core::ops::RangeInclusive<usize>,
-        floor: f32,
-        ceiling: f32,
-        cost: impl Fn(&Nearest, &Crumb, &Crumb) -> Option<f32>,
-    ) -> Option<Nearest> {
-        let line = self.course();
-        let mut best: Option<(Nearest, f32)> = None;
-        for end in ends.rev() {
-            let (a, b) = (line[end - 1], line[end]);
-            if b.along < floor || a.along > ceiling {
-                continue;
-            }
-            let near = nearest_on(line, p, end);
-            let Some(cost) = cost(&near, &a, &b) else {
-                continue;
-            };
-            if best.is_none_or(|(_, best)| cost < best) {
-                best = Some((near, cost));
-            }
-        }
-        best.map(|(near, _)| near)
-    }
-
-    fn update(&mut self, p: Point) -> Option<Matched> {
-        let len = self.len;
+    fn update(&mut self, line: &[Crumb], heading: Option<u16>, p: Point) -> Option<Matched> {
+        let len = line.len();
         let window = self.segment.saturating_sub(SEARCH_BACK).max(1)
             ..=(self.segment + SEARCH_AHEAD).min(len - 1);
-        let mut near = self.nearest(p, window)?;
+        let mut near = self.nearest(line, heading, p, window)?;
         if (self.search_whole_course || near.off > OFF_M)
-            && let Some(anywhere) = self.nearest(p, 1..=len - 1)
+            && let Some(anywhere) = self.nearest(line, heading, p, 1..=len - 1)
             && anywhere.off < near.off
         {
             near = anywhere;
         }
         if near.off <= ON_M && near.to_end_m < END_M {
-            self.let_go();
             return Some(Matched::End);
         }
         self.segment = near.end;

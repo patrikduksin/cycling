@@ -1,16 +1,12 @@
 use super::*;
 use crate::ride::course::nav::tests::latches;
 
-/// N3a's finding: an empty `Course` or a `NewRide` empties the line but
-/// keeps the turn list.
-pub(super) const TURN_LIST_OUTLIVES_THE_LINE: &str = "every turn ends within the line";
-
 pub(super) struct View<'f> {
     pub(super) line: &'f [Crumb],
     pub(super) len: usize,
     pub(super) turns: &'f [Turn],
     pub(super) turn_count: usize,
-    pub(super) nav: &'f Navigator,
+    pub(super) nav: Navigator,
 }
 
 impl<'f> View<'f> {
@@ -20,7 +16,7 @@ impl<'f> View<'f> {
             len: follower.len,
             turns: follower.turns,
             turn_count: follower.turn_count,
-            nav: &follower.nav,
+            nav: follower.life.nav().copied().unwrap_or_default(),
         }
     }
 
@@ -50,7 +46,7 @@ pub(super) fn every_end_lies_within_the_line(view: &View) -> bool {
 }
 
 pub(super) fn latches_index_the_turn_list(view: &View) -> bool {
-    let latched = latches(view.nav);
+    let latched = latches(&view.nav);
     [latched.banner, latched.last_sounded, latched.last_beeped]
         .into_iter()
         .flatten()
@@ -61,10 +57,14 @@ pub(super) fn latches_index_the_turn_list(view: &View) -> bool {
 macro_rules! turn_rules {
     ($table:ident) => {
         $table! {
-            "turn starts never decrease" => turn_starts_never_decrease,
-            "each turn starts by its end" => each_turn_starts_by_its_end,
-            TURN_LIST_OUTLIVES_THE_LINE => every_end_lies_within_the_line,
-            "banner, last_sounded and last_beeped index the turn list" => latches_index_the_turn_list,
+            "turn starts never decrease" =>
+                $crate::ride::course::follow::tests::turn_list::turn_starts_never_decrease,
+            "each turn starts by its end" =>
+                $crate::ride::course::follow::tests::turn_list::each_turn_starts_by_its_end,
+            "every turn ends within the line" =>
+                $crate::ride::course::follow::tests::turn_list::every_end_lies_within_the_line,
+            "banner, last_sounded and last_beeped index the turn list" =>
+                $crate::ride::course::follow::tests::turn_list::latches_index_the_turn_list,
         }
     };
 }
@@ -73,7 +73,7 @@ pub(super) use turn_rules;
 pub(super) type TurnRule = (&'static str, fn(&View) -> bool);
 
 macro_rules! turn_list {
-    ($($name:expr => $rule:ident),* $(,)?) => {
+    ($($name:expr => $rule:path),* $(,)?) => {
         pub(super) const TURN_LIST: &[TurnRule] = &[$(($name, $rule)),*];
     };
 }

@@ -2,9 +2,8 @@ use super::*;
 use crate::ride::course::nav::{ARRIVED_MS, CONFIRM_MS, REMIND_MS};
 use core::hash::{Hash, Hasher};
 
-/// #399's `Lifecycle`, read from today's fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Life {
+pub(super) enum LifecycleKind {
     NoCourse,
     Unplaced,
     Joining,
@@ -13,28 +12,24 @@ pub(super) enum Life {
     LetGo,
 }
 
-pub(super) const LIVES: [Life; 6] = [
-    Life::NoCourse,
-    Life::Unplaced,
-    Life::Joining,
-    Life::Following,
-    Life::Arrived,
-    Life::LetGo,
+pub(super) const KINDS: [LifecycleKind; 6] = [
+    LifecycleKind::NoCourse,
+    LifecycleKind::Unplaced,
+    LifecycleKind::Joining,
+    LifecycleKind::Following,
+    LifecycleKind::Arrived,
+    LifecycleKind::LetGo,
 ];
 
-impl Life {
+impl LifecycleKind {
     fn of(follower: &Owned) -> Self {
-        match follower {
-            Owned {
-                following: true, ..
-            } => Self::Following,
-            Owned { held: true, .. } if latches(&follower.nav).arrived_ms.is_some() => {
-                Self::Arrived
-            }
-            Owned { held: true, .. } => Self::LetGo,
-            Owned { unplaced: true, .. } => Self::Unplaced,
-            Owned { len: 2.., .. } => Self::Joining,
-            _ => Self::NoCourse,
+        match follower.life {
+            Lifecycle::NoCourse => Self::NoCourse,
+            Lifecycle::Unplaced => Self::Unplaced,
+            Lifecycle::Joining(_) => Self::Joining,
+            Lifecycle::Following(_) => Self::Following,
+            Lifecycle::Arrived { .. } => Self::Arrived,
+            Lifecycle::LetGo { .. } => Self::LetGo,
         }
     }
 
@@ -90,7 +85,7 @@ pub(super) struct Bounds {
     courses: u8,
     new_rides: u8,
     let_goes: u8,
-    max_fixes: Option<u8>,
+    pub(super) max_fixes: Option<u8>,
     pub(super) starts_following: bool,
 }
 
@@ -223,8 +218,8 @@ impl World {
         }
     }
 
-    pub(super) fn life(&self) -> Life {
-        Life::of(&self.follower)
+    pub(super) fn kind(&self) -> LifecycleKind {
+        LifecycleKind::of(&self.follower)
     }
 
     fn lattice(&self) -> &'static [[LatticeSpot; 3]] {
@@ -250,10 +245,10 @@ pub(super) fn place(follower: &mut Follower, fixture: &Fixture, full: bool) {
         true => fixture.course.points(),
         false => &[],
     };
-    follower.set_course(points, Some(frame()));
-    follower.take_turns(points, |list| {
-        list[..fixture.stored.len()].copy_from_slice(&fixture.stored);
-        Some((fixture.stored.len(), false))
+    follower.handle(Input::Course {
+        points,
+        frame: Some(frame()),
+        read: &mut stored(&fixture.stored, false),
     });
 }
 
@@ -327,46 +322,57 @@ pub(super) fn next(world: &World, step: Step) -> World {
                     taken_loop_ms: now,
                 }
             });
-            after.edge.raised = after
-                .follower
-                .with(|follower| follower.observe(fix, now, speed_mm_s, paused));
+            after.edge.raised = after.follower.with(|follower| {
+                follower.handle(Input::Observe {
+                    now,
+                    fix,
+                    speed_mm_s,
+                    paused,
+                })
+            });
         }
         Step::Course { full } => {
             after.courses += 1;
             after.follower.with(|follower| match world.fixture {
                 Some(fixture) => place(follower, fixture, full),
-                None => follower.set_course(&[], Some(frame())),
+                None => {
+                    follower.handle(Input::Course {
+                        points: &[],
+                        frame: Some(frame()),
+                        read: &mut |_| None,
+                    });
+                }
             });
         }
         Step::NewRide => {
             after.new_rides += 1;
-            after.follower.with(|follower| follower.reset());
+            after
+                .follower
+                .with(|follower| follower.handle(Input::NewRide));
         }
         Step::LetGo => {
             after.let_goes += 1;
-            after.follower.with(|follower| {
-                if follower.following() {
-                    follower.stop();
-                }
-            });
+            after
+                .follower
+                .with(|follower| follower.handle(Input::LetGo));
         }
     }
     if started_over(world, step, &after) {
         after.turn_now_since_restart = 0;
     }
     if after.edge.raised == Some(Event::TurnNow)
-        && let Some(k) = latches(&after.follower.nav).last_beeped
+        && let Some(k) = latches(&after.follower.nav()).last_beeped
     {
         assert!(k < u64::BITS as usize, "turn {k} past the bitset");
         after.turn_now_since_restart |= 1 << k;
     }
     let now = after.now;
-    after.edge.shown = after.follower.with(|follower| follower.sign(now));
+    after.edge.shown = after.follower.with(|follower| follower.shown(now).sign);
     after
 }
 
 pub(super) fn started_over(before: &World, step: Step, after: &World) -> bool {
     let rewound =
-        latches(&after.follower.nav).furthest_mm < latches(&before.follower.nav).furthest_mm;
+        latches(&after.follower.nav()).furthest_mm < latches(&before.follower.nav()).furthest_mm;
     matches!(step, Step::Course { .. } | Step::NewRide) || rewound
 }

@@ -10,7 +10,7 @@ fn signs_along(
     for point in points.windows(1) {
         let events = ride_course(rider, course, point, now);
         assert!(events.is_empty(), "{events:?}");
-        signs.push(rider.follower.sign(*now));
+        signs.push(rider.sign(*now));
     }
     signs
 }
@@ -47,7 +47,7 @@ fn riding_against_the_course_before_joining_says_turn_around_until_lined_up() {
     let lined_up = path(&[(300.0, -17.0), (300.0, 0.0), (700.0, 0.0)], 7.0);
     let (_, events) = ride_course_warned(&mut rider, &course, &lined_up, &mut now);
     assert_eq!(events, [Event::Following]);
-    assert!(matches!(rider.follower.sign(now), Sign::Chip { .. }));
+    assert!(matches!(rider.sign(now), Sign::Chip { .. }));
 }
 
 #[test]
@@ -77,19 +77,19 @@ fn turn_around_clears_on_leaving_the_course_and_never_shows_once_stopped() {
     let mut now = 0;
     let against = path(&[(600.0, 0.0), (300.0, 0.0)], 7.0);
     signs_along(&mut rider, &course, &against, &mut now);
-    assert_eq!(rider.follower.sign(now), Sign::TurnAround);
+    assert_eq!(rider.sign(now), Sign::TurnAround);
     let away = path(&[(300.0, 0.0), (300.0, -200.0)], 7.0);
     let signs = signs_along(&mut rider, &course, &away, &mut now);
     assert_eq!(signs.last(), Some(&Sign::None), "{signs:?}");
     now += nav::LOST_MS + 1_000;
-    assert_eq!(rider.follower.sign(now), Sign::None);
+    assert_eq!(rider.sign(now), Sign::None);
     rider.reset();
     let on = path(&[(0.0, 0.0), (500.0, 0.0)], 7.0);
     assert_eq!(
         ride_course(&mut rider, &course, &on, &mut now),
         [Event::Following]
     );
-    rider.follower.stop();
+    rider.let_go();
     let back = path(&[(500.0, 0.0), (100.0, 0.0)], 7.0);
     let signs = signs_along(&mut rider, &course, &back, &mut now);
     assert!(
@@ -107,12 +107,12 @@ fn a_lost_fix_takes_turn_around_down() {
     let mut now = 0;
     let against = path(&[(600.0, 0.0), (300.0, 0.0)], 7.0);
     signs_along(&mut rider, &course, &against, &mut now);
-    assert_eq!(rider.follower.sign(now), Sign::TurnAround);
+    assert_eq!(rider.sign(now), Sign::TurnAround);
     for _ in 0..6 {
         now += 1_000;
         rider.observe(None, now);
     }
-    assert_eq!(rider.follower.sign(now), Sign::None);
+    assert_eq!(rider.sign(now), Sign::None);
 }
 
 #[test]

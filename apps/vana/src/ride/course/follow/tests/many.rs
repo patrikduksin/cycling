@@ -42,15 +42,14 @@ fn at_corners(line: &[(f32, f32)], room: usize, stored: Option<usize>) -> Vec<Ki
         let (east, north) = along_line(line, k as f32 * 7.0);
         now += 1_000;
         let event = rider.observe(Some(at(east, north)), now);
-        said.extend(event.and_then(|event| told(event, rider.follower.sign(now))));
+        said.extend(event.and_then(|event| told(event, rider.sign(now))));
         if rider.needs_course() {
-            rider.set_course(points);
-            if let Some(stored) = stored {
-                rider.follower.take_turns(points, |list| {
-                    let count = stored.min(turns.len());
-                    list[..count].copy_from_slice(&turns[..count]);
-                    Some((count, true))
-                });
+            match stored {
+                Some(count) => {
+                    let count = count.min(turns.len());
+                    rider.place(points, &mut super::stored(&turns[..count], true));
+                }
+                None => rider.set_course(points),
             }
         }
     }
@@ -133,12 +132,11 @@ fn compacting_the_turn_list_keeps_its_order_and_indices() {
             waited |= rider.follower.scan.waiting();
             compacted |= first.is_some_and(|first| rider.follower.turns[0].start_mm > first);
             if rider.needs_course() {
-                rider.set_course(course.points());
-                if let Some(count) = stored {
-                    rider.follower.take_turns(course.points(), |list| {
-                        list[..count].copy_from_slice(&all[..count]);
-                        Some((count, true))
-                    });
+                match stored {
+                    Some(count) => {
+                        rider.place(course.points(), &mut super::stored(&all[..count], true))
+                    }
+                    None => rider.set_course(course.points()),
                 }
             }
             let view = View::of(&rider.follower);

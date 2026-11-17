@@ -130,7 +130,7 @@ mod tests {
     use crate::ride::breadcrumb::Crumb;
     use crate::ride::breadcrumb::tests::{at, taken};
     use crate::ride::course;
-    use crate::ride::course::follow::Follower;
+    use crate::ride::course::follow::{Follower, Input};
     use crate::ride::course::nav::Event;
     use crate::ride::log::Sample;
     extern crate std;
@@ -398,12 +398,19 @@ mod tests {
         let (mut crumbs, mut line) = (vec![Crumb::default(); 512], vec![Crumb::default(); 512]);
         let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut follower = Follower::new(&mut line, &mut []);
-        follower.set_course(&course, breadcrumb.frame());
+        let place = |follower: &mut Follower, frame| {
+            follower.handle(Input::Course {
+                points: &course,
+                frame,
+                read: &mut |_| None,
+            });
+        };
+        place(&mut follower, breadcrumb.frame());
         assert!(follower.unplaced());
         let mut rebuild = Rebuild::new(1, slots.len());
         while !rebuild.step(&mut breadcrumb, slots.len(), 16, |i| slots.get(i).copied()) {
             if follower.unplaced() && breadcrumb.frame().is_some() {
-                follower.set_course(&course, breadcrumb.frame());
+                place(&mut follower, breadcrumb.frame());
             }
         }
         breadcrumb.end_replay();
@@ -415,12 +422,12 @@ mod tests {
         let mut events = Vec::new();
         for (i, &fix) in square(3)[0..40].iter().enumerate() {
             let now = (i as u64 + 1) * 1_000;
-            events.extend(follower.observe(
-                breadcrumb.observe(taken(fix, now), now),
+            events.extend(follower.handle(Input::Observe {
                 now,
-                None,
-                false,
-            ));
+                fix: breadcrumb.observe(taken(fix, now), now),
+                speed_mm_s: None,
+                paused: false,
+            }));
         }
         assert!(events.contains(&Event::Following), "{events:?}");
         assert!(follower.following());

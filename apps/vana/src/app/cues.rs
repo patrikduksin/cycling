@@ -206,12 +206,10 @@ impl Waiting {
         self.0.contains(&true)
     }
 
-    /// The most urgent cue waiting that still `holds`; those before it that
-    /// no longer do are dropped.
-    fn next(&mut self, holds: impl Fn(Navigation) -> bool) -> Option<Navigation> {
+    fn next(&mut self, still_due: impl Fn(Navigation) -> bool) -> Option<Navigation> {
         Navigation::BY_URGENCY
             .into_iter()
-            .find(|&cue| core::mem::take(&mut self.0[cue as usize]) && holds(cue))
+            .find(|&cue| core::mem::take(&mut self.0[cue as usize]) && still_due(cue))
     }
 }
 
@@ -248,19 +246,17 @@ impl Cues {
         self.pending = Some((cue, now));
     }
 
-    /// Start a raised cue and offer its notes to `sound`. Call once per loop.
-    /// Navigation cues waiting play most urgent first, each dropped unless
-    /// it `holds` still, until the buzzer takes its first note. One cut off
-    /// before its last note waits again.
     pub(super) fn play(
         &mut self,
         sound: &mut impl Sound,
         now: u64,
-        holds: impl Fn(Navigation) -> bool,
+        still_due: impl Fn(Navigation) -> bool,
     ) {
         let next = match self.pending.take() {
             Some((cue, at)) => (now.saturating_sub(at) < STALE_MS).then_some(cue),
-            None if !self.run.is_playing() => self.navigation_waiting.next(&holds).map(Cue::from),
+            None if !self.run.is_playing() => {
+                self.navigation_waiting.next(&still_due).map(Cue::from)
+            }
             None => None,
         };
         if let Some(cue) = next {
@@ -280,7 +276,7 @@ impl Cues {
         let unheard = self.note == 0 && self.run.is_playing();
         if let Some(cue) = self.playing.and_then(Cue::navigation)
             && unheard
-            && !holds(cue)
+            && !still_due(cue)
         {
             self.run.clear();
             self.playing = None;
@@ -442,11 +438,11 @@ mod tests {
     fn heard(
         cues: &mut Cues,
         until: u64,
-        holds: impl Fn(Navigation) -> bool,
+        still_due: impl Fn(Navigation) -> bool,
     ) -> std::vec::Vec<Cue> {
         let mut heard = std::vec::Vec::new();
         for now in (0..until).step_by(50) {
-            cues.play(&mut Open, now, &holds);
+            cues.play(&mut Open, now, &still_due);
             heard.extend(cues.take_played().filter(|p| p.note == 1).map(|p| p.cue));
         }
         heard
@@ -622,7 +618,7 @@ mod tests {
                 }
                 let nav = &self.nav;
                 self.cues
-                    .play(&mut self.buzzer, now, |cue| nav.holds(cue, &[]));
+                    .play(&mut self.buzzer, now, |cue| nav.still_due(cue, &[]));
                 let first = self.cues.take_played().filter(|p| p.note == 1);
                 self.heard.extend(first.map(|p| (now, p.cue)));
             }

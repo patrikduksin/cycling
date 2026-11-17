@@ -1,5 +1,3 @@
-//! Every state of today's `Follower` reachable in a bounded configuration,
-//! with each candidate `holds` and `legal` rule of #399 checked on it.
 use super::*;
 use crate::testing::{Report, explore};
 use std::string::String;
@@ -7,10 +5,11 @@ use std::string::String;
 mod deep;
 mod fixtures;
 mod model;
-pub(super) mod rules;
-pub(super) mod snapshot;
+mod rules;
+mod snapshot;
+mod table;
 
-use super::turn_list::*;
+use super::turn_list::{View, turn_rules};
 use crate::ride::course::nav::tests::latches;
 use fixtures::*;
 use model::*;
@@ -28,15 +27,15 @@ struct Searched {
 
 fn search(bounds: &Bounds, shape: Option<Shape>, budget: usize) -> Searched {
     let start = std::time::Instant::now();
-    let fixture = shape.map(|shape| fixture(bounds.size, shape));
+    let placed = shape.map(|shape| fixture(bounds.size, shape));
     let first = bounds.times.iter().copied().min().unwrap_or(0);
-    let mut init = World::new(bounds, fixture, first);
+    let mut init = World::new(bounds, placed, first);
     let mut joining = 0..JOIN_FIXES;
-    while bounds.starts_following && init.life() != Life::Following {
+    while bounds.starts_following && init.kind() != LifecycleKind::Following {
         assert!(
             joining.next().is_some(),
             "{:?} joins in {JOIN_FIXES} fixes",
-            fixture.map(|f| f.name)
+            placed.map(|f| f.name)
         );
         let ahead = Step::Observe {
             now: first,
@@ -60,13 +59,13 @@ fn search(bounds: &Bounds, shape: Option<Shape>, budget: usize) -> Searched {
             }
             after
         },
-        |world| world.life().name(),
+        |world| world.kind().name(),
         HOLDS,
         &LEGAL,
         budget,
     );
     Searched {
-        name: fixture.map_or("no course", |fixture| fixture.name),
+        name: placed.map_or("no course", |placed| placed.name),
         report,
         raised: raised.into_inner(),
         elapsed: start.elapsed(),
@@ -98,33 +97,31 @@ const TURNS_SOUND: [Event; 4] = [
     Event::Arrived,
 ];
 
-impl Shape {
-    /// The events a search of this course raises, and the rules it breaks.
-    fn expects(self) -> (&'static [Event], &'static [&'static str]) {
-        match self {
-            Shape::Straight => (&JOINS, &[]),
-            Shape::L | Shape::Hairpin => (&TURNS_SOUND, &[TURN_LIST_OUTLIVES_THE_LINE]),
+const OFF_AND_BACK: [Event; 3] = [Event::OffCourse, Event::StillOff, Event::OnCourse];
+
+impl Bounds {
+    fn raises(&self, shape: Shape) -> &'static [Event] {
+        match (self.starts_following, shape) {
+            (true, _) => &OFF_AND_BACK,
+            (false, Shape::Straight) => &JOINS,
+            (false, Shape::L | Shape::Hairpin) => &TURNS_SOUND,
         }
     }
 }
 
 fn closes(bounds: Bounds, shape: Option<Shape>) {
-    let (raises, breaks) = shape.map_or((&[][..], &[][..]), Shape::expects);
-    closes_raising(bounds, shape, raises, breaks);
-}
-
-fn closes_raising(bounds: Bounds, shape: Option<Shape>, raises: &[Event], breaks: &[&str]) {
+    let raises = shape.map_or(&[][..], |shape| bounds.raises(shape));
     let searched = search(&bounds, shape, BUDGET);
     let text = summary(&searched);
     std::println!("{text}");
     let report = &searched.report;
     assert!(report.closed, "{text}");
-    let lives: Vec<&str> = match shape {
-        Some(_) => LIVES.iter().map(|life| life.name()).collect(),
-        None => std::vec![Life::NoCourse.name()],
+    let kinds: Vec<&str> = match shape {
+        Some(_) => KINDS.iter().map(|kind| kind.name()).collect(),
+        None => std::vec![LifecycleKind::NoCourse.name()],
     };
-    for life in lives {
-        assert!(report.reached.contains(&life), "{life} unreached\n{text}");
+    for kind in kinds {
+        assert!(report.reached.contains(&kind), "{kind} unreached\n{text}");
     }
     let raised = &searched.raised;
     for event in raises {
@@ -133,8 +130,7 @@ fn closes_raising(bounds: Bounds, shape: Option<Shape>, raises: &[Event], breaks
             "{event:?} unraised: {raised:?}\n{text}"
         );
     }
-    let broken: Vec<&str> = report.broken.iter().map(|broken| broken.rule).collect();
-    assert_eq!(broken, breaks, "\n{text}");
+    assert!(report.broken.is_empty(), "{text}");
 }
 
 #[test]
@@ -147,7 +143,6 @@ fn times_without_a_course() {
     closes(Bounds::times(), None);
 }
 
-/// The straight has no turns, so its list never outlives the line.
 #[test]
 fn places_on_the_straight() {
     closes(Bounds::places(), Some(Shape::Straight));
@@ -172,13 +167,7 @@ fn follower_search_in_full() {
     }
 }
 
-/// Not an `Input`, so the search never calls it.
-fn upload_room_while_the_line_is_empty(follower: &Follower) -> bool {
-    follower.len == 0
-}
-
 #[test]
-#[ignore = "N3a finding: an upload lends the turn list while the old course is still placed"]
 fn an_upload_borrows_the_turn_list_while_the_line_is_empty() {
     let fixture = fixture(Size::Issue, Shape::L);
     let (mut line, mut turns) = (
@@ -187,10 +176,23 @@ fn an_upload_borrows_the_turn_list_while_the_line_is_empty() {
     );
     let mut follower = Follower::new(&mut line, &mut turns);
     place(&mut follower, fixture, true);
-    let lends = upload_room_while_the_line_is_empty(&follower);
-    follower.turn_room();
     place(&mut follower, fixture, false);
-    assert!(upload_room_while_the_line_is_empty(&follower));
-    follower.turn_room();
-    assert!(lends);
+    follower.upload_room();
+    follower.upload_room();
+    place(&mut follower, fixture, true);
+    assert!(follower.joinable());
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic = "the turn list is lent only while no course is placed"]
+fn the_turn_list_is_never_lent_while_a_course_is_placed() {
+    let fixture = fixture(Size::Issue, Shape::L);
+    let (mut line, mut turns) = (
+        vec![Crumb::default(); fixture.course.points().len()],
+        vec![Turn::default(); ROOM],
+    );
+    let mut follower = Follower::new(&mut line, &mut turns);
+    place(&mut follower, fixture, true);
+    follower.upload_room();
 }

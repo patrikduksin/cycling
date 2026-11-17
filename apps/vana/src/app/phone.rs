@@ -894,10 +894,11 @@ impl Runtime {
         // Until the upload is stored the course in memory is not the stored
         // one; if it fails, the stored one is read back.
         track.kept.store = Store::Unread;
+        track.course.clear();
+        track.course_changed(bulk);
         let mut gpx = gpx::Gpx::new();
         let (course, mut finding) = track.upload();
         gpx.start(course, &mut finding);
-        track.course_changed(bulk);
         log::info!(target: "phone", "VANA_PHONE course_upload bytes={}", request.body);
         self.phone.w().job = Job::Course {
             id,

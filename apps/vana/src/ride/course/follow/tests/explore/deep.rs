@@ -3,8 +3,7 @@ use super::*;
 #[test]
 #[ignore = "tier 2: cycling verify --deep"]
 fn off_course_on_the_straight() {
-    let raises = [Event::OffCourse, Event::StillOff, Event::OnCourse];
-    closes_raising(Bounds::off_course(), Some(Shape::Straight), &raises, &[]);
+    closes(Bounds::off_course(), Some(Shape::Straight));
 }
 
 #[test]

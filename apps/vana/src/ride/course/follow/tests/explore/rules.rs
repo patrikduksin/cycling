@@ -3,9 +3,14 @@ use crate::ride::course::nav::ARRIVED_MS;
 use crate::testing::{Holds, Legal};
 
 macro_rules! holds {
-    ($($name:expr => $rule:ident),* $(,)?) => {
-        pub(super) const HOLDS: &[Holds<World>] =
-            &[$(($name, |world| $rule(&world.follower.view()))),*];
+    ($($name:expr => $rule:path),* $(,)?) => {
+        pub(super) const HOLDS: &[Holds<World>] = &[
+            $(($name, |world| $rule(&world.follower.view())),)*
+            (
+                "every state is a row of the old-to-new table",
+                super::table::is_a_row_of_the_old_to_new_table,
+            ),
+        ];
     };
 }
 turn_rules!(holds);
@@ -14,8 +19,8 @@ fn observe_ways(before: &World, step: Step, after: &World) -> bool {
     let Step::Observe { .. } = step else {
         return true;
     };
-    use Life::*;
-    match (before.life(), after.life()) {
+    use LifecycleKind::*;
+    match (before.kind(), after.kind()) {
         (Joining, Following | Arrived) | (Following, Arrived) => true,
         (from, to) => from == to,
     }
@@ -25,23 +30,25 @@ fn course_ways(before: &World, step: Step, after: &World) -> bool {
     let Step::Course { full } = step else {
         return true;
     };
-    let want = match before.life() {
-        Life::Following | Life::Arrived | Life::LetGo => Life::LetGo,
-        _ if full => Life::Joining,
-        _ => Life::NoCourse,
+    let want = match before.kind() {
+        LifecycleKind::Following | LifecycleKind::Arrived | LifecycleKind::LetGo => {
+            LifecycleKind::LetGo
+        }
+        _ if full => LifecycleKind::Joining,
+        _ => LifecycleKind::NoCourse,
     };
-    after.life() == want
+    after.kind() == want
 }
 
 fn new_ride_ways(before: &World, step: Step, after: &World) -> bool {
     let Step::NewRide = step else {
         return true;
     };
-    let waits = before.follower.len >= 2 || before.follower.unplaced;
-    after.life()
+    let waits = before.follower.len >= 2 || before.follower.life.unplaced();
+    after.kind()
         == match waits {
-            true => Life::Unplaced,
-            false => Life::NoCourse,
+            true => LifecycleKind::Unplaced,
+            false => LifecycleKind::NoCourse,
         }
 }
 
@@ -49,20 +56,21 @@ fn let_go_ways(before: &World, step: Step, after: &World) -> bool {
     let Step::LetGo = step else {
         return true;
     };
-    match before.life() {
-        Life::Following => after.life() == Life::LetGo,
+    match before.kind() {
+        LifecycleKind::Following => after.kind() == LifecycleKind::LetGo,
         _ => before.follower.encoding() == after.follower.encoding(),
     }
 }
 
 fn arrived_sign_only_while_arrived(_: &World, _: Step, after: &World) -> bool {
-    let arrived_ms = latches(&after.follower.nav).arrived_ms;
+    let arrived_ms = latches(&after.follower.nav()).arrived_ms;
     after.edge.shown != Sign::Arrived
-        || after.life() == Life::Arrived && arrived_ms.is_some_and(|at| after.now < at + ARRIVED_MS)
+        || after.kind() == LifecycleKind::Arrived
+            && arrived_ms.is_some_and(|at| after.now < at + ARRIVED_MS)
 }
 
 fn turn_around_sign_only_while_joining(_: &World, _: Step, after: &World) -> bool {
-    after.edge.shown != Sign::TurnAround || after.life() == Life::Joining
+    after.edge.shown != Sign::TurnAround || after.kind() == LifecycleKind::Joining
 }
 
 fn paused_never_off_course(_: &World, step: Step, after: &World) -> bool {
@@ -76,7 +84,7 @@ fn turn_now_once_per_turn(before: &World, step: Step, after: &World) -> bool {
     if after.edge.raised != Some(Event::TurnNow) {
         return true;
     }
-    let Some(k) = latches(&after.follower.nav).last_beeped else {
+    let Some(k) = latches(&after.follower.nav()).last_beeped else {
         return false;
     };
     let heard = match started_over(before, step, after) {

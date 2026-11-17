@@ -31,14 +31,36 @@ impl<'a> Rider<'a> {
     }
 
     fn set_course(&mut self, course: &[course::Point]) {
-        self.follower.set_course(course, self.breadcrumb.frame());
+        self.place(course, &mut |_| None);
+    }
+
+    fn place(&mut self, points: &[course::Point], read: &mut ReadStored) {
+        let frame = self.breadcrumb.frame();
+        self.follower.handle(Input::Course {
+            points,
+            frame,
+            read,
+        });
     }
 
     fn observe(&mut self, location_e7: Option<(i32, i32)>, now: u64) -> Option<Event> {
         let fix = self
             .breadcrumb
             .observe(location_e7.and_then(|e7| taken(e7, now)), now);
-        self.follower.observe(fix, now, None, self.paused)
+        self.follower.handle(Input::Observe {
+            now,
+            fix,
+            speed_mm_s: None,
+            paused: self.paused,
+        })
+    }
+
+    fn sign(&self, now: u64) -> Sign {
+        self.follower.shown(now).sign
+    }
+
+    fn let_go(&mut self) {
+        self.follower.handle(Input::LetGo);
     }
 
     fn needs_course(&self) -> bool {
@@ -47,7 +69,14 @@ impl<'a> Rider<'a> {
 
     fn reset(&mut self) {
         self.breadcrumb.reset();
-        self.follower.reset();
+        self.follower.handle(Input::NewRide);
+    }
+}
+
+fn stored(turns: &[Turn], more: bool) -> impl FnMut(&mut [Turn]) -> Option<(usize, bool)> {
+    move |list| {
+        list[..turns.len()].copy_from_slice(turns);
+        Some((turns.len(), more))
     }
 }
 
@@ -89,17 +118,14 @@ fn ride_course_stored(
     for &(east, north) in points {
         *now += 1_000;
         let event = rider.observe(Some(at(east, north)), *now);
-        match event.and_then(|event| said(event, rider.follower.sign(*now))) {
+        match event.and_then(|event| said(event, rider.sign(*now))) {
             Some(told) => warnings.push(told),
             None => events.extend(event),
         }
         if rider.needs_course() {
-            rider.set_course(course);
-            if let Some(stored) = stored {
-                rider.follower.take_turns(course, |turns| {
-                    turns[..stored.len()].copy_from_slice(stored);
-                    Some((stored.len(), false))
-                });
+            match stored {
+                Some(turns) => rider.place(course, &mut self::stored(turns, false)),
+                None => rider.set_course(course),
             }
         }
     }
@@ -178,10 +204,7 @@ fn stored_turns_move_into_the_frame_of_a_ride_started_far_away() {
             .collect()
     };
     let scanned = named(&rider.follower.turns[..rider.follower.turn_count]);
-    rider.follower.take_turns(course.points(), |list| {
-        list[..stored.len()].copy_from_slice(&stored);
-        Some((stored.len(), false))
-    });
+    rider.place(course.points(), &mut self::stored(&stored, false));
     assert!(rider.follower.scan.done());
     let placed = named(&rider.follower.turns[..rider.follower.turn_count]);
     assert_eq!(placed.len(), corners.len());
@@ -304,7 +327,7 @@ fn riding_a_followed_course_the_wrong_way_or_stopped_warns_of_nothing() {
         ride_course(&mut rider, &course, &out, &mut now),
         [Event::Following]
     );
-    rider.follower.stop();
+    rider.let_go();
     let on = path(&[(500.0, 0.0), (1000.0, 0.0), (1000.0, 500.0)], 7.0);
     let (warnings, _) = ride_course_warned(&mut rider, &course, &on, &mut now);
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -382,7 +405,7 @@ fn sharing_a_kilometre_then_turning_off_is_off_course_until_back_on_it() {
         [Event::Following, Event::OffCourse, Event::StillOff]
     );
     assert!(rider.follower.following(), "700 m off");
-    let off = rider.follower.sign(now);
+    let off = rider.sign(now);
     assert!(matches!(off, Sign::OffCourse { .. }), "{off:?}");
     let back = path(
         &[
@@ -416,7 +439,7 @@ fn moving_the_bike_while_paused_never_says_off_course() {
     let mut cafe = path(&[(500.0, 0.0), (500.0, -44.0)], 2.0);
     cafe.extend([(500.0, -44.0); 60]);
     assert!(ride_course(&mut rider, &course, &cafe, &mut now).is_empty());
-    let sign = rider.follower.sign(now);
+    let sign = rider.sign(now);
     assert!(!matches!(sign, Sign::OffCourse { .. }), "{sign:?}");
     rider.paused = false;
     let back = path(&[(500.0, -44.0), (500.0, 0.0), (800.0, 0.0)], 7.0);
@@ -436,7 +459,7 @@ fn once_stopped_from_the_map_the_course_is_not_followed_again() {
         ride_course(&mut rider, &course, &on, &mut now),
         [Event::Following]
     );
-    rider.follower.stop();
+    rider.let_go();
     assert_eq!(rider.follower.ahead(), None);
     let more = path(&[(700.0, 0.0), (1000.0, 0.0), (1000.0, 300.0)], 7.0);
     assert!(ride_course(&mut rider, &course, &more, &mut now).is_empty());
@@ -460,7 +483,7 @@ fn an_out_and_back_course_keeps_to_the_leg_the_rider_is_on() {
             events.extend(ride_course(&mut rider, &course, point, &mut now));
             if let Some(to_end) = rider.follower.to_end_m() {
                 assert!(to_end <= last.saturating_add(30), "{to_end} after {last}");
-                let sign = rider.follower.sign(now);
+                let sign = rider.sign(now);
                 assert!(!matches!(sign, Sign::OffCourse { .. }), "{sign:?}");
                 last = to_end;
             }

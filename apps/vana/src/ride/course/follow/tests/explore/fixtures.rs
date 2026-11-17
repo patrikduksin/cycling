@@ -31,7 +31,6 @@ impl Shape {
 }
 
 pub(super) struct Fixture {
-    shape: Shape,
     pub(super) name: &'static str,
     pub(super) course: Box<Course>,
     pub(super) stored: Vec<Turn>,
@@ -46,7 +45,7 @@ pub(super) struct LatticeSpot {
 }
 
 impl Fixture {
-    fn new(shape: Shape, name: &'static str, margin_m: f32, drawn: Vec<(f32, f32)>) -> Self {
+    fn new(name: &'static str, margin_m: f32, drawn: Vec<(f32, f32)>) -> Self {
         let (course, stored) = uploaded(&drawn);
         assert!(stored.len() <= ROOM, "{name}: {} turns", stored.len());
         let length: f32 = drawn.windows(2).map(|w| distance(w[0], w[1])).sum();
@@ -67,9 +66,12 @@ impl Fixture {
         let mut placed = vec![Crumb::default(); course.points().len()];
         let mut turns = vec![Turn::default(); ROOM];
         let mut follower = Follower::new(&mut placed, &mut turns);
-        follower.set_course(course.points(), Some(frame()));
+        follower.handle(Input::Course {
+            points: course.points(),
+            frame: Some(frame()),
+            read: &mut |_| None,
+        });
         Self {
-            shape,
             name,
             course,
             stored,
@@ -155,9 +157,15 @@ fn drawn(lengths: &Lengths, shape: Shape) -> Vec<(f32, f32)> {
     }
 }
 
-pub(super) fn fixtures(size: Size) -> &'static [Fixture; 3] {
-    static ISSUE: OnceLock<[Fixture; 3]> = OnceLock::new();
-    static SHORT: OnceLock<[Fixture; 3]> = OnceLock::new();
+struct Fixtures {
+    straight: Fixture,
+    l: Fixture,
+    hairpin: Fixture,
+}
+
+fn fixtures(size: Size) -> &'static Fixtures {
+    static ISSUE: OnceLock<Fixtures> = OnceLock::new();
+    static SHORT: OnceLock<Fixtures> = OnceLock::new();
     let (cell, lengths) = match size {
         Size::Issue => (
             &ISSUE,
@@ -183,22 +191,23 @@ pub(super) fn fixtures(size: Size) -> &'static [Fixture; 3] {
         ),
     };
     cell.get_or_init(|| {
-        Shape::ALL.map(|shape| {
-            Fixture::new(
-                shape,
-                name(size, shape),
-                lengths.margin_m,
-                drawn(&lengths, shape),
-            )
-        })
+        let made =
+            |shape| Fixture::new(name(size, shape), lengths.margin_m, drawn(&lengths, shape));
+        Fixtures {
+            straight: made(Shape::Straight),
+            l: made(Shape::L),
+            hairpin: made(Shape::Hairpin),
+        }
     })
 }
 
 pub(super) fn fixture(size: Size, shape: Shape) -> &'static Fixture {
-    fixtures(size)
-        .iter()
-        .find(|fixture| fixture.shape == shape)
-        .expect("a fixture of each shape")
+    let fixtures = fixtures(size);
+    match shape {
+        Shape::Straight => &fixtures.straight,
+        Shape::L => &fixtures.l,
+        Shape::Hairpin => &fixtures.hairpin,
+    }
 }
 
 pub(super) fn frame() -> Frame {

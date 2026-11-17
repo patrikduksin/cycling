@@ -4,9 +4,10 @@ use super::recording::{Outing, Ride};
 use crate::kept::course::{Kept, delete_turns, load_turns, save_turns};
 use crate::ride::breadcrumb::rebuild::Rebuild;
 use crate::ride::breadcrumb::{Breadcrumb, Fix};
-use crate::ride::course::follow::Follower;
+use crate::ride::course::follow::{Follower, Input};
 use crate::ride::course::nav::{Event, Navigation, Sign};
 use crate::ride::course::stored::{self, Finder, Finding};
+use crate::ride::course::turns::Turn;
 use crate::ride::course::{self, Course};
 use crate::ride::journal::Read;
 use crate::ride::log::{Slot, Status, decode};
@@ -112,7 +113,7 @@ impl RideTrack {
     pub fn new(
         crumbs: &'static mut [Crumb],
         line: &'static mut [Crumb],
-        turns: &'static mut [crate::ride::course::turns::Turn],
+        turns: &'static mut [Turn],
         map: &'static mut MapFrame,
         course: &'static mut Course,
         finder: &'static mut Finder,
@@ -184,28 +185,29 @@ impl RideTrack {
     /// found by the scan when none of its own are there.
     pub(super) fn course_changed(&mut self, media: &mut impl ReadWrite) {
         let course = &*self.course;
-        self.follower
-            .set_course(course.points(), self.breadcrumb.frame());
-        self.follower.take_turns(course.points(), |turns| {
-            match load_turns(media, course::key(course), turns) {
-                Ok(Some(stored)) => {
-                    log::info!(
-                        target: "sdk.course",
-                        "turns_stored count={} full={}",
-                        stored.count,
-                        stored.full
-                    );
-                    Some((stored.count, stored.full))
-                }
-                Ok(None) => {
-                    log::info!(target: "sdk.course", "turns_scanned");
-                    None
-                }
-                Err(error) => {
-                    log::warn!(target: "sdk.course", "turns_not_read error={error:?}");
-                    None
-                }
+        let mut read = |turns: &mut [Turn]| match load_turns(media, course::key(course), turns) {
+            Ok(Some(stored)) => {
+                log::info!(
+                    target: "sdk.course",
+                    "turns_stored count={} full={}",
+                    stored.count,
+                    stored.full
+                );
+                Some((stored.count, stored.full))
             }
+            Ok(None) => {
+                log::info!(target: "sdk.course", "turns_scanned");
+                None
+            }
+            Err(error) => {
+                log::warn!(target: "sdk.course", "turns_not_read error={error:?}");
+                None
+            }
+        };
+        self.follower.handle(Input::Course {
+            points: course.points(),
+            frame: self.breadcrumb.frame(),
+            read: &mut read,
         });
     }
 
@@ -228,7 +230,7 @@ impl RideTrack {
                     found.full,
                     found.reach
                 );
-                let turns = &self.follower.turn_room()[..found.count];
+                let turns = &self.follower.upload_room()[..found.count];
                 save_turns(media, key, turns, found.full)
             }
             None => delete_turns(media),
@@ -243,7 +245,7 @@ impl RideTrack {
     pub(super) fn upload(&mut self) -> (&mut Course, Finding<'_>) {
         let finding = Finding {
             finder: self.finder,
-            turns: self.follower.turn_room(),
+            turns: self.follower.upload_room(),
         };
         (self.course, finding)
     }
@@ -268,7 +270,7 @@ impl Runtime {
         let riding = outing.is_some();
         if riding && outing != state.outing {
             state.breadcrumb.reset();
-            state.follower.reset();
+            state.follower.handle(Input::NewRide);
             state.map.start_ride();
             state.zoom = MapZoom::default();
             state.resume = match state.resume {
@@ -333,7 +335,12 @@ impl Runtime {
         if let (Some(Fix { moved: true, .. }), Some(speed), false) = (fix, speed, paused) {
             state.zoom.observe_riding_at(speed);
         }
-        let event = state.follower.observe(fix, now, speed, paused);
+        let event = state.follower.handle(Input::Observe {
+            now,
+            fix,
+            speed_mm_s: speed,
+            paused,
+        });
         state.place_course(bulk);
         if state.breadcrumb.take_pass() {
             self.ride.passed_start(now);
@@ -361,7 +368,7 @@ impl Runtime {
         if let Some(state) = self.track.as_deref_mut()
             && state.follower.following()
         {
-            state.follower.stop();
+            state.follower.handle(Input::LetGo);
             self.display.redraw();
         }
     }
@@ -388,7 +395,7 @@ pub(super) fn refresh_map(
         placement: state.follower.placement(),
         ahead: state.follower.ahead(),
         joinable: state.follower.joinable(),
-        guidance: state.follower.guidance(now),
+        guidance: state.follower.shown(now).guidance,
         left_m: state.follower.to_end_m(),
         reach: state.zoom.reach(),
         radar,
@@ -400,16 +407,16 @@ pub(super) fn refresh_map(
     }
 }
 
-pub(super) fn holds(track: &Option<&'static mut RideTrack>, cue: Navigation) -> bool {
+pub(super) fn still_due(track: &Option<&'static mut RideTrack>, cue: Navigation) -> bool {
     track
         .as_deref()
-        .is_some_and(|state| state.follower.holds(cue))
+        .is_some_and(|state| state.follower.still_due(cue))
 }
 
 pub(super) fn sign_of(track: &Option<&'static mut RideTrack>, now: u64) -> Sign {
     track
         .as_deref()
-        .map_or(Sign::None, |state| state.follower.sign(now))
+        .map_or(Sign::None, |state| state.follower.shown(now).sign)
 }
 
 pub(super) fn map_of<'a>(track: &'a Option<&'static mut RideTrack>) -> Option<FilledMap<'a>> {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::ride::course::bits::Bits;
+use crate::ride::course::bits::{Bits, fields};
 use core::hash::{Hash, Hasher};
 
 #[derive(Default)]
@@ -98,24 +98,44 @@ macro_rules! owned {
 owned! {
     len: usize,
     placement: Placement,
-    unplaced: bool,
-    held: bool,
-    join_fixes: u8,
-    join_end: usize,
-    turn_around_fixes: u8,
+    life: Lifecycle,
     last_fix: Option<Point>,
-    following: bool,
-    segment: usize,
-    matched: Option<Point>,
-    to_end_m: f32,
-    furthest_to_end_m: f32,
-    matched_fix: Option<Point>,
-    search_whole_course: bool,
     heading: Option<u16>,
     taken_loop_ms: u64,
     turn_count: usize,
     scan: PlacedScan,
-    nav: Navigator,
+}
+
+impl Bits for Lifecycle {
+    fn bits(&self, into: &mut dyn Hasher) {
+        match self {
+            Lifecycle::NoCourse => 0u8.bits(into),
+            Lifecycle::Unplaced => 1u8.bits(into),
+            Lifecycle::Joining(joining) => {
+                2u8.bits(into);
+                joining.bits(into);
+            }
+            Lifecycle::Following(following) => {
+                3u8.bits(into);
+                following.bits(into);
+            }
+            Lifecycle::Arrived { nav } => {
+                4u8.bits(into);
+                nav.bits(into);
+            }
+            Lifecycle::LetGo { awaits_frame } => {
+                5u8.bits(into);
+                awaits_frame.bits(into);
+            }
+        }
+    }
+}
+
+fields! {
+    Joining { fixes, against_fixes }
+    Following {
+        nav, segment, matched, matched_fix, to_end_m, furthest_to_end_m, search_whole_course
+    }
 }
 
 impl Owned {
@@ -125,13 +145,17 @@ impl Owned {
         encoding.0
     }
 
+    pub(super) fn nav(&self) -> Navigator {
+        self.life.nav().copied().unwrap_or_default()
+    }
+
     pub(super) fn view(&self) -> View<'_> {
         View {
             line: &self.line,
             len: self.len,
             turns: &self.turns,
             turn_count: self.turn_count,
-            nav: &self.nav,
+            nav: self.nav(),
         }
     }
 }

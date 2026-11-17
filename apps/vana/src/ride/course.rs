@@ -41,6 +41,7 @@ use libm::sqrtf;
 pub mod follow;
 pub mod gpx;
 pub mod nav;
+pub mod route_leg;
 pub mod stored;
 pub mod turns;
 

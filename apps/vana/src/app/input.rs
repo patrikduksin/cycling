@@ -308,7 +308,7 @@ impl Runtime {
     }
 
     fn sign_at(&self, x: usize, y: usize, now: u64, radar: bool) -> bool {
-        let sign = super::track::sign_of(&self.track, now);
+        let sign = super::course::sign_of(&self.track, now);
         crate::screens::sign::on_page(self.navigation.ride_page(), sign, radar)
             .is_some_and(|placed| placed.rect().contains(x, y))
     }

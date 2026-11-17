@@ -1,6 +1,7 @@
 use super::*;
 use crate::ride::breadcrumb::{Breadcrumb, Reported};
 use crate::ride::course::nav::Distance;
+use crate::ride::course::route_leg::{self, RouteLeg};
 use crate::ride::geo::TURN;
 use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
@@ -139,9 +140,45 @@ fn settled_at(speed_mm_s: u32) -> Reach {
     zoom.reach()
 }
 
+fn stepped<'a>(leg: &mut RouteLeg, track: &Track<'a>) -> Track<'a> {
+    leg.observe(&route_leg::Input {
+        course: track.course,
+        placement: track.placement,
+        here: track.here,
+        here_taken_ms: track.here_taken_ms,
+        heading: track.heading,
+        speed_mm_s: track.speed_mm_s,
+        split: track.split().map(|(end, _)| end),
+    });
+    Track {
+        leg: leg.end(),
+        ..*track
+    }
+}
+
 fn fill(frame: &mut Frame, track: &Track) {
-    frame.route_leg.observe(track);
-    super::fill(frame, track);
+    super::fill(frame, &stepped(&mut RouteLeg::default(), track));
+}
+
+#[derive(Default)]
+struct Held {
+    frame: Frame,
+    leg: RouteLeg,
+}
+
+impl Held {
+    fn fill(&mut self, track: &Track) {
+        let track = stepped(&mut self.leg, track);
+        super::fill(&mut self.frame, &track);
+    }
+}
+
+impl core::ops::Deref for Held {
+    type Target = Frame;
+
+    fn deref(&self) -> &Frame {
+        &self.frame
+    }
 }
 
 fn filled(track: &Track) -> Frame {
@@ -772,9 +809,9 @@ fn there_and_back(lane_m: f32) -> std::vec::Vec<Crumb> {
 #[test]
 fn a_rider_between_the_way_out_and_back_sees_the_way_out_on_every_fix() {
     let c = there_and_back(6.0);
-    let mut frame = Frame::default();
+    let mut frame = Held::default();
     for x in [2.0, 4.0, 2.0, 4.0] {
-        fill(&mut frame, &joining(&c, (x, 0.0)));
+        frame.fill(&joining(&c, (x, 0.0)));
         assert!(
             route_in(&frame, AHEAD_OF_THE_PUCK).is_some(),
             "{x} m east: ahead"
@@ -822,17 +859,17 @@ fn between_two_roads_the_same_way_the_route_holds_its_road_until_another_is_10_m
         assert!(!columns.is_empty(), "a route ahead");
         columns.iter().sum::<usize>() / columns.len()
     };
-    let mut frame = Frame::default();
+    let mut frame = Held::default();
     for x in [14.0, 16.0, 14.0, 16.0] {
-        fill(&mut frame, &joining(&c, (x, 0.0)));
+        frame.fill(&joining(&c, (x, 0.0)));
         assert!(road_x(&frame) < 120, "{x} m east: the first road");
     }
-    fill(&mut frame, &joining(&c, (22.0, 0.0)));
+    frame.fill(&joining(&c, (22.0, 0.0)));
     assert!(
         road_x(&frame) < 120,
         "22 m east, one fix 14 m nearer the second road"
     );
-    fill(&mut frame, &joining(&c, (24.0, 0.0)));
+    frame.fill(&joining(&c, (24.0, 0.0)));
     assert!(
         road_x(&frame) > 120,
         "24 m east, the second fix nearer the second road"
@@ -842,11 +879,11 @@ fn between_two_roads_the_same_way_the_route_holds_its_road_until_another_is_10_m
 #[test]
 fn standing_still_before_joining_the_route_keeps_its_leg() {
     let c = there_and_back(6.0);
-    let mut frame = Frame::default();
-    fill(&mut frame, &joining(&c, (2.0, 0.0)));
+    let mut frame = Held::default();
+    frame.fill(&joining(&c, (2.0, 0.0)));
     let mut standing = joining(&c, (4.0, 0.0));
     standing.heading = None;
-    fill(&mut frame, &standing);
+    frame.fill(&standing);
     assert!(route_in(&frame, AHEAD_OF_THE_PUCK).is_some(), "ahead");
     assert_eq!(route_in(&frame, BEHIND_THE_PUCK), None, "behind");
 }
@@ -854,11 +891,11 @@ fn standing_still_before_joining_the_route_keeps_its_leg() {
 #[test]
 fn after_following_stops_the_route_keeps_the_leg_it_followed() {
     let c = there_and_back(6.0);
-    let mut frame = Frame::default();
-    fill(&mut frame, &on_course(&c, (0.0, 0.0), 100.0));
+    let mut frame = Held::default();
+    frame.fill(&on_course(&c, (0.0, 0.0), 100.0));
     let mut stopped = joining(&c, (4.0, 0.0));
     stopped.heading = None;
-    fill(&mut frame, &stopped);
+    frame.fill(&stopped);
     assert!(route_in(&frame, AHEAD_OF_THE_PUCK).is_some(), "ahead");
     assert_eq!(route_in(&frame, BEHIND_THE_PUCK), None, "behind");
 }
@@ -992,6 +1029,7 @@ fn way_drawn(frame: &Frame, here: Point, lane_m: f32) -> Way {
 
 struct Rider<'a> {
     breadcrumb: Breadcrumb<'a>,
+    leg: RouteLeg,
     map: Cache<'static>,
     placement: Placement,
     now: u64,
@@ -1001,6 +1039,7 @@ impl<'a> Rider<'a> {
     fn new(storage: &'a mut [Crumb]) -> Self {
         Self {
             breadcrumb: Breadcrumb::new(storage),
+            leg: RouteLeg::default(),
             map: Cache::new(std::boxed::Box::leak(std::boxed::Box::default())),
             placement: Placement::default(),
             now: 0,
@@ -1029,7 +1068,7 @@ impl<'a> Rider<'a> {
         track.here_taken_ms = self.breadcrumb.position_taken_ms();
         track.heading = self.breadcrumb.heading();
         track.speed_mm_s = speed_mm_s;
-        self.map.update(&track);
+        self.map.update(&stepped(&mut self.leg, &track));
         here
     }
 
@@ -1071,14 +1110,14 @@ impl<'a> Rider<'a> {
 #[test]
 fn headings_across_the_held_leg_never_switch_it_standing_or_riding() {
     let c = there_and_back(6.0);
-    let mut frame = Frame::default();
+    let mut frame = Held::default();
     for (fix, d) in [85.0, 95.0, 85.0, 95.0, 85.0, 275.0, 85.0, 275.0]
         .into_iter()
         .enumerate()
     {
         let mut track = joining(&c, (3.0, 0.0));
         track.heading = Some(degrees(d));
-        fill(&mut frame, &track);
+        frame.fill(&track);
         assert!(
             way_drawn(&frame, (3.0, 0.0), 6.0) == Way::Out,
             "standing, fix {fix} at {d}°"
@@ -1089,7 +1128,7 @@ fn headings_across_the_held_leg_never_switch_it_standing_or_riding() {
         let mut track = joining(&c, here);
         track.heading = Some(degrees(d));
         track.speed_mm_s = RIDING;
-        fill(&mut frame, &track);
+        frame.fill(&track);
         assert!(
             way_drawn(&frame, here, 6.0) == Way::Out,
             "riding, fix {fix} at {d}°"
@@ -1304,7 +1343,7 @@ fn a_new_ride_forgets_the_leg_the_last_one_held() {
     let mut rider = Rider::new(&mut storage);
     rider.holds_the_way_back(&c);
     rider.breadcrumb.reset();
-    rider.map.start_ride();
+    rider.places_a_course();
     assert_eq!(
         rider.rides_and_sees(&c, 6.0, (0.0, 0.0), STANDING),
         Way::Out,
@@ -1475,6 +1514,7 @@ mod santiago {
                 placement: Placement::default(),
                 ahead: Some((end, Some(self.here))),
                 joinable: false,
+                leg: None,
                 guidance: Some(Guidance {
                     sign: Sign::Chip {
                         glyph: Glyph::Right,

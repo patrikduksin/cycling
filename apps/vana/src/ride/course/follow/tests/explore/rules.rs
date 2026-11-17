@@ -1,5 +1,5 @@
 use super::*;
-use crate::ride::course::nav::ARRIVED_MS;
+use crate::ride::course::nav::{ARRIVED_CHIME_MS, ARRIVED_MS};
 use crate::testing::{Holds, Legal};
 
 macro_rules! holds {
@@ -69,6 +69,12 @@ fn arrived_sign_only_while_arrived(_: &World, _: Step, after: &World) -> bool {
             && arrived_ms.is_some_and(|at| after.now < at + ARRIVED_MS)
 }
 
+fn arrival_chime_due_only_while_arrived(_: &World, _: Step, after: &World) -> bool {
+    let arrived_ms = latches(&after.follower.nav()).arrived_ms;
+    let within = arrived_ms.is_some_and(|at| after.now < at + ARRIVED_CHIME_MS);
+    after.edge.chime_due == (after.kind() == LifecycleKind::Arrived && within)
+}
+
 fn turn_around_sign_only_while_joining(_: &World, _: Step, after: &World) -> bool {
     after.edge.shown != Sign::TurnAround || after.kind() == LifecycleKind::Joining
 }
@@ -94,7 +100,7 @@ fn turn_now_once_per_turn(before: &World, step: Step, after: &World) -> bool {
     heard & 1 << k == 0
 }
 
-pub(super) const LEGAL: [Legal<World, Step>; 8] = [
+pub(super) const LEGAL: [Legal<World, Step>; 9] = [
     ("ways in and out: Observe", observe_ways),
     ("ways in and out: Course", course_ways),
     ("ways in and out: NewRide", new_ride_ways),
@@ -102,6 +108,10 @@ pub(super) const LEGAL: [Legal<World, Step>; 8] = [
     (
         "the Arrived sign only while arrived, within ARRIVED_MS",
         arrived_sign_only_while_arrived,
+    ),
+    (
+        "the arrival chime is due exactly while arrived, within ARRIVED_CHIME_MS",
+        arrival_chime_due_only_while_arrived,
     ),
     (
         "the TurnAround sign only while joining",

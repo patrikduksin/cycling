@@ -54,6 +54,8 @@ pub enum Cue {
     OnCourse,
     TurnSoon,
     TurnNow,
+    /// The end of a followed course.
+    Arrived,
     Mark,
 }
 
@@ -95,6 +97,7 @@ impl Cue {
             Self::OnCourse => &[Low, High],
             Self::TurnSoon => &[Low, Middle],
             Self::TurnNow => &[High],
+            Self::Arrived => &[Middle, High],
             Self::Mark => &[Middle, Middle, Middle],
         }
     }
@@ -123,6 +126,7 @@ impl Cue {
             Self::OnCourse => "on_course",
             Self::TurnSoon => "turn_soon",
             Self::TurnNow => "turn_now",
+            Self::Arrived => "arrived",
             Self::Mark => "mark",
         }
     }
@@ -141,6 +145,7 @@ impl Cue {
             Self::OnCourse => Some(Navigation::OnCourse),
             Self::TurnNow => Some(Navigation::TurnNow),
             Self::TurnSoon => Some(Navigation::TurnSoon),
+            Self::Arrived => Some(Navigation::Arrived),
             _ => None,
         }
     }
@@ -153,6 +158,7 @@ impl From<Navigation> for Cue {
             Navigation::OnCourse => Self::OnCourse,
             Navigation::TurnNow => Self::TurnNow,
             Navigation::TurnSoon => Self::TurnSoon,
+            Navigation::Arrived => Self::Arrived,
         }
     }
 }
@@ -195,7 +201,7 @@ pub(super) struct Played {
 
 /// Navigation cues waiting for the buzzer, one of each kind.
 #[derive(Default)]
-struct Waiting([bool; 4]);
+struct Waiting([bool; 5]);
 
 impl Waiting {
     fn add(&mut self, cue: Navigation) {
@@ -344,6 +350,7 @@ mod tests {
         assert_eq!(ids(Cue::OnCourse), [21, 10]);
         assert_eq!(ids(Cue::TurnSoon), [21, 0]);
         assert_eq!(ids(Cue::TurnNow), [10]);
+        assert_eq!(ids(Cue::Arrived), ids(Cue::Start));
         assert_eq!(ids(Cue::Mark), [0, 0, 0]);
         // One pattern stands for every note; none leaves cues silent.
         let single = [pattern(4, 3000, 100)];
@@ -555,18 +562,48 @@ mod tests {
         );
         let mut more = Cues::default();
         more.raise(Cue::RadarApproach, false, 0);
-        for cue in [Cue::TurnSoon, Cue::TurnNow, Cue::OnCourse, Cue::OffCourse] {
+        for cue in [
+            Cue::Arrived,
+            Cue::TurnSoon,
+            Cue::TurnNow,
+            Cue::OnCourse,
+            Cue::OffCourse,
+        ] {
             more.raise(cue, false, 0);
         }
         assert_eq!(
-            heard(&mut more, 8_000, |_| true),
+            heard(&mut more, 10_000, |_| true),
             [
                 Cue::RadarApproach,
                 Cue::OffCourse,
                 Cue::OnCourse,
                 Cue::TurnNow,
-                Cue::TurnSoon
+                Cue::TurnSoon,
+                Cue::Arrived
             ]
+        );
+    }
+
+    #[test]
+    fn the_arrival_chime_waits_for_a_lap_raised_with_it_and_for_an_alarm() {
+        let mut cues = Cues::default();
+        cues.raise(Cue::Arrived, false, 0);
+        cues.raise(Cue::Lap, false, 0);
+        assert_eq!(heard(&mut cues, 2_000, |_| true), [Cue::Lap, Cue::Arrived]);
+        let mut alarmed = Cues::default();
+        alarmed.raise(Cue::Arrived, false, 0);
+        alarmed.raise(Cue::RadarApproach, false, 0);
+        alarmed.raise(Cue::Lap, false, 0);
+        assert_eq!(
+            heard(&mut alarmed, 2_000, |_| true),
+            [Cue::RadarApproach, Cue::Arrived]
+        );
+        let mut late = Cues::default();
+        late.raise(Cue::RadarApproach, false, 0);
+        late.raise(Cue::Arrived, false, 0);
+        assert_eq!(
+            heard(&mut late, 2_000, |cue| cue != Navigation::Arrived),
+            [Cue::RadarApproach]
         );
     }
 
@@ -618,7 +655,7 @@ mod tests {
                 }
                 let nav = &self.nav;
                 self.cues
-                    .play(&mut self.buzzer, now, |cue| nav.still_due(cue, &[]));
+                    .play(&mut self.buzzer, now, |cue| nav.still_due(cue, &[], now));
                 let first = self.cues.take_played().filter(|p| p.note == 1);
                 self.heard.extend(first.map(|p| (now, p.cue)));
             }

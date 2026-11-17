@@ -26,11 +26,11 @@ const AGAINST_M: f32 = 5.0;
 const HOP_M: f32 = 40.0;
 const GAP_MS: u64 = 5_000;
 const JOIN_FIXES: u8 = 5;
-const TURN_AROUND_FIXES: u8 = 3;
-const MOVING_M: f32 = 2.0;
+pub(super) const TURN_AROUND_FIXES: u8 = 3;
+pub(super) const MOVING_M: f32 = 2.0;
 pub(crate) const MOVING_FROM_MM_S: u32 = 5 * 1_000_000 / 3_600;
 const MORE_THAN_45_DEG_OFF: core::ops::RangeInclusive<u16> = TURN / 8..=TURN * 7 / 8;
-const MORE_THAN_135_DEG_OFF: core::ops::Range<u16> = TURN * 3 / 8 + 1..TURN * 5 / 8;
+pub(super) const MORE_THAN_135_DEG_OFF: core::ops::Range<u16> = TURN * 3 / 8 + 1..TURN * 5 / 8;
 
 type Point = (f32, f32);
 
@@ -243,8 +243,12 @@ impl<'a> Follower<'a> {
             taken_loop_ms: 0,
             turns,
             turn_count: 0,
-            scan: PlacedScan::default(),
+            scan: PlacedScan::finished(),
         }
+    }
+
+    fn clear_turns(&mut self) {
+        (self.scan, self.turn_count) = (PlacedScan::finished(), 0);
     }
 
     pub fn handle(&mut self, input: Input) -> Option<Event> {
@@ -274,7 +278,7 @@ impl<'a> Follower<'a> {
     fn new_ride(&mut self) {
         let waits = self.len >= 2 || self.life.unplaced();
         self.len = 0;
-        (self.scan, self.turn_count) = (PlacedScan::finished(), 0);
+        self.clear_turns();
         self.placement = self.placement.next();
         self.last_fix = None;
         self.heading = None;
@@ -300,7 +304,7 @@ impl<'a> Follower<'a> {
             (false, None) => Lifecycle::NoCourse,
         };
         let Some(frame) = frame else {
-            (self.scan, self.turn_count) = (PlacedScan::finished(), 0);
+            self.clear_turns();
             return None;
         };
         for k in 0..n {
@@ -382,7 +386,7 @@ impl<'a> Follower<'a> {
             self.len, 0,
             "the turn list is lent only while no course is placed"
         );
-        (self.scan, self.turn_count) = (PlacedScan::finished(), 0);
+        self.clear_turns();
         self.turns
     }
 
@@ -452,14 +456,15 @@ impl<'a> Follower<'a> {
         }
     }
 
-    /// Whether `cue`, raised earlier and still unheard, is still due.
-    pub fn still_due(&self, cue: Navigation) -> bool {
-        match &self.life {
-            Lifecycle::Following(following) => {
-                following.nav.still_due(cue, &self.turns[..self.turn_count])
-            }
-            _ => false,
-        }
+    /// Whether `cue`, raised earlier and still unheard, is still due at
+    /// `now`. Once arrived, only the arrival chime may be.
+    pub fn still_due(&self, cue: Navigation, now: u64) -> bool {
+        let nav = match (&self.life, cue) {
+            (Lifecycle::Following(following), _) => &following.nav,
+            (Lifecycle::Arrived { nav }, Navigation::Arrived) => nav,
+            _ => return false,
+        };
+        nav.still_due(cue, &self.turns[..self.turn_count], now)
     }
 
     fn observe(

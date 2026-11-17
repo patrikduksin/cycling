@@ -15,7 +15,7 @@ mod climb_page;
 pub use crate::ride::course::stored::Finder as CourseFinder;
 pub use crate::ride::course::turns::{TURNS as COURSE_TURNS, Turn};
 pub use crate::ride::course::{Course, POINTS as COURSE_POINTS};
-pub use track::{Crumb, MapFrame, MapWork, RideTrack, TRACK_CRUMBS, Timed};
+pub use course::{Crumb, MapFrame, MapWork, RideTrack, TRACK_CRUMBS, Timed};
 mod commands;
 mod course;
 mod cues;
@@ -60,7 +60,6 @@ mod sensor_links;
 #[cfg(test)]
 mod tests;
 mod timing;
-mod track;
 mod training;
 mod view;
 pub use phone::{
@@ -122,7 +121,7 @@ pub struct Runtime {
     shown: presentation::Shown,
     chart: view::Chart,
     alerts: crate::ride::alerts::Alerts,
-    track: Option<&'static mut track::RideTrack>,
+    track: Option<&'static mut course::RideTrack>,
     reported: seen::Reported,
     /// This pass's `tick` or `look_ahead` read or wrote storage.
     storage_worked: bool,

@@ -453,10 +453,11 @@ fn the_way_back_leads_to_a_missed_turn_only_within_60_m_of_where_the_rider_left(
 }
 
 #[test]
-fn arriving_sounds_once_and_shows_for_60_s() {
+fn arriving_sounds_once_due_for_10_s_and_shows_for_60_s() {
     let turns = [corner(1000.0, RIGHT)];
     let mut rider = Rider::new(&turns, None);
     rider.ride(0.0, 990.0, 5.0);
+    assert!(!rider.nav.still_due(Navigation::Arrived, &turns, 100_000));
     let arrived = Observed::Arrived { now_ms: 100_000 };
     assert_eq!(rider.step(arrived), Some(Event::Arrived));
     assert_eq!(rider.step(arrived), None);
@@ -466,6 +467,10 @@ fn arriving_sounds_once_and_shows_for_60_s() {
         (160_000, Sign::None),
     ] {
         assert_eq!(rider.nav.sign(&turns, now_ms), sign, "{now_ms}");
+    }
+    for (now_ms, due) in [(100_000, true), (109_999, true), (110_000, false)] {
+        let chime = rider.nav.still_due(Navigation::Arrived, &turns, now_ms);
+        assert_eq!(chime, due, "the chime held back to {now_ms}");
     }
 }
 
@@ -624,9 +629,9 @@ fn a_held_back_turn_now_holds_only_until_its_turn_is_passed() {
         heard.iter().any(|&(_, event)| event == Event::TurnNow),
         "{heard:?}"
     );
-    assert!(rider.nav.still_due(Navigation::TurnNow, &turns));
+    assert!(rider.nav.still_due(Navigation::TurnNow, &turns, 0));
     rider.ride(485.0, 560.0, 5.0);
-    assert!(!rider.nav.still_due(Navigation::TurnNow, &turns));
+    assert!(!rider.nav.still_due(Navigation::TurnNow, &turns, 0));
 }
 
 #[test]
@@ -637,10 +642,10 @@ fn a_held_back_off_course_holds_only_while_off_course() {
         .filter_map(|_| rider.fix(100.0, 60.0, true))
         .collect();
     assert_eq!(heard, [Event::OffCourse]);
-    assert!(rider.nav.still_due(Navigation::OffCourse, &[]));
-    assert!(!rider.nav.still_due(Navigation::OnCourse, &[]));
+    assert!(rider.nav.still_due(Navigation::OffCourse, &[], 0));
+    assert!(!rider.nav.still_due(Navigation::OnCourse, &[], 0));
     assert_eq!(rider.at(105.0), Some(Event::OnCourse));
-    assert!(!rider.nav.still_due(Navigation::OffCourse, &[]));
+    assert!(!rider.nav.still_due(Navigation::OffCourse, &[], 0));
 }
 
 #[test]

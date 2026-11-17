@@ -1,4 +1,4 @@
-use libm::{atan2f, cosf, sqrtf};
+use libm::{atan2f, cosf, sinf, sqrtf};
 
 /// Metres per 1e-7 degree of latitude, on a sphere of the mean Earth radius.
 pub const M_PER_E7: f32 = 0.011_119_508;
@@ -72,6 +72,13 @@ pub(crate) fn bearing(from: Point, to: Point) -> u16 {
     let turns = radians / core::f32::consts::TAU;
     let turns = if turns < 0.0 { turns + 1.0 } else { turns };
     ((turns * f32::from(TURN)) as u32 % u32::from(TURN)) as u16
+}
+
+/// The sine and cosine of `heading`, in `TURN`ths clockwise from north.
+pub(crate) fn rotation(heading: u16) -> (f32, f32) {
+    let turns = f32::from(heading % TURN) / f32::from(TURN);
+    let radians = turns * core::f32::consts::TAU;
+    (sinf(radians), cosf(radians))
 }
 
 /// Millimetres; a float cast saturates, so no length overflows.

@@ -234,7 +234,7 @@ impl Runtime {
         let radar_paired = ant.channel(device_type::RADAR, now).is_some();
         if page == Page::Ride && self.navigation.ride_page() == RidePage::Map {
             let light = self.light();
-            super::track::refresh_map(
+            super::course::refresh_map(
                 &mut self.track,
                 now,
                 self.readings.live.speed_mm_s,

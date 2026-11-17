@@ -31,6 +31,9 @@ const BEEP_MM: u32 = 30_000;
 const REWIND_MM: u32 = 30_000;
 const MISSED_MM: u32 = 60_000;
 pub(crate) const ARRIVED_MS: u64 = 60_000;
+/// The arrival chime shares recording's start notes, so heard later than
+/// this behind an alarm it would read as a recording event: it is dropped.
+pub(crate) const ARRIVED_CHIME_MS: u64 = 10_000;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Observed {
@@ -81,14 +84,16 @@ pub enum Navigation {
     OnCourse,
     TurnNow,
     TurnSoon,
+    Arrived,
 }
 
 impl Navigation {
-    pub const BY_URGENCY: [Self; 4] = [
+    pub const BY_URGENCY: [Self; 5] = [
         Self::OffCourse,
         Self::OnCourse,
         Self::TurnNow,
         Self::TurnSoon,
+        Self::Arrived,
     ];
 }
 
@@ -543,10 +548,16 @@ impl Navigator {
         }
     }
 
-    /// Whether `cue`, raised earlier and still unheard, is still so: the
-    /// turn it is of not yet passed, the rider still off course or on it.
-    pub fn still_due(&self, cue: Navigation, turns: &[Turn]) -> bool {
+    /// Whether `cue`, raised earlier and still unheard, is still so at
+    /// `now_ms`: the turn it is of not yet passed, the rider still off
+    /// course or on it, the end reached within `ARRIVED_CHIME_MS`.
+    pub fn still_due(&self, cue: Navigation, turns: &[Turn], now_ms: u64) -> bool {
         let raised = match cue {
+            Navigation::Arrived => {
+                return self
+                    .arrived_ms
+                    .is_some_and(|at| now_ms < at.saturating_add(ARRIVED_CHIME_MS));
+            }
             Navigation::OnCourse => Raised::OnCourse,
             Navigation::OffCourse => Raised::OffCourse,
             Navigation::TurnSoon => match self.last_sounded.and_then(|k| turns.get(k)) {

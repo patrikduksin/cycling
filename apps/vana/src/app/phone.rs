@@ -22,6 +22,7 @@
 //! of a body and never writes more output than the transport has room for.
 
 use super::Runtime;
+use super::course::{course_changed, save_turns, upload};
 use super::navigation::To;
 use super::pace::Touched;
 use crate::kept::{self, course::Store};
@@ -896,9 +897,9 @@ impl Runtime {
         // one; if it fails, the stored one is read back.
         track.kept.store = Store::Unread;
         track.course.clear();
-        track.course_changed(bulk);
+        course_changed(track, bulk);
         let mut gpx = gpx::Gpx::new();
-        let (course, mut finding) = track.upload();
+        let (course, mut finding) = upload(track);
         gpx.start(course, &mut finding);
         log::info!(target: "phone", "VANA_PHONE course_upload bytes={}", request.body);
         self.phone.w().job = Job::Course {
@@ -928,7 +929,7 @@ impl Runtime {
         // answer rather than a connection cut while it sends.
         {
             let mut piece = [0u8; UPLOAD_PIECE];
-            let (course, mut finding) = track.upload();
+            let (course, mut finding) = upload(track);
             for _ in 0..UPLOAD_READS {
                 let wanted = (body - received).min(UPLOAD_PIECE as u32) as usize;
                 let n = server.read(id, &mut piece[..wanted]);
@@ -949,7 +950,7 @@ impl Runtime {
             self.phone.w().job = Job::Course { id, received, gpx };
             return;
         }
-        let (course, mut finding) = track.upload();
+        let (course, mut finding) = upload(track);
         let finished = gpx.finish(course, &mut finding);
         let found = finished.ok().and_then(|()| finding.finish(course));
         if let Err(refusal) = finished {
@@ -966,8 +967,8 @@ impl Runtime {
         match kept::course::save(bulk, track.course) {
             Ok(()) => {
                 track.kept.store = Store::Kept;
-                track.save_turns(bulk, found);
-                track.course_changed(bulk);
+                save_turns(track, bulk, found);
+                course_changed(track, bulk);
                 log::info!(
                     target: "phone",
                     "VANA_PHONE course_saved points={} distance_m={}",
@@ -1000,7 +1001,7 @@ impl Runtime {
             Ok(()) => {
                 track.course.clear();
                 track.kept.store = Store::Kept;
-                track.course_changed(bulk);
+                course_changed(track, bulk);
                 log::info!(target: "phone", "VANA_PHONE course_cleared");
                 self.display.redraw();
                 self.reply(id, 204, None);

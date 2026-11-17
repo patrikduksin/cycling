@@ -390,6 +390,7 @@ alert's, and an alert always wins over a chime.
 | Paused (manual or automatic) | The lowest pattern |
 | Lap | The shortest pattern |
 | Ride saved | The highest pattern |
+| A followed course's end | The recording-start chime. It waits for an alert or another chime sounding then, and is dropped if it cannot sound within 10 s |
 
 ## Course sign
 

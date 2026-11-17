@@ -99,18 +99,18 @@ const TURNS_SOUND: [Event; 4] = [
 
 const OFF_AND_BACK: [Event; 3] = [Event::OffCourse, Event::StillOff, Event::OnCourse];
 
-impl Bounds {
-    fn raises(&self, shape: Shape) -> &'static [Event] {
-        match (self.starts_following, shape) {
-            (true, _) => &OFF_AND_BACK,
-            (false, Shape::Straight) => &JOINS,
-            (false, Shape::L | Shape::Hairpin) => &TURNS_SOUND,
-        }
+fn raises(shape: Shape) -> &'static [Event] {
+    match shape {
+        Shape::Straight => &JOINS,
+        Shape::L | Shape::Hairpin => &TURNS_SOUND,
     }
 }
 
 fn closes(bounds: Bounds, shape: Option<Shape>) {
-    let raises = shape.map_or(&[][..], |shape| bounds.raises(shape));
+    closes_raising(bounds, shape, shape.map_or(&[], raises));
+}
+
+fn closes_raising(bounds: Bounds, shape: Option<Shape>, raises: &[Event]) {
     let searched = search(&bounds, shape, BUDGET);
     let text = summary(&searched);
     std::println!("{text}");

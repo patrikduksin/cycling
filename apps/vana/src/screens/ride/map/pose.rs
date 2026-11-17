@@ -1,9 +1,8 @@
 use super::roads::Detail;
 use crate::ride::course::follow::moving;
-use crate::ride::geo::TURN;
-use core::f32::consts::TAU;
+use crate::ride::geo::rotation;
 use core::ops::Range;
-use libm::{cosf, roundf, sinf};
+use libm::roundf;
 
 pub type Point = (f32, f32);
 
@@ -154,15 +153,11 @@ impl Projection {
     }
 }
 
-pub fn rotation(heading: u16) -> (f32, f32) {
-    let turns = f32::from(heading % TURN) / f32::from(TURN);
-    (sinf(turns * TAU), cosf(turns * TAU))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ride::course::follow::MOVING_FROM_MM_S;
+    use crate::ride::geo::TURN;
 
     const KMH: f32 = 1_000_000.0 / 3_600.0;
 

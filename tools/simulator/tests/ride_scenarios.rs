@@ -6954,8 +6954,16 @@ const TURN_NOW: [u8; 1] = [10];
 const OFF_COURSE: [u8; 2] = [10, 21];
 const ON_COURSE: [u8; 2] = [21, 10];
 const ARRIVED: [u8; 2] = [0, 10];
+const ARRIVAL_CUE: &str = "arrived";
 
 fn cues_since(sim: &Sim, from: usize) -> Vec<(String, Vec<u8>)> {
+    timed_cues_since(sim, from)
+        .into_iter()
+        .map(|(_, cue, notes)| (cue, notes))
+        .collect()
+}
+
+fn timed_cues_since(sim: &Sim, from: usize) -> Vec<(u64, String, Vec<u8>)> {
     use firmware_services::trace::{Event, decode};
     let trace = sim.trace();
     let (_, events) = decode(&trace).unwrap();
@@ -6967,19 +6975,35 @@ fn cues_since(sim: &Sim, from: usize) -> Vec<(String, Vec<u8>)> {
             _ => None,
         })
         .collect();
+    let played = &sim.device.sim().speaker.played;
     assert_eq!(
         sounds.len(),
-        sim.device.sim().speaker.played.len(),
+        played.len(),
         "the trace has every note the speaker played"
     );
-    let mut cues: Vec<(String, Vec<u8>)> = Vec::new();
-    for (cue, pattern, note) in sounds.into_iter().skip(from) {
+    let mut cues: Vec<(u64, String, Vec<u8>)> = Vec::new();
+    for ((cue, pattern, note), &(at, _)) in sounds.into_iter().zip(played).skip(from) {
         match cues.last_mut() {
-            Some(last) if note > 1 => last.1.push(pattern),
-            _ => cues.push((cue, vec![pattern])),
+            Some(last) if note > 1 => last.2.push(pattern),
+            _ => cues.push((at, cue, vec![pattern])),
         }
     }
     cues
+}
+
+fn with_a_course(gpx: &str) -> Sim {
+    use device_api::server::Method;
+    let mut sim = Sim::new();
+    sim.fit_bulk(Presence::Ready);
+    let mut sim = equip(sim.boot());
+    sim.init_bulk();
+    sim.format_files();
+    sim.connect_phone();
+    let (status, body) = sim.phone_request(Method::Put, "/api/course", gpx.as_bytes());
+    assert_eq!(status, 200, "{body}");
+    sim.press(Button::TopLeft);
+    sim.advance(seconds(1));
+    sim
 }
 
 #[track_caller]
@@ -7024,18 +7048,8 @@ fn ride_until_only(sim: &mut Sim, cue: &str, notes: &[u8], before_m: f64) -> f64
 
 #[test]
 fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
-    use device_api::server::Method;
-    let mut sim = Sim::new();
-    sim.fit_bulk(Presence::Ready);
-    let mut sim = equip(sim.boot());
-    sim.init_bulk();
-    sim.format_files();
-    sim.connect_phone();
     let course = gpx_through("Cerro loop", &COURSE_LOOP);
-    let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
-    assert_eq!(status, 200, "{body}");
-    sim.press(Button::TopLeft);
-    sim.advance(seconds(1));
+    let mut sim = with_a_course(&course);
 
     sim.ride_route(Route::from_gpx(&course_ride_gpx()).unwrap());
     sim.pair(&["POWER METER", "SPEED/CAD"]);
@@ -7064,7 +7078,7 @@ fn a_course_from_the_phone_is_followed_on_the_map_off_and_back_on_course() {
     assert!((2_200.0..2_340.0).contains(&on), "{on}");
     sim.checkpoint("back on the course on the map");
 
-    let end = ride_until_cue(&mut sim, "start", 5_800.0);
+    let end = ride_until_cue(&mut sim, ARRIVAL_CUE, 5_800.0);
     assert!((5_500.0..5_700.0).contains(&end), "{end}");
     sim.advance(seconds(1));
     assert_eq!(cues_since(&sim, 0).last().unwrap().1, ARRIVED);
@@ -7105,18 +7119,8 @@ fn turns_course_gpx() -> String {
 
 #[test]
 fn a_followed_course_sounds_its_turns_and_not_a_gentle_bend() {
-    use device_api::server::Method;
-    let mut sim = Sim::new();
-    sim.fit_bulk(Presence::Ready);
-    let mut sim = equip(sim.boot());
-    sim.init_bulk();
-    sim.format_files();
-    sim.connect_phone();
     let gpx = turns_course_gpx();
-    let (status, body) = sim.phone_request(Method::Put, "/api/course", gpx.as_bytes());
-    assert_eq!(status, 200, "{body}");
-    sim.press(Button::TopLeft);
-    sim.advance(seconds(1));
+    let mut sim = with_a_course(&gpx);
 
     sim.ride_route(Route::from_gpx(&gpx).unwrap());
     sim.pair(&["POWER METER", "SPEED/CAD"]);
@@ -7151,7 +7155,7 @@ fn a_followed_course_sounds_its_turns_and_not_a_gentle_bend() {
     let now = ride_until_only(&mut sim, "turn_now", &TURN_NOW, 1_620.0);
     assert!((1_565.0..1_585.0).contains(&now), "{now}");
     sim.checkpoint("30 m before the hairpin");
-    let end = ride_until_cue(&mut sim, "start", 2_100.0);
+    let end = ride_until_cue(&mut sim, ARRIVAL_CUE, 2_100.0);
     assert!(end > 1_950.0, "{end}");
     sim.stop_ride();
 }
@@ -7191,7 +7195,7 @@ fn a_course_is_still_followed_after_the_ride_moves_to_internal_memory() {
     sim.checkpoint("off the course after the move");
     let on = ride_until_cue_checking(&mut sim, "on_course", 2_400.0, no_second_join);
     assert!((2_200.0..2_340.0).contains(&on), "{on}");
-    let end = ride_until_cue_checking(&mut sim, "start", 5_800.0, no_second_join);
+    let end = ride_until_cue_checking(&mut sim, ARRIVAL_CUE, 5_800.0, no_second_join);
     assert!((5_500.0..5_700.0).contains(&end), "{end}");
     sim.checkpoint("the end of the course after the move");
     sim.stop_ride();
@@ -7199,18 +7203,8 @@ fn a_course_is_still_followed_after_the_ride_moves_to_internal_memory() {
 }
 
 fn following_the_loop_on_the_map() -> Sim {
-    use device_api::server::Method;
-    let mut sim = Sim::new();
-    sim.fit_bulk(Presence::Ready);
-    let mut sim = equip(sim.boot());
-    sim.init_bulk();
-    sim.format_files();
-    sim.connect_phone();
     let course = gpx_through("Cerro loop", &COURSE_LOOP);
-    let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
-    assert_eq!(status, 200, "{body}");
-    sim.press(Button::TopLeft);
-    sim.advance(seconds(1));
+    let mut sim = with_a_course(&course);
     sim.ride_route(Route::from_gpx(&course_ride_gpx()).unwrap());
     sim.pair(&["POWER METER", "SPEED/CAD"]);
     sim.ride_at(25.0, 180.0, 0.0, 85.0);
@@ -7261,21 +7255,11 @@ fn a_long_press_on_the_badge_stops_following_too() {
 }
 
 fn riding_too_far_beside_a_zigzag_to_follow() -> Sim {
-    use device_api::server::Method;
-    let mut sim = Sim::new();
-    sim.fit_bulk(Presence::Ready);
-    let mut sim = equip(sim.boot());
-    sim.init_bulk();
-    sim.format_files();
-    sim.connect_phone();
     let zigzag: Vec<(f64, f64)> = (0..=14)
         .map(|leg| (f64::from(leg % 2) * 15.0, 150.0 * f64::from(leg)))
         .collect();
     let course = gpx_spaced("zigzag", &zigzag, 1_000.0);
-    let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
-    assert_eq!(status, 200, "{body}");
-    sim.press(Button::TopLeft);
-    sim.advance(seconds(1));
+    let mut sim = with_a_course(&course);
     let beside = gpx_through("beside it", &[(50.0, 0.0), (50.0, 2_100.0)]);
     sim.ride_route(Route::from_gpx(&beside).unwrap());
     sim.pair(&["POWER METER", "SPEED/CAD"]);
@@ -7285,47 +7269,151 @@ fn riding_too_far_beside_a_zigzag_to_follow() -> Sim {
     sim
 }
 
-/// #399 N-2, until N4b steps the map's leg on every fix, so the course
-/// ahead shows on return.
 #[test]
-fn before_following_the_map_comes_back_on_the_leg_it_last_drew() {
-    let mut watched = riding_too_far_beside_a_zigzag_to_follow();
-    while watched.world().distance_m < 1_100.0 {
-        watched.advance(seconds(1));
-        watched.expect_no_text("FOLLOWING COURSE");
-        let shown = course_pixels(&watched);
-        let at = watched.world().distance_m;
-        assert!(shown > 1_000, "watched throughout, {shown} px at {at:.0} m");
-    }
-
+fn before_following_the_map_comes_back_on_the_leg_ridden_beside_meanwhile() {
     let mut sim = riding_too_far_beside_a_zigzag_to_follow();
     ride_to(&mut sim, 375.0);
     sim.ride_page("1/5");
     ride_to(&mut sim, 1_000.0);
     sim.ride_page("5/5");
     let back = course_pixels(&sim);
-    sim.checkpoint("back on the map, still on the leg left 600 m before");
-    sim.advance(seconds(1));
-    let next = course_pixels(&sim);
-    assert!(
-        back < 200 && next > 1_000,
-        "{back} px of course on return, {next} px a fix later"
+    sim.checkpoint("back on the map, on the leg beside the rider");
+    assert!(back > 1_000, "{back} px of course on return");
+}
+
+struct WatchedAndAway {
+    watched: Sim,
+    away: Sim,
+}
+
+impl WatchedAndAway {
+    fn new(ride: impl Fn() -> Sim) -> Self {
+        let mut pair = Self {
+            watched: ride(),
+            away: ride(),
+        };
+        pair.both(|sim| sim.ride_page("5/5"));
+        pair
+    }
+
+    fn both(&mut self, act: impl Fn(&mut Sim)) {
+        act(&mut self.watched);
+        act(&mut self.away);
+        let (watched, away) = (self.watched.now(), self.away.now());
+        self.watched.advance(away.saturating_sub(watched));
+        self.away.advance(watched.saturating_sub(away));
+    }
+
+    fn leave(&mut self) {
+        self.away.ride_page("1/5");
+        self.both(|_| {});
+    }
+
+    #[track_caller]
+    fn come_back(&mut self, what: &str) {
+        self.away.ride_page("5/5");
+        self.both(|_| {});
+        self.away.checkpoint(what);
+        self.same_map(what);
+    }
+
+    #[track_caller]
+    fn ride_to(&mut self, metres: f64) {
+        while self.watched.world().distance_m < metres {
+            self.both(|sim| sim.advance(seconds(1)));
+            if self.away.screen().page().as_deref() == Some("5/5") {
+                let at = self.watched.world().distance_m;
+                self.same_map(&format!("at {at:.0} m"));
+            }
+        }
+    }
+
+    #[track_caller]
+    fn same_map(&self, what: &str) {
+        let (watched, away) = (course_pixels(&self.watched), course_pixels(&self.away));
+        assert!(watched > 0, "{what}: no course drawn");
+        assert!(
+            away.abs_diff(watched) * 10 <= watched,
+            "{what}: {away} px of course back from away, {watched} px watched"
+        );
+    }
+}
+
+#[test]
+fn the_map_comes_back_on_the_leg_it_would_show_had_it_been_watched() {
+    let course = gpx_through(
+        "out and back",
+        &[(0.0, 0.0), (0.0, 800.0), (30.0, 800.0), (30.0, 0.0)],
     );
+    let ride = gpx_through(
+        "beside, then along",
+        &[
+            (-45.0, -100.0),
+            (-45.0, 400.0),
+            (-45.0, 200.0),
+            (0.0, 200.0),
+            (0.0, 800.0),
+            (30.0, 800.0),
+            (30.0, -100.0),
+        ],
+    );
+    let mut rides = WatchedAndAway::new(|| {
+        let mut sim = with_a_course(&course);
+        sim.ride_route(Route::from_gpx(&ride).unwrap());
+        sim.pair(&["POWER METER", "SPEED/CAD"]);
+        sim.ride_at(25.0, 180.0, 0.0, 85.0);
+        sim.start_ride();
+        sim
+    });
+
+    rides.leave();
+    rides.ride_to(150.0);
+    rides.come_back("beside the way out, from fixes with no heading yet");
+
+    rides.ride_to(450.0);
+    rides.leave();
+    rides.ride_to(650.0);
+    rides.come_back("after the U-turn, riding south beside the way back");
+
+    rides.ride_to(690.0);
+    rides.leave();
+    rides.both(|sim| sim.ride_at(0.0, 0.0, 0.0, 0.0));
+    rides.both(|sim| sim.advance(seconds(20)));
+    rides.both(|sim| sim.ride_at(25.0, 180.0, 0.0, 85.0));
+    rides.ride_to(800.0);
+    rides.come_back("after a stop at the corner, across onto the way out");
+
+    rides.ride_to(900.0);
+    rides.leave();
+    rides.ride_to(1_100.0);
+    rides.come_back("following the way out");
+    assert!(!map_badge(&rides.away).is_empty(), "following");
+
+    rides.ride_to(2_100.0);
+    rides.leave();
+    rides.ride_to(2_250.0);
+    rides.come_back("past the course's end");
+    assert_eq!(map_badge(&rides.away), ["ARRIVED"]);
+}
+
+#[test]
+fn after_a_long_press_the_map_comes_back_on_the_leg_it_would_show_had_it_been_watched() {
+    let mut rides = WatchedAndAway::new(following_the_loop_on_the_map);
+    rides.both(|sim| sim.long_press(120, 160, 1_200));
+    assert_eq!(
+        map_badge(&rides.away),
+        Vec::<String>::new(),
+        "following stopped"
+    );
+    rides.leave();
+    rides.ride_to(1_500.0);
+    rides.come_back("riding on along the course without following it");
+    rides.ride_to(1_600.0);
 }
 
 fn following_a_short_course_with_a_radar() -> Sim {
-    use device_api::server::Method;
-    let mut sim = Sim::new();
-    sim.fit_bulk(Presence::Ready);
-    let mut sim = equip(sim.boot());
-    sim.init_bulk();
-    sim.format_files();
-    sim.connect_phone();
     let course = gpx_through("short", &[(0.0, 0.0), (0.0, 800.0)]);
-    let (status, body) = sim.phone_request(Method::Put, "/api/course", course.as_bytes());
-    assert_eq!(status, 200, "{body}");
-    sim.press(Button::TopLeft);
-    sim.advance(seconds(1));
+    let mut sim = with_a_course(&course);
     let ride = gpx_through("past its end", &[(0.0, 0.0), (0.0, 1_200.0)]);
     sim.ride_route(Route::from_gpx(&ride).unwrap());
     sim.ant_sensor(device_type::RADAR, RADAR);
@@ -7336,8 +7424,6 @@ fn following_a_short_course_with_a_radar() -> Sim {
     ride_to(&mut sim, 600.0);
     sim
 }
-
-const ARRIVAL_CUE: &str = "start";
 
 fn arrival_chime_ms() -> u64 {
     let mut sim = following_a_short_course_with_a_radar();
@@ -7353,78 +7439,152 @@ fn arrival_chime_ms() -> u64 {
     fine.now()
 }
 
+const CHIME_WITHIN_MS: i64 = 10_000;
+
 fn cues_after_acting_before_chime(
     chime_ms: u64,
     lead_ms: u64,
+    for_ms: u64,
     act: impl Fn(&mut Sim),
-) -> Vec<(String, Vec<u8>)> {
+) -> Vec<(i64, String, Vec<u8>)> {
     let mut sim = following_a_short_course_with_a_radar();
     let from = sim.device.sim().speaker.played.len();
     sim.advance(chime_ms - lead_ms - sim.now());
     act(&mut sim);
-    sim.advance(seconds(15));
-    cues_since(&sim, from)
+    sim.advance(for_ms);
+    timed_cues_since(&sim, from)
+        .into_iter()
+        .map(|(at, name, notes)| (at as i64 - chime_ms as i64, name, notes))
+        .collect()
 }
 
-fn whole_chime(heard: &[(String, Vec<u8>)]) -> bool {
+fn whole_chime_at(heard: &[(i64, String, Vec<u8>)]) -> Option<i64> {
     heard
         .iter()
-        .any(|(name, notes)| name == ARRIVAL_CUE && notes[..] == ARRIVED)
+        .find(|(_, name, notes)| name == ARRIVAL_CUE && notes[..] == ARRIVED)
+        .map(|&(at, ..)| at)
 }
 
-/// #399 N-3, until N5 moves the arrival chime to the navigation slot, where
-/// a chime cut off waits again and sounds whole after the alarm, within 10 s
-/// of arrival.
+fn first_at(heard: &[(i64, String, Vec<u8>)], cue: &str) -> Option<i64> {
+    heard
+        .iter()
+        .find(|(_, name, _)| name == cue)
+        .map(|&(at, ..)| at)
+}
+
+fn closing_car() -> Vehicle {
+    Vehicle {
+        range_m: 60.0,
+        closing_kmh: 30.0,
+        fast: true,
+        side: Side::Behind,
+    }
+}
+
 #[test]
-fn a_radar_alarm_as_the_rider_arrives_cuts_the_arrival_chime_short() {
+fn a_radar_alarm_that_cuts_the_arrival_chime_short_lets_it_sound_whole_after() {
     let chime_ms = arrival_chime_ms();
-    let heard = cues_after_acting_before_chime(chime_ms, 100, |sim| {
-        sim.vehicle(Vehicle {
-            range_m: 60.0,
-            closing_kmh: 30.0,
-            fast: true,
-            side: Side::Behind,
-        });
+    let heard = cues_after_acting_before_chime(chime_ms, 100, seconds(15), |sim| {
+        sim.vehicle(closing_car())
     });
+    let first: Vec<_> = heard
+        .iter()
+        .take(2)
+        .map(|(_, name, notes)| (name, notes))
+        .collect();
     assert_eq!(
-        heard.get(..2),
-        Some(
-            &[
-                (ARRIVAL_CUE.into(), vec![0]),
-                ("radar_approach".into(), vec![22])
-            ][..]
-        ),
+        first,
+        [
+            (&ARRIVAL_CUE.to_string(), &vec![0]),
+            (&"radar_approach".to_string(), &vec![22])
+        ],
         "{heard:?}"
     );
-    assert!(!whole_chime(&heard), "{heard:?}");
+    let whole = whole_chime_at(&heard);
+    assert!(whole.is_some_and(|at| at < CHIME_WITHIN_MS), "{heard:?}");
 }
 
-/// #399 N-3, until N5 moves the arrival chime to the navigation slot, where
-/// the lap and the chime both sound.
 #[test]
-fn a_lap_in_the_pass_that_arrives_drops_the_arrival_chime() {
+fn a_radar_alarm_at_arrival_still_gives_the_whole_chime_within_10_s() {
     let chime_ms = arrival_chime_ms();
-    let by_lead: Vec<_> = (0..=100)
-        .step_by(5)
+    let heard = cues_after_acting_before_chime(chime_ms, seconds(3), seconds(15), |sim| {
+        sim.vehicle(closing_car())
+    });
+    let whole = whole_chime_at(&heard).expect("the whole chime");
+    assert!((0..CHIME_WITHIN_MS).contains(&whole), "{heard:?}");
+    assert!(
+        heard
+            .iter()
+            .any(|(at, name, _)| name.starts_with("radar_") && (0..whole).contains(at)),
+        "the chime waited behind the alarm: {heard:?}"
+    );
+    assert!(first_at(&heard, "radar_passing").is_some(), "{heard:?}");
+}
+
+#[test]
+fn an_alarm_sustained_past_10_s_after_arrival_drops_the_arrival_chime() {
+    let chime_ms = arrival_chime_ms();
+    let heard = cues_after_acting_before_chime(chime_ms, 0, seconds(30), |sim| {
+        for range_m in [12.0, 22.0, 32.0] {
+            sim.vehicle(Vehicle {
+                range_m,
+                closing_kmh: 6.0,
+                fast: false,
+                side: Side::Behind,
+            });
+        }
+    });
+    let radar_after = |ms: i64| {
+        heard
+            .iter()
+            .any(|(at, name, _)| name.starts_with("radar_") && *at >= ms)
+    };
+    assert!(radar_after(CHIME_WITHIN_MS), "sustained: {heard:?}");
+    assert!(first_at(&heard, "radar_clear").is_some(), "{heard:?}");
+    assert_eq!(whole_chime_at(&heard), None, "{heard:?}");
+    assert!(
+        heard
+            .iter()
+            .all(|(at, name, _)| name != ARRIVAL_CUE || *at < CHIME_WITHIN_MS),
+        "{heard:?}"
+    );
+}
+
+#[track_caller]
+fn pressed_as_the_rider_arrives_the_chime_still_sounds(button: Button, cue: &str) {
+    let chime_ms = arrival_chime_ms();
+    let by_lead: Vec<_> = (0..=60)
+        .step_by(10)
         .map(|lead_ms| {
-            let press = |sim: &mut Sim| sim.report(Button::TopLeft);
-            (
-                lead_ms,
-                cues_after_acting_before_chime(chime_ms, lead_ms, press),
-            )
+            let press = |sim: &mut Sim| sim.report(button);
+            let heard = cues_after_acting_before_chime(chime_ms, lead_ms, seconds(15), press);
+            (lead_ms, heard)
         })
         .collect();
-    let lap_alone = vec![("lap".to_string(), vec![0])];
+    for (lead_ms, heard) in &by_lead {
+        let whole = whole_chime_at(heard);
+        assert!(
+            first_at(heard, cue).is_some() && whole.is_some_and(|at| at < CHIME_WITHIN_MS),
+            "{lead_ms} ms before: {heard:?}"
+        );
+    }
+    let chime_first =
+        |heard: &[(i64, String, Vec<u8>)]| first_at(heard, ARRIVAL_CUE) < first_at(heard, cue);
     assert!(
-        by_lead.iter().any(|(_, heard)| *heard == lap_alone),
-        "a lap pressed in the pass that arrives is heard alone: {by_lead:?}"
+        by_lead.iter().any(|(_, heard)| chime_first(heard))
+            && by_lead.iter().any(|(_, heard)| !chime_first(heard)),
+        "the presses straddle the pass that arrives: {by_lead:?}"
     );
-    assert!(
-        by_lead
-            .iter()
-            .all(|(_, heard)| heard.iter().any(|(name, _)| name == "lap")),
-        "{by_lead:?}"
-    );
+}
+
+#[test]
+fn a_lap_in_the_pass_that_arrives_and_the_arrival_chime_both_sound() {
+    pressed_as_the_rider_arrives_the_chime_still_sounds(Button::TopLeft, "lap");
+}
+
+#[test]
+fn pausing_in_the_pass_that_arrives_keeps_the_arrival_chime() {
+    pressed_as_the_rider_arrives_the_chime_still_sounds(Button::BottomRight, "pause");
 }
 
 /// Santiago on 14 October 2026: sunset 19:55 local, 22:55 UTC.
@@ -10329,7 +10489,7 @@ mod navigation {
         let mut sim = on_course_spaced(&course, &route, 100.0);
         sim.ride_at(27.1, 168.0, 139.0, 88.0);
         start_following(&mut sim);
-        let end = ride_until_cue(&mut sim, "start", 56_400.0);
+        let end = ride_until_cue(&mut sim, ARRIVAL_CUE, 56_400.0);
         assert!((56_100.0..56_300.0).contains(&end), "{end}");
         sim.advance(seconds(1));
         assert_eq!(cues_since(&sim, 0).last().unwrap().1, ARRIVED);

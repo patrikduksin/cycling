@@ -176,6 +176,7 @@ pub(super) struct World {
 pub(super) struct Edge {
     pub(super) raised: Option<Event>,
     pub(super) shown: Sign,
+    pub(super) chime_due: bool,
 }
 
 impl Hash for World {
@@ -214,6 +215,7 @@ impl World {
             edge: Edge {
                 raised: None,
                 shown: Sign::None,
+                chime_due: false,
             },
         }
     }
@@ -368,6 +370,9 @@ pub(super) fn next(world: &World, step: Step) -> World {
     }
     let now = after.now;
     after.edge.shown = after.follower.with(|follower| follower.shown(now).sign);
+    after.edge.chime_due = after
+        .follower
+        .with(|follower| follower.still_due(Navigation::Arrived, now));
     after
 }
 

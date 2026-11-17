@@ -170,7 +170,8 @@ impl Runtime {
         );
         let sun = self.night.sun(now);
         let leg = self.track.as_deref().and_then(|track| {
-            track.leg(
+            super::course::way_home(
+                track,
                 self.ride.totals.avg_speed_mm_s(),
                 self.ride.totals.moving_ms(),
             )
@@ -225,7 +226,7 @@ impl Runtime {
         }
         let track = &self.track;
         self.cues
-            .play(sound, now, |cue| super::track::still_due(track, cue));
+            .play(sound, now, |cue| super::course::still_due(track, cue, now));
     }
 
     /// Show `alert` as a toast and raise its cue.
@@ -344,7 +345,7 @@ impl Runtime {
         view.auto_paused = self.ride.auto.paused();
         view.ride_page = navigation.ride_page();
         view.ride_pages = choice;
-        view.nav = super::track::sign_of(&self.track, now);
+        view.nav = super::course::sign_of(&self.track, now);
         view.course = course;
         view.main_slots = self.preferences.options.main_slots;
         let readout = self.shown.readout();
@@ -471,7 +472,7 @@ impl Runtime {
         }
         view.light = light;
         if page == Page::Ride && view.ride_page == RidePage::Map {
-            view.show_map(super::track::map_of(&self.track));
+            view.show_map(super::course::map_of(&self.track));
         }
         view.graphics = self.motion.graphics(self.motion_visible(), now);
         let drawn = system.draw(&view.prepare(), now);

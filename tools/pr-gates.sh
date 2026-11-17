@@ -2,15 +2,24 @@
 set -u
 
 words=()
+harmless=0
 while (($#)); do
   case $1 in
-    -R | --repo) shift ;;
-    --dry-run | --help | -h) exit 0 ;;
+    # These take a value, so the word after one is never a flag: `--body -h` is a body of "-h".
+    -R | --repo | -a | --assignee | -B | --base | -b | --body | -F | --body-file | -H | --head | -l | --label | \
+      -m | --milestone | -p | --project | --recover | -r | --reviewer | -T | --template | -t | --title) shift ;;
+    --dry-run | --help | -h) harmless=1 ;;
     -*) ;;
     *) words+=("$1") ;;
   esac
   shift
 done
+# Before the harmless flags: a merge flag the list above misses could take one as its value.
+if [[ ${words[0]-} == pr && ${words[1]-} == merge ]]; then
+  echo "gh pr merge refused: cycling merge <pr> is the only way to merge. It verifies the merge tree and pushes exactly that commit." >&2
+  exit 1
+fi
+((harmless)) && exit 0
 [[ ${words[0]-} == pr && ${words[1]-} =~ ^(create|new)$ ]] || exit 0
 
 session=${CLAUDE_CODE_SESSION_ID-}
@@ -54,5 +63,5 @@ if ((${#missing[@]} == 2)); then
 else
   gates="${missing[0]} has"
 fi
-echo "gh pr create refused: $gates not run in this session. Follow .agents/skills/verify/SKILL.md steps 1 and 2, then retry." >&2
+echo "gh pr create refused: $gates not run in this session. Follow .agents/skills/verify/SKILL.md step 1, then retry." >&2
 exit 1

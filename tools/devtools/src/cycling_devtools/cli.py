@@ -93,7 +93,8 @@ TASKS = [
     ),
     task(
         'test-slow',
-        'Every web test, one file at a time, including those too slow for every verify (CYCLING_SLOW=1)',
+        'The slow tier, run after each merge: every web test, one file at a time, including those too slow for every '
+        'verify (CYCLING_SLOW=1)',
         'bun install --frozen-lockfile --silent',
         'CYCLING_SLOW=1 bun test web',
     ),
@@ -114,6 +115,17 @@ TASKS = [
         'quick',
         'Inner loop: tests without the slow group and clippy on the crates the diff touches, and a firmware cargo check',
         f'{DEV}quick',
+    ),
+    task(
+        'merge',
+        'The only way to merge: squash PR N onto main, verify that tree, push exactly it (--prepare verifies only); the slow tier follows in the background',
+        f'{DEV}merge',
+    ),
+    task(
+        'review',
+        "Verdicts keyed to a PR's patch-id: review patch prints it, record --patch stores a PASS or FAIL on it, "
+        'step times a step without a verdict, status says whether the current patch has a PASS',
+        f'{DEV}review',
     ),
     task(
         'playbook-audit',

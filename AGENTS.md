@@ -28,12 +28,15 @@ Run tasks through `cycling <task>` and commit `Cargo.lock`. The flake dev
 shell provides every tool and the `cycling` command; see
 [dev-setup](docs/dev-setup.md).
 
-- Inner loop: targeted host tests and the simulator; a firmware rebuild after
-  a VANA edit takes about 45 s (the fat-LTO link is 30 s of it), and one after
-  a commit that changes no firmware input about 2 s.
-- Before opening or updating a PR: follow the
-  [verify skill](.agents/skills/verify/SKILL.md): `/deslop`, `/no-comments`,
-  then `cycling verify --pr <n>`. Verify runs the gates the changed paths
+- Inner loop: `cycling quick` (tests and clippy on the crates the diff
+  touches, and a firmware `cargo check`), targeted host tests and the
+  simulator; a firmware rebuild after a VANA edit takes about 45 s (the
+  fat-LTO link is 30 s of it), and one after a commit that changes no firmware
+  input about 2 s.
+- Before opening or updating a PR, and to merge: follow the
+  [verify skill](.agents/skills/verify/SKILL.md): `/deslop`, then
+  `/no-comments` beside `cycling verify`, then `cycling verify --pr <n>`, the
+  reviews, and `cycling merge <n>`. Verify runs the gates the changed paths
   select (`tools/devtools/src/cycling_devtools/lanes.py`) in parallel in the
   worktree, stops if a file changes while it runs, and posts the results and
   the screens that changed against main, with a video of each new scenario. A
@@ -51,7 +54,9 @@ shell provides every tool and the `cycling` command; see
 - PRs are verified locally, not by GitHub CI: `cycling verify --pr <n>` runs
   the tests, the checks, simulate, the firmware build, the screens and
   harness-virtual, those of them the changed paths select, and posts the
-  results on the PR. CI runs only on pushes to main.
+  results on the PR. `cycling merge <n>` is the only way to merge: it verifies
+  the squash on main and pushes exactly that commit with the `cycling/verify`
+  status. CI runs only on pushes to main.
 - Preserve the licensed [Trouble Host patch](vendor/trouble-host/CYCLING-PATCH.md)
   and its minimum-MTU (ATT MTU 23) regression coverage.
 

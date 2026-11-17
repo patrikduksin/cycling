@@ -107,7 +107,11 @@ def inside(path, root):
 
 
 def worktrees(root=ROOT):
-    """Parse `git worktree list --porcelain`; the first entry is the primary checkout."""
+    """Parse `git worktree list --porcelain`; the first entry is the primary checkout.
+
+    The checkouts `cycling merge` keeps under the primary checkout's .local/merge are left out:
+    their build directories are what makes the next merge fast, however long they sat idle.
+    """
     out = run('git', 'worktree', 'list', '--porcelain', cwd=root)
     if out.returncode:
         raise RuntimeError(out.stderr.strip())
@@ -115,6 +119,8 @@ def worktrees(root=ROOT):
     for block in out.stdout.strip().split('\n\n'):
         fields = {key: value for key, _, value in (line.partition(' ') for line in block.splitlines())}
         path = Path(fields['worktree'])
+        if found and inside(path.resolve(), found[0].path / '.local' / 'merge'):
+            continue
         branch = fields.get('branch')
         found.append(
             Worktree(

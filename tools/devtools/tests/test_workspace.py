@@ -1,5 +1,6 @@
 """The single .local guard and shared reply/byte helpers."""
 
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -112,6 +113,9 @@ class MainCheckoutTests(unittest.TestCase):
             )
             git('worktree', 'add', '-q', str(linked))
             self.assertEqual(workspace.main_checkout(primary).resolve(), primary.resolve())
+            self.assertEqual(workspace.main_checkout(linked).resolve(), primary.resolve())
+
+            shutil.rmtree(linked)
             self.assertEqual(workspace.main_checkout(linked).resolve(), primary.resolve())
 
     def test_outside_git_falls_back_to_the_given_root(self):

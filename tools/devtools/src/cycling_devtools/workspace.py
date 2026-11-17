@@ -1,5 +1,6 @@
 """Repository paths and the private-evidence rule shared by host tools."""
 
+import functools
 import subprocess
 from pathlib import Path
 
@@ -18,6 +19,9 @@ SIMULATOR_BUILD = (
 )
 
 
+# Asked once: a background job outlives the worktree that started it, and a deleted worktree no
+# longer says where the primary checkout is.
+@functools.cache
 def main_checkout(root=ROOT):
     """The primary checkout that owns this repository's git directory.
 

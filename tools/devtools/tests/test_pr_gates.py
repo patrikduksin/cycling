@@ -71,6 +71,19 @@ class PrGatesTests(unittest.TestCase):
             with self.subTest(arguments):
                 self.assertEqual(self.assert_allowed(*arguments), '')
 
+    def test_gh_pr_merge_is_refused_in_any_session_and_names_cycling_merge(self):
+        self.write(self.root, DESLOP, assistant(NO_COMMENTS))
+        for session in ('s1', None):
+            for arguments in (
+                ('pr', 'merge', '7', '--squash'),
+                ('-R', 'o/r', 'pr', 'merge'),
+                ('pr', 'merge', '7', '--squash', '--body', '-h'),
+            ):
+                with self.subTest(arguments, session=session):
+                    result = self.gates(*arguments, session=session)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn('cycling merge <pr>', result.stderr)
+
     def test_no_evidence_refuses_and_names_both_gates(self):
         reason = self.refusal()
         self.assertIn('/deslop and /no-comments have not run', reason)
@@ -84,6 +97,9 @@ class PrGatesTests(unittest.TestCase):
             ('--repo', 'o/r', 'pr', 'create'),
             ('--repo=o/r', 'pr', 'create'),
             ('-Ro/r', 'pr', 'create', '--title', 'a # b'),
+            ('pr', 'create', '--title', 'Add b', '--body', '-h'),
+            ('pr', 'create', '-t', '--help', '--fill'),
+            ('pr', 'create', '--fill', '--base', '--dry-run'),
         ):
             with self.subTest(arguments):
                 self.refusal(*arguments)

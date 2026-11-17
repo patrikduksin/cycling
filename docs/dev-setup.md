@@ -107,6 +107,35 @@ pin at once and belongs in its own PR with `cycling verify` results.
   ride scenarios, clippy on the crates the diff touches, and
   `cycling check-firmware` when a device links one of them. It takes no slot
   and certifies nothing.
+- `cycling merge <pr>` is the only way to merge. It takes its turn on a lock
+  in the primary checkout, squashes the PR onto main, and verifies that tree
+  unless it already passed. It lands the commit in order: it moves the PR's
+  branch to it, posts the `cycling/verify` status that main requires on it,
+  waits until GitHub shows it as the PR's head, and only then fast-forwards
+  main to it, so GitHub marks the PR merged. If GitHub does not show the head
+  within a minute, or main has moved or refuses the push, it puts the branch
+  back at its head and says so. It deletes the PR's branch once GitHub
+  shows the PR merged. No worktree has the squash checked out, so the merge
+  verifies it in the machine's one merge checkout, `.local/merge/verify` in
+  the primary checkout: a locked worktree with its own target dirs, which
+  `cycling clean` leaves alone. `--prepare` squashes and verifies only, in the
+  same queue. The merge refuses a PR whose base is not main, and one without
+  a review PASS on its current patch. `cycling review patch --pr <n>` prints
+  that patch, `git patch-id --verbatim` of what `gh pr diff` shows: the PR's
+  head against its merge-base with the PR's base. `cycling review record
+  --patch` refuses a verdict on any other. A PASS on a stacked PR therefore
+  covers its own changes only; once its parent lands, rebase it onto main,
+  and the PASS holds if the rebased diff is the one that was reviewed.
+- After a merge, two jobs run on the merged commit in the background at
+  `nice 19`. `cycling sim-compare --fill` caches its screens as the base of
+  later comparisons, with its log in `.local/merge/fill.log`. The slow tier
+  runs in `.local/merge/slow-tier` of the primary checkout and comments on
+  the merged PR if it fails or cannot run. The slow tier is
+  `cycling test-slow`, every web test with `CYCLING_SLOW=1`: the tests verify
+  leaves out. It builds no Rust. One runs at a time, and a run that finds
+  main past its commit leaves the work to the newer merge's run. With under
+  10 GB free it does not start, and says so on the PR. Its log is
+  `.local/merge/slow-tier.log`.
 - nextest's `slow` group (`.config/nextest.toml`) holds the tests that
   `cycling quick` leaves out with `-E 'not group(slow)'`: a test over 5 s on
   its own, and every share of a sweep. `cycling verify` runs them all. Split

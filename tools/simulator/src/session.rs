@@ -960,16 +960,21 @@ pub struct Session {
 }
 impl Session {
     pub fn new(root: &Path, width: usize, height: usize) -> io::Result<Self> {
-        if !(16..=320).contains(&width) || !(16..=320).contains(&height) {
+        if !(16..=320).contains(&width) || !(16..=512).contains(&height) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "geometry must be 16..320",
+                "geometry must be 16..320 wide and 16..512 tall",
             ));
         }
+        let layout = vana::screens::scaled::Scaled::fitting(width, height)
+            .map_or(&vana::screens::BASE, |scaled| {
+                Box::leak(Box::new(vana::screens::Layout::of(scaled)))
+            });
         let model = Model {
             name: VIRTUAL,
             width,
             height,
+            layout,
             ..crate::models::C606
         };
         Self::with_media(
@@ -1071,7 +1076,7 @@ impl Session {
             });
         }
         shell.forget_frame();
-        let mut sdk = vana::app::Runtime::new(profile);
+        let mut sdk = vana::app::Runtime::new(profile, model.layout);
         {
             use vana::ride::directory::{ENTRY, RIDES, RideIndex};
             let bytes = || Box::leak(vec![0u8; RIDES * ENTRY].into_boxed_slice());

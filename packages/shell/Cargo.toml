@@ -10,6 +10,8 @@ publish = false
 [features]
 default = []
 std = []
+# Panels up to 400 rows, for the simulator's test panels.
+tall = []
 # Count painter work for the host render benchmark (`rendering::work`).
 work-counters = ["std"]
 # Record how each painted pixel was written, for the light look check (`rendering::record`).

@@ -298,7 +298,7 @@ impl Runtime {
 }
 
 fn booted(profile: Profile) -> Runtime {
-    let mut runtime = Runtime::new(profile);
+    let mut runtime = Runtime::new(profile, &crate::screens::BASE);
     runtime.format_event(super::format::Event::IntentAtBoot(
         super::intent::Found::Idle,
     ));

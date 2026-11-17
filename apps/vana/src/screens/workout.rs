@@ -1,9 +1,9 @@
 //! VANA workout rendering: the chrome around whichever screen is shown.
+use super::Layout;
 use super::canvas::Canvas;
-use super::chrome::{
-    BLACK, Battery, CONTENT, Gps, HEIGHT, Look, Mark, Row, STATUS_BAR, StatusBar, TOAST, Toast,
-    WIDTH,
-};
+use super::chrome::{BLACK, Battery, Gps, Look, Mark, Row, StatusBar, Toast};
+#[cfg(test)]
+use super::chrome::{CONTENT, HEIGHT, WIDTH};
 use super::cue::{Badge, Cue};
 use super::home::Home;
 use super::ready::Readiness;
@@ -230,6 +230,7 @@ impl<'a> Extra<'a> {
 
 #[derive(Hash)]
 pub struct Scene<'v> {
+    layout: &'static Layout,
     kind: Kind,
     look: Look,
     bar: Option<&'v StatusBar>,
@@ -326,7 +327,10 @@ struct WholePage<'v> {
 }
 
 impl firmware_shell::shell::Picture for Scene<'_> {
-    const SIZE: (usize, usize) = (WIDTH, HEIGHT);
+    fn size(&self) -> (usize, usize) {
+        let panel = self.layout.scaled.panel;
+        (panel.width, panel.height)
+    }
 
     fn paint(&self, row: &mut Row) {
         let row = &mut row.looked(self.look);
@@ -338,12 +342,13 @@ impl firmware_shell::shell::Picture for Scene<'_> {
     }
 
     fn parts(&self, parts: &mut firmware_shell::shell::Parts) {
+        let height = self.layout.scaled.panel.height;
         let Kind::Ride(page) = self.kind else {
-            parts.add(0..HEIGHT, self);
+            parts.add(0..height, self);
             return;
         };
         parts.add(
-            0..HEIGHT,
+            0..height,
             &WholePage {
                 kind: self.kind,
                 look: self.look,
@@ -352,8 +357,9 @@ impl firmware_shell::shell::Picture for Scene<'_> {
                 badge: self.badge,
             },
         );
-        parts.add(0..CONTENT.top, &self.bar);
-        parts.add(TOAST.top..TOAST.bottom, &self.toast);
+        let chrome = &self.layout.chrome;
+        parts.add(0..chrome.content.top, &self.bar);
+        parts.add(chrome.toast.top..chrome.toast.bottom, &self.toast);
         if let Some(sign) = &self.sign {
             let rect = sign.rect();
             parts.add(rect.top..rect.bottom, sign);
@@ -413,15 +419,15 @@ impl<'v> Scene<'v> {
 
     fn bar_rows(&self) -> usize {
         match self.kind {
-            Kind::Ride(RidePage::Map) => STATUS_BAR.bottom,
-            _ => CONTENT.top,
+            Kind::Ride(RidePage::Map) => self.layout.chrome.status_bar.bottom,
+            _ => self.layout.chrome.content.top,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn pixel(&self, x: usize, y: usize) -> u16 {
         use firmware_shell::shell::Picture;
-        let mut pixels = [0u16; WIDTH];
+        let mut pixels = std::vec![0u16; self.size().0];
         self.paint(&mut Row::new(y, &mut pixels));
         pixels.get(x).copied().unwrap_or(0)
     }
@@ -514,6 +520,113 @@ impl<'v> Scene<'v> {
     }
 }
 
+#[cfg(any(test, feature = "invariants"))]
+impl Scene<'_> {
+    /// Check this frame's layout (`check`): fail a screen laid out from
+    /// regions that breaks it, and note what a screen not laid out from
+    /// regions yet shows, while the thread records.
+    pub fn check_layout(&self) {
+        use super::check::{self, Placed};
+        use std::string::String;
+        use std::vec::Vec;
+        if !check::enabled() {
+            return;
+        }
+        let panel = self.layout.scaled.screen();
+        if !matches!(self.kind, Kind::Ride(RidePage::Main)) {
+            if check::recording() {
+                let inks: Vec<_> = self
+                    .body
+                    .canvas()
+                    .map(|canvas| {
+                        let text = super::chrome::layout::text;
+                        canvas.runs.iter().filter_map(text).collect()
+                    })
+                    .unwrap_or_default();
+                let bounds = match self.kind {
+                    Kind::List { .. } => check::scrolling_bounds(panel),
+                    _ => panel,
+                };
+                let what = match self.kind {
+                    Kind::List { layout, .. } => std::format!("List at {}", layout.top),
+                    kind => std::format!("{kind:?}"),
+                };
+                check::canvas_findings(&what, bounds, &inks);
+            }
+            return;
+        }
+        let smooth = self.smooth();
+        let shift = if self.radar.is_some() {
+            0
+        } else {
+            self.frame().centre_shift
+        };
+        let body = self.frame().body;
+        let mut regions: Vec<(&str, super::chrome::Rect)> = Vec::new();
+        regions.push(("status bar", self.layout.chrome.status_bar));
+        if self.radar.is_some() {
+            regions.push(("radar", self.frame().radar));
+        }
+        let bands = self.layout.main.bands(smooth.tags.course);
+        let shown = |rect: super::chrome::Rect| super::chrome::Rect {
+            left: rect.left - shift,
+            right: rect.right - shift,
+            ..rect
+        };
+        let arrived = smooth.tags.bands.first() == Some(&ride::MainBand::Arrived);
+        if arrived {
+            regions.push(("body", shown(body)));
+        } else {
+            regions.extend(bands.map(|(name, band)| (name, shown(band))));
+        }
+        let mut placed: Vec<Placed> = smooth
+            .labels
+            .iter()
+            .zip(&smooth.tags.bands)
+            .map(|(label, &band)| Placed {
+                name: String::from_utf8_lossy(label.line.text()).into_owned(),
+                rect: shown(super::chrome::Rect {
+                    left: label.left,
+                    top: label.top,
+                    right: label.columns().end,
+                    bottom: label.bottom(),
+                }),
+                region: regions.len() - if arrived { 1 } else { 6 - band as usize },
+            })
+            .collect();
+        for (i, gauge) in smooth.gauges.iter().flatten().enumerate() {
+            let rows = [gauge.rows, gauge.band].map(|(top, bottom)| {
+                shown(super::chrome::Rect {
+                    top,
+                    bottom,
+                    ..self.layout.main.text
+                })
+            });
+            for rect in rows {
+                placed.push(Placed {
+                    name: std::format!("gauge {i}"),
+                    rect,
+                    region: regions.len() - 6 + 2 + i,
+                });
+            }
+        }
+        let targets: Vec<_> = self.sign.iter().map(|sign| ("sign", sign.rect())).collect();
+        let breaks = check::region_breaks(panel, &regions, &placed, &targets);
+        assert!(
+            breaks.is_empty(),
+            "the main page on {:?} breaks its layout:\n{}",
+            self.layout.scaled,
+            breaks.join("\n")
+        );
+    }
+}
+
+impl Scene<'_> {
+    pub(super) fn frame(&self) -> &ride::Frame {
+        &self.layout.ride
+    }
+}
+
 static NO_CANVAS: Canvas = Canvas::EMPTY;
 static NO_SMOOTH: Smooth = Smooth::EMPTY;
 static NO_CLIMB_FRAME: ClimbFrame = ClimbFrame::EMPTY;
@@ -540,6 +653,8 @@ pub struct Graphics {
 }
 
 pub struct View<'a> {
+    /// The panel's layout, for the pages that lay out from it.
+    pub layout: &'static Layout,
     pub now_ms: u64,
     pub sample: Sample,
     /// Power over the last 3 s, which the ride page shows instead of the
@@ -623,6 +738,7 @@ impl<'a> View<'a> {
             let _ = time.push_str("--:--");
         }
         Self {
+            layout: &super::BASE,
             now_ms: 0,
             sample: Sample::default(),
             power_3s: None,
@@ -968,6 +1084,8 @@ impl<'a> View<'a> {
                 None => Kind::Canvas,
             },
         };
+        let layout = self.frame_layout();
+        let frame = &layout.ride;
         let (gauges, radar) = match kind {
             Kind::Ride(page) => (
                 if page == RidePage::Main {
@@ -975,11 +1093,13 @@ impl<'a> View<'a> {
                 } else {
                     [None; 2]
                 },
-                self.radar_paired.then(|| ride::radar(&self.graphics.radar)),
+                self.radar_paired
+                    .then(|| ride::radar(&self.graphics.radar, &frame.strip)),
             ),
             _ => ([None; 2], None),
         };
         Scene {
+            layout,
             kind,
             look: super::look::look(self.light),
             bar: (!sheet && !self.full_screen()).then_some(&self.bar),
@@ -1006,6 +1126,22 @@ impl<'a> View<'a> {
         canvas
     }
 
+    fn lays_out_from_panel(&self) -> bool {
+        self.page == Page::Ride
+            && !self.pause_screen
+            && self.ride_page == RidePage::Main
+            && self.ftp_offer.is_none()
+    }
+
+    /// The layout this frame draws.
+    pub fn frame_layout(&self) -> &'static Layout {
+        if self.lays_out_from_panel() {
+            self.layout
+        } else {
+            &super::BASE
+        }
+    }
+
     pub fn prepare(&mut self) -> Scene<'_> {
         let mark = match self.state {
             Status::Recording => Mark::Recording,
@@ -1013,7 +1149,11 @@ impl<'a> View<'a> {
             Status::Paused => Mark::Paused,
             _ => Mark::None,
         };
-        self.bar = StatusBar::with_battery(&self.time, self.gps, self.battery, mark);
+        let layout = self.frame_layout();
+        self.bar = StatusBar::placed(&self.time, self.gps, self.battery, mark, &layout.scaled);
+        if layout.scaled != super::scaled::BASE {
+            self.toast = self.toast.map(|toast| toast.on(layout));
+        }
         let shown = core::mem::take(&mut self.cues);
         self.badge = None;
         let cues: &'static [Cue] = match self.page {

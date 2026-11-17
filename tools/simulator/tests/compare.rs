@@ -464,7 +464,13 @@ fn a_passing_recorded_scenario_writes_its_hashes() {
     let run = std::env::temp_dir().join(format!("sim-compare-hashes-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&run);
     let mut sim = Sim::comparing();
-    sim.attach_recording(Recording::at(run.join("scenario"), "scenario", 240, 320));
+    sim.attach_recording(Recording::at(
+        run.join("scenario"),
+        "scenario",
+        "c606",
+        240,
+        320,
+    ));
     let mut sim = sim.boot();
     let hashes = sim.hashes().unwrap();
     drop(sim);

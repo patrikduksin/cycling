@@ -2,22 +2,46 @@
 
 use crate::devices::Model;
 use device_api::input::Button;
+use vana::screens::Layout;
+use vana::screens::scaled::Scaled;
 
+static C606_LAYOUT: Layout = Layout::of(Scaled::of(240, 320));
 pub const C606: Model = Model {
     name: "c606",
     width: 240,
     height: 320,
     touch: true,
     buttons: &[Button::TopLeft, Button::BottomLeft, Button::BottomRight],
+    layout: &C606_LAYOUT,
 };
+static BARE_LAYOUT: Layout = Layout::of(Scaled::of(240, 320));
 pub const BARE: Model = Model {
     name: "bare",
     width: 240,
     height: 320,
     touch: false,
     buttons: &[Button::TopLeft, Button::BottomLeft, Button::BottomRight],
+    layout: &BARE_LAYOUT,
+};
+static SMALL_LAYOUT: Layout = Layout::of(Scaled::of(180, 240));
+pub const SMALL: Model = Model {
+    name: "small",
+    width: 180,
+    height: 240,
+    touch: true,
+    buttons: &[Button::TopLeft, Button::BottomLeft, Button::BottomRight],
+    layout: &SMALL_LAYOUT,
+};
+static WIDE_LAYOUT: Layout = Layout::of(Scaled::of(240, 400));
+pub const WIDE: Model = Model {
+    name: "wide",
+    width: 240,
+    height: 400,
+    touch: true,
+    buttons: &[Button::TopLeft, Button::BottomLeft, Button::BottomRight],
+    layout: &WIDE_LAYOUT,
 };
 
 pub fn all() -> &'static [&'static Model] {
-    &[&C606, &BARE]
+    &[&C606, &BARE, &SMALL, &WIDE]
 }

@@ -14,7 +14,7 @@ links = "vana"
 [features]
 default = []
 planted-bug = []
-invariants = []
+invariants = ["firmware-shell/tall"]
 testing = []
 
 [dependencies]
@@ -29,3 +29,4 @@ log = { version = "=0.4.35", default-features = false }
 
 [dev-dependencies]
 firmware-services = { path = "../../packages/services", features = ["testing"] }
+firmware-shell = { path = "../../packages/shell", features = ["tall"] }

@@ -135,7 +135,13 @@ pub fn take_panic() -> Option<String> {
 pub fn render_video(dir: &Path) -> io::Result<String> {
     let bytes = fs::read(dir.join(tape::FILE))?;
     let (header, film) = tape::read(&bytes)?;
-    let mut recording = Recording::at(dir.to_path_buf(), &header.name, header.width, header.height);
+    let mut recording = Recording::at(
+        dir.to_path_buf(),
+        &header.name,
+        &header.device,
+        header.width,
+        header.height,
+    );
     recording.truth = header.truth;
     recording.video(
         &header.shots,
@@ -167,6 +173,7 @@ pub struct Checkpoint {
 
 pub struct Recording {
     pub name: String,
+    device: String,
     dir: PathBuf,
     width: usize,
     height: usize,
@@ -215,16 +222,23 @@ impl Recording {
         let root = std::env::var_os("SIM_ARTIFACTS")?;
         let video = std::env::var_os("SIM_VIDEO").is_some_and(|v| v == "1");
         let (name, dir) = claim(name, model.name);
-        let recording = Self::at(Path::new(&root).join(dir), &name, model.width, model.height);
+        let recording = Self::at(
+            Path::new(&root).join(dir),
+            &name,
+            model.name,
+            model.width,
+            model.height,
+        );
         Some(recording.with_video(video))
     }
 
-    pub fn at(dir: PathBuf, name: &str, width: usize, height: usize) -> Self {
+    pub fn at(dir: PathBuf, name: &str, device: &str, width: usize, height: usize) -> Self {
         capture_panics();
         PANIC.with(|p| p.borrow_mut().take());
         Self {
             dir,
             name: name.to_string(),
+            device: device.to_string(),
             width,
             height,
             frames_at: Vec::new(),
@@ -311,6 +325,7 @@ impl Recording {
             truth.dedup_by_key(|t| t.at_ms);
             let header = tape::Header {
                 name: self.name.clone(),
+                device: self.device.clone(),
                 width: self.width,
                 height: self.height,
                 failure: failure.clone(),
@@ -553,7 +568,7 @@ impl Recording {
                 canvas.text(MARGIN + 90, status_y + 4, 1, FAIL, &one_line(message, 120));
             }
             None => {
-                canvas.text(MARGIN, status_y, 2, DIM, "VANA ON SIMULATED C606");
+                canvas.text(MARGIN, status_y, 2, DIM, &footer(&self.device));
             }
         }
         canvas
@@ -679,6 +694,10 @@ pub fn clock(ms: u64) -> String {
     }
 }
 
+pub(crate) fn footer(device: &str) -> String {
+    format!("VANA ON SIMULATED {}", device.to_uppercase())
+}
+
 fn title(name: &str) -> String {
     name.replace('_', " ")
 }
@@ -752,7 +771,7 @@ mod tests {
     }
 
     fn recording(frames: &[u64]) -> Recording {
-        let mut recording = Recording::at(PathBuf::new(), "timing", 4, 2);
+        let mut recording = Recording::at(PathBuf::new(), "timing", "c606", 4, 2);
         for (i, &at) in frames.iter().enumerate() {
             recording.keep(at, &[i as u16; 8]);
         }

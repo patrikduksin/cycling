@@ -128,10 +128,11 @@ pub struct Runtime {
     storage_worked: bool,
     micros_clock: Option<fn() -> u64>,
     latency_clock: Option<fn() -> u64>,
+    layout: &'static crate::screens::Layout,
 }
 
 impl Runtime {
-    pub fn new(profile: Profile) -> Self {
+    pub fn new(profile: Profile, layout: &'static crate::screens::Layout) -> Self {
         Self {
             navigation: navigation::Navigation::default(),
             phone: phone::Phone::default(),
@@ -170,6 +171,7 @@ impl Runtime {
             storage_worked: false,
             micros_clock: None,
             latency_clock: None,
+            layout,
         }
     }
 

@@ -145,6 +145,8 @@ pub struct Model {
     pub height: usize,
     pub touch: bool,
     pub buttons: &'static [Button],
+    /// The panel as VANA lays it out.
+    pub layout: &'static vana::screens::Layout,
 }
 impl Model {
     pub fn named(name: &str) -> Option<&'static Model> {

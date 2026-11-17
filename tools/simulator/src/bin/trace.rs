@@ -514,7 +514,7 @@ fn replay<'a>(
     shell_simulator::recording::replace_dir(&dir).map_err(|e| e.to_string())?;
     let mut sim = Sim::replaying(capture, mode, None).map_err(|e| e.to_string())?;
     let model = sim.device.model;
-    let recording = Recording::at(dir.clone(), stem, model.width, model.height)
+    let recording = Recording::at(dir.clone(), stem, model.name, model.width, model.height)
         .with_video(options.has("video"));
     let mut ran = sim.replay_until(from);
     let before = sim

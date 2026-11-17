@@ -15,9 +15,11 @@
 //! one is under way, and when the road is clear it returns to the page the
 //! rider was on, unless they changed page during the climb (see
 //! `app::climb_page`).
+use super::Layout;
 use super::canvas::Canvas;
-use super::chrome::{self, Align, CONTENT, Rect};
+use super::chrome::{self, Align, Rect};
 use super::icons::SignForm;
+use super::scaled::{self, BASE, Scaled};
 use super::workout::{Body, Graphics, Scene, Text, View};
 use crate::ride::laps::Lap;
 use crate::ride::zones::TrainingProfile;
@@ -56,13 +58,41 @@ pub(super) const GRID: u16 = chrome::TERTIARY;
 
 /// The radar strip and its divider.
 pub(super) const RADAR_WIDTH: usize = 28;
+
+/// The ride screen's frame on a panel: the radar strip, the body a page
+/// draws into beside it, and where the strip's track and targets run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Frame {
+    pub radar: Rect,
+    pub body: Rect,
+    pub strip: Strip,
+    /// Without a radar the body moves left by this much, to the centre.
+    pub centre_shift: usize,
+}
+
+pub const fn frame(at: &Scaled) -> Frame {
+    use scaled::Track::{Fr, Unit};
+    let chrome = chrome::regions(at);
+    let content = chrome.content;
+    let [radar, body] = content.cols([Unit(RADAR_WIDTH as u16), Fr(1)], Unit(0), at);
+    let radius = at.unit(5);
+    Frame {
+        radar,
+        body,
+        strip: Strip {
+            arrow_top: content.top + at.unit(8),
+            track_top: content.top + at.unit(22),
+            track_bottom: chrome.toast.top - 1 - radius,
+            radius,
+            centre: radar.left + at.unit(12),
+            divider: at.unit(2),
+        },
+        centre_shift: radar.width() / 2,
+    }
+}
+
 /// What a page draws into, beside the radar strip.
-pub(super) const BODY: Rect = Rect {
-    left: CONTENT.left + RADAR_WIDTH,
-    top: CONTENT.top,
-    right: CONTENT.right,
-    bottom: CONTENT.bottom,
-};
+pub(super) const BODY: Rect = frame(&BASE).body;
 /// Text margins inside the body, as on the main page.
 pub(super) const LEFT: usize = BODY.left + 10;
 pub(super) const RIGHT: usize = BODY.right - 8;
@@ -292,17 +322,72 @@ pub(super) type Labels = heapless::Vec<chrome::Label<12>, 14>;
 #[derive(Default, Hash)]
 pub struct Smooth {
     pub(super) labels: Labels,
-    pub(super) gauges: Option<[usize; 2]>,
+    #[cfg(any(test, feature = "invariants"))]
+    pub(super) tags: Unhashed<Tags>,
+    pub(super) gauges: Option<[main::Gauge; 2]>,
     /// A workout target under a gauge: which gauge and its columns.
     pub(super) band: Option<(usize, core::ops::Range<usize>)>,
+    pub(super) span: main::Span,
 }
 
 impl Smooth {
     pub const EMPTY: Self = Self {
         labels: heapless::Vec::new(),
+        #[cfg(any(test, feature = "invariants"))]
+        tags: Unhashed(Tags::NONE),
         gauges: None,
         band: None,
+        span: main::Span::NONE,
     };
+}
+
+impl Smooth {
+    #[cfg_attr(not(any(test, feature = "invariants")), allow(unused_variables))]
+    pub(super) fn tag(&mut self, from: usize, band: main::Band) {
+        #[cfg(any(test, feature = "invariants"))]
+        for _ in from..self.labels.len() {
+            let _ = self.tags.bands.push(band);
+        }
+    }
+}
+
+#[cfg(any(test, feature = "invariants"))]
+#[derive(Clone, Default)]
+pub(super) struct Tags {
+    pub(super) bands: heapless::Vec<main::Band, 14>,
+    pub(super) course: bool,
+}
+
+#[cfg(any(test, feature = "invariants"))]
+impl Tags {
+    const NONE: Self = Self {
+        bands: heapless::Vec::new(),
+        course: false,
+    };
+}
+
+#[cfg(any(test, feature = "invariants"))]
+#[derive(Clone, Default)]
+pub(super) struct Unhashed<T>(T);
+
+#[cfg(any(test, feature = "invariants"))]
+impl<T> core::hash::Hash for Unhashed<T> {
+    fn hash<H: core::hash::Hasher>(&self, _: &mut H) {}
+}
+
+#[cfg(any(test, feature = "invariants"))]
+impl<T> core::ops::Deref for Unhashed<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+#[cfg(any(test, feature = "invariants"))]
+impl<T> core::ops::DerefMut for Unhashed<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
 }
 
 /// Prepare the shown page once per frame: the main page's labels, or the
@@ -373,31 +458,39 @@ pub(super) fn cell(
 /// Paint a content row over the black the scene laid: the radar strip
 /// while a radar is paired, and the page in the body, centred without a radar.
 pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
+    let frame = scene.frame();
+    let (strip, body) = (
+        frame.radar.left..frame.radar.right - frame.strip.divider,
+        frame.body,
+    );
     if page == RidePage::Map {
         if let Some(radar) = &scene.radar {
-            paint_radar(radar, &mut row.within(0..RADAR_WIDTH - 2));
+            paint_radar(radar, &mut row.within(strip));
         }
         paint_map(scene, row);
         return;
     }
     if let Some(radar) = &scene.radar {
-        paint_radar(radar, &mut row.within(0..RADAR_WIDTH - 2));
-        paint_page(scene, page, &mut row.within(BODY.left..BODY.right));
+        paint_radar(radar, &mut row.within(strip));
+        paint_page(scene, page, &mut row.within(body.left..body.right));
         return;
     }
     paint_page(
         scene,
         page,
-        &mut row.shifted(CENTRE_SHIFT).within(BODY.left..BODY.right),
+        &mut row
+            .shifted(frame.centre_shift)
+            .within(body.left..body.right),
     );
 }
 
 pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
     if let Some(radar) = &scene.radar {
-        parts.add(TRACK_TOP..TRACK_BOTTOM + 1, &radar.track);
+        let strip = &radar.strip;
+        parts.add(strip.track_top..strip.track_bottom + 1, &radar.track);
         for marker in radar.markers.iter().flatten() {
             let y = usize::from(marker.0);
-            parts.add(y - TARGET_RADIUS..y + TARGET_RADIUS + 1, marker);
+            parts.add(y - strip.radius..y + strip.radius + 1, marker);
         }
     }
     match page {
@@ -436,13 +529,20 @@ fn paint_map(scene: &Scene, row: &mut Row) {
     scene.canvas().paint(row);
 }
 
-/// Where the radar track runs: the rider at the top, 200 m at the bottom.
-/// It ends above the toast band, so a toast never hides a target.
-const TRACK_TOP: usize = BODY.top + 22;
-const TRACK_BOTTOM: usize = chrome::TOAST.top - 1 - TARGET_RADIUS;
-/// Targets are discs this many rows above and below their range.
-const TARGET_RADIUS: usize = 5;
-const ARROW_TOP: usize = BODY.top + 8;
+/// Where the radar strip draws: the arrow, then the track from the rider at
+/// the top to 200 m at the bottom. The track ends above the toast band, so a
+/// toast never hides a target, a disc `radius` rows above and below its
+/// range, centred on column `centre`. `divider` columns part it from the body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Strip {
+    arrow_top: usize,
+    track_top: usize,
+    track_bottom: usize,
+    radius: usize,
+    centre: usize,
+    divider: usize,
+}
+
 const RANGE_MM: u32 = 200_000;
 
 /// Where the gliding graphics land: the end of each zone gauge's lit run,
@@ -454,35 +554,41 @@ pub struct Pixels {
     markers: [Option<(u16, bool)>; 8],
 }
 
-pub fn pixels(graphics: &Graphics, profile: &TrainingProfile) -> Pixels {
+/// The glides of the main page as `layout` places it.
+pub fn pixels(graphics: &Graphics, profile: &TrainingProfile, layout: &Layout) -> Pixels {
     let [power, heart] = zones::gauges(graphics, profile);
+    let span = main::Span::of(&layout.main, &layout.scaled);
     Pixels {
         gauges: [
-            power.map(|mark| main::gauge_end(0, mark)),
-            heart.map(|mark| main::gauge_end(1, mark)),
+            power.map(|mark| main::gauge_end(&span, 0, mark)),
+            heart.map(|mark| main::gauge_end(&span, 1, mark)),
         ],
-        markers: radar(&graphics.radar).markers,
+        markers: radar(&graphics.radar, &layout.ride.strip).markers,
     }
 }
+
+pub use main::{Band as MainBand, Regions as MainRegions, regions as main_regions};
 
 #[derive(Clone, Copy, Debug, Hash)]
 pub struct Radar {
     track: u16,
     markers: [Option<(u16, bool)>; 8],
+    strip: Strip,
 }
 
-pub(super) fn radar(snapshot: &radar::Snapshot) -> Radar {
+pub(super) fn radar(snapshot: &radar::Snapshot, strip: &Strip) -> Radar {
     Radar {
         track: track_color(snapshot.status),
         markers: snapshot
             .targets
-            .map(|target| target.map(|target| (target_y(target), close(target)))),
+            .map(|target| target.map(|target| (target_y(target, strip), close(target)))),
+        strip: *strip,
     }
 }
 
-fn target_y(target: radar::Target) -> u16 {
-    let span = (TRACK_BOTTOM - TRACK_TOP) as u32;
-    (TRACK_TOP as u32 + target.range_mm.min(RANGE_MM) * span / RANGE_MM) as u16
+fn target_y(target: radar::Target, strip: &Strip) -> u16 {
+    let span = (strip.track_bottom - strip.track_top) as u32;
+    (strip.track_top as u32 + target.range_mm.min(RANGE_MM) * span / RANGE_MM) as u16
 }
 
 fn track_color(status: radar::Status) -> u16 {
@@ -496,24 +602,27 @@ fn track_color(status: radar::Status) -> u16 {
 /// The radar strip: the arrow, the track, then targets, the first on top.
 fn paint_radar(radar: &Radar, row: &mut Row) {
     let y = row.y();
-    if (ARROW_TOP..ARROW_TOP + 11).contains(&y) {
-        let half = (y - ARROW_TOP) / 2;
-        row.span(12 - half..13 + half, WHITE);
+    let strip = &radar.strip;
+    let centre = strip.centre;
+    if (strip.arrow_top..strip.arrow_top + 11).contains(&y) {
+        let half = (y - strip.arrow_top) / 2;
+        row.span(centre - half..centre + 1 + half, WHITE);
     }
-    if (TRACK_TOP..=TRACK_BOTTOM).contains(&y) {
-        row.span(11..14, radar.track);
+    if (strip.track_top..=strip.track_bottom).contains(&y) {
+        row.span(centre - 1..centre + 2, radar.track);
     }
+    let radius = strip.radius as i32;
     for &(target_y, close) in radar.markers.iter().rev().flatten() {
         let dy = y as i32 - i32::from(target_y);
-        if dy * dy > (TARGET_RADIUS * TARGET_RADIUS) as i32 {
+        if dy * dy > radius * radius {
             continue;
         }
         let mut half = 0;
-        while (half + 1) * (half + 1) + dy * dy <= (TARGET_RADIUS * TARGET_RADIUS) as i32 {
+        while (half + 1) * (half + 1) + dy * dy <= radius * radius {
             half += 1;
         }
         let color = if close { RED } else { POWER };
-        row.span((12 - half) as usize..(13 + half) as usize, color);
+        row.span(centre - half as usize..centre + 1 + half as usize, color);
     }
 }
 
@@ -570,18 +679,22 @@ fn reference_map_pixel(scene: &Scene, x: usize, y: usize) -> chrome::Shown {
 
 #[cfg(test)]
 fn reference_radar_pixel(radar: &Radar, x: usize, y: usize) -> u16 {
+    let strip = &radar.strip;
+    let (centre, radius) = (strip.centre as i32, strip.radius as i32);
     for &(target_y, close) in radar.markers.iter().flatten() {
-        let dx = x as i32 - 12;
+        let dx = x as i32 - centre;
         let dy = y as i32 - i32::from(target_y);
-        if dx * dx + dy * dy <= (TARGET_RADIUS * TARGET_RADIUS) as i32 {
+        if dx * dx + dy * dy <= radius * radius {
             return if close { RED } else { POWER };
         }
     }
-    if (11..=13).contains(&x) && (TRACK_TOP..=TRACK_BOTTOM).contains(&y) {
+    if (strip.centre - 1..=strip.centre + 1).contains(&x)
+        && (strip.track_top..=strip.track_bottom).contains(&y)
+    {
         return radar.track;
     }
-    let top = ARROW_TOP;
-    if (top..top + 11).contains(&y) && (x as i32 - 12).abs() <= (y - top) as i32 / 2 {
+    let top = strip.arrow_top;
+    if (top..top + 11).contains(&y) && (x as i32 - centre).abs() <= (y - top) as i32 / 2 {
         return WHITE;
     }
     chrome::BLACK
@@ -919,14 +1032,15 @@ mod tests {
                 range_mm,
                 closing_speed_cm_s: 0,
             };
-            let bottom = usize::from(target_y(target)) + TARGET_RADIUS;
+            let strip = frame(&BASE).strip;
+            let bottom = usize::from(target_y(target, &strip)) + strip.radius;
             assert!(bottom < chrome::TOAST.top, "{range_mm} mm");
             let mut snapshot = radar::Snapshot::default();
             snapshot.targets[0] = Some(target);
             for y in chrome::TOAST.top..chrome::HEIGHT {
                 for x in 0..RADAR_WIDTH {
                     assert_eq!(
-                        reference_radar_pixel(&radar(&snapshot), x, y),
+                        reference_radar_pixel(&radar(&snapshot, &strip), x, y),
                         chrome::BLACK,
                         "({x}, {y})"
                     );

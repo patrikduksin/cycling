@@ -332,6 +332,7 @@ impl Runtime {
             _ => navigation.home_cursor(),
         };
         let mut view = View::new(page, cursor, local);
+        view.layout = self.layout;
         view.editing = page == Page::Settings && navigation.editing();
         view.now_ms = now;
         view.active_secs = self.ride.active_ms(now) / 1000;
@@ -473,11 +474,18 @@ impl Runtime {
             view.show_map(super::course::map_of(&self.track));
         }
         view.graphics = self.motion.graphics(self.motion_visible(), now);
-        let drawn = system.draw(&view.prepare(), now);
+        let scene = view.prepare();
+        #[cfg(any(test, feature = "invariants"))]
+        scene.check_layout();
+        let drawn = system.draw(&scene, now);
         Presented::Page {
             page,
             drawn,
-            pixels: crate::screens::ride::pixels(&view.graphics, &view.profile),
+            pixels: crate::screens::ride::pixels(
+                &view.graphics,
+                &view.profile,
+                view.frame_layout(),
+            ),
         }
     }
 
@@ -1149,12 +1157,18 @@ impl Runtime {
     /// When the readings `shown` or a glide next need a frame.
     pub(super) fn motion_due(&self, shown: &crate::ride::log::Sample, now: u64) -> Option<u64> {
         let profile = self.preferences.profile;
+        let visible = self.motion_visible();
+        let layout = if visible.main {
+            self.layout
+        } else {
+            &crate::screens::BASE
+        };
         self.motion.due(
-            self.motion_visible(),
+            visible,
             shown,
             self.policy().min_motion_frame_gap_ms,
             now,
-            |graphics| crate::screens::ride::pixels(graphics, &profile),
+            |graphics| crate::screens::ride::pixels(graphics, &profile, layout),
         )
     }
 }

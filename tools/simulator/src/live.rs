@@ -357,7 +357,8 @@ impl Live {
             let line = format!("{} {}", clock(note.at_ms), note.text);
             y += wrap(&mut canvas, x, y, 1, DIM, &line, PANEL_WIDTH) + 2;
         }
-        canvas.text(MARGIN, height - 30, 2, DIM, "VANA ON SIMULATED C606");
+        let footer = crate::recording::footer(sim.device.model.name);
+        canvas.text(MARGIN, height - 30, 2, DIM, &footer);
         canvas
     }
 }

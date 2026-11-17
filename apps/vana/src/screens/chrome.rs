@@ -3,8 +3,12 @@
 //! Every screen draws below the status bar inside [`CONTENT`]; pages derive
 //! their own boxes from it rather than hard-coding coordinates, so the chrome
 //! can change without rewriting them. See `docs/ui.md`.
+use super::Layout;
+use super::scaled::{BASE, Scale, Scaled, Track};
 use super::workout::Text;
+use core::num::NonZeroU8;
 use core::ops::Range;
+use firmware_shell::rendering::font::FaceRole;
 pub use firmware_shell::rendering::font::{
     Align, BODY, CAPTION, HERO, LARGE, Label, Line, TITLE, VALUE, blend, mix,
 };
@@ -50,29 +54,35 @@ impl Rect {
     }
 }
 
-/// The thin bar on top of every screen but the boot splash. It has no
-/// divider: black space separates it from the content.
-pub const STATUS_BAR: Rect = Rect {
-    left: 0,
-    top: 0,
-    right: WIDTH,
-    bottom: 22,
-};
-/// Everything below the status bar.
-pub const CONTENT: Rect = Rect {
-    left: 0,
-    top: STATUS_BAR.bottom + 2,
-    right: WIDTH,
-    bottom: HEIGHT,
-};
-/// Toasts float over the bottom of the content; pages keep their least
-/// important readings, or nothing, here.
-pub const TOAST: Rect = Rect {
-    left: 0,
-    top: HEIGHT - 40,
-    right: WIDTH,
-    bottom: HEIGHT,
-};
+/// Where the chrome sits on a panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    /// The thin bar on top of every screen but the boot splash. It has no
+    /// divider: black space separates it from the content.
+    pub status_bar: Rect,
+    /// Everything below the status bar.
+    pub content: Rect,
+    /// Toasts float over the bottom of the content; pages keep their least
+    /// important readings, or nothing, here.
+    pub toast: Rect,
+}
+
+pub const fn regions(at: &Scaled) -> Regions {
+    use Track::{Fr, Unit};
+    let screen = at.screen();
+    let [status_bar, _, content] = screen.rows([Unit(22), Unit(2), Fr(1)], Unit(0), at);
+    let [_, toast] = screen.rows([Fr(1), Unit(40)], Unit(0), at);
+    Regions {
+        status_bar,
+        content,
+        toast,
+    }
+}
+
+/// The chrome on the 240 × 320 canvas.
+pub const STATUS_BAR: Rect = regions(&BASE).status_bar;
+pub const CONTENT: Rect = regions(&BASE).content;
+pub const TOAST: Rect = regions(&BASE).toast;
 
 /// RGB565 from 8-bit channels.
 pub const fn rgb(r: u8, g: u8, b: u8) -> u16 {
@@ -625,10 +635,10 @@ const TIGHT_DOT_PITCH: usize = 8;
 /// One clear column between dots: the last resort before GPS gives way.
 const TIGHTEST_DOT_PITCH: usize = 7;
 
-const MIDDLE: usize = STATUS_BAR.bottom / 2;
-const EDGE: usize = 8;
-/// The mark's dot or pause bars, before its word.
-const MARK_ICON: usize = 10;
+const MIDDLE_UNITS: usize = 11;
+const EDGE_UNITS: usize = 8;
+const MARK_ICON_UNITS: usize = 10;
+const MARK_ICON_PX: usize = 10;
 /// Battery icon: a 19 × 10 pill with a nub.
 const BATTERY_WIDTH: usize = 19;
 const FILL_WIDTH: usize = BATTERY_WIDTH - 6;
@@ -728,9 +738,10 @@ const SPILL: usize = 2;
 
 type Small = Label<8>;
 
-const fn small(text: &[u8], x: usize, align: Align, color: u16) -> Small {
-    let line = Line::new(&CAPTION, text);
-    let top = MIDDLE - CAPTION.top as usize - CAPTION.cap as usize / 2;
+fn small(at: &Scaled, text: &[u8], x: usize, align: Align, color: u16) -> Small {
+    let caption = at.face(FaceRole::Caption);
+    let line = Line::new(caption, text);
+    let top = at.unit(MIDDLE_UNITS) - caption.top as usize - caption.cap as usize / 2;
     Label::new(line, x, top, align, color)
 }
 
@@ -742,6 +753,7 @@ const fn small(text: &[u8], x: usize, align: Align, color: u16) -> Small {
 /// out; nothing overlaps.
 #[derive(Clone, Copy, Hash)]
 pub struct StatusBar {
+    scale: Scale,
     clock: Small,
     /// The battery, when its icon fits.
     battery: Option<Battery>,
@@ -774,20 +786,35 @@ impl StatusBar {
     /// The bar with a battery that may be charging: a green bolt then
     /// shows left of the icon, and the icon stays even when low.
     pub fn with_battery(clock: &Text<8>, gps: Gps, battery: Option<Battery>, mark: Mark) -> Self {
-        let line = Line::new(&BODY, clock.as_bytes());
-        let top = MIDDLE - BODY.top as usize - BODY.cap as usize / 2;
-        let clock = Label::new(line, WIDTH - EDGE, top, Align::Right, WHITE);
+        Self::placed(clock, gps, battery, mark, &BASE)
+    }
+
+    /// `with_battery` laid out on `at`'s panel.
+    pub fn placed(
+        clock: &Text<8>,
+        gps: Gps,
+        battery: Option<Battery>,
+        mark: Mark,
+        at: &Scaled,
+    ) -> Self {
+        let (edge, gap) = (at.unit(EDGE_UNITS), at.unit(GAP));
+        let body = at.face(FaceRole::Body);
+        let line = Line::new(body, clock.as_bytes());
+        let top = at.unit(MIDDLE_UNITS) - body.top as usize - body.cap as usize / 2;
+        let clock = Label::new(line, at.panel.width - edge, top, Align::Right, WHITE);
         let (word, color): (&[u8], u16) = match mark {
             Mark::None => (b"", BLACK),
             Mark::Recording => (b"REC", RED),
             Mark::Paused => (b"PAUSED", AMBER),
             Mark::AutoPaused => (b"AUTO", AMBER),
         };
-        let mut mark_label = small(word, EDGE + MARK_ICON + 4, Align::Left, color);
-        if mark_label.right() + SPILL + GAP > clock.left {
-            mark_label = small(b"", EDGE + MARK_ICON + 4, Align::Left, color);
+        let word_left = at.unit(EDGE_UNITS + MARK_ICON_UNITS + 4);
+        let mut mark_label = small(at, word, word_left, Align::Left, color);
+        if mark_label.right() + SPILL + gap > clock.left {
+            mark_label = small(at, b"", word_left, Align::Left, color);
         }
         let mut bar = Self {
+            scale: at.scale,
             clock,
             battery: None,
             battery_left: 0,
@@ -801,8 +828,8 @@ impl StatusBar {
             dots: None,
         };
         let mark_end = bar.mark_end();
-        let fits = |left: usize| left >= mark_end + GAP;
-        let battery_left = clock.left.saturating_sub(GAP + BATTERY_WIDTH);
+        let fits = |left: usize| left >= mark_end + gap;
+        let battery_left = clock.left.saturating_sub(gap + BATTERY_WIDTH);
         let bolt_left = battery_left.saturating_sub(BOLT_GAP + BOLT_WIDTH);
         match battery {
             // A low battery shows as its red percentage in place of the icon.
@@ -810,7 +837,7 @@ impl StatusBar {
                 let level = battery.percent;
                 let mut text = Text::<4>::new();
                 let _ = core::fmt::Write::write_fmt(&mut text, format_args!("{level}%"));
-                let label = small(text.as_bytes(), clock.left - GAP, Align::Right, RED);
+                let label = small(at, text.as_bytes(), clock.left - gap, Align::Right, RED);
                 if fits(label.left) {
                     bar.right_limit = label.left;
                     bar.percent = Some(label);
@@ -839,7 +866,13 @@ impl StatusBar {
         };
         bar.limit_without_gps = bar.right_limit;
         if let Some(color) = gps_color {
-            let label = small(b"GPS", bar.right_limit - 6, Align::Right, color);
+            let label = small(
+                at,
+                b"GPS",
+                bar.right_limit - at.unit(6),
+                Align::Right,
+                color,
+            );
             if fits(label.left) {
                 bar.right_limit = label.left;
                 bar.gps = Some(label);
@@ -852,21 +885,22 @@ impl StatusBar {
     fn mark_end(&self) -> usize {
         match self.mark {
             Mark::None => 0,
-            _ if self.mark_label.line.width() == 0 => EDGE + MARK_ICON,
+            _ if self.mark_label.line.width() == 0 => self.mark_columns().end,
             _ => self.mark_label.right() + SPILL,
         }
     }
 
     pub fn set_pages(&mut self, index: usize, count: usize) {
         self.pages = (index, count);
+        let gap = self.scale.px(GAP);
         let left = match self.mark {
-            Mark::None => EDGE,
-            _ => self.mark_end() + GAP,
+            Mark::None => self.scale.px(EDGE_UNITS),
+            _ => self.mark_end() + gap,
         };
         let pitch = |limit: usize| {
             [DOT_PITCH, TIGHT_DOT_PITCH, TIGHTEST_DOT_PITCH]
                 .into_iter()
-                .find(|pitch| left + (count - 1) * pitch + DOT_SIZE + GAP <= limit)
+                .find(|pitch| left + (count - 1) * pitch + DOT_SIZE + gap <= limit)
         };
         self.dots = None;
         if count > 1 {
@@ -894,7 +928,8 @@ impl StatusBar {
         let y = row.y();
         row.fill(BLACK);
         // The mark, battery and dots are drawn about the middle row.
-        let shapes = (MIDDLE - 6..MIDDLE + 6)
+        let middle = self.scale.px(MIDDLE_UNITS);
+        let shapes = (middle - 6..middle + 6)
             .contains(&y)
             .then(|| Inks::of(row.look()));
         self.mark_label.paint(row);
@@ -902,7 +937,7 @@ impl StatusBar {
             && self.mark != Mark::None
         {
             let mark = row.ink(self.mark_label.color);
-            row.each(EDGE..EDGE + MARK_ICON, |x| {
+            row.each(self.mark_columns(), |x| {
                 Some(self.icon_pixel(inks, mark, x, y))
             });
         }
@@ -947,7 +982,7 @@ impl StatusBar {
         if self.dot_columns().contains(&x) {
             return self.dots_pixel(inks, x, y);
         }
-        if self.mark != Mark::None && (EDGE..EDGE + MARK_ICON).contains(&x) {
+        if self.mark != Mark::None && self.mark_columns().contains(&x) {
             return self.icon_pixel(inks, look.ink(self.mark_label.color), x, y);
         }
         text(&self.mark_label).unwrap_or(inks.black)
@@ -959,7 +994,7 @@ impl StatusBar {
         let text = |label: &Small| label.left..label.right() + SPILL;
         let mut items = std::vec::Vec::new();
         if self.mark != Mark::None {
-            items.push(("mark", EDGE..self.mark_end()));
+            items.push(("mark", self.mark_columns().start..self.mark_end()));
         }
         if self.dots.is_some() {
             items.push(("dots", self.dot_columns()));
@@ -977,22 +1012,28 @@ impl StatusBar {
         items
     }
 
+    fn mark_columns(&self) -> Range<usize> {
+        let edge = self.scale.px(EDGE_UNITS);
+        edge..edge + MARK_ICON_PX
+    }
+
     fn icon_pixel(&self, inks: Inks, mark: Shown, x: usize, y: usize) -> Shown {
+        let (edge, middle) = (self.scale.px(EDGE_UNITS), self.scale.px(MIDDLE_UNITS));
         let coverage = match self.mark {
             Mark::None => 0,
             // A dot of radius 4.5 centred in a 10 × 10 cell.
-            Mark::Recording => disc(x, y, 4 * EDGE as i32 + 18, 4 * MIDDLE as i32, 18),
+            Mark::Recording => disc(x, y, 4 * edge as i32 + 18, 4 * middle as i32, 18),
             Mark::Paused | Mark::AutoPaused => {
                 let bar = |left: usize| {
                     let rect = Rect {
                         left,
-                        top: MIDDLE - 5,
+                        top: middle - 5,
                         right: left + 3,
-                        bottom: MIDDLE + 5,
+                        bottom: middle + 5,
                     };
                     rounded(rect, 1, x, y)
                 };
-                bar(EDGE + 1).max(bar(EDGE + 6))
+                bar(edge + 1).max(bar(edge + 6))
             }
         };
         blend(mark, inks.black, coverage)
@@ -1008,22 +1049,23 @@ impl StatusBar {
     fn battery_pixel(&self, inks: Inks, fill: Shown, x: usize, y: usize) -> Shown {
         let battery = self.battery.unwrap_or_default();
         let left = self.battery_left;
+        let middle = self.scale.px(MIDDLE_UNITS);
         if x < left {
-            let top = MIDDLE - BOLT.len() / 2;
+            let top = middle - BOLT.len() / 2;
             let coverage = bolt(left - BOLT_GAP - BOLT_WIDTH, top, x, y);
             return blend(inks.green, inks.black, coverage);
         }
         let body = Rect {
             left,
-            top: MIDDLE - 5,
+            top: middle - 5,
             right: left + BATTERY_WIDTH - 2,
-            bottom: MIDDLE + 5,
+            bottom: middle + 5,
         };
         let nub = Rect {
             left: body.right + 1,
-            top: MIDDLE - 2,
+            top: middle - 2,
             right: body.right + 2,
-            bottom: MIDDLE + 2,
+            bottom: middle + 2,
         };
         if nub.contains(x, y) {
             return inks.secondary;
@@ -1051,7 +1093,8 @@ impl StatusBar {
         }
         let dot = (x - left) / pitch;
         let cx = 4 * (left + dot * pitch) as i32 + 2 * DOT_SIZE as i32;
-        let coverage = disc(x, y, cx, 4 * DOTS_Y as i32, 2 * DOT_SIZE as i32 - 2);
+        let cy = 4 * self.scale.px(DOTS_Y) as i32;
+        let coverage = disc(x, y, cx, cy, 2 * DOT_SIZE as i32 - 2);
         let color = if dot == index {
             inks.white
         } else {
@@ -1097,45 +1140,71 @@ pub struct Toast {
     label: Label<20>,
     pill: Rect,
     pub tone: Tone,
-    /// Long messages drop the tone dot to fit.
-    dot: bool,
+    dot_size: Option<NonZeroU8>,
+    inset: u8,
 }
 
 impl Toast {
     /// Text that does not fit the screen is cut.
     pub fn new(message: &str, tone: Tone) -> Self {
-        let bytes = message.as_bytes();
+        Self::placed(message.as_bytes(), tone, &super::BASE)
+    }
+
+    /// The same toast laid out on `layout`'s panel.
+    pub fn on(&self, layout: &Layout) -> Self {
+        Self::placed(self.text(), self.tone, layout)
+    }
+
+    fn placed(bytes: &[u8], tone: Tone, layout: &Layout) -> Self {
+        let at = &layout.scaled;
+        let body = at.face(FaceRole::Body);
+        let width = at.panel.width;
+        let (inset, dot, padding) = (at.unit(12), at.unit(TOAST_DOT), at.unit(TOAST_PADDING));
         let mut len = bytes.len().min(20);
-        while len > 0 && BODY.width(&bytes[..len]) + 24 > WIDTH - 4 {
+        while len > 0 && body.width(&bytes[..len]) + 2 * inset > width - 4 {
             len -= 1;
         }
-        let line = Line::<20>::new(&BODY, &bytes[..len]);
-        let dot = line.width() + TOAST_DOT + TOAST_PADDING <= WIDTH - 4;
-        let width = if dot {
-            line.width() + TOAST_DOT + TOAST_PADDING
-        } else {
-            line.width() + 24
+        let line = Line::<20>::new(body, &bytes[..len]);
+        let dot_size = (line.width() + dot + padding <= width - 4)
+            .then(|| NonZeroU8::new(dot as u8))
+            .flatten();
+        let pill_width = match dot_size {
+            Some(_) => line.width() + dot + padding,
+            None => line.width() + 2 * inset,
         };
-        let top = TOAST.bottom - 8 - TOAST_HEIGHT;
+        let height = at.unit(TOAST_HEIGHT);
+        let top = layout.chrome.toast.bottom - at.unit(8) - height;
         let pill = Rect {
-            left: (WIDTH - width) / 2,
+            left: (width - pill_width) / 2,
             top,
-            right: (WIDTH - width) / 2 + width,
-            bottom: top + TOAST_HEIGHT,
+            right: (width - pill_width) / 2 + pill_width,
+            bottom: top + height,
         };
-        let text_top = top + TOAST_HEIGHT / 2 - BODY.top as usize - BODY.cap as usize / 2;
-        let left = pill.left + if dot { 12 + TOAST_DOT + 6 } else { 12 };
+        let text_top = top + height / 2 - body.top as usize - body.cap as usize / 2;
+        let left = pill.left
+            + match dot_size {
+                Some(_) => inset + dot + at.unit(6),
+                None => inset,
+            };
         let label = Label::new(line, left, text_top, Align::Left, WHITE);
         Self {
             label,
             pill,
             tone,
-            dot,
+            dot_size,
+            inset: inset as u8,
         }
     }
 
     pub fn text(&self) -> &[u8] {
         self.label.line.text()
+    }
+
+    fn dot_quarter_px(&self, size: NonZeroU8) -> (i32, i32, i32) {
+        let radius = 2 * i32::from(size.get());
+        let cx = 4 * (self.pill.left + usize::from(self.inset)) as i32 + radius;
+        let cy = 4 * (self.pill.top + self.pill.height() / 2) as i32;
+        (cx, cy, radius)
     }
 
     /// Paint the pill over the row: its edge per pixel, the tone dot, then
@@ -1145,7 +1214,7 @@ impl Toast {
         if y < self.pill.top || y >= self.pill.bottom {
             return;
         }
-        let radius = TOAST_HEIGHT / 2;
+        let radius = self.pill.height() / 2;
         let (raised, black) = (row.ink(RAISED), row.ink(BLACK));
         paint_rounded(row, self.pill, radius, 0, |x, y| {
             match rounded(self.pill, radius, x, y) {
@@ -1153,12 +1222,10 @@ impl Toast {
                 coverage => Some(blend(raised, black, coverage)),
             }
         });
-        if self.dot {
-            let cx = 4 * (self.pill.left + 12) as i32 + 2 * TOAST_DOT as i32;
-            let cy = 4 * (self.pill.top + TOAST_HEIGHT / 2) as i32;
+        if let Some(size) = self.dot_size {
             paint_disc(
                 row,
-                (cx, cy, 2 * TOAST_DOT as i32),
+                self.dot_quarter_px(size),
                 self.tone.color(),
                 |_, dot, shown, _| Some(blend(shown, raised, dot)),
             );
@@ -1172,7 +1239,7 @@ impl Toast {
         if y < self.pill.top {
             return None;
         }
-        let coverage = rounded(self.pill, TOAST_HEIGHT / 2, x, y);
+        let coverage = rounded(self.pill, self.pill.height() / 2, x, y);
         if coverage == 0 {
             return None;
         }
@@ -1180,13 +1247,10 @@ impl Toast {
         if coverage < 15 {
             return Some(blend(raised, look.ink(BLACK), coverage));
         }
-        let cx = 4 * (self.pill.left + 12) as i32 + 2 * TOAST_DOT as i32;
-        let cy = 4 * (self.pill.top + TOAST_HEIGHT / 2) as i32;
-        let dot = if self.dot {
-            disc(x, y, cx, cy, 2 * TOAST_DOT as i32)
-        } else {
-            0
-        };
+        let dot = self.dot_size.map_or(0, |size| {
+            let (cx, cy, radius) = self.dot_quarter_px(size);
+            disc(x, y, cx, cy, radius)
+        });
         if dot > 0 {
             return Some(blend(look.ink(self.tone.color()), raised, dot));
         }
@@ -1196,10 +1260,11 @@ impl Toast {
 
 /// Checks for the layout sweeps: where text really inks, and that nothing
 /// on a screen overlaps or leaves its region.
-#[cfg(test)]
+#[cfg(any(test, feature = "invariants"))]
 pub(crate) mod layout {
     use super::{Label, Rect};
     use std::string::String;
+    #[cfg(test)]
     use std::vec::Vec;
 
     /// The box a label inks, or `None` for blank text.
@@ -1236,6 +1301,7 @@ pub(crate) mod layout {
     pub(crate) const WORD_GAP: usize = 4;
 
     /// Whether two inks overlap, or sit on one line closer than `WORD_GAP`.
+    #[cfg(test)]
     const fn meet(a: Rect, b: Rect) -> bool {
         a.left < b.right + WORD_GAP
             && b.left < a.right + WORD_GAP
@@ -1245,6 +1311,7 @@ pub(crate) mod layout {
 
     /// No two items overlap or run together on a line, and every item lies
     /// inside `bounds`.
+    #[cfg(test)]
     #[track_caller]
     pub(crate) fn assert_apart(items: &[(String, Rect)], bounds: Rect, what: &str) {
         for (i, (name, rect)) in items.iter().enumerate() {
@@ -1263,6 +1330,7 @@ pub(crate) mod layout {
     }
 
     /// Every text in `want` shows whole as one of the items.
+    #[cfg(test)]
     #[track_caller]
     pub(crate) fn assert_shown(items: &[(String, Rect)], want: &[&str], what: &str) {
         let names: Vec<&str> = items.iter().map(|(name, _)| name.as_str()).collect();

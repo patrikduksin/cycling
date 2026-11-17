@@ -5,7 +5,7 @@ compile_error!("planted-bug is the fuzzer's proof and never reaches a device");
 #[cfg(all(feature = "invariants", target_os = "none"))]
 compile_error!("invariants checks run in the simulator and never reach a device");
 
-#[cfg(test)]
+#[cfg(any(test, feature = "invariants"))]
 extern crate std;
 
 #[cfg(any(test, feature = "invariants"))]

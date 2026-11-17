@@ -316,7 +316,7 @@ mod tests {
     }
 
     fn on_screen(graphics: &Graphics) -> Pixels {
-        pixels(graphics, &TrainingProfile::default())
+        pixels(graphics, &TrainingProfile::default(), &crate::screens::BASE)
     }
 
     /// Take `sample` and `radar` and draw a frame at `now`, as the runtime

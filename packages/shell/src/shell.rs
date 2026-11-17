@@ -30,8 +30,12 @@ pub enum BrightnessChoice {
 pub const MIN_WIDTH: usize = 16;
 pub const MIN_HEIGHT: usize = 16;
 pub const CANVAS_MAX_WIDTH: usize = 320;
-/// The tallest panel.
+/// The tallest panel. `tall` raises it for the simulator's test panels;
+/// firmware leaves it off, so its band arrays keep their size.
+#[cfg(not(feature = "tall"))]
 pub const MAX_HEIGHT: usize = 320;
+#[cfg(feature = "tall")]
+pub const MAX_HEIGHT: usize = 400;
 const BANDS: usize = MAX_HEIGHT / BAND_ROWS;
 const FNV_OFFSET: u32 = 0x811c_9dc5;
 const FNV_PRIME: u32 = 0x0100_0193;
@@ -80,15 +84,15 @@ fn digest_pairs(hash: u32, pixels: &[u16]) -> u32 {
 /// whose pixels follow from its `Hash` alone, so equal pictures paint alike.
 pub trait Picture: core::hash::Hash {
     /// The canvas's width and height, fitted to the panel as `draw_canvas`
-    /// fits them. It is at most `MAX_HEIGHT` tall.
-    const SIZE: (usize, usize);
+    /// fits them unless they are the panel's. It is at most `MAX_HEIGHT` tall.
+    fn size(&self) -> (usize, usize);
     /// Paint every pixel of `row`'s clip.
     fn paint(&self, row: &mut Row);
     /// Name the picture's parts, so a frame sends only the bands whose
     /// parts changed. One part over every row, the default, sends the
     /// picture whole or not at all.
     fn parts(&self, parts: &mut Parts) {
-        parts.add(0..Self::SIZE.1, self);
+        parts.add(0..self.size().1, self);
     }
 }
 
@@ -103,7 +107,7 @@ pub struct Parts {
 impl Parts {
     /// The parts `picture` names, keyed band by band.
     pub fn of<F: Picture>(picture: &F) -> Self {
-        const { assert!(F::SIZE.1 <= MAX_HEIGHT) };
+        debug_assert!(picture.size().1 <= MAX_HEIGHT);
         let mut parts = Self {
             keys: [FNV_OFFSET; BANDS],
         };
@@ -632,7 +636,8 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
     pub fn draw<F: Picture>(&mut self, picture: &F, now: u64) -> Drawn {
         let parts = Parts::of(picture);
         let geometry = self.display.geometry();
-        let unscaled = (geometry.width, geometry.height) == F::SIZE;
+        let size = picture.size();
+        let unscaled = (geometry.width, geometry.height) == size;
         let changed = self.shown.map(|shown| shown.changed(&parts));
         let rows = match changed {
             _ if self.frame_wanted(now) => Rows::all(geometry.height),
@@ -646,7 +651,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             if unscaled {
                 self.send(rows, |y, pixels| picture.paint(&mut Row::new(y, pixels)));
             } else {
-                let (width, height) = F::SIZE;
+                let (width, height) = size;
                 self.draw_canvas(width, height, |row| picture.paint(row));
             }
             if self.display_error {

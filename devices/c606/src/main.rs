@@ -263,6 +263,10 @@ async fn attach_track(sdk: &mut vana::app::Runtime) -> bool {
     true
 }
 
+static LAYOUT: vana::screens::Layout = vana::screens::Layout::of(
+    vana::screens::scaled::Scaled::of(device::fitted::PANEL_WIDTH, device::fitted::PANEL_HEIGHT),
+);
+
 #[embassy_executor::task]
 async fn console(
     usb: device::drivers::usb::Usb,
@@ -273,7 +277,7 @@ async fn console(
 ) {
     let mut terminal = firmware_console::session::Terminal::new(usb);
     let mut next_health = 0;
-    let sdk = external(|| vana::app::Runtime::new(profile));
+    let sdk = external(|| vana::app::Runtime::new(profile, &LAYOUT));
     device::capabilities::ant::wake_on(vana::app::WAKING_ANT_TYPE);
     {
         // Every saved ride of both journals, for ride history: about 20 KB

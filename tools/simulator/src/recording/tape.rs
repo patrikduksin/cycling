@@ -6,7 +6,7 @@ use flate2::write::ZlibEncoder;
 use std::io::{self, BufReader, Read, Write as _};
 
 pub(super) const FILE: &str = "frames.bin";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 
 pub(super) struct Panels(fdeflate::Compressor<Vec<u8>>);
 
@@ -143,6 +143,7 @@ pub(super) struct Shot {
 
 pub(super) struct Header {
     pub name: String,
+    pub device: String,
     pub width: usize,
     pub height: usize,
     pub failure: Option<String>,
@@ -156,6 +157,7 @@ pub(super) fn write(header: &Header, film: &[u8]) -> Vec<u8> {
     out.extend((header.width as u16).to_le_bytes());
     out.extend((header.height as u16).to_le_bytes());
     put_str(&mut out, &header.name);
+    put_str(&mut out, &header.device);
     out.push(u8::from(header.failure.is_some()));
     put_str(&mut out, header.failure.as_deref().unwrap_or_default());
     out.extend((header.notes.len() as u32).to_le_bytes());
@@ -191,6 +193,7 @@ pub(super) fn read(bytes: &[u8]) -> io::Result<(Header, &[u8])> {
     let width = u16::from_le_bytes(tape.take()?).into();
     let height = u16::from_le_bytes(tape.take()?).into();
     let name = tape.string()?;
+    let device = tape.string()?;
     let failed = tape.take::<1>()? != [0];
     let failure = failed.then_some(tape.string()?);
     let notes = tape.list(|tape| {
@@ -222,6 +225,7 @@ pub(super) fn read(bytes: &[u8]) -> io::Result<(Header, &[u8])> {
     }
     let header = Header {
         name,
+        device,
         width,
         height,
         failure,
@@ -342,7 +346,7 @@ mod tests {
     #[test]
     fn a_video_rendered_after_the_run_matches_one_rendered_in_it() {
         let dir = std::env::temp_dir().join(format!("sim-tape-{}", std::process::id()));
-        let mut recording = Recording::at(dir.clone(), "taped", 4, 2).with_video(true);
+        let mut recording = Recording::at(dir.clone(), "taped", "c606", 4, 2).with_video(true);
         recording.truth.push(Truth {
             at_ms: 0,
             speed_kmh: 25.0,
@@ -403,6 +407,7 @@ mod tests {
         .collect();
         let header = Header {
             name: "taped".into(),
+            device: "small".into(),
             width: 4,
             height: 2,
             failure: Some("boom".into()),
@@ -432,8 +437,13 @@ mod tests {
         let (back, film) = read(&bytes).unwrap();
         assert_eq!(film, b"film");
         assert_eq!(
-            (back.name.as_str(), back.width, back.height),
-            ("taped", 4, 2)
+            (
+                back.name.as_str(),
+                back.device.as_str(),
+                back.width,
+                back.height
+            ),
+            ("taped", "small", 4, 2)
         );
         assert_eq!(back.failure.as_deref(), Some("boom"));
         let notes = |h: &Header| {

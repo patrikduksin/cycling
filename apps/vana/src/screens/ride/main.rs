@@ -5,26 +5,20 @@
 //! white bar under the power (or heart-rate) gauge spans the step's target.
 use super::slots::Reading;
 use super::zones::{GAUGE_WIDTH, Mark};
-use super::{BODY, Labels, RidePage, Smooth, Text, elapsed, kilometres, speed, whole};
+use super::{Labels, RidePage, Smooth, Text, elapsed, kilometres, speed, whole};
 use crate::ride::course::nav::Sign;
 use crate::screens::chrome::{
-    Align, BLACK, BODY as BODY_FACE, CAPTION, GRADE, HEART, HERO, LARGE, Label, Line, POWER, Rect,
-    Row, SECONDARY, SPEED, Shown, TERTIARY, VALUE, WHITE, blend, rounded, zone_color,
+    Align, BLACK, CONTENT, GRADE, HEART, Label, Line, POWER, Rect, Row, SECONDARY, SPEED, Shown,
+    TERTIARY, WHITE, blend, rounded, zone_color,
 };
 use crate::screens::icons::SignForm;
-use crate::screens::sign::{self, baseline_under_mockup};
+use crate::screens::scaled::{Scaled, Track};
+use crate::screens::sign;
 use crate::screens::workout::{Scene, View};
 use core::fmt::Write;
-use firmware_shell::rendering::font::{Face, SPILL, TOTAL_11, TOTAL_30, TOTAL_60};
+use firmware_shell::rendering::font::{Face, FaceRole, SPILL};
 use firmware_shell::shell::Parts;
 
-const LEFT: usize = BODY.left + 10;
-const RIGHT: usize = BODY.right - 8;
-const GAUGE_HEIGHT: usize = 5;
-const GAUGE_GAP: usize = 3;
-/// The workout target sits this far under its gauge, this tall.
-const BAND_GAP: usize = 2;
-const BAND_HEIGHT: usize = 2;
 /// Power has seven zones, heart rate five.
 const SEGMENTS: [usize; 2] = [7, 5];
 const MOST_SEGMENTS: usize = if SEGMENTS[0] > SEGMENTS[1] {
@@ -33,51 +27,308 @@ const MOST_SEGMENTS: usize = if SEGMENTS[0] > SEGMENTS[1] {
     SEGMENTS[1]
 };
 
-struct Rows {
+/// The main page's bands on one panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    /// The readings' text runs between these columns.
+    pub text: Rect,
+    /// A free ride: time and grade, speed, power, heart rate, then the
+    /// rider's two readings. Each label's top is its band's.
+    pub free: [Rect; 5],
+    /// The power and heart-rate gauges on a free ride.
+    pub gauges: [Gauge; 2],
+    /// On a course: time and grade, the chip's band, speed, power, heart
+    /// rate, then the rider's readings, each on a baseline inside its band.
+    pub course: [Rect; 6],
+}
+
+/// The band a label is laid out in: one of the five readings, on a free
+/// ride's bands or a course's, or the arrival totals, which span the body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Band {
+    Time,
+    Speed,
+    Power,
+    Heart,
+    Lower,
+    Arrived,
+}
+
+impl Regions {
+    /// The bands a frame laid out on, named, in `Band` order where it has
+    /// one, then the course's chip.
+    #[cfg(any(test, feature = "invariants"))]
+    pub fn bands(&self, course: bool) -> [(&'static str, Rect); 6] {
+        let [time, speed, power, heart, lower] = self.free;
+        let [on_time, chip, on_speed, on_power, on_heart, on_lower] = self.course;
+        if course {
+            return [
+                ("time", on_time),
+                ("speed", on_speed),
+                ("power", on_power),
+                ("heart", on_heart),
+                ("lower", on_lower),
+                ("chip", chip),
+            ];
+        }
+        [
+            ("time", time),
+            ("speed", speed),
+            ("power", power),
+            ("heart", heart),
+            ("lower", lower),
+            (
+                "rest",
+                Rect {
+                    top: lower.bottom,
+                    ..lower
+                },
+            ),
+        ]
+    }
+}
+
+/// A zone gauge's rows, and the rows of a workout's target under it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Gauge {
+    pub rows: (usize, usize),
+    pub band: (usize, usize),
+}
+
+impl Gauge {
+    const fn under(top: usize, at: &Scaled) -> Self {
+        use Track::Unit;
+        let room = Rect {
+            left: 0,
+            top,
+            right: 0,
+            bottom: top + at.unit(9),
+        };
+        let [rows, _, band] = room.rows([Unit(5), Unit(2), Unit(2)], Unit(0), at);
+        Self {
+            rows: (rows.top, rows.bottom),
+            band: (band.top, band.bottom),
+        }
+    }
+
+    fn rows(&self) -> core::ops::Range<usize> {
+        self.rows.0..self.rows.1
+    }
+
+    fn band(&self) -> core::ops::Range<usize> {
+        self.band.0..self.band.1
+    }
+}
+
+/// Where a gauge's segments run, and the gap between them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Span {
+    left: usize,
+    right: usize,
+    gap: usize,
+}
+
+impl Span {
+    pub const NONE: Self = Self {
+        left: 0,
+        right: 0,
+        gap: 0,
+    };
+
+    pub fn of(regions: &Regions, at: &Scaled) -> Self {
+        Self {
+            left: regions.text.left,
+            right: regions.text.right,
+            gap: at.unit(3),
+        }
+    }
+
+    fn pitch(&self, segments: usize) -> usize {
+        (self.right - self.left + self.gap) / segments
+    }
+}
+
+pub const fn regions(at: &Scaled) -> Regions {
+    use Track::{Fr, Unit};
+    let body = super::frame(at).body;
+    let [_, text, _] = body.cols([Unit(10), Fr(1), Unit(8)], Unit(0), at);
+    let [_, time, _, speed, _, power, _, heart, _, lower] = body.rows(
+        [
+            Unit(4),
+            Unit(34),
+            Fr(1),
+            Unit(70),
+            Fr(1),
+            Unit(58),
+            Fr(1),
+            Unit(62),
+            Fr(1),
+            Unit(68),
+        ],
+        Unit(0),
+        at,
+    );
+    let [
+        time_on,
+        chip,
+        _,
+        speed_on,
+        _,
+        power_on,
+        _,
+        heart_on,
+        _,
+        lower_on,
+    ] = body.rows(
+        [
+            Unit(42),
+            Unit(38),
+            Fr(1),
+            Unit(57),
+            Fr(1),
+            Unit(56),
+            Fr(1),
+            Unit(60),
+            Fr(1),
+            Unit(43),
+        ],
+        Unit(0),
+        at,
+    );
+    Regions {
+        text,
+        free: [time, speed, power, heart, lower],
+        gauges: [gauge_in(power, at), gauge_in(heart, at)],
+        course: [time_on, chip, speed_on, power_on, heart_on, lower_on],
+    }
+}
+
+const fn gauge_in(band: Rect, at: &Scaled) -> Gauge {
+    use Track::{Fr, Line, Unit};
+    let [_, gap, _] = band.rows([Line(FaceRole::Large), Unit(5), Fr(1)], Unit(0), at);
+    Gauge::under(gap.bottom, at)
+}
+
+struct BaselinesBelowBandTopUnits {
     time: usize,
     speed: usize,
-    speed_faces: &'static [&'static Face],
     power: usize,
     heart: usize,
     lower: usize,
-    gauges: [usize; 2],
+}
+
+const COURSE_BASELINES: BaselinesBelowBandTopUnits = BaselinesBelowBandTopUnits {
+    time: 35,
+    speed: 46,
+    power: 39,
+    heart: 39,
+    lower: 27,
+};
+
+const COURSE_GAUGES_BELOW_BASELINE_UNITS: [usize; 2] = [8, 10];
+
+const fn baseline_below_body_units(mockup_last_cap_row: usize) -> usize {
+    mockup_last_cap_row + 1 - CONTENT.top
+}
+
+struct Rows {
+    time: usize,
+    speed: usize,
+    speed_faces: [&'static Face; 3],
+    speed_count: usize,
+    power: usize,
+    heart: usize,
+    lower: usize,
+    gauges: [Gauge; 2],
+    left: usize,
+    right: usize,
+    gap: usize,
     unit_gap: usize,
+    lower_unit_gap: usize,
     lower_right: usize,
+    caption: &'static Face,
+    value: &'static Face,
+    body: &'static Face,
+    large: &'static Face,
 }
 
-const COURSE_UNIT_INK_GAP: usize = 6;
-const COURSE_LOWER_UNIT_RIGHT: usize = RIGHT + 1;
-
-static HERO_SPEED: [&Face; 3] = [&HERO, &LARGE, &VALUE];
-static COURSE_SPEED: [&Face; 2] = [&LARGE, &VALUE];
-
-fn rows(course: bool) -> Rows {
+fn rows(course: bool, regions: &Regions, at: &Scaled) -> Rows {
+    let face = |role| at.face(role);
+    let (value, large) = (face(FaceRole::Value), face(FaceRole::Large));
+    let common = |rows: Rows| Rows {
+        left: regions.text.left,
+        right: regions.text.right,
+        gap: at.unit(8),
+        lower_unit_gap: at.unit(4),
+        caption: face(FaceRole::Caption),
+        value,
+        body: face(FaceRole::Body),
+        large,
+        ..rows
+    };
     if course {
-        return Rows {
-            time: baseline_under_mockup(58),
-            speed: baseline_under_mockup(149),
-            speed_faces: &COURSE_SPEED,
-            power: baseline_under_mockup(199),
-            heart: baseline_under_mockup(255),
-            lower: baseline_under_mockup(303),
-            gauges: [208, 266],
-            unit_gap: COURSE_UNIT_INK_GAP,
-            lower_right: COURSE_LOWER_UNIT_RIGHT,
-        };
+        let [time, _, speed, power, heart, lower] = regions.course;
+        let below_band_top = |band: Rect, units: usize| band.top + at.unit(units);
+        let units = COURSE_BASELINES;
+        let power = below_band_top(power, units.power);
+        let heart = below_band_top(heart, units.heart);
+        let [power_gauge, heart_gauge] = COURSE_GAUGES_BELOW_BASELINE_UNITS;
+        return common(Rows {
+            time: below_band_top(time, units.time),
+            speed: below_band_top(speed, units.speed),
+            speed_faces: [large, value, value],
+            speed_count: 2,
+            power,
+            heart,
+            lower: below_band_top(lower, units.lower),
+            gauges: [
+                Gauge::under(power + at.unit(power_gauge), at),
+                Gauge::under(heart + at.unit(heart_gauge), at),
+            ],
+            unit_gap: at.unit(6),
+            lower_right: regions.text.right + at.unit(1),
+            ..BLANK
+        });
     }
-    let (power, heart) = (BODY.top + 108, BODY.top + 166);
-    Rows {
-        time: baseline(&VALUE, BODY.top + 4),
-        speed: baseline(&HERO, BODY.top + 38),
-        speed_faces: &HERO_SPEED,
-        power: baseline(&LARGE, power),
-        heart: baseline(&LARGE, heart),
-        lower: baseline(&VALUE, BODY.top + 228),
-        gauges: [power + 47, heart + 47],
-        unit_gap: UNIT_GAP,
-        lower_right: RIGHT,
-    }
+    let [time, speed, power, heart, lower] = regions.free;
+    common(Rows {
+        time: baseline(value, time.top),
+        speed: baseline(face(FaceRole::Hero), speed.top),
+        speed_faces: [face(FaceRole::Hero), large, value],
+        speed_count: 3,
+        power: baseline(large, power.top),
+        heart: baseline(large, heart.top),
+        lower: baseline(value, lower.top),
+        gauges: regions.gauges,
+        unit_gap: at.unit(4),
+        lower_right: regions.text.right,
+        ..BLANK
+    })
 }
+
+const BLANK: Rows = Rows {
+    time: 0,
+    speed: 0,
+    speed_faces: [&firmware_shell::rendering::font::VALUE; 3],
+    speed_count: 0,
+    power: 0,
+    heart: 0,
+    lower: 0,
+    gauges: [Gauge {
+        rows: (0, 0),
+        band: (0, 0),
+    }; 2],
+    left: 0,
+    right: 0,
+    gap: 0,
+    unit_gap: 0,
+    lower_unit_gap: 0,
+    lower_right: 0,
+    caption: &firmware_shell::rendering::font::CAPTION,
+    value: &firmware_shell::rendering::font::VALUE,
+    body: &firmware_shell::rendering::font::BODY,
+    large: &firmware_shell::rendering::font::LARGE,
+};
 
 /// The bottom of `face`'s capitals for a label whose top is `top`.
 const fn baseline(face: &Face, top: usize) -> usize {
@@ -97,14 +348,10 @@ fn on_baseline(
     Label::new(Line::new(face, text), x, top, align, color)
 }
 
-/// The least space between two readings on one line.
-const GAP: usize = 8;
-/// Space between a value and its unit.
-const UNIT_GAP: usize = 4;
-
 #[allow(clippy::too_many_arguments)]
 fn reading(
     labels: &mut Labels,
+    caption: &'static Face,
     faces: &[&'static Face],
     value: &Text<12>,
     unit: &[u8],
@@ -113,14 +360,14 @@ fn reading(
     (align, gap): (Align, usize),
     color: u16,
 ) {
-    let unit_width = CAPTION.width(unit) + SPILL;
+    let unit_width = caption.width(unit) + SPILL;
     let room = right.saturating_sub(left + gap + unit_width);
     let line = Line::fit(faces, value.as_bytes(), room);
     let face = line.face();
     let top = base - face.top as usize - face.cap as usize;
     let (value, unit) = match align {
         Align::Right => {
-            let unit = on_baseline(&CAPTION, unit, right - SPILL, base, Align::Right, SECONDARY);
+            let unit = on_baseline(caption, unit, right - SPILL, base, Align::Right, SECONDARY);
             let value = Label::new(line, unit.left - gap, top, Align::Right, color);
             (value, unit)
         }
@@ -131,7 +378,7 @@ fn reading(
             let at = left + face.ink_width(value.line.text()) + gap;
             (
                 value,
-                on_baseline(&CAPTION, unit, at, base, Align::Left, SECONDARY),
+                on_baseline(caption, unit, at, base, Align::Left, SECONDARY),
             )
         }
     };
@@ -146,70 +393,85 @@ fn value(write: &dyn Fn(&mut Text<12>)) -> Text<12> {
 }
 
 pub(super) fn prepare(view: &View) -> Smooth {
+    let layout = view.frame_layout();
+    let (regions, at) = (&layout.main, &layout.scaled);
+    let span = Span::of(regions, at);
     if view.course && view.nav == Sign::Arrived {
-        return arrived(view);
+        return arrived(view, regions, at);
     }
-    let rows = rows(view.course);
+    let rows = rows(view.course, regions, at);
     let mut smooth = Smooth {
         gauges: Some(rows.gauges),
+        span,
         ..Smooth::default()
     };
+    #[cfg(any(test, feature = "invariants"))]
+    {
+        smooth.tags.course = view.course;
+    }
     let banner_covers_time_and_grade =
         sign::form(RidePage::Main, view.nav) == Some(SignForm::Banner);
     if !banner_covers_time_and_grade {
-        time_and_grade(&mut smooth.labels, view, rows.time);
+        time_and_grade(&mut smooth.labels, view, &rows);
+        smooth.tag(0, Band::Time);
     }
     readings(&mut smooth, view, &rows);
     smooth
 }
 
-fn arrived(view: &View) -> Smooth {
+fn arrived(view: &View, regions: &Regions, at: &Scaled) -> Smooth {
     let totals = &view.totals;
     let mut smooth = Smooth::default();
+    arrived_labels(&mut smooth, view, totals, regions, at);
+    smooth.tag(0, Band::Arrived);
+    smooth
+}
+
+fn arrived_labels(
+    smooth: &mut Smooth,
+    view: &View,
+    totals: &crate::ride::totals::Totals,
+    regions: &Regions,
+    at: &Scaled,
+) {
     let labels = &mut smooth.labels;
+    let (left, right) = (regions.text.left, regions.text.right);
+    let top = regions.course[0].top;
+    let base =
+        |mockup_last_cap_row: usize| top + at.unit(baseline_below_body_units(mockup_last_cap_row));
+    let total_11 = at.face(FaceRole::Total11);
     let caption = |labels: &mut Labels, text: &[u8], x, base, align| {
-        let _ = labels.push(on_baseline(&TOTAL_11, text, x, base, align, SECONDARY));
+        let _ = labels.push(on_baseline(total_11, text, x, base, align, SECONDARY));
     };
-    caption(
-        labels,
-        b"DISTANCE",
-        LEFT,
-        baseline_under_mockup(132),
-        Align::Left,
-    );
+    caption(labels, b"DISTANCE", left, base(132), Align::Left);
     let distance = value(&|v| kilometres(v, totals.distance_mm()));
-    let faces: [&Face; 2] = [&TOTAL_60, &LARGE];
+    let faces = [at.face(FaceRole::Total60), at.face(FaceRole::Large)];
     reading(
         labels,
+        at.face(FaceRole::Caption),
         &faces,
         &distance,
         b"KM",
-        (LEFT, RIGHT),
-        baseline_under_mockup(184),
-        (Align::Left, rows(true).unit_gap),
+        (left, right),
+        base(184),
+        (Align::Left, at.unit(6)),
         WHITE,
     );
-    caption(
-        labels,
-        b"RIDE TIME",
-        LEFT,
-        baseline_under_mockup(210),
-        Align::Left,
-    );
+    caption(labels, b"RIDE TIME", left, base(210), Align::Left);
     let time = value(&|v| elapsed(v, view.active_secs));
     let _ = labels.push(on_baseline(
-        &VALUE,
+        at.face(FaceRole::Value),
         time.as_bytes(),
-        LEFT,
-        baseline_under_mockup(243),
+        left,
+        base(243),
         Align::Left,
         WHITE,
     ));
-    let centre = (LEFT + RIGHT - SPILL) / 2;
+    let centre = (left + right - SPILL) / 2;
     let averages = [
         (
             &b"AVG KM/H"[..],
-            LEFT,
+            left,
             Align::Left,
             value(&|v| speed(v, totals.avg_speed_mm_s())),
             SPEED,
@@ -223,27 +485,26 @@ fn arrived(view: &View) -> Smooth {
         ),
         (
             b"AVG BPM",
-            RIGHT - SPILL,
+            right - SPILL,
             Align::Right,
             value(&|v| whole(v, totals.avg_heart_bpm())),
             HEART,
         ),
     ];
     for (name, x, align, average, color) in averages {
-        caption(labels, name, x, baseline_under_mockup(270), align);
+        caption(labels, name, x, base(270), align);
         let _ = labels.push(on_baseline(
-            &TOTAL_30,
+            at.face(FaceRole::Total30),
             average.as_bytes(),
             x,
-            baseline_under_mockup(300),
+            base(300),
             align,
             color,
         ));
     }
-    smooth
 }
 
-fn time_and_grade(labels: &mut Labels, view: &View, base: usize) {
+fn time_and_grade(labels: &mut Labels, view: &View, rows: &Rows) {
     let sample = view.sample;
     let grade = value(&|v| {
         let _ = match sample.gradient_tenths {
@@ -257,39 +518,42 @@ fn time_and_grade(labels: &mut Labels, view: &View, base: usize) {
             None => v.push_str("--%"),
         };
     });
+    let base = rows.time;
     let grade = on_baseline(
-        &BODY_FACE,
+        rows.body,
         grade.as_bytes(),
-        RIGHT - SPILL,
+        rows.right - SPILL,
         base,
         Align::Right,
         GRADE,
     );
     let time = value(&|v| elapsed(v, view.active_secs));
     let line = Line::fit(
-        &[&VALUE, &BODY_FACE],
+        &[rows.value, rows.body],
         time.as_bytes(),
-        grade.left - GAP - LEFT,
+        grade.left - rows.gap - rows.left,
     );
     let top = base - line.face().top as usize - line.face().cap as usize;
-    let _ = labels.push(Label::new(line, LEFT, top, Align::Left, WHITE));
+    let _ = labels.push(Label::new(line, rows.left, top, Align::Left, WHITE));
     let _ = labels.push(grade);
 }
 
 fn readings(smooth: &mut Smooth, view: &View, rows: &Rows) {
     let sample = view.sample;
-    let labels = &mut smooth.labels;
+    let from = smooth.labels.len();
     let kmh = value(&|v| speed(v, sample.speed_mm_s));
     reading(
-        labels,
-        rows.speed_faces,
+        &mut smooth.labels,
+        rows.caption,
+        &rows.speed_faces[..rows.speed_count],
         &kmh,
         b"KM/H",
-        (LEFT, RIGHT),
+        (rows.left, rows.right),
         rows.speed,
         (Align::Left, rows.unit_gap),
         SPEED,
     );
+    smooth.tag(from, Band::Speed);
 
     let zones = [
         view.power_3s
@@ -298,32 +562,47 @@ fn readings(smooth: &mut Smooth, view: &View, rows: &Rows) {
             .heart_bpm
             .map_or(0, |bpm| view.profile.heart_zone(bpm)),
     ];
-    smooth.band = target_band(view);
+    smooth.band = target_band(view, &smooth.span);
     let watts = value(&|v| whole(v, view.power_3s));
     let bpm = value(&|v| whole(v, sample.heart_bpm));
     let lines = [
         (watts, &b"W"[..], rows.power, POWER),
         (bpm, &b"BPM"[..], rows.heart, HEART),
     ];
-    for ((text, unit, base, color), zone) in lines.into_iter().zip(zones) {
+    for (((text, unit, base, color), zone), band) in
+        lines.into_iter().zip(zones).zip([Band::Power, Band::Heart])
+    {
+        let from = smooth.labels.len();
+        let labels = &mut smooth.labels;
         let mut name = Text::<12>::new();
         let _ = match zone {
             0 => name.push_str("Z-"),
             z => write!(name, "Z{z}"),
         };
         let zone = on_baseline(
-            &BODY_FACE,
+            rows.body,
             name.as_bytes(),
-            RIGHT - SPILL,
+            rows.right - SPILL,
             base,
             Align::Right,
             zone_color(zone),
         );
-        let faces: [&Face; 2] = [&LARGE, &VALUE];
-        let span = (LEFT, zone.left - GAP);
+        let faces = [rows.large, rows.value];
+        let span = (rows.left, zone.left - rows.gap);
         let side = (Align::Left, rows.unit_gap);
-        reading(labels, &faces, &text, unit, span, base, side, color);
+        reading(
+            labels,
+            rows.caption,
+            &faces,
+            &text,
+            unit,
+            span,
+            base,
+            side,
+            color,
+        );
         let _ = labels.push(zone);
+        smooth.tag(from, band);
     }
 
     let [left, right] = [view.main_slots.left, view.main_slots.right];
@@ -331,19 +610,22 @@ fn readings(smooth: &mut Smooth, view: &View, rows: &Rows) {
     for (reading, text) in [left, right].into_iter().zip(&mut shown) {
         reading.write(view, text);
     }
-    lower(labels, [left, right], &shown, rows);
+    let from = smooth.labels.len();
+    lower(&mut smooth.labels, [left, right], &shown, rows);
+    smooth.tag(from, Band::Lower);
 }
 
 /// The last line: the chosen readings split it between them, the first
 /// from the left edge and the second from the right.
 fn lower(labels: &mut Labels, readings: [Reading; 2], values: &[Text<12>; 2], rows: &Rows) {
     let base = rows.lower;
-    let middle = (LEFT + RIGHT) / 2;
-    let faces: [&Face; 2] = [&VALUE, &BODY_FACE];
+    let middle = (rows.left + rows.right) / 2;
+    let faces = [rows.value, rows.body];
     let [left, right] = readings;
-    let span = (LEFT, middle - GAP / 2);
+    let span = (rows.left, middle - rows.gap / 2);
     reading(
         labels,
+        rows.caption,
         &faces,
         &values[0],
         left.unit(),
@@ -352,22 +634,23 @@ fn lower(labels: &mut Labels, readings: [Reading; 2], values: &[Text<12>; 2], ro
         (Align::Left, rows.unit_gap),
         left.color(),
     );
-    let span = (middle + GAP / 2, rows.lower_right);
+    let span = (middle + rows.gap / 2, rows.lower_right);
     reading(
         labels,
+        rows.caption,
         &faces,
         &values[1],
         right.unit(),
         span,
         base,
-        (Align::Right, UNIT_GAP),
+        (Align::Right, rows.lower_unit_gap),
         right.color(),
     );
 }
 
 /// Where a reading falls on gauge `i`: the zone it is in, and the share of
 /// that zone's segment below it.
-fn gauge_x(view: &View, i: usize, value: u16) -> usize {
+fn gauge_x(view: &View, span: &Span, i: usize, value: u16) -> usize {
     let profile = &view.profile;
     let (zone, (low, high)) = if i == 0 {
         let zone = profile.power_zone(value);
@@ -376,14 +659,16 @@ fn gauge_x(view: &View, i: usize, value: u16) -> usize {
         let zone = profile.heart_zone(value);
         (zone, profile.heart_range(zone))
     };
-    let pitch = (RIGHT - LEFT + GAUGE_GAP) / SEGMENTS[i];
-    let width = pitch - GAUGE_GAP;
+    let pitch = span.pitch(SEGMENTS[i]);
+    let width = pitch - span.gap;
     let within = u32::from(value).clamp(low, high) - low;
-    LEFT + usize::from(zone - 1) * pitch + width * within as usize / (high - low).max(1) as usize
+    span.left
+        + usize::from(zone - 1) * pitch
+        + width * within as usize / (high - low).max(1) as usize
 }
 
 /// The step's target band under its gauge, while a workout step has one.
-fn target_band(view: &View) -> Option<(usize, core::ops::Range<usize>)> {
+fn target_band(view: &View, span: &Span) -> Option<(usize, core::ops::Range<usize>)> {
     use crate::workout::model::Metric;
     let training = view.training.as_ref().filter(|t| !t.done)?;
     let band = training.now.band?;
@@ -392,26 +677,23 @@ fn target_band(view: &View) -> Option<(usize, core::ops::Range<usize>)> {
         Metric::Heart => 1,
         Metric::Cadence => return None,
     };
-    let from = gauge_x(view, i, band.low);
-    let to = gauge_x(view, i, band.high).max(from + 3).min(RIGHT);
+    let from = gauge_x(view, span, i, band.low);
+    let to = gauge_x(view, span, i, band.high)
+        .max(from + 3)
+        .min(span.right);
     Some((i, from..to))
-}
-
-fn band_rows(gauge: usize) -> core::ops::Range<usize> {
-    let top = gauge + GAUGE_HEIGHT + BAND_GAP;
-    top..top + BAND_HEIGHT
 }
 
 fn band(smooth: &Smooth) -> Option<(core::ops::Range<usize>, core::ops::Range<usize>)> {
     let (i, columns) = smooth.band.clone()?;
-    Some((band_rows(smooth.gauges?[i]), columns))
+    Some((smooth.gauges?[i].band(), columns))
 }
 
 pub(super) fn parts(scene: &Scene, parts: &mut Parts) {
     let smooth = scene.smooth();
-    for (&top, mark) in smooth.gauges.iter().flatten().zip(&scene.gauges) {
-        parts.add(band_rows(top), &smooth.band);
-        parts.add(top..top + GAUGE_HEIGHT, mark);
+    for (gauge, mark) in smooth.gauges.iter().flatten().zip(&scene.gauges) {
+        parts.add(gauge.band(), &smooth.band);
+        parts.add(gauge.rows(), mark);
     }
     for label in &smooth.labels {
         parts.add(label.top..label.bottom(), label);
@@ -427,10 +709,10 @@ pub(super) fn paint(scene: &Scene, row: &mut Row) {
     {
         row.span(columns, WHITE);
     }
-    for (i, &top) in smooth.gauges.iter().flatten().enumerate() {
-        if (top..top + GAUGE_HEIGHT).contains(&y) {
+    for (i, gauge) in smooth.gauges.iter().flatten().enumerate() {
+        if gauge.rows().contains(&y) {
             let mark = scene.gauges[i].unwrap_or_default();
-            paint_gauge(row, mark.zone, mark.fill.into(), SEGMENTS[i], top);
+            paint_gauge(row, &smooth.span, mark, SEGMENTS[i], gauge);
             return;
         }
     }
@@ -451,10 +733,10 @@ pub(super) fn reference_pixel(scene: &Scene, x: usize, y: usize) -> Shown {
     {
         return look.ink(WHITE);
     }
-    for (i, &top) in smooth.gauges.iter().flatten().enumerate() {
-        if (top..top + GAUGE_HEIGHT).contains(&y) {
+    for (i, gauge) in smooth.gauges.iter().flatten().enumerate() {
+        if gauge.rows().contains(&y) {
             let mark = scene.gauges[i].unwrap_or_default();
-            let Some(at) = gauge(mark.zone, mark.fill.into(), SEGMENTS[i], x, y, top) else {
+            let Some(at) = self::gauge(&smooth.span, mark, SEGMENTS[i], x, y, gauge) else {
                 return black;
             };
             let color = segment_color(at.segment, at.lit);
@@ -470,26 +752,28 @@ pub(super) fn reference_pixel(scene: &Scene, x: usize, y: usize) -> Shown {
 }
 
 /// The column where gauge `i`'s lit run ends for `mark`.
-pub(super) fn gauge_end(i: usize, mark: Mark) -> usize {
-    let pitch = (RIGHT - LEFT + GAUGE_GAP) / SEGMENTS[i];
-    let width = pitch - GAUGE_GAP;
-    LEFT + usize::from(mark.zone.saturating_sub(1)) * pitch
+pub(super) fn gauge_end(span: &Span, i: usize, mark: Mark) -> usize {
+    let pitch = span.pitch(SEGMENTS[i]);
+    let width = pitch - span.gap;
+    span.left
+        + usize::from(mark.zone.saturating_sub(1)) * pitch
         + width * usize::from(mark.fill) / GAUGE_WIDTH
 }
 
 /// `gauge` as spans: each segment lit up to its split, then the dim track,
 /// with only its rounded ends worked out per pixel.
-fn paint_gauge(row: &mut Row, zone: u8, fill: usize, segments: usize, top: usize) {
-    let y = row.y();
-    let pitch = (RIGHT - LEFT + GAUGE_GAP) / segments;
-    let width = pitch - GAUGE_GAP;
+fn paint_gauge(row: &mut Row, span: &Span, mark: Mark, segments: usize, gauge: &Gauge) {
+    let pitch = span.pitch(segments);
+    let width = pitch - span.gap;
+    let (zone, fill) = (mark.zone, usize::from(mark.fill));
     let lit = usize::from(zone);
     let black = row.ink(BLACK);
     let inks: [[Shown; 2]; MOST_SEGMENTS] = core::array::from_fn(|segment| {
         [false, true].map(|lit| row.ink(segment_color(segment, lit)))
     });
+    let y = row.y();
     for (segment, &[track, color]) in inks.iter().enumerate().take(segments) {
-        let left = LEFT + segment * pitch;
+        let left = span.left + segment * pitch;
         let split = if segment + 1 < lit {
             width
         } else if segment + 1 == lit {
@@ -500,7 +784,7 @@ fn paint_gauge(row: &mut Row, zone: u8, fill: usize, segments: usize, top: usize
         row.span_shown(left..left + split, color);
         row.span_shown(left + split..left + width, track);
         let end = |x| {
-            let at = gauge(zone, fill, segments, x, y, top)?;
+            let at = self::gauge(span, mark, segments, x, y, gauge)?;
             let shown = inks[at.segment][usize::from(at.lit)];
             Some(blend(shown, black, at.coverage))
         };
@@ -523,31 +807,29 @@ fn segment_color(segment: usize, lit: bool) -> u16 {
     }
 }
 
-/// A row of rounded segments, one per zone: those below `zone` lit in their
-/// colours, the current one lit `fill` / `GAUGE_WIDTH` of the way through
-/// its range, the rest a dim track.
 fn gauge(
-    zone: u8,
-    fill: usize,
+    span: &Span,
+    mark: Mark,
     segments: usize,
     x: usize,
     y: usize,
-    top: usize,
+    gauge: &Gauge,
 ) -> Option<GaugePixel> {
-    if !(LEFT..RIGHT).contains(&x) {
+    if !(span.left..span.right).contains(&x) {
         return None;
     }
-    let pitch = (RIGHT - LEFT + GAUGE_GAP) / segments;
-    let segment = (x - LEFT) / pitch;
-    let left = LEFT + segment * pitch;
+    let pitch = span.pitch(segments);
+    let segment = (x - span.left) / pitch;
+    let left = span.left + segment * pitch;
     let rect = Rect {
         left,
-        top,
-        right: left + pitch - GAUGE_GAP,
-        bottom: top + GAUGE_HEIGHT,
+        top: gauge.rows.0,
+        right: left + pitch - span.gap,
+        bottom: gauge.rows.1,
     };
-    let zone = usize::from(zone);
-    let width = pitch - GAUGE_GAP;
+    let zone = usize::from(mark.zone);
+    let width = pitch - span.gap;
+    let fill = usize::from(mark.fill);
     let lit = segment + 1 < zone || (segment + 1 == zone && x - left < width * fill / GAUGE_WIDTH);
     Some(GaugePixel {
         segment,
@@ -558,8 +840,12 @@ fn gauge(
 
 #[cfg(test)]
 mod tests {
+    use super::super::{BODY, LEFT, RIGHT};
     use super::*;
     use crate::ride::log::{Sample, Status};
+    use crate::screens::scaled::BASE;
+
+    const UNIT_GAP: usize = 4;
     use crate::screens::chrome::layout::{assert_apart, assert_shown, text};
     use crate::screens::ride::slots::Slots;
     use crate::screens::workout::Page;
@@ -634,12 +920,12 @@ mod tests {
 
     fn items(view: &View) -> Vec<(String, Rect)> {
         let mut items: Vec<_> = view.smooth().labels.iter().filter_map(text).collect();
-        for (i, &top) in view.smooth().gauges.iter().flatten().enumerate() {
+        for (i, gauge) in view.smooth().gauges.iter().flatten().enumerate() {
             let rect = Rect {
                 left: LEFT,
-                top,
+                top: gauge.rows.0,
                 right: RIGHT,
-                bottom: top + GAUGE_HEIGHT,
+                bottom: gauge.rows.1,
             };
             items.push((std::format!("gauge {i}"), rect));
         }
@@ -672,7 +958,10 @@ mod tests {
                 let (gauge, columns) = view.smooth().band.clone().expect("a power target");
                 assert_eq!(gauge, 0);
                 let band = player.now(&view.profile).band.unwrap();
-                assert_eq!(columns.start, gauge_x(&view, 0, band.low));
+                assert_eq!(
+                    columns.start,
+                    gauge_x(&view, &view.smooth().span, 0, band.low)
+                );
                 assert!(columns.end > columns.start + 2);
                 let bounds = Rect {
                     left: BODY.left,
@@ -744,7 +1033,12 @@ mod tests {
                 for (reading, text) in [left, right].into_iter().zip(&mut texts) {
                     let _ = text.push_str(WIDEST_VALUES[usize::from(reading.id())]);
                 }
-                lower(&mut labels, [left, right], &texts, &rows(false));
+                lower(
+                    &mut labels,
+                    [left, right],
+                    &texts,
+                    &rows(false, &regions(&BASE), &BASE),
+                );
                 let items: Vec<_> = labels.iter().filter_map(text).collect();
                 let what = std::format!("{} | {}", left.name(), right.name());
                 assert_apart(&items, bounds, &what);

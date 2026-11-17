@@ -1,0 +1,14 @@
+[device]
+name = "small"
+
+[panel]
+width = 180
+height = 240
+
+[controls]
+touch = true
+buttons = [
+  { id = 0, role = "back" },
+  { id = 1, role = "move" },
+  { id = 2, role = "act" },
+]

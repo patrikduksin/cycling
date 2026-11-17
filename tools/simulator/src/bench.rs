@@ -276,6 +276,7 @@ pub(crate) mod scenes {
     /// Paint the next frame `frames` times, plus once counted.
     #[track_caller]
     pub fn measure(sim: &mut Sim, frames: u32) -> Request {
+        vana::screens::check::enable(false);
         sim.device.shell.forget_panel();
         let display = sim.device.display.clone();
         display.0.borrow_mut().check_skipped_rows = false;

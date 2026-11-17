@@ -367,6 +367,7 @@ mod tests {
                 notes: &notes,
                 end_ms: 6_000,
                 rides: Vec::new(),
+                hashes: None,
             })
             .unwrap();
         let video = ["video.mp4", "video.gif"]

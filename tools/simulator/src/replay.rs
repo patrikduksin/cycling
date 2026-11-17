@@ -43,11 +43,20 @@ impl Sink for Blocks {
 }
 
 /// The media as a session found it before its first pass.
-#[derive(Clone)]
 pub struct Origin {
     pub(crate) flash: FileFlash,
     pub bulk: SimBulk,
     pub(crate) boot: u32,
+}
+
+impl Origin {
+    pub fn untapped(&self) -> Self {
+        Self {
+            flash: self.flash.untapped(),
+            bulk: self.bulk.untapped(),
+            boot: self.boot,
+        }
+    }
 }
 
 /// Everything a replay needs: where the media stood and what was read.
@@ -718,7 +727,7 @@ impl Sources {
             position: ReplayPosition(Served::new("position", &ledger)),
             companion: ReplayCompanion(Served::new("companion report", &ledger)),
             bulk: ReplayBulk {
-                media: shelled.bulk.clone(),
+                media: shelled.bulk.untapped(),
                 entropy: entropy.clone(),
             },
             access_point: ReplayAccessPoint {

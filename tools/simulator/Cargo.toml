@@ -14,7 +14,7 @@ planted-bug = ["vana/planted-bug"]
 
 [dependencies]
 device-api = { path = "../../packages/device-api" }
-firmware-services = { path = "../../packages/services" }
+firmware-services = { path = "../../packages/services", features = ["testing"] }
 firmware-shell = { path = "../../packages/shell", features = ["std", "work-counters"] }
 firmware-console = { path = "../../packages/console" }
 vana = { path = "../../apps/vana" }

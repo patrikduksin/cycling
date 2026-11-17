@@ -183,6 +183,7 @@ pub struct Outcome<'a> {
     pub notes: &'a [Note],
     pub end_ms: u64,
     pub rides: Vec<RideSummary>,
+    pub hashes: Option<crate::compare::Hashes>,
 }
 
 pub struct RideSummary {
@@ -358,6 +359,12 @@ impl Recording {
         for ride in &outcome.rides {
             fs::write(self.dir.join(format!("ride-{}.gpx", ride.id)), &ride.gpx)?;
             fs::write(self.dir.join(format!("ride-{}.json", ride.id)), &ride.json)?;
+        }
+        if let Some(hashes) = &outcome.hashes {
+            fs::write(self.dir.join("hashes.json"), hashes.json())?;
+            if let Some(run) = self.dir.parent() {
+                fs::write(run.join(crate::compare::MARKER), "")?;
+            }
         }
         fs::write(self.dir.join("timeline.txt"), timeline(outcome.notes))?;
         fs::write(
@@ -724,6 +731,7 @@ mod tests {
             notes: &[note(0)],
             end_ms: 6_000_000,
             rides: Vec::new(),
+            hashes: None,
         };
         let shown = recording(&frames).shots(&outcome);
         assert!(shown.len() < frames.len() / 2, "{} shots", shown.len());
@@ -759,6 +767,7 @@ mod tests {
             notes,
             end_ms,
             rides: Vec::new(),
+            hashes: None,
         };
         let shots = recording.shots(&outcome);
         shots.iter().map(|(_, shot)| u64::from(shot.hold_ms)).sum()

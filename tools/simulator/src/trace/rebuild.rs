@@ -428,7 +428,7 @@ fn ends(slot: &[u8; SLOT_SIZE]) -> Option<u32> {
 fn internal_flash(boot: u32, settings: &[u8], journal: Option<&[u8]>) -> Result<FileFlash, String> {
     let blank = FileFlash::memory();
     let (settings, _) = firmware_shell::preferences::decode(Some(settings));
-    firmware_shell::storage::Store::new(blank.clone())
+    firmware_shell::storage::Store::new(blank.untapped())
         .save(settings)
         .map_err(|error| format!("the settings do not save: {error:?}"))?;
     let (_, configuration, mut data) = blank.image().expect("memory media");

@@ -75,12 +75,46 @@ struct MemoryMedia {
     configuration: Vec<u8>,
     data: Vec<u8>,
 }
-#[derive(Clone)]
 pub struct FileFlash {
     backing: Backing,
     pub fault: Rc<RefCell<Fault>>,
+    tap: Option<crate::compare::Tap>,
 }
 impl FileFlash {
+    fn on(backing: Backing) -> Self {
+        Self {
+            backing,
+            fault: Rc::default(),
+            tap: None,
+        }
+    }
+    pub(crate) fn tapped(self, tap: Option<crate::compare::Tap>) -> Self {
+        Self { tap, ..self }
+    }
+    pub fn untapped(&self) -> Self {
+        Self {
+            backing: self.backing.clone(),
+            fault: self.fault.clone(),
+            tap: None,
+        }
+    }
+    pub(crate) fn device_handle(&self) -> Self {
+        self.untapped().tapped(self.tap.clone())
+    }
+    fn fold_device_result(
+        &self,
+        r: Region,
+        op: StorageOp,
+        offset: usize,
+        len: usize,
+        result: Result<(), Error>,
+    ) -> Result<(), Error> {
+        if let Some(tap) = &self.tap {
+            let folded = result.map_err(StorageError::from_flash);
+            tap.storage(r.into(), op, offset as u64, len as u64, folded);
+        }
+        result
+    }
     /// Reset injected faults and advance the persisted session generation.
     pub(crate) fn begin_boot(&self) -> io::Result<u32> {
         *self.fault.borrow_mut() = Fault::default();
@@ -138,24 +172,18 @@ impl FileFlash {
                 Err(e) => return Err(e),
             }
         }
-        Ok(Self {
-            backing: Backing::Files {
-                root: root.to_path_buf(),
-                _lock: Rc::new(lock),
-            },
-            fault: Rc::default(),
-        })
+        Ok(Self::on(Backing::Files {
+            root: root.to_path_buf(),
+            _lock: Rc::new(lock),
+        }))
     }
     /// Erased media that lives as long as any clone, for fast scenarios.
     pub fn memory() -> Self {
-        Self {
-            backing: Backing::Memory(Rc::new(RefCell::new(MemoryMedia {
-                boot: 0,
-                configuration: vec![0xff; 8192],
-                data: vec![0xff; DATA_BYTES],
-            }))),
-            fault: Rc::default(),
-        }
+        Self::on(Backing::Memory(Rc::new(RefCell::new(MemoryMedia {
+            boot: 0,
+            configuration: vec![0xff; 8192],
+            data: vec![0xff; DATA_BYTES],
+        }))))
     }
     /// Separate memory media holding these bytes, whose next boot is
     /// `boot`. `None` for file-backed media.
@@ -164,14 +192,13 @@ impl FileFlash {
             return None;
         };
         let media = media.borrow();
-        Some(Self {
-            backing: Backing::Memory(Rc::new(RefCell::new(MemoryMedia {
+        Some(Self::on(Backing::Memory(Rc::new(RefCell::new(
+            MemoryMedia {
                 boot: boot.checked_sub(1)?,
                 configuration: media.configuration.clone(),
                 data: media.data.clone(),
-            }))),
-            fault: Rc::default(),
-        })
+            },
+        )))))
     }
     /// Memory media's boot counter, configuration and data bytes, to save
     /// them; `None` for file-backed media.
@@ -183,14 +210,11 @@ impl FileFlash {
         Some((media.boot, media.configuration.clone(), media.data.clone()))
     }
     pub fn from_image(boot: u32, configuration: Vec<u8>, data: Vec<u8>) -> Self {
-        Self {
-            backing: Backing::Memory(Rc::new(RefCell::new(MemoryMedia {
-                boot,
-                configuration,
-                data,
-            }))),
-            fault: Rc::default(),
-        }
+        Self::on(Backing::Memory(Rc::new(RefCell::new(MemoryMedia {
+            boot,
+            configuration,
+            data,
+        }))))
     }
     /// A copy of a region's bytes, for inspection after a scenario.
     pub fn contents(&mut self, r: Region) -> Vec<u8> {
@@ -289,6 +313,22 @@ impl OwnedFlash for FileFlash {
         }
     }
     fn read(&mut self, r: Region, offset: usize, out: &mut [u8]) -> Result<(), Error> {
+        let result = self.guest_read(r, offset, out);
+        self.fold_device_result(r, StorageOp::Read, offset, out.len(), result)
+    }
+    fn program(&mut self, r: Region, offset: usize, bytes: &[u8]) -> Result<(), Error> {
+        let result = self.mutation(r, offset, bytes, false);
+        self.fold_device_result(r, StorageOp::Write, offset, bytes.len(), result)
+    }
+    fn erase(&mut self, r: Region, offset: usize, len: usize) -> Result<(), Error> {
+        let result = self
+            .check(r, offset, len, 4096)
+            .and_then(|()| self.mutation(r, offset, &vec![0xff; len], true));
+        self.fold_device_result(r, StorageOp::Erase, offset, len, result)
+    }
+}
+impl FileFlash {
+    fn guest_read(&self, r: Region, offset: usize, out: &mut [u8]) -> Result<(), Error> {
         self.check(r, offset, out.len(), 1)?;
         let fault = self
             .fault
@@ -299,15 +339,7 @@ impl OwnedFlash for FileFlash {
         }
         self.raw_read(r, offset, out)
     }
-    fn program(&mut self, r: Region, offset: usize, bytes: &[u8]) -> Result<(), Error> {
-        self.mutation(r, offset, bytes, false)
-    }
-    fn erase(&mut self, r: Region, offset: usize, len: usize) -> Result<(), Error> {
-        self.check(r, offset, len, 4096)?;
-        self.mutation(r, offset, &vec![0xff; len], true)
-    }
-}
-impl FileFlash {
+
     /// The region's bytes, as a host reading the medium sees them: no fault
     /// meets it and the device's operations do not count it.
     fn raw_read(&self, r: Region, offset: usize, out: &mut [u8]) -> Result<(), Error> {

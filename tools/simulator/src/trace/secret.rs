@@ -8,7 +8,7 @@ use firmware_services::trace::{self, Event};
 /// Each secret in `capture`, with where it is.
 pub fn secrets(capture: &Capture) -> Vec<String> {
     let mut found = Vec::new();
-    let mut store = firmware_shell::storage::Store::new(capture.origin.flash.clone());
+    let mut store = firmware_shell::storage::Store::new(capture.origin.flash.untapped());
     if let Ok(loaded) = store.load()
         && loaded.settings.wifi.is_some()
     {

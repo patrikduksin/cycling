@@ -27,6 +27,8 @@ pub mod origin;
 pub mod redact;
 pub mod shell;
 pub mod spool;
+#[cfg(feature = "testing")]
+pub mod tapped;
 #[cfg(test)]
 mod tests;
 

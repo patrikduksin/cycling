@@ -1,6 +1,7 @@
 //! Scenario driver for the simulated device: press buttons, change the world,
 //! let time pass and read what the screen shows.
 use crate::ant::AntSensor;
+use crate::compare::Tap;
 use crate::recording::{Outcome, Recording};
 use crate::route::Route;
 use crate::screen::{Frame, Look, TextRun};
@@ -194,7 +195,12 @@ pub struct Sim {
 impl Sim {
     /// A powered-off C606 with VANA, an ANT radio and empty memory media.
     pub fn new() -> Self {
-        Self::with(Recording::from_env)
+        Self::with(Recording::from_env, requested_tap())
+    }
+
+    /// Like `new`, in comparison mode whatever the environment says.
+    pub fn comparing() -> Self {
+        Self::with(Recording::from_env, Some(Tap::default()))
     }
 
     /// Like `new`, recorded under `name` rather than the test thread's name.
@@ -204,11 +210,18 @@ impl Sim {
     }
 
     pub fn named(name: &str) -> Self {
-        Self::with(|width, height| Recording::named(name, width, height))
+        Self::with(
+            |width, height| Recording::named(name, width, height),
+            requested_tap(),
+        )
     }
 
-    fn with(recording: impl FnOnce(usize, usize) -> Option<Recording>) -> Self {
-        let device = Session::device().expect("memory media always opens");
+    fn with(recording: impl FnOnce(usize, usize) -> Option<Recording>, tap: Option<Tap>) -> Self {
+        let device = match tap {
+            Some(tap) => Session::comparing(tap),
+            None => Session::device(),
+        };
+        let device = device.expect("memory media always opens");
         let geometry = device.display.0.borrow().geometry;
         Self {
             recording: recording(geometry.width, geometry.height),
@@ -1045,6 +1058,21 @@ impl Sim {
         Some(bytes)
     }
 
+    /// The names in the FILES volume, as a host lists them.
+    pub fn file_names(&mut self) -> Option<Vec<String>> {
+        use firmware_services::{files, volume};
+        let mut sector = [0u8; 512];
+        let mut media = self.device.bulk.host();
+        let mut store = volume::open(&mut media, &volume::FILES, &mut sector).ok()?;
+        let dir = files::mount(&mut store, &mut sector).ok()?;
+        let mut names = Vec::new();
+        dir.list(&mut store, &mut sector, |entry| {
+            names.push(entry.name.as_str().to_string())
+        })
+        .ok()?;
+        Some(names)
+    }
+
     /// Format an empty store in the bulk region's STORE volume, as the
     /// owner's `STORE FORMAT CONFIRM` would: the volume table is created
     /// first if there is none.
@@ -1132,7 +1160,7 @@ impl Sim {
         match store {
             Store::Settings => {
                 let mut journal = firmware_services::storage::Journal::new(
-                    self.device.media.clone(),
+                    self.device.media.untapped(),
                     Region::Configuration,
                 );
                 journal.save(b"another version").expect("the journal saves");
@@ -1203,6 +1231,16 @@ impl Sim {
         crate::rides::read(&self.ride_media())
     }
 
+    /// The scenario's comparison hashes as they stand: the media now, and
+    /// every session so far with the current one as if it ended now.
+    pub fn hashes(&mut self) -> Option<crate::compare::Hashes> {
+        let tap = self.device.tap.clone()?;
+        Some(tap.hashes(crate::compare::media(
+            &mut self.device.media,
+            &self.device.bulk,
+        )))
+    }
+
     /// A readable summary of what the device and world look like right now.
     pub fn describe(&self) -> String {
         let mut out = String::new();
@@ -1223,6 +1261,16 @@ impl Drop for Sim {
             return;
         };
         let name = recording.name.clone();
+        let hashes = if std::thread::panicking() {
+            Ok(None)
+        } else {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.hashes()))
+        };
+        let (hashes, unhashed) = match hashes {
+            Ok(hashes) => (hashes, None),
+            Err(panic) => (None, Some(panic)),
+        };
+        let compared = hashes.is_some();
         // A second panic while a failed scenario unwinds would abort the whole
         // test binary, so artifact work never unwinds out of here.
         let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1231,14 +1279,32 @@ impl Drop for Sim {
                 notes: &self.notes,
                 end_ms: self.now(),
                 rides,
+                hashes,
             })
         }));
-        match written {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => eprintln!("scenario artifacts for {name}: {error}"),
-            Err(_) => eprintln!("scenario artifacts for {name} panicked"),
+        let written = match written {
+            Ok(Ok(())) => true,
+            Ok(Err(error)) => {
+                eprintln!("scenario artifacts for {name}: {error}");
+                false
+            }
+            Err(_) => {
+                eprintln!("scenario artifacts for {name} panicked");
+                false
+            }
+        };
+        if let Some(panic) = unhashed {
+            std::panic::resume_unwind(panic);
         }
+        assert!(
+            written || !compared,
+            "{name} passed, but its comparison hashes were not written"
+        );
     }
+}
+
+fn requested_tap() -> Option<Tap> {
+    crate::compare::requested().then(Tap::default)
 }
 
 impl Default for Sim {

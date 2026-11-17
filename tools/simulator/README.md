@@ -49,6 +49,43 @@ any worktree, runs only the current checkout. `cycling sim-compare --fill <commi
 caches a commit's run ahead of time, for a merge to call on each new main;
 concurrent misses on one base build it once.
 
+Comparison mode (`src/compare.rs`) proves that a refactor changed nothing the
+screens cannot show. It is a switch at run time: a `Sim` made while
+`SIM_COMPARE=1` is set compares, and so does one made with `Sim::comparing`.
+A `Sim` that does not compare has no tap, and its logger keeps warnings and
+errors only, at most 64 a pass. Each comparing scenario writes
+`hashes.json` with three SHA-256 hashes, and its run directory gets a
+`comparison-mode` marker:
+
+- `trace`: every event the recorder takes, before the spool can refuse its
+  block, the BLE requests the trace passes through unrecorded, and every log
+  line as it is logged, VANA's `info` lines included, with its pass time. A
+  line belongs to the device whose code ran last on the thread, so one a test
+  logs between passes counts after that device's last pass. A line logged
+  before any comparing device exists on the thread is not hashed. Each
+  session is folded in with its ordinal when it ends, so a difference before
+  a reboot counts.
+- `storage`: every operation on internal flash and the card through the
+  device's handles, with medium, offset, length and result. A scenario's setup
+  through those handles counts too, such as `sim.device.media.program`. Host
+  handles (`host_bulk`, `put_file`, `file`), `untapped` handles and copies of
+  the media do not, and neither do the trace spool's own card writes, which go through host
+  handles.
+- `media`: what the media hold at the end. Internal regions and card sectors
+  count as bytes, FILES and STORE by file name and bytes, and the trace spool
+  is left out. A FILES or STORE volume with a file that does not read whole,
+  a lost record included, counts as its raw sectors instead, all but the
+  spool's chunks.
+
+Every value is hashed as explicit bytes in the trace's own codes, never as
+Rust `Debug` text, so a rename changes no hash. A passing scenario whose
+hashes cannot be taken or written fails. `cycling sim-compare` runs both sides
+with `SIM_COMPARE=1` and `CYCLING_BUILD_COMMIT` set to forty zeros, so the
+header's commit and the `INFO` reply match. A side has comparison mode when its run wrote the marker. The report
+lists every scenario whose hashes differ from the base, and every scenario
+that wrote no hashes on a side that has comparison mode. It reports and never
+fails: a PR that changes behavior on purpose names the hashes it changes.
+
 `cycling sim-live` opens a window (`src/bin/sim-live.rs`, behind the `live`
 feature) onto `live.rs`: the device powers on beside a rider at 25 km/h on a
 loop route with GPS and ANT heart-rate, power, speed/cadence and radar sensors

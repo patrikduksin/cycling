@@ -2,6 +2,7 @@ pub mod ant;
 pub mod artifacts;
 pub mod bench;
 pub mod bulk;
+pub mod compare;
 pub mod devices;
 mod flows;
 pub mod fuzz;

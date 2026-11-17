@@ -21,6 +21,26 @@ use device_api::sound::{self, Sound};
 /// Where a pass's events go.
 pub trait Record {
     fn record(&mut self, event: &Event<'_>);
+
+    /// A call that reaches the device unrecorded, shown to a tap.
+    #[cfg(feature = "testing")]
+    fn passed(&mut self, _call: Passed) {}
+}
+
+/// Watches a recorder from outside the trace: every event before its sink
+/// can refuse the block, and the calls that pass through unrecorded.
+#[cfg(feature = "testing")]
+pub trait Tap {
+    fn event(&mut self, event: &Event<'_>);
+    fn passed(&mut self, call: Passed);
+}
+
+/// A call the trace passes through unrecorded, as a tap sees it.
+#[cfg(feature = "testing")]
+#[derive(Clone, Copy, Debug)]
+pub enum Passed {
+    BleRequest(ble_transport::Operation, Result<(), Error>),
+    BleReconnect(Result<(), Error>),
 }
 
 /// Where sealed event blocks go, in order.
@@ -38,6 +58,8 @@ pub struct Recorder<B, S> {
     sink: S,
     lost: Lost,
     quiet: Option<u64>,
+    #[cfg(feature = "testing")]
+    tap: Option<std::boxed::Box<dyn Tap>>,
 }
 
 /// Blocks the sink refused since it last took one.
@@ -55,7 +77,14 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Recorder<B, S> {
             sink,
             lost: Lost::default(),
             quiet: None,
+            #[cfg(feature = "testing")]
+            tap: None,
         }
+    }
+
+    #[cfg(feature = "testing")]
+    pub fn tap(&mut self, tap: std::boxed::Box<dyn Tap>) {
+        self.tap = Some(tap);
     }
 
     /// A pass that is recorded only when something else is recorded in it:
@@ -125,8 +154,19 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Record for Recorder<B, S> {
         {
             self.record(&Event::Pass { now_ms });
         }
+        #[cfg(feature = "testing")]
+        if let Some(tap) = &mut self.tap {
+            tap.event(event);
+        }
         if self.push(event) == Err(Full::Record) {
             let _ = self.push(&Event::TooLarge(event.tag()));
+        }
+    }
+
+    #[cfg(feature = "testing")]
+    fn passed(&mut self, call: Passed) {
+        if let Some(tap) = &mut self.tap {
+            tap.passed(call);
         }
     }
 }
@@ -136,6 +176,13 @@ impl<T: Record> Record for Option<T> {
     fn record(&mut self, event: &Event<'_>) {
         if let Some(record) = self {
             record.record(event);
+        }
+    }
+
+    #[cfg(feature = "testing")]
+    fn passed(&mut self, call: Passed) {
+        if let Some(record) = self {
+            record.passed(call);
         }
     }
 }
@@ -492,7 +539,12 @@ pub struct PassBle<'a, B: ?Sized, R: ?Sized> {
 
 impl<B: Ble + ?Sized, R: Record + ?Sized> Ble for PassBle<'_, B, R> {
     fn request(&mut self, operation: ble_transport::Operation) -> Result<(), Error> {
-        self.inner.request(operation)
+        let result = self.inner.request(operation);
+        #[cfg(feature = "testing")]
+        self.record
+            .borrow_mut()
+            .passed(Passed::BleRequest(operation, result));
+        result
     }
     fn control(&self) -> device_api::connectivity::ControlStatus {
         self.inner.control()
@@ -517,7 +569,12 @@ impl<B: Ble + ?Sized, R: Record + ?Sized> Ble for PassBle<'_, B, R> {
         Some(level)
     }
     fn reconnect(&mut self) -> Result<(), Error> {
-        self.inner.reconnect()
+        let result = self.inner.reconnect();
+        #[cfg(feature = "testing")]
+        self.record
+            .borrow_mut()
+            .passed(Passed::BleReconnect(result));
+        result
     }
 }
 

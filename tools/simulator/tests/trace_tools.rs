@@ -656,7 +656,7 @@ fn a_strict_replay_holds_a_fixture_to_its_panel_digests() {
     let mut trace = recorder.sink().0.clone();
     trace.extend_from_slice(recorder.open_block());
     let altered = shell_simulator::replay::Capture {
-        origin: capture.origin.clone(),
+        origin: capture.origin.untapped(),
         trace,
     };
     let report = Sim::replay(&altered).device.report().unwrap();

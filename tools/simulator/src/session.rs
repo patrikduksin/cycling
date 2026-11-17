@@ -1,5 +1,6 @@
 //! Headless backend: production parser, shell handlers, journals and SDK runtime.
 use crate::ant::SimulatedAnt;
+use crate::compare::Tap;
 use crate::devices::Battery;
 use crate::devices::DisplayDevice;
 use crate::devices::InputDevice;
@@ -782,6 +783,7 @@ pub struct Session {
     /// reports traffic.
     host: bool,
     devices: Devices,
+    pub(crate) tap: Option<Tap>,
 }
 impl Session {
     pub fn new(root: &Path, width: usize, height: usize) -> io::Result<Self> {
@@ -791,12 +793,33 @@ impl Session {
                 "geometry must be 16..320",
             ));
         }
-        Self::with_media(FileFlash::open(root)?, width, height, Memory::ALL)
+        Self::with_media(
+            FileFlash::open(root)?,
+            crate::bulk::SimBulk::default(),
+            width,
+            height,
+            Memory::ALL,
+            None,
+        )
     }
     /// A C606-sized device on memory media whose companion and ANT radio
     /// start shortly after boot.
     pub fn device() -> io::Result<Self> {
-        let mut session = Self::with_media(FileFlash::memory(), 240, 320, Memory::ALL)?;
+        Self::simulated(None)
+    }
+    /// Like `device`, folding into `tap` everything comparison mode hashes.
+    pub fn comparing(tap: Tap) -> io::Result<Self> {
+        Self::simulated(Some(tap))
+    }
+    fn simulated(tap: Option<Tap>) -> io::Result<Self> {
+        let mut session = Self::with_media(
+            FileFlash::memory(),
+            crate::bulk::SimBulk::default(),
+            240,
+            320,
+            Memory::ALL,
+            tap,
+        )?;
         let sim = session.sim_mut();
         sim.companion_starting(Availability::Ready);
         sim.restart_probe_ms = RESTART_PROBE_MS;
@@ -820,11 +843,19 @@ impl Session {
     }
     fn with_media(
         media: FileFlash,
+        bulk: crate::bulk::SimBulk,
         width: usize,
         height: usize,
         memory: Memory,
+        tap: Option<Tap>,
     ) -> io::Result<Self> {
         crate::logs::install();
+        if tap.is_some() {
+            crate::logs::enable_info();
+        }
+        crate::logs::enter_device(tap.as_ref(), 0);
+        let media = media.tapped(tap.clone());
+        let bulk = bulk.tapped(tap.clone());
         let boot = media.begin_boot()?;
         let display = DisplayDevice::new(width, height);
         let input = InputDevice::new(
@@ -836,7 +867,7 @@ impl Session {
             display.clone(),
             RecordedEdges::new(input.clone()),
             power.clone(),
-            media.clone(),
+            media.device_handle(),
             0,
         )
         .map_err(|_| io::Error::other("shell unavailable"))?;
@@ -907,6 +938,9 @@ impl Session {
             volumes: None,
             journals: None,
         });
+        if let Some(tap) = &tap {
+            trace.recorder.borrow_mut().tap(Box::new(tap.clone()));
+        }
         Ok(Self {
             shell,
             now: 0,
@@ -916,7 +950,7 @@ impl Session {
             off: false,
             display,
             media,
-            bulk: crate::bulk::SimBulk::default(),
+            bulk,
             sdk,
             trace,
             origin: None,
@@ -926,6 +960,7 @@ impl Session {
             edges_seen: 0,
             host: false,
             devices: Devices::Simulated(Box::new(Simulated::new())),
+            tap,
         })
     }
 
@@ -940,17 +975,16 @@ impl Session {
             .ok()
             .and_then(|(header, _)| Config::decode(header.config));
         let memory = config.map_or(Memory::ALL, |config| config.memory);
-        let mut session = Self::with_media(flash, 240, 320, memory)?;
+        let mut session = Self::with_media(flash, origin.bulk.scripted(), 240, 320, memory, None)?;
         if config.is_some_and(|config| config.redacted) {
             session.redact_secrets();
         }
-        session.bulk = origin.bulk.scripted();
         let shelled = Shelled {
             input: session.input.clone(),
             display: session.display.clone(),
             power: session.power.clone(),
-            flash: session.media.clone(),
-            bulk: session.bulk.clone(),
+            flash: session.media.untapped(),
+            bulk: session.bulk.untapped(),
         };
         let replay = Replay::new(capture.trace.clone(), shelled, mode, build_id())
             .map_err(|error| io::Error::other(format!("trace: {error}")))?;
@@ -998,7 +1032,7 @@ impl Session {
             return Err(format!("{what} at {at} ms, unseen by the trace"));
         }
         Ok(Capture {
-            origin: self.origin.clone().ok_or("no pass ran yet")?,
+            origin: self.origin.as_ref().ok_or("no pass ran yet")?.untapped(),
             trace: self.trace(),
         })
     }
@@ -1041,6 +1075,7 @@ impl Session {
                 }
             }
         }
+        crate::logs::enter_device(self.tap.as_ref(), self.now);
         if !self.trace.spooling {
             self.trace.spool(&self.bulk);
         }
@@ -1486,6 +1521,12 @@ impl Session {
         if let Some(digest) = self.shell.take_frame() {
             record(Event::Panel(digest));
         }
+        drop(recorder);
+        self.record_logs();
+        seen
+    }
+    fn record_logs(&self) {
+        let mut recorder = self.trace.recorder.borrow_mut();
         crate::logs::drain(|level, target, text| {
             recorder.record(&Event::Log {
                 level,
@@ -1493,7 +1534,6 @@ impl Session {
                 text,
             });
         });
-        seen
     }
     fn standby(&mut self, companion: CompanionView) {
         let lit = self.sdk.standby(&mut self.shell, &companion, self.now);
@@ -1645,6 +1685,7 @@ impl Session {
         power: device_api::power::Status,
         out: &mut String,
     ) -> &'static str {
+        crate::logs::enter_device(self.tap.as_ref(), self.now);
         // A host talking on the terminal keeps the usual pace.
         self.rest_ms = 0;
         {
@@ -2020,16 +2061,26 @@ impl Session {
     /// Reboot on the same media. The world, sensors and receiver presence
     /// persist; everything held in device memory starts over.
     fn reboot(&mut self, power: bool) -> io::Result<()> {
+        self.record_logs();
+        if let Some(tap) = &self.tap {
+            tap.end_session();
+        }
         let g = self.display.geometry();
-        let mut next = Self::with_media(self.media.clone(), g.width, g.height, Memory::ALL)?;
+        self.bulk.begin_boot();
+        let mut next = Self::with_media(
+            self.media.untapped(),
+            self.bulk.untapped(),
+            g.width,
+            g.height,
+            Memory::ALL,
+            self.tap.clone(),
+        )?;
         if self.display.0.borrow().hashes.is_some() {
             next.display.0.borrow_mut().hashes = Some(Vec::new());
         }
         if self.trace.start.redacted {
             next.redact_secrets();
         }
-        self.bulk.begin_boot();
-        next.bulk = self.bulk.clone();
         let uptime = self.now;
         let (sim, next_sim) = (self.sim_mut(), next.sim_mut());
         next_sim.world = core::mem::take(&mut sim.world);

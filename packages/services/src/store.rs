@@ -793,6 +793,25 @@ impl Store {
         })
     }
 
+    /// The first volume sector of each chunk `name` holds, in table order;
+    /// each runs [`Store::chunk_sectors`] sectors.
+    #[cfg(feature = "testing")]
+    pub fn chunk_starts(
+        &self,
+        media: &mut impl ReadWrite,
+        name: &Name,
+        sector: &mut Sector,
+        mut visit: impl FnMut(u64),
+    ) -> Result<(), Error> {
+        let (slot, _) = self.find(media, name, sector)?;
+        let sectors = u64::from(self.head.chunk);
+        self.table(media, sector, |chunk, link| {
+            if link.is_some_and(|link| link.slot == slot) {
+                visit(DATA + u64::from(chunk) * sectors);
+            }
+        })
+    }
+
     /// Create `name` empty, holding one chunk, and open it for appending in
     /// place of any open appender. With `rollover`, a full store first
     /// deletes the oldest file in that directory.

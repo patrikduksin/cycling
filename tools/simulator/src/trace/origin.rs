@@ -23,8 +23,8 @@ pub fn describe(capture: &Capture, media: Media, origin: &str) -> String {
         },
         start.boot
     );
-    let mut flash = start.flash.clone();
-    let mut store = firmware_shell::storage::Store::new(flash.clone());
+    let mut flash = start.flash.untapped();
+    let mut store = firmware_shell::storage::Store::new(flash.untapped());
     match store.load() {
         Ok(loaded) => {
             let settings = loaded.settings;

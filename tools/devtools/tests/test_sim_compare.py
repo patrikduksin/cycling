@@ -262,12 +262,17 @@ def simulate(runs, broken=()):
         names = [n for n in SCREENS[side] if not run.tests or run.tests[0] in n]
         shutil.rmtree(run.artifacts, ignore_errors=True)
         run.artifacts.mkdir(parents=True)
+        (run.artifacts / compare.COMPARISON_MODE_MARKER).touch()
         if side in broken:
             (run.artifacts / 'cargo.log').write_text('error: could not compile\n')
             return 101
         for name in names:
             scenario(run.artifacts, name, {'final screen': SCREENS[side][name]})
             (run.artifacts / name / 'frames.bin').write_text(side)
+            trace = 't' * 64 if name == 'steady' else side * 16
+            (run.artifacts / name / 'hashes.json').write_text(
+                json.dumps({'media': 'm' * 64, 'trace': trace, 'storage': 's' * 64})
+            )
         log = ''.join(f'test {n} ... ok\n' for n in names)
         (run.artifacts / 'cargo.log').write_text(f'{log}test result: ok. {len(names)} passed\n')
         return 0
@@ -325,7 +330,7 @@ def test_main_refuses_an_incomplete_baseline_before_reporting(tmp_path, monkeypa
     assert main() == 1
     assert posted == []
     assert not (tmp_path / 'relative/summary.md').exists()
-    assert not (compare.CACHE / 'abc1234-rust1').exists()
+    assert not (compare.CACHE / 'abc1234-rust1-hashes').exists()
 
 
 @pytest.mark.parametrize('video', [False, True])
@@ -352,8 +357,12 @@ def test_a_complete_base_is_cached_by_commit_rustc_and_filter(tmp_path, monkeypa
     main = fake_main(tmp_path, monkeypatch, runs, checkouts)
     assert main() == 0
     first = (tmp_path / 'out/summary.md').read_text()
-    assert (cache / 'abc1234-rust1/ride/final.png').exists()
-    assert (cache / 'abc1234-rust1/ride/frames.bin').exists()
+    assert (cache / 'abc1234-rust1-hashes/ride/final.png').exists()
+    assert (cache / 'abc1234-rust1-hashes/ride/frames.bin').exists()
+    assert (cache / 'abc1234-rust1-hashes/ride/hashes.json').exists()
+    assert 'Hashes: 1 of 2 scenarios differ from the base. 1 are new and have no base hashes.' in first
+    assert 'incomplete' not in first
+    assert '| Ride | same | `beforebefore` → `afterafteraf` | same |' in first
     runs.clear()
     assert main() == 0
     assert [r.artifacts.name for r in runs] == ['after']
@@ -507,7 +516,7 @@ def test_overlapping_fills_of_different_commits_each_cache_their_own_screens(tmp
     with concurrent.futures.ThreadPoolExecutor(2) as pool:
         assert list(pool.map(compare.fill, ['aaa', 'bbb'])) == [None, None]
     for commit in ('aaa', 'bbb'):
-        assert (cache / f'{commit}-rust1/ride/frames.bin').read_text() == commit
+        assert (cache / f'{commit}-rust1-hashes/ride/frames.bin').read_text() == commit
     assert list((tmp_path / 'fill').iterdir()) == [], 'a fill left its checkout or screens behind'
 
 
@@ -585,7 +594,7 @@ def test_an_interrupt_or_a_termination_stops_both_runs_at_once(tmp_path, monkeyp
     assert len(started) == 2
     for process in started:
         assert process.wait(timeout=5) is not None
-    assert not (compare.CACHE / 'abc1234-rust1').exists()
+    assert not (compare.CACHE / 'abc1234-rust1-hashes').exists()
 
 
 def test_explicit_base_is_resolved_without_fetching(monkeypatch):
@@ -674,3 +683,71 @@ def test_streaming_errors_stop_cargo_and_its_children(tmp_path, monkeypatch):
         while time.monotonic() < deadline:
             os.killpg(started[0].pid, 0)
             time.sleep(0.05)
+
+
+def hashed(run, name, **changed):
+    hashes = {'media': 'm' * 64, 'trace': 't' * 64, 'storage': 's' * 64} | changed
+    (run / name / 'hashes.json').write_text(json.dumps(hashes))
+
+
+def with_mode(*runs):
+    for run in runs:
+        run.mkdir(parents=True, exist_ok=True)
+        (run / compare.COMPARISON_MODE_MARKER).touch()
+
+
+def test_the_hash_table_lists_only_scenarios_whose_hashes_differ(tmp_path):
+    before, after = tmp_path / 'before', tmp_path / 'after'
+    with_mode(before, after)
+    for run in (before, after):
+        scenario(run, 'steady', {'home': png(IMAGE, 4)})
+        scenario(run, 'ride', {'home': png(IMAGE, 4)})
+        hashed(run, 'steady')
+    hashed(before, 'ride')
+    hashed(after, 'ride', media='n' * 64, storage='r' * 64)
+    old, new = report.load(before), report.load(after)
+    lines = compare.hash_table(old, new)
+    assert 'Hashes: 1 of 2 scenarios differ from the base.' in lines
+    assert '| Ride | `mmmmmmmmmmmm` → `nnnnnnnnnnnn` | same | `ssssssssssss` → `rrrrrrrrrrrr` |' in lines
+    assert not any('Steady' in line for line in lines)
+    assert not any('incomplete' in line for line in lines)
+    markdown, _ = compare.comparison(compare.pair(old, new), old, new, tmp_path, ('origin/main', 'a', 'S', 'b'))
+    assert 'No screen changed.\n\nHashes: 1 of 2 scenarios differ' in markdown
+
+
+def test_a_base_from_before_comparison_mode_says_it_has_no_hashes(tmp_path):
+    before, after = tmp_path / 'before', tmp_path / 'after'
+    with_mode(after)
+    scenario(before, 'ride', {'home': png(IMAGE, 4)})
+    scenario(after, 'ride', {'home': png(IMAGE, 4)})
+    hashed(before, 'ride')
+    hashed(after, 'ride')
+    lines = compare.hash_table(report.load(before), report.load(after))
+    assert lines[-1] == 'Hashes: the base predates comparison mode and wrote none, so no hash was compared.'
+
+
+def test_scenarios_without_hashes_on_a_side_with_comparison_mode_are_listed(tmp_path):
+    before, after = tmp_path / 'before', tmp_path / 'after'
+    with_mode(before, after)
+    for run in (before, after):
+        for name in ('steady', 'ride', 'climb'):
+            scenario(run, name, {'home': png(IMAGE, 4)})
+    hashed(before, 'steady')
+    hashed(after, 'steady')
+    hashed(after, 'ride')
+    hashed(before, 'climb')
+    lines = compare.hash_table(report.load(before), report.load(after))
+    assert 'Hashes: 0 of 1 scenarios differ from the base.' in lines
+    assert 'Hash coverage is incomplete: 2 scenario runs wrote no hashes, so nothing about them was compared:' in lines
+    assert '- Ride (base)' in lines
+    assert '- Climb (this checkout)' in lines
+    assert not any('predates' in line for line in lines)
+
+
+def test_each_side_runs_in_comparison_mode_under_the_neutral_identity(tmp_path, monkeypatch):
+    script = 'import os; print(os.environ["SIM_COMPARE"], os.environ["CYCLING_BUILD_COMMIT"])'
+    monkeypatch.setattr(compare, 'COMMAND', [sys.executable, '-c', script])
+    monkeypatch.setenv('CYCLING_BUILD_COMMIT', 'abc')
+    assert compare.run_scenarios(compare.Run(tmp_path, tmp_path / 'after', tmp_path / 'target')) == 0
+    assert (tmp_path / 'after/cargo.log').read_text().split() == ['1', '0' * 40]
+    assert not (tmp_path / 'after' / compare.COMPARISON_MODE_MARKER).exists(), 'only the simulator says it compared'

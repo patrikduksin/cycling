@@ -107,7 +107,7 @@ fn the_shell_reads_the_battery_and_backlight_the_pass_froze() {
 fn a_failed_flash_operation_has_the_number_the_simulator_gives_it() {
     let log = log();
     let flash = FileFlash::memory();
-    let mut recorded = ShellFlash::new(flash.clone(), log);
+    let mut recorded = ShellFlash::new(flash.untapped(), log);
     let kept = RefCell::new(Kept::default());
     flash.fault.borrow_mut().after = Some(1);
     for pass in 0..2u8 {
@@ -138,7 +138,7 @@ fn a_failed_card_operation_has_the_number_the_simulator_gives_it() {
     card.begin_pass();
     log.begin_pass(Availability::Ready, &CompanionView(None));
     for binding in 0..2 {
-        let mut inner = card.clone();
+        let mut inner = card.untapped();
         let mut bulk = RecordedBulk::counted(&mut inner, &kept, log);
         let _ = bulk.owned_info();
         let _ = bulk.owned_write(100 + binding, &sector);
@@ -159,7 +159,7 @@ fn a_pass_records_refusals_and_faults_in_the_order_the_simulator_does() {
     let card = SimBulk::default();
     let mut panel = ShellDisplay::new(display.clone(), log);
     let mut backlight = ShellPower::new(power.clone(), log);
-    let mut recorded_flash = ShellFlash::new(flash.clone(), log);
+    let mut recorded_flash = ShellFlash::new(flash.untapped(), log);
     let kept = RefCell::new(Kept::default());
     display.0.borrow_mut().refusals.scripted = vec![0];
     power.0.borrow_mut().refusals.scripted = vec![0];
@@ -169,7 +169,7 @@ fn a_pass_records_refusals_and_faults_in_the_order_the_simulator_does() {
         partial: 0,
     });
     log.begin_pass(Availability::Ready, &CompanionView(None));
-    let mut inner = card.clone();
+    let mut inner = card.untapped();
     let _ = RecordedBulk::counted(&mut inner, &kept, log).owned_write(70, &[1; 512]);
     let _ = recorded_flash.program(Region::Data, 0, &[1; 4]);
     let _ = backlight.brightness(10);

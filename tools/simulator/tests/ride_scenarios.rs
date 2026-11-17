@@ -6233,6 +6233,70 @@ fn facts_of(sim: &mut Sim, journal: u8, ride_id: u32) -> Option<vana::ride::fact
         .find(|record| (record.journal, record.ride_id) == (journal, ride_id))
 }
 
+fn fill_files(sim: &mut Sim, free: usize) {
+    use firmware_services::{files, volume};
+    let mut sector = [0u8; 512];
+    let mut media = sim.device.host_bulk();
+    let mut store = volume::open(&mut media, &volume::FILES, &mut sector).unwrap();
+    let used = files::mount(&mut store, &mut sector).unwrap().len();
+    for n in used..files::CAPACITY - free {
+        let name = files::Name::new(&format!("fill/{n:03}.txt")).unwrap();
+        files::write(&mut store, &name, b"x", &mut sector).unwrap();
+    }
+    sim.note(
+        NoteKind::Device,
+        format!("host filled FILES to {free} free entries"),
+    );
+}
+
+fn app_files(sim: &mut Sim) -> Vec<String> {
+    let mut names = sim.file_names().expect("FILES lists");
+    names.retain(|name| !name.starts_with("fill/"));
+    names
+}
+
+#[test]
+fn with_files_nearly_full_facts_give_way_so_a_discarded_ride_still_hides() {
+    let mut sim = files_rider();
+    fill_files(&mut sim, 2);
+    sim.ride_at(25.0, 200.0, 165.0, 90.0);
+    sim.start_ride();
+    sim.advance(minutes(3));
+    sim.stop_ride();
+    sim.expect_text("2 NEW BESTS");
+    sim.ride_at(0.0, 0.0, 140.0, 0.0);
+    sim.advance(seconds(75));
+    sim.checkpoint("ride saved with FILES nearly full");
+    assert_eq!(app_files(&mut sim), ["notes.txt", "bests.dat"]);
+    assert!(facts_of(&mut sim, b'b', 1).is_none(), "the facts gave way");
+    sim.press(Button::BottomRight);
+    sim.done();
+
+    sim.ride_at(30.0, 220.0, 140.0, 90.0);
+    sim.start_ride();
+    sim.advance(minutes(2));
+    sim.discard_ride();
+    sim.checkpoint("the second ride discarded");
+    assert_eq!(
+        app_files(&mut sim),
+        ["notes.txt", "bests.dat", vana::ride::deleted::TABLE]
+    );
+
+    sim.ride_at(0.0, 0.0, 72.0, 0.0);
+    sim.advance(seconds(61));
+    sim.home("RIDES");
+    sim.advance(seconds(5));
+    sim.expect_text("1 RIDE");
+    sim.expect_text("1/1");
+    sim.checkpoint("only the saved ride is listed");
+    sim.press(Button::BottomRight);
+    sim.wait_gone("READING", seconds(5)).unwrap();
+    sim.expect_text("SAVED RIDE");
+    sim.press(Button::BottomLeft);
+    sim.expect_no_text("HR RECOVERY");
+    sim.checkpoint("the saved ride has no recovery: its facts gave way");
+}
+
 /// A ride the host ends saves before the summary starts measuring; the
 /// recovery still reaches its facts a minute later.
 #[test]
@@ -9123,7 +9187,7 @@ mod mutations {
 
     pub fn replay(recording: &Recording, trace: Vec<u8>) -> Caught {
         let capture = Capture {
-            origin: recording.capture.origin.clone(),
+            origin: recording.capture.origin.untapped(),
             trace,
         };
         let mut replayed = Sim::replay(&capture);

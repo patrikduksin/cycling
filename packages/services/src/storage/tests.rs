@@ -35,6 +35,9 @@ impl Memory {
 
 impl OwnedFlash for Memory {
     type Error = ();
+    fn availability(&self, _region: Region) -> device_api::observation::Availability {
+        device_api::observation::Availability::Ready
+    }
     fn geometry(&self, region: Region) -> Geometry {
         Geometry {
             capacity: if region == Region::Configuration {
@@ -112,6 +115,9 @@ fn journal_owns_commit_layout_and_preserves_operation_order() {
     }
     impl OwnedFlash for Trace {
         type Error = ();
+        fn availability(&self, _region: Region) -> device_api::observation::Availability {
+            device_api::observation::Availability::Ready
+        }
         fn geometry(&self, region: Region) -> Geometry {
             self.memory.geometry(region)
         }
@@ -431,6 +437,9 @@ struct Marginal {
 
 impl OwnedFlash for Marginal {
     type Error = ();
+    fn availability(&self, _region: Region) -> device_api::observation::Availability {
+        device_api::observation::Availability::Ready
+    }
     fn geometry(&self, region: Region) -> Geometry {
         self.memory.geometry(region)
     }

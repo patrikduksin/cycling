@@ -1811,6 +1811,9 @@ struct FlakyBulk {
 }
 
 impl device_api::bulk::ReadWrite for FlakyBulk {
+    fn entropy(&mut self) -> u64 {
+        0
+    }
     fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
         Ok(device_api::bulk::OwnedInfo {
             start_sector: 0,

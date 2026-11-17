@@ -741,6 +741,9 @@ pub(crate) mod tests {
     pub(crate) struct Region(BTreeMap<u64, [u8; SECTOR_SIZE]>);
 
     impl ReadWrite for Region {
+        fn entropy(&mut self) -> u64 {
+            0
+        }
         fn owned_info(&mut self) -> Result<OwnedInfo, MediaError> {
             Ok(OwnedInfo {
                 start_sector: 4096,

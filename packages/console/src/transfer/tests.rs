@@ -15,6 +15,9 @@ struct Media {
 }
 
 impl ReadWrite for Media {
+    fn entropy(&mut self) -> u64 {
+        0
+    }
     fn owned_info(&mut self) -> Result<OwnedInfo, Error> {
         Ok(OwnedInfo {
             start_sector: 1_955_841,

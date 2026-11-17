@@ -48,9 +48,7 @@ pub enum Region {
 /// mutation may have changed bytes: inspect/rescan before deciding to retry.
 pub trait OwnedFlash {
     type Error;
-    fn availability(&self, _region: Region) -> crate::observation::Availability {
-        crate::observation::Availability::Ready
-    }
+    fn availability(&self, region: Region) -> crate::observation::Availability;
     fn geometry(&self, region: Region) -> Geometry;
     fn read(&mut self, region: Region, offset: usize, output: &mut [u8])
     -> Result<(), Self::Error>;

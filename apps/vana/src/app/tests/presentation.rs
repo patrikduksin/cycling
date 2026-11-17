@@ -16,6 +16,13 @@ const HEIGHT: usize = 320;
 #[derive(Clone)]
 pub(super) struct Panel(Rc<RefCell<Vec<u16>>>, pub(super) Rc<core::cell::Cell<u32>>);
 impl device_api::display::Display for Panel {
+    fn availability(&self) -> device_api::observation::Availability {
+        device_api::observation::Availability::Ready
+    }
+    fn format(&self) -> device_api::display::Format {
+        device_api::display::Format::Rgb565
+    }
+    fn check(&mut self, _row: impl FnMut(usize, &mut [u16])) {}
     fn geometry(&self) -> Geometry {
         Geometry {
             width: WIDTH,

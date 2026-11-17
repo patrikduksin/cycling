@@ -76,6 +76,12 @@ impl DisplayDevice {
     }
 }
 impl Display for DisplayDevice {
+    fn availability(&self) -> Availability {
+        Availability::Ready
+    }
+    fn format(&self) -> device_api::display::Format {
+        device_api::display::Format::Rgb565
+    }
     fn geometry(&self) -> Geometry {
         self.0.borrow().geometry
     }
@@ -542,6 +548,13 @@ impl PowerSwitch {
     }
 }
 impl device_api::power::PowerControl for PowerSwitch {
+    fn request_after(
+        &mut self,
+        operation: device_api::power::Operation,
+        delay_ms: u32,
+    ) -> Result<(), Error> {
+        device_api::power::request_now_only(self, operation, delay_ms)
+    }
     fn capabilities(&self) -> device_api::power::Capabilities {
         use device_api::power::Support;
         device_api::power::Capabilities {

@@ -56,7 +56,5 @@ pub trait ReadWrite {
     /// Unpredictable bits for naming a new store on this medium, so a
     /// reformat never reuses an identity whose sectors may remain. Boards
     /// without a hardware random source return 0.
-    fn entropy(&mut self) -> u64 {
-        0
-    }
+    fn entropy(&mut self) -> u64;
 }

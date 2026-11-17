@@ -266,6 +266,13 @@ impl<'d> Display<'d> {
     }
 }
 impl DisplayCapability for Display<'_> {
+    fn availability(&self) -> device_api::observation::Availability {
+        device_api::observation::Availability::Ready
+    }
+    fn format(&self) -> device_api::display::Format {
+        device_api::display::Format::Rgb565
+    }
+    fn check(&mut self, _row: impl FnMut(usize, &mut [u16])) {}
     fn geometry(&self) -> Geometry {
         Geometry {
             width: PANEL_WIDTH,

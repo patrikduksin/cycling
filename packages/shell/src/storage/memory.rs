@@ -15,6 +15,9 @@ impl Default for Memory {
     }
 }
 impl OwnedFlash for Memory {
+    fn availability(&self, _region: Region) -> device_api::observation::Availability {
+        device_api::observation::Availability::Ready
+    }
     type Error = ();
     fn geometry(&self, region: Region) -> Geometry {
         Geometry {

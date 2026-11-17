@@ -98,22 +98,13 @@ pub struct Discovery {
 }
 
 pub trait Ble {
-    fn request(&mut self, _operation: crate::ble_transport::Operation) -> Result<(), Error> {
-        Err(Error::Unsupported)
-    }
-    fn control(&self) -> crate::connectivity::ControlStatus {
-        crate::connectivity::ControlStatus::new()
-    }
-    fn discoveries(&self) -> [Option<crate::ble_transport::Discovery>; 8] {
-        [None; 8]
-    }
-
+    fn request(&mut self, operation: crate::ble_transport::Operation) -> Result<(), Error>;
+    fn control(&self) -> crate::connectivity::ControlStatus;
+    fn discoveries(&self) -> [Option<crate::ble_transport::Discovery>; 8];
     fn availability(&self) -> Availability;
     fn snapshot(&self) -> crate::ble_transport::Snapshot;
     fn take_packet(&mut self) -> Option<crate::ble_transport::Packet>;
     /// The newest Battery Level read since the last call. A peer without the
     /// Battery Service, or a transport that does not read it, yields none.
-    fn take_battery(&mut self) -> Option<crate::ble_transport::BatteryLevel> {
-        None
-    }
+    fn take_battery(&mut self) -> Option<crate::ble_transport::BatteryLevel>;
 }

@@ -77,6 +77,12 @@ impl Radio {
     }
 }
 impl Ant for Radio {
+    fn take_diagnostic_packet(&mut self) -> Option<device_api::ant::Packet> {
+        None
+    }
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<device_api::ant::Snapshot> {
+        device_api::ant::channel(self.channels(now_ms), kind)
+    }
     fn availability(&self) -> Availability {
         self.availability
     }
@@ -166,6 +172,21 @@ impl Ant for Radio {
 // Unavailable optional capabilities keep these tests at the public Runtime lifecycle.
 struct Absent;
 impl device_api::ble_transport::Ble for Absent {
+    fn request(
+        &mut self,
+        _operation: device_api::ble_transport::Operation,
+    ) -> Result<(), device_api::observation::Error> {
+        Err(device_api::observation::Error::Unsupported)
+    }
+    fn control(&self) -> device_api::connectivity::ControlStatus {
+        device_api::connectivity::ControlStatus::new()
+    }
+    fn discoveries(&self) -> [Option<device_api::ble_transport::Discovery>; 8] {
+        [None; 8]
+    }
+    fn take_battery(&mut self) -> Option<device_api::ble_transport::BatteryLevel> {
+        None
+    }
     fn availability(&self) -> Availability {
         Availability::Unsupported
     }
@@ -211,6 +232,9 @@ impl RideStorage for Absent {
 /// A board without bulk media: rides use the internal journal.
 struct NoBulk;
 impl device_api::bulk::ReadWrite for NoBulk {
+    fn entropy(&mut self) -> u64 {
+        0
+    }
     fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
         Err(device_api::bulk::Error::Unsupported)
     }

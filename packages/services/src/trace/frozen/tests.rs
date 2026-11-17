@@ -49,6 +49,28 @@ impl Radio {
 }
 
 impl Ant for Radio {
+    fn capabilities(&self) -> device_api::ant::Capabilities {
+        device_api::ant::Capabilities::UNAVAILABLE
+    }
+    fn scan(&self) -> device_api::ant::ScanSnapshot {
+        device_api::ant::ScanSnapshot {
+            state: device_api::ant::ScanState::Idle,
+            generation: 0,
+            discovery_overflows: 0,
+        }
+    }
+    fn send_status(
+        &self,
+        _id: device_api::ant::OperationId,
+    ) -> Option<device_api::ant::SendObservation> {
+        None
+    }
+    fn take_diagnostic_packet(&mut self) -> Option<device_api::ant::Packet> {
+        None
+    }
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<device_api::ant::Snapshot> {
+        device_api::ant::channel(self.channels(now_ms), kind)
+    }
     fn scanning(&self) -> bool {
         false
     }

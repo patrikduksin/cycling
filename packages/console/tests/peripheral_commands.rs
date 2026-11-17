@@ -32,6 +32,12 @@ impl device_api::position_control::PositionControl for Untouched {
     }
 }
 impl device_api::sensors::Sensors for Untouched {
+    fn startup_status(&self) -> device_api::sensors::Startup {
+        device_api::sensors::Startup::Unsupported
+    }
+    fn startup_reason(&self) -> Option<u8> {
+        None
+    }
     fn snapshot(&self, _: u64) -> device_api::sensors::Snapshot {
         panic!("sensors accessed")
     }
@@ -153,6 +159,9 @@ fn recovery_failure_cannot_be_reported_as_success() {
 }
 
 impl device_api::bulk::ReadWrite for PartialMedia {
+    fn entropy(&mut self) -> u64 {
+        0
+    }
     fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
         Err(device_api::bulk::Error::Unavailable)
     }
@@ -197,6 +206,9 @@ impl device_api::bulk::Read for OwnedMedia {
     }
 }
 impl device_api::bulk::ReadWrite for OwnedMedia {
+    fn entropy(&mut self) -> u64 {
+        0
+    }
     fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
         Ok(device_api::bulk::OwnedInfo {
             start_sector: 1_955_841,

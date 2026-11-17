@@ -84,6 +84,9 @@ impl Media {
 }
 
 impl ReadWrite for Media {
+    fn entropy(&mut self) -> u64 {
+        0
+    }
     fn owned_info(&mut self) -> Result<OwnedInfo, MediaError> {
         if self.unavailable || self.off {
             return Err(MediaError::Unavailable);

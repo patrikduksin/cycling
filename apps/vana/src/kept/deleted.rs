@@ -857,6 +857,9 @@ mod hidden_tests {
         use device_api::bulk::{Error as MediaError, OwnedInfo};
         struct Unreadable;
         impl ReadWrite for Unreadable {
+            fn entropy(&mut self) -> u64 {
+                0
+            }
             fn owned_info(&mut self) -> Result<OwnedInfo, MediaError> {
                 crate::workout::library::tests::Region::default().owned_info()
             }

@@ -724,6 +724,9 @@ impl SimulatedAnt {
 }
 
 impl Ant for SimulatedAnt {
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<Snapshot> {
+        device_api::ant::channel(self.channels(now_ms), kind)
+    }
     fn availability(&self) -> Availability {
         self.availability
     }

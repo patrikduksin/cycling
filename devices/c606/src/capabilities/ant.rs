@@ -458,6 +458,9 @@ pub fn reply(group: u8, payload: [u8; 8], now: u64) {
 
 pub struct Ant;
 impl device_api::ant::Ant for Ant {
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<Snapshot> {
+        device_api::ant::channel(self.channels(now_ms), kind)
+    }
     fn availability(&self) -> device_api::observation::Availability {
         if super::sensors::ant_allowed() {
             device_api::observation::Availability::Ready

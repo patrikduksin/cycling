@@ -1046,6 +1046,12 @@ impl AntSource {
 }
 
 impl Ant for AntSource {
+    fn take_diagnostic_packet(&mut self) -> Option<ant::Packet> {
+        None
+    }
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<ant::Snapshot> {
+        ant::channel(self.channels(now_ms), kind)
+    }
     fn scanning(&self) -> bool {
         self.radio().scanning()
     }
@@ -1197,6 +1203,12 @@ impl RecordedAnt {
 }
 
 impl Ant for RecordedAnt {
+    fn take_diagnostic_packet(&mut self) -> Option<ant::Packet> {
+        None
+    }
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<ant::Snapshot> {
+        ant::channel(self.channels(now_ms), kind)
+    }
     fn scanning(&self) -> bool {
         self.radio().1.0
     }

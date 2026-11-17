@@ -218,6 +218,15 @@ pub struct BleFixture {
     pub battery: Option<device_api::ble_transport::BatteryLevel>,
 }
 impl Ble for BleFixture {
+    fn request(&mut self, _operation: device_api::ble_transport::Operation) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
+    fn control(&self) -> device_api::connectivity::ControlStatus {
+        device_api::connectivity::ControlStatus::new()
+    }
+    fn discoveries(&self) -> [Option<device_api::ble_transport::Discovery>; 8] {
+        [None; 8]
+    }
     fn availability(&self) -> Availability {
         Availability::Ready
     }
@@ -233,6 +242,28 @@ impl Ble for BleFixture {
 }
 pub struct NoAnt;
 impl Ant for NoAnt {
+    fn capabilities(&self) -> device_api::ant::Capabilities {
+        device_api::ant::Capabilities::UNAVAILABLE
+    }
+    fn scan(&self) -> device_api::ant::ScanSnapshot {
+        device_api::ant::ScanSnapshot {
+            state: device_api::ant::ScanState::Idle,
+            generation: 0,
+            discovery_overflows: 0,
+        }
+    }
+    fn send_status(
+        &self,
+        _id: device_api::ant::OperationId,
+    ) -> Option<device_api::ant::SendObservation> {
+        None
+    }
+    fn take_diagnostic_packet(&mut self) -> Option<device_api::ant::Packet> {
+        None
+    }
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<device_api::ant::Snapshot> {
+        device_api::ant::channel(self.channels(now_ms), kind)
+    }
     fn availability(&self) -> Availability {
         Availability::Unsupported
     }

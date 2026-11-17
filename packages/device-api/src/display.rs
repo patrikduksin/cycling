@@ -83,13 +83,9 @@ impl core::ops::BitOr for Rows {
 /// Submission is synchronous. Return, including error, means all DMA access has
 /// ended and the device owns its buffers again. No cancellable future is exposed.
 pub trait Display {
-    fn availability(&self) -> Availability {
-        Availability::Ready
-    }
+    fn availability(&self) -> Availability;
     fn geometry(&self) -> Geometry;
-    fn format(&self) -> Format {
-        Format::Rgb565
-    }
+    fn format(&self) -> Format;
     /// One frame: calls `row(y, pixels)` for each row of `rows` on the panel,
     /// top to bottom, with `geometry().width` pixels to fill completely;
     /// their prior contents are unspecified. Rows are requested in order so
@@ -99,7 +95,7 @@ pub trait Display {
     /// Called with the frame the shell believes the panel shows, every row
     /// in turn. A display that keeps its pixels, such as a simulator, can
     /// check that they match; a panel has nothing to compare.
-    fn check(&mut self, _row: impl FnMut(usize, &mut [u16])) {}
+    fn check(&mut self, row: impl FnMut(usize, &mut [u16]));
 }
 
 #[cfg(test)]

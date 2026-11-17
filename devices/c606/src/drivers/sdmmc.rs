@@ -827,6 +827,9 @@ impl Reader<'_> {
 }
 
 impl device_api::bulk::ReadWrite for Reader<'_> {
+    fn entropy(&mut self) -> u64 {
+        0
+    }
     fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
         if self.report.cache_enabled {
             return Err(device_api::bulk::Error::Unsupported);

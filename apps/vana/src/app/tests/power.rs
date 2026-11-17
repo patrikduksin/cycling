@@ -25,6 +25,13 @@ impl Switch {
     }
 }
 impl PowerControl for Switch {
+    fn request_after(
+        &mut self,
+        operation: Operation,
+        delay_ms: u32,
+    ) -> Result<(), device_api::observation::Error> {
+        device_api::power::request_now_only(self, operation, delay_ms)
+    }
     fn capabilities(&self) -> device_api::power::Capabilities {
         device_api::power::Capabilities::UNSUPPORTED
     }
@@ -689,6 +696,21 @@ struct Notifying {
     packets: std::collections::VecDeque<device_api::ble_transport::Packet>,
 }
 impl device_api::ble_transport::Ble for Notifying {
+    fn request(
+        &mut self,
+        _operation: device_api::ble_transport::Operation,
+    ) -> Result<(), device_api::observation::Error> {
+        Err(device_api::observation::Error::Unsupported)
+    }
+    fn control(&self) -> device_api::connectivity::ControlStatus {
+        device_api::connectivity::ControlStatus::new()
+    }
+    fn discoveries(&self) -> [Option<device_api::ble_transport::Discovery>; 8] {
+        [None; 8]
+    }
+    fn take_battery(&mut self) -> Option<device_api::ble_transport::BatteryLevel> {
+        None
+    }
     fn availability(&self) -> Availability {
         Availability::Ready
     }

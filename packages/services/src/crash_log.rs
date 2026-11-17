@@ -190,6 +190,9 @@ mod tests {
     }
 
     impl OwnedFlash for Media {
+        fn availability(&self, _region: Region) -> device_api::observation::Availability {
+            device_api::observation::Availability::Ready
+        }
         type Error = ();
         fn geometry(&self, _: Region) -> Geometry {
             Geometry {
@@ -366,6 +369,9 @@ mod tests {
     fn a_write_that_does_not_read_back_fails() {
         struct Stuck(Media);
         impl OwnedFlash for Stuck {
+            fn availability(&self, _region: Region) -> device_api::observation::Availability {
+                device_api::observation::Availability::Ready
+            }
             type Error = ();
             fn geometry(&self, region: Region) -> Geometry {
                 self.0.geometry(region)

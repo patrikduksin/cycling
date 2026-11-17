@@ -92,6 +92,12 @@ mod tests {
     use device_api::storage::Geometry;
     struct Backend;
     impl OwnedFlash for Backend {
+        fn availability(
+            &self,
+            _region: device_api::storage::Region,
+        ) -> device_api::observation::Availability {
+            device_api::observation::Availability::Ready
+        }
         type Error = ();
         fn geometry(&self, _: device_api::storage::Region) -> Geometry {
             Geometry {

@@ -201,6 +201,12 @@ impl IntentFlash {
 
 impl device_api::storage::OwnedFlash for IntentFlash {
     type Error = ();
+    fn availability(
+        &self,
+        _region: device_api::storage::Region,
+    ) -> device_api::observation::Availability {
+        device_api::observation::Availability::Ready
+    }
     fn geometry(&self, region: device_api::storage::Region) -> device_api::storage::Geometry {
         device_api::storage::Geometry {
             capacity: if region == device_api::storage::Region::Intent {

@@ -203,34 +203,24 @@ pub enum AntOperation {
     Send { target: Target, data: [u8; 8] },
 }
 
+pub fn channel(channels: [Option<Snapshot>; CHANNEL_CAPACITY], kind: u8) -> Option<Snapshot> {
+    channels
+        .into_iter()
+        .flatten()
+        .find(|s| s.selected.is_some_and(|p| p.device_type == kind))
+}
+
 pub trait Ant {
     fn scanning(&self) -> bool;
     fn discoveries(&self) -> [Option<crate::ant::Discovery>; 8];
     fn request(&mut self, operation: AntOperation, now_ms: u64) -> Result<Admission, Error>;
-    fn capabilities(&self) -> Capabilities {
-        Capabilities::UNAVAILABLE
-    }
-    fn scan(&self) -> ScanSnapshot {
-        ScanSnapshot {
-            state: ScanState::Idle,
-            generation: 0,
-            discovery_overflows: 0,
-        }
-    }
+    fn capabilities(&self) -> Capabilities;
+    fn scan(&self) -> ScanSnapshot;
     /// One outstanding send and one retained observation. Local IDs never correlate wire replies.
-    fn send_status(&self, _id: OperationId) -> Option<SendObservation> {
-        None
-    }
+    fn send_status(&self, id: OperationId) -> Option<SendObservation>;
     /// Independent bounded diagnostic stream; never consumes the production stream.
-    fn take_diagnostic_packet(&mut self) -> Option<Packet> {
-        None
-    }
-    fn channel(&self, kind: u8, now_ms: u64) -> Option<crate::ant::Snapshot> {
-        self.channels(now_ms)
-            .into_iter()
-            .flatten()
-            .find(|s| s.selected.is_some_and(|p| p.device_type == kind))
-    }
+    fn take_diagnostic_packet(&mut self) -> Option<Packet>;
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<crate::ant::Snapshot>;
     fn availability(&self) -> Availability;
     fn channels(&self, now_ms: u64)
     -> [Option<crate::ant::Snapshot>; crate::ant::CHANNEL_CAPACITY];

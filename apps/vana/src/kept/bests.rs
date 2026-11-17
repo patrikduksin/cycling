@@ -717,6 +717,9 @@ mod tests {
     }
 
     impl ReadWrite for Card {
+        fn entropy(&mut self) -> u64 {
+            0
+        }
         fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
             self.region.owned_info()
         }

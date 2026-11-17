@@ -5,6 +5,19 @@ use firmware_services::ant::Channels;
 
 struct Transport(Channels);
 impl Ant for Transport {
+    fn capabilities(&self) -> device_api::ant::Capabilities {
+        device_api::ant::Capabilities::UNAVAILABLE
+    }
+    fn scan(&self) -> device_api::ant::ScanSnapshot {
+        device_api::ant::ScanSnapshot {
+            state: device_api::ant::ScanState::Idle,
+            generation: 0,
+            discovery_overflows: 0,
+        }
+    }
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<device_api::ant::Snapshot> {
+        device_api::ant::channel(self.channels(now_ms), kind)
+    }
     fn scanning(&self) -> bool {
         self.0.scanning()
     }

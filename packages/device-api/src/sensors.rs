@@ -118,12 +118,8 @@ impl IdentityQuery {
 /// Optional physical sensor observations; motion remains explicitly unscaled
 /// until fitted hardware and axes are established.
 pub trait Sensors {
-    fn startup_status(&self) -> Startup {
-        Startup::Unsupported
-    }
-    fn startup_reason(&self) -> Option<u8> {
-        None
-    }
+    fn startup_status(&self) -> Startup;
+    fn startup_reason(&self) -> Option<u8>;
     fn snapshot(&self, now: u64) -> crate::sensors::Snapshot;
     fn light(&self, now: u64) -> Observation<Light>;
     fn identity_status(&self) -> IdentityQuery;

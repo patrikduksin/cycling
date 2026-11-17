@@ -132,14 +132,20 @@ pub trait PowerControl {
         &mut self,
         operation: Operation,
         delay_ms: u32,
-    ) -> Result<(), crate::observation::Error> {
-        if delay_ms == 0 {
-            self.request(operation)
-        } else if delay_ms > MAX_DELAY_MS || operation != Operation::Shutdown {
-            Err(crate::observation::Error::Invalid)
-        } else {
-            Err(crate::observation::Error::Unsupported)
-        }
+    ) -> Result<(), crate::observation::Error>;
+}
+
+pub fn request_now_only(
+    control: &mut (impl PowerControl + ?Sized),
+    operation: Operation,
+    delay_ms: u32,
+) -> Result<(), crate::observation::Error> {
+    if delay_ms == 0 {
+        control.request(operation)
+    } else if delay_ms > MAX_DELAY_MS || operation != Operation::Shutdown {
+        Err(crate::observation::Error::Invalid)
+    } else {
+        Err(crate::observation::Error::Unsupported)
     }
 }
 

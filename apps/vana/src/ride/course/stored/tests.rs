@@ -219,6 +219,9 @@ struct Cut {
 }
 
 impl ReadWrite for Cut {
+    fn entropy(&mut self) -> u64 {
+        0
+    }
     fn owned_info(&mut self) -> Result<OwnedInfo, MediaError> {
         self.region.owned_info()
     }

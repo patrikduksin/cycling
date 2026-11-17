@@ -435,6 +435,9 @@ pub struct PassAnt<'a, A: ?Sized, R: ?Sized> {
 }
 
 impl<A: Ant + ?Sized, R: Record + ?Sized> Ant for PassAnt<'_, A, R> {
+    fn channel(&self, kind: u8, now_ms: u64) -> Option<ant::Snapshot> {
+        ant::channel(self.channels(now_ms), kind)
+    }
     fn scanning(&self) -> bool {
         self.frozen.view.scanning
     }

@@ -11,7 +11,7 @@ use super::ride::summary::{self, After};
 use super::ride::{self, ClimbFrame, ClimbLent, Marks, RidePage, Smooth};
 use super::sign;
 use crate::clock::Local;
-use crate::ride::bests::Bests;
+use crate::kept::bests::Bests;
 use crate::ride::course::nav::Sign;
 use crate::ride::laps::Lap;
 use crate::ride::log::{Sample, Status};

@@ -9,7 +9,7 @@
 //! shows nothing rather than a number from another moment.
 //!
 //! The journal has no field for the result, so it is kept with the ride's
-//! facts (`ride::facts`) once measured, and a ride read back from the list
+//! facts (`kept::facts`) once measured, and a ride read back from the list
 //! shows it from there.
 
 /// Time from the finish to the second reading.

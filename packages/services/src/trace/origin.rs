@@ -49,7 +49,7 @@ pub struct Media<'a> {
     pub rides: Option<RideLog>,
     pub files: Found<Files<'a>>,
     /// VANA's ride facts table, `rides/facts.tbl` in FILES, by the digest
-    /// of its slots (`vana::ride::facts::digest`); `None` without a table
+    /// of its slots (`vana::kept::facts::record::digest`); `None` without a table
     /// or when it did not read.
     pub facts: Option<u32>,
     pub terrain: Found<Terrain>,

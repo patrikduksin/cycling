@@ -43,6 +43,16 @@ the simulator until another consumer needs them. Component drivers can stay
 private to the device that uses them. Screens follow one visual language and
 input model, described in [ui](ui.md).
 
+Inside VANA, the domain lives in `ride/`, `kept/`, `sensors/` and `workout/`.
+`kept/` holds what VANA keeps on FILES beside the ride journals: the bests,
+each saved ride's facts and the rides the rider hid. Each has its record, its
+codec and the state that reads it into memory. The application layer, `app/`,
+holds `Runtime` and the glue that turns domain state into pages, toasts and
+redraws; `screens/` draws them. Domain code never imports `crate::app` or
+`crate::screens` and takes what it needs as arguments.
+`tools/check-boundaries.py` enforces this rule in `cycling check`. Its one
+exception, `sensors/scan.rs`, is listed there.
+
 `services` holds portable mechanisms, such as decoding a positioning stream or
 maintaining a journal. Its modules remain independent. It must not become a
 central owner of all state or a home for code whose ownership is unclear. A

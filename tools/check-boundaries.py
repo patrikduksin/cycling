@@ -53,7 +53,7 @@ SINGLE_WRITERS = {
 ASSIGNMENT = re.compile(r'(?<![=!<>])=\s*(?:\w+\s*::\s*)*(' + '|'.join(
     re.escape(value).replace('::', r'\s*::\s*') for value in SINGLE_WRITERS) + r')\b')
 
-DOMAIN = ('ride', 'sensors', 'workout')
+DOMAIN = ('ride', 'kept', 'sensors', 'workout')
 LAYERS = ('app', 'screens')
 LAYER_RULE = (f'domain code ({", ".join(d + "/" for d in DOMAIN)}) never reaches crate::app or crate::screens: '
               'take what it needs as arguments')
@@ -433,6 +433,8 @@ ui = { package = "firmware-shell", path = "../shell" }
     assert not layer_findings(menu, 'apps/vana/src/app/input.rs')
     assert domain_module(Path('src/ride/recorder.rs')) == recorder
     assert domain_module(Path('src/sensors/mod.rs')) == ('sensors',)
+    assert domain_module(Path('src/kept/facts/store.rs')) == ('kept', 'facts', 'store')
+    assert [line for line, _ in layer_findings('use crate::app::Runtime;', 'apps/vana/src/kept/bests.rs')] == [1]
     assert domain_module(Path('src/app/input.rs')) is None
     assert domain_module(Path('tests/ride.rs')) is None
     wifi = STACK_STATE_WAITER[0]

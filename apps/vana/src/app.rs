@@ -49,7 +49,7 @@ mod seen;
 mod setup;
 mod storage;
 pub use input::HOLD_GAP_MS;
-pub use recording::{Journals, Medium};
+pub use recording::Journals;
 pub use seen::Seen;
 pub use storage::{Health, StorageHealth, Store};
 mod phone;
@@ -100,9 +100,9 @@ pub struct Runtime {
     /// The summary's heart-rate recovery, measured after the finish.
     recovery: crate::ride::recovery::Recovery,
     preferences: preferences::Preferences,
-    bests: bests::Kept,
-    facts: facts::Kept,
-    deleted: deleted::Hidden,
+    bests: crate::kept::bests::Kept,
+    facts: crate::kept::facts::store::Kept,
+    deleted: crate::kept::deleted::Hidden,
     form: form::Kept,
     format: format::Format,
     card_probe: Option<storage::StorageHealth>,
@@ -142,9 +142,9 @@ impl Runtime {
             ride: recording::Ride::default(),
             recovery: crate::ride::recovery::Recovery::default(),
             preferences: preferences::Preferences::default(),
-            bests: bests::Kept::default(),
-            facts: facts::Kept::default(),
-            deleted: deleted::Hidden::default(),
+            bests: crate::kept::bests::Kept::default(),
+            facts: crate::kept::facts::store::Kept::default(),
+            deleted: crate::kept::deleted::Hidden::default(),
             form: form::Kept::default(),
             format: format::Format::default(),
             card_probe: None,

@@ -4548,16 +4548,16 @@ fn form_counts_each_of_200_rides_at_the_ftp_it_was_ridden_at() {
     sim.fit_bulk(Presence::Ready);
     sim.format_files();
     for (ride, &(days_ago, _, ftp)) in plan.iter().enumerate() {
-        let record = vana::ride::facts::Record {
+        let record = vana::kept::facts::record::Record {
             journal: b'i',
             ride_id: ride as u32 + 1,
             started_utc_ms: history_start(days_ago) + HISTORY_STEP_MS,
-            facts: vana::ride::facts::Facts {
+            facts: vana::kept::facts::record::Facts {
                 profile: vana::ride::zones::TrainingProfile::new(ftp, 172),
                 ..Default::default()
             },
         };
-        vana::ride::facts::save(&mut sim.device.bulk, &record).unwrap();
+        vana::kept::facts::record::save(&mut sim.device.bulk, &record).unwrap();
     }
     let entries = files_entries(&mut sim);
     let mut sim = equip(sim.boot());
@@ -6293,9 +6293,9 @@ fn files_rider() -> Sim {
 }
 
 /// The facts the table on FILES keeps for ride `ride_id` of `journal`.
-fn facts_of(sim: &mut Sim, journal: u8, ride_id: u32) -> Option<vana::ride::facts::Record> {
-    let bytes = sim.file(vana::ride::facts::TABLE)?;
-    vana::ride::facts::decode_table(&bytes)
+fn facts_of(sim: &mut Sim, journal: u8, ride_id: u32) -> Option<vana::kept::facts::record::Record> {
+    let bytes = sim.file(vana::kept::facts::record::TABLE)?;
+    vana::kept::facts::record::decode_table(&bytes)
         .find(|record| (record.journal, record.ride_id) == (journal, ride_id))
 }
 
@@ -6345,7 +6345,7 @@ fn with_files_nearly_full_facts_give_way_so_a_discarded_ride_still_hides() {
     sim.checkpoint("the second ride discarded");
     assert_eq!(
         app_files(&mut sim),
-        ["notes.txt", "bests.dat", vana::ride::deleted::TABLE]
+        ["notes.txt", "bests.dat", vana::kept::deleted::TABLE]
     );
 
     sim.ride_at(0.0, 0.0, 72.0, 0.0);

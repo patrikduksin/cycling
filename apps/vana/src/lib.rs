@@ -43,6 +43,7 @@ macro_rules! invariants {
 pub mod app;
 pub mod clock;
 pub mod daylight;
+pub mod kept;
 pub mod ride;
 pub mod screens;
 pub mod sensors;

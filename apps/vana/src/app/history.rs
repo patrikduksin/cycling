@@ -12,10 +12,10 @@
 //! are reachable only with no ride open, and a new ride clears them anyway.
 //! Home keeps the last ride's line from before the first replay.
 use super::Runtime;
-use super::recording::Medium;
 use crate::clock::Zone;
 use crate::ride::directory::{Journal, RideIndex};
 use crate::ride::log::{Status, Summary};
+use crate::ride::medium::Medium;
 use crate::ride::replay::{Progress, Replay, Sums};
 use crate::ride::week::Weeks;
 use crate::screens::history::{self, List, Row};

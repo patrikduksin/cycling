@@ -41,8 +41,8 @@
 //! then drops that journal's rides; the start time guards the rest. So a ride
 //! whose start time is unknown has no facts. A profile out of range reads as
 //! none and leaves the other fields.
-use super::zones::TrainingProfile;
-use super::{Contents, another_version};
+use crate::ride::zones::TrainingProfile;
+use crate::ride::{Contents, another_version};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::{Crc32, crc32};
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};

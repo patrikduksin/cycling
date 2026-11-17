@@ -471,7 +471,7 @@ to other features.
 
 The rider's all-time bests (5 s, 1, 5 and 20 min power, longest ride by
 distance and by time, most ascent) are ride history, so they live in
-`bests.dat` on the FILES volume (`ride::bests`), not in the preference record.
+`bests.dat` on the FILES volume (`kept::bests`), not in the preference record.
 When a live ride finishes, VANA reads the file, merges the ride and writes it
 back with the same synchronous write as the workout outcome; a ride that
 cannot be stored claims no best. VANA never formats the store: without a
@@ -637,7 +637,7 @@ ride recovered after a power cut has no record.
 ### Ride facts
 
 When a ride is saved, VANA keeps what the journal does not hold in one table
-on FILES, `rides/facts.tbl` (`apps/vana/src/ride/facts.rs`): the FTP and LTHR
+on FILES, `rides/facts.tbl` (`apps/vana/src/kept/facts/record.rs`): the FTP and LTHR
 in force, the climbs it finished and their gain, and its start time. Once the
 summary has measured the heart-rate recovery, the ride is saved again with it.
 The rides list's TSS and FORM use the kept FTP, and a saved ride read back
@@ -700,7 +700,7 @@ without that slot and never rewritten.
 
 The rider can discard a ride on END RIDE? and delete a saved ride from its
 last page. Neither erases anything. One table on FILES, `rides/deleted.tbl`
-(`apps/vana/src/ride/deleted.rs`), names the hidden rides. The rides list,
+(`apps/vana/src/kept/deleted.rs`), names the hidden rides. The rides list,
 the ride count, the week's distance and TSS, FORM and the phone's
 `/api/activities` leave them out, and a FIT request for one answers 404
 `deleted`. Removing the file shows every ride again. After boot, each time

@@ -546,7 +546,7 @@ fn a_trace_of_another_version_is_refused_with_why() {
 
 #[test]
 fn a_ride_saved_again_since_leaves_the_facts_table_out() {
-    use vana::ride::facts;
+    use vana::kept::facts::record as facts;
     let (mut sim, trace, _) = recorded_session();
     let table = sim.file(facts::TABLE).unwrap();
     let mut again = facts::decode_table(&table)
@@ -573,7 +573,7 @@ fn a_ride_saved_again_since_leaves_the_facts_table_out() {
 /// hidden rides' table grew at its end, and the rebuild takes it back.
 #[test]
 fn a_ride_discarded_in_the_session_replays_strict() {
-    use vana::ride::deleted;
+    use vana::kept::deleted;
     let discard = |sim: &mut Sim| {
         for _ in 0..4 {
             if !sim.on_home() {

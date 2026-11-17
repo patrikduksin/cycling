@@ -374,7 +374,9 @@ impl Start {
         let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
         let (files, terrain) = origin::volumes(&mut bulk.host(), &mut entries, &mut sector);
         let files = files.map(|files| (files.store, files.generation, files.entries.to_vec()));
-        let facts = vana::ride::facts::digest(&mut bulk.host()).ok().flatten();
+        let facts = vana::kept::facts::record::digest(&mut bulk.host())
+            .ok()
+            .flatten();
         self.volumes = Some(Volumes {
             files,
             facts,
@@ -902,10 +904,10 @@ impl Session {
             if memory.ride_index {
                 sdk.attach_ride_index(Box::leak(Box::new(RideIndex::new(bytes(), bytes()))));
             }
-            let facts = vec![0u8; vana::ride::facts::SHELF_BYTES].into_boxed_slice();
+            let facts = vec![0u8; vana::kept::facts::record::SHELF_BYTES].into_boxed_slice();
             if memory.ride_facts {
                 sdk.attach_ride_facts(Box::leak(facts));
-                let deleted = vec![0u8; vana::ride::deleted::SHELF_BYTES].into_boxed_slice();
+                let deleted = vec![0u8; vana::kept::deleted::SHELF_BYTES].into_boxed_slice();
                 sdk.attach_deleted_rides(Box::leak(deleted));
             }
         }

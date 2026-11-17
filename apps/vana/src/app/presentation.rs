@@ -1,11 +1,12 @@
 //! Foreground scheduling, view preparation and radar alerts.
 use super::Runtime;
 use super::cues::Cue;
-use super::recording::{Medium, Request, RideMessage};
+use super::recording::{Request, RideMessage};
 use crate::clock::Zone;
 use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
+use crate::ride::medium::Medium;
 use crate::ride::turn_back::Turn;
 use crate::screens::chrome::{AMBER, Battery, CHARGE_STEPS, Gps, RED, Toast, Tone};
 use crate::screens::home::Home;

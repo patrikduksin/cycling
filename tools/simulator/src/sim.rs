@@ -1200,7 +1200,7 @@ impl Sim {
                     .expect("the journal programs");
             }
             Store::Records => {
-                let mut bests = vana::ride::bests::encode_file(&Default::default());
+                let mut bests = vana::kept::bests::encode_file(&Default::default());
                 bests[4] = 1;
                 let body = bests.len() - 4;
                 let crc = firmware_services::checksum::crc32(&bests[..body]);

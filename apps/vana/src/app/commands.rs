@@ -6,8 +6,9 @@
 //! journal, so existing tools never act on bulk media by accident.
 use super::Runtime;
 use super::pace::Touched;
-use super::recording::{Medium, Request};
+use super::recording::Request;
 use crate::ride::log::{SLOT_SIZE, Slot, VERSION, transport_checksum};
+use crate::ride::medium::Medium;
 use crate::ride::recorder::{Action, Recorder, Refused};
 use crate::ride::storage::RideStorage;
 use crate::sensors::ble_profile::Profile;

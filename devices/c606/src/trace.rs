@@ -180,7 +180,7 @@ impl Trace {
         };
         let (files, terrain) = origin::volumes(bulk, &mut *start.entries, &mut self.sector);
         start.files = files.map(|files| (files.store, files.generation, files.entries.len()));
-        start.facts = vana::ride::facts::digest(bulk).ok().flatten();
+        start.facts = vana::kept::facts::record::digest(bulk).ok().flatten();
         start.terrain = terrain;
         log::info!(target: "trace", "staging boot={:08x}", start.boot);
     }

@@ -70,8 +70,8 @@ settings. `FORMAT`, or `cycling format`, reports
 each store as `current`, `blank`, `foreign` or `unusable`, in the order the
 wipe takes them: `table`, `rides`, `files`, `records` (the facts, deleted
 rides, bests and workout outcomes VANA writes into FILES), `traces` (STORE),
-`internal` and `settings`. Each record's owner (`ride/facts.rs`,
-`ride/deleted.rs`, `ride/bests.rs`, `workout/history.rs`) decides what its file
+`internal` and `settings`. Each record's owner (`kept/facts/record.rs`,
+`kept/deleted.rs`, `kept/bests.rs`, `workout/history.rs`) decides what its file
 holds, and a file that names the owner but carries another version byte is
 foreign.
 

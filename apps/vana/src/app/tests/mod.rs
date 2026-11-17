@@ -2,6 +2,7 @@
 //! the capabilities VANA consumes.
 use super::*;
 use crate::ride::log::{Commit, REGION_SIZE, SECTOR_SIZE, SECTORS, SLOT_SIZE, Sector, Slot};
+use crate::ride::medium::Medium;
 use crate::ride::storage::RideStorage;
 use device_api::ant::{AntOperation, Event, Identity};
 use device_api::input::{Button, Input};

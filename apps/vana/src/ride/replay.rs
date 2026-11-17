@@ -9,7 +9,7 @@
 //! long ride never holds up a frame. Reading is read-only.
 //!
 //! Laps come from the lap marks on samples (`log::LapStart`). Climbs are not
-//! in the journal: a ride's count comes from its facts (`ride::facts`).
+//! in the journal: a ride's count comes from its facts (`kept::facts`).
 //! Ascent and descent follow the recorded altitude with a live ride's rules;
 //! a ride recorded without altitude estimates its ascent from the recorded
 //! gradient over the distance ridden.

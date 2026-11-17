@@ -7,15 +7,16 @@
 //! fails or fills while a ride is running, the ride continues on the internal
 //! journal as a new ride; the bulk part stays exportable.
 use super::Runtime;
+use crate::kept::bests::Found;
+use crate::kept::facts::record::Climbing;
 use crate::ride::auto::Auto;
-use crate::ride::bests::Found;
 use crate::ride::bulk::{Bulk, BulkState};
 use crate::ride::climb::{Climbs, Event as ClimbEvent};
 use crate::ride::elevation::Trace;
-use crate::ride::facts::Climbing;
 use crate::ride::journal::{Internal, InternalState};
 use crate::ride::laps::{AutoLap, Lap, Laps};
 use crate::ride::log::{Altitude, Sample, Status};
+use crate::ride::medium::Medium;
 use crate::ride::metrics::Step;
 use crate::ride::recorder::{Action, Recorder, Refused, ResultEvent};
 use crate::ride::storage::RideStorage;
@@ -52,40 +53,6 @@ pub(super) enum Request {
 pub(super) enum RideMessage {
     Clear,
     StorageNotReady,
-}
-
-/// Where a recorder keeps its rides.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Medium {
-    /// The 1 MiB journal in the owned boot-flash reservation.
-    Internal,
-    /// The sector log in the owned MMC partition.
-    Bulk,
-}
-
-impl Medium {
-    /// How workout records and ride facts on FILES name this journal.
-    pub const fn journal(self) -> u8 {
-        match self {
-            Self::Internal => b'i',
-            Self::Bulk => b'b',
-        }
-    }
-
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Internal => "internal",
-            Self::Bulk => "bulk",
-        }
-    }
-
-    /// Short label for the screen.
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Internal => "INT",
-            Self::Bulk => "MMC",
-        }
-    }
 }
 
 /// One ride as the rider rides it. A move from the card to internal memory

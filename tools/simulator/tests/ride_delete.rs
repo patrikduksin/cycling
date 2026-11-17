@@ -7,7 +7,7 @@ use shell_simulator::ant::device_type;
 use shell_simulator::bulk::Presence;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{Sim, minutes, seconds};
-use vana::ride::deleted::{self, Reason};
+use vana::kept::deleted::{self, Reason};
 
 const HEART: u16 = 4242;
 const POWER: u16 = 1234;
@@ -128,9 +128,10 @@ fn a_ride_discarded_after_a_lap_is_saved_then_hidden_and_sets_no_best() {
     assert_eq!(records[0].reason, Reason::Discarded);
     assert_eq!(records[0].ride.ride_id, sim.bulk_rides()[1].id);
     assert_eq!(sim.file("bests.dat"), bests, "the 420 W ride set no best");
-    let facts = sim.file(vana::ride::facts::TABLE).unwrap();
+    let facts = sim.file(vana::kept::facts::record::TABLE).unwrap();
     assert!(
-        vana::ride::facts::decode_table(&facts).all(|r| r.ride_id != records[0].ride.ride_id),
+        vana::kept::facts::record::decode_table(&facts)
+            .all(|r| r.ride_id != records[0].ride.ride_id),
         "no facts for the discarded ride"
     );
     home_frame(&mut sim);

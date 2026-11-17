@@ -17,7 +17,7 @@ use super::history::date;
 use super::ride::summary::effort_label;
 use super::ride::{elapsed, kilometres};
 use super::workout::{Text, View};
-use crate::ride::bests::Mark;
+use crate::kept::bests::Mark;
 use core::fmt::Write;
 
 const LEFT: usize = 16;
@@ -228,7 +228,7 @@ fn line(canvas: &mut Canvas, row: usize, label: &[u8], value: &Text<12>, mark: M
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ride::bests::Bests;
+    use crate::kept::bests::Bests;
     use crate::screens::chrome::{HEIGHT, Rect};
     use crate::screens::workout::Page;
 

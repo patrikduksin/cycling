@@ -20,9 +20,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io;
 use std::path::Path;
+use vana::kept::deleted;
+use vana::kept::facts::record as facts;
 use vana::ride::bulk::{CHECKPOINT_RECORDS, TAG, encode_catalog};
 use vana::ride::log::{Catalog, Kind, SLOT_SIZE, Scanner, Slot, decode};
-use vana::ride::{deleted, facts};
 
 /// What a host pulled from the device after the session, through the
 /// read-only paths: ride export and `files get`.

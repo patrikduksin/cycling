@@ -284,9 +284,9 @@ async fn console(
         });
         sdk.attach_ride_index(index);
         // Each saved ride's facts, 32 KB in PSRAM.
-        sdk.attach_ride_facts(external_bytes(vana::ride::facts::SHELF_BYTES));
+        sdk.attach_ride_facts(external_bytes(vana::kept::facts::record::SHELF_BYTES));
         // The rides the rider discarded or deleted, 8 KB in PSRAM.
-        sdk.attach_deleted_rides(external_bytes(vana::ride::deleted::SHELF_BYTES));
+        sdk.attach_deleted_rides(external_bytes(vana::kept::deleted::SHELF_BYTES));
     }
     let mut memory = firmware_services::trace::origin::Memory {
         ride_index: true,

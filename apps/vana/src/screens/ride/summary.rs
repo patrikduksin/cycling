@@ -31,7 +31,7 @@
 use super::elevation::Chart;
 use super::stats::zone_bar;
 use super::{elapsed, kilometres, speed, whole};
-use crate::ride::bests::Found;
+use crate::kept::bests::Found;
 use crate::ride::recovery::Reading as Recovery;
 use crate::ride::totals::EFFORT_SECONDS;
 use crate::screens::canvas::{Canvas, Shape};

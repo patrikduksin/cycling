@@ -706,7 +706,7 @@ fn totals_stop_at_an_accepted_finish_while_its_flush_is_pending() {
         assert!(
             runtime
                 .ride
-                .submit(crate::app::Medium::Internal, |recorder, token| {
+                .submit(crate::ride::medium::Medium::Internal, |recorder, token| {
                     recorder.request(crate::ride::recorder::Action::Finish, 2100, token)
                 })
         );

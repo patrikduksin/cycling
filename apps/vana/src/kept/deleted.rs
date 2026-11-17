@@ -37,7 +37,13 @@
 //! A table of another version or stride, or with a damaged header, is
 //! foreign: it hides nothing and is never written over. A slot of another
 //! record version reads as damaged.
-use super::{Contents, another_version};
+//!
+//! `Hidden` reads the table onto the shelf the composition lends (PSRAM on the
+//! device) once after boot, and again each time the card becomes ready.
+use super::deleted;
+use crate::ride::log::Summary;
+use crate::ride::medium::Medium;
+use crate::ride::{Contents, another_version};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::{Crc32, crc32};
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
@@ -571,5 +577,229 @@ pub fn forget(media: &mut impl ReadWrite, shelf: &mut Shelf, journal: u8) -> Res
     rewrite(media, shelf, None, |ride| ride.journal == journal)
 }
 
+/// A failed read of the table is tried again this long after.
+const RETRY_MS: u64 = 5_000;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Scan {
+    #[default]
+    Unread,
+    Retry {
+        at: u64,
+    },
+    /// The shelf holds the table, or there is none yet.
+    Read,
+    /// No FILES volume: read again when a card is ready.
+    Absent,
+    /// A table this version does not write: it hides nothing and stays.
+    Foreign,
+}
+
+#[derive(Default)]
+pub(crate) struct Hidden {
+    pub(crate) shelf: Option<Shelf>,
+    pub(crate) scan: Scan,
+    /// Changes with the shelf, so lists and totals made from it are made
+    /// again.
+    pub(crate) revision: u32,
+    /// The bulk medium was usable at the last service.
+    card_ready: bool,
+    /// A card is in and has not failed, whatever its ride log's state.
+    pub(crate) card_in: bool,
+    /// The saved ride the rider asked to delete, for the next service.
+    pub(crate) delete: Option<(Medium, Summary)>,
+    /// The page asks about rides: END RIDE? or the list.
+    asking: bool,
+}
+
+impl Hidden {
+    pub(crate) fn shelf(&self) -> Option<&Shelf> {
+        self.shelf.as_ref().filter(|_| self.scan == Scan::Read)
+    }
+
+    pub(crate) fn hides(&self, ride: &Ride) -> bool {
+        self.shelf().is_some_and(|shelf| shelf.hides(ride))
+    }
+
+    /// Whether a ride can be hidden now: the table is read, the card is in
+    /// and the table has room.
+    pub(crate) fn writable(&self) -> bool {
+        self.card_in && self.shelf().is_some_and(|shelf| !shelf.full())
+    }
+
+    /// Whether the list may count its rides: the table was read, or a read
+    /// failed and nothing is hidden until one succeeds.
+    pub(crate) fn settled(&self) -> bool {
+        self.shelf.is_none() || self.scan != Scan::Unread
+    }
+
+    pub(crate) fn save(&mut self, bulk: &mut impl ReadWrite, record: &Record) -> Result<(), Error> {
+        let shelf = self.shelf.as_mut().filter(|_| self.scan == Scan::Read);
+        let Some(shelf) = shelf else {
+            return Err(Error::Table);
+        };
+        let saved = deleted::save(bulk, shelf, record);
+        self.revision = self.revision.wrapping_add(1);
+        if let Err(error) = saved {
+            log::warn!(target: "sdk.deleted", "save_failed error={error:?}");
+        }
+        saved
+    }
+
+    /// A cleared or initialized journal numbers its rides from 1 again. A
+    /// table not read yet is read first, so its records of that journal go.
+    pub(crate) fn forget(&mut self, bulk: &mut impl ReadWrite, medium: Medium, now: u64) {
+        if matches!(self.scan, Scan::Unread | Scan::Retry { .. }) {
+            self.read(bulk, now);
+        }
+        let Some(shelf) = self.shelf.as_mut().filter(|_| self.scan == Scan::Read) else {
+            return;
+        };
+        if let Err(error) = deleted::forget(bulk, shelf, medium.journal()) {
+            log::warn!(target: "sdk.deleted", "forget_failed error={error:?}");
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Read the table when it is due and no ride is being written. A card
+    /// that became ready is read again, and so is one without a table this
+    /// version writes once a page that asks about rides opens: the host may
+    /// have made FILES since.
+    pub(crate) fn scan_step(
+        &mut self,
+        bulk: &mut impl ReadWrite,
+        now: u64,
+        (ready, busy, asking): (bool, bool, bool),
+    ) {
+        let opened = asking && !self.asking;
+        self.asking = asking;
+        if ready && !self.card_ready || opened && matches!(self.scan, Scan::Absent | Scan::Foreign)
+        {
+            self.scan = Scan::Unread;
+            self.revision = self.revision.wrapping_add(1);
+        }
+        self.card_ready = ready;
+        let due = match self.scan {
+            Scan::Unread => true,
+            Scan::Retry { at } => now >= at,
+            Scan::Read | Scan::Absent | Scan::Foreign => false,
+        };
+        if due && !busy {
+            self.read(bulk, now);
+        }
+    }
+
+    fn read(&mut self, bulk: &mut impl ReadWrite, now: u64) {
+        let Some(shelf) = self.shelf.as_mut() else {
+            return;
+        };
+        let before = self.scan;
+        self.scan = match deleted::read(bulk, shelf) {
+            Ok(_) => Scan::Read,
+            Err(Error::Table) => Scan::Foreign,
+            Err(error) if absent(error) => Scan::Absent,
+            Err(_) => Scan::Retry {
+                at: now.saturating_add(RETRY_MS),
+            },
+        };
+        if self.scan != Scan::Read {
+            shelf.clear();
+        }
+        if self.scan == Scan::Read || before != self.scan {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+}
+
+/// Whether a read failed because there is no card or no store to read,
+/// rather than only this time.
+fn absent(error: Error) -> bool {
+    use device_api::bulk::Error as Media;
+    matches!(
+        error,
+        Error::Volume(
+            volume::Error::Missing
+                | volume::Error::Foreign
+                | volume::Error::Small
+                | volume::Error::Media(Media::Unavailable | Media::Unsupported)
+        ) | Error::Files(
+            files::Error::Uninitialized
+                | files::Error::Foreign
+                | files::Error::Media(Media::Unavailable | Media::Unsupported)
+        )
+    )
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod hidden_tests {
+    use super::*;
+    use crate::workout::library::tests::formatted;
+
+    fn hidden() -> Hidden {
+        Hidden {
+            shelf: Some(Shelf::new(std::vec![0; deleted::SHELF_BYTES].leak())),
+            ..Hidden::default()
+        }
+    }
+
+    fn record(ride_id: u32) -> Record {
+        Record {
+            ride: Ride::new(b'b', 9, ride_id, None, 60_000),
+            reason: Reason::Deleted,
+            hidden_utc_s: 0,
+        }
+    }
+
+    #[test]
+    fn the_table_is_read_once_the_card_is_ready_and_no_ride_is_being_written() {
+        let mut card = formatted();
+        let mut kept = hidden();
+        kept.card_in = true;
+        assert!(!kept.settled());
+        kept.scan_step(&mut card, 0, (true, true, false));
+        assert!(!kept.settled(), "not while a ride is being written");
+        kept.scan_step(&mut card, 0, (true, false, false));
+        assert!(kept.settled() && kept.writable(), "no table yet");
+        kept.save(&mut card, &record(4)).unwrap();
+        assert!(kept.hides(&record(4).ride));
+
+        let mut again = hidden();
+        again.scan_step(&mut card, 0, (true, false, false));
+        assert!(again.hides(&record(4).ride), "read back");
+
+        let mut blank = crate::workout::library::tests::Region::default();
+        let mut none = hidden();
+        none.scan_step(&mut blank, 0, (false, false, false));
+        assert_eq!(none.scan, Scan::Absent);
+        assert!(none.settled() && !none.writable());
+        assert!(none.save(&mut blank, &record(1)).is_err());
+        none.card_in = true;
+        none.scan_step(&mut card, 0, (false, false, true));
+        assert!(
+            none.hides(&record(4).ride),
+            "FILES made since, read as END RIDE? opens"
+        );
+        assert!(
+            none.writable(),
+            "a card without a ride log still keeps FILES"
+        );
+        none.card_in = false;
+        assert!(
+            !none.writable() && none.hides(&record(4).ride),
+            "card pulled"
+        );
+    }
+
+    #[test]
+    fn without_a_shelf_nothing_is_hidden_and_the_list_counts_at_once() {
+        let mut card = formatted();
+        let mut bare = Hidden::default();
+        bare.scan_step(&mut card, 0, (true, false, false));
+        assert!(bare.settled());
+        assert!(!bare.writable());
+        assert!(!bare.hides(&record(1).ride));
+    }
+}

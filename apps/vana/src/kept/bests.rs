@@ -29,7 +29,8 @@
 //! The ride bests need a ride of `MIN_RIDE_S`, so a test press of a few
 //! seconds does not become "the longest ride". A power above
 //! `PLAUSIBLE_WATTS` for its window is a sensor glitch and never a best.
-use super::{Contents, another_version};
+use super::bests;
+use crate::ride::{Contents, another_version};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::crc32;
 use firmware_services::{files, volume};
@@ -339,6 +340,114 @@ pub fn suggest_ftp(best_20_min: u16, ftp_watts: u16) -> Option<u16> {
     let suggested = (u32::from(best_20_min) * FTP_SHARE_PCT + 50) / 100;
     let enough = suggested * 100 >= u32::from(ftp_watts) * (100 + FTP_GAIN_PCT);
     (enough && suggested > 0).then_some(suggested.min(u32::from(u16::MAX)) as u16)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Store {
+    /// Not read yet, or to be read again.
+    #[default]
+    Unread,
+    Kept,
+    /// No card, no FILES volume or no formatted file store.
+    Unavailable,
+    /// A file is there that does not decode; it is left alone.
+    Damaged,
+    Foreign,
+    /// The store would not take a write: the bests are in memory only.
+    NotSaved,
+}
+
+/// A failed read or write is tried again this long after.
+pub(crate) const RETRY_MS: u64 = 5_000;
+
+/// The bests in force and what the BESTS view is doing with them.
+#[derive(Default)]
+pub(crate) struct Kept {
+    pub(crate) bests: Bests,
+    pub(crate) store: Store,
+    /// BESTS is on screen, so it reads the file again once on opening.
+    pub(crate) open: bool,
+    /// ACT asked to clear them; the rider has yet to confirm.
+    pub(crate) confirming: bool,
+    /// The rider confirmed: the next service clears the file.
+    pub(crate) clear: bool,
+    /// A finished ride's outcome whose read failed this time.
+    pub(crate) pending: Option<(Outcome, u16)>,
+    /// `bests` hold a merge the store has not taken yet.
+    pub(crate) unsaved: bool,
+    pub(crate) retry_at: u64,
+    /// The bulk medium was usable at the last service.
+    pub(crate) card_ready: bool,
+}
+
+impl Kept {
+    /// Take a ride's outcome into the stored bests; returns what it set,
+    /// which is nothing when the store could not be used.
+    pub(crate) fn merge(
+        &mut self,
+        media: &mut impl ReadWrite,
+        outcome: Outcome,
+        day: u16,
+        now: u64,
+    ) -> Found {
+        let base = if self.unsaved {
+            Ok(self.bests)
+        } else {
+            bests::load(media)
+        };
+        let mut bests = match base {
+            Ok(bests) => bests,
+            Err(bests::Error::Media) => {
+                log::warn!(target: "sdk.bests", "load_failed error=Media");
+                self.pending = Some((outcome, day));
+                self.retry_at = now.saturating_add(RETRY_MS);
+                return Found::default();
+            }
+            Err(bests::Error::Damaged) => {
+                self.store = Store::Damaged;
+                return Found::default();
+            }
+            Err(bests::Error::Foreign) => {
+                self.store = Store::Foreign;
+                return Found::default();
+            }
+            Err(_) => {
+                self.store = Store::Unavailable;
+                return Found::default();
+            }
+        };
+        self.pending = None;
+        let found = bests.merge(&outcome, day);
+        self.bests = bests;
+        if !found.any() && !self.unsaved {
+            self.store = Store::Kept;
+            return Found::default();
+        }
+        self.write(media, now);
+        if self.unsaved {
+            Found::default()
+        } else {
+            found
+        }
+    }
+
+    /// Write the bests; if the store refuses, keep them in memory.
+    pub(crate) fn write(&mut self, media: &mut impl ReadWrite, now: u64) {
+        match bests::save(media, &self.bests) {
+            Ok(()) => {
+                self.store = Store::Kept;
+                self.unsaved = false;
+            }
+            Err(bests::Error::Unavailable) => self.store = Store::Unavailable,
+            Err(bests::Error::Foreign) => self.store = Store::Foreign,
+            Err(error) => {
+                log::warn!(target: "sdk.bests", "save_failed error={error:?}");
+                self.store = Store::NotSaved;
+                self.unsaved = true;
+                self.retry_at = now.saturating_add(RETRY_MS);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

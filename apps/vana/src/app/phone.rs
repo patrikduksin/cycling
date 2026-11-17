@@ -23,11 +23,11 @@
 
 use super::Runtime;
 use super::pace::Touched;
-use super::recording::Medium;
 use crate::ride::course::{self, gpx};
 use crate::ride::fit::{self, Export, Flow, Plan, Refusal};
 use crate::ride::index::{Activity, Index};
 use crate::ride::log::Slot;
+use crate::ride::medium::Medium;
 use crate::ride::rider::Rider;
 use crate::ride::storage::RideStorage;
 use crate::workout::codec::{DecodeError, ENCODED_MAX};

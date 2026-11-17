@@ -3,17 +3,18 @@
 //! BESTS view under Settings, PROFILE.
 //!
 //! The bests live in a small file beside the workout outcomes
-//! (`ride::bests`), not in the preference record. A ride
+//! (`kept::bests`), not in the preference record. A ride
 //! is never held up for the file. Where it cannot be used the BESTS view says
 //! why: no store to keep it in, a damaged file, a file of another version, or
 //! a store that would not take the write (the merged bests stay in memory and
 //! the next write keeps them). A read that failed only this time is tried
 //! again, with the ride's outcome waiting.
 use super::Runtime;
-use super::recording::{Medium, Ride};
+use super::recording::Ride;
 use crate::clock::Zone;
-use crate::ride::bests::{self, Bests, Found, Outcome, suggest_ftp};
+use crate::kept::bests::{self, Bests, Found, Kept, Outcome, RETRY_MS, Store, suggest_ftp};
 use crate::ride::log::Status;
+use crate::ride::medium::Medium;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::bests::Mode;
 use crate::screens::chrome::Tone;
@@ -22,44 +23,6 @@ use crate::screens::workout::{Page, Text};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
 use device_api::input::Button;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Store {
-    /// Not read yet, or to be read again.
-    #[default]
-    Unread,
-    Kept,
-    /// No card, no FILES volume or no formatted file store.
-    Unavailable,
-    /// A file is there that does not decode; it is left alone.
-    Damaged,
-    Foreign,
-    /// The store would not take a write: the bests are in memory only.
-    NotSaved,
-}
-
-/// A failed read or write is tried again this long after.
-const RETRY_MS: u64 = 5_000;
-
-/// The bests in force and what the BESTS view is doing with them.
-#[derive(Default)]
-pub(super) struct Kept {
-    pub(super) bests: Bests,
-    store: Store,
-    /// BESTS is on screen, so it reads the file again once on opening.
-    open: bool,
-    /// ACT asked to clear them; the rider has yet to confirm.
-    confirming: bool,
-    /// The rider confirmed: the next service clears the file.
-    clear: bool,
-    /// A finished ride's outcome whose read failed this time.
-    pending: Option<(Outcome, u16)>,
-    /// `bests` hold a merge the store has not taken yet.
-    unsaved: bool,
-    retry_at: u64,
-    /// The bulk medium was usable at the last service.
-    card_ready: bool,
-}
 
 impl Kept {
     /// The BESTS row's value in Settings.
@@ -85,68 +48,6 @@ impl Kept {
             Store::Foreign => Mode::Foreign,
             Store::NotSaved => Mode::NotSaved,
             _ => Mode::List,
-        }
-    }
-
-    /// Take a ride's outcome into the stored bests; returns what it set,
-    /// which is nothing when the store could not be used.
-    fn merge(&mut self, media: &mut impl ReadWrite, outcome: Outcome, day: u16, now: u64) -> Found {
-        let base = if self.unsaved {
-            Ok(self.bests)
-        } else {
-            bests::load(media)
-        };
-        let mut bests = match base {
-            Ok(bests) => bests,
-            Err(bests::Error::Media) => {
-                log::warn!(target: "sdk.bests", "load_failed error=Media");
-                self.pending = Some((outcome, day));
-                self.retry_at = now.saturating_add(RETRY_MS);
-                return Found::default();
-            }
-            Err(bests::Error::Damaged) => {
-                self.store = Store::Damaged;
-                return Found::default();
-            }
-            Err(bests::Error::Foreign) => {
-                self.store = Store::Foreign;
-                return Found::default();
-            }
-            Err(_) => {
-                self.store = Store::Unavailable;
-                return Found::default();
-            }
-        };
-        self.pending = None;
-        let found = bests.merge(&outcome, day);
-        self.bests = bests;
-        if !found.any() && !self.unsaved {
-            self.store = Store::Kept;
-            return Found::default();
-        }
-        self.write(media, now);
-        if self.unsaved {
-            Found::default()
-        } else {
-            found
-        }
-    }
-
-    /// Write the bests; if the store refuses, keep them in memory.
-    fn write(&mut self, media: &mut impl ReadWrite, now: u64) {
-        match bests::save(media, &self.bests) {
-            Ok(()) => {
-                self.store = Store::Kept;
-                self.unsaved = false;
-            }
-            Err(bests::Error::Unavailable) => self.store = Store::Unavailable,
-            Err(bests::Error::Foreign) => self.store = Store::Foreign,
-            Err(error) => {
-                log::warn!(target: "sdk.bests", "save_failed error={error:?}");
-                self.store = Store::NotSaved;
-                self.unsaved = true;
-                self.retry_at = now.saturating_add(RETRY_MS);
-            }
         }
     }
 }
@@ -387,7 +288,7 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ride::bests::{Mark, PLAUSIBLE_WATTS};
+    use crate::kept::bests::{Mark, PLAUSIBLE_WATTS};
     use crate::screens::chrome::Toast;
 
     fn fits(text: &Text<24>) {

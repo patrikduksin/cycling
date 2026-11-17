@@ -1,6 +1,6 @@
 use super::Runtime;
 use super::cues::Cue;
-use super::recording::{Medium, Outing, Ride};
+use super::recording::{Outing, Ride};
 use crate::ride::course::follow::Follower;
 use crate::ride::course::nav::{Event, Navigation, Sign};
 use crate::ride::course::stored::{self, Finder, Finding};
@@ -8,6 +8,7 @@ use crate::ride::course::{self, Course};
 use crate::ride::homing::rebuild::Rebuild;
 use crate::ride::homing::{Fix, Homing};
 use crate::ride::log::{Slot, Status, decode};
+use crate::ride::medium::Medium;
 use crate::ride::turn_back::Leg;
 use crate::screens::chrome::{Toast, Tone};
 pub use crate::screens::ride::MapFrame;

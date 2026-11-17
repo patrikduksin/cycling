@@ -8,14 +8,12 @@
 //! away, and counts once until they are away again; that gap is the
 //! hysteresis jitter near the start cannot cross. Waiting at the start, however
 //! long, delays the pass until the rider rides on.
+use crate::ride::geo::{Frame, bearing, distance};
 use crate::ride::thin::{self, off_segment};
 use device_api::gps::{FixState, Snapshot};
-use libm::{atan2f, cosf, sqrtf};
 
 pub mod rebuild;
 
-/// Metres per 1e-7 degree of latitude, on a sphere of the mean Earth radius.
-const M_PER_E7: f32 = 0.011_119_508;
 /// Fixes closer than this to the last one add nothing to the breadcrumb.
 const MIN_STEP_M: f32 = 5.0;
 /// A kept point may sit this far off the straight line it replaces; doubled
@@ -42,8 +40,6 @@ const PASS_END_M: f32 = 50.0;
 const PASS_ARM_M: f32 = 100.0;
 /// Standing still, the guide is brought up to date this often.
 const STILL_MS: u64 = 1_000;
-/// Angles are in 4096ths of a turn, clockwise from north.
-pub const TURN: u16 = 4096;
 
 /// One kept point: metres east and north of the start, and metres along the
 /// breadcrumb from it. All zero bytes are a valid `Crumb`, so composition
@@ -95,52 +91,6 @@ pub struct Fix {
     pub taken_loop_ms: u64,
 }
 
-/// Where a ride's positions are measured from: its first fix.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Frame {
-    origin: (i32, i32),
-    east_per_e7: f32,
-}
-
-impl Frame {
-    pub(crate) fn at((lat, lon): (i32, i32)) -> Self {
-        Self {
-            origin: (lat, lon),
-            east_per_e7: east_per_e7(lat),
-        }
-    }
-
-    /// Metres east and north of the origin; across the antimeridian the
-    /// short way round is the way ridden.
-    pub fn place(&self, lat: i32, lon: i32) -> (f32, f32) {
-        let (lat0, lon0) = self.origin;
-        let mut east = i64::from(lon) - i64::from(lon0);
-        if east > 1_800_000_000 {
-            east -= 3_600_000_000;
-        } else if east < -1_800_000_000 {
-            east += 3_600_000_000;
-        }
-        (
-            east as f32 * self.east_per_e7,
-            (i64::from(lat) - i64::from(lat0)) as f32 * M_PER_E7,
-        )
-    }
-
-    /// The `(lat_e7, lon_e7)` that `place` puts at `(east, north)`.
-    pub fn locate(&self, (east, north): (f32, f32)) -> (i32, i32) {
-        let (lat0, lon0) = self.origin;
-        (
-            lat0.saturating_add((north / M_PER_E7) as i32),
-            lon0.saturating_add((east / self.east_per_e7) as i32),
-        )
-    }
-
-    /// Metres per 1e-7 degree east and north.
-    pub fn metres_per_e7(&self) -> (f32, f32) {
-        (self.east_per_e7, M_PER_E7)
-    }
-}
-
 type Point = (f32, f32);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -184,26 +134,7 @@ impl StartPass {
     }
 }
 
-pub(crate) fn distance(a: Point, b: Point) -> f32 {
-    let (east, north) = (b.0 - a.0, b.1 - a.1);
-    sqrtf(east * east + north * north)
-}
-
-/// The bearing from `from` to `to`, in `TURN`ths clockwise from north.
-pub(crate) fn bearing(from: Point, to: Point) -> u16 {
-    let radians = atan2f(to.0 - from.0, to.1 - from.1);
-    let turns = radians / core::f32::consts::TAU;
-    let turns = if turns < 0.0 { turns + 1.0 } else { turns };
-    ((turns * f32::from(TURN)) as u32 % u32::from(TURN)) as u16
-}
-
-/// Metres east per 1e-7 degree of longitude at this latitude.
-fn east_per_e7(lat_e7: i32) -> f32 {
-    let radians = lat_e7 as f32 * 1e-7 * core::f32::consts::PI / 180.0;
-    M_PER_E7 * cosf(radians)
-}
-
-pub struct Homing<'a> {
+pub struct Breadcrumb<'a> {
     crumbs: &'a mut [Crumb],
     len: usize,
     tolerance: f32,
@@ -226,7 +157,7 @@ pub struct Homing<'a> {
     guide: Option<Guide>,
 }
 
-impl<'a> Homing<'a> {
+impl<'a> Breadcrumb<'a> {
     /// A breadcrumb in `crumbs`; its length is the most points kept.
     pub fn new(crumbs: &'a mut [Crumb]) -> Self {
         assert!(crumbs.len() >= 8, "a breadcrumb needs room for a few bends");
@@ -272,15 +203,6 @@ impl<'a> Homing<'a> {
     /// Whether the rider rode past the start since this was last asked.
     pub fn take_pass(&mut self) -> bool {
         core::mem::take(&mut self.passed)
-    }
-
-    /// Points kept now.
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
     }
 
     /// The ride's frame, once it has its first fix.
@@ -509,6 +431,7 @@ impl<'a> Homing<'a> {
 pub(crate) mod tests {
     use super::*;
     use crate::ride::course;
+    use crate::ride::geo::TURN;
     extern crate std;
     use std::vec;
     use std::vec::Vec;
@@ -526,11 +449,7 @@ pub(crate) mod tests {
 
     /// A position `east` and `north` metres from (LAT, LON).
     pub(crate) fn at(east: f32, north: f32) -> (i32, i32) {
-        let cos = cosf(LAT as f32 * 1e-7 * core::f32::consts::PI / 180.0);
-        (
-            LAT + (north / M_PER_E7) as i32,
-            LON + (east / (M_PER_E7 * cos)) as i32,
-        )
+        Frame::at((LAT, LON)).locate((east, north))
     }
 
     /// Fixes every `step` metres along straight legs between `corners`.
@@ -550,10 +469,10 @@ pub(crate) mod tests {
         points
     }
 
-    fn ride(homing: &mut Homing, points: &[(f32, f32)], now: &mut u64) {
+    fn ride(breadcrumb: &mut Breadcrumb, points: &[(f32, f32)], now: &mut u64) {
         for &(east, north) in points {
             *now += 1_000;
-            homing.observe(taken(at(east, north), *now), *now);
+            breadcrumb.observe(taken(at(east, north), *now), *now);
         }
     }
 
@@ -566,16 +485,16 @@ pub(crate) mod tests {
     #[test]
     fn straight_roads_keep_their_corners_and_few_points() {
         let mut crumbs = vec![Crumb::default(); 64];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
         // 1 km east, 1 km north, 500 m west: fixes every 7 m.
         let route = path(
             &[(0.0, 0.0), (1000.0, 0.0), (1000.0, 1000.0), (500.0, 1000.0)],
             7.0,
         );
-        ride(&mut homing, &route, &mut now);
+        ride(&mut breadcrumb, &route, &mut now);
         // The start, both corners and a point each full window (336 m).
-        let kept = &homing.crumbs[..homing.len()];
+        let kept = breadcrumb.crumbs();
         assert!(kept.len() <= 9, "{kept:?}");
         for corner in [(1000.0, 0.0), (1000.0, 1000.0)] {
             assert!(
@@ -584,10 +503,10 @@ pub(crate) mod tests {
                 "{corner:?} in {kept:?}"
             );
         }
-        let (direct_m, track_m) = homing.way_back().unwrap();
+        let (direct_m, track_m) = breadcrumb.way_back().unwrap();
         assert!((1115..=1120).contains(&direct_m), "{direct_m}");
         assert!((2495..=2505).contains(&track_m), "{track_m}");
-        let guide = homing.guide().unwrap();
+        let guide = breadcrumb.guide().unwrap();
         assert!(!guide.at_start);
         // Riding west, the start lies to the south-west: behind and left.
         assert!(near(guide.bearing, 206.6, 1.0), "{guide:?}");
@@ -597,19 +516,19 @@ pub(crate) mod tests {
     #[test]
     fn a_full_breadcrumb_thins_itself_and_keeps_its_length() {
         let mut crumbs = vec![Crumb::default(); 32];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
         // A zig-zag of 200 m legs, each corner 30 m off the line.
         let corners: Vec<_> = (0..120)
             .map(|i| (i as f32 * 200.0, if i % 2 == 0 { 0.0 } else { 30.0 }))
             .collect();
-        ride(&mut homing, &path(&corners, 8.0), &mut now);
-        assert!(homing.len() <= 32);
-        assert!(homing.tolerance > TOLERANCE_M);
+        ride(&mut breadcrumb, &path(&corners, 8.0), &mut now);
+        assert!(breadcrumb.crumbs().len() <= 32);
+        assert!(breadcrumb.tolerance > TOLERANCE_M);
         // Thinning shortens the zig-zag to its trend, never past it.
-        let (_, track_m) = homing.way_back().unwrap();
+        let (_, track_m) = breadcrumb.way_back().unwrap();
         assert!((23_800..=24_300).contains(&track_m), "{track_m}");
-        let crumbs = &homing.crumbs[..homing.len()];
+        let crumbs = breadcrumb.crumbs();
         assert!(crumbs.windows(2).all(|w| w[1].along > w[0].along));
     }
     /// The fixes a receiver reports riding `road`: each `white` metres off at
@@ -623,28 +542,28 @@ pub(crate) mod tests {
                 east = (east * 0.98 + unit() * bias * 0.2).clamp(-bias, bias);
                 north = (north * 0.98 + unit() * bias * 0.2).clamp(-bias, bias);
                 let (e, n) = (east + unit() * white, north + unit() * white);
-                (
-                    fix.lat_e7 + (n / M_PER_E7) as i32,
-                    fix.lon_e7 + (e / east_per_e7(fix.lat_e7)) as i32,
-                )
+                Frame::at((*fix).into()).locate((e, n))
             })
             .collect()
     }
 
     /// The breadcrumb keeps a subsequence of the fixes, so each fix up to the
     /// last kept one lies between two of them.
-    fn deviation(homing: &Homing, road: &[course::Point], fixes: &[(i32, i32)]) -> f32 {
-        let kept = homing.crumbs();
+    fn deviation(breadcrumb: &Breadcrumb, road: &[course::Point], fixes: &[(i32, i32)]) -> f32 {
+        let kept = breadcrumb.crumbs();
         let xy = |c: Crumb| (c.east, c.north);
         let (mut worst, mut k) = (0.0f32, 0);
         for (truth, &(lat, lon)) in road.iter().zip(fixes) {
             if k + 1 == kept.len() {
                 break;
             }
-            if homing.frame().unwrap().place(lat, lon) == xy(kept[k + 1]) {
+            if breadcrumb.frame().unwrap().place(lat, lon) == xy(kept[k + 1]) {
                 k += 1;
             }
-            let p = homing.frame().unwrap().place(truth.lat_e7, truth.lon_e7);
+            let p = breadcrumb
+                .frame()
+                .unwrap()
+                .place(truth.lat_e7, truth.lon_e7);
             let b = xy(kept[(k + 1).min(kept.len() - 1)]);
             worst = worst.max(off_segment(p, xy(kept[k]), b));
         }
@@ -668,17 +587,17 @@ pub(crate) mod tests {
             let road = course::tests::road(km, step, seed as u64 + 1);
             let fixes = received(&road, white, bias, seed as u64 + 1);
             let mut crumbs = vec![Crumb::default(); 4096];
-            let mut homing = Homing::new(&mut crumbs);
+            let mut breadcrumb = Breadcrumb::new(&mut crumbs);
             let mut now = 0;
             for &fix in &fixes {
                 now += 1_000;
-                homing.observe(taken(fix, now), now);
+                breadcrumb.observe(taken(fix, now), now);
             }
-            let worst = deviation(&homing, &road, &fixes);
+            let worst = deviation(&breadcrumb, &road, &fixes);
             std::eprintln!(
                 "| {name} | {} | {:.0} m | {worst:.0} m |",
-                homing.len(),
-                homing.tolerance
+                breadcrumb.crumbs().len(),
+                breadcrumb.tolerance
             );
             if worst > limit {
                 off.push(name);
@@ -690,77 +609,80 @@ pub(crate) mod tests {
     #[test]
     fn no_fix_no_guide_and_a_stopped_rider_has_no_heading() {
         let mut crumbs = vec![Crumb::default(); 16];
-        let mut homing = Homing::new(&mut crumbs);
-        assert_eq!(homing.guide(), None);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
+        assert_eq!(breadcrumb.guide(), None);
         let mut now = 0;
         ride(
-            &mut homing,
+            &mut breadcrumb,
             &path(&[(0.0, 0.0), (0.0, 100.0)], 7.0),
             &mut now,
         );
-        assert!(homing.guide().unwrap().heading.is_some());
+        assert!(breadcrumb.guide().unwrap().heading.is_some());
         // Standing still: the same position, then a new one nearby.
-        homing.observe(taken(at(0.0, 100.0), now + 20_000), now + 20_000);
-        homing.observe(taken(at(1.0, 101.0), now + 21_000), now + 21_000);
-        let guide = homing.guide().unwrap();
+        breadcrumb.observe(taken(at(0.0, 100.0), now + 20_000), now + 20_000);
+        breadcrumb.observe(taken(at(1.0, 101.0), now + 21_000), now + 21_000);
+        let guide = breadcrumb.guide().unwrap();
         assert_eq!(guide.heading, None);
         assert!(near(guide.bearing, 180.0, 2.0), "{guide:?}");
-        homing.observe(None, now + 30_000);
-        assert_eq!(homing.guide(), None);
-        homing.reset();
-        assert!(homing.is_empty());
+        breadcrumb.observe(None, now + 30_000);
+        assert_eq!(breadcrumb.guide(), None);
+        breadcrumb.reset();
+        assert!(breadcrumb.crumbs().is_empty());
     }
 
     #[test]
     fn standing_still_hands_the_fix_on_once_a_second_and_loses_the_heading() {
         let mut crumbs = vec![Crumb::default(); 64];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
         ride(
-            &mut homing,
+            &mut breadcrumb,
             &path(&[(0.0, 0.0), (0.0, 600.0)], 7.0),
             &mut now,
         );
         let mut still = Vec::new();
         for _ in 0..40 {
             now += 500;
-            still.extend(homing.observe(taken(at(0.0, 600.0), now), now));
+            still.extend(breadcrumb.observe(taken(at(0.0, 600.0), now), now));
         }
         assert_eq!(still.len(), 20, "{still:?}");
         assert!(still.iter().all(|fix| !fix.moved));
-        assert_eq!(homing.guide().unwrap().heading, None);
+        assert_eq!(breadcrumb.guide().unwrap().heading, None);
         assert_eq!(still.last().unwrap().heading, None);
     }
 
     #[test]
     fn a_ride_across_the_antimeridian_measures_the_short_way() {
         let mut crumbs = vec![Crumb::default(); 16];
-        let mut homing = Homing::new(&mut crumbs);
-        homing.observe(taken((0, 1_799_998_000), 1_000), 1_000);
-        homing.observe(taken((0, -1_799_998_000), 2_000), 2_000);
-        let (direct_m, _) = homing.way_back().unwrap();
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
+        breadcrumb.observe(taken((0, 1_799_998_000), 1_000), 1_000);
+        breadcrumb.observe(taken((0, -1_799_998_000), 2_000), 2_000);
+        let (direct_m, _) = breadcrumb.way_back().unwrap();
         assert!((40..=50).contains(&direct_m), "{direct_m}");
     }
 
     #[test]
     fn back_at_the_start_after_a_loop_is_at_the_start_until_away_again() {
         let mut crumbs = vec![Crumb::default(); 64];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
-        ride(&mut homing, &path(&LOOP, 7.0), &mut now);
-        assert!(homing.guide().unwrap().at_start);
+        ride(&mut breadcrumb, &path(&LOOP, 7.0), &mut now);
+        assert!(breadcrumb.guide().unwrap().at_start);
         ride(
-            &mut homing,
+            &mut breadcrumb,
             &path(&[(0.0, 0.0), (0.0, 60.0)], 7.0),
             &mut now,
         );
-        assert!(homing.guide().unwrap().at_start, "within the 80 m to leave");
+        assert!(
+            breadcrumb.guide().unwrap().at_start,
+            "within the 80 m to leave"
+        );
         ride(
-            &mut homing,
+            &mut breadcrumb,
             &path(&[(0.0, 60.0), (0.0, 120.0)], 7.0),
             &mut now,
         );
-        assert!(!homing.guide().unwrap().at_start);
+        assert!(!breadcrumb.guide().unwrap().at_start);
     }
 
     const LOOP: [(f32, f32); 5] = [
@@ -774,7 +696,7 @@ pub(crate) mod tests {
     /// Fixes at which a pass of the start was reported, each displaced by up
     /// to `jitter` metres per axis.
     fn passes(
-        homing: &mut Homing,
+        breadcrumb: &mut Breadcrumb,
         points: &[(f32, f32)],
         now: &mut u64,
         jitter: f32,
@@ -790,8 +712,8 @@ pub(crate) mod tests {
         for (index, &(east, north)) in points.iter().enumerate() {
             *now += 1_000;
             let fix = at(east + next() * jitter, north + next() * jitter);
-            homing.observe(taken(fix, *now), *now);
-            if homing.take_pass() {
+            breadcrumb.observe(taken(fix, *now), *now);
+            if breadcrumb.take_pass() {
                 found.push(index);
             }
         }
@@ -811,9 +733,9 @@ pub(crate) mod tests {
     #[test]
     fn each_lap_of_a_loop_passes_the_start_once() {
         let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
-        let found = passes(&mut homing, &lap_points(3), &mut now, 0.0);
+        let found = passes(&mut breadcrumb, &lap_points(3), &mut now, 0.0);
         assert_eq!(found.len(), 3, "{found:?}");
         // A lap is 2 km: 288 fixes of 7 m, and the pass ends 35 m past the start.
         for (lap, &at) in found.iter().enumerate() {
@@ -828,51 +750,51 @@ pub(crate) mod tests {
     #[test]
     fn the_ride_leaving_its_own_start_is_no_pass() {
         let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
         // Standing at the start for two minutes, then riding off.
         let mut points = vec![(0.0, 0.0); 120];
         points.extend(path(&[(0.0, 0.0), (800.0, 0.0)], 7.0));
-        assert!(passes(&mut homing, &points, &mut now, 0.0).is_empty());
+        assert!(passes(&mut breadcrumb, &points, &mut now, 0.0).is_empty());
     }
 
     #[test]
     fn gps_jitter_at_the_start_cannot_fire_twice() {
         let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
         // 12 m of jitter on each axis, from a minute at the start to three laps.
         let mut points = vec![(0.0, 0.0); 60];
         points.extend(lap_points(3));
-        let found = passes(&mut homing, &points, &mut now, 12.0);
+        let found = passes(&mut breadcrumb, &points, &mut now, 12.0);
         assert_eq!(found.len(), 3, "{found:?}");
         // Idling 60 m out, inside the hysteresis band, adds none; the start
         // is the first noisy fix, so it may sit 17 m from where the road starts.
         let idle = vec![(60.0, 0.0); 300];
-        assert!(passes(&mut homing, &idle, &mut now, 12.0).is_empty());
+        assert!(passes(&mut breadcrumb, &idle, &mut now, 12.0).is_empty());
     }
 
     #[test]
     fn waiting_at_the_start_does_not_lose_the_pass() {
         let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
         // A lap, then three minutes wandering a car park at the start.
         let mut points = path(&LOOP, 7.0);
         let yard: Vec<(f32, f32)> = (0..180)
             .map(|i| {
                 let angle = i as f32 / 12.0;
-                (15.0 * cosf(angle), 15.0 * libm::sinf(angle))
+                (15.0 * libm::cosf(angle), 15.0 * libm::sinf(angle))
             })
             .collect();
         points.extend(&yard);
-        assert!(passes(&mut homing, &points, &mut now, 0.0).is_empty());
+        assert!(passes(&mut breadcrumb, &points, &mut now, 0.0).is_empty());
         // Riding on counts the lap, and the next lap its own pass.
-        let found = passes(&mut homing, &lap_points(1), &mut now, 0.0);
+        let found = passes(&mut breadcrumb, &lap_points(1), &mut now, 0.0);
         assert_eq!(found.len(), 2, "{found:?}");
         assert!(found[0] < 20, "the first on leaving: {found:?}");
         // A stop of ninety seconds at the start of a ride, mid-loops, too.
-        homing.reset();
+        breadcrumb.reset();
         let mut stop = path(
             &[
                 (0.0, 0.0),
@@ -885,7 +807,7 @@ pub(crate) mod tests {
         );
         stop.extend(vec![(0.0, 0.0); 90]);
         stop.extend(lap_points(1));
-        let found = passes(&mut homing, &stop, &mut now, 0.0);
+        let found = passes(&mut breadcrumb, &stop, &mut now, 0.0);
         assert_eq!(found.len(), 2, "{found:?}");
     }
 
@@ -894,7 +816,7 @@ pub(crate) mod tests {
         // The ride's first fix is a car park, then it joins a road.
         for off in [20.0, 30.0, 40.0] {
             let mut crumbs = vec![Crumb::default(); 256];
-            let mut homing = Homing::new(&mut crumbs);
+            let mut breadcrumb = Breadcrumb::new(&mut crumbs);
             let mut now = 0;
             let mut points = vec![(0.0, -off); 10];
             // Ride up to the road, round the loop three times, and on.
@@ -904,7 +826,7 @@ pub(crate) mod tests {
             }
             corners.push((300.0, 0.0));
             points.extend(path(&corners, 7.0));
-            let found = passes(&mut homing, &points, &mut now, 0.0);
+            let found = passes(&mut breadcrumb, &points, &mut now, 0.0);
             assert_eq!(found.len(), 3, "{off} m off: {found:?}");
         }
     }
@@ -912,7 +834,7 @@ pub(crate) mod tests {
     #[test]
     fn a_short_loop_passes_every_time() {
         let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
         let square = [
             (0.0, 0.0),
@@ -926,46 +848,46 @@ pub(crate) mod tests {
             corners.extend_from_slice(&square[1..]);
         }
         corners.push((200.0, 0.0));
-        let found = passes(&mut homing, &path(&corners, 7.0), &mut now, 0.0);
+        let found = passes(&mut breadcrumb, &path(&corners, 7.0), &mut now, 0.0);
         assert_eq!(found.len(), 5, "{found:?}");
     }
 
     #[test]
     fn stopping_at_the_start_after_a_lap_is_not_a_pass() {
         let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
         let mut points = path(&LOOP, 7.0);
         points.extend(vec![(0.0, 0.0); 120]);
-        assert!(passes(&mut homing, &points, &mut now, 0.0).is_empty());
+        assert!(passes(&mut breadcrumb, &points, &mut now, 0.0).is_empty());
     }
 
     #[test]
     fn an_out_and_back_passes_the_start_once_on_the_way_home() {
         let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
         let out = path(&[(0.0, 0.0), (3000.0, 0.0), (0.0, 0.0), (-300.0, 0.0)], 7.0);
-        let found = passes(&mut homing, &out, &mut now, 0.0);
+        let found = passes(&mut breadcrumb, &out, &mut now, 0.0);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0] > 800, "not on the way out: {found:?}");
         // Ending the ride at the start passes nothing.
-        homing.reset();
+        breadcrumb.reset();
         let there = path(&[(0.0, 0.0), (3000.0, 0.0), (0.0, 0.0)], 7.0);
-        assert!(passes(&mut homing, &there, &mut now, 0.0).is_empty());
+        assert!(passes(&mut breadcrumb, &there, &mut now, 0.0).is_empty());
     }
 
     #[test]
     fn a_road_that_only_grazes_the_start_area_is_no_pass() {
         let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut now = 0;
         // Out east, round and back west along a road 60 m north of the start.
         let route = path(
             &[(0.0, 0.0), (500.0, 0.0), (500.0, 60.0), (-300.0, 60.0)],
             7.0,
         );
-        assert!(passes(&mut homing, &route, &mut now, 0.0).is_empty());
+        assert!(passes(&mut breadcrumb, &route, &mut now, 0.0).is_empty());
     }
 
     /// How the receiver errs: white noise per axis, and a bias that drifts
@@ -999,7 +921,7 @@ pub(crate) mod tests {
         let mut points = vec![(0.0, -off); 10];
         points.extend(path(&route, 7.0));
         let mut crumbs = vec![Crumb::default(); 256];
-        let mut homing = Homing::new(&mut crumbs);
+        let mut breadcrumb = Breadcrumb::new(&mut crumbs);
         let mut count = 0;
         for (index, &(east, north)) in points.iter().enumerate() {
             let t = index as f32;
@@ -1009,8 +931,8 @@ pub(crate) mod tests {
                 north + noise.bias * libm::sinf(w * t + phase_n) + next() * noise.white,
             );
             let now = (index as u64 + 1) * 1_000;
-            homing.observe(taken(fix, now), now);
-            count += usize::from(homing.take_pass());
+            breadcrumb.observe(taken(fix, now), now);
+            count += usize::from(breadcrumb.take_pass());
         }
         count
     }

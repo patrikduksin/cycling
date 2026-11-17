@@ -1,9 +1,10 @@
+use crate::ride::breadcrumb::{Crumb, Fix};
 use crate::ride::course::nav::{
     self, Event, Guidance, MatchedFix, Navigation, Navigator, OFF_M, ON_M, Observed, Sign,
 };
 use crate::ride::course::turns::{PlacedScan, SCAN_STEPS, Turn};
 use crate::ride::course::{self, along_m};
-use crate::ride::homing::{Crumb, Fix, Frame, TURN, bearing, distance};
+use crate::ride::geo::{Frame, TURN, bearing, distance};
 use crate::ride::thin::off_segment;
 
 const END_M: f32 = 30.0;
@@ -355,7 +356,7 @@ impl<'a> Follower<'a> {
     }
 
     /// This main-loop pass's fix, if the ride has a fresh one
-    /// (`Homing::observe`), and the ride's live speed. Every pass finds a
+    /// (`Breadcrumb::observe`), and the ride's live speed. Every pass finds a
     /// few more of the course's turns.
     pub fn observe(
         &mut self,

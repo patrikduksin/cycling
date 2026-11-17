@@ -1,8 +1,8 @@
 use super::*;
+use crate::ride::breadcrumb::Breadcrumb;
+use crate::ride::breadcrumb::tests::{at, path, taken};
 use crate::ride::course::nav::tests::{Said, said};
 use crate::ride::course::turns;
-use crate::ride::homing::Homing;
-use crate::ride::homing::tests::{at, path, taken};
 extern crate std;
 use std::vec;
 use std::vec::Vec;
@@ -14,7 +14,7 @@ mod receiver;
 mod spurs;
 
 struct Rider<'a> {
-    homing: Homing<'a>,
+    breadcrumb: Breadcrumb<'a>,
     follower: Follower<'a>,
     paused: bool,
 }
@@ -22,29 +22,29 @@ struct Rider<'a> {
 impl<'a> Rider<'a> {
     fn new(crumbs: &'a mut [Crumb], line: &'a mut [Crumb], turns: &'a mut [Turn]) -> Self {
         Self {
-            homing: Homing::new(crumbs),
+            breadcrumb: Breadcrumb::new(crumbs),
             follower: Follower::new(line, turns),
             paused: false,
         }
     }
 
     fn set_course(&mut self, course: &[course::Point]) {
-        self.follower.set_course(course, self.homing.frame());
+        self.follower.set_course(course, self.breadcrumb.frame());
     }
 
     fn observe(&mut self, location_e7: Option<(i32, i32)>, now: u64) -> Option<Event> {
         let fix = self
-            .homing
+            .breadcrumb
             .observe(location_e7.and_then(|e7| taken(e7, now)), now);
         self.follower.observe(fix, now, None, self.paused)
     }
 
     fn needs_course(&self) -> bool {
-        self.follower.unplaced() && self.homing.frame().is_some()
+        self.follower.unplaced() && self.breadcrumb.frame().is_some()
     }
 
     fn reset(&mut self) {
-        self.homing.reset();
+        self.breadcrumb.reset();
         self.follower.reset();
     }
 }

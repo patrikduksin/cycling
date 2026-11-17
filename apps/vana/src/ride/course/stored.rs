@@ -44,9 +44,10 @@
 //! each), its kind (0 none, 1 left, 2 right, 3 sharp left, 4 sharp right, 5
 //! U-turn) and flags (1 two corners, 2 cornered). A file of another version
 //! or shape reads as one that does not decode.
-use super::turns::{RECORD, Scan, Spurs, TURNS, Turn, distance, starts_at};
-use super::{Follow, POINTS, Point, east_per_e7, error, metres};
+use super::turns::{RECORD, Scan, Spurs, TURNS, Turn, starts_at};
+use super::{Follow, POINTS, Point, error};
 use crate::kept::StoreError;
+use crate::ride::geo::{distance, east_per_e7, metres, mm};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::Crc32;
 use firmware_services::files;
@@ -509,14 +510,14 @@ impl<'a> Onto<'a> {
         Self {
             points,
             kept_mm,
-            scale: east_per_e7(points[0]),
+            scale: east_per_e7(points[0].lat_e7),
             k: 0,
             along: 0.0,
         }
     }
 
     fn segment(&self, k: usize) -> f32 {
-        let (east, north) = metres(self.points[k], self.points[k + 1], self.scale);
+        let (east, north) = metres(self.points[k].into(), self.points[k + 1].into(), self.scale);
         sqrtf(east * east + north * north)
     }
 
@@ -549,11 +550,6 @@ fn side(a: (f32, f32), p: (f32, f32), b: (f32, f32)) -> f32 {
     (east * (p.1 - a.1) - north * (p.0 - a.0)) / length
 }
 
-/// A float cast saturates, so no length overflows.
-fn mm(metres: f32) -> u32 {
-    (metres * 1000.0) as u32
-}
-
 impl Follow for Finding<'_> {
     fn start(&mut self) {
         let finder = &mut *self.finder;
@@ -576,9 +572,9 @@ impl Follow for Finding<'_> {
         }
         if !finder.started {
             finder.started = true;
-            (finder.origin, finder.east_per_e7) = (point, east_per_e7(point));
+            (finder.origin, finder.east_per_e7) = (point, east_per_e7(point.lat_e7));
         }
-        let here = metres(finder.origin, point, finder.east_per_e7);
+        let here = metres(finder.origin.into(), point.into(), finder.east_per_e7);
         let k = finder.given_count;
         let here_m = k.checked_sub(1).map_or(0.0, |last| {
             let (p, p_m) = finder.given[last % GIVEN];

@@ -1,5 +1,5 @@
 use super::Point;
-use crate::ride::homing::distance;
+use crate::ride::geo::distance;
 
 const ARROW_SHAFT_PX: f32 = 26.0;
 const ARROW_BEFORE_TURN_PX: f32 = 10.0;

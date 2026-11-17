@@ -1,5 +1,5 @@
 use super::pose::{CLOSEST, Reach};
-use crate::ride::homing::Frame as RideFrame;
+use crate::ride::geo::Frame as RideFrame;
 use terrain::{PackId, Road, RoadClass, TileKey};
 
 pub const TILES: usize = terrain::WANTED;

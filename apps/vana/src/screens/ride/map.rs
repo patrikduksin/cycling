@@ -4,9 +4,10 @@ mod raster;
 mod roads;
 
 use super::kilometres;
+use crate::ride::breadcrumb::Crumb;
 use crate::ride::course::follow::{self, Placement};
 use crate::ride::course::nav::{Glyph, Guidance, Sign, Spot};
-use crate::ride::homing::{Crumb, Frame as RideFrame, TURN, bearing, distance};
+use crate::ride::geo::{Frame as RideFrame, TURN, bearing, distance};
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
     ACCENT, AMBER, Align, BLACK, BODY as BODY_FACE, HEIGHT, Look, Rect, Row, SECONDARY, WHITE,
@@ -26,8 +27,6 @@ type Point = (f32, f32);
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Track<'a> {
-    /// The device has memory set aside for the breadcrumb.
-    pub available: bool,
     /// Kept points, metres east and north of the start, oldest first.
     pub crumbs: &'a [Crumb],
     /// The rider, while the fix is fresh.
@@ -63,7 +62,6 @@ pub struct Track<'a> {
 /// once a second, not on every radar redraw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Key {
-    available: bool,
     crumbs: usize,
     newest: u32,
     here: Option<(u32, u32)>,
@@ -86,7 +84,6 @@ impl Track<'_> {
     fn key(&self, leg: Option<usize>) -> Key {
         let bits = |(x, y): Point| (x.to_bits(), y.to_bits());
         Key {
-            available: self.available,
             crumbs: self.crumbs.len(),
             newest: self.crumbs.last().map_or(0, |c| c.along.to_bits()),
             here: self.here.map(bits),
@@ -544,9 +541,8 @@ const _: () = assert!(GROUND.end <= HEIGHT);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Show {
-    /// The device keeps no track.
     #[default]
-    Unavailable,
+    Unfilled,
     /// No position yet.
     NoGps,
     Map,
@@ -625,7 +621,7 @@ pub struct Frame {
 impl Default for Frame {
     fn default() -> Self {
         Self {
-            show: Show::Unavailable,
+            show: Show::Unfilled,
             last_pose: Pose::default(),
             last_centre: (0.0, 0.0),
             layer: Layer::new(GROUND.start),
@@ -794,9 +790,7 @@ fn draw_roads(frame: &mut Frame, at: &Projection, centre: Point, look: Look) {
 }
 
 fn fill(frame: &mut Frame, track: &Track) {
-    frame.show = if !track.available {
-        Show::Unavailable
-    } else if track.rider_or_last_crumb().is_none() {
+    frame.show = if track.rider_or_last_crumb().is_none() {
         Show::NoGps
     } else {
         Show::Map

@@ -1,12 +1,12 @@
 use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Outing, Ride};
+use crate::ride::breadcrumb::rebuild::Rebuild;
+use crate::ride::breadcrumb::{Breadcrumb, Fix};
 use crate::ride::course::follow::Follower;
 use crate::ride::course::nav::{Event, Navigation, Sign};
 use crate::ride::course::stored::{self, Finder, Finding};
 use crate::ride::course::{self, Course};
-use crate::ride::homing::rebuild::Rebuild;
-use crate::ride::homing::{Fix, Homing};
 use crate::ride::journal::Read;
 use crate::ride::log::{Slot, Status, decode};
 use crate::ride::medium::Medium;
@@ -16,7 +16,7 @@ pub use crate::screens::ride::MapFrame;
 use crate::screens::ride::{Fetched, FilledMap, MapCache, MapZoom, Track};
 use device_api::bulk::ReadWrite;
 
-pub use crate::ride::homing::Crumb;
+pub use crate::ride::breadcrumb::Crumb;
 
 /// Points the breadcrumb keeps: 48 KiB, thinned to fit a ride of any length.
 pub const TRACK_CRUMBS: usize = 4096;
@@ -90,7 +90,7 @@ pub struct MapWork {
 
 /// The breadcrumb, the course it follows and the open ride they belong to.
 pub struct RideTrack {
-    homing: Homing<'static>,
+    breadcrumb: Breadcrumb<'static>,
     follower: Follower<'static>,
     outing: Option<Outing>,
     map: MapCache<'static>,
@@ -117,7 +117,7 @@ impl RideTrack {
         finder: &'static mut Finder,
     ) -> Self {
         Self {
-            homing: Homing::new(crumbs),
+            breadcrumb: Breadcrumb::new(crumbs),
             follower: Follower::new(line, turns),
             outing: None,
             map: MapCache::new(map),
@@ -136,7 +136,7 @@ impl RideTrack {
         engine: &mut terrain::Lookahead,
         clock: Option<fn() -> u64>,
     ) {
-        let Some(frame) = self.homing.frame() else {
+        let Some(frame) = self.breadcrumb.frame() else {
             return;
         };
         let started = clock.map(|clock| clock());
@@ -171,8 +171,8 @@ impl RideTrack {
             return None;
         }
         Leg::of(
-            &self.homing.guide()?,
-            self.homing.way_back(),
+            &self.breadcrumb.guide()?,
+            self.breadcrumb.way_back(),
             speed_mm_s,
             moving_ms,
         )
@@ -184,7 +184,7 @@ impl RideTrack {
     pub(super) fn course_changed(&mut self, media: &mut impl ReadWrite) {
         let course = &*self.course;
         self.follower
-            .set_course(course.points(), self.homing.frame());
+            .set_course(course.points(), self.breadcrumb.frame());
         self.follower.take_turns(course.points(), |turns| {
             match stored::load(media, course::key(course), turns) {
                 Ok(Some(stored)) => {
@@ -209,7 +209,7 @@ impl RideTrack {
     }
 
     fn place_course(&mut self, media: &mut impl ReadWrite) {
-        if self.follower.unplaced() && self.homing.frame().is_some() {
+        if self.follower.unplaced() && self.breadcrumb.frame().is_some() {
             self.course_changed(media);
         }
     }
@@ -266,7 +266,7 @@ impl Runtime {
         let outing = self.ride.outing();
         let riding = outing.is_some();
         if riding && outing != state.outing {
-            state.homing.reset();
+            state.breadcrumb.reset();
             state.follower.reset();
             state.map.start_ride();
             state.zoom = MapZoom::default();
@@ -295,7 +295,7 @@ impl Runtime {
             let fix = live.location_e7.map(|_| live.utc_ms);
             let done = if medium != self.ride.shown() {
                 // A ride that moved to another medium has its fixes there.
-                rebuild.settle(&mut state.homing, fix.flatten());
+                rebuild.settle(&mut state.breadcrumb, fix.flatten());
                 true
             } else {
                 let upper = self.ride.recorder(medium).next_slot();
@@ -304,7 +304,7 @@ impl Runtime {
                     Medium::Bulk => REBUILD_BULK,
                 };
                 let (ride, mut slot) = (&mut self.ride, Slot::default());
-                let read = rebuild.step(&mut state.homing, upper, budget, |index| {
+                let read = rebuild.step(&mut state.breadcrumb, upper, budget, |index| {
                     match ride.read_slot(medium, store, bulk, index, &mut slot) {
                         Read::Slot => decode(&slot),
                         Read::Invalid | Read::Failed => None,
@@ -312,7 +312,7 @@ impl Runtime {
                 });
                 read || match fix {
                     Some(utc_ms) if rebuild.caught_up(upper) => {
-                        rebuild.settle(&mut state.homing, utc_ms);
+                        rebuild.settle(&mut state.breadcrumb, utc_ms);
                         true
                     }
                     _ => false,
@@ -323,10 +323,10 @@ impl Runtime {
                 state.resume = Resume::Reading { medium, rebuild };
                 return;
             }
-            state.homing.end_replay();
+            state.breadcrumb.end_replay();
             state.resume = Resume::None;
         }
-        let fix = state.homing.observe(self.readings.reported, now);
+        let fix = state.breadcrumb.observe(self.readings.reported, now);
         let speed = self.readings.live.speed_mm_s;
         let paused = self.ride.active().status() == Status::Paused;
         if let (Some(Fix { moved: true, .. }), Some(speed), false) = (fix, speed, paused) {
@@ -334,7 +334,7 @@ impl Runtime {
         }
         let event = state.follower.observe(fix, now, speed, paused);
         state.place_course(bulk);
-        if state.homing.take_pass() {
+        if state.breadcrumb.take_pass() {
             self.ride.passed_start(now);
             self.display.redraw();
         }
@@ -378,11 +378,10 @@ pub(super) fn refresh_map(
         return;
     };
     let drawn = Track {
-        available: true,
-        crumbs: state.homing.crumbs(),
-        here: state.homing.position(),
-        here_taken_ms: state.homing.position_taken_ms(),
-        heading: state.homing.heading(),
+        crumbs: state.breadcrumb.crumbs(),
+        here: state.breadcrumb.position(),
+        here_taken_ms: state.breadcrumb.position_taken_ms(),
+        heading: state.breadcrumb.heading(),
         speed_mm_s,
         course: state.follower.course(),
         placement: state.follower.placement(),

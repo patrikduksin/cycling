@@ -10,7 +10,8 @@
 //! the margin has stayed at or above `CLEAR_S` for `CLEAR_MS`, which is rare: it
 //! takes a loop swinging back or a faster pace.
 use crate::daylight::Sun;
-use crate::ride::homing::{Guide, TURN};
+use crate::ride::breadcrumb::Guide;
+use crate::ride::geo::TURN;
 
 /// The alert is due when this little time is left before the latest turn.
 pub const WARN_S: i64 = 15 * 60;

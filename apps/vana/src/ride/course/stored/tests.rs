@@ -3,7 +3,8 @@ use crate::ride::course::tests::{at as point_at, road};
 use crate::ride::course::turns::tests::{
     arc, bends, block, build, curved_ring, extended, hairpin, join, path, ring,
 };
-use crate::ride::course::{Course, east_per_e7, key, metres, save as save_course};
+use crate::ride::course::{Course, key, save as save_course};
+use crate::ride::geo::{east_per_e7, metres};
 use crate::testing::Rng;
 use crate::workout::library::tests::{Region, formatted, put};
 use device_api::bulk::{Error as MediaError, OwnedInfo};
@@ -109,10 +110,10 @@ fn gate_courses() -> Vec<Vec<(f32, f32)>> {
 
 /// `points` in metres from the first, as the course's frame measures.
 fn framed(points: &[Point]) -> Vec<(f32, f32)> {
-    let scale = east_per_e7(points[0]);
+    let scale = east_per_e7(points[0].lat_e7);
     points
         .iter()
-        .map(|&p| metres(points[0], p, scale))
+        .map(|&p| metres(points[0].into(), p.into(), scale))
         .collect()
 }
 

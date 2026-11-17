@@ -1,7 +1,8 @@
 use super::*;
 pub(crate) use crate::ride::course::nav::tests::{Said, ride_with};
 use crate::ride::course::tests::{at as point_at, empty};
-use crate::ride::course::{Builder, Course, east_per_e7, metres};
+use crate::ride::course::{Builder, Course};
+use crate::ride::geo::{east_per_e7, metres};
 use crate::testing::{Share, split_in_eight};
 use std::vec;
 use std::vec::Vec;
@@ -71,8 +72,7 @@ pub(crate) fn turns_of(line: &[(f32, f32)]) -> Vec<Turn> {
 }
 
 /// Ride `line` through `positions`, metres from its start, and say where
-/// each warning came. Riding back is not riding the course its way, which
-/// warns of nothing (`Homing`), so only the way on is asked.
+/// each warning came.
 fn ride_through(line: &[(f32, f32)], positions: impl IntoIterator<Item = f32>) -> Vec<(u32, Said)> {
     ride_with(&turns_of(line), positions)
 }
@@ -321,10 +321,10 @@ fn a_rider_inside_a_roundabout_hears_nothing_of_it() {
 /// `course`'s points in metres east and north of its start.
 pub(crate) fn line_of(course: &Course) -> Vec<(f32, f32)> {
     let points = course.points();
-    let scale = east_per_e7(points[0]);
+    let scale = east_per_e7(points[0].lat_e7);
     points
         .iter()
-        .map(|&p| metres(points[0], p, scale))
+        .map(|&p| metres(points[0].into(), p.into(), scale))
         .collect()
 }
 

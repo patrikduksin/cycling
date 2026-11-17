@@ -92,10 +92,10 @@ fn a_dense_course_keeps_its_corners_and_its_length() {
     assert!(points.len() < 900, "{} points", points.len());
     assert_eq!(points.first(), Some(&at(0.0, 0.0)));
     assert_eq!(points.last(), Some(&at(0.0, 0.0)));
-    let scale = east_per_e7(points[0]);
+    let scale = east_per_e7(points[0].lat_e7);
     for corner in [at(1_000.0, 0.0), at(1_000.0, 1_000.0), at(0.0, 1_000.0)] {
         let near = points.iter().any(|&p| {
-            let (east, north) = metres(p, corner, scale);
+            let (east, north) = metres(p.into(), corner.into(), scale);
             east * east + north * north <= MIN_STEP_M * MIN_STEP_M
         });
         assert!(near, "{corner:?} kept within a step");
@@ -291,9 +291,9 @@ pub(crate) fn road(km: f64, step: f64, seed: u64) -> Vec<Point> {
 /// fixes, so each fix lies between two kept ones.
 fn deviation(road: &[Point], course: &Course) -> (f64, f64) {
     let kept = course.points();
-    let scale = f64::from(east_per_e7(road[0]));
+    let scale = f64::from(east_per_e7(road[0].lat_e7));
     let xy = |p: Point| {
-        let (east, north) = metres(road[0], p, scale as f32);
+        let (east, north) = metres(road[0].into(), p.into(), scale as f32);
         (f64::from(east), f64::from(north))
     };
     let (mut worst, mut far, mut k) = (0.0f64, 0usize, 0usize);

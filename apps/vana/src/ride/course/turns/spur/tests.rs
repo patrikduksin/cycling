@@ -1,6 +1,7 @@
 use super::super::tests::{Said, hairpin, join, line_of, path, ride_with, ring, turns_of};
-use super::super::{Kind, PlacedScan, SCAN_STEPS, Side, TURNS, Turn, distance};
+use super::super::{Kind, PlacedScan, SCAN_STEPS, Side, TURNS, Turn};
 use crate::ride::course::stored::tests::{found, found_along, uploaded};
+use crate::ride::geo::distance;
 use crate::testing::{Share, split_in_eight};
 use core::cell::Cell;
 use std::string::{String, ToString};

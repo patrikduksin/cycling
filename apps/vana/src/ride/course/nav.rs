@@ -15,7 +15,7 @@
 //! which never moves. Each step returns at most one `Event`. A second one
 //! due on the same fix waits one fix, and is dropped if it no longer holds.
 use crate::ride::course::turns::{HALF_CHORD_MM, Kind, Side, Turn};
-use crate::ride::homing::distance;
+use crate::ride::geo::distance;
 
 type Point = (f32, f32);
 

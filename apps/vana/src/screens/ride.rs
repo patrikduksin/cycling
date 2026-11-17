@@ -730,19 +730,18 @@ mod tests {
         view.sample = sample;
         view.power_3s = sample.power_watts;
         let crumbs = Box::leak(Box::new([
-            crate::ride::homing::Crumb {
+            crate::ride::breadcrumb::Crumb {
                 east: 0.0,
                 north: 0.0,
                 along: 0.0,
             },
-            crate::ride::homing::Crumb {
+            crate::ride::breadcrumb::Crumb {
                 east: 400.0,
                 north: 300.0,
                 along: 500.0,
             },
         ]));
         let track = Track {
-            available: true,
             crumbs,
             here: Some((400.0, 300.0)),
             ..Track::default()

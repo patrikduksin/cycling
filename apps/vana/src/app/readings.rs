@@ -1,8 +1,8 @@
 //! Sensor data intake and the live ride sample built from it.
 use super::{Observations, Runtime};
 use crate::ride::auto::{Motion, Source};
+use crate::ride::breadcrumb::Reported;
 use crate::ride::gps_speed::{GpsSpeed, Ground};
-use crate::ride::homing::Reported;
 use crate::ride::log::{Sample, Status};
 use crate::ride::metrics::{Cadence, Gradient, Odometer, Power3s, Speed};
 use crate::ride::wheel_size::{self, Calibrator};

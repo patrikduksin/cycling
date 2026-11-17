@@ -1,5 +1,5 @@
 use super::*;
-use crate::ride::homing::Reported;
+use crate::ride::breadcrumb::Reported;
 use device_api::gps::Snapshot;
 use firmware_services::gps::Parser;
 use std::format;
@@ -41,7 +41,7 @@ fn angle(e7: i32, degrees: usize, [positive, negative]: [char; 2]) -> String {
 
 impl Rider<'_> {
     fn hear(&mut self, gps: &Snapshot, now: u64) -> Option<Event> {
-        let fix = self.homing.observe(Reported::fresh(gps, now), now);
+        let fix = self.breadcrumb.observe(Reported::fresh(gps, now), now);
         self.follower.observe(fix, now, None, false)
     }
 }

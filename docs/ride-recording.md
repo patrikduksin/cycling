@@ -339,7 +339,7 @@ Recording:
 - After power loss, the open ride is closed with a RECOVERED record at its last
   committed active time and the ride screen shows `RECOVERED`; the next START is
   a new ride. That ride reads the recovered ride's positions back from the
-  journal for the map's track and AT START laps (`ride::homing::rebuild`); its
+  journal for the map's track and AT START laps (`ride::breadcrumb::rebuild`); its
   totals and laps start from zero. Power lost during the very first write of an
   empty journal leaves one occupied invalid slot and recording stays available.
 - Sampling continues with missing sensors or GPS; unavailable measurements stay

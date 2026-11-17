@@ -32,12 +32,13 @@
 //! A file of another version or shape reads as damaged, never as part of a
 //! course, and is left alone until an upload replaces it.
 use crate::kept::StoreError;
+use crate::ride::geo::{M_PER_E7, east_per_e7, metres};
 use crate::ride::thin;
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};
 use firmware_services::checksum::Crc32;
 use firmware_services::le::{get_u16, get_u32, put_u16, put_u32};
 use firmware_services::{files, volume};
-use libm::{cosf, sqrtf};
+use libm::sqrtf;
 
 pub mod follow;
 pub mod gpx;
@@ -54,8 +55,6 @@ const MIN_STEP_M: f32 = 5.0;
 /// A point may sit this far off the line that replaces it on the first
 /// thinning; doubled on each one after.
 const TOLERANCE_M: f32 = 4.0;
-/// Metres per 1e-7 degree of latitude, as in `ride::homing`.
-const M_PER_E7: f32 = 0.011_119_508;
 const LAT_MAX_E7: u32 = 900_000_000;
 const LON_MAX_E7: u32 = 1_800_000_000;
 
@@ -80,6 +79,12 @@ impl Point {
     pub fn new(lat_e7: i32, lon_e7: i32) -> Option<Self> {
         let within = lat_e7.unsigned_abs() <= LAT_MAX_E7 && lon_e7.unsigned_abs() <= LON_MAX_E7;
         within.then_some(Self { lat_e7, lon_e7 })
+    }
+}
+
+impl From<Point> for (i32, i32) {
+    fn from(point: Point) -> Self {
+        (point.lat_e7, point.lon_e7)
     }
 }
 
@@ -149,11 +154,11 @@ impl Course {
         let Some(&first) = points.first() else {
             return 0;
         };
-        let scale = east_per_e7(first);
+        let scale = east_per_e7(first.lat_e7);
         let total: f32 = points
             .windows(2)
             .map(|pair| {
-                let (east, north) = metres(pair[0], pair[1], scale);
+                let (east, north) = metres(pair[0].into(), pair[1].into(), scale);
                 sqrtf(east * east + north * north)
             })
             .sum();
@@ -164,24 +169,6 @@ impl Course {
 
 fn name_byte(byte: u8) -> bool {
     byte.is_ascii_uppercase() || byte.is_ascii_digit() || b" -._'".contains(&byte)
-}
-
-/// Metres east per 1e-7 degree of longitude at `at`'s latitude.
-fn east_per_e7(at: Point) -> f32 {
-    let radians = at.lat_e7 as f32 * 1e-7 * core::f32::consts::PI / 180.0;
-    M_PER_E7 * cosf(radians)
-}
-
-/// Metres east and north from `a` to `b`, the short way round.
-fn metres(a: Point, b: Point, east_per_e7: f32) -> (f32, f32) {
-    let mut east = i64::from(b.lon_e7) - i64::from(a.lon_e7);
-    if east > 1_800_000_000 {
-        east -= 3_600_000_000;
-    } else if east < -1_800_000_000 {
-        east += 3_600_000_000;
-    }
-    let north = i64::from(b.lat_e7) - i64::from(a.lat_e7);
-    (east as f32 * east_per_e7, north as f32 * M_PER_E7)
 }
 
 /// Builds a course from points as they stream in, of any count.
@@ -221,9 +208,13 @@ impl Builder {
         self.last = Some(point);
         let len = course.len as usize;
         if len == 0 {
-            self.east_per_e7 = east_per_e7(point);
+            self.east_per_e7 = east_per_e7(point.lat_e7);
         } else {
-            let (east, north) = metres(course.points[len - 1], point, self.east_per_e7);
+            let (east, north) = metres(
+                course.points[len - 1].into(),
+                point.into(),
+                self.east_per_e7,
+            );
             if east * east + north * north < MIN_STEP_M * MIN_STEP_M {
                 return;
             }
@@ -243,7 +234,7 @@ impl Builder {
     fn keep(&mut self, course: &mut Course, point: Point, follow: &mut impl Follow) {
         if course.len as usize == POINTS {
             let (origin, scale) = (course.points[0], self.east_per_e7);
-            let at = |p: &Point| metres(origin, *p, scale);
+            let at = |p: &Point| metres(origin.into(), (*p).into(), scale);
             let moved = |to, from| follow.moved(to, from);
             course.len =
                 thin::thin_moving(&mut course.points, POINTS, &mut self.tolerance, at, moved)
@@ -274,11 +265,13 @@ impl Follow for () {}
 /// Metres along `points` from the first to each, in turn, in the course's
 /// own frame: what distances along a course are measured in.
 pub(crate) fn along_m(points: &[Point]) -> impl Iterator<Item = f32> + '_ {
-    let scale = points.first().map_or(M_PER_E7, |&first| east_per_e7(first));
+    let scale = points
+        .first()
+        .map_or(M_PER_E7, |&first| east_per_e7(first.lat_e7));
     let mut along = 0.0f32;
     points.iter().enumerate().map(move |(k, &p)| {
         if k > 0 {
-            let (east, north) = metres(points[k - 1], p, scale);
+            let (east, north) = metres(points[k - 1].into(), p.into(), scale);
             along += sqrtf(east * east + north * north);
         }
         along

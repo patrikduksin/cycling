@@ -1,6 +1,7 @@
 pub mod alerts;
 pub mod auto;
 pub mod battery_life;
+pub mod breadcrumb;
 pub mod bulk;
 pub mod climb;
 pub mod climb_ahead;
@@ -9,8 +10,8 @@ pub mod directory;
 pub mod elevation;
 pub mod fit;
 pub mod fitness;
+pub mod geo;
 pub mod gps_speed;
-pub mod homing;
 pub mod index;
 pub mod journal;
 pub mod laps;

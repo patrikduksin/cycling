@@ -37,7 +37,8 @@
 //! spur before what it reads is found, and its turns are moved onto the
 //! course by `Spurs::real`. The course itself keeps every point of a spur,
 //! and its length.
-use super::{Cursor, HALF_CHORD_M, STEP_M, Turn, distance, mm, swing, way};
+use super::{Cursor, HALF_CHORD_M, STEP_M, Turn, swing, way};
+use crate::ride::geo::{distance, mm};
 use crate::ride::thin::off_segment;
 use libm::{atan2f, fabsf, sqrtf};
 

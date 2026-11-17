@@ -41,6 +41,7 @@
 //! course with more, the scan waits until the rider is past half of them,
 //! which make way for the rest.
 //! Distances along the course are u32 millimetres, saturating.
+use crate::ride::geo::{distance, mm};
 use libm::{atan2f, fabsf, sqrtf, tanf};
 pub(crate) use spur::{Spurs, starts_at};
 
@@ -215,16 +216,6 @@ impl Turn {
             sparse: false,
         })
     }
-}
-
-pub(crate) fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
-    let (east, north) = (b.0 - a.0, b.1 - a.1);
-    sqrtf(east * east + north * north)
-}
-
-/// A float cast saturates, so no length overflows.
-fn mm(metres: f32) -> u32 {
-    (metres * 1000.0) as u32
 }
 
 /// A point moving on along the course, start first.

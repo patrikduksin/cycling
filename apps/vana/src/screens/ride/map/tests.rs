@@ -1,6 +1,7 @@
 use super::*;
+use crate::ride::breadcrumb::{Breadcrumb, Reported};
 use crate::ride::course::nav::Distance;
-use crate::ride::homing::{Homing, Reported, TURN};
+use crate::ride::geo::TURN;
 use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
 
@@ -42,7 +43,6 @@ fn follower_course(points: &[Point]) -> std::vec::Vec<Crumb> {
 
 fn free(crumbs: &[Crumb]) -> Track<'_> {
     Track {
-        available: true,
         crumbs,
         here: crumbs.last().map(|c| (c.east, c.north)),
         heading: Some(0),
@@ -65,7 +65,6 @@ fn following(course: &[Crumb], here: Point, along_m: f32, junction: Option<Spot>
         },
     };
     Track {
-        available: true,
         crumbs: &[],
         here: Some(here),
         heading: Some(0),
@@ -105,7 +104,6 @@ fn off_course(course: &[Crumb]) -> Track<'_> {
 
 fn joining(course: &[Crumb], here: Point) -> Track<'_> {
     Track {
-        available: true,
         here: Some(here),
         heading: Some(0),
         course,
@@ -281,7 +279,6 @@ fn far_off_course_in_every_direction_three_chevrons_lead_back_clear_of_the_badge
 
 fn waiting_to_join(course: &[Crumb], here: Point, heading: u16) -> Track<'_> {
     Track {
-        available: true,
         here: Some(here),
         heading: Some(heading),
         course,
@@ -596,13 +593,12 @@ fn every_state_lays_out_its_text() {
         cache.update(track);
         assert_shows(page(cache.filled()).canvas(), want, what);
     };
-    assert_shows(page(None).canvas(), &["NO TRACK"], "unavailable");
-    check(&Track::default(), &["NO TRACK"], "no memory");
-    let waiting = Track {
-        available: true,
-        ..Track::default()
-    };
-    check(&waiting, &["NO GPS YET", "MAP STARTS WITH GPS"], "no gps");
+    assert_shows(page(None).canvas(), &["NO TRACK"], "no memory");
+    check(
+        &Track::default(),
+        &["NO GPS YET", "MAP STARTS WITH GPS"],
+        "no gps",
+    );
     let c = follower_course(&MOCKUP_COURSE);
     check(&approach(&c), &["100 M", "12.40", "KM"], "following");
     let ride = track_crumbs(&[(0.0, 0.0), (0.0, 800.0)]);
@@ -995,7 +991,7 @@ fn way_drawn(frame: &Frame, here: Point, lane_m: f32) -> Way {
 }
 
 struct Rider<'a> {
-    homing: Homing<'a>,
+    breadcrumb: Breadcrumb<'a>,
     map: Cache<'static>,
     placement: Placement,
     now: u64,
@@ -1004,7 +1000,7 @@ struct Rider<'a> {
 impl<'a> Rider<'a> {
     fn new(storage: &'a mut [Crumb]) -> Self {
         Self {
-            homing: Homing::new(storage),
+            breadcrumb: Breadcrumb::new(storage),
             map: Cache::new(std::boxed::Box::leak(std::boxed::Box::default())),
             placement: Placement::default(),
             now: 0,
@@ -1012,13 +1008,12 @@ impl<'a> Rider<'a> {
     }
 
     fn reports(&mut self, (east, north): Point) {
-        const METRES_PER_E7: f32 = 0.011_119_508;
         self.now += 1_000;
         let location_e7 = (
-            libm::roundf(north / METRES_PER_E7) as i32,
-            libm::roundf(east / METRES_PER_E7) as i32,
+            libm::roundf(north / crate::ride::geo::M_PER_E7) as i32,
+            libm::roundf(east / crate::ride::geo::M_PER_E7) as i32,
         );
-        self.homing.observe(
+        self.breadcrumb.observe(
             Some(Reported {
                 location_e7,
                 taken_loop_ms: self.now,
@@ -1028,11 +1023,11 @@ impl<'a> Rider<'a> {
     }
 
     fn shows(&mut self, course: &[Crumb], speed_mm_s: Option<u32>) -> Point {
-        let here = self.homing.position().expect("a fix");
+        let here = self.breadcrumb.position().expect("a fix");
         let mut track = joining(course, here);
         track.placement = self.placement;
-        track.here_taken_ms = self.homing.position_taken_ms();
-        track.heading = self.homing.heading();
+        track.here_taken_ms = self.breadcrumb.position_taken_ms();
+        track.heading = self.breadcrumb.heading();
         track.speed_mm_s = speed_mm_s;
         self.map.update(&track);
         here
@@ -1113,7 +1108,7 @@ fn a_stop_s_gps_jitter_never_switches_the_held_leg() {
         let mut drawn = 0;
         for (fix, at) in JITTER.into_iter().enumerate() {
             rider.reports(at);
-            if rider.homing.heading().is_none() {
+            if rider.breadcrumb.heading().is_none() {
                 continue;
             }
             assert!(
@@ -1308,7 +1303,7 @@ fn a_new_ride_forgets_the_leg_the_last_one_held() {
     let mut storage = [Crumb::default(); 64];
     let mut rider = Rider::new(&mut storage);
     rider.holds_the_way_back(&c);
-    rider.homing.reset();
+    rider.breadcrumb.reset();
     rider.map.start_ride();
     assert_eq!(
         rider.rides_and_sees(&c, 6.0, (0.0, 0.0), STANDING),
@@ -1420,7 +1415,7 @@ fn a_course_replaced_by_the_same_one_1_m_east_forgets_the_leg_it_held() {
 
 mod santiago {
     use super::*;
-    use crate::ride::homing::TURN;
+    use crate::ride::geo::TURN;
     use crate::screens::ride::map::roads::tests::{PLAZA, SANTIAGO, cached, header};
     use std::time::Instant;
     use std::{boxed::Box, println, string::String, vec::Vec};
@@ -1471,7 +1466,6 @@ mod santiago {
                 .find(|c| (c.along - (total - 400.0 - self.turn_m)).abs() < 0.5);
             let turn = turn.map(|c| (c.east, c.north)).unwrap();
             Track {
-                available: true,
                 crumbs: &[],
                 here: Some(self.here),
                 here_taken_ms: None,
@@ -1631,7 +1625,6 @@ mod santiago {
             },
         ];
         let track = Track {
-            available: true,
             here: Some((0.0, 0.0)),
             heading: Some(TURN / 8),
             course: &course,

@@ -1,6 +1,6 @@
 use super::roads::Detail;
 use crate::ride::course::follow::moving;
-use crate::ride::homing::TURN;
+use crate::ride::geo::TURN;
 use core::f32::consts::TAU;
 use core::ops::Range;
 use libm::{cosf, roundf, sinf};

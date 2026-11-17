@@ -491,39 +491,10 @@ impl Trace {
         }
     }
 
-    /// ` trace=STATE ...` for `STORE STATUS`; a reason's words are joined
-    /// by `_`, so every field stays one `key=value` word.
-    pub fn status(&self, out: &mut impl Write) {
-        let reason = |out: &mut dyn Write, state: &str, why: &str| {
-            write!(out, " trace={state} why=")?;
-            for (index, word) in why.split(' ').enumerate() {
-                write!(out, "{}{word}", if index > 0 { "_" } else { "" })?;
-            }
-            Ok::<(), core::fmt::Error>(())
-        };
-        let _ = match &self.file {
-            File::Waiting => write!(out, " trace=waiting"),
-            File::Off(why) => reason(out, "off", why),
-            File::Ended(why) => reason(out, "ended", why),
-            File::Staging(..) => write!(out, " trace=staging"),
-            File::Open(_, _, drain) => write!(
-                out,
-                " trace=recording file={} written={}",
-                drain.name().as_str(),
-                drain.written()
-            ),
-        };
-        if let Some(recorder) = self.record.borrow().as_ref() {
-            let spool = recorder.sink();
-            let _ = write!(
-                out,
-                " spool={}/{} spool_peak={} spool_refused={}",
-                spool.len(),
-                spool.capacity(),
-                spool.peak(),
-                spool.refused()
-            );
-        }
+    pub fn status(&self, out: &mut dyn Write) {
+        let record = self.record.borrow();
+        self.file
+            .status(record.as_ref().map(|recorder| recorder.sink()), out);
     }
 }
 

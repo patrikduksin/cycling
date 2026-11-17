@@ -29,7 +29,7 @@ fn send_admission_status(result: Result<Admission, Error>) -> &'static str {
 
 pub fn execute(
     command: Command,
-    ant: &mut impl device_api::ant::Ant,
+    ant: &mut (impl device_api::ant::Ant + ?Sized),
     now: u64,
     output: &mut impl Write,
 ) -> Option<&'static str> {

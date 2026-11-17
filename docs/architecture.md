@@ -19,7 +19,7 @@ details into this document.
 | `packages/device-api` (`device-api`) | Hardware-independent capability contracts and the observations needed to use them. |
 | `packages/shell` (`firmware-shell`) | Foreground presentation, physical-input routing, shared rendering, preferences and inactivity policy. |
 | `packages/services` (`firmware-services`) | Portable acquisition, transport and persistence mechanisms with no board, presentation or cycling policy. |
-| `packages/console` (`firmware-console`) | Device command sessions, framing, bounded replies and logs, and command integration. |
+| `packages/console` (`firmware-console`) | Device command sessions, framing, bounded replies and logs, and the ordinary terminal commands the device and the simulator share. |
 | `tools/simulator` (`shell-simulator`) | Host composition and simulated capabilities, including controllable input, time and failures. |
 | `tools/devtools` | Host workflows for backup, flashing, terminal access, exports and test scenarios. |
 | `vendor` | Redistributable dependencies that require a maintained local patch, including Trouble Host. |
@@ -89,8 +89,12 @@ verification commands, without repeating implementation details that will drift.
 
 Shells and applications consume `device-api`. Device implementations provide those
 contracts, using portable services, component drivers and an MCU HAL. The console
-integrates commands through explicit handlers. Application-specific commands keep
-their policy in the application.
+is the shared command composition: `firmware_console::commands::execute` answers
+every ordinary command for the C606 and the simulator alike, so it depends on
+`vana::app::Runtime` and hands VANA's own commands to it. Each composition
+implements `Board` for what only it answers: its card and trace, its terminal,
+its clock and its hardware diagnostics. Application-specific commands keep their
+policy in the application.
 
 The constraints are deliberate:
 
@@ -143,7 +147,7 @@ Use typed results and observations; terminal code owns their text formatting.
 | Power | Expose battery observations and supported brightness and power operations. The device enforces hardware limits and sequencing; the shell chooses preferences and inactivity policy. |
 | Storage | Expose checked relative access to owned reservations. Callers never receive access to stock or vendor regions. Journal mechanics are reusable; the owner of the stored data chooses its schema and recovery rules. |
 | Positioning | Expose timestamped observations with freshness and loss information. Keep byte framing, decoding and acquisition state behind the contract. Consumers decide whether a fix is useful for their task. |
-| Network | No portable contract. Device composition calls its board's Wi-Fi functions directly, and each request passes the shutdown admission guard. The Embassy stack stays inside the device: its resources can exist while the link is down, so device code bounds waits, checks readiness and rejects results from an obsolete connection generation. |
+| Network | `device_api::connectivity::Wifi` is the station contract the console uses; each request passes the shutdown admission guard. The Embassy stack stays inside the device: its resources can exist while the link is down, so device code bounds waits, checks readiness and rejects results from an obsolete connection generation. |
 | BLE and ANT | Expose profile-independent transport data with connection and loss information. Devices handle controller quirks, services manage transport state, and VANA interprets profiles and chooses sensors. |
 
 ## State machines are one step function over the existing owners

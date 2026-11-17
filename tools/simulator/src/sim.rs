@@ -712,7 +712,7 @@ impl Sim {
     /// `until_ms`; false once the trace is spent.
     pub fn replay_until(&mut self, until_ms: u64) -> bool {
         while self.device.now < until_ms {
-            if !self.device.replay_step() {
+            if let crate::session::Step::End = self.device.replay_step() {
                 return false;
             }
             if let Some(recording) = &mut self.recording {
@@ -782,36 +782,40 @@ impl Sim {
     /// `finish_ble_operation`.
     pub fn hold_ble_operation(&mut self) {
         self.note(NoteKind::World, "BLE operation pending");
-        self.device.sim_mut().ble_control.operation = device_api::connectivity::Operation::Pending;
+        self.device.sim_mut().ble.control.operation = device_api::connectivity::Operation::Pending;
     }
 
     pub fn finish_ble_operation(&mut self) {
         self.note(NoteKind::World, "BLE operation completed");
-        self.device.sim_mut().ble_control.operation =
+        self.device.sim_mut().ble.control.operation =
             device_api::connectivity::Operation::Completed;
     }
 
     pub fn hold_wifi_operation(&mut self) {
         self.note(NoteKind::World, "Wi-Fi operation pending");
-        self.device.sim_mut().wifi_control.operation = device_api::connectivity::Operation::Pending;
+        self.device.sim_mut().wifi.control.operation = device_api::connectivity::Operation::Pending;
     }
 
     pub fn finish_wifi_operation(&mut self) {
         self.note(NoteKind::World, "Wi-Fi operation completed");
-        self.device.sim_mut().wifi_control.operation =
+        self.device.sim_mut().wifi.control.operation =
             device_api::connectivity::Operation::Completed;
     }
 
     /// Wi-Fi time synchronization succeeds now with this UTC, in ms since
-    /// 1970; the device keeps it until it reboots.
+    /// 1970, over a station that is online; the device keeps it until it
+    /// reboots.
     pub fn sync_network_time(&mut self, unix_ms: u64) {
         self.note(
             NoteKind::World,
             format!("network time synced to {unix_ms} ms"),
         );
-        self.device.sim_mut().network_time = Some(firmware_services::network_time::Anchor {
+        let now = self.device.now;
+        let sim = self.device.sim_mut();
+        sim.wifi.online = true;
+        sim.network_time = Some(firmware_services::network_time::Anchor {
             unix_ms,
-            uptime_ms: self.device.now,
+            uptime_ms: now,
         });
     }
 

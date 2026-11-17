@@ -1290,6 +1290,7 @@ dependencies = [
  "firmware-shell",
  "serde",
  "serde-json-core",
+ "vana",
 ]
 
 [[package]]

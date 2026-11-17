@@ -155,6 +155,8 @@ record! {
     ble_transport::Selection { name, address, service, characteristic }
     ble_transport::Discovery { name, address, random, rssi }
     connectivity::ControlStatus { sequence, operation, error }
+    connectivity::NetworkDiscovery { ssid, rssi }
+    connectivity::WifiStats { associations, probe_successes, probe_failures, fault }
     power::WakeSources { button, usb, timer }
     power::Capabilities { shutdown, sleep, sleep_timer_ms, wake, shutdown_wake, sleep_wake }
     sound::Pattern { id, frequency_hz, nominal_ms, guard_ms }

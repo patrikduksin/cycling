@@ -55,7 +55,10 @@ fn a_trace_appended_to_the_store_reads_back_after_a_power_loss() {
     assert_eq!(field(&volumes, "store"), "5244928+532479");
     assert_eq!(
         sim.command("STORE STATUS"),
-        ("OK", "state=uninitialized".into())
+        (
+            "OK",
+            "state=uninitialized trace=off why=no_volume_table".into()
+        )
     );
     sim.format_store();
     let trace: Vec<u8> = (0..20_000u32).map(|i| (i * 31 % 251) as u8).collect();

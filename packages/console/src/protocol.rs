@@ -85,6 +85,25 @@ pub enum Command {
     Test(u8),
 }
 
+impl Command {
+    pub fn is_ant(self) -> bool {
+        matches!(
+            self,
+            Self::Ant
+                | Self::AntScan(_)
+                | Self::AntStop
+                | Self::AntConnect(_)
+                | Self::AntDisconnect(_)
+                | Self::AntChannel(_)
+                | Self::AntDevices
+                | Self::AntRead
+                | Self::AntCapabilities
+                | Self::AntOperation(_)
+                | Self::AntSend { .. }
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Request {
     pub id: u32,
@@ -463,6 +482,10 @@ pub fn admitted_while_not_ready(command: Command) -> bool {
             | Command::Restart
             | Command::Help
     )
+}
+
+pub fn admitted(command: Command, power: device_api::power::Status) -> bool {
+    power.ready || admitted_while_not_ready(command)
 }
 
 /// The `BUSY` detail for a command refused while power work is not ready.

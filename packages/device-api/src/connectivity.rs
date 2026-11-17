@@ -1,4 +1,6 @@
 //! Bounded connectivity configuration and control observations. No credentials in Debug.
+use crate::capability::capability;
+use crate::observation::Error;
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Text<const N: usize> {
     bytes: [u8; N],
@@ -212,6 +214,24 @@ impl core::fmt::Debug for WifiStats {
 pub struct NetworkDiscovery {
     pub ssid: Text<32>,
     pub rssi: i8,
+}
+
+/// The Wi-Fi station. Requests are accepted, not completed: read `control`
+/// for the outcome.
+#[capability(id = 18)]
+pub trait Wifi {
+    #[request(refreshes, redact)]
+    fn request(&mut self, operation: WifiOperation) -> Result<(), Error>;
+    #[observe]
+    fn control(&self) -> ControlStatus;
+    #[observe]
+    fn discoveries(&self) -> [Option<NetworkDiscovery>; 8];
+    #[observe]
+    fn state(&self) -> WifiState;
+    #[observe]
+    fn online(&self) -> bool;
+    #[observe]
+    fn stats(&self) -> WifiStats;
 }
 
 #[cfg(test)]

@@ -528,6 +528,45 @@ impl File {
         Ok(())
     }
 
+    /// ` trace=STATE ...` for `STORE STATUS`, with the spool's fill when one
+    /// stages; a reason's words are joined by `_`, so every field stays one
+    /// `key=value` word.
+    pub fn status<R: AsRef<[u8]> + AsMut<[u8]>>(
+        &self,
+        spool: Option<&Spool<R>>,
+        out: &mut dyn core::fmt::Write,
+    ) {
+        let reason = |out: &mut dyn core::fmt::Write, state: &str, why: &str| {
+            write!(out, " trace={state} why=")?;
+            for (index, word) in why.split(' ').enumerate() {
+                write!(out, "{}{word}", if index > 0 { "_" } else { "" })?;
+            }
+            Ok::<(), core::fmt::Error>(())
+        };
+        let _ = match self {
+            Self::Waiting => write!(out, " trace=waiting"),
+            Self::Off(why) => reason(out, "off", why),
+            Self::Ended(why) => reason(out, "ended", why),
+            Self::Staging(..) => write!(out, " trace=staging"),
+            Self::Open(_, _, drain) => write!(
+                out,
+                " trace=recording file={} written={}",
+                drain.name().as_str(),
+                drain.written()
+            ),
+        };
+        if let Some(spool) = spool {
+            let _ = write!(
+                out,
+                " spool={}/{} spool_peak={} spool_refused={}",
+                spool.len(),
+                spool.capacity(),
+                spool.peak(),
+                spool.refused()
+            );
+        }
+    }
+
     /// The card is being formatted under the session: the file goes with
     /// its store, and no later pass stages another.
     pub fn formatted(&mut self) {

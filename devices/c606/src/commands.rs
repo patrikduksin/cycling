@@ -3,9 +3,7 @@ use c606_firmware as device;
 use core::fmt;
 use core::fmt::Write;
 use device::drivers::wifi;
-use device_api::ble_transport::Ble as _;
-use device_api::input::InputObservation as _;
-use device_api::power::PowerControl as _;
+use firmware_console::commands::{Board, Capabilities, Card, Identity};
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
 use firmware_console::session::Terminal;
@@ -59,8 +57,8 @@ pub struct Devices {
     pub power: device::board::Power,
 }
 
-pub fn execute(
-    terminal: &mut Terminal<impl device_api::console::Console>,
+pub fn execute<C: device_api::console::Console>(
+    terminal: &mut Terminal<C>,
     request: Request,
     system: &mut crate::FirmwareShell,
     now: u64,
@@ -82,478 +80,255 @@ pub fn execute(
         server: _,
         access_point: _,
     } = devices;
-    let mut output = Text::new();
-    let mut status = "OK";
     let started = embassy_time::Instant::now();
-    let readiness = power.status();
-    if !readiness.ready && !firmware_console::protocol::admitted_while_not_ready(request.command) {
-        firmware_console::protocol::write_not_ready(
-            &mut output,
-            readiness.state,
-            device_api::sensors::Sensors::startup_status(sensors),
-        );
-        terminal.reply(request.id, "BUSY", output.as_str(), now);
-        return;
-    }
-    if let Some(status) =
-        firmware_console::commands::shell::execute(request.command, system, now, &mut output)
-    {
-        if matches!(
-            request.command,
-            Command::Harness(firmware_shell::harness::Command {
-                operation: firmware_shell::harness::Operation::Caps,
-                ..
-            })
-        ) {
-            let _ = write!(
-                output,
-                " ordinary=HELP,INFO,STATUS,POWER,POSITION,INPUT,BATTERY,TIME,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,WIFI,BLE,ANT,MMC,VOLUME,TERRAIN,FILES,STORE,SOUND,GNSS,PRESSURE,MOTION,COMPANION,STORAGE,FITTED,DISPLAY,RESTART,TEST"
-            );
-            {
-                let _ = write!(output, ",RIDE,EXPORT,RADAR,PROFILE,WORKOUT,PHONE");
-            }
-        }
-        match request.command {
-            Command::Save => {
-                system.storage_max_ms = system.storage_max_ms.max(started.elapsed().as_millis())
-            }
-            Command::Display(_) => {
-                sdk.suspend_display();
-                system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis())
-            }
-            _ => {}
-        }
-        terminal.reply(request.id, status, output.as_str(), now);
-        return;
-    }
-    match request.command {
-        Command::Power(_) | Command::PowerShutdownAfter(_) => {
-            let (operation, delay_ms) = match request.command {
-                Command::Power(operation) => (operation, 0),
-                Command::PowerShutdownAfter(delay_ms) => {
-                    (Some(device_api::power::Operation::Shutdown), delay_ms)
-                }
-                _ => unreachable!(),
-            };
-            if let Some(operation) = operation {
-                if sdk.recording() {
-                    terminal.reply(request.id, "BUSY", "active work", now);
-                    return;
-                }
-                trace.sync(&mut *bulk, now);
-                status = firmware_console::protocol::request_status(
-                    power.request_after(operation, delay_ms),
-                );
-            }
-            let _ = write!(
-                output,
-                "capabilities={:?} status={:?}",
-                power.capabilities(),
-                power.status()
-            );
-        }
-        Command::Volume(command) => {
-            use firmware_console::commands::volumes;
-            if sdk.holds_storage() {
-                terminal.reply(request.id, "BUSY", "formatting", now);
-                return;
-            }
-            // A transfer pauses the app, and a STORE format erases every
-            // file in STORE; refuse both while a ride records. Other volume
-            // writes never reach RIDES or STORE.
-            if matches!(
-                command,
-                volumes::Command::Transfer | volumes::Command::StoreFormat
-            ) && sdk.recording()
-            {
-                terminal.reply(request.id, "BUSY", "active work", now);
-                return;
-            }
-            // The session's trace is open in STORE: a format would erase it.
-            if command == volumes::Command::StoreFormat && trace.open() {
-                terminal.reply(request.id, "BUSY", "trace open", now);
-                return;
-            }
-            {
-                let mut recorded = firmware_services::trace::frozen::RecordedBulk::counted(
-                    &mut *bulk,
-                    &trace.record,
-                    trace.log,
-                );
-                status = volumes::execute(command, &mut recorded, &mut output);
-                if command == volumes::Command::Store {
-                    trace.status(&mut output);
-                }
-                if command != volumes::Command::Transfer {
-                    trace.after_host(bulk, false, now);
-                }
-            }
-            if command == volumes::Command::Transfer && status == "ACCEPTED" {
-                terminal.schedule_transfer();
-            }
-        }
-        Command::Peripheral(command) => {
-            status = firmware_console::commands::peripherals::execute(
-                command,
-                now,
-                bulk,
-                sound,
-                position,
-                sensors,
-                &mut output,
-            );
-        }
-        Command::Domain { bytes, length } => {
-            status = sdk.command(
-                core::str::from_utf8(&bytes[..length]).unwrap_or(""),
-                &mut system.data_storage(),
-                &mut firmware_services::trace::frozen::RecordedBulk::counted(
-                    bulk,
-                    &trace.record,
-                    trace.log,
-                ),
-                now,
-                &mut output,
-            );
-        }
-        command @ (Command::Ant
-        | Command::AntChannel(_)
-        | Command::AntDevices
-        | Command::AntRead
-        | Command::AntScan(_)
-        | Command::AntStop
-        | Command::AntConnect(_)
-        | Command::AntDisconnect(_)
-        | Command::AntCapabilities
-        | Command::AntOperation(_)
-        | Command::AntSend { .. }) => {
-            status = firmware_console::commands::ant::execute(command, ant, now, &mut output)
-                // Only ANT commands reach this arm; the console handles all of them.
-                .unwrap_or("UNSUPPORTED");
-        }
-        Command::Help => {
-            let _ = write!(
-                output,
-                "MMC OWNED TEST relative_sector expected_crc_hex fill_hex; "
-            );
-            let _ = write!(
-                output,
-                "MMC [READ sector offset length|CLOCK hz|RECOVER]; MMC OWNED [STATUS|READ sector offset length]; FORMAT [CONFIRM] (SDK); VOLUME [STATUS|INIT|TRANSFER]; TERRAIN [STATUS]; FILES [STATUS|FORMAT CONFIRM|LIST slot|STAT name|DELETE name]; STORE [STATUS|FORMAT CONFIRM|LIST index]; SOUND [PATTERNS|PLAY id|STOP]; GNSS [PAUSE 2000..10000|RESUME]; PRESSURE; MOTION; COMPANION [QUERY]; "
-            );
-            let _ = write!(
-                output,
-                "CMD id HELP|INFO|STATUS|POWER [STATUS|SHUTDOWN [AFTER 0..30000]|SLEEP|WAKE]|POSITION|INPUT|BATTERY|TIME|SETTINGS|BRIGHTNESS n|AUTO|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|WIFI [SCAN|NETWORKS|CONFIG WPA2/WPA3 ssid_hex password_hex|CONNECT|DISCONNECT|FORGET]|BLE [SCAN|PEERS|SELECT HRS/CSC name_hex/- addr_le_hex/- (SDK)|CONNECT|DISCONNECT|FORGET|ECHO]|ANT [SCAN seconds|STOP|DEVICES|CONNECT type number transmission|DISCONNECT type|CHANNEL type|READ|CAPABILITIES|OPERATION id|SEND type number transmission generation hex16]|RADAR [SENSORS] (SDK)|PROFILE [FTP watts|LTHR bpm] (SDK)|PHONE [START [HOME]|STOP] (SDK)|STORAGE|FITTED|DISPLAY rgb565hex|RESTART|CRASH [CLEAR]|TEST n"
-            );
-        }
-        Command::Info => {
-            let recording = sdk.recording();
-            crate::logging::metadata(recording);
-            let _ = write!(
-                output,
-                "board={} slot={} commit={} logging=INFO recording={} protocol=1 max_line=256 log_slots=8 log_bytes=384",
-                diagnostics.board(),
-                diagnostics.slot(),
-                option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
-                recording
-            );
-        }
-        Command::Status => {
-            let _ = write!(
-                output,
-                "synthetic_events={} routed_events={} foreground={:?} press_frame_ms={} press_frame_max_ms={} press_frames={} ",
-                system.synthetic_events,
-                system.routed_events,
-                system.foreground,
-                system.press_frame_ms,
-                system.press_frame_max_ms,
-                system.press_frames
-            );
-            let (frame_us, wait_us, frame_max_us) =
-                crate::device::drivers::display::TIMING.snapshot();
-            let _ = write!(
-                output,
-                "display_frame_us={frame_us} display_wait_us={wait_us} display_frame_max_us={frame_max_us} stack_untouched={} ",
-                crate::device::stack::untouched()
-            );
-            if let Some(work) = sdk.map_work_since_attached() {
-                let _ = write!(
-                    output,
-                    "map_fills={} map_fill_max_us={} map_extracts={} map_extract_max_us={} map_cuts={} ",
-                    work.fill.runs,
-                    work.fill.max_us,
-                    work.extract.runs,
-                    work.extract.max_us,
-                    work.cuts
-                );
-            }
-            let _ = crate::device::drivers::sdmmc::HEALTH.write(&mut output);
-            let _ = write!(output, " ");
-            let logs = crate::logging::stats();
-            let _ = write!(
-                output,
-                "uptime_ms={} reset={} crash={} heap_free={} heap_min_sampled={} psram_free={} input_events={} display_submissions={} display_ms={} display_max_ms={} storage_ops={} storage_max_ms={} terminal_rejected={} log_attempts={} log_total_us={} log_max_us={} log_lost={} log_depth={} log_buffer_bytes={} usb_poll_max_us={}",
-                now,
-                system.reset.name(),
-                system.crash.name(),
-                diagnostics.heap_free(),
-                system.heap_min_sampled,
-                diagnostics.external_free(),
-                system.input_events,
-                system.display_submissions,
-                system.display_ms,
-                system.display_max_ms,
-                system.operations,
-                system.storage_max_ms,
-                terminal.rejected(),
-                logs.0,
-                logs.1,
-                logs.2,
-                logs.3,
-                logs.4,
-                logs.5,
-                terminal.tx_max_us()
-            );
-        }
-
-        Command::Input | Command::Battery => {
-            if let Some(s) = input.snapshot(now) {
-                let _ = write!(
-                    output,
-                    "touch_available={} touch_errors={} companion_valid={} bad_crc={} uart_errors={} input_lost={} buttons={:?} battery={:?} power={:?}",
-                    s.touch_available,
-                    s.touch_errors,
-                    s.companion_valid,
-                    s.companion_bad_crc,
-                    s.uart_errors,
-                    s.input_lost,
-                    s.button_counts,
-                    s.battery,
-                    s.power
-                );
-            } else {
-                status = "UNAVAILABLE";
-            }
-        }
-        Command::Time => {
-            let t = firmware_services::network_time::snapshot(
-                now,
-                system.settings.timezone_minutes,
-                wifi::online(),
-            );
-            let _ = write!(output, "{:?}", t);
-        }
-
-        Command::Harness(_)
-        | Command::Position
-        | Command::Settings
-        | Command::SetBrightness(_)
-        | Command::SetTimezone(_)
-        | Command::SetIdle(..)
-        | Command::Save
-        | Command::Display(_)
-        | Command::Activity => unreachable!("shared shell command"),
-        Command::Wifi => {
-            let _ = write!(
-                output,
-                "state={} online={} stats={:?} saved={} operation={} sequence={} error={}",
-                wifi::state().code(),
-                wifi::online(),
-                wifi::stats(),
-                system.settings.wifi.is_some(),
-                wifi::control().operation.name(),
-                wifi::control().sequence,
-                wifi::control().error_name()
-            );
-        }
-        Command::WifiReconnect => {
-            status = firmware_console::protocol::request_status(wifi::request(
-                device_api::connectivity::WifiOperation::Connect,
-            ));
-        }
-        Command::WifiScan => {
-            status = firmware_console::protocol::request_status(wifi::request(
-                device_api::connectivity::WifiOperation::Scan,
-            ))
-        }
-        Command::WifiDisconnect => {
-            status = firmware_console::protocol::request_status(wifi::request(
-                device_api::connectivity::WifiOperation::Disconnect,
-            ))
-        }
-        Command::WifiConfigure(_) | Command::WifiForget => {
-            let configuration = match request.command {
-                Command::WifiConfigure(value) => Some(value),
-                _ => None,
-            };
-            status = match system.save_wifi(wifi::control().operation, configuration) {
-                Ok(()) => firmware_console::protocol::request_status(wifi::request(
-                    device_api::connectivity::WifiOperation::Configure(configuration),
-                )),
-                Err(refused) => refused,
-            };
-        }
-        Command::WifiNetworks => {
-            for (index, network) in wifi::discoveries().iter().enumerate() {
-                if let Some(network) = network {
-                    let _ = write!(output, "index={} ssid_hex=", index);
-                    for b in network.ssid.bytes() {
-                        let _ = write!(output, "{:02x}", b);
-                    }
-                    let _ = write!(output, " rssi={} ", network.rssi);
-                }
-            }
-        }
-        Command::Ble => {
-            let s = ble.snapshot();
-            let _ = write!(
-                output,
-                "link={} connections={} disconnections={} notifications={} dropped={} scan_reports={} saved={} profile={} operation={} sequence={} error={}",
-                s.link.name(),
-                s.connections,
-                s.disconnections,
-                s.notifications,
-                s.dropped,
-                s.scan_reports,
-                system.settings.ble.is_some(),
-                system.settings.ble_profile,
-                ble.control().operation.name(),
-                ble.control().sequence,
-                ble.control().error_name()
-            );
-        }
-        Command::BleReconnect => {
-            status = firmware_console::protocol::request_status(
-                ble.request(device_api::ble_transport::Operation::Connect),
-            );
-        }
-        Command::BleScan => {
-            status = firmware_console::protocol::request_status(
-                ble.request(device_api::ble_transport::Operation::Scan),
-            )
-        }
-        Command::BleDisconnect => {
-            status = firmware_console::protocol::request_status(
-                ble.request(device_api::ble_transport::Operation::Disconnect),
-            )
-        }
-        Command::BleEcho => {
-            status = firmware_console::protocol::request_status(
-                ble.request(device_api::ble_transport::Operation::Echo),
-            )
-        }
-        Command::BleForget | Command::BleSelect(_, _) => {
-            let choice = match request.command {
-                Command::BleSelect(peer, profile) => Some((peer, profile)),
-                _ => None,
-            };
-            status = match sdk.select_ble(
-                system,
-                ble.control().operation,
-                ble.snapshot().connections,
-                choice,
-            ) {
-                Ok(selection) => firmware_console::protocol::request_status(
-                    ble.request(device_api::ble_transport::Operation::Select(selection)),
-                ),
-                Err(refused) => refused,
-            };
-        }
-        Command::BlePeers => {
-            for (index, peer) in ble.discoveries().iter().enumerate() {
-                if let Some(peer) = peer {
-                    let _ = write!(output, "index={} name_hex=", index);
-                    for b in peer.name.bytes() {
-                        let _ = write!(output, "{:02x}", b);
-                    }
-                    let _ = write!(output, " address_le=");
-                    for b in peer.address {
-                        let _ = write!(output, "{:02x}", b);
-                    }
-                    let _ = write!(output, " random={} rssi={} ", peer.random, peer.rssi);
-                }
-            }
-        }
-        Command::Storage => {
-            let _ = write!(output, "{:?}", system.data_storage().data().geometry());
-        }
-        Command::Fitted => fitted(system, &mut output),
-
-        Command::Restart => {
-            terminal.schedule_reboot(now, false);
-            status = "ACCEPTED";
-        }
-        Command::Crash => {
-            let last = crate::device::drivers::crash_rtc::last(&mut system.crash_storage());
-            match last {
-                Err(device_api::storage::AccessError::Unavailable) => status = "UNAVAILABLE",
-                Err(_) => status = "FAILED",
-                Ok(None) => {
-                    let _ = write!(output, "none");
-                }
-                Ok(Some((record, source))) => {
-                    let _ = write!(
-                        output,
-                        "kind={} this_boot={} source={} version={} commit={} elf={}{} uptime_ms={} location={}:{} frames={} pcs=",
-                        record.kind.name(),
-                        // Boot marks the record reported, so ask what this boot's
-                        // reset was blamed on.
-                        matches!(system.crash, device_api::crash::Marker::Valid(_)),
-                        source.name(),
-                        record.version(),
-                        if record.commit().is_empty() {
-                            "unknown"
-                        } else {
-                            record.commit()
-                        },
-                        // The archived ELF's name, for `cycling backtrace`.
-                        record.commit(),
-                        record.build.suffix(),
-                        record.uptime_ms,
-                        record.file(),
-                        record.line,
-                        record.pcs().len(),
-                    );
-                    for (index, pc) in record.pcs().iter().enumerate() {
-                        let _ = write!(output, "{}0x{pc:08x}", if index == 0 { "" } else { "," });
-                    }
-                    // Last, so a reader can take the rest of the line as it is.
-                    let _ = write!(output, " message={}", record.message());
-                }
-            }
-        }
-        Command::CrashClear => {
-            status = match crate::device::drivers::crash_rtc::clear(&mut system.crash_storage()) {
-                Ok(()) => "OK",
-                Err(device_api::storage::AccessError::Unavailable) => "UNAVAILABLE",
-                Err(_) => "FAILED",
-            };
-        }
-        Command::Test(n) => match n {
-            0..=4 => {
-                diagnostics.set_fault(n);
-                status = "ACCEPTED";
-            }
-            20 => {
-                log::warn!(target:"diagnostic","controlled executor stall ms=6000");
-                diagnostics.stall();
-                log::info!(target:"diagnostic","executor stall ended");
-                status = "ACCEPTED";
-            }
-            11 => {
-                terminal.schedule_reboot(now, true);
-                status = "ACCEPTED";
-            }
-            10 => {
-                for _ in 0..64 {
-                    log::warn!(target:"diagnostic","controlled log saturation");
-                }
-                status = "ACCEPTED";
-            }
-            _ => status = "UNSUPPORTED",
+    let mut output = Text::new();
+    let status = firmware_console::commands::execute(
+        request.command,
+        now,
+        Capabilities {
+            ant,
+            ble,
+            wifi: &mut Station,
+            power,
+            input,
         },
+        system,
+        sdk,
+        &mut Composition {
+            terminal,
+            trace,
+            bulk,
+            sound,
+            position,
+            sensors,
+            diagnostics,
+        },
+        &mut output,
+    );
+    let elapsed = started.elapsed().as_millis();
+    match request.command {
+        Command::Save => system.storage_max_ms = system.storage_max_ms.max(elapsed),
+        Command::Display(_) => system.display_max_ms = system.display_max_ms.max(elapsed),
+        _ => {}
     }
     terminal.reply(request.id, status, output.as_str(), now);
     terminal.command_completed();
+}
+
+struct Station;
+
+impl device_api::connectivity::Wifi for Station {
+    fn request(
+        &mut self,
+        operation: device_api::connectivity::WifiOperation,
+    ) -> Result<(), device_api::observation::Error> {
+        wifi::request(operation)
+    }
+    fn control(&self) -> device_api::connectivity::ControlStatus {
+        wifi::control()
+    }
+    fn discoveries(&self) -> [Option<device_api::connectivity::NetworkDiscovery>; 8] {
+        wifi::discoveries()
+    }
+    fn state(&self) -> device_api::connectivity::WifiState {
+        wifi::state()
+    }
+    fn online(&self) -> bool {
+        wifi::online()
+    }
+    fn stats(&self) -> device_api::connectivity::WifiStats {
+        wifi::stats()
+    }
+}
+
+struct Composition<'a, C: device_api::console::Console, G> {
+    terminal: &'a mut Terminal<C>,
+    trace: &'a mut crate::trace::Trace,
+    bulk: &'a mut device::board::Bulk,
+    sound: &'a mut device::board::Sound,
+    position: &'a mut device::board::Positioning,
+    sensors: &'a mut device::board::Sensors,
+    diagnostics: &'a G,
+}
+
+struct TracedCard<'a> {
+    trace: &'a mut crate::trace::Trace,
+    bulk: &'a mut device::board::Bulk,
+}
+
+impl Card for TracedCard<'_> {
+    fn media(&mut self) -> impl device_api::bulk::ReadWrite + '_ {
+        firmware_services::trace::frozen::RecordedBulk::counted(
+            &mut *self.bulk,
+            &self.trace.record,
+            self.trace.log,
+        )
+    }
+    fn trace_in_store(&self) -> bool {
+        self.trace.open()
+    }
+    fn trace_status(&self, out: &mut dyn Write) {
+        self.trace.status(out);
+    }
+    fn after_volume(&mut self, now: u64) {
+        self.trace.after_host(&mut *self.bulk, false, now);
+    }
+    fn sync_trace(&mut self, now: u64) {
+        self.trace.sync(&mut *self.bulk, now);
+    }
+}
+
+impl<C: device_api::console::Console, G: Diagnostics> Board<crate::FirmwareShell>
+    for Composition<'_, C, G>
+{
+    const HARDWARE: &'static str = ",MMC,SOUND,GNSS,PRESSURE,MOTION,COMPANION,FITTED,TEST";
+    fn startup(&self) -> device_api::sensors::Startup {
+        device_api::sensors::Sensors::startup_status(self.sensors)
+    }
+    fn card(&mut self) -> impl Card + '_ {
+        TracedCard {
+            trace: &mut *self.trace,
+            bulk: &mut *self.bulk,
+        }
+    }
+    fn transfer(&mut self) -> &'static str {
+        self.terminal.schedule_transfer();
+        "ACCEPTED"
+    }
+    fn restart(&mut self, now: u64) {
+        self.terminal.schedule_reboot(now, false);
+    }
+    fn identity(&mut self, recording: bool) -> Identity {
+        crate::logging::metadata(recording);
+        Identity {
+            board: self.diagnostics.board(),
+            slot: self.diagnostics.slot(),
+            commit: option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
+        }
+    }
+    fn status(&self, mut out: &mut dyn Write) {
+        let (frame_us, wait_us, frame_max_us) = crate::device::drivers::display::TIMING.snapshot();
+        let _ = write!(
+            out,
+            " display_frame_us={frame_us} display_wait_us={wait_us} display_frame_max_us={frame_max_us} stack_untouched={} ",
+            crate::device::stack::untouched()
+        );
+        let _ = crate::device::drivers::sdmmc::HEALTH.write(&mut out);
+        let logs = crate::logging::stats();
+        let _ = write!(
+            out,
+            " heap_free={} psram_free={} terminal_rejected={} log_attempts={} log_total_us={} log_max_us={} log_lost={} log_depth={} log_buffer_bytes={} usb_poll_max_us={}",
+            self.diagnostics.heap_free(),
+            self.diagnostics.external_free(),
+            self.terminal.rejected(),
+            logs.0,
+            logs.1,
+            logs.2,
+            logs.3,
+            logs.4,
+            logs.5,
+            self.terminal.tx_max_us()
+        );
+    }
+    fn clock(&self) -> firmware_services::network_time::Clock {
+        firmware_services::network_time::clock()
+    }
+    fn hardware(
+        &mut self,
+        system: &mut crate::FirmwareShell,
+        command: Command,
+        now: u64,
+        mut out: &mut dyn Write,
+    ) -> &'static str {
+        match command {
+            Command::Peripheral(command) => firmware_console::commands::peripherals::execute(
+                command,
+                now,
+                &mut *self.bulk,
+                &mut *self.sound,
+                &mut *self.position,
+                &mut *self.sensors,
+                &mut out,
+            ),
+            Command::Fitted => {
+                fitted(system, out);
+                "OK"
+            }
+            Command::Crash => crash(system, out),
+            Command::CrashClear => {
+                match crate::device::drivers::crash_rtc::clear(&mut system.crash_storage()) {
+                    Ok(()) => "OK",
+                    Err(device_api::storage::AccessError::Unavailable) => "UNAVAILABLE",
+                    Err(_) => "FAILED",
+                }
+            }
+            Command::Test(n) => match n {
+                0..=4 => {
+                    self.diagnostics.set_fault(n);
+                    "ACCEPTED"
+                }
+                20 => {
+                    log::warn!(target:"diagnostic","controlled executor stall ms=6000");
+                    self.diagnostics.stall();
+                    log::info!(target:"diagnostic","executor stall ended");
+                    "ACCEPTED"
+                }
+                11 => {
+                    self.terminal.schedule_reboot(now, true);
+                    "ACCEPTED"
+                }
+                10 => {
+                    for _ in 0..64 {
+                        log::warn!(target:"diagnostic","controlled log saturation");
+                    }
+                    "ACCEPTED"
+                }
+                _ => "UNSUPPORTED",
+            },
+            _ => "UNSUPPORTED",
+        }
+    }
+}
+
+fn crash(system: &mut crate::FirmwareShell, out: &mut dyn Write) -> &'static str {
+    let record = match crate::device::drivers::crash_rtc::last(&mut system.crash_storage()) {
+        Err(device_api::storage::AccessError::Unavailable) => return "UNAVAILABLE",
+        Err(_) => return "FAILED",
+        Ok(None) => {
+            let _ = write!(out, "none");
+            return "OK";
+        }
+        Ok(Some(record)) => record,
+    };
+    let (record, source) = record;
+    let _ = write!(
+        out,
+        "kind={} this_boot={} source={} version={} commit={} elf={}{} uptime_ms={} location={}:{} frames={} pcs=",
+        record.kind.name(),
+        // Boot marks the record reported, so ask what this boot's
+        // reset was blamed on.
+        matches!(system.crash, device_api::crash::Marker::Valid(_)),
+        source.name(),
+        record.version(),
+        if record.commit().is_empty() {
+            "unknown"
+        } else {
+            record.commit()
+        },
+        // The archived ELF's name, for `cycling backtrace`.
+        record.commit(),
+        record.build.suffix(),
+        record.uptime_ms,
+        record.file(),
+        record.line,
+        record.pcs().len(),
+    );
+    for (index, pc) in record.pcs().iter().enumerate() {
+        let _ = write!(out, "{}0x{pc:08x}", if index == 0 { "" } else { "," });
+    }
+    // Last, so a reader can take the rest of the line as it is.
+    let _ = write!(out, " message={}", record.message());
+    "OK"
 }
 
 /// The card for one transfer session. Its ownership is checked at the
@@ -787,7 +562,7 @@ pub async fn transfer(
     }
 }
 
-fn fitted(system: &mut crate::FirmwareShell, output: &mut Text) {
+fn fitted(system: &mut crate::FirmwareShell, output: &mut dyn Write) {
     use device_api::input::InputSource as _;
     use device_api::observation::Availability;
     let panel = system.display_geometry();

@@ -216,13 +216,21 @@ pub struct BleFixture {
     pub snapshot: device_api::ble_transport::Snapshot,
     pub packets: std::collections::VecDeque<device_api::ble_transport::Packet>,
     pub battery: Option<device_api::ble_transport::BatteryLevel>,
+    pub control: device_api::connectivity::ControlStatus,
 }
 impl Ble for BleFixture {
-    fn request(&mut self, _operation: device_api::ble_transport::Operation) -> Result<(), Error> {
-        Err(Error::Unsupported)
+    fn request(&mut self, operation: device_api::ble_transport::Operation) -> Result<(), Error> {
+        let device_api::ble_transport::Operation::Select(_) = operation else {
+            return Err(Error::Unsupported);
+        };
+        self.packets.clear();
+        self.snapshot.link = Link::Off;
+        self.control.sequence = self.control.sequence.wrapping_add(1);
+        self.control.operation = device_api::connectivity::Operation::Completed;
+        Ok(())
     }
     fn control(&self) -> device_api::connectivity::ControlStatus {
-        device_api::connectivity::ControlStatus::new()
+        self.control
     }
     fn discoveries(&self) -> [Option<device_api::ble_transport::Discovery>; 8] {
         [None; 8]
@@ -238,6 +246,51 @@ impl Ble for BleFixture {
     }
     fn take_battery(&mut self) -> Option<device_api::ble_transport::BatteryLevel> {
         self.battery.take()
+    }
+}
+#[derive(Default)]
+pub struct WifiFixture {
+    pub control: device_api::connectivity::ControlStatus,
+    pub online: bool,
+}
+impl device_api::connectivity::Wifi for WifiFixture {
+    fn request(&mut self, operation: device_api::connectivity::WifiOperation) -> Result<(), Error> {
+        let device_api::connectivity::WifiOperation::Configure(_) = operation else {
+            return Err(Error::Unsupported);
+        };
+        self.control.sequence = self.control.sequence.wrapping_add(1);
+        self.control.operation = device_api::connectivity::Operation::Completed;
+        Ok(())
+    }
+    fn control(&self) -> device_api::connectivity::ControlStatus {
+        self.control
+    }
+    fn discoveries(&self) -> [Option<device_api::connectivity::NetworkDiscovery>; 8] {
+        [None; 8]
+    }
+    fn state(&self) -> device_api::connectivity::WifiState {
+        device_api::connectivity::WifiState::Unconfigured
+    }
+    fn online(&self) -> bool {
+        self.online
+    }
+    fn stats(&self) -> device_api::connectivity::WifiStats {
+        device_api::connectivity::WifiStats::default()
+    }
+}
+struct UnrecordedConsolePower(device_api::power::Status);
+impl PowerControl for UnrecordedConsolePower {
+    fn capabilities(&self) -> device_api::power::Capabilities {
+        device_api::power::Capabilities::UNSUPPORTED
+    }
+    fn status(&self) -> device_api::power::Status {
+        self.0
+    }
+    fn request(&mut self, _: device_api::power::Operation) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
+    fn request_after(&mut self, _: device_api::power::Operation, _: u32) -> Result<(), Error> {
+        Err(Error::Unsupported)
     }
 }
 pub struct NoAnt;
@@ -556,6 +609,17 @@ impl Trace {
         open && synced.is_ok()
     }
 
+    fn after_host(&mut self, bulk: &crate::bulk::SimBulk, now: u64) {
+        let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
+        let mut recorder = self.recorder.borrow_mut();
+        let after = self
+            .file
+            .after_host(&mut recorder, &mut bulk.host(), false, now, &mut sector);
+        if after.is_err() {
+            recorder.sink_mut().spool = None;
+        }
+    }
+
     fn bytes(&self) -> Vec<u8> {
         let mut recorder = self.recorder.borrow_mut();
         let mut bytes = self.start.header();
@@ -575,6 +639,86 @@ fn recorded_bulk<'a>(
         Devices::Simulated(_) => bulk,
     };
     RecordedBulk::new(bulk, record)
+}
+
+struct Twin<'a> {
+    media: &'a mut dyn ReadWrite,
+    trace: &'a mut Trace,
+    trace_card: crate::bulk::SimBulk,
+    startup: Startup,
+    network_time: Option<firmware_services::network_time::Anchor>,
+}
+
+struct TwinCard<'a> {
+    media: &'a mut dyn ReadWrite,
+    trace: &'a mut Trace,
+    trace_card: &'a crate::bulk::SimBulk,
+}
+
+impl firmware_console::commands::Card for TwinCard<'_> {
+    fn media(&mut self) -> impl ReadWrite + '_ {
+        RecordedBulk::new(&mut *self.media, &self.trace.recorder)
+    }
+    fn trace_in_store(&self) -> bool {
+        self.trace.file.is_open()
+    }
+    fn trace_status(&self, out: &mut dyn std::fmt::Write) {
+        let recorder = self.trace.recorder.borrow();
+        self.trace.file.status(recorder.sink().spool.as_ref(), out);
+    }
+    fn after_volume(&mut self, now: u64) {
+        self.trace.after_host(self.trace_card, now);
+    }
+    fn sync_trace(&mut self, now: u64) {
+        self.trace.sync(self.trace_card, now);
+    }
+}
+
+impl firmware_console::commands::Board<VirtualShell> for Twin<'_> {
+    const HARDWARE: &'static str = "";
+    fn startup(&self) -> Startup {
+        self.startup
+    }
+    fn card(&mut self) -> impl firmware_console::commands::Card + '_ {
+        TwinCard {
+            media: &mut *self.media,
+            trace: &mut *self.trace,
+            trace_card: &self.trace_card,
+        }
+    }
+    fn transfer(&mut self) -> &'static str {
+        "UNSUPPORTED"
+    }
+    fn restart(&mut self, _: u64) {}
+    fn identity(&mut self, _: bool) -> firmware_console::commands::Identity {
+        firmware_console::commands::Identity {
+            board: VIRTUAL,
+            slot: "unknown",
+            commit: crate::compare::build_hash(),
+        }
+    }
+    fn status(&self, _: &mut dyn std::fmt::Write) {}
+    fn clock(&self) -> firmware_services::network_time::Clock {
+        use firmware_services::network_time::Clock;
+        self.network_time
+            .map_or(Clock::Unsynced { syncing: false }, Clock::Anchored)
+    }
+    fn hardware(
+        &mut self,
+        _: &mut VirtualShell,
+        command: Command,
+        _: u64,
+        out: &mut dyn std::fmt::Write,
+    ) -> &'static str {
+        match command {
+            Command::Crash => {
+                let _ = out.write_str("none");
+                "OK"
+            }
+            Command::CrashClear => "OK",
+            _ => "UNSUPPORTED",
+        }
+    }
 }
 
 fn observe_startup(switch: &mut PowerSwitch, now: u64, startup: Startup) {
@@ -648,8 +792,7 @@ pub struct Simulated {
     /// Coordinated shutdown and work readiness, as composition reads them.
     pub switch: PowerSwitch,
     barometer: Option<(u64, u32)>,
-    pub(crate) wifi_control: device_api::connectivity::ControlStatus,
-    pub(crate) ble_control: device_api::connectivity::ControlStatus,
+    pub wifi: WifiFixture,
     pub phone_server: crate::phone::SimServer,
     pub access_point: crate::phone::SimAccessPoint,
 }
@@ -672,8 +815,7 @@ impl Simulated {
             restart_probe: None,
             switch: PowerSwitch::default(),
             barometer: None,
-            wifi_control: device_api::connectivity::ControlStatus::new(),
-            ble_control: device_api::connectivity::ControlStatus::new(),
+            wifi: WifiFixture::default(),
             phone_server: Default::default(),
             access_point: Default::default(),
         }
@@ -771,6 +913,17 @@ impl Simulated {
 enum Devices {
     Simulated(Box<Simulated>),
     Replayed(Box<Replay>),
+}
+
+#[derive(Debug)]
+pub enum Step {
+    Pass,
+    Command {
+        line: String,
+        status: &'static str,
+        reply: String,
+    },
+    End,
 }
 
 /// A sized session has no manifest a replay could rebuild its geometry from.
@@ -1040,26 +1193,32 @@ impl Session {
         session.devices = Devices::Replayed(Box::new(replay));
         Ok(session)
     }
-    /// Run what the trace holds next: a pass or a terminal request. False
-    /// once the trace is spent.
-    pub fn replay_step(&mut self) -> bool {
+    pub fn replay_step(&mut self) -> Step {
         let Devices::Replayed(replay) = &mut self.devices else {
-            return false;
+            return Step::End;
         };
         match replay.step() {
             Next::Pass => self.tick(),
             Next::Command(line) => {
-                let _ = self.command(line.as_bytes(), &mut String::new());
+                let mut reply = String::new();
+                let status = self
+                    .command(line.as_bytes(), &mut reply)
+                    .map_or("INVALID", |(_, status)| status);
+                return Step::Command {
+                    line,
+                    status,
+                    reply,
+                };
             }
             Next::End => {
                 let trace = self.trace();
                 if let Devices::Replayed(replay) = &mut self.devices {
                     replay.rerecorded(&trace);
                 }
-                return false;
+                return Step::End;
             }
         }
-        true
+        Step::Pass
     }
     /// Where a replay parted from its recording so far.
     pub fn report(&self) -> Option<Report> {
@@ -1684,8 +1843,8 @@ impl Session {
             };
             self.trace.record(&Event::Command(text));
         }
-        let power = self.gate();
-        Ok((request, self.execute_gated(request, power, out)))
+        self.freeze_power();
+        Ok((request, self.execute_gated(request, out)))
     }
     /// Run a pass, then a parsed request, as the terminal does. Unlike
     /// `command`, the trace does not see the request, so a replay of this
@@ -1693,221 +1852,121 @@ impl Session {
     pub fn execute(&mut self, request: Request, out: &mut String) -> &'static str {
         self.unrecorded("a request ran unrecorded");
         self.close_rest();
-        let power = self.gate();
-        self.execute_gated(request, power, out)
+        self.freeze_power();
+        self.execute_gated(request, out)
     }
-    fn gate(&mut self) -> device_api::power::Status {
+    fn freeze_power(&mut self) {
         let now = self.now;
         let record = &self.trace.recorder;
         match &mut self.devices {
             Devices::Simulated(sim) => {
                 observe_startup(&mut sim.switch, now, sim.startup);
-                self.trace.power.freeze(&sim.switch, now, record)
+                self.trace.power.freeze(&sim.switch, now, record);
             }
             Devices::Replayed(replay) => {
-                self.trace.power.freeze(&replay.sources.power, now, record)
+                self.trace.power.freeze(&replay.sources.power, now, record);
             }
         }
     }
-    fn execute_gated(
-        &mut self,
-        request: Request,
-        power: device_api::power::Status,
-        out: &mut String,
-    ) -> &'static str {
+    fn execute_gated(&mut self, request: Request, out: &mut String) -> &'static str {
         crate::logs::enter_device(self.tap.as_ref(), self.now);
         // A host talking on the terminal keeps the usual pace.
         self.rest_ms = 0;
         {
             self.host = true;
         }
-        let status = self.respond(request, power, out);
+        let status = self.respond(request.command, out);
         self.record_faults();
         status
     }
-    fn respond(
-        &mut self,
-        request: Request,
-        power: device_api::power::Status,
-        out: &mut String,
-    ) -> &'static str {
+    fn respond(&mut self, command: Command, out: &mut String) -> &'static str {
         let now = self.now;
-        if !power.ready && !firmware_console::protocol::admitted_while_not_ready(request.command) {
-            let startup = match &self.devices {
-                Devices::Simulated(sim) => sim.startup,
-                Devices::Replayed(_) => self.trace.startup.at(now).unwrap_or(Startup::Unsupported),
-            };
-            firmware_console::protocol::write_not_ready(out, power.state, startup);
-            return "BUSY";
-        }
-        let status = match &mut self.devices {
-            Devices::Simulated(sim) => {
-                firmware_console::commands::ant::execute(request.command, &mut sim.ant, now, out)
-            }
+        let trace_card = self.bulk.host();
+        let (mut ant, mut ble, mut wifi, mut power);
+        let (devices, media, startup, network_time) = match &mut self.devices {
+            Devices::Simulated(sim) => (
+                firmware_console::commands::Capabilities {
+                    ant: &mut sim.ant,
+                    ble: &mut sim.ble,
+                    wifi: &mut sim.wifi,
+                    power: &mut sim.switch,
+                    input: &NoInputObservation,
+                },
+                &mut self.bulk as &mut dyn ReadWrite,
+                sim.startup,
+                sim.network_time,
+            ),
             Devices::Replayed(replay) => {
-                let status =
-                    firmware_console::commands::ant::execute(request.command, &mut NoAnt, now, out);
-                if status.is_some() {
-                    replay
-                        .sources
-                        .unrecorded("the ANT radio the terminal reads");
+                let sources = &mut replay.sources;
+                let frozen = self.trace.power.frozen();
+                if firmware_console::protocol::admitted(command, frozen) {
+                    if command.is_ant() {
+                        sources.unrecorded("the ANT radio the terminal reads");
+                    }
+                    if matches!(command, Command::Time | Command::Input | Command::Battery) {
+                        sources.unrecorded("the clock, link or companion the terminal reads");
+                    }
+                    if matches!(
+                        command,
+                        Command::Wifi
+                            | Command::WifiReconnect
+                            | Command::WifiScan
+                            | Command::WifiNetworks
+                            | Command::WifiDisconnect
+                            | Command::Ble
+                            | Command::BleReconnect
+                            | Command::BleScan
+                            | Command::BlePeers
+                            | Command::BleDisconnect
+                            | Command::BleEcho
+                    ) {
+                        sources.unrecorded("the radio the terminal reads");
+                    }
+                    if matches!(
+                        command,
+                        Command::Power(..) | Command::PowerShutdownAfter(..)
+                    ) {
+                        sources.unrecorded("the power control the terminal reads");
+                    }
                 }
-                status
-            }
-        };
-        if let Some(status) = status {
-            return status;
-        }
-        if let Some(status) = firmware_console::commands::shell::execute(
-            request.command,
-            &mut self.shell,
-            self.now,
-            out,
-        ) {
-            if matches!(request.command, Command::Display(_)) {
-                self.sdk.suspend_display();
-            }
-            if matches!(
-                request.command,
-                Command::Harness(firmware_shell::harness::Command {
-                    operation: firmware_shell::harness::Operation::Caps,
-                    ..
-                })
-            ) {
-                out.push_str(" ordinary=HELP,INFO,STATUS,POSITION,SETTINGS,BRIGHTNESS,TIMEZONE,IDLE,SAVE,ACTIVITY,STORAGE,DISPLAY,WIFI,BLE,RESTART");
-                out.push_str(",RIDE,EXPORT,RADAR,PROFILE,WORKOUT");
-            }
-            return status;
-        }
-        let (wifi_control, ble_control) = match &self.devices {
-            Devices::Simulated(sim) => (sim.wifi_control, sim.ble_control),
-            Devices::Replayed(replay) => {
-                if matches!(request.command, Command::Wifi | Command::Ble) {
-                    replay
-                        .sources
-                        .unrecorded("the radio control status the terminal reads");
-                }
+                (ant, wifi, power) = (
+                    NoAnt,
+                    WifiFixture::default(),
+                    UnrecordedConsolePower(frozen),
+                );
+                ble = BleFixture {
+                    snapshot: self.trace.ble.snapshot(),
+                    ..BleFixture::default()
+                };
                 (
-                    device_api::connectivity::ControlStatus::new(),
-                    device_api::connectivity::ControlStatus::new(),
+                    firmware_console::commands::Capabilities {
+                        ant: &mut ant,
+                        ble: &mut ble,
+                        wifi: &mut wifi,
+                        power: &mut power,
+                        input: &NoInputObservation,
+                    },
+                    &mut sources.bulk as &mut dyn ReadWrite,
+                    self.trace.startup.at(now).unwrap_or(Startup::Unsupported),
+                    None,
                 )
             }
         };
-        match request.command {
-            // The simulator has no binary USB session; tests install volume
-            // contents through `Sim` instead.
-            Command::Volume(firmware_console::commands::volumes::Command::Transfer) => {
-                return "UNSUPPORTED";
-            }
-            Command::Volume(_) if self.sdk.holds_storage() => return "BUSY",
-            Command::Volume(command) => {
-                return firmware_console::commands::volumes::execute(
-                    command,
-                    &mut recorded_bulk(&mut self.bulk, &mut self.devices, &self.trace.recorder),
-                    out,
-                );
-            }
-            Command::Info => {
-                let _ = write!(
-                    out,
-                    "board=virtual build={} protocol=1 boot={} physical_evidence=unsupported",
-                    crate::compare::build_hash(),
-                    self.boot
-                );
-            }
-            Command::Help => {
-                out.push_str("CMD id INFO|STATUS|SETTINGS|BRIGHTNESS n|TIMEZONE minutes|IDLE seconds level|SAVE|ACTIVITY|DISPLAY rgb565hex|POSITION|HARNESS CAPS|RESTART; physical-only operations UNSUPPORTED; fixtures use separate FIXTURE lines");
-            }
-            Command::Status => {
-                firmware_console::commands::shell::status(&self.shell, self.now, out)
-            }
-            Command::Storage => {
-                let _ = write!(out, "{:?}", self.shell.data_storage().data().geometry());
-            }
-            Command::Wifi => {
-                let _ = write!(
-                    out,
-                    "state=0 online=false saved={} operation={} sequence={} error={} radio=unsupported fixture=true",
-                    self.shell.settings.wifi.is_some(),
-                    wifi_control.operation.name(),
-                    wifi_control.sequence,
-                    wifi_control.error_name()
-                );
-            }
-            Command::WifiConfigure(_) | Command::WifiForget => {
-                let configuration = match request.command {
-                    Command::WifiConfigure(config) => Some(config),
-                    _ => None,
-                };
-                if let Err(refused) = self.shell.save_wifi(wifi_control.operation, configuration) {
-                    return refused;
-                }
-                if let Devices::Simulated(sim) = &mut self.devices {
-                    sim.wifi_control.sequence = sim.wifi_control.sequence.wrapping_add(1);
-                    sim.wifi_control.operation = device_api::connectivity::Operation::Completed;
-                }
-                return "ACCEPTED";
-            }
-            Command::BleForget | Command::BleSelect(_, _) => {
-                let choice = match request.command {
-                    Command::BleSelect(peer, profile) => Some((peer, profile)),
-                    _ => None,
-                };
-                if let Err(refused) = self.sdk.select_ble(
-                    &mut self.shell,
-                    ble_control.operation,
-                    self.trace.ble.snapshot().connections,
-                    choice,
-                ) {
-                    return refused;
-                }
-                if let Devices::Simulated(sim) = &mut self.devices {
-                    sim.ble.packets.clear();
-                    sim.ble.snapshot.link = device_api::ble_transport::Link::Off;
-                    sim.ble_control.sequence = sim.ble_control.sequence.wrapping_add(1);
-                    sim.ble_control.operation = device_api::connectivity::Operation::Completed;
-                }
-                return "ACCEPTED";
-            }
-            Command::Ble => {
-                let s = match &self.devices {
-                    Devices::Simulated(sim) => sim.ble.snapshot(),
-                    Devices::Replayed(_) => self.trace.ble.snapshot(),
-                };
-                let _ = write!(
-                    out,
-                    "link={} connections={} disconnections={} notifications={} dropped={} scan_reports={} saved={} profile={} operation={} sequence={} error={} radio=unsupported fixture=true",
-                    s.link.name(),
-                    s.connections,
-                    s.disconnections,
-                    s.notifications,
-                    s.dropped,
-                    s.scan_reports,
-                    self.shell.settings.ble.is_some(),
-                    self.shell.settings.ble_profile,
-                    ble_control.operation.name(),
-                    ble_control.sequence,
-                    ble_control.error_name()
-                );
-            }
-            Command::Domain { bytes, length } => {
-                return self.sdk.command(
-                    core::str::from_utf8(&bytes[..length]).unwrap_or(""),
-                    &mut self.shell.data_storage(),
-                    &mut recorded_bulk(&mut self.bulk, &mut self.devices, &self.trace.recorder),
-                    self.now,
-                    out,
-                );
-            }
-            Command::Restart => return "ACCEPTED",
-            // The simulator never panics into a record.
-            Command::Crash => {
-                let _ = write!(out, "none");
-            }
-            Command::CrashClear => {}
-            _ => return "UNSUPPORTED",
-        }
-        "OK"
+        firmware_console::commands::execute(
+            command,
+            now,
+            devices,
+            &mut self.shell,
+            &mut self.sdk,
+            &mut Twin {
+                media,
+                trace: &mut self.trace,
+                trace_card,
+                startup,
+                network_time,
+            },
+            out,
+        )
     }
     /// A terminal fixture line: the world or a simulated device changes. A
     /// replay has neither; its trace already holds what they did.

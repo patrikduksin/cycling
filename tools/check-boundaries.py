@@ -21,7 +21,7 @@ OWNERS = {
     "terrain": ("packages/terrain", set()),
     "firmware-services": ("packages/services", {"device-api"}),
     "firmware-shell": ("packages/shell", {"device-api", "firmware-services"}),
-    "firmware-console": ("packages/console", {"device-api", "firmware-services", "firmware-shell"}),
+    "firmware-console": ("packages/console", {"device-api", "firmware-services", "firmware-shell", "vana"}),
     "vana": ("apps/vana", {"device-api", "firmware-services", "firmware-shell", "terrain"}),
     "c606-firmware": ("devices/c606", {"device-api", "firmware-services", "firmware-shell", "firmware-console", "vana", "terrain"}),
     "shell-simulator": ("tools/simulator", {"device-api", "firmware-services", "firmware-shell", "firmware-console", "vana", "terrain"}),

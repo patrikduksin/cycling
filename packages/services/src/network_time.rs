@@ -160,6 +160,10 @@ pub fn update(timestamp: Timestamp, now_ms: u64) {
 }
 
 pub fn snapshot(now_ms: u64, timezone_minutes: i16, online: bool) -> Snapshot {
+    clock().snapshot(now_ms, timezone_minutes, online)
+}
+
+pub fn clock() -> Clock {
     let (utc_seconds, utc_millis, mono_seconds, mono_millis, available) = loop {
         let before = SEQUENCE.load(Ordering::Acquire);
         if before & 1 != 0 {
@@ -178,13 +182,32 @@ pub fn snapshot(now_ms: u64, timezone_minutes: i16, online: bool) -> Snapshot {
         }
     };
     if !available {
-        return Snapshot::unsynced(SYNCING.load(Ordering::Relaxed));
+        return Clock::Unsynced {
+            syncing: SYNCING.load(Ordering::Relaxed),
+        };
     }
-    Anchor {
+    Clock::Anchored(Anchor {
         unix_ms: u64::from(utc_seconds) * 1_000 + u64::from(utc_millis),
         uptime_ms: u64::from(mono_seconds) * 1_000 + u64::from(mono_millis),
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Clock {
+    /// Never synchronized, or invalidated by a sleep.
+    Unsynced {
+        syncing: bool,
+    },
+    Anchored(Anchor),
+}
+
+impl Clock {
+    pub fn snapshot(self, now_ms: u64, timezone_minutes: i16, online: bool) -> Snapshot {
+        match self {
+            Self::Unsynced { syncing } => Snapshot::unsynced(syncing),
+            Self::Anchored(anchor) => anchor.snapshot(now_ms, timezone_minutes, online),
+        }
     }
-    .snapshot(now_ms, timezone_minutes, online)
 }
 
 impl Snapshot {

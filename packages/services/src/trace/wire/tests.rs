@@ -94,6 +94,8 @@ storage::Geometry: capacity program_size erase_size
 ble_transport::Selection: name address service characteristic
 ble_transport::Discovery: name address random rssi
 connectivity::ControlStatus: sequence operation error
+connectivity::NetworkDiscovery: ssid rssi
+connectivity::WifiStats: associations probe_successes probe_failures fault
 power::WakeSources: button usb timer
 power::Capabilities: shutdown sleep sleep_timer_ms wake shutdown_wake sleep_wake
 sound::Pattern: id frequency_hz nominal_ms guard_ms
@@ -280,6 +282,29 @@ fn ble_requests_control_and_discoveries_round_trip() {
 }
 
 #[test]
+fn wifi_observations_round_trip() {
+    same(connectivity::WifiStats {
+        associations: 3,
+        probe_successes: 41,
+        probe_failures: 2,
+        fault: 7,
+    });
+    let found = connectivity::NetworkDiscovery {
+        ssid: text("home"),
+        rssi: -64,
+    };
+    let back = round_trip(&[None, Some(found), None, None, None, None, None, None]);
+    assert_eq!(back[1].map(|d| (d.ssid, d.rssi)), Some((found.ssid, -64)));
+    for state in [
+        connectivity::WifiState::Unconfigured,
+        connectivity::WifiState::Verified,
+        connectivity::WifiState::Failed,
+    ] {
+        same(state);
+    }
+}
+
+#[test]
 fn power_capabilities_and_battery_round_trip() {
     same(power::Capabilities::UNSUPPORTED);
     same(power::Capabilities {
@@ -356,6 +381,7 @@ impl Encoded for device_api::ant::Capabilities where
 // to compile (E0119).
 impl Encoded for device_api::server::AccessPointConfig {}
 impl Encoded for Option<device_api::server::Request> {}
+impl Encoded for device_api::connectivity::WifiOperation {}
 
 trait EachEncoded {}
 impl EachEncoded for () {}

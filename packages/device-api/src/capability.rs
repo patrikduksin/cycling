@@ -19,7 +19,8 @@
 //! assert_eq!(CAPABILITY_LAMP.methods.len(), 2);
 //! ```
 
-use crate::{ant, ble_transport, bulk, console, display, input, position_control, positioning};
+use crate::{ant, ble_transport, bulk, connectivity, console, display, input};
+use crate::{position_control, positioning};
 use crate::{power, sensors, server, sound, storage};
 
 pub use ::capability::capability;
@@ -835,6 +836,7 @@ registry! {
     server::CAPABILITY_SERVER ServerRecorded,
     sound::CAPABILITY_SOUND SoundRecorded,
     storage::CAPABILITY_OWNED_FLASH OwnedFlashRecorded,
+    connectivity::CAPABILITY_WIFI WifiRecorded,
 }
 
 #[cfg(test)]
@@ -987,7 +989,8 @@ mod tests {
 14 AccessPoint: start request(refreshes, redact), stop request(refreshes), state observe, reach observe, entropy take(redact)
 15 Server: listen request(refreshes), request observe(redact), read take(refreshes) [out], room observe, write sink(refreshes) [input], finish request(refreshes)
 16 Sound: patterns observe, snapshot observe, play request(refreshes), stop request(refreshes)
-17 OwnedFlash: availability observe(keys = Region::ALL), geometry observe(keys = Region::ALL), read media(read) [out], program media(write) [input], erase media(erase)"
+17 OwnedFlash: availability observe(keys = Region::ALL), geometry observe(keys = Region::ALL), read media(read) [out], program media(write) [input], erase media(erase)
+18 Wifi: request request(refreshes, redact), control observe, discoveries observe, state observe, online observe, stats observe"
         );
     }
 }

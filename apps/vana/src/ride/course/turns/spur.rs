@@ -8,23 +8,6 @@
 //! out, or what it said before spurs were cut: never a turn neither says,
 //! and never without one both say.
 //!
-//! `Spurs` reads the course as it is, ahead of the scan, the scan's own
-//! chord a step at a time. Where that chord swings by `REVERSAL_DEG` over
-//! `REVERSAL_STEPS`, or `WIDE_REVERSAL_DEG` over `WIDE_REVERSAL_STEPS`, the
-//! course has turned back on itself. From there its way back is walked a
-//! metre at a time while it stays within `CLOSE_M` of its way out, read
-//! without the spurs already found, as a planner's way back retraces its
-//! way out. Where it came beside the point of the way out furthest back is
-//! the spur's base. The spur is cut when it goes `SPUR_MIN_M` to `SPUR_M`
-//! from its base, the way on is `PARTED_M` off the way out `RAY_M` on, and
-//! the way in, the spur and the way on each leave the base `APART_DEG` or
-//! more from the others at each of `RAYS_M` along. A way back that drifts
-//! off, a fork too narrow to tell from the road, and a way on back along the
-//! way in, as at the far end of an out-and-back, each fail this. Where the
-//! course turns back again during a walk, it is walked in turn once that
-//! walk ends, so spurs one after another, and a spur off a spur's way out,
-//! are each found.
-//!
 //! A walk whose spur is not sure walks on while the way back stays within
 //! `LOOSE_M` of the way out, and no further than `SPUR_M`, to find the whole
 //! stretch that may or may not be a spur.
@@ -52,6 +35,8 @@ const REVERSAL_STEPS: usize = 3;
 const WIDE_REVERSAL_DEG: f32 = 160.0;
 const WIDE_REVERSAL_STEPS: usize = 8;
 const CLOSE_M: f32 = 1.0;
+const DRIFT_PER_M: f32 = 0.15;
+const ALONG_PER_M: f32 = 0.866;
 const LOOSE_M: f32 = 4.0;
 pub(super) const ALONE_M: f32 = 250.0;
 const END_SLACK_M: f32 = LOOSE_M;
@@ -194,15 +179,17 @@ impl Walk {
             }
             let (off, along_m) = way_out.nearest(back.here, at);
             let walked_m = tip_m + back_m - furthest_back.rejoin_m;
-            let further_back = further_back(furthest_back.base_m, walked_m, WAY_M);
-            if off > CLOSE_M {
+            let came_back_m = furthest_back.base_m - along_m;
+            let alongside = further_back(furthest_back.base_m, walked_m, WAY_M).contains(&along_m)
+                && came_back_m >= ALONG_PER_M * walked_m;
+            let drifting =
+                alongside && came_back_m <= walked_m + CLOSE_M && off <= drift_m(tip_m - along_m);
+            if off > CLOSE_M && !drifting {
                 if trail_m > 0.0 && along_m - trail_m < WALK_M {
                     return far_end;
                 }
                 left_m = Some(back_m);
-            } else if further_back.contains(&along_m)
-                && along_m < furthest_back.base_m - FURTHER_BACK_M
-            {
+            } else if alongside && came_back_m > FURTHER_BACK_M {
                 furthest_back = Stretch {
                     base_m: along_m,
                     rejoin: back,
@@ -704,6 +691,10 @@ impl WayOut<'_> {
 /// has walked, give or take `slack_m`.
 fn further_back(from_m: f32, walked_m: f32, slack_m: f32) -> core::ops::Range<f32> {
     from_m - walked_m - slack_m..from_m
+}
+
+fn drift_m(from_tip_m: f32) -> f32 {
+    (DRIFT_PER_M * from_tip_m).min(LOOSE_M)
 }
 
 fn bearing(a: (f32, f32), b: (f32, f32)) -> Option<f32> {

@@ -1355,3 +1355,40 @@ fn a_roundabout_drawn_coarsely_never_names_a_wrong_way() {
         assert!(wrong.is_empty(), "{:#?}", &wrong[..wrong.len().min(8)]);
     }
 }
+
+#[test]
+fn jitter_where_a_course_starts_is_never_said_as_a_u_turn() {
+    let mut line = vec![
+        (2.735, 3.986),
+        (2.861, 1.418667),
+        (2.770, 5.080334),
+        (-2.938, 2.094),
+        (4.398, 6.307),
+    ];
+    line.extend((2..=200).map(|k| (2.0 * k as f32, 5.0)));
+    let (_, cut) = crate::ride::course::stored::tests::found_along(&line);
+    assert_eq!(cut, 0.0);
+    let (_, turns, _) = crate::ride::course::stored::tests::found(&line);
+    let heard = ride_with(&turns, (0..150).map(|k| k as f32 * 3.0));
+    let u_turn = |said: &Said| matches!(said, Said::Soon(Kind::UTurn) | Said::Now(Kind::UTurn));
+    assert!(!heard.iter().any(|(_, said)| u_turn(said)), "{heard:?}");
+}
+
+#[test]
+fn a_spur_at_a_jittery_course_s_start_leaves_the_straight_after_it_silent() {
+    let jitter = [
+        (-0.7f32, -3.1),
+        (6.2, -4.2),
+        (1.2, 3.7),
+        (5.1, -0.1),
+        (12.8, 1.5),
+        (11.6, 1.4),
+        (16.1, -1.6),
+    ];
+    let mut line = path(&[jitter[0], (-46.8, 70.7), jitter[0]], 2.0);
+    line.extend_from_slice(&jitter[1..]);
+    line.extend((0..=100).map(|i| (18.9 + 2.0 * i as f32, 0.0)));
+    let (_, turns, _) = crate::ride::course::stored::tests::found(&line);
+    let heard = ride_with(&turns, (0..150).map(|k| k as f32 * 3.0));
+    assert!(heard.is_empty(), "{heard:?}");
+}

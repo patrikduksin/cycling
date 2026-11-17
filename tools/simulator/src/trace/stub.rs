@@ -260,7 +260,7 @@ pub fn stub(
     );
     let _ = writeln!(
         body,
-        "    let mut sim = Sim::replaying(&capture, shell_simulator::replay::Mode::Stimulus, None);"
+        "    let mut sim = Sim::replaying(&capture, shell_simulator::replay::Mode::Stimulus, None).unwrap();"
     );
     let _ = writeln!(
         body,

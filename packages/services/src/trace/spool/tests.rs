@@ -65,6 +65,7 @@ impl ReadWrite for Stalling {
 
 const HEADER: Header<'static> = Header {
     build: [0; 20],
+    device: "c606",
     boot: 7,
     profile: 0,
     config: &[1; 300],

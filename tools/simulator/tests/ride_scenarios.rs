@@ -10552,3 +10552,39 @@ mod course_map {
         }
     }
 }
+
+#[test]
+fn bare_runs_on_buttons_alone() {
+    use device_api::input::InputSource;
+    use device_api::observation::Availability;
+    use shell_simulator::models::BARE;
+    use shell_simulator::replay::first_difference;
+
+    let mut sim = Sim::on(BARE).boot();
+    let frame = sim.screen();
+    assert_eq!((frame.width, frame.height), (240, 320));
+    let controls = sim.device.input.controls();
+    assert_eq!(controls.touch, Availability::Unsupported);
+    assert_eq!(controls.buttons, BARE.buttons);
+    sim.checkpoint("home on bare");
+
+    let mut changed = 0;
+    for &button in BARE.buttons {
+        let before = sim.screen().text();
+        sim.press(button);
+        sim.advance(seconds(1));
+        changed += usize::from(sim.screen().text() != before);
+        sim.press(Button::TopLeft);
+        sim.advance(seconds(1));
+    }
+    assert!(changed > 0, "no button changed the screen");
+
+    let capture = sim.capture();
+    let (header, _) = firmware_services::trace::decode(&capture.trace).unwrap();
+    assert_eq!(header.device, "bare");
+    let replayed = Sim::replay(&capture);
+    assert_eq!(replayed.device.model, BARE);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{:?}", report.counts);
+    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+}

@@ -4,6 +4,7 @@ use crate::compare::Tap;
 use crate::devices::Battery;
 use crate::devices::DisplayDevice;
 use crate::devices::InputDevice;
+use crate::devices::Model;
 use crate::devices::PowerDevice;
 use crate::devices::PowerSwitch;
 use crate::devices::Speaker;
@@ -15,8 +16,6 @@ use device_api::ant::Ant;
 use device_api::ant::AntOperation;
 use device_api::ble_transport::Ble;
 use device_api::bulk::ReadWrite;
-use device_api::display::Display;
-use device_api::input::Button;
 use device_api::input::InputObservation;
 use device_api::input::InputSnapshot;
 use device_api::observation::Availability;
@@ -353,6 +352,7 @@ struct Window {
 /// working memory at power-on, FILES and TERRAIN as the first pass found
 /// them, and the ride journals once VANA's boot scans ended.
 struct Start {
+    device: &'static str,
     boot: u32,
     profile: u8,
     settings: firmware_shell::preferences::Settings,
@@ -429,16 +429,13 @@ impl Start {
         };
         let (mut scratch, mut out) = (vec![0u8; 16 * 1024], vec![0u8; 16 * 1024]);
         let commit = option_env!("CYCLING_BUILD_COMMIT").unwrap_or("");
-        let len = origin::header(
+        let stamp = origin::Stamp {
             commit,
-            self.boot,
-            self.profile,
-            &config,
-            &media,
-            &mut scratch,
-            &mut out,
-        )
-        .expect("the header fits a block");
+            device: self.device,
+            boot: self.boot,
+        };
+        let len = origin::header(stamp, self.profile, &config, &media, &mut scratch, &mut out)
+            .expect("the header fits a block");
         out.truncate(len);
         out
     }
@@ -757,8 +754,11 @@ enum Devices {
     Replayed(Box<Replay>),
 }
 
-/// The simulated device, composed like C606 firmware, and what it observes.
+/// A sized session has no manifest a replay could rebuild its geometry from.
+pub const VIRTUAL: &str = "virtual";
+
 pub struct Session {
+    pub model: Model,
     pub shell: VirtualShell,
     /// Device uptime; it restarts from zero with the device.
     pub now: u64,
@@ -793,30 +793,34 @@ impl Session {
                 "geometry must be 16..320",
             ));
         }
-        Self::with_media(
-            FileFlash::open(root)?,
-            crate::bulk::SimBulk::default(),
+        let model = Model {
+            name: VIRTUAL,
             width,
             height,
+            ..crate::models::C606
+        };
+        Self::with_media(
+            model,
+            FileFlash::open(root)?,
+            crate::bulk::SimBulk::default(),
             Memory::ALL,
             None,
         )
     }
-    /// A C606-sized device on memory media whose companion and ANT radio
-    /// start shortly after boot.
-    pub fn device() -> io::Result<Self> {
-        Self::simulated(None)
+    /// A `model` on memory media whose companion and ANT radio start
+    /// shortly after boot.
+    pub fn device(model: Model) -> io::Result<Self> {
+        Self::simulated(model, None)
     }
     /// Like `device`, folding into `tap` everything comparison mode hashes.
-    pub fn comparing(tap: Tap) -> io::Result<Self> {
-        Self::simulated(Some(tap))
+    pub fn comparing(model: Model, tap: Tap) -> io::Result<Self> {
+        Self::simulated(model, Some(tap))
     }
-    fn simulated(tap: Option<Tap>) -> io::Result<Self> {
+    fn simulated(model: Model, tap: Option<Tap>) -> io::Result<Self> {
         let mut session = Self::with_media(
+            model,
             FileFlash::memory(),
             crate::bulk::SimBulk::default(),
-            240,
-            320,
             Memory::ALL,
             tap,
         )?;
@@ -842,13 +846,13 @@ impl Session {
         matches!(self.devices, Devices::Replayed(_))
     }
     fn with_media(
+        model: Model,
         media: FileFlash,
         bulk: crate::bulk::SimBulk,
-        width: usize,
-        height: usize,
         memory: Memory,
         tap: Option<Tap>,
     ) -> io::Result<Self> {
+        let (width, height) = (model.width, model.height);
         crate::logs::install();
         if tap.is_some() {
             crate::logs::enable_info();
@@ -858,10 +862,7 @@ impl Session {
         let bulk = bulk.tapped(tap.clone());
         let boot = media.begin_boot()?;
         let display = DisplayDevice::new(width, height);
-        let input = InputDevice::new(
-            &[Button::TopLeft, Button::BottomLeft, Button::BottomRight],
-            Availability::Ready,
-        );
+        let input = model.input();
         let power = PowerDevice::new(Availability::Ready);
         let mut shell = firmware_shell::shell::Shell::new(
             display.clone(),
@@ -930,6 +931,7 @@ impl Session {
             sdk.attach_track(Box::leak(track));
         }
         let trace = Trace::new(Start {
+            device: model.name,
             boot,
             profile: shell.settings.ble_profile,
             settings: shell.settings,
@@ -942,6 +944,7 @@ impl Session {
             trace.recorder.borrow_mut().tap(Box::new(tap.clone()));
         }
         Ok(Self {
+            model,
             shell,
             now: 0,
             boot,
@@ -964,18 +967,28 @@ impl Session {
         })
     }
 
-    /// A C606-sized device on the captured media, with the capture's trace
-    /// standing in for the world. Drive it with `replay_step`.
+    /// Drive it with `replay_step`.
     pub fn replaying(capture: &Capture, mode: Mode) -> io::Result<Self> {
         let origin = &capture.origin;
         let flash = origin.flash.copy_before_boot(origin.boot).ok_or_else(|| {
             io::Error::other("the capture's media is file-backed and cannot be replayed")
         })?;
-        let config = firmware_services::trace::decode(&capture.trace)
-            .ok()
-            .and_then(|(header, _)| Config::decode(header.config));
+        let (header, _) = firmware_services::trace::decode(&capture.trace)
+            .map_err(|error| io::Error::other(format!("trace: {error}")))?;
+        let model = *Model::named(header.device).ok_or_else(|| {
+            let known: Vec<_> = crate::models::all()
+                .iter()
+                .map(|model| model.name)
+                .collect();
+            io::Error::other(format!(
+                "trace: recorded on {:?}, which the simulator has no model of (it has {})",
+                header.device,
+                known.join(", ")
+            ))
+        })?;
+        let config = Config::decode(header.config);
         let memory = config.map_or(Memory::ALL, |config| config.memory);
-        let mut session = Self::with_media(flash, origin.bulk.scripted(), 240, 320, memory, None)?;
+        let mut session = Self::with_media(model, flash, origin.bulk.scripted(), memory, None)?;
         if config.is_some_and(|config| config.redacted) {
             session.redact_secrets();
         }
@@ -2065,13 +2078,11 @@ impl Session {
         if let Some(tap) = &self.tap {
             tap.end_session();
         }
-        let g = self.display.geometry();
         self.bulk.begin_boot();
         let mut next = Self::with_media(
+            self.model,
             self.media.untapped(),
             self.bulk.untapped(),
-            g.width,
-            g.height,
             Memory::ALL,
             self.tap.clone(),
         )?;

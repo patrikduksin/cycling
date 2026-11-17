@@ -1,8 +1,16 @@
 # Shell simulator
 
 The `shell-simulator` package runs the shared shell and the VANA application
-on a host, composed like C606 firmware, inside a simulated world. It owns its fake
+on a host, composed like firmware, inside a simulated world. It owns its fake
 devices because they serve simulation and test control rather than physical hardware.
+
+Each device it composes is a `Model` in `src/models.rs`, which `cycling devices`
+generates from every `devices/*/device.toml` and from the test-only models in
+`models/*.toml`. `Sim::new()` is a C606; `Sim::on(models::BARE)` is `bare`,
+240x320 with three buttons and no touch panel, on which a tap panics. A trace
+header names the model that recorded it, and a replay composes that model; a
+`Session::new(root, width, height)` session records `virtual`, which no
+replay composes.
 
 Start with `src/sim.rs`, the scenario driver: press buttons, change the world, let
 time pass and read the screen. `session.rs` composes the device in the firmware
@@ -26,8 +34,9 @@ loop's order and serves the terminal backend. The world and its observers:
 Scenarios live in `tests/ride_scenarios.rs`. `cycling sim` runs them with
 `SIM_ARTIFACTS` set: `recording.rs` writes checkpoint
 screenshots (`sim.checkpoint(..)`), a chart of the world, recorded rides as GPX
-and JSON, a timeline and `result.json` for each scenario under `.local/sim/latest`,
-including failed ones. `SIM_VIDEO=1` adds a captioned video; encoding it is most
+and JSON, a timeline and `result.json` for each scenario under
+`.local/sim/latest/<scenario>@<model>/`, including failed ones. `result.json`
+names the scenario and its model, and the reports key and compare runs by both. `SIM_VIDEO=1` adds a captioned video; encoding it is most
 of a run's time, so only `cycling sim-pr` and `cycling sim-live` set it. Every
 scenario also stores the frames its video would show in `frames.bin`
 (`recording/tape.rs`), so
@@ -81,7 +90,8 @@ Every value is hashed as explicit bytes in the trace's own codes, never as
 Rust `Debug` text, so a rename changes no hash. A passing scenario whose
 hashes cannot be taken or written fails. `cycling sim-compare` runs both sides
 with `SIM_COMPARE=1` and `CYCLING_BUILD_COMMIT` set to forty zeros, so the
-header's commit and the `INFO` reply match. A side has comparison mode when its run wrote the marker. The report
+header's commit and the `INFO` reply match. A side has comparison mode when its run wrote the marker. The header's
+model id is not hashed; a run is keyed by its scenario and model instead. The report
 lists every scenario whose hashes differ from the base, and every scenario
 that wrote no hashes on a side that has comparison mode. It reports and never
 fails: a PR that changes behavior on purpose names the hashes it changes.

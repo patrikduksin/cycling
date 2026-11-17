@@ -364,6 +364,7 @@ mod tests {
         });
         recording
             .write(Outcome {
+                device: "c606",
                 notes: &notes,
                 end_ms: 6_000,
                 rides: Vec::new(),

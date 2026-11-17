@@ -2,6 +2,7 @@
 //! let time pass and read what the screen shows.
 use crate::ant::AntSensor;
 use crate::compare::Tap;
+use crate::devices::Model;
 use crate::recording::{Outcome, Recording};
 use crate::route::Route;
 use crate::screen::{Frame, Look, TextRun};
@@ -195,12 +196,20 @@ pub struct Sim {
 impl Sim {
     /// A powered-off C606 with VANA, an ANT radio and empty memory media.
     pub fn new() -> Self {
-        Self::with(Recording::from_env, requested_tap())
+        Self::on(crate::models::C606)
+    }
+
+    pub fn on(model: Model) -> Self {
+        Self::with(model, Recording::from_env, requested_tap())
     }
 
     /// Like `new`, in comparison mode whatever the environment says.
     pub fn comparing() -> Self {
-        Self::with(Recording::from_env, Some(Tap::default()))
+        Self::with(
+            crate::models::C606,
+            Recording::from_env,
+            Some(Tap::default()),
+        )
     }
 
     /// Like `new`, recorded under `name` rather than the test thread's name.
@@ -211,20 +220,24 @@ impl Sim {
 
     pub fn named(name: &str) -> Self {
         Self::with(
-            |width, height| Recording::named(name, width, height),
+            crate::models::C606,
+            |model| Recording::named(name, model),
             requested_tap(),
         )
     }
 
-    fn with(recording: impl FnOnce(usize, usize) -> Option<Recording>, tap: Option<Tap>) -> Self {
+    fn with(
+        model: Model,
+        recording: impl FnOnce(&Model) -> Option<Recording>,
+        tap: Option<Tap>,
+    ) -> Self {
         let device = match tap {
-            Some(tap) => Session::comparing(tap),
-            None => Session::device(),
+            Some(tap) => Session::comparing(model, tap),
+            None => Session::device(model),
         };
         let device = device.expect("memory media always opens");
-        let geometry = device.display.0.borrow().geometry;
         Self {
-            recording: recording(geometry.width, geometry.height),
+            recording: recording(&model),
             device,
             notes: Vec::new(),
             power_hold: 0,
@@ -430,13 +443,10 @@ impl Sim {
             (i32::from(a) + (i32::from(b) - i32::from(a)) * i / steps) as u16
         };
         for i in 0..=steps {
-            let point = Point {
+            self.finger(Point {
                 x: lerp(from.0, to.0, i),
                 y: lerp(from.1, to.1, i),
-            };
-            self.device
-                .input
-                .push(self.device.clock_ms(), Input::Touch(point));
+            });
             self.advance(10);
         }
         self.advance(hold_ms);
@@ -459,15 +469,22 @@ impl Sim {
     /// Report a contact through `points`, then the release.
     fn touch(&mut self, points: &[(u16, u16)]) {
         for &(x, y) in points {
-            self.device
-                .input
-                .push(self.device.clock_ms(), Input::Touch(Point { x, y }));
+            self.finger(Point { x, y });
             self.advance(TOUCH_STEP_MS);
         }
         self.device
             .input
             .push(self.device.clock_ms(), Input::Release);
         self.advance(PRESS_GAP_MS);
+    }
+
+    #[track_caller]
+    fn finger(&mut self, point: Point) {
+        let model = self.device.model;
+        assert!(model.touch, "{} has no touch panel", model.name);
+        self.device
+            .input
+            .push(self.device.clock_ms(), Input::Touch(point));
     }
 
     /// Buttons pressed in the same companion report window.
@@ -663,7 +680,7 @@ impl Sim {
         mode: crate::replay::Mode,
         setup: impl FnOnce(&mut crate::replay::Sources),
     ) -> Self {
-        let mut sim = Self::replaying(capture, mode, None);
+        let mut sim = Self::replaying(capture, mode, None).expect("a replayable capture");
         sim.hash_frames();
         setup(sim.device.replay_sources().expect("a replay"));
         sim.replay_until(u64::MAX);
@@ -676,13 +693,13 @@ impl Sim {
         capture: &crate::replay::Capture,
         mode: crate::replay::Mode,
         recording: Option<Recording>,
-    ) -> Self {
-        Self {
-            device: Session::replaying(capture, mode).expect("a replayable capture"),
+    ) -> std::io::Result<Self> {
+        Ok(Self {
+            device: Session::replaying(capture, mode)?,
             notes: Vec::new(),
             recording,
             power_hold: 0,
-        }
+        })
     }
 
     pub fn attach_recording(&mut self, recording: Recording) {
@@ -1276,6 +1293,7 @@ impl Drop for Sim {
         let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let rides = self.rides().iter().map(crate::rides::summary).collect();
             recording.write(Outcome {
+                device: self.device.model.name,
                 notes: &self.notes,
                 end_ms: self.now(),
                 rides,

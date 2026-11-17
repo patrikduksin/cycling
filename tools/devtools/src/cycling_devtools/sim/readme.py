@@ -82,7 +82,7 @@ def main():
     )
     OUT.mkdir(parents=True, exist_ok=True)
     for name, scenario, checkpoint in SHOTS:
-        (OUT / name).write_bytes(panel((ARTIFACTS / scenario / checkpoint).read_bytes()))
+        (OUT / name).write_bytes(panel((ARTIFACTS / f'{scenario}@c606' / checkpoint).read_bytes()))
         print(f'docs/screenshots/{name}')
 
 

@@ -510,7 +510,7 @@ fn power_shows_dashes_while_the_meter_is_out() {
         "/tests/traces/power-dropout-after-descent.trace"
     )))
     .expect("the fixture loads");
-    let mut sim = Sim::replaying(&capture, shell_simulator::replay::Mode::Stimulus, None);
+    let mut sim = Sim::replaying(&capture, shell_simulator::replay::Mode::Stimulus, None).unwrap();
     assert!(
         sim.replay_until(202660),
         "the trace reaches 03:22.660 ride 03:00"

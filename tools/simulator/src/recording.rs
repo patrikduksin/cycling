@@ -7,6 +7,7 @@
 //! frames it is made from in `frames.bin`, so [`render_video`] can make it
 //! later without running the scenario again.
 use crate::artifacts::{Canvas, Series, Still, chart_png, chart_svg, gif, mp4};
+use crate::devices::Model;
 use crate::sim::{Note, NoteKind};
 use crate::world::World;
 use std::cell::RefCell;
@@ -44,22 +45,23 @@ thread_local! {
     static PANIC: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-/// A directory name no other recording in this process uses.
-fn claim(name: String) -> String {
+fn claim(name: &str, device: &str) -> (String, String) {
     static CLAIMED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let mut claimed = CLAIMED.lock().unwrap_or_else(|e| e.into_inner());
-    let unique = (1..)
+    let (name, dir) = (1..)
         .map(|n| {
-            if n == 1 {
-                name.clone()
+            let name = if n == 1 {
+                name.to_string()
             } else {
                 format!("{name}-{n}")
-            }
+            };
+            let dir = format!("{name}@{device}");
+            (name, dir)
         })
-        .find(|candidate| !claimed.contains(candidate))
+        .find(|(_, dir)| !claimed.contains(dir))
         .expect("an unused name exists");
-    claimed.push(unique.clone());
-    unique
+    claimed.push(dir.clone());
+    (name, dir)
 }
 
 /// The file that marks a directory as the simulator's own output.
@@ -180,6 +182,7 @@ pub struct Recording {
 
 /// What a finished scenario hands to the report.
 pub struct Outcome<'a> {
+    pub device: &'static str,
     pub notes: &'a [Note],
     pub end_ms: u64,
     pub rides: Vec<RideSummary>,
@@ -197,7 +200,7 @@ pub struct RideSummary {
 
 impl Recording {
     /// A recording for the current test thread, when artifacts are requested.
-    pub fn from_env(width: usize, height: usize) -> Option<Self> {
+    pub fn from_env(model: &Model) -> Option<Self> {
         let thread = std::thread::current();
         let name = thread
             .name()
@@ -205,15 +208,15 @@ impl Recording {
             .rsplit("::")
             .next()
             .unwrap_or("scenario");
-        Self::named(name, width, height)
+        Self::named(name, model)
     }
 
-    /// A recording called `name`, when artifacts are requested.
-    pub fn named(name: &str, width: usize, height: usize) -> Option<Self> {
+    pub fn named(name: &str, model: &Model) -> Option<Self> {
         let root = std::env::var_os("SIM_ARTIFACTS")?;
         let video = std::env::var_os("SIM_VIDEO").is_some_and(|v| v == "1");
-        let name = claim(name.to_string());
-        Some(Self::at(Path::new(&root).join(&name), &name, width, height).with_video(video))
+        let (name, dir) = claim(name, model.name);
+        let recording = Self::at(Path::new(&root).join(dir), &name, model.width, model.height);
+        Some(recording.with_video(video))
     }
 
     pub fn at(dir: PathBuf, name: &str, width: usize, height: usize) -> Self {
@@ -590,8 +593,9 @@ impl Recording {
         let mut out = String::new();
         let _ = write!(
             out,
-            "{{\n  \"name\": {},\n  \"status\": \"{}\",\n  \"failure\": {},\n  \"simulated_ms\": {},\n  \"frames\": {},\n  \"files\": [{}],\n  \"checkpoints\": [{}],\n  \"rides\": [{}]\n}}\n",
+            "{{\n  \"name\": {},\n  \"device\": {},\n  \"status\": \"{}\",\n  \"failure\": {},\n  \"simulated_ms\": {},\n  \"frames\": {},\n  \"files\": [{}],\n  \"checkpoints\": [{}],\n  \"rides\": [{}]\n}}\n",
             json(&self.name),
+            json(outcome.device),
             if failure.is_some() { "fail" } else { "pass" },
             failure.map_or("null".to_string(), json),
             outcome.end_ms,
@@ -728,6 +732,7 @@ mod tests {
     fn quiet_stretches_merge_into_fewer_shots() {
         let frames: Vec<u64> = (0..6_000).map(|i| i * 1_000).collect();
         let outcome = Outcome {
+            device: "c606",
             notes: &[note(0)],
             end_ms: 6_000_000,
             rides: Vec::new(),
@@ -764,6 +769,7 @@ mod tests {
 
     fn video_ms(recording: &Recording, notes: &[Note], end_ms: u64) -> u64 {
         let outcome = Outcome {
+            device: "c606",
             notes,
             end_ms,
             rides: Vec::new(),

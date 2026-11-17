@@ -120,6 +120,30 @@ impl Display for DisplayDevice {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Model {
+    pub name: &'static str,
+    pub width: usize,
+    pub height: usize,
+    pub touch: bool,
+    pub buttons: &'static [Button],
+}
+impl Model {
+    pub fn named(name: &str) -> Option<&'static Model> {
+        crate::models::all()
+            .iter()
+            .copied()
+            .find(|model| model.name == name)
+    }
+    pub fn input(&self) -> InputDevice {
+        let touch = if self.touch {
+            Availability::Ready
+        } else {
+            Availability::Unsupported
+        };
+        InputDevice::new(self.buttons, touch)
+    }
+}
 #[derive(Clone)]
 pub struct InputDevice {
     pub edges: Rc<RefCell<Edges>>,

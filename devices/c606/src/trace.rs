@@ -563,7 +563,12 @@ impl Start {
             _ => core::hint::black_box(option_env!("CYCLING_BUILD_COMMIT").unwrap_or("")),
         };
         let profile = self.settings.ble_profile;
-        let len = origin::header(commit, self.boot, profile, &config, &media, scratch, out)?;
+        let stamp = origin::Stamp {
+            commit,
+            device: device::fitted::NAME,
+            boot: self.boot,
+        };
+        let len = origin::header(stamp, profile, &config, &media, scratch, out)?;
         let out: &'static [u8] = out;
         Some(&out[..len])
     }

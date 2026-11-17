@@ -82,6 +82,48 @@ def test_checked_in_output_is_what_the_manifest_generates(c606):
         assert path.read_text() == text, f'{path} is stale: run cycling devices'
 
 
+def test_models_rs_holds_every_device_and_test_model():
+    assert devices.MODELS_RS.read_text() == devices.models_rs(devices.models([devices.parse(C606 / 'device.toml')]))
+    found = {model.name: model for model in devices.models([devices.parse(C606 / 'device.toml')])}
+    assert found['c606'] == devices.parse(C606 / 'device.toml').model
+    bare = found['bare']
+    assert (bare.width, bare.height, bare.touch) == (240, 320, False)
+    assert [b.role for b in bare.buttons] == ['back', 'move', 'act']
+
+
+def model_with(tmp_path, change, name='bare'):
+    path = tmp_path / f'{name}.toml'
+    path.write_text(change((devices.TEST_MODELS / 'bare.toml').read_text()))
+    return path
+
+
+@pytest.mark.parametrize(
+    ('change', 'name', 'rule'),
+    [
+        (lambda t: t, 'other', 'match its file name'),
+        (lambda t: t.replace('[panel]', '[build]\nchip = "esp32s3"\n\n[panel]'), 'bare', 'unknown keys'),
+        (lambda t: t.replace('  { id = 2, role = "act" },\n', ''), 'bare', 'at least 3 buttons'),
+        (lambda t: t.replace('width = 240', 'width = 170'), 'bare', '3/4 scale'),
+        (lambda t: t.replace('name = "bare"', 'name = "Bare"'), 'Bare', 'must match'),
+        (lambda t: t.replace('name = "bare"', 'name = "virtual"'), 'virtual', 'reserved'),
+    ],
+)
+def test_a_test_model_that_breaks_a_rule_is_refused_naming_it(tmp_path, change, name, rule):
+    with pytest.raises(devices.ManifestError, match=rule):
+        devices.parse_test_model(model_with(tmp_path, change, name))
+
+
+def test_the_test_model_cases_start_from_a_model_that_passes(tmp_path):
+    assert devices.parse_test_model(model_with(tmp_path, lambda t: t)).name == 'bare'
+
+
+def test_a_test_model_may_not_take_a_device_name(tmp_path, monkeypatch):
+    model_with(tmp_path, lambda t: t.replace('name = "bare"', 'name = "c606"'), 'c606')
+    monkeypatch.setattr(devices, 'TEST_MODELS', tmp_path)
+    with pytest.raises(devices.ManifestError, match=r'share a name: c606$'):
+        devices.models([devices.parse(C606 / 'device.toml')])
+
+
 def manifest_with(tmp_path, change):
     root = tmp_path / 'c606'
     root.mkdir()

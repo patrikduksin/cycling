@@ -223,6 +223,7 @@ impl File {
     fn new(room: Option<usize>) -> Self {
         let header = Header {
             build: [0; 20],
+            device: "c606",
             boot: 1,
             profile: 0,
             config: &[],

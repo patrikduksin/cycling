@@ -9,6 +9,7 @@ pub mod fuzz;
 pub mod gps;
 pub mod live;
 pub mod logs;
+pub mod models;
 pub mod phone;
 pub mod probe;
 pub mod recording;

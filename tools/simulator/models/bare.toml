@@ -1,0 +1,14 @@
+[device]
+name = "bare"
+
+[panel]
+width = 240
+height = 320
+
+[controls]
+touch = false
+buttons = [
+  { id = 0, role = "back" },
+  { id = 1, role = "move" },
+  { id = 2, role = "act" },
+]

@@ -41,6 +41,9 @@ LISTED = (
     re.compile(rf'<img\b[^>]*?alt="(\d+)"[^>]*?src="({ASSET})"'),
     re.compile(rf'<img\b[^>]*?src="({ASSET})"[^>]*?alt="(\d+)"'),
 )
+# A result that names no device, from a base before results named theirs or a
+# scenario that wrote none, counts as the C606's.
+UNNAMED_DEVICE = 'c606'
 TEST_LINE = re.compile(r'^test (?:\S+::)?(\w+) \.\.\. (ok|FAILED|ignored)', re.MULTILINE)
 
 
@@ -52,28 +55,38 @@ def load(run):
     for path in sorted(run.glob('*/result.json')):
         result = json.loads(path.read_text())
         result['dir'] = path.parent
-        results[path.parent.name] = result
+        result.setdefault('device', UNNAMED_DEVICE)
+        result['key'] = f'{result["name"]}@{result["device"]}'
+        results[result['key']] = result
     log = run / 'cargo.log'
     if log.exists():
         text = log.read_text(errors='replace')
         for name, verdict in TEST_LINE.findall(text):
-            result = results.get(name)
+            runs = [r for r in results.values() if r['name'] == name]
             if verdict == 'ignored':
                 continue
-            if result is None:
-                results[name] = missing(run, name, 'The scenario wrote no artifacts.')
-            elif verdict == 'FAILED' and result['status'] == 'pass':
-                result['status'] = 'fail'
-                result['failure'] = 'cargo reported this test as failed after its simulator was dropped.'
+            if not runs:
+                result = missing(run, name, 'The scenario wrote no artifacts.')
+                results[result['key']] = result
+            for result in runs:
+                if verdict == 'FAILED' and result['status'] == 'pass':
+                    result['status'] = 'fail'
+                    result['failure'] = 'cargo reported this test as failed after its simulator was dropped.'
         if 'test result:' not in text:
-            results['cargo_test'] = missing(run, 'cargo_test', 'cargo test did not finish; see cargo.log.')
-    ordered = sorted(results.values(), key=lambda r: (r['status'] == 'pass', r['name']))
+            result = missing(run, 'cargo_test', 'cargo test did not finish; see cargo.log.')
+            results[result['key']] = result
+    devices = {r['device'] for r in results.values()}
+    for r in results.values():
+        r['title'] = title(r['name']) + (f' on {r["device"]}' if len(devices) > 1 else '')
+    ordered = sorted(results.values(), key=lambda r: (r['status'] == 'pass', r['key']))
     return ordered
 
 
 def missing(run, name, failure):
     return {
         'name': name,
+        'device': UNNAMED_DEVICE,
+        'key': f'{name}@{UNNAMED_DEVICE}',
         'status': 'fail',
         'failure': failure,
         'simulated_ms': 0,
@@ -149,11 +162,11 @@ def summary(results, base, heading, commit):
     ]
     for r in results:
         mark = '✅' if r['status'] == 'pass' else '❌'
-        lines.append(f'| {mark} | {title(r["name"])} | {clock(r["simulated_ms"])} | {rides_text(r)} |')
+        lines.append(f'| {mark} | {r["title"]} | {clock(r["simulated_ms"])} | {rides_text(r)} |')
     attachments = []
     for r in results:
         mark = '✅' if r['status'] == 'pass' else '❌'
-        lines += ['', f'### {mark} {title(r["name"])}', '']
+        lines += ['', f'### {mark} {r["title"]}', '']
         if r['failure']:
             lines += [*fenced(r['failure']), '']
         video, checkpoints, chart = media(r)
@@ -209,7 +222,7 @@ def page(results, heading):
     for r in results:
         name = r['dir'].name
         status = 'pass' if r['status'] == 'pass' else 'fail'
-        parts.append(f'<section><h2 class="{status}">{html.escape(title(r["name"]))}</h2>')
+        parts.append(f'<section><h2 class="{status}">{html.escape(r["title"])}</h2>')
         parts.append(
             f'<p>{clock(r["simulated_ms"])} simulated · {r["frames"]} frames · rides: {html.escape(rides_text(r))}</p>'
         )
@@ -440,7 +453,7 @@ def main(argv=None):
     markdown, attachments = summary(results, ROOT, args.heading, commit())
     (args.run / 'summary.md').write_text(markdown)
     (args.run / 'index.html').write_text(page(results, args.heading))
-    failed = [r['name'] for r in results if r['status'] != 'pass']
+    failed = [r['key'] for r in results if r['status'] != 'pass']
     print(f'{len(results) - len(failed)}/{len(results)} passed; report {args.run / "index.html"}')
     if args.pr:
         post(args.pr, markdown, attachments)

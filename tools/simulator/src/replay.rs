@@ -1839,6 +1839,7 @@ mod tests {
     fn recorded_by(build: [u8; 20]) -> RefCell<Recorder<Box<[u8]>, Blocks>> {
         let header = Header {
             build,
+            device: "c606",
             boot: 1,
             profile: 0,
             config: &[],

@@ -351,7 +351,7 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
 fn power_cycle_of_a_running_device_brings_the_companion_back_ready() {
     use device_api::observation::Availability;
     use device_api::sensors::Startup;
-    let mut s = Session::device().unwrap();
+    let mut s = Session::device(shell_simulator::models::C606).unwrap();
     s.step(COMPANION_BOOT_MS + 500);
     assert_eq!(
         (s.sim_mut().startup, s.sim_mut().ant.availability),
@@ -370,7 +370,7 @@ fn power_cycle_of_a_running_device_brings_the_companion_back_ready() {
 fn cpu_restart_while_the_companion_boots_lets_it_finish() {
     use device_api::observation::Availability;
     use device_api::sensors::Startup;
-    let mut s = Session::device().unwrap();
+    let mut s = Session::device(shell_simulator::models::C606).unwrap();
     s.step(500);
     assert_eq!(s.sim_mut().startup, Startup::Probing);
     s.restart().unwrap();
@@ -432,4 +432,23 @@ fn an_app_edge_keeps_the_time_the_device_received_it() {
     let edge = shell.take_app_input().expect("routed to the app");
     assert_eq!(edge.input, press);
     assert_eq!(edge.received_ms, 1_000);
+}
+
+#[test]
+#[should_panic(expected = "bare has no touch panel")]
+fn a_tap_on_a_model_without_touch_is_refused() {
+    let mut sim = shell_simulator::sim::Sim::on(shell_simulator::models::BARE);
+    sim.discard_recording();
+    sim.tap(120, 160);
+}
+
+#[test]
+fn a_sized_session_records_a_device_no_model_replays() {
+    let t = Temp::new();
+    let mut s = Session::new(&t.0, 32, 24).unwrap();
+    s.step(100);
+    let trace = s.trace();
+    let (header, _) = firmware_services::trace::decode(&trace).unwrap();
+    assert_eq!(header.device, shell_simulator::session::VIRTUAL);
+    assert!(shell_simulator::devices::Model::named(header.device).is_none());
 }

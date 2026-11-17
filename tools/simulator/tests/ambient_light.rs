@@ -90,7 +90,7 @@ fn a_ride_with_a_light_feed_replays_to_the_same_backlight() {
     assert!(seen.len() > 20, "the backlight moved through {seen:?}");
     let capture = sim.capture();
 
-    let mut replayed = Sim::replaying(&capture, Mode::Strict, None);
+    let mut replayed = Sim::replaying(&capture, Mode::Strict, None).unwrap();
     replayed.replay_until(start);
     let mut again = vec![replayed.device.shell.effective()];
     while replayed.replay_until(replayed.device.now + 1) {

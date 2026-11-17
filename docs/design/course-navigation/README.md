@@ -52,7 +52,7 @@ course ahead, so the ridden line below the puck was taken out of all three
 (drawn on map-approach and map-close; below the screen on map-offcourse).
 
 `cycling mockup-compare` compares each mockup with the simulator checkpoint a
-scenario names after it (`.local/sim/latest/<scenario>/NN-ride-turns.png`, run
+scenario names after it (`.local/sim/latest/<scenario>@c606/NN-ride-turns.png`, run
 `cycling sim` first). Each element's interior must be its token exactly in
 RGB565, a colour's ink may reach at most one pixel past where the mockup draws
 it, and a sign's fill must fill exactly the mockup's box. `<screen>.rules.toml`

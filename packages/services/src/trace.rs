@@ -33,7 +33,7 @@ pub mod tapped;
 mod tests;
 
 /// The header's first byte.
-pub const VERSION: u8 = 4;
+pub const VERSION: u8 = 5;
 pub const MAX_BLOCK: usize = u16::MAX as usize + FRAME;
 const FRAME: usize = 2 + 4;
 
@@ -42,6 +42,8 @@ const FRAME: usize = 2 + 4;
 pub struct Header<'a> {
     /// Git commit of the recording firmware, zero when unknown.
     pub build: [u8; 20],
+    /// The manifest name of the device that recorded it, such as `c606`.
+    pub device: &'a str,
     pub boot: u32,
     /// The BLE profile selector the shell settings stored.
     pub profile: u8,
@@ -1358,6 +1360,7 @@ impl<'a> Wire<'a> for Header<'a> {
     fn put(&self, w: &mut Writer) {
         VERSION.put(w);
         w.bytes(&self.build);
+        self.device.put(w);
         self.boot.put(w);
         self.profile.put(w);
         self.config.put(w);
@@ -1367,6 +1370,7 @@ impl<'a> Wire<'a> for Header<'a> {
         u8::take(r);
         Self {
             build: <[u8; 20]>::take(r),
+            device: <&str>::take(r),
             boot: u32::take(r),
             profile: u8::take(r),
             config: <&[u8]>::take(r),
@@ -1872,6 +1876,14 @@ impl core::fmt::Display for Error {
     }
 }
 
+/// Keep in step with `NAME` in `cycling devices`.
+fn is_manifest_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes.next().is_some_and(|b| b.is_ascii_lowercase())
+        && name.len() <= 16
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 /// The header and the events after it.
 pub fn decode(bytes: &[u8]) -> Result<(Header<'_>, Events<'_>), Error> {
     let (payload, next) = block(bytes, 0).ok_or(Error::Header)?;
@@ -1881,7 +1893,7 @@ pub fn decode(bytes: &[u8]) -> Result<(Header<'_>, Events<'_>), Error> {
     }
     let mut r = Reader::new(payload, 0);
     let header = Header::take(&mut r);
-    if !r.ok() || r.at != payload.len() {
+    if !r.ok() || r.at != payload.len() || !is_manifest_name(header.device) {
         return Err(Error::Header);
     }
     let cursor = Cursor {

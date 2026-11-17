@@ -95,8 +95,8 @@ def screens(result):
 
 def pair(before, after):
     """Pairs in the after run's order; checkpoints only the base has come last."""
-    old = {r['name']: screens(r) for r in before}
-    new = {r['name']: screens(r) for r in after}
+    old = {r['key']: screens(r) for r in before}
+    new = {r['key']: screens(r) for r in after}
     pairs = []
     for scenario in [*new, *(s for s in old if s not in new)]:
         a, b = old.get(scenario, {}), new.get(scenario, {})
@@ -183,20 +183,21 @@ def comparison(pairs, before, after, base, refs):
         f'After: `{head_commit}`, {passed}/{len(after)} passed. '
         'Screens are paired by scenario and checkpoint and compared by pixels.',
     ]
+    titles = titled(before, after)
     unchanged = {}
     for p, state in states:
         if state == 'unchanged':
             unchanged.setdefault(p.scenario, []).append(p.checkpoint)
     if unchanged:
         lines += ['', f'<details><summary>{count["unchanged"]} unchanged screens</summary>', '']
-        lines += [f'- {report.title(s)}: {", ".join(names)}' for s, names in unchanged.items()]
+        lines += [f'- {titles[s]}: {", ".join(names)}' for s, names in unchanged.items()]
         lines += ['', '</details>']
     if count['unchanged'] == len(pairs):
         lines += ['', 'No screen changed.']
     lines += hash_table(before, after)
 
-    results = {r['name']: r for r in after}
-    previous = {r['name']: r for r in before}
+    results = {r['key']: r for r in after}
+    previous = {r['key']: r for r in before}
     attachments = []
     for scenario in dict.fromkeys([*(p.scenario for p in pairs), *results]):
         shown = [(p, state) for p, state in states if p.scenario == scenario and state != 'unchanged']
@@ -206,7 +207,7 @@ def comparison(pairs, before, after, base, refs):
             continue
         mark = '❌' if failed else '✅' if result else '⚪'
         suffix = ' (new scenario)' if scenario not in previous else ' (removed scenario)' if result is None else ''
-        lines += ['', f'### {mark} {report.title(scenario)}{suffix}', '']
+        lines += ['', f'### {mark} {titles[scenario]}{suffix}', '']
         if failed and result['failure']:
             lines += [*report.fenced(result['failure']), '']
         videos = [
@@ -235,12 +236,17 @@ def comparison(pairs, before, after, base, refs):
     return '\n'.join(lines) + '\n', attachments
 
 
+def titled(before, after):
+    base = {r['key']: r['title'] for r in before}
+    return base | {r['key']: r['title'] for r in after}
+
+
 def hashes(results):
     found = {}
     for result in results:
         path = result['dir'] / 'hashes.json'
         if path.exists():
-            found[result['name']] = json.loads(path.read_text())
+            found[result['key']] = json.loads(path.read_text())
     return found
 
 
@@ -254,11 +260,12 @@ def hash_table(before, after):
     if not has_mode(after):
         return ['', 'Hashes: this checkout has no comparison mode, so no hash was compared.']
     old, new = hashes(before), hashes(after)
-    missing = [(r['name'], 'base') for r in before if r['name'] not in old]
-    missing += [(r['name'], 'this checkout') for r in after if r['name'] not in new]
+    titles = titled(before, after)
+    missing = [(r['key'], 'base') for r in before if r['key'] not in old]
+    missing += [(r['key'], 'this checkout') for r in after if r['key'] not in new]
     both = [name for name in new if name in old]
     differ = [name for name in both if any(old[name][h] != new[name][h] for h in HASHES)]
-    added = [name for name in new if name not in {r['name'] for r in before}]
+    added = [name for name in new if name not in {r['key'] for r in before}]
     lines = ['', f'Hashes: {len(differ)} of {len(both)} scenarios differ from the base.']
     if added:
         lines[-1] += f' {len(added)} are new and have no base hashes.'
@@ -269,7 +276,7 @@ def hash_table(before, after):
             'so nothing about them was compared:',
             '',
         ]
-        lines += [f'- {report.title(name)} ({side})' for name, side in sorted(missing)]
+        lines += [f'- {titles[name]} ({side})' for name, side in sorted(missing)]
     if differ:
         lines += ['', '| Scenario | Media | Trace | Storage |', '|---|---|---|---|']
         for name in differ:
@@ -277,7 +284,7 @@ def hash_table(before, after):
                 f'`{old[name][h][:12]}` → `{new[name][h][:12]}`' if old[name][h] != new[name][h] else 'same'
                 for h in HASHES
             ]
-            lines.append(f'| {report.title(name)} | {" | ".join(cells)} |')
+            lines.append(f'| {titles[name]} | {" | ".join(cells)} |')
     return lines
 
 
@@ -385,8 +392,8 @@ def incomplete(directory, status):
 
 
 def video_scenarios(pairs, before, after, with_changed):
-    old, current = {r['name'] for r in before}, {r['name'] for r in after}
-    new = [r['name'] for r in after if r['name'] not in old]
+    old, current = {r['key'] for r in before}, {r['key'] for r in after}
+    new = [r['key'] for r in after if r['key'] not in old]
     if not with_changed:
         return new, []
     both = old & current
@@ -398,7 +405,7 @@ def render_videos(renderer, results):
     def render(result):
         done = subprocess.run([renderer, '--video', result['dir']], capture_output=True, text=True)
         if done.returncode:
-            print(f'sim-compare: warning: no video of {result["name"]}: {done.stderr.strip()}', file=sys.stderr)
+            print(f'sim-compare: warning: no video of {result["key"]}: {done.stderr.strip()}', file=sys.stderr)
         else:
             result['files'].append(Path(done.stdout.strip()).name)
 
@@ -657,7 +664,7 @@ def main(argv=None):
     after_videos, before_videos = video_scenarios(pairs, before, after, args.video)
     render_videos(
         target / RENDERER,
-        [*(r for r in after if r['name'] in after_videos), *(r for r in before if r['name'] in before_videos)],
+        [*(r for r in after if r['key'] in after_videos), *(r for r in before if r['key'] in before_videos)],
     )
     for directory, results in ((before_dir, before), (after_dir, after)):
         (directory / 'index.html').write_text(report.page(results, f'Simulator scenarios ({directory.name})'))

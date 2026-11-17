@@ -53,9 +53,10 @@ IMAGE = bytes(range(48))
 OTHER = bytes([*range(47), 0])
 
 
-def scenario(run, name, screens, status='pass', video=False):
-    """A scenario whose checkpoint screens are {caption: png bytes}."""
-    directory = run / name
+def scenario(run, name, screens, status='pass', video=False, device=None):
+    """A scenario whose checkpoint screens are {caption: png bytes}. Without a
+    device it is a result from before results named their device."""
+    directory = run / (name if device is None else f'{name}@{device}')
     directory.mkdir(parents=True)
     files = []
     if video:
@@ -73,7 +74,7 @@ def scenario(run, name, screens, status='pass', video=False):
         'frames': 1,
         'files': files,
         'rides': [],
-    }
+    } | ({} if device is None else {'device': device})
     (directory / 'result.json').write_text(json.dumps(result))
 
 
@@ -99,15 +100,38 @@ def test_pairs_by_scenario_and_checkpoint_name(tmp_path):
     pairs = compare.pair(report.load(before), report.load(after))
     states = {(p.scenario, p.checkpoint): p.state for p in pairs}
     assert states == {
-        ('ride', 'new view'): 'new',
-        ('ride', 'riding'): 'unchanged',
-        ('ride', 'final screen'): 'changed',
-        ('ride', 'old view'): 'removed',
-        ('fresh', 'final screen'): 'new',
-        ('gone', 'final screen'): 'removed',
+        ('ride@c606', 'new view'): 'new',
+        ('ride@c606', 'riding'): 'unchanged',
+        ('ride@c606', 'final screen'): 'changed',
+        ('ride@c606', 'old view'): 'removed',
+        ('fresh@c606', 'final screen'): 'new',
+        ('gone@c606', 'final screen'): 'removed',
     }
     # The after run's order, with checkpoints only the base has last.
-    assert [p.checkpoint for p in pairs if p.scenario == 'ride'] == ['new view', 'riding', 'final screen', 'old view']
+    assert [p.checkpoint for p in pairs if p.scenario == 'ride@c606'] == [
+        'new view',
+        'riding',
+        'final screen',
+        'old view',
+    ]
+
+
+def test_runs_pair_by_scenario_and_device_and_title_the_device_when_there_are_two(tmp_path):
+    before, after = tmp_path / 'before', tmp_path / 'after'
+    with_mode(before, after)
+    scenario(before, 'ride', {'home': png(IMAGE, 4)})
+    hashed(before, 'ride')
+    scenario(after, 'ride', {'home': png(IMAGE, 4)}, device='c606')
+    hashed(after, 'ride@c606')
+    scenario(after, 'ride', {'home': png(OTHER, 4)}, device='bare')
+    hashed(after, 'ride@bare', media='n' * 64)
+    old, new = report.load(before), report.load(after)
+    states = {(p.scenario, p.checkpoint): p.state for p in compare.pair(old, new)}
+    assert states == {('ride@c606', 'home'): 'unchanged', ('ride@bare', 'home'): 'new'}
+    assert sorted(r['title'] for r in new) == ['Ride on bare', 'Ride on c606']
+    assert [r['title'] for r in old] == ['Ride']
+    lines = compare.hash_table(old, new)
+    assert 'Hashes: 0 of 1 scenarios differ from the base. 1 are new and have no base hashes.' in lines
 
 
 def test_repeated_captions_keep_their_partners(tmp_path):
@@ -751,3 +775,14 @@ def test_each_side_runs_in_comparison_mode_under_the_neutral_identity(tmp_path, 
     assert compare.run_scenarios(compare.Run(tmp_path, tmp_path / 'after', tmp_path / 'target')) == 0
     assert (tmp_path / 'after/cargo.log').read_text().split() == ['1', '0' * 40]
     assert not (tmp_path / 'after' / compare.COMPARISON_MODE_MARKER).exists(), 'only the simulator says it compared'
+
+
+def test_a_scenario_that_wrote_nothing_pairs_with_its_base_run(tmp_path):
+    before, after = tmp_path / 'before', tmp_path / 'after'
+    scenario(before, 'ride', {'home': png(IMAGE, 4)}, device='c606')
+    after.mkdir()
+    (after / 'cargo.log').write_text('test ride ... FAILED\n\ntest result: FAILED.\n')
+    old, new = report.load(before), report.load(after)
+    assert [r['key'] for r in new] == ['ride@c606']
+    states = {(p.scenario, p.checkpoint): p.state for p in compare.pair(old, new)}
+    assert states == {('ride@c606', 'home'): 'removed'}

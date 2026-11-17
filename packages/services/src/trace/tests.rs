@@ -6,6 +6,7 @@ use std::vec::Vec;
 
 const HEADER: Header<'static> = Header {
     build: [7; 20],
+    device: "c606",
     boot: 42,
     profile: 1,
     config: b"prefs",
@@ -535,6 +536,21 @@ fn a_torn_header_is_refused() {
     let bytes = encode(&sample(), 4096);
     let header = block(&bytes, 0).unwrap().1;
     assert!(decode(&bytes[..header - 1]).is_err());
+}
+
+#[test]
+fn the_header_names_the_device_that_recorded_it() {
+    let bytes = encode(&sample(), 4096);
+    assert_eq!(decode(&bytes).unwrap().0.device, "c606");
+    for device in ["", "C606", "6c06", "c606/../x", "a-name-past-sixteen"] {
+        let mut bytes = std::vec![0u8; 128];
+        let len = encode_header(&Header { device, ..HEADER }, &mut bytes).unwrap();
+        assert_eq!(
+            decode(&bytes[..len]).err(),
+            Some(Error::Header),
+            "{device:?}"
+        );
+    }
 }
 
 #[test]

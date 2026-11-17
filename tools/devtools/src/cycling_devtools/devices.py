@@ -1,16 +1,20 @@
 """Device manifests: devices/<name>/device.toml declares a model once, and everything else derives from it.
 
-    cycling devices                 # check every manifest and write each devices/<name>/src/fitted.rs
+    cycling devices                 # check every manifest; write each devices/<name>/src/fitted.rs and the simulator's models.rs
     cycling devices --locked        # fail, naming each stale file, instead of writing
     cycling devices --check         # compare the attached unit's FITTED reply with its manifest
 
 build.sh, flash, backup and the other device tasks read the manifest that
 `--device <name>` (CYCLING_DEVICE) selects; it may be left out while exactly one exists.
+
+Test-only models in tools/simulator/models/<name>.toml declare only [device], [panel] and
+[controls]. They feed tools/simulator/src/models.rs and nothing that builds firmware.
 """
 
 import argparse
 import itertools
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -24,12 +28,16 @@ from cycling_devtools.terminal.usb import UsbConnection, reply_fields
 from cycling_devtools.workspace import ROOT
 
 DEVICES = ROOT / 'devices'
+TEST_MODELS = ROOT / 'tools' / 'simulator' / 'models'
+MODELS_RS = ROOT / 'tools' / 'simulator' / 'src' / 'models.rs'
 ERASE_SECTOR = 0x1000
 HARDWARE_FEATURE = 'hardware'
 REGIONS = ('configuration', 'data', 'crash')
 BUTTONS_BY_ID = ('TopLeft', 'BottomLeft', 'BottomRight', 'Center')
 ROLES = ('act', 'back', 'move')
 MIN_BUTTONS = 3
+NAME = r'[a-z][a-z0-9-]{0,15}'
+RESERVED_NAMES = ('virtual',)
 BASE_PANEL = (240, 320)
 MIN_SCALE_QUARTERS = 3
 MAX_PANEL = (320, 512)
@@ -87,8 +95,16 @@ class Fixture:
 
 
 @dataclass(frozen=True)
-class Device:
+class Model:
     name: str
+    width: int
+    height: int
+    touch: bool
+    buttons: tuple[Fixture, ...]
+
+
+@dataclass(frozen=True)
+class Device:
     root: Path
     chip: str
     target: str
@@ -103,10 +119,11 @@ class Device:
     partition_table: int
     partitions: tuple[Partition, ...]
     owned: tuple[Owned, ...]
-    width: int
-    height: int
-    touch: bool
-    buttons: tuple[Fixture, ...]
+    model: Model
+
+    @property
+    def name(self):
+        return self.model.name
 
     def partition(self, name):
         return next(p for p in self.partitions if p.name == name)
@@ -181,7 +198,6 @@ def parse(path):
 
 def build(raw, root):
     table(raw, 'the manifest', ('device', 'build', 'partitions', 'owned', 'panel', 'controls'))
-    identity = table(raw['device'], '[device]', ('name',))
     spec = table(
         raw['build'],
         '[build]',
@@ -199,14 +215,8 @@ def build(raw, root):
         Owned(region, **table(value, f'[owned].{region}', ('offset', 'size', 'within')))
         for region, value in table(raw['owned'], '[owned]', REGIONS).items()
     )
-    panel = table(raw['panel'], '[panel]', ('width', 'height'))
-    controls = table(raw['controls'], '[controls]', ('touch', 'buttons'))
-    buttons = tuple(
-        Fixture(**{'role': None} | table(button, f'[controls] button {index}', ('id',), optional=('role',)))
-        for index, button in enumerate(controls['buttons'])
-    )
+    model = build_model(raw)
     return Device(
-        name=identity['name'],
         root=root,
         chip=spec['chip'],
         target=spec['target'],
@@ -221,21 +231,52 @@ def build(raw, root):
         partition_table=layout['table'],
         partitions=partitions,
         owned=owned,
-        width=panel['width'],
-        height=panel['height'],
-        touch=controls['touch'],
-        buttons=buttons,
+        model=model,
     )
+
+
+def build_model(raw):
+    identity = table(raw['device'], '[device]', ('name',))
+    panel = table(raw['panel'], '[panel]', ('width', 'height'))
+    controls = table(raw['controls'], '[controls]', ('touch', 'buttons'))
+    buttons = tuple(
+        Fixture(**{'role': None} | table(button, f'[controls] button {index}', ('id',), optional=('role',)))
+        for index, button in enumerate(controls['buttons'])
+    )
+    return Model(identity['name'], panel['width'], panel['height'], controls['touch'], buttons)
+
+
+def parse_test_model(path):
+    try:
+        raw = tomllib.loads(path.read_text())
+        table(raw, 'the model', ('device', 'panel', 'controls'))
+        model = build_model(raw)
+        if model.name != path.stem:
+            raise ManifestError(f'[device].name {model.name!r} must match its file name {path.stem!r}')
+        check_name(model)
+        check_panel(model)
+        check_buttons(model)
+    except (tomllib.TOMLDecodeError, ManifestError) as error:
+        raise ManifestError(f'{path.relative_to(ROOT) if path.is_relative_to(ROOT) else path}: {error}') from None
+    return model
 
 
 def check(device, root):
     if device.name != root.name:
         raise ManifestError(f'[device].name {device.name!r} must match its directory {root.name!r}')
+    check_name(device.model)
     check_cargo(device, root / 'Cargo.toml')
     check_partitions(device)
     check_owned(device)
-    check_panel(device)
-    check_buttons(device)
+    check_panel(device.model)
+    check_buttons(device.model)
+
+
+def check_name(model):
+    if not re.fullmatch(NAME, model.name):
+        raise ManifestError(f'[device].name {model.name!r} must match {NAME}')
+    if model.name in RESERVED_NAMES:
+        raise ManifestError(f"[device].name {model.name!r} is reserved for the simulator's sized shell sessions")
 
 
 def check_cargo(device, path):
@@ -319,8 +360,8 @@ def check_owned(device):
         raise ManifestError('owned ranges leave no room for the application image')
 
 
-def check_panel(device):
-    width, height = device.width, device.height
+def check_panel(model):
+    width, height = model.width, model.height
     if not (16 <= width <= MAX_PANEL[0] and 16 <= height <= MAX_PANEL[1]):
         raise ManifestError(f'panel {width}x{height} is outside 16x16 to {MAX_PANEL[0]}x{MAX_PANEL[1]}')
     if scale_quarters(width, height) < MIN_SCALE_QUARTERS:
@@ -331,15 +372,15 @@ def scale_quarters(width, height):
     return min(4 * width // BASE_PANEL[0], 4 * height // BASE_PANEL[1])
 
 
-def check_buttons(device):
-    ids = [b.id for b in device.buttons]
+def check_buttons(model):
+    ids = [b.id for b in model.buttons]
     if len(ids) < MIN_BUTTONS:
         raise ManifestError(f'a device needs at least {MIN_BUTTONS} buttons, one per role')
     if len(set(ids)) != len(ids):
         raise ManifestError('two buttons share an id')
     if any(not 0 <= i < len(BUTTONS_BY_ID) for i in ids):
         raise ManifestError(f'button ids run from 0 to {len(BUTTONS_BY_ID) - 1}')
-    roles = [b.role for b in device.buttons if b.role is not None]
+    roles = [b.role for b in model.buttons if b.role is not None]
     if unknown := set(roles) - set(ROLES):
         raise ManifestError(f'unknown button roles: {", ".join(sorted(unknown))}')
     if sorted(roles) != sorted(ROLES):
@@ -348,6 +389,15 @@ def check_buttons(device):
 
 def manifests():
     return sorted(DEVICES.glob('*/device.toml'))
+
+
+def models(found_devices):
+    found = [device.model for device in found_devices]
+    found += [parse_test_model(path) for path in sorted(TEST_MODELS.glob('*.toml'))]
+    names = [model.name for model in found]
+    if shared := sorted({name for name in names if names.count(name) > 1}):
+        raise ManifestError(f'two models share a name: {", ".join(shared)}')
+    return found
 
 
 def selected(name=None):
@@ -365,7 +415,7 @@ def selected(name=None):
 
 
 def fitted_rs(device):
-    buttons = ', '.join(f'Button::{BUTTONS_BY_ID[b.id]}' for b in device.buttons)
+    buttons = ', '.join(f'Button::{BUTTONS_BY_ID[b.id]}' for b in device.model.buttons)
     regions = ', '.join(f'("{r}", Region::{r.capitalize()})' for r in REGIONS)
     arms = '\n'.join(
         f'        Region::{r.region.capitalize()} => ({r.offset:#x}, {r.size:#x}),'
@@ -377,8 +427,8 @@ use device_api::input::Button;
 use device_api::storage::Region;
 
 pub const NAME: &str = "{device.name}";
-pub const PANEL_WIDTH: usize = {device.width};
-pub const PANEL_HEIGHT: usize = {device.height};
+pub const PANEL_WIDTH: usize = {device.model.width};
+pub const PANEL_HEIGHT: usize = {device.model.height};
 pub const BUTTONS: &[Button] = &[{buttons}];
 pub const REGIONS: &[(&str, Region)] = &[{regions}];
 
@@ -388,6 +438,40 @@ pub const fn owned(region: Region) -> (u32, usize) {{
     }}
 }}
 """
+    return rustfmt(text)
+
+
+def models_rs(found):
+    def constant(model):
+        buttons = ', '.join(f'Button::{BUTTONS_BY_ID[b.id]}' for b in model.buttons)
+        return f"""pub const {const_name(model)}: Model = Model {{
+    name: "{model.name}",
+    width: {model.width},
+    height: {model.height},
+    touch: {'true' if model.touch else 'false'},
+    buttons: &[{buttons}],
+}};
+"""
+
+    every = ', '.join(f'&{const_name(model)}' for model in found)
+    text = f"""//! Generated by `cycling devices` from devices/*/device.toml and tools/simulator/models/*.toml; edit those, then rerun it.
+
+use crate::devices::Model;
+use device_api::input::Button;
+
+{''.join(constant(model) for model in found)}
+pub fn all() -> &'static [&'static Model] {{
+    &[{every}]
+}}
+"""
+    return rustfmt(text)
+
+
+def const_name(model):
+    return model.name.upper().replace('-', '_')
+
+
+def rustfmt(text):
     formatted = subprocess.run(
         ['rustfmt', '--edition', '2024', '--emit', 'stdout'], input=text, capture_output=True, text=True, check=True
     )
@@ -398,19 +482,26 @@ def generated(device):
     return {device.root / 'src' / 'fitted.rs': fitted_rs(device)}
 
 
+def outputs():
+    found_devices = [parse(path) for path in manifests()]
+    every = {}
+    for device in found_devices:
+        every |= generated(device)
+    return every | {MODELS_RS: models_rs(models(found_devices))}
+
+
 def stale(device):
     return [path for path, text in generated(device).items() if not path.is_file() or path.read_text() != text]
 
 
 def generate(locked):
     written = []
-    for path in manifests():
-        for target, text in generated(parse(path)).items():
-            if target.is_file() and target.read_text() == text:
-                continue
-            written.append(target.relative_to(ROOT))
-            if not locked:
-                target.write_text(text)
+    for target, text in outputs().items():
+        if target.is_file() and target.read_text() == text:
+            continue
+        written.append(target.relative_to(ROOT))
+        if not locked:
+            target.write_text(text)
     for path in written:
         print(f'{"stale" if locked else "wrote"} {path}', file=sys.stderr if locked else sys.stdout)
     if locked and written:
@@ -422,9 +513,9 @@ def generate(locked):
 def expected_fitted(device):
     fields = {
         'device': device.name,
-        'width': device.width,
-        'height': device.height,
-        'buttons': ','.join(str(b.id) for b in device.buttons),
+        'width': device.model.width,
+        'height': device.model.height,
+        'buttons': ','.join(str(b.id) for b in device.model.buttons),
     }
     for r in device.owned:
         fields |= {f'{r.region}_offset': r.offset, f'{r.region}_size': r.size, f'{r.region}_erase': ERASE_SECTOR}
@@ -445,8 +536,8 @@ def compare_fitted(device, reply):
         if got != want:
             problems.append(f'{key}: unit {reply.get(key)!r}, manifest {want!r}')
     fitted = reply.get('touch') not in (None, 'unsupported')
-    if fitted != device.touch:
-        problems.append(f'touch: unit {reply.get("touch")!r}, manifest fitted={device.touch}')
+    if fitted != device.model.touch:
+        problems.append(f'touch: unit {reply.get("touch")!r}, manifest fitted={device.model.touch}')
     return problems
 
 

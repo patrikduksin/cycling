@@ -285,12 +285,19 @@ impl<T> Found<T> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Stamp<'a> {
+    pub commit: &'a str,
+    /// The device's manifest name.
+    pub device: &'a str,
+    pub boot: u32,
+}
+
 /// The header block of a trace this build records, from what the device
 /// started from, in `out`; `config` and `media` are encoded through
 /// `scratch` first. `None` when either does not fit.
 pub fn header(
-    commit: &str,
-    boot: u32,
+    stamp: Stamp<'_>,
     profile: u8,
     config: &Config<'_>,
     media: &Media<'_>,
@@ -301,8 +308,9 @@ pub fn header(
     let (config, rest) = scratch.split_at_mut(configured);
     let media = media.encode(rest)?;
     let header = super::Header {
-        build: build(commit),
-        boot,
+        build: build(stamp.commit),
+        device: stamp.device,
+        boot: stamp.boot,
         profile,
         config,
         media: &rest[..media],

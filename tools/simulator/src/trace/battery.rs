@@ -577,6 +577,7 @@ mod tests {
     fn timeline(passes: &[(u64, Vec<Event<'_>>)]) -> Timeline {
         let header = Header {
             build: [0; 20],
+            device: "c606",
             boot: 1,
             profile: 0,
             config: &[],

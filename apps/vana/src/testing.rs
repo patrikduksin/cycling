@@ -8,6 +8,7 @@
 use crate::ride::log::{Altitude, LapStart, Sample};
 
 pub use firmware_services::testing::Rng;
+use std::vec::Vec;
 
 /// Ride-shaped draws on the shared generator.
 pub trait Draw {
@@ -277,5 +278,215 @@ impl device_api::storage::OwnedFlash for IntentFlash {
         }
         .apply(&mut self.bytes[offset..offset + length]);
         Err(())
+    }
+}
+
+/// A rule every reached state keeps, by name.
+pub(crate) type Holds<S> = (&'static str, fn(&S) -> bool);
+/// A rule every transition keeps, by name: before, event, after.
+pub(crate) type Legal<S, E> = (&'static str, fn(&S, E, &S) -> bool);
+
+/// What a breadth-first search of every state reachable from `inits` found.
+pub(crate) struct Report<E> {
+    /// The frontier emptied within the budget; only then is the search
+    /// exhaustive, up to a fingerprint collision.
+    pub closed: bool,
+    pub states: usize,
+    /// Names of the states reached, each once, in the order first reached.
+    pub reached: Vec<&'static str>,
+    /// Each broken rule once, with the shortest event path that breaks it.
+    pub broken: Vec<Broken<E>>,
+}
+
+pub(crate) struct Broken<E> {
+    pub rule: &'static str,
+    pub init_index: usize,
+    pub path: Vec<E>,
+}
+
+#[derive(Clone, Copy)]
+enum Step<E> {
+    Init(usize),
+    Edge { parent: usize, event: E },
+}
+
+/// Search breadth-first from `inits` through `next`, checking `holds` on
+/// visited states and `legal` on every generated edge. Deduplication uses
+/// 128-bit fingerprints from `S::hash`; callers must hash every distinction
+/// relevant to state predicates or future behavior. Fingerprint collisions
+/// can omit states. Discovering more than `budget` states truncates the search.
+pub(crate) fn explore<S: Clone + core::hash::Hash, E: Copy>(
+    inits: &[S],
+    alphabet: impl Fn(&S) -> Vec<E>,
+    next: impl Fn(&S, E) -> S,
+    name: impl Fn(&S) -> &'static str,
+    holds: &[Holds<S>],
+    legal: &[Legal<S, E>],
+    budget: usize,
+) -> Report<E> {
+    use std::collections::{HashSet, VecDeque};
+    let names = holds
+        .iter()
+        .map(|(name, _)| name)
+        .chain(legal.iter().map(|(name, _)| name));
+    let unique: HashSet<_> = names.clone().collect();
+    assert_eq!(unique.len(), names.count(), "rule names are unique");
+    let mut trail: Vec<Step<E>> = Vec::new();
+    let path = |trail: &[Step<E>], mut at: usize, last: Option<E>| {
+        let mut path: Vec<E> = last.into_iter().collect();
+        loop {
+            match trail[at] {
+                Step::Init(index) => {
+                    path.reverse();
+                    return (index, path);
+                }
+                Step::Edge { parent, event } => {
+                    path.push(event);
+                    at = parent;
+                }
+            }
+        }
+    };
+    let mut report = Report {
+        closed: false,
+        states: 0,
+        reached: Vec::new(),
+        broken: Vec::new(),
+    };
+    let record = |report: &mut Report<E>, rule: &'static str, (init_index, path)| {
+        if report.broken.iter().all(|broken| broken.rule != rule) {
+            report.broken.push(Broken {
+                rule,
+                init_index,
+                path,
+            });
+        }
+    };
+    let mut seen = HashSet::new();
+    let mut frontier = VecDeque::new();
+    let mut admit = |state: S, from: Step<E>, trail: &mut Vec<Step<E>>, report: &mut Report<E>| {
+        if !seen.insert(fingerprint(&state)) {
+            return None;
+        }
+        let at = trail.len();
+        trail.push(from);
+        let named = name(&state);
+        if !report.reached.contains(&named) {
+            report.reached.push(named);
+        }
+        Some((at, state))
+    };
+    for (index, init) in inits.iter().enumerate() {
+        if let Some(admitted) = admit(init.clone(), Step::Init(index), &mut trail, &mut report) {
+            frontier.push_back(admitted);
+        }
+    }
+    if trail.len() > budget {
+        report.states = trail.len();
+        return report;
+    }
+    while let Some((at, state)) = frontier.pop_front() {
+        for (rule, keeps) in holds {
+            if !keeps(&state) {
+                record(&mut report, rule, path(&trail, at, None));
+            }
+        }
+        for event in alphabet(&state) {
+            let after = next(&state, event);
+            for (rule, keeps) in legal {
+                if !keeps(&state, event, &after) {
+                    record(&mut report, rule, path(&trail, at, Some(event)));
+                }
+            }
+            let from = Step::Edge { parent: at, event };
+            if let Some(admitted) = admit(after, from, &mut trail, &mut report) {
+                if trail.len() > budget {
+                    report.states = trail.len();
+                    return report;
+                }
+                frontier.push_back(admitted);
+            }
+        }
+    }
+    report.closed = true;
+    report.states = trail.len();
+    report
+}
+
+fn fingerprint(state: &impl core::hash::Hash) -> u128 {
+    use core::hash::Hasher;
+    struct Twin(std::hash::DefaultHasher, std::hash::DefaultHasher);
+    impl Hasher for Twin {
+        fn write(&mut self, bytes: &[u8]) {
+            self.0.write(bytes);
+            self.1.write(bytes);
+        }
+        fn finish(&self) -> u64 {
+            self.0.finish()
+        }
+    }
+    let mut salted = std::hash::DefaultHasher::new();
+    salted.write_u64(0x5eed);
+    let mut twin = Twin(std::hash::DefaultHasher::new(), salted);
+    state.hash(&mut twin);
+    u128::from(twin.0.finish()) << 64 | u128::from(twin.1.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn count(budget: usize) -> Report<u8> {
+        explore(
+            &[0u8],
+            |_| std::vec![1, 2],
+            |state, step| (state + step) % 10,
+            |state| if state % 2 == 0 { "even" } else { "odd" },
+            &[("below seven", |state| *state < 7)],
+            &[("never wraps", |before, _, after| after > before)],
+            budget,
+        )
+    }
+
+    #[test]
+    fn explore_reaches_every_state_and_names_the_shortest_path_to_each_broken_rule() {
+        let report = count(100);
+        assert!(report.closed);
+        assert_eq!(report.states, 10);
+        assert_eq!(report.reached, ["even", "odd"]);
+        let path = |rule| {
+            let broken = report
+                .broken
+                .iter()
+                .find(|broken| broken.rule == rule)
+                .unwrap();
+            (broken.init_index, broken.path.clone())
+        };
+        assert_eq!(path("below seven"), (0, std::vec![1, 2, 2, 2]));
+        assert_eq!(path("never wraps"), (0, std::vec![2, 2, 2, 2, 2]));
+    }
+
+    #[test]
+    fn a_broken_rule_names_its_init_even_past_a_duplicate_init() {
+        let report = explore(
+            &[0u8, 0, 5],
+            |_| std::vec::Vec::<u8>::new(),
+            |state, _| *state,
+            |_| "any",
+            &[("not five", |state| *state != 5)],
+            &[],
+            100,
+        );
+        assert!(report.closed);
+        assert_eq!(report.states, 2);
+        assert_eq!(report.broken[0].init_index, 2);
+        assert!(report.broken[0].path.is_empty());
+    }
+
+    #[test]
+    fn explore_past_its_budget_is_not_closed() {
+        let report = count(5);
+        assert!(!report.closed);
+        assert!(report.states > 5);
     }
 }

@@ -378,11 +378,13 @@ impl Ride {
         self.pending_token().is_some()
     }
 
-    /// The wipe a host's Clear waits on stopped short. Storage stays held,
-    /// so `record` will not pass the outcome on: it goes to the host here.
-    pub(super) fn wipe_failed(&mut self) {
-        self.internal.wipe_failed();
-        if let Some(result) = self.internal.take_result()
+    pub(super) fn wipe_failed(&mut self, clear: Option<u32>) {
+        let failed = clear.map(|token| ResultEvent {
+            action: None,
+            token,
+            ok: false,
+        });
+        if let Some(result) = self.internal.take_result().or(failed)
             && matches!(self.host, Request::Pending(token) if token == result.token)
         {
             self.host = Request::Completed(result);

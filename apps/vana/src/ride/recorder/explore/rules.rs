@@ -1,9 +1,17 @@
 use super::medium::{LAST, Volume};
 use super::{Event, Returned, Wipe, World};
 use crate::ride::log::{Kind, SAMPLES_PER_BATCH, Slot, Status, decode, erased};
-use crate::ride::recorder::Pending;
+use crate::ride::recorder::ResultEvent;
 use crate::ride::recorder::invariants::Rule;
 use crate::testing::{Holds, Legal};
+
+pub(super) fn broken(world: &World) -> Option<Rule> {
+    Rule::of(&world.state.recorder)
+}
+
+fn lap_waiting(world: &World) -> bool {
+    world.state.recorder.batch.laps.lap_waiting()
+}
 
 fn wrote(before: &World, event: Event, after: &World) -> bool {
     let (was, is) = (&before.state.env.medium, &after.state.env.medium);
@@ -22,38 +30,14 @@ fn appended(before: &World, after: &World) -> bool {
         .any(|(was, is)| erased(was) && !erased(is))
 }
 
-fn wipe_waits(world: &World) -> bool {
-    matches!(world.state.recorder.pending, Some(Pending::Wipe(_)))
-}
-
 pub(super) const HOLDS: &[Holds<World>] = &[
-    ("the recorder's invariants hold", |w| {
-        Rule::of(&w.state.recorder).is_none()
-    }),
+    ("the recorder's invariants hold", |w| broken(w).is_none()),
     (
-        "the catalog's next slot is the journal's head, outside scanning, error and a failed wipe",
+        "the catalog's next slot is the journal's head whenever the recorder can be serviced",
         |w| {
             matches!(w.status(), Status::Scanning | Status::Error)
-                || w.state.env.wipe == Wipe::Failed
-                || w.state.recorder.catalog.next_slot == w.state.env.medium.head()
-        },
-    ),
-    ("a wipe waits only while one runs", |w| {
-        !wipe_waits(w) || w.state.env.wipe == Wipe::Running
-    }),
-    (
-        "a waiting wipe implies needs_init, ready, saved, recovered or full, with no ride open",
-        |w| {
-            !wipe_waits(w)
-                || (!w.state.recorder.open_ride
-                    && matches!(
-                        w.status(),
-                        Status::NeedsInit
-                            | Status::Ready
-                            | Status::Saved
-                            | Status::Recovered
-                            | Status::Full
-                    ))
+                || matches!(w.state.env.wipe, Wipe::Running | Wipe::Failed)
+                || w.observed.next_slot == w.state.env.medium.head()
         },
     ),
 ];
@@ -61,7 +45,7 @@ pub(super) const HOLDS: &[Holds<World>] = &[
 pub(super) const LEGAL: &[Legal<World, Event>] = &[
     (
         "one journal operation per service call",
-        |_, _, after| !matches!(after.returned, Returned::Worked { operations, .. } if operations > 1),
+        |_, _, after| !matches!(after.returned, Returned::Serviced { operations } if operations > 1),
     ),
     (
         "nothing is written after an uncertain append until a scan",
@@ -105,47 +89,29 @@ pub(super) const LEGAL: &[Legal<World, Event>] = &[
         },
     ),
     (
-        "no slot is written while a wipe waits",
+        "nothing is written while a wipe runs",
         |before, event, after| {
-            !wipe_waits(before)
-                || event.writes_without_the_recorder()
-                || before.state.env.medium.slots == after.state.env.medium.slots
+            before.state.env.wipe != Wipe::Running || !wrote(before, event, after)
         },
     ),
     (
-        "a waiting wipe ends only by wiped, wipe_failed, a cut or an error",
+        "wiped(Some(t)) leaves Done{None, t, true}",
         |before, event, after| {
-            !wipe_waits(before)
-                || wipe_waits(after)
-                || after.status() == Status::Error
-                || matches!(
-                    event,
-                    Event::Wiped | Event::WipeFailed { .. } | Event::Cut(_)
-                )
-        },
-    ),
-    (
-        "a waiting wipe's result says whether it wiped",
-        |before, event, after| {
-            let Some(Pending::Wipe(token)) = before.state.recorder.pending else {
+            let (Event::Wiped, Some(token)) = (event, before.state.env.clear) else {
                 return true;
             };
-            let ok = match event {
-                Event::Wiped => true,
-                Event::WipeFailed { .. } => false,
-                _ => return true,
-            };
-            after
-                .state
-                .recorder
-                .result
-                .is_some_and(|result| (result.action, result.token, result.ok) == (None, token, ok))
+            after.observed.result
+                == Some(ResultEvent {
+                    action: None,
+                    token,
+                    ok: true,
+                })
         },
     ),
     ("wiped leaves an empty ready journal", |_, event, after| {
         !matches!(event, Event::Wiped)
             || (after.status() == Status::Ready
-                && after.state.recorder.catalog.next_slot == 0
+                && after.observed.next_slot == 0
                 && after.state.env.medium.head() == 0)
     }),
     (
@@ -199,8 +165,7 @@ pub(super) const SCAN_ANSWER_PROBES: &[Legal<World, Event>] = &[
 ];
 
 fn flushed(before: &World, after: &World) -> bool {
-    after.state.recorder.written_samples
-        == before.state.recorder.written_samples + SAMPLES_PER_BATCH as u32
+    after.observed.written_samples == before.observed.written_samples + SAMPLES_PER_BATCH as u32
 }
 
 pub(super) const FULL_BATCH: &[Legal<World, Event>] = &[
@@ -208,19 +173,17 @@ pub(super) const FULL_BATCH: &[Legal<World, Event>] = &[
         "a full batch is flushed while recording",
         |before, _, after| {
             !(before.status() == Status::Recording
-                && before.state.recorder.pending.is_none()
+                && before.observed.pending_action.is_none()
                 && flushed(before, after))
         },
     ),
     ("a sample is dropped", |before, _, after| {
-        after.state.recorder.dropped_samples <= before.state.recorder.dropped_samples
+        after.observed.dropped_samples <= before.observed.dropped_samples
     }),
     (
         "a stop's lap samples fill the batch with a lap still waiting",
         |before, _, after| {
-            !(before.state.recorder.stopping()
-                && flushed(before, after)
-                && after.state.recorder.lap_marks.lap_waiting())
+            !(before.observed.stopping && flushed(before, after) && lap_waiting(after))
         },
     ),
 ];

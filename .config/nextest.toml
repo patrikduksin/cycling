@@ -3,7 +3,8 @@ slow = { max-threads = "num-cpus" }
 
 [[profile.default.overrides]]
 filter = """
-test(=a_two_hour_ride_with_a_pause_replays_exactly)
+test(=ride::recorder::explore::every_state_of_the_recorder_keeps_the_rules)
+| test(=a_two_hour_ride_with_a_pause_replays_exactly)
 | test(=no_turn_back_when_riding_home_in_the_dark_or_with_sunset_off)
 | test(=riding_out_toward_dusk_says_when_to_turn_back)
 | test(=the_battery_estimate_shows_on_ready_and_warns_during_a_fast_drain)

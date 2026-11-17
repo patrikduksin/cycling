@@ -232,7 +232,8 @@ impl Runtime {
 
     /// Scan both ride journals ahead of the first `tick`, while the device
     /// is still starting, so Home opens with storage ready. Does nothing once
-    /// the scans are done; formatting, recovery and recording wait for `tick`.
+    /// the scans are done or while FORMAT owns storage; formatting, recovery
+    /// and recording wait for `tick`.
     pub fn prepare(
         &mut self,
         store: &mut impl crate::ride::storage::RideStorage,
@@ -240,6 +241,9 @@ impl Runtime {
         now: u64,
     ) {
         use crate::ride::log::Status;
+        if self.format.owns_storage() {
+            return;
+        }
         if self.ride.internal.status() == Status::Scanning
             || self.ride.bulk.status() == Status::Scanning
         {

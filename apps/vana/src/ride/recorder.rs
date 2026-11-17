@@ -29,6 +29,7 @@ use crate::ride::log::Entry;
 use crate::ride::log::Kind;
 use crate::ride::log::LapStart;
 use crate::ride::log::Recovery;
+use crate::ride::log::SAMPLES_PER_BATCH;
 use crate::ride::log::Sample;
 use crate::ride::log::Status;
 use crate::ride::log::Summary;
@@ -40,15 +41,6 @@ pub enum Action {
     Pause,
     Resume,
     Finish,
-}
-
-#[derive(Clone, Copy)]
-#[cfg_attr(test, derive(Hash))]
-enum Pending {
-    Ride(Action, u64, u32),
-    Initialize(u32),
-    Clear(u32),
-    Wipe(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,70 +57,326 @@ pub struct ResultEvent {
     pub ok: bool,
 }
 
-#[cfg_attr(test, derive(Clone, Hash))]
-pub struct Recorder {
-    catalog: Catalog,
-    status: Status,
-    /// Slots of the medium, including the reserved terminal slot.
-    slots: usize,
-    /// Initialize or clear step.
-    step: usize,
-    /// Active time of the last record this ride committed.
-    committed_ms: u64,
-    /// The journal asked for recovery state to be saved.
-    checkpoint_due: bool,
-    pending: Option<Pending>,
-    result: Option<ResultEvent>,
-    ride_id: u32,
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
+enum Lifecycle {
+    Scanning,
+    NeedsInit,
+    Foreign,
+    Unsupported,
+    Unavailable,
+    Corrupt,
+    Preparing {
+        clear: bool,
+        step: usize,
+        token: u32,
+    },
+    Ready,
+    Saved,
+    Running {
+        ride: OpenRide,
+        since: u64,
+        next_sample: u64,
+    },
+    Stopping {
+        ride: OpenRide,
+        token: u32,
+        stop: Stop,
+    },
+    Paused {
+        ride: OpenRide,
+    },
+    Recovering,
+    Recovered,
+    Full {
+        open: bool,
+    },
+    Failed {
+        open: bool,
+    },
+}
+
+impl Lifecycle {
+    fn ride(&self) -> Option<&OpenRide> {
+        match self {
+            Self::Running { ride, .. } | Self::Stopping { ride, .. } | Self::Paused { ride } => {
+                Some(ride)
+            }
+            _ => None,
+        }
+    }
+
+    fn ride_mut(&mut self) -> Option<&mut OpenRide> {
+        match self {
+            Self::Running { ride, .. } | Self::Stopping { ride, .. } | Self::Paused { ride } => {
+                Some(ride)
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
+enum Stop {
+    Pause { since: u64, at: u64 },
+    Finish { since: u64, at: u64 },
+    FinishPaused,
+}
+
+impl Stop {
+    fn action(self) -> Action {
+        match self {
+            Self::Pause { .. } => Action::Pause,
+            Self::Finish { .. } | Self::FinishPaused => Action::Finish,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
+struct OpenRide {
+    id: u32,
     sequence: u32,
-    accumulated_ms: u64,
-    running_since: u64,
-    stop_at: Option<u64>,
-    open_ride: bool,
+    committed_ms: u64,
     summary: Summary,
-    samples: [Sample; crate::ride::log::SAMPLES_PER_BATCH],
-    sample_count: usize,
-    lap_marks: Marks,
-    next_sample: u64,
-    written_samples: u32,
-    dropped_samples: u32,
+}
+
+impl OpenRide {
+    fn committed(mut self, active_ms: u64) -> Self {
+        self.sequence = self.sequence.wrapping_add(1);
+        self.committed_ms = active_ms;
+        self
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
+enum Inbox {
+    Idle,
+    Pending(Ask),
+    Done(ResultEvent),
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
+enum Ask {
+    Start { at: u64, token: u32 },
+    Resume { at: u64, token: u32 },
+}
+
+#[derive(Default)]
+#[cfg_attr(test, derive(Clone, Hash))]
+struct Batch {
+    samples: [Sample; SAMPLES_PER_BATCH],
+    count: usize,
+    laps: Marks,
+}
+
+impl Batch {
+    fn full(&self) -> bool {
+        self.count == self.samples.len()
+    }
+
+    fn stored(&self) -> &[Sample] {
+        &self.samples[..self.count]
+    }
+
+    fn take(&mut self, sample: Sample, active_ms: u64) {
+        let mut sample = sample.without_impossible_battery();
+        sample.active_ms = active_ms;
+        sample.lap = self.laps.pop();
+        self.samples[self.count] = sample;
+        self.count += 1;
+    }
+}
+
+#[derive(Default)]
+#[cfg_attr(test, derive(Clone, Hash))]
+struct Counters {
+    written: u32,
+    dropped: u32,
     max_write_ms: u32,
     max_erase_ms: u32,
+}
+
+#[derive(Clone, Copy)]
+enum Effect {
+    Scan,
+    Prepare {
+        clear: bool,
+        step: usize,
+        seed: u64,
+    },
+    Checkpoint,
+    Append {
+        slot: usize,
+        terminal: bool,
+        record: Record,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum Record {
+    Event {
+        kind: Kind,
+        ride: u32,
+        sequence: u32,
+        active_ms: u64,
+    },
+    Batch {
+        ride: u32,
+        sequence: u32,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum Found {
+    Done { overdue: bool },
+    Uninitialized,
+    Foreign,
+    Unsupported,
+    Unavailable,
+    Corrupt,
+    Failed,
+}
+
+#[derive(Clone, Copy)]
+enum Outcome {
+    Scanning,
+    Scanned {
+        found: Found,
+        slots: usize,
+    },
+    Preparing {
+        elapsed_ms: u32,
+    },
+    Prepared {
+        slots: Option<usize>,
+        elapsed_ms: u32,
+    },
+    Checkpointed(Checkpoint),
+    Appended {
+        record: Record,
+        append: Append,
+        active_ms: u64,
+        elapsed_ms: u32,
+    },
+    NoRoom,
+}
+
+#[cfg_attr(test, derive(Clone, Hash))]
+pub struct Recorder {
+    lifecycle: Lifecycle,
+    inbox: Inbox,
+    checkpoint_due: bool,
+    catalog: Catalog,
+    /// Slots of the medium, including the reserved terminal slot.
+    slots: usize,
+    accumulated_ms: u64,
+    batch: Batch,
+    counters: Counters,
 }
 
 impl Default for Recorder {
     fn default() -> Self {
         Self {
-            catalog: Catalog::default(),
-            status: Status::Scanning,
-            slots: crate::ride::log::SLOTS,
-            step: 0,
-            committed_ms: 0,
+            lifecycle: Lifecycle::Scanning,
+            inbox: Inbox::Idle,
             checkpoint_due: false,
-            pending: None,
-            result: None,
-            ride_id: 0,
-            sequence: 0,
+            catalog: Catalog::default(),
+            slots: crate::ride::log::SLOTS,
             accumulated_ms: 0,
-            running_since: 0,
-            stop_at: None,
-            open_ride: false,
-            summary: Summary::default(),
-            samples: [Sample::default(); crate::ride::log::SAMPLES_PER_BATCH],
-            sample_count: 0,
-            lap_marks: Marks::default(),
-            next_sample: 0,
-            written_samples: 0,
-            dropped_samples: 0,
-            max_write_ms: 0,
-            max_erase_ms: 0,
+            batch: Batch::default(),
+            counters: Counters::default(),
         }
     }
 }
 
 impl Recorder {
+    #[cfg(test)]
+    pub(crate) const VARIANTS: [&'static str; 19] = [
+        "scanning",
+        "needs init",
+        "foreign",
+        "unsupported",
+        "unavailable",
+        "corrupt",
+        "formatting",
+        "clearing",
+        "ready",
+        "saved",
+        "running",
+        "stopping to pause",
+        "stopping to finish",
+        "finishing while paused",
+        "paused",
+        "recovering",
+        "recovered",
+        "full",
+        "failed",
+    ];
+
+    #[cfg(test)]
+    pub(crate) fn variant(&self) -> &'static str {
+        match &self.lifecycle {
+            Lifecycle::Scanning => "scanning",
+            Lifecycle::NeedsInit => "needs init",
+            Lifecycle::Foreign => "foreign",
+            Lifecycle::Unsupported => "unsupported",
+            Lifecycle::Unavailable => "unavailable",
+            Lifecycle::Corrupt => "corrupt",
+            Lifecycle::Preparing { clear: false, .. } => "formatting",
+            Lifecycle::Preparing { clear: true, .. } => "clearing",
+            Lifecycle::Ready => "ready",
+            Lifecycle::Saved => "saved",
+            Lifecycle::Running { .. } => "running",
+            Lifecycle::Stopping {
+                stop: Stop::Pause { .. },
+                ..
+            } => "stopping to pause",
+            Lifecycle::Stopping {
+                stop: Stop::Finish { .. },
+                ..
+            } => "stopping to finish",
+            Lifecycle::Stopping {
+                stop: Stop::FinishPaused,
+                ..
+            } => "finishing while paused",
+            Lifecycle::Paused { .. } => "paused",
+            Lifecycle::Recovering => "recovering",
+            Lifecycle::Recovered => "recovered",
+            Lifecycle::Full { .. } => "full",
+            Lifecycle::Failed { .. } => "failed",
+        }
+    }
+
     pub fn status(&self) -> Status {
-        self.status
+        match &self.lifecycle {
+            Lifecycle::Scanning => Status::Scanning,
+            Lifecycle::NeedsInit => Status::NeedsInit,
+            Lifecycle::Foreign => Status::Foreign,
+            Lifecycle::Unsupported => Status::Unsupported,
+            Lifecycle::Unavailable => Status::Unavailable,
+            Lifecycle::Corrupt => Status::Corrupt,
+            Lifecycle::Preparing { clear: false, .. } => Status::Formatting,
+            Lifecycle::Preparing { clear: true, .. } => Status::Clearing,
+            Lifecycle::Ready => Status::Ready,
+            Lifecycle::Saved => Status::Saved,
+            Lifecycle::Running { .. }
+            | Lifecycle::Stopping {
+                stop: Stop::Pause { .. } | Stop::Finish { .. },
+                ..
+            } => Status::Recording,
+            Lifecycle::Paused { .. }
+            | Lifecycle::Stopping {
+                stop: Stop::FinishPaused,
+                ..
+            } => Status::Paused,
+            Lifecycle::Recovering | Lifecycle::Recovered => Status::Recovered,
+            Lifecycle::Full { .. } => Status::Full,
+            Lifecycle::Failed { .. } => Status::Error,
+        }
     }
 
     pub fn completed(&self) -> u16 {
@@ -136,11 +384,11 @@ impl Recorder {
     }
 
     pub fn written_samples(&self) -> u32 {
-        self.written_samples
+        self.counters.written
     }
 
     pub fn dropped_samples(&self) -> u32 {
-        self.dropped_samples
+        self.counters.dropped
     }
 
     pub fn next_slot(&self) -> usize {
@@ -148,22 +396,22 @@ impl Recorder {
     }
 
     pub fn max_write_ms(&self) -> u32 {
-        self.max_write_ms
+        self.counters.max_write_ms
     }
 
     /// Optimistic 1 Hz recording time left before the journal is full, after
     /// reserving START (when no ride is open) and the terminal slot. Each
     /// pause/resume costs an event slot and may pad a partial batch.
     pub fn remaining_secs(&self) -> u32 {
-        if !self.status.usable() {
+        if !self.status().usable() {
             return 0;
         }
         let used = self
             .catalog
             .next_slot
-            .saturating_sub(usize::from(self.open_ride));
+            .saturating_sub(usize::from(self.ride_open()));
         crate::ride::reclaim::estimated_seconds_in(self.slots, used)
-            .saturating_sub(self.sample_count as u32)
+            .saturating_sub(self.batch.count as u32)
     }
 
     /// Slots of the medium, including the reserved terminal slot.
@@ -173,18 +421,19 @@ impl Recorder {
 
     /// A ride is open and running or paused on this journal.
     pub fn riding(&self) -> bool {
-        self.open_ride && matches!(self.status, Status::Recording | Status::Paused)
-    }
-
-    /// A pause or finish was accepted and not yet completed.
-    pub fn stop_requested(&self) -> bool {
-        self.stop_at.is_some()
+        self.lifecycle.ride().is_some()
     }
 
     /// The ride action accepted and not yet completed.
     pub fn pending_action(&self) -> Option<Action> {
-        match self.pending {
-            Some(Pending::Ride(action, ..)) => Some(action),
+        self.waiting().map(|(action, _)| action)
+    }
+
+    fn waiting(&self) -> Option<(Action, u32)> {
+        match (&self.lifecycle, &self.inbox) {
+            (Lifecycle::Stopping { token, stop, .. }, _) => Some((stop.action(), *token)),
+            (_, Inbox::Pending(Ask::Start { token, .. })) => Some((Action::Start, *token)),
+            (_, Inbox::Pending(Ask::Resume { token, .. })) => Some((Action::Resume, *token)),
             _ => None,
         }
     }
@@ -192,19 +441,27 @@ impl Recorder {
     /// Recovered with an interrupted ride whose closing record is still to be
     /// appended; a new ride may start once it is.
     pub fn recovering(&self) -> bool {
-        self.status == Status::Recovered && self.catalog.recovery.is_some()
+        matches!(self.lifecycle, Lifecycle::Recovering)
     }
 
     pub fn busy(&self) -> bool {
-        self.pending.is_some() || self.result.is_some()
+        !matches!(self.inbox, Inbox::Idle)
+            || matches!(
+                self.lifecycle,
+                Lifecycle::Stopping { .. } | Lifecycle::Preparing { .. }
+            )
     }
 
     pub fn max_erase_ms(&self) -> u32 {
-        self.max_erase_ms
+        self.counters.max_erase_ms
     }
 
     pub fn ride_open(&self) -> bool {
-        self.open_ride
+        match &self.lifecycle {
+            Lifecycle::Recovering => true,
+            Lifecycle::Full { open } | Lifecycle::Failed { open } => *open,
+            lifecycle => lifecycle.ride().is_some(),
+        }
     }
 
     pub fn summaries(&self) -> [Option<Summary>; crate::ride::log::HISTORY_CAPACITY] {
@@ -226,74 +483,74 @@ impl Recorder {
     }
 
     pub fn exportable(&self) -> bool {
-        !self.open_ride
-            && self.pending.is_none()
-            && self.result.is_none()
+        matches!(self.inbox, Inbox::Idle)
             && matches!(
-                self.status,
-                Status::NeedsInit
-                    | Status::Foreign
-                    | Status::Ready
-                    | Status::Saved
-                    | Status::Recovered
-                    | Status::Full
-                    | Status::Corrupt
+                self.lifecycle,
+                Lifecycle::NeedsInit
+                    | Lifecycle::Foreign
+                    | Lifecycle::Ready
+                    | Lifecycle::Saved
+                    | Lifecycle::Recovered
+                    | Lifecycle::Full { open: false }
+                    | Lifecycle::Corrupt
             )
     }
 
     pub fn request(&mut self, action: Action, now: u64, token: u32) -> bool {
-        if self.pending.is_some() || self.result.is_some() {
+        if self.busy() {
             return false;
         }
-        let allowed = match action {
-            Action::Start => {
-                self.catalog.recovery.is_none()
-                    && matches!(
-                        self.status,
-                        Status::Ready | Status::Saved | Status::Recovered
-                    )
+        match (action, self.lifecycle) {
+            (Action::Start, Lifecycle::Ready | Lifecycle::Saved | Lifecycle::Recovered)
+                if self.catalog.recovery.is_none() =>
+            {
+                self.inbox = Inbox::Pending(Ask::Start { at: now, token });
             }
-            Action::Pause => self.status == Status::Recording,
-            Action::Resume => self.status == Status::Paused,
-            Action::Finish => {
-                self.open_ride && matches!(self.status, Status::Recording | Status::Paused)
+            (Action::Pause, Lifecycle::Running { ride, since, .. }) => {
+                let stop = Stop::Pause { since, at: now };
+                self.lifecycle = Lifecycle::Stopping { ride, token, stop };
             }
-        };
-        if allowed {
-            if matches!(action, Action::Pause | Action::Finish) {
-                self.stop_at = Some(now);
+            (Action::Resume, Lifecycle::Paused { .. }) => {
+                self.inbox = Inbox::Pending(Ask::Resume { at: now, token });
             }
-            self.pending = Some(Pending::Ride(action, now, token));
+            (Action::Finish, Lifecycle::Running { ride, since, .. }) => {
+                let stop = Stop::Finish { since, at: now };
+                self.lifecycle = Lifecycle::Stopping { ride, token, stop };
+            }
+            (Action::Finish, Lifecycle::Paused { ride }) => {
+                let stop = Stop::FinishPaused;
+                self.lifecycle = Lifecycle::Stopping { ride, token, stop };
+            }
+            _ => return false,
         }
-        allowed
+        true
     }
 
     /// Explicitly prepare a journal that holds no usable rides. Corrupt bulk
     /// media is only superseded by a new epoch; its sectors stay readable.
     pub fn initialize(&mut self, token: u32) -> Result<(), Refused> {
-        if self.status == Status::Foreign {
+        if matches!(self.lifecycle, Lifecycle::Foreign) {
             return Err(Refused::Foreign);
         }
-        if !matches!(self.status, Status::NeedsInit | Status::Corrupt)
-            || self.pending.is_some()
-            || self.result.is_some()
-        {
+        if !matches!(self.lifecycle, Lifecycle::NeedsInit | Lifecycle::Corrupt) || self.busy() {
             return Err(Refused::State);
         }
-        self.pending = Some(Pending::Initialize(token));
-        self.step = 0;
-        self.status = Status::Formatting;
+        self.lifecycle = Lifecycle::Preparing {
+            clear: false,
+            step: 0,
+            token,
+        };
         Ok(())
     }
 
-    fn clearable(&self, expected_upper: usize) -> Result<(), Refused> {
-        if self.status == Status::Foreign {
+    pub(crate) fn clearable(&self, expected_upper: usize) -> Result<(), Refused> {
+        if matches!(self.lifecycle, Lifecycle::Foreign) {
             return Err(Refused::Foreign);
         }
         if !crate::ride::reclaim::request_allowed(
-            self.status,
-            self.open_ride,
-            self.pending.is_some() || self.result.is_some(),
+            self.status(),
+            self.ride_open(),
+            self.busy(),
             expected_upper,
             self.catalog.next_slot,
         ) {
@@ -304,39 +561,23 @@ impl Recorder {
 
     pub fn clear(&mut self, expected_upper: usize, token: u32) -> Result<(), Refused> {
         self.clearable(expected_upper)?;
-        self.pending = Some(Pending::Clear(token));
-        self.step = 0;
-        self.status = Status::Clearing;
+        self.lifecycle = Lifecycle::Preparing {
+            clear: true,
+            step: 0,
+            token,
+        };
         Ok(())
     }
 
-    /// Hold a Clear's token while something else wipes this journal;
-    /// `wiped` completes it.
-    pub fn await_wipe(&mut self, expected_upper: usize, token: u32) -> Result<(), Refused> {
-        self.clearable(expected_upper)?;
-        self.pending = Some(Pending::Wipe(token));
-        Ok(())
-    }
-
-    /// The journal was wiped: it holds no rides, and a Clear waiting on the
-    /// wipe completes.
-    pub fn wiped(&mut self) {
+    /// FORMAT wiped the journal: it holds no rides, and the host Clear
+    /// the wipe carried out, if any, completes.
+    pub fn wiped(&mut self, clear: Option<u32>) {
         self.emptied();
-        self.end_wipe(true);
-    }
-
-    /// The wipe stopped short, and a Clear waiting on it fails.
-    pub fn wipe_failed(&mut self) {
-        self.end_wipe(false);
-    }
-
-    fn end_wipe(&mut self, ok: bool) {
-        if let Some(Pending::Wipe(token)) = self.pending {
-            self.pending = None;
-            self.result = Some(ResultEvent {
+        if let Some(token) = clear {
+            self.inbox = Inbox::Done(ResultEvent {
                 action: None,
                 token,
-                ok,
+                ok: true,
             });
         }
     }
@@ -346,44 +587,57 @@ impl Recorder {
             next_ride_id: 1,
             ..Catalog::default()
         };
-        self.ride_id = 0;
-        self.sequence = 0;
         self.accumulated_ms = 0;
-        self.committed_ms = 0;
-        self.open_ride = false;
-        self.sample_count = 0;
-        self.status = Status::Ready;
+        self.batch.count = 0;
+        self.lifecycle = Lifecycle::Ready;
     }
 
     /// A lap closed: a sample this ride stores, after those of laps already
     /// waiting, begins a new one. Nothing is marked without an open ride.
     pub fn mark_lap(&mut self, start: LapStart) {
         if self.riding() {
-            self.lap_marks.push(start);
+            self.batch.laps.push(start);
         }
     }
 
     pub fn take_result(&mut self) -> Option<ResultEvent> {
-        self.result.take()
+        let Inbox::Done(result) = self.inbox else {
+            return None;
+        };
+        self.inbox = Inbox::Idle;
+        Some(result)
     }
 
     /// A pause or finish was accepted and active time is frozen, though the
     /// status stays Recording until its flush completes.
     pub fn stopping(&self) -> bool {
-        self.status == Status::Recording && self.stop_at.is_some()
+        matches!(
+            self.lifecycle,
+            Lifecycle::Stopping {
+                stop: Stop::Pause { .. } | Stop::Finish { .. },
+                ..
+            }
+        )
     }
 
     /// When the next 1 Hz sample is due, while one is.
     pub fn sample_due_ms(&self) -> Option<u64> {
-        (self.status == Status::Recording && self.stop_at.is_none()).then_some(self.next_sample)
+        match &self.lifecycle {
+            Lifecycle::Running { next_sample, .. } => Some(*next_sample),
+            _ => None,
+        }
     }
 
     pub fn active_ms(&self, now: u64) -> u64 {
-        if self.status == Status::Recording {
-            crate::ride::log::active_at(self.accumulated_ms, self.running_since, self.stop_at, now)
-        } else {
-            self.accumulated_ms
-        }
+        let (since, stop) = match &self.lifecycle {
+            Lifecycle::Running { since, .. } => (*since, None),
+            Lifecycle::Stopping {
+                stop: Stop::Pause { since, at } | Stop::Finish { since, at },
+                ..
+            } => (*since, Some(*at)),
+            _ => return self.accumulated_ms,
+        };
+        crate::ride::log::active_at(self.accumulated_ms, since, stop, now)
     }
 
     /// Perform at most one scan step, initialize/clear step, checkpoint, or
@@ -394,430 +648,488 @@ impl Recorder {
         now: u64,
         sample: Sample,
         clock: &impl Fn() -> u64,
-    ) -> bool {
-        let before = self.status;
-        let worked = self.service_inner(journal, now, sample, clock);
-        if self.status != before {
-            if self.status == Status::Error {
+    ) {
+        let before = self.status();
+        if let Some(effect) = self.step(now, sample) {
+            let outcome = apply(self, effect, journal, clock);
+            self.settle(outcome, now);
+        }
+        let status = self.status();
+        if status != before {
+            if status == Status::Error {
                 log::error!(target: "sdk.recorder", "media_failed previous={} next_slot={}", before.name(), self.catalog.next_slot);
             } else {
-                log::info!(target: "sdk.recorder", "state_changed previous={} current={} next_slot={}", before.name(), self.status.name(), self.catalog.next_slot);
+                log::info!(target: "sdk.recorder", "state_changed previous={} current={} next_slot={}", before.name(), status.name(), self.catalog.next_slot);
             }
         }
-        worked
     }
 
-    fn service_inner(
-        &mut self,
-        journal: &mut impl Journal,
-        now: u64,
-        sample: Sample,
-        clock: &impl Fn() -> u64,
-    ) -> bool {
-        if self.status == Status::Scanning {
-            self.scan(journal);
-            return true;
-        }
-        if matches!(self.status, Status::Formatting | Status::Clearing) {
-            self.prepare(journal, now, clock);
-            return true;
-        }
-        if self.status == Status::Error {
-            // The medium's state is uncertain: write nothing until recovery,
-            // and fail any action still queued so its token completes.
-            if let Some(Pending::Ride(action, .., token)) = self.pending.take() {
-                self.stop_at = None;
-                self.result = Some(ResultEvent {
-                    action: Some(action),
-                    token,
-                    ok: false,
-                });
-                return true;
+    fn step(&mut self, now: u64, sample: Sample) -> Option<Effect> {
+        match self.lifecycle {
+            Lifecycle::Scanning => return Some(Effect::Scan),
+            Lifecycle::Preparing { clear, step, .. } => {
+                let seed = now ^ (u64::from(self.catalog.next_ride_id) << 32) ^ step as u64;
+                return Some(Effect::Prepare { clear, step, seed });
             }
-            return false;
+            Lifecycle::Failed { .. } => return None,
+            _ => {}
         }
         if self.checkpoint_due {
             self.checkpoint_due = false;
-            let catalog = self.checkpoint_catalog();
-            if journal.checkpoint(&catalog) == Checkpoint::Failed {
-                self.freeze(now);
-                self.status = Status::Error;
-                return self.service_inner(journal, now, sample, clock);
-            }
-            return true;
+            return Some(Effect::Checkpoint);
         }
-
-        if self.status == Status::Recording && self.stop_at.is_none() && now >= self.next_sample {
-            if self.sample_count < self.samples.len() {
-                let mut sample = sample.without_impossible_battery();
-                sample.active_ms = self.active_ms(now);
-                sample.lap = self.lap_marks.pop();
-                self.samples[self.sample_count] = sample;
-                self.sample_count += 1;
-            } else {
-                self.dropped_samples = self.dropped_samples.saturating_add(1);
-            }
-            // Stay on the 1 Hz grid from the start/resume press so service
-            // latency does not stretch every period; count skipped periods.
-            let missed = (now - self.next_sample) / 1_000;
-            self.dropped_samples = self
-                .dropped_samples
-                .saturating_add(missed.min(u64::from(u32::MAX)) as u32);
-            self.next_sample = self
-                .next_sample
-                .saturating_add(missed.saturating_add(1).saturating_mul(1_000));
+        self.sample(now, sample);
+        if let (Lifecycle::Recovering, Some(recovery)) = (self.lifecycle, self.catalog.recovery) {
+            let record = Record::Event {
+                kind: Kind::Recovered,
+                ride: recovery.ride_id,
+                sequence: recovery.next_sequence,
+                active_ms: recovery.active_ms,
+            };
+            return self.append(now, true, record);
         }
-
-        // A lap that closed since the last sample has no later sample to
-        // begin on once recording stops, so the stop stores one more per lap,
-        // and one for the ride's start if no sample has carried it yet.
-        while self.stopping()
-            && self.sample_count < self.samples.len()
-            && self.lap_marks.lap_waiting()
-        {
-            let mut sample = sample.without_impossible_battery();
-            sample.active_ms = self.active_ms(now);
-            sample.lap = self.lap_marks.pop();
-            self.samples[self.sample_count] = sample;
-            self.sample_count += 1;
-        }
-
-        if self.status == Status::Recovered
-            && let Some(recovery) = self.catalog.recovery
-        {
-            let entry = Entry::event(
-                Kind::Recovered,
-                recovery.ride_id,
-                recovery.next_sequence,
-                recovery.active_ms,
-            );
-            if self.append(journal, &entry, true, now, clock) {
-                self.catalog.completed = self.catalog.completed.saturating_add(1);
-                self.catalog.recovery = None;
-                self.accumulated_ms = recovery.active_ms;
-                self.open_ride = false;
-                let mut summary = recovery.summary;
-                summary.finish(Kind::Recovered, recovery.active_ms, recovery.gap);
-                self.catalog.push_summary(summary);
-            }
-            return true;
-        }
-
-        if let Some(Pending::Initialize(_)) = self.pending {
-            return false;
-        }
-        if let Some(Pending::Clear(_) | Pending::Wipe(_)) = self.pending {
-            return false;
-        }
-        if let Some(Pending::Ride(action, action_ms, token)) = self.pending {
-            if self.sample_count != 0 && matches!(action, Action::Pause | Action::Finish) {
-                if !self.flush(journal, now, clock) {
-                    self.pending = None;
-                    self.result = Some(ResultEvent {
-                        action: Some(action),
-                        token,
-                        ok: false,
-                    });
+        match (self.lifecycle, self.inbox) {
+            (Lifecycle::Stopping { ride, stop, .. }, _) => {
+                if self.batch.count != 0 {
+                    return self.flush(now, ride.id, ride.sequence);
                 }
-                return true;
+                let (kind, terminal) = match stop {
+                    Stop::Pause { .. } => (Kind::Pause, false),
+                    Stop::Finish { .. } | Stop::FinishPaused => (Kind::Finish, true),
+                };
+                let record = Record::Event {
+                    kind,
+                    ride: ride.id,
+                    sequence: ride.sequence,
+                    active_ms: self.active_ms(now),
+                };
+                self.append(now, terminal, record)
             }
-            let active_ms = match action {
-                Action::Start => 0,
-                _ => self.active_ms(action_ms),
-            };
-            let kind = match action {
-                Action::Start => Kind::Start,
-                Action::Pause => Kind::Pause,
-                Action::Resume => Kind::Resume,
-                Action::Finish => Kind::Finish,
-            };
-            if action == Action::Start {
+            (_, Inbox::Pending(Ask::Start { token, .. })) => {
                 if crate::ride::reclaim::estimated_seconds_in(self.slots, self.catalog.next_slot)
                     == 0
                 {
                     // No room for START, one sample batch and the terminal record.
-                    self.status = Status::Full;
-                    self.pending = None;
-                    self.result = Some(ResultEvent {
-                        action: Some(action),
+                    self.lifecycle = Lifecycle::Full {
+                        open: self.ride_open(),
+                    };
+                    self.inbox = Inbox::Done(ResultEvent {
+                        action: Some(Action::Start),
                         token,
                         ok: false,
                     });
-                    return true;
+                    return None;
                 }
-                self.ride_id = self.catalog.next_ride_id;
-                self.sequence = 0;
+                let record = Record::Event {
+                    kind: Kind::Start,
+                    ride: self.catalog.next_ride_id,
+                    sequence: 0,
+                    active_ms: 0,
+                };
+                self.append(now, false, record)
             }
-            let entry = Entry::event(kind, self.ride_id, self.sequence, active_ms);
-            let ok = self.append(
-                journal,
-                &entry,
-                matches!(kind, Kind::Finish | Kind::Recovered | Kind::Full),
-                now,
-                clock,
-            );
-            if ok {
-                self.sequence = self.sequence.wrapping_add(1);
-                match action {
-                    Action::Start => {
-                        self.accumulated_ms = 0;
-                        self.running_since = action_ms;
-                        self.next_sample = action_ms;
-                        self.stop_at = None;
-                        self.open_ride = true;
-                        self.lap_marks = Marks::default();
-                        self.lap_marks.push(LapStart::Ride);
-                        self.summary = Summary::started(self.ride_id);
-                        self.status = Status::Recording;
-                        // As a scan would see it once START is committed.
-                        self.catalog.next_ride_id = self.ride_id.wrapping_add(1).max(1);
-                    }
-                    Action::Pause => {
-                        self.accumulated_ms = active_ms;
-                        self.stop_at = None;
-                        self.status = Status::Paused;
-                    }
-                    Action::Resume => {
-                        self.running_since = action_ms;
-                        self.next_sample = action_ms;
-                        self.stop_at = None;
-                        self.status = Status::Recording;
-                    }
-                    Action::Finish => {
-                        self.accumulated_ms = active_ms;
-                        self.stop_at = None;
-                        self.open_ride = false;
-                        self.lap_marks = Marks::default();
-                        self.status = Status::Saved;
-                        self.summary.finish(Kind::Finish, active_ms, false);
-                        self.catalog.push_summary(self.summary);
-                        self.catalog.completed = self.catalog.completed.saturating_add(1);
-                        self.catalog.next_ride_id = self.ride_id.wrapping_add(1).max(1);
-                    }
+            (Lifecycle::Paused { ride }, Inbox::Pending(Ask::Resume { .. })) => {
+                let record = Record::Event {
+                    kind: Kind::Resume,
+                    ride: ride.id,
+                    sequence: ride.sequence,
+                    active_ms: self.accumulated_ms,
+                };
+                self.append(now, false, record)
+            }
+            (Lifecycle::Running { ride, .. }, _) if self.batch.full() => {
+                self.flush(now, ride.id, ride.sequence)
+            }
+            _ => None,
+        }
+    }
+
+    fn sample(&mut self, now: u64, sample: Sample) {
+        let active_ms = self.active_ms(now);
+        match &mut self.lifecycle {
+            Lifecycle::Running { next_sample, .. } if now >= *next_sample => {
+                if self.batch.full() {
+                    self.counters.dropped = self.counters.dropped.saturating_add(1);
+                } else {
+                    self.batch.take(sample, active_ms);
+                }
+                let missed = (now - *next_sample) / 1_000;
+                self.counters.dropped = self
+                    .counters
+                    .dropped
+                    .saturating_add(missed.min(u64::from(u32::MAX)) as u32);
+                *next_sample =
+                    next_sample.saturating_add(missed.saturating_add(1).saturating_mul(1_000));
+            }
+            Lifecycle::Stopping {
+                stop: Stop::Pause { .. } | Stop::Finish { .. },
+                ..
+            } => {
+                while !self.batch.full() && self.batch.laps.lap_waiting() {
+                    self.batch.take(sample, active_ms);
                 }
             }
-            self.pending = None;
-            self.result = Some(ResultEvent {
+            _ => {}
+        }
+    }
+
+    fn flush(&mut self, now: u64, ride: u32, sequence: u32) -> Option<Effect> {
+        if self.catalog.next_slot >= self.slots.saturating_sub(1) {
+            self.freeze(now);
+            self.counters.dropped = self
+                .counters
+                .dropped
+                .saturating_add(self.batch.count as u32);
+            self.batch.count = 0;
+            let record = Record::Event {
+                kind: Kind::Full,
+                ride,
+                sequence,
+                active_ms: self.active_ms(now),
+            };
+            return self.append(now, true, record);
+        }
+        self.append(now, false, Record::Batch { ride, sequence })
+    }
+
+    fn append(&mut self, now: u64, terminal: bool, record: Record) -> Option<Effect> {
+        let slot = self.catalog.next_slot;
+        if slot >= self.slots || (!terminal && slot >= self.slots.saturating_sub(1)) {
+            self.settle(Outcome::NoRoom, now);
+            return None;
+        }
+        Some(Effect::Append {
+            slot,
+            terminal,
+            record,
+        })
+    }
+
+    fn settle(&mut self, outcome: Outcome, now: u64) {
+        match outcome {
+            Outcome::Scanning | Outcome::Checkpointed(Checkpoint::Written) => {}
+            Outcome::Scanned { found, slots } => {
+                self.slots = slots;
+                self.lifecycle = match found {
+                    Found::Done { overdue } => {
+                        self.checkpoint_due = overdue;
+                        if self.catalog.foreign() {
+                            Lifecycle::Foreign
+                        } else if self.catalog.next_slot >= self.slots {
+                            Lifecycle::Full { open: false }
+                        } else if let Some(recovery) = self.catalog.recovery {
+                            self.accumulated_ms = recovery.active_ms;
+                            Lifecycle::Recovering
+                        } else {
+                            Lifecycle::Ready
+                        }
+                    }
+                    Found::Uninitialized => Lifecycle::NeedsInit,
+                    Found::Foreign => Lifecycle::Foreign,
+                    Found::Unsupported => Lifecycle::Unsupported,
+                    Found::Unavailable => Lifecycle::Unavailable,
+                    Found::Corrupt => Lifecycle::Corrupt,
+                    Found::Failed => Lifecycle::Failed { open: false },
+                };
+            }
+            Outcome::Preparing { elapsed_ms } => {
+                self.counters.max_erase_ms = self.counters.max_erase_ms.max(elapsed_ms);
+                if let Lifecycle::Preparing { step, .. } = &mut self.lifecycle {
+                    *step += 1;
+                }
+            }
+            Outcome::Prepared { slots, elapsed_ms } => {
+                self.counters.max_erase_ms = self.counters.max_erase_ms.max(elapsed_ms);
+                let token = match self.lifecycle {
+                    Lifecycle::Preparing { token, .. } => token,
+                    _ => 0,
+                };
+                if let Some(slots) = slots {
+                    self.slots = slots;
+                    self.emptied();
+                } else {
+                    self.lifecycle = Lifecycle::Failed { open: false };
+                }
+                self.inbox = Inbox::Done(ResultEvent {
+                    action: None,
+                    token,
+                    ok: slots.is_some(),
+                });
+            }
+            Outcome::Checkpointed(Checkpoint::Failed) => self.stop(now, false),
+            Outcome::Appended {
+                record,
+                append,
+                active_ms,
+                elapsed_ms,
+            } => {
+                self.counters.max_write_ms = self.counters.max_write_ms.max(elapsed_ms);
+                match append {
+                    Append::Verified { checkpoint_due } => {
+                        self.catalog.next_slot += 1;
+                        self.catalog.valid_slots = self.catalog.valid_slots.saturating_add(1);
+                        self.checkpoint_due |= checkpoint_due;
+                        self.committed(record, active_ms);
+                    }
+                    Append::Uncertain => {
+                        self.stop(now, false);
+                    }
+                }
+            }
+            Outcome::NoRoom => self.stop(now, true),
+        }
+    }
+
+    fn stop(&mut self, now: u64, full: bool) {
+        self.freeze(now);
+        let waiting = self.waiting();
+        let open = self.ride_open();
+        self.lifecycle = if full {
+            Lifecycle::Full { open }
+        } else {
+            Lifecycle::Failed { open }
+        };
+        self.fail(waiting);
+    }
+
+    fn fail(&mut self, waiting: Option<(Action, u32)>) {
+        let Some((action, token)) = waiting else {
+            return;
+        };
+        self.inbox = Inbox::Done(ResultEvent {
+            action: Some(action),
+            token,
+            ok: false,
+        });
+    }
+
+    fn committed(&mut self, record: Record, active_ms: u64) {
+        let done = |action, token| {
+            Inbox::Done(ResultEvent {
                 action: Some(action),
                 token,
-                ok,
-            });
-            return true;
+                ok: true,
+            })
+        };
+        match (record, self.lifecycle, self.inbox) {
+            (Record::Batch { .. }, ..) => {
+                if let Some(ride) = self.lifecycle.ride_mut() {
+                    *ride = ride.committed(active_ms);
+                    for sample in self.batch.stored() {
+                        ride.summary.add_sample(*sample);
+                    }
+                }
+                self.counters.written = self
+                    .counters
+                    .written
+                    .saturating_add(self.batch.count as u32);
+                self.batch.count = 0;
+            }
+            (
+                Record::Event {
+                    kind: Kind::Start,
+                    ride,
+                    ..
+                },
+                _,
+                Inbox::Pending(Ask::Start { at, token }),
+            ) => {
+                self.accumulated_ms = 0;
+                self.batch.laps = Marks::default();
+                self.batch.laps.push(LapStart::Ride);
+                self.catalog.next_ride_id = ride.wrapping_add(1).max(1);
+                self.lifecycle = Lifecycle::Running {
+                    ride: OpenRide {
+                        id: ride,
+                        sequence: 1,
+                        committed_ms: active_ms,
+                        summary: Summary::started(ride),
+                    },
+                    since: at,
+                    next_sample: at,
+                };
+                self.inbox = done(Action::Start, token);
+            }
+            (
+                Record::Event { .. },
+                Lifecycle::Paused { ride },
+                Inbox::Pending(Ask::Resume { at, token }),
+            ) => {
+                self.lifecycle = Lifecycle::Running {
+                    ride: ride.committed(active_ms),
+                    since: at,
+                    next_sample: at,
+                };
+                self.inbox = done(Action::Resume, token);
+            }
+            (
+                Record::Event {
+                    kind: Kind::Full, ..
+                },
+                lifecycle,
+                _,
+            ) => {
+                let waiting = self.waiting();
+                if let Some(ride) = lifecycle.ride() {
+                    self.close(ride.summary, Kind::Full, active_ms, false);
+                }
+                self.lifecycle = Lifecycle::Full { open: false };
+                self.fail(waiting);
+            }
+            (Record::Event { .. }, Lifecycle::Stopping { ride, token, stop }, _) => {
+                self.accumulated_ms = active_ms;
+                match stop {
+                    Stop::Pause { .. } => {
+                        self.lifecycle = Lifecycle::Paused {
+                            ride: ride.committed(active_ms),
+                        };
+                    }
+                    Stop::Finish { .. } | Stop::FinishPaused => {
+                        self.batch.laps = Marks::default();
+                        self.close(ride.summary, Kind::Finish, active_ms, false);
+                        self.catalog.next_ride_id = ride.id.wrapping_add(1).max(1);
+                        self.lifecycle = Lifecycle::Saved;
+                    }
+                }
+                self.inbox = done(stop.action(), token);
+            }
+            (Record::Event { .. }, Lifecycle::Recovering, _) => {
+                if let Some(recovery) = self.catalog.recovery.take() {
+                    self.accumulated_ms = recovery.active_ms;
+                    self.close(
+                        recovery.summary,
+                        Kind::Recovered,
+                        recovery.active_ms,
+                        recovery.gap,
+                    );
+                }
+                self.lifecycle = Lifecycle::Recovered;
+            }
+            (Record::Event { .. }, ..) => {}
         }
-
-        if self.status == Status::Recording && self.sample_count == self.samples.len() {
-            self.flush(journal, now, clock);
-            return true;
-        }
-        false
     }
 
-    fn scan(&mut self, journal: &mut impl Journal) {
-        let scan = journal.scan();
-        if scan == Scan::More {
-            return;
-        }
-        // Whatever the outcome, report this journal's capacity: none for a
-        // medium without an epoch.
-        self.slots = journal.slots();
-        let catalog = match scan {
-            Scan::More => return,
-            Scan::Done(catalog) => catalog,
-            Scan::Uninitialized => {
-                self.status = Status::NeedsInit;
-                return;
-            }
-            Scan::Foreign => {
-                self.status = Status::Foreign;
-                return;
-            }
-            Scan::Unsupported => {
-                self.status = Status::Unsupported;
-                return;
-            }
-            Scan::Unavailable => {
-                self.status = Status::Unavailable;
-                return;
-            }
-            Scan::Corrupt => {
-                self.status = Status::Corrupt;
-                return;
-            }
-            Scan::Uncertain(catalog) => {
-                // Exportable up to the extent seen; nothing is written and
-                // only an explicit initialize starts over.
-                self.catalog = catalog;
-                self.status = Status::Corrupt;
-                return;
-            }
-            Scan::Failed => {
-                self.status = Status::Error;
-                return;
-            }
-        };
-        #[cfg(feature = "planted-bug")]
-        let catalog = forget_paused_recovery(catalog, journal);
-        self.catalog = catalog;
-        // Write an overdue checkpoint before any append, so repeated cuts
-        // cannot grow what the next boot replays.
-        self.checkpoint_due = journal.checkpoint_overdue();
-        self.status = if catalog.foreign() {
-            Status::Foreign
-        } else if catalog.next_slot >= self.slots {
-            Status::Full
-        } else if let Some(recovery) = catalog.recovery {
-            self.accumulated_ms = recovery.active_ms;
-            self.committed_ms = recovery.active_ms;
-            self.ride_id = recovery.ride_id;
-            self.sequence = recovery.next_sequence;
-            self.open_ride = true;
-            self.summary = recovery.summary;
-            Status::Recovered
-        } else {
-            Status::Ready
-        };
-    }
-
-    /// One initialize or clear step; completion leaves an empty journal.
-    fn prepare(&mut self, journal: &mut impl Journal, now: u64, clock: &impl Fn() -> u64) {
-        let clearing = self.status == Status::Clearing;
-        let started = clock();
-        // A new bulk epoch needs an identity that differs from the last one.
-        let seed = now ^ (u64::from(self.catalog.next_ride_id) << 32) ^ self.step as u64;
-        let progress = if clearing {
-            journal.clear(self.step, seed)
-        } else {
-            journal.initialize(self.step, seed)
-        };
-        self.max_erase_ms = self
-            .max_erase_ms
-            .max(clock().saturating_sub(started).min(u64::from(u32::MAX)) as u32);
-        let ok = match progress {
-            Progress::More => {
-                self.step += 1;
-                return;
-            }
-            Progress::Done => true,
-            Progress::Failed => false,
-        };
-        let token = match self.pending.take() {
-            Some(Pending::Initialize(token) | Pending::Clear(token)) => token,
-            _ => 0,
-        };
-        if ok {
-            self.slots = journal.slots();
-            self.emptied();
-        } else {
-            self.status = Status::Error;
-        }
-        self.result = Some(ResultEvent {
-            action: None,
-            token,
-            ok,
-        });
+    fn close(&mut self, mut summary: Summary, kind: Kind, active_ms: u64, gap: bool) {
+        summary.finish(kind, active_ms, gap);
+        self.catalog.push_summary(summary);
+        self.catalog.completed = self.catalog.completed.saturating_add(1);
     }
 
     /// The state a scan of everything committed so far would rebuild.
     fn checkpoint_catalog(&self) -> Catalog {
         let mut catalog = self.catalog;
-        if self.open_ride && catalog.recovery.is_none() {
+        if catalog.recovery.is_none()
+            && let Some(ride) = self.lifecycle.ride()
+        {
             catalog.recovery = Some(Recovery {
-                ride_id: self.ride_id,
-                next_sequence: self.sequence,
-                active_ms: self.committed_ms,
+                ride_id: ride.id,
+                next_sequence: ride.sequence,
+                active_ms: ride.committed_ms,
                 gap: false,
-                summary: self.summary,
+                summary: ride.summary,
             });
         }
         catalog
     }
 
-    fn flush(&mut self, journal: &mut impl Journal, now: u64, clock: &impl Fn() -> u64) -> bool {
-        if self.catalog.next_slot >= self.slots.saturating_sub(1) {
-            self.freeze(now);
-            self.dropped_samples = self
-                .dropped_samples
-                .saturating_add(self.sample_count as u32);
-            self.sample_count = 0;
-            let entry = Entry::event(Kind::Full, self.ride_id, self.sequence, self.active_ms(now));
-            if self.append(journal, &entry, true, now, clock) {
-                self.summary.finish(Kind::Full, entry.active_ms, false);
-                self.catalog.push_summary(self.summary);
-                self.catalog.completed = self.catalog.completed.saturating_add(1);
-                self.open_ride = false;
-            }
-            // An uncertain FULL record is a media failure, not a closed ride.
-            if self.status != Status::Error {
-                self.status = Status::Full;
-            }
-            return false;
-        }
-        let entry = Entry::batch(
-            self.ride_id,
-            self.sequence,
-            &self.samples[..self.sample_count],
-        )
-        .unwrap();
-        if self.append(journal, &entry, false, now, clock) {
-            self.sequence = self.sequence.wrapping_add(1);
-            for sample in &self.samples[..self.sample_count] {
-                self.summary.add_sample(*sample);
-            }
-            self.written_samples = self
-                .written_samples
-                .saturating_add(self.sample_count as u32);
-            self.sample_count = 0;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn append(
-        &mut self,
-        journal: &mut impl Journal,
-        entry: &Entry,
-        final_slot: bool,
-        now: u64,
-        clock: &impl Fn() -> u64,
-    ) -> bool {
-        if self.catalog.next_slot >= self.slots
-            || (!final_slot && self.catalog.next_slot >= self.slots.saturating_sub(1))
-        {
-            self.freeze(now);
-            self.status = Status::Full;
-            return false;
-        }
-        let started = clock();
-        let appended = journal.append(self.catalog.next_slot, entry, final_slot);
-        let elapsed = clock().saturating_sub(started).min(u64::from(u32::MAX)) as u32;
-        self.max_write_ms = self.max_write_ms.max(elapsed);
-        match appended {
-            Append::Verified { checkpoint_due } => {
-                self.catalog.next_slot += 1;
-                self.catalog.valid_slots = self.catalog.valid_slots.saturating_add(1);
-                self.committed_ms = entry.active_ms;
-                self.checkpoint_due |= checkpoint_due;
-                true
-            }
-            Append::Uncertain => {
-                // The commit may have reached the medium even when verification
-                // could not complete. Stop and let the boot scan reconcile it.
-                self.freeze(now);
-                self.status = Status::Error;
-                false
-            }
-        }
-    }
-
     fn freeze(&mut self, now: u64) {
-        if self.status == Status::Recording {
-            (self.accumulated_ms, self.running_since, self.stop_at) = crate::ride::log::freeze_at(
-                self.accumulated_ms,
-                self.running_since,
-                self.stop_at,
-                now,
-            );
+        self.accumulated_ms = self.active_ms(now);
+        match &mut self.lifecycle {
+            Lifecycle::Running { since, .. } => *since = now,
+            Lifecycle::Stopping {
+                stop: Stop::Pause { since, at } | Stop::Finish { since, at },
+                ..
+            } => (*since, *at) = (now, now),
+            _ => {}
+        }
+    }
+}
+
+fn elapsed_ms(clock: &impl Fn() -> u64, started: u64) -> u32 {
+    clock().saturating_sub(started).min(u64::from(u32::MAX)) as u32
+}
+
+// Out of line, so the entry and the catalogs it builds stay out of the
+// caller's frame, which holds one copy of this per medium otherwise.
+#[inline(never)]
+fn apply(
+    recorder: &mut Recorder,
+    effect: Effect,
+    journal: &mut impl Journal,
+    clock: &impl Fn() -> u64,
+) -> Outcome {
+    match effect {
+        Effect::Scan => {
+            let scan = journal.scan();
+            if scan == Scan::More {
+                return Outcome::Scanning;
+            }
+            let slots = journal.slots();
+            let found = match scan {
+                Scan::More => return Outcome::Scanning,
+                Scan::Done(catalog) => {
+                    #[cfg(feature = "planted-bug")]
+                    let catalog = forget_paused_recovery(catalog, journal);
+                    recorder.catalog = catalog;
+                    Found::Done {
+                        overdue: journal.checkpoint_overdue(),
+                    }
+                }
+                Scan::Uninitialized => Found::Uninitialized,
+                Scan::Foreign => Found::Foreign,
+                Scan::Unsupported => Found::Unsupported,
+                Scan::Unavailable => Found::Unavailable,
+                Scan::Corrupt => Found::Corrupt,
+                Scan::Uncertain(catalog) => {
+                    recorder.catalog = catalog;
+                    Found::Corrupt
+                }
+                Scan::Failed => Found::Failed,
+            };
+            Outcome::Scanned { found, slots }
+        }
+        Effect::Prepare { clear, step, seed } => {
+            let started = clock();
+            let progress = if clear {
+                journal.clear(step, seed)
+            } else {
+                journal.initialize(step, seed)
+            };
+            let elapsed_ms = elapsed_ms(clock, started);
+            let slots = match progress {
+                Progress::More => return Outcome::Preparing { elapsed_ms },
+                Progress::Done => Some(journal.slots()),
+                Progress::Failed => None,
+            };
+            Outcome::Prepared { slots, elapsed_ms }
+        }
+        Effect::Checkpoint => {
+            Outcome::Checkpointed(journal.checkpoint(&recorder.checkpoint_catalog()))
+        }
+        Effect::Append {
+            slot,
+            terminal,
+            record,
+        } => {
+            let entry = match record {
+                Record::Event {
+                    kind,
+                    ride,
+                    sequence,
+                    active_ms,
+                } => Entry::event(kind, ride, sequence, active_ms),
+                Record::Batch { ride, sequence } => {
+                    Entry::batch(ride, sequence, recorder.batch.stored()).unwrap()
+                }
+            };
+            let started = clock();
+            let append = journal.append(slot, &entry, terminal);
+            Outcome::Appended {
+                record,
+                append,
+                active_ms: entry.active_ms,
+                elapsed_ms: elapsed_ms(clock, started),
+            }
         }
     }
 }
@@ -1193,7 +1505,7 @@ mod tests {
         assert_eq!(recorder.status(), Status::Error);
         assert!(!recorder.take_result().unwrap().ok);
         let mutations = media.mutations;
-        assert!(!recorder.service(&mut media, 200, Sample::default(), &|| 200));
+        recorder.service(&mut media, 200, Sample::default(), &|| 200);
         assert_eq!(media.mutations, mutations);
     }
 

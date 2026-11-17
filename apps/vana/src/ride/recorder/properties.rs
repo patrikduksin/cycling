@@ -460,7 +460,7 @@ impl Rig {
 
     fn wipe(&mut self) {
         let upper = self.recorder.next_slot();
-        if self.recorder.await_wipe(upper, 1).is_err() {
+        if self.recorder.clearable(upper).is_err() {
             return;
         }
         self.clear_due = true;
@@ -477,7 +477,7 @@ impl Rig {
         }
         let seed = self.seed;
         assert!(wiped, "seed {seed}");
-        self.recorder.wiped();
+        self.recorder.wiped(Some(1));
         self.clear_due = false;
         assert!(self.recorder.take_result().unwrap().ok, "seed {seed}");
         assert!(
@@ -660,11 +660,11 @@ fn power_cut_during_a_clear_never_revives_a_ride_or_hides_data() {
         rig.boot();
         rig.service();
         let upper = rig.recorder.next_slot();
-        if rig.recorder.await_wipe(upper, 2).is_ok() {
+        if rig.recorder.clearable(upper).is_ok() {
             rig.live_from = rig.probe.acknowledged.len();
             let wiped = (0..SECTORS).all(|sector| wipe_sector(&mut rig.probe.nor, sector));
             assert!(wiped, "seed {seed}");
-            rig.recorder.wiped();
+            rig.recorder.wiped(Some(2));
             assert!(rig.recorder.take_result().unwrap().ok, "seed {seed}");
             assert!(
                 rig.probe.nor.bytes.iter().all(|&byte| byte == 0xff),

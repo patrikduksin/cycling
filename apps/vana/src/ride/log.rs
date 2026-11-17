@@ -370,19 +370,6 @@ pub fn active_at(accumulated_ms: u64, running_since: u64, stop_at: Option<u64>, 
     accumulated_ms.saturating_add(stop_at.unwrap_or(now).saturating_sub(running_since))
 }
 
-pub fn freeze_at(
-    accumulated_ms: u64,
-    running_since: u64,
-    stop_at: Option<u64>,
-    now: u64,
-) -> (u64, u64, Option<u64>) {
-    (
-        active_at(accumulated_ms, running_since, stop_at, now),
-        now,
-        Some(now),
-    )
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(test, derive(Hash))]
 pub struct Recovery {
@@ -1235,8 +1222,5 @@ mod tests {
         assert_eq!(active_at(4_000, 10_000, Some(10_999), 11_001), 4_999);
         assert_eq!(active_at(4_000, 10_000, None, 11_001), 5_001);
         assert_eq!(active_at(4_000, 12_000, Some(10_999), 11_001), 4_000);
-        let frozen = freeze_at(4_000, 10_000, None, 11_001);
-        assert_eq!(frozen, (5_001, 11_001, Some(11_001)));
-        assert_eq!(active_at(frozen.0, frozen.1, frozen.2, 20_000), 5_001);
     }
 }

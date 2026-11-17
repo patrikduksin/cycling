@@ -10,7 +10,7 @@ use crate::sensors::ant::device_type::HEART_RATE;
 use std::string::ToString;
 
 fn riding() -> Recorder {
-    Recorder::in_status(Status::Recording, true)
+    Recorder::running()
 }
 
 fn recording(mut runtime: Runtime) -> Runtime {
@@ -103,6 +103,16 @@ fn violating(rule: Rule) -> Runtime {
         Rule::AutoLapDisagrees => runtime.break_auto_lap_rule(),
         Rule::StartupStatusDisagreesOnceKnown => {
             runtime.startup_status = device_api::sensors::Startup::Ready.name();
+        }
+        Rule::HostTokenOwned => runtime.ride.host = crate::app::recording::Request::Pending(9),
+        Rule::PageWhileWiping => {
+            runtime.format = crate::app::format::Format::Running {
+                stage: crate::app::format::Stage::SettleIntent,
+                scope: crate::app::format::Scope::one(crate::app::storage::Store::Internal),
+                resumed: false,
+                clear: None,
+            };
+            runtime.navigation.page = Page::Home;
         }
         Rule::TwoRidingRides => {
             runtime.ride.internal = riding();

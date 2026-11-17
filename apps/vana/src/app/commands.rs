@@ -190,10 +190,13 @@ impl Runtime {
         if self.ride.open() {
             return Err(NotQueued::State);
         }
+        let mut clear = None;
         self.queue(Medium::Internal, output, |recorder, token| {
-            recorder.await_wipe(bound, token)
+            clear = Some(token);
+            recorder.clearable(bound)
         })?;
-        self.format_event(Event::Confirm(Scope::one(Store::Internal)), now);
+        let scope = Scope::one(Store::Internal);
+        self.format_event(Event::Confirm { scope, clear }, now);
         Ok(())
     }
 

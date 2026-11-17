@@ -37,6 +37,7 @@ pub(super) enum Format {
         /// The wipe began on an earlier boot, whose cut erase can leave
         /// cells that read erased yet hold weakly.
         resumed: bool,
+        clear: Option<u32>,
     },
     Failed,
     Done,
@@ -233,13 +234,14 @@ impl Format {
         }
     }
 
-    fn from_stage(stage: Option<Stage>, scope: Scope, resumed: bool) -> Self {
+    fn from_stage(stage: Option<Stage>, scope: Scope, resumed: bool, clear: Option<u32>) -> Self {
         core::iter::successors(stage, |stage| stage.next())
             .find(|stage| stage.runs_for(scope))
             .map_or(Self::Done, |stage| Self::Running {
                 stage,
                 scope,
                 resumed,
+                clear,
             })
     }
 
@@ -263,7 +265,10 @@ pub(super) enum Event {
         held: bool,
         at: u64,
     },
-    Confirm(Scope),
+    Confirm {
+        scope: Scope,
+        clear: Option<u32>,
+    },
     IntentRecorded(Scope),
     IntentNotRecorded,
     Wrote,
@@ -275,8 +280,8 @@ pub(super) enum Go {
     Stay,
     Question,
     FirstPage,
-    Ready,
-    JournalEmptied,
+    Ready { clear: Option<u32> },
+    JournalEmptied { clear: Option<u32> },
 }
 
 fn began_after_drawn(drawn: u64, at: u64) -> bool {
@@ -290,11 +295,11 @@ pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go
         (Unread, Event::IntentAtBoot(Found::Pending(scope))) => (Resuming { scope }, Go::Stay),
         // An unread intent may still name a pending wipe, so rides stay
         // blocked until a boot reads it.
-        (Unread, Event::Read { .. }) => (Failed, Go::Ready),
+        (Unread, Event::Read { .. }) => (Failed, Go::Ready { clear: None }),
         (Resuming { scope }, Event::Read { card, .. }) => {
             let resumed = match scope.reachable(card) {
-                Some(reachable) => Format::from_stage(Some(Stage::RESUMED), reachable, true),
-                None => Format::from_stage(Some(Stage::SettleIntent), scope, true),
+                Some(reachable) => Format::from_stage(Some(Stage::RESUMED), reachable, true, None),
+                None => Format::from_stage(Some(Stage::SettleIntent), scope, true, None),
             };
             (resumed, Go::Question)
         }
@@ -337,31 +342,47 @@ pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go
             },
         ) if began_after_drawn(drawn, at) => match button {
             Button::BottomRight if !ride_open => (
-                Format::from_stage(Some(Stage::FIRST), scope, false),
+                Format::from_stage(Some(Stage::FIRST), scope, false, None),
                 Go::Question,
             ),
             Button::TopLeft => (Declined, Go::FirstPage),
             Button::BottomRight | Button::BottomLeft | Button::Center => (format, Go::Stay),
         },
-        (Idle | Offered { .. } | Declined | Failed, Event::Confirm(scope)) if !ride_open => (
-            Format::from_stage(Some(Stage::FIRST), scope, false),
-            Go::Question,
-        ),
-        (Running { stage, resumed, .. }, Event::IntentRecorded(scope)) => {
-            (Format::from_stage(stage.next(), scope, resumed), Go::Stay)
+        (Idle | Offered { .. } | Declined | Failed, Event::Confirm { scope, clear })
+            if !ride_open =>
+        {
+            (
+                Format::from_stage(Some(Stage::FIRST), scope, false, clear),
+                Go::Question,
+            )
         }
+        (
+            Running {
+                stage,
+                resumed,
+                clear,
+                ..
+            },
+            Event::IntentRecorded(scope),
+        ) => (
+            Format::from_stage(stage.next(), scope, resumed, clear),
+            Go::Stay,
+        ),
         (
             Running {
                 stage,
                 scope,
                 resumed,
+                clear,
             },
             Event::Wrote,
-        ) => match Format::from_stage(stage.next(), scope, resumed) {
-            Done if scope.ends_without_restart() => (Idle, Go::JournalEmptied),
+        ) => match Format::from_stage(stage.next(), scope, resumed, clear) {
+            Done if scope.ends_without_restart() => (Idle, Go::JournalEmptied { clear }),
             next => (next, Go::Stay),
         },
-        (Running { .. }, Event::WriteFailed | Event::IntentNotRecorded) => (Failed, Go::Ready),
+        (Running { clear, .. }, Event::WriteFailed | Event::IntentNotRecorded) => {
+            (Failed, Go::Ready { clear })
+        }
         _ => (format, Go::Stay),
     }
 }
@@ -402,17 +423,17 @@ impl Runtime {
             Go::Stay => return self.display_after(format),
             Go::Question => Page::Format,
             Go::FirstPage => self.first_page(),
-            Go::Ready => {
-                self.ride.wipe_failed();
+            Go::Ready { clear } => {
+                self.ride.wipe_failed(clear);
                 Page::Ready
             }
-            Go::JournalEmptied => {
-                self.ride.internal.wiped();
+            Go::JournalEmptied { clear } => {
+                self.ride.internal.wiped(clear);
                 self.first_page()
             }
         };
-        let brand_leads_on =
-            matches!(go, Go::Question | Go::JournalEmptied) && self.navigation.page == Page::Boot;
+        let brand_leads_on = matches!(go, Go::Question | Go::JournalEmptied { .. })
+            && self.navigation.page == Page::Boot;
         if !brand_leads_on {
             self.navigation.page = page;
             self.navigation.page_since = now;
@@ -453,7 +474,7 @@ impl Runtime {
             }
             "CONFIRM" => {
                 let scope = Scope::every(self.card_access());
-                self.format_event(Event::Confirm(scope), now);
+                self.format_event(Event::Confirm { scope, clear: None }, now);
                 if matches!(self.format, Format::Running { .. }) {
                     "ACCEPTED"
                 } else {
@@ -493,6 +514,7 @@ impl Runtime {
             stage,
             scope,
             resumed,
+            ..
         } = self.format
         else {
             return;

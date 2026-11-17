@@ -50,11 +50,16 @@ const WITHOUT_CARD: Event = Event::Read {
     card: CardAccess::Out,
 };
 
+fn confirm(scope: Scope) -> Event {
+    Event::Confirm { scope, clear: None }
+}
+
 fn running(stage: Stage, scope: Scope) -> Format {
     Running {
         stage,
         scope,
         resumed: false,
+        clear: None,
     }
 }
 
@@ -63,6 +68,7 @@ fn resumed_at(stage: Stage, scope: Scope) -> Format {
         stage,
         scope,
         resumed: true,
+        clear: None,
     }
 }
 
@@ -95,9 +101,14 @@ fn every_state_and_event_steps_as_the_table_says() {
             Unread,
             Go::Stay,
         ),
-        (Unread, read(true, true), Failed, Go::Ready),
-        (Unread, read(false, false), Failed, Go::Ready),
-        (Unread, Event::Confirm(every), Unread, Go::Stay),
+        (Unread, read(true, true), Failed, Go::Ready { clear: None }),
+        (
+            Unread,
+            read(false, false),
+            Failed,
+            Go::Ready { clear: None },
+        ),
+        (Unread, confirm(every), Unread, Go::Stay),
         (Unread, press(ACT, 9_000), Unread, Go::Stay),
         (resuming, read(false, true), resumed, Go::Question),
         (resuming, read(true, true), resumed, Go::Question),
@@ -117,7 +128,7 @@ fn every_state_and_event_steps_as_the_table_says() {
         (resuming, Event::Drawn(1_000), resuming, Go::Stay),
         (resuming, press(ACT, 9_000), resuming, Go::Stay),
         (resuming, press(BACK, 9_000), resuming, Go::Stay),
-        (resuming, Event::Confirm(every), resuming, Go::Stay),
+        (resuming, confirm(every), resuming, Go::Stay),
         (
             resuming,
             Event::IntentAtBoot(Found::Idle),
@@ -164,11 +175,11 @@ fn every_state_and_event_steps_as_the_table_says() {
             Go::Stay,
         ),
         (ASKED, press(BACK, 1_250), Declined, Go::FirstPage),
-        (Idle, Event::Confirm(every), wiping, Go::Question),
-        (ASKED, Event::Confirm(every), wiping, Go::Question),
-        (Declined, Event::Confirm(every), wiping, Go::Question),
-        (Failed, Event::Confirm(every), wiping, Go::Question),
-        (wiping, Event::Confirm(every), wiping, Go::Stay),
+        (Idle, confirm(every), wiping, Go::Question),
+        (ASKED, confirm(every), wiping, Go::Question),
+        (Declined, confirm(every), wiping, Go::Question),
+        (Failed, confirm(every), wiping, Go::Question),
+        (wiping, confirm(every), wiping, Go::Stay),
         (wiping, press(ACT, 9_000), wiping, Go::Stay),
         (wiping, Event::IntentRecorded(every), begun, Go::Stay),
         (
@@ -205,7 +216,7 @@ fn every_state_and_event_steps_as_the_table_says() {
             running(Stage::SettleIntent, INTERNAL),
             Event::Wrote,
             Idle,
-            Go::JournalEmptied,
+            Go::JournalEmptied { clear: None },
         ),
         (
             running(Stage::SettleIntent, INTERNAL_RIDES),
@@ -219,9 +230,14 @@ fn every_state_and_event_steps_as_the_table_says() {
             Done,
             Go::Stay,
         ),
-        (wiping, Event::IntentNotRecorded, Failed, Go::Ready),
-        (begun, Event::WriteFailed, Failed, Go::Ready),
-        (Done, Event::Confirm(every), Done, Go::Stay),
+        (
+            wiping,
+            Event::IntentNotRecorded,
+            Failed,
+            Go::Ready { clear: None },
+        ),
+        (begun, Event::WriteFailed, Failed, Go::Ready { clear: None }),
+        (Done, confirm(every), Done, Go::Stay),
         (Done, read(true, true), Done, Go::Stay),
     ];
     for (format, event, after, go) in rows {
@@ -231,6 +247,59 @@ fn every_state_and_event_steps_as_the_table_says() {
             "{format:?} {event:?}"
         );
     }
+}
+
+#[test]
+fn a_clear_keeps_its_token_through_the_wipe_and_hands_it_to_the_ending() {
+    const TOKEN: u32 = 7;
+    let clearing = |stage| Running {
+        stage,
+        scope: INTERNAL,
+        resumed: false,
+        clear: Some(TOKEN),
+    };
+    let clear = Event::Confirm {
+        scope: INTERNAL,
+        clear: Some(TOKEN),
+    };
+    assert_eq!(
+        step(Idle, clear, false),
+        (clearing(Stage::RecordIntent), Go::Question)
+    );
+    let stages = [
+        Stage::RecordIntent,
+        Stage::ForgetInternalRides,
+        Stage::SettleIntent,
+    ]
+    .into_iter()
+    .chain((0..SECTORS).map(Stage::JournalSector));
+    let inert = [
+        clear,
+        confirm(INTERNAL),
+        read(true, true),
+        Event::Drawn(1_000),
+        press(ACT, 9_000),
+    ];
+    let mut endings = Vec::new();
+    for stage in stages {
+        let written = match stage {
+            Stage::RecordIntent => [Event::IntentRecorded(INTERNAL), Event::IntentNotRecorded],
+            _ => [Event::Wrote, Event::WriteFailed],
+        };
+        for event in written.into_iter().chain(inert) {
+            let (after, go) = step(clearing(stage), event, false);
+            match (after, go) {
+                (Running { clear, .. }, Go::Stay) => assert_eq!(clear, Some(TOKEN)),
+                (_, Go::Ready { clear } | Go::JournalEmptied { clear }) => {
+                    assert_eq!(clear, Some(TOKEN), "{stage:?} {event:?}");
+                    endings.push(go);
+                }
+                _ => panic!("{stage:?} {event:?} gave {after:?} {go:?}"),
+            }
+        }
+    }
+    assert!(endings.contains(&Go::Ready { clear: Some(TOKEN) }));
+    assert!(endings.contains(&Go::JournalEmptied { clear: Some(TOKEN) }));
 }
 
 #[test]
@@ -277,7 +346,7 @@ fn no_ride_starts_before_the_intent_is_read_or_while_a_wipe_resumes() {
 
 #[test]
 fn nothing_starts_a_wipe_under_an_open_ride() {
-    let every = Event::Confirm(Scope::every(CardAccess::Writable));
+    let every = confirm(Scope::every(CardAccess::Writable));
     for (format, event) in [
         (ASKED, press(ACT, 1_250)),
         (Idle, every),
@@ -342,7 +411,7 @@ fn a_wipe_takes_the_stages_of_the_stores_it_is_for_in_order() {
     for (scope, stages) in cases {
         let wipe = |format| {
             let mut taken = Vec::new();
-            let mut format = step(format, Event::Confirm(scope), false).0;
+            let mut format = step(format, confirm(scope), false).0;
             while let Running { stage, .. } = format {
                 taken.push(stage);
                 let event = match stage {

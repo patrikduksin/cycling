@@ -1,5 +1,7 @@
 use super::Runtime;
+use super::format::Format;
 use super::power::Sheet;
+use super::recording::Request;
 use crate::ride::medium::Medium;
 use crate::ride::recorder::Action;
 use crate::ride::recorder::invariants as recorder;
@@ -28,6 +30,11 @@ invariants! {
                 && runtime.startup_status != runtime.startup.name(),
         TwoRidingRides: "both journals riding"
             if runtime.ride.internal.riding() && runtime.ride.bulk.riding(),
+        HostTokenOwned: "a host operation waits without exactly one owner of its token"
+            if runtime.host_token_unowned(),
+        PageWhileWiping: "a page other than FORMAT or the brand shown while a wipe runs"
+            if matches!(runtime.format, Format::Running { .. })
+                && !matches!(runtime.navigation.page, Page::Format | Page::Boot),
     }
 }
 
@@ -47,6 +54,26 @@ impl core::fmt::Display for Broken {
 }
 
 impl Runtime {
+    fn host_token_unowned(&self) -> bool {
+        let host = match self.ride.host {
+            Request::Pending(token) => Some(token),
+            Request::Idle | Request::Completed(_) => None,
+        };
+        let wiping = match self.format {
+            Format::Running { clear, .. } => clear,
+            _ => None,
+        };
+        let owners = |token| {
+            usize::from(wiping == Some(token))
+                + [Medium::Internal, Medium::Bulk]
+                    .into_iter()
+                    .filter(|&medium| self.ride.recorder(medium).outstanding_token() == Some(token))
+                    .count()
+        };
+        host.is_some_and(|token| owners(token) != 1)
+            || wiping.is_some_and(|token| host != Some(token))
+    }
+
     pub fn broken(&self) -> Option<Broken> {
         [Medium::Internal, Medium::Bulk]
             .into_iter()

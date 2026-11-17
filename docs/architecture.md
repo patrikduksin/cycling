@@ -173,6 +173,24 @@ scan, gets one file named for the behavior beside its owner.
 - Return effects as data. One interpreter performs them and is the only writer
   of what they touch. An outcome, accepted or refused, comes back to `step` as
   an event.
+- An owner that holds a capability splits its service into `step`, `apply` and
+  `settle`, as [the recorder](../apps/vana/src/ride/recorder.rs) does with its
+  journal.
+  - Its state is a `Lifecycle` and an `Inbox`. An operation in progress keeps
+    its token in its own variant: a pause or finish in `Stopping`, an
+    initialize or clear in `Preparing`. The inbox holds a start or resume that
+    waits, or a result not yet taken.
+  - `step` decides in memory and returns one `Effect` at most. An effect is
+    small and `Copy`, and names what to do without carrying a buffer.
+  - `apply` is the only code that calls the journal. It makes the effect's one
+    call, times it, and returns an `Outcome`.
+  - `settle` takes the outcome and returns no effect, so one service call
+    makes one journal call at most. The type holds that bound, not a counter.
+    A refusal that needs no call, such as no room for the record, is settled
+    by `step` itself.
+  - A command that can cause no effect (`request`, `initialize`, `clear`,
+    `mark_lap`, `take_result`) is a plain method. It takes no journal and no
+    clock, so its signature shows that it does no IO.
 - Raise events where the change happens, in an input handler or at the end of
   the service tick that changed the owner. Drawing reads state and never writes
   it.
@@ -199,9 +217,14 @@ scan, gets one file named for the behavior beside its owner.
   runs over a six-slot fake journal whose bytes are part of the state.
   `Env` holds everything outside the recorder: that journal, the time, the
   counts that bound a path, and FORMAT's wipe. `drive` makes one event's calls
-  into the recorder, and `observe` reads it through public methods only. A
-  second recorder adds its own `drive` and `observe`, with no shared trait, and
-  the differential search gives both recorders every edge over one `Env`.
+  into the recorder, and `observe` reads it through public methods only. The
+  rules read `Env`, what the call returned and what `observe` saw. `rules.rs`
+  names its two reads of private state at its top.
+  To rewrite a searched machine, freeze the old copy beside it as a test-only
+  module with its own `drive` and `observe`, and no shared trait. Search both
+  over one `Env`, compare every observation and the journal on every edge, and
+  delete the old copy in the same PR once the search closes with no
+  difference.
   A scan answers `More` before its last answer, as the real journals do, and
   two starting volumes answer `Foreign` and `Corrupt` with no catalog. A probe
   is a rule the search must break, because the edge that breaks it reaches what
@@ -210,6 +233,8 @@ scan, gets one file named for the behavior beside its owner.
   with or without the erase, or is cut and finished at the next boot. While
   FORMAT holds storage with no wipe waiting in the recorder, the search makes
   only the recorder calls the app makes.
+  Its always-on search starts first in each test run, in nextest's `slow`
+  group, which `cycling quick` leaves out.
   Run its ignored `WIDE` and full-batch tests on any PR that touches
   `ride/recorder*` or `ride/journal.rs`.
   Capacities beyond the bounds stay covered by targeted and property tests.

@@ -1,6 +1,7 @@
 import dataclasses
 import subprocess
 import time
+import types
 
 import pytest
 
@@ -580,10 +581,12 @@ def reviewed_patch(capsys):
     return capsys.readouterr().out.strip()
 
 
-def test_review_status_follows_the_patch_not_the_commit(checkout, github, feature, capsys):
+def test_review_status_follows_the_patch_not_the_commit(checkout, github, feature, capsys, monkeypatch):
     patch = reviewed_patch(capsys)
     assert reviewing('status') == 1
-    assert reviewing('step', '--by', 'deslop', '--started', str(time.time() - 30)) == 0
+    now = time.time()
+    monkeypatch.setattr(review, 'time', types.SimpleNamespace(time=lambda: now))
+    assert reviewing('step', '--by', 'deslop', '--started', str(now - 30)) == 0
     assert reviewing('status') == 1
     assert reviewing('record', '--patch', patch, '--by', 'thermos-bugs/opus', '--verdict', 'PASS') == 0
     assert reviewing('status') == 0

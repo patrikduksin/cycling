@@ -509,11 +509,11 @@ impl Runtime {
     pub fn select_ble<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
         &mut self,
         shell: &mut Shell<D, I, P, B>,
-        pending: bool,
+        radio: device_api::connectivity::Operation,
         connections: u32,
         choice: Option<(Selection, u8)>,
     ) -> Result<Option<Selection>, &'static str> {
-        if pending {
+        if radio == device_api::connectivity::Operation::Pending {
             return Err("UNAVAILABLE");
         }
         let (selection, profile) = match choice {

@@ -381,25 +381,16 @@ pub fn execute(
             ))
         }
         Command::WifiConfigure(_) | Command::WifiForget => {
-            let configuration = if let Command::WifiConfigure(value) = request.command {
-                Some(value)
-            } else {
-                None
+            let configuration = match request.command {
+                Command::WifiConfigure(value) => Some(value),
+                _ => None,
             };
-            if wifi::control().operation == device_api::connectivity::Operation::Pending {
-                status = "UNAVAILABLE";
-            } else {
-                let previous = system.settings;
-                system.settings.wifi = configuration;
-                if !system.save_connectivity() {
-                    system.settings = previous;
-                    status = "FAILED";
-                } else {
-                    status = firmware_console::protocol::request_status(wifi::request(
-                        device_api::connectivity::WifiOperation::Configure(configuration),
-                    ));
-                }
-            }
+            status = match system.save_wifi(wifi::control().operation, configuration) {
+                Ok(()) => firmware_console::protocol::request_status(wifi::request(
+                    device_api::connectivity::WifiOperation::Configure(configuration),
+                )),
+                Err(refused) => refused,
+            };
         }
         Command::WifiNetworks => {
             for (index, network) in wifi::discoveries().iter().enumerate() {
@@ -457,7 +448,7 @@ pub fn execute(
             };
             status = match sdk.select_ble(
                 system,
-                ble.control().operation == device_api::connectivity::Operation::Pending,
+                ble.control().operation,
                 ble.snapshot().connections,
                 choice,
             ) {

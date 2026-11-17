@@ -786,6 +786,17 @@ impl Sim {
             device_api::connectivity::Operation::Completed;
     }
 
+    pub fn hold_wifi_operation(&mut self) {
+        self.note(NoteKind::World, "Wi-Fi operation pending");
+        self.device.sim_mut().wifi_control.operation = device_api::connectivity::Operation::Pending;
+    }
+
+    pub fn finish_wifi_operation(&mut self) {
+        self.note(NoteKind::World, "Wi-Fi operation completed");
+        self.device.sim_mut().wifi_control.operation =
+            device_api::connectivity::Operation::Completed;
+    }
+
     /// Wi-Fi time synchronization succeeds now with this UTC, in ms since
     /// 1970; the device keeps it until it reboots.
     pub fn sync_network_time(&mut self, unix_ms: u64) {

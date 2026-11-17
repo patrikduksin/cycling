@@ -889,6 +889,31 @@ fn ble_select_and_forget_wait_for_a_pending_ble_operation() {
 }
 
 #[test]
+fn wifi_config_and_forget_wait_for_a_pending_wifi_operation() {
+    let mut sim = rider();
+    let (status, out) = sim.command("WIFI CONFIG WPA2 54657374 70617373776f7264");
+    assert_eq!(status, "ACCEPTED", "WIFI CONFIG: {out}");
+    sim.hold_wifi_operation();
+    let (_, wifi) = sim.command("WIFI");
+    let (status, out) = sim.command("WIFI CONFIG WPA3 4f74686572 70617373776f7264");
+    assert_eq!(status, "UNAVAILABLE", "WIFI CONFIG while pending: {out}");
+    let (status, out) = sim.command("WIFI FORGET");
+    assert_eq!(status, "UNAVAILABLE", "WIFI FORGET while pending: {out}");
+    assert_eq!(
+        sim.command("WIFI").1,
+        wifi,
+        "a refused change reached Wi-Fi"
+    );
+    sim.finish_wifi_operation();
+    let (status, out) = sim.command("WIFI FORGET");
+    assert_eq!(
+        status, "ACCEPTED",
+        "WIFI FORGET once the operation completed: {out}"
+    );
+    assert!(sim.command("WIFI").1.contains("saved=false"));
+}
+
+#[test]
 fn sitting_out_a_long_pause_before_ending_measures_nothing() {
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);

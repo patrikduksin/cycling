@@ -628,7 +628,7 @@ pub struct Simulated {
     /// Coordinated shutdown and work readiness, as composition reads them.
     pub switch: PowerSwitch,
     barometer: Option<(u64, u32)>,
-    wifi_control: device_api::connectivity::ControlStatus,
+    pub(crate) wifi_control: device_api::connectivity::ControlStatus,
     pub(crate) ble_control: device_api::connectivity::ControlStatus,
     pub phone_server: crate::phone::SimServer,
     pub access_point: crate::phone::SimAccessPoint,
@@ -1814,15 +1814,12 @@ impl Session {
                 );
             }
             Command::WifiConfigure(_) | Command::WifiForget => {
-                let previous = self.shell.settings;
-                self.shell.settings.wifi = if let Command::WifiConfigure(config) = request.command {
-                    Some(config)
-                } else {
-                    None
+                let configuration = match request.command {
+                    Command::WifiConfigure(config) => Some(config),
+                    _ => None,
                 };
-                if !self.shell.save_connectivity() {
-                    self.shell.settings = previous;
-                    return "FAILED";
+                if let Err(refused) = self.shell.save_wifi(wifi_control.operation, configuration) {
+                    return refused;
                 }
                 if let Devices::Simulated(sim) = &mut self.devices {
                     sim.wifi_control.sequence = sim.wifi_control.sequence.wrapping_add(1);
@@ -1835,15 +1832,9 @@ impl Session {
                     Command::BleSelect(peer, profile) => Some((peer, profile)),
                     _ => None,
                 };
-                let pending = match &self.devices {
-                    Devices::Simulated(sim) => {
-                        sim.ble_control.operation == device_api::connectivity::Operation::Pending
-                    }
-                    Devices::Replayed(_) => false,
-                };
                 if let Err(refused) = self.sdk.select_ble(
                     &mut self.shell,
-                    pending,
+                    ble_control.operation,
                     self.trace.ble.snapshot().connections,
                     choice,
                 ) {

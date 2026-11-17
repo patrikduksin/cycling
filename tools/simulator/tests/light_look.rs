@@ -2,8 +2,13 @@ use device_api::input::Button;
 use firmware_shell::rendering::record::{self, Kind};
 use shell_simulator::bench::SCENES;
 use shell_simulator::sim::{Sim, seconds};
+use vana::screens::chrome::{
+    ACCENT, AMBER, BLACK, CARD, GREEN, HEART, MUTED, POWER, PRESSED, RAISED, RED, SECONDARY, SPEED,
+    TERTIARY, WHITE, ZONES,
+};
 use vana::screens::look::light;
 use vana::screens::phone;
+use vana::screens::sign::{ARRIVED_FILL, OFF_FILL, TURN_FILL};
 use vana::screens::workout::Page;
 
 fn reach(name: &str) -> Sim {
@@ -68,6 +73,17 @@ const GREY_CHROMA: u8 = 8;
 const GREY_EDGE_TOLERANCE: [u8; 3] = [17, 8, 17];
 const COLOUR_EDGE_TOLERANCE: [u8; 3] = [91, 81, 140];
 
+const GREY_ROUNDING_STEPS: u16 = 1;
+
+const PALETTE: [u16; 16] = [
+    BLACK, WHITE, SECONDARY, MUTED, TERTIARY, CARD, RAISED, PRESSED, ACCENT, GREEN, AMBER, RED,
+    SPEED, POWER, HEART, ZONES[6],
+];
+
+const SIGN_FILLS: [u16; 3] = [TURN_FILL, OFF_FILL, ARRIVED_FILL];
+
+const SIGN_RADIUS: usize = 12;
+
 #[derive(Clone, Copy, Default)]
 struct Most {
     by: [u8; 3],
@@ -104,7 +120,7 @@ fn every_screen_paints_its_colours_through_the_light_look() {
         let code = (sim.device.sdk.page() == Page::Phone)
             .then(|| panel(&dark.pixels, width))
             .flatten();
-        let sign = fixed_box(&shown.kinds, width);
+        let sign = sign_box(&shown, width, name);
         let mut most = [Most::default(); 2];
         for (i, (&was, &now)) in dark.pixels.iter().zip(&shown.pixels).enumerate() {
             let (x, y) = (i % width, i / width);
@@ -118,12 +134,18 @@ fn every_screen_paints_its_colours_through_the_light_look() {
                 Kind::Mapped => assert_eq!(now, light(was), "{name}: mapped at {x},{y}"),
                 Kind::Fixed => assert_eq!(now, was, "{name}: fixed at {x},{y}"),
                 Kind::Computed if sign.is_some_and(|sign| inside(sign, x, y)) => {}
+                Kind::Computed if solid(&dark.pixels, width, i) => {
+                    let want = light(was);
+                    let rounding = if grey(was) { GREY_ROUNDING_STEPS } else { 0 };
+                    assert!(
+                        max_channel_steps(now, want) <= rounding,
+                        "{name}: solid computed at {x},{y}: {now:#06x} for {want:#06x}"
+                    );
+                }
                 Kind::Computed => {
                     let (now, want) = (channels(now), channels(light(was)));
                     let delta = core::array::from_fn(|c| now[c].abs_diff(want[c]));
-                    let was = channels(was);
-                    let grey = was.iter().max().unwrap() - was.iter().min().unwrap() <= GREY_CHROMA;
-                    let (tolerance, most) = if grey {
+                    let (tolerance, most) = if grey(was) {
                         (GREY_EDGE_TOLERANCE, &mut most[0])
                     } else {
                         (COLOUR_EDGE_TOLERANCE, &mut most[1])
@@ -163,16 +185,40 @@ fn every_screen_paints_its_colours_through_the_light_look() {
     println!("corpus (r, g, b): grey edges within {grey:?}, coloured edges within {colour:?}");
 }
 
-fn panel(pixels: &[u16], width: usize) -> Option<[usize; 4]> {
-    let white = pixels
-        .iter()
-        .enumerate()
-        .filter(|&(i, &pixel)| pixel == 0xffff && phone::on_code(i % width, i / width));
-    white.fold(None, |found, (i, _)| {
+fn solid(pixels: &[u16], width: usize, i: usize) -> bool {
+    let x = i % width;
+    PALETTE.contains(&pixels[i])
+        && x > 0
+        && x + 1 < width
+        && pixels[i - 1] == pixels[i]
+        && pixels[i + 1] == pixels[i]
+}
+
+fn grey(pixel: u16) -> bool {
+    let channels = channels(pixel);
+    channels.iter().max().unwrap() - channels.iter().min().unwrap() <= GREY_CHROMA
+}
+
+fn max_channel_steps(a: u16, b: u16) -> u16 {
+    [(11, 0x1f), (5, 0x3f), (0, 0x1f)]
+        .into_iter()
+        .map(|(shift, mask)| (a >> shift & mask).abs_diff(b >> shift & mask))
+        .max()
+        .unwrap()
+}
+
+fn bounds(width: usize, at: impl Iterator<Item = usize>) -> Option<[usize; 4]> {
+    at.fold(None, |found, i| {
         let (x, y) = (i % width, i / width);
         let [left, top, right, bottom] = found.unwrap_or([x, y, x, y]);
         Some([left.min(x), top.min(y), right.max(x), bottom.max(y)])
     })
+}
+
+fn panel(pixels: &[u16], width: usize) -> Option<[usize; 4]> {
+    let white =
+        (0..pixels.len()).filter(|&i| pixels[i] == 0xffff && phone::on_code(i % width, i / width));
+    bounds(width, white)
 }
 
 fn beside_or_in_corner([left, top, right, bottom]: [usize; 4], x: usize, y: usize) -> bool {
@@ -181,16 +227,34 @@ fn beside_or_in_corner([left, top, right, bottom]: [usize; 4], x: usize, y: usiz
     outside || (x < left + r || x > right - r) && (y < top + r || y > bottom - r)
 }
 
-fn fixed_box(kinds: &[Kind], width: usize) -> Option<[usize; 4]> {
-    let fixed = kinds
-        .iter()
-        .enumerate()
-        .filter(|(_, kind)| **kind == Kind::Fixed);
-    fixed.fold(None, |found, (i, _)| {
+fn sign_box(shown: &Painted, width: usize, name: &str) -> Option<[usize; 4]> {
+    let fixed = || (0..shown.kinds.len()).filter(|&i| shown.kinds[i] == Kind::Fixed);
+    let sign = bounds(
+        width,
+        fixed().filter(|&i| SIGN_FILLS.contains(&shown.pixels[i])),
+    );
+    for i in fixed() {
         let (x, y) = (i % width, i / width);
-        let [left, top, right, bottom] = found.unwrap_or([x, y, x, y]);
-        Some([left.min(x), top.min(y), right.max(x), bottom.max(y)])
-    })
+        let on_sign = sign.is_some_and(|sign| inside(sign, x, y));
+        assert!(on_sign, "{name}: fixed at {x},{y} outside the sign");
+    }
+    if let Some([left, top, right, bottom]) = sign {
+        let fill = |x: usize, y: usize| {
+            let i = y * width + x;
+            shown.kinds[i] == Kind::Fixed && SIGN_FILLS.contains(&shown.pixels[i])
+        };
+        let r = SIGN_RADIUS;
+        let (across, down) = (left + r..=right - r, top + r..=bottom - r);
+        let edges = right - left > 2 * r
+            && bottom - top > 2 * r
+            && across.clone().all(|x| fill(x, top) && fill(x, bottom))
+            && down.clone().all(|y| fill(left, y) && fill(right, y));
+        assert!(
+            edges,
+            "{name}: the sign's fill stops short of its box {sign:?}"
+        );
+    }
+    sign
 }
 
 fn inside([left, top, right, bottom]: [usize; 4], x: usize, y: usize) -> bool {

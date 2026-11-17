@@ -505,17 +505,20 @@ fn rows_paint_what_the_per_pixel_original_says() {
         turning,
         waiting_to_join(&c, (0.0, -100.0), 300),
     ];
-    for (n, track) in cases.iter().enumerate() {
-        let frame = filled(track);
-        for y in 0..HEIGHT {
-            let mut pixels = [0x1234u16; WIDTH];
-            paint(&frame, &mut Row::new(y, &mut pixels));
-            for (x, &got) in pixels.iter().enumerate() {
-                assert_eq!(
-                    got,
-                    pixel(&frame, Look::PLAIN, x, y, 0x1234),
-                    "case {n} at {x},{y}"
-                );
+    for (n, track) in cases.into_iter().enumerate() {
+        for light in [false, true] {
+            let look = crate::screens::look::look(light);
+            let frame = filled(&Track { light, ..track });
+            for y in 0..HEIGHT {
+                let mut pixels = [0x1234u16; WIDTH];
+                paint(&frame, &mut Row::new(y, &mut pixels).looked(look));
+                for (x, &got) in pixels.iter().enumerate() {
+                    assert_eq!(
+                        got,
+                        pixel(&frame, look, x, y, 0x1234),
+                        "case {n} light {light} at {x},{y}"
+                    );
+                }
             }
         }
     }

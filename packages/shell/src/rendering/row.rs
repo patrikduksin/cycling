@@ -381,7 +381,6 @@ mod tests {
         assert!(lit.len() > 2 && lit.iter().all(|&p| p == 51), "{lit:?}");
     }
 
-    #[cfg(feature = "paint-record")]
     #[test]
     fn rows_record_how_each_pixel_was_last_written() {
         use crate::rendering::record::{Kind::*, of, start};
@@ -399,5 +398,18 @@ mod tests {
             of(&pixels).unwrap(),
             [&mapped[..], &worked[..], &glyph[..]].concat()
         );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "never opened")]
+    fn a_row_over_a_forgotten_record_is_caught() {
+        use crate::rendering::record::{open, start};
+        start();
+        let mut pixels = [0u16; 4];
+        let mut row = Row::new(0, &mut pixels);
+        let others = std::vec![[0u16; 4]; 64];
+        others.iter().for_each(|other| open(other));
+        row.span(0..1, 1);
     }
 }

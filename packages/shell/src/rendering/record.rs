@@ -1,7 +1,8 @@
 //! How each pixel was last written, so a host check can tell a palette
 //! colour mapped through a row's look from one written as given.
-//! Recording needs the `paint-record` feature and a `start` on the painting
-//! thread; without them nothing is kept and `of` answers `None`.
+//! Recording needs the `paint-record` feature, or the shell's own tests, and a
+//! `start` on the painting thread; without them nothing is kept and `of`
+//! answers `None`.
 //!
 //! A record belongs to the pixel buffer a `Row::new` was given, found by its
 //! address, so reborrowed rows share it without carrying anything.
@@ -22,7 +23,7 @@ pub enum Kind {
     Computed,
 }
 
-#[cfg(feature = "paint-record")]
+#[cfg(any(test, feature = "paint-record"))]
 mod recording {
     use super::Kind;
     use core::cell::{Cell, RefCell};
@@ -62,24 +63,28 @@ mod recording {
         });
     }
 
-    pub fn with(buffer: *const u16, change: impl FnOnce(&mut [Kind])) {
+    fn with(buffer: *const u16, change: impl FnOnce(&mut [Kind])) -> bool {
         if !STARTED.get() {
-            return;
+            return true;
         }
         RECORDS.with_borrow_mut(|records| {
             let key = buffer as usize;
-            if let Some((_, kinds)) = records.iter_mut().rev().find(|(kept, _)| *kept == key) {
-                change(kinds);
-            }
-        });
+            let found = records.iter_mut().rev().find(|(kept, _)| *kept == key);
+            found.map(|(_, kinds)| change(kinds)).is_some()
+        })
+    }
+
+    fn write(buffer: *const u16, change: impl FnOnce(&mut [Kind])) {
+        let opened = with(buffer, change);
+        debug_assert!(opened, "a row wrote a buffer that was never opened");
     }
 
     pub fn mark(buffer: *const u16, x: Range<usize>, kind: Kind) {
-        with(buffer, |kinds| kinds[x].fill(kind));
+        write(buffer, |kinds| kinds[x].fill(kind));
     }
 
     pub fn mark_each(buffer: *const u16, x: Range<usize>, kind: impl Fn(usize) -> Option<Kind>) {
-        with(buffer, |kinds| {
+        write(buffer, |kinds| {
             for x in x {
                 if let Some(kind) = kind(x) {
                     kinds[x] = kind;
@@ -90,12 +95,10 @@ mod recording {
 
     pub fn copy((from, start): (*const u16, usize), (to, x): (*const u16, Range<usize>)) {
         let mut copied = Vec::new();
-        with(from, |kinds| {
+        write(from, |kinds| {
             copied.extend_from_slice(&kinds[start..start + x.len()])
         });
-        if !copied.is_empty() {
-            with(to, |kinds| kinds[x].copy_from_slice(&copied));
-        }
+        write(to, |kinds| kinds[x].copy_from_slice(&copied));
     }
 
     pub fn of(pixels: &[u16]) -> Option<Vec<Kind>> {
@@ -110,7 +113,7 @@ mod recording {
 /// Record the rows this thread paints from now on.
 #[inline(always)]
 pub fn start() {
-    #[cfg(feature = "paint-record")]
+    #[cfg(any(test, feature = "paint-record"))]
     recording::start();
 }
 
@@ -119,13 +122,13 @@ pub fn start() {
 /// a row painted without `Row::new` shows no older record.
 #[inline(always)]
 pub fn open(_pixels: &[u16]) {
-    #[cfg(feature = "paint-record")]
+    #[cfg(any(test, feature = "paint-record"))]
     recording::open(_pixels);
 }
 
 #[inline(always)]
 pub(crate) fn mark(_buffer: *const u16, _x: core::ops::Range<usize>, _kind: Kind) {
-    #[cfg(feature = "paint-record")]
+    #[cfg(any(test, feature = "paint-record"))]
     recording::mark(_buffer, _x, _kind);
 }
 
@@ -135,22 +138,22 @@ pub(crate) fn mark_each(
     _x: core::ops::Range<usize>,
     _kind: impl Fn(usize) -> Option<Kind>,
 ) {
-    #[cfg(feature = "paint-record")]
+    #[cfg(any(test, feature = "paint-record"))]
     recording::mark_each(_buffer, _x, _kind);
 }
 
 #[inline(always)]
 pub(crate) fn copy(_from: (*const u16, usize), _to: (*const u16, core::ops::Range<usize>)) {
-    #[cfg(feature = "paint-record")]
+    #[cfg(any(test, feature = "paint-record"))]
     recording::copy(_from, _to);
 }
 
 /// How each pixel of a buffer rows were painted into was last written, or
 /// `None` without the `paint-record` feature, a `start` or a row over it.
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 pub fn of(_pixels: &[u16]) -> Option<std::vec::Vec<Kind>> {
-    #[cfg(feature = "paint-record")]
+    #[cfg(any(test, feature = "paint-record"))]
     return recording::of(_pixels);
-    #[cfg(not(feature = "paint-record"))]
+    #[cfg(not(any(test, feature = "paint-record")))]
     None
 }

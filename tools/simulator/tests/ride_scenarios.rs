@@ -859,6 +859,35 @@ fn a_ble_strap_gets_a_recovery_after_the_ride_is_saved() {
 }
 
 #[test]
+fn ble_select_and_forget_wait_for_a_pending_ble_operation() {
+    let mut sim = rider();
+    sim.select_ble_heart_strap();
+    let (_, settings) = sim.command("SETTINGS");
+    let (_, ble) = sim.command("BLE");
+    sim.hold_ble_operation();
+    let (status, out) = sim.command("BLE SELECT CSC 4f54484552 -");
+    assert_eq!(status, "UNAVAILABLE", "BLE SELECT while pending: {out}");
+    let (status, out) = sim.command("BLE FORGET");
+    assert_eq!(status, "UNAVAILABLE", "BLE FORGET while pending: {out}");
+    assert_eq!(
+        sim.command("SETTINGS").1,
+        settings,
+        "a refused choice changed the settings"
+    );
+    assert!(ble.contains("saved=true profile=1 "), "{ble}");
+    let (_, refused) = sim.command("BLE");
+    assert!(refused.contains("saved=true profile=1 "), "{refused}");
+    sim.finish_ble_operation();
+    let (status, out) = sim.command("BLE FORGET");
+    assert_eq!(
+        status, "ACCEPTED",
+        "BLE FORGET once the operation completed: {out}"
+    );
+    let (_, forgotten) = sim.command("BLE");
+    assert!(forgotten.contains("saved=false profile=0 "), "{forgotten}");
+}
+
+#[test]
 fn sitting_out_a_long_pause_before_ending_measures_nothing() {
     let mut sim = rider();
     sim.pair(&["HEART RATE", "POWER METER", "SPEED/CAD"]);

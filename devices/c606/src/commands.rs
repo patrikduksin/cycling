@@ -450,54 +450,22 @@ pub fn execute(
                 ble.request(device_api::ble_transport::Operation::Echo),
             )
         }
-        Command::BleForget => {
-            if ble.control().operation == device_api::connectivity::Operation::Pending {
-                status = "UNAVAILABLE";
-            } else {
-                let previous = system.settings;
-                system.settings.ble = None;
-                system.settings.ble_profile = 0;
-                if !system.save_connectivity() {
-                    system.settings = previous;
-                    status = "FAILED";
-                } else {
-                    sdk.select_profile(
-                        vana::sensors::ble_profile::Profile::Echo,
-                        ble.snapshot().connections,
-                    );
-                    status = firmware_console::protocol::request_status(
-                        ble.request(device_api::ble_transport::Operation::Select(None)),
-                    );
-                }
-            }
-        }
-        Command::BleSelect(_, _) => {
-            if ble.control().operation == device_api::connectivity::Operation::Pending {
-                status = "UNAVAILABLE";
-            } else {
-                let (selection, profile) =
-                    if let Command::BleSelect(peer, profile) = request.command {
-                        let profile = vana::sensors::ble_profile::Profile::from_u8(profile);
-                        (
-                            vana::sensors::ble::selection(profile, peer.name.bytes(), peer.address),
-                            profile,
-                        )
-                    } else {
-                        (None, vana::sensors::ble_profile::Profile::Echo)
-                    };
-                let previous = system.settings;
-                system.settings.ble = selection;
-                system.settings.ble_profile = profile as u8;
-                if !system.save_connectivity() {
-                    system.settings = previous;
-                    status = "FAILED";
-                } else {
-                    sdk.select_profile(profile, ble.snapshot().connections);
-                    status = firmware_console::protocol::request_status(
-                        ble.request(device_api::ble_transport::Operation::Select(selection)),
-                    );
-                }
-            }
+        Command::BleForget | Command::BleSelect(_, _) => {
+            let choice = match request.command {
+                Command::BleSelect(peer, profile) => Some((peer, profile)),
+                _ => None,
+            };
+            status = match sdk.select_ble(
+                system,
+                ble.control().operation == device_api::connectivity::Operation::Pending,
+                ble.snapshot().connections,
+                choice,
+            ) {
+                Ok(selection) => firmware_console::protocol::request_status(
+                    ble.request(device_api::ble_transport::Operation::Select(selection)),
+                ),
+                Err(refused) => refused,
+            };
         }
         Command::BlePeers => {
             for (index, peer) in ble.discoveries().iter().enumerate() {

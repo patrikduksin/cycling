@@ -10,8 +10,15 @@ use super::recording::{Medium, Request};
 use crate::ride::log::{SLOT_SIZE, Slot, VERSION, transport_checksum};
 use crate::ride::recorder::{Action, Recorder, Refused};
 use crate::ride::storage::RideStorage;
+use crate::sensors::ble_profile::Profile;
 use core::fmt::Write;
+use device_api::ble_transport::Selection;
 use device_api::bulk::ReadWrite;
+use device_api::display::Display;
+use device_api::input::InputSource;
+use device_api::power::Power;
+use device_api::storage::OwnedFlash;
+use firmware_shell::shell::Shell;
 
 /// Terminal replies older than this report no current sensor reading.
 const SENSOR_REPLY_FRESH_MS: u64 = 3000;
@@ -492,5 +499,40 @@ impl Runtime {
             return "OUTPUT";
         }
         "OK"
+    }
+}
+
+impl Runtime {
+    /// BLE SELECT, or FORGET when `choice` is none. On success the caller asks
+    /// its radio for the returned selection.
+    pub fn select_ble<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
+        &mut self,
+        shell: &mut Shell<D, I, P, B>,
+        pending: bool,
+        connections: u32,
+        choice: Option<(Selection, u8)>,
+    ) -> Result<Option<Selection>, &'static str> {
+        if pending {
+            return Err("UNAVAILABLE");
+        }
+        let (selection, profile) = match choice {
+            Some((peer, profile)) => {
+                let profile = Profile::from_u8(profile);
+                (
+                    crate::sensors::ble::selection(profile, peer.name.bytes(), peer.address),
+                    profile,
+                )
+            }
+            None => (None, Profile::Echo),
+        };
+        let previous = shell.settings;
+        shell.settings.ble = selection;
+        shell.settings.ble_profile = profile as u8;
+        if !shell.save_connectivity() {
+            shell.settings = previous;
+            return Err("FAILED");
+        }
+        self.select_profile(profile, connections);
+        Ok(selection)
     }
 }

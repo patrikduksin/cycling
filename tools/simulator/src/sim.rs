@@ -772,6 +772,20 @@ impl Sim {
         assert_eq!(status, "ACCEPTED", "BLE SELECT: {out}");
     }
 
+    /// The BLE radio is busy with an operation, as the C606's owner task is
+    /// between accepting a request and completing it, until
+    /// `finish_ble_operation`.
+    pub fn hold_ble_operation(&mut self) {
+        self.note(NoteKind::World, "BLE operation pending");
+        self.device.sim_mut().ble_control.operation = device_api::connectivity::Operation::Pending;
+    }
+
+    pub fn finish_ble_operation(&mut self) {
+        self.note(NoteKind::World, "BLE operation completed");
+        self.device.sim_mut().ble_control.operation =
+            device_api::connectivity::Operation::Completed;
+    }
+
     /// Wi-Fi time synchronization succeeds now with this UTC, in ms since
     /// 1970; the device keeps it until it reboots.
     pub fn sync_network_time(&mut self, unix_ms: u64) {

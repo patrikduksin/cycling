@@ -627,7 +627,7 @@ pub struct Simulated {
     pub switch: PowerSwitch,
     barometer: Option<(u64, u32)>,
     wifi_control: device_api::connectivity::ControlStatus,
-    ble_control: device_api::connectivity::ControlStatus,
+    pub(crate) ble_control: device_api::connectivity::ControlStatus,
     pub phone_server: crate::phone::SimServer,
     pub access_point: crate::phone::SimAccessPoint,
 }
@@ -1828,35 +1828,24 @@ impl Session {
                 }
                 return "ACCEPTED";
             }
-            Command::BleForget => {
-                let previous = self.shell.settings;
-                self.shell.settings.ble = None;
-                self.shell.settings.ble_profile = 0;
-                if !self.shell.save_connectivity() {
-                    self.shell.settings = previous;
-                    return "FAILED";
-                }
-                if let Devices::Simulated(sim) = &mut self.devices {
-                    sim.ble.packets.clear();
-                    sim.ble.snapshot.link = device_api::ble_transport::Link::Off;
-                    sim.ble_control.sequence = sim.ble_control.sequence.wrapping_add(1);
-                    sim.ble_control.operation = device_api::connectivity::Operation::Completed;
-                }
-                self.sdk.select_profile(
-                    vana::sensors::ble_profile::Profile::Echo,
+            Command::BleForget | Command::BleSelect(_, _) => {
+                let choice = match request.command {
+                    Command::BleSelect(peer, profile) => Some((peer, profile)),
+                    _ => None,
+                };
+                let pending = match &self.devices {
+                    Devices::Simulated(sim) => {
+                        sim.ble_control.operation == device_api::connectivity::Operation::Pending
+                    }
+                    Devices::Replayed(_) => false,
+                };
+                if let Err(refused) = self.sdk.select_ble(
+                    &mut self.shell,
+                    pending,
                     self.trace.ble.snapshot().connections,
-                );
-                return "ACCEPTED";
-            }
-            Command::BleSelect(peer, profile) => {
-                let profile = vana::sensors::ble_profile::Profile::from_u8(profile);
-                let previous = self.shell.settings;
-                self.shell.settings.ble =
-                    vana::sensors::ble::selection(profile, peer.name.bytes(), peer.address);
-                self.shell.settings.ble_profile = profile as u8;
-                if !self.shell.save_connectivity() {
-                    self.shell.settings = previous;
-                    return "FAILED";
+                    choice,
+                ) {
+                    return refused;
                 }
                 if let Devices::Simulated(sim) = &mut self.devices {
                     sim.ble.packets.clear();
@@ -1864,8 +1853,6 @@ impl Session {
                     sim.ble_control.sequence = sim.ble_control.sequence.wrapping_add(1);
                     sim.ble_control.operation = device_api::connectivity::Operation::Completed;
                 }
-                self.sdk
-                    .select_profile(profile, self.trace.ble.snapshot().connections);
                 return "ACCEPTED";
             }
             Command::Ble => {

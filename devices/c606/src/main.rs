@@ -616,6 +616,8 @@ fn traced_pass(
                 }
                 vana::app::Point::Phone => stage_ended(Stage::Phone),
                 vana::app::Point::VanaPresent => stage_ended(Stage::VanaPresent),
+                // After VANA's "TURNING OFF" frame, the device's coordinated
+                // shutdown takes over; this loop then only serves the terminal.
                 vana::app::Point::VanaAfter => stage_ended(Stage::VanaAfter),
             },
         );

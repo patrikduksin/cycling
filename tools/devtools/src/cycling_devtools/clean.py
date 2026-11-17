@@ -1,13 +1,12 @@
 """Free disk: remove merged worktrees and idle build directories (a dry run unless --apply).
 
-Every linked worktree carries its own .local/ build targets, about 4.5 GB each, and
-agents leave them behind. A worktree is removed only when it is provably dead: its
+A worktree is removed only when it is provably dead: its
 branch is merged, it has commits of its own, its tree is clean and quiet, it holds
 no ignored file outside the regenerable build dirs, it contains no other worktree
 and no process works inside it. Build directories of the worktrees that stay are
-deleted when nothing in them changed for --idle-hours. The primary checkout and
-its .local/elf archive are never touched. Every row is judged again right before
-it is deleted.
+deleted when nothing in them changed for --idle-hours; the primary checkout is
+never removed, though its idle build directories are. Every row is judged again
+right before it is deleted.
 
 Live agents are found by the cwd of each /proc/<pid>. Another user's processes
 expose no cwd to us and are not seen, so run this as the user who runs the agents.
@@ -29,9 +28,15 @@ from pathlib import Path
 
 from cycling_devtools.workspace import ROOT
 
-# Idle-deleted under <worktree>/.local: regenerable by build.sh and verify.
-BUILD_DIR_PATTERNS = ('firmware*', 'verify')
-CACHE_NAMES = ('__pycache__', '.pytest_cache', '.ruff_cache', '.venv')
+BUILD_DIRS = ('target', 'vendor/trouble-host/target', '.local/firmware*', '.local/verify')
+BUILD_OUTPUTS = (
+    '.local/cycling.bin',
+    '.local/cycling.elf',
+    '.local/partitions.csv',
+    '.local/stack-frames.md',
+    '.local/dev-shell*',
+)
+CACHE_NAMES = ('__pycache__', '.pytest_cache', '.ruff_cache', '.venv', 'node_modules')
 KEEP_IN_SIM = ('live', 'compare', 'fill')
 IDLE_HOURS = 24.0
 LOW_DISK_GB = 30
@@ -178,17 +183,20 @@ def dirty(path):
     return out.returncode != 0 or bool(out.stdout.strip())
 
 
+def matches(parts, patterns):
+    return any(
+        len(parts) > pattern.count('/') and fnmatch.fnmatchcase('/'.join(parts[: pattern.count('/') + 1]), pattern)
+        for pattern in patterns
+    )
+
+
 def is_build(parts):
     """Whether a path relative to the worktree is regenerable ignored content."""
     if any(name in CACHE_NAMES for name in parts):
         return True
-    if parts[:1] == ('target',):
+    if matches(parts, (*BUILD_DIRS, *BUILD_OUTPUTS)):
         return True
-    if parts[:1] != ('.local',) or len(parts) < 2:
-        return False
-    if any(fnmatch.fnmatch(parts[1], pattern) for pattern in BUILD_DIR_PATTERNS):
-        return True
-    return parts[1] == 'sim' and len(parts) > 2 and parts[2] not in KEEP_IN_SIM
+    return parts[:2] == ('.local', 'sim') and len(parts) > 2 and parts[2] not in KEEP_IN_SIM
 
 
 def foreign(root, relative):
@@ -349,15 +357,27 @@ def measure(path):
 
 
 def build_dirs(tree):
-    local = tree.path / '.local'
-    found = {child for pattern in BUILD_DIR_PATTERNS for child in local.glob(pattern)}
+    found = {child for pattern in BUILD_DIRS for child in tree.path.glob(pattern)}
     return sorted(child for child in found if child.is_dir() and not child.is_symlink())
+
+
+def owner(directory):
+    for pattern in BUILD_DIRS:
+        depth = pattern.count('/')
+        if depth >= len(directory.parents):
+            continue
+        tree = directory.parents[depth]
+        if matches(directory.relative_to(tree).parts, (pattern,)) and (tree / '.git').exists():
+            return tree
+    return None
 
 
 def judge_dir(tree, directory, ctx):
     """(size, decision) for one build dir of a kept worktree."""
     size, newest = measure(directory)
     idle = (ctx.now - newest) / 3600
+    if nested := [other for other in ctx.trees if inside(other.path, directory)]:
+        return size, keep(f'contains worktree {nested[0].path.name}')
     if direct_occupants(tree, ctx) or occupants(directory, ctx):
         return size, keep('live process in worktree')
     if idle < ctx.idle_hours:
@@ -367,13 +387,13 @@ def judge_dir(tree, directory, ctx):
 
 def rejudge(row, ctx):
     """The decision for a planned row against the machine as it is now."""
-    tree = next((tree for tree in ctx.trees if tree.path == row.path), None)
+    path = row.path if row.kind == 'worktree' else owner(row.path)
+    tree = next((tree for tree in ctx.trees if tree.path == path), None)
     if row.kind == 'worktree':
         return judge(tree, ctx) if tree else keep('no longer a registered worktree')
-    owner = next((tree for tree in ctx.trees if tree.path == row.path.parent.parent), None)
-    if owner is None or not row.path.is_dir():
+    if tree is None or not row.path.is_dir():
         return keep('no longer present')
-    return judge_dir(owner, row.path, ctx)[1]
+    return judge_dir(tree, row.path, ctx)[1]
 
 
 def plan(ctx):
@@ -441,9 +461,9 @@ def apply_row(row, root=ROOT):
             if out.returncode:
                 return f'worktree removed, branch kept: {out.stderr.strip()}'
         return None
-    local = row.path.parent
-    if row.path.is_symlink() or local.name != '.local' or not inside(row.path.resolve(), local.parent):
-        return 'refusing a path outside <worktree>/.local'
+    tree = owner(row.path)
+    if row.path.is_symlink() or tree is None or not inside(row.path.resolve(), tree.resolve()):
+        return 'refusing a path that is not a build dir'
     shutil.rmtree(row.path)
     return None
 

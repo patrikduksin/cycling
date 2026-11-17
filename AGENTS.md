@@ -37,7 +37,8 @@ shell provides every tool and the `cycling` command; see
   gate in parallel and posts the results and the screens that changed against
   main, with a video of each new scenario. Add `--video` for before and after
   videos of changed scenarios, for a bug fix a reviewer should watch.
-- Disk: a worktree that builds firmware carries 1 to 2.5 GB of `.local` build targets. Run
+- Disk: a worktree that ran `cycling verify` carries about 7 GB of target dirs
+  (`target/`, `vendor/trouble-host/target/`, `.local/firmware`). Run
   `cycling clean` for a dry-run table of what it would free; `--apply` removes
   merged, clean, quiet worktrees nobody is working in, and idle build dirs.
   Verify and sim-compare warn when the disk runs low.

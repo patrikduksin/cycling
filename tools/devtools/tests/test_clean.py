@@ -33,7 +33,9 @@ class CleanCase(unittest.TestCase):
         git(base, 'init', '-q', '--bare', '-b', 'main', str(self.origin))
         self.primary = base / 'primary'
         git(base, 'clone', '-q', str(self.origin), str(self.primary))
-        (self.primary / '.gitignore').write_text('/.local/\ntodo.md\n/target/\n__pycache__/\n')
+        (self.primary / '.gitignore').write_text(
+            '/.local/\ntodo.md\n/target/\n/vendor/trouble-host/target/\n__pycache__/\nnode_modules/\n'
+        )
         git(self.primary, 'add', '.')
         git(self.primary, 'commit', '-q', '-m', 'first')
         git(self.primary, 'push', '-q', 'origin', 'HEAD:main')
@@ -181,7 +183,13 @@ class JudgeTests(CleanCase):
             '.local/sim/latest/a.png',
             '.local/sim/publish/tmpab12cd34.log',
             'target/x',
+            'vendor/trouble-host/target/debug/x',
+            '.local/cycling.bin',
+            '.local/cycling.elf',
+            '.local/stack-frames.md',
+            '.local/dev-shell-1-link',
             'a/__pycache__/m.pyc',
+            'web/node_modules/.bin/alchemy',
         ):
             (built / relative).parent.mkdir(parents=True, exist_ok=True)
             (built / relative).write_text('x')
@@ -284,6 +292,11 @@ class IdleBuildDirTests(CleanCase):
         owner = self.tree(tree, ctx)
         return {d.name: clean.judge_dir(owner, d, ctx)[1] for d in clean.build_dirs(owner)}
 
+    def verdicts(self, tree):
+        ctx = self.ctx(idle_hours=24)
+        owner = self.tree(tree, ctx)
+        return {d: clean.judge_dir(owner, d, ctx)[1] for d in clean.build_dirs(owner)}
+
     def test_only_dirs_idle_past_the_threshold_go_and_sim_and_elf_are_never_listed(self):
         kept = self.add_worktree('kept')
         self.make_dirs(kept)
@@ -316,6 +329,28 @@ class IdleBuildDirTests(CleanCase):
         self.age(kept / '.local/firmware', 100)
         busy = clean.Process(1, 'cargo', kept)
         self.assertEqual(self.rows(kept, procs=[busy])['firmware'].action, K)
+
+    def test_idle_host_target_dirs_go_too(self):
+        kept = self.add_worktree('kept')
+        for relative in ('target/debug', 'vendor/trouble-host/target/debug'):
+            (kept / relative).mkdir(parents=True)
+            (kept / relative / 'lib.rlib').write_bytes(b'x' * 10_000)
+        self.age(kept / 'target', 30)
+        rows = {d.relative_to(kept).as_posix(): v for d, v in self.verdicts(kept).items()}
+        self.assertEqual(rows['target'].action, R)
+        self.assertEqual(rows['vendor/trouble-host/target'].action, K)
+
+    def test_an_idle_target_that_holds_a_worktree_is_kept(self):
+        kept = self.add_worktree('kept')
+        (kept / 'target').mkdir()
+        git(self.primary, 'worktree', 'add', '-q', '-b', 'inner', str(kept / 'target' / 'inner'), 'origin/main')
+        self.age(kept / 'target', 30)
+        rows = {d.relative_to(kept).as_posix(): v for d, v in self.verdicts(kept).items()}
+        self.assertEqual(rows['target'].action, K)
+        self.assertIn('contains worktree inner', rows['target'].reason)
+
+    def test_a_path_too_shallow_for_a_build_dir_has_no_owner(self):
+        self.assertIsNone(clean.owner(Path('/target')))
 
     def test_hard_links_count_once_and_symlinked_dirs_are_skipped(self):
         kept = self.add_worktree('kept')
@@ -352,7 +387,7 @@ class ApplyTests(CleanCase):
         wip = self.add_worktree('wip', commit=True)
         self.assertIn('branch kept', clean.apply_row(self.row('worktree', wip, 'wip'), self.primary))
 
-    def test_build_dir_removal_refuses_paths_outside_dot_local(self):
+    def test_build_dir_removal_refuses_paths_that_are_not_build_dirs(self):
         kept = self.add_worktree('kept')
         (kept / 'src').mkdir()
         self.assertIn('refusing', clean.apply_row(self.row('build dir', kept / 'src')))
@@ -364,9 +399,10 @@ class ApplyTests(CleanCase):
 
     def test_removes_an_idle_build_dir(self):
         kept = self.add_worktree('kept')
-        (kept / '.local/firmware').mkdir(parents=True)
-        self.assertIsNone(clean.apply_row(self.row('build dir', kept / '.local/firmware')))
-        self.assertFalse((kept / '.local/firmware').exists())
+        for relative in ('.local/firmware', 'target', 'vendor/trouble-host/target'):
+            (kept / relative).mkdir(parents=True)
+            self.assertIsNone(clean.apply_row(self.row('build dir', kept / relative)))
+            self.assertFalse((kept / relative).exists())
 
 
 class PlanTests(CleanCase):

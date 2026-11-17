@@ -38,6 +38,16 @@ pub fn requested() -> bool {
     std::env::var_os(ENV).is_some_and(|value| value == "1")
 }
 
+/// The build a trace header and `INFO` name. Comparison mode names forty
+/// zeros, so both sides of `cycling sim-compare` name one build.
+pub fn build_hash() -> &'static str {
+    if requested() {
+        "0000000000000000000000000000000000000000"
+    } else {
+        env!("CYCLING_BUILD_HASH")
+    }
+}
+
 /// One scenario's hashes, as its `hashes.json` holds them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hashes {

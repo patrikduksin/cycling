@@ -427,9 +427,8 @@ impl Start {
             terrain,
         };
         let (mut scratch, mut out) = (vec![0u8; 16 * 1024], vec![0u8; 16 * 1024]);
-        let commit = option_env!("CYCLING_BUILD_COMMIT").unwrap_or("");
         let stamp = origin::Stamp {
-            commit,
+            build: crate::compare::build_hash(),
             device: self.device,
             boot: self.boot,
         };
@@ -533,16 +532,6 @@ impl Trace {
         bytes.extend_from_slice(recorder.open_block());
         bytes
     }
-}
-
-/// The checkout paths whose tracked files build VANA, as `build.rs` lists
-/// them: an uncommitted change under one means no commit holds this build.
-pub fn build_sources() -> Vec<&'static str> {
-    env!("CYCLING_BUILD_SOURCES").split(' ').collect()
-}
-
-fn build_id() -> [u8; 20] {
-    origin::build(option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""))
 }
 
 fn recorded_bulk<'a>(
@@ -1014,7 +1003,7 @@ impl Session {
             flash: session.media.untapped(),
             bulk: session.bulk.untapped(),
         };
-        let replay = Replay::new(capture.trace.clone(), shelled, mode, build_id())
+        let replay = Replay::new(capture.trace.clone(), shelled, mode)
             .map_err(|error| io::Error::other(format!("trace: {error}")))?;
         session.devices = Devices::Replayed(Box::new(replay));
         Ok(session)
@@ -1789,8 +1778,8 @@ impl Session {
             Command::Info => {
                 let _ = write!(
                     out,
-                    "board=virtual commit={} protocol=1 boot={} physical_evidence=unsupported",
-                    option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
+                    "board=virtual build={} protocol=1 boot={} physical_evidence=unsupported",
+                    crate::compare::build_hash(),
                     self.boot
                 );
             }

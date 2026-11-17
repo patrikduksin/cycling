@@ -1,55 +1,73 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 const BUILD_SOURCES: &str = include_str!("build-sources");
 
-fn git(root: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+fn features() -> String {
+    let names: Vec<String> = std::env::vars()
+        .filter_map(|(name, _)| name.strip_prefix("CARGO_FEATURE_").map(str::to_owned))
+        .collect();
+    names.join(",")
 }
 
+/// Cargo reruns this script for a new rustc or feature set and otherwise only
+/// on the rerun-if lines it prints, so the hash may take no other input.
 fn main() {
-    let sources: Vec<&str> = BUILD_SOURCES.lines().collect();
-    println!("cargo:rerun-if-env-changed=CYCLING_BUILD_COMMIT");
-    println!(
-        "cargo:rustc-env=CYCLING_BUILD_SOURCES={}",
-        sources.join(" ")
-    );
-    if std::env::var_os("CYCLING_BUILD_COMMIT").is_some() {
-        return;
-    }
     let root =
         PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("set by cargo")).join("../..");
-    let Some(commit) = git(&root, &["rev-parse", "HEAD"]).filter(|c| !c.is_empty()) else {
-        return;
-    };
-    // HEAD's reflog moves on every commit, checkout and reset, also when the
-    // branch ref lives in packed-refs; the index moves when a change is staged.
-    for name in ["HEAD", "logs/HEAD", "packed-refs", "index"] {
-        if let Some(path) = git(&root, &["rev-parse", "--git-path", name]) {
-            let path = root.join(path);
-            if path.exists() {
-                println!("cargo:rerun-if-changed={}", path.display());
-            }
-        }
+    for source in BUILD_SOURCES.lines() {
+        println!("cargo::rerun-if-changed={}", root.join(source).display());
     }
-    let tracked = git(&root, &[&["ls-files", "--"][..], &sources].concat()).unwrap_or_default();
-    for file in tracked.lines() {
-        println!("cargo:rerun-if-changed={}", root.join(file).display());
+    println!(
+        "cargo::rerun-if-changed={}",
+        root.join(".gitignore").display()
+    );
+    for script in ["build_hash.py", "tree.py"] {
+        println!(
+            "cargo::rerun-if-changed={}",
+            root.join("tools/devtools/src/cycling_devtools")
+                .join(script)
+                .display()
+        );
     }
-    let status = [
-        &["status", "--porcelain", "--untracked-files=no", "--"][..],
-        &sources,
-    ]
-    .concat();
-    let dirty = git(&root, &status).is_none_or(|changes| !changes.is_empty());
-    let suffix = if dirty { "-dirty" } else { "" };
-    println!("cargo:rustc-env=CYCLING_BUILD_COMMIT={commit}{suffix}");
+    let exclude = Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ])
+        .output()
+        .expect("git runs");
+    let exclude = PathBuf::from(String::from_utf8_lossy(&exclude.stdout).trim());
+    // A path that does not exist reruns the script on every build.
+    if exclude.is_file() {
+        println!("cargo::rerun-if-changed={}", exclude.display());
+    }
+    let vana = std::env::var("DEP_VANA_FEATURES").expect("vana's build script names its features");
+    let out = Command::new("uv")
+        .arg("run")
+        .arg("--project")
+        .arg(root.join("tools/devtools"))
+        .args(["--locked", "python", "-m", "cycling_devtools.build_hash"])
+        .arg("--root")
+        .arg(&root)
+        .args(["hash", "--scope", "sources", "--features", &features()])
+        .args(["--vana-features", &vana])
+        .output()
+        .expect("uv runs: build in the dev shell (docs/dev-setup.md)");
+    assert!(
+        out.status.success(),
+        "cycling_devtools.build_hash failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = String::from_utf8(out.stdout).expect("build_hash prints hex");
+    let hash = printed
+        .split_whitespace()
+        .next()
+        .expect("build_hash prints the hash first");
+    println!("cargo::rustc-env=CYCLING_BUILD_HASH={hash}");
+    println!("cargo::rustc-env=CYCLING_VANA_FEATURES={vana}");
 }

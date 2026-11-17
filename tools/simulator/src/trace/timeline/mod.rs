@@ -4,7 +4,7 @@
 mod reader;
 mod text;
 
-pub use reader::read;
+pub use reader::{build_name, read};
 use text::hex;
 pub use text::{bytes, duration, micros, millis, percent, rate, ride_clock, sensor, session_clock};
 
@@ -365,8 +365,7 @@ impl fmt::Display for Entry {
 
 /// A whole trace, decoded.
 pub struct Timeline {
-    /// The recording build's commit in hex, trailing zero bytes dropped;
-    /// empty when unknown.
+    /// The recording build's content hash in hex; empty when unknown.
     pub build: String,
     pub boot: u32,
     pub entries: Vec<Entry>,

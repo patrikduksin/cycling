@@ -408,28 +408,12 @@ pub struct Replay {
 }
 
 impl Replay {
-    /// `build` is the replaying build's commit, zero when unknown.
-    pub fn new(
-        bytes: Vec<u8>,
-        shelled: Shelled,
-        mode: Mode,
-        build: [u8; 20],
-    ) -> Result<Self, trace::Error> {
+    pub fn new(bytes: Vec<u8>, shelled: Shelled, mode: Mode) -> Result<Self, trace::Error> {
         let (header, events) = trace::decode(&bytes)?;
         let redacted =
             trace::origin::Config::decode(header.config).is_some_and(|config| config.redacted);
         let cursor = events.cursor();
         let ledger = Ledger(Rc::new(RefCell::new(Report::new(mode))));
-        let known = |build: [u8; 20]| build != [0; 20];
-        if mode == Mode::Strict
-            && known(header.build)
-            && known(build)
-            && !trace::origin::same_build(&header.build, &build)
-        {
-            ledger.note(Kind::Unreplayable, 1, || {
-                "another build recorded this trace; replay it as a stimulus".into()
-            });
-        }
         let ant = match mode {
             Mode::Strict => AntSource::Recorded(Box::new(RecordedAnt::new(&ledger))),
             Mode::Stimulus => AntSource::Model(Box::new(ModelAnt::hearing(events, &ledger))),
@@ -608,16 +592,11 @@ fn first_difference_of(
         Ok(decoded) => decoded,
         Err(error) => return Some(format!("the replayed trace does not decode: {error}")),
     };
-    let unknown = |build: &[u8; 20]| *build == [0; 20];
-    let stamped = header.build == replayed_header.build
-        || unknown(&header.build)
-        || unknown(&replayed_header.build)
-        || trace::origin::same_build(&header.build, &replayed_header.build);
-    let unstamped = trace::Header {
+    let same_but_build = trace::Header {
         build: replayed_header.build,
         ..header
     };
-    if !stamped || unstamped != replayed_header {
+    if same_but_build != replayed_header {
         return Some(format!("header {header:?}, replayed {replayed_header:?}"));
     }
     let (mut pass, mut read) = (0, 0);
@@ -1872,37 +1851,21 @@ mod tests {
             flash: FileFlash::memory(),
             bulk: SimBulk::default().scripted(),
         };
-        Replay::new(bytes, shelled, Mode::Strict, [0; 20]).unwrap()
+        Replay::new(bytes, shelled, Mode::Strict).unwrap()
     }
 
     #[test]
-    fn a_strict_replay_takes_a_c606_stamp_as_its_commit() {
-        use firmware_services::trace::origin::build;
-        let full = "0123456789abcdef0123456789abcdef01234567";
-        let unreplayable = |recorded: &str, current: &str| {
-            let recorder = recorded_by(build(recorded));
-            recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
-            let shelled = Shelled {
-                input: InputDevice::new(&[Button::TopLeft], Availability::Ready),
-                display: DisplayDevice::new(16, 16),
-                power: PowerDevice::new(Availability::Ready),
-                flash: FileFlash::memory(),
-                bulk: SimBulk::default().scripted(),
-            };
-            let replay = Replay::new(bytes(&recorder), shelled, Mode::Strict, build(current));
-            replay.unwrap().sources.report().count(Kind::Unreplayable)
-        };
-        assert_eq!(unreplayable(&full[..12], full), 0, "the C606's 12 digits");
-        assert_eq!(unreplayable(full, &full[..12]), 0);
-        assert_eq!(unreplayable(full, full), 0);
-        assert_eq!(unreplayable("fedcba987654", full), 1, "another build");
-        let traced = |commit: &str| {
-            let recorder = recorded_by(build(commit));
-            recorder.borrow_mut().record(&Event::Pass { now_ms: 10 });
+    fn traces_that_part_only_in_their_build_do_not_differ() {
+        let traced = |build: [u8; 20], page: &str| {
+            let recorder = recorded_by(build);
+            recorder.borrow_mut().record(&Event::Page(page));
             bytes(&recorder)
         };
-        assert_eq!(first_difference(&traced(&full[..12]), &traced(full)), None);
-        assert!(first_difference(&traced("fedcba987654"), &traced(full)).is_some());
+        assert_eq!(
+            first_difference(&traced([1; 20], "home"), &traced([2; 20], "home")),
+            None
+        );
+        assert!(first_difference(&traced([1; 20], "home"), &traced([1; 20], "ride")).is_some());
     }
 
     #[test]

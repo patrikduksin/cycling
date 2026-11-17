@@ -217,14 +217,20 @@ any other `--out` is refused, so a mistyped path never loses files. Read them in
 - `replayed.trace`: the replay's own trace; `cycling trace timeline` reads it,
   to compare with the recording line by line.
 
-The mode follows the build. A trace names the commit that recorded it (the
-summary's `build`). It is `unknown` for a build with uncommitted changes,
-which no commit holds, and for traces from before builds were stamped. A
-build with uncommitted changes stamps itself `<commit>-dirty`. The default,
-`--mode auto`, replays strict when this checkout built that commit with no
-uncommitted change under `apps`, `packages`, `tools/simulator`, `vendor`,
-`patches`, `.cargo` or the Cargo files, and stimulus otherwise; the `mode`
-line says which and why.
+A trace names the build that recorded it (the
+summary's `build`): a hash of what built it, uncommitted changes included.
+The build archives what it hashed in the primary checkout's
+`.local/builds/<hash>/` on the machine that built it, and keeps it. An unstamped trace
+names `unknown`. Older commit-stamped traces keep their commit bytes; those
+stamps have no archived listing. A device build hashes its whole tree. A
+simulator build hashes only `apps`, `packages`, `tools/simulator`, the
+vendored `trouble-host` manifest, `patches`, `.cargo` and the Cargo files, with its features and toolchain, so
+an edit anywhere else keeps its hash. The default, `--mode auto`, replays
+strict when this build recorded the trace, or when the two archived builds
+name the same sources and VANA features, as a device build and a simulator
+build of one tree do. Otherwise it replays stimulus. The `mode` line says
+which and why; `uv run --project tools/devtools python -m
+cycling_devtools.build_hash relate <hash> <hash>` prints the same relation.
 
 - `stimulus` runs this checkout against the recorded world: sensors, GPS and
   buttons arrive when they did, and the ANT radio is a model. It is what a
@@ -232,8 +238,9 @@ line says which and why.
 - `strict` answers every call VANA makes from the recording and counts any
   difference. It reproduces the recording frame for frame, checks the
   panel's pixels against the recorded digests, and tells a replay fault from
-  a VANA change. To get a strict replay of an older trace, check out its
-  `build` first. A stimulus replay does not compare the pixel digests.
+  a VANA change. To get a strict replay of an older trace, rebuild its
+  tree: check out the commit in `.local/builds/<build>/commit`, then apply
+  the `diff.patch` beside it, if there is one, with `git apply --binary`. A stimulus replay does not compare the pixel digests.
   A frame sends only the rows that changed, but the digest (`Panel`) is
   of the whole panel, so a frame the device sent whole, such as one a
   capture asked for, still matches.

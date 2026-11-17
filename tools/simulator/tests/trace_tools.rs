@@ -776,27 +776,36 @@ fn replay_guards_its_default_directory_the_same_way() {
 }
 
 #[test]
-fn the_build_stamp_is_this_checkouts_commit_and_says_when_it_was_edited() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(args)
-            .output()
-            .expect("git runs");
-        String::from_utf8(out.stdout).unwrap().trim().to_string()
+fn the_build_names_an_archived_listing_of_its_sources() {
+    let out = shell_simulator::build_hash(&["listing", env!("CYCLING_BUILD_HASH")]).unwrap();
+    assert!(out.status.success(), "the build is archived: {out:?}");
+    let listing = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        listing.lines().any(|line| line.starts_with("source apps ")),
+        "{listing}"
+    );
+    assert!(
+        !listing.lines().any(|line| line.starts_with("tree ")),
+        "the rest of the tree builds no simulator: {listing}"
+    );
+    let names = |list: &str| {
+        let mut names: Vec<String> = list
+            .split(',')
+            .filter(|name| !name.is_empty())
+            .map(|name| name.to_lowercase().replace('-', "_"))
+            .collect();
+        names.sort();
+        names
     };
-    let head = git(&["rev-parse", "HEAD"]);
-    let sources = shell_simulator::session::build_sources();
-    let edited = !git(&[
-        &["status", "--porcelain", "--untracked-files=no", "--"][..],
-        &sources,
-    ]
-    .concat())
-    .is_empty();
-    let expected = format!("{head}{}", if edited { "-dirty" } else { "" });
-    assert_eq!(option_env!("CYCLING_BUILD_COMMIT"), Some(expected.as_str()));
+    let archived = listing
+        .lines()
+        .find_map(|line| line.strip_prefix("vana-features "))
+        .unwrap_or_else(|| panic!("no vana-features line: {listing}"));
+    assert_eq!(
+        names(archived),
+        names(env!("CYCLING_VANA_FEATURES")),
+        "the listing names the VANA features cargo built: {listing}"
+    );
 }
 
 #[test]
@@ -948,7 +957,7 @@ fn a_test_stub_compiles_in_a_fresh_file_whatever_it_expects() {
 #[test]
 fn the_build_stamp_and_replay_watch_every_checkout_path_cargo_builds_from() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let sources = shell_simulator::session::build_sources();
+    let sources: Vec<&str> = include_str!("../build-sources").lines().collect();
     let covered = |path: &str| {
         sources
             .iter()
@@ -958,11 +967,11 @@ fn the_build_stamp_and_replay_watch_every_checkout_path_cargo_builds_from() {
     let mut read: Vec<String> = manifest
         .lines()
         .filter_map(|line| line.split_once("path = \"")?.1.split_once('"'))
-        .map(|(path, _)| path.to_string())
+        .map(|(path, _)| format!("{path}/Cargo.toml"))
         .collect();
     assert!(
         !read.is_empty(),
-        "the workspace patches a crate from the checkout"
+        "the workspace patches a crate from the checkout, and cargo reads its manifest"
     );
     read.push(".cargo/config.toml".into());
     read.extend(

@@ -178,9 +178,10 @@ pub fn take() -> Option<Line> {
 }
 
 pub fn metadata(recording: bool) {
-    log::info!(target: "build", "commit={} dirty={} recording={} level=INFO slots=8 bytes=384",
+    log::info!(target: "build", "commit={} dirty={} build={} recording={} level=INFO slots=8 bytes=384",
         option_env!("CYCLING_BUILD_COMMIT").unwrap_or("unknown"),
         option_env!("CYCLING_BUILD_DIRTY").unwrap_or("unknown"),
+        option_env!("CYCLING_BUILD_HASH").unwrap_or("unknown"),
         recording);
 }
 

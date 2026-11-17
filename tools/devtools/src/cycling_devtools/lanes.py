@@ -62,6 +62,7 @@ RULES = (
     ('.config/nextest.toml', RUST_BUILD),
     ('tools/simulator/', RUST_CODE),
     *((f'tools/devtools/src/cycling_devtools/{module}.py', EVERY) for module in VERIFY_MODULES),
+    ('tools/devtools/src/cycling_devtools/build_hash.py', RUST_BUILD | {'check-python'}),
     (
         'tools/devtools/',
         frozenset({'test-python', 'check-python', 'check-devices', 'build', 'screens', 'harness-virtual'}),

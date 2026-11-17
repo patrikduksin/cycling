@@ -1,30 +1,38 @@
-"""Write a build's commit into a linked firmware ELF over the placeholder it was compiled with."""
+"""Write a build's commit and hash into a linked firmware ELF over the placeholders it was compiled with."""
 
 import argparse
 import sys
 from pathlib import Path
 
 
-def stamp(elf, placeholder, commit):
-    if len(placeholder) != len(commit):
-        raise ValueError(f'placeholder {placeholder!r} and commit {commit!r} differ in length')
+def stamp(elf, placeholder, value):
+    if len(placeholder) != len(value):
+        raise ValueError(f'placeholder {placeholder!r} and value {value!r} differ in length')
     if placeholder not in elf:
         raise ValueError(
             f'placeholder {placeholder.decode()!r} is not in the ELF: the firmware no longer embeds '
-            'CYCLING_BUILD_COMMIT as a string, so stamping cannot name its commit'
+            'it as a string, so stamping cannot name its build'
         )
-    return elf.replace(placeholder, commit)
+    return elf.replace(placeholder, value)
+
+
+def pair(text):
+    placeholder, equals, value = text.partition('=')
+    if not equals:
+        raise argparse.ArgumentTypeError(f'{text!r} is not PLACEHOLDER=VALUE')
+    return placeholder.encode(), value.encode()
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('elf', type=Path)
     parser.add_argument('out', type=Path)
-    parser.add_argument('--placeholder', required=True)
-    parser.add_argument('--commit', required=True)
+    parser.add_argument('--stamp', action='append', required=True, type=pair, metavar='PLACEHOLDER=VALUE')
     args = parser.parse_args(argv)
+    stamped = args.elf.read_bytes()
     try:
-        stamped = stamp(args.elf.read_bytes(), args.placeholder.encode(), args.commit.encode())
+        for placeholder, value in args.stamp:
+            stamped = stamp(stamped, placeholder, value)
     except ValueError as error:
         print(error, file=sys.stderr)
         return 1

@@ -558,13 +558,10 @@ impl Start {
             terrain: self.terrain,
         };
         let (scratch, out) = self.header.split_at_mut(HEADER / 2);
-        let commit = match option_env!("CYCLING_BUILD_DIRTY") {
-            Some("1") => "",
-            _ => core::hint::black_box(option_env!("CYCLING_BUILD_COMMIT").unwrap_or("")),
-        };
+        let build = core::hint::black_box(option_env!("CYCLING_BUILD_HASH").unwrap_or(""));
         let profile = self.settings.ble_profile;
         let stamp = origin::Stamp {
-            commit,
+            build,
             device: device::fitted::NAME,
             boot: self.boot,
         };

@@ -16,6 +16,14 @@ const GAP_MS: u64 = 1_000;
 
 const TRACE_BYTES_PER_ENTRY_FLOOR: usize = 16;
 
+/// A header's build in hex, empty when it is zero: unknown.
+pub fn build_name(build: &[u8; 20]) -> String {
+    if *build == [0; 20] {
+        return String::new();
+    }
+    build.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Decode `bytes`; an error for a trace whose header does not decode.
 pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
     let (header, mut events) = trace::decode(bytes).map_err(|error| match error {
@@ -35,16 +43,8 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
     }
     reader.end_pass();
     reader.sensors.silent_at_end(reader.now);
-    let build_len = header
-        .build
-        .iter()
-        .rposition(|&b| b != 0)
-        .map_or(0, |i| i + 1);
     Ok(Timeline {
-        build: header.build[..build_len]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect(),
+        build: build_name(&header.build),
         boot: header.boot,
         passes: reader.passes,
         end_ms: reader.now,

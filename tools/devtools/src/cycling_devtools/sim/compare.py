@@ -45,7 +45,7 @@ COMMAND = [
     '--test',
     'ride_scenarios',
 ]
-COMPARISON = {'SIM_COMPARE': '1', 'CYCLING_BUILD_COMMIT': '0' * 40}
+COMPARISON = {'SIM_COMPARE': '1'}
 HASHES = ('media', 'trace', 'storage')
 COMPARISON_MODE_MARKER = 'comparison-mode'
 CACHE_FORMAT = 'hashes'

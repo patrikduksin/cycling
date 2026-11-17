@@ -768,12 +768,11 @@ def test_scenarios_without_hashes_on_a_side_with_comparison_mode_are_listed(tmp_
     assert not any('predates' in line for line in lines)
 
 
-def test_each_side_runs_in_comparison_mode_under_the_neutral_identity(tmp_path, monkeypatch):
-    script = 'import os; print(os.environ["SIM_COMPARE"], os.environ["CYCLING_BUILD_COMMIT"])'
+def test_each_side_runs_in_comparison_mode(tmp_path, monkeypatch):
+    script = 'import os; print(os.environ["SIM_COMPARE"])'
     monkeypatch.setattr(compare, 'COMMAND', [sys.executable, '-c', script])
-    monkeypatch.setenv('CYCLING_BUILD_COMMIT', 'abc')
     assert compare.run_scenarios(compare.Run(tmp_path, tmp_path / 'after', tmp_path / 'target')) == 0
-    assert (tmp_path / 'after/cargo.log').read_text().split() == ['1', '0' * 40]
+    assert (tmp_path / 'after/cargo.log').read_text().split() == ['1']
     assert not (tmp_path / 'after' / compare.COMPARISON_MODE_MARKER).exists(), 'only the simulator says it compared'
 
 

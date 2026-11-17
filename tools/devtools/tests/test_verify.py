@@ -39,6 +39,10 @@ def test_devtools_select_the_firmware_but_not_the_rust_tests():
     assert 'test-rust' not in selected
 
 
+def test_the_build_hash_the_build_scripts_run_selects_the_rust_tests_and_the_firmware():
+    assert {'test-rust', 'build', 'test-python'} <= select('tools/devtools/src/cycling_devtools/build_hash.py')
+
+
 def test_a_path_no_rule_knows_selects_every_gate():
     assert select('docs/ui.md', 'firmware-next/src/main.rs') == lanes.EVERY
 

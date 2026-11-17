@@ -40,7 +40,8 @@ const FRAME: usize = 2 + 4;
 /// What a replay needs before the first pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header<'a> {
-    /// Git commit of the recording firmware, zero when unknown.
+    /// The recording build's content hash (`cycling_devtools.build_hash`),
+    /// zero when unknown.
     pub build: [u8; 20],
     /// The manifest name of the device that recorded it, such as `c606`.
     pub device: &'a str,

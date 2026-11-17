@@ -37,7 +37,11 @@ export PATH="$CYCLING_ESP_TOOLCHAIN/bin:$CYCLING_ESP_TOOLCHAIN/xtensa-esp-elf/bi
 CYCLING_BUILD_COMMIT="$(git rev-parse --short=12 HEAD)"
 placeholder_source="zcyclingzcommitzplaceholderzzzzzzzzzzzzzzzzzzzzzzzzz"
 commit_placeholder="${placeholder_source:0:${#CYCLING_BUILD_COMMIT}}"
-if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+export CYCLING_VANA_FEATURES=""
+read -r CYCLING_BUILD_HASH state < <(uv run --project tools/devtools --locked python -m cycling_devtools.build_hash \
+  hash --scope tree --features "$features" --vana-features "$CYCLING_VANA_FEATURES")
+hash_placeholder="zcyclingzhashzplaceholderzzzzzzzzzzzzzzz"
+if [[ "$state" == dirty ]]; then
   export CYCLING_BUILD_DIRTY=1
 else
   export CYCLING_BUILD_DIRTY=0
@@ -45,14 +49,14 @@ fi
 # sccache keys every rustc call on all CARGO_* variables: an exported
 # per-worktree CARGO_TARGET_DIR would keep every worktree's builds apart.
 unset CARGO_TARGET_DIR
-CYCLING_BUILD_COMMIT="$commit_placeholder" cargo "$verb" --target-dir "$firmware_target" -p "$package" \
+CYCLING_BUILD_COMMIT="$commit_placeholder" CYCLING_BUILD_HASH="$hash_placeholder" cargo "$verb" --target-dir "$firmware_target" -p "$package" \
   --bin "$bin" --release --locked --no-default-features --features "$features" \
   --target "$target"
 [[ "$verb" == build ]] || exit 0
 elf="$image_dir/cycling.elf"
 uv run --project tools/devtools --locked python -m cycling_devtools.stamp \
   "$firmware_target/$target/release/$bin" "$elf" \
-  --placeholder "$commit_placeholder" --commit "$CYCLING_BUILD_COMMIT"
+  --stamp "$commit_placeholder=$CYCLING_BUILD_COMMIT" --stamp "$hash_placeholder=$CYCLING_BUILD_HASH"
 # The main stack is the internal DRAM that statics and the heap leave. Each
 # task and VANA's frame preparation run on it, so growing statics silently
 # shrinks it until boot overflows the stack guard (#167). Fail the build

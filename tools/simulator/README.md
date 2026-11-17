@@ -89,8 +89,8 @@ errors only, at most 64 a pass. Each comparing scenario writes
 Every value is hashed as explicit bytes in the trace's own codes, never as
 Rust `Debug` text, so a rename changes no hash. A passing scenario whose
 hashes cannot be taken or written fails. `cycling sim-compare` runs both sides
-with `SIM_COMPARE=1` and `CYCLING_BUILD_COMMIT` set to forty zeros, so the
-header's commit and the `INFO` reply match. A side has comparison mode when its run wrote the marker. The header's
+with `SIM_COMPARE=1`, under which the header's build and the `INFO` reply
+name forty zeros, so they match. A side has comparison mode when its run wrote the marker. The header's
 model id is not hashed; a run is keyed by its scenario and model instead. The report
 lists every scenario whose hashes differ from the base, and every scenario
 that wrote no hashes on a side that has comparison mode. It reports and never

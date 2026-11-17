@@ -287,7 +287,8 @@ impl<T> Found<T> {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Stamp<'a> {
-    pub commit: &'a str,
+    /// The build's content hash in hex, as `cycling_devtools.build_hash` prints it.
+    pub build: &'a str,
     /// The device's manifest name.
     pub device: &'a str,
     pub boot: u32,
@@ -308,7 +309,7 @@ pub fn header(
     let (config, rest) = scratch.split_at_mut(configured);
     let media = media.encode(rest)?;
     let header = super::Header {
-        build: build(stamp.commit),
+        build: build(stamp.build),
         device: stamp.device,
         boot: stamp.boot,
         profile,
@@ -318,20 +319,22 @@ pub fn header(
     super::encode_header(&header, out)
 }
 
-/// A commit as a header's `build`: its hex digits as bytes, as many as fit
-/// and given, zero after them. A short commit is a prefix of the full one.
-/// A build with uncommitted changes (`<commit>-dirty`) is zero, unknown,
-/// since no commit holds what it ran.
-pub fn build(commit: &str) -> [u8; 20] {
+/// A build hash as a header's `build`: its forty hex digits as bytes.
+/// Anything else, such as no hash or an unstamped placeholder, is zero:
+/// unknown.
+pub fn build(hash: &str) -> [u8; 20] {
     let mut id = [0u8; 20];
-    if commit.ends_with("-dirty") {
-        return id;
+    if hash.len() != 2 * id.len() {
+        return [0; 20];
     }
-    for (byte, pair) in id.iter_mut().zip(commit.as_bytes().chunks(2)) {
-        *byte = core::str::from_utf8(pair)
+    for (byte, pair) in id.iter_mut().zip(hash.as_bytes().chunks(2)) {
+        let Some(parsed) = core::str::from_utf8(pair)
             .ok()
             .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-            .unwrap_or(0);
+        else {
+            return [0; 20];
+        };
+        *byte = parsed;
     }
     id
 }
@@ -358,19 +361,6 @@ pub fn generations(bulk: &mut impl ReadWrite, sector: &mut volume::Sector) -> Ge
         Some(header.generation)
     });
     Generations { files, terrain }
-}
-
-/// Whether two stamps name the same commit: the shorter, up to its last
-/// non-zero byte, starts the longer. A zero stamp names no commit.
-pub fn same_build(a: &[u8; 20], b: &[u8; 20]) -> bool {
-    let named = |build: &[u8; 20]| build.iter().rposition(|&byte| byte != 0).map(|i| i + 1);
-    match (named(a), named(b)) {
-        (Some(a_len), Some(b_len)) => {
-            let len = a_len.min(b_len);
-            a[..len] == b[..len]
-        }
-        _ => false,
-    }
 }
 
 /// Room for every file FILES can hold in [`Files::entries`].
@@ -776,14 +766,16 @@ mod tests {
     }
 
     #[test]
-    fn a_build_names_its_commit_and_a_dirty_build_names_none() {
-        let full = "0123456789abcdef0123456789abcdef01234567";
-        let mut stamped = [0u8; 20];
-        stamped[..6].copy_from_slice(&[0x01, 0x23, 0x45, 0x67, 0x89, 0xab]);
-        assert_eq!(build(&full[..12]), stamped, "the C606 stamps 12 digits");
-        assert_eq!(build(full)[..6], stamped[..6]);
-        assert_eq!(build(full)[19], 0x67);
-        assert_eq!(build(&std::format!("{full}-dirty")), [0; 20]);
+    fn a_build_is_its_hash_and_anything_else_is_zero() {
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(build(hash)[..3], [0x01, 0x23, 0x45]);
+        assert_eq!(build(hash)[19], 0x67);
         assert_eq!(build(""), [0; 20]);
+        assert_eq!(build(&hash[..12]), [0; 20]);
+        assert_eq!(
+            build("zcyclingzhashzplaceholderzzzzzzzzzzzzzzz"),
+            [0; 20],
+            "devices/build.sh's placeholder, in an image it did not stamp"
+        );
     }
 }

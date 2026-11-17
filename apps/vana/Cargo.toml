@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+# Cargo passes build-script metadata to immediate dependents only as
+# DEP_<links>_<KEY>. VANA links no native library; the key gives the
+# simulator's and c606's build scripts DEP_VANA_FEATURES.
+links = "vana"
 
 [features]
 default = []

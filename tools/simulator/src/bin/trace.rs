@@ -11,7 +11,9 @@ use shell_simulator::trace::report::{
     in_window, render,
 };
 use shell_simulator::trace::story::tell;
-use shell_simulator::trace::timeline::{At, Entry, Kind, Timeline, read, session_clock};
+use shell_simulator::trace::timeline::{
+    At, Entry, Kind, Timeline, build_name, read, session_clock,
+};
 use shell_simulator::trace::{divergence, origin, otlp, rebuild, stub};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -107,10 +109,10 @@ commands:
       (it holds .simulator-output) or it is empty; anything else is refused.
       stimulus runs this build against the recorded world; strict expects
       the recording build and counts every call it answers differently.
-      auto (default) picks strict when this checkout, without uncommitted
-      VANA changes, built the trace's commit, else stimulus, and says why;
-      a build with uncommitted changes never matches (its stamp ends -dirty,
-      and the traces it records name no build).
+      auto (default) picks strict when this build recorded the trace, or a
+      build of the same VANA sources and features did (the firmware's, by
+      the listings .local/builds archived for both hashes), else stimulus,
+      and says why.
       Divergences count inside the window, with a total for before it, each
       labelled rider-visible, model-only (the stimulus ANT model),
       timing-only, call-level (strict) or replay fault.
@@ -129,9 +131,8 @@ commands:
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // trace.sh caches a binary under a commit only if it says it was built there.
-    if args == ["--build-commit"] {
-        println!("{}", option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""));
+    if args == ["--build-hash"] {
+        println!("{}", env!("CYCLING_BUILD_HASH"));
         return ExitCode::SUCCESS;
     }
     if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
@@ -350,48 +351,87 @@ fn decode<'a>(slot: &'a mut Option<Timeline>, trace: &[u8]) -> Result<&'a Timeli
     Ok(slot.insert(read(trace)?))
 }
 
-const DIRTY: &str = "-dirty";
+#[derive(Debug, PartialEq)]
+enum BuildRelation {
+    Same { build: String },
+    SameSources { recorded: String, current: String },
+    Other { recorded: String, current: String },
+    Unknown { why: String },
+}
 
-fn pick_mode(
-    asked: &str,
-    recorded: &str,
-    current: &str,
-    edits: &[String],
-) -> Result<(Mode, String), String> {
-    let short = |build: &str| build.chars().take(12).collect::<String>();
-    let built = current.strip_suffix(DIRTY);
-    let commit = built.unwrap_or(current);
-    let same = !recorded.is_empty()
-        && !commit.is_empty()
-        && (recorded.starts_with(commit) || commit.starts_with(recorded));
-    let builds = if recorded.is_empty() {
-        "the trace names no build (a build with uncommitted changes recorded it, or one from before builds were stamped)".to_string()
-    } else if commit.is_empty() {
-        format!(
-            "the trace's build is {}; this checkout's is unknown",
-            short(recorded)
-        )
-    } else if !same {
-        format!(
-            "the trace's build {} is not this checkout's {}",
+fn short(build: &str) -> String {
+    build.chars().take(12).collect()
+}
+
+impl BuildRelation {
+    fn parse(relate_output: &str, recorded: &str, current: &str) -> Result<Self, String> {
+        let (recorded, current) = (short(recorded), short(current));
+        match relate_output.trim() {
+            "same" => Ok(Self::Same { build: current }),
+            "same-sources" => Ok(Self::SameSources { recorded, current }),
+            "other" => Ok(Self::Other { recorded, current }),
+            other => match other.strip_prefix("unknown ") {
+                Some(why) => Ok(Self::Unknown {
+                    why: format!(
+                        "the trace's build {recorded} and this build {current} cannot be compared: {why}"
+                    ),
+                }),
+                None => Err(format!("build_hash relate printed {other:?}")),
+            },
+        }
+    }
+}
+
+fn relation(recorded: &str, current: &str) -> Result<BuildRelation, String> {
+    if recorded.is_empty() {
+        return Ok(BuildRelation::Unknown {
+            why: "the trace names no build".into(),
+        });
+    }
+    let cannot = |why: &str| BuildRelation::Unknown {
+        why: format!(
+            "the trace's build {} and this build {} cannot be compared: {why}",
             short(recorded),
-            short(commit)
-        )
-    } else if let Some(first) = edits.first() {
-        format!(
-            "this checkout's commit {} recorded the trace, but {} files that build VANA have uncommitted changes ({first})",
-            short(commit),
-            edits.len()
-        )
-    } else if built.is_some() {
-        format!(
-            "this checkout's commit {} recorded the trace, but this build was made with uncommitted changes to files that build VANA",
-            short(commit)
-        )
-    } else {
-        format!("this checkout's build {} recorded the trace", short(commit))
+            short(current)
+        ),
     };
-    let matched = same && built.is_none() && edits.is_empty();
+    if current.is_empty() {
+        return Ok(cannot("this build names none"));
+    }
+    if recorded == current {
+        return Ok(BuildRelation::Same {
+            build: short(current),
+        });
+    }
+    match shell_simulator::build_hash(&["relate", recorded, current]) {
+        Ok(out) if out.status.success() => {
+            BuildRelation::parse(&String::from_utf8_lossy(&out.stdout), recorded, current)
+        }
+        Ok(out) => Ok(cannot(&format!(
+            "build_hash relate failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+        Err(why) => Ok(cannot(&why)),
+    }
+}
+
+fn pick_mode(asked: &str, relation: BuildRelation) -> Result<(Mode, String), String> {
+    let (matched, builds) = match relation {
+        BuildRelation::Same { build } => (true, format!("this build {build} recorded the trace")),
+        BuildRelation::SameSources { recorded, current } => (
+            true,
+            format!(
+                "build {recorded} recorded the trace from the VANA sources this build {current} has"
+            ),
+        ),
+        BuildRelation::Other { recorded, current } => (
+            false,
+            format!(
+                "build {recorded} recorded the trace from other VANA sources or features than this build {current}"
+            ),
+        ),
+        BuildRelation::Unknown { why } => (false, why),
+    };
     match asked {
         "auto" if matched => Ok((Mode::Strict, builds)),
         "auto" => Ok((
@@ -410,26 +450,6 @@ fn pick_mode(
     }
 }
 
-fn uncommitted_here() -> Vec<String> {
-    std::process::Command::new("git")
-        .args(["status", "--porcelain", "--untracked-files=no", "--"])
-        .args(
-            shell_simulator::session::build_sources()
-                .iter()
-                .map(|source| format!(":(top){source}")),
-        )
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| {
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter_map(|line| line.get(3..).map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn replay<'a>(
     path: &Path,
     capture: &shell_simulator::replay::Capture,
@@ -446,12 +466,15 @@ fn replay<'a>(
         },
         None => 5_000,
     };
-    let (mode, why) = pick_mode(
-        options.value("mode").unwrap_or("auto"),
-        &timeline.build,
-        option_env!("CYCLING_BUILD_COMMIT").unwrap_or(""),
-        &uncommitted_here(),
-    )?;
+    let current = build_name(&firmware_services::trace::origin::build(env!(
+        "CYCLING_BUILD_HASH"
+    )));
+    let asked = options.value("mode").unwrap_or("auto");
+    let relation = match relation(&timeline.build, &current) {
+        Err(why) if asked != "auto" => BuildRelation::Unknown { why },
+        found => found?,
+    };
+    let (mode, why) = pick_mode(asked, relation)?;
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("trace");
     let dir = options.value("out").map_or_else(
         || {
@@ -542,25 +565,89 @@ mod tests {
     const BUILD: &str = "0123456789abcdef0123456789abcdef01234567";
 
     #[test]
-    fn auto_replays_strict_only_on_the_build_that_recorded_the_trace() {
-        let auto = |recorded, current, edits: &[String]| {
-            pick_mode("auto", recorded, current, edits).unwrap().0
-        };
-        assert_eq!(auto(BUILD, BUILD, &[]), Mode::Strict);
-        assert_eq!(auto(&BUILD[..12], BUILD, &[]), Mode::Strict);
-        assert_eq!(auto("", BUILD, &[]), Mode::Stimulus);
-        assert_eq!(auto(BUILD, "", &[]), Mode::Stimulus);
-        assert_eq!(auto("fedcba9876", BUILD, &[]), Mode::Stimulus);
-        let edited = ["apps/vana/src/app/facts.rs".to_string()];
-        assert_eq!(auto(BUILD, BUILD, &edited), Mode::Stimulus);
-        let dirty = format!("{BUILD}{DIRTY}");
-        assert_eq!(auto(BUILD, &dirty, &[]), Mode::Stimulus, "built dirty");
-        assert_eq!(auto(&BUILD[..12], &dirty, &[]), Mode::Stimulus);
+    fn auto_replays_strict_only_on_a_build_of_the_recording_sources() {
+        let builds = || (BUILD.to_string(), BUILD.to_string());
+        let auto = |relation| pick_mode("auto", relation).unwrap().0;
         assert_eq!(
-            pick_mode("strict", "", BUILD, &[]).unwrap().0,
+            auto(BuildRelation::Same {
+                build: BUILD.into()
+            }),
+            Mode::Strict
+        );
+        let (recorded, current) = builds();
+        assert_eq!(
+            auto(BuildRelation::SameSources { recorded, current }),
+            Mode::Strict,
+            "the firmware's build"
+        );
+        let (recorded, current) = builds();
+        assert_eq!(
+            auto(BuildRelation::Other { recorded, current }),
+            Mode::Stimulus
+        );
+        assert_eq!(
+            auto(BuildRelation::Unknown {
+                why: "not archived".into()
+            }),
+            Mode::Stimulus
+        );
+        let (recorded, current) = builds();
+        assert_eq!(
+            pick_mode("strict", BuildRelation::Other { recorded, current })
+                .unwrap()
+                .0,
             Mode::Strict,
             "asked for"
         );
-        assert!(pick_mode("exact", BUILD, BUILD, &[]).is_err());
+        assert!(
+            pick_mode(
+                "exact",
+                BuildRelation::Same {
+                    build: BUILD.into()
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_relation_is_what_build_hash_said_and_nothing_else() {
+        let parse = |said| BuildRelation::parse(said, BUILD, BUILD);
+        assert_eq!(
+            parse("same-sources\n"),
+            Ok(BuildRelation::SameSources {
+                recorded: BUILD[..12].into(),
+                current: BUILD[..12].into()
+            })
+        );
+        assert!(matches!(parse("other\n"), Ok(BuildRelation::Other { .. })));
+        assert!(matches!(
+            parse("unknown build fedcba987654 has no archived sources\n"),
+            Ok(BuildRelation::Unknown { why }) if why.ends_with(": build fedcba987654 has no archived sources")
+        ));
+        assert_eq!(
+            parse("Traceback (most recent call last)"),
+            Err("build_hash relate printed \"Traceback (most recent call last)\"".into())
+        );
+    }
+
+    #[test]
+    fn equal_builds_are_the_same_without_asking_the_checkout() {
+        assert_eq!(
+            relation(BUILD, BUILD),
+            Ok(BuildRelation::Same {
+                build: BUILD[..12].into()
+            })
+        );
+        assert!(matches!(
+            relation("", BUILD),
+            Ok(BuildRelation::Unknown { .. })
+        ));
+        assert!(matches!(
+            relation(BUILD, ""),
+            Ok(BuildRelation::Unknown { .. })
+        ));
+        let comparison = firmware_services::trace::origin::build(&"0".repeat(40));
+        assert_eq!(build_name(&comparison), "", "sim-compare's hash is unknown");
     }
 }

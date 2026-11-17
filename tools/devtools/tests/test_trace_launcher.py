@@ -28,10 +28,11 @@ fi
 [ -z "${BUILD_EXIT:-}" ] || { echo 'error: it does not compile' >&2; exit "$BUILD_EXIT"; }
 mkdir -p "$target/tools"
 tree=$(cat "$manifest/apps/app.rs")
+hash=$(git -C "$manifest" hash-object apps/app.rs)
 commit=$(git -C "$manifest" rev-parse HEAD)
 cat > "$target/tools/trace" <<BIN
 #!/usr/bin/env bash
-if [ "\\$*" = --build-commit ]; then echo "\\${STAMP:-$commit}"; exit; fi
+if [ "\\$*" = --build-hash ]; then echo "\\${STAMP:-$hash}"; exit; fi
 [ -z "\\${PROBE_LOCK:-}" ] || { flock -xn "\\$PROBE_LOCK" true && echo unlocked || echo locked; }
 echo "built $commit $tree: \\$*"
 exit \\${TRACE_EXIT:-0}
@@ -50,6 +51,11 @@ exec {shutil.which('install')} "$@"
 """
 
 FAKE_UV = """#!/usr/bin/env bash
+built_from_app_rs_blob() { [ "$1" = "$(git rev-parse "$2:apps/app.rs")" ]; }
+if [ "${*: -3:1}" = built-from ]; then
+    built_from_app_rs_blob "${@: -2}"
+    exit
+fi
 echo "uv $*"
 exit ${UV_EXIT:-0}
 """

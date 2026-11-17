@@ -69,6 +69,11 @@ build_copy() {
             && install -m 0755 "$built" "$copy"
     } 9> "$target/.trace-build.lock" || build_failed $?
 }
+copy_is_the_commits() {
+    [ "$(git -C "$root" rev-parse HEAD)" = "$commit" ] && ! edited \
+        && uv run --project "$root/tools/devtools" --locked python -m cycling_devtools.build_hash \
+            built-from "$("$copy" --build-hash)" "$commit"
+}
 run_copy() {
     status=0
     "$copy" "$@" || status=$?
@@ -94,12 +99,7 @@ while :; do
     fi
     flock -u 8
     build_copy
-    # A commit or an edit made while it built would be in the binary; the
-    # binary names the commit it was built from.
-    if [ "$(git -C "$root" rev-parse HEAD)" != "$commit" ] || edited \
-        || [ "$("$copy" --build-commit)" != "$commit" ]; then
-        run_copy "$@"
-    fi
+    copy_is_the_commits || run_copy "$@"
     mv -f "$copy" "$cache/$commit"
     (
         flock -xn 7 || exit 0

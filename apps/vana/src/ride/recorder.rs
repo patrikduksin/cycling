@@ -600,7 +600,7 @@ impl Recorder {
         // Write an overdue checkpoint before any append, so repeated cuts
         // cannot grow what the next boot replays.
         self.checkpoint_due = journal.checkpoint_overdue();
-        self.status = if catalog.unknown_data() {
+        self.status = if catalog.foreign() {
             Status::Foreign
         } else if catalog.next_slot >= self.slots {
             Status::Full
@@ -911,7 +911,7 @@ mod tests {
         }
     }
     #[test]
-    fn unknown_data_reads_foreign_and_no_initialize_or_clear_erases_it() {
+    fn a_foreign_journal_reads_foreign_and_no_initialize_or_clear_erases_it() {
         let mut media = Memory::default();
         media.bytes[0] = 0;
         let original = media.bytes.clone();
@@ -1176,6 +1176,48 @@ mod tests {
     }
 
     #[test]
+    fn torn_appends_with_no_record_between_them_keep_recording_available() {
+        let tears = [crate::ride::log::SLOT_SIZE, 10, 5];
+        for count in [2, 3] {
+            let mut media = Memory::default();
+            for (index, torn) in tears.into_iter().take(count).enumerate() {
+                let mut recorder = Recorder::default();
+                scan(&mut recorder, &mut media);
+                assert_eq!(
+                    (recorder.status(), recorder.next_slot()),
+                    (Status::Ready, index),
+                    "after {index} torn appends"
+                );
+                media.tear_write = Some(torn);
+                assert!(recorder.request(Action::Start, 100, 1));
+                recorder.service(&mut media, 100, Sample::default(), &|| 100);
+                assert_eq!(recorder.status(), Status::Error);
+            }
+
+            let mut rebooted = Recorder::default();
+            scan(&mut rebooted, &mut media);
+            assert_eq!(
+                (rebooted.status(), rebooted.next_slot()),
+                (Status::Ready, count),
+                "after {count} torn appends"
+            );
+            start(&mut rebooted, &mut media, 200);
+            assert!(rebooted.request(Action::Finish, 1_200, 2));
+            for now in [1_200, 1_200] {
+                rebooted.service(&mut media, now, Sample::default(), &|| now);
+            }
+            assert!(rebooted.take_result().unwrap().ok);
+            let mut again = Recorder::default();
+            scan(&mut again, &mut media);
+            assert_eq!(
+                (again.status(), again.completed()),
+                (Status::Ready, 1),
+                "after {count} torn appends"
+            );
+        }
+    }
+
+    #[test]
     fn foreign_data_in_the_first_slot_reads_foreign() {
         for first in [[0u8; 5], *b"RIDE\x01", [0xff, 0xff, 0xff, 0xff, 0xff]] {
             let mut media = Memory::default();
@@ -1185,13 +1227,37 @@ mod tests {
             scan(&mut recorder, &mut media);
             assert_eq!(recorder.status(), Status::Foreign, "{first:?}");
         }
-        // Two unknown slots are never treated as one torn append.
+    }
+
+    #[test]
+    fn a_torn_append_beside_a_foreign_slot_reads_foreign() {
+        let slot = crate::ride::log::SLOT_SIZE;
+        for (torn, foreign) in [(0, slot), (slot, 0)] {
+            let mut media = Memory::default();
+            media.bytes[torn..torn + 5].copy_from_slice(b"RIDE\x02");
+            media.bytes[foreign..foreign + 5].fill(0);
+            let mut recorder = Recorder::default();
+            scan(&mut recorder, &mut media);
+            assert_eq!(recorder.status(), Status::Foreign, "torn slot at {torn}");
+        }
+    }
+
+    #[test]
+    fn committed_records_of_a_newer_version_read_foreign_and_are_never_cleared() {
+        use crate::ride::log::{Entry, Kind, SLOT_SIZE, commit_word, encode};
         let mut media = Memory::default();
-        media.bytes[..5].copy_from_slice(b"RIDE\x02");
-        media.bytes[256..261].copy_from_slice(b"RIDE\x02");
+        for (index, kind) in [Kind::Start, Kind::Finish].into_iter().enumerate() {
+            let mut slot = encode(&Entry::event(kind, 1, index as u32, 0));
+            slot.0[4] = 3;
+            slot.0[SLOT_SIZE - 4..].copy_from_slice(&commit_word().0);
+            media.bytes[index * SLOT_SIZE..][..SLOT_SIZE].copy_from_slice(&slot.0);
+        }
+        let before = media.bytes.clone();
         let mut recorder = Recorder::default();
         scan(&mut recorder, &mut media);
         assert_eq!(recorder.status(), Status::Foreign);
+        assert_eq!(recorder.clear(2, 0), Err(Refused::Foreign));
+        assert_eq!(media.bytes, before);
     }
 
     #[test]

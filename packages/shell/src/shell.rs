@@ -573,21 +573,9 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         });
         self.dirty = self.display_error;
     }
-    /// Leave the settings reading foreign until [`Self::erase_settings`]
-    /// completes: current ones are replaced with a record no version reads.
-    /// From here until a restart nothing saves settings. False when the
-    /// write failed.
-    pub fn condemn_settings(&mut self) -> bool {
-        let condemned = self.store.condemn().is_ok();
-        if condemned {
-            self.settings_source = Source::Foreign;
-        }
-        condemned
-    }
-
-    /// Erase the settings journal, foreign or not. False when the erase
-    /// failed; the settings may then still read foreign.
+    /// Blocks saves until the restart, so FORMAT's erased journal stays blank.
     pub fn erase_settings(&mut self) -> bool {
+        self.settings_source = Source::Foreign;
         self.store.erase().is_ok()
     }
 

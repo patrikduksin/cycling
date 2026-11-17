@@ -285,6 +285,57 @@ fn catalogs_round_trip_through_checkpoints() {
 }
 
 #[test]
+fn a_checkpoint_restores_the_verdict_of_a_full_scan_over_torn_slots() {
+    enum Slot<'a> {
+        Bytes(&'a [u8; SLOT_SIZE]),
+        Unreadable,
+    }
+    use Slot::{Bytes, Unreadable};
+    let mut torn = [0xff; SLOT_SIZE];
+    torn[..4].copy_from_slice(b"RIDE");
+    torn[4] = crate::ride::log::VERSION;
+    let foreign = [0u8; SLOT_SIZE];
+    for (name, slots, reads_foreign) in [
+        (
+            "torn torn torn",
+            [Bytes(&torn), Bytes(&torn), Bytes(&torn)],
+            false,
+        ),
+        (
+            "torn foreign torn",
+            [Bytes(&torn), Bytes(&foreign), Bytes(&torn)],
+            true,
+        ),
+        (
+            "torn unreadable torn",
+            [Bytes(&torn), Unreadable, Bytes(&torn)],
+            true,
+        ),
+    ] {
+        let scan = |scanner: &mut Scanner, range: core::ops::Range<usize>| {
+            for index in range {
+                match slots[index] {
+                    Bytes(bytes) => scanner.accept_slot(index, bytes),
+                    Unreadable => scanner.skip(index, index + 1),
+                }
+            }
+        };
+        let mut full = Scanner::default();
+        scan(&mut full, 0..slots.len());
+        let full = full.catalog();
+        assert_eq!(full.foreign(), reads_foreign, "{name}");
+        for split in 0..=slots.len() {
+            let mut before = Scanner::default();
+            scan(&mut before, 0..split);
+            let restored = decode_catalog(&encode_catalog(&before.catalog())).unwrap();
+            let mut resumed = Scanner::resume(&restored);
+            scan(&mut resumed, split..slots.len());
+            assert_eq!(resumed.catalog(), full, "{name} split at {split}");
+        }
+    }
+}
+
+#[test]
 fn day_long_ride_averages_survive_checkpoints_without_saturating() {
     // 24 h at 1 Hz: past the 65,535 samples a 16-bit count could hold.
     let mut summary = Summary::started(1);

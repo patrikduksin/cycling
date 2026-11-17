@@ -791,7 +791,7 @@ impl Runtime {
                 view.scroll = offset;
                 view.set_canvas(self.history_canvas(offset, pressed));
             }
-            Page::Format => view.formatting = self.format.owns_storage(),
+            Page::Format => view.format = self.format.shows(),
             Page::EndRide | Page::DiscardRide => {
                 view.discard = if self.ride.discard != super::recording::Discard::Idle {
                     crate::screens::workout::Discard::Answered

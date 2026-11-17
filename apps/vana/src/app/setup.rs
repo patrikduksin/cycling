@@ -26,7 +26,7 @@ impl Runtime {
 
     pub(super) fn first_page(&self) -> Page {
         use super::format::Format;
-        if matches!(self.format, Format::Offered { .. } | Format::Running(_)) {
+        if matches!(self.format, Format::Offered { .. } | Format::Running { .. }) {
             Page::Format
         } else if self.setup_step().is_some() {
             Page::Setup

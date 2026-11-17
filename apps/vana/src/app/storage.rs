@@ -66,7 +66,7 @@ impl Store {
         }
     }
 
-    const fn on_card(self) -> bool {
+    pub(super) const fn on_card(self) -> bool {
         !matches!(self, Self::Internal | Self::Settings)
     }
 }

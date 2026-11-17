@@ -585,7 +585,7 @@ pub struct View<'a> {
     pub training: Option<ride::Training>,
     /// A test's FTP waiting for the rider's answer, and the FTP in force.
     pub ftp_offer: Option<(u16, u16)>,
-    pub formatting: bool,
+    pub format: super::format::Shows,
     pub page: Page,
     /// The focused Home card, or the selected Settings field.
     pub cursor: usize,
@@ -654,7 +654,7 @@ impl<'a> View<'a> {
             marks: Marks::default(),
             training: None,
             ftp_offer: None,
-            formatting: false,
+            format: super::format::Shows::Wait,
             page,
             cursor,
             editing: false,
@@ -1029,11 +1029,10 @@ impl<'a> View<'a> {
                 &[]
             }
             Page::Format => {
-                fill(self, |view| super::format::prepare(view.formatting));
-                if self.formatting {
-                    &[]
-                } else {
-                    &ride::end::TRASH_CUES
+                fill(self, |view| super::format::prepare(view.format));
+                match self.format {
+                    super::format::Shows::Question(_) => &ride::end::TRASH_CUES,
+                    super::format::Shows::Wait => &[],
                 }
             }
             Page::Settings => {

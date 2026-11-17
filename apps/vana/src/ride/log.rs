@@ -349,10 +349,12 @@ pub fn erased(slot: &[u8]) -> bool {
 
 /// Whether an invalid slot can be this journal's own interrupted append: its
 /// magic and version bytes are programmed, or partly programmed (NOR flash only
-/// clears bits), but never all still erased.
-pub fn torn_append(slot: &[u8]) -> bool {
+/// clears bits), but never all still erased. The commit word is programmed
+/// after the record, so a slot that holds it was never torn.
+fn torn_append(slot: &[u8]) -> bool {
     let expected = [MAGIC[0], MAGIC[1], MAGIC[2], MAGIC[3], VERSION];
     slot.len() == SLOT_SIZE
+        && get_u32(slot, COMMIT_OFFSET) != COMMITTED
         && !erased(&slot[..expected.len()])
         && slot
             .iter()
@@ -607,19 +609,12 @@ pub struct Catalog {
     pub recovery: Option<Recovery>,
     pub summaries: [Option<Summary>; HISTORY_CAPACITY],
     pub summary_count: u8,
-    /// Slot 0 is occupied but invalid and looks like a torn first append.
-    pub torn_first: bool,
+    pub foreign_slot: bool,
 }
 
 impl Catalog {
-    /// Occupied data the recorder did not write: only FORMAT may erase it. A
-    /// single torn first append (power lost during the first START of a fresh
-    /// or cleared journal) is the recorder's own and stays in place as an
-    /// occupied invalid slot.
-    pub fn unknown_data(&self) -> bool {
-        self.valid_slots == 0
-            && self.invalid_slots != 0
-            && !(self.invalid_slots == 1 && self.next_slot == 1 && self.torn_first)
+    pub fn foreign(&self) -> bool {
+        self.valid_slots == 0 && self.foreign_slot
     }
 
     pub fn push_summary(&mut self, summary: Summary) {
@@ -646,7 +641,7 @@ pub struct Scanner {
     /// The latest record's ride; ids count up and wrap past zero, so the
     /// largest on record is not the newest.
     last_ride_id: u32,
-    torn_first: bool,
+    foreign_slot: bool,
     /// The ride the last accepted slot completed, for the ride index.
     completed_now: Option<Summary>,
 }
@@ -694,7 +689,7 @@ impl Scanner {
             summaries: catalog.summaries,
             summary_count: catalog.summary_count,
             last_ride_id: catalog.next_ride_id.wrapping_sub(1),
-            torn_first: catalog.torn_first,
+            foreign_slot: catalog.foreign_slot,
             completed_now: None,
         }
     }
@@ -712,7 +707,7 @@ impl Scanner {
         let mut slot = Slot::default();
         slot.0.copy_from_slice(bytes);
         let Some(entry) = decode(&slot) else {
-            self.torn_first |= index == 0 && torn_append(bytes);
+            self.foreign_slot |= !torn_append(bytes);
             self.gap(1);
             return;
         };
@@ -722,6 +717,7 @@ impl Scanner {
     /// Slots `from..to` are occupied but unreadable as records.
     pub fn skip(&mut self, from: usize, to: usize) {
         self.next_slot = self.next_slot.max(to);
+        self.foreign_slot = true;
         self.gap(to.saturating_sub(from));
     }
 
@@ -745,7 +741,7 @@ impl Scanner {
             recovery: self.open,
             summaries: self.summaries,
             summary_count: self.summary_count,
-            torn_first: self.torn_first,
+            foreign_slot: self.foreign_slot,
         }
     }
 

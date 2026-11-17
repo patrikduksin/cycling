@@ -43,6 +43,13 @@ fn short_fixed_seeds_pass() {
 }
 
 #[test]
+fn seed_0xab_keeps_the_card_ride_through_torn_internal_starts() {
+    if let Err(finding) = fuzz::run(&fuzz::draw(0xab), &Corpus::none(), false) {
+        panic!("{finding}");
+    }
+}
+
+#[test]
 fn a_finding_names_the_course_it_rode() {
     let plan = FIXED
         .map(fuzz::draw)

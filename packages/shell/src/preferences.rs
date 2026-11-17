@@ -10,8 +10,6 @@ pub const RETRY_MS: u64 = 5_000;
 const PREFIX: &[u8] = b"cycling";
 const VERSION: u8 = 7;
 const LENGTH: usize = layout::APP + APP_CAPACITY;
-pub const CONDEMNED: &[u8] = b"FORMAT";
-const _: () = assert!(CONDEMNED.len() != LENGTH);
 /// Bytes reserved for the application's own versioned preference record.
 pub const APP_CAPACITY: usize = 96;
 
@@ -224,8 +222,7 @@ impl Settings {
 pub enum Source {
     Current,
     Missing,
-    /// Another version, damaged, or condemned by FORMAT: never saved over,
-    /// even once FORMAT has erased it.
+    /// Another version, damaged, or erased by FORMAT: never saved over.
     Foreign,
     /// The journal could not be read.
     Failed,

@@ -450,6 +450,7 @@ fn no_ride_starts_while_the_format_question_is_up() {
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     runtime.format = crate::app::format::Format::Offered {
         drawn_at: Some(1000),
+        scope: crate::app::format::Scope::of([crate::app::Store::Rides]).unwrap(),
     };
     runtime.navigation.page = Page::Ready;
     runtime.ride_auto(Call::Do(Decision::Start), 2000);

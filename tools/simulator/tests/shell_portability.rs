@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn nothing_saves_settings_from_a_format_mark_until_the_restart() {
+    fn nothing_saves_settings_from_a_format_erase_until_the_restart() {
         use firmware_shell::preferences::{AppPreferences, Source};
         let display = DisplayDevice::new(240, 320);
         let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
@@ -409,10 +409,8 @@ mod tests {
         let mut shell = Shell::new(display, input, power, Memory::default(), 0).unwrap();
         assert!(shell.save());
         assert_eq!(shell.settings_source, Source::Current);
-        assert!(shell.condemn_settings());
-        assert_eq!(shell.settings_source, Source::Foreign);
-        assert!(!shell.save(), "the mark stays");
         assert!(shell.erase_settings());
+        assert_eq!(shell.settings_source, Source::Foreign);
         let app = AppPreferences::new(&[1]).unwrap();
         assert!(!shell.save(), "an erased journal stays blank");
         assert!(!shell.save_app_preferences(app));

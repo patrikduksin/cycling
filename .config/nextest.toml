@@ -15,6 +15,7 @@ test(=a_two_hour_ride_with_a_pause_replays_exactly)
 | test(=navigation::arriving_shows_the_ride_totals_for_a_minute)
 | test(=no_turn_back_when_stopping_on_the_way_home)
 | test(=bulk_media_keeps_a_long_ride_through_power_loss)
+| test(=a_wipe_cut_at_any_write_keeps_the_other_stores_and_leaves_none_foreign_or_unusable)
 """
 test-group = "slow"
 priority = 100

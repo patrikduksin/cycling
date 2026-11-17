@@ -101,17 +101,6 @@ impl<B: OwnedFlash> Store<B> {
         self.save(settings)
     }
 
-    /// FORMAT's first step: unless the settings already read foreign, save
-    /// a record no version reads. Until [`Self::erase`] completes, every boot
-    /// then finds foreign settings, wherever a FORMAT was cut.
-    pub fn condemn(&mut self) -> Result<(), Error<B::Error>> {
-        if self.load()?.source != crate::preferences::Source::Foreign {
-            self.journal.save(crate::preferences::CONDEMNED)?;
-        }
-        Ok(())
-    }
-
-    /// FORMAT's last step: erase the journal, foreign or not.
     pub fn erase(&mut self) -> Result<(), Error<B::Error>> {
         Ok(self.journal.erase()?)
     }

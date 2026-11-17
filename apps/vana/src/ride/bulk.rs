@@ -79,7 +79,7 @@ pub fn wipe(
 pub fn encode_catalog(catalog: &Catalog) -> [u8; ENCODED] {
     let mut bytes = [0u8; ENCODED];
     bytes[1] = u8::from(catalog.recovery.is_some())
-        | u8::from(catalog.torn_first) << 1
+        | u8::from(catalog.foreign_slot) << 1
         | u8::from(catalog.recovery.is_some_and(|r| r.gap)) << 2;
     bytes[2] = catalog.summary_count;
     put_u64(&mut bytes, 4, catalog.next_slot as u64);
@@ -145,7 +145,7 @@ pub fn decode_catalog(bytes: &[u8]) -> Option<Catalog> {
         recovery,
         summaries,
         summary_count: count as u8,
-        torn_first: bytes[1] & 2 != 0,
+        foreign_slot: bytes[1] & 2 != 0,
     })
 }
 

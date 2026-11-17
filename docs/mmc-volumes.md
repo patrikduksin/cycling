@@ -43,10 +43,19 @@ over it.
 A boot that finds a foreign store asks `FORMAT STORAGE?` once, from the brand,
 Home or setup, never over a ride:
 
-- ACT (trash cue) wipes everything VANA stores: the settings (shell settings,
-  preferences, the Wi-Fi password), the internal ride journal, and the `RIDES`,
-  `FILES` and `STORE` volumes. The screen says `CHECKING STORAGE`, and the
-  device restarts into first-run setup. Only a press that begins after the
+- ACT (trash cue) wipes the stores that read foreign when the question was asked, and
+  nothing else: a foreign volume table takes the table, the terrain pack and
+  the `RIDES`, `FILES` and `STORE` volumes; a foreign ride log, `FILES` (or a
+  record in it) or `STORE` takes that volume; a foreign internal ride journal
+  takes the journal; foreign settings take the settings (shell settings,
+  preferences, the Wi-Fi password). The question's last line names what goes:
+  `RIDES AND SETTINGS GO` when the rides and the settings both do, the one
+  store when only one does (`WHOLE CARD GOES`, `CARD RIDES GO`,
+  `CARD FILES GO`, `TRACES GO`, `DEVICE RIDE LOG GOES`, `SETTINGS GO`), and
+  otherwise the gravest of them and more (`RIDES AND MORE GO`,
+  `SETTINGS AND MORE GO`, `FILES AND MORE GO`, `RIDE LOG AND MORE GO`). The
+  screen then says `CHECKING STORAGE` and the device restarts, into first-run
+  setup only when the settings went. Only a press that begins after the
   question is drawn counts, so a button held through boot does nothing.
 - BACK keeps everything. Stores of the current version keep working, the
   ready page says `STORAGE NOT FORMATTED` / `OFF AND ON TO FORMAT` where a
@@ -55,8 +64,9 @@ Home or setup, never over a ride:
   `RIDE CLEAR CONFIRM` answer `FOREIGN` over a foreign ride log, and the next
   boot asks again.
 
-`FORMAT CONFIRM` on the terminal, or `cycling format --confirm`, runs the same
-wipe whether or not anything is foreign. `FORMAT`, or `cycling format`, reports
+`FORMAT CONFIRM` on the terminal, or `cycling format --confirm`, wipes every
+store, foreign or not; with no card, only the internal journal and the
+settings. `FORMAT`, or `cycling format`, reports
 each store as `current`, `blank`, `foreign` or `unusable`, in the order the
 wipe takes them: `table`, `rides`, `files`, `records` (the facts, deleted
 rides, bests and workout outcomes VANA writes into FILES), `traces` (STORE),
@@ -82,18 +92,20 @@ version from its own torn appends, so data it cannot read is `foreign`, raises
 the offer, and only FORMAT erases it.
 
 From its first write until the restart, the wipe owns storage: no ride starts
-(`STORAGE NOT READY`), nothing saves settings, the trace file ends, and
-storage commands answer `BUSY`.
+(`STORAGE NOT READY`), the trace file ends, and storage commands answer
+`BUSY`. Once it erases the settings, nothing saves them until the restart.
 
-A power cut during the wipe leads back to the offer. The wipe first saves a
-settings record no version reads and erases the settings last, so every boot
-in between finds foreign settings; running the wipe again over a half-formatted
-device ends in the same state. A replaced table is written after the terrain
-pack is erased, so a cut between still finds the old table. A wipe whose write
-fails stops and shows the ready page with `STORAGE NOT FORMATTED`. The next
-boot offers it again when the first write, the settings mark, was made; when
-that write is the one that failed, nothing was wiped, and the next boot finds
-the stores as they were.
+A power cut during the wipe never touches a store it was not for. The internal
+journal, the settings and the records in `FILES` read foreign until their wipe
+is done, so a cut there leads back to the offer. The table is written after
+the terrain pack is erased, so a cut between still finds the old table. A cut
+inside the `RIDES`, `FILES` or `STORE` wipe can leave that volume blank, and
+one inside the `RIDES` wipe can leave a corrupt ride log: neither raises the
+offer again, and `RIDE BULK INIT`, `FILES FORMAT CONFIRM` or
+`STORE FORMAT CONFIRM` starts it.
+A wipe whose write fails stops and shows the ready page with
+`STORAGE NOT FORMATTED`; the next boot offers it again for whatever still
+reads foreign.
 
 The code is `apps/vana/src/app/storage.rs` (what each store holds) and
 `apps/vana/src/app/format.rs` (the offer and the wipe). The only functions that

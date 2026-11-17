@@ -368,17 +368,11 @@ impl Rig {
             "seed {seed}"
         );
         let status = self.recorder.status();
-        // Power cut during the first START of an empty journal more than
-        // once leaves several torn slots, which the scan deliberately treats
-        // as unknown data (see `Catalog::unknown_data`): no ride is lost.
-        let torn_only = entries.is_empty()
-            && occupied.iter().all(|&index| {
-                crate::ride::log::torn_append(&nor.bytes[index * SLOT_SIZE..][..SLOT_SIZE])
-            });
+        let torn_clear_reads_foreign_427 =
+            status == Status::Foreign && nor.torn_erase && entries.is_empty();
         assert!(
             matches!(status, Status::Ready | Status::Recovered | Status::Full)
-                || (status == Status::Foreign && torn_only && occupied.len() > 1)
-                || (status == Status::Foreign && nor.torn_erase && entries.is_empty()),
+                || torn_clear_reads_foreign_427,
             "seed {seed}: {status:?} at slot {}",
             catalog.next_slot
         );

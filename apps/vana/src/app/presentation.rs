@@ -2,6 +2,7 @@
 use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Request, RideMessage};
+use super::view::{Presented, Shows};
 use crate::clock::Zone;
 use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::laps::AutoLap;
@@ -10,30 +11,27 @@ use crate::ride::medium::Medium;
 use crate::ride::turn_back::Turn;
 use crate::screens::chrome::{AMBER, Battery, CHARGE_STEPS, Gps, RED, Toast, Tone};
 use crate::screens::home::Home;
-use crate::screens::kinetic::Kinetic;
 use crate::screens::look;
 use crate::screens::power::Sheet as PowerSheet;
 use crate::screens::ready::{Check, Level, Line as ReadyLine, Readiness};
-use crate::screens::ride::summary::{After, Saving, SummaryPage};
+use crate::screens::ride::summary::{After, Saving};
 use crate::screens::ride::{self, RidePage};
 use crate::screens::sensors::{GLANCES, Glance, MenuMessage};
 use crate::screens::settings;
-use crate::screens::touch::{Control, List, Touches};
+use crate::screens::touch::{Control, List};
 use crate::screens::workout::{LOW_STORAGE_S, Page, Text, View};
 use crate::sensors::ant::{BatteryStatus, device_type};
 use crate::sensors::radar::Beep;
 use core::fmt::Write;
-use device_api::ant::Ant;
 use device_api::display::Display as Panel;
 use device_api::gps::FixState;
 use device_api::input::InputSource;
 use device_api::observation::Observation;
-use device_api::positioning::Positioning;
 use device_api::power::Power;
 use device_api::sensors::Startup;
 use device_api::sound::Sound;
 use device_api::storage::OwnedFlash;
-use firmware_shell::shell::{Drawn, Picture, Screen, Shell};
+use firmware_shell::shell::{Picture, Shell};
 
 /// Sensors whose battery wants changing, as Ready and Home name them. While
 /// any sensor is not live it is missing first and no battery is news.
@@ -82,13 +80,13 @@ impl BatteryWarning {
 /// The brand stays this long after VANA's first frame, then Home opens. The
 /// device keeps the backlight dark until VANA runs, so this is all a rider sees.
 pub(super) const BRAND_MS: u64 = 400;
-const ANIMATED_FRAME_MS: u64 = 500;
+pub(super) const ANIMATED_FRAME_MS: u64 = 500;
 /// Motion (the brand reveal, the farewell) draws at this cadence: a frame
 /// takes about 25 ms on the C606, so this leaves the loop free between them.
 pub(super) const MOTION_FRAME_MS: u64 = 40;
-const STATIC_FRAME_MS: u64 = 1000;
+pub(super) const STATIC_FRAME_MS: u64 = 1000;
 /// A list following the finger or coasting draws at up to 60 frames a second.
-const SCROLL_FRAME_MS: u64 = 16;
+pub(super) const SCROLL_FRAME_MS: u64 = 16;
 /// How long a confirmation or hint stays over the content.
 pub(super) const TOAST_MS: u64 = 2000;
 /// Battery news stays a little longer than a confirmation.
@@ -97,192 +95,6 @@ pub(super) const BATTERY_TOAST_MS: u64 = 4000;
 const BATTERY_NEWS_GAP_MS: u64 = 30_000;
 /// How long a ride without wheel speed notes that auto-pause is off.
 const NO_SPEED_NOTE_MS: u64 = 8000;
-
-pub(super) struct Navigation {
-    pub(super) page: Page,
-    /// The ride page shown while `page` is the ride screen.
-    pub(super) ride_page: RidePage,
-    /// The highlighted Home choice, an index into `workout::HOME`.
-    pub(super) home_cursor: usize,
-    /// The selected Settings field, an index into `settings::FIELDS`.
-    pub(super) settings_field: usize,
-    /// The selected Settings field is being changed.
-    pub(super) settings_editing: bool,
-    /// The wheel setting when its editor opened, so an edit that ends where
-    /// it began changes nothing.
-    pub(super) wheel_edit: Option<super::preferences::Wheel>,
-    /// The focused card on a first-run setup page.
-    pub(super) setup_cursor: usize,
-    /// The Settings editor was opened from setup and returns there.
-    pub(super) setup_return: bool,
-    /// The sensor menu was opened from setup and returns there.
-    pub(super) sensors_return: bool,
-    /// Connect phone shows the join code (0) or the page code (1).
-    pub(super) phone_step: u8,
-    /// The screen already moved to the page code when a phone joined.
-    pub(super) phone_advanced: bool,
-    /// Whether the climb page came up by itself, and where it goes back to
-    /// (`climb_page`).
-    pub(super) climb: super::climb_page::Follow,
-    /// The road the last pass saw.
-    pub(super) road: super::climb_page::Road,
-    pub(super) page_since: u64,
-    pub(super) last_press: u64,
-    /// When VANA drew its first frame; the brand flash counts from here.
-    pub(super) first_frame: Option<u64>,
-    /// Latest report of each button, to tell a held button from a new press.
-    pub(super) last_report: [Option<u64>; 3],
-    /// The finger on the screen, if any, and what it is bound to.
-    pub(super) touches: Touches,
-    /// The Settings section's scroll.
-    pub(super) settings_scroll: Kinetic,
-    /// A confirmation or hint and when it expires.
-    pub(super) toast: Option<(Toast, u64)>,
-    /// The recorder state the last frame announced.
-    announced: Status,
-    /// When the ride was last paused, for the paused screen's timer.
-    pub(super) paused_since: Option<u64>,
-    /// The rider paged from the paused screen to the ride pages.
-    pub(super) pause_hidden: bool,
-    /// The ride page a ride opens on.
-    pub(super) first_page: RidePage,
-    /// The paused screen came back by paging past either end of the ride
-    /// pages, so MOVE continues at the first page and a swipe back at the
-    /// last, rather than at the page the rider left.
-    pub(super) pause_wrapped: bool,
-    /// The summary page shown after a ride.
-    pub(super) summary_page: usize,
-    /// A sound the next `alert` plays.
-    pub(super) chime: Option<Cue>,
-    /// The personal bests the ride set, announced when its summary opens.
-    pub(super) best_news: Option<Text<24>>,
-    /// The bests toast on screen, so leaving the summary can take it away.
-    best_shown: Option<Text<24>>,
-}
-
-impl Navigation {
-    /// Show `message` over the content for a moment, replacing any other.
-    pub(super) fn toast(&mut self, message: &str, tone: Tone, now: u64) {
-        self.toast = Some((Toast::new(message, tone), now.saturating_add(TOAST_MS)));
-    }
-
-    /// Show `toast` for `ms`, replacing any other.
-    pub(super) fn show(&mut self, toast: Toast, ms: u64, now: u64) {
-        self.toast = Some((toast, now.saturating_add(ms)));
-    }
-
-    pub(super) fn announce(&mut self, status: Status, now: u64) {
-        let before = core::mem::replace(&mut self.announced, status);
-        if before == status {
-            return;
-        }
-        let riding = matches!(before, Status::Recording | Status::Paused);
-        let (message, tone) = match (before, status) {
-            (Status::Paused, Status::Recording) => {
-                self.paused_since = None;
-                self.chime = Some(Cue::Resume);
-                ("RESUMED", Tone::Good)
-            }
-            (_, Status::Recording) => {
-                self.paused_since = None;
-                self.best_news = None;
-                self.chime = Some(Cue::Start);
-                ("RECORDING", Tone::Good)
-            }
-            // The paused screen says it, whoever paused.
-            (_, Status::Paused) => {
-                self.paused_since = Some(now);
-                self.pause_hidden = false;
-                self.pause_wrapped = false;
-                self.chime = Some(Cue::Pause);
-                return;
-            }
-            (_, Status::Saved) if riding && self.page == Page::Summary => {
-                // New bests take the saved chime's place, with a toast.
-                let news = self.best_news.take();
-                self.chime = Some(if news.is_some() {
-                    Cue::Best
-                } else {
-                    Cue::Saved
-                });
-                if let Some(news) = news {
-                    self.toast(news.as_str(), Tone::Good, now);
-                    self.best_shown = Some(news);
-                }
-                return;
-            }
-            (_, Status::Saved) if riding => ("RIDE SAVED", Tone::Good),
-            (_, Status::Recovered) => ("RIDE RECOVERED", Tone::Info),
-            _ => return,
-        };
-        self.toast(message, tone, now);
-    }
-
-    /// A discarded ride was saved, then hidden or not: `message` instead of
-    /// RIDE SAVED and its chime.
-    pub(super) fn discarded(&mut self, message: &str, tone: Tone, now: u64) {
-        self.announced = Status::Saved;
-        self.toast(message, tone, now);
-    }
-
-    /// The toast of new bests belongs to the summary: leaving it takes that
-    /// toast away, and only that one.
-    pub(super) fn leave_summary(&mut self) {
-        let Some(shown) = self.best_shown.take() else {
-            return;
-        };
-        if self
-            .toast
-            .as_ref()
-            .is_some_and(|(toast, _)| toast.text() == Toast::new(shown.as_str(), Tone::Good).text())
-        {
-            self.toast = None;
-        }
-    }
-
-    /// Show the ride screen's first page.
-    pub(super) fn open_ride(&mut self) {
-        self.page = Page::Ride;
-        self.ride_page_reset(self.first_page);
-        self.pause_hidden = false;
-    }
-}
-
-impl Default for Navigation {
-    fn default() -> Self {
-        Self {
-            page: Page::Boot,
-            ride_page: RidePage::Main,
-            home_cursor: 0,
-            settings_field: 0,
-            settings_editing: false,
-            wheel_edit: None,
-            setup_cursor: 0,
-            setup_return: false,
-            sensors_return: false,
-            phone_step: 0,
-            phone_advanced: false,
-            climb: Default::default(),
-            road: Default::default(),
-            page_since: 0,
-            last_press: 0,
-            first_frame: None,
-            last_report: [None; 3],
-            touches: Touches::default(),
-            settings_scroll: Kinetic::default(),
-            toast: None,
-            announced: Status::Ready,
-            paused_since: None,
-            pause_hidden: false,
-            first_page: RidePage::Main,
-            pause_wrapped: false,
-            summary_page: 0,
-            chime: None,
-            best_news: None,
-            best_shown: None,
-        }
-    }
-}
 
 /// Foreground drawing. Once the terminal takes over the panel it stays suspended.
 #[derive(Clone, Copy)]
@@ -325,110 +137,6 @@ impl Runtime {
         system.draw_canvas(240, 320, |row| scene.paint(row));
     }
 
-    pub fn present<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
-        &mut self,
-        system: &mut Shell<D, I, P, B>,
-        now: u64,
-        ant: &impl Ant,
-        position: &impl Positioning,
-    ) {
-        self.follow_daylight(now, position);
-        system.set_curve(
-            self.preferences
-                .options
-                .auto_brightness
-                .then_some(self.policy().light_curve),
-        );
-        // Once the device accepted turning off, the last frame stays.
-        if system.foreground == Screen::Blank || self.turning_off() {
-            return;
-        }
-        self.latch_numbers(now);
-        let shown = self.shown.sample();
-        self.motion.take(
-            &arrived_sample(&self.readings),
-            &radar_reports(&self.readings, now),
-            self.policy().glides,
-            now,
-        );
-        // A new number, or a glide that moves a graphic, draws rather than
-        // waiting for the page's usual pace.
-        let due = self.motion_due(&shown, now);
-        let Display::Active { next_frame_ms } = &mut self.display else {
-            return;
-        };
-        if let Some(due) = due {
-            *next_frame_ms = (*next_frame_ms).min(due);
-        }
-        if now < *next_frame_ms {
-            return;
-        }
-        let sheet = self.power.view();
-        // A reveal frame that could still be drawing when the brand time
-        // ends would make Home late; skip it and draw Home on time.
-        if self.navigation.page == Page::Boot
-            && sheet.is_none()
-            && let Some(first) = self.navigation.first_frame
-        {
-            let home_at = first + BRAND_MS;
-            if now < home_at && now + MOTION_FRAME_MS > home_at {
-                *next_frame_ms = home_at;
-                return;
-            }
-        }
-        let motion = matches!(sheet, Some(PowerSheet::TurningOff { .. }))
-            || (sheet.is_none() && self.navigation.page == Page::Boot);
-        let animated = matches!(
-            self.navigation.page,
-            Page::Ride | Page::Ready | Page::EndRide | Page::DiscardRide | Page::Summary
-        ) || sheet.is_some_and(PowerSheet::animated)
-            || self.readings.battery.charging();
-        *next_frame_ms = now.saturating_add(if motion {
-            MOTION_FRAME_MS
-        } else if animated {
-            ANIMATED_FRAME_MS
-        } else {
-            STATIC_FRAME_MS
-        });
-        // A list in motion draws as often as the panel can take: its
-        // curves are read at each frame's time, so a late frame lands
-        // where the motion has got to.
-        // A card under a resting finger lights up once the delay passes.
-        self.navigation.touches.tick(now);
-        let moving = self.list_frame(now);
-        self.refresh_chart();
-        self.workout_display(system, now, ant, position);
-        if let Display::Active { next_frame_ms } = &mut self.display {
-            if moving {
-                *next_frame_ms = (*next_frame_ms).min(now + SCROLL_FRAME_MS);
-            }
-            if let Some(due) = self.navigation.touches.due() {
-                *next_frame_ms = (*next_frame_ms).min(due);
-            }
-        }
-        let due = self.motion_due(&shown, now);
-        if self.navigation.page == Page::Ride
-            && let Display::Active { next_frame_ms } = &mut self.display
-        {
-            if let Some(due) = due {
-                *next_frame_ms = (*next_frame_ms).min(due);
-            }
-            // Motion frames shift the frame phase, so the ride clock asks for
-            // a frame when its next second turns rather than up to a frame late.
-            let active_ms = self.ride.active_ms(now);
-            if self.ride.active_ms(now + 1000) > active_ms {
-                *next_frame_ms = (*next_frame_ms).min(now + 1000 - active_ms % 1000);
-            }
-        }
-        // Open Home exactly when the brand flash ends, not on the next animation frame.
-        if self.navigation.page == Page::Boot
-            && let (Some(first), Display::Active { next_frame_ms }) =
-                (self.navigation.first_frame, &mut self.display)
-        {
-            *next_frame_ms = (*next_frame_ms).min(first + BRAND_MS);
-        }
-    }
-
     /// Sound the cues and alarms due: the latest ride moment's cue, a closed
     /// lap, the radar's beeps for the nearest vehicle behind while on the ride
     /// screen, which win over any cue, and the rider's alerts (`ride::alerts`), each with
@@ -438,7 +146,7 @@ impl Runtime {
         if core::mem::take(&mut self.ride.lap_chime) {
             self.cue(Cue::Lap, now);
         }
-        if let Some(cue) = self.navigation.chime.take() {
+        if let Some(cue) = self.navigation.take_chime() {
             self.cue(cue, now);
         }
         // A workout's step cue says more than the lap or ride chime it echoes.
@@ -457,7 +165,7 @@ impl Runtime {
             now,
             self.preferences.options.sunset_alert,
             self.ride.active().status(),
-            self.navigation.page == Page::Ride,
+            self.navigation.page() == Page::Ride,
             self.night.sun(now),
         );
         let sun = self.night.sun(now);
@@ -474,11 +182,11 @@ impl Runtime {
             now,
             self.preferences.options.sunset_alert,
             self.ride.active().status(),
-            self.navigation.page == Page::Ride,
+            self.navigation.page() == Page::Ride,
             turn,
             self.preferences.options.zone,
         );
-        if self.navigation.page == Page::Ride {
+        if self.navigation.page() == Page::Ride {
             if let Some(beep) = self.readings.radar_warning.update(radar, now) {
                 self.cue(
                     match beep {
@@ -565,7 +273,7 @@ impl Runtime {
 
     /// When the frame just submitted reached the panel: the monotonic clock
     /// after submission, so slow rendering shows up in press-to-frame latency.
-    fn drawn_at(&self, now: u64) -> u64 {
+    pub(super) fn drawn_at(&self, now: u64) -> u64 {
         self.ride
             .latency_clock
             .map_or(now, |clock| clock())
@@ -576,89 +284,39 @@ impl Runtime {
         self.display = Display::Suspended;
     }
 
-    fn workout_display<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
-        &mut self,
+    #[inline(never)]
+    pub(super) fn present<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
+        &self,
         system: &mut Shell<D, I, P, B>,
+        shows: Shows,
         now: u64,
-        ant: &impl Ant,
-        position: &impl Positioning,
-    ) {
-        self.power.animate(now);
-        if let Some(sheet) = self.power.view() {
-            let canvas = sheet.canvas();
-            let look = look::look(self.light());
-            system.draw_canvas(240, 320, |row| {
-                PowerSheet::paint(&canvas, &mut row.looked(look));
-            });
-            self.power_drawn(!system.display_error);
-            if !system.display_error {
-                self.timing.frame(self.drawn_at(now));
+    ) -> Presented {
+        let (gps, radar_paired) = match shows {
+            Shows::Sheet(sheet) => {
+                let canvas = sheet.canvas();
+                let look = look::look(self.light());
+                system.draw_canvas(240, 320, |row| {
+                    PowerSheet::paint(&canvas, &mut row.looked(look));
+                });
+                return Presented::Sheet {
+                    ok: !system.display_error,
+                };
             }
-            return;
-        }
-        let first_page = self.first_page();
-        let navigation = &mut self.navigation;
-        // A return to setup lasts only while its editor or sensor menu does.
-        if !(navigation.page == Page::Settings && navigation.settings_editing) {
-            navigation.setup_return = false;
-        }
-        if navigation.page != Page::Sensors {
-            navigation.sensors_return = false;
-        }
-        let first_frame = *navigation.first_frame.get_or_insert(now);
-        if navigation.page == Page::Boot && now.saturating_sub(first_frame) >= BRAND_MS {
-            navigation.page = first_page;
-        }
-        // A ride opens on its first page: the workout page during a workout.
-        let first = self.first_ride_page();
-        let navigation = &mut self.navigation;
-        navigation.first_page = first;
-        let status = self.ride.active().status();
-        if navigation.page != Page::Boot {
-            navigation.announce(status, now);
-        }
-        // The ride is over: tell the rider once what the calibration set, over
-        // the ride's own saved toast.
-        if status != Status::Saved && !self.ride.open() {
-            self.readings.wheel_news = None;
-        }
-        if status == Status::Saved
-            && navigation.page != Page::Boot
-            && let Some(learned) = self.readings.wheel_news.take()
-        {
-            let mut text = Text::<20>::new();
-            let _ = write!(text, "WHEEL SET {learned} MM");
-            self.navigation
-                .show(Toast::new(text.as_str(), Tone::Good), BATTERY_TOAST_MS, now);
-        }
-        // Over the ride's own news: its workout could not be read.
-        if core::mem::take(&mut self.training.missing) {
-            self.navigation
-                .toast("WORKOUT MISSING", crate::screens::chrome::Tone::Warn, now);
-        }
-        if status == Status::Recording {
-            self.history_ride_started();
-        }
-        let pages = self.ride_pages();
+            Shows::Page { gps, radar_paired } => (gps, radar_paired),
+        };
         let (choice, course) = (self.page_choice_with_course_map(), self.course().is_some());
         let ftp_offer = self.ftp_sheet();
         let picker_offset = self.list_offset(List::Workouts, now);
-        let picker = (self.navigation.page == Page::Workouts).then(|| {
-            let pressed = match self.navigation.touches.pressed() {
+        let picker = (self.navigation.page() == Page::Workouts).then(|| {
+            let pressed = match self.navigation.touches().pressed() {
                 Some(Control::Workout(index)) => Some(index),
                 _ => None,
             };
             self.picker(self.list_offset(List::Workouts, now), pressed)
         });
         let light = self.light();
-        let navigation = &mut self.navigation;
-        // A page the rider turned off, or the workout page once its workout
-        // is gone, gives way to the main page.
-        if !pages.contains(navigation.ride_page) {
-            navigation.ride_page_chosen(RidePage::Main);
-        }
-        let page = navigation.page;
-        let gps = position.snapshot(now);
+        let navigation = &self.navigation;
+        let page = navigation.page();
         let zone = self.preferences.options.zone;
         let local = match self.shown.live().utc_ms {
             Some(ms) => Some(zone.local(ms / 1000)),
@@ -670,32 +328,21 @@ impl Runtime {
             }),
         };
         let cursor = match page {
-            Page::Settings => navigation.settings_field,
-            Page::Setup => navigation.setup_cursor,
-            _ => navigation.home_cursor,
+            Page::Settings => navigation.settings_field(),
+            Page::Setup => navigation.setup_cursor(),
+            _ => navigation.home_cursor(),
         };
         let mut view = View::new(page, cursor, local);
-        view.editing = page == Page::Settings && navigation.settings_editing;
+        view.editing = page == Page::Settings && navigation.editing();
         view.now_ms = now;
         view.active_secs = self.ride.active_ms(now) / 1000;
         view.state = self.ride.active().status();
         let sample = self.shown.sample();
         view.power_3s = sample.power_watts;
         view.sample = self.shown.live();
-        view.radar_paired = ant.channel(device_type::RADAR, now).is_some();
-        if page == Page::Ride && navigation.ride_page == RidePage::Map {
-            let speed_mm_s = self.readings.live.speed_mm_s;
-            super::track::refresh_map(
-                &mut self.track,
-                now,
-                speed_mm_s,
-                view.radar_paired,
-                light,
-                self.micros_clock,
-            );
-        }
+        view.radar_paired = radar_paired;
         view.auto_paused = self.ride.auto.paused();
-        view.ride_page = navigation.ride_page;
+        view.ride_page = navigation.ride_page();
         view.ride_pages = choice;
         view.nav = super::track::sign_of(&self.track, now);
         view.course = course;
@@ -753,15 +400,15 @@ impl Runtime {
         };
         view.paused_secs = paused_secs;
         view.pause_screen =
-            page == Page::Ride && view.state == Status::Paused && !navigation.pause_hidden;
-        view.toast = self.toast(now);
+            page == Page::Ride && view.state == Status::Paused && !navigation.pause_hidden();
+        view.toast = self.toast_at(now);
         match page {
             Page::Boot => {
+                let first_frame = navigation.first_frame().unwrap_or(now);
                 let shown = now.saturating_sub(first_frame).min(BRAND_MS);
                 view.reveal = (shown * u64::from(crate::screens::brand::DONE) / BRAND_MS) as u16;
             }
             Page::Ready => {
-                self.refresh_sensor_menu(ant, now);
                 view.show_ready(self.readiness(view.gps, view.battery, now));
             }
             Page::Summary => {
@@ -773,14 +420,10 @@ impl Runtime {
             }
             Page::Form => view.show_form(self.form.mode),
             Page::PastRide => self.past_view(&mut view),
-            Page::Phone => {
-                // The codes stay readable while a phone connects.
-                system.activity(now);
-                self.phone_view(&mut view);
-            }
+            Page::Phone => self.phone_view(&mut view),
             Page::History => {
                 let offset = self.list_offset(List::Rides, now);
-                let pressed = match self.navigation.touches.pressed() {
+                let pressed = match self.navigation.touches().pressed() {
                     Some(Control::Ride(index)) => Some(index),
                     _ => None,
                 };
@@ -797,25 +440,18 @@ impl Runtime {
                     crate::screens::workout::Discard::Unavailable
                 };
             }
-            Page::Ride => {
-                // Keep the screen lit while riding; a finished ride may dim and idle off.
-                if self.recording() {
-                    system.activity(now);
-                }
-            }
+            Page::Ride => {}
             Page::Home => {
-                self.refresh_sensor_menu(ant, now);
                 view.set_home(self.home(gps_fix, now));
             }
             Page::Sensors => {
-                self.refresh_sensor_menu(ant, now);
                 view.show_sensors(self.menu.canvas(), self.menu.cues());
             }
             Page::Settings => {
                 view.scroll = self.list_offset(List::Settings, now);
                 self.settings_lines(&mut view);
-                let first = settings::rows(self.navigation.settings_field).1;
-                view.press_setting(match self.navigation.touches.pressed() {
+                let first = settings::rows(self.navigation.settings_field()).1;
+                view.press_setting(match self.navigation.touches().pressed() {
                     Some(Control::Setting(field)) => Some((field - first) as u16),
                     _ => None,
                 });
@@ -839,20 +475,10 @@ impl Runtime {
         }
         view.graphics = self.motion.graphics(self.motion_visible(), now);
         let drawn = system.draw(&view.prepare(), now);
-        let pixels = crate::screens::ride::pixels(&view.graphics, &view.profile);
-        self.motion.drew(&sample, pixels, now);
-        // Only a frame the panel accepted is a milestone or answers a press;
-        // a pending press waits for the next frame that reaches the panel.
-        if drawn == Drawn::Sent {
-            let drawn = self.drawn_at(now);
-            self.timing.first_frame(drawn);
-            if matches!(page, Page::Home | Page::Setup) {
-                self.timing.first_ready(drawn);
-            }
-            if page == Page::Format {
-                self.format_event(super::format::Event::Drawn(drawn), now);
-            }
-            self.timing.frame(drawn);
+        Presented::Page {
+            page,
+            drawn,
+            pixels: crate::screens::ride::pixels(&view.graphics, &view.profile),
         }
     }
 
@@ -921,7 +547,7 @@ impl Runtime {
     fn home(&self, gps_fix: bool, now: u64) -> Home {
         let last = self.rides_line();
         let glance = self.glance(now);
-        let mut home = Home::new(self.navigation.home_cursor, gps_fix, &glance, last);
+        let mut home = Home::new(self.navigation.home_cursor(), gps_fix, &glance, last);
         let (status, problem) = self.home_status(now);
         let warning = BatteryWarning::of(&glance).filter(|_| !problem && status == "READY TO RIDE");
         match (self.chosen_name(), warning) {
@@ -941,18 +567,6 @@ impl Runtime {
     /// What the toast band shows now: a lap just finished first, then an automatic start or resume, then the latest
     /// confirmation, then ride problems and low storage, which last until
     /// they are resolved, then what auto-pause is doing.
-    pub(super) fn toast(&mut self, now: u64) -> Option<Toast> {
-        let navigation = &mut self.navigation;
-        if navigation
-            .toast
-            .as_ref()
-            .is_some_and(|(_, until)| now >= *until)
-        {
-            navigation.toast = None;
-        }
-        self.toast_at(now)
-    }
-
     pub(super) fn toast_at(&self, now: u64) -> Option<Toast> {
         if let Some(lap) = self.ride.lap_toast(now) {
             return Some(Toast::new(ride::lap_toast(lap).as_str(), Tone::Info));
@@ -962,12 +576,12 @@ impl Runtime {
             return Some(Toast::new(auto, Tone::Info));
         }
         let navigation = &self.navigation;
-        if let Some((toast, until)) = &navigation.toast
-            && now < *until
+        if let Some((toast, until)) = navigation.toast_shown()
+            && now < until
         {
-            return Some(*toast);
+            return Some(toast);
         }
-        if navigation.page != Page::Ride {
+        if navigation.page() != Page::Ride {
             return None;
         }
         let problem = match (self.ride.request, self.ride.active().status()) {
@@ -1035,7 +649,7 @@ impl Runtime {
     /// rather than for the whole ride.
     fn auto_pause_toast(&self, status: Status, now: u64) -> Option<Toast> {
         let text = match status {
-            Status::Paused if self.ride.auto.paused() && self.navigation.pause_hidden => {
+            Status::Paused if self.ride.auto.paused() && self.navigation.pause_hidden() => {
                 "AUTO PAUSED"
             }
             Status::Recording
@@ -1054,7 +668,7 @@ impl Runtime {
     #[inline(never)]
     pub(super) fn show_elevation<'a>(&'a self, view: &mut View<'a>) {
         if crate::screens::ride::summary::shows_elevation(view) {
-            view.set_elevation_chart(&self.ride.chart);
+            view.set_elevation_chart(self.chart.chart());
         }
     }
 
@@ -1062,17 +676,6 @@ impl Runtime {
     /// altitude.
     pub(super) fn has_elevation(&self) -> bool {
         self.ride.trace.len() >= 2
-    }
-
-    /// Chart the ride's trace again when it changed, as the summary page that
-    /// shows it opens.
-    fn refresh_chart(&mut self) {
-        let showing = matches!(self.navigation.page, Page::Summary | Page::PastRide)
-            && SummaryPage::at(self.navigation.summary_page, self.has_elevation())
-                == SummaryPage::Elevation;
-        if showing && self.ride.trace.take_changed() {
-            self.ride.chart.refresh(&self.ride.trace);
-        }
     }
 
     /// What the summary shows beyond the totals.
@@ -1085,7 +688,7 @@ impl Runtime {
             _ => Saving::Saved,
         };
         After {
-            page: self.navigation.summary_page,
+            page: self.navigation.summary_page(),
             saving,
             best: self.ride.efforts.best(),
             climbs: Some(self.ride.climbing.count),
@@ -1495,20 +1098,20 @@ impl Runtime {
     /// and gauges only on the main ride page.
     fn motion_visible(&self) -> super::motion::Visible {
         let navigation = &self.navigation;
-        let riding = navigation.page == Page::Ride
-            && !(self.ride.active().status() == Status::Paused && !navigation.pause_hidden)
+        let riding = navigation.page() == Page::Ride
+            && !(self.ride.active().status() == Status::Paused && !navigation.pause_hidden())
             && self.power.view().is_none();
         super::motion::Visible {
-            main: riding && navigation.ride_page == RidePage::Main,
+            main: riding && navigation.ride_page() == RidePage::Main,
             radar: riding,
         }
     }
 
-    fn policy(&self) -> &'static super::mode::Policy {
+    pub(super) fn policy(&self) -> &'static super::mode::Policy {
         self.preferences.options.mode.policy()
     }
 
-    fn latch_numbers(&mut self, now: u64) {
+    pub(super) fn latch_numbers(&mut self, now: u64) {
         let (recording, second) = if self.ride.active().status() == Status::Recording {
             (true, self.ride.active_ms(now) / 1000)
         } else {
@@ -1517,8 +1120,8 @@ impl Runtime {
         let moment = Moment {
             recording,
             second,
-            page: self.navigation.page,
-            ride_page: self.navigation.ride_page,
+            page: self.navigation.page(),
+            ride_page: self.navigation.ride_page(),
             lap: self.ride.laps.current().number,
             climbing: self.ride.climbs.climbing().is_some(),
         };
@@ -1533,7 +1136,7 @@ impl Runtime {
                 previous_lap: ride.laps.previous(),
                 climbing: ride.climbs.climbing(),
                 training: self.shown_workout(&self.preferences.profile),
-                paused_secs: self.navigation.paused_since.map_or(0, |since| {
+                paused_secs: self.navigation.paused_since().map_or(0, |since| {
                     (now.saturating_sub(since) / 1000).min(u64::from(u32::MAX)) as u32
                 }),
             };
@@ -1542,7 +1145,7 @@ impl Runtime {
     }
 
     /// When the readings `shown` or a glide next need a frame.
-    fn motion_due(&self, shown: &crate::ride::log::Sample, now: u64) -> Option<u64> {
+    pub(super) fn motion_due(&self, shown: &crate::ride::log::Sample, now: u64) -> Option<u64> {
         let profile = self.preferences.profile;
         self.motion.due(
             self.motion_visible(),
@@ -1554,7 +1157,7 @@ impl Runtime {
     }
 }
 
-fn arrived_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
+pub(super) fn arrived_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
     crate::ride::log::Sample {
         power_watts: readings.power_3s_watts,
         ..readings.live
@@ -1621,7 +1224,10 @@ impl Shown {
 }
 
 /// Radar targets with the times their reports arrived, for gliding markers.
-fn radar_reports(readings: &super::readings::Readings, now: u64) -> super::motion::Reports {
+pub(super) fn radar_reports(
+    readings: &super::readings::Readings,
+    now: u64,
+) -> super::motion::Reports {
     super::motion::Reports {
         snapshot: readings.radar.snapshot(now),
         received_ms: readings.radar.received_ms(),

@@ -4,6 +4,7 @@
 use super::presentation::Screen;
 use super::*;
 use crate::app::cues::Cue;
+use crate::app::navigation::To;
 use crate::app::pace::{BUSY_REST_MS, STILL_REST_MS};
 use crate::app::presentation::MOTION_FRAME_MS;
 use crate::ride::log::Status;
@@ -19,7 +20,7 @@ const NOW: u64 = 5_000;
 fn still_home() -> (Runtime, Screen, Radio) {
     let (mut runtime, mut screen, mut radio) =
         (booted(Profile::HeartRate), Screen::new(), Radio::new());
-    runtime.navigation.page = Page::Home;
+    runtime.navigation.go(To::Page(Page::Home));
     // The first pass looks for the ride journal; later ones read nothing.
     advance(&mut runtime, &mut radio, NOW - 10);
     advance(&mut runtime, &mut radio, NOW);
@@ -76,7 +77,7 @@ fn ride_drawn(at: u64) -> (Runtime, Screen, Radio, Journal) {
     let (mut journal, mut radio, mut screen) = (Journal::erased(), Radio::new(), Screen::new());
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     radio.connected(HEART_RATE, NOW - 1000);
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     runtime.input_received(press(Button::BottomRight), NOW, NOW, &mut radio);
     for now in [NOW, NOW + 10, at - 10, at] {
         tick(&mut runtime, &mut journal, &mut radio, now);
@@ -132,7 +133,7 @@ fn a_new_number_the_page_does_not_show_asks_for_no_more_frames() {
         left: Reading::Distance,
         right: Reading::Kcal,
     };
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     let mut power = |runtime: &mut Runtime, screen: &mut Screen, event, rpm, now| {
         radio.data(POWER, [0x10, event, 0xff, rpm, 0, 0, 200, 0], now);
         tick(runtime, &mut journal, &mut radio, now);
@@ -171,7 +172,7 @@ fn a_finger_or_a_cue_on_a_recording_ride_keeps_the_busy_pace() {
 #[test]
 fn a_ride_recording_on_home_rests_until_its_next_sample() {
     let (mut runtime, mut screen, mut radio, mut journal) = ride_drawn(NOW + 100);
-    runtime.navigation.page = Page::Home;
+    runtime.navigation.go(To::Page(Page::Home));
     tick(&mut runtime, &mut journal, &mut radio, NOW + 960);
     assert!(
         screen.present(&mut runtime, &radio, NOW + 960),

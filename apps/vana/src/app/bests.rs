@@ -9,6 +9,7 @@
 //! the next write keeps them). A read that failed only this time is tried
 //! again, with the ride's outcome waiting.
 use super::Runtime;
+use super::navigation::To;
 use crate::kept::bests::{Bests, Found, Kept, Seen, Store};
 use crate::ride::log::Status;
 use crate::screens::bests::Mode;
@@ -93,7 +94,7 @@ impl Runtime {
 
     /// How many pages the summary on screen has.
     pub(super) fn summary_pages(&self) -> usize {
-        match self.navigation.page {
+        match self.navigation.page() {
             Page::Summary if self.summary_offer().is_some() => {
                 summary::pages(self.has_elevation()) + 1
             }
@@ -133,9 +134,8 @@ impl Runtime {
     }
 
     /// Open the BESTS view from Settings.
-    pub(super) fn open_bests(&mut self, now: u64) {
-        self.navigation.page = Page::Bests;
-        self.navigation.page_since = now;
+    pub(super) fn open_bests(&mut self) {
+        self.navigation.go(To::Page(Page::Bests));
     }
 
     /// BACK returns to Settings. ACT asks to clear the bests, and then ACT
@@ -154,14 +154,14 @@ impl Runtime {
                 kept.confirming = true;
             }
             Button::TopLeft if kept.confirming => kept.confirming = false,
-            Button::TopLeft if !held => self.navigation.page = Page::Settings,
+            Button::TopLeft if !held => self.navigation.go(To::Page(Page::Settings)),
             _ => {}
         }
     }
 
     pub(super) fn service_bests(&mut self, media: &mut impl ReadWrite, now: u64) {
         let seen = Seen {
-            open: self.navigation.page == Page::Bests,
+            open: self.navigation.page() == Page::Bests,
             ready: self.ride.bulk.status().usable(),
             busy: self.ride.pending() || self.ride.open(),
         };

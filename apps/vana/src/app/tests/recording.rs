@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::navigation::To;
 use crate::ride::log::Status;
 use crate::screens::ride::{PageChoice, RidePage};
 use crate::screens::workout::Page;
@@ -16,7 +17,7 @@ fn wheel(event_time: u16, revolutions: u16) -> [u8; 8] {
 }
 
 fn on_ride_page(runtime: &mut Runtime) {
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
 }
 
 /// Let the recorder finish any queued writes.
@@ -184,10 +185,10 @@ fn a_finished_workout_leaves_the_workout_page_for_the_main_page() {
         (RidePage::Workout, RidePage::Main),
         (RidePage::Stats, RidePage::Stats),
     ] {
-        runtime.navigation.ride_page = on;
+        runtime.navigation.go(To::RidePage(on));
         let _ = runtime.ride.workout_events.push(Event::Finished);
         runtime.workout_events(5000);
-        assert_eq!(runtime.navigation.ride_page, then, "from {on:?}");
+        assert_eq!(runtime.navigation.ride_page(), then, "from {on:?}");
     }
 }
 
@@ -218,15 +219,15 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
         (3000, RidePage::Main),
     ] {
         runtime.input_received(press(Button::BottomLeft), at, at, &mut radio);
-        assert!(runtime.navigation.page == Page::Ride);
-        assert_eq!(runtime.navigation.ride_page, page);
+        assert!(runtime.navigation.page() == Page::Ride);
+        assert_eq!(runtime.navigation.ride_page(), page);
     }
 
     // Recording, TopLeft laps and never asks to end the ride.
     for at in [3800, 4200] {
         runtime.input_received(press(Button::TopLeft), at, at, &mut radio);
         tick(&mut runtime, &mut journal, &mut radio, at);
-        assert!(runtime.navigation.page == Page::Ride);
+        assert!(runtime.navigation.page() == Page::Ride);
         assert_eq!(runtime.ride.internal.status(), Status::Recording);
     }
     assert_eq!(runtime.ride.laps.count(), 1, "the second lap is debounced");
@@ -234,31 +235,31 @@ fn ending_a_ride_needs_a_pause_then_an_answer_to_end_ride() {
     // Paused, TopLeft asks "End ride?"; BACK keeps the ride paused.
     pause(&mut runtime, &mut journal, &mut radio, 4600);
     runtime.input_received(press(Button::TopLeft), 5000, 5000, &mut radio);
-    assert!(runtime.navigation.page == Page::EndRide);
+    assert!(runtime.navigation.page() == Page::EndRide);
     runtime.input_received(press(Button::TopLeft), 5400, 5400, &mut radio);
-    assert!(runtime.navigation.page == Page::Ride);
+    assert!(runtime.navigation.page() == Page::Ride);
     // MOVE on the question does nothing; it waits as long as it takes.
     runtime.input_received(press(Button::TopLeft), 5800, 5800, &mut radio);
     runtime.input_received(press(Button::BottomLeft), 6200, 6200, &mut radio);
     tick(&mut runtime, &mut journal, &mut radio, 60_000);
-    assert!(runtime.navigation.page == Page::EndRide);
+    assert!(runtime.navigation.page() == Page::EndRide);
     assert_eq!(runtime.ride.internal.status(), Status::Paused);
     // ACT answers: the ride saves and its summary opens.
     runtime.input_received(press(Button::BottomRight), 60_400, 60_400, &mut radio);
-    assert!(runtime.navigation.page == Page::Summary);
+    assert!(runtime.navigation.page() == Page::Summary);
     settle(&mut runtime, &mut journal, &mut radio, 60_400);
     assert_eq!(runtime.ride.internal.status(), Status::Saved);
-    assert!(runtime.navigation.page == Page::Summary);
+    assert!(runtime.navigation.page() == Page::Summary);
 
     // The summary pages wrap; ACT finishes, to Home.
-    assert_eq!(runtime.navigation.summary_page, 0);
+    assert_eq!(runtime.navigation.summary_page(), 0);
     runtime.input_received(press(Button::BottomLeft), 63_000, 63_000, &mut radio);
-    assert_eq!(runtime.navigation.summary_page, 1);
+    assert_eq!(runtime.navigation.summary_page(), 1);
     runtime.input_received(press(Button::BottomLeft), 63_400, 63_400, &mut radio);
     runtime.input_received(press(Button::BottomLeft), 63_800, 63_800, &mut radio);
-    assert_eq!(runtime.navigation.summary_page, 0);
+    assert_eq!(runtime.navigation.summary_page(), 0);
     runtime.input_received(press(Button::BottomRight), 64_200, 64_200, &mut radio);
-    assert!(runtime.navigation.page == Page::Home);
+    assert!(runtime.navigation.page() == Page::Home);
 }
 
 #[test]
@@ -366,7 +367,7 @@ fn ask_to_end(runtime: &mut Runtime, store: &mut impl RideStorage, radio: &mut R
     }
     assert_eq!(runtime.ride.internal.status(), Status::Paused);
     runtime.input_received(press(Button::TopLeft), 2400, 2400, radio);
-    assert!(runtime.navigation.page == Page::EndRide);
+    assert!(runtime.navigation.page() == Page::EndRide);
 }
 
 fn host(
@@ -419,7 +420,7 @@ fn a_host_finish_while_asking_opens_the_summary_before_the_next_frame() {
     assert!(status.starts_with("state=saved "), "{status}");
     assert!(status.contains(" page=summary "), "{status}");
     runtime.input_received(press(Button::BottomRight), 5000, 5000, &mut radio);
-    assert!(runtime.navigation.page == Page::Home);
+    assert!(runtime.navigation.page() == Page::Home);
 }
 
 #[test]
@@ -435,7 +436,7 @@ fn a_refused_answer_to_end_ride_returns_to_the_ride_and_says_storage_not_ready()
         nobody_waits
     ));
     runtime.input_received(press(Button::BottomRight), 2800, 2800, &mut radio);
-    assert!(runtime.navigation.page == Page::Ride);
+    assert!(runtime.navigation.page() == Page::Ride);
     assert_eq!(runtime.ride.internal.status(), Status::Paused);
     assert_eq!(
         toast_text(&mut runtime, 2800).as_deref(),
@@ -453,7 +454,7 @@ fn no_ride_starts_while_the_format_question_is_up() {
         drawn_at: Some(1000),
         scope: crate::app::format::Scope::of([crate::app::Store::Rides]).unwrap(),
     };
-    runtime.navigation.page = Page::Ready;
+    runtime.navigation.go(To::Page(Page::Ready));
     runtime.ride_auto(Call::Do(Decision::Start), 2000);
     assert_eq!(
         host(&mut runtime, &mut journal, 2000, "RIDE START").0,
@@ -475,7 +476,7 @@ fn a_failed_finish_read_by_the_host_stays_on_the_summary_and_lets_the_rider_leav
     };
     ask_to_end(&mut runtime, &mut store, &mut radio);
     runtime.input_received(press(Button::BottomRight), 2800, 2800, &mut radio);
-    assert!(runtime.navigation.page == Page::Summary);
+    assert!(runtime.navigation.page() == Page::Summary);
     store.fail = true;
     for step in 0..20 {
         tick(&mut runtime, &mut store, &mut radio, 2800 + step * 100);
@@ -492,9 +493,9 @@ fn a_failed_finish_read_by_the_host_stays_on_the_summary_and_lets_the_rider_leav
     ));
     let mut screen = super::presentation::Screen::new();
     assert!(screen.present(&mut runtime, &radio, 5000));
-    assert!(runtime.navigation.page == Page::Summary);
+    assert!(runtime.navigation.page() == Page::Summary);
     runtime.input_received(press(Button::BottomRight), 5400, 5400, &mut radio);
-    assert!(runtime.navigation.page == Page::Home);
+    assert!(runtime.navigation.page() == Page::Home);
 }
 
 #[test]
@@ -507,23 +508,26 @@ fn the_paused_screen_comes_first_and_paging_returns_to_it() {
     tick(&mut runtime, &mut journal, &mut radio, 1000);
     pause(&mut runtime, &mut journal, &mut radio, 2000);
     runtime.navigation.announce(Status::Paused, 2200);
-    assert!(!runtime.navigation.pause_hidden, "the paused screen shows");
+    assert!(
+        !runtime.navigation.pause_hidden(),
+        "the paused screen shows"
+    );
     runtime.input_received(press(Button::BottomLeft), 2600, 2600, &mut radio);
-    assert!(runtime.navigation.pause_hidden);
+    assert!(runtime.navigation.pause_hidden());
     assert_eq!(
-        runtime.navigation.ride_page,
+        runtime.navigation.ride_page(),
         RidePage::Main,
         "the page before"
     );
     for at in [3000, 3400, 3800] {
         runtime.input_received(press(Button::BottomLeft), at, at, &mut radio);
     }
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     runtime.input_received(press(Button::BottomLeft), 4200, 4200, &mut radio);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Map);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
     runtime.input_received(press(Button::BottomLeft), 4600, 4600, &mut radio);
     assert!(
-        !runtime.navigation.pause_hidden,
+        !runtime.navigation.pause_hidden(),
         "back to the paused screen"
     );
     // Paging on goes round every page again, starting at the first.
@@ -531,22 +535,23 @@ fn the_paused_screen_comes_first_and_paging_returns_to_it() {
     for at in (5000..9000).step_by(400).take(6) {
         runtime.input_received(press(Button::BottomLeft), at, at, &mut radio);
         let navigation = &runtime.navigation;
-        seen.push(navigation.pause_hidden.then_some(navigation.ride_page));
+        seen.push(navigation.pause_hidden().then_some(navigation.ride_page()));
     }
     let pages = RidePage::ALL.map(Some);
     assert_eq!(seen[..5], pages, "every page");
     assert_eq!(seen[5], None, "then the paused screen");
     // A swipe back from the paused screen shows the last page.
-    runtime.navigation.ride_page_chosen(RidePage::Main);
-    runtime.navigation.pause_hidden = true;
-    runtime.navigation.pause_wrapped = false;
+    runtime.navigation.go(To::RidePage(RidePage::Main));
+    runtime.navigation.go(To::LeavePause {
+        wrapped_to: RidePage::Main,
+    });
     runtime.previous_ride_page();
-    assert!(!runtime.navigation.pause_hidden);
+    assert!(!runtime.navigation.pause_hidden());
     runtime.previous_ride_page();
     assert_eq!(
         (
-            runtime.navigation.pause_hidden,
-            runtime.navigation.ride_page
+            runtime.navigation.pause_hidden(),
+            runtime.navigation.ride_page()
         ),
         (true, RidePage::Map)
     );
@@ -729,7 +734,7 @@ fn arming_end_ride_replaces_a_showing_lap_toast() {
     pause(&mut runtime, &mut journal, &mut radio, 5400);
     // Within the toast's two seconds: the question replaces the lap.
     runtime.input_received(press(Button::TopLeft), 5800, 5800, &mut radio);
-    assert!(runtime.navigation.page == Page::EndRide);
+    assert!(runtime.navigation.page() == Page::EndRide);
     assert_eq!(runtime.ride.lap_toast(5800), None);
 }
 
@@ -761,38 +766,38 @@ fn climbs_bring_up_the_climb_page_and_return_unless_the_rider_paged() {
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     on_ride_page(&mut runtime);
     runtime.input_received(press(Button::BottomLeft), 1000, 1000, &mut radio);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Stats);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Stats);
 
     // A climb shows the climb page; its end goes back to the stats.
     barometer_climb(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     barometer_top(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Stats);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Stats);
 
     // Paging during a climb keeps the rider's choice when it ends, and the
     // climb does not take them back.
     barometer_climb(&mut runtime);
     runtime.input_received(press(Button::BottomLeft), 2000, 2000, &mut radio);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Map);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
     ride_barometer(&mut runtime, 200, |m| 320 + m as i32 * 8 / 10);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Map);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
     barometer_top(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Map);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
 
     // Already on the climb page: it stays there after the climb.
     for at in [2600, 3000, 3400, 3800] {
         runtime.input_received(press(Button::BottomLeft), at, at, &mut radio);
     }
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     barometer_climb(&mut runtime);
     barometer_top(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
 
     // Away from the ride screen climbs change nothing.
-    runtime.navigation.page = Page::Home;
-    runtime.navigation.ride_page = RidePage::Main;
+    runtime.navigation.go(To::Page(Page::Home));
+    runtime.navigation.go(To::RidePage(RidePage::Main));
     barometer_climb(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
 }
 
 fn hide(runtime: &mut Runtime, pages: &[RidePage]) {
@@ -812,7 +817,7 @@ fn move_and_swipes_skip_the_pages_the_rider_turned_off() {
     let mut seen = std::vec::Vec::new();
     for at in [1000, 1400, 1800, 2200] {
         runtime.input_received(press(Button::BottomLeft), at, at, &mut radio);
-        seen.push(runtime.navigation.ride_page);
+        seen.push(runtime.navigation.ride_page());
     }
     assert_eq!(
         seen,
@@ -824,9 +829,9 @@ fn move_and_swipes_skip_the_pages_the_rider_turned_off() {
         ]
     );
     runtime.previous_ride_page();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
     runtime.previous_ride_page();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Map);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
 }
 
 #[test]
@@ -835,7 +840,7 @@ fn a_page_turned_off_under_the_rider_gives_way_to_main() {
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     on_ride_page(&mut runtime);
-    runtime.navigation.ride_page_chosen(RidePage::Lap);
+    runtime.navigation.go(To::RidePage(RidePage::Lap));
     hide(&mut runtime, &[RidePage::Lap]);
     assert!(!runtime.ride_pages().contains(RidePage::Lap));
     assert_eq!(runtime.ride_pages().first(), RidePage::Main);
@@ -853,19 +858,22 @@ fn a_climb_does_not_bring_up_a_climb_page_the_rider_turned_off() {
     hide(&mut runtime, &[RidePage::Climb]);
     on_ride_page(&mut runtime);
     barometer_climb(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
-    assert!(runtime.navigation.toast.is_none(), "silent, no toast");
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
+    assert!(
+        runtime.navigation.toast_shown().is_none(),
+        "silent, no toast"
+    );
     barometer_top(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
 
     climb_on_the_map(&mut runtime, 0.0);
     runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
-    assert!(runtime.navigation.toast.is_none());
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
+    assert!(runtime.navigation.toast_shown().is_none());
 
     hide(&mut runtime, &[]);
     runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb, "back on");
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb, "back on");
 }
 
 /// A runtime with a look-ahead whose forecast has a 5% climb starting
@@ -905,19 +913,19 @@ fn the_map_brings_the_page_up_before_the_foot_and_takes_it_away_past_the_top() {
     on_ride_page(&mut runtime);
     climb_on_the_map(&mut runtime, 300.0);
     runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     // Up the 1 km climb: the barometer saying nothing keeps it, as does a
     // map that loses the climb in its last metres.
     ride_on(&mut runtime, 1200);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     map_says(&mut runtime, 2, |m| -m * 0.02);
     runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     // At 100 m past the top it stays; beyond, it lets go.
     ride_on(&mut runtime, 200);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     ride_on(&mut runtime, 10);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
 }
 
 #[test]
@@ -928,13 +936,13 @@ fn the_barometer_ending_a_climb_leaves_the_page_while_the_map_climbs_on() {
     on_ride_page(&mut runtime);
     climb_on_the_map(&mut runtime, 0.0);
     barometer_climb(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     barometer_top(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
     // The map shows the rider turned off the climb: the road is clear.
     map_says(&mut runtime, 2, |_| 0.0);
     runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
 }
 
 #[test]
@@ -943,12 +951,12 @@ fn a_climb_the_map_saw_before_the_ride_screen_comes_up_on_it() {
     let mut journal = Journal::erased();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     climb_on_the_map(&mut runtime, 300.0);
-    runtime.navigation.page = Page::Home;
+    runtime.navigation.go(To::Page(Page::Home));
     runtime.follow_road();
     on_ride_page(&mut runtime);
-    assert_eq!(runtime.navigation.ride_page, RidePage::Main);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Main);
     runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
 }
 
 #[test]
@@ -959,13 +967,13 @@ fn a_climb_close_after_another_comes_up_too() {
     on_ride_page(&mut runtime);
     climb_on_the_map(&mut runtime, 0.0);
     runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
-    runtime.navigation.ride_page_chosen(RidePage::Main);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
+    runtime.navigation.go(To::RidePage(RidePage::Main));
     // Over the top: 300 m level, then the next climb.
     ride_on(&mut runtime, 1150);
     map_says(&mut runtime, 2, |m| (m - 300.0).clamp(0.0, 800.0) * 0.06);
     runtime.follow_road();
-    assert_eq!(runtime.navigation.ride_page, RidePage::Climb);
+    assert_eq!(runtime.navigation.ride_page(), RidePage::Climb);
 }
 
 #[test]
@@ -1932,7 +1940,7 @@ fn rides_falling_back_to_internal_flash_carry_a_warning_toast() {
             toast.tone,
         )
     };
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     assert_eq!(toast(&mut runtime, now), ("READY INT".into(), Tone::Warn));
     let mut out = String::new();
     assert_eq!(
@@ -1947,7 +1955,7 @@ fn rides_falling_back_to_internal_flash_carry_a_warning_toast() {
     // Past the ride's first notes, the fallback is what the band names.
     now += 60_000;
     tick_with(&mut runtime, &mut journal, &mut bulk, now);
-    runtime.navigation.toast = None;
+    runtime.navigation.clear_toast();
     assert_eq!(
         toast(&mut runtime, now),
         ("RECORDING INT".into(), Tone::Warn)
@@ -1972,7 +1980,7 @@ fn rides_falling_back_to_internal_flash_carry_a_warning_toast() {
     );
     runtime.ride.request = Request::Idle;
     // Off the ride page nothing is shown.
-    runtime.navigation.page = Page::Home;
+    runtime.navigation.go(To::Page(Page::Home));
     assert!(runtime.toast(now).is_none());
 }
 
@@ -2137,7 +2145,7 @@ fn a_failed_host_pause_on_mmc_is_the_hosts_and_the_ride_continues_internally() {
         now,
         "RIDE BULK STATUS",
     );
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     accepted(bulk_command(
         &mut runtime,
         &mut journal,

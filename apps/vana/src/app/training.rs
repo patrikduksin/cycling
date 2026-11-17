@@ -23,6 +23,7 @@
 //! - `WORKOUT HISTORY INTERNAL|BULK id` reports a saved ride's workout.
 use super::Runtime;
 use super::cues::Cue;
+use super::navigation::To;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::chrome::Tone;
 use crate::screens::kinetic::Kinetic;
@@ -180,7 +181,7 @@ impl Runtime {
     /// List the uploads when the library is out of date: at boot and when
     /// the picker opens, never during a ride.
     pub(super) fn service_workouts(&mut self, media: &mut impl ReadWrite) {
-        let picking = self.navigation.page == Page::Workouts;
+        let picking = self.navigation.page() == Page::Workouts;
         if picking && !self.training.picking {
             self.training.listed = false;
         }
@@ -255,22 +256,21 @@ impl Runtime {
         match button {
             Button::BottomLeft => self.list_move(List::Workouts, VISIBLE, held, now),
             Button::BottomRight if self.list_act(List::Workouts, now) => {
-                self.choose_workout(self.training.picker_cursor, now)
+                self.choose_workout(self.training.picker_cursor)
             }
-            Button::TopLeft => self.navigation.page = Page::Home,
+            Button::TopLeft => self.navigation.go(To::Page(Page::Home)),
             _ => {}
         }
     }
 
     /// Choose picker row `row`: Ready names it, and the next ride plays it.
-    pub(super) fn choose_workout(&mut self, row: usize, now: u64) {
+    pub(super) fn choose_workout(&mut self, row: usize) {
         let Some(id) = self.training.row(row) else {
             return;
         };
         self.training.picker_cursor = row;
         self.training.selected = id;
-        self.navigation.page = Page::Ready;
-        self.navigation.page_since = now;
+        self.navigation.go(To::Page(Page::Ready));
     }
 
     /// ACT saves a test's FTP, BACK keeps the one in force; MOVE does nothing.
@@ -350,10 +350,7 @@ impl Runtime {
                         }
                         None => {
                             // The workout page has nothing left to show.
-                            if self.navigation.ride_page == RidePage::Workout {
-                                self.navigation.ride_page_chosen(RidePage::Main);
-                            }
-                            super::climb_page::workout_finished(&mut self.navigation);
+                            self.navigation.go(To::WorkoutDone);
                             self.navigation.toast("WORKOUT DONE", Tone::Good, now);
                         }
                     }
@@ -403,7 +400,6 @@ impl Runtime {
         &mut self,
         words: &mut core::str::SplitAsciiWhitespace<'_>,
         media: &mut impl ReadWrite,
-        now: u64,
         output: &mut impl Write,
     ) -> &'static str {
         let operation = words.next();
@@ -429,7 +425,7 @@ impl Runtime {
                     return "STATE";
                 }
                 // As choosing it on the picker: Ready names it.
-                self.choose_workout(row, now);
+                self.choose_workout(row);
                 self.display.redraw();
                 write!(output, "selected={row}")
             }
@@ -554,8 +550,8 @@ impl Runtime {
     }
 
     pub(super) fn ftp_question(&self) -> Option<Question> {
-        let offer_page = self.navigation.page == Page::Summary
-            && self.navigation.summary_page == summary::pages(self.has_elevation())
+        let offer_page = self.navigation.page() == Page::Summary
+            && self.navigation.summary_page() == summary::pages(self.has_elevation())
             && self.ride_saved();
         self.training
             .ftp

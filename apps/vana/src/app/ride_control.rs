@@ -1,11 +1,11 @@
 use super::Runtime;
 use super::cues::Cue;
+use super::navigation::To;
 use super::recording::{Discard, Request, RideMessage};
 use crate::ride::auto::{Call, Decision};
 use crate::ride::log::Status;
 use crate::ride::recorder::Action;
 use crate::screens::chrome::Tone;
-use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
 use device_api::input::Button;
 
@@ -26,7 +26,7 @@ impl Runtime {
         match call {
             Call::Do(decision) => self.ride_event(Event::Auto(call), Origin::Auto(decision), now),
             Call::Remind => {
-                let step = step(self.navigation.page, self.seen(), Event::Auto(call));
+                let step = step(self.navigation.page(), self.seen(), Event::Auto(call));
                 self.apply(step, now);
             }
         }
@@ -34,7 +34,7 @@ impl Runtime {
 
     pub(super) fn ride_serviced(&mut self, before: Status, now: u64) {
         let step = step(
-            self.navigation.page,
+            self.navigation.page(),
             self.seen(),
             Event::Serviced { before },
         );
@@ -272,7 +272,7 @@ fn serviced(page: Page, seen: Seen, before: Status) -> Step {
 
 impl Runtime {
     fn ride_event(&mut self, event: Event, origin: Origin, now: u64) {
-        let first = step(self.navigation.page, self.seen(), event);
+        let first = step(self.navigation.page(), self.seen(), event);
         self.apply(first, now);
         if let Some(action) = first.submit {
             let accepted = self.submit_ride(action, origin, now);
@@ -281,7 +281,7 @@ impl Runtime {
                 accepted,
                 origin,
             };
-            let second = step(self.navigation.page, self.seen(), answer);
+            let second = step(self.navigation.page(), self.seen(), answer);
             self.apply(second, now);
         }
     }
@@ -306,27 +306,25 @@ impl Runtime {
             None => {}
             Some(Go::OpenRide) => {
                 self.recovery.clear();
-                self.navigation.open_ride();
+                self.navigation.go(To::Ride);
             }
             Some(Go::BackToRide) => {
                 self.ride.discard = Discard::Idle;
-                self.navigation.page = Page::Ride;
+                self.navigation.go(To::Page(Page::Ride));
             }
             Some(Go::EndRide) => {
                 self.ride.clear_lap_toast();
-                self.navigation.page = Page::EndRide;
+                self.navigation.go(To::Page(Page::EndRide));
             }
-            Some(Go::DiscardRide) => self.navigation.page = Page::DiscardRide,
+            Some(Go::DiscardRide) => self.navigation.go(To::Page(Page::DiscardRide)),
             Some(Go::Summary) => {
-                self.navigation.best_news =
-                    super::bests::news(&self.ride.bests_found, &self.bests.bests);
                 // Opening the summary is the finish; the save completing
                 // under it is not a second one.
-                if self.navigation.page != Page::Summary {
+                if self.navigation.page() != Page::Summary {
                     self.recovery.finish(now);
                 }
-                self.navigation.summary_page = 0;
-                self.navigation.page = Page::Summary;
+                let news = super::bests::news(&self.ride.bests_found, &self.bests.bests);
+                self.navigation.go(To::Summary { news });
             }
             Some(Go::Home) => self.ride_left(),
             Some(Go::Discarded) => {
@@ -358,9 +356,7 @@ impl Runtime {
 
     /// Home, done with the ride.
     fn ride_left(&mut self) {
-        self.navigation.leave_summary();
-        self.navigation.ride_page = RidePage::Main;
-        self.navigation.page = Page::Home;
+        self.navigation.go(To::Home);
         self.recovery.clear();
         self.leave_workout();
     }
@@ -374,7 +370,7 @@ impl Runtime {
             });
         if accepted
             && action == Action::Finish
-            && self.navigation.page == Page::DiscardRide
+            && self.navigation.page() == Page::DiscardRide
             && let Request::Pending(token) = self.ride.request
         {
             self.ride.discard = Discard::Asked(token);

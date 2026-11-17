@@ -1,6 +1,7 @@
 use super::Runtime;
 use super::input::HOLD_GAP_MS;
 use super::intent::{self, Found};
+use super::navigation::To;
 use super::preferences::Stored;
 use super::storage::{Health, StorageHealth, Store};
 use crate::kept::CardRefused;
@@ -158,6 +159,7 @@ pub(super) enum Stage {
     ForgetInternalRides,
     Settings,
     SettleIntent,
+    Abandon,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,14 +186,14 @@ impl Stage {
             Self::JournalSector(_) => Self::ForgetInternalRides,
             Self::ForgetInternalRides => Self::Settings,
             Self::Settings => Self::SettleIntent,
-            Self::SettleIntent => return None,
+            Self::SettleIntent | Self::Abandon => return None,
         })
     }
 
     fn runs_for(self, scope: Scope) -> bool {
         use Store::*;
         match self {
-            Self::RecordIntent | Self::SettleIntent => true,
+            Self::RecordIntent | Self::SettleIntent | Self::Abandon => true,
             Self::Card(Card::Table) => scope.holds(Table),
             Self::Card(Card::Rides) => scope.holds_any(&[Table, Rides]),
             Self::Card(Card::Files) => scope.holds_any(&[Table, Files, Records]),
@@ -370,6 +372,14 @@ pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go
         ),
         (
             Running {
+                stage: Stage::Abandon,
+                clear,
+                ..
+            },
+            Event::Wrote | Event::WriteFailed,
+        ) => (Failed, Go::Ready { clear }),
+        (
+            Running {
                 stage,
                 scope,
                 resumed,
@@ -380,9 +390,26 @@ pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go
             Done if scope.ends_without_restart() => (Idle, Go::JournalEmptied { clear }),
             next => (next, Go::Stay),
         },
-        (Running { clear, .. }, Event::WriteFailed | Event::IntentNotRecorded) => {
-            (Failed, Go::Ready { clear })
-        }
+        (
+            Running {
+                scope,
+                resumed,
+                clear,
+                ..
+            },
+            Event::WriteFailed,
+        ) => (
+            Running {
+                stage: Stage::Abandon,
+                scope,
+                resumed,
+                clear,
+            },
+            Go::Stay,
+        ),
+        // An intent that was not recorded may still name a wipe begun
+        // earlier, so it is not settled.
+        (Running { clear, .. }, Event::IntentNotRecorded) => (Failed, Go::Ready { clear }),
         _ => (format, Go::Stay),
     }
 }
@@ -416,7 +443,7 @@ impl Runtime {
         self.format == Format::Done
     }
 
-    pub(super) fn format_event(&mut self, event: Event, now: u64) {
+    pub(super) fn format_event(&mut self, event: Event) {
         let (format, go) = step(self.format, event, self.ride.open());
         self.format = format;
         let page = match go {
@@ -433,10 +460,9 @@ impl Runtime {
             }
         };
         let brand_leads_on = matches!(go, Go::Question | Go::JournalEmptied { .. })
-            && self.navigation.page == Page::Boot;
+            && self.navigation.page() == Page::Boot;
         if !brand_leads_on {
-            self.navigation.page = page;
-            self.navigation.page_since = now;
+            self.navigation.go(To::Page(page));
         }
         self.display.redraw();
     }
@@ -454,14 +480,13 @@ impl Runtime {
         }
     }
 
-    pub(super) fn format_input(&mut self, button: Button, held: bool, at: u64, now: u64) {
-        self.format_event(Event::Report { button, held, at }, now);
+    pub(super) fn format_input(&mut self, button: Button, held: bool, at: u64) {
+        self.format_event(Event::Report { button, held, at });
     }
 
     pub(super) fn format_command(
         &mut self,
         argument: &str,
-        now: u64,
         output: &mut impl core::fmt::Write,
     ) -> &'static str {
         match argument {
@@ -474,7 +499,7 @@ impl Runtime {
             }
             "CONFIRM" => {
                 let scope = Scope::every(self.card_access());
-                self.format_event(Event::Confirm { scope, clear: None }, now);
+                self.format_event(Event::Confirm { scope, clear: None });
                 if matches!(self.format, Format::Running { .. }) {
                     "ACCEPTED"
                 } else {
@@ -494,7 +519,7 @@ impl Runtime {
     ) {
         if self.format == Format::Unread {
             let found = intent::at_boot(system.data_storage().intent());
-            self.format_event(Event::IntentAtBoot(found), now);
+            self.format_event(Event::IntentAtBoot(found));
         }
         if matches!(
             self.format,
@@ -503,11 +528,13 @@ impl Runtime {
             self.probe_storage(bulk);
             let health = self.storage_health();
             if health.settled() {
-                let hub = matches!(self.navigation.page, Page::Boot | Page::Home | Page::Setup)
-                    && !self.ride.open();
+                let hub = matches!(
+                    self.navigation.page(),
+                    Page::Boot | Page::Home | Page::Setup
+                ) && !self.ride.open();
                 let foreign = Scope::foreign(&health);
                 let card = self.card_access();
-                self.format_event(Event::Read { foreign, hub, card }, now);
+                self.format_event(Event::Read { foreign, hub, card });
             }
         }
         let Format::Running {
@@ -520,13 +547,7 @@ impl Runtime {
             return;
         };
         let event = self.write(stage, scope, resumed, system, bulk, now);
-        // A dead card must not hold every boot in a wipe. An intent that was
-        // not recorded may still name a wipe begun earlier, so it is not
-        // settled.
-        if event == Event::WriteFailed {
-            intent::settle(system.data_storage().intent());
-        }
-        self.format_event(event, now);
+        self.format_event(event);
     }
 
     fn write<D: Display, I: InputSource, P: Power, B: OwnedFlash>(
@@ -543,7 +564,7 @@ impl Runtime {
                 return intent::begin(system.data_storage().intent(), scope)
                     .map_or(Event::IntentNotRecorded, Event::IntentRecorded);
             }
-            Stage::SettleIntent => intent::settle(system.data_storage().intent()),
+            Stage::SettleIntent | Stage::Abandon => intent::settle(system.data_storage().intent()),
             Stage::Card(card) => {
                 let seed = now ^ bulk.entropy();
                 wipe(card, bulk, seed).is_some()

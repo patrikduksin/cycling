@@ -89,7 +89,7 @@ impl Runtime {
             Status::Unsupported | Status::Unavailable | Status::Error
         );
         let busy = self.ride.pending();
-        let asking = matches!(self.navigation.page, Page::EndRide | Page::History);
+        let asking = matches!(self.navigation.page(), Page::EndRide | Page::History);
         self.deleted.scan_step(
             bulk,
             now,
@@ -102,7 +102,7 @@ impl Runtime {
         let Some((medium, summary)) = self.deleted.delete.take() else {
             return;
         };
-        if self.navigation.page != Page::PastRide {
+        if self.navigation.page() != Page::PastRide {
             return;
         }
         let newest = self

@@ -254,7 +254,7 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
             availability: fixture.availability(),
             snapshot: fixture.snapshot(s.now),
         };
-        s.sdk.present(&mut s.shell, s.now, &NoAnt, &position);
+        s.sdk.frame(&mut s.shell, s.now, &NoAnt, &position);
     }
     fn press(s: &mut Session, button: Button) {
         s.advance(400).unwrap();

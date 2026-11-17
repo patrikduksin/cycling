@@ -1,6 +1,7 @@
 //! Turning off: the confirm sheet, the idle policy and the device hand-over.
 use super::presentation::Screen;
 use super::*;
+use crate::app::navigation::To;
 use crate::app::power::{FAREWELL_MS, Sheet};
 use crate::ride::log::Status;
 use crate::screens::brand::DONE;
@@ -103,7 +104,7 @@ fn home(journal: &mut Journal, radio: &mut Radio, screen: &mut Screen) -> Runtim
     let mut runtime = ready_runtime(journal, radio);
     screen.present(&mut runtime, radio, 0);
     screen.present(&mut runtime, radio, crate::app::presentation::BRAND_MS);
-    assert_eq!(runtime.navigation.page, Page::Home);
+    assert_eq!(runtime.navigation.page(), Page::Home);
     runtime
 }
 
@@ -254,7 +255,7 @@ fn turning_off_is_out_of_reach_while_a_ride_is_open() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     runtime.input_received(press(Button::BottomRight), 1_000, 1_000, &mut radio);
     for step in 0..20 {
         tick(&mut runtime, &mut journal, &mut radio, 1_000 + step * 100);
@@ -262,7 +263,7 @@ fn turning_off_is_out_of_reach_while_a_ride_is_open() {
     assert_eq!(runtime.ride.internal.status(), Status::Recording);
     // BACK during a recording ride does not leave the ride.
     runtime.input_received(press(Button::TopLeft), 4_000, 4_000, &mut radio);
-    assert_eq!(runtime.navigation.page, Page::Ride);
+    assert_eq!(runtime.navigation.page(), Page::Ride);
     // Even asked directly, the sheet refuses an open ride.
     runtime.open_power_sheet(4_500);
     assert_eq!(runtime.power.sheet, Sheet::Closed);
@@ -287,7 +288,7 @@ fn holding_top_left_through_power_on_does_not_ask_to_turn_off() {
         assert_eq!(runtime.power.sheet, Sheet::Closed, "at {at} ms");
     }
     assert_eq!(
-        runtime.navigation.page,
+        runtime.navigation.page(),
         Page::Home,
         "the press skipped the brand"
     );
@@ -422,7 +423,7 @@ fn press_to_frame_latency_includes_the_time_spent_drawing() {
     let mut screen = Screen::new();
     let mut runtime = home(&mut journal, &mut radio, &mut screen);
     runtime.set_latency_clock(|| CLOCK.load(Ordering::Relaxed));
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     runtime.input_received(press(Button::BottomLeft), 10_000, 10_000, &mut radio);
     // The pass started at 10 000 ms; the frame finished 800 ms later.
     CLOCK.store(10_800, Ordering::Relaxed);
@@ -533,7 +534,7 @@ fn recording_is_confirmed_after_the_start_write_finishes() {
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     runtime.set_latency_clock(|| WRITE_CLOCK.load(Ordering::Relaxed));
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     WRITE_CLOCK.store(1_000, Ordering::Relaxed);
     runtime.input_received(press(Button::BottomRight), 1_000, 1_000, &mut radio);
     // The pass starts at 1 000 ms; the start write and commit end 300 ms later.
@@ -627,7 +628,7 @@ fn rejected_frames_are_not_milestones_and_do_not_answer_a_press() {
         report(&runtime)
     );
 
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     runtime.input_received(press(Button::BottomLeft), 1_000, 1_000, &mut radio);
     screen.panel.1.set(1);
     assert!(screen.present(&mut runtime, &radio, 1_000));
@@ -849,7 +850,7 @@ fn press_latency_starts_when_the_device_received_the_press() {
     let mut radio = Radio::new();
     let mut screen = Screen::new();
     let mut runtime = home(&mut journal, &mut radio, &mut screen);
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     // Received at 7 100 ms, handled at 7 900 ms behind slow work, drawn at 7 950 ms.
     runtime.input_received(press(Button::BottomLeft), 7_100, 7_900, &mut radio);
     assert!(screen.present(&mut runtime, &radio, 7_950));
@@ -867,7 +868,7 @@ fn a_hold_queued_behind_slow_work_still_continues() {
     screen.present(&mut runtime, &radio, 0);
     // Two TopLeft reports 100 ms apart, the second handled 800 ms late.
     runtime.input_received(press(Button::TopLeft), 1_000, 1_000, &mut radio);
-    assert_eq!(runtime.navigation.page, Page::Home);
+    assert_eq!(runtime.navigation.page(), Page::Home);
     runtime.input_received(press(Button::TopLeft), 1_100, 1_800, &mut radio);
     assert_eq!(
         runtime.power.sheet,
@@ -881,7 +882,7 @@ fn ride_start_latency_starts_when_the_device_received_the_press() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     // Received at 7 900 ms, handled at 8 700 ms behind slow work.
     runtime.input_received(press(Button::BottomRight), 7_900, 8_700, &mut radio);
     let mut step = 0;

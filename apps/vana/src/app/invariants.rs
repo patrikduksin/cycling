@@ -16,7 +16,7 @@ invariants! {
         ConfirmOffWhileRecording: "turn-off question shown while recording"
             if matches!(runtime.power.sheet, Sheet::Confirm { .. }) && runtime.recording(),
         SummaryWhileRiding: "summary shown while riding"
-            if runtime.navigation.page == Page::Summary
+            if runtime.navigation.page() == Page::Summary
                 && runtime.ride.active().riding()
                 && runtime.ride.active().pending_action() != Some(Action::Finish),
         TwoRidingRides: "both journals riding"
@@ -25,7 +25,9 @@ invariants! {
             if runtime.host_token_unowned(),
         PageWhileWiping: "a page other than FORMAT or the brand shown while a wipe runs"
             if matches!(runtime.format, Format::Running { .. })
-                && !matches!(runtime.navigation.page, Page::Format | Page::Boot),
+                && !matches!(runtime.navigation.page(), Page::Format | Page::Boot),
+        EditingOffSettings: "a Settings number edited off the Settings page"
+            if runtime.navigation.editing() && runtime.navigation.page() != Page::Settings,
     }
 }
 

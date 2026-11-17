@@ -1,5 +1,6 @@
 //! The phone session through `serve_phone`, with an in-memory transport.
 use super::*;
+use crate::app::navigation::To;
 use crate::sensors::ant::device_type::HEART_RATE;
 use device_api::server::{
     AccessPoint, AccessPointConfig, AccessPointState, Method, Reach, Request, Server,
@@ -129,7 +130,9 @@ impl AccessPoint for Radio2 {
 fn saved_ride(journal: &mut Journal) -> (Runtime, super::Radio, u64) {
     let mut radio = super::Radio::new();
     let mut runtime = ready_runtime(journal, &mut radio);
-    runtime.navigation.page = crate::screens::workout::Page::Ride;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Ride));
     radio.connected(HEART_RATE, 0);
     runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     let mut now = 1000;
@@ -376,7 +379,9 @@ fn a_session_does_not_open_during_a_ride() {
     let mut journal = Journal::erased();
     let mut radio = super::Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    runtime.navigation.page = crate::screens::workout::Page::Ride;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Ride));
     runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     for step in 0..8 {
         tick(&mut runtime, &mut journal, &mut radio, 1000 + step * 250);
@@ -400,6 +405,7 @@ fn a_session_does_not_open_during_a_ride() {
 fn phone_lines(runtime: &mut Runtime) -> (Vec<String>, Option<usize>) {
     let mut view =
         crate::screens::workout::View::new(crate::screens::workout::Page::Phone, 0, None);
+    runtime.phone_joined();
     runtime.phone_view(&mut view);
     let lines = view
         .lines()
@@ -417,15 +423,15 @@ fn connect_phone_opens_from_settings_and_moves_to_the_page_code_once_a_phone_joi
     let mut journal = Journal::erased();
     let (mut runtime, mut radio, now) = saved_ride(&mut journal);
     attach(&mut runtime);
-    runtime.navigation.page = Page::Settings;
-    runtime.navigation.settings_field = Row::Phone.index();
+    runtime.navigation.go(To::Page(Page::Settings));
+    runtime.navigation.go(To::Field(Row::Phone.index()));
     runtime.input_received(
         press(Button::BottomRight),
         now + 1600,
         now + 1600,
         &mut radio,
     );
-    assert_eq!(runtime.navigation.page, Page::Phone);
+    assert_eq!(runtime.navigation.page(), Page::Phone);
     let (lines, code) = phone_lines(&mut runtime);
     assert_eq!(lines[TITLE_LINE], "STARTING WI-FI");
     assert!(code.is_none());
@@ -473,7 +479,7 @@ fn connect_phone_opens_from_settings_and_moves_to_the_page_code_once_a_phone_joi
         phone.now + 800,
         &mut radio,
     );
-    assert_eq!(phone.runtime.navigation.page, Page::Home);
+    assert_eq!(phone.runtime.navigation.page(), Page::Home);
     phone.step();
     phone.step();
     assert!(phone.runtime.phone_status().is_none());

@@ -6,6 +6,7 @@
 //! it. When the focus has scrolled out of view, a press first brings it
 //! back (`scroll::Layout::next` and `act`).
 use super::Runtime;
+use super::navigation::To;
 use crate::screens::kinetic::Kinetic;
 use crate::screens::scroll::{Layout, Press};
 use crate::screens::settings::{self, Kind, Row};
@@ -17,12 +18,12 @@ impl Runtime {
     /// The list the page shows, if any.
     pub(super) fn page_list(&self) -> Option<List> {
         let navigation = &self.navigation;
-        match navigation.page {
+        match navigation.page() {
             Page::History => Some(List::Rides),
             Page::Workouts if self.ftp_sheet().is_none() => Some(List::Workouts),
             Page::Settings
-                if !(navigation.settings_editing
-                    && Row::at(navigation.settings_field).kind() == Kind::Number) =>
+                if !(navigation.editing()
+                    && Row::at(navigation.settings_field()).kind() == Kind::Number) =>
             {
                 Some(List::Settings)
             }
@@ -42,7 +43,7 @@ impl Runtime {
         match list {
             List::Rides => self.history_count(),
             List::Workouts => self.training.rows(),
-            List::Settings => settings::rows(self.navigation.settings_field).0.len(),
+            List::Settings => settings::rows(self.navigation.settings_field()).0.len(),
         }
     }
 
@@ -52,7 +53,7 @@ impl Runtime {
             List::Rides => self.history.cursor,
             List::Workouts => self.training.picker_cursor,
             List::Settings => {
-                let field = self.navigation.settings_field;
+                let field = self.navigation.settings_field();
                 field % settings::ROWS - settings::rows(field).1
             }
         }
@@ -63,8 +64,8 @@ impl Runtime {
             List::Rides => self.history.cursor = index,
             List::Workouts => self.training.picker_cursor = index,
             List::Settings => {
-                let first = settings::rows(self.navigation.settings_field).1;
-                self.navigation.settings_field = first + index;
+                let first = settings::rows(self.navigation.settings_field()).1;
+                self.navigation.go(To::Field(first + index));
             }
         }
     }
@@ -73,7 +74,7 @@ impl Runtime {
         match list {
             List::Rides => &self.history.scroll,
             List::Workouts => &self.training.picker_scroll,
-            List::Settings => &self.navigation.settings_scroll,
+            List::Settings => self.navigation.settings_scroll(),
         }
     }
 
@@ -81,7 +82,7 @@ impl Runtime {
         match list {
             List::Rides => &mut self.history.scroll,
             List::Workouts => &mut self.training.picker_scroll,
-            List::Settings => &mut self.navigation.settings_scroll,
+            List::Settings => self.navigation.settings_scroll_mut(),
         }
     }
 
@@ -116,7 +117,7 @@ impl Runtime {
         match pan {
             Pan::Down(y) => {
                 if scroll.press(y, now) {
-                    self.navigation.touches.claim_pan();
+                    self.navigation.touches_mut().claim_pan();
                 }
             }
             Pan::Move(y) => scroll.drag(y, now),
@@ -176,13 +177,13 @@ impl Runtime {
             return;
         }
         let navigation = &mut self.navigation;
-        let section = settings::section(navigation.settings_field).0;
-        navigation.settings_field = (navigation.settings_field + 1) % settings::ROWS;
-        if settings::section(navigation.settings_field).0 == section {
+        let section = settings::section(navigation.settings_field()).0;
+        navigation.go(To::Field(
+            (navigation.settings_field() + 1) % settings::ROWS,
+        ));
+        if settings::section(navigation.settings_field()).0 == section {
             let target = layout.reveal(cursor + 1, rest);
-            navigation.settings_scroll.reveal(target as f32, now);
-        } else {
-            navigation.settings_scroll = Kinetic::default();
+            navigation.settings_scroll_mut().reveal(target as f32, now);
         }
     }
 

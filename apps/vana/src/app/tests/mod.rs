@@ -1,6 +1,7 @@
 //! Runtime tests through its public lifecycle, with deterministic fakes for
 //! the capabilities VANA consumes.
 use super::*;
+use crate::app::navigation::To;
 use crate::ride::log::{Commit, REGION_SIZE, SECTOR_SIZE, SECTORS, SLOT_SIZE, Sector, Slot};
 use crate::ride::medium::Medium;
 use crate::ride::storage::RideStorage;
@@ -289,12 +290,18 @@ impl RideStorage for Journal {
     }
 }
 
+impl Runtime {
+    fn toast(&mut self, now: u64) -> Option<crate::screens::chrome::Toast> {
+        self.navigation.expire_toast(now);
+        self.toast_at(now)
+    }
+}
+
 fn booted(profile: Profile) -> Runtime {
     let mut runtime = Runtime::new(profile);
-    runtime.format_event(
-        super::format::Event::IntentAtBoot(super::intent::Found::Idle),
-        0,
-    );
+    runtime.format_event(super::format::Event::IntentAtBoot(
+        super::intent::Found::Idle,
+    ));
     runtime
 }
 
@@ -377,7 +384,9 @@ fn choose_sensor(runtime: &mut Runtime, radio: &mut Radio, peer: device_api::ant
         0,
     );
     radio.channels.tick(1);
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
     let mut now = 600;
     let mut step = |runtime: &mut Runtime, radio: &mut Radio, button| {
         runtime.input_received(press(button), now, now, radio);
@@ -407,7 +416,7 @@ fn choose_sensor(runtime: &mut Runtime, radio: &mut Radio, peer: device_api::ant
 /// SENSOR?. Returns when it pressed last.
 fn forget_sensor(runtime: &mut Runtime, radio: &mut Radio, kind: u8, mut now: u64) -> u64 {
     use crate::screens::sensors::Page;
-    runtime.open_sensors(radio, now);
+    runtime.open_sensors(false, radio, now);
     for _ in 0..12 {
         if runtime.menu.diagnostics().focus.map(|f| f.device_type) == Some(kind) {
             break;

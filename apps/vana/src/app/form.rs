@@ -12,6 +12,7 @@
 //! does not carry the fold.
 use super::Runtime;
 use super::history::WeeksKey;
+use super::navigation::To;
 use crate::ride::fitness::Daily;
 use crate::screens::form::{Mode, signed, verdict};
 use crate::screens::workout::{Page, Text};
@@ -47,17 +48,16 @@ impl Kept {
 }
 
 impl Runtime {
-    pub(super) fn open_form(&mut self, now: u64) {
+    pub(super) fn open_form(&mut self) {
         self.history.start_indexing();
         self.form.mode = Mode::Reading;
-        self.navigation.page = Page::Form;
-        self.navigation.page_since = now;
+        self.navigation.go(To::Page(Page::Form));
     }
 
     /// BACK returns to Settings.
     pub(super) fn form_input(&mut self, button: Button, held: bool) {
         if button == Button::TopLeft && !held {
-            self.navigation.page = Page::Settings;
+            self.navigation.go(To::Page(Page::Settings));
         }
     }
 
@@ -65,7 +65,7 @@ impl Runtime {
     /// PROFILE row's value while Settings is. The minute-keyed cache bounds the
     /// work to one fold a minute, or when the rides or the FTP change.
     pub(super) fn service_form(&mut self) {
-        if !matches!(self.navigation.page, Page::Form | Page::Settings) {
+        if !matches!(self.navigation.page(), Page::Form | Page::Settings) {
             return;
         }
         let mode = self.fold_form();

@@ -33,6 +33,7 @@ mod lookahead;
 mod mark;
 mod mode;
 mod motion;
+mod navigation;
 mod night;
 mod pace;
 mod pass;
@@ -61,6 +62,7 @@ mod tests;
 mod timing;
 mod track;
 mod training;
+mod view;
 pub use phone::{
     Closed as PhoneClosed, Mode as PhoneMode, Status as PhoneStatus, Work as PhoneWork,
 };
@@ -86,7 +88,7 @@ pub struct Observations<'a, P, I> {
 }
 
 pub struct Runtime {
-    navigation: presentation::Navigation,
+    navigation: navigation::Navigation,
     phone: phone::Phone,
     display: presentation::Display,
     startup: Option<device_api::sensors::Startup>,
@@ -118,6 +120,7 @@ pub struct Runtime {
     lookahead: Option<&'static mut lookahead::Terrain>,
     motion: motion::Motion,
     shown: presentation::Shown,
+    chart: view::Chart,
     alerts: crate::ride::alerts::Alerts,
     track: Option<&'static mut track::RideTrack>,
     reported: seen::Reported,
@@ -129,7 +132,7 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(profile: Profile) -> Self {
         Self {
-            navigation: presentation::Navigation::default(),
+            navigation: navigation::Navigation::default(),
             phone: phone::Phone::default(),
             display: presentation::Display::default(),
             startup: None,
@@ -158,6 +161,7 @@ impl Runtime {
             lookahead: None,
             motion: motion::Motion::default(),
             shown: presentation::Shown::default(),
+            chart: view::Chart::default(),
             alerts: crate::ride::alerts::Alerts::default(),
             track: None,
             reported: seen::Reported::default(),
@@ -283,7 +287,7 @@ impl Runtime {
 
     /// The page VANA shows, for composition and scenario checks.
     pub fn page(&self) -> crate::screens::workout::Page {
-        self.navigation.page
+        self.navigation.page()
     }
 
     /// Advance sensor links, take new sensor data and service both ride

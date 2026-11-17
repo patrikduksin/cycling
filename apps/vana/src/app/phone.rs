@@ -22,6 +22,7 @@
 //! of a body and never writes more output than the transport has room for.
 
 use super::Runtime;
+use super::navigation::To;
 use super::pace::Touched;
 use crate::kept::{self, course::Store};
 use crate::ride::course::gpx;
@@ -1429,9 +1430,7 @@ impl Runtime {
     /// Open Connect phone: a session on the device's access point, starting
     /// at the join code.
     pub(super) fn enter_phone(&mut self) {
-        self.navigation.page = crate::screens::workout::Page::Phone;
-        self.navigation.phone_step = 0;
-        self.navigation.phone_advanced = false;
+        self.navigation.go(To::Phone);
         self.open_phone(Mode::AccessPoint);
     }
 
@@ -1443,11 +1442,12 @@ impl Runtime {
         match button {
             Button::TopLeft if !held => {
                 self.close_phone();
-                self.navigation.page = if self.history.phone.take().is_some() {
-                    crate::screens::workout::Page::PastRide
-                } else {
-                    crate::screens::workout::Page::Home
-                };
+                self.navigation
+                    .go(To::Page(if self.history.phone.take().is_some() {
+                        crate::screens::workout::Page::PastRide
+                    } else {
+                        crate::screens::workout::Page::Home
+                    }));
             }
             Button::TopLeft => {}
             _ => self.phone_touch(),
@@ -1458,13 +1458,23 @@ impl Runtime {
         if self.phone.session.is_none() && self.phone.wanted.is_none() {
             self.enter_phone();
         } else {
-            self.navigation.phone_step ^= 1;
+            self.navigation.go(To::PhoneCode);
+        }
+    }
+
+    pub(super) fn phone_joined(&mut self) {
+        if let Some(status) = self.phone_status()
+            && status.mode == Mode::AccessPoint
+            && matches!(status.access_point, AccessPointState::Up { clients } if clients > 0)
+            && !self.navigation.phone_advanced()
+        {
+            self.navigation.go(To::PhoneJoined);
         }
     }
 
     /// The Connect phone lines and code for this frame.
     #[inline(never)]
-    pub(super) fn phone_view(&mut self, view: &mut crate::screens::workout::View) {
+    pub(super) fn phone_view(&self, view: &mut crate::screens::workout::View) {
         use crate::screens::phone::{NAME, NOTE, PROBLEM, SECRET, STEP, TITLE_LINE, place};
         use crate::screens::qr::Qr;
         let (qr, lines) = view.show_phone();
@@ -1497,12 +1507,8 @@ impl Runtime {
             AccessPointState::Up { clients } => clients,
             _ => 0,
         };
-        if status.mode == Mode::AccessPoint && joined > 0 && !self.navigation.phone_advanced {
-            self.navigation.phone_advanced = true;
-            self.navigation.phone_step = 1;
-        }
         let url = status.url();
-        let join = status.mode == Mode::AccessPoint && self.navigation.phone_step == 0;
+        let join = status.mode == Mode::AccessPoint && self.navigation.phone_step() == 0;
         if join {
             let _ = lines[STEP].push_str("STEP 1 OF 2");
             let _ = lines[TITLE_LINE].push_str("JOIN VANA WI-FI");

@@ -29,8 +29,7 @@ pub struct Trace {
     next_mm: u64,
     /// The last reading: distance and altitude in decimetres.
     latest: Option<(u64, i32)>,
-    /// A point was placed since `take_changed`.
-    changed: bool,
+    generation: u32,
 }
 
 impl Default for Trace {
@@ -47,7 +46,7 @@ impl Trace {
         step_mm: FIRST_STEP_MM,
         next_mm: 0,
         latest: None,
-        changed: true,
+        generation: 0,
     };
 }
 
@@ -84,16 +83,22 @@ impl Trace {
             self.len = CAPACITY / 2;
             self.step_mm *= 2;
         }
-        self.changed = true;
+        self.generation = self.generation.wrapping_add(1);
         self.points[self.len] = Altitude::from_dm(altitude_dm);
         self.len += 1;
         self.next_mm += self.step_mm;
     }
 
-    /// Whether the trace changed since this was last asked. A fresh trace,
-    /// as after a reset, counts as changed.
-    pub fn take_changed(&mut self) -> bool {
-        core::mem::take(&mut self.changed)
+    /// No altitude yet, as a new generation.
+    pub fn reset(&mut self) {
+        *self = Self {
+            generation: self.generation.wrapping_add(1),
+            ..Self::EMPTY
+        };
+    }
+
+    pub fn generation(&self) -> u32 {
+        self.generation
     }
 
     pub fn len(&self) -> usize {

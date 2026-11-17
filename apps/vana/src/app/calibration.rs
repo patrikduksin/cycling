@@ -268,7 +268,7 @@ impl Runtime {
         }
         let live = self.live_power_meter(ant, now);
         let recording = self.recording();
-        let watching = self.navigation.page == crate::screens::workout::Page::Sensors;
+        let watching = self.navigation.page() == crate::screens::workout::Page::Sensors;
         self.advance_calibration(Event::Tick {
             live,
             recording,

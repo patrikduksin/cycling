@@ -1,5 +1,6 @@
 //! Zeroing the saved power meter through the runtime and a radio fake.
 use super::*;
+use crate::app::navigation::To;
 use crate::screens::sensors::CalibrationNote;
 use device_api::ant::SendStage;
 
@@ -150,12 +151,16 @@ fn a_request_held_by_a_busy_radio_never_goes_out_once_a_ride_records() {
         tick(&mut runtime, &mut journal, &mut radio, step);
     }
     feed(&mut runtime, &mut journal, &mut radio, 1_000, 23_800);
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
     radio.reject = Some(device_api::ant::Error::Busy);
     runtime.calibrate(&mut radio, 23_800);
     assert_eq!(note(&runtime), Some(CalibrationNote::WaitingForRadio));
     feed(&mut runtime, &mut journal, &mut radio, 24_000, 27_000);
-    runtime.navigation.page = crate::screens::workout::Page::Ride;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Ride));
     runtime.input_received(
         device_api::input::Input::Button {
             button: device_api::input::Button::BottomRight,
@@ -179,10 +184,14 @@ fn a_request_held_by_a_busy_radio_never_goes_out_once_a_ride_records() {
 #[test]
 fn leaving_the_sensor_page_drops_a_request_the_radio_has_not_taken() {
     let (mut runtime, mut radio) = live();
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
     radio.reject = Some(device_api::ant::Error::Busy);
     runtime.calibrate(&mut radio, 200);
-    runtime.navigation.page = crate::screens::workout::Page::Home;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Home));
     run(&mut runtime, &mut radio, 200, 300);
     radio.reject = None;
     run(&mut runtime, &mut radio, 300, 2_000);
@@ -193,7 +202,9 @@ fn leaving_the_sensor_page_drops_a_request_the_radio_has_not_taken() {
 #[test]
 fn a_radio_stuck_on_an_earlier_message_asks_for_a_restart() {
     let (mut runtime, mut radio) = live();
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
     radio.reject = Some(device_api::ant::Error::Uncertain);
     runtime.calibrate(&mut radio, 200);
     let note = note(&runtime).unwrap();

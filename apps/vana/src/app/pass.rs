@@ -112,7 +112,7 @@ pub fn pass<D, I, P, B, Pos, In, A, Bl, Bu, Ap, Sv, So, Pc>(
         now,
     );
     at(Point::Phone, shell);
-    app.present(shell, now, &ant, position);
+    app.frame(shell, now, &ant, position);
     at(Point::VanaPresent, shell);
     app.save_preferences(shell, now);
     app.alert(&mut sound, now);

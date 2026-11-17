@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::navigation::To;
 use crate::screens::sensors::MenuMessage;
 use crate::screens::workout::Page;
 use crate::sensors::ant::device_type::{HEART_RATE, RADAR};
@@ -128,7 +129,7 @@ impl Screen {
     /// Whether this call drew a frame.
     pub(super) fn present(&mut self, runtime: &mut Runtime, radio: &Radio, now: u64) -> bool {
         let before = self.shell.display_submissions;
-        runtime.present(&mut self.shell, now, radio, &Absent);
+        runtime.frame(&mut self.shell, now, radio, &Absent);
         self.shell.display_submissions != before
     }
 }
@@ -140,7 +141,7 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
     let mut radio = Radio::new();
     // The brand flashes from VANA's first frame, whenever the device lets it run.
     assert!(screen.present(&mut runtime, &radio, 3000));
-    assert!(runtime.navigation.page == Page::Boot);
+    assert!(runtime.navigation.page() == Page::Boot);
     // The reveal moves at the motion cadence, then Home opens on time.
     assert!(!screen.present(&mut runtime, &radio, 3039));
     let reveal = (3040..3400)
@@ -148,9 +149,9 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
         .filter(|&now| screen.present(&mut runtime, &radio, now))
         .count();
     assert_eq!(reveal, 9, "ten reveal frames in 400 ms");
-    assert!(runtime.navigation.page == Page::Boot);
+    assert!(runtime.navigation.page() == Page::Boot);
     assert!(screen.present(&mut runtime, &radio, 3400));
-    assert!(runtime.navigation.page == Page::Home);
+    assert!(runtime.navigation.page() == Page::Home);
     assert!(!screen.present(&mut runtime, &radio, 7000));
     assert!(!screen.present(&mut runtime, &radio, 7999));
     // Input redraws immediately.
@@ -167,7 +168,8 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
     assert!(!runtime.input_active());
     runtime.input_received(press(Button::BottomLeft), 9000, 9000, &mut radio);
     assert_eq!(
-        runtime.navigation.home_cursor, 1,
+        runtime.navigation.home_cursor(),
+        1,
         "input is ignored while suspended"
     );
     assert!(!screen.present(&mut runtime, &radio, 9000));
@@ -184,7 +186,7 @@ fn a_new_startup_status_draws_at_once_where_it_shows() {
     runtime.input_received(press(Button::BottomLeft), 4000, 4000, &mut radio);
     runtime.input_received(press(Button::BottomRight), 4400, 4400, &mut radio);
     assert!(screen.present(&mut runtime, &radio, 4400));
-    assert!(runtime.navigation.page == Page::Sensors);
+    assert!(runtime.navigation.page() == Page::Sensors);
     runtime.set_startup_status(device_api::sensors::Startup::Probing);
     assert!(screen.present(&mut runtime, &radio, 4401));
     assert_eq!(
@@ -204,9 +206,9 @@ fn ride_opens_ready_which_waits_for_act_to_start() {
     radio.data(HEART_RATE, [0; 8], 6000);
     assert!(screen.present(&mut runtime, &radio, 6000));
     assert!(screen.present(&mut runtime, &radio, 6500));
-    assert!(runtime.navigation.page == Page::Home);
+    assert!(runtime.navigation.page() == Page::Home);
     runtime.input_received(press(Button::BottomRight), 7000, 7000, &mut radio);
-    assert!(runtime.navigation.page == Page::Ready);
+    assert!(runtime.navigation.page() == Page::Ready);
 
     assert!(screen.present(&mut runtime, &radio, 7000));
     let readiness = runtime.readiness(
@@ -238,9 +240,9 @@ fn ride_opens_ready_which_waits_for_act_to_start() {
 
     // Ready stays until the rider acts: no timer moves on.
     assert!(screen.present(&mut runtime, &radio, 30_000));
-    assert!(runtime.navigation.page == Page::Ready);
+    assert!(runtime.navigation.page() == Page::Ready);
     runtime.input_received(press(Button::TopLeft), 30_500, 30_500, &mut radio);
-    assert!(runtime.navigation.page == Page::Home);
+    assert!(runtime.navigation.page() == Page::Home);
 }
 
 #[test]
@@ -293,7 +295,7 @@ fn radar_beeps_sound_only_on_the_ride_page() {
     tick(&mut runtime, &mut journal, &mut radio, 1000);
     runtime.alert(&mut speaker, 1000);
     assert!(speaker.0.is_empty(), "no alert away from the ride page");
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     radio.data(RADAR, close, 1250);
     tick(&mut runtime, &mut journal, &mut radio, 1250);
     runtime.alert(&mut speaker, 1250);
@@ -307,7 +309,7 @@ fn radar_beeps_sound_only_on_the_ride_page() {
     tick(&mut runtime, &mut journal, &mut radio, 6000);
     runtime.alert(&mut speaker, 6000);
     assert!(speaker.0.is_empty(), "an empty road is quiet");
-    runtime.navigation.chime = Some(crate::app::cues::Cue::Lap);
+    runtime.navigation.chime(crate::app::cues::Cue::Lap);
     runtime.alert(&mut speaker, 7000);
     assert_eq!(speaker.0, [1], "the lap chime");
     radio.data(RADAR, [0x30, 2, 0, 10, 0, 0, 1, 0], 7050);
@@ -325,25 +327,25 @@ fn a_touch_lifted_after_leaving_settings_does_not_swallow_the_next_tap() {
     let mut runtime = booted(Profile::HeartRate);
     let mut radio = Radio::new();
     let touch = |x, y| Input::Touch(device_api::input::Point { x, y });
-    runtime.navigation.page = Page::Settings;
+    runtime.navigation.go(To::Page(Page::Settings));
     // A tap on FTP edits it. A finger on the minus pad lowers it once and
     // stays down while TopLeft finishes and TopLeft leaves Settings; it
     // lifts on Home.
     runtime.input_received(touch(120, 86), 1000, 1000, &mut radio);
     runtime.input_received(Input::Release, 1050, 1050, &mut radio);
-    assert!(runtime.navigation.settings_editing);
+    assert!(runtime.navigation.editing());
     runtime.input_received(touch(60, 237), 1500, 1500, &mut radio);
     assert_eq!(runtime.preferences.profile.ftp_watts, 210);
     runtime.input_received(press(Button::TopLeft), 2000, 2000, &mut radio);
     runtime.input_received(press(Button::TopLeft), 3000, 3000, &mut radio);
-    assert!(runtime.navigation.page == Page::Home);
+    assert!(runtime.navigation.page() == Page::Home);
     runtime.input_received(Input::Release, 3500, 3500, &mut radio);
     // Back in Settings, the first tap counts.
-    runtime.navigation.page = Page::Settings;
+    runtime.navigation.go(To::Page(Page::Settings));
     runtime.input_received(touch(120, 140), 4000, 4000, &mut radio);
     runtime.input_received(Input::Release, 4050, 4050, &mut radio);
-    assert_eq!(runtime.navigation.settings_field, 1);
-    assert!(runtime.navigation.settings_editing);
+    assert_eq!(runtime.navigation.settings_field(), 1);
+    assert!(runtime.navigation.editing());
 }
 
 #[test]

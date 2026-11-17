@@ -114,7 +114,7 @@ impl Runtime {
             power,
             standby_dark: self.standby_dark(),
             host,
-            page: self.navigation.page,
+            page: self.navigation.page(),
             busy: self.busy(system, now),
         };
         let frame = match self.display {
@@ -137,7 +137,7 @@ impl Runtime {
             .filter_map(|recorder| recorder.sample_due_ms())
             .min()
             .map(|sample| sample.min(self.readings.odometer.due_ms()));
-        let radar = (self.navigation.page == Page::Ride)
+        let radar = (self.navigation.page() == Page::Ride)
             .then(|| self.readings.radar_warning.due_ms())
             .flatten();
         recording.into_iter().chain(radar).min()
@@ -149,7 +149,7 @@ impl Runtime {
         system: &Shell<D, I, P, B>,
         now: u64,
     ) -> bool {
-        self.navigation.touches.down()
+        self.navigation.touches().down()
             || self
                 .page_list()
                 .is_some_and(|list| self.kinetic(list).moving())

@@ -12,6 +12,7 @@
 //! are reachable only with no ride open, and a new ride clears them anyway.
 //! Home keeps the last ride's line from before the first replay.
 use super::Runtime;
+use super::navigation::To;
 use crate::clock::Zone;
 use crate::ride::directory::{Journal, RideIndex};
 use crate::ride::log::{Status, Summary};
@@ -201,7 +202,7 @@ impl Runtime {
         self.history.indexing = true;
         self.history.cursor = 0;
         self.history.open = None;
-        self.navigation.page = Page::History;
+        self.navigation.go(To::Page(Page::History));
         self.show_focus(Scrolling::Rides, 0);
     }
 
@@ -244,7 +245,7 @@ impl Runtime {
         self.history.open = None;
         let last = self.history_count().saturating_sub(1);
         self.history.cursor = self.history.cursor.min(last);
-        self.navigation.page = Page::History;
+        self.navigation.go(To::Page(Page::History));
         self.show_focus(Scrolling::Rides, now);
     }
 
@@ -256,7 +257,7 @@ impl Runtime {
     ) {
         // Home's RIDES card counts every saved ride, so the scan starts there
         // too once no ride is open.
-        if !self.history.indexing && self.navigation.page == Page::Home && !self.recording() {
+        if !self.history.indexing && self.navigation.page() == Page::Home && !self.recording() {
             self.history.indexing = true;
         }
         if !self.history.indexing {
@@ -266,7 +267,7 @@ impl Runtime {
             return;
         };
         let added = self.ride.directory_step(index, store, bulk);
-        let page = self.navigation.page;
+        let page = self.navigation.page();
         let counted = self.counted();
         let flipped = counted != self.history.counted;
         let recount = page == Page::Home && flipped;
@@ -291,7 +292,7 @@ impl Runtime {
             Button::BottomRight if count > 0 && self.list_act(Scrolling::Rides, now) => {
                 self.open_past_ride(self.history.cursor)
             }
-            Button::TopLeft => self.navigation.page = Page::Home,
+            Button::TopLeft => self.navigation.go(To::Page(Page::Home)),
             _ => {}
         }
     }
@@ -313,8 +314,7 @@ impl Runtime {
         self.history.cursor = index;
         let upper = self.ride.recorder(medium).next_slot();
         self.history.open = Some((medium, Replay::new(ride_id, upper), summary));
-        self.navigation.summary_page = 0;
-        self.navigation.page = Page::PastRide;
+        self.navigation.go(To::PastRide);
     }
 
     fn sums(&mut self) -> Sums<'_> {
@@ -332,7 +332,7 @@ impl Runtime {
     pub(super) fn past_ride_input(&mut self, button: Button, held: bool) {
         match button {
             Button::BottomLeft => self.next_summary_page(1),
-            Button::TopLeft if !held => self.navigation.page = Page::History,
+            Button::TopLeft if !held => self.navigation.go(To::Page(Page::History)),
             Button::BottomRight if !held => {
                 let Some((medium, _, summary)) = self.history.open else {
                     return;
@@ -350,13 +350,13 @@ impl Runtime {
 
     /// Whether a saved ride's pages end with DELETE RIDE?.
     pub(super) fn deletable(&self) -> bool {
-        self.navigation.page == Page::PastRide && self.deleted.writable()
+        self.navigation.page() == Page::PastRide && self.deleted.writable()
     }
 
     /// Whether DELETE RIDE?, the page after the others, is on screen.
     pub(super) fn delete_shown(&self) -> bool {
         self.deletable()
-            && self.navigation.summary_page
+            && self.navigation.summary_page()
                 == crate::screens::ride::summary::pages(self.has_elevation())
     }
 
@@ -372,7 +372,7 @@ impl Runtime {
         store: &mut impl crate::ride::storage::RideStorage,
         bulk: &mut impl device_api::bulk::ReadWrite,
     ) {
-        if self.navigation.page != Page::PastRide {
+        if self.navigation.page() != Page::PastRide {
             return;
         }
         let Some((medium, mut replay, summary)) = self.history.open else {
@@ -575,7 +575,7 @@ impl Runtime {
         let active_ms = summary.map_or(0, |s| s.active_ms).max(replay.active_ms);
         view.active_secs = active_ms / 1000;
         let after = After {
-            page: self.navigation.summary_page,
+            page: self.navigation.summary_page(),
             saving,
             best: self.ride.efforts.best(),
             climbs: facts

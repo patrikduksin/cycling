@@ -2,7 +2,7 @@ use super::Runtime;
 use super::climb_page::{Follow, press_undone};
 use super::cues::Cue;
 use super::input::HOLD_GAP_MS;
-use super::presentation::Navigation;
+use super::navigation::{Navigation, Pause, Restore, To};
 use crate::screens::chrome::Tone;
 use crate::screens::ride::RidePage;
 use crate::screens::workout::{Page, Text};
@@ -110,8 +110,7 @@ enum Event {
 struct View {
     page: Page,
     ride: (RidePage, Follow),
-    /// `pause_hidden` and `pause_wrapped`.
-    pause: (bool, bool),
+    pause: Pause,
     summary_page: usize,
     home_cursor: usize,
 }
@@ -205,11 +204,12 @@ impl Runtime {
                 restore,
             } => (pressed_ms, page, restore),
         };
-        let navigation = &mut self.navigation;
-        (navigation.ride_page, navigation.climb) = restore.ride;
-        (navigation.pause_hidden, navigation.pause_wrapped) = restore.pause;
-        navigation.summary_page = restore.summary_page;
-        navigation.home_cursor = restore.home_cursor;
+        self.navigation.go(To::Restore(Restore {
+            ride: restore.ride,
+            pause: restore.pause,
+            summary_page: restore.summary_page,
+            home_cursor: restore.home_cursor,
+        }));
         let marks = &mut self.marks;
         marks.count = marks.count.saturating_add(1);
         marks.made = Some(Mark {
@@ -220,7 +220,7 @@ impl Runtime {
         let mut text = Text::<12>::new();
         let _ = write!(text, "MARK {}", marks.count);
         self.navigation.toast(text.as_str(), Tone::Info, now);
-        self.navigation.chime = Some(Cue::Mark);
+        self.navigation.chime(Cue::Mark);
         self.display.redraw();
         MoveReport::Held
     }
@@ -229,11 +229,14 @@ impl Runtime {
 impl View {
     fn of(navigation: &Navigation) -> Self {
         Self {
-            page: navigation.page,
-            ride: (navigation.ride_page, navigation.climb),
-            pause: (navigation.pause_hidden, navigation.pause_wrapped),
-            summary_page: navigation.summary_page,
-            home_cursor: navigation.home_cursor,
+            page: navigation.page(),
+            ride: (navigation.ride_page(), navigation.climb()),
+            pause: Pause {
+                hidden: navigation.pause_hidden(),
+                wrapped: navigation.pause_wrapped(),
+            },
+            summary_page: navigation.summary_page(),
+            home_cursor: navigation.home_cursor(),
         }
     }
 
@@ -273,7 +276,10 @@ mod tests {
     const RIDE: View = View {
         page: Page::Ride,
         ride: (RidePage::Main, Follow::Idle),
-        pause: (false, false),
+        pause: Pause {
+            hidden: false,
+            wrapped: false,
+        },
         summary_page: 0,
         home_cursor: 0,
     };
@@ -433,7 +439,10 @@ mod tests {
             after,
         };
         let paused = |view| View {
-            pause: (true, false),
+            pause: Pause {
+                hidden: true,
+                wrapped: false,
+            },
             ..view
         };
         let home = |home_cursor| View {

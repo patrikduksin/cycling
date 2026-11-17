@@ -8,9 +8,8 @@
 //! Each pass, after the ride and the look-ahead, `follow_road` steps the
 //! follower with the road before and now.
 use super::Runtime;
-use super::presentation::Navigation;
-use crate::screens::ride::{PageChoice, RidePage};
-use crate::screens::workout::Page;
+use super::navigation::To;
+use crate::screens::ride::RidePage;
 
 impl Runtime {
     /// Look at the road and follow it; once per pass, from the ride's tick
@@ -23,28 +22,8 @@ impl Runtime {
             None if self.ride.climbs.climbing().is_some() => Road::Climbing,
             None => Road::Clear,
         };
-        let choice = self.page_choice_with_course_map();
-        let navigation = &mut self.navigation;
-        let before = core::mem::replace(&mut navigation.road, road);
-        let seen = Seen::of(navigation, choice, before);
-        let step = step(navigation.climb, Event::Road(seen));
-        apply(navigation, step);
-    }
-}
-
-impl Navigation {
-    /// The rider picked a ride page: a climb no longer takes them back.
-    pub(super) fn ride_page_chosen(&mut self, page: RidePage) {
-        self.ride_page = page;
-        let step = step(self.climb, Event::Paged);
-        apply(self, step);
-    }
-
-    /// The ride screen opened on its first page: the climb page is the
-    /// road's to bring up again.
-    pub(super) fn ride_page_reset(&mut self, page: RidePage) {
-        self.ride_page = page;
-        self.climb = Follow::Idle;
+        let page_on = self.page_choice_with_course_map().shows(RidePage::Climb);
+        self.navigation.go(To::Road { road, page_on });
     }
 }
 
@@ -59,6 +38,19 @@ pub(super) enum Follow {
     /// This climb is the rider's: they paged away, or were on the page
     /// already. Nothing changes until it is over.
     Done,
+}
+
+impl Follow {
+    pub(super) fn workout_done(self) -> Self {
+        match self {
+            Self::Shown {
+                back_to: RidePage::Workout,
+            } => Self::Shown {
+                back_to: RidePage::Main,
+            },
+            other => other,
+        }
+    }
 }
 
 /// The road, as the climb page sees it.
@@ -82,33 +74,29 @@ enum Event {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Seen {
-    before: Road,
-    road: Road,
+pub(super) struct Seen {
+    pub(super) before: Road,
+    pub(super) road: Road,
     /// The ride screen is up (not paused over, not another screen).
-    riding: bool,
+    pub(super) riding: bool,
     /// The rider kept the climb page on.
-    page_on: bool,
-    ride_page: RidePage,
-}
-
-impl Seen {
-    fn of(navigation: &Navigation, choice: PageChoice, before: Road) -> Self {
-        Self {
-            before,
-            road: navigation.road,
-            riding: navigation.page == Page::Ride,
-            page_on: choice.shows(RidePage::Climb),
-            ride_page: navigation.ride_page,
-        }
-    }
+    pub(super) page_on: bool,
+    pub(super) ride_page: RidePage,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Step {
-    follow: Follow,
+pub(super) struct Step {
+    pub(super) follow: Follow,
     /// The ride page to switch to.
-    show: Option<RidePage>,
+    pub(super) show: Option<RidePage>,
+}
+
+pub(super) fn on_road(follow: Follow, seen: Seen) -> Step {
+    step(follow, Event::Road(seen))
+}
+
+pub(super) fn on_paged(follow: Follow) -> Step {
+    step(follow, Event::Paged)
 }
 
 const fn stay(follow: Follow) -> Step {
@@ -158,20 +146,6 @@ fn step(follow: Follow, event: Event) -> Step {
     }
 }
 
-/// A finished workout leaves its page: a climb that covered it goes back to
-/// the main page instead.
-pub(super) fn workout_finished(navigation: &mut Navigation) {
-    if navigation.climb
-        == (Follow::Shown {
-            back_to: RidePage::Workout,
-        })
-    {
-        navigation.climb = Follow::Shown {
-            back_to: RidePage::Main,
-        };
-    }
-}
-
 /// A rider's mark undoes the MOVE press that began its hold: the ride page and
 /// the follower go back as one, so a page is never put back under a follower
 /// that has moved on. A climb page that came up during the hold stays, and
@@ -196,38 +170,9 @@ pub(super) fn press_undone(
     }
 }
 
-/// With `workout_finished` and the mark showing what `press_undone` put back,
-/// the only writer of `Navigation::climb`, and of a ride page the road chose.
-fn apply(navigation: &mut Navigation, step: Step) {
-    navigation.climb = step.follow;
-    if let Some(page) = step.show {
-        navigation.ride_page = page;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_climb_over_a_finished_workout_goes_back_to_the_main_page() {
-        let mut navigation = Navigation::default();
-        navigation.climb = Follow::Shown {
-            back_to: RidePage::Workout,
-        };
-        workout_finished(&mut navigation);
-        assert_eq!(navigation.climb, Follow::Shown { back_to: Main });
-        navigation.climb = Follow::Shown {
-            back_to: RidePage::Map,
-        };
-        workout_finished(&mut navigation);
-        assert_eq!(
-            navigation.climb,
-            Follow::Shown {
-                back_to: RidePage::Map
-            }
-        );
-    }
 
     #[test]
     fn a_mark_puts_back_the_page_and_the_follower_as_one() {

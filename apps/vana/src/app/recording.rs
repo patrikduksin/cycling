@@ -7,6 +7,7 @@
 //! fails or fills while a ride is running, the ride continues on the internal
 //! journal as a new ride; the bulk part stays exportable.
 use super::Runtime;
+use super::navigation::To;
 use crate::kept::bests::Found;
 use crate::kept::facts::record::Climbing;
 use crate::ride::auto::Auto;
@@ -23,7 +24,6 @@ use crate::ride::settle::{self, End, Hide, Saved};
 use crate::ride::storage::RideStorage;
 use crate::ride::totals::{Efforts, Totals};
 use crate::ride::zones::{TrainingProfile, ZoneTime};
-use crate::screens::ride::ElevationChart;
 use crate::screens::workout::Page;
 use device_api::bulk::ReadWrite;
 use firmware_services::checksum::crc32;
@@ -91,8 +91,6 @@ pub(super) struct Ride {
     /// Altitude over distance for the summary's chart, kept and reset with
     /// `totals`.
     pub(super) trace: Trace,
-    /// The summary's chart of `trace`, charted when the page opens.
-    pub(super) chart: ElevationChart,
     pub(super) bests_found: Found,
     /// Climbs finished this ride.
     pub(super) climbing: Climbing,
@@ -186,7 +184,6 @@ impl Default for Ride {
             zone_time: ZoneTime::default(),
             efforts: Efforts::default(),
             trace: Trace::default(),
-            chart: ElevationChart::default(),
             bests_found: Found::default(),
             climbing: Climbing::default(),
             lap_chime: false,
@@ -738,7 +735,7 @@ impl Runtime {
             return;
         }
         // Rolling off starts a ride from Ready or the ride screen.
-        let ready = matches!(self.navigation.page, Page::Ride | Page::Ready);
+        let ready = matches!(self.navigation.page(), Page::Ride | Page::Ready);
         let status = self.ride.active().status();
         let motion = self.readings.motion;
         let automatic = self.preferences.options.auto_pause;
@@ -840,14 +837,14 @@ impl Runtime {
                 ride.lap_toast = None;
                 ride.zone_time = ZoneTime::default();
                 ride.efforts = Efforts::default();
-                ride.trace = Trace::default();
+                ride.trace.reset();
                 ride.bests_found = Found::default();
                 self.training
                     .ftp
                     .answered(crate::workout::ftp::Source::RideSummary);
                 ride.climbing = Climbing::default();
                 ride.climbs = Climbs::default();
-                self.navigation.climb = Default::default();
+                self.navigation.go(To::RideStarted);
                 // The chosen workout starts with the ride, its steps read
                 // now; its steps lap it. One that cannot be read rides free.
                 ride.workout = match self.training.load_chosen(bulk) {

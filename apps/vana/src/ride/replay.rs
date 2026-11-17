@@ -155,7 +155,7 @@ impl Sums<'_> {
         *self.totals = Totals::default();
         *self.zone_time = ZoneTime::default();
         *self.efforts = Efforts::default();
-        *self.trace = Trace::default();
+        self.trace.reset();
     }
 }
 

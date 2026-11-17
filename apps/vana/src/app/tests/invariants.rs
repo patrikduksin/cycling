@@ -1,6 +1,7 @@
 use super::phone::{Radio2, Transport, attach};
 use super::*;
 use crate::app::invariants::Rule;
+use crate::app::navigation::To;
 use crate::app::power::Sheet;
 use crate::ride::log::Status;
 use crate::ride::recorder::Recorder;
@@ -37,7 +38,7 @@ fn at_summary() -> Runtime {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    runtime.navigation.page = Page::Ride;
+    runtime.navigation.go(To::Page(Page::Ride));
     radio.connected(HEART_RATE, 0);
     let mut step = |runtime: &mut Runtime, now| {
         tick(runtime, &mut journal, &mut radio, now);
@@ -61,7 +62,7 @@ fn at_summary() -> Runtime {
             step(&mut runtime, at + pass * 20);
         }
     }
-    assert_eq!(runtime.navigation.page, Page::Summary);
+    assert_eq!(runtime.navigation.page(), Page::Summary);
     runtime
 }
 
@@ -92,8 +93,9 @@ fn violating(rule: Rule) -> Runtime {
                 resumed: false,
                 clear: None,
             };
-            runtime.navigation.page = Page::Home;
+            runtime.navigation.go(To::Page(Page::Home));
         }
+        Rule::EditingOffSettings => runtime.navigation.edit_off_settings(),
         Rule::TwoRidingRides => {
             runtime.ride.internal = riding();
             runtime.ride.bulk = riding();
@@ -159,7 +161,11 @@ fn a_test_sheet_covers_the_summary_offer_until_it_is_answered() {
         .training
         .ftp
         .set(Source::RideSummary, Some(current + 100));
-    runtime.navigation.summary_page = crate::screens::ride::summary::pages(runtime.has_elevation());
+    runtime
+        .navigation
+        .go(To::SummaryPage(crate::screens::ride::summary::pages(
+            runtime.has_elevation(),
+        )));
     assert!(runtime.offer_shown());
     runtime
         .training

@@ -236,7 +236,30 @@ fn every_state_and_event_steps_as_the_table_says() {
             Failed,
             Go::Ready { clear: None },
         ),
-        (begun, Event::WriteFailed, Failed, Go::Ready { clear: None }),
+        (
+            begun,
+            Event::WriteFailed,
+            running(Stage::Abandon, every),
+            Go::Stay,
+        ),
+        (
+            running(Stage::SettleIntent, RIDES),
+            Event::WriteFailed,
+            running(Stage::Abandon, RIDES),
+            Go::Stay,
+        ),
+        (
+            running(Stage::Abandon, RIDES),
+            Event::Wrote,
+            Failed,
+            Go::Ready { clear: None },
+        ),
+        (
+            running(Stage::Abandon, RIDES),
+            Event::WriteFailed,
+            Failed,
+            Go::Ready { clear: None },
+        ),
         (Done, confirm(every), Done, Go::Stay),
         (Done, read(true, true), Done, Go::Stay),
     ];
@@ -270,6 +293,7 @@ fn a_clear_keeps_its_token_through_the_wipe_and_hands_it_to_the_ending() {
         Stage::RecordIntent,
         Stage::ForgetInternalRides,
         Stage::SettleIntent,
+        Stage::Abandon,
     ]
     .into_iter()
     .chain((0..SECTORS).map(Stage::JournalSector));

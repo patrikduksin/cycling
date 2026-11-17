@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::navigation::To;
 use crate::ride::log::transport_checksum;
 use std::string::String;
 
@@ -176,8 +177,10 @@ fn ride_status_reports_the_page_and_home_selection() {
     let mut journal = Journal::erased();
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
-    runtime.navigation.page = crate::screens::workout::Page::Home;
-    runtime.navigation.home_cursor = 2;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Home));
+    runtime.navigation.go(To::HomeCursor(2));
     let mut out = std::string::String::new();
     assert_eq!(
         runtime.command("RIDE STATUS", &mut journal, &mut NoBulk, 0, &mut out),

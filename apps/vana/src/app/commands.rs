@@ -62,7 +62,7 @@ impl Runtime {
         // built once.
         let (store, bulk) = (&mut Touched::new(store), &mut Touched::new(bulk));
         if let Some(argument) = words.strip_prefix("FORMAT") {
-            return self.format_command(argument.trim(), now, output);
+            return self.format_command(argument.trim(), output);
         }
         let mut parts = words.split_ascii_whitespace().peekable();
         let domain = parts.next();
@@ -87,7 +87,7 @@ impl Runtime {
         }
         let mut workout = words.split_ascii_whitespace();
         if workout.next() == Some("WORKOUT") {
-            return self.workout_command(&mut workout, bulk, now, output);
+            return self.workout_command(&mut workout, bulk, output);
         }
         if more {
             return "INVALID";
@@ -120,7 +120,7 @@ impl Runtime {
                     recorder.clear(bound, token)
                 });
             }
-            return NotQueued::reply(self.clear_internal(bound, now, output));
+            return NotQueued::reply(self.clear_internal(bound, output));
         }
         if bound.is_some() {
             return "INVALID";
@@ -181,12 +181,7 @@ impl Runtime {
         }
     }
 
-    fn clear_internal(
-        &mut self,
-        bound: usize,
-        now: u64,
-        output: &mut impl Write,
-    ) -> Result<(), NotQueued> {
+    fn clear_internal(&mut self, bound: usize, output: &mut impl Write) -> Result<(), NotQueued> {
         if self.ride.open() {
             return Err(NotQueued::State);
         }
@@ -196,7 +191,7 @@ impl Runtime {
             recorder.clearable(bound)
         })?;
         let scope = Scope::one(Store::Internal);
-        self.format_event(Event::Confirm { scope, clear }, now);
+        self.format_event(Event::Confirm { scope, clear });
         Ok(())
     }
 
@@ -427,9 +422,9 @@ impl Runtime {
             if self.power.view().is_some() {
                 "power"
             } else {
-                self.navigation.page.name()
+                self.navigation.page().name()
             },
-            self.navigation.home_cursor,
+            self.navigation.home_cursor(),
             pending
         )
         .is_err()

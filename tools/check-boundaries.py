@@ -40,15 +40,8 @@ TEST_SOURCE_SEAMS = {
 }
 
 SINGLE_WRITERS = {
-    "Page::EndRide": "apps/vana/src/app/ride_control.rs",
-    "Page::DiscardRide": "apps/vana/src/app/ride_control.rs",
-    "Page::Summary": "apps/vana/src/app/ride_control.rs",
     "RideMessage::Clear": "apps/vana/src/app/ride_control.rs",
     "RideMessage::StorageNotReady": "apps/vana/src/app/ride_control.rs",
-    "Follow::Shown": "apps/vana/src/app/climb_page.rs",
-    "Hold::Idle": "apps/vana/src/app/mark.rs",
-    "Hold::Holding": "apps/vana/src/app/mark.rs",
-    "Hold::Spent": "apps/vana/src/app/mark.rs",
 }
 ASSIGNMENT = re.compile(r'(?<![=!<>])=\s*(?:\w+\s*::\s*)*(' + '|'.join(
     re.escape(value).replace('::', r'\s*::\s*') for value in SINGLE_WRITERS) + r')\b')
@@ -446,13 +439,13 @@ ui = { package = "firmware-shell", path = "../shell" }
     assert not violations('use firmware_shell::Shell;', *source_rules('c606-firmware', Path('src/main.rs'), aliases))
     assert violations('use board::Board;', *source_rules('firmware-shell', Path('src/lib.rs'), aliases))
     elsewhere = 'apps/vana/src/app/input.rs'
-    for source in ['self.navigation.page = Page::EndRide;', 'page = crate::screens::workout::Page::Summary;',
-                   'navigation.page=Page :: EndRide']:
+    for source in ['self.ride.message = RideMessage::Clear;', 'message = crate::app::recording::RideMessage::Clear;',
+                   'ride.message=RideMessage :: StorageNotReady']:
         assert foreign_writes(source, elsewhere), source
-    for source in ['if page == Page::EndRide {}', 'page != Page::Summary', '// page = Page::EndRide',
-                   'let name = "page = Page::EndRide";', 'page = Page::EndRideLater;']:
+    for source in ['if message == RideMessage::Clear {}', 'message != RideMessage::Clear', '// message = RideMessage::Clear',
+                   'let name = "message = RideMessage::Clear";', 'message = RideMessage::ClearLater;']:
         assert not foreign_writes(source, elsewhere), source
-    assert not foreign_writes('self.navigation.page = Page::EndRide;', SINGLE_WRITERS['Page::EndRide'])
+    assert not foreign_writes('self.ride.message = RideMessage::Clear;', SINGLE_WRITERS['RideMessage::Clear'])
     recorder, deeper = ('ride', 'recorder'), ('ride', 'recorder', 'invariants')
     for source in ['use crate::app::Runtime;', 'let page = crate :: screens::workout::Page::Home;',
                    'use crate::{ride::log, app::Medium};', 'use crate::{\n    screens::{sensors},\n};',

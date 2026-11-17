@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::navigation::To;
 use crate::screens::sensors::MenuMessage;
 use crate::sensors::scan;
 use device_api::ant::{Ant, AntOperation};
@@ -25,7 +26,9 @@ fn workout_scan_keeps_existing_channels_receiving() {
         .channels
         .receive(device_api::ant::Event::Connected(peer), 1);
     let mut runtime = restored(&[peer]);
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
     runtime.input_received(
         Input::Button {
             button: Button::BottomRight,
@@ -130,13 +133,17 @@ fn back_cancels_starting_scan_and_rescan_waits_for_stop_completion() {
         fail_disconnects: false,
     };
     let mut runtime = booted(Profile::HeartRate);
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
     let press = |button| Input::Button { button, code: 1 };
     runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     runtime.input_received(press(Button::TopLeft), 1400, 1400, &mut radio);
-    assert!(runtime.navigation.page == crate::screens::workout::Page::Home);
+    assert!(runtime.navigation.page() == crate::screens::workout::Page::Home);
     assert_eq!(radio.scan().state, device_api::ant::ScanState::Stopping);
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
     runtime.input_received(press(Button::BottomRight), 1800, 1800, &mut radio);
     assert_eq!(
         radio
@@ -172,7 +179,9 @@ fn scan_failure_reports_recovery_and_keeps_back_usable() {
         fail_disconnects: false,
     };
     let mut runtime = booted(Profile::HeartRate);
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
     let press = |button| Input::Button { button, code: 1 };
     runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     assert_eq!(
@@ -187,8 +196,10 @@ fn scan_failure_reports_recovery_and_keeps_back_usable() {
     runtime.discovery.step(scan::Event::Tick, &mut radio, 1500);
     assert_eq!(runtime.discovery.message(), MenuMessage::RadioLost);
     runtime.input_received(press(Button::TopLeft), 1800, 1800, &mut radio);
-    assert!(runtime.navigation.page == crate::screens::workout::Page::Home);
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    assert!(runtime.navigation.page() == crate::screens::workout::Page::Home);
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
     runtime.input_received(press(Button::BottomRight), 2200, 2200, &mut radio);
     assert_eq!(radio.requests.len(), 2);
     assert_eq!(
@@ -218,7 +229,9 @@ fn active_scan_cancel_retries_busy_stop_without_disconnecting_sensor() {
         .channels
         .receive(device_api::ant::Event::Connected(peer), 1);
     let mut runtime = booted(Profile::HeartRate);
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
     let press = |button| Input::Button { button, code: 1 };
     runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     radio.channels.receive(
@@ -232,7 +245,7 @@ fn active_scan_cancel_retries_busy_stop_without_disconnecting_sensor() {
     assert_eq!(runtime.discovery.message(), MenuMessage::Scanning);
     radio.reject = Some(device_api::ant::Error::Busy);
     runtime.input_received(press(Button::TopLeft), 1400, 1400, &mut radio);
-    assert!(runtime.navigation.page == crate::screens::workout::Page::Home);
+    assert!(runtime.navigation.page() == crate::screens::workout::Page::Home);
     assert_eq!(runtime.discovery.message(), MenuMessage::StoppingScan);
     radio.reject = None;
     runtime.discovery.step(scan::Event::Tick, &mut radio, 1500);
@@ -270,7 +283,9 @@ fn normal_scan_settling_reports_completion_not_cancellation() {
         fail_disconnects: false,
     };
     let mut runtime = booted(Profile::HeartRate);
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
     runtime.input_received(
         Input::Button {
             button: Button::BottomRight,
@@ -307,8 +322,10 @@ fn only_nearby_searches_from_the_sensor_pages() {
             .filter(|op| matches!(op, AntOperation::Scan(_)))
             .count()
     };
-    runtime.navigation.page = crate::screens::workout::Page::Home;
-    runtime.navigation.home_cursor = 1;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Home));
+    runtime.navigation.go(To::HomeCursor(1));
     runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Sensors);
     runtime.input_received(press(Button::BottomRight), 1400, 1400, &mut radio);
@@ -340,7 +357,9 @@ fn opening_sensors_with_nothing_saved_opens_nearby_and_searches() {
         fail_disconnects: false,
     };
     let mut runtime = booted(Profile::HeartRate);
-    runtime.navigation.page = crate::screens::workout::Page::Home;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Home));
     runtime.input_received(
         Input::Button {
             button: Button::BottomLeft,
@@ -372,7 +391,7 @@ fn opening_sensors_with_nothing_saved_opens_nearby_and_searches() {
         1800,
         &mut radio,
     );
-    assert!(runtime.navigation.page == crate::screens::workout::Page::Home);
+    assert!(runtime.navigation.page() == crate::screens::workout::Page::Home);
     assert!(matches!(
         radio.requests.last(),
         Some(AntOperation::StopScan)
@@ -391,7 +410,9 @@ fn reentry_waits_for_stop_and_busy_scan_start_retries_without_another_press() {
         fail_disconnects: false,
     };
     let mut runtime = booted(Profile::HeartRate);
-    runtime.navigation.page = crate::screens::workout::Page::Home;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Home));
     let press = |button| Input::Button { button, code: 1 };
     runtime.input_received(press(Button::BottomLeft), 1000, 1000, &mut radio);
     runtime.input_received(press(Button::BottomRight), 1400, 1400, &mut radio);
@@ -442,7 +463,7 @@ fn busy_connection_continues_after_leaving_and_waits_for_observed_success() {
         };
         runtime.input_received(back, now, now, &mut radio);
     }
-    assert!(runtime.navigation.page == crate::screens::workout::Page::Home);
+    assert!(runtime.navigation.page() == crate::screens::workout::Page::Home);
     radio.reject = None;
     advance(&mut runtime, &mut radio, 1800);
     assert_eq!(radio.channel(120, 1800).unwrap().selected, Some(peer));
@@ -567,7 +588,7 @@ fn reentry_does_not_start_a_new_scan_ahead_of_a_pending_connection() {
         1400,
         &mut radio,
     );
-    runtime.navigation.home_cursor = 1;
+    runtime.navigation.go(To::HomeCursor(1));
     radio.reject = None;
     runtime.input_received(
         Input::Button {
@@ -643,8 +664,10 @@ fn busy_reentry_clears_old_discoveries_when_the_new_scan_is_admitted() {
     }
     radio.channels.tick(1);
     let mut runtime = booted(Profile::HeartRate);
-    runtime.navigation.page = crate::screens::workout::Page::Sensors;
-    runtime.navigation.home_cursor = 1;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Sensors));
+    runtime.navigation.go(To::HomeCursor(1));
     let press = |button| Input::Button { button, code: 1 };
     runtime.input_received(press(Button::BottomLeft), 1000, 1000, &mut radio);
     runtime.input_received(press(Button::TopLeft), 1400, 1400, &mut radio);
@@ -688,7 +711,9 @@ fn entry_waits_for_an_admitted_connection_before_starting_discovery() {
     };
     radio.channels.connect(peer, 0).unwrap();
     let mut runtime = booted(Profile::HeartRate);
-    runtime.navigation.page = crate::screens::workout::Page::Home;
+    runtime
+        .navigation
+        .go(To::Page(crate::screens::workout::Page::Home));
     let press = |button| Input::Button { button, code: 1 };
     runtime.input_received(press(Button::BottomLeft), 1000, 1000, &mut radio);
     runtime.input_received(press(Button::BottomRight), 1400, 1400, &mut radio);

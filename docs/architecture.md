@@ -242,8 +242,44 @@ scan, gets one file named for the behavior beside its owner.
   Run its ignored `WIDE` and full-batch tests on any PR that touches
   `ride/recorder*` or `ride/journal.rs`.
   Capacities beyond the bounds stay covered by targeted and property tests.
-- Enforce a single writer by adding the value and its owner to `SINGLE_WRITERS`
-  in `tools/check-boundaries.py`, which `cycling check` runs.
+- Enforce a single writer with privacy: make the fields private to the
+  owner's module and give it one writer. The page is the model.
+  [`Navigation`](../apps/vana/src/app/navigation.rs) keeps the page and its
+  sidecar fields private, and `go(To)` is the only code that writes them. Each
+  `To` variant moves exactly what one kind of site moved before, so a reader
+  finds every page change by searching for `To::`. `go` also ends a Settings
+  edit on every move off Settings, which makes the `EditingOffSettings` rule
+  hold by construction. Until a value can be private, list it and its owner in
+  `SINGLE_WRITERS` in `tools/check-boundaries.py`, which `cycling check` runs.
+
+## The frame writes in tiers and draws read-only
+
+[`app/view.rs`](../apps/vana/src/app/view.rs) runs VANA's frame as four
+tiers around one read-only draw. `Runtime::frame` calls them in this order:
+
+1. `every_pass` follows the daylight and sets the light curve, even while the
+   screen is blank.
+2. `unless_blank` stops on a blank or turning-off screen. It then latches the
+   numbers and takes the motion. It stops again unless a frame is due.
+3. `when_due` sets the base pace, then makes every other write the frame makes,
+   in the order the frame has always made them. These writes include the
+   lists, the chart, the power sheet's animation, the page moves and toasts,
+   the map, the sensor menu and the shell's activity. Under a power sheet it
+   stops after the sheet's animation. It also reads the position and the radar
+   channel for the view, at their place in that order, so the trace stream
+   stays the same.
+4. `present(&self)` fills the `View` and draws it. It writes nothing in
+   `Runtime`. It returns `Presented`, a small `Copy` value with the draw
+   result, the page and the gliding graphics' pixels.
+5. `after_view` applies `Presented`: `motion.drew` first, then the timing
+   milestones and FORMAT's `Drawn`, then the next frame time. The next frame
+   time reads the motion after `drew`, so `after_view` computes it, not
+   `present`.
+
+The `View` is about 10 KB, so it lives only in `present`'s stack frame. The
+tiers and `present` are `#[inline(never)]`, so no tier's frame sits under
+another's. A new write in the frame goes into the tier that runs at its moment,
+never into `present`.
 
 ## Ownership includes time and failure
 

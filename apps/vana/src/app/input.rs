@@ -6,6 +6,7 @@
 //! scrolls and changes pages, and never starts, pauses, laps or stops a ride.
 use super::Runtime;
 use super::mark::MoveReport;
+use super::navigation::{Report, To};
 use crate::clock::Zone;
 use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
@@ -65,7 +66,7 @@ impl Runtime {
         let owner = self.touch_owner();
         let events = self
             .navigation
-            .touches
+            .touches_mut()
             .feed(input, received, owner, |_| hit);
         // A list always hears how its finger ends, even under a sheet, so it
         // never waits for a lift it will not see.
@@ -85,10 +86,9 @@ impl Runtime {
         // power-on hold of TopLeft, rather than starting a new press.
         let held = match input {
             Input::Button { button, code: 1 } => {
-                let last = &mut self.navigation.last_report[button.index().min(2)];
-                let held = last.is_some_and(|at| received.saturating_sub(at) < HOLD_GAP_MS);
-                *last = Some(received);
-                held
+                self.navigation
+                    .reported(button.index(), received, HOLD_GAP_MS)
+                    == Report::Held
             }
             _ => false,
         };
@@ -97,10 +97,10 @@ impl Runtime {
         if self.power.view().is_some() {
             if let Input::Button { button, code: 1 } = input
                 && !held
-                && received.saturating_sub(self.navigation.last_press) >= DEBOUNCE_MS
+                && received.saturating_sub(self.navigation.last_press()) >= DEBOUNCE_MS
                 && self.power_input(button)
             {
-                self.navigation.last_press = received;
+                self.navigation.pressed(received);
                 self.display.redraw();
             }
             return;
@@ -110,10 +110,10 @@ impl Runtime {
         if self.ftp_sheet().is_some() {
             if let Input::Button { button, code: 1 } = input
                 && !held
-                && received.saturating_sub(self.navigation.last_press) >= DEBOUNCE_MS
+                && received.saturating_sub(self.navigation.last_press()) >= DEBOUNCE_MS
                 && self.ftp_input(button, now)
             {
-                self.navigation.last_press = received;
+                self.navigation.pressed(received);
                 self.display.redraw();
             }
             return;
@@ -128,7 +128,7 @@ impl Runtime {
         }
         // Buttons and a Cancel reach the sensor menu, so lost input makes
         // MOVE reconfirm the focus before ACT can change a sensor.
-        if self.navigation.page == Page::Sensors {
+        if self.navigation.page() == Page::Sensors {
             self.sensors_input(input, received, now, ant);
             return;
         }
@@ -156,12 +156,12 @@ impl Runtime {
         now: u64,
         ant: &mut impl Ant,
     ) {
-        if received.saturating_sub(self.navigation.last_press) < DEBOUNCE_MS {
+        if received.saturating_sub(self.navigation.last_press()) < DEBOUNCE_MS {
             return;
         }
-        self.navigation.last_press = received;
+        self.navigation.pressed(received);
         self.display.redraw();
-        match self.navigation.page {
+        match self.navigation.page() {
             Page::Home => self.home_input(button, received, now, ant, held),
             Page::Ride if button == Button::BottomLeft => {
                 self.timing.press(received);
@@ -189,8 +189,8 @@ impl Runtime {
             Page::Workouts => self.workouts_input(button, now, held),
             Page::Setup => self.setup_input(button, now, ant),
             // A press during the brand flash opens Home straight away.
-            Page::Boot => self.navigation.page = self.first_page(),
-            Page::Format => self.format_input(button, held, received, now),
+            Page::Boot => self.navigation.go(To::Page(self.first_page())),
+            Page::Format => self.format_input(button, held, received),
             Page::Sensors => {}
         }
     }
@@ -206,19 +206,19 @@ impl Runtime {
     /// tappable).
     fn touch_owner(&self) -> Owner {
         let navigation = &self.navigation;
-        let page = navigation.page as u32;
-        let subview = match navigation.page {
+        let page = navigation.page() as u32;
+        let subview = match navigation.page() {
             // The paused screen is a view of its own over the ride pages.
             Page::Ride => {
                 let paused = self.ride.active().status() == Status::Paused;
-                let screen = paused && !navigation.pause_hidden;
-                navigation.ride_page.index() as u32 | u32::from(screen) << 3
+                let screen = paused && !navigation.pause_hidden();
+                navigation.ride_page().index() as u32 | u32::from(screen) << 3
             }
-            Page::Summary | Page::PastRide => navigation.summary_page as u32,
+            Page::Summary | Page::PastRide => navigation.summary_page() as u32,
             Page::Sensors => u32::from(self.menu.touch_view()),
             Page::Settings => {
-                let section = settings::section(navigation.settings_field).0 as u32;
-                u32::from(navigation.settings_editing) | section << 1
+                let section = settings::section(navigation.settings_field()).0 as u32;
+                u32::from(navigation.editing()) | section << 1
             }
             Page::Setup => u32::from(self.preferences.options.setup),
             Page::Boot
@@ -243,10 +243,10 @@ impl Runtime {
     fn hit_test(&self, point: device_api::input::Point, now: u64, radar: bool) -> Hit {
         let (x, y) = (usize::from(point.x), usize::from(point.y));
         let navigation = &self.navigation;
-        let paused_screen = self.navigation.page == Page::Ride
+        let paused_screen = self.navigation.page() == Page::Ride
             && self.ride.active().status() == Status::Paused
-            && !navigation.pause_hidden;
-        let control = match navigation.page {
+            && !navigation.pause_hidden();
+        let control = match navigation.page() {
             Page::Home => Home::tile_at(x, y).map(Control::Tile),
             Page::Ready if ready::riding_at(y) => Some(Control::ReadyWorkout),
             Page::Ready => {
@@ -261,19 +261,19 @@ impl Runtime {
                 .setup_step()
                 .and_then(|step| crate::screens::setup::target(x, y, step))
                 .map(Control::Setup),
-            Page::Settings if navigation.settings_editing => {
-                match settings::target(x, y, navigation.settings_field, true, 0) {
+            Page::Settings if navigation.editing() => {
+                match settings::target(x, y, navigation.settings_field(), true, 0) {
                     Some(settings::Target::Lower) => Some(Control::Lower),
                     Some(settings::Target::Raise) => Some(Control::Raise),
                     _ => None,
                 }
             }
             Page::Ride if paused_screen => None,
-            Page::Ride if navigation.ride_page == RidePage::Map => Some(Control::Map),
+            Page::Ride if navigation.ride_page() == RidePage::Map => Some(Control::Map),
             Page::Ride if self.sign_at(x, y, now, radar) => Some(Control::Sign),
             // Adding a minute to a step changes no ride state, so a tap may.
             Page::Ride
-                if navigation.ride_page == RidePage::Workout
+                if navigation.ride_page() == RidePage::Workout
                     && crate::screens::ride::EXTEND_ROWS.contains(&y) =>
             {
                 Some(Control::ExtendStep)
@@ -285,7 +285,7 @@ impl Runtime {
             list: None,
             // Settings swipes between sections, out of the editor too.
             swipes: matches!(
-                navigation.page,
+                navigation.page(),
                 Page::Ride | Page::Summary | Page::PastRide | Page::Settings
             ),
         };
@@ -299,7 +299,7 @@ impl Runtime {
                     List::Rides => Control::Ride(index),
                     List::Workouts => Control::Workout(index),
                     List::Settings => {
-                        Control::Setting(settings::rows(navigation.settings_field).1 + index)
+                        Control::Setting(settings::rows(navigation.settings_field()).1 + index)
                     }
                 });
             }
@@ -309,7 +309,7 @@ impl Runtime {
 
     fn sign_at(&self, x: usize, y: usize, now: u64, radar: bool) -> bool {
         let sign = super::track::sign_of(&self.track, now);
-        crate::screens::sign::on_page(self.navigation.ride_page, sign, radar)
+        crate::screens::sign::on_page(self.navigation.ride_page(), sign, radar)
             .is_some_and(|placed| placed.rect().contains(x, y))
     }
 
@@ -327,8 +327,8 @@ impl Runtime {
             }
             TouchEvent::Contact(_) => {}
             TouchEvent::Hold(Control::Map)
-                if self.navigation.page == Page::Ride
-                    && self.navigation.ride_page == RidePage::Map =>
+                if self.navigation.page() == Page::Ride
+                    && self.navigation.ride_page() == RidePage::Map =>
             {
                 self.stop_following_from_map();
             }
@@ -342,25 +342,25 @@ impl Runtime {
     fn activate(&mut self, control: Control, now: u64, ant: &mut impl Ant) {
         match control {
             Control::Tile(tile) => {
-                self.navigation.home_cursor = match tile {
+                self.navigation.go(To::HomeCursor(match tile {
                     Tile::Ride => 0,
                     Tile::Sensors => 1,
                     Tile::Workouts => 2,
                     Tile::Settings => 3,
                     Tile::Rides => 4,
-                };
+                }));
                 self.open_home_tile(now, ant);
             }
             Control::ReadyWorkout => {
-                self.navigation.page = Page::Workouts;
+                self.navigation.go(To::Page(Page::Workouts));
                 self.show_focus(List::Workouts, now);
             }
-            Control::ReadySensors => self.open_sensors(ant, now),
+            Control::ReadySensors => self.open_sensors(false, ant, now),
             Control::Phone => self.phone_touch(),
             Control::Ride(index) => self.open_past_ride(index),
-            Control::Workout(index) => self.choose_workout(index, now),
+            Control::Workout(index) => self.choose_workout(index),
             Control::Setting(field) => {
-                self.navigation.settings_field = field;
+                self.navigation.go(To::Field(field));
                 self.act_on_setting(now, ant);
             }
             Control::Setup(card) => self.setup_card(card, now, ant),
@@ -371,7 +371,7 @@ impl Runtime {
                 let action = self.menu.tap(x, y, now);
                 self.sensors_action(action, now, ant);
             }
-            Control::Sign => self.navigation.ride_page_chosen(RidePage::Map),
+            Control::Sign => self.navigation.go(To::RidePage(RidePage::Map)),
             Control::Lower | Control::Raise | Control::Map => {}
         }
     }
@@ -380,23 +380,21 @@ impl Runtime {
     /// Settings section. Changing the page is safe while riding.
     fn swiped(&mut self, swipe: Swipe) {
         let next = swipe == Swipe::Next;
-        match self.navigation.page {
+        match self.navigation.page() {
             Page::Ride if next => self.next_ride_page(),
             Page::Ride => self.previous_ride_page(),
             Page::Summary | Page::PastRide if next => self.next_summary_page(1),
             Page::Summary | Page::PastRide => self.previous_summary_page(),
             Page::Settings => {
                 let navigation = &mut self.navigation;
-                let (section, _) = settings::section(navigation.settings_field);
+                let (section, _) = settings::section(navigation.settings_field());
                 let count = settings::SECTIONS.len();
                 let section = if next {
                     section + 1
                 } else {
                     section + count - 1
                 };
-                navigation.settings_field = settings::first_of(section);
-                navigation.settings_editing = false;
-                navigation.settings_scroll = Default::default();
+                navigation.go(To::Section(settings::first_of(section)));
             }
             _ => {}
         }
@@ -410,9 +408,8 @@ impl Runtime {
 
     /// Show the sensor pages. With nothing saved they open on NEARBY,
     /// which searches.
-    pub(super) fn open_sensors(&mut self, ant: &mut impl Ant, now: u64) {
-        self.navigation.page = Page::Sensors;
-        self.navigation.page_since = now;
+    pub(super) fn open_sensors(&mut self, from_setup: bool, ant: &mut impl Ant, now: u64) {
+        self.navigation.go(To::Sensors { from_setup });
         self.refresh_sensor_menu(ant, now);
         let action = self.menu.open();
         self.sensors_action(action, now, ant);
@@ -428,7 +425,7 @@ impl Runtime {
             Some(Action::Calibrate) => self.calibrate(ant, now),
             Some(Action::Ride) => {
                 self.cancel_search(ant, now);
-                self.navigation.page = self.after_sensors();
+                self.after_sensors();
             }
             None => {}
         }
@@ -450,7 +447,8 @@ impl Runtime {
     ) {
         match button {
             Button::BottomLeft => {
-                self.navigation.home_cursor = (self.navigation.home_cursor + 1) % HOME.len()
+                let cursor = (self.navigation.home_cursor() + 1) % HOME.len();
+                self.navigation.go(To::HomeCursor(cursor));
             }
             Button::BottomRight => self.open_home_tile(now, ant),
             // BACK on Home asks to turn off; Home is never reachable mid-ride.
@@ -460,21 +458,15 @@ impl Runtime {
     }
 
     fn open_home_tile(&mut self, now: u64, ant: &mut impl Ant) {
-        self.navigation.page_since = now;
-        match self.navigation.home_cursor {
-            0 => self.navigation.page = Page::Ready,
-            1 => self.open_sensors(ant, now),
+        match self.navigation.home_cursor() {
+            0 => self.navigation.go(To::Page(Page::Ready)),
+            1 => self.open_sensors(false, ant, now),
             2 => {
-                self.navigation.page = Page::Workouts;
+                self.navigation.go(To::Page(Page::Workouts));
                 self.show_focus(List::Workouts, now);
             }
             4 => self.open_history(),
-            _ => {
-                self.navigation.page = Page::Settings;
-                self.navigation.settings_field = 0;
-                self.navigation.settings_editing = false;
-                self.navigation.settings_scroll = Default::default();
-            }
+            _ => self.navigation.go(To::Settings),
         }
     }
 
@@ -482,13 +474,13 @@ impl Runtime {
     /// TopLeft goes Home. Editing a number: BottomLeft lowers and
     /// BottomRight raises it by `settings::STEP`, TopLeft finishes.
     fn settings_input(&mut self, button: Button, now: u64, ant: &mut impl Ant, held: bool) {
-        if !self.navigation.settings_editing {
+        if !self.navigation.editing() {
             match button {
                 Button::BottomLeft => self.settings_move(now),
                 Button::BottomRight if self.list_act(List::Settings, now) => {
                     self.act_on_setting(now, ant)
                 }
-                Button::TopLeft => self.navigation.page = Page::Home,
+                Button::TopLeft => self.navigation.go(To::Page(Page::Home)),
                 _ => {}
             }
             return;
@@ -496,9 +488,7 @@ impl Runtime {
         match button {
             Button::BottomLeft => self.adjust_setting(-self.setting_step(), now, held),
             Button::BottomRight => self.adjust_setting(self.setting_step(), now, held),
-            Button::TopLeft if !self.setup_edit_finished(now) => {
-                self.navigation.settings_editing = false
-            }
+            Button::TopLeft if !self.setup_edit_finished(now) => self.navigation.go(To::EditDone),
             _ => {}
         }
     }
@@ -506,19 +496,19 @@ impl Runtime {
     /// Act on the selected row: edit a number, step a choice or open a page.
     fn act_on_setting(&mut self, now: u64, ant: &mut impl Ant) {
         use settings::{Kind, Row, SettingsAction};
-        let row = Row::at(self.navigation.settings_field);
+        let row = Row::at(self.navigation.settings_field());
         match (row.kind(), row.action()) {
-            (Kind::Number, _) => {
-                self.navigation.settings_editing = true;
-                self.navigation.wheel_edit = Some(self.preferences.options.wheel);
-            }
+            (Kind::Number, _) => self.navigation.go(To::Edit {
+                field: self.navigation.settings_field(),
+                wheel_origin: self.preferences.options.wheel,
+                from_setup: false,
+            }),
             (Kind::Choice, _) => self.next_choice(row, now),
-            (_, Some(SettingsAction::Sensors)) => self.open_sensors(ant, now),
-            (_, Some(SettingsAction::Bests)) => self.open_bests(now),
-            (_, Some(SettingsAction::Form)) => self.open_form(now),
+            (_, Some(SettingsAction::Sensors)) => self.open_sensors(false, ant, now),
+            (_, Some(SettingsAction::Bests)) => self.open_bests(),
+            (_, Some(SettingsAction::Form)) => self.open_form(),
             (_, Some(SettingsAction::ConnectPhone)) => {
                 self.enter_phone();
-                self.navigation.page_since = now;
             }
             _ => {}
         }
@@ -617,13 +607,13 @@ impl Runtime {
 
     /// What one press moves the edited number.
     fn setting_step(&self) -> i32 {
-        i32::from(settings::Row::at(self.navigation.settings_field).step())
+        i32::from(settings::Row::at(self.navigation.settings_field()).step())
     }
 
     /// Move the edited number by `step`, within its range. A repeat from a
     /// held button (`held`) never clears weight or age: only a tap does.
     fn adjust_setting(&mut self, step: i32, now: u64, held: bool) {
-        let row = settings::Row::at(self.navigation.settings_field);
+        let row = settings::Row::at(self.navigation.settings_field());
         if matches!(row, settings::Row::Weight | settings::Row::Age) {
             let mut options = self.preferences.options;
             options.rider = if row == settings::Row::Weight {
@@ -634,7 +624,7 @@ impl Runtime {
             self.set_options(options, now);
             return;
         }
-        if settings::Row::at(self.navigation.settings_field) == settings::Row::Wheel {
+        if settings::Row::at(self.navigation.settings_field()) == settings::Row::Wheel {
             // The next multiple of five mm in the direction of the press, so
             // common sizes are reachable from any start. Setting the size by
             // hand takes it out of the calibration's hands, unless the edit
@@ -649,7 +639,10 @@ impl Runtime {
             };
             let range = PLAUSIBLE_MM;
             let size = target.clamp(i32::from(*range.start()), i32::from(*range.end())) as u16;
-            let origin = self.navigation.wheel_edit.unwrap_or(options.wheel);
+            let origin = self
+                .navigation
+                .edit()
+                .map_or(options.wheel, |edit| edit.wheel_origin);
             options.wheel = if size == origin.size_mm() {
                 origin
             } else {
@@ -662,7 +655,7 @@ impl Runtime {
             return;
         }
         let mut profile = self.preferences.profile;
-        let (value, range) = match settings::Row::at(self.navigation.settings_field) {
+        let (value, range) = match settings::Row::at(self.navigation.settings_field()) {
             settings::Row::Ftp => (&mut profile.ftp_watts, TrainingProfile::FTP_WATTS),
             settings::Row::Threshold => (&mut profile.lthr_bpm, TrainingProfile::LTHR_BPM),
             _ => return,
@@ -675,7 +668,7 @@ impl Runtime {
     pub(super) fn next_summary_page(&mut self, step: usize) {
         let pages = self.summary_pages();
         let navigation = &mut self.navigation;
-        navigation.summary_page = (navigation.summary_page + step) % pages;
+        navigation.go(To::SummaryPage((navigation.summary_page() + step) % pages));
     }
 
     /// One page back. The FTP offer is reached only going forward, so a
@@ -684,10 +677,11 @@ impl Runtime {
     fn previous_summary_page(&mut self) {
         let last = summary::pages(self.has_elevation()) - 1;
         let navigation = &mut self.navigation;
-        navigation.summary_page = match navigation.summary_page {
+        let page = match navigation.summary_page() {
             0 => last,
             page => (page - 1).min(last),
         };
+        navigation.go(To::SummaryPage(page));
     }
 
     /// BottomLeft steps through the ride pages, wrapping after the last.
@@ -697,20 +691,16 @@ impl Runtime {
         let paused = self.ride.active().status() == Status::Paused;
         let pages = self.ride_pages();
         let navigation = &mut self.navigation;
-        if paused && !navigation.pause_hidden {
-            navigation.pause_hidden = true;
-            if core::mem::take(&mut navigation.pause_wrapped) {
-                navigation.ride_page_chosen(pages.first());
-            }
+        if paused && !navigation.pause_hidden() {
+            navigation.go(To::LeavePause {
+                wrapped_to: pages.first(),
+            });
             return;
         }
-        match pages.next(navigation.ride_page) {
-            Some(next) => navigation.ride_page_chosen(next),
-            None if paused => {
-                navigation.pause_hidden = false;
-                navigation.pause_wrapped = true;
-            }
-            None => navigation.ride_page_chosen(pages.first()),
+        match pages.next(navigation.ride_page()) {
+            Some(next) => navigation.go(To::RidePage(next)),
+            None if paused => navigation.go(To::PauseWrapped),
+            None => navigation.go(To::RidePage(pages.first())),
         }
     }
 
@@ -719,19 +709,17 @@ impl Runtime {
         let paused = self.ride.active().status() == Status::Paused;
         let pages = self.ride_pages();
         let navigation = &mut self.navigation;
-        if paused && !navigation.pause_hidden {
-            navigation.pause_hidden = true;
-            if core::mem::take(&mut navigation.pause_wrapped) {
-                navigation.ride_page_chosen(pages.last());
-            }
+        if paused && !navigation.pause_hidden() {
+            navigation.go(To::LeavePause {
+                wrapped_to: pages.last(),
+            });
             return;
         }
-        if paused && navigation.ride_page == pages.first() {
-            navigation.pause_hidden = false;
-            navigation.pause_wrapped = true;
+        if paused && navigation.ride_page() == pages.first() {
+            navigation.go(To::PauseWrapped);
             return;
         }
-        let page = pages.preceding(navigation.ride_page);
-        navigation.ride_page_chosen(page);
+        let page = pages.preceding(navigation.ride_page());
+        navigation.go(To::RidePage(page));
     }
 }

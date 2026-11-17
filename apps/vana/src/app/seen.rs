@@ -77,7 +77,7 @@ impl super::Runtime {
             sink(Seen::RideState(ride));
         }
         let second = now / 1000;
-        if self.navigation.page == Page::Ride && self.reported.second != Some(second) {
+        if self.navigation.page() == Page::Ride && self.reported.second != Some(second) {
             self.reported.second = Some(second);
             let mut shown = Line::default();
             let _ = crate::screens::ride::shown(
@@ -103,13 +103,13 @@ impl super::Runtime {
 
     pub(super) fn seen_page(&self) -> &'static str {
         let navigation = &self.navigation;
-        match navigation.page {
+        match navigation.page() {
             Page::Ride
-                if self.ride.active().status() == Status::Paused && !navigation.pause_hidden =>
+                if self.ride.active().status() == Status::Paused && !navigation.pause_hidden() =>
             {
                 "ride/paused"
             }
-            Page::Ride => navigation.ride_page.name(),
+            Page::Ride => navigation.ride_page().name(),
             page => page.name(),
         }
     }

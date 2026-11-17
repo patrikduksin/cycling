@@ -87,7 +87,7 @@ def keyed_env(gate_env):
     ambient = {
         name: value
         for name, value in os.environ.items()
-        if name in KEYED_ENV_NAMES or name.startswith(KEYED_ENV_PREFIXES)
+        if name in KEYED_ENV_NAMES or (name.startswith(KEYED_ENV_PREFIXES) and name != 'CARGO_TARGET_DIR')
     }
     return sorted((ambient | dict(gate_env)).items())
 

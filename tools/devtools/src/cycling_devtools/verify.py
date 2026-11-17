@@ -105,7 +105,6 @@ class Run:
         return self.key(gate, self.request)
 
     def record_keys(self, gate):
-
         # A pass that posted on a pull request also certifies the run that posts nothing, never the reverse.
         return {self.lookup_key(gate), self.key(gate, dataclasses.replace(self.request, pr=None, video=False))}
 

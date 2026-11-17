@@ -462,6 +462,21 @@ def test_a_terminated_run_stops_its_gates_in_either_kind_of_lane(
     assert gone(tmp_path / 'pid')
 
 
+def test_a_second_termination_signal_cannot_interrupt_the_unwinding(restored_signals):
+    runner.unwind_on_termination()
+    with pytest.raises(SystemExit):
+        os.kill(os.getpid(), signal.SIGTERM)
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
+    assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+
+
+def test_a_hangup_the_caller_ignores_stays_ignored(restored_signals):
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    runner.unwind_on_termination()
+    assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    assert signal.getsignal(signal.SIGTERM) is not signal.SIG_IGN
+
+
 def test_the_disk_is_checked_again_once_the_slot_is_held(checkout, monkeypatch):
     (checkout / 'src' / 'new.txt').write_text('new')
     free = iter([25.0, 19.0])

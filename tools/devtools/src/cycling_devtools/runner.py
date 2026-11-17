@@ -61,10 +61,15 @@ class Gates:
 
 
 def unwind_on_termination():
+    caught = [number for number in (signal.SIGTERM, signal.SIGHUP) if signal.getsignal(number) is not signal.SIG_IGN]
+
     def stop(number, frame):
+        # uv forwards a group's signal to its child, so a second one would interrupt the cleanup the first started.
+        for each in caught:
+            signal.signal(each, signal.SIG_IGN)
         raise SystemExit(128 + number)
 
-    for number in (signal.SIGTERM, signal.SIGHUP):
+    for number in caught:
         signal.signal(number, stop)
 
 

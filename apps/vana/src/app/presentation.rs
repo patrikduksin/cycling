@@ -547,9 +547,8 @@ impl Runtime {
     }
 
     pub fn set_startup_status(&mut self, status: Startup) {
-        if self.startup_status != status.name() {
-            self.startup_status = status.name();
-            self.startup = status;
+        if self.startup != Some(status) {
+            self.startup = Some(status);
             self.menu.set_message(match status {
                 Startup::Charging | Startup::WakePending | Startup::Waiting => {
                     MenuMessage::StartingSensors
@@ -869,16 +868,18 @@ impl Runtime {
             "CHECKING STORAGE"
         } else if matches!(
             self.startup,
-            Startup::NotSubmitted
-                | Startup::Probing
-                | Startup::Pending
-                | Startup::Waiting
-                | Startup::WakePending
+            Some(
+                Startup::NotSubmitted
+                    | Startup::Probing
+                    | Startup::Pending
+                    | Startup::Waiting
+                    | Startup::WakePending
+            )
         ) {
             "STARTING SENSORS"
         } else if matches!(
             self.startup,
-            Startup::Uncertain | Startup::TimedOut | Startup::Unavailable
+            Some(Startup::Uncertain | Startup::TimedOut | Startup::Unavailable)
         ) {
             return ("SENSORS UNAVAILABLE", true);
         } else {
@@ -1152,7 +1153,7 @@ impl Runtime {
     fn sensors_check(&self, now: u64) -> Check {
         if matches!(
             self.startup,
-            Startup::Uncertain | Startup::TimedOut | Startup::Unavailable
+            Some(Startup::Uncertain | Startup::TimedOut | Startup::Unavailable)
         ) {
             return Check::new(Level::Wait, "SENSORS UNAVAILABLE", "TURN VANA OFF AND ON");
         }

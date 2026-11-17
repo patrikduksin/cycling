@@ -1,5 +1,6 @@
 use super::*;
 use crate::screens::sensors::MenuMessage;
+use crate::sensors::scan;
 use device_api::ant::{Ant, AntOperation};
 use device_api::input::{Button, Input};
 
@@ -47,15 +48,15 @@ fn workout_scan_keeps_existing_channels_receiving() {
     );
     assert!(!radio.channels.channel(120, 1100).unwrap().stale);
     assert_eq!(radio.requests.len(), 1);
-    runtime.discovery.scan.tick(&mut radio, 1100);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 1100);
     assert!(matches!(
         radio.requests.last(),
         Some(AntOperation::Scan(10000))
     ));
     radio.channels.tick(11200);
-    runtime.discovery.scan.tick(&mut radio, 11200);
-    runtime.discovery.scan.tick(&mut radio, 11300);
-    runtime.discovery.scan.tick(&mut radio, 11400);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 11200);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 11300);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 11400);
     assert!(!runtime.discovery.scan.active());
     assert_eq!(
         radio.channels.channel(120, 11400).unwrap().link,
@@ -63,17 +64,19 @@ fn workout_scan_keeps_existing_channels_receiving() {
     );
 
     forget_sensor(&mut runtime, &mut radio, 120, 12000);
-    assert!(runtime.links.saved.of_type(120).is_none());
+    assert!(runtime.preferences.sensors.of_type(120).is_none());
     assert!(runtime.preferences.sensors.of_type(120).is_none());
     assert_eq!(
         radio.channels.channel(120, 12500).unwrap().link,
         device_api::ant::LinkState::Disconnected
     );
     radio.requests.clear();
-    runtime.discovery.scan.start(&mut radio, 13000);
+    runtime
+        .discovery
+        .step(scan::Event::Start, &mut radio, 13000);
     radio.channels.tick(23200);
-    runtime.discovery.scan.tick(&mut radio, 23200);
-    runtime.discovery.scan.tick(&mut radio, 23300);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 23200);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 23300);
     assert!(!runtime.discovery.scan.active());
     assert!(
         !radio
@@ -108,7 +111,7 @@ fn workout_scan_keeps_existing_channels_receiving() {
         25000,
         &mut radio,
     );
-    assert_eq!(runtime.links.saved.of_type(120), Some((0, peer)));
+    assert_eq!(runtime.preferences.sensors.of_type(120), Some((0, peer)));
     assert_eq!(
         radio.channels.channel(120, 25000).unwrap().link,
         device_api::ant::LinkState::Connected
@@ -144,8 +147,8 @@ fn back_cancels_starting_scan_and_rescan_waits_for_stop_completion() {
         1
     );
     radio.channels.tick(3400);
-    runtime.discovery.scan.tick(&mut radio, 3400);
-    assert_eq!(runtime.discovery.scan.message(), MenuMessage::ScanCancelled);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 3400);
+    assert_eq!(runtime.discovery.message(), MenuMessage::ScanCancelled);
     runtime.input_received(press(Button::BottomRight), 3800, 3800, &mut radio);
     assert_eq!(
         radio
@@ -181,8 +184,8 @@ fn scan_failure_reports_recovery_and_keeps_back_usable() {
     radio
         .channels
         .request_failed(device_api::ant::Request::Scan { duration_ms: 10000 }, 1500);
-    runtime.discovery.scan.tick(&mut radio, 1500);
-    assert_eq!(runtime.discovery.scan.message(), MenuMessage::RadioLost);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 1500);
+    assert_eq!(runtime.discovery.message(), MenuMessage::RadioLost);
     runtime.input_received(press(Button::TopLeft), 1800, 1800, &mut radio);
     assert!(runtime.navigation.page == crate::screens::workout::Page::Home);
     runtime.navigation.page = crate::screens::workout::Page::Sensors;
@@ -225,16 +228,16 @@ fn active_scan_cancel_retries_busy_stop_without_disconnecting_sensor() {
         },
         1100,
     );
-    runtime.discovery.scan.tick(&mut radio, 1100);
-    assert_eq!(runtime.discovery.scan.message(), MenuMessage::Scanning);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 1100);
+    assert_eq!(runtime.discovery.message(), MenuMessage::Scanning);
     radio.reject = Some(device_api::ant::Error::Busy);
     runtime.input_received(press(Button::TopLeft), 1400, 1400, &mut radio);
     assert!(runtime.navigation.page == crate::screens::workout::Page::Home);
-    assert_eq!(runtime.discovery.scan.message(), MenuMessage::StoppingScan);
+    assert_eq!(runtime.discovery.message(), MenuMessage::StoppingScan);
     radio.reject = None;
-    runtime.discovery.scan.tick(&mut radio, 1500);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 1500);
     let requests = radio.requests.len();
-    runtime.discovery.scan.tick(&mut radio, 1600);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 1600);
     assert_eq!(radio.requests.len(), requests);
     radio.channels.receive(
         device_api::ant::Event::Data {
@@ -245,8 +248,8 @@ fn active_scan_cancel_retries_busy_stop_without_disconnecting_sensor() {
     );
     assert!(!radio.channel(120, 1700).unwrap().stale);
     radio.channels.tick(3500);
-    runtime.discovery.scan.tick(&mut radio, 3500);
-    assert_eq!(runtime.discovery.scan.message(), MenuMessage::ScanCancelled);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 3500);
+    assert_eq!(runtime.discovery.message(), MenuMessage::ScanCancelled);
     assert!(
         !radio
             .requests
@@ -279,10 +282,10 @@ fn normal_scan_settling_reports_completion_not_cancellation() {
     );
     radio.channels.tick(11000);
     radio.settling = true;
-    runtime.discovery.scan.tick(&mut radio, 11000);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 11000);
     radio.settling = false;
-    runtime.discovery.scan.tick(&mut radio, 12000);
-    assert_eq!(runtime.discovery.scan.message(), MenuMessage::ScanDone);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 12000);
+    assert_eq!(runtime.discovery.message(), MenuMessage::ScanDone);
 }
 
 /// With a sensor saved, Sensors opens on SENSORS and searches only once
@@ -404,12 +407,12 @@ fn reentry_waits_for_stop_and_busy_scan_start_retries_without_another_press() {
     );
     radio.channels.tick(3900);
     radio.reject = Some(device_api::ant::Error::Busy);
-    runtime.discovery.scan.tick(&mut radio, 3900);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 3900);
     radio.reject = None;
-    runtime.discovery.scan.tick(&mut radio, 4000);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 4000);
     assert_eq!(radio.scan().state, device_api::ant::ScanState::Starting);
     let count = radio.requests.len();
-    runtime.discovery.scan.tick(&mut radio, 4100);
+    runtime.discovery.step(scan::Event::Tick, &mut radio, 4100);
     assert_eq!(radio.requests.len(), count);
 }
 
@@ -484,7 +487,7 @@ fn same_type_replacement_waits_for_old_disconnect_observation() {
         Some((0, replacement))
     );
     radio.data(120, [0; 8], 1000);
-    assert!(runtime.links.rejects(old));
+    assert!(runtime.links.rejects(&runtime.preferences.sensors, old));
     assert!(matches!(
         radio.requests.as_slice(),
         [AntOperation::Disconnect(120)]
@@ -534,7 +537,7 @@ fn busy_radio_keeps_the_selection_and_connects_once_it_recovers() {
         radio.channel(120, 28_100).unwrap().link,
         device_api::ant::LinkState::Connected
     );
-    assert_eq!(runtime.links.saved.of_type(120), Some((0, peer)));
+    assert_eq!(runtime.preferences.sensors.of_type(120), Some((0, peer)));
 }
 
 #[test]

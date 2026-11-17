@@ -57,8 +57,10 @@ discarded ride, then saves bests, the workout record and facts, in that order.
 The application layer, `app/`, holds `Runtime` and the glue that turns domain
 state into pages, toasts and redraws; `screens/` draws them. Domain code never imports `crate::app` or
 `crate::screens` and takes what it needs as arguments.
-`tools/check-boundaries.py` enforces this rule in `cycling check`. Its one
-exception, `sensors/scan.rs`, is listed there.
+`tools/check-boundaries.py` enforces this rule in `cycling check`, with no
+exceptions. The ANT search, `sensors/scan.rs`, shows the pure shape: its
+`step` reads the radio as a `Seen` value and returns the request to submit,
+and `app/sensor_links.rs` submits it and hands the answer back.
 
 `services` holds portable mechanisms, such as decoding a positioning stream or
 maintaining a journal. Its modules remain independent. It must not become a

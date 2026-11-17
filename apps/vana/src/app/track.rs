@@ -343,7 +343,8 @@ impl Runtime {
         });
         state.place_course(bulk);
         if state.breadcrumb.take_pass() {
-            self.ride.passed_start(now);
+            self.ride
+                .passed_start(self.preferences.options.auto_lap, now);
             self.display.redraw();
         }
         let Some(event) = event else {

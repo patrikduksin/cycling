@@ -83,27 +83,7 @@ fn violating(rule: Rule) -> Runtime {
             runtime = recording(runtime);
             runtime.power.sheet = Sheet::Confirm { since: 0 };
         }
-        Rule::TwoFtpQuestions => {
-            runtime = at_summary();
-            runtime.ride.ftp_suggestion = Some(runtime.preferences.profile.ftp_watts + 100);
-            runtime.navigation.summary_page =
-                crate::screens::ride::summary::pages(runtime.has_elevation());
-            assert!(runtime.offer_shown());
-            runtime.training.ftp_offer = Some(runtime.preferences.profile.ftp_watts);
-        }
-        Rule::SavedSensorsDisagree => {
-            let peer = device_api::ant::Identity {
-                device_type: HEART_RATE,
-                device_number: 42,
-                transmission_type: 1,
-            };
-            assert!(runtime.preferences.sensors.select(peer).is_some());
-        }
         Rule::SummaryWhileRiding => runtime = recording(at_summary()),
-        Rule::AutoLapDisagrees => runtime.break_auto_lap_rule(),
-        Rule::StartupStatusDisagreesOnceKnown => {
-            runtime.startup_status = device_api::sensors::Startup::Ready.name();
-        }
         Rule::HostTokenOwned => runtime.ride.host = crate::app::recording::Request::Pending(9),
         Rule::PageWhileWiping => {
             runtime.format = crate::app::format::Format::Running {
@@ -162,13 +142,33 @@ fn consistent_runtimes_hold() {
     assert_eq!(booted(Profile::HeartRate).broken(), None);
     assert_eq!(with_phone_open().broken(), None);
     assert_eq!(recording(booted(Profile::HeartRate)).broken(), None);
-    let mut known = booted(Profile::HeartRate);
-    known.startup_status = known.startup.name();
-    assert_eq!(known.broken(), None);
 }
 
 #[test]
 fn a_ride_from_start_to_summary_holds_after_every_step() {
     let runtime = at_summary();
     assert_eq!(runtime.ride.internal.status(), Status::Saved);
+}
+
+#[test]
+fn a_test_sheet_covers_the_summary_offer_until_it_is_answered() {
+    use crate::workout::ftp::Source;
+    let mut runtime = at_summary();
+    let current = runtime.preferences.profile.ftp_watts;
+    runtime
+        .training
+        .ftp
+        .set(Source::RideSummary, Some(current + 100));
+    runtime.navigation.summary_page = crate::screens::ride::summary::pages(runtime.has_elevation());
+    assert!(runtime.offer_shown());
+    runtime
+        .training
+        .ftp
+        .set(Source::WorkoutTest, Some(current + 10));
+    assert!(!runtime.offer_shown());
+    assert_eq!(runtime.ftp_sheet(), Some((current + 10, current)));
+    runtime.input_received(press(Button::TopLeft), 100_000, 100_000, &mut Radio::new());
+    assert_eq!(runtime.ftp_sheet(), None);
+    assert!(runtime.offer_shown());
+    assert_eq!(runtime.preferences.profile.ftp_watts, current);
 }

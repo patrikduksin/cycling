@@ -461,10 +461,12 @@ fn a_broken_rule_stops_the_session_naming_the_rule_boot_and_pass() {
     }
     s.restart().unwrap();
     s.tick();
-    s.sdk.break_auto_lap_rule();
+    s.sdk.break_a_rule();
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.tick())).unwrap_err();
     assert_eq!(
         panic.downcast_ref::<String>().map(String::as_str),
-        Some("broken after pass 5 (boot 2): auto lap disagrees with options")
+        Some(
+            "broken after pass 5 (boot 2): a host operation waits without exactly one owner of its token"
+        )
     );
 }

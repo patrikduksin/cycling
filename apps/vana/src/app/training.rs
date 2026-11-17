@@ -26,10 +26,11 @@ use super::cues::Cue;
 use crate::ride::zones::TrainingProfile;
 use crate::screens::chrome::Tone;
 use crate::screens::kinetic::Kinetic;
-use crate::screens::ride::{PageChoice, Pages, RidePage, Training as Shown};
+use crate::screens::ride::{PageChoice, Pages, RidePage, Training as Shown, summary};
 use crate::screens::touch::List;
 use crate::screens::workout::{Page, Text};
 use crate::screens::workouts::{Choice, Picker, VISIBLE};
+use crate::workout::ftp::{Candidates, Question, Source};
 use crate::workout::history;
 use crate::workout::library::{Id, Library, LoadError, Outline};
 use crate::workout::model::{Length, Name, Played};
@@ -55,8 +56,7 @@ pub(super) struct Training {
     /// The picker's scroll, which follows the finger.
     pub(super) picker_scroll: Kinetic,
     beep: Option<(Beep, u64)>,
-    /// A test's FTP waiting for the rider's answer.
-    pub(super) ftp_offer: Option<u16>,
+    pub(super) ftp: Candidates,
     /// The library lists what FILES holds now; cleared at boot and each
     /// time the picker opens.
     listed: bool,
@@ -275,7 +275,7 @@ impl Runtime {
 
     /// ACT saves a test's FTP, BACK keeps the one in force; MOVE does nothing.
     pub(super) fn ftp_input(&mut self, button: Button, now: u64) -> bool {
-        let Some(ftp) = self.training.ftp_offer else {
+        let Some(Question::Test { ftp, current }) = self.ftp_question() else {
             return false;
         };
         match button {
@@ -289,12 +289,12 @@ impl Runtime {
             }
             Button::TopLeft => {
                 let mut text = Text::<20>::new();
-                let _ = write!(text, "FTP KEPT {} W", self.preferences.profile.ftp_watts);
+                let _ = write!(text, "FTP KEPT {current} W");
                 self.navigation.toast(text.as_str(), Tone::Info, now);
             }
             _ => return true,
         }
-        self.training.ftp_offer = None;
+        self.training.ftp.answered(Source::WorkoutTest);
         true
     }
 
@@ -361,7 +361,7 @@ impl Runtime {
                 Event::Ftp(ftp) => {
                     self.training.beep(Beep::Step, now);
                     if ftp != self.preferences.profile.ftp_watts {
-                        self.training.ftp_offer = Some(ftp);
+                        self.training.ftp.set(Source::WorkoutTest, Some(ftp));
                     }
                 }
             }
@@ -549,15 +549,25 @@ impl Runtime {
             summary.skipped,
             summary.in_target_pct().map_or(-1, i16::from),
             summary.ftp.unwrap_or(0),
-            self.training.ftp_offer.unwrap_or(0)
+            self.training.ftp.test().unwrap_or(0)
         )
+    }
+
+    pub(super) fn ftp_question(&self) -> Option<Question> {
+        let offer_page = self.navigation.page == Page::Summary
+            && self.navigation.summary_page == summary::pages(self.has_elevation())
+            && self.ride_saved();
+        self.training
+            .ftp
+            .question(self.preferences.profile.ftp_watts, offer_page)
     }
 
     /// The FTP sheet's numbers while it is up.
     pub(super) fn ftp_sheet(&self) -> Option<(u16, u16)> {
-        self.training
-            .ftp_offer
-            .map(|ftp| (ftp, self.preferences.profile.ftp_watts))
+        match self.ftp_question()? {
+            Question::Test { ftp, current } => Some((ftp, current)),
+            Question::Summary(_) => None,
+        }
     }
 
     /// The Home ride card names the workout the next ride plays.

@@ -19,7 +19,7 @@ impl Runtime {
         let navigation = &self.navigation;
         match navigation.page {
             Page::History => Some(List::Rides),
-            Page::Workouts if self.training.ftp_offer.is_none() => Some(List::Workouts),
+            Page::Workouts if self.ftp_sheet().is_none() => Some(List::Workouts),
             Page::Settings
                 if !(navigation.settings_editing
                     && Row::at(navigation.settings_field).kind() == Kind::Number) =>

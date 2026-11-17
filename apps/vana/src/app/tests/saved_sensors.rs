@@ -237,7 +237,7 @@ fn disconnect_removes_closes_and_late_events_cannot_resurrect_it() {
     advance(&mut runtime, &mut radio, 0);
     assert_eq!(link(&radio, HEART, 0), Some(LinkState::Connecting));
     let forgot = forget_sensor(&mut runtime, &mut radio, HEART, 1000);
-    assert_eq!(runtime.links.saved.of_type(HEART), None);
+    assert_eq!(runtime.preferences.sensors.of_type(HEART), None);
     assert_eq!(runtime.preferences.sensors.of_type(HEART), None);
     assert!(
         runtime
@@ -256,7 +256,7 @@ fn disconnect_removes_closes_and_late_events_cannot_resurrect_it() {
     // A late open is ignored; pages never reach the ride.
     radio.channels.receive(Event::Connected(heart), 6100);
     radio.data(HEART, [0, 0, 0, 0, 0, 0, 1, 80], 6100);
-    assert!(runtime.links.rejects(heart));
+    assert!(runtime.links.rejects(&runtime.preferences.sensors, heart));
     radio.channels.receive(Event::Disconnected(heart), 6200);
     let connects = radio.connects(heart);
     run(&mut runtime, &mut radio, 6200, 120_000);
@@ -312,7 +312,7 @@ fn reselecting_a_removed_sensor_connects_it_again() {
         600,
     );
     assert_eq!(link(&radio, HEART, 600), Some(LinkState::Connected));
-    assert!(!runtime.links.rejects(heart));
+    assert!(!runtime.links.rejects(&runtime.preferences.sensors, heart));
     assert_eq!(runtime.preferences.sensors.of_type(HEART), Some((0, heart)));
 }
 
@@ -563,16 +563,17 @@ fn battery_page(identity: Identity, data: [u8; 8]) -> device_api::ant::Packet {
 fn a_battery_report_belongs_to_the_saved_sensor_that_sent_it() {
     use crate::sensors::ant::{Battery, BatteryStatus};
     let mut links = crate::app::sensor_links::Links::default();
+    let mut saved = crate::sensors::saved::Saved::default();
     let strap = peer(HEART, 7);
     let other = peer(HEART, 8);
     let meter = peer(POWER, 9);
-    links.saved.select(strap);
-    links.saved.select(meter);
+    saved.select(strap);
+    saved.select(meter);
     let low = [0x52, 0xff, 1, 0, 0, 0, 0x80, 0x42];
-    links.note_battery(&battery_page(other, low));
-    links.note_battery(&battery_page(peer(34, 1), low));
+    links.note_battery(&saved, &battery_page(other, low));
+    links.note_battery(&saved, &battery_page(peer(34, 1), low));
     assert!(links.battery(0, strap).is_none() && links.battery(1, meter).is_none());
-    links.note_battery(&battery_page(strap, low));
+    links.note_battery(&saved, &battery_page(strap, low));
     let expected = Battery {
         status: BatteryStatus::Low,
         millivolts: Some(2500),
@@ -581,11 +582,14 @@ fn a_battery_report_belongs_to_the_saved_sensor_that_sent_it() {
     assert_eq!(links.battery(0, strap), Some(expected));
     assert_eq!(links.battery(1, meter), None);
     // A reserved status or an ordinary page keeps what was reported.
-    links.note_battery(&battery_page(strap, [0x52, 0xff, 1, 0, 0, 0, 0, 0x62]));
-    links.note_battery(&battery_page(strap, [0x10, 0, 0, 0, 0, 0, 0, 0x22]));
+    links.note_battery(
+        &saved,
+        &battery_page(strap, [0x52, 0xff, 1, 0, 0, 0, 0, 0x62]),
+    );
+    links.note_battery(&saved, &battery_page(strap, [0x10, 0, 0, 0, 0, 0, 0, 0x22]));
     assert_eq!(links.battery(0, strap), Some(expected));
     // Replacing the sensor must not carry its report to the new one.
-    links.saved.select(other);
+    saved.select(other);
     assert_eq!(links.battery(0, other), None);
 }
 
@@ -593,8 +597,9 @@ fn a_battery_report_belongs_to_the_saved_sensor_that_sent_it() {
 fn a_dual_sided_meter_stays_low_while_its_other_battery_reads_good() {
     use crate::sensors::ant::BatteryStatus;
     let mut links = crate::app::sensor_links::Links::default();
+    let mut saved = crate::sensors::saved::Saved::default();
     let meter = peer(POWER, 9);
-    links.saved.select(meter);
+    saved.select(meter);
     let side = |identifier: u8, status: u8| {
         battery_page(
             meter,
@@ -611,18 +616,18 @@ fn a_dual_sided_meter_stays_low_while_its_other_battery_reads_good() {
         )
     };
     for _ in 0..4 {
-        links.note_battery(&side(0, 4));
+        links.note_battery(&saved, &side(0, 4));
         assert_eq!(
             links.battery(0, meter).map(|b| b.status),
             Some(BatteryStatus::Low)
         );
-        links.note_battery(&side(1, 2));
+        links.note_battery(&saved, &side(1, 2));
         assert_eq!(
             links.battery(0, meter).map(|b| b.status),
             Some(BatteryStatus::Low)
         );
     }
-    links.note_battery(&side(0, 2));
+    links.note_battery(&saved, &side(0, 2));
     assert_eq!(
         links.battery(0, meter).map(|b| b.status),
         Some(BatteryStatus::Good)
@@ -632,11 +637,12 @@ fn a_dual_sided_meter_stays_low_while_its_other_battery_reads_good() {
 #[test]
 fn a_combined_speed_cadence_sensor_never_reports_a_battery() {
     let mut links = crate::app::sensor_links::Links::default();
+    let mut saved = crate::sensors::saved::Saved::default();
     let sensor = peer(121, 5);
-    links.saved.select(sensor);
-    links.note_battery(&battery_page(
-        sensor,
-        [0x52, 0x10, 0x20, 0, 0, 0x30, 0x23, 0x41],
-    ));
+    saved.select(sensor);
+    links.note_battery(
+        &saved,
+        &battery_page(sensor, [0x52, 0x10, 0x20, 0, 0, 0x30, 0x23, 0x41]),
+    );
     assert_eq!(links.battery(0, sensor), None);
 }

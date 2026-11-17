@@ -85,14 +85,11 @@ pub struct Observations<'a, P, I> {
     pub physical: Snapshot,
 }
 
-const STARTUP_UNKNOWN: &str = "unknown";
-
 pub struct Runtime {
     navigation: presentation::Navigation,
     phone: phone::Phone,
     display: presentation::Display,
-    startup_status: &'static str,
-    startup: device_api::sensors::Startup,
+    startup: Option<device_api::sensors::Startup>,
     menu: Menu,
     discovery: sensor_links::Discovery,
     links: sensor_links::Links,
@@ -135,8 +132,7 @@ impl Runtime {
             navigation: presentation::Navigation::default(),
             phone: phone::Phone::default(),
             display: presentation::Display::default(),
-            startup_status: STARTUP_UNKNOWN,
-            startup: device_api::sensors::Startup::Unsupported,
+            startup: None,
             menu: Menu::new(),
             discovery: sensor_links::Discovery::default(),
             links: sensor_links::Links::default(),
@@ -261,7 +257,7 @@ impl Runtime {
         use device_api::sensors::Startup;
         if matches!(
             self.startup,
-            Startup::Ready | Startup::AlreadyRunning | Startup::RunningDegraded
+            Some(Startup::Ready | Startup::AlreadyRunning | Startup::RunningDegraded)
         ) {
             self.timing.companion(now);
         }

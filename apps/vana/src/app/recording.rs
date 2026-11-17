@@ -82,8 +82,6 @@ pub(super) struct Ride {
     counted_ms: u64,
     /// This ride's laps, reset with the totals.
     pub(super) laps: Laps,
-    /// What closes laps by itself, from the rider's options.
-    pub(super) auto_lap: AutoLap,
     /// The last finished lap and when it closed, for the status-row toast.
     lap_toast: Option<(u64, Lap)>,
     /// Time in each training zone, kept and reset with `totals`.
@@ -95,11 +93,7 @@ pub(super) struct Ride {
     pub(super) trace: Trace,
     /// The summary's chart of `trace`, charted when the page opens.
     pub(super) chart: ElevationChart,
-    /// The personal bests this ride set, and the FTP its 20 min best
-    /// suggests while the rider has not answered. Kept after stop until the
-    /// next ride starts.
     pub(super) bests_found: Found,
-    pub(super) ftp_suggestion: Option<u16>,
     /// Climbs finished this ride.
     pub(super) climbing: Climbing,
     /// A lap closed since the last chime.
@@ -188,14 +182,12 @@ impl Default for Ride {
             totals: Totals::default(),
             counted_ms: 0,
             laps: Laps::default(),
-            auto_lap: AutoLap::Every(5),
             lap_toast: None,
             zone_time: ZoneTime::default(),
             efforts: Efforts::default(),
             trace: Trace::default(),
             chart: ElevationChart::default(),
             bests_found: Found::default(),
-            ftp_suggestion: None,
             climbing: Climbing::default(),
             lap_chime: false,
             climbs: Climbs::default(),
@@ -435,6 +427,7 @@ impl Ride {
         sample: &Sample,
         pressure_centi_pa: Option<u32>,
         profile: &TrainingProfile,
+        auto_lap: AutoLap,
     ) -> Option<ClimbEvent> {
         self.altitude_fresh = false;
         let recorder = self.active();
@@ -475,13 +468,10 @@ impl Ride {
             self.climbing.add(climb.gain_dm);
         }
         let Some(player) = &mut self.workout else {
-            if let Some(lap) = self.laps.add_every(
-                credited,
-                distance_mm,
-                &sample,
-                now,
-                self.auto_lap.every_mm(),
-            ) {
+            if let Some(lap) =
+                self.laps
+                    .add_every(credited, distance_mm, &sample, now, auto_lap.every_mm())
+            {
                 self.lap_closed(lap, now);
             }
             return climb;
@@ -518,9 +508,9 @@ impl Ride {
 
     /// The rider passed the ride's start: close a lap if they chose laps
     /// there and no workout is playing.
-    pub(super) fn passed_start(&mut self, now: u64) {
+    pub(super) fn passed_start(&mut self, auto_lap: AutoLap, now: u64) {
         // A paused ride is standing still: a pass then is not a lap.
-        if self.auto_lap != AutoLap::AtStart
+        if auto_lap != AutoLap::AtStart
             || self.workout.is_some()
             || self.active().status() != crate::ride::log::Status::Recording
         {
@@ -852,7 +842,9 @@ impl Runtime {
                 ride.efforts = Efforts::default();
                 ride.trace = Trace::default();
                 ride.bests_found = Found::default();
-                ride.ftp_suggestion = None;
+                self.training
+                    .ftp
+                    .answered(crate::workout::ftp::Source::RideSummary);
                 ride.climbing = Climbing::default();
                 ride.climbs = Climbs::default();
                 self.navigation.climb = Default::default();
@@ -960,7 +952,9 @@ impl Runtime {
         }
         if let Some(claimed) = settled.claimed {
             ride.bests_found = claimed.found;
-            ride.ftp_suggestion = claimed.ftp;
+            self.training
+                .ftp
+                .set(crate::workout::ftp::Source::RideSummary, claimed.ftp);
         }
         // A ride lost while paused continues paused; automation waits until
         // it is, so an automatic pause stays automatic.

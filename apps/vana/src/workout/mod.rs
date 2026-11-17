@@ -7,6 +7,7 @@
 //! the record of how a saved ride's workout went. Screens live in
 //! `screens::workouts` (the picker) and `screens::ride::workout` (the page).
 pub mod codec;
+pub mod ftp;
 pub mod history;
 pub mod library;
 pub mod model;

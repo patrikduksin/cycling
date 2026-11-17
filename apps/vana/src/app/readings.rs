@@ -455,8 +455,11 @@ impl Runtime {
                 break;
             };
             // A removed or replaced sensor's pages never reach the ride.
-            if !self.links.rejects(packet.identity) {
-                self.links.note_battery(&packet);
+            if !self
+                .links
+                .rejects(&self.preferences.sensors, packet.identity)
+            {
+                self.links.note_battery(&self.preferences.sensors, &packet);
                 self.hear_calibration(&packet, now);
                 self.readings.receive(packet);
             }
@@ -583,7 +586,10 @@ impl Runtime {
         if let Some(step) = step {
             let profile = self.preferences.profile;
             // The climb page reads the climb under way; `follow_road` looks.
-            let _ = self.ride.count(now, step, &sample, pressure, &profile);
+            let auto_lap = self.preferences.options.auto_lap;
+            let _ = self
+                .ride
+                .count(now, step, &sample, pressure, &profile, auto_lap);
             if !self.ride.workout_events.is_empty() {
                 self.workout_events(now);
             }

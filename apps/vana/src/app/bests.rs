@@ -9,13 +9,13 @@
 //! the next write keeps them). A read that failed only this time is tried
 //! again, with the ride's outcome waiting.
 use super::Runtime;
-use crate::kept::bests::{Bests, Found, Kept, Seen, Store, suggest_ftp};
+use crate::kept::bests::{Bests, Found, Kept, Seen, Store};
 use crate::ride::log::Status;
-use crate::ride::zones::TrainingProfile;
 use crate::screens::bests::Mode;
 use crate::screens::chrome::Tone;
 use crate::screens::ride::summary;
 use crate::screens::workout::{Page, Text};
+use crate::workout::ftp::{Offer, Question, Source};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
 use device_api::input::Button;
@@ -78,20 +78,17 @@ impl Runtime {
     /// The FTP offer the summary shows as its last page: once the ride is
     /// saved, while it is still higher than the FTP in force by enough, and
     /// until the rider answers or leaves.
-    pub(super) fn summary_offer(&self) -> Option<summary::FtpOffer> {
-        let ride = &self.ride;
-        let best = ride.ftp_suggestion?;
-        if ride.pending() || ride.active().status() != Status::Saved {
+    pub(super) fn summary_offer(&self) -> Option<Offer> {
+        if !self.ride_saved() {
             return None;
         }
-        let current = self.preferences.profile.ftp_watts;
-        let suggested =
-            suggest_ftp(best, current).filter(|ftp| TrainingProfile::FTP_WATTS.contains(ftp))?;
-        Some(summary::FtpOffer {
-            suggested,
-            current,
-            best,
-        })
+        self.training
+            .ftp
+            .summary_offer(self.preferences.profile.ftp_watts)
+    }
+
+    pub(super) fn ride_saved(&self) -> bool {
+        !self.ride.pending() && self.ride.active().status() == Status::Saved
     }
 
     /// How many pages the summary on screen has.
@@ -107,9 +104,7 @@ impl Runtime {
 
     /// Whether the summary shows the FTP offer now.
     pub(super) fn offer_shown(&self) -> bool {
-        self.navigation.page == Page::Summary
-            && self.navigation.summary_page == summary::pages(self.has_elevation())
-            && self.summary_offer().is_some()
+        matches!(self.ftp_question(), Some(Question::Summary(_)))
     }
 
     /// ACT takes the suggested FTP, BACK keeps the one in force. Either way
@@ -122,18 +117,18 @@ impl Runtime {
         let tone = match button {
             Button::BottomRight => {
                 let mut profile = self.preferences.profile;
-                profile.ftp_watts = offer.suggested;
+                profile.ftp_watts = offer.suggested_watts;
                 self.preferences.set(profile, now);
-                let _ = write!(text, "FTP {} W SAVED", offer.suggested);
+                let _ = write!(text, "FTP {} W SAVED", offer.suggested_watts);
                 Tone::Good
             }
             Button::TopLeft => {
-                let _ = write!(text, "FTP KEPT {} W", offer.current);
+                let _ = write!(text, "FTP KEPT {} W", offer.current_watts);
                 Tone::Info
             }
             _ => return,
         };
-        self.ride.ftp_suggestion = None;
+        self.training.ftp.answered(Source::RideSummary);
         self.navigation.toast(text.as_str(), tone, now);
     }
 

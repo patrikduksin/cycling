@@ -307,7 +307,7 @@ impl Runtime {
 
     /// The saved power meter, when its channel is connected and its data fresh.
     fn live_power_meter(&self, ant: &impl Ant, now: u64) -> Option<Target> {
-        let (_, peer) = self.links.saved.of_type(device_type::POWER)?;
+        let (_, peer) = self.preferences.sensors.of_type(device_type::POWER)?;
         let channel = ant.channel(device_type::POWER, now)?;
         (channel.selected == Some(peer) && channel.link == LinkState::Connected && !channel.stale)
             .then_some(Target {

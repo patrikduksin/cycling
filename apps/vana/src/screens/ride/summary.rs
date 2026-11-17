@@ -52,15 +52,6 @@ pub const OFFER_CUES: [Cue; 2] = [
     Cue::new(Corner::BottomRight, Icon::Check),
 ];
 
-/// A suggested FTP: 95% of a new 20 min best, well above the one in force.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FtpOffer {
-    pub suggested: u16,
-    pub current: u16,
-    /// The 20 min best it comes from, in watts.
-    pub best: u16,
-}
-
 /// Where the saved ride stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Saving {
@@ -96,7 +87,7 @@ pub struct After {
     /// The personal bests this ride set.
     pub found: Found,
     /// The FTP on offer as the last page.
-    pub offer: Option<FtpOffer>,
+    pub offer: Option<crate::workout::ftp::Offer>,
     /// Heart-rate recovery after the finish; for a saved ride, from its
     /// facts.
     pub recovery: Option<Recovery>,
@@ -546,13 +537,16 @@ fn ftp_offer(view: &View, canvas: &mut Canvas) {
         return;
     };
     let mut best = Text::<24>::new();
-    let _ = core::fmt::Write::write_fmt(&mut best, format_args!("20 MIN BEST {} W", offer.best));
+    let _ = core::fmt::Write::write_fmt(
+        &mut best,
+        format_args!("20 MIN BEST {} W", offer.best_watts),
+    );
     centred(canvas, &[&BODY, &CAPTION], best.as_bytes(), 104, SECONDARY);
     let mut ftp = Text::<12>::new();
-    let _ = core::fmt::Write::write_fmt(&mut ftp, format_args!("FTP {} W?", offer.suggested));
+    let _ = core::fmt::Write::write_fmt(&mut ftp, format_args!("FTP {} W?", offer.suggested_watts));
     centred(canvas, &[&TITLE, &BODY], ftp.as_bytes(), 164, POWER);
     let mut now = Text::<24>::new();
-    let _ = core::fmt::Write::write_fmt(&mut now, format_args!("NOW {} W", offer.current));
+    let _ = core::fmt::Write::write_fmt(&mut now, format_args!("NOW {} W", offer.current_watts));
     centred(canvas, &[&BODY, &CAPTION], now.as_bytes(), 194, SECONDARY);
 }
 

@@ -15,19 +15,10 @@ invariants! {
             if matches!(runtime.power.sheet, Sheet::TurningOff { .. }) && runtime.recording(),
         ConfirmOffWhileRecording: "turn-off question shown while recording"
             if matches!(runtime.power.sheet, Sheet::Confirm { .. }) && runtime.recording(),
-        TwoFtpQuestions: "two FTP questions asked"
-            if runtime.training.ftp_offer.is_some() && runtime.offer_shown(),
-        SavedSensorsDisagree: "saved sensors disagree with preferences"
-            if runtime.links.saved != runtime.preferences.sensors,
         SummaryWhileRiding: "summary shown while riding"
             if runtime.navigation.page == Page::Summary
                 && runtime.ride.active().riding()
                 && runtime.ride.active().pending_action() != Some(Action::Finish),
-        AutoLapDisagrees: "auto lap disagrees with options"
-            if runtime.ride.auto_lap != runtime.preferences.options.auto_lap,
-        StartupStatusDisagreesOnceKnown: "known startup status disagrees with startup"
-            if runtime.startup_status != super::STARTUP_UNKNOWN
-                && runtime.startup_status != runtime.startup.name(),
         TwoRidingRides: "both journals riding"
             if runtime.ride.internal.riding() && runtime.ride.bulk.riding(),
         HostTokenOwned: "a host operation waits without exactly one owner of its token"
@@ -86,10 +77,7 @@ impl Runtime {
 
     #[cfg(any(test, feature = "invariants"))]
     #[doc(hidden)]
-    pub fn break_auto_lap_rule(&mut self) {
-        self.ride.auto_lap = match self.preferences.options.auto_lap {
-            crate::ride::laps::AutoLap::Off => crate::ride::laps::AutoLap::AtStart,
-            _ => crate::ride::laps::AutoLap::Off,
-        };
+    pub fn break_a_rule(&mut self) {
+        self.ride.host = Request::Pending(9);
     }
 }

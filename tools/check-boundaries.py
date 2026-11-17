@@ -57,7 +57,6 @@ DOMAIN = ('ride', 'kept', 'sensors', 'workout')
 LAYERS = ('app', 'screens')
 LAYER_RULE = (f'domain code ({", ".join(d + "/" for d in DOMAIN)}) never reaches crate::app or crate::screens: '
               'take what it needs as arguments')
-DOMAIN_EXCEPTIONS = {'apps/vana/src/sensors/scan.rs': {('screens', 'sensors', 'MenuMessage')}}
 ROOT_ALIAS_RULE = 'domain code may not alias the crate root: spell crate:: paths in full'
 TOKEN = re.compile(r'(?:r#)?[A-Za-z_]\w*|::|[^\s$]')
 
@@ -319,7 +318,7 @@ def resolve(segments, module, plain):
     return path, line
 
 
-def layer_imports(text, module, allowed=()):
+def layer_imports(text, module):
     tokens = rust_tokens(text) + [(';', 0)] * 5
     modules = lexical_modules(tokens, module)
     leaves, expressions, index = [], [], 0
@@ -353,7 +352,7 @@ def layer_imports(text, module, allowed=()):
             findings.append((line, f'`as {alias}`: {ROOT_ALIAS_RULE}'))
         elif glob and path == ():
             findings.append((line, f'a glob of the crate root brings crate::app and crate::screens in; {LAYER_RULE}'))
-        elif path and path[0] in LAYERS and path not in allowed:
+        elif path and path[0] in LAYERS:
             findings.append((line, f'crate::{"::".join(path)}: {LAYER_RULE}'))
     return sorted(set(findings))
 
@@ -363,7 +362,7 @@ def layer_findings(text, repo_relative_path):
     if not Path(repo_relative_path).is_relative_to(package):
         return []
     module = domain_module(Path(repo_relative_path).relative_to(package))
-    return layer_imports(text, module, DOMAIN_EXCEPTIONS.get(repo_relative_path, ())) if module else []
+    return layer_imports(text, module) if module else []
 
 
 def domain_module(relative):
@@ -488,10 +487,8 @@ ui = { package = "firmware-shell", path = "../shell" }
                    'mod app { pub struct Local; } mod inner { mod deeper { use super::super::app::Local; } }']:
         assert not layer_imports(source, recorder), source
     assert [line for line, _ in layer_imports('use crate::{\n    ride::log,\n    app::\n        Medium,\n};', recorder)] == [3]
-    scan = 'apps/vana/src/sensors/scan.rs'
     menu = 'use crate::screens::sensors::MenuMessage;\n'
-    assert not layer_findings(menu, scan)
-    assert [line for line, _ in layer_findings(menu + 'use crate::app::Runtime;', scan)] == [2]
+    assert [line for line, _ in layer_findings(menu, 'apps/vana/src/sensors/scan.rs')] == [1]
     assert [line for line, _ in layer_findings(menu, 'apps/vana/src/sensors/saved.rs')] == [1]
     assert not layer_findings(menu, 'apps/vana/src/app/input.rs')
     assert domain_module(Path('src/ride/recorder.rs')) == recorder

@@ -107,7 +107,7 @@ impl Runtime {
         }
         // The FTP sheet after a test takes the buttons next; touch never
         // answers it.
-        if self.training.ftp_offer.is_some() {
+        if self.ftp_sheet().is_some() {
             if let Input::Button { button, code: 1 } = input
                 && !held
                 && received.saturating_sub(self.navigation.last_press) >= DEBOUNCE_MS
@@ -233,7 +233,7 @@ impl Runtime {
             | Page::History
             | Page::Workouts => 0,
         };
-        let sheet = u32::from(self.power.view().is_some() || self.training.ftp_offer.is_some());
+        let sheet = u32::from(self.power.view().is_some() || self.ftp_sheet().is_some());
         let dark = u32::from(!self.display.is_active());
         Owner(page | subview << 4 | sheet << 12 | dark << 13)
     }

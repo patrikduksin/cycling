@@ -152,6 +152,7 @@ fn an_update_across_workout_steps_puts_each_part_in_its_steps_lap() {
         &crate::ride::log::Sample::default(),
         None,
         &profile,
+        runtime.preferences.options.auto_lap,
     );
     assert_eq!(runtime.ride.laps.count(), laps_before + 3);
     for back in 0..3 {

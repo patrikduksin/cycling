@@ -601,19 +601,12 @@ impl Runtime {
     /// Adopt the preferences the shell loaded at startup.
     pub fn load_preferences(&mut self, app: &AppPreferences, settings: Source) {
         self.preferences = Preferences::load(app.bytes(), settings);
-        self.links.saved = self.preferences.sensors;
-        self.apply_options();
         self.settle_wheel(0);
     }
 
     /// Use these options from now on; they are saved once edits settle.
     pub(super) fn set_options(&mut self, options: Options, now: u64) {
         self.preferences.set_options(options, now);
-        self.apply_options();
-    }
-
-    fn apply_options(&mut self) {
-        self.ride.auto_lap = self.preferences.options.auto_lap;
     }
 
     /// Ask the shell for these backlight choices: they apply at once and

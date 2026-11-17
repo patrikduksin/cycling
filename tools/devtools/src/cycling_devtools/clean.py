@@ -1,7 +1,6 @@
 """Free disk: remove merged worktrees and idle build directories (a dry run unless --apply).
 
-Every linked worktree carries its own target dirs, about 7 GB after a verify, and
-agents leave them behind. A worktree is removed only when it is provably dead: its
+A worktree is removed only when it is provably dead: its
 branch is merged, it has commits of its own, its tree is clean and quiet, it holds
 no ignored file outside the regenerable build dirs, it contains no other worktree
 and no process works inside it. Build directories of the worktrees that stay are
@@ -29,9 +28,7 @@ from pathlib import Path
 
 from cycling_devtools.workspace import ROOT
 
-# Idle-deleted, relative to a worktree: regenerable by cargo, build.sh and verify.
 BUILD_DIRS = ('target', 'vendor/trouble-host/target', '.local/firmware*', '.local/verify')
-# Also regenerable: build.sh's image and the dev shell's GC root (.claude/hooks/dev-shell.sh).
 BUILD_OUTPUTS = (
     '.local/cycling.bin',
     '.local/cycling.elf',
@@ -361,7 +358,6 @@ def build_dirs(tree):
 
 
 def owner(directory):
-    """The checkout whose build dir directory is, else None."""
     for pattern in BUILD_DIRS:
         tree = directory.parents[pattern.count('/')]
         relative = directory.relative_to(tree).as_posix()

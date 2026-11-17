@@ -88,6 +88,13 @@ The constraints are deliberate:
   is unnecessary until a real consumer needs it.
 - Only firmware or simulator composition connects concrete devices and applications.
 
+VANA writes its pass once. `app::pass` calls the shell and VANA in their fixed
+order, and the firmware and the simulator both call it with handles bound to
+the trace. Composition keeps what differs between them. Before the call it
+freezes the observations and handles standby; after it, it sends the trace on.
+At each `Point` the pass hands back, it records inputs and measures stage
+timing.
+
 A device package can contain both a hardware library and a composition binary.
 The binary's dependencies do not give hardware modules permission to import app
 policy. Keep that distinction explicit in imports and review, as Cargo package

@@ -1377,10 +1377,10 @@ impl Session {
             }
             Devices::Simulated(sim) => self.trace.position.freeze(&sim.position, now, record),
         };
-        self.vana_pass(companion, position, startup);
+        self.bind_and_pass(companion, position, startup);
         false
     }
-    fn vana_pass(
+    fn bind_and_pass(
         &mut self,
         companion: CompanionView,
         position: firmware_services::trace::frozen::PositionView,
@@ -1452,56 +1452,35 @@ impl Session {
                     &mut sim.switch,
                 ),
             };
-        let mut ant = self.trace.ant.bind(ant, now, record);
-        let mut ble = self.trace.ble.bind(ble, now, record);
-        let mut bulk = RecordedBulk::new(bulk, record);
-        let mut access_point = self.trace.access_point.bind(access_point, now, record);
-        let mut server = self.trace.server.bind(server, now, record);
-        let mut sound = self.trace.sound.bind(sound, now, record);
-        let mut control = self.trace.power.bind(control, now, record);
-        self.sdk.set_startup_status(startup);
-        self.shell.set_app_active(self.sdk.input_active());
-        self.shell.observe_light(light);
-        self.shell.tick(now);
-        self.shell
-            .input_source()
-            .record(&mut *self.trace.recorder.borrow_mut());
-        record_synthetic(&mut self.shell, &self.trace.recorder);
-        for _ in 0..16 {
-            let Some(edge) = self.shell.take_app_input() else {
-                break;
-            };
-            self.sdk
-                .input_received(edge.input, edge.received_ms, now, &mut ant);
-        }
-        self.shell.observe_position(&position, now);
-        self.shell.present();
-        self.sdk.tick(
-            &mut self.shell.data_storage(),
-            &mut bulk,
-            now,
-            &mut ant,
-            &mut ble,
+        let handles = vana::app::Handles {
+            ant: self.trace.ant.bind(ant, now, record),
+            ble: self.trace.ble.bind(ble, now, record),
+            bulk: RecordedBulk::new(bulk, record),
+            access_point: self.trace.access_point.bind(access_point, now, record),
+            server: self.trace.server.bind(server, now, record),
+            sound: self.trace.sound.bind(sound, now, record),
+            control: self.trace.power.bind(control, now, record),
+        };
+        vana::app::pass(
+            &mut self.sdk,
+            &mut self.shell,
+            startup,
+            light,
             vana::app::Observations {
                 position: &position,
                 network_time,
                 input: &companion,
                 physical,
             },
-        );
-        self.sdk.service_format(&mut self.shell, &mut bulk, now);
-        self.sdk.look_ahead(&mut bulk, now);
-        self.sdk.serve_phone(
-            &mut server,
-            &mut access_point,
-            &mut self.shell.data_storage(),
-            &mut bulk,
             now,
+            handles,
+            &mut |point, shell| {
+                if point == vana::app::Point::InputsReady {
+                    shell.input_source().record(&mut *record.borrow_mut());
+                    record_synthetic(shell, record);
+                }
+            },
         );
-        self.sdk.present(&mut self.shell, now, &ant, &position);
-        self.sdk.save_preferences(&mut self.shell, now);
-        self.sdk.alert(&mut sound, now);
-        self.sdk.power(&mut self.shell, &mut control, now);
     }
     fn record_seen(&mut self) -> Vec<Seen> {
         let mut seen = Vec::new();

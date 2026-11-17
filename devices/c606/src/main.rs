@@ -380,7 +380,7 @@ async fn console(
         bringup.poll(now, &mut devices.ble);
         stage_ended(Stage::Bringup);
         {
-            let quiet = vana_pass(
+            let quiet = traced_pass(
                 sdk,
                 trace,
                 system,
@@ -481,14 +481,10 @@ async fn console(
     }
 }
 
-/// One pass of VANA and the shell, with every handle VANA reads frozen for
-/// the pass and recorded into the session's trace in the order the
-/// simulator records them (`tools/simulator/src/session.rs`), then this
-/// pass's share of the trace to the card. Inlined, as the pass was before
-/// it had a name: a frame of its own would sit under every frame VANA
-/// prepares. True for a pass in dark charging standby.
+/// Inlined: a frame of its own would sit under every frame VANA prepares.
+/// True for a pass in dark charging standby.
 #[inline(always)]
-fn vana_pass(
+fn traced_pass(
     sdk: &mut vana::app::Runtime,
     trace: &mut trace::Trace,
     system: &mut FirmwareShell,
@@ -564,76 +560,65 @@ fn vana_pass(
         trace
             .server
             .redact(token.as_ref().map(|token| token.bytes()));
-        let mut ant = trace.ant.bind(&mut devices.ant, now, record);
-        let mut ble = trace.ble.bind(&mut devices.ble, now, record);
-        let mut bulk = RecordedBulk::counted(&mut devices.bulk, record, trace.log);
-        let mut access_point = trace
-            .access_point
-            .bind(&mut devices.access_point, now, record);
-        let mut server = trace.server.bind(&mut devices.server, now, record);
-        let mut sound = trace.sound.bind(&mut devices.sound, now, record);
-        let mut control = trace.power.bind(&mut devices.power, now, record);
+        let handles = vana::app::Handles {
+            ant: trace.ant.bind(&mut devices.ant, now, record),
+            ble: trace.ble.bind(&mut devices.ble, now, record),
+            bulk: RecordedBulk::counted(&mut devices.bulk, record, trace.log),
+            access_point: trace
+                .access_point
+                .bind(&mut devices.access_point, now, record),
+            server: trace.server.bind(&mut devices.server, now, record),
+            sound: trace.sound.bind(&mut devices.sound, now, record),
+            control: trace.power.bind(&mut devices.power, now, record),
+        };
         stage_ended(Stage::Observe);
-        sdk.set_startup_status(startup);
-        system.set_app_active(sdk.input_active());
-        system.observe_light(light);
-        system.tick(now);
-        system.input_source().0.record(&mut *record.borrow_mut());
-        for input in system.take_synthetic() {
-            firmware_services::trace::frozen::Record::record(
-                &mut *record.borrow_mut(),
-                &Event::Synthetic(input),
-            );
-        }
-        for _ in 0..16 {
-            let Some(edge) = system.take_app_input() else {
-                break;
-            };
-            sdk.input_received(edge.input, edge.received_ms, now, &mut ant);
-        }
-        system.observe_position(&position, now);
-        stage_ended(Stage::Shell);
-        let started = embassy_time::Instant::now();
-        system.present();
-        system.display_max_ms = system.display_max_ms.max(started.elapsed().as_millis());
-        stage_ended(Stage::ShellPresent);
-        sdk.tick(
-            &mut system.data_storage(),
-            &mut bulk,
-            now,
-            &mut ant,
-            &mut ble,
+        let mut started = embassy_time::Instant::MIN;
+        vana::app::pass(
+            sdk,
+            system,
+            startup,
+            light,
             vana::app::Observations {
                 position: &position,
                 network_time,
                 input: &companion,
                 physical,
             },
-        );
-        sdk.service_format(system, &mut bulk, now);
-        stage_ended(Stage::VanaTick);
-        // One bounded look-ahead step a pass (a tile chunk, a match or a
-        // prediction), before the frame that may show its result.
-        let started = embassy_time::Instant::now();
-        sdk.look_ahead(&mut bulk, now);
-        *terrain_step_max_us = (*terrain_step_max_us).max(started.elapsed().as_micros());
-        stage_ended(Stage::LookAhead);
-        sdk.serve_phone(
-            &mut server,
-            &mut access_point,
-            &mut system.data_storage(),
-            &mut bulk,
             now,
+            handles,
+            &mut |point, system| match point {
+                vana::app::Point::InputsReady => {
+                    system.input_source().0.record(&mut *record.borrow_mut());
+                    for input in system.take_synthetic() {
+                        firmware_services::trace::frozen::Record::record(
+                            &mut *record.borrow_mut(),
+                            &Event::Synthetic(input),
+                        );
+                    }
+                }
+                vana::app::Point::Shell => {
+                    stage_ended(Stage::Shell);
+                    started = embassy_time::Instant::now();
+                }
+                vana::app::Point::ShellPresent => {
+                    system.display_max_ms =
+                        system.display_max_ms.max(started.elapsed().as_millis());
+                    stage_ended(Stage::ShellPresent);
+                }
+                vana::app::Point::VanaTick => {
+                    stage_ended(Stage::VanaTick);
+                    started = embassy_time::Instant::now();
+                }
+                vana::app::Point::LookAhead => {
+                    *terrain_step_max_us =
+                        (*terrain_step_max_us).max(started.elapsed().as_micros());
+                    stage_ended(Stage::LookAhead);
+                }
+                vana::app::Point::Phone => stage_ended(Stage::Phone),
+                vana::app::Point::VanaPresent => stage_ended(Stage::VanaPresent),
+                vana::app::Point::VanaAfter => stage_ended(Stage::VanaAfter),
+            },
         );
-        stage_ended(Stage::Phone);
-        sdk.present(system, now, &ant, &position);
-        stage_ended(Stage::VanaPresent);
-        sdk.save_preferences(system, now);
-        sdk.alert(&mut sound, now);
-        // After VANA's "TURNING OFF" frame, the device's coordinated
-        // shutdown takes over; this loop then only serves the terminal.
-        sdk.power(system, &mut control, now);
-        stage_ended(Stage::VanaAfter);
     }
     trace.log.record(&trace.record);
     trace.seen(sdk, system.take_frame(), now);

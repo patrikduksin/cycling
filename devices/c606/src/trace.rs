@@ -210,7 +210,7 @@ impl Trace {
 
     /// What the rider saw this pass, as the simulator records it
     /// (`record_seen` in `tools/simulator/src/session.rs`). Not inlined, so
-    /// its locals stay out of `vana_pass`'s frame, which stays under every
+    /// its locals stay out of `traced_pass`'s frame, which stays under every
     /// frame VANA runs.
     #[inline(never)]
     pub fn seen(&mut self, sdk: &mut vana::app::Runtime, frame: Option<u32>, now: u64) {

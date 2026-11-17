@@ -95,7 +95,7 @@ struct Session {
     passes: u64,
     most_records_a_pass: u64,
     longest_pass_ms: u64,
-    records: u32,
+    budget: Budget,
 }
 
 struct Kept(Vec<u8>);
@@ -130,7 +130,7 @@ impl Session {
             now: 0,
             passes: 0,
             most_records_a_pass: 0,
-            records: 1,
+            budget: Budget::Records(1),
             longest_pass_ms: 0,
         }
     }
@@ -153,7 +153,7 @@ impl Session {
             .pass(
                 &mut self.recorder,
                 &mut self.disk,
-                self.records,
+                self.budget,
                 self.now,
                 &mut self.sector,
             )
@@ -250,11 +250,11 @@ fn at_the_measured_rate_a_stalling_store_keeps_every_event_one_record_a_pass() {
         "riding, the spool holds about a flushed block: {riding}"
     );
     assert_eq!(session.most_records_a_pass, 1);
-    session.records = IDLE_RECORDS;
+    session.budget = Budget::Records(IDLE_RECORDS);
     session.upload(UPLOAD_BYTES);
     let upload = session.recorder.sink().peak();
     let most = session.most_records_a_pass;
-    session.records = 1;
+    session.budget = Budget::Records(1);
     session.ride(60_000);
     let now = session.now;
     session
@@ -595,6 +595,126 @@ mod file {
         assert_eq!(
             events(&bytes),
             ["Pass { now_ms: 10 }", "Pass { now_ms: 30 }", "HostWrote"]
+        );
+    }
+
+    struct Boot {
+        media: Media,
+        sector: Sector,
+        file: File,
+        recorder: Spooled<Vec<u8>, Vec<u8>>,
+        now: u64,
+    }
+
+    impl Boot {
+        fn new() -> Self {
+            let (mut media, mut sector) = card(true);
+            let file = File::stage(&mut media, &mut sector);
+            let recorder = Recorder::new(vec![0u8; 4096], Spool::new(vec![0u8; RING_BYTES]));
+            Self {
+                media,
+                sector,
+                file,
+                recorder,
+                now: 0,
+            }
+        }
+
+        fn pass(&mut self, recorded_kib: usize, card: Card) {
+            self.now += 10;
+            let piece = [b'b'; 512];
+            self.recorder.record(&Event::Pass { now_ms: self.now });
+            for _ in 0..recorded_kib * 2 {
+                self.recorder.record(&Event::ServerRead {
+                    id: 1,
+                    part: &piece,
+                    more: true,
+                });
+            }
+            let known = || Some((header(), 7));
+            self.file
+                .pass(
+                    &mut self.recorder,
+                    &mut self.media,
+                    card,
+                    known,
+                    self.now,
+                    &mut self.sector,
+                )
+                .unwrap();
+        }
+
+        fn spooled(&self) -> usize {
+            self.recorder.sink().len()
+        }
+
+        fn written(&self) -> u64 {
+            match &self.file {
+                File::Open(_, _, drain) => drain.written(),
+                _ => panic!("no open file"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_boot_burst_loses_no_block_before_the_first_riding_pass() {
+        let mut boot = Boot::new();
+        for _ in 0..60 {
+            boot.pass(20, Card::Idle);
+            assert!(boot.spooled() < PAYLOAD, "boot drains the spool every pass");
+        }
+        boot.pass(0, Card::Riding);
+        assert_eq!(boot.recorder.sink().refused(), 0);
+        let now = boot.now;
+        boot.file
+            .sync(&mut boot.recorder, &mut boot.media, now, &mut boot.sector)
+            .unwrap();
+        let name = opened(&boot.file);
+        let bytes = read(&mut boot.media, &mut boot.sector, &name);
+        let events = events(&bytes);
+        assert_eq!(events.iter().filter(|e| e.starts_with("Pass")).count(), 61);
+        assert!(!events.iter().any(|e| e.starts_with("Lost")));
+    }
+
+    #[test]
+    fn a_boot_burst_that_starts_after_a_quiet_first_pass_or_pauses_loses_no_block() {
+        let mut boot = Boot::new();
+        boot.pass(0, Card::Idle);
+        for pass in 0..60 {
+            boot.pass(if pass == 30 { 0 } else { 20 }, Card::Idle);
+            assert!(boot.spooled() < PAYLOAD, "boot drains the spool every pass");
+        }
+        assert_eq!(boot.recorder.sink().refused(), 0);
+    }
+
+    #[test]
+    fn a_closed_card_drains_nothing_while_booting() {
+        let mut boot = Boot::new();
+        boot.pass(20, Card::Idle);
+        let written = boot.written();
+        boot.pass(20, Card::Closed);
+        assert_eq!(boot.written(), written, "a closed card writes no record");
+        boot.pass(0, Card::Idle);
+        assert!(boot.spooled() < PAYLOAD, "boot drains once the card opens");
+    }
+
+    #[test]
+    fn boot_ends_at_the_first_riding_pass() {
+        let mut boot = Boot::new();
+        boot.pass(20, Card::Idle);
+        let written = boot.written();
+        boot.pass(20, Card::Riding);
+        let riding = boot.written() - written;
+        assert!(
+            riding > 0 && riding <= PAYLOAD as u64,
+            "a riding pass writes one record: {riding} B"
+        );
+        let written = boot.written();
+        boot.pass(20, Card::Idle);
+        let idle = boot.written() - written;
+        assert!(
+            idle <= u64::from(IDLE_RECORDS) * PAYLOAD as u64 && boot.spooled() > PAYLOAD,
+            "an idle pass after a ride writes {IDLE_RECORDS} records at most: {idle} B"
         );
     }
 }

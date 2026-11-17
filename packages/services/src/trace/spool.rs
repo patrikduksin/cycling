@@ -6,7 +6,9 @@
 //! bytes) of the header and the spooled blocks to the trace file: one while
 //! a ride records, so such a pass writes at most one record sector, plus
 //! the metadata that links the next chunk once every [`store::CHUNK`]
-//! records, and up to [`IDLE_RECORDS`] otherwise.
+//! records, and up to [`IDLE_RECORDS`] otherwise. Until the first pass a
+//! ride records, an idle pass writes everything the spool holds, so the
+//! boot burst never outruns the ring, however its passes are spread.
 //! Every [`SYNC_MS`] it hands the recorder's open block to the spool and,
 //! once the spool holds less than a record, syncs the file: a power cut
 //! loses at most that long of the trace, plus what the spool still holds.
@@ -78,6 +80,15 @@ pub enum Card {
 }
 
 impl Card {
+    fn budget(self) -> Budget {
+        match self {
+            Self::Closed => Budget::Records(0),
+            Self::Riding => Budget::Records(1),
+            Self::Idle => Budget::Records(IDLE_RECORDS),
+            Self::Closing => Budget::UntilEmpty,
+        }
+    }
+
     /// The card as the C606 composes it: `open` while its power owner
     /// admits work, and VANA `riding` or asking to turn off next pass
     /// (`shutdown_due`).
@@ -87,6 +98,23 @@ impl Card {
             (true, true, _) => Self::Closing,
             (true, false, true) => Self::Riding,
             (true, false, false) => Self::Idle,
+        }
+    }
+}
+
+/// How many whole records a pass of the drain may append.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Budget {
+    Records(u32),
+    /// Until the spool holds less than a record.
+    UntilEmpty,
+}
+
+impl Budget {
+    fn allows(self, written: u32) -> bool {
+        match self {
+            Self::Records(records) => written < records,
+            Self::UntilEmpty => true,
         }
     }
 }
@@ -194,6 +222,7 @@ pub struct Drain {
     flushed_ms: u64,
     synced_ms: u64,
     written: u64,
+    booting: bool,
 }
 
 impl Drain {
@@ -221,6 +250,7 @@ impl Drain {
             flushed_ms: now,
             synced_ms: now,
             written: header.len() as u64,
+            booting: true,
         })
     }
 
@@ -239,14 +269,15 @@ impl Drain {
         self.written
     }
 
-    /// This pass's share: at most `records` whole records of the header and
-    /// the spool, and, in a pass that wrote none, every [`SYNC_MS`] the
-    /// recorder's open block and a sync.
+    /// This pass's share: every [`SYNC_MS`] the recorder's open block goes
+    /// to the spool; then the whole records of the header and the spool
+    /// `budget` allows; and, in a pass that wrote none, every [`SYNC_MS`]
+    /// what the spool holds and a sync.
     pub fn pass<B: AsRef<[u8]> + AsMut<[u8]>, S: Staging>(
         &mut self,
         recorder: &mut Recorder<B, S>,
         media: &mut impl ReadWrite,
-        records: u32,
+        budget: Budget,
         now: u64,
         sector: &mut Sector,
     ) -> Result<(), Error> {
@@ -256,7 +287,7 @@ impl Drain {
         }
         let spool = recorder.sink_mut().spool();
         let mut written = 0;
-        while written < records {
+        while budget.allows(written) {
             let room = self.appender.room();
             if spool.len() < room {
                 break;
@@ -293,6 +324,14 @@ impl Drain {
         self.appender.sync(&mut self.store, media, sector)?;
         (self.flushed_ms, self.synced_ms) = (now, now);
         Ok(())
+    }
+
+    fn end_boot_and_budget(&mut self, card: Card) -> Budget {
+        self.booting &= card != Card::Riding;
+        match card {
+            Card::Idle if self.booting => Budget::UntilEmpty,
+            card => card.budget(),
+        }
     }
 
     /// Go on after another writer, such as the host's transfer session, may
@@ -378,11 +417,9 @@ impl File {
         now: u64,
         sector: &mut Sector,
     ) -> Result<(), &'static str> {
-        let records = match card {
-            Card::Closed => return Ok(()),
-            Card::Riding => 1,
-            Card::Idle | Card::Closing => IDLE_RECORDS,
-        };
+        if card == Card::Closed {
+            return Ok(());
+        }
         if let Self::Staging(extent, generations) = *self {
             let Some((header, boot)) = header() else {
                 return Ok(());
@@ -409,8 +446,9 @@ impl File {
         let Self::Open(extent, _, drain) = self else {
             return Ok(());
         };
+        let budget = drain.end_boot_and_budget(card);
         let mut volume = Volume::new(&mut *bulk, *extent);
-        let mut drained = drain.pass(recorder, &mut volume, records, now, sector);
+        let mut drained = drain.pass(recorder, &mut volume, budget, now, sector);
         if card == Card::Closing {
             drained = drained.and_then(|()| drain.sync(recorder, &mut volume, now, sector));
         }

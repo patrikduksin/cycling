@@ -160,6 +160,9 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>, S: Sink> Record for Recorder<B, S> {
         if self.push(event) == Err(Full::Record) {
             let _ = self.push(&Event::TooLarge(event.tag()));
         }
+        if event.seals() {
+            self.flush();
+        }
     }
 
     #[cfg(feature = "testing")]

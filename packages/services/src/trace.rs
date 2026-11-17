@@ -713,6 +713,18 @@ impl<'a> Wire<'a> for Header<'a> {
 }
 
 impl<'a> Event<'a> {
+    /// Whether the block holding this event is sealed as soon as it is
+    /// recorded: a button report, a named cue's first note, a page change
+    /// or a storage fault.
+    pub fn seals(&self) -> bool {
+        match self {
+            Self::Input(edge) => matches!(edge.input, Input::Button { .. }),
+            Self::Sound { cue, note, .. } => !cue.is_empty() && *note == 1,
+            Self::Page(_) | Self::StorageFault(_) => true,
+            _ => false,
+        }
+    }
+
     pub fn tag(&self) -> u8 {
         match self {
             Self::Pass { .. } => tag::PASS,

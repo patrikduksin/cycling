@@ -386,3 +386,80 @@ fn a_synced_clock_is_recorded_once_and_reads_on_as_the_clock_owner_computes() {
     assert!(latest.changed(corrected.snapshot(now, -180, false), now));
     assert!(latest.changed(Snapshot::unsynced(false), now + 10));
 }
+
+#[test]
+fn a_button_press_a_cue_a_page_change_and_a_storage_fault_each_seal_their_block() {
+    use device_api::input::{Button, Edge, Input};
+    let press = Event::Input(Edge {
+        sequence: 1,
+        received_ms: 10,
+        input: Input::Button {
+            button: Button::Center,
+            code: 1,
+        },
+    });
+    let cue = Event::Sound {
+        pattern: 2,
+        cue: "turn",
+        note: 1,
+        of: 2,
+    };
+    let fault = Event::StorageFault(crate::trace::StorageFault {
+        medium: crate::trace::Medium::Bulk,
+        attempt: 1,
+        op: crate::trace::StorageOp::Write,
+        at: 0,
+        landed: 0,
+        error: crate::trace::StorageError::Failed,
+    });
+    for moment in [press, cue, Event::Page("map"), fault] {
+        let mut recorder = Recorder::new([0u8; 128], File::new(None));
+        let header = recorder.sink().bytes.len();
+        recorder.record(&Event::Pass { now_ms: 10 });
+        assert_eq!(
+            recorder.sink().bytes.len(),
+            header,
+            "a pass waits for its block to fill"
+        );
+        recorder.record(&moment);
+        assert!(
+            recorder.sink().bytes.len() > header,
+            "{moment:?} sealed its block"
+        );
+        assert!(recorder.open_block().is_empty());
+    }
+}
+
+#[test]
+fn a_cue_seals_its_block_at_its_first_note_only_and_a_touch_never_does() {
+    use device_api::input::{Edge, Input, Point};
+    let mut recorder = Recorder::new([0u8; 128], File::new(None));
+    let header = recorder.sink().bytes.len();
+    let touches = [Input::Touch(Point { x: 10, y: 20 }), Input::Release].map(|input| {
+        Event::Input(Edge {
+            sequence: 2,
+            received_ms: 20,
+            input,
+        })
+    });
+    let later = Event::Sound {
+        pattern: 2,
+        cue: "turn",
+        note: 2,
+        of: 2,
+    };
+    let unnamed = Event::Sound {
+        pattern: 3,
+        cue: "",
+        note: 0,
+        of: 0,
+    };
+    for event in touches.iter().chain([&later, &unnamed]) {
+        recorder.record(event);
+        assert_eq!(
+            recorder.sink().bytes.len(),
+            header,
+            "{event:?} leaves its block open"
+        );
+    }
+}

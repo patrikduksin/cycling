@@ -1,6 +1,7 @@
 import ast
 import os
 import signal
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -466,8 +467,10 @@ def test_a_second_termination_signal_cannot_interrupt_the_unwinding(restored_sig
     runner.unwind_on_termination()
     with pytest.raises(SystemExit):
         os.kill(os.getpid(), signal.SIGTERM)
-    assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
-    assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    os.kill(os.getpid(), signal.SIGTERM)
+    os.kill(os.getpid(), signal.SIGHUP)
+    ignored = subprocess.run(['grep', 'SigIgn', '/proc/self/status'], capture_output=True, text=True).stdout
+    assert not int(ignored.split()[1], 16) & (1 << (signal.SIGTERM - 1)), 'a gate started now still dies on SIGTERM'
 
 
 def test_a_hangup_the_caller_ignores_stays_ignored(restored_signals):

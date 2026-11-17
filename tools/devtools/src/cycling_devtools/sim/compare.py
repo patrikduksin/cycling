@@ -19,6 +19,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from cycling_devtools import runner
 from cycling_devtools.clean import warn_if_low_disk
 from cycling_devtools.sim import report
 from cycling_devtools.workspace import ROOT, main_checkout
@@ -558,6 +559,7 @@ def main(argv=None):
     parser.add_argument('--out', type=Path, default=OUT)
     args = parser.parse_args(argv)
     warn_if_low_disk()
+    runner.unwind_on_termination()
     if args.fill:
         if problem := fill(args.fill, args.filter):
             print(f'sim-compare: {args.fill} was not cached: {problem}', file=sys.stderr)

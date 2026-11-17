@@ -33,10 +33,13 @@ shell provides every tool and the `cycling` command; see
   a commit that changes no firmware input about 2 s.
 - Before opening or updating a PR: follow the
   [verify skill](.agents/skills/verify/SKILL.md): `/deslop`, `/no-comments`,
-  then `cycling verify --pr <n>`. Verify runs every
-  gate in parallel and posts the results and the screens that changed against
-  main, with a video of each new scenario. Add `--video` for before and after
-  videos of changed scenarios, for a bug fix a reviewer should watch.
+  then `cycling verify --pr <n>`. Verify runs the gates the changed paths
+  select (`tools/devtools/src/cycling_devtools/lanes.py`) in parallel in the
+  worktree, stops if a file changes while it runs, and posts the results and
+  the screens that changed against main, with a video of each new scenario. A
+  gate that passed on the same tree is not run again. Add `--video` for
+  before and after videos of changed scenarios, for a bug fix a reviewer
+  should watch.
 - Disk: a worktree that ran `cycling verify` carries about 7 GB of target dirs
   (`target/`, `vendor/trouble-host/target/`, `.local/firmware`). Run
   `cycling clean` for a dry-run table of what it would free; `--apply` removes
@@ -46,8 +49,9 @@ shell provides every tool and the `cycling` command; see
 - Firmware changes: `cycling test`, `cycling check` (includes boundary checks
   and ruff) and `cycling build`.
 - PRs are verified locally, not by GitHub CI: `cycling verify --pr <n>` runs
-  test, check, simulate, the firmware build, the screens and harness-virtual,
-  and posts the results on the PR. CI runs only on pushes to main.
+  the tests, the checks, simulate, the firmware build, the screens and
+  harness-virtual, those of them the changed paths select, and posts the
+  results on the PR. CI runs only on pushes to main.
 - Preserve the licensed [Trouble Host patch](vendor/trouble-host/CYCLING-PATCH.md)
   and its minimum-MTU (ATT MTU 23) regression coverage.
 

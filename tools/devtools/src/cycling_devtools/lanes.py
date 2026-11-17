@@ -23,7 +23,8 @@ LANES = (
     ),
     (Gate('test-trouble-host', 'cycling test-trouble-host', test=True),),
     (Gate('test-python', 'cycling test-python', test=True),),
-    (Gate('test-web', 'cycling test-web', test=True),),
+    # Both start with bun install, which two at once in a fresh worktree leave half done.
+    (Gate('test-web', 'cycling test-web', test=True), Gate('check-web', 'cycling check-web')),
     (Gate('check-rust', 'cycling check-rust', (('CARGO_TARGET_DIR', 'target/clippy'),)),),
     (
         Gate('check-boundaries', 'cycling check-boundaries'),
@@ -31,7 +32,6 @@ LANES = (
         Gate('check-generated-web', 'cycling check-generated-web'),
         Gate('check-python', 'cycling check-python'),
     ),
-    (Gate('check-web', 'cycling check-web'),),
     (Gate('screens', 'cycling sim-compare', reports=True),),
 )
 ALONE = (Gate('harness-virtual', 'cycling harness-virtual'),)

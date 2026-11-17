@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from cycling_devtools import admission, lanes, quick, runner, tree, verify, workspace
+from cycling_devtools import admission, cli, lanes, quick, runner, tree, verify, workspace
 from verify_fixture import commit, gate_runs, git
 
 
@@ -497,3 +497,9 @@ def test_the_gates_are_selected_from_the_tree_under_verification(checkout, monke
     (elsewhere / 'src' / 'new.txt').write_text('new')
     assert verify.verify(request(elsewhere)).ok
     assert asked == [elsewhere]
+
+
+def test_the_gates_that_install_the_web_packages_never_run_side_by_side():
+    installs = {task.name for task in cli.TASKS if any(step.startswith('bun install') for step in task.steps)}
+    lanes_with_install = [lane for lane in lanes.LANES if any(gate.name in installs for gate in lane)]
+    assert len(lanes_with_install) == 1

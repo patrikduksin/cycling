@@ -21,6 +21,7 @@ pub mod session;
 pub mod sim;
 pub mod storage;
 pub mod trace;
+pub mod twin;
 pub mod world;
 
 /// Runs `cycling_devtools.build_hash` with `args` in the checkout that holds

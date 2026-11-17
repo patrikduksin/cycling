@@ -22,6 +22,7 @@ use device_api::sensors;
 use device_api::server::{self, AccessPointState, Method, Reach};
 use device_api::sound;
 
+pub mod determined;
 pub mod frozen;
 pub mod origin;
 pub mod redact;

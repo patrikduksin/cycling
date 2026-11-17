@@ -175,10 +175,7 @@ mod shared {
     use super::DISCOVERIES;
     use core::cell::RefCell;
     use critical_section::Mutex;
-    use device_api::connectivity::ControlError;
-    use device_api::connectivity::ControlStatus;
     use device_api::observation::Error;
-    use device_api::power::PeripheralState;
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use embassy_sync::signal::Signal;
 
@@ -208,51 +205,6 @@ mod shared {
         }
         pub fn with<R>(&self, f: impl FnOnce(&mut Control<Op>) -> R) -> R {
             critical_section::with(|cs| f(&mut self.control.borrow_ref_mut(cs)))
-        }
-        pub fn set_ready(&self) {
-            self.with(Control::set_ready);
-        }
-        pub fn ready(&self) -> bool {
-            self.with(|c| c.ready())
-        }
-        pub fn suspended(&self) -> bool {
-            self.with(|c| c.suspended())
-        }
-        pub fn power(&self) -> PeripheralState {
-            self.with(|c| c.power())
-        }
-        pub fn status(&self) -> ControlStatus {
-            self.with(|c| c.status())
-        }
-        pub fn has_command(&self) -> bool {
-            self.with(|c| c.has_command())
-        }
-        pub fn take_command(&self) -> Option<Op> {
-            self.with(Control::take_command)
-        }
-        pub fn uncertain(&self) -> bool {
-            self.with(|c| c.uncertain())
-        }
-        pub fn mark_uncertain(&self) {
-            self.with(Control::mark_uncertain);
-        }
-        pub fn finish(&self, automatic: bool, error: Option<ControlError>) {
-            self.with(|c| c.finish(automatic, error));
-        }
-        pub fn complete(&self, error: Option<ControlError>) {
-            self.with(|c| c.complete(error));
-        }
-        pub fn stop(&self, error: ControlError) {
-            self.with(|c| c.stop(error));
-        }
-        pub fn complete_resume(&self) -> PeripheralState {
-            self.with(Control::complete_resume)
-        }
-        pub fn suspend_outcome(&self, quiet: bool) -> PeripheralState {
-            self.with(|c| c.suspend_outcome(quiet))
-        }
-        pub fn power_complete(&self, suspend: bool, state: PeripheralState) {
-            self.with(|c| c.power_complete(suspend, state));
         }
         /// Admit a power target; `on_change` runs in the same critical section
         /// when the target actually changes.

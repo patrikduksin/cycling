@@ -334,7 +334,6 @@ pub struct Parts {
     pub ant: Ant,
     pub ble: Ble,
     pub positioning: Positioning,
-    pub network: Network,
     pub server: crate::drivers::http::Server,
     pub access_point: AccessPoint,
     pub power: Power,
@@ -410,7 +409,6 @@ pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
         ant: Ant,
         ble: Ble,
         positioning: Positioning,
-        network: Network(stack),
         server: crate::drivers::http::Server,
         access_point: AccessPoint(stack),
         power: Power,
@@ -444,15 +442,10 @@ impl device_api::ble_transport::Ble for Ble {
     fn take_battery(&mut self) -> Option<device_api::ble_transport::BatteryLevel> {
         crate::drivers::bluetooth::take_battery()
     }
-    fn reconnect(&mut self) -> Result<(), device_api::observation::Error> {
-        let _access = crate::capabilities::power::ACCESS.enter()?;
-        crate::drivers::bluetooth::request(device_api::ble_transport::Operation::Connect)
-    }
     fn request(
         &mut self,
         operation: device_api::ble_transport::Operation,
     ) -> Result<(), device_api::observation::Error> {
-        let _access = crate::capabilities::power::ACCESS.enter()?;
         crate::drivers::bluetooth::request(operation)
     }
     fn control(&self) -> device_api::connectivity::ControlStatus {
@@ -463,52 +456,6 @@ impl device_api::ble_transport::Ble for Ble {
     }
 }
 pub use crate::capabilities::ant::Ant;
-pub struct Network(Option<embassy_net::Stack<'static>>);
-impl device_api::network::Network for Network {
-    fn availability(&self) -> device_api::observation::Availability {
-        if self.0.is_some() {
-            device_api::observation::Availability::Ready
-        } else if crate::drivers::wifi::state() == device_api::connectivity::WifiState::Unconfigured
-        {
-            device_api::observation::Availability::Unconfigured
-        } else {
-            device_api::observation::Availability::Failed
-        }
-    }
-    fn stack(&self) -> Option<embassy_net::Stack<'static>> {
-        self.0
-    }
-    fn online(&self) -> bool {
-        crate::drivers::wifi::online()
-    }
-    fn state(&self) -> device_api::connectivity::WifiState {
-        crate::drivers::wifi::state()
-    }
-    fn stats(&self) -> device_api::connectivity::WifiStats {
-        crate::drivers::wifi::stats()
-    }
-    fn connection_generation(&self) -> u32 {
-        crate::drivers::wifi::connection_generation()
-    }
-    fn reconnect(&mut self) -> Result<(), device_api::observation::Error> {
-        let _access = crate::capabilities::power::ACCESS.enter()?;
-        crate::drivers::wifi::request(device_api::connectivity::WifiOperation::Connect)
-    }
-    fn request(
-        &mut self,
-        operation: device_api::connectivity::WifiOperation,
-    ) -> Result<(), device_api::observation::Error> {
-        let _access = crate::capabilities::power::ACCESS.enter()?;
-        crate::drivers::wifi::request(operation)
-    }
-    fn control(&self) -> device_api::connectivity::ControlStatus {
-        crate::drivers::wifi::control()
-    }
-    fn discoveries(&self) -> [Option<device_api::connectivity::NetworkDiscovery>; 8] {
-        crate::drivers::wifi::discoveries()
-    }
-}
-
 /// The soft access point for the phone companion, and where its server is reached.
 pub struct AccessPoint(Option<embassy_net::Stack<'static>>);
 impl device_api::server::AccessPoint for AccessPoint {

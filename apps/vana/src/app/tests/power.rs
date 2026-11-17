@@ -698,9 +698,6 @@ impl device_api::ble_transport::Ble for Notifying {
     fn take_packet(&mut self) -> Option<device_api::ble_transport::Packet> {
         self.packets.pop_front()
     }
-    fn reconnect(&mut self) -> Result<(), device_api::observation::Error> {
-        Ok(())
-    }
 }
 
 #[test]

@@ -2,9 +2,9 @@
 use c606_firmware as device;
 use core::fmt;
 use core::fmt::Write;
+use device::drivers::wifi;
 use device_api::ble_transport::Ble as _;
 use device_api::input::InputObservation as _;
-use device_api::network::Network as _;
 use device_api::power::PowerControl as _;
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
@@ -53,7 +53,6 @@ pub struct Devices {
     pub bulk: device::board::Bulk,
     pub sound: device::board::Sound,
     pub sensors: device::board::Sensors,
-    pub network: device::board::Network,
     pub server: device::drivers::http::Server,
     pub access_point: device::board::AccessPoint,
     pub input: device::board::Input,
@@ -77,7 +76,6 @@ pub fn execute(
         bulk,
         sound,
         sensors,
-        network,
         input,
         power,
         // The phone session serves through VANA's loop, not commands.
@@ -340,7 +338,7 @@ pub fn execute(
             let t = firmware_services::network_time::snapshot(
                 now,
                 system.settings.timezone_minutes,
-                network.online(),
+                wifi::online(),
             );
             let _ = write!(output, "{:?}", t);
         }
@@ -358,29 +356,29 @@ pub fn execute(
             let _ = write!(
                 output,
                 "state={} online={} stats={:?} saved={} operation={} sequence={} error={}",
-                network.state().code(),
-                network.online(),
-                network.stats(),
+                wifi::state().code(),
+                wifi::online(),
+                wifi::stats(),
                 system.settings.wifi.is_some(),
-                network.control().operation.name(),
-                network.control().sequence,
-                network.control().error_name()
+                wifi::control().operation.name(),
+                wifi::control().sequence,
+                wifi::control().error_name()
             );
         }
         Command::WifiReconnect => {
-            status = firmware_console::protocol::request_status(
-                network.request(device_api::connectivity::WifiOperation::Connect),
-            );
+            status = firmware_console::protocol::request_status(wifi::request(
+                device_api::connectivity::WifiOperation::Connect,
+            ));
         }
         Command::WifiScan => {
-            status = firmware_console::protocol::request_status(
-                network.request(device_api::connectivity::WifiOperation::Scan),
-            )
+            status = firmware_console::protocol::request_status(wifi::request(
+                device_api::connectivity::WifiOperation::Scan,
+            ))
         }
         Command::WifiDisconnect => {
-            status = firmware_console::protocol::request_status(
-                network.request(device_api::connectivity::WifiOperation::Disconnect),
-            )
+            status = firmware_console::protocol::request_status(wifi::request(
+                device_api::connectivity::WifiOperation::Disconnect,
+            ))
         }
         Command::WifiConfigure(_) | Command::WifiForget => {
             let configuration = if let Command::WifiConfigure(value) = request.command {
@@ -388,7 +386,7 @@ pub fn execute(
             } else {
                 None
             };
-            if network.control().operation == device_api::connectivity::Operation::Pending {
+            if wifi::control().operation == device_api::connectivity::Operation::Pending {
                 status = "UNAVAILABLE";
             } else {
                 let previous = system.settings;
@@ -397,14 +395,14 @@ pub fn execute(
                     system.settings = previous;
                     status = "FAILED";
                 } else {
-                    status = firmware_console::protocol::request_status(network.request(
+                    status = firmware_console::protocol::request_status(wifi::request(
                         device_api::connectivity::WifiOperation::Configure(configuration),
                     ));
                 }
             }
         }
         Command::WifiNetworks => {
-            for (index, network) in network.discoveries().iter().enumerate() {
+            for (index, network) in wifi::discoveries().iter().enumerate() {
                 if let Some(network) = network {
                     let _ = write!(output, "index={} ssid_hex=", index);
                     for b in network.ssid.bytes() {

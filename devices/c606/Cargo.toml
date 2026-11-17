@@ -11,7 +11,7 @@ publish = false
 default = []
 bulk-maintenance = []
 scripted-gnss = []
-hardware = ["device-api/network-stack","dep:esp-hal", "dep:esp32s3", "dep:esp-backtrace", "dep:esp-println", "dep:esp-bootloader-esp-idf", "dep:esp-radio", "dep:esp-rtos", "dep:esp-alloc", "dep:esp-storage", "dep:embassy-executor", "dep:embassy-net", "dep:embassy-time", "dep:embassy-sync", "dep:static_cell", "dep:embassy-futures", "dep:critical-section", "dep:trouble-host", "dep:bt-hci", "dep:rtos-trace"]
+hardware = ["dep:esp-hal", "dep:esp32s3", "dep:esp-backtrace", "dep:esp-println", "dep:esp-bootloader-esp-idf", "dep:esp-radio", "dep:esp-rtos", "dep:esp-alloc", "dep:esp-storage", "dep:embassy-executor", "dep:embassy-net", "dep:embassy-time", "dep:embassy-sync", "dep:static_cell", "dep:embassy-futures", "dep:critical-section", "dep:trouble-host", "dep:bt-hci", "dep:rtos-trace"]
 
 
 [dependencies]

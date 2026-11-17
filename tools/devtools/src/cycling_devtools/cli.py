@@ -176,7 +176,6 @@ TASKS = [
     task(
         'check-rust',
         'Clippy and rustfmt over the workspace',
-        'cargo check -p device-api --locked --features network-stack',
         'cargo clippy --workspace --all-targets --locked --no-default-features --features shell-simulator/live -- -D warnings',
         'cargo fmt --all -- --check',
     ),

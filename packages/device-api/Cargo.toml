@@ -7,10 +7,5 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[features]
-default = []
-network-stack = ["dep:embassy-net"]
-
 [dependencies]
 heapless.workspace = true
-embassy-net = { version = "0.9.1", features = ["dhcpv4", "medium-ethernet", "tcp", "udp", "dns", "auto-icmp-echo-reply"], optional = true }

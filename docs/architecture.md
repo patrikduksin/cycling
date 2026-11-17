@@ -121,7 +121,7 @@ Use typed results and observations; terminal code owns their text formatting.
 | Power | Expose battery observations and supported brightness and power operations. The device enforces hardware limits and sequencing; the shell chooses preferences and inactivity policy. |
 | Storage | Expose checked relative access to owned reservations. Callers never receive access to stock or vendor regions. Journal mechanics are reusable; the owner of the stored data chooses its schema and recovery rules. |
 | Positioning | Expose timestamped observations with freshness and loss information. Keep byte framing, decoding and acquisition state behind the contract. Consumers decide whether a fix is useful for their task. |
-| Network | Expose the actual Embassy stack with connection control where hardware needs it. Stack resources can exist while the link is down. Callers bound waits, check readiness and reject results from an obsolete connection generation. |
+| Network | No portable contract. Device composition calls its board's Wi-Fi functions directly, and each request passes the shutdown admission guard. The Embassy stack stays inside the device: its resources can exist while the link is down, so device code bounds waits, checks readiness and rejects results from an obsolete connection generation. |
 | BLE and ANT | Expose profile-independent transport data with connection and loss information. Devices handle controller quirks, services manage transport state, and VANA interprets profiles and chooses sensors. |
 
 ## State machines are one step function over the existing owners

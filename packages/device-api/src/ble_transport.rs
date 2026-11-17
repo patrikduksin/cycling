@@ -116,5 +116,4 @@ pub trait Ble {
     fn take_battery(&mut self) -> Option<crate::ble_transport::BatteryLevel> {
         None
     }
-    fn reconnect(&mut self) -> Result<(), Error>;
 }

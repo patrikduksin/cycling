@@ -40,7 +40,6 @@ pub trait Tap {
 #[derive(Clone, Copy, Debug)]
 pub enum Passed {
     BleRequest(ble_transport::Operation, Result<(), Error>),
-    BleReconnect(Result<(), Error>),
 }
 
 /// Where sealed event blocks go, in order.
@@ -567,14 +566,6 @@ impl<B: Ble + ?Sized, R: Record + ?Sized> Ble for PassBle<'_, B, R> {
         let level = self.inner.take_battery()?;
         self.record.borrow_mut().record(&Event::BleBattery(level));
         Some(level)
-    }
-    fn reconnect(&mut self) -> Result<(), Error> {
-        let result = self.inner.reconnect();
-        #[cfg(feature = "testing")]
-        self.record
-            .borrow_mut()
-            .passed(Passed::BleReconnect(result));
-        result
     }
 }
 

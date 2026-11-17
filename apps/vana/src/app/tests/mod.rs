@@ -174,9 +174,6 @@ impl device_api::ble_transport::Ble for Absent {
     fn take_packet(&mut self) -> Option<device_api::ble_transport::Packet> {
         None
     }
-    fn reconnect(&mut self) -> Result<(), device_api::observation::Error> {
-        Err(device_api::observation::Error::Unsupported)
-    }
 }
 impl device_api::positioning::Positioning for Absent {
     fn availability(&self) -> Availability {

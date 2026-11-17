@@ -70,9 +70,5 @@ pub fn passed(call: Passed) -> Vec<u8> {
             }
             result.put(w);
         }
-        Passed::BleReconnect(result) => {
-            w.byte(1);
-            result.put(w);
-        }
     })
 }

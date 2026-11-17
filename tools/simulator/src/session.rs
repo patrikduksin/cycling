@@ -230,9 +230,6 @@ impl Ble for BleFixture {
     fn take_battery(&mut self) -> Option<device_api::ble_transport::BatteryLevel> {
         self.battery.take()
     }
-    fn reconnect(&mut self) -> Result<(), Error> {
-        Err(Error::Unsupported)
-    }
 }
 pub struct NoAnt;
 impl Ant for NoAnt {

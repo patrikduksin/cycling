@@ -12,7 +12,6 @@ pub mod crash;
 pub mod display;
 pub mod gps;
 pub mod input;
-pub mod network;
 pub mod observation;
 pub mod position_control;
 pub mod positioning;

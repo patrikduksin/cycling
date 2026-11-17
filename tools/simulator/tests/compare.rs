@@ -127,7 +127,6 @@ fn ble_calls_hash(calls: &[Operation]) -> String {
     for &call in calls {
         let _ = ble.request(call);
     }
-    let _ = ble.reconnect();
     tap.hashes(String::new()).trace
 }
 

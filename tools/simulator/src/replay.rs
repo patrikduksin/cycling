@@ -1466,10 +1466,6 @@ impl Ble for ReplayBle {
     fn take_battery(&mut self) -> Option<ble_transport::BatteryLevel> {
         self.battery.pop_front()
     }
-    fn reconnect(&mut self) -> Result<(), Error> {
-        self.ledger.unrecorded("BLE reconnect");
-        Err(Error::Unsupported)
-    }
     fn request(&mut self, _: ble_transport::Operation) -> Result<(), Error> {
         self.ledger.unrecorded("BLE request");
         Err(Error::Unsupported)

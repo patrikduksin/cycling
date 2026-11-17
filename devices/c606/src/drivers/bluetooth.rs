@@ -48,18 +48,19 @@ type BlePeripheral<'s> = Peripheral<'s, BleController, DefaultPacketPool>;
 static CONTROL: Shared<BleOperation, Discovery> = Shared::new();
 
 pub fn power_status() -> PeripheralState {
-    CONTROL.power()
+    CONTROL.with(|c| c.power())
 }
 pub fn power_request(suspend: bool) -> Result<(), Error> {
     CONTROL.power_request(suspend, || {})
 }
 pub fn control() -> ControlStatus {
-    CONTROL.status()
+    CONTROL.with(|c| c.status())
 }
 pub fn discoveries() -> [Option<Discovery>; DISCOVERIES] {
     CONTROL.discoveries()
 }
 pub fn request(operation: BleOperation) -> Result<(), Error> {
+    let _access = crate::capabilities::power::ACCESS.enter()?;
     CONTROL.request(operation)
 }
 
@@ -245,13 +246,13 @@ pub async fn start(bt: BT<'static>) {
         esp_alloc::HEAP.free()
     );
 
-    CONTROL.set_ready();
+    CONTROL.with(|c| c.set_ready());
     let outcome = select(
         runner.run_with_handler(&ScanCounter),
         application(&stack, central, peripheral, &server),
     )
     .await;
-    CONTROL.stop(ControlError::RunnerStopped);
+    CONTROL.with(|c| c.stop(ControlError::RunnerStopped));
     set_link(Link::Failed);
     match outcome {
         Either::First(Ok(())) => log::info!(target: "ble", "CYCLING_BLE runner_stopped result=ok"),
@@ -281,13 +282,13 @@ async fn application<'a>(
         retry: Reconnect::default(),
     };
     loop {
-        if !CONTROL.ready() {
+        if !CONTROL.with(|c| c.ready()) {
             return;
         }
-        if CONTROL.suspended() {
+        if CONTROL.with(|c| c.suspended()) {
             // Re-check from the top after quiescing: a disconnect timeout can
             // stop the owner, and then nothing would ever signal it again.
-            if CONTROL.power() == PeripheralState::Pending {
+            if CONTROL.with(|c| c.power()) == PeripheralState::Pending {
                 quiesce(stack, &mut peripheral).await;
             } else {
                 CONTROL.changed().await;
@@ -296,11 +297,11 @@ async fn application<'a>(
         }
         // Keep echo, selection and reconnect intent unchanged across power
         // preparation. Fresh transport work resumes below.
-        if CONTROL.complete_resume() == PeripheralState::Failed {
+        if CONTROL.with(|c| c.complete_resume()) == PeripheralState::Failed {
             CONTROL.changed().await;
             continue;
         }
-        let requested = CONTROL.take_command();
+        let requested = CONTROL.with(|c| c.take_command());
         let automatic = requested.is_none() && session.retry.requested();
         let operation = if automatic {
             Some(BleOperation::Connect)
@@ -310,10 +311,10 @@ async fn application<'a>(
         if let Some(operation) = operation {
             central = perform(operation, automatic, &mut session, stack, central, server).await;
         }
-        if !CONTROL.ready() {
+        if !CONTROL.with(|c| c.ready()) {
             return;
         }
-        if CONTROL.suspended() {
+        if CONTROL.with(|c| c.suspended()) {
             continue;
         }
         idle(&mut session, &mut peripheral, server).await;
@@ -332,7 +333,7 @@ async fn quiesce(stack: &BleStack<'_>, peripheral: &mut BlePeripheral<'_>) {
     .await;
     let mut quiet = matches!(result, Ok(Ok(_)));
     if !quiet {
-        CONTROL.mark_uncertain();
+        CONTROL.with(|c| c.mark_uncertain());
     }
     // A peer can connect just before the advertising disable. Drain
     // that accepted controller connection before claiming inactivity.
@@ -341,13 +342,13 @@ async fn quiesce(stack: &BleStack<'_>, peripheral: &mut BlePeripheral<'_>) {
         quiet &= wait_disconnected(&connection).await;
     }
     while PACKETS.try_receive().is_ok() {}
-    let state = CONTROL.suspend_outcome(quiet);
+    let state = CONTROL.with(|c| c.suspend_outcome(quiet));
     set_link(if state == PeripheralState::Quiescent {
         Link::Off
     } else {
         Link::Failed
     });
-    CONTROL.power_complete(true, state);
+    CONTROL.with(|c| c.power_complete(true, state));
 }
 
 async fn perform<'a>(
@@ -366,20 +367,20 @@ async fn perform<'a>(
             critical_section::with(|cs| *BATTERY.borrow_ref_mut(cs) = None);
             session.echo = false;
             set_link(Link::Off);
-            CONTROL.finish(automatic, None);
+            CONTROL.with(|c| c.finish(automatic, None));
             central
         }
         BleOperation::Disconnect => {
             session.retry.disconnect();
             session.echo = false;
             set_link(Link::Off);
-            CONTROL.finish(automatic, None);
+            CONTROL.with(|c| c.finish(automatic, None));
             central
         }
         BleOperation::Echo => {
             session.retry.disconnect();
             session.echo = true;
-            CONTROL.finish(automatic, None);
+            CONTROL.with(|c| c.finish(automatic, None));
             central
         }
         BleOperation::Scan => {
@@ -388,7 +389,7 @@ async fn perform<'a>(
             CONTROL.clear_discoveries();
             let (central, _, success) = scan_target(central).await;
             set_link(Link::Off);
-            CONTROL.finish(automatic, (!success).then_some(ControlError::ScanFailed));
+            CONTROL.with(|c| c.finish(automatic, (!success).then_some(ControlError::ScanFailed)));
             central
         }
         BleOperation::Connect => connect(automatic, session, stack, central, server).await,
@@ -409,17 +410,17 @@ async fn connect<'a>(
     let Some(selection) = critical_section::with(|cs| *SELECTION.borrow_ref(cs)) else {
         set_link(Link::Off);
         session.retry.disconnect();
-        CONTROL.finish(automatic, Some(ControlError::Unconfigured));
+        CONTROL.with(|c| c.finish(automatic, Some(ControlError::Unconfigured)));
         return central;
     };
     let (mut central, target, _) = scan_target(central).await;
     // A suspend, or a user command overriding an automatic retry, wins.
-    if CONTROL.suspended() || (automatic && CONTROL.has_command()) {
+    if CONTROL.with(|c| c.suspended()) || (automatic && CONTROL.with(|c| c.has_command())) {
         return central;
     }
     let Some(target) = target else {
         set_link(Link::Failed);
-        CONTROL.finish(automatic, Some(ControlError::PeerNotFound));
+        CONTROL.with(|c| c.finish(automatic, Some(ControlError::PeerNotFound)));
         return central;
     };
     set_link(Link::Connecting);
@@ -430,13 +431,15 @@ async fn connect<'a>(
         disconnected();
     }
     match result {
-        Ok(()) if CONTROL.has_command() => set_link(Link::Off),
+        Ok(()) if CONTROL.with(|c| c.has_command()) => set_link(Link::Off),
         result => {
             set_link(Link::Failed);
-            CONTROL.finish(
-                automatic,
-                Some(result.err().unwrap_or(ControlError::ConnectionEnded)),
-            );
+            CONTROL.with(|c| {
+                c.finish(
+                    automatic,
+                    Some(result.err().unwrap_or(ControlError::ConnectionEnded)),
+                )
+            });
         }
     }
     central
@@ -449,7 +452,7 @@ async fn idle(session: &mut Session, peripheral: &mut BlePeripheral<'_>, server:
         if advertise_and_echo(peripheral, server).await.is_err() {
             // A GATT error can drop a live connection and only queue its
             // disconnect. Do not claim power quiescence without completion.
-            CONTROL.mark_uncertain();
+            CONTROL.with(|c| c.mark_uncertain());
             let _ = select(CONTROL.work_pending(), Timer::after_secs(1)).await;
         }
     } else if session.retry.requested() {
@@ -539,7 +542,7 @@ where
             .map_err(|_| {
                 // Cancellation can race a controller connection-complete event.
                 // The public host API cannot prove that late connection absent.
-                CONTROL.mark_uncertain();
+                CONTROL.with(|c| c.mark_uncertain());
                 ControlError::ConnectTimeout
             })?
             .map_err(|_| ControlError::ConnectFailed)?;
@@ -644,7 +647,7 @@ where
     let mut battery_due_ms = 0;
     set_link(Link::Connected);
     if report_completion {
-        CONTROL.complete(None);
+        CONTROL.with(|c| c.complete(None));
     }
     loop {
         if let Some(characteristic) = &battery {
@@ -849,9 +852,9 @@ async fn wait_disconnected(connection: &Connection<'_, DefaultPacketPool>) -> bo
     .await
     .is_err()
     {
-        CONTROL.mark_uncertain();
+        CONTROL.with(|c| c.mark_uncertain());
         set_link(Link::Failed);
-        CONTROL.stop(ControlError::DisconnectTimeout);
+        CONTROL.with(|c| c.stop(ControlError::DisconnectTimeout));
         false
     } else {
         true

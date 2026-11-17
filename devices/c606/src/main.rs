@@ -140,7 +140,6 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
                 bulk: board.bulk,
                 sound: board.sound,
                 sensors: board.sensors,
-                network: board.network,
                 server: board.server,
                 access_point: board.access_point,
                 input: board.input_observation,
@@ -365,7 +364,6 @@ async fn console(
     let mut bringup = bringup::Bringup::start(
         embassy_time::Instant::now().as_millis(),
         system.settings.wifi,
-        &mut devices.network,
         ble_selection,
         &mut devices.ble,
     );
@@ -379,7 +377,7 @@ async fn console(
         device::capabilities::io::pass_began();
         let now = embassy_time::Instant::now().as_millis();
         system.heap_min_sampled = system.heap_min_sampled.min(esp_alloc::HEAP.free());
-        bringup.poll(now, &mut devices.network, &mut devices.ble);
+        bringup.poll(now, &mut devices.ble);
         stage_ended(Stage::Bringup);
         {
             let quiet = vana_pass(
@@ -556,7 +554,7 @@ fn vana_pass(
         let light = trace
             .light
             .observe(devices.sensors.light(now), now, record, Event::Light);
-        let online = device_api::network::Network::online(&devices.network);
+        let online = device::drivers::wifi::online();
         let network_time = firmware_services::network_time::snapshot(now, 0, online);
         let network_time =
             trace

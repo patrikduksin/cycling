@@ -3,9 +3,9 @@
 //! the foreground loop; polling here lets the panel, terminal and VANA run
 //! while the radios settle. Composition chooses what is saved; this only
 //! sequences the requests.
+use c606_firmware::drivers::wifi;
 use device_api::ble_transport::Ble;
 use device_api::connectivity::Operation;
-use device_api::network::Network;
 
 /// Bound on each configuration wait, as before.
 const SETTLE_MS: u64 = 3_000;
@@ -29,7 +29,6 @@ impl Bringup {
     pub fn start(
         now: u64,
         wifi: Option<device_api::connectivity::WifiConfig>,
-        network: &mut impl Network,
         ble_selection: Option<device_api::ble_transport::Selection>,
         ble: &mut impl Ble,
     ) -> Self {
@@ -38,11 +37,10 @@ impl Bringup {
         };
         let wifi = match wifi {
             Some(configuration)
-                if network
-                    .request(device_api::connectivity::WifiOperation::Configure(Some(
-                        configuration,
-                    )))
-                    .is_ok() =>
+                if wifi::request(device_api::connectivity::WifiOperation::Configure(Some(
+                    configuration,
+                )))
+                .is_ok() =>
             {
                 settling
             }
@@ -64,12 +62,12 @@ impl Bringup {
     }
 
     /// Connect each link once its configuration completed or its wait ran out.
-    pub fn poll(&mut self, now: u64, network: &mut impl Network, ble: &mut impl Ble) {
+    pub fn poll(&mut self, now: u64, ble: &mut impl Ble) {
         if let Step::Settling { deadline } = self.wifi {
-            let operation = network.control().operation;
+            let operation = wifi::control().operation;
             if operation != Operation::Pending || now >= deadline {
                 if operation == Operation::Completed {
-                    let _ = network.request(device_api::connectivity::WifiOperation::Connect);
+                    let _ = wifi::request(device_api::connectivity::WifiOperation::Connect);
                 }
                 self.wifi = Step::Done;
             }

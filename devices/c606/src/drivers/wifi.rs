@@ -62,10 +62,10 @@ use device_api::power::PeripheralState;
 static CONTROL: Shared<WifiOperation, NetworkDiscovery> = Shared::new();
 
 pub fn power_status() -> PeripheralState {
-    CONTROL.power()
+    CONTROL.with(|c| c.power())
 }
 fn suspended() -> bool {
-    CONTROL.suspended()
+    CONTROL.with(|c| c.suspended())
 }
 pub fn power_request(suspend: bool) -> Result<(), Error> {
     CONTROL.power_request(suspend, || {
@@ -74,12 +74,13 @@ pub fn power_request(suspend: bool) -> Result<(), Error> {
     })
 }
 pub fn control() -> ControlStatus {
-    CONTROL.status()
+    CONTROL.with(|c| c.status())
 }
 pub fn discoveries() -> [Option<NetworkDiscovery>; DISCOVERIES] {
     CONTROL.discoveries()
 }
 pub fn request(operation: WifiOperation) -> Result<(), Error> {
+    let _access = crate::capabilities::power::ACCESS.enter()?;
     CONTROL.request(operation)
 }
 
@@ -218,7 +219,7 @@ pub fn access_point_state() -> device_api::server::AccessPointState {
 pub fn access_point_request(
     start: Option<device_api::server::AccessPointConfig>,
 ) -> Result<(), Error> {
-    if start.is_some() && (suspended() || CONTROL.power() != PeripheralState::Running) {
+    if start.is_some() && (suspended() || CONTROL.with(|c| c.power()) != PeripheralState::Running) {
         return Err(Error::Unavailable);
     }
     if access_point_state() == device_api::server::AccessPointState::Failed {
@@ -332,7 +333,7 @@ pub async fn initialize(peripheral: WIFI<'static>, spawner: Spawner) -> Option<S
         crate::drivers::psram::place(AP_RESOURCES)?,
         seed.rotate_left(17) ^ u64::from(rng.random()),
     );
-    CONTROL.set_ready();
+    CONTROL.with(|c| c.set_ready());
     use crate::activity::{Task, spawn};
     spawn(
         spawner,
@@ -368,7 +369,7 @@ async fn next_command() -> Option<(WifiOperation, bool)> {
         {
             return None;
         }
-        if let Some(operation) = CONTROL.take_command() {
+        if let Some(operation) = CONTROL.with(|c| c.take_command()) {
             return Some((operation, false));
         }
         if RECOVERY_REQUESTED.swap(false, Ordering::AcqRel)
@@ -425,7 +426,7 @@ async fn connection(mut controller: WifiController<'static>) {
             }
             continue;
         }
-        if CONTROL.complete_resume() == PeripheralState::Failed {
+        if CONTROL.with(|c| c.complete_resume()) == PeripheralState::Failed {
             CONTROL.changed().await;
             continue;
         }
@@ -485,7 +486,7 @@ async fn start_access_point(
             Ok(Ok(_))
         )
     {
-        CONTROL.mark_uncertain();
+        CONTROL.with(|c| c.mark_uncertain());
         Link::Failed.store();
         ap_store(AccessPointState::Failed);
         log::warn!(target: "wifi", "CYCLING_AP start_failed kind=disconnect");
@@ -551,9 +552,10 @@ async fn quiesce(controller: &mut WifiController<'static>) {
         true
     };
     if !disconnected {
-        CONTROL.mark_uncertain();
+        CONTROL.with(|c| c.mark_uncertain());
     }
-    let state = CONTROL.suspend_outcome(disconnected && !controller.is_connected());
+    let quiet = disconnected && !controller.is_connected();
+    let state = CONTROL.with(|c| c.suspend_outcome(quiet));
     if state == PeripheralState::Quiescent {
         Link::Unconfigured.store();
     } else {
@@ -561,7 +563,7 @@ async fn quiesce(controller: &mut WifiController<'static>) {
     }
     // esp-radio exposes no public stop API. This confirms station inactivity,
     // not that the Wi-Fi controller or RF domain has been powered off.
-    CONTROL.power_complete(true, state);
+    CONTROL.with(|c| c.power_complete(true, state));
 }
 
 /// Wait for a command, a reconnect deadline or the loss of the association.
@@ -628,7 +630,7 @@ async fn perform(
         }
         WifiOperation::Disconnect => {
             if leave_association(controller, automatic).await {
-                CONTROL.finish(automatic, None);
+                CONTROL.with(|c| c.finish(automatic, None));
             }
         }
         WifiOperation::Connect => {
@@ -658,13 +660,13 @@ async fn scan(controller: &mut WifiController<'static>, automatic: bool) {
                     }
                 }
             });
-            CONTROL.finish(automatic, None);
+            CONTROL.with(|c| c.finish(automatic, None));
         }
         Err(_) => {
-            CONTROL.mark_uncertain();
-            CONTROL.finish(automatic, Some(ControlError::ScanTimeout));
+            CONTROL.with(|c| c.mark_uncertain());
+            CONTROL.with(|c| c.finish(automatic, Some(ControlError::ScanTimeout)));
         }
-        Ok(Err(_)) => CONTROL.finish(automatic, Some(ControlError::ScanFailed)),
+        Ok(Err(_)) => CONTROL.with(|c| c.finish(automatic, Some(ControlError::ScanFailed))),
     }
 }
 
@@ -679,9 +681,9 @@ async fn leave_association(controller: &mut WifiController<'static>, automatic: 
             with_timeout(Duration::from_secs(5), controller.disconnect_async()).await,
             Ok(Ok(_))
         ) {
-            CONTROL.mark_uncertain();
+            CONTROL.with(|c| c.mark_uncertain());
             Link::Failed.store();
-            CONTROL.finish(automatic, Some(ControlError::DisconnectFailed));
+            CONTROL.with(|c| c.finish(automatic, Some(ControlError::DisconnectFailed)));
             return false;
         }
     }
@@ -699,18 +701,18 @@ fn configure(
             .set_config(&Config::Station(station_config(config)))
             .is_err()
         {
-            CONTROL.finish(automatic, Some(ControlError::ConfigurationFailed));
+            CONTROL.with(|c| c.finish(automatic, Some(ControlError::ConfigurationFailed)));
             return;
         }
     }
     critical_section::with(|cs| *CONFIGURATION.borrow_ref_mut(cs) = config);
-    CONTROL.finish(automatic, None);
+    CONTROL.with(|c| c.finish(automatic, None));
 }
 
 async fn connect(controller: &mut WifiController<'static>, retry: &mut Reconnect, automatic: bool) {
     if critical_section::with(|cs| CONFIGURATION.borrow_ref(cs).is_none()) {
         retry.disconnect();
-        CONTROL.finish(automatic, Some(ControlError::Unconfigured));
+        CONTROL.with(|c| c.finish(automatic, Some(ControlError::Unconfigured)));
         return;
     }
     Link::Connecting.store();
@@ -720,13 +722,13 @@ async fn connect(controller: &mut WifiController<'static>, retry: &mut Reconnect
             ASSOCIATIONS.fetch_add(1, Ordering::Relaxed);
             GENERATION.fetch_add(1, Ordering::AcqRel);
             Link::Associated.store();
-            CONTROL.finish(automatic, None);
+            CONTROL.with(|c| c.finish(automatic, None));
         }
         result => {
             // disconnect_async refuses a connecting station, so a timeout
             // cannot prove that the attempt has stopped. Keep power blocked.
             if result.is_err() {
-                CONTROL.mark_uncertain();
+                CONTROL.with(|c| c.mark_uncertain());
             }
             if controller.is_connected()
                 && !matches!(
@@ -734,17 +736,19 @@ async fn connect(controller: &mut WifiController<'static>, retry: &mut Reconnect
                     Ok(Ok(_))
                 )
             {
-                CONTROL.mark_uncertain();
+                CONTROL.with(|c| c.mark_uncertain());
             }
             Link::Failed.store();
-            CONTROL.finish(
-                automatic,
-                Some(if result.is_err() {
-                    ControlError::ConnectTimeout
-                } else {
-                    ControlError::ConnectFailed
-                }),
-            );
+            CONTROL.with(|c| {
+                c.finish(
+                    automatic,
+                    Some(if result.is_err() {
+                        ControlError::ConnectTimeout
+                    } else {
+                        ControlError::ConnectFailed
+                    }),
+                )
+            });
         }
     }
 }

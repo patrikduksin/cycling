@@ -598,17 +598,18 @@ impl Upload {
     /// Points of the stored course, read as a restart would.
     fn stored(&mut self) -> Vec<crate::ride::course::Point> {
         let mut course = std::boxed::Box::new(crate::ride::course::Course::empty());
-        crate::ride::course::load(&mut self.files, &mut course).unwrap();
+        crate::kept::course::load(&mut self.files, &mut course).unwrap();
         course.points().to_vec()
     }
 
     /// The turns stored beside the stored course, if its own.
     fn stored_turns(&mut self) -> Option<usize> {
-        use crate::ride::course::{self, stored};
+        use crate::kept::course::{load, load_turns};
+        use crate::ride::course;
         let mut course = std::boxed::Box::new(course::Course::empty());
-        course::load(&mut self.files, &mut course).unwrap();
+        load(&mut self.files, &mut course).unwrap();
         let mut turns = std::vec![crate::app::Turn::default(); crate::app::COURSE_TURNS];
-        let found = stored::load(&mut self.files, course::key(&course), &mut turns).unwrap();
+        let found = load_turns(&mut self.files, course::key(&course), &mut turns).unwrap();
         found.map(|found| found.count)
     }
 }

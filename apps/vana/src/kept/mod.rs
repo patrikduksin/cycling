@@ -1,6 +1,7 @@
 //! What VANA keeps on the FILES volume beside the ride journals: the rider's
 //! bests, each saved ride's facts and the rides the rider hid.
 pub mod bests;
+pub mod course;
 pub mod deleted;
 pub mod facts;
 

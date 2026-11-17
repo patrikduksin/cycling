@@ -23,7 +23,8 @@
 
 use super::Runtime;
 use super::pace::Touched;
-use crate::ride::course::{self, gpx};
+use crate::kept::{self, course::Store};
+use crate::ride::course::gpx;
 use crate::ride::fit::{self, Export, Flow, Plan, Refusal};
 use crate::ride::index::{Activity, Index};
 use crate::ride::journal::Read;
@@ -892,7 +893,7 @@ impl Runtime {
         };
         // Until the upload is stored the course in memory is not the stored
         // one; if it fails, the stored one is read back.
-        track.kept.store = super::course::Store::Unread;
+        track.kept.store = Store::Unread;
         let mut gpx = gpx::Gpx::new();
         let (course, mut finding) = track.upload();
         gpx.start(course, &mut finding);
@@ -960,9 +961,9 @@ impl Runtime {
                 }),
             );
         }
-        match course::save(bulk, track.course) {
+        match kept::course::save(bulk, track.course) {
             Ok(()) => {
-                track.kept.store = super::course::Store::Kept;
+                track.kept.store = Store::Kept;
                 track.save_turns(bulk, found);
                 track.course_changed(bulk);
                 log::info!(
@@ -977,8 +978,8 @@ impl Runtime {
             Err(error) => {
                 log::warn!(target: "phone", "VANA_PHONE course_not_saved error={error:?}");
                 let (status, json) = match error {
-                    crate::kept::StoreError::Full => (507, r#"{"error":"full"}"#),
-                    crate::kept::StoreError::Media => (503, r#"{"error":"storage"}"#),
+                    kept::StoreError::Full => (507, r#"{"error":"full"}"#),
+                    kept::StoreError::Media => (503, r#"{"error":"storage"}"#),
                     _ => (
                         503,
                         r#"{"error":"unavailable","detail":"no formatted memory card to keep a course on"}"#,
@@ -993,10 +994,10 @@ impl Runtime {
         let Some(track) = self.track.as_deref_mut() else {
             return self.reply(id, 503, Some(r#"{"error":"memory"}"#));
         };
-        match course::delete(bulk) {
+        match kept::course::delete(bulk) {
             Ok(()) => {
                 track.course.clear();
-                track.kept.store = super::course::Store::Kept;
+                track.kept.store = Store::Kept;
                 track.course_changed(bulk);
                 log::info!(target: "phone", "VANA_PHONE course_cleared");
                 self.display.redraw();

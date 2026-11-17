@@ -1,82 +1,28 @@
 //! An upload empties the course while it streams in, so one that fails or is
 //! cut off reads the stored course back.
 use super::Runtime;
-use crate::kept::{RETRY_MS, StoreError};
-use crate::ride::course::{self, Course};
+use crate::kept::course::Seen;
+use crate::ride::course::Course;
 use device_api::bulk::ReadWrite;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum Store {
-    /// Not read yet, or the course in memory is not the stored one.
-    #[default]
-    Unread,
-    /// The course in memory is the stored one, or there is none.
-    Kept,
-    /// No card, no FILES volume or no formatted file store.
-    Unavailable,
-    /// A file is there that does not decode; it stays until replaced.
-    Damaged,
-}
-
-impl Store {
-    pub(super) const fn name(self) -> &'static str {
-        match self {
-            Self::Unread => "reading",
-            Self::Kept => "kept",
-            Self::Unavailable => "unavailable",
-            Self::Damaged => "damaged",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Kept {
-    pub(super) store: Store,
-    retry_at: u64,
-    /// The bulk medium was usable at the last service.
-    card_ready: bool,
-}
-
-impl Kept {
-    /// The result of reading or writing the stored course.
-    pub(super) fn took(&mut self, result: Result<(), StoreError>, now: u64) {
-        self.store = match result {
-            Ok(()) => Store::Kept,
-            Err(StoreError::Media) => {
-                self.retry_at = now.saturating_add(RETRY_MS);
-                Store::Unread
-            }
-            Err(StoreError::Damaged) => Store::Damaged,
-            // The course never reads `Foreign`.
-            Err(StoreError::Unavailable | StoreError::Full | StoreError::Foreign) => {
-                Store::Unavailable
-            }
-        };
-    }
-}
 
 impl Runtime {
     /// Read the stored course when it is unread, unless an upload is
     /// replacing it.
     pub(super) fn service_course(&mut self, media: &mut impl ReadWrite, now: u64) {
-        let ready = self.ride.bulk.status().usable();
-        let uploading = self.phone_uploading();
+        let seen = Seen {
+            ready: self.ride.bulk.status().usable(),
+            uploading: self.phone_uploading(),
+        };
         let Some(track) = self.track.as_deref_mut() else {
             return;
         };
-        let kept = &mut track.kept;
-        if ready && !kept.card_ready && kept.store == Store::Unavailable {
-            kept.store = Store::Unread;
-        }
-        kept.card_ready = ready;
-        if kept.store != Store::Unread || uploading || now < kept.retry_at {
+        if !track
+            .kept
+            .service(seen, media, &mut *track.course, now)
+            .read
+        {
             return;
         }
-        let result = course::load(media, track.course);
-        if let Err(error) = result {
-            log::warn!(target: "sdk.course", "load_failed error={error:?}");
-        }
-        track.kept.took(result, now);
         track.course_changed(media);
         self.display.redraw();
     }

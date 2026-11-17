@@ -1,14 +1,16 @@
 use super::*;
+use crate::kept::course::{delete, load, load_turns, save as save_course, save_turns};
 use crate::ride::course::tests::{at as point_at, road};
 use crate::ride::course::turns::tests::{
     arc, bends, block, build, curved_ring, extended, hairpin, join, path, ring,
 };
-use crate::ride::course::{Course, key, save as save_course};
+use crate::ride::course::{Course, key};
 use crate::ride::geo::{east_per_e7, metres};
 use crate::testing::Rng;
 use crate::workout::library::tests::{Region, formatted, put};
+use device_api::bulk::ReadWrite;
 use device_api::bulk::{Error as MediaError, OwnedInfo};
-use firmware_services::volume;
+use firmware_services::{files, volume};
 use libm::fabsf;
 use std::boxed::Box;
 use std::vec;
@@ -238,9 +240,9 @@ impl ReadWrite for Cut {
 /// they are stored and its own.
 fn reread(region: &mut Region) -> (Box<Course>, Option<Vec<[u8; RECORD]>>) {
     let mut course = Box::new(Course::empty());
-    crate::ride::course::load(region, &mut course).unwrap();
+    load(region, &mut course).unwrap();
     let mut turns = vec![Turn::default(); TURNS];
-    let stored = load(region, key(&course), &mut turns).unwrap();
+    let stored = load_turns(region, key(&course), &mut turns).unwrap();
     (course, stored.map(|stored| records(&turns[..stored.count])))
 }
 
@@ -253,7 +255,7 @@ fn a_cut_at_any_write_never_gives_a_course_another_courses_turns() {
     let (new, new_turns) = uploaded(&extended(&hairpin(30.0, 5.0), 3_000.0));
     let mut region = formatted();
     save_course(&mut region, &old).unwrap();
-    save(&mut region, key(&old), &old_turns, false).unwrap();
+    save_turns(&mut region, key(&old), &old_turns, false).unwrap();
     let mut seen = std::collections::BTreeSet::new();
     for writes in 0.. {
         let mut media = Cut {
@@ -261,7 +263,7 @@ fn a_cut_at_any_write_never_gives_a_course_another_courses_turns() {
             writes,
         };
         let done = save_course(&mut media, &new).is_ok()
-            && save(&mut media, key(&new), &new_turns, false).is_ok();
+            && save_turns(&mut media, key(&new), &new_turns, false).is_ok();
         let (course, turns) = reread(&mut media.region);
         let is_new = course.points() == new.points();
         assert!(is_new || course.points() == old.points(), "{writes} writes");
@@ -285,7 +287,12 @@ fn turns_file(region: &mut Region) -> Option<files::Entry> {
     let mut sector = [0; SECTOR_SIZE];
     let mut store = volume::open(region, &volume::FILES, &mut sector).unwrap();
     let dir = files::mount(&mut store, &mut sector).unwrap();
-    dir.find(&mut store, &name(), &mut sector).unwrap()
+    dir.find(
+        &mut store,
+        &files::Name::new("course-turns.dat").unwrap(),
+        &mut sector,
+    )
+    .unwrap()
 }
 
 /// A course older firmware stored has no turns beside it, and one it
@@ -297,14 +304,14 @@ fn a_course_without_its_own_turns_reads_none() {
     let mut region = formatted();
     save_course(&mut region, &first).unwrap();
     assert_eq!(reread(&mut region).1, None);
-    save(&mut region, key(&first), &first_turns, false).unwrap();
+    save_turns(&mut region, key(&first), &first_turns, false).unwrap();
     assert_eq!(reread(&mut region).1, Some(records(&first_turns)));
     let (second, _) = uploaded(&extended(&hairpin(30.0, 5.0), 3_000.0));
     save_course(&mut region, &second).unwrap();
     assert_eq!(reread(&mut region).1, None);
-    crate::ride::course::delete(&mut region).unwrap();
+    delete(&mut region).unwrap();
     assert_eq!(turns_file(&mut region), None);
-    crate::ride::course::delete(&mut region).unwrap();
+    delete(&mut region).unwrap();
 }
 
 #[test]
@@ -317,8 +324,8 @@ fn a_damaged_turns_file_reads_none() {
         let mut damaged = bytes.clone();
         damaged[at] ^= 0x10;
         let mut region = formatted();
-        put(&mut region, FILE, &damaged);
-        let read = load(&mut region, key(&course), &mut list);
+        put(&mut region, "course-turns.dat", &damaged);
+        let read = load_turns(&mut region, key(&course), &mut list);
         assert_eq!(read, Ok(None), "byte {at}");
     }
     for length in [0, 1, HEADER, bytes.len() - 1] {

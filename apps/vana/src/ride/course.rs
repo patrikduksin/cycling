@@ -31,13 +31,11 @@
 //!
 //! A file of another version or shape reads as damaged, never as part of a
 //! course, and is left alone until an upload replaces it.
-use crate::kept::StoreError;
 use crate::ride::geo::{M_PER_E7, east_per_e7, metres};
 use crate::ride::thin;
-use device_api::bulk::{ReadWrite, SECTOR_SIZE};
+use device_api::bulk::SECTOR_SIZE;
 use firmware_services::checksum::Crc32;
 use firmware_services::le::{get_u16, get_u32, put_u16, put_u32};
-use firmware_services::{files, volume};
 use libm::sqrtf;
 
 pub mod follow;
@@ -58,7 +56,6 @@ const TOLERANCE_M: f32 = 4.0;
 const LAT_MAX_E7: u32 = 900_000_000;
 const LON_MAX_E7: u32 = 1_800_000_000;
 
-const FILE: &str = "course.dat";
 const MAGIC: &[u8; 4] = b"VCRS";
 pub const VERSION: u8 = 2;
 const HEADER: usize = 34;
@@ -278,16 +275,6 @@ pub(crate) fn along_m(points: &[Point]) -> impl Iterator<Item = f32> + '_ {
     })
 }
 
-fn error(error: files::Error) -> StoreError {
-    use device_api::bulk::Error as Media;
-    match error {
-        files::Error::Media(Media::Failed) | files::Error::Stale => StoreError::Media,
-        files::Error::Full | files::Error::TooLarge => StoreError::Full,
-        files::Error::Mismatch => StoreError::Damaged,
-        _ => StoreError::Unavailable,
-    }
-}
-
 /// Every byte of `course`'s file, in order, in a few pieces.
 pub fn encode(course: &Course, mut put: impl FnMut(&[u8])) {
     let sum = sealed(course, &mut put);
@@ -401,117 +388,6 @@ fn decode_into<E>(
     }
     course.len = count as u32;
     Ok(())
-}
-
-fn open<'a, M: ReadWrite>(
-    media: &'a mut M,
-    sector: &mut files::Sector,
-) -> Result<volume::Volume<'a, M>, StoreError> {
-    volume::open(media, &volume::FILES, sector).map_err(|error| match error {
-        volume::Error::Media(device_api::bulk::Error::Failed) => StoreError::Media,
-        _ => StoreError::Unavailable,
-    })
-}
-
-fn name() -> files::Name {
-    files::Name::new(FILE).expect("a valid file name")
-}
-
-/// The stored course into `course`; empty when the store has none.
-pub fn load(media: &mut impl ReadWrite, course: &mut Course) -> Result<(), StoreError> {
-    course.clear();
-    let mut sector = [0; SECTOR_SIZE];
-    let mut store = open(media, &mut sector)?;
-    let dir = files::mount(&mut store, &mut sector).map_err(error)?;
-    let Some(entry) = dir.find(&mut store, &name(), &mut sector).map_err(error)? else {
-        return Ok(());
-    };
-    let read = |offset: u32, out: &mut [u8]| -> Result<(), files::Error> {
-        let mut sector = [0; SECTOR_SIZE];
-        let n = dir.read(&mut store, &entry, offset, out, &mut sector)?;
-        if n == out.len() {
-            Ok(())
-        } else {
-            Err(files::Error::Range)
-        }
-    };
-    match decode(entry.length, read, course) {
-        Ok(()) => Ok(()),
-        Err(DecodeError::Read(files::Error::Range)) | Err(DecodeError::Damaged) => {
-            Err(StoreError::Damaged)
-        }
-        Err(DecodeError::Read(read)) => Err(error(read)),
-    }
-}
-
-/// Store `course`, replacing the file there in one atomic commit. A store
-/// the host has not formatted is not formatted here.
-pub fn save(media: &mut impl ReadWrite, course: &Course) -> Result<(), StoreError> {
-    write(media, &name(), |put| encode(course, put))
-}
-
-/// Write the file `encode` gives, twice: once for its length and CRC, then
-/// to the store.
-fn write(
-    media: &mut impl ReadWrite,
-    name: &files::Name,
-    encode: impl Fn(&mut dyn FnMut(&[u8])),
-) -> Result<(), StoreError> {
-    let mut length = 0u32;
-    let mut crc = Crc32::new();
-    encode(&mut |bytes| {
-        length += bytes.len() as u32;
-        crc = crc.update(bytes);
-    });
-    let mut sector = [0; SECTOR_SIZE];
-    let mut store = open(media, &mut sector)?;
-    let dir = files::mount(&mut store, &mut sector).map_err(error)?;
-    let mut writer = dir
-        .begin(&mut store, name, length, &mut sector)
-        .map_err(error)?;
-    // Whole sectors to the writer, and the short last one at the end.
-    let mut held = [0u8; SECTOR_SIZE];
-    let mut filled = 0;
-    let mut failed = None;
-    encode(&mut |mut bytes| {
-        while !bytes.is_empty() && failed.is_none() {
-            let n = bytes.len().min(SECTOR_SIZE - filled);
-            held[filled..filled + n].copy_from_slice(&bytes[..n]);
-            filled += n;
-            bytes = &bytes[n..];
-            if filled == SECTOR_SIZE {
-                failed = writer.write(&mut store, &held).err();
-                filled = 0;
-            }
-        }
-    });
-    if let Some(failed) = failed {
-        return Err(error(failed));
-    }
-    writer.write(&mut store, &held[..filled]).map_err(error)?;
-    writer
-        .commit(&mut store, crc.finish(), &mut sector)
-        .map_err(error)?;
-    Ok(())
-}
-
-/// Remove the course, and then the turns stored beside it. A cut between
-/// leaves turns that name no course.
-pub fn delete(media: &mut impl ReadWrite) -> Result<(), StoreError> {
-    remove(media, &name())?;
-    if let Err(error) = stored::delete(media) {
-        log::warn!(target: "sdk.course", "turns_not_deleted error={error:?}");
-    }
-    Ok(())
-}
-
-fn remove(media: &mut impl ReadWrite, name: &files::Name) -> Result<(), StoreError> {
-    let mut sector = [0; SECTOR_SIZE];
-    let mut store = open(media, &mut sector)?;
-    match files::delete(&mut store, name, &mut sector) {
-        Ok(()) | Err(files::Error::NotFound) => Ok(()),
-        Err(failed) => Err(error(failed)),
-    }
 }
 
 #[cfg(test)]

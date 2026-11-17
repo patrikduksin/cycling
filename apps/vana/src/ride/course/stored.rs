@@ -45,16 +45,13 @@
 //! U-turn) and flags (1 two corners, 2 cornered). A file of another version
 //! or shape reads as one that does not decode.
 use super::turns::{RECORD, Scan, Spurs, TURNS, Turn, starts_at};
-use super::{Follow, POINTS, Point, error};
-use crate::kept::StoreError;
+use super::{Follow, POINTS, Point};
 use crate::ride::geo::{distance, east_per_e7, metres, mm};
-use device_api::bulk::{ReadWrite, SECTOR_SIZE};
+use device_api::bulk::SECTOR_SIZE;
 use firmware_services::checksum::Crc32;
-use firmware_services::files;
 use firmware_services::le::{get_u16, get_u32, put_u16, put_u32};
 use libm::sqrtf;
 
-const FILE: &str = "course-turns.dat";
 const MAGIC: &[u8; 4] = b"VTRN";
 pub const VERSION: u8 = 2;
 const HEADER: usize = 16;
@@ -611,10 +608,6 @@ impl Follow for Finding<'_> {
     }
 }
 
-fn name() -> files::Name {
-    files::Name::new(FILE).expect("a valid file name")
-}
-
 /// Every byte of the file for `turns` of the course `key`, in a few pieces.
 pub fn encode(key: u32, turns: &[Turn], full: bool, mut put: impl FnMut(&[u8])) {
     let turns = &turns[..turns.len().min(TURNS)];
@@ -705,51 +698,6 @@ pub fn decode<E>(
     let mut sum = [0u8; 4];
     read(length - 4, &mut sum)?;
     Ok((valid && crc.finish().to_le_bytes() == sum).then_some(stored))
-}
-
-/// The turns stored for the course `key` into `turns`: how many, or `None`
-/// when there are none of this course's that decode.
-pub fn load(
-    media: &mut impl ReadWrite,
-    key: u32,
-    turns: &mut [Turn],
-) -> Result<Option<Stored>, StoreError> {
-    let mut sector = [0; SECTOR_SIZE];
-    let mut store = super::open(media, &mut sector)?;
-    let dir = files::mount(&mut store, &mut sector).map_err(error)?;
-    let Some(entry) = dir.find(&mut store, &name(), &mut sector).map_err(error)? else {
-        return Ok(None);
-    };
-    let read = |offset: u32, out: &mut [u8]| -> Result<(), files::Error> {
-        let mut sector = [0; SECTOR_SIZE];
-        let n = dir.read(&mut store, &entry, offset, out, &mut sector)?;
-        if n == out.len() {
-            Ok(())
-        } else {
-            Err(files::Error::Range)
-        }
-    };
-    match decode(entry.length, read, turns) {
-        Ok(stored) => Ok(stored.filter(|stored| stored.key == key)),
-        Err(files::Error::Range) => Ok(None),
-        Err(failed) => Err(error(failed)),
-    }
-}
-
-/// Store `turns` of the course `key`, replacing the file there in one
-/// atomic commit.
-pub fn save(
-    media: &mut impl ReadWrite,
-    key: u32,
-    turns: &[Turn],
-    full: bool,
-) -> Result<(), StoreError> {
-    super::write(media, &name(), |put| encode(key, turns, full, put))
-}
-
-/// Remove the stored turns.
-pub fn delete(media: &mut impl ReadWrite) -> Result<(), StoreError> {
-    super::remove(media, &name())
 }
 
 #[cfg(test)]

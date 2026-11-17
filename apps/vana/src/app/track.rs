@@ -1,6 +1,7 @@
 use super::Runtime;
 use super::cues::Cue;
 use super::recording::{Outing, Ride};
+use crate::kept::course::{Kept, delete_turns, load_turns, save_turns};
 use crate::ride::breadcrumb::rebuild::Rebuild;
 use crate::ride::breadcrumb::{Breadcrumb, Fix};
 use crate::ride::course::follow::Follower;
@@ -99,7 +100,7 @@ pub struct RideTrack {
     pub(super) course: &'static mut Course,
     /// Finds the turns of a course while it uploads.
     finder: &'static mut Finder,
-    pub(super) kept: super::course::Kept,
+    pub(super) kept: Kept,
     resume: Resume,
     pub(super) work: MapWork,
     pub(super) since_attached: MapWork,
@@ -124,7 +125,7 @@ impl RideTrack {
             zoom: MapZoom::default(),
             course,
             finder,
-            kept: super::course::Kept::default(),
+            kept: Kept::default(),
             resume: Resume::None,
             work: MapWork::default(),
             since_attached: MapWork::default(),
@@ -186,7 +187,7 @@ impl RideTrack {
         self.follower
             .set_course(course.points(), self.breadcrumb.frame());
         self.follower.take_turns(course.points(), |turns| {
-            match stored::load(media, course::key(course), turns) {
+            match load_turns(media, course::key(course), turns) {
                 Ok(Some(stored)) => {
                     log::info!(
                         target: "sdk.course",
@@ -228,9 +229,9 @@ impl RideTrack {
                     found.reach
                 );
                 let turns = &self.follower.turn_room()[..found.count];
-                stored::save(media, key, turns, found.full)
+                save_turns(media, key, turns, found.full)
             }
-            None => stored::delete(media),
+            None => delete_turns(media),
         };
         if let Err(error) = result {
             log::warn!(target: "phone", "VANA_PHONE course_turns_not_saved error={error:?}");

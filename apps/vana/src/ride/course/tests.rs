@@ -1,7 +1,10 @@
 use super::*;
+use crate::kept::StoreError;
+use crate::kept::course::{delete, load, save};
 use crate::ride::thin::off_segment;
 use crate::testing::Rng;
 use crate::workout::library::tests::{Region, formatted, put};
+use firmware_services::{files, volume};
 use std::boxed::Box;
 use std::vec::Vec;
 

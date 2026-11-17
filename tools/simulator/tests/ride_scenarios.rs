@@ -20,6 +20,7 @@ use vana::screens::chrome::{AMBER, GREEN, RED, SECONDARY, WHITE, ZONES};
 const HEART: u16 = 4242;
 const POWER: u16 = 1234;
 const SPEED: u16 = 777;
+const SPEED_ONLY: u16 = 778;
 const RADAR: u16 = 31;
 
 fn rider() -> Sim {
@@ -2425,7 +2426,7 @@ fn a_manually_paused_rider_who_rides_on_hears_a_reminder_every_half_minute() {
 }
 
 #[test]
-fn a_speed_sensor_dropout_does_not_pause_the_ride() {
+fn a_speed_sensor_dropout_leaves_auto_pause_to_gps() {
     let mut sim = rider();
     sim.pair(&["SPEED/CAD"]);
     sim.start_ride();
@@ -2436,9 +2437,45 @@ fn a_speed_sensor_dropout_does_not_pause_the_ride() {
     assert!(recording(&mut sim));
     sim.expect_no_text("AUTO PAUSED");
     sim.checkpoint("speed sensor lost, still recording");
+    let km = reading(&sim, "KM");
+    sim.ride_at(0.0, 0.0, 0.0, 0.0);
+    sim.wait_for("AUTO PAUSED", seconds(20)).unwrap();
+    sim.advance(seconds(30));
+    sim.expect_text("AUTO PAUSED");
+    sim.ride_at(36.0, 0.0, 0.0, 0.0);
+    let latency = sim.wait_for("AUTO RESUME", seconds(15)).unwrap();
+    assert!(latency <= seconds(5), "auto-resume took {latency} ms");
+    sim.advance(minutes(1));
+    assert!(recording(&mut sim));
+    expect_near(&mut sim, "KM/H", 36.0, 0.2);
+    let ridden = reading(&sim, "KM") - km;
+    assert!(
+        (ridden - 0.6).abs() <= 0.05,
+        "{ridden:.2} km after resuming"
+    );
     sim.set_present(device_type::SPEED_CADENCE, SPEED, true);
     sim.advance(seconds(10));
     assert!(recording(&mut sim));
+}
+
+#[test]
+fn a_silent_paired_speed_sensor_leaves_auto_pause_to_gps() {
+    let mut sim = rider();
+    sim.ant_sensor(device_type::SPEED, SPEED_ONLY);
+    sim.pair(&["SPEED"]);
+    sim.set_present(device_type::SPEED, SPEED_ONLY, false);
+    sim.advance(seconds(10));
+    sim.start_ride();
+    sim.wait_for("AUTO PAUSED", seconds(15)).unwrap();
+    sim.advance(seconds(30));
+    sim.expect_text("AUTO PAUSED");
+    sim.ride_at(36.0, 0.0, 0.0, 0.0);
+    let latency = sim.wait_for("AUTO RESUME", seconds(15)).unwrap();
+    assert!(latency <= seconds(5), "auto-resume took {latency} ms");
+    sim.advance(minutes(1));
+    assert!(recording(&mut sim));
+    expect_near(&mut sim, "KM/H", 36.0, 0.2);
+    expect_near(&mut sim, "KM", 0.6, 0.05);
 }
 
 #[test]

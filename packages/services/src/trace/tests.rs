@@ -1,6 +1,7 @@
 use super::*;
 use device_api::ant::{Admission, Discovery, Identity, LinkState, OperationId, ScanState};
 use device_api::gps::FixState;
+use device_api::input::{Button, Point};
 use std::string::{String, ToString};
 use std::vec::Vec;
 
@@ -763,45 +764,56 @@ fn vitals_are_due_every_five_seconds_and_every_minute_in_dark_standby() {
 }
 
 #[test]
-fn records_keep_their_fields() {
-    let fields: Vec<String> = RECORD_FIELDS
-        .iter()
-        .map(|(record, fields)| std::format!("{record}: {}", fields.join(" ")))
-        .collect();
-    let pinned = "\
-Point: x y
-Edge: sequence received_ms input
-ant::Identity: device_type device_number transmission_type
-ant::Packet: identity data received_ms generation loss_count
-ant::Snapshot: scanning link selected generation packets dropped_packets discovery_overflows transport_losses tx_failures age_ms stale
-ant::Discovery: identity rssi seen_ms
-ant::ScanSnapshot: state generation discovery_overflows
-ant::Target: identity generation
-ant::SendObservation: id target stage
-ble_transport::Snapshot: link connections disconnections notifications dropped scan_reports
-ble_transport::BatteryLevel: connection raw received_ms
-device_api::gps::Snapshot: state identity latitude_e7 longitude_e7 satellites hdop_tenths speed_mm_s epoch_ms utc utc_ms age_ms bytes valid_sentences checksum_errors parse_errors overflows line_overflows long_proprietary uart_errors binary_bytes non_nmea_frames
-positioning::Snapshot: gps transport sequence received_at_ms fault_at_ms
-sensors::Pressure: pressure_centi_pa temperature_centi_c
-sensors::Motion: axes
-sensors::Identity: fields
-sensors::Snapshot: pressure motion identity reports invalid_reports losses
-InputSnapshot: battery power button_counts touch_available touch_errors companion_valid companion_bad_crc uart_errors input_lost
-crate::network_time::Snapshot: unix_seconds millis local_minutes age_ms status
-AntRadio<'a>: availability capabilities scanning scan
-ServerRequest<'a>: id method path query session gzip body
-Reach: access_point station
-sound::Snapshot: state pattern requested_ms submitted_ms until_ms
-power::Status: sequence operation state at_ms prepare_at_ms failure ready
-StorageFault: medium attempt op at landed error
-AntCapabilities<'a>: supported_types connection_capacity one_peer_per_type concurrent_scan acknowledged_send radio_delivery_feedback burst max_pending_sends
-FrameTime: frames mean_us
-Health: simulated heap_free heap_min psram_free frame_max_us pass_max_us gps_sentences gps_overflows gps_uart_errors companion_errors card_write_max_us card_recoveries spool_used spool_size wifi wifi_rssi ble_rssi
-Consumers: cpu_mhz backlight frames gnss wifi access_point ble ant ant_scanning ant_channels slept_ms
-Activity: simulated window_ms wakes awake_us main_us radio_us idle_us switches ticks hooks_us consumers";
-    assert_eq!(
-        fields.join("\n"),
-        pinned,
-        "a record grew or changed: give new fields a new tag"
-    );
+fn committed_traces_reencode_byte_for_byte() {
+    let traces: [(&str, &[u8]); 2] = [
+        (
+            "laps-and-a-menu",
+            include_bytes!("../../../../tools/simulator/tests/traces/laps-and-a-menu.trace"),
+        ),
+        (
+            "power-dropout-after-descent",
+            include_bytes!(
+                "../../../../tools/simulator/tests/traces/power-dropout-after-descent.trace"
+            ),
+        ),
+    ];
+    for (name, bytes) in traces {
+        let (header, mut all) = decode(bytes).unwrap();
+        assert!(all.by_ref().count() > 1000, "{name} has events");
+        assert_eq!(all.end(), Some(End::Complete), "{name} ends whole");
+        let mut out = std::vec![0u8; MAX_BLOCK];
+        let len = encode_header(&header, &mut out).unwrap();
+        out.truncate(len);
+        let (_, mut start) = block(bytes, 0).unwrap();
+        while start < bytes.len() {
+            let mut events = Events::resume(
+                bytes,
+                Cursor {
+                    block: start,
+                    at: 0,
+                    now: 0,
+                    end: None,
+                    checked: None,
+                },
+            );
+            assert_eq!(
+                events.step(),
+                Ok(None),
+                "{name}: a block opens with its clock"
+            );
+            let mut encoder = Encoder::new(std::vec![0u8; MAX_BLOCK]);
+            encoder.now = events.cursor.now;
+            encoder.restart();
+            loop {
+                match events.step() {
+                    Ok(Some(event)) => encoder.push(&event).unwrap(),
+                    Ok(None) | Err(End::Complete) => break,
+                    Err(end) => panic!("{name}: block at {start} ends {}", end.name()),
+                }
+            }
+            out.extend_from_slice(encoder.sealed());
+            start = block(bytes, start).unwrap().1;
+        }
+        assert!(out == bytes, "{name} re-encodes to other bytes");
+    }
 }

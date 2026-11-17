@@ -141,6 +141,13 @@ def manifest_with(tmp_path, change):
         (lambda t: t.replace('role = "act"', 'role = "back"'), 'exactly one button'),
         (lambda t: t.replace('{ id = 2, role = "act" }', '{ id = 2 }'), 'exactly one button'),
         (lambda t: t.replace('{ id = 2,', '{ id = 7,'), 'button ids run'),
+        (
+            lambda t: t.replace(
+                '{ id = 0, role = "back" },\n  { id = 1, role = "move" },',
+                '{ id = 1, role = "move" },\n  { id = 0, role = "back" },',
+            ),
+            'ascending id order',
+        ),
         (lambda t: t.replace('offset = 0x1E000, size = 0x2000', 'offset = 0x1E800, size = 0x1000'), 'erase sector'),
         (lambda t: t.replace('offset = 0xD98000, size = 0x100000', 'offset = 0xD98000, size = 0x101000'), 'overlap'),
         (lambda t: t.replace('offset = 0x1E000, size = 0x2000', 'offset = 0x1F000, size = 0x2000'), 'inside'),

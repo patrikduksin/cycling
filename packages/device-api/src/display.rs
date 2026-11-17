@@ -21,7 +21,7 @@ pub const MAX_BANDS: usize = 128;
 /// A set of whole bands of `BAND_ROWS` rows, the first at the top of the
 /// panel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Rows(u128);
+pub struct Rows(pub u128);
 
 impl Rows {
     pub const NONE: Self = Self(0);

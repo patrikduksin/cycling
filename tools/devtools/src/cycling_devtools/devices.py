@@ -380,6 +380,8 @@ def check_buttons(model):
         raise ManifestError('two buttons share an id')
     if any(not 0 <= i < len(BUTTONS_BY_ID) for i in ids):
         raise ManifestError(f'button ids run from 0 to {len(BUTTONS_BY_ID) - 1}')
+    if ids != sorted(ids):
+        raise ManifestError('list buttons in ascending id order: a trace records them as a set')
     roles = [b.role for b in model.buttons if b.role is not None]
     if unknown := set(roles) - set(ROLES):
         raise ManifestError(f'unknown button roles: {", ".join(sorted(unknown))}')

@@ -372,11 +372,17 @@ def test_a_pass_under_one_setting_of_the_build_does_not_stand_for_another(checko
     monkeypatch.setenv('EDITOR', 'ed')
     assert verify.verify(request(checkout)).ok
     assert gate_runs(checkout) == 1
-    settings = (('CYCLING_MIN_STACK_BYTES', '999999999'), ('RUSTFLAGS', '-Dwarnings'), ('CARGO_PROFILE_DEV_DEBUG', '0'))
+    settings = (
+        ('CYCLING_MIN_STACK_BYTES', '999999999'),
+        ('RUSTFLAGS', '-Dwarnings'),
+        ('CARGO_PROFILE_DEV_DEBUG', '0'),
+        ('RUSTDOCFLAGS', '--invalid'),
+        ('CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS', '-Dwarnings'),
+    )
     for name, value in settings:
         monkeypatch.setenv(name, value)
         assert verify.verify(request(checkout)).ok
-    assert gate_runs(checkout) == 4
+    assert gate_runs(checkout) == 6
 
 
 def test_an_edit_during_a_run_that_found_every_gate_cached_is_not_certified(checkout, monkeypatch):

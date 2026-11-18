@@ -29,6 +29,10 @@
 //! The ride bests need a ride of `MIN_RIDE_S`, so a test press of a few
 //! seconds does not become "the longest ride". A power above
 //! `PLAUSIBLE_WATTS` for its window is a sensor glitch and never a best.
+//!
+//! `Kept::service` is the bests' state machine. It takes what it needs from
+//! other owners as a `Seen` value and returns an `Out` of domain facts, which
+//! the glue in `app::bests` turns into a toast and a redraw.
 use super::{RETRY_MS, StoreError};
 use crate::ride::{Contents, another_version};
 use device_api::bulk::{ReadWrite, SECTOR_SIZE};

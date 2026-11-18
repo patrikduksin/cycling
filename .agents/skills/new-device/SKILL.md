@@ -11,9 +11,8 @@ its ROM bootloader is reachable, and whether it accepts our unsigned firmware.
 
 The device-safety rules in [AGENTS.md](../../../AGENTS.md) apply. In addition:
 
-- The visitor owns the device and watches the page. Never write to it.
-  Writing to a visitor's device is not supported yet (#348); the `cycling
-  flash` flows refuse any device but the backed-up C606.
+- The visitor owns the device and watches the page. Never write to it. The
+  `cycling flash` flows refuse any device but the backed-up C606.
 - Every device command goes through `cycling remote <CODE> -- <command>`.
   Run bare, `cycling flasher` and `cycling monitor` fall back to a locally
   attached device, which may be Patrik's C606.
@@ -67,7 +66,11 @@ checkout's.
    - Hardware hints: `strings -n 6` over the apps for display, touch, GNSS,
      ANT+/BLE, sensor and PMIC part numbers and board names.
    - OTA layout: whether two app slots exist and how large they are, against
-     our image size in `.local/cycling.bin`.
+     our image size in `.local/cycling.bin`. A port declares its layout in a
+     `devices/<name>/device.toml`, and `cycling devices` accepts it only with
+     two equal slots `ota_0` and `ota_1`, an `otadata` partition before them,
+     and room at the end of one slot for the owned ranges that keep rides and
+     settings.
 6. **Report.** Write `.local/survey/<device_id>/report.md` and reply to
    the user with the same content:
    - Chip family, model, revision, features, crystal, flash size and JEDEC id,
@@ -78,8 +81,11 @@ checkout's.
      the ROM cannot say (classic ESP32); write it as unknown.
    - Partition layout and the stock app's identity.
    - Hardware hints, each marked as inferred from strings.
-   - Verdict: can cycling firmware run here, and what a port needs (board
-     support, drivers, display, inputs).
+   - Verdict: can cycling firmware run here, and what a port needs: its
+     `device.toml` (see [Adding a device](../../../CONTRIBUTING.md#adding-a-device)),
+     board support, drivers, display and inputs. The manifest needs at least
+     three buttons, one each for act, back and move, and a panel that lays
+     out at 3/4 scale or more.
 
 ## What this cannot tell
 

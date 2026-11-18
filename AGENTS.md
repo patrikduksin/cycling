@@ -28,35 +28,21 @@ Run tasks through `cycling <task>` and commit `Cargo.lock`. The flake dev
 shell provides every tool and the `cycling` command; see
 [dev-setup](docs/dev-setup.md).
 
-- Inner loop: `cycling quick` (tests and clippy on the crates the diff
-  touches, and a firmware `cargo check`), targeted host tests and the
-  simulator; a firmware rebuild after a VANA edit takes about 45 s (the
-  fat-LTO link is 30 s of it), and one after a commit that changes no firmware
-  input about 2 s.
-- Before opening or updating a PR, and to merge: follow the
-  [verify skill](.agents/skills/verify/SKILL.md): `/deslop`, then
-  `/no-comments` beside `cycling verify`, then `cycling verify --pr <n>`, the
-  reviews, and `cycling merge <n>`. Verify runs the gates the changed paths
-  select (`tools/devtools/src/cycling_devtools/lanes.py`) in parallel in the
-  worktree, stops if a file changes while it runs, and posts the results and
-  the screens that changed against main, with a video of each new scenario. A
-  gate that passed on the same tree is not run again. Add `--video` for
-  before and after videos of changed scenarios, for a bug fix a reviewer
-  should watch.
+- Inner loop: run `cycling quick` after every edit.
+  `cycling build` after a VANA edit takes about 45 s, most of it the fat-LTO
+  link, and about 2 s after a commit that changes no firmware input.
+  [Checks you can run on your own work](docs/dev-setup.md#checks-you-can-run-on-your-own-work)
+  lists the deeper ones and when each is worth its time.
+- Verify, review and merge with the [verify skill](.agents/skills/verify/SKILL.md),
+  before you open or update a PR. GitHub CI runs only on pushes to main, and
+  `cycling merge <n>` is the only way to merge.
+- Firmware changes: `cycling test`, `cycling check` (includes boundary checks
+  and ruff) and `cycling build`.
 - Disk: a worktree that ran `cycling verify` carries about 7 GB of target dirs
   (`target/`, `vendor/trouble-host/target/`, `.local/firmware`). Run
   `cycling clean` for a dry-run table of what it would free; `--apply` removes
   merged, clean, quiet worktrees nobody is working in, and idle build dirs.
   Verify and sim-compare warn when the disk runs low.
-
-- Firmware changes: `cycling test`, `cycling check` (includes boundary checks
-  and ruff) and `cycling build`.
-- PRs are verified locally, not by GitHub CI: `cycling verify --pr <n>` runs
-  the tests, the checks, simulate, the firmware build, the screens and
-  harness-virtual, those of them the changed paths select, and posts the
-  results on the PR. `cycling merge <n>` is the only way to merge: it verifies
-  the squash on main and pushes exactly that commit with the `cycling/verify`
-  status. CI runs only on pushes to main.
 - Preserve the licensed [Trouble Host patch](vendor/trouble-host/CYCLING-PATCH.md)
   and its minimum-MTU (ATT MTU 23) regression coverage.
 
@@ -68,9 +54,9 @@ access or device tests. It owns the procedure; these rules always apply:
 - Change device firmware only through `cycling backup`, `cycling flash`,
   `cycling flash-maintenance`, `cycling rollback`, `cycling stock` and
   `cycling stock-select`.
-- Stock lives in the verified private backup, not on the device (owner
-  decision, 2026-10-17): cycling may occupy both A/B application slots, and
-  `cycling stock` restores the complete backup. Never touch eFuses. Preserve
+- Stock lives in the verified private backup, not on the device: cycling may
+  occupy both A/B application slots, and `cycling stock` restores the complete
+  backup. Never touch eFuses. Preserve
   the bootloader and partition table. No vendor filesystem writes outside that
   full restore.
 - A flash keeps settings and rides while their formats are unchanged:
@@ -95,7 +81,3 @@ access or device tests. It owns the procedure; these rules always apply:
 - Autonomous issue or queue delivery: [deliver](.agents/skills/deliver/SKILL.md).
 - A rider's account of a ride problem, a battery that drains too fast, or a
   `.trace` file: [ride-trace](.agents/skills/ride-trace/SKILL.md).
-- Issue tracker: GitHub Issues; read `docs/agents/issue-tracker.md` first.
-- Triage: the five default labels; read `docs/agents/triage-labels.md` first.
-- Domain docs: single-context layout; read `docs/agents/domain.md` before
-  exploring domain concepts or proposing domain changes.

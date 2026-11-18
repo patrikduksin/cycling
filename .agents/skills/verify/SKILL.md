@@ -6,11 +6,15 @@ description: Run the cycling repository's PR gates and its review loop, then mer
 # Verify
 
 Put these steps on the todo list word for word, and keep a step you do not
-run there with its reason. [dev-setup](../../../docs/dev-setup.md) and
-[testing-harness](../../../docs/testing-harness.md) hold the detail.
+run there with its reason. This skill is the one home of the procedure.
+[How verify certifies a tree](../../../docs/dev-setup.md#how-verify-certifies-a-tree),
+[How a merge lands](../../../docs/dev-setup.md#how-a-merge-lands) and
+[testing-harness](../../../docs/testing-harness.md) say how the tools work.
 
 While you edit, `cycling quick` checks the crates the diff touches in seconds.
 It certifies nothing.
+[Checks you can run on your own work](../../../docs/dev-setup.md#checks-you-can-run-on-your-own-work)
+lists the deeper ones.
 
 1. Run `/deslop` on the diff against `main` (the `pstack:deslop` skill).
    Then start `cycling verify` in the background, and beside it run
@@ -24,8 +28,9 @@ It certifies nothing.
    session the dev shell's `gh` refuses `gh pr create` until `/deslop` and
    `/no-comments` ran in the session.
 3. Run `cycling verify --pr <n>` after every push. It is the PR gate: the
-   gates the changed paths select, in parallel, with the firmware build and
-   the screens compared with main. A gate that already passed on this exact
+   gates the changed paths select, in parallel. The firmware build and the
+   screens compared with main run only when the paths select them; the table
+   names the gates left out. A gate that already passed on this exact
    tree shows as `cached`. It posts the results on the PR. Do not run
    `cycling sim-compare` or `cycling sim-pr` beside it. Add `--video` only for
    a bug fix whose before and after a reviewer should watch.

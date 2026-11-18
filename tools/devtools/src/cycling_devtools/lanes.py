@@ -52,6 +52,8 @@ RUST_CODE = frozenset(
 )
 RUST_BUILD = RUST_CODE | {'build', 'check-devices'}
 WEB = frozenset({'test-web', 'check-web'})
+# check-boundaries fails a document that names a missing file, and a document can name any path.
+ALWAYS = frozenset({'check-boundaries'})
 
 VERIFY_MODULES = ('admission', 'clean', 'cli', 'lanes', 'runner', 'tree', 'verify', 'workspace')
 
@@ -157,5 +159,7 @@ def gates_for(path, firmware):
 
 
 def select(paths, root):
-    firmware = firmware_crates(root) if paths else ()
-    return frozenset().union(*(gates_for(path, firmware) for path in paths))
+    if not paths:
+        return NONE
+    firmware = firmware_crates(root)
+    return ALWAYS.union(*(gates_for(path, firmware) for path in paths))

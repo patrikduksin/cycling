@@ -248,7 +248,7 @@ shell geometries.
 - Synthetic input enters the normal shell consumer. It cannot establish switch or
   touch sensing or wake an electrically off device. Physical observations keep
   their own counters.
-- The audio fixture verifies laptop capture, not the C606 buzzer (see #84). No
+- The audio fixture verifies laptop capture, not the C606 buzzer. No
   result is calibrated dB SPL, and comparisons are limited while host AGC or
   noise processing is unverified.
 - Timing is reported, not promised: scheduling under display or flash work is

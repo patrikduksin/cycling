@@ -1,3 +1,27 @@
+//! Every state the recorder reaches within small bounds, searched with
+//! `testing::explore` over a six-slot fake journal (`medium`) whose written
+//! bytes are part of each state.
+//!
+//! `Env` holds everything outside the recorder: that journal, the time, the
+//! counts that bound a path (clears and laps), a clear still waiting, a torn
+//! write, and FORMAT's wipe.
+//! `drive` makes one event's calls into the recorder, and `observe` reads it
+//! through public methods only. The rules in `rules` read a `World`: the state
+//! with its `Env`, what the call returned and what `observe` saw. Its two
+//! reads of private state, `broken` and `lap_waiting`, sit at its top.
+//!
+//! A scan answers `More` before its last answer, as the real journals do, and
+//! two of the starting volumes answer `Foreign` and `Corrupt` with no catalog.
+//! A probe is a rule the search must break, because the edge that breaks it
+//! reaches what the probe names. `rules::SCAN_ANSWER_PROBES` names those three
+//! scan answers. `rules::FULL_BATCH` names a full batch flushed while
+//! recording, a dropped sample, and a stop's lap samples filling the batch
+//! while a lap still waits.
+//!
+//! A FORMAT wipe of the journal is an outside event here. It finishes, fails
+//! with or without the erase, or is cut and finished at the next boot. While
+//! FORMAT holds storage, the search makes only the recorder calls the app
+//! makes.
 use super::{Action, Recorder, Refused, ResultEvent};
 use crate::ride::log::{LapStart, SAMPLES_PER_BATCH, Status};
 use crate::testing::{Legal, Report, explore};

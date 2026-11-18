@@ -40,20 +40,22 @@ over the line.
 ## Building and testing
 
 Any x86_64 or aarch64 Linux machine with [Nix](https://nixos.org/download)
-works. The repository provides every other tool.
+works, and the repository provides every other tool.
+[Set up a machine](docs/dev-setup.md#set-up-a-machine) has the install steps.
+Then:
 
 ```sh
-git clone https://github.com/patrikduksin/cycling && cd cycling
-nix develop                         # dev shell with every pinned tool
 cycling test
 cycling check
 cycling simulate                    # run the firmware on your computer
 cycling build                       # firmware with the VANA cycling app
-cycling verify                      # every check in parallel
+cycling verify                      # the checks your changed files select
 ```
 
 `cycling` alone lists every task. You don't need a bike computer to
-contribute: the simulator runs the screens and input on your computer.
+contribute: the simulator runs the screens and input on your computer. The
+[verify skill](.agents/skills/verify/SKILL.md) is how a pull request here is
+checked, reviewed and merged.
 
 Before you connect to or flash a device, read the
 [C606 guide](.agents/skills/c606/SKILL.md). Always take the backup first, and
@@ -79,12 +81,17 @@ New devices are the most exciting contributions this project gets. Each one
 lives in `devices/<device>`:
 
 1. Pick a HAL and runtime that fits the chip.
-2. Implement the capabilities in `packages/device-api` that the shell needs:
+2. Declare the model once in `devices/<device>/device.toml`: its build
+   (chip, target, package and binary), flash layout, owned ranges, panel and
+   buttons. [devices/c606/device.toml](devices/c606/device.toml) is the
+   example. `cycling devices` checks every manifest and writes the files
+   generated from it; the build, flash and backup tasks read it.
+3. Implement the capabilities in `packages/device-api` that the shell needs:
    display, input, positioning, radios, storage. Keep wiring, drivers, memory
    limits and task startup inside the device folder.
-3. Compose those pieces with the shared shell in a device entry point, and add
-   it to the `cycling` tasks and checks.
-4. Validate it on real hardware and write down what you observed.
+4. Compose those pieces with the shared shell in the device entry point that
+   `device.toml` names.
+5. Validate it on real hardware and write down what you observed.
 
 Shared code never imports device code or branches on a board name. Start by
 opening a device request issue, even if you plan to do all of it yourself.

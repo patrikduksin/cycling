@@ -1,3 +1,6 @@
+//! The glue of one recording pass. `Runtime::record` runs `Ride`'s pass steps
+//! and does between them what only the runtime can, in the order
+//! `ride::current` describes.
 use super::Runtime;
 use super::navigation::To;
 use crate::ride::current::Ended;

@@ -15,7 +15,7 @@ details into this document.
 | Path | Owns |
 | --- | --- |
 | `apps/vana` (`vana`) | Cycling behavior and its presentation: sensor selection and profiles, workout screens, ride state, metrics, recording, recovery, export and app preferences. |
-| `devices/c606` (`c606-firmware`) | C606 hardware and the firmware assembled for it. Drivers, wiring, HAL resources, interrupts, DMA, memory placement, startup and board quirks live here. Sanitized device research lives in `research/`. Its `device.toml` declares the model's build, flash layout, panel and buttons once; `cycling devices` generates `src/fitted.rs` from it for the drivers, and devtools read it for build and flash. |
+| `devices/c606` (`c606-firmware`) | C606 hardware and the firmware assembled for it. Drivers, wiring, HAL resources, interrupts, DMA, memory placement, startup and board quirks live here. Sanitized device research lives in `research/`. Its `device.toml` declares the model's build, flash layout, panel and buttons once; `cycling devices` generates `devices/c606/src/fitted.rs` from it for the drivers, and devtools read it for build and flash. |
 | `packages/device-api` (`device-api`) | Hardware-independent capability contracts and the observations needed to use them. |
 | `packages/shell` (`firmware-shell`) | Foreground presentation, physical-input routing, shared rendering, preferences and inactivity policy. |
 | `packages/services` (`firmware-services`) | Portable acquisition, transport and persistence mechanisms with no board, presentation or cycling policy. |
@@ -44,31 +44,13 @@ private to the device that uses them. Screens follow one visual language and
 input model, described in [ui](ui.md).
 
 Inside VANA, the domain lives in `ride/`, `kept/`, `sensors/` and `workout/`.
-`kept/` holds what VANA keeps on FILES beside the ride journals: the bests,
-each saved ride's facts and the rides the rider hid. Each has its record, its
-codec and the state machine that reads it into memory and writes it back. The
-bests' machine, `bests::Kept::service`, takes what it needs from other owners
-as a `Seen` value and returns an `Out` of domain facts, which the glue turns
-into a toast and a redraw. `kept/` also holds `StoreError`, the typed failure
-of the bests and course files, and the one `RETRY_MS` that FILES and the
-preference record wait before trying again. `ride/settle.rs` is the save
-protocol, the only code that writes FILES after a recorder result: it hides a
-discarded ride, then saves bests, the workout record and facts, in that order.
-[`ride/current.rs`](../apps/vana/src/ride/current.rs) holds `Ride`, the
-rider's ride: both recorders and their media, the request tokens, the ride's
-sums, laps and climbs, automation, and `Continuation`, the ride's move from
-the card to internal flash. Its fields are private. Readers use its getters,
-and every write is a method. One pass of recording is three `Ride` steps with
-the glue in `app/recording.rs` between them, in the order the trace hash
-fixes:
-`service` runs the recorders, the glue resets the stores of a wiped medium,
-`open_pass` continues a lost bulk ride or opens a new ride's sums, the glue
-loads the new ride's workout and opens its pages, `finish_pass` hands each
-recorder's result to the rider or the host, the glue settles the ended
-rides, and `after_settle` takes the outcome and pauses a continuation. The
-workout player belongs to `Training`. The ride page's message, the lap and
-automation toasts and the lap chime are `Notices` in `app/ride_control.rs`,
-the only file that writes the message.
+`kept/` holds what VANA keeps on FILES beside the ride journals, each file with
+its own record, codec and state machine. `ride/settle.rs` is the save protocol
+and the only code that writes FILES after a recorder result, so a ride's files
+are saved in one order. [`Ride`](../apps/vana/src/ride/current.rs) is the
+rider's ride. Its fields are private and every write is a method, so its rules
+live in one file; its module doc gives the order of one recording pass, which
+the trace hash fixes.
 The application layer, `app/`, holds `Runtime` and the glue that turns domain
 state into pages, toasts and redraws; `screens/` draws them. Domain code never imports `crate::app` or
 `crate::screens` and takes what it needs as arguments.
@@ -226,74 +208,38 @@ scan, gets one file named for the behavior beside its owner.
   Simulator scenarios stay the acceptance check.
 - Search a machine whose bounded configuration is small with `explore` in
   [`testing.rs`](../apps/vana/src/testing.rs). It runs the real code breadth
-  first from every starting state, checks each named state rule on every state
-  it reaches and each transition rule on every edge, and returns the shortest
-  path to each broken rule. Its visited set keeps a 128-bit fingerprint of each
-  complete state, never an abstraction. A search that closed within its budget
-  claims every reachable state of that configuration, up to a fingerprint
-  collision. A truncated search claims nothing, so its test fails; shrink the
-  bounds instead. The [recorder's search](../apps/vana/src/ride/recorder/explore.rs)
-  runs over a six-slot fake journal whose bytes are part of the state.
-  `Env` holds everything outside the recorder: that journal, the time, the
-  counts that bound a path, and FORMAT's wipe. `drive` makes one event's calls
-  into the recorder, and `observe` reads it through public methods only. The
-  rules read `Env`, what the call returned and what `observe` saw. `rules.rs`
-  names its two reads of private state at its top.
-  To rewrite a searched machine, freeze the old copy beside it as a test-only
-  module with its own `drive` and `observe`, and no shared trait. Search both
-  over one `Env`, compare every observation and the journal on every edge, and
-  delete the old copy in the same PR once the search closes with no
+  first from every starting state, checks each named rule on every state and
+  edge it reaches, and returns the shortest path to each broken rule. A search
+  that closed within its budget claims every reachable state of that
+  configuration, up to a fingerprint collision. A truncated search claims
+  nothing, so its test fails; shrink the bounds instead. Capacities beyond the
+  bounds stay covered by targeted and property tests. The
+  [recorder's search](../apps/vana/src/ride/recorder/explore.rs) is the model
+  to copy.
+- To rewrite a searched machine, freeze the old copy beside it as a test-only
+  module that the search drives and observes on its own, with no shared trait.
+  Search both over one environment, compare every observation on every edge,
+  and delete the old copy in the same PR once the search closes with no
   difference.
-  A scan answers `More` before its last answer, as the real journals do, and
-  two starting volumes answer `Foreign` and `Corrupt` with no catalog. A probe
-  is a rule the search must break, because the edge that breaks it reaches what
-  the probe names, such as a full batch flushed while recording.
-  A FORMAT wipe of that journal is an outside event there. It finishes, fails
-  with or without the erase, or is cut and finished at the next boot. While
-  FORMAT holds storage, the search makes only the recorder calls the app
-  makes.
-  Its always-on search starts first in each test run, in nextest's `slow`
-  group, which `cycling quick` leaves out.
-  Run its ignored `WIDE` and full-batch tests on any PR that touches
-  `ride/recorder*` or `ride/journal.rs`.
-  Capacities beyond the bounds stay covered by targeted and property tests.
 - Enforce a single writer with privacy: make the fields private to the
   owner's module and give it one writer. The page is the model.
   [`Navigation`](../apps/vana/src/app/navigation.rs) keeps the page and its
   sidecar fields private, and `go(To)` is the only code that writes them. Each
-  `To` variant moves exactly what one kind of site moved before, so a reader
+  `To` variant is one kind of page move with everything it moves, so a reader
   finds every page change by searching for `To::`. `go` also ends a Settings
   edit on every move off Settings, which makes the `EditingOffSettings` rule
   hold by construction.
 
 ## The frame writes in tiers and draws read-only
 
-[`app/view.rs`](../apps/vana/src/app/view.rs) runs VANA's frame as four
-tiers around one read-only draw. `Runtime::frame` calls them in this order:
-
-1. `every_pass` follows the daylight and sets the light curve, even while the
-   screen is blank.
-2. `unless_blank` stops on a blank or turning-off screen. It then latches the
-   numbers and takes the motion. It stops again unless a frame is due.
-3. `when_due` sets the base pace, then makes every other write the frame makes,
-   in the order the frame has always made them. These writes include the
-   lists, the chart, the power sheet's animation, the page moves and toasts,
-   the map, the sensor menu and the shell's activity. Under a power sheet it
-   stops after the sheet's animation. It also reads the position and the radar
-   channel for the view, at their place in that order, so the trace stream
-   stays the same.
-4. `present(&self)` fills the `View` and draws it. It writes nothing in
-   `Runtime`. It returns `Presented`, a small `Copy` value with the draw
-   result, the page and the gliding graphics' pixels.
-5. `after_view` applies `Presented`: `motion.drew` first, then the timing
-   milestones and FORMAT's `Drawn`, then the next frame time. The next frame
-   time reads the motion after `drew`, so `after_view` computes it, not
-   `present`.
-
-The `View` is about 10 KB, so it lives only in `present`'s stack frame. The
-tiers and `present` are `#[inline(never)]`, so no tier's frame sits under
-another's. A new write in the frame goes into the tier that runs at its moment,
-never into `present`.
+VANA's frame makes its writes in tiers, each at the moment it runs, and then
+draws from state it only reads. Drawing that writes would make what the rider
+sees depend on when the frame happened to run, and a write moved between tiers
+changes the trace. The view a frame draws lives only on the draw's stack, and
+the tiers do not inline into each other, so the deepest stack is one tier's
+frame, not their sum, inside the device's stack budget.
+[`app/view.rs`](../apps/vana/src/app/view.rs) lists the tiers. A new write
+goes into the tier that runs at its moment, never into the draw.
 
 ## Ownership includes time and failure
 

@@ -3,6 +3,23 @@
 //! keep their own rides and recover them independently. If the bulk medium
 //! fails or fills while a ride is running, the ride continues on the internal
 //! journal as a new ride; the bulk part stays exportable.
+//!
+//! `Ride` is the rider's ride: both recorders and their media, the request
+//! tokens, the ride's sums, laps and climbs, automation, and the move from the
+//! card to internal flash. The workout player belongs to `Training`.
+//!
+//! One pass of recording is three `Ride` steps with the glue in
+//! `app::recording` between them, in the order the trace hash fixes:
+//!
+//! 1. `service` runs the recorders. The glue then resets the stores of a
+//!    wiped medium.
+//! 2. `open_pass` continues a ride the card lost, or opens a new ride's sums.
+//!    The glue then loads the new ride's workout and opens its pages.
+//! 3. `finish_pass` hands each recorder's result to the rider or the host.
+//!    The glue then settles the ended rides through `ride::settle`.
+//!
+//! `after_settle` then takes the outcome and pauses a continuation that owes
+//! a pause.
 use crate::kept::bests::Found;
 use crate::kept::facts::record::Climbing;
 use crate::ride::auto::{Auto, Call, Decision, Motion};

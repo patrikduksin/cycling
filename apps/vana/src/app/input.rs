@@ -1,6 +1,6 @@
 //! Physical controls, touch and workout navigation.
 //!
-//! Buttons keep one role on every screen (see `docs/ui.md`) and go to the
+//! Buttons keep one role on every screen (see `docs/ux-flows.md`) and go to the
 //! focused control, their first responder. Touch goes to what lies under the
 //! finger (`hit_test`), through the arbiter in `screens::touch`: it selects,
 //! scrolls and changes pages, and never starts, pauses, laps or stops a ride.

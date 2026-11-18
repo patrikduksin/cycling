@@ -17,8 +17,11 @@ def select(*paths):
     return lanes.select(paths, workspace.ROOT)
 
 
-def test_a_docs_change_selects_no_gate():
-    assert select('docs/ui.md', 'README.md') == frozenset()
+def test_a_docs_change_selects_only_the_check_of_what_documents_name():
+    assert select('docs/ui.md', 'README.md') == {'check-boundaries'}
+    for named in ('LICENSE', '.claude/settings.json', 'web/README.md', 'tools/devtools/src/cycling_devtools/quick.py'):
+        assert 'check-boundaries' in select(named)
+    assert select() == lanes.NONE
 
 
 def test_rust_under_apps_selects_the_firmware_the_host_tests_and_pytest_but_not_the_web():
@@ -355,9 +358,9 @@ def test_the_firmware_follows_target_build_and_workspace_dependencies_of_the_tre
     )
     assert lanes.firmware_crates(tmp_path) == {'dev', 'on-target', 'at-build', 'shared'}
     monkeypatch.setattr(lanes, 'RULES', (('shared/', lanes.NONE), ('tool/', lanes.NONE)))
-    assert lanes.select(['shared/src/lib.rs'], tmp_path) == {'build'}
-    assert lanes.select(['tool/src/lib.rs'], tmp_path) == lanes.NONE
-    assert lanes.select(['shared/src/lib.rs'], workspace.ROOT) == lanes.NONE
+    assert lanes.select(['shared/src/lib.rs'], tmp_path) == {'build'} | lanes.ALWAYS
+    assert lanes.select(['tool/src/lib.rs'], tmp_path) == lanes.ALWAYS
+    assert lanes.select(['shared/src/lib.rs'], workspace.ROOT) == lanes.ALWAYS
 
 
 def test_an_edit_in_the_second_the_index_was_written_changes_the_tree_hash(checkout):

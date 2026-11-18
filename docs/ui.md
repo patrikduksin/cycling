@@ -1,18 +1,20 @@
 # VANA UI
 
-VANA has one visual language. A rider glances at a 240 × 320 screen for under a
+VANA has one visual language. A rider glances at a small screen for under a
 second, often in sunlight, while moving. So every screen follows the same rules:
 black space instead of boxes, a few large numbers, and colour that always means
-something. This document defines those rules. The code that implements them
-lives in `apps/vana/src/screens/chrome.rs` (geometry, palette, shapes, status
-bar, toasts), `apps/vana/src/screens/canvas.rs` (a prepared screen of text
-runs and shapes) and `packages/shell/src/rendering/font` (type).
+something. This document defines how screens look: type, colour, shapes,
+geometry and motion. [UX flows](ux-flows.md) owns what the rider sees and
+when: the order of screens, timing, sounds and what each button does. The
+code that implements these rules lives in `apps/vana/src/screens/chrome.rs`
+(geometry, palette, shapes, status bar, toasts),
+`apps/vana/src/screens/canvas.rs` (a prepared screen of text runs and shapes)
+and `packages/shell/src/rendering/font` (type).
 
 Every screen uses it: Home, Sensors, Workouts, Ready, the ride pages, the
-paused screen, End ride, the ride summary, Settings, the brand reveal, the power
-sheets and the charge shown while the device is off on USB power. None draws
-in the 5 × 7 bitmap font. The screens a ride passes through, in order, are
-set out in [UX flows](ux-flows.md).
+paused screen, End ride, the ride summary, Settings, Connect phone, the brand
+reveal, the power sheets and the charge shown while the device is off on USB
+power. None draws in the 5 × 7 bitmap font.
 
 ## Principles
 
@@ -27,6 +29,35 @@ set out in [UX flows](ux-flows.md).
    placed beside or above the number they qualify, never inside a frame.
 5. **Edges are soft.** Text, discs, pills and cards are anti-aliased against
    what lies behind them.
+
+## How screens scale
+
+Every pixel position, size and face height in this document is the value at
+scale 1, on the C606's 240 × 320 panel. Other panels lay out from the same
+rules at a scale step:
+
+- The step is the smaller of the panel's width over 240 and its height over
+  320, rounded down to a quarter and capped at 3/2. A panel under 3/4 cannot
+  lay out. Faces and icons are generated only for the 3/4 and 1 steps, so a
+  device whose panel lands on another step does not build until faces are
+  generated for that step.
+- A layout's lengths are units, which the step multiplies, rounded half up.
+  A line of text takes the height of that step's own face.
+- A screen splits a box into rows or columns: fixed units, the height of a
+  face's line or capitals, and shares of what is left. A panel taller or wider
+  than its step gives the extra space to the shares, so readings keep their
+  size and gain room around them.
+- The status bar, the course sign and the ride screens (the ride pages, the
+  paused screen, END RIDE? and the ride summary) lay out from the panel. Each
+  device's build lays them out once for its panel, into one static layout, so
+  a screen that does not fit a panel a device declares fails that device's
+  build. `apps/vana/src/screens/mod.rs` holds that layout and
+  `apps/vana/src/screens/scaled.rs` the steps.
+- Every other screen draws the 240 × 320 canvas, and the shell stretches the
+  canvas to the panel: each panel pixel shows the nearest canvas pixel.
+- A device names its panel in its `device.toml` under `devices/`, and
+  `cycling devices` regenerates the list of panels a build lays out for,
+  `apps/vana/src/screens/limits.rs`.
 
 ## Type scale
 
@@ -44,19 +75,23 @@ not jitter as they change.
 | `LARGE` | 700, 50 px | 42 px, digits 37 | Primary readings beside others: power, heart rate |
 | `HERO` | 700, 78 px | digits only | The one reading a page is about: speed on the main page of a ride without a course |
 
-The course sign and the arrived totals have faces of their own, each at the
-size and weight the mockups in `design/course-navigation` draw and holding
-only the characters it shows: `SIGN_50`, `SIGN_32`, `SIGN_27`, `SIGN_20`,
-`SIGN_18`, `SIGN_14` and `SIGN_13` (Nunito 900), and `TOTAL_60`, `TOTAL_30`
-(700) and `TOTAL_11` (900) for the totals. See Course sign below.
+The course sign, the arrived totals and the map's footer have faces of their
+own, each at the size and weight the mockups in `docs/design/course-navigation`
+draw and holding only the characters it shows: `SIGN_50`, `SIGN_32`,
+`SIGN_27`, `SIGN_20`, `SIGN_18`, `SIGN_14` and `SIGN_13` (Nunito 900) for the
+sign, `TOTAL_60`, `TOTAL_30` (700) and `TOTAL_11` (900) for the totals, and
+`FOOT_20` (700) for the distance in the map's footer. See Course sign below.
 
 `VALUE`, `LARGE` and `HERO` hold only ` +-./0123456789:%`. Units are a
 `CAPTION` in `SECONDARY`, bottom-aligned with the number and 6 px to its
 right. A missing reading shows `--` in the value's face and colour.
 
-To change a face, edit the table in `packages/shell/fonts/generate.py` and run
-`uv run packages/shell/fonts/generate.py`. The script rewrites `faces.rs`.
-Every face costs flash: all six take about 50 KB together.
+The 17 faces are listed in `packages/shell/fonts/generate.py`. To change a
+face, edit that list and run `uv run packages/shell/fonts/generate.py`, which
+rewrites `packages/shell/src/rendering/font/faces.rs`, then
+`uv run packages/shell/fonts/generate.py --scale 0.75`, which rewrites
+`packages/shell/src/rendering/font/faces_0_75.rs` with every face at the 3/4
+step. Every face costs flash at each step it is generated for.
 
 ## Palette
 
@@ -97,7 +132,7 @@ stays. Night decides only the THEME's AUTO and the DAY / NIGHT note.
 
 BRIGHTNESS in Settings → Display steps through AUTO, 25, 50, 75 and 100%. A
 percent is a fixed brightness. AUTO follows the ambient light sensor along
-the curve of the display mode (`app::mode::TABLE`): SAVER is lower than
+the curve of the display mode (see MODE under Motion): SAVER is lower than
 NORMAL at every light. A change in the light must last before the backlight follows: a
 darker one for more than 6 s, a brighter one for more than 2 s, so a tunnel,
 a passing shadow or lamps close together never move it. Light that repeats
@@ -109,8 +144,7 @@ every 100 ms (100% to 10% takes 9 s). A change smaller than 3 points is
 ignored. The curves are provisional: no daylight reading
 is known yet, so NORMAL reaches 100% at a reading of 4,000. Without a fresh
 reading AUTO shows the stored percent, and so does charging standby. Dimming
-after inactivity keeps its own level on top of either. A record saved before
-AUTO loads as AUTO. The terminal's `BRIGHTNESS n` is a rider's percent, a fixed brightness, and
+after inactivity keeps its own level on top of either. The terminal's `BRIGHTNESS n` is a rider's percent, a fixed brightness, and
 `BRIGHTNESS AUTO` returns to AUTO; VANA adopts either on its next pass and
 stores it. `SETTINGS` reports `auto` and the `effective` level.
 
@@ -120,13 +154,12 @@ THEME in Settings → Display chooses DARK, LIGHT or AUTO. DARK is the default.
 In AUTO the light look follows the day and night decision above: light by day,
 dark at night. The row's note says LIGHT NOW or DARK NOW.
 
-The light look is derived from the one palette by `light`, applied to each
-colour as it is painted. A screen paints through a row that carries the
-look (`Row::looked`). The row's paint calls take palette colours, bare
-`u16`s, and map each once per call. A colour as shown is a `Shown`, which
-`Row::ink` returns and `blend`, `span_shown`, `each` and `each_over` take,
-so a colour mapped twice or never does not compile. An anti-aliased edge
-blends colours already mapped, so it ramps between the two colours shown. `screens::look::light` inverts
+The light look is derived from the one palette, applied to each colour as it
+is painted. A screen paints through a row that carries the look, and the row
+maps each palette colour once as it paints it. A colour as shown has a type
+of its own, so a colour mapped twice or never does not compile. An
+anti-aliased edge blends colours already mapped, so it ramps between the two
+colours shown. The mapping, in `apps/vana/src/screens/look.rs`, inverts
 luminance and keeps hue: `Y = (2r + 5g + b) / 8`, then each channel moves
 by `255 - 2Y` and is clamped. Greys swap ends (`BLACK` becomes white,
 `WHITE` becomes black). Bright colours such as `POWER` and `SPEED` turn
@@ -157,43 +190,47 @@ A metric's number always uses its own colour, on every page and in every chart.
 
 `ZONES` is one ramp shared by power zones, heart-rate zones and climb
 steepness: grey, blue, green, yellow, orange, red, purple (Z1 to Z7).
-`zone_color(0)` (no profile or no reading) is `TERTIARY`. Heart rate uses Z1
-to Z5 of the same ramp.
+Without a profile or a reading the zone colour is `TERTIARY`. Heart rate uses
+Z1 to Z5 of the same ramp.
 
 Climb steepness uses the ramp from blue up, on the climb page's profile and on
 the summary's elevation page:
 
 | Band | Colour |
 | --- | --- |
-| Descent | `ZONES[1]` (blue) |
-| Easy, below 3% | `ZONES[2]` (green) |
+| Descent, below -1.5% | `ZONES[1]` (blue) |
+| Easy, -1.5% to 3% | `ZONES[2]` (green) |
 | Moderate, 3–6% | `ZONES[3]` (yellow) |
 | Steep, 6–9% | `ZONES[4]` (orange) |
 | Hard, 9–12% | `ZONES[5]` (red) |
 | Severe, 12% and more | `ZONES[6]` (purple) |
 
+Each band starts at its lower bound and runs to the next band's. Along a
+profile, a steeper grade takes its band at once, and a band drops back only
+once the grade is 0.5% below where the band starts, so a steady grade on a
+boundary keeps one colour.
+
 ## Shapes
 
 | Shape | Rule |
 | --- | --- |
-| Card | Radius 18, `CARD` fill. When focused, `RAISED` fill with a 3 px `ACCENT` ring (`chrome::card`). |
+| Card | Radius 18, `CARD` fill. When focused, `RAISED` fill with a 3 px `ACCENT` ring. |
 | Small card or button | Radius 12, otherwise the same as a card |
 | Pill (toasts, chips) | Radius = half its height |
 | Gauge segment | 5 px tall, 3 px gaps, radius 2 |
 | Dot | 6 px page dots; an 8 px tone dot in toasts |
-| Icons | Anti-aliased, in one colour, blended over what lies behind like text (`screens::icons`). A sensor's icon takes its metric's colour where it names a saved sensor (`HEART`, `POWER`, `SPEED` for speed and speed/cadence, `CADENCE`) and `WHITE` for any other; Home draws them `WHITE` with a status dot at the top-right, and NEARBY draws the sensors it lists in `SECONDARY`. The SVGs in `apps/vana/icons` are the source; see Icons below. |
-| Ring | An arc of a ring with round ends (`chrome::Ring`), running clockwise from 12 o'clock. VANA's one shape for progress, charge and time left: the brand mark, the turn-off countdown, the charge and the power symbol. A ring that shows a share stands on a 25% track of its own colour. |
+| Icons | Anti-aliased, in one colour, blended over what lies behind like text. A sensor's icon takes its metric's colour where it names a saved sensor (`HEART`, `POWER`, `SPEED` for speed and speed/cadence, `CADENCE`) and `WHITE` for any other; Home draws them `WHITE` with a status dot at the top-right, and NEARBY draws the sensors it lists in `SECONDARY`. The SVGs in `apps/vana/icons` are the source; see Icons below. |
+| Ring | An arc of a ring with round ends, running clockwise from 12 o'clock. VANA's one shape for progress, charge and time left: the brand mark, the turn-off countdown, the charge and the power symbol. A ring that shows a share stands on a 25% track of its own colour. |
 
-Shapes are coverage functions (`disc`, `rounded`), blended over what lies
-behind them, and painted per row by `paint_rounded` and `paint_disc`. Never
-draw a 1 px outline as decoration.
+Shapes are anti-aliased coverage, blended over what lies behind them and
+painted one display row at a time. Never draw a 1 px outline as decoration.
 
 ### Button cues
 
 A screen that asks for a decision points at the buttons that answer it with a
 cue: a quarter disc of radius 42 in the screen corner beside the button, with
-an icon and no words (`screens::cue`). The disc's colour says what the button
-does, so the cue reads at a glance.
+an icon and no words. The disc's colour says what the button does, so the cue
+reads at a glance.
 
 | Icon | Disc | Meaning |
 | --- | --- | --- |
@@ -223,7 +260,7 @@ corners; each screen's layout test checks it.
 The stats, lap and climb pages (the map page draws instead) list readings in cells: a `CAPTION` in
 `SECONDARY` over its value in `VALUE`, in the metric's colour. Cells sit in two
 columns from the body's 10 px margin, 48 px apart, so each caption has 7 clear
-rows above it, and keep 8 px between the columns (`ride::cell`). A page that
+rows above it, and keep 8 px between the columns. A page that
 cannot fit its readings at that rhythm shows fewer of them: space over
 density. A value that does not fit its column steps down to
 `BODY` on the same baseline. Captions are short enough for a column:
@@ -249,7 +286,7 @@ pixel of each other at any size; `--zoom DIR` writes 8x sheets to review.
 ## Sensors
 
 Sensors has two lists and the pages of one sensor, in the same rows and
-cards as everywhere else (`screens::sensors`).
+cards as everywhere else.
 
 - SENSORS lists the saved sensors under its `TITLE`: an icon in its metric
   colour, the name in `BODY`, and a `CAPTION` state under it in its state
@@ -279,6 +316,8 @@ cards as everywhere else (`screens::sensors`).
 
 ## Spacing and regions
 
+The regions at scale 1:
+
 | Region | Rows | Notes |
 | --- | --- | --- |
 | `STATUS_BAR` | 0–21 | Ride mark (red dot and REC, or amber bars and PAUSED), page dots, then GPS, battery and clock on the right. No divider. |
@@ -289,14 +328,17 @@ The screen margin is 10 px. Text inside a card is inset 16 px. Cards are 8 px
 apart.
 
 Nothing is placed at a fixed x without a width budget. Text that can grow
-(readings, clocks, summaries) is laid out with `Line::fit`: measure it, take
-the largest face from a short list that fits its box, and keep its baseline.
+(readings, clocks, summaries) is fitted to its box: VANA measures it, takes
+the largest face from a short list that fits, and keeps its baseline.
 If the smallest face still does not fit, drop the least important neighbour,
 such as a caption, before cutting text. Each restyled screen has a sweep test
 with extreme values: 120.0 km/h, 1999 W, 220 bpm, 180 rpm, 1000 km, 99:59:59
 and full sensor lists. The test asserts that no two glyph runs overlap, that
-nothing leaves its region and that every reading shows whole. On ride pages, the radar strip takes the left 28 px only while a radar is
-paired. Otherwise the body shifts 14 px to stay centred.
+nothing leaves its region and that every reading shows whole.
+
+On ride pages, the radar strip takes the left 28 px only while a radar is
+paired. Otherwise the body shifts 14 px to stay centred. The strip's track
+ends above the toast band, so a toast never hides a radar target.
 
 ## Status bar and toasts
 
@@ -314,9 +356,12 @@ the rider may need at any moment:
 - the clock.
 
 Items are laid out with measured widths, in priority order: the ride mark,
-the clock, the battery, GPS, then page dots. Dots close up from an 11 px to an
-8 px pitch before they are dropped, and an item that still does not fit is
-left out. Items never overlap. While recording, every combination fits.
+the clock, the battery, then the page dots and GPS. The ride mark drops its
+word (REC, PAUSED, AUTO) where the word would reach the clock. Page dots
+close up from an 11 px to an 8 px and then a 7 px pitch. If they still do
+not fit, GPS gives way to them, and only then are they dropped. Any other
+item that does not fit is left out. Items never overlap. While recording,
+every combination fits.
 
 Messages appear as toasts: a `RAISED` pill with a tone dot and `BODY` text,
 centred over the bottom of the content.
@@ -338,30 +383,27 @@ Only one toast shows at a time. From highest priority to lowest:
    page: CHARGING 64% (`Good`) when USB power arrives, LOW BATTERY 20% (`Warn`) as the charge falls to
    20%, and CHARGE SOON 10% (`Alert`) at 10% and again at 5%. Each level is
    announced once per discharge; charging re-arms them. A device switched on
-   already low says so only in its status bar. Ride alerts (`ride/alerts.rs`,
-   chosen under Settings ALERTS and LIMITS) show here on ride pages, each with
-   its cue: a limit broken for 10 s, HR HIGH 172, HR LOW 95, POWER HIGH 400W,
-   POWER LOW 120W or CADENCE LOW 60, is `Warn` and repeats every 2 min while it
-   lasts. EAT AND DRINK (`Info`) comes every chosen interval of ride time.
-   ALL CLEAR (`Good`) follows 2 s after the last vehicle behind passed; the
-   radar's beeps for vehicles have no toast. All are off by default except
-   ALL CLEAR. Once per ride, BATTERY 40 MIN LEFT or BATTERY 2 H LEFT (`Warn`, with the low-battery
-   cue; hours and minutes round down) shows when the estimated time left
-   (`ride/battery_life.rs`) has stayed under 1.25 times the planned time of the
-   workout (1 h at least) for 5 min. The estimate needs 6 points over 40 min,
+   already low says so only in its status bar. Ride alerts, chosen under
+   Settings ALERTS and LIMITS, show here on ride pages, each with its cue
+   ([sounds](ux-flows.md#sounds)): a limit broken for 10 s, HR HIGH 172, HR
+   LOW 95, POWER HIGH 400W, POWER LOW 120W or CADENCE LOW 60, is `Warn` and
+   repeats every 2 min while it lasts. EAT AND DRINK (`Info`) comes every
+   chosen interval of ride time. ALL CLEAR (`Good`) follows 2 s after the
+   last vehicle behind passed; the radar's beeps for vehicles have no toast.
+   All are off by default except ALL CLEAR. Once per ride, BATTERY 40 MIN
+   LEFT or BATTERY 2 H LEFT (`Warn`; hours and minutes round down) shows
+   when the estimated time left has stayed for 5 min under 1.25 times the
+   longer of one hour and the workout time still to ride. The estimate needs 6 points over 40 min,
    takes the worse of the 3 h median and the last 45 min, is cut by 30% under
    40% charge, and is silent when unknown, stale or above 95%. It restarts on
    charging, a rise of 2 steps that holds or a fall of over 20 points; a one
    point flicker is ignored and a smaller fall counts as one moment. A battery
    level toast keeps it back for 30 s. Ready rarely shows it without a ride or an
    hour of use behind it, since nothing is stored between boots. Limits
-   and reminders keep 3 s apart; the radar's beeps never wait. The sunset alert
-   (Settings ALERTS, SUNSET, on by default) is `Warn` with the band cue:
-   SUNSET IN 30 MIN once, and SUNSET - LIGHTS ON once when the sun sets
-   mid-ride (the font is ASCII, so a dash stands for a dot). Details in
-   [ux-flows](ux-flows.md#sunset). TURN BACK BY 17:40 (or TURN BACK NOW) is
-   the same `Warn` with the band cue, under the same SUNSET setting, once per
-   ride: the latest time to start home and be there by sunset.
+   and reminders keep 3 s apart; the radar's beeps never wait. The sunset
+   alerts, SUNSET IN 30 MIN, SUNSET - LIGHTS ON, and TURN BACK BY 17:40 or
+   TURN BACK NOW, are `Warn` (the font is ASCII, so a dash stands for a
+   dot); [UX flows](ux-flows.md#sunset) says when each shows.
 4. On ride pages only, sticky storage faults: STORAGE ERROR, then STORAGE
    FULL, WRITE FAILED, STORAGE NOT READY. A storage write failure is never
    hidden: the only one item 5 may replace is the bulk failure that moved
@@ -372,9 +414,8 @@ Only one toast shows at a time. From highest priority to lowest:
    INT, AUTO PAUSED INT, SAVED INT or RECOVERED INT. After a recovery, RIDE
    RECOVERED stays until recording resumes.
 6. Auto-pause: AUTO PAUSED stays while the rider looks at ride pages during
-   an automatic pause (the paused screen names it itself). With a course
-   placed, an automatic pause starts on the ride pages rather than the paused
-   screen, so the sign and the map's direction stay in sight. A
+   an automatic pause (the paused screen names it itself; [UX
+   flows](ux-flows.md#paused) says which screen a pause opens on). A
    ride recording without wheel or GPS speed shows AUTO PAUSE OFF for its first 8 s
    of active time, not for the whole ride.
 
@@ -382,36 +423,23 @@ There are no bottom button labels. Each button has a fixed role, so the screen
 does not need to explain them; where a screen asks a question, a button cue
 points at the answer.
 
-### Ride chimes
-
-Short chimes mark the ride's moments, so the rider need not look. Each uses a
-platform pattern no longer than 150 ms; the 300 ms pattern stays the radar
-alert's, and an alert always wins over a chime.
-
-| Moment | Chime |
-| --- | --- |
-| Recording starts or resumes | The highest pattern |
-| Paused (manual or automatic) | The lowest pattern |
-| Lap | The shortest pattern |
-| Ride saved | The highest pattern |
-| A followed course's end | The recording-start chime. It waits for an alert or another chime sounding then, and is dropped if it cannot sound within 10 s |
-
 ## Course sign
 
-While a course is followed, one sign tells the rider the next turn
-(`screens::sign`). Before following starts, the same sign says TURN AROUND
-while the rider rides against the course beside it. Its geometry is the mockups' in
-`docs/design/course-navigation`, laid out from their fractional positions;
-`cycling mockup-compare` checks the data-page screens against them. Every
-fill takes white ink, digits and units alike, and the sign paints without
-the light look (`Row::plain`), so it is the same in both looks. Its digits jump to each new
-distance: 10 m steps under 1 km, then 0.1 km, then whole km.
+While a course is loaded, one sign tells the rider the next turn, in one of
+three forms; [UX flows](ux-flows.md#course) says when each form shows and
+what it says. Its geometry is the mockups' in
+`docs/design/course-navigation`, laid out from their fractional positions
+at the panel's scale step; `cycling mockup-compare` checks the data-page
+screens against them. Every fill takes white ink, digits and units alike,
+and the sign paints without the light look, so it is the same in both
+looks. Its digits jump to each new distance: 10 m steps under 1 km, then
+0.1 km, then whole km.
 
 | Form | Where | Box | Content |
 | --- | --- | --- | --- |
-| Banner | Main, stats and climb, while a turn is near, off course, arrived or riding against the course before joining it | Rows 22 to 104, full width, square corners | The glyph, then the distance in `SIGN_50` with its unit in `SIGN_20`; off course a second line TURN BACK in `SIGN_18`; arrived ARRIVED in `SIGN_27`; turn around the U-turn glyph and TURN over AROUND in `SIGN_27` on baselines 58 and 86 (`SIGN_20` on 56 and 78 in the badge) |
+| Banner | Main, stats and climb | Rows 22 to 104, full width, square corners | The glyph, then the distance in `SIGN_50` with its unit in `SIGN_20`; off course a second line TURN BACK in `SIGN_18`; arrived ARRIVED in `SIGN_27`; turn around the U-turn glyph and TURN over AROUND in `SIGN_27` on baselines 58 and 86 (`SIGN_20` on 56 and 78 in the badge) |
 | Chip | Main, at rest | `RAISED` at (24, 72), 28 tall, radius 8, as wide as its text; the glyph on a 28 × 28 turn-fill square | The distance in `SIGN_20`, its unit in `SIGN_13` `MUTED` |
-| Badge | The map (drawn there in a later change) | At (8, 30), 60 tall, radius 12, as wide as its text | The banner at 60/82 of its size |
+| Badge | The map | At (8, 30), 60 tall, radius 12, as wide as its text | The banner at 60/82 of its size |
 
 Fills are `#0a6fe0` for a turn, `#d67400` off course and turn around, and
 `#1b9a45` arrived. A
@@ -425,7 +453,7 @@ draw: elapsed time and grade on baseline 58, the chip, speed in `LARGE` on
 149, power on 199 with its gauge at 208, heart rate on 255 with its gauge at
 266, and the lower line on 303, under the toast band. Units sit 6 px after the
 digits' ink there, as the mockups set them. Without a course the page keeps the
-`HERO` speed. For the 60 s after arriving, main is the ride's totals instead:
+`HERO` speed. When main shows the ride's totals after arriving, it sets the
 captions in `TOTAL_11`, distance in `TOTAL_60`, ride time in `VALUE` and the
 three averages in `TOTAL_30` at left, centre and right.
 
@@ -440,8 +468,8 @@ axes, ticks, gridlines, legends or frames.
   `ZONES` for zones and steepness, and the metric colour for a single metric.
   Never use a gradient that means nothing.
 - **Past and future.** What has happened is drawn in full colour. What is
-  ahead, or is only a reference, is drawn in that colour at 25% (`blend(color,
-  BLACK, 4)`), or in `TERTIARY` when no colour applies.
+  ahead, or is only a reference, is drawn in that colour at 25% over black,
+  or in `TERTIARY` when no colour applies.
 - **Now.** The current position is a 6 px `WHITE` disc, or a `WHITE` bar,
   never a line across the chart.
 - **Labels.** `CAPTION` text only at the ends (start, top, now, best), in
@@ -457,41 +485,101 @@ Applied to the cycling-specific charts:
 | --- | --- |
 | Zone gauge (main page) | One segment per zone, 5 px. Zones below the current one are lit in their colours. The current zone fills left to right as the reading moves through it. Zones above are `TERTIARY`. The zone chip (`Z4`) beside the reading is `BODY` in the zone colour, `Z-` without a zone. |
 | Time in zone (stats) | One 8 px bar per metric, `PWR` and `HR` captions on its left, segments proportional to time in each zone, in zone colours, with 2 px gaps and no empty zones. A `TERTIARY` track before any time is recorded. |
-| Elevation profile (climb) | A solid area per column, coloured by the steepness of that column's grade, on one `TERTIARY` baseline, with a 6 px `WHITE` disc for the rider. The grade sits in the top left, in `LARGE` while it fits beside power and heart rate (`VALUE` otherwise), each of those with its zone on a rounded chip in the zone's colour; a 5 px bar under them shows the current grade's steepness colour. On a climb from the map (`docs/terrain.md`) it is the whole climb from its foot past its top, fixed while the disc moves. What is climbed is at 25%, and a 6 px progress bar under it, as wide as the chart, fills `WHITE`, with FOOT, `NN% UP` and TOP under it. A climb ahead runs from the rider past the top, with the road before the foot and after the top at 25%. Without a map, a climb under way shows the last 4 km with the road before the climb at 25%. With no climb it is the whole ride, disc at the end. A `SECONDARY` "NO MAP" caption marks a missing terrain pack. |
-| Workout (workout page) | One bar per played step across the content width, with a 1 px gap. Its width is proportional to the step's planned time (distance and open steps get an estimate), its height to the target's intensity. A ramp is one stair per stage, up to the first stage at 150% of FTP (and always the stage on now), with width in proportion to its minutes and each stair's height and zone colour from its watts. The colour is the zone of the target's middle, `CADENCE` for cadence and `TERTIARY` without a target. Steps done and on now are full colour, steps ahead 25%. A `WHITE` bar under the chart marks the step on now, or under the stair on now for a ramp; the stairs ahead are 25%. Above the chart, the step's band gauge: a `TERTIARY` track, the target band in its metric colour, and a `WHITE` disc at the 3 s reading. A ramp's band is 95% to 110% of the stage's watts, which the page names (`HOLD 121 W`). When the workout ends, a rider on this page moves to the main page. |
+| Elevation profile (climb) | A solid area per column, coloured by the steepness of that column's grade, on one `TERTIARY` baseline, with a 6 px `WHITE` disc for the rider. The grade sits in the top left, in `LARGE` while it fits beside power and heart rate (`VALUE` otherwise), each of those with its zone on a rounded chip in the zone's colour; a 5 px bar under them shows the current grade's steepness colour. The road the profile dims ([UX flows](ux-flows.md#climb) says which stretch the profile spans and what it dims) is at 25%. On a climb from the map, a 6 px progress bar under the chart, as wide as the chart, fills `WHITE`, with FOOT, `NN% UP` and TOP under it. The NO MAP caption is `SECONDARY`. |
+| Workout (workout page) | One bar per played step across the content width, with a 1 px gap. Its width is proportional to the step's planned time (distance and open steps get an estimate), its height to the target's intensity. A ramp is one stair per stage, up to the first stage at 150% of FTP (and always the stage on now), with width in proportion to its minutes and each stair's height and zone colour from its watts. The colour is the zone of the target's middle, `CADENCE` for cadence and `TERTIARY` without a target. Steps done and on now are full colour, steps ahead 25%. A `WHITE` bar under the chart marks the step on now, or under the stair on now for a ramp; the stairs ahead are 25%. Above the chart, the step's band gauge: a `TERTIARY` track, the target band in its metric colour, and a `WHITE` disc at the 3 s reading. A ramp's band is 95% to 110% of the stage's watts, which the page names (`HOLD 121 W`). |
 | Target band (main page) | During a workout, a 2 px `WHITE` bar under the power or heart gauge spans the step's target. |
-| Track (map) | The whole screen from the status bar to row 290 on ground `#101012`, heading up (the last heading holds when still; there is no north up). The rider's puck sits at one spot on every fix, on a course, off it or without one: row 223, three quarters of the way down the map, and centred across it (x 120, or x 134 beside a radar). Neither the route nor a turn moves or zooms the map. The scale follows the speed: the map shows about 40 s of riding from the puck to its top edge, never less than 150 m nor more than 1 km (`Zoom` in `screens/ride/map/pose.rs`), and a ride starts at 300 m. Each fix moves the scale a fifth of the way to that goal, so a change of speed eases in over several seconds and never turns back; slower than about 5 km/h, or paused, it holds. The puck is a 14.5 px black ring, a 12.5 px white disc and the `PUCK` arrow in `ACCENT` (`AMBER` off course, `SECONDARY` without a fix). The course ahead is a 12 px `ACCENT` route on an 18 px `#04264c` casing with round caps and joins, drawn from the rider's place on the course (the matched point, the junction off course, or the nearest point on it before joining) forward 1.5 times the distance shown ahead along the course (off course, that plus the rider's distance to the junction), and screen clipping hides what is off the map. A straight road needs 1.21 to pass the top edge's far corner with its casing, and the mockup course, which jogs after its turn, needs 1.33. The course behind is not drawn, and the way back from a turnaround past the top edge stops short of the puck. Before joining or after stopping, the place is the nearest point on a leg within 90° of the heading (the nearest at all when none is within 25 m); it keeps the leg it holds until another is 10 m closer or that leg is 25 m off on two moving fixes in a row, or the heading is more than 135° against it on three moving fixes in a row. Every fix counts, even one at the same spot, whether or not the map is drawn again. A fix with a speed moves at 5 km/h or more (the speed the scale follows from) once it is 2 m on from the last fix that counted; at 5 km/h or more but less than 2 m on it leaves every count as it is, so a slow rider still turns the leg. A fix without a speed moves when it is 2 m on from the fix before it, and travel never adds up across such fixes. A fix while standing (under 5 km/h, or without a speed less than 2 m on from the fix before) starts every count again, and a moving fix that does not meet a rule starts that rule's count again, so a heading across the leg or a stop never changes it. Each time the course is placed, replaced or removed, or a new ride starts, the held leg is forgotten, even for a course of the same size. The next turn's corner carries a 5 px white arrow on an 8.5 px casing: 26 px of route from up to 10 px before the corner (a quarter of the way to the rider when nearer), then a head 10.5 px long and 15.8 px wide. Off course, up to three 3.5 px `AMBER` chevrons 15 px apart, pointing to the junction and centred between the rider and the junction, or where the straight line to it leaves the map, pushed out along that line until they clear the puck and stopping short of the junction's ring. The puck's row keeps them below the badge and the map's left edge keeps them off a radar strip, whichever way the junction lies. The junction ring (`#101012` 12 px, `AMBER` 10 px, black 5.5 px, white 3.5 px) shows while it is on the map. Before following starts, up to eight 2 px `#04264c` chevrons, 7 px wide and 3.5 px deep, sit on the course ahead every 25 m along it, counted from its end, or every second, fourth and so on of those, the fewest that keep them at least 40 px apart. They show from the rider's place on the course forward up to 320 px or the end of the drawn line, clear of the puck, each pointing the way the course runs. They stay put on the ground as the rider moves and as the scale eases, and thin out or fill in only where the scale doubles. The sign's badge sits at 8,30 over the map, at 36,30 with a radar paired, and may cover the route; it never reaches the puck. Under the course lie the terrain pack's roads (`screens/ride/map/roads.rs`): trunk, primary and secondary roads 9 px `#444448`, every other road 5 px `#2a2a2d`, square-ended, at those widths at every scale. Which roads are drawn follows the scale: every road up to about 530 m ahead, and further out no service roads, tracks or paths, switching at 560 m ahead going out and 500 m coming in so speed noise holds the detail; each road is simplified so no point strays half a pixel at the closest scale that draws it. Outside the pack, or without one, the course lies on the bare ground. The ride's own track is drawn, 5 px `#1f4a78`, only without a course loaded. With a radar paired the radar strip keeps columns 0 to 26 and the map's ground starts at x 28; the footer keeps the whole width. The black footer, rows 290 to 320, holds a 3 px `SECONDARY` scale bar from x 12, the longest of 250 m, 100 m or 50 m that is at most 90 px (60 px for 100 m at 335 m ahead), its length in `CAPTION`, and the distance left on a followed course (else the ride's) in `FOOT_20`, `WHITE`, ending at x 203, with `KM` in `CAPTION` ending at x 228. Strokes paint as row spans (`map::raster`), solid pixels stored and only the edges blended; the roads are rasterised once a fill onto a layer of the ground, two bits of coverage a class a pixel, and a frame paints the ground and roads from it by table. |
+| Track (map) | See [Map page](#map-page) below. |
 | Lap comparison (laps) | One vertical bar per lap across the page's full width, each centred in an equal slot, up to 24 px wide with at least 3 px between bars, on one `TERTIARY` baseline. Height is proportional to the lap's average power, or its speed on a ride without power, in that metric's colour. Finished laps are drawn at 25%, the open lap in full colour, and the best lap gets a 2 px `WHITE` cap. The oldest lap is on the left and the open lap on the right; the 16 kept laps and the open one fit. |
 
 The time-in-zone bars, the profile and the lap bars reach into the toast band.
 They are the least important part of their page, and a toast covers them for
 a moment only.
 
+### Map page
+
+[UX flows](ux-flows.md#map) says what the map shows and when: heading up,
+the scale, how far the course is drawn, and the rider's place on it. It
+draws them with this geometry:
+
+- **Ground.** The whole screen from the status bar to row 290, on ground
+  `#101012`. With a radar paired the radar strip keeps columns 0 to 26 and
+  the map's ground starts at x 28.
+- **Puck.** Row 223, three quarters of the way down the map, and centred
+  across it: x 120, or x 134 beside a radar. A 14.5 px black ring, a 12.5 px
+  white disc and the `PUCK` arrow in `ACCENT` (`AMBER` off course,
+  `SECONDARY` without a fix).
+- **Route.** The course ahead is a 12 px `ACCENT` route on an 18 px
+  `#04264c` casing with round caps and joins. Screen clipping hides what is
+  off the map, and the way back from a turnaround past the top edge stops
+  short of the puck.
+- **Next turn.** The next turn's corner carries a 5 px white arrow on an
+  8.5 px casing: 26 px of route from up to 10 px before the corner (a
+  quarter of the way to the rider when nearer), then a head 10.5 px long and
+  15.8 px wide.
+- **Off course.** Up to three 3.5 px `AMBER` chevrons 15 px apart, pointing
+  to the junction and centred between the rider and the junction, or where
+  the straight line to it leaves the map, pushed out along that line until
+  they clear the puck and stopping short of the junction's ring. The puck's
+  row keeps them below the badge, and the map's left edge keeps them off a
+  radar strip, whichever way the junction lies. The junction ring
+  (`#101012` 12 px, `AMBER` 10 px, black 5.5 px, white 3.5 px) shows while
+  it is on the map.
+- **Before following starts.** Up to eight 2 px `#04264c` chevrons, 7 px
+  wide and 3.5 px deep, sit on the course ahead every 25 m along it, counted
+  from its end, or every second, fourth and so on of those, the fewest that
+  keep them at least 40 px apart. They show from the rider's place on the
+  course forward up to 320 px or the end of the drawn line, clear of the
+  puck, each pointing the way the course runs. They stay put on the ground
+  as the rider moves and as the scale eases, and thin out or fill in only
+  where the scale doubles.
+- **Badge.** The sign's badge sits at 8,30 over the map, at 36,30 with a
+  radar paired, and may cover the route; it never reaches the puck.
+- **Roads.** Under the course lie the terrain pack's roads: trunk, primary
+  and secondary roads 9 px `#444448`, every other road 5 px `#2a2a2d`,
+  square-ended, at those widths at every scale. Which roads are drawn
+  follows the scale: every road up to about 530 m ahead, and further out no
+  service roads, tracks or paths, switching at 560 m ahead going out and
+  500 m coming in so speed noise holds the detail. Each road is simplified
+  so no point strays half a pixel at the closest scale that draws it.
+  Outside the pack, or without one, the course lies on the bare ground.
+- **Own track.** The ride's own track, when the map draws it, is 5 px
+  `#1f4a78`.
+- **Footer.** The black footer, rows 290 to 320, keeps the whole width. It
+  holds a 3 px `SECONDARY` scale bar from x 12, the longest of 250 m, 100 m
+  or 50 m that is at most 90 px (60 px for 100 m at 335 m ahead), its length
+  in `CAPTION`, and the distance in `FOOT_20`, `WHITE`, ending at x 203, with
+  `KM` in `CAPTION` ending at x 228.
+
+The map paints its strokes as row spans: solid pixels are stored and only the
+edges are blended. It draws the roads once per fill into a layer of the
+ground that keeps two bits of coverage per road class and pixel, and each
+frame paints the ground and roads from that layer by table.
+
 ## How data updates
 
-- **Prepare once, paint per row.** On every frame, `prepare()` turns the view
-  into positioned labels, bars and shapes. `paint(row)` then fills one display
-  row at a time: items whose rows it misses cost one comparison, and the rest
-  paint spans. `Label::paint` blends a glyph run over what the row already
-  holds. `paint_rounded` and `paint_disc` fill solid parts as spans and work
-  out only anti-aliased edges per pixel. Paint backgrounds first; later
+- **Prepare once, paint per row.** On every frame, the screen turns the view
+  into positioned labels, bars and shapes. Painting then fills one display
+  row at a time: items whose rows it misses cost one comparison, and the
+  rest paint spans. A glyph run blends over what the row already holds.
+  Rounded shapes and discs fill solid parts as spans and work out only
+  anti-aliased edges per pixel. Paint backgrounds first; later
   paints cover earlier ones. Each painted screen keeps its per-pixel original
   as a test reference, and tests assert whole frames match it.
 - **Values change in place.** Digits are tabular and right- or left-aligned to
-  fixed anchors, so a number never shifts its neighbours. A reading moves
-  only by gliding (see Motion).
+  fixed anchors, so a number never shifts its neighbours. A number jumps to
+  each new reading; only graphics glide (see Motion).
 - **Missing data looks dim, not alarming.** A stale or absent reading shows `--`.
   Zone colours fall back to `TERTIARY`. Errors belong in toasts or the status
   bar, not in the reading's place.
-- **State changes announce themselves once.** Starting, pausing, resuming,
-  laps and saving each raise a toast. Persistent conditions use the sticky
-  toasts above or the status bar.
+- **State changes announce themselves once.** Starting, resuming, laps and
+  saving each raise a toast, and a pause shows the paused screen. Persistent
+  conditions use the sticky toasts above or the status bar.
 
 ## Motion
 
 Motion marks the device's own moments. Each is a ring that moves and text
 that fades, prepared like any other frame, so a motion frame costs what a
-still one does (about 10 ms on the C606). Motion frames draw every 40 ms; the
+still one does (about 25 ms on the C606). Motion frames draw every 40 ms; the
 charging icon and sheets step every 500 ms; other pages look again once a
 second. A page sends a frame only when what it shows changes, such as the
 clock's minute, a reading, a glide that reaches the next pixel, the battery
@@ -504,12 +592,11 @@ radar markers jump to each reading or report instead of gliding, radar
 markers stop closing between reports, and every number on the ride pages changes
 once a second, when the ride clock's second turns (the wall clock's while no
 ride records): speed, power, heart rate, cadence, the distance and totals on
-the lower line and the stats, lap, climb, workout and way-back figures. Gauges and markers still show every reading as it arrives, so
+the lower line and the stats, lap, climb and workout figures. Gauges and markers still show every reading as it arrives, so
 SAVER draws a frame for each report, about four a second, and one for the
-numbers. `app/mode.rs` holds one table row per mode; the rest of VANA reads
-its fields and never asks which mode is on. The choice is stored in VANA's
-record, so it survives a restart, and a record saved before it loads as
-NORMAL.
+numbers. `apps/vana/src/app/mode.rs` holds one table row per mode; the rest
+of VANA reads its fields and never asks which mode is on. The choice is
+stored in VANA's record, so it survives a restart.
 
 Numbers never glide. A rider glancing down mid-glide could not read one, so
 every number and word on the ride screen jumps to each reading as it
@@ -522,11 +609,12 @@ at their reported speed for at most 300 ms, then glide to the next report.
 A glide draws a frame only when it moves a gauge or marker onto another
 pixel, at most every 40 ms. Only drawing glides: recording, totals and
 alerts use readings as they arrive. The mechanism is
-`firmware_shell::rendering::glide`; VANA's use of it is in `app/motion.rs`.
+`packages/shell/src/rendering/glide.rs`; VANA's use of it is in
+`apps/vana/src/app/motion.rs`.
 
 | Moment | Motion | Duration |
 | --- | --- | --- |
-| Power on | VANA shows on the first lit frame; an `ACCENT` ring closes clockwise round it from 12 o'clock and LABS fades in. Home opens when it ends. | 400 ms, the existing brand time: Home is not later |
+| Power on | VANA shows on the first lit frame; an `ACCENT` ring closes clockwise round it from 12 o'clock and LABS fades in. Home opens when it ends. | 400 ms, the brand's own time, so Home opens no later |
 | Turn off | The ring's tail chases its head round until it is gone, while the wordmark and TURNING OFF fade to black. VANA asks the device to turn off once the black frame is on the panel. | 480 ms |
 | Idle warning | An `AMBER` ring round the seconds empties with them. | 30 s |
 | Charging while off | A `GREEN` ring shows the charge with its percentage inside, and a 50% green arc climbs from the charge to full as the status bar's icon does. CHARGED at 100%. The screen goes dark after 20 s; holding top left starts VANA as always. | 20 s |
@@ -537,7 +625,8 @@ alerts use readings as they arrive. The mechanism is
 Settings is a list of sections, one per page, with page dots in the status
 bar: PROFILE, BODY, DISPLAY, CLOCK, RIDE, MAIN PAGE, RIDE PAGES, SOUND, ALERTS, LIMITS and DEVICE. A section has a `TITLE`
 headline over rows that scroll under the finger, between the headline and
-the save status (see Lists that scroll). A section whose rows do not fit
+the save status (see Lists that scroll). The `TITLE` falls back to `BODY`
+when a section name is too wide, as `RIDE PAGES` is. A section whose rows do not fit
 shows a 3 px scroll bar in the right margin: a `CARD` track down the rows,
 the part in view in `SECONDARY`. A row is a small card (radius 12) with its
 label as a `CAPTION` over its value in `BODY`, and an optional note in
@@ -556,77 +645,75 @@ Acting on a row does one of three things:
   minus and plus pads. Editing WHEEL steps by 5 mm and makes the size MANUAL;
 - a choice steps to its next value at once (brightness auto/25/50/75/100%, dim
   after 15 s/30 s/1 min/5 min/never, day/night auto/day/night, theme dark/light/auto, mode normal/saver, time zone chile/UTC-3/UTC-4, auto-pause on/off, auto lap off/1/2/5/10
-  km/at start, wheel mode auto/manual, the main page's two lower readings (cycling through the list below), ride pages (STATS, LAP, CLIMB, MAP) on/off, sounds on/off);
-- an action opens a page (SENSORS, BESTS, FORM) or a flow (PHONE, a placeholder until the
-  phone companion lands).
+  km/at start, wheel mode auto/manual, the main page's two lower readings, ride pages (STATS, LAP, CLIMB, MAP) on/off, sounds on/off);
+- an action opens a page (SENSORS, BESTS, FORM) or Connect phone (PHONE).
 
 Storage and firmware rows only show facts. The save status sits in the
 bottom band, under any toast. Brightness and dimming belong to the shell, so
 VANA asks it to apply them at once and store them; the other choices, AUTO
 among them, are stored in VANA's preference record and VANA hands the shell
-the display mode's curve.
+the display mode's curve. Every choice survives a restart. A preference
+record another firmware version wrote is foreign: VANA keeps the defaults,
+saves nothing over it and asks FORMAT STORAGE? at boot
+([volumes](mmc-volumes.md#format)).
 
 TIME ZONE sets the clock on the status bar, ride start times and night by the
-clock (`clock::Zone`). CHILE, the default, follows mainland Chile's summer
+clock. CHILE, the default, follows mainland Chile's summer
 time: UTC-3 from the first Saturday of September at 24:00 to the first
 Saturday of April at 24:00, UTC-4 otherwise. Its note says which is in force,
 such as UTC-4 NOW. UTC-3 (Magallanes, Aysén) and UTC-4 hold all year. The
 shell's own `TIMEZONE` terminal setting does not move VANA's clock.
+
 ### Bests
 
-BESTS, the last row of PROFILE, opens the rider's all-time bests (`screens::bests`):
-5 s, 1, 5 and 20 min power in `POWER`, then the longest ride, the longest
-ride time and the most ascent in their own colours, each a `CAPTION` over the
-day it was set, with the value in `BODY` at the right. With a weight set,
-each power best also shows its W/KG as a `CAPTION` on the label's line. A best not set shows
-`--` in `TERTIARY`; one set before the clock was known shows no day. The page
-has no cues; BACK returns to Settings. The row's value counts the bests set
-(7 SET, NONE YET, or a problem). A problem replaces the list with an `AMBER`
-headline and a grey line: BESTS NOT KEPT where there is no place to keep them,
-BESTS FILE DAMAGED for a file that cannot be read, BESTS NOT FORMATTED (shrunk
-to fit) with OFF AND ON TO FORMAT for a file of another version, and BESTS NOT
-SAVED when the store would not take a write. ACT asks CLEAR BESTS? with the check cue
-beside ACT to clear and the back cue beside BACK to keep; on a damaged file it
-starts them over. A failed clear says CLEAR FAILED in a toast.
+BESTS, the third row of PROFILE, opens the rider's all-time bests;
+[UX flows](ux-flows.md#bests) says what counts as a best and what each
+state means. Each best is a row: a `CAPTION` label over the day it was set,
+with the value in `BODY` at the right. The 5 s, 1, 5 and 20 min power bests
+come first in `POWER`, then the longest ride and the longest ride time in
+`SPEED` and the most ascent in `GRADE`. With a weight set, each power best
+also shows its W/KG as a `CAPTION` on the label's line. A best not set shows
+`--` in `TERTIARY`; one set before the clock was known shows no day. The
+page has no cues.
+
+A problem replaces the list with an `AMBER` headline in `BODY` and a grey
+`CAPTION` line under it. BESTS NOT FORMATTED, the longest headline, steps
+down to `CAPTION` where it does not fit in `BODY`. CLEAR BESTS? is a
+`WHITE` headline in `TITLE` (`BODY` where `TITLE` does not fit), with the
+check cue beside ACT and the back cue beside BACK.
 
 On the ride summary, a new best has the reading's metric colour and `BEST` in
-its caption: BEST TIME and BEST KM (`SPEED`), BEST ASC M (`GRADE`) on page 1,
-and a `POWER` `BEST` caption under each new best-power bar on page 3.
+its caption: BEST TIME and BEST KM (`SPEED`) and BEST ASC M (`GRADE`) on page
+1, and a `POWER` `BEST` caption under each new best-power bar on the
+best-power page (page 3, or page 4 after an elevation page).
 
 ### Form
 
-FORM, the fourth row of PROFILE, opens fitness, fatigue and form
-(`screens::form`, numbers from `ride::fitness`): FITNESS and FATIGUE as `CAPTION`
-over a `BODY` value in `POWER` (training stress is power's colour), and FORM
-beside its verdict. Only the ends of the range take a colour: `GREEN` FRESH
-(+5 to +25) and `RED` VERY TIRED (below -30). RESTED (above +25), EVEN (-10 to
-+4) and BUILDING (-30 to -11) are `WHITE`, since the cost of training is not a
-warning. Six 24 px bars, one per week, stand on a `TERTIARY` zero line, up for
-positive form and down for negative, in the colour of their own week's verdict
-and to a fixed scale (50 points is 36 px) so weeks compare. `CAPTION`s name
-only the ends, 6 WEEKS AGO and NOW, and a grey note says rides without power
-are left out, only when some were. Where there is nothing to show the page says
-why in a `BODY` headline and a grey line (READING RIDES, NO DATE YET with GET A
-GPS FIX, NO POWER RIDES with NEEDS A POWER METER). The page has no cues.
+FORM, the fourth row of PROFILE, opens fitness, fatigue and form;
+[UX flows](ux-flows.md#form) says how the numbers are worked out and the
+range of each verdict. FITNESS and FATIGUE are a `CAPTION` over a `BODY`
+value in `POWER` (training stress is power's colour), and FORM stands beside
+its verdict. Only the ends of the range take a colour: FRESH is `GREEN` and
+VERY TIRED is `RED`. RESTED, EVEN and BUILDING are `WHITE`, since the cost of
+training is not a warning. The six weekly bars are 24 px wide and stand on a
+`TERTIARY` zero line, each in the colour of its own week's verdict and to a
+fixed scale (50 points is 36 px) so weeks compare. `CAPTION`s name only the
+ends, 6 WEEKS AGO and NOW, and the note on rides without power is grey.
+Where there is nothing to show, the page says why in a `BODY` headline and a
+grey line. The page has no cues.
 
-MAIN PAGE has two rows, LOWER LEFT and LOWER RIGHT, one for each reading on the
-main page's last line. Each steps through CADENCE, DISTANCE, NP, AVG POWER,
-AVG HR, AVG SPEED, KCAL, WORK and ASCENT, and wraps. CADENCE on the left and
-DISTANCE on the right are the defaults, and draw the page exactly as it was.
-The unit beside the value names the reading: RPM, KM, NP, KCAL, KJ or M. The
-three averages share the unit AVG, because the half-width slot has no room for
-more, and their colour tells them apart (`POWER`, `HEART`, `SPEED`). A count
-past 9999 KCAL reads in thousands ("10K"), so a number is never cut off. A
-reading with no data yet shows `--`. The choice is two bytes of VANA's preference
-record, and the display mode's byte follows them (`app::preferences`).
+### Main page readings
 
-RIDE PAGES (STATS, LAP, CLIMB, MAP) lists one row per optional ride page. The ride screen's page dots
-count the pages that are on, and a page that is off never takes a dot, a MOVE
-press or a swipe. The `TITLE` falls back to `BODY` when a section name is too
-wide, as `RIDE PAGES` is. The CLIMB row's note, NO CLIMB POP-UP, shows while it
-is off. The choice is stored as hidden-page bits in the flags byte of VANA's
-preference record (`app::preferences`), so riders who hide nothing keep a
-record identical to the one before.
+MAIN PAGE chooses the two readings on the main page's last line
+([UX flows](ux-flows.md#choosing-the-main-pages-readings)). The unit beside
+the value names the reading: RPM, KM, NP, KCAL, KJ or M. The three averages
+share the unit AVG, because the half-width slot has no room for more, and
+their colour tells them apart (`POWER`, `HEART`, `SPEED`). A count past
+9999 KCAL reads in thousands ("10K"), so a number is never cut off. A
+reading with no data yet shows `--`.
+
+RIDE PAGES turns the optional ride pages on and off
+([UX flows](ux-flows.md#choosing-the-ride-pages)).
 
 ## First-run setup
 
@@ -643,74 +730,26 @@ KNOW), HEART (SET LTHR, I DON'T KNOW), SENSORS (PAIR SENSORS, LATER) and READY
   The next start resumes at the same page. SKIP SETUP, RIDE and HOME finish
   setup for good.
 
-Units are not asked yet: every screen is metric.
+Setup asks for no units: every screen is metric.
 
 ## Sounds
 
-Cues are short runs of the buzzer's three short patterns, taken as low,
-middle and high notes by pitch. Rising runs mean go, falling ones stop.
-
-| Event | Notes |
-| --- | --- |
-| Ride starts | middle, high |
-| Resumes | high |
-| Pauses, by hand or automatically | high, middle |
-| Lap | middle |
-| Ride saved | low, middle, high |
-| Battery low or critical | low, low |
-| Workout step's last three seconds | low, once a second |
-| Workout step begins, workout ends or a test measures FTP (in place of the lap chime) | high, high |
-| Following a course, or back on it | low, high |
-| A course's turn 30 s ahead (150 to 400 m) | low, middle |
-| 30 m before the course's turn | high |
-| Off the course being followed, and once again 15 s later | high, low |
-| End of the course reached | middle, high (the ride-start chime) |
-| Vehicle appears behind | the long alarm pattern |
-| Nearest vehicle near (under 60 m or 7 s), repeating every 1.5 s | low, once |
-| Nearest vehicle close (under 30 m or 4 s), repeating every 1 s | middle, once |
-| Nearest vehicle passing (under 15 m or 2 s), repeating every 0.5 s | high, once |
-| Road empty for 2 s after vehicles (ALL CLEAR setting) | low, high |
-| The rider marks a moment (MOVE held 1.5 s) | middle, middle, middle |
-
-Each note waits for the previous one's guard. A newer cue replaces one in
-progress, and a cue that cannot start within a second is dropped. SOUNDS OFF
-mutes cues; the radar's beeps always sound and nothing replaces them. The
-nearest vehicle sets the pace, by its range or its time to reach the rider,
-whichever is nearer. A vehicle holding the rider's speed sounds only the alarm. When
-the road empties, the next vehicle sounds the alarm again.
+Each cue's notes, and when a cue waits or is dropped, are in
+[UX flows](ux-flows.md#sounds).
 
 ## Input
 
 Three buttons control everything. Touch is a shortcut for navigation only.
-
-| Button | Home | Sensors | Settings | Workouts | Ride |
-| --- | --- | --- | --- | --- | --- |
-| BottomRight (ACT) | Open the focused card | Open the focused row; on a sensor's page, zero a power meter or ask FORGET SENSOR?; answer a question | Act on the row (edit, step a choice, open); while editing, raise it | Choose the focused workout, then Ready | Pause, resume; on the NEW FTP sheet, save it |
-| BottomLeft (MOVE) | Focus the next card; held 1.5 s: mark the moment (MARK n) | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages (a manual pause, or an automatic one without a course, opens on it; an automatic pause on a course opens on the ride page); held 1.5 s: mark the moment (MARK n) |
-| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back a page: SENSORS, then where Sensors opened from | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
-
-| Button | Ready | End ride? | Summary | Rides | Saved ride |
-| --- | --- | --- | --- | --- | --- |
-| BottomRight (ACT) | Start the ride | End and save it | Done: Home | Open the focused ride | Send to the phone |
-| BottomLeft (MOVE) | Held 1.5 s: mark the moment (MARK n) | — | Next page (wraps); held 1.5 s: mark the moment (MARK n) | Focus the next ride (wraps; held, four on) | Next page (wraps) |
-| TopLeft (BACK) | Home, dropping a chosen workout | Keep the ride, paused | Home | Home | Back to Rides |
-
-The rider's mark writes the moment into the session trace, so whoever reads
-the trace later starts where the rider noticed something. MOVE held for 1.5 s
-marks once per hold, while the button is still down, with three middle notes
-and a `MARK n` toast that counts the marks since power-on, so it confirms with
-SOUNDS OFF too. The hold's first report is an ordinary MOVE; the mark puts
-back the page or focus it changed, and the repeats before it change nothing.
-The mark names the time of that first report and the page shown before it.
-Lists and Settings keep their own held MOVE, so nothing marks there.
+What each button does on each screen, holding MOVE to mark a moment and
+holding TopLeft to reboot are in [UX flows](ux-flows.md#buttons).
 
 | Gesture | Rule | Effect |
 | --- | --- | --- |
 | Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card on Home, the row on Sensors, or the ride on Rides; a cue acts as its button; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
 | Drag | 10 px of mostly vertical travel on a list | The list follows the finger and coasts on when it lifts (see Lists that scroll); the card it landed on is never activated |
 | Swipe | 10 px of mostly sideways travel, then at least 48 px and twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings, out of the number editor too |
-| Long press | Still for 1 s, then lifted | On the map, stops following the course |
-| Tap on the course sign | As a tap, on the banner or the chip | Opens the map page (see [UX flows](ux-flows.md), Course) |
+| Long press | Still for 1 s, then lifted | On the map, stops following the course ([UX flows](ux-flows.md#map)) |
+| Tap on the course sign | As a tap, on the banner or the chip | Opens the map page ([UX flows](ux-flows.md#course)) |
 | Settings pads | Act on contact | Step the edited value |
 
 ### How touch is routed
@@ -723,7 +762,7 @@ tap then compete for it, and the first to win takes it: 10 px of mostly
 vertical travel give it to the list, as much mostly sideways travel to the
 swipe, and leaving the 16 px tap slop any other way loses it for all. A
 control that lost is released, never activated. The Settings pads act as the
-finger lands. `screens::touch` owns this arbitration.
+finger lands. `apps/vana/src/screens/touch.rs` owns this arbitration.
 
 A card in a list shows as pressed (`PRESSED`, iOS's touched-cell grey) only
 once the finger has rested 150 ms, as a scroll view holds a touch back until it
@@ -736,7 +775,7 @@ activating a control, and scrolling never moves it.
 ### Lists that scroll
 
 Rides, Workouts and a Settings section are pages of cards that scroll under
-the finger, with the motion of iOS's `UIScrollView` (`screens::kinetic`):
+the finger, with the motion of iOS's `UIScrollView`:
 
 - The page follows the finger pixel for pixel once it has travelled 10 px.
 - Past either end it stretches with UIKit's rubber band:
@@ -761,12 +800,6 @@ scrolls the focused card into view and does nothing else. With the focus in
 view, MOVE focuses the next card and scrolls it into view on a stiffer spring
 (about a third of a second), and ACT acts on it.
 
-Holding TopLeft for 10 s reboots the device from any state, even one that
-draws nothing. The device firmware watches for it below VANA, so a stuck
-screen cannot swallow it. The hold's first report still acts as a press
-(LAP, or the TURN OFF sheet on Home); a ride in progress resumes as a
-recovered ride.
-
 Touch never starts, pauses, laps or ends a ride. Wet gloves, rain and bumps
 cause stray contacts, and a ride must not depend on them. Anything touch can do,
 a button can do too.
@@ -780,16 +813,15 @@ finger down changes nothing for touch, so the next tap still counts. On Sensors
 it still reaches the menu, which then waits for MOVE before ACT can change a
 sensor.
 
-Producers and the arbiter share one contract, set out on
-`device_api::input::Input::Cancel`. After a `Cancel` the producer sends nothing
+Producers and the arbiter share one contract, set out on `Input::Cancel` in
+`packages/device-api/src/input.rs`. After a `Cancel` the producer sends nothing
 more from that contact. It sends one `Release` when the panel reports the lift
-or stops reporting the finger for `STALE_CONTACT_MS` (250 ms). A finger the
+or stops reporting the finger for 250 ms. A finger the
 panel stops reporting is cancelled and released at once, so a tap right after
-it is whole. The C606 driver keeps this contract with
-`firmware_services::input::TouchContact`.
+it is whole. The C606 touch driver keeps this contract.
 
-Every edge queue keeps the contract too. When a slow consumer overflows
-`Edges`, the queue drops its history and sends a `Cancel`. It then drops the
+Every edge queue keeps the contract too. When a slow consumer overflows its
+queue of touch edges, the queue drops its history and sends a `Cancel`. It then drops the
 points of the contact in progress until that contact's `Release`, and tells the
 producer, which cancels its own contact. A retained move can never reach the
 arbiter as a fresh touch.
@@ -797,8 +829,6 @@ arbiter as a fresh touch.
 A producer that cannot keep the contract still loses only the cancelled
 contact: a `Touch` that arrives at least 250 ms after the last touch edge
 starts a new contact.
-
-The radar track ends above the toast band. A toast never hides a radar target.
 
 ## Testing screens
 

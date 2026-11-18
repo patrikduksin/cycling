@@ -1,3 +1,29 @@
+//! VANA's frame: four tiers that write `Runtime`, around one read-only draw.
+//! `Runtime::frame` calls three tiers, the draw, then the fourth tier:
+//!
+//! 1. `every_pass` follows the daylight, announces the ride state and sets the
+//!    light curve, even while the screen is blank.
+//! 2. `unless_blank` stops on a blank or turning-off screen. It then latches the
+//!    numbers and takes the motion. It stops again unless a frame is due.
+//! 3. `when_due` sets the base pace, then makes every other write the frame
+//!    makes: the lists, the chart, the power sheet's animation, the page moves
+//!    and toasts, the map, the sensor menu and the shell's activity. Under a
+//!    power sheet it stops after the sheet's animation. It also reads the
+//!    position and the radar channel for the view, at their place in that
+//!    order, so the trace stream stays the same.
+//! 4. `present(&self)`, in `presentation.rs`, fills the `View` and draws it. It
+//!    writes nothing in `Runtime`. It returns `Presented`, a small `Copy` value:
+//!    a drawn power sheet, or a drawn page with the draw result, the page and
+//!    the gliding graphics' pixels.
+//! 5. `after_view` applies `Presented`. For a page it calls `motion.drew`
+//!    first, then sets the timing milestones and FORMAT's `Drawn`, then the
+//!    next frame time. The next frame time reads the motion after `drew`, so
+//!    `after_view` computes it, not `present`.
+//!
+//! A frame's `View` lives only in `present`'s stack frame, and `screens::workout`
+//! asserts its size on the device. The tiers and `present` are
+//! `#[inline(never)]`, so no tier's frame sits under another's. A new write in
+//! the frame goes into the tier that runs at its moment, never into `present`.
 use super::Runtime;
 use super::navigation::To;
 use super::presentation::{

@@ -126,7 +126,7 @@ impl Display {
 
 impl Runtime {
     /// Draw the brand's first frame in the rider's look, before the runtime
-    /// presents. Not inlined: the view is about 10 KB, and in the caller's
+    /// presents. Not inlined: the view is several KB, and in the caller's
     /// poll frame it would sit under every later frame's preparation (#167).
     #[inline(never)]
     pub fn draw_boot<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(

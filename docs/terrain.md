@@ -136,7 +136,7 @@ the 3 × 3 tiles around Plaza de Armas (`santiago-centro.terrain`, 180 KB,
 the densest roads a map draws) and a synthetic course along its streets,
 written by `cycling terrain course` (see that folder's README).
 
-## Pack format (v2)
+## Pack format (version 3)
 
 The pack is a single opaque image. The host writes it into the `TERRAIN`
 volume through the volume pack tooling and the device reads it by byte
@@ -321,9 +321,10 @@ keeps the tile records private; callers see:
   `(lat_e7, lon_e7)` from the first node through the shape to the last.
 
 Reading every road of the densest central-Santiago tile (848 edges, 1,858
-points) takes about 23 µs on the development laptop
-(`tests/santiago.rs`, `extraction_cost_per_tile`). That is a host figure;
-the device cost is measured in the map's own extraction.
+points) took about 23 µs on the development laptop on 2026-11-16. To measure
+it again, run `extraction_cost_per_tile` in
+`packages/terrain/tests/santiago.rs` (see Tests below). That is a host
+figure; the device cost is measured in the map's own extraction.
 
 The map (`apps/vana/src/screens/ride/map/roads.rs`) asks only for the tiles
 of its view, a quarter wider each way, that it does not yet hold at its
@@ -356,20 +357,14 @@ view of each scale; run it with
 once onto a 4-bit layer of the ground (two bits of coverage a class a
 pixel), and a frame paints the ground and roads from it by table.
 
-On the device, riding the fixture course in the light look (5 s health
-windows with `cycling build --variant scripted-gnss`), the map with roads sends a frame in
-31 ms at the median window's slowest (p95 44 ms) against 35 ms (p95 54 ms)
-for the map before roads: the roads cost less than the map work this
-change sped up, but the map page is still over its 25 ms frame budget. A
-road extraction takes up to 10 ms of its look-ahead pass, and a map fill
-with roads up to 48 ms.
-
-To measure it again:
+The map page's frame budget is 25 ms. A road extraction runs inside a
+look-ahead pass, and a map fill draws the roads with the rest of the map. To
+measure the frame time, the extraction and the fill on the device:
 
 1. Build `cycling build --variant scripted-gnss` and flash it with
    `cycling device flash-image`. Its receiver rides the fixture course from
    Plaza de Armas after a two-minute hold, then 1.6 km off it, so the map
-   also shows the way back to a junction far behind, at its widest step.
+   also shows the way back to a junction far behind.
 2. Put the fixture course's `course.dat` (the simulator writes it after an
    upload) on the card with `cycling files put course.dat <path>`, and
    restart.
@@ -382,8 +377,8 @@ To measure it again:
 
 ### Climbs ahead
 
-`apps/vana/src/ride/climb_ahead.rs` reruns the ride's own detector (#154
-thresholds) over the predicted samples. A climb starts at 3% over 200 m and is
+`apps/vana/src/ride/climb_ahead.rs` reruns the ride's own detector, with its
+thresholds, over the predicted samples. A climb starts at 3% over 200 m and is
 confirmed by 20 m of gain. It ends 10 m below its top, or when the grade over
 200 m falls under 1%. For up to three climbs it records:
 
@@ -430,8 +425,9 @@ climb page (ux-flows, Climb).
 | MMC reads | at most one 2 KiB read per step; a ride across new country loads a tile every minute or two |
 | CPU | one step per main-loop pass: a match is tens of edges, a prediction at most 2,000 edges and 501 samples |
 
-The device validation in the integration PR covers frame time against the
-25 ms budget, press-to-frame latency and step timing.
+The look-ahead must keep every frame within the 25 ms budget. Measure frame
+time on the device as *Roads for the map* describes, and press-to-frame
+latency with `cycling latency` ([testing harness](testing-harness.md)).
 
 ## Tests
 

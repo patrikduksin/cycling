@@ -1,3 +1,7 @@
+//! The ride screens' state machine: buttons and automatic actions to recorder
+//! requests and page moves. The ride page's message, the lap and automation
+//! toasts and the lap chime are `Notices`, and this file is the only writer of
+//! the message.
 use super::Runtime;
 use super::cues::Cue;
 use super::navigation::To;

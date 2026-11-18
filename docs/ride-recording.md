@@ -40,8 +40,8 @@ cycling ride-export                          # Writes .local/exports/<id>/ by de
 - Output: raw bytes, SHA-256, manifest, reconstructed ride JSON and GPX. Ride IDs
   restart after clear, so exported identity includes START-slot and raw content hashes.
 - Ride JSON lists `laps`: each lap's number, first sample, active time, UTC,
-  position and `started_by` (`ride`, `manual`, `distance`, `step` or
-  `distance_step`), or `null` for a ride recorded before laps were kept. GPX
+  position and `started_by` (`ride`, `manual`, `distance`, `step`,
+  `distance_step` or `position`), or `null` for a ride with no lap marks. GPX
   marks where each lap after the first began with a `wpt` named `LAP n`.
 - GPX contains only recorded locations and recorded UTC (Wi-Fi SNTP, else the
   GNSS receiver's clock). When the clock arrives mid-ride, earlier samples of
@@ -76,16 +76,17 @@ cycling ride-export --from .local/exports/<id> --format fit   # Convert an earli
   gives its start.
 - Distance comes from wheel speed only. Without a wheel sensor the file has
   none and readers use GPS.
-  Altitude is the barometric one (below); rides recorded before it was kept
-  have no elevation, and readers such as Strava fill it from their own map.
+  Altitude is the barometric one (below); a ride with no recorded altitude
+  has no elevation, and readers such as Strava fill it from their own map.
   Lap and session `total_ascent` and `total_descent` follow the recorded
   altitudes with the ride page's rules, and are left out without any.
 - Each lap's `lap_trigger` is `manual` for a lap press, `distance` for an
   automatic lap or a workout step that lasts a distance, `time` for any other
-  workout step (FIT has no workout-step trigger), and `session_end` for the
-  last. Laps meet: each starts where the last ended, so a pause at a lap
-  boundary belongs to the later lap's elapsed time. The laps' timer times add
-  up to the session's. A ride recorded before laps were kept is one lap.
+  workout step (FIT has no workout-step trigger), `position_start` for a pass
+  of the ride's start, and `session_end` for the last. Laps meet: each starts
+  where the last ended, so a pause at a lap boundary belongs to the later
+  lap's elapsed time. The laps' timer times add up to the session's. A ride
+  with no lap marks is one lap.
 
 ## Explicit reclaim
 
@@ -118,7 +119,7 @@ cycling ride-clear .local/exports/<export-id>
 
 ## Bulk MMC storage
 
-When the owned MMC partition from #108 is present and initialized, rides record
+When the owned MMC partition is present and initialized, rides record
 there instead of internal flash. Each slot sits in its own 512-byte
 sector container, so the export format is the same as for internal flash. The
 mechanism is [`sector_log`](../packages/services/src/sector_log.rs) and the
@@ -167,14 +168,14 @@ cycling ride-clear --medium bulk .local/exports/<export-id>
   before those writes is recovered as that cut.
 - Rides record to internal flash when the MMC is missing (`NOMEDIA`),
   unformatted, corrupt, failed or without room for another ride. The ride
-  screen then shows a yellow `READY INT`/`RECORDING INT`, and `RIDE STATUS`
+  page then shows an amber toast such as `READY INT` or `RECORDING INT`, and `RIDE STATUS`
   reports `fallback=1`. A ride that just filled the MMC still shows as `SAVED`
   until the next one starts. If MMC writes fail during a ride, including on
   pause or resume, the ride continues on internal flash as a new ride with its
   active time and totals carried over (`moved=1`), paused if the rider was
   pausing, and automatically resumed if it was auto-paused. If internal flash
-  cannot take the continuation either, the failed MMC ride stays on screen as
-  `STORAGE ERROR`. A failed finish ends the ride. The MMC part is recovered on the next
+  cannot take the continuation either, the failed MMC ride stays on the ride
+  page with the `STORAGE ERROR` toast. A failed finish ends the ride. The MMC part is recovered on the next
   boot. Internal rides are never migrated.
 - Bulk export lists invalid sector containers in `invalid_containers`, exports
   them as zero slots and saves each raw sector as `invalid-sector-N.bin`, with
@@ -183,11 +184,11 @@ cycling ride-clear --medium bulk .local/exports/<export-id>
 - The store is bound to its region size and accepts a region that later grows
   at its end, so an explicit, owner-run migration can extend it.
 
-## Historical ANT captures
+## ANT diagnostic records
 
-Historical ANT diagnostic records remain occupied slots, preserved by recovery and
-raw export. The on-device diagnostic recorder has been removed. Decode a full raw
-prefix offline:
+A journal can hold ANT diagnostic records. They are occupied slots that
+recovery and raw export keep, and firmware does not write them. Decode a full
+raw prefix offline:
 
 ```sh
 cycling ant-export .local/ant-decoded --input .local/exports/<export-id>/ride-slots.bin
@@ -199,61 +200,33 @@ sequence gaps and keeps the selected raw bytes.
 Keep raw exports, decoded captures, coordinates, sensor readings and identifiers
 in ignored `.local/`.
 
-## VANA workout build
+## What a ride records
 
-Controls:
-
-| Screen | Control |
-| --- | --- |
-| Menu | Opens a ride, sensor status, the workout picker (TRAIN) or settings |
-| Ride | Opens Ready (GPS, sensors, battery and storage in plain words); ACT or rolling off starts the ride, and the ride buttons below apply. See [UX flows](ux-flows.md). |
-| Settings | Bottom-left moves to the next field (FTP, LTHR), bottom-right edits it, top-left returns home. While editing, bottom-left lowers and bottom-right raises it by 5 and top-left finishes. Touch: tap a field to edit it, then tap the large minus or plus pad. Edits apply at once and are saved two seconds after the last change. |
-| Sensors | Bottom-left moves, bottom-right selects, top-left returns. Choosing a nearby sensor saves it; choosing another of a saved type asks to replace it. A saved sensor opens a page whose only action is Disconnect, which removes it; a power meter's page also offers Calibrate, which asks it to zero itself. |
-
-Ride buttons keep the system-wide roles: bottom-right acts, bottom-left moves,
-top-left marks or backs out. The ride screen shows no button labels; the
-status row under the pages names the ride state, and short toasts confirm a
-lap. A pause fills the screen. A ride ends only once paused, and only through
-the END RIDE? question, so a bump of top-left while riding marks a lap
-instead. Touch never starts, pauses, laps or ends a ride.
-
-| Ride state | Bottom-right (act) | Bottom-left (move) | Top-left (mark / back) |
-| --- | --- | --- | --- |
-| Ready | Start | — | Home |
-| Recording | Pause | Next page, wrapping | Lap |
-| Paused | Resume | From the paused screen to the ride pages; past the last page, back | Asks END RIDE?: ACT finishes and commits the final samples, then the summary shows `RIDE SAVED`; BACK keeps the ride paused |
-| Saved (summary) | Done: Home | Next summary page | Home |
-
-The pages are live, totals, lap and climb; the header shows `1/4`. A
-confirmed climb (3% over 200 m that gains 20 m), or one from the map within
-500 m, brings up the climb page. Its end returns to the previous page unless
-the rider changed page during the climb.
+[UX flows](ux-flows.md#the-ride) owns the ride's screens and buttons, with
+[Sensors](ux-flows.md#sensors), and [UI](ui.md) owns how they look, from
+[Settings](ui.md#settings) to the [power-on brand](ui.md#motion). This
+section keeps what decides the recorded data.
 
 Laps:
 
 - A lap press closes the current lap; another within three seconds is ignored.
-  Settings AUTO LAP chooses what closes a lap by itself: off, every 1, 2, 5
-  (the default) or 10 km of lap distance, or AT START. A lap press restarts the
-  distance count. During a workout each step closes a lap instead, and neither
-  kind of automatic lap runs. All share one numbered list.
-- AT START closes a lap each time the rider rides past where the ride began
-  (the first fix, as the breadcrumb measures from). A pass comes within 25 m of
-  the start and then leaves beyond 35 m while moving, so the lap begins about
-  40 m past the start (35 m and the next sample). It counts once the rider has been
-  75 m away, which is why a ride never laps at its own start, and GPS jitter
-  between 25 m and 75 m cannot fire it twice. More than a minute within 25 m
-  is loitering, such as a car park, and is no pass. A pass closes no lap shorter
-  than 500 m or 60 s of recorded time; the lap carries on. It needs the
-  breadcrumb, so it runs wherever the breadcrumb does.
-- For two seconds a toast in the status row shows `LAP n`, the finished lap's
-  time and its average power.
+  Settings AUTO LAP starts at EVERY 5 KM; its choices are in
+  [UX flows](ux-flows.md#recording). A lap press restarts the distance count
+  of an automatic lap. During a
+  workout each step closes a lap instead, and neither automatic lap runs. All
+  laps share one numbered list.
+- AT START follows the rules in [UX flows](ux-flows.md#recording). It reads
+  the breadcrumb's passes of the start, so it runs wherever the breadcrumb
+  does.
+- For two seconds a toast shows `LAP n`, the finished lap's time and its
+  average power.
 - Lap time is recorded time, so a pause adds none. Lap averages follow the ride
   totals: power counts zeros, speed is lap distance over moving time, heart rate
   counts seconds with a reading.
 - The lap page shows the open lap's time, number, distance and average power,
   speed and heart rate, then the previous lap's time and average power. Speed
   and power deltas against the previous lap are green with `+` when higher and
-  red with `-` when lower.
+  `SECONDARY` with `-` when lower.
 - Laps restart with each ride, stay visible after saving, and keep the last 16
   summaries in RAM. The journal keeps where each lap began, so FIT, JSON and
   GPX exports and saved rides have them, and a ride recovered after power loss
@@ -261,27 +234,25 @@ Laps:
 
 Sensors:
 
-- Four ANT channels cover speed, heart rate, power and radar. VANA selects one
-  BLE HRS or CSC profile at a time.
-- A scan briefly disconnects the selected channels, scans for ten seconds, then
-  restores them. Sensor values are unavailable during the scan.
-- Selected ANT sensors are saved, one per device type with their full identity,
-  and reconnect by themselves: after power-on (without opening Sensors), when a
-  sensor wakes late, after signal loss or a sensor power cycle, and after a
-  radio restart or device wake. VANA only ever reconnects the saved identity.
-  Each failed search waits 1, 2, 4, 8, 16, then 30 seconds before the next
-  (on top of the radio's ten-second search), one radio request at a time, with
-  saved sensors taken in turn. Discovery pauses reconnection briefly; an
-  uncertain radio is not retried until it restarts.
-- Sensor tiles keep their positions and show what was observed: live,
-  waiting for data, data lost, searching, not found yet (retrying), waiting for
-  radio, replacing, radio unavailable or type unsupported.
-- Disconnect removes the sensor from the saved sensors at once and closes its
-  channel; its pages are ignored from then on. It stays removed through
-  reconnection, scans and restarts until selected again.
+- VANA holds up to ten saved ANT+ sensors, one per device type: power,
+  fitness equipment, shifting, Di2 shifting, bike lights, radar, heart rate,
+  speed and cadence, cadence, and speed. It selects one BLE HRS or CSC
+  profile at a time.
+- A search runs for ten seconds beside the connected sensors, which keep
+  reporting through it.
+- Saved ANT+ sensors keep their full identity and reconnect by themselves:
+  after power-on (without opening Sensors), when a sensor wakes late, after
+  signal loss or a sensor power cycle, and after a radio restart or device
+  wake. VANA only ever reconnects the saved identity. Each failed search waits
+  1, 2, 4, 8, 16, then 30 seconds before the next (on top of the radio's
+  ten-second search), one radio request at a time, with saved sensors taken in
+  turn. Discovery pauses reconnection briefly; an uncertain radio is not
+  retried until it restarts.
+- A forgotten sensor's channel closes at once, and its pages are ignored from
+  then on, through reconnection, searches and restarts.
 - Saved sensors are stored with the training profile (see below). A save that
-  fails shows NOT SAVED on the Sensors page and is retried every five seconds;
-  an unreadable stored record shows SAVED SENSORS UNREADABLE and is kept.
+  fails is retried every five seconds, and the Sensors pages say NOT SAVED; an
+  unreadable stored record shows SAVED SENSORS UNREADABLE and is kept.
 - BLE transport loss or stale/disconnected measurements invalidate sensor values.
 
 Speed and distance:
@@ -289,8 +260,8 @@ Speed and distance:
 - A wheel sensor that measures is the speed source. Without one (none paired,
   lost, or not yet turning) GPS stands in (`ride/gps_speed.rs`): the receiver's
   Doppler ground speed from RMC or VTG when it sends one for the fix, otherwise
-  the distance the fix moved over the last 2-4 s (a median of three). The
-  record format is unchanged: `speed_mm_s` holds whichever source was used.
+  the distance the fix moved over the last 2-4 s (a median of three).
+  `speed_mm_s` holds whichever source was used.
 - GPS speed needs a fresh fix (at most 2 s old) with HDOP of 5.0 or better and
   at least four satellites when the receiver reports them. A poorer fix gives
   no speed and cannot move or stop the ride. Below 3.6 km/h GPS reads zero:
@@ -301,11 +272,11 @@ Speed and distance:
 - `POSITION` on the terminal reports `hdop_tenths` and `speed_mm_s`, so an
   outdoor check shows whether the receiver sends Doppler.
 
-Auto-pause and auto-start (on by default, constants in `ride/auto.rs`):
+Auto-pause and auto-start (Settings AUTO PAUSE, on by default; constants in
+`ride/auto.rs`):
 
 - Only a measured speed pauses, resumes or starts a ride. Without a wheel or
-  GPS speed nothing pauses or starts, and the ride page says `AUTO PAUSE OFF`
-  for the first 8 s.
+  GPS speed nothing pauses or starts.
 - Wheel: pause below 3 km/h for 1 s. Packets that repeat the last count bound
   the speed to one circumference per the time past the sensor's count interval
   plus 300 ms; silence alone does not decay it. A stop pauses the ride about 4 s
@@ -321,11 +292,11 @@ Auto-pause and auto-start (on by default, constants in `ride/auto.rs`):
   2 s, start at or above 10 km/h for 5 s. In the simulator the pause takes
   about 3 s with Doppler and 7 s from positions; jitter of 2 m at a light
   neither resumes the ride nor adds distance.
-- Start happens on the ride screen with the ride Ready, through the ordinary
-  start request (refused while storage is not ready). Only a Ready ride starts
+- Auto-start runs on Ready or the ride pages, through the ordinary start
+  request (refused while storage is not ready). Only a Ready ride starts
   itself, not one that is Saved or Recovered.
-- Journal: the same Pause, Resume and Start events as the buttons; the record
-  format and export are unchanged. The screen says `AUTO PAUSED`.
+- The journal gets the same Pause, Resume and Start events as the buttons; the
+  record format and export do not tell them apart.
 - A manual pause never auto-resumes. ACT on an auto-pause keeps the ride paused
   as a manual pause; the next ACT resumes. If every speed source is lost during
   an auto-pause, the ride resumes after 3 s when a wheel measured the stop, or
@@ -341,27 +312,28 @@ Recording:
   samples once START and the terminal record are reserved, which is 16,376 s
   (4 h 32 min 56 s) at 1 Hz when empty. Each pause/resume costs two event slots
   plus the unused part of the batch it flushes (about 10 s of capacity).
-- Ready shows `ROOM FOR n H` (`ROOM FOR n MIN` under an hour). Under one hour left, the ride
-  state row turns yellow and reads `STORAGE nM LEFT`, `REC nM LEFT` or
+- Ready shows `ROOM FOR n H` (`ROOM FOR n MIN` under an hour). Under one hour
+  left, the ride page shows an amber toast, `STORAGE nM LEFT`, `REC nM LEFT` or
   `PAUSED nM LEFT`; `RIDE STATUS` reports `free_s`. START is refused (`STORAGE
   FULL`) without room for one sample batch.
 - When the journal fills mid-ride, the last slot closes the ride with a FULL
-  record, later samples are dropped and the screen shows `STORAGE FULL`. The ride
-  and every earlier ride stay exportable.
+  record, later samples are dropped and the ride page says `STORAGE FULL`. The
+  ride and every earlier ride stay exportable.
 - After power loss, the open ride is closed with a RECOVERED record at its last
-  committed active time and the ride screen shows `RECOVERED`; the next START is
-  a new ride. That ride reads the recovered ride's positions back from the
-  journal for the map's track and AT START laps (`ride::breadcrumb::rebuild`); its
-  totals and laps start from zero. Power lost during the very first write of an
-  empty journal leaves one occupied invalid slot and recording stays available.
+  committed active time and the ride page says `RIDE RECOVERED`; the next START
+  is a new ride. That ride reads the recovered ride's positions back from the
+  journal, so the map's track and AT START laps go on from where the cut ride
+  began; its totals and laps start from zero. Power lost during the very first
+  write of an empty journal leaves one occupied invalid slot and recording
+  stays available.
 - Sampling continues with missing sensors or GPS; unavailable measurements stay
   absent. Location-free rides are valid, and export does not invent coordinates,
   satellite metadata, speed or distance.
 - Optional sample flags 0x40, 0x80 and 0x100 add measured speed in mm/s at byte
   40, power in watts at byte 38 and signed gradient in tenths of a percent at byte
   44.
-- Sample bytes 46..48 hold the smoothed barometric altitude (the ride page's
-  `Totals` altitude, only with a fresh pressure reading) as FIT's `altitude`
+- Sample bytes 46..48 hold the smoothed barometric altitude (the altitude the
+  ride page shows, only with a fresh pressure reading) as FIT's `altitude`
   field: u16 of (metres + 500) * 5, 0.2 m resolution, 0xFFFF for none. It has
   no flag bit. The host JSON has `altitude_m` and the GPX `<ele>`.
 - Gradient estimates the pressure change over at least 30 metres of wheel
@@ -385,12 +357,13 @@ Lap marks:
 - Values 6 to 254 are reserved for later marks; this firmware and
   `ride-export` read them as no mark.
 
-Fixed settings in this build:
+Clock:
 
-| Setting | Value |
-| --- | --- |
-| Display clock | Settings TIME ZONE, Chile's summer time rule by default (`clock::Zone`); recorded UTC is unmodified |
-| Clock source | Wi-Fi SNTP since boot, else the GNSS receiver's dated fixes (carried on through a lost fix); GNSS time of day as a display fallback |
+- Settings TIME ZONE sets the displayed clock, Chile's summer time rule by
+  default (`clock::Zone`); recorded UTC is unmodified.
+- The clock comes from Wi-Fi SNTP since boot, else the GNSS receiver's dated
+  fixes (carried on through a lost fix); GNSS time of day is a display
+  fallback.
 
 Wheel circumference starts at 2136 mm (stock RC520 700x28c) and is stored in
 the preference record. In WHEEL MODE AUTO, a ride with a speed sensor and a good
@@ -406,16 +379,12 @@ Training profile:
   then 75, 90, 105, 120 and 150 %); heart rate zones are Friel's five as a
   percentage of LTHR (Z2 from 81 %, then 90, 94 and 100 %). Boundaries round to
   the nearest watt or beat.
-- The defaults, FTP 215 W and LTHR 185 bpm, reproduce the earlier fixed power
-  table exactly and keep Z5 heart rate from 185 bpm.
-- The main ride page shows each zone number in black on a band of the zone
-  colour (Z1 grey, Z2 blue, Z3 green, Z4 yellow, Z5 orange, Z6 red, Z7 purple),
-  with a gauge of the reading's place within the zone. Its power, and the
-  power zone, are the 3 s average: the mean of the last reading in each of the
-  last three seconds, zeros included, cleared when the meter goes quiet. The
-  stats page shows the recorded time in each power and heart rate zone as two
-  bars. Time in zone is kept in memory with the other ride totals; it is not
-  part of the ride record.
+- The defaults are FTP 215 W and LTHR 185 bpm.
+- The main page's power, and the power zone, are the 3 s average: the mean of
+  the last reading in each of the last three seconds, zeros included, cleared
+  when the meter goes quiet. [UI](ui.md#charts) draws the zone gauges and the
+  time-in-zone bars. Time in zone is kept in memory with the other ride
+  totals; it is not part of the ride record.
 - The stats page also shows live intensity factor (`IF`, normalized power over
   FTP) and training stress score (`TSS`: seconds with power × NP² / (FTP² ×
   36), so an hour at FTP is 100). Both wait for normalized power's first 30 s
@@ -432,17 +401,15 @@ Training profile:
   defaults in force, with no saved sensors, and is never replaced: the
   device offers FORMAT (see [volumes](mmc-volumes.md#format)).
 
-Radar uses the left edge of the workout screen:
+While a radar is paired, the ride pages keep a strip on their left edge for it:
 
-- Each fresh target is a dot; lower means farther behind, and it moves toward the
-  rider marker as it approaches. Yellow marks an approaching target, red proximity.
-- A short sound plays for a closing target within 40 metres or six seconds of
-  closing time, at most once per five seconds, on the workout screen including
-  its ready and paused states.
-- The decoder expires each target page after two seconds. Missing radar data turns
-  the rail grey.
-
-VANA branding and the brief glitch animation appear only on the splash screen.
+- A white arrow at the top is the rider. Each fresh target is a dot on the
+  track below it, lower the farther behind, out to 200 m. A dot is yellow
+  (`POWER`), and red when the target closes and is within 40 m or six seconds.
+- The track is `ACCENT` while the radar reports, amber while it is
+  unavailable, and red when it reports an error or an undefined threat.
+- The decoder expires each target page after two seconds.
+- The radar's sounds are in [UI](ui.md#sounds).
 
 ## Structured training
 
@@ -461,7 +428,7 @@ distance or until MARK, with a target: % FTP, watts, heart zone, % LTHR,
 cadence, a ramp or none. Repeat blocks play a run of steps several times.
 Targets follow the training profile, so a new FTP moves every power band.
 
-While riding a workout, the ride pages gain a workout page first (`1/7`). It
+While riding a workout, the ride pages gain a workout page first. It
 shows the step and its target, the 3 s reading against the band (UNDER, ON
 TARGET, OVER), the time or distance left, the next step and the whole
 workout as a chart. The main page draws the band under its power or heart
@@ -476,8 +443,7 @@ moves to the main page; one on another page stays there.
 | Tap on the time left | One more minute, or 500 m on a distance step |
 
 `WORKOUT STATUS` reports the step, target, reading, compliance, laps and the
-time on target; `Runtime::workout_summary()` gives the last workout's summary
-to other features.
+time on target.
 
 ### Personal bests
 
@@ -486,9 +452,10 @@ distance and by time, most ascent) are ride history, so they live in
 `bests.dat` on the FILES volume (`kept::bests`), not in the preference record.
 When a live ride finishes, VANA reads the file, merges the ride and writes it
 back with the same synchronous write as the workout outcome; a ride that
-cannot be stored claims no best. VANA never formats the store: without a
-card, a FILES volume or a store the host formatted, bests are not kept (the
-host's `files format` erases them). A file that does not decode is never
+cannot be stored claims no best. A ride never formats the store: without a
+card, a FILES volume or a formatted store, bests are not kept. Only the host's
+`files format` and [FORMAT](mmc-volumes.md#format) format FILES, and both
+erase the bests. A file that does not decode is never
 merged into; only CLEAR BESTS replaces it. A file of another version is
 foreign: never merged into nor replaced, CLEAR BESTS included, until FORMAT
 erases it. A write the store refuses leaves the merged bests in memory for the
@@ -510,7 +477,8 @@ unknown; a value of 0 is no best.
 
 A course is a planned route the rider loads from the phone page (`PUT
 /api/course` with a GPX file). VANA keeps one, as `course.dat` on the FILES
-volume (`ride::course`), and reads it back at boot and when the card becomes
+volume (stored by [kept/course.rs](../apps/vana/src/kept/course.rs), its bytes
+defined in [ride/course.rs](../apps/vana/src/ride/course.rs)), and reads it back at boot and when the card becomes
 ready. In memory it is up to 2,048 points in PSRAM beside the breadcrumb. The
 upload streams through `ride::course::gpx`, which takes the first track of
 two points or more (or, without one, the first such route), joins a track's
@@ -525,7 +493,7 @@ the file in one atomic commit only once the whole body has read as a course;
 an upload that fails, or that the phone cuts off, leaves the stored course,
 which VANA then reads back. Body bytes count as activity, so a slow upload
 does not end the phone session as idle. `DELETE /api/course` removes it. Without a card, a
-FILES volume or a store the host formatted, no course is kept.
+FILES volume or a formatted store, no course is kept.
 
 | Bytes | Field |
 | --- | --- |
@@ -557,8 +525,8 @@ are written as `course-turns.dat` once `course.dat` is committed, and removed
 with it. The file store commits one file at a time, so the turns name their
 course by its key: the CRC that ends `course.dat`. Turns left by a cut
 between the two writes are not that course's. A course without its own turns, or with a turns file that does
-not decode, has them found by scanning the course as kept when it is placed,
-as before; so does a course whose scan at upload needed more than the 512
+not decode, has them found by scanning the course as kept when it is placed;
+so does a course whose scan at upload needed more than the 512
 points it keeps, and its turns file is removed. Placing a course reads its
 turns into the 1,024-turn list and moves them into the ride's frame. The list
 holds 1,024 turns at a time: on a course with more, the scan waits once the
@@ -608,8 +576,8 @@ says it is not formatted.
 The phone page adds workouts too (`PUT /api/workouts`, the same codec file as
 the body, at most `ENCODED_MAX` (475) bytes; the page builds it from the JSON
 in the browser, byte for byte as `workout-load` does). The file is gathered in
-the phone server's PSRAM, then `Library::store` decodes and validates it
-before anything is written, so a damaged, cut-off or unridable file changes
+the phone server's PSRAM, then VANA decodes and validates it before
+anything is written, so a damaged, cut-off or unridable file changes
 nothing. It is stored as `workouts/<name in lower case, at most 17 characters>-<CRC32 of
 the name>.vw`, so the same name replaces its file (one atomic commit; a cut
 leaves the old file) and two names never share one. The picker lists only 8,
@@ -624,8 +592,7 @@ the workout's name, so neither replaces the other; delete either with
 list, 400 `empty`, 409 `ride` or `full`, 413 `too_large`, 422 `format`,
 `damaged` or `invalid`, 503 `unavailable` or `storage`, 507 `nospace`. `GET
 /api/workouts` lists the uploads (read from FILES again) and `DELETE
-/api/workouts?file=<file>` removes one that is listed. The files are the ones
-firmware from before the phone page reads, unchanged; the phone session ends
+/api/workouts?file=<file>` removes one that is listed. The phone session ends
 when a ride starts and these routes also refuse while one records.
 
 VANA lists `workouts/` at boot, each time the picker opens and on
@@ -649,7 +616,7 @@ ride recovered after a power cut has no record.
 ### Ride facts
 
 When a ride is saved, VANA keeps what the journal does not hold in one table
-on FILES, `rides/facts.tbl` (`apps/vana/src/kept/facts/record.rs`): the FTP and LTHR
+on FILES, `rides/facts.tbl`: the FTP and LTHR
 in force, the climbs it finished and their gain, and its start time. Once the
 summary has measured the heart-rate recovery, the ride is saved again with it.
 The rides list's TSS and FORM use the kept FTP, and a saved ride read back
@@ -673,8 +640,9 @@ open or being written.
   counts at the FTP now.
 - Facts give way to every other file: a ride saves its workout record first,
   and a new table never takes the last free directory entry.
-- Without a card, a FILES volume or a store the host formatted, nothing is
-  written and every reader shows what it showed before facts were kept. A
+- Without a card, a FILES volume or a formatted store, nothing is
+  written and every reader shows the ride as one without facts: TSS at the
+  FTP now, no climbs and no HR recovery. A
   write the store refuses is logged and the ride is not held up for it. A
   table whose header fails its CRC keeps its slots, and the next save writes
   it again with a fresh header, copy-on-write. A `rides/facts.tbl` without
@@ -684,8 +652,10 @@ open or being written.
   start: the same ride unless rides were saved out of start order, and each
   boot reads the table again.
 
-The table is a header and then one 32-byte slot per ride, oldest saved first.
-Each slot ends in the CRC32 of the bytes before it:
+The table, defined in
+[kept/facts/record.rs](../apps/vana/src/kept/facts/record.rs), is a header
+and then one 32-byte slot per ride, oldest saved first. Each slot ends in the
+CRC32 of the bytes before it:
 
 | Header bytes | Field |
 | --- | --- |
@@ -711,8 +681,8 @@ without that slot and never rewritten.
 ### Discarded and deleted rides
 
 The rider can discard a ride on END RIDE? and delete a saved ride from its
-last page. Neither erases anything. One table on FILES, `rides/deleted.tbl`
-(`apps/vana/src/kept/deleted.rs`), names the hidden rides. The rides list,
+last page ([UX flows](ux-flows.md#end-ride)). Neither erases anything. One
+table on FILES, `rides/deleted.tbl`, names the hidden rides. The rides list,
 the ride count, the week's distance and TSS, FORM and the phone's
 `/api/activities` leave them out, and a FIT request for one answers 404
 `deleted`. Removing the file shows every ride again. After boot, each time
@@ -740,7 +710,7 @@ written.
 - A save writes the table again, copy-on-write, its slots byte for byte and
   in their order with the new one last. A table that only gains rides
   therefore only grows at its end. A cut leaves the old table or the new one.
-- Without a card, a FILES volume or a store the host formatted, nothing is
+- Without a card, a FILES volume or a formatted store, nothing is
   hidden, END RIDE? has no discard cue and a saved ride has no delete page.
   Neither shows once the table is full or the card is out or has failed. A
   failed read hides nothing and is tried again 5 s later; the list and the
@@ -750,8 +720,9 @@ written.
   `rides/deleted.tbl` without the magic, with a damaged header, or of another
   version or stride is read as hiding nothing and never written over.
 
-The table is a header and then one 32-byte slot per hidden ride, each ending
-in the CRC32 of the bytes before it:
+The table, defined in [kept/deleted.rs](../apps/vana/src/kept/deleted.rs),
+is a header and then one 32-byte slot per hidden ride, each ending in the
+CRC32 of the bytes before it:
 
 | Header bytes | Field |
 | --- | --- |
@@ -794,6 +765,6 @@ in the CRC32 of the bytes before it:
 - Altitude is the standard atmosphere, not calibrated to sea level: weather can
   shift absolute altitude by tens of metres, while changes within a ride are
   good. A saved ride's ascent, descent and elevation profile come from the
-  recorded altitude; only a ride saved before altitude was recorded estimates
-  ascent from the recorded gradient.
-- A grey radar rail does not imply an empty road.
+  recorded altitude; only a ride with no recorded altitude estimates ascent
+  from the recorded gradient.
+- An amber radar track, which means no radar data, does not imply an empty road.

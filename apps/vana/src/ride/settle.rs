@@ -1,3 +1,7 @@
+//! The save protocol, the only code that writes FILES after a recorder result.
+//! A discarded ride is hidden instead of saved. Any other ride, and a discard
+//! that could not be hidden, saves its bests, workout record and facts, in that
+//! order.
 use crate::clock::Zone;
 use crate::kept::CardRefused;
 use crate::kept::bests::{self, Found, Outcome};

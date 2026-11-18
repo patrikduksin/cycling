@@ -11,8 +11,10 @@ The ANT host test has two explicit source seams to substitute UART and locking.
 """
 from collections import namedtuple
 from enum import Enum
+import os
 from pathlib import Path
 import re
+import subprocess
 import tomllib
 from typing import NamedTuple
 
@@ -460,6 +462,39 @@ def source_rules(owner, relative, aliases):
     return forbidden, portable
 
 
+DOCUMENTS = ('AGENTS.md', 'CONTRIBUTING.md', 'README.md', 'docs', '.agents')
+TRACKED_ROOTS = ('apps/', 'packages/', 'devices/', 'tools/', 'docs/', '.agents/', 'web/', 'nix/', 'vendor/')
+LINK = re.compile(r'\]\(([^)#\s]+)(?:#[^)]*)?\)')
+CODE_PATH = re.compile(r'`([\w.-]+/[\w./-]+)(?::[\d,-]+)?`')
+
+
+def missing_references(text, path, exists):
+    """Paths a document names that are not in the repository.
+
+    A link resolves from its document. A path in backticks is checked when it
+    starts at a tracked top-level directory, so a shorthand such as
+    `ride/recorder.rs` is left alone.
+    """
+    findings, fenced = [], False
+    for number, line in enumerate(text.splitlines(), 1):
+        fenced ^= line.lstrip().startswith('```')
+        if fenced:
+            continue
+        for target in LINK.findall(line):
+            if '://' not in target and not target.startswith('mailto:') and not exists((Path(path).parent / target).as_posix()):
+                findings.append((number, f'links to {target}, which does not exist'))
+        for target in CODE_PATH.findall(line):
+            if target.startswith(TRACKED_ROOTS) and not exists(target):
+                findings.append((number, f'names {target}, which does not exist'))
+    return findings
+
+
+def documents():
+    for name in DOCUMENTS:
+        path = ROOT / name
+        yield from sorted(path.rglob('*.md')) if path.is_dir() else [path]
+
+
 def self_test():
     for source in [
         'use firmware_shell::{Shell};', 'use {vana as app, device_api};',
@@ -627,6 +662,11 @@ ui = { package = "firmware-shell", path = "../shell" }
                    'fn verify() { Stack::wait_config_down(&stack).await; }',
                    'fn time_sync() { select(stack.wait_link_down(), timer).await; }']:
         assert foreign_stack_waits(publisher + helper, wifi), helper
+    present = {'docs/ui.md', 'apps/vana/src/lib.rs'}.__contains__
+    document = ('[ui](ui.md) [gone](gone.md#top) [site](https://example.com) `apps/vana/src/lib.rs:12` `apps/vana/src/gone.rs` `ride/recorder.rs`'
+                '\n```\n[example](example.md)\n```')
+    assert missing_references(document, 'docs/architecture.md', present) == [
+        (1, 'links to gone.md, which does not exist'), (1, 'names apps/vana/src/gone.rs, which does not exist')]
 
 
 def main():
@@ -661,9 +701,19 @@ def main():
             for check in (unmarked_capabilities, console_reach, owner_reach, pixel_rects):
                 failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
                                 for line, reason in check(path.read_text(), path.relative_to(ROOT).as_posix()))
+    tracked = set(subprocess.run(['git', 'ls-files'], cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines())
+    tracked |= {parent.as_posix() for name in tracked for parent in Path(name).parents}
+
+    def exists(target):
+        directory = '/' if target.endswith('/') else ''
+        target = os.path.normpath(target)
+        return target in tracked or subprocess.run(['git', 'check-ignore', '-q', target + directory], cwd=ROOT, stderr=subprocess.DEVNULL).returncode == 0
+    for path in documents():
+        failures.extend(f'{path.relative_to(ROOT)}:{line}: {reason}'
+                        for line, reason in missing_references(path.read_text(), path.relative_to(ROOT).as_posix(), exists))
     if failures:
         raise SystemExit('\n'.join(failures))
-    print(f'Boundaries, layers, the stack waiter, capabilities, the console, the device owners and laid-out screens passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
+    print(f'Boundaries, layers, the stack waiter, capabilities, the console, the device owners, laid-out screens and document references passed for {len(OWNERS)} packages and {len(paths)} Rust files.')
 
 
 if __name__ == '__main__':

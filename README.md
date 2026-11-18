@@ -64,7 +64,7 @@ On the Magene C606 today:
 - **Radar.** Rear radar alerts that beep faster and higher as a car gets closer.
 - **Maps and courses.** Your track on a map, GPX courses loaded from your phone,
   turn warnings ahead, and a climb page that follows the road.
-- **Workouts.** Nine built-in workouts, and your own added from your phone.
+- **Workouts.** 16 built-in workouts, and your own added from your phone.
 - **Training.** Zones, personal bests, an FTP suggestion after a new 20 minute
   best, and fitness, fatigue and form over the last 120 days.
 - **Ride recording.** Laps (including an automatic lap each time you pass your
@@ -86,9 +86,10 @@ Your original firmware is never lost. The first step reads a complete backup
 of your device, and one command puts the manufacturer's firmware back whenever
 you want.
 
+Set up the repository as [Set up a machine](docs/dev-setup.md#set-up-a-machine)
+describes, then run:
+
 ```sh
-git clone https://github.com/patrikduksin/cycling && cd cycling
-nix develop                               # sets up every tool (needs Nix: https://nixos.org/download)
 CYCLING_PORT=/dev/ttyACM0 cycling backup  # one-time full backup (your port may differ)
 cycling flash                             # install cycling
 cycling stock                             # anytime: back to the manufacturer's firmware

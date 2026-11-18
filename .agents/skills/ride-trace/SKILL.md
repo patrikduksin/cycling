@@ -44,10 +44,8 @@ not read or a tool that did not build, is `{"error": ...}` with exit status 2;
   When `CYCLING_DEVICE_HOST` is set, the device is on another machine:
   follow the remote device skill; `cycling device trace pull` brings
   `.local/` back with the kept pack, so the first pull of a pack copies it
-  across. An `.origin` saved before the intent region (`ORIGIN1`) does
-  not load: `cycling trace upgrade <trace>...` rewrites each as
-  `ORIGIN2`, with a blank intent region. Keep device traces under `.local/`
-  and never commit them: they record the rider's location.
+  across. Keep device traces under `.local/` and never commit them: they
+  record the rider's location.
 - What a strict replay of a device trace reads beside the trace: the
   terrain pack's data, which the trace holds only digests of. The header
   names the pack by its SHA-256, and the replay finds the pack file in
@@ -189,8 +187,7 @@ A trace names the build that recorded it (the
 summary's `build`): a hash of what built it, uncommitted changes included.
 The build archives what it hashed in the primary checkout's
 `.local/builds/<hash>/` on the machine that built it, and keeps it. An unstamped trace
-names `unknown`. Older commit-stamped traces keep their commit bytes; those
-stamps have no archived listing. A device build hashes its whole tree. A
+names `unknown`. A device build hashes its whole tree. A
 simulator build hashes only `apps`, `packages`, `tools/simulator`, the
 vendored `trouble-host` manifest, `patches`, `.cargo` and the Cargo files, with its features and toolchain, so
 an edit anywhere else keeps its hash. The default, `--mode auto`, replays
@@ -206,8 +203,8 @@ cycling_devtools.build_hash relate <hash> <hash>` prints the same relation.
 - `strict` answers every call VANA makes from the recording and counts any
   difference. It reproduces the recording frame for frame, checks the
   panel's pixels against the recorded digests, and tells a replay fault from
-  a VANA change. To get a strict replay of an older trace, rebuild its
-  tree: check out the commit in `.local/builds/<build>/commit`, then apply
+  a VANA change. To get a strict replay of a trace another build recorded,
+  rebuild that build's tree: check out the commit in `.local/builds/<build>/commit`, then apply
   the `diff.patch` beside it, if there is one, with `git apply --binary`. A stimulus replay does not compare the pixel digests.
   A frame sends only the rows that changed, but the digest (`Panel`) is
   of the whole panel, so a frame the device sent whole, such as one a
@@ -237,8 +234,7 @@ Done when the screenshot at the moment shows what the rider described, or
    described. Keep fixtures short: a trace costs about 40 KB a minute.
    `no_committed_fixture_holds_a_wifi_password_or_a_phone_token` fails on a
    fixture that holds a Wi-Fi password, a phone session token or saved Wi-Fi
-   credentials. A sanitizer that turns a real trace into a fixture does not
-   exist yet; it is future work.
+   credentials. No tool turns a device trace into a fixture.
 2. `cycling trace test-stub tools/simulator/tests/traces/<name>.trace --at T --name <what_the_rider_should_see> --expect <field>=<value>`
    prints a test that replays to T in stimulus mode, in two sections. Its doc
    comment says what the recording showed and what the sensors were doing
@@ -269,8 +265,7 @@ warm, or it drained while dark. A trace cannot measure current: it says what
 kept the CPU and the radios busy, and a USB power meter on the bench says
 what that costs in each device state.
 
-1. Get the trace of that session (step 1). A trace from a build without
-   health and activity records shows none of the lines below.
+1. Get the trace of that session (step 1).
 2. Run `cycling trace summary <trace>` and read three blocks:
    - `activity by device state`: for each state (home idle, riding, paused,
      screen off, charging standby), executor wakeups and timer interrupts a

@@ -55,79 +55,91 @@ pin at once and belongs in its own PR with `cycling verify` results.
   only. A new worktree still compiles every workspace crate, build script,
   proc macro and test binary. It also compiles crates that `include!` a build
   script's output (serde, esp-hal) and the crates above them, because the
-  worktree's `OUT_DIR` path is part of their key. The first `cycling verify`
-  in a new worktree takes about 130 s, against about 80 s warm.
+  worktree's `OUT_DIR` path is part of their key.
 - sccache keys each compile on the working directory and on every `CARGO_*`
   variable. Pass `--target-dir` to cargo: an exported absolute
   `CARGO_TARGET_DIR` stops every other worktree from reusing those builds.
 - Target dirs stay per worktree, so parallel agents never queue on one cargo
   lock. `CYCLING_FW_TARGET_ROOT` moves the firmware target dirs elsewhere.
-- Firmware always builds release (fat LTO). A lighter profile was measured and
-  dropped: Xtensa runtime assembly needs one codegen unit and LTO, and thin
-  LTO saved nothing over warm release rebuilds. After a VANA edit a warm
-  rebuild compiles vana (9 s), the c606-firmware lib (6 s) and the fat-LTO bin
-  (30 s) one after another; packaging and the stack checks take 1 s.
+- Firmware always builds release with fat LTO, because the Xtensa runtime
+  assembly needs one codegen unit and LTO.
 - The firmware compiles with a placeholder commit, which `build.sh` replaces
   in the linked ELF, so a commit that changes no firmware input rebuilds
-  nothing (about 2 s).
-- `cycling verify` certifies a tree. It hashes the worktree as it is,
-  untracked files included, and runs the gates in the worktree. After each
-  gate, and once more before it reports, it hashes the tree again and compares
-  every file's change time. If anything differs, an edit that was undone
-  included, it stops the gates that are still running, names the files, and
-  certifies nothing. A run that is interrupted or terminated stops its gates
-  the same way, and `cycling sim-compare` stops the cargo runs it started. Do
-  not edit while it runs. The table in `tools/devtools/src/cycling_devtools/lanes.py` maps
-  the paths changed since the merge-base with main to gates, and a path it
-  does not know selects every gate; `--all` selects them regardless. A
-  workspace crate selects the firmware build when the package of a
-  `devices/*/device.toml` depends on it. The firmware build, the tests, the
-  checks, simulate and the screens run in parallel lanes, the firmware first,
-  then harness-virtual alone. Each gate that passes is recorded in the primary
-  checkout's `.local/verify/results` under the tree hash, the toolchain, the
-  gate's definition and the settings in the environment that change a build
-  (`CYCLING_*`, `RUSTFLAGS`, `CARGO_BUILD_*`, `CARGO_PROFILE_*`,
-  `NEXTEST_PROFILE`), so no worktree runs it on that tree again (`cached`
-  in the table; `--fresh` runs it anyway). The screens lane is
-  `cycling sim-compare --base <merge-base>`: it runs the ride scenarios once,
-  recorded, and compares them with the merge-base's, and the
+  nothing.
+
+## How verify certifies a tree
+
+The [verify skill](../.agents/skills/verify/SKILL.md) says when to run
+`cycling verify` and what comes after it. This section says how it works.
+
+- It hashes the worktree as it is, untracked files included, and runs the
+  gates in the worktree. After each gate, and once more before it reports, it
+  hashes the tree again and compares every file's change time. If anything
+  differs, an edit that was undone included, it stops the gates that are still
+  running, names the files, and certifies nothing. A run that is interrupted
+  or terminated stops its gates the same way, and `cycling sim-compare` stops
+  the cargo runs it started.
+- `RULES` in `tools/devtools/src/cycling_devtools/lanes.py` maps the paths
+  changed since the merge-base with main to gates, and a path no rule matches
+  selects every gate; `--all` selects them regardless. A workspace crate
+  selects the firmware build when the package of a `devices/*/device.toml`
+  depends on it. The table names the gates the paths did not select.
+- The selected gates run in parallel lanes: the firmware build, the Rust tests
+  then simulate, the Trouble Host tests, the Python tests, the web tests and
+  checks, clippy and rustfmt, the other checks, and the screens. When every
+  lane passes, harness-virtual runs alone. A `tests-passed` file appears in the log
+  directory, `.local/verify/<tree>/`, once every selected test gate passed.
+- The screens lane is `cycling sim-compare --base <merge-base>`: it runs the
+  ride scenarios once, recorded, and compares them with the merge-base's. The
   test lane's nextest profile (`without-ride-scenarios`, in
-  `.config/nextest.toml`) leaves them out. `--pr N` posts the table and the
-  changed screens on a PR, and refuses a tree that is not its commit;
-  `--video` adds before and after videos of changed scenarios. Logs go to `.local/verify/<tree>/`, and a `tests-passed` file
-  appears there when the test gates have passed. `--deep` runs tier 2 alone,
-  at nice 19 and without a slot: `cycling fuzz --fixed`,
-  `cycling fuzz-planted`, and the course Follower's large `explore` searches
-  (`#[ignore]`d in `ride/course/follow/tests/explore/deep.rs`, so tier 1
-  runs only its small ones).
+  `.config/nextest.toml`) leaves the scenarios out. `--pr N` posts the table
+  and the changed screens on a PR, with a video of each new scenario, and
+  refuses a tree that is not its commit. `--video` adds before and after
+  videos of changed scenarios.
+- Each gate that passes is recorded for 30 days in the primary checkout's
+  `.local/verify/results`. The key is the tree hash, the toolchain, the gate
+  and its command, and the settings in the environment that change a build
+  (`CYCLING_*`, `CARGO_BUILD_*`, `CARGO_PROFILE_*`, `CARGO_TARGET_*` except
+  `CARGO_TARGET_DIR`, `RUSTFLAGS`, `RUSTDOCFLAGS`, their `CARGO_ENCODED_`
+  forms, and `NEXTEST_PROFILE`). No worktree runs that gate on that tree again
+  (`cached` in the table); `--fresh` runs it anyway.
 - A verify with gates to run takes one of the machine's slots first, one per
   ten cores (`tools/devtools/src/cycling_devtools/admission.py`), and waits
   when none is free. Its time in the table includes the wait and names it. It
   refuses to start with under 20 GB free, and checks again once it has its
   slot.
-- `cycling quick` is the inner loop: nextest without the `slow` group and the
-  ride scenarios, clippy on the crates the diff touches, and
-  `cycling check-firmware` when a device links one of them. It takes no slot
-  and certifies nothing.
-- `cycling merge <pr>` is the only way to merge. It takes its turn on a lock
-  in the primary checkout, squashes the PR onto main, and verifies that tree
-  unless it already passed. It lands the commit in order: it moves the PR's
-  branch to it, posts the `cycling/verify` status that main requires on it,
-  waits until GitHub shows it as the PR's head, and only then fast-forwards
-  main to it, so GitHub marks the PR merged. If GitHub does not show the head
-  within a minute, or main has moved or refuses the push, it puts the branch
-  back at its head and says so. It deletes the PR's branch once GitHub
-  shows the PR merged. No worktree has the squash checked out, so the merge
-  verifies it in the machine's one merge checkout, `.local/merge/verify` in
-  the primary checkout: a locked worktree with its own target dirs, which
-  `cycling clean` leaves alone. `--prepare` squashes and verifies only, in the
-  same queue. The merge refuses a PR whose base is not main, and one without
-  a review PASS on its current patch. `cycling review patch --pr <n>` prints
-  that patch, `git patch-id --verbatim` of what `gh pr diff` shows: the PR's
-  head against its merge-base with the PR's base. `cycling review record
-  --patch` refuses a verdict on any other. A PASS on a stacked PR therefore
-  covers its own changes only; once its parent lands, rebase it onto main,
-  and the PASS holds if the rebased diff is the one that was reviewed.
+- `--deep` runs tier 2 alone, at nice 19 and without a slot:
+  `cycling fuzz --fixed`, `cycling fuzz-planted`, and the course Follower's
+  large `explore` searches (`#[ignore]`d in
+  `apps/vana/src/ride/course/follow/tests/explore/deep.rs`, so tier 1 runs only
+  its small ones).
+- nextest's `slow` group (`.config/nextest.toml`) holds the tests that
+  `cycling quick` leaves out with `-E 'not group(slow)'`: a test over 5 s on
+  its own, and every share of a sweep. `cycling verify` runs them all. Split
+  a long VANA sweep into eight tests with `split_in_eight!`
+  (`apps/vana/src/testing.rs`), so verify runs its shares side by side.
+
+## How a merge lands
+
+- `cycling merge <pr>` takes its turn on a lock in the primary checkout,
+  squashes the PR onto main, and verifies that tree unless it already passed.
+  It moves the PR's branch to the squash, posts the `cycling/verify` status
+  that main requires on it, waits until GitHub shows it as the PR's head, and
+  only then fast-forwards main to it, so GitHub marks the PR merged. If GitHub
+  does not show the head within a minute, or main has moved or refuses the
+  push, it puts the branch back at its head and says so. It deletes the PR's
+  branch once GitHub shows the PR merged.
+- No worktree has the squash checked out, so the merge verifies it in the
+  machine's one merge checkout, `.local/merge/verify` in the primary checkout:
+  a locked worktree with its own target dirs, which `cycling clean` leaves
+  alone. `--prepare` squashes and verifies only, in the same queue.
+- The merge refuses a PR whose base is not main, and one without a review
+  PASS on its current patch. `cycling review patch --pr <n>` prints that
+  patch, `git patch-id --verbatim` of what `gh pr diff` shows: the PR's head
+  against its merge-base with the PR's base. `cycling review record --patch`
+  refuses a verdict on any other. A PASS on a stacked PR therefore covers its
+  own changes only, and it still holds after the parent lands and the PR is
+  rebased onto main, if the rebased diff is the one that was reviewed.
 - After a merge, two jobs run on the merged commit in the background at
   `nice 19`. `cycling sim-compare --fill` caches its screens as the base of
   later comparisons, with its log in `.local/merge/fill.log`. The slow tier
@@ -138,15 +150,56 @@ pin at once and belongs in its own PR with `cycling verify` results.
   main past its commit leaves the work to the newer merge's run. With under
   10 GB free it does not start, and says so on the PR. Its log is
   `.local/merge/slow-tier.log`.
-- nextest's `slow` group (`.config/nextest.toml`) holds the tests that
-  `cycling quick` leaves out with `-E 'not group(slow)'`: a test over 5 s on
-  its own, and every share of a sweep. `cycling verify` runs them all. Split
-  a long VANA sweep into eight tests with `split_in_eight!`
-  (`apps/vana/src/testing.rs`), so verify runs its shares side by side. The
-  48 sweep shares cost `cycling quick` 200 of its 265 CPU-s after a VANA
-  edit.
 - `cycling playbook-audit --session ID` prints a session digest for the
   auditor brief in `docs/agents/playbook-auditor.md`.
+
+## Checks you can run on your own work
+
+`cycling verify` certifies a PR. These checks find bugs earlier, or find the
+ones its tier 1 gates do not reach. Run any of them at any time; none of them
+posts anything.
+
+- `cycling quick` runs nextest and clippy on the crates your diff touches,
+  leaving out the `slow` group and the ride scenarios. When a device links one
+  of those crates, it also runs `cycling check-firmware`, a firmware
+  `cargo check`. It takes no slot and certifies nothing. It catches compile
+  errors, lints and failing unit tests. Run it after every edit.
+- An `explore` search (`apps/vana/src/testing.rs`) runs a state machine's real
+  code breadth first from every starting state within small bounds, checks
+  every named rule on every state and edge, and prints the shortest path to
+  each broken rule. It catches an ordering or an interleaving that no
+  hand-written test tried. Three machines have one: the ride recorder
+  (`apps/vana/src/ride/recorder/explore.rs`), the ANT sensor scan
+  (`apps/vana/src/sensors/scan/explore.rs`) and the course Follower
+  (`apps/vana/src/ride/course/follow/tests/explore/`). The small searches run
+  with the tests. After any change to `apps/vana/src/ride/recorder.rs`, its
+  directory or `apps/vana/src/ride/journal.rs`, also run the recorder's
+  ignored wide and full-batch searches. Their `#[ignore]` reasons give their
+  time and memory.
+
+  ```sh
+  cargo nextest run --locked --no-default-features -p vana --lib --run-ignored only -E 'test(/^ride::recorder::explore::/)'
+  ```
+
+- The invariants are rules that must hold after every pass, such as "both
+  journals riding" or "summary shown while riding". VANA states them in
+  `apps/vana/src/app/invariants.rs` and
+  `apps/vana/src/ride/recorder/invariants.rs`, compiled for tests and for the
+  `invariants` feature and never for a device. The simulator checks them
+  after every pass and panics on the first broken one, so every simulator
+  test and every fuzz session checks them.
+- `cycling fuzz` runs random sessions in the twin: courses, sensors, button
+  presses, power cuts, torn writes and card refusals, judged after each step.
+  It catches crashes, lost rides and broken invariants in combinations nobody
+  wrote down. Run `cycling fuzz --minutes N` after a change to recording,
+  storage, power or page flow. A finding prints its seed and the command that
+  reproduces it. The [simulator README](../tools/simulator/README.md) gives
+  the flags and what each check judges.
+- `cycling verify --deep` runs tier 2: the fixed fuzz seeds, the planted-bug
+  proof that the fuzzer still finds a bug, and the Follower's large `explore`
+  searches. It takes no slot, runs at nice 19, and is not a PR gate. Run it
+  when your change touches what it searches: course following, recording and
+  storage, or the fuzzer.
 
 ## A device on another machine
 

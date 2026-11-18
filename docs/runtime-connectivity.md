@@ -14,7 +14,7 @@ Firmware images contain no credentials or target identifiers.
 - Limits: 32 bytes for SSIDs and names, 8..63 bytes for passwords. WPA2 and WPA3
   personal networks are joined. `WPA3` is a stored preference only: esp-radio
   has no WPA3 threshold, so the station also joins a WPA2-only network of the
-  same name (owner decision, 2026-11-14).
+  same name.
 - BLE addresses use the little-endian byte order returned by `BLE PEERS`.
 
 ```text
@@ -125,9 +125,10 @@ checks completion. The device does not export stored credentials.
 - BLE modes are `none`, `echo`, `sim-heart`, `sim-csc` or `authorized-heart`; the
   last reads an explicit private authorization record.
 - `echo_after` returns runtime BLE to echo while keeping the saved selection.
-- The generator only handles its recorded original case: echo plus the
-  authorized compiled selection, which it migrates to owned settings before
-  restoring echo. Restoring another owner's configuration needs a deliberate plan.
+- The generator accepts only a captured original whose BLE is advertising
+  (echo). Its BLE scenario restores by selecting `authorized-heart` from the
+  private authorization record and then returning runtime BLE to echo. Any
+  other original needs a deliberate restoration plan; the generator refuses it.
 
 The virtual backend covers parsing, settings persistence, selection
 changes and notification-generation rejection; radio connect and scan are

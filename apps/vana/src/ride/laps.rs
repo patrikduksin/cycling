@@ -287,7 +287,7 @@ impl Laps {
     /// The rider passed the start: close the current lap. The first must have
     /// run `AT_START_MIN_MM` and `AT_START_MIN_MS`, so a pass soon after the
     /// start is no lap; later ones are guarded by the pass itself, which
-    /// needs the rider 75 m away first, so a short loop laps every time.
+    /// needs the rider `breadcrumb::PASS_ARM_M` away first, so a short loop laps every time.
     pub fn at_start(&mut self, now_ms: u64) -> Option<Lap> {
         let long_enough = self.finished > 0
             || (self.current.distance_mm >= AT_START_MIN_MM

@@ -2,10 +2,12 @@
 
 These are the approved mockups for following a course on VANA. The SVGs are the
 source of truth for geometry, sizes and colours, drawn in device pixels on the
-240×320 screen. `png/` holds them rendered at 2x, plus `sheet.png` (all
+240×320 screen at scale 1; [UI](../../ui.md#how-screens-scale) says how other
+panels scale. `png/` holds them rendered at 2x, plus `sheet.png` (all
 screens) and `glance-sheet.png` (blurred, roughly a half-second look at arm's
-length). `spec.md` is the interaction spec. `png/before-*.png` are the screens
-this design replaces.
+length). [UX flows](../../ux-flows.md#course) says what the rider sees and
+when, and [UI](../../ui.md#course-sign) how the sign and the
+[map](../../ui.md#map-page) are drawn.
 
 | Screen | Scenario |
 | --- | --- |
@@ -29,8 +31,8 @@ The mockups use these values on top of the palette in
 | Arrived fill | `#1b9a45` | Arrived banner |
 | Sign ink | `#ffffff` | Every glyph, digit and unit on a coloured sign |
 | Map ground | `#101012` | Map page background |
-| Minor road | `#2a2a2d`, 5 px | Residential and smaller |
-| Major road | `#444448`, 9 px | Primary and secondary classes |
+| Minor road | `#2a2a2d`, 5 px | Every road class below secondary |
+| Major road | `#444448`, 9 px | Trunk, primary and secondary |
 | Route ahead | `ACCENT` `#0a84ff`, 12 px on an 18 px `#04264c` casing | Course still to ride |
 | Ridden | `#1f4a78`, 5 px | The ride's own track, on a ride without a course |
 | Off-course marks | `AMBER` `#ff9f0a` | Rider puck, chevrons back, missed-junction ring |
@@ -39,17 +41,12 @@ The typeface is Nunito at weights 800 and 900, as everywhere else in VANA.
 
 ## Checking a screen against its mockup
 
-The three map mockups were drawn with the rider low and to the left, at the
-stepped zoom. After the 2026-11-15 ride Patrik fixed the rider at x 120,
-row 223, so their map layer (everything between the ground and the footer)
-was moved to put the puck there: map-approach by (+40, -43), map-close by
-(+56, -43) and map-offcourse by (+40, +65). Off course the junction now lies
-below the map, so its three chevrons were redrawn as the map draws them, from
-the puck down towards the bottom edge, and the route past the junction was
-extended up to the status bar. The scales are as drawn; the scenario rides at
-the speeds that give them. While a course is loaded the map draws only the
-course ahead, so the ridden line below the puck was taken out of all three
-(drawn on map-approach and map-close; below the screen on map-offcourse).
+The three map mockups put the rider's puck where the map does, at x 120,
+row 223, and draw only the course ahead, with no ridden line. On
+map-offcourse the junction lies below the map, so its three chevrons run
+from the puck towards the bottom edge, and the route past the junction runs
+up to the status bar. Each map mockup is drawn at one scale, and its
+scenario rides at the speed that gives that scale.
 
 `cycling mockup-compare` compares each mockup with the simulator checkpoint a
 scenario names after it (`.local/sim/latest/<scenario>@c606/NN-ride-turns.png`, run

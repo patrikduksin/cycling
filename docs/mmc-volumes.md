@@ -34,11 +34,12 @@ default table, which restores access to the log.
 
 ## FORMAT
 
-Every persisted format has one version byte: the settings journal and the
-records in it, the ride slots, the volume table, the sector log, FILES, STORE,
-the pack, and each table VANA writes into FILES. Data with another version byte
-is `foreign`. No reader accepts it and no format, create or initialize writes
-over it.
+Every persisted format has one version byte, and data with another one is
+`foreign`: no reader accepts it and no format, create or initialize writes
+over it ([AGENTS.md](../AGENTS.md) states the rule). Here
+that covers the settings journal and the records in it, the ride slots, the
+volume table, the sector log, FILES, STORE, the pack, and each table VANA
+writes into FILES.
 
 A boot that finds a foreign store asks `FORMAT STORAGE?` once, from the brand,
 Home or setup, never over a ride:

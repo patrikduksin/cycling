@@ -40,8 +40,8 @@ hand.
 - `CYCLING_*` task settings travel with the command.
 - `stock`, `stock-select` and `backup` need the owner's
   go-ahead in the task; ask rather than run them.
-- After device tests, leave cycling firmware running (`cycling device flash`),
-  as the C606 skill requires, and report what you observed.
+- `cycling device flash` is how you leave cycling firmware running after
+  device tests.
 
 ## Crashes
 
@@ -54,9 +54,6 @@ The next boot also copies it to flash, so it stays until the next panic or
 `CRASH CLEAR`, even after the device is switched off; no logs need to have
 been running at the time. `source=rtc` means RTC memory still held it,
 `source=flash` that a power-off cleared RTC memory and the flash copy answered.
-Firmware from before this copy neither reads nor clears it, so after a
-rollback to such firmware and back, an older flash record can reappear;
-run `CRASH CLEAR` on current firmware to drop it.
 `cycling device crash-test --power-off` adds a power cycle to the crash
 test (on USB the C606 comes back in charging standby; off USB, switch it on).
 

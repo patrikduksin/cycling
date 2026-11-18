@@ -1,8 +1,10 @@
 # VANA UX flows
 
-This is the source of truth for how a rider moves through VANA. [UI](ui.md)
-owns how each screen looks, and [ride recording](ride-recording.md) owns what
-is stored. The simulator scenario
+This is the source of truth for how a rider moves through VANA: what the
+rider sees and when, the order of screens and pages, timing, sounds and what
+each button does. [UI](ui.md) owns how each screen looks (type, colour,
+geometry and motion), and [ride recording](ride-recording.md) owns what is
+stored. The simulator scenario
 `the_ride_lifecycle_walks_from_ready_to_the_summary` walks this flow and keeps
 a screenshot of each step.
 
@@ -49,12 +51,13 @@ coloured dot, a headline and, when needed, what to do:
 | Line | Good (green) | Waiting or worth knowing (amber) | Problem (red) | Not in use (grey) |
 | --- | --- | --- | --- | --- |
 | GPS | GPS LOCKED | FINDING GPS, you can start anyway | | NO GPS, records without a map |
-| Sensors | n SENSORS LIVE, with their short names | SENSORS WAKING UP, naming the missing ones; NO SENSORS, tap here to pair one; HR LOW BATTERY or n BATTERIES TO CHANGE, once every sensor is live | HR CRITICAL BATTERY, change it before riding | |
-| Battery | BATTERY n%, with ABOUT n H LEFT once the drain rate is known | under 30%: charge after the ride | under 15%: charge before riding | |
-| Storage | ROOM FOR n H | ROOM FOR n MIN or UNDER 1 MIN OF ROOM: export old rides; on internal memory | STORAGE FULL, STORAGE PROBLEM | |
+| Sensors | n SENSORS LIVE, with their short names | SENSORS WAKING UP, naming the missing ones; HR LOW BATTERY or n BATTERIES TO CHANGE, change it soon, once every sensor is live; SENSORS UNAVAILABLE, turn VANA off and on | HR CRITICAL BATTERY (or n BATTERIES TO CHANGE), change it before riding | NO SENSORS, tap here to pair one |
+| Battery | BATTERY n%, with ABOUT n H LEFT once the drain rate is known; CHARGING n% on USB power | under 30%: charge after the ride | under 15%: charge before riding | BATTERY, while the level is unknown |
+| Storage | ROOM FOR n H; RECORDING while a ride records; LAST RIDE RECOVERED after a recovery | CHECKING STORAGE; ROOM FOR n MIN or UNDER 1 MIN OF ROOM: export old rides; ROOM FOR n H on internal memory | STORAGE FULL: export old rides; STORAGE NOT FORMATTED: off and on to format; STORAGE PROBLEM: turn VANA off and on | |
 
 The headline sums them up: READY when every line is green or grey, ALMOST
-READY when something is amber, and NOT READY (red) when storage cannot record.
+READY when a line is amber or red but storage can record, and NOT READY (red)
+when storage cannot record.
 Only storage stops a ride; everything else is advice, so a rider is never
 held at a green light by a sensor. Under the headline, the ride type reads
 FREE RIDE, or the chosen workout's name.
@@ -113,8 +116,8 @@ Starting switches straight to the ride pages, shows a RECORDING toast and
 plays the start chime. On the ride pages ACT pauses, MOVE turns the page and
 BACK takes a lap (with a lap toast and the lap chime). The ride pages never
 show cues: the buttons keep fixed roles. Holding MOVE for 1.5 s marks the
-moment in the session trace (MARK n and three middle notes) and leaves the
-page as it was; `cycling trace pull` lists the marks.
+moment in the session trace ([Buttons](#buttons)) and leaves the page as it
+was; `cycling trace pull` lists the marks.
 
 Settings RIDE has AUTO LAP: OFF, EVERY 1, 2, 5 or 10 KM, or AT START, which
 takes a lap each time the rider rides past where the ride began, for loops
@@ -133,11 +136,11 @@ convenience, and BACK takes one by hand.
 
 ### Climb
 
-The CLIMB page has one layout on every road. The grade fills the top left
-in its steepness colour, with no caption. POWER 3S and HEART stack beside
-it, each with its zone on a chip in the zone's colour. A band in the grade's
-colour runs under them, and two readings and a profile with a white disc
-for the rider follow:
+The CLIMB page has one layout on every road, which [UI](ui.md#charts) draws
+under Elevation profile: the grade in its steepness colour with no caption,
+POWER 3S and HEART beside it, then two readings and a profile with a white
+disc for the rider. What the readings and the profile show depends on the
+road:
 
 - **CLIMB IN 0.3 KM**: a climb from the map starts within 500 m. LENGTH KM,
   with AVG grade and GAIN M stacked beside it. The profile runs from the rider
@@ -170,23 +173,47 @@ and a black footer, heading up: the way the rider is heading is always up,
 and when the rider stands still the last heading holds.
 
 The rider's puck sits in one place on every fix: centred across the map and
-three quarters of the way down it, so most of the map is the road ahead and,
+three quarters of the way down it ([UI](ui.md#map-page) gives the
+geometry), so most of the map is the road ahead and,
 while following, the blue route runs up through the middle. The course
 ahead is a wide blue route on a dark casing, and a white arrow on the route
 marks the next turn's corner. Only the course still to ride is drawn: from
 the rider's place on it, forward along the course for 1.5 times the
 distance the map shows ahead, so a road that winds a little still runs past
-the top edge.
+the top edge. A straight road needs 1.21 times that distance to pass the top
+edge's far corner with its casing, and the mockup course, which jogs after
+its turn, needs 1.33.
 Off course the walk starts at the junction and goes that far past the
 rider's distance to it. The course behind the rider is not drawn, and
 neither is the ride's own track. The way back of an out-and-back shows only
 when its turnaround is within that distance: then it is course still to
-ride. Before joining, the rider's place is the nearest point on a stretch
-of course that runs the rider's way; it holds while the rider stands still
-or wavers between two stretches, so the route does not jump from fix to
-fix.
+ride.
+
+Before joining, or after following stops, the rider's place is the nearest
+point on a leg of the course within 90° of the heading (the nearest point at
+all when no such leg is within 25 m). The place keeps the leg it holds until
+another leg is 10 m closer or the held leg is 25 m off on two moving fixes
+in a row, or the heading is more than 135° against the leg on three moving
+fixes in a row. So the route does not jump from fix to fix while the rider
+stands still or wavers between two legs. Every fix counts, even one at the
+same spot, whether or not the map is drawn again:
+
+- A fix with a speed moves at 5 km/h or more (the speed the scale follows
+  from) once it is 2 m on from the last fix that counted. At 5 km/h or more
+  but less than 2 m on, it leaves every count as it is, so a slow rider
+  still turns the leg.
+- A fix without a speed moves when it is 2 m on from the fix before it, and
+  travel never adds up across such fixes.
+- A fix while standing (under 5 km/h, or without a speed less than 2 m on
+  from the fix before) starts every count again. A moving fix that does not
+  meet a rule starts that rule's count again, so a heading across the leg or
+  a stop never changes the leg.
+
+Each time the course is placed, replaced or removed, or a new ride starts,
+the held leg is forgotten, even for a course of the same size.
+
 The badge in the top-left corner shows the next turn and how far it is, at
-rest too; with a radar paired it sits 8 px right of the radar strip. It may
+rest too. It may
 cover the route, never the puck: straight up from the puck it covers from
 0.66 to 0.96 of the distance the map shows ahead, 184 to 267 m at 25 km/h,
 so a turn there can be under the badge.
@@ -194,8 +221,9 @@ so a turn there can be under the badge.
 The map never pans or zooms to fit a turn or the route: its scale follows
 the speed. From the puck to the top edge it shows about 40 s of riding,
 never less than 150 m nor more than 1 km, so at 25 km/h it shows about
-280 m. A ride starts at 300 m. A change of speed eases the scale in over several seconds,
-never back and forth; stopped, slower than about 5 km/h, or paused, it holds.
+280 m. A ride starts at 300 m. Each fix moves the scale a fifth of the way
+to that goal, so a change of speed eases in over several seconds and never
+turns back; stopped, slower than about 5 km/h, or paused, it holds.
 
 Off course, the badge turns amber, the puck's arrow turns amber, and up to
 three amber chevrons lead back in a straight line towards the junction where
@@ -241,7 +269,7 @@ last one, at 5 km/h or more when the ride's speed is known, so a fix
 jittering at a stop never counts. Until following starts, the map draws small
 arrows on the course's line near the rider, the way it runs, so a rider
 standing at a junction sees which way to go. Riding another part of the same
-course follows from wherever the rider joins it, as before. While following,
+course follows from wherever the rider joins it. While following,
 the rider is off course once they are more than 40 m from it on two fixes at
 least 5 s apart, with no fix nearer between: two falling tones, and once more
 15 s later. A fix lost for 5 s starts that count again. While the ride is
@@ -262,12 +290,8 @@ of the run beeps 30 m before it. A turn first met nearer than 300 m sounds its
 rising beeps at once, and one the rider is already in sounds nothing. At most
 one navigation sound plays per fix: another due on the same fix waits for the
 next, and is dropped if it no longer holds, so a turn beeping 30 m ahead
-right after rejoining the course drops its rising beeps. A navigation sound
-raised while a radar alarm or another sound plays waits and plays after it,
-however long that takes, unless by then its turn is passed or the off-course
-state it told of has ended. One of each kind waits at once; together they
-play OFF COURSE first, then ON COURSE, the beep at a turn and the turn
-ahead. A sound whose turn passes before the buzzer starts it never plays.
+right after rejoining the course drops its rising beeps. How a navigation
+sound waits behind other sounds is under [Sounds](#sounds).
 A turn is where the course turns by 60 degrees or more, turning at least as
 sharply as 60 degrees in 50 m: LEFT or RIGHT, SHARP LEFT or SHARP RIGHT past
 120 degrees, and U-TURN past 150. A bend gentler than that sounds nothing.
@@ -287,8 +311,8 @@ way in, the spur and the way on leave its base at least 30 degrees apart.
 There the course says what it would say with the spur's out-and-back taken
 out: no turn into it, no U-TURN at its end and no turn out of it, each turn
 after it as much further on as the spur is long. Wherever VANA is not sure,
-the course says what it said before spurs were found: the turn in, the
-U-TURN and the turn out. So at every spur the course says one or the other,
+the course keeps the spur as drawn: the turn in, the U-TURN and the turn
+out. So at every spur the course says one or the other,
 never a turn that neither says, and never leaves out a turn that both say.
 VANA is not sure of a way back that drifts more than 1 m off the way out, a
 dead end under 13 m or over 150 m deep, a fork narrower than 30 degrees, or
@@ -299,10 +323,13 @@ one of them as drawn. The course keeps a spur's points and its length, so
 distance along it and arrival are unchanged. Riding straight past the base
 of a spur left out is not off course, and riding into it and back sounds
 nothing either. Roads side by side about 8 m apart, a hairpin and a
-roundabout keep their turns. Turns stored with a course loaded before this
-keep its spurs until the course is loaded again.
-Where the course is drawn coarsely, as a planner's route is, or it was loaded
-before turns were found this way, a turn of several corners is named only
+roundabout keep their turns.
+The turns found as the course loads are stored beside it. A course whose
+turns file is missing, belongs to another course or cannot be read has its
+turns and spurs found again from the course as kept, which for a long course
+is thinned to fit.
+Where the course is drawn coarsely, as a planner's route is, or its turns
+are found from a thinned course, a turn of several corners is named only
 roughly: LEFT or RIGHT from about 80 degrees, U-TURN from about 160, never
 SHARP, and otherwise nothing; a roundabout there may say nothing but never a
 wrong way. Wherever which way comes first is not clear, as when corners come
@@ -315,18 +342,19 @@ eight or an out-and-back does, the turns are those of the pass the rider is
 on. A course with more than 1,024 turns sounds them to its end.
 
 While a course is loaded, the data pages show one sign for it, as the mockups
-in `design/course-navigation` draw it. Main takes their layout: elapsed time
-and grade on top, then a smaller speed, and power, heart rate and the lower
-line further down. Rows 22 to 104 belong to the sign, so it comes and goes
-without moving or resizing a reading. A ride without a course keeps the page
-it had, with the large speed.
+in `docs/design/course-navigation` draw it, and main takes the mockups'
+course layout ([UI](ui.md#course-sign) gives both): elapsed time and grade
+on top, then a smaller speed, and power, heart rate and the lower line
+further down. A band across the top of the page belongs to the sign, so the
+sign comes and goes without moving or resizing a reading. A ride without a
+course keeps the main page with the large speed.
 
 - **At rest** (following, no turn near), main shows a chip under the time: the
   next turn's arrow on a blue square and how far it is (`6.4 KM`), or a flag
   and the distance to the end after the last turn. Stats and climb show
   nothing.
-- **Turn ahead.** When the rising beeps sound, a blue banner covers rows 22
-  to 104 on main, stats and climb: the turn's arrow and its distance in large
+- **Turn ahead.** When the rising beeps sound, a blue banner covers the
+  sign's band on main, stats and climb: the turn's arrow and its distance in large
   digits (`120 M`). The time and grade under it are hidden, and on stats and
   climb so are the readings it covers; nothing moves. The banner always shows
   the next turn: past a turn it shows the one after, and it stays up for 40 m
@@ -345,8 +373,8 @@ it had, with the large speed.
 Tapping the banner or the chip opens the map page. While a course is loaded,
 the map page is in the MOVE cycle even if the rider turned it off, so the tap
 always has a page to open and the page dots stay true. With a radar paired
-the banner starts right of the radar strip and its contents move with the
-page body; the radar always keeps its columns.
+the sign moves right with the page body, and the radar always keeps its
+columns.
 
 ### Workouts from the phone
 
@@ -370,10 +398,13 @@ chosen when the list changes.
 ### Choosing the main page's readings
 
 Settings has a MAIN PAGE section with LOWER LEFT and LOWER RIGHT, the two readings
-on the main page's last line. They start as CADENCE and DISTANCE. A rider without
-a cadence sensor can swap CADENCE for KCAL, NP, AVG HR, AVG SPEED, AVG POWER, WORK
-or ASCENT, and the page shows `--` for one that has no data yet. The choice is read
-when the ride screen opens, applies to every ride and survives a reboot.
+on the main page's last line. They start as CADENCE on the left and DISTANCE
+on the right. ACT on a row steps it through CADENCE, DISTANCE, NP, AVG POWER,
+AVG HR, AVG SPEED, KCAL, WORK and ASCENT, and wraps, so a rider without a
+cadence sensor can put another reading in its place. The page shows `--` for
+a reading that has no data yet. The choice is read when the ride screen
+opens, applies to every ride and survives a reboot. [UI](ui.md#main-page-readings)
+gives each reading's unit and colour.
 
 ### Choosing the ride pages
 
@@ -388,8 +419,8 @@ ends, a rider on the WORKOUT page moves to MAIN; the FTP ramp test ends with
 its last step, so the NEW FTP sheet shows over MAIN.
 
 CLIMB OFF also ends the climb page's habit of coming up by itself: neither the
-ride's own climb detection nor a climb ahead on the map switches the page. A climb
-never had a toast, and none is added: the rider declined the page, and a toast
+ride's own climb detection nor a climb ahead on the map switches the page. A
+climb raises no toast either: the rider declined the page, and a toast
 would cover the readings they chose to look at. The CLIMB row's note
 says NO CLIMB POP-UP while it is off. The choice is read when the ride screen
 opens and applies to the next ride page the rider sees; it cannot change under
@@ -400,10 +431,10 @@ them, since Settings is not reachable during a ride.
 Dusk catches riders out, so VANA works out the sunset (the sun's centre at
 -0.833 degrees) from the last fixed position and the GPS or network time, at
 most once a minute. While recording, with Settings ALERTS SUNSET on (the
-default, and the default for settings saved before it existed), an amber
-toast and the attention chime say SUNSET IN 30 MIN, once per ride, when
+default), an amber toast and the ride-alert cue ([Sounds](#sounds)) say
+SUNSET IN 30 MIN, once per ride, when
 30 to 20 minutes remain, and SUNSET - LIGHTS ON once when the sun sets. The
-alerts follow the SOUNDS setting for the chime and show on the ride pages;
+alerts follow the SOUNDS setting for the cue and show on the ride pages;
 one due while another page is up waits for the rider's return. They need a
 known position and time. A ride that starts after sunset says nothing: the
 rider can see it is dark. A ride that starts less than 20 minutes before
@@ -412,7 +443,7 @@ minutes old, never repeats the warning either. A pause across the
 30-minute mark gives the warning on resume, if 20 minutes or more remain.
 Polar day and night have no sunset and no alert.
 
-A second amber toast with the same chime, TURN BACK BY 17:40 in local time,
+A second amber toast with the same cue, TURN BACK BY 17:40 in local time,
 says when to start home to be there by sunset. It speaks once per ride, on
 the ride pages, when less than 15 minutes remain before that time; if the time
 has already passed it says TURN BACK NOW. The time home is the straight
@@ -439,8 +470,9 @@ With a course placed, an automatic pause leaves the ride page up instead,
 with the AUTO PAUSED toast, so a rider standing at the start still sees which
 way to go; the paused screen is past the last ride page.
 The pause chime plays once. An automatic pause adds RIDE ON TO RESUME, and
-rolling on resumes it with AUTO RESUME. ACT resumes (RESUMED toast and the
-start chime). Riding on after a pause by ACT never resumes the ride, but VANA
+rolling on resumes it with AUTO RESUME. ACT on an automatic pause keeps the
+ride paused as a pause by ACT, so rolling on no longer resumes it. ACT on a
+pause by ACT resumes (RESUMED toast and the start chime). Riding on after a pause by ACT never resumes the ride, but VANA
 plays a rising three-note reminder once the bike has held start speed (6 km/h
 on a wheel sensor, 10 km/h on GPS) for a few seconds, then at most once every 30 s
 of that pause while the rider keeps riding, however often they stop and go. It
@@ -496,25 +528,28 @@ The summary opens with a green check and RIDE SAVED, and pages through:
 4. Best power over 5 s, 1, 5 and 20 min as bars against the best of them,
    then climbs and laps. Without an elevation page this is page 3.
 
-MOVE or a swipe turns the page, wrapping, and the page dots count three or four; ACT (Done) or BACK goes Home. If the last
+MOVE or a swipe turns the page, wrapping. The page dots count the pages:
+three, or four with an elevation page, and one more with the FTP offer
+below. ACT (Done) or BACK goes Home. If the last
 write failed, page 1 says NOT ALL SAVED in amber instead of RIDE SAVED.
 
 A ride recorded live that sets a personal best (see Bests below) opens its
-summary with one toast and the best chime: `BEST 5 MIN 312 W` for one,
-`3 NEW BESTS` for more. Each new best says BEST in its caption and takes its
-metric colour.
+summary with one toast and the best chime: `BEST 5 MIN 312 W`, NEW LONGEST
+RIDE, NEW LONGEST TIME or NEW MOST ASCENT for one, `3 NEW BESTS` for more.
+[UI](ui.md#bests) gives how a new best shows on the summary's pages.
 
 **FTP offer.** When the ride's new 20 min best times 0.95 is at least 3% above
-the stored FTP, the summary gets a fourth, last page: `FTP 245 W?`, over the
+the stored FTP, the summary gets one more, last page: the fourth, or the
+fifth after an elevation page. It shows `FTP 245 W?`, over the
 20 min best it comes from and `NOW 215 W`. It is a page, not a sheet, so the
-other three pages keep their buttons: ACT and BACK still go Home. Like END
+other pages keep their buttons: ACT and BACK still go Home. Like END
 RIDE?, it shows without the status bar, which would cut its back cue. On the
 offer, ACT (check cue) takes it (`FTP 245 W SAVED`) and BACK (back cue) keeps
 the FTP in force (`FTP KEPT 215 W`); both then go Home. Pressing Done on an
 earlier page declines it, and the offer is never shown again for that ride.
-The four page dots show that it is there. It is reached only going forward
-(MOVE from the last page): a swipe back from the first page lands on page 3,
-where ACT is Done as everywhere else. It is dropped when the suggestion no
+The extra page dot shows that it is there. It is reached only going forward
+(MOVE from the last page): a swipe back from the first page lands on the
+best-power page before it, where ACT is Done as everywhere else. It is dropped when the suggestion no
 longer beats the FTP in force by 3%. It is not offered for a saved ride read
 back from the list.
 
@@ -574,10 +609,10 @@ distance, the bars and LAST WEEK; it has its own page, FORM (below).
 
 A saved ride opens on the summary's pages, read back from its journal:
 SAVED RIDE and its start replace RIDE SAVED, and READING shows while it is
-read. Laps read back from the ride (a ride recorded before laps were kept
-reads --). Climbs and HR RECOVERY come from the ride's facts. Ascent and the
+read. Laps are counted from the ride's samples and read -- until the ride is
+read. Climbs and HR RECOVERY come from the ride's facts. Ascent and the
 elevation profile come from the altitude recorded with the ride, with the same
-3 m band as a live ride; a ride saved before altitude was recorded estimates
+3 m band as a live ride; a ride recorded without altitude estimates
 its ascent from the recorded gradient and shows no profile. MOVE or a swipe turns the page, BACK returns to
 the list, and ACT (an arrow cue) offers the ride to the phone. A ride whose
 record cannot be read says RIDE UNREADABLE.
@@ -598,11 +633,10 @@ A ride's facts are what its journal does not hold: the FTP and LTHR in force
 when it was saved, its HR RECOVERY once measured, and the climbs it finished.
 They are a table on the FILES volume (`ride-recording.md`, "Ride facts"),
 written when the ride is saved, that keeps the newest 1000 rides: FORM's 120
-days at eight rides a day. A ride without them reads as before: TSS at the FTP
+days at eight rides a day. A ride without them shows TSS at the FTP
 set now, CLIMBS --, and no HR RECOVERY. That is a ride saved with no card,
 FILES volume or formatted store, one saved without a clock, one recovered after
-a power cut, one older than the newest 1000, and one saved by firmware from
-before facts were kept. A ride that moved from the MMC onto internal flash keeps its
+a power cut, and one older than the newest 1000. A ride that moved from the MMC onto internal flash keeps its
 facts with its internal part.
 
 The list holds every saved ride of both journals (internal flash and the
@@ -618,7 +652,10 @@ once.
 The rider's all-time bests are 5 s, 1, 5 and 20 min power, the longest ride
 by distance and by time, and the most ascent. Settings, PROFILE, BESTS lists
 each with its value and the day it was set, and each power best also in W/KG
-once Settings, BODY holds a weight; BACK returns to Settings.
+once Settings, BODY holds a weight; BACK returns to Settings. The BESTS row's
+value counts the bests set (7 SET), says NONE YET, or names a problem below
+(NOT KEPT, DAMAGED, NOT FORMATTED, NOT SAVED). [UI](ui.md#bests) gives how
+the page looks.
 
 - Only a ride that finishes counts, never a discarded one. Deleting a saved
   ride keeps the bests it set. Rides under 10 minutes can set a power best but not a distance, time or
@@ -629,20 +666,25 @@ once Settings, BODY holds a weight; BACK returns to Settings.
   never a best.
 - They are ride history, not settings: a small file on the FILES volume
   beside the workout outcomes (`ride-recording.md`, "Personal bests"), saved
-  when the ride is. VANA never formats the store: where there is no card, no
-  FILES volume or no formatted store (formatting is the host's, behind
-  `--confirm`, and erases the bests), they are not kept: BESTS says BESTS
-  NOT KEPT, and a ride is never held up for it. A device that never recorded
-  one shows NONE YET.
+  when the ride is. Where there is no card, no FILES volume or no formatted
+  store, they are not kept: BESTS says BESTS NOT KEPT and NO PLACE TO KEEP
+  THEM, and a ride is never held up for it. VANA never formats a store on
+  its own. A store is formatted only by the host (`cycling format --confirm`)
+  or by the rider's yes to FORMAT STORAGE? at boot
+  ([volumes](mmc-volumes.md#format)), and either erases the bests. A device
+  that never recorded one shows NONE YET.
 - If the store would not take a write (full or failing), BESTS says BESTS NOT
-  SAVED; the bests merged so far stay in memory and the next write keeps them.
-  A read that failed only this time is tried again with the ride waiting.
-- A file that cannot be read says BESTS FILE DAMAGED and is left alone.
-- A file of another version says BESTS NOT FORMATTED / OFF AND ON TO FORMAT,
-  and ACT does nothing: only FORMAT replaces it.
+  SAVED and STORAGE REFUSED THEM; the bests merged so far stay in memory and
+  the next write keeps them. A read that failed only this time is tried again
+  with the ride waiting.
+- A file that cannot be read says BESTS FILE DAMAGED and IT CANNOT BE READ,
+  and is left alone.
+- A file of another version is foreign: BESTS says BESTS NOT FORMATTED and
+  OFF AND ON TO FORMAT, and ACT does nothing. Only a format replaces the
+  file.
 - ACT on BESTS asks CLEAR BESTS?: ACT (check cue) clears them, replacing a
   damaged file too, and BACK (back cue) keeps them. A failed clear says CLEAR
-  FAILED.
+  FAILED in a toast.
 
 ## Form
 
@@ -651,12 +693,12 @@ months of rides with power. Its row reads the
 current form number and word once the ride index has read the rides (it follows FTP
 changes), and OPEN TO SEE until then. FITNESS is the 42-day
 average of the daily training stress, FATIGUE the 7-day one, and FORM is
-fitness minus fatigue, with a word for it: RESTED above +25 (white), FRESH
-from +5 to +25 (green), EVEN from -10 to +4 (white), BUILDING from -30 to -11
-(white, the normal cost of training) and VERY TIRED below -30 (red). Under them one bar
+fitness minus fatigue, with a word for it: RESTED above +25, FRESH
+from +5 to +25, EVEN from -10 to +4, BUILDING from -30 to -11
+(the normal cost of training) and VERY TIRED below -30. Under them one bar
 a week shows how form stood at the end of each of the last six weeks, up for
 positive and down for negative, from 6 WEEKS AGO to NOW. BACK returns to
-Settings.
+Settings. [UI](ui.md#form) gives the verdicts' colours and the bars' scale.
 
 - The stress is each ride's TSS (see the rides list), at the FTP the ride was
   saved with where its facts are still kept, else the FTP now, added up by the
@@ -713,9 +755,114 @@ name and number; ACT forgets it and returns to SENSORS, BACK returns to its
 page. MOVE does nothing on these pages but a power meter's. A forgotten
 sensor is never connected again until it is chosen on NEARBY.
 
-## Other routes
+## Connect phone
 
-- **Phone.** `Page::Phone` is a placeholder for the phone companion: PHONE and
-  SEND RIDES TO YOUR PHONE from Home, or SEND THIS RIDE TO PHONE from a saved
-  ride; BACK returns where it came from. The phone workstream owns its Home
-  entry and the sending.
+Settings, DEVICE, PHONE (SEND RIDES) and ACT on a saved ride open Connect
+phone. It starts a session on VANA's own Wi-Fi that one phone uses with no
+app to install, through two QR codes. CONNECT PHONE and STARTING WI-FI show
+while the Wi-Fi starts.
+
+1. STEP 1 OF 2, JOIN VANA WI-FI: the network's name and password beside a
+   code that the phone's camera offers to join. The note says SCAN WITH THE
+   CAMERA, or how many phones joined (1 JOINED).
+2. STEP 2 OF 2, OPEN YOUR RIDES: once a phone joins, the screen moves here by
+   itself. The address and a code open the page that lists the rides,
+   downloads them as FIT files and loads a course or a workout (see Course
+   and Workouts from the phone). The note says ENDS AFTER 10 MIN IDLE, or how
+   many rides were sent (2 SENT).
+
+MOVE, ACT or a tap on the code switches between the two codes. BACK ends the
+session and returns to the saved ride it came from, else Home. The session
+also ends after 10 minutes without a request from the phone, or when a ride
+starts. The screen then says PHONE DISCONNECTED and why (SESSION ENDED,
+ENDED AFTER 10 MIN IDLE, NOT DURING A RIDE, WI-FI DID NOT START or NO HOME
+WI-FI) over TAP TO TRY AGAIN, and a press or a tap starts a new session. A
+session the terminal starts on the home network says ON HOME WI-FI and shows
+only the second code.
+
+## Buttons
+
+Three buttons control everything, and each keeps one role on every screen:
+BottomRight is ACT, BottomLeft is MOVE and TopLeft is BACK. Touch is a
+shortcut for navigation only; [UI](ui.md#input) gives the gestures.
+
+| Button | Home | Sensors | Settings | Workouts | Ride |
+| --- | --- | --- | --- | --- | --- |
+| BottomRight (ACT) | Open the focused card | Open the focused row; on a sensor's page, zero a power meter or ask FORGET SENSOR?; answer a question | Act on the row (edit, step a choice, open); while editing, raise it | Choose the focused workout, then Ready | Pause, resume; on the NEW FTP sheet, save it |
+| BottomLeft (MOVE) | Focus the next card; held 1.5 s: mark the moment (MARK n) | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages (a manual pause, or an automatic one without a course, opens on it; an automatic pause on a course opens on the ride page); held 1.5 s: mark the moment (MARK n) |
+| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back a page: SENSORS, then where Sensors opened from | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
+
+| Button | Ready | End ride? | Summary | Rides | Saved ride |
+| --- | --- | --- | --- | --- | --- |
+| BottomRight (ACT) | Start the ride | End and save it | Done: Home | Open the focused ride | Send to the phone; on the DELETE RIDE? page, delete the ride |
+| BottomLeft (MOVE) | Held 1.5 s: mark the moment (MARK n) | Ask DISCARD RIDE?, when the ride can be discarded | Next page (wraps); held 1.5 s: mark the moment (MARK n) | Focus the next ride (wraps; held, four on) | Next page (wraps) |
+| TopLeft (BACK) | Home, dropping a chosen workout | Keep the ride, paused | Home | Home | Back to Rides |
+
+The rider's mark writes the moment into the session trace, so whoever reads
+the trace later starts where the rider noticed something. MOVE held for 1.5 s
+marks once per hold, while the button is still down, with three middle notes
+and a `MARK n` toast that counts the marks since power-on, so it confirms with
+SOUNDS OFF too. The hold's first report is an ordinary MOVE; the mark puts
+back the page or focus it changed, and the repeats before it change nothing.
+The mark names the time of that first report and the page shown before it.
+Lists and Settings keep their own held MOVE, so nothing marks there.
+
+Holding TopLeft for 10 s reboots the device from any state, even one that
+draws nothing. The device firmware watches for it below VANA, so a stuck
+screen cannot swallow it. The hold's first report still acts as a press
+(LAP, or the TURN OFF sheet on Home); a ride in progress resumes as a
+recovered ride.
+
+## Sounds
+
+Cues are short runs of three notes. VANA takes the buzzer's patterns of
+150 ms or less as low, middle and high notes by pitch, and the longest
+pattern of 300 ms or less as the alarm. A buzzer with one short pattern plays
+it for every note. Rising runs mean go, falling ones stop.
+
+| Event | Notes |
+| --- | --- |
+| Ride starts | middle, high |
+| Resumes | high |
+| Pauses, by hand or automatically | high, middle |
+| Riding on while paused by ACT (see Paused) | middle, middle, high |
+| Lap | middle |
+| Ride saved | low, middle, high |
+| The summary of a ride that set a best | middle, high, high |
+| Battery low or critical, and BATTERY n LEFT | low, low |
+| Workout step's last three seconds | low, once a second |
+| Workout step begins, workout ends or a test measures FTP (in place of the lap chime) | high, high |
+| A limit broken (HR, power or cadence), and the sunset and TURN BACK alerts | high, high |
+| EAT AND DRINK | middle, middle |
+| Following a course, or back on it | low, high |
+| A course's turn 300 m ahead | low, middle |
+| 30 m before the course's turn | high |
+| Off the course being followed, and once again 15 s later | high, low |
+| End of the course reached | middle, high (the ride-start chime) |
+| Vehicle appears behind | the alarm |
+| Nearest vehicle near (under 60 m or 7 s), repeating every 1.5 s | low, once |
+| Nearest vehicle close (under 30 m or 4 s), repeating every 1 s | middle, once |
+| Nearest vehicle passing (under 15 m or 2 s), repeating every 0.5 s | high, once |
+| Road empty for 2 s after vehicles (ALL CLEAR setting) | low, high |
+| The rider marks a moment (MOVE held 1.5 s) | middle, middle, middle |
+
+Each note waits for the previous one's guard. A newer cue replaces one that
+waits or sounds, and a cue that cannot start within 1 s of its event is
+dropped. The radar's cues for vehicles are safety cues: while one waits or
+sounds, every other cue is dropped, and only another radar cue replaces it.
+SOUNDS OFF mutes every cue but those.
+
+Navigation cues (off course, back on course, the turn ahead, the beep at a
+turn and the end of the course) wait apart instead. One of each kind waits
+until no other cue waits or sounds, however long that takes, and one cut off
+by a newer cue waits again. Waiting cues play in this order: off course, back
+on course, the beep at a turn, the turn ahead and the end of the course. Each
+is dropped once it no longer holds: its turn is passed, the off-course or
+back-on-course state it told of has ended, or the end of the course was
+reached more than 10 s ago, since a later chime would sound like a ride
+starting.
+
+The nearest vehicle sets the radar's pace, by its range or its time to reach
+the rider, whichever is nearer. A vehicle holding the rider's speed sounds
+only the alarm. When the road empties, the next vehicle sounds the alarm
+again.

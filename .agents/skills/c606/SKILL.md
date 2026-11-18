@@ -28,9 +28,8 @@ on the flash geometry of [device.toml](../../../devices/c606/device.toml). It ve
 image and ranges, restricts writes to an application slot and OTA selection
 (or, for `stock`, the backup itself), and reads back changes.
 
-Stock lives in the verified backup, not on the device: cycling may occupy both
-slots (owner decision, 2026-10-17). The backup is `.local/device/flash.bin` with
-its `manifest.json`; keep the separate copy too.
+Stock lives in the backup, as [AGENTS.md](../../../AGENTS.md) requires. The
+backup is `.local/device/flash.bin` with its `manifest.json`.
 
 - A/B: slot A is `0x20000` (stock's ota_0), slot B `0x760000`. Slot B ends with
   the 1 MiB ride journal and the settings, so images in both slots are capped
@@ -58,19 +57,12 @@ its `manifest.json`; keep the separate copy too.
   into use ([volumes](../../../docs/mmc-volumes.md#format)).
 - Never use generic flashing tools or write the backup by hand. The recovered
   layout assumes secure boot and flash encryption are disabled.
-- Never touch eFuses. Preserve the bootloader and partition table. No vendor
-  filesystem writes.
-- A flash with unchanged formats keeps settings and rides; `flash` checks the
-  stub's MD5 of the owned reservations. A format change wipes them. Each
-  persisted format has one version byte, and firmware refuses a mismatch as
-  foreign instead of overwriting it.
 - The first backup needs an explicit `--port` or `CYCLING_PORT`, because port
   discovery relies on its manifest. `backup` refuses when slot A holds cycling:
   on a new host, copy the existing verified backup instead. Keep a separate copy of the backup. Never
   overwrite an existing baseline backup.
-- The helper resets with the watchdog. RTS hard reset left this device in ROM
-  download mode even with stock selected; watchdog reset reached normal stock
-  startup, as confirmed by the user.
+- The helper resets with the watchdog, because an RTS hard reset leaves this
+  device in ROM download mode even with stock selected.
 - Stock can remove the USB port during startup. After reset the helper captures
   briefly with DTR/RTS released, reports unavailable USB and rejects captured ROM
   download mode. Observe physical startup, and record it separately from
@@ -115,13 +107,19 @@ its `manifest.json`; keep the separate copy too.
 
 ## Firmware build
 
-`cycling build` makes one firmware. VANA and the diagnostic harness are always
-compiled in, also in the image riders flash.
+`cycling build` makes the firmware riders flash. VANA and the diagnostic
+harness are always compiled into it. The `[build].variants` of
+[device.toml](../../../devices/c606/device.toml) add other images through
+`cycling build --variant NAME`: `maintenance` (the MMC maintenance image that
+`cycling build-maintenance` and `cycling flash-maintenance` build, with no
+JSON console) and `scripted-gnss` (positioning reads scripted NMEA sentences in
+place of the GPS receiver).
 
 - Record firmware revision, device timestamps, collection state and traffic
   with results.
-- After testing, leave cycling firmware with ordinary terminal and logs
-  available, and stop readers and owned BLE fixtures.
+- After testing, flash back the ordinary firmware if a variant is on the
+  device, so its terminal and logs are available, and stop readers and owned
+  BLE fixtures.
 
 ## Test rules
 

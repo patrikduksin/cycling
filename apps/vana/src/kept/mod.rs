@@ -1,5 +1,9 @@
 //! What VANA keeps on the FILES volume beside the ride journals: the rider's
-//! bests, each saved ride's facts and the rides the rider hid.
+//! bests, each saved ride's facts, the rides the rider hid and the course.
+//!
+//! Each has its record, its codec and the state machine that reads it into
+//! memory and writes it back. `StoreError` is the typed failure of the bests
+//! and course files.
 pub mod bests;
 pub mod course;
 pub mod deleted;

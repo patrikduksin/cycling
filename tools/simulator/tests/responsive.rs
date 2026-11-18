@@ -1,4 +1,4 @@
-use device_api::input::Button;
+use device_api::input::Role;
 use device_api::server::Method;
 use shell_simulator::ant::device_type;
 use shell_simulator::bulk::Presence;
@@ -41,15 +41,10 @@ impl Twin {
                 continue;
             };
             assert_eq!(note.kind, NoteKind::Input);
-            let button = [
-                Button::TopLeft,
-                Button::BottomLeft,
-                Button::BottomRight,
-                Button::Center,
-            ]
-            .into_iter()
-            .find(|button| format!("{button:?}") == name)
-            .expect("a button");
+            let button = [Role::Back, Role::Move, Role::Act]
+                .into_iter()
+                .find(|role| format!("{role:?}") == name)
+                .expect("a role");
             self.sim.advance(note.at_ms - self.sim.now());
             self.sim.report(button);
         }
@@ -233,7 +228,7 @@ fn every_ride_page_draws_on_both_test_panels() {
         twin.sim
             .checkpoint(&format!("ride stats on {}", model.name));
         twin.guide(|sim| {
-            sim.press(Button::TopLeft);
+            sim.press(Role::Back);
             sim.advance(seconds(30));
             sim.ride_page("3/5");
         });
@@ -273,13 +268,13 @@ fn the_paused_end_and_summary_screens_draw_on_both_test_panels() {
         shows(&twin.sim, &["PAUSED", "FOR", "RIDE TIME", "KM"]);
         twin.sim.checkpoint(&format!("paused on {}", model.name));
         twin.guide(|sim| {
-            sim.press(Button::TopLeft);
+            sim.press(Role::Back);
             sim.expect_text("END RIDE?");
         });
         shows(&twin.sim, &["END RIDE?", "KM", "YOUR RIDE WILL BE SAVED"]);
         twin.sim.checkpoint(&format!("end ride on {}", model.name));
         twin.guide(|sim| {
-            sim.press(Button::BottomRight);
+            sim.press(Role::Act);
             sim.wait_for("RIDE SAVED", seconds(5)).unwrap();
         });
         twin.sim.checkpoint(&format!("summary on {}", model.name));
@@ -300,19 +295,19 @@ fn the_summary_pages_and_a_saved_ride_draw_on_both_test_panels() {
         shows(&twin.sim, &["RIDE SAVED", "TIME", "DIST KM", "AVG BPM"]);
         twin.sim.checkpoint(&format!("summary overview on {name}"));
         twin.guide(|sim| {
-            sim.press(Button::BottomLeft);
+            sim.press(Role::Move);
             sim.expect_text("NP W");
         });
         shows(&twin.sim, &["NP W", "KCAL", "PWR", "HR"]);
         twin.sim.checkpoint(&format!("summary effort on {name}"));
         twin.guide(|sim| {
-            sim.press(Button::BottomLeft);
+            sim.press(Role::Move);
             sim.expect_text("DESCENT M");
         });
         shows(&twin.sim, &["ASCENT M", "DESCENT M", "MIN M", "MAX M"]);
         twin.sim.checkpoint(&format!("summary elevation on {name}"));
         twin.guide(|sim| {
-            sim.press(Button::BottomLeft);
+            sim.press(Role::Move);
             sim.expect_text("BEST POWER W");
         });
         shows(&twin.sim, &["BEST POWER W", "CLIMBS", "LAPS"]);
@@ -321,7 +316,7 @@ fn the_summary_pages_and_a_saved_ride_draw_on_both_test_panels() {
         twin.guide(|sim| {
             sim.done();
             sim.home("RIDES");
-            sim.press(Button::BottomRight);
+            sim.press(Role::Act);
             sim.wait_gone("READING", seconds(5)).unwrap();
             sim.expect_text("SAVED RIDE");
         });
@@ -337,7 +332,7 @@ fn the_workout_page_draws_on_both_test_panels() {
         let mut twin = Twin::paired(model, world, &KINDS);
         twin.guide(|sim| {
             sim.choose_workout("VO2 MAX 5X3");
-            sim.press(Button::BottomRight);
+            sim.press(Role::Act);
             sim.wait_for("RECORDING", seconds(2)).unwrap();
         });
         twin.both(|sim| sim.ride_at(30.0, 120.0, 142.0, 90.0));

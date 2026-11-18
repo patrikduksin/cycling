@@ -21,7 +21,9 @@ pub const WARNING_SECONDS: u64 = 30;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sheet {
     /// "Turn off?" after BACK on Home: ACT turns off, anything else returns.
-    Confirm,
+    /// With `unsaved` rides the phone has not confirmed it says to sync them
+    /// first, and ACT does not turn off.
+    Confirm { unsaved: u8 },
     /// Idle auto-off countdown; any button keeps VANA on.
     Warning { seconds: u64 },
     /// The farewell, `progress` thousandths of the way to black.
@@ -56,7 +58,7 @@ impl Sheet {
     /// Whether the sheet moves from frame to frame.
     pub const fn animated(self) -> bool {
         match self {
-            Self::Confirm => false,
+            Self::Confirm { .. } => false,
             Self::Warning { .. } | Self::TurningOff { .. } => true,
             Self::Charging { battery, .. } => battery.charging && battery.percent < 100,
         }
@@ -66,7 +68,7 @@ impl Sheet {
     pub fn canvas(self) -> Canvas {
         let mut canvas = Canvas::default();
         match self {
-            Self::Confirm => confirm(&mut canvas),
+            Self::Confirm { unsaved } => confirm(&mut canvas, unsaved),
             Self::Warning { seconds } => warning(&mut canvas, seconds),
             Self::TurningOff { progress } => {
                 brand::farewell(&mut canvas, progress);
@@ -85,8 +87,9 @@ impl Sheet {
     }
 }
 
-/// The power symbol, the question and the ACT corner.
-fn confirm(canvas: &mut Canvas) {
+/// The power symbol, the question and the ACT corner, which unsaved rides
+/// take away.
+fn confirm(canvas: &mut Canvas, unsaved: u8) {
     // A ring open at the top with a bar through the gap.
     let gap = TURN / 12;
     canvas.shape(Shape::ring(ring(118, 32, 7, gap, TURN - 2 * gap), WHITE));
@@ -101,13 +104,12 @@ fn confirm(canvas: &mut Canvas) {
         color: WHITE,
     });
     centred(canvas, &[&TITLE, &BODY], b"TURN OFF", 208, WHITE);
-    centred(
-        canvas,
-        &[&BODY, &CAPTION],
-        b"RIDES ARE SAVED",
-        240,
-        SECONDARY,
-    );
+    let (line, color): (&[u8], u16) = match unsaved {
+        0 => (b"RIDES ARE SAVED", SECONDARY),
+        1 => (b"SYNC RIDE FIRST", AMBER),
+        _ => (b"SYNC RIDES FIRST", AMBER),
+    };
+    centred(canvas, &[&BODY, &CAPTION], line, 240, color);
     // BACK sits by its button, top left.
     canvas.caption(
         &crate::screens::scaled::BASE,
@@ -117,6 +119,9 @@ fn confirm(canvas: &mut Canvas) {
         20,
         Align::Left,
     );
+    if unsaved > 0 {
+        return;
+    }
     // ACT, bottom right, turns off: its corner is lit.
     for rect in [
         Rect {
@@ -263,7 +268,18 @@ mod tests {
     #[test]
     fn sheets_lay_out_whole_and_paint_their_reference() {
         let sheets = [
-            (Sheet::Confirm, &["TURN OFF", "RIDES ARE SAVED", "BACK"][..]),
+            (
+                Sheet::Confirm { unsaved: 0 },
+                &["TURN OFF", "RIDES ARE SAVED", "BACK"][..],
+            ),
+            (
+                Sheet::Confirm { unsaved: 1 },
+                &["TURN OFF", "SYNC RIDE FIRST", "BACK"][..],
+            ),
+            (
+                Sheet::Confirm { unsaved: 3 },
+                &["TURN OFF", "SYNC RIDES FIRST", "BACK"][..],
+            ),
             (
                 Sheet::Warning { seconds: 9 },
                 &["TURNING OFF IN", "9", "TO STAY ON"],
@@ -305,7 +321,7 @@ mod tests {
 
     #[test]
     fn confirm_marks_act_and_draws_the_power_symbol() {
-        let confirm = Sheet::Confirm.canvas();
+        let confirm = Sheet::Confirm { unsaved: 0 }.canvas();
         assert_eq!(
             confirm.pixel(Look::PLAIN, 239, 319, Shown(BLACK)).0,
             ACCENT,

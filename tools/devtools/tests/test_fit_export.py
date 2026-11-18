@@ -237,7 +237,20 @@ class FitExportTests(unittest.TestCase):
         self.assertEqual(command[command.index('--bin') + 1], 'ride-fit')
         # Absolute, because cargo runs from the workspace root.
         here = Path.cwd()
-        self.assertEqual(command[-5:], ['--', str(here / 'in.bin'), str(here / 'out'), '--start-utc-ms', '5'])
+        self.assertEqual(
+            command[-9:],
+            [
+                '--',
+                str(here / 'in.bin'),
+                str(here / 'out'),
+                '--product',
+                'VANA C606',
+                '--fit-product',
+                '606',
+                '--start-utc-ms',
+                '5',
+            ],
+        )
 
 
 if __name__ == '__main__':

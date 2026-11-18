@@ -85,6 +85,9 @@ impl Nor {
 
 impl RideStorage for Nor {
     type Error = ();
+    fn ride_geometry(&mut self) -> device_api::storage::Geometry {
+        crate::ride::log::GEOMETRY
+    }
     fn ride_read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), ()> {
         if self.off {
             return Err(());

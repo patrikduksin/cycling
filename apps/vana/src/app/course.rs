@@ -332,11 +332,18 @@ impl Runtime {
         self.display.redraw();
     }
 
-    pub(super) fn stop_following_from_map(&mut self) {
+    pub(super) fn following(&self) -> bool {
+        self.track
+            .as_deref()
+            .is_some_and(|state| state.follower.following())
+    }
+
+    pub(super) fn stop_following_from_map(&mut self, now: u64) {
         if let Some(state) = self.track.as_deref_mut()
             && state.follower.following()
         {
             state.follower.handle(Input::LetGo);
+            self.navigation.toast("COURSE OFF", Tone::Info, now);
             self.display.redraw();
         }
     }

@@ -5,7 +5,7 @@
 //! them (`vana::app::pace`). A press or a radar page ends a rest at once, a
 //! harness press runs when it is due, and a strict replay of a resting
 //! session is exact.
-use device_api::input::{Button, Input, Point};
+use device_api::input::{Input, Point, Role};
 use firmware_services::trace::{Event, decode};
 use shell_simulator::ant::device_type;
 use shell_simulator::bulk::Presence;
@@ -107,7 +107,7 @@ fn still_pages_rest_between_passes() {
     expect_still(&mut sim, "home dimmed");
     sim.home("SETTINGS");
     expect_still(&mut sim, "settings");
-    sim.press(Button::TopLeft);
+    sim.press(Role::Back);
     sim.set_battery(60, true);
     expect_still(&mut sim, "home charging");
 }
@@ -122,7 +122,7 @@ fn work_on_a_page_keeps_the_busy_pace() {
     expect_busy(&mut sim, seconds(1), "a finger resting on Home");
     sim.device.input.push(sim.device.clock_ms(), Input::Release);
     sim.advance(seconds(1));
-    sim.press(Button::TopLeft);
+    sim.press(Role::Back);
     sim.expect_text("TURN OFF");
     expect_busy(&mut sim, seconds(2), "the turn-off sheet");
 }
@@ -213,9 +213,9 @@ fn a_radar_page_wakes_a_resting_ride() {
 fn a_press_waiting_for_its_frame_keeps_the_busy_pace() {
     let mut sim = device();
     sim.advance(seconds(3));
-    sim.report(Button::BottomLeft);
+    sim.report(Role::Move);
     sim.advance(100);
-    sim.report(Button::BottomLeft);
+    sim.report(Role::Move);
     sim.advance(10);
     assert!(sim.device.shell.frame_wanted(sim.device.now));
     expect_busy(&mut sim, 500, "a press waiting for its frame");
@@ -294,7 +294,7 @@ fn a_press_wakes_a_resting_home() {
         resting(&mut sim);
         let rested = sim.device.now;
         if press {
-            sim.report(Button::BottomRight);
+            sim.report(Role::Act);
         }
         sim.advance(10);
         (sim.device.now > rested, sim.device.sdk.page())
@@ -337,8 +337,8 @@ fn a_resting_session_with_a_press_replays_exactly() {
     let mut sim = sim.boot();
     sim.advance(seconds(5));
     resting(&mut sim);
-    sim.press(Button::BottomRight);
-    sim.press(Button::TopLeft);
+    sim.press(Role::Act);
+    sim.press(Role::Back);
     sim.advance(seconds(5));
     let capture = sim.capture();
     let replayed = Sim::replay(&capture);
@@ -374,10 +374,10 @@ fn a_fling_from_a_resting_list_coasts_as_from_a_busy_one() {
 #[test]
 fn reading_a_saved_ride_keeps_the_busy_pace() {
     let mut sim = rides_list(&[30, 2]);
-    sim.press(Button::BottomLeft);
+    sim.press(Role::Move);
     sim.expect_text("2/2");
     let (before, began) = (passes(&sim), sim.now());
-    sim.report(Button::BottomRight);
+    sim.report(Role::Act);
     sim.advance(10);
     sim.expect_text("READING");
     while sim.screen().contains("READING") {

@@ -230,7 +230,7 @@ impl Runtime {
     pub(super) fn calibrate(&mut self, ant: &mut impl Ant, now: u64) {
         let event = Event::Ask {
             live: self.live_power_meter(ant, now),
-            recording: self.recording(),
+            recording: self.recorder_busy(),
             now,
         };
         self.calibration = step(self.calibration, event);
@@ -267,7 +267,7 @@ impl Runtime {
             });
         }
         let live = self.live_power_meter(ant, now);
-        let recording = self.recording();
+        let recording = self.recorder_busy();
         let watching = self.navigation.page() == crate::screens::workout::Page::Sensors;
         self.advance_calibration(Event::Tick {
             live,

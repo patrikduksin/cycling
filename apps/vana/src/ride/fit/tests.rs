@@ -149,7 +149,14 @@ fn fit_time(unix_ms: u64) -> u64 {
 
 fn file(slots: &[Slot], start: Option<u64>) -> Result<(Plan, Vec<u8>), Refusal> {
     let mut out = Bytes(Vec::new());
-    let plan = write_all(slots.iter(), 3, Rider::default(), start, &mut out)?;
+    let plan = write_all(
+        slots.iter(),
+        3,
+        Rider::default(),
+        &crate::testing::PRODUCT,
+        start,
+        &mut out,
+    )?;
     assert_eq!(plan.size as usize, out.0.len());
     Ok((plan, out.0))
 }
@@ -295,7 +302,14 @@ fn an_empty_ride_is_refused() {
 #[test]
 fn stream_bounds_hold() {
     let mut out = Counter::default();
-    let export = Export::start(1, Rider::default(), None, None, &mut out);
+    let export = Export::start(
+        1,
+        Rider::default(),
+        &crate::testing::PRODUCT,
+        None,
+        None,
+        &mut out,
+    );
     assert!(out.0 <= MAX_START_OUTPUT, "start {}", out.0);
     let start = out.0;
     let mut export2 = export.clone();
@@ -396,7 +410,15 @@ fn journal(samples: &[Sample]) -> Vec<Slot> {
 
 fn file_for(slots: &[Slot], rider: Rider) -> Vec<Decoded> {
     let mut out = Bytes(Vec::new());
-    let plan = write_all(slots.iter(), 3, rider, None, &mut out).unwrap();
+    let plan = write_all(
+        slots.iter(),
+        3,
+        rider,
+        &crate::testing::PRODUCT,
+        None,
+        &mut out,
+    )
+    .unwrap();
     assert_eq!(plan.size as usize, out.0.len());
     decode(&out.0)
 }
@@ -876,7 +898,14 @@ fn a_ride_without_lap_marks_is_one_lap_of_the_whole_ride() {
 #[test]
 fn a_slot_of_four_laps_stays_within_its_bound() {
     let mut out = Counter::default();
-    let mut export = Export::start(3, Rider::default(), None, None, &mut out);
+    let mut export = Export::start(
+        3,
+        Rider::default(),
+        &crate::testing::PRODUCT,
+        None,
+        None,
+        &mut out,
+    );
     let slots = ride(true, 0);
     export.slot(&slots[0], &mut out);
     export.slot(&slots[1], &mut out);

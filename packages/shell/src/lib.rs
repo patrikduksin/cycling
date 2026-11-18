@@ -4,6 +4,7 @@ extern crate std;
 pub mod backlight;
 pub mod harness;
 pub mod idle;
+pub mod input;
 pub mod preferences;
 pub mod rendering;
 pub mod shell;

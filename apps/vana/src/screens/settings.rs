@@ -2,13 +2,13 @@
 //! under the finger between the section's title and the save status
 //! (`scroll::Layout`), with a scroll bar at the right when they do not fit.
 //!
-//! Buttons keep their system roles. BottomLeft moves to the next row (the
-//! page follows into the next section), BottomRight acts on it and TopLeft
-//! goes back Home. Acting cycles a choice, opens a page or edits a number.
-//! While a number is edited, BottomLeft lowers and BottomRight raises it by
-//! `STEP`, and TopLeft finishes. Touch does the same directly: swipe between
-//! sections, drag a long section, tap a row to act on it, and tap the large
-//! minus and plus pads while editing. The runtime prepares each row's value and note; this draws
+//! Buttons keep their roles. MOVE moves to the next row (the page follows
+//! into the next section), ACT acts on it and BACK goes back Home. Acting
+//! cycles a choice, opens a page or edits a number. While a number is
+//! edited, MOVE lowers and ACT raises it by `STEP`, and BACK finishes.
+//! Touch does the same directly: swipe between sections, drag a long
+//! section, tap a row to act on it, and tap the large minus and plus pads
+//! while editing. The runtime prepares each row's value and note; this draws
 //! them and maps touches to `Target`s.
 use super::canvas::{Canvas, Shape};
 use super::chrome::{
@@ -142,42 +142,122 @@ const _: () = {
         i += 1;
     }
 };
-/// All rows, the cursor's range.
-pub const ROWS: usize = {
-    let mut count = 0;
-    let mut i = 0;
-    while i < SECTIONS.len() {
-        count += SECTIONS[i].1.len();
-        i += 1;
-    }
-    count
+const NO_PHONE: [(&str, &[Row]); 11] = {
+    let mut sections = SECTIONS;
+    sections[SECTIONS.len() - 1] = ("DEVICE", &[Row::Sensors, Row::Storage, Row::Firmware]);
+    sections
 };
 
-impl Row {
-    /// The row at cursor position `index`, wrapping.
-    pub fn at(index: usize) -> Self {
-        let mut index = index % ROWS;
-        for (_, rows) in SECTIONS {
-            if index < rows.len() {
-                return rows[index];
-            }
-            index -= rows.len();
+/// The sections this device shows; cursor positions count their rows in
+/// order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sections {
+    All,
+    NoPhone,
+}
+
+impl Sections {
+    fn table(self) -> &'static [(&'static str, &'static [Row])] {
+        match self {
+            Self::All => &SECTIONS,
+            Self::NoPhone => &NO_PHONE,
         }
-        unreachable!("index is below ROWS")
     }
 
-    /// The row's cursor position.
-    pub fn index(self) -> usize {
+    pub fn phone(self) -> bool {
+        self.field(Row::Phone).is_some()
+    }
+
+    pub fn count(self) -> usize {
+        self.table().len()
+    }
+
+    /// All rows, the cursor's range.
+    pub fn fields(self) -> usize {
+        self.table().iter().map(|(_, rows)| rows.len()).sum()
+    }
+
+    pub fn title(self, section: usize) -> &'static str {
+        self.table()[section % self.count()].0
+    }
+
+    /// The row at cursor position `index`, wrapping.
+    pub fn row(self, index: usize) -> Row {
+        let (rows, first) = self.rows(index);
+        rows[index % self.fields() - first]
+    }
+
+    /// The row's cursor position, if this device shows it.
+    pub fn field(self, row: Row) -> Option<usize> {
         let mut first = 0;
-        for (_, rows) in SECTIONS {
-            if let Some(i) = rows.iter().position(|row| *row == self) {
-                return first + i;
+        for (_, rows) in self.table() {
+            if let Some(i) = rows.iter().position(|r| *r == row) {
+                return Some(first + i);
             }
             first += rows.len();
         }
-        unreachable!("every row is in a section")
+        None
     }
 
+    /// The section holding cursor position `index`, and its first position.
+    pub fn section(self, index: usize) -> (usize, usize) {
+        let index = index % self.fields();
+        let mut first = 0;
+        for (section, (_, rows)) in self.table().iter().enumerate() {
+            if index < first + rows.len() {
+                return (section, first);
+            }
+            first += rows.len();
+        }
+        unreachable!("index is below fields")
+    }
+
+    /// The rows of the section holding cursor position `index`, and the
+    /// cursor position of its first row.
+    pub fn rows(self, index: usize) -> (&'static [Row], usize) {
+        let (section, first) = self.section(index);
+        (self.table()[section].1, first)
+    }
+
+    /// The first cursor position of `section`, wrapping.
+    pub fn first_of(self, section: usize) -> usize {
+        self.table()[..section % self.count()]
+            .iter()
+            .map(|(_, rows)| rows.len())
+            .sum()
+    }
+
+    /// The target under a touch at panel point (`x`, `y`) on the section
+    /// that holds `cursor`, scrolled to `offset`: its rows, or the pads while
+    /// a number is edited.
+    pub fn target(
+        self,
+        x: usize,
+        y: usize,
+        cursor: usize,
+        editing: bool,
+        offset: i32,
+    ) -> Option<Target> {
+        if !(LEFT..RIGHT).contains(&x) {
+            return None;
+        }
+        if editing {
+            return (PAD_TOP..PAD_TOP + PAD_HEIGHT)
+                .contains(&y)
+                .then_some(if x < PAD_SPLIT {
+                    Target::Lower
+                } else {
+                    Target::Raise
+                });
+        }
+        let (rows, first) = self.rows(cursor);
+        LAYOUT
+            .card_at(rows.len(), offset, x, y)
+            .map(|row| Target::Row(first + row))
+    }
+}
+
+impl Row {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Ftp => "FTP WATTS",
@@ -274,33 +354,6 @@ impl Row {
     }
 }
 
-/// The section holding cursor position `index`, and its first position.
-pub fn section(index: usize) -> (usize, usize) {
-    let mut first = 0;
-    for (section, (_, rows)) in SECTIONS.iter().enumerate() {
-        if index % ROWS < first + rows.len() {
-            return (section, first);
-        }
-        first += rows.len();
-    }
-    unreachable!("index is below ROWS")
-}
-
-/// The rows of the section holding cursor position `index`, and the cursor
-/// position of its first row.
-pub fn rows(index: usize) -> (&'static [Row], usize) {
-    let (section, first) = section(index);
-    (SECTIONS[section].1, first)
-}
-
-/// The first cursor position of `section`, wrapping.
-pub fn first_of(section: usize) -> usize {
-    SECTIONS[..section % SECTIONS.len()]
-        .iter()
-        .map(|(_, rows)| rows.len())
-        .sum()
-}
-
 /// Each press or tap moves a number by this much: watts, bpm or a wheel's mm.
 pub const STEP: u16 = 5;
 
@@ -368,34 +421,12 @@ pub enum Target {
     Raise,
 }
 
-/// The target under a touch at panel point (`x`, `y`) on the section that
-/// holds `cursor`, scrolled to `offset`: its rows, or the pads while a
-/// number is edited.
-pub fn target(x: usize, y: usize, cursor: usize, editing: bool, offset: i32) -> Option<Target> {
-    if !(LEFT..RIGHT).contains(&x) {
-        return None;
-    }
-    if editing {
-        return (PAD_TOP..PAD_TOP + PAD_HEIGHT)
-            .contains(&y)
-            .then_some(if x < PAD_SPLIT {
-                Target::Lower
-            } else {
-                Target::Raise
-            });
-    }
-    let (rows, first) = rows(cursor);
-    LAYOUT
-        .card_at(rows.len(), offset, x, y)
-        .map(|row| Target::Row(first + row))
-}
-
 /// The section's rows, or the number editor, with the save status.
 pub(super) fn prepare(view: &View) -> Canvas {
     let mut canvas = Canvas::default();
-    let (section, _) = section(view.cursor);
-    let title = SECTIONS[section].0;
-    let row = Row::at(view.cursor);
+    let sections = view.sections;
+    let title = sections.title(sections.section(view.cursor).0);
+    let row = sections.row(view.cursor);
     if view.editing && row.kind() == Kind::Number {
         editor(&mut canvas, view, title, row);
     } else {
@@ -408,14 +439,14 @@ pub(super) fn prepare(view: &View) -> Canvas {
             Align::Left,
             WHITE,
         );
-        let (rows, first) = rows(view.cursor);
+        let (rows, first) = sections.rows(view.cursor);
         for index in LAYOUT.visible(rows.len(), view.scroll) {
             row_card(
                 &mut canvas,
                 view,
                 index,
                 rows[index],
-                first + index == view.cursor % ROWS,
+                first + index == view.cursor % sections.fields(),
             );
         }
         // A long section's track down the viewport, the part in view lit.
@@ -645,22 +676,40 @@ mod tests {
 
     #[test]
     fn rows_walk_every_section_in_order() {
-        assert_eq!(ROWS, 36);
-        for index in 0..ROWS {
-            assert_eq!(Row::at(index).index(), index);
-            let (section, first) = section(index);
-            assert_eq!(first_of(section), first);
-            let (rows, top) = rows(index);
-            assert!(rows.len() <= SECTION_ROWS && rows.contains(&Row::at(index)));
-            assert_eq!(rows[0], Row::at(top));
+        for (sections, fields) in [(Sections::All, 36), (Sections::NoPhone, 35)] {
+            assert_eq!(sections.fields(), fields);
+            for index in 0..fields {
+                assert_eq!(sections.field(sections.row(index)), Some(index));
+                let (section, first) = sections.section(index);
+                assert_eq!(sections.first_of(section), first);
+                let (rows, top) = sections.rows(index);
+                assert!(rows.len() <= SECTION_ROWS && rows.contains(&sections.row(index)));
+                assert_eq!(rows[0], sections.row(top));
+            }
+            assert_eq!(sections.row(fields), Row::Ftp, "wraps");
+            assert_eq!(sections.first_of(sections.count()), 0);
         }
-        assert_eq!(Row::at(ROWS), Row::Ftp, "wraps");
-        assert_eq!(section(Row::Weight.index()), (1, Row::Weight.index()));
-        assert_eq!(section(Row::Sex.index()), (1, Row::Weight.index()));
-        assert_eq!(section(Row::TimeZone.index()), (3, Row::TimeZone.index()));
-        assert_eq!(section(Row::Sounds.index()), (7, Row::Sounds.index()));
-        assert_eq!(section(Row::PowerLow.index()), (9, Row::HeartHigh.index()));
-        assert_eq!(first_of(SECTIONS.len()), 0);
+        let all = Sections::All;
+        let at = |row| all.field(row).unwrap();
+        assert_eq!(all.section(at(Row::Weight)), (1, at(Row::Weight)));
+        assert_eq!(all.section(at(Row::Sex)), (1, at(Row::Weight)));
+        assert_eq!(all.section(at(Row::TimeZone)), (3, at(Row::TimeZone)));
+        assert_eq!(all.section(at(Row::Sounds)), (7, at(Row::Sounds)));
+        assert_eq!(all.section(at(Row::PowerLow)), (9, at(Row::HeartHigh)));
+    }
+
+    #[test]
+    fn without_wifi_device_drops_only_the_phone_row() {
+        let (all, bare) = (Sections::All, Sections::NoPhone);
+        assert!(all.phone() && !bare.phone());
+        let rows = |sections: Sections| (0..sections.fields()).map(move |i| sections.row(i));
+        assert!(rows(all).filter(|row| *row != Row::Phone).eq(rows(bare)));
+        let device = bare.field(Row::Sensors).unwrap();
+        assert_eq!(
+            bare.rows(device).0,
+            [Row::Sensors, Row::Storage, Row::Firmware]
+        );
+        assert_eq!(bare.title(bare.section(device).0), "DEVICE");
     }
 
     #[test]
@@ -696,7 +745,11 @@ mod tests {
 
     #[test]
     fn body_numbers_move_a_unit_at_a_time_and_say_when_unset() {
-        let mut editing = View::new(Page::Settings, Row::Weight.index(), None);
+        let mut editing = View::new(
+            Page::Settings,
+            Sections::All.field(Row::Weight).unwrap(),
+            None,
+        );
         editing.editing = true;
         let lines = editing.show_settings();
         let _ = lines[VALUES].push_str("NOT SET");
@@ -728,14 +781,14 @@ mod tests {
             ("99H LEFT", "120 RIDES"),
             ("OFF", "NO CLIMB POP-UP"),
         ];
-        for cursor in 0..ROWS {
+        for cursor in 0..Sections::All.fields() {
             for editing in [false, true] {
                 for status in ["SAVED", "SAVE FAILED, RETRYING", "NOT SAVED: DATA KEPT"] {
                     let view = view(cursor, editing, &long, status);
-                    let shown = if editing && Row::at(cursor).kind() == Kind::Number {
+                    let shown = if editing && Sections::All.row(cursor).kind() == Kind::Number {
                         1
                     } else {
-                        rows(cursor).0.len()
+                        Sections::All.rows(cursor).0.len()
                     };
                     let mut texts = std::vec![status];
                     for (value, note) in &long[..shown] {
@@ -757,27 +810,48 @@ mod tests {
     #[test]
     fn touches_find_rows_of_the_shown_section_and_pads_only_while_editing() {
         let row = |slot| ROW_TOP + slot * ROW_PITCH + 10;
-        assert_eq!(target(100, row(0), 0, false, 0), Some(Target::Row(0)));
-        assert_eq!(target(200, row(1), 0, false, 0), Some(Target::Row(1)));
-        assert_eq!(target(100, row(2), 0, false, 0), Some(Target::Row(2)));
-        assert_eq!(target(100, row(3), 0, false, 0), Some(Target::Row(3)));
-        let device = Row::Sensors.index();
         assert_eq!(
-            target(100, row(3), device, false, 0),
+            Sections::All.target(100, row(0), 0, false, 0),
+            Some(Target::Row(0))
+        );
+        assert_eq!(
+            Sections::All.target(200, row(1), 0, false, 0),
+            Some(Target::Row(1))
+        );
+        assert_eq!(
+            Sections::All.target(100, row(2), 0, false, 0),
+            Some(Target::Row(2))
+        );
+        assert_eq!(
+            Sections::All.target(100, row(3), 0, false, 0),
+            Some(Target::Row(3))
+        );
+        let device = Sections::All.field(Row::Sensors).unwrap();
+        assert_eq!(
+            Sections::All.target(100, row(3), device, false, 0),
             Some(Target::Row(device + 3))
         );
-        assert_eq!(target(100, ROW_TOP + ROW_HEIGHT + 2, 0, false, 0), None);
-        let ride = Row::TimeZone.index();
-        assert_eq!(target(30, PAD_TOP + 10, ride, false, 0), None);
-        assert_eq!(target(30, PAD_TOP + 10, 0, true, 0), Some(Target::Lower));
-        assert_eq!(target(200, PAD_TOP + 10, 0, true, 0), Some(Target::Raise));
-        assert_eq!(target(100, row(0), 0, true, 0), None);
-        assert_eq!(target(5, PAD_TOP + 10, 0, true, 0), None);
+        assert_eq!(
+            Sections::All.target(100, ROW_TOP + ROW_HEIGHT + 2, 0, false, 0),
+            None
+        );
+        let ride = Sections::All.field(Row::TimeZone).unwrap();
+        assert_eq!(Sections::All.target(30, PAD_TOP + 10, ride, false, 0), None);
+        assert_eq!(
+            Sections::All.target(30, PAD_TOP + 10, 0, true, 0),
+            Some(Target::Lower)
+        );
+        assert_eq!(
+            Sections::All.target(200, PAD_TOP + 10, 0, true, 0),
+            Some(Target::Raise)
+        );
+        assert_eq!(Sections::All.target(100, row(0), 0, true, 0), None);
+        assert_eq!(Sections::All.target(5, PAD_TOP + 10, 0, true, 0), None);
     }
 
     #[test]
     fn a_long_section_scrolls_and_shows_where_it_is() {
-        let display = Row::Brightness.index();
+        let display = Sections::All.field(Row::Brightness).unwrap();
         let bar = |view: &mut View, y| view.pixel(BAR_LEFT + 1, y);
         let scrolled = |offset| {
             let mut view = View::new(Page::Settings, display, None);
@@ -786,7 +860,7 @@ mod tests {
             view.prepare();
             view
         };
-        let rows = SECTIONS[2].1.len();
+        let rows = Sections::All.rows(display).0.len();
         assert_eq!(rows, 5);
         // From the top: the thumb at the top of the track.
         let mut top = scrolled(0);
@@ -803,7 +877,7 @@ mod tests {
         assert!(LAYOUT.whole(4, end));
         let fifth = (LAYOUT.top as i32 + LAYOUT.span(4).0 - end + 10) as usize;
         assert_eq!(
-            target(100, fifth, display, false, end),
+            Sections::All.target(100, fifth, display, false, end),
             Some(Target::Row(display + 4))
         );
         // A short section has no bar.

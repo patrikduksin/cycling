@@ -1,5 +1,5 @@
 use crate::world::Side;
-use device_api::input::Button;
+use device_api::input::Role;
 use std::ops::RangeInclusive;
 
 /// The seeds `cycling fuzz --fixed` runs: synthetic courses only, so every
@@ -142,8 +142,8 @@ pub enum Step {
     Wait {
         ms: u32,
     },
-    Press(Button),
-    Hold(Button, u16),
+    Press(Role),
+    Hold(Role, u16),
     Ride {
         kmh: u8,
         watts: u16,
@@ -195,7 +195,7 @@ impl Step {
     }
 }
 
-const BUTTONS: [Button; 3] = [Button::TopLeft, Button::BottomLeft, Button::BottomRight];
+const BUTTONS: [Role; 3] = [Role::Back, Role::Move, Role::Act];
 
 type Draw = fn(&mut Rng, &Setup) -> Option<Step>;
 

@@ -68,7 +68,13 @@ def test_fitted_rs_holds_the_driver_literals_it_replaced(c606):
     text = devices.fitted_rs(c606)
     assert 'pub const PANEL_WIDTH: usize = 240;' in text
     assert 'pub const PANEL_HEIGHT: usize = 320;' in text
-    assert 'pub const BUTTONS: &[Button] = &[Button::TopLeft, Button::BottomLeft, Button::BottomRight];' in text
+    assert 'pub const PRODUCT_NAME: &str = "VANA C606";' in text
+    assert 'pub const FIT_PRODUCT: u16 = 606;' in text
+    fixtures = re.findall(r'Fixture \{\s*id: (\d+),\s*role: (Some\(Role::\w+\)|None),\s*\}', text)
+    assert fixtures == [('0', 'Some(Role::Back)'), ('1', 'Some(Role::Move)'), ('2', 'Some(Role::Act)')]
+    for fact in ('GPS', 'ANT', 'BLE', 'WIFI', 'SOUND', 'SHUTDOWN', 'CARD'):
+        assert f'pub const {fact}: bool = true;' in text
+    assert re.search(r'pub const SENSORS: SensorSet = SensorSet \{\s*barometer: true,\s*light: true,\s*\};', text)
     arms = dict(re.findall(r'Region::(\w+) => \((0x[0-9a-f]+, 0x[0-9a-f]+)\)', text))
     assert {region: tuple(int(v, 16) for v in pair.split(', ')) for region, pair in arms.items()} == {
         'Configuration': (0x00E9_8000, 2 * 4096),
@@ -90,6 +96,53 @@ def test_models_rs_holds_every_device_and_test_model():
     bare = found['bare']
     assert (bare.width, bare.height, bare.touch) == (240, 320, False)
     assert [b.role for b in bare.buttons] == ['back', 'move', 'act']
+    assert (bare.product, bare.fit_product) == ('VANA BARE', 0)
+    assert [part for part, fitted in bare.fitted.items() if not fitted] == ['wifi', 'barometer']
+
+
+def test_the_volatile_model_backs_its_data_with_memory_that_is_never_durable():
+    found = {model.name: model for model in devices.models([devices.parse(C606 / 'device.toml')])}
+    volatile = found['volatile']
+    assert volatile.memory == (
+        devices.Memory('data', 'psram', 0x40000),
+        devices.Memory('configuration', 'ram', 0x2000),
+    )
+    assert not any(r.durable for r in volatile.memory)
+    assert volatile.fitted['wifi']
+    assert found['c606'].memory == ()
+    generated = devices.models_rs(list(found.values()))
+    assert 'memory: &[(Region::Data, 0x40000), (Region::Configuration, 0x2000)]' in generated
+
+
+def test_every_c606_range_is_flash_and_durable(c606):
+    assert all(r.durable for r in c606.owned)
+    assert re.search(
+        r'pub const fn durable\(region: Region\) -> bool \{\s*match region \{(\s*Region::\w+ => true,){4}',
+        devices.fitted_rs(c606),
+    )
+
+
+def test_a_memory_backed_range_skips_partition_containment_and_the_image_cap(tmp_path):
+    memory = 'data = { memory = "psram", size = 0x40000 }'
+    device = devices.parse(
+        manifest_with(
+            tmp_path, lambda t: t.replace('data = { offset = 0xD98000, size = 0x100000, within = "ota_1" }', memory)
+        )
+    )
+    assert device.model.memory == (devices.Memory('data', 'psram', 0x40000),)
+    assert device.image_cap == 0x73A000 - 0x2000
+    with pytest.raises(devices.ManifestError, match='no driver that backs it yet'):
+        devices.fitted_rs(device)
+
+
+def test_a_role_less_button_generates_none_and_answers_its_bare_id(tmp_path):
+    extra = '  { id = 2, role = "act" },\n  { id = 9 },\n'
+    device = devices.parse(manifest_with(tmp_path, lambda t: t.replace('  { id = 2, role = "act" },\n', extra)))
+    assert re.search(r'Fixture \{\s*id: 9,\s*role: None,?\s*\}', devices.fitted_rs(device))
+    assert devices.expected_fitted(device)['buttons'] == '0:back,1:move,2:act,9'
+
+
+VOLATILE_DATA = '\n[owned]\ndata = { memory = "psram", size = 0x40000 }\n'
 
 
 def model_with(tmp_path, change, name='bare'):
@@ -107,6 +160,13 @@ def model_with(tmp_path, change, name='bare'):
         (lambda t: t.replace('width = 240', 'width = 170'), 'bare', '3/4 scale'),
         (lambda t: t.replace('name = "bare"', 'name = "Bare"'), 'Bare', 'must match'),
         (lambda t: t.replace('name = "bare"', 'name = "virtual"'), 'virtual', 'reserved'),
+        (lambda t: t.replace('light = true\n', ''), 'bare', r'\[fitted\] is missing: light'),
+        (lambda t: t.replace('product = "VANA BARE"', 'product = "VANA BARE TOO LONG"'), 'bare', '1 to 15 bytes'),
+        (lambda t: t.replace('wifi = true', 'wifi = false') + VOLATILE_DATA, 'bare', 'needs Wi-Fi'),
+        (lambda t: t + '\n[owned]\ndata = { offset = 0x0, size = 0x1000, within = "ota_1" }\n', 'bare', 'no flash'),
+        (lambda t: t + VOLATILE_DATA.replace('"psram"', '"sram"'), 'bare', 'psram" or "ram'),
+        (lambda t: t + VOLATILE_DATA.replace('0x40000', '0x40800'), 'bare', 'whole 0x1000-byte erase sectors'),
+        (lambda t: t + '\n[owned]\nspare = { memory = "ram", size = 0x1000 }\n', 'bare', 'unknown keys: spare'),
     ],
 )
 def test_a_test_model_that_breaks_a_rule_is_refused_naming_it(tmp_path, change, name, rule):
@@ -125,6 +185,22 @@ def test_a_test_model_may_not_take_a_device_name(tmp_path, monkeypatch):
         devices.models([devices.parse(C606 / 'device.toml')])
 
 
+def more_buttons(count):
+    return ''.join(f'  {{ id = {10 + i} }},\n' for i in range(count))
+
+
+def test_buttons_may_list_any_ids_in_any_order_up_to_eight(tmp_path):
+    listed = '  { id = 200, role = "act" },\n  { id = 7, role = "back" },\n  { id = 3, role = "move" },\n'
+    path = manifest_with(
+        tmp_path,
+        lambda t: t.replace(
+            '  { id = 0, role = "back" },\n  { id = 1, role = "move" },\n  { id = 2, role = "act" },\n',
+            listed + more_buttons(5),
+        ),
+    )
+    assert [b.id for b in devices.parse(path).model.buttons] == [200, 7, 3, 10, 11, 12, 13, 14]
+
+
 def manifest_with(tmp_path, change):
     root = tmp_path / 'c606'
     root.mkdir()
@@ -140,14 +216,23 @@ def manifest_with(tmp_path, change):
         (lambda t: t.replace('{ id = 2, role = "act" }', '{ id = 1, role = "act" }'), 'share an id'),
         (lambda t: t.replace('role = "act"', 'role = "back"'), 'exactly one button'),
         (lambda t: t.replace('{ id = 2, role = "act" }', '{ id = 2 }'), 'exactly one button'),
-        (lambda t: t.replace('{ id = 2,', '{ id = 7,'), 'button ids run'),
+        (lambda t: t.replace('{ id = 2,', '{ id = 256,'), 'integers from 0 to 255'),
+        (lambda t: t.replace('{ id = 2,', '{ id = -1,'), 'integers from 0 to 255'),
         (
-            lambda t: t.replace(
-                '{ id = 0, role = "back" },\n  { id = 1, role = "move" },',
-                '{ id = 1, role = "move" },\n  { id = 0, role = "back" },',
-            ),
-            'ascending id order',
+            lambda t: t.replace('  { id = 2, role = "act" },\n', '  { id = 2, role = "act" },\n' + more_buttons(6)),
+            'at most 8 buttons',
         ),
+        (lambda t: t.replace('"VANA C606"', '"VANA C606 EXTRA L"'), '1 to 15 bytes'),
+        (lambda t: t.replace('"VANA C606"', '""'), '1 to 15 bytes'),
+        (lambda t: t.replace('"VANA C606"', '"VANA Ç606"'), 'printable ASCII'),
+        (lambda t: t.replace('fit_product = 606', 'fit_product = 65536'), 'fit_product 65536 must be an integer'),
+        (lambda t: t.replace('fit_product = 606', 'fit_product = -1'), 'fit_product -1 must be an integer'),
+        (lambda t: t.replace('fit_product = 606\n', ''), r'\[device\] is missing: fit_product'),
+        (lambda t: t.replace('product = "VANA C606"\n', ''), r'\[device\] is missing: product'),
+        (lambda t: t.replace('shutdown = true\n', ''), r'\[fitted\] is missing: shutdown'),
+        (lambda t: t.replace('card = true\n', 'card = true\nradio = true\n'), r'\[fitted\] has unknown keys: radio'),
+        (lambda t: t.replace('gps = true', 'gps = "yes"'), r'\[fitted\] gps must be true or false'),
+        (lambda t: t[: t.index('\n[fitted]')] + '\n', 'the manifest is missing: fitted'),
         (lambda t: t.replace('offset = 0x1E000, size = 0x2000', 'offset = 0x1E800, size = 0x1000'), 'erase sector'),
         (lambda t: t.replace('offset = 0xD98000, size = 0x100000', 'offset = 0xD98000, size = 0x101000'), 'overlap'),
         (lambda t: t.replace('offset = 0x1E000, size = 0x2000', 'offset = 0x1F000, size = 0x2000'), 'inside'),
@@ -176,6 +261,13 @@ def manifest_with(tmp_path, change):
         (
             lambda t: t.replace(
                 'data = { offset = 0xD98000, size = 0x100000, within = "ota_1" }',
+                'data = { memory = "psram", size = 0x40000 }',
+            ).replace('wifi = true', 'wifi = false'),
+            'needs Wi-Fi',
+        ),
+        (
+            lambda t: t.replace(
+                'data = { offset = 0xD98000, size = 0x100000, within = "ota_1" }',
                 'data = { offset = 0x65A000, size = 0x100000, within = "ota_0" }',
             ),
             'exactly one application slot',
@@ -195,7 +287,8 @@ def unit_reply(c606, **changes):
     fields = {
         key: hex(value) if isinstance(value, int) else value for key, value in devices.expected_fitted(c606).items()
     }
-    return {'touch': 'ready'} | {key: str(value) for key, value in fields.items()} | changes
+    facts = {'touch': 'ready', 'shutdown': 'supported', 'barometer': 'fitted', 'light': 'fitted'}
+    return facts | {key: str(value) for key, value in fields.items()} | changes
 
 
 def test_a_unit_that_answers_its_manifest_matches(c606):
@@ -203,12 +296,45 @@ def test_a_unit_that_answers_its_manifest_matches(c606):
 
 
 def test_each_disagreement_with_the_unit_is_named(c606):
-    reply = unit_reply(c606, data_offset='0xd99000', buttons='0,1', touch='unsupported')
+    reply = unit_reply(
+        c606,
+        data_offset='0xd99000',
+        buttons='0:back,1:move',
+        touch='unsupported',
+        shutdown='unsupported',
+        barometer='absent',
+        light='absent',
+    )
     assert devices.compare_fitted(c606, reply) == [
-        "buttons: unit '0,1', manifest '0,1,2'",
+        "buttons: unit '0:back,1:move', manifest '0:back,1:move,2:act'",
         "data_offset: unit '0xd99000', manifest 14254080",
         "touch: unit 'unsupported', manifest fitted=True",
+        "shutdown: unit 'unsupported', manifest fitted=True",
+        "barometer: unit 'absent', manifest fitted=True",
+        "light: unit 'absent', manifest fitted=True",
     ]
+
+
+def test_a_unit_reporting_more_than_its_manifest_fits_is_named(tmp_path):
+    absent = 'shutdown = false\ncard = true\nbarometer = false\nlight = false\n'
+    path = manifest_with(
+        tmp_path, lambda t: t.replace('shutdown = true\ncard = true\nbarometer = true\nlight = true\n', absent)
+    )
+    device = devices.parse(path)
+    assert (
+        devices.compare_fitted(device, unit_reply(device, shutdown='unsupported', barometer='absent', light='absent'))
+        == []
+    )
+    assert devices.compare_fitted(device, unit_reply(device)) == [
+        "shutdown: unit 'supported', manifest fitted=False",
+        "barometer: unit 'fitted', manifest fitted=False",
+        "light: unit 'fitted', manifest fitted=False",
+    ]
+
+
+def test_an_unknown_shutdown_is_a_note_not_a_mismatch(c606, capsys):
+    assert devices.compare_fitted(c606, unit_reply(c606, shutdown='unknown')) == []
+    assert 'shutdown=unknown' in capsys.readouterr().out
 
 
 def test_another_device_is_refused_before_any_field(c606):

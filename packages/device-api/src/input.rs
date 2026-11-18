@@ -8,29 +8,73 @@ pub struct Point {
     pub y: u16,
 }
 
+/// What a button does on every screen (see `docs/ui.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Button {
-    TopLeft,
-    BottomLeft,
-    BottomRight,
-    Center,
+pub enum Role {
+    Act,
+    Back,
+    Move,
 }
 
-impl Button {
-    pub fn index(self) -> usize {
-        match self {
-            Self::TopLeft => 0,
-            Self::BottomLeft => 1,
-            Self::BottomRight => 2,
-            Self::Center => 3,
+impl Role {
+    pub const ALL: [Role; 3] = [Self::Act, Self::Back, Self::Move];
+}
+
+/// One physical button: the id its driver reports, and its role, if any.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fixture {
+    pub id: u8,
+    pub role: Option<Role>,
+}
+
+pub const MAX_BUTTONS: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fixtures {
+    fixtures: [Fixture; MAX_BUTTONS],
+    len: u8,
+}
+
+impl Fixtures {
+    pub const NONE: Self = Self::new(&[]);
+
+    pub const fn new(list: &[Fixture]) -> Self {
+        assert!(list.len() <= MAX_BUTTONS, "more buttons than MAX_BUTTONS");
+        let mut fixtures = [Fixture { id: 0, role: None }; MAX_BUTTONS];
+        let mut index = 0;
+        while index < list.len() {
+            fixtures[index] = list[index];
+            index += 1;
         }
+        Self {
+            fixtures,
+            len: list.len() as u8,
+        }
+    }
+
+    pub fn as_slice(&self) -> &[Fixture] {
+        &self.fixtures[..usize::from(self.len)]
+    }
+
+    pub fn role(&self, id: u8) -> Option<Role> {
+        self.as_slice()
+            .iter()
+            .find(|fixture| fixture.id == id)
+            .and_then(|fixture| fixture.role)
+    }
+
+    pub fn id(&self, role: Role) -> Option<u8> {
+        self.as_slice()
+            .iter()
+            .find(|fixture| fixture.role == Some(role))
+            .map(|fixture| fixture.id)
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Controls {
     pub touch: Availability,
-    pub buttons: &'static [Button],
+    pub buttons: Fixtures,
 }
 
 #[capability(id = 7)]
@@ -80,9 +124,11 @@ pub enum Input {
     /// that start a new contact at a `Touch` arriving at least
     /// `STALE_CONTACT_MS` after the last touch edge.
     Cancel,
-    /// Known physical button with uninterpreted companion report code. Repeated
-    /// code 1 reports do not establish a physical release; clients choose policy.
-    Button { button: Button, code: u16 },
+    /// A report from the button with this fixture id, with the C606
+    /// companion's uninterpreted report code. Repeated code 1 reports do not
+    /// establish a physical release; clients choose policy. A new device's
+    /// driver produces the C606 companion's codes and repeat cadence.
+    Button { id: u8, code: u16 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

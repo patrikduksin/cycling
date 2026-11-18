@@ -5,6 +5,7 @@ extern crate std;
 
 extern crate self as device_api;
 
+pub mod absent;
 pub mod ant;
 pub mod ble_transport;
 pub mod bulk;
@@ -24,3 +25,5 @@ pub mod sensors;
 pub mod server;
 pub mod sound;
 pub mod storage;
+
+pub use absent::Absent;

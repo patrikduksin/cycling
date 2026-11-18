@@ -1,7 +1,7 @@
 //! Discarding a ride at its end and deleting a saved ride: the journals keep
 //! every ride, and `rides/deleted.tbl` on FILES hides it from the list, the
 //! ride count, the week's totals and the phone.
-use device_api::input::Button;
+use device_api::input::Role;
 use device_api::server::Method;
 use shell_simulator::ant::device_type;
 use shell_simulator::bulk::Presence;
@@ -76,7 +76,7 @@ fn to_delete_page(sim: &mut Sim) {
         if sim.screen().contains("DELETE RIDE?") {
             return;
         }
-        sim.press(Button::BottomLeft);
+        sim.press(Role::Move);
     }
     panic!("no DELETE RIDE?; screen:\n{}", sim.screen().text());
 }
@@ -99,7 +99,7 @@ fn a_ride_discarded_after_a_lap_is_saved_then_hidden_and_sets_no_best() {
     let bests = sim.file("bests.dat");
     sim.checkpoint("home before the discarded ride");
     // The screen dimmed: the first press only wakes it.
-    sim.press(Button::BottomLeft);
+    sim.press(Role::Move);
 
     sim.ride_at(34.0, 420.0, 170.0, 95.0);
     sim.start_ride();
@@ -107,17 +107,17 @@ fn a_ride_discarded_after_a_lap_is_saved_then_hidden_and_sets_no_best() {
     sim.lap(1);
     sim.advance(minutes(2));
     sim.pause_ride();
-    sim.press(Button::TopLeft);
+    sim.press(Role::Back);
     sim.expect_text("END RIDE?");
     sim.checkpoint("end ride with the discard cue on move");
-    sim.press(Button::BottomLeft);
+    sim.press(Role::Move);
     sim.expect_text("DISCARD RIDE?");
     sim.expect_text("IT WILL NOT BE SAVED");
     sim.checkpoint("discard ride asks");
-    sim.press(Button::TopLeft);
+    sim.press(Role::Back);
     sim.expect_text("END RIDE?");
-    sim.press(Button::BottomLeft);
-    sim.press(Button::BottomRight);
+    sim.press(Role::Move);
+    sim.press(Role::Act);
     sim.wait_for("RIDE DISCARDED", seconds(5)).unwrap();
     assert!(sim.on_home(), "{}", sim.screen().text());
     sim.checkpoint("home says ride discarded");
@@ -153,14 +153,14 @@ fn an_auto_paused_ride_and_a_zero_km_test_ride_discard_the_same_way() {
     sim.advance(minutes(3));
     sim.ride_at(0.0, 0.0, 120.0, 0.0);
     sim.wait_for("AUTO PAUSED", seconds(30)).unwrap();
-    sim.press(Button::TopLeft);
+    sim.press(Role::Back);
     sim.expect_text("END RIDE?");
     sim.ride_at(30.0, 220.0, 140.0, 90.0);
     sim.advance(seconds(10));
     sim.expect_text("END RIDE?");
-    sim.press(Button::BottomLeft);
+    sim.press(Role::Move);
     sim.checkpoint("auto-paused ride discard ride asks");
-    sim.press(Button::BottomRight);
+    sim.press(Role::Act);
     sim.wait_for("RIDE DISCARDED", seconds(5)).unwrap();
 
     sim.ride_at(0.0, 0.0, 72.0, 0.0);
@@ -170,11 +170,11 @@ fn an_auto_paused_ride_and_a_zero_km_test_ride_discard_the_same_way() {
     if sim.ride_state() == "recording" {
         sim.pause_ride();
     }
-    sim.press(Button::TopLeft);
-    sim.press(Button::BottomLeft);
+    sim.press(Role::Back);
+    sim.press(Role::Move);
     sim.expect_text("0.00 KM");
     sim.checkpoint("zero km test ride discard ride asks");
-    sim.press(Button::BottomRight);
+    sim.press(Role::Act);
     sim.wait_for("RIDE DISCARDED", seconds(5)).unwrap();
 
     assert_eq!(sim.bulk_rides().len(), 2);
@@ -192,11 +192,11 @@ fn a_discard_cut_off_before_the_mark_leaves_a_saved_ride() {
     sim.start_ride();
     sim.advance(minutes(4));
     sim.pause_ride();
-    sim.press(Button::TopLeft);
-    sim.press(Button::BottomLeft);
+    sim.press(Role::Back);
+    sim.press(Role::Move);
     sim.expect_text("DISCARD RIDE?");
     sim.fail_bulk(0, 100);
-    sim.press(Button::BottomRight);
+    sim.press(Role::Act);
     sim.wait_for("NOT DISCARDED", seconds(5)).unwrap();
     assert!(sim.on_home(), "{}", sim.screen().text());
     assert_eq!(sim.rides().len(), 1, "saved on internal flash");
@@ -221,9 +221,9 @@ fn a_deleted_ride_leaves_the_list_the_count_the_week_and_the_phone() {
     sim.connect_phone();
     let before = activity_ids(&mut sim);
     assert_eq!(before.len(), 3, "{before:?}");
-    sim.press(Button::TopLeft);
+    sim.press(Role::Back);
     while !sim.on_home() {
-        sim.press(Button::TopLeft);
+        sim.press(Role::Back);
     }
     home_frame(&mut sim);
     assert_eq!(rides_line(&sim), "WEEK 14 KM");
@@ -231,17 +231,17 @@ fn a_deleted_ride_leaves_the_list_the_count_the_week_and_the_phone() {
     sim.home("RIDES");
     sim.advance(seconds(5));
     sim.expect_text("1/3");
-    sim.press(Button::BottomLeft);
-    sim.press(Button::BottomRight);
+    sim.press(Role::Move);
+    sim.press(Role::Act);
     sim.wait_gone("READING", seconds(5)).unwrap();
     sim.checkpoint("saved ride with one more page dot");
     to_delete_page(&mut sim);
     sim.expect_text("IT GOES FROM YOUR RIDES");
     sim.checkpoint("delete ride asks");
-    sim.press(Button::BottomLeft);
+    sim.press(Role::Move);
     sim.expect_no_text("DELETE RIDE?");
     to_delete_page(&mut sim);
-    sim.press(Button::BottomRight);
+    sim.press(Role::Act);
     sim.wait_for("RIDE DELETED", seconds(5)).unwrap();
     sim.checkpoint("rides list says ride deleted");
     sim.expect_text("2/2");
@@ -253,15 +253,15 @@ fn a_deleted_ride_leaves_the_list_the_count_the_week_and_the_phone() {
     assert_eq!(sim.bulk_rides().len(), 3, "nothing erased");
 
     // The newest ride, which Home's card counted last: MOVE wraps to it.
-    sim.press(Button::BottomLeft);
+    sim.press(Role::Move);
     sim.expect_text("1/2");
-    sim.press(Button::BottomRight);
+    sim.press(Role::Act);
     to_delete_page(&mut sim);
-    sim.press(Button::BottomRight);
+    sim.press(Role::Act);
     sim.wait_for("RIDE DELETED", seconds(5)).unwrap();
     sim.expect_text("1/1");
     sim.expect_text("0:20:00");
-    sim.press(Button::TopLeft);
+    sim.press(Role::Back);
     home_frame(&mut sim);
     assert_eq!(rides_line(&sim), "WEEK 9 KM");
 
@@ -297,14 +297,14 @@ fn a_clear_whose_card_refuses_the_forget_reports_failed() {
     ride(&mut sim, 0.0, 0.0, seconds(30));
     sim.home("RIDES");
     sim.advance(seconds(5));
-    sim.press(Button::BottomRight);
+    sim.press(Role::Act);
     to_delete_page(&mut sim);
-    sim.press(Button::BottomRight);
+    sim.press(Role::Act);
     sim.wait_for("RIDE DELETED", seconds(5)).unwrap();
     assert_eq!(hidden(&mut sim).len(), 1);
-    sim.press(Button::TopLeft);
+    sim.press(Role::Back);
     while !sim.on_home() {
-        sim.press(Button::TopLeft);
+        sim.press(Role::Back);
     }
 
     let (_, status) = sim.command("RIDE INTERNAL STATUS");

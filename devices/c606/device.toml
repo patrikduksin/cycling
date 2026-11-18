@@ -1,5 +1,7 @@
 [device]
 name = "c606"
+product = "VANA C606"
+fit_product = 606
 
 [build]
 chip = "esp32s3"
@@ -39,3 +41,14 @@ buttons = [
   { id = 1, role = "move" },
   { id = 2, role = "act" },
 ]
+
+[fitted]
+gps = true
+ant = true
+ble = true
+wifi = true
+sound = true
+shutdown = true
+card = true
+barometer = true
+light = true

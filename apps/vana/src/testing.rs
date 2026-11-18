@@ -10,6 +10,11 @@ use crate::ride::log::{Altitude, LapStart, Sample};
 pub use firmware_services::testing::Rng;
 use std::vec::Vec;
 
+pub const PRODUCT: crate::Product = crate::Product {
+    name: "VANA C606",
+    fit_id: 606,
+};
+
 /// Ride-shaped draws on the shared generator.
 pub trait Draw {
     fn lap(&mut self) -> LapStart;
@@ -216,6 +221,7 @@ impl device_api::storage::OwnedFlash for IntentFlash {
             },
             program_size: 4,
             erase_size: 4096,
+            durable: true,
         }
     }
     fn read(

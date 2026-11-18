@@ -12,11 +12,8 @@ use crate::ride::log::Status;
 use crate::ride::recorder::Action;
 use crate::screens::chrome::Tone;
 use crate::screens::workout::Page;
-use device_api::input::Button;
-
-const ACT: Button = Button::BottomRight;
-const BACK: Button = Button::TopLeft;
-const MOVE: Button = Button::BottomLeft;
+use device_api::input::Role;
+use device_api::input::Role::{Act as ACT, Back as BACK, Move as MOVE};
 
 /// A finished lap shows in the status row this long.
 const LAP_TOAST_MS: u64 = 2000;
@@ -78,7 +75,7 @@ impl Notices {
 }
 
 impl Runtime {
-    pub(super) fn ride_press(&mut self, button: Button, held: bool, pressed_at: u64, now: u64) {
+    pub(super) fn ride_press(&mut self, button: Role, held: bool, pressed_at: u64, now: u64) {
         self.ride_event(
             Event::Press { button, held },
             Origin::Rider { pressed_at },
@@ -109,7 +106,7 @@ impl Runtime {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Event {
     Press {
-        button: Button,
+        button: Role,
         held: bool,
     },
     Auto(Call),
@@ -220,7 +217,7 @@ fn step(page: Page, seen: Seen, event: Event) -> Step {
     }
 }
 
-fn press(page: Page, seen: Seen, button: Button, held: bool) -> Step {
+fn press(page: Page, seen: Seen, button: Role, held: bool) -> Step {
     let startable = matches!(seen.next, Status::Ready | Status::Saved | Status::Recovered);
     let riding = matches!(seen.ride, Status::Recording | Status::Paused);
     let saving = seen.pending || riding;
@@ -317,6 +314,7 @@ fn serviced(page: Page, seen: Seen, before: Status) -> Step {
         | Page::Ride
         | Page::EndRide
         | Page::DiscardRide
+        | Page::LoseRides
         | Page::Summary
         | Page::Settings
         | Page::Bests
@@ -356,8 +354,8 @@ impl Runtime {
             next: self.ride.recorder(self.ride.medium()).status(),
             pending: self.ride.pending(),
             auto_paused: self.ride.auto().paused(),
-            recording: self.recording(),
-            can_discard: self.deleted.writable(),
+            recording: self.recorder_busy(),
+            can_discard: self.can_discard(),
             discard: self.ride.discard(),
         }
     }
@@ -574,7 +572,7 @@ mod tests {
         }
     }
 
-    fn press(button: Button) -> Event {
+    fn press(button: Role) -> Event {
         Event::Press {
             button,
             held: false,

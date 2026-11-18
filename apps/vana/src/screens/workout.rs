@@ -54,6 +54,9 @@ pub enum Page {
     PastRide,
     /// First-run setup.
     Setup,
+    /// LOSE n UNSAVED RIDES?, which a host CLEAR asks while the phone has
+    /// not confirmed every ride of a volatile journal.
+    LoseRides,
 }
 
 impl Page {
@@ -76,6 +79,7 @@ impl Page {
             Self::History => "history",
             Self::PastRide => "past_ride",
             Self::Setup => "setup",
+            Self::LoseRides => "lose_rides",
         }
     }
 }
@@ -375,6 +379,11 @@ impl firmware_shell::shell::Picture for Scene<'_> {
 }
 
 impl<'v> Scene<'v> {
+    #[cfg(test)]
+    pub(crate) fn cues(&self) -> &'static [Cue] {
+        self.cues
+    }
+
     fn paint_content(&self, row: &mut Row) {
         let y = row.y();
         if let Some(bar) = self.bar
@@ -865,6 +874,7 @@ pub struct View<'a> {
     pub page: Page,
     /// The focused Home card, or the selected Settings field.
     pub cursor: usize,
+    pub sections: super::settings::Sections,
     /// Settings: the selected field is being changed.
     pub editing: bool,
     /// How far the page's list is scrolled, in pixels; negative past the top.
@@ -880,6 +890,8 @@ pub struct View<'a> {
     pub pause_screen: bool,
     /// Whether END RIDE? offers DISCARD RIDE?, and whether that was answered.
     pub discard: Discard,
+    /// Rides the phone has not confirmed, which LOSE n UNSAVED RIDES? counts.
+    pub unsaved: u8,
     /// Button cues prepared for this frame.
     pub(super) cues: &'static [Cue],
     pub(super) badge: Option<Badge>,
@@ -934,6 +946,7 @@ impl<'a> View<'a> {
             format: super::format::Shows::Wait,
             page,
             cursor,
+            sections: super::settings::Sections::All,
             editing: false,
             scroll: 0,
             time,
@@ -941,6 +954,7 @@ impl<'a> View<'a> {
             paused_secs: 0,
             pause_screen: false,
             discard: Discard::Unavailable,
+            unsaved: 0,
             cues: &[],
             badge: None,
             nav: Sign::None,
@@ -972,7 +986,7 @@ impl<'a> View<'a> {
     }
 
     #[cfg(test)]
-    pub(super) fn canvas(&self) -> &Canvas {
+    pub(crate) fn canvas(&self) -> &Canvas {
         self.shown(self.body.canvas(), "canvas", &NO_CANVAS)
     }
 
@@ -1201,7 +1215,7 @@ impl<'a> View<'a> {
     /// the paused screen and the questions, whose back cue the bar would cut.
     fn full_screen(&self) -> bool {
         match self.page {
-            Page::Boot | Page::Format | Page::EndRide | Page::DiscardRide => true,
+            Page::Boot | Page::Format | Page::EndRide | Page::DiscardRide | Page::LoseRides => true,
             Page::Summary | Page::PastRide => summary::question_shown(self.after()),
             Page::Sensors => super::sensors::full_screen(self.cues),
             _ => self.paused_screen_shown(),
@@ -1215,8 +1229,7 @@ impl<'a> View<'a> {
             Page::Workouts if self.ftp_offer.is_none() => Some(&super::workouts::LAYOUT),
             Page::Settings
                 if !(self.editing
-                    && super::settings::Row::at(self.cursor).kind()
-                        == super::settings::Kind::Number) =>
+                    && self.sections.row(self.cursor).kind() == super::settings::Kind::Number) =>
             {
                 Some(&super::settings::LAYOUT)
             }
@@ -1343,8 +1356,8 @@ impl<'a> View<'a> {
             }
             Page::Settings => {
                 fill(self, super::settings::prepare);
-                let (section, _) = super::settings::section(self.cursor);
-                self.bar.set_pages(section, super::settings::SECTIONS.len());
+                let (section, _) = self.sections.section(self.cursor);
+                self.bar.set_pages(section, self.sections.count());
                 &[]
             }
             Page::Ready => {
@@ -1362,6 +1375,10 @@ impl<'a> View<'a> {
                 } else {
                     &ride::end::CUES
                 }
+            }
+            Page::LoseRides => {
+                fill(self, super::unsaved::prepare);
+                &ride::end::TRASH_CUES
             }
             Page::DiscardRide => {
                 fill(self, ride::end::discard);
@@ -1420,7 +1437,7 @@ impl<'a> View<'a> {
                 fill(self, summary::prepare);
                 if summary::delete_shown(self.after()) {
                     &ride::end::TRASH_CUES
-                } else if self.after().saving == summary::Saving::Reading {
+                } else if self.after().saving == summary::Saving::Reading || !self.after().send {
                     &[]
                 } else {
                     &summary::PAST_CUES

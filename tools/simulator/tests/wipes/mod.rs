@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use device_api::input::Button;
+use device_api::input::Role;
 use device_api::storage::Region;
 use firmware_services::volume::{self, Table};
 use shell_simulator::bulk::Presence;
@@ -10,9 +10,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use vana::app::{HOLD_GAP_MS, INTENT_IDLE_RECORD, Store};
 use vana::screens::workout::Page;
 
-pub const ACT: Button = Button::BottomRight;
-pub const BACK: Button = Button::TopLeft;
-pub const MOVE: Button = Button::BottomLeft;
+pub const ACT: Role = Role::Act;
+pub const BACK: Role = Role::Back;
+pub const MOVE: Role = Role::Move;
 
 pub fn field<'a>(status: &'a str, name: &str) -> &'a str {
     status
@@ -236,7 +236,7 @@ pub fn device_with_a_full_internal_journal(name: &str) -> (Sim, String) {
     use device_api::storage::OwnedFlash;
     let (mut sim, slots) = device_with_a_ride_on_internal_flash(name);
     let used = slots.parse::<usize>().unwrap() * vana::ride::log::SLOT_SIZE;
-    let rest = vana::ride::log::REGION_SIZE - used;
+    let rest = shell_simulator::storage::DATA_BYTES - used;
     sim.device
         .media
         .untapped()
@@ -247,7 +247,7 @@ pub fn device_with_a_full_internal_journal(name: &str) -> (Sim, String) {
     let slots = internal_slots(&mut sim);
     assert_eq!(
         slots,
-        vana::ride::log::SLOTS.to_string(),
+        (shell_simulator::storage::DATA_BYTES / vana::ride::log::SLOT_SIZE).to_string(),
         "every sector holds data"
     );
     (sim, slots)

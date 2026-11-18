@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use device_api::input::Button;
-    use device_api::input::Input;
+    use device_api::Absent;
     use device_api::input::Point;
+    use device_api::input::{Fixture, Fixtures, Input};
     use device_api::observation::Availability;
     use device_api::observation::Observation;
     use device_api::positioning::Positioning;
@@ -12,14 +12,15 @@ mod tests {
     use firmware_shell::shell::Screen;
     use firmware_shell::shell::Shell;
     use shell_simulator::devices::*;
+
+    fn plain(id: u8) -> Fixtures {
+        Fixtures::new(&[Fixture { id, role: None }])
+    }
     #[test]
     fn same_shell_renders_geometries_maps_controls_and_consumes_wake() {
-        for (width, height, buttons) in [
-            (240, 320, &[Button::TopLeft][..]),
-            (128, 64, &[Button::Center][..]),
-        ] {
+        for (width, height, id) in [(240, 320, 0), (128, 64, 3)] {
             let display = DisplayDevice::new(width, height);
-            let input = InputDevice::new(buttons, Availability::Ready);
+            let input = InputDevice::new(plain(id), Availability::Ready);
             let power = PowerDevice::new(Availability::Ready);
             let mut shell = Shell::new(
                 display.clone(),
@@ -48,13 +49,7 @@ mod tests {
             input.push(1002, Input::Release);
             shell.tick(1002);
             assert_eq!(shell.routed_events, 0);
-            input.push(
-                1003,
-                Input::Button {
-                    button: buttons[0],
-                    code: 1,
-                },
-            );
+            input.push(1003, Input::Button { id, code: 1 });
             shell.tick(1003);
             shell.present();
             assert_eq!(shell.foreground, Screen::Blank);
@@ -63,13 +58,7 @@ mod tests {
             assert_eq!(shell.effective(), 0);
             shell.tick(10_000);
             assert_eq!(shell.effective(), 0);
-            input.push(
-                10_001,
-                Input::Button {
-                    button: buttons[0],
-                    code: 1,
-                },
-            );
+            input.push(10_001, Input::Button { id, code: 1 });
             shell.tick(10_001);
             assert_eq!(shell.foreground, Screen::Status);
             assert_eq!(shell.effective(), shell.settings.brightness);
@@ -78,7 +67,7 @@ mod tests {
     #[test]
     fn dev_animation_holds_and_respects_dim_blank_and_application() {
         let display = DisplayDevice::new(240, 320);
-        let input = InputDevice::new(&[Button::Center], Availability::Ready);
+        let input = InputDevice::new(plain(3), Availability::Ready);
         let mut shell = Shell::new(
             display.clone(),
             input.clone(),
@@ -119,13 +108,7 @@ mod tests {
         }
         assert_eq!(shell.display_submissions, 5);
         shell.set_app_active(false);
-        input.push(
-            9000,
-            Input::Button {
-                button: Button::Center,
-                code: 1,
-            },
-        );
+        input.push(9000, Input::Button { id: 3, code: 1 });
         shell.tick(9200);
         shell.present();
         assert_eq!(shell.foreground, Screen::Blank);
@@ -140,7 +123,7 @@ mod tests {
     #[test]
     fn lost_input_cancels_hold_optional_absence_and_failures_remain_visible() {
         let display = DisplayDevice::new(64, 64);
-        let input = InputDevice::new(&[Button::Center], Availability::Ready);
+        let input = InputDevice::new(plain(3), Availability::Ready);
         let power = PowerDevice::new(Availability::Unsupported);
         let memory = Memory {
             available: Availability::Unsupported,
@@ -180,13 +163,13 @@ mod tests {
         shell.present();
         assert!(!shell.display_error);
         assert_eq!(display.0.borrow().submissions, 1);
-        assert_eq!(NoPosition.availability(), Availability::Unsupported);
-        assert!(NoPosition.snapshot(100).is_none());
+        assert_eq!(Absent.availability(), Availability::Unsupported);
+        assert!(Absent.snapshot(100).is_none());
     }
     #[test]
     fn stale_battery_failed_power_and_background_presentation_are_distinct() {
         let display = DisplayDevice::new(80, 80);
-        let input = InputDevice::new(&[Button::Center], Availability::Unsupported);
+        let input = InputDevice::new(plain(3), Availability::Unsupported);
         let power = PowerDevice::new(Availability::Ready);
         power.0.borrow_mut().battery = Some((50, 3800, 10));
         let mut shell = Shell::new(
@@ -198,7 +181,7 @@ mod tests {
             0,
         )
         .unwrap();
-        shell.observe_position(&NoPosition, 0);
+        shell.observe_position(&Absent, 0);
         assert_eq!(shell.positioning_availability, Availability::Unsupported);
         shell.tick(5011);
         assert!(matches!(
@@ -216,19 +199,13 @@ mod tests {
         shell.tick(5013);
         assert_eq!(shell.power_availability, Availability::Initializing);
         assert!(!shell.power_error);
-        input.push(
-            5014,
-            Input::Button {
-                button: Button::Center,
-                code: 1,
-            },
-        );
+        input.push(5014, Input::Button { id: 3, code: 1 });
         shell.tick(5014);
         shell.present();
         assert_eq!(shell.foreground, Screen::Blank);
         // Background updates do not steal the foreground or submit frames.
         let before = display.0.borrow().submissions;
-        shell.observe_position(&NoPosition, 6000);
+        shell.observe_position(&Absent, 6000);
         shell.tick(6000);
         shell.present();
         assert_eq!(shell.foreground, Screen::Blank);
@@ -238,7 +215,13 @@ mod tests {
     #[test]
     fn a_frame_counts_as_shown_when_any_pixel_changed() {
         let display = DisplayDevice::new(240, 320);
-        let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+        let input = InputDevice::new(
+            device_api::input::Fixtures::new(&[device_api::input::Fixture {
+                id: 0,
+                role: Some(device_api::input::Role::Back),
+            }]),
+            Availability::Ready,
+        );
         let power = PowerDevice::new(Availability::Ready);
         let mut shell = Shell::new(
             display,
@@ -307,7 +290,13 @@ mod tests {
     #[test]
     fn a_picture_on_the_panel_is_sent_again_only_when_something_else_drew() {
         let display = DisplayDevice::new(240, 320);
-        let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+        let input = InputDevice::new(
+            device_api::input::Fixtures::new(&[device_api::input::Fixture {
+                id: 0,
+                role: Some(device_api::input::Role::Back),
+            }]),
+            Availability::Ready,
+        );
         let power = PowerDevice::new(Availability::Ready);
         let mut shell = Shell::new(
             display.clone(),
@@ -342,13 +331,7 @@ mod tests {
             Drawn::Sent,
             "after a failed frame"
         );
-        input.push(
-            70,
-            Input::Button {
-                button: Button::TopLeft,
-                code: 1,
-            },
-        );
+        input.push(70, Input::Button { id: 0, code: 1 });
         shell.tick(70);
         let before = submissions();
         assert_eq!(
@@ -387,7 +370,13 @@ mod tests {
     #[test]
     fn a_frame_sends_the_bands_whose_parts_changed_and_digests_the_whole_panel() {
         let shell = |display: &DisplayDevice| {
-            let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+            let input = InputDevice::new(
+                device_api::input::Fixtures::new(&[device_api::input::Fixture {
+                    id: 0,
+                    role: Some(device_api::input::Role::Back),
+                }]),
+                Availability::Ready,
+            );
             let power = PowerDevice::new(Availability::Ready);
             let mut shell = Shell::new(
                 display.clone(),
@@ -442,7 +431,13 @@ mod tests {
     fn nothing_saves_settings_from_a_format_erase_until_the_restart() {
         use firmware_shell::preferences::{AppPreferences, Source};
         let display = DisplayDevice::new(240, 320);
-        let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+        let input = InputDevice::new(
+            device_api::input::Fixtures::new(&[device_api::input::Fixture {
+                id: 0,
+                role: Some(device_api::input::Role::Back),
+            }]),
+            Availability::Ready,
+        );
         let power = PowerDevice::new(Availability::Ready);
         let mut shell = Shell::new(
             display,
@@ -468,7 +463,13 @@ mod tests {
     #[should_panic(expected = "a skipped frame hid a change")]
     fn the_simulated_panel_catches_a_picture_whose_key_misses_what_it_paints() {
         let display = DisplayDevice::new(240, 320);
-        let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+        let input = InputDevice::new(
+            device_api::input::Fixtures::new(&[device_api::input::Fixture {
+                id: 0,
+                role: Some(device_api::input::Role::Back),
+            }]),
+            Availability::Ready,
+        );
         let power = PowerDevice::new(Availability::Ready);
         let mut shell = Shell::new(
             display,

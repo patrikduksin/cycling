@@ -6,6 +6,9 @@ pub struct Geometry {
     pub capacity: usize,
     pub program_size: usize,
     pub erase_size: usize,
+    /// The bytes survive power-off. A memory-backed reservation holds the
+    /// same format but starts erased on every boot.
+    pub durable: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

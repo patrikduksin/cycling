@@ -272,7 +272,7 @@ pub struct Recorder {
     checkpoint_due: bool,
     catalog: Catalog,
     /// Slots of the medium, including the reserved terminal slot.
-    slots: usize,
+    slots: Option<usize>,
     accumulated_ms: u64,
     batch: Batch,
     counters: Counters,
@@ -285,7 +285,7 @@ impl Default for Recorder {
             inbox: Inbox::Idle,
             checkpoint_due: false,
             catalog: Catalog::default(),
-            slots: crate::ride::log::SLOTS,
+            slots: None,
             accumulated_ms: 0,
             batch: Batch::default(),
             counters: Counters::default(),
@@ -410,13 +410,17 @@ impl Recorder {
             .catalog
             .next_slot
             .saturating_sub(usize::from(self.ride_open()));
-        crate::ride::reclaim::estimated_seconds_in(self.slots, used)
+        crate::ride::reclaim::estimated_seconds_in(self.capacity(), used)
             .saturating_sub(self.batch.count as u32)
     }
 
     /// Slots of the medium, including the reserved terminal slot.
-    pub fn slots(&self) -> usize {
+    pub fn slots(&self) -> Option<usize> {
         self.slots
+    }
+
+    fn capacity(&self) -> usize {
+        self.slots.unwrap_or(0)
     }
 
     /// A ride is open and running or paused on this journal.
@@ -456,6 +460,10 @@ impl Recorder {
         self.counters.max_erase_ms
     }
 
+    pub fn open_ride_id(&self) -> Option<u32> {
+        self.lifecycle.ride().map(|ride| ride.id)
+    }
+
     pub fn ride_open(&self) -> bool {
         match &self.lifecycle {
             Lifecycle::Recovering => true,
@@ -475,6 +483,12 @@ impl Recorder {
 
     pub fn summary_count(&self) -> u8 {
         self.catalog.summary_count
+    }
+
+    /// The id the next ride takes; ids count from one after the journal is
+    /// emptied.
+    pub fn next_ride_id(&self) -> u32 {
+        self.catalog.next_ride_id
     }
 
     #[cfg(test)]
@@ -706,8 +720,10 @@ impl Recorder {
                 self.append(now, terminal, record)
             }
             (_, Inbox::Pending(Ask::Start { token, .. })) => {
-                if crate::ride::reclaim::estimated_seconds_in(self.slots, self.catalog.next_slot)
-                    == 0
+                if crate::ride::reclaim::estimated_seconds_in(
+                    self.capacity(),
+                    self.catalog.next_slot,
+                ) == 0
                 {
                     // No room for START, one sample batch and the terminal record.
                     self.lifecycle = Lifecycle::Full {
@@ -774,7 +790,7 @@ impl Recorder {
     }
 
     fn flush(&mut self, now: u64, ride: u32, sequence: u32) -> Option<Effect> {
-        if self.catalog.next_slot >= self.slots.saturating_sub(1) {
+        if self.catalog.next_slot >= self.capacity().saturating_sub(1) {
             self.freeze(now);
             self.counters.dropped = self
                 .counters
@@ -793,8 +809,8 @@ impl Recorder {
     }
 
     fn append(&mut self, now: u64, terminal: bool, record: Record) -> Option<Effect> {
-        let slot = self.catalog.next_slot;
-        if slot >= self.slots || (!terminal && slot >= self.slots.saturating_sub(1)) {
+        let (slot, slots) = (self.catalog.next_slot, self.capacity());
+        if slot >= slots || (!terminal && slot >= slots.saturating_sub(1)) {
             self.settle(Outcome::NoRoom, now);
             return None;
         }
@@ -809,13 +825,13 @@ impl Recorder {
         match outcome {
             Outcome::Scanning | Outcome::Checkpointed(Checkpoint::Written) => {}
             Outcome::Scanned { found, slots } => {
-                self.slots = slots;
+                self.slots = Some(slots);
                 self.lifecycle = match found {
                     Found::Done { overdue } => {
                         self.checkpoint_due = overdue;
                         if self.catalog.foreign() {
                             Lifecycle::Foreign
-                        } else if self.catalog.next_slot >= self.slots {
+                        } else if self.catalog.next_slot >= slots {
                             Lifecycle::Full { open: false }
                         } else if let Some(recovery) = self.catalog.recovery {
                             self.accumulated_ms = recovery.active_ms;
@@ -845,7 +861,7 @@ impl Recorder {
                     _ => 0,
                 };
                 if let Some(slots) = slots {
-                    self.slots = slots;
+                    self.slots = Some(slots);
                     self.emptied();
                 } else {
                     self.lifecycle = Lifecycle::Failed { open: false };
@@ -1226,6 +1242,9 @@ mod tests {
     }
     impl RideStorage for Flash {
         type Error = ();
+        fn ride_geometry(&mut self) -> device_api::storage::Geometry {
+            crate::ride::log::GEOMETRY
+        }
         fn ride_read_sector(
             &mut self,
             sector: usize,

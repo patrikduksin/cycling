@@ -9,7 +9,7 @@ use crate::rendering::row::Row;
 use device_api::display::BAND_ROWS;
 use device_api::display::Display;
 use device_api::display::Rows;
-use device_api::input::Button;
+use device_api::input::Fixtures;
 use device_api::input::Input;
 use device_api::input::InputSource;
 use device_api::observation::Availability;
@@ -222,7 +222,8 @@ pub struct Shell<D, I, P, B> {
     pub battery: device_api::observation::Observation<(u8, u16)>,
     pub positioning_availability: Availability,
     pub position: Option<device_api::positioning::Snapshot>,
-    next_button: Option<Button>,
+    buttons: Fixtures,
+    next_button: Option<u8>,
     dirty: bool,
     fill_color: Option<u16>,
     dev_frame: u8,
@@ -250,12 +251,16 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             return Err(Error::Invalid);
         }
         let controls = input.controls();
-        if controls.buttons.is_empty()
+        if controls.buttons.as_slice().is_empty()
             && controls.touch != device_api::observation::Availability::Ready
         {
             return Err(Error::Unavailable);
         }
-        let next_button = controls.buttons.first().copied();
+        let next_button = controls
+            .buttons
+            .as_slice()
+            .first()
+            .map(|fixture| fixture.id);
         let storage_available = flash.availability(device_api::storage::Region::Configuration);
         let loaded = if storage_available == Availability::Ready {
             Some(store.load())
@@ -318,6 +323,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             battery: device_api::observation::Observation::Unavailable,
             positioning_availability: Availability::Unsupported,
             position: None,
+            buttons: controls.buttons,
             next_button,
             dirty: true,
             fill_color: None,
@@ -342,8 +348,27 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             self.app_active = active;
         }
     }
-    pub fn take_app_input(&mut self) -> Option<device_api::input::Edge> {
-        self.app_input.pop()
+    /// The next input for the application. Presses of buttons without a
+    /// role never reach it.
+    pub fn take_app_input(&mut self) -> Option<crate::input::Edge> {
+        use crate::input::Input as App;
+        use device_api::input::Input;
+        while let Some(edge) = self.app_input.pop() {
+            let input = match edge.input {
+                Input::Touch(point) => App::Touch(point),
+                Input::Release => App::Release,
+                Input::Cancel => App::Cancel,
+                Input::Button { id, code } => match self.buttons.role(id) {
+                    Some(role) => App::Press { role, code },
+                    None => continue,
+                },
+            };
+            return Some(crate::input::Edge {
+                received_ms: edge.received_ms,
+                input,
+            });
+        }
+        None
     }
     /// The harness's synthetic inputs handed on like physical ones since the
     /// last call, in order.
@@ -529,8 +554,7 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
                 let _ = self.app_input.push(at, input);
                 return;
             }
-            if matches!(input, Input::Button { button, code: 1 } if Some(button) == self.next_button)
-            {
+            if matches!(input, Input::Button { id, code: 1 } if Some(id) == self.next_button) {
                 self.fill_color = None;
                 self.foreground = match self.foreground {
                     Screen::Status => Screen::Blank,

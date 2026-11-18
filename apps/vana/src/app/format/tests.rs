@@ -1,6 +1,7 @@
 use super::*;
-use Button::{BottomLeft as MOVE, BottomRight as ACT, TopLeft as BACK};
+use crate::ride::log::SECTORS;
 use Format::*;
+use device_api::input::Role::{Act as ACT, Back as BACK, Move as MOVE};
 use std::vec;
 use std::vec::Vec;
 
@@ -20,7 +21,7 @@ const UNDRAWN: Format = Offered {
     scope: RIDES,
 };
 
-fn press(button: Button, at: u64) -> Event {
+fn press(button: Role, at: u64) -> Event {
     Event::Report {
         button,
         held: false,
@@ -28,7 +29,7 @@ fn press(button: Button, at: u64) -> Event {
     }
 }
 
-fn held(button: Button, at: u64) -> Event {
+fn held(button: Role, at: u64) -> Event {
     Event::Report {
         button,
         held: true,
@@ -195,6 +196,12 @@ fn every_state_and_event_steps_as_the_table_says() {
             Go::Stay,
         ),
         (
+            running(Stage::JournalSector(0), every),
+            Event::SectorWiped,
+            running(Stage::JournalSector(1), every),
+            Go::Stay,
+        ),
+        (
             running(last_sector, every),
             Event::Wrote,
             running(Stage::Settings, every),
@@ -296,7 +303,7 @@ fn a_clear_keeps_its_token_through_the_wipe_and_hands_it_to_the_ending() {
         Stage::Abandon,
     ]
     .into_iter()
-    .chain((0..SECTORS).map(Stage::JournalSector));
+    .chain([Stage::JournalSector(0), Stage::JournalSector(SECTORS - 1)]);
     let inert = [
         clear,
         confirm(INTERNAL),
@@ -389,7 +396,7 @@ fn nothing_starts_a_wipe_under_an_open_ride() {
 #[test]
 fn a_wipe_takes_the_stages_of_the_stores_it_is_for_in_order() {
     use Card::{Files, Rides, Table, Traces};
-    let journal = || (0..SECTORS).map(Stage::JournalSector);
+    let journal = || [Stage::JournalSector(0)].into_iter();
     let card = [Table, Rides, Files, Traces].map(Stage::Card);
     let cases: [(Scope, Vec<Stage>); 12] = [
         (scope(&[Store::Table]), card.to_vec()),

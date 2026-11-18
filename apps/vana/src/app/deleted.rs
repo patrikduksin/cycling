@@ -17,11 +17,11 @@ impl Runtime {
         self.deleted.attach(Shelf::new(slots));
     }
 
-    /// The bulk log's store id, which a new log on the card changes; 0 for
-    /// the internal journal.
+    /// The store id of `medium`'s journal, which a new log on the card, or a
+    /// volatile internal journal starting empty, changes.
     pub(super) fn store(&self, medium: Medium) -> u64 {
         match medium {
-            Medium::Internal => 0,
+            Medium::Internal => self.ride.internal_store(),
             Medium::Bulk => self.ride.bulk_media().log().map_or(0, |log| log.store_id()),
         }
     }

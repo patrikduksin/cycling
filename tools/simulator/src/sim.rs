@@ -8,7 +8,7 @@ use crate::route::Route;
 use crate::screen::{Frame, TextRun};
 use crate::session::Session;
 use crate::world::{Vehicle, World};
-use device_api::input::{Button, Input, Point};
+use device_api::input::{Input, Point, Role};
 use device_api::storage::Region;
 use firmware_shell::rendering::row::Look;
 use std::fmt::Write as _;
@@ -180,9 +180,46 @@ impl Screen {
     }
 }
 
+/// A part a scenario needs its model to have fitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Need {
+    Touch,
+    Wifi,
+    Barometer,
+}
+
+impl Need {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Touch => "touch",
+            Self::Wifi => "wifi",
+            Self::Barometer => "barometer",
+        }
+    }
+}
+
+/// How the panic of a scenario its model cannot run begins: the scenario
+/// is skipped on that model, not failed.
+pub const UNMET: &str = "unmet need: ";
+
+/// The environment variable that names the model `Sim::new` simulates.
+pub const MODEL: &str = "SIM_MODEL";
+
+fn chosen() -> Model {
+    match std::env::var(MODEL) {
+        Ok(name) => *Model::named(&name).unwrap_or_else(|| {
+            let known: Vec<_> = crate::models::all().iter().map(|m| m.name).collect();
+            panic!("{MODEL}={name} names no model (there are {known:?})")
+        }),
+        Err(_) => crate::models::C606,
+    }
+}
+
 pub struct Sim {
     pub device: Session,
     pub notes: Vec<Note>,
+    /// The parts this scenario has needed so far.
+    pub needs: Vec<Need>,
     recording: Option<Recording>,
     /// Top-left reports seen in a row while the device is off.
     /// Top-left reports in the current hold while the device is off.
@@ -195,9 +232,10 @@ pub struct Media {
 }
 
 impl Sim {
-    /// A powered-off C606 with VANA, an ANT radio and empty memory media.
+    /// A powered-off device with VANA and empty memory media: the C606, or
+    /// the model `SIM_MODEL` names.
     pub fn new() -> Self {
-        Self::on(crate::models::C606)
+        Self::on(chosen())
     }
 
     pub fn on(model: Model) -> Self {
@@ -206,11 +244,7 @@ impl Sim {
 
     /// Like `new`, in comparison mode whatever the environment says.
     pub fn comparing() -> Self {
-        Self::with(
-            crate::models::C606,
-            Recording::from_env,
-            Some(Tap::default()),
-        )
+        Self::with(chosen(), Recording::from_env, Some(Tap::default()))
     }
 
     /// Like `new`, recorded under `name` rather than the test thread's name.
@@ -221,7 +255,7 @@ impl Sim {
 
     pub fn named(name: &str) -> Self {
         Self::with(
-            crate::models::C606,
+            chosen(),
             |model| Recording::named(name, model),
             requested_tap(),
         )
@@ -241,7 +275,26 @@ impl Sim {
             recording: recording(&model),
             device,
             notes: Vec::new(),
+            needs: Vec::new(),
             power_hold: 0,
+        }
+    }
+
+    /// The scenario needs `need`: on a model without it, it stops here and
+    /// counts as skipped on that model.
+    #[track_caller]
+    pub fn need(&mut self, need: Need) {
+        if !self.needs.contains(&need) {
+            self.needs.push(need);
+        }
+        let model = self.device.model;
+        let fitted = match need {
+            Need::Touch => model.touch,
+            Need::Wifi => model.fitted.wifi,
+            Need::Barometer => model.fitted.sensors.barometer,
+        };
+        if !fitted {
+            panic!("{UNMET}{}: {} has none", need.name(), model.name);
         }
     }
 
@@ -256,9 +309,9 @@ impl Sim {
     /// knows VANA would. Does nothing on Home.
     pub fn skip_setup(&mut self) {
         if self.device.sdk.page() == vana::screens::workout::Page::Setup {
-            self.press(device_api::input::Button::BottomLeft);
+            self.press(Role::Move);
             self.expect_text("SKIP SETUP");
-            self.press(device_api::input::Button::BottomRight);
+            self.press(Role::Act);
             assert!(self.device.sdk.page() == vana::screens::workout::Page::Home);
         }
     }
@@ -356,29 +409,27 @@ impl Sim {
     }
 
     /// One physical press, then enough time for the next press to count.
-    pub fn press(&mut self, button: Button) {
+    pub fn press(&mut self, button: Role) {
         self.note(NoteKind::Input, format!("press {button:?}"));
         self.report(button);
         self.advance(PRESS_GAP_MS);
     }
 
     /// One companion report of `button` going down, now, without waiting.
-    pub fn report(&mut self, button: Button) {
+    pub fn report(&mut self, button: Role) {
         self.deliver(button, false);
     }
 
     /// A repeated report of a button still held since the previous report.
     /// The caller knows the hold is continuous: the live window keeps time in
     /// real milliseconds, while uptime runs faster at 10x and 60x.
-    pub fn repeat(&mut self, button: Button) {
+    pub fn repeat(&mut self, button: Role) {
         self.deliver(button, true);
     }
 
-    /// While the device is off, only a held top-left button does anything:
-    /// it turns the device on, as the companion does.
-    fn deliver(&mut self, button: Button, continuing: bool) {
+    fn deliver(&mut self, button: Role, continuing: bool) {
         if self.is_off() {
-            if button != Button::TopLeft {
+            if button != Role::Back {
                 self.power_hold = 0;
                 return;
             }
@@ -395,19 +446,26 @@ impl Sim {
             return;
         }
         self.power_hold = 0;
+        let model = self.device.model;
+        let id = model
+            .buttons
+            .id(button)
+            .unwrap_or_else(|| panic!("{} has no {button:?} button", model.name));
         self.device
             .input
-            .push(self.device.clock_ms(), Input::Button { button, code: 1 });
+            .push(self.device.clock_ms(), Input::Button { id, code: 1 });
     }
 
     /// A finger on the screen at (x, y), lifted at once.
     pub fn tap(&mut self, x: u16, y: u16) {
+        self.need(Need::Touch);
         self.note(NoteKind::Input, format!("tap {x},{y}"));
         self.touch(&[(x, y), (x, y)]);
     }
 
     /// A finger held still at (`x`, `y`) for `ms`, then lifted.
     pub fn long_press(&mut self, x: u16, y: u16, ms: u64) {
+        self.need(Need::Touch);
         self.note(NoteKind::Input, format!("long press {x},{y} {ms} ms"));
         let steps = (ms / TOUCH_STEP_MS + 1) as usize;
         self.touch(&std::vec![(x, y); steps]);
@@ -415,6 +473,7 @@ impl Sim {
 
     /// A finger dragged from `from` to `to` in a quarter second.
     pub fn swipe(&mut self, from: (u16, u16), to: (u16, u16)) {
+        self.need(Need::Touch);
         self.note(
             NoteKind::Input,
             format!("swipe {},{} to {},{}", from.0, from.1, to.0, to.1),
@@ -432,6 +491,7 @@ impl Sim {
     /// move, the list coasts on at the finger's speed; with `hold_ms` the
     /// finger rests there first, so it throws nothing.
     pub fn drag(&mut self, from: (u16, u16), to: (u16, u16), ms: u64, hold_ms: u64) {
+        self.need(Need::Touch);
         self.note(
             NoteKind::Input,
             format!(
@@ -481,15 +541,13 @@ impl Sim {
 
     #[track_caller]
     fn finger(&mut self, point: Point) {
-        let model = self.device.model;
-        assert!(model.touch, "{} has no touch panel", model.name);
         self.device
             .input
             .push(self.device.clock_ms(), Input::Touch(point));
     }
 
     /// Buttons pressed in the same companion report window.
-    pub fn press_together(&mut self, buttons: &[Button]) {
+    pub fn press_together(&mut self, buttons: &[Role]) {
         self.note(NoteKind::Input, format!("press together {buttons:?}"));
         for &button in buttons {
             self.report(button);
@@ -499,13 +557,13 @@ impl Sim {
 
     /// The companion repeats code-1 reports while a button stays down; the
     /// firmware cannot observe a release (see issue #86).
-    pub fn hold(&mut self, button: Button, ms: u64) {
+    pub fn hold(&mut self, button: Role, ms: u64) {
         self.hold_while(button, ms, |_, _| {});
     }
 
     /// `hold`, calling `during` with how long the button has been held
     /// before each of its reports.
-    pub fn hold_while(&mut self, button: Button, ms: u64, mut during: impl FnMut(&mut Self, u64)) {
+    pub fn hold_while(&mut self, button: Role, ms: u64, mut during: impl FnMut(&mut Self, u64)) {
         self.note(NoteKind::Input, format!("hold {button:?} {ms} ms"));
         let mut held = 0;
         while held < ms {
@@ -696,6 +754,7 @@ impl Sim {
         Ok(Self {
             device: Session::replaying(capture, mode)?,
             notes: Vec::new(),
+            needs: Vec::new(),
             recording,
             power_hold: 0,
         })
@@ -1381,6 +1440,7 @@ impl Drop for Sim {
             let rides = self.rides().iter().map(crate::rides::summary).collect();
             recording.write(Outcome {
                 device: self.device.model.name,
+                needs: &self.needs,
                 notes: &self.notes,
                 end_ms: self.now(),
                 rides,

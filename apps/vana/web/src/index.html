@@ -121,22 +121,82 @@ function metric(value, unit, color) {
   return el('div', {}, el('span', { class: 'value', style: `color:${color}` }, value), el('span', { class: 'unit' }, unit));
 }
 
+const FIT_CRC = [0x0000, 0xCC01, 0xD801, 0x1400, 0xF001, 0x3C00, 0x2800, 0xE401,
+  0xA001, 0x6C00, 0x7800, 0xB401, 0x5000, 0x9C01, 0x8801, 0x4400];
+function fitCrc(bytes) {
+  let crc = 0;
+  for (const byte of bytes) {
+    crc = ((crc >> 4) & 0x0FFF) ^ FIT_CRC[crc & 0xF] ^ FIT_CRC[byte & 0xF];
+    crc = ((crc >> 4) & 0x0FFF) ^ FIT_CRC[crc & 0xF] ^ FIT_CRC[byte >> 4];
+  }
+  return crc;
+}
+
+function download(url, name = '') {
+  const link = el('a', { href: url, download: name });
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+async function keepRide(ride, url, note) {
+  note.className = 'note';
+  note.textContent = 'Saving…';
+  try {
+    if (typeof Blob === 'undefined' || !URL.createObjectURL) throw new Error('This browser cannot save the file.');
+    const response = await fetch(url, { headers: { 'X-Session': token }, cache: 'no-store' });
+    if (response.status === 401) throw new Error('This session ended.');
+    if (!response.ok) throw new Error(`The device answered ${response.status}.`);
+    const receipt = response.headers.get('X-Receipt');
+    const named = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const end = bytes.length - 2;
+    const trailer = end > 0 ? bytes[end] | bytes[end + 1] << 8 : -1;
+    if (receipt == null || end < 14 || fitCrc(bytes.subarray(0, end)) !== trailer) throw new Error('The file arrived incomplete.');
+    const href = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.ant.fit' }));
+    download(href, named ? named[1] : `${ride.id}.fit`);
+    setTimeout(() => URL.revokeObjectURL(href), 60_000);
+    await api(`/api/synced?activity=${encodeURIComponent(ride.id)}&receipt=${receipt}&crc=${trailer}`, { method: 'POST' });
+    ride.unsaved = false;
+    note.textContent = 'Saved to this phone. VANA no longer needs to keep it.';
+  } catch (error) {
+    note.className = 'note alert';
+    note.textContent = `Not confirmed: ${error.message} VANA keeps the ride. Try again.`;
+  }
+}
+
+// A ride VANA holds only until the phone confirms a whole copy; once
+// confirmed, the button downloads it like any other ride.
+function keepButton(ride, href, cls, note) {
+  return el('button', { type: 'button', class: cls, onclick: () => (ride.unsaved ? keepRide(ride, href(), note) : download(href())) }, 'Download .fit');
+}
+
+function unsavedNote(ride) {
+  return el('div', { class: 'note warn' }, ride && ride.unsaved ? 'Not saved yet: only this phone can keep it.' : '');
+}
+
 function rideCard(ride) {
   const url = `/api/activities/${ride.id}.fit`;
   const actions = el('div', { class: 'row' });
+  const note = unsavedNote(ride);
   if (ride.start == null) {
     const input = el('input', { type: 'datetime-local' });
-    const link = el('a', { class: 'button primary' }, 'Download .fit');
+    const started = () => Math.floor(new Date(input.value).getTime() / 1000);
+    const link = ride.unsaved
+      ? keepButton(ride, () => `${url}?start=${started()}`, 'button primary', note)
+      : el('a', { class: 'button primary' }, 'Download .fit');
     const update = () => {
-      const start = Math.floor(new Date(input.value).getTime() / 1000);
-      const valid = Number.isFinite(start);
+      const valid = Number.isFinite(started());
       link.classList.toggle('disabled', !valid);
-      if (valid) link.href = `${url}?start=${start}`;
+      if (link.tagName === 'BUTTON') link.disabled = !valid;
+      else if (valid) link.href = `${url}?start=${started()}`;
       else link.removeAttribute('href');
     };
     input.addEventListener('input', update);
     update();
     actions.append(el('div', { class: 'note' }, 'This ride has no date: no Wi-Fi time or GPS fix reached it. When did it start?'), input, link);
+  } else if (ride.unsaved) {
+    actions.append(keepButton(ride, () => url, 'button primary', note));
   } else {
     actions.append(el('a', { class: 'button primary', href: url, download: '' }, 'Download .fit'));
   }
@@ -152,7 +212,7 @@ function rideCard(ride) {
         ride.distance_m == null ? '' : metric((ride.distance_m / 1000).toFixed(1), 'KM', 'var(--white)')),
       el('span', { class: 'hint' }, 'Charts and analysis ›')),
     ride.end === 'recovered' ? el('div', { class: 'note warn' }, 'Recovered after power loss') : '',
-    actions);
+    actions, note);
 }
 
 // ---- FIT reader: record (20) and session (18) messages, little or big endian.
@@ -525,9 +585,13 @@ async function showRide(id) {
   if (hasPower) items.push([fixed(mean(ride.power)), 'Avg W', 'var(--power)']);
   if (range(ride.heart).n) items.push([fixed(mean(ride.heart)), 'Avg bpm', 'var(--heart)']);
   if (Number.isFinite(climb)) items.push([fixed(climb), 'Ascent m', 'var(--amber)']);
+  const note = unsavedNote(info);
+  const save = info && info.unsaved
+    ? keepButton(info, () => `/api/activities/${id}.fit`, 'button', note)
+    : el('a', { class: 'button', href: `/api/activities/${id}.fit`, download: '' }, 'Download .fit');
   const cards = [el('div', { class: 'card' },
     el('div', { class: 'caption' }, info ? when(info.start) : 'Ride'), stats(items),
-    el('div', { class: 'row', style: 'margin-top:8px' }, el('a', { class: 'button', href: `/api/activities/${id}.fit`, download: '' }, 'Download .fit')))];
+    el('div', { class: 'row', style: 'margin-top:8px' }, save), note)];
   if (hasPower && Number.isFinite(np) && ftp) {
     const factor = np / ftp;
     cards.push(el('div', { class: 'card' }, el('div', { class: 'caption' }, `Training load · FTP ${ftp} W`),
@@ -854,6 +918,37 @@ function showWorkouts(list) {
   if (old) old.replaceWith(card); else if (course) course.after(card); else $('list').prepend(card);
 }
 
+async function clearRides(button, note) {
+  button.disabled = true;
+  note.className = 'note';
+  note.textContent = 'Clearing…';
+  try {
+    let { clear } = await api('/api/activities', { method: 'DELETE' });
+    while (clear === 'asking' || clear === 'clearing') {
+      note.textContent = clear === 'asking' ? 'Confirm on the device.' : 'Clearing…';
+      await new Promise((resume) => setTimeout(resume, 700));
+      ({ clear } = await api('/api/status'));
+    }
+    if (clear === 'kept') {
+      note.textContent = 'Rides kept.';
+      button.disabled = false;
+      return;
+    }
+    if (clear === 'failed') throw new Error('VANA could not clear its rides.');
+    load();
+  } catch (error) {
+    note.className = 'note alert';
+    note.textContent = error.message;
+    button.disabled = false;
+  }
+}
+
+function clearRow() {
+  const note = el('div', { class: 'note' });
+  const button = el('button', { type: 'button', onclick: () => clearRides(button, note) }, 'Clear rides');
+  return el('div', { class: 'row' }, button, note);
+}
+
 let rides = [];
 async function load() {
   try {
@@ -868,7 +963,8 @@ async function load() {
     rides = list.activities;
     if (location.hash.startsWith('#/ride/')) return route();
     $('list').replaceChildren(...(course ? [courseCard(course)] : []), ...(workouts ? [workoutsCard(workouts)] : []), ...(rides.length ? rides.map(rideCard)
-      : [el('div', { class: 'empty caption' }, list.indexing ? 'Reading rides…' : 'No rides yet')]));
+      : [el('div', { class: 'empty caption' }, list.indexing ? 'Reading rides…' : 'No rides yet')]),
+    ...(status.volatile && rides.length && !list.indexing ? [clearRow()] : []));
     $('foot').textContent = list.indexing ? 'Reading rides…' : `${rides.length} rides`;
     if (list.indexing || status.indexing) setTimeout(load, 700);
   } catch (error) {

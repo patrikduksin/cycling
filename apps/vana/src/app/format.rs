@@ -5,14 +5,14 @@ use super::navigation::To;
 use super::preferences::Stored;
 use super::storage::{Health, StorageHealth, Store};
 use crate::kept::CardRefused;
-use crate::ride::log::{SECTORS, Status};
+use crate::ride::log::Status;
 use crate::ride::medium::Medium;
 use crate::ride::storage::RideStorage;
 use crate::screens::format::{Goes, Shows};
 use crate::screens::workout::Page;
 use device_api::bulk::ReadWrite;
 use device_api::display::Display;
-use device_api::input::{Button, InputSource};
+use device_api::input::{InputSource, Role};
 use device_api::power::Power;
 use device_api::storage::OwnedFlash;
 use firmware_services::volume::{self, FILES, Layout, RIDES, STORE, TERRAIN, Volume};
@@ -182,7 +182,6 @@ impl Stage {
             Self::Card(Card::Rides) => Self::Card(Card::Files),
             Self::Card(Card::Files) => Self::Card(Card::Traces),
             Self::Card(Card::Traces) => Self::JournalSector(0),
-            Self::JournalSector(index) if index + 1 < SECTORS => Self::JournalSector(index + 1),
             Self::JournalSector(_) => Self::ForgetInternalRides,
             Self::ForgetInternalRides => Self::Settings,
             Self::Settings => Self::SettleIntent,
@@ -263,7 +262,7 @@ pub(super) enum Event {
     },
     Drawn(u64),
     Report {
-        button: Button,
+        button: Role,
         held: bool,
         at: u64,
     },
@@ -274,6 +273,8 @@ pub(super) enum Event {
     IntentRecorded(Scope),
     IntentNotRecorded,
     Wrote,
+    /// A journal sector is wiped and the journal holds more.
+    SectorWiped,
     WriteFailed,
 }
 
@@ -343,12 +344,12 @@ pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go
                 at,
             },
         ) if began_after_drawn(drawn, at) => match button {
-            Button::BottomRight if !ride_open => (
+            Role::Act if !ride_open => (
                 Format::from_stage(Some(Stage::FIRST), scope, false, None),
                 Go::Question,
             ),
-            Button::TopLeft => (Declined, Go::FirstPage),
-            Button::BottomRight | Button::BottomLeft | Button::Center => (format, Go::Stay),
+            Role::Back => (Declined, Go::FirstPage),
+            Role::Act | Role::Move => (format, Go::Stay),
         },
         (Idle | Offered { .. } | Declined | Failed, Event::Confirm { scope, clear })
             if !ride_open =>
@@ -378,6 +379,23 @@ pub(super) fn step(format: Format, event: Event, ride_open: bool) -> (Format, Go
             },
             Event::Wrote | Event::WriteFailed,
         ) => (Failed, Go::Ready { clear }),
+        (
+            Running {
+                stage: Stage::JournalSector(index),
+                scope,
+                resumed,
+                clear,
+            },
+            Event::SectorWiped,
+        ) => (
+            Running {
+                stage: Stage::JournalSector(index + 1),
+                scope,
+                resumed,
+                clear,
+            },
+            Go::Stay,
+        ),
         (
             Running {
                 stage,
@@ -456,6 +474,7 @@ impl Runtime {
             }
             Go::JournalEmptied { clear } => {
                 self.ride.wiped(clear);
+                self.relist_internal();
                 self.first_page()
             }
         };
@@ -480,7 +499,7 @@ impl Runtime {
         }
     }
 
-    pub(super) fn format_input(&mut self, button: Button, held: bool, at: u64) {
+    pub(super) fn format_input(&mut self, button: Role, held: bool, at: u64) {
         self.format_event(Event::Report { button, held, at });
     }
 
@@ -497,6 +516,8 @@ impl Runtime {
                 }
                 "OK"
             }
+            // A wipe takes the internal journal, and with it unsaved rides.
+            "CONFIRM" if self.holds_unsynced() => "UNSYNCED",
             "CONFIRM" => {
                 let scope = Scope::every(self.card_access());
                 self.format_event(Event::Confirm { scope, clear: None });
@@ -571,8 +592,12 @@ impl Runtime {
             }
             Stage::JournalSector(index) => {
                 let store = &mut system.data_storage();
-                (!resumed || store.ride_erase_sector(index).is_ok())
-                    && crate::ride::journal::wipe_sector(store, index)
+                let wiped = (!resumed || store.ride_erase_sector(index).is_ok())
+                    && crate::ride::journal::wipe_sector(store, index);
+                if wiped && index + 1 < store.ride_sectors() {
+                    return Event::SectorWiped;
+                }
+                wiped
             }
             Stage::ForgetInternalRides => self.forget_internal_rides(bulk, now).is_ok(),
             Stage::Settings => {

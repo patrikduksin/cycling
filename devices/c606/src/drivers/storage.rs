@@ -50,6 +50,7 @@ impl OwnedFlash for Backend<'_> {
             capacity: Self::region(region).1,
             program_size: FlashStorage::WRITE_SIZE,
             erase_size: FlashStorage::ERASE_SIZE,
+            durable: crate::fitted::durable(region),
         }
     }
     fn read(&mut self, region: Region, offset: usize, output: &mut [u8]) -> Result<(), Error> {

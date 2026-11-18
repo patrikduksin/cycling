@@ -218,7 +218,7 @@ impl Runtime {
     /// the forecast if it is `fresh`; a ride's odometer starts over with each
     /// ride, so no pin outlives one.
     pub(super) fn pin_climb(&mut self, fresh: bool) {
-        let recording = self.recording();
+        let recording = self.recorder_busy();
         let odometer = self.ride.totals().distance_mm();
         let Some(state) = self.lookahead.as_deref_mut() else {
             return;

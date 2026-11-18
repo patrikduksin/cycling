@@ -235,10 +235,7 @@ mod tests {
         let mut edges = Edges::new();
         assert!(!edges.push(0, point(1)));
         let _ = edges.pop();
-        let button = Input::Button {
-            button: device_api::input::Button::BottomLeft,
-            code: 1,
-        };
+        let button = Input::Button { id: 1, code: 1 };
         for t in 1..=16 {
             assert!(!edges.push(t, button));
         }

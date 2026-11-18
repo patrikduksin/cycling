@@ -19,7 +19,7 @@ use crate::screens::workout::{Page, Text};
 use crate::workout::ftp::{Offer, Question, Source};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
-use device_api::input::Button;
+use device_api::input::Role;
 
 impl Kept {
     /// The BESTS row's value in Settings.
@@ -110,20 +110,20 @@ impl Runtime {
 
     /// ACT takes the suggested FTP, BACK keeps the one in force. Either way
     /// the summary's own press then finishes it, as on any page.
-    pub(super) fn answer_ftp_offer(&mut self, button: Button, now: u64) {
+    pub(super) fn answer_ftp_offer(&mut self, button: Role, now: u64) {
         let Some(offer) = self.summary_offer() else {
             return;
         };
         let mut text = Text::<20>::new();
         let tone = match button {
-            Button::BottomRight => {
+            Role::Act => {
                 let mut profile = self.preferences.profile;
                 profile.ftp_watts = offer.suggested_watts;
                 self.preferences.set(profile, now);
                 let _ = write!(text, "FTP {} W SAVED", offer.suggested_watts);
                 Tone::Good
             }
-            Button::TopLeft => {
+            Role::Back => {
                 let _ = write!(text, "FTP KEPT {} W", offer.current_watts);
                 Tone::Info
             }
@@ -140,21 +140,21 @@ impl Runtime {
 
     /// BACK returns to Settings. ACT asks to clear the bests, and then ACT
     /// confirms while BACK keeps them.
-    pub(super) fn bests_input(&mut self, button: Button, held: bool) {
+    pub(super) fn bests_input(&mut self, button: Role, held: bool) {
         let kept = &mut self.bests;
         match button {
-            Button::BottomRight if kept.confirming => {
+            Role::Act if kept.confirming => {
                 kept.confirming = false;
                 kept.clear = true;
             }
-            Button::BottomRight
+            Role::Act
                 if kept.store == Store::Damaged
                     || (kept.store == Store::Kept && kept.bests.count() != 0) =>
             {
                 kept.confirming = true;
             }
-            Button::TopLeft if kept.confirming => kept.confirming = false,
-            Button::TopLeft if !held => self.navigation.go(To::Page(Page::Settings)),
+            Role::Back if kept.confirming => kept.confirming = false,
+            Role::Back if !held => self.navigation.go(To::Page(Page::Settings)),
             _ => {}
         }
     }

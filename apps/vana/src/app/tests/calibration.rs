@@ -162,8 +162,8 @@ fn a_request_held_by_a_busy_radio_never_goes_out_once_a_ride_records() {
         .navigation
         .go(To::Page(crate::screens::workout::Page::Ride));
     runtime.input_received(
-        device_api::input::Input::Button {
-            button: device_api::input::Button::BottomRight,
+        firmware_shell::input::Input::Press {
+            role: Role::Act,
             code: 1,
         },
         27_000,
@@ -171,7 +171,7 @@ fn a_request_held_by_a_busy_radio_never_goes_out_once_a_ride_records() {
         &mut radio,
     );
     feed(&mut runtime, &mut journal, &mut radio, 27_000, 33_000);
-    assert!(runtime.recording());
+    assert!(runtime.recorder_busy());
     radio.reject = None;
     feed(&mut runtime, &mut journal, &mut radio, 33_000, 36_000);
     assert!(radio.channels.pending_send().is_none());

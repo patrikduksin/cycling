@@ -114,7 +114,7 @@ pub(crate) mod scenes {
     use crate::route::{Point, Route};
     use crate::sim::{Sim, minutes, seconds};
     use crate::world::{Side, Vehicle};
-    use device_api::input::Button;
+    use device_api::input::Role;
 
     /// A screen to measure and how a rider reaches it.
     pub struct Scene {
@@ -328,9 +328,9 @@ pub(crate) mod scenes {
         let mut sim = rider(true);
         sim.open_mode_row();
         sim.expect_field("MODE", "NORMAL");
-        sim.press(Button::BottomRight);
+        sim.press(Role::Act);
         sim.expect_field("MODE", "SAVER");
-        sim.press(Button::TopLeft);
+        sim.press(Role::Back);
         sim.expect_text("READY TO RIDE");
         ride_main_from(sim)
     }
@@ -438,7 +438,7 @@ pub(crate) mod scenes {
     pub(crate) fn workout_page() -> Sim {
         let mut sim = rider(false);
         sim.choose_workout("VO2 MAX 5X3");
-        sim.press(Button::BottomRight);
+        sim.press(Role::Act);
         sim.wait_for("RECORDING", seconds(2)).unwrap();
         sim.ride_at(30.0, 120.0, 142.0, 90.0);
         sim.advance(seconds(20));
@@ -500,7 +500,7 @@ pub(crate) mod scenes {
             course.as_bytes(),
         );
         assert_eq!(status, 200);
-        sim.press(Button::TopLeft);
+        sim.press(Role::Back);
         sim.advance(seconds(1));
         let route = gpx_every_ten_metres(origin, &[(0.0, 0.0), (0.0, 2_000.0)]);
         sim.ride_route(Route::from_gpx(&route).unwrap());
@@ -547,7 +547,7 @@ pub(crate) mod scenes {
             course.as_bytes(),
         );
         assert_eq!(status, 200);
-        sim.press(Button::TopLeft);
+        sim.press(Role::Back);
         sim.advance(seconds(1));
         let route = gpx_every_ten_metres(origin, &[to(0.0, -600.0), to(0.0, turn_m)]);
         sim.ride_route(Route::from_gpx(&route).unwrap());
@@ -586,7 +586,7 @@ pub(crate) mod scenes {
 
     fn end_ride() -> Sim {
         let mut sim = paused();
-        sim.press(Button::TopLeft);
+        sim.press(Role::Back);
         sim.expect_text("END RIDE?");
         sim
     }
@@ -648,9 +648,9 @@ pub(crate) mod scenes {
     fn bests() -> Sim {
         let mut sim = after_a_long_ride();
         sim.home("SETTINGS");
-        sim.press(Button::BottomLeft);
-        sim.press(Button::BottomLeft);
-        sim.press(Button::BottomRight);
+        sim.press(Role::Move);
+        sim.press(Role::Move);
+        sim.press(Role::Act);
         sim.expect_text("LONGEST RIDE");
         sim
     }
@@ -659,9 +659,9 @@ pub(crate) mod scenes {
         let mut sim = after_a_long_ride();
         sim.home("SETTINGS");
         for _ in 0..3 {
-            sim.press(Button::BottomLeft);
+            sim.press(Role::Move);
         }
-        sim.press(Button::BottomRight);
+        sim.press(Role::Act);
         sim.wait_for("FATIGUE", seconds(60)).unwrap();
         sim
     }
@@ -687,7 +687,7 @@ pub(crate) mod scenes {
 
     fn past_ride() -> Sim {
         let mut sim = history();
-        sim.press(Button::BottomRight);
+        sim.press(Role::Act);
         sim.wait_gone("READING", seconds(5)).unwrap();
         sim.expect_text("SAVED RIDE");
         sim
@@ -723,7 +723,7 @@ pub(crate) mod scenes {
 
     fn setup_power_step() -> Sim {
         let mut sim = setup();
-        sim.press(Button::BottomRight);
+        sim.press(Role::Act);
         sim.expect_text("SET FTP");
         assert_eq!(sim.vana_page(), "setup");
         sim
@@ -731,13 +731,13 @@ pub(crate) mod scenes {
 
     fn settings_editing() -> Sim {
         let mut sim = settings();
-        sim.press(Button::BottomRight);
+        sim.press(Role::Act);
         sim
     }
 
     fn bests_confirm() -> Sim {
         let mut sim = bests();
-        sim.press(Button::BottomRight);
+        sim.press(Role::Act);
         sim.expect_text("CLEAR BESTS?");
         sim
     }
@@ -746,16 +746,16 @@ pub(crate) mod scenes {
         let mut sim = rider(false);
         sim.home("SETTINGS");
         for _ in 0..3 {
-            sim.press(Button::BottomLeft);
+            sim.press(Role::Move);
         }
-        sim.press(Button::BottomRight);
+        sim.press(Role::Act);
         sim.wait_for("NO POWER RIDES", seconds(60)).unwrap();
         sim
     }
 
     fn phone_from_ride() -> Sim {
         let mut sim = past_ride();
-        sim.press(Button::BottomRight);
+        sim.press(Role::Act);
         sim.advance(seconds(1));
         sim.expect_text("JOIN VANA WI-FI");
         sim
@@ -773,16 +773,16 @@ pub(crate) mod scenes {
         sim.swipe_next();
         sim.swipe_next();
         for _ in 0..3 {
-            sim.press(Button::BottomLeft);
+            sim.press(Role::Move);
         }
         sim.expect_field("THEME", "DARK");
-        sim.press(Button::BottomRight);
+        sim.press(Role::Act);
         sim
     }
 
     fn home_light() -> Sim {
         let mut sim = light();
-        sim.press(Button::TopLeft);
+        sim.press(Role::Back);
         sim.expect_text("READY TO RIDE");
         sim
     }

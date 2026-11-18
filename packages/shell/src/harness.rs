@@ -1,7 +1,6 @@
 //! Bounded composition-owned test operations. No device capability implements policy.
 use core::fmt::Write;
 use device_api::display::Geometry;
-use device_api::input::Button;
 use device_api::input::Controls;
 use device_api::input::Input;
 use device_api::input::Point;
@@ -340,10 +339,7 @@ impl State {
         self.due = due;
         self.delivered += 1;
         let event = match scheduled.event {
-            Event::Button(index) => Input::Button {
-                button: button(index)?,
-                code: 1,
-            },
+            Event::Button(id) => Input::Button { id, code: 1 },
             Event::Down(x, y) | Event::Move(x, y) => {
                 self.held = true;
                 Input::Touch(Point { x, y })
@@ -520,8 +516,8 @@ impl State {
                         "unsupported"
                     }
                 );
-                for b in controls.buttons {
-                    let _ = write!(out, "{},", b.index());
+                for b in controls.buttons.as_slice() {
+                    let _ = write!(out, "{},", b.id);
                 }
                 let _ = write!(
                     out,
@@ -585,8 +581,8 @@ impl State {
                     return "INVALID";
                 }
                 match event {
-                    Event::Button(index) => {
-                        if button(index).is_none_or(|b| !controls.buttons.contains(&b)) {
+                    Event::Button(id) => {
+                        if !controls.buttons.as_slice().iter().any(|b| b.id == id) {
                             return "UNSUPPORTED";
                         }
                     }
@@ -759,16 +755,6 @@ impl State {
         "OK"
     }
 }
-fn button(index: u8) -> Option<Button> {
-    match index {
-        0 => Some(Button::TopLeft),
-        1 => Some(Button::BottomLeft),
-        2 => Some(Button::BottomRight),
-        3 => Some(Button::Center),
-        _ => None,
-    }
-}
-
 /// A run is a little-endian u16 pixel count followed by one RGB565LE pixel.
 /// Prefer runs only when one bounded payload covers more than a raw payload.
 /// The caller has checked that bytes contains 1..=2048 complete pixels.
@@ -799,10 +785,14 @@ fn encode_chunk(bytes: &[u8], encoded: &mut [u8; ENCODED_BYTES]) -> (&'static st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use device_api::input::{Fixture, Fixtures, Role};
 
     const CONTROLS: Controls = Controls {
         touch: Availability::Ready,
-        buttons: &[Button::BottomRight],
+        buttons: Fixtures::new(&[Fixture {
+            id: 2,
+            role: Some(Role::Act),
+        }]),
     };
     const PANEL: Geometry = Geometry {
         width: 240,

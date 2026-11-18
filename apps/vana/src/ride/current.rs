@@ -8,6 +8,13 @@
 //! tokens, the ride's sums, laps and climbs, automation, and the move from the
 //! card to internal flash. The workout player belongs to `Training`.
 //!
+//! The internal journal is volatile when its reservation's geometry is not
+//! durable. Its boot scan then finds it empty, and `service` draws a fresh
+//! store id each time it starts empty, at boot or when a wipe ends, so a
+//! FILES record of an earlier boot never names a ride of this one. A
+//! volatile journal admits `VOLATILE_STARTS` starts, continuations included,
+//! until it is cleared; a continuation past that bound does not start.
+//!
 //! One pass of recording is three `Ride` steps with the glue in
 //! `app::recording` between them, in the order the trace hash fixes:
 //!
@@ -46,6 +53,10 @@ use firmware_services::trace::origin;
 const INDEX_INTERNAL_BUDGET: usize = 32;
 const INDEX_BULK_BUDGET: usize = 4;
 
+/// Rides a volatile journal may start before it is cleared again.
+pub(crate) const VOLATILE_STARTS: usize = 16;
+const _: () = assert!(VOLATILE_STARTS <= crate::ride::index::KEPT);
+
 /// One actor's latest recorder operation: queued under its token, then its
 /// result.
 #[derive(Clone, Copy)]
@@ -53,6 +64,9 @@ pub(crate) enum Request {
     Idle,
     Pending(u32),
     Completed(ResultEvent),
+    /// The rider answered BACK to LOSE n UNSAVED RIDES?, so the host's
+    /// clear never ran.
+    Declined(u32),
 }
 
 #[derive(Clone, Copy)]
@@ -118,6 +132,15 @@ pub(crate) struct Ride {
     scanned: Scanned,
     /// Where the rider's answer to DISCARD RIDE? stands.
     discard: Discard,
+    /// Set once the boot scan ends if the internal journal's reservation
+    /// loses its rides at power-off: the store id that FILES records of its
+    /// rides carry. It is drawn afresh each time the journal starts empty, as
+    /// the card's ride log gets a new one, so a record of an earlier boot or
+    /// clear never names a ride of this one, whenever the card is read.
+    volatile_store: Option<u64>,
+    /// A wipe emptied the volatile journal; its next service draws a new
+    /// store id before any ride of the emptied journal can start.
+    renew_store: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -191,6 +214,8 @@ impl Default for Ride {
             outing: Outing(0),
             scanned: Scanned::default(),
             discard: Discard::Idle,
+            volatile_store: None,
+            renew_store: false,
         }
     }
 }
@@ -399,6 +424,37 @@ impl Ride {
             ) || (status.usable() && self.bulk.remaining_secs() == 0))
     }
 
+    /// The journal on `medium` loses its rides at power-off.
+    pub(crate) fn volatile(&self, medium: Medium) -> bool {
+        medium == Medium::Internal && self.volatile_store.is_some()
+    }
+
+    /// The store id of the internal journal's rides in FILES records; 0 for
+    /// a durable journal.
+    pub(crate) fn internal_store(&self) -> u64 {
+        self.volatile_store.unwrap_or(0)
+    }
+
+    /// The internal ride open now, if its journal is volatile.
+    pub(crate) fn volatile_ride(&self) -> Option<u32> {
+        self.volatile_store?;
+        self.internal.open_ride_id()
+    }
+
+    /// A ride may start on `medium`: a volatile journal takes
+    /// `VOLATILE_STARTS` rides between clears.
+    pub(crate) fn admits_start(&self, medium: Medium) -> bool {
+        !self.volatile(medium) || self.volatile_starts() < VOLATILE_STARTS
+    }
+
+    /// Rides started on the volatile journal since it was last emptied.
+    pub(crate) fn volatile_starts(&self) -> usize {
+        if self.volatile_store.is_none() {
+            return 0;
+        }
+        self.internal.next_ride_id().saturating_sub(1) as usize
+    }
+
     /// The token the next submitted operation will carry.
     pub(crate) fn next_token(&self) -> u32 {
         self.next_token
@@ -423,6 +479,9 @@ impl Ride {
 
     fn start(&mut self, medium: Medium, op: Op) -> Result<u32, Refused> {
         let token = self.next_token;
+        if matches!(op, Op::Request(Action::Start, _)) && !self.admits_start(medium) {
+            return Err(Refused::State);
+        }
         let recorder = self.recorder_mut(medium);
         match op {
             Op::Initialize => recorder.initialize(token),
@@ -488,6 +547,7 @@ impl Ride {
 
     pub(crate) fn wiped(&mut self, clear: Option<u32>) {
         self.internal.wiped(clear);
+        self.renew_store = self.volatile_store.is_some();
     }
 
     pub(crate) fn clear_sums(&mut self) {
@@ -517,6 +577,12 @@ impl Ride {
             && matches!(self.host, Request::Pending(token) if token == result.token)
         {
             self.host = Request::Completed(result);
+        }
+    }
+
+    pub(crate) fn refuse_clear(&mut self, token: u32) {
+        if matches!(self.host, Request::Pending(queued) if queued == token) {
+            self.host = Request::Declined(token);
         }
     }
 
@@ -805,7 +871,7 @@ impl Ride {
             return;
         }
         // Token 0: no rider or host waits for this start.
-        if !self.internal.request(Action::Start, now, 0) {
+        if !self.admits_start(Medium::Internal) || !self.internal.request(Action::Start, now, 0) {
             self.give_up_continuation();
         }
     }
@@ -819,16 +885,20 @@ impl Ride {
     }
 
     pub(crate) fn recording(&self) -> bool {
-        self.pending()
-            || self.open()
+        self.open()
             || self.moving()
             || [&self.internal, &self.bulk].iter().any(|r| {
                 r.pending_action().is_some()
-                    || matches!(
-                        r.status(),
-                        Status::Recording | Status::Paused | Status::Formatting | Status::Clearing
-                    )
+                    || matches!(r.status(), Status::Recording | Status::Paused)
             })
+    }
+
+    pub(crate) fn busy(&self) -> bool {
+        self.recording()
+            || self.pending()
+            || [&self.internal, &self.bulk]
+                .iter()
+                .any(|r| matches!(r.status(), Status::Formatting | Status::Clearing))
     }
 
     /// Mark closed laps, service both recorders, note where each boot scan
@@ -871,8 +941,16 @@ impl Ride {
             sample,
             clock,
         );
+        let mut internal_booted_empty = false;
         if self.scanned.internal.is_none() && self.internal.status() != Status::Scanning {
             self.scanned.internal = Some(self.internal_at_boot(store));
+            internal_booted_empty =
+                self.internal.status() != Status::Unsupported && !store.ride_geometry().durable;
+        }
+        let internal_reset_ended = internal_reset && !resetting(self.internal.status());
+        let emptied = internal_reset_ended || core::mem::take(&mut self.renew_store);
+        if internal_booted_empty || emptied && self.volatile_store.is_some() {
+            self.volatile_store = Some(bulk.entropy());
         }
         self.bulk.service(
             &mut Bulk::new(&mut self.bulk_media, bulk),
@@ -883,7 +961,7 @@ impl Ride {
         if self.scanned.bulk.is_none() && self.bulk.status() != Status::Scanning {
             self.scanned.bulk = Some(self.bulk_at_boot());
         }
-        if internal_reset && !resetting(self.internal.status()) {
+        if internal_reset_ended {
             self.forget_moved_ride();
         }
         let ready = |reset: bool, medium| {
@@ -893,7 +971,7 @@ impl Ride {
             before,
             was_scanning,
             reset: [
-                ready(internal_reset, Medium::Internal),
+                ready(internal_reset || internal_booted_empty, Medium::Internal),
                 ready(bulk_reset, Medium::Bulk),
             ],
             lost_paused,
@@ -1049,6 +1127,10 @@ impl Ride {
 impl Ride {
     pub(crate) fn internal_mut(&mut self) -> &mut Recorder {
         &mut self.internal
+    }
+
+    pub(crate) fn set_volatile(&mut self) {
+        self.volatile_store = Some(0);
     }
 
     pub(crate) fn bulk_mut(&mut self) -> &mut Recorder {

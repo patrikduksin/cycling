@@ -337,7 +337,8 @@ TASKS = [
     ),
     task(
         'sim',
-        'Run VANA scenarios in the simulated world; report and screenshots go to .local/sim/latest (SIM_VIDEO=1 adds videos)',
+        'Run VANA scenarios in the simulated world; report and screenshots go to .local/sim/latest (SIM_VIDEO=1 adds videos; '
+        'SIM_MODEL=bare runs them on that model, skipping a scenario whose needs it does not meet)',
         'rm -rf .local/sim/latest && mkdir -p .local/sim/latest',
         f'SIM_ARTIFACTS=$PWD/.local/sim/latest {SIM_SCENARIOS} 2>&1 | tee .local/sim/latest/cargo.log || true',
         f'{DEV}sim.report .local/sim/latest',

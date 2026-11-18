@@ -373,7 +373,7 @@ fn unformatted_missing_or_unsupported_media_is_never_written() {
     assert!(!device.recorder.request(Action::Start, 0, 1));
     assert_eq!(device.recorder.remaining_secs(), 0);
     // No epoch, no capacity: not the internal journal's slot count.
-    assert_eq!(device.recorder.slots(), 0);
+    assert_eq!(device.recorder.slots(), Some(0));
     for (error, status) in [
         (MediaError::Unavailable, Status::Unavailable),
         (MediaError::Unsupported, Status::Unsupported),

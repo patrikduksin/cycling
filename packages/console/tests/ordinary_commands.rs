@@ -44,7 +44,10 @@ impl device_api::input::InputSource for Keys {
     fn controls(&self) -> device_api::input::Controls {
         device_api::input::Controls {
             touch: Availability::Unsupported,
-            buttons: &[device_api::input::Button::TopLeft],
+            buttons: device_api::input::Fixtures::new(&[device_api::input::Fixture {
+                id: 0,
+                role: Some(device_api::input::Role::Back),
+            }]),
         }
     }
     fn take_edge(&mut self) -> Option<device_api::input::Edge> {
@@ -80,6 +83,7 @@ impl device_api::storage::OwnedFlash for Flash {
             },
             program_size: 4,
             erase_size: SECTOR,
+            durable: true,
         }
     }
     fn read(&mut self, region: Region, offset: usize, output: &mut [u8]) -> Result<(), ()> {
@@ -138,57 +142,6 @@ impl device_api::bulk::ReadWrite for CardMedia<'_> {
     }
     fn entropy(&mut self) -> u64 {
         self.0.entropy()
-    }
-}
-
-struct NoAnt;
-impl device_api::ant::Ant for NoAnt {
-    fn capabilities(&self) -> device_api::ant::Capabilities {
-        device_api::ant::Capabilities::UNAVAILABLE
-    }
-    fn scan(&self) -> device_api::ant::ScanSnapshot {
-        device_api::ant::ScanSnapshot {
-            state: device_api::ant::ScanState::Idle,
-            generation: 0,
-            discovery_overflows: 0,
-        }
-    }
-    fn send_status(
-        &self,
-        _: device_api::ant::OperationId,
-    ) -> Option<device_api::ant::SendObservation> {
-        None
-    }
-    fn take_diagnostic_packet(&mut self) -> Option<device_api::ant::Packet> {
-        None
-    }
-    fn channel(&self, _: u8, _: u64) -> Option<device_api::ant::Snapshot> {
-        None
-    }
-    fn availability(&self) -> Availability {
-        Availability::Unsupported
-    }
-    fn scanning(&self) -> bool {
-        false
-    }
-    fn discoveries(&self) -> [Option<device_api::ant::Discovery>; 8] {
-        [None; 8]
-    }
-    fn request(
-        &mut self,
-        _: device_api::ant::AntOperation,
-        _: u64,
-    ) -> Result<device_api::ant::Admission, device_api::ant::Error> {
-        Err(device_api::ant::Error::Unavailable)
-    }
-    fn channels(
-        &self,
-        _: u64,
-    ) -> [Option<device_api::ant::Snapshot>; device_api::ant::CHANNEL_CAPACITY] {
-        [None; device_api::ant::CHANNEL_CAPACITY]
-    }
-    fn take_packet(&mut self) -> Option<device_api::ant::Packet> {
-        None
     }
 }
 
@@ -271,12 +224,10 @@ impl device_api::power::PowerControl for Switch {
     }
 }
 
-struct NoInput;
-impl device_api::input::InputObservation for NoInput {
-    fn snapshot(&self, _: u64) -> Option<device_api::input::InputSnapshot> {
-        None
-    }
-}
+const PRODUCT: vana::Product = vana::Product {
+    name: "VANA C606",
+    fit_id: 606,
+};
 
 struct Traced {
     card: Media,
@@ -382,7 +333,7 @@ impl<B: Board<System>> Device<B> {
             0,
         )
         .expect("the panel is ready");
-        let mut sdk = vana::app::Runtime::new(Default::default(), &vana::screens::BASE);
+        let mut sdk = vana::app::Runtime::new(Default::default(), PRODUCT, &vana::screens::BASE);
         sdk.service_format(&mut system, &mut card(), 0);
         assert!(!sdk.holds_host_storage(), "the boot read its format intent");
         Self {
@@ -403,11 +354,11 @@ impl<B: Board<System>> Device<B> {
             request.command,
             1_000,
             Capabilities {
-                ant: &mut NoAnt,
+                ant: &mut device_api::Absent,
                 ble: &mut self.ble,
                 wifi: &mut self.wifi,
                 power: &mut self.power,
-                input: &NoInput,
+                input: &device_api::Absent,
             },
             &mut self.system,
             &mut self.sdk,

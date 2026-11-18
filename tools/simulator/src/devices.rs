@@ -2,15 +2,14 @@
 use device_api::display::Display;
 use device_api::display::Geometry;
 use device_api::display::Rows;
-use device_api::input::Button;
 use device_api::input::Controls;
 use device_api::input::Edge;
+use device_api::input::Fixtures;
 use device_api::input::Input;
 use device_api::input::InputSource;
 use device_api::journal::{MethodId, Script as _};
 use device_api::observation::Availability;
 use device_api::observation::Error;
-use device_api::positioning::Positioning;
 use device_api::power::Power;
 use device_api::storage::OwnedFlash;
 use device_api::storage::Region;
@@ -143,14 +142,34 @@ impl Display for DisplayDevice {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Model {
     pub name: &'static str,
+    pub product: vana::Product,
     pub width: usize,
     pub height: usize,
     pub touch: bool,
-    pub buttons: &'static [Button],
+    pub buttons: Fixtures,
     /// The panel as VANA lays it out.
     pub layout: &'static vana::screens::Layout,
+    pub fitted: Fitted,
+    /// Owned regions backed by memory, with their sizes: they never survive
+    /// power-off. Every other region is the simulator's durable flash.
+    pub memory: &'static [(Region, usize)],
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fitted {
+    pub gps: bool,
+    pub ant: bool,
+    pub ble: bool,
+    pub wifi: bool,
+    pub sound: bool,
+    pub shutdown: bool,
+    pub card: bool,
+    pub sensors: device_api::sensors::SensorSet,
 }
 impl Model {
+    /// Whether `region` keeps its bytes across power-off.
+    pub fn durable(&self, region: Region) -> bool {
+        !self.memory.iter().any(|&(memory, _)| memory == region)
+    }
     pub fn named(name: &str) -> Option<&'static Model> {
         crate::models::all()
             .iter()
@@ -177,7 +196,7 @@ pub struct InputDevice {
     pub twin: Option<(Scripted, MethodId)>,
 }
 impl InputDevice {
-    pub fn new(buttons: &'static [Button], touch: Availability) -> Self {
+    pub fn new(buttons: Fixtures, touch: Availability) -> Self {
         Self {
             edges: Rc::new(RefCell::new(Edges::new())),
             replayed: Rc::default(),
@@ -298,16 +317,6 @@ impl Refusals {
         refused
     }
 }
-/// The simulator has no positioning receiver or radios.
-pub struct NoPosition;
-impl Positioning for NoPosition {
-    fn availability(&self) -> Availability {
-        Availability::Unsupported
-    }
-    fn snapshot(&self, _: u64) -> Option<device_api::positioning::Snapshot> {
-        None
-    }
-}
 #[derive(Clone)]
 pub struct Memory {
     pub sectors: [[u8; 4096]; 2],
@@ -355,6 +364,7 @@ impl OwnedFlash for Memory {
             },
             program_size: 4,
             erase_size: 4096,
+            durable: true,
         }
     }
     fn read(&mut self, region: Region, offset: usize, output: &mut [u8]) -> Result<(), Error> {
@@ -524,6 +534,8 @@ pub struct PowerSwitch {
     pub startup_ready: bool,
     /// Degraded companion startup keeps work ready but refuses shutdown.
     pub startup_running: bool,
+    /// The model can turn itself off.
+    pub shutdown: bool,
 }
 impl Default for PowerSwitch {
     fn default() -> Self {
@@ -532,19 +544,21 @@ impl Default for PowerSwitch {
             status: device_api::power::Status::IDLE,
             startup_ready: true,
             startup_running: true,
+            shutdown: true,
         }
     }
 }
 impl PowerSwitch {
     /// A device the companion started for charging: work stays closed and
     /// only the panel is open, to show the charge.
-    pub fn charging() -> Self {
+    pub fn charging(shutdown: bool) -> Self {
         Self {
             status: device_api::power::Status {
                 state: device_api::power::State::Charging,
                 ready: false,
                 ..device_api::power::Status::IDLE
             },
+            shutdown,
             ..Self::default()
         }
     }
@@ -601,7 +615,11 @@ impl device_api::power::PowerControl for PowerSwitch {
     fn capabilities(&self) -> device_api::power::Capabilities {
         use device_api::power::Support;
         device_api::power::Capabilities {
-            shutdown: Support::Supported,
+            shutdown: if self.shutdown {
+                Support::Supported
+            } else {
+                Support::Unsupported
+            },
             ..device_api::power::Capabilities::UNSUPPORTED
         }
     }
@@ -614,7 +632,7 @@ impl device_api::power::PowerControl for PowerSwitch {
         status
     }
     fn request(&mut self, operation: device_api::power::Operation) -> Result<(), Error> {
-        if operation != device_api::power::Operation::Shutdown {
+        if operation != device_api::power::Operation::Shutdown || !self.shutdown {
             return Err(Error::Unsupported);
         }
         if !self.startup_ready || !self.status().ready {

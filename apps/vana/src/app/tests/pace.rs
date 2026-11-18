@@ -52,6 +52,8 @@ fn each_kind_of_work_alone_keeps_the_busy_pace() {
             runtime.input_received(Input::Touch(Point { x: 120, y: 4 }), NOW, NOW, radio);
         }),
         ("the turn-off sheet", |runtime, _| {
+            let mut screen = super::presentation::Screen::new();
+            runtime.power(&mut screen.shell, &mut super::power::Switch::new(true), NOW);
             runtime.open_power_sheet(NOW)
         }),
         ("a cue to sound", |runtime, _| {
@@ -78,7 +80,7 @@ fn ride_drawn(at: u64) -> (Runtime, Screen, Radio, Journal) {
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     radio.connected(HEART_RATE, NOW - 1000);
     runtime.navigation.go(To::Page(Page::Ride));
-    runtime.input_received(press(Button::BottomRight), NOW, NOW, &mut radio);
+    runtime.input_received(press(Role::Act), NOW, NOW, &mut radio);
     for now in [NOW, NOW + 10, at - 10, at] {
         tick(&mut runtime, &mut journal, &mut radio, now);
     }

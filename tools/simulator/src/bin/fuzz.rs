@@ -612,10 +612,10 @@ fn summary(coverage: &Coverage, findings: usize, wall: Duration, jobs: usize) {
     for page in pressed {
         let count = |button| coverage.presses.get(&(*page, button)).copied().unwrap_or(0);
         println!(
-            "  {page:<13} TopLeft {:>6}  BottomLeft {:>6}  BottomRight {:>6}",
-            count("TopLeft"),
-            count("BottomLeft"),
-            count("BottomRight")
+            "  {page:<13} Back {:>6}  Move {:>6}  Act {:>6}",
+            count("Back"),
+            count("Move"),
+            count("Act")
         );
     }
     if coverage.skips.is_empty() {

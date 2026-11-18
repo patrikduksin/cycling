@@ -12,7 +12,7 @@ use crate::route::{Point, Route};
 use crate::sim::{Sim, seconds};
 use crate::world::Vehicle;
 use check::{BOOT_PAGE_DEADLINE_MS, CHECKS, Moment, Observation, Verdict, observe};
-use device_api::input::Button;
+use device_api::input::Role;
 use plan::{CENTERS, Card, Course, Sensor, Setup, Step};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -295,12 +295,11 @@ impl Session<'_> {
     }
 }
 
-fn button_name(button: Button) -> &'static str {
+fn button_name(button: Role) -> &'static str {
     match button {
-        Button::TopLeft => "TopLeft",
-        Button::BottomLeft => "BottomLeft",
-        Button::BottomRight => "BottomRight",
-        Button::Center => "Center",
+        Role::Back => "Back",
+        Role::Move => "Move",
+        Role::Act => "Act",
     }
 }
 

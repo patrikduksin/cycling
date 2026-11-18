@@ -50,8 +50,8 @@ mod ride_control;
 mod seen;
 mod setup;
 mod storage;
+mod sync;
 pub use crate::ride::current::Journals;
-pub(crate) use format::Scope;
 pub use input::HOLD_GAP_MS;
 pub use seen::Seen;
 pub use storage::{Health, StorageHealth, Store};
@@ -84,9 +84,13 @@ pub struct Observations<'a, P, I> {
     pub input: &'a I,
     /// Companion sensors, including barometric pressure.
     pub physical: Snapshot,
+    /// The onboard sensors the device has fitted. Without a barometer,
+    /// pressure is never read, so there is no grade.
+    pub fitted: device_api::sensors::SensorSet,
 }
 
 pub struct Runtime {
+    product: crate::Product,
     navigation: navigation::Navigation,
     phone: phone::Phone,
     display: presentation::Display,
@@ -99,6 +103,7 @@ pub struct Runtime {
     readings: readings::Readings,
     sensors: Client,
     ride: crate::ride::current::Ride,
+    sync: sync::Sync,
     notices: ride_control::Notices,
     /// The summary's heart-rate recovery, measured after the finish.
     recovery: crate::ride::recovery::Recovery,
@@ -132,8 +137,13 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn new(profile: Profile, layout: &'static crate::screens::Layout) -> Self {
+    pub fn new(
+        profile: Profile,
+        product: crate::Product,
+        layout: &'static crate::screens::Layout,
+    ) -> Self {
         Self {
+            product,
             navigation: navigation::Navigation::default(),
             phone: phone::Phone::default(),
             display: presentation::Display::default(),
@@ -145,6 +155,7 @@ impl Runtime {
             readings: readings::Readings::default(),
             sensors: Client::new(profile),
             ride: crate::ride::current::Ride::default(),
+            sync: sync::Sync::default(),
             notices: ride_control::Notices::default(),
             recovery: crate::ride::recovery::Recovery::default(),
             preferences: preferences::Preferences::default(),

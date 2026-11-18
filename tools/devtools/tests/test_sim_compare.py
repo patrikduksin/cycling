@@ -55,7 +55,7 @@ OTHER = bytes([*range(47), 0])
 
 def scenario(run, name, screens, status='pass', video=False, device=None):
     """A scenario whose checkpoint screens are {caption: png bytes}. Without a
-    device it is a result from before results named their device."""
+    device it runs on the c606 in a directory named for the scenario alone."""
     directory = run / (name if device is None else f'{name}@{device}')
     directory.mkdir(parents=True)
     files = []
@@ -74,7 +74,8 @@ def scenario(run, name, screens, status='pass', video=False, device=None):
         'frames': 1,
         'files': files,
         'rides': [],
-    } | ({} if device is None else {'device': device})
+        'device': device or 'c606',
+    }
     (directory / 'result.json').write_text(json.dumps(result))
 
 
@@ -776,12 +777,12 @@ def test_each_side_runs_in_comparison_mode(tmp_path, monkeypatch):
     assert not (tmp_path / 'after' / compare.COMPARISON_MODE_MARKER).exists(), 'only the simulator says it compared'
 
 
-def test_a_scenario_that_wrote_nothing_pairs_with_its_base_run(tmp_path):
+def test_a_scenario_that_wrote_nothing_fails_on_no_device_and_its_base_screens_are_removed(tmp_path):
     before, after = tmp_path / 'before', tmp_path / 'after'
     scenario(before, 'ride', {'home': png(IMAGE, 4)}, device='c606')
     after.mkdir()
     (after / 'cargo.log').write_text('test ride ... FAILED\n\ntest result: FAILED.\n')
     old, new = report.load(before), report.load(after)
-    assert [r['key'] for r in new] == ['ride@c606']
+    assert [(r['key'], r['device'], r['status']) for r in new] == [('ride', None, 'fail')]
     states = {(p.scenario, p.checkpoint): p.state for p in compare.pair(old, new)}
     assert states == {('ride@c606', 'home'): 'removed'}

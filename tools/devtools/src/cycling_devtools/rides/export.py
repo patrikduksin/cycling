@@ -25,6 +25,7 @@ import xml.etree.ElementTree as ET
 import zlib
 from pathlib import Path
 
+from cycling_devtools import devices
 from cycling_devtools.device.port import add_port_argument, selected_port
 from cycling_devtools.little_endian import i16, i32, u16, u32, u64
 from cycling_devtools.terminal.usb import UsbConnection
@@ -501,6 +502,8 @@ def fit_command(canonical, output, start_utc_ms=None):
     command = [built] if built else ['cargo', 'run', '--quiet', '--locked', '-p', 'vana', '--bin', 'ride-fit', '--']
     # Cargo runs from the workspace root, so relative paths would move.
     command += [str(Path(canonical).resolve()), str(Path(output).resolve())]
+    model = devices.selected().model
+    command += ['--product', model.product, '--fit-product', str(model.fit_product)]
     if start_utc_ms is not None:
         command += ['--start-utc-ms', str(start_utc_ms)]
     return command

@@ -21,7 +21,7 @@
 //! | 4..8 | ride id in that journal |
 //! | 8..12 | ride start, UTC seconds; 0 unknown |
 //! | 12..16 | ride time, seconds |
-//! | 16..24 | the bulk log's store id; 0 for the internal journal |
+//! | 16..24 | the journal's store id: the bulk log's, a volatile internal journal's, or 0 for a durable internal journal |
 //! | 24..28 | when it was hidden, UTC seconds; 0 unknown |
 //! | 28..32 | CRC32 of bytes 0..28 |
 //!
@@ -84,7 +84,8 @@ pub struct Ride {
     /// `b'i'` for the internal journal, `b'b'` for the bulk log.
     pub journal: u8,
     pub ride_id: u32,
-    /// The bulk log's store id, which a new log on the card changes.
+    /// The journal's store id, which a new log on the card, or a volatile
+    /// internal journal starting empty, changes.
     pub store: u64,
     /// UTC seconds; 0 when the clock was unknown.
     pub started_utc_s: u32,
@@ -636,6 +637,13 @@ impl Hidden {
 
     pub(crate) fn hides(&self, ride: &Ride) -> bool {
         self.shelf().is_some_and(|shelf| shelf.hides(ride))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_empty_table(&mut self) {
+        self.shelf = Some(Shelf::new(std::vec![0; SHELF_BYTES].leak()));
+        self.scan = Scan::Read;
+        self.card_in = true;
     }
 
     /// Whether a ride can be hidden now: the table is read, the card is in

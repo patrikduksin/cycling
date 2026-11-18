@@ -1,5 +1,5 @@
 use device_api::bulk::ReadWrite;
-use device_api::input::Button;
+use device_api::input::Role;
 use firmware_services::trace::Event;
 use firmware_services::trace::recorder::{Record, Recorder, Sink};
 use firmware_services::{files, store, volume};
@@ -48,7 +48,7 @@ fn the_same_press_before_or_after_a_restart_hashes_differently() {
             sim.power_loss();
             sim.advance(seconds(5));
             if before == session {
-                sim.report(Button::BottomLeft);
+                sim.report(Role::Move);
             }
             sim.advance(seconds(5));
         }
@@ -62,7 +62,7 @@ fn a_press_before_a_restart_changes_the_trace_hash_alone() {
     let run = |press: bool| {
         let mut sim = booted_card_unrecorded();
         if press {
-            sim.report(Button::BottomLeft);
+            sim.report(Role::Move);
         }
         sim.advance(seconds(1));
         sim.power_loss();
@@ -313,8 +313,8 @@ fn a_line_counts_at_the_quiet_pass_it_was_logged_in() {
         sim.discard_recording();
         sim.set_battery(64, true);
         sim.advance(seconds(2));
-        sim.press(Button::TopLeft);
-        sim.press(Button::BottomRight);
+        sim.press(Role::Back);
+        sim.press(Role::Act);
         sim.advance(seconds(2));
         assert!(sim.is_off(), "turned off into charging standby");
         sim.advance(STANDBY_LIT_MS + seconds(65));

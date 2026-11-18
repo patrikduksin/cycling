@@ -11,6 +11,14 @@ pub enum ProtocolError {
 // SD Physical Layer status error bits, including SWITCH_ERROR and AKE_SEQ_ERROR.
 const R1_ERROR_MASK: u32 = 0xfdff_e088;
 
+pub fn refuse_writes_while_cached(cache_enabled: bool) -> Result<(), device_api::bulk::Error> {
+    if cache_enabled {
+        Err(device_api::bulk::Error::Failed)
+    } else {
+        Ok(())
+    }
+}
+
 pub fn check_r1(status: u32) -> Result<(), ProtocolError> {
     if status & R1_ERROR_MASK == 0 {
         Ok(())
@@ -115,5 +123,14 @@ mod tests {
             (value >> 96) as u32,
         ];
         assert_eq!(sd_sector_count(words), Ok(32_768));
+    }
+
+    #[test]
+    fn a_fitted_card_that_refuses_owned_writes_fails_and_never_reads_as_absent() {
+        assert_eq!(
+            refuse_writes_while_cached(true),
+            Err(device_api::bulk::Error::Failed)
+        );
+        assert_eq!(refuse_writes_while_cached(false), Ok(()));
     }
 }

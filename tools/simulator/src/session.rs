@@ -11,12 +11,12 @@ use crate::devices::Scripted;
 use crate::devices::Speaker;
 use crate::gps::Receiver;
 use crate::replay::{Capture, Mode, Next, Origin, Replay, Report, Seen, Shelled, Sources};
-use crate::storage::FileFlash;
+use crate::storage::{FileFlash, Volatile};
 use crate::twin::flash::{Flash, ScriptedFlash};
 use crate::twin::world::{Left, Recorded};
 use crate::world::World;
+use device_api::Absent;
 use device_api::ant::Ant;
-use device_api::ant::AntOperation;
 use device_api::ble_transport::Ble;
 use device_api::bulk::ReadWrite;
 use device_api::display::DisplayObserved;
@@ -301,62 +301,6 @@ impl PowerControl for UnrecordedConsolePower {
         Err(Error::Unsupported)
     }
 }
-pub struct NoAnt;
-impl Ant for NoAnt {
-    fn capabilities(&self) -> device_api::ant::Capabilities {
-        device_api::ant::Capabilities::UNAVAILABLE
-    }
-    fn scan(&self) -> device_api::ant::ScanSnapshot {
-        device_api::ant::ScanSnapshot {
-            state: device_api::ant::ScanState::Idle,
-            generation: 0,
-            discovery_overflows: 0,
-        }
-    }
-    fn send_status(
-        &self,
-        _id: device_api::ant::OperationId,
-    ) -> Option<device_api::ant::SendObservation> {
-        None
-    }
-    fn take_diagnostic_packet(&mut self) -> Option<device_api::ant::Packet> {
-        None
-    }
-    fn channel(&self, kind: u8, now_ms: u64) -> Option<device_api::ant::Snapshot> {
-        device_api::ant::channel(self.channels(now_ms), kind)
-    }
-    fn availability(&self) -> Availability {
-        Availability::Unsupported
-    }
-    fn scanning(&self) -> bool {
-        false
-    }
-    fn discoveries(&self) -> [Option<device_api::ant::Discovery>; 8] {
-        [None; 8]
-    }
-    fn request(
-        &mut self,
-        _: AntOperation,
-        _: u64,
-    ) -> Result<device_api::ant::Admission, device_api::ant::Error> {
-        Err(device_api::ant::Error::Unavailable)
-    }
-    fn channels(
-        &self,
-        _: u64,
-    ) -> [Option<device_api::ant::Snapshot>; device_api::ant::CHANNEL_CAPACITY] {
-        [None; device_api::ant::CHANNEL_CAPACITY]
-    }
-    fn take_packet(&mut self) -> Option<device_api::ant::Packet> {
-        None
-    }
-}
-pub struct NoInputObservation;
-impl InputObservation for NoInputObservation {
-    fn snapshot(&self, _: u64) -> Option<InputSnapshot> {
-        None
-    }
-}
 const ASSUMED_BAROMETER_MS: u64 = 100;
 /// The companion sends ambient light about three times a second.
 const ASSUMED_LIGHT_MS: u64 = 333;
@@ -402,6 +346,7 @@ struct Sensed {
     startup: Startup,
     physical: Option<device_api::sensors::Snapshot>,
     light: Observation<device_api::sensors::Light>,
+    fitted: device_api::sensors::SensorSet,
 }
 
 impl device_api::sensors::Sensors for Sensed {
@@ -429,6 +374,9 @@ impl device_api::sensors::Sensors for Sensed {
     }
     fn query_identity(&mut self, _: u64) -> Result<(), Error> {
         Err(Error::Unsupported)
+    }
+    fn fitted(&self) -> device_api::sensors::SensorSet {
+        self.fitted
     }
 }
 
@@ -836,13 +784,13 @@ fn observe_startup(switch: &mut PowerSwitch, now: u64, startup: Startup) {
 /// journal back when it ends: a leaked journal would keep the media and its
 /// lock.
 #[derive(Clone)]
-struct Lent(Rc<RefCell<Option<Store<FileFlash>>>>);
+struct Lent(Rc<RefCell<Option<Store<Volatile<FileFlash>>>>>);
 
 impl Lent {
-    fn new(flash: FileFlash) -> Self {
+    fn new(flash: Volatile<FileFlash>) -> Self {
         Self(Rc::new(RefCell::new(Some(Store::new(flash)))))
     }
-    fn store(&self) -> RefMut<'_, Store<FileFlash>> {
+    fn store(&self) -> RefMut<'_, Store<Volatile<FileFlash>>> {
         RefMut::map(self.0.borrow_mut(), |store| {
             store.as_mut().expect("lent while its session lives")
         })
@@ -941,6 +889,13 @@ pub struct Simulated {
     pub wifi: WifiFixture,
     pub phone_server: crate::phone::SimServer,
     pub access_point: crate::phone::SimAccessPoint,
+    /// The parts the model has.
+    fitted: crate::devices::Fitted,
+}
+
+fn absent() -> &'static mut Absent {
+    // `Absent` has no size, so leaking one allocates nothing.
+    Box::leak(Box::new(Absent))
 }
 
 impl Simulated {
@@ -986,7 +941,7 @@ impl Simulated {
         });
         next.speaker.played = core::mem::take(&mut self.speaker.played);
     }
-    fn new() -> Self {
+    fn new(fitted: crate::devices::Fitted) -> Self {
         Self {
             world: World::default(),
             position: PositionFixture::default(),
@@ -1001,11 +956,15 @@ impl Simulated {
             companion_boot_ms: None,
             restart_probe_ms: 0,
             restart_probe: None,
-            switch: PowerSwitch::default(),
+            switch: PowerSwitch {
+                shutdown: fitted.shutdown,
+                ..PowerSwitch::default()
+            },
             barometer: None,
             wifi: WifiFixture::default(),
             phone_server: Default::default(),
             access_point: Default::default(),
+            fitted,
         }
     }
 
@@ -1019,7 +978,7 @@ impl Simulated {
         self.startup = Startup::Charging;
         self.ant.availability = self.ant_ready_availability();
         self.companion_boot_ms = None;
-        self.switch = PowerSwitch::charging();
+        self.switch = PowerSwitch::charging(self.fitted.shutdown);
     }
 
     fn wake(&mut self, now: u64) {
@@ -1143,7 +1102,7 @@ impl Servers {
 /// Strict replay uses stand-ins for unrecorded console capabilities; recorded BLE, Wi-Fi and card
 /// calls go to its servers.
 struct StandIns {
-    ant: NoAnt,
+    ant: Absent,
     ble: BleFixture,
     wifi: WifiFixture,
     power: UnrecordedConsolePower,
@@ -1192,15 +1151,30 @@ impl Devices {
                     &mut sources.power,
                 )
             }
-            Devices::Simulated(sim) => (
-                &mut sim.ant,
-                &mut sim.ble,
-                bulk,
-                &mut sim.access_point,
-                &mut sim.phone_server,
-                &mut sim.speaker,
-                &mut sim.switch,
-            ),
+            Devices::Simulated(sim) => {
+                let fitted = sim.fitted;
+                (
+                    if fitted.ant { &mut sim.ant } else { absent() },
+                    if fitted.ble { &mut sim.ble } else { absent() },
+                    if fitted.card { bulk } else { absent() },
+                    if fitted.wifi {
+                        &mut sim.access_point
+                    } else {
+                        absent()
+                    },
+                    if fitted.wifi {
+                        &mut sim.phone_server
+                    } else {
+                        absent()
+                    },
+                    if fitted.sound {
+                        &mut sim.speaker
+                    } else {
+                        absent()
+                    },
+                    &mut sim.switch,
+                )
+            }
             Devices::Twin(servers) => (
                 &mut servers.ant,
                 &mut servers.ble,
@@ -1232,16 +1206,19 @@ impl Devices {
         &'a mut dyn ReadWrite,
     ) {
         match self {
-            Devices::Simulated(sim) => (
-                firmware_console::commands::Capabilities {
-                    ant: &mut sim.ant,
-                    ble: &mut sim.ble,
-                    wifi: &mut sim.wifi,
-                    power: &mut sim.switch,
-                    input: &NoInputObservation,
-                },
-                bulk,
-            ),
+            Devices::Simulated(sim) => {
+                let fitted = sim.fitted;
+                (
+                    firmware_console::commands::Capabilities {
+                        ant: if fitted.ant { &mut sim.ant } else { absent() },
+                        ble: if fitted.ble { &mut sim.ble } else { absent() },
+                        wifi: if fitted.wifi { &mut sim.wifi } else { absent() },
+                        power: &mut sim.switch,
+                        input: &Absent,
+                    },
+                    if fitted.card { bulk } else { absent() },
+                )
+            }
             Devices::Replayed(replay) => {
                 let sources = &mut replay.sources;
                 if firmware_console::protocol::admitted(command, frozen) {
@@ -1271,7 +1248,7 @@ impl Devices {
                         ble: &mut stand_ins.ble,
                         wifi: &mut stand_ins.wifi,
                         power: &mut stand_ins.power,
-                        input: &NoInputObservation,
+                        input: &Absent,
                     },
                     &mut sources.bulk,
                 )
@@ -1288,7 +1265,7 @@ impl Devices {
                         ble: &mut servers.ble,
                         wifi: &mut servers.wifi,
                         power: &mut stand_ins.power,
-                        input: &NoInputObservation,
+                        input: &Absent,
                     },
                     &mut servers.bulk,
                 )
@@ -1319,6 +1296,7 @@ impl Devices {
     ) -> PositionView {
         let source: &dyn Positioning = match self {
             Devices::Replayed(replay) => &replay.sources.position,
+            Devices::Simulated(sim) if !sim.fitted.gps => &Absent,
             Devices::Simulated(sim) => &sim.position,
             Devices::Twin(servers) => &servers.position,
         };
@@ -1539,7 +1517,8 @@ impl Session {
             power.refusals.twin = Some(method("Power", "brightness"));
             power.twin = Some(method("Power", "availability"));
         }
-        let settings = Lent::new(media.device_handle());
+        let ram = Volatile::boot(media.device_handle(), &model);
+        let settings = Lent::new(ram.handle(media.device_handle()));
         let log = Trace::log();
         // Before the shell loads its settings, which hold the Wi-Fi password.
         if redacted {
@@ -1553,7 +1532,7 @@ impl Session {
             device_api::storage::OwnedFlashRecorder::new(
                 match &twin {
                     Some(world) => Flash::Scripted(ScriptedFlash::new(world.clone())),
-                    None => Flash::Simulated(media.device_handle()),
+                    None => Flash::Simulated(ram),
                 },
                 log.clone(),
                 Rc::default(),
@@ -1595,7 +1574,7 @@ impl Session {
             });
         }
         shell.forget_frame();
-        let mut sdk = vana::app::Runtime::new(profile, model.layout);
+        let mut sdk = vana::app::Runtime::new(profile, model.product, model.layout);
         {
             use vana::ride::directory::{ENTRY, RIDES, RideIndex};
             let bytes = || Box::leak(vec![0u8; RIDES * ENTRY].into_boxed_slice());
@@ -1663,7 +1642,7 @@ impl Session {
             rest_ms: 0,
             edges_seen: 0,
             host: false,
-            devices: Devices::Simulated(Box::new(Simulated::new())),
+            devices: Devices::Simulated(Box::new(Simulated::new(model.fitted))),
             tap,
             passes_since_start,
         };
@@ -1945,7 +1924,7 @@ impl Session {
         }
         let card = spool::Card::of(
             self.card_admits(),
-            self.sdk.recording(),
+            self.sdk.recorder_busy(),
             self.sdk.shutdown_due(),
         );
         if self.sdk.wipes_traces() {
@@ -2098,6 +2077,7 @@ impl Session {
                 startup: self.startup(),
                 physical: None,
                 light: Observation::Unavailable,
+                fitted: self.model.fitted.sensors,
             };
             let trace = &self.trace;
             device_api::sensors::SensorsRecorder::new(
@@ -2168,41 +2148,55 @@ impl Session {
         startup: Startup,
     ) {
         let now = self.now;
-        let (physical, light, network_time) = match &mut self.devices {
+        let model = self.model.fitted.sensors;
+        let (physical, light, network_time, fitted) = match &mut self.devices {
             Devices::Replayed(replay) => (
                 replay.sources.physical(),
                 replay.sources.light(),
                 replay.sources.network_time(),
+                replay.sources.fitted(),
             ),
-            Devices::Simulated(sim) => (
-                sim.physical(now),
-                sim.light(now),
-                sim.network_time
-                    .map_or_else(Default::default, |anchor| anchor.snapshot(now, 0, true)),
-            ),
+            Devices::Simulated(sim) => {
+                let mut physical = sim.physical(now);
+                if !model.barometer {
+                    physical.pressure = Observation::Unavailable;
+                }
+                let light = if model.light {
+                    sim.light(now)
+                } else {
+                    Observation::Unavailable
+                };
+                let network_time = sim
+                    .network_time
+                    .map_or_else(Default::default, |anchor| anchor.snapshot(now, 0, true));
+                (physical, light, network_time, model)
+            }
             Devices::Twin(servers) => {
                 use device_api::sensors::Sensors as _;
-                (
+                let sensed = (
                     servers.sensors.snapshot(now),
                     servers.sensors.light(now),
-                    servers.world.borrow().network_time(),
-                )
+                    servers.sensors.fitted(),
+                );
+                let network_time = servers.world.borrow().network_time();
+                (sensed.0, sensed.1, network_time, sensed.2)
             }
         };
         let record: &RefCell<TraceRecorder> = &self.trace.recorder;
-        let (physical, light) = {
+        let (physical, light, fitted) = {
             use device_api::sensors::Sensors as _;
             let sensed = Sensed {
                 startup,
                 physical: Some(physical),
                 light,
+                fitted,
             };
             let sensors = device_api::sensors::SensorsRecorder::new(
                 sensed,
                 record,
                 &self.trace.observed.sensors,
             );
-            (sensors.snapshot(now), sensors.light(now))
+            (sensors.snapshot(now), sensors.light(now), sensors.fitted())
         };
         if self.trace.network_time.changed(network_time, now) {
             self.trace.record(&Event::NetworkTime(network_time));
@@ -2257,6 +2251,7 @@ impl Session {
                 network_time,
                 input: &companion,
                 physical,
+                fitted,
             },
             now,
             vana::app::Handles {
@@ -2519,7 +2514,7 @@ impl Session {
             Devices::Replayed(_) | Devices::Twin(_) => (self.trace.startup, None),
         };
         let mut stand_ins = StandIns {
-            ant: NoAnt,
+            ant: Absent,
             ble: BleFixture {
                 snapshot: self.trace.ble,
                 ..BleFixture::default()
@@ -2802,7 +2797,7 @@ pub fn terminal(root: &Path, width: usize, height: usize, restart_probe_ms: u64)
             match session.command(&line, &mut out) {
                 Ok((request, status)) => {
                     id = request.id;
-                    restart = request.command == Command::Restart;
+                    restart = request.command == Command::Restart && status == "ACCEPTED";
                     status
                 }
                 Err(_) => "INVALID",

@@ -83,9 +83,25 @@ checkout's.
    - Hardware hints, each marked as inferred from strings.
    - Verdict: can cycling firmware run here, and what a port needs: its
      `device.toml` (see [Adding a device](../../../CONTRIBUTING.md#adding-a-device)),
-     board support, drivers, display and inputs. The manifest needs at least
-     three buttons, one each for act, back and move, and a panel that lays
-     out at 3/4 scale or more.
+     board support, drivers, display and inputs. `cycling devices` refuses a
+     manifest that breaks these rules:
+     - `[device]` has `name`, `product` and `fit_product`. `product` is 1 to
+       15 bytes of printable ASCII: the FIT product name and the device name
+       the phone page shows. `fit_product` is the FIT product id, 0 to 65535.
+     - `[controls]` lists 3 to 8 buttons. Each has an integer `id` from 0 to
+       255 that no other button has. `act`, `back` and `move` are each the
+       `role` of exactly one button. Other buttons have no role, and their
+       presses never reach VANA.
+     - `[fitted]` says `true` or `false` for each of `gps`, `ant`, `ble`,
+       `wifi`, `sound`, `shutdown`, `card`, `barometer` and `light`. A part
+       the device lacks is `false`, and its board uses `device_api::Absent`
+       for it.
+     - An `[owned]` range is flash-backed (`offset`, `size`, `within`) or
+       memory-backed (`memory = "psram"` or `"ram"`, `size`), in whole
+       `0x1000`-byte sectors. A memory-backed range loses its bytes at
+       power-off. A memory-backed `data` range keeps rides in memory, so it
+       needs `wifi = true`: only the phone can keep those rides.
+     - The panel lays out at 3/4 scale or more.
 
 ## What this cannot tell
 

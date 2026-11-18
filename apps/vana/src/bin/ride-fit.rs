@@ -1,19 +1,24 @@
 //! Convert an exported raw ride prefix (`ride-slots.bin`) into FIT activity
 //! files with the same encoder the device streams to phones.
 //!
-//! Usage: `ride-fit <ride-slots.bin> <output-dir> [--ride ID] [--start-utc-ms MS]`
+//! Usage: `ride-fit <ride-slots.bin> <output-dir> --product NAME --fit-product ID
+//! [--ride ID] [--start-utc-ms MS]`
 //!
 //! Writes `ride-<id>.fit` for every ride (or the one chosen) and prints one
 //! JSON line per ride: its file and size, or why it has none. `--start-utc-ms`
-//! dates rides recorded without a clock. A raw prefix carries no settings, so
+//! dates rides recorded without a clock. The product is the device's, from
+//! its manifest. A raw prefix carries no settings, so
 //! calories come from power alone, as for a rider without a body set.
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use vana::Product;
 use vana::ride::fit::{Refusal, write_all};
 use vana::ride::log::{Kind, SLOT_SIZE, Slot, decode};
 use vana::ride::rider::Rider;
+
+const USAGE: &str = "usage: ride-fit <ride-slots.bin> <output-dir> --product NAME --fit-product ID [--ride ID] [--start-utc-ms MS]";
 
 struct Out(Vec<u8>);
 impl firmware_services::fit::Sink for Out {
@@ -55,22 +60,35 @@ impl Iterator for Slots<'_> {
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
-        eprintln!("usage: ride-fit <ride-slots.bin> <output-dir> [--ride ID] [--start-utc-ms MS]");
+        eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
     let mut only = None;
     let mut start_utc_ms = None;
+    let mut name = None;
+    let mut fit_id = None;
     while let Some(flag) = args.next() {
-        let value = args.next().and_then(|v| v.parse::<u64>().ok());
-        match (flag.as_str(), value) {
+        let value = args.next();
+        let number = value.as_deref().and_then(|v| v.parse::<u64>().ok());
+        match (flag.as_str(), number) {
             ("--ride", Some(id)) => only = u32::try_from(id).ok(),
             ("--start-utc-ms", Some(ms)) => start_utc_ms = Some(ms),
+            ("--fit-product", Some(id)) => fit_id = u16::try_from(id).ok(),
+            ("--product", _) if value.is_some() => name = value,
             _ => {
                 eprintln!("unknown or malformed argument {flag}");
                 return ExitCode::from(2);
             }
         }
     }
+    let (Some(name), Some(fit_id)) = (name, fit_id) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let product = Product {
+        name: name.leak(),
+        fit_id,
+    };
     let file = match std::fs::File::open(&input) {
         Ok(file) => file,
         Err(error) => {
@@ -116,6 +134,7 @@ fn main() -> ExitCode {
             ride,
             entry.ride_id,
             Rider::default(),
+            &product,
             start_utc_ms,
             &mut out,
         ) {

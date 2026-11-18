@@ -382,9 +382,9 @@ fn discovery_waits_for_a_search_in_progress_and_reconnects_after_it() {
     run(&mut runtime, &mut radio, 0, 15_000);
     runtime.navigation.go(To::Page(Page::Home));
     runtime.navigation.go(To::HomeCursor(1));
-    runtime.input_received(press(Button::BottomRight), 15_000, 15_000, &mut radio);
-    runtime.input_received(press(Button::BottomLeft), 15_400, 15_400, &mut radio);
-    runtime.input_received(press(Button::BottomRight), 15_800, 15_800, &mut radio);
+    runtime.input_received(press(Role::Act), 15_000, 15_000, &mut radio);
+    runtime.input_received(press(Role::Move), 15_400, 15_400, &mut radio);
+    runtime.input_received(press(Role::Act), 15_800, 15_800, &mut radio);
     run(&mut runtime, &mut radio, 15_800, 26_000);
     let scan = radio
         .requests
@@ -414,7 +414,7 @@ fn save_problems_stay_visible_while_discovery_runs() {
     // Opening Sensors starts a search whose progress replaces page messages.
     runtime.navigation.go(To::Page(Page::Home));
     runtime.navigation.go(To::HomeCursor(1));
-    runtime.input_received(press(Button::BottomRight), 1_000, 1_000, &mut radio);
+    runtime.input_received(press(Role::Act), 1_000, 1_000, &mut radio);
     for (from, to) in [(1_000, 1_500), (1_500, 4_000), (4_000, 20_000)] {
         run(&mut runtime, &mut radio, from, to);
         assert_eq!(
@@ -436,7 +436,7 @@ fn save_problems_stay_visible_while_discovery_runs() {
     run(&mut runtime, &mut radio, 0, 1_000);
     runtime.navigation.go(To::Page(Page::Home));
     runtime.navigation.go(To::HomeCursor(1));
-    runtime.input_received(press(Button::BottomRight), 1_000, 1_000, &mut radio);
+    runtime.input_received(press(Role::Act), 1_000, 1_000, &mut radio);
     run(&mut runtime, &mut radio, 1_000, 1_200);
     runtime.preferences.save_failed(1_200);
     run(&mut runtime, &mut radio, 1_200, 6_000);
@@ -518,7 +518,7 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     advance(&mut runtime, &mut radio, 0);
     runtime.open_sensors(false, &mut radio, 1000);
     touch(&mut runtime, &mut radio, 1300);
-    runtime.input_received(press(Button::BottomRight), 1400, 1400, &mut radio);
+    runtime.input_received(press(Role::Act), 1400, 1400, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
     runtime.input_received(Input::Release, 1500, 1500, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
@@ -535,14 +535,14 @@ fn sensor_subviews_own_their_contacts_and_lost_input_holds_act() {
     let mut radio = Radio::quiet();
     advance(&mut runtime, &mut radio, 0);
     runtime.open_sensors(false, &mut radio, 1000);
-    runtime.input_received(press(Button::BottomRight), 1400, 1400, &mut radio);
+    runtime.input_received(press(Role::Act), 1400, 1400, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Detail);
     runtime.input_received(Input::Cancel, 1600, 1600, &mut radio);
     assert_eq!(
         runtime.menu.diagnostics().message,
         Some(MenuMessage::InputLost)
     );
-    runtime.input_received(press(Button::BottomRight), 3000, 3000, &mut radio);
+    runtime.input_received(press(Role::Act), 3000, 3000, &mut radio);
     assert_eq!(
         runtime.menu.diagnostics().page,
         SensorPage::Detail,

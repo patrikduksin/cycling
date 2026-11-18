@@ -648,6 +648,11 @@ Acting on a row does one of three things:
   km/at start, wheel mode auto/manual, the main page's two lower readings, ride pages (STATS, LAP, CLIMB, MAP) on/off, sounds on/off);
 - an action opens a page (SENSORS, BESTS, FORM) or Connect phone (PHONE).
 
+On a device without Wi-Fi (its access point reports `Unsupported`) DEVICE
+holds SENSORS, STORAGE and FIRMWARE only: no PHONE row and no gap, and MOVE,
+swipes, taps and scrolling treat the section as three rows. A radio that is
+fitted but failed keeps the PHONE row.
+
 Storage and firmware rows only show facts. The save status sits in the
 bottom band, under any toast. Brightness and dimming belong to the shell, so
 VANA asks it to apply them at once and store them; the other choices, AUTO
@@ -748,7 +753,7 @@ holding TopLeft to reboot are in [UX flows](ux-flows.md#buttons).
 | Tap | Never moves 16 px from where it started, at any point; lifted within 600 ms | Acts on the control the finger landed on, wherever it lifts: opens the card on Home, the row on Sensors, or the ride on Rides; a cue acts as its button; on Ready, the sensors line opens Sensors and the workout line under the headline opens Workouts to change it; on Workouts, the workout is chosen; on Settings, the row acts as ACT does. Rows own their bounds; the refresh mark's wider touch box takes only the space above the first row. On the workout page, a tap on the time left or its bar extends the step by a minute (500 m for a distance step) |
 | Drag | 10 px of mostly vertical travel on a list | The list follows the finger and coasts on when it lifts (see Lists that scroll); the card it landed on is never activated |
 | Swipe | 10 px of mostly sideways travel, then at least 48 px and twice as far as vertically, within 1 s | Next page (right to left) or previous page (left to right) on ride pages, the summary and a saved ride; next or previous section on Settings, out of the number editor too |
-| Long press | Still for 1 s, then lifted | On the map, stops following the course ([UX flows](ux-flows.md#map)) |
+| Long press | Still for 1 s, then lifted | On the map, stops following the course (COURSE OFF; [UX flows](ux-flows.md#map)) |
 | Tap on the course sign | As a tap, on the banner or the chip | Opens the map page ([UX flows](ux-flows.md#course)) |
 | Settings pads | Act on contact | Step the edited value |
 

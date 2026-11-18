@@ -1,7 +1,5 @@
 //! C606 companion framing and local input reports, recovered from stock N21.
 
-use device_api::input::Button;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     Battery {
@@ -13,7 +11,7 @@ pub enum Event {
         status: u8,
     },
     Button {
-        button: Button,
+        id: u8,
         code: u16,
     },
 }
@@ -228,17 +226,15 @@ fn decode(frame: &[u8]) -> Option<Event> {
         }
         (0x10, 0xf0) if p[1] == 2 => Some(Event::Power { status: p[2] }),
         (0x10, 0x49) => {
-            let button = match p[1] {
-                0 => Button::TopLeft,
-                1 => Button::BottomLeft,
-                2 => Button::BottomRight,
-                _ => return None,
-            };
+            let id = p[1];
+            if id > 2 {
+                return None;
+            }
             let code = u16::from_le_bytes([p[6], p[7]]).checked_sub(0x8000)?;
             if code == 0 {
                 return None;
             }
-            Some(Event::Button { button, code })
+            Some(Event::Button { id, code })
         }
         _ => None,
     }
@@ -249,7 +245,7 @@ pub struct Status {
     pub battery: Option<(u8, u16)>,
     pub power: Option<u8>,
     pub button_counts: [u32; 3],
-    pub last_button: Option<Button>,
+    pub last_button: Option<u8>,
 }
 impl Status {
     pub fn update(&mut self, event: Event) {
@@ -259,11 +255,11 @@ impl Status {
                 millivolts,
             } => self.battery = Some((percent, millivolts)),
             Event::Power { status } => self.power = Some(status),
-            Event::Button { button, .. } => {
-                if let Some(count) = self.button_counts.get_mut(button.index()) {
+            Event::Button { id, .. } => {
+                if let Some(count) = self.button_counts.get_mut(usize::from(id)) {
                     *count = count.saturating_add(1);
                 }
-                self.last_button = Some(button);
+                self.last_button = Some(id);
             }
         }
     }
@@ -302,12 +298,9 @@ mod tests {
     #[test]
     fn unknown_button_codes_remain_counted_for_investigation() {
         let mut status = Status::default();
-        status.update(Event::Button {
-            button: Button::TopLeft,
-            code: 2,
-        });
+        status.update(Event::Button { id: 0, code: 2 });
         assert_eq!(status.button_counts, [1, 0, 0]);
-        assert_eq!(status.last_button, Some(Button::TopLeft));
+        assert_eq!(status.last_button, Some(0));
     }
     #[test]
     fn fragmented_battery_and_button_reports() {
@@ -326,13 +319,7 @@ mod tests {
         for id in 0..3 {
             let f = packet(16, [0x49, id, 0, 0, 0, 0, 1, 0x80]);
             let event = f.into_iter().find_map(|b| d.push(b)).unwrap();
-            assert_eq!(
-                event,
-                Event::Button {
-                    button: [Button::TopLeft, Button::BottomLeft, Button::BottomRight][id as usize],
-                    code: 1
-                }
-            );
+            assert_eq!(event, Event::Button { id, code: 1 });
         }
         assert_eq!(d.valid_frames, 4);
     }
@@ -347,10 +334,7 @@ mod tests {
         }
         assert_eq!(
             good.into_iter().find_map(|b| d.push(b)),
-            Some(Event::Button {
-                button: Button::TopLeft,
-                code: 1
-            })
+            Some(Event::Button { id: 0, code: 1 })
         );
         assert_eq!(d.bad_crc, 1);
     }

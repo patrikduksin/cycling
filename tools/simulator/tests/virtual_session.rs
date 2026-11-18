@@ -181,16 +181,22 @@ fn runtime_sensor_change_clears_old_readings_and_survives_restart() {
 
 #[test]
 fn foreground_app_receives_only_forwarded_edges_and_transitions_clear_queue() {
-    use device_api::input::Button;
-    use device_api::input::Input;
+    use device_api::input::{Fixture, Fixtures, Input, Role};
     use device_api::observation::Availability;
+    use firmware_shell::input::Input as App;
     use firmware_shell::shell::Screen;
     use firmware_shell::shell::Shell;
     use shell_simulator::devices::DisplayDevice;
     use shell_simulator::devices::InputDevice;
     use shell_simulator::devices::Memory;
     use shell_simulator::devices::PowerDevice;
-    let input = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+    let input = InputDevice::new(
+        Fixtures::new(&[Fixture {
+            id: 0,
+            role: Some(Role::Back),
+        }]),
+        Availability::Ready,
+    );
     let mut shell = Shell::new(
         DisplayDevice::new(32, 24),
         input.clone(),
@@ -200,8 +206,9 @@ fn foreground_app_receives_only_forwarded_edges_and_transitions_clear_queue() {
         0,
     )
     .unwrap();
-    let click = Input::Button {
-        button: Button::TopLeft,
+    let click = Input::Button { id: 0, code: 1 };
+    let press = App::Press {
+        role: Role::Back,
         code: 1,
     };
     shell.settings.dim_timeout_secs = 1;
@@ -214,12 +221,12 @@ fn foreground_app_receives_only_forwarded_edges_and_transitions_clear_queue() {
     input.push(1002, click);
     shell.tick(1002);
     assert_eq!(shell.foreground, Screen::Status);
-    assert_eq!(shell.take_app_input().unwrap().input, click);
+    assert_eq!(shell.take_app_input().unwrap().input, press);
     assert!(shell.take_app_input().is_none());
     input.push(1003, Input::Release);
     shell.tick(1003);
     shell.set_app_active(true);
-    assert_eq!(shell.take_app_input().unwrap().input, Input::Release);
+    assert_eq!(shell.take_app_input().unwrap().input, App::Release);
     input.push(1004, click);
     shell.tick(1004);
     shell.set_app_active(false);
@@ -243,12 +250,11 @@ fn sdk_boot_exposes_physical_menu_without_a_usb_command() {
 }
 #[test]
 fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
-    use device_api::input::Button;
-    use device_api::input::Input;
-
+    use device_api::Absent;
+    use device_api::input::Role;
     use device_api::observation::Availability;
     use device_api::positioning::{Positioning, Snapshot};
-    use shell_simulator::session::NoAnt;
+    use firmware_shell::input::Input;
     use vana::ride::log::Kind;
     struct Position(Availability, Option<Snapshot>);
     impl Positioning for Position {
@@ -262,12 +268,19 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     fn present(s: &mut Session) {
         let fixture = &s.sim().position;
         let position = Position(fixture.availability(), fixture.snapshot(s.now));
-        s.sdk.frame(&mut s.shell, s.now, &NoAnt, &position);
+        s.sdk.frame(&mut s.shell, s.now, &Absent, &position);
     }
-    fn press(s: &mut Session, button: Button) {
+    fn press(s: &mut Session, button: Role) {
         s.advance(400).unwrap();
-        s.sdk
-            .input_received(Input::Button { button, code: 1 }, s.now, s.now, &mut NoAnt);
+        s.sdk.input_received(
+            Input::Press {
+                role: button,
+                code: 1,
+            },
+            s.now,
+            s.now,
+            &mut Absent,
+        );
         s.advance(100).unwrap();
     }
     fn state(s: &mut Session, expected: &str) -> String {
@@ -287,32 +300,32 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     let mut s = Session::new(&t.0, 240, 320).unwrap();
     s.advance(7000).unwrap();
     present(&mut s); // Splash completes into first-run setup.
-    press(&mut s, Button::TopLeft); // BACK leaves setup for the TRAIN/SENSORS menu.
+    press(&mut s, Role::Back); // BACK leaves setup for the TRAIN/SENSORS menu.
     state(&mut s, "ready");
-    press(&mut s, Button::BottomRight); // RIDE -> Ready.
+    press(&mut s, Role::Act); // RIDE -> Ready.
     s.advance(2600).unwrap();
     present(&mut s); // Ready waits for ACT.
-    assert!(!s.sdk.recording());
-    press(&mut s, Button::BottomRight);
+    assert!(!s.sdk.recorder_busy());
+    press(&mut s, Role::Act);
     state(&mut s, "recording");
     s.advance(5200).unwrap();
-    press(&mut s, Button::BottomRight);
+    press(&mut s, Role::Act);
     let paused = active(&state(&mut s, "paused"));
     s.advance(5000).unwrap();
     assert_eq!(active(&state(&mut s, "paused")), paused);
-    press(&mut s, Button::BottomRight);
+    press(&mut s, Role::Act);
     s.advance(2100).unwrap();
     assert!(active(&state(&mut s, "recording")) > paused);
-    press(&mut s, Button::TopLeft); // Recording, this is a lap, not end ride.
-    press(&mut s, Button::TopLeft);
+    press(&mut s, Role::Back); // Recording, this is a lap, not end ride.
+    press(&mut s, Role::Back);
     state(&mut s, "recording");
-    press(&mut s, Button::BottomRight); // Only a paused ride ends.
+    press(&mut s, Role::Act); // Only a paused ride ends.
     state(&mut s, "paused");
-    press(&mut s, Button::TopLeft); // Asks END RIDE?; a single press must not save.
+    press(&mut s, Role::Back); // Asks END RIDE?; a single press must not save.
     state(&mut s, "paused");
-    press(&mut s, Button::BottomRight); // Yes: save.
+    press(&mut s, Role::Act); // Yes: save.
     let saved_duration = active(&state(&mut s, "saved"));
-    assert!(!s.sdk.recording());
+    assert!(!s.sdk.recorder_busy());
     let saved = std::fs::read(t.0.join("data.bin")).unwrap();
     let info = command(&mut s, "EXPORT INFO");
     assert_eq!(info.0, "OK");
@@ -332,15 +345,15 @@ fn vana_buttons_pause_resume_and_save_without_overwriting_previous_workout() {
     assert_eq!(entries.last().unwrap().active_ms, saved_duration);
 
     // A later workout appends after the completed one, including across restart.
-    press(&mut s, Button::BottomRight); // Summary: Done, Home.
-    press(&mut s, Button::BottomRight); // RIDE -> Ready.
-    press(&mut s, Button::BottomRight); // Start.
+    press(&mut s, Role::Act); // Summary: Done, Home.
+    press(&mut s, Role::Act); // RIDE -> Ready.
+    press(&mut s, Role::Act); // Start.
     state(&mut s, "recording");
     s.advance(1500).unwrap();
-    press(&mut s, Button::BottomRight);
+    press(&mut s, Role::Act);
     state(&mut s, "paused");
-    press(&mut s, Button::TopLeft);
-    press(&mut s, Button::BottomRight);
+    press(&mut s, Role::Back);
+    press(&mut s, Role::Act);
     state(&mut s, "saved");
     assert_eq!(
         &std::fs::read(t.0.join("data.bin")).unwrap()[..prefix.len()],
@@ -416,11 +429,18 @@ fn work_after_a_restart_waits_for_the_companion_probe_and_says_starting() {
 
 #[test]
 fn an_app_edge_keeps_the_time_the_device_received_it() {
-    use device_api::input::{Button, Input};
+    use device_api::input::{Input, Role};
     use device_api::observation::Availability;
+    use firmware_shell::input::Input as App;
     use firmware_shell::shell::Shell;
     use shell_simulator::devices::{DisplayDevice, InputDevice, Memory, PowerDevice};
-    let input = InputDevice::new(&[Button::BottomLeft], Availability::Ready);
+    let input = InputDevice::new(
+        device_api::input::Fixtures::new(&[device_api::input::Fixture {
+            id: 1,
+            role: Some(device_api::input::Role::Move),
+        }]),
+        Availability::Ready,
+    );
     let mut shell = Shell::new(
         DisplayDevice::new(32, 24),
         input.clone(),
@@ -431,20 +451,22 @@ fn an_app_edge_keeps_the_time_the_device_received_it() {
     )
     .unwrap();
     shell.set_app_active(true);
-    let press = Input::Button {
-        button: Button::BottomLeft,
-        code: 1,
-    };
-    input.push(1_000, press);
+    input.push(1_000, Input::Button { id: 1, code: 1 });
     // The shell gets to it late, behind slow work.
     shell.tick(1_800);
     let edge = shell.take_app_input().expect("routed to the app");
-    assert_eq!(edge.input, press);
+    assert_eq!(
+        edge.input,
+        App::Press {
+            role: Role::Move,
+            code: 1
+        }
+    );
     assert_eq!(edge.received_ms, 1_000);
 }
 
 #[test]
-#[should_panic(expected = "bare has no touch panel")]
+#[should_panic(expected = "unmet need: touch: bare has none")]
 fn a_tap_on_a_model_without_touch_is_refused() {
     let mut sim = shell_simulator::sim::Sim::on(shell_simulator::models::BARE);
     sim.discard_recording();

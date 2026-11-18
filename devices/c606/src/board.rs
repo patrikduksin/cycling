@@ -329,6 +329,35 @@ impl device_api::positioning::Positioning for Positioning {
         crate::capabilities::positioning::snapshot(now_ms)
     }
 }
+/// Whether a `Parts` handle type stands for fitted hardware, asserted
+/// against the manifest's `[fitted]` facts below.
+trait Fitted {
+    const FITTED: bool = true;
+}
+impl Fitted for device_api::Absent {
+    const FITTED: bool = false;
+}
+impl Fitted for Positioning {}
+impl Fitted for Ant {}
+impl Fitted for Ble {}
+impl Fitted for crate::drivers::http::Server {}
+impl Fitted for AccessPoint {}
+impl Fitted for Sound {}
+impl Fitted for Bulk {}
+
+const fn fitted_handle<T: Fitted>() -> bool {
+    T::FITTED
+}
+const _: () = assert!(fitted_handle::<Positioning>() == crate::fitted::GPS);
+const _: () = assert!(fitted_handle::<Ant>() == crate::fitted::ANT);
+const _: () = assert!(fitted_handle::<Ble>() == crate::fitted::BLE);
+const _: () = assert!(
+    fitted_handle::<crate::drivers::http::Server>() == crate::fitted::WIFI
+        && fitted_handle::<AccessPoint>() == crate::fitted::WIFI
+);
+const _: () = assert!(fitted_handle::<Sound>() == crate::fitted::SOUND);
+const _: () = assert!(fitted_handle::<Bulk>() == crate::fitted::CARD);
+
 /// Composition receives exclusive initialized handles. Acquisition is already
 /// running and outlives foreground presentation and terminal connections.
 pub struct Parts {
@@ -414,7 +443,7 @@ pub async fn start(spawner: embassy_executor::Spawner) -> Parts {
         ble: Ble,
         positioning: Positioning,
         server: crate::drivers::http::Server,
-        access_point: AccessPoint(stack),
+        access_point: AccessPoint { started: stack },
         power: Power,
         power_control: Power,
         sensors: Sensors,
@@ -461,27 +490,29 @@ impl device_api::ble_transport::Ble for Ble {
 }
 pub use crate::capabilities::ant::Ant;
 /// The soft access point for the phone companion, and where its server is reached.
-pub struct AccessPoint(Option<embassy_net::Stack<'static>>);
+pub struct AccessPoint {
+    started: Option<embassy_net::Stack<'static>>,
+}
 impl device_api::server::AccessPoint for AccessPoint {
     fn start(
         &mut self,
         config: device_api::server::AccessPointConfig,
     ) -> Result<(), device_api::observation::Error> {
-        if self.0.is_none() {
-            return Err(device_api::observation::Error::Unsupported);
+        if self.started.is_none() {
+            return Err(device_api::observation::Error::Failed);
         }
         let _access = crate::capabilities::power::ACCESS.enter()?;
         crate::drivers::wifi::access_point_request(Some(config))
     }
     fn stop(&mut self) -> Result<(), device_api::observation::Error> {
-        if self.0.is_none() {
+        if self.started.is_none() {
             return Ok(());
         }
         crate::drivers::wifi::access_point_request(None)
     }
     fn state(&self) -> device_api::server::AccessPointState {
-        if self.0.is_none() {
-            return device_api::server::AccessPointState::Unsupported;
+        if self.started.is_none() {
+            return device_api::server::AccessPointState::Failed;
         }
         crate::drivers::wifi::access_point_state()
     }
@@ -492,7 +523,7 @@ impl device_api::server::AccessPoint for AccessPoint {
         )
         .then_some(crate::drivers::wifi::AP_ADDRESS);
         let station = self
-            .0
+            .started
             .filter(|_| crate::drivers::wifi::online())
             .and_then(|stack| stack.config_v4())
             .map(|config| config.address.address().octets());
@@ -632,6 +663,9 @@ impl device_api::sensors::Sensors for Sensors {
     }
     fn startup_reason(&self) -> Option<u8> {
         crate::capabilities::sensors::startup_reason()
+    }
+    fn fitted(&self) -> device_api::sensors::SensorSet {
+        crate::fitted::SENSORS
     }
     fn snapshot(&self, now: u64) -> device_api::sensors::Snapshot {
         crate::capabilities::sensors::snapshot(now)

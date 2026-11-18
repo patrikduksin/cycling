@@ -1,6 +1,7 @@
 //! Render each sensor page with deterministic fixtures into PPM previews.
 use device_api::ant::{Discovery, Identity};
-use device_api::input::{Button, Input};
+use device_api::input::Role;
+use firmware_shell::input::Input;
 use firmware_shell::rendering::row::Row;
 use firmware_shell::shell::Picture;
 use vana::screens::sensors::{CalibrationNote, Connection, Menu, MenuMessage, Page, Selected};
@@ -89,7 +90,7 @@ fn main() {
     render(&ten, &output, "sensors-ten-add-row");
 
     focus(&mut menu, None, &mut now);
-    press(&mut menu, Button::BottomRight, &mut now);
+    press(&mut menu, Role::Act, &mut now);
     menu.search_started();
     menu.refresh(nearby, tiles(1), true);
     menu.set_message(MenuMessage::Scanning);
@@ -115,7 +116,7 @@ fn main() {
     first.open();
     first.set_message(MenuMessage::ScanDone);
     focus(&mut first, Some(HEART_RATE), &mut now);
-    press(&mut first, Button::BottomRight, &mut now);
+    press(&mut first, Role::Act, &mut now);
     let strap = identity(HEART_RATE, 4321);
     let mut with_strap = tiles(0);
     with_strap[0] = Some(Selected {
@@ -141,7 +142,7 @@ fn main() {
     render(&empty, &output, "nearby-radio-unavailable");
 
     focus(&mut menu, Some(HEART_RATE), &mut now);
-    press(&mut menu, Button::BottomRight, &mut now);
+    press(&mut menu, Role::Act, &mut now);
     assert_eq!(menu.diagnostics().page, Page::Replace);
     render(&menu, &output, "replace");
 
@@ -149,24 +150,24 @@ fn main() {
     detail.refresh(nearby, tiles(3), false);
     detail.open();
     focus(&mut detail, Some(POWER), &mut now);
-    press(&mut detail, Button::BottomRight, &mut now);
+    press(&mut detail, Role::Act, &mut now);
     render(&detail, &output, "detail-power");
     detail.set_calibration(Some(CalibrationNote::Done(-12)));
     render(&detail, &output, "detail-power-calibrated");
     detail.set_calibration(Some(CalibrationNote::Failed));
     render(&detail, &output, "detail-power-failed");
     detail.set_calibration(None);
-    press(&mut detail, Button::BottomLeft, &mut now);
+    press(&mut detail, Role::Move, &mut now);
     assert_eq!(detail.diagnostics().page, Page::Forget);
     render(&detail, &output, "forget-power");
-    press(&mut detail, Button::TopLeft, &mut now);
-    press(&mut detail, Button::TopLeft, &mut now);
+    press(&mut detail, Role::Back, &mut now);
+    press(&mut detail, Role::Back, &mut now);
     focus(&mut detail, Some(HEART_RATE), &mut now);
-    press(&mut detail, Button::BottomRight, &mut now);
+    press(&mut detail, Role::Act, &mut now);
     render(&detail, &output, "detail-heart");
-    press(&mut detail, Button::TopLeft, &mut now);
+    press(&mut detail, Role::Back, &mut now);
     focus(&mut detail, Some(SPEED), &mut now);
-    press(&mut detail, Button::BottomRight, &mut now);
+    press(&mut detail, Role::Act, &mut now);
     render(&detail, &output, "detail-speed-not-found");
 }
 
@@ -178,9 +179,15 @@ fn identity(device_type: u8, device_number: u16) -> Identity {
     }
 }
 
-fn press(menu: &mut Menu, button: Button, now: &mut u64) {
+fn press(menu: &mut Menu, button: Role, now: &mut u64) {
     *now += 1_200;
-    menu.input(Input::Button { button, code: 1 }, *now);
+    menu.input(
+        Input::Press {
+            role: button,
+            code: 1,
+        },
+        *now,
+    );
 }
 
 /// MOVE until the sensor of this type is focused, or the ADD SENSOR row for `None`.
@@ -189,7 +196,7 @@ fn focus(menu: &mut Menu, kind: Option<u8>, now: &mut u64) {
         if menu.diagnostics().focus.map(|f| f.device_type) == kind {
             return;
         }
-        press(menu, Button::BottomLeft, now);
+        press(menu, Role::Move, now);
     }
     panic!("fixture focus {kind:?} is not reachable");
 }

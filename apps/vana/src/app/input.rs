@@ -22,7 +22,8 @@ use crate::screens::touch::{Control, Hit, List, Owner, Swipe, TouchEvent};
 use crate::screens::workout::{HOME, Page};
 use crate::sensors::ant::device_type;
 use device_api::ant::Ant;
-use device_api::input::{Button, Input};
+use device_api::input::Role;
+use firmware_shell::input::Input;
 
 const DEBOUNCE_MS: u64 = 350;
 /// Settings choices, in the order acting steps through them.
@@ -85,17 +86,19 @@ impl Runtime {
         // after the previous one of that button continues a hold, such as the
         // power-on hold of TopLeft, rather than starting a new press.
         let held = match input {
-            Input::Button { button, code: 1 } => {
-                self.navigation
-                    .reported(button.index(), received, HOLD_GAP_MS)
-                    == Report::Held
-            }
+            Input::Press {
+                role: button,
+                code: 1,
+            } => self.navigation.reported(button, received, HOLD_GAP_MS) == Report::Held,
             _ => false,
         };
         // A power sheet covers every page and takes buttons first; touch never
         // turns the device off.
         if self.power.view().is_some() {
-            if let Input::Button { button, code: 1 } = input
+            if let Input::Press {
+                role: button,
+                code: 1,
+            } = input
                 && !held
                 && received.saturating_sub(self.navigation.last_press()) >= DEBOUNCE_MS
                 && self.power_input(button)
@@ -108,7 +111,10 @@ impl Runtime {
         // The FTP sheet after a test takes the buttons next; touch never
         // answers it.
         if self.ftp_sheet().is_some() {
-            if let Input::Button { button, code: 1 } = input
+            if let Input::Press {
+                role: button,
+                code: 1,
+            } = input
                 && !held
                 && received.saturating_sub(self.navigation.last_press()) >= DEBOUNCE_MS
                 && self.ftp_input(button, now)
@@ -132,10 +138,14 @@ impl Runtime {
             self.sensors_input(input, received, now, ant);
             return;
         }
-        let Input::Button { button, code: 1 } = input else {
+        let Input::Press {
+            role: button,
+            code: 1,
+        } = input
+        else {
             return;
         };
-        if button != Button::BottomLeft {
+        if button != Role::Move {
             self.button_press(button, held, received, now, ant);
             return;
         }
@@ -150,7 +160,7 @@ impl Runtime {
 
     fn button_press(
         &mut self,
-        button: Button,
+        button: Role,
         held: bool,
         received: u64,
         now: u64,
@@ -163,7 +173,7 @@ impl Runtime {
         self.display.redraw();
         match self.navigation.page() {
             Page::Home => self.home_input(button, received, now, ant, held),
-            Page::Ride if button == Button::BottomLeft => {
+            Page::Ride if button == Role::Move => {
                 self.timing.press(received);
                 self.next_ride_page();
             }
@@ -171,7 +181,7 @@ impl Runtime {
                 self.timing.press(received);
                 self.ride_press(button, held, received, now);
             }
-            Page::Summary if button == Button::BottomLeft => self.next_summary_page(1),
+            Page::Summary if button == Role::Move => self.next_summary_page(1),
             // The FTP offer's answer, then the press ends the summary as on any page.
             Page::Summary if self.offer_shown() => {
                 if !held {
@@ -191,7 +201,8 @@ impl Runtime {
             // A press during the brand flash opens Home straight away.
             Page::Boot => self.navigation.go(To::Page(self.first_page())),
             Page::Format => self.format_input(button, held, received),
-            Page::Sensors => {}
+            Page::LoseRides if !held => self.lose_rides_input(button),
+            Page::Sensors | Page::LoseRides => {}
         }
     }
 
@@ -217,7 +228,7 @@ impl Runtime {
             Page::Summary | Page::PastRide => navigation.summary_page() as u32,
             Page::Sensors => u32::from(self.menu.touch_view()),
             Page::Settings => {
-                let section = settings::section(navigation.settings_field()).0 as u32;
+                let section = navigation.sections().section(navigation.settings_field()).0 as u32;
                 u32::from(navigation.editing()) | section << 1
             }
             Page::Setup => u32::from(self.preferences.options.setup),
@@ -227,6 +238,7 @@ impl Runtime {
             | Page::Ready
             | Page::EndRide
             | Page::DiscardRide
+            | Page::LoseRides
             | Page::Phone
             | Page::Bests
             | Page::Form
@@ -262,7 +274,10 @@ impl Runtime {
                 .and_then(|step| crate::screens::setup::target(x, y, step))
                 .map(Control::Setup),
             Page::Settings if navigation.editing() => {
-                match settings::target(x, y, navigation.settings_field(), true, 0) {
+                match navigation
+                    .sections()
+                    .target(x, y, navigation.settings_field(), true, 0)
+                {
                     Some(settings::Target::Lower) => Some(Control::Lower),
                     Some(settings::Target::Raise) => Some(Control::Raise),
                     _ => None,
@@ -298,9 +313,9 @@ impl Runtime {
                 hit.control = layout.card_at(count, offset, x, y).map(|index| match list {
                     List::Rides => Control::Ride(index),
                     List::Workouts => Control::Workout(index),
-                    List::Settings => {
-                        Control::Setting(settings::rows(navigation.settings_field()).1 + index)
-                    }
+                    List::Settings => Control::Setting(
+                        navigation.sections().rows(navigation.settings_field()).1 + index,
+                    ),
                 });
             }
         }
@@ -332,7 +347,7 @@ impl Runtime {
                 if self.navigation.page() == Page::Ride
                     && self.navigation.ride_page() == RidePage::Map =>
             {
-                self.stop_following_from_map();
+                self.stop_following_from_map(now);
             }
             TouchEvent::Hold(_) => {}
             TouchEvent::Swipe(swipe) => self.swiped(swipe),
@@ -389,14 +404,15 @@ impl Runtime {
             Page::Summary | Page::PastRide => self.previous_summary_page(),
             Page::Settings => {
                 let navigation = &mut self.navigation;
-                let (section, _) = settings::section(navigation.settings_field());
-                let count = settings::SECTIONS.len();
+                let sections = navigation.sections();
+                let (section, _) = sections.section(navigation.settings_field());
+                let count = sections.count();
                 let section = if next {
                     section + 1
                 } else {
                     section + count - 1
                 };
-                navigation.go(To::Section(settings::first_of(section)));
+                navigation.go(To::Section(sections.first_of(section)));
             }
             _ => {}
         }
@@ -441,20 +457,20 @@ impl Runtime {
     /// MOVE steps the focused card, ACT opens it and BACK asks to turn off.
     fn home_input(
         &mut self,
-        button: Button,
+        button: Role,
         received: u64,
         now: u64,
         ant: &mut impl Ant,
         held: bool,
     ) {
         match button {
-            Button::BottomLeft => {
+            Role::Move => {
                 let cursor = (self.navigation.home_cursor() + 1) % HOME.len();
                 self.navigation.go(To::HomeCursor(cursor));
             }
-            Button::BottomRight => self.open_home_tile(now, ant),
+            Role::Act => self.open_home_tile(now, ant),
             // BACK on Home asks to turn off; Home is never reachable mid-ride.
-            Button::TopLeft if !held => self.open_power_sheet(received),
+            Role::Back if !held => self.open_power_sheet(received),
             _ => {}
         }
     }
@@ -475,30 +491,28 @@ impl Runtime {
     /// Choosing a row: BottomLeft moves to the next, BottomRight acts on it,
     /// TopLeft goes Home. Editing a number: BottomLeft lowers and
     /// BottomRight raises it by `settings::STEP`, TopLeft finishes.
-    fn settings_input(&mut self, button: Button, now: u64, ant: &mut impl Ant, held: bool) {
+    fn settings_input(&mut self, button: Role, now: u64, ant: &mut impl Ant, held: bool) {
         if !self.navigation.editing() {
             match button {
-                Button::BottomLeft => self.settings_move(now),
-                Button::BottomRight if self.list_act(List::Settings, now) => {
-                    self.act_on_setting(now, ant)
-                }
-                Button::TopLeft => self.navigation.go(To::Page(Page::Home)),
+                Role::Move => self.settings_move(now),
+                Role::Act if self.list_act(List::Settings, now) => self.act_on_setting(now, ant),
+                Role::Back => self.navigation.go(To::Page(Page::Home)),
                 _ => {}
             }
             return;
         }
         match button {
-            Button::BottomLeft => self.adjust_setting(-self.setting_step(), now, held),
-            Button::BottomRight => self.adjust_setting(self.setting_step(), now, held),
-            Button::TopLeft if !self.setup_edit_finished(now) => self.navigation.go(To::EditDone),
+            Role::Move => self.adjust_setting(-self.setting_step(), now, held),
+            Role::Act => self.adjust_setting(self.setting_step(), now, held),
+            Role::Back if !self.setup_edit_finished(now) => self.navigation.go(To::EditDone),
             _ => {}
         }
     }
 
     /// Act on the selected row: edit a number, step a choice or open a page.
     fn act_on_setting(&mut self, now: u64, ant: &mut impl Ant) {
-        use settings::{Kind, Row, SettingsAction};
-        let row = Row::at(self.navigation.settings_field());
+        use settings::{Kind, SettingsAction};
+        let row = self.navigation.setting();
         match (row.kind(), row.action()) {
             (Kind::Number, _) => self.navigation.go(To::Edit {
                 field: self.navigation.settings_field(),
@@ -609,13 +623,13 @@ impl Runtime {
 
     /// What one press moves the edited number.
     fn setting_step(&self) -> i32 {
-        i32::from(settings::Row::at(self.navigation.settings_field()).step())
+        i32::from(self.navigation.setting().step())
     }
 
     /// Move the edited number by `step`, within its range. A repeat from a
     /// held button (`held`) never clears weight or age: only a tap does.
     fn adjust_setting(&mut self, step: i32, now: u64, held: bool) {
-        let row = settings::Row::at(self.navigation.settings_field());
+        let row = self.navigation.setting();
         if matches!(row, settings::Row::Weight | settings::Row::Age) {
             let mut options = self.preferences.options;
             options.rider = if row == settings::Row::Weight {
@@ -626,7 +640,7 @@ impl Runtime {
             self.set_options(options, now);
             return;
         }
-        if settings::Row::at(self.navigation.settings_field()) == settings::Row::Wheel {
+        if self.navigation.setting() == settings::Row::Wheel {
             // The next multiple of five mm in the direction of the press, so
             // common sizes are reachable from any start. Setting the size by
             // hand takes it out of the calibration's hands, unless the edit
@@ -657,7 +671,7 @@ impl Runtime {
             return;
         }
         let mut profile = self.preferences.profile;
-        let (value, range) = match settings::Row::at(self.navigation.settings_field()) {
+        let (value, range) = match self.navigation.setting() {
             settings::Row::Ftp => (&mut profile.ftp_watts, TrainingProfile::FTP_WATTS),
             settings::Row::Threshold => (&mut profile.lthr_bpm, TrainingProfile::LTHR_BPM),
             _ => return,

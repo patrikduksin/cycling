@@ -2,9 +2,7 @@
 //! firmware is doing: the rider's way out of a state nothing else leaves, such
 //! as a dark, lit panel. Input acquisition watches every report, before shell,
 //! VANA or the power owner can drop it.
-use device_api::input::Button;
-
-pub const BUTTON: Button = Button::TopLeft;
+pub const TOP_LEFT_ID: u8 = 0;
 /// Far longer than any press or hold the interface uses.
 pub const HOLD_MS: u64 = 10_000;
 /// Observed companion codes: 1 for a click; while a button is held, 4
@@ -21,8 +19,8 @@ pub struct Hold {
 
 impl Hold {
     /// Note one button report; returns whether the hold has lasted `HOLD_MS`.
-    pub fn report(&mut self, button: Button, code: u16, now: u64) -> bool {
-        if button != BUTTON {
+    pub fn report(&mut self, id: u8, code: u16, now: u64) -> bool {
+        if id != TOP_LEFT_ID {
             return false;
         }
         if code != HELD {
@@ -45,21 +43,21 @@ mod tests {
     fn hold(hold: &mut Hold, from: u64, until: u64) -> bool {
         (from..=until)
             .step_by(250)
-            .any(|now| hold.report(BUTTON, HELD, now))
+            .any(|now| hold.report(TOP_LEFT_ID, HELD, now))
     }
 
     #[test]
     fn ten_second_hold_reboots() {
         let mut h = Hold::default();
         assert!(!hold(&mut h, 0, HOLD_MS - 250));
-        assert!(h.report(BUTTON, HELD, HOLD_MS));
+        assert!(h.report(TOP_LEFT_ID, HELD, HOLD_MS));
     }
 
     #[test]
     fn release_or_a_long_gap_starts_over() {
         let mut h = Hold::default();
         assert!(!hold(&mut h, 0, 9_000));
-        assert!(!h.report(BUTTON, 5, 9_100));
+        assert!(!h.report(TOP_LEFT_ID, 5, 9_100));
         assert!(!hold(&mut h, 9_200, 9_200 + HOLD_MS - 250));
         let mut h = Hold::default();
         assert!(!hold(&mut h, 0, 9_000));
@@ -74,9 +72,9 @@ mod tests {
     fn clicks_and_other_buttons_do_not_count() {
         let mut h = Hold::default();
         for now in (0..=2 * HOLD_MS).step_by(250) {
-            assert!(!h.report(Button::BottomLeft, HELD, now));
-            assert!(!h.report(Button::BottomRight, HELD, now));
-            assert!(!h.report(BUTTON, 1, now));
+            assert!(!h.report(1, HELD, now));
+            assert!(!h.report(2, HELD, now));
+            assert!(!h.report(TOP_LEFT_ID, 1, now));
         }
     }
 }

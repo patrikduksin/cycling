@@ -38,6 +38,9 @@ impl device_api::sensors::Sensors for Untouched {
     fn startup_reason(&self) -> Option<u8> {
         None
     }
+    fn fitted(&self) -> device_api::sensors::SensorSet {
+        panic!("sensors accessed")
+    }
     fn snapshot(&self, _: u64) -> device_api::sensors::Snapshot {
         panic!("sensors accessed")
     }

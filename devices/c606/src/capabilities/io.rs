@@ -197,13 +197,13 @@ pub async fn run(mut touch: crate::drivers::touch::Touch<'static>, touch_availab
                             millivolts,
                         } => state.battery = Some(((percent, millivolts), now)),
                         Event::Power { status } => state.power = Some((status, now)),
-                        Event::Button { button, code } => {
-                            log::info!(target: "button", "id={} code={}", button.index(), code);
-                            if hold.report(button, code, now) {
+                        Event::Button { id, code } => {
+                            log::info!(target: "button", "id={} code={}", id, code);
+                            if hold.report(id, code, now) {
                                 log::warn!(target: "input", "reboot hold");
                                 esp_hal::system::software_reset();
                             }
-                            if edge(now, Input::Button { button, code }) {
+                            if edge(now, Input::Button { id, code }) {
                                 contact.cancel(now);
                             }
                         }

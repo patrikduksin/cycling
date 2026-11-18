@@ -327,14 +327,8 @@ impl Runtime {
                 )
             }),
         };
-        let cursor = match page {
-            Page::Settings => navigation.settings_field(),
-            Page::Setup => navigation.setup_cursor(),
-            _ => navigation.home_cursor(),
-        };
-        let mut view = View::new(page, cursor, local);
+        let mut view = navigation.view(local);
         view.layout = self.layout;
-        view.editing = page == Page::Settings && navigation.editing();
         view.now_ms = now;
         view.active_secs = self.ride.active_ms(now) / 1000;
         view.state = self.ride.active().status();
@@ -436,10 +430,11 @@ impl Runtime {
                 view.set_canvas(self.history_canvas(offset, pressed));
             }
             Page::Format => view.format = self.format.shows(),
+            Page::LoseRides => view.unsaved = self.sync.count() as u8,
             Page::EndRide | Page::DiscardRide => {
                 view.discard = if self.ride.discard() != crate::ride::current::Discard::Idle {
                     crate::screens::workout::Discard::Answered
-                } else if self.deleted.writable() {
+                } else if self.can_discard() {
                     crate::screens::workout::Discard::Offered
                 } else {
                     crate::screens::workout::Discard::Unavailable
@@ -455,7 +450,7 @@ impl Runtime {
             Page::Settings => {
                 view.scroll = self.list_offset(List::Settings, now);
                 self.settings_lines(&mut view);
-                let first = settings::rows(self.navigation.settings_field()).1;
+                let first = view.sections.rows(view.cursor).1;
                 view.press_setting(match self.navigation.touches().pressed() {
                     Some(Control::Setting(field)) => Some((field - first) as u16),
                     _ => None,
@@ -494,11 +489,15 @@ impl Runtime {
         }
     }
 
-    /// Home says what is still starting, or why turning off did not happen;
-    /// `true` when it is a problem.
+    /// Home says what is still starting, why turning off did not happen, or
+    /// that rides are not saved; `true` when it is a problem.
     pub(super) fn home_status(&self, now: u64) -> (&'static str, bool) {
         if let Some(notice) = self.power.notice(now) {
             return (notice.text(), true);
+        }
+        // Rides the phone has not confirmed stay named until it has.
+        if self.holds_unsynced() {
+            return ("NOT SAVED", true);
         }
         let status = if self.ride.internal().status() == Status::Scanning
             || self.ride.bulk().status() == Status::Scanning
@@ -632,8 +631,8 @@ impl Runtime {
     }
 
     /// Recording time left, once it is under `LOW_STORAGE_S`; else rides
-    /// falling back to internal flash because bulk media cannot take them;
-    /// else a recovered ride.
+    /// the phone has not confirmed; else rides falling back to internal
+    /// flash because bulk media cannot take them; else a recovered ride.
     fn storage_toast(&self, status: Status) -> Option<Toast> {
         let label = match status {
             Status::Recording => "REC",
@@ -648,6 +647,9 @@ impl Runtime {
             let mut text = Text::<20>::new();
             let _ = write!(text, "{label} {}M LEFT", left / 60);
             return Some(Toast::new(text.as_str(), Tone::Warn));
+        }
+        if self.holds_unsynced() {
+            return Some(Toast::new("NOT SAVED", Tone::Warn));
         }
         if self.falling_back() {
             let text = match status {
@@ -706,12 +708,13 @@ impl Runtime {
     }
 
     /// What the summary shows beyond the totals.
-    fn after(&self, now: u64) -> After {
+    pub(super) fn after(&self, now: u64) -> After {
         let status = self.ride.active().status();
         let saving = match status {
             _ if self.ride.pending() => Saving::Writing,
             Status::Recording | Status::Paused => Saving::Writing,
             Status::Error => Saving::Failed,
+            _ if self.shown_ride_unsynced() => Saving::Unsynced,
             _ => Saving::Saved,
         };
         After {
@@ -722,6 +725,7 @@ impl Runtime {
             // The open lap counts: a ride without a lap press is one lap.
             laps: Some(self.ride.laps().count().saturating_add(1)),
             past: false,
+            send: false,
             delete: false,
             elevation: self.has_elevation(),
             found: self.ride.bests_found(),
@@ -837,6 +841,16 @@ impl Runtime {
                 Check::new(Level::Wait, "CHECKING STORAGE", "")
             }
             Status::Recording | Status::Paused => Check::new(Level::Good, "RECORDING", ""),
+            Status::Ready | Status::Saved | Status::Recovered
+                if !self.ride.admits_start(medium) =>
+            {
+                let title = if self.holds_unsynced() {
+                    "SYNC RIDES FIRST"
+                } else {
+                    "CLEAR RIDES FIRST"
+                };
+                Check::new(Level::Problem, title, "ON THE PHONE PAGE")
+            }
             status @ (Status::Ready | Status::Saved | Status::Recovered) => {
                 let left = recorder.remaining_secs();
                 if left == 0 {
@@ -872,13 +886,13 @@ impl Runtime {
         use super::preferences::Persistence;
         use crate::screens::settings::{Kind, NOTES, Row, STATUS, VALUES};
         let cursor = view.cursor;
-        let row = Row::at(cursor);
+        let row = view.sections.row(cursor);
         let editor = [row];
         let editing = view.editing && row.kind() == Kind::Number;
         let shown: &[Row] = if editing {
             &editor
         } else {
-            settings::rows(cursor).0
+            view.sections.rows(cursor).0
         };
         let lines = view.show_settings();
         let (values, notes) = lines[VALUES..].split_at_mut(NOTES - VALUES);

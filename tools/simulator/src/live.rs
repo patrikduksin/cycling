@@ -8,7 +8,7 @@ use crate::recording::{
 use crate::route::{Point, Route};
 use crate::sim::{HOLD_REPEAT_MS, NoteKind, Sim};
 use crate::world::{Side, Vehicle};
-use device_api::input::{Button, Input, Point as Touch};
+use device_api::input::{Input, Point as Touch, Role};
 
 /// The firmware loop's pass length.
 const STEP_MS: u64 = 10;
@@ -43,18 +43,18 @@ pub const KEYS: [(&str, &str); 13] = [
     ("ESC", "QUIT AND SAVE"),
 ];
 
-fn button(key: char) -> Option<Button> {
+fn button(key: char) -> Option<Role> {
     match key {
-        'q' => Some(Button::TopLeft),
-        'a' => Some(Button::BottomLeft),
-        'd' => Some(Button::BottomRight),
+        'q' => Some(Role::Back),
+        'a' => Some(Role::Move),
+        'd' => Some(Role::Act),
         _ => None,
     }
 }
 
 struct Held {
     key: char,
-    button: Button,
+    button: Role,
     real_ms: f64,
     /// Repeats follow real time, so a hold feels the same at every speed.
     next_real_ms: f64,
@@ -424,10 +424,7 @@ mod tests {
     }
 
     fn reports(live: &mut Live, key: char, ms: u64) -> usize {
-        let move_report = Input::Button {
-            button: Button::BottomLeft,
-            code: 1,
-        };
+        let move_report = Input::Button { id: 1, code: 1 };
         let count = |live: &Live| {
             let trace = live.sim.trace();
             let (_, events) = trace::decode(&trace).expect("the session's own trace decodes");

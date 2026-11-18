@@ -10,7 +10,7 @@ use crate::screens::setup::{Choice, Step};
 use crate::screens::workout::{Page, View};
 use core::fmt::Write;
 use device_api::ant::Ant;
-use device_api::input::Button;
+use device_api::input::Role;
 
 impl Runtime {
     /// The setup page due, if setup is not done.
@@ -63,21 +63,20 @@ impl Runtime {
 
     /// MOVE focuses the next card, ACT takes it and BACK leaves for Home;
     /// setup resumes there on the next start.
-    pub(super) fn setup_input(&mut self, button: Button, now: u64, ant: &mut impl Ant) {
+    pub(super) fn setup_input(&mut self, button: Role, now: u64, ant: &mut impl Ant) {
         let Some(step) = self.setup_step() else {
             self.navigation.go(To::Page(Page::Home));
             return;
         };
         match button {
-            Button::BottomLeft => {
+            Role::Move => {
                 let cards = step.cards().len();
                 self.navigation.go(To::SetupCursor(
                     (self.navigation.setup_cursor() + 1) % cards,
                 ));
             }
-            Button::BottomRight => self.setup_choice(step, now, ant),
-            Button::TopLeft => self.navigation.go(To::Page(Page::Home)),
-            _ => {}
+            Role::Act => self.setup_choice(step, now, ant),
+            Role::Back => self.navigation.go(To::Page(Page::Home)),
         }
     }
 
@@ -103,8 +102,11 @@ impl Runtime {
                 } else {
                     Row::Threshold
                 };
+                let Some(field) = self.navigation.sections().field(row) else {
+                    return;
+                };
                 self.navigation.go(To::Edit {
-                    field: row.index(),
+                    field,
                     wheel_origin: self.preferences.options.wheel,
                     from_setup: true,
                 });

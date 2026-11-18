@@ -1027,7 +1027,7 @@ mod tests {
 10 Positioning: availability observe, snapshot observe
 11 Power: availability observe, battery observe, brightness sink
 12 PowerControl: capabilities observe, status observe, request request(refreshes), request_after request(refreshes)
-13 Sensors: startup_status observe, startup_reason observe, snapshot observe, light observe, identity_status observe, query_identity request(refreshes)
+13 Sensors: startup_status observe, startup_reason observe, snapshot observe, light observe, identity_status observe, query_identity request(refreshes), fitted observe
 14 AccessPoint: start request(refreshes, redact), stop request(refreshes), state observe, reach observe, entropy take(redact)
 15 Server: listen request(refreshes, repeats), request observe(redact), read take(refreshes) [out], room observe, write sink(refreshes) [input], finish request(refreshes)
 16 Sound: patterns observe, snapshot observe, play request(refreshes), stop request(refreshes)

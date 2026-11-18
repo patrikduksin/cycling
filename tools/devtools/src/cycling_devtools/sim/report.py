@@ -41,9 +41,7 @@ LISTED = (
     re.compile(rf'<img\b[^>]*?alt="(\d+)"[^>]*?src="({ASSET})"'),
     re.compile(rf'<img\b[^>]*?src="({ASSET})"[^>]*?alt="(\d+)"'),
 )
-# A result that names no device, from a base before results named theirs or a
-# scenario that wrote none, counts as the C606's.
-UNNAMED_DEVICE = 'c606'
+MARKS = {'pass': '✅', 'skip': '⏭️', 'fail': '❌'}
 TEST_LINE = re.compile(r'^test (?:\S+::)?(\w+) \.\.\. (ok|FAILED|ignored)', re.MULTILINE)
 
 
@@ -55,7 +53,6 @@ def load(run):
     for path in sorted(run.glob('*/result.json')):
         result = json.loads(path.read_text())
         result['dir'] = path.parent
-        result.setdefault('device', UNNAMED_DEVICE)
         result['key'] = f'{result["name"]}@{result["device"]}'
         results[result['key']] = result
     log = run / 'cargo.log'
@@ -75,9 +72,9 @@ def load(run):
         if 'test result:' not in text:
             result = missing(run, 'cargo_test', 'cargo test did not finish; see cargo.log.')
             results[result['key']] = result
-    devices = {r['device'] for r in results.values()}
+    devices = {r['device'] for r in results.values()} - {None}
     for r in results.values():
-        r['title'] = title(r['name']) + (f' on {r["device"]}' if len(devices) > 1 else '')
+        r['title'] = title(r['name']) + (f' on {r["device"]}' if len(devices) > 1 and r['device'] else '')
     ordered = sorted(results.values(), key=lambda r: (r['status'] == 'pass', r['key']))
     return ordered
 
@@ -85,8 +82,8 @@ def load(run):
 def missing(run, name, failure):
     return {
         'name': name,
-        'device': UNNAMED_DEVICE,
-        'key': f'{name}@{UNNAMED_DEVICE}',
+        'device': None,
+        'key': name,
         'status': 'fail',
         'failure': failure,
         'simulated_ms': 0,
@@ -149,10 +146,11 @@ def media(result):
 def summary(results, base, heading, commit):
     """Markdown for one PR comment and the files it references."""
     passed = sum(r['status'] == 'pass' for r in results)
+    skipped = sum(r['status'] == 'skip' for r in results)
     simulated = sum(r['simulated_ms'] for r in results)
-    icon = '✅' if passed == len(results) else '❌'
+    icon = '✅' if passed + skipped == len(results) else '❌'
     lines = [
-        f'## {icon} {heading}: {passed}/{len(results)} scenarios passed',
+        f'## {icon} {heading}: {passed}/{len(results)} scenarios passed, {skipped} skipped',
         '',
         f'VANA on a simulated C606 at `{commit}` · {clock(simulated)} of simulated time. '
         'Videos compress quiet stretches and play actions in real time.',
@@ -161,11 +159,11 @@ def summary(results, base, heading, commit):
         '|---|---|---|---|',
     ]
     for r in results:
-        mark = '✅' if r['status'] == 'pass' else '❌'
+        mark = MARKS[r['status']]
         lines.append(f'| {mark} | {r["title"]} | {clock(r["simulated_ms"])} | {rides_text(r)} |')
     attachments = []
     for r in results:
-        mark = '✅' if r['status'] == 'pass' else '❌'
+        mark = MARKS[r['status']]
         lines += ['', f'### {mark} {r["title"]}', '']
         if r['failure']:
             lines += [*fenced(r['failure']), '']
@@ -453,8 +451,10 @@ def main(argv=None):
     markdown, attachments = summary(results, ROOT, args.heading, commit())
     (args.run / 'summary.md').write_text(markdown)
     (args.run / 'index.html').write_text(page(results, args.heading))
-    failed = [r['key'] for r in results if r['status'] != 'pass']
-    print(f'{len(results) - len(failed)}/{len(results)} passed; report {args.run / "index.html"}')
+    failed = [r['key'] for r in results if r['status'] == 'fail']
+    skipped = sum(r['status'] == 'skip' for r in results)
+    passed = len(results) - len(failed) - skipped
+    print(f'{passed}/{len(results)} passed, {skipped} skipped; report {args.run / "index.html"}')
     if args.pr:
         post(args.pr, markdown, attachments)
     return 1 if failed else 0

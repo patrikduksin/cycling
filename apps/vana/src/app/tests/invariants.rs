@@ -26,8 +26,8 @@ fn with_phone_open() -> Runtime {
     runtime.serve_phone(
         &mut Transport::default(),
         &mut Radio2::default(),
-        &mut Absent,
-        &mut NoBulk,
+        &mut MustNotWrite,
+        &mut MustNotWrite,
         20,
     );
     assert!(runtime.phone_status().is_some());
@@ -44,7 +44,7 @@ fn at_summary() -> Runtime {
         tick(runtime, &mut journal, &mut radio, now);
         assert_eq!(runtime.broken(), None, "at {now} ms");
     };
-    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut Radio::new());
+    runtime.input_received(press(Role::Act), 1000, 1000, &mut Radio::new());
     let mut now = 1000;
     while now < 10_000 {
         step(&mut runtime, now);
@@ -52,9 +52,9 @@ fn at_summary() -> Runtime {
     }
     assert!(runtime.ride.internal().riding());
     for (button, at) in [
-        (Button::BottomRight, now),
-        (Button::TopLeft, now + 400),
-        (Button::BottomRight, now + 800),
+        (Role::Act, now),
+        (Role::Back, now + 400),
+        (Role::Act, now + 800),
     ] {
         runtime.input_received(press(button), at, at, &mut Radio::new());
         assert_eq!(runtime.broken(), None, "{button:?} at {at} ms");
@@ -82,7 +82,10 @@ fn violating(rule: Rule) -> Runtime {
         }
         Rule::ConfirmOffWhileRecording => {
             runtime = recording(runtime);
-            runtime.power.sheet = Sheet::Confirm { since: 0 };
+            runtime.power.sheet = Sheet::Confirm {
+                since: 0,
+                unsaved: 0,
+            };
         }
         Rule::SummaryWhileRiding => runtime = recording(at_summary()),
         Rule::HostTokenOwned => runtime
@@ -101,6 +104,21 @@ fn violating(rule: Rule) -> Runtime {
         Rule::TwoRidingRides => {
             *runtime.ride.internal_mut() = riding();
             *runtime.ride.bulk_mut() = riding();
+        }
+        Rule::TurningOffUnsynced => {
+            runtime.ride.set_volatile();
+            *runtime.ride.internal_mut() = riding();
+            runtime.protect_open_ride();
+            *runtime.ride.internal_mut() = Recorder::default();
+            runtime.power.sheet = crate::app::power::TURNING_OFF;
+        }
+        Rule::UnprotectedVolatileRide => {
+            runtime.ride.set_volatile();
+            *runtime.ride.internal_mut() = riding();
+        }
+        Rule::VolatileError => {
+            runtime.ride.set_volatile();
+            *runtime.ride.internal_mut() = Recorder::failed();
         }
     }
     runtime
@@ -175,7 +193,7 @@ fn a_test_sheet_covers_the_summary_offer_until_it_is_answered() {
         .set(Source::WorkoutTest, Some(current + 10));
     assert!(!runtime.offer_shown());
     assert_eq!(runtime.ftp_sheet(), Some((current + 10, current)));
-    runtime.input_received(press(Button::TopLeft), 100_000, 100_000, &mut Radio::new());
+    runtime.input_received(press(Role::Back), 100_000, 100_000, &mut Radio::new());
     assert_eq!(runtime.ftp_sheet(), None);
     assert!(runtime.offer_shown());
     assert_eq!(runtime.preferences.profile.ftp_watts, current);

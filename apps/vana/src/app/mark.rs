@@ -3,6 +3,7 @@ use super::climb_page::{Follow, press_undone};
 use super::cues::Cue;
 use super::input::HOLD_GAP_MS;
 use super::navigation::{Navigation, Pause, Restore, To};
+use crate::ride::log::Status;
 use crate::screens::chrome::Tone;
 use crate::screens::ride::RidePage;
 use crate::screens::workout::{Page, Text};
@@ -24,6 +25,7 @@ impl Runtime {
             received,
             view: View::of(&self.navigation),
             page: self.seen_page(),
+            move_hold: self.move_hold(),
         };
         self.mark_apply(step(self.marks.hold, event), now)
     }
@@ -45,6 +47,13 @@ pub(super) struct Mark {
     pub count: u16,
     pub pressed_ms: u64,
     pub page: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MoveHold {
+    Mark,
+    Extend,
+    StopFollowing,
 }
 
 /// What a MOVE report leaves for the rest of the input handling.
@@ -81,6 +90,7 @@ struct Press {
     since: u64,
     last: u64,
     page: &'static str,
+    move_hold: MoveHold,
     before: View,
     after: View,
 }
@@ -98,6 +108,7 @@ enum Event {
         received: u64,
         view: View,
         page: &'static str,
+        move_hold: MoveHold,
     },
     /// The press the hold began with was handled, leaving this view.
     Pressed(View),
@@ -120,8 +131,8 @@ enum Effect {
     None,
     /// Handle the report as a press.
     Press,
-    /// The hold marked: show `restore` and record the press.
-    Mark {
+    Held {
+        move_hold: MoveHold,
         pressed_ms: u64,
         page: &'static str,
         restore: View,
@@ -156,6 +167,7 @@ fn step(hold: Hold, event: Event) -> Step {
                 received,
                 view,
                 page,
+                move_hold,
             },
             _,
         ) => {
@@ -163,6 +175,7 @@ fn step(hold: Hold, event: Event) -> Step {
                 since: received,
                 last: received,
                 page,
+                move_hold,
                 before: view,
                 after: view,
             };
@@ -171,7 +184,8 @@ fn step(hold: Hold, event: Event) -> Step {
         (Event::Move { received, view, .. }, Hold::Holding(press))
             if press.held_at(received) && received.saturating_sub(press.since) >= HOLD_MS =>
         {
-            let effect = Effect::Mark {
+            let effect = Effect::Held {
+                move_hold: press.move_hold,
                 pressed_ms: press.since,
                 page: press.page,
                 restore: undone(press, view),
@@ -195,14 +209,15 @@ impl Runtime {
     /// The only writer of `Marks`.
     fn mark_apply(&mut self, step: Step, now: u64) -> MoveReport {
         self.marks.hold = step.hold;
-        let (pressed_ms, page, restore) = match step.effect {
+        let (move_hold, pressed_ms, page, restore) = match step.effect {
             Effect::None => return MoveReport::Held,
             Effect::Press => return MoveReport::Press,
-            Effect::Mark {
+            Effect::Held {
+                move_hold,
                 pressed_ms,
                 page,
                 restore,
-            } => (pressed_ms, page, restore),
+            } => (move_hold, pressed_ms, page, restore),
         };
         self.navigation.go(To::Restore(Restore {
             ride: restore.ride,
@@ -210,6 +225,16 @@ impl Runtime {
             summary_page: restore.summary_page,
             home_cursor: restore.home_cursor,
         }));
+        match move_hold {
+            MoveHold::Mark => self.mark(pressed_ms, page, now),
+            MoveHold::Extend => self.extend_step(now),
+            MoveHold::StopFollowing => self.stop_following_from_map(now),
+        }
+        self.display.redraw();
+        MoveReport::Held
+    }
+
+    fn mark(&mut self, pressed_ms: u64, page: &'static str, now: u64) {
         let marks = &mut self.marks;
         marks.count = marks.count.saturating_add(1);
         marks.made = Some(Mark {
@@ -221,8 +246,22 @@ impl Runtime {
         let _ = write!(text, "MARK {}", marks.count);
         self.navigation.toast(text.as_str(), Tone::Info, now);
         self.navigation.chime(Cue::Mark);
-        self.display.redraw();
-        MoveReport::Held
+    }
+
+    fn move_hold(&self) -> MoveHold {
+        let ride_shown = self.navigation.page() == Page::Ride
+            && !(self.ride.active().status() == Status::Paused && !self.navigation.pause_hidden());
+        match self.navigation.ride_page() {
+            RidePage::Workout
+                if ride_shown
+                    && self.ride.active().status() == Status::Recording
+                    && self.step_extendable() =>
+            {
+                MoveHold::Extend
+            }
+            RidePage::Map if ride_shown && self.following() => MoveHold::StopFollowing,
+            _ => MoveHold::Mark,
+        }
     }
 }
 
@@ -298,6 +337,7 @@ mod tests {
             received,
             view,
             page: "ride/main",
+            move_hold: MoveHold::Mark,
         }
     }
 
@@ -306,6 +346,7 @@ mod tests {
             since,
             last,
             page: "ride/main",
+            move_hold: MoveHold::Mark,
             before: RIDE,
             after: NEXT,
         })
@@ -317,6 +358,7 @@ mod tests {
             since: 1_000,
             last: 1_000,
             page: "ride/main",
+            move_hold: MoveHold::Mark,
             before: RIDE,
             after: RIDE,
         };
@@ -364,7 +406,8 @@ mod tests {
                 holding(1_000, 2_400),
                 report(true, 2_500, NEXT),
                 Hold::Spent,
-                Effect::Mark {
+                Effect::Held {
+                    move_hold: MoveHold::Mark,
                     pressed_ms: 1_000,
                     page: "ride/main",
                     restore: RIDE,
@@ -390,6 +433,22 @@ mod tests {
                 report(true, 2_600, RIDE),
                 Hold::Spent,
                 Effect::None,
+            ),
+            (
+                "a hold begun on a running step extends it in place of a mark",
+                Hold::Holding(Press {
+                    last: 2_400,
+                    move_hold: MoveHold::Extend,
+                    ..started
+                }),
+                report(true, 2_500, NEXT),
+                Hold::Spent,
+                Effect::Held {
+                    move_hold: MoveHold::Extend,
+                    pressed_ms: 1_000,
+                    page: "ride/main",
+                    restore: NEXT,
+                },
             ),
             (
                 "lost input ends the hold",
@@ -435,6 +494,7 @@ mod tests {
             since: 0,
             last: 0,
             page: "ride",
+            move_hold: MoveHold::Mark,
             before,
             after,
         };

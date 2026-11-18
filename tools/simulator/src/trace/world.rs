@@ -52,6 +52,7 @@ pub enum World<'a> {
     Startup(sensors::Startup),
     Physical(sensors::Snapshot),
     Light(Observation<sensors::Light>),
+    Fitted(sensors::SensorSet),
     Companion(Option<InputSnapshot>),
     /// A hardware random value the card's owner asked for, and one the
     /// access point drew its network from.
@@ -86,6 +87,7 @@ pub enum World<'a> {
         result: Result<(), Error>,
     },
     PowerControl(power::Status),
+    PowerCapabilities(power::Capabilities),
     PowerRequest {
         operation: power::Operation,
         delay_ms: u32,
@@ -163,6 +165,7 @@ pub fn read<'a>(call: &Call<'a>) -> Option<World<'a>> {
         ("Sensors", "startup_status") => World::Startup(Wire::take(r)),
         ("Sensors", "snapshot") => World::Physical(Wire::take(r)),
         ("Sensors", "light") => World::Light(Wire::take(r)),
+        ("Sensors", "fitted") => World::Fitted(Wire::take(r)),
         ("InputObservation", "snapshot") => World::Companion(Wire::take(r)),
         ("ReadWrite", "entropy") => World::Entropy(Wire::take(r)),
         ("AccessPoint", "entropy") => World::AccessPointEntropy(Wire::take(r)),
@@ -207,6 +210,7 @@ pub fn read<'a>(call: &Call<'a>) -> Option<World<'a>> {
             result: Wire::take(r),
         },
         ("PowerControl", "status") => World::PowerControl(Wire::take(r)),
+        ("PowerControl", "capabilities") => World::PowerCapabilities(Wire::take(r)),
         ("PowerControl", "request") => World::PowerRequest {
             operation: Wire::take(r),
             delay_ms: 0,

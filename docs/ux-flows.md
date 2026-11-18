@@ -53,7 +53,7 @@ coloured dot, a headline and, when needed, what to do:
 | GPS | GPS LOCKED | FINDING GPS, you can start anyway | | NO GPS, records without a map |
 | Sensors | n SENSORS LIVE, with their short names | SENSORS WAKING UP, naming the missing ones; HR LOW BATTERY or n BATTERIES TO CHANGE, change it soon, once every sensor is live; SENSORS UNAVAILABLE, turn VANA off and on | HR CRITICAL BATTERY (or n BATTERIES TO CHANGE), change it before riding | NO SENSORS, tap here to pair one |
 | Battery | BATTERY n%, with ABOUT n H LEFT once the drain rate is known; CHARGING n% on USB power | under 30%: charge after the ride | under 15%: charge before riding | BATTERY, while the level is unknown |
-| Storage | ROOM FOR n H; RECORDING while a ride records; LAST RIDE RECOVERED after a recovery | CHECKING STORAGE; ROOM FOR n MIN or UNDER 1 MIN OF ROOM: export old rides; ROOM FOR n H on internal memory | STORAGE FULL: export old rides; STORAGE NOT FORMATTED: off and on to format; STORAGE PROBLEM: turn VANA off and on | |
+| Storage | ROOM FOR n H; RECORDING while a ride records; LAST RIDE RECOVERED after a recovery | CHECKING STORAGE; ROOM FOR n MIN or UNDER 1 MIN OF ROOM: export old rides; ROOM FOR n H on internal memory | STORAGE FULL: export old rides; STORAGE NOT FORMATTED: off and on to format; STORAGE PROBLEM: turn VANA off and on; SYNC RIDES FIRST or CLEAR RIDES FIRST: on the phone page ([Rides kept in memory](#rides-kept-in-memory)) | |
 
 The headline sums them up: READY when every line is green or grey, ALMOST
 READY when a line is amber or red but storage can record, and NOT READY (red)
@@ -500,7 +500,9 @@ and keeps no facts. The same sheet follows an auto-pause (BACK took the pause
 over, so rolling on does not resume the ride under it), a lap (the whole ride
 goes, laps and all) and a 0 km test ride. If the ride cannot be hidden once
 saved, Home says NOT DISCARDED and the ride is kept as any other, with its
-bests and facts.
+bests and facts. A ride kept in memory that the phone has not saved
+([Rides kept in memory](#rides-kept-in-memory)) has no trash cue and cannot
+be discarded.
 
 ### Ride saved
 
@@ -531,7 +533,9 @@ The summary opens with a green check and RIDE SAVED, and pages through:
 MOVE or a swipe turns the page, wrapping. The page dots count the pages:
 three, or four with an elevation page, and one more with the FTP offer
 below. ACT (Done) or BACK goes Home. If the last
-write failed, page 1 says NOT ALL SAVED in amber instead of RIDE SAVED.
+write failed, page 1 says NOT ALL SAVED in amber instead of RIDE SAVED. A
+ride kept in memory that the phone has not saved says SYNC TO SAVE in amber
+instead, with no check.
 
 A ride recorded live that sets a personal best (see Bests below) opens its
 summary with one toast and the best chime: `BEST 5 MIN 312 W`, NEW LONGEST
@@ -614,7 +618,8 @@ read. Climbs and HR RECOVERY come from the ride's facts. Ascent and the
 elevation profile come from the altitude recorded with the ride, with the same
 3 m band as a live ride; a ride recorded without altitude estimates
 its ascent from the recorded gradient and shows no profile. MOVE or a swipe turns the page, BACK returns to
-the list, and ACT (an arrow cue) offers the ride to the phone. A ride whose
+the list, and ACT (an arrow cue) offers the ride to the phone. On a device
+without Wi-Fi these pages show no ACT cue and ACT does nothing. A ride whose
 record cannot be read says RIDE UNREADABLE.
 
 With a card whose FILES store is formatted, a saved ride gets one more page
@@ -627,7 +632,8 @@ the focus on the ride that took its place, and the ride count, the week's
 distance and TSS, FORM, Home's card and the phone's list drop the ride. The
 journal keeps it (`ride-recording.md`, "Discarded and deleted rides"), and
 the bests it set stay. Undated rides newer than it renumber (RIDE n counts
-list places).
+list places). A ride kept in memory that the phone has not saved has no
+delete page.
 
 A ride's facts are what its journal does not hold: the FTP and LTHR in force
 when it was saved, its HR RECOVERY once measured, and the climbs it finished.
@@ -646,6 +652,46 @@ per tick once the list was first opened, about 20 bytes per ride and up to 1,000
 oldest drop out beyond that). Until it has read a journal, the last four rides
 each journal's catalog keeps still show, and a newly saved ride appears at
 once.
+
+## Rides kept in memory
+
+Some devices have no ride storage that survives power-off. Their internal
+journal is in memory, and every ride recorded to it is lost when the device
+turns off. Rides on a memory card are not affected. VANA protects each ride
+in memory from its start until the phone saves a whole copy (see
+[Connect phone](#connect-phone)), or until the rider clears it. While any
+ride is protected:
+
+- Home's status line says NOT SAVED, and the ride pages show a NOT SAVED
+  toast. A low-storage toast takes its place while one shows.
+- The summary and the saved ride say SYNC TO SAVE in place of RIDE SAVED
+  and SAVED RIDE, and so does a toast that would say RIDE SAVED.
+- The TURN OFF sheet says SYNC RIDE FIRST, or SYNC RIDES FIRST for more than
+  one, in place of RIDES ARE SAVED, and shows no ACT corner. Every button
+  closes the sheet, and the device stays on.
+- The idle timer never turns the device off. It refuses with no message,
+  because Home already says NOT SAVED.
+- END RIDE? offers no discard, and the saved ride has no delete page.
+
+A ride counts as saved once the phone page confirms it, and the ride then
+shows as on any other device. The rider loses a protected ride only by
+answering a CLEAR (below), or by a forced reboot: holding BACK for 10 s, a
+crash or a power cut. A forced reboot loses every ride in memory, saved or
+not.
+
+The journal in memory takes 16 rides between clears, saved and unsaved
+alike. After the 16th ride starts, Ready's storage line says SYNC RIDES FIRST
+while any of them is unsaved, else CLEAR RIDES FIRST, over ON THE PHONE
+PAGE, and the headline says NOT READY. Neither ACT nor rolling off starts a
+ride until the rides are cleared.
+
+A CLEAR of the journal in memory, from the phone page's **Clear rides** or
+the terminal's `RIDE CLEAR CONFIRM`, empties it without a question when
+every ride is saved. With unsaved rides the device first asks LOSE n
+UNSAVED RIDES? (LOSE 1 UNSAVED RIDE? for one), over THEY CANNOT COME BACK
+(IT CANNOT COME BACK).
+ACT (red trash cue) clears the journal and the unsaved rides with it. BACK
+keeps every ride, refuses the CLEAR and returns Home.
 
 ## Bests
 
@@ -780,6 +826,34 @@ WI-FI) over TAP TO TRY AGAIN, and a press or a tap starts a new session. A
 session the terminal starts on the home network says ON HOME WI-FI and shows
 only the second code.
 
+A device without Wi-Fi has no phone feature. Settings, DEVICE has no PHONE
+row, and a saved ride offers no send ([Saved rides](#saved-rides)).
+
+On a device that keeps rides in memory
+([Rides kept in memory](#rides-kept-in-memory)), the page marks each
+unsaved ride with "Not saved yet: only this phone can keep it." Its
+**Download .fit** button then saves the ride in four steps:
+
+1. The page fetches the whole FIT file. VANA sends it with a receipt, a
+   number drawn for this download only.
+2. The page checks the file's FIT CRC against the CRC in its last two bytes.
+   A short file, a wrong CRC or a missing receipt fails the save.
+3. The page hands the file to the phone's browser to keep.
+4. The page sends VANA the receipt and the CRC. VANA counts the ride as
+   saved only when both match the newest download of that ride, so an older
+   or cut download confirms nothing.
+
+The page then says "Saved to this phone. VANA no longer needs to keep it."
+Any failure says "Not confirmed:", the reason and "VANA keeps the ride. Try
+again." A saved ride downloads as on any other device.
+
+On such a device the page also shows **Clear rides** under the list, once
+the list is read. It empties the journal in memory, so the next 16 rides can
+start. With unsaved rides the page says "Confirm on the device." while
+VANA asks LOSE n UNSAVED RIDES?, and "Rides kept." when the rider answers
+BACK. A device whose rides survive power-off refuses a clear from the page,
+and the page shows no such button.
+
 ## Buttons
 
 Three buttons control everything, and each keeps one role on every screen:
@@ -789,8 +863,8 @@ shortcut for navigation only; [UI](ui.md#input) gives the gestures.
 | Button | Home | Sensors | Settings | Workouts | Ride |
 | --- | --- | --- | --- | --- | --- |
 | BottomRight (ACT) | Open the focused card | Open the focused row; on a sensor's page, zero a power meter or ask FORGET SENSOR?; answer a question | Act on the row (edit, step a choice, open); while editing, raise it | Choose the focused workout, then Ready | Pause, resume; on the NEW FTP sheet, save it |
-| BottomLeft (MOVE) | Focus the next card; held 1.5 s: mark the moment (MARK n) | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages (a manual pause, or an automatic one without a course, opens on it; an automatic pause on a course opens on the ride page); held 1.5 s: mark the moment (MARK n) |
-| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms | Back a page: SENSORS, then where Sensors opened from | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
+| BottomLeft (MOVE) | Focus the next card; held 1.5 s: mark the moment (MARK n) | Focus the next row (wraps); on a power meter's page, ask FORGET SENSOR? | Next row, into the next section; while editing, lower it | Focus the next workout (wraps; held, four on) | Next page (wraps); while paused, the paused screen is one of the pages (a manual pause, or an automatic one without a course, opens on it; an automatic pause on a course opens on the ride page); held 1.5 s: mark the moment (MARK n), except on the workout page during a running step, where it extends the step (+1 MIN, +0.5 KM), and on the map while following a course, where it stops following (COURSE OFF) |
+| TopLeft (BACK / MARK) | Turn off, after the TURN OFF sheet confirms, on a device that can turn off | Back a page: SENSORS, then where Sensors opened from | Home; while editing, finish | Home | LAP while recording, which during a workout also ends the step (next step); asks END RIDE? while paused; on the NEW FTP sheet, keep the old FTP |
 
 | Button | Ready | End ride? | Summary | Rides | Saved ride |
 | --- | --- | --- | --- | --- | --- |
@@ -805,7 +879,11 @@ and a `MARK n` toast that counts the marks since power-on, so it confirms with
 SOUNDS OFF too. The hold's first report is an ordinary MOVE; the mark puts
 back the page or focus it changed, and the repeats before it change nothing.
 The mark names the time of that first report and the page shown before it.
-Lists and Settings keep their own held MOVE, so nothing marks there.
+Lists and Settings keep their own held MOVE, so nothing marks there. Two
+ride pages give the hold the job touch does there: on the workout page during
+a running step it extends the step, and on the map while a course is
+followed it stops following. Both put the page back as a mark does, and mark
+nothing.
 
 Holding TopLeft for 10 s reboots the device from any state, even one that
 draws nothing. The device firmware watches for it below VANA, so a stuck

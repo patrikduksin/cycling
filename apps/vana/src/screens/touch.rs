@@ -34,7 +34,8 @@
 //! last touch edge starts a new one, while a finger that keeps reporting
 //! stays blocked.
 use super::home::Tile;
-use device_api::input::{Input, Point, STALE_CONTACT_MS};
+use device_api::input::{Point, STALE_CONTACT_MS};
+use firmware_shell::input::Input;
 use heapless::Vec;
 
 /// A tap moves less than this in either axis.
@@ -669,8 +670,8 @@ mod tests {
         let tap = contact(&mut t, ON_PAGE, &[(50, 50)], 100);
         assert_eq!(tap.last(), Some(&Activated(Control::ExtendStep)));
         // A stray release or a button changes nothing.
-        let button = Input::Button {
-            button: device_api::input::Button::BottomLeft,
+        let button = Input::Press {
+            role: device_api::input::Role::Move,
             code: 1,
         };
         assert!(t.feed(Input::Release, 200, A, |_| ON_PAGE).is_empty());
@@ -834,8 +835,18 @@ mod tests {
             }
         }
         fn consume(touches: &mut Touches, edges: &mut Edges) -> std::vec::Vec<TouchEvent> {
+            use device_api::input::Input as Device;
             core::iter::from_fn(|| edges.pop())
-                .flat_map(|edge| touches.feed(edge.input, edge.received_ms, A, |_| ON_PAGE))
+                .map(|edge| {
+                    let input = match edge.input {
+                        Device::Touch(point) => Input::Touch(point),
+                        Device::Release => Input::Release,
+                        Device::Cancel => Input::Cancel,
+                        Device::Button { .. } => unreachable!("only the panel produces here"),
+                    };
+                    (input, edge.received_ms)
+                })
+                .flat_map(|(input, at)| touches.feed(input, at, A, |_| ON_PAGE))
                 .filter(|event| matches!(event, Activated(_)))
                 .collect()
         }

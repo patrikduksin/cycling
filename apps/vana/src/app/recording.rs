@@ -20,8 +20,14 @@ impl Runtime {
         self.ride.journals_at_boot()
     }
 
-    pub fn recording(&self) -> bool {
-        self.ride.recording()
+    pub fn recorder_busy(&self) -> bool {
+        self.ride.busy()
+    }
+
+    /// Rides on a volatile journal that the phone has not confirmed: every
+    /// controlled way of losing RAM waits until this is false.
+    pub fn holds_unsynced(&self) -> bool {
+        self.sync.count() > 0
     }
 
     /// Pause, resume or start the ride from its speed source (see `ride::auto`),
@@ -78,6 +84,7 @@ impl Runtime {
             self.ride
                 .set_laps_by_distance(self.training.player.is_none());
         }
+        self.protect_open_ride();
         let ended = self.ride.finish_pass();
         let (ride, player) = (&self.ride, self.training.player.as_ref());
         let saved = |medium: Medium| Saved {

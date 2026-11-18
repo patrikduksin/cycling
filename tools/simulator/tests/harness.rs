@@ -1,4 +1,3 @@
-use device_api::input::Button;
 use device_api::input::Input;
 use device_api::observation::Availability;
 
@@ -16,7 +15,13 @@ use std::fmt::Write;
 type TestShell = Shell<DisplayDevice, InputDevice, PowerDevice, Memory>;
 fn shell(w: usize, h: usize) -> (TestShell, DisplayDevice, InputDevice) {
     let d = DisplayDevice::new(w, h);
-    let i = InputDevice::new(&[Button::TopLeft], Availability::Ready);
+    let i = InputDevice::new(
+        device_api::input::Fixtures::new(&[device_api::input::Fixture {
+            id: 0,
+            role: Some(device_api::input::Role::Back),
+        }]),
+        Availability::Ready,
+    );
     let mut s = Shell::new(
         d.clone(),
         i.clone(),
@@ -168,13 +173,7 @@ fn timed_consumer_wake_physical_counters_and_expiry_cancel() {
     assert_eq!(s.routed_events, 0);
     s.tick(2000);
     assert_eq!(s.synthetic_events, 2); // Expiry emits a cancellation through the consumer.
-    physical.push(
-        2001,
-        Input::Button {
-            button: Button::TopLeft,
-            code: 1,
-        },
-    );
+    physical.push(2001, Input::Button { id: 0, code: 1 });
     s.tick(2001);
     assert_eq!(s.input_events, 1);
     assert_eq!(s.routed_events, 1);
@@ -584,13 +583,7 @@ fn press_to_frame_latency_counts_from_when_the_press_happened() {
     static NOW: AtomicU64 = AtomicU64::new(0);
     let (mut s, _, physical) = shell(32, 24);
     s.clock = Some(|| NOW.load(Ordering::Relaxed));
-    physical.push(
-        100,
-        Input::Button {
-            button: Button::TopLeft,
-            code: 1,
-        },
-    );
+    physical.push(100, Input::Button { id: 0, code: 1 });
     // The press waited behind other work and is consumed later.
     NOW.store(130, Ordering::Relaxed);
     s.tick(130);

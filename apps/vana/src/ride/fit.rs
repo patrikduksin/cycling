@@ -48,6 +48,7 @@
 //! Other totals use the ride page's rules too (`Totals`, and `Lap` for each
 //! lap; a lap's ascent and descent are the session's over its time).
 
+use crate::Product;
 use crate::ride::laps::Lap;
 use crate::ride::log::{self, Entry, Kind, LapStart, Sample, Slot, Timeline};
 use crate::ride::rider::Rider;
@@ -56,11 +57,8 @@ use firmware_services::fit::{
     self, BaseType, Counter, Field, Message, Sink, Value, Writer, semicircles,
 };
 
-/// Product name in `file_id` and `device_info`.
-const PRODUCT_NAME: &str = "VANA C606";
 /// Garmin's manufacturer id for development and unregistered devices.
 const MANUFACTURER_DEVELOPMENT: u16 = 255;
-const PRODUCT: u16 = 606;
 /// Software version times 100, from the crate version.
 const SOFTWARE_VERSION: u16 = software_version();
 
@@ -279,6 +277,8 @@ pub const LATE_STRETCHES: usize = 8;
 pub struct Plan {
     /// Bytes of the complete file.
     pub size: u32,
+    /// The file CRC this pass wrote, its last two bytes.
+    pub crc: u16,
     /// UTC minus active time of the ride's first dated sample.
     pub offset_ms: Option<u64>,
     pub samples: u32,
@@ -365,6 +365,7 @@ impl Export {
     pub fn start(
         ride_id: u32,
         rider: Rider,
+        product: &Product,
         plan: Option<&Plan>,
         clock: Option<u64>,
         out: &mut impl Sink,
@@ -413,10 +414,10 @@ impl Export {
             &[
                 Value::Enum(Some(FILE_ACTIVITY)),
                 Value::U16(Some(MANUFACTURER_DEVELOPMENT)),
-                Value::U16(Some(PRODUCT)),
+                Value::U16(Some(product.fit_id)),
                 Value::U32z(Some(ride_id)),
                 Value::U32(created),
-                Value::Str(PRODUCT_NAME),
+                Value::Str(product.name),
             ],
         );
         export.writer.record(
@@ -426,9 +427,9 @@ impl Export {
                 Value::U32(created),
                 Value::U8(Some(0)),
                 Value::U16(Some(MANUFACTURER_DEVELOPMENT)),
-                Value::U16(Some(PRODUCT)),
+                Value::U16(Some(product.fit_id)),
                 Value::U16(Some(SOFTWARE_VERSION)),
-                Value::Str(PRODUCT_NAME),
+                Value::Str(product.name),
             ],
         );
         export
@@ -801,9 +802,10 @@ impl Export {
                 Value::Enum(Some(EVENT_TYPE_STOP)),
             ],
         );
-        self.writer.finish(out);
+        let crc = self.writer.finish(out);
         Plan {
             size: self.writer.written() as u32,
+            crc,
             offset_ms: self.first_offset_ms,
             samples: self.samples,
             laps: self.laps,
@@ -851,11 +853,12 @@ pub fn write_all<S: core::borrow::Borrow<Slot>>(
     slots: impl Iterator<Item = S> + Clone,
     ride_id: u32,
     rider: Rider,
+    product: &Product,
     start_utc_ms: Option<u64>,
     out: &mut impl Sink,
 ) -> Result<Plan, Refusal> {
     let mut counter = Counter::default();
-    let mut sizing = Export::start(ride_id, rider, None, None, &mut counter);
+    let mut sizing = Export::start(ride_id, rider, product, None, None, &mut counter);
     for slot in slots.clone() {
         if sizing.slot(slot.borrow(), &mut counter) == Flow::End {
             break;
@@ -863,7 +866,7 @@ pub fn write_all<S: core::borrow::Borrow<Slot>>(
     }
     let plan = sizing.finish(&mut counter);
     let clock = clock_for(&plan, start_utc_ms)?;
-    let mut export = Export::start(ride_id, rider, Some(&plan), clock, out);
+    let mut export = Export::start(ride_id, rider, product, Some(&plan), clock, out);
     for slot in slots {
         if export.slot(slot.borrow(), out) == Flow::End {
             break;

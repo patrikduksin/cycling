@@ -1,5 +1,4 @@
-use device_api::input::Button;
-use device_api::input::Input;
+use device_api::input::{Fixture, Fixtures, Input};
 use device_api::observation::Availability;
 use firmware_shell::shell::Shell;
 use shell_simulator::devices::DisplayDevice;
@@ -52,11 +51,9 @@ fn main() {
         return;
     }
 
-    for (width, height, buttons) in [
-        (240, 320, &[Button::TopLeft][..]),
-        (128, 64, &[Button::Center][..]),
-    ] {
+    for (width, height, id) in [(240, 320, 0), (128, 64, 3)] {
         let display = DisplayDevice::new(width, height);
+        let buttons = Fixtures::new(&[Fixture { id, role: None }]);
         let input = InputDevice::new(buttons, Availability::Unsupported);
         let power = PowerDevice::new(Availability::Unsupported);
         let memory = Memory {
@@ -66,7 +63,7 @@ fn main() {
         let journal = memory.journal();
         let mut shell =
             Shell::new(display.clone(), input.clone(), power, memory, journal, 0).unwrap();
-        shell.observe_position(&shell_simulator::devices::NoPosition, 0);
+        shell.observe_position(&device_api::Absent, 0);
         shell.tick(0);
         shell.present();
         let lit = display
@@ -76,18 +73,12 @@ fn main() {
             .iter()
             .filter(|v| **v != 0)
             .count();
-        input.push(
-            10,
-            Input::Button {
-                button: buttons[0],
-                code: 1,
-            },
-        );
+        input.push(10, Input::Button { id, code: 1 });
         shell.tick(10);
         shell.present();
         println!(
             "geometry={width}x{height} control={:?} first_lit_pixels={lit} screen={:?} submissions={} power=unsupported storage={} positioning=unsupported ble=unsupported ant=unsupported network=unsupported",
-            buttons[0],
+            id,
             shell.foreground,
             display.0.borrow().submissions,
             shell.settings_source.name()

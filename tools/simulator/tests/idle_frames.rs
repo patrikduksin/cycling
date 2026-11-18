@@ -1,6 +1,6 @@
 //! An idle screen draws at its page's pace and no faster: once a second for
 //! still pages, twice while something animates, such as the charging battery.
-use device_api::input::Button;
+use device_api::input::Role;
 use shell_simulator::ant::device_type;
 use shell_simulator::sim::{Sim, seconds};
 
@@ -34,7 +34,7 @@ fn go_home(sim: &mut Sim) {
         if sim.on_home() {
             return;
         }
-        sim.press(Button::TopLeft);
+        sim.press(Role::Back);
     }
     panic!("not back on Home; screen:\n{}", sim.screen().text());
 }
@@ -98,7 +98,7 @@ fn a_paused_ride_draws_twice_a_second_on_every_page() {
     while !sim.screen().contains("RIDE TIME") {
         let page = sim.screen().page().unwrap_or_default();
         expect_pace(&mut sim, &format!("paused, ride page {page}"), ANIMATED);
-        sim.press(Button::BottomLeft);
+        sim.press(Role::Move);
         pages += 1;
         assert!(pages <= 8, "ride pages never returned to the paused screen");
     }

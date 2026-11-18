@@ -7,12 +7,17 @@
 build.sh, flash, backup and the other device tasks read the manifest that
 `--device <name>` (CYCLING_DEVICE) selects; it may be left out while exactly one exists.
 
-Test-only models in tools/simulator/models/<name>.toml declare only [device], [panel] and
-[controls]. They feed tools/simulator/src/models.rs and nothing that builds firmware.
+Test-only models in tools/simulator/models/<name>.toml declare only [device], [panel],
+[controls], [fitted] and, optionally, memory-backed [owned] ranges. They feed
+tools/simulator/src/models.rs and nothing that builds firmware.
+
+An [owned] range is flash-backed (offset, size, within), which survives power-off, or
+memory-backed (memory = "psram" or "ram", size), which never does.
 """
 
 import argparse
 import itertools
+import json
 import os
 import re
 import shlex
@@ -34,9 +39,15 @@ LIMITS_RS = ROOT / 'apps' / 'vana' / 'src' / 'screens' / 'limits.rs'
 ERASE_SECTOR = 0x1000
 HARDWARE_FEATURE = 'hardware'
 REGIONS = ('configuration', 'data', 'crash', 'intent')
-BUTTONS_BY_ID = ('TopLeft', 'BottomLeft', 'BottomRight', 'Center')
+MEMORIES = ('psram', 'ram')
 ROLES = ('act', 'back', 'move')
 MIN_BUTTONS = 3
+MAX_BUTTONS = 8
+MAX_BUTTON_ID = 255
+MAX_PRODUCT_BYTES = 15
+MAX_FIT_PRODUCT = 0xFFFF
+FITTED = ('gps', 'ant', 'ble', 'wifi', 'sound', 'shutdown', 'card', 'barometer', 'light')
+SENSORS = ('barometer', 'light')
 NAME = r'[a-z][a-z0-9-]{0,15}'
 RESERVED_NAMES = ('virtual',)
 BASE_PANEL = (240, 320)
@@ -83,10 +94,19 @@ class Owned:
     offset: int
     size: int
     within: str
+    durable = True
 
     @property
     def end(self):
         return self.offset + self.size
+
+
+@dataclass(frozen=True)
+class Memory:
+    region: str
+    memory: str
+    size: int
+    durable = False
 
 
 @dataclass(frozen=True)
@@ -98,10 +118,14 @@ class Fixture:
 @dataclass(frozen=True)
 class Model:
     name: str
+    product: str
+    fit_product: int
     width: int
     height: int
     touch: bool
     buttons: tuple[Fixture, ...]
+    fitted: dict[str, bool]
+    memory: tuple[Memory, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -119,18 +143,19 @@ class Device:
     variants: dict[str, str]
     partition_table: int
     partitions: tuple[Partition, ...]
-    owned: tuple[Owned, ...]
+    owned: tuple[Owned | Memory, ...]
     model: Model
 
     @property
     def name(self):
         return self.model.name
 
+    @property
+    def flash(self):
+        return tuple(r for r in self.owned if isinstance(r, Owned))
+
     def partition(self, name):
         return next(p for p in self.partitions if p.name == name)
-
-    def region(self, name):
-        return next(r for r in self.owned if r.region == name)
 
     @property
     def slots(self):
@@ -140,12 +165,12 @@ class Device:
     def image_cap(self):
         room = [p.size for p in self.slots]
         for slot in self.slots:
-            room += [r.offset - slot.offset for r in self.owned if r.within == slot.name]
+            room += [r.offset - slot.offset for r in self.flash if r.within == slot.name]
         return min(room)
 
     @property
     def owned_tail(self):
-        inside = [r for r in self.owned if r.within in {p.name for p in self.slots}]
+        inside = [r for r in self.flash if r.within in {p.name for p in self.slots}]
         start = min(r.offset for r in inside)
         return start, max(r.end for r in inside) - start
 
@@ -198,7 +223,7 @@ def parse(path):
 
 
 def build(raw, root):
-    table(raw, 'the manifest', ('device', 'build', 'partitions', 'owned', 'panel', 'controls'))
+    table(raw, 'the manifest', ('device', 'build', 'partitions', 'owned', 'panel', 'controls', 'fitted'))
     spec = table(
         raw['build'],
         '[build]',
@@ -212,11 +237,8 @@ def build(raw, root):
         Partition(**table(row, f'[partitions] row {index}', ('name', 'type', 'subtype', 'offset', 'size')))
         for index, row in enumerate(rows)
     )
-    owned = tuple(
-        Owned(region, **table(value, f'[owned].{region}', ('offset', 'size', 'within')))
-        for region, value in table(raw['owned'], '[owned]', REGIONS).items()
-    )
-    model = build_model(raw)
+    owned = tuple(owned_range(region, value) for region, value in table(raw['owned'], '[owned]', REGIONS).items())
+    model = build_model(raw, tuple(r for r in owned if isinstance(r, Memory)))
     return Device(
         root=root,
         chip=spec['chip'],
@@ -236,27 +258,47 @@ def build(raw, root):
     )
 
 
-def build_model(raw):
-    identity = table(raw['device'], '[device]', ('name',))
+def owned_range(region, value):
+    where = f'[owned].{region}'
+    if isinstance(value, dict) and 'memory' in value:
+        return Memory(region, **table(value, where, ('memory', 'size')))
+    return Owned(region, **table(value, where, ('offset', 'size', 'within')))
+
+
+def build_model(raw, memory=()):
+    identity = table(raw['device'], '[device]', ('name', 'product', 'fit_product'))
     panel = table(raw['panel'], '[panel]', ('width', 'height'))
     controls = table(raw['controls'], '[controls]', ('touch', 'buttons'))
     buttons = tuple(
         Fixture(**{'role': None} | table(button, f'[controls] button {index}', ('id',), optional=('role',)))
         for index, button in enumerate(controls['buttons'])
     )
-    return Model(identity['name'], panel['width'], panel['height'], controls['touch'], buttons)
+    fitted = table(raw['fitted'], '[fitted]', FITTED)
+    return Model(
+        identity['name'],
+        identity['product'],
+        identity['fit_product'],
+        panel['width'],
+        panel['height'],
+        controls['touch'],
+        buttons,
+        {fact: fitted[fact] for fact in FITTED},
+        memory,
+    )
 
 
 def parse_test_model(path):
     try:
         raw = tomllib.loads(path.read_text())
-        table(raw, 'the model', ('device', 'panel', 'controls'))
-        model = build_model(raw)
+        table(raw, 'the model', ('device', 'panel', 'controls', 'fitted'), optional=('owned',))
+        owned = table(raw.get('owned', {}), '[owned]', (), optional=REGIONS)
+        ranges = tuple(owned_range(region, value) for region, value in owned.items())
+        if flash := [r.region for r in ranges if not isinstance(r, Memory)]:
+            raise ManifestError(f'owned range {flash[0]} must be memory-backed: a test model has no flash')
+        model = build_model(raw, ranges)
         if model.name != path.stem:
             raise ManifestError(f'[device].name {model.name!r} must match its file name {path.stem!r}')
-        check_name(model)
-        check_panel(model)
-        check_buttons(model)
+        check_model(model)
     except (tomllib.TOMLDecodeError, ManifestError) as error:
         raise ManifestError(f'{path.relative_to(ROOT) if path.is_relative_to(ROOT) else path}: {error}') from None
     return model
@@ -265,12 +307,19 @@ def parse_test_model(path):
 def check(device, root):
     if device.name != root.name:
         raise ManifestError(f'[device].name {device.name!r} must match its directory {root.name!r}')
-    check_name(device.model)
     check_cargo(device, root / 'Cargo.toml')
     check_partitions(device)
     check_owned(device)
-    check_panel(device.model)
-    check_buttons(device.model)
+    check_model(device.model)
+
+
+def check_model(model):
+    check_name(model)
+    check_product(model)
+    check_panel(model)
+    check_buttons(model)
+    check_fitted(model)
+    check_memory(model)
 
 
 def check_name(model):
@@ -278,6 +327,37 @@ def check_name(model):
         raise ManifestError(f'[device].name {model.name!r} must match {NAME}')
     if model.name in RESERVED_NAMES:
         raise ManifestError(f"[device].name {model.name!r} is reserved for the simulator's sized shell sessions")
+
+
+def check_product(model):
+    product = model.product
+    if not (isinstance(product, str) and product.isascii() and product.isprintable()):
+        raise ManifestError(f'[device].product {product!r} must be printable ASCII: the FIT product name is ASCII')
+    if not 1 <= len(product) <= MAX_PRODUCT_BYTES:
+        raise ManifestError(
+            f'[device].product {product!r} must be 1 to {MAX_PRODUCT_BYTES} bytes: '
+            'the FIT product name is 16 bytes with its terminator'
+        )
+    fit = model.fit_product
+    if type(fit) is not int or not 0 <= fit <= MAX_FIT_PRODUCT:
+        raise ManifestError(f'[device].fit_product {fit!r} must be an integer from 0 to {MAX_FIT_PRODUCT}')
+
+
+def check_fitted(model):
+    if wrong := [fact for fact, value in model.fitted.items() if not isinstance(value, bool)]:
+        raise ManifestError(f'[fitted] {", ".join(wrong)} must be true or false')
+
+
+def check_memory(model):
+    for r in model.memory:
+        if r.memory not in MEMORIES:
+            raise ManifestError(f'owned range {r.region} must name memory "psram" or "ram", not {r.memory!r}')
+        if type(r.size) is not int or r.size <= 0 or not aligned(r.size):
+            raise ManifestError(
+                f'owned range {r.region} must be a nonzero run of whole {ERASE_SECTOR:#x}-byte erase sectors'
+            )
+    if any(r.region == 'data' for r in model.memory) and not model.fitted['wifi']:
+        raise ManifestError('a memory-backed data range needs Wi-Fi: only the phone can keep its rides')
 
 
 def check_cargo(device, path):
@@ -335,7 +415,7 @@ def check_partitions(device):
 
 def check_owned(device):
     names = {p.name for p in device.partitions}
-    for r in device.owned:
+    for r in device.flash:
         if r.within not in names:
             raise ManifestError(f'owned range {r.region} is within unknown partition {r.within!r}')
         partition = device.partition(r.within)
@@ -343,12 +423,12 @@ def check_owned(device):
             raise ManifestError(f'owned range {r.region} must lie inside its partition {r.within}')
         if not aligned(r.offset, r.size):
             raise ManifestError(f'owned range {r.region} must be aligned to the {ERASE_SECTOR:#x}-byte erase sector')
-    ranges = sorted(device.owned, key=lambda r: r.offset)
+    ranges = sorted(device.flash, key=lambda r: r.offset)
     for a, b in itertools.pairwise(ranges):
         if a.end > b.offset:
             raise ManifestError(f'owned ranges {a.region} and {b.region} overlap')
     holding = {r.within for r in ranges} & {slot.name for slot in device.slots}
-    if len(holding) != 1:
+    if ranges and len(holding) != 1:
         raise ManifestError('owned ranges must close exactly one application slot, so a flash preserves one span')
     for slot in device.slots:
         inside = [r for r in ranges if r.within == slot.name]
@@ -377,12 +457,12 @@ def check_buttons(model):
     ids = [b.id for b in model.buttons]
     if len(ids) < MIN_BUTTONS:
         raise ManifestError(f'a device needs at least {MIN_BUTTONS} buttons, one per role')
+    if len(ids) > MAX_BUTTONS:
+        raise ManifestError(f'a device has at most {MAX_BUTTONS} buttons, device_api::input::MAX_BUTTONS')
+    if any(type(i) is not int or not 0 <= i <= MAX_BUTTON_ID for i in ids):
+        raise ManifestError(f'button ids are integers from 0 to {MAX_BUTTON_ID}')
     if len(set(ids)) != len(ids):
         raise ManifestError('two buttons share an id')
-    if any(not 0 <= i < len(BUTTONS_BY_ID) for i in ids):
-        raise ManifestError(f'button ids run from 0 to {len(BUTTONS_BY_ID) - 1}')
-    if ids != sorted(ids):
-        raise ManifestError('list buttons in ascending id order: a trace records them as a set')
     roles = [b.role for b in model.buttons if b.role is not None]
     if unknown := set(roles) - set(ROLES):
         raise ManifestError(f'unknown button roles: {", ".join(sorted(unknown))}')
@@ -417,27 +497,62 @@ def selected(name=None):
     return parse(path)
 
 
+def rust_bool(value):
+    return 'true' if value else 'false'
+
+
+def rust_product(model):
+    return f'Product {{ name: {json.dumps(model.product)}, fit_id: {model.fit_product} }}'
+
+
+def rust_fixtures(model):
+    def role(b):
+        return 'None' if b.role is None else f'Some(Role::{b.role.capitalize()})'
+
+    return 'Fixtures::new(&[' + ''.join(f'Fixture {{ id: {b.id}, role: {role(b)} }},' for b in model.buttons) + '])'
+
+
+def rust_sensors(model):
+    return 'SensorSet { ' + ', '.join(f'{s}: {rust_bool(model.fitted[s])}' for s in SENSORS) + ' }'
+
+
 def fitted_rs(device):
-    buttons = ', '.join(f'Button::{BUTTONS_BY_ID[b.id]}' for b in device.model.buttons)
-    regions = ', '.join(f'("{r}", Region::{r.capitalize()})' for r in REGIONS)
-    arms = '\n'.join(
-        f'        Region::{r.region.capitalize()} => ({r.offset:#x}, {r.size:#x}),'
-        for r in sorted(device.owned, key=lambda r: REGIONS.index(r.region))
+    model = device.model
+    if model.memory:
+        raise ManifestError(
+            f'owned range {model.memory[0].region} is memory-backed, and {device.name} has no driver that backs it yet'
+        )
+    facts = ''.join(
+        f'pub const {fact.upper()}: bool = {rust_bool(model.fitted[fact])};\n' for fact in FITTED if fact not in SENSORS
     )
+    regions = ', '.join(f'("{r}", Region::{r.capitalize()})' for r in REGIONS)
+    ranges = sorted(device.owned, key=lambda r: REGIONS.index(r.region))
+    arms = '\n'.join(f'        Region::{r.region.capitalize()} => ({r.offset:#x}, {r.size:#x}),' for r in ranges)
+    durable = '\n'.join(f'        Region::{r.region.capitalize()} => {rust_bool(r.durable)},' for r in ranges)
     text = f"""//! Generated by `cycling devices` from devices/{device.name}/device.toml; edit the manifest, then rerun it.
 
-use device_api::input::Button;
+use device_api::input::{{Fixture, Fixtures, Role}};
+use device_api::sensors::SensorSet;
 use device_api::storage::Region;
 
 pub const NAME: &str = "{device.name}";
-pub const PANEL_WIDTH: usize = {device.model.width};
-pub const PANEL_HEIGHT: usize = {device.model.height};
-pub const BUTTONS: &[Button] = &[{buttons}];
+pub const PRODUCT_NAME: &str = {json.dumps(model.product)};
+pub const FIT_PRODUCT: u16 = {model.fit_product};
+pub const PANEL_WIDTH: usize = {model.width};
+pub const PANEL_HEIGHT: usize = {model.height};
+pub const BUTTONS: Fixtures = {rust_fixtures(model)};
+{facts}pub const SENSORS: SensorSet = {rust_sensors(model)};
 pub const REGIONS: &[(&str, Region)] = &[{regions}];
 
 pub const fn owned(region: Region) -> (u32, usize) {{
     match region {{
 {arms}
+    }}
+}}
+
+pub const fn durable(region: Region) -> bool {{
+    match region {{
+{durable}
     }}
 }}
 """
@@ -447,23 +562,30 @@ pub const fn owned(region: Region) -> (u32, usize) {{
 def models_rs(found):
     def constant(model):
         name = const_name(model)
-        buttons = ', '.join(f'Button::{BUTTONS_BY_ID[b.id]}' for b in model.buttons)
+        facts = ', '.join(f'{fact}: {rust_bool(model.fitted[fact])}' for fact in FITTED if fact not in SENSORS)
+        memory = ', '.join(f'(Region::{r.region.capitalize()}, {r.size:#x})' for r in model.memory)
         return f"""static {name}_LAYOUT: Layout = Layout::of(Scaled::of({model.width}, {model.height}));
 pub const {name}: Model = Model {{
     name: "{model.name}",
+    product: {rust_product(model)},
     width: {model.width},
     height: {model.height},
-    touch: {'true' if model.touch else 'false'},
-    buttons: &[{buttons}],
+    touch: {rust_bool(model.touch)},
+    buttons: {rust_fixtures(model)},
     layout: &{name}_LAYOUT,
+    fitted: Fitted {{ {facts}, sensors: {rust_sensors(model)} }},
+    memory: &[{memory}],
 }};
 """
 
     every = ', '.join(f'&{const_name(model)}' for model in found)
     text = f"""//! Generated by `cycling devices` from devices/*/device.toml and tools/simulator/models/*.toml; edit those, then rerun it.
 
-use crate::devices::Model;
-use device_api::input::Button;
+use crate::devices::{{Fitted, Model}};
+use device_api::input::{{Fixture, Fixtures, Role}};
+use device_api::sensors::SensorSet;
+use device_api::storage::Region;
+use vana::Product;
 use vana::screens::Layout;
 use vana::screens::scaled::Scaled;
 
@@ -557,9 +679,9 @@ def expected_fitted(device):
         'device': device.name,
         'width': device.model.width,
         'height': device.model.height,
-        'buttons': ','.join(str(b.id) for b in device.model.buttons),
+        'buttons': ','.join(str(b.id) if b.role is None else f'{b.id}:{b.role}' for b in device.model.buttons),
     }
-    for r in device.owned:
+    for r in device.flash:
         fields |= {f'{r.region}_offset': r.offset, f'{r.region}_size': r.size, f'{r.region}_erase': ERASE_SECTOR}
     return fields
 
@@ -580,6 +702,15 @@ def compare_fitted(device, reply):
     fitted = reply.get('touch') not in (None, 'unsupported')
     if fitted != device.model.touch:
         problems.append(f'touch: unit {reply.get("touch")!r}, manifest fitted={device.model.touch}')
+    shutdown = reply.get('shutdown')
+    if shutdown == 'unknown':
+        print('note: shutdown=unknown is a runtime state, not a fitting; the unit cannot tell yet')
+    elif shutdown != ('supported' if device.model.fitted['shutdown'] else 'unsupported'):
+        problems.append(f'shutdown: unit {shutdown!r}, manifest fitted={device.model.fitted["shutdown"]}')
+    for sensor in SENSORS:
+        want = device.model.fitted[sensor]
+        if reply.get(sensor) != ('fitted' if want else 'absent'):
+            problems.append(f'{sensor}: unit {reply.get(sensor)!r}, manifest fitted={want}')
     return problems
 
 

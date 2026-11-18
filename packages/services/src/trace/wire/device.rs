@@ -5,7 +5,7 @@ use device_api::bulk;
 use device_api::connectivity::{self, Text};
 use device_api::display;
 use device_api::gps;
-use device_api::input::{Button, Controls, Edge, Input, InputSnapshot, Point};
+use device_api::input::{Controls, Edge, Fixture, Fixtures, Input, InputSnapshot, Point, Role};
 use device_api::observation::{Availability, Observation};
 use device_api::position_control;
 use device_api::positioning;
@@ -53,7 +53,7 @@ impl<'a, T: Wire<'a>> Wire<'a> for Observation<T> {
 
 codes! {
     Availability { Unsupported = 0, Initializing = 1, Unconfigured = 2, Ready = 3, Failed = 4 }
-    Button { TopLeft = 0, BottomLeft = 1, BottomRight = 2, Center = 3 }
+    Role { Act = 0, Back = 1, Move = 2 }
     ant::LinkState {
         Idle = 0, Connecting = 1, Connected = 2, Disconnecting = 3, Disconnected = 4,
         TimedOut = 5, TransportLost = 6,
@@ -139,6 +139,8 @@ record! {
     sensors::Motion { axes }
     sensors::Identity { fields }
     sensors::Snapshot { pressure, motion, identity, reports, invalid_reports, losses }
+    sensors::SensorSet { barometer, light }
+    Fixture { id, role }
     InputSnapshot {
         battery, power, button_counts, touch_available, touch_errors, companion_valid,
         companion_bad_crc, uart_errors, input_lost,
@@ -151,7 +153,7 @@ record! {
     bulk::Info { sectors, sector_size, clock_hz, bus_width, reads, failures, last_read_us }
     bulk::OwnedInfo { start_sector, sectors, sector_size }
     display::Geometry { width, height }
-    storage::Geometry { capacity, program_size, erase_size }
+    storage::Geometry { capacity, program_size, erase_size, durable }
     ble_transport::Selection { name, address, service, characteristic }
     ble_transport::Discovery { name, address, random, rssi }
     connectivity::ControlStatus { sequence, operation, error }
@@ -180,9 +182,9 @@ impl Wire<'_> for Input {
             }
             Self::Release => w.byte(1),
             Self::Cancel => w.byte(2),
-            Self::Button { button, code } => {
+            Self::Button { id, code } => {
                 w.byte(3);
-                button.put(w);
+                id.put(w);
                 code.put(w);
             }
         }
@@ -193,7 +195,7 @@ impl Wire<'_> for Input {
             1 => Self::Release,
             2 => Self::Cancel,
             3 => Self::Button {
-                button: Button::take(r),
+                id: u8::take(r),
                 code: u16::take(r),
             },
             _ => {
@@ -478,50 +480,30 @@ impl Wire<'_> for display::Rows {
 
 impl Wire<'_> for Controls {
     fn put(&self, w: &mut Writer) {
-        debug_assert!(
-            self.buttons
-                .windows(2)
-                .all(|pair| pair[0].index() < pair[1].index()),
-            "buttons must be listed in ascending order: the set they encode as keeps none"
-        );
         self.touch.put(w);
-        w.byte(
-            self.buttons
-                .iter()
-                .fold(0, |set, button| set | 1 << button.index()),
-        );
+        let buttons = self.buttons.as_slice();
+        w.byte(buttons.len() as u8);
+        for fixture in buttons {
+            fixture.put(w);
+        }
     }
     fn take(r: &mut Reader<'_>) -> Self {
-        const ALL: [Button; 4] = [
-            Button::TopLeft,
-            Button::BottomLeft,
-            Button::BottomRight,
-            Button::Center,
-        ];
-        static SETS: [([Button; 4], usize); 16] = {
-            let mut sets = [([Button::TopLeft; 4], 0); 16];
-            let mut set = 0;
-            while set < 16 {
-                let mut index = 0;
-                while index < 4 {
-                    if set & 1 << index != 0 {
-                        sets[set].0[sets[set].1] = ALL[index];
-                        sets[set].1 += 1;
-                    }
-                    index += 1;
-                }
-                set += 1;
-            }
-            sets
-        };
         let touch = Wire::take(r);
-        let (buttons, len) = SETS.get(usize::from(r.byte())).unwrap_or_else(|| {
+        let len = usize::from(r.byte());
+        if len > device_api::input::MAX_BUTTONS {
             r.fail();
-            &SETS[0]
-        });
+            return Self {
+                touch,
+                buttons: Fixtures::NONE,
+            };
+        }
+        let mut list = [Fixture { id: 0, role: None }; device_api::input::MAX_BUTTONS];
+        for fixture in &mut list[..len] {
+            *fixture = Fixture::take(r);
+        }
         Self {
             touch,
-            buttons: &buttons[..*len],
+            buttons: Fixtures::new(&list[..len]),
         }
     }
 }

@@ -220,8 +220,8 @@ impl World {
         SensorsRecorder::new(&mut self.sensors, trace.log, &trace.observed.sensors).startup_status()
     }
 
-    /// The motion and pressure sensors and the ambient light this pass
-    /// reads.
+    /// The motion and pressure sensors, the ambient light and the fitted
+    /// sensors this pass reads.
     #[inline(always)]
     pub fn sensed(
         &mut self,
@@ -230,9 +230,10 @@ impl World {
     ) -> (
         device_api::sensors::Snapshot,
         Observation<device_api::sensors::Light>,
+        device_api::sensors::SensorSet,
     ) {
         let sensors = SensorsRecorder::new(&mut self.sensors, trace.log, &trace.observed.sensors);
-        (sensors.snapshot(now), sensors.light(now))
+        (sensors.snapshot(now), sensors.light(now), sensors.fitted())
     }
 
     pub fn ant(&self) -> &device::board::Ant {

@@ -1,0 +1,31 @@
+[device]
+name = "volatile"
+product = "VANA VOLATILE"
+fit_product = 0
+
+[panel]
+width = 240
+height = 320
+
+[controls]
+touch = true
+buttons = [
+  { id = 0, role = "back" },
+  { id = 1, role = "move" },
+  { id = 2, role = "act" },
+]
+
+[owned]
+data = { memory = "psram", size = 0x40000 }
+configuration = { memory = "ram", size = 0x2000 }
+
+[fitted]
+gps = true
+ant = true
+ble = true
+wifi = true
+sound = true
+shutdown = true
+card = true
+barometer = true
+light = true

@@ -139,8 +139,9 @@ impl Runtime {
         }
         let pages_over_pause =
             self.ride.auto().paused() && super::course::course_placed(&self.track);
+        let unsynced = self.shown_ride_unsynced();
         self.navigation
-            .announce(self.ride.active().status(), pages_over_pause, now);
+            .announce(self.ride.active().status(), pages_over_pause, unsynced, now);
     }
 
     #[inline(never)]
@@ -288,7 +289,7 @@ impl Runtime {
                 self.phone_joined();
             }
             // Keep the screen lit while riding; a finished ride may dim and idle off.
-            Page::Ride if self.recording() => system.activity(now),
+            Page::Ride if self.recorder_busy() => system.activity(now),
             _ => {}
         }
         Due {

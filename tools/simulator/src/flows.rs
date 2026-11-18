@@ -1,6 +1,6 @@
 //! What a rider does on VANA, as button sequences that read the screen.
 use crate::sim::{NoteKind, Sim, seconds};
-use device_api::input::Button;
+use device_api::input::Role;
 
 /// The value after `name=` in a status line such as `RIDE STATUS`'s.
 pub fn status_field<'a>(status: &'a str, name: &str) -> Option<&'a str> {
@@ -23,10 +23,10 @@ impl Sim {
     pub fn home(&mut self, label: &str) {
         for _ in 0..crate::sim::HOME_CARDS + 2 {
             if self.screen().white(label) {
-                self.press(Button::BottomRight);
+                self.press(Role::Act);
                 return;
             }
-            self.press(Button::BottomLeft);
+            self.press(Role::Move);
         }
         panic!("no Home tile {label:?}; screen:\n{}", self.screen().text());
     }
@@ -42,11 +42,7 @@ impl Sim {
             let screen = self.screen();
             let row = screen.run("ADD SENSOR");
             let act = row.is_some_and(|row| focused(&screen, &row));
-            self.press(if act {
-                Button::BottomRight
-            } else {
-                Button::BottomLeft
-            });
+            self.press(if act { Role::Act } else { Role::Move });
         }
         panic!("NEARBY does not open; screen:\n{}", self.screen().text());
     }
@@ -58,7 +54,7 @@ impl Sim {
     pub fn connect_sensor(&mut self, kind: &str) {
         self.nearby_page();
         self.focus_row(kind);
-        self.press(Button::BottomRight);
+        self.press(Role::Act);
         self.expect_text(&format!("{kind} ADDED"));
     }
 
@@ -68,9 +64,9 @@ impl Sim {
     pub fn replace_sensor(&mut self, kind: &str) {
         self.nearby_page();
         self.focus_row(kind);
-        self.press(Button::BottomRight);
+        self.press(Role::Act);
         self.expect_text("REPLACE SENSOR");
-        self.press(Button::BottomRight);
+        self.press(Role::Act);
         self.expect_text(&format!("{kind} ADDED"));
     }
 
@@ -78,10 +74,10 @@ impl Sim {
     #[track_caller]
     pub fn open_sensor_detail(&mut self, kind: &str) {
         if on_nearby(&self.screen()) {
-            self.press(Button::TopLeft);
+            self.press(Role::Back);
         }
         self.focus_row(kind);
-        self.press(Button::BottomRight);
+        self.press(Role::Act);
         self.expect_text("BATTERY");
     }
 
@@ -93,13 +89,13 @@ impl Sim {
         self.open_sensor_detail(kind);
         self.advance(vana::screens::sensors::SETTLE_MS);
         self.press(if kind == "POWER METER" {
-            Button::BottomLeft
+            Role::Move
         } else {
-            Button::BottomRight
+            Role::Act
         });
         self.expect_text("FORGET");
         self.advance(vana::screens::sensors::SETTLE_MS);
-        self.press(Button::BottomRight);
+        self.press(Role::Act);
     }
 
     /// Wait until SENSORS shows `kind`'s row LIVE.
@@ -122,7 +118,7 @@ impl Sim {
             if screen.run(kind).is_some_and(|run| focused(&screen, &run)) {
                 return;
             }
-            self.press(Button::BottomLeft);
+            self.press(Role::Move);
         }
         panic!("no {kind} row to focus; screen:\n{}", self.screen().text());
     }
@@ -136,7 +132,7 @@ impl Sim {
         for kind in kinds {
             self.connect_sensor(kind);
         }
-        self.press(Button::TopLeft);
+        self.press(Role::Back);
         for kind in kinds {
             self.wait_live(kind);
         }
@@ -144,7 +140,7 @@ impl Sim {
             if self.on_home() {
                 return;
             }
-            self.press(Button::TopLeft);
+            self.press(Role::Back);
         }
         panic!(
             "Sensors did not return Home; screen:\n{}",
@@ -164,7 +160,7 @@ impl Sim {
     pub fn start_ride(&mut self) {
         self.home("RIDE");
         self.expect_text("READY");
-        self.press(Button::BottomRight);
+        self.press(Role::Act);
         self.wait_for("RECORDING", seconds(2)).unwrap();
     }
 
@@ -174,7 +170,7 @@ impl Sim {
     }
 
     pub fn pause_ride(&mut self) {
-        self.press(Button::BottomRight);
+        self.press(Role::Act);
         // A lap toast may cover the status row for up to two seconds.
         self.wait_for("PAUSED", seconds(3)).unwrap();
     }
@@ -183,7 +179,7 @@ impl Sim {
     #[track_caller]
     pub fn show_ride_pages(&mut self) {
         if self.screen().contains("RIDE TIME") {
-            self.press(Button::BottomLeft);
+            self.press(Role::Move);
         }
         assert!(
             !self.screen().contains("RIDE TIME"),
@@ -198,13 +194,13 @@ impl Sim {
         self.swipe_next();
         self.swipe_next();
         for _ in 0..4 {
-            self.press(Button::BottomLeft);
+            self.press(Role::Move);
         }
         self.expect_text("DISPLAY");
     }
 
     pub fn resume_ride(&mut self) {
-        self.press(Button::BottomRight);
+        self.press(Role::Act);
         self.wait_for("RESUMED", seconds(3)).unwrap();
     }
 
@@ -216,17 +212,13 @@ impl Sim {
         self.home("SETTINGS");
         for (index, target) in [ftp_watts, lthr_bpm].into_iter().enumerate() {
             if index > 0 {
-                self.press(Button::BottomLeft);
+                self.press(Role::Move);
             }
-            self.press(Button::BottomRight);
+            self.press(Role::Act);
             self.step_profile_field(index, target, |sim, raise| {
-                sim.press(if raise {
-                    Button::BottomRight
-                } else {
-                    Button::BottomLeft
-                })
+                sim.press(if raise { Role::Act } else { Role::Move })
             });
-            self.press(Button::TopLeft);
+            self.press(Role::Back);
         }
     }
 
@@ -240,7 +232,7 @@ impl Sim {
             self.step_profile_field(index, target, |sim, raise| {
                 sim.tap(if raise { 176 } else { 64 }, 237)
             });
-            self.press(Button::TopLeft);
+            self.press(Role::Back);
         }
     }
 
@@ -310,12 +302,12 @@ impl Sim {
         self.expect_text("WORKOUTS");
         for _ in 0..24 {
             if self.screen().white(name) {
-                self.press(Button::BottomRight);
+                self.press(Role::Act);
                 assert_eq!(self.vana_page(), "ready");
                 self.expect_text(name);
                 return;
             }
-            self.press(Button::BottomLeft);
+            self.press(Role::Move);
         }
         panic!("no workout {name:?}; screen:\n{}", self.screen().text());
     }
@@ -337,9 +329,9 @@ impl Sim {
         if self.ride_state() == "recording" {
             self.pause_ride();
         }
-        self.press(Button::TopLeft);
+        self.press(Role::Back);
         self.expect_text("END RIDE?");
-        self.press(Button::BottomRight);
+        self.press(Role::Act);
         self.wait_for("RIDE SAVED", seconds(5)).unwrap();
     }
 
@@ -350,11 +342,11 @@ impl Sim {
         if self.ride_state() == "recording" {
             self.pause_ride();
         }
-        self.press(Button::TopLeft);
+        self.press(Role::Back);
         self.expect_text("END RIDE?");
-        self.press(Button::BottomLeft);
+        self.press(Role::Move);
         self.expect_text("DISCARD RIDE?");
-        self.press(Button::BottomRight);
+        self.press(Role::Act);
         self.wait_for("RIDE DISCARDED", seconds(5)).unwrap();
         assert!(self.on_home(), "{}", self.screen().text());
     }
@@ -362,7 +354,7 @@ impl Sim {
     /// Finish the summary with BottomRight and land on Home.
     #[track_caller]
     pub fn done(&mut self) {
-        self.press(Button::BottomRight);
+        self.press(Role::Act);
         assert!(self.on_home(), "{}", self.screen().text());
     }
 
@@ -376,7 +368,7 @@ impl Sim {
             "TopLeft laps only a recording ride; screen:\n{}",
             self.screen().text()
         );
-        self.press(Button::TopLeft);
+        self.press(Role::Back);
         let prefix = format!("LAP {number} ");
         self.screen()
             .find(&prefix)
@@ -394,7 +386,7 @@ impl Sim {
             if self.screen().page().as_deref() == Some(indicator) {
                 return;
             }
-            self.press(Button::BottomLeft);
+            self.press(Role::Move);
         }
         panic!(
             "no ride page {indicator}; screen:\n{}",
@@ -406,6 +398,7 @@ impl Sim {
     /// the access point, as the rider and their phone would.
     #[track_caller]
     pub fn connect_phone(&mut self) {
+        self.need(crate::sim::Need::Wifi);
         self.home("SETTINGS");
         for _ in 0..=vana::screens::settings::SECTIONS.len() {
             if self.screen().run("PHONE").is_some() {
@@ -430,6 +423,7 @@ impl Sim {
         path: &str,
         body: &[u8],
     ) -> (u16, String) {
+        self.need(crate::sim::Need::Wifi);
         let token = self
             .device
             .sdk

@@ -817,7 +817,10 @@ impl Reader {
                     answer(result)
                 )
             }),
-            World::PositionAvailability(_) | World::Other => {}
+            World::PositionAvailability(_)
+            | World::Fitted(_)
+            | World::PowerCapabilities(_)
+            | World::Other => {}
             World::AntAvailability(_)
             | World::AntScanning(_)
             | World::AntDiscovery { .. }
@@ -936,7 +939,7 @@ fn ant_result(result: Result<ant::Admission, ant::Error>) -> String {
 
 fn input(input: Input) -> String {
     match input {
-        Input::Button { button, code } => format!("button {button:?} code {code}"),
+        Input::Button { id, code } => format!("button {id} code {code}"),
         Input::Touch(point) => format!("touch {},{}", point.x, point.y),
         Input::Release => "release".into(),
         Input::Cancel => "cancel".into(),

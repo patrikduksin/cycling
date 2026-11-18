@@ -1,7 +1,8 @@
 /// Where a recorder keeps its rides.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Medium {
-    /// The 1 MiB journal in the owned boot-flash reservation.
+    /// The journal in the owned `Data` reservation: boot flash that keeps
+    /// rides, or memory that loses them at power-off, as its geometry says.
     Internal,
     /// The sector log in the owned MMC partition.
     Bulk,

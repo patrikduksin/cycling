@@ -1,4 +1,4 @@
-use device_api::input::Button;
+use device_api::input::Role;
 use firmware_shell::rendering::record::{self, Kind};
 use shell_simulator::bench::SCENES;
 use shell_simulator::sim::{Sim, seconds};
@@ -23,7 +23,7 @@ fn reads_home_settings_and_a_ride_page_in_the_light_look() {
         sim.screen().text(),
         "7:00\nGPS\nDISPLAY\nBRIGHTNESS\nAUTO\nDIM AFTER\n30 S\nDAY / NIGHT\nAUTO\nDAY NOW\nTHEME\nLIGHT\nSAVING"
     );
-    sim.press(Button::TopLeft);
+    sim.press(Role::Back);
     assert_eq!(
         sim.screen().text(),
         "7:00\nGPS\nRIDE\nGPS READY\nREADY TO RIDE\nSENSORS\n3/3 LIVE\nHR\nPWR\nSPD/C\nTRAIN\nSETTINGS\nRIDES\nNONE YET"

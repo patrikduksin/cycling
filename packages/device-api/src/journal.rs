@@ -206,6 +206,7 @@ ageless! {
     crate::position_control::Snapshot,
     crate::power::Capabilities, crate::power::Status,
     crate::sensors::Startup, crate::sensors::Snapshot, crate::sensors::IdentityQuery,
+    crate::sensors::SensorSet,
     crate::observation::Observation<crate::sensors::Light>,
     crate::server::AccessPointState, crate::server::Reach, crate::server::Request,
     crate::sound::Snapshot,

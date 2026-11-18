@@ -20,12 +20,26 @@ use crate::ride::load::{Effort, PowerLoad};
 use firmware_services::checksum::crc32;
 use firmware_services::le::{get_u16, get_u32, get_u64, put_u16, put_u32, put_u64};
 
-pub const REGION_SIZE: usize = 1024 * 1024;
 pub const SECTOR_SIZE: usize = 4096;
 pub const SLOT_SIZE: usize = 256;
 pub const SLOTS_PER_SECTOR: usize = SECTOR_SIZE / SLOT_SIZE;
+#[cfg(test)]
+pub const REGION_SIZE: usize = 1024 * 1024;
+#[cfg(test)]
 pub const SECTORS: usize = REGION_SIZE / SECTOR_SIZE;
+#[cfg(test)]
 pub const SLOTS: usize = REGION_SIZE / SLOT_SIZE;
+#[cfg(test)]
+pub const GEOMETRY: device_api::storage::Geometry = device_api::storage::Geometry {
+    capacity: REGION_SIZE,
+    program_size: 4,
+    erase_size: SECTOR_SIZE,
+    durable: true,
+};
+
+pub const fn sectors(capacity: usize) -> usize {
+    capacity / SECTOR_SIZE
+}
 pub const SAMPLES_PER_BATCH: usize = 4;
 pub const HISTORY_CAPACITY: usize = 4;
 /// The longest gap between two samples that still counts as ridden time,
@@ -637,6 +651,7 @@ impl Catalog {
 #[derive(Default)]
 pub struct Scanner {
     sector: usize,
+    sectors: Option<usize>,
     next_slot: usize,
     completed: u16,
     invalid_slots: u16,
@@ -671,8 +686,17 @@ impl Scanner {
             .map(|summary| (summary, load.effort()))
     }
 
+    pub fn over(sectors: usize) -> Self {
+        Self {
+            sectors: Some(sectors),
+            ..Self::default()
+        }
+    }
+
     pub fn next_sector(&self) -> Option<usize> {
-        (self.sector < SECTORS).then_some(self.sector)
+        self.sectors
+            .is_some_and(|sectors| self.sector < sectors)
+            .then_some(self.sector)
     }
 
     pub fn accept(&mut self, sector: &Sector) {
@@ -687,7 +711,8 @@ impl Scanner {
     /// earlier slot had been scanned.
     pub fn resume(catalog: &Catalog) -> Self {
         Self {
-            sector: SECTORS,
+            sector: 0,
+            sectors: None,
             next_slot: catalog.next_slot,
             completed: catalog.completed,
             invalid_slots: catalog.invalid_slots,
@@ -759,7 +784,9 @@ impl Scanner {
     }
 
     pub fn finish(&self) -> Option<Catalog> {
-        (self.sector == SECTORS).then(|| self.catalog())
+        self.sectors
+            .is_none_or(|sectors| self.sector == sectors)
+            .then(|| self.catalog())
     }
 
     fn apply(&mut self, entry: Entry, mut load: Option<&mut PowerLoad>) {
@@ -1102,7 +1129,7 @@ mod tests {
             sector.0[index * SLOT_SIZE..][..SLOT_SIZE].copy_from_slice(&slot.0);
         }
         sector.0[4 * SLOT_SIZE] = 0;
-        let mut scan = Scanner::default();
+        let mut scan = Scanner::over(SECTORS);
         scan.accept(&sector);
         for _ in 1..SECTORS {
             scan.accept(&Sector([0xff; SECTOR_SIZE]));
@@ -1123,7 +1150,7 @@ mod tests {
             slot.0[COMMIT_OFFSET..].copy_from_slice(&commit_word().0);
             sector.0[index as usize * SLOT_SIZE..][..SLOT_SIZE].copy_from_slice(&slot.0);
         }
-        let mut scan = Scanner::default();
+        let mut scan = Scanner::over(SECTORS);
         scan.accept(&sector);
         for _ in 1..SECTORS {
             scan.accept(&Sector([0xff; SECTOR_SIZE]));
@@ -1135,7 +1162,7 @@ mod tests {
 
     #[test]
     fn history_is_empty_or_keeps_four_latest_complete_summaries() {
-        let mut empty = Scanner::default();
+        let mut empty = Scanner::over(SECTORS);
         for _ in 0..SECTORS {
             empty.accept(&Sector([0xff; SECTOR_SIZE]));
         }
@@ -1171,7 +1198,7 @@ mod tests {
             }
         }
         sector.0[index * SLOT_SIZE] = 0;
-        let mut scan = Scanner::default();
+        let mut scan = Scanner::over(SECTORS);
         scan.accept(&sector);
         for _ in 1..SECTORS {
             scan.accept(&Sector([0xff; SECTOR_SIZE]));
@@ -1224,7 +1251,7 @@ mod tests {
 
     #[test]
     fn occupied_final_slot_is_reported_at_the_exact_capacity_boundary() {
-        let mut scan = Scanner::default();
+        let mut scan = Scanner::over(SECTORS);
         for sector_index in 0..SECTORS {
             let mut sector = Sector([0xff; SECTOR_SIZE]);
             if sector_index == SECTORS - 1 {

@@ -5,9 +5,7 @@
 //! ride uses, while `INIT`, `CLEAR` and `EXPORT` keep addressing the internal
 //! journal, so existing tools never act on bulk media by accident.
 use super::Runtime;
-use super::format::Event;
 use super::pace::Touched;
-use super::{Scope, Store};
 use crate::ride::current::{Op, Request};
 use crate::ride::journal::Read;
 use crate::ride::log::{SLOT_SIZE, Slot, VERSION, transport_checksum};
@@ -28,7 +26,7 @@ use firmware_shell::shell::Shell;
 const SENSOR_REPLY_FRESH_MS: u64 = 3000;
 
 #[derive(Clone, Copy)]
-enum NotQueued {
+pub(super) enum NotQueued {
     Busy,
     Output,
     Foreign,
@@ -109,16 +107,16 @@ impl Runtime {
             let Some(bound) = bound.and_then(|value| value.parse::<usize>().ok()) else {
                 return "INVALID";
             };
+            if stored == Medium::Internal {
+                return NotQueued::reply(self.clear_internal(bound, output).map(drop));
+            }
             if !self.verified_store(stored) {
                 return "STATE";
             }
             if !self.format.admits_rides() {
                 return "BUSY";
             }
-            if stored == Medium::Bulk {
-                return self.submit(stored, output, Op::Clear(bound));
-            }
-            return NotQueued::reply(self.clear_internal(bound, output));
+            return self.submit(stored, output, Op::Clear(bound));
         }
         if bound.is_some() {
             return "INVALID";
@@ -172,17 +170,22 @@ impl Runtime {
         }
     }
 
-    fn clear_internal(&mut self, bound: usize, output: &mut impl Write) -> Result<(), NotQueued> {
+    /// `RIDE CLEAR CONFIRM` of the internal journal, from the host or the
+    /// phone page: the token it was queued under.
+    pub(super) fn clear_internal(
+        &mut self,
+        bound: usize,
+        output: &mut impl Write,
+    ) -> Result<u32, NotQueued> {
+        if !self.format.admits_rides() {
+            return Err(NotQueued::Busy);
+        }
         if self.ride.open() {
             return Err(NotQueued::State);
         }
         let clear = self.queue(Medium::Internal, output, Op::Clearable(bound))?;
-        let scope = Scope::one(Store::Internal);
-        self.format_event(Event::Confirm {
-            scope,
-            clear: Some(clear),
-        });
-        Ok(())
+        self.clear_internal_rides(clear);
+        Ok(clear)
     }
 
     /// Queue a recorder mutation, reporting its token before changing state so
@@ -377,7 +380,7 @@ impl Runtime {
             if write!(
                 output,
                 " capacity={} store={:016x} generation={} boot_reads={} layout={}",
-                recorder.slots(),
+                recorder.slots().unwrap_or(0),
                 log.map_or(0, |log| log.store_id()),
                 log.map_or(0, |log| log.generation()),
                 self.ride.bulk_media().boot_reads(),
@@ -406,9 +409,14 @@ impl Runtime {
         {
             return "OUTPUT";
         }
-        if let Request::Completed(result) = self.ride.host() {
-            let outcome = if result.ok { "OK" } else { "FAILED" };
-            if write!(output, " completed={} result={outcome}", result.token).is_err() {
+        let completed = match self.ride.host() {
+            Request::Completed(result) => Some((result.token, result.ok)),
+            Request::Declined(token) => Some((token, false)),
+            Request::Idle | Request::Pending(_) => None,
+        };
+        if let Some((token, ok)) = completed {
+            let outcome = if ok { "OK" } else { "FAILED" };
+            if write!(output, " completed={token} result={outcome}").is_err() {
                 return "OUTPUT";
             }
             self.ride.host_reported();
@@ -475,7 +483,7 @@ impl Runtime {
                 " {:016x} {} {}",
                 log.map_or(0, |log| log.store_id()),
                 log.map_or(0, |log| log.generation()),
-                recorder.slots()
+                recorder.slots().unwrap_or(0)
             )
             .is_err()
             {

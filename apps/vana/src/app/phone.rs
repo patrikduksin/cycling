@@ -17,16 +17,22 @@
 //! /api/workouts`, is one codec file (`workout::codec`): at most
 //! `ENCODED_MAX` bytes gathered in `Work`, then decoded, validated and stored
 //! under `workouts/` by `Library::store`, the library the picker lists. `GET`
-//! lists the uploads and `DELETE ?file=` removes one. Each service step
+//! lists the uploads and `DELETE ?file=` removes one. On a volatile internal
+//! journal, a FIT file of a ride `app::sync` protects carries an `X-Receipt`;
+//! `POST /api/synced` quotes it with the file's CRC to confirm the ride, and
+//! `DELETE /api/activities` clears the journal. Each service step
 //! does a bounded amount of media reads, reads at most `UPLOAD_READS` pieces
 //! of a body and never writes more output than the transport has room for.
 
 use super::Runtime;
+use super::commands::NotQueued;
 use super::course::{course_changed, save_turns, upload};
 use super::navigation::To;
 use super::pace::Touched;
+use super::sync::Confirmed;
 use crate::kept::{self, course::Store};
 use crate::ride::course::gpx;
+use crate::ride::current::Request as Queued;
 use crate::ride::fit::{self, Export, Flow, Plan, Refusal};
 use crate::ride::index::{Activity, Index};
 use crate::ride::journal::Read;
@@ -34,6 +40,7 @@ use crate::ride::log::Slot;
 use crate::ride::medium::Medium;
 use crate::ride::rider::Rider;
 use crate::ride::storage::RideStorage;
+use crate::screens::settings::Sections;
 use crate::workout::codec::{DecodeError, ENCODED_MAX};
 use crate::workout::library::{self, Library, LoadError, StoreError};
 use core::fmt::Write;
@@ -164,6 +171,8 @@ struct FitJob {
     next_slot: usize,
     start_slot: usize,
     start_utc_ms: Option<u64>,
+    /// What the phone quotes to confirm this export of a protected ride.
+    receipt: Option<u32>,
     phase: FitPhase,
     name: heapless::String<48>,
 }
@@ -217,6 +226,8 @@ pub(super) struct Phone {
     /// The access point stop is still to be requested.
     stopping: bool,
     last_id: u32,
+    /// The token of the page's Clear rides, until the page reads its end.
+    clear: Option<u32>,
     /// Ride indexes and the response in progress, kept by the device
     /// outside the runtime (see [`Runtime::attach_phone`]).
     work: Option<&'static mut Work>,
@@ -389,7 +400,7 @@ impl Runtime {
         if self.phone.session.is_some() || self.phone.work.is_none() {
             return;
         }
-        if self.recording() {
+        if self.recorder_busy() {
             self.phone.closed = Some(Closed::Ride);
             return;
         }
@@ -428,6 +439,10 @@ impl Runtime {
         bulk: &mut impl ReadWrite,
         now: u64,
     ) {
+        self.navigation.set_sections(match ap.state() {
+            AccessPointState::Unsupported => Sections::NoPhone,
+            _ => Sections::All,
+        });
         if self.format.holds_host_storage() {
             return;
         }
@@ -441,7 +456,12 @@ impl Runtime {
         }
         if let Some(session) = &self.phone.session {
             let idle = now.saturating_sub(session.last_request_ms) > IDLE_MS;
-            if self.recording() {
+            // The page's own Clear rides keeps the session, which reports
+            // how it ended.
+            let clearing = self.phone.clear.is_some_and(
+                |token| matches!(self.ride.host(), Queued::Pending(queued) if queued == token),
+            );
+            if self.ride.recording() || self.recorder_busy() && !clearing {
                 self.end_session(Closed::Ride);
             } else if idle {
                 self.end_session(Closed::Idle);
@@ -485,7 +505,7 @@ impl Runtime {
         }
         server.listen(true);
         self.index_step(store, bulk);
-        self.answer(server, store, bulk, now);
+        self.answer(server, ap, store, bulk, now);
     }
 
     fn index_step(&mut self, store: &mut impl RideStorage, bulk: &mut impl ReadWrite) {
@@ -547,6 +567,7 @@ impl Runtime {
     fn answer(
         &mut self,
         server: &mut impl Server,
+        ap: &mut impl AccessPoint,
         store: &mut impl RideStorage,
         bulk: &mut impl ReadWrite,
         now: u64,
@@ -576,7 +597,7 @@ impl Runtime {
                 session.last_request_ms = now;
                 session.status.requests += 1;
             }
-            self.route(&request, bulk);
+            self.route(&request, ap, bulk);
         }
         self.progress(server, store, bulk, now);
     }
@@ -602,7 +623,7 @@ impl Runtime {
         work.job = Job::Text { id, at: 0 };
     }
 
-    fn route(&mut self, request: &Request, bulk: &mut impl ReadWrite) {
+    fn route(&mut self, request: &Request, ap: &mut impl AccessPoint, bulk: &mut impl ReadWrite) {
         let id = request.id;
         let path = request.path.as_str();
         match (request.method, path) {
@@ -655,12 +676,14 @@ impl Runtime {
                 };
                 self.activities_head(id);
             }
+            (Method::Delete, "/api/activities") => self.clear_rides(id),
             (Method::Get, "/api/course") => self.course_reply(id),
             (Method::Put | Method::Post, "/api/course") => self.start_course(request, bulk),
             (Method::Delete, "/api/course") => self.clear_course(id, bulk),
             (Method::Get, "/api/workouts") => self.workouts_reply(id, bulk),
             (Method::Put | Method::Post, "/api/workouts") => self.start_workout(request),
             (Method::Delete, "/api/workouts") => self.delete_workout(request, bulk),
+            (Method::Post, "/api/synced") => self.synced(request),
             (Method::Post, "/api/close") => {
                 self.reply(id, 204, None);
                 self.phone.wanted = Some(None);
@@ -674,7 +697,11 @@ impl Runtime {
                         let start = query_value(&request.query, "start")
                             .and_then(|v| v.parse::<u64>().ok())
                             .and_then(|s| s.checked_mul(1000));
-                        self.start_fit(id, target, start);
+                        let receipt = self
+                            .sync
+                            .protects(target.0, target.2)
+                            .then(|| ap.entropy());
+                        self.start_fit(id, target, start, receipt);
                     }
                     (Method::Delete, Some(_)) => self.reply(
                         id,
@@ -691,18 +718,113 @@ impl Runtime {
         }
     }
 
+    /// The phone holds a whole copy of a protected ride: `activity` names
+    /// it, `receipt` its newest export and `crc` that file's CRC trailer.
+    fn synced(&mut self, request: &Request) {
+        let id = request.id;
+        let query = request.query.as_str();
+        let number = |key| query_value(query, key).and_then(|v| v.parse::<u32>().ok());
+        let ack = query_value(query, "activity")
+            .and_then(parse_id)
+            .zip(number("receipt"))
+            .zip(number("crc").and_then(|crc| u16::try_from(crc).ok()));
+        let Some((((medium, _, ride_id), receipt), crc)) = ack else {
+            return self.reply(id, 400, Some(r#"{"error":"acknowledgment"}"#));
+        };
+        let confirmed = if medium == Medium::Internal {
+            self.sync.confirm(ride_id, receipt, crc)
+        } else {
+            Confirmed::Unknown
+        };
+        match confirmed {
+            Confirmed::Synced => {
+                log::info!(target: "phone", "VANA_PHONE synced ride={ride_id}");
+                self.display.redraw();
+                self.reply(id, 204, None);
+            }
+            Confirmed::Unknown => self.reply(id, 404, Some(r#"{"error":"not_protected"}"#)),
+            Confirmed::Mismatch => self.reply(id, 409, Some(r#"{"error":"not_this_export"}"#)),
+        }
+    }
+
+    /// The page's Clear rides: the host's `RIDE CLEAR CONFIRM` of the
+    /// internal rides the page listed. With unsaved rides the device asks
+    /// LOSE n UNSAVED RIDES? first; the page polls `clear` in the status.
+    fn clear_rides(&mut self, id: u32) {
+        // A durable journal keeps its rides through power-off: the phone
+        // need not clear them, and one tap must not wipe internal flash.
+        if !self.ride.volatile(Medium::Internal) {
+            return self.reply(id, 409, Some(r#"{"error":"durable"}"#));
+        }
+        let listed = &self.phone.w().indexes[0];
+        if !listed.done() {
+            return self.reply(id, 409, Some(r#"{"error":"indexing"}"#));
+        }
+        let bound = listed.next_slot();
+        match self.clear_internal(bound, &mut heapless::String::<24>::new()) {
+            Ok(token) => {
+                self.phone.clear = Some(token);
+                let mut json = heapless::String::<32>::new();
+                let _ = write!(json, r#"{{"clear":{}}}"#, Maybe(self.take_clear_outcome()));
+                self.reply(id, 202, Some(json.as_str()));
+            }
+            Err(NotQueued::Busy) => self.reply(id, 409, Some(r#"{"error":"busy"}"#)),
+            Err(_) => self.reply(id, 409, Some(r#"{"error":"state"}"#)),
+        }
+    }
+
+    /// Reading the end frees the host's command slot, as `RIDE STATUS` does.
+    fn take_clear_outcome(&mut self) -> Option<Clear> {
+        let token = self.phone.clear?;
+        let state = match self.ride.host() {
+            Queued::Pending(queued) if queued == token => {
+                return Some(if self.sync.asked() == Some(token) {
+                    Clear::Asking
+                } else {
+                    Clear::Clearing
+                });
+            }
+            Queued::Completed(result) if result.token == token => {
+                self.ride.host_reported();
+                Some(if result.ok {
+                    Clear::Cleared
+                } else {
+                    Clear::Failed
+                })
+            }
+            Queued::Declined(declined) if declined == token => {
+                self.ride.host_reported();
+                Some(Clear::Kept)
+            }
+            _ => None,
+        };
+        self.phone.clear = None;
+        state
+    }
+
+    /// The internal journal was emptied: list it again from its start.
+    pub(super) fn relist_internal(&mut self) {
+        if let Some(work) = self.phone.work.as_deref_mut() {
+            work.indexes[0].reset();
+        }
+    }
+
     fn status_reply(&mut self, id: u32) {
         let mut json = heapless::String::<768>::new();
         let session = self.phone.session.as_ref().map(|s| s.status);
+        let clear = Maybe(self.take_clear_outcome());
         let _ = write!(
             json,
-            r#"{{"device":"VANA C606","firmware":"{}","battery":{},"ftp":{},"lthr":{},"mode":"{}","indexing":{},"media":["#,
+            r#"{{"device":"{}","firmware":"{}","volatile":{},"battery":{},"ftp":{},"lthr":{},"mode":"{}","indexing":{},"clear":{},"media":["#,
+            self.product.name,
             env!("CARGO_PKG_VERSION"),
+            self.ride.volatile(Medium::Internal),
             Maybe(self.readings.live.battery_percent),
             self.preferences.profile.ftp_watts,
             self.preferences.profile.lthr_bpm,
             session.map_or("none", |s| s.mode.name()),
             self.indexing(),
+            clear,
         );
         for (index, medium) in MEDIA.into_iter().enumerate() {
             let recorder = self.ride.recorder(medium);
@@ -713,7 +835,7 @@ impl Runtime {
                 medium.name(),
                 recorder.status().name(),
                 recorder.next_slot(),
-                recorder.slots(),
+                recorder.slots().unwrap_or(0),
                 recorder.remaining_secs(),
             );
         }
@@ -736,11 +858,17 @@ impl Runtime {
         let _ = self.phone.w().text.extend_from_slice(open.as_bytes());
     }
 
-    fn activity_json(medium: Medium, ride: &Activity, first: bool) -> heapless::String<320> {
+    /// One ride of the list; `unsaved` while the phone has not confirmed it.
+    fn activity_json(
+        medium: Medium,
+        ride: &Activity,
+        first: bool,
+        unsaved: bool,
+    ) -> heapless::String<320> {
         let mut json = heapless::String::new();
         let _ = write!(
             json,
-            r#"{}{{"id":"{}{}-{}","ride":{},"medium":"{}","start":{},"duration_s":{},"distance_m":{},"samples":{},"gps":{},"power":{},"heart":{},"end":"{}"}}"#,
+            r#"{}{{"id":"{}{}-{}","ride":{},"medium":"{}","start":{},"duration_s":{},"distance_m":{},"samples":{},"gps":{},"power":{},"heart":{},"end":"{}","unsaved":{}}}"#,
             if first { "" } else { "," },
             medium_letter(medium),
             ride.start_slot,
@@ -755,6 +883,7 @@ impl Runtime {
             ride.with_power > 0,
             ride.with_heart > 0,
             ride.end.map_or("open", |end| end.name()),
+            unsaved,
         );
         json
     }
@@ -764,6 +893,7 @@ impl Runtime {
         id: u32,
         (medium, start_slot, ride_id): (Medium, usize, u32),
         start: Option<u64>,
+        receipt: Option<u32>,
     ) {
         if self.hidden_id(medium, ride_id) {
             return self.reply(id, 404, Some(r#"{"error":"deleted"}"#));
@@ -786,7 +916,7 @@ impl Runtime {
         };
         let rider = self.preferences.options.rider;
         let mut counter = Counter::default();
-        let export = Export::start(ride_id, rider, None, None, &mut counter);
+        let export = Export::start(ride_id, rider, &self.product, None, None, &mut counter);
         self.phone.w().job = Job::Fit {
             id,
             job: FitJob {
@@ -796,6 +926,7 @@ impl Runtime {
                 next_slot: start_slot,
                 start_slot,
                 start_utc_ms: start,
+                receipt,
                 phase: FitPhase::Sizing { export, counter },
                 name: file_name(ride_id, ride.start_utc_ms.or(start)),
             },
@@ -1092,7 +1223,7 @@ impl Runtime {
 
     fn start_workout(&mut self, request: &Request) {
         let id = request.id;
-        if self.recording() {
+        if self.recorder_busy() {
             return self.reply(id, 409, Some(r#"{"error":"ride"}"#));
         }
         if request.body == 0 {
@@ -1138,7 +1269,7 @@ impl Runtime {
             self.phone.w().job = Job::Workout { id, received };
             return;
         }
-        if self.recording() {
+        if self.recorder_busy() {
             return self.reply(id, 409, Some(r#"{"error":"ride"}"#));
         }
         if body as usize > ENCODED_MAX {
@@ -1186,7 +1317,7 @@ impl Runtime {
 
     fn delete_workout(&mut self, request: &Request, bulk: &mut impl ReadWrite) {
         let id = request.id;
-        if self.recording() {
+        if self.recorder_busy() {
             return self.reply(id, 409, Some(r#"{"error":"ride"}"#));
         }
         let mut path = heapless::String::<{ files::NAME }>::new();
@@ -1256,7 +1387,8 @@ impl Runtime {
                 sent[medium] += 1;
                 continue;
             }
-            let json = Self::activity_json(MEDIA[medium], &ride, first);
+            let unsaved = self.sync.protects(MEDIA[medium], ride.ride_id);
+            let json = Self::activity_json(MEDIA[medium], &ride, first, unsaved);
             if server.room() < json.len() {
                 self.phone.w().job = Job::Activities { id, sent, first };
                 return;
@@ -1326,7 +1458,7 @@ impl Runtime {
                     }
                 };
                 // Nothing was written yet, so the whole buffer is free.
-                if !self.fit_head(server, id, &plan, &job.name) {
+                if !self.fit_head(server, id, &plan, &job.name, job.receipt) {
                     return self.reply(id, 503, Some(r#"{"error":"busy"}"#));
                 }
                 let mut out = Out {
@@ -1334,7 +1466,14 @@ impl Runtime {
                     id,
                     short: false,
                 };
-                let export = Export::start(job.ride_id, job.rider, Some(&plan), clock, &mut out);
+                let export = Export::start(
+                    job.ride_id,
+                    job.rider,
+                    &self.product,
+                    Some(&plan),
+                    clock,
+                    &mut out,
+                );
                 job.phase = FitPhase::Writing { export };
                 job.next_slot = job.start_slot;
                 self.phone.w().job = Job::Fit { id, job };
@@ -1376,8 +1515,11 @@ impl Runtime {
                         id,
                         short: false,
                     };
-                    export.clone().finish(&mut out);
+                    let written = export.clone().finish(&mut out);
                     server.finish(id);
+                    if let Some(receipt) = job.receipt {
+                        self.sync.exported(job.ride_id, receipt, written.crc);
+                    }
                     if let Some(session) = self.phone.session.as_mut() {
                         session.status.downloads += 1;
                     }
@@ -1389,17 +1531,26 @@ impl Runtime {
         }
     }
 
-    /// Queue the FIT response head; false when the transport lacks room.
-    fn fit_head(&self, server: &mut impl Server, id: u32, plan: &Plan, name: &str) -> bool {
+    /// Queue the FIT response head, with the export's receipt if it has
+    /// one; false when the transport lacks room.
+    fn fit_head(
+        &self,
+        server: &mut impl Server,
+        id: u32,
+        plan: &Plan,
+        name: &str,
+        receipt: Option<u32>,
+    ) -> bool {
         let mut disposition = heapless::String::<80>::new();
         let _ = write!(disposition, "attachment; filename=\"{name}\"");
-        let Some(head) = Head::new(200)
+        let mut head = Head::new(200)
             .header("Content-Type", "application/vnd.ant.fit")
             .header("Content-Disposition", disposition.as_str())
-            .header("Cache-Control", "no-store")
-            .length(plan.size as usize)
-            .finish()
-        else {
+            .header("Cache-Control", "no-store");
+        if let Some(receipt) = receipt {
+            head = head.header("X-Receipt", receipt);
+        }
+        let Some(head) = head.length(plan.size as usize).finish() else {
             return false;
         };
         if server.room() < head.bytes().len() + fit::MAX_START_OUTPUT {
@@ -1438,10 +1589,10 @@ impl Runtime {
     /// BACK ends the session and returns where it was opened from; any
     /// other press or a tap on the code switches codes, or tries again after
     /// a session ended.
-    pub(super) fn phone_input(&mut self, button: device_api::input::Button, held: bool) {
-        use device_api::input::Button;
+    pub(super) fn phone_input(&mut self, button: device_api::input::Role, held: bool) {
+        use device_api::input::Role;
         match button {
-            Button::TopLeft if !held => {
+            Role::Back if !held => {
                 self.close_phone();
                 self.navigation
                     .go(To::Page(if self.history.phone.take().is_some() {
@@ -1450,7 +1601,7 @@ impl Runtime {
                         crate::screens::workout::Page::Home
                     }));
             }
-            Button::TopLeft => {}
+            Role::Back => {}
             _ => self.phone_touch(),
         }
     }
@@ -1547,6 +1698,31 @@ impl Runtime {
                 let _ = lines[NAME].push_str("WAITING FOR WI-FI");
             }
         }
+    }
+}
+
+/// The page's Clear rides, as `/api/status` names it.
+#[derive(Clone, Copy)]
+enum Clear {
+    /// LOSE n UNSAVED RIDES? is on the device.
+    Asking,
+    Clearing,
+    Cleared,
+    /// The rider kept the rides with BACK.
+    Kept,
+    Failed,
+}
+
+impl core::fmt::Display for Clear {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let name = match self {
+            Self::Asking => "asking",
+            Self::Clearing => "clearing",
+            Self::Cleared => "cleared",
+            Self::Kept => "kept",
+            Self::Failed => "failed",
+        };
+        write!(f, "\"{name}\"")
     }
 }
 

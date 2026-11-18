@@ -10,7 +10,7 @@ fn run(
     words: &str,
 ) -> (&'static str, String) {
     let mut output = String::new();
-    let status = runtime.command(words, journal, &mut NoBulk, now, &mut output);
+    let status = runtime.command(words, journal, &mut MustNotWrite, now, &mut output);
     (status, output)
 }
 
@@ -37,7 +37,7 @@ fn ride_commands_are_accepted_once_and_report_completion_once() {
         run(&mut runtime, &mut journal, 0, "RIDE START"),
         ("ACCEPTED", "token=1".into())
     );
-    assert!(runtime.recording());
+    assert!(runtime.recorder_busy());
     assert_eq!(run(&mut runtime, &mut journal, 0, "RIDE PAUSE").0, "BUSY");
 
     tick(&mut runtime, &mut journal, &mut radio, 100);
@@ -69,10 +69,10 @@ fn undersized_reply_leaves_the_command_unqueued() {
     let mut radio = Radio::new();
     let mut runtime = ready_runtime(&mut journal, &mut radio);
     assert_eq!(
-        runtime.command("RIDE START", &mut journal, &mut NoBulk, 0, &mut Full),
+        runtime.command("RIDE START", &mut journal, &mut MustNotWrite, 0, &mut Full),
         "OUTPUT"
     );
-    assert!(!runtime.recording());
+    assert!(!runtime.recorder_busy());
     assert_eq!(
         run(&mut runtime, &mut journal, 0, "RIDE START"),
         ("ACCEPTED", "token=1".into())
@@ -103,7 +103,7 @@ fn malformed_commands_are_invalid_without_side_effects() {
             "{words:?}"
         );
     }
-    assert!(!runtime.recording());
+    assert!(!runtime.recorder_busy());
 }
 
 #[test]
@@ -183,14 +183,16 @@ fn ride_status_reports_the_page_and_home_selection() {
     runtime.navigation.go(To::HomeCursor(2));
     let mut out = std::string::String::new();
     assert_eq!(
-        runtime.command("RIDE STATUS", &mut journal, &mut NoBulk, 0, &mut out),
+        runtime.command("RIDE STATUS", &mut journal, &mut MustNotWrite, 0, &mut out),
         "OK"
     );
     assert!(out.contains(" page=home home_cursor=2 pending=0"), "{out}");
+    let mut screen = super::presentation::Screen::new();
+    runtime.power(&mut screen.shell, &mut super::power::Switch::new(true), 0);
     // A power sheet covers Home: a harness must not press through it.
     runtime.input_received(
-        Input::Button {
-            button: Button::TopLeft,
+        Input::Press {
+            role: Role::Back,
             code: 1,
         },
         1_000,
@@ -198,6 +200,12 @@ fn ride_status_reports_the_page_and_home_selection() {
         &mut radio,
     );
     out.clear();
-    runtime.command("RIDE STATUS", &mut journal, &mut NoBulk, 1_000, &mut out);
+    runtime.command(
+        "RIDE STATUS",
+        &mut journal,
+        &mut MustNotWrite,
+        1_000,
+        &mut out,
+    );
     assert!(out.contains(" page=power "), "{out}");
 }

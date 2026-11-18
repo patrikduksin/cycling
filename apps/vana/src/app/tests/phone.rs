@@ -19,13 +19,13 @@ pub(super) struct Transport {
     /// The body still to be read, and the most each `read` hands over.
     body: Vec<u8>,
     piece: usize,
-    pending: Vec<u8>,
+    pub(super) pending: Vec<u8>,
     finished: bool,
     next_id: u32,
 }
 
 impl Transport {
-    fn ask(&mut self, method: Method, path: &str, query: &str, session: &str) {
+    pub(super) fn ask(&mut self, method: Method, path: &str, query: &str, session: &str) {
         self.next_id += 1;
         let mut request = Request::new(method);
         request.id = self.next_id;
@@ -134,48 +134,54 @@ fn saved_ride(journal: &mut Journal) -> (Runtime, super::Radio, u64) {
         .navigation
         .go(To::Page(crate::screens::workout::Page::Ride));
     radio.connected(HEART_RATE, 0);
-    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
+    runtime.input_received(press(Role::Act), 1000, 1000, &mut radio);
     let mut now = 1000;
     while now < 10_000 {
         radio.data(HEART_RATE, HEART_72, now);
         tick(&mut runtime, journal, &mut radio, now);
         now += 250;
     }
-    runtime.input_received(press(Button::BottomRight), now, now, &mut radio);
+    runtime.input_received(press(Role::Act), now, now, &mut radio);
     for step in 0..4 {
         tick(&mut runtime, journal, &mut radio, now + step * 50);
     }
-    runtime.input_received(press(Button::TopLeft), now + 400, now + 400, &mut radio);
-    runtime.input_received(press(Button::BottomRight), now + 800, now + 800, &mut radio);
+    runtime.input_received(press(Role::Back), now + 400, now + 400, &mut radio);
+    runtime.input_received(press(Role::Act), now + 800, now + 800, &mut radio);
     for step in 0..20 {
         tick(&mut runtime, journal, &mut radio, now + 800 + step * 100);
     }
-    assert!(!runtime.recording());
+    assert!(!runtime.recorder_busy());
     (runtime, radio, now + 3000)
 }
 
-struct Phone<'a> {
-    runtime: &'a mut Runtime,
-    journal: &'a mut Journal,
-    transport: Transport,
-    radio: Radio2,
-    now: u64,
+pub(super) struct Phone<'a> {
+    pub(super) runtime: &'a mut Runtime,
+    pub(super) journal: &'a mut Journal,
+    pub(super) transport: Transport,
+    pub(super) radio: Radio2,
+    pub(super) now: u64,
 }
 
 impl Phone<'_> {
-    fn step(&mut self) {
+    pub(super) fn step(&mut self) {
         self.now += 20;
         self.runtime.serve_phone(
             &mut self.transport,
             &mut self.radio,
             self.journal,
-            &mut NoBulk,
+            &mut MustNotWrite,
             self.now,
         );
     }
 
     /// The whole response: head and body.
-    fn get(&mut self, method: Method, path: &str, query: &str, session: &str) -> (String, Vec<u8>) {
+    pub(super) fn get(
+        &mut self,
+        method: Method,
+        path: &str,
+        query: &str,
+        session: &str,
+    ) -> (String, Vec<u8>) {
         self.transport.ask(method, path, query, session);
         let mut response = Vec::new();
         for _ in 0..2000 {
@@ -190,7 +196,7 @@ impl Phone<'_> {
         panic!("{path} never finished");
     }
 
-    fn token(&self) -> String {
+    pub(super) fn token(&self) -> String {
         String::from(self.runtime.phone_status().unwrap().token.text())
     }
 }
@@ -201,7 +207,7 @@ pub(super) fn attach(runtime: &mut Runtime) {
     ));
 }
 
-fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+pub(super) fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
     head.lines()
         .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
 }
@@ -261,6 +267,11 @@ fn a_phone_on_home_wifi_lists_and_downloads_a_ride() {
 
     let (head, fit) = phone.get(Method::Get, &path, "start=1792249200", &token);
     assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert_eq!(
+        header(&head, "X-Receipt"),
+        None,
+        "durable rides need no receipt"
+    );
     let length: usize = header(&head, "Content-Length").unwrap().parse().unwrap();
     assert_eq!(fit.len(), length);
     assert!(
@@ -382,11 +393,11 @@ fn a_session_does_not_open_during_a_ride() {
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Ride));
-    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
+    runtime.input_received(press(Role::Act), 1000, 1000, &mut radio);
     for step in 0..8 {
         tick(&mut runtime, &mut journal, &mut radio, 1000 + step * 250);
     }
-    assert!(runtime.recording());
+    assert!(runtime.recorder_busy());
     attach(&mut runtime);
     runtime.open_phone(PhoneMode::AccessPoint);
     let mut access_point = Radio2::default();
@@ -394,7 +405,7 @@ fn a_session_does_not_open_during_a_ride() {
         &mut Transport::default(),
         &mut access_point,
         &mut journal,
-        &mut NoBulk,
+        &mut MustNotWrite,
         4000,
     );
     assert!(runtime.phone_status().is_none());
@@ -424,13 +435,9 @@ fn connect_phone_opens_from_settings_and_moves_to_the_page_code_once_a_phone_joi
     let (mut runtime, mut radio, now) = saved_ride(&mut journal);
     attach(&mut runtime);
     runtime.navigation.go(To::Page(Page::Settings));
-    runtime.navigation.go(To::Field(Row::Phone.index()));
-    runtime.input_received(
-        press(Button::BottomRight),
-        now + 1600,
-        now + 1600,
-        &mut radio,
-    );
+    let phone = runtime.navigation.sections().field(Row::Phone).unwrap();
+    runtime.navigation.go(To::Field(phone));
+    runtime.input_received(press(Role::Act), now + 1600, now + 1600, &mut radio);
     assert_eq!(runtime.navigation.page(), Page::Phone);
     let (lines, code) = phone_lines(&mut runtime);
     assert_eq!(lines[TITLE_LINE], "STARTING WI-FI");
@@ -463,7 +470,7 @@ fn connect_phone_opens_from_settings_and_moves_to_the_page_code_once_a_phone_joi
     assert!(code.is_some());
     // The rider can go back to the join code for a second phone.
     phone.runtime.input_received(
-        press(Button::BottomLeft),
+        press(Role::Move),
         phone.now + 400,
         phone.now + 400,
         &mut radio,
@@ -474,7 +481,7 @@ fn connect_phone_opens_from_settings_and_moves_to_the_page_code_once_a_phone_joi
 
     // BACK ends the session and the access point stops.
     phone.runtime.input_received(
-        press(Button::TopLeft),
+        press(Role::Back),
         phone.now + 800,
         phone.now + 800,
         &mut radio,
@@ -1131,4 +1138,129 @@ fn hostile_workout_uploads_never_panic_and_leave_only_valid_files() {
         );
     }
     assert!(kept >= 1 && refused > 200, "{kept} kept, {refused} refused");
+}
+
+struct FailedRadio;
+
+impl AccessPoint for FailedRadio {
+    fn start(&mut self, _: AccessPointConfig) -> Result<(), device_api::observation::Error> {
+        Ok(())
+    }
+    fn stop(&mut self) -> Result<(), device_api::observation::Error> {
+        Ok(())
+    }
+    fn state(&self) -> AccessPointState {
+        AccessPointState::Failed
+    }
+    fn reach(&self) -> Reach {
+        Reach::default()
+    }
+    fn entropy(&mut self) -> u32 {
+        0
+    }
+}
+
+fn learn_radio_in_a_phone_pass(
+    runtime: &mut Runtime,
+    journal: &mut Journal,
+    ap: &mut impl AccessPoint,
+    now: u64,
+) {
+    runtime.serve_phone(&mut Absent, ap, journal, &mut MustNotWrite, now);
+}
+
+fn device_rows(runtime: &Runtime) -> (bool, Vec<&'static str>) {
+    let mut view = runtime.navigation.view(None);
+    let _ = view.show_settings();
+    view.prepare();
+    let canvas = view.canvas();
+    let shown = ["SENSORS", "PHONE", "STORAGE", "FIRMWARE"]
+        .into_iter()
+        .filter(|label| canvas.shows(label))
+        .collect();
+    (canvas.shows("DEVICE"), shown)
+}
+
+fn past_ride_cues(runtime: &Runtime) -> &'static [crate::screens::cue::Cue] {
+    let mut view = runtime.navigation.view(None);
+    runtime.past_view(&mut view);
+    view.prepare().cues()
+}
+
+#[test]
+fn without_wifi_settings_device_shows_three_rows_for_move_swipe_and_tap() {
+    use crate::screens::settings::Row;
+    use crate::screens::workout::Page;
+    let mut journal = Journal::erased();
+    let mut radio = super::Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    learn_radio_in_a_phone_pass(&mut runtime, &mut journal, &mut Absent, 900);
+    runtime.navigation.go(To::Settings);
+    super::touch::touch(&mut runtime, &mut radio, &[(40, 150), (200, 150)], 1000);
+    assert_eq!(
+        device_rows(&runtime),
+        (true, std::vec!["SENSORS", "STORAGE", "FIRMWARE"])
+    );
+    assert_eq!(runtime.navigation.setting(), Row::Sensors);
+    let mut now = 2000;
+    let mut walked = std::vec![runtime.navigation.setting()];
+    for _ in 0..3 {
+        runtime.input_received(press(Role::Move), now, now, &mut radio);
+        walked.push(runtime.navigation.setting());
+        now += 500;
+    }
+    assert_eq!(
+        walked,
+        [Row::Sensors, Row::Storage, Row::Firmware, Row::Ftp]
+    );
+    super::touch::touch(&mut runtime, &mut radio, &[(40, 150), (200, 150)], now);
+    assert_eq!(device_rows(&runtime).1, ["SENSORS", "STORAGE", "FIRMWARE"]);
+    super::touch::touch(
+        &mut runtime,
+        &mut radio,
+        &[(120, 76 + 2 * 52 + 10)],
+        now + 500,
+    );
+    assert_eq!(runtime.navigation.setting(), Row::Firmware);
+    assert_eq!(runtime.navigation.page(), Page::Settings);
+}
+
+#[test]
+fn a_failed_radio_keeps_the_phone_row() {
+    let mut journal = Journal::erased();
+    let mut radio = super::Radio::new();
+    let mut runtime = ready_runtime(&mut journal, &mut radio);
+    learn_radio_in_a_phone_pass(&mut runtime, &mut journal, &mut FailedRadio, 900);
+    runtime.navigation.go(To::Settings);
+    super::touch::touch(&mut runtime, &mut radio, &[(40, 150), (200, 150)], 1000);
+    assert_eq!(
+        device_rows(&runtime),
+        (true, std::vec!["SENSORS", "PHONE", "STORAGE", "FIRMWARE"])
+    );
+}
+
+#[test]
+fn without_wifi_a_saved_ride_has_no_send_cue_and_act_stays() {
+    use crate::screens::cue::{Corner, Cue, Icon};
+    use crate::screens::workout::Page;
+    let mut journal = Journal::erased();
+    let (mut runtime, mut radio, now) = saved_ride(&mut journal);
+    let send = [Cue::new(Corner::BottomRight, Icon::Send)];
+
+    learn_radio_in_a_phone_pass(&mut runtime, &mut journal, &mut FailedRadio, now);
+    runtime.open_past_ride(0);
+    runtime.replay_step(&mut journal, &mut MustNotWrite);
+    assert_eq!(runtime.navigation.page(), Page::PastRide);
+    assert_eq!(past_ride_cues(&runtime), send);
+
+    runtime.navigation.go(To::Page(Page::History));
+    learn_radio_in_a_phone_pass(&mut runtime, &mut journal, &mut Absent, now + 100);
+    runtime.open_past_ride(0);
+    for _ in 0..50 {
+        runtime.replay_step(&mut journal, &mut MustNotWrite);
+    }
+    assert_eq!(past_ride_cues(&runtime), []);
+    runtime.input_received(press(Role::Act), now + 500, now + 500, &mut radio);
+    assert_eq!(runtime.navigation.page(), Page::PastRide);
+    assert!(runtime.phone_status().is_none());
 }

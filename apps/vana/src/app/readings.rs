@@ -542,7 +542,9 @@ impl Runtime {
             _ => None,
         };
         let pressure = match observations.physical.pressure {
-            Observation::Fresh { value, .. } => Some(value.pressure_centi_pa),
+            Observation::Fresh { value, .. } if observations.fitted.barometer => {
+                Some(value.pressure_centi_pa)
+            }
             _ => None,
         };
         let readings = &mut self.readings;

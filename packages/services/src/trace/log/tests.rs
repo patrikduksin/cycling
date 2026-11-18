@@ -278,6 +278,7 @@ impl OwnedFlash for Nor {
             capacity: self.data.len(),
             program_size: 1,
             erase_size: 4096,
+            durable: true,
         }
     }
     fn read(&mut self, _: Region, offset: usize, output: &mut [u8]) -> Result<(), Error> {

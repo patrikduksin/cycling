@@ -41,6 +41,16 @@ macro_rules! invariants {
 }
 
 pub mod app;
+
+/// What a device calls itself: the FIT file's product and the phone's
+/// device name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Product {
+    /// At most 15 bytes: the FIT product-name field holds 16 with its end.
+    pub name: &'static str,
+    pub fit_id: u16,
+}
+
 pub mod clock;
 pub mod daylight;
 pub mod kept;

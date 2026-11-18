@@ -1,4 +1,4 @@
-use device_api::input::Button;
+use device_api::input::Role;
 use shell_simulator::ant::device_type;
 use shell_simulator::recording;
 use shell_simulator::replay::Mode;
@@ -69,9 +69,9 @@ fn laps_and_a_menu(sim: &mut Sim) {
     sim.start_ride();
     sim.ride_at(30.0, 210.0, 0.0, 90.0);
     sim.advance(seconds(40));
-    sim.press(Button::TopLeft);
+    sim.press(Role::Back);
     sim.advance(seconds(30));
-    sim.press(Button::TopLeft);
+    sim.press(Role::Back);
     sim.advance(seconds(10));
     sim.pause_ride();
     sim.advance(seconds(5));
@@ -358,7 +358,7 @@ fn every_press_of_the_same_button_is_found() {
         &timeline,
         &Query::parse("input"),
         (0, u64::MAX),
-        Some("TopLeft"),
+        Some("button 0"),
     )
     .iter()
     .filter_map(|found| match found {
@@ -379,9 +379,9 @@ fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
     sim.ride_at(0.0, 0.0, 0.0, 0.0);
     sim.start_ride();
     sim.advance(seconds(2));
-    sim.press(Button::BottomLeft);
+    sim.press(Role::Move);
     sim.advance(1_400);
-    sim.press(Button::BottomLeft);
+    sim.press(Role::Move);
     sim.advance(seconds(1));
     let pressed = read(&sim.capture().trace).unwrap();
     let pages: Vec<String> = pressed
@@ -400,8 +400,8 @@ fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
     assert_eq!(
         last_two,
         [
-            "ride/stats  (after button BottomLeft code 1; shows dist)",
-            "ride/lap  (after button BottomLeft code 1; shows none)"
+            "ride/stats  (after button 1 code 1; shows dist)",
+            "ride/lap  (after button 1 code 1; shows none)"
         ],
         "{pages:?}"
     );
@@ -428,9 +428,9 @@ fn the_riders_marks_are_found_by_kind_and_told_as_events() {
     sim.start_ride();
     sim.advance(seconds(2));
     let pressed = sim.device.clock_ms();
-    sim.hold(Button::BottomLeft, 1600);
+    sim.hold(Role::Move, 1600);
     sim.advance(seconds(3));
-    sim.hold(Button::BottomLeft, 1600);
+    sim.hold(Role::Move, 1600);
     sim.advance(seconds(1));
     let timeline = read(&sim.capture().trace).unwrap();
     let found: Vec<String> = find(&timeline, &Query::parse("mark"), (0, u64::MAX), None)
@@ -488,7 +488,7 @@ fn a_page_a_harness_press_brought_up_names_the_press() {
         .unwrap()
         .to_string();
     assert!(
-        page.ends_with("ride/stats  (after synthetic button BottomLeft code 1; shows dist)"),
+        page.ends_with("ride/stats  (after synthetic button 1 code 1; shows dist)"),
         "{page}"
     );
 }
@@ -1201,8 +1201,8 @@ fn dark_charging_standby_rests_between_passes() {
     let mut sim = Sim::new().boot();
     sim.set_battery(64, true);
     sim.advance(seconds(2));
-    sim.press(Button::TopLeft);
-    sim.press(Button::BottomRight);
+    sim.press(Role::Back);
+    sim.press(Role::Act);
     sim.advance(seconds(2));
     assert!(sim.is_off(), "turned off into charging standby");
     sim.advance(STANDBY_LIT_MS + seconds(150));

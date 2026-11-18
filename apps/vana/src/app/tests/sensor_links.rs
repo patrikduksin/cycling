@@ -3,7 +3,8 @@ use crate::app::navigation::To;
 use crate::screens::sensors::MenuMessage;
 use crate::sensors::scan;
 use device_api::ant::{Ant, AntOperation};
-use device_api::input::{Button, Input};
+use device_api::input::Role;
+use firmware_shell::input::Input;
 
 #[test]
 fn workout_scan_keeps_existing_channels_receiving() {
@@ -30,8 +31,8 @@ fn workout_scan_keeps_existing_channels_receiving() {
         .navigation
         .go(To::Page(crate::screens::workout::Page::Sensors));
     runtime.input_received(
-        Input::Button {
-            button: Button::BottomRight,
+        Input::Press {
+            role: Role::Act,
             code: 1,
         },
         1000,
@@ -106,8 +107,8 @@ fn workout_scan_keeps_existing_channels_receiving() {
     runtime.refresh_sensor_menu(&radio, 24_900);
     runtime.menu.show_found();
     runtime.input_received(
-        Input::Button {
-            button: Button::BottomRight,
+        Input::Press {
+            role: Role::Act,
             code: 1,
         },
         25000,
@@ -136,15 +137,18 @@ fn back_cancels_starting_scan_and_rescan_waits_for_stop_completion() {
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Sensors));
-    let press = |button| Input::Button { button, code: 1 };
-    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
-    runtime.input_received(press(Button::TopLeft), 1400, 1400, &mut radio);
+    let press = |button| Input::Press {
+        role: button,
+        code: 1,
+    };
+    runtime.input_received(press(Role::Act), 1000, 1000, &mut radio);
+    runtime.input_received(press(Role::Back), 1400, 1400, &mut radio);
     assert!(runtime.navigation.page() == crate::screens::workout::Page::Home);
     assert_eq!(radio.scan().state, device_api::ant::ScanState::Stopping);
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Sensors));
-    runtime.input_received(press(Button::BottomRight), 1800, 1800, &mut radio);
+    runtime.input_received(press(Role::Act), 1800, 1800, &mut radio);
     assert_eq!(
         radio
             .requests
@@ -156,7 +160,7 @@ fn back_cancels_starting_scan_and_rescan_waits_for_stop_completion() {
     radio.channels.tick(3400);
     runtime.discovery.step(scan::Event::Tick, &mut radio, 3400);
     assert_eq!(runtime.discovery.message(), MenuMessage::ScanCancelled);
-    runtime.input_received(press(Button::BottomRight), 3800, 3800, &mut radio);
+    runtime.input_received(press(Role::Act), 3800, 3800, &mut radio);
     assert_eq!(
         radio
             .requests
@@ -182,25 +186,28 @@ fn scan_failure_reports_recovery_and_keeps_back_usable() {
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Sensors));
-    let press = |button| Input::Button { button, code: 1 };
-    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
+    let press = |button| Input::Press {
+        role: button,
+        code: 1,
+    };
+    runtime.input_received(press(Role::Act), 1000, 1000, &mut radio);
     assert_eq!(
         runtime.menu.diagnostics().message,
         Some(MenuMessage::ScanUnavailable)
     );
     radio.reject = None;
-    runtime.input_received(press(Button::BottomRight), 1400, 1400, &mut radio);
+    runtime.input_received(press(Role::Act), 1400, 1400, &mut radio);
     radio
         .channels
         .request_failed(device_api::ant::Request::Scan { duration_ms: 10000 }, 1500);
     runtime.discovery.step(scan::Event::Tick, &mut radio, 1500);
     assert_eq!(runtime.discovery.message(), MenuMessage::RadioLost);
-    runtime.input_received(press(Button::TopLeft), 1800, 1800, &mut radio);
+    runtime.input_received(press(Role::Back), 1800, 1800, &mut radio);
     assert!(runtime.navigation.page() == crate::screens::workout::Page::Home);
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Sensors));
-    runtime.input_received(press(Button::BottomRight), 2200, 2200, &mut radio);
+    runtime.input_received(press(Role::Act), 2200, 2200, &mut radio);
     assert_eq!(radio.requests.len(), 2);
     assert_eq!(
         runtime.menu.diagnostics().message,
@@ -232,8 +239,11 @@ fn active_scan_cancel_retries_busy_stop_without_disconnecting_sensor() {
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Sensors));
-    let press = |button| Input::Button { button, code: 1 };
-    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
+    let press = |button| Input::Press {
+        role: button,
+        code: 1,
+    };
+    runtime.input_received(press(Role::Act), 1000, 1000, &mut radio);
     radio.channels.receive(
         device_api::ant::Event::Discovery {
             identity: peer,
@@ -244,7 +254,7 @@ fn active_scan_cancel_retries_busy_stop_without_disconnecting_sensor() {
     runtime.discovery.step(scan::Event::Tick, &mut radio, 1100);
     assert_eq!(runtime.discovery.message(), MenuMessage::Scanning);
     radio.reject = Some(device_api::ant::Error::Busy);
-    runtime.input_received(press(Button::TopLeft), 1400, 1400, &mut radio);
+    runtime.input_received(press(Role::Back), 1400, 1400, &mut radio);
     assert!(runtime.navigation.page() == crate::screens::workout::Page::Home);
     assert_eq!(runtime.discovery.message(), MenuMessage::StoppingScan);
     radio.reject = None;
@@ -287,8 +297,8 @@ fn normal_scan_settling_reports_completion_not_cancellation() {
         .navigation
         .go(To::Page(crate::screens::workout::Page::Sensors));
     runtime.input_received(
-        Input::Button {
-            button: Button::BottomRight,
+        Input::Press {
+            role: Role::Act,
             code: 1,
         },
         1000,
@@ -326,18 +336,18 @@ fn only_nearby_searches_from_the_sensor_pages() {
         .navigation
         .go(To::Page(crate::screens::workout::Page::Home));
     runtime.navigation.go(To::HomeCursor(1));
-    runtime.input_received(press(Button::BottomRight), 1000, 1000, &mut radio);
+    runtime.input_received(press(Role::Act), 1000, 1000, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Sensors);
-    runtime.input_received(press(Button::BottomRight), 1400, 1400, &mut radio);
-    runtime.input_received(press(Button::TopLeft), 1800, 1800, &mut radio);
+    runtime.input_received(press(Role::Act), 1400, 1400, &mut radio);
+    runtime.input_received(press(Role::Back), 1800, 1800, &mut radio);
     advance(&mut runtime, &mut radio, 2000);
     assert_eq!(scans(&radio), 0);
-    runtime.input_received(press(Button::BottomLeft), 2200, 2200, &mut radio);
-    runtime.input_received(press(Button::BottomRight), 2600, 2600, &mut radio);
+    runtime.input_received(press(Role::Move), 2200, 2200, &mut radio);
+    runtime.input_received(press(Role::Act), 2600, 2600, &mut radio);
     advance(&mut runtime, &mut radio, 2700);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Nearby);
     assert_eq!(scans(&radio), 1);
-    runtime.input_received(press(Button::TopLeft), 3000, 3000, &mut radio);
+    runtime.input_received(press(Role::Back), 3000, 3000, &mut radio);
     assert_eq!(runtime.menu.diagnostics().page, SensorPage::Sensors);
     assert!(matches!(
         radio.requests.last(),
@@ -361,8 +371,8 @@ fn opening_sensors_with_nothing_saved_opens_nearby_and_searches() {
         .navigation
         .go(To::Page(crate::screens::workout::Page::Home));
     runtime.input_received(
-        Input::Button {
-            button: Button::BottomLeft,
+        Input::Press {
+            role: Role::Move,
             code: 1,
         },
         1000,
@@ -370,8 +380,8 @@ fn opening_sensors_with_nothing_saved_opens_nearby_and_searches() {
         &mut radio,
     );
     runtime.input_received(
-        Input::Button {
-            button: Button::BottomRight,
+        Input::Press {
+            role: Role::Act,
             code: 1,
         },
         1400,
@@ -383,8 +393,8 @@ fn opening_sensors_with_nothing_saved_opens_nearby_and_searches() {
         [AntOperation::Scan(10000)]
     ));
     runtime.input_received(
-        Input::Button {
-            button: Button::TopLeft,
+        Input::Press {
+            role: Role::Back,
             code: 1,
         },
         1800,
@@ -413,11 +423,14 @@ fn reentry_waits_for_stop_and_busy_scan_start_retries_without_another_press() {
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Home));
-    let press = |button| Input::Button { button, code: 1 };
-    runtime.input_received(press(Button::BottomLeft), 1000, 1000, &mut radio);
-    runtime.input_received(press(Button::BottomRight), 1400, 1400, &mut radio);
-    runtime.input_received(press(Button::TopLeft), 1800, 1800, &mut radio);
-    runtime.input_received(press(Button::BottomRight), 2200, 2200, &mut radio);
+    let press = |button| Input::Press {
+        role: button,
+        code: 1,
+    };
+    runtime.input_received(press(Role::Move), 1000, 1000, &mut radio);
+    runtime.input_received(press(Role::Act), 1400, 1400, &mut radio);
+    runtime.input_received(press(Role::Back), 1800, 1800, &mut radio);
+    runtime.input_received(press(Role::Act), 2200, 2200, &mut radio);
     assert_eq!(
         radio
             .requests
@@ -457,8 +470,8 @@ fn busy_connection_continues_after_leaving_and_waits_for_observed_success() {
     choose_sensor(&mut runtime, &mut radio, peer);
     assert!(radio.channel(120, 1000).is_none());
     for now in [1400, 1800] {
-        let back = Input::Button {
-            button: Button::TopLeft,
+        let back = Input::Press {
+            role: Role::Back,
             code: 1,
         };
         runtime.input_received(back, now, now, &mut radio);
@@ -580,8 +593,8 @@ fn reentry_does_not_start_a_new_scan_ahead_of_a_pending_connection() {
     };
     choose_sensor(&mut runtime, &mut radio, peer);
     runtime.input_received(
-        Input::Button {
-            button: Button::TopLeft,
+        Input::Press {
+            role: Role::Back,
             code: 1,
         },
         1400,
@@ -591,8 +604,8 @@ fn reentry_does_not_start_a_new_scan_ahead_of_a_pending_connection() {
     runtime.navigation.go(To::HomeCursor(1));
     radio.reject = None;
     runtime.input_received(
-        Input::Button {
-            button: Button::BottomRight,
+        Input::Press {
+            role: Role::Act,
             code: 1,
         },
         1800,
@@ -668,12 +681,15 @@ fn busy_reentry_clears_old_discoveries_when_the_new_scan_is_admitted() {
         .navigation
         .go(To::Page(crate::screens::workout::Page::Sensors));
     runtime.navigation.go(To::HomeCursor(1));
-    let press = |button| Input::Button { button, code: 1 };
-    runtime.input_received(press(Button::BottomLeft), 1000, 1000, &mut radio);
-    runtime.input_received(press(Button::TopLeft), 1400, 1400, &mut radio);
+    let press = |button| Input::Press {
+        role: button,
+        code: 1,
+    };
+    runtime.input_received(press(Role::Move), 1000, 1000, &mut radio);
+    runtime.input_received(press(Role::Back), 1400, 1400, &mut radio);
     radio.reject = Some(device_api::ant::Error::Busy);
-    runtime.input_received(press(Button::BottomRight), 1800, 1800, &mut radio);
-    runtime.input_received(press(Button::BottomLeft), 2200, 2200, &mut radio);
+    runtime.input_received(press(Role::Act), 1800, 1800, &mut radio);
+    runtime.input_received(press(Role::Move), 2200, 2200, &mut radio);
     radio.reject = None;
     advance(&mut runtime, &mut radio, 2300);
     let fresh = device_api::ant::Identity {
@@ -688,8 +704,8 @@ fn busy_reentry_clears_old_discoveries_when_the_new_scan_is_admitted() {
         },
         2400,
     );
-    runtime.input_received(press(Button::BottomLeft), 2700, 2700, &mut radio);
-    runtime.input_received(press(Button::BottomRight), 3100, 3100, &mut radio);
+    runtime.input_received(press(Role::Move), 2700, 2700, &mut radio);
+    runtime.input_received(press(Role::Act), 3100, 3100, &mut radio);
     assert_eq!(runtime.menu.selected_identity(17), Some(fresh));
 }
 
@@ -714,9 +730,12 @@ fn entry_waits_for_an_admitted_connection_before_starting_discovery() {
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Home));
-    let press = |button| Input::Button { button, code: 1 };
-    runtime.input_received(press(Button::BottomLeft), 1000, 1000, &mut radio);
-    runtime.input_received(press(Button::BottomRight), 1400, 1400, &mut radio);
+    let press = |button| Input::Press {
+        role: button,
+        code: 1,
+    };
+    runtime.input_received(press(Role::Move), 1000, 1000, &mut radio);
+    runtime.input_received(press(Role::Act), 1400, 1400, &mut radio);
     assert!(
         radio.requests.is_empty(),
         "Do not submit a scan while the channel is connecting"

@@ -33,7 +33,7 @@ invariants! {
         BatchOverflow: "sample batch overflows its buffer"
             if recorder.batch.count > SAMPLES_PER_BATCH,
         SlotBeyondMedium: "next slot beyond the medium"
-            if recorder.catalog.next_slot > recorder.slots,
+            if recorder.catalog.next_slot > recorder.capacity(),
     }
 }
 
@@ -65,6 +65,13 @@ impl Recorder {
         }
     }
 
+    pub(crate) fn failed() -> Self {
+        Self {
+            lifecycle: Lifecycle::Failed { open: false },
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn violating(rule: Rule) -> Self {
         let mut recorder = Self::running();
         match rule {
@@ -88,7 +95,7 @@ impl Recorder {
                 recorder.checkpoint_due = true;
             }
             Rule::BatchOverflow => recorder.batch.count = SAMPLES_PER_BATCH + 1,
-            Rule::SlotBeyondMedium => recorder.catalog.next_slot = recorder.slots + 1,
+            Rule::SlotBeyondMedium => recorder.catalog.next_slot = recorder.capacity() + 1,
         }
         recorder
     }
@@ -125,7 +132,7 @@ mod tests {
         let mut clearing = in_lifecycle(Lifecycle::Ready);
         assert_eq!(clearing.clear(0, 1), Ok(()));
         let mut full = Recorder::running();
-        full.catalog.next_slot = full.slots;
+        full.catalog.next_slot = full.capacity();
         let mut full_and_due = in_lifecycle(Lifecycle::Full { open: false });
         full_and_due.checkpoint_due = true;
         let consistent = [

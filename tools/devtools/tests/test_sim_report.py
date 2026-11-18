@@ -16,6 +16,7 @@ def scenario(run, name, status='pass', checkpoints=0, failure=None):
     (directory / 'ride-1.gpx').write_text('<gpx/>')
     result = {
         'name': name,
+        'device': 'c606',
         'status': status,
         'failure': failure,
         'simulated_ms': 125_000,
@@ -43,6 +44,14 @@ def test_summary_lists_failures_first_and_references_every_attachment(tmp_path):
     assert './dropout_recovers/final.png' in attachments
     assert './ride_records_track/01-step-0.png' in attachments
     assert './ride_records_track/final.png' not in attachments
+
+
+def test_a_skipped_scenario_is_neither_passed_nor_failed(tmp_path):
+    scenario(tmp_path, 'ride_records_track')
+    scenario(tmp_path, 'phone_saves_a_ride', status='skip', failure='unmet need: wifi: bare has none')
+    markdown, _ = report.summary(report.load(tmp_path), tmp_path, 'Sim', 'abc123')
+    assert markdown.startswith('## ✅ Sim: 1/2 scenarios passed, 1 skipped')
+    assert '| ⏭️ | Phone saves a ride |' in markdown
 
 
 def test_checkpoints_are_capped_but_keep_the_last(tmp_path):

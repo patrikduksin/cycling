@@ -53,6 +53,7 @@ impl OwnedFlash for ScriptedFlash {
             capacity: 0,
             program_size: 4,
             erase_size: 4096,
+            durable: true,
         })
     }
 
@@ -74,7 +75,7 @@ impl OwnedFlash for ScriptedFlash {
 
 /// The flash a simulated shell owns: the simulator's, or a replay's.
 pub enum Flash {
-    Simulated(crate::storage::FileFlash),
+    Simulated(crate::storage::Volatile<crate::storage::FileFlash>),
     Scripted(ScriptedFlash),
 }
 

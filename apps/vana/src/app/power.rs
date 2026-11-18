@@ -7,7 +7,7 @@
 use super::Runtime;
 use crate::screens::power::Sheet as View;
 use device_api::observation::Observation;
-use device_api::power::{Operation, PowerControl, State};
+use device_api::power::{Operation, PowerControl, State, Support};
 use firmware_shell::shell::Shell;
 
 /// No input, sensor data, movement or USB power for this long turns VANA off.
@@ -38,9 +38,12 @@ pub(super) const TURNING_OFF: Sheet = Sheet::TurningOff {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Sheet {
     Closed,
-    /// The rider asked to turn off and has not answered yet.
+    /// The rider asked to turn off and has not answered yet. With rides the
+    /// phone has not confirmed, `unsaved` of them, the sheet says to sync
+    /// them first and ACT does not turn off.
     Confirm {
         since: u64,
+        unsaved: u8,
     },
     /// The farewell is on its way to the panel; the request follows once
     /// its last, black frame is drawn. `progress` is in thousandths of
@@ -137,6 +140,9 @@ pub(super) struct Power {
     pub(super) auto: AutoOff,
     notice: Option<(Notice, u64)>,
     usb_powered: bool,
+    /// The device can turn off: its `PowerControl` does not answer
+    /// shutdown `Unsupported`. Without it VANA offers no turn-off.
+    shutdown: bool,
     last_activity_ms: u64,
     anchor_e7: Option<(i32, i32)>,
     /// The unsaved edit the rider was told about; turning off again discards
@@ -152,6 +158,7 @@ impl Default for Power {
             auto: AutoOff::Awake,
             notice: None,
             usb_powered: false,
+            shutdown: false,
             last_activity_ms: 0,
             anchor_e7: None,
             unsaved_warned: None,
@@ -205,7 +212,7 @@ impl Power {
     /// The sheet VANA draws instead of the current page, if any.
     pub(super) fn view(&self) -> Option<View> {
         match self.sheet {
-            Sheet::Confirm { .. } => Some(View::Confirm),
+            Sheet::Confirm { unsaved, .. } => Some(View::Confirm { unsaved }),
             Sheet::TurningOff { progress, .. } => Some(View::TurningOff { progress }),
             Sheet::Requested { .. } => Some(View::TurningOff {
                 progress: crate::screens::brand::DONE,
@@ -236,17 +243,21 @@ impl Power {
 impl Runtime {
     /// Ask to turn off, as TopLeft (BACK) on Home does. Refused mid-ride.
     pub(super) fn open_power_sheet(&mut self, now: u64) {
-        if !self.recording() {
-            self.power.sheet = Sheet::Confirm { since: now };
+        if !self.recorder_busy() && self.power.shutdown {
+            self.power.sheet = Sheet::Confirm {
+                since: now,
+                unsaved: self.sync.count() as u8,
+            };
         }
     }
 
     /// Buttons while a power sheet is shown. Returns whether the sheet took them.
-    pub(super) fn power_input(&mut self, button: device_api::input::Button) -> bool {
-        use device_api::input::Button;
+    pub(super) fn power_input(&mut self, button: device_api::input::Role) -> bool {
+        use device_api::input::Role;
         match self.power.sheet {
             Sheet::Confirm { .. } => {
-                self.power.sheet = if button == Button::BottomRight && !self.recording() {
+                let off = !self.recorder_busy() && !self.holds_unsynced();
+                self.power.sheet = if button == Role::Act && off {
                     TURNING_OFF
                 } else {
                     Sheet::Closed
@@ -315,7 +326,10 @@ impl Runtime {
         P: device_api::power::Power,
         B: device_api::storage::OwnedFlash,
     {
-        let busy = self.recording();
+        self.power.shutdown = control.capabilities().shutdown != Support::Unsupported;
+        let busy = self.recorder_busy();
+        // Auto-off refuses silently: NOT SAVED on Home says why.
+        let keeps_ram = busy || self.holds_unsynced();
         let before = self.power.view();
         if self.preferences.unsaved_edit().is_none() {
             self.power.unsaved_warned = None;
@@ -331,14 +345,14 @@ impl Runtime {
                 }
             }
         }
-        if let Sheet::Confirm { since } = self.power.sheet
+        if let Sheet::Confirm { since, .. } = self.power.sheet
             && (busy || now.saturating_sub(since) >= CONFIRM_TIMEOUT_MS)
         {
             self.power.sheet = Sheet::Closed;
         }
-        self.power.auto = if self.power.sheet == Sheet::Closed {
+        self.power.auto = if self.power.sheet == Sheet::Closed && self.power.shutdown {
             auto_off(Idle {
-                busy,
+                busy: keeps_ram,
                 usb_powered: self.power.usb_powered,
                 input_idle_ms: system.inactive_ms(now),
                 quiet_ms: now.saturating_sub(self.power.last_activity_ms),
@@ -350,7 +364,7 @@ impl Runtime {
             self.power.sheet = TURNING_OFF;
             self.power.auto = AutoOff::Awake;
         }
-        if busy && matches!(self.power.sheet, Sheet::TurningOff { .. }) {
+        if keeps_ram && matches!(self.power.sheet, Sheet::TurningOff { .. }) {
             self.power.sheet = Sheet::Closed;
         }
         // VANA cannot draw while the terminal owns the panel or it is blank:

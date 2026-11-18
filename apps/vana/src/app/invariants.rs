@@ -10,11 +10,11 @@ use crate::screens::workout::Page;
 invariants! {
     pub enum Rule of runtime: Runtime {
         PhoneWhileRecording: "phone session open while recording"
-            if runtime.phone_status().is_some() && runtime.recording(),
+            if runtime.phone_status().is_some() && runtime.recorder_busy(),
         TurningOffWhileRecording: "turning-off frame shown while recording"
-            if matches!(runtime.power.sheet, Sheet::TurningOff { .. }) && runtime.recording(),
+            if matches!(runtime.power.sheet, Sheet::TurningOff { .. }) && runtime.recorder_busy(),
         ConfirmOffWhileRecording: "turn-off question shown while recording"
-            if matches!(runtime.power.sheet, Sheet::Confirm { .. }) && runtime.recording(),
+            if matches!(runtime.power.sheet, Sheet::Confirm { .. }) && runtime.recorder_busy(),
         SummaryWhileRiding: "summary shown while riding"
             if runtime.navigation.page() == Page::Summary
                 && runtime.ride.active().riding()
@@ -28,6 +28,17 @@ invariants! {
                 && !matches!(runtime.navigation.page(), Page::Format | Page::Boot),
         EditingOffSettings: "a Settings number edited off the Settings page"
             if runtime.navigation.editing() && runtime.navigation.page() != Page::Settings,
+        TurningOffUnsynced: "turning off while the phone has not confirmed every ride"
+            if matches!(runtime.power.sheet, Sheet::TurningOff { .. } | Sheet::Requested { .. })
+                && runtime.holds_unsynced(),
+        UnprotectedVolatileRide: "a volatile journal's open ride is not protected"
+            if runtime
+                .ride
+                .volatile_ride()
+                .is_some_and(|id| !runtime.sync.protects(Medium::Internal, id)),
+        VolatileError: "a volatile journal in error"
+            if runtime.ride.volatile(Medium::Internal)
+                && runtime.ride.internal().status() == crate::ride::log::Status::Error,
     }
 }
 
@@ -50,7 +61,7 @@ impl Runtime {
     fn host_token_unowned(&self) -> bool {
         let host = match self.ride.host() {
             Request::Pending(token) => Some(token),
-            Request::Idle | Request::Completed(_) => None,
+            Request::Idle | Request::Completed(_) | Request::Declined(_) => None,
         };
         let wiping = match self.format {
             Format::Running { clear, .. } => clear,
@@ -58,13 +69,16 @@ impl Runtime {
         };
         let owners = |token| {
             usize::from(wiping == Some(token))
+                + usize::from(self.sync.asked() == Some(token))
                 + [Medium::Internal, Medium::Bulk]
                     .into_iter()
                     .filter(|&medium| self.ride.recorder(medium).outstanding_token() == Some(token))
                     .count()
         };
+        let asked = self.sync.asked();
         host.is_some_and(|token| owners(token) != 1)
             || wiping.is_some_and(|token| host != Some(token))
+            || asked.is_some_and(|token| host != Some(token))
     }
 
     pub fn broken(&self) -> Option<Broken> {

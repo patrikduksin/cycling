@@ -471,6 +471,15 @@ impl Player {
         true
     }
 
+    /// Whether `extend` would lengthen the step being played.
+    pub fn extendable(&self) -> bool {
+        !self.done
+            && matches!(
+                self.played.step.length,
+                Length::Time(_) | Length::Distance(_)
+            )
+    }
+
     fn next(&mut self, events: &mut Events, skipped: bool) {
         // A test result comes from its own step, as that step ends.
         if self.played.step.intensity == Intensity::Test

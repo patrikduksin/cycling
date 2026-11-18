@@ -7,7 +7,8 @@ use crate::screens::chrome::{ACCENT, CONTENT, HEIGHT, RED, Rect, SECONDARY, TITL
 use crate::screens::cue::{Corner, RADIUS};
 use crate::sensors::ant::{Battery, BatteryStatus, device_type};
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
-use device_api::input::{Button, Input};
+use device_api::input::Role;
+use firmware_shell::input::Input;
 
 const SCREEN: Rect = Rect {
     left: 0,
@@ -16,8 +17,11 @@ const SCREEN: Rect = Rect {
     bottom: HEIGHT,
 };
 
-fn press(button: Button) -> Input {
-    Input::Button { button, code: 1 }
+fn press(button: Role) -> Input {
+    Input::Press {
+        role: button,
+        code: 1,
+    }
 }
 
 fn identity(device_type: u8, device_number: u16) -> Identity {
@@ -73,7 +77,7 @@ impl Rider {
         Self { now: 10_000 }
     }
 
-    fn press(&mut self, menu: &mut Menu, button: Button) -> Option<Action> {
+    fn press(&mut self, menu: &mut Menu, button: Role) -> Option<Action> {
         self.now += SETTLE_MS;
         menu.input(press(button), self.now)
     }
@@ -84,7 +88,7 @@ impl Rider {
             if menu.diagnostics().focus.map(|f| f.device_type) == kind {
                 return;
             }
-            self.press(menu, Button::BottomLeft);
+            self.press(menu, Role::Move);
         }
         panic!("{kind:?} is not reachable");
     }
@@ -132,36 +136,24 @@ fn only_nearby_searches() {
     let mut menu = opened(&[peer(10)], &tiles);
     let mut rider = Rider::new();
     for _ in 0..6 {
-        assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
+        assert_eq!(rider.press(&mut menu, Role::Move), None);
     }
     rider.focus(&mut menu, Some(device_type::HEART_RATE));
-    assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
+    assert_eq!(rider.press(&mut menu, Role::Act), None);
     assert_eq!(page(&menu), Page::Detail);
-    assert_eq!(rider.press(&mut menu, Button::TopLeft), None);
+    assert_eq!(rider.press(&mut menu, Role::Back), None);
     rider.focus(&mut menu, None);
-    assert_eq!(
-        rider.press(&mut menu, Button::BottomRight),
-        Some(Action::Scan)
-    );
+    assert_eq!(rider.press(&mut menu, Role::Act), Some(Action::Scan));
     assert_eq!(page(&menu), Page::Nearby);
     menu.search_started();
     menu.refresh([None; DISCOVERY_CAPACITY], saved(&tiles), true);
-    assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
-    assert_eq!(
-        rider.press(&mut menu, Button::TopLeft),
-        Some(Action::StopScan)
-    );
-    assert_eq!(
-        rider.press(&mut menu, Button::BottomRight),
-        Some(Action::Scan)
-    );
+    assert_eq!(rider.press(&mut menu, Role::Act), None);
+    assert_eq!(rider.press(&mut menu, Role::Back), Some(Action::StopScan));
+    assert_eq!(rider.press(&mut menu, Role::Act), Some(Action::Scan));
     menu.search_started();
     menu.refresh([None; DISCOVERY_CAPACITY], saved(&tiles), false);
     assert_eq!(menu.diagnostics().focus, None);
-    assert_eq!(
-        rider.press(&mut menu, Button::BottomRight),
-        Some(Action::Scan)
-    );
+    assert_eq!(rider.press(&mut menu, Role::Act), Some(Action::Scan));
     let refresh = menu
         .canvas()
         .shapes
@@ -193,7 +185,7 @@ fn move_walks_the_rows_and_wraps_and_back_leaves() {
     let mut seen = std::vec::Vec::new();
     for _ in 0..5 {
         seen.push(menu.diagnostics().focus.map(|f| f.device_type));
-        rider.press(&mut menu, Button::BottomLeft);
+        rider.press(&mut menu, Role::Move);
     }
     use device_type::{HEART_RATE, POWER, SPEED};
     let walk = [
@@ -205,12 +197,12 @@ fn move_walks_the_rows_and_wraps_and_back_leaves() {
     ];
     assert_eq!(seen, walk);
     rider.focus(&mut menu, Some(POWER));
-    rider.press(&mut menu, Button::BottomRight);
+    rider.press(&mut menu, Role::Act);
     assert_eq!(page(&menu), Page::Detail);
-    rider.press(&mut menu, Button::TopLeft);
+    rider.press(&mut menu, Role::Back);
     assert_eq!(page(&menu), Page::Sensors);
     assert_eq!(menu.diagnostics().focus.map(|f| f.device_type), Some(POWER));
-    assert_eq!(rider.press(&mut menu, Button::TopLeft), Some(Action::Ride));
+    assert_eq!(rider.press(&mut menu, Role::Back), Some(Action::Ride));
 }
 
 /// NEARBY's line under its title, as text.
@@ -233,19 +225,16 @@ fn nearby_stays_open_after_an_add_so_more_sensors_pair_from_one_search() {
     let mut menu = opened(&found, &tiles);
     let mut rider = Rider::new();
     rider.focus(&mut menu, None);
-    assert_eq!(
-        rider.press(&mut menu, Button::BottomRight),
-        Some(Action::Scan)
-    );
+    assert_eq!(rider.press(&mut menu, Role::Act), Some(Action::Scan));
     menu.search_started();
     menu.refresh(nearby(&found), saved(&tiles), true);
     assert_eq!(menu.diagnostics().focus, Some(speed));
     for want in [cadence, radar, speed] {
-        rider.press(&mut menu, Button::BottomLeft);
+        rider.press(&mut menu, Role::Move);
         assert_eq!(menu.diagnostics().focus, Some(want));
     }
     assert_eq!(
-        rider.press(&mut menu, Button::BottomRight),
+        rider.press(&mut menu, Role::Act),
         Some(Action::Connect(speed))
     );
     tiles.push((speed, Connection::WaitingForRadio));
@@ -257,7 +246,7 @@ fn nearby_stays_open_after_an_add_so_more_sensors_pair_from_one_search() {
     assert!(!menu.canvas().shows("ID 10"));
     assert_eq!(menu.diagnostics().focus, Some(cadence));
     assert_eq!(
-        rider.press(&mut menu, Button::BottomRight),
+        rider.press(&mut menu, Role::Act),
         Some(Action::Connect(cadence))
     );
     tiles.push((cadence, Connection::WaitingForRadio));
@@ -269,19 +258,13 @@ fn nearby_stays_open_after_an_add_so_more_sensors_pair_from_one_search() {
     assert_eq!(search_line(&menu), ("CADENCE ADDED".into(), GREEN));
     menu.set_message(MenuMessage::ScanFailed);
     assert_eq!(search_line(&menu).1, AMBER);
-    assert_eq!(
-        rider.press(&mut menu, Button::TopLeft),
-        Some(Action::StopScan)
-    );
+    assert_eq!(rider.press(&mut menu, Role::Back), Some(Action::StopScan));
     assert_eq!(page(&menu), Page::Sensors);
     assert_eq!(menu.diagnostics().focus, Some(cadence));
     rider.focus(&mut menu, None);
-    assert_eq!(
-        rider.press(&mut menu, Button::BottomRight),
-        Some(Action::Scan)
-    );
+    assert_eq!(rider.press(&mut menu, Role::Act), Some(Action::Scan));
     assert_eq!(search_line(&menu).0, "FIND NEARBY");
-    rider.press(&mut menu, Button::TopLeft);
+    rider.press(&mut menu, Role::Back);
     assert_eq!(menu.diagnostics().focus, None);
 }
 
@@ -290,16 +273,13 @@ fn back_from_nearby_returns_to_sensors_or_leaves_when_nothing_is_saved() {
     let mut rider = Rider::new();
     let mut menu = opened(&[peer(10)], &[(strap(1), Connection::Live)]);
     rider.focus(&mut menu, None);
-    rider.press(&mut menu, Button::BottomRight);
-    assert_eq!(
-        rider.press(&mut menu, Button::TopLeft),
-        Some(Action::StopScan)
-    );
+    rider.press(&mut menu, Role::Act);
+    assert_eq!(rider.press(&mut menu, Role::Back), Some(Action::StopScan));
     assert_eq!(page(&menu), Page::Sensors);
     assert_eq!(menu.diagnostics().focus, None, "back on ADD SENSOR's row");
     let mut empty = opened(&[peer(10)], &[]);
     assert_eq!(page(&empty), Page::Nearby);
-    assert_eq!(rider.press(&mut empty, Button::TopLeft), Some(Action::Ride));
+    assert_eq!(rider.press(&mut empty, Role::Back), Some(Action::Ride));
 }
 
 #[test]
@@ -308,19 +288,19 @@ fn a_sensor_of_a_saved_type_asks_before_it_replaces() {
     let mut menu = opened(&[peer(20)], &[(current, Connection::Live)]);
     let mut rider = Rider::new();
     rider.focus(&mut menu, None);
-    rider.press(&mut menu, Button::BottomRight);
-    assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
+    rider.press(&mut menu, Role::Act);
+    assert_eq!(rider.press(&mut menu, Role::Act), None);
     assert_eq!(page(&menu), Page::Replace);
     assert!(menu.canvas().shows("REPLACE SENSOR"));
     assert!(menu.canvas().shows("1") && menu.canvas().shows("20"));
-    assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
+    assert_eq!(rider.press(&mut menu, Role::Move), None);
     assert_eq!(page(&menu), Page::Replace);
-    assert_eq!(rider.press(&mut menu, Button::TopLeft), None);
+    assert_eq!(rider.press(&mut menu, Role::Back), None);
     assert_eq!(page(&menu), Page::Nearby);
     assert_eq!(menu.selected_identity(device_type::POWER), Some(current));
-    rider.press(&mut menu, Button::BottomRight);
+    rider.press(&mut menu, Role::Act);
     assert_eq!(
-        rider.press(&mut menu, Button::BottomRight),
+        rider.press(&mut menu, Role::Act),
         Some(Action::Connect(peer(20).identity))
     );
 }
@@ -332,14 +312,14 @@ fn full_slots_and_stale_discoveries_say_why_nothing_connects() {
     let mut menu = opened(&[peer(10)], &tiles);
     let mut rider = Rider::new();
     rider.focus(&mut menu, None);
-    rider.press(&mut menu, Button::BottomRight);
-    assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
+    rider.press(&mut menu, Role::Act);
+    assert_eq!(rider.press(&mut menu, Role::Act), None);
     assert_eq!(menu.diagnostics().message, Some(MenuMessage::SlotsFull));
     assert_eq!(search_line(&menu), ("SENSOR SLOTS FULL".into(), AMBER));
     let mut menu = opened(&[peer(10)], &[]);
     menu.refresh([None; DISCOVERY_CAPACITY], [None; CHANNEL_CAPACITY], false);
     assert!(menu.canvas().shows("NOT SEEN"));
-    assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
+    assert_eq!(rider.press(&mut menu, Role::Act), None);
     assert_eq!(menu.diagnostics().message, Some(MenuMessage::NotSeen));
 }
 
@@ -500,11 +480,11 @@ fn ten_saved_sensors_scroll_so_the_focus_stays_in_view() {
             ACCENT,
             "step {step}: ring"
         );
-        rider.press(&mut menu, Button::BottomLeft);
+        rider.press(&mut menu, Role::Move);
     }
     rider.focus(&mut menu, None);
     assert!(!menu.canvas().shows("SENSORS"));
-    rider.press(&mut menu, Button::BottomLeft);
+    rider.press(&mut menu, Role::Move);
     assert!(menu.canvas().shows("SENSORS"));
     rider.focus(&mut menu, None);
     let add = focused_rect(&menu);
@@ -522,7 +502,7 @@ fn eight_nearby_sensors_scroll_so_the_focus_stays_in_view() {
             rect.top >= CONTENT.top && rect.bottom <= FOCUS_BOTTOM,
             "step {step}: {rect:?}"
         );
-        rider.press(&mut menu, Button::BottomLeft);
+        rider.press(&mut menu, Role::Move);
     }
 }
 
@@ -531,7 +511,7 @@ fn a_power_meter_detail_waits_a_moment_then_act_zeroes_and_move_asks_to_forget()
     let meter = identity(device_type::POWER, 5512);
     let mut menu = opened(&[], &[(meter, Connection::Live)]);
     let opened_at = 20_000;
-    assert_eq!(menu.input(press(Button::BottomRight), opened_at), None);
+    assert_eq!(menu.input(press(Role::Act), opened_at), None);
     assert_eq!(page(&menu), Page::Detail);
     let cues: std::vec::Vec<_> = menu
         .layout
@@ -548,32 +528,26 @@ fn a_power_meter_detail_waits_a_moment_then_act_zeroes_and_move_asks_to_forget()
             (Corner::BottomRight, Icon::Calibrate)
         ]
     );
+    assert_eq!(menu.input(press(Role::Act), opened_at + 400), None);
+    assert_eq!(menu.input(press(Role::Act), opened_at + 990), None);
     assert_eq!(
-        menu.input(press(Button::BottomRight), opened_at + 400),
-        None
-    );
-    assert_eq!(
-        menu.input(press(Button::BottomRight), opened_at + 990),
-        None
-    );
-    assert_eq!(
-        menu.input(press(Button::BottomRight), opened_at + SETTLE_MS + 400),
+        menu.input(press(Role::Act), opened_at + SETTLE_MS + 400),
         Some(Action::Calibrate)
     );
     assert_eq!(page(&menu), Page::Detail);
     let mut rider = Rider {
         now: opened_at + SETTLE_MS + 400,
     };
-    assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
+    assert_eq!(rider.press(&mut menu, Role::Move), None);
     assert_eq!(page(&menu), Page::Forget);
     assert!(menu.canvas().shows("FORGET") && menu.canvas().shows("SENSOR?"));
     assert!(menu.canvas().shows("POWER METER 5512"));
-    assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
-    assert_eq!(rider.press(&mut menu, Button::TopLeft), None);
+    assert_eq!(rider.press(&mut menu, Role::Move), None);
+    assert_eq!(rider.press(&mut menu, Role::Back), None);
     assert_eq!(page(&menu), Page::Detail);
-    rider.press(&mut menu, Button::BottomLeft);
+    rider.press(&mut menu, Role::Move);
     assert_eq!(
-        rider.press(&mut menu, Button::BottomRight),
+        rider.press(&mut menu, Role::Act),
         Some(Action::Disconnect(device_type::POWER))
     );
     assert_eq!(page(&menu), Page::Sensors);
@@ -583,27 +557,21 @@ fn a_power_meter_detail_waits_a_moment_then_act_zeroes_and_move_asks_to_forget()
 fn any_other_sensor_detail_forgets_on_act_and_ignores_move() {
     let mut menu = opened(&[], &[(strap(100), Connection::Live)]);
     let mut rider = Rider::new();
-    rider.press(&mut menu, Button::BottomRight);
+    rider.press(&mut menu, Role::Act);
     assert_eq!(page(&menu), Page::Detail);
     let corners: std::vec::Vec<_> = menu.cues().iter().map(|c| c.corner).collect();
     assert_eq!(corners, [Corner::TopLeft, Corner::BottomRight]);
-    assert_eq!(
-        menu.input(press(Button::BottomRight), rider.now + 400),
-        None
-    );
+    assert_eq!(menu.input(press(Role::Act), rider.now + 400), None);
     assert_eq!(page(&menu), Page::Detail);
-    assert_eq!(rider.press(&mut menu, Button::BottomLeft), None);
+    assert_eq!(rider.press(&mut menu, Role::Move), None);
     assert_eq!(page(&menu), Page::Detail);
-    assert_eq!(rider.press(&mut menu, Button::BottomRight), None);
+    assert_eq!(rider.press(&mut menu, Role::Act), None);
     assert_eq!(page(&menu), Page::Forget);
     assert!(menu.canvas().shows("HEART RATE 100"));
-    assert_eq!(
-        menu.input(press(Button::BottomRight), rider.now + 400),
-        None
-    );
+    assert_eq!(menu.input(press(Role::Act), rider.now + 400), None);
     assert_eq!(page(&menu), Page::Forget);
     assert_eq!(
-        rider.press(&mut menu, Button::BottomRight),
+        rider.press(&mut menu, Role::Act),
         Some(Action::Disconnect(device_type::HEART_RATE))
     );
     menu.refresh([None; DISCOVERY_CAPACITY], [None; CHANNEL_CAPACITY], false);
@@ -619,7 +587,7 @@ fn a_sensor_removed_under_its_detail_page_returns_to_sensors() {
     ];
     let mut menu = opened(&[], &tiles);
     let mut rider = Rider::new();
-    rider.press(&mut menu, Button::BottomRight);
+    rider.press(&mut menu, Role::Act);
     assert_eq!(page(&menu), Page::Detail);
     let mut left = saved(&tiles);
     left[0] = None;
@@ -682,8 +650,8 @@ const MINE_ROW_MIDDLE: usize = super::layout::MINE_TOP + 24;
 fn cancel_holds_act_until_move_and_debounce_drops_repeats() {
     let mut menu = opened(&[], &[(strap(1), Connection::Live)]);
     for code in [4, 5] {
-        let held = Input::Button {
-            button: Button::BottomRight,
+        let held = Input::Press {
+            role: Role::Act,
             code,
         };
         assert_eq!(menu.input(held, 0), None);
@@ -691,17 +659,14 @@ fn cancel_holds_act_until_move_and_debounce_drops_repeats() {
     assert_eq!(page(&menu), Page::Sensors);
     menu.input(Input::Cancel, 400);
     assert!(menu.canvas().shows("MOVE FOCUS FIRST"));
-    assert_eq!(menu.input(press(Button::BottomRight), 800), None);
+    assert_eq!(menu.input(press(Role::Act), 800), None);
     assert_eq!(page(&menu), Page::Sensors);
-    menu.input(press(Button::BottomLeft), 1_200);
+    menu.input(press(Role::Move), 1_200);
     assert!(menu.canvas().shows("SENSORS"));
-    assert_eq!(menu.input(press(Button::BottomRight), 1_549), None);
+    assert_eq!(menu.input(press(Role::Act), 1_549), None);
     assert_eq!(page(&menu), Page::Sensors);
     menu.input(Input::Cancel, 2_000);
-    assert_eq!(
-        menu.input(press(Button::TopLeft), 2_400),
-        Some(Action::Ride)
-    );
+    assert_eq!(menu.input(press(Role::Back), 2_400), Some(Action::Ride));
 }
 
 #[test]
@@ -725,8 +690,8 @@ fn replacement_tells_maximum_identities_apart_without_overlap() {
     let mut menu = opened(&[discovery], &[(current, Connection::NotFound)]);
     let mut rider = Rider::new();
     rider.focus(&mut menu, None);
-    rider.press(&mut menu, Button::BottomRight);
-    rider.press(&mut menu, Button::BottomRight);
+    rider.press(&mut menu, Role::Act);
+    rider.press(&mut menu, Role::Act);
     assert_eq!(page(&menu), Page::Replace);
     let canvas = menu.canvas();
     canvas.assert_laid_out(
@@ -772,7 +737,7 @@ fn the_detail_page_shows_the_battery_in_the_colour_of_its_urgency() {
         let mut menu = Menu::new();
         menu.refresh([None; DISCOVERY_CAPACITY], tiles, false);
         menu.open();
-        Rider::new().press(&mut menu, Button::BottomRight);
+        Rider::new().press(&mut menu, Role::Act);
         assert_eq!(page(&menu), Page::Detail);
         assert_eq!(run(&menu, text).map(|r| r.color), Some(color), "{text}");
         assert_eq!(run(&menu, "V").is_some(), millivolts.is_some(), "{text}");
@@ -799,7 +764,7 @@ fn calibration_notes_show_in_their_colour_only_on_a_power_meter() {
     let meter = identity(device_type::POWER, 5512);
     for (note, text, color) in notes {
         let mut menu = opened(&[], &[(meter, Connection::Live)]);
-        Rider::new().press(&mut menu, Button::BottomRight);
+        Rider::new().press(&mut menu, Role::Act);
         menu.set_calibration(Some(note));
         assert_eq!(note.text().as_str(), text);
         let line = run(&menu, text).unwrap_or_else(|| panic!("{text}"));
@@ -820,7 +785,7 @@ fn calibration_notes_show_in_their_colour_only_on_a_power_meter() {
         assert_clear_of_cues(&menu, text);
     }
     let mut strap_menu = opened(&[], &[(strap(1), Connection::Live)]);
-    Rider::new().press(&mut strap_menu, Button::BottomRight);
+    Rider::new().press(&mut strap_menu, Role::Act);
     strap_menu.set_calibration(Some(CalibrationNote::Calibrating));
     assert!(!strap_menu.canvas().shows("CALIBRATING..."));
 }
@@ -907,7 +872,7 @@ fn crowded() -> std::vec::Vec<(std::string::String, Menu)> {
     for step in 0..11 {
         states.push((std::format!("sensors {step}"), menu_copy(&menu)));
         if let View::Mine(Mine::Saved(_)) = menu.state.view {
-            rider.press(&mut menu, Button::BottomRight);
+            rider.press(&mut menu, Role::Act);
             states.push((std::format!("detail {step}"), menu_copy(&menu)));
             menu.set_calibration(Some(CalibrationNote::Failed));
             states.push((std::format!("detail, failed {step}"), menu_copy(&menu)));
@@ -916,15 +881,15 @@ fn crowded() -> std::vec::Vec<(std::string::String, Menu)> {
                 View::Detail(slot) => slot,
                 _ => unreachable!(),
             }) {
-                rider.press(&mut menu, Button::BottomLeft);
+                rider.press(&mut menu, Role::Move);
             } else {
-                rider.press(&mut menu, Button::BottomRight);
+                rider.press(&mut menu, Role::Act);
             }
             states.push((std::format!("forget {step}"), menu_copy(&menu)));
-            rider.press(&mut menu, Button::TopLeft);
-            rider.press(&mut menu, Button::TopLeft);
+            rider.press(&mut menu, Role::Back);
+            rider.press(&mut menu, Role::Back);
         }
-        rider.press(&mut menu, Button::BottomLeft);
+        rider.press(&mut menu, Role::Move);
     }
     let mut add = Menu::new();
     let fresh: [_; DISCOVERY_CAPACITY] = core::array::from_fn(|n| {
@@ -938,7 +903,7 @@ fn crowded() -> std::vec::Vec<(std::string::String, Menu)> {
     add.set_message(MenuMessage::SavedUnreadable);
     for step in 0..9 {
         states.push((std::format!("add {step}"), menu_copy(&add)));
-        rider.press(&mut add, Button::BottomLeft);
+        rider.press(&mut add, Role::Move);
     }
     let mut replace = Menu::new();
     replace.refresh(
@@ -948,8 +913,8 @@ fn crowded() -> std::vec::Vec<(std::string::String, Menu)> {
     );
     replace.open();
     rider.focus(&mut replace, None);
-    rider.press(&mut replace, Button::BottomRight);
-    rider.press(&mut replace, Button::BottomRight);
+    rider.press(&mut replace, Role::Act);
+    rider.press(&mut replace, Role::Act);
     assert_eq!(page(&replace), Page::Replace);
     states.push(("replace".into(), replace));
     states

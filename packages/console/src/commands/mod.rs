@@ -125,9 +125,12 @@ pub fn execute<D: Display, I: InputSource, P: Power, F: OwnedFlash, B: Board<She
                 _ => unreachable!(),
             };
             if let Some(operation) = operation {
-                if sdk.recording() {
+                if sdk.recorder_busy() {
                     let _ = out.write_str("active work");
                     return "BUSY";
+                }
+                if operation != device_api::power::Operation::Wake && sdk.holds_unsynced() {
+                    return "UNSYNCED";
                 }
                 board.card().sync_trace(now);
                 status = request_status(power.request_after(operation, delay_ms));
@@ -171,7 +174,7 @@ pub fn execute<D: Display, I: InputSource, P: Power, F: OwnedFlash, B: Board<She
             let _ = out.write_str(HELP);
         }
         Command::Info => {
-            let recording = sdk.recording();
+            let recording = sdk.recorder_busy();
             let Identity {
                 board,
                 slot,
@@ -326,9 +329,17 @@ pub fn execute<D: Display, I: InputSource, P: Power, F: OwnedFlash, B: Board<She
             }
         }
         Command::Storage => {
-            let _ = write!(out, "{:?}", system.data_storage().data().geometry());
+            let geometry = system.data_storage().data().geometry();
+            let _ = write!(
+                out,
+                "Geometry {{ capacity: {}, program_size: {}, erase_size: {}, durable: {} }}",
+                geometry.capacity, geometry.program_size, geometry.erase_size, geometry.durable
+            );
         }
         Command::Restart => {
+            if sdk.holds_unsynced() {
+                return "UNSYNCED";
+            }
             board.restart(now);
             status = "ACCEPTED";
         }
@@ -361,7 +372,7 @@ fn volume<System>(
     } else if matches!(
         command,
         volumes::Command::Transfer | volumes::Command::StoreFormat
-    ) && sdk.recording()
+    ) && sdk.recorder_busy()
     {
         Some("active work")
     } else if command == volumes::Command::StoreFormat && card.trace_in_store() {

@@ -1,5 +1,4 @@
 use super::*;
-use device_api::input::Button;
 use std::string::{String, ToString};
 use std::vec::Vec;
 
@@ -74,10 +73,7 @@ fn sample() -> Vec<Event<'static>> {
         },
         Event::Shown("W=210 BPM=142 KM/H=28.0"),
         Event::Panel(0x0bad_f00d),
-        Event::Synthetic(Input::Button {
-            button: Button::BottomLeft,
-            code: 1,
-        }),
+        Event::Synthetic(Input::Button { id: 1, code: 1 }),
         Event::Log {
             level: Level::Warn,
             target: "terrain",

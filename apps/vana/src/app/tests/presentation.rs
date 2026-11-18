@@ -73,7 +73,20 @@ impl device_api::input::InputSource for Keys {
     fn controls(&self) -> device_api::input::Controls {
         device_api::input::Controls {
             touch: Availability::Unsupported,
-            buttons: &[Button::TopLeft, Button::BottomLeft, Button::BottomRight],
+            buttons: device_api::input::Fixtures::new(&[
+                device_api::input::Fixture {
+                    id: 0,
+                    role: Some(Role::Back),
+                },
+                device_api::input::Fixture {
+                    id: 1,
+                    role: Some(Role::Move),
+                },
+                device_api::input::Fixture {
+                    id: 2,
+                    role: Some(Role::Act),
+                },
+            ]),
         }
     }
     fn take_edge(&mut self) -> Option<device_api::input::Edge> {
@@ -81,46 +94,9 @@ impl device_api::input::InputSource for Keys {
     }
 }
 
-pub(super) struct NoPower;
-impl device_api::power::Power for NoPower {
-    fn availability(&self) -> Availability {
-        Availability::Unsupported
-    }
-    fn battery(&self) -> Option<(u8, u16, u64)> {
-        None
-    }
-    fn brightness(&mut self, _: u8) -> Result<(), device_api::observation::Error> {
-        Err(device_api::observation::Error::Unsupported)
-    }
-}
-
-pub(super) struct NoFlash;
-impl device_api::storage::OwnedFlash for NoFlash {
-    type Error = ();
-    fn availability(&self, _: device_api::storage::Region) -> Availability {
-        Availability::Unsupported
-    }
-    fn geometry(&self, _: device_api::storage::Region) -> device_api::storage::Geometry {
-        device_api::storage::Geometry {
-            capacity: 0,
-            program_size: 1,
-            erase_size: 1,
-        }
-    }
-    fn read(&mut self, _: device_api::storage::Region, _: usize, _: &mut [u8]) -> Result<(), ()> {
-        Err(())
-    }
-    fn program(&mut self, _: device_api::storage::Region, _: usize, _: &[u8]) -> Result<(), ()> {
-        Err(())
-    }
-    fn erase(&mut self, _: device_api::storage::Region, _: usize, _: usize) -> Result<(), ()> {
-        Err(())
-    }
-}
-
 pub(super) struct Screen {
     pub(super) panel: Panel,
-    pub(super) shell: Shell<Panel, Keys, NoPower, NoFlash>,
+    pub(super) shell: Shell<Panel, Keys, Absent, Absent>,
 }
 impl Screen {
     pub(super) fn new() -> Self {
@@ -131,9 +107,9 @@ impl Screen {
         let shell = Shell::new(
             panel.clone(),
             Keys,
-            NoPower,
-            NoFlash,
-            Box::leak(Box::new(Store::new(NoFlash))),
+            Absent,
+            Absent,
+            Box::leak(Box::new(Store::new(Absent))),
             0,
         )
         .expect("display is ready");
@@ -169,7 +145,7 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
     assert!(!screen.present(&mut runtime, &radio, 7000));
     assert!(!screen.present(&mut runtime, &radio, 7999));
     // Input redraws immediately.
-    runtime.input_received(press(Button::BottomLeft), 7999, 7999, &mut radio);
+    runtime.input_received(press(Role::Move), 7999, 7999, &mut radio);
     assert!(screen.present(&mut runtime, &radio, 7999));
     runtime.set_startup_status(device_api::sensors::Startup::Probing);
     assert!(!screen.present(&mut runtime, &radio, 8000));
@@ -180,7 +156,7 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
 
     runtime.suspend_display();
     assert!(!runtime.input_active());
-    runtime.input_received(press(Button::BottomLeft), 9000, 9000, &mut radio);
+    runtime.input_received(press(Role::Move), 9000, 9000, &mut radio);
     assert_eq!(
         runtime.navigation.home_cursor(),
         1,
@@ -197,8 +173,8 @@ fn a_new_startup_status_draws_at_once_where_it_shows() {
     let mut radio = Radio::new();
     assert!(screen.present(&mut runtime, &radio, 3000));
     assert!(screen.present(&mut runtime, &radio, 3400));
-    runtime.input_received(press(Button::BottomLeft), 4000, 4000, &mut radio);
-    runtime.input_received(press(Button::BottomRight), 4400, 4400, &mut radio);
+    runtime.input_received(press(Role::Move), 4000, 4000, &mut radio);
+    runtime.input_received(press(Role::Act), 4400, 4400, &mut radio);
     assert!(screen.present(&mut runtime, &radio, 4400));
     assert!(runtime.navigation.page() == Page::Sensors);
     runtime.set_startup_status(device_api::sensors::Startup::Probing);
@@ -221,7 +197,7 @@ fn ride_opens_ready_which_waits_for_act_to_start() {
     assert!(screen.present(&mut runtime, &radio, 6000));
     assert!(screen.present(&mut runtime, &radio, 6500));
     assert!(runtime.navigation.page() == Page::Home);
-    runtime.input_received(press(Button::BottomRight), 7000, 7000, &mut radio);
+    runtime.input_received(press(Role::Act), 7000, 7000, &mut radio);
     assert!(runtime.navigation.page() == Page::Ready);
 
     assert!(screen.present(&mut runtime, &radio, 7000));
@@ -255,7 +231,7 @@ fn ride_opens_ready_which_waits_for_act_to_start() {
     // Ready stays until the rider acts: no timer moves on.
     assert!(screen.present(&mut runtime, &radio, 30_000));
     assert!(runtime.navigation.page() == Page::Ready);
-    runtime.input_received(press(Button::TopLeft), 30_500, 30_500, &mut radio);
+    runtime.input_received(press(Role::Back), 30_500, 30_500, &mut radio);
     assert!(runtime.navigation.page() == Page::Home);
 }
 
@@ -350,8 +326,8 @@ fn a_touch_lifted_after_leaving_settings_does_not_swallow_the_next_tap() {
     assert!(runtime.navigation.editing());
     runtime.input_received(touch(60, 237), 1500, 1500, &mut radio);
     assert_eq!(runtime.preferences.profile.ftp_watts, 210);
-    runtime.input_received(press(Button::TopLeft), 2000, 2000, &mut radio);
-    runtime.input_received(press(Button::TopLeft), 3000, 3000, &mut radio);
+    runtime.input_received(press(Role::Back), 2000, 2000, &mut radio);
+    runtime.input_received(press(Role::Back), 3000, 3000, &mut radio);
     assert!(runtime.navigation.page() == Page::Home);
     runtime.input_received(Input::Release, 3500, 3500, &mut radio);
     // Back in Settings, the first tap counts.

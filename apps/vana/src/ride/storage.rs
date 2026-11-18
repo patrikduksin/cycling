@@ -1,15 +1,27 @@
 //! Ride layout adapter over an exclusively borrowed byte reservation.
 
 use crate::ride::log::Commit;
+use crate::ride::log::SECTOR_SIZE;
+use crate::ride::log::SLOT_SIZE;
 use crate::ride::log::Sector;
 use crate::ride::log::Slot;
 use device_api::storage::AccessError;
+use device_api::storage::Geometry;
 use device_api::storage::OwnedFlash;
 use device_api::storage::checked_range;
 use firmware_services::storage::AppStorage;
 
 pub trait RideStorage {
     type Error;
+    /// The ride reservation: its size, which sets the journal's sectors and
+    /// slots, and whether it survives power-off.
+    fn ride_geometry(&mut self) -> Geometry;
+    fn ride_sectors(&mut self) -> usize {
+        crate::ride::log::sectors(self.ride_geometry().capacity)
+    }
+    fn ride_slots(&mut self) -> usize {
+        self.ride_sectors() * crate::ride::log::SLOTS_PER_SECTOR
+    }
     fn ride_read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), Self::Error>;
     fn ride_read_slot(&mut self, slot: usize, output: &mut Slot) -> Result<(), Self::Error>;
     fn ride_erase_sector(&mut self, sector: usize) -> Result<(), Self::Error>;
@@ -17,7 +29,8 @@ pub trait RideStorage {
     fn ride_commit_slot(&mut self, slot: usize, commit: &Commit) -> Result<(), Self::Error>;
 }
 
-fn offset<E>(
+fn journal_offset<E>(
+    geometry: Geometry,
     index: usize,
     stride: usize,
     within: usize,
@@ -27,60 +40,50 @@ fn offset<E>(
         .checked_mul(stride)
         .and_then(|v| v.checked_add(within))
         .ok_or(AccessError::OutOfBounds)?;
-    checked_range(crate::ride::log::REGION_SIZE, offset, length, 1)?;
+    let journal = crate::ride::log::sectors(geometry.capacity) * SECTOR_SIZE;
+    checked_range(journal, offset, length, 1)?;
     Ok(offset)
 }
 
 impl<B: OwnedFlash> RideStorage for AppStorage<'_, B> {
     type Error = AccessError<B::Error>;
+    fn ride_geometry(&mut self) -> Geometry {
+        self.data().geometry()
+    }
     fn ride_read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), Self::Error> {
+        let at = journal_offset(self.ride_geometry(), sector, SECTOR_SIZE, 0, output.0.len())?;
         self.data()
-            .read(
-                offset(sector, crate::ride::log::SECTOR_SIZE, 0, output.0.len())?,
-                &mut output.0,
-            )
+            .read(at, &mut output.0)
             .map_err(AccessError::Device)
     }
     fn ride_read_slot(&mut self, slot: usize, output: &mut Slot) -> Result<(), Self::Error> {
+        let at = journal_offset(self.ride_geometry(), slot, SLOT_SIZE, 0, output.0.len())?;
         self.data()
-            .read(
-                offset(slot, crate::ride::log::SLOT_SIZE, 0, output.0.len())?,
-                &mut output.0,
-            )
+            .read(at, &mut output.0)
             .map_err(AccessError::Device)
     }
     fn ride_erase_sector(&mut self, sector: usize) -> Result<(), Self::Error> {
+        let at = journal_offset(self.ride_geometry(), sector, SECTOR_SIZE, 0, SECTOR_SIZE)?;
         self.data()
-            .erase(
-                offset(
-                    sector,
-                    crate::ride::log::SECTOR_SIZE,
-                    0,
-                    crate::ride::log::SECTOR_SIZE,
-                )?,
-                crate::ride::log::SECTOR_SIZE,
-            )
+            .erase(at, SECTOR_SIZE)
             .map_err(AccessError::Device)
     }
     fn ride_write_slot(&mut self, slot: usize, data: &Slot) -> Result<(), Self::Error> {
+        let at = journal_offset(self.ride_geometry(), slot, SLOT_SIZE, 0, data.0.len())?;
         self.data()
-            .program(
-                offset(slot, crate::ride::log::SLOT_SIZE, 0, data.0.len())?,
-                &data.0,
-            )
+            .program(at, &data.0)
             .map_err(AccessError::Device)
     }
     fn ride_commit_slot(&mut self, slot: usize, commit: &Commit) -> Result<(), Self::Error> {
+        let at = journal_offset(
+            self.ride_geometry(),
+            slot,
+            SLOT_SIZE,
+            SLOT_SIZE - 4,
+            commit.0.len(),
+        )?;
         self.data()
-            .program(
-                offset(
-                    slot,
-                    crate::ride::log::SLOT_SIZE,
-                    crate::ride::log::SLOT_SIZE - 4,
-                    commit.0.len(),
-                )?,
-                &commit.0,
-            )
+            .program(at, &commit.0)
             .map_err(AccessError::Device)
     }
 }
@@ -89,7 +92,6 @@ impl<B: OwnedFlash> RideStorage for AppStorage<'_, B> {
 mod tests {
     use super::*;
 
-    use device_api::storage::Geometry;
     struct Backend;
     impl OwnedFlash for Backend {
         fn availability(
@@ -104,6 +106,7 @@ mod tests {
                 capacity: crate::ride::log::REGION_SIZE,
                 program_size: 4,
                 erase_size: 4096,
+                durable: true,
             }
         }
         fn read(

@@ -425,6 +425,11 @@ async fn terrain() -> Option<&'static mut vana::app::Terrain> {
     })
 }
 
+const PRODUCT: vana::Product = vana::Product {
+    name: device::fitted::PRODUCT_NAME,
+    fit_id: device::fitted::FIT_PRODUCT,
+};
+
 static LAYOUT: vana::screens::Layout = vana::screens::Layout::of(
     vana::screens::scaled::Scaled::of(device::fitted::PANEL_WIDTH, device::fitted::PANEL_HEIGHT),
 );
@@ -440,7 +445,7 @@ async fn console(
 ) {
     let mut terminal = firmware_console::session::Terminal::new(usb);
     let mut next_health = 0;
-    let sdk = external(|| vana::app::Runtime::new(profile, &LAYOUT));
+    let sdk = external(|| vana::app::Runtime::new(profile, PRODUCT, &LAYOUT));
     device::capabilities::ant::wake_on(vana::app::WAKING_ANT_TYPE);
     working.attach(sdk);
     sdk.load_preferences(&system.settings.app, system.settings_source);
@@ -630,7 +635,7 @@ fn traced_pass(
     // Keep USB observations alive while device owners complete the transition.
     if power.ready {
         let position = world.position(trace, now);
-        let (physical, light) = world.sensed(trace, now);
+        let (physical, light, fitted) = world.sensed(trace, now);
         let online = device::drivers::wifi::online();
         let network_time = firmware_services::network_time::snapshot(now, 0, online);
         trace.network_time(network_time, now);
@@ -651,6 +656,7 @@ fn traced_pass(
                 network_time,
                 input: &companion,
                 physical,
+                fitted,
             },
             now,
             handles,
@@ -696,7 +702,7 @@ fn traced_pass(
         world.unrecorded_bulk(),
         firmware_services::trace::spool::Card::of(
             !device::capabilities::power::ACCESS.closed(),
-            sdk.recording(),
+            sdk.recorder_busy(),
             sdk.shutdown_due(),
         ),
         now,

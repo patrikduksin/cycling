@@ -290,7 +290,7 @@ fn a_wipe_that_fails_says_so_on_the_ready_page() {
         sim.press(ACT);
         sim.advance(seconds(1));
         assert_eq!(sim.device.sdk.page(), Page::Ready, "no ride opens");
-        assert!(!sim.device.sdk.recording());
+        assert!(!sim.device.sdk.recorder_busy());
     }
     sim.expect_text("STORAGE NOT READY");
     assert_eq!(sim.command("RIDE START").0, "BUSY");
@@ -398,7 +398,7 @@ fn a_resumed_clear_takes_the_brand_then_checking_storage_then_home() {
         sim.press(BACK);
         sim.press(ACT);
     }
-    assert!(!sim.device.sdk.recording(), "no ride starts");
+    assert!(!sim.device.sdk.recorder_busy(), "no ride starts");
     while sim.device.sdk.page() != Page::Home {
         assert!(sim.now() - cut < seconds(60), "the resume never ends");
         sim.expect_no_text("FORMAT STORAGE?");
@@ -432,7 +432,7 @@ fn a_resumed_clear_erases_again_a_sector_its_cut_erase_left_reading_erased() {
     sim.wait_usable();
     assert_eq!(internal_slots(&mut sim), "0", "the wipe finished");
     let erased = sim.device.media.fault.borrow().erased.clone();
-    for sector in 0..vana::ride::log::SECTORS {
+    for sector in 0..vana::ride::log::sectors(shell_simulator::storage::DATA_BYTES) {
         let offset = sector * vana::ride::log::SECTOR_SIZE;
         assert!(
             erased.contains(&(Region::Data, offset)),
@@ -596,7 +596,7 @@ fn an_intent_a_boot_cannot_read_holds_off_rides_and_the_next_boot_finishes_its_w
         "BUSY",
         "no ride on a journal a wipe is due on"
     );
-    assert!(!sim.device.sdk.recording());
+    assert!(!sim.device.sdk.recorder_busy());
     assert_eq!(field(&health(&mut sim), "state"), "failed");
     sim.expect_text("OFF AND ON TO FORMAT");
     sim.checkpoint("the intent cannot be read");

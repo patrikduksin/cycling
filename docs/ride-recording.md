@@ -61,7 +61,8 @@ cycling ride-export --from .local/exports/<id> --format fit   # Convert an earli
 ```
 
 - [ride/fit.rs](../apps/vana/src/ride/fit.rs) turns a ride into a FIT
-  activity (cycling): file_id, device_info, timer start, stop and resume
+  activity (cycling): file_id and device_info, which name the device's
+  manifest `product` and `fit_product`, timer start, stop and resume
   events, one record per sample with time, position, distance, speed, heart
   rate, cadence, power, grade and altitude, one lap as each lap ends, then the
   session (with normalized power) and the activity. Laps and session carry
@@ -308,7 +309,9 @@ Recording:
   and commit four samples per flash slot. Late service delays a sample but does
   not stretch later periods; wholly skipped periods count as `dropped`.
 - Capacity is shared by every ride until an export and explicit clear; nothing is
-  reclaimed automatically. The 1 MiB reservation is 4,096 slots: 4,094 hold
+  reclaimed automatically. The internal journal is as large as the owned
+  `Data` reservation's `Geometry.capacity`, in whole 4 KiB sectors. The
+  C606's 1 MiB reservation is 4,096 slots: 4,094 hold
   samples once START and the terminal record are reserved, which is 16,376 s
   (4 h 32 min 56 s) at 1 Hz when empty. Each pause/resume costs two event slots
   plus the unused part of the batch it flushes (about 10 s of capacity).
@@ -338,6 +341,50 @@ Recording:
   no flag bit. The host JSON has `altitude_m` and the GPX `<ele>`.
 - Gradient estimates the pressure change over at least 30 metres of wheel
   distance and needs fresh pressure and moving wheel data.
+
+Rides kept in memory ([UX flows](ux-flows.md#rides-kept-in-memory) has what
+the rider sees):
+
+- `Geometry.durable` of the `Data` reservation says whether the internal
+  journal survives power-off. A memory-backed reservation (`[owned]` with
+  `memory = "psram"` or `"ram"` in the device manifest) is not durable. The
+  device fills it with the erased byte at every boot, so the journal keeps the
+  same format and scans empty. Rides on the bulk log are always durable.
+- A volatile internal journal gets a fresh random store id each time it starts
+  empty: at boot, and when a clear or FORMAT's wipe of it ends. Its ride ids
+  restart at 1 each time, so a FILES record of an earlier boot's ride 1, kept
+  on the card, would otherwise name this boot's ride 1. The store id goes into those records
+  (see the hidden-ride table below), and an old record never matches a new
+  ride. A durable internal journal has store id 0, and a clear drops its
+  records instead.
+- A ride is protected from the pass its recording starts on a volatile
+  journal, a continuation segment included. The protected set lives in RAM,
+  up to 16 rides (`app/sync.rs`).
+- Each FIT download of a protected ride carries a random receipt in its
+  `X-Receipt` header, and the pass that writes the file keeps the CRC in its
+  last two bytes. `POST /api/synced?activity=<id>&receipt=<receipt>&crc=<crc>`
+  confirms the ride only when the receipt and the CRC are the newest
+  download's: 204 removes the ride from the set, 409 `not_this_export`
+  names a mismatch, 404 `not_protected` a ride that is not in the set, and
+  400 `acknowledgment` a malformed query. `/api/activities` marks each
+  protected ride `"unsaved":true`, and `/api/status` reports `"volatile"`
+  for the internal journal and `"clear"` for the page's clear.
+- A volatile journal admits 16 starts, continuation segments included, until
+  it is cleared. A start past that answers `STATE`. A continuation past it
+  does not start, and the bulk part stays the rider's ride.
+- An internal `RIDE CLEAR CONFIRM`, or `DELETE /api/activities` from the phone
+  page, asks LOSE n UNSAVED RIDES? on the device while rides are protected.
+  `RIDE STATUS` reports the token pending until the rider answers. BACK
+  completes it with `result=FAILED` and keeps the journal. ACT empties the set
+  and runs the clear. `DELETE /api/activities` on a durable journal answers
+  409 `durable`, and 409 `indexing` before the page's list is read.
+- While rides are protected, every controlled way of losing RAM refuses:
+  `RESTART`, `POWER SHUTDOWN`, `POWER SLEEP`, `FORMAT CONFIRM` and the
+  C606's `TEST 11` and `TEST 12` answer `UNSYNCED`. The TURN OFF sheet and the
+  idle timer refuse too.
+- A forced reboot cannot be refused: holding BACK for 10 s, a panic or a
+  power cut. The next boot starts the journal empty, so it loses every ride
+  in memory, protected or not, and the protected set with them.
 
 Lap marks:
 
@@ -698,9 +745,10 @@ written.
   that moment does to any ride. The rider can delete it later.
 - A deleted ride keeps the bests it set: `bests.dat` does not record which
   ride set a best. CLEAR BESTS starts over.
-- A record hides the ride whose journal, bulk log store id, ride id, start
+- A record hides the ride whose journal, store id, ride id, start
   second and ride time all match. An undated ride matches too, as the key
-  needs no clock. A new bulk log on the card has a new store id. Clearing or
+  needs no clock. A new bulk log on the card has a new store id, as does a
+  volatile internal journal each time it starts empty. Clearing or
   initializing a journal drops its records once the clear succeeds, as its
   ride ids start over.
 - The phone knows a ride by its journal and id. It takes the list's ride of
@@ -738,7 +786,7 @@ CRC32 of the bytes before it:
 | 4..8 | ride id |
 | 8..12 | ride start, UTC seconds; 0 unknown |
 | 12..16 | ride time, seconds |
-| 16..24 | the bulk log's store id; 0 internal |
+| 16..24 | the journal's store id: the bulk log's, a volatile internal journal's, or 0 for a durable internal journal |
 | 24..28 | when it was hidden, UTC seconds; 0 unknown |
 | 28..32 | CRC32 of bytes 0..28 |
 

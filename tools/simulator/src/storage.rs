@@ -10,7 +10,8 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
 };
-const DATA_BYTES: usize = 1024 * 1024;
+/// The simulated ride reservation, the C606's 1 MiB.
+pub const DATA_BYTES: usize = 1024 * 1024;
 const JOURNAL_BYTES: usize = 8192;
 /// A storage operation that failed, and how many of its bytes reached the
 /// medium first. `attempt` is its place among the medium's operations since
@@ -451,6 +452,7 @@ impl OwnedFlash for FileFlash {
             capacity: Self::capacity(r),
             program_size: 4,
             erase_size: 4096,
+            durable: true,
         }
     }
     fn read(&mut self, r: Region, offset: usize, out: &mut [u8]) -> Result<(), Error> {
@@ -505,5 +507,121 @@ impl FileFlash {
         f.seek(SeekFrom::Start(offset as u64))
             .and_then(|_| f.read_exact(out))
             .map_err(|_| Error::Failed)
+    }
+}
+
+/// Each memory-backed region and its bytes.
+type Ram = std::rc::Rc<std::cell::RefCell<Vec<(Region, Vec<u8>)>>>;
+
+/// A model's memory-backed regions over the flash that backs the rest. It is
+/// built at every boot, so those regions start erased, as a device fills its
+/// memory with the erased byte, and keep nothing across power-off. Its
+/// handles share the one memory.
+pub struct Volatile<F> {
+    flash: F,
+    memory: Ram,
+}
+
+impl<F> Volatile<F> {
+    pub fn boot(flash: F, model: &crate::devices::Model) -> Self {
+        let memory = model
+            .memory
+            .iter()
+            .map(|&(region, size)| (region, vec![0xff; size]))
+            .collect();
+        Self {
+            flash,
+            memory: std::rc::Rc::new(std::cell::RefCell::new(memory)),
+        }
+    }
+
+    /// Another handle on the same memory, over `flash`.
+    pub fn handle<G>(&self, flash: G) -> Volatile<G> {
+        Volatile {
+            flash,
+            memory: self.memory.clone(),
+        }
+    }
+
+    fn memory(&self, r: Region) -> Option<std::cell::RefMut<'_, Vec<u8>>> {
+        std::cell::RefMut::filter_map(self.memory.borrow_mut(), |memory| {
+            memory
+                .iter_mut()
+                .find(|(region, _)| *region == r)
+                .map(|(_, bytes)| bytes)
+        })
+        .ok()
+    }
+}
+
+impl<F: OwnedFlash<Error = Error>> OwnedFlash for Volatile<F> {
+    type Error = Error;
+    fn availability(&self, r: Region) -> Availability {
+        self.flash.availability(r)
+    }
+    fn geometry(&self, r: Region) -> device_api::storage::Geometry {
+        match self.memory(r) {
+            Some(bytes) => device_api::storage::Geometry {
+                capacity: bytes.len(),
+                durable: false,
+                ..self.flash.geometry(r)
+            },
+            None => self.flash.geometry(r),
+        }
+    }
+    fn read(&mut self, r: Region, offset: usize, out: &mut [u8]) -> Result<(), Error> {
+        let Some(bytes) = self.memory(r) else {
+            return self.flash.read(r, offset, out);
+        };
+        device_api::storage::checked_range::<()>(bytes.len(), offset, out.len(), 1)
+            .map_err(|_| Error::Invalid)?;
+        out.copy_from_slice(&bytes[offset..offset + out.len()]);
+        Ok(())
+    }
+    fn program(&mut self, r: Region, offset: usize, input: &[u8]) -> Result<(), Error> {
+        let Some(mut bytes) = self.memory(r) else {
+            return self.flash.program(r, offset, input);
+        };
+        device_api::storage::checked_range::<()>(bytes.len(), offset, input.len(), 4)
+            .map_err(|_| Error::Invalid)?;
+        for (stored, new) in bytes[offset..].iter_mut().zip(input) {
+            *stored &= new;
+        }
+        Ok(())
+    }
+    fn erase(&mut self, r: Region, offset: usize, len: usize) -> Result<(), Error> {
+        let Some(mut bytes) = self.memory(r) else {
+            return self.flash.erase(r, offset, len);
+        };
+        device_api::storage::checked_range::<()>(bytes.len(), offset, len, 4096)
+            .map_err(|_| Error::Invalid)?;
+        bytes[offset..offset + len].fill(0xff);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod volatile_tests {
+    use super::*;
+
+    #[test]
+    fn a_memory_backed_region_boots_erased_and_says_it_is_not_durable() {
+        let model = &crate::models::VOLATILE;
+        let flash = FileFlash::memory;
+        let mut volatile = Volatile::boot(flash(), model);
+        let data = volatile.geometry(Region::Data);
+        assert_eq!((data.capacity, data.durable), (0x40000, false));
+        assert!(volatile.geometry(Region::Intent).durable);
+        volatile.program(Region::Data, 0, &[0; 256]).unwrap();
+        let mut read = [0xaa; 256];
+        volatile.read(Region::Data, 0, &mut read).unwrap();
+        assert_eq!(read, [0; 256]);
+        let mut rebooted = Volatile::boot(flash(), model);
+        rebooted.read(Region::Data, 0, &mut read).unwrap();
+        assert_eq!(read, [0xff; 256], "a power-off loses the memory");
+        assert_eq!(
+            rebooted.program(Region::Data, 0x40000, &[0; 4]),
+            Err(Error::Invalid)
+        );
     }
 }

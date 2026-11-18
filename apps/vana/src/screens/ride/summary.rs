@@ -61,6 +61,9 @@ pub enum Saving {
     #[default]
     Writing,
     Saved,
+    /// Written to a journal that loses it at power-off, and the phone has
+    /// not confirmed a copy: only syncing saves it.
+    Unsynced,
     /// Storage failed while finishing: what was written before is kept.
     Failed,
     /// A saved ride is being read back.
@@ -82,6 +85,8 @@ pub struct After {
     pub laps: Option<u16>,
     /// A saved ride from the list, titled by `View::past_title`.
     pub past: bool,
+    /// ACT sends the saved ride to the phone.
+    pub send: bool,
     /// The saved ride's pages end with DELETE RIDE?.
     pub delete: bool,
     /// The ride has an elevation page.
@@ -103,6 +108,7 @@ impl After {
         climbs: None,
         laps: None,
         past: false,
+        send: false,
         delete: false,
         elevation: false,
         found: Found::EMPTY,
@@ -586,13 +592,20 @@ fn overview(view: &View, layout: &Layout, canvas: &mut Canvas) {
     let faces = [at.face(FaceRole::Title), at.face(FaceRole::Body)];
     if after.past {
         let saved = regions.saved;
-        let centre = (saved.left + saved.right) / 2;
-        let text = b"SAVED RIDE";
-        canvas.caption(at, text, saved.width(), centre, saved.bottom, Align::Center);
+        if after.saving == Saving::Unsynced {
+            let caption = [at.face(FaceRole::Caption)];
+            centred(canvas, &caption, b"SYNC TO SAVE", saved, AMBER);
+        } else {
+            let centre = (saved.left + saved.right) / 2;
+            let text = b"SAVED RIDE";
+            canvas.caption(at, text, saved.width(), centre, saved.bottom, Align::Center);
+        }
         let title = view.past_title().as_bytes();
         centred(canvas, &faces, title, regions.title, WHITE);
     } else if after.saving == Saving::Saved {
         centred(canvas, &faces, b"RIDE SAVED", regions.title, WHITE);
+    } else if after.saving == Saving::Unsynced {
+        centred(canvas, &faces, b"SYNC TO SAVE", regions.title, AMBER);
     }
     let mut values: [Text<12>; 6] = core::array::from_fn(|_| Text::new());
     let [time, distance, avg_speed, ascent, power, heart] = &mut values;
@@ -740,7 +753,10 @@ pub fn shows_elevation(view: &View) -> bool {
     let after = view.after();
     after.elevation
         && SummaryPage::at(after.page, true) == SummaryPage::Elevation
-        && matches!(after.saving, Saving::Saved | Saving::Failed)
+        && matches!(
+            after.saving,
+            Saving::Saved | Saving::Unsynced | Saving::Failed
+        )
 }
 
 fn elevation_page(view: &View, layout: &Layout, canvas: &mut Canvas) {
@@ -924,6 +940,7 @@ mod tests {
                 climbs: Some(999),
                 laps: Some(999),
                 past: false,
+                send: false,
                 delete: false,
                 elevation: false,
                 found: Found::default(),
@@ -979,6 +996,10 @@ mod tests {
         let saved = extreme(0, Saving::Saved);
         assert!(saved.canvas().shows("RIDE SAVED"));
         assert!(badge(&saved).is_some());
+        let unsynced = extreme(0, Saving::Unsynced);
+        let sync = unsynced.canvas().find("SYNC TO SAVE").map(|run| run.color);
+        assert_eq!(sync, Some(AMBER), "a protected ride is not called saved");
+        assert!(!unsynced.canvas().shows("RIDE SAVED") && badge(&unsynced).is_none());
         assert!(extreme(0, Saving::Failed).canvas().shows("NOT ALL SAVED"));
         let saving = extreme(0, Saving::Writing);
         assert!(saving.canvas().shows("SAVING") && badge(&saving).is_none());
@@ -1076,6 +1097,9 @@ mod tests {
             view.prepare();
             view
         };
+        let protected = past(0, Saving::Unsynced);
+        assert!(protected.canvas().shows("SYNC TO SAVE"));
+        assert!(!protected.canvas().shows("SAVED RIDE"));
         let first = past(0, Saving::Saved);
         let want = ["SAVED RIDE", "DEC 31  12:59", "99:59:59"];
         first.canvas().assert_laid_out(bounds, &want, "past ride");

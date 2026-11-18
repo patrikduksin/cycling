@@ -28,6 +28,7 @@ impl OwnedFlash for Memory {
             },
             program_size: 4,
             erase_size: SECTOR_SIZE,
+            durable: true,
         }
     }
     fn read(&mut self, region: Region, offset: usize, output: &mut [u8]) -> Result<(), ()> {

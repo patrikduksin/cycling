@@ -25,6 +25,7 @@ pub mod settings;
 pub mod setup;
 pub mod sign;
 pub mod touch;
+pub mod unsaved;
 pub mod workout;
 pub mod workouts;
 

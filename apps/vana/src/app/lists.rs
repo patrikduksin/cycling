@@ -9,7 +9,7 @@ use super::Runtime;
 use super::navigation::To;
 use crate::screens::kinetic::Kinetic;
 use crate::screens::scroll::{Layout, Press};
-use crate::screens::settings::{self, Kind, Row};
+use crate::screens::settings::{self, Kind};
 use crate::screens::touch::{List, Pan};
 use crate::screens::workout::Page;
 use crate::screens::{history, workouts};
@@ -22,8 +22,7 @@ impl Runtime {
             Page::History => Some(List::Rides),
             Page::Workouts if self.ftp_sheet().is_none() => Some(List::Workouts),
             Page::Settings
-                if !(navigation.editing()
-                    && Row::at(navigation.settings_field()).kind() == Kind::Number) =>
+                if !(navigation.editing() && navigation.setting().kind() == Kind::Number) =>
             {
                 Some(List::Settings)
             }
@@ -43,7 +42,14 @@ impl Runtime {
         match list {
             List::Rides => self.history_count(),
             List::Workouts => self.training.rows(),
-            List::Settings => settings::rows(self.navigation.settings_field()).0.len(),
+            List::Settings => {
+                let navigation = &self.navigation;
+                navigation
+                    .sections()
+                    .rows(navigation.settings_field())
+                    .0
+                    .len()
+            }
         }
     }
 
@@ -53,8 +59,9 @@ impl Runtime {
             List::Rides => self.history.cursor,
             List::Workouts => self.training.picker_cursor,
             List::Settings => {
-                let field = self.navigation.settings_field();
-                field % settings::ROWS - settings::rows(field).1
+                let (field, sections) =
+                    (self.navigation.settings_field(), self.navigation.sections());
+                field % sections.fields() - sections.rows(field).1
             }
         }
     }
@@ -64,7 +71,8 @@ impl Runtime {
             List::Rides => self.history.cursor = index,
             List::Workouts => self.training.picker_cursor = index,
             List::Settings => {
-                let first = settings::rows(self.navigation.settings_field()).1;
+                let navigation = &self.navigation;
+                let first = navigation.sections().rows(navigation.settings_field()).1;
                 self.navigation.go(To::Field(first + index));
             }
         }
@@ -177,11 +185,12 @@ impl Runtime {
             return;
         }
         let navigation = &mut self.navigation;
-        let section = settings::section(navigation.settings_field()).0;
+        let sections = navigation.sections();
+        let section = sections.section(navigation.settings_field()).0;
         navigation.go(To::Field(
-            (navigation.settings_field() + 1) % settings::ROWS,
+            (navigation.settings_field() + 1) % sections.fields(),
         ));
-        if settings::section(navigation.settings_field()).0 == section {
+        if sections.section(navigation.settings_field()).0 == section {
             let target = layout.reveal(cursor + 1, rest);
             navigation.settings_scroll_mut().reveal(target as f32, now);
         }

@@ -38,7 +38,7 @@ use crate::workout::model::{Length, Name, Played};
 use crate::workout::player::{Event, Events, Player, Summary};
 use core::fmt::Write;
 use device_api::bulk::ReadWrite;
-use device_api::input::Button;
+use device_api::input::Role;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Beep {
@@ -191,7 +191,7 @@ impl Runtime {
             self.training.listed = false;
         }
         self.training.picking = picking;
-        if self.training.listed || self.recording() {
+        if self.training.listed || self.recorder_busy() {
             return;
         }
         self.training.list(media);
@@ -257,13 +257,13 @@ impl Runtime {
     /// MOVE focuses the next card (held, the next page of cards; past the
     /// last it wraps to the first), ACT chooses it for Ready, BACK goes Home.
     /// Either press first brings a focus that scrolled away back into view.
-    pub(super) fn workouts_input(&mut self, button: Button, now: u64, held: bool) {
+    pub(super) fn workouts_input(&mut self, button: Role, now: u64, held: bool) {
         match button {
-            Button::BottomLeft => self.list_move(List::Workouts, VISIBLE, held, now),
-            Button::BottomRight if self.list_act(List::Workouts, now) => {
+            Role::Move => self.list_move(List::Workouts, VISIBLE, held, now),
+            Role::Act if self.list_act(List::Workouts, now) => {
                 self.choose_workout(self.training.picker_cursor)
             }
-            Button::TopLeft => self.navigation.go(To::Page(Page::Home)),
+            Role::Back => self.navigation.go(To::Page(Page::Home)),
             _ => {}
         }
     }
@@ -279,12 +279,12 @@ impl Runtime {
     }
 
     /// ACT saves a test's FTP, BACK keeps the one in force; MOVE does nothing.
-    pub(super) fn ftp_input(&mut self, button: Button, now: u64) -> bool {
+    pub(super) fn ftp_input(&mut self, button: Role, now: u64) -> bool {
         let Some(Question::Test { ftp, current }) = self.ftp_question() else {
             return false;
         };
         match button {
-            Button::BottomRight => {
+            Role::Act => {
                 let mut profile = self.preferences.profile;
                 profile.ftp_watts = ftp;
                 self.preferences.set(profile, now);
@@ -292,7 +292,7 @@ impl Runtime {
                 let _ = write!(text, "FTP {ftp} W SAVED");
                 self.navigation.toast(text.as_str(), Tone::Good, now);
             }
-            Button::TopLeft => {
+            Role::Back => {
                 let mut text = Text::<20>::new();
                 let _ = write!(text, "FTP KEPT {current} W");
                 self.navigation.toast(text.as_str(), Tone::Info, now);
@@ -318,6 +318,13 @@ impl Runtime {
     }
 
     /// A tap on the workout page's time left adds to the step.
+    pub(super) fn step_extendable(&self) -> bool {
+        self.training
+            .player
+            .as_ref()
+            .is_some_and(|player| player.extendable())
+    }
+
     pub(super) fn extend_step(&mut self, now: u64) {
         let Some(player) = self.training.player.as_mut() else {
             return;
@@ -415,7 +422,7 @@ impl Runtime {
         let number = |index: usize| arguments.get(index).and_then(|v| v.parse::<usize>().ok());
         let written = match (operation, arguments.len()) {
             (None | Some("LIST"), 0) => {
-                if !self.recording() {
+                if !self.recorder_busy() {
                     self.training.list(media);
                     self.display.redraw();
                 }
@@ -426,7 +433,7 @@ impl Runtime {
                 let Some(row) = number(0).filter(|&row| row < self.training.rows()) else {
                     return "INVALID";
                 };
-                if self.recording() {
+                if self.recorder_busy() {
                     return "STATE";
                 }
                 // As choosing it on the picker: Ready names it.
@@ -438,7 +445,7 @@ impl Runtime {
                 let Some(index) = number(0) else {
                     return "INVALID";
                 };
-                if self.recording() {
+                if self.recorder_busy() {
                     return "STATE";
                 }
                 let Some(upload) = self.training.library.uploads().get(index).copied() else {

@@ -8,7 +8,8 @@ use crate::screens::kinetic::Kinetic;
 use crate::screens::ride::RidePage;
 use crate::screens::settings;
 use crate::screens::touch::Touches;
-use crate::screens::workout::{Page, Text};
+use crate::screens::workout::{Page, Text, View};
+use device_api::input::Role;
 use firmware_services::why;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,8 +85,8 @@ pub(super) struct Navigation {
     ride_page: RidePage,
     /// The highlighted Home choice, an index into `workout::HOME`.
     home_cursor: usize,
-    /// The selected Settings field, an index into `settings::FIELDS`.
     settings_field: usize,
+    sections: settings::Sections,
     /// Set only on Settings.
     edit: Option<Edit>,
     /// The focused card on a first-run setup page.
@@ -142,6 +143,7 @@ impl Default for Navigation {
             ride_page: RidePage::Main,
             home_cursor: 0,
             settings_field: 0,
+            sections: settings::Sections::All,
             edit: None,
             setup_cursor: 0,
             setup_return: false,
@@ -186,7 +188,7 @@ impl Navigation {
                 self.settings_scroll = Kinetic::default();
             }
             To::Field(field) => {
-                if settings::section(field).0 != settings::section(self.settings_field).0 {
+                if self.sections.section(field).0 != self.sections.section(self.settings_field).0 {
                     self.settings_scroll = Kinetic::default();
                 }
                 self.settings_field = field;
@@ -325,6 +327,30 @@ impl Navigation {
         self.settings_field
     }
 
+    pub(super) fn view<'a>(&self, local: Option<crate::clock::Local>) -> View<'a> {
+        let cursor = match self.page {
+            Page::Settings => self.settings_field,
+            Page::Setup => self.setup_cursor,
+            _ => self.home_cursor,
+        };
+        let mut view = View::new(self.page, cursor, local);
+        view.sections = self.sections;
+        view.editing = self.page == Page::Settings && self.editing();
+        view
+    }
+
+    pub(super) fn setting(&self) -> settings::Row {
+        self.sections.row(self.settings_field)
+    }
+
+    pub(super) fn sections(&self) -> settings::Sections {
+        self.sections
+    }
+
+    pub(super) fn set_sections(&mut self, sections: settings::Sections) {
+        self.sections = sections;
+    }
+
     pub(super) fn edit(&self) -> Option<Edit> {
         self.edit
     }
@@ -405,8 +431,13 @@ impl Navigation {
         self.last_press = received;
     }
 
-    pub(super) fn reported(&mut self, index: usize, received: u64, hold_gap_ms: u64) -> Report {
-        let last = &mut self.last_report[index.min(2)];
+    pub(super) fn reported(&mut self, role: Role, received: u64, hold_gap_ms: u64) -> Report {
+        let index = match role {
+            Role::Act => 0,
+            Role::Back => 1,
+            Role::Move => 2,
+        };
+        let last = &mut self.last_report[index];
         let held = last.is_some_and(|at| received.saturating_sub(at) < hold_gap_ms);
         *last = Some(received);
         if held { Report::Held } else { Report::Pressed }
@@ -454,7 +485,15 @@ impl Navigation {
         self.toast = Some((toast, now.saturating_add(ms)));
     }
 
-    pub(super) fn announce(&mut self, status: Status, pages_over_pause: bool, now: u64) {
+    /// Say what the ride's status became; a ride the phone has not
+    /// confirmed (`unsynced`) is never called saved.
+    pub(super) fn announce(
+        &mut self,
+        status: Status,
+        pages_over_pause: bool,
+        unsynced: bool,
+        now: u64,
+    ) {
         let before = core::mem::replace(&mut self.announced, status);
         if before == status {
             return;
@@ -493,6 +532,7 @@ impl Navigation {
                 }
                 return;
             }
+            (_, Status::Saved) if riding && unsynced => ("SYNC TO SAVE", Tone::Warn),
             (_, Status::Saved) if riding => ("RIDE SAVED", Tone::Good),
             (_, Status::Recovered) => ("RIDE RECOVERED", Tone::Info),
             _ => return,

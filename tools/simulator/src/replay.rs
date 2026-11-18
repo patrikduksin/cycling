@@ -705,6 +705,7 @@ pub struct Sources {
     startup: Served<sensors::Startup>,
     physical: Served<sensors::Snapshot>,
     light: Served<Observation<sensors::Light>>,
+    fitted: Served<sensors::SensorSet>,
     network_time: Served<firmware_services::network_time::Snapshot>,
     backlight: Served<Availability>,
     /// Where the last failed access recorded ended: a failed read's bytes
@@ -751,13 +752,14 @@ impl Sources {
             },
             power: ReplayPowerControl {
                 view: Served::new("power control", &ledger),
+                capabilities: Served::new("power capabilities", &ledger),
                 calls: Calls::new("power control", &ledger),
                 off: false,
-                ledger: ledger.clone(),
             },
             startup: Served::new("companion startup", &ledger),
             physical: Served::new("barometer and motion", &ledger),
             light: Served::new("ambient light", &ledger),
+            fitted: Served::new("fitted sensors", &ledger),
             network_time: Served::new("network time", &ledger),
             backlight: Served::new("backlight", &ledger),
             fault_end: None,
@@ -913,6 +915,7 @@ impl Sources {
             World::Position(snapshot) => self.position.snapshot.set(snapshot),
             World::Physical(snapshot) => self.physical.set(snapshot),
             World::Light(light) => self.light.set(light),
+            World::Fitted(fitted) => self.fitted.set(fitted),
             World::Companion(snapshot) => self.companion.0.set(snapshot),
             World::Startup(startup) => self.startup.set(startup),
             World::Entropy(value) => self.bulk.entropy.values.push_back(value),
@@ -996,6 +999,7 @@ impl Sources {
                 }
             }
             World::SoundRequest { play, result } => self.sound.calls.push((play, result)),
+            World::PowerCapabilities(capabilities) => self.power.capabilities.set(capabilities),
             World::PowerControl(status) => {
                 if let Some(view) = self.power.calls.change(status) {
                     self.power.view.set(view);
@@ -1037,6 +1041,10 @@ impl Sources {
             .latest
             .at(self.light.ledger.now())
             .unwrap_or(Observation::Unavailable)
+    }
+
+    pub fn fitted(&self) -> sensors::SensorSet {
+        self.fitted.read().unwrap_or(sensors::SensorSet::NONE)
     }
 
     pub fn network_time(&self) -> firmware_services::network_time::Snapshot {
@@ -1578,9 +1586,9 @@ type PowerCall = (power::Operation, u32, Result<(), Error>);
 /// and whether the power went away this pass.
 pub struct ReplayPowerControl {
     view: Served<power::Status>,
+    capabilities: Served<power::Capabilities>,
     calls: Calls<PowerCall, power::Status>,
     off: bool,
-    ledger: Ledger,
 }
 
 impl ReplayPowerControl {
@@ -1604,8 +1612,9 @@ impl ReplayPowerControl {
 
 impl PowerControl for ReplayPowerControl {
     fn capabilities(&self) -> power::Capabilities {
-        self.ledger.unrecorded("power capabilities");
-        power::Capabilities::UNSUPPORTED
+        self.capabilities
+            .read()
+            .unwrap_or(power::Capabilities::UNSUPPORTED)
     }
     fn status(&self) -> power::Status {
         self.view.read().unwrap_or(power::Status {
@@ -1625,7 +1634,7 @@ impl PowerControl for ReplayPowerControl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use device_api::input::Button;
+    use device_api::input::Role;
     use device_api::journal::PART;
     use device_api::server::{Method, ServerObserved, ServerRecorder};
     use firmware_services::trace::Header;
@@ -1702,7 +1711,13 @@ mod tests {
 
     fn replay(bytes: Vec<u8>) -> Replay {
         let shelled = Shelled {
-            input: InputDevice::new(&[Button::TopLeft], Availability::Ready),
+            input: InputDevice::new(
+                device_api::input::Fixtures::new(&[device_api::input::Fixture {
+                    id: 0,
+                    role: Some(Role::Back),
+                }]),
+                Availability::Ready,
+            ),
             display: DisplayDevice::new(16, 16),
             power: PowerDevice::new(Availability::Ready),
             flash: FileFlash::memory(),

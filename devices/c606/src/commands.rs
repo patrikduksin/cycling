@@ -8,6 +8,9 @@ use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
 use firmware_console::session::{Reboot, Terminal};
 
+const TEST_REBOOT: u8 = 11;
+const TEST_REBOOT_UNSYNCED: u8 = 12;
+
 struct Text {
     bytes: [u8; 1280],
     len: usize,
@@ -71,29 +74,37 @@ pub fn execute<C: device_api::console::Console>(
     let (log, observed) = (trace.log, trace.observed);
     let mut ble = device_api::ble_transport::BleRecorder::new(ble, log, &observed.ble);
     let mut wifi = device_api::connectivity::WifiRecorder::new(Station, log, &observed.wifi);
-    let status = firmware_console::commands::execute(
+    let status = if matches!(
         request.command,
-        now,
-        Capabilities {
-            ant,
-            ble: &mut ble,
-            wifi: &mut wifi,
-            power,
-            input,
-        },
-        system,
-        sdk,
-        &mut Composition {
-            terminal,
-            trace,
-            bulk,
-            sound,
-            position,
-            sensors,
-            diagnostics,
-        },
-        &mut output,
-    );
+        Command::Test(TEST_REBOOT | TEST_REBOOT_UNSYNCED)
+    ) && sdk.holds_unsynced()
+    {
+        "UNSYNCED"
+    } else {
+        firmware_console::commands::execute(
+            request.command,
+            now,
+            Capabilities {
+                ant,
+                ble: &mut ble,
+                wifi: &mut wifi,
+                power,
+                input,
+            },
+            system,
+            sdk,
+            &mut Composition {
+                terminal,
+                trace,
+                bulk,
+                sound,
+                position,
+                sensors,
+                diagnostics,
+            },
+            &mut output,
+        )
+    };
     let elapsed = started.elapsed().as_millis();
     match request.command {
         Command::Save => system.storage_max_ms = system.storage_max_ms.max(elapsed),
@@ -278,11 +289,11 @@ impl<C: device_api::console::Console, G: Diagnostics> Board<crate::FirmwareShell
                     log::info!(target:"diagnostic","executor stall ended");
                     "ACCEPTED"
                 }
-                11 => {
+                TEST_REBOOT => {
                     self.terminal.schedule_reboot(now, Reboot::Panic);
                     "ACCEPTED"
                 }
-                12 => {
+                TEST_REBOOT_UNSYNCED => {
                     self.terminal.schedule_reboot(now, Reboot::PanicUnsynced);
                     "ACCEPTED"
                 }
@@ -584,8 +595,10 @@ pub async fn transfer(
 }
 
 fn fitted(system: &mut crate::FirmwareShell, output: &mut dyn Write) {
-    use device_api::input::InputSource as _;
+    use device_api::input::{InputSource as _, Role};
     use device_api::observation::Availability;
+    use device_api::power::{PowerControl, Support};
+    use device_api::sensors::Sensors;
     use device_api::storage::OwnedFlash as _;
     let panel = system.display_geometry();
     let controls = system.input_source().unrecorded().controls();
@@ -604,10 +617,31 @@ fn fitted(system: &mut crate::FirmwareShell, output: &mut dyn Write) {
         panel.height,
         touch
     );
-    for (index, button) in controls.buttons.iter().enumerate() {
+    for (index, button) in controls.buttons.as_slice().iter().enumerate() {
         let separator = if index == 0 { "" } else { "," };
-        let _ = write!(output, "{}{}", separator, button.index());
+        let _ = write!(output, "{}{}", separator, button.id);
+        if let Some(role) = button.role {
+            let role = match role {
+                Role::Act => "act",
+                Role::Back => "back",
+                Role::Move => "move",
+            };
+            let _ = write!(output, ":{role}");
+        }
     }
+    let shutdown = match PowerControl::capabilities(&device::board::Power).shutdown {
+        Support::Supported => "supported",
+        Support::Unknown => "unknown",
+        Support::Unsupported => "unsupported",
+    };
+    let sensors = Sensors::fitted(&device::board::Sensors);
+    let fitted = |fitted: bool| if fitted { "fitted" } else { "absent" };
+    let _ = write!(
+        output,
+        " shutdown={shutdown} barometer={} light={}",
+        fitted(sensors.barometer),
+        fitted(sensors.light)
+    );
     for &(name, region) in device::fitted::REGIONS {
         let geometry = system.flash().unrecorded().geometry(region);
         let _ = write!(

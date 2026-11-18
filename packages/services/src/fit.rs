@@ -287,11 +287,11 @@ impl Writer {
         }
     }
 
-    /// Write the file CRC; the file is complete.
-    pub fn finish(&mut self, sink: &mut impl Sink) {
-        let crc = self.crc.to_le_bytes();
+    /// Write the file CRC, and return it; the file is complete.
+    pub fn finish(&mut self, sink: &mut impl Sink) -> u16 {
         self.written += CRC_SIZE;
-        sink.put(&crc);
+        sink.put(&self.crc.to_le_bytes());
+        self.crc
     }
 }
 

@@ -209,6 +209,7 @@ pub struct Recording {
 /// What a finished scenario hands to the report.
 pub struct Outcome<'a> {
     pub device: &'static str,
+    pub needs: &'a [crate::sim::Need],
     pub notes: &'a [Note],
     pub end_ms: u64,
     pub rides: Vec<RideSummary>,
@@ -326,7 +327,7 @@ impl Recording {
     /// Write every artifact; failures to write are reported, never hidden.
     pub fn write(mut self, outcome: Outcome<'_>) -> io::Result<()> {
         let failure = std::thread::panicking()
-            .then(|| PANIC.with(|p| p.borrow_mut().take()).unwrap_or_default());
+            .then(|| PANIC.with(|p| p.borrow().clone()).unwrap_or_default());
         replace_dir(&self.dir)?;
         let mut files = Vec::new();
 
@@ -627,10 +628,20 @@ impl Recording {
         let mut out = String::new();
         let _ = write!(
             out,
-            "{{\n  \"name\": {},\n  \"device\": {},\n  \"status\": \"{}\",\n  \"failure\": {},\n  \"simulated_ms\": {},\n  \"frames\": {},\n  \"files\": [{}],\n  \"checkpoints\": [{}],\n  \"rides\": [{}]\n}}\n",
+            "{{\n  \"name\": {},\n  \"device\": {},\n  \"needs\": [{}],\n  \"status\": \"{}\",\n  \"failure\": {},\n  \"simulated_ms\": {},\n  \"frames\": {},\n  \"files\": [{}],\n  \"checkpoints\": [{}],\n  \"rides\": [{}]\n}}\n",
             json(&self.name),
             json(outcome.device),
-            if failure.is_some() { "fail" } else { "pass" },
+            outcome
+                .needs
+                .iter()
+                .map(|need| json(need.name()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            match failure {
+                Some(failure) if failure.starts_with(crate::sim::UNMET) => "skip",
+                Some(_) => "fail",
+                None => "pass",
+            },
             failure.map_or("null".to_string(), json),
             outcome.end_ms,
             self.frames_at.len(),
@@ -801,6 +812,7 @@ mod tests {
         let frames: Vec<u64> = (0..6_000).map(|i| i * 1_000).collect();
         let outcome = Outcome {
             device: "c606",
+            needs: &[],
             notes: &[note(0)],
             end_ms: 6_000_000,
             rides: Vec::new(),
@@ -838,6 +850,7 @@ mod tests {
     fn video_ms(recording: &Recording, notes: &[Note], end_ms: u64) -> u64 {
         let outcome = Outcome {
             device: "c606",
+            needs: &[],
             notes,
             end_ms,
             rides: Vec::new(),

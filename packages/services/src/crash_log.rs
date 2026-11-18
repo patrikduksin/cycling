@@ -199,6 +199,7 @@ mod tests {
                 capacity: SLOTS * SLOT_SIZE,
                 program_size: 4,
                 erase_size: SLOT_SIZE,
+                durable: true,
             }
         }
         fn read(&mut self, region: Region, offset: usize, output: &mut [u8]) -> Result<(), ()> {

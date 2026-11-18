@@ -25,7 +25,7 @@ use crate::screens::ride::summary::{After, Saving};
 use crate::screens::touch::List as Scrolling;
 use crate::screens::workout::{Page, Text, View};
 use core::fmt::Write;
-use device_api::input::Button;
+use device_api::input::Role;
 
 /// Slots read per tick: internal flash reads are quick, the MMC slower.
 const INTERNAL_BUDGET: usize = 32;
@@ -257,7 +257,7 @@ impl Runtime {
     ) {
         // Home's RIDES card counts every saved ride, so the scan starts there
         // too once no ride is open.
-        if !self.history.indexing && self.navigation.page() == Page::Home && !self.recording() {
+        if !self.history.indexing && self.navigation.page() == Page::Home && !self.recorder_busy() {
             self.history.indexing = true;
         }
         if !self.history.indexing {
@@ -283,16 +283,14 @@ impl Runtime {
     /// MOVE focuses the next ride (held, `SHOWN` on; past the last, the
     /// first) and scrolls it into view, ACT opens it, BACK goes Home. Either
     /// press first brings a focus that scrolled away back into view.
-    pub(super) fn history_input(&mut self, button: Button, held: bool, now: u64) {
+    pub(super) fn history_input(&mut self, button: Role, held: bool, now: u64) {
         let count = self.history_count();
         match button {
-            Button::BottomLeft if count > 0 => {
-                self.list_move(Scrolling::Rides, history::SHOWN, held, now)
-            }
-            Button::BottomRight if count > 0 && self.list_act(Scrolling::Rides, now) => {
+            Role::Move if count > 0 => self.list_move(Scrolling::Rides, history::SHOWN, held, now),
+            Role::Act if count > 0 && self.list_act(Scrolling::Rides, now) => {
                 self.open_past_ride(self.history.cursor)
             }
-            Button::TopLeft => self.navigation.go(To::Page(Page::Home)),
+            Role::Back => self.navigation.go(To::Page(Page::Home)),
             _ => {}
         }
     }
@@ -319,16 +317,19 @@ impl Runtime {
 
     /// MOVE turns the page, BACK returns to the list, ACT sends the ride to
     /// the phone, or on the delete page after the others deletes it.
-    pub(super) fn past_ride_input(&mut self, button: Button, held: bool) {
+    pub(super) fn past_ride_input(&mut self, button: Role, held: bool) {
         match button {
-            Button::BottomLeft => self.next_summary_page(1),
-            Button::TopLeft if !held => self.navigation.go(To::Page(Page::History)),
-            Button::BottomRight if !held => {
+            Role::Move => self.next_summary_page(1),
+            Role::Back if !held => self.navigation.go(To::Page(Page::History)),
+            Role::Act if !held => {
                 let Some((medium, _, summary)) = self.history.open else {
                     return;
                 };
                 if self.delete_shown() {
                     self.delete_past_ride(medium, summary);
+                    return;
+                }
+                if !self.navigation.sections().phone() {
                     return;
                 }
                 self.history.phone = Some((medium, summary.ride_id));
@@ -340,7 +341,12 @@ impl Runtime {
 
     /// Whether a saved ride's pages end with DELETE RIDE?.
     pub(super) fn deletable(&self) -> bool {
-        self.navigation.page() == Page::PastRide && self.deleted.writable()
+        self.navigation.page() == Page::PastRide
+            && self.deleted.writable()
+            && !self
+                .history
+                .open
+                .is_some_and(|(medium, _, summary)| self.sync.protects(medium, summary.ride_id))
     }
 
     /// Whether DELETE RIDE?, the page after the others, is on screen.
@@ -557,6 +563,9 @@ impl Runtime {
         let summary = Some(summary);
         let saving = match replay.progress() {
             Progress::Reading => Saving::Reading,
+            Progress::Done if summary.is_some_and(|s| self.sync.protects(*medium, s.ride_id)) => {
+                Saving::Unsynced
+            }
             Progress::Done => Saving::Saved,
             Progress::Missing => Saving::Unreadable,
         };
@@ -573,6 +582,7 @@ impl Runtime {
                 .map(|climbing| climbing.count),
             laps: replay.laps(),
             past: true,
+            send: self.navigation.sections().phone(),
             delete: self.deletable(),
             elevation: self.has_elevation(),
             recovery: facts
@@ -587,7 +597,7 @@ impl Runtime {
     /// Home's RIDES card: this week's distance once the index has read every
     /// ride, else the last ride's distance, or how many are saved.
     pub(super) fn rides_line(&self) -> Text<20> {
-        if !self.recording()
+        if !self.recorder_busy()
             && self.counted()
             && let Some(weeks) = self.weeks()
             && weeks.this.distance_mm > 0
@@ -598,7 +608,7 @@ impl Runtime {
             .history
             .home_last
             .unwrap_or_else(|| self.ride.totals().distance_mm());
-        if !self.recording() && distance > 0 {
+        if !self.recorder_busy() && distance > 0 {
             return crate::screens::home::last_ride(distance);
         }
         let mut line = Text::new();

@@ -116,6 +116,21 @@ impl IdentityQuery {
     }
 }
 
+/// The onboard sensors a device has fitted. A fitted sensor can still fail;
+/// one that is missing here is absent, whatever `snapshot` reports.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SensorSet {
+    pub barometer: bool,
+    pub light: bool,
+}
+
+impl SensorSet {
+    pub const NONE: Self = Self {
+        barometer: false,
+        light: false,
+    };
+}
+
 /// Optional physical sensor observations; motion remains explicitly unscaled
 /// until fitted hardware and axes are established.
 #[capability(id = 13)]
@@ -132,4 +147,6 @@ pub trait Sensors {
     fn identity_status(&self) -> IdentityQuery;
     #[request(refreshes)]
     fn query_identity(&mut self, #[clock] now: u64) -> Result<(), Error>;
+    #[observe]
+    fn fitted(&self) -> SensorSet;
 }

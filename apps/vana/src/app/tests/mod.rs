@@ -5,9 +5,11 @@ use crate::app::navigation::To;
 use crate::ride::log::{Commit, REGION_SIZE, SECTOR_SIZE, SECTORS, SLOT_SIZE, Sector, Slot};
 use crate::ride::medium::Medium;
 use crate::ride::storage::RideStorage;
+use device_api::Absent;
 use device_api::ant::{AntOperation, Event, Identity};
-use device_api::input::{Button, Input};
+use device_api::input::Role;
 use device_api::observation::{Availability, Observation};
+use firmware_shell::input::Input;
 use std::vec::Vec;
 
 mod calibration;
@@ -20,6 +22,7 @@ mod presentation;
 mod recording;
 mod saved_sensors;
 mod sensor_links;
+mod sync;
 mod touch;
 
 struct Radio {
@@ -170,49 +173,12 @@ impl Ant for Radio {
     }
 }
 
-// Unavailable optional capabilities keep these tests at the public Runtime lifecycle.
-struct Absent;
-impl device_api::ble_transport::Ble for Absent {
-    fn request(
-        &mut self,
-        _operation: device_api::ble_transport::Operation,
-    ) -> Result<(), device_api::observation::Error> {
-        Err(device_api::observation::Error::Unsupported)
-    }
-    fn control(&self) -> device_api::connectivity::ControlStatus {
-        device_api::connectivity::ControlStatus::new()
-    }
-    fn discoveries(&self) -> [Option<device_api::ble_transport::Discovery>; 8] {
-        [None; 8]
-    }
-    fn take_battery(&mut self) -> Option<device_api::ble_transport::BatteryLevel> {
-        None
-    }
-    fn availability(&self) -> Availability {
-        Availability::Unsupported
-    }
-    fn snapshot(&self) -> device_api::ble_transport::Snapshot {
-        Default::default()
-    }
-    fn take_packet(&mut self) -> Option<device_api::ble_transport::Packet> {
-        None
-    }
-}
-impl device_api::positioning::Positioning for Absent {
-    fn availability(&self) -> Availability {
-        Availability::Unsupported
-    }
-    fn snapshot(&self, _: u64) -> Option<device_api::positioning::Snapshot> {
-        None
-    }
-}
-impl device_api::input::InputObservation for Absent {
-    fn snapshot(&self, _: u64) -> Option<device_api::input::InputSnapshot> {
-        None
-    }
-}
-impl RideStorage for Absent {
+struct MustNotWrite;
+impl RideStorage for MustNotWrite {
     type Error = ();
+    fn ride_geometry(&mut self) -> device_api::storage::Geometry {
+        crate::ride::log::GEOMETRY
+    }
     fn ride_read_sector(&mut self, _: usize, _: &mut Sector) -> Result<(), ()> {
         Err(())
     }
@@ -230,9 +196,7 @@ impl RideStorage for Absent {
     }
 }
 
-/// A board without bulk media: rides use the internal journal.
-struct NoBulk;
-impl device_api::bulk::ReadWrite for NoBulk {
+impl device_api::bulk::ReadWrite for MustNotWrite {
     fn entropy(&mut self) -> u64 {
         0
     }
@@ -248,10 +212,15 @@ impl device_api::bulk::ReadWrite for NoBulk {
 }
 
 /// An in-memory ride reservation with NOR semantics: programming clears bits.
-struct Journal(Vec<u8>);
+struct Journal(Vec<u8>, bool);
 impl Journal {
     fn erased() -> Self {
-        Self(std::vec![0xff; REGION_SIZE])
+        Self(std::vec![0xff; REGION_SIZE], true)
+    }
+    /// A memory-backed reservation of `sectors` sectors, which a power-off
+    /// loses.
+    fn volatile(sectors: usize) -> Self {
+        Self(std::vec![0xff; sectors * SECTOR_SIZE], false)
     }
     fn slot(&self, index: usize) -> Slot {
         let mut slot = Slot::default();
@@ -262,6 +231,13 @@ impl Journal {
 }
 impl RideStorage for Journal {
     type Error = ();
+    fn ride_geometry(&mut self) -> device_api::storage::Geometry {
+        device_api::storage::Geometry {
+            capacity: self.0.len(),
+            durable: self.1,
+            ..crate::ride::log::GEOMETRY
+        }
+    }
     fn ride_read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), ()> {
         output
             .0
@@ -298,16 +274,25 @@ impl Runtime {
 }
 
 fn booted(profile: Profile) -> Runtime {
-    let mut runtime = Runtime::new(profile, &crate::screens::BASE);
+    let mut runtime = Runtime::new(profile, crate::testing::PRODUCT, &crate::screens::BASE);
     runtime.format_event(super::format::Event::IntentAtBoot(
         super::intent::Found::Idle,
     ));
     runtime
 }
 
-fn press(button: Button) -> Input {
-    Input::Button { button, code: 1 }
+fn press(button: Role) -> Input {
+    Input::Press {
+        role: button,
+        code: 1,
+    }
 }
+
+/// Every onboard sensor, as the C606 fits them.
+const FITTED: device_api::sensors::SensorSet = device_api::sensors::SensorSet {
+    barometer: true,
+    light: true,
+};
 
 fn no_physical_sensors() -> device_api::sensors::Snapshot {
     device_api::sensors::Snapshot {
@@ -323,7 +308,7 @@ fn no_physical_sensors() -> device_api::sensors::Snapshot {
 fn tick(runtime: &mut Runtime, store: &mut impl RideStorage, radio: &mut Radio, now: u64) {
     runtime.tick(
         store,
-        &mut NoBulk,
+        &mut MustNotWrite,
         now,
         radio,
         &mut Absent,
@@ -332,12 +317,13 @@ fn tick(runtime: &mut Runtime, store: &mut impl RideStorage, radio: &mut Radio, 
             network_time: Default::default(),
             input: &Absent,
             physical: no_physical_sensors(),
+            fitted: FITTED,
         },
     );
 }
 
 fn advance(runtime: &mut Runtime, radio: &mut Radio, now: u64) {
-    tick(runtime, &mut Absent, radio, now);
+    tick(runtime, &mut MustNotWrite, radio, now);
 }
 
 /// A runtime started with these sensors saved, as after a restart.
@@ -398,16 +384,16 @@ fn choose_sensor(runtime: &mut Runtime, radio: &mut Radio, peer: device_api::ant
         if runtime.menu.diagnostics().focus == Some(peer) {
             break;
         }
-        step(runtime, radio, Button::BottomLeft);
+        step(runtime, radio, Role::Move);
     }
     assert_eq!(
         runtime.menu.diagnostics().focus,
         Some(peer),
         "{peer:?} is listed"
     );
-    step(runtime, radio, Button::BottomRight);
+    step(runtime, radio, Role::Act);
     if runtime.menu.diagnostics().page == Page::Replace {
-        step(runtime, radio, Button::BottomRight);
+        step(runtime, radio, Role::Act);
     }
 }
 
@@ -422,20 +408,20 @@ fn forget_sensor(runtime: &mut Runtime, radio: &mut Radio, kind: u8, mut now: u6
             break;
         }
         now += 400;
-        runtime.input_received(press(Button::BottomLeft), now, now, radio);
+        runtime.input_received(press(Role::Move), now, now, radio);
     }
     now += 400;
-    runtime.input_received(press(Button::BottomRight), now, now, radio);
+    runtime.input_received(press(Role::Act), now, now, radio);
     assert_eq!(runtime.menu.diagnostics().page, Page::Detail);
     now += crate::screens::sensors::SETTLE_MS;
     let trash = if kind == crate::sensors::ant::device_type::POWER {
-        Button::BottomLeft
+        Role::Move
     } else {
-        Button::BottomRight
+        Role::Act
     };
     runtime.input_received(press(trash), now, now, radio);
     assert_eq!(runtime.menu.diagnostics().page, Page::Forget);
     now += crate::screens::sensors::SETTLE_MS;
-    runtime.input_received(press(Button::BottomRight), now, now, radio);
+    runtime.input_received(press(Role::Act), now, now, radio);
     now
 }

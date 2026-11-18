@@ -6,7 +6,8 @@ use crate::screens::canvas::Canvas;
 use crate::screens::cue::{Corner, Cue};
 use crate::sensors::ant::{BatteryStatus, device_type};
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
-use device_api::input::{Button, Input};
+use device_api::input::Role;
+use firmware_shell::input::Input;
 
 const DEBOUNCE_MS: u64 = 350;
 
@@ -428,7 +429,11 @@ impl State {
             self.message = Some(MenuMessage::InputLost);
             return None;
         }
-        let Input::Button { button, code: 1 } = input else {
+        let Input::Press {
+            role: button,
+            code: 1,
+        } = input
+        else {
             return None;
         };
         if self
@@ -439,15 +444,14 @@ impl State {
         }
         self.last_press = Some(now);
         match button {
-            Button::Center => None,
-            Button::TopLeft => self.press(Press::Back, now),
-            Button::BottomLeft => {
+            Role::Back => self.press(Press::Back, now),
+            Role::Move => {
                 self.confirm_focus();
                 self.press(Press::Move, now)
             }
             // After lost input, the rider must confirm focus before activating.
-            Button::BottomRight if self.needs_navigation => None,
-            Button::BottomRight => self.press(Press::Act, now),
+            Role::Act if self.needs_navigation => None,
+            Role::Act => self.press(Press::Act, now),
         }
     }
 

@@ -76,6 +76,7 @@ fn pace(seen: &Seen) -> Pace {
         | Page::Ride
         | Page::EndRide
         | Page::DiscardRide
+        | Page::LoseRides
         | Page::Summary => true,
         Page::Boot | Page::Format | Page::Phone | Page::Setup => false,
     };
@@ -181,6 +182,9 @@ impl<'a, M: ?Sized> Touched<'a, M> {
 
 impl<M: RideStorage + ?Sized> RideStorage for Touched<'_, M> {
     type Error = M::Error;
+    fn ride_geometry(&mut self) -> device_api::storage::Geometry {
+        self.media.ride_geometry()
+    }
     fn ride_read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), M::Error> {
         self.touched = true;
         self.media.ride_read_sector(sector, output)
@@ -224,7 +228,7 @@ impl<M: ReadWrite + ?Sized> ReadWrite for Touched<'_, M> {
 mod tests {
     use super::*;
 
-    const STILL_PAGES: [Page; 13] = [
+    const STILL_PAGES: [Page; 14] = [
         Page::Home,
         Page::Sensors,
         Page::Settings,
@@ -237,6 +241,7 @@ mod tests {
         Page::Ride,
         Page::EndRide,
         Page::DiscardRide,
+        Page::LoseRides,
         Page::Summary,
     ];
     const BUSY_PAGES: [Page; 3] = [Page::Boot, Page::Phone, Page::Setup];

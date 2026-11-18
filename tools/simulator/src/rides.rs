@@ -3,6 +3,7 @@ use crate::recording::{RideSummary, json};
 use crate::route::{Point, from_e7, to_gpx};
 use firmware_services::fit::Counter;
 use std::fmt::Write as _;
+use vana::Product;
 use vana::ride::fit::{self, Plan, Refusal};
 use vana::ride::log::{Entry, Kind, SLOT_SIZE, Sample, Slot, decode};
 use vana::ride::rider::Rider;
@@ -16,11 +17,12 @@ pub struct Ride {
 impl Ride {
     /// What the FIT export finds in this ride when the phone gives no start:
     /// its start time, or why the file is refused.
-    pub fn fit_plan(&self) -> Result<Plan, Refusal> {
+    pub fn fit_plan(&self, product: &Product) -> Result<Plan, Refusal> {
         fit::write_all(
             self.slots.iter(),
             self.id,
             Rider::default(),
+            product,
             None,
             &mut Counter::default(),
         )
@@ -60,7 +62,7 @@ impl Ride {
 
     /// The ride as the FIT activity file the device exports, or why it has none;
     /// `start_utc_ms` dates a ride recorded without a clock.
-    pub fn fit(&self, start_utc_ms: Option<u64>) -> Result<Vec<u8>, Refusal> {
+    pub fn fit(&self, product: &Product, start_utc_ms: Option<u64>) -> Result<Vec<u8>, Refusal> {
         struct Out(Vec<u8>);
         impl firmware_services::fit::Sink for Out {
             fn put(&mut self, bytes: &[u8]) {
@@ -72,6 +74,7 @@ impl Ride {
             self.slots.iter(),
             self.id,
             Rider::default(),
+            product,
             start_utc_ms,
             &mut out,
         )?;

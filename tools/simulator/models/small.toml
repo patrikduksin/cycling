@@ -1,5 +1,7 @@
 [device]
 name = "small"
+product = "VANA SMALL"
+fit_product = 0
 
 [panel]
 width = 180
@@ -12,3 +14,14 @@ buttons = [
   { id = 1, role = "move" },
   { id = 2, role = "act" },
 ]
+
+[fitted]
+gps = true
+ant = true
+ble = true
+wifi = true
+sound = true
+shutdown = true
+card = true
+barometer = true
+light = true

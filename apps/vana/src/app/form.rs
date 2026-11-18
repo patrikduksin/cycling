@@ -18,7 +18,7 @@ use crate::screens::form::{Mode, signed, verdict};
 use crate::screens::workout::{Page, Text};
 use core::cell::RefCell;
 use core::fmt::Write;
-use device_api::input::Button;
+use device_api::input::Role;
 
 #[derive(Default)]
 pub(super) struct Kept {
@@ -55,8 +55,8 @@ impl Runtime {
     }
 
     /// BACK returns to Settings.
-    pub(super) fn form_input(&mut self, button: Button, held: bool) {
-        if button == Button::TopLeft && !held {
+    pub(super) fn form_input(&mut self, button: Role, held: bool) {
+        if button == Role::Back && !held {
             self.navigation.go(To::Page(Page::Settings));
         }
     }

@@ -729,11 +729,7 @@ impl Reader<'_> {
         start: u64,
         input: &[u8; 512],
     ) -> Result<(), device_api::bulk::Error> {
-        // An enabled eMMC cache needs an explicit persistent flush protocol.
-        // Until that is supported, neither maintenance nor owned writes proceed.
-        if self.report.cache_enabled {
-            return Err(device_api::bulk::Error::Unsupported);
-        }
+        super::sdmmc_probe::refuse_writes_while_cached(self.report.cache_enabled)?;
         let address = self.range(start, 512)?;
         let mut buffer = Sector(*input);
         let started = Instant::now();
@@ -831,9 +827,7 @@ impl device_api::bulk::ReadWrite for Reader<'_> {
         0
     }
     fn owned_info(&mut self) -> Result<device_api::bulk::OwnedInfo, device_api::bulk::Error> {
-        if self.report.cache_enabled {
-            return Err(device_api::bulk::Error::Unsupported);
-        }
+        super::sdmmc_probe::refuse_writes_while_cached(self.report.cache_enabled)?;
         self.validate_owned()
     }
     fn owned_read(

@@ -15,7 +15,7 @@ details into this document.
 | Path | Owns |
 | --- | --- |
 | `apps/vana` (`vana`) | Cycling behavior and its presentation: sensor selection and profiles, workout screens, ride state, metrics, recording, recovery, export and app preferences. |
-| `devices/c606` (`c606-firmware`) | C606 hardware and the firmware assembled for it. Drivers, wiring, HAL resources, interrupts, DMA, memory placement, startup and board quirks live here. Sanitized device research lives in `research/`. Its `device.toml` declares the model's build, flash layout, panel and buttons once; `cycling devices` generates `devices/c606/src/fitted.rs` from it for the drivers, and devtools read it for build and flash. |
+| `devices/c606` (`c606-firmware`) | C606 hardware and the firmware assembled for it. Drivers, wiring, HAL resources, interrupts, DMA, memory placement, startup and board quirks live here. Sanitized device research lives in `research/`. Its `device.toml` declares the model's build, flash layout, owned ranges, panel, buttons, product and fitted parts once; `cycling devices` generates `devices/c606/src/fitted.rs` from it for the drivers, and devtools read it for build and flash. |
 | `packages/device-api` (`device-api`) | Hardware-independent capability contracts and the observations needed to use them. |
 | `packages/shell` (`firmware-shell`) | Foreground presentation, physical-input routing, shared rendering, preferences and inactivity policy. |
 | `packages/services` (`firmware-services`) | Portable acquisition, transport and persistence mechanisms with no board, presentation or cycling policy. |
@@ -134,8 +134,23 @@ a task. Keep the invariant and the work needed to preserve it with one owner.
 
 Capabilities are independently composable. A consumer asks for the capabilities
 it uses; there is no mandatory global `System` object or service registry. Device
-startup supplies independent handles. Missing hardware is explicit. It cannot
-report success or pretend to be a temporary failure.
+startup supplies independent handles.
+
+Each device declares once, in its manifest, what it has: its product, its
+buttons, its owned ranges and its `[fitted]` parts. A fitted fact never
+changes while the device runs. Working state, such as a radio that did not
+start or a card that is out, is the capability's observation. Shared code
+reads both from the existing contracts and never asks which device it runs
+on.
+
+Missing hardware is explicit. The board puts `device_api::Absent` where the
+part would be, and the contract answers with its own word for absence:
+`Availability::Unsupported`, a sensor left out of `Sensors::fitted()`, no
+power operation. Absence never reports success or a temporary failure. VANA
+hides a feature whose part is absent and shows a fitted part that fails as
+broken, so the rider never sees a fault that no restart can clear. The C606
+board asserts at compile time that each handle it builds agrees with its
+manifest (`Fitted` in `devices/c606/src/board.rs`).
 
 A small interface still needs an honest contract. State what is available, which
 limits apply, who owns buffers, what completion means and how failure appears.
@@ -144,9 +159,9 @@ Use typed results and observations; terminal code owns their text formatting.
 | Capability | Boundary and reason |
 | --- | --- |
 | Display | Expose geometry, supported formats and submission completion. The device owns panel quirks and DMA; the shell owns layout and rendering policy, including which 4-row bands a frame sends (`Rows`). Callers must know when a buffer is safe to reuse. |
-| Input | Expose supported physical controls and observations. The shell maps them to actions and chooses wake behavior. Device code must not invent releases the hardware cannot establish; overflow cancels held state, and a cancelled touch contact ends with one `Release` once the panel reports the lift or stops reporting the finger (`Input::Cancel`). |
+| Input | Expose touch and each button report by the button's id. The manifest gives each id a role (ACT, BACK or MOVE, each on exactly one button), and the shell turns a report into `Input::Press` with that role and drops presses from a button without one, so every screen works on any button layout. The shell also chooses wake behavior. Device code must not invent releases the hardware cannot establish; overflow cancels held state, and a cancelled touch contact ends with one `Release` once the panel reports the lift or stops reporting the finger (`Input::Cancel`). |
 | Power | Expose battery observations and supported brightness and power operations. The device enforces hardware limits and sequencing; the shell chooses preferences and inactivity policy. |
-| Storage | Expose checked relative access to owned reservations. Callers never receive access to stock or vendor regions. Journal mechanics are reusable; the owner of the stored data chooses its schema and recovery rules. |
+| Storage | Expose checked relative access to owned reservations, and each reservation's `Geometry`: its size and whether it survives power-off (`durable`). Callers never receive access to stock or vendor regions. Journal mechanics are reusable; the owner of the stored data chooses its schema and recovery rules. |
 | Positioning | Expose timestamped observations with freshness and loss information. Keep byte framing, decoding and acquisition state behind the contract. Consumers decide whether a fix is useful for their task. |
 | Network | `device_api::connectivity::Wifi` is the station contract the console uses; each request passes the shutdown admission guard. The Embassy stack stays inside the device: its resources can exist while the link is down, so device code bounds waits, checks readiness and rejects results from an obsolete connection generation. |
 | BLE and ANT | Expose profile-independent transport data with connection and loss information. Devices handle controller quirks, services manage transport state, and VANA interprets profiles and chooses sensors. |

@@ -7,7 +7,7 @@
 //! state and the borrowed storage handle.
 
 use crate::ride::log::{
-    Catalog, Entry, SLOT_SIZE, SLOTS, SLOTS_PER_SECTOR, Scanner, Sector, Slot, commit_word, decode,
+    Catalog, Entry, SLOT_SIZE, SLOTS_PER_SECTOR, Scanner, Sector, Slot, commit_word, decode,
     recommittable, tear,
 };
 use crate::ride::storage::RideStorage;
@@ -107,21 +107,21 @@ enum Recommit {
     Unknown,
 }
 
-/// Scan progress of the internal 1 MiB journal.
+/// Scan progress of the internal journal.
+#[derive(Default)]
 pub struct InternalState {
-    scanner: Option<Scanner>,
+    scan: Scanning,
     sector: Sector,
     torn: Option<usize>,
 }
 
-impl Default for InternalState {
-    fn default() -> Self {
-        Self {
-            scanner: Some(Scanner::default()),
-            sector: Sector::default(),
-            torn: None,
-        }
-    }
+#[allow(clippy::large_enum_variant)]
+#[derive(Default)]
+enum Scanning {
+    #[default]
+    NotStarted,
+    Reading(Scanner),
+    Ended,
 }
 
 /// FORMAT's wipe of internal sector `index`: true once it reads erased. Slot
@@ -144,15 +144,22 @@ pub fn wipe_sector<S: RideStorage>(store: &mut S, index: usize) -> bool {
     }
 }
 
-/// The internal journal: fixed slots in the owned boot-flash reservation.
+/// The internal journal: fixed slots in the owned `Data` reservation, sized
+/// by its geometry.
 pub struct Internal<'a, S> {
     state: &'a mut InternalState,
     store: &'a mut S,
+    slots: usize,
 }
 
 impl<'a, S: RideStorage> Internal<'a, S> {
     pub fn new(state: &'a mut InternalState, store: &'a mut S) -> Self {
-        Self { state, store }
+        let slots = store.ride_slots();
+        Self {
+            state,
+            store,
+            slots,
+        }
     }
 
     fn recommit(&mut self, index: usize, expected: Option<&Entry>) -> Recommit {
@@ -179,11 +186,20 @@ impl<'a, S: RideStorage> Internal<'a, S> {
 
 impl<S: RideStorage> Journal for Internal<'_, S> {
     fn slots(&self) -> usize {
-        SLOTS
+        self.slots
     }
 
     fn scan(&mut self) -> Scan {
-        let Some(scanner) = self.state.scanner.as_mut() else {
+        if let Scanning::NotStarted = self.state.scan {
+            let sectors = self.store.ride_sectors();
+            // A device without a ride reservation has no internal journal.
+            if sectors == 0 {
+                self.state.scan = Scanning::Ended;
+                return Scan::Unsupported;
+            }
+            self.state.scan = Scanning::Reading(Scanner::over(sectors));
+        }
+        let Scanning::Reading(scanner) = &mut self.state.scan else {
             return Scan::Failed;
         };
         let Some(sector) = scanner.next_sector() else {
@@ -194,7 +210,7 @@ impl<S: RideStorage> Journal for Internal<'_, S> {
             .ride_read_sector(sector, &mut self.state.sector)
             .is_err()
         {
-            self.state.scanner = None;
+            self.state.scan = Scanning::Ended;
             return Scan::Failed;
         }
         if let Some(torn) = self.state.torn
@@ -208,7 +224,7 @@ impl<S: RideStorage> Journal for Internal<'_, S> {
             return Scan::More;
         };
         let newest = scanner.newest();
-        self.state.scanner = None;
+        self.state.scan = Scanning::Ended;
         // A cut commit program can leave the newest slot's word marginal,
         // read whole on one boot and torn on a later one (#444).
         let Some(newest) = newest else {
@@ -218,7 +234,7 @@ impl<S: RideStorage> Journal for Internal<'_, S> {
             Recommit::Whole => Scan::Done(catalog),
             Recommit::Torn if self.state.torn.is_none() => {
                 self.state.torn = Some(newest);
-                self.state.scanner = Some(Scanner::default());
+                self.state.scan = Scanning::NotStarted;
                 Scan::More
             }
             Recommit::Torn | Recommit::Unknown => Scan::Failed,
@@ -310,6 +326,9 @@ mod tests {
 
     impl RideStorage for Flash {
         type Error = ();
+        fn ride_geometry(&mut self) -> device_api::storage::Geometry {
+            crate::ride::log::GEOMETRY
+        }
         fn ride_read_sector(&mut self, sector: usize, output: &mut Sector) -> Result<(), ()> {
             self.read(sector * SECTOR_SIZE, &mut output.0);
             Ok(())

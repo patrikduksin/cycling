@@ -394,13 +394,14 @@ TASKS = [
     task(
         'trace',
         'Read a ride trace as text, or one JSON document with --json: summary, timeline, find, otlp, replay, '
-        'test-stub, upgrade (--help; skill: ride-trace); pull [file] copies the newest or a named device trace into '
-        '.local/traces/',
+        'diff <a> <b>, test-stub (--help; skill: ride-trace); pull [file] copies the newest or a named '
+        'device trace into .local/traces/ and checks it replays faithfully under the build that recorded it',
         f'{TRACE} trace',
     ),
     task(
         'replay',
-        'Replay a window of a ride trace with screenshots, screen text and divergence: replay <trace> --from T --to T',
+        'Replay a ride trace under this build, stopping where it leaves the recorded world: replay <trace> '
+        '--from T --to T [--mode auto|faithful|changed] [--model] [--set T:<kind>=drop|<hex>] [--against REV]',
         f'{TRACE} replay',
     ),
     task(

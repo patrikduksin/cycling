@@ -29,7 +29,7 @@ not read or a tool that did not build, is `{"error": ...}` with exit status 2;
 ## 1. Get the trace
 
 - From the simulator: fixtures live in `tools/simulator/tests/traces/`, each
-  `<name>.trace` with the media it started on in `<name>.origin`.
+  a `<name>.trace` and nothing beside it.
 - From the device: the C606 writes each session to
   `traces/<sequence>-<boot>.trace` in the card's STORE volume. Connect it
   over USB and run `cycling trace pull` for the newest trace, or
@@ -37,8 +37,17 @@ not read or a tool that did not build, is `{"error": ...}` with exit status 2;
   `.local/traces/<file>`. The pull only reads the device, and `timing`
   says how long its transfer session paused VANA and where the device
   spent that time. A device trace needs nothing beside it: it is a world
-  log that holds every byte of media VANA read, each once, so a strict
-  replay takes its media from the trace.
+  log that holds every byte of media VANA read, each once, so a replay
+  takes its media from the trace. The pull then replays the trace
+  faithfully under the twin of the build that recorded it, rebuilt from
+  `.local/builds/<build>/` and cached by trace and build, and adds
+  `faithful: {ok, ended, exclusions}`, or `{skipped: why}` when that build
+  is not archived here, its sources list no faithful mode in
+  `tools/simulator/trace-capabilities` (checked before anything is built),
+  its twin did not build, or the TERRAIN pack is missing
+  (`no TERRAIN pack <sha256>`). A divergence, or a replay that leaves the
+  recorded world at boot, is a recording bug (`ok: false`), and the pull's
+  output leads with it: fix it first.
   A build reads only its own trace format and refuses any other with
   both formats named; read such a trace with the build that recorded it.
   When `CYCLING_DEVICE_HOST` is set, the device is on another machine:
@@ -46,7 +55,7 @@ not read or a tool that did not build, is `{"error": ...}` with exit status 2;
   `.local/` back with the kept pack, so the first pull of a pack copies it
   across. Keep device traces under `.local/` and never commit them: they
   record the rider's location.
-- What a strict replay of a device trace reads beside the trace: the
+- What a replay of a device trace reads beside the trace: the
   terrain pack's data, which the trace holds only digests of. The header
   names the pack by its SHA-256, and the replay finds the pack file in
   `.local/terrain/` of the primary checkout (`CYCLING_TERRAIN_PACKS` names
@@ -60,13 +69,11 @@ not read or a tool that did not build, is `{"error": ...}` with exit status 2;
   the card stays closed; once the standby screen is dark, a pass is
   recorded only when the startup or power status changes. Warnings
   in a device trace include driver lines that a replay never logs, and
-  replays ignore them. A stimulus replay of a device trace runs on blank
-  media, since it has no `.origin`: rides and settings saved before that
-  power-on are absent.
+  replays ignore them.
 
-`cycling trace origin <trace>` says in words what a replay starts from: the
-power-on number, settings, VANA's saved sensors and setup step, rides on
-internal flash, and the bulk card.
+A replay starts from blank flash at the header's power-on number, with the
+card the trace's volume table describes; every byte VANA reads comes from the
+trace.
 
 Done when `cycling trace summary <trace>` prints a header line, not an error.
 
@@ -173,11 +180,13 @@ any other `--out` is refused, so a mistyped path never loses files. Read them in
 - `screens.txt`: the screen's text at each screenshot, one line each.
 - `divergence.txt`: where the replay parted from the recording inside the
   window, with one total for before it. Each count has a meaning:
-  `rider-visible` (the rider would have seen something else), `model-only`
-  (the stimulus ANT model or fresh entropy answered; the rider sees nothing),
-  `timing-only`, `call-level` (strict: VANA asked differently) or
-  `replay fault`. The `verdict` line sums it up; `rider-visible: none` with
-  model-only counts is a clean window, not a replay fault.
+  `rider-visible` (the rider would have seen something else), `broken`
+  (VANA panicked or broke an invariant), `replay fault` (the build left the
+  recorded world, or the trace is damaged), `modelled` (`--model` answered
+  where the trace held nothing), `call-level` (VANA asked differently) or
+  `redacted`. The `seen` line says what the rider saw; the `verdict` line
+  says whether the mode's verdict holds, and a replay whose verdict fails
+  exits 1.
 - `timeline.txt`: what the recording saw in the window, at its own times; the
   PNGs and `video.mp4` carry the same captions.
 - `replayed.trace`: the replay's own trace; `cycling trace timeline` reads it,
@@ -190,33 +199,63 @@ The build archives what it hashed in the primary checkout's
 names `unknown`. A device build hashes its whole tree. A
 simulator build hashes only `apps`, `packages`, `tools/simulator`, the
 vendored `trouble-host` manifest, `patches`, `.cargo` and the Cargo files, with its features and toolchain, so
-an edit anywhere else keeps its hash. The default, `--mode auto`, replays
-strict when this build recorded the trace, or when the two archived builds
-name the same sources and VANA features, as a device build and a simulator
-build of one tree do. Otherwise it replays stimulus. The `mode` line says
-which and why; `uv run --project tools/devtools python -m
-cycling_devtools.build_hash relate <hash> <hash>` prints the same relation.
+an edit anywhere else keeps its hash.
 
-- `stimulus` runs this checkout against the recorded world: sensors, GPS and
-  buttons arrive when they did, and the ANT radio is a model. It is what a
-  changed build, a fix and every regression test use.
-- `strict` answers every call VANA makes from the recording and counts any
-  difference. It reproduces the recording frame for frame, checks the
-  panel's pixels against the recorded digests, and tells a replay fault from
-  a VANA change. To get a strict replay of a trace another build recorded,
-  rebuild that build's tree: check out the commit in `.local/builds/<build>/commit`, then apply
-  the `diff.patch` beside it, if there is one, with `git apply --binary`. A stimulus replay does not compare the pixel digests.
-  A frame sends only the rows that changed, but the digest (`Panel`) is
-  of the whole panel, so a frame the device sent whole, such as one a
-  capture asked for, still matches.
+Every replay runs the same twin: each call VANA makes is answered from the
+trace's world records, and media from the twin's model of them. A read is
+served from the bytes the trace holds, whenever VANA makes it, so a build
+that caches or reorders reads replays; a write is the twin's own, so a build
+that writes something else reads back what it wrote, never the device's
+bytes. The replay stops where the build leaves the recorded world: a request
+or take the trace holds no answer for, a recorded call the build never made
+in its pass, or media the trace does not hold. The stop names the session
+time and what was asked, as `left the recorded world at 12:30.250: unknown
+media Bulk 4096+1`.
 
-A strict replay takes its media from the trace's world records, and says
-what it proved: the media records and the settings records that matched, and
-what it left out (redacted frames, the terrain pack read by digest, and
-anything after records the device lost). A stimulus replay starts from
-the trace's `.origin`; the header line's `media` says whether it has one. A device trace keeps its
+The mode is only the verdict. The default, `--mode auto`, picks `faithful`
+when this build recorded the trace, or when the two archived builds name the
+same sources and VANA features, as a device build and a simulator build of
+one tree do. Otherwise it picks `changed`. The `mode` line says which and
+why; `uv run --project tools/devtools python -m cycling_devtools.build_hash
+relate <hash> <hash>` prints the same relation.
+
+- `faithful` expects the build that recorded the trace. Anything it records
+  otherwise than the trace did, a world record or a panel digest, is a
+  recording bug, and the verdict fails. To replay an older trace faithfully,
+  rebuild its tree: check out the commit in `.local/builds/<build>/commit`,
+  then apply the `diff.patch` beside it, if there is one, with `git apply
+  --binary`. A frame sends only the rows that changed, but the digest
+  (`Panel`) is of the whole panel, so a frame the device sent whole, such
+  as one a capture asked for, still matches.
+- `changed` runs this checkout's build. It fails only on a stop, a panic or
+  a broken invariant. The first difference in what it recorded again is
+  what the change did, and "re-recorded the trace byte for byte" shows that
+  a refactor changed nothing.
+- `--model` goes on past each stop on a branch labelled with its kind: the
+  nearest recorded answer of the same call (`Modelled`), a recorded call
+  dropped with what it observed kept (`NotRequested`), or the nearest
+  recorded bytes, erased where none exist (`Unrecorded`). Every later pass
+  is on the branch, and a replay that branched fails.
+
+To ask what one input changes, `cycling replay <trace> --set
+T:<kind>[#n]=drop|<hex>` replays the trace as recorded and as altered, both
+`changed` with `--model`. The kind is the one `trace timeline` prints, such
+as `ant.request`; a method as a stop names it, such as `Ant::request`,
+also works. The set alters the n-th record of that kind in the first pass at
+or after T that holds it, and the output prints that pass. To ask what a
+change of VANA did, `cycling replay <trace> --against <rev>` replays under
+this checkout and under `<rev>`; a rev whose sources lack `changed` is
+refused before it builds. Both print where the two replays part, as
+`cycling trace diff <a.trace> <b.trace>` does for any two traces: the first
+seen entry, the first frame (the panel's digest) and the first world record
+that differ, each at its pass. When either trace replaced the phone page's
+credentials, that page's frames are left out and the diff says how many.
+
+A replay says what it proved: the media records and the settings records
+that matched, and what it left out (redacted frames, the terrain pack read
+by digest, and anything after records the device lost). A device trace keeps its
 secrets redacted, so the phone page, which draws the session's network name,
-password and code, draws other pixels. A strict replay counts these frames
+password and code, draws other pixels. A replay counts these frames
 as `redacted`, never as the first divergence, so a later difference still
 shows as first. Read what the replay left out before you call a divergence a
 replay fault.
@@ -236,7 +275,7 @@ Done when the screenshot at the moment shows what the rider described, or
    fixture that holds a Wi-Fi password, a phone session token or saved Wi-Fi
    credentials. No tool turns a device trace into a fixture.
 2. `cycling trace test-stub tools/simulator/tests/traces/<name>.trace --at T --name <what_the_rider_should_see> --expect <field>=<value>`
-   prints a test that replays to T in stimulus mode, in two sections. Its doc
+   prints a test that replays to T as a changed build, in two sections. Its doc
    comment says what the recording showed and what the sensors were doing
    (each link, each sensor's last packet and silence). For a trace outside
    the fixtures directory it first prints whether the trace may become a

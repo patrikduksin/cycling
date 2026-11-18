@@ -23,6 +23,8 @@ fn expanded(runs: &[u8], len: usize) -> Option<Vec<u8>> {
         content: Content::Inline(runs),
         outside: false,
         fault: None,
+        continues: false,
+        each: None,
     };
     let mut out = vec![0x55u8; len];
     let n = access.expand(&mut out)?;

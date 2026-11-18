@@ -29,7 +29,7 @@ fn ridden() -> Sim {
 
 #[test]
 fn a_ride_writes_what_each_capability_gave_vana() {
-    let trace = ridden().capture().trace;
+    let trace = ridden().capture();
     let (_, events) = decode(&trace).expect("the trace decodes");
     let mut methods: BTreeMap<String, usize> = BTreeMap::new();
     for event in events {
@@ -70,7 +70,7 @@ fn a_ride_writes_what_each_capability_gave_vana() {
 #[test]
 fn a_riding_pass_costs_few_bytes_of_world_records() {
     let sim = ridden();
-    let trace = sim.capture().trace;
+    let trace = sim.capture();
     let (_, events) = decode(&trace).expect("the trace decodes");
     let riding_from = sim.device.now - 120_000;
     let (mut passes, mut bytes) = (0usize, 0usize);
@@ -120,7 +120,7 @@ fn a_radio_command_writes_the_control_status_it_read() {
     sim.device
         .command(b"CMD 2 BLE FORGET", &mut reply)
         .expect("the command parses");
-    let trace = sim.capture().trace;
+    let trace = sim.capture();
     let (_, events) = decode(&trace).expect("the trace decodes");
     let mut after_command = Vec::new();
     let mut commands = 0;
@@ -148,21 +148,17 @@ fn a_radio_command_writes_the_control_status_it_read() {
 }
 
 #[test]
-fn a_trace_with_no_origin_beside_it_replays_strict() {
-    use shell_simulator::trace::file;
+fn a_trace_read_back_from_its_file_alone_replays_faithful() {
     let dir = std::env::temp_dir().join(format!("trace-alone-{}", std::process::id()));
     let path = dir.join("ride.trace");
-    file::save(&ridden().capture(), &path).expect("the capture saves");
-    std::fs::remove_file(file::origin_path(&path)).expect("the origin was saved");
-    let (alone, media) = file::load(&path).expect("the trace loads");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&path, ridden().capture()).unwrap();
+    let alone = std::fs::read(&path).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
-    assert_eq!(media, file::Media::Blank);
 
     let report = Sim::replay(&alone).device.report().unwrap();
     assert_eq!(report.first, None, "{:?}", report.counts);
-    let faithful = report
-        .faithful
-        .expect("a strict replay says what it proved");
+    let faithful = report.faithful.expect("a replay says what it proved");
     assert_eq!(faithful.ended, None);
     assert!(faithful.physical > 0, "{faithful}");
 }

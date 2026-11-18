@@ -28,7 +28,6 @@ pub struct StorageFault {
 }
 
 /// Tear the mutation after `after` succeed, leaving `partial` bytes of it.
-/// A stimulus replay fails exactly the operations its trace scripts.
 #[derive(Default)]
 pub struct Fault {
     pub after: Option<u32>,
@@ -39,7 +38,6 @@ pub struct Fault {
     pub unreadable: Option<Region>,
     /// Each erase this boot that completed, by region and offset.
     pub erased: Vec<(Region, usize)>,
-    pub script: std::collections::VecDeque<StorageFault>,
     attempts: u32,
     lost: PowerLost,
 }
@@ -71,38 +69,32 @@ impl Fault {
             };
             return Some(fault);
         }
-        let scripted = (self.script.iter())
-            .position(|f| (f.medium, f.op, f.at) == (region.into(), op, at as u64));
-        let fault = match scripted {
-            Some(index) => self.script.remove(index)?,
-            None if op == StorageOp::Read && self.unreadable == Some(region) => StorageFault {
+        if op == StorageOp::Read {
+            return (self.unreadable == Some(region)).then_some(StorageFault {
                 medium: region.into(),
                 attempt,
                 op,
                 at: at as u64,
                 landed: 0,
                 error: StorageError::Failed,
-            },
-            None if op == StorageOp::Read => return None,
-            None => {
-                let injected = self.after == Some(0);
-                if let Some(n) = self.after.as_mut() {
-                    *n = n.saturating_sub(1);
-                }
-                if !injected {
-                    return None;
-                }
-                self.after = None;
-                self.lost.set(self.power_cut);
-                StorageFault {
-                    medium: region.into(),
-                    attempt,
-                    op,
-                    at: at as u64,
-                    landed: self.partial.min(len) as u32,
-                    error: StorageError::Failed,
-                }
-            }
+            });
+        }
+        let injected = self.after == Some(0);
+        if let Some(n) = self.after.as_mut() {
+            *n = n.saturating_sub(1);
+        }
+        if !injected {
+            return None;
+        }
+        self.after = None;
+        self.lost.set(self.power_cut);
+        let fault = StorageFault {
+            medium: region.into(),
+            attempt,
+            op,
+            at: at as u64,
+            landed: self.partial.min(len) as u32,
+            error: StorageError::Failed,
         };
         Some(fault)
     }
@@ -273,15 +265,6 @@ impl FileFlash {
     /// Erased media that lives as long as any clone, for fast scenarios.
     pub fn memory() -> Self {
         Self::from_image(0, FlashImage::erased())
-    }
-    /// Separate memory media holding these bytes, whose next boot is
-    /// `boot`. `None` for file-backed media.
-    pub fn copy_before_boot(&self, boot: u32) -> Option<Self> {
-        let Backing::Memory(media) = &self.backing else {
-            return None;
-        };
-        let media = media.borrow();
-        Some(Self::from_image(boot.checked_sub(1)?, media.image.clone()))
     }
     /// Memory media's boot counter and bytes, to save them; `None` for
     /// file-backed media.

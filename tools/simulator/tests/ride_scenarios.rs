@@ -2942,17 +2942,16 @@ fn a_ride_after_a_long_charging_standby_is_in_its_file_whole() {
         .count();
     assert_eq!(lost, 0, "the standby fit the spool");
     println!("{}", trace_size(&pulled, sim.device.now));
-    let mut capture = sim.capture();
-    capture.trace = pulled;
+    let capture = pulled;
     let replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
     assert_eq!(report.first, None, "{report}");
-    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    assert_eq!(first_difference(&capture, &replayed.trace()), None);
     assert!(
         replayed.frame_hashes() == sim.frame_hashes(),
         "the same frames"
     );
-    let faithful = report.faithful.expect("a strict replay that ended");
+    let faithful = report.faithful.expect("a replay that ended");
     assert_eq!(faithful.ended, None, "{faithful}");
     let samples: Vec<usize> = (sim.rides().iter())
         .map(|ride| ride.samples().count())
@@ -8508,36 +8507,20 @@ fn hashed() -> Sim {
 }
 
 #[track_caller]
-fn assert_replays_exactly(
-    recorded: Sim,
-    scenario: fn(&mut Sim),
-    bulk: bool,
-) -> shell_simulator::replay::Capture {
-    assert_replays_exactly_after(recorded, scenario, bulk, |_| {})
-}
-
-#[track_caller]
-fn assert_replays_exactly_after(
-    mut recorded: Sim,
-    scenario: fn(&mut Sim),
-    bulk: bool,
-    alter: fn(&mut shell_simulator::replay::Capture),
-) -> shell_simulator::replay::Capture {
+fn assert_replays_exactly(mut recorded: Sim, scenario: fn(&mut Sim), bulk: bool) -> Vec<u8> {
     scenario(&mut recorded);
-    let mut capture = recorded.capture();
-    alter(&mut capture);
-    println!("{}", trace_size(&capture.trace, recorded.device.now));
+    let capture = recorded.capture();
+    println!("{}", trace_size(&capture, recorded.device.now));
     let replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
     assert_eq!(report.first, None, "{report}");
-    if let Some(difference) =
-        shell_simulator::replay::first_difference(&capture.trace, &replayed.trace())
+    if let Some(difference) = shell_simulator::replay::first_difference(&capture, &replayed.trace())
     {
         panic!("the replay read or showed something else: {difference}");
     }
     // Media accesses are checked through the rerecorded bytes and digests rather than by comparing
     // final journal contents.
-    let faithful = report.faithful.expect("a strict replay that ended");
+    let faithful = report.faithful.expect("a replay that ended");
     assert_eq!(faithful.ended, None, "{faithful}");
     assert!(faithful.physical > 0, "{faithful}");
     let (frames, replayed_frames) = (recorded.frame_hashes(), replayed.frame_hashes());
@@ -8608,8 +8591,8 @@ fn a_trace_damaged_mid_way_replays_to_where_it_breaks_and_says_so() {
     let mut sim = equip(Sim::new().boot());
     manual_laps(&mut sim);
     let mut capture = sim.capture();
-    let middle = capture.trace.len() / 2;
-    capture.trace[middle] ^= 0x40;
+    let middle = capture.len() / 2;
+    capture[middle] ^= 0x40;
     let replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
     assert_eq!(report.count(Kind::Truncated), 1, "{report}");
@@ -8617,7 +8600,7 @@ fn a_trace_damaged_mid_way_replays_to_where_it_breaks_and_says_so() {
         replayed.device.now < sim.device.now,
         "the replay stops where the trace breaks"
     );
-    let difference = first_difference(&capture.trace, &replayed.trace()).unwrap();
+    let difference = first_difference(&capture, &replayed.trace()).unwrap();
     assert!(difference.contains("damaged"), "{difference}");
 }
 
@@ -8635,7 +8618,7 @@ fn a_ride_with_a_ble_strap_selected_by_command_replays_exactly() {
 fn a_command_runs_after_its_pass_as_on_the_c606() {
     use firmware_services::trace::{Event, decode};
     let capture = assert_replays_exactly(equip(hashed().boot()), ble_heart_strap, false);
-    let (_, events) = decode(&capture.trace).unwrap();
+    let (_, events) = decode(&capture).unwrap();
     let (mut passes, mut commands) = (Vec::new(), 0);
     for event in events {
         match event {
@@ -8683,7 +8666,7 @@ fn a_ride_dated_by_wifi_replays_exactly_whatever_the_process_clock_holds() {
         0,
     );
     let capture = assert_replays_exactly(equip(hashed().boot()), a_ride_dated_by_wifi, false);
-    let (_, events) = firmware_services::trace::decode(&capture.trace).unwrap();
+    let (_, events) = firmware_services::trace::decode(&capture).unwrap();
     let synced = events
         .filter_map(|event| match event {
             firmware_services::trace::Event::NetworkTime(time) => time.unix_seconds,
@@ -8724,14 +8707,14 @@ fn a_trace_names_the_terrain_pack_and_the_working_memory_its_session_started_wit
     a_ride_on_new_bulk_media(&mut sim);
 
     let capture = sim.capture();
-    let (header, _) = firmware_services::trace::decode(&capture.trace).unwrap();
+    let (header, _) = firmware_services::trace::decode(&capture).unwrap();
     let Found::Read(terrain) = header.terrain else {
         panic!("the pack: {:?}", header.terrain);
     };
     assert!(terrain.ready);
     assert_eq!(terrain.length, 2048);
     assert_eq!(&terrain.tag[..8], b"CHILE-V1");
-    let opened = world::opened(&capture.trace);
+    let opened = world::opened(&capture);
     assert_eq!((opened.memory, opened.redacted), (Memory::ALL, false));
 }
 
@@ -8742,7 +8725,7 @@ fn a_replay_gives_vana_only_the_working_memory_the_recording_had() {
     sim.advance(seconds(5));
     let mut capture = sim.capture();
     assert!(sim.device.sdk.detach_terrain().is_some());
-    let trace: &'static [u8] = Box::leak(capture.trace.clone().into_boxed_slice());
+    let trace: &'static [u8] = Box::leak(capture.clone().into_boxed_slice());
     let (header, events) = decode(trace).unwrap();
     let events: Vec<Event<'static>> = events
         .map(|event| match event {
@@ -8756,7 +8739,7 @@ fn a_replay_gives_vana_only_the_working_memory_the_recording_had() {
             event => event,
         })
         .collect();
-    capture.trace = mutations::encode(&header, events);
+    capture = shell_simulator::trace::surgery::encode(&header, events);
     let mut replayed = Sim::replay(&capture);
     assert!(
         replayed.device.sdk.detach_terrain().is_none(),
@@ -8777,18 +8760,18 @@ fn a_session_recorded_into_the_store_replays_exactly_from_the_file_a_host_pulls(
     assert!(name.starts_with("traces/000001-"), "{name}");
     let pulled = sim.store_file(&name).expect("every record reads back");
     let mut capture = sim.capture();
-    assert_eq!(pulled.len(), capture.trace.len());
-    assert!(pulled == capture.trace, "the file is the trace");
-    capture.trace = pulled;
+    assert_eq!(pulled.len(), capture.len());
+    assert!(pulled == capture, "the file is the trace");
+    capture = pulled;
 
     let replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
     assert_eq!(report.first, None, "{report}");
-    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    assert_eq!(first_difference(&capture, &replayed.trace()), None);
     let (frames, replayed_frames) = (sim.frame_hashes(), replayed.frame_hashes());
     assert!(frames.len() > 100);
     assert!(frames == replayed_frames, "the same frames from power-on");
-    let faithful = report.faithful.expect("a strict replay that ended");
+    let faithful = report.faithful.expect("a replay that ended");
     assert_eq!(faithful.ended, None, "{faithful}");
     assert!(
         sim.bulk_rides()
@@ -8802,13 +8785,8 @@ fn a_session_recorded_into_the_store_replays_exactly_from_the_file_a_host_pulls(
 fn a_new_store_replays_with_the_entropy_it_was_named_from() {
     let mut sim = hashed();
     sim.fit_bulk(Presence::Ready);
-    let capture = assert_replays_exactly_after(
-        equip(sim.boot()),
-        a_ride_on_new_bulk_media,
-        true,
-        |capture| capture.origin.bulk.reseed_entropy(0xdec0de),
-    );
-    let entropy = count_world(&capture.trace, |world| matches!(world, World::Entropy(_)));
+    let capture = assert_replays_exactly(equip(sim.boot()), a_ride_on_new_bulk_media, true);
+    let entropy = count_world(&capture, |world| matches!(world, World::Entropy(_)));
     assert!(entropy > 0, "the store's entropy is recorded");
 }
 
@@ -8831,13 +8809,21 @@ fn sensor_data(sim: &mut Sim) -> Vec<Vec<Sample>> {
 }
 
 #[test]
-fn a_ride_replayed_as_stimulus_on_the_same_build_saves_the_same_ride() {
-    use shell_simulator::replay::Mode;
+fn a_ride_replayed_changed_on_the_same_build_saves_the_same_ride() {
+    use shell_simulator::replay::{Mode, Options};
     let mut recorded = equip(hashed().boot());
     paired_then_ridden(&mut recorded);
-    let mut replayed = Sim::replay_as(&recorded.capture(), Mode::Stimulus, |_| {});
+    let changed = Options {
+        mode: Mode::Changed,
+        model: false,
+    };
+    let mut replayed = Sim::replay_as(&recorded.capture(), changed);
     let report = replayed.device.report().unwrap();
-    assert_eq!(report.first, None, "{report:?}");
+    assert_eq!(
+        report.verdict(),
+        Ok("the replay re-recorded the trace byte for byte".into()),
+        "{report}"
+    );
     let rides = sensor_data(&mut recorded);
     assert!(
         rides.iter().any(|ride| ride.len() > 200),
@@ -8863,38 +8849,79 @@ fn connected_in_order(trace: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-#[test]
-fn a_ride_replays_against_a_build_that_connects_the_power_meter_first() {
-    use device_api::ant::{AntOperation, Error};
-    use shell_simulator::replay::{Kind, Mode};
-    let mut recorded = equip(hashed().boot());
-    paired_then_ridden(&mut recorded);
-    let mut power_asked = false;
-    let mut replayed = Sim::replay_as(&recorded.capture(), Mode::Stimulus, |sources| {
-        sources.adapt_ant(move |operation, _| match operation {
-            AntOperation::Connect(peer) if peer.device_type == device_type::POWER => {
-                power_asked = true;
-                None
-            }
-            AntOperation::Connect(_) if !power_asked => Some(Err(Error::Busy)),
+fn with_the_first_connects_swapped(trace: &[u8]) -> Vec<u8> {
+    use device_api::ant::AntOperation;
+    use firmware_services::trace::wire::{Wire, Writer};
+    use firmware_services::trace::{Event, decode};
+    let trace: &'static [u8] = Box::leak(trace.to_vec().into_boxed_slice());
+    let (header, events) = decode(trace).unwrap();
+    let mut events: Vec<Event<'static>> = events.collect();
+    let connects: Vec<(usize, usize)> = (events.iter().enumerate())
+        .filter_map(|(at, event)| match event {
+            Event::Call(call) => match world::read(call) {
+                Some(World::AntRequest {
+                    operation: AntOperation::Connect(_),
+                    result: result @ Ok(_),
+                }) => {
+                    let mut bytes = [0u8; 64];
+                    let mut w = Writer::new(&mut bytes, call.now_ms);
+                    result.put(&mut w);
+                    Some((at, call.body.len() - w.written().unwrap()))
+                }
+                _ => None,
+            },
             _ => None,
         })
-    });
+        .take(2)
+        .collect();
+    let [(first, first_args), (second, second_args)] = connects[..] else {
+        panic!("two connections the radio accepted")
+    };
+    let (Event::Call(mut a), Event::Call(mut b)) = (events[first], events[second]) else {
+        unreachable!()
+    };
+    let a_body = [&b.body[..second_args], &a.body[first_args..]].concat();
+    let b_body = [&a.body[..first_args], &b.body[second_args..]].concat();
+    a.body = Vec::leak(a_body);
+    b.body = Vec::leak(b_body);
+    events[first] = Event::Call(a);
+    events[second] = Event::Call(b);
+    shell_simulator::trace::surgery::encode(&header, events)
+}
+
+#[test]
+fn a_ride_recorded_power_meter_first_replays_on_a_modelled_branch_and_saves_the_sensor_data() {
+    use shell_simulator::replay::{Kind, Mode, Options};
+    let mut recorded = equip(hashed().boot());
+    paired_then_ridden(&mut recorded);
+    let mut capture = recorded.capture();
+    capture = with_the_first_connects_swapped(&capture);
+    let modelled = Options {
+        mode: Mode::Changed,
+        model: true,
+    };
+    let mut replayed = Sim::replay_as(&capture, modelled);
     let (power, heart, speed) = (
         device_type::POWER,
         device_type::HEART_RATE,
         device_type::SPEED_CADENCE,
     );
-    assert_eq!(connected_in_order(&recorded.trace()), [heart, power, speed]);
-    let mut order = connected_in_order(&replayed.trace());
-    assert_eq!(order[0], power, "{order:?}");
-    order.sort_unstable();
-    assert_eq!(order, [power, heart, speed]);
+    assert_eq!(connected_in_order(&capture), [power, heart, speed]);
+    assert_eq!(
+        connected_in_order(&replayed.trace()),
+        [heart, power, speed],
+        "this build connects the strap first"
+    );
     let report = replayed.device.report().unwrap();
-    println!("{report:#?}");
-    assert!(report.count(Kind::Refused) >= 1, "{report:?}");
-    assert!(report.count(Kind::Modelled) >= 1, "{report:?}");
-    assert!(report.count(Kind::NotHeard) > 0, "{report:?}");
+    let branched = report.branched.as_ref().expect("the replay branched");
+    assert!(report.verdict().is_err(), "a branch fails the verdict");
+    assert!(report.count(Kind::Modelled) >= 1, "{report}");
+    assert!(report.count(Kind::NotRequested) >= 1, "{report}");
+    assert!(
+        branched.detail.contains("Ant::request"),
+        "the branch names the call: {}",
+        branched.detail
+    );
     assert_eq!(sensor_data(&mut replayed), sensor_data(&mut recorded));
 }
 
@@ -8950,10 +8977,10 @@ fn a_course_uploaded_from_the_phone_mid_session_replays_exactly() {
     sim.fit_bulk(Presence::Ready);
     sim.format_files();
     let capture = assert_replays_exactly(equip(sim.boot()), a_course_uploaded_from_the_phone, true);
-    let read = body_read(&capture.trace);
+    let read = body_read(&capture);
     let course = gpx_through("Cerro loop", &COURSE_LOOP);
     assert_eq!(read, course.len(), "the whole body is in the trace");
-    let joined = count_world(&capture.trace, |world| {
+    let joined = count_world(&capture, |world| {
         matches!(
             world,
             World::AccessPointState(device_api::server::AccessPointState::Up { clients: 1 })
@@ -9048,15 +9075,15 @@ fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
     use firmware_services::trace::{Event, decode};
     let (sim, secrets) = a_redacted_phone_session_then_a_ride();
     let capture = sim.capture();
-    let text = String::from_utf8_lossy(&capture.trace);
+    let text = String::from_utf8_lossy(&capture);
     for secret in &secrets {
         assert!(!text.contains(secret.as_str()), "the trace holds {secret}");
     }
-    let said = count_events(&capture.trace, |event| {
+    let said = count_events(&capture, |event| {
         matches!(event, Event::Session { redacted: true, .. })
     });
     assert_eq!(said, 1, "the trace says it replaced its secrets");
-    let (_, events) = decode(&capture.trace).unwrap();
+    let (_, events) = decode(&capture).unwrap();
     let sessions: Vec<String> = events
         .filter_map(|event| match event {
             Event::Call(call) => match world::read(&call) {
@@ -9079,7 +9106,7 @@ fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
         2,
         "the phone page draws the redacted credentials: {report}"
     );
-    let faithful = report.faithful.clone().expect("a strict replay that ended");
+    let faithful = report.faithful.clone().expect("a replay that ended");
     assert_eq!(faithful.ended, None, "{report}");
     assert!(
         faithful
@@ -9091,29 +9118,9 @@ fn a_redacted_phone_session_replays_on_placeholders_and_holds_no_secret() {
     assert!(placeholder.is_none(), "the session closed for the ride");
 }
 
-/// The capture, with the rider shown another page where its last page
-/// opened.
-fn with_the_last_page_unseen(
-    mut capture: shell_simulator::replay::Capture,
-) -> shell_simulator::replay::Capture {
+fn with_the_last_frame_unseen(mut capture: Vec<u8>) -> Vec<u8> {
     use firmware_services::trace::{Event, decode};
-    let trace: &'static [u8] = Box::leak(capture.trace.clone().into_boxed_slice());
-    let (header, events) = decode(trace).unwrap();
-    let mut events: Vec<Event<'static>> = events.collect();
-    let last = events
-        .iter()
-        .rposition(|event| matches!(event, Event::Page(_)))
-        .unwrap();
-    events[last] = Event::Page("a page the rider never saw");
-    capture.trace = mutations::encode(&header, events);
-    capture
-}
-
-fn with_the_last_frame_unseen(
-    mut capture: shell_simulator::replay::Capture,
-) -> shell_simulator::replay::Capture {
-    use firmware_services::trace::{Event, decode};
-    let trace: &'static [u8] = Box::leak(capture.trace.clone().into_boxed_slice());
+    let trace: &'static [u8] = Box::leak(capture.clone().into_boxed_slice());
     let (header, events) = decode(trace).unwrap();
     let mut events: Vec<Event<'static>> = events.collect();
     let last = events
@@ -9121,7 +9128,7 @@ fn with_the_last_frame_unseen(
         .rposition(|event| matches!(event, Event::Panel(_)))
         .unwrap();
     events[last] = Event::Panel(0xdead_beef);
-    capture.trace = mutations::encode(&header, events);
+    capture = shell_simulator::trace::surgery::encode(&header, events);
     capture
 }
 
@@ -9142,20 +9149,6 @@ fn a_redacted_phone_session_leaves_a_later_difference_first() {
     );
 }
 
-#[test]
-fn a_stimulus_replay_names_no_frame_in_what_the_rider_saw() {
-    let (sim, _) = a_redacted_phone_session_then_a_ride();
-    let capture = with_the_last_page_unseen(sim.capture());
-    let stimulus = shell_simulator::replay::Mode::Stimulus;
-    let replayed = Sim::replay_as(&capture, stimulus, |_| {});
-    let report = replayed.device.report().unwrap();
-    let first = report.first.as_ref().expect("the altered page diverges");
-    assert!(
-        first.detail.contains("a page the rider never saw") && !first.detail.contains("Panel("),
-        "a stimulus replay compares no frames: {report}"
-    );
-}
-
 fn a_ride_whose_journal_write_tears(sim: &mut Sim) {
     sim.pair(&["HEART RATE", "POWER METER"]);
     sim.ride_at(28.0, 200.0, 140.0, 85.0);
@@ -9173,7 +9166,7 @@ fn a_storage_failure_mid_ride_replays_exactly() {
         a_ride_whose_journal_write_tears,
         false,
     );
-    let torn = count_world(&capture.trace, |world| {
+    let torn = count_world(&capture, |world| {
         matches!(
             world,
             World::Media(StorageOp::Write, access)
@@ -9200,7 +9193,7 @@ fn a_bulk_failure_mid_ride_replays_exactly() {
     let mut sim = hashed();
     sim.fit_bulk(Presence::Ready);
     let capture = assert_replays_exactly(equip(sim.boot()), a_ride_whose_card_fails, false);
-    let torn = count_world(&capture.trace, |world| {
+    let torn = count_world(&capture, |world| {
         matches!(
             world,
             World::Media(StorageOp::Write, access)
@@ -9227,7 +9220,7 @@ fn a_card_that_goes_missing_mid_ride_replays_exactly() {
     let mut sim = hashed();
     sim.fit_bulk(Presence::Ready);
     let capture = assert_replays_exactly(equip(sim.boot()), a_ride_whose_card_goes_missing, false);
-    let missing = count_world(&capture.trace, |world| match world {
+    let missing = count_world(&capture, |world| match world {
         World::Media(_, access) => {
             access.span.medium == Medium::Bulk && access.fault == Some(StorageError::Unavailable)
         }
@@ -9265,12 +9258,12 @@ fn a_panel_and_backlight_that_refuse_replay_exactly() {
     );
     for output in [Output::Panel, Output::Backlight] {
         let refused = count_world(
-            &capture.trace,
+            &capture,
             |world| matches!(world, World::Refused { output: refused, .. } if *refused == output),
         );
         assert!(refused > 0, "{output:?} refused");
     }
-    let changes = count_world(&capture.trace, |world| matches!(world, World::Backlight(_)));
+    let changes = count_world(&capture, |world| matches!(world, World::Backlight(_)));
     assert_eq!(changes, 3, "ready, failed, ready again");
 }
 
@@ -9292,10 +9285,10 @@ fn a_ride_then_turned_off(sim: &mut Sim) {
 fn a_ride_ended_by_turning_off_replays_exactly() {
     use firmware_services::trace::Event;
     let capture = assert_replays_exactly(equip(hashed().boot()), a_ride_then_turned_off, false);
-    let asked = count_world(&capture.trace, |world| {
+    let asked = count_world(&capture, |world| {
         matches!(world, World::PowerRequest { result: Ok(()), .. })
     });
-    let off = count_events(&capture.trace, |event| matches!(event, Event::PoweredOff));
+    let off = count_events(&capture, |event| matches!(event, Event::PoweredOff));
     assert_eq!(
         (asked, off),
         (1, 1),
@@ -9334,7 +9327,7 @@ fn a_session_turned_off_is_in_its_file_up_to_the_shutdown_request() {
         }
         (passes, asked)
     };
-    let (recorded, asked) = passes(&sim.capture().trace);
+    let (recorded, asked) = passes(&sim.capture());
     let asked = asked.expect("VANA asked to turn off");
     let pulled = sim.store_file(&name).expect("every record reads back");
     let (filed, _) = passes(&pulled);
@@ -9344,22 +9337,19 @@ fn a_session_turned_off_is_in_its_file_up_to_the_shutdown_request() {
         recorded[..before],
         "every pass before the one that asked"
     );
-    let mut capture = sim.capture();
-    capture.trace = pulled;
+    let capture = pulled;
     let replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
     assert_eq!(report.first, None, "{:?}", report.counts);
-    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    assert_eq!(first_difference(&capture, &replayed.trace()), None);
 }
 
 mod mutations {
     use super::*;
-    use firmware_services::trace::recorder::{Record, Recorder};
-    use firmware_services::trace::{Event, Header, decode};
-    use shell_simulator::replay::{Blocks, Capture, first_difference};
+    use firmware_services::trace::{Event, decode};
+    use shell_simulator::replay::first_difference;
 
     pub struct Recording {
-        capture: Capture,
         pub trace: &'static [u8],
         frames: Vec<u64>,
         backlight: (u8, u32),
@@ -9380,10 +9370,9 @@ mod mutations {
         let capture = sim.capture();
         let (frames, backlight) = outputs(&sim);
         Recording {
-            trace: Vec::leak(capture.trace.clone()),
+            trace: Vec::leak(capture),
             frames,
             backlight,
-            capture,
         }
     }
 
@@ -9412,7 +9401,6 @@ mod mutations {
         )
     }
 
-    /// Every kind of event in `trace` a strict replay reads.
     pub fn kinds(trace: &[u8]) -> Vec<String> {
         let (_, events) = decode(trace).unwrap();
         let kinds: std::collections::BTreeSet<String> =
@@ -9444,23 +9432,6 @@ mod mutations {
         })
     }
 
-    pub fn encode(
-        header: &Header<'_>,
-        events: impl IntoIterator<Item = Event<'static>>,
-    ) -> Vec<u8> {
-        let mut file = vec![0u8; 4096];
-        let len = firmware_services::trace::encode_header(header, &mut file).unwrap();
-        file.truncate(len);
-        let buffer = vec![0u8; 4096].into_boxed_slice();
-        let mut recorder = Recorder::new(buffer, Blocks(file));
-        for event in events {
-            recorder.record(&event);
-        }
-        let mut bytes = recorder.sink().0.clone();
-        bytes.extend_from_slice(recorder.open_block());
-        bytes
-    }
-
     pub fn mutated(trace: &'static [u8], kind: &str, how: Mutation) -> Option<Vec<u8>> {
         let (header, events) = decode(trace).unwrap();
         let mut events: Vec<Event<'static>> = events.collect();
@@ -9477,7 +9448,7 @@ mod mutations {
                 events[at] = changed;
             }
         }
-        Some(encode(&header, events))
+        Some(shell_simulator::trace::surgery::encode(&header, events))
     }
 
     pub fn with_too_large(trace: &'static [u8]) -> Vec<u8> {
@@ -9496,7 +9467,7 @@ mod mutations {
                 operation,
             },
         );
-        encode(&header, events)
+        shell_simulator::trace::surgery::encode(&header, events)
     }
 
     #[derive(Debug)]
@@ -9514,12 +9485,8 @@ mod mutations {
     }
 
     pub fn replay(recording: &Recording, trace: Vec<u8>) -> Caught {
-        let capture = Capture {
-            origin: recording.capture.origin.untapped(),
-            trace,
-        };
-        let strict = shell_simulator::replay::Mode::Strict;
-        let mut replayed = match Sim::replaying(&capture, strict, None) {
+        let faithful = shell_simulator::replay::Options::default();
+        let mut replayed = match Sim::replaying(&trace, faithful, None) {
             Ok(replayed) => replayed,
             Err(boot) => {
                 return Caught {
@@ -9589,7 +9556,7 @@ mod mutations {
         assert!(missed.is_empty(), "mutations that did not show: {missed:?}");
         assert!(
             silent.is_empty(),
-            "strict replays that showed other frames and reported nothing: {silent:?}"
+            "replays that showed other frames and reported nothing: {silent:?}"
         );
     }
 }
@@ -9781,7 +9748,7 @@ fn a_ride_paged_by_the_harness_replays_exactly() {
     use firmware_services::trace::Event;
     let capture =
         assert_replays_exactly(equip(hashed().boot()), a_ride_paged_by_the_harness, false);
-    let pressed = count_events(&capture.trace, |event| matches!(event, Event::Synthetic(_)));
+    let pressed = count_events(&capture, |event| matches!(event, Event::Synthetic(_)));
     assert_eq!(pressed, 1, "the harness pressed once");
 }
 
@@ -10801,13 +10768,13 @@ fn bare_runs_on_buttons_alone() {
     assert!(changed > 0, "no button changed the screen");
 
     let capture = sim.capture();
-    let (header, _) = firmware_services::trace::decode(&capture.trace).unwrap();
+    let (header, _) = firmware_services::trace::decode(&capture).unwrap();
     assert_eq!(header.device, "bare");
     let replayed = Sim::replay(&capture);
     assert_eq!(replayed.device.model, BARE);
     let report = replayed.device.report().unwrap();
     assert_eq!(report.first, None, "{:?}", report.counts);
-    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    assert_eq!(first_difference(&capture, &replayed.trace()), None);
 }
 
 #[test]
@@ -10823,7 +10790,7 @@ fn a_refused_frame_replays_as_refused_and_says_so() {
     sim.advance(seconds(2));
     let replayed = Sim::replay(&sim.capture());
     let report = replayed.device.report().expect("a replay");
-    let faithful = report.faithful.clone().expect("a strict replay");
+    let faithful = report.faithful.clone().expect("a replay");
     assert_eq!(faithful.ended, None, "{report}");
     assert!(
         faithful

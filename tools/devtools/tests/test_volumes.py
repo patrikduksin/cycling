@@ -449,7 +449,15 @@ class VolumesTests(unittest.TestCase):
         return status, out.getvalue(), err.getvalue()
 
     def pull_result(self, marks, **more):
-        return {'name': 'traces/000010-0000bbbb.trace', 'records': 2, 'path': 'x.trace', 'marks': marks, **more}
+        faithful = {'ok': True, 'ended': None, 'exclusions': []}
+        return {
+            'name': 'traces/000010-0000bbbb.trace',
+            'records': 2,
+            'path': 'x.trace',
+            'marks': marks,
+            'faithful': faithful,
+            **more,
+        }
 
     def test_trace_pull_with_json_prints_one_json_document_holding_the_marks(self):
         for marks in ([], [MARK]):

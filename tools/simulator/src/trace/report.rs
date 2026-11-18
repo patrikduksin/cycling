@@ -5,7 +5,6 @@ use crate::bundle::Bundled;
 use crate::replay::Mode;
 use crate::trace::battery;
 use crate::trace::divergence::Divergences;
-use crate::trace::file::Media;
 use crate::trace::find::Found;
 use crate::trace::story::{Point, Span, tell};
 use crate::trace::timeline::{
@@ -40,8 +39,6 @@ pub struct Header<'a> {
     passes: u64,
     #[serde(serialize_with = "end_name")]
     end: End,
-    #[serde(serialize_with = "media_name")]
-    media: &'a Media,
     terrain: Option<Pack>,
 }
 
@@ -60,12 +57,8 @@ fn mode_name<S: Serializer>(mode: &Mode, serializer: S) -> Result<S::Ok, S::Erro
     serializer.serialize_str(mode.name())
 }
 
-fn media_name<S: Serializer>(media: &&Media, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(media.name())
-}
-
 impl<'a> Header<'a> {
-    pub fn of(path: &Path, timeline: &'a Timeline, media: &'a Media) -> Self {
+    pub fn of(path: &Path, timeline: &'a Timeline) -> Self {
         Self {
             trace: path.display().to_string(),
             build: (!timeline.build.is_empty()).then_some(timeline.build.as_str()),
@@ -74,7 +67,6 @@ impl<'a> Header<'a> {
             end_ms: timeline.end_ms,
             passes: timeline.passes,
             end: timeline.end,
-            media,
             terrain: match timeline.terrain {
                 trace::origin::Found::Read(pack) => Some(Pack {
                     sha256: pack.digest.iter().map(|b| format!("{b:02x}")).collect(),
@@ -90,9 +82,9 @@ impl<'a> Header<'a> {
 impl fmt::Display for Header<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "trace {}", self.trace)?;
-        write!(
+        writeln!(
             f,
-            "build {}, boot {}, format {}, {} over {} passes, {}{}; media ",
+            "build {}, boot {}, format {}, {} over {} passes, {}{}",
             self.build.unwrap_or("unknown"),
             self.boot,
             self.format,
@@ -105,13 +97,6 @@ impl fmt::Display for Header<'_> {
                 End::Corrupt => ": a damaged block and everything after it were dropped",
             },
         )?;
-        match self.media {
-            Media::Saved => writeln!(f, "saved beside it (.origin)"),
-            Media::Blank => writeln!(
-                f,
-                "not saved: a strict replay reads them from the trace, a stimulus replay starts on blank media"
-            ),
-        }?;
         match &self.terrain {
             Some(pack) => writeln!(
                 f,
@@ -145,7 +130,7 @@ struct Count {
 }
 
 impl<'a> Summary<'a> {
-    pub fn of(path: &Path, timeline: &'a Timeline, media: &'a Media) -> Self {
+    pub fn of(path: &Path, timeline: &'a Timeline) -> Self {
         let story = tell(timeline);
         let mut counts = [(0, 0); Kind::ALL.len()];
         for entry in &timeline.entries {
@@ -159,7 +144,7 @@ impl<'a> Summary<'a> {
             .map(|(kind, (new, repeats))| (kind, Count { new, repeats }))
             .collect();
         Self {
-            header: Header::of(path, timeline, media),
+            header: Header::of(path, timeline),
             before: &timeline.before,
             silences: &timeline.silences,
             spans: story.spans,
@@ -235,21 +220,6 @@ impl fmt::Display for Summary<'_> {
             f,
             "next: timeline --from T --to T, find <field=value|kind|text>, replay --from T"
         )
-    }
-}
-
-/// Text a command writes as prose, its lines in JSON: `origin` and `media`.
-#[derive(Serialize)]
-pub struct Prose {
-    #[serde(serialize_with = "as_lines")]
-    pub lines: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin: Option<String>,
-}
-
-impl fmt::Display for Prose {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.lines)
     }
 }
 
@@ -396,12 +366,16 @@ pub struct Replayed<'a> {
     pub why: String,
     pub from_ms: u64,
     pub to_ms: u64,
+    pub model: bool,
     pub reached: Moment,
     pub trace_ended: bool,
     pub divergence: Option<Divergences>,
+    /// What the replay proved by recording the world again.
+    pub faithful: Option<Proved>,
     pub artifacts: Artifacts,
-    /// A strict replay's first divergence from the start of the trace, in
+    /// A faithful replay's first divergence from the start of the trace, in
     /// the window or before it: what a bundle of this failure expects.
+    /// `None` under --model or in a changed replay.
     pub parted: Option<Parted>,
     pub bundle: Option<Bundled>,
 }
@@ -411,6 +385,35 @@ pub struct Parted {
     pub kind: &'static str,
     pub at_ms: u64,
     pub detail: String,
+}
+
+/// [`crate::replay::Faithful`] for a script to read.
+#[derive(Serialize)]
+pub struct Proved {
+    pub ok: bool,
+    pub physical: u64,
+    pub semantic: u64,
+    /// Where the replay ended before its trace, or first recorded
+    /// otherwise, and why.
+    pub ended: Option<String>,
+    pub exclusions: Vec<String>,
+}
+
+impl Proved {
+    pub fn of(ok: bool, faithful: &crate::replay::Faithful) -> Self {
+        Self {
+            ok,
+            physical: faithful.physical,
+            semantic: faithful.semantic,
+            ended: (faithful.ended.as_ref())
+                .map(|(pass_ms, why)| format!("{}: {why}", session_clock(*pass_ms))),
+            exclusions: faithful
+                .exclusions
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -425,8 +428,9 @@ impl fmt::Display for Replayed<'_> {
         writeln!(f, "mode {}: {}", self.mode.name(), self.why)?;
         writeln!(
             f,
-            "replayed {} from {} to {}; reached {}{}",
+            "replayed {}{} from {} to {}; reached {}{}",
             self.mode.name(),
+            if self.model { " --model" } else { "" },
             session_clock(self.from_ms),
             session_clock(self.to_ms),
             self.reached,
@@ -451,5 +455,67 @@ impl fmt::Display for Replayed<'_> {
             f,
             "screens.txt has the screen text at each screenshot; why.txt what the glue decided and why; replayed.trace is this replay's own trace (diff it with timeline)"
         )
+    }
+}
+
+/// `cycling trace diff`: where two traces part.
+#[derive(Serialize)]
+pub struct Diffed<'a> {
+    pub a: &'a str,
+    pub b: &'a str,
+    #[serde(flatten)]
+    pub diff: crate::trace::diff::Diff,
+}
+
+impl fmt::Display for Diffed<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "a {}\nb {}", self.a, self.b)?;
+        write!(f, "{}", self.diff)
+    }
+}
+
+/// A `--set` and the pass it resolved to.
+#[derive(Serialize)]
+pub struct Resolved {
+    pub set: String,
+    pub at: Moment,
+}
+
+/// `cycling replay --set`: the recorded and the altered future, and where
+/// they part.
+#[derive(Serialize)]
+pub struct Futures<'a> {
+    pub sets: Vec<Resolved>,
+    pub recorded: Replayed<'a>,
+    pub set: Replayed<'a>,
+    pub diff: crate::trace::diff::Diff,
+}
+
+impl fmt::Display for Futures<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for resolved in &self.sets {
+            writeln!(
+                f,
+                "--set {} resolved to the pass at {}",
+                resolved.set, resolved.at
+            )?;
+        }
+        for (name, future) in [("recorded", &self.recorded), ("set", &self.set)] {
+            let verdict = match &future.divergence {
+                Some(divergence) => format!(
+                    "{}: {}",
+                    if divergence.ok { "holds" } else { "fails" },
+                    divergence.verdict
+                ),
+                None => "no report".into(),
+            };
+            writeln!(
+                f,
+                "{name}: reached {}; verdict {verdict}; artifacts in {}",
+                future.reached,
+                future.artifacts.dir.display()
+            )?;
+        }
+        write!(f, "{}", self.diff)
     }
 }

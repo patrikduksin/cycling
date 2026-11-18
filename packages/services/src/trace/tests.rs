@@ -341,7 +341,7 @@ fn bytes_past_the_known_fields_are_refused() {
 
 #[test]
 fn a_trace_of_another_version_is_refused_as_foreign() {
-    for version in [0, VERSION + 1] {
+    for version in [0, VERSION - 1, VERSION + 1] {
         let mut bytes = std::vec![0u8; 128];
         let len = encode_header(&HEADER, &mut bytes).unwrap();
         bytes[2] = version;

@@ -27,9 +27,17 @@ fi
     read -r commit
 } < <(git rev-parse --show-toplevel --path-format=absolute --git-common-dir HEAD)
 
-# A strict replay of a device's trace reads the TERRAIN pack its header
-# names from the primary checkout's packs, as worktrees share its `.local`.
-export CYCLING_TERRAIN_PACKS="${CYCLING_TERRAIN_PACKS:-$(dirname "$common")/.local/terrain}"
+primary=$(dirname "$common")
+export CYCLING_TERRAIN_PACKS="${CYCLING_TERRAIN_PACKS:-$primary/.local/terrain}"
+
+if [ "${1:-}" = replay ]; then
+    for arg; do
+        if [ "$arg" = --against ]; then
+            exec uv run --project "$root/tools/devtools" --locked \
+                python -m cycling_devtools.twin against "$@"
+        fi
+    done
+fi
 
 if [ "${1:-}" = pull ]; then
     shift
@@ -107,7 +115,9 @@ while :; do
     mv -f "$copy" "$cache/$commit"
     (
         flock -xn 7 || exit 0
-        ls -t "$cache" | tail -n +6 | (cd "$cache" && xargs -r rm -f --)
-        find "$cache" -maxdepth 1 -name '.*.??????' -mmin +60 -delete
+        # A .from note is not a binary: it goes with the binary it describes.
+        ls -t "$cache" | grep -v '\.from$' | tail -n +6 \
+            | (cd "$cache" && while read -r old; do rm -f -- "$old" "$old.from"; done)
+        find "$cache" -maxdepth 1 -name '.*.??????*' -mmin +60 -delete
     ) 7> "$cache/.lock" || true
 done

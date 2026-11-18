@@ -304,20 +304,30 @@ impl Pass {
     /// The view the next pass starts from, or the calls the twin never
     /// made, in the order the device made them.
     pub fn end(self) -> Result<View, Stop> {
-        let left: Vec<Left> = self
-            .calls
-            .into_iter()
-            .filter(|call| !call.consumed)
-            .map(|call| Left {
+        let (view, left) = self.finish();
+        match left.is_empty() {
+            true => Ok(view),
+            false => Err(Stop::Unconsumed(left)),
+        }
+    }
+
+    /// The view the next pass starts from, and the calls the twin never
+    /// made. What those calls observed is in the view all the same: the
+    /// world arrives whatever VANA asks.
+    pub fn finish(mut self) -> (View, Vec<Left>) {
+        let mut left = Vec::new();
+        for call in self.calls {
+            if call.consumed {
+                continue;
+            }
+            self.view.install(call.observed, self.now_ms);
+            left.push(Left {
                 method: call.method,
                 body: call.body,
                 epoch: call.epoch,
-            })
-            .collect();
-        match left.is_empty() {
-            true => Ok(self.view),
-            false => Err(Stop::Unconsumed(left)),
+            });
         }
+        (self.view, left)
     }
 
     fn matched(&mut self, method: MethodId, args: &[u8]) -> Option<Vec<u8>> {

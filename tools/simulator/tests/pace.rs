@@ -3,7 +3,7 @@
 //! as a recording ride draws, and 100 while a finger, a sheet, a coasting
 //! list, a press awaiting its frame, the look-ahead or storage work needs
 //! them (`vana::app::pace`). A press or a radar page ends a rest at once, a
-//! harness press runs when it is due, and a strict replay of a resting
+//! harness press runs when it is due, and a replay of a resting
 //! session is exact.
 use device_api::input::{Input, Point, Role};
 use firmware_services::trace::{Event, decode};
@@ -344,7 +344,7 @@ fn a_resting_session_with_a_press_replays_exactly() {
     let replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
     assert_eq!(report.first, None, "{:?}", report.counts);
-    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    assert_eq!(first_difference(&capture, &replayed.trace()), None);
     let frames = sim.frame_hashes();
     assert!(!frames.is_empty() && replayed.frame_hashes() == frames);
 }

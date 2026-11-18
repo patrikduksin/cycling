@@ -717,42 +717,34 @@ impl Sim {
     }
 
     /// What a replay of this power-on session needs.
-    pub fn capture(&self) -> crate::replay::Capture {
+    pub fn capture(&self) -> Vec<u8> {
         self.device.capture().unwrap_or_else(|why| panic!("{why}"))
     }
 
-    /// Run a captured session again on its media, pass by pass at the
-    /// recorded uptimes, with the trace standing in for the world. Frames
-    /// are hashed throughout.
-    pub fn replay(capture: &crate::replay::Capture) -> Self {
-        Self::replay_as(capture, crate::replay::Mode::Strict, |_| {})
+    /// Run a captured session again, pass by pass at the recorded uptimes,
+    /// with the trace standing in for the world, as the build that
+    /// recorded it. Frames are hashed throughout.
+    pub fn replay(trace: &[u8]) -> Self {
+        Self::replay_as(trace, crate::replay::Options::default())
     }
 
-    /// As `replay`, in `mode`. A stimulus replay's devices are as `setup`
-    /// leaves them before the first pass; a strict one has none to set up.
-    pub fn replay_as(
-        capture: &crate::replay::Capture,
-        mode: crate::replay::Mode,
-        setup: impl FnOnce(&mut crate::replay::Sources),
-    ) -> Self {
-        let mut sim = Self::replaying(capture, mode, None).expect("a replayable capture");
+    /// As `replay`, with `options`.
+    pub fn replay_as(trace: &[u8], options: crate::replay::Options) -> Self {
+        let mut sim = Self::replaying(trace, options, None).expect("a replayable trace");
         sim.hash_frames();
-        if let Some(sources) = sim.device.replay_sources() {
-            setup(sources);
-        }
         sim.replay_until(u64::MAX);
         sim
     }
 
-    /// A replay of `capture` in `mode` that has run nothing yet, recorded
-    /// into `recording` when given. Drive it with `replay_until`.
+    /// A replay of `trace` that has run nothing yet, recorded into
+    /// `recording` when given. Drive it with `replay_until`.
     pub fn replaying(
-        capture: &crate::replay::Capture,
-        mode: crate::replay::Mode,
+        trace: &[u8],
+        options: crate::replay::Options,
         recording: Option<Recording>,
     ) -> std::io::Result<Self> {
         Ok(Self {
-            device: Session::replaying(capture, mode)?,
+            device: Session::replaying(trace, options)?,
             notes: Vec::new(),
             needs: Vec::new(),
             recording,
@@ -1290,8 +1282,12 @@ impl Sim {
     }
 
     /// Recorded ride journal bytes, as `EXPORT` would read them.
+    /// The data region as it stands; in a replay, as the replayed build
+    /// wrote it.
     pub fn ride_media(&mut self) -> Vec<u8> {
-        self.device.media.contents(Region::Data)
+        let mut media = self.device.media.contents(Region::Data);
+        self.device.replayed_media(Region::Data, &mut media);
+        media
     }
 
     /// Leave `stores` as another version of the firmware would have written

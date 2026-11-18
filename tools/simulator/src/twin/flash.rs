@@ -1,4 +1,4 @@
-//! The internal flash of a strict replay: no medium of its own, every
+//! The internal flash of a replay: no medium of its own, every
 //! access answered by the recorded world.
 use crate::devices::Scripted;
 use device_api::journal::{Aging, MethodId, Stored};

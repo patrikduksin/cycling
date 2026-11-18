@@ -10,7 +10,7 @@ use crate::devices::PowerSwitch;
 use crate::devices::Scripted;
 use crate::devices::Speaker;
 use crate::gps::Receiver;
-use crate::replay::{Capture, Mode, Next, Origin, Replay, Report, Seen, Shelled, Sources};
+use crate::replay::{Next, Options, Report};
 use crate::storage::{FileFlash, Volatile};
 use crate::twin::flash::{Flash, ScriptedFlash};
 use crate::twin::world::{Left, Recorded};
@@ -485,11 +485,8 @@ struct Trace {
     recorder: Journal,
     observed: Rc<Observed>,
     network_time: Latest<firmware_services::network_time::Snapshot>,
-    /// What the last pass or command read: the composition's own view of
-    /// the companion's startup, the power status and the BLE link.
     startup: Startup,
     status: device_api::power::Status,
-    ble: device_api::ble_transport::Snapshot,
     started: Vec<u8>,
     start: Start,
     file: spool::File,
@@ -556,7 +553,6 @@ impl Trace {
             network_time: Latest::default(),
             startup: Startup::Unsupported,
             status: device_api::power::Status::IDLE,
-            ble: Default::default(),
             started: Vec::new(),
         }
     }
@@ -1059,9 +1055,6 @@ impl Simulated {
 
 enum Devices {
     Simulated(Box<Simulated>),
-    /// A stimulus replay: the recording's inputs, and a model of its radio.
-    Replayed(Box<Replay>),
-    /// A strict replay: every device answers from the recorded world.
     Twin(Box<Servers>),
 }
 
@@ -1099,12 +1092,8 @@ impl Servers {
     }
 }
 
-/// Strict replay uses stand-ins for unrecorded console capabilities; recorded BLE, Wi-Fi and card
-/// calls go to its servers.
 struct StandIns {
     ant: Absent,
-    ble: BleFixture,
-    wifi: WifiFixture,
     power: UnrecordedConsolePower,
 }
 
@@ -1139,18 +1128,6 @@ impl Devices {
         &'a mut dyn PowerControl,
     ) {
         match self {
-            Devices::Replayed(replay) => {
-                let sources = &mut replay.sources;
-                (
-                    &mut sources.ant,
-                    &mut sources.ble,
-                    &mut sources.bulk,
-                    &mut sources.access_point,
-                    &mut sources.server,
-                    &mut sources.sound,
-                    &mut sources.power,
-                )
-            }
             Devices::Simulated(sim) => {
                 let fitted = sim.fitted;
                 (
@@ -1189,7 +1166,6 @@ impl Devices {
 
     fn bulk<'a>(&'a mut self, bulk: &'a mut crate::bulk::SimBulk) -> &'a mut dyn ReadWrite {
         match self {
-            Devices::Replayed(replay) => &mut replay.sources.bulk,
             Devices::Simulated(_) => bulk,
             Devices::Twin(servers) => &mut servers.bulk,
         }
@@ -1219,40 +1195,6 @@ impl Devices {
                     if fitted.card { bulk } else { absent() },
                 )
             }
-            Devices::Replayed(replay) => {
-                let sources = &mut replay.sources;
-                if firmware_console::protocol::admitted(command, frozen) {
-                    if let Some(input) = terminal_read(command) {
-                        sources.unrecorded(input);
-                    }
-                    if matches!(
-                        command,
-                        Command::Wifi
-                            | Command::WifiReconnect
-                            | Command::WifiScan
-                            | Command::WifiNetworks
-                            | Command::WifiDisconnect
-                            | Command::Ble
-                            | Command::BleReconnect
-                            | Command::BleScan
-                            | Command::BlePeers
-                            | Command::BleDisconnect
-                            | Command::BleEcho
-                    ) {
-                        sources.unrecorded("the radio the terminal reads");
-                    }
-                }
-                (
-                    firmware_console::commands::Capabilities {
-                        ant: &mut stand_ins.ant,
-                        ble: &mut stand_ins.ble,
-                        wifi: &mut stand_ins.wifi,
-                        power: &mut stand_ins.power,
-                        input: &Absent,
-                    },
-                    &mut sources.bulk,
-                )
-            }
             Devices::Twin(servers) => {
                 if firmware_console::protocol::admitted(command, frozen)
                     && let Some(input) = terminal_read(command)
@@ -1280,7 +1222,6 @@ impl Devices {
         record: &RefCell<TraceRecorder>,
     ) -> CompanionView {
         let source: &dyn InputObservation = match self {
-            Devices::Replayed(replay) => &replay.sources.companion,
             Devices::Simulated(sim) => &sim.battery,
             Devices::Twin(servers) => &servers.companion,
         };
@@ -1295,7 +1236,6 @@ impl Devices {
         record: &RefCell<TraceRecorder>,
     ) -> PositionView {
         let source: &dyn Positioning = match self {
-            Devices::Replayed(replay) => &replay.sources.position,
             Devices::Simulated(sim) if !sim.fitted.gps => &Absent,
             Devices::Simulated(sim) => &sim.position,
             Devices::Twin(servers) => &servers.position,
@@ -1324,12 +1264,6 @@ impl Devices {
                 }
                 &mut sim.switch
             }
-            Devices::Replayed(replay) => {
-                if replay.sources.power.powered_off() {
-                    return None;
-                }
-                &mut replay.sources.power
-            }
             Devices::Twin(servers) => {
                 if servers.world.borrow().powered_off() {
                     return None;
@@ -1352,7 +1286,6 @@ impl Devices {
                 observe_startup(&mut sim.switch, now, sim.startup);
                 &mut sim.switch
             }
-            Devices::Replayed(replay) => &mut replay.sources.power,
             Devices::Twin(servers) => &mut servers.control,
         };
         device_api::power::PowerControlRecorder::new(control, record, observed).status()
@@ -1364,7 +1297,6 @@ struct Boot {
     passes_since_start: u64,
     /// Secrets are replaced from before the shell loads its settings.
     redacted: bool,
-    /// The recorded world a strict replay's shell devices answer from.
     twin: Option<Scripted>,
 }
 
@@ -1377,6 +1309,11 @@ pub enum Step {
         reply: String,
     },
     End,
+}
+
+enum Stopped {
+    LeftTheRecording,
+    Panicked,
 }
 
 /// A sized session has no manifest a replay could rebuild its geometry from.
@@ -1399,7 +1336,7 @@ pub struct Session {
     pub bulk: crate::bulk::SimBulk,
     pub sdk: vana::app::Runtime,
     trace: Trace,
-    origin: Option<Origin>,
+    trace_is_the_record: bool,
     unrecorded: Option<(&'static str, u64)>,
     unseen_ms: u64,
     rest_ms: u64,
@@ -1467,13 +1404,13 @@ impl Session {
     pub fn sim(&self) -> &Simulated {
         match &self.devices {
             Devices::Simulated(sim) => sim,
-            Devices::Replayed(_) | Devices::Twin(_) => panic!("a replay has no simulated world"),
+            Devices::Twin(_) => panic!("a replay has no simulated world"),
         }
     }
     pub fn sim_mut(&mut self) -> &mut Simulated {
         match &mut self.devices {
             Devices::Simulated(sim) => sim,
-            Devices::Replayed(_) | Devices::Twin(_) => panic!("a replay has no simulated world"),
+            Devices::Twin(_) => panic!("a replay has no simulated world"),
         }
     }
     pub fn is_replay(&self) -> bool {
@@ -1636,7 +1573,7 @@ impl Session {
             bulk,
             sdk,
             trace,
-            origin: None,
+            trace_is_the_record: false,
             unrecorded: None,
             unseen_ms: 0,
             rest_ms: 0,
@@ -1659,19 +1596,18 @@ impl Session {
         }
     }
 
-    /// Drive it with `replay_step`.
-    pub fn replaying(capture: &Capture, mode: Mode) -> io::Result<Self> {
-        Self::replaying_with(capture, mode, &crate::trace::card::pack_store())
+    /// Drive it with `replay_step`. A replay that leaves the recorded world
+    /// before its first pass fails with a [`LeftAtBoot`] inside the error.
+    pub fn replaying(trace: &[u8], options: Options) -> io::Result<Self> {
+        Self::replaying_with(trace, options, &crate::trace::card::pack_store())
     }
 
-    /// As `replaying`, a strict replay reading a TERRAIN pack its capture
-    /// lacks from the pack files in `packs`.
-    pub fn replaying_with(capture: &Capture, mode: Mode, packs: &Path) -> io::Result<Self> {
-        let origin = &capture.origin;
-        let flash = origin.flash.copy_before_boot(origin.boot).ok_or_else(|| {
-            io::Error::other("the capture's media is file-backed and cannot be replayed")
-        })?;
-        let (header, _) = firmware_services::trace::decode(&capture.trace)
+    /// As `replaying`, reading the TERRAIN pack the trace's header names
+    /// from the pack files in `packs`. A replay starts from blank flash at
+    /// the header's power-on, with the card the trace says enough of: the
+    /// twin serves every byte VANA reads from the trace.
+    pub fn replaying_with(trace: &[u8], options: Options, packs: &Path) -> io::Result<Self> {
+        let (header, _) = firmware_services::trace::decode(trace)
             .map_err(|error| io::Error::other(format!("trace: {error}")))?;
         let model = *Model::named(header.device).ok_or_else(|| {
             let known: Vec<_> = crate::models::all()
@@ -1684,25 +1620,14 @@ impl Session {
                 known.join(", ")
             ))
         })?;
-        let crate::trace::world::Opened { memory, redacted } =
-            crate::trace::world::opened(&capture.trace);
-        let world = match mode {
-            Mode::Stimulus => None,
-            Mode::Strict => {
-                let pack = crate::trace::card::pack(&capture.trace, &origin.bulk, packs)?;
-                let world = Recorded::open(capture.trace.clone(), pack)
-                    .map_err(|error| io::Error::other(format!("trace: {error}")))?;
-                Some(Rc::new(RefCell::new(world)))
-            }
-        };
-        // A strict replay stages its own trace file on the card its session
-        // started on. A device's trace comes without that card and says
-        // enough of it.
-        let card = match (mode, origin.bulk.presence()) {
-            (Mode::Stimulus, _) => origin.bulk.scripted(),
-            (Mode::Strict, crate::bulk::Presence::Absent) => crate::trace::card::of(&capture.trace),
-            (Mode::Strict, _) => origin.bulk.copy(),
-        };
+        let boot = header.boot.max(1);
+        let flash = FileFlash::from_image(boot - 1, crate::storage::FlashImage::erased());
+        let crate::trace::world::Opened { memory, redacted } = crate::trace::world::opened(trace);
+        let pack = crate::trace::card::pack(trace, packs)?;
+        let world = Recorded::open(trace.to_vec(), pack, options)
+            .map_err(|error| io::Error::other(format!("trace: {error}")))?;
+        let world = Rc::new(RefCell::new(world));
+        let card = crate::trace::card::of(trace);
         let booted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             Self::with_media(
                 model,
@@ -1713,58 +1638,53 @@ impl Session {
                 Boot {
                     passes_since_start: 0,
                     redacted,
-                    twin: world.clone(),
+                    twin: Some(world.clone()),
                 },
             )
         }));
-        let mut session = match (booted, &world) {
-            (Ok(session), _) => session?,
-            (Err(panic), Some(world)) if panic.is::<Left>() => {
+        let mut session = match booted {
+            Ok(session) => session?,
+            Err(panic) if panic.is::<Left>() => {
                 let world = world.borrow();
                 let why = world.parted().unwrap_or_default();
-                return Err(io::Error::other(format!("trace: at boot, {why}")));
+                return Err(io::Error::other(LeftAtBoot(why.to_string())));
             }
-            (Err(panic), _) => std::panic::resume_unwind(panic),
+            Err(panic) => std::panic::resume_unwind(panic),
         };
         if redacted {
             session.redact_secrets();
         }
-        if let Some(world) = world {
-            if world.borrow_mut().take_redacting() {
-                session.redact_secrets();
-            }
-            session.devices = Devices::Twin(Box::new(Servers::new(world)));
-            return Ok(session);
+        if world.borrow_mut().take_redacting() {
+            session.redact_secrets();
         }
-        let shelled = Shelled {
-            input: session.input.clone(),
-            display: session.display.clone(),
-            power: session.power.clone(),
-            flash: session.media.untapped(),
-            bulk: session.bulk.untapped(),
-        };
-        let replay = Replay::new(capture.trace.clone(), shelled)
-            .map_err(|error| io::Error::other(format!("trace: {error}")))?;
-        session.devices = Devices::Replayed(Box::new(replay));
+        session.devices = Devices::Twin(Box::new(Servers::new(world)));
         Ok(session)
     }
-    /// Run `step` of a strict replay. `None` when it left the recorded
-    /// world: the world holds why, and the session runs no further.
-    fn within_the_recording(&mut self, step: impl FnOnce(&mut Self) -> Step) -> Option<Step> {
+    fn within_the_recording(
+        &mut self,
+        world: &Scripted,
+        step: impl FnOnce(&mut Self) -> Step,
+    ) -> Result<Step, Stopped> {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| step(self))) {
-            Ok(step) => Some(step),
-            Err(panic) if panic.is::<Left>() => None,
-            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(step) => Ok(step),
+            Err(panic) if panic.is::<Left>() => Err(Stopped::LeftTheRecording),
+            Err(panic) => {
+                let why = (panic.downcast_ref::<String>().map(String::as_str))
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("a panic without a message");
+                world.borrow_mut().panicked(why);
+                Err(Stopped::Panicked)
+            }
         }
     }
     fn twin_step(&mut self, world: Scripted) -> Step {
         let next = world.borrow_mut().advance();
         let step = match next {
-            Next::Pass => self.within_the_recording(|session| {
+            Next::Pass => self.within_the_recording(&world, |session| {
                 session.tick();
                 Step::Pass
             }),
-            Next::Command(line) => self.within_the_recording(|session| {
+            Next::Command(line) => self.within_the_recording(&world, |session| {
                 let mut reply = String::new();
                 let status = session
                     .command(line.as_bytes(), &mut reply)
@@ -1775,7 +1695,7 @@ impl Session {
                     reply,
                 }
             }),
-            Next::End => None,
+            Next::End => Ok(Step::End),
         };
         if world.borrow_mut().take_redacting() {
             self.redact_secrets();
@@ -1783,62 +1703,42 @@ impl Session {
         step.unwrap_or(Step::End)
     }
     pub fn replay_step(&mut self) -> Step {
-        if let Devices::Twin(servers) = &self.devices {
-            return self.twin_step(servers.world.clone());
+        match &self.devices {
+            Devices::Twin(servers) => self.twin_step(servers.world.clone()),
+            Devices::Simulated(_) => Step::End,
         }
-        let Devices::Replayed(replay) = &mut self.devices else {
-            return Step::End;
-        };
-        match replay.step() {
-            Next::Pass => self.tick(),
-            Next::Command(line) => {
-                let mut reply = String::new();
-                let status = self
-                    .command(line.as_bytes(), &mut reply)
-                    .map_or("INVALID", |(_, status)| status);
-                return Step::Command {
-                    line,
-                    status,
-                    reply,
-                };
-            }
-            Next::End => return Step::End,
-        }
-        Step::Pass
     }
     /// Where a replay parted from its recording so far.
     pub fn report(&self) -> Option<Report> {
         match &self.devices {
-            Devices::Replayed(replay) => Some(replay.sources.report()),
             Devices::Twin(servers) => Some(servers.world.borrow().report(&self.trace())),
             Devices::Simulated(_) => None,
         }
     }
-    /// The devices a stimulus replay presents, to set up before it runs.
-    pub fn replay_sources(&mut self) -> Option<&mut Sources> {
-        match &mut self.devices {
-            Devices::Replayed(replay) => Some(&mut replay.sources),
-            Devices::Simulated(_) | Devices::Twin(_) => None,
+    /// In a replay, `region` as the replayed build left it, over `out`.
+    pub fn replayed_media(&self, region: device_api::storage::Region, out: &mut [u8]) {
+        if let Devices::Twin(servers) = &self.devices {
+            servers.world.borrow_mut().contents(region.into(), out);
         }
     }
     /// Open a replay's window: its next divergence becomes the report's
     /// first. Returns the counts before the window.
     pub fn open_replay_window(&mut self) -> std::collections::BTreeMap<crate::replay::Kind, u32> {
         match &mut self.devices {
-            Devices::Replayed(replay) => replay.sources.open_window(),
             Devices::Twin(servers) => servers.world.borrow_mut().open_window(),
             Devices::Simulated(_) => Default::default(),
         }
     }
-    /// What a replay of this session needs.
-    pub fn capture(&self) -> Result<Capture, String> {
+    /// The trace a replay of this session needs: all of it, unless
+    /// something changed what VANA read unseen by the trace.
+    pub fn capture(&self) -> Result<Vec<u8>, String> {
         if let Some((what, at)) = self.unrecorded {
             return Err(format!("{what} at {at} ms, unseen by the trace"));
         }
-        Ok(Capture {
-            origin: self.origin.as_ref().ok_or("no pass ran yet")?.untapped(),
-            trace: self.trace(),
-        })
+        if !self.trace_is_the_record {
+            return Err("no pass ran yet".into());
+        }
+        Ok(self.trace())
     }
     /// The bulk medium as a host writes it over USB. After the first pass
     /// such a write changes what VANA reads unseen by the trace, so this
@@ -1848,7 +1748,7 @@ impl Session {
         self.bulk.host()
     }
     fn unrecorded(&mut self, what: &'static str) {
-        if self.origin.is_some() {
+        if self.trace_is_the_record {
             self.unrecorded.get_or_insert((what, self.now));
         }
     }
@@ -1865,16 +1765,9 @@ impl Session {
     /// One pass of the firmware loop, in the order C606 composition runs it.
     pub fn tick(&mut self) {
         match &mut self.devices {
-            Devices::Replayed(replay) => self.now = replay.load_pass(),
             Devices::Twin(servers) => self.now = servers.world.borrow().now(),
             Devices::Simulated(sim) => {
-                if self.origin.is_none() {
-                    self.origin = self.media.copy_before_boot(self.boot).map(|flash| Origin {
-                        flash,
-                        bulk: self.bulk.copy(),
-                        boot: self.boot,
-                    });
-                }
+                self.trace_is_the_record = true;
                 if !self.off {
                     sim.environment(self.now, self.shell.settings.ble.is_some());
                 }
@@ -1918,10 +1811,7 @@ impl Session {
             self.forget_as_recorded();
             return;
         }
-        let seen = self.record_seen();
-        if let Devices::Replayed(replay) = &mut self.devices {
-            replay.saw(&seen);
-        }
+        self.record_seen();
         let card = spool::Card::of(
             self.card_admits(),
             self.sdk.recorder_busy(),
@@ -1941,7 +1831,6 @@ impl Session {
         use device_api::power::PowerControl as _;
         let status = match &self.devices {
             Devices::Simulated(sim) => sim.switch.status(),
-            Devices::Replayed(replay) => replay.sources.power.status(),
             Devices::Twin(servers) => servers.control.status(),
         };
         !self.off && (status.ready || status.state == device_api::power::State::Initializing)
@@ -2048,7 +1937,6 @@ impl Session {
     fn startup(&self) -> Startup {
         match &self.devices {
             Devices::Simulated(sim) => sim.startup,
-            Devices::Replayed(replay) => replay.sources.startup(),
             Devices::Twin(servers) => {
                 use device_api::sensors::Sensors as _;
                 servers.sensors.startup_status()
@@ -2150,12 +2038,6 @@ impl Session {
         let now = self.now;
         let model = self.model.fitted.sensors;
         let (physical, light, network_time, fitted) = match &mut self.devices {
-            Devices::Replayed(replay) => (
-                replay.sources.physical(),
-                replay.sources.light(),
-                replay.sources.network_time(),
-                replay.sources.fitted(),
-            ),
             Devices::Simulated(sim) => {
                 let mut physical = sim.physical(now);
                 if !model.barometer {
@@ -2207,17 +2089,14 @@ impl Session {
             self.trace.recorder.borrow_mut().session_token(token);
         }
         match &mut self.devices {
-            Devices::Replayed(replay) => replay.sources.server.token = token,
             Devices::Twin(servers) => servers.world.borrow_mut().token = token,
             Devices::Simulated(_) => {}
         }
-        let stimulus = matches!(self.devices, Devices::Replayed(_));
         let Trace {
             recorder,
             observed,
             started,
             status,
-            ble: link,
             ..
         } = &mut self.trace;
         let record: &RefCell<TraceRecorder> = recorder;
@@ -2231,16 +2110,12 @@ impl Session {
         let mut sound = device_api::sound::SoundRecorder::new(raw.5, record, &observed.sound);
         let mut control =
             device_api::power::PowerControlRecorder::new(raw.6, record, &observed.control);
-        // A stimulus replay's sources answer what its pass asks of them, so
-        // it samples that and nothing more.
-        if !stimulus {
-            ant.sample();
-            ble.sample();
-            access_point.sample();
-            server.sample();
-            sound.sample();
-            control.sample();
-        }
+        ant.sample();
+        ble.sample();
+        access_point.sample();
+        server.sample();
+        sound.sample();
+        control.sample();
         vana::app::pass(
             &mut self.sdk,
             &mut self.shell,
@@ -2273,16 +2148,11 @@ impl Session {
             },
         );
         *status = control.status();
-        *link = ble.snapshot();
     }
-    fn record_seen(&mut self) -> Vec<Seen> {
-        let mut seen = Vec::new();
+    fn record_seen(&mut self) {
         let mut notes = Vec::new();
         let mut recorder = self.trace.recorder.borrow_mut();
-        let mut record = |event: Event<'_>| {
-            recorder.record(&event);
-            seen.extend(crate::replay::seen(&event).flatten());
-        };
+        let mut record = |event: Event<'_>| recorder.record(&event);
         self.sdk.report_seen(self.now, &mut |shown| match shown {
             vana::app::Seen::Page(page) => record(Event::Page(page)),
             vana::app::Seen::Toast(text) => record(Event::Toast(text)),
@@ -2323,7 +2193,6 @@ impl Session {
         }
         drop(recorder);
         self.record_logs();
-        seen
     }
     fn record_logs(&self) {
         let mut recorder = self.trace.recorder.borrow_mut();
@@ -2474,9 +2343,6 @@ impl Session {
         self.trace.status =
             (self.devices).command_power(&self.trace.observed.control, now, &self.trace.recorder);
     }
-    /// A host wrote the card unseen after the pass a strict replay just
-    /// ran: its log forgets the card where the recording did and reads the
-    /// volume table again, as the C606 does after a transfer session.
     fn forget_as_recorded(&mut self) {
         let Devices::Twin(servers) = &mut self.devices else {
             return;
@@ -2511,15 +2377,10 @@ impl Session {
         let frozen = self.trace.status;
         let (startup, network_time) = match &self.devices {
             Devices::Simulated(sim) => (sim.startup, sim.network_time),
-            Devices::Replayed(_) | Devices::Twin(_) => (self.trace.startup, None),
+            Devices::Twin(_) => (self.trace.startup, None),
         };
         let mut stand_ins = StandIns {
             ant: Absent,
-            ble: BleFixture {
-                snapshot: self.trace.ble,
-                ..BleFixture::default()
-            },
-            wifi: WifiFixture::default(),
             power: UnrecordedConsolePower(frozen),
         };
         let (devices, media) =
@@ -2833,3 +2694,15 @@ fn host_micros() -> u64 {
         .elapsed()
         .as_micros() as u64
 }
+
+/// A replay left the recorded world as VANA booted: why.
+#[derive(Debug)]
+pub struct LeftAtBoot(pub String);
+
+impl std::fmt::Display for LeftAtBoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "trace: at boot, {}", self.0)
+    }
+}
+
+impl std::error::Error for LeftAtBoot {}

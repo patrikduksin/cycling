@@ -1,28 +1,19 @@
-//! The secrets a capture can hold. A trace that does not redact records
-//! the password of a `WIFI CONFIG` command, of the request it makes of the
-//! radio and of the settings the shell loads and saves, and the token a
-//! phone sends with each request, so a replay hands VANA what it read; the
-//! media keeps saved Wi-Fi credentials. A redacting trace holds none:
-//! see `firmware_services::trace::redact`.
-use crate::replay::Capture;
+//! The secrets a trace can hold. A trace that does not redact records the
+//! password of a `WIFI CONFIG` command, of the request it makes of the radio
+//! and of the settings the shell loads and saves, and the token a phone
+//! sends with each request, so a replay hands VANA what it read. A
+//! redacting trace holds none: see `firmware_services::trace::redact`.
 use crate::trace::timeline::session_clock;
 use crate::trace::world::World;
 use crate::twin::script::declared;
 use device_api::connectivity::Text;
 use firmware_services::trace::wire::{Reader, Wire};
 use firmware_services::trace::{self, Call, Event, redact};
-use firmware_shell::storage::Settings as _;
 
-/// Each secret in `capture`, with where it is.
-pub fn secrets(capture: &Capture) -> Vec<String> {
+/// Each secret in `trace`, with where it is.
+pub fn secrets(trace: &[u8]) -> Vec<String> {
     let mut found = Vec::new();
-    let mut store = firmware_shell::storage::Store::new(capture.origin.flash.untapped());
-    if let Ok(loaded) = store.load()
-        && loaded.settings.wifi.is_some()
-    {
-        found.push("the origin's settings: saved Wi-Fi credentials".to_string());
-    }
-    let events = match trace::decode(&capture.trace) {
+    let events = match trace::decode(trace) {
         Ok((_, events)) => events,
         Err(error) => {
             found.push(format!(

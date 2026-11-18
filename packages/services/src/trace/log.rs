@@ -217,8 +217,13 @@ where
         let Some(run) = self.memory.run.take() else {
             return;
         };
-        self.media_record(run.method, media::DIGEST, run.span, |w| {
+        let each = run.each.filter(|&each| each != run.span.count);
+        let flags = media::DIGEST | each.map_or(0, |_| media::EACH);
+        self.media_record(run.method, flags, run.span, |w| {
             w.bytes(&run.crc.to_le_bytes());
+            if let Some(each) = each {
+                each.put(w);
+            }
         });
     }
 
@@ -266,7 +271,8 @@ where
         }
     }
 
-    fn run(&mut self, method: MethodId, span: Span, bytes: &[u8]) {
+    /// `each`: the count of every read the run joins; `None` for writes.
+    fn run(&mut self, method: MethodId, span: Span, bytes: &[u8], each: Option<u32>) {
         let crc = self.memory.crc;
         if let Some(run) = &mut self.memory.run
             && run.extend(method, span, bytes, crc)
@@ -278,6 +284,7 @@ where
             method,
             span,
             crc: crc(0, bytes),
+            each,
         });
     }
 
@@ -299,7 +306,7 @@ where
         fault: Option<StorageError>,
     ) {
         self.flush_run();
-        let flags = media::INLINE | fault.map_or(0, |_| media::FAULT);
+        let mut flags = media::INLINE | fault.map_or(0, |_| media::FAULT);
         let units = (media::PART / place.unit).max(1);
         let mut start = place.span.start;
         for part in bytes.chunks(units * place.unit) {
@@ -315,6 +322,7 @@ where
                     fault.put(w);
                 }
             });
+            flags |= media::CONTINUES;
         }
     }
 
@@ -325,9 +333,11 @@ where
         match (place.class, fault) {
             (Class::Outside, _) => self.outside(method, place.span, fault),
             (_, Some(_)) => self.inline(method, place, bytes, fault),
-            (Class::DigestOnly, None) => self.run(method, place.span, bytes),
+            (Class::DigestOnly, None) => {
+                self.run(method, place.span, bytes, Some(place.span.count));
+            }
             (Class::Inline, None) if self.memory.determined.covers(place.span) => {
-                self.run(method, place.span, bytes);
+                self.run(method, place.span, bytes, Some(place.span.count));
             }
             (Class::Inline, None) => {
                 self.inline(method, place, bytes, None);
@@ -343,9 +353,12 @@ where
         }
         match (place.class, fault) {
             (Class::Outside, _) => self.outside(method, place.span, fault),
-            (_, Some(fault)) => self.failed(method, place.span, fault),
+            (_, Some(fault)) => {
+                let attempted = (self.memory.crc)(0, bytes);
+                self.failed(method, place.span, Some(attempted), fault);
+            }
             (class, None) => {
-                self.run(method, place.span, bytes);
+                self.run(method, place.span, bytes, None);
                 let determined = &mut self.memory.determined;
                 if class == Class::Inline {
                     if !place.nor {
@@ -364,7 +377,7 @@ where
         }
         match (place.class, fault) {
             (Class::Outside, _) => self.outside(method, place.span, fault),
-            (_, Some(fault)) => self.failed(method, place.span, fault),
+            (_, Some(fault)) => self.failed(method, place.span, None, fault),
             (class, None) => {
                 self.flush_run();
                 self.media_record(method, 0, place.span, |_| {});
@@ -375,10 +388,22 @@ where
         }
     }
 
-    fn failed(&mut self, method: MethodId, span: Span, fault: StorageError) {
+    fn failed(
+        &mut self,
+        method: MethodId,
+        span: Span,
+        attempted: Option<u32>,
+        fault: StorageError,
+    ) {
         self.flush_run();
         self.memory.determined.remove(span);
-        self.media_record(method, media::FAULT, span, |w| fault.put(w));
+        let flags = media::FAULT | attempted.map_or(0, |_| media::DIGEST);
+        self.media_record(method, flags, span, |w| {
+            if let Some(crc) = attempted {
+                w.bytes(&crc.to_le_bytes());
+            }
+            fault.put(w);
+        });
     }
 }
 

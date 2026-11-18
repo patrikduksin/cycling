@@ -688,6 +688,8 @@ def pull_trace(args, parser):
     else:
         if problems := lost(result, result['path']):
             result['error'] = problems
+    if not args.json and (bug := trace_media.recording_bug(result)):
+        print(bug, file=sys.stderr)
     print(json.dumps(result, indent=2))
     if not args.json:
         print(trace_media.marks_text(result['marks']), file=sys.stderr)

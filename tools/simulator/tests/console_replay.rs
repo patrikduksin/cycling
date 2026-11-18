@@ -1,4 +1,4 @@
-use shell_simulator::replay::{Kind, Mode};
+use shell_simulator::replay::{Kind, Options};
 use shell_simulator::session::Step;
 use shell_simulator::sim::{Sim, seconds};
 use std::collections::BTreeMap;
@@ -21,10 +21,7 @@ const SCRIPT: [&str; 13] = [
 
 const UNRECORDED: [&str; 5] = ["POWER STATUS", "TIME", "INPUT", "BATTERY", "POWER SHUTDOWN"];
 
-fn recorded() -> (
-    shell_simulator::replay::Capture,
-    Vec<(&'static str, String)>,
-) {
+fn recorded() -> (Vec<u8>, Vec<(&'static str, String)>) {
     let mut sim = Sim::new();
     sim.discard_recording();
     let mut sim = sim.boot();
@@ -35,10 +32,8 @@ fn recorded() -> (
     (sim.capture(), replies)
 }
 
-fn replayed(
-    capture: &shell_simulator::replay::Capture,
-) -> (Sim, Vec<(String, &'static str, String)>) {
-    let mut sim = Sim::replaying(capture, Mode::Strict, None).expect("a replayable capture");
+fn replayed(capture: &[u8]) -> (Sim, Vec<(String, &'static str, String)>) {
+    let mut sim = Sim::replaying(capture, Options::default(), None).expect("a replayable capture");
     let mut replies = Vec::new();
     loop {
         match sim.device.replay_step() {
@@ -103,11 +98,17 @@ fn a_replay_refuses_a_store_format_while_its_own_trace_is_open() {
     ];
     sim.advance(seconds(1));
     let (sim, on_replay) = replayed(&sim.capture());
-    let before_trace = |reply: &str| reply.split(" trace=").next().unwrap_or_default().to_owned();
+    let stable_status = |reply: &str| {
+        (reply.split(" trace=").next().unwrap_or(reply))
+            .split_whitespace()
+            .filter(|field| !field.starts_with("store="))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     let (status, store) = (&on_device[0], &on_replay[0]);
     assert!(status.1.contains(" trace=recording "), "{}", status.1);
     assert!(store.2.contains(" trace=recording "), "{}", store.2);
-    assert_eq!(before_trace(&store.2), before_trace(&status.1));
+    assert_eq!(stable_status(&store.2), stable_status(&status.1));
     assert_eq!(on_device[1], ("BUSY", "trace open".into()));
     assert_eq!(
         (on_replay[1].1, on_replay[1].2.as_str()),

@@ -5,11 +5,7 @@
 use crate::storage::StorageFault;
 use device_api::bulk::{Error, OwnedInfo, ReadWrite, SECTOR_SIZE};
 use firmware_services::trace::{Medium, StorageError, StorageOp};
-use std::{
-    cell::RefCell,
-    collections::{HashMap, VecDeque},
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 /// Sectors in the C606 owned data region (the ownership marker excluded).
 pub const C606_SECTORS: u64 = 5_777_407;
@@ -46,7 +42,6 @@ struct Region {
     writes: u64,
     /// Entropy state; it survives reboots like a hardware source would not repeat.
     entropy: u64,
-    script: Option<VecDeque<StorageFault>>,
     attempts: u32,
 }
 
@@ -75,7 +70,6 @@ impl Default for SimBulk {
                 reads: 0,
                 writes: 0,
                 entropy: 0x5eed,
-                script: None,
                 attempts: 0,
             })),
             Actor::Device,
@@ -116,12 +110,6 @@ impl SimBulk {
             entropy: region.entropy,
             written,
         }
-    }
-
-    pub fn from_image(image: Image) -> Self {
-        let bulk = Self::default();
-        bulk.restore(&image);
-        bulk
     }
 
     pub fn restore(&self, image: &Image) {
@@ -175,35 +163,6 @@ impl SimBulk {
 
     pub fn begin_pass(&self) {
         self.region.borrow_mut().attempts = 0;
-    }
-
-    /// The same sectors, failing only as a trace says: presence, faults
-    /// and failure come from the trace from now on.
-    pub fn scripted(&self) -> Self {
-        let copy = self.copy();
-        let mut region = copy.region.borrow_mut();
-        region.script = Some(VecDeque::new());
-        region.fault = None;
-        region.failed = false;
-        region.lost = Default::default();
-        drop(region);
-        copy
-    }
-
-    /// A failure the trace recorded, for the operation that met it.
-    pub fn script(&self, fault: StorageFault) {
-        if let Some(script) = &mut self.region.borrow_mut().script {
-            script.push_back(fault);
-        }
-    }
-
-    /// Scripted failures no operation met; they are dropped.
-    pub fn unmet(&self) -> Vec<StorageFault> {
-        let mut region = self.region.borrow_mut();
-        region
-            .script
-            .as_mut()
-            .map_or_else(Vec::new, |script| script.drain(..).collect())
     }
 
     pub fn presence(&self) -> Presence {
@@ -313,19 +272,12 @@ impl SimBulk {
             landed: 0,
             error: StorageError::from_bulk(error),
         };
-        let fault = match &mut region.script {
-            Some(_) if self.actor == Actor::Host => None,
-            Some(script) => script
-                .iter()
-                .position(|f| (f.op, f.at) == (op, sector))
-                .and_then(|index| script.remove(index)),
-            None => match region.presence {
-                _ if region.lost.get() => Some(failure(Error::Unavailable)),
-                Presence::Absent => Some(failure(Error::Unsupported)),
-                Presence::Missing => Some(failure(Error::Unavailable)),
-                Presence::Ready if region.failed => Some(failure(Error::Failed)),
-                Presence::Ready => None,
-            },
+        let fault = match region.presence {
+            _ if region.lost.get() => Some(failure(Error::Unavailable)),
+            Presence::Absent => Some(failure(Error::Unsupported)),
+            Presence::Missing => Some(failure(Error::Unavailable)),
+            Presence::Ready if region.failed => Some(failure(Error::Failed)),
+            Presence::Ready => None,
         };
         if let Some(fault) = fault {
             return Err(fault);

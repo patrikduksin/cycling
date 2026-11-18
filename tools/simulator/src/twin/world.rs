@@ -1,18 +1,21 @@
-//! The recorded world a strict replay runs in: the trace's world records,
+//! The recorded world a replay runs in: the trace's world records,
 //! read a pass at a time, answering every server of the twin.
 //!
 //! A segment is what one pass recorded, or one terminal command, or the
 //! boot before the first pass. Its calls and observations go to a
-//! [`script::Pass`], its media records wait in order for the twin's own
-//! accesses, and the few inputs that are no capability's (network time, the
+//! [`script::Pass`], its media are the [`Model`] the trace's index gives,
+//! and the few inputs that are no capability's (network time, the
 //! power going away) are kept beside them.
 //!
 //! A call the trace holds no answer for has left the recorded world. The
 //! world notes why and unwinds with [`Left`], which ends the replay at that
-//! pass: there is no value it could hand VANA instead.
-use super::media::{Change, Outcome, TwinMedium};
+//! pass: there is no value it could hand VANA instead. Unless it models:
+//! then it hands VANA the nearest value the trace holds, labels the stop,
+//! and every later pass is on that branch.
+use super::index::{Index, Model};
+use super::media::Change;
 use super::script::{self, Named, Record};
-use crate::replay::{Exclusion, Faithful, Kind, Mode, Next, Report};
+use crate::replay::{Divergence, Exclusion, Faithful, Kind, Mode, Next, Options, Report};
 use crate::trace::card::Pack;
 use device_api::capability::{Keys, Kind as Declared};
 use device_api::connectivity::{Text, WifiOperation, WifiRestore};
@@ -24,13 +27,15 @@ use device_api::server::{AccessPointConfig, AccessPointRestore, Request, ServerR
 use device_api::storage::Region;
 use firmware_services::storage::Record as Saved;
 use firmware_services::trace::determined::Span;
-use firmware_services::trace::media::{Access, Content};
+use firmware_services::trace::media::{Access, Volumes};
 use firmware_services::trace::replayed::Replayed;
 use firmware_services::trace::wire::{Reader, Wire, Writer};
 use firmware_services::trace::{self, End, Event, Events, Medium, ServerRequest, StorageError};
 use firmware_shell::preferences::{Settings, Source};
 use firmware_shell::storage::{Error as SettingsError, Loaded, SettingsRestore};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
+
+type Records = BTreeMap<MethodId, Vec<(u64, Vec<u8>)>>;
 
 /// The payload a replay unwinds with when it leaves the recorded world.
 pub struct Left;
@@ -46,27 +51,6 @@ struct Open {
     answer: Option<(Vec<u8>, usize, u64)>,
 }
 
-struct Pending {
-    method: MethodId,
-    span: Span,
-    bytes: Option<Vec<u8>>,
-    digest: bool,
-    outside: bool,
-    fault: Option<StorageError>,
-    /// Units of a shared record the twin's accesses have covered.
-    met: u32,
-}
-
-enum Met {
-    /// The trace holds no record of this access.
-    Unlisted,
-    Recorded {
-        digest: bool,
-    },
-    Outside,
-    Fault(StorageError, Option<Vec<u8>>),
-}
-
 pub struct Recorded {
     trace: Vec<u8>,
     cursor: trace::Cursor,
@@ -74,10 +58,7 @@ pub struct Recorded {
     view: script::View,
     pass: Pass,
     open: Option<Open>,
-    media: BTreeMap<u8, TwinMedium>,
-    pending: VecDeque<Pending>,
-    /// The TERRAIN pack's data, which the trace holds only digests of.
-    pack: Option<Pack>,
+    media: Model,
     terrain: trace::origin::Found<trace::origin::Terrain>,
     redacted: bool,
     /// The twin's open phone session, which a redacted recording's
@@ -91,22 +72,30 @@ pub struct Recorded {
     report: Report,
     stopped: bool,
     parted: Option<(u64, String)>,
-    terrain_reads: u32,
-    outside: u32,
     settings: Option<String>,
     lost: Option<u64>,
     /// The last record of each request that repeats: what a call the device
     /// left unrecorded gave.
     repeated: BTreeMap<MethodId, Vec<u8>>,
+    model: bool,
+    recorded: Option<Records>,
 }
 
 impl Recorded {
     /// The world `trace` recorded, with its boot segment loaded.
-    pub fn open(trace: Vec<u8>, pack: Option<Pack>) -> Result<Self, trace::Error> {
+    pub fn open(
+        trace: Vec<u8>,
+        pack: Option<Pack>,
+        options: Options,
+    ) -> Result<Self, super::index::Error> {
         let (header, events) = trace::decode(&trace)?;
         let terrain = header.terrain;
         let redacted = crate::trace::world::opened(&trace).redacted;
         let cursor = events.cursor();
+        let mut sector = [0u8; device_api::bulk::SECTOR_SIZE];
+        let volumes = Volumes::read(&mut crate::trace::card::of(&trace).host(), &mut sector);
+        let check_digests = options.mode == Mode::Faithful;
+        let media = Model::new(Index::of(&trace, volumes)?, pack, check_digests);
         let mut world = Self {
             trace,
             cursor,
@@ -117,9 +106,7 @@ impl Recorded {
                 now_ms: 0,
             },
             open: None,
-            media: BTreeMap::new(),
-            pending: VecDeque::new(),
-            pack,
+            media,
             terrain,
             redacted,
             token: None,
@@ -127,15 +114,19 @@ impl Recorded {
             powered_off: false,
             forgotten: Vec::new(),
             redacting: false,
-            report: Report::new(Mode::Strict),
+            report: Report::new(options.mode),
             stopped: false,
             parted: None,
-            terrain_reads: 0,
-            outside: 0,
             settings: None,
             lost: None,
             repeated: BTreeMap::new(),
+            model: options.model,
+            recorded: None,
         };
+        if let Some(conflict) = world.media.conflict() {
+            let why = format!("a recording bug: {conflict}");
+            world.note(Kind::Unreplayable, why);
+        }
         world.load(0);
         Ok(world)
     }
@@ -173,7 +164,7 @@ impl Recorded {
     pub fn forget(&mut self) -> Vec<Medium> {
         let forgotten = core::mem::take(&mut self.forgotten);
         for medium in &forgotten {
-            self.media.remove(&(*medium as u8));
+            self.media.forget(*medium);
         }
         forgotten
     }
@@ -282,7 +273,7 @@ impl Recorded {
                 records.push(Record::Repeated { method, count });
             }
             match script::declared(method).map(|(_, declared)| declared.kind) {
-                Some(Declared::Media(_)) => self.await_media(method, &body, now_ms),
+                Some(Declared::Media(_)) => self.check_media(method, &body, now_ms),
                 Some(Declared::Observe(Keys::Unkeyed | Keys::All(_))) => {
                     records.push(Record::Observed { method, body })
                 }
@@ -304,7 +295,7 @@ impl Recorded {
         self.segment = Some(script::Pass::new(now_ms, view, records));
     }
 
-    fn await_media(&mut self, method: MethodId, body: &[u8], now_ms: u64) {
+    fn check_media(&mut self, method: MethodId, body: &[u8], now_ms: u64) {
         let call = trace::Call {
             method,
             now_ms,
@@ -316,51 +307,34 @@ impl Recorded {
                 format!("a media record of {} that does not decode", Named(method)),
             );
         };
-        let bytes = match access.content {
-            Content::Inline(_) => {
-                let len = access.span.count as usize * access.span.medium.unit();
-                let mut bytes = vec![0u8; len];
-                match access.expand(&mut bytes) {
-                    Some(expanded) => bytes.truncate(expanded),
-                    None => {
-                        return self.note(
-                            Kind::Unreplayable,
-                            format!("the bytes of a {} record do not decode", Named(method)),
-                        );
-                    }
-                }
-                Some(bytes)
-            }
-            _ => None,
-        };
-        self.outside += u32::from(access.outside);
-        self.pending.push_back(Pending {
-            method,
-            span: access.span,
-            bytes,
-            digest: matches!(access.content, Content::Digest(_)),
-            outside: access.outside,
-            fault: access.fault,
-            met: 0,
-        });
+        let len = access.span.count as usize * access.span.medium.unit();
+        if access.expand(&mut vec![0u8; len]).is_none()
+            && matches!(
+                access.content,
+                firmware_services::trace::media::Content::Inline(_)
+            )
+        {
+            self.note(
+                Kind::Unreplayable,
+                format!("the bytes of a {} record do not decode", Named(method)),
+            );
+        }
     }
 
-    /// The segment ended: what it left unanswered parts the replay from
-    /// the recording, and the bytes it carried and the twin never read
-    /// stay known.
     fn close(&mut self) {
+        self.media.end_pass();
         let Some(segment) = self.segment.take() else {
             return;
         };
-        for pending in core::mem::take(&mut self.pending) {
-            if let (Some(bytes), None) = (&pending.bytes, pending.fault) {
-                let at = u64::from(pending.span.start) * pending.span.medium.unit() as u64;
-                self.medium(pending.span.medium).install(at, bytes);
-            }
+        let (view, left) = segment.finish();
+        self.view = view;
+        if left.is_empty() {
+            return;
         }
-        match segment.end() {
-            Ok(view) => self.view = view,
-            Err(stop) => self.part(Kind::LeftOver, stop.to_string()),
+        let stop = script::Stop::Unconsumed(left);
+        match self.model {
+            true => self.branch(Kind::NotRequested, stop.to_string()),
+            false => self.part(Kind::LeftOver, stop.to_string()),
         }
     }
 
@@ -393,8 +367,9 @@ impl Recorded {
             (checked.refused_frames > 0)
                 .then_some(Exclusion::RefusedFrames(checked.refused_frames)),
             self.settings.clone().map(Exclusion::SettingsJournal),
-            (self.terrain_reads > 0).then_some(Exclusion::TerrainByDigest(self.terrain_reads)),
-            (self.outside > 0).then_some(Exclusion::Outside(self.outside)),
+            (self.media.terrain_reads > 0)
+                .then_some(Exclusion::TerrainByDigest(self.media.terrain_reads)),
+            (self.media.outside > 0).then_some(Exclusion::Outside(self.media.outside)),
             self.lost.map(|pass_ms| Exclusion::Lost { pass_ms }),
         ];
         let ended = match (&checked.difference, &self.parted) {
@@ -425,13 +400,66 @@ impl Recorded {
 
     fn part(&mut self, kind: Kind, why: String) {
         self.parted.get_or_insert((self.pass.now_ms, why.clone()));
+        if matches!(kind, Kind::Unrecorded | Kind::LeftOver | Kind::Panicked) {
+            self.report.stopped.get_or_insert(Divergence {
+                at_ms: self.pass.now_ms,
+                kind,
+                detail: why.clone(),
+            });
+        }
         self.note(kind, why);
         self.stopped = true;
     }
 
     fn stop(&mut self, why: String) -> ! {
-        self.part(Kind::Unrecorded, format!("left the recorded world: {why}"));
+        let at = crate::trace::timeline::session_clock(self.pass.now_ms);
+        self.part(
+            Kind::Unrecorded,
+            format!("left the recorded world at {at}: {why}"),
+        );
         std::panic::resume_unwind(Box::new(Left))
+    }
+
+    /// VANA panicked or broke an invariant in the step that ran.
+    pub fn panicked(&mut self, why: &str) {
+        self.part(Kind::Panicked, format!("VANA panicked: {why}"));
+    }
+
+    fn branch(&mut self, kind: Kind, why: String) {
+        let at = crate::trace::timeline::session_clock(self.pass.now_ms);
+        let why = format!("{} at {at}: {why}", kind.name());
+        self.report.branched.get_or_insert(Divergence {
+            at_ms: self.pass.now_ms,
+            kind,
+            detail: why.clone(),
+        });
+        self.note(kind, why);
+    }
+
+    fn nearest(&mut self, method: MethodId, prefix: &[u8]) -> Option<(u64, Vec<u8>)> {
+        let trace = &self.trace;
+        let recorded = self.recorded.get_or_insert_with(|| {
+            let mut recorded = Records::new();
+            let Ok((_, events)) = trace::decode(trace) else {
+                return recorded;
+            };
+            let mut now_ms = 0;
+            for event in events {
+                match event {
+                    Event::Pass { now_ms: at } => now_ms = at,
+                    Event::Call(call) => (recorded.entry(call.method).or_default())
+                        .push((now_ms, call.body.to_vec())),
+                    _ => {}
+                }
+            }
+            recorded
+        });
+        let records = recorded.get(&method)?;
+        let now = self.pass.now_ms;
+        let fits = |(_, body): &&(u64, Vec<u8>)| body.starts_with(prefix);
+        let before = records.iter().filter(|(at, _)| *at <= now).rev().find(fits);
+        let after = || records.iter().filter(|(at, _)| *at > now).find(fits);
+        before.or_else(after).cloned()
     }
 
     fn segment(&mut self) -> &mut script::Pass {
@@ -464,6 +492,11 @@ impl Recorded {
             }
             None => self.stop(format!("the record of {} does not decode", Named(method))),
         }
+    }
+
+    /// The replayed build's own bytes of `medium`, as far as `out` reaches.
+    pub fn contents(&mut self, medium: Medium, out: &mut [u8]) {
+        self.media.contents(medium, out);
     }
 
     /// The latest observation of `method`, when the trace holds one: for a
@@ -503,67 +536,6 @@ impl Recorded {
         edge
     }
 
-    fn medium(&mut self, medium: Medium) -> &mut TwinMedium {
-        self.media.entry(medium as u8).or_default()
-    }
-
-    /// What the trace holds of the twin's access to `count` units at
-    /// `start`: the first record waiting that covers its start. A record
-    /// of bytes is installed, with the parts that follow it.
-    fn meet(&mut self, method: MethodId, medium: Medium, start: u32, count: u32) -> Met {
-        let concerns = |pending: &Pending| {
-            let from = pending.span.start.saturating_add(pending.met);
-            let end = u64::from(pending.span.start) + u64::from(pending.span.count);
-            pending.method == method
-                && pending.span.medium == medium
-                && start >= from
-                && u64::from(start) < end
-        };
-        let Some(index) = self.pending.iter().position(concerns) else {
-            return Met::Unlisted;
-        };
-        let pending = &mut self.pending[index];
-        let (digest, outside, fault) = (pending.digest, pending.outside, pending.fault);
-        if pending.bytes.is_none() {
-            pending.met = start - pending.span.start + count;
-            if pending.met >= pending.span.count {
-                self.pending.remove(index);
-            }
-            return match (fault, outside) {
-                (Some(fault), _) => Met::Fault(fault, None),
-                (None, true) => Met::Outside,
-                (None, false) => Met::Recorded { digest },
-            };
-        }
-        let mut carried = Vec::new();
-        let end = u64::from(start) + u64::from(count);
-        let mut next = None;
-        while let Some(part) = self.pending.get(index)
-            && part.method == method
-            && part.span.medium == medium
-            && u64::from(part.span.start) < end
-            && next.is_none_or(|next| part.span.start == next)
-            && let Some(bytes) = &part.bytes
-        {
-            next = Some(part.span.start + part.span.count);
-            match fault {
-                Some(_) => carried.extend_from_slice(bytes),
-                None => {
-                    let (from, bytes) = (
-                        u64::from(part.span.start) * medium.unit() as u64,
-                        bytes.clone(),
-                    );
-                    self.medium(medium).install(from, &bytes);
-                }
-            }
-            self.pending.remove(index);
-        }
-        match fault {
-            Some(fault) => Met::Fault(fault, Some(carried)),
-            None => Met::Recorded { digest: false },
-        }
-    }
-
     pub fn media_read(
         &mut self,
         method: MethodId,
@@ -572,41 +544,20 @@ impl Recorded {
         out: &mut [u8],
     ) -> Result<(), StorageError> {
         let count = (out.len() as u64 / medium.unit() as u64) as u32;
-        let met = self.meet(method, medium, start, count);
-        let place = || format!("{medium:?} {start}+{count}");
-        let digest = match met {
-            Met::Fault(fault, left) => {
-                if let Some(left) = left {
-                    let len = left.len().min(out.len());
-                    out[..len].copy_from_slice(&left[..len]);
-                }
-                return Err(fault);
+        let span = Span {
+            medium,
+            start,
+            count,
+        };
+        match self.media.read(method, span, out) {
+            Ok(read) => read,
+            Err(leave @ super::index::Leave::Unknown { .. }) if self.model => {
+                self.branch(Kind::Unrecorded, leave.to_string());
+                self.media.assume(method, span, out);
+                Ok(())
             }
-            Met::Outside => self.stop(format!("outside {}", place())),
-            Met::Recorded { digest } => digest,
-            Met::Unlisted => false,
-        };
-        let from = u64::from(start) * medium.unit() as u64;
-        if self.medium(medium).read(from, out).is_ok() {
-            return Ok(());
+            Err(leave) => self.stop(leave.to_string()),
         }
-        let packed = match (&self.pack, medium, digest) {
-            (Some(pack), Medium::Bulk, true) => out
-                .chunks_mut(device_api::bulk::SECTOR_SIZE)
-                .enumerate()
-                .try_for_each(|(index, sector)| {
-                    let bytes = pack.sector(u64::from(start) + index as u64)?;
-                    sector.copy_from_slice(&bytes[..sector.len()]);
-                    Some(())
-                })
-                .is_some(),
-            _ => false,
-        };
-        if !packed {
-            self.stop(format!("unknown media {}", place()))
-        }
-        self.terrain_reads += 1;
-        Ok(())
     }
 
     pub fn media_write(
@@ -644,18 +595,12 @@ impl Recorded {
         count: u32,
         change: Change<'_>,
     ) -> Result<(), StorageError> {
-        let from = u64::from(start) * medium.unit() as u64;
-        match self.meet(method, medium, start, count) {
-            Met::Fault(fault, _) => {
-                self.medium(medium).mutate(from, change, Outcome::Failed);
-                Err(fault)
-            }
-            Met::Outside => Ok(()),
-            Met::Recorded { .. } | Met::Unlisted => {
-                self.medium(medium).mutate(from, change, Outcome::Done);
-                Ok(())
-            }
-        }
+        let span = Span {
+            medium,
+            start,
+            count,
+        };
+        self.media.mutate(method, span, change)
     }
 }
 
@@ -678,13 +623,26 @@ impl Script for Recorded {
         }
         let open = self.opened();
         let (method, args) = (open.method, open.args.clone());
-        if let Err(stop) = self.segment().answer(method, &args) {
-            let why = stop.to_string();
-            let why = why
-                .strip_prefix("left the recorded world: ")
-                .unwrap_or(&why);
-            self.stop(why.into())
+        let Err(stop) = self.segment().answer(method, &args) else {
+            return;
+        };
+        let why = stop.to_string();
+        let why = why
+            .strip_prefix("left the recorded world: ")
+            .unwrap_or(&why)
+            .to_string();
+        let script::Stop::Unanswered(identity) = stop else {
+            self.stop(why)
+        };
+        if !self.model {
+            self.stop(why)
         }
+        let Some((at_ms, body)) = self.nearest(method, &args) else {
+            self.stop(format!("no model for {identity}"))
+        };
+        self.branch(Kind::Modelled, why);
+        let answer = body[args.len()..].to_vec();
+        self.opened().answer = Some((answer, 0, at_ms));
     }
 
     fn answered(&mut self) -> bool {
@@ -715,13 +673,22 @@ impl Script for Recorded {
     fn observed(&mut self) -> u64 {
         let open = self.opened();
         let (method, key) = (open.method, open.args.clone());
-        match self.segment().observe(method, &key) {
-            Some(seen) => {
-                self.opened().answer = Some((seen.value, 0, seen.at_ms));
-                seen.at_ms
-            }
-            None => self.stop(format!("{} was never observed", Named(method))),
+        if let Some(seen) = self.segment().observe(method, &key) {
+            self.opened().answer = Some((seen.value, 0, seen.at_ms));
+            return seen.at_ms;
         }
+        let why = format!("{} was never observed", Named(method));
+        let latest = match self.model {
+            true => self.nearest(method, &[]),
+            false => None,
+        };
+        let Some((at_ms, body)) = latest else {
+            self.stop(why)
+        };
+        self.branch(Kind::Unrecorded, why);
+        let value = body.get(key.len()..).unwrap_or_default().to_vec();
+        self.opened().answer = Some((value, 0, at_ms));
+        at_ms
     }
 
     fn fill(&mut self, out: &mut [u8]) -> usize {

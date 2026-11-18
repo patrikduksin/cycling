@@ -5,33 +5,46 @@ use device_api::bulk::{Error as CardError, OwnedInfo, ReadWrite, ReadWriteRecord
 use firmware_services::trace::log::Log;
 use firmware_services::trace::media::{Memory, Volumes};
 use firmware_services::trace::recorder::Recorder;
-use firmware_services::volume::{self, Extent};
+use firmware_services::volume;
 use std::cell::RefCell;
 
-const PLAIN: u64 = 3;
-const TERRAIN: u64 = 40;
-const STORE: u64 = 90;
-const BROKEN: u64 = 5;
+const PLAIN: u64 = 3_000;
+const BROKEN: u64 = 5_000;
 
-struct Card;
-
-fn sector(number: u64) -> [u8; SECTOR_SIZE] {
-    [number as u8; SECTOR_SIZE]
+fn card() -> SimBulk {
+    let card = SimBulk::default();
+    card.set_presence(crate::bulk::Presence::Ready);
+    card.set_sectors(4 * volume::TERRAIN_SECTORS);
+    volume::create(&mut card.host(), &mut [0; SECTOR_SIZE]).unwrap();
+    card
 }
+
+fn volumes() -> Volumes {
+    Volumes::read(&mut card().host(), &mut [0; SECTOR_SIZE])
+}
+
+fn terrain() -> u64 {
+    volumes().terrain.unwrap().start
+}
+
+fn store() -> u64 {
+    volumes().store.unwrap().start
+}
+
+struct Card(SimBulk);
 
 impl ReadWrite for Card {
     fn owned_info(&mut self) -> Result<OwnedInfo, CardError> {
-        Err(CardError::Unsupported)
+        self.0.owned_info()
     }
     fn owned_read(&mut self, at: u64, out: &mut [u8; SECTOR_SIZE]) -> Result<(), CardError> {
         if at == BROKEN {
             return Err(CardError::Failed);
         }
-        *out = sector(at);
-        Ok(())
+        self.0.owned_read(at, out)
     }
-    fn owned_write(&mut self, _: u64, _: &[u8; SECTOR_SIZE]) -> Result<(), CardError> {
-        Ok(())
+    fn owned_write(&mut self, at: u64, bytes: &[u8; SECTOR_SIZE]) -> Result<(), CardError> {
+        self.0.owned_write(at, bytes)
     }
     fn entropy(&mut self) -> u64 {
         7
@@ -49,22 +62,13 @@ fn recorded(sectors: &[u64], after: &[Event<'_>]) -> Vec<u8> {
     let len = trace::encode_header(&header, &mut file).unwrap();
     file.truncate(len);
     let recorder = Recorder::new(vec![0u8; 4096], Blocks(file));
-    let mut log = Log::new(Some(recorder), Box::new(Memory::new()));
-    let extent = |name, start| {
-        Some(Extent {
-            name,
-            start,
-            sectors: 10,
-        })
-    };
-    log.volumes(Volumes {
-        terrain: extent(volume::TERRAIN, TERRAIN),
-        store: extent(volume::STORE, STORE),
-    });
-    log.begin_pass(1_000, false);
+    let log = Log::new(Some(recorder), Box::new(Memory::new()));
     let log = RefCell::new(log);
+    log.borrow_mut().begin_pass(1_000, false);
     let observed = RefCell::default();
-    let mut card = ReadWriteRecorder::new(Card, &log, &observed);
+    let mut card = ReadWriteRecorder::new(Card(card().host()), &log, &observed);
+    let volumes = Volumes::read(&mut card, &mut [0; SECTOR_SIZE]);
+    log.borrow_mut().volumes(volumes);
     for &at in sectors {
         let _ = card.owned_read(at, &mut [0; SECTOR_SIZE]);
     }
@@ -96,7 +100,7 @@ fn read(world: &mut Recorded, at: u32) -> Result<Result<[u8; SECTOR_SIZE], Stora
 }
 
 fn replaying(trace: Vec<u8>, pack: Option<Pack>) -> Recorded {
-    let mut world = Recorded::open(trace, pack).unwrap();
+    let mut world = Recorded::open(trace, pack, Options::default()).unwrap();
     assert!(matches!(world.advance(), Next::Pass));
     world
 }
@@ -105,8 +109,9 @@ fn replaying(trace: Vec<u8>, pack: Option<Pack>) -> Recorded {
 fn a_first_read_gives_the_bytes_the_trace_carries_and_a_later_one_the_same() {
     let trace = recorded(&[PLAIN, PLAIN], &[]);
     let mut world = replaying(trace.clone(), None);
-    assert_eq!(read(&mut world, PLAIN as u32), Ok(Ok(sector(PLAIN))));
-    assert_eq!(read(&mut world, PLAIN as u32), Ok(Ok(sector(PLAIN))));
+    let held = card().sector(PLAIN);
+    assert_eq!(read(&mut world, PLAIN as u32), Ok(Ok(held)));
+    assert_eq!(read(&mut world, PLAIN as u32), Ok(Ok(held)));
     let report = world.report(&trace);
     let faithful = report.faithful.unwrap();
     assert_eq!(faithful.exclusions, [], "{faithful}");
@@ -117,18 +122,25 @@ fn a_read_the_trace_holds_no_bytes_of_leaves_the_recorded_world() {
     let mut world = replaying(recorded(&[PLAIN], &[]), None);
     assert_eq!(
         read(&mut world, 7),
-        Err("left the recorded world: unknown media Bulk 7+1".into())
+        Err("left the recorded world at 00:01.000: unknown media Bulk 7+1".into())
     );
 }
 
 #[test]
 fn a_terrain_read_is_served_from_the_pack_and_listed() {
-    let trace = recorded(&[TERRAIN], &[]);
-    let pack = SimBulk::default();
-    pack.set_sectors(200);
-    let held = pack.sector(TERRAIN);
-    let mut world = replaying(trace.clone(), Some(Pack::Card(pack)));
-    assert_eq!(read(&mut world, TERRAIN as u32), Ok(Ok(held)));
+    let terrain = terrain() + firmware_services::pack::DATA;
+    let trace = recorded(&[terrain], &[]);
+    let held = card().sector(terrain);
+    let path = std::env::temp_dir().join(format!("pack-{}", std::process::id()));
+    std::fs::write(&path, held).unwrap();
+    let pack = Pack {
+        file: std::fs::File::open(&path).unwrap(),
+        first: terrain,
+        length: SECTOR_SIZE as u64,
+    };
+    std::fs::remove_file(&path).unwrap();
+    let mut world = replaying(trace.clone(), Some(pack));
+    assert_eq!(read(&mut world, terrain as u32), Ok(Ok(held)));
     let faithful = world.report(&trace).faithful.unwrap();
     assert_eq!(
         faithful.exclusions,
@@ -138,20 +150,21 @@ fn a_terrain_read_is_served_from_the_pack_and_listed() {
 
     let mut packless = replaying(trace, None);
     assert_eq!(
-        read(&mut packless, TERRAIN as u32),
+        read(&mut packless, terrain as u32),
         Err(format!(
-            "left the recorded world: unknown media Bulk {TERRAIN}+1"
+            "left the recorded world at 00:01.000: unknown media Bulk {terrain}+1"
         ))
     );
 }
 
 #[test]
 fn a_store_read_is_served_from_the_bytes_every_read_of_it_carries() {
-    let trace = recorded(&[STORE, STORE], &[]);
+    let store = store();
+    let trace = recorded(&[store, store], &[]);
     let mut world = replaying(trace.clone(), None);
-    let held = [STORE as u8; SECTOR_SIZE];
-    assert_eq!(read(&mut world, STORE as u32), Ok(Ok(held)));
-    assert_eq!(read(&mut world, STORE as u32), Ok(Ok(held)));
+    let held = card().sector(store);
+    assert_eq!(read(&mut world, store as u32), Ok(Ok(held)));
+    assert_eq!(read(&mut world, store as u32), Ok(Ok(held)));
     let faithful = world.report(&trace).faithful.unwrap();
     assert_eq!(faithful.exclusions, [], "{faithful}");
 }
@@ -166,7 +179,7 @@ fn a_read_that_failed_fails_again_and_determines_nothing() {
     assert_eq!(
         read(&mut world, BROKEN as u32),
         Err(format!(
-            "left the recorded world: unknown media Bulk {BROKEN}+1"
+            "left the recorded world at 00:01.000: unknown media Bulk {BROKEN}+1"
         ))
     );
 }
@@ -178,7 +191,7 @@ fn a_replay_ends_where_the_recording_lost_world_records() {
         bytes: 900,
     };
     let trace = recorded(&[PLAIN], &[lost]);
-    let mut world = Recorded::open(trace.clone(), None).unwrap();
+    let mut world = Recorded::open(trace.clone(), None, Options::default()).unwrap();
     assert!(
         matches!(world.advance(), Next::End),
         "the pass before the loss may be cut"

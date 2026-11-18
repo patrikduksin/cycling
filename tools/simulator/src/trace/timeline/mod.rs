@@ -4,7 +4,7 @@
 mod reader;
 mod text;
 
-pub use reader::{build_name, read};
+pub use reader::{build_name, kind, read};
 use text::hex;
 pub use text::{bytes, duration, micros, millis, percent, rate, ride_clock, sensor, session_clock};
 

@@ -1,7 +1,7 @@
 """A failure as one file any fleet machine replays: the trace, the TERRAIN pack it read, and the full source tree of
 the build that recorded it.
 
-  cycling bundle <trace> [--out FILE] [--json]    bundle a trace, expecting what a strict replay shows here
+  cycling bundle <trace> [--out FILE] [--json]    bundle a trace, expecting what a faithful replay shows here
   cycling bundle run <file> [--json]              rebuild the recording build and replay or refuzz it
   python -m cycling_devtools.bundle write ...     the Rust tools' writer (replay and fuzz failures)
 """
@@ -31,7 +31,6 @@ from cycling_devtools import build_hash, tree, workspace
 FORMAT = 1
 MANIFEST = 'bundle.json'
 TRACE = 'trace'
-ORIGIN = 'trace.origin'
 COURSE = 'course.trace'
 PACK = 'pack'
 TREE = 'tree/'
@@ -278,8 +277,7 @@ def write(root, out, trace, build, run: Run, expect: Expect, course=None, pack=N
     listing, tree_id = built_tree(root, build)
     pack_id = pack and PackId(file_sha256(pack), pack.stat().st_size)
     manifest = json.dumps(manifest_json(Manifest(FORMAT, build, listing, pack_id, run, expect)), indent=2).encode()
-    origin = trace.with_suffix('.origin')
-    members = [(trace, TRACE), (origin if origin.is_file() else None, ORIGIN), (course, COURSE), (pack, PACK)]
+    members = [(trace, TRACE), (course, COURSE), (pack, PACK)]
     out.parent.mkdir(parents=True, exist_ok=True)
     staging = staging_file(out.parent, f'.{out.name}.')
     try:
@@ -343,9 +341,9 @@ def bundle_trace(root, trace, out, runner: Runner) -> Path:
     with tempfile.TemporaryDirectory() as scratch:
         tool = ['bash', str(root / 'tools' / 'simulator' / 'trace.sh')]
         doc = replay(tool, trace, end_ms, Path(scratch) / 'replay', root, None, runner)
-    if doc['mode'] != 'strict':
+    if doc['mode'] != 'faithful':
         raise Refused(
-            f'this checkout replays {trace.name} in {doc["mode"]} mode ({doc["why"]}), so it cannot say what a strict '
+            f'this checkout replays {trace.name} in {doc["mode"]} mode ({doc["why"]}), so it cannot say what a faithful '
             "replay shows; bundle it from a checkout whose build matches the trace's"
         )
     out = out or bundles_dir(root) / f'{trace.stem}-{build[:12]}.bundle'
@@ -409,7 +407,7 @@ def build_tool(root, tree_dir, manifest: Manifest, tool: Tool, target, runner: R
             break
     else:
         raise Refused(f'cargo built no {tool.name}')
-    # A replay's build may be the firmware's, which no simulator is; its strict replay relates the two instead.
+    # A replay's build may be the firmware's, which no simulator is; its faithful replay relates the two instead.
     if isinstance(manifest.run, Fuzz):
         said = runner([str(built), '--build-hash'], cwd=tree_dir, stdout=subprocess.PIPE, text=True).stdout.strip()
         if said != manifest.build:
@@ -506,7 +504,7 @@ def unpack(path, root, runner: Runner) -> Unpacked:
                 elif member.name == PACK and manifest.pack is not None:
                     stored = store_pack(bundle, member, cache / 'packs', manifest.pack)
                     (run_dir / 'packs' / manifest.pack.sha256).symlink_to(stored)
-                elif member.name in (TRACE, ORIGIN, COURSE):
+                elif member.name in (TRACE, COURSE):
                     bundle.extract(member, run_dir, filter='data')
                 else:
                     raise Refused(f'{path} holds {member.name}, which no bundle holds')
@@ -559,7 +557,7 @@ def parted(doc) -> Faithful | Diverged:
 
 def replayed(trace_tool, tree_dir, run_dir, to_ms, env, runner: Runner) -> Outcome:
     doc = replay([str(trace_tool)], run_dir / TRACE, to_ms, run_dir / 'replay', tree_dir, env, runner)
-    if doc['mode'] != 'strict':
+    if doc['mode'] != 'faithful':
         raise Refused(f'this rebuild is another build: {doc["why"]}')
     return parted(doc)
 

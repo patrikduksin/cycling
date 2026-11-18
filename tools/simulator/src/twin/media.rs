@@ -126,6 +126,31 @@ impl TwinMedium {
         self.pages.clear();
     }
 
+    /// The first byte of `bytes` at `at` that this medium knows otherwise.
+    pub fn differs(&self, at: u64, bytes: &[u8]) -> Option<u64> {
+        (bytes.iter().enumerate()).find_map(|(offset, byte)| {
+            let address = at + offset as u64;
+            let page = self.pages.get(&(address / PAGE as u64))?;
+            let held = page.get((address % PAGE as u64) as usize)?;
+            (held != *byte).then_some(address)
+        })
+    }
+
+    /// The bytes `from` knows in `range`.
+    pub fn copy_from(&mut self, from: &TwinMedium, range: core::ops::Range<u64>, fill: Fill) {
+        for address in range {
+            let (page, at) = (address / PAGE as u64, (address % PAGE as u64) as usize);
+            let Some(byte) = from.pages.get(&page).and_then(|page| page.get(at)) else {
+                continue;
+            };
+            self.page(address, |page, i| {
+                if fill == Fill::Overwrite || page.get(i).is_none() {
+                    page.set(i, byte);
+                }
+            });
+        }
+    }
+
     fn page(&mut self, address: u64, change: impl FnOnce(&mut Page, usize)) {
         let page = self
             .pages
@@ -133,6 +158,12 @@ impl TwinMedium {
             .or_insert(Page::UNKNOWN);
         change(page, (address % PAGE as u64) as usize);
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Fill {
+    OnlyUnknown,
+    Overwrite,
 }
 
 #[cfg(test)]

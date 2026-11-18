@@ -441,11 +441,8 @@ fn a_resumed_clear_erases_again_a_sector_its_cut_erase_left_reading_erased() {
     }
 }
 
-/// A commit word the cut left marginal reads whole on some boots and torn
-/// on others, so a saved capture keeps it to replay its boot as it ran.
 #[test]
-fn a_boot_over_a_marginal_intent_word_replays_the_same_after_a_save_and_load() {
-    use shell_simulator::trace::file;
+fn a_boot_over_a_marginal_intent_word_replays_from_its_trace_as_it_ran() {
     let (mut sim, slots) = device_with_a_ride_on_internal_flash("intent-marginal-saved");
     sim.discard_recording();
     for boot in 0..8 {
@@ -456,15 +453,7 @@ fn a_boot_over_a_marginal_intent_word_replays_the_same_after_a_save_and_load() {
         assert!(sim.power_lost(), "boot {boot}: the commit word was cut");
         sim.cut_power();
         sim.advance(seconds(10));
-        let capture = sim.capture();
-        assert_eq!(Sim::replay(&capture).device.report().unwrap().first, None);
-        let path = std::env::temp_dir()
-            .join(format!("intent-marginal-{}", std::process::id()))
-            .join(format!("boot-{boot}.trace"));
-        file::save(&capture, &path).expect("the capture saves");
-        let (loaded, _) = file::load(&path).expect("the capture loads");
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-        let report = Sim::replay(&loaded).device.report().unwrap();
+        let report = Sim::replay(&sim.capture()).device.report().unwrap();
         assert_eq!(report.first, None, "boot {boot}: {:?}", report.counts);
         sim.restore_media(&media);
         sim.wait_usable();

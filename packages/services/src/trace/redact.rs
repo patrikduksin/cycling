@@ -11,7 +11,7 @@
 //!   become [`TOKEN`] repeated when they are the open session's token and
 //!   [`OTHER`] repeated when they are another.
 //!
-//! A strict replay of a phone session therefore runs on placeholders
+//! A replay of a phone session therefore runs on placeholders
 //! consistently: VANA makes its network name, password and token from the
 //! placeholder words, the replay hands VANA its own token wherever the
 //! recording had the session's token, and another token stays another.

@@ -6,16 +6,19 @@
 //!
 //! - A read of bytes the trace does not determine yet carries them
 //!   ([`INLINE`]), with runs of `0x00` and `0xFF` elided, and determines
-//!   them. A read longer than [`PART`] bytes splits into records.
-//! - A read of determined bytes carries their CRC32 ([`DIGEST`]). Reads
-//!   that follow one another on the medium share one record.
+//!   them. A read longer than [`PART`] bytes splits into records, and each
+//!   after its first goes on it ([`CONTINUES`]).
+//! - A read of determined bytes carries their CRC32 ([`DIGEST`]). Reads of
+//!   one count that follow one another on the medium share one record,
+//!   which then carries that count ([`EACH`]).
 //! - A write carries the CRC32 of what it wrote, and consecutive writes
 //!   share one record. A card write determines its sectors. A flash program
 //!   only clears bits, so it keeps a determined range determined and
 //!   undetermines any other.
 //! - An erase carries only its range, which it determines.
 //! - A failed write or erase carries its error ([`FAULT`]) and undetermines
-//!   the whole range it attempted. A failed read carries the buffer as it
+//!   the whole range it attempted. A failed write also carries the CRC32 of
+//!   what it attempted to write. A failed read carries the buffer as it
 //!   left it and its error, and determines nothing.
 //! - The TERRAIN pack's data is too large to carry: its reads are always a
 //!   CRC32, and the header names the pack. The pack's own headers are
@@ -40,6 +43,10 @@ pub const DIGEST: u8 = 2;
 pub const OUTSIDE: u8 = 4;
 /// The access failed; its error closes the body.
 pub const FAULT: u8 = 8;
+/// The record goes on the read the record before it began.
+pub const CONTINUES: u8 = 16;
+/// The digest joins reads of one count, which follows the CRC32.
+pub const EACH: u8 = 32;
 
 pub use device_api::journal::PART;
 
@@ -157,13 +164,17 @@ pub(super) struct Run {
     pub span: Span,
     /// The CRC32 of the run so far.
     pub crc: u32,
+    /// A run of reads: the count of each, so the record keeps where each
+    /// began. Writes join whatever their counts.
+    pub each: Option<u32>,
 }
 
 impl Run {
-    /// Take `at` into the run when it is the same method's and starts where
-    /// the run ends.
+    /// Take `at` into the run when it is the same method's, starts where
+    /// the run ends, and is a read of the run's count or a write.
     pub fn extend(&mut self, method: MethodId, at: Span, bytes: &[u8], crc: Crc) -> bool {
         let follows = self.method == method
+            && self.each.is_none_or(|each| each == at.count)
             && self.span.medium == at.medium
             && self.span.start.checked_add(self.span.count) == Some(at.start)
             && self.span.count.checked_add(at.count).is_some();
@@ -268,6 +279,10 @@ pub struct Access<'a> {
     pub content: Content<'a>,
     pub outside: bool,
     pub fault: Option<StorageError>,
+    /// It goes on the read the record before it began.
+    pub continues: bool,
+    /// A digest of reads that followed one another: the count of each.
+    pub each: Option<u32>,
 }
 
 impl<'a> Access<'a> {
@@ -294,12 +309,16 @@ impl<'a> Access<'a> {
         } else {
             Content::None
         };
+        let each = (flags & EACH != 0).then(|| u32::take(&mut r));
+        let divides = each.is_none_or(|each| each != 0 && span.count.is_multiple_of(each));
         let whole = matches!(content, Content::Inline(_)) || r.at == rest;
-        (r.ok() && whole).then_some(Self {
+        (r.ok() && whole && divides).then_some(Self {
             span,
             content,
             outside: flags & OUTSIDE != 0,
             fault,
+            continues: flags & CONTINUES != 0,
+            each,
         })
     }
 

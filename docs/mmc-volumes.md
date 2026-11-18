@@ -273,7 +273,7 @@ cycling trace pull [FILE]                     # a ride trace, read only
 ```
 
 `cycling trace pull` copies a ride trace into `.local/traces/`. The trace is
-a world log: it holds every byte of media VANA read, so a strict replay needs
+a world log: it holds every byte of media VANA read, so a replay needs
 nothing else from the device. The pull only reads. It prints its result as
 one JSON document, then on stderr the moments the rider marked by holding
 MOVE (`marks:` with one line each, or `marks: none`). With `--json` it prints

@@ -1,9 +1,8 @@
-//! What a strict replay of a device's trace needs beside the trace: a card
-//! for the replay's own trace file, and the TERRAIN pack's data.
+//! What a replay needs beside the trace: a card for the replay's own
+//! trace file, and the TERRAIN pack's data.
 //!
-//! A device's trace comes without an `.origin`. It holds the card's size
-//! and its volume table, so the replay's card has the device's volumes and
-//! an empty STORE. The pack's data is too large for a trace, which holds
+//! A trace holds the card's size and its volume table, so the replay's
+//! card has the recorded volumes and an empty STORE. The pack's data is too large for a trace, which holds
 //! digests of it: the replay reads the data from the pack file the header
 //! names by its SHA-256, in the local pack store.
 use crate::bulk::{Presence, SimBulk};
@@ -15,6 +14,7 @@ use firmware_services::trace::{self, Event, Medium, StorageOp};
 use firmware_services::volume::{self, Layout, Volume};
 use firmware_services::{pack, store};
 use sha2::Digest;
+use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::unix::fs::FileExt;
@@ -76,33 +76,23 @@ pub fn of(trace: &[u8]) -> SimBulk {
     card
 }
 
-/// Where a replay reads the TERRAIN pack's data.
-pub enum Pack {
-    /// On the card the session started on.
-    Card(SimBulk),
-    /// In a pack file, whose data starts at sector `first` of the
-    /// recorded card.
-    File { file: File, first: u64, length: u64 },
+/// The TERRAIN pack's data, in the pack file the trace names, whose data
+/// starts at sector `first` of the recorded card.
+pub struct Pack {
+    pub(crate) file: File,
+    pub(crate) first: u64,
+    pub(crate) length: u64,
 }
 
 impl Pack {
     /// The pack's data in `sector` of the recorded card; `None` outside it.
     pub fn sector(&self, sector: u64) -> Option<[u8; SECTOR_SIZE]> {
-        match self {
-            Self::Card(card) => Some(card.sector(sector)),
-            Self::File {
-                file,
-                first,
-                length,
-            } => {
-                let at = sector.checked_sub(*first)? * SECTOR_SIZE as u64;
-                let held = length.checked_sub(at).filter(|held| *held > 0)?;
-                let mut bytes = [0u8; SECTOR_SIZE];
-                let len = held.min(SECTOR_SIZE as u64) as usize;
-                file.read_exact_at(&mut bytes[..len], at).ok()?;
-                Some(bytes)
-            }
-        }
+        let at = sector.checked_sub(self.first)? * SECTOR_SIZE as u64;
+        let held = self.length.checked_sub(at).filter(|held| *held > 0)?;
+        let mut bytes = [0u8; SECTOR_SIZE];
+        let len = held.min(SECTOR_SIZE as u64) as usize;
+        self.file.read_exact_at(&mut bytes[..len], at).ok()?;
+        Some(bytes)
     }
 }
 
@@ -119,17 +109,33 @@ fn digest(path: &Path) -> io::Result<[u8; 32]> {
     }
 }
 
+/// The TERRAIN pack a session read is in no pack file here.
+#[derive(Debug)]
+pub struct NoPack {
+    pub sha256: String,
+    text: String,
+}
+
+impl fmt::Display for NoPack {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl std::error::Error for NoPack {}
+
 fn find(store: &Path, terrain: &Terrain) -> io::Result<PathBuf> {
     let missing = || {
         let tag = String::from_utf8_lossy(&terrain.tag);
-        io::Error::other(format!(
-            "the session read the TERRAIN pack {} (sha256 {}, {} bytes), and no file in {} is that pack; \
+        let sha256 = Hex(&terrain.digest).to_string();
+        let text = format!(
+            "the session read the TERRAIN pack {} (sha256 {sha256}, {} bytes), and no file in {} is that pack; \
              put the pack file there, or name its directory in {STORE}",
             tag.trim_end_matches('\0'),
-            Hex(&terrain.digest),
             terrain.length,
             store.display(),
-        ))
+        );
+        io::Error::other(NoPack { sha256, text })
     };
     let mut files: Vec<PathBuf> = std::fs::read_dir(store)
         .map_err(|_| missing())?
@@ -147,10 +153,9 @@ fn find(store: &Path, terrain: &Terrain) -> io::Result<PathBuf> {
     Err(missing())
 }
 
-/// The TERRAIN pack `trace`'s header names: on the `origin` card when it
-/// holds that pack, else a file in `store`. `None` when the session found
-/// no ready pack.
-pub fn pack(trace: &[u8], origin: &SimBulk, store: &Path) -> io::Result<Option<Pack>> {
+/// The TERRAIN pack `trace`'s header names, a file in `store`. `None` when
+/// the session found no ready pack.
+pub fn pack(trace: &[u8], store: &Path) -> io::Result<Option<Pack>> {
     let header = trace::decode(trace)
         .map(|(header, _)| header)
         .map_err(|error| io::Error::other(format!("trace: {error}")))?;
@@ -161,19 +166,6 @@ pub fn pack(trace: &[u8], origin: &SimBulk, store: &Path) -> io::Result<Option<P
         return Ok(None);
     }
     let mut sector = [0u8; SECTOR_SIZE];
-    let held = |card: &SimBulk| {
-        let mut host = card.host();
-        let mut sector = [0u8; SECTOR_SIZE];
-        let Ok(Layout::Table(table)) = volume::read(&mut host, &mut sector) else {
-            return None;
-        };
-        let extent = table.find(&volume::TERRAIN)?;
-        let header = pack::status(&mut Volume::new(&mut host, extent), &mut sector).ok()??;
-        Some(header.spec.digest)
-    };
-    if held(origin) == Some(terrain.digest) {
-        return Ok(Some(Pack::Card(origin.untapped())));
-    }
     let recorded = of(trace);
     let first = match volume::read(&mut recorded.host(), &mut sector) {
         Ok(Layout::Table(table)) => table.find(&volume::TERRAIN).map(|extent| extent.start),
@@ -183,7 +175,7 @@ pub fn pack(trace: &[u8], origin: &SimBulk, store: &Path) -> io::Result<Option<P
         return Ok(None);
     };
     let path = find(store, &terrain)?;
-    Ok(Some(Pack::File {
+    Ok(Some(Pack {
         file: File::open(path)?,
         first: first + pack::DATA,
         length: terrain.length,
@@ -191,46 +183,13 @@ pub fn pack(trace: &[u8], origin: &SimBulk, store: &Path) -> io::Result<Option<P
 }
 
 /// The TERRAIN pack `trace`'s header names as a file a bundle can carry: the
-/// pack file in `store`, else the pack's data on the `origin` card, written
-/// to `spill`. `None` when the session found no ready pack.
-pub fn pack_file(
-    trace: &[u8],
-    origin: &SimBulk,
-    store: &Path,
-    spill: &Path,
-) -> io::Result<Option<PathBuf>> {
+/// pack file in `store`. `None` when the session found no ready pack.
+pub fn pack_file(trace: &[u8], store: &Path) -> io::Result<Option<PathBuf>> {
     let header = trace::decode(trace)
         .map(|(header, _)| header)
         .map_err(|error| io::Error::other(format!("trace: {error}")))?;
-    let Found::Read(terrain) = header.terrain else {
-        return Ok(None);
-    };
-    if !terrain.ready {
-        return Ok(None);
+    match header.terrain {
+        Found::Read(terrain) if terrain.ready => find(store, &terrain).map(Some),
+        _ => Ok(None),
     }
-    let missing = match find(store, &terrain) {
-        Ok(path) => return Ok(Some(path)),
-        Err(missing) => missing,
-    };
-    let mut host = origin.host();
-    let mut sector = [0u8; SECTOR_SIZE];
-    let Ok(Layout::Table(table)) = volume::read(&mut host, &mut sector) else {
-        return Err(missing);
-    };
-    let Some(extent) = table.find(&volume::TERRAIN) else {
-        return Err(missing);
-    };
-    let held = pack::status(&mut Volume::new(&mut host, extent), &mut sector);
-    if !matches!(held, Ok(Some(header)) if header.spec.digest == terrain.digest) {
-        return Err(missing);
-    }
-    let first = extent.start + pack::DATA;
-    let mut bytes = Vec::with_capacity(terrain.length as usize);
-    for at in (0..terrain.length).step_by(SECTOR_SIZE) {
-        let data = origin.sector(first + at / SECTOR_SIZE as u64);
-        let len = (terrain.length - at).min(SECTOR_SIZE as u64) as usize;
-        bytes.extend_from_slice(&data[..len]);
-    }
-    std::fs::write(spill, bytes)?;
-    Ok(Some(spill.to_path_buf()))
 }

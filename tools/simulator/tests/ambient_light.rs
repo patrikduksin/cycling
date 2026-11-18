@@ -1,6 +1,5 @@
-use shell_simulator::replay::{Mode, first_difference};
+use shell_simulator::replay::{Options, first_difference};
 use shell_simulator::sim::{Sim, seconds};
-use shell_simulator::trace::file;
 use shell_simulator::trace::timeline::{Kind, read};
 use std::path::Path;
 
@@ -26,7 +25,7 @@ fn the_light_a_ride_saw_is_in_its_trace_and_replays_exactly() {
     sim.advance(seconds(1));
     let capture = sim.capture();
 
-    let recorded = light_lines(&capture.trace);
+    let recorded = light_lines(&capture);
     assert!(
         recorded.contains(&"ambient light 68".to_string()),
         "{recorded:?}"
@@ -44,19 +43,19 @@ fn the_light_a_ride_saw_is_in_its_trace_and_replays_exactly() {
     let replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
     assert_eq!(report.first, None, "{:?}", report.counts);
-    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    assert_eq!(first_difference(&capture, &replayed.trace()), None);
     assert_eq!(light_lines(&replayed.trace()), recorded);
 }
 
 #[test]
 fn a_trace_of_a_ride_with_no_light_feed_replays_exactly() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/traces/laps-and-a-menu.trace");
-    let (capture, _) = file::load(&path).expect("the fixture loads");
-    assert_eq!(light_lines(&capture.trace), ["ambient light unavailable"]);
+    let capture = std::fs::read(&path).expect("the fixture reads");
+    assert_eq!(light_lines(&capture), ["ambient light unavailable"]);
     let replayed = Sim::replay(&capture);
     let report = replayed.device.report().unwrap();
     assert_eq!(report.first, None, "{:?}", report.counts);
-    assert_eq!(first_difference(&capture.trace, &replayed.trace()), None);
+    assert_eq!(first_difference(&capture, &replayed.trace()), None);
 }
 
 fn levels(mut samples: Vec<u8>) -> Vec<u8> {
@@ -90,7 +89,7 @@ fn a_ride_with_a_light_feed_replays_to_the_same_backlight() {
     assert!(seen.len() > 20, "the backlight moved through {seen:?}");
     let capture = sim.capture();
 
-    let mut replayed = Sim::replaying(&capture, Mode::Strict, None).unwrap();
+    let mut replayed = Sim::replaying(&capture, Options::default(), None).unwrap();
     replayed.replay_until(start);
     let mut again = vec![replayed.device.shell.effective()];
     while replayed.replay_until(replayed.device.now + 1) {

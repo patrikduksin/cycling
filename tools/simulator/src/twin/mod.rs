@@ -2,6 +2,7 @@
 //! from the trace alone.
 pub mod check;
 pub mod flash;
+pub mod index;
 pub mod media;
 pub mod script;
 pub mod world;

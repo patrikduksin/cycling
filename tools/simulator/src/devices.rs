@@ -191,7 +191,7 @@ pub struct InputDevice {
     /// Edges a trace recorded, delivered as they were taken.
     pub replayed: Rc<RefCell<VecDeque<Edge>>>,
     pub controls: Controls,
-    /// The recorded world a strict replay takes its edges from, and that
+    /// The recorded world a replay takes its edges from, and that
     /// method in it.
     pub twin: Option<(Scripted, MethodId)>,
 }
@@ -233,7 +233,7 @@ pub struct PowerState {
     pub writes: u32,
     pub fail: bool,
     pub refusals: Refusals,
-    /// The recorded world a strict replay reads the backlight's
+    /// The recorded world a replay reads the backlight's
     /// availability from, and that method in it.
     pub twin: Option<(Scripted, MethodId)>,
 }
@@ -283,13 +283,13 @@ pub struct Refusals {
     attempts: u8,
     pub refused: Vec<u8>,
     pub scripted: Vec<u8>,
-    /// The recorded world a strict replay asks instead, and the sink's
+    /// The recorded world a replay asks instead, and the sink's
     /// method in it.
     pub twin: Option<(Scripted, MethodId)>,
     recorded: device_api::journal::Sampled,
 }
 
-/// The recorded world of a strict replay, as its devices hold it.
+/// The recorded world of a replay, as its devices hold it.
 pub type Scripted = Rc<RefCell<crate::twin::world::Recorded>>;
 impl Refusals {
     /// A new pass: attempts count from zero again.

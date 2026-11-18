@@ -4,8 +4,6 @@
 //! what the sensors were doing. The expectation states what the rider
 //! should have seen: from `--expect`, or a `todo!` the author replaces, so
 //! the test is red on the recording and never asserts the symptom.
-use crate::replay::Capture;
-use crate::trace::file::{Media, origin_path};
 use crate::trace::find::{Query, Test};
 use crate::trace::secret::secrets;
 use crate::trace::timeline::{Kind, Silence, Timeline, field, session_clock};
@@ -67,7 +65,7 @@ impl Expect {
 /// For a trace outside the fixtures directory: whether it may become a
 /// fixture and the steps that make it one, as comment lines to print before
 /// the stub, which reads it from there. None for a fixture.
-pub fn to_fixture(path: &Path, capture: &Capture, media: &Media) -> Option<String> {
+pub fn to_fixture(path: &Path, trace: &[u8]) -> Option<String> {
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
@@ -81,10 +79,10 @@ pub fn to_fixture(path: &Path, capture: &Capture, media: &Media) -> Option<Strin
         "// {} is not a fixture: the test below reads {FIXTURES}/{name}.trace.\n",
         source.display()
     );
-    let found = secrets(capture);
-    if *media == Media::Blank {
+    let found = secrets(trace);
+    if crate::trace::world::opened(trace).redacted {
         out.push_str(
-            "// It is a device trace (no .origin beside it): it records\n\
+            "// It is a device trace (it redacts from its first record, as the C606 does): it records\n\
              // where the rider rode and is never committed. Write a simulator scenario that gives\n\
              // VANA the same inputs and record it as a fixture instead (ride-trace skill, step 5).\n",
         );
@@ -100,10 +98,8 @@ pub fn to_fixture(path: &Path, capture: &Capture, media: &Media) -> Option<Strin
             "// It holds no Wi-Fi password, phone session token or saved Wi-Fi credentials.\n\
              // To make it a fixture, from the checkout root:\n\
              //   cp {} {FIXTURES}/{name}.trace\n\
-             //   cp {} {FIXTURES}/{name}.origin\n\
              //   cargo test -p shell-simulator --test trace_tools no_committed_fixture",
             source.display(),
-            origin_path(&source).display()
         );
         if Path::new(FIXTURES).join(format!("{name}.trace")).exists() {
             out.push_str(
@@ -256,11 +252,11 @@ pub fn stub(
     }
     let _ = writeln!(
         body,
-        "    let (capture, _) = shell_simulator::trace::file::load(std::path::Path::new(concat!(\n        env!(\"CARGO_MANIFEST_DIR\"),\n        \"/tests/traces/{fixture}.trace\"\n    )))\n    .expect(\"the fixture loads\");"
+        "    let trace = std::fs::read(concat!(\n        env!(\"CARGO_MANIFEST_DIR\"),\n        \"/tests/traces/{fixture}.trace\"\n    ))\n    .expect(\"the fixture reads\");"
     );
     let _ = writeln!(
         body,
-        "    let mut sim = Sim::replaying(&capture, shell_simulator::replay::Mode::Stimulus, None).unwrap();"
+        "    let changed = shell_simulator::replay::Options {{\n        mode: shell_simulator::replay::Mode::Changed,\n        model: false,\n    }};\n    let mut sim = Sim::replaying(&trace, changed, None).unwrap();"
     );
     let _ = writeln!(
         body,

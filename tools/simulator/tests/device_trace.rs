@@ -1,15 +1,14 @@
 //! A device's trace comes alone, without the media its session started on.
-//! A strict replay runs on what the trace holds: the card's size and volume
+//! A replay runs on what the trace holds: the card's size and volume
 //! table for its own trace file, every byte VANA read, and the TERRAIN pack
 //! its header names, found in a directory of pack files.
 use shell_simulator::ant::device_type;
 use shell_simulator::bulk::Presence;
-use shell_simulator::replay::{Capture, Exclusion, Mode};
+use shell_simulator::replay::{Exclusion, Options};
 use shell_simulator::route::{Point, Route, to_gpx};
 use shell_simulator::session::{Session, Step};
 use shell_simulator::sim::{Sim, seconds};
 use shell_simulator::trace::card;
-use shell_simulator::trace::file::{self, Media};
 use std::path::{Path, PathBuf};
 
 fn data(name: &str) -> PathBuf {
@@ -40,7 +39,7 @@ fn g21() -> Route {
     Route::from_gpx(&to_gpx("G-21", &points)).unwrap()
 }
 
-fn recorded(dir: &Path) -> (PathBuf, Capture) {
+fn recorded(dir: &Path) -> PathBuf {
     let mut sim = Sim::new();
     sim.discard_recording();
     sim.fit_bulk(Presence::Ready);
@@ -62,9 +61,8 @@ fn recorded(dir: &Path) -> (PathBuf, Capture) {
     assert_eq!(sim.command("STORE STATUS").0, "OK");
     sim.advance(seconds(2));
     let path = dir.join("ride.trace");
-    let capture = sim.capture();
-    std::fs::write(&path, &capture.trace).unwrap();
-    (path, capture)
+    std::fs::write(&path, sim.capture()).unwrap();
+    path
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -75,15 +73,14 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 #[test]
-fn a_trace_alone_replays_strict_with_the_pack_its_header_names() {
+fn a_trace_alone_replays_faithful_with_the_pack_its_header_names() {
     let dir = scratch("device-trace");
-    let (trace, _) = recorded(&dir);
-    let (capture, media) = file::load(&trace).unwrap();
-    assert_eq!(media, Media::Blank, "nothing was saved beside the trace");
+    let trace = recorded(&dir);
+    let capture = std::fs::read(&trace).unwrap();
 
     let packs = dir.join("packs");
     std::fs::create_dir(&packs).unwrap();
-    let missing = Session::replaying_with(&capture, Mode::Strict, &packs)
+    let missing = Session::replaying_with(&capture, Options::default(), &packs)
         .err()
         .expect("no pack file to read TERRAIN from");
     let missing = missing.to_string();
@@ -92,7 +89,7 @@ fn a_trace_alone_replays_strict_with_the_pack_its_header_names() {
 
     std::fs::write(packs.join("other.terrain"), [7u8; 600]).unwrap();
     std::fs::copy(data("farellones.terrain"), packs.join("a-pack.terrain")).unwrap();
-    let mut replay = Session::replaying_with(&capture, Mode::Strict, &packs).unwrap();
+    let mut replay = Session::replaying_with(&capture, Options::default(), &packs).unwrap();
     let mut store = None;
     loop {
         match replay.replay_step() {
@@ -120,10 +117,10 @@ fn a_trace_alone_replays_strict_with_the_pack_its_header_names() {
 }
 
 #[test]
-fn the_header_names_the_pack_a_bundle_carries_from_the_store_or_the_starting_card() {
+fn the_header_names_the_pack_a_bundle_carries_from_the_store() {
     use sha2::Digest;
     let dir = scratch("device-trace-pack");
-    let (trace, capture) = recorded(&dir);
+    let trace = recorded(&dir);
     let pack = std::fs::read(data("farellones.terrain")).unwrap();
     let summary = std::process::Command::new(env!("CARGO_BIN_EXE_trace"))
         .arg("summary")
@@ -143,21 +140,24 @@ fn the_header_names_the_pack_a_bundle_carries_from_the_store_or_the_starting_car
 
     let packs = dir.join("packs");
     std::fs::create_dir(&packs).unwrap();
-    let spill = dir.join("spilled.pack");
-    let carried = |packs: &Path, card| card::pack_file(&capture.trace, card, packs, &spill);
-    let blank = shell_simulator::bulk::SimBulk::default();
-    assert!(carried(&packs, &blank).is_err(), "neither holds the pack");
-    assert_eq!(
-        carried(&packs, &capture.origin.bulk).unwrap(),
-        Some(spill.clone())
-    );
+    let bytes = std::fs::read(&trace).unwrap();
     assert!(
-        std::fs::read(&spill).unwrap() == pack,
-        "the card's pack, byte for byte"
+        card::pack_file(&bytes, &packs).is_err(),
+        "the store does not hold the pack"
     );
+    let unpacked = std::process::Command::new(env!("CARGO_BIN_EXE_trace"))
+        .args(["replay".as_ref(), trace.as_os_str(), "--json".as_ref()])
+        .arg("--out")
+        .arg(dir.join("replay"))
+        .env(card::STORE, &packs)
+        .output()
+        .unwrap();
+    assert_eq!(unpacked.status.code(), Some(2));
+    let failed: serde_json::Value = serde_json::from_slice(&unpacked.stdout).unwrap();
+    assert_eq!(failed["no_pack"], sha256.as_str(), "{failed}");
     std::fs::copy(data("farellones.terrain"), packs.join("a-pack.terrain")).unwrap();
     assert_eq!(
-        carried(&packs, &blank).unwrap(),
+        card::pack_file(&bytes, &packs).unwrap(),
         Some(packs.join("a-pack.terrain"))
     );
     std::fs::remove_dir_all(&dir).unwrap();

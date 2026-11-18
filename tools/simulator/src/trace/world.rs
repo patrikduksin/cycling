@@ -1,4 +1,4 @@
-//! A world record as the trace tools and a stimulus replay read it: the
+//! A world record as the trace tools read it: the
 //! value one call gave VANA, typed by the method its capability table names.
 use crate::twin::script::declared;
 use device_api::ant;

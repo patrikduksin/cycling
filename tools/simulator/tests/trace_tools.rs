@@ -4,7 +4,6 @@ use shell_simulator::recording;
 use shell_simulator::replay::Mode;
 use shell_simulator::route::{Point, Route};
 use shell_simulator::sim::{Sim, seconds};
-use shell_simulator::trace::file;
 use shell_simulator::trace::find::{Found, Query, find};
 use shell_simulator::trace::story::tell;
 use shell_simulator::trace::timeline::{At, Kind, Timeline, read};
@@ -91,7 +90,7 @@ fn record_trace_fixtures() {
         sim.discard_recording();
         let mut sim = sim.boot();
         scenario(&mut sim);
-        file::save(&sim.capture(), &fixture(name)).expect("the fixture saves");
+        std::fs::write(fixture(name), sim.capture()).expect("the fixture saves");
     }
 }
 
@@ -102,7 +101,7 @@ fn no_committed_fixture_holds_a_wifi_password_or_a_phone_token() {
     for entry in std::fs::read_dir(&dir).expect("the fixtures directory") {
         let path = entry.expect("a fixture").path();
         if path.extension().is_some_and(|ext| ext == "trace") {
-            let (capture, _) = file::load(&path).expect("the fixture loads");
+            let capture = std::fs::read(&path).expect("the fixture reads");
             let found = shell_simulator::trace::secret::secrets(&capture);
             assert!(
                 found.is_empty(),
@@ -116,7 +115,7 @@ fn no_committed_fixture_holds_a_wifi_password_or_a_phone_token() {
 }
 
 #[test]
-fn secrets_finds_a_wifi_password_a_phone_token_and_saved_credentials() {
+fn secrets_finds_a_wifi_password_and_a_phone_token() {
     use shell_simulator::trace::secret::secrets;
     let configure = b"CMD 1 WIFI CONFIG WPA2 54657374 70617373776f7264";
     let session = |redacting: bool| {
@@ -157,10 +156,7 @@ fn secrets_finds_a_wifi_password_a_phone_token_and_saved_credentials() {
     sim.advance(seconds(5));
     assert_eq!(
         secrets(&sim.capture()),
-        [
-            "the origin's settings: saved Wi-Fi credentials",
-            "the pass at 00:00.000: a Wi-Fi password in the shell's settings",
-        ],
+        ["the pass at 00:00.000: a Wi-Fi password in the shell's settings"],
         "the settings the shell loads at boot"
     );
 
@@ -173,14 +169,14 @@ fn secrets_finds_a_wifi_password_a_phone_token_and_saved_credentials() {
     redacting.advance(seconds(5));
     assert_eq!(
         secrets(&redacting.capture()),
-        ["the origin's settings: saved Wi-Fi credentials"],
-        "a redacting trace holds no secret; its media still does"
+        [] as [&str; 0],
+        "a redacting trace holds no secret after a restart either"
     );
 }
 
 fn timeline(name: &str) -> Timeline {
-    let (capture, _) = file::load(&fixture(name)).expect("the fixture loads");
-    read(&capture.trace).expect("the fixture decodes")
+    let capture = std::fs::read(fixture(name)).expect("the fixture reads");
+    read(&capture).expect("the fixture decodes")
 }
 
 #[test]
@@ -265,33 +261,6 @@ fn the_save_warning_is_storage_and_belongs_to_the_ride_it_ended_with() {
         "{:?}",
         event.alongside
     );
-}
-
-#[test]
-fn the_origin_of_a_later_power_on_names_the_ride_and_sensors_saved_before_it() {
-    let mut sim = Sim::new();
-    sim.fit_bulk(shell_simulator::bulk::Presence::Ready);
-    let mut sim = sim.boot();
-    sim.discard_recording();
-    laps_and_a_menu(&mut sim);
-    sim.device
-        .power_cycle()
-        .expect("the device powers on again");
-    sim.advance(seconds(5));
-    let text =
-        shell_simulator::trace::origin::describe(&sim.capture(), file::Media::Saved, "x.origin");
-    let lines: Vec<&str> = text.lines().collect();
-    assert!(lines[0].ends_with("power-on 2"), "{text}");
-    assert!(
-        lines[2].contains(&format!("sensors power#{POWER}")),
-        "{text}"
-    );
-    assert!(lines[2].ends_with("setup done"), "{text}");
-    assert!(
-        lines[3].starts_with("rides on internal flash: ride 1 (1:"),
-        "{text}"
-    );
-    assert!(lines[4].starts_with("bulk card: ready, "), "{text}");
 }
 
 #[test]
@@ -383,7 +352,7 @@ fn a_page_names_what_brought_it_up_and_the_readings_it_shows() {
     sim.advance(1_400);
     sim.press(Role::Move);
     sim.advance(seconds(1));
-    let pressed = read(&sim.capture().trace).unwrap();
+    let pressed = read(&sim.capture()).unwrap();
     let pages: Vec<String> = pressed
         .entries
         .iter()
@@ -432,7 +401,7 @@ fn the_riders_marks_are_found_by_kind_and_told_as_events() {
     sim.advance(seconds(3));
     sim.hold(Role::Move, 1600);
     sim.advance(seconds(1));
-    let timeline = read(&sim.capture().trace).unwrap();
+    let timeline = read(&sim.capture()).unwrap();
     let found: Vec<String> = find(&timeline, &Query::parse("mark"), (0, u64::MAX), None)
         .iter()
         .map(|found| found.to_string())
@@ -480,7 +449,7 @@ fn a_page_a_harness_press_brought_up_names_the_press() {
         );
     }
     sim.advance(seconds(1));
-    let trace = read(&sim.capture().trace).unwrap();
+    let trace = read(&sim.capture()).unwrap();
     let page = trace
         .entries
         .iter()
@@ -538,12 +507,16 @@ fn otlp_export_is_one_traces_and_one_metrics_request() {
 
 #[test]
 fn power_shows_dashes_while_the_meter_is_out() {
-    let (capture, _) = shell_simulator::trace::file::load(std::path::Path::new(concat!(
+    let capture = std::fs::read(std::path::Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/traces/power-dropout-after-descent.trace"
     )))
-    .expect("the fixture loads");
-    let mut sim = Sim::replaying(&capture, shell_simulator::replay::Mode::Stimulus, None).unwrap();
+    .expect("the fixture reads");
+    let changed = shell_simulator::replay::Options {
+        mode: Mode::Changed,
+        model: false,
+    };
+    let mut sim = Sim::replaying(&capture, changed, None).unwrap();
     assert!(
         sim.replay_until(202660),
         "the trace reaches 03:22.660 ride 03:00"
@@ -605,17 +578,17 @@ fn a_test_stub_never_asserts_the_symptom_it_is_told_to_expect_away() {
 fn a_trace_outside_the_fixtures_gets_the_steps_that_make_it_one() {
     use shell_simulator::trace::stub::to_fixture;
     let fixture = fixture("laps-and-a-menu");
-    let (capture, media) = file::load(&fixture).unwrap();
-    assert_eq!(to_fixture(&fixture, &capture, &media), None);
+    let trace = std::fs::read(&fixture).unwrap();
+    assert_eq!(to_fixture(&fixture, &trace), None);
 
     let dir = std::env::temp_dir().join(format!("trace-stub-{}", std::process::id()));
     let outside = dir.join("morning.trace");
     let mut sim = Sim::new().boot();
     sim.discard_recording();
     sim.advance(seconds(2));
-    file::save(&sim.capture(), &outside).unwrap();
-    let (capture, media) = file::load(&outside).unwrap();
-    let steps = to_fixture(&outside, &capture, &media).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&outside, sim.capture()).unwrap();
+    let steps = to_fixture(&outside, &sim.capture()).unwrap();
     assert!(steps.contains("holds no Wi-Fi password"), "{steps}");
     assert!(
         steps.contains("tools/simulator/tests/traces/morning.trace\n"),
@@ -626,48 +599,27 @@ fn a_trace_outside_the_fixtures_gets_the_steps_that_make_it_one() {
         "{steps}"
     );
 
-    std::fs::remove_file(file::origin_path(&outside)).unwrap();
-    let (capture, media) = file::load(&outside).unwrap();
-    let steps = to_fixture(&outside, &capture, &media).unwrap();
+    sim.device.redact_secrets();
+    sim.device
+        .power_cycle()
+        .expect("the device powers on again");
+    sim.advance(seconds(2));
+    let steps = to_fixture(&outside, &sim.capture()).unwrap();
     assert!(steps.contains("device trace"), "{steps}");
     assert!(!steps.contains("cp "), "{steps}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
-fn an_origin1_origin_is_named_on_load_and_upgrades_to_replay_exactly() {
-    let dir = std::env::temp_dir().join(format!("trace-origin1-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let trace = dir.join("laps-and-a-menu.trace");
-    std::fs::copy(fixture("laps-and-a-menu"), &trace).unwrap();
-    let saved_before_the_intent_region =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/traces/origin1/laps-and-a-menu.origin");
-    std::fs::copy(saved_before_the_intent_region, file::origin_path(&trace)).unwrap();
-    let error = file::load(&trace)
-        .err()
-        .expect("an ORIGIN1 origin is refused");
-    assert!(
-        error.to_string().contains("ORIGIN1") && error.to_string().contains("upgrade"),
-        "{error}"
-    );
-    assert!(file::upgrade(&trace).unwrap(), "upgraded");
-    assert!(!file::upgrade(&trace).unwrap(), "upgraded once");
-    assert_eq!(
-        std::fs::read(file::origin_path(&trace)).unwrap(),
-        std::fs::read(file::origin_path(&fixture("laps-and-a-menu"))).unwrap(),
-        "as this build saves it"
-    );
-    let (capture, _) = file::load(&trace).unwrap();
-    let report = Sim::replay(&capture).device.report().unwrap();
-    assert_eq!(report.first, None, "{:?}", report.counts);
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
-#[test]
-fn a_stimulus_replay_of_a_fixture_shows_what_the_recording_showed() {
-    let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
-    let sim = Sim::replay_as(&capture, Mode::Stimulus, |_| {});
+fn a_changed_replay_of_a_fixture_shows_what_the_recording_showed() {
+    let capture = std::fs::read(fixture("laps-and-a-menu")).unwrap();
+    let changed = shell_simulator::replay::Options {
+        mode: Mode::Changed,
+        model: false,
+    };
+    let sim = Sim::replay_as(&capture, changed);
     let report = sim.device.report().unwrap();
+    assert_eq!(report.verdict().map(|_| ()), Ok(()), "{report}");
     assert_eq!(
         report.count(shell_simulator::replay::Kind::Seen),
         0,
@@ -677,17 +629,17 @@ fn a_stimulus_replay_of_a_fixture_shows_what_the_recording_showed() {
 }
 
 #[test]
-fn a_strict_replay_of_a_fixture_shows_the_recorded_frames() {
-    let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
+fn a_faithful_replay_of_a_fixture_shows_the_recorded_frames() {
+    let capture = std::fs::read(fixture("laps-and-a-menu")).unwrap();
     let sim = Sim::replay(&capture);
     let report = sim.device.report().unwrap();
     assert_eq!(report.first, None, "{:?}", report.counts);
 }
 
-fn one_frame_off(capture: &shell_simulator::replay::Capture) -> shell_simulator::replay::Capture {
+fn one_frame_off(capture: &[u8]) -> Vec<u8> {
     use firmware_services::trace::recorder::{Record, Recorder};
     use firmware_services::trace::{Event, decode, encode_header};
-    let (header, events) = decode(&capture.trace).unwrap();
+    let (header, events) = decode(capture).unwrap();
     let mut events: Vec<Event<'_>> = events.collect();
     let frames: Vec<usize> = (0..events.len())
         .filter(|&at| matches!(events[at], Event::Panel(_)))
@@ -709,17 +661,16 @@ fn one_frame_off(capture: &shell_simulator::replay::Capture) -> shell_simulator:
     }
     let mut trace = recorder.sink().0.clone();
     trace.extend_from_slice(recorder.open_block());
-    shell_simulator::replay::Capture {
-        origin: capture.origin.untapped(),
-        trace,
-    }
+    trace
 }
 
 #[test]
-fn a_strict_replay_holds_a_fixture_to_its_panel_digests() {
-    let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
-    let altered = one_frame_off(&capture);
-    let report = Sim::replay(&altered).device.report().unwrap();
+fn a_faithful_replay_holds_a_fixture_to_its_panel_digests() {
+    let capture = std::fs::read(fixture("laps-and-a-menu")).unwrap();
+    let report = Sim::replay(&one_frame_off(&capture))
+        .device
+        .report()
+        .unwrap();
     assert_eq!(
         report.count(shell_simulator::replay::Kind::Seen),
         1,
@@ -888,7 +839,7 @@ fn timeline_and_find_never_print_the_phone_token() {
         b"",
     );
     assert_eq!(status, 200);
-    let timeline = read(&sim.capture().trace).unwrap();
+    let timeline = read(&sim.capture()).unwrap();
     let asked: Vec<&str> = timeline
         .entries
         .iter()
@@ -931,7 +882,7 @@ fn the_ride_clock_reads_what_the_rider_saw_after_the_card_fails() {
     sim.advance(seconds(120));
     sim.fail_bulk(0, 100);
     sim.advance(seconds(60));
-    let timeline = read(&sim.capture().trace).unwrap();
+    let timeline = read(&sim.capture()).unwrap();
     use shell_simulator::trace::timeline::field;
     let off: Vec<String> = timeline
         .entries
@@ -1315,7 +1266,7 @@ fn the_json_summary_holds_the_header_silences_story_battery_and_counts() {
     assert_eq!(header["end_ms"], timeline.end_ms);
     assert_eq!(header["passes"], timeline.passes);
     assert_eq!(header["end"], "complete");
-    assert_eq!(header["media"], "saved", "the fixture's .origin");
+    assert!(header.get("media").is_none(), "a trace is the whole record");
     let silences = summary["silences"].as_array().unwrap();
     let [silence] = silences.as_slice() else {
         panic!("only the power meter went quiet: {silences:?}");
@@ -1453,9 +1404,6 @@ fn json_find_gives_stretches_or_entries_up_to_the_limit_and_the_total() {
 fn every_other_trace_command_answers_in_one_json_document() {
     let trace = fixture("power-dropout-after-descent");
     let trace = path_of(&trace);
-    let origin = trace_json(&["origin", trace]);
-    assert!(origin["origin"].as_str().unwrap().ends_with(".origin"));
-    assert!(origin["lines"][0].as_str().unwrap().starts_with("origin "));
     let otlp = trace_json(&["otlp", trace]);
     assert!(otlp["traces"]["resourceSpans"].is_array(), "{otlp}");
     assert!(otlp["metrics"]["resourceMetrics"].is_array());
@@ -1476,6 +1424,35 @@ fn every_other_trace_command_answers_in_one_json_document() {
 }
 
 #[test]
+fn a_replay_that_leaves_the_recorded_world_at_boot_says_so_in_its_json_error() {
+    let dir = scratch("replay-at-boot");
+    let header = firmware_services::trace::Header {
+        build: [0; 20],
+        device: "c606",
+        boot: 1,
+        terrain: firmware_services::trace::origin::Found::Absent,
+    };
+    let empty = shell_simulator::trace::surgery::encode(&header, []);
+    let trace = dir.join("empty.trace");
+    std::fs::write(&trace, empty).unwrap();
+    let replayed = std::process::Command::new(env!("CARGO_BIN_EXE_trace"))
+        .args(["replay".as_ref(), trace.as_os_str(), "--json".as_ref()])
+        .arg("--out")
+        .arg(dir.join("out"))
+        .output()
+        .unwrap();
+    assert_eq!(replayed.status.code(), Some(2));
+    let failed: serde_json::Value = serde_json::from_slice(&replayed.stdout).unwrap();
+    let left = failed["left"].as_str().expect("a left cause");
+    assert!(
+        left.starts_with("at boot, left the recorded world"),
+        "{failed}"
+    );
+    assert_eq!(failed["error"], format!("trace: {left}"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn a_json_replay_names_its_mode_window_divergence_and_artifacts() {
     let dir = scratch("replay-json");
     let out = dir.join("out");
@@ -1489,7 +1466,7 @@ fn a_json_replay_names_its_mode_window_divergence_and_artifacts() {
         "--out",
         path_of(&out),
     ]);
-    assert_eq!(replayed["mode"], "stimulus", "the fixture names no build");
+    assert_eq!(replayed["mode"], "changed", "the fixture names no build");
     assert!(!replayed["why"].as_str().unwrap().is_empty());
     assert_eq!(
         (replayed["from_ms"].as_u64(), replayed["to_ms"].as_u64()),
@@ -1509,6 +1486,61 @@ fn a_json_replay_names_its_mode_window_divergence_and_artifacts() {
     for name in ["screens.txt", "divergence.txt", "replayed.trace"] {
         assert!(files.iter().any(|file| file.ends_with(name)), "{files:?}");
     }
+}
+
+#[test]
+fn a_set_replays_both_futures_and_names_where_they_part() {
+    let dir = scratch("replay-set");
+    let out = dir.join("out");
+    let futures = trace_json(&[
+        "replay",
+        path_of(&fixture("laps-and-a-menu")),
+        "--set",
+        "0s:input=drop",
+        "--out",
+        path_of(&out),
+    ]);
+    let resolved = &futures["sets"][0];
+    assert_eq!(resolved["set"], "0s:input=drop");
+    assert!(
+        resolved["at"]["session_ms"].as_u64().unwrap() > 0,
+        "{resolved}"
+    );
+    assert_eq!(futures["recorded"]["mode"], "changed");
+    assert_eq!(futures["recorded"]["model"], true);
+    assert_eq!(futures["recorded"]["divergence"]["ok"], true, "{futures}");
+    assert_eq!(
+        futures["set"]["divergence"]["ok"], false,
+        "the press it dropped branches the replay: {futures}"
+    );
+    assert!(futures["diff"]["seen"].is_object(), "{futures}");
+    assert!(futures["diff"]["world"].is_object(), "{futures}");
+    assert!(out.join("recorded/replayed.trace").exists());
+    assert!(out.join("set/replayed.trace").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn trace_diff_names_the_first_seen_entry_and_world_record_two_traces_part_at() {
+    let laps = fixture("laps-and-a-menu");
+    let same = trace_json(&["diff", path_of(&laps), path_of(&laps)]);
+    assert_eq!(
+        (
+            same["seen"].clone(),
+            same["panel"].clone(),
+            same["world"].clone()
+        ),
+        (
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null
+        )
+    );
+    let other = fixture("power-dropout-after-descent");
+    let parted = trace_json(&["diff", path_of(&laps), path_of(&other)]);
+    assert!(parted["seen"]["at_ms"].is_u64(), "{parted}");
+    assert!(parted["panel"]["a"].is_string(), "{parted}");
+    assert!(parted["world"]["a"].is_string(), "{parted}");
 }
 
 #[test]
@@ -1570,14 +1602,14 @@ fn path_with_fake_uv(dir: &Path) -> PathBuf {
 }
 
 #[test]
-fn a_strict_replay_by_its_own_build_that_parts_bundles_its_first_divergence_and_never_fails_for_it()
-{
+fn a_faithful_replay_by_its_own_build_that_fails_bundles_its_first_divergence_and_never_errs_for_it()
+ {
     let dir = scratch("replay-bundle");
     let mut sim = Sim::new().boot();
     sim.discard_recording();
     sim.advance(seconds(5));
     let trace = dir.join("own.trace");
-    file::save(&one_frame_off(&sim.capture()), &trace).unwrap();
+    std::fs::write(&trace, one_frame_off(&sim.capture())).unwrap();
     let bin = path_with_fake_uv(&dir);
     let asked = dir.join("asked");
     let replay = |out: &str, more: &[&str], refuses: &str| {
@@ -1599,15 +1631,16 @@ fn a_strict_replay_by_its_own_build_that_parts_bundles_its_first_divergence_and_
             .args(more)
             .output()
             .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "the verdict fails, and nothing else does: {}",
             String::from_utf8_lossy(&out.stderr)
         );
         serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
     };
     let parted = replay("parted", &[], "");
-    assert_eq!(parted["mode"], "strict", "{}", parted["why"]);
+    assert_eq!(parted["mode"], "faithful", "{}", parted["why"]);
     let first = &parted["divergence"]["first"];
     assert_eq!(first["kind"], "Seen");
     assert_eq!(parted["bundle"]["written"], "/bundles/failure.bundle");

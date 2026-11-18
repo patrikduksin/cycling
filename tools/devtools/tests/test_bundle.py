@@ -149,7 +149,7 @@ def test_a_clean_build_bundles_its_commit_tree(repo, build, trace, tmp_path):
     )
     held = members(out)
     assert held['trace'] == b'VANA-TRACE world log'
-    assert {'trace.origin', 'course.trace', 'pack'}.isdisjoint(held)
+    assert {'course.trace', 'pack'}.isdisjoint(held)
     assert extracted_tree(out, tmp_path / 'extracted') == git(repo, 'rev-parse', 'HEAD^{tree}')
 
 
@@ -186,14 +186,13 @@ def test_a_build_not_archived_here_is_refused(repo, trace, tmp_path):
         bundle.write(repo, tmp_path / 'out.bundle', trace, 'f' * 40, Replay(1), Faithful())
 
 
-def test_the_trace_origin_and_course_travel_with_a_fuzz_finding(repo, build, trace, tmp_path):
-    trace.with_suffix('.origin').write_bytes(b'VANA-ORIGIN2')
+def test_the_course_travels_with_a_fuzz_finding(repo, build, trace, tmp_path):
     course = tmp_path / 'course.trace'
     course.write_bytes(b'course')
     run = Fuzz('0x00000000000000ab', True, False)
     out = bundle.write(repo, tmp_path / 'f.bundle', trace, build(), run, Found('X', 'step 3', 'why'), course=course)
     held = members(out)
-    assert (held['trace.origin'], held['course.trace']) == (b'VANA-ORIGIN2', b'course')
+    assert held['course.trace'] == b'course'
     with pytest.raises(bundle.Refused, match='exactly when --course'):
         bundle.write(repo, tmp_path / 'g.bundle', trace, build(), run, Found('X', 'step 3', 'why'))
 
@@ -201,7 +200,7 @@ def test_the_trace_origin_and_course_travel_with_a_fuzz_finding(repo, build, tra
 class Summary:
     def __init__(self, header, replay=None):
         self.header = header
-        self.replay = replay or {'mode': 'strict', 'why': 'same build', 'parted': None}
+        self.replay = replay or {'mode': 'faithful', 'why': 'same build', 'parted': None}
         self.replays = []
 
     def __call__(self, argv, **kwargs):
@@ -235,7 +234,7 @@ def test_a_trace_bundles_the_pack_its_header_names_by_length_and_digest(repo, bu
         bundle.bundle_trace(repo, trace, tmp_path / 'm.bundle', Summary(missing))
 
 
-def test_a_trace_bundles_what_its_strict_replay_shows_here(repo, build, trace, tmp_path):
+def test_a_trace_bundles_what_its_faithful_replay_shows_here(repo, build, trace, tmp_path):
     name = build()
     header = {'build': name, 'end_ms': 61000, 'terrain': None}
     faithful = Summary(header)
@@ -246,12 +245,12 @@ def test_a_trace_bundles_what_its_strict_replay_shows_here(repo, build, trace, t
     assert argv[7:8] == ['61000ms'] and argv[-2:] == ['--json', '--no-bundle']
 
     first = {'kind': 'Unrecorded', 'at_ms': 3300, 'detail': 'a host command the trace never saw'}
-    diverged = Summary(header, {'mode': 'strict', 'why': 'same build', 'parted': first})
+    diverged = Summary(header, {'mode': 'faithful', 'why': 'same build', 'parted': first})
     expect = manifest_of(bundle.bundle_trace(repo, trace, tmp_path / 'd.bundle', diverged)).expect
     assert expect == Diverged('Unrecorded', 3300, 'a host command the trace never saw')
 
-    other = Summary(header, {'mode': 'stimulus', 'why': 'recorded by another build', 'parted': None})
-    with pytest.raises(bundle.Refused, match=r'in stimulus mode \(recorded by another build\).*whose build matches'):
+    other = Summary(header, {'mode': 'changed', 'why': 'recorded by another build', 'parted': None})
+    with pytest.raises(bundle.Refused, match=r'in changed mode \(recorded by another build\).*whose build matches'):
         bundle.bundle_trace(repo, trace, tmp_path / 'o.bundle', other)
     assert not (tmp_path / 'o.bundle').exists()
 
@@ -260,7 +259,7 @@ class Twin:
     def __init__(self, tmp_path, replay=None, fuzz=(0, 'pass\n'), build_hash=None):
         self.bin = tmp_path / 'cargo-out'
         self.calls = []
-        self.replay = replay or {'mode': 'strict', 'why': 'same build', 'parted': None}
+        self.replay = replay or {'mode': 'faithful', 'why': 'same build', 'parted': None}
         self.fuzz = fuzz
         self.build_hash = build_hash
 
@@ -433,7 +432,7 @@ def test_a_divergence_other_than_the_expected_one_differs(repo, build, trace, tm
     expect = Diverged('Refused', 1200, 'read 4')
     out = bundle.write(repo, tmp_path / 'x.bundle', trace, build(), Replay(2000), expect)
     parted = {'kind': 'Refused', 'at_ms': 1300, 'detail': 'read 4'}
-    twin = Twin(tmp_path, replay={'mode': 'strict', 'why': '', 'parted': parted})
+    twin = Twin(tmp_path, replay={'mode': 'faithful', 'why': '', 'parted': parted})
     assert bundle.main(['--root', str(repo), 'run', str(out), '--json'], runner=twin) == 1
     doc = json.loads(capsys.readouterr().out)
     assert (doc['verdict'], doc['expect'], doc['got']) == (
@@ -447,7 +446,7 @@ def test_a_rebuild_the_twin_does_not_call_the_recording_build_is_an_error(
     repo, build, trace, tmp_path, in_shell, capsys
 ):
     out = bundle.write(repo, tmp_path / 'x.bundle', trace, build(), Replay(2000), Faithful())
-    twin = Twin(tmp_path, replay={'mode': 'stimulus', 'why': 'builds differ', 'parted': None})
+    twin = Twin(tmp_path, replay={'mode': 'changed', 'why': 'builds differ', 'parted': None})
     assert bundle.main(['--root', str(repo), 'run', str(out), '--json'], runner=twin) == 2
     assert json.loads(capsys.readouterr().out) == {'error': 'this rebuild is another build: builds differ'}
 

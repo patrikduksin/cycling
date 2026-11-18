@@ -660,40 +660,35 @@ impl Reader {
     }
 
     fn world(&mut self, world: World<'_>) {
+        let kind = self::kind(&world).unwrap_or(Kind::Trace);
         match world {
-            World::Edge(edge) => {
-                self.push_with(Kind::Input, 0, |line| line.write_str(&input(edge.input)))
+            World::Edge(edge) => self.push_with(kind, 0, |line| line.write_str(&input(edge.input))),
+            World::Startup(startup) => {
+                self.push_with(kind, 0, |line| write!(line, "companion {}", startup.name()))
             }
-            World::Startup(startup) => self.push_with(Kind::Startup, 0, |line| {
-                write!(line, "companion {}", startup.name())
-            }),
             World::AntLink { channel, snapshot } => {
-                self.push_with(Kind::Ant, channel, |line| ant_link(line, channel, snapshot))
+                self.push_with(kind, channel, |line| ant_link(line, channel, snapshot))
             }
             World::AntPacket(packet) => {
                 let now = self.now;
-                let entry = self
-                    .entries
-                    .push_with(self.at(), Kind::AntPacket, 0, |line| {
-                        self.sensors.packet(now, packet.identity, packet.data, line);
-                        Ok(())
-                    });
+                let entry = self.entries.push_with(self.at(), kind, 0, |line| {
+                    self.sensors.packet(now, packet.identity, packet.data, line);
+                    Ok(())
+                });
                 entry.bytes = Some(packet.data);
             }
-            World::AntRequest { operation, result } => {
-                self.push_with(Kind::AntRequest, 0, |line| {
-                    write!(
-                        line,
-                        "{} -> {}",
-                        ant_operation(operation),
-                        ant_result(result)
-                    )
-                })
-            }
-            World::AntSend(send) => self.push_with(Kind::AntRequest, 0, |line| {
-                write!(line, "send status {send:?}")
+            World::AntRequest { operation, result } => self.push_with(kind, 0, |line| {
+                write!(
+                    line,
+                    "{} -> {}",
+                    ant_operation(operation),
+                    ant_result(result)
+                )
             }),
-            World::BlePacket(packet) => self.push_with(Kind::BlePacket, 0, |line| {
+            World::AntSend(send) => {
+                self.push_with(kind, 0, |line| write!(line, "send status {send:?}"))
+            }
+            World::BlePacket(packet) => self.push_with(kind, 0, |line| {
                 write!(
                     line,
                     "connection {} seq {} data {}",
@@ -702,16 +697,16 @@ impl Reader {
                     hex(packet.data().unwrap_or(&[]))
                 )
             }),
-            World::BleBattery(level) => self.push_with(Kind::Ble, 0, |line| {
+            World::BleBattery(level) => self.push_with(kind, 0, |line| {
                 write!(line, "sensor battery raw {}", level.raw)
             }),
             World::Position(snapshot) => {
                 if let Some(utc) = snapshot.and_then(|s| s.gps.utc_ms) {
                     self.learn_utc(utc);
                 }
-                self.push_with(Kind::Gps, 0, |line| gps(line, snapshot));
+                self.push_with(kind, 0, |line| gps(line, snapshot));
             }
-            World::Physical(snapshot) => self.push_with(Kind::Sensors, 0, |line| {
+            World::Physical(snapshot) => self.push_with(kind, 0, |line| {
                 line.write_str(match snapshot.pressure {
                     Observation::Unavailable => "barometer unavailable",
                     Observation::Fresh { .. } => "barometer fresh",
@@ -719,19 +714,17 @@ impl Reader {
                 })
             }),
             World::Light(light) => match light {
-                Observation::Unavailable => self.push_with(Kind::Sensors, 0, |line| {
-                    line.write_str("ambient light unavailable")
-                }),
-                Observation::Fresh { value, .. } => self.push_with(Kind::Sensors, 0, |line| {
-                    write!(line, "ambient light {}", value.0)
-                }),
-                Observation::Stale { value, .. } => self.push_with(Kind::Sensors, 0, |line| {
+                Observation::Unavailable => {
+                    self.push_with(kind, 0, |line| line.write_str("ambient light unavailable"))
+                }
+                Observation::Fresh { value, .. } => {
+                    self.push_with(kind, 0, |line| write!(line, "ambient light {}", value.0))
+                }
+                Observation::Stale { value, .. } => self.push_with(kind, 0, |line| {
                     write!(line, "ambient light {} stale", value.0)
                 }),
             },
-            World::Companion(snapshot) => {
-                self.push_with(Kind::Battery, 0, |line| battery(line, snapshot))
-            }
+            World::Companion(snapshot) => self.push_with(kind, 0, |line| battery(line, snapshot)),
             World::Media(op, access) => {
                 if let Some(error) = access.fault {
                     let (medium, at) = (access.span.medium, access.span.start);
@@ -742,9 +735,9 @@ impl Reader {
                 self.storage_fault(format_args!("Bulk Info failed at 0: {error:?}"))
             }
             World::Entropy(value) | World::AccessPointEntropy(value) => {
-                self.push_with(Kind::Entropy, 0, |line| write!(line, "{value:#018x}"))
+                self.push_with(kind, 0, |line| write!(line, "{value:#018x}"))
             }
-            World::AccessPointRequest { start, result } => self.push_with(Kind::Phone, 0, |line| {
+            World::AccessPointRequest { start, result } => self.push_with(kind, 0, |line| {
                 write!(
                     line,
                     "access point {} -> {}",
@@ -752,7 +745,7 @@ impl Reader {
                     answer(result)
                 )
             }),
-            World::ServerListen(listen) => self.push_with(Kind::Phone, 0, |line| {
+            World::ServerListen(listen) => self.push_with(kind, 0, |line| {
                 line.write_str(if listen {
                     "server listen"
                 } else {
@@ -760,9 +753,9 @@ impl Reader {
                 })
             }),
             World::ServerFinish(id) => {
-                self.push_with(Kind::Phone, 0, |line| write!(line, "server finish #{id}"))
+                self.push_with(kind, 0, |line| write!(line, "server finish #{id}"))
             }
-            World::ServerRead { id, part, more } => self.push_with(Kind::Phone, 0, |line| {
+            World::ServerRead { id, part, more } => self.push_with(kind, 0, |line| {
                 write!(
                     line,
                     "server read #{id} {} B{}",
@@ -770,12 +763,12 @@ impl Reader {
                     if more { ", more" } else { "" }
                 )
             }),
-            World::ServerWrite { id, taken } => self.push_with(Kind::Phone, 0, |line| {
+            World::ServerWrite { id, taken } => self.push_with(kind, 0, |line| {
                 write!(line, "server write #{id} took {taken} B")
             }),
             World::PowerControl(status) => {
                 self.power.push((self.now, status.state));
-                self.push_with(Kind::Power, 0, |line| {
+                self.push_with(kind, 0, |line| {
                     write_lower(
                         line,
                         format_args!("{:?} {:?}", status.state, status.operation),
@@ -786,7 +779,7 @@ impl Reader {
                 operation,
                 delay_ms,
                 result,
-            } => self.push_with(Kind::Power, 0, |line| {
+            } => self.push_with(kind, 0, |line| {
                 write!(
                     line,
                     "{} in {delay_ms} ms -> {}",
@@ -794,19 +787,19 @@ impl Reader {
                     answer(result)
                 )
             }),
-            World::Backlight(availability) => self.push_with(Kind::Display, 0, |line| {
+            World::Backlight(availability) => self.push_with(kind, 0, |line| {
                 write_lower(line, format_args!("backlight {availability:?}"))
             }),
-            World::Refused { output, attempt } => self.push_with(Kind::Display, 0, |line| {
+            World::Refused { output, attempt } => self.push_with(kind, 0, |line| {
                 write_lower(line, format_args!("{output:?} refused, attempt {attempt}"))
             }),
-            World::SoundState(snapshot) => self.push_with(Kind::Buzzer, 0, |line| {
+            World::SoundState(snapshot) => self.push_with(kind, 0, |line| {
                 write_lower(
                     line,
                     format_args!("{:?} {:?}", snapshot.state, snapshot.pattern),
                 )
             }),
-            World::SoundRequest { play, result } => self.push_with(Kind::Buzzer, 0, |line| {
+            World::SoundRequest { play, result } => self.push_with(kind, 0, |line| {
                 write!(
                     line,
                     "{} -> {}",
@@ -836,6 +829,44 @@ impl Reader {
     fn storage_fault(&mut self, fault: fmt::Arguments<'_>) {
         self.push_with(Kind::Storage, 0, |line| write_lower(line, fault));
     }
+}
+
+/// The kind of the entries a world record makes, as `trace timeline`
+/// names them; `None` for a record that makes none.
+pub fn kind(world: &World<'_>) -> Option<Kind> {
+    Some(match world {
+        World::Edge(_) => Kind::Input,
+        World::Startup(_) => Kind::Startup,
+        World::AntAvailability(_)
+        | World::AntScanning(_)
+        | World::AntDiscovery { .. }
+        | World::AntLink { .. } => Kind::Ant,
+        World::AntPacket(_) => Kind::AntPacket,
+        World::AntRequest { .. } | World::AntSend(_) => Kind::AntRequest,
+        World::BleAvailability(_) | World::BleLink(_) | World::BleBattery(_) => Kind::Ble,
+        World::BlePacket(_) => Kind::BlePacket,
+        World::Position(_) => Kind::Gps,
+        World::Physical(_) | World::Light(_) => Kind::Sensors,
+        World::Companion(_) => Kind::Battery,
+        World::Media(..) | World::NoCard(_) => Kind::Storage,
+        World::Entropy(_) | World::AccessPointEntropy(_) => Kind::Entropy,
+        World::AccessPointState(_)
+        | World::AccessPointReach(_)
+        | World::AccessPointRequest { .. }
+        | World::ServerRequest(_)
+        | World::ServerRoom(_)
+        | World::ServerListen(_)
+        | World::ServerFinish(_)
+        | World::ServerRead { .. }
+        | World::ServerWrite { .. } => Kind::Phone,
+        World::PowerControl(_) | World::PowerRequest { .. } => Kind::Power,
+        World::Backlight(_) | World::Refused { .. } => Kind::Display,
+        World::SoundState(_) | World::SoundRequest { .. } => Kind::Buzzer,
+        World::PositionAvailability(_)
+        | World::Fitted(_)
+        | World::PowerCapabilities(_)
+        | World::Other => return None,
+    })
 }
 
 /// Which shown readings a ride page draws, from VANA's own pages; the main

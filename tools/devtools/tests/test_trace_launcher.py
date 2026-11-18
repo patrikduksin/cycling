@@ -217,6 +217,24 @@ class TraceLauncherTests(LauncherCase):
             names, sorted([f'.{first}.Fresh1', '.lock', first, *commits[2:]]), 'the oldest unused one goes'
         )
 
+    def test_pruning_counts_binaries_not_their_notes_and_a_pruned_binarys_note_goes_with_it(self):
+        first = git(self.repo, 'rev-parse', 'HEAD')
+        self.run_trace(self.repo, 'summary')
+        for name in ('build-old', 'build-new'):
+            self.cache().joinpath(name).write_text('a patched build')
+            self.cache().joinpath(f'{name}.from').write_text('what it was built from\n')
+        for name in ('build-old', 'build-old.from'):
+            os.utime(self.cache() / name, (0, 0))
+        commits = []
+        for n in range(3):
+            (self.repo / 'apps' / 'app.rs').write_text(f'v{n}')
+            commits.append(self.commit(f'v{n}'))
+            self.run_trace(self.repo, 'summary')
+        self.assertEqual(
+            sorted(p.name for p in self.cache().iterdir()),
+            sorted(['.lock', first, 'build-new', 'build-new.from', *commits]),
+        )
+
     @contextmanager
     def locked(self, path, how):
         path.parent.mkdir(parents=True, exist_ok=True)

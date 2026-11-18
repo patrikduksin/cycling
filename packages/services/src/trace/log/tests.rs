@@ -184,7 +184,8 @@ fn a_run_ends_at_any_other_record_and_at_the_pass() {
 }
 
 #[test]
-fn a_failed_write_forgets_what_it_attempted_and_a_failed_read_determines_nothing() {
+fn a_failed_write_forgets_what_it_attempted_and_names_its_crc_and_a_failed_read_determines_nothing()
+{
     let log = log();
     let mut card = ReadWriteRecorder::new(Card::new(64), &log, Box::default());
     let mut out = sector(0);
@@ -199,7 +200,7 @@ fn a_failed_write_forgets_what_it_attempted_and_a_failed_read_determines_nothing
         accesses(&log),
         [
             "4.2 Bulk 8+1 crc",
-            "4.2 Bulk 8+1!",
+            "4.2 Bulk 8+1 crc!",
             "4.1 Bulk 8+1 bytes!",
             "4.1 Bulk 8+1 bytes",
             "4.1 Bulk 8+1 crc",

@@ -12,50 +12,41 @@ use std::fmt;
 pub enum Meaning {
     /// The rider saw or heard something else than in the recording.
     RiderVisible,
-    /// The simulator could not replay a recorded event.
+    /// VANA panicked or broke an invariant.
+    Broken,
+    /// The simulator could not replay a recorded event, or the build left
+    /// the recorded world.
     ReplayFault,
-    /// Strict: VANA asked other than the recording did.
+    /// `--model` answered where the recording held nothing.
+    Modelled,
+    /// VANA asked other than the recording did.
     CallLevel,
-    /// Stimulus: the ANT model or fresh entropy answered where the
-    /// recording's radio did; nothing the rider sees.
-    ModelOnly,
-    /// Stimulus: recorded input waited for VANA's next pass.
-    Timing,
-    /// Strict: the phone page's pixels, where the trace redacted the
-    /// credentials it draws.
+    /// The phone page's pixels, where the trace redacted the credentials
+    /// it draws.
     Redacted,
 }
 
 impl Meaning {
-    pub fn of(kind: Kind, mode: Mode) -> Self {
+    pub fn of(kind: Kind) -> Self {
         match kind {
             Kind::Seen => Self::RiderVisible,
+            Kind::Panicked => Self::Broken,
             Kind::Redacted => Self::Redacted,
             Kind::Unrecorded | Kind::Unreplayable | Kind::Truncated | Kind::Lost => {
                 Self::ReplayFault
             }
-            Kind::Modelled
-            | Kind::LeftOver
-            | Kind::OtherRequest
-            | Kind::NotRequested
-            | Kind::Refused
-            | Kind::NotHeard
-            | Kind::Carried
-            | Kind::Rerecorded => match (kind, mode) {
-                (_, Mode::Strict) => Self::CallLevel,
-                (Kind::Carried, Mode::Stimulus) => Self::Timing,
-                (_, Mode::Stimulus) => Self::ModelOnly,
-            },
+            Kind::Modelled | Kind::NotRequested => Self::Modelled,
+            Kind::LeftOver | Kind::Rerecorded => Self::CallLevel,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
             Self::RiderVisible => "rider-visible",
+            Self::Broken => "broken",
             Self::ReplayFault => "replay fault",
+            Self::Modelled => "modelled",
             Self::CallLevel => "call-level",
-            Self::ModelOnly => "model-only",
-            Self::Timing => "timing-only",
             Self::Redacted => "redacted",
         }
     }
@@ -65,16 +56,16 @@ impl Meaning {
             Self::RiderVisible => {
                 "the rider saw or heard something else; compare screens.txt with timeline.txt"
             }
+            Self::Broken => "VANA panicked or broke an invariant",
             Self::ReplayFault => {
                 "the trace held no value for an input VANA read, or an event the simulator cannot replay"
             }
+            Self::Modelled => {
+                "--model answered with the nearest recorded value where the trace held none; the replay is on that branch"
+            }
             Self::CallLevel => {
-                "VANA asked other than the recording: a VANA change, or a replay fault on the same build"
+                "VANA asked other than the recording: a VANA change, or a recording bug on the same build"
             }
-            Self::ModelOnly => {
-                "the stimulus ANT model or fresh entropy answered where the recording's radio did; the rider does not see it"
-            }
-            Self::Timing => "recorded input waited for VANA's next pass",
             Self::Redacted => {
                 "the phone page drew other credentials than the redacted trace holds; expected"
             }
@@ -96,8 +87,12 @@ pub struct Divergences {
     pub first: Option<First>,
     #[serde(serialize_with = "by_kind")]
     pub before: Counts,
-    pub verdict: &'static str,
-    /// What a strict replay proved by recording the world again, and what
+    /// What the rider saw, by the window's divergences.
+    pub seen: &'static str,
+    /// The mode's verdict over the whole replay.
+    pub ok: bool,
+    pub verdict: String,
+    /// What a replay proved by recording the world again, and what
     /// that leaves out, a line each.
     pub guarantees: Vec<String>,
 }
@@ -154,12 +149,14 @@ pub fn summarize(
         let inside = count - before.get(&kind).copied().unwrap_or(0);
         if inside > 0 {
             by_meaning
-                .entry(Meaning::of(kind, mode))
+                .entry(Meaning::of(kind))
                 .or_default()
                 .insert(kind, inside);
         }
     }
-    let verdict = if by_meaning.contains_key(&Meaning::RiderVisible) {
+    let seen = if by_meaning.contains_key(&Meaning::Broken) {
+        "VANA panicked or broke an invariant"
+    } else if by_meaning.contains_key(&Meaning::RiderVisible) {
         "the rider saw something else than the recording in this window"
     } else if by_meaning.contains_key(&Meaning::ReplayFault) {
         "the rider saw what the recording saw, but the replay lacked recorded input or skipped events"
@@ -169,6 +166,10 @@ pub fn summarize(
         "the replay matched the recording"
     } else {
         "the rider saw what the recording saw; nothing here is a replay fault"
+    };
+    let (ok, verdict) = match report.verdict() {
+        Ok(verdict) => (true, verdict),
+        Err(verdict) => (false, verdict),
     };
     Divergences {
         mode,
@@ -185,11 +186,13 @@ pub fn summarize(
             .collect(),
         first: report.first.as_ref().map(|first| First {
             at: timeline.moment(first.at_ms),
-            meaning: Meaning::of(first.kind, mode),
+            meaning: Meaning::of(first.kind),
             kind: first.kind,
             detail: first.detail.clone(),
         }),
         before: before.clone(),
+        seen,
+        ok,
         verdict,
         guarantees: (report.faithful.iter())
             .flat_map(|faithful| {
@@ -249,7 +252,14 @@ impl fmt::Display for Divergences {
                 _ => format!("{earlier} ({})", counts_text(&self.before)),
             }
         )?;
-        writeln!(f, "verdict: {}", self.verdict)?;
+        writeln!(f, "seen: {}", self.seen)?;
+        let held = if self.ok { "holds" } else { "fails" };
+        writeln!(
+            f,
+            "verdict ({}): {held}: {}",
+            self.mode.name(),
+            self.verdict
+        )?;
         self.guarantees
             .iter()
             .try_for_each(|line| writeln!(f, "{line}"))
@@ -291,42 +301,67 @@ mod tests {
     }
 
     #[test]
-    fn only_the_window_counts_and_model_answers_are_not_faults() {
+    fn only_the_window_counts_and_a_modelled_branch_fails_the_verdict() {
         let before = Counts::from([(Kind::NotRequested, 1)]);
-        let mut report = Report::new(Mode::Stimulus);
-        report.first = Some(Divergence {
+        let mut report = Report::new(Mode::Changed);
+        let first = Divergence {
             at_ms: 2_000,
             kind: Kind::NotRequested,
             detail: "the recording asked Scan".into(),
-        });
-        report.counts = Counts::from([(Kind::NotRequested, 3), (Kind::Carried, 1)]);
-        let text = summarize(&timeline(), (1_000, 5_000), &before, &report).to_string();
+        };
+        report.first = Some(first.clone());
+        report.branched = Some(first);
+        report.counts = Counts::from([(Kind::NotRequested, 3), (Kind::Rerecorded, 1)]);
+        let summary = summarize(&timeline(), (1_000, 5_000), &before, &report);
+        let text = summary.to_string();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[1], "  rider-visible: none");
         assert!(
-            lines[2].starts_with("  model-only: 2 (NotRequested 2): "),
+            lines[2].starts_with("  modelled: 2 (NotRequested 2): "),
             "{text}"
         );
         assert!(
-            lines[3].starts_with("  timing-only: 1 (Carried 1): "),
+            lines[3].starts_with("  call-level: 1 (Rerecorded 1): "),
             "{text}"
         );
-        assert!(lines[4].starts_with("  first: 00:02.000 ride --:-- model-only, NotRequested"));
+        assert!(lines[4].starts_with("  first: 00:02.000 ride --:-- modelled, NotRequested"));
         assert_eq!(lines[5], "before 00:01.000: 1 (NotRequested 1)");
-        assert!(
-            lines[6].ends_with("nothing here is a replay fault"),
-            "{text}"
+        assert_eq!(
+            lines[7],
+            "verdict (changed): fails: branched by --model at 00:02.000: the recording asked Scan"
         );
-        let json =
-            serde_json::to_value(summarize(&timeline(), (1_000, 5_000), &before, &report)).unwrap();
+        assert!(!summary.ok);
+        let json = serde_json::to_value(&summary).unwrap();
         assert_eq!(json["first"]["kind"], "NotRequested");
         assert_eq!(json["meanings"][0]["kinds"]["NotRequested"], 2);
         assert_eq!(json["before"]["NotRequested"], 1);
+        assert_eq!(json["ok"], false);
 
-        let mut seen = Report::new(Mode::Strict);
+        let mut seen = Report::new(Mode::Faithful);
         seen.counts = Counts::from([(Kind::Seen, 1)]);
-        let text = summarize(&timeline(), (0, 5_000), &Counts::new(), &seen).to_string();
+        let summary = summarize(&timeline(), (0, 5_000), &Counts::new(), &seen);
+        let text = summary.to_string();
         assert!(text.contains("  rider-visible: 1 (Seen 1)"), "{text}");
         assert!(!text.contains("rider-visible: none"), "{text}");
+        assert!(
+            !summary.ok,
+            "a faithful replay that saw otherwise is a recording bug"
+        );
+    }
+
+    #[test]
+    fn a_changed_replay_that_records_otherwise_without_stopping_holds() {
+        let mut report = Report::new(Mode::Changed);
+        report.counts = Counts::from([(Kind::Rerecorded, 1)]);
+        report.faithful = Some(crate::replay::Faithful {
+            ended: Some((3_000, "pass at 3000 ms: recorded A, replayed B".into())),
+            ..Default::default()
+        });
+        let summary = summarize(&timeline(), (0, 5_000), &Counts::new(), &report);
+        assert!(summary.ok, "{summary}");
+        assert_eq!(
+            summary.verdict,
+            "stayed in the recorded world; first difference at 00:03.000: pass at 3000 ms: recorded A, replayed B"
+        );
     }
 }

@@ -43,7 +43,7 @@ use device_api::journal::MethodId;
 use wire::{Reader, Wire, Writer};
 
 /// The header's first byte.
-pub const VERSION: u8 = 6;
+pub const VERSION: u8 = 7;
 pub const MAX_BLOCK: usize = u16::MAX as usize + FRAME;
 const FRAME: usize = 2 + 4;
 

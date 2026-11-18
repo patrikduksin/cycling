@@ -49,6 +49,7 @@ pub fn read(bytes: &[u8]) -> Result<Timeline, String> {
     Ok(Timeline {
         build: build_name(&header.build),
         boot: header.boot,
+        terrain: header.terrain,
         passes: reader.passes,
         end_ms: reader.now,
         end: events.end().expect("events stop only once they say why"),

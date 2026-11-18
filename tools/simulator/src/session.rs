@@ -1918,6 +1918,7 @@ impl Session {
         self.power.0.borrow_mut().refusals.begin_pass();
         self.media.fault.borrow_mut().begin_pass();
         self.bulk.begin_pass();
+        firmware_services::why::pass(self.now);
         let stayed_quiet = self.pass(quiet);
         {
             let power = self.trace.status.state;

@@ -368,6 +368,8 @@ pub struct Timeline {
     /// The recording build's content hash in hex; empty when unknown.
     pub build: String,
     pub boot: u32,
+    /// The TERRAIN pack the session found at power-on.
+    pub terrain: trace::origin::Found<trace::origin::Terrain>,
     pub entries: Vec<Entry>,
     /// The ride clock at each ride state change.
     pub clock: Vec<Anchor>,

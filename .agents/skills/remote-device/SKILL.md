@@ -60,6 +60,13 @@ run `CRASH CLEAR` on current firmware to drop it.
 `cycling device crash-test --power-off` adds a power cycle to the crash
 test (on USB the C606 comes back in charging standby; off USB, switch it on).
 
+`TEST 11` and `TEST 12` both reset with a controlled panic about a second
+after `ACCEPTED` (pipe one ahead of a command to reset in the middle of it).
+`TEST 11` syncs the ride trace to the card first. `TEST 12` does not, so the
+trace's last blocks are only in PSRAM: the next boot's trace summary says how
+many it salvaged into the trace before (`blocks salvaged into it after the
+crash`), and that trace ends with the pass of the `TEST 12` command.
+
 Decode with `cycling device terminal CRASH | cycling backtrace`, or
 `cycling backtrace <log>` for a captured panic print. `build.sh` keeps the
 newest 24 builds' ELFs as `.local/elf/<commit>[-dirty].elf` in the

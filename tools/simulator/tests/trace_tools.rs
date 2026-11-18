@@ -684,11 +684,9 @@ fn a_strict_replay_of_a_fixture_shows_the_recorded_frames() {
     assert_eq!(report.first, None, "{:?}", report.counts);
 }
 
-#[test]
-fn a_strict_replay_holds_a_fixture_to_its_panel_digests() {
+fn one_frame_off(capture: &shell_simulator::replay::Capture) -> shell_simulator::replay::Capture {
     use firmware_services::trace::recorder::{Record, Recorder};
     use firmware_services::trace::{Event, decode, encode_header};
-    let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
     let (header, events) = decode(&capture.trace).unwrap();
     let mut events: Vec<Event<'_>> = events.collect();
     let frames: Vec<usize> = (0..events.len())
@@ -711,10 +709,16 @@ fn a_strict_replay_holds_a_fixture_to_its_panel_digests() {
     }
     let mut trace = recorder.sink().0.clone();
     trace.extend_from_slice(recorder.open_block());
-    let altered = shell_simulator::replay::Capture {
+    shell_simulator::replay::Capture {
         origin: capture.origin.untapped(),
         trace,
-    };
+    }
+}
+
+#[test]
+fn a_strict_replay_holds_a_fixture_to_its_panel_digests() {
+    let (capture, _) = file::load(&fixture("laps-and-a-menu")).unwrap();
+    let altered = one_frame_off(&capture);
     let report = Sim::replay(&altered).device.report().unwrap();
     assert_eq!(
         report.count(shell_simulator::replay::Kind::Seen),
@@ -833,7 +837,8 @@ fn replay_guards_its_default_directory_the_same_way() {
 
 #[test]
 fn the_build_names_an_archived_listing_of_its_sources() {
-    let out = shell_simulator::build_hash(&["listing", env!("CYCLING_BUILD_HASH")]).unwrap();
+    let out =
+        shell_simulator::devtools("build_hash", ["listing", env!("CYCLING_BUILD_HASH")]).unwrap();
     assert!(out.status.success(), "the build is archived: {out:?}");
     let listing = String::from_utf8(out.stdout).unwrap();
     assert!(
@@ -1504,4 +1509,148 @@ fn a_json_replay_names_its_mode_window_divergence_and_artifacts() {
     for name in ["screens.txt", "divergence.txt", "replayed.trace"] {
         assert!(files.iter().any(|file| file.ends_with(name)), "{files:?}");
     }
+}
+
+#[test]
+fn a_replay_writes_what_the_glue_decided_beside_the_screens() {
+    let dir = scratch("replay-why");
+    let out = dir.join("out");
+    trace_json(&[
+        "replay",
+        path_of(&fixture("laps-and-a-menu")),
+        "--to",
+        "2m",
+        "--every",
+        "2m",
+        "--out",
+        path_of(&out),
+    ]);
+    let why = std::fs::read_to_string(out.join("why.txt")).unwrap();
+    for tag in [
+        "  toast.lap  ",
+        "  cue.started  cue=Lap",
+        "  page  from=Ready to=Ride",
+    ] {
+        assert!(why.contains(tag), "{tag:?} in {why}");
+    }
+    let laps = why
+        .lines()
+        .filter(|line| line.contains("  toast.lap  "))
+        .count();
+    assert_eq!(
+        laps, 2,
+        "a toast held for its two seconds is one line: {why}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn path_with_fake_uv(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let uv = bin.join("uv");
+    std::fs::write(
+        &uv,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$UV_ASKED\"\n\
+         if [ -n \"$UV_REFUSES\" ]; then echo \"$UV_REFUSES\" >&2; exit 1; fi\n\
+         echo /bundles/failure.bundle\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let git = std::process::Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    std::os::unix::fs::symlink(
+        String::from_utf8(git.stdout).unwrap().trim(),
+        bin.join("git"),
+    )
+    .unwrap();
+    bin
+}
+
+#[test]
+fn a_strict_replay_by_its_own_build_that_parts_bundles_its_first_divergence_and_never_fails_for_it()
+{
+    let dir = scratch("replay-bundle");
+    let mut sim = Sim::new().boot();
+    sim.discard_recording();
+    sim.advance(seconds(5));
+    let trace = dir.join("own.trace");
+    file::save(&one_frame_off(&sim.capture()), &trace).unwrap();
+    let bin = path_with_fake_uv(&dir);
+    let asked = dir.join("asked");
+    let replay = |out: &str, more: &[&str], refuses: &str| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_trace"))
+            .env("PATH", &bin)
+            .env("UV_ASKED", &asked)
+            .env("UV_REFUSES", refuses)
+            .args([
+                "replay",
+                path_of(&trace),
+                "--to",
+                "5s",
+                "--every",
+                "5s",
+                "--json",
+            ])
+            .arg("--out")
+            .arg(dir.join(out))
+            .args(more)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    let parted = replay("parted", &[], "");
+    assert_eq!(parted["mode"], "strict", "{}", parted["why"]);
+    let first = &parted["divergence"]["first"];
+    assert_eq!(first["kind"], "Seen");
+    assert_eq!(parted["bundle"]["written"], "/bundles/failure.bundle");
+    let asked: Vec<String> = std::fs::read_to_string(&asked)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let after = |flag: &str| {
+        let at = asked.iter().position(|arg| arg == flag);
+        at.map(|at| asked[at + 1].clone())
+            .unwrap_or_else(|| panic!("{flag} in {asked:?}"))
+    };
+    assert_eq!(after("-m"), "cycling_devtools.bundle");
+    assert!(asked.iter().any(|arg| arg == "write"), "{asked:?}");
+    assert_eq!(
+        after("--out"),
+        dir.join("parted/failure.bundle").display().to_string()
+    );
+    assert_eq!(after("--trace"), trace.display().to_string());
+    assert_eq!(after("--build"), env!("CYCLING_BUILD_HASH"));
+    let run: serde_json::Value = serde_json::from_str(&after("--run")).unwrap();
+    assert_eq!(run["kind"], "replay");
+    assert_eq!(
+        run["to_ms"], parted["header"]["end_ms"],
+        "to the trace's end"
+    );
+    let expect: serde_json::Value = serde_json::from_str(&after("--expect")).unwrap();
+    assert_eq!(
+        expect["diverged"],
+        serde_json::json!({
+            "kind": "Seen",
+            "at_ms": first["at"]["session_ms"],
+            "detail": first["detail"],
+        })
+    );
+    assert!(!asked.iter().any(|arg| arg == "--pack"), "no TERRAIN pack");
+
+    let refused = replay("refused", &[], "build 1d38 is not archived here");
+    assert_eq!(
+        refused["bundle"]["failed"], "build 1d38 is not archived here",
+        "the replay reports it"
+    );
+    assert!(replay("skipped", &["--no-bundle"], "")["bundle"].is_null());
+    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -27,6 +27,16 @@ pub enum At {
     End,
 }
 
+impl fmt::Display for At {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Setup => f.write_str("setup"),
+            Self::Step(index) => write!(f, "step {index}"),
+            Self::End => f.write_str("end"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
     pub seed: u64,
@@ -83,16 +93,12 @@ pub fn reproduce(seed: u64, course_trace: Option<&Path>) -> String {
 
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let at = match self.at {
-            At::Setup => "setup".to_string(),
-            At::Step(index) => format!("step {index}"),
-            At::End => "end".to_string(),
-        };
         writeln!(
             f,
-            "FAIL seed={:#018x} check={:?} at={at} t={}",
+            "FAIL seed={:#018x} check={:?} at={} t={}",
             self.seed,
             self.check,
+            self.at,
             clock(self.at_ms)
         )?;
         writeln!(f, "  {}", self.detail.replace('\n', "\n  "))?;

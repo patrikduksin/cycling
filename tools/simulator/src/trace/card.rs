@@ -189,3 +189,48 @@ pub fn pack(trace: &[u8], origin: &SimBulk, store: &Path) -> io::Result<Option<P
         length: terrain.length,
     }))
 }
+
+/// The TERRAIN pack `trace`'s header names as a file a bundle can carry: the
+/// pack file in `store`, else the pack's data on the `origin` card, written
+/// to `spill`. `None` when the session found no ready pack.
+pub fn pack_file(
+    trace: &[u8],
+    origin: &SimBulk,
+    store: &Path,
+    spill: &Path,
+) -> io::Result<Option<PathBuf>> {
+    let header = trace::decode(trace)
+        .map(|(header, _)| header)
+        .map_err(|error| io::Error::other(format!("trace: {error}")))?;
+    let Found::Read(terrain) = header.terrain else {
+        return Ok(None);
+    };
+    if !terrain.ready {
+        return Ok(None);
+    }
+    let missing = match find(store, &terrain) {
+        Ok(path) => return Ok(Some(path)),
+        Err(missing) => missing,
+    };
+    let mut host = origin.host();
+    let mut sector = [0u8; SECTOR_SIZE];
+    let Ok(Layout::Table(table)) = volume::read(&mut host, &mut sector) else {
+        return Err(missing);
+    };
+    let Some(extent) = table.find(&volume::TERRAIN) else {
+        return Err(missing);
+    };
+    let held = pack::status(&mut Volume::new(&mut host, extent), &mut sector);
+    if !matches!(held, Ok(Some(header)) if header.spec.digest == terrain.digest) {
+        return Err(missing);
+    }
+    let first = extent.start + pack::DATA;
+    let mut bytes = Vec::with_capacity(terrain.length as usize);
+    for at in (0..terrain.length).step_by(SECTOR_SIZE) {
+        let data = origin.sector(first + at / SECTOR_SIZE as u64);
+        let len = (terrain.length - at).min(SECTOR_SIZE as u64) as usize;
+        bytes.extend_from_slice(&data[..len]);
+    }
+    std::fs::write(spill, bytes)?;
+    Ok(Some(spill.to_path_buf()))
+}

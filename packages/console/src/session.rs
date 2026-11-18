@@ -19,6 +19,18 @@ struct Reply<'a> {
     ms: u64,
     data: &'a str,
 }
+/// How a reboot the console scheduled resets the device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reboot {
+    /// `RESTART`: a clean software reset.
+    Restart,
+    /// `TEST 11`: a controlled panic once the trace is synced.
+    Panic,
+    /// `TEST 12`: a controlled panic with the trace's last blocks only in
+    /// memory, for the next boot to salvage.
+    PanicUnsynced,
+}
+
 pub struct Terminal<T> {
     usb: T,
     lines: Lines,
@@ -30,7 +42,7 @@ pub struct Terminal<T> {
     rejected: u32,
     sent: u32,
     tx_max_us: u64,
-    reboot: Option<(u64, bool)>,
+    reboot: Option<(u64, Reboot)>,
     transfer: bool,
     traffic: bool,
 }
@@ -117,14 +129,14 @@ impl<T: device_api::console::Console> Terminal<T> {
         self.usb.flush();
         self.tx_max_us = self.tx_max_us.max(clock_us().saturating_sub(started));
     }
-    /// Return the requested restart mode after draining the reply, or after the
+    /// Return the requested reboot after draining the reply, or after the
     /// one-second deadline if the host cannot receive it. The caller owns reset.
-    pub fn reboot_due(&self, now: u64) -> Option<bool> {
-        let (at, panic) = self.reboot?;
+    pub fn reboot_due(&self, now: u64) -> Option<Reboot> {
+        let (at, reboot) = self.reboot?;
         if now >= at + 1000
             || (now >= at + 100 && self.reply_len == 0 && self.offset == self.length)
         {
-            Some(panic)
+            Some(reboot)
         } else {
             None
         }
@@ -147,8 +159,8 @@ impl<T: device_api::console::Console> Terminal<T> {
         self.transfer = false;
         self.lines = Lines::default();
     }
-    pub fn schedule_reboot(&mut self, now: u64, panic: bool) {
-        self.reboot = Some((now, panic));
+    pub fn schedule_reboot(&mut self, now: u64, reboot: Reboot) {
+        self.reboot = Some((now, reboot));
     }
     pub fn rejected(&self) -> u32 {
         self.rejected
@@ -314,18 +326,18 @@ mod tests {
     fn reboot_waits_for_reply_but_disconnected_host_cannot_prevent_it() {
         let mut session = Terminal::new(Transport::default());
         session.reply(1, "ACCEPTED", "", 0);
-        session.schedule_reboot(0, true);
+        session.schedule_reboot(0, Reboot::PanicUnsynced);
         session.usb.blocked = true;
         session.pump(|| None, || 0);
         assert_eq!(session.reboot_due(100), None);
         assert_eq!(session.reboot_due(999), None);
-        assert_eq!(session.reboot_due(1000), Some(true));
+        assert_eq!(session.reboot_due(1000), Some(Reboot::PanicUnsynced));
         session.usb.blocked = false;
         for _ in 0..3 {
             session.pump(|| None, || 0);
         }
         assert_eq!(session.reboot_due(99), None);
-        assert_eq!(session.reboot_due(100), Some(true));
+        assert_eq!(session.reboot_due(100), Some(Reboot::PanicUnsynced));
     }
 
     #[test]

@@ -1,19 +1,21 @@
 //! `cycling trace` and `cycling replay`: read a ride trace as text, find
 //! moments in it, export it to OpenTelemetry, replay a window of it with
 //! screenshots, and write a regression test from it.
+use shell_simulator::bundle::{Bundle, Bundled, Expect, Run};
 use shell_simulator::recording::Recording;
-use shell_simulator::replay::Mode;
+use shell_simulator::replay::{Divergence, Mode};
 use shell_simulator::sim::Sim;
 use shell_simulator::trace::file::{self, Media};
 use shell_simulator::trace::find::{Query, find};
 use shell_simulator::trace::report::{
-    Answers, Artifacts, Header, Listing, Prose, Replayed, Stub, Summary, Written, in_window, render,
+    Answers, Artifacts, Header, Listing, Parted, Prose, Replayed, Stub, Summary, Written,
+    in_window, render,
 };
 use shell_simulator::trace::story::tell;
 use shell_simulator::trace::timeline::{
     At, Entry, Kind, Timeline, build_name, read, session_clock,
 };
-use shell_simulator::trace::{divergence, origin, otlp, stub};
+use shell_simulator::trace::{card, divergence, origin, otlp, stub};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -33,14 +35,16 @@ and r40:00 for a ride time.
 {error} with exit status 2 when the command fails. A moment is
 {session_ms, ride_ms}, ride_ms null outside a ride. An entry is a moment's
 fields with {kind, text, repeat}, a page's cause and shows, and a packet's
-bytes in hex, whatever --hex says. summary gives {header, silences, spans,
-events, battery, entries (per kind {new, repeats})}; timeline {from_ms,
-to_ms, entries, hidden}; find {found, total}, each found an entry with type
-entry or {type stretch, from, to, first}, at most --limit of them; replay
-{header, mode, why, from_ms, to_ms, reached, trace_ended, divergence,
-artifacts}; origin {origin, lines}; otlp {traces, metrics}, or {out} with
---out; test-stub {fixture_steps, test}. The summary's battery and the lines
-of origin are prose, the text's own lines, with no fields to parse.
+bytes in hex, whatever --hex says. A header's terrain is the TERRAIN pack
+the session found, {sha256, length, ready}, or null. summary gives {header,
+silences, spans, events, battery, entries (per kind {new, repeats})};
+timeline {from_ms, to_ms, entries, hidden}; find {found, total}, each found
+an entry with type entry or {type stretch, from, to, first}, at most --limit
+of them; replay {header, mode, why, from_ms, to_ms, reached, trace_ended,
+divergence, artifacts, bundle}; origin {origin, lines}; otlp {traces,
+metrics}, or {out} with --out; test-stub {fixture_steps, test}. The summary's
+battery and the lines of origin are prose, the text's own lines, with no
+fields to parse.
 
 commands:
   summary <trace>
@@ -90,11 +94,17 @@ commands:
       metrics hold the shown readings, the battery, the health records and
       each activity window, per task.
   replay <trace> [--from T] [--to T] [--mode auto|stimulus|strict]
-         [--every T] [--video] [--out DIR]
+         [--every T] [--video] [--out DIR] [--no-bundle]
       Replay the session up to --to (default --from plus 60s), screenshots every
-      --every (default 5s) from --from, the screen's text, the replay's own
+      --every (default 5s) from --from, the screen's text, what the glue
+      decided and from what (why.txt: toasts, cues, pages), the replay's own
       trace and where it parted from the recording, into --out (default
       .local/replay/<trace>-<from>/ under the checkout; paths print absolute).
+      A strict replay by the recording's build, or one of its sources, that
+      parts from the recording also writes failure.bundle there: the trace,
+      that build's sources and the first divergence, one file `cycling bundle
+      run` reproduces on another machine; the output names it, or why it is
+      missing (bundle in JSON: {written} or {failed}). --no-bundle skips it.
       An existing --out is replaced only when a replay or scenario wrote it
       (it holds .simulator-output) or it is empty; anything else is refused.
       stimulus runs this build against the recorded world; strict expects
@@ -192,7 +202,7 @@ impl Options {
 
 fn run(args: &[String]) -> Result<String, String> {
     let (command, rest) = args.split_first().expect("arguments checked");
-    let options = Options::parse(rest, &["all", "video", "hex", "json"])?;
+    let options = Options::parse(rest, &["all", "video", "hex", "json", "no-bundle"])?;
     let json = options.has("json");
     let path = PathBuf::from(
         options
@@ -386,7 +396,7 @@ fn relation(recorded: &str, current: &str) -> Result<BuildRelation, String> {
             build: short(current),
         });
     }
-    match shell_simulator::build_hash(&["relate", recorded, current]) {
+    match shell_simulator::devtools("build_hash", ["relate", recorded, current]) {
         Ok(out) if out.status.success() => {
             BuildRelation::parse(&String::from_utf8_lossy(&out.stdout), recorded, current)
         }
@@ -457,7 +467,12 @@ fn replay<'a>(
         Err(why) if asked != "auto" => BuildRelation::Unknown { why },
         found => found?,
     };
+    let own_build = matches!(
+        relation,
+        BuildRelation::Same { .. } | BuildRelation::SameSources { .. }
+    );
     let (mode, why) = pick_mode(asked, relation)?;
+    let bundling = mode == Mode::Strict && own_build && !options.has("no-bundle");
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("trace");
     let dir = options.value("out").map_or_else(
         || {
@@ -469,11 +484,14 @@ fn replay<'a>(
         PathBuf::from,
     );
     shell_simulator::recording::replace_dir(&dir).map_err(|e| e.to_string())?;
+    let collecting = firmware_services::why::collect();
     let mut sim = Sim::replaying(capture, mode, None).map_err(|e| e.to_string())?;
     let model = sim.device.model;
     let recording = Recording::at(dir.clone(), stem, model.name, model.width, model.height)
         .with_video(options.has("video"));
     let mut ran = sim.replay_until(from);
+    let strict = mode == Mode::Strict;
+    let before_window = strict.then(|| sim.device.report()?.first).flatten();
     let before = sim.device.open_replay_window();
     sim.attach_recording(recording);
     let shots = (0..).map(|i| from + i * every).take_while(|at| *at <= to);
@@ -502,22 +520,36 @@ fn replay<'a>(
         }
     }
     let reached = timeline.moment(sim.device.now);
-    let divergences = sim
-        .device
-        .report()
-        .map(|report| divergence::summarize(timeline, (from, to), &before, &report));
+    let report = sim.device.report();
+    let divergences = report
+        .as_ref()
+        .map(|report| divergence::summarize(timeline, (from, to), &before, report));
     let own = sim.trace();
     drop(sim);
+    let decided = firmware_services::why::take();
+    drop(collecting);
     let write = |name: &str, bytes: &[u8]| {
         std::fs::write(dir.join(name), bytes).map_err(|e| format!("{}: {e}", dir.display()))
     };
     write("screens.txt", screens.as_bytes())?;
-    let report = divergences
+    write("why.txt", why_lines(timeline, &decided).as_bytes())?;
+    let text = divergences
         .as_ref()
         .map(ToString::to_string)
         .unwrap_or_default();
-    write("divergence.txt", report.as_bytes())?;
+    write("divergence.txt", text.as_bytes())?;
     write("replayed.trace", &own)?;
+    let failure = report
+        .filter(|_| strict)
+        .and_then(|report| first_parting(before_window, report.first));
+    let parted = failure.as_ref().map(|first| Parted {
+        kind: first.kind.name(),
+        at_ms: first.at_ms,
+        detail: first.detail.clone(),
+    });
+    let bundle = failure
+        .filter(|_| bundling)
+        .map(|first| failure_bundle(path, capture, timeline, &dir, first));
     let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
@@ -534,7 +566,68 @@ fn replay<'a>(
         trace_ended: !ran,
         divergence: divergences,
         artifacts: Artifacts { dir, files },
+        parted,
+        bundle,
     })
+}
+
+fn why_lines(timeline: &Timeline, decided: &[firmware_services::why::Why]) -> String {
+    let mut lines = String::new();
+    for why in decided {
+        let _ = write!(lines, "{}  {}", timeline.moment(why.at_ms), why.tag);
+        for (i, (name, value)) in why.operands.iter().enumerate() {
+            let _ = write!(lines, "{}{name}={value}", if i == 0 { "  " } else { " " });
+        }
+        lines.push('\n');
+    }
+    lines
+}
+
+fn first_parting(
+    before_window: Option<Divergence>,
+    in_window: Option<Divergence>,
+) -> Option<Divergence> {
+    before_window
+        .into_iter()
+        .chain(in_window)
+        .min_by_key(|first| first.at_ms)
+}
+
+fn failure_bundle(
+    path: &Path,
+    capture: &shell_simulator::replay::Capture,
+    timeline: &Timeline,
+    dir: &Path,
+    first: Divergence,
+) -> Bundled {
+    let spill = dir.join("failure.pack");
+    let pack = match card::pack_file(
+        &capture.trace,
+        &capture.origin.bulk,
+        &card::pack_store(),
+        &spill,
+    ) {
+        Ok(pack) => pack,
+        Err(error) => return Bundled::Failed(format!("the TERRAIN pack: {error}")),
+    };
+    let bundled = Bundle {
+        out: &dir.join("failure.bundle"),
+        trace: path,
+        build: &timeline.build,
+        run: Run::Replay {
+            to_ms: timeline.end_ms,
+        },
+        expect: Expect::Diverged {
+            kind: first.kind.name(),
+            at_ms: first.at_ms,
+            detail: first.detail,
+        },
+        course: None,
+        pack: pack.as_deref(),
+    }
+    .write();
+    let _ = std::fs::remove_file(&spill);
+    bundled
 }
 
 #[cfg(test)]
@@ -628,5 +721,27 @@ mod tests {
         ));
         let comparison = firmware_services::trace::origin::build(&"0".repeat(40));
         assert_eq!(build_name(&comparison), "", "sim-compare's hash is unknown");
+    }
+
+    #[test]
+    fn a_divergence_before_the_window_parts_even_when_the_window_holds_none() {
+        let at = |at_ms| Divergence {
+            at_ms,
+            kind: shell_simulator::replay::Kind::Unrecorded,
+            detail: format!("pass {at_ms}"),
+        };
+        assert_eq!(
+            first_parting(Some(at(900)), None).map(|d| d.at_ms),
+            Some(900)
+        );
+        assert_eq!(
+            first_parting(Some(at(900)), Some(at(4_000))).map(|d| d.at_ms),
+            Some(900)
+        );
+        assert_eq!(
+            first_parting(None, Some(at(4_000))).map(|d| d.at_ms),
+            Some(4_000)
+        );
+        assert!(first_parting(None, None).is_none());
     }
 }

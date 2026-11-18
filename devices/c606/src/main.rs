@@ -12,6 +12,7 @@ mod logging;
 mod trace;
 mod world;
 use esp_backtrace as _;
+use firmware_console::session::Reboot;
 #[cfg(not(feature = "bulk-maintenance"))]
 esp_bootloader_esp_idf::esp_app_desc!();
 // The descriptor version marks the binary maintenance protocol, so host tools
@@ -507,9 +508,11 @@ async fn console(
             trace.sync(world.unrecorded_bulk(), now);
             commands::Diagnostics::restart(&FirmwareDiagnostics, false);
         }
-        if let Some(panic) = terminal.reboot_due(now) {
-            trace.sync(world.unrecorded_bulk(), now);
-            commands::Diagnostics::restart(&FirmwareDiagnostics, panic);
+        if let Some(reboot) = terminal.reboot_due(now) {
+            if reboot != Reboot::PanicUnsynced {
+                trace.sync(world.unrecorded_bulk(), now);
+            }
+            commands::Diagnostics::restart(&FirmwareDiagnostics, reboot != Reboot::Restart);
         }
         let request = terminal.request(now);
         stage_ended(Stage::Terminal);

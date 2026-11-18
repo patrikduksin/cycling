@@ -1,3 +1,4 @@
+use shell_simulator::bundle::{Bundle, Expect, Run};
 use shell_simulator::fuzz::plan::Rng;
 use shell_simulator::fuzz::{self, Corpus, Coverage, FIXED, Finding, PAGES, Plan};
 use std::collections::{BTreeSet, VecDeque};
@@ -28,7 +29,8 @@ power cuts, torn flash writes and card refusals. After every step the checks
 read the device; a panic is a finding too, and so is a crash that ends a
 session's process. A finding prints the seed and the command that reproduces
 it, and writes the plan, the world log of its boot and the corpus trace it
-rode under --out DIR/<seed>.
+rode under --out DIR/<seed>, with finding.bundle: the finding as one file
+`cycling bundle run` reproduces on another machine.
 
   --minutes N   fresh seeds for N minutes of wall time (the default, 1)
   --seed S      one session, printing each step and the page after it
@@ -121,7 +123,12 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
 }
 
 fn main() -> ExitCode {
-    let args = match parse(std::env::args().skip(1)) {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv == ["--build-hash"] {
+        println!("{}", env!("CYCLING_BUILD_HASH"));
+        return ExitCode::SUCCESS;
+    }
+    let args = match parse(argv.into_iter()) {
         Ok(args) => args,
         Err(why) => {
             if !why.is_empty() {
@@ -520,10 +527,28 @@ fn found(mut finding: Finding, plan: &Plan, out: Option<&Path>) -> String {
         }
         Ok(())
     })();
-    match written {
-        Ok(()) => format!("{finding}\n  wrote {}", dir.display()),
-        Err(error) => format!("{finding}\n  could not write {}: {error}", dir.display()),
+    if let Err(error) = written {
+        return format!("{finding}\n  could not write {}: {error}", dir.display());
     }
+    let bundled = Bundle {
+        out: &dir.join("finding.bundle"),
+        trace: &dir.join("world.trace"),
+        build: env!("CYCLING_BUILD_HASH"),
+        run: Run::Fuzz {
+            seed: finding.seed,
+            course: finding.course_trace.is_some(),
+            debug_assertions: cfg!(debug_assertions),
+        },
+        expect: Expect::Found {
+            check: finding.check,
+            at: finding.at.to_string(),
+            detail: finding.detail.split('\n').next().unwrap_or_default().into(),
+        },
+        course: finding.course_trace.as_deref(),
+        pack: None,
+    }
+    .write();
+    format!("{finding}\n  wrote {}\n  {bundled}", dir.display())
 }
 
 fn finding_dir(out: &Path, seed: u64) -> PathBuf {

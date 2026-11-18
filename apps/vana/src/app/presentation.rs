@@ -32,6 +32,7 @@ use device_api::power::Power;
 use device_api::sensors::Startup;
 use device_api::sound::Sound;
 use device_api::storage::OwnedFlash;
+use firmware_services::why;
 use firmware_shell::shell::{Picture, Shell};
 
 /// Sensors whose battery wants changing, as Ready and Home name them. While
@@ -580,19 +581,23 @@ impl Runtime {
     /// they are resolved, then what auto-pause is doing.
     pub(super) fn toast_at(&self, now: u64) -> Option<Toast> {
         if let Some(lap) = self.notices.lap_toast(now) {
+            why!("toast.lap", lap = lap.number, time_ms = lap.time_ms);
             return Some(Toast::new(ride::lap_toast(lap).as_str(), Tone::Info));
         }
         let auto = self.notices.auto_toast(now);
         if !auto.is_empty() {
+            why!("toast.auto", auto);
             return Some(Toast::new(auto, Tone::Info));
         }
         let navigation = &self.navigation;
         if let Some((toast, until)) = navigation.toast_shown()
             && now < until
         {
+            why!("toast.confirmation", shown = shown(&toast), until);
             return Some(toast);
         }
         if navigation.page() != Page::Ride {
+            why!("toast.none", page = navigation.page());
             return None;
         }
         let problem = match (self.ride.request(), self.ride.active().status()) {
@@ -610,11 +615,19 @@ impl Runtime {
                 "STORAGE NOT READY"
             }
             (_, status) => {
-                return self
-                    .storage_toast(status)
-                    .or_else(|| self.auto_pause_toast(status, now));
+                if let Some(toast) = self.storage_toast(status) {
+                    why!("toast.storage", status, shown = shown(&toast));
+                    return Some(toast);
+                }
+                let toast = self.auto_pause_toast(status, now);
+                match &toast {
+                    Some(toast) => why!("toast.auto_pause", status, shown = shown(toast)),
+                    None => why!("toast.none", status),
+                }
+                return toast;
             }
         };
+        why!("toast.problem", problem);
         Some(Toast::new(problem, Tone::Alert))
     }
 
@@ -1252,6 +1265,10 @@ pub(super) fn radar_reports(
         snapshot: readings.radar.snapshot(now),
         received_ms: readings.radar.received_ms(),
     }
+}
+
+fn shown(toast: &Toast) -> &str {
+    core::str::from_utf8(toast.text()).unwrap_or("?")
 }
 
 /// An alert limit's value: "OFF", or the limit in its unit.

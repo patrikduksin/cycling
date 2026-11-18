@@ -72,4 +72,26 @@ fn the_fuzzer_finds_the_planted_bug_and_its_seed_reproduces_it() {
         Some(first),
         "the seed finds the plant again"
     );
+
+    let out = std::env::temp_dir().join(format!("fuzz-planted-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_fuzz"))
+        .env("PATH", "")
+        .arg("--seed")
+        .arg(format!("{:#018x}", first.seed))
+        .arg("--no-corpus")
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .expect("the fuzz binary runs");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(1), "{stdout}");
+    let report = &stdout[stdout.find("FAIL seed=").expect("a finding")..];
+    assert!(
+        report.contains("\n  no bundle: run it inside a checkout"),
+        "a bundle it could not write, with no git on PATH, is reported: {report}"
+    );
+    let dir = out.join(format!("{:#018x}", first.seed));
+    assert!(dir.join("world.trace").is_file(), "{report}");
+    std::fs::remove_dir_all(&out).unwrap();
 }

@@ -4,10 +4,11 @@
 //! its header names, found in a directory of pack files.
 use shell_simulator::ant::device_type;
 use shell_simulator::bulk::Presence;
-use shell_simulator::replay::{Exclusion, Mode};
+use shell_simulator::replay::{Capture, Exclusion, Mode};
 use shell_simulator::route::{Point, Route, to_gpx};
 use shell_simulator::session::{Session, Step};
 use shell_simulator::sim::{Sim, seconds};
+use shell_simulator::trace::card;
 use shell_simulator::trace::file::{self, Media};
 use std::path::{Path, PathBuf};
 
@@ -39,7 +40,7 @@ fn g21() -> Route {
     Route::from_gpx(&to_gpx("G-21", &points)).unwrap()
 }
 
-fn recorded(dir: &Path) -> PathBuf {
+fn recorded(dir: &Path) -> (PathBuf, Capture) {
     let mut sim = Sim::new();
     sim.discard_recording();
     sim.fit_bulk(Presence::Ready);
@@ -61,8 +62,9 @@ fn recorded(dir: &Path) -> PathBuf {
     assert_eq!(sim.command("STORE STATUS").0, "OK");
     sim.advance(seconds(2));
     let path = dir.join("ride.trace");
-    std::fs::write(&path, sim.capture().trace).unwrap();
-    path
+    let capture = sim.capture();
+    std::fs::write(&path, &capture.trace).unwrap();
+    (path, capture)
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -75,7 +77,7 @@ fn scratch(name: &str) -> PathBuf {
 #[test]
 fn a_trace_alone_replays_strict_with_the_pack_its_header_names() {
     let dir = scratch("device-trace");
-    let trace = recorded(&dir);
+    let (trace, _) = recorded(&dir);
     let (capture, media) = file::load(&trace).unwrap();
     assert_eq!(media, Media::Blank, "nothing was saved beside the trace");
 
@@ -113,6 +115,50 @@ fn a_trace_alone_replays_strict_with_the_pack_its_header_names() {
     assert!(
         store.contains(" trace=recording "),
         "the replay's own trace file is open on its card: {store}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_header_names_the_pack_a_bundle_carries_from_the_store_or_the_starting_card() {
+    use sha2::Digest;
+    let dir = scratch("device-trace-pack");
+    let (trace, capture) = recorded(&dir);
+    let pack = std::fs::read(data("farellones.terrain")).unwrap();
+    let summary = std::process::Command::new(env!("CARGO_BIN_EXE_trace"))
+        .arg("summary")
+        .arg(&trace)
+        .arg("--json")
+        .output()
+        .unwrap();
+    let summary: serde_json::Value = serde_json::from_slice(&summary.stdout).unwrap();
+    let sha256: String = sha2::Sha256::digest(&pack)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        summary["header"]["terrain"],
+        serde_json::json!({"sha256": sha256, "length": pack.len(), "ready": true})
+    );
+
+    let packs = dir.join("packs");
+    std::fs::create_dir(&packs).unwrap();
+    let spill = dir.join("spilled.pack");
+    let carried = |packs: &Path, card| card::pack_file(&capture.trace, card, packs, &spill);
+    let blank = shell_simulator::bulk::SimBulk::default();
+    assert!(carried(&packs, &blank).is_err(), "neither holds the pack");
+    assert_eq!(
+        carried(&packs, &capture.origin.bulk).unwrap(),
+        Some(spill.clone())
+    );
+    assert!(
+        std::fs::read(&spill).unwrap() == pack,
+        "the card's pack, byte for byte"
+    );
+    std::fs::copy(data("farellones.terrain"), packs.join("a-pack.terrain")).unwrap();
+    assert_eq!(
+        carried(&packs, &blank).unwrap(),
+        Some(packs.join("a-pack.terrain"))
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }

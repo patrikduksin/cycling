@@ -11,6 +11,7 @@
 use crate::ride::course::nav::Navigation;
 use device_api::sound::{Pattern, Sound};
 use firmware_services::sound::Sequence;
+use firmware_services::why;
 
 /// The longest pattern used as the alarm.
 const ALARM_MAX_MS: u16 = 300;
@@ -213,9 +214,14 @@ impl Waiting {
     }
 
     fn next(&mut self, still_due: impl Fn(Navigation) -> bool) -> Option<Navigation> {
-        Navigation::BY_URGENCY
-            .into_iter()
-            .find(|&cue| core::mem::take(&mut self.0[cue as usize]) && still_due(cue))
+        Navigation::BY_URGENCY.into_iter().find(|&cue| {
+            let waited = core::mem::take(&mut self.0[cue as usize]);
+            let due = waited && still_due(cue);
+            if waited && !due {
+                why!("cue.no_longer_due", cue);
+            }
+            due
+        })
     }
 }
 
@@ -237,18 +243,27 @@ impl Cues {
     /// waiting or sounding. `muted` keeps all but safety alarms quiet.
     pub(super) fn raise(&mut self, cue: Cue, muted: bool, now: u64) {
         if muted && !cue.safety() {
+            why!("cue.muted", cue);
             return;
         }
-        if let Some(cue) = cue.navigation() {
-            self.navigation_waiting.add(cue);
+        if let Some(navigation) = cue.navigation() {
+            why!("cue.waits", cue);
+            self.navigation_waiting.add(navigation);
             return;
         }
         let busy = |held: Option<Cue>| held.is_some_and(Cue::safety);
         let alarm_held =
             busy(self.pending.map(|(cue, _)| cue)) || (self.run.is_playing() && busy(self.playing));
         if alarm_held && !cue.safety() {
+            why!(
+                "cue.held",
+                cue,
+                pending = self.pending,
+                playing = self.playing
+            );
             return;
         }
+        why!("cue.raised", cue, replaced = self.pending);
         self.pending = Some((cue, now));
     }
 
@@ -259,7 +274,13 @@ impl Cues {
         still_due: impl Fn(Navigation) -> bool,
     ) {
         let next = match self.pending.take() {
-            Some((cue, at)) => (now.saturating_sub(at) < STALE_MS).then_some(cue),
+            Some((cue, at)) => {
+                let age = now.saturating_sub(at);
+                if age >= STALE_MS {
+                    why!("cue.stale", cue, age);
+                }
+                (age < STALE_MS).then_some(cue)
+            }
             None if !self.run.is_playing() => {
                 self.navigation_waiting.next(&still_due).map(Cue::from)
             }
@@ -271,9 +292,11 @@ impl Cues {
                 .filter(|_| self.run.is_playing())
                 .and_then(Cue::navigation)
             {
+                why!("cue.cut", cut, by = cue);
                 self.navigation_waiting.add(cut);
             }
             let notes = resolve(sound.patterns(), cue);
+            why!("cue.started", cue, notes = notes.len());
             self.run.start(&notes, now);
             self.playing = Some(cue);
             self.note = 0;
@@ -284,6 +307,7 @@ impl Cues {
             && unheard
             && !still_due(cue)
         {
+            why!("cue.no_longer_due", cue);
             self.run.clear();
             self.playing = None;
         }

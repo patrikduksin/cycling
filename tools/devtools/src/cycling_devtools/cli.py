@@ -403,6 +403,12 @@ TASKS = [
         f'{TRACE} replay',
     ),
     task(
+        'bundle',
+        'One file a failure replays from on any machine: bundle <trace> [--out FILE] packs the trace, its TERRAIN '
+        "pack and its build's source tree; bundle run <file> rebuilds that build and says whether it reproduced",
+        f'{DEV}bundle',
+    ),
+    task(
         'harness',
         'Run a named or structured C606/virtual harness scenario and return compact JSON',
         f'{DEV}harness.runner',

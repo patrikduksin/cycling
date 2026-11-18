@@ -117,12 +117,31 @@ pub fn capture_panics() {
                 .unwrap_or_default();
             let location = info
                 .location()
-                .map(|l| format!(" at {}:{}", l.file(), l.line()))
+                .map(|l| format!(" at {}:{}", portable(l.file()), l.line()))
                 .unwrap_or_default();
             PANIC.with(|p| *p.borrow_mut() = Some(format!("{message}{location}")));
             default(info);
         }));
     });
+}
+
+/// `file` as a panic location names it on any machine: a workspace file is
+/// already relative to the workspace, a dependency's is cut to its crate
+/// directory and the standard library's to `library/`, so the machine's
+/// cargo home and the toolchain's commit drop out.
+fn portable(file: &str) -> &str {
+    if !file.starts_with('/') {
+        return file;
+    }
+    for marker in ["/registry/src/", "/git/checkouts/"] {
+        if let Some((_, under)) = file.split_once(marker) {
+            return under.split_once('/').map_or(under, |(_, path)| path);
+        }
+    }
+    if let Some(at) = file.find("/library/") {
+        return &file[at + 1..];
+    }
+    file.rsplit('/').next().unwrap_or(file)
 }
 
 /// The message of this thread's last panic, once.
@@ -746,6 +765,36 @@ pub fn json(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panic_location_names_no_machine() {
+        let cases = [
+            ("apps/vana/src/ride/log.rs", "apps/vana/src/ride/log.rs"),
+            (
+                "/home/rider/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/heapless-0.8.0/src/vec.rs",
+                "heapless-0.8.0/src/vec.rs",
+            ),
+            (
+                "/nix/store/x-cargo/git/checkouts/esp-hal-3c1d/4a5b6c7/esp-hal/src/lib.rs",
+                "4a5b6c7/esp-hal/src/lib.rs",
+            ),
+            (
+                "/rustc/0123456789abcdef/library/core/src/option.rs",
+                "library/core/src/option.rs",
+            ),
+            ("/somewhere/else/build.rs", "build.rs"),
+        ];
+        for (file, shown) in cases {
+            assert_eq!(portable(file), shown, "{file}");
+        }
+        capture_panics();
+        let _ = std::panic::catch_unwind(|| panic!("planted"));
+        let said = take_panic().expect("the hook kept the panic");
+        assert!(
+            said.starts_with("planted at tools/simulator/src/recording.rs:"),
+            "{said}"
+        );
+    }
 
     #[test]
     fn quiet_stretches_merge_into_fewer_shots() {

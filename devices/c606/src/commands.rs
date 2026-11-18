@@ -6,7 +6,7 @@ use device::drivers::wifi;
 use firmware_console::commands::{Board, Capabilities, Card, Identity};
 use firmware_console::protocol::Command;
 use firmware_console::protocol::Request;
-use firmware_console::session::Terminal;
+use firmware_console::session::{Reboot, Terminal};
 
 struct Text {
     bytes: [u8; 1280],
@@ -192,7 +192,7 @@ impl<C: device_api::console::Console, G: Diagnostics> Board<crate::FirmwareShell
         "ACCEPTED"
     }
     fn restart(&mut self, now: u64) {
-        self.terminal.schedule_reboot(now, false);
+        self.terminal.schedule_reboot(now, Reboot::Restart);
     }
     fn identity(&mut self, recording: bool) -> Identity {
         crate::logging::metadata(recording);
@@ -279,7 +279,11 @@ impl<C: device_api::console::Console, G: Diagnostics> Board<crate::FirmwareShell
                     "ACCEPTED"
                 }
                 11 => {
-                    self.terminal.schedule_reboot(now, true);
+                    self.terminal.schedule_reboot(now, Reboot::Panic);
+                    "ACCEPTED"
+                }
+                12 => {
+                    self.terminal.schedule_reboot(now, Reboot::PanicUnsynced);
                     "ACCEPTED"
                 }
                 10 => {

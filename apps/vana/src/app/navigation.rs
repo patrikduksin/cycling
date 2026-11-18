@@ -9,6 +9,7 @@ use crate::screens::ride::RidePage;
 use crate::screens::settings;
 use crate::screens::touch::Touches;
 use crate::screens::workout::{Page, Text};
+use firmware_services::why;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Edit {
@@ -170,6 +171,7 @@ impl Default for Navigation {
 
 impl Navigation {
     pub(super) fn go(&mut self, to: To) {
+        let (from, ride_from) = (self.page, self.ride_page);
         match to {
             To::Page(page) => self.page = page,
             To::Settings => {
@@ -286,6 +288,12 @@ impl Navigation {
         }
         if self.page != Page::Settings {
             self.edit = None;
+        }
+        if self.page != from {
+            why!("page", from, to = self.page);
+        }
+        if self.ride_page != ride_from {
+            why!("ride_page", from = ride_from, to = self.ride_page);
         }
     }
 

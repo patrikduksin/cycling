@@ -274,6 +274,7 @@ mod tests {
         Timeline {
             build: String::new(),
             boot: 1,
+            terrain: firmware_services::trace::origin::Found::Absent,
             entries: Vec::new(),
             clock: Vec::new(),
             passes: 0,

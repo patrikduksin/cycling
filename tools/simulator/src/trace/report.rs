@@ -1,6 +1,7 @@
 //! What each `cycling trace` command prints: one value per command, which
 //! writes itself as text (`Display`) and as JSON (`Serialize`) from the same
 //! fields, so the two cannot tell different stories.
+use crate::bundle::Bundled;
 use crate::replay::Mode;
 use crate::trace::battery;
 use crate::trace::divergence::Divergences;
@@ -41,6 +42,14 @@ pub struct Header<'a> {
     end: End,
     #[serde(serialize_with = "media_name")]
     media: &'a Media,
+    terrain: Option<Pack>,
+}
+
+#[derive(Serialize)]
+struct Pack {
+    sha256: String,
+    length: u64,
+    ready: bool,
 }
 
 fn end_name<S: Serializer>(end: &End, serializer: S) -> Result<S::Ok, S::Error> {
@@ -66,6 +75,14 @@ impl<'a> Header<'a> {
             passes: timeline.passes,
             end: timeline.end,
             media,
+            terrain: match timeline.terrain {
+                trace::origin::Found::Read(pack) => Some(Pack {
+                    sha256: pack.digest.iter().map(|b| format!("{b:02x}")).collect(),
+                    length: pack.length,
+                    ready: pack.ready,
+                }),
+                trace::origin::Found::Absent | trace::origin::Found::Unreadable(_) => None,
+            },
         }
     }
 }
@@ -94,6 +111,16 @@ impl fmt::Display for Header<'_> {
                 f,
                 "not saved: a strict replay reads them from the trace, a stimulus replay starts on blank media"
             ),
+        }?;
+        match &self.terrain {
+            Some(pack) => writeln!(
+                f,
+                "terrain pack sha256 {}, {} bytes{}",
+                pack.sha256,
+                pack.length,
+                if pack.ready { "" } else { ", not ready" }
+            ),
+            None => Ok(()),
         }
     }
 }
@@ -373,6 +400,17 @@ pub struct Replayed<'a> {
     pub trace_ended: bool,
     pub divergence: Option<Divergences>,
     pub artifacts: Artifacts,
+    /// A strict replay's first divergence from the start of the trace, in
+    /// the window or before it: what a bundle of this failure expects.
+    pub parted: Option<Parted>,
+    pub bundle: Option<Bundled>,
+}
+
+#[derive(Serialize)]
+pub struct Parted {
+    pub kind: &'static str,
+    pub at_ms: u64,
+    pub detail: String,
 }
 
 #[derive(Serialize)]
@@ -406,9 +444,12 @@ impl fmt::Display for Replayed<'_> {
         for file in &self.artifacts.files {
             writeln!(f, "  {}", file.display())?;
         }
+        if let Some(bundle) = &self.bundle {
+            writeln!(f, "{bundle}")?;
+        }
         writeln!(
             f,
-            "screens.txt has the screen text at each screenshot; replayed.trace is this replay's own trace (diff it with timeline)"
+            "screens.txt has the screen text at each screenshot; why.txt what the glue decided and why; replayed.trace is this replay's own trace (diff it with timeline)"
         )
     }
 }

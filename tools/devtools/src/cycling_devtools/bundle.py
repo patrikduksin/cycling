@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, assert_never
 
-from cycling_devtools import build_hash, tree, workspace
+from cycling_devtools import build_hash, tree, twin, workspace
 
 FORMAT = 1
 MANIFEST = 'bundle.json'
@@ -359,17 +359,12 @@ class Ran:
     dir: Path
 
 
-class Tool(NamedTuple):
-    name: str
-    profile: str
-
-
-def tool_for(run: Run) -> Tool:
+def tool_for(run: Run) -> twin.Tool:
     match run:
         case Replay():
-            return Tool('trace', 'tools')
+            return twin.Tool('trace', 'tools')
         case Fuzz(debug_assertions=debug_assertions):
-            return Tool('fuzz', 'dev' if debug_assertions else 'tools')
+            return twin.Tool('fuzz', 'dev' if debug_assertions else 'tools')
         case _:
             assert_never(run)
 
@@ -378,7 +373,7 @@ def declared_features(tree_dir, listing):
     listed = next((line.removeprefix('features ') for line in listing.splitlines() if line.startswith('features ')), '')
     names = set(listed.split(',')) - {''}
     declared = tomllib.loads((tree_dir / 'tools' / 'simulator' / 'Cargo.toml').read_text()).get('features', {})
-    return sorted(name for name in declared if build_hash.cargo_feature_names([name])[0] in names)
+    return tuple(sorted(name for name in declared if build_hash.cargo_feature_names([name])[0] in names))
 
 
 def same_bytes(a, b):
@@ -388,29 +383,22 @@ def same_bytes(a, b):
         return False
 
 
-def build_tool(root, tree_dir, manifest: Manifest, tool: Tool, target, runner: Runner) -> Path:
-    cargo = ['cargo', 'build', '--profile', tool.profile, '-p', 'shell-simulator', '--locked', '--no-default-features']
-    cargo += ['--bin', tool.name, '--message-format=json-render-diagnostics']
-    if features := declared_features(tree_dir, manifest.listing):
-        cargo += ['--features', ','.join(features)]
+def build_tool(root, tree_dir, manifest: Manifest, into, target, runner: Runner) -> Path:
+    tool = tool_for(manifest.run)._replace(features=declared_features(tree_dir, manifest.listing))
     here = os.environ.get('IN_NIX_SHELL') and same_bytes(tree_dir / 'flake.lock', root / 'flake.lock')
-    argv = cargo if here else ['nix', 'develop', str(tree_dir), '--command', *cargo]
-    env = os.environ | {'CARGO_TARGET_DIR': str(target)}
-    done = runner(argv, cwd=tree_dir, env=env, stdout=subprocess.PIPE, text=True)
-    if done.returncode:
-        raise Refused('the recording build did not rebuild; cargo said why on stderr')
-    for line in done.stdout.splitlines():
-        message = json.loads(line)
-        name = message.get('target', {}).get('name')
-        if message.get('reason') == 'compiler-artifact' and name == tool.name and message.get('executable'):
-            built = Path(message['executable'])
-            break
-    else:
-        raise Refused(f'cargo built no {tool.name}')
+    try:
+        built = twin.build(
+            tree_dir, into, tool, cargo_target_dir=target, nix_develop_flake=None if here else tree_dir, runner=runner
+        )
+    except subprocess.CalledProcessError:
+        raise Refused('the recording build did not rebuild; cargo said why on stderr') from None
+    except RuntimeError as error:
+        raise Refused(str(error)) from None
     # A replay's build may be the firmware's, which no simulator is; its faithful replay relates the two instead.
     if isinstance(manifest.run, Fuzz):
         said = runner([str(built), '--build-hash'], cwd=tree_dir, stdout=subprocess.PIPE, text=True).stdout.strip()
         if said != manifest.build:
+            built.unlink()
             raise Refused(f'the rebuilt {tool.name} is build {said[:12]!r}, not the bundled {manifest.build[:12]}')
     return built
 
@@ -521,11 +509,8 @@ def unpack(path, root, runner: Runner) -> Unpacked:
             rebuilt_s = None
             if not installed.is_file():
                 started = time.monotonic()
-                installed.parent.mkdir(parents=True, exist_ok=True)
-                staging = installed.with_name(f'.{tool.name}')
-                built = build_tool(root, tree_dir, manifest, tool, entry / 'target', runner)
-                shutil.copy2(built, staging)
-                os.replace(staging, installed)
+                built = build_tool(root, tree_dir, manifest, installed.parent, entry / 'target', runner)
+                os.replace(built, installed)
                 rebuilt_s = time.monotonic() - started
     finally:
         shutil.rmtree(scratch, ignore_errors=True)

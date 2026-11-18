@@ -19,6 +19,7 @@
 //! The decision table test lists every combination.
 
 use crate::ride::log::Status;
+use firmware_services::why;
 
 /// Auto-pause and auto-start are on by default; a settings screen can drive this.
 pub const ENABLED: bool = true;
@@ -116,6 +117,7 @@ pub enum Call {
 }
 
 #[derive(Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Auto {
     /// The ride is paused by automation (or about to be). A manual pause is
     /// never resumed automatically.
@@ -231,6 +233,7 @@ impl Auto {
         }
         let (since, _, _) = *self.since.get_or_insert((now, source, call));
         if now.saturating_sub(since) < hold {
+            why!("auto.holding", call, source, since, hold_ms = hold, status);
             return None;
         }
         if call == Call::Remind {
@@ -242,6 +245,15 @@ impl Auto {
             }
             self.last_remind = Some(now);
         }
+        why!(
+            "auto.call",
+            call,
+            source,
+            speed_mm_s = speed,
+            held_ms = now.saturating_sub(since),
+            hold_ms = hold,
+            status
+        );
         Some(call)
     }
 }

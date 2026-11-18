@@ -36,6 +36,17 @@ pub(super) struct Motion {
     targets: [Track; 8],
 }
 
+state!(Motion {
+    drawn_ms,
+    numbers,
+    pixels,
+    glides,
+    power,
+    heart,
+    radar,
+    targets,
+});
+
 impl Default for Motion {
     fn default() -> Self {
         Self::new(true)
@@ -48,6 +59,7 @@ const fn glide(glides: bool, ms: u32) -> Glide {
 
 /// The readings the main page writes as numbers.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Numbers {
     speed_mm_s: Option<u32>,
     power_watts: Option<u16>,
@@ -67,6 +79,7 @@ impl From<&Sample> for Numbers {
 }
 
 /// One radar slot: the report it last saw and where its marker glides.
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Track {
     glide: Glide,
     extrapolates: bool,

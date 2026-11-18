@@ -64,6 +64,7 @@ pub fn altitude_dm(pressure_centi_pa: u32) -> i32 {
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 enum Trend {
     #[default]
     Level,
@@ -73,6 +74,7 @@ enum Trend {
 
 /// A running mean of a reading, counting only samples that carried one.
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Mean {
     sum: u64,
     count: u32,
@@ -90,6 +92,7 @@ impl Mean {
 }
 
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Totals {
     distance_mm: u64,
     moving_ms: u64,
@@ -335,6 +338,7 @@ const BUCKETS: usize = 120;
 /// result can read a few watts low, never high. Seconds without a power
 /// reading are skipped, as normalized power skips them.
 #[derive(Clone)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Efforts {
     fine: [u16; FINE],
     fine_len: usize,

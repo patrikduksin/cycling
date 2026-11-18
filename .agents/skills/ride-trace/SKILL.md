@@ -1,6 +1,6 @@
 ---
 name: ride-trace
-description: Turn a rider's account of a ride problem into the moment in the ride trace, a simulator replay of it with screenshots, and a regression test; or find the task or radio that drains the battery. Use when a rider describes something that went wrong during a ride, when the battery runs down faster than it should, when handed a `.trace` file, or when a replay diverges.
+description: Turn a rider's account of a ride problem into the moment in the ride trace, a simulator replay of it with screenshots, the owner and rule that decided what the rider saw, and a regression test; or find the task or radio that drains the battery. Use when a rider describes something that went wrong during a ride, when the battery runs down faster than it should, when handed a `.trace` file, or when a replay diverges.
 ---
 
 # Ride trace
@@ -263,7 +263,54 @@ replay fault.
 Done when the screenshot at the moment shows what the rider described, or
 `divergence.txt` explains why it does not.
 
-## 5. Write the regression test
+## 5. Ask why
+
+`cycling trace why <trace> --at T` names what decided the moment: which
+owner chose what the rider saw, by which rule, from which operands, and which
+of its fields changed. It replays the session from power-on to one second
+past T, in the mode `replay` would pick, and prints the mode and verdict
+lines as `replay` does. Then it prints, pass by pass, the ten seconds before
+T and the second after it:
+
+```text
+01:01.260 ride 00:40  toast.lap  lap=1 time_ms=39500
+01:01.260 ride 00:40  cue.started  cue=Lap notes=1
+```
+
+- A decision line is `<tag>  name=value ...`. The tag is `<owner>.<rule>`,
+  noted where the owner made the decision; the operands are the values the
+  rule read. The owner is the one its deltas name, so each recorder decides
+  as `recorder_internal` or `recorder_bulk`. A decision re-made each pass from the same operands is one
+  line, at the pass it was first made.
+- A delta line is `Δ <owner>.<field>  old -> new`: a field of the owner's
+  state that the pass changed, as its `Debug` text. A buffer reads as its
+  length and a digest of its items, and `(not shown)` marks a field the
+  owner showed on one side only. Each delta is told against the state just
+  before the window's first pass, so a window of one pass shows what that
+  pass changed. A field that changes in
+  more than three passes of the window, such as a clock, is one line at its
+  first change, `changed in N passes: first -> last`; `--deltas all` prints
+  every change. The text clips a value at 96 characters; `--json` keeps it
+  whole.
+- `in force at T` lists each tag's latest decision at or before T, however
+  long before, grouped by owner with the owner's latest last. Start there:
+  the last decision of the owner that drew the thing the rider described is
+  the rule that drew it.
+
+`--before` and `--after` widen the window, `--owner follow` keeps one
+owner's tags and deltas (comma-separated for several), and `--limit N|all`
+caps the window's entries, keeping those nearest T; the default 120 holds
+the text near 200 lines and 32 KB. On a two-hour trace (150,000 passes) it
+answers in about 4 s with the cached tool, nearly all of it the replay up to
+the window, as long as `replay` of the same window takes. `--json` gives the
+same entries with their moments, as `cycling trace --help` lists: a field
+that changed in more than three passes is kind `churn`, with `first`, `last`
+and `passes`.
+
+Done when you can name the owner, the rule and the operands behind what the
+rider saw, and the field that changed it.
+
+## 6. Write the regression test
 
 1. Make a fixture from a simulator scenario, never from a device trace.
    Write a scenario in `tools/simulator/tests/trace_tools.rs` that gives VANA

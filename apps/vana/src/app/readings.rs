@@ -16,6 +16,7 @@ use device_api::input::InputObservation;
 use device_api::observation::Observation;
 use device_api::positioning::Positioning;
 use firmware_services::network_time;
+use firmware_services::why;
 
 /// Decoded readings older than this no longer describe the rider.
 const READING_FRESH_MS: u64 = 3000;
@@ -24,6 +25,7 @@ const BLE_PACKETS_PER_TICK: usize = 2;
 
 /// A decoded value and when its packet arrived.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub(super) struct Timed<T> {
     pub(super) value: T,
     pub(super) received_ms: u64,
@@ -106,6 +108,33 @@ pub(super) struct Readings {
     /// When the last battery level toast showed.
     pub(super) battery_news_ms: Option<u64>,
 }
+
+state!(Readings {
+    live,
+    reported,
+    speed,
+    wheel_size,
+    wheel_epoch,
+    wheel_news,
+    wheel_pending,
+    wheel_sensors,
+    gps,
+    motion,
+    odometer,
+    gradient,
+    heart,
+    power,
+    crank,
+    combined_crank,
+    power_3s,
+    power_3s_watts,
+    radar,
+    radar_warning,
+    epochs,
+    battery,
+    battery_life,
+    battery_news_ms,
+});
 
 /// Battery levels the rider is told about once per discharge, and whether
 /// each is critical.
@@ -309,11 +338,26 @@ impl Readings {
 /// yet only when GPS cannot measure either.
 fn motion(wheel_fresh: bool, wheel: Option<u32>, ground: Ground) -> Motion {
     match (wheel, ground) {
-        (Some(speed), _) => Motion::Measured(Source::Wheel, speed),
-        (None, Ground::Measured(speed)) => Motion::Measured(Source::Gps, speed),
-        (None, _) if wheel_fresh => Motion::Unknown(Source::Wheel),
-        (None, Ground::Unknown) => Motion::Unknown(Source::Gps),
-        (None, Ground::Lost) => Motion::Lost,
+        (Some(speed), _) => {
+            why!("readings.speed_from_wheel");
+            Motion::Measured(Source::Wheel, speed)
+        }
+        (None, Ground::Measured(speed)) => {
+            why!("readings.speed_from_gps", wheel_fresh);
+            Motion::Measured(Source::Gps, speed)
+        }
+        (None, _) if wheel_fresh => {
+            why!("readings.wheel_without_speed", ground);
+            Motion::Unknown(Source::Wheel)
+        }
+        (None, Ground::Unknown) => {
+            why!("readings.gps_without_speed");
+            Motion::Unknown(Source::Gps)
+        }
+        (None, Ground::Lost) => {
+            why!("readings.speed_lost");
+            Motion::Lost
+        }
     }
 }
 
@@ -333,10 +377,18 @@ impl Runtime {
         }
         if let Some(learned) = self.readings.wheel_pending.take() {
             let mut options = self.preferences.options;
-            if !options.wheel.manual
+            let applied = !options.wheel.manual
                 && !self.preferences.locked()
-                && wheel_size::worth_applying(options.wheel.size_mm(), learned)
-            {
+                && wheel_size::worth_applying(options.wheel.size_mm(), learned);
+            why!(
+                "readings.wheel_learned",
+                learned,
+                applied,
+                manual = options.wheel.manual,
+                locked = self.preferences.locked(),
+                size_mm = options.wheel.size_mm()
+            );
+            if applied {
                 options.wheel.mm = Some(learned);
                 self.set_options(options, now);
                 self.readings.wheel_news = Some(learned);
@@ -363,6 +415,7 @@ impl Runtime {
             .map(|kind| saved.of_type(kind).map(|(_, identity)| identity));
         let readings = &mut self.readings;
         if sensors != readings.wheel_sensors {
+            why!("readings.wheel_sensors_changed", sensors);
             readings.wheel_sensors = sensors;
             readings.wheel_size.reset();
             readings.wheel_pending = None;

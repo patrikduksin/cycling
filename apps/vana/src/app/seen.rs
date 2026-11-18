@@ -43,6 +43,14 @@ pub(super) struct Reported {
     shown: Line<96>,
 }
 
+state!(Reported {
+    page,
+    toast,
+    ride,
+    second,
+    shown,
+});
+
 impl super::Runtime {
     /// Hand `sink` what the rider sees that changed since the last call, and
     /// the cue note the rider heard. Call once a pass, after `alert`. Reads
@@ -116,6 +124,7 @@ impl super::Runtime {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Line<const N: usize> {
     bytes: [u8; N],
     len: usize,

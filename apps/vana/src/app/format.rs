@@ -44,6 +44,8 @@ pub(super) enum Format {
     Done,
 }
 
+state!(Format = "format");
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Scope(u8);
 

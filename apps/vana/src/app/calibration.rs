@@ -13,6 +13,7 @@ use device_api::ant::{
     Admission, Ant, AntOperation, Error, Identity, LinkState, OperationId, Packet, SendStage,
     Target,
 };
+use firmware_services::why;
 
 /// From the radio taking the request to the power meter's answer.
 pub(super) const TIMEOUT_MS: u64 = 10_000;
@@ -60,6 +61,8 @@ pub(super) enum Phase {
         at: u64,
     },
 }
+
+state!(Phase = "phase");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Event {
@@ -300,6 +303,12 @@ impl Runtime {
     fn advance_calibration(&mut self, event: Event) {
         let next = step(self.calibration, event);
         if next != self.calibration {
+            why!(
+                "calibration.step",
+                from = self.calibration,
+                event,
+                to = next
+            );
             self.calibration = next;
             self.display.redraw();
         }

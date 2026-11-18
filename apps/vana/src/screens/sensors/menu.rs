@@ -122,6 +122,8 @@ pub struct Menu {
     pub(super) layout: Layout,
 }
 
+state!(Menu { state });
+
 impl Menu {
     /// The sensor pages, placed on the panel `layout` lays out.
     pub const fn new(layout: &'static crate::screens::Layout) -> Self {
@@ -269,6 +271,7 @@ impl Menu {
 }
 
 /// What the sensor pages show and focus.
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub(super) struct State {
     pub(super) discoveries: [Option<Discovery>; DISCOVERY_CAPACITY],
     /// Whether each retained discovery was reported by the latest refresh.

@@ -33,6 +33,19 @@ use crate::ride::log::SAMPLES_PER_BATCH;
 use crate::ride::log::Sample;
 use crate::ride::log::Status;
 use crate::ride::log::Summary;
+use crate::ride::medium::Medium;
+use firmware_services::why;
+
+/// `why!` under the owner name the recorder's state shows, so that each
+/// medium's decisions stay apart.
+macro_rules! decided {
+    ($recorder:expr, $rule:literal $($operands:tt)*) => {
+        match $recorder.medium {
+            Medium::Internal => why!(concat!("recorder_internal.", $rule) $($operands)*),
+            Medium::Bulk => why!(concat!("recorder_bulk.", $rule) $($operands)*),
+        }
+    };
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(test, derive(Hash))]
@@ -50,7 +63,8 @@ pub enum Refused {
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
+#[cfg_attr(test, derive(Hash, PartialEq))]
 pub struct ResultEvent {
     pub action: Option<Action>,
     pub token: u32,
@@ -58,7 +72,8 @@ pub struct ResultEvent {
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
+#[cfg_attr(test, derive(Hash, PartialEq))]
 enum Lifecycle {
     Scanning,
     NeedsInit,
@@ -117,7 +132,8 @@ impl Lifecycle {
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
+#[cfg_attr(test, derive(Hash, PartialEq))]
 enum Stop {
     Pause { since: u64, at: u64 },
     Finish { since: u64, at: u64 },
@@ -134,7 +150,8 @@ impl Stop {
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
+#[cfg_attr(test, derive(Hash, PartialEq))]
 struct OpenRide {
     id: u32,
     sequence: u32,
@@ -151,7 +168,8 @@ impl OpenRide {
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
+#[cfg_attr(test, derive(Hash, PartialEq))]
 enum Inbox {
     Idle,
     Pending(Ask),
@@ -159,7 +177,8 @@ enum Inbox {
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(test, derive(Debug, Hash, PartialEq))]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
+#[cfg_attr(test, derive(Hash, PartialEq))]
 enum Ask {
     Start { at: u64, token: u32 },
     Resume { at: u64, token: u32 },
@@ -192,6 +211,7 @@ impl Batch {
 }
 
 #[derive(Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 #[cfg_attr(test, derive(Clone, Hash))]
 struct Counters {
     written: u32,
@@ -267,6 +287,7 @@ enum Outcome {
 
 #[cfg_attr(test, derive(Clone, Hash))]
 pub struct Recorder {
+    medium: Medium,
     lifecycle: Lifecycle,
     inbox: Inbox,
     checkpoint_due: bool,
@@ -278,9 +299,33 @@ pub struct Recorder {
     counters: Counters,
 }
 
+#[cfg(not(target_os = "none"))]
+impl why::State for Recorder {
+    fn fields(&self, out: &mut why::Fields<'_>) {
+        out.field("lifecycle", &self.lifecycle);
+        out.field("inbox", &self.inbox);
+        out.field("checkpoint_due", &self.checkpoint_due);
+        out.field("slots", &self.slots);
+        out.field("next_slot", &self.catalog.next_slot);
+        out.field("next_ride_id", &self.catalog.next_ride_id);
+        out.field("recovery", &self.catalog.recovery.is_some());
+        out.field("accumulated_ms", &self.accumulated_ms);
+        out.buffer("batch", self.batch.stored());
+        out.field("counters", &self.counters);
+    }
+}
+
+#[cfg(test)]
 impl Default for Recorder {
     fn default() -> Self {
+        Self::new(Medium::Internal)
+    }
+}
+
+impl Recorder {
+    pub fn new(medium: Medium) -> Self {
         Self {
+            medium,
             lifecycle: Lifecycle::Scanning,
             inbox: Inbox::Idle,
             checkpoint_due: false,
@@ -291,9 +336,7 @@ impl Default for Recorder {
             counters: Counters::default(),
         }
     }
-}
 
-impl Recorder {
     #[cfg(test)]
     pub(crate) const VARIANTS: [&'static str; 19] = [
         "scanning",
@@ -317,7 +360,6 @@ impl Recorder {
         "failed",
     ];
 
-    #[cfg(test)]
     pub(crate) fn variant(&self) -> &'static str {
         match &self.lifecycle {
             Lifecycle::Scanning => "scanning",
@@ -512,6 +554,7 @@ impl Recorder {
 
     pub fn request(&mut self, action: Action, now: u64, token: u32) -> bool {
         if self.busy() {
+            decided!(self, "busy", action, state = self.variant());
             return false;
         }
         match (action, self.lifecycle) {
@@ -535,8 +578,18 @@ impl Recorder {
                 let stop = Stop::FinishPaused;
                 self.lifecycle = Lifecycle::Stopping { ride, token, stop };
             }
-            _ => return false,
+            _ => {
+                decided!(
+                    self,
+                    "refused",
+                    action,
+                    state = self.variant(),
+                    recovery = self.catalog.recovery.is_some()
+                );
+                return false;
+            }
         }
+        decided!(self, "accepted", action, token, state = self.variant());
         true
     }
 
@@ -670,6 +723,15 @@ impl Recorder {
         }
         let status = self.status();
         if status != before {
+            decided!(
+                self,
+                "status",
+                from = before,
+                to = status,
+                state = self.variant(),
+                slots = self.slots,
+                next_slot = self.catalog.next_slot
+            );
             if status == Status::Error {
                 log::error!(target: "sdk.recorder", "media_failed previous={} next_slot={}", before.name(), self.catalog.next_slot);
             } else {
@@ -725,6 +787,12 @@ impl Recorder {
                     self.catalog.next_slot,
                 ) == 0
                 {
+                    decided!(
+                        self,
+                        "no_room_to_start",
+                        slots = self.capacity(),
+                        next_slot = self.catalog.next_slot
+                    );
                     // No room for START, one sample batch and the terminal record.
                     self.lifecycle = Lifecycle::Full {
                         open: self.ride_open(),
@@ -897,6 +965,13 @@ impl Recorder {
     }
 
     fn stop(&mut self, now: u64, full: bool) {
+        decided!(
+            self,
+            "stopped",
+            full,
+            state = self.variant(),
+            next_slot = self.catalog.next_slot
+        );
         self.freeze(now);
         let waiting = self.waiting();
         let open = self.ride_open();

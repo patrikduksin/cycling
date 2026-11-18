@@ -56,6 +56,18 @@ pub(super) struct History {
     hidden: core::cell::Cell<Option<(Rides, usize)>>,
 }
 
+state!(History {
+    indexing,
+    counted,
+    cursor,
+    scroll,
+    open,
+    phone,
+    home_last,
+    weeks,
+    hidden,
+});
+
 /// The rides hidden, and each journal's rides, last id and how many of them
 /// the index has read.
 type Rides = (u32, [(usize, Option<u32>, usize); 2]);

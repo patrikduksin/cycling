@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 from cycling_devtools import build_hash, tree, workspace
 
@@ -41,35 +42,44 @@ def cache(root=workspace.ROOT):
     return workspace.main_checkout(root) / '.local' / 'tools' / 'trace'
 
 
-def build(source, into):
-    """Build the trace tool in `source`, and return a private copy in `into` of the binary cargo built. The copy is
-    made under the build lock, so another worktree sharing the target dir cannot replace the binary before it."""
-    metadata = subprocess.run(
-        ['cargo', 'metadata', '--format-version', '1', '--no-deps', '--manifest-path', str(source / 'Cargo.toml')],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    target = Path(json.loads(metadata)['target_directory'])
-    target.mkdir(parents=True, exist_ok=True)
-    with open(target / '.trace-build.lock', 'w') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        done = subprocess.run(
-            [
-                'cargo', 'build', '-q', '--manifest-path', str(source / 'Cargo.toml'), '--profile', 'tools',
-                '-p', 'shell-simulator', '--locked', '--no-default-features', '--bin', 'trace',
-                '--message-format=json-render-diagnostics',
-            ],
+class Tool(NamedTuple):
+    name: str = 'trace'
+    profile: str = 'tools'
+    features: tuple[str, ...] = ()
+
+
+TRACE = Tool()
+
+
+def build(source, into, tool=TRACE, *, cargo_target_dir=None, nix_develop_flake=None, runner=subprocess.run):
+    if cargo_target_dir is None:
+        metadata = runner(
+            ['cargo', 'metadata', '--format-version', '1', '--no-deps', '--manifest-path', str(source / 'Cargo.toml')],
             check=True,
-            stdout=subprocess.PIPE,
+            capture_output=True,
             text=True,
-        ).stdout  # fmt: skip
+        ).stdout
+        cargo_target_dir = Path(json.loads(metadata)['target_directory'])
+    cargo = [
+        'cargo', 'build', '-q', '--manifest-path', str(source / 'Cargo.toml'), '--profile', tool.profile,
+        '-p', 'shell-simulator', '--locked', '--no-default-features', '--bin', tool.name,
+        '--message-format=json-render-diagnostics',
+    ]  # fmt: skip
+    if tool.features:
+        cargo += ['--features', ','.join(tool.features)]
+    argv = cargo if nix_develop_flake is None else ['nix', 'develop', str(nix_develop_flake), '--command', *cargo]
+    cargo_target_dir = Path(cargo_target_dir)
+    cargo_target_dir.mkdir(parents=True, exist_ok=True)
+    with open(cargo_target_dir / '.trace-build.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        env = os.environ | {'CARGO_TARGET_DIR': str(cargo_target_dir)}
+        done = runner(argv, cwd=source, env=env, check=True, stdout=subprocess.PIPE, text=True).stdout
         for line in done.splitlines():
             message = json.loads(line)
-            built = message.get('reason') == 'compiler-artifact' and message['target']['name'] == 'trace'
+            built = message.get('reason') == 'compiler-artifact' and message['target']['name'] == tool.name
             if built and message.get('executable'):
                 return private_copy(Path(message['executable']), into)
-    raise RuntimeError(f'cargo built no trace binary in {source}')
+    raise RuntimeError(f'cargo built no {tool.name} binary in {source}')
 
 
 def private_copy(binary, into):

@@ -181,6 +181,16 @@ impl<const N: usize> core::hash::Hash for Line<N> {
     }
 }
 
+#[cfg(not(target_os = "none"))]
+impl<const N: usize> core::fmt::Debug for Line<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match core::str::from_utf8(self.text()) {
+            Ok(text) => text.fmt(f),
+            Err(_) => self.text().fmt(f),
+        }
+    }
+}
+
 impl<const N: usize> Line<N> {
     /// Text beyond `N` characters is cut.
     pub const fn new(face: &'static Face, text: &[u8]) -> Self {
@@ -413,6 +423,7 @@ pub enum Align {
 
 /// A line of text placed on the canvas in one colour.
 #[derive(Clone, Copy, Hash)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Label<const N: usize> {
     pub line: Line<N>,
     pub left: usize,

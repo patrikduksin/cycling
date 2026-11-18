@@ -40,6 +40,13 @@ pub(super) struct Notices {
     auto_toast: Option<(&'static str, u64)>,
 }
 
+state!(Notices {
+    message,
+    lap_toast,
+    lap_chime,
+    auto_toast,
+});
+
 impl Notices {
     pub(super) fn message(&self) -> RideMessage {
         self.message

@@ -21,6 +21,7 @@ pub enum Question {
 }
 
 #[derive(Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Candidates {
     test: Option<u16>,
     best: Option<u16>,

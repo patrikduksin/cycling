@@ -311,8 +311,9 @@ def test_a_run_rebuilds_the_build_once_and_replays_from_the_bundle_alone(repo, b
     tree_dir = entry(repo, name) / 'tree'
     ((cargo, cwd, env),), (replay,) = twin.builds(), twin.ran('trace')
     assert cargo == [
-        'cargo', 'build', '--profile', 'tools', '-p', 'shell-simulator', '--locked', '--no-default-features',
-        '--bin', 'trace', '--message-format=json-render-diagnostics', '--features', 'default,planted-bug',
+        'cargo', 'build', '-q', '--manifest-path', str(tree_dir / 'Cargo.toml'), '--profile', 'tools',
+        '-p', 'shell-simulator', '--locked', '--no-default-features', '--bin', 'trace',
+        '--message-format=json-render-diagnostics', '--features', 'default,planted-bug',
     ]  # fmt: skip
     assert (cwd, env['CARGO_TARGET_DIR']) == (tree_dir, str(entry(repo, name) / 'target'))
     assert git(tree_dir, 'rev-parse', 'HEAD^{tree}') == listed_tree(repo, name), 'the commit is the built tree'
@@ -426,6 +427,7 @@ def test_another_dev_shell_builds_through_nix_develop(repo, build, trace, tmp_pa
     ((argv, cwd, _),) = twin.builds()
     assert argv[:4] == ['nix', 'develop', str(cwd), '--command']
     assert argv[4:6] == ['cargo', 'build']
+    assert argv[argv.index('--manifest-path') + 1] == str(cwd / 'Cargo.toml')
 
 
 def test_a_divergence_other_than_the_expected_one_differs(repo, build, trace, tmp_path, in_shell, capsys):
@@ -461,7 +463,7 @@ def test_a_fuzz_finding_reruns_its_seed_on_its_course(repo, build, trace, tmp_pa
     twin = Twin(tmp_path, fuzz=(1, line.format(found.detail)))
     ran = bundle.run_bundle(out, repo, twin)
     (cargo, _, _), ((argv, _, _),) = twin.builds()[0], twin.ran('fuzz')
-    assert cargo[2:4] == ['--profile', 'tools'] and cargo[cargo.index('--bin') + 1] == 'fuzz'
+    assert cargo[cargo.index('--profile') + 1] == 'tools' and cargo[cargo.index('--bin') + 1] == 'fuzz'
     assert argv[1:] == ['--seed', '0x00000000000000ab', '--corpus', str(ran.dir / 'course.trace')]
     assert (ran.dir / 'course.trace').read_bytes() == b'course'
     assert ran.verdict == Reproduced()
@@ -490,7 +492,7 @@ def test_a_finding_made_with_debug_assertions_reruns_on_a_build_that_checks_them
     twin = Twin(tmp_path, fuzz=(1, line))
     assert bundle.run_bundle(out, repo, twin).verdict == Reproduced()
     ((cargo, _, _),) = twin.builds()
-    assert cargo[2:4] == ['--profile', 'dev'], 'the dev profile keeps debug_assertions on'
+    assert cargo[cargo.index('--profile') + 1] == 'dev', 'the dev profile keeps debug_assertions on'
     assert twin.ran('fuzz')[0][0][0].endswith('/bin/dev/fuzz')
 
 

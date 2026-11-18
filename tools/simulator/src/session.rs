@@ -1794,7 +1794,7 @@ impl Session {
         self.power.0.borrow_mut().refusals.begin_pass();
         self.media.fault.borrow_mut().begin_pass();
         self.bulk.begin_pass();
-        firmware_services::why::pass(self.now);
+        firmware_services::why::pass(self.now, |out| self.sdk.state(out));
         let stayed_quiet = self.pass(quiet);
         {
             let power = self.trace.status.state;
@@ -1808,6 +1808,7 @@ impl Session {
         self.trace.window.passes += 1;
         self.passes_since_start += 1;
         self.assert_invariants();
+        firmware_services::why::deltas(|out| self.sdk.state(out));
         if !self.off && self.trace.vitals.due(self.now, quiet) {
             self.record_vitals();
         }

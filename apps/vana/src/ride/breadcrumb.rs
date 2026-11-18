@@ -52,6 +52,15 @@ pub struct Crumb {
     pub along: f32,
 }
 
+#[cfg(not(target_os = "none"))]
+impl core::hash::Hash for Crumb {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        [self.east, self.north, self.along]
+            .map(f32::to_bits)
+            .hash(state);
+    }
+}
+
 /// The way to the start, as of the last fix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Guide {
@@ -156,6 +165,26 @@ pub struct Breadcrumb<'a> {
     updated_ms: u64,
     guide: Option<Guide>,
 }
+
+state!(Breadcrumb<'_> {
+    len,
+    tolerance,
+    frame,
+    window,
+    window_len,
+    fed,
+    here,
+    here_ms,
+    heading_from,
+    heading,
+    heading_ms,
+    arrived,
+    pass,
+    pass_start,
+    passed,
+    updated_ms,
+    guide,
+});
 
 impl<'a> Breadcrumb<'a> {
     /// A breadcrumb in `crumbs`; its length is the most points kept.

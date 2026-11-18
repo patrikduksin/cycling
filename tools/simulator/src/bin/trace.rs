@@ -8,8 +8,8 @@ use shell_simulator::session::LeftAtBoot;
 use shell_simulator::sim::Sim;
 use shell_simulator::trace::find::{Query, find};
 use shell_simulator::trace::report::{
-    Answers, Artifacts, Diffed, Futures, Header, Listing, Parted, Proved, Replayed, Resolved, Stub,
-    Summary, Written, in_window, render,
+    Answers, Artifacts, Asking, Diffed, Explained, Futures, Header, Listing, Parted, Proved,
+    Replayed, Resolved, Said, Stub, Summary, Written, in_window, render,
 };
 use shell_simulator::trace::story::tell;
 use shell_simulator::trace::surgery::{self, Set};
@@ -49,7 +49,12 @@ trace_ended, divergence (with ok and verdict), faithful {ok, physical,
 semantic, ended, exclusions}, artifacts, parted, bundle}; replay --set
 {sets, recorded, set, diff}; diff {a, b, seen, panel, world, exclusions};
 otlp {traces,
-metrics}, or {out} with --out; test-stub {fixture_steps, test}. The
+metrics}, or {out} with --out; test-stub {fixture_steps, test}; why {header,
+mode, why, at_ms, from_ms, to_ms, reached, trace_ended, divergence, entries,
+hidden, in_force}, each entry {at, kind}, a decision with {tag, operands
+{name: value}}, a delta with {owner, field, old, new}, null on the side
+where the owner did not show the field, and a churn, a field that changed in
+more than 3 passes, with {owner, field, first, last, passes}. The
 summary's battery is prose, the text's own lines, with no fields to parse.
 
 commands:
@@ -144,6 +149,26 @@ commands:
       {at_ms, a, b} or null. When either trace replaced the credentials the
       phone page draws, that page's frames are left out and exclusions says
       how many.
+  why <trace> --at T [--before T] [--after T] [--owner LIST] [--limit N|all]
+         [--deltas all] [--mode auto|faithful|changed] [--model]
+      What decided the moment and what changed around it. It replays the
+      session from power-on to --after past T (default 1s), in the mode
+      replay would pick, and prints from --before ahead of T (default 10s):
+      each decision an owner noted, `<moment>  <tag>  name=value ...`, its
+      rule and the operands it read, and each field of an owner's state a
+      pass changed, `<moment>  Δ <owner>.<field>  old -> new`. A decision
+      re-made each pass from the same operands is one line; a buffer reads
+      as its length and digest. A field that changes in more than 3 passes
+      of the window, such as a clock, reads as one line at its first change,
+      `Δ <owner>.<field>  changed in N passes: first -> last`; --deltas all
+      prints every change. Then `in force at T`: each tag's latest
+      decision at or before T, grouped by owner, the owner's latest last.
+      --owner keeps the tags <owner> and <owner>.<rule> and that owner's
+      deltas (comma-separated for several). --limit (default 120) keeps the
+      entries nearest T and says how many it left out, which holds the text
+      near 200 lines. On a two-hour trace (150,000 passes) it answers in
+      about 4 s with the cached tool, nearly all of it the replay up to the
+      window. A replay whose verdict fails exits 1.
   test-stub <trace> --at T [--name NAME] [--expect FIELD=VALUE,...]
       A regression test that replays the trace to T. Its doc comment says
       what the recording showed and what the sensors were doing then; its
@@ -392,6 +417,12 @@ fn run(args: &[String]) -> Result<Ran, Failed> {
             let (replayed, _) = replay(&path, &trace, timeline, &options, asked, &dir, 60_000)?;
             held = (replayed.divergence.as_ref()).is_some_and(|divergence| divergence.ok);
             render(json, &replayed)
+        }
+        "why" => {
+            let timeline = decode(&mut decoded, &trace)?;
+            let explained = explain(&path, &trace, timeline, &options)?;
+            held = (explained.divergence.as_ref()).is_some_and(|divergence| divergence.ok);
+            render(json, &explained)
         }
         "test-stub" => {
             let timeline = decode(&mut decoded, &trace)?;
@@ -753,16 +784,78 @@ fn replay<'a>(
     Ok((replayed, own))
 }
 
-fn why_lines(timeline: &Timeline, decided: &[firmware_services::why::Why]) -> String {
+fn why_lines(timeline: &Timeline, decided: &[firmware_services::why::Entry]) -> String {
     let mut lines = String::new();
-    for why in decided {
-        let _ = write!(lines, "{}  {}", timeline.moment(why.at_ms), why.tag);
-        for (i, (name, value)) in why.operands.iter().enumerate() {
-            let _ = write!(lines, "{}{name}={value}", if i == 0 { "  " } else { " " });
-        }
-        lines.push('\n');
+    for entry in decided {
+        let _ = writeln!(lines, "{}", Said::of(timeline, entry));
     }
     lines
+}
+
+const WHY_LIMIT: usize = 120;
+
+fn explain<'a>(
+    path: &Path,
+    trace: &[u8],
+    timeline: &'a Timeline,
+    options: &Options,
+) -> Result<Explained<'a>, Failed> {
+    let at = options.time(timeline, "at")?.ok_or("why needs --at")?;
+    let length = |name: &str, default: u64| match options.value(name).map(At::parse) {
+        None => Ok(default),
+        Some(Ok(At::Session(ms))) => Ok(ms),
+        Some(_) => Err(format!("--{name} takes a session length such as 10s")),
+    };
+    let from = at.saturating_sub(length("before", 10_000)?);
+    let to = at.saturating_add(length("after", 1_000)?);
+    let limit = match options.value("limit") {
+        None => WHY_LIMIT,
+        Some("all") => usize::MAX,
+        Some(limit) => limit.parse().map_err(|_| "--limit takes a number or all")?,
+    };
+    let asked = asked_mode(options, timeline)?;
+    let collecting = firmware_services::why::collect();
+    firmware_services::why::deltas_in(from, to);
+    let mut sim = Sim::replaying(trace, asked.replaying, None).map_err(Failed::opening)?;
+    let mut ran = sim.replay_until(from);
+    let before = sim.device.open_replay_window();
+    ran = ran && sim.replay_until(to);
+    let reached = timeline.moment(sim.device.now);
+    let divergence = (sim.device.report().as_ref())
+        .map(|report| divergence::summarize(timeline, (from, to), &before, report));
+    drop(sim);
+    let entries = firmware_services::why::take();
+    drop(collecting);
+    let asking = Asking {
+        at_ms: at,
+        from_ms: from,
+        to_ms: to,
+        owners: options
+            .values("owner")
+            .flat_map(|owners| owners.split(','))
+            .collect(),
+        limit,
+        every_delta: match options.value("deltas") {
+            None => false,
+            Some("all") => true,
+            Some(other) => return Err(format!("--deltas takes all, not {other:?}").into()),
+        },
+    };
+    let kept = asking.keep(timeline, &entries);
+    Ok(Explained {
+        header: Header::of(path, timeline),
+        mode: asked.replaying.mode,
+        why: asked.why,
+        at_ms: at,
+        from_ms: from,
+        to_ms: to,
+        reached,
+        trace_ended: !ran,
+        divergence,
+        entries: kept.kept,
+        hidden: kept.hidden,
+        in_force: kept.in_force,
+    })
 }
 
 fn first_parting(

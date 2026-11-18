@@ -76,6 +76,22 @@ pub(super) struct Training {
     pub(super) events: Events,
 }
 
+state!(Training {
+    library,
+    selected,
+    picker_cursor,
+    picker_scroll,
+    beep,
+    ftp,
+    listed,
+    list_error,
+    picking,
+    missing,
+    last,
+    player,
+    events,
+});
+
 impl Training {
     fn beep(&mut self, beep: Beep, now: u64) {
         // A step beep outranks a countdown beep in the same moment.

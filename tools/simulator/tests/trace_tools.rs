@@ -1576,6 +1576,291 @@ fn a_replay_writes_what_the_glue_decided_beside_the_screens() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+fn trace_text(args: &[&str]) -> String {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_trace"))
+        .args(args)
+        .output()
+        .expect("the trace tool runs");
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).expect("UTF-8 text")
+}
+
+#[test]
+fn trace_why_prints_the_windows_decisions_and_those_in_force_at_the_moment() {
+    let laps = fixture("laps-and-a-menu");
+    let why = trace_text(&["why", path_of(&laps), "--at", "1:01.5"]);
+    let (window, in_force) = why
+        .split_once("in force at 01:01.500:\n")
+        .unwrap_or_else(|| panic!("an in-force section: {why}"));
+    assert!(window.contains("mode changed: "), "{why}");
+    assert!(
+        window.contains("decisions and deltas from 00:51.500 to 01:02.500"),
+        "the default window is 10s before and 1s after: {why}"
+    );
+    assert!(
+        window.contains("\n01:01.260 ride 00:40  toast.lap  lap=1 time_ms=39500\n"),
+        "{why}"
+    );
+    assert!(
+        !window.contains("page  from=Ready"),
+        "before the window: {why}"
+    );
+    assert!(
+        in_force.contains("  00:20.860 ride 00:00  page  from=Ready to=Ride\n"),
+        "a decision made long before is still in force: {in_force}"
+    );
+    let toasts: Vec<&str> = in_force
+        .lines()
+        .filter_map(|line| line.split("  ").nth(2))
+        .filter(|tag| tag.starts_with("toast."))
+        .collect();
+    assert_eq!(
+        toasts,
+        ["toast.confirmation", "toast.none", "toast.lap"],
+        "each tag once, an owner's latest last: {in_force}"
+    );
+
+    let doc = trace_json(&["why", path_of(&laps), "--at", "1:01.5", "--owner", "toast"]);
+    assert_eq!(
+        (
+            doc["at_ms"].as_u64(),
+            doc["from_ms"].as_u64(),
+            doc["to_ms"].as_u64()
+        ),
+        (Some(61_500), Some(51_500), Some(62_500))
+    );
+    assert_eq!(doc["mode"], "changed");
+    assert!(
+        doc["header"]["end_ms"].is_u64() && doc["divergence"]["ok"] == true,
+        "{doc}"
+    );
+    assert_eq!(
+        doc["entries"],
+        serde_json::json!([{
+            "at": {"session_ms": 61_260, "ride_ms": 40_400},
+            "kind": "decision",
+            "tag": "toast.lap",
+            "operands": {"lap": "1", "time_ms": "39500"},
+        }]),
+        "--owner toast leaves out the cue's decisions"
+    );
+    assert!(
+        (doc["in_force"].as_array().unwrap().iter())
+            .all(|said| said["tag"].as_str().unwrap().starts_with("toast.")),
+        "{doc}"
+    );
+
+    let limited = trace_text(&[
+        "why",
+        path_of(&laps),
+        "--at",
+        "1:01.5",
+        "--owner",
+        "toast,cue",
+        "--limit",
+        "1",
+    ]);
+    assert!(
+        limited.contains("2 entries farther from 01:01.500 left out; --limit all shows them"),
+        "{limited}"
+    );
+    let limited = trace_json(&[
+        "why",
+        path_of(&laps),
+        "--at",
+        "1:01.5",
+        "--owner",
+        "toast,cue",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(
+        (
+            limited["entries"].as_array().unwrap().len(),
+            limited["hidden"].as_u64()
+        ),
+        (1, Some(2))
+    );
+}
+
+#[test]
+fn a_window_of_one_pass_shows_what_that_pass_changed() {
+    let laps = fixture("laps-and-a-menu");
+    let why = trace_text(&[
+        "why",
+        path_of(&laps),
+        "--at",
+        "20.860s",
+        "--before",
+        "0s",
+        "--after",
+        "0s",
+    ]);
+    for delta in [
+        "\n00:20.860 ride 00:00  Δ navigation.page  Ready -> Ride\n",
+        "\n00:20.860 ride 00:00  Δ recorder_internal.lifecycle  Ready -> Running { ",
+    ] {
+        assert!(why.contains(delta), "{delta:?} missing: {why}");
+    }
+}
+
+#[test]
+fn decisions_in_force_from_one_pass_keep_the_order_the_owner_made_them() {
+    let laps = fixture("laps-and-a-menu");
+    let why = trace_text(&["why", path_of(&laps), "--at", "20.860s"]);
+    let (_, in_force) = why
+        .split_once("in force at 00:20.860:\n")
+        .unwrap_or_else(|| panic!("an in-force section: {why}"));
+    let ride: Vec<&str> = in_force
+        .lines()
+        .filter_map(|line| line.split("  ").nth(2))
+        .filter(|tag| tag.starts_with("ride."))
+        .collect();
+    assert_eq!(
+        ride,
+        ["ride.submitted", "ride.new_ride", "ride.result"],
+        "{in_force}"
+    );
+}
+
+#[test]
+fn each_recorder_decides_under_its_own_owner_and_stays_in_force_beside_the_other() {
+    let laps = fixture("laps-and-a-menu");
+    let why = trace_text(&["why", path_of(&laps), "--at", "20.860s"]);
+    let (_, in_force) = why
+        .split_once("in force at 00:20.860:\n")
+        .unwrap_or_else(|| panic!("an in-force section: {why}"));
+    for decided in [
+        "  00:00.010 ride --:--  recorder_bulk.status  from=Scanning to=Unsupported ",
+        "  00:20.860 ride 00:00  recorder_internal.status  from=Ready to=Recording ",
+    ] {
+        assert!(
+            in_force.contains(decided),
+            "{decided:?} missing: {in_force}"
+        );
+    }
+    let bulk = trace_json(&[
+        "why",
+        path_of(&laps),
+        "--at",
+        "20.860s",
+        "--owner",
+        "recorder_bulk",
+    ]);
+    assert!(
+        (bulk["in_force"].as_array().unwrap().iter())
+            .all(|said| said["tag"].as_str().unwrap().starts_with("recorder_bulk.")),
+        "{bulk}"
+    );
+}
+
+#[test]
+fn a_delta_reads_old_to_new_and_names_a_field_an_owner_stopped_showing() {
+    use firmware_services::why::{Delta, Entry, Why};
+    use shell_simulator::trace::report::{Asking, Kept};
+    let timeline = timeline("laps-and-a-menu");
+    let delta = |at_ms, field, old: Option<&str>, new: Option<&str>| {
+        Entry::Delta(Delta {
+            at_ms,
+            owner: "follow",
+            field,
+            old: old.map(str::to_string),
+            new: new.map(str::to_string),
+        })
+    };
+    let entries = [
+        Entry::Decision(Why {
+            at_ms: 2_000,
+            tag: "follow.turn_around",
+            operands: vec![("against_fixes", "3".into())],
+        }),
+        delta(2_000, "sign", Some("None"), Some("Some(TurnAround)")),
+        delta(9_000, "segment", Some("7"), None),
+        delta(30_000, "segment", None, Some("8")),
+    ];
+    let asking = Asking {
+        at_ms: 9_000,
+        from_ms: 0,
+        to_ms: 10_000,
+        owners: vec!["follow"],
+        limit: usize::MAX,
+        every_delta: false,
+    };
+    let Kept {
+        kept,
+        hidden,
+        in_force,
+    } = asking.keep(&timeline, &entries);
+    let lines: Vec<String> = kept.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        lines,
+        [
+            "00:02.000 ride --:--  follow.turn_around  against_fixes=3",
+            "00:02.000 ride --:--  Δ follow.sign  None -> Some(TurnAround)",
+            "00:09.000 ride --:--  Δ follow.segment  7 -> (not shown)",
+        ]
+    );
+    assert_eq!((hidden, in_force.len()), (0, 1));
+    assert_eq!(
+        serde_json::to_value(&kept[1]).unwrap(),
+        serde_json::json!({
+            "at": {"session_ms": 2_000, "ride_ms": null},
+            "kind": "delta",
+            "owner": "follow",
+            "field": "sign",
+            "old": "None",
+            "new": "Some(TurnAround)",
+        })
+    );
+    let other = Asking {
+        owners: vec!["cue"],
+        ..asking
+    };
+    assert!(other.keep(&timeline, &entries).kept.is_empty());
+
+    let ticking: Vec<Entry> = (0..5_u64)
+        .map(|i| {
+            delta(
+                1_000 + i * 1_000,
+                "taken_loop_ms",
+                Some(&i.to_string()),
+                Some(&(i + 1).to_string()),
+            )
+        })
+        .collect();
+    let lines = |every_delta| {
+        let asking = Asking {
+            every_delta,
+            owners: vec!["follow"],
+            ..asking
+        };
+        asking.keep(&timeline, &ticking).kept
+    };
+    let churn = lines(false);
+    assert_eq!(
+        churn.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        ["00:01.000 ride --:--  Δ follow.taken_loop_ms  changed in 5 passes: 0 -> 5"],
+        "a field that keeps changing is one line"
+    );
+    assert_eq!(
+        serde_json::to_value(&churn[0]).unwrap(),
+        serde_json::json!({
+            "at": {"session_ms": 1_000, "ride_ms": null},
+            "kind": "churn",
+            "owner": "follow",
+            "field": "taken_loop_ms",
+            "first": "0",
+            "last": "5",
+            "passes": 5,
+        })
+    );
+    assert_eq!(lines(true).len(), 5, "--deltas all prints every change");
+}
+
 fn path_with_fake_uv(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = dir.join("bin");
@@ -1686,4 +1971,54 @@ fn a_faithful_replay_by_its_own_build_that_fails_bundles_its_first_divergence_an
     );
     assert!(replay("skipped", &["--no-bundle"], "")["bundle"].is_null());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+const LONGEST_FIELD: usize = 2_000;
+
+fn fields_longer_than(
+    capture: &[u8],
+    most: usize,
+) -> std::collections::BTreeMap<(&'static str, &'static str), usize> {
+    use firmware_services::why::{Fields, Value};
+    let changed = shell_simulator::replay::Options {
+        mode: Mode::Changed,
+        model: false,
+    };
+    let mut sim = Sim::replaying(capture, changed, None).unwrap();
+    let mut longest = std::collections::BTreeMap::new();
+    let mut passes = 0_u32;
+    while !matches!(
+        sim.device.replay_step(),
+        shell_simulator::session::Step::End
+    ) {
+        passes += 1;
+        if !passes.is_multiple_of(20) {
+            continue;
+        }
+        let mut sink = |owner, field, value: Value<'_>| {
+            if let Value::Debug(value) = value {
+                let chars = format!("{value:?}").chars().count();
+                let seen = longest.entry((owner, field)).or_insert(0);
+                *seen = chars.max(*seen);
+            }
+        };
+        sim.device.sdk.state(&mut Fields::new(&mut sink));
+    }
+    assert!(passes > 1_000, "{passes} passes replayed");
+    longest.retain(|_, chars| *chars > most);
+    longest
+}
+
+#[test]
+fn no_owner_field_reads_longer_than_a_bounded_line_in_any_fixture() {
+    let long: Vec<_> = ["laps-and-a-menu", "power-dropout-after-descent"]
+        .into_iter()
+        .map(|name| (name, std::fs::read(fixture(name)).unwrap()))
+        .map(|(name, capture)| (name, fields_longer_than(&capture, LONGEST_FIELD)))
+        .filter(|(_, long)| !long.is_empty())
+        .collect();
+    assert!(
+        long.is_empty(),
+        "fields whose Debug text passes {LONGEST_FIELD} characters, which belong in buffers or metadata: {long:?}"
+    );
 }

@@ -54,6 +54,7 @@ pub enum Ground {
 }
 
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Fix {
     epoch_ms: u32,
     latitude_e7: i32,
@@ -61,6 +62,7 @@ struct Fix {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Latest {
     epoch_ms: u32,
     received_ms: u64,
@@ -68,6 +70,7 @@ struct Latest {
 }
 
 #[derive(Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct GpsSpeed {
     latest: Option<Latest>,
     /// Good fixes, oldest first, with no gap between them.

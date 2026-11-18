@@ -27,6 +27,7 @@ use firmware_shell::rendering::font::{FaceRole, SPILL};
 
 /// A workout on the ride screen: before it starts, while it runs and after.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Training {
     pub name: Name,
     pub test: Option<Test>,

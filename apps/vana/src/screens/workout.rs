@@ -1542,6 +1542,7 @@ pub enum Discard {
 }
 
 #[derive(Clone)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Text<const N: usize> {
     bytes: [u8; N],
     len: usize,

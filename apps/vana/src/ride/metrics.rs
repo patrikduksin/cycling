@@ -25,6 +25,7 @@ const DROPOUT_MS: u64 = 1000;
 
 /// The latest wheel revolution event of an ANT+ speed page.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Revolution {
     /// Event time in 1/1024 s, wrapping.
     event_time: u16,
@@ -44,6 +45,7 @@ const MAX_CADENCE_TENTHS: u64 = CrankCadence::MAX_TENTHS as u64;
 /// Crank cadence from the revolutions of an ANT+ cadence sensor. The caller
 /// resets it when the channel session restarts.
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Cadence {
     previous: Option<Revolution>,
     tenths: Option<u16>,
@@ -115,6 +117,7 @@ impl Cadence {
     }
 }
 
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Speed {
     /// Wheel circumference in mm, which turns revolutions into distance. It
     /// changes only between rides, so a ride's distance never jumps.
@@ -256,6 +259,7 @@ pub struct Step {
 
 /// Ride distance, integrated from wheel speed about once per second.
 #[derive(Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Odometer {
     distance_mm: u64,
     last_step_ms: u64,
@@ -291,6 +295,7 @@ impl Odometer {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct PressureBase {
     pressure_centi_pa: u32,
     distance_mm: u64,
@@ -298,6 +303,7 @@ struct PressureBase {
 
 /// Road gradient from barometric pressure change over travelled distance.
 #[derive(Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Gradient {
     base: Option<PressureBase>,
     tenths: Option<i16>,
@@ -360,6 +366,7 @@ impl Gradient {
 /// last three seconds, zeros included. A lost meter clears it, so the value
 /// never outlives the readings it averages.
 #[derive(Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Power3s {
     /// The last reading of each sampled second, and that second.
     slots: [Option<(u32, u16)>; 3],

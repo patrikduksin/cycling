@@ -362,9 +362,11 @@ look-ahead pass, and a map fill draws the roads with the rest of the map. To
 measure the frame time, the extraction and the fill on the device:
 
 1. Build `cycling build --variant scripted-gnss` and flash it with
-   `cycling device flash-image`. Its receiver rides the fixture course from
-   Plaza de Armas after a two-minute hold, then 1.6 km off it, so the map
-   also shows the way back to a junction far behind.
+   `cycling device flash-image`. After a two-minute hold its receiver rides
+   the first 200 m of the fixture course backwards to Plaza de Armas, which
+   shows TURN AROUND while the ride joins, turns there, rides the course,
+   then 1.6 km off it, so the map also shows the way back to a junction far
+   behind.
 2. Put the fixture course's `course.dat` (the simulator writes it after an
    upload) on the card with `cycling files put course.dat <path>`, and
    restart.

@@ -244,6 +244,14 @@ pub struct Shelf {
     len: usize,
 }
 
+#[cfg(not(target_os = "none"))]
+impl firmware_services::why::State for Shelf {
+    fn fields(&self, out: &mut firmware_services::why::Fields<'_>) {
+        out.field("shelf_capacity", &self.capacity());
+        out.buffer("shelf", &self.slots.as_chunks::<SLOT>().0[..self.len]);
+    }
+}
+
 impl Shelf {
     /// An empty shelf in `slots` (a multiple of [`SLOT`] bytes).
     pub fn new(slots: &'static mut [u8]) -> Self {
@@ -619,6 +627,21 @@ pub(crate) struct Hidden {
     pub(crate) delete: Option<(Medium, Summary)>,
     /// The page asks about rides: END RIDE? or the list.
     asking: bool,
+}
+
+#[cfg(not(target_os = "none"))]
+impl firmware_services::why::State for Hidden {
+    fn fields(&self, out: &mut firmware_services::why::Fields<'_>) {
+        if let Some(shelf) = &self.shelf {
+            shelf.fields(out);
+        }
+        out.field("scan", &self.scan);
+        out.field("revision", &self.revision);
+        out.field("card_ready", &self.card_ready);
+        out.field("card_in", &self.card_in);
+        out.field("delete", &self.delete);
+        out.field("asking", &self.asking);
+    }
 }
 
 impl Hidden {

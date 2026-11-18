@@ -52,6 +52,7 @@ use device_api::server::{
 use firmware_services::files;
 use firmware_services::fit::{Counter, Sink};
 use firmware_services::http::{Head, query_value};
+use firmware_services::why;
 
 /// A session without requests ends after this long.
 pub const IDLE_MS: u64 = 10 * 60 * 1000;
@@ -233,6 +234,27 @@ pub(super) struct Phone {
     work: Option<&'static mut Work>,
 }
 
+#[cfg(not(target_os = "none"))]
+impl why::State for Phone {
+    fn fields(&self, out: &mut why::Fields<'_>) {
+        let session = self.session.as_ref();
+        let status = session.map(|session| &session.status);
+        out.field("mode", &status.map(|status| status.mode));
+        out.field("ssid", &status.map(|status| status.ssid));
+        out.field("address", &status.and_then(|status| status.address));
+        out.field("access_point", &status.map(|status| status.access_point));
+        out.field("requests", &status.map(|status| status.requests));
+        out.field("downloads", &status.map(|status| status.downloads));
+        out.field("last_request_ms", &session.map(|s| s.last_request_ms));
+        out.field("started", &session.map(|s| s.started));
+        out.field("wanted", &self.wanted);
+        out.field("closed", &self.closed);
+        out.field("stopping", &self.stopping);
+        out.field("last_id", &self.last_id);
+        out.field("clear", &self.clear);
+    }
+}
+
 impl Phone {
     /// A session is open, or the next service step opens or ends one.
     pub(super) fn busy(&self) -> bool {
@@ -389,6 +411,7 @@ impl Runtime {
 
     fn end_session(&mut self, why: Closed) {
         if let Some(session) = self.phone.session.take() {
+            why!("phone.closed", why, started = session.started);
             self.phone.stopping = session.started;
             self.phone.closed = Some(why);
             self.phone.w().job = Job::Idle;
@@ -401,6 +424,7 @@ impl Runtime {
             return;
         }
         if self.recorder_busy() {
+            why!("phone.refused_while_riding", mode);
             self.phone.closed = Some(Closed::Ride);
             return;
         }
@@ -426,6 +450,7 @@ impl Runtime {
             last_request_ms: now,
             started: false,
         });
+        why!("phone.opened", mode);
         log::info!(target: "phone", "VANA_PHONE open mode={}", mode.name());
     }
 
@@ -462,8 +487,18 @@ impl Runtime {
                 |token| matches!(self.ride.host(), Queued::Pending(queued) if queued == token),
             );
             if self.ride.recording() || self.recorder_busy() && !clearing {
+                why!(
+                    "phone.ends_for_ride",
+                    recording = self.ride.recording(),
+                    clearing
+                );
                 self.end_session(Closed::Ride);
             } else if idle {
+                why!(
+                    "phone.idle",
+                    idle_ms = now.saturating_sub(session.last_request_ms),
+                    limit_ms = IDLE_MS
+                );
                 self.end_session(Closed::Idle);
             }
         }

@@ -256,6 +256,23 @@ frame, not their sum, inside the device's stack budget.
 [`app/view.rs`](../apps/vana/src/app/view.rs) lists the tiers. A new write
 goes into the tier that runs at its moment, never into the draw.
 
+## Owners say why
+
+A replay explains a ride in its owners' own terms. An owner notes each
+decision with `firmware_services::why!` at the rule that picks what the rider
+sees: a tag named `<owner>.<rule>` and the operands the rule read, as in
+`follow.turn_around` with `against_fixes`, `turn_around_fixes` and `fresh`.
+The tag sits at the decision, not on every call, because a decision held from
+one pass to the next is already one entry. Each owner also implements
+`why::State`, naming its fields (a `state!` line beside the type when every
+field shows as itself), and `Runtime::state` names every owner, so a replay
+can say which fields changed. A buffer shows as its length and a digest, and a
+secret, such as the phone session's password, is never a field.
+
+None of this reaches the device. There the operands are type-checked and
+never evaluated, and `State` and the `Debug` it needs exist only on host, so
+the image, `.rodata` and the stack frames stay as they were.
+
 ## Screens lay out from the panel
 
 A screen takes its geometry from the panel it draws on, so one build of the

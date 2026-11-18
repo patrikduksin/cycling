@@ -382,6 +382,7 @@ impl LoadError {
 
 /// Built-ins, and the uploads FILES held when last listed.
 #[derive(Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Library {
     uploads: heapless::Vec<Upload, UPLOADS>,
     /// Upload files that did not decode, or did not fit, at the last listing.

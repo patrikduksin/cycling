@@ -45,6 +45,7 @@ use device_api::input::InputSource;
 use device_api::positioning::{Positioning, Snapshot as Position};
 use device_api::power::Power;
 use device_api::storage::OwnedFlash;
+use firmware_services::why;
 use firmware_shell::shell::{Drawn, Screen, Shell};
 
 #[derive(Clone, Copy)]
@@ -84,6 +85,8 @@ pub(super) struct Chart {
     chart: ElevationChart,
     charted: Option<u32>,
 }
+
+state!(Chart { charted });
 
 impl Chart {
     pub(super) fn chart(&self) -> &ElevationChart {
@@ -152,6 +155,11 @@ impl Runtime {
     ) -> Option<Frame> {
         // Once the device accepted turning off, the last frame stays.
         if system.foreground == Screen::Blank || self.turning_off() {
+            why!(
+                "frame.blank",
+                blank = system.foreground == Screen::Blank,
+                turning_off = self.turning_off()
+            );
             return None;
         }
         self.latch_numbers(now);
@@ -166,6 +174,7 @@ impl Runtime {
         // waiting for the page's usual pace.
         let due = self.motion_due(&shown, now);
         let Display::Active { next_frame_ms } = &mut self.display else {
+            why!("frame.suspended");
             return None;
         };
         if let Some(due) = due {
@@ -182,6 +191,7 @@ impl Runtime {
         {
             let home_at = first + BRAND_MS;
             if now < home_at && now + MOTION_FRAME_MS > home_at {
+                why!("frame.reveal_skipped", home_at, brand_ms = BRAND_MS);
                 *next_frame_ms = home_at;
                 return None;
             }
@@ -206,14 +216,23 @@ impl Runtime {
             Page::Ride | Page::Ready | Page::EndRide | Page::DiscardRide | Page::Summary
         ) || sheet.is_some_and(PowerSheet::animated)
             || self.readings.battery.charging();
+        let pace_ms = if motion {
+            MOTION_FRAME_MS
+        } else if animated {
+            ANIMATED_FRAME_MS
+        } else {
+            STATIC_FRAME_MS
+        };
+        why!(
+            "frame.pace",
+            pace_ms,
+            motion,
+            animated,
+            page,
+            sheet = sheet.is_some()
+        );
         self.display = Display::Active {
-            next_frame_ms: now.saturating_add(if motion {
-                MOTION_FRAME_MS
-            } else if animated {
-                ANIMATED_FRAME_MS
-            } else {
-                STATIC_FRAME_MS
-            }),
+            next_frame_ms: now.saturating_add(pace_ms),
         };
         // A card under a resting finger lights up once the delay passes.
         self.navigation.touches_mut().tick(now);
@@ -231,6 +250,7 @@ impl Runtime {
         navigation.lapse_returns();
         let first_frame = navigation.first_frame_at(now);
         if navigation.page() == Page::Boot && now.saturating_sub(first_frame) >= BRAND_MS {
+            why!("frame.brand_over", first_frame, first_page);
             navigation.go(To::Page(first_page));
         }
         // A ride opens on its first page: the workout page during a workout.
@@ -248,6 +268,7 @@ impl Runtime {
             && navigation.page() != Page::Boot
             && let Some(learned) = self.readings.wheel_news.take()
         {
+            why!("frame.wheel_set", learned);
             let mut text = Text::<20>::new();
             let _ = write!(text, "WHEEL SET {learned} MM");
             self.navigation
@@ -255,6 +276,7 @@ impl Runtime {
         }
         // Over the ride's own news: its workout could not be read.
         if core::mem::take(&mut self.training.missing) {
+            why!("frame.workout_missing");
             self.navigation.toast("WORKOUT MISSING", Tone::Warn, now);
         }
         if status == Status::Recording {
@@ -263,6 +285,10 @@ impl Runtime {
         // A page the rider turned off, or the workout page once its workout
         // is gone, gives way to the main page.
         if !self.ride_pages().contains(self.navigation.ride_page()) {
+            why!(
+                "frame.ride_page_off",
+                ride_page = self.navigation.ride_page()
+            );
             self.navigation.go(To::RidePage(RidePage::Main));
         }
         let page = self.navigation.page();

@@ -136,6 +136,37 @@ pub(super) struct Navigation {
     best_shown: Option<Text<24>>,
 }
 
+state!(Navigation {
+    page,
+    ride_page,
+    home_cursor,
+    settings_field,
+    sections,
+    edit,
+    setup_cursor,
+    setup_return,
+    sensors_return,
+    phone_step,
+    phone_advanced,
+    climb,
+    road,
+    last_press,
+    first_frame,
+    last_report,
+    touches,
+    settings_scroll,
+    toast,
+    announced,
+    paused_since,
+    pause_hidden,
+    first_page,
+    pause_wrapped,
+    summary_page,
+    chime,
+    best_news,
+    best_shown,
+});
+
 impl Default for Navigation {
     fn default() -> Self {
         Self {

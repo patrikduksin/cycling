@@ -217,6 +217,7 @@ impl Alert {
 
 /// One band limit's debounce.
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Limit {
     /// Since when the reading has been outside (or, once fired, back inside).
     /// Times are the clock's low 32 bits, compared wrapping, to keep the
@@ -284,6 +285,19 @@ pub struct Alerts {
     battery_short_since: Option<u64>,
 }
 
+state!(Alerts {
+    limits,
+    fuel_at_ms,
+    active_ms,
+    last,
+    seen,
+    empty_since,
+    sunset,
+    turn_back,
+    battery_told,
+    battery_short_since,
+});
+
 /// The last Unix time a clock is asked to read: the end of year 9999, so a
 /// hostile time cannot overflow the calendar sums.
 const LATEST_UNIX: i64 = 253_402_300_799;
@@ -300,6 +314,7 @@ const RECOVERED_AFTER_MS: u64 = 120_000;
 
 /// What this ride has seen of the sun and said about it.
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct SunsetWatch {
     warned: bool,
     /// The sun was up at some point of this ride, so its setting is news.

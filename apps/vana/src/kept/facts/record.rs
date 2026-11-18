@@ -628,6 +628,14 @@ pub struct Shelf {
     len: usize,
 }
 
+#[cfg(not(target_os = "none"))]
+impl firmware_services::why::State for Shelf {
+    fn fields(&self, out: &mut firmware_services::why::Fields<'_>) {
+        out.field("shelf_capacity", &self.capacity());
+        out.buffer("shelf", &self.slots.as_chunks::<SLOT>().0[..self.len]);
+    }
+}
+
 impl Shelf {
     /// An empty shelf in `slots` (a multiple of [`SLOT`] bytes).
     pub fn new(slots: &'static mut [u8]) -> Self {

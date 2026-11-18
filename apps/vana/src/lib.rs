@@ -40,6 +40,25 @@ macro_rules! invariants {
     };
 }
 
+macro_rules! state {
+    ($owner:ty = $name:literal) => {
+        #[cfg(not(target_os = "none"))]
+        impl firmware_services::why::State for $owner {
+            fn fields(&self, out: &mut firmware_services::why::Fields<'_>) {
+                out.field($name, self);
+            }
+        }
+    };
+    ($owner:ty { $($field:ident),+ $(,)? }) => {
+        #[cfg(not(target_os = "none"))]
+        impl firmware_services::why::State for $owner {
+            fn fields(&self, out: &mut firmware_services::why::Fields<'_>) {
+                $(out.field(::core::stringify!($field), &self.$field);)+
+            }
+        }
+    };
+}
+
 pub mod app;
 
 /// What a device calls itself: the FIT file's product and the phone's

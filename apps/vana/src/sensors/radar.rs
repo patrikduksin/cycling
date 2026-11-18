@@ -350,6 +350,7 @@ impl Proximity {
 /// Beeps for the nearest vehicle: an alarm when one first appears, then a
 /// note that repeats faster and climbs as it closes in.
 #[derive(Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Warning {
     level: Proximity,
     last_ms: Option<u64>,

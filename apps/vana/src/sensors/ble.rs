@@ -37,6 +37,19 @@ pub struct Client {
     rr_dropped: u32,
     battery: Option<crate::sensors::ant::Battery>,
 }
+
+state!(Client {
+    profile,
+    after_connection,
+    transport,
+    heart,
+    cadence,
+    last_sequence,
+    dropped,
+    invalid,
+    rr_dropped,
+    battery,
+});
 impl Client {
     pub fn new(profile: Profile) -> Self {
         Self {

@@ -216,6 +216,12 @@ pub(crate) struct Kept {
     card_ready: bool,
 }
 
+state!(Kept {
+    store,
+    retry_at,
+    card_ready,
+});
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Seen {
     /// The bulk medium is usable.

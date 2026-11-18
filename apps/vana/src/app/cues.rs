@@ -202,6 +202,7 @@ pub(super) struct Played {
 
 /// Navigation cues waiting for the buzzer, one of each kind.
 #[derive(Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Waiting([bool; 5]);
 
 impl Waiting {
@@ -235,6 +236,16 @@ pub(super) struct Cues {
     of: u8,
     played: Option<Played>,
 }
+
+state!(Cues {
+    pending,
+    navigation_waiting,
+    playing,
+    run,
+    note,
+    of,
+    played,
+});
 
 impl Cues {
     /// Sound `cue` soon. A later cue replaces an earlier one, except that

@@ -36,6 +36,15 @@ pub struct RouteLeg {
     too_far_fixes: u8,
 }
 
+state!(RouteLeg {
+    placement,
+    end,
+    last_fix,
+    counted_from,
+    against_fixes,
+    too_far_fixes,
+});
+
 impl RouteLeg {
     /// The held leg, as the index of its end in the course.
     pub fn end(&self) -> Option<usize> {

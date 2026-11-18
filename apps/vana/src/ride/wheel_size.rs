@@ -77,6 +77,7 @@ pub struct Sample {
 
 /// A segment's direction, in mm north and east, with its length.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Heading {
     north: i64,
     east: i64,
@@ -84,6 +85,7 @@ struct Heading {
 }
 
 #[derive(Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Calibrator {
     anchor: Option<Sample>,
     last_ms: u64,

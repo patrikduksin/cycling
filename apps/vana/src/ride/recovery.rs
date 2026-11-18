@@ -48,6 +48,8 @@ pub struct Recovery {
     state: State,
 }
 
+state!(Recovery = "recovery");
+
 fn live(bpm: Option<u16>) -> Option<u16> {
     bpm.filter(|bpm| *bpm > 0)
 }

@@ -29,8 +29,19 @@ pub(super) struct Night {
     next_sun_ms: u64,
 }
 
+state!(Night {
+    night,
+    mode,
+    next_check_ms,
+    place,
+    clock,
+    sun,
+    next_sun_ms,
+});
+
 /// A receiver time of day and the uptime it was read at.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Clock {
     /// Seconds since UTC midnight.
     seconds: i64,

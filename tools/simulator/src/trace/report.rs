@@ -11,6 +11,7 @@ use crate::trace::timeline::{
     Before, Entry, Kind, Moment, SILENCE_MS, Silence, Timeline, duration, session_clock,
 };
 use firmware_services::trace::{self, End};
+use firmware_services::why;
 use serde::{Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -517,5 +518,273 @@ impl fmt::Display for Futures<'_> {
             )?;
         }
         write!(f, "{}", self.diff)
+    }
+}
+
+#[derive(Serialize)]
+pub struct Explained<'a> {
+    pub header: Header<'a>,
+    #[serde(serialize_with = "mode_name")]
+    pub mode: Mode,
+    pub why: String,
+    pub at_ms: u64,
+    pub from_ms: u64,
+    pub to_ms: u64,
+    pub reached: Moment,
+    pub trace_ended: bool,
+    pub divergence: Option<Divergences>,
+    pub entries: Vec<Said>,
+    pub hidden: usize,
+    pub in_force: Vec<Said>,
+}
+
+pub struct Asking<'a> {
+    pub at_ms: u64,
+    pub from_ms: u64,
+    pub to_ms: u64,
+    pub owners: Vec<&'a str>,
+    pub limit: usize,
+    pub every_delta: bool,
+}
+
+const MAX_CHANGES_LISTED_SINGLY: usize = 3;
+
+pub struct Kept {
+    pub kept: Vec<Said>,
+    pub hidden: usize,
+    pub in_force: Vec<Said>,
+}
+
+impl Asking<'_> {
+    fn owns(&self, entry: &why::Entry) -> bool {
+        let named = |owner: &str| match entry {
+            why::Entry::Decision(decision) => decision
+                .tag
+                .strip_prefix(owner)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.')),
+            why::Entry::Delta(delta) => delta.owner == owner,
+        };
+        self.owners.is_empty() || self.owners.iter().any(|owner| named(owner))
+    }
+
+    pub fn keep(&self, timeline: &Timeline, entries: &[why::Entry]) -> Kept {
+        let owned = || entries.iter().filter(|entry| self.owns(entry));
+        let window: Vec<&why::Entry> = owned()
+            .filter(|entry| (self.from_ms..=self.to_ms).contains(&entry.at_ms()))
+            .collect();
+        let window = self.collapse(timeline, &window);
+        let mut nearest: Vec<usize> = (0..window.len()).collect();
+        nearest.sort_by_key(|&i| (window[i].at.session_ms.abs_diff(self.at_ms), i));
+        nearest.truncate(self.limit);
+        nearest.sort_unstable();
+        let hidden = window.len() - nearest.len();
+        let mut window: Vec<Option<Said>> = window.into_iter().map(Some).collect();
+        let kept = nearest.iter().filter_map(|&i| window[i].take()).collect();
+        let mut latest = BTreeMap::new();
+        for (noted, entry) in owned().enumerate() {
+            if let why::Entry::Decision(decision) = entry
+                && decision.at_ms <= self.at_ms
+            {
+                latest.insert(decision.tag, (noted, entry));
+            }
+        }
+        let mut in_force: Vec<(&str, (usize, &why::Entry))> = latest.into_iter().collect();
+        in_force.sort_by_key(|(tag, (noted, _))| (tag.split('.').next(), *noted));
+        let in_force = (in_force.into_iter())
+            .map(|(_, (_, entry))| Said::of(timeline, entry))
+            .collect();
+        Kept {
+            kept,
+            hidden,
+            in_force,
+        }
+    }
+
+    fn collapse(&self, timeline: &Timeline, window: &[&why::Entry]) -> Vec<Said> {
+        let mut changes: BTreeMap<(&str, &str), Vec<&why::Delta>> = BTreeMap::new();
+        for entry in window {
+            if let why::Entry::Delta(delta) = entry {
+                changes
+                    .entry((delta.owner, delta.field))
+                    .or_default()
+                    .push(delta);
+            }
+        }
+        let churns = |delta: &why::Delta| {
+            !self.every_delta
+                && changes[&(delta.owner, delta.field)].len() > MAX_CHANGES_LISTED_SINGLY
+        };
+        let mut said = Vec::new();
+        for entry in window {
+            let why::Entry::Delta(delta) = entry else {
+                said.push(Said::of(timeline, entry));
+                continue;
+            };
+            if !churns(delta) {
+                said.push(Said::of(timeline, entry));
+                continue;
+            }
+            let all = &changes[&(delta.owner, delta.field)];
+            if !core::ptr::eq(all[0], delta) {
+                continue;
+            }
+            said.push(Said {
+                at: timeline.moment(delta.at_ms),
+                what: What::Churn {
+                    owner: delta.owner,
+                    field: delta.field,
+                    first: delta.old.clone(),
+                    last: all[all.len() - 1].new.clone(),
+                    passes: all.len(),
+                },
+            });
+        }
+        said
+    }
+}
+
+#[derive(Serialize)]
+pub struct Said {
+    pub at: Moment,
+    #[serde(flatten)]
+    pub what: What,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum What {
+    Decision {
+        tag: &'static str,
+        #[serde(serialize_with = "as_map")]
+        operands: Vec<(&'static str, String)>,
+    },
+    Delta {
+        owner: &'static str,
+        field: &'static str,
+        old: Option<String>,
+        new: Option<String>,
+    },
+    Churn {
+        owner: &'static str,
+        field: &'static str,
+        first: Option<String>,
+        last: Option<String>,
+        passes: usize,
+    },
+}
+
+fn as_map<S: Serializer>(pairs: &[(&str, String)], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_map(pairs.iter().map(|(name, value)| (name, value)))
+}
+
+impl Said {
+    pub fn of(timeline: &Timeline, entry: &why::Entry) -> Self {
+        let what = match entry {
+            why::Entry::Decision(decision) => What::Decision {
+                tag: decision.tag,
+                operands: decision.operands.clone(),
+            },
+            why::Entry::Delta(delta) => What::Delta {
+                owner: delta.owner,
+                field: delta.field,
+                old: delta.old.clone(),
+                new: delta.new.clone(),
+            },
+        };
+        Self {
+            at: timeline.moment(entry.at_ms()),
+            what,
+        }
+    }
+}
+
+const SHOWN_CHARS: usize = 96;
+
+fn clipped(value: &str) -> std::borrow::Cow<'_, str> {
+    match value.char_indices().nth(SHOWN_CHARS) {
+        Some((end, _)) => format!("{}…", &value[..end]).into(),
+        None => value.into(),
+    }
+}
+
+fn shown(value: &Option<String>) -> std::borrow::Cow<'_, str> {
+    match value {
+        Some(value) => clipped(value),
+        None => "(not shown)".into(),
+    }
+}
+
+impl fmt::Display for Said {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}  ", self.at)?;
+        match &self.what {
+            What::Decision { tag, operands } => {
+                f.write_str(tag)?;
+                for (i, (name, value)) in operands.iter().enumerate() {
+                    let gap = if i == 0 { "  " } else { " " };
+                    write!(f, "{gap}{name}={}", clipped(value))?;
+                }
+                Ok(())
+            }
+            What::Delta {
+                owner,
+                field,
+                old,
+                new,
+            } => write!(f, "Δ {owner}.{field}  {} -> {}", shown(old), shown(new)),
+            What::Churn {
+                owner,
+                field,
+                first,
+                last,
+                passes,
+            } => write!(
+                f,
+                "Δ {owner}.{field}  changed in {passes} passes: {} -> {}",
+                shown(first),
+                shown(last)
+            ),
+        }
+    }
+}
+
+impl fmt::Display for Explained<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.header)?;
+        writeln!(f, "mode {}: {}", self.mode.name(), self.why)?;
+        writeln!(
+            f,
+            "why at {}: replayed {} from power-on, decisions and deltas from {} to {}; reached {}{}",
+            session_clock(self.at_ms),
+            self.mode.name(),
+            session_clock(self.from_ms),
+            session_clock(self.to_ms),
+            self.reached,
+            if self.trace_ended {
+                " (the trace ended)"
+            } else {
+                ""
+            }
+        )?;
+        f.write_str("divergence: ")?;
+        if let Some(divergence) = &self.divergence {
+            write!(f, "{divergence}")?;
+        }
+        for said in &self.entries {
+            writeln!(f, "{said}")?;
+        }
+        if self.hidden > 0 {
+            writeln!(
+                f,
+                "{} entries farther from {} left out; --limit all shows them",
+                self.hidden,
+                session_clock(self.at_ms)
+            )?;
+        }
+        writeln!(f, "in force at {}:", session_clock(self.at_ms))?;
+        for said in &self.in_force {
+            writeln!(f, "  {said}")?;
+        }
+        Ok(())
     }
 }

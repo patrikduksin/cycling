@@ -72,6 +72,8 @@ pub(super) struct Marks {
     pub(super) made: Option<Mark>,
 }
 
+state!(Marks { hold, count, made });
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Hold {
     #[default]

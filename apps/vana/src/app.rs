@@ -136,6 +136,59 @@ pub struct Runtime {
     layout: &'static crate::screens::Layout,
 }
 
+#[cfg(not(target_os = "none"))]
+impl Runtime {
+    pub fn state(&self, out: &mut firmware_services::why::Fields<'_>) {
+        out.owner("runtime", self);
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+impl firmware_services::why::State for Runtime {
+    fn fields(&self, out: &mut firmware_services::why::Fields<'_>) {
+        out.field("startup", &self.startup);
+        out.field("card_probe", &self.card_probe);
+        out.field("storage_worked", &self.storage_worked);
+        out.owner("navigation", &self.navigation);
+        out.owner("phone", &self.phone);
+        out.owner("display", &self.display);
+        out.owner("sensor_menu", &self.menu);
+        out.owner("sensor_discovery", &self.discovery);
+        out.owner("sensor_links", &self.links);
+        out.owner("calibration", &self.calibration);
+        out.owner("readings", &self.readings);
+        out.owner("ble", &self.sensors);
+        out.owner("ride", &self.ride);
+        out.owner("sync", &self.sync);
+        out.owner("notices", &self.notices);
+        out.owner("recovery", &self.recovery);
+        out.owner("preferences", &self.preferences);
+        out.owner("bests", &self.bests);
+        out.owner("facts", &self.facts);
+        out.owner("deleted", &self.deleted);
+        out.owner("form", &self.form);
+        out.owner("format", &self.format);
+        out.owner("power", &self.power);
+        out.owner("timing", &self.timing);
+        out.owner("training", &self.training);
+        out.owner("cues", &self.cues);
+        out.owner("marks", &self.marks);
+        out.owner("history", &self.history);
+        out.owner("night", &self.night);
+        if let Some(lookahead) = &self.lookahead {
+            out.owner("lookahead", &**lookahead);
+        }
+        out.owner("motion", &self.motion);
+        out.owner("shown", &self.shown);
+        out.owner("chart", &self.chart);
+        out.owner("alerts", &self.alerts);
+        if let Some(track) = &self.track {
+            out.owner("track", &**track);
+        }
+        out.owner("reported", &self.reported);
+    }
+}
+
 impl Runtime {
     pub fn new(
         profile: Profile,

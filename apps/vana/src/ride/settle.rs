@@ -15,6 +15,7 @@ use crate::ride::totals::{Efforts, Totals};
 use crate::ride::zones::TrainingProfile;
 use crate::workout::player::Player;
 use device_api::bulk::ReadWrite;
+use firmware_services::why;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Saved<'a> {
@@ -94,15 +95,28 @@ pub(crate) fn settle(
         let ride = match end {
             End::Finished(ride) => ride,
             End::Discarded(ride) if hide(&ride, deleted, bulk) => {
+                why!("settle.hidden", medium = ride.medium, ride = ride_id(&ride));
                 settled.hide = Hide::Hidden;
                 continue;
             }
             End::Discarded(ride) => {
+                why!(
+                    "settle.discard_not_hidden",
+                    medium = ride.medium,
+                    ride = ride_id(&ride)
+                );
                 settled.hide = Hide::Kept;
                 ride
             }
         };
         let claimed = save(&ride, bests, facts, bulk);
+        why!(
+            "settle.saved",
+            medium = ride.medium,
+            ride = ride_id(&ride),
+            workout = ride.player.is_some(),
+            claimed
+        );
         settled.claimed = Some(
             settled
                 .claimed
@@ -127,7 +141,12 @@ pub(crate) fn reset(
     });
     let facts = facts.forget(bulk, medium);
     let deleted = deleted.forget(bulk, medium, now);
+    why!("settle.reset", medium, history, facts, deleted);
     history.and(facts).and(deleted)
+}
+
+fn ride_id(ride: &Saved<'_>) -> Option<u32> {
+    ride.summary.map(|summary| summary.ride_id)
 }
 
 fn hide(ride: &Saved<'_>, deleted: &mut deleted::Hidden, bulk: &mut impl ReadWrite) -> bool {

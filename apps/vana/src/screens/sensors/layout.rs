@@ -392,6 +392,7 @@ pub(super) enum Target {
 /// Where the shown page's rows and cues are, worked out after every change:
 /// small enough to keep, unlike the canvas, which each frame draws afresh
 /// from it.
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub(super) struct Layout {
     pub(super) screens: &'static Screens,
     /// How far the list has scrolled up to keep its focus in view.

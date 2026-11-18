@@ -112,6 +112,22 @@ pub struct RideTrack {
     pub(super) since_attached: MapWork,
 }
 
+#[cfg(not(target_os = "none"))]
+impl firmware_services::why::State for RideTrack {
+    fn fields(&self, out: &mut firmware_services::why::Fields<'_>) {
+        out.field("outing", &self.outing);
+        out.field("zoom", &self.zoom);
+        out.field("resume", &self.resume);
+        out.field("work", &self.work);
+        out.field("since_attached", &self.since_attached);
+        out.owner("breadcrumb", &self.breadcrumb);
+        out.owner("follow", &self.follower);
+        out.owner("route_leg", &self.route_leg);
+        out.owner("course", &*self.course);
+        out.owner("course_kept", &self.kept);
+    }
+}
+
 impl RideTrack {
     /// The breadcrumb in `crumbs`, the course and room for it in the
     /// ride's frame in `line`; all may be zeroed memory.

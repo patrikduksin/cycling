@@ -4,8 +4,10 @@ const COURSE: &str =
     include_str!("../../../packages/terrain/tests/data/santiago-centro-course.gpx");
 const HOLD_MS: u64 = 120_000;
 const SPEED_M_S: f64 = 10.0;
+const BACK_TO_START_M: f64 = 200.0;
 const ON_COURSE_M: f64 = 3_500.0;
 const OFF_COURSE_M: f64 = 1_600.0;
+const RIDE_M: f64 = BACK_TO_START_M + ON_COURSE_M + OFF_COURSE_M;
 const M_PER_DEGREE: f64 = 111_195.0;
 
 pub struct Script {
@@ -29,8 +31,8 @@ impl Script {
         }
         self.sent_s = Some(second);
         let ridden_m = elapsed_ms.saturating_sub(HOLD_MS) as f64 / 1000.0 * SPEED_M_S;
-        let (lat, lon, bearing) = place(ridden_m.min(ON_COURSE_M + OFF_COURSE_M));
-        let moving = ridden_m > 0.0 && ridden_m < ON_COURSE_M + OFF_COURSE_M;
+        let (lat, lon, bearing) = ride_back_then_course(ridden_m.min(RIDE_M));
+        let moving = ridden_m > 0.0 && ridden_m < RIDE_M;
         let knots = if moving { SPEED_M_S * 1.943_844 } else { 0.0 };
         let clock = 36_000 + second;
         let time = (clock / 3600 % 24, clock / 60 % 60, clock % 60);
@@ -138,6 +140,14 @@ fn east_north(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
     (east, (b.0 - a.0) * M_PER_DEGREE)
 }
 
+fn ride_back_then_course(ridden_m: f64) -> (f64, f64, f64) {
+    if ridden_m < BACK_TO_START_M {
+        let (lat, lon, bearing) = place(BACK_TO_START_M - ridden_m);
+        return (lat, lon, (bearing + 180.0) % 360.0);
+    }
+    place(ridden_m - BACK_TO_START_M)
+}
+
 fn place(ridden_m: f64) -> (f64, f64, f64) {
     let mut walked = 0.0;
     let mut last = None;
@@ -195,13 +205,22 @@ mod tests {
     }
 
     #[test]
-    fn the_rider_waits_at_the_plaza_then_rides_the_course_and_off_it() {
+    fn the_rider_waits_on_the_course_rides_it_back_to_the_plaza_then_rides_it_and_off_it() {
         let mut script = Script::new(1_000);
         let (lat, lon, speed) = fix(&mut script, 1_000);
-        let start = points().next().unwrap();
-        assert!((f64::from(lat) * 1e-7 - start.0).abs() < 1e-6, "{lat}");
-        assert!((f64::from(lon) * 1e-7 - start.1).abs() < 1e-6, "{lon}");
+        let waiting = place(BACK_TO_START_M);
+        assert!((f64::from(lat) * 1e-7 - waiting.0).abs() < 1e-6, "{lat}");
+        assert!((f64::from(lon) * 1e-7 - waiting.1).abs() < 1e-6, "{lon}");
         assert_eq!(speed, Some(0));
+        let back = ride_back_then_course(BACK_TO_START_M / 2.0);
+        let forward = place(BACK_TO_START_M / 2.0);
+        assert!(
+            ((back.2 - forward.2 + 360.0) % 360.0 - 180.0).abs() < 1e-6,
+            "riding back heads against the course: {back:?} {forward:?}"
+        );
+        let start = points().next().unwrap();
+        let turned = ride_back_then_course(BACK_TO_START_M);
+        assert!((turned.0 - start.0).abs() < 1e-9 && (turned.1 - start.1).abs() < 1e-9);
         let mut zero = [0u8; 2048];
         assert_eq!(script.sentences(1_500, &mut zero), 0, "one fix a second");
         let (_, _, speed) = fix(&mut script, 1_000 + HOLD_MS + 10_000);

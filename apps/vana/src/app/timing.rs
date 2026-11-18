@@ -33,6 +33,23 @@ pub(super) struct Timing {
     press_frame_max: Option<u64>,
 }
 
+state!(Timing {
+    first_frame,
+    first_ready,
+    companion,
+    storage,
+    storage_state,
+    gnss_fix,
+    sensors,
+    sensors_dropped,
+    dropped_kinds,
+    ride_press,
+    recording,
+    press_pending,
+    press_frame_last,
+    press_frame_max,
+});
+
 fn mark(slot: &mut Option<u64>, now: u64, name: &str) {
     if slot.is_none() {
         *slot = Some(now);

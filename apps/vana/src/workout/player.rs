@@ -135,6 +135,7 @@ pub enum TestReadout {
     BestMinute(u16),
 }
 
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Player {
     workout: Workout,
     steps: usize,

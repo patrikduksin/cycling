@@ -47,6 +47,7 @@ use crate::workout::player::{Events, Player};
 use device_api::bulk::ReadWrite;
 use firmware_services::checksum::crc32;
 use firmware_services::trace::origin;
+use firmware_services::why;
 
 /// Slots the ride index reads per tick: internal flash reads are quick, each
 /// MMC read is three card reads (ownership checks, then the record).
@@ -60,6 +61,7 @@ const _: () = assert!(VOLATILE_STARTS <= crate::ride::index::KEPT);
 /// One actor's latest recorder operation: queued under its token, then its
 /// result.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub(crate) enum Request {
     Idle,
     Pending(u32),
@@ -70,6 +72,7 @@ pub(crate) enum Request {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub(crate) enum Op {
     Initialize,
     Clear(usize),
@@ -189,8 +192,8 @@ pub struct Journals {
 impl Default for Ride {
     fn default() -> Self {
         Self {
-            internal: Recorder::default(),
-            bulk: Recorder::default(),
+            internal: Recorder::new(Medium::Internal),
+            bulk: Recorder::new(Medium::Bulk),
             internal_media: InternalState::default(),
             bulk_media: BulkState::default(),
             request: Request::Idle,
@@ -399,6 +402,10 @@ impl Ride {
 
     /// The continuation cannot start: the bulk ride stays the rider's ride.
     fn give_up_continuation(&mut self) {
+        why!(
+            "ride.continuation_given_up",
+            continuation = self.continuation
+        );
         self.continuation = match self.continuation {
             Continuation::Moved { carried_ms, .. } => Continuation::Moved {
                 carried_ms,
@@ -480,10 +487,16 @@ impl Ride {
     fn start(&mut self, medium: Medium, op: Op) -> Result<u32, Refused> {
         let token = self.next_token;
         if matches!(op, Op::Request(Action::Start, _)) && !self.admits_start(medium) {
+            why!(
+                "ride.volatile_starts_used",
+                medium,
+                starts = self.volatile_starts(),
+                limit = VOLATILE_STARTS
+            );
             return Err(Refused::State);
         }
         let recorder = self.recorder_mut(medium);
-        match op {
+        let started = match op {
             Op::Initialize => recorder.initialize(token),
             Op::Clear(bound) => recorder.clear(bound, token),
             Op::Clearable(bound) => recorder.clearable(bound),
@@ -491,7 +504,9 @@ impl Ride {
                 .request(action, now, token)
                 .then_some(())
                 .ok_or(Refused::State),
-        }?;
+        };
+        why!("ride.submitted", medium, op, token, refused = started.err());
+        started?;
         self.next_token = token.wrapping_add(1).max(1);
         Ok(token)
     }
@@ -990,6 +1005,11 @@ impl Ride {
                 carry_ms: self.bulk.active_ms(now),
                 paused_when_lost: paused,
             };
+            why!(
+                "ride.continues_internally",
+                bulk = self.bulk.status(),
+                continuation = self.continuation
+            );
             log::warn!(target: "sdk.recorder", "bulk_lost state={} continuing=internal", self.bulk.status().name());
             self.continue_internally(now);
         }
@@ -1008,9 +1028,11 @@ impl Ride {
                     carried_ms: carry_ms,
                     pause_owed: paused_when_lost,
                 };
+                why!("ride.moved_internally", continuation = self.continuation);
             } else {
                 new_ride = true;
                 self.outing = Outing(self.outing.0.wrapping_add(1));
+                why!("ride.new_ride", outing = self.outing, medium = self.last);
                 self.continuation = Continuation::None;
                 self.laps = Laps::default();
                 self.clear_sums();
@@ -1042,6 +1064,13 @@ impl Ride {
                 continue;
             };
             let discarded = result.token != 0 && self.discard == Discard::Asked(result.token);
+            why!(
+                "ride.result",
+                medium,
+                result,
+                discarded,
+                host = matches!(self.host, Request::Pending(token) if token == result.token)
+            );
             if discarded && !result.ok {
                 self.discard = Discard::Failed;
             }
@@ -1092,6 +1121,7 @@ impl Ride {
                 Status::Paused => self.continuation = landed,
                 Status::Recording => {
                     if self.internal.pending_action().is_none() {
+                        why!("ride.pause_owed", continuation = self.continuation);
                         self.internal.request(Action::Pause, now, 0);
                     }
                 }
@@ -1099,6 +1129,35 @@ impl Ride {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+impl why::State for Ride {
+    fn fields(&self, out: &mut why::Fields<'_>) {
+        out.field("request", &self.request);
+        out.field("request_on", &self.request_on);
+        out.field("host", &self.host);
+        out.field("next_token", &self.next_token);
+        out.field("totals", &self.totals);
+        out.field("counted_ms", &self.counted_ms);
+        out.field("zone_time", &self.zone_time);
+        out.field("efforts", &self.efforts);
+        out.field("bests_found", &self.bests_found);
+        out.field("climbing", &self.climbing);
+        out.field("settled", &self.settled);
+        out.field("altitude_fresh", &self.altitude_fresh);
+        out.field("auto", &self.auto);
+        out.field("continuation", &self.continuation);
+        out.field("last", &self.last);
+        out.field("outing", &self.outing);
+        out.field("scanned", &self.scanned);
+        out.field("discard", &self.discard);
+        out.field("volatile_store", &self.volatile_store);
+        out.field("renew_store", &self.renew_store);
+        out.owner("laps", &self.laps);
+        out.owner("recorder_internal", &self.internal);
+        out.owner("recorder_bulk", &self.bulk);
     }
 }
 

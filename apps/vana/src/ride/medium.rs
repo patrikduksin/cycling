@@ -1,5 +1,6 @@
 /// Where a recorder keeps its rides.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(test, derive(Hash))]
 pub enum Medium {
     /// The journal in the owned `Data` reservation: boot flash that keeps
     /// rides, or memory that loses them at power-off, as its geometry says.

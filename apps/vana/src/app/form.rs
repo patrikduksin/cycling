@@ -31,6 +31,12 @@ pub(super) struct Kept {
     pub(super) mode: Mode,
 }
 
+state!(Kept {
+    daily,
+    folded,
+    mode,
+});
+
 impl Kept {
     /// The FORM row's value in Settings: the latest fold.
     pub(super) fn summary(&self) -> Text<38> {

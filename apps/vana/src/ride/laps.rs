@@ -85,6 +85,7 @@ impl AutoLap {
 
 /// How a lap was closed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "none"), derive(Hash))]
 pub enum Trigger {
     #[default]
     Manual,
@@ -112,6 +113,7 @@ impl From<Trigger> for LapStart {
 
 /// What one lap added up; the open lap is one too.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "none"), derive(Hash))]
 pub struct Lap {
     /// One for the first lap of a ride.
     pub number: u16,
@@ -243,6 +245,21 @@ pub struct Laps {
     /// steps close the laps instead.
     pub by_distance: bool,
     unmarked: Marks,
+}
+
+#[cfg(not(target_os = "none"))]
+impl firmware_services::why::State for Laps {
+    fn fields(&self, out: &mut firmware_services::why::Fields<'_>) {
+        out.field("current", &self.current);
+        out.field("finished", &self.finished);
+        out.field("closed_at_ms", &self.closed_at_ms);
+        out.field("by_distance", &self.by_distance);
+        out.field("unmarked", &self.unmarked);
+        out.buffer(
+            "history",
+            &self.history[..usize::from(self.finished).min(HISTORY)],
+        );
+    }
 }
 
 impl Default for Laps {

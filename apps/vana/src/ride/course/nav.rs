@@ -16,6 +16,7 @@
 //! due on the same fix waits one fix, and is dropped if it no longer holds.
 use crate::ride::course::turns::{HALF_CHORD_MM, Kind, Side, Turn};
 use crate::ride::geo::distance;
+use firmware_services::why;
 
 type Point = (f32, f32);
 
@@ -331,12 +332,14 @@ impl Navigator {
         match observed {
             Observed::Arrived { now_ms } => {
                 if self.arrived_ms.is_none() {
+                    why!("nav.arrived", now_ms);
                     self.arrived_ms = Some(now_ms);
                     return Some(Event::Arrived);
                 }
                 return None;
             }
             Observed::Lost => {
+                why!("nav.lost", place = self.place);
                 self.lost = true;
                 if let Place::Leaving { .. } = self.place {
                     self.place = Place::On;
@@ -344,14 +347,22 @@ impl Navigator {
                 return None;
             }
             Observed::Joined(fix) => {
+                why!("nav.joined", along_mm = fix.along_mm, off_m = fix.off_m);
                 *self = Self::default();
                 due.raise(Raised::Following);
                 self.fix(fix, turns, &locate, &mut due);
             }
             Observed::Fix(fix) => self.fix(fix, turns, &locate, &mut due),
         }
-        if let Some(parked) = parked.filter(|&raised| self.due(raised, turns)) {
-            due.raise(parked);
+        if let Some(parked) = parked {
+            let still_due = self.due(parked, turns);
+            why!("nav.parked", parked, still_due);
+            if still_due {
+                due.raise(parked);
+            }
+        }
+        if let Some(waits) = due.second {
+            why!("nav.waits", waits, first = due.first);
         }
         self.pending = due.second;
         due.first.map(Raised::event)
@@ -369,18 +380,39 @@ impl Navigator {
             .last
             .is_some_and(|last| fix.taken_loop_ms.saturating_sub(last.taken_loop_ms) > LOST_MS);
         let now = fix.taken_loop_ms;
+        let off_m = fix.off_m;
         self.place = match self.place {
-            Place::Leaving { .. } if fix.paused => Place::On,
-            Place::On if fix.off_m > OFF_M && !fix.paused => Place::Leaving {
-                since_ms: now,
-                junction: self.junction(turns, fix.along_mm, locate),
-            },
-            Place::Leaving { .. } if fix.off_m <= OFF_M => Place::On,
-            Place::Leaving { junction, .. } if gap => Place::Leaving {
-                since_ms: now,
-                junction,
-            },
+            Place::Leaving { .. } if fix.paused => {
+                why!("nav.leaving_paused", off_m);
+                Place::On
+            }
+            Place::On if fix.off_m > OFF_M && !fix.paused => {
+                let junction = self.junction(turns, fix.along_mm, locate);
+                why!("nav.leaving", off_m, off_limit_m = OFF_M, junction);
+                Place::Leaving {
+                    since_ms: now,
+                    junction,
+                }
+            }
+            Place::Leaving { .. } if fix.off_m <= OFF_M => {
+                why!("nav.back_before_off", off_m, off_limit_m = OFF_M);
+                Place::On
+            }
+            Place::Leaving { junction, .. } if gap => {
+                why!("nav.leaving_after_gap", off_m, lost_ms = LOST_MS);
+                Place::Leaving {
+                    since_ms: now,
+                    junction,
+                }
+            }
             Place::Leaving { since_ms, junction } if now.saturating_sub(since_ms) >= CONFIRM_MS => {
+                why!(
+                    "nav.off_course",
+                    off_m,
+                    leaving_ms = now.saturating_sub(since_ms),
+                    confirm_ms = CONFIRM_MS,
+                    junction
+                );
                 due.raise(Raised::OffCourse);
                 Place::Off {
                     since_ms: now,
@@ -390,6 +422,7 @@ impl Navigator {
                 }
             }
             Place::Off { .. } if fix.off_m <= ON_M && fix.forward => {
+                why!("nav.on_course", off_m, on_m = ON_M, forward = fix.forward);
                 due.raise(Raised::OnCourse);
                 Place::On
             }
@@ -399,6 +432,11 @@ impl Navigator {
                 reminded: false,
                 ..
             } if now.saturating_sub(since_ms) >= REMIND_MS && !fix.paused => {
+                why!(
+                    "nav.still_off",
+                    off_ms = now.saturating_sub(since_ms),
+                    remind_ms = REMIND_MS
+                );
                 due.raise(Raised::StillOff);
                 Place::Off {
                     since_ms,
@@ -444,10 +482,17 @@ impl Navigator {
 
     fn follow_turns(&mut self, fix: &MatchedFix, turns: &[Turn], due: &mut Due) {
         if !fix.forward {
+            why!("nav.backwards", banner = self.banner);
             self.banner = None;
             return;
         }
         if fix.along_mm.saturating_add(REWIND_MM) < self.furthest_mm {
+            why!(
+                "nav.rewind",
+                along_mm = fix.along_mm,
+                furthest_mm = self.furthest_mm,
+                rewind_mm = REWIND_MM
+            );
             (
                 self.cursor,
                 self.banner,
@@ -467,23 +512,65 @@ impl Navigator {
         let ahead = |next: &Next| next.turn.start_mm.checked_sub(here);
         let opens = |next: &Next| next.unblocked && ahead(next).is_some_and(|mm| mm <= WINDOW_MM);
         let was_open = self.banner.is_some();
+        let next_index = next.map(|next| next.index);
         self.banner = match (self.banner, next) {
             (Some(k), Some(next)) if k == next.index => Some(k),
             (Some(k), next) if k < self.cursor => {
                 let passed = &turns[k];
                 match next {
                     Some(next) if next.unblocked && dense(passed, next.turn, speed) => {
+                        why!(
+                            "nav.banner_dense",
+                            passed = k,
+                            next = next.index,
+                            gap_mm = next.turn.start_mm.saturating_sub(passed.end_mm),
+                            speed_mm_s = speed,
+                            dense_s = DENSE_S
+                        );
                         Some(next.index)
                     }
-                    _ if here < passed.end_mm.saturating_add(GRACE_MM) => Some(k),
-                    Some(next) if opens(&next) => Some(next.index),
-                    _ => None,
+                    _ if here < passed.end_mm.saturating_add(GRACE_MM) => {
+                        why!(
+                            "nav.banner_grace",
+                            passed = k,
+                            past_mm = here.saturating_sub(passed.end_mm),
+                            grace_mm = GRACE_MM
+                        );
+                        Some(k)
+                    }
+                    Some(next) if opens(&next) => {
+                        why!("nav.banner_opens", next = next.index, after = k);
+                        Some(next.index)
+                    }
+                    _ => {
+                        why!("nav.banner_closed", passed = k, next = next_index);
+                        None
+                    }
                 }
             }
-            _ => next.filter(opens).map(|next| next.index),
+            _ => {
+                let opened = next.filter(opens).map(|next| next.index);
+                if opened.is_some() || was_open {
+                    why!(
+                        "nav.banner",
+                        banner = opened,
+                        next = next_index,
+                        unblocked = next.map(|next| next.unblocked),
+                        ahead_mm = next.and_then(|next| ahead(&next)),
+                        window_mm = WINDOW_MM
+                    );
+                }
+                opened
+            }
         };
         if let Some(k) = self.banner {
             if !was_open && self.last_sounded < Some(k) {
+                why!(
+                    "nav.turn_soon",
+                    turn = k,
+                    ahead_mm = turns[k].start_mm.saturating_sub(here),
+                    window_mm = WINDOW_MM
+                );
                 due.raise(Raised::TurnSoon {
                     turn: turns[k].id(),
                 });
@@ -497,6 +584,12 @@ impl Navigator {
                 && ahead(next).is_some_and(|mm| mm <= BEEP_MM)
         });
         if let Some(next) = beep {
+            why!(
+                "nav.turn_now",
+                turn = next.index,
+                ahead_mm = ahead(&next),
+                beep_mm = BEEP_MM
+            );
             self.last_beeped = Some(next.index);
             due.raise(Raised::TurnNow {
                 turn: next.turn.id(),
@@ -574,25 +667,37 @@ impl Navigator {
 
     pub fn sign(&self, turns: &[Turn], now_ms: u64) -> Sign {
         if let Some(at) = self.arrived_ms {
-            return match now_ms < at.saturating_add(ARRIVED_MS) {
+            let shown = now_ms < at.saturating_add(ARRIVED_MS);
+            why!(
+                "nav.sign_arrived",
+                arrived_ms = at,
+                shown,
+                arrived_for_ms = ARRIVED_MS
+            );
+            return match shown {
                 true => Sign::Arrived,
                 false => Sign::None,
             };
         }
         let Some(last) = self.last.filter(|_| !self.lost) else {
+            why!(
+                "nav.sign_no_fix",
+                lost = self.lost,
+                fixed = self.last.is_some()
+            );
             return Sign::None;
         };
         if let Place::Off { junction, .. } = self.place {
-            return Sign::OffCourse {
-                back: Distance::from_m(distance(last.here, junction.at)),
-            };
+            let back = Distance::from_m(distance(last.here, junction.at));
+            why!("nav.sign_off_course", back, junction);
+            return Sign::OffCourse { back };
         }
         let next = self.next(turns).map(|next| {
             let ahead = next.turn.start_mm.saturating_sub(self.furthest_mm);
             (next.glyph, Distance::from_mm(ahead))
         });
         let passed = self.banner.and_then(|k| turns.get(k)).and_then(glyph);
-        match (self.banner, next, passed) {
+        let sign = match (self.banner, next, passed) {
             (Some(_), Some((glyph, distance)), _) => Sign::Turn { glyph, distance },
             (Some(_), None, Some(glyph)) => Sign::Turn {
                 glyph,
@@ -603,7 +708,9 @@ impl Navigator {
                 glyph: Glyph::Finish,
                 distance: Distance::from_mm(last.to_end_mm),
             },
-        }
+        };
+        why!("nav.sign", sign, banner = self.banner, cursor = self.cursor);
+        sign
     }
 
     pub fn guidance(
@@ -643,6 +750,22 @@ impl Navigator {
         self.banner = shift(self.banner);
         self.last_sounded = shift(self.last_sounded);
         self.last_beeped = shift(self.last_beeped);
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+impl why::State for Navigator {
+    fn fields(&self, out: &mut why::Fields<'_>) {
+        out.field("cursor", &self.cursor);
+        out.field("furthest_mm", &self.furthest_mm);
+        out.field("banner", &self.banner);
+        out.field("last_sounded", &self.last_sounded);
+        out.field("last_beeped", &self.last_beeped);
+        out.field("place", &self.place);
+        out.field("last", &self.last);
+        out.field("arrived_ms", &self.arrived_ms);
+        out.field("lost", &self.lost);
+        out.field("pending", &self.pending);
     }
 }
 

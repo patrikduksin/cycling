@@ -6,6 +6,7 @@ use crate::ride::course::turns::{PlacedScan, SCAN_STEPS, Turn};
 use crate::ride::course::{self, along_m};
 use crate::ride::geo::{Frame, TURN, bearing, box_gap, distance};
 use crate::ride::thin::off_segment;
+use firmware_services::why;
 
 const END_M: f32 = 30.0;
 const SEARCH_BACK: usize = 64;
@@ -109,6 +110,7 @@ impl Placement {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 enum Riding {
     /// Along the segment ending at this point: the first pass ridden its way.
     Along(usize),
@@ -144,19 +146,46 @@ impl Lifecycle {
         }
     }
 
+    fn phase(&self) -> Phase {
+        match self {
+            Self::NoCourse => Phase::NoCourse,
+            Self::Unplaced => Phase::Unplaced,
+            Self::Joining(_) => Phase::Joining,
+            Self::Following(_) => Phase::Following,
+            Self::Arrived { .. } => Phase::Arrived,
+            Self::LetGo { awaits_frame } => Phase::LetGo {
+                awaits_frame: *awaits_frame,
+            },
+        }
+    }
+
     fn unplaced(&self) -> bool {
-        matches!(self, Self::Unplaced | Self::LetGo { awaits_frame: true })
+        matches!(
+            self.phase(),
+            Phase::Unplaced | Phase::LetGo { awaits_frame: true }
+        )
     }
 
     fn cannot_join_again_this_ride(&self) -> bool {
         matches!(
-            self,
-            Self::Following(_) | Self::Arrived { .. } | Self::LetGo { .. }
+            self.phase(),
+            Phase::Following | Phase::Arrived | Phase::LetGo { .. }
         )
     }
 }
 
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
+enum Phase {
+    NoCourse,
+    Unplaced,
+    Joining,
+    Following,
+    Arrived,
+    LetGo { awaits_frame: bool },
+}
+
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Joining {
     fixes: u8,
     against_fixes: u8,
@@ -277,6 +306,7 @@ impl<'a> Follower<'a> {
 
     fn new_ride(&mut self) {
         let waits = self.len >= 2 || self.life.unplaced();
+        why!("follow.new_ride", waits);
         self.len = 0;
         self.clear_turns();
         self.placement = self.placement.next();
@@ -303,6 +333,13 @@ impl<'a> Follower<'a> {
             (false, None) if unplaced => Lifecycle::Unplaced,
             (false, None) => Lifecycle::NoCourse,
         };
+        why!(
+            "follow.course",
+            points = n,
+            placed = frame.is_some(),
+            cannot_join,
+            life = self.life.phase()
+        );
         let Some(frame) = frame else {
             self.clear_turns();
             return None;
@@ -340,9 +377,11 @@ impl<'a> Follower<'a> {
     ) {
         let len = self.len;
         let Some((count, more)) = stored.filter(|&(count, _)| count <= self.turns.len()) else {
+            why!("follow.scan_turns", stored, room = self.turns.len());
             (self.scan, self.turn_count) = (PlacedScan::default(), 0);
             return;
         };
+        why!("follow.stored_turns", count, more);
         let line = &self.line[..len];
         let frame_m = |k: usize| line[len - 1].along - line[len - 1 - k].along;
         for end in [false, true] {
@@ -399,6 +438,7 @@ impl<'a> Follower<'a> {
     }
 
     fn let_go(&mut self) {
+        why!("follow.let_go", following = self.following());
         if self.following() {
             self.life = Lifecycle::LetGo {
                 awaits_frame: false,
@@ -437,16 +477,29 @@ impl<'a> Follower<'a> {
 
     pub fn shown(&self, now: u64) -> Shown {
         let fresh = now.saturating_sub(self.taken_loop_ms) <= nav::LOST_MS;
-        if let Lifecycle::Joining(joining) = self.life
-            && joining.against_fixes >= TURN_AROUND_FIXES
-            && fresh
-        {
-            return Shown {
-                sign: Sign::TurnAround,
-                guidance: None,
-            };
+        if let Lifecycle::Joining(joining) = self.life {
+            let against_fixes = joining.against_fixes;
+            if against_fixes >= TURN_AROUND_FIXES && fresh {
+                why!(
+                    "follow.turn_around",
+                    against_fixes,
+                    turn_around_fixes = TURN_AROUND_FIXES,
+                    fresh
+                );
+                return Shown {
+                    sign: Sign::TurnAround,
+                    guidance: None,
+                };
+            }
+            why!(
+                "follow.no_turn_around",
+                against_fixes,
+                turn_around_fixes = TURN_AROUND_FIXES,
+                fresh
+            );
         }
         let Some(nav) = self.life.nav() else {
+            why!("follow.no_sign", life = self.life.phase());
             return Shown::default();
         };
         let (line, turns) = (&self.line[..self.len], &self.turns[..self.turn_count]);
@@ -483,6 +536,13 @@ impl<'a> Follower<'a> {
                 return None;
             };
             let lost = now.saturating_sub(self.taken_loop_ms) > nav::LOST_MS;
+            if lost {
+                why!(
+                    "follow.lost",
+                    last_fix_ms = self.taken_loop_ms,
+                    lost_ms = nav::LOST_MS
+                );
+            }
             return lost
                 .then(|| following.nav.step(Observed::Lost, turns, locate))
                 .flatten();
@@ -490,6 +550,11 @@ impl<'a> Follower<'a> {
         if fix.taken_loop_ms.saturating_sub(self.taken_loop_ms) > GAP_MS
             && let Lifecycle::Following(following) = &mut self.life
         {
+            why!(
+                "follow.gap",
+                gap_ms = fix.taken_loop_ms.saturating_sub(self.taken_loop_ms),
+                gap_limit_ms = GAP_MS
+            );
             following.matched_fix = None;
         }
         self.taken_loop_ms = fix.taken_loop_ms;
@@ -575,6 +640,11 @@ impl Joining {
     fn observe(&mut self, line: &[Crumb], heading: Option<u16>, p: Point, moving: bool) -> Joined {
         let Some(heading) = heading else {
             self.fixes = 0;
+            why!(
+                "follow.no_heading",
+                moving,
+                against_fixes = self.against_fixes
+            );
             return Joined::NotYet;
         };
         let riding = riding(line, p, heading);
@@ -583,14 +653,30 @@ impl Joining {
             Riding::Against | Riding::Across => self.against_fixes,
             Riding::Along(_) | Riding::Away => 0,
         };
-        let Riding::Along(end) = riding else {
-            self.fixes = 0;
-            return Joined::NotYet;
+        let along = match riding {
+            Riding::Along(end) => {
+                self.fixes = self.fixes.saturating_add(1);
+                Some(end)
+            }
+            Riding::Against | Riding::Across | Riding::Away => {
+                self.fixes = 0;
+                None
+            }
         };
-        self.fixes = self.fixes.saturating_add(1);
-        match self.fixes >= JOIN_FIXES {
-            true => Joined::FromSegmentEndingAt(end),
-            false => Joined::NotYet,
+        why!(
+            "follow.joining",
+            riding,
+            moving,
+            fixes = self.fixes,
+            join_fixes = JOIN_FIXES,
+            against_fixes = self.against_fixes
+        );
+        match along {
+            Some(end) if self.fixes >= JOIN_FIXES => {
+                why!("follow.joined", from_segment = end, fixes = self.fixes);
+                Joined::FromSegmentEndingAt(end)
+            }
+            _ => Joined::NotYet,
         }
     }
 }
@@ -717,16 +803,35 @@ impl Following {
         let len = line.len();
         let window = self.segment.saturating_sub(SEARCH_BACK).max(1)
             ..=(self.segment + SEARCH_AHEAD).min(len - 1);
-        let mut near = self.nearest(line, heading, p, window)?;
-        if (self.search_whole_course || near.off > OFF_M)
+        let Some(mut near) = self.nearest(line, heading, p, window.clone()) else {
+            why!("follow.unmatched", window, after_gap = self.after_gap(p));
+            return None;
+        };
+        let search_whole = self.search_whole_course || near.off > OFF_M;
+        if search_whole
             && let Some(anywhere) = self.nearest(line, heading, p, 1..=len - 1)
             && anywhere.off < near.off
         {
             near = anywhere;
         }
         if near.off <= ON_M && near.to_end_m < END_M {
+            why!(
+                "follow.end",
+                off_m = near.off,
+                on_m = ON_M,
+                to_end_m = near.to_end_m,
+                end_m = END_M
+            );
             return Some(Matched::End);
         }
+        why!(
+            "follow.matched",
+            segment = near.end,
+            off_m = near.off,
+            to_end_m = near.to_end_m,
+            searched_whole_course = search_whole,
+            after_gap = self.after_gap(p)
+        );
         self.segment = near.end;
         self.matched = Some(near.point);
         self.to_end_m = near.to_end_m;
@@ -737,6 +842,42 @@ impl Following {
             false => near.off > OFF_M,
         };
         Some(Matched::On(near))
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+impl why::State for Follower<'_> {
+    fn fields(&self, out: &mut why::Fields<'_>) {
+        let joining = match &self.life {
+            Lifecycle::Joining(joining) => Some(joining),
+            _ => None,
+        };
+        let following = match &self.life {
+            Lifecycle::Following(following) => Some(following),
+            _ => None,
+        };
+        out.field("life", &self.life.phase());
+        out.field("placement", &self.placement);
+        out.buffer("course", self.course());
+        out.buffer("turns", &self.turns[..self.turn_count]);
+        out.field("scan_done", &self.scan.done());
+        out.field("last_fix", &self.last_fix);
+        out.field("heading", &self.heading);
+        out.field("taken_loop_ms", &self.taken_loop_ms);
+        out.field("joining_fixes", &joining.map(|j| j.fixes));
+        out.field("against_fixes", &joining.map(|j| j.against_fixes));
+        out.field("segment", &following.map(|f| f.segment));
+        out.field("matched", &following.and_then(|f| f.matched));
+        out.field("matched_fix", &following.and_then(|f| f.matched_fix));
+        out.field("to_end_m", &following.map(|f| f.to_end_m));
+        out.field("furthest_to_end_m", &following.map(|f| f.furthest_to_end_m));
+        out.field(
+            "search_whole_course",
+            &following.map(|f| f.search_whole_course),
+        );
+        if let Some(nav) = self.life.nav() {
+            out.owner("nav", nav);
+        }
     }
 }
 

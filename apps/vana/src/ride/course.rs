@@ -67,6 +67,7 @@ pub const MAX_FILE: usize = HEADER + POINTS * POINT + 4;
 /// A position in 1e-7 degrees, within the ranges of latitude and longitude.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "none"), derive(Hash))]
 pub struct Point {
     pub lat_e7: i32,
     pub lon_e7: i32,
@@ -94,6 +95,14 @@ pub struct Course {
     name_len: u32,
     name: [u8; NAME],
     points: [Point; POINTS],
+}
+
+#[cfg(not(target_os = "none"))]
+impl firmware_services::why::State for Course {
+    fn fields(&self, out: &mut firmware_services::why::Fields<'_>) {
+        out.field("name", &self.name());
+        out.buffer("points", self.points());
+    }
 }
 
 impl Course {

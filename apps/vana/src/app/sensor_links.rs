@@ -56,6 +56,12 @@ pub(super) struct Discovery {
     generation: u32,
 }
 
+state!(Discovery {
+    scan,
+    requested,
+    generation,
+});
+
 impl Discovery {
     /// A search the rider asked for starts or runs; its results arrive a
     /// few packets a pass.
@@ -96,6 +102,7 @@ fn seen(ant: &impl Ant, now: u64) -> scan::Seen {
 
 /// Retry state of one saved sensor or closing channel.
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Schedule {
     /// Unsuccessful requests since data last arrived.
     failures: u8,
@@ -164,6 +171,7 @@ impl Schedule {
 
 /// A removed sensor's device type whose channel may still be open.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Closing {
     kind: u8,
     schedule: Schedule,
@@ -196,6 +204,14 @@ pub(super) struct Links {
     /// one. Live state only; never stored.
     batteries: [Option<(Identity, BatteryReports)>; CHANNEL_CAPACITY],
 }
+
+state!(Links {
+    schedules,
+    closing,
+    next,
+    shown,
+    batteries,
+});
 
 fn channel_of(channels: &[Option<Snapshot>], kind: u8) -> Option<Snapshot> {
     channels

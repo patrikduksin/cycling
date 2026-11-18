@@ -100,10 +100,13 @@ const NO_SPEED_NOTE_MS: u64 = 8000;
 
 /// Foreground drawing. Once the terminal takes over the panel it stays suspended.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub(super) enum Display {
     Active { next_frame_ms: u64 },
     Suspended,
 }
+
+state!(Display = "display");
 
 impl Default for Display {
     fn default() -> Self {
@@ -1219,6 +1222,7 @@ pub(super) fn arrived_sample(readings: &super::readings::Readings) -> crate::rid
 }
 
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub(super) struct Readout {
     live: crate::ride::log::Sample,
     power_3s_watts: Option<u16>,
@@ -1232,6 +1236,7 @@ pub(super) struct Readout {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Moment {
     recording: bool,
     second: u64,
@@ -1246,6 +1251,8 @@ pub(super) struct Shown {
     taken: Option<Moment>,
     readout: Readout,
 }
+
+state!(Shown { taken, readout });
 
 impl Shown {
     fn stale(&self, numbers: super::mode::Numbers, moment: Moment) -> bool {

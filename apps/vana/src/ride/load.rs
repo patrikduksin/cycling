@@ -29,6 +29,7 @@ pub fn stress_score(np_watts: u16, power_ms: u64, ftp_watts: u16) -> Option<u32>
 
 /// The rolling 30 s power of a ride so far.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct PowerLoad {
     window: [u16; WINDOW],
     window_len: usize,

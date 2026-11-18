@@ -29,6 +29,7 @@ const HORIZON_M: f32 = 10_000.0;
 static NO_MAP: Forecast = Forecast::NONE;
 
 /// The ready pack in the TERRAIN volume.
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 struct Mounted {
     extent: Extent,
     pack: Pack,
@@ -54,6 +55,17 @@ pub struct Terrain {
     pinned: Option<Pinned>,
     status: Option<terrain::Status>,
 }
+
+state!(Terrain {
+    mounted,
+    checked_ms,
+    sector,
+    forecast,
+    last_fix_ms,
+    fed,
+    pinned,
+    status,
+});
 
 impl Terrain {
     /// The look-ahead around a tile cache (`TERRAIN_ARENA_BYTES`).

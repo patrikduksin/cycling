@@ -364,6 +364,18 @@ pub(crate) struct Kept {
     card_ready: bool,
 }
 
+state!(Kept {
+    bests,
+    store,
+    open,
+    confirming,
+    clear,
+    pending,
+    unsaved,
+    retry_at,
+    card_ready,
+});
+
 /// What the bests' service sees of the rest of the device.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Seen {

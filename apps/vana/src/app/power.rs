@@ -8,6 +8,7 @@ use super::Runtime;
 use crate::screens::power::Sheet as View;
 use device_api::observation::Observation;
 use device_api::power::{Operation, PowerControl, State, Support};
+use firmware_services::why;
 use firmware_shell::shell::Shell;
 
 /// No input, sensor data, movement or USB power for this long turns VANA off.
@@ -151,6 +152,18 @@ pub(super) struct Power {
     pub(super) standby: Standby,
 }
 
+state!(Power {
+    sheet,
+    auto,
+    notice,
+    usb_powered,
+    shutdown,
+    last_activity_ms,
+    anchor_e7,
+    unsaved_warned,
+    standby,
+});
+
 impl Default for Power {
     fn default() -> Self {
         Self {
@@ -243,6 +256,12 @@ impl Power {
 impl Runtime {
     /// Ask to turn off, as TopLeft (BACK) on Home does. Refused mid-ride.
     pub(super) fn open_power_sheet(&mut self, now: u64) {
+        why!(
+            "power.sheet_asked",
+            busy = self.recorder_busy(),
+            shutdown = self.power.shutdown,
+            unsaved = self.sync.count()
+        );
         if !self.recorder_busy() && self.power.shutdown {
             self.power.sheet = Sheet::Confirm {
                 since: now,
@@ -257,6 +276,12 @@ impl Runtime {
         match self.power.sheet {
             Sheet::Confirm { .. } => {
                 let off = !self.recorder_busy() && !self.holds_unsynced();
+                why!(
+                    "power.confirm_answered",
+                    button,
+                    busy = self.recorder_busy(),
+                    unsynced = self.holds_unsynced()
+                );
                 self.power.sheet = if button == Role::Act && off {
                     TURNING_OFF
                 } else {
@@ -339,6 +364,7 @@ impl Runtime {
             if status.ready && status.sequence == sequence {
                 // The device recovered instead of turning off.
                 if status.state == State::Failed || status.state == State::Completed {
+                    why!("power.device_stayed_on", state = status.state);
                     self.power.sheet = Sheet::Closed;
                     self.power.notice = Some((Notice::Failed, now));
                     system.activity(now);
@@ -348,6 +374,12 @@ impl Runtime {
         if let Sheet::Confirm { since, .. } = self.power.sheet
             && (busy || now.saturating_sub(since) >= CONFIRM_TIMEOUT_MS)
         {
+            why!(
+                "power.confirm_closed",
+                busy,
+                open_ms = now.saturating_sub(since),
+                timeout_ms = CONFIRM_TIMEOUT_MS
+            );
             self.power.sheet = Sheet::Closed;
         }
         self.power.auto = if self.power.sheet == Sheet::Closed && self.power.shutdown {
@@ -360,11 +392,21 @@ impl Runtime {
         } else {
             AutoOff::Awake
         };
+        if self.power.auto != AutoOff::Awake {
+            why!(
+                "power.auto_off",
+                auto = self.power.auto,
+                input_idle_ms = system.inactive_ms(now),
+                quiet_ms = now.saturating_sub(self.power.last_activity_ms),
+                auto_off_ms = AUTO_OFF_MS
+            );
+        }
         if self.power.auto == AutoOff::Due {
             self.power.sheet = TURNING_OFF;
             self.power.auto = AutoOff::Awake;
         }
         if keeps_ram && matches!(self.power.sheet, Sheet::TurningOff { .. }) {
+            why!("power.keeps_ram", busy, unsynced = self.holds_unsynced());
             self.power.sheet = Sheet::Closed;
         }
         // VANA cannot draw while the terminal owns the panel or it is blank:
@@ -378,6 +420,10 @@ impl Runtime {
             && !self.flush_preferences(system, now)
             && self.power.unsaved_warned != self.preferences.unsaved_edit()
         {
+            why!(
+                "power.preferences_unsaved",
+                edit = self.preferences.unsaved_edit()
+            );
             log::warn!(target: "sdk.power", "preferences not saved; staying on");
             self.power.unsaved_warned = self.preferences.unsaved_edit();
             self.power.sheet = Sheet::Closed;
@@ -387,12 +433,14 @@ impl Runtime {
         if matches!(self.power.sheet, Sheet::TurningOff { due: true, .. }) {
             match control.request(Operation::Shutdown) {
                 Ok(()) => {
+                    why!("power.shutdown_accepted");
                     log::info!(target: "sdk.power", "shutdown accepted");
                     self.power.sheet = Sheet::Requested {
                         sequence: control.status().sequence,
                     };
                 }
                 Err(error) => {
+                    why!("power.shutdown_refused", error);
                     log::warn!(target: "sdk.power", "shutdown refused error={:?}", error);
                     self.power.sheet = Sheet::Closed;
                     self.power.notice = Some((Notice::Refused, now));

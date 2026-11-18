@@ -31,6 +31,8 @@ pub(super) struct Sync {
     asked: Option<u32>,
 }
 
+state!(Sync { protected, asked });
+
 /// What the phone's acknowledgment did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Confirmed {

@@ -1153,6 +1153,7 @@ const TOAST_PADDING: usize = 12 + 6 + 14;
 /// A short message in a pill floating over the bottom of the content. The
 /// owner decides how long it lives; above its band it costs one comparison.
 #[derive(Clone, Copy, Hash)]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
 pub struct Toast {
     label: Label<20>,
     pill: Rect,

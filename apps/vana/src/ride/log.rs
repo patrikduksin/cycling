@@ -54,7 +54,7 @@ pub(crate) const COMMIT_OFFSET: usize = 252;
 const COMMITTED: u32 = 0x434f_4d54;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[cfg_attr(test, derive(Hash))]
+#[cfg_attr(not(target_os = "none"), derive(Hash))]
 pub enum Status {
     #[default]
     Scanning,
@@ -169,7 +169,7 @@ pub const RECORDED_LIVE: u8 = 2;
 
 /// Why a lap began, kept on its first sample.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(test, derive(Hash))]
+#[cfg_attr(not(target_os = "none"), derive(Hash))]
 #[repr(u8)]
 pub enum LapStart {
     /// The ride's first sample: this ride keeps its laps. Not a boundary.
@@ -215,7 +215,7 @@ const LAP_BYTE: usize = 37;
 const NO_LAP: u8 = 0xff;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[cfg_attr(test, derive(Hash))]
+#[cfg_attr(not(target_os = "none"), derive(Hash))]
 pub struct Sample {
     pub active_ms: u64,
     pub utc_ms: Option<u64>,
@@ -398,7 +398,7 @@ pub fn active_at(accumulated_ms: u64, running_since: u64, stop_at: Option<u64>, 
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(test, derive(Hash))]
+#[cfg_attr(not(target_os = "none"), derive(Hash))]
 pub struct Recovery {
     pub ride_id: u32,
     pub next_sequence: u32,
@@ -408,7 +408,7 @@ pub struct Recovery {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[cfg_attr(test, derive(Hash))]
+#[cfg_attr(not(target_os = "none"), derive(Hash))]
 pub struct Summary {
     pub ride_id: u32,
     pub recovered: bool,
@@ -619,7 +619,7 @@ impl Timeline {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[cfg_attr(test, derive(Hash))]
+#[cfg_attr(not(target_os = "none"), derive(Hash))]
 pub struct Catalog {
     pub next_slot: usize,
     pub next_ride_id: u32,
@@ -927,7 +927,7 @@ fn decode_sample(bytes: &[u8]) -> Option<Sample> {
 /// the code itself means a sample encodes and decodes exactly, whoever made
 /// it; 0xFFFF, which means none, cannot be held.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(test, derive(Hash))]
+#[cfg_attr(not(target_os = "none"), derive(Hash))]
 pub struct Altitude(u16);
 
 impl Altitude {

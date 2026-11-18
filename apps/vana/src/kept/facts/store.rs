@@ -58,6 +58,19 @@ pub(crate) struct Kept {
     card_ready: bool,
 }
 
+#[cfg(not(target_os = "none"))]
+impl firmware_services::why::State for Kept {
+    fn fields(&self, out: &mut firmware_services::why::Fields<'_>) {
+        if let Some(shelf) = &self.shelf {
+            shelf.fields(out);
+        }
+        out.field("scan", &self.scan);
+        out.field("revision", &self.revision);
+        out.field("awaiting", &self.awaiting);
+        out.field("card_ready", &self.card_ready);
+    }
+}
+
 impl Kept {
     pub(crate) fn attach(&mut self, shelf: Shelf) {
         self.shelf = Some(shelf);

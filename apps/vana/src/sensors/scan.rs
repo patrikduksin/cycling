@@ -10,7 +10,8 @@ const START_DEADLINE_MS: u64 = 15_000;
 const CANCEL_DEADLINE_MS: u64 = 2_000;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(test, derive(Hash, Debug))]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
+#[cfg_attr(test, derive(Hash))]
 enum Phase {
     #[default]
     Idle,
@@ -132,7 +133,8 @@ pub enum Event {
 }
 
 #[derive(Default)]
-#[cfg_attr(test, derive(Clone, Copy, PartialEq, Eq, Hash, Debug))]
+#[cfg_attr(not(target_os = "none"), derive(Debug))]
+#[cfg_attr(test, derive(Clone, Copy, PartialEq, Eq, Hash))]
 pub struct Scan {
     phase: Phase,
     cancel_deadline: u64,

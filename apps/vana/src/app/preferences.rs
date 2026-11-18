@@ -469,6 +469,19 @@ pub(super) struct Preferences {
     edit: u32,
 }
 
+state!(Preferences {
+    profile,
+    sensors,
+    options,
+    display,
+    display_edit,
+    stored,
+    changed_at,
+    retry_at,
+    failed,
+    edit,
+});
+
 impl Default for Preferences {
     fn default() -> Self {
         Self {

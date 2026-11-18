@@ -1,30 +1,55 @@
-"""Pull a ride trace and the moments the rider marked in it, and check once that it replays faithfully under the
-build that recorded it: a divergence there is a recording bug."""
+"""Pull a ride trace, then judge it on this machine with the build that recorded it: list the moments the rider
+marked in it, and check once that it replays faithfully, where a divergence is a recording bug."""
 
 import hashlib
 import json
-import shlex
+import os
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 
-from cycling_devtools import twin, workspace
-from cycling_devtools.cli import TRACE
+from cycling_devtools import twin, upgrade, workspace
 from cycling_devtools.device import volumes
 from cycling_devtools.workspace import ROOT
 
+NO_BUILD = '00' * 20
 
-def trace_tool(*args):
-    """Run `cycling trace` and return what it printed."""
-    command = [*shlex.split(TRACE), 'trace', *map(str, args)]
-    done = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-    if done.returncode != 0:
-        raise RuntimeError(f'cycling trace {args[0]}: {done.stderr.strip()}')
-    return done.stdout
+
+class Skipped(Exception):
+    """No twin of the recording build can judge the trace here."""
+
+
+def recorded_twin(twin_for, build, root):
+    try:
+        return twin_for(build, root=root)
+    except (twin.NotArchived, twin.Incapable) as error:
+        raise Skipped(str(error)) from None
+    except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
+        raise Skipped(f'the twin of build {build[:12]} did not build: {error}') from None
+
+
+def recorded_marks(trace, build, *, root=ROOT, twin_for=twin.binary_for_build):
+    """The marks in `trace`, listed by the trace tool of `build`, the build that recorded it, or {skipped: why}."""
+    try:
+        binary = recorded_twin(twin_for, build, root)
+        listed = twin.run_json(binary, 'find', str(trace), 'mark', '--limit', 'all')
+    except Skipped as why:
+        return {'skipped': str(why)}
+    except OSError as error:
+        return {'skipped': did_not_start(build, error)}
+    if 'found' not in listed:
+        return {'skipped': f'the trace tool of build {build[:12]} lists no marks: {listed.get("error")}'}
+    return listed['found']
+
+
+def did_not_start(build, error):
+    return f'the twin of build {build[:12]} did not start: {error}'
 
 
 def marks_text(marks):
+    if isinstance(marks, dict):
+        return f'marks: unread, {marks["skipped"]}'
     if not marks:
         return 'marks: none'
     return '\n'.join(['marks:', *(f'  mark {mark["text"]}' for mark in marks)])
@@ -42,12 +67,13 @@ def session(connection, timing, name, work):
         timing[name] = {'s': round(time.monotonic() - started, 3), **spent}
 
 
-def replay_faithful(binary, trace):
+def replay_faithful(binary, trace, root=ROOT):
     """The faithful replay's JSON document, or {error}."""
+    env = os.environ | {'CYCLING_TERRAIN_PACKS': str(workspace.terrain_packs(root))}
     with tempfile.TemporaryDirectory(prefix='faithful-') as out:
         command = [str(binary), 'replay', str(trace), '--mode', 'faithful', '--to', '99999:00']
         command += ['--every', '99999:00', '--out', str(Path(out) / 'replay'), '--json']
-        done = subprocess.run(command, capture_output=True, text=True)
+        done = subprocess.run(command, capture_output=True, text=True, env=env)
     try:
         return json.loads(done.stdout)
     except json.JSONDecodeError:
@@ -76,14 +102,14 @@ def faithful(
     if cached.exists():
         return json.loads(cached.read_text())
     try:
-        binary = twin_for(build, root=root)
-    except (twin.NotArchived, twin.Incapable) as error:
-        return {'skipped': str(error)}
-    except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
-        return {'skipped': f'the twin of build {build[:12]} did not build: {error}'}
-    if why := check(binary, build, root=root):
-        return {'skipped': why}
-    replayed = replay(binary, trace)
+        binary = recorded_twin(twin_for, build, root)
+        if why := check(binary, build, root=root):
+            return {'skipped': why}
+        replayed = replay(binary, trace, root=root)
+    except Skipped as why:
+        return {'skipped': str(why)}
+    except (OSError, subprocess.CalledProcessError) as error:
+        return {'skipped': did_not_start(build, error)}
     if 'left' in replayed:
         verdict = {'ok': False, 'ended': replayed['left'], 'exclusions': []}
     elif 'no_pack' in replayed:
@@ -104,24 +130,35 @@ def faithful(
 
 
 def recording_bug(result):
-    checked = result['faithful']
+    checked = result.get('faithful', {})
     if checked.get('ok') is False:
         return f'a recording bug: {checked["ended"]}'
     return None
 
 
-def pull(connection, name=None, directory=Path('.local/traces'), tool=trace_tool, check=faithful):
-    """Pull the trace `name` (the newest by default), list its marks, and check it replays faithfully."""
-    started, timing = time.monotonic(), {}
+def pull(connection, name=None, directory=Path('.local/traces')):
+    """Copy the trace `name`, the newest by default, and nothing else."""
+    timing = {}
     result = session(
         connection, timing, 'trace_session', lambda transfer: volumes.trace_pull(transfer, name, directory)
     )
+    sha256 = hashlib.sha256(Path(result['path']).read_bytes()).hexdigest()
+    return {**result, 'sha256': sha256, 'timing': timing}
+
+
+def judge(result, *, marks_of=recorded_marks, check=faithful):
+    """Add to a pulled `result` its trace's marks and faithful verdict, each from the build that recorded it."""
+    started = time.monotonic()
     path = Path(result['path'])
-    marks = json.loads(tool('find', path, 'mark', '--limit', 'all', '--json'))
-    build = json.loads(tool('summary', path, '--json'))['header']['build']
-    checked = time.monotonic()
-    result['faithful'] = check(path, build) if build else {'skipped': 'the trace names no build'}
-    timing['faithful_s'] = round(time.monotonic() - checked, 3)
-    timing['total_s'] = round(time.monotonic() - started, 3)
-    result.update(marks=marks['found'], timing=timing)
+    try:
+        _, build = upgrade.header(path)
+        why = 'the trace names no build' if build == NO_BUILD else None
+    except ValueError as error:
+        why = str(error)
+    if why:
+        result['marks'] = result['faithful'] = {'skipped': why}
+    else:
+        result['marks'] = marks_of(path, build)
+        result['faithful'] = check(path, build)
+    result['timing']['judge_s'] = round(time.monotonic() - started, 3)
     return result

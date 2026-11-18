@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import unittest
@@ -30,55 +31,161 @@ MARKS = [
 BUILD = 'ab' * 20
 
 
+def recorded(directory, version=5, build=BUILD):
+    """A trace whose header names its format and the build that recorded it."""
+    trace = directory / 'ride.trace'
+    trace.write_bytes(bytes([0, 0, version]) + bytes.fromhex(build) + b'a ride')
+    return trace
+
+
+def unlaunchable(directory):
+    """A twin that is there but cannot start, as one whose loader is gone."""
+    binary = directory / 'trace'
+    binary.write_text('#!/nonexistent/ld-linux.so\n')
+    binary.chmod(0o755)
+    return binary
+
+
+def tool(directory, script):
+    """A trace tool that runs `script` with its arguments as $@."""
+    binary = directory / 'trace'
+    binary.write_text(f'#!/bin/sh\n{script}\n')
+    binary.chmod(0o755)
+    return binary
+
+
 class TracePullTests(unittest.TestCase):
-    def pull(self, directory, marks=()):
+    def test_pull_copies_the_trace_and_nothing_else(self):
         device = FakeDevice()
         device.store = {'traces/000003-00000007.trace': (1, [b'trace'])}
-        calls = []
-
-        def tool(command, *args):
-            calls.append((command, *args))
-            if command == 'summary':
-                return json.dumps({'header': {'build': BUILD}})
-            return json.dumps({'found': list(marks), 'total': len(marks)})
-
-        def check(path, build):
-            calls.append(('faithful', path, build))
-            return {'ok': True, 'ended': None, 'exclusions': []}
-
-        with mock.patch.object(volumes, 'open_session', return_value=FakeTransfer(device)):
-            result = trace_media.pull(None, directory=directory, tool=tool, check=check)
-        return result, calls
-
-    def test_pull_copies_the_trace_and_nothing_else(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(volumes, 'open_session', return_value=FakeTransfer(device)),
+        ):
             directory = Path(directory)
-            result, calls = self.pull(directory)
+            result = trace_media.pull(None, directory=directory)
             trace = directory / '000003-00000007.trace'
             self.assertEqual(trace.read_bytes(), b'trace')
             self.assertEqual(sorted(path.name for path in directory.iterdir()), [trace.name])
-            self.assertEqual(
-                calls,
-                [
-                    ('find', trace, 'mark', '--limit', 'all', '--json'),
-                    ('summary', trace, '--json'),
-                    ('faithful', trace, BUILD),
-                ],
-            )
-            self.assertEqual(result['faithful'], {'ok': True, 'ended': None, 'exclusions': []})
-            self.assertEqual(result['path'], str(trace))
-            self.assertEqual(result['marks'], [])
-            self.assertIn('trace_session', result['timing'])
+        self.assertEqual(result['path'], str(trace))
+        self.assertEqual((result['bytes'], result['sha256']), (5, trace_media.hashlib.sha256(b'trace').hexdigest()))
+        self.assertNotIn('marks', result, 'the pull only copies')
+        self.assertNotIn('faithful', result, 'the pull only copies')
+        self.assertIn('trace_session', result['timing'])
 
-    def test_the_pull_keeps_every_mark_the_rider_made(self):
-        with tempfile.TemporaryDirectory() as directory:
-            result, _ = self.pull(Path(directory), marks=MARKS)
+
+class JudgeTests(unittest.TestCase):
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.directory = Path(scratch.name)
+        self.twins = []
+
+    def judge(self, trace, binary=None, missing=None):
+        def twin_for(build, root):
+            self.twins.append(build)
+            if missing:
+                raise trace_media.twin.NotArchived(missing)
+            return binary
+
+        result = {'path': str(trace), 'timing': {}}
+        checks = []
+        trace_media.judge(
+            result,
+            marks_of=lambda path, build: trace_media.recorded_marks(path, build, twin_for=twin_for),
+            check=lambda path, build: checks.append((path, build)) or {'ok': True, 'ended': None, 'exclusions': []},
+        )
+        return result, checks
+
+    def test_the_marks_are_listed_by_the_trace_tool_of_the_build_that_recorded_the_trace(self):
+        trace = recorded(self.directory, version=5)
+        found = json.dumps({'found': MARKS, 'total': 2})
+        listed = tool(self.directory, f'[ "$1 $3 $4 $5 $6" = "find mark --limit all --json" ] && echo \'{found}\'')
+        result, checks = self.judge(trace, binary=listed)
         self.assertEqual(result['marks'], MARKS)
+        self.assertEqual(self.twins, [BUILD])
+        self.assertEqual(checks, [(trace, BUILD)])
+        self.assertEqual(result['faithful'], {'ok': True, 'ended': None, 'exclusions': []})
+
+    def test_marks_no_tool_can_list_are_skipped_and_the_pull_still_succeeds(self):
+        trace = recorded(self.directory, version=6)
+        result, _ = self.judge(trace, missing='build abababababab is not archived on this machine')
+        self.assertEqual(result['marks'], {'skipped': 'build abababababab is not archived on this machine'})
+        self.assertEqual(result['path'], str(trace))
+        self.assertNotIn('error', result)
         self.assertEqual(
-            trace_media.marks_text(result['marks']),
+            trace_media.marks_text(result['marks']), 'marks: unread, build abababababab is not archived on this machine'
+        )
+
+        refusing = tool(self.directory, "echo 'error: unrecognized subcommand find' >&2; exit 2")
+        result, _ = self.judge(trace, binary=refusing)
+        self.assertEqual(
+            result['marks'],
+            {'skipped': f'the trace tool of build {BUILD[:12]} lists no marks: error: unrecognized subcommand find'},
+        )
+
+    def test_a_twin_that_cannot_start_skips_the_marks(self):
+        result, _ = self.judge(recorded(self.directory), binary=unlaunchable(self.directory))
+        self.assertTrue(result['marks']['skipped'].startswith(f'the twin of build {BUILD[:12]} did not start: '))
+
+    def test_a_pull_under_json_whose_twin_cannot_start_still_prints_one_document(self):
+        trace = recorded(self.directory)
+        binary = unlaunchable(self.directory)
+        result = {'path': str(trace), 'timing': {}}
+        with (
+            mock.patch.object(trace_media, 'recorded_twin', lambda twin_for, build, root: binary),
+            mock.patch.object(trace_media.workspace, 'main_checkout', lambda root: self.directory),
+            mock.patch('sys.stdout', new_callable=io.StringIO) as out,
+        ):
+            volumes.finish_pull(result, as_json=True)
+        printed = json.loads(out.getvalue())
+        self.assertIn('did not start', printed['marks']['skipped'])
+        self.assertIn('did not start', printed['faithful']['skipped'])
+        self.assertNotIn('error', printed)
+
+    def test_a_judge_that_fails_under_json_is_one_error_document(self):
+        result = {'path': str(recorded(self.directory)), 'timing': {}}
+        with (
+            mock.patch.object(trace_media, 'judge', side_effect=ValueError('the twin cache is unreadable')),
+            mock.patch('sys.stdout', new_callable=io.StringIO) as out,
+            self.assertRaises(SystemExit) as exit,
+        ):
+            volumes.finish_pull(result, as_json=True)
+        self.assertEqual(exit.exception.code, 2)
+        self.assertEqual(json.loads(out.getvalue())['error'], 'the twin cache is unreadable')
+
+    def test_a_trace_that_names_no_build_is_neither_listed_nor_checked(self):
+        trace = recorded(self.directory, build='00' * 20)
+        result, checks = self.judge(trace)
+        self.assertEqual(result['marks'], {'skipped': 'the trace names no build'})
+        self.assertEqual(result['faithful'], {'skipped': 'the trace names no build'})
+        self.assertEqual((self.twins, checks), ([], []))
+
+    def test_the_marks_print_one_line_each(self):
+        self.assertEqual(
+            trace_media.marks_text(MARKS),
             'marks:\n  mark 1 pressed 00:40.900 on ride/main\n  mark 2 pressed 01:08.510 on ride/stats',
         )
         self.assertEqual(trace_media.marks_text([]), 'marks: none')
+
+
+class TerrainPackTests(unittest.TestCase):
+    def test_the_faithful_replay_reads_packs_from_the_primary_checkout(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            primary = Path(scratch)
+            echo = tool(primary, 'echo "{\\"packs\\": \\"$CYCLING_TERRAIN_PACKS\\"}"')
+            with mock.patch.object(trace_media.workspace, 'main_checkout', lambda root: primary):
+                with mock.patch.dict(trace_media.os.environ, {}, clear=False) as env:
+                    env.pop('CYCLING_TERRAIN_PACKS', None)
+                    self.assertEqual(
+                        trace_media.replay_faithful(echo, primary / 'ride.trace', root=primary),
+                        {'packs': str(primary / '.local' / 'terrain')},
+                    )
+                    env['CYCLING_TERRAIN_PACKS'] = '/elsewhere'
+                    self.assertEqual(
+                        trace_media.replay_faithful(echo, primary / 'ride.trace', root=primary),
+                        {'packs': '/elsewhere'},
+                    )
 
 
 def replayed(ok, ended=None, verdict='the replay re-recorded the trace byte for byte'):
@@ -99,7 +206,7 @@ class FaithfulCheckTests(unittest.TestCase):
         self.addCleanup(patched.stop)
 
     def check(self, outcome, twin_for=None):
-        def replay(binary, trace):
+        def replay(binary, trace, root):
             self.replays.append((binary, trace))
             return outcome
 
@@ -156,6 +263,15 @@ class FaithfulCheckTests(unittest.TestCase):
             self.check(replayed(True), twin_for=nameless),
             {'skipped': f'the twin of build {BUILD[:12]} did not build: cargo built no trace binary in /scratch'},
         )
+
+    def test_a_twin_that_cannot_start_is_skipped_and_not_cached(self):
+        binary = unlaunchable(self.root)
+        for check in (trace_media.twin.faithful_to, lambda binary, build, root: None):
+            checked = trace_media.faithful(
+                self.trace, BUILD, root=self.root, twin_for=lambda build, root: binary, check=check
+            )
+            self.assertTrue(checked['skipped'].startswith(f'the twin of build {BUILD[:12]} did not start: '))
+        self.assertFalse((self.root / '.local' / 'traces' / '.faithful').exists())
 
     def test_a_build_older_than_the_faithful_mode_is_skipped_unbuilt(self):
         def old(build, root):

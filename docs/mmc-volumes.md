@@ -276,7 +276,9 @@ cycling trace pull [FILE]                     # a ride trace, read only
 a world log: it holds every byte of media VANA read, so a replay needs
 nothing else from the device. The pull only reads. It prints its result as
 one JSON document, then on stderr the moments the rider marked by holding
-MOVE (`marks:` with one line each, or `marks: none`). With `--json` it prints
+MOVE (`marks:` with one line each, or `marks: none`), listed by the trace
+tool of the build that recorded the trace (`marks: unread, <why>` when that
+build is not archived here or its tool cannot list them). With `--json` it prints
 only the document, and a failure it reports, bad arguments included, as
 `{"error": ...}` with exit status 2.
 

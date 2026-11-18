@@ -335,8 +335,7 @@ def bundle_trace(root, trace, out, runner: Runner) -> Path:
     terrain = header['terrain']
     pack = None
     if terrain is not None and terrain['ready']:
-        store = os.environ.get('CYCLING_TERRAIN_PACKS') or workspace.main_checkout(root) / '.local' / 'terrain'
-        pack = find_pack(Path(store), terrain)
+        pack = find_pack(workspace.terrain_packs(root), terrain)
     end_ms = header['end_ms']
     with tempfile.TemporaryDirectory() as scratch:
         tool = ['bash', str(root / 'tools' / 'simulator' / 'trace.sh')]

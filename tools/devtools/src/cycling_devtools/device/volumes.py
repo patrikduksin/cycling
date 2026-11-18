@@ -650,6 +650,11 @@ def main():
         action='store_true',
         help='print only the result, one JSON document, without the marks listed after it; a failure is {"error"}',
     )
+    pull.add_argument(
+        '--copy-only',
+        action='store_true',
+        help='copy the trace and judge nothing; `cycling device trace pull` judges it where it runs',
+    )
     args = parser.parse_args()
     for path in (getattr(args, 'file', None),):
         if path is not None and not path.is_file():
@@ -676,8 +681,6 @@ def pull_trace(args, parser):
     """The result is the one document on stdout, naming a lost record as its "error". Without --json the marks
     follow on stderr and a failure is raised; with it a failure is {"error": ...} and exit status 2, as for the
     trace commands."""
-    from cycling_devtools.device import trace_media
-
     port = selected_port(parser, args.port)
     try:
         result = run(args, port)
@@ -688,13 +691,27 @@ def pull_trace(args, parser):
     else:
         if problems := lost(result, result['path']):
             result['error'] = problems
-    if not args.json and (bug := trace_media.recording_bug(result)):
+    finish_pull(result, args.json, judge=not args.copy_only)
+
+
+def finish_pull(result, as_json, judge=True):
+    """Judge a copied trace on this machine, then print the result as `cycling trace pull` does."""
+    from cycling_devtools.device import trace_media
+
+    if judge and 'path' in result:
+        try:
+            trace_media.judge(result)
+        except Exception as error:
+            if not as_json:
+                raise
+            result['error'] = str(error) or type(error).__name__
+    if not as_json and (bug := trace_media.recording_bug(result)):
         print(bug, file=sys.stderr)
     print(json.dumps(result, indent=2))
-    if not args.json:
+    if not as_json and 'marks' in result:
         print(trace_media.marks_text(result['marks']), file=sys.stderr)
     if 'error' in result:
-        raise SystemExit(2 if args.json else result['error'])
+        raise SystemExit(2 if as_json else result['error'])
 
 
 class Parser(argparse.ArgumentParser):

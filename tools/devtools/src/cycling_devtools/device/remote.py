@@ -11,15 +11,20 @@ a measurement build (`cycling build --variant scripted-gnss`) leaves it; every o
 sends nothing but the source. Afterwards the host's
 .local evidence (logs, test reports, exports) is copied back to the same paths
 here. Only the image and text cross the network: no USB forwarding.
+
+`trace pull` only copies the trace there; it is judged here, where the
+archived builds and TERRAIN packs are.
 """
 
 import hashlib
+import json
 import os
 import shlex
 import socket
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 from cycling_devtools.workspace import ROOT
 
@@ -98,6 +103,11 @@ def main(argv=None):
     if task in {'build', 'build-maintenance'}:
         sys.exit(f'run `cycling device flash`: it builds here and flashes there; {task} is not a device task.')
 
+    pulling = task == 'trace' and args[:1] == ['pull']
+    if pulling:
+        as_json = '--json' in args
+        args = [*(arg for arg in args if arg != '--json'), '--json', '--copy-only']
+
     if task in {'flash', 'flash-maintenance'}:
         # Build here, where the toolchain and caches are; the host only writes the image.
         subprocess.run(['cycling', 'build' if task == 'flash' else 'build-maintenance'], cwd=ROOT, check=True)
@@ -109,19 +119,59 @@ def main(argv=None):
     print(f'device task {task} on {host} at {sha[:12]}', file=sys.stderr, flush=True)
     subprocess.run(['git', 'push', '-q', '-f', remote, f'{sha}:refs/remote-device/{name}'], cwd=ROOT, check=True)
 
-    ssh = ['ssh', '-o', 'BatchMode=yes', *(['-t'] if sys.stdin.isatty() else []), host]
+    tty = sys.stdin.isatty() and not pulling
+    ssh = ['ssh', '-o', 'BatchMode=yes', *(['-t'] if tty else []), host]
     if task == 'flash-image':
         subprocess.run([*ssh, prepare(sha, worktree)], check=True)
         images = [str(ROOT / '.local' / image) for image in ('cycling.bin', 'cycling.elf')]
         subprocess.run(['rsync', '-a', *images, f'{remote}/{worktree}/.local/'], check=True)
         code = subprocess.run([*ssh, run(worktree, task, args)]).returncode
     else:
-        code = subprocess.run([*ssh, prepare(sha, worktree) + run(worktree, task, args)]).returncode
+        done = subprocess.run(
+            [*ssh, prepare(sha, worktree) + run(worktree, task, args)],
+            stdout=subprocess.PIPE if pulling else None,
+            text=True,
+        )
+        code = done.returncode
 
     excludes = [f'--exclude={pattern}' for pattern in NOT_RETURNED]
     (ROOT / '.local').mkdir(exist_ok=True)
-    subprocess.run(['rsync', '-a', *excludes, f'{remote}/{worktree}/.local/', str(ROOT / '.local') + '/'], check=False)
+    returned = subprocess.run(
+        ['rsync', '-a', *excludes, f'{remote}/{worktree}/.local/', str(ROOT / '.local') + '/'], check=False
+    ).returncode
+    if pulling:
+        return judge_here(done.stdout, as_json, returned)
     return code
+
+
+def judge_here(printed, as_json, returned):
+    """Judge the trace the host copied, once rsync (exit status `returned`) has brought exactly those bytes back
+    into this checkout's .local, and print it as a local pull does."""
+    from cycling_devtools.device import volumes
+
+    try:
+        result = json.loads(printed)
+    except json.JSONDecodeError:
+        result = {'error': f'the device host printed no JSON: {printed.strip()[-200:]}'}
+    copied = 'path' in result
+    if copied:
+        result['path'] = str(ROOT / result['path'])
+        if why := not_returned(Path(result['path']), result, returned):
+            result['error'] = why
+            copied = False
+    volumes.finish_pull(result, as_json, judge=copied)
+    return 0
+
+
+def not_returned(path, pulled, returned):
+    """Why `path` is not the trace the device host `pulled`, or None when it is."""
+    if returned != 0:
+        return f'rsync returned {returned}, so {path} may hold an older pull'
+    held = path.read_bytes() if path.is_file() else b''
+    here, there = (len(held), hashlib.sha256(held).hexdigest()), (pulled['bytes'], pulled['sha256'])
+    if here != there:
+        return f'{path} is not the trace the device host pulled: {here[0]} bytes {here[1][:12]}, not {there[0]} {there[1][:12]}'
+    return None
 
 
 if __name__ == '__main__':

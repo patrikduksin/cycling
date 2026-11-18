@@ -39,14 +39,18 @@ not read or a tool that did not build, is `{"error": ...}` with exit status 2;
   says how long its transfer session paused VANA and where the device
   spent that time. A device trace needs nothing beside it: it is a world
   log that holds every byte of media VANA read, each once, so a replay
-  takes its media from the trace. The pull then replays the trace
-  faithfully under the twin of the build that recorded it, rebuilt from
-  `.local/builds/<build>/` and cached by trace and build, and adds
-  `faithful: {ok, ended, exclusions}`, or `{skipped: why}` when that build
-  is not archived here, its sources list no faithful mode in
+  takes its media from the trace. The pull then judges the trace on this
+  machine, in any trace format, with the twin of the build that recorded
+  it, rebuilt from the primary checkout's `.local/builds/<build>/`; through
+  `cycling device trace pull` the host only copies it. That twin lists the
+  marks (`marks`, or `{skipped: why}` when it cannot) and replays the
+  trace faithfully, cached by trace and build, reading TERRAIN packs from
+  `CYCLING_TERRAIN_PACKS` or the primary checkout's `.local/terrain/`. The
+  pull adds `faithful: {ok, ended, exclusions}`, or `{skipped: why}` when
+  that build is not archived here, its sources list no faithful mode in
   `tools/simulator/trace-capabilities` (checked before anything is built),
   its twin did not build, or the TERRAIN pack is missing
-  (`no TERRAIN pack <sha256>`). A divergence, or a replay that leaves the
+  (`no TERRAIN pack <sha256>`). Neither skip fails the pull. A divergence, or a replay that leaves the
   recorded world at boot, is a recording bug (`ok: false`), and the pull's
   output leads with it: fix it first.
   A build reads only its own trace format and refuses any other with

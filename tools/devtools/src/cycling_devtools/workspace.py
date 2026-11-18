@@ -1,6 +1,7 @@
 """Repository paths and the private-evidence rule shared by host tools."""
 
 import functools
+import os
 import subprocess
 from pathlib import Path
 
@@ -40,6 +41,11 @@ def main_checkout(root=ROOT):
     except OSError, subprocess.CalledProcessError:
         return root
     return Path(common).parent
+
+
+def terrain_packs(root=ROOT):
+    """The directory of TERRAIN pack files a replay reads, as tools/simulator/trace.sh names it."""
+    return Path(os.environ.get('CYCLING_TERRAIN_PACKS') or main_checkout(root) / '.local' / 'terrain')
 
 
 # Device-wide private state shared by every checkout of this repository.

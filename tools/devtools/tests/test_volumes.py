@@ -438,6 +438,7 @@ class VolumesTests(unittest.TestCase):
             mock.patch.object(sys, 'argv', ['volumes', 'trace-pull', *argv]),
             mock.patch('cycling_devtools.device.port.select_port', port or mock.Mock(return_value='port')),
             mock.patch.object(volumes, 'run', run),
+            mock.patch('cycling_devtools.device.trace_media.judge', side_effect=lambda result: result),
             mock.patch('sys.stdout', new_callable=io.StringIO) as out,
             mock.patch('sys.stderr', new_callable=io.StringIO) as err,
         ):

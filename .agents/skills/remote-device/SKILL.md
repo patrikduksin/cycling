@@ -32,11 +32,15 @@ hand.
 | Logs | `cycling device logs --seconds 30` |
 | Base, persistence, crash tests | `cycling device e2e`, `persistence-test`, `crash-test` |
 | Back to the previous slot | `cycling device rollback` |
+| Pull a ride trace | `cycling device trace pull [FILE] [--json]` (copies there, judges here) |
 
 - The host holds the one USB lock. `Another cycling device task is using USB`
   means another agent has the device: wait and retry, never work around it.
 - Evidence (logs, reports, exports) comes back to the same `.local/` path the
   task printed. Read it here.
+- `cycling device trace pull` only copies the trace on the host. Its marks
+  and faithful check run here, after the copy comes back, against this
+  machine's archived builds and TERRAIN packs.
 - `CYCLING_*` task settings travel with the command.
 - `stock`, `stock-select` and `backup` need the owner's
   go-ahead in the task; ask rather than run them.

@@ -1,5 +1,7 @@
 import contextlib
+import hashlib
 import io
+import json
 import subprocess
 import tempfile
 import unittest
@@ -84,6 +86,76 @@ class RemoteScriptTests(unittest.TestCase):
             ):
                 remote.main([task])
             self.assertEqual(run.call_args.args[0], ['cycling', build])
+
+
+class RemoteTracePullTests(unittest.TestCase):
+    NAME = '000070-da24d9d9.trace'
+    PULLED = b'the trace the device host pulled'
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.root = Path(scratch.name)
+        self.local = self.root / '.local' / 'traces' / self.NAME
+
+    def pull(self, args, rsync=0, returned=PULLED):
+        copied = {
+            'name': f'traces/{self.NAME}',
+            'records': 2,
+            'bytes': len(self.PULLED),
+            'sha256': hashlib.sha256(self.PULLED).hexdigest(),
+            'path': f'.local/traces/{self.NAME}',
+        }
+        scripts, judged = [], []
+
+        def run(command, **kwargs):
+            if command[0] == 'ssh':
+                scripts.append(command[-1])
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps(copied))
+            if command[0] == 'rsync' and returned is not None:
+                self.local.parent.mkdir(parents=True, exist_ok=True)
+                self.local.write_bytes(returned)
+            return subprocess.CompletedProcess(command, rsync)
+
+        def judge(result):
+            judged.append(result['path'])
+            result.update(marks=[], faithful={'ok': True, 'ended': None, 'exclusions': []})
+            return result
+
+        with (
+            patch.dict(remote.os.environ, {'CYCLING_DEVICE_HOST': 'h'}),
+            patch.object(remote, 'ROOT', self.root),
+            patch.object(remote, 'snapshot', return_value='ab' * 20),
+            patch.object(remote.subprocess, 'run', side_effect=run),
+            patch('cycling_devtools.device.trace_media.judge', side_effect=judge),
+            patch('sys.stdout', new_callable=io.StringIO) as out,
+            patch('sys.stderr', new_callable=io.StringIO),
+        ):
+            try:
+                code = remote.main(['trace', 'pull', *args])
+            except SystemExit as exit:
+                code = exit.code
+        return code, scripts, judged, out.getvalue()
+
+    def test_the_device_host_only_copies_the_trace_and_this_machine_judges_it(self):
+        code, scripts, judged, out = self.pull([self.NAME, '--json'])
+        self.assertEqual(code, 0)
+        self.assertIn(f'cycling trace pull {self.NAME} --json --copy-only', scripts[-1])
+        self.assertEqual(judged, [str(self.local)])
+        self.assertEqual(json.loads(out)['faithful'], {'ok': True, 'ended': None, 'exclusions': []})
+
+    def test_a_failed_transfer_never_judges_an_older_local_copy(self):
+        self.local.parent.mkdir(parents=True)
+        self.local.write_bytes(b'an older pull of the same name')
+        code, _, judged, out = self.pull([self.NAME, '--json'], rsync=23, returned=None)
+        self.assertEqual((code, judged), (2, []))
+        self.assertIn('rsync returned 23', json.loads(out)['error'])
+        self.assertNotIn('faithful', json.loads(out))
+
+    def test_a_returned_file_that_is_not_the_pulled_trace_is_never_judged(self):
+        code, _, judged, out = self.pull([self.NAME, '--json'], returned=b'other bytes')
+        self.assertEqual((code, judged), (2, []))
+        self.assertIn('is not the trace the device host pulled', json.loads(out)['error'])
 
 
 class BacktraceTests(unittest.TestCase):

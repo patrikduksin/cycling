@@ -1,3 +1,4 @@
+use crate::sim::Kept;
 use crate::world::Side;
 use device_api::input::Role;
 use std::ops::RangeInclusive;
@@ -67,21 +68,33 @@ pub struct Setup {
     pub sensors: Vec<Sensor>,
     pub card: Card,
     pub course: Course,
-    /// The steps take the device from power-on, as a lifted slice's do:
-    /// nothing skips first-run setup or pairs the sensors for them.
-    pub from_power_on: bool,
+    pub start: Start,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where the first step finds the device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Start {
+    /// On Home, first-run setup skipped and the sensors paired: a drawn
+    /// plan's.
+    Home,
+    /// Powering on, as a lifted slice's steps take it: with what it kept
+    /// from before, or factory fresh.
+    PowerOn(Option<Kept>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Sensor {
     Heart,
     Power,
     SpeedCadence,
+    Wheel,
+    Cadence,
     Radar,
 }
 
 impl Sensor {
-    pub const ALL: [Sensor; 4] = [Self::Heart, Self::Power, Self::SpeedCadence, Self::Radar];
+    /// The sensors a drawn plan picks from.
+    pub const DRAWN: [Sensor; 4] = [Self::Heart, Self::Power, Self::SpeedCadence, Self::Radar];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,7 +164,7 @@ pub enum Step {
     Press(Role),
     Hold(Role, u16),
     Ride {
-        kmh: u8,
+        kmh_tenths: u16,
         watts: u16,
         bpm: u8,
         rpm: u8,
@@ -175,6 +188,8 @@ pub enum Step {
         percent: u8,
         charging: bool,
     },
+    /// A touch report at panel coordinates.
+    Touch(Touch),
     /// Power cut without warning; the device boots while the plan goes on.
     PowerCut,
     /// The internal flash tears its next mutation after `after` succeed.
@@ -187,6 +202,18 @@ pub enum Step {
         after: u8,
         partial: u16,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Touch {
+    /// A finger down at this point, or moved to it.
+    At {
+        x: u16,
+        y: u16,
+    },
+    Release,
+    /// The panel lost the contact.
+    Cancel,
 }
 
 impl Step {
@@ -273,7 +300,7 @@ const WEIGHTS: &[(u64, Draw)] = &[
 
 fn ride(rng: &mut Rng) -> Step {
     Step::Ride {
-        kmh: rng.between(3..=60) as u8,
+        kmh_tenths: rng.between(3..=60) as u16 * 10,
         watts: rng.between(0..=600) as u16,
         bpm: rng.between(60..=190) as u8,
         rpm: rng.between(0..=120) as u8,
@@ -299,7 +326,7 @@ fn step(rng: &mut Rng, setup: &Setup) -> Step {
 }
 
 fn setup(rng: &mut Rng) -> Setup {
-    let sensors = Sensor::ALL
+    let sensors = Sensor::DRAWN
         .into_iter()
         .filter(|_| rng.percent(55))
         .collect();
@@ -333,7 +360,7 @@ fn setup(rng: &mut Rng) -> Setup {
         sensors,
         card,
         course,
-        from_power_on: false,
+        start: Start::Home,
     }
 }
 

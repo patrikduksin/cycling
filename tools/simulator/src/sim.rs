@@ -37,6 +37,16 @@ pub const HOLD_REPEAT_MS: u64 = 100;
 /// Counted rather than timed, so a held key powers on at any live speed.
 pub const POWER_ON_REPORTS: u32 = 15;
 
+/// What a device kept from before it powered on: the first-run setup page
+/// to resume, none once setup is done, the training profile, and the ANT
+/// sensors saved, by device type and number, in tile order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Kept {
+    pub setup: Option<vana::screens::setup::Step>,
+    pub profile: vana::ride::zones::TrainingProfile,
+    pub sensors: Vec<(u8, u16)>,
+}
+
 pub fn seconds(s: u64) -> u64 {
     s * 1000
 }
@@ -316,6 +326,29 @@ impl Sim {
         }
     }
 
+    /// Power on as a device that kept `kept` from before: VANA's
+    /// preferences hold it and its defaults for the rest.
+    pub fn keep_preferences(&mut self, kept: &Kept) {
+        let (mut record, _) = vana::app::decode_preferences(&[]);
+        record.options.setup = kept.setup.map_or(0, vana::screens::setup::Step::byte);
+        record.profile = kept.profile;
+        for &(device_type, device_number) in &kept.sensors {
+            let saved = record
+                .sensors
+                .select(AntSensor::new(device_type, device_number).identity);
+            assert!(
+                saved.is_some(),
+                "sensor {device_type}/{device_number} is saved"
+            );
+        }
+        let encoded = vana::app::encode_preferences(&record);
+        let app = firmware_shell::preferences::AppPreferences::new(&encoded)
+            .expect("a record fits the shell's area");
+        self.note(NoteKind::Device, format!("kept {kept:?}"));
+        self.device.keep_app_preferences(app);
+        self.cut_power();
+    }
+
     /// Advance until the panel is lit and Home is open. Returns
     /// the time waited.
     #[track_caller]
@@ -504,16 +537,11 @@ impl Sim {
             (i32::from(a) + (i32::from(b) - i32::from(a)) * i / steps) as u16
         };
         for i in 0..=steps {
-            self.finger(Point {
-                x: lerp(from.0, to.0, i),
-                y: lerp(from.1, to.1, i),
-            });
+            self.finger_at(lerp(from.0, to.0, i), lerp(from.1, to.1, i));
             self.advance(10);
         }
         self.advance(hold_ms);
-        self.device
-            .input
-            .push(self.device.clock_ms(), Input::Release);
+        self.lift_finger();
         self.advance(PRESS_GAP_MS);
     }
 
@@ -530,20 +558,35 @@ impl Sim {
     /// Report a contact through `points`, then the release.
     fn touch(&mut self, points: &[(u16, u16)]) {
         for &(x, y) in points {
-            self.finger(Point { x, y });
+            self.finger_at(x, y);
             self.advance(TOUCH_STEP_MS);
         }
-        self.device
-            .input
-            .push(self.device.clock_ms(), Input::Release);
+        self.lift_finger();
         self.advance(PRESS_GAP_MS);
     }
 
+    /// One touch report, now: a finger down at (`x`, `y`), or moved there.
     #[track_caller]
-    fn finger(&mut self, point: Point) {
+    pub fn finger_at(&mut self, x: u16, y: u16) {
+        self.need(Need::Touch);
         self.device
             .input
-            .push(self.device.clock_ms(), Input::Touch(point));
+            .push(self.device.clock_ms(), Input::Touch(Point { x, y }));
+    }
+
+    /// The finger lifted, now.
+    pub fn lift_finger(&mut self) {
+        self.device
+            .input
+            .push(self.device.clock_ms(), Input::Release);
+    }
+
+    /// The panel lost the contact, now: what it reported completes no
+    /// gesture.
+    pub fn cancel_touch(&mut self) {
+        self.device
+            .input
+            .push(self.device.clock_ms(), Input::Cancel);
     }
 
     /// Buttons pressed in the same companion report window.

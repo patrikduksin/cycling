@@ -1,9 +1,9 @@
 //! A plan as simulator calls: each one runs on a [`Sim`] or prints as the
 //! Rust that runs it, so a printed scenario does what the fuzzer did.
-use super::plan::{Card, Course, Plan, RideAction, Sensor, Setup, Step};
+use super::plan::{Card, Course, Plan, RideAction, Sensor, Setup, Start, Step, Touch};
 use crate::bulk::Presence;
 use crate::route::{Point, Route};
-use crate::sim::Sim;
+use crate::sim::{Kept, Sim};
 use crate::world::Vehicle;
 use device_api::input::Role;
 use std::fmt::Write as _;
@@ -86,17 +86,20 @@ pub enum Call {
     AntSensor(Sensor),
     RideRoute(Road),
     RideAt {
-        kmh: u8,
+        kmh_tenths: u16,
         watts: u16,
         bpm: u8,
         rpm: u8,
     },
     Pair(Vec<Sensor>),
     InitBulk,
+    FormatRides,
+    KeepPreferences(Kept),
     Advance(u64),
     Press(Role),
     Hold(Role, u64),
     Host(RideAction),
+    Touch(Touch),
     Present(Sensor, bool),
     GpsFix(bool),
     Barometer(bool),
@@ -129,16 +132,20 @@ pub fn ant(sensor: Sensor) -> (u8, u16, &'static str) {
         Sensor::Heart => (device_type::HEART_RATE, 4242, "HEART RATE"),
         Sensor::Power => (device_type::POWER, 1234, "POWER METER"),
         Sensor::SpeedCadence => (device_type::SPEED_CADENCE, 777, "SPEED/CAD"),
+        Sensor::Wheel => (device_type::SPEED, 778, "SPEED"),
+        Sensor::Cadence => (device_type::CADENCE, 779, "CADENCE"),
         Sensor::Radar => (device_type::RADAR, 31, "RADAR"),
     }
 }
 
-fn type_name(sensor: Sensor) -> &'static str {
+fn device_type_const_name(kind: u8) -> &'static str {
     use crate::ant::device_type;
-    match ant(sensor).0 {
+    match kind {
         device_type::HEART_RATE => "HEART_RATE",
         device_type::POWER => "POWER",
         device_type::SPEED_CADENCE => "SPEED_CADENCE",
+        device_type::SPEED => "SPEED",
+        device_type::CADENCE => "CADENCE",
         _ => "RADAR",
     }
 }
@@ -157,12 +164,12 @@ impl Call {
             }
             Self::RideRoute(road) => sim.ride_route(road.route.clone()),
             Self::RideAt {
-                kmh,
+                kmh_tenths,
                 watts,
                 bpm,
                 rpm,
             } => sim.ride_at(
-                f64::from(*kmh),
+                f64::from(*kmh_tenths) / 10.0,
                 f64::from(*watts),
                 f64::from(*bpm),
                 f64::from(*rpm),
@@ -172,6 +179,8 @@ impl Call {
                 sim.pair(&names);
             }
             Self::InitBulk => sim.init_bulk(),
+            Self::FormatRides => sim.format_rides(),
+            Self::KeepPreferences(kept) => sim.keep_preferences(kept),
             Self::Advance(ms) => sim.advance(*ms),
             Self::Press(role) => sim.press(*role),
             Self::Hold(role, ms) => sim.hold(*role, *ms),
@@ -180,6 +189,9 @@ impl Call {
                     sim.command_after_reading_outcome(action.command());
                 }
             }
+            Self::Touch(Touch::At { x, y }) => sim.finger_at(*x, *y),
+            Self::Touch(Touch::Release) => sim.lift_finger(),
+            Self::Touch(Touch::Cancel) => sim.cancel_touch(),
             Self::Present(sensor, present) => {
                 let (kind, number, _) = ant(*sensor);
                 sim.set_present(kind, number, *present);
@@ -216,22 +228,45 @@ impl Call {
             Self::SkipSetup => "sim.skip_setup();".into(),
             Self::AntSensor(sensor) => format!(
                 "sim.ant_sensor(device_type::{}, {});",
-                type_name(*sensor),
+                device_type_const_name(ant(*sensor).0),
                 number(sensor)
             ),
             Self::RideRoute(road) => format!("sim.ride_route({});", road.rust),
             Self::RideAt {
-                kmh,
+                kmh_tenths,
                 watts,
                 bpm,
                 rpm,
-            } => format!("sim.ride_at({kmh}.0, {watts}.0, {bpm}.0, {rpm}.0);"),
+            } => format!(
+                "sim.ride_at({}.{}, {watts}.0, {bpm}.0, {rpm}.0);",
+                kmh_tenths / 10,
+                kmh_tenths % 10
+            ),
             Self::Pair(sensors) => {
                 let names: Vec<String> =
                     sensors.iter().map(|s| format!("{:?}", ant(*s).2)).collect();
                 format!("sim.pair(&[{}]);", names.join(", "))
             }
             Self::InitBulk => "sim.init_bulk();".into(),
+            Self::FormatRides => "sim.format_rides();".into(),
+            Self::KeepPreferences(kept) => {
+                let sensors: Vec<String> = (kept.sensors.iter())
+                    .map(|&(kind, number)| {
+                        format!("(device_type::{}, {number})", device_type_const_name(kind))
+                    })
+                    .collect();
+                let setup = match kept.setup {
+                    Some(step) => format!("Some(SetupStep::{step:?})"),
+                    None => "None".into(),
+                };
+                let profile = kept.profile;
+                format!(
+                    "sim.keep_preferences(&Kept {{\n        setup: {setup},\n        profile: TrainingProfile {{ ftp_watts: {}, lthr_bpm: {} }},\n        sensors: vec![{}],\n    }});",
+                    profile.ftp_watts,
+                    profile.lthr_bpm,
+                    sensors.join(", ")
+                )
+            }
             Self::Advance(ms) => format!("sim.advance({ms});"),
             Self::Press(role) => format!("sim.press(Role::{role:?});"),
             Self::Hold(role, ms) => format!("sim.hold(Role::{role:?}, {ms});"),
@@ -239,9 +274,12 @@ impl Call {
                 "if !sim.is_off() {{\n        sim.command_after_reading_outcome({:?});\n    }}",
                 action.command()
             ),
+            Self::Touch(Touch::At { x, y }) => format!("sim.finger_at({x}, {y});"),
+            Self::Touch(Touch::Release) => "sim.lift_finger();".into(),
+            Self::Touch(Touch::Cancel) => "sim.cancel_touch();".into(),
             Self::Present(sensor, present) => format!(
                 "sim.set_present(device_type::{}, {}, {present});",
-                type_name(*sensor),
+                device_type_const_name(ant(*sensor).0),
                 number(sensor)
             ),
             Self::GpsFix(fix) => format!("sim.set_gps_fix({fix});"),
@@ -272,21 +310,28 @@ pub fn prepare(setup: &Setup, road: Road) -> Vec<Call> {
             _ => Presence::Missing,
         }));
     }
-    if !setup.from_power_on {
-        calls.extend([Call::WaitUsable, Call::SkipSetup]);
+    let home = setup.start == Start::Home;
+    match &setup.start {
+        Start::Home => calls.extend([Call::WaitUsable, Call::SkipSetup]),
+        Start::PowerOn(kept) => {
+            if setup.card == Card::Ready {
+                calls.push(Call::FormatRides);
+            }
+            calls.extend(kept.clone().map(Call::KeepPreferences));
+        }
     }
     calls.extend(setup.sensors.iter().map(|s| Call::AntSensor(*s)));
     calls.push(Call::RideRoute(road));
     calls.push(Call::RideAt {
-        kmh: 0,
+        kmh_tenths: 0,
         watts: 0,
         bpm: 72,
         rpm: 0,
     });
-    if !setup.sensors.is_empty() && !setup.from_power_on {
+    if !setup.sensors.is_empty() && home {
         calls.push(Call::Pair(setup.sensors.clone()));
     }
-    if setup.card == Card::Ready {
+    if setup.card == Card::Ready && home {
         calls.push(Call::InitBulk);
     }
     calls
@@ -299,18 +344,18 @@ pub fn step(step: &Step) -> Call {
         Step::Press(role) => Call::Press(role),
         Step::Hold(role, ms) => Call::Hold(role, u64::from(ms)),
         Step::Ride {
-            kmh,
+            kmh_tenths,
             watts,
             bpm,
             rpm,
         } => Call::RideAt {
-            kmh,
+            kmh_tenths,
             watts,
             bpm,
             rpm,
         },
         Step::Stop => Call::RideAt {
-            kmh: 0,
+            kmh_tenths: 0,
             watts: 0,
             bpm: 90,
             rpm: 0,
@@ -331,6 +376,7 @@ pub fn step(step: &Step) -> Call {
             side,
         }),
         Step::Battery { percent, charging } => Call::Battery { percent, charging },
+        Step::Touch(touch) => Call::Touch(touch),
         Step::PowerCut => Call::CutPower,
         Step::TornWrite { after, partial } => Call::TornWrite {
             after: u32::from(after),
@@ -364,6 +410,9 @@ pub fn print(name: &str, calls: &[Call], then: &str) -> String {
         ("Point::", "shell_simulator::route::Point"),
         ("Route::", "shell_simulator::route::Route"),
         ("Side::", "shell_simulator::world::{Side, Vehicle}"),
+        ("Kept {", "shell_simulator::sim::Kept"),
+        ("SetupStep::", "vana::screens::setup::Step as SetupStep"),
+        ("TrainingProfile {", "vana::ride::zones::TrainingProfile"),
     ] {
         if uses(named) {
             let _ = writeln!(out, "    use {import};");

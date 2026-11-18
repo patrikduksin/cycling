@@ -108,7 +108,8 @@ TASKS = [
         'verify',
         'Run the PR gates the changed paths select, in parallel; it stops if the tree changes, and passes are cached by tree hash. '
         '--pr N to post results and changed screens, --video for before/after videos of changed scenarios, '
-        '--all for every gate, --fresh to ignore cached passes, --deep for tier 2 alone (every private ride, fuzz)',
+        '--all for every gate, --fresh to ignore cached passes, --deep for tier 2 alone (every private ride, fuzz) in this tree; '
+        'merges and the nightly run tier 2 on the newest main and bisect a failure (cycling_devtools.deep_tier)',
         f'{DEV}verify',
     ),
     task(
@@ -118,7 +119,7 @@ TASKS = [
     ),
     task(
         'merge',
-        'The only way to merge: squash PR N onto main, verify that tree, push exactly it (--prepare verifies only); the slow tier follows in the background',
+        'The only way to merge: squash PR N onto main, verify that tree, push exactly it (--prepare verifies only); the slow tier and a tier 2 request follow in the background',
         f'{DEV}merge',
     ),
     task(
@@ -407,7 +408,7 @@ TASKS = [
         'trace',
         'Read a ride trace as text, or one JSON document with --json: summary, timeline, find, otlp, replay, '
         'diff <a> <b>, cut, shrink, dump, undump (--help; skill: ride-trace); upgrade <trace>... brings private traces '
-        "to this format; nightly [--install] pulls and checks the day's rides, then runs verify --deep; pull [file] copies the newest or a named "
+        "to this format; nightly [--install] pulls and checks the day's rides, then runs verify --deep on the newest main; pull [file] copies the newest or a named "
         'device trace into .local/traces/ and checks it replays faithfully under the build that recorded it',
         f'{TRACE} trace',
     ),

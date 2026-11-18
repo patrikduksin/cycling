@@ -145,9 +145,11 @@ The [verify skill](../.agents/skills/verify/SKILL.md) says when to run
   refuses a verdict on any other. A PASS on a stacked PR therefore covers its
   own changes only, and it still holds after the parent lands and the PR is
   rebased onto main, if the rebased diff is the one that was reviewed.
-- After a merge, two jobs run on the merged commit in the background at
-  `nice 19`. `cycling sim-compare --fill` caches its screens as the base of
-  later comparisons, with its log in `.local/merge/fill.log`. The slow tier
+- After a merge, three jobs run in the background at `nice 19`: the screen
+  fill and the slow tier on the merged commit, and a request for tier 2 on
+  the newest main (see `cycling verify --deep` below), with its log in
+  `.local/merge/deep.log`. `cycling sim-compare --fill` caches its screens
+  as the base of later comparisons, with its log in `.local/merge/fill.log`. The slow tier
   runs in `.local/merge/slow-tier` of the primary checkout and comments on
   the merged PR if it fails or cannot run. The slow tier is
   `cycling test-slow`, every web test with `CYCLING_SLOW=1`: the tests verify
@@ -203,14 +205,27 @@ posts anything.
 - `cycling verify --deep` runs tier 2: every real ride of the private
   corpus under the tree's build, the fixed fuzz seeds, the planted-bug
   proof that the fuzzer still finds a bug, and the Follower's large `explore`
-  searches. `cycling trace nightly` runs it every night at 03:00 from a
-  systemd user timer (`cycling trace nightly --install`), after pulling the
-  day's rides from the C606 when it answers on USB. It presses no button,
-  and it opens one GitHub issue per ride for a faithfulness divergence or
-  a broken invariant, never for a stop.
-  It takes no slot, runs at nice 19, and is not a PR gate. Run it
+  searches. It takes no slot, runs at nice 19, and is not a PR gate. Run it
   when your change touches what it searches: course following, recording and
   storage, or the fuzzer.
+- Tier 2 also runs on its own after every `cycling merge` and every night
+  at 03:00, from a systemd user timer (`cycling trace nightly --install`).
+  The nightly first pulls the day's rides from the C606 when it answers on
+  USB. It presses no button, and it opens one GitHub issue per ride for a
+  faithfulness divergence or a broken invariant, never for a stop.
+- Each request goes through
+  `tools/devtools/src/cycling_devtools/deep_tier.py`. It fetches main and
+  runs `cycling verify --deep` on the newest main in `.local/merge/deep`, a
+  locked worktree of the primary checkout, never in a working tree. One run
+  holds the lock `.local/nightly/deep.lock` at a time. A request during a
+  run leaves the marker `.local/nightly/deep.pending` and returns, and the
+  run then goes again once on the newest main, however many requests came.
+- `.local/nightly/deep.json` holds the last green commit and the last run.
+  A failure is bisected across the commits since the last green one, with
+  `git bisect run` and the gate that failed alone. It then opens one GitHub
+  issue that names the first bad commit. If that gate fails on the last
+  green commit too, no commit is to blame (often a ride the corpus has
+  gained), and the issue says so.
 
 ## A device on another machine
 

@@ -2615,6 +2615,11 @@ impl Session {
         self.sync_trace();
         self.reboot(false)
     }
+    /// Store `app` as VANA's preferences, as a save would; VANA reads them
+    /// when it next boots.
+    pub fn keep_app_preferences(&mut self, app: firmware_shell::preferences::AppPreferences) {
+        self.settings.save_app(app).expect("memory media saves");
+    }
     /// Power lost and restored: the companion boots again too.
     pub fn power_cycle(&mut self) -> io::Result<()> {
         self.reboot(true)

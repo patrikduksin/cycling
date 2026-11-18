@@ -9,6 +9,7 @@ from cycling_devtools.tree import git
 
 ATTEMPTS = 5
 SLOW_TIER = (sys.executable, '-m', 'cycling_devtools.slow_tier')
+DEEP_TIER = (sys.executable, '-m', 'cycling_devtools.deep_tier')
 FILL_SCREENS = ('nice', '-n', '19', 'cycling', 'sim-compare', '--fill')
 
 
@@ -111,6 +112,7 @@ def after(pr, commit, report):
     place = merge_checkout.directory()
     detached([*FILL_SCREENS, commit], place / 'fill.log', place / 'verify')
     detached([*SLOW_TIER, str(pr.number), commit], place / 'slow-tier.log', workspace.main_checkout())
+    detached(DEEP_TIER, place / 'deep.log', workspace.main_checkout())
 
 
 def open_pull_request(number):

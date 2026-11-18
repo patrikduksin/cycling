@@ -1,16 +1,21 @@
-//! A world slice lifted to a [`Plan`]: the sensors it heard, the track its
-//! fixes rode, and its inputs in time order as plan steps. The lift is
-//! lossy: ANT pages become `ride_at` values, a GNSS fix's speed the
+//! A world slice lifted to a [`Plan`]: what the device kept from before
+//! power-on, the sensors it heard, the track its fixes rode, and its
+//! inputs in time order as plan steps. The lift is lossy: ANT pages become
+//! `ride_at` values, the wheel's revolutions or else a GNSS fix's speed the
 //! riding speed, and what has no step is counted in [`Lifted::left_out`].
+//! Of the preferences VANA read at boot it keeps only the setup step, the
+//! training profile and the saved sensors' kinds, nothing personal or
+//! secret: the rest is counted where it differs from VANA's defaults.
 //! Whether the plan still shows the failure is for the caller to run.
-use super::plan::{Card, Course, Plan, RideAction, Sensor, Setup, Step};
+use super::plan::{Card, Course, Plan, RideAction, Sensor, Setup, Start, Step, Touch};
 use crate::route::{Route, distance_m, from_e7};
+use crate::sim::Kept;
 use crate::trace::world::{self, World};
 use device_api::ant;
 use device_api::gps::FixState;
 use device_api::input::{Controls, Input, Role};
 use firmware_services::trace::replayed::Replayed;
-use firmware_services::trace::wire::Reader;
+use firmware_services::trace::wire::{Reader, Wire};
 use firmware_services::trace::{self, Event};
 use std::collections::BTreeMap;
 
@@ -30,10 +35,35 @@ pub struct Lifted {
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Riding {
-    kmh: u8,
+    kmh_tenths: u16,
     watts: u16,
     bpm: u8,
     rpm: u8,
+}
+
+#[derive(Clone, Copy)]
+struct RideWindow {
+    step_index: usize,
+    start_ms: u64,
+}
+
+impl RideWindow {
+    fn contains(&self, now_ms: u64) -> bool {
+        now_ms < self.start_ms + RIDE_EVERY_MS
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WheelEvent {
+    event_time_1024ths: u16,
+    revolutions: u16,
+    heard_ms: u64,
+}
+
+enum KeptAtBoot {
+    NotRead,
+    NothingKept,
+    Kept(Kept),
 }
 
 struct Lift {
@@ -41,7 +71,9 @@ struct Lift {
     clock_ms: u64,
     riding: Riding,
     emitted: Riding,
-    emitted_ms: Option<u64>,
+    ride_window: Option<RideWindow>,
+    wheel_circumference_mm: u32,
+    last_wheel_event: Option<WheelEvent>,
     sensors: Vec<Sensor>,
     last_packet: BTreeMap<u8, u64>,
     absent: Vec<Sensor>,
@@ -50,6 +82,7 @@ struct Lift {
     controls: Option<Controls>,
     held: Option<(Role, u64, u64)>,
     card: Card,
+    kept: KeptAtBoot,
     left_out: BTreeMap<String, usize>,
 }
 
@@ -58,7 +91,9 @@ fn sensor(device_type: u8) -> Option<Sensor> {
     match device_type {
         kind::HEART_RATE => Some(Sensor::Heart),
         kind::POWER => Some(Sensor::Power),
-        kind::SPEED_CADENCE | kind::SPEED | kind::CADENCE => Some(Sensor::SpeedCadence),
+        kind::SPEED_CADENCE => Some(Sensor::SpeedCadence),
+        kind::SPEED => Some(Sensor::Wheel),
+        kind::CADENCE => Some(Sensor::Cadence),
         kind::RADAR => Some(Sensor::Radar),
         _ => None,
     }
@@ -105,27 +140,39 @@ impl Lift {
         {
             self.release();
         }
-        let due = self
-            .emitted_ms
-            .is_none_or(|at| now_ms >= at + RIDE_EVERY_MS);
-        if due && self.riding != self.emitted {
-            let Riding {
-                kmh,
-                watts,
-                bpm,
-                rpm,
-            } = self.riding;
-            self.at(
-                now_ms,
-                Step::Ride {
-                    kmh,
-                    watts,
-                    bpm,
-                    rpm,
-                },
-            );
-            self.emitted = self.riding;
-            self.emitted_ms = Some(now_ms);
+        self.ride(now_ms);
+    }
+
+    fn ride(&mut self, now_ms: u64) {
+        if self.riding == self.emitted {
+            return;
+        }
+        let Riding {
+            kmh_tenths,
+            watts,
+            bpm,
+            rpm,
+        } = self.riding;
+        let step = Step::Ride {
+            kmh_tenths,
+            watts,
+            bpm,
+            rpm,
+        };
+        self.hold_latest_readings_of_window(now_ms, step);
+        self.emitted = self.riding;
+    }
+
+    fn hold_latest_readings_of_window(&mut self, now_ms: u64, step: Step) {
+        match self.ride_window.filter(|window| window.contains(now_ms)) {
+            Some(window) => self.steps[window.step_index] = step,
+            None => {
+                self.at(now_ms, step);
+                self.ride_window = Some(RideWindow {
+                    step_index: self.steps.len() - 1,
+                    start_ms: now_ms,
+                });
+            }
         }
     }
 
@@ -157,9 +204,40 @@ impl Lift {
                     self.riding.rpm = data[3];
                 }
             }
+            Sensor::SpeedCadence | Sensor::Wheel => {
+                self.wheel_speed_from_event(WheelEvent {
+                    event_time_1024ths: u16::from_le_bytes([data[4], data[5]]),
+                    revolutions: u16::from_le_bytes([data[6], data[7]]),
+                    heard_ms: now_ms,
+                });
+            }
             Sensor::Radar => self.left("radar targets"),
             _ => {}
         }
+    }
+
+    fn wheel_speed_from_event(&mut self, event: WheelEvent) {
+        match self.last_wheel_event {
+            Some(last) if last.event_time_1024ths == event.event_time_1024ths => {
+                if event.heard_ms.saturating_sub(last.heard_ms) > DROPOUT_AFTER_MS {
+                    self.riding.kmh_tenths = 0;
+                }
+                return;
+            }
+            Some(last) => {
+                let seconds = f64::from(
+                    event
+                        .event_time_1024ths
+                        .wrapping_sub(last.event_time_1024ths),
+                ) / 1024.0;
+                let metres = f64::from(event.revolutions.wrapping_sub(last.revolutions))
+                    * f64::from(self.wheel_circumference_mm)
+                    / 1000.0;
+                self.riding.kmh_tenths = (metres / seconds * 36.0).round() as u16;
+            }
+            None => {}
+        }
+        self.last_wheel_event = Some(event);
     }
 
     fn position(&mut self, now_ms: u64, snapshot: &device_api::positioning::Snapshot) {
@@ -171,8 +249,11 @@ impl Lift {
             }
             self.fix = Some(fresh);
         }
-        if let Some(mm_s) = gps.speed_mm_s.filter(|_| fresh) {
-            self.riding.kmh = (f64::from(mm_s) * 3.6 / 1000.0).round().min(255.0) as u8;
+        if let Some(mm_s) = gps
+            .speed_mm_s
+            .filter(|_| fresh && self.last_wheel_event.is_none())
+        {
+            self.riding.kmh_tenths = (f64::from(mm_s) * 0.036).round() as u16;
         }
         if let (true, Some(lat), Some(lon)) = (fresh, gps.latitude_e7, gps.longitude_e7) {
             let point = from_e7(lat, lon);
@@ -211,6 +292,79 @@ impl Lift {
         }
     }
 
+    fn touch(&mut self, at_ms: u64, touch: Touch) {
+        self.release();
+        self.at(at_ms, Step::Touch(touch));
+    }
+
+    fn read_boot_settings(&mut self, call: &trace::Call<'_>) {
+        let mut r = Reader::new(call.body, call.now_ms);
+        let loaded = r.byte() == 0;
+        let bytes = <&[u8]>::take(&mut r);
+        if !loaded || r.read().is_none() {
+            return self.left("unreadable settings");
+        }
+        let (settings, _) = firmware_shell::preferences::decode(Some(bytes));
+        if settings.ble.is_some() {
+            self.left("a BLE sensor in the settings");
+        }
+        let (record, stored) = vana::app::decode_preferences(settings.app.bytes());
+        self.kept = match stored {
+            vana::app::StoredPreferences::Missing => KeptAtBoot::NothingKept,
+            vana::app::StoredPreferences::Foreign => {
+                self.left("foreign preferences");
+                KeptAtBoot::NothingKept
+            }
+            vana::app::StoredPreferences::Current => {
+                self.wheel_circumference_mm = u32::from(record.options.wheel.size_mm());
+                KeptAtBoot::Kept(self.kept(&record))
+            }
+        };
+    }
+
+    fn kept(&mut self, record: &vana::app::PreferencesRecord) -> Kept {
+        let mut sensors = Vec::new();
+        for (_, peer) in record.sensors.peers() {
+            match sensor(peer.device_type) {
+                Some(kind) => {
+                    let (device_type, number, _) = super::script::ant(kind);
+                    sensors.push((device_type, number));
+                }
+                None => self.left(format!("saved ANT device type {}", peer.device_type)),
+            }
+        }
+        let (fresh, _) = vana::app::decode_preferences(&[]);
+        let (now, then) = (record.options, fresh.options);
+        for (what, differs) in [
+            ("auto pause", now.auto_pause != then.auto_pause),
+            ("sounds", now.sounds != then.sounds),
+            ("auto lap", now.auto_lap != then.auto_lap),
+            ("day and night", now.daylight != then.daylight),
+            ("theme", now.theme != then.theme),
+            ("time zone", now.zone != then.zone),
+            ("wheel size", now.wheel != then.wheel),
+            ("rider", now.rider != then.rider),
+            ("ride alerts", now.alerts != then.alerts),
+            ("sunset alert", now.sunset_alert != then.sunset_alert),
+            ("ride pages", now.ride_pages != then.ride_pages),
+            ("main page readings", now.main_slots != then.main_slots),
+            ("display mode", now.mode != then.mode),
+            (
+                "auto brightness",
+                now.auto_brightness != then.auto_brightness,
+            ),
+        ] {
+            if differs {
+                self.left(format!("preference {what}"));
+            }
+        }
+        Kept {
+            setup: vana::screens::setup::Step::stored(now.setup),
+            profile: record.profile,
+            sensors,
+        }
+    }
+
     fn command(&mut self, now_ms: u64, line: &str) {
         let request = line.splitn(3, ' ').nth(2).unwrap_or(line);
         let action = [
@@ -242,7 +396,9 @@ pub fn lift(slice: &[u8]) -> Result<Lifted, String> {
             bpm: 72,
             ..Riding::default()
         },
-        emitted_ms: None,
+        ride_window: None,
+        wheel_circumference_mm: vana::ride::metrics::WHEEL_MM,
+        last_wheel_event: None,
         sensors: Vec::new(),
         last_packet: BTreeMap::new(),
         absent: Vec::new(),
@@ -251,6 +407,7 @@ pub fn lift(slice: &[u8]) -> Result<Lifted, String> {
         controls: None,
         held: None,
         card: Card::None,
+        kept: KeptAtBoot::NotRead,
         left_out: BTreeMap::new(),
     };
     let mut now_ms = 0;
@@ -270,12 +427,26 @@ pub fn lift(slice: &[u8]) -> Result<Lifted, String> {
                     lift.controls = r.read().map(|_| controls);
                     continue;
                 }
+                if named == Some(("Settings", "load")) {
+                    if matches!(lift.kept, KeptAtBoot::NotRead) {
+                        lift.read_boot_settings(&call);
+                    }
+                    continue;
+                }
                 match world::read(&call) {
                     Some(World::AntPacket(packet)) => lift.packet(now_ms, &packet),
                     Some(World::Position(Some(snapshot))) => lift.position(now_ms, &snapshot),
                     Some(World::Edge(edge)) => match edge.input {
                         Input::Button { id, .. } => lift.button(now_ms, id),
-                        _ => lift.left("touch"),
+                        Input::Touch(point) => lift.touch(
+                            edge.received_ms,
+                            Touch::At {
+                                x: point.x,
+                                y: point.y,
+                            },
+                        ),
+                        Input::Release => lift.touch(edge.received_ms, Touch::Release),
+                        Input::Cancel => lift.touch(edge.received_ms, Touch::Cancel),
                     },
                     Some(World::NoCard(_)) => lift.card = Card::None,
                     _ if named == Some(("ReadWrite", "owned_info")) => lift.card = Card::Ready,
@@ -286,6 +457,7 @@ pub fn lift(slice: &[u8]) -> Result<Lifted, String> {
         }
     }
     lift.release();
+    lift.ride(now_ms);
     if now_ms > lift.clock_ms {
         lift.steps.push(Step::Wait {
             ms: (now_ms - lift.clock_ms).min(u64::from(u32::MAX)) as u32,
@@ -303,7 +475,7 @@ pub fn lift(slice: &[u8]) -> Result<Lifted, String> {
         _ => Course::Track { points: lift.track },
     };
     let mut sensors = lift.sensors;
-    sensors.sort_by_key(|s| Sensor::ALL.iter().position(|a| a == s));
+    sensors.sort();
     Ok(Lifted {
         plan: Plan {
             seed: 0,
@@ -311,7 +483,10 @@ pub fn lift(slice: &[u8]) -> Result<Lifted, String> {
                 sensors,
                 card: lift.card,
                 course,
-                from_power_on: true,
+                start: Start::PowerOn(match lift.kept {
+                    KeptAtBoot::Kept(kept) => Some(kept),
+                    KeptAtBoot::NotRead | KeptAtBoot::NothingKept => None,
+                }),
             },
             steps: lift.steps,
         },

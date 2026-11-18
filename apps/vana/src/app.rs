@@ -42,7 +42,10 @@ pub use pace::{STANDBY_DARK_PASS_MS, WAKING_ANT_TYPE};
 pub use pass::{Handles, Point, pass};
 mod power;
 mod preferences;
-pub use preferences::decode as decode_preferences;
+pub use preferences::{
+    Record as PreferencesRecord, Stored as StoredPreferences, decode as decode_preferences,
+    encode as encode_preferences,
+};
 mod presentation;
 mod readings;
 mod recording;

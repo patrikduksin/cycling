@@ -83,3 +83,23 @@ def post_status(sha, state, description):
 
 def comment(number, body):
     gh('pr', 'comment', str(number), '--body', body)
+
+
+class Issues:
+    def filed(self, mark):
+        done = subprocess.run(
+            ['gh', 'issue', 'list', '--state', 'all', '--search', f'"{mark}" in:body', '--json', 'number'],
+            cwd=workspace.main_checkout(),
+            capture_output=True,
+            text=True,
+        )
+        return done.returncode == 0 and json.loads(done.stdout or '[]') != []
+
+    def file(self, title, body):
+        gh('issue', 'create', '--title', title, '--body', body)
+
+    def file_once(self, mark, title, body):
+        if self.filed(mark):
+            return False
+        self.file(title, f'{mark}\n{body}')
+        return True

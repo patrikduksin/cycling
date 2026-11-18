@@ -365,7 +365,7 @@ fn still_a_bike_computer(probe: &mut Probe, setup: &Setup) -> Verdict {
         charging: false,
     });
     probe.run(Call::RideAt {
-        kmh: 0,
+        kmh_tenths: 0,
         watts: 0,
         bpm: 72,
         rpm: 0,
@@ -398,7 +398,7 @@ fn still_a_bike_computer(probe: &mut Probe, setup: &Setup) -> Verdict {
         ids(&card_rides_if(probe.sim, setup)),
     );
     probe.run(Call::RideAt {
-        kmh: 25,
+        kmh_tenths: 250,
         watts: 180,
         bpm: 130,
         rpm: 85,

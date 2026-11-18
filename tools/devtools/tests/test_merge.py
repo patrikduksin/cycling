@@ -222,7 +222,7 @@ def test_a_merge_that_cannot_update_its_pull_request_is_still_a_merge_with_its_b
     said = capsys.readouterr().out
     assert f'merged #7 as {landed}' in said
     assert '#7 is merged, but its pull request was not updated: HTTP 502' in said
-    assert [log for _, log in github.started] == ['fill.log', 'slow-tier.log']
+    assert [log for _, log in github.started] == ['fill.log', 'slow-tier.log', 'deep.log']
 
 
 def test_the_squash_is_never_dated_before_the_main_it_lands_on(checkout, feature, monkeypatch):
@@ -240,13 +240,14 @@ def test_the_squash_is_never_dated_before_the_main_it_lands_on(checkout, feature
     )
 
 
-def test_the_screens_are_cached_and_the_slow_tier_started_for_the_landed_commit(checkout, github, feature):
+def test_the_screens_are_cached_and_the_slow_and_deep_tiers_started_for_the_landed_commit(checkout, github, feature):
     approve(feature)
     merge.merge(7)
     landed = origin('main', checkout)
-    fill, slow = github.started
+    fill, slow, deep = github.started
     assert fill == (['nice', '-n', '19', 'cycling', 'sim-compare', '--fill', landed], 'fill.log')
     assert slow[0][-2:] == ['7', landed] and slow[1] == 'slow-tier.log'
+    assert deep == (merge.DEEP_TIER, 'deep.log')
 
 
 def test_a_background_job_adds_to_its_log(checkout, tmp_path):

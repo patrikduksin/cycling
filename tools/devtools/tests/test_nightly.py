@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-from cycling_devtools import nightly
+from cycling_devtools import deep_tier, forge, nightly
 
 
-class Issues:
+class Issues(forge.Issues):
     def __init__(self, filed=()):
         self.marks, self.created = set(filed), []
 
@@ -46,7 +46,7 @@ def state(tmp_path, monkeypatch):
 
 
 def run(device, issues):
-    return nightly.nightly(run=device, issues=issues, deep=lambda root: 0)
+    return nightly.nightly(run=device, issues=issues, deep=lambda issues: [])
 
 
 def test_it_pulls_each_trace_newer_than_the_last_but_the_one_recording_now(state):
@@ -56,7 +56,7 @@ def test_it_pulls_each_trace_newer_than_the_last_but_the_one_recording_now(state
     result = run(device, Issues())
     assert [p['trace'] for p in result['pulled']] == ['traces/000011-bb.trace']
     assert json.loads(state.read_text()) == {'last': 'traces/000011-bb.trace'}
-    assert result == {**result, 'filed': [], 'deep': 0}
+    assert result == {**result, 'filed': [], 'deep': []}
     assert run(Device(['000011-bb.trace', '000012-cc.trace']), Issues())['pulled'] == []
 
 
@@ -73,24 +73,36 @@ def test_a_divergence_or_a_broken_ride_files_one_issue_and_a_stop_files_none(sta
     assert again['filed'] == [] and len(issues.created) == 2, 'the markers keep each issue to one'
 
 
-def test_no_device_skips_and_runs_nothing_else(state):
-    deep = []
-    result = nightly.nightly(run=Device(None), issues=Issues(), deep=deep.append)
+def test_no_device_skips_the_pull_and_still_asks_for_tier_2(state):
+    issues = Issues()
+    asked = []
+
+    def deep(given):
+        asked.append(given)
+        return [deep_tier.Run('abc', deep_tier.GateFailed('fuzz'), 'def')]
+
+    result = nightly.nightly(run=Device(None), issues=issues, deep=deep)
     assert result['skipped'].startswith('the device did not list its traces')
-    assert deep == [] and not state.exists()
+    assert result['deep'] == [{'commit': 'abc', 'failed': 'fuzz', 'first_bad': 'def'}]
+    assert asked == [issues] and not state.exists()
+
+
+GREEN = {'commit': 'abc', 'failed': None, 'first_bad': None}
+RED = {'commit': 'abc', 'failed': 'fuzz', 'first_bad': None}
 
 
 @pytest.mark.parametrize(
     ('result', 'status'),
     [
-        ({'pulled': [], 'filed': [], 'deep': 0}, 0),
-        ({'pulled': [], 'filed': ['t broken'], 'deep': 0}, 1),
-        ({'pulled': [], 'filed': [], 'deep': 3}, 3),
-        ({'pulled': [], 'filed': ['t broken'], 'deep': 3}, 3),
-        ({'skipped': 'the device did not list its traces: no device on USB'}, 0),
+        ({'pulled': [], 'filed': [], 'deep': [GREEN]}, 0),
+        ({'pulled': [], 'filed': [], 'deep': []}, 0),
+        ({'pulled': [], 'filed': ['t broken'], 'deep': [GREEN]}, 1),
+        ({'pulled': [], 'filed': [], 'deep': [GREEN, RED]}, 1),
+        ({'skipped': 'the device did not list its traces: no device on USB', 'deep': [RED]}, 1),
+        ({'skipped': 'the device did not list its traces: no device on USB', 'deep': []}, 0),
     ],
 )
-def test_the_exit_status_fails_on_a_filed_issue_and_carries_a_failed_deep_verify(monkeypatch, result, status):
+def test_the_exit_status_fails_on_a_filed_issue_or_a_failed_tier_2_run(monkeypatch, result, status):
     monkeypatch.setattr(nightly, 'nightly', lambda: result)
     assert nightly.main(['--json']) == status
 

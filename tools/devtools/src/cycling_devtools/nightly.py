@@ -1,14 +1,15 @@
-"""`cycling trace nightly`: tier 2's pull of the day's rides, with no one at the device.
+"""`cycling trace nightly`: tier 2's pull of the day's rides, with no one at the device, then tier 2 itself.
 
 When the C606 answers on USB, it lists the STORE's traces and pulls each one newer than the last it pulled,
 leaving out the newest, the session the device is recording now. Each pull replays faithfully under the build
 that recorded it (`cycling trace pull`), and the new rides replay under this checkout's build with broken()
-(`cycling corpus`). Then it runs `cycling verify --deep`, which replays every ride. Nothing presses a button.
+(`cycling corpus`). Then, device or not, it asks for tier 2 as `cycling merge` does: `cycling verify --deep`
+on the newest main, coalesced with a run already under way (`deep_tier`). Nothing presses a button.
 
 A faithfulness divergence, a recording bug, or a broken invariant opens a GitHub issue with the replay's output
 in it, once: the issue body carries a marker per trace and failure, and an open or closed issue with it is
 never filed again. A stop under this build files nothing: a legitimate change to what VANA asks makes every
-ride stop. It exits with the deep verify's status when that fails, and 1 when it filed an issue.
+ride stop. It exits with 1 when it filed an issue or a tier 2 run it made failed.
 The state, the last trace pulled, is in the primary checkout's .local/nightly/.
 
 `--install` writes a systemd user timer for 03:00 local time, and its service, under $XDG_CONFIG_HOME
@@ -23,7 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from cycling_devtools import workspace
+from cycling_devtools import deep_tier, forge, workspace
 
 TRACES = 'traces/'
 UNIT = 'cycling-nightly'
@@ -49,39 +50,25 @@ def marker(trace, kind):
     return f'<!-- cycling-nightly {trace} {kind} -->'
 
 
-class GitHub:
-    def __init__(self, root, run=subprocess.run):
-        self.root, self.run = root, run
-
-    def filed(self, mark):
-        done = self.run(
-            ['gh', 'issue', 'list', '--state', 'all', '--search', f'"{mark}" in:body', '--json', 'number'],
-            cwd=self.root,
-            capture_output=True,
-            text=True,
-        )
-        return done.returncode == 0 and json.loads(done.stdout or '[]') != []
-
-    def file(self, title, body):
-        self.run(['gh', 'issue', 'create', '--title', title, '--body', body], cwd=self.root, check=True)
-
-
 def report(issues, trace, kind, title, detail):
-    mark = marker(trace, kind)
-    if issues.filed(mark):
-        return False
-    body = f'{mark}\nThe nightly pull of `{trace}` found this.\n\n```json\n{json.dumps(detail, indent=2)}\n```\n'
-    issues.file(title, body)
-    return True
+    body = f'The nightly pull of `{trace}` found this.\n\n```json\n{json.dumps(detail, indent=2)}\n```\n'
+    return issues.file_once(marker(trace, kind), title, body)
 
 
-def nightly(root=workspace.ROOT, *, run=run_json, issues=None, deep=None):
-    issues = issues or GitHub(root)
+def nightly(root=workspace.ROOT, *, run=run_json, issues=None, deep=deep_tier.request):
+    issues = issues or forge.Issues()
+    status, listed = run(['cycling', 'store', 'list', TRACES], root)
+    if status == 0 and isinstance(listed, list):
+        result = pull(root, run, issues, listed)
+    else:
+        result = {'skipped': f'the device did not list its traces: {listed.get("error", listed)}'}
+    result['deep'] = [done.json() for done in deep(issues)]
+    return result
+
+
+def pull(root, run, issues, listed):
     state_path = state_file(root)
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
-    status, listed = run(['cycling', 'store', 'list', TRACES], root)
-    if status != 0 or not isinstance(listed, list):
-        return {'skipped': f'the device did not list its traces: {listed.get("error", listed)}'}
     names = sorted((entry['name'] for entry in listed), key=sequence)[:-1]
     last = state.get('last')
     fresh = [name for name in names if last is None or sequence(name) > sequence(last)]
@@ -107,12 +94,7 @@ def nightly(root=workspace.ROOT, *, run=run_json, issues=None, deep=None):
                 issues, result['trace'], 'broken', f'Nightly: VANA breaks on {Path(result["trace"]).name}', result
             ):
                 filed.append(f'{result["trace"]} broken')
-    deep_status = (deep or run_deep)(root)
-    return {'pulled': pulled, 'filed': filed, 'deep': deep_status}
-
-
-def run_deep(root):
-    return subprocess.run(['cycling', 'verify', '--deep'], cwd=root).returncode
+    return {'pulled': pulled, 'filed': filed}
 
 
 def units(root, nix):
@@ -160,7 +142,7 @@ def main(argv=None):
         return 0
     result = nightly()
     print(json.dumps(result) if args.json else json.dumps(result, indent=2))
-    return result.get('deep') or (1 if result.get('filed') else 0)
+    return 1 if result.get('filed') or any(done['failed'] for done in result['deep']) else 0
 
 
 if __name__ == '__main__':

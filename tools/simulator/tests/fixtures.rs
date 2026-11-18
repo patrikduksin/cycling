@@ -144,10 +144,10 @@ fn a_shrunk_fixture_is_smaller_still_fails_and_is_what_it_says_it_kept() {
 #[test]
 fn a_lifted_slice_rides_the_sensors_and_track_it_recorded_from_power_on() {
     use shell_simulator::fuzz::lift::{lift, synthetic};
-    use shell_simulator::fuzz::plan::{Course, Sensor, Step};
+    use shell_simulator::fuzz::plan::{Course, Sensor, Start, Step};
     let lifted = lift(&dropout()).unwrap();
     let setup = &lifted.plan.setup;
-    assert!(setup.from_power_on);
+    assert!(matches!(setup.start, Start::PowerOn(_)));
     assert!(
         setup.sensors.contains(&Sensor::Power),
         "{:?}",
@@ -165,11 +165,69 @@ fn a_lifted_slice_rides_the_sensors_and_track_it_recorded_from_power_on() {
     assert!(
         steps
             .iter()
-            .any(|s| matches!(s, Step::Ride { kmh, .. } if *kmh > 0))
+            .any(|s| matches!(s, Step::Ride { kmh_tenths, .. } if *kmh_tenths > 0))
     );
     let Course::Profile { knots, .. } = synthetic(&setup.course) else {
         panic!("a synthetic course");
     };
     let length = shell_simulator::route::Route::track(points).length_m();
     assert_eq!(f64::from(knots[1].0), length.round());
+}
+
+fn replayed(plan: &shell_simulator::fuzz::Plan) -> shell_simulator::sim::Sim {
+    use shell_simulator::fuzz::script::{Road, calls};
+    let mut sim = shell_simulator::sim::Sim::new();
+    for call in calls(plan, Road::of(&plan.setup.course, &mut |_| None)) {
+        call.run(&mut sim);
+    }
+    sim
+}
+
+#[test]
+fn a_slice_from_a_device_set_up_before_lifts_to_one_that_boots_to_home_with_its_sensor() {
+    use shell_simulator::ant::device_type;
+    use shell_simulator::fuzz::lift::lift;
+    use shell_simulator::fuzz::plan::Start;
+    use shell_simulator::sim::{Kept, Sim};
+    let mut sim = Sim::new();
+    sim.ant_sensor(device_type::POWER, 1234);
+    sim.wait_usable();
+    sim.skip_setup();
+    sim.pair(&["POWER METER"]);
+    sim.advance(5_000);
+    sim.cut_power();
+    sim.wait_usable();
+    assert_eq!(sim.vana_page(), "home");
+    let lifted = lift(&sim.trace()).unwrap();
+    let Start::PowerOn(Some(Kept { setup, sensors, .. })) = &lifted.plan.setup.start else {
+        panic!("kept preferences: {:?}", lifted.plan.setup.start);
+    };
+    assert_eq!(*setup, None, "setup was done");
+    assert_eq!(*sensors, vec![(device_type::POWER, 1234)]);
+    let mut replay = replayed(&lifted.plan);
+    replay.wait_usable();
+    assert_eq!(replay.vana_page(), "home", "{}", replay.screen().text());
+}
+
+#[test]
+fn a_recorded_tap_replays_as_the_same_tap() {
+    use shell_simulator::fuzz::lift::lift;
+    use shell_simulator::sim::Sim;
+    let mut sim = Sim::new();
+    sim.wait_usable();
+    sim.skip_setup();
+    sim.tap(120, 210);
+    sim.expect_text("NEARBY");
+    let lifted = lift(&sim.trace()).unwrap();
+    assert!(
+        !lifted.left_out.contains_key("touch"),
+        "{:?}",
+        lifted.left_out
+    );
+    let replay = replayed(&lifted.plan);
+    assert!(
+        replay.screen().contains("NEARBY"),
+        "{}",
+        replay.screen().text()
+    );
 }

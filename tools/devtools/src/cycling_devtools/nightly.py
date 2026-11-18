@@ -1,10 +1,11 @@
 """`cycling trace nightly`: tier 2's pull of the day's rides, with no one at the device, then tier 2 itself.
 
-When the C606 answers on USB, it lists the STORE's traces and pulls each one newer than the last it pulled,
-leaving out the newest, the session the device is recording now. Each pull replays faithfully under the build
-that recorded it (`cycling trace pull`), and the new rides replay under this checkout's build with broken()
-(`cycling corpus`). Then, device or not, it asks for tier 2 as `cycling merge` does: `cycling verify --deep`
-on the newest main, coalesced with a run already under way (`deep_tier`). Nothing presses a button.
+When the C606 answers on USB, here or on CYCLING_DEVICE_HOST through `cycling device`, it lists the STORE's
+traces and pulls each one newer than the last it pulled, leaving out the newest, the session the device is
+recording now. Each pull replays faithfully under the build that recorded it (`cycling trace pull`), and the
+new rides replay under this checkout's build with broken() (`cycling corpus`). Then, device or not, it asks
+for tier 2 as `cycling merge` does: `cycling verify --deep` on the newest main, coalesced with a run already
+under way (`deep_tier`). Nothing presses a button.
 
 A faithfulness divergence, a recording bug, or a broken invariant opens a GitHub issue with the replay's output
 in it, once: the issue body carries a marker per trace and failure, and an open or closed issue with it is
@@ -31,11 +32,15 @@ UNIT = 'cycling-nightly'
 
 
 def run_json(args, cwd):
-    done = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    done = subprocess.run(args, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     try:
         return done.returncode, json.loads(done.stdout)
     except json.JSONDecodeError:
         return done.returncode, {'error': done.stderr.strip() or f'{" ".join(args)} printed no JSON'}
+
+
+def on_device(args):
+    return ['cycling', 'device', *args[1:]] if os.environ.get('CYCLING_DEVICE_HOST') else args
 
 
 def state_file(root):
@@ -57,7 +62,7 @@ def report(issues, trace, kind, title, detail):
 
 def nightly(root=workspace.ROOT, *, run=run_json, issues=None, deep=deep_tier.request):
     issues = issues or forge.Issues()
-    status, listed = run(['cycling', 'store', 'list', TRACES], root)
+    status, listed = run(on_device(['cycling', 'store', 'list', TRACES]), root)
     if status == 0 and isinstance(listed, list):
         result = pull(root, run, issues, listed)
     else:
@@ -74,7 +79,7 @@ def pull(root, run, issues, listed):
     fresh = [name for name in names if last is None or sequence(name) > sequence(last)]
     pulled, filed = [], []
     for name in fresh:
-        _, result = run(['cycling', 'trace', 'pull', name.rsplit('/', 1)[-1], '--json'], root)
+        _, result = run(on_device(['cycling', 'trace', 'pull', name.rsplit('/', 1)[-1], '--json']), root)
         if 'error' in result:
             pulled.append({'trace': name, 'error': result['error']})
             break
@@ -97,8 +102,9 @@ def pull(root, run, issues, listed):
     return {'pulled': pulled, 'filed': filed}
 
 
-def units(root, nix):
+def units(root, nix, host=None):
     primary = workspace.main_checkout(root)
+    environment = f'Environment=CYCLING_DEVICE_HOST={host}\n' if host else ''
     service = f"""[Unit]
 Description=cycling nightly: pull the day's rides, check them, then cycling verify --deep
 
@@ -106,7 +112,7 @@ Description=cycling nightly: pull the day's rides, check them, then cycling veri
 Type=oneshot
 WorkingDirectory={primary}
 ExecStart={nix} develop {primary} --command cycling trace nightly
-Nice=19
+{environment}Nice=19
 """
     timer = """[Unit]
 Description=cycling nightly at 03:00
@@ -125,7 +131,7 @@ def install(root=workspace.ROOT, environ=os.environ, run=subprocess.run):
     config = Path(environ.get('XDG_CONFIG_HOME') or Path(environ['HOME']) / '.config')
     directory = config / 'systemd' / 'user'
     directory.mkdir(parents=True, exist_ok=True)
-    for name, text in units(root, shutil.which('nix') or 'nix').items():
+    for name, text in units(root, shutil.which('nix') or 'nix', environ.get('CYCLING_DEVICE_HOST')).items():
         (directory / name).write_text(text)
     run(['systemctl', '--user', 'daemon-reload'], check=True)
     run(['systemctl', '--user', 'enable', '--now', f'{UNIT}.timer'], check=True)

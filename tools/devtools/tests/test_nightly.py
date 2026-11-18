@@ -20,9 +20,12 @@ class Issues(forge.Issues):
 class Device:
     def __init__(self, names, faithful=None, broken=()):
         self.names, self.faithful, self.broken = names, faithful or {}, set(broken)
-        self.calls = []
+        self.calls, self.remote = [], []
 
     def __call__(self, args, cwd):
+        self.remote.append(args[1] == 'device')
+        if args[1] == 'device':
+            args = [args[0], *args[2:]]
         self.calls.append(args[1:])
         if args[1:3] == ['store', 'list']:
             if self.names is None:
@@ -41,6 +44,7 @@ class Device:
 @pytest.fixture
 def state(tmp_path, monkeypatch):
     path = tmp_path / 'nightly' / 'state.json'
+    monkeypatch.delenv('CYCLING_DEVICE_HOST', raising=False)
     monkeypatch.setattr(nightly, 'state_file', lambda root: path)
     return path
 
@@ -56,8 +60,24 @@ def test_it_pulls_each_trace_newer_than_the_last_but_the_one_recording_now(state
     result = run(device, Issues())
     assert [p['trace'] for p in result['pulled']] == ['traces/000011-bb.trace']
     assert json.loads(state.read_text()) == {'last': 'traces/000011-bb.trace'}
+    assert not any(device.remote), 'without CYCLING_DEVICE_HOST the C606 is on this machine'
     assert result == {**result, 'filed': [], 'deep': []}
     assert run(Device(['000011-bb.trace', '000012-cc.trace']), Issues())['pulled'] == []
+
+
+def test_a_device_on_another_machine_is_listed_and_pulled_through_cycling_device(state, monkeypatch):
+    monkeypatch.setenv('CYCLING_DEVICE_HOST', 'c606-host')
+    seen = []
+    device = Device(['000001-a.trace', '000002-now.trace'])
+
+    def remote(args, cwd):
+        seen.append(args[:3])
+        return device(args, cwd)
+
+    result = run(remote, Issues())
+    assert [p['trace'] for p in result['pulled']] == ['traces/000001-a.trace']
+    assert seen[:2] == [['cycling', 'device', 'store'], ['cycling', 'device', 'trace']]
+    assert seen[2] == ['cycling', 'corpus', '--last'], 'the replay of the pulled rides stays here'
 
 
 def test_a_divergence_or_a_broken_ride_files_one_issue_and_a_stop_files_none(state):
@@ -111,13 +131,15 @@ def test_install_writes_a_0300_timer_and_its_service_under_xdg_config_home(tmp_p
     config = tmp_path / 'config'
     ran = []
     directory = nightly.install(
-        environ={'XDG_CONFIG_HOME': str(config), 'HOME': '/nowhere'}, run=lambda a, **_: ran.append(a)
+        environ={'XDG_CONFIG_HOME': str(config), 'HOME': '/nowhere', 'CYCLING_DEVICE_HOST': 'c606-host'},
+        run=lambda a, **_: ran.append(a),
     )
     assert directory == config / 'systemd' / 'user'
     timer = (directory / 'cycling-nightly.timer').read_text()
     service = (directory / 'cycling-nightly.service').read_text()
     assert 'OnCalendar=*-*-* 03:00:00' in timer and 'WantedBy=timers.target' in timer
     assert '--command cycling trace nightly' in service and 'Type=oneshot' in service
+    assert 'Environment=CYCLING_DEVICE_HOST=c606-host' in service, 'a boot without a desktop session still finds it'
     assert ran == [
         ['systemctl', '--user', 'daemon-reload'],
         ['systemctl', '--user', 'enable', '--now', 'cycling-nightly.timer'],

@@ -1,6 +1,6 @@
 use shell_simulator::bundle::{Bundle, Expect, Run};
 use shell_simulator::fuzz::plan::Rng;
-use shell_simulator::fuzz::{self, Corpus, Coverage, FIXED, Finding, PAGES, Plan};
+use shell_simulator::fuzz::{self, Corpus, Coverage, FIXED, Finding, PAGES, Plan, shrink};
 use std::collections::{BTreeSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -18,9 +18,14 @@ const SESSIONS_PER_CHILD: u32 = 8;
 /// The stderr lines a dead child's finding shows.
 const STDERR_TAIL: usize = 12;
 
+/// How long one finding's shrink may take, its plan and world slice
+/// together, unless --shrink-budget says otherwise.
+const SHRINK_BUDGET: Duration = Duration::from_secs(60);
+
 const USAGE: &str = "\
 usage: cycling fuzz [--minutes N | --seed S | --seeds A-B | --fixed]
                     [--corpus PATH | --no-corpus] [--jobs N] [--out DIR]
+                    [--shrink-budget SECONDS | --no-shrink]
 
 Each session draws a plan from its seed: a course (synthetic, or a GPS track
 from a world log under --corpus), sensors, a card, then button presses, rides,
@@ -32,6 +37,13 @@ it, and writes the plan, the world log of its boot and the corpus trace it
 rode under --out DIR/<seed>, with finding.bundle: the finding as one file
 `cycling bundle run` reproduces on another machine.
 
+Once the sessions end, the first finding of each check shrinks, all side
+by side: its plan to as few steps as still fail the check, then its boot's
+world log to a fixture (slice.trace and expect.toml) that `trace shrink`
+makes smaller, then the shrunk plan as a scenario test, written only when
+running it fails the check. Each shrink prints its sizes before and after
+and writes DIR/<seed>/shrunk/. A run with no finding shrinks nothing.
+
   --minutes N   fresh seeds for N minutes of wall time (the default, 1)
   --seed S      one session, printing each step and the page after it
   --seeds A-B   the seeds A to B
@@ -40,7 +52,11 @@ rode under --out DIR/<seed>, with finding.bundle: the finding as one file
                 directory; missing means none
   --no-corpus   no corpus, even with --corpus
   --jobs N      sessions side by side (default: half the cores)
-  --out DIR     where findings are written
+  --out DIR     where findings are written; a finding shrinks only with it
+  --shrink-budget SECONDS
+                each shrink's wall time, plan and world slice together
+                (default 60)
+  --no-shrink   write findings as they were found
 
 Seeds take decimal or 0x hex. Exit 1 on any finding, 2 on bad arguments.";
 
@@ -58,6 +74,8 @@ struct Args {
     corpus: Option<PathBuf>,
     jobs: usize,
     out: Option<PathBuf>,
+    /// Each finding's shrink; `None` with --no-shrink.
+    shrink: Option<Duration>,
 }
 
 fn seed(text: &str) -> Result<u64, String> {
@@ -75,6 +93,7 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
         corpus: None,
         jobs: std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).max(1)),
         out: None,
+        shrink: Some(SHRINK_BUDGET),
     };
     while let Some(flag) = argv.next() {
         let mut value = || argv.next().ok_or(format!("{flag} needs a value"));
@@ -114,6 +133,15 @@ fn parse(mut argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     .ok_or(format!("not a job count: {jobs}"))?;
             }
             "--out" => args.out = Some(value()?.into()),
+            "--shrink-budget" => {
+                let seconds = value()?;
+                args.shrink = Some(Duration::from_secs(
+                    seconds
+                        .parse()
+                        .map_err(|_| format!("not seconds: {seconds}"))?,
+                ));
+            }
+            "--no-shrink" => args.shrink = None,
             "--child" => args.seeds = Seeds::Stdin,
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument {other}")),
@@ -168,8 +196,9 @@ fn main() -> ExitCode {
                     coverage
                 }
                 Err(finding) => {
-                    let text = found(finding, &plan, args.out.as_deref());
-                    reported(&report, plan.seed, &text);
+                    let check = Some(finding.check);
+                    let text = found(*finding, &plan, args.out.as_deref());
+                    reported(&report, plan.seed, check, &text);
                     Coverage::default()
                 }
             }
@@ -194,6 +223,9 @@ fn main() -> ExitCode {
         Seeds::Stdin => unreachable!("a child serves before this"),
     };
     let findings = report.into_inner().unwrap_or_else(|e| e.into_inner());
+    if let (Some(budget), Some(out)) = (args.shrink, &args.out) {
+        shrink_firsts(&findings, &corpus, out, budget);
+    }
     if !matches!(args.seeds, Seeds::One(_)) {
         summary(&coverage, findings.len(), started.elapsed(), args.jobs);
     }
@@ -209,7 +241,7 @@ fn main() -> ExitCode {
 fn pool(
     args: &Args,
     corpus: &Corpus,
-    report: &Mutex<Vec<u64>>,
+    report: &Mutex<Vec<Reported>>,
     next: impl Fn() -> Option<u64> + Sync,
 ) -> Coverage {
     let exe = std::env::current_exe().expect("the fuzz binary finds itself");
@@ -244,10 +276,12 @@ fn pool(
                         };
                         match serving.session(seed) {
                             Outcome::Pass(session) => coverage.merge(session),
-                            Outcome::Found(text) => reported(report, seed, &text),
+                            Outcome::Found(check, text) => {
+                                reported(report, seed, Some(check), &text);
+                            }
                             Outcome::Died(death) => {
                                 let text = serving.died(seed, death, corpus, args.out.as_deref());
-                                reported(report, seed, &text);
+                                reported(report, seed, None, &text);
                                 continue;
                             }
                         }
@@ -275,8 +309,8 @@ fn pool(
 /// What a child wrote for one seed.
 enum Outcome {
     Pass(Coverage),
-    /// The finding as the child printed it.
-    Found(String),
+    /// The finding's check, and the finding as the child printed it.
+    Found(&'static str, String),
     /// The child exited before the seed's record ended.
     Died(Death),
 }
@@ -299,7 +333,7 @@ enum Death {
 ///   pass   SIMULATED_MS  WORLD_LOG_DIGEST
 ///
 /// or, for a finding, `start`, then `say  LINE` for each line it printed and
-/// `found`.
+/// `found  CHECK`.
 struct Child {
     process: std::process::Child,
     stdin: ChildStdin,
@@ -383,7 +417,9 @@ impl Child {
                     coverage.world_log_digests = number(digest);
                     return Outcome::Pass(coverage);
                 }
-                ["found"] => return Outcome::Found(said.trim_end().to_string()),
+                ["found", check] => {
+                    return Outcome::Found(name(check), said.trim_end().to_string());
+                }
                 _ => println!("{line}"),
             }
         }
@@ -409,7 +445,7 @@ impl Child {
             // The child never drew this seed's course; the parent's corpus is
             // the nearest guess at it.
             Death::BeforeStart => (
-                fuzz::route(&fuzz::draw(seed).setup.course, corpus).1,
+                fuzz::road(&fuzz::draw(seed).setup.course, corpus).1,
                 ", before its session started",
             ),
         };
@@ -478,7 +514,7 @@ fn serve(corpus: &Corpus, out: Option<&Path>) {
                 .parse()
                 .unwrap_or_else(|_| panic!("the parent wrote {line:?} for a seed"));
             let plan = fuzz::draw(seed);
-            let course = fuzz::route(&plan.setup.course, corpus).1;
+            let course = fuzz::road(&plan.setup.course, corpus).1;
             let course = course.map_or("-".into(), |trace| trace.display().to_string());
             println!("start\t{seed}\t{course}");
             match fuzz::run(&plan, corpus, false) {
@@ -495,20 +531,114 @@ fn serve(corpus: &Corpus, out: Option<&Path>) {
                     );
                 }
                 Err(finding) => {
-                    for line in found(finding, &plan, out).lines() {
+                    let check = finding.check;
+                    for line in found(*finding, &plan, out).lines() {
                         println!("say\t{line}");
                     }
-                    println!("found");
+                    println!("found\t{check}");
                 }
             }
         }
     });
 }
 
-fn reported(report: &Mutex<Vec<u64>>, seed: u64, text: &str) {
+/// A finding's seed, and its check; `None` for a session whose process
+/// died, which this process cannot run again to shrink.
+type Reported = (u64, Option<&'static str>);
+
+fn reported(report: &Mutex<Vec<Reported>>, seed: u64, check: Option<&'static str>, text: &str) {
     let mut report = report.lock().unwrap_or_else(|e| e.into_inner());
-    report.push(seed);
+    report.push((seed, check));
     println!("{text}");
+}
+
+/// Shrinks the first finding of each check, side by side, and prints each
+/// shrink; the other findings of a check are left as they were found.
+fn shrink_firsts(findings: &[Reported], corpus: &Corpus, out: &Path, budget: Duration) {
+    let mut firsts = std::collections::BTreeMap::new();
+    for &(seed, check) in findings {
+        if let Some(check) = check {
+            let first = firsts.entry(check).or_insert(seed);
+            *first = (*first).min(seed);
+        }
+    }
+    let shrinks: Vec<String> = std::thread::scope(|scope| {
+        let threads: Vec<_> = (firsts.values())
+            .map(|&seed| scope.spawn(move || shrunk(seed, corpus, out, budget)))
+            .collect();
+        (threads.into_iter())
+            .map(|thread| {
+                thread
+                    .join()
+                    .unwrap_or_else(|_| "shrink: it panicked".into())
+            })
+            .collect()
+    });
+    for text in shrinks {
+        println!("{text}");
+    }
+}
+
+/// `seed`'s finding shrunk under `out`: its plan, its world slice as a
+/// fixture and the scenario, with their sizes before and after.
+fn shrunk(seed: u64, corpus: &Corpus, out: &Path, budget: Duration) -> String {
+    let started = Instant::now();
+    let plan = fuzz::draw(seed);
+    let Err(finding) = fuzz::run(&plan, corpus, false) else {
+        return format!("shrink seed={seed:#018x}: it passes when run again, so nothing shrinks");
+    };
+    let dir = finding_dir(out, seed).join("shrunk");
+    let mut text = format!("shrunk seed={seed:#018x} check={:?}", finding.check);
+    let Some(small) = shrink::plan(&plan, corpus, finding.check, budget) else {
+        return text + "\n  the plan no longer fails it";
+    };
+    let budgeted = |minimal| {
+        if minimal {
+            "1-minimal"
+        } else {
+            "cut short by the budget"
+        }
+    };
+    text += &format!(
+        "\n  plan {} -> {} steps in {} tries, {}; found at {}",
+        plan.steps.len(),
+        small.plan.steps.len(),
+        small.tried,
+        budgeted(small.minimal),
+        small.finding.at,
+    );
+    let written = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(dir.join("plan.txt"), format!("{:#?}\n", small.plan)));
+    if let Err(error) = written {
+        return text + &format!("\n  could not write {}: {error}", dir.display());
+    }
+    let left = budget.saturating_sub(started.elapsed());
+    text += &match shrink::world_slice(&small.finding, &dir.join("fixture"), left) {
+        None => format!("\n  no world slice: no replay judges {}", finding.check),
+        Some(Err(why)) => format!("\n  no world slice: {why}"),
+        Some(Ok(sliced)) => format!(
+            "\n  world slice {} -> {} bytes, {} -> {} passes, {} -> {} records, {}",
+            sliced.before.bytes,
+            sliced.after.bytes,
+            sliced.before.passes,
+            sliced.after.passes,
+            sliced.before.records,
+            sliced.after.records,
+            budgeted(sliced.levels.iter().all(|level| level.minimal)),
+        ),
+    };
+    text += &match shrink::scenario(&small, corpus, &format!("fuzz_seed_{seed:x}")) {
+        Ok(source) => match std::fs::write(dir.join("scenario.rs"), source) {
+            Ok(()) => "\n  scenario.rs fails the check".to_string(),
+            Err(error) => format!("\n  could not write scenario.rs: {error}"),
+        },
+        Err(why) => format!("\n  no scenario: {why}"),
+    };
+    text + &format!(
+        "\n  wrote {} in {:.0} s",
+        dir.display(),
+        started.elapsed().as_secs_f64()
+    )
 }
 
 /// Writes `finding`'s plan, world log and course under `out`, and returns

@@ -549,68 +549,6 @@ fn power_shows_dashes_while_the_meter_is_out() {
 }
 
 #[test]
-fn a_test_stub_never_asserts_the_symptom_it_is_told_to_expect_away() {
-    use shell_simulator::trace::stub::{Expect, stub};
-    let timeline = timeline("power-dropout-after-descent");
-    let at = timeline.session_ms(At::Ride(seconds(170))).unwrap();
-    let not_dashed = [Expect::parse("power!=--").unwrap()];
-    let test = stub(&timeline, "dropout", "power_shows", at, &not_dashed).unwrap();
-    let (characterization, expectation) = test.split_once("// Expectation").unwrap();
-    assert!(
-        !characterization.contains(r#"field(&shown, "power")"#),
-        "{test}"
-    );
-    assert!(
-        expectation.contains(r#"assert_ne!(field(&shown, "power"), Some("--")"#),
-        "{test}"
-    );
-    assert!(
-        characterization.contains(&format!("power#{POWER} last packet")),
-        "{test}"
-    );
-    let unchanged = [Expect::parse("power=--").unwrap()];
-    assert!(stub(&timeline, "dropout", "power_shows", at, &unchanged).is_err());
-    let open = stub(&timeline, "dropout", "power_shows", at, &[]).unwrap();
-    assert!(open.contains("todo!("), "{open}");
-}
-
-#[test]
-fn a_trace_outside_the_fixtures_gets_the_steps_that_make_it_one() {
-    use shell_simulator::trace::stub::to_fixture;
-    let fixture = fixture("laps-and-a-menu");
-    let trace = std::fs::read(&fixture).unwrap();
-    assert_eq!(to_fixture(&fixture, &trace), None);
-
-    let dir = std::env::temp_dir().join(format!("trace-stub-{}", std::process::id()));
-    let outside = dir.join("morning.trace");
-    let mut sim = Sim::new().boot();
-    sim.discard_recording();
-    sim.advance(seconds(2));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(&outside, sim.capture()).unwrap();
-    let steps = to_fixture(&outside, &sim.capture()).unwrap();
-    assert!(steps.contains("holds no Wi-Fi password"), "{steps}");
-    assert!(
-        steps.contains("tools/simulator/tests/traces/morning.trace\n"),
-        "{steps}"
-    );
-    assert!(
-        steps.contains("--test trace_tools no_committed_fixture"),
-        "{steps}"
-    );
-
-    sim.device.redact_secrets();
-    sim.device
-        .power_cycle()
-        .expect("the device powers on again");
-    sim.advance(seconds(2));
-    let steps = to_fixture(&outside, &sim.capture()).unwrap();
-    assert!(steps.contains("device trace"), "{steps}");
-    assert!(!steps.contains("cp "), "{steps}");
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
-#[test]
 fn a_changed_replay_of_a_fixture_shows_what_the_recording_showed() {
     let capture = std::fs::read(fixture("laps-and-a-menu")).unwrap();
     let changed = shell_simulator::replay::Options {
@@ -913,57 +851,6 @@ fn the_ride_clock_reads_what_the_rider_saw_after_the_card_fails() {
         states.len() > 1,
         "the fallback shows in the ride states: {states:?}"
     );
-}
-
-fn fresh_file_faults(test: &str) -> Vec<String> {
-    let imported: Vec<&str> = test
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("use ")?.strip_suffix(';'))
-        .filter_map(|path| path.rsplit("::").next())
-        .collect();
-    let code: String = test
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect();
-    let used = |name: &str| match name {
-        "Sim" => code.contains("Sim::"),
-        "field" => code.contains("field(&shown"),
-        other => panic!("the stub imports {other}"),
-    };
-    let mut faults: Vec<String> = imported
-        .iter()
-        .filter(|name| !used(name))
-        .map(|name| format!("imports {name} unused"))
-        .collect();
-    for name in ["Sim", "field"] {
-        if used(name) && !imported.contains(&name) {
-            faults.push(format!("uses {name} without importing it"));
-        }
-    }
-    faults
-}
-
-#[test]
-fn a_test_stub_compiles_in_a_fresh_file_whatever_it_expects() {
-    use shell_simulator::trace::stub::{Expect, stub};
-    let timeline = timeline("power-dropout-after-descent");
-    let riding = timeline.session_ms(At::Ride(seconds(170))).unwrap();
-    let before_the_ride = 2_000;
-    for (at, expect) in [
-        (riding, "page=ride/climb"),
-        (before_the_ride, "page=ride/main"),
-        (before_the_ride, "toast~SAVED,ride=recording"),
-        (riding, "power!=--"),
-    ] {
-        let expect: Vec<Expect> = expect
-            .split(',')
-            .map(|e| Expect::parse(e).unwrap())
-            .collect();
-        let test = stub(&timeline, "dropout", "stub", at, &expect).unwrap();
-        assert_eq!(fresh_file_faults(&test), Vec::<String>::new(), "{test}");
-    }
-    let open = stub(&timeline, "dropout", "stub", riding, &[]).unwrap();
-    assert_eq!(fresh_file_faults(&open), Vec::<String>::new(), "{open}");
 }
 
 #[test]
@@ -1407,12 +1294,20 @@ fn every_other_trace_command_answers_in_one_json_document() {
     let otlp = trace_json(&["otlp", trace]);
     assert!(otlp["traces"]["resourceSpans"].is_array(), "{otlp}");
     assert!(otlp["metrics"]["resourceMetrics"].is_array());
-    let stub = trace_json(&["test-stub", trace, "--at", "r1:00"]);
-    assert!(
-        stub["fixture_steps"].is_null(),
-        "a committed fixture needs no steps"
-    );
-    assert!(stub["test"].as_str().unwrap().contains("#[test]"));
+    let out = std::env::temp_dir().join(format!("trace-cut-{}", std::process::id()));
+    let cut = trace_json(&[
+        "cut",
+        trace,
+        "--to",
+        "r2:50",
+        "--expect",
+        "power!=--",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(cut["judged"][0]["got"], "--", "{cut}");
+    assert!(out.join("slice.trace").is_file(), "{cut}");
+    std::fs::remove_dir_all(&out).unwrap();
 
     let failed = std::process::Command::new(env!("CARGO_BIN_EXE_trace"))
         .args(["summary", "no-such.trace", "--json"])
@@ -1421,6 +1316,46 @@ fn every_other_trace_command_answers_in_one_json_document() {
     assert_eq!(failed.status.code(), Some(2));
     let error: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
     assert!(error["error"].as_str().unwrap().contains("no-such.trace"));
+}
+
+#[test]
+fn a_cut_never_writes_through_a_staging_file_symlinked_to_a_tracked_file() {
+    let repo = scratch("cut-staging-link");
+    let git = |args: &[&str]| {
+        let ran = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(ran.status.success(), "git {args:?}: {ran:?}");
+    };
+    git(&["init", "-q"]);
+    std::fs::write(repo.join(".gitignore"), "/out/\n").unwrap();
+    std::fs::write(repo.join("tracked.txt"), "committed words").unwrap();
+    git(&["add", ".gitignore", "tracked.txt"]);
+    let out = repo.join("out");
+    std::fs::create_dir(&out).unwrap();
+    std::os::unix::fs::symlink(repo.join("tracked.txt"), out.join(".slice.trace.new")).unwrap();
+    let cut = trace_json(&[
+        "cut",
+        path_of(&fixture("power-dropout-after-descent")),
+        "--to",
+        "r2:50",
+        "--expect",
+        "power!=--",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    let tracked = std::fs::read(repo.join("tracked.txt")).unwrap();
+    assert!(
+        tracked == b"committed words",
+        "the tracked file now holds {} bytes: {cut}",
+        tracked.len()
+    );
+    let slice = std::fs::symlink_metadata(out.join("slice.trace")).unwrap();
+    assert!(slice.is_file(), "the slice is a file of its own: {slice:?}");
+    std::fs::remove_dir_all(&repo).unwrap();
 }
 
 #[test]

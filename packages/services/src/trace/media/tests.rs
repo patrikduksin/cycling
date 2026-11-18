@@ -5,12 +5,64 @@ use std::vec::Vec;
 
 fn elided(bytes: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; bytes.len() + 16];
-    let mut w = Writer::new(&mut out, 0);
-    elide(&mut w, bytes);
-    assert!(!w.overflow);
-    let len = w.len;
+    let len = super::elided(bytes, &mut out).expect("room");
     out.truncate(len);
     out
+}
+
+#[test]
+fn a_record_put_reads_back_as_the_access_it_was() {
+    let runs = elided(&[1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+    let span = |medium, start, count| Span {
+        medium,
+        start,
+        count,
+    };
+    let read = Access {
+        span: span(Medium::Data, 8, 12),
+        content: Content::Inline(&runs),
+        outside: false,
+        fault: None,
+        continues: true,
+        each: None,
+    };
+    let accesses = [
+        read,
+        Access {
+            span: span(Medium::Bulk, 40, 4),
+            content: Content::Digest(0xdead_beef),
+            each: Some(2),
+            continues: false,
+            ..read
+        },
+        Access {
+            content: Content::Digest(7),
+            fault: Some(StorageError::Failed),
+            continues: false,
+            ..read
+        },
+        Access {
+            content: Content::None,
+            outside: true,
+            continues: false,
+            ..read
+        },
+    ];
+    for access in accesses {
+        let mut body = [0u8; 128];
+        let mut w = Writer::new(&mut body, 0);
+        access.put(&mut w);
+        let len = w.written().unwrap();
+        let call = Call {
+            method: MethodId {
+                capability: 17,
+                operation: 2,
+            },
+            now_ms: 0,
+            body: &body[..len],
+        };
+        assert_eq!(Access::of(&call), Some(access));
+    }
 }
 
 fn expanded(runs: &[u8], len: usize) -> Option<Vec<u8>> {

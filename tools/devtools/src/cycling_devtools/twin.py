@@ -5,7 +5,7 @@ afterwards, and the binary is cached in the primary checkout's .local/tools/trac
 clean commit is cached by its id, as trace.sh caches it. A patched or tree build is cached by the binary's own
 build hash, beside a note of what it was built from, so it is never served as the clean commit.
 
-A caller that needs a replay mode names it, and a build whose sources do not list it in
+A caller that needs a replay mode, or `dump`, names it, and a build whose sources do not list it in
 tools/simulator/trace-capabilities is refused before anything is built.
 
 `against` is `cycling replay <trace> --against <rev>`: both builds replay the trace changed with --model, and

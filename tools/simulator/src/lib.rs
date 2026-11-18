@@ -4,6 +4,7 @@ pub mod bench;
 pub mod bulk;
 pub mod bundle;
 pub mod compare;
+pub mod ddmin;
 pub mod devices;
 mod flows;
 pub mod fuzz;

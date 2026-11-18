@@ -89,6 +89,7 @@ class Run:
         self.lock = threading.Lock()
         self.tests_out = {gate.name for gate in plan.gates if gate.test}
         self.edited = []
+        self.read = {gate.name: tree.read_digests(gate.reads, request.root) for gate in plan.gates if gate.reads}
         self.find_cached()
 
     def find_cached(self):
@@ -99,7 +100,9 @@ class Run:
         }
 
     def key(self, gate, request):
-        return tree.result_key(self.watch.tree, gate.name, request.command(gate), gate.env)
+        return tree.result_key(
+            self.watch.tree, gate.name, request.command(gate), gate.env, self.read.get(gate.name, ())
+        )
 
     def lookup_key(self, gate):
         return self.key(gate, self.request)
@@ -123,10 +126,19 @@ class Run:
     def stop_if_edited(self):
         with self.lock:
             if not self.edited:
-                self.edited = self.watch.changed()
+                self.edited = self.watch.changed() + self.reads_changed()
                 if self.edited:
                     self.gates.stop()
             return bool(self.edited)
+
+    def reads_changed(self):
+        moved = set()
+        for gate in self.plan.gates:
+            if gate.name in self.read:
+                was = dict(self.read[gate.name])
+                now = dict(tree.read_digests(gate.reads, self.request.root))
+                moved.update(name for name in was.keys() | now.keys() if was.get(name) != now.get(name))
+        return sorted(moved)
 
     def lane(self, lane):
         results = []

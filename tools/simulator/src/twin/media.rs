@@ -7,7 +7,7 @@
 //! forgets them all, and a host write forgets the whole medium.
 use std::collections::BTreeMap;
 
-const PAGE: usize = 512;
+pub const PAGE: usize = 512;
 
 #[derive(Clone)]
 struct Page {
@@ -119,6 +119,18 @@ impl TwinMedium {
                 }
             }
         }
+    }
+
+    /// Every page that holds a known byte, by its number, with each byte
+    /// it does not know as `unknown`.
+    pub fn pages(&self, unknown: u8) -> impl Iterator<Item = (u64, [u8; PAGE])> + '_ {
+        self.pages.iter().map(move |(&number, page)| {
+            let mut bytes = [unknown; PAGE];
+            for (at, byte) in bytes.iter_mut().enumerate() {
+                *byte = page.get(at).unwrap_or(unknown);
+            }
+            (number, bytes)
+        })
     }
 
     /// A host wrote the medium, where the trace does not say.

@@ -3231,6 +3231,7 @@ fn bulk_media_keeps_a_long_ride_through_power_loss() {
     sim.home("RIDE");
     sim.expect_text("LAST RIDE RECOVERED");
     sim.checkpoint("recovered MMC ride named on Ready");
+    assert_session_replays_faithfully(&sim);
 }
 
 #[test]
@@ -6904,6 +6905,7 @@ fn a_five_hour_track_on_the_card_reads_back_after_a_restart() {
     );
     assert!(after * 10 >= before * 9, "{after} px against {before} px");
     sim.checkpoint("the map after the restart, five hours read back");
+    assert_session_replays_faithfully(&sim);
 }
 
 #[test]
@@ -8544,6 +8546,18 @@ fn assert_replays_exactly(mut recorded: Sim, scenario: fn(&mut Sim), bulk: bool)
         "a ride was saved"
     );
     capture
+}
+
+#[track_caller]
+fn assert_session_replays_faithfully(sim: &Sim) {
+    let capture = sim.capture();
+    let replayed = Sim::replay(&capture);
+    let report = replayed.device.report().unwrap();
+    assert_eq!(report.first, None, "{report}");
+    if let Some(difference) = shell_simulator::replay::first_difference(&capture, &replayed.trace())
+    {
+        panic!("the replay read or showed something else: {difference}");
+    }
 }
 
 fn trace_size(bytes: &[u8], uptime_ms: u64) -> String {

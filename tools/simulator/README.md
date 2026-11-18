@@ -128,7 +128,13 @@ judge the device after it: rides decode, committed samples survive, a riding
 ride keeps recording, the boot page clears, and no panic. At the end the
 settled device must boot and record and save a ride. A finding prints the seed
 and the command that reproduces it, and writes the plan and the world log under
-`.local/fuzz/<seed>`. `--seed S` prints the session step by step, `--minutes N`
+`.local/fuzz/<seed>`. When the sessions end, the first finding of each check
+shrinks under `.local/fuzz/<seed>/shrunk/` (`src/fuzz/shrink.rs`): its plan to
+the fewest steps that still fail the check, its boot's world log to a fixture
+that `cycling trace shrink` makes smaller, and the shrunk plan as a scenario
+test, written only when running it fails the check. Each prints its sizes
+before and after. `--shrink-budget SECONDS` bounds each shrink (60 by default)
+and `--no-shrink` turns it off. `--seed S` prints the session step by step, `--minutes N`
 runs fresh seeds on several threads and prints coverage of pages by button and
 the skipped guards, and `--fixed` runs the seed set that `cycling verify --deep`
 runs. `cycling fuzz-planted` proves the fuzzer: behind the `planted-bug`

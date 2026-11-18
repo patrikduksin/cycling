@@ -86,7 +86,12 @@ The [verify skill](../.agents/skills/verify/SKILL.md) says when to run
   depends on it. The table names the gates the paths did not select.
 - The selected gates run in parallel lanes: the firmware build, the Rust tests
   then simulate, the Trouble Host tests, the Python tests, the web tests and
-  checks, clippy and rustfmt, the other checks, and the screens. When every
+  checks, clippy and rustfmt, the other checks, the screens, and the corpus.
+  The corpus lane, `cycling corpus`, replays the 10 newest real rides of the
+  primary checkout's `.local/ride-trace/` in this build's trace format under
+  the tree's build: it prints each stop, where the build asks something the
+  ride holds no answer for, and fails only on a panic or a broken invariant.
+  A checkout with none skips it and says so. When every
   lane passes, harness-virtual runs alone. A `tests-passed` file appears in the log
   directory, `.local/verify/<tree>/`, once every selected test gate passed.
 - The screens lane is `cycling sim-compare --base <merge-base>`: it runs the
@@ -109,7 +114,7 @@ The [verify skill](../.agents/skills/verify/SKILL.md) says when to run
   refuses to start with under 20 GB free, and checks again once it has its
   slot.
 - `--deep` runs tier 2 alone, at nice 19 and without a slot:
-  `cycling fuzz --fixed`, `cycling fuzz-planted`, and the course Follower's
+  `cycling corpus --all`, `cycling fuzz --fixed`, `cycling fuzz-planted`, and the course Follower's
   large `explore` searches (`#[ignore]`d in
   `apps/vana/src/ride/course/follow/tests/explore/deep.rs`, so tier 1 runs only
   its small ones).
@@ -195,9 +200,15 @@ posts anything.
   storage, power or page flow. A finding prints its seed and the command that
   reproduces it. The [simulator README](../tools/simulator/README.md) gives
   the flags and what each check judges.
-- `cycling verify --deep` runs tier 2: the fixed fuzz seeds, the planted-bug
+- `cycling verify --deep` runs tier 2: every real ride of the private
+  corpus under the tree's build, the fixed fuzz seeds, the planted-bug
   proof that the fuzzer still finds a bug, and the Follower's large `explore`
-  searches. It takes no slot, runs at nice 19, and is not a PR gate. Run it
+  searches. `cycling trace nightly` runs it every night at 03:00 from a
+  systemd user timer (`cycling trace nightly --install`), after pulling the
+  day's rides from the C606 when it answers on USB. It presses no button,
+  and it opens one GitHub issue per ride for a faithfulness divergence or
+  a broken invariant, never for a stop.
+  It takes no slot, runs at nice 19, and is not a PR gate. Run it
   when your change touches what it searches: course following, recording and
   storage, or the fuzzer.
 

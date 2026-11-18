@@ -229,6 +229,14 @@ pub(super) fn put_span(w: &mut Writer, flags: u8, span: Span) {
     span.count.put(w);
 }
 
+/// `bytes` elided, as [`Content::Inline`] carries them, into `out`; its
+/// length, `None` when `out` is too short.
+pub fn elided(bytes: &[u8], out: &mut [u8]) -> Option<usize> {
+    let mut w = Writer::new(out, 0);
+    elide(&mut w, bytes);
+    w.written()
+}
+
 /// `bytes` with each run of `0x00` or `0xFF` of [`RUN`] or more as its
 /// length alone: a sequence of `varint(length << 2 | kind)`, a literal's
 /// bytes after it.
@@ -320,6 +328,33 @@ impl<'a> Access<'a> {
             continues: flags & CONTINUES != 0,
             each,
         })
+    }
+
+    /// The record's body, as [`Access::of`] reads it back.
+    pub fn put(&self, w: &mut Writer) {
+        let content = match self.content {
+            Content::None => 0,
+            Content::Digest(_) => DIGEST,
+            Content::Inline(_) => INLINE,
+        };
+        let flag = |set: bool, flag: u8| if set { flag } else { 0 };
+        let flags = content
+            | flag(self.outside, OUTSIDE)
+            | flag(self.fault.is_some(), FAULT)
+            | flag(self.continues, CONTINUES)
+            | flag(self.each.is_some(), EACH);
+        put_span(w, flags, self.span);
+        match self.content {
+            Content::None => {}
+            Content::Digest(crc) => w.bytes(&crc.to_le_bytes()),
+            Content::Inline(runs) => w.bytes(runs),
+        }
+        if let Some(each) = self.each {
+            each.put(w);
+        }
+        if let Some(fault) = self.fault {
+            fault.put(w);
+        }
     }
 
     /// The inline bytes into `out`, and how many; `None` when the record

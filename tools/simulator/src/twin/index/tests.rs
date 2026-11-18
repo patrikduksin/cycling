@@ -796,14 +796,12 @@ fn reads_joined_into_one_digest_shift_no_later_fault_at_the_second_start() {
     assert_eq!(reads, [Ok(true), Ok(true), Ok(true), Ok(true), Ok(false)]);
 }
 
-#[test]
-fn a_part_that_goes_on_no_read_is_a_malformed_trace() {
-    let device = Device::new();
+fn record_part(device: &Device, at: u32) {
     let mut body = [0u8; 128];
     let mut w = Writer::new(&mut body, device.now);
     w.byte(firmware_services::trace::media::INLINE | firmware_services::trace::media::CONTINUES);
     Medium::Data.put(&mut w);
-    4096u32.put(&mut w);
+    at.put(&mut w);
     64u32.put(&mut w);
     w.varint(64 << 2);
     w.bytes(&[0x5A; 64]);
@@ -816,6 +814,32 @@ fn a_part_that_goes_on_no_read_is_a_malformed_trace() {
     (device.log.borrow_mut().recorder.as_mut())
         .expect("a recorder")
         .record(&Event::Call(call));
+}
+
+#[test]
+fn a_read_whose_first_part_was_lost_indexes_up_to_the_loss() {
+    let mut device = Device::new();
+    let before = device.read(0, 64);
+    device.pass();
+    (device.log.borrow_mut().recorder.as_mut())
+        .expect("a recorder")
+        .record(&Event::Lost {
+            blocks: 1,
+            bytes: 900,
+        });
+    record_part(&device, 4096);
+    let mut twin = Twin::of(&device.trace());
+    assert_eq!(
+        twin.read(0, 64),
+        Ok(Ok(before)),
+        "the media before the loss"
+    );
+}
+
+#[test]
+fn a_part_that_goes_on_no_read_is_a_malformed_trace() {
+    let device = Device::new();
+    record_part(&device, 4096);
     let error = Index::of(&device.trace(), volumes()).err();
     assert!(
         error.is_some_and(|error| error.to_string().contains("Data 4096+64")),

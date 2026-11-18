@@ -108,7 +108,7 @@ TASKS = [
         'verify',
         'Run the PR gates the changed paths select, in parallel; it stops if the tree changes, and passes are cached by tree hash. '
         '--pr N to post results and changed screens, --video for before/after videos of changed scenarios, '
-        '--all for every gate, --fresh to ignore cached passes, --deep for tier 2 alone (fuzz)',
+        '--all for every gate, --fresh to ignore cached passes, --deep for tier 2 alone (every private ride, fuzz)',
         f'{DEV}verify',
     ),
     task(
@@ -358,10 +358,22 @@ TASKS = [
         f'{FUZZ} --corpus {PRIMARY_CHECKOUT_RIDE_TRACES} --out .local/fuzz',
     ),
     task(
+        'corpus',
+        "Replay the private corpus's 10 newest real rides (--all for every one) under this build: a stop is "
+        'printed for the review, a panic or broken invariant fails',
+        f'{DEV}corpus',
+    ),
+    task(
         'fuzz-planted',
         'Prove the fuzzer: it finds the bug planted behind the planted-bug feature, and its seed finds it again',
         'CARGO_TARGET_DIR=target/planted cargo test -p shell-simulator --locked --no-default-features '
         '--features planted-bug --test fuzz_planted -- --nocapture',
+    ),
+    task(
+        'fixtures-planted',
+        'Prove a lifted scenario fails on its bug: tests/lifted_scenarios.rs under the planted-reading-bug feature',
+        'CARGO_TARGET_DIR=target/planted cargo test -p shell-simulator --locked --no-default-features '
+        '--features planted-reading-bug --test lifted_scenarios the_planted_',
     ),
     task(
         'redraw-probe',
@@ -394,7 +406,8 @@ TASKS = [
     task(
         'trace',
         'Read a ride trace as text, or one JSON document with --json: summary, timeline, find, otlp, replay, '
-        'diff <a> <b>, test-stub (--help; skill: ride-trace); pull [file] copies the newest or a named '
+        'diff <a> <b>, cut, shrink, dump, undump (--help; skill: ride-trace); upgrade <trace>... brings private traces '
+        "to this format; nightly [--install] pulls and checks the day's rides, then runs verify --deep; pull [file] copies the newest or a named "
         'device trace into .local/traces/ and checks it replays faithfully under the build that recorded it',
         f'{TRACE} trace',
     ),

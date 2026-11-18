@@ -1214,6 +1214,18 @@ impl Runtime {
     }
 }
 
+#[cfg(feature = "planted-reading-bug")]
+const FORTY_KMH_MM_S: u32 = 11_111;
+
+#[cfg(feature = "planted-reading-bug")]
+fn dash_power_when_fast(sample: crate::ride::log::Sample) -> crate::ride::log::Sample {
+    let fast = sample.speed_mm_s.is_some_and(|mm_s| mm_s > FORTY_KMH_MM_S);
+    crate::ride::log::Sample {
+        power_watts: sample.power_watts.filter(|_| !fast),
+        ..sample
+    }
+}
+
 pub(super) fn arrived_sample(readings: &super::readings::Readings) -> crate::ride::log::Sample {
     crate::ride::log::Sample {
         power_watts: readings.power_3s_watts,
@@ -1269,10 +1281,13 @@ impl Shown {
     }
 
     pub(super) fn sample(&self) -> crate::ride::log::Sample {
-        crate::ride::log::Sample {
+        let sample = crate::ride::log::Sample {
             power_watts: self.readout.power_3s_watts,
             ..self.readout.live
-        }
+        };
+        #[cfg(feature = "planted-reading-bug")]
+        let sample = dash_power_when_fast(sample);
+        sample
     }
 
     pub(super) fn readout(&self) -> &Readout {

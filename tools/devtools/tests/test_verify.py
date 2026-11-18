@@ -1,4 +1,5 @@
 import ast
+import dataclasses
 import os
 import signal
 import subprocess
@@ -164,6 +165,53 @@ def test_a_pass_that_posted_on_a_pull_request_stands_for_a_run_that_posts_nothin
     assert verify.verify(request(checkout, pr=7)).ok
     assert verify.verify(request(checkout)).ok
     assert gate_runs(checkout) == 3
+
+
+def test_a_cached_pass_holds_only_for_the_files_outside_the_tree_its_gate_read(checkout, monkeypatch, tmp_path):
+    rides = tmp_path / 'rides'
+    rides.mkdir()
+    corpus = lanes.Gate('probe', 'echo ran >> "$GATE_RUNS"; true', reads=f'ls -d {rides}/*.trace 2>/dev/null || true')
+    monkeypatch.setattr(lanes, 'LANES', ((corpus,),))
+    commit(checkout, 'Change', **{'src/b.txt': 'b'})
+    assert verify.verify(request(checkout)).ok
+    assert verify.verify(request(checkout)).ok
+    assert gate_runs(checkout) == 1, 'no rides, the same tree: cached'
+    (rides / 'new.trace').write_bytes(b'a ride')
+    assert verify.verify(request(checkout)).ok
+    assert verify.verify(request(checkout)).ok
+    assert gate_runs(checkout) == 2, 'a new ride runs the gate again'
+    (rides / 'new.trace').write_bytes(b'the ride, upgraded')
+    assert verify.verify(request(checkout)).ok
+    assert gate_runs(checkout) == 3, 'a ride whose contents changed runs it again'
+
+
+def test_a_file_outside_the_tree_that_changes_while_the_gates_run_certifies_nothing(checkout, monkeypatch):
+    rides = checkout / '.local' / 'rides'
+    rides.mkdir(parents=True)
+    ride = rides / 'a.trace'
+    ride.write_bytes(b'a ride')
+    corpus = lanes.Gate('probe', 'echo ran >> "$GATE_RUNS"; true', reads=f'ls -d {rides}/*.trace')
+    monkeypatch.setattr(lanes, 'LANES', ((corpus,),))
+    commit(checkout, 'Change', **{'src/b.txt': 'b'})
+    assert verify.verify(request(checkout)).ok
+    cached_pass = tree.cached_pass
+
+    def ride_upgraded_after_the_lookup(key):
+        ride.write_bytes(b'the ride, upgraded')
+        return cached_pass(key)
+
+    monkeypatch.setattr(tree, 'cached_pass', ride_upgraded_after_the_lookup)
+    outcome = verify.verify(request(checkout))
+    assert not outcome.ok, outcome.report
+    assert outcome.report.endswith(f'\n\n{ride}'), outcome.report
+    monkeypatch.setattr(tree, 'cached_pass', cached_pass)
+
+    rewriting = dataclasses.replace(corpus, command=f'echo ran >> "$GATE_RUNS"; echo again >> {ride}')
+    monkeypatch.setattr(lanes, 'LANES', ((rewriting,),))
+    outcome = verify.verify(request(checkout))
+    assert not outcome.ok, outcome.report
+    assert outcome.report.endswith(f'\n\n{ride}'), outcome.report
+    assert gate_runs(checkout) == 2
 
 
 def test_a_failure_is_reported_with_its_log_and_never_cached(checkout):

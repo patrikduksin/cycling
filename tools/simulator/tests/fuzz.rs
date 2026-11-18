@@ -61,8 +61,9 @@ fn a_finding_names_the_course_it_rode() {
         at: At::End,
         at_ms: 0,
         detail: String::new(),
-        course_trace: fuzz::route(&plan.setup.course, corpus).1,
+        course_trace: fuzz::road(&plan.setup.course, corpus).1,
         world_log: WorldLog(Vec::new()),
+        end_probe: Vec::new(),
     };
     let without = finding(&Corpus::none()).reproduce();
     assert!(without.ends_with(" --no-corpus"), "{without}");
@@ -88,6 +89,7 @@ fn a_reproduce_line_keeps_an_odd_course_path_one_shell_word() {
         detail: String::new(),
         course_trace: Some(path.into()),
         world_log: WorldLog(Vec::new()),
+        end_probe: Vec::new(),
     };
     let line = finding.reproduce();
     let word = line.split_once(" --corpus ").expect("names the course").1;
@@ -155,4 +157,33 @@ fn a_child_that_dies_is_a_finding_with_a_reproduce_line() {
         stdout.contains("reproduce: cycling fuzz --seed 0x0000000000000001 --no-corpus"),
         "{all}"
     );
+}
+
+#[test]
+fn a_scenario_that_would_not_fail_its_check_is_never_printed() {
+    use shell_simulator::fuzz::shrink::{self, Shrunk};
+    let mut plan = fuzz::draw(1);
+    plan.steps.truncate(3);
+    let corpus = Corpus::none();
+    let shrunk = |check, at| Shrunk {
+        plan: plan.clone(),
+        finding: Finding {
+            seed: 1,
+            check,
+            at,
+            at_ms: 0,
+            detail: String::new(),
+            course_trace: None,
+            world_log: WorldLog(Vec::new()),
+            end_probe: Vec::new(),
+        },
+        minimal: true,
+        tried: 0,
+    };
+    let passing = shrink::scenario(&shrunk("rides decode", At::End), &corpus, "t").unwrap_err();
+    assert!(passing.contains("does not fail rides decode"), "{passing}");
+    let no_panic = shrink::scenario(&shrunk("no panic", At::Step(2)), &corpus, "t").unwrap_err();
+    assert!(no_panic.contains("runs without a panic"), "{no_panic}");
+    let between = shrink::scenario(&shrunk("committed samples survive", At::End), &corpus, "t");
+    assert!(between.unwrap_err().contains("judged between steps"));
 }

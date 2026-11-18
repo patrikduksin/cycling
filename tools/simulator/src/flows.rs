@@ -16,6 +16,22 @@ impl Sim {
         self.command(text)
     }
 
+    /// Run until the device is on, lit and past the boot page, or until
+    /// `within_ms` have gone by; whether it got there.
+    pub fn leave_boot_page(&mut self, within_ms: u64) -> bool {
+        let from = self.now();
+        loop {
+            let booting = self.is_off() || !self.device.lit() || self.vana_page() == "boot";
+            if !booting {
+                return true;
+            }
+            if self.now() - from > within_ms {
+                return false;
+            }
+            self.advance(10);
+        }
+    }
+
     /// Choose a Home card, such as RIDE, SENSORS, TRAIN or RIDES; the focused
     /// one has a white title. One extra press covers a dimmed screen, which a
     /// press only wakes.

@@ -345,21 +345,6 @@ impl fmt::Display for Written {
 }
 
 #[derive(Serialize)]
-pub struct Stub {
-    pub fixture_steps: Option<String>,
-    pub test: String,
-}
-
-impl fmt::Display for Stub {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(steps) = &self.fixture_steps {
-            writeln!(f, "{steps}")?;
-        }
-        f.write_str(&self.test)
-    }
-}
-
-#[derive(Serialize)]
 pub struct Replayed<'a> {
     pub header: Header<'a>,
     #[serde(serialize_with = "mode_name")]
@@ -378,6 +363,8 @@ pub struct Replayed<'a> {
     /// the window or before it: what a bundle of this failure expects.
     /// `None` under --model or in a changed replay.
     pub parted: Option<Parted>,
+    /// Where the replay stopped before its trace's end, in any mode.
+    pub stopped: Option<Parted>,
     pub bundle: Option<Bundled>,
 }
 

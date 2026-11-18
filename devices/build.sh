@@ -50,12 +50,12 @@ fi
 # per-worktree CARGO_TARGET_DIR would keep every worktree's builds apart.
 unset CARGO_TARGET_DIR
 CYCLING_BUILD_COMMIT="$commit_placeholder" CYCLING_BUILD_HASH="$hash_placeholder" cargo "$verb" --target-dir "$firmware_target" -p "$package" \
-  --bin "$bin" --release --locked --no-default-features --features "$features" \
+  --bin "$bin" --profile firmware --locked --no-default-features --features "$features" \
   --target "$target"
 [[ "$verb" == build ]] || exit 0
 elf="$image_dir/cycling.elf"
 uv run --project tools/devtools --locked python -m cycling_devtools.stamp \
-  "$firmware_target/$target/release/$bin" "$elf" \
+  "$firmware_target/$target/firmware/$bin" "$elf" \
   --stamp "$commit_placeholder=$CYCLING_BUILD_COMMIT" --stamp "$hash_placeholder=$CYCLING_BUILD_HASH"
 # The main stack is the internal DRAM that statics and the heap leave. Each
 # task and VANA's frame preparation run on it, so growing statics silently

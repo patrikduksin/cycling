@@ -11,6 +11,7 @@ publish = false
 default = []
 live = ["dep:minifb"]
 planted-bug = ["vana/planted-bug"]
+planted-reading-bug = ["vana/planted-reading-bug"]
 
 [dependencies]
 device-api = { path = "../../packages/device-api" }

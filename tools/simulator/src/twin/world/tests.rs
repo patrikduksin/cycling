@@ -205,3 +205,18 @@ fn a_replay_ends_where_the_recording_lost_world_records() {
         "{faithful}"
     );
 }
+
+#[test]
+fn a_flash_geometry_the_trace_never_observed_leaves_the_recorded_world() {
+    use device_api::storage::{OwnedFlash, Region};
+    let world = std::rc::Rc::new(RefCell::new(replaying(recorded(&[], &[]), None)));
+    let flash = crate::twin::flash::ScriptedFlash::new(world.clone());
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        flash.geometry(Region::Data)
+    }));
+    assert!(outcome.is_err_and(|panic| panic.is::<Left>()));
+    assert_eq!(
+        world.borrow().parted(),
+        Some("left the recorded world at 00:01.000: OwnedFlash::geometry was never observed")
+    );
+}

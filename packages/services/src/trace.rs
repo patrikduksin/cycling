@@ -639,6 +639,11 @@ impl<'a> Wire<'a> for Header<'a> {
 }
 
 impl<'a> Event<'a> {
+    /// Whether a replay stops at this event: the recording lost records here.
+    pub fn ends_replay(&self) -> bool {
+        matches!(self, Self::Lost { .. } | Self::TooLarge { .. })
+    }
+
     /// Whether the block holding this event is sealed as soon as it is
     /// recorded: a named cue's first note or a page change. The world log
     /// seals a button report and a storage fault itself.
@@ -1160,6 +1165,21 @@ impl<'a> Events<'a> {
         }
         next_record(payload, &mut c.at, &mut c.now)
     }
+}
+
+/// `event` as one record, its times read after the pass clock `pass_ms`:
+/// for a dump another build reads back with [`take_record`].
+pub fn put_record(event: &Event<'_>, pass_ms: u64, out: &mut [u8]) -> Option<usize> {
+    let mut w = Writer::new(out, pass_ms);
+    event.put_record(&mut w, pass_ms);
+    w.written()
+}
+
+/// The one record `bytes` hold, as [`put_record`] wrote it.
+pub fn take_record(bytes: &[u8], pass_ms: u64) -> Option<Event<'_>> {
+    let (mut at, mut now) = (0, pass_ms);
+    let event = next_record(bytes, &mut at, &mut now).ok().flatten()?;
+    (at == bytes.len()).then_some(event)
 }
 
 /// The record at `at` of a block's payload, read after the pass clock

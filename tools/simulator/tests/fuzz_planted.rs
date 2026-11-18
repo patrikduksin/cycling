@@ -39,7 +39,7 @@ fn the_plant_fires_by_hand() {
 fn the_fuzzer_finds_the_planted_bug_and_its_seed_reproduces_it() {
     assert!(FIXED.contains(&1) && FIXED.contains(&PROOF_SEEDS));
     let corpus = Corpus::none();
-    let found: Vec<Finding> = std::thread::scope(|scope| {
+    let found: Vec<Box<Finding>> = std::thread::scope(|scope| {
         let searches: Vec<_> = (1..=PROOF_SEEDS)
             .map(|seed| {
                 let corpus = &corpus;
@@ -93,5 +93,141 @@ fn the_fuzzer_finds_the_planted_bug_and_its_seed_reproduces_it() {
     );
     let dir = out.join(format!("{:#018x}", first.seed));
     assert!(dir.join("world.trace").is_file(), "{report}");
+    let shrunk = &report[report.find("shrunk seed=").expect("the finding shrinks")..];
+    println!("{shrunk}");
+    let steps = |line: &str| -> Vec<usize> {
+        let sizes = line.split_once(" steps").unwrap().0;
+        let (before, after) = sizes.rsplit_once(" -> ").unwrap();
+        [before.rsplit(' ').next().unwrap(), after]
+            .map(|n| n.parse().unwrap())
+            .to_vec()
+    };
+    let plan = shrunk
+        .lines()
+        .find(|l| l.contains("  plan "))
+        .expect("its plan's sizes");
+    assert!(steps(plan)[1] < steps(plan)[0], "{shrunk}");
+    assert!(shrunk.contains("\n  world slice "), "{shrunk}");
+    assert!(
+        shrunk.contains("\n  scenario.rs fails the check"),
+        "{shrunk}"
+    );
+    for file in [
+        "plan.txt",
+        "fixture/slice.trace",
+        "fixture/expect.toml",
+        "scenario.rs",
+    ] {
+        assert!(dir.join("shrunk").join(file).is_file(), "{file}: {shrunk}");
+    }
     std::fs::remove_dir_all(&out).unwrap();
+
+    let unshrunk = std::process::Command::new(env!("CARGO_BIN_EXE_fuzz"))
+        .args([
+            "--seed",
+            &format!("{:#018x}", first.seed),
+            "--no-corpus",
+            "--no-shrink",
+        ])
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .expect("the fuzz binary runs");
+    assert_eq!(unshrunk.status.code(), Some(1));
+    assert!(!String::from_utf8_lossy(&unshrunk.stdout).contains("shrunk seed="));
+    assert!(!dir.join("shrunk").exists(), "--no-shrink shrinks nothing");
+    std::fs::remove_dir_all(&out).unwrap();
+}
+
+struct Shrunk {
+    seed: u64,
+    line: String,
+    slice_fails_alone: Result<(), String>,
+}
+
+fn shrink_finding(seed: u64, corpus: &Corpus, out: &std::path::Path) -> Option<Shrunk> {
+    use shell_simulator::fuzz::shrink;
+    use shell_simulator::trace::fixture::{Class, Fixture};
+    use std::time::Duration;
+    let plan = fuzz::draw(seed);
+    fuzz::run(&plan, corpus, false).err()?;
+    let shrunk =
+        shrink::plan(&plan, corpus, PLANT_CHECK, Duration::from_secs(240)).expect("it fails again");
+    assert!(shrunk.minimal, "seed {seed}: the budget ran out");
+    for skipped in 0..shrunk.plan.steps.len() {
+        let mut fewer = shrunk.plan.clone();
+        fewer.steps.remove(skipped);
+        let again = fuzz::run(&fewer, corpus, false).err();
+        assert!(
+            again.is_none_or(|f| f.check != PLANT_CHECK),
+            "seed {seed}: step {skipped} could go too"
+        );
+    }
+    let dir = out.join(format!("{seed}"));
+    let mut line = format!(
+        "seed {seed:>2}: plan {} -> {} steps ({} tries), found at {}",
+        plan.steps.len(),
+        shrunk.plan.steps.len(),
+        shrunk.tried,
+        shrunk.finding.at
+    );
+    let source = shrink::scenario(&shrunk, corpus, &format!("plant_seed_{seed}"))
+        .unwrap_or_else(|why| panic!("seed {seed}: {why}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("scenario.rs"), source).unwrap();
+    let sliced = shrink::world_slice(&shrunk.finding, &dir, Duration::from_secs(60))
+        .expect("rides decode is judged on a replay");
+    let slice_fails_alone = sliced.map(|sliced| {
+        let fixture = Fixture::read(&dir).unwrap();
+        assert_eq!(fixture.judge().class(), Class::Reproduced, "seed {seed}");
+        line += &format!(
+            "; world slice {} -> {} bytes, {} -> {} passes, {} -> {} records",
+            sliced.before.bytes,
+            sliced.after.bytes,
+            sliced.before.passes,
+            sliced.after.passes,
+            sliced.before.records,
+            sliced.after.records,
+        );
+    });
+    if let Err(why) = &slice_fails_alone {
+        line += &format!("; {why}");
+    }
+    Some(Shrunk {
+        seed,
+        line,
+        slice_fails_alone,
+    })
+}
+
+#[test]
+fn every_finding_of_the_plant_shrinks_to_a_one_minimal_plan_and_a_world_slice() {
+    let corpus = Corpus::none();
+    let out = std::env::temp_dir().join(format!("fuzz-shrunk-{}", std::process::id()));
+    let shrunk: Vec<Shrunk> = std::thread::scope(|scope| {
+        let shrinks: Vec<_> = (1..=PROOF_SEEDS)
+            .map(|seed| {
+                let (corpus, out) = (&corpus, &out);
+                scope.spawn(move || shrink_finding(seed, corpus, out))
+            })
+            .collect();
+        shrinks
+            .into_iter()
+            .filter_map(|shrink| shrink.join().expect("each plan shrinks 1-minimal"))
+            .collect()
+    });
+    let _ = std::fs::remove_dir_all(&out);
+    for found in &shrunk {
+        println!("{}", found.line);
+    }
+    let alone: Vec<u64> = (shrunk.iter())
+        .filter(|found| found.slice_fails_alone.is_ok())
+        .map(|found| found.seed)
+        .collect();
+    println!(
+        "{} of {} world slices fail alone: seeds {alone:?}",
+        alone.len(),
+        shrunk.len()
+    );
+    assert_eq!(alone.len(), shrunk.len(), "every world slice fails alone");
 }

@@ -1,19 +1,18 @@
 pub mod check;
 pub mod corpus;
+pub mod lift;
 pub mod plan;
+pub mod script;
+pub mod shrink;
 
 pub use corpus::Corpus;
 pub use plan::{FIXED, Plan, draw};
 
-use crate::ant::device_type;
-use crate::bulk::Presence;
 use crate::flows::status_field;
-use crate::route::{Point, Route};
 use crate::sim::{Sim, seconds};
-use crate::world::Vehicle;
 use check::{BOOT_PAGE_DEADLINE_MS, CHECKS, Moment, Observation, Verdict, observe};
 use device_api::input::Role;
-use plan::{CENTERS, Card, Course, Sensor, Setup, Step};
+use plan::{Card, Course, Setup, Step};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -37,7 +36,7 @@ impl fmt::Display for At {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Finding {
     pub seed: u64,
     /// A check's name, or "no panic".
@@ -49,6 +48,9 @@ pub struct Finding {
     /// corpus.
     pub course_trace: Option<PathBuf>,
     pub world_log: WorldLog,
+    /// What the end probe did, for a finding at the end: the calls it made
+    /// after the last step, as it made them.
+    pub end_probe: Vec<script::Call>,
 }
 
 /// The trace of the boot the finding was made in.
@@ -172,7 +174,7 @@ pub const PAGES: [&str; 17] = [
 
 /// Play `plan`, judging every step. With `verbose`, print each step and the
 /// page after it.
-pub fn run(plan: &Plan, corpus: &Corpus, verbose: bool) -> Result<Coverage, Finding> {
+pub fn run(plan: &Plan, corpus: &Corpus, verbose: bool) -> Result<Coverage, Box<Finding>> {
     crate::recording::capture_panics();
     let mut sim = Sim::named(&format!("fuzz-{:016x}", plan.seed));
     let mut session = Session {
@@ -181,6 +183,7 @@ pub fn run(plan: &Plan, corpus: &Corpus, verbose: bool) -> Result<Coverage, Find
         at: At::Setup,
         coverage: Coverage::default(),
         course_trace: None,
+        end_probe: Vec::new(),
     };
     let outcome = catch_unwind(AssertUnwindSafe(|| session.play(&mut sim, corpus)));
     let world_log = WorldLog(catch_unwind(AssertUnwindSafe(|| sim.trace())).unwrap_or_default());
@@ -197,7 +200,7 @@ pub fn run(plan: &Plan, corpus: &Corpus, verbose: bool) -> Result<Coverage, Find
             crate::recording::take_panic().unwrap_or_default(),
         ),
     };
-    Err(Finding {
+    Err(Box::new(Finding {
         seed: plan.seed,
         check,
         at: session.at,
@@ -205,7 +208,8 @@ pub fn run(plan: &Plan, corpus: &Corpus, verbose: bool) -> Result<Coverage, Find
         detail,
         course_trace: session.course_trace,
         world_log,
-    })
+        end_probe: session.end_probe,
+    }))
 }
 
 struct Session<'a> {
@@ -214,6 +218,7 @@ struct Session<'a> {
     at: At,
     coverage: Coverage,
     course_trace: Option<PathBuf>,
+    end_probe: Vec<script::Call>,
 }
 
 type Failed = (&'static str, String);
@@ -222,9 +227,11 @@ impl Session<'_> {
     fn play(&mut self, sim: &mut Sim, corpus: &Corpus) -> Result<(), Failed> {
         let setup = &self.plan.setup;
         let card = setup.card == Card::Ready;
-        let (road, course_trace) = route(&setup.course, corpus);
+        let (road, course_trace) = road(&setup.course, corpus);
         self.course_trace = course_trace;
-        prepare(sim, setup, road);
+        for call in script::prepare(setup, road) {
+            call.run(sim);
+        }
         let mut before = observe(sim, card, None);
         if self.verbose {
             println!("seed {:#018x}", self.plan.seed);
@@ -243,7 +250,7 @@ impl Session<'_> {
                     .entry((before.page, button_name(*button)))
                     .or_default() += 1;
             }
-            apply(sim, step);
+            script::step(step).run(sim);
             let after = observe(sim, card, Some(&before));
             if self.verbose {
                 println!(
@@ -257,7 +264,11 @@ impl Session<'_> {
             before = after;
         }
         self.at = At::End;
-        match still_a_bike_computer(sim, setup) {
+        let mut probe = Probe {
+            sim,
+            ran: &mut self.end_probe,
+        };
+        match still_a_bike_computer(&mut probe, setup) {
             Verdict::Pass => {}
             Verdict::Skip(why) => self.skip("still a bike computer", why),
             Verdict::Fail(why) => return Err(("still a bike computer", why)),
@@ -303,145 +314,75 @@ fn button_name(button: Role) -> &'static str {
     }
 }
 
-fn ant(sensor: Sensor) -> (u8, u16, &'static str) {
-    match sensor {
-        Sensor::Heart => (device_type::HEART_RATE, 4242, "HEART RATE"),
-        Sensor::Power => (device_type::POWER, 1234, "POWER METER"),
-        Sensor::SpeedCadence => (device_type::SPEED_CADENCE, 777, "SPEED/CAD"),
-        Sensor::Radar => (device_type::RADAR, 31, "RADAR"),
-    }
-}
-
-fn prepare(sim: &mut Sim, setup: &Setup, road: Route) {
-    if setup.card != Card::None {
-        sim.fit_bulk(if setup.card == Card::Ready {
-            Presence::Ready
-        } else {
-            Presence::Missing
-        });
-    }
-    sim.wait_usable();
-    sim.skip_setup();
-    for sensor in &setup.sensors {
-        let (kind, number, _) = ant(*sensor);
-        sim.ant_sensor(kind, number);
-    }
-    sim.ride_route(road);
-    sim.ride_at(0.0, 0.0, 72.0, 0.0);
-    if !setup.sensors.is_empty() {
-        let names: Vec<_> = setup.sensors.iter().map(|s| ant(*s).2).collect();
-        sim.pair(&names);
-    }
-    if setup.card == Card::Ready {
-        sim.init_bulk();
-    }
-}
-
 /// The road `course` rides, and the corpus trace it came from.
-pub fn route(course: &Course, corpus: &Corpus) -> (Route, Option<PathBuf>) {
-    let center = |index: u8| {
-        let (lat, lon) = CENTERS[usize::from(index) % CENTERS.len()];
-        Point::new(lat, lon)
-    };
-    match course {
-        Course::Loop {
-            center: at,
-            length_m,
-            climb_m,
-        } => (
-            Route::loop_around(center(*at), f64::from(*length_m), f64::from(*climb_m)),
-            None,
-        ),
-        Course::Profile { center: at, knots } => {
-            let knots: Vec<_> = knots
-                .iter()
-                .map(|&(d, e)| (f64::from(d), f64::from(e)))
-                .collect();
-            (Route::profile(center(*at), &knots), None)
-        }
-        Course::Corpus { pick } => match corpus.route(*pick) {
-            Some((path, road)) => (road.clone(), Some(path.clone())),
-            None => route(&plan::empty_corpus_loop(*pick), corpus),
-        },
-    }
-}
-
-fn apply(sim: &mut Sim, step: &Step) {
-    match *step {
-        Step::Wait { ms } => sim.advance(u64::from(ms)),
-        Step::Press(button) => sim.press(button),
-        Step::Hold(button, ms) => sim.hold(button, u64::from(ms)),
-        Step::Ride {
-            kmh,
-            watts,
-            bpm,
-            rpm,
-        } => sim.ride_at(
-            f64::from(kmh),
-            f64::from(watts),
-            f64::from(bpm),
-            f64::from(rpm),
-        ),
-        Step::Stop => sim.ride_at(0.0, 0.0, 90.0, 0.0),
-        Step::Host(action) => {
-            if !sim.is_off() {
-                sim.command_after_reading_outcome(action.command());
-            }
-        }
-        Step::Dropout { sensor, present } => {
-            let (kind, number, _) = ant(sensor);
-            sim.set_present(kind, number, present);
-        }
-        Step::GpsFix(fix) => sim.set_gps_fix(fix),
-        Step::Barometer(on) => sim.set_barometer(on),
-        Step::Vehicle {
-            range_m,
-            closing_kmh,
-            fast,
-            side,
-        } => sim.vehicle(Vehicle {
-            range_m: f64::from(range_m),
-            closing_kmh: f64::from(closing_kmh),
-            fast,
-            side,
-        }),
-        Step::Battery { percent, charging } => sim.set_battery(percent, charging),
-        Step::PowerCut => sim.cut_power(),
-        Step::TornWrite { after, partial } => {
-            sim.fail_storage(u32::from(after), usize::from(partial));
-        }
-        Step::CardRefusal { after, partial } => {
-            sim.fail_bulk(u32::from(after), usize::from(partial));
-        }
-    }
+pub fn road(course: &Course, corpus: &Corpus) -> (script::Road, Option<PathBuf>) {
+    let mut from = None;
+    let road = script::Road::of(course, &mut |pick| {
+        let (path, route) = corpus.route(pick)?;
+        from = Some(path.clone());
+        Some(route.clone())
+    });
+    (road, from)
 }
 
 const STARTABLE: [&str; 3] = ["ready", "saved", "recovered"];
 
-fn still_a_bike_computer(sim: &mut Sim, setup: &Setup) -> Verdict {
+/// The end probe's hold on the simulator: each call it makes is kept in
+/// the session before it runs, so a scenario prints what it did, even
+/// when a call panics.
+struct Probe<'s> {
+    sim: &'s mut Sim,
+    ran: &'s mut Vec<script::Call>,
+}
+
+impl Probe<'_> {
+    fn run(&mut self, call: script::Call) {
+        self.ran.push(call.clone());
+        call.run(self.sim);
+    }
+
+    fn command(&mut self, line: &'static str) -> String {
+        self.ran.push(script::Call::Command(line));
+        self.sim.command(line).1
+    }
+
+    fn ride(&mut self, action: plan::RideAction) -> (&'static str, String) {
+        self.ran.push(script::Call::Host(action));
+        self.sim.command_after_reading_outcome(action.command())
+    }
+}
+
+fn still_a_bike_computer(probe: &mut Probe, setup: &Setup) -> Verdict {
+    use plan::RideAction;
+    use script::Call;
     for sensor in &setup.sensors {
-        let (kind, number, _) = ant(*sensor);
-        sim.set_present(kind, number, true);
+        probe.run(Call::Present(*sensor, true));
     }
-    sim.set_gps_fix(true);
-    sim.set_barometer(true);
-    sim.set_battery(80, false);
-    sim.ride_at(0.0, 0.0, 72.0, 0.0);
-    sim.clear_storage_fault();
-    sim.cut_power();
-    let booted = sim.now();
-    while sim.is_off() || !sim.device.lit() || sim.vana_page() == "boot" {
-        if sim.now() - booted > BOOT_PAGE_DEADLINE_MS {
-            return Verdict::Fail(format!(
-                "not past the boot page {} s after power-on; screen:\n{}",
-                BOOT_PAGE_DEADLINE_MS / 1000,
-                sim.screen().text()
-            ));
-        }
-        sim.advance(10);
+    probe.run(Call::GpsFix(true));
+    probe.run(Call::Barometer(true));
+    probe.run(Call::Battery {
+        percent: 80,
+        charging: false,
+    });
+    probe.run(Call::RideAt {
+        kmh: 0,
+        watts: 0,
+        bpm: 72,
+        rpm: 0,
+    });
+    probe.run(Call::ClearStorageFault);
+    probe.run(Call::CutPower);
+    probe.run(Call::LeaveBootPage(BOOT_PAGE_DEADLINE_MS));
+    let sim = &mut *probe.sim;
+    if sim.is_off() || !sim.device.lit() || sim.vana_page() == "boot" {
+        return Verdict::Fail(format!(
+            "not past the boot page {} s after power-on; screen:\n{}",
+            BOOT_PAGE_DEADLINE_MS / 1000,
+            sim.screen().text()
+        ));
     }
-    sim.advance(seconds(5));
-    let (_, status) = sim.command("RIDE STATUS");
+    probe.run(Call::Advance(seconds(5)));
+    let status = probe.command("RIDE STATUS");
     let state = status_field(&status, "state").unwrap_or_default();
     if !STARTABLE.contains(&state) {
         return Verdict::Skip(match state {
@@ -452,30 +393,39 @@ fn still_a_bike_computer(sim: &mut Sim, setup: &Setup) -> Verdict {
             _ => "recorder in another state",
         });
     }
-    let known = (ids(&sim.rides()), ids(&card_rides_if(sim, setup)));
-    sim.ride_at(25.0, 180.0, 130.0, 85.0);
-    let (answer, out) = sim.command_after_reading_outcome("RIDE START");
+    let known = (
+        ids(&probe.sim.rides()),
+        ids(&card_rides_if(probe.sim, setup)),
+    );
+    probe.run(Call::RideAt {
+        kmh: 25,
+        watts: 180,
+        bpm: 130,
+        rpm: 85,
+    });
+    let (answer, out) = probe.ride(RideAction::Start);
     if answer != "ACCEPTED" {
         return Verdict::Fail(format!("RIDE START answered {answer} {out} in {status}"));
     }
-    sim.advance(seconds(30));
-    let (_, recording) = sim.command("RIDE STATUS");
+    probe.run(Call::Advance(seconds(30)));
+    let recording = probe.command("RIDE STATUS");
     let samples: u32 = status_field(&recording, "samples")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     if status_field(&recording, "state") != Some("recording") || samples < 20 {
         return Verdict::Fail(format!("30 s after RIDE START: {recording}"));
     }
-    let (answer, out) = sim.command_after_reading_outcome("RIDE FINISH");
+    let (answer, out) = probe.ride(RideAction::Finish);
     if answer != "ACCEPTED" {
         return Verdict::Fail(format!("RIDE FINISH answered {answer} {out}"));
     }
-    sim.advance(seconds(5));
+    probe.run(Call::Advance(seconds(5)));
     let saved_on = |rides: &[crate::rides::Ride], known: &[u32]| {
         rides
             .iter()
             .any(|r| !known.contains(&r.id) && r.kinds().last() == Some(&Kind::Finish))
     };
+    let sim = &mut *probe.sim;
     let saved = saved_on(&sim.rides(), &known.0) || saved_on(&card_rides_if(sim, setup), &known.1);
     if !saved {
         let (_, status) = sim.command("RIDE STATUS");
@@ -494,3 +444,6 @@ fn card_rides_if(sim: &Sim, setup: &Setup) -> Vec<crate::rides::Ride> {
     }
     check::card_rides(sim)
 }
+
+#[cfg(test)]
+mod tests;

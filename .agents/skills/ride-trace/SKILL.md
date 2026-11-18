@@ -28,8 +28,9 @@ not read or a tool that did not build, is `{"error": ...}` with exit status 2;
 
 ## 1. Get the trace
 
-- From the simulator: fixtures live in `tools/simulator/tests/traces/`, each
-  a `<name>.trace` and nothing beside it.
+- From the simulator: traces the tools' tests read live in
+  `tools/simulator/tests/traces/`, each a `<name>.trace` and nothing beside
+  it; regression fixtures live beside them, one directory each (step 5).
 - From the device: the C606 writes each session to
   `traces/<sequence>-<boot>.trace` in the card's STORE volume. Connect it
   over USB and run `cycling trace pull` for the newest trace, or
@@ -49,7 +50,15 @@ not read or a tool that did not build, is `{"error": ...}` with exit status 2;
   recorded world at boot, is a recording bug (`ok: false`), and the pull's
   output leads with it: fix it first.
   A build reads only its own trace format and refuses any other with
-  both formats named; read such a trace with the build that recorded it.
+  both formats named; read such a trace with the build that recorded it,
+  or upgrade it: `cycling trace upgrade <trace>...` has the trace tool of
+  the recording build `trace dump` it and this checkout's `trace undump`
+  re-encode it, beside the original as `<stem>.v<format>.trace`. A record
+  this build cannot carry, because its value decodes otherwise here, ends
+  the upgraded trace before that record's pass and is named; when it is
+  the first record, nothing is written. A build older than `trace dump`
+  needs a backport of it (`--patch FILE`), and a format before 6 is
+  unreadable.
   When `CYCLING_DEVICE_HOST` is set, the device is on another machine:
   follow the remote device skill; `cycling device trace pull` brings
   `.local/` back with the kept pack, so the first pull of a pack copies it
@@ -312,37 +321,51 @@ rider saw, and the field that changed it.
 
 ## 6. Write the regression test
 
-1. Make a fixture from a simulator scenario, never from a device trace.
-   Write a scenario in `tools/simulator/tests/trace_tools.rs` that gives VANA
-   the inputs the timeline showed around the moment (the sensors, the route,
-   the silence), add it to `record_trace_fixtures`, and record it with the
-   command under Reference. Its summary must show the moment the rider
-   described. Keep fixtures short: a trace costs about 40 KB a minute.
-   `no_committed_fixture_holds_a_wifi_password_or_a_phone_token` fails on a
-   fixture that holds a Wi-Fi password, a phone session token or saved Wi-Fi
-   credentials. No tool turns a device trace into a fixture.
-2. `cycling trace test-stub tools/simulator/tests/traces/<name>.trace --at T --name <what_the_rider_should_see> --expect <field>=<value>`
-   prints a test that replays to T as a changed build, in two sections. Its doc
-   comment says what the recording showed and what the sensors were doing
-   (each link, each sensor's last packet and silence). For a trace outside
-   the fixtures directory it first prints whether the trace may become a
-   fixture (never a device trace or one holding a secret) and the commands
-   that copy it there and run the secrets test; the stub already reads the
-   path the copy will have. The characterization
-   asserts the rest of the moment as recorded. The expectation asserts what
-   the rider should have seen: `--expect power!=--`, `power=230`,
-   `page=ride/climb` or `toast~SAVED`, several joined with commas, for a
-   reading (`time`, `speed`, `power`, `hr`, `cad`, `dist`, `grade`) or `page`,
-   `toast` or `ride`. It refuses an expectation the recording already meets.
-   Without `--expect`, the expectation is a `todo!()` to replace.
-3. Paste it into `tools/simulator/tests/trace_tools.rs`, or a new test file
-   beside it: it brings its own imports and `cycling` gate. Run it: it goes red on the expectation, with the recorded value in the
-   message. A red in the characterization means the replay itself differs;
-   go back to step 4.
-4. Fix VANA; the test goes green. The characterization keeps the rest of the
-   moment as it was.
+1. Cut a fixture at the moment:
+   `cycling trace cut <trace> --to T --expect <field>=<value> [--name NAME]`.
+   A fixture is a directory: `slice.trace`, the trace from power-on to its
+   last pass at or before T, and `expect.toml`, what the rider should have
+   seen then. `--expect` takes `power!=--`, `power=230`, `page=ride/climb`
+   or `toast~SAVED`, several joined with commas, for a reading (`time`,
+   `speed`, `power`, `hr`, `cad`, `dist`, `grade`) or `page`, `toast` or
+   `ride`. `--check rides decode` (or `no garbage sample`) judges the
+   replayed internal flash instead. `--keep` names the rest of the moment,
+   what held and must go on holding (`--keep speed=45.0,hr=160`), so a
+   shrink cannot keep the failure by another cause, such as a silent
+   sensor. The cut replays the slice as a changed build and refuses unless
+   every expectation fails and every keep holds, so the fixture is red
+   while the bug is there.
+2. Where it lands: a simulator trace that holds no secret gives
+   `tools/simulator/tests/traces/<name>/`, to commit. A device trace, or
+   one holding a secret, gives the primary checkout's
+   `.local/fixtures/<name>/`, which is never committed: it records where
+   the rider rode. `--name` is one plain name, and a private fixture's
+   `--out` is refused unless git ignores it there. `every_fixture_replays_to_what_the_rider_should_have_seen`
+   in `tools/simulator/tests/fixtures.rs` runs both and prints how many
+   private fixtures it ran. A private fixture that no longer replays to its
+   moment, because the build asks otherwise now, is printed, not failed.
+3. Shrink it: `cycling trace shrink <fixture dir> [--budget 60s]` removes
+   what the failure does not need while every expectation still fails:
+   first the outputs no replay reads (pages, frames, health), then whole
+   passes and commands, then single input records. Each step that still
+   fails rewrites the fixture, so a shrink cut short keeps its best. It
+   prints the sizes before and after, and per level whether it ended
+   1-minimal.
+4. Turn it into a committed scenario:
+   `cycling trace cut --scenario <fixture dir> --synthetic-course --name NAME`
+   lifts the slice to a fuzz plan (the sensors it heard, presses and holds,
+   ride commands, ride values from the ANT pages and GPS speed, dropouts,
+   GPS fix changes), runs it in the simulator from power-on, and prints the
+   Rust test that does the same and asserts the fixture's expectation and
+   keeps at its end. It is refused unless the expectation fails in that
+   run; then the fixture stays a fixture. Without `--synthetic-course` the
+   test rides the recorded track and is private; with it, a flat course of
+   the same length at a made-up place. Read the remaining inputs before
+   committing it to `tools/simulator/tests/lifted_scenarios.rs`: `--json`
+   gives `left_out`, what the lift left out, and `private`.
+5. Fix VANA; the fixture and the scenario go green.
 
-Done when the test is red before the fix and green after it.
+Done when the fixture or scenario is red before the fix and green after it.
 
 ## Battery drain or a background loop
 

@@ -476,3 +476,26 @@ fn committed_traces_reencode_byte_for_byte() {
         assert!(out == bytes, "{name} re-encodes to other bytes");
     }
 }
+
+#[test]
+fn one_record_put_alone_reads_back_after_its_pass_clock() {
+    let events = [
+        Event::Pass { now_ms: 1_234 },
+        Event::Page("home"),
+        Event::Lost {
+            blocks: 2,
+            bytes: 900,
+        },
+        Event::Command("CMD 1 RIDE START"),
+    ];
+    for event in events {
+        let mut out = [0u8; 64];
+        let len = put_record(&event, 1_000, &mut out).unwrap();
+        assert_eq!(take_record(&out[..len], 1_000), Some(event));
+        assert_eq!(
+            take_record(&out[..len - 1], 1_000),
+            None,
+            "{event:?} cut short"
+        );
+    }
+}

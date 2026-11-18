@@ -62,10 +62,14 @@ pub struct Plan {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Setup {
-    /// Sensors in range and paired before any fault.
+    /// Sensors in range, and paired before any fault unless the steps
+    /// start from power-on.
     pub sensors: Vec<Sensor>,
     pub card: Card,
     pub course: Course,
+    /// The steps take the device from power-on, as a lifted slice's do:
+    /// nothing skips first-run setup or pairs the sensors for them.
+    pub from_power_on: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +106,8 @@ pub enum Course {
     /// A track from the corpus, by index; an empty corpus rides
     /// `empty_corpus_loop(pick)` instead.
     Corpus { pick: u64 },
+    /// A recorded track, latitude and longitude in 1e-7 degrees.
+    Track { points: Vec<(i32, i32)> },
 }
 
 pub fn empty_corpus_loop(pick: u64) -> Course {
@@ -327,6 +333,7 @@ fn setup(rng: &mut Rng) -> Setup {
         sensors,
         card,
         course,
+        from_power_on: false,
     }
 }
 

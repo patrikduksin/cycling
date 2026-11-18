@@ -9,14 +9,14 @@ use shell_simulator::sim::Sim;
 use shell_simulator::trace::find::{Query, find};
 use shell_simulator::trace::report::{
     Answers, Artifacts, Asking, Diffed, Explained, Futures, Header, Listing, Parted, Proved,
-    Replayed, Resolved, Said, Stub, Summary, Written, in_window, render,
+    Replayed, Resolved, Said, Summary, Written, in_window, render,
 };
 use shell_simulator::trace::story::tell;
 use shell_simulator::trace::surgery::{self, Set};
 use shell_simulator::trace::timeline::{
     At, Entry, Kind, Timeline, build_name, read, session_clock,
 };
-use shell_simulator::trace::{card, diff, divergence, otlp, stub};
+use shell_simulator::trace::{card, diff, divergence, dump, fixture, otlp, scenario, shrink};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -46,10 +46,15 @@ timeline {from_ms, to_ms, entries, hidden}; find {found, total}, each found
 an entry with type entry or {type stretch, from, to, first}, at most --limit
 of them; replay {header, mode, why, from_ms, to_ms, model, reached,
 trace_ended, divergence (with ok and verdict), faithful {ok, physical,
-semantic, ended, exclusions}, artifacts, parted, bundle}; replay --set
+semantic, ended, exclusions}, artifacts, parted, stopped {kind, at_ms, detail}
+(where it left the recorded world, kind Unrecorded or LeftOver, or VANA
+panicked or broke an invariant, kind Panicked), bundle}; replay --set
 {sets, recorded, set, diff}; diff {a, b, seen, panel, world, exclusions};
 otlp {traces,
-metrics}, or {out} with --out; test-stub {fixture_steps, test}; why {header,
+metrics}, or {out} with --out; cut {fixture, at_ms, bytes, why_here, judged}; shrink
+{before, after, levels}, each size {bytes, passes, records}; cut --scenario
+{test, steps, synthetic, private, left_out, judged}; undump {from_format,
+records, same_build, stopped}; why {header,
 mode, why, at_ms, from_ms, to_ms, reached, trace_ended, divergence, entries,
 hidden, in_force}, each entry {at, kind}, a decision with {tag, operands
 {name: value}}, a delta with {owner, field, old, new}, null on the side
@@ -149,6 +154,48 @@ commands:
       {at_ms, a, b} or null. When either trace replaced the credentials the
       phone page draws, that page's frames are left out and exclusions says
       how many.
+  cut <trace> --to T --expect FIELD=VALUE,... [--check NAME] [--keep FIELD=VALUE,...]
+      [--name NAME] [--out DIR]
+      A fixture: the trace from power-on to its last pass at or before T
+      (slice.trace) and what the rider should have seen then (expect.toml).
+      --expect takes power!=--, power=230, page=ride/climb or toast~SAVE;
+      --check names a fuzz check judged on the replayed internal flash
+      (rides decode, no garbage sample). --keep names what held then and
+      must go on holding, the rest of the moment, so a shrink cannot keep
+      the failure by another cause. It is refused unless every expectation
+      fails and every keep holds on the slice, replayed as a changed build.
+      A simulator trace's fixture goes to tools/simulator/tests/traces/NAME/,
+      which the fixtures test runs; a device trace's, or one holding a
+      secret, to the primary checkout's .local/fixtures/NAME/. NAME is one
+      plain name; a private fixture's --out must be a place git ignores.
+  cut --scenario <fixture dir> [--synthetic-course] [--name NAME] [--out FILE]
+      The fixture's slice lifted to a fuzz plan (the sensors it heard, its
+      GPS track, presses, holds, ride commands, ride values from the ANT
+      pages and GPS speed, dropouts and GPS fix changes), run in the
+      simulator, and printed as the Rust test that runs it and asserts the
+      fixture's expectation at its end. It is refused unless the
+      expectation fails in that run: then the fixture stays a fixture. The
+      test rides the recorded track, which is private; --synthetic-course
+      rides a flat course of the same length at a made-up place instead,
+      under the same check. --json's left_out names what the lift left out.
+  dump <trace>
+      The trace as JSON lines another build re-encodes: a header, every
+      method's signature, then one line per record with the value this
+      build decoded from it. A call names its method; a media access spells
+      out its span, bytes and flags; any other record keeps its encoding.
+  undump <dump> --out FILE
+      Re-encode a dump, from this build or another, in this build's format.
+      A record is carried only when this build decodes the same value under
+      the same signature; the first one it cannot carry ends FILE before
+      that record's pass and is reported, and the command exits 1. cycling
+      trace upgrade runs dump under the trace's own build, then undump.
+  shrink <fixture dir> [--budget T]
+      Make the fixture's slice as small as it goes while every expectation
+      still fails: delta debugging over the outputs no replay reads, then
+      whole passes and commands, then single input records. Each step that
+      still fails rewrites the fixture, so a shrink cut short keeps its best.
+      --budget is wall time (default 60s). Prints the sizes before and after
+      and, per level, whether it ended 1-minimal: no single unit more can go.
   why <trace> --at T [--before T] [--after T] [--owner LIST] [--limit N|all]
          [--deltas all] [--mode auto|faithful|changed] [--model]
       What decided the moment and what changed around it. It replays the
@@ -169,17 +216,6 @@ commands:
       near 200 lines. On a two-hour trace (150,000 passes) it answers in
       about 4 s with the cached tool, nearly all of it the replay up to the
       window. A replay whose verdict fails exits 1.
-  test-stub <trace> --at T [--name NAME] [--expect FIELD=VALUE,...]
-      A regression test that replays the trace to T. Its doc comment says
-      what the recording showed and what the sensors were doing then; its
-      characterization asserts the rest of the moment as recorded; its
-      expectation states what the rider should have seen. --expect writes
-      the expectation (power!=--, power=230, page=ride/climb, toast~SAVE)
-      and refuses one the recording already meets; without it the
-      expectation is a todo!() to replace. Either way the test is red on the
-      recording. For a trace outside tools/simulator/tests/traces/ it first
-      says whether the trace may become a fixture (a device trace or one
-      holding a secret may not) and the commands that copy it there.
 ";
 
 fn main() -> ExitCode {
@@ -327,7 +363,19 @@ impl Options {
 
 fn run(args: &[String]) -> Result<Ran, Failed> {
     let (command, rest) = args.split_first().expect("arguments checked");
-    let options = Options::parse(rest, &["all", "video", "hex", "json", "model", "no-bundle"])?;
+    let options = Options::parse(
+        rest,
+        &[
+            "all",
+            "video",
+            "hex",
+            "json",
+            "model",
+            "no-bundle",
+            "scenario",
+            "synthetic-course",
+        ],
+    )?;
     let json = options.has("json");
     let path = PathBuf::from(
         options
@@ -347,7 +395,59 @@ fn run(args: &[String]) -> Result<Ran, Failed> {
             held: true,
         });
     }
+    if command == "cut" && options.has("scenario") {
+        let stem = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or("the fixture needs a name")?;
+        let name = options
+            .value("name")
+            .map(str::to_string)
+            .unwrap_or_else(|| stem.replace('-', "_"));
+        let lifted = scenario::scenario(&path, &name, options.has("synthetic-course"))?;
+        let printed = render(json, &lifted)?;
+        if let Some(out) = options.value("out") {
+            std::fs::write(out, &lifted.test).map_err(|e| format!("{out}: {e}"))?;
+        }
+        return Ok(Ran {
+            printed,
+            held: true,
+        });
+    }
+    if command == "shrink" {
+        let budget = match options.value("budget") {
+            Some(text) => match At::parse(text)? {
+                At::Session(ms) => std::time::Duration::from_millis(ms),
+                At::Ride(_) => return Err("--budget takes a duration such as 60s or 5m".into()),
+            },
+            None => std::time::Duration::from_secs(60),
+        };
+        let shrunk = shrink::shrink(&path, budget)?;
+        return Ok(Ran {
+            printed: render(json, &shrunk)?,
+            held: true,
+        });
+    }
     let trace = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    match command.as_str() {
+        "dump" => {
+            return Ok(Ran {
+                printed: dump::dump(&trace)?,
+                held: true,
+            });
+        }
+        "undump" => {
+            let out = options.value("out").ok_or("undump needs --out FILE")?;
+            let text = String::from_utf8(trace).map_err(|_| "a dump is text")?;
+            let undumped = dump::undump(&text)?;
+            std::fs::write(out, &undumped.trace).map_err(|e| format!("{out}: {e}"))?;
+            return Ok(Ran {
+                printed: render(json, &undumped)?,
+                held: undumped.stopped.is_none(),
+            });
+        }
+        _ => {}
+    }
     let mut decoded = None;
     let mut held = true;
     let printed = match command.as_str() {
@@ -424,33 +524,33 @@ fn run(args: &[String]) -> Result<Ran, Failed> {
             held = (explained.divergence.as_ref()).is_some_and(|divergence| divergence.ok);
             render(json, &explained)
         }
-        "test-stub" => {
+        "cut" => {
             let timeline = decode(&mut decoded, &trace)?;
-            let at = options
-                .time(timeline, "at")?
-                .ok_or("test-stub needs --at")?;
-            let fixture = path
+            let to = options.time(timeline, "to")?.ok_or("cut needs --to")?;
+            let expects = |flag: &str| -> Result<Vec<fixture::Expect>, String> {
+                options
+                    .value(flag)
+                    .map(|list| list.split(',').map(fixture::Expect::parse).collect())
+                    .transpose()
+                    .map(Option::unwrap_or_default)
+            };
+            let seen = expects("expect")?;
+            let stem = path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .ok_or("the trace needs a file name")?;
             let name = options
                 .value("name")
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("{}_at_{}", fixture.replace('-', "_"), at / 1000));
-            let expect: Vec<stub::Expect> = options
-                .value("expect")
-                .map(|list| list.split(',').map(stub::Expect::parse).collect())
-                .transpose()?
-                .unwrap_or_default();
-            let test = stub::stub(timeline, fixture, &name, at, &expect)?;
-            let fixture_steps = stub::to_fixture(&path, &trace);
-            render(
-                json,
-                &Stub {
-                    fixture_steps,
-                    test,
-                },
-            )
+                .unwrap_or_else(|| format!("{stem}-at-{}", to / 1000));
+            let out = options.value("out").map(Path::new);
+            let (dir, why) = fixture::home(&trace, &name, out)?;
+            if dir.join("expect.toml").exists() {
+                return Err(format!("{}: a fixture is already there", dir.display()).into());
+            }
+            let keep = expects("keep")?;
+            let cut = fixture::cut(&trace, to, seen, options.value("check"), keep, &dir, why)?;
+            render(json, &cut)
         }
         other => Err(format!("unknown command {other:?}; see --help")),
     }?;
@@ -734,6 +834,11 @@ fn replay<'a>(
             .as_ref()
             .map(|faithful| Proved::of(ok, faithful))
     });
+    let stopped = (report.as_ref().and_then(|report| report.stopped.as_ref())).map(|stop| Parted {
+        kind: stop.kind.name(),
+        at_ms: stop.at_ms,
+        detail: stop.detail.clone(),
+    });
     let own = sim.trace();
     drop(sim);
     let decided = firmware_services::why::take();
@@ -779,6 +884,7 @@ fn replay<'a>(
         faithful,
         artifacts: Artifacts { dir, files },
         parted,
+        stopped,
         bundle,
     };
     Ok((replayed, own))
@@ -904,13 +1010,14 @@ mod tests {
     const BUILD: &str = "0123456789abcdef0123456789abcdef01234567";
 
     #[test]
-    fn every_mode_the_tool_lists_as_a_capability_is_one_it_replays_in() {
+    fn every_capability_the_tool_lists_is_a_mode_it_replays_in_or_its_dump() {
         let listed = include_str!("../../trace-capabilities");
         assert_eq!(
             listed.split_whitespace().collect::<Vec<_>>(),
-            ["faithful", "changed"]
+            ["faithful", "changed", "dump"]
         );
-        for mode in listed.split_whitespace() {
+        assert!(USAGE.contains("\n  dump <trace>\n"), "dump is a command");
+        for mode in listed.split_whitespace().filter(|listed| *listed != "dump") {
             let relation = BuildRelation::Unknown {
                 why: "a test".into(),
             };

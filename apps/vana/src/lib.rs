@@ -2,6 +2,8 @@
 
 #[cfg(all(feature = "planted-bug", target_os = "none"))]
 compile_error!("planted-bug is the fuzzer's proof and never reaches a device");
+#[cfg(all(feature = "planted-reading-bug", target_os = "none"))]
+compile_error!("planted-reading-bug is the fixtures' proof and never reaches a device");
 #[cfg(all(feature = "invariants", target_os = "none"))]
 compile_error!("invariants checks run in the simulator and never reach a device");
 

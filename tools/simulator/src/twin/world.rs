@@ -244,7 +244,7 @@ impl Recorded {
                 Some(Event::PoweredOff) => self.powered_off = true,
                 Some(Event::Session { redacted: true, .. }) => self.redacting = !self.redacted,
                 Some(Event::NetworkTime(snapshot)) => self.network_time.set(snapshot, now_ms),
-                Some(Event::Lost { .. } | Event::TooLarge { .. }) => self.lost = Some(now_ms),
+                Some(event) if event.ends_replay() => self.lost = Some(now_ms),
                 Some(_) => {}
             }
         }
@@ -492,6 +492,12 @@ impl Recorded {
             }
             None => self.stop(format!("the record of {} does not decode", Named(method))),
         }
+    }
+
+    /// The replayed build's own pages of `medium` that hold a byte the
+    /// twin knows.
+    pub fn pages(&mut self, medium: Medium) -> Vec<(u64, [u8; super::media::PAGE])> {
+        self.media.pages(medium)
     }
 
     /// The replayed build's own bytes of `medium`, as far as `out` reaches.

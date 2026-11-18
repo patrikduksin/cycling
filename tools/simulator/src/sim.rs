@@ -19,7 +19,7 @@ pub const HOME_CARDS: usize = 4;
 /// Power-on never takes longer than this to open Home in the simulator.
 const BOOT_TIMEOUT_MS: u64 = 15_000;
 /// Firmware passes between a press and the next one VANA accepts (debounce is 350 ms).
-const PRESS_GAP_MS: u64 = 400;
+pub(crate) const PRESS_GAP_MS: u64 = 400;
 /// Touch reports arrive this often while a finger moves.
 const TOUCH_STEP_MS: u64 = 30;
 const FOREIGN_WRITE_ORDER: [Store; Store::ALL.len()] = [

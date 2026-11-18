@@ -382,16 +382,25 @@ impl device_api::sensors::Sensors for Sensed {
 
 /// The trace's sealed blocks: kept for a capture, and staged for its file
 /// while the card's STORE volume records it, as the C606 stages them. A
-/// block the spool has no room for is lost from both.
+/// block the spool has no room for is lost from both, except in a replay.
 #[derive(Default)]
 pub struct Staged {
     kept: Vec<u8>,
     spool: Option<Spool<Vec<u8>>>,
+    capture: Capture,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Capture {
+    #[default]
+    SpoolAdmits,
+    KeepsEveryBlock,
 }
 
 impl Sink for Staged {
     fn block(&mut self, bytes: &[u8]) -> bool {
-        let taken = self.spool.as_mut().is_none_or(|spool| spool.block(bytes));
+        let spooled = self.spool.as_mut().is_none_or(|spool| spool.block(bytes));
+        let taken = spooled || self.capture == Capture::KeepsEveryBlock;
         if taken {
             self.kept.extend_from_slice(bytes);
         }
@@ -534,9 +543,16 @@ impl Start {
 }
 
 impl Trace {
-    fn log() -> Journal {
+    fn log(replay: bool) -> Journal {
         let buffer = vec![0u8; tail::BLOCK].into_boxed_slice();
-        let recorder = Recorder::new(buffer, Staged::default());
+        let staged = Staged {
+            capture: match replay {
+                true => Capture::KeepsEveryBlock,
+                false => Capture::SpoolAdmits,
+            },
+            ..Staged::default()
+        };
+        let recorder = Recorder::new(buffer, staged);
         Rc::new(RefCell::new(Log::new(Some(recorder), Box::default())))
     }
 
@@ -1456,7 +1472,7 @@ impl Session {
         }
         let ram = Volatile::boot(media.device_handle(), &model);
         let settings = Lent::new(ram.handle(media.device_handle()));
-        let log = Trace::log();
+        let log = Trace::log(twin.is_some());
         // Before the shell loads its settings, which hold the Wi-Fi password.
         if redacted {
             log.borrow_mut().redact();
@@ -1720,6 +1736,26 @@ impl Session {
         }
     }
     /// In a replay, `region` as the replayed build left it, over `out`.
+    /// A replay's card as the replayed build left it: every sector the
+    /// trace read or the build wrote. `None` outside a replay.
+    pub fn replayed_bulk(&self) -> Option<crate::bulk::SimBulk> {
+        let Devices::Twin(servers) = &self.devices else {
+            return None;
+        };
+        let written = servers
+            .world
+            .borrow_mut()
+            .pages(firmware_services::trace::Medium::Bulk);
+        let card = crate::bulk::SimBulk::default();
+        card.restore(&crate::bulk::Image {
+            presence: crate::bulk::Presence::Ready,
+            sectors: crate::bulk::C606_SECTORS,
+            entropy: 0,
+            written,
+        });
+        Some(card)
+    }
+
     pub fn replayed_media(&self, region: device_api::storage::Region, out: &mut [u8]) {
         if let Devices::Twin(servers) = &self.devices {
             servers.world.borrow_mut().contents(region.into(), out);

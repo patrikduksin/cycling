@@ -1,7 +1,7 @@
 //! The internal flash of a replay: no medium of its own, every
 //! access answered by the recorded world.
 use crate::devices::Scripted;
-use device_api::journal::{Aging, MethodId, Stored};
+use device_api::journal::{Aging, Get, MethodId, Put, Script, Stored};
 use device_api::observation::{Availability, Error};
 use device_api::storage::{Geometry, OwnedFlash, Region};
 use firmware_services::trace::replayed::Replayed;
@@ -38,23 +38,25 @@ impl ScriptedFlash {
     }
 }
 
-/// A region the trace holds no observation of yet reads as ready and
-/// empty.
+const UNRECORDED_AVAILABILITY: Availability = Availability::Ready;
+
 impl OwnedFlash for ScriptedFlash {
     type Error = Error;
 
     fn availability(&self, region: Region) -> Availability {
         self.observed(self.availability, region)
-            .unwrap_or(Availability::Ready)
+            .unwrap_or(UNRECORDED_AVAILABILITY)
     }
 
     fn geometry(&self, region: Region) -> Geometry {
-        self.observed(self.geometry, region).unwrap_or(Geometry {
-            capacity: 0,
-            program_size: 4,
-            erase_size: 4096,
-            durable: true,
-        })
+        let mut world = self.world.borrow_mut();
+        let script = &mut *world;
+        script.begin(self.geometry);
+        Put::put(script, &region);
+        let at = script.observed();
+        let geometry: Geometry = Get::get(script);
+        script.end();
+        geometry.aged(script.pass().now_ms.saturating_sub(at))
     }
 
     fn read(&mut self, region: Region, offset: usize, out: &mut [u8]) -> Result<(), Error> {

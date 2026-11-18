@@ -39,7 +39,7 @@ fn bearing(a: Point, b: Point) -> f64 {
     y.atan2(x).to_degrees().rem_euclid(360.0)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Route {
     points: Vec<Point>,
     cumulative: Vec<f64>,
@@ -61,6 +61,20 @@ impl Route {
             cumulative,
             closed,
         }
+    }
+
+    /// A track through `points`, latitude and longitude in 1e-7 degrees.
+    pub fn track(points: &[(i32, i32)]) -> Route {
+        Route::new(
+            points.iter().map(|&(lat, lon)| from_e7(lat, lon)).collect(),
+            false,
+        )
+    }
+
+    /// The track's points in 1e-7 degrees, as [`Route::track`] takes them.
+    pub fn points_e7(&self) -> Vec<(i32, i32)> {
+        let e7 = |degrees: f64| (degrees * 1e7).round() as i32;
+        self.points.iter().map(|p| (e7(p.lat), e7(p.lon))).collect()
     }
 
     /// Parses `<trkpt>` and `<rtept>` elements with `lat`/`lon` attributes and optional `<ele>`.

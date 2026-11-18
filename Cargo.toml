@@ -15,13 +15,18 @@ repository = "https://github.com/patrikduksin/cycling"
 # Match the version Embassy and the radio stacks already pull in.
 heapless = { version = "=0.9.3", default-features = false }
 
+# Host builds unwind: a replay catches VANA's panics and leaves the recorded
+# world by unwinding. Only the firmware profile aborts.
 [profile.release]
 opt-level = "s"
 lto = "fat"
 codegen-units = 1
 debug = 2
-panic = "abort"
 overflow-checks = true
+
+[profile.firmware]
+inherits = "release"
+panic = "abort"
 
 [profile.tools]
 inherits = "release"
@@ -29,7 +34,6 @@ opt-level = 3
 lto = false
 codegen-units = 16
 debug = "line-tables-only"
-panic = "unwind"
 
 [patch.crates-io]
 trouble-host = { path = "vendor/trouble-host" }

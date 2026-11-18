@@ -10,6 +10,9 @@ class Gate:
     env: tuple[tuple[str, str], ...] = ()
     test: bool = False
     reports: bool = False
+    # A command that prints the files outside the tree the gate judges, such as the private rides, one per line.
+    # A cached pass holds only for the same files with the same contents.
+    reads: str | None = None
 
 
 BUILD = Gate('build', 'cycling build', (('CYCLING_IMAGE_DIR', '.local/verify/images/build'),))
@@ -18,7 +21,13 @@ BUILD = Gate('build', 'cycling build', (('CYCLING_IMAGE_DIR', '.local/verify/ima
 LANES = (
     (BUILD,),
     (
-        Gate('test-rust', 'cycling test-rust', (('NEXTEST_PROFILE', 'without-ride-scenarios'),), test=True),
+        Gate(
+            'test-rust',
+            'cycling test-rust',
+            (('NEXTEST_PROFILE', 'without-ride-scenarios'),),
+            test=True,
+            reads='cycling corpus --list-fixtures',
+        ),
         Gate('simulate', 'cycling simulate'),
     ),
     (Gate('test-trouble-host', 'cycling test-trouble-host', test=True),),
@@ -33,11 +42,14 @@ LANES = (
         Gate('check-python', 'cycling check-python'),
     ),
     (Gate('screens', 'cycling sim-compare', reports=True),),
+    (Gate('corpus', 'cycling corpus', reads='cycling corpus --list'),),
 )
 ALONE = (Gate('harness-virtual', 'cycling harness-virtual'),)
 DEEP = (
+    Gate('corpus-all', 'nice -n 19 cycling corpus --all', reads='cycling corpus --all --list'),
     Gate('fuzz', 'nice -n 19 cycling fuzz --fixed'),
     Gate('planted', 'nice -n 19 cycling fuzz-planted'),
+    Gate('fixtures-planted', 'nice -n 19 cycling fixtures-planted'),
     Gate(
         'explore',
         'nice -n 19 cargo nextest run --locked --no-default-features -p vana --lib --run-ignored only'
@@ -48,7 +60,7 @@ DEEP = (
 EVERY = frozenset(gate.name for lane in (*LANES, ALONE) for gate in lane)
 NONE = frozenset()
 RUST_CODE = frozenset(
-    {'test-rust', 'simulate', 'check-rust', 'check-boundaries', 'screens', 'harness-virtual', 'test-python'}
+    {'test-rust', 'simulate', 'check-rust', 'check-boundaries', 'screens', 'harness-virtual', 'test-python', 'corpus'}
 )
 RUST_BUILD = RUST_CODE | {'build', 'check-devices'}
 WEB = frozenset({'test-web', 'check-web'})

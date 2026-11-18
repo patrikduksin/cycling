@@ -59,10 +59,10 @@ pub fn observe(sim: &mut Sim, card: bool, previous: Option<&Observation>) -> Obs
     }
 }
 
-pub(super) fn card_rides(sim: &Sim) -> Vec<Ride> {
+pub(crate) fn card_rides(sim: &Sim) -> Vec<Ride> {
     use vana::ride::bulk::{Bulk, BulkState};
     use vana::ride::journal::{Journal, Read, Scan};
-    let mut media = sim.device.bulk.inspect();
+    let mut media = (sim.device.replayed_bulk()).unwrap_or_else(|| sim.device.bulk.inspect());
     let mut state = BulkState::default();
     let mut journal = Bulk::new(&mut state, &mut media);
     let catalog = loop {

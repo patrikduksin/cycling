@@ -444,6 +444,7 @@ impl Index {
             match event {
                 Event::Call(call) => indexer.call(&call),
                 Event::Forget(medium) => indexer.forget(medium),
+                event if event.ends_replay() => break,
                 _ => indexer.flush(),
             }
         }
@@ -746,6 +747,12 @@ impl Model {
             return Err(Leave::Digest { span });
         }
         Ok(Ok(()))
+    }
+
+    /// The twin's own pages of `medium` that hold a byte it knows, erased
+    /// where it knows none.
+    pub fn pages(&mut self, medium: Medium) -> Vec<(u64, [u8; super::media::PAGE])> {
+        self.live(medium).bytes.pages(0xFF).collect()
     }
 
     /// The twin's own bytes of `medium` from its start, erased where the

@@ -92,8 +92,18 @@ def keyed_env(gate_env):
     return sorted((ambient | dict(gate_env)).items())
 
 
-def result_key(tree, gate, command, gate_env):
-    inputs = [tree, toolchain(), gate, command, keyed_env(gate_env)]
+def read_digests(command, root):
+    """Each file `command` prints, with the sha256 of its contents: what a gate judges outside the tree."""
+    listed = subprocess.run(command, shell=True, cwd=root, check=True, capture_output=True, text=True).stdout
+    found = []
+    for name in filter(None, listed.splitlines()):
+        with Path(name).open('rb') as file:
+            found.append([name, hashlib.file_digest(file, 'sha256').hexdigest()])
+    return found
+
+
+def result_key(tree, gate, command, gate_env, read=()):
+    inputs = [tree, toolchain(), gate, command, keyed_env(gate_env), list(read)]
     return hashlib.sha256(json.dumps(inputs).encode()).hexdigest()[:32]
 
 

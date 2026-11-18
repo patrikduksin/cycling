@@ -39,6 +39,18 @@ if [ "${1:-}" = replay ]; then
     done
 fi
 
+if [ "${1:-}" = nightly ]; then
+    shift
+    exec uv run --project "$root/tools/devtools" --locked \
+        python -m cycling_devtools.nightly "$@"
+fi
+
+if [ "${1:-}" = upgrade ]; then
+    shift
+    exec uv run --project "$root/tools/devtools" --locked \
+        python -m cycling_devtools.upgrade "$@"
+fi
+
 if [ "${1:-}" = pull ]; then
     shift
     exec uv run --project "$root/tools/devtools" --locked \

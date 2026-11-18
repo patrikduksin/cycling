@@ -3,23 +3,25 @@
 //!
 //! MOVE (BottomLeft) moves focus down the cards, ACT (BottomRight) opens the
 //! focused one and a tap opens the card under the finger.
+use super::Layout;
 #[cfg(test)]
 use super::chrome::Look;
 use super::chrome::{
-    AMBER, Align, BLACK, BODY, CAPTION, CONTENT, GREEN, Inks, Label, Line, MUTED, Rect, Row,
-    SECONDARY, Shown, TITLE, WHITE, blend, card, paint_disc, paint_rounded,
+    AMBER, Align, BLACK, GREEN, Inks, Label, Line, MUTED, Rect, Row, SECONDARY, Shown, WHITE,
+    blend, card, paint_disc, paint_rounded,
 };
+use super::icons::{Icon, Sensor, Size};
+use super::scaled::{Scaled, Track};
+use super::sensors::Glance;
+use super::workout::Text;
+use firmware_shell::rendering::font::{Face, FaceRole, SPILL};
+use heapless::Vec;
 
 /// The width of a card's focus ring, which `paint_rounded` fills as spans
 /// where it is solid.
 const fn ring(focused: bool) -> usize {
     if focused { 3 } else { 0 }
 }
-use super::icons::{Sensor, Size};
-use super::sensors::Glance;
-use super::workout::Text;
-use firmware_shell::rendering::font::{Face, SPILL};
-use heapless::Vec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tile {
@@ -30,60 +32,147 @@ pub enum Tile {
     Rides,
 }
 
-const MARGIN: usize = 10;
 const RADIUS: usize = 18;
-const GAP: usize = 8;
-pub const RIDE_TILE: Rect = Rect {
-    left: MARGIN,
-    top: CONTENT.top + 6,
-    right: CONTENT.right - MARGIN,
-    bottom: CONTENT.top + 122,
-};
-pub const SENSORS_TILE: Rect = Rect {
-    left: MARGIN,
-    top: RIDE_TILE.bottom + GAP,
-    right: CONTENT.right - MARGIN,
-    bottom: RIDE_TILE.bottom + GAP + 78,
-};
-/// TRAIN (the workouts) and SETTINGS share a row, TRAIN first in MOVE
-/// order; each card is as wide as its title needs.
-pub const WORKOUTS_TILE: Rect = Rect {
-    left: MARGIN,
-    top: SENSORS_TILE.bottom + GAP,
-    right: MARGIN + 90,
-    bottom: SENSORS_TILE.bottom + GAP + 40,
-};
-pub const SETTINGS_TILE: Rect = Rect {
-    left: WORKOUTS_TILE.right + GAP,
-    top: WORKOUTS_TILE.top,
-    right: CONTENT.right - MARGIN,
-    bottom: WORKOUTS_TILE.bottom,
-};
-/// Text inside the half-width cards keeps this far from their edges.
-const SMALL_INSET: usize = INSET;
-/// The saved rides, as a slim card under settings.
-pub const RIDES_TILE: Rect = Rect {
-    left: MARGIN,
-    top: SETTINGS_TILE.bottom + 6,
-    right: CONTENT.right - MARGIN,
-    bottom: SETTINGS_TILE.bottom + 6 + 32,
-};
 const RIDES_RADIUS: usize = 12;
-const INSET: usize = 16;
-/// The green start button on the RIDE card, centre and radius.
-const PLAY: (usize, usize, usize) = (RIDE_TILE.left + 44, RIDE_TILE.top + 58, 28);
-/// The text column right of the start button: RIDE, GPS and the status line.
-const TEXT_LEFT: usize = PLAY.0 + PLAY.2 + 14;
-/// Icons in the sensors card, left to right.
+const GAP: usize = 8;
+/// Text inside the half-width cards keeps this far from their edges.
+const SMALL_INSET: usize = 16;
 /// Up to four sensors show, each an icon with its short name under it; the
 /// count beside the title covers the rest.
 const ICONS: usize = 4;
-const ICON_PITCH: usize = 52;
-const ICON_TOP: usize = SENSORS_TILE.top + 36;
-/// The top line of the short names under the icons.
-const NAME_TOP: usize = ICON_TOP + 22;
-/// The top of each icon's 22 px square, one row above the status dot's.
-const ICON_SQUARE_TOP: usize = ICON_TOP - 1;
+
+/// Home on one panel: the cards top to bottom, and where each card's
+/// contents sit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    /// The rider's first card takes a taller panel's spare rows.
+    pub ride: Rect,
+    pub sensors: Rect,
+    /// TRAIN (the workouts) and SETTINGS share a row, TRAIN first in MOVE
+    /// order; each card is as wide as its title needs.
+    pub workouts: Rect,
+    pub settings: Rect,
+    /// The saved rides, as a slim card under settings.
+    pub rides: Rect,
+    /// The green start button on the RIDE card: centre and radius.
+    pub play: (usize, usize, usize),
+    /// The play triangle's box, its flat side on the left. Its centroid (a
+    /// third of the way from the flat side) sits on the button's centre, one
+    /// pixel right, so it reads as centred.
+    pub triangle: Rect,
+    /// RIDE, its capitals ending on the bottom, right of the start button.
+    pub ride_title: Rect,
+    /// The GPS line, then what is still starting on one or two lines.
+    pub gps: Rect,
+    pub status: [Rect; 2],
+    /// The sensors card's title row, inset; the live count ends on its right.
+    pub sensors_title: Rect,
+    /// Each sensor's icon square, left to right; its status dot sits at the
+    /// square's top right.
+    pub slots: [Rect; ICONS],
+    /// The short names under the icons, centred on them but kept clear of
+    /// the focus ring.
+    pub names: Rect,
+    /// RIDES and the last ride's numbers, inset like the sensors.
+    pub rides_text: Rect,
+}
+
+pub const fn regions(at: &Scaled) -> Regions {
+    use Track::{Fr, Line, Unit};
+    let content = super::chrome::regions(at).content;
+    let [_, cards, _] = content.cols([Unit(10), Fr(1), Unit(10)], Unit(0), at);
+    // The bottom margin is split off alone: after the units above it, it
+    // rounds to 1 px at 3/4; alone it keeps the C606's 2 px.
+    let [cards, _] = cards.rows([Fr(1), Unit(2)], Unit(0), at);
+    let [_, ride, _, sensors, _, small, _, rides] = cards.rows(
+        [
+            Unit(6),
+            Fr(1),
+            Unit(8),
+            Unit(78),
+            Unit(8),
+            Unit(40),
+            Unit(6),
+            Unit(32),
+        ],
+        Unit(0),
+        at,
+    );
+    let [workouts, _, settings] = small.cols([Unit(90), Unit(GAP as u16), Fr(1)], Unit(0), at);
+
+    let [_, button, _, title, text, _] = ride.cols(
+        [Unit(16), Unit(56), Unit(14), Unit(2), Fr(1), Unit(8)],
+        Unit(0),
+        at,
+    );
+    let caption = Line(FaceRole::Caption);
+    let [upper, lower] = ride.rows([Fr(1), Fr(1)], Unit(0), at);
+    let [above, _] = upper.rows([Fr(1), Unit(5)], Unit(0), at);
+    let [gps, _, first, _, second, _] = lower.rows(
+        [caption, Unit(4), caption, Unit(2), caption, Fr(1)],
+        Unit(0),
+        at,
+    );
+    let (cx, cy, r) = (
+        (button.left + button.right) / 2,
+        gps.top,
+        button.width() / 2,
+    );
+    let (left, top) = (cx - at.unit(6), cy - at.unit(12));
+
+    let [_, inner, _] = sensors.cols([Unit(16), Fr(1), Unit(16)], Unit(0), at);
+    let [_, sensors_title, icons, _, names, _] = inner.rows(
+        [Unit(14), Unit(21), Unit(22), Unit(1), caption, Fr(1)],
+        Unit(0),
+        at,
+    );
+    let [_, clear, _] = sensors.cols([Unit(5), Fr(1), Unit(5)], Unit(0), at);
+    let pitch = Unit(52);
+    Regions {
+        ride,
+        sensors,
+        workouts,
+        settings,
+        rides,
+        play: (cx, cy, r),
+        triangle: Rect {
+            left,
+            top,
+            right: left + at.unit(20),
+            bottom: top + at.unit(24),
+        },
+        ride_title: Rect {
+            left: title.left,
+            right: text.right,
+            ..above
+        },
+        gps: gps.with_columns(text),
+        status: [first.with_columns(text), second.with_columns(text)],
+        sensors_title,
+        slots: icons.cols([pitch, pitch, pitch, Fr(1)], Unit(0), at),
+        names: names.with_columns(clear),
+        rides_text: rides.with_columns(inner),
+    }
+}
+
+impl Regions {
+    /// The card under a tap.
+    pub const fn tile_at(&self, x: usize, y: usize) -> Option<Tile> {
+        if self.ride.contains(x, y) {
+            Some(Tile::Ride)
+        } else if self.sensors.contains(x, y) {
+            Some(Tile::Sensors)
+        } else if self.workouts.contains(x, y) {
+            Some(Tile::Workouts)
+        } else if self.settings.contains(x, y) {
+            Some(Tile::Settings)
+        } else if self.rides.contains(x, y) {
+            Some(Tile::Rides)
+        } else {
+            None
+        }
+    }
+}
 
 type Small = Label<20>;
 
@@ -101,6 +190,8 @@ const fn label(
 /// What Home shows, prepared once per frame.
 #[derive(Hash)]
 pub struct Home {
+    at: &'static Scaled,
+    regions: &'static Regions,
     /// The focused card: Ride, Sensors or Settings.
     pub cursor: usize,
     ride: Small,
@@ -120,16 +211,27 @@ pub struct Home {
 }
 
 impl Home {
-    /// `last` sums up the saved rides, such as the last one's "5.00 KM".
-    pub fn new(cursor: usize, gps_fix: bool, glance: &[Glance], last: Text<20>) -> Self {
+    /// Home laid out on `layout`'s panel. `last` sums up the saved rides,
+    /// such as the last one's "5.00 KM".
+    pub fn new(
+        layout: &'static Layout,
+        cursor: usize,
+        gps_fix: bool,
+        glance: &[Glance],
+        last: Text<20>,
+    ) -> Self {
+        let (at, regions) = (&layout.scaled, &layout.home);
+        let face = |role| at.face(role);
+        let (caption, body) = (face(FaceRole::Caption), face(FaceRole::Body));
         let sensors: Vec<Glance, ICONS> = glance.iter().take(ICONS).copied().collect();
         let names = sensors
             .iter()
-            .enumerate()
-            .map(|(slot, glance)| {
-                let centre = SENSORS_TILE.left + INSET + slot * ICON_PITCH + 11;
+            .zip(&regions.slots)
+            .map(|(glance, slot)| {
+                let centre = slot.left + usize::from(icon(at, glance).size) / 2;
                 let name = short_name(glance.kind);
-                label(name, &CAPTION, centre, NAME_TOP, Align::Center, SECONDARY)
+                let top = regions.names.top;
+                label(name, caption, centre, top, Align::Center, SECONDARY)
             })
             .collect();
         let live = glance.iter().filter(|g| g.live).count();
@@ -142,18 +244,17 @@ impl Home {
             );
         }
         let title = |card: usize| if card == cursor { WHITE } else { MUTED };
-        let text_left = TEXT_LEFT;
         let (gps_text, gps_color): (&[u8], u16) = if gps_fix {
             (b"GPS READY", GREEN)
         } else {
             (b"NO GPS FIX", SECONDARY)
         };
-        // RIDE, the GPS line and the status stack as one block centred on the button.
-        let ride_top = PLAY.1 - TITLE.top as usize - TITLE.cap as usize - 5;
-        let sensors_top = SENSORS_TILE.top + 14;
-        let settings_top = SETTINGS_TILE.top + (SETTINGS_TILE.height() - BODY.height as usize) / 2;
-        let left = SENSORS_TILE.left + INSET;
-        let right = SENSORS_TILE.right - INSET;
+        let ride_face = face(FaceRole::Title);
+        let ride = regions.ride_title;
+        let ride_top = ride.bottom - ride_face.top as usize - ride_face.cap as usize;
+        let header = regions.sensors_title;
+        let small = regions.settings;
+        let small_top = small.top + (small.height() - body.height as usize) / 2;
         let count_color = if battery_low {
             AMBER
         } else if live > 0 {
@@ -161,48 +262,65 @@ impl Home {
         } else {
             SECONDARY
         };
-        let gps_top = PLAY.1;
-        let rides_top = RIDES_TILE.top + (RIDES_TILE.height() - BODY.height as usize) / 2;
-        let rides_title = label(b"RIDES", &BODY, left, rides_top, Align::Left, title(4));
+        let rides = regions.rides_text;
+        let rides_top = rides.top + (rides.height() - body.height as usize) / 2;
+        let rides_title = label(b"RIDES", body, rides.left, rides_top, Align::Left, title(4));
         // The last ride keeps its numbers: they step down a size to fit.
-        let room = right - (rides_title.right() + SPILL + GAP);
-        let line = Line::fit(&[&CAPTION], last.as_bytes(), room);
-        let last = Label::new(line, right, rides_top + 3, Align::Right, SECONDARY);
+        let room = rides.right - (rides_title.right() + SPILL + at.unit(GAP));
+        let line = Line::fit(&[caption], last.as_bytes(), room);
+        let last = Label::new(
+            line,
+            rides.right,
+            rides_top + at.unit(3),
+            Align::Right,
+            SECONDARY,
+        );
+        let gps = regions.gps;
+        let titled = |text, tile, color| small_title(at, text, tile, small_top, color);
         Self {
+            at,
+            regions,
             cursor,
-            ride: label(b"RIDE", &TITLE, text_left, ride_top, Align::Left, title(0)),
-            status: Vec::new(),
-            gps: label(
-                gps_text,
-                &CAPTION,
-                text_left + 2,
-                gps_top,
+            ride: label(
+                b"RIDE",
+                ride_face,
+                ride.left,
+                ride_top,
                 Align::Left,
-                gps_color,
+                title(0),
             ),
-            sensors_title: label(b"SENSORS", &BODY, left, sensors_top, Align::Left, title(1)),
+            status: Vec::new(),
+            gps: label(gps_text, caption, gps.left, gps.top, Align::Left, gps_color),
+            sensors_title: label(
+                b"SENSORS",
+                body,
+                header.left,
+                header.top,
+                Align::Left,
+                title(1),
+            ),
             count: label(
                 count.as_bytes(),
-                &CAPTION,
-                right,
-                sensors_top + 3,
+                caption,
+                header.right,
+                header.top + at.unit(3),
                 Align::Right,
                 count_color,
             ),
             none: glance.is_empty().then(|| {
                 label(
                     b"NONE PAIRED",
-                    &CAPTION,
-                    left,
-                    ICON_TOP + 8,
+                    caption,
+                    header.left,
+                    regions.slots[0].top + at.unit(9),
                     Align::Left,
                     SECONDARY,
                 )
             }),
             sensors,
             names,
-            workouts_title: small_title(b"TRAIN", WORKOUTS_TILE, settings_top, title(2)),
-            settings_title: small_title(b"SETTINGS", SETTINGS_TILE, settings_top, title(3)),
+            workouts_title: titled(b"TRAIN", regions.workouts, title(2)),
+            settings_title: titled(b"SETTINGS", regions.settings, title(3)),
             rides_title,
             last,
         }
@@ -217,15 +335,15 @@ impl Home {
     /// The status line in a colour of its own, such as red for a critical
     /// battery.
     pub fn set_status_in(&mut self, text: &[u8], color: u16) {
-        let (left, right) = (TEXT_LEFT + 2, RIDE_TILE.right - 8);
-        let width = right - left;
-        let top = PLAY.1 + CAPTION.height as usize + 4;
+        let caption = self.at.face(FaceRole::Caption);
+        let rows = self.regions.status;
+        let width = rows[0].width();
         // Too long for the column: break at the last space that fits.
-        let split = (CAPTION.width(text) + SPILL > width)
+        let split = (caption.width(text) + SPILL > width)
             .then(|| {
                 (1..text.len())
                     .rev()
-                    .find(|&i| text[i] == b' ' && CAPTION.width(&text[..i]) + SPILL <= width)
+                    .find(|&i| text[i] == b' ' && caption.width(&text[..i]) + SPILL <= width)
             })
             .flatten();
         self.status.clear();
@@ -233,33 +351,11 @@ impl Home {
             Some(i) => [&text[..i], &text[i + 1..]],
             None => [text, b""],
         };
-        for (n, part) in lines
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .enumerate()
-        {
-            let line = Line::fit(&[&CAPTION], part, width);
-            let at = top + n * (CAPTION.height as usize + 2);
+        for (part, row) in lines.into_iter().filter(|part| !part.is_empty()).zip(rows) {
+            let line = Line::fit(&[caption], part, width);
             let _ = self
                 .status
-                .push(Label::new(line, left, at, Align::Left, color));
-        }
-    }
-
-    /// The card under a tap.
-    pub fn tile_at(x: usize, y: usize) -> Option<Tile> {
-        if RIDE_TILE.contains(x, y) {
-            Some(Tile::Ride)
-        } else if SENSORS_TILE.contains(x, y) {
-            Some(Tile::Sensors)
-        } else if WORKOUTS_TILE.contains(x, y) {
-            Some(Tile::Workouts)
-        } else if SETTINGS_TILE.contains(x, y) {
-            Some(Tile::Settings)
-        } else if RIDES_TILE.contains(x, y) {
-            Some(Tile::Rides)
-        } else {
-            None
+                .push(Label::new(line, row.left, row.top, Align::Left, color));
         }
     }
 
@@ -267,12 +363,15 @@ impl Home {
     pub fn paint(&self, row: &mut Row) {
         let y = row.y();
         let inks = Inks::of(row.look());
-        if y < RIDE_TILE.bottom {
+        let regions = self.regions;
+        let radius = self.at.unit(RADIUS);
+        if y < regions.ride.bottom {
             let focused = self.cursor == 0;
-            paint_rounded(row, RIDE_TILE, RADIUS, ring(focused), |x, y| {
-                Self::surface(inks, focused, RIDE_TILE, x, y)
+            let tile = regions.ride;
+            paint_rounded(row, tile, radius, ring(focused), |x, y| {
+                surface(inks, focused, tile, radius, x, y)
             });
-            if y < RIDE_TILE.top {
+            if y < tile.top {
                 return;
             }
             self.gps.paint(row);
@@ -280,32 +379,28 @@ impl Home {
             for status in &self.status {
                 status.paint(row);
             }
-            let (cx, cy, r) = PLAY;
+            let (cx, cy, r) = regions.play;
             let disc = (4 * cx as i32, 4 * cy as i32, 4 * r as i32);
             paint_disc(row, disc, GREEN, |x, button, _, _| {
-                let fill = Self::surface(inks, focused, RIDE_TILE, x, y)?;
-                Some(Self::play(inks, x, y, button, fill))
+                let fill = surface(inks, focused, tile, radius, x, y)?;
+                Some(self.play(inks, x, y, button, fill))
             });
-            // The play triangle: 24 rows, 20 wide at the middle. Its centroid
-            // (a third of the way from the flat side) sits on the disc's centre,
-            // one pixel right, so it reads as centred.
-            let gy = y as i32 - (cy as i32 - 12);
-            if (0..24).contains(&gy) {
-                let left = cx - 6;
-                let width = (20 * (24 - (2 * gy - 23).abs()) / 24) as usize;
+            if let Some(width) = triangle_width(regions.triangle, y) {
+                let left = regions.triangle.left;
                 row.span(left..left + width.max(1), BLACK);
             }
-        } else if y < SENSORS_TILE.bottom {
+        } else if y < regions.sensors.bottom {
             let focused = self.cursor == 1;
-            paint_rounded(row, SENSORS_TILE, RADIUS, ring(focused), |x, y| {
-                Self::surface(inks, focused, SENSORS_TILE, x, y)
+            let tile = regions.sensors;
+            paint_rounded(row, tile, radius, ring(focused), |x, y| {
+                surface(inks, focused, tile, radius, x, y)
             });
-            if y < SENSORS_TILE.top {
+            if y < tile.top {
                 return;
             }
             if let Some(none) = &self.none {
                 none.paint(row);
-            } else if y >= ICON_SQUARE_TOP {
+            } else if y >= regions.slots[0].top {
                 self.paint_icons(row, inks, focused);
                 for name in &self.names {
                     name.paint(row);
@@ -313,19 +408,20 @@ impl Home {
             }
             self.count.paint(row);
             self.sensors_title.paint(row);
-        } else if y < SETTINGS_TILE.bottom {
-            for (index, tile) in [(2, WORKOUTS_TILE), (3, SETTINGS_TILE)] {
+        } else if y < regions.settings.bottom {
+            for (index, tile) in [(2, regions.workouts), (3, regions.settings)] {
                 let focused = self.cursor == index;
-                paint_rounded(row, tile, RADIUS, ring(focused), |x, y| {
-                    Self::surface(inks, focused, tile, x, y)
+                paint_rounded(row, tile, radius, ring(focused), |x, y| {
+                    surface(inks, focused, tile, radius, x, y)
                 });
             }
             self.workouts_title.paint(row);
             self.settings_title.paint(row);
         } else {
             let focused = self.cursor == 4;
-            paint_rounded(row, RIDES_TILE, RIDES_RADIUS, ring(focused), |x, y| {
-                Self::surface_of(inks, focused, RIDES_TILE, RIDES_RADIUS, x, y)
+            let (tile, radius) = (regions.rides, self.at.unit(RIDES_RADIUS));
+            paint_rounded(row, tile, radius, ring(focused), |x, y| {
+                surface(inks, focused, tile, radius, x, y)
             });
             self.rides_title.paint(row);
             self.last.paint(row);
@@ -335,26 +431,30 @@ impl Home {
     /// Sensor icons in white, each with its status dot at the top right.
     fn paint_icons(&self, row: &mut Row, inks: Inks, focused: bool) {
         let y = row.y();
-        let left = SENSORS_TILE.left + INSET;
-        for (slot, glance) in self.sensors.iter().enumerate() {
-            let slot_left = left + slot * ICON_PITCH;
-            let dot = (4 * (slot_left + 25) as i32, 4 * ICON_TOP as i32 + 2, 10);
-            paint_disc(row, dot, glance.color, |x, dot, color, _| {
-                let fill = Self::surface(inks, focused, SENSORS_TILE, x, y)?;
+        let tile = self.regions.sensors;
+        let radius = self.at.unit(RADIUS);
+        for (glance, slot) in self.sensors.iter().zip(&self.regions.slots) {
+            paint_disc(row, self.dot(*slot), glance.color, |x, dot, color, _| {
+                let fill = surface(inks, focused, tile, radius, x, y)?;
                 Some(blend(color, fill, dot))
             });
-            let icon = Sensor::of(glance.kind).icon(Size::Small);
-            icon.paint(row, slot_left, ICON_SQUARE_TOP, WHITE);
+            icon(self.at, glance).paint(row, slot.left, slot.top, WHITE);
         }
     }
 
-    /// The green start button with a black play triangle, 26 tall, inside it.
-    fn play(inks: Inks, x: usize, y: usize, button: u8, fill: Shown) -> Shown {
-        let (cx, cy, _) = PLAY;
-        let gx = x as i32 - (cx as i32 - 6);
-        let gy = y as i32 - (cy as i32 - 12);
-        let inside =
-            gx >= 0 && (0..24).contains(&gy) && gx < (20 * (24 - (2 * gy - 23).abs()) / 24).max(1);
+    fn dot(&self, slot: Rect) -> (i32, i32, i32) {
+        let at = self.at;
+        (
+            (4 * slot.left + at.unit(100)) as i32,
+            (4 * slot.top + at.unit(6)) as i32,
+            at.unit(10) as i32,
+        )
+    }
+
+    fn play(&self, inks: Inks, x: usize, y: usize, button: u8, fill: Shown) -> Shown {
+        let triangle = self.regions.triangle;
+        let inside = x >= triangle.left
+            && triangle_width(triangle, y).is_some_and(|width| x - triangle.left < width.max(1));
         if inside {
             inks.black
         } else {
@@ -365,25 +465,27 @@ impl Home {
     #[cfg(test)]
     pub fn pixel(&self, look: Look, x: usize, y: usize) -> Shown {
         let inks = Inks::of(look);
-        if y < RIDE_TILE.bottom {
+        let regions = self.regions;
+        if y < regions.ride.bottom {
             return self.ride_pixel(look, x, y);
         }
-        if y < SENSORS_TILE.bottom {
+        if y < regions.sensors.bottom {
             return self.sensors_pixel(look, x, y);
         }
-        if y < SETTINGS_TILE.bottom {
-            let (index, tile, title) = if x < SETTINGS_TILE.left {
-                (2, WORKOUTS_TILE, &self.workouts_title)
+        let radius = self.at.unit(RADIUS);
+        if y < regions.settings.bottom {
+            let (index, tile, title) = if x < regions.settings.left {
+                (2, regions.workouts, &self.workouts_title)
             } else {
-                (3, SETTINGS_TILE, &self.settings_title)
+                (3, regions.settings, &self.settings_title)
             };
-            let Some(fill) = Self::surface(inks, self.cursor == index, tile, x, y) else {
+            let Some(fill) = surface(inks, self.cursor == index, tile, radius, x, y) else {
                 return inks.black;
             };
             return title.pixel(look, x, y, fill).unwrap_or(fill);
         }
-        let Some(fill) = Self::surface_of(inks, self.cursor == 4, RIDES_TILE, RIDES_RADIUS, x, y)
-        else {
+        let radius = self.at.unit(RIDES_RADIUS);
+        let Some(fill) = surface(inks, self.cursor == 4, regions.rides, radius, x, y) else {
             return inks.black;
         };
         for label in [&self.rides_title, &self.last] {
@@ -394,44 +496,17 @@ impl Home {
         fill
     }
 
-    /// Fill and focus ring: the focused card is raised and ringed.
-    fn surface(inks: Inks, focused: bool, rect: Rect, x: usize, y: usize) -> Option<Shown> {
-        Self::surface_of(inks, focused, rect, RADIUS, x, y)
-    }
-
-    fn surface_of(
-        inks: Inks,
-        focused: bool,
-        rect: Rect,
-        radius: usize,
-        x: usize,
-        y: usize,
-    ) -> Option<Shown> {
-        if focused {
-            card(
-                rect,
-                radius,
-                x,
-                y,
-                inks.raised,
-                Some(inks.accent),
-                inks.black,
-            )
-        } else {
-            card(rect, radius, x, y, inks.card, None, inks.black)
-        }
-    }
-
     #[cfg(test)]
     fn ride_pixel(&self, look: Look, x: usize, y: usize) -> Shown {
         let inks = Inks::of(look);
-        let Some(fill) = Self::surface(inks, self.cursor == 0, RIDE_TILE, x, y) else {
+        let radius = self.at.unit(RADIUS);
+        let Some(fill) = surface(inks, self.cursor == 0, self.regions.ride, radius, x, y) else {
             return inks.black;
         };
-        let (cx, cy, r) = PLAY;
+        let (cx, cy, r) = self.regions.play;
         let button = super::chrome::disc(x, y, 4 * cx as i32, 4 * cy as i32, 4 * r as i32);
         if button > 0 {
-            return Self::play(inks, x, y, button, fill);
+            return self.play(inks, x, y, button, fill);
         }
         for label in [&self.ride, &self.gps].into_iter().chain(&self.status) {
             if let Some(color) = label.pixel(look, x, y, fill) {
@@ -444,7 +519,9 @@ impl Home {
     #[cfg(test)]
     fn sensors_pixel(&self, look: Look, x: usize, y: usize) -> Shown {
         let inks = Inks::of(look);
-        let Some(fill) = Self::surface(inks, self.cursor == 1, SENSORS_TILE, x, y) else {
+        let radius = self.at.unit(RADIUS);
+        let tile = self.regions.sensors;
+        let Some(fill) = surface(inks, self.cursor == 1, tile, radius, x, y) else {
             return inks.black;
         };
         for label in [&self.sensors_title, &self.count] {
@@ -460,30 +537,132 @@ impl Home {
                 return color;
             }
         }
-        let left = SENSORS_TILE.left + INSET;
-        if y < ICON_SQUARE_TOP || x < left {
+        let slots = &self.regions.slots;
+        if y < slots[0].top {
             return fill;
         }
-        let slot = (x - left) / ICON_PITCH;
-        let Some(glance) = self.sensors.get(slot) else {
+        let Some((glance, slot)) = self
+            .sensors
+            .iter()
+            .zip(slots)
+            .find(|(_, slot)| (slot.left..slot.right).contains(&x))
+        else {
             return fill;
         };
-        let slot_left = left + slot * ICON_PITCH;
-        let cx = 4 * (slot_left + 25) as i32;
-        let dot = super::chrome::disc(x, y, cx, 4 * ICON_TOP as i32 + 2, 10);
+        let (cx, cy, r) = self.dot(*slot);
+        let dot = super::chrome::disc(x, y, cx, cy, r);
         let under = blend(look.ink(glance.color), fill, dot);
-        let icon = Sensor::of(glance.kind).icon(Size::Small);
-        icon.pixel(x, y, slot_left, ICON_SQUARE_TOP, look.ink(WHITE), under)
+        icon(self.at, glance)
+            .pixel(x, y, slot.left, slot.top, look.ink(WHITE), under)
             .unwrap_or(under)
     }
 }
 
-/// A half-width card's title: `BODY`, or a caption where `BODY` is too wide.
-fn small_title(text: &[u8], tile: Rect, top: usize, color: u16) -> Small {
-    let width = tile.width() - 2 * SMALL_INSET;
-    let line = Line::fit(&[&BODY, &CAPTION], text, width);
-    let top = top + (BODY.height - line.face().height) as usize / 2;
-    Label::new(line, tile.left + SMALL_INSET, top, Align::Left, color)
+#[cfg(any(test, feature = "invariants"))]
+pub(crate) type Card = (
+    &'static str,
+    Rect,
+    std::vec::Vec<(std::string::String, Rect)>,
+);
+
+#[cfg(any(test, feature = "invariants"))]
+impl Home {
+    pub(crate) fn cards(&self) -> [Card; 5] {
+        use super::chrome::layout::text;
+        let regions = self.regions;
+        let (cx, cy, r) = regions.play;
+        let play = Rect {
+            left: cx - r,
+            top: cy - r,
+            right: cx + r + 1,
+            bottom: cy + r + 1,
+        };
+        let mut ride: std::vec::Vec<_> = [&self.ride, &self.gps]
+            .into_iter()
+            .chain(&self.status)
+            .filter_map(text)
+            .collect();
+        ride.push(("play".into(), play));
+        let mut sensors: std::vec::Vec<_> = [&self.sensors_title, &self.count]
+            .into_iter()
+            .chain(&self.none)
+            .chain(&self.names)
+            .filter_map(text)
+            .collect();
+        for (slot, (glance, square)) in self.sensors.iter().zip(&regions.slots).enumerate() {
+            let ink = icon(self.at, glance).ink(square.left, square.top);
+            let (dx, dy, dr) = self.dot(*square);
+            let dot = |quarters: i32| (quarters / 4) as usize;
+            let icon = Rect {
+                left: ink.left.min(dot(dx - dr)),
+                top: ink.top.min(dot(dy - dr)),
+                right: ink.right.max(dot(dx + dr) + 1),
+                bottom: ink.bottom.max(dot(dy + dr) + 1),
+            };
+            sensors.push((std::format!("icon {slot}"), icon));
+        }
+        let rides = [&self.rides_title, &self.last]
+            .into_iter()
+            .filter_map(text)
+            .collect();
+        [
+            ("ride card", regions.ride, ride),
+            ("sensors card", regions.sensors, sensors),
+            (
+                "train card",
+                regions.workouts,
+                text(&self.workouts_title).into_iter().collect(),
+            ),
+            (
+                "settings card",
+                regions.settings,
+                text(&self.settings_title).into_iter().collect(),
+            ),
+            ("rides card", regions.rides, rides),
+        ]
+    }
+}
+
+fn triangle_width(triangle: Rect, y: usize) -> Option<usize> {
+    let (rows, wide) = (triangle.height() as i32, triangle.width() as i32);
+    let gy = y.checked_sub(triangle.top)? as i32;
+    (gy < rows).then(|| (wide * (rows - (2 * gy - (rows - 1)).abs()) / rows) as usize)
+}
+
+fn icon(at: &Scaled, glance: &Glance) -> &'static Icon {
+    at.art.sensor(Sensor::of(glance.kind), Size::Small)
+}
+
+fn surface(
+    inks: Inks,
+    focused: bool,
+    rect: Rect,
+    radius: usize,
+    x: usize,
+    y: usize,
+) -> Option<Shown> {
+    if focused {
+        card(
+            rect,
+            radius,
+            x,
+            y,
+            inks.raised,
+            Some(inks.accent),
+            inks.black,
+        )
+    } else {
+        card(rect, radius, x, y, inks.card, None, inks.black)
+    }
+}
+
+fn small_title(at: &Scaled, text: &[u8], tile: Rect, top: usize, color: u16) -> Small {
+    let body = at.face(FaceRole::Body);
+    let inset = at.unit(SMALL_INSET);
+    let width = tile.width() - 2 * inset;
+    let line = Line::fit(&[body, at.face(FaceRole::Caption)], text, width);
+    let top = top + (body.height - line.face().height) as usize / 2;
+    Label::new(line, tile.left + inset, top, Align::Left, color)
 }
 
 /// A sensor's name short enough to sit under its icon on Home.
@@ -525,64 +704,113 @@ pub fn this_week(distance_mm: u64) -> Text<20> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screens::BASE;
     use crate::screens::chrome::{ACCENT, CARD, RAISED};
+
+    const R: Regions = BASE.home;
+
+    fn home(cursor: usize, gps_fix: bool, glance: &[Glance], last: Text<20>) -> Home {
+        Home::new(&BASE, cursor, gps_fix, glance, last)
+    }
+
+    #[test]
+    fn the_c606_keeps_its_cards() {
+        let rect = |left, top, right, bottom| Rect {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        assert_eq!(R.ride, rect(10, 30, 230, 146));
+        assert_eq!(R.sensors, rect(10, 154, 230, 232));
+        assert_eq!(R.workouts, rect(10, 240, 100, 280));
+        assert_eq!(R.settings, rect(108, 240, 230, 280));
+        assert_eq!(R.rides, rect(10, 286, 230, 318));
+        assert_eq!(R.play, (54, 88, 28));
+        assert_eq!(R.triangle, rect(48, 76, 68, 100));
+        assert_eq!((R.ride_title.left, R.ride_title.bottom), (96, 83));
+        assert_eq!((R.gps.left, R.gps.top), (98, 88));
+        assert_eq!(
+            R.status.map(|row| (row.left, row.top, row.right)),
+            [(98, 106, 222), (98, 122, 222)]
+        );
+        assert_eq!((R.sensors_title.left, R.sensors_title.top), (26, 168));
+        assert_eq!(
+            R.slots.map(|slot| (slot.left, slot.top)),
+            [(26, 189), (78, 189), (130, 189), (182, 189)]
+        );
+        assert_eq!(R.names.top, 212);
+    }
 
     #[test]
     fn focus_raises_and_rings_the_card_and_taps_find_cards() {
-        let home = Home::new(0, true, &[], Text::new());
-        let inside = (RIDE_TILE.right - 24, RIDE_TILE.bottom - 24);
+        let home = home(0, true, &[], Text::new());
+        let inside = (R.ride.right - 24, R.ride.bottom - 24);
         assert_eq!(home.pixel(Look::PLAIN, inside.0, inside.1).0, RAISED);
         assert_eq!(
-            home.pixel(Look::PLAIN, RIDE_TILE.center_x(), RIDE_TILE.top)
-                .0,
+            home.pixel(Look::PLAIN, R.ride.center_x(), R.ride.top).0,
             ACCENT
         );
-        let sensors_inside = (SENSORS_TILE.right - 24, SENSORS_TILE.bottom - 24);
+        let sensors_inside = (R.sensors.right - 24, R.sensors.bottom - 24);
         assert_eq!(
             home.pixel(Look::PLAIN, sensors_inside.0, sensors_inside.1)
                 .0,
             CARD
         );
         assert_eq!(
-            home.pixel(Look::PLAIN, RIDE_TILE.left, RIDE_TILE.top).0,
+            home.pixel(Look::PLAIN, R.ride.left, R.ride.top).0,
             BLACK,
             "rounded"
         );
-        assert_eq!(home.pixel(Look::PLAIN, PLAY.0 + 20, PLAY.1).0, GREEN);
-        assert_eq!(
-            home.pixel(Look::PLAIN, PLAY.0, PLAY.1).0,
-            BLACK,
-            "play triangle"
-        );
+        let (cx, cy, _) = R.play;
+        assert_eq!(home.pixel(Look::PLAIN, cx + 20, cy).0, GREEN);
+        assert_eq!(home.pixel(Look::PLAIN, cx, cy).0, BLACK, "play triangle");
         assert_eq!(home.ride.color, WHITE);
-        let sensors = Home::new(1, true, &[], Text::new());
+        let sensors = home_at(1);
         assert_eq!(sensors.ride.color, MUTED);
-        let top = (SENSORS_TILE.center_x(), SENSORS_TILE.top);
+        let top = (R.sensors.center_x(), R.sensors.top);
         assert_eq!(sensors.pixel(Look::PLAIN, top.0, top.1).0, ACCENT);
-        assert_eq!(Home::tile_at(120, RIDE_TILE.top + 1), Some(Tile::Ride));
+        assert_eq!(R.tile_at(120, R.ride.top + 1), Some(Tile::Ride));
+        assert_eq!(R.tile_at(120, R.sensors.bottom - 1), Some(Tile::Sensors));
+        assert_eq!(R.tile_at(120, R.ride.bottom + 2), None);
+        assert_eq!(R.tile_at(120, R.settings.top + 2), Some(Tile::Settings));
         assert_eq!(
-            Home::tile_at(120, SENSORS_TILE.bottom - 1),
-            Some(Tile::Sensors)
-        );
-        assert_eq!(Home::tile_at(120, RIDE_TILE.bottom + 2), None);
-        assert_eq!(
-            Home::tile_at(120, SETTINGS_TILE.top + 2),
-            Some(Tile::Settings)
-        );
-        assert_eq!(
-            Home::tile_at(WORKOUTS_TILE.left + 4, WORKOUTS_TILE.top + 20),
+            R.tile_at(R.workouts.left + 4, R.workouts.top + 20),
             Some(Tile::Workouts)
         );
-        let workouts = Home::new(2, true, &[], Text::new());
-        let top = (WORKOUTS_TILE.center_x(), WORKOUTS_TILE.top);
+        let workouts = home_at(2);
+        let top = (R.workouts.center_x(), R.workouts.top);
         assert_eq!(workouts.pixel(Look::PLAIN, top.0, top.1).0, ACCENT);
         assert_eq!(workouts.workouts_title.color, WHITE);
         assert_eq!(workouts.settings_title.color, MUTED);
-        let settings = Home::new(3, true, &[], Text::new());
-        let top = (SETTINGS_TILE.center_x(), SETTINGS_TILE.top);
+        let settings = home_at(3);
+        let top = (R.settings.center_x(), R.settings.top);
         assert_eq!(settings.pixel(Look::PLAIN, top.0, top.1).0, ACCENT);
         assert_eq!(settings.settings_title.color, WHITE);
-        assert_eq!(Home::tile_at(2, 100), None);
+        assert_eq!(R.tile_at(2, 100), None);
+    }
+
+    fn home_at(cursor: usize) -> Home {
+        home(cursor, true, &[], Text::new())
+    }
+
+    #[test]
+    fn taps_find_the_cards_on_every_panel() {
+        for layout in crate::screens::panels::ALL {
+            let regions = &layout.home;
+            for (tile, rect) in [
+                (Tile::Ride, regions.ride),
+                (Tile::Sensors, regions.sensors),
+                (Tile::Workouts, regions.workouts),
+                (Tile::Settings, regions.settings),
+                (Tile::Rides, regions.rides),
+            ] {
+                let (x, y) = (rect.center_x(), rect.top + rect.height() / 2);
+                assert_eq!(regions.tile_at(x, y), Some(tile), "{:?}", layout.scaled);
+            }
+            let between = regions.ride.bottom + 1;
+            assert_eq!(regions.tile_at(regions.ride.center_x(), between), None);
+        }
     }
 
     #[test]
@@ -605,91 +833,46 @@ mod tests {
         assert_eq!(this_week(499_999).as_bytes(), b"WEEK 0 KM");
         let last = last_ride(4_999_800);
         assert_eq!(last.as_bytes(), b"5.00 KM");
-        let home = Home::new(0, false, &glance, last);
-        assert_eq!(home.count.line.text(), b"1/2 LIVE");
-        assert_eq!(home.count.color, GREEN);
+        let home_with = |glance: &[Glance], last| home(0, false, glance, last);
+        let shown = home_with(&glance, last);
+        assert_eq!(shown.count.line.text(), b"1/2 LIVE");
+        assert_eq!(shown.count.color, GREEN);
         let mut low = glance;
         // A dead strap is not live, so its battery is not the news.
         low[1].battery = Some(crate::sensors::ant::BatteryStatus::Critical);
-        assert_eq!(Home::new(0, false, &low, Text::new()).count.color, GREEN);
+        assert_eq!(home_with(&low, Text::new()).count.color, GREEN);
         low[0].battery = Some(crate::sensors::ant::BatteryStatus::Low);
-        let warned = Home::new(0, false, &low, Text::new());
+        let warned = home_with(&low, Text::new());
         assert_eq!(warned.count.line.text(), b"1/2 LIVE");
         assert_eq!(warned.count.color, AMBER);
         low[0].battery = Some(crate::sensors::ant::BatteryStatus::Ok);
-        assert_eq!(Home::new(0, false, &low, Text::new()).count.color, GREEN);
-        let left = SENSORS_TILE.left + INSET;
-        assert_eq!(home.pixel(Look::PLAIN, left + 25, ICON_TOP).0, GREEN);
+        assert_eq!(home_with(&low, Text::new()).count.color, GREEN);
+        let dot_top = R.slots[0].top + 1;
         assert_eq!(
-            home.pixel(Look::PLAIN, left + ICON_PITCH + 25, ICON_TOP).0,
+            shown.pixel(Look::PLAIN, R.slots[0].left + 25, dot_top).0,
+            GREEN
+        );
+        assert_eq!(
+            shown.pixel(Look::PLAIN, R.slots[1].left + 25, dot_top).0,
             0xfd20
         );
-        assert_eq!(home.last.line.text(), b"5.00 KM");
-        assert_eq!(home.rides_title.line.text(), b"RIDES");
-        let none = Home::new(0, false, &[], Text::new());
+        assert_eq!(shown.last.line.text(), b"5.00 KM");
+        assert_eq!(shown.rides_title.line.text(), b"RIDES");
+        let none = home_with(&[], Text::new());
         assert!(none.none.is_some() && none.last.line.text().is_empty());
         // The RIDES card takes the focus and a tap.
-        let rides = Home::new(4, false, &[], Text::new());
+        let rides = home_at(4);
         assert_eq!(
-            rides
-                .pixel(Look::PLAIN, RIDES_TILE.center_x(), RIDES_TILE.top)
-                .0,
+            rides.pixel(Look::PLAIN, R.rides.center_x(), R.rides.top).0,
             ACCENT
         );
-        assert_eq!(Home::tile_at(120, RIDES_TILE.top + 4), Some(Tile::Rides));
-    }
-
-    /// What each card shows, as named boxes, for the layout sweep.
-    fn cards(home: &Home) -> [(Rect, std::vec::Vec<(std::string::String, Rect)>); 4] {
-        use crate::screens::chrome::layout::text;
-        let (cx, cy, r) = PLAY;
-        let play = Rect {
-            left: cx - r,
-            top: cy - r,
-            right: cx + r + 1,
-            bottom: cy + r + 1,
-        };
-        let mut ride: std::vec::Vec<_> = [&home.ride, &home.gps]
-            .into_iter()
-            .chain(&home.status)
-            .filter_map(text)
-            .collect();
-        ride.push(("play".into(), play));
-        let mut sensors: std::vec::Vec<_> = [&home.sensors_title, &home.count]
-            .into_iter()
-            .chain(&home.none)
-            .chain(&home.names)
-            .filter_map(text)
-            .collect();
-        for slot in 0..home.sensors.len() {
-            let left = SENSORS_TILE.left + INSET + slot * ICON_PITCH;
-            let ink = Sensor::of(home.sensors[slot].kind)
-                .icon(Size::Small)
-                .ink(left, ICON_SQUARE_TOP);
-            let icon = Rect {
-                top: ink.top.min(ICON_TOP - 1),
-                right: left + 28,
-                ..ink
-            };
-            sensors.push((std::format!("icon {slot}"), icon));
-        }
-        [
-            (RIDE_TILE, ride),
-            (SENSORS_TILE, sensors),
-            (
-                WORKOUTS_TILE,
-                text(&home.workouts_title).into_iter().collect(),
-            ),
-            (
-                SETTINGS_TILE,
-                text(&home.settings_title).into_iter().collect(),
-            ),
-        ]
+        assert_eq!(R.tile_at(120, R.rides.top + 4), Some(Tile::Rides));
     }
 
     #[test]
     fn extreme_home_content_never_overlaps_or_clips() {
-        use crate::screens::chrome::layout::{assert_apart, assert_shown, text};
+        use crate::screens::chrome::layout::{assert_apart, assert_shown};
+        use crate::screens::workout::{Page, View};
         use crate::sensors::ant::device_type;
         let kinds = [
             device_type::SPEED_CADENCE,
@@ -709,34 +892,42 @@ mod tests {
                 battery: (index == 1).then_some(crate::sensors::ant::BatteryStatus::Low),
             })
             .collect();
-        for count in [0, 1, 4, 6] {
-            for distance_mm in [0, 15_000_000, 150_000_000, 1_000_000_000] {
-                for moving_s in [0, 3_600, 359_999] {
-                    {
-                        for cursor in 0..5 {
-                            let last = if distance_mm == 0 {
-                                Text::new()
-                            } else {
-                                last_ride(distance_mm + moving_s)
-                            };
-                            let mut home = Home::new(cursor, true, &glances[..count], last.clone());
-                            home.set_status(b"SENSORS UNAVAILABLE", true);
-                            let what = std::format!("{count} sensors, {:?}", last.as_str());
-                            let mut all = std::vec::Vec::new();
-                            for (card, items) in cards(&home) {
-                                assert_apart(&items, card.inset(4), &what);
-                                all.extend(items);
-                            }
-                            let below = [&home.rides_title, &home.last];
-                            let last_items: std::vec::Vec<_> =
-                                below.into_iter().filter_map(text).collect();
-                            all.extend(last_items.clone());
-                            assert_apart(&all, CONTENT, &what);
-                            if !last.as_bytes().is_empty() {
-                                assert_shown(&last_items, &[last.as_str()], &what);
-                            }
-                            assert_shown(&all, &["TRAIN", "SETTINGS"], &what);
+        crate::screens::check::enable(true);
+        for layout in crate::screens::panels::ALL {
+            for count in [0, 1, 4, 6] {
+                for distance_mm in [0, 15_000_000, 150_000_000, 1_000_000_000] {
+                    for cursor in 0..5 {
+                        let last = if distance_mm == 0 {
+                            Text::new()
+                        } else {
+                            last_ride(distance_mm)
+                        };
+                        let mut home =
+                            Home::new(layout, cursor, true, &glances[..count], last.clone());
+                        let status = [&b"SENSORS UNAVAILABLE"[..], b"NOT SAVED"][cursor % 2];
+                        home.set_status(status, true);
+                        let what = std::format!(
+                            "{:?}: {count} sensors, {:?}",
+                            layout.scaled,
+                            last.as_str()
+                        );
+                        let lines: std::vec::Vec<&[u8]> =
+                            home.status.iter().map(|label| label.line.text()).collect();
+                        assert_eq!(lines.join(&b' '), status, "{what}: the whole status");
+                        let ring = layout.scaled.unit(4);
+                        let mut all = std::vec::Vec::new();
+                        for (_, card, items) in home.cards() {
+                            assert_apart(&items, card.inset(ring), &what);
+                            all.extend(items);
                         }
+                        if !last.as_bytes().is_empty() {
+                            assert_shown(&all, &[last.as_str()], &what);
+                        }
+                        assert_shown(&all, &["RIDE", "TRAIN", "SETTINGS", "RIDES"], &what);
+                        let mut view = View::new(Page::Home, cursor, None);
+                        view.layout = layout;
+                        view.set_home(home);
+                        view.prepare().check_layout();
                     }
                 }
             }

@@ -12,7 +12,7 @@ use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
 use crate::ride::wheel_size::PLAUSIBLE_MM;
 use crate::ride::zones::TrainingProfile;
-use crate::screens::home::{Home, Tile};
+use crate::screens::home::Tile;
 use crate::screens::ready;
 use crate::screens::ride::RidePage;
 use crate::screens::ride::summary;
@@ -259,25 +259,29 @@ impl Runtime {
             && self.ride.active().status() == Status::Paused
             && !navigation.pause_hidden();
         let control = match navigation.page() {
-            Page::Home => Home::tile_at(x, y).map(Control::Tile),
-            Page::Ready if ready::riding_at(y) => Some(Control::ReadyWorkout),
-            Page::Ready => {
-                (ready::line_at(y) == Some(ready::Line::Sensors)).then_some(Control::ReadySensors)
-            }
+            Page::Home => self.layout.home.tile_at(x, y).map(Control::Tile),
+            Page::Ready if self.layout.ready.riding_at(x, y) => Some(Control::ReadyWorkout),
+            Page::Ready => (self.layout.ready.line_at(x, y) == Some(ready::Line::Sensors))
+                .then_some(Control::ReadySensors),
             // A tap on the code switches codes; after a session ended, any
             // tap tries again.
-            Page::Phone => (crate::screens::phone::on_code(x, y) || self.phone_status().is_none())
-                .then_some(Control::Phone),
+            Page::Phone => (crate::screens::phone::on_code(self.layout, x, y)
+                || self.phone_status().is_none())
+            .then_some(Control::Phone),
             Page::Sensors => Some(Control::Menu(point)),
             Page::Setup => self
                 .setup_step()
-                .and_then(|step| crate::screens::setup::target(x, y, step))
+                .and_then(|step| crate::screens::setup::target(&self.layout.setup, x, y, step))
                 .map(Control::Setup),
             Page::Settings if navigation.editing() => {
-                match navigation
-                    .sections()
-                    .target(x, y, navigation.settings_field(), true, 0)
-                {
+                match navigation.sections().target(
+                    &self.layout.settings,
+                    x,
+                    y,
+                    navigation.settings_field(),
+                    true,
+                    0,
+                ) {
                     Some(settings::Target::Lower) => Some(Control::Lower),
                     Some(settings::Target::Raise) => Some(Control::Raise),
                     _ => None,
@@ -305,7 +309,7 @@ impl Runtime {
             ),
         };
         if let Some(list) = self.page_list() {
-            let layout = Self::list_layout(list);
+            let layout = self.list_layout(list);
             if layout.on_page(y) {
                 let count = self.list_count(list);
                 let offset = self.list_offset(list, now);
@@ -325,8 +329,7 @@ impl Runtime {
     fn sign_at(&self, x: usize, y: usize, now: u64, radar: bool) -> bool {
         let sign = super::course::sign_of(&self.track, now);
         let page = self.navigation.ride_page();
-        let layout = crate::screens::ride::page_layout(page, self.layout);
-        crate::screens::sign::on_page(page, sign, radar, layout)
+        crate::screens::sign::on_page(page, sign, radar, self.layout)
             .is_some_and(|placed| placed.rect().contains(x, y))
     }
 

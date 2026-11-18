@@ -256,6 +256,40 @@ frame, not their sum, inside the device's stack budget.
 [`app/view.rs`](../apps/vana/src/app/view.rs) lists the tiers. A new write
 goes into the tier that runs at its moment, never into the draw.
 
+## Screens lay out from the panel
+
+A screen takes its geometry from the panel it draws on, so one build of the
+screens serves every panel a device declares. [UI](ui.md#how-screens-scale)
+says what a rider sees at each scale step.
+
+- **A screen's regions are a function of the panel alone.** Each screen module
+  owns `pub const fn regions(at: &Scaled) -> Regions`, and a variant that
+  depends on what a frame shows (a radar, a course) is a field of its own.
+  Because nothing else feeds a layout, the composition can compute every
+  screen's regions once, in one `static` `screens::Layout`, and a layout that
+  does not fit a panel fails that device's build instead of a ride.
+- **Screens borrow the one layout.** `Scene` and `View` hold a single
+  `&'static Layout`, and screens borrow their regions from it without copying
+  them. Laying regions out per frame, or copying them, costs stack on
+  `Runtime::present`'s path for every screen, and that path has the least
+  headroom on the device.
+- **Bounds come from the manifests.** An array that holds a region takes its
+  bound with `scaled::largest!` over `limits::PANELS`, measured on each panel's
+  own regions. Firmware sees only the devices' panels, so its arrays stay the
+  size its own panel needs; tests also see the simulator models' panels.
+- **Pixel numbers stay in `regions`.** Screen code reads the 240 × 320 constants
+  only in tests, and `tools/check-boundaries.py` refuses a numeric `Rect` edge
+  in a screen file outside its `regions`, so no placement bypasses the scale.
+- **Every frame is checked.** [`screens/check.rs`](../apps/vana/src/screens/check.rs)
+  runs on every frame in tests and the simulator: regions lie inside the
+  panel, each run and shape stays inside the region it was laid out in, and
+  runs do not overlap. `tools/simulator/tests/responsive.rs` walks every screen
+  on the `wide` and `small` test models beside a C606.
+
+The shell keeps `draw_canvas`, which fits a small canvas to the panel, for its
+own status and blank screens, so the shell still runs on panels VANA cannot
+lay out.
+
 ## Ownership includes time and failure
 
 Each resource has one owner. It can provide direct access or bounded request and

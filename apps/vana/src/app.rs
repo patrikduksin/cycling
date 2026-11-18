@@ -148,7 +148,7 @@ impl Runtime {
             phone: phone::Phone::default(),
             display: presentation::Display::default(),
             startup: None,
-            menu: Menu::new(),
+            menu: Menu::new(layout),
             discovery: sensor_links::Discovery::default(),
             links: sensor_links::Links::default(),
             calibration: calibration::Phase::Idle,

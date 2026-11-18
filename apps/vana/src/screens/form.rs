@@ -10,27 +10,121 @@
 //! tired, on a baseline at zero. When some rides had no power the page says
 //! they are left out. While the ride index is still reading, or when there is
 //! no date or no ride with power, it says that instead.
+use super::bests::{Message, centred, message_of};
 use super::canvas::{Canvas, Shape};
-use super::chrome::{
-    Align, BODY, CAPTION, CONTENT, GREEN, POWER, RED, Rect, SECONDARY, TERTIARY, WHITE, WIDTH,
-};
+use super::chrome::{Align, GREEN, POWER, RED, Rect, SECONDARY, TERTIARY, WHITE};
+use super::scaled::{Scaled, Track};
 use super::workout::{Text, View};
 use crate::ride::fitness::{Form, TREND};
 use core::fmt::Write;
+use firmware_shell::rendering::font::FaceRole;
 
-const LEFT: usize = 16;
-const RIGHT: usize = WIDTH - 16;
-const FIRST: usize = CONTENT.top + 60;
-const PITCH: usize = 32;
-/// The zero line of the trend, and the bar height a form of `SCALE` reaches.
-const ZERO: usize = 212;
-const REACH: usize = 36;
 const SCALE: i32 = 50;
-const BAR_WIDE: usize = 24;
-const BAR_PITCH: usize = 35;
-const BARS_LEFT: usize = (WIDTH - (TREND - 1) * BAR_PITCH - BAR_WIDE) / 2;
-const ENDS_BASE: usize = 272;
-const NOTE_BASE: usize = 292;
+
+/// FORM on one panel: the title, three bands of readings, then the trend
+/// of the last weeks, its ends named under it and the note under those.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    /// FORM, its capitals ending on the bottom.
+    pub title: Rect,
+    /// FITNESS, FATIGUE and FORM: each caption, then its value, whose
+    /// capitals end on the bottom.
+    pub bands: [Rect; 3],
+    pub value: Rect,
+    /// What form means today, beside the FORM caption.
+    pub word: Rect,
+    /// The trend: bars stand up from `zero` into `rested` and hang into
+    /// `tired`, a form of `SCALE` reaching across either. On a taller panel
+    /// the trend takes the spare rows.
+    pub rested: Rect,
+    pub zero: Rect,
+    pub tired: Rect,
+    /// One column per week, oldest first.
+    pub weeks: [Rect; TREND],
+    /// "6 WEEKS AGO" and "NOW" end on its bottom.
+    pub ends: Rect,
+    /// That rides without power are left out, on two lines.
+    pub note: [Rect; 2],
+    pub message: Message,
+}
+
+pub const fn regions(at: &Scaled) -> Regions {
+    use Track::{Fr, Unit};
+    let text = super::bests::columns(at);
+    let band = Unit(32);
+    let [
+        title,
+        _,
+        a,
+        b,
+        c,
+        _,
+        rested,
+        zero,
+        _,
+        tired,
+        ends,
+        first,
+        second,
+        _,
+    ] = text.rows(
+        [
+            Unit(24),
+            Unit(4),
+            band,
+            band,
+            band,
+            Unit(28),
+            Fr(1),
+            Unit(1),
+            Unit(1),
+            Fr(1),
+            Unit(22),
+            Unit(20),
+            Unit(14),
+            Unit(14),
+        ],
+        Unit(0),
+        at,
+    );
+    let [_, word, _] = text.cols([Unit(70), Unit(100), Fr(1)], Unit(0), at);
+    let content = super::chrome::regions(at).content;
+    let wide = Unit(24);
+    let gap = Unit(35 - 24);
+    let [_, w0, _, w1, _, w2, _, w3, _, w4, _, w5, _] = content.cols(
+        [
+            Fr(1),
+            wide,
+            gap,
+            wide,
+            gap,
+            wide,
+            gap,
+            wide,
+            gap,
+            wide,
+            gap,
+            wide,
+            Fr(1),
+        ],
+        Unit(0),
+        at,
+    );
+    let note = super::bests::message(at).line;
+    Regions {
+        title,
+        bands: [a, b, c],
+        value: super::bests::value_column(at),
+        word,
+        rested,
+        zero,
+        tired,
+        weeks: [w0, w1, w2, w3, w4, w5],
+        ends,
+        note: [first.with_columns(note), second.with_columns(note)],
+        message: super::bests::message(at),
+    }
+}
 
 /// What the page shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -69,43 +163,36 @@ pub fn signed(text: &mut Text<12>, value: i16) {
 }
 
 pub fn prepare(view: &View) -> Canvas {
+    let layout = view.layout;
+    let (at, regions) = (&layout.scaled, &layout.form);
+    let face = |role| at.face(role);
+    let (body, caption) = (face(FaceRole::Body), face(FaceRole::Caption));
     let mut canvas = Canvas::default();
+    let mut say = |title: &[u8], line: &[u8]| {
+        message_of(&mut canvas, at, &regions.message, (title, WHITE), line);
+    };
     let (form, left_out) = match view.form() {
         Mode::Form { form, left_out } => (form, left_out),
         Mode::Reading => {
-            super::bests::centred(&mut canvas, &[&BODY], b"READING RIDES", 150, WHITE);
-            super::bests::centred(
-                &mut canvas,
-                &[&CAPTION],
-                b"FORM SHOWS WHEN DONE",
-                174,
-                SECONDARY,
-            );
+            say(b"READING RIDES", b"FORM SHOWS WHEN DONE");
             return canvas;
         }
         Mode::NoClock => {
-            super::bests::centred(&mut canvas, &[&BODY], b"NO DATE YET", 150, WHITE);
-            super::bests::centred(&mut canvas, &[&CAPTION], b"GET A GPS FIX", 174, SECONDARY);
+            say(b"NO DATE YET", b"GET A GPS FIX");
             return canvas;
         }
         Mode::NoPower => {
-            super::bests::centred(&mut canvas, &[&BODY], b"NO POWER RIDES", 150, WHITE);
-            super::bests::centred(
-                &mut canvas,
-                &[&CAPTION],
-                b"NEEDS A POWER METER",
-                174,
-                SECONDARY,
-            );
+            say(b"NO POWER RIDES", b"NEEDS A POWER METER");
             return canvas;
         }
     };
+    let title = regions.title;
     canvas.fit(
-        &[&BODY],
+        &[body],
         b"FORM",
-        RIGHT - LEFT,
-        LEFT,
-        CONTENT.top + 24,
+        title.width(),
+        title.left,
+        title.bottom,
         Align::Left,
         WHITE,
     );
@@ -121,94 +208,80 @@ pub fn prepare(view: &View) -> Canvas {
         (b"FATIGUE", &fatigue, POWER),
         (b"FORM", &signed_form, tone),
     ];
-    for (row, (label, value, color)) in rows.into_iter().enumerate() {
-        let base = FIRST + row * PITCH;
+    let value = regions.value;
+    for ((label, text, color), band) in rows.into_iter().zip(regions.bands) {
+        let base = band.bottom;
+        let caption_base = base - at.unit(14);
         canvas.caption(
-            &crate::screens::scaled::BASE,
+            at,
             label,
-            RIGHT - LEFT,
-            LEFT,
-            base - 14,
+            band.width(),
+            band.left,
+            caption_base,
             Align::Left,
         );
         canvas.fit(
-            &[&BODY, &CAPTION],
-            value.as_bytes(),
-            100,
-            RIGHT,
-            base - 3,
+            &[body, caption],
+            text.as_bytes(),
+            value.width(),
+            value.right,
+            base - at.unit(3),
             Align::Right,
             color,
         );
     }
+    let column = regions.word;
     canvas.fit(
-        &[&CAPTION],
+        &[caption],
         word.as_bytes(),
-        100,
-        LEFT + 70,
-        FIRST + 2 * PITCH - 14,
+        column.width(),
+        column.left,
+        regions.bands[2].bottom - at.unit(14),
         Align::Left,
         tone,
     );
     canvas.shape(Shape::Bar {
-        rect: Rect {
-            left: LEFT,
-            top: ZERO,
-            right: RIGHT,
-            bottom: ZERO + 1,
-        },
+        rect: regions.zero,
         radius: 0,
         color: TERTIARY,
     });
-    for (week, &value) in form.trend.iter().enumerate() {
-        let high = (i32::from(value).abs().min(SCALE) as usize * REACH / SCALE as usize).max(2);
-        let left = BARS_LEFT + week * BAR_PITCH;
+    let reach = regions.rested.height();
+    let radius = at.unit(2);
+    for (&value, week) in form.trend.iter().zip(regions.weeks) {
+        let high = (i32::from(value).abs().min(SCALE) as usize * reach / SCALE as usize).max(2);
         let (top, bottom) = if value >= 0 {
-            (ZERO - high, ZERO)
+            (regions.rested.bottom - high, regions.rested.bottom)
         } else {
-            (ZERO + 2, ZERO + 2 + high)
+            (regions.tired.top, regions.tired.top + high)
         };
         canvas.shape(Shape::Bar {
             rect: Rect {
-                left,
                 top,
-                right: left + BAR_WIDE,
                 bottom,
+                ..week
             },
-            radius: 2,
+            radius,
             color: verdict(value).1,
         });
     }
+    let ends = regions.ends;
     canvas.caption(
-        &crate::screens::scaled::BASE,
+        at,
         b"6 WEEKS AGO",
-        RIGHT - LEFT,
-        LEFT,
-        ENDS_BASE,
+        ends.width(),
+        ends.left,
+        ends.bottom,
         Align::Left,
     );
-    canvas.caption(
-        &crate::screens::scaled::BASE,
-        b"NOW",
-        60,
-        RIGHT,
-        ENDS_BASE,
-        Align::Right,
-    );
-    let note: &[&[u8]] = if left_out {
-        &[b"RIDES WITHOUT POWER", b"ARE LEFT OUT"]
-    } else {
-        &[]
-    };
-    for (line, text) in note.iter().enumerate() {
-        canvas.caption(
-            &crate::screens::scaled::BASE,
-            text,
-            RIGHT - LEFT,
-            WIDTH / 2,
-            NOTE_BASE + line * 14,
-            Align::Center,
-        );
+    let now = at.unit(60);
+    canvas.caption(at, b"NOW", now, ends.right, ends.bottom, Align::Right);
+    if left_out {
+        for (text, row) in [&b"RIDES WITHOUT POWER"[..], b"ARE LEFT OUT"]
+            .into_iter()
+            .zip(regions.note)
+        {
+            centred(&mut canvas, &[caption], text, row, SECONDARY);
+        }
     }
     canvas
 }
@@ -216,23 +289,25 @@ pub fn prepare(view: &View) -> Canvas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::chrome::HEIGHT;
     use crate::screens::workout::Page;
+    use crate::screens::{BASE, Layout, panels};
 
-    fn view(mode: Mode) -> View<'static> {
+    const R: Regions = BASE.form;
+
+    fn shown(layout: &'static Layout, mode: Mode) -> View<'static> {
         let mut view = View::new(Page::Form, 0, None);
+        view.layout = layout;
         view.show_form(mode);
         view.prepare();
         view
     }
 
+    fn view(mode: Mode) -> View<'static> {
+        shown(&BASE, mode)
+    }
+
     fn full() -> Rect {
-        Rect {
-            left: 0,
-            top: CONTENT.top,
-            right: WIDTH,
-            bottom: HEIGHT,
-        }
+        BASE.chrome.content
     }
 
     #[test]
@@ -318,6 +393,48 @@ mod tests {
     }
 
     #[test]
+    fn the_widest_form_and_every_waiting_page_lay_out_whole() {
+        let widest = Mode::Form {
+            form: Form {
+                fitness: 999,
+                fatigue: 999,
+                form: -999,
+                trend: [i16::MIN, i16::MAX, -50, 50, -1, 0],
+            },
+            left_out: true,
+        };
+        let waiting = [
+            (Mode::Reading, ["READING RIDES", "FORM SHOWS WHEN DONE"]),
+            (Mode::NoClock, ["NO DATE YET", "GET A GPS FIX"]),
+            (Mode::NoPower, ["NO POWER RIDES", "NEEDS A POWER METER"]),
+        ];
+        crate::screens::check::enable(true);
+        for layout in panels::ALL {
+            let what = std::format!("{:?}", layout.scaled);
+            let mut view = shown(layout, widest);
+            view.prepare().check_layout();
+            view.canvas().assert_laid_out(
+                layout.chrome.content,
+                &[
+                    "FITNESS",
+                    "999",
+                    "-999",
+                    "VERY TIRED",
+                    "NOW",
+                    "ARE LEFT OUT",
+                ],
+                &what,
+            );
+            for (mode, want) in waiting {
+                let mut view = shown(layout, mode);
+                view.prepare().check_layout();
+                view.canvas()
+                    .assert_laid_out(layout.chrome.content, &want, &what);
+            }
+        }
+    }
+
+    #[test]
     fn trend_bars_stand_on_the_zero_line_by_sign_and_stop_at_the_scale() {
         let view = view(Mode::Form {
             form: Form {
@@ -337,14 +454,19 @@ mod tests {
                 _ => None,
             })
             .collect();
+        let (zero, reach) = (R.zero.top, R.rested.height());
+        assert_eq!((zero, reach), (212, 36));
         assert_eq!(bars.len(), TREND);
-        assert_eq!(bars[0].top, ZERO - REACH);
-        assert_eq!(bars[0].bottom, ZERO);
+        assert_eq!(bars[0].top, zero - reach);
+        assert_eq!(bars[0].bottom, zero);
         assert_eq!(bars[1].bottom - bars[1].top, 2);
-        assert_eq!(bars[2].top, ZERO + 2);
-        assert_eq!(bars[2].bottom, ZERO + 2 + REACH);
-        assert_eq!(bars[3].bottom - bars[3].top, REACH / 2);
-        assert!(bars[4].top > ZERO);
-        assert!(bars.iter().all(|b| b.left >= LEFT && b.right <= RIGHT));
+        assert_eq!(bars[2].top, zero + 2);
+        assert_eq!(bars[2].bottom, zero + 2 + reach);
+        assert_eq!(bars[3].bottom - bars[3].top, reach / 2);
+        assert!(bars[4].top > zero);
+        assert!(
+            bars.iter()
+                .all(|b| b.left >= R.zero.left && b.right <= R.zero.right)
+        );
     }
 }

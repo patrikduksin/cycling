@@ -11,13 +11,12 @@
 //! while editing. The runtime prepares each row's value and note; this draws
 //! them and maps touches to `Target`s.
 use super::canvas::{Canvas, Shape};
-use super::chrome::{
-    ACCENT, AMBER, Align, BODY, CAPTION, CARD, LARGE, Line, PRESSED, RAISED, Rect, SECONDARY,
-    TITLE, VALUE, WHITE,
-};
+use super::chrome::{ACCENT, AMBER, Align, CARD, Line, PRESSED, RAISED, Rect, SECONDARY, WHITE};
 use super::ride::RidePage;
+use super::scaled::{Scaled, Track};
 use super::scroll::{Column, Layout};
 use super::workout::View;
+use firmware_shell::rendering::font::FaceRole;
 
 /// Every row, in BottomLeft order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,27 +231,29 @@ impl Sections {
     /// a number is edited.
     pub fn target(
         self,
+        regions: &Regions,
         x: usize,
         y: usize,
         cursor: usize,
         editing: bool,
         offset: i32,
     ) -> Option<Target> {
-        if !(LEFT..RIGHT).contains(&x) {
+        let list = &regions.list;
+        if !(list.column.left..list.column.right).contains(&x) {
             return None;
         }
         if editing {
-            return (PAD_TOP..PAD_TOP + PAD_HEIGHT)
-                .contains(&y)
-                .then_some(if x < PAD_SPLIT {
+            let Editor { lower, raise, .. } = regions.editor;
+            return (lower.top..lower.bottom).contains(&y).then_some(
+                if x < (lower.right + raise.left) / 2 {
                     Target::Lower
                 } else {
                     Target::Raise
-                });
+                },
+            );
         }
         let (rows, first) = self.rows(cursor);
-        LAYOUT
-            .card_at(rows.len(), offset, x, y)
+        list.card_at(rows.len(), offset, x, y)
             .map(|row| Target::Row(first + row))
     }
 }
@@ -375,42 +376,77 @@ pub const VALUES: usize = 1;
 /// A note beside each value, such as the zone a number anchors.
 pub const NOTES: usize = VALUES + SECTION_ROWS;
 
-const RADIUS: usize = 12;
-/// Text keeps this far inside a row or pad.
-const INSET: usize = 16;
-const LEFT: usize = 10;
-const RIGHT: usize = 230;
-const TITLE_BASE: usize = 62;
-const ROW_TOP: usize = 76;
-const ROW_HEIGHT: usize = 46;
-const ROW_PITCH: usize = 52;
-/// The rows scroll between the title and the save status.
-pub const LAYOUT: Layout = Layout {
-    top: ROW_TOP - 4,
-    bottom: STATUS_BASE - 12,
-    column: Column {
-        left: LEFT,
-        right: RIGHT,
-        top: 4,
-        height: ROW_HEIGHT,
-        pitch: ROW_PITCH,
-    },
-    end: 4,
-    margin: 4,
-    pin: None,
-};
-const FOCUS: usize = 3;
-/// A long section's scroll bar, in the margin right of the rows.
-const BAR_LEFT: usize = RIGHT + 4;
-const BAR_WIDE: usize = 3;
-/// The number editor's field and its minus and plus pads.
-const FIELD_TOP: usize = 76;
-const FIELD_HEIGHT: usize = 92;
-const PAD_TOP: usize = 208;
-const PAD_HEIGHT: usize = 58;
-const PAD_SPLIT: usize = 120;
-const PAD_GAP: usize = 4;
-const STATUS_BASE: usize = 300;
+/// Settings on one panel; each text row's capitals end on its bottom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    /// The rows, scrolling between the title and the save status.
+    pub list: Layout,
+    pub title: Rect,
+    /// A long section's scroll bar: its columns, in the margin right of the
+    /// rows, down the viewport.
+    pub bar: Rect,
+    pub status: Rect,
+    pub editor: Editor,
+}
+
+/// The number editor: the section's title, the edited number's field, and
+/// the minus and plus pads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Editor {
+    pub title: Rect,
+    pub field: Rect,
+    pub lower: Rect,
+    pub raise: Rect,
+}
+
+pub const fn regions(at: &Scaled) -> Regions {
+    use Track::{Fr, Unit};
+    let content = super::chrome::regions(at).content;
+    let [_, rows, _, bar, _] =
+        content.cols([Unit(10), Fr(1), Unit(4), Unit(3), Unit(3)], Unit(0), at);
+    let [title, _, list, status, _] =
+        rows.rows([Unit(38), Unit(10), Fr(1), Unit(12), Unit(20)], Unit(0), at);
+    let [heading, _, field, _, pads, _, _] = rows.rows(
+        [
+            Unit(20),
+            Unit(32),
+            Unit(92),
+            Fr(1),
+            Unit(58),
+            Unit(34),
+            Unit(20),
+        ],
+        Unit(0),
+        at,
+    );
+    let [lower, _, raise] = pads.cols([Fr(1), Unit(8), Fr(1)], Unit(0), at);
+    let height = at.unit(46);
+    Regions {
+        list: Layout {
+            top: list.top,
+            bottom: list.bottom,
+            column: Column {
+                left: rows.left,
+                right: rows.right,
+                top: at.unit(4),
+                height,
+                pitch: height + at.unit(6),
+            },
+            end: at.unit(4),
+            margin: at.unit(4),
+            pin: None,
+        },
+        title,
+        bar: list.with_columns(bar),
+        status,
+        editor: Editor {
+            title: heading,
+            field,
+            lower,
+            raise,
+        },
+    }
+}
 
 /// What a touch landed on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -423,6 +459,9 @@ pub enum Target {
 
 /// The section's rows, or the number editor, with the save status.
 pub(super) fn prepare(view: &View) -> Canvas {
+    let layout = view.layout;
+    let (at, regions) = (&layout.scaled, &layout.settings);
+    let list = &regions.list;
     let mut canvas = Canvas::default();
     let sections = view.sections;
     let title = sections.title(sections.section(view.cursor).0);
@@ -430,17 +469,18 @@ pub(super) fn prepare(view: &View) -> Canvas {
     if view.editing && row.kind() == Kind::Number {
         editor(&mut canvas, view, title, row);
     } else {
+        let heading = regions.title;
         canvas.fit(
-            &[&TITLE, &BODY],
+            &[at.face(FaceRole::Title), at.face(FaceRole::Body)],
             title.as_bytes(),
-            RIGHT - LEFT,
-            LEFT,
-            TITLE_BASE,
+            heading.width(),
+            heading.left,
+            heading.bottom,
             Align::Left,
             WHITE,
         );
         let (rows, first) = sections.rows(view.cursor);
-        for index in LAYOUT.visible(rows.len(), view.scroll) {
+        for index in list.visible(rows.len(), view.scroll) {
             row_card(
                 &mut canvas,
                 view,
@@ -450,17 +490,16 @@ pub(super) fn prepare(view: &View) -> Canvas {
             );
         }
         // A long section's track down the viewport, the part in view lit.
-        let (top, bottom) = (LAYOUT.top, LAYOUT.bottom);
-        if let Some((start, end)) = LAYOUT.thumb(rows.len(), view.scroll) {
+        let bar = regions.bar;
+        if let Some((start, end)) = list.thumb(rows.len(), view.scroll) {
             // The bar stays put while the rows scroll under it.
-            let at = |y| LAYOUT.held(y, view.scroll);
-            for (top, bottom, color) in [(top, bottom, CARD), (start, end, SECONDARY)] {
+            let held = |y| list.held(y, view.scroll);
+            for (top, bottom, color) in [(bar.top, bar.bottom, CARD), (start, end, SECONDARY)] {
                 canvas.shape(Shape::Bar {
                     rect: Rect {
-                        left: BAR_LEFT,
-                        top: at(top),
-                        right: BAR_LEFT + BAR_WIDE,
-                        bottom: at(bottom),
+                        top: held(top),
+                        bottom: held(bottom),
+                        ..bar
                     },
                     radius: 1,
                     color,
@@ -474,12 +513,13 @@ pub(super) fn prepare(view: &View) -> Canvas {
     }
     let status = view.lines()[STATUS].as_bytes();
     let fine = matches!(status, b"SAVED" | b"SAVING");
+    let line = regions.status;
     canvas.fit(
-        &[&CAPTION],
+        &[at.face(FaceRole::Caption)],
         status,
-        RIGHT - LEFT,
-        LEFT,
-        STATUS_BASE,
+        line.width(),
+        line.left,
+        line.bottom,
         Align::Left,
         if fine { SECONDARY } else { AMBER },
     );
@@ -490,18 +530,21 @@ pub(super) fn prepare(view: &View) -> Canvas {
 /// be tapped, so each sits on a small card; the focused one is raised and
 /// ringed.
 fn row_card(canvas: &mut Canvas, view: &View, index: usize, row: Row, focused: bool) {
-    let rect = LAYOUT.rect(index);
+    let layout = view.layout;
+    let at = &layout.scaled;
+    let rect = layout.settings.list.rect(index);
     let slot = index;
+    let (radius, focus, inset) = (at.unit(12), at.unit(3), at.unit(16));
     if focused {
         canvas.shape(Shape::Panel {
             rect,
-            radius: RADIUS,
+            radius,
             color: ACCENT,
         });
     }
     canvas.shape(Shape::Panel {
-        rect: if focused { rect.inset(FOCUS) } else { rect },
-        radius: if focused { RADIUS - FOCUS } else { RADIUS },
+        rect: if focused { rect.inset(focus) } else { rect },
+        radius: if focused { radius - focus } else { radius },
         color: if view.pressed_setting() == Some(index as u16) {
             PRESSED
         } else if focused {
@@ -510,18 +553,19 @@ fn row_card(canvas: &mut Canvas, view: &View, index: usize, row: Row, focused: b
             CARD
         },
     });
-    let (left, right) = (LEFT + INSET, RIGHT - INSET);
+    let (left, right) = (rect.left + inset, rect.right - inset);
     canvas.caption(
-        &crate::screens::scaled::BASE,
+        at,
         row.label().as_bytes(),
         right - left,
         left,
-        rect.top + 19,
+        rect.top + at.unit(19),
         Align::Left,
     );
-    let base = rect.top + 38;
+    let base = rect.top + at.unit(38);
+    let caption = at.face(FaceRole::Caption);
     let value = canvas.fit(
-        &[&BODY, &CAPTION],
+        &[at.face(FaceRole::Body), caption],
         view.lines()[VALUES + slot].as_bytes(),
         right - left,
         left,
@@ -531,21 +575,14 @@ fn row_card(canvas: &mut Canvas, view: &View, index: usize, row: Row, focused: b
     );
     // A note too wide beside the value gives way to its part after a comma, then to none.
     let whole = view.lines()[NOTES + slot].as_bytes();
-    let room = right.saturating_sub(value.right() + 12);
+    let room = right.saturating_sub(value.right() + at.unit(12));
     let last = whole
         .windows(2)
         .position(|pair| pair == b", ")
-        .map_or(whole, |at| &whole[at + 2..]);
+        .map_or(whole, |comma| &whole[comma + 2..]);
     for note in [whole, last] {
-        if !note.is_empty() && Line::<24>::fit(&[&CAPTION], note, room).text().len() == note.len() {
-            canvas.caption(
-                &crate::screens::scaled::BASE,
-                note,
-                room,
-                right,
-                base,
-                Align::Right,
-            );
+        if !note.is_empty() && Line::<24>::fit(&[caption], note, room).text().len() == note.len() {
+            canvas.caption(at, note, room, right, base, Align::Right);
             break;
         }
     }
@@ -553,50 +590,50 @@ fn row_card(canvas: &mut Canvas, view: &View, index: usize, row: Row, focused: b
 
 /// The edited number on an accent field, with its note, then the pads.
 fn editor(canvas: &mut Canvas, view: &View, title: &str, row: Row) {
+    let layout = view.layout;
+    let (at, editor) = (&layout.scaled, &layout.settings.editor);
+    let face = |role| at.face(role);
+    let (radius, inset) = (at.unit(12), at.unit(16));
+    let heading = editor.title;
     canvas.caption(
-        &crate::screens::scaled::BASE,
+        at,
         title.as_bytes(),
-        RIGHT - LEFT,
-        LEFT,
-        44,
+        heading.width(),
+        heading.left,
+        heading.bottom,
         Align::Left,
     );
-    let rect = Rect {
-        left: LEFT,
-        top: FIELD_TOP,
-        right: RIGHT,
-        bottom: FIELD_TOP + FIELD_HEIGHT,
-    };
+    let rect = editor.field;
     canvas.shape(Shape::Panel {
         rect,
-        radius: RADIUS,
+        radius,
         color: ACCENT,
     });
-    let (left, width) = (LEFT + INSET, RIGHT - LEFT - 2 * INSET);
+    let (left, width) = (rect.left + inset, rect.width() - 2 * inset);
     canvas.fit(
-        &[&CAPTION],
+        &[face(FaceRole::Caption)],
         row.label().as_bytes(),
         width,
         left,
-        rect.top + 24,
+        rect.top + at.unit(24),
         Align::Left,
         WHITE,
     );
     canvas.fit(
-        &[&VALUE, &BODY],
+        &[face(FaceRole::Value), face(FaceRole::Body)],
         view.lines()[VALUES].as_bytes(),
         width,
         left,
-        rect.top + 60,
+        rect.top + at.unit(60),
         Align::Left,
         WHITE,
     );
     canvas.fit(
-        &[&CAPTION],
+        &[face(FaceRole::Caption)],
         view.lines()[NOTES].as_bytes(),
         width,
         left,
-        rect.top + 80,
+        rect.top + at.unit(80),
         Align::Left,
         WHITE,
     );
@@ -605,26 +642,19 @@ fn editor(canvas: &mut Canvas, view: &View, title: &str, row: Row) {
     } else {
         (b"-5", b"+5")
     };
-    for (left, right, label) in [
-        (LEFT, PAD_SPLIT - PAD_GAP, lower),
-        (PAD_SPLIT + PAD_GAP, RIGHT, raise),
-    ] {
+    let large = face(FaceRole::Large);
+    for (pad, label) in [(editor.lower, lower), (editor.raise, raise)] {
         canvas.shape(Shape::Panel {
-            rect: Rect {
-                left,
-                top: PAD_TOP,
-                right,
-                bottom: PAD_TOP + PAD_HEIGHT,
-            },
-            radius: RADIUS,
+            rect: pad,
+            radius,
             color: RAISED,
         });
-        let base = PAD_TOP + (PAD_HEIGHT + LARGE.cap as usize) / 2;
+        let base = pad.top + (pad.height() + large.cap as usize) / 2;
         canvas.fit(
-            &[&LARGE],
+            &[large],
             label,
-            right - left,
-            (left + right) / 2,
+            pad.width(),
+            pad.center_x(),
             base,
             Align::Center,
             WHITE,
@@ -637,8 +667,28 @@ mod tests {
     use super::*;
     use crate::screens::workout::Page;
 
+    const R: Regions = regions(&crate::screens::scaled::BASE);
+    const LAYOUT: Layout = R.list;
+    const LEFT: usize = R.list.column.left;
+    const ROW_TOP: usize = R.list.top + R.list.column.top;
+    const ROW_HEIGHT: usize = R.list.column.height;
+    const ROW_PITCH: usize = R.list.column.pitch;
+    const PAD_TOP: usize = R.editor.lower.top;
+    const BAR_LEFT: usize = R.bar.left;
+
     fn view(cursor: usize, editing: bool, values: &[(&str, &str)], status: &str) -> View<'static> {
+        view_on(&crate::screens::BASE, cursor, editing, values, status)
+    }
+
+    fn view_on(
+        layout: &'static crate::screens::Layout,
+        cursor: usize,
+        editing: bool,
+        values: &[(&str, &str)],
+        status: &str,
+    ) -> View<'static> {
         let mut view = View::new(Page::Settings, cursor, None);
+        view.layout = layout;
         view.editing = editing;
         let lines = view.show_settings();
         for (slot, (value, note)) in values.iter().enumerate() {
@@ -737,7 +787,10 @@ mod tests {
         let mut editing = profile(0, true);
         let colors: std::vec::Vec<_> = panels(&editing).iter().map(|(_, c)| *c).collect();
         assert_eq!(colors, [ACCENT, RAISED, RAISED]);
-        assert!(editing.canvas().find("215").unwrap().line.face().cap == VALUE.cap);
+        assert!(
+            editing.canvas().find("215").unwrap().line.face().cap
+                == crate::screens::BASE.scaled.face(FaceRole::Value).cap
+        );
         assert!(editing.canvas().shows("FTP WATTS") && !editing.canvas().shows("LTHR BPM"));
         assert!(editing.canvas().shows("-5") && editing.canvas().shows("+5"));
         assert_eq!(editing.pixel(LEFT + 2, PAD_TOP + 20), RAISED);
@@ -764,16 +817,8 @@ mod tests {
         assert_eq!(Row::Sex.kind(), Kind::Choice);
     }
 
-    /// Long values, notes and statuses still lay out whole on every section.
     #[test]
     fn extreme_settings_never_overlap_or_clip() {
-        // The rows lie on the page, below the screen's rows.
-        let screen = Rect {
-            left: 0,
-            top: 24,
-            right: 240,
-            bottom: 100_000,
-        };
         let long = [
             ("1000", "Z4 905-1050 W"),
             ("220", "Z5 FROM 220 BPM"),
@@ -781,27 +826,52 @@ mod tests {
             ("99H LEFT", "120 RIDES"),
             ("OFF", "NO CLIMB POP-UP"),
         ];
-        for cursor in 0..Sections::All.fields() {
-            for editing in [false, true] {
-                for status in ["SAVED", "SAVE FAILED, RETRYING", "NOT SAVED: DATA KEPT"] {
-                    let view = view(cursor, editing, &long, status);
-                    let shown = if editing && Sections::All.row(cursor).kind() == Kind::Number {
-                        1
+        for layout in crate::screens::panels::ALL {
+            let screen = Rect {
+                top: layout.chrome.content.top,
+                bottom: 100_000,
+                ..layout.scaled.screen()
+            };
+            let list = &layout.settings.list;
+            for cursor in 0..Sections::All.fields() {
+                let count = Sections::All.rows(cursor).0.len();
+                for editing in [false, true] {
+                    // Every scroll of the rows, so a tall panel's whole
+                    // section is in view at once.
+                    let scrolls = if editing {
+                        0..=0
                     } else {
-                        Sections::All.rows(cursor).0.len()
+                        0..=list.reveal(count - 1, 0).max(0)
                     };
-                    let mut texts = std::vec![status];
-                    for (value, note) in &long[..shown] {
-                        texts.push(value);
-                        if !note.is_empty() {
-                            texts.push(note);
+                    let statuses = ["SAVED", "SAVE FAILED, RETRYING", "NOT SAVED: DATA KEPT"];
+                    for (status, scroll) in statuses
+                        .into_iter()
+                        .flat_map(|status| scrolls.clone().map(move |scroll| (status, scroll)))
+                    {
+                        let mut view = view_on(layout, cursor, editing, &long, status);
+                        view.scroll = scroll;
+                        view.prepare().check_layout();
+                        let shown = if editing && Sections::All.row(cursor).kind() == Kind::Number {
+                            0..1
+                        } else {
+                            list.visible(count, scroll)
+                        };
+                        let mut texts = std::vec![status];
+                        for (value, note) in &long[shown] {
+                            texts.push(value);
+                            if !note.is_empty() {
+                                texts.push(note);
+                            }
                         }
+                        view.canvas().assert_laid_out(
+                            screen,
+                            &texts,
+                            &std::format!(
+                                "{cursor} {editing} {status} at {scroll} on {:?}",
+                                layout.scaled.panel
+                            ),
+                        );
                     }
-                    view.canvas().assert_laid_out(
-                        screen,
-                        &texts,
-                        &std::format!("{cursor} {editing} {status}"),
-                    );
                 }
             }
         }
@@ -811,42 +881,45 @@ mod tests {
     fn touches_find_rows_of_the_shown_section_and_pads_only_while_editing() {
         let row = |slot| ROW_TOP + slot * ROW_PITCH + 10;
         assert_eq!(
-            Sections::All.target(100, row(0), 0, false, 0),
+            Sections::All.target(&R, 100, row(0), 0, false, 0),
             Some(Target::Row(0))
         );
         assert_eq!(
-            Sections::All.target(200, row(1), 0, false, 0),
+            Sections::All.target(&R, 200, row(1), 0, false, 0),
             Some(Target::Row(1))
         );
         assert_eq!(
-            Sections::All.target(100, row(2), 0, false, 0),
+            Sections::All.target(&R, 100, row(2), 0, false, 0),
             Some(Target::Row(2))
         );
         assert_eq!(
-            Sections::All.target(100, row(3), 0, false, 0),
+            Sections::All.target(&R, 100, row(3), 0, false, 0),
             Some(Target::Row(3))
         );
         let device = Sections::All.field(Row::Sensors).unwrap();
         assert_eq!(
-            Sections::All.target(100, row(3), device, false, 0),
+            Sections::All.target(&R, 100, row(3), device, false, 0),
             Some(Target::Row(device + 3))
         );
         assert_eq!(
-            Sections::All.target(100, ROW_TOP + ROW_HEIGHT + 2, 0, false, 0),
+            Sections::All.target(&R, 100, ROW_TOP + ROW_HEIGHT + 2, 0, false, 0),
             None
         );
         let ride = Sections::All.field(Row::TimeZone).unwrap();
-        assert_eq!(Sections::All.target(30, PAD_TOP + 10, ride, false, 0), None);
         assert_eq!(
-            Sections::All.target(30, PAD_TOP + 10, 0, true, 0),
+            Sections::All.target(&R, 30, PAD_TOP + 10, ride, false, 0),
+            None
+        );
+        assert_eq!(
+            Sections::All.target(&R, 30, PAD_TOP + 10, 0, true, 0),
             Some(Target::Lower)
         );
         assert_eq!(
-            Sections::All.target(200, PAD_TOP + 10, 0, true, 0),
+            Sections::All.target(&R, 200, PAD_TOP + 10, 0, true, 0),
             Some(Target::Raise)
         );
-        assert_eq!(Sections::All.target(100, row(0), 0, true, 0), None);
-        assert_eq!(Sections::All.target(5, PAD_TOP + 10, 0, true, 0), None);
+        assert_eq!(Sections::All.target(&R, 100, row(0), 0, true, 0), None);
+        assert_eq!(Sections::All.target(&R, 5, PAD_TOP + 10, 0, true, 0), None);
     }
 
     #[test]
@@ -877,7 +950,7 @@ mod tests {
         assert!(LAYOUT.whole(4, end));
         let fifth = (LAYOUT.top as i32 + LAYOUT.span(4).0 - end + 10) as usize;
         assert_eq!(
-            Sections::All.target(100, fifth, display, false, end),
+            Sections::All.target(&R, 100, fifth, display, false, end),
             Some(Target::Row(display + 4))
         );
         // A short section has no bar.

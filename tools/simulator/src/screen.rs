@@ -238,8 +238,13 @@ fn build_templates(faces: &Faces) -> Templates {
             });
         }
     }
+    // Glyphs with the same solid pixels, as a small K whose arms are all
+    // edge is an I, are told apart by their edges: the most covered first.
     for list in map.values_mut() {
-        list.sort_by_key(|t| std::cmp::Reverse(t.ink));
+        list.sort_by_key(|t| {
+            let covered: u32 = t.coverage.iter().map(|&c| u32::from(c)).sum();
+            std::cmp::Reverse((t.ink, covered))
+        });
     }
     let mut by_down: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
     for &(right, down) in map.keys() {
@@ -1082,10 +1087,19 @@ mod tests {
             GREEN,
             "01:02:05",
         );
+        smooth_on(
+            &mut p,
+            width,
+            8,
+            190,
+            face(FaceRole::Caption),
+            WHITE,
+            "BACK",
+        );
         let frame = Frame::new(width, height, &p, Look::PLAIN);
         assert!(core::ptr::eq(frame.faces, &SCALE_0_75));
         let texts: Vec<_> = frame.read().into_iter().map(|r| r.text).collect();
-        assert_eq!(texts, ["REC 100%", "29.9", "KM/H", "01:02:05"]);
+        assert_eq!(texts, ["REC 100%", "29.9", "KM/H", "01:02:05", "BACK"]);
         assert!(frame.contains("KM/H"));
     }
 

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" color="#fff">
+  <!-- Half a pixel right and down at 14 px, so each stroke fills a column and a row whole. -->
+  <g stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none" transform="translate(0.857 0.857)">
+    <path d="M12 5v14M5 12h14"/>
+  </g>
+</svg>

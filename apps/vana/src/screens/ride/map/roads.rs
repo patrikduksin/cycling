@@ -50,8 +50,6 @@ impl Detail {
     }
 }
 
-/// Roads are fetched once for any panel, as finely as the base canvas shows
-/// them.
 const ROADS_FETCHED_FOR: super::Ground = crate::screens::BASE.map.free;
 
 #[derive(Clone, Copy, Debug, Default)]

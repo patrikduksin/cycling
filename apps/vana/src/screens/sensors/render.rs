@@ -37,6 +37,7 @@ impl Menu {
     /// tests and previews.
     pub fn frame(&self) -> View<'static> {
         let mut view = View::new(Screen::Sensors, 0, None);
+        view.layout = self.layout.screens;
         view.show_sensors(self.canvas(), self.cues());
         view
     }

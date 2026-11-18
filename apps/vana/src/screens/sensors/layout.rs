@@ -1,67 +1,372 @@
-//! Each sensor page placed once per change, with the boxes taps land on,
-//! and drawn from that onto a canvas of runs, shapes and cues for each
-//! frame.
 use super::kind;
 use super::menu::{Mine, State, View};
 use super::slot::{LinkStatus, Selected};
+use crate::screens::Layout as Screens;
 use crate::screens::canvas::{Canvas, Run, Shape, on_baseline};
 use crate::screens::chrome::{
-    ACCENT, AMBER, Align, BODY, CAPTION, CARD, CONTENT, GREEN, HEIGHT, Line, RAISED, RED, Rect,
-    SECONDARY, TITLE, VALUE, WHITE,
+    ACCENT, AMBER, Align, CARD, GREEN, Line, RAISED, RED, Rect, SECONDARY, WHITE,
 };
 use crate::screens::cue::{Corner, Cue, Icon as CueIcon};
-use crate::screens::icons::{ARROW, Icon, PLUS, REFRESH, Sensor, Size, StaticIcon};
+use crate::screens::icons::{Icon, Sensor, Size, StaticIcon};
+use crate::screens::scaled::{Scaled, Track};
 use crate::screens::workout::Text;
 use crate::sensors::ant::BatteryStatus;
 use core::fmt::Write;
 use device_api::ant::Identity;
-use firmware_shell::rendering::font::{Face, SPILL};
+use firmware_shell::rendering::font::{Face, FaceRole, SPILL};
 use heapless::Vec;
 
-/// The screen margin; rows and cards keep 2 px less.
-const MARGIN: usize = 10;
-const ROW_LEFT: usize = 8;
-const ROW_RIGHT: usize = 232;
-const RADIUS: usize = 12;
-const RING: usize = 3;
-pub(super) const TITLE_BASE: usize = 62;
-/// SENSORS: a row per saved sensor, then ADD SENSOR.
-pub(super) const MINE_TOP: usize = 72;
-pub(super) const MINE_PITCH: usize = 50;
-pub(super) const ROW_HEIGHT: usize = 48;
-/// NEARBY: the search line under the title, then a card per sensor.
-pub(super) const SEARCH_BASE: usize = 84;
-pub(super) const NEARBY_TOP: usize = 94;
-pub(super) const NEARBY_PITCH: usize = 52;
-/// The list scrolls so the focused row ends above this line.
-pub(super) const FOCUS_BOTTOM: usize = HEIGHT - 8;
-/// Text in a row starts right of its icon.
-const MINE_TEXT: usize = 56;
-const NEARBY_TEXT: usize = 52;
-const TEXT_RIGHT: usize = ROW_RIGHT - 10;
-/// The plus at a nearby sensor's right, and the refresh mark on the
-/// search line.
-const PLUS_LEFT: usize = 204;
-const REFRESH_LEFT: usize = 206;
-/// Detail, FORGET SENSOR? and REPLACE SENSOR: a card holding the sensor's
-/// icon, centred.
-const ICON_CARD: usize = 56;
-const ICON_CARD_RADIUS: usize = 18;
-const MID: usize = crate::screens::chrome::WIDTH / 2;
-pub(super) const DETAIL_CARD_TOP: usize = 22;
-pub(super) const NAME_BASE: usize = 106;
-pub(super) const STATUS_BASE: usize = 126;
-/// BATTERY and ID: a caption over the value, in two columns.
-pub(super) const CELL_BASE: usize = 158;
-pub(super) const VALUE_BASE: usize = 192;
-pub(super) const BATTERY_LEFT: usize = 34;
-pub(super) const ID_LEFT: usize = 126;
-pub(super) const CALIBRATION_BASE: usize = 233;
-pub(super) const HINT_BASE: usize = 249;
-pub(super) const FORGET_CARD_TOP: usize = 56;
-pub(super) const FORGET_BASES: [usize; 2] = [158, 192];
-pub(super) const FORGET_NAME_BASE: usize = 214;
-pub(super) const REPLACE_CARD_TOP: usize = 30;
+/// The sensor pages on one panel. SENSORS and NEARBY are lists under the
+/// status bar, measured as they lie before they scroll; every other page
+/// takes the whole panel, whose spare rows part it from the edges.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    /// Both lists' title, its capitals on its bottom.
+    pub title: Rect,
+    /// NEARBY's search line, its capitals on its bottom, and the refresh
+    /// mark at its end with the box its taps own.
+    pub search: Rect,
+    pub refresh: Rect,
+    pub refresh_tap: Rect,
+    pub mine: Mines,
+    pub nearby: Nearby,
+    /// The list scrolls so the focused row ends above this line.
+    pub focus_bottom: usize,
+    pub detail: Detail,
+    pub forget: Forget,
+    pub replace: Replace,
+    /// A card's corner, and the focus ring's width inside it.
+    pub radius: usize,
+    pub ring: usize,
+    /// The corner of the big card holding a sensor's icon on its pages.
+    pub icon_card_radius: usize,
+    /// Columns between a state and the dot after it, and the dot's radius in
+    /// quarter pixels.
+    pub dot_gap: usize,
+    pub dot: usize,
+    /// Columns between a battery's voltage and its unit.
+    pub unit_gap: usize,
+}
+
+/// A list's rows. The boxes inside a row are measured from its top.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Rows {
+    /// The first row's box; each next one lies `pitch` lower.
+    pub first: Rect,
+    pub pitch: usize,
+    /// The sensor's icon, from the box's top left corner.
+    pub icon: Rect,
+    /// The name over its state, capitals on their bottoms.
+    pub name: Rect,
+    pub state: Rect,
+}
+
+/// NEARBY: a card per sensor found, with a plus at its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Nearby {
+    pub rows: Rows,
+    pub plus: Rect,
+}
+
+/// SENSORS: a row per saved sensor, then ADD SENSOR in a card of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Mines {
+    pub rows: Rows,
+    pub add_card: Rect,
+    pub add_plus: Rect,
+    pub add_text: Rect,
+}
+
+/// A saved sensor's page: its icon card, name and state, then BATTERY and
+/// ID over their values, then a power meter's calibration note and hint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Detail {
+    pub card: Rect,
+    pub name: Rect,
+    pub status: Rect,
+    /// The two cells, captions on the top row and values below.
+    pub battery: Rect,
+    pub id: Rect,
+    pub value: Rect,
+    pub calibration: Rect,
+    pub hint: Rect,
+}
+
+/// FORGET SENSOR?: its icon card, the question in two words, and the
+/// sensor's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Forget {
+    pub card: Rect,
+    pub words: [Rect; 2],
+    pub name: Rect,
+}
+
+/// REPLACE SENSOR: the new sensor's card and name, the question, an arrow,
+/// and the saved sensor on the left beside the new one on the right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Replace {
+    pub card: Rect,
+    pub name: Rect,
+    pub question: Rect,
+    pub arrow: Rect,
+    pub sides: [Rect; 2],
+    /// Rows of each side: the device number, its transmission type and the
+    /// side's label.
+    pub number: Rect,
+    pub transmission: Rect,
+    pub label: Rect,
+}
+
+pub const fn regions(at: &Scaled) -> Regions {
+    use Track::{Fr, Unit};
+    let screen = at.screen();
+    let [_, text, _] = screen.cols([Unit(10), Fr(1), Unit(10)], Unit(0), at);
+    let [_, title, search, _] = screen.rows([Unit(24), Unit(38), Unit(22), Fr(1)], Unit(0), at);
+    let [_, line, _, mark, _] =
+        screen.cols([Unit(10), Fr(1), Unit(8), Unit(18), Unit(16)], Unit(0), at);
+    let [_, refresh, _] = screen.rows([Unit(70), Unit(18), Fr(1)], Unit(0), at);
+    let [_, tap, _] = screen.rows([Unit(60), Unit(34), Fr(1)], Unit(0), at);
+    let refresh_tap = Rect {
+        left: mark.left - at.unit(14),
+        right: screen.right,
+        ..tap
+    };
+    Regions {
+        title: title.with_columns(text),
+        search: search.with_columns(line),
+        refresh: refresh.with_columns(mark),
+        refresh_tap,
+        mine: mines(at),
+        nearby: nearby(at),
+        focus_bottom: screen.bottom - at.unit(8),
+        detail: detail(at, text),
+        forget: forget(at, text),
+        replace: replace(at, text),
+        radius: at.unit(12),
+        ring: at.unit(3),
+        icon_card_radius: at.unit(18),
+        dot_gap: at.unit(5),
+        dot: at.unit(6),
+        unit_gap: at.unit(6),
+    }
+}
+
+const fn first_row(at: &Scaled, above: u16) -> (Rect, Rect) {
+    use Track::{Fr, Unit};
+    let screen = at.screen();
+    let [_, row, _] = screen.cols([Unit(8), Fr(1), Unit(8)], Unit(0), at);
+    let [_, first, _] = screen.rows([Unit(above), Unit(48), Fr(1)], Unit(0), at);
+    let first = first.with_columns(row);
+    let top = Rect {
+        top: 0,
+        bottom: first.bottom - first.top,
+        ..first
+    };
+    (first, top)
+}
+
+const fn mines(at: &Scaled) -> Mines {
+    use Track::{Fr, Unit};
+    let (first, row) = first_row(at, 72);
+    let [_, _, icon, text, _, _] = at.screen().cols(
+        [Unit(8), Unit(10), Unit(38), Fr(1), Unit(10), Unit(8)],
+        Unit(0),
+        at,
+    );
+    let [_, icon_rows, _] = row.rows([Unit(11), Unit(26), Fr(1)], Unit(0), at);
+    let [name, state, _] = row.rows([Unit(23), Unit(16), Fr(1)], Unit(0), at);
+    let [_, add_card, _] = row.rows([Unit(4), Unit(40), Fr(1)], Unit(0), at);
+    let [_, plus, _] = row.rows([Unit(15), Unit(18), Fr(1)], Unit(0), at);
+    let [add_base, _] = row.rows([Unit(31), Fr(1)], Unit(0), at);
+    let [_, add_text, _] = at.screen().cols([Unit(48), Fr(1), Unit(18)], Unit(0), at);
+    Mines {
+        rows: Rows {
+            first,
+            pitch: at.unit(50),
+            icon: icon_rows.with_columns(icon),
+            name: name.with_columns(text),
+            state: state.with_columns(text),
+        },
+        add_card,
+        add_plus: plus.with_columns(icon),
+        add_text: add_base.with_columns(add_text),
+    }
+}
+
+const fn nearby(at: &Scaled) -> Nearby {
+    use Track::{Fr, Unit};
+    let (first, row) = first_row(at, 94);
+    let [_, _, icon, text, _, plus, _, _] = at.screen().cols(
+        [
+            Unit(8),
+            Unit(10),
+            Unit(34),
+            Fr(1),
+            Unit(8),
+            Unit(18),
+            Unit(10),
+            Unit(8),
+        ],
+        Unit(0),
+        at,
+    );
+    let [_, icon_rows, _] = row.rows([Unit(13), Unit(22), Fr(1)], Unit(0), at);
+    let [name, state, _] = row.rows([Unit(23), Unit(16), Fr(1)], Unit(0), at);
+    let [_, plus_rows, _] = row.rows([Unit(15), Unit(18), Fr(1)], Unit(0), at);
+    Nearby {
+        rows: Rows {
+            first,
+            pitch: at.unit(52),
+            icon: icon_rows.with_columns(icon),
+            name: name.with_columns(text),
+            state: state.with_columns(text),
+        },
+        plus: plus_rows.with_columns(plus),
+    }
+}
+
+const fn icon_card(at: &Scaled, rows: Rect) -> Rect {
+    use Track::{Fr, Unit};
+    let [_, card, _] = at.screen().cols([Fr(1), Unit(56), Fr(1)], Unit(0), at);
+    rows.with_columns(card)
+}
+
+const fn detail(at: &Scaled, text: Rect) -> Detail {
+    use Track::{Fr, Unit};
+    let screen = at.screen();
+    let [
+        _,
+        _,
+        card,
+        name,
+        status,
+        captions,
+        value,
+        calibration,
+        hint,
+        _,
+        _,
+    ] = screen.rows(
+        [
+            Fr(1),
+            Unit(22),
+            Unit(56),
+            Unit(28),
+            Unit(20),
+            Unit(32),
+            Unit(34),
+            Unit(41),
+            Unit(16),
+            Unit(71),
+            Fr(1),
+        ],
+        Unit(0),
+        at,
+    );
+    let [_, _, battery, _, id, _, _] = screen.cols(
+        [
+            Fr(1),
+            Unit(34),
+            Unit(84),
+            Unit(8),
+            Unit(104),
+            Unit(10),
+            Fr(1),
+        ],
+        Unit(0),
+        at,
+    );
+    Detail {
+        card: icon_card(at, card),
+        name: name.with_columns(text),
+        status: status.with_columns(text),
+        battery: captions.with_columns(battery),
+        id: captions.with_columns(id),
+        value,
+        calibration: calibration.with_columns(text),
+        hint: hint.with_columns(text),
+    }
+}
+
+const fn forget(at: &Scaled, text: Rect) -> Forget {
+    use Track::{Fr, Unit};
+    let [_, _, card, first, second, name, _, _] = at.screen().rows(
+        [
+            Fr(1),
+            Unit(56),
+            Unit(56),
+            Unit(46),
+            Unit(34),
+            Unit(22),
+            Unit(106),
+            Fr(1),
+        ],
+        Unit(0),
+        at,
+    );
+    Forget {
+        card: icon_card(at, card),
+        words: [first.with_columns(text), second.with_columns(text)],
+        name: name.with_columns(text),
+    }
+}
+
+const fn replace(at: &Scaled, text: Rect) -> Replace {
+    use Track::{Fr, Unit};
+    let screen = at.screen();
+    let [_, _, card, name, question, _, arrow, _, _] = screen.rows(
+        [
+            Fr(1),
+            Unit(30),
+            Unit(56),
+            Unit(22),
+            Unit(24),
+            Unit(10),
+            Unit(28),
+            Unit(150),
+            Fr(1),
+        ],
+        Unit(0),
+        at,
+    );
+    let [_, _, number, transmission, label, _, _] = screen.rows(
+        [
+            Fr(1),
+            Unit(132),
+            Unit(35),
+            Unit(17),
+            Unit(16),
+            Unit(120),
+            Fr(1),
+        ],
+        Unit(0),
+        at,
+    );
+    let [_, arrow_cols, _] = screen.cols([Fr(1), Unit(28), Fr(1)], Unit(0), at);
+    let [_, _, current, _, new, _, _] = screen.cols(
+        [
+            Fr(1),
+            Unit(10),
+            Unit(100),
+            Unit(20),
+            Unit(100),
+            Unit(10),
+            Fr(1),
+        ],
+        Unit(0),
+        at,
+    );
+    Replace {
+        card: icon_card(at, card),
+        name: name.with_columns(text),
+        question: question.with_columns(text),
+        arrow: arrow.with_columns(arrow_cols),
+        sides: [current, new],
+        number,
+        transmission,
+        label,
+    }
+}
 
 const BACK: Cue = Cue::new(Corner::TopLeft, CueIcon::Back);
 /// A power meter's page: ACT zeroes it, MOVE forgets it.
@@ -88,6 +393,7 @@ pub(super) enum Target {
 /// small enough to keep, unlike the canvas, which each frame draws afresh
 /// from it.
 pub(super) struct Layout {
+    pub(super) screens: &'static Screens,
     /// How far the list has scrolled up to keep its focus in view.
     scroll: usize,
     pub(super) cues: &'static [Cue],
@@ -96,18 +402,23 @@ pub(super) struct Layout {
 }
 
 impl Layout {
-    pub(super) const fn new() -> Self {
+    pub(super) const fn new(screens: &'static Screens) -> Self {
         Self {
+            screens,
             scroll: 0,
             cues: &[],
             targets: Vec::new(),
         }
     }
 
+    const fn regions(&self) -> &'static Regions {
+        &self.screens.sensors
+    }
+
     /// The target under a point; rows and cues own their bounds. Rows under
     /// the status bar take no taps.
     pub(super) fn target(&self, x: usize, y: usize) -> Option<Target> {
-        if y < CONTENT.top && !super::full_screen(self.cues) {
+        if y < self.screens.chrome.content.top && !super::full_screen(self.cues) {
             return None;
         }
         self.targets
@@ -118,82 +429,92 @@ impl Layout {
 
     /// Place the shown page: its scroll, rows and cues.
     pub(super) fn prepare(&mut self, state: &State) {
+        let regions = self.regions();
         self.targets.clear();
         self.scroll = 0;
         self.cues = &[];
         match state.view {
             View::Mine(focus) => {
+                let rows = &regions.mine.rows;
                 let index = state.rows().position(|row| row == focus).unwrap_or(0);
-                self.scroll_to(MINE_TOP + index * MINE_PITCH);
+                self.scroll_to(rows, index);
                 for (index, row) in state.rows().enumerate() {
-                    self.row(MINE_TOP + index * MINE_PITCH, Target::Mine(row));
+                    self.row(rows, index, Target::Mine(row));
                 }
             }
             View::Nearby(focus) => {
+                let rows = &regions.nearby.rows;
                 let index = focus
                     .and_then(|focus| state.nearby().position(|index| index == focus))
                     .unwrap_or(0);
-                self.scroll_to(NEARBY_TOP + index * NEARBY_PITCH);
-                if let Some(base) = self.search_base() {
+                self.scroll_to(rows, index);
+                if let Some(shift) = self.search_scroll() {
+                    let tap = regions.refresh_tap;
                     let bounds = Rect {
-                        left: REFRESH_LEFT - 14,
-                        top: base - 24,
-                        right: crate::screens::chrome::WIDTH,
-                        bottom: base + 10,
+                        top: tap.top - shift,
+                        bottom: tap.bottom - shift,
+                        ..tap
                     };
                     let _ = self.targets.push((bounds, Target::Refresh));
                 }
                 for (row, index) in state.nearby().enumerate() {
-                    self.row(NEARBY_TOP + row * NEARBY_PITCH, Target::Nearby(index));
+                    self.row(rows, row, Target::Nearby(index));
                 }
             }
             View::Detail(slot) if state.calibratable(slot) => self.cues = &POWER_CUES,
             View::Detail(_) | View::Forget(_) => self.cues = &FORGET_CUES,
             View::Replace(_) => self.cues = &REPLACE_CUES,
         }
+        let panel = self.screens.scaled.panel;
         for cue in self.cues {
             let _ = self
                 .targets
-                .push((cue_box(cue.corner), Target::Cue(cue.corner)));
+                .push((cue_box(cue.corner, panel), Target::Cue(cue.corner)));
         }
     }
 
-    /// Scroll so the row at `top` of the whole list ends above
-    /// `FOCUS_BOTTOM`.
-    fn scroll_to(&mut self, top: usize) {
-        self.scroll = (top + ROW_HEIGHT).saturating_sub(FOCUS_BOTTOM);
+    fn scroll_to(&mut self, rows: &Rows, index: usize) {
+        let bottom = rows.first.bottom + index * rows.pitch;
+        self.scroll = bottom.saturating_sub(self.regions().focus_bottom);
     }
 
-    /// The row at `top` of the whole list, where it shows whole on the
-    /// screen or runs under the status bar.
-    fn row(&mut self, top: usize, target: Target) {
-        let Some(top) = top.checked_sub(self.scroll) else {
+    fn row(&mut self, rows: &Rows, index: usize, target: Target) {
+        let Some(top) = (rows.first.top + index * rows.pitch).checked_sub(self.scroll) else {
             return;
         };
-        if top + ROW_HEIGHT > HEIGHT {
+        let bottom = top + rows.first.height();
+        if bottom > self.screens.scaled.panel.height {
             return;
         }
         let rect = Rect {
-            left: ROW_LEFT,
             top,
-            right: ROW_RIGHT,
-            bottom: top + ROW_HEIGHT,
+            bottom,
+            ..rows.first
         };
         let _ = self.targets.push((rect, target));
     }
 
-    /// The search line's baseline on NEARBY, until it scrolls under the
-    /// status bar.
-    fn search_base(&self) -> Option<usize> {
-        SEARCH_BASE
+    fn search_scroll(&self) -> Option<usize> {
+        let regions = self.regions();
+        let at = &self.screens.scaled;
+        regions
+            .search
+            .bottom
             .checked_sub(self.scroll)
-            .filter(|&base| base >= CONTENT.top + 12)
+            .filter(|&base| base >= self.screens.chrome.content.top + at.unit(12))
+            .map(|_| self.scroll)
     }
 
     /// Draw the page as placed: the same state and layout always draw the
     /// same canvas.
     pub(super) fn draw(&self, state: &State, canvas: &mut Canvas) {
-        let mut page = Drawing { state, canvas };
+        let mut page = Drawing {
+            state,
+            canvas,
+            at: &self.screens.scaled,
+            regions: self.regions(),
+            content: self.screens.chrome.content,
+        };
         match state.view {
             View::Mine(focus) => {
                 let problem = state.notice.or(state.message.filter(|m| m.on_sensors()));
@@ -210,8 +531,8 @@ impl Layout {
             }
             View::Nearby(focus) => {
                 page.title(b"NEARBY", WHITE, self.scroll);
-                if let Some(base) = self.search_base() {
-                    page.search_line(base);
+                if let Some(shift) = self.search_scroll() {
+                    page.search_line(shift);
                 }
                 for &(rect, target) in &self.targets {
                     if let Target::Nearby(index) = target {
@@ -234,14 +555,32 @@ impl Layout {
     }
 }
 
+const fn in_row(inner: Rect, top: usize) -> Rect {
+    Rect {
+        top: top + inner.top,
+        bottom: top + inner.bottom,
+        ..inner
+    }
+}
+
 struct Drawing<'a> {
     state: &'a State,
     canvas: &'a mut Canvas,
+    at: &'static Scaled,
+    regions: &'static Regions,
+    content: Rect,
 }
 
 impl Drawing<'_> {
+    fn face(&self, role: FaceRole) -> &'static Face {
+        self.at.face(role)
+    }
+
     fn mine(&mut self, row: Mine, rect: Rect, focused: bool) {
+        let regions = self.regions;
+        let rows = &regions.mine.rows;
         let top = rect.top;
+        let (body, caption) = (self.face(FaceRole::Body), self.face(FaceRole::Caption));
         match row {
             Mine::Saved(slot) => {
                 let Some(selected) = self.state.selected[slot] else {
@@ -251,56 +590,50 @@ impl Drawing<'_> {
                     self.focus_card(rect);
                 }
                 let sensor = Sensor::of(selected.identity.device_type);
-                self.icon(
-                    sensor.icon(Size::Row),
-                    ROW_LEFT + 10,
-                    top + 11,
-                    sensor.tint(),
-                );
-                let name = kind(selected.identity.device_type);
-                let width = TEXT_RIGHT - MINE_TEXT;
+                let icon = in_row(rows.icon, top);
+                let art = self.at.art.sensor(sensor, Size::Row);
+                self.icon(art, icon.left, icon.top, sensor.tint());
+                let name = in_row(rows.name, top);
+                let width = name.width();
                 self.canvas.fit(
-                    &[&BODY, &CAPTION],
-                    name,
+                    &[body, caption],
+                    kind(selected.identity.device_type),
                     width,
-                    MINE_TEXT,
-                    top + 23,
+                    name.left,
+                    name.bottom,
                     Align::Left,
                     WHITE,
                 );
                 let (text, color) = link(selected);
                 let warning = battery_warning(selected);
                 let live = selected.link_status() == LinkStatus::Live;
-                let base = top + 39;
+                let state = in_row(rows.state, top);
                 match warning {
-                    Some(warning) if live && !fits(text, warning.0, width) => {
-                        self.status(MINE_TEXT, base, width, warning, None);
+                    Some(warning) if live && !self.fits(text, warning.0, width) => {
+                        self.status(state, warning, None);
                     }
                     Some(warning) if live => {
-                        let state = (text, warning.1);
-                        self.status(MINE_TEXT, base, width, state, Some(warning));
+                        self.status(state, (text, warning.1), Some(warning));
                     }
-                    _ => self.status(MINE_TEXT, base, width, (text, color), warning),
+                    _ => self.status(state, (text, color), warning),
                 }
             }
             Mine::Add => {
-                let card = Rect {
-                    top: top + 4,
-                    bottom: top + 44,
-                    ..rect
-                };
+                let card = in_row(regions.mine.add_card, top);
                 if focused {
                     self.focus_card(card);
                 } else {
-                    self.panel(card, RADIUS, CARD);
+                    self.panel(card, regions.radius, CARD);
                 }
-                self.icon(&PLUS, ROW_LEFT + 10, top + 15, GREEN);
+                let plus = in_row(regions.mine.add_plus, top);
+                self.icon(self.at.art.plus, plus.left, plus.top, GREEN);
+                let text = in_row(regions.mine.add_text, top);
                 self.canvas.fit(
-                    &[&BODY],
+                    &[body],
                     b"ADD SENSOR",
-                    TEXT_RIGHT - 48,
-                    48,
-                    top + 31,
+                    text.width(),
+                    text.left,
+                    text.bottom,
                     Align::Left,
                     WHITE,
                 );
@@ -308,25 +641,29 @@ impl Drawing<'_> {
         }
     }
 
-    /// NEARBY's line under its title, and the refresh mark at its end.
-    fn search_line(&mut self, base: usize) {
+    fn search_line(&mut self, shift: usize) {
+        let regions = self.regions;
         let (line, color) = self.state.search_line();
+        let search = regions.search;
+        let caption = self.face(FaceRole::Caption);
         self.canvas.fit(
-            &[&CAPTION],
+            &[caption],
             line.as_bytes(),
-            REFRESH_LEFT - 8 - MARGIN,
-            MARGIN,
-            base,
+            search.width(),
+            search.left,
+            search.bottom - shift,
             Align::Left,
             color,
         );
         let mark = if self.state.scanning { ACCENT } else { WHITE };
-        self.icon(&REFRESH, REFRESH_LEFT, base - 14, mark);
+        let refresh = regions.refresh;
+        self.icon(self.at.art.refresh, refresh.left, refresh.top - shift, mark);
     }
 
     /// A nearby sensor's card, by discovery slot.
     fn nearby(&mut self, index: usize, rect: Rect, focused: bool) {
         let state = self.state;
+        let rows = &self.regions.nearby.rows;
         let Some(discovery) = state.discoveries[index] else {
             return;
         };
@@ -334,20 +671,25 @@ impl Drawing<'_> {
         if focused {
             self.focus_card(rect);
         } else {
-            self.panel(rect, RADIUS, CARD);
+            self.panel(rect, self.regions.radius, CARD);
         }
         let identity = discovery.identity;
-        let icon = Sensor::of(identity.device_type).icon(Size::Small);
-        self.icon(icon, ROW_LEFT + 10, top + 13, SECONDARY);
-        self.icon(&PLUS, PLUS_LEFT, top + 15, GREEN);
-        let width = PLUS_LEFT - 8 - NEARBY_TEXT;
-        let name = kind(identity.device_type);
+        let icon = in_row(rows.icon, top);
+        let art = self
+            .at
+            .art
+            .sensor(Sensor::of(identity.device_type), Size::Small);
+        self.icon(art, icon.left, icon.top, SECONDARY);
+        let plus = in_row(self.regions.nearby.plus, top);
+        self.icon(self.at.art.plus, plus.left, plus.top, GREEN);
+        let name = in_row(rows.name, top);
+        let faces = [self.face(FaceRole::Body), self.face(FaceRole::Caption)];
         self.canvas.fit(
-            &[&BODY, &CAPTION],
-            name,
-            width,
-            NEARBY_TEXT,
-            top + 23,
+            &faces,
+            kind(identity.device_type),
+            name.width(),
+            name.left,
+            name.bottom,
             Align::Left,
             WHITE,
         );
@@ -357,81 +699,75 @@ impl Drawing<'_> {
         } else {
             let _ = caption.push_str("NOT SEEN");
         }
-        let caption = caption.as_bytes();
+        let line = in_row(rows.state, top);
         self.canvas.caption(
-            &crate::screens::scaled::BASE,
-            caption,
-            width,
-            NEARBY_TEXT,
-            top + 39,
+            self.at,
+            caption.as_bytes(),
+            line.width(),
+            line.left,
+            line.bottom,
             Align::Left,
         );
     }
 
     fn detail(&mut self, selected: Selected, calibratable: bool) {
         let state = self.state;
+        let at = self.at;
+        let regions = &self.regions.detail;
         let identity = selected.identity;
-        self.icon_card(identity, DETAIL_CARD_TOP);
-        let width = 2 * (MID - MARGIN);
-        let name = kind(identity.device_type);
-        let faces: [&'static Face; 2] = [&BODY, &CAPTION];
-        self.canvas
-            .fit(&faces, name, width, MID, NAME_BASE, Align::Center, WHITE);
-        let (status, color) = link(selected);
-        self.canvas.fit(
-            &[&CAPTION],
-            status,
-            width,
-            MID,
-            STATUS_BASE,
-            Align::Center,
-            color,
+        self.icon_card(identity, regions.card);
+        let (body, caption) = (self.face(FaceRole::Body), self.face(FaceRole::Caption));
+        let centred =
+            |canvas: &mut Canvas, faces: &[&'static Face], text: &[u8], row: Rect, color| {
+                canvas.fit(
+                    faces,
+                    text,
+                    row.width(),
+                    row.center_x(),
+                    row.bottom,
+                    Align::Center,
+                    color,
+                );
+            };
+        centred(
+            self.canvas,
+            &[body, caption],
+            kind(identity.device_type),
+            regions.name,
+            WHITE,
         );
-        let caption = |canvas: &mut Canvas, text: &[u8], left: usize| {
-            canvas.caption(
-                &crate::screens::scaled::BASE,
-                text,
-                ID_LEFT - BATTERY_LEFT - 8,
-                left,
-                CELL_BASE,
-                Align::Left,
-            );
-        };
-        caption(self.canvas, b"BATTERY", BATTERY_LEFT);
-        caption(self.canvas, b"ID", ID_LEFT);
+        let (status, color) = link(selected);
+        centred(self.canvas, &[caption], status, regions.status, color);
+        for (text, cell) in [(&b"BATTERY"[..], regions.battery), (b"ID", regions.id)] {
+            let width = regions.battery.width();
+            self.canvas
+                .caption(at, text, width, cell.left, cell.bottom, Align::Left);
+        }
         self.battery_value(selected);
         let number = state.identity_label(identity);
-        let id_width = crate::screens::chrome::WIDTH - MARGIN - ID_LEFT;
-        let faces: [&'static Face; 2] = [&VALUE, &BODY];
-        let number = number.as_bytes();
+        let value = [self.face(FaceRole::Value), body];
+        let id = regions.id;
         self.canvas.fit(
-            &faces,
-            number,
-            id_width,
-            ID_LEFT,
-            VALUE_BASE,
+            &value,
+            number.as_bytes(),
+            id.width(),
+            id.left,
+            regions.value.bottom,
             Align::Left,
             WHITE,
         );
         if let Some(note) = state.calibration.filter(|_| calibratable) {
             let text = note.text();
-            self.canvas.fit(
-                &[&CAPTION],
-                text.as_bytes(),
-                width,
-                MID,
-                CALIBRATION_BASE,
-                Align::Center,
-                note.color(),
-            );
+            let row = regions.calibration;
+            centred(self.canvas, &[caption], text.as_bytes(), row, note.color());
             if let Some(hint) = note.hint() {
-                let hint = hint.as_bytes();
+                let row = regions.hint;
                 self.canvas.caption(
-                    &crate::screens::scaled::BASE,
-                    hint,
-                    width,
-                    MID,
-                    HINT_BASE,
+                    at,
+                    hint.as_bytes(),
+                    row.width(),
+                    row.center_x(),
+                    row.bottom,
                     Align::Center,
                 );
             }
@@ -441,15 +777,13 @@ impl Drawing<'_> {
     /// The battery cell's value: the voltage when known, else the status
     /// word, in the colour of its urgency.
     fn battery_value(&mut self, selected: Selected) {
+        let detail = &self.regions.detail;
+        let (left, base) = (detail.battery.left, detail.value.bottom);
+        let value = self.face(FaceRole::Value);
         let Some(battery) = selected.battery else {
-            let line = Line::new(&VALUE, b"--");
-            self.canvas.run(on_baseline(
-                line,
-                BATTERY_LEFT,
-                VALUE_BASE,
-                Align::Left,
-                WHITE,
-            ));
+            let line = Line::new(value, b"--");
+            self.canvas
+                .run(on_baseline(line, left, base, Align::Left, WHITE));
             return;
         };
         let color = match battery.status {
@@ -459,47 +793,33 @@ impl Drawing<'_> {
         };
         let Some(volts) = selected.volts() else {
             let word = battery.status.text().as_bytes();
-            let line = Line::new(&BODY, word);
-            self.canvas.run(on_baseline(
-                line,
-                BATTERY_LEFT,
-                VALUE_BASE,
-                Align::Left,
-                color,
-            ));
+            let line = Line::new(self.face(FaceRole::Body), word);
+            self.canvas
+                .run(on_baseline(line, left, base, Align::Left, color));
             return;
         };
-        let line = Line::new(&VALUE, volts.as_bytes());
-        let unit_left = BATTERY_LEFT + VALUE.ink_width(volts.as_bytes()) + 6;
-        self.canvas.run(on_baseline(
-            line,
-            BATTERY_LEFT,
-            VALUE_BASE,
-            Align::Left,
-            color,
-        ));
-        let unit = Line::new(&CAPTION, b"V");
-        self.canvas.run(on_baseline(
-            unit,
-            unit_left,
-            VALUE_BASE,
-            Align::Left,
-            SECONDARY,
-        ));
+        let line = Line::new(value, volts.as_bytes());
+        let unit_left = left + value.ink_width(volts.as_bytes()) + self.regions.unit_gap;
+        self.canvas
+            .run(on_baseline(line, left, base, Align::Left, color));
+        let unit = Line::new(self.face(FaceRole::Caption), b"V");
+        self.canvas
+            .run(on_baseline(unit, unit_left, base, Align::Left, SECONDARY));
     }
 
     fn forget(&mut self, selected: Selected) {
         let state = self.state;
+        let regions = &self.regions.forget;
         let identity = selected.identity;
-        self.icon_card(identity, FORGET_CARD_TOP);
-        let width = 2 * (MID - MARGIN);
-        for (word, base) in [&b"FORGET"[..], b"SENSOR?"].into_iter().zip(FORGET_BASES) {
+        self.icon_card(identity, regions.card);
+        let faces = [self.face(FaceRole::Title), self.face(FaceRole::Body)];
+        for (word, row) in [&b"FORGET"[..], b"SENSOR?"].into_iter().zip(regions.words) {
             self.canvas.fit(
-                &[&TITLE, &BODY],
+                &faces,
                 word,
-                width,
-                MID,
-                base,
+                row.width(),
+                row.center_x(),
+                row.bottom,
                 Align::Center,
                 WHITE,
             );
@@ -507,13 +827,13 @@ impl Drawing<'_> {
         let mut name = Text::<24>::new();
         let _ = name.push_str(core::str::from_utf8(kind(identity.device_type)).unwrap_or(""));
         let _ = write!(name, " {}", state.identity_label(identity).as_str());
-        let name = name.as_bytes();
+        let row = regions.name;
         self.canvas.caption(
-            &crate::screens::scaled::BASE,
-            name,
-            width,
-            MID,
-            FORGET_NAME_BASE,
+            self.at,
+            name.as_bytes(),
+            row.width(),
+            row.center_x(),
+            row.bottom,
             Align::Center,
         );
     }
@@ -522,124 +842,127 @@ impl Drawing<'_> {
     /// right.
     fn replace(&mut self, identity: Identity) {
         let state = self.state;
-        self.icon_card(identity, REPLACE_CARD_TOP);
-        let width = 2 * (MID - MARGIN);
-        let name = kind(identity.device_type);
+        let at = self.at;
+        let regions = &self.regions.replace;
+        self.icon_card(identity, regions.card);
+        let (body, caption) = (self.face(FaceRole::Body), self.face(FaceRole::Caption));
+        let name = regions.name;
         self.canvas.fit(
-            &[&BODY, &CAPTION],
-            name,
-            width,
-            MID,
-            108,
+            &[body, caption],
+            kind(identity.device_type),
+            name.width(),
+            name.center_x(),
+            name.bottom,
             Align::Center,
             WHITE,
         );
+        let question = regions.question;
         self.canvas.caption(
-            &crate::screens::scaled::BASE,
+            at,
             b"REPLACE SENSOR",
-            width,
-            MID,
-            132,
+            question.width(),
+            question.center_x(),
+            question.bottom,
             Align::Center,
         );
-        self.icon(&ARROW, MID - 14, 142, ACCENT);
+        let arrow = regions.arrow;
+        self.icon(at.art.arrow, arrow.left, arrow.top, ACCENT);
         let current = state.selected_identity(identity.device_type);
-        let sides = [
-            (current, &b"CURRENT"[..], 60),
-            (Some(identity), b"NEW", 180),
-        ];
-        for (peer, label, center) in sides {
-            self.canvas.caption(
-                &crate::screens::scaled::BASE,
-                label,
-                100,
-                center,
-                200,
-                Align::Center,
-            );
+        let sides = [(current, &b"CURRENT"[..]), (Some(identity), b"NEW")];
+        for ((peer, label), side) in sides.into_iter().zip(regions.sides) {
+            let center = side.center_x();
+            let base = regions.label.bottom;
+            self.canvas
+                .caption(at, label, side.width(), center, base, Align::Center);
             let Some(peer) = peer else { continue };
             let mut number = Text::<6>::new();
             let _ = write!(number, "{}", peer.device_number);
-            let faces: [&'static Face; 2] = [&VALUE, &BODY];
-            let number = number.as_bytes();
-            self.canvas
-                .fit(&faces, number, 96, center, 167, Align::Center, WHITE);
+            let width = side.width() - at.unit(4);
+            let faces = [self.face(FaceRole::Value), body];
+            let base = regions.number.bottom;
+            self.canvas.fit(
+                &faces,
+                number.as_bytes(),
+                width,
+                center,
+                base,
+                Align::Center,
+                WHITE,
+            );
             if state.shares_number(peer) {
                 let mut transmission = Text::<4>::new();
                 let _ = write!(transmission, "T{}", peer.transmission_type);
-                let text = transmission.as_bytes();
-                self.canvas
-                    .fit(&[&CAPTION], text, 96, center, 184, Align::Center, WHITE);
+                let base = regions.transmission.bottom;
+                self.canvas.fit(
+                    &[caption],
+                    transmission.as_bytes(),
+                    width,
+                    center,
+                    base,
+                    Align::Center,
+                    WHITE,
+                );
             }
         }
     }
 
-    /// The page title, in `TITLE` while it fits, scrolled with the page;
-    /// left out once it has gone under the status bar.
     fn title(&mut self, text: &[u8], color: u16, scroll: usize) {
-        let Some(base) = TITLE_BASE.checked_sub(scroll) else {
+        let title = self.regions.title;
+        let Some(base) = title.bottom.checked_sub(scroll) else {
             return;
         };
-        let line = Line::fit(&[&TITLE, &BODY], text, 2 * (MID - MARGIN));
+        let faces = [self.face(FaceRole::Title), self.face(FaceRole::Body)];
+        let line = Line::fit(&faces, text, title.width());
         let face = line.face();
-        if base < CONTENT.top + usize::from(face.cap) {
+        if base < self.content.top + usize::from(face.cap) {
             return;
         }
         self.canvas
-            .run(on_baseline(line, MARGIN, base, Align::Left, color));
+            .run(on_baseline(line, title.left, base, Align::Left, color));
     }
 
-    /// A state line: `first`, then `second` after a dot where it fits whole.
-    fn status(
-        &mut self,
-        left: usize,
-        base: usize,
-        width: usize,
-        (text, color): (&[u8], u16),
-        second: Option<(&[u8], u16)>,
-    ) {
+    fn status(&mut self, row: Rect, (text, color): (&[u8], u16), second: Option<(&[u8], u16)>) {
+        let caption = self.face(FaceRole::Caption);
+        let (left, base, width) = (row.left, row.bottom, row.width());
         let first: Run = self
             .canvas
-            .fit(&[&CAPTION], text, width, left, base, Align::Left, color);
+            .fit(&[caption], text, width, left, base, Align::Left, color);
         let Some((text, color)) =
-            second.filter(|&(second, _)| fits(first.line.text(), second, width))
+            second.filter(|&(second, _)| self.fits(first.line.text(), second, width))
         else {
             return;
         };
-        let end = first.left + CAPTION.ink_width(first.line.text());
+        let gap = self.regions.dot_gap;
+        let end = first.left + caption.ink_width(first.line.text());
         self.canvas.shape(Shape::Disc {
-            cx: 4 * (end + DOT_GAP) as i32 + 2,
-            cy: 4 * base as i32 - 2 * i32::from(CAPTION.cap),
-            radius: 6,
+            cx: 4 * (end + gap) as i32 + 2,
+            cy: 4 * base as i32 - 2 * i32::from(caption.cap),
+            radius: self.regions.dot as i32,
             color,
         });
-        let line = Line::new(&CAPTION, text);
-        self.canvas.run(on_baseline(
-            line,
-            end + 2 * DOT_GAP,
-            base,
-            Align::Left,
-            color,
-        ));
+        let line = Line::new(caption, text);
+        self.canvas
+            .run(on_baseline(line, end + 2 * gap, base, Align::Left, color));
+    }
+
+    fn fits(&self, first: &[u8], second: &[u8], width: usize) -> bool {
+        let caption = self.face(FaceRole::Caption);
+        let both = caption.ink_width(first) + 2 * self.regions.dot_gap + caption.width(second);
+        both + SPILL <= width
     }
 
     fn focus_card(&mut self, rect: Rect) {
-        self.panel(rect, RADIUS, ACCENT);
-        self.panel(rect.inset(RING), RADIUS - RING, RAISED);
+        let (radius, ring) = (self.regions.radius, self.regions.ring);
+        self.panel(rect, radius, ACCENT);
+        self.panel(rect.inset(ring), radius - ring, RAISED);
     }
 
-    fn icon_card(&mut self, identity: Identity, top: usize) {
-        let rect = Rect {
-            left: MID - ICON_CARD / 2,
-            top,
-            right: MID + ICON_CARD / 2,
-            bottom: top + ICON_CARD,
-        };
-        self.panel(rect, ICON_CARD_RADIUS, CARD);
+    fn icon_card(&mut self, identity: Identity, card: Rect) {
+        self.panel(card, self.regions.icon_card_radius, CARD);
         let sensor = Sensor::of(identity.device_type);
-        let icon = sensor.icon(Size::Large);
-        let inset = (ICON_CARD - usize::from(icon.size)) / 2;
-        self.icon(icon, rect.left + inset, top + inset, sensor.tint());
+        let icon = self.at.art.sensor(sensor, Size::Large);
+        let inset = (card.width() - usize::from(icon.size)) / 2;
+        self.icon(icon, card.left + inset, card.top + inset, sensor.tint());
     }
 
     fn panel(&mut self, rect: Rect, radius: usize, color: u16) {
@@ -658,18 +981,6 @@ impl Drawing<'_> {
             color,
         });
     }
-}
-
-/// Columns between a state and the dot after it, and the dot and what follows.
-const DOT_GAP: usize = 5;
-
-/// Both parts of a state line fit `width`.
-fn fits(first: &[u8], second: &[u8], width: usize) -> bool {
-    both(first, second) + SPILL <= width
-}
-
-const fn both(first: &[u8], second: &[u8]) -> usize {
-    CAPTION.ink_width(first) + 2 * DOT_GAP + CAPTION.width(second)
 }
 
 /// A saved sensor's state, as its row and detail page name it.
@@ -693,14 +1004,13 @@ fn battery_warning(selected: Selected) -> Option<(&'static [u8], u16)> {
     }
 }
 
-/// The box a cue's quarter disc fills, which its taps own.
-const fn cue_box(corner: Corner) -> Rect {
-    use crate::screens::chrome::WIDTH;
+const fn cue_box(corner: Corner, panel: crate::screens::scaled::Panel) -> Rect {
     use crate::screens::cue::RADIUS;
+    let (right, bottom) = (panel.width, panel.height);
     let (left, top) = match corner {
         Corner::TopLeft => (0, 0),
-        Corner::BottomLeft => (0, HEIGHT - RADIUS),
-        Corner::BottomRight => (WIDTH - RADIUS, HEIGHT - RADIUS),
+        Corner::BottomLeft => (0, bottom - RADIUS),
+        Corner::BottomRight => (right - RADIUS, bottom - RADIUS),
     };
     Rect {
         left,

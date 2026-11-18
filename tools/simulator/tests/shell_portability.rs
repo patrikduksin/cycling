@@ -273,9 +273,6 @@ mod tests {
         }
     }
     impl Picture for Solid {
-        fn size(&self) -> (usize, usize) {
-            (240, 320)
-        }
         fn paint(&self, row: &mut Row) {
             row.fill(self.color);
         }
@@ -351,9 +348,6 @@ mod tests {
         split: usize,
     }
     impl Picture for Split {
-        fn size(&self) -> (usize, usize) {
-            (240, 320)
-        }
         fn paint(&self, row: &mut Row) {
             row.fill(if row.y() < self.split {
                 self.top

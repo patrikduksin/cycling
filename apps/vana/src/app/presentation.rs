@@ -10,7 +10,7 @@ use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
 use crate::ride::medium::Medium;
 use crate::ride::turn_back::Turn;
-use crate::screens::chrome::{AMBER, Battery, CHARGE_STEPS, Gps, RED, Toast, Tone};
+use crate::screens::chrome::{AMBER, Battery, CHARGE_STEPS, Gps, RED, Row, Toast, Tone};
 use crate::screens::home::Home;
 use crate::screens::look;
 use crate::screens::power::Sheet as PowerSheet;
@@ -134,9 +134,12 @@ impl Runtime {
         system: &mut Shell<D, I, P, B>,
     ) {
         let mut view = View::new(Page::Boot, 0, None);
+        view.layout = self.layout;
         view.light = self.light();
         let scene = view.prepare();
-        system.draw_canvas(240, 320, |row| scene.paint(row));
+        #[cfg(any(test, feature = "invariants"))]
+        scene.check_layout();
+        system.draw_rows(|y, pixels| scene.paint(&mut Row::new(y, pixels)));
     }
 
     /// Sound the cues and alarms due: the latest ride moment's cue, a closed
@@ -293,10 +296,12 @@ impl Runtime {
     ) -> Presented {
         let (gps, radar_paired) = match shows {
             Shows::Sheet(sheet) => {
-                let canvas = sheet.canvas();
+                let canvas = sheet.canvas(self.layout);
+                #[cfg(any(test, feature = "invariants"))]
+                PowerSheet::check_layout(&canvas, self.layout);
                 let look = look::look(self.light());
-                system.draw_canvas(240, 320, |row| {
-                    PowerSheet::paint(&canvas, &mut row.looked(look));
+                system.draw_rows(|y, pixels| {
+                    PowerSheet::paint(&canvas, &mut Row::new(y, pixels).looked(look));
                 });
                 return Presented::Sheet {
                     ok: !system.display_error,
@@ -481,11 +486,7 @@ impl Runtime {
         Presented::Page {
             page,
             drawn,
-            pixels: crate::screens::ride::pixels(
-                &view.graphics,
-                &view.profile,
-                view.frame_layout(),
-            ),
+            pixels: crate::screens::ride::pixels(&view.graphics, &view.profile, view.layout),
         }
     }
 
@@ -558,7 +559,13 @@ impl Runtime {
     fn home(&self, gps_fix: bool, now: u64) -> Home {
         let last = self.rides_line();
         let glance = self.glance(now);
-        let mut home = Home::new(self.navigation.home_cursor(), gps_fix, &glance, last);
+        let mut home = Home::new(
+            self.layout,
+            self.navigation.home_cursor(),
+            gps_fix,
+            &glance,
+            last,
+        );
         let (status, problem) = self.home_status(now);
         let warning = BatteryWarning::of(&glance).filter(|_| !problem && status == "READY TO RIDE");
         match (self.chosen_name(), warning) {

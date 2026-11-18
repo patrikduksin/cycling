@@ -1505,9 +1505,13 @@ impl Session {
         {
             let mut view =
                 vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
+            view.layout = model.layout;
             let scene = view.prepare();
-            shell.draw_canvas(240, 320, |row| {
-                firmware_shell::shell::Picture::paint(&scene, row);
+            shell.draw_rows(|y, pixels| {
+                firmware_shell::shell::Picture::paint(
+                    &scene,
+                    &mut vana::screens::chrome::Row::new(y, pixels),
+                );
             });
         }
         shell.forget_frame();

@@ -95,6 +95,12 @@ impl Layout {
         self.bottom - self.top
     }
 
+    /// The first canvas row the viewport can show: the rubber band pulls the
+    /// page down past its top by less than a viewport.
+    pub const fn stretched_top(&self) -> usize {
+        PAGE - self.viewport()
+    }
+
     /// The page's height with `count` cards.
     pub const fn content(&self, count: usize) -> usize {
         if count == 0 {
@@ -166,6 +172,18 @@ impl Layout {
         let first = ((offset - first_bottom).div_euclid(pitch) + 1).max(0) as usize;
         let end = ((bottom - first_top - 1).div_euclid(pitch) + 1).clamp(0, count as i32) as usize;
         first.min(end)..end
+    }
+
+    /// Whether something on canvas rows `rows` can show at `offset`: what
+    /// stays put always, the page's rows while they reach the viewport below
+    /// the pinned band.
+    pub fn shows(&self, rows: Range<usize>, offset: i32) -> bool {
+        if rows.start < self.stretched_top() {
+            return true;
+        }
+        let top = PAGE as i32 + offset + self.inset(offset);
+        let bottom = PAGE as i32 + offset + self.viewport() as i32;
+        (rows.start as i32) < bottom && (rows.end as i32) > top
     }
 
     /// The card under a touch at screen (`x`, `y`) at `offset`.

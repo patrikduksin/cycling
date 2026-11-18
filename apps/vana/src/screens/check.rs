@@ -1,22 +1,18 @@
 //! The layout check (#398 D5). A frame's regions lie inside the panel and
 //! apart; every label stays inside the region it was laid out in; hit
-//! targets stay inside the panel and apart. A screen that lays out from
-//! regions fails the check by panicking. Screens that do not yet only have
-//! their text checked against itself, and what that finds is recorded on
-//! request rather than failed, since their runs may already overlap within
-//! `font::SPILL`.
+//! targets stay inside the panel and apart. A frame that breaks it fails by
+//! panicking.
 //!
 //! The simulator checks every frame; the render benchmarks turn it off so
 //! they time painting alone.
 use super::chrome::Rect;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::format;
 use std::string::String;
 use std::vec::Vec;
 
 std::thread_local! {
     static ENABLED: Cell<bool> = const { Cell::new(true) };
-    static FINDINGS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
 }
 
 /// Check frames on this thread, or stop checking them.
@@ -26,34 +22,6 @@ pub fn enable(on: bool) {
 
 pub(super) fn enabled() -> bool {
     ENABLED.get()
-}
-
-/// Collect what the check finds on screens not laid out from regions, from
-/// now until `findings`.
-pub fn record() {
-    FINDINGS.with(|found| *found.borrow_mut() = Some(Vec::new()));
-}
-
-/// What was collected since `record`, each finding once.
-pub fn findings() -> Vec<String> {
-    let mut found = FINDINGS
-        .with(|found| found.borrow_mut().take())
-        .unwrap_or_default();
-    found.sort();
-    found.dedup();
-    found
-}
-
-pub(super) fn recording() -> bool {
-    FINDINGS.with(|found| found.borrow().is_some())
-}
-
-pub(super) fn note(finding: String) {
-    FINDINGS.with(|found| {
-        if let Some(found) = found.borrow_mut().as_mut() {
-            found.push(finding);
-        }
-    });
 }
 
 pub(super) struct Placed {
@@ -138,29 +106,43 @@ pub(super) fn overlaps(inks: &[(String, Rect)]) -> Vec<String> {
     breaks
 }
 
-pub(super) fn canvas_findings(what: &str, bounds: Rect, inks: &[(String, Rect)]) {
-    use super::chrome::layout::WORD_GAP;
-    for (i, (name, rect)) in inks.iter().enumerate() {
-        if !inside(*rect, bounds) {
-            note(format!("{what}: {name:?} {rect:?} leaves the panel"));
+pub(super) fn canvas_breaks(
+    canvas: &super::canvas::Canvas,
+    bounds: Rect,
+    regions: &[(&str, Rect)],
+    page_first: usize,
+    targets: &[(&str, Rect)],
+) -> Vec<String> {
+    let region = |rect: Rect| {
+        (page_first..regions.len())
+            .find(|&i| inside(rect, regions[i].1))
+            .unwrap_or(page_first)
+    };
+    let inks: Vec<_> = canvas
+        .runs
+        .iter()
+        .filter_map(super::chrome::layout::text)
+        .collect();
+    let shapes = canvas.shapes.iter().map(|shape| {
+        let rect = shape.bounds().clipped(bounds);
+        Placed {
+            name: format!("{shape:?}"),
+            rect,
+            region: region(rect),
         }
-        for (other, against) in &inks[i + 1..] {
-            let near = Rect {
-                left: rect.left.saturating_sub(WORD_GAP),
-                right: rect.right + WORD_GAP,
-                ..*rect
-            };
-            if overlap(*rect, *against) {
-                note(format!(
-                    "{what}: {name:?} {rect:?} overlaps {other:?} {against:?}"
-                ));
-            } else if overlap(near, *against) {
-                note(format!(
-                    "{what}: {name:?} {rect:?} runs into {other:?} {against:?} (under {WORD_GAP} columns apart)"
-                ));
-            }
-        }
-    }
+    });
+    let placed: Vec<Placed> = inks
+        .iter()
+        .map(|(name, rect)| Placed {
+            name: name.clone(),
+            rect: *rect,
+            region: region(*rect),
+        })
+        .chain(shapes)
+        .collect();
+    let mut breaks = region_breaks(bounds, regions, &placed, targets);
+    breaks.extend(overlaps(&inks));
+    breaks
 }
 
 #[cfg(test)]

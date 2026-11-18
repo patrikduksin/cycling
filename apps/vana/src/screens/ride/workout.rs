@@ -263,7 +263,7 @@ fn step_name(value: &mut Text<24>, played: Played, short: bool) {
 }
 
 pub(super) fn prepare(view: &View) -> Canvas {
-    let layout = view.frame_layout();
+    let layout = view.layout;
     let (at, regions) = (&layout.scaled, &layout.workout);
     let (caption, body) = (at.face(FaceRole::Caption), at.face(FaceRole::Body));
     let (left_edge, right_edge) = (regions.step.left, regions.step.right);

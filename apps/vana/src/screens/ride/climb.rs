@@ -291,7 +291,7 @@ fn tenths_km(value: &mut Text<12>, mm: u64) {
 
 /// The text, the band, the bar and the rider; `frame` must be prepared.
 pub(super) fn prepare(view: &View) -> Canvas {
-    let layout = view.frame_layout();
+    let layout = view.layout;
     let mut canvas = Canvas::default();
     let situation = situation(view);
     head(&mut canvas, layout, view, situation);
@@ -666,7 +666,7 @@ fn spread_profile(columns: &mut [Column; PROFILE_LEN], len: usize, count: usize)
 
 /// Precompute every chart column for the road the page shows.
 pub(super) fn frame(view: &View) -> Frame {
-    let layout = view.frame_layout();
+    let layout = view.layout;
     let chart = layout.climb.chart;
     let count = chart.width();
     let mut frame = Frame {

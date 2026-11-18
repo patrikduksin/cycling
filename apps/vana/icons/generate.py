@@ -15,8 +15,9 @@ The whole SVG is rendered at once, so parts that overlap make one shape with
 no seam. Parts that do not touch in the drawing must keep a clear pixel
 between them at every size, or the script stops. `--zoom DIR` also writes an
 8x nearest-neighbour sheet of each size to DIR for review. `--scale 0.75`
-writes `art_0_75.rs`, every size at that scale step rounded half up, and
-reports each icon whose parts touch there instead of stopping.
+writes `art_0_75.rs`, every size at that scale step rounded half up, under
+the same checks. An icon that fails them at a step is redrawn for it in the
+step's folder, `0.75/`, which the step reads in place of the SVG here.
 """
 
 import io
@@ -25,7 +26,6 @@ import sys
 import xml.etree.ElementTree as ET
 from fractions import Fraction
 from pathlib import Path
-from dataclasses import dataclass, field
 from typing import NamedTuple
 
 import resvg_py
@@ -127,11 +127,16 @@ def render(svg: str, size: int) -> list[int]:
     return [quantize(a) for a in png.getchannel("A").tobytes()]
 
 
-def parts(name: str) -> list[str]:
+def drawing(drawings: Path, name: str) -> str:
+    own = drawings / f"{name}.svg"
+    return (own if own.exists() else HERE / f"{name}.svg").read_text()
+
+
+def parts(drawings: Path, name: str) -> list[str]:
     """Each drawn element of an icon as an SVG of its own, with the attributes
     of its group; a stroked path is split into its subpaths."""
     ET.register_namespace("", SVG)
-    root = ET.fromstring((HERE / f"{name}.svg").read_text())
+    root = ET.fromstring(drawing(drawings, name))
     leaves = []
     for child in root:
         group = child.attrib if child.tag == f"{{{SVG}}}g" else {}
@@ -151,9 +156,9 @@ def parts(name: str) -> list[str]:
     return svgs
 
 
-def check_gaps(name: str, sizes: list[int]) -> None:
+def check_gaps(drawings: Path, name: str, sizes: list[int]) -> None:
     """Parts that do not touch in the drawing keep a clear pixel between them."""
-    pieces = parts(name)
+    pieces = parts(drawings, name)
     fine = [render(piece, 240) for piece in pieces]
     group = list(range(len(pieces)))
 
@@ -184,26 +189,18 @@ def check_gaps(name: str, sizes: list[int]) -> None:
                         assert max(near) < MIN_INK, f"{name} at {size} px: parts {i} and {j} touch at {x},{y}"
 
 
-@dataclass
-class FaintIcons:
-    allowed: bool
-    found: list[str] = field(default_factory=list)
+def rasterize(drawings: Path, name: str, size: int) -> dict:
+    return crop(render(drawing(drawings, name), size), size, name)
 
 
-def rasterize(name: str, size: int, faint: FaintIcons) -> dict:
-    return crop(render((HERE / f"{name}.svg").read_text(), size), size, name, faint)
-
-
-def crop(coverage: list[int], size: int, name: str, faint: FaintIcons) -> dict:
+def crop(coverage: list[int], size: int, name: str) -> dict:
     alpha = Image.new("L", (size, size))
     alpha.putdata([c * 17 for c in coverage])
     left, top, right, bottom = alpha.getbbox()
     width, height = right - left, bottom - top
     data = alpha.crop((left, top, right, bottom)).tobytes()
     pixels = [value // 17 for value in data]
-    if 15 not in pixels:
-        assert faint.allowed, f"{name} at {size} px has no solid pixel"
-        faint.found.append(f"{name} at {size} px has no solid pixel")
+    assert 15 in pixels, f"{name} at {size} px has no solid pixel"
     return dict(left=left, top=top, width=width, height=height, bits=pack(pixels, width))
 
 
@@ -224,7 +221,7 @@ def draw(art: str, size: int, x: float, y: float, mirror: int, scale: float) -> 
 
 
 def rasterize_at_subpixel_centre(
-    art: str, mirror: int, scale: float, fill: tuple[int, int], centre: tuple[float, float], faint: FaintIcons
+    art: str, mirror: int, scale: float, fill: tuple[int, int], centre: tuple[float, float]
 ) -> dict:
     reach = math.ceil(GLYPH_INK_RADIUS_UNITS * scale) + 1
     x, y = centre[0] - fill[0], centre[1] - fill[1]
@@ -236,22 +233,22 @@ def rasterize_at_subpixel_centre(
     edge += [coverage[-1 - i] for i in range(size)] + [coverage[i * size + size - 1] for i in range(size)]
     assert max(edge) == 0, f"a sign glyph at {scale} reaches past its square"
     return dict(
-        left=raster_origin_x, top=raster_origin_y, size=size, raster=crop(coverage, size, f"a sign glyph at {scale}", faint)
+        left=raster_origin_x, top=raster_origin_y, size=size, raster=crop(coverage, size, f"a sign glyph at {scale}")
     )
 
 
-def zoom_sheet(names: list[str], size: int, path: Path) -> None:
+def zoom_sheet(drawings: Path, names: list[str], size: int, path: Path) -> None:
     """Every icon at `size`, white on black, each pixel 8 x 8."""
     cell = size + 4
     sheet = Image.new("L", (cell * len(names), cell))
     for index, name in enumerate(names):
         tile = Image.new("L", (size, size))
-        tile.putdata([c * 17 for c in render((HERE / f"{name}.svg").read_text(), size)])
+        tile.putdata([c * 17 for c in render(drawing(drawings, name), size)])
         sheet.paste(tile, (index * cell + 2, 2))
     sheet.resize((sheet.width * ZOOM, sheet.height * ZOOM), Image.NEAREST).save(path)
 
 
-def sign_sheet(form: str, scale: float, fill: tuple[int, int], path: Path, faint: FaintIcons) -> None:
+def sign_sheet(form: str, scale: float, fill: tuple[int, int], path: Path) -> None:
     form_index = [f.name for f in FORMS].index(form)
     glyphs = [
         rasterize_at_subpixel_centre(
@@ -260,7 +257,6 @@ def sign_sheet(form: str, scale: float, fill: tuple[int, int], path: Path, faint
             scale,
             fill,
             centres_with_scaled_banner_fallback(g.centres_by_form)[form_index],
-            faint,
         )
         for g in SIGN_GLYPHS
     ]
@@ -315,19 +311,19 @@ def fields(size: int, raster: dict, indent: int) -> list[str]:
     return lines + [f"{pad}],"]
 
 
-def emit(faint: FaintIcons) -> str:
+def emit(drawings: Path) -> str:
     total = 0
     body = []
     for size in SENSOR_SIZES:
         body.append(f"/// Sensor icons at {size} px, in `Sensor` order.")
         body.append(f"pub static SENSORS_{size}: [Icon; {len(SENSORS)}] = [")
         for name in SENSORS:
-            raster = rasterize(name, size, faint)
+            raster = rasterize(drawings, name, size)
             total += len(raster["bits"]) + 8
             body += [f"    // {name}", "    Icon {", *fields(size, raster, 8), "    },"]
         body += ["];", ""]
     for name, size in MARKS:
-        raster = rasterize(name, size, faint)
+        raster = rasterize(drawings, name, size)
         total += len(raster["bits"]) + 8
         body += [
             f"/// The {name} mark at {size} px.",
@@ -336,7 +332,7 @@ def emit(faint: FaintIcons) -> str:
             "};",
             "",
         ]
-    raster = crop(render(draw(PUCK, PUCK_SIZE, PUCK_SIZE / 2, PUCK_SIZE / 2, 1, 1), PUCK_SIZE), PUCK_SIZE, "puck", faint)
+    raster = crop(render(draw(PUCK, PUCK_SIZE, PUCK_SIZE / 2, PUCK_SIZE / 2, 1, 1), PUCK_SIZE), PUCK_SIZE, "puck")
     total += len(raster["bits"]) + 8
     body += [
         "/// The map's rider arrow; its square's centre is the puck's.",
@@ -349,7 +345,7 @@ def emit(faint: FaintIcons) -> str:
     for _, art, mirror, at in SIGN_GLYPHS:
         body += ["    ["]
         for (_, scale, fill), centre in zip(FORMS, centres_with_scaled_banner_fallback(at), strict=True):
-            glyph = rasterize_at_subpixel_centre(art, mirror, scale, fill, centre, faint)
+            glyph = rasterize_at_subpixel_centre(art, mirror, scale, fill, centre)
             total += len(glyph["raster"]["bits"]) + 10
             body += [
                 "        SignArt {",
@@ -418,38 +414,23 @@ TURN_AT_1, BACK_AT_1, FLAG_AT_1 = TURN_AT, BACK_AT, FLAG_AT
 
 if __name__ == "__main__":
     scale = Fraction(sys.argv[sys.argv.index("--scale") + 1]) if "--scale" in sys.argv else Fraction(1)
-    touching = []
-    faint = FaintIcons(allowed=scale != 1)
     if scale != 1:
         scale_to(scale)
-
-    def gaps(name: str, sizes: list[int]) -> None:
-        for size in sizes:
-            try:
-                check_gaps(name, [size])
-            except AssertionError as error:
-                if scale == 1:
-                    raise
-                touching.append(str(error))
-
+    drawings = HERE / str(float(scale))
     for name in SENSORS:
-        gaps(name, SENSOR_SIZES)
+        check_gaps(drawings, name, SENSOR_SIZES)
     for name, size in MARKS:
-        gaps(name, [size])
-    for line in touching:
-        print(line)
+        check_gaps(drawings, name, [size])
     if "--zoom" in sys.argv:
         zoom = Path(sys.argv[sys.argv.index("--zoom") + 1])
         zoom.mkdir(parents=True, exist_ok=True)
         for size in SENSOR_SIZES:
-            zoom_sheet(SENSORS, size, zoom / f"sensors-{size}.png")
+            zoom_sheet(drawings, SENSORS, size, zoom / f"sensors-{size}.png")
         for size in sorted({size for _, size in MARKS}):
             marks = [name for name, mark in MARKS if mark == size]
-            zoom_sheet(marks, size, zoom / f"marks-{size}.png")
+            zoom_sheet(drawings, marks, size, zoom / f"marks-{size}.png")
         for form, scale, fill in FORMS:
-            sign_sheet(form, scale, fill, zoom / f"sign-{form.lower()}.png", faint)
+            sign_sheet(form, scale, fill, zoom / f"sign-{form.lower()}.png")
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(emit(faint))
-    for line in faint.found:
-        print(line)
+    OUTPUT.write_text(emit(drawings))
     print(f"wrote {OUTPUT.relative_to(HERE.parents[2])}")

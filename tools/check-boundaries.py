@@ -252,10 +252,9 @@ def console_reach(text, path):
 
 
 SCREENS = 'apps/vana/src/screens/'
-REGIONS_FN = re.compile(r'\bconst\s+fn\s+regions\s*\(')
 RECT_LITERAL = re.compile(r'(?<![\w:])Rect\s*\{')
 NUMERIC_FIELD = re.compile(r'\b(?:left|top|right|bottom)\s*:\s*\d[\d_]*(?:usize)?\s*[,}]')
-PIXEL_RULE = ('a numeric `Rect { … }` in a screen laid out from `regions`: make it a `Track` in a `const fn` '
+PIXEL_RULE = ('a numeric `Rect { … }` in a screen, which lays out from the panel: make it a `Track` in a `const fn` '
               'of `&Scaled` (`regions`), or measure a lone offset with `at.unit(n)` from a region\'s edge')
 
 
@@ -270,13 +269,11 @@ def brace_end(code, start):
 
 
 def pixel_rects(text, path):
-    """In a screen file with a `const fn regions`, a `Rect` literal with an edge at a number, outside a
-    `const fn` (where layouts are built from tracks) and outside test modules, is a hand-placed pixel."""
+    """In a screen file, a `Rect` literal with an edge at a number, outside a `const fn` (where layouts
+    are built from tracks) and outside test modules, is a hand-placed pixel."""
     if not path.startswith(SCREENS):
         return []
     code = STRING.sub(lambda match: blank(match.group()), without_comments(text))
-    if not REGIONS_FN.search(code):
-        return []
     allowed = []
     for match in re.finditer(r'\bconst\s+fn\b[^{;]*\{|#\[cfg\(test\)\]\s*mod\s+\w+\s*\{', code):
         allowed.append((match.start(), brace_end(code, match.end() - 1)))
@@ -650,7 +647,8 @@ ui = { package = "firmware-shell", path = "../shell" }
     assert pixel_rects(laid_out + 'fn paint() { let r = Rect { left: 0, top, right: 240, bottom }; }', page)
     assert not pixel_rects(laid_out + 'fn paint() { let r = Rect { top: y + at.unit(4), ..z }; }', page)
     assert not pixel_rects(laid_out + '#[cfg(test)]\nmod tests {\n    const R: Rect = Rect { left: 1, top: 2, right: 3, bottom: 4 };\n}\n', page)
-    assert not pixel_rects('fn paint() { let r = Rect { top: 4, ..y }; }', page), 'a file without regions is not laid out yet'
+    assert pixel_rects('fn paint() { let r = Rect { top: 4, ..y }; }', page), 'every screen lays out from the panel'
+    assert not pixel_rects('fn paint() { let r = Rect { top: 4, ..y }; }', 'apps/vana/src/app/page.rs')
     assert not pixel_rects(laid_out + 'pub struct Rect {\n    pub left: usize,\n}\n// Rect { left: 3 }\n', page)
     wifi = STACK_STATE_WAITER[0]
     publisher = 'async fn network(stack: Stack) {\n    loop {\n        stack.wait_config_up().await;\n' \

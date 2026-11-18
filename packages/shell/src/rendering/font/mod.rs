@@ -608,9 +608,33 @@ mod tests {
     }
 
     /// `Label::paint_row` holds only `SPILL` columns of a glyph for the next.
+    /// A glyph at 3/4 advances no more than 3/4 of its scale-1 advance,
+    /// unless its ink would then reach further past its advance than at
+    /// scale 1; a digit takes the widest digit's need.
+    #[test]
+    fn a_glyph_at_3_4_advances_3_4_of_its_scale_1_advance_or_what_its_ink_needs() {
+        let need = |s: &Glyph, b: &Glyph| {
+            let overrun = (i32::from(b.x) + i32::from(b.w) - i32::from(b.advance)).max(0);
+            i32::from(s.x) + i32::from(s.w) - overrun
+        };
+        for (small, base) in SCALE_0_75.0.iter().zip(SCALE_1.0) {
+            let digits = b"0123456789".map(|d| need(small.glyph(d), base.glyph(d)));
+            let digit = digits.into_iter().max().unwrap();
+            for (code, (s, b)) in (0x20u8..).zip(small.glyphs.iter().zip(base.glyphs)) {
+                let room = if code.is_ascii_digit() {
+                    digit
+                } else {
+                    need(s, b)
+                };
+                let within = 4 * u32::from(s.advance) <= 3 * u32::from(b.advance);
+                assert!(within || i32::from(s.advance) <= room, "{:?}", code as char);
+            }
+        }
+    }
+
     #[test]
     fn glyphs_spill_at_most_spill_columns_into_the_next_cell() {
-        for face in FACES {
+        for face in SCALE_1.0.iter().chain(&SCALE_0_75.0) {
             for glyph in face.glyphs {
                 let reach = i32::from(glyph.x) + i32::from(glyph.w);
                 assert!(reach <= i32::from(glyph.advance) + SPILL as i32);

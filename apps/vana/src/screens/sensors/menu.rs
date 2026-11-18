@@ -122,17 +122,12 @@ pub struct Menu {
     pub(super) layout: Layout,
 }
 
-impl Default for Menu {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Menu {
-    pub const fn new() -> Self {
+    /// The sensor pages, placed on the panel `layout` lays out.
+    pub const fn new(layout: &'static crate::screens::Layout) -> Self {
         Self {
             state: State::new(),
-            layout: Layout::new(),
+            layout: Layout::new(layout),
         }
     }
 

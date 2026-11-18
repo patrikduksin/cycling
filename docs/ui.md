@@ -38,23 +38,31 @@ rules at a scale step:
 
 - The step is the smaller of the panel's width over 240 and its height over
   320, rounded down to a quarter and capped at 3/2. A panel under 3/4 cannot
-  lay out. Faces and icons are generated only for the 3/4 and 1 steps, so a
-  device whose panel lands on another step does not build until faces are
-  generated for that step.
+  lay out. Faces and icons are generated only for the steps some device or
+  simulator model uses, today 3/4 and 1, so a device whose panel lands on
+  another step does not build until faces are generated for that step.
 - A layout's lengths are units, which the step multiplies, rounded half up.
   A line of text takes the height of that step's own face.
+- A step's face is drawn at the scaled size and advances by the scaled scale-1
+  advance, both rounded down, so a line of text at a step is never wider than
+  its scale-1 width scaled. A glyph whose ink fills its scale-1 advance keeps
+  the one column more it needs, so letters never touch where they do not at
+  scale 1. At a step, digits share the widest digit's advance.
 - A screen splits a box into rows or columns: fixed units, the height of a
   face's line or capitals, and shares of what is left. A panel taller or wider
   than its step gives the extra space to the shares, so readings keep their
-  size and gain room around them.
-- The status bar, the course sign and the ride screens (the ride pages, the
-  paused screen, END RIDE? and the ride summary) lay out from the panel. Each
-  device's build lays them out once for its panel, into one static layout, so
-  a screen that does not fit a panel a device declares fails that device's
-  build. `apps/vana/src/screens/mod.rs` holds that layout and
+  size and gain room around them: Home's RIDE card, FORM's trend and the map
+  grow, and lists show more cards.
+- Every screen lays out from the panel and draws at the panel's size. Each
+  device's build lays the screens out once for its panel, into one static
+  layout, so a screen that does not fit a panel a device declares fails that
+  device's build. `apps/vana/src/screens/mod.rs` holds that layout and
   `apps/vana/src/screens/scaled.rs` the steps.
-- Every other screen draws the 240 × 320 canvas, and the shell stretches the
-  canvas to the panel: each panel pixel shows the nearest canvas pixel.
+- Shapes drawn at a fixed pixel size (the status bar's battery, bolt and dots,
+  the gauges' rounded ends, a cue's disc and icon) keep that size at every
+  step. Only where they sit scales.
+- Touch is hit-tested in panel pixels against the same regions the screen
+  drew.
 - A device names its panel in its `device.toml` under `devices/`, and
   `cycling devices` regenerates the list of panels a build lays out for,
   `apps/vana/src/screens/limits.rs`.

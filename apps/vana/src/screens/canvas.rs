@@ -171,22 +171,51 @@ const fn fitted(rect: Rect, radius: usize) -> usize {
 pub struct Canvas {
     pub shapes: Vec<Shape, 24>,
     pub runs: Vec<Run, 28>,
+    /// Shapes and runs that found the canvas full: the layout check fails a
+    /// frame that lost any, where firmware quietly paints without them.
+    #[cfg(any(test, feature = "invariants"))]
+    dropped: usize,
 }
 
 impl Canvas {
     pub const EMPTY: Self = Self {
         shapes: Vec::new(),
         runs: Vec::new(),
+        #[cfg(any(test, feature = "invariants"))]
+        dropped: 0,
     };
 
     pub fn shape(&mut self, shape: Shape) {
-        let _ = self.shapes.push(shape);
+        if self.shapes.push(shape).is_err() {
+            self.drop_one();
+        }
     }
 
     /// Place `run`; returns it for neighbours to measure from.
     pub fn run(&mut self, run: Run) -> Run {
-        let _ = self.runs.push(run);
+        if self.runs.push(run).is_err() {
+            self.drop_one();
+        }
         run
+    }
+
+    #[cfg(any(test, feature = "invariants"))]
+    fn drop_one(&mut self) {
+        self.dropped += 1;
+    }
+
+    #[cfg(not(any(test, feature = "invariants")))]
+    fn drop_one(&mut self) {}
+
+    /// Fail a canvas that lost a shape or a run to its capacity.
+    #[cfg(any(test, feature = "invariants"))]
+    #[track_caller]
+    pub fn assert_kept(&self, what: impl core::fmt::Display) {
+        assert!(
+            self.dropped == 0,
+            "{what}: {} shapes or runs found the canvas full",
+            self.dropped
+        );
     }
 
     /// `text` in the largest of `faces` that fits `width`, placed by `align`
@@ -317,6 +346,7 @@ impl Canvas {
     #[track_caller]
     pub fn assert_laid_out_at(&self, at: &Scaled, bounds: Rect, want: &[&str], what: &str) {
         use super::chrome::layout::{assert_apart_at, assert_shown, text};
+        self.assert_kept(what);
         let texts: std::vec::Vec<_> = self.runs.iter().filter_map(text).collect();
         assert_apart_at(at, &texts, bounds, what);
         // Bars may touch each other (a chart), so check each against text.

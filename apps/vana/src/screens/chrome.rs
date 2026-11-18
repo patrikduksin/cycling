@@ -1,23 +1,26 @@
 //! Shared chrome: canvas geometry, palette, shapes, the status bar and toasts.
 //!
-//! Every screen draws below the status bar inside [`CONTENT`]; pages derive
-//! their own boxes from it rather than hard-coding coordinates, so the chrome
-//! can change without rewriting them. See `docs/ui.md`.
+//! Every screen draws below the status bar inside its layout's
+//! `chrome.content` ([`regions`]); pages derive their own boxes from it
+//! rather than hard-coding coordinates, so the chrome can change without
+//! rewriting them. See `docs/ui.md`.
 use super::Layout;
 use super::scaled::{BASE, Scale, Scaled, Track};
 use super::workout::Text;
 use core::num::NonZeroU8;
 use core::ops::Range;
 use firmware_shell::rendering::font::FaceRole;
-pub use firmware_shell::rendering::font::{
-    Align, BODY, CAPTION, HERO, LARGE, Label, Line, TITLE, VALUE, blend, mix,
-};
+pub use firmware_shell::rendering::font::{Align, Label, Line, blend, mix};
+#[cfg(test)]
+pub use firmware_shell::rendering::font::{BODY, CAPTION, HERO, LARGE, TITLE, VALUE};
 pub use firmware_shell::rendering::row::{Look, Row, Shown};
 
+#[cfg(test)]
 pub const WIDTH: usize = 240;
+#[cfg(test)]
 pub const HEIGHT: usize = 320;
 
-/// A half-open box on the 240 × 320 canvas.
+/// A half-open box on the panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Rect {
     pub left: usize,
@@ -91,9 +94,11 @@ pub const fn regions(at: &Scaled) -> Regions {
     }
 }
 
-/// The chrome on the 240 × 320 canvas.
+#[cfg(test)]
 pub const STATUS_BAR: Rect = regions(&BASE).status_bar;
+#[cfg(test)]
 pub const CONTENT: Rect = regions(&BASE).content;
+#[cfg(test)]
 pub const TOAST: Rect = regions(&BASE).toast;
 
 /// RGB565 from 8-bit channels.
@@ -1312,6 +1317,7 @@ pub(crate) mod layout {
 
     /// Clear units between two items on the same line: less reads as one
     /// word.
+    #[cfg(test)]
     pub(crate) const WORD_GAP: usize = 4;
 
     /// Whether two inks overlap, or sit on one line closer than `gap`.
@@ -1605,6 +1611,27 @@ mod tests {
         );
         let long = Toast::new("A MESSAGE THAT IS FAR TOO LONG", Tone::Info);
         assert!(long.pill.right <= WIDTH && long.text().len() < 20);
+    }
+
+    #[test]
+    fn the_longest_toasts_keep_every_letter_in_the_band_on_every_panel() {
+        for layout in crate::screens::panels::ALL {
+            let (band, width) = (layout.chrome.toast, layout.scaled.panel.width);
+            for (message, tone) in [
+                ("STORAGE NOT READY", Tone::Alert),
+                ("PRESS AGAIN TO SAVE", Tone::Warn),
+                ("LAP 99 9:59:59 999W", Tone::Info),
+                ("NOT SAVED", Tone::Warn),
+                ("COURSE OFF", Tone::Info),
+            ] {
+                let toast = Toast::new(message, tone).on(layout);
+                let what = std::format!("{message} on {:?}", layout.scaled.panel);
+                assert_eq!(toast.text(), message.as_bytes(), "{what}");
+                let pill = toast.pill;
+                assert!(pill.left > 0 && pill.right < width, "{what}: {pill:?}");
+                assert!(pill.top >= band.top && pill.bottom <= band.bottom, "{what}");
+            }
+        }
     }
 
     #[test]

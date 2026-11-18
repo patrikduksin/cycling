@@ -1676,7 +1676,7 @@ impl Runtime {
             } else {
                 let _ = lines[NOTE].push_str("SCAN WITH THE CAMERA");
             }
-            *qr = Qr::encode(status.join_text().as_str()).map(place);
+            *qr = Qr::encode(status.join_text().as_str()).map(|qr| place(self.layout, qr));
             return;
         }
         let _ = lines[STEP].push_str(match status.mode {
@@ -1692,7 +1692,7 @@ impl Runtime {
                 } else {
                     let _ = lines[NOTE].push_str("ENDS AFTER 10 MIN IDLE");
                 }
-                *qr = Qr::encode(url.as_str()).map(place);
+                *qr = Qr::encode(url.as_str()).map(|qr| place(self.layout, qr));
             }
             _ => {
                 let _ = lines[NAME].push_str("WAITING FOR WI-FI");

@@ -8,8 +8,8 @@ use super::zones::{GAUGE_WIDTH, Mark};
 use super::{Labels, RidePage, Smooth, Text, elapsed, kilometres, speed, whole};
 use crate::ride::course::nav::Sign;
 use crate::screens::chrome::{
-    Align, BLACK, CONTENT, GRADE, HEART, Label, Line, POWER, Rect, Row, SECONDARY, SPEED, Shown,
-    TERTIARY, WHITE, blend, rounded, zone_color,
+    Align, BLACK, GRADE, HEART, Label, Line, POWER, Rect, Row, SECONDARY, SPEED, Shown, TERTIARY,
+    WHITE, blend, rounded, zone_color,
 };
 use crate::screens::icons::SignForm;
 use crate::screens::scaled::{Scaled, Track};
@@ -228,7 +228,8 @@ const COURSE_CAPS: CapsBelowBandTopUnits = CapsBelowBandTopUnits {
 const COURSE_GAUGES_BELOW_BAND_TOP_UNITS: [usize; 2] = [47, 49];
 
 const fn baseline_below_body_units(mockup_last_cap_row: usize) -> usize {
-    mockup_last_cap_row + 1 - CONTENT.top
+    let base = crate::screens::chrome::regions(&crate::screens::scaled::BASE);
+    mockup_last_cap_row + 1 - base.content.top
 }
 
 struct Rows {
@@ -391,7 +392,7 @@ fn value(write: &dyn Fn(&mut Text<12>)) -> Text<12> {
 }
 
 pub(super) fn prepare(view: &View) -> Smooth {
-    let layout = view.frame_layout();
+    let layout = view.layout;
     let (regions, at) = (&layout.main, &layout.scaled);
     let span = Span::of(regions, at);
     if view.course && view.nav == Sign::Arrived {
@@ -1241,7 +1242,7 @@ mod tests {
             );
             let mut items = items(&view);
             if let Some(form) = nav.and_then(|nav| sign::form(RidePage::Main, nav)) {
-                let placed = sign::place(view.nav, form, true, view.frame_layout()).unwrap();
+                let placed = sign::place(view.nav, form, true, view.layout).unwrap();
                 items.push(("chip".into(), placed.rect()));
             }
             assert_apart(&items, bounds, &what);

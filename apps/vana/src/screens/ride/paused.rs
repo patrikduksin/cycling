@@ -87,7 +87,7 @@ pub const fn regions(at: &Scaled) -> Regions {
 pub const READINGS: [&str; 2] = ["time", "dist"];
 
 pub fn prepare(view: &View) -> Canvas {
-    let layout = view.frame_layout();
+    let layout = view.layout;
     let (at, regions) = (&layout.scaled, &layout.paused);
     let face = |role| at.face(role);
     let mut canvas = Canvas::default();

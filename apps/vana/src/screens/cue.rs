@@ -47,6 +47,17 @@ pub const CLEAR_OF_CUES: [Track; 3] = [Track::Unit(24), Track::Fr(1), Track::Uni
 
 /// The visible quarter disc's radius.
 pub const RADIUS: usize = 42;
+
+/// How far in from its side a bottom cue's disc reaches on the row `above`
+/// rows over the panel's bottom edge, rounded up.
+pub const fn reach(above: usize) -> usize {
+    if above >= RADIUS {
+        return 0;
+    }
+    let span = RADIUS * RADIUS - above * above;
+    let root = span.isqrt();
+    if root * root < span { root + 1 } else { root }
+}
 /// The icon's centre, this far in from both edges of its corner.
 const ICON_INSET: i32 = 17;
 /// The box around the icon centre that the icon can touch, in pixels.
@@ -89,6 +100,23 @@ impl Cue {
             Corner::BottomRight => (width - ICON_INSET, height - ICON_INSET),
             Corner::BottomLeft => (ICON_INSET, height - ICON_INSET),
         }
+    }
+
+    /// Whether the disc reaches into `rect`.
+    pub const fn covers(&self, rect: super::chrome::Rect, panel: Panel) -> bool {
+        let (cx, cy) = self.corner_xy(panel);
+        let (cx, cy) = (cx as usize, cy as usize);
+        let dx = if cx < rect.left {
+            rect.left - cx
+        } else {
+            cx.saturating_sub(rect.right)
+        };
+        let dy = if cy < rect.top {
+            rect.top - cy
+        } else {
+            cy.saturating_sub(rect.bottom)
+        };
+        dx * dx + dy * dy < RADIUS * RADIUS
     }
 
     pub const fn rows(&self, panel: Panel) -> core::ops::Range<usize> {

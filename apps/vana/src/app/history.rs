@@ -504,13 +504,15 @@ impl Runtime {
         pressed: Option<usize>,
     ) -> crate::screens::canvas::Canvas {
         let count = self.history_count();
+        let layout = self.layout;
         history::prepare(&List {
+            layout,
             count,
             cursor: self.history.cursor,
             offset,
             pressed,
             row: |index| self.history_row(index, count),
-            weeks: if count > 0 && history::header_shows(offset) {
+            weeks: if count > 0 && history::header_shows(&layout.history.list, offset) {
                 self.weeks()
             } else {
                 None

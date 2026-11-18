@@ -250,14 +250,13 @@ pub struct Scene<'v> {
 
 #[derive(Clone, Copy, Debug, Hash)]
 enum Kind {
-    Canvas,
-    Panel,
+    PageUnderBar,
+    Scrolled,
     Home,
     Ride(RidePage),
     Phone,
     Summary {
         elevation: bool,
-        from_panel: bool,
     },
     List {
         layout: &'static super::scroll::Layout,
@@ -333,15 +332,6 @@ struct WholePage<'v> {
 }
 
 impl firmware_shell::shell::Picture for Scene<'_> {
-    fn size(&self) -> (usize, usize) {
-        let panel = if super::scaled::ONLY_BASE {
-            super::scaled::BASE_PANEL
-        } else {
-            self.layout.scaled.panel
-        };
-        (panel.width, panel.height)
-    }
-
     fn paint(&self, row: &mut Row) {
         let row = &mut row.looked(self.look);
         row.fill(BLACK);
@@ -393,7 +383,7 @@ impl<'v> Scene<'v> {
             return;
         }
         match self.kind {
-            Kind::Canvas | Kind::Panel => self.canvas().paint(row),
+            Kind::PageUnderBar | Kind::Scrolled => self.canvas().paint(row),
             Kind::Home => {
                 if let Some(home) = self.home() {
                     home.paint(row);
@@ -442,7 +432,7 @@ impl<'v> Scene<'v> {
     #[cfg(test)]
     pub(crate) fn pixel(&self, x: usize, y: usize) -> u16 {
         use firmware_shell::shell::Picture;
-        let mut pixels = std::vec![0u16; self.size().0];
+        let mut pixels = std::vec![0u16; self.layout.scaled.panel.width];
         self.paint(&mut Row::new(y, &mut pixels));
         pixels.get(x).copied().unwrap_or(0)
     }
@@ -508,7 +498,7 @@ impl<'v> Scene<'v> {
             return color;
         }
         let mut color = match self.kind {
-            Kind::Canvas | Kind::Panel => self.canvas().pixel(look, x, y, black),
+            Kind::PageUnderBar | Kind::Scrolled => self.canvas().pixel(look, x, y, black),
             Kind::Home => self.home().map_or(black, |home| home.pixel(look, x, y)),
             Kind::Ride(page) => ride::reference_pixel(self, page, x, y),
             Kind::Phone => super::phone::pixel(self, x, y)
@@ -539,9 +529,7 @@ impl<'v> Scene<'v> {
 
 #[cfg(any(test, feature = "invariants"))]
 impl Scene<'_> {
-    /// Check this frame's layout (`check`): fail a screen laid out from
-    /// regions that breaks it, and note what a screen not laid out from
-    /// regions yet shows, while the thread records.
+    /// Check this frame's layout (`check`): fail a screen that breaks it.
     pub fn check_layout(&self) {
         use super::check::{self, Placed};
         use std::string::String;
@@ -549,10 +537,12 @@ impl Scene<'_> {
         if !check::enabled() {
             return;
         }
+        if let Some(canvas) = self.body.canvas() {
+            canvas.assert_kept(format_args!("{:?} on {:?}", self.kind, self.layout.scaled));
+        }
         let panel = self.layout.scaled.screen();
         if let Kind::Ride(page) = self.kind
             && page != RidePage::Main
-            && ride::from_panel(page)
         {
             let breaks = self.canvas_breaks(page);
             assert!(
@@ -564,11 +554,7 @@ impl Scene<'_> {
             );
             return;
         }
-        if let Kind::Summary {
-            elevation,
-            from_panel: true,
-        } = self.kind
-        {
+        if let Kind::Summary { elevation } = self.kind {
             let breaks = self.summary_breaks(elevation);
             assert!(
                 breaks.is_empty(),
@@ -578,36 +564,48 @@ impl Scene<'_> {
             );
             return;
         }
-        if let Kind::Panel = self.kind {
-            let breaks = self.breaks_within(std::vec![("screen", panel)], 0);
+        if let Kind::Home = self.kind
+            && let Some(home) = self.body.home()
+        {
+            let breaks = self.home_breaks(home);
             assert!(
                 breaks.is_empty(),
-                "a whole-screen canvas on {:?} breaks its layout:\n{}",
+                "Home on {:?} breaks its layout:\n{}",
+                self.layout.scaled,
+                breaks.join("\n")
+            );
+            return;
+        }
+        if let Kind::List { layout, scroll } = self.kind {
+            let breaks = self.list_breaks(layout, scroll);
+            assert!(
+                breaks.is_empty(),
+                "a list on {:?} breaks its layout:\n{}",
+                self.layout.scaled,
+                breaks.join("\n")
+            );
+            return;
+        }
+        if let Kind::PageUnderBar | Kind::Scrolled | Kind::Phone = self.kind {
+            let regions = match self.bar {
+                Some(_) if matches!(self.kind, Kind::Scrolled) => std::vec![("list", panel)],
+                Some(_) => std::vec![
+                    ("status bar", self.layout.chrome.status_bar),
+                    ("page", self.layout.chrome.content),
+                ],
+                None => std::vec![("screen", panel)],
+            };
+            let page_first = regions.len() - 1;
+            let breaks = self.breaks_within(regions, page_first);
+            assert!(
+                breaks.is_empty(),
+                "a canvas page on {:?} breaks its layout:\n{}",
                 self.layout.scaled,
                 breaks.join("\n")
             );
             return;
         }
         if !matches!(self.kind, Kind::Ride(RidePage::Main)) {
-            if check::recording() {
-                let inks: Vec<_> = self
-                    .body
-                    .canvas()
-                    .map(|canvas| {
-                        let text = super::chrome::layout::text;
-                        canvas.runs.iter().filter_map(text).collect()
-                    })
-                    .unwrap_or_default();
-                let bounds = match self.kind {
-                    Kind::List { .. } => check::scrolling_bounds(panel),
-                    _ => panel,
-                };
-                let what = match self.kind {
-                    Kind::List { layout, .. } => std::format!("List at {}", layout.top),
-                    kind => std::format!("{kind:?}"),
-                };
-                check::canvas_findings(&what, bounds, &inks);
-            }
             return;
         }
         let smooth = self.smooth();
@@ -686,46 +684,103 @@ impl Scene<'_> {
         self.breaks_within(regions, page_first)
     }
 
+    fn home_breaks(&self, home: &Home) -> std::vec::Vec<std::string::String> {
+        use super::check::{self, Placed};
+        use std::vec::Vec;
+        let mut regions = std::vec![("status bar", self.layout.chrome.status_bar)];
+        let mut placed = Vec::new();
+        let mut inks = Vec::new();
+        for (name, card, items) in home.cards() {
+            regions.push((name, card));
+            for (item, rect) in items {
+                placed.push(Placed {
+                    name: item.clone(),
+                    rect,
+                    region: regions.len() - 1,
+                });
+                inks.push((item, rect));
+            }
+        }
+        let panel = self.layout.scaled.screen();
+        let mut breaks = check::region_breaks(panel, &regions, &placed, &[]);
+        breaks.extend(check::overlaps(&inks));
+        breaks
+    }
+
     fn breaks_within(
         &self,
         regions: std::vec::Vec<(&str, super::chrome::Rect)>,
         page_first: usize,
     ) -> std::vec::Vec<std::string::String> {
-        use super::check::{self, Placed};
-        use std::vec::Vec;
-        let region = |rect: super::chrome::Rect| {
-            (page_first..regions.len())
-                .find(|&i| check::inside(rect, regions[i].1))
-                .unwrap_or(page_first)
-        };
-        let canvas = self.canvas();
-        let inks: Vec<_> = canvas
-            .runs
-            .iter()
-            .filter_map(super::chrome::layout::text)
-            .collect();
+        self.breaks_in(regions, page_first, self.layout.scaled.screen())
+    }
+
+    fn breaks_in(
+        &self,
+        regions: std::vec::Vec<(&str, super::chrome::Rect)>,
+        page_first: usize,
+        bounds: super::chrome::Rect,
+    ) -> std::vec::Vec<std::string::String> {
+        let targets: std::vec::Vec<_> =
+            self.sign.iter().map(|sign| ("sign", sign.rect())).collect();
+        super::check::canvas_breaks(self.canvas(), bounds, &regions, page_first, &targets)
+    }
+
+    fn list_breaks(
+        &self,
+        list: &super::scroll::Layout,
+        scroll: i32,
+    ) -> std::vec::Vec<std::string::String> {
+        use super::check;
+        use super::chrome::Rect;
         let panel = self.layout.scaled.screen();
-        let shapes = canvas.shapes.iter().map(|shape| {
-            let rect = shape.bounds().clipped(panel);
-            Placed {
-                name: std::format!("{shape:?}"),
-                rect,
-                region: region(rect),
+        let mut regions = std::vec::Vec::new();
+        let page = if self.bar.is_some() {
+            regions.push(("status bar", self.layout.chrome.status_bar));
+            self.layout.chrome.content
+        } else {
+            panel
+        };
+        let page_first = regions.len();
+        let band = list
+            .pin
+            .filter(|_| list.pinned(scroll))
+            .map_or(0, |pin| pin.height);
+        for (name, rect) in [
+            (
+                "above the list",
+                Rect {
+                    bottom: list.top,
+                    ..page
+                },
+            ),
+            (
+                "pinned band",
+                Rect {
+                    top: list.top,
+                    bottom: list.top + band,
+                    ..page
+                },
+            ),
+            (
+                "below the list",
+                Rect {
+                    top: list.bottom,
+                    ..page
+                },
+            ),
+        ] {
+            if rect.height() > 0 {
+                regions.push((name, rect));
             }
-        });
-        let placed: Vec<Placed> = inks
-            .iter()
-            .map(|(name, rect)| Placed {
-                name: name.clone(),
-                rect: *rect,
-                region: region(*rect),
-            })
-            .chain(shapes)
-            .collect();
-        let targets: Vec<_> = self.sign.iter().map(|sign| ("sign", sign.rect())).collect();
-        let mut breaks = check::region_breaks(panel, &regions, &placed, &targets);
-        breaks.extend(check::overlaps(&inks));
-        breaks
+        }
+        let rows = Rect {
+            top: list.stretched_top(),
+            bottom: usize::MAX,
+            ..panel
+        };
+        regions.push(("page", rows));
+        self.breaks_in(regions, page_first, check::scrolling_bounds(panel))
     }
 
     fn summary_breaks(&self, elevation: bool) -> std::vec::Vec<std::string::String> {
@@ -785,6 +840,19 @@ impl Scene<'_> {
             .collect();
         let mut breaks = check::region_breaks(panel, &regions, &placed, &[]);
         breaks.extend(check::overlaps(&inks));
+        for cue in self.cues {
+            for item in placed
+                .iter()
+                .filter(|item| cue.covers(item.rect, self.layout.scaled.panel))
+            {
+                breaks.push(std::format!(
+                    "{:?} {:?} is under the {:?} cue",
+                    item.name,
+                    item.rect,
+                    cue.icon
+                ));
+            }
+        }
         breaks
     }
 }
@@ -1225,13 +1293,13 @@ impl<'a> View<'a> {
     /// The scrolling list this page shows, if any.
     pub fn layout(&self) -> Option<&'static super::scroll::Layout> {
         match self.page {
-            Page::History => Some(&super::history::LAYOUT),
-            Page::Workouts if self.ftp_offer.is_none() => Some(&super::workouts::LAYOUT),
+            Page::History => Some(&self.layout.history.list),
+            Page::Workouts if self.ftp_offer.is_none() => Some(&self.layout.workouts.list),
             Page::Settings
                 if !(self.editing
                     && self.sections.row(self.cursor).kind() == super::settings::Kind::Number) =>
             {
-                Some(&super::settings::LAYOUT)
+                Some(&self.layout.settings.list)
             }
             _ => None,
         }
@@ -1249,24 +1317,22 @@ impl<'a> View<'a> {
     fn scene(&self) -> Scene<'_> {
         let sheet = self.page == Page::Boot || self.ftp_offer.is_some();
         let kind = match self.page {
-            _ if sheet => Kind::Canvas,
+            _ if sheet => self.canvas_kind(),
             Page::Home => Kind::Home,
             Page::Ride if !self.pause_screen => Kind::Ride(self.ride_page),
             Page::Phone => Kind::Phone,
             Page::Summary | Page::PastRide => Kind::Summary {
                 elevation: summary::shows_elevation(self),
-                from_panel: summary::from_panel(self),
             },
             _ => match self.layout() {
                 Some(layout) => Kind::List {
                     layout,
                     scroll: self.scroll,
                 },
-                None if self.lays_out_from_panel() => Kind::Panel,
-                None => Kind::Canvas,
+                None => self.canvas_kind(),
             },
         };
-        let layout = self.frame_layout();
+        let layout = self.layout;
         let frame = &layout.ride;
         let (gauges, radar) = match kind {
             Kind::Ride(page) => (
@@ -1304,27 +1370,15 @@ impl<'a> View<'a> {
     /// still starting.
     fn boot_canvas(&self) -> Canvas {
         let mut canvas = Canvas::default();
-        super::brand::reveal(&mut canvas, self.reveal);
+        super::brand::reveal(&mut canvas, self.layout, self.reveal);
         canvas
     }
 
-    fn lays_out_from_panel(&self) -> bool {
-        if summary::from_panel(self) {
-            return self.ftp_offer.is_none();
-        }
-        let ride_page =
-            self.page == Page::Ride && !self.pause_screen && ride::from_panel(self.ride_page);
-        let ending =
-            self.paused_screen_shown() || matches!(self.page, Page::EndRide | Page::DiscardRide);
-        (ride_page || ending) && self.ftp_offer.is_none()
-    }
-
-    /// The layout this frame draws.
-    pub fn frame_layout(&self) -> &'static Layout {
-        if self.lays_out_from_panel() {
-            self.layout
+    fn canvas_kind(&self) -> Kind {
+        if self.page == Page::Sensors && !self.full_screen() {
+            Kind::Scrolled
         } else {
-            &super::BASE
+            Kind::PageUnderBar
         }
     }
 
@@ -1335,7 +1389,7 @@ impl<'a> View<'a> {
             Status::Paused => Mark::Paused,
             _ => Mark::None,
         };
-        let layout = self.frame_layout();
+        let layout = self.layout;
         self.bar = StatusBar::placed(&self.time, self.gps, self.battery, mark, &layout.scaled);
         if layout.scaled != super::scaled::BASE {
             self.toast = self.toast.map(|toast| toast.on(layout));
@@ -1348,7 +1402,9 @@ impl<'a> View<'a> {
                 &[]
             }
             Page::Format => {
-                fill(self, |view| super::format::prepare(view.format));
+                fill(self, |view| {
+                    super::format::prepare(view.layout, view.format)
+                });
                 match self.format {
                     super::format::Shows::Question(_) => &ride::end::TRASH_CUES,
                     super::format::Shows::Wait => &[],
@@ -1361,7 +1417,9 @@ impl<'a> View<'a> {
                 &[]
             }
             Page::Ready => {
-                fill(self, |view| super::ready::prepare(view.readiness()));
+                fill(self, |view| {
+                    super::ready::prepare(view.layout, view.readiness())
+                });
                 if self.readiness().can_start() {
                     &super::ready::CUES
                 } else {
@@ -1462,7 +1520,9 @@ impl<'a> View<'a> {
         self.cues = cues;
         // The FTP sheet covers whatever page it shows over.
         if let Some((new, old)) = self.ftp_offer {
-            fill(self, |_| super::workouts::ftp_sheet(new, old));
+            fill(self, |view| {
+                super::workouts::ftp_sheet(view.layout, new, old)
+            });
             self.cues = &[];
             self.badge = None;
         }
@@ -1809,7 +1869,7 @@ mod tests {
                 let what = std::format!("{page:?} radar {radar_paired}");
                 let bare = view(page, Sign::None, radar_paired);
                 let under = view(page, turn, radar_paired);
-                let banner = sign::on_page(page, turn, radar_paired, under.frame_layout())
+                let banner = sign::on_page(page, turn, radar_paired, under.layout)
                     .unwrap()
                     .rect();
                 let canvas = bare.canvas();
@@ -1963,7 +2023,7 @@ mod tests {
     #[test]
     fn home_highlights_the_selected_tile() {
         let mut view = View::new(Page::Home, 1, None);
-        view.set_home(Home::new(1, false, &[], Text::new()));
+        view.set_home(Home::new(&crate::screens::BASE, 1, false, &[], Text::new()));
         view.prepare();
         assert_eq!(view.pixel(200, 215), RAISED, "Sensors is raised");
         assert_ne!(view.pixel(200, 120), RAISED, "Ride is not");
@@ -2019,6 +2079,7 @@ mod tests {
             view.gps = Gps::Fixed;
             let last = last_ride(4_999_800);
             view.set_home(Home::new(
+                &crate::screens::BASE,
                 cursor,
                 cursor == 1,
                 &glance[..cursor.min(2)],
@@ -2144,7 +2205,7 @@ mod tests {
                     None
                 }
                 Page::Sensors => {
-                    let mut menu = crate::screens::sensors::Menu::new();
+                    let mut menu = crate::screens::sensors::Menu::new(&crate::screens::BASE);
                     menu.open();
                     view.show_sensors(menu.canvas(), menu.cues());
                     None

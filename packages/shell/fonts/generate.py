@@ -6,12 +6,14 @@
 
 Run `uv run packages/shell/fonts/generate.py` after changing a face below; it
 rewrites `packages/shell/src/rendering/font/faces.rs`. `--scale 0.75` writes
-`faces_0_75.rs`, every face at that scale step, pixel sizes rounded half up.
+`faces_0_75.rs`, every face at that scale step, with sizes and advances
+scaled and rounded down so text runs no wider than at scale 1 (see `at_step`).
 The source is Nunito, a rounded sans under the SIL Open Font License (see
 OFL.txt beside this file).
 """
 
 import argparse
+import math
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -111,12 +113,32 @@ def pack(pixels: list[int], width: int) -> bytes:
     return bytes(rows)
 
 
-def round_half_up(value: Fraction) -> int:
-    return int(value + Fraction(1, 2))
+def at_scale_1(name: str, weight: int, size: int, chars: str, tracking: float, faint: FaintGlyphs):
+    glyphs, height, lift = rasterize(weight, size, chars, tracking, faint)
+    for char, advance in SHIPPED_ADVANCES.get(name, {}).items():
+        glyphs[char]["advance"] = advance
+    return glyphs, height, lift
 
 
-def scaled(scale: Fraction, size: int, tracking: float) -> tuple[int, float]:
-    return round_half_up(scale * size), float(scale * Fraction(tracking).limit_denominator(10))
+def at_step(scale: Fraction, name: str, weight: int, size: int, chars: str, tracking: float, faint: FaintGlyphs):
+    """The face at `scale` times its em size, rounded down to whole pixels: a
+    fractional size blurs stems between columns, and a size rounded up draws
+    glyphs too wide for their scaled advances. Each advance is the scale-1
+    advance times `scale`, rounded down, so text runs no wider than its scale-1
+    width scaled, except where a glyph's ink would then reach further past
+    its advance than at scale 1: that glyph keeps the advance its ink needs,
+    and digits share the widest digit's advance."""
+    base, _, _ = at_scale_1(name, weight, size, chars, tracking, FaintGlyphs(allowed=False))
+    glyphs, height, lift = rasterize(weight, math.floor(scale * size), chars, 0, faint)
+    for char, glyph in glyphs.items():
+        was = base[char]
+        overrun = max(was["x"] + was["w"] - was["advance"], 0)
+        glyph["advance"] = max(math.floor(scale * was["advance"]), glyph["x"] + glyph["w"] - overrun)
+    digits = [glyphs[d] for d in DIGITS if d in glyphs]
+    widest = max((digit["advance"] for digit in digits), default=0)
+    for digit in digits:
+        digit["advance"] = widest
+    return glyphs, height, lift
 
 
 def output(scale: Fraction):
@@ -135,13 +157,13 @@ def emit(scale: Fraction = Fraction(1)) -> str:
     total = 0
     for name, weight, size, chars, tracking, doc in FACES:
         faint = FaintGlyphs(allowed=scale != 1)
-        if scale != 1:
-            size, tracking = scaled(scale, size, tracking)
-        glyphs, height, lift = rasterize(weight, size, chars, tracking, faint)
+        if scale == 1:
+            glyphs, height, lift = at_scale_1(name, weight, size, chars, tracking, faint)
+        else:
+            glyphs, height, lift = at_step(scale, name, weight, size, chars, tracking, faint)
+            size = math.floor(scale * size)
         if faint.chars:
             print(f"{name} at {size} px: {''.join(faint.chars)!r} have no solid pixel")
-        for char, advance in SHIPPED_ADVANCES.get(name, {}).items():
-            glyphs[char]["advance"] = advance if scale == 1 else round_half_up(scale * advance)
         bits = bytearray()
         entries = []
         for code in range(FIRST, LAST + 1):

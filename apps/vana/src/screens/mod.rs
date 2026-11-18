@@ -53,6 +53,20 @@ pub struct Layout {
     pub workout: ride::WorkoutRegions,
     pub paused: ride::PausedRegions,
     pub end: ride::EndRegions,
+    pub sensors: sensors::Regions,
+    pub home: home::Regions,
+    pub bests: bests::Regions,
+    pub form: form::Regions,
+    pub history: history::Regions,
+    pub workouts: workouts::Regions,
+    pub settings: settings::Regions,
+    pub brand: brand::Regions,
+    pub power: power::Regions,
+    pub format: format::Regions,
+    pub ready: ready::Regions,
+    pub setup: setup::Regions,
+    pub phone: phone::Regions,
+    pub unsaved: unsaved::Regions,
 }
 
 impl Layout {
@@ -71,11 +85,25 @@ impl Layout {
             workout: ride::workout_regions(&scaled),
             paused: ride::paused_regions(&scaled),
             end: ride::end_regions(&scaled),
+            sensors: sensors::regions(&scaled),
+            home: home::regions(&scaled),
+            bests: bests::regions(&scaled),
+            form: form::regions(&scaled),
+            history: history::regions(&scaled),
+            workouts: workouts::regions(&scaled),
+            settings: settings::regions(&scaled),
+            brand: brand::regions(&scaled),
+            power: power::regions(&scaled),
+            format: format::regions(&scaled),
+            ready: ready::regions(&scaled),
+            setup: setup::regions(&scaled),
+            phone: phone::regions(&scaled),
+            unsaved: unsaved::regions(&scaled),
         }
     }
 }
 
-/// The layout of the 240 × 320 canvas.
+/// The layout of the base 240 × 320 panel, the C606's.
 pub static BASE: Layout = Layout::of(scaled::BASE);
 
 /// The simulator's test panels, for screens' own tests.

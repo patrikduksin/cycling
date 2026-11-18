@@ -95,7 +95,7 @@ pub(super) fn prepare(view: &View) -> Canvas {
     whole(avg_heart, totals.avg_heart_bpm());
     whole(ascent, Some((totals.ascent_dm() + 5) / 10));
 
-    let layout = view.frame_layout();
+    let layout = view.layout;
     let regions = &layout.stats;
     let mut canvas = Canvas::default();
     for (index, ((caption, color), value)) in CELLS.iter().zip(&values).enumerate() {

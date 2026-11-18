@@ -103,7 +103,7 @@ fn workout_scan_keeps_existing_channels_receiving() {
         24000,
     );
     radio.channels.tick(24900);
-    runtime.menu = crate::screens::sensors::Menu::new();
+    runtime.menu = crate::screens::sensors::Menu::new(runtime.layout);
     runtime.refresh_sensor_menu(&radio, 24_900);
     runtime.menu.show_found();
     runtime.input_received(

@@ -29,6 +29,8 @@ pub const TRASH_CUES: [Cue; 2] = [BACK, Cue::new(Corner::BottomRight, Icon::Tras
 /// capitals end on their bottoms, between the cues.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Regions {
+    /// What the ride is called, when the question names it, above the title.
+    pub name: Rect,
     pub title: Rect,
     pub time: Rect,
     pub distance: Rect,
@@ -41,10 +43,12 @@ pub const fn regions(at: &Scaled) -> Regions {
     let screen = at.screen();
     let [_, text, _] = screen.cols(crate::screens::cue::CLEAR_OF_CUES, Unit(0), at);
     let [_, wide, _] = screen.cols([Unit(10), Fr(1), Unit(10)], Unit(0), at);
-    let [_, title, time, distance, line, _, _] = text.rows(
+    let [_, named, _] = screen.cols([Unit(16), Fr(1), Unit(16)], Unit(0), at);
+    let [_, name, title, time, distance, line, _, _] = text.rows(
         [
             Fr(1),
-            Unit(112),
+            Unit(70),
+            Unit(42),
             Unit(66),
             Unit(28),
             Unit(38),
@@ -55,6 +59,7 @@ pub const fn regions(at: &Scaled) -> Regions {
         at,
     );
     Regions {
+        name: name.with_columns(named),
         title,
         time,
         distance,
@@ -73,7 +78,7 @@ pub fn discard(view: &View) -> Canvas {
 /// A question about a ride: `title`, the ride time, the distance and a grey
 /// `line` saying what the answer does.
 pub fn question(view: &View, title: &[u8], line: &[u8]) -> Canvas {
-    let layout = view.frame_layout();
+    let layout = view.layout;
     let (at, regions) = (&layout.scaled, &layout.end);
     let face = |role| at.face(role);
     let mut canvas = Canvas::default();

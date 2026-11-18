@@ -450,7 +450,7 @@ impl Runtime {
         let lit = now.saturating_sub(since) < STANDBY_LIT_MS;
         if !lit {
             if !standby.dark {
-                system.draw_canvas(240, 320, |row| row.fill(crate::screens::chrome::BLACK));
+                system.draw_rows(|_, pixels| pixels.fill(crate::screens::chrome::BLACK));
                 standby.dark = !system.display_error;
             }
             return false;
@@ -479,9 +479,12 @@ impl Runtime {
             },
             known: percent.is_some(),
         };
-        let canvas = sheet.canvas();
+        let canvas = sheet.canvas(self.layout);
+        #[cfg(any(test, feature = "invariants"))]
+        View::check_layout(&canvas, self.layout);
         let look = crate::screens::look::look(self.light());
-        system.draw_canvas(240, 320, |row| {
+        system.draw_rows(|y, pixels| {
+            let row = &mut crate::screens::chrome::Row::new(y, pixels);
             View::paint(&canvas, &mut row.looked(look));
         });
         true

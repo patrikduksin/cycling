@@ -9,17 +9,18 @@
 //! rides that had power), last week's distance and a bar for each day. Once
 //! its top line has scrolled away, RIDES and the focus's place pin at the
 //! top. Without a saved ride the screen says how one gets here.
-use super::canvas::{Canvas, Shape};
-use super::chrome::HEIGHT as SCREEN_HEIGHT;
+use super::Layout as Screens;
+use super::canvas::{Canvas, Shape, on_baseline};
 use super::chrome::{
-    ACCENT, Align, BODY, CAPTION, CARD, CONTENT, HEART, POWER, PRESSED, RAISED, Rect, SECONDARY,
-    TERTIARY, TITLE, VALUE, WHITE, WIDTH,
+    ACCENT, Align, CARD, HEART, Line, POWER, PRESSED, RAISED, Rect, SECONDARY, TERTIARY, WHITE,
 };
+use super::scaled::{Scaled, Track};
 use super::scroll::{Column, Layout, PAGE, Pin};
 use super::workout::Text;
 use crate::clock::{Local, civil};
 use crate::ride::week::{DAYS, Weeks};
 use core::fmt::Write;
+use firmware_shell::rendering::font::{FaceRole, SPILL};
 
 /// Held MOVE steps this many cards on.
 pub const SHOWN: usize = 4;
@@ -38,6 +39,7 @@ pub struct Row {
 /// The list: how many rides, which is focused, how far it is scrolled and
 /// each card made on demand, so only the cards on screen exist at once.
 pub struct List<F: Fn(usize) -> Row> {
+    pub layout: &'static Screens,
     pub count: usize,
     pub cursor: usize,
     /// How far the page is scrolled (`Kinetic::offset`): negative past the
@@ -52,92 +54,143 @@ pub struct List<F: Fn(usize) -> Row> {
     pub pressed: Option<usize>,
 }
 
-const LEFT: usize = 10;
-const RIGHT: usize = WIDTH - 10;
-const RADIUS: usize = 12;
-const INSET: usize = 14;
-/// The focus ring around a card, inside the gap between cards.
-const RING: usize = 3;
-const _: () = assert!(2 * RING <= PITCH - HEIGHT);
-const HEADLINE: usize = CONTENT.top + 36;
-const HEIGHT: usize = 54;
-const PITCH: usize = HEIGHT + 6;
+/// The rides on one panel. The page's parts are in screen rows as they lie
+/// with the page at its top; each text row's capitals end on its bottom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Regions {
+    /// The page under the status bar: the week header, then the cards.
+    pub list: Layout,
+    /// The week header's text, inside the cards' columns.
+    pub text: Rect,
+    pub caption: Rect,
+    /// The week's distance, left of the day bars.
+    pub value: Rect,
+    pub time: Rect,
+    pub stress: Rect,
+    pub last: Rect,
+    /// Each day's bar at its tallest, Monday first; bars end on the value's
+    /// bottom.
+    pub bars: [Rect; DAYS],
+    /// The band RIDES and the focus's place pin in once the header's top
+    /// line has scrolled away.
+    pub band: Rect,
+    /// Without a ride: RIDES, then what the list will hold.
+    pub empty: [Rect; 3],
+}
 
-const HEADER_FIRST: usize = CONTENT.top + 111;
-const CAPTION_BASE: usize = CONTENT.top + 16;
-const VALUE_BASE: usize = CONTENT.top + 54;
-const TIME_BASE: usize = CONTENT.top + 73;
-const STRESS_BASE: usize = CONTENT.top + 87;
-const LAST_BASE: usize = CONTENT.top + 101;
-/// The day bars end on `BARS_BASE`, up to `BARS_HIGH` tall, `BAR_PITCH` apart.
-const BARS_BASE: usize = VALUE_BASE;
-const BARS_HIGH: usize = 30;
-const BAR_WIDE: usize = 10;
-const BAR_PITCH: usize = 14;
-const BARS_LEFT: usize = RIGHT - 4 - (DAYS - 1) * BAR_PITCH - BAR_WIDE;
+pub const fn regions(at: &Scaled) -> Regions {
+    use Track::{Fr, Unit};
+    let content = super::chrome::regions(at).content;
+    let [_, cards, _] = content.cols([Unit(10), Fr(1), Unit(10)], Unit(0), at);
+    let [_, text, _] = content.cols([Unit(14), Fr(1), Unit(14)], Unit(0), at);
+    let [_, days, _] = content.cols([Fr(1), Unit(94), Unit(14)], Unit(0), at);
+    let [caption, value, time, stress, last, _, column] = text.rows(
+        [
+            Unit(16),
+            Unit(38),
+            Unit(19),
+            Unit(14),
+            Unit(14),
+            Unit(10),
+            Fr(1),
+        ],
+        Unit(0),
+        at,
+    );
+    let [_, tall] = value.rows([Fr(1), Unit(30)], Unit(0), at);
+    let bars = tall.with_columns(days).cols([Unit(10); DAYS], Unit(4), at);
+    let [band, _] = content.rows([Unit(24), Fr(1)], Unit(0), at);
+    let [title, _, nothing, saved, _] =
+        text.rows([Unit(36), Unit(60), Unit(30), Unit(24), Fr(1)], Unit(0), at);
+    let height = at.unit(54);
+    Regions {
+        list: Layout {
+            top: content.top,
+            bottom: content.bottom,
+            column: Column {
+                left: cards.left,
+                right: cards.right,
+                top: column.top - content.top,
+                height,
+                pitch: height + at.unit(6),
+            },
+            end: at.unit(10),
+            margin: at.unit(6),
+            pin: Some(Pin {
+                after: (caption.bottom - content.top) as i32,
+                height: band.height(),
+            }),
+        },
+        text,
+        caption,
+        value: Rect {
+            right: days.left - at.unit(30),
+            ..value
+        },
+        time: Rect {
+            right: days.left - at.unit(8),
+            ..time
+        },
+        stress: Rect {
+            right: days.left - at.unit(8),
+            ..stress
+        },
+        last: Rect {
+            right: cards.right,
+            ..last
+        },
+        bars,
+        band,
+        empty: [
+            title.with_columns(cards),
+            nothing.with_columns(cards),
+            saved.with_columns(cards),
+        ],
+    }
+}
+
 /// The most training stress the header names; more reads `9999+`.
 const STRESS_MOST: u32 = 9999;
 /// Every other day is named: the letters are as wide as the bars are apart.
 const DAY_LETTERS: [&[u8]; DAYS] = [b"M", b"", b"W", b"", b"F", b"", b"S"];
 
-/// The page under the status bar: the week header, then the cards.
-pub const LAYOUT: Layout = Layout {
-    top: CONTENT.top,
-    bottom: SCREEN_HEIGHT,
-    column: Column {
-        left: LEFT,
-        right: RIGHT,
-        top: HEADER_FIRST - CONTENT.top,
-        height: HEIGHT,
-        pitch: PITCH,
-    },
-    end: 10,
-    margin: 6,
-    // Once the header's top line has gone under the status bar.
-    pin: Some(Pin {
-        after: (CAPTION_BASE - CONTENT.top) as i32,
-        height: PIN,
-    }),
-};
-/// The pinned band's height, and its line's baseline on screen.
-const PIN: usize = 24;
-const PIN_BASE: usize = CONTENT.top + 18;
-/// Shifts a row of the page as it lies at rest to its canvas row.
-const AT: usize = PAGE - CONTENT.top;
-
 /// Whether any of the week header shows with the page scrolled to `offset`.
-pub fn header_shows(offset: i32) -> bool {
-    offset < LAYOUT.span(0).0
+pub fn header_shows(list: &Layout, offset: i32) -> bool {
+    offset < list.span(0).0
 }
 
 pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
+    let (at, regions) = (&list.layout.scaled, &list.layout.history);
+    let layout = &regions.list;
+    let face = |role| at.face(role);
+    let page_row = |y: usize| PAGE + y - layout.top;
     let mut canvas = Canvas::default();
     if list.count == 0 {
+        let [title, nothing, saved] = regions.empty;
         canvas.fit(
-            &[&TITLE, &BODY],
+            &[face(FaceRole::Title), face(FaceRole::Body)],
             b"RIDES",
-            RIGHT - LEFT,
-            LEFT + 4,
-            AT + HEADLINE,
+            title.width(),
+            regions.text.left,
+            page_row(title.bottom),
             Align::Left,
             WHITE,
         );
-        let centre = WIDTH / 2;
         canvas.fit(
-            &[&BODY],
+            &[face(FaceRole::Body)],
             b"NO RIDES YET",
-            RIGHT - LEFT,
-            centre,
-            AT + 150,
+            nothing.width(),
+            nothing.center_x(),
+            page_row(nothing.bottom),
             Align::Center,
             WHITE,
         );
         canvas.caption(
-            &crate::screens::scaled::BASE,
+            at,
             b"SAVED RIDES SHOW HERE",
-            RIGHT - LEFT,
-            centre,
-            AT + 174,
+            saved.width(),
+            saved.center_x(),
+            page_row(saved.bottom),
             Align::Center,
         );
         return canvas;
@@ -145,60 +198,63 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
     let mut count = Text::<12>::new();
     let _ = write!(count, "{}/{}", list.cursor + 1, list.count);
     // Only what shows: the header while any of it does, and the cards whose
-    // rows reach the viewport.
-    if header_shows(list.offset) {
+    // rows reach the viewport. The runs the viewport leaves out go as each
+    // part is made: a tall panel's cards and the whole header would overfill
+    // the canvas together.
+    let cull = |canvas: &mut Canvas| {
+        canvas
+            .runs
+            .retain(|run| layout.shows(run.top..run.bottom(), list.offset));
+    };
+    if header_shows(layout, list.offset) {
         header(&mut canvas, list, count.as_bytes());
+        cull(&mut canvas);
     }
-    if LAYOUT.pinned(list.offset) {
+    if layout.pinned(list.offset) {
+        let (band, text) = (regions.band, regions.text);
+        let base = band.top + at.unit(18);
+        let place = at.unit(80);
         canvas.fit(
-            &[&BODY],
+            &[face(FaceRole::Body)],
             b"RIDES",
-            RIGHT - LEFT - 80,
-            LEFT + 4,
-            PIN_BASE,
+            text.width() + at.unit(8) - place,
+            text.left,
+            base,
             Align::Left,
             WHITE,
         );
-        canvas.caption(
-            &crate::screens::scaled::BASE,
-            count.as_bytes(),
-            80,
-            RIGHT - 4,
-            PIN_BASE,
-            Align::Right,
-        );
+        canvas.caption(at, count.as_bytes(), place, text.right, base, Align::Right);
         // A hairline where the cards pass under the band.
         canvas.shape(Shape::Bar {
             rect: Rect {
-                left: 0,
-                top: CONTENT.top + PIN - 1,
-                right: WIDTH,
-                bottom: CONTENT.top + PIN,
+                top: band.bottom - 1,
+                ..band
             },
             radius: 0,
             color: CARD,
         });
     }
-    for index in LAYOUT.visible(list.count, list.offset) {
+    let (radius, ring, inset) = (at.unit(12), at.unit(3), at.unit(14));
+    for index in layout.visible(list.count, list.offset) {
         let row = (list.row)(index);
-        let rect = LAYOUT.rect(index);
+        let rect = layout.rect(index);
         let focused = index == list.cursor;
         // The focused card is ringed, as on every list (`docs/ui.md`).
         if focused {
             canvas.shape(Shape::Panel {
                 rect: Rect {
-                    left: rect.left - RING,
-                    top: rect.top - RING,
-                    right: rect.right + RING,
-                    bottom: rect.bottom + RING,
+                    left: rect.left - ring,
+                    top: rect.top - ring,
+                    right: rect.right + ring,
+                    bottom: rect.bottom + ring,
                 },
-                radius: RADIUS + RING,
+                radius: radius + ring,
                 color: ACCENT,
             });
         }
         canvas.shape(Shape::Panel {
             rect,
-            radius: RADIUS,
+            radius,
             color: if list.pressed == Some(index) {
                 PRESSED
             } else if focused {
@@ -207,42 +263,39 @@ pub fn prepare<F: Fn(usize) -> Row>(list: &List<F>) -> Canvas {
                 CARD
             },
         });
-        let width = rect.right - rect.left - 2 * INSET;
-        let title_base = rect.top + 8 + BODY.cap as usize;
-        // Heart rate at the right of the title line, the date beside it.
-        let heart = canvas.fit(
-            &[&CAPTION],
-            row.heart.as_bytes(),
-            width / 2,
-            rect.right - INSET,
-            title_base,
-            Align::Right,
-            HEART,
-        );
-        let room = if row.heart.as_bytes().is_empty() {
+        let width = rect.width() - 2 * inset;
+        let body = face(FaceRole::Body);
+        let title_base = rect.top + at.unit(8) + body.cap as usize;
+        let caption = face(FaceRole::Caption);
+        let heart = Line::<24>::fit(&[caption], row.heart.as_bytes(), width / 2);
+        let (start, end) = (rect.left + inset, rect.right - inset);
+        let beside = (end - heart.width()).saturating_sub(start + super::canvas::GAP);
+        let room = if row.heart.as_bytes().is_empty()
+            || caption.width(row.title.as_bytes()) + SPILL > beside
+        {
             width
         } else {
-            heart
-                .left
-                .saturating_sub(rect.left + INSET + super::canvas::GAP)
+            canvas.run(on_baseline(heart, end, title_base, Align::Right, HEART));
+            beside
         };
         canvas.fit(
-            &[&BODY, &CAPTION],
+            &[body, caption],
             row.title.as_bytes(),
             room,
-            rect.left + INSET,
+            rect.left + inset,
             title_base,
             Align::Left,
             if focused { WHITE } else { SECONDARY },
         );
         canvas.caption(
-            &crate::screens::scaled::BASE,
+            at,
             row.detail.as_bytes(),
             width,
-            rect.left + INSET,
-            rect.bottom - 10,
+            rect.left + inset,
+            rect.bottom - at.unit(10),
             Align::Left,
         );
+        cull(&mut canvas);
     }
     canvas
 }
@@ -268,21 +321,18 @@ pub fn date(days: u16) -> Text<20> {
 /// Without a clock nothing is known (`--`); while the index still reads, what
 /// it has found so far shows.
 fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]) {
-    let left = LEFT + 4;
-    let title = canvas.caption(
-        &crate::screens::scaled::BASE,
-        b"THIS WEEK",
-        100,
-        left,
-        AT + CAPTION_BASE,
-        Align::Left,
-    );
+    let (at, regions) = (&list.layout.scaled, &list.layout.history);
+    let face = |role| at.face(role);
+    let page_row = |y: usize| PAGE + y - regions.list.top;
+    let left = regions.text.left;
+    let caption = page_row(regions.caption.bottom);
+    let title = canvas.caption(at, b"THIS WEEK", at.unit(100), left, caption, Align::Left);
     let place = canvas.caption(
-        &crate::screens::scaled::BASE,
+        at,
         count,
-        80,
-        RIGHT - 4,
-        AT + CAPTION_BASE,
+        at.unit(80),
+        regions.text.right,
+        caption,
         Align::Right,
     );
     let weeks = list.weeks.as_ref();
@@ -298,20 +348,20 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
         None => b"--",
     };
     let run = canvas.fit(
-        &[&VALUE, &BODY],
+        &[face(FaceRole::Value), face(FaceRole::Body)],
         value,
-        BARS_LEFT - left - 30,
+        regions.value.width(),
         left,
-        AT + VALUE_BASE,
+        page_row(regions.value.bottom),
         Align::Left,
         WHITE,
     );
     canvas.fit(
-        &[&CAPTION],
+        &[face(FaceRole::Caption)],
         b"KM",
-        30,
-        run.right() + 6,
-        AT + VALUE_BASE,
+        at.unit(30),
+        run.right() + at.unit(6),
+        page_row(regions.value.bottom),
         Align::Left,
         SECONDARY,
     );
@@ -328,11 +378,11 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
         }
     };
     canvas.fit(
-        &[&BODY],
+        &[face(FaceRole::Body)],
         time.as_bytes(),
-        BARS_LEFT - left - 8,
+        regions.time.width(),
         left,
-        AT + TIME_BASE,
+        page_row(regions.time.bottom),
         Align::Left,
         WHITE,
     );
@@ -348,12 +398,13 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
                 "RIDES"
             }
         );
+        let x = title.right() + at.unit(12);
         canvas.caption(
-            &crate::screens::scaled::BASE,
+            at,
             rides.as_bytes(),
-            place.left.saturating_sub(title.right() + 12 + 8),
-            title.right() + 12,
-            AT + CAPTION_BASE,
+            place.left.saturating_sub(x + at.unit(8)),
+            x,
+            caption,
             Align::Left,
         );
     }
@@ -365,11 +416,11 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             (weeks.last.distance_mm + 500_000) / 1_000_000
         );
         canvas.caption(
-            &crate::screens::scaled::BASE,
+            at,
             last.as_bytes(),
-            RIGHT - left,
+            regions.last.width(),
             left,
-            AT + LAST_BASE,
+            page_row(regions.last.bottom),
             Align::Left,
         );
     }
@@ -384,11 +435,11 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             write!(stress, "TSS {}", weeks.this.stress)
         };
         canvas.fit(
-            &[&CAPTION],
+            &[face(FaceRole::Caption)],
             stress.as_bytes(),
-            BARS_LEFT - left - 8,
+            regions.stress.width(),
             left,
-            AT + STRESS_BASE,
+            page_row(regions.stress.bottom),
             Align::Left,
             POWER,
         );
@@ -396,25 +447,25 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
     // One bar a day, Monday first: dark stubs for days without a ride, white
     // for ridden days (blue for today), tall in proportion to the most.
     let most = weeks.map_or(0, |w| w.this.day_mm.iter().copied().max().unwrap_or(0));
-    for (day, letter) in DAY_LETTERS.iter().enumerate() {
+    for (day, (letter, bar)) in DAY_LETTERS.iter().zip(regions.bars).enumerate() {
         let today = weeks.is_some_and(|w| w.today == day);
         let ridden = weeks.is_some_and(|w| w.this.day_rides[day] > 0);
         let distance = weeks.map_or(0, |w| w.this.day_mm[day]);
+        let tallest = bar.height();
         let high = if ridden {
-            let scaled = (distance * BARS_HIGH as u64).checked_div(most).unwrap_or(0);
-            usize::try_from(scaled).unwrap_or(BARS_HIGH).max(6)
+            let scaled = (distance * tallest as u64).checked_div(most).unwrap_or(0);
+            usize::try_from(scaled).unwrap_or(tallest).max(at.unit(6))
         } else {
-            3
+            at.unit(3)
         };
-        let x = BARS_LEFT + day * BAR_PITCH;
+        let base = page_row(bar.bottom);
         canvas.shape(Shape::Bar {
             rect: Rect {
-                left: x,
-                top: AT + BARS_BASE - high,
-                right: x + BAR_WIDE,
-                bottom: AT + BARS_BASE,
+                top: base - high,
+                bottom: base,
+                ..bar
             },
-            radius: if ridden { 3 } else { 1 },
+            radius: at.unit(if ridden { 3 } else { 1 }),
             color: match (ridden, today) {
                 (false, _) => TERTIARY,
                 (true, true) => ACCENT,
@@ -425,11 +476,11 @@ fn header<F: Fn(usize) -> Row>(canvas: &mut Canvas, list: &List<F>, count: &[u8]
             continue;
         }
         canvas.fit(
-            &[&CAPTION],
+            &[face(FaceRole::Caption)],
             letter,
-            BAR_PITCH + 6,
-            x + BAR_WIDE / 2,
-            AT + TIME_BASE,
+            at.unit(20),
+            bar.center_x(),
+            page_row(regions.time.bottom),
             Align::Center,
             if today { ACCENT } else { SECONDARY },
         );
@@ -483,8 +534,11 @@ mod tests {
         row
     }
 
+    const LAYOUT: Layout = crate::screens::BASE.history.list;
+
     fn list(count: usize, cursor: usize) -> List<fn(usize) -> Row> {
         List {
+            layout: &crate::screens::BASE,
             count,
             cursor,
             offset: 0,
@@ -516,21 +570,13 @@ mod tests {
         assert_eq!(at(0).as_str(), "OCT 17  12:00");
     }
 
-    fn bounds() -> Rect {
-        Rect {
-            left: 0,
-            top: CONTENT.top,
-            right: WIDTH,
-            bottom: 320,
-        }
-    }
-
     /// The whole canvas: the page sits below the screen's rows from `PAGE`.
     fn page() -> Rect {
         Rect {
+            left: 0,
             top: 0,
+            right: 240,
             bottom: 100_000,
-            ..bounds()
         }
     }
 
@@ -583,13 +629,15 @@ mod tests {
             scrolled.weeks = Some(week());
             let canvas = prepare(&scrolled);
             canvas.assert_laid_out(page(), &[], &std::format!("{offset}"));
-            assert_eq!(canvas.shows("THIS WEEK"), header_shows(offset), "{offset}");
-            // Once the header's top line is gone, RIDES and the place pin.
-            assert_eq!(canvas.shows("RIDES"), LAYOUT.pinned(offset), "{offset}");
+            // Once the header's top line is gone, RIDES and the place pin in
+            // its stead.
             assert_eq!(
-                canvas.shows("1/8"),
-                header_shows(offset) || LAYOUT.pinned(offset)
+                canvas.shows("THIS WEEK"),
+                !LAYOUT.pinned(offset),
+                "{offset}"
             );
+            assert_eq!(canvas.shows("RIDES"), LAYOUT.pinned(offset), "{offset}");
+            assert!(canvas.shows("1/8"), "{offset}");
             let made: std::vec::Vec<_> = cards(&canvas)
                 .iter()
                 .filter(|(_, c)| *c != ACCENT)
@@ -695,6 +743,116 @@ mod tests {
             let last = std::format!("LAST WEEK {km} KM");
             assert!(canvas.shows(shown), "{shown}");
             canvas.assert_laid_out(page(), &[&last, shown, "THIS WEEK"], "stress");
+        }
+    }
+
+    #[test]
+    fn long_rides_and_a_long_week_lay_out_on_every_panel() {
+        use crate::screens::workout::{Page, View};
+        let zone = |_| -3 * 3600;
+        let tuesday = (20_746 * 86_400 + 15 * 3600) * 1000;
+        let mut weeks = week();
+        weeks.add(
+            Some(tuesday - 7 * 86_400_000),
+            1,
+            Some(9_999_000_000),
+            &zone,
+        );
+        weeks.add_stress(
+            Some(tuesday),
+            400 * 3_600_000,
+            Some(1_234_500_000),
+            Some(u32::MAX),
+            &zone,
+        );
+        for layout in crate::screens::panels::ALL {
+            let end = layout.history.list.reveal(ROWS - 1, 0);
+            for (count, offset) in [(ROWS, -40), (ROWS, 0), (ROWS, 60), (ROWS, end), (0, 0)] {
+                let mut rides = list(count, 1);
+                rides.layout = layout;
+                rides.offset = offset;
+                rides.weeks = Some(weeks);
+                rides.pressed = Some(2);
+                let mut view = View::new(Page::History, 0, None);
+                view.layout = layout;
+                view.scroll = offset;
+                view.set_canvas(prepare(&rides));
+                view.prepare().check_layout();
+                let what = std::format!("{count} rides at {offset} on {:?}", layout.scaled.panel);
+                let want: &[&str] = match (count, offset) {
+                    (0, _) => &["RIDES", "NO RIDES YET", "SAVED RIDES SHOW HERE"],
+                    (_, 0) => &["THIS WEEK", "TSS 9999+", "DEC 31  12:59", "141 BPM"],
+                    _ => &[],
+                };
+                let page = Rect {
+                    top: 0,
+                    bottom: 100_000,
+                    ..layout.scaled.screen()
+                };
+                view.canvas().assert_laid_out(page, want, &what);
+            }
+        }
+    }
+
+    /// Short titles beside their heart rates, so every card makes its three
+    /// runs, and a detail of its own on each.
+    fn short(index: usize) -> Row {
+        let mut row = Row::default();
+        let _ = write!(row.title, "RIDE {}", index + 1);
+        let _ = write!(row.detail, "{}:07:12  32.4 KM", index + 1);
+        let _ = row.heart.push_str("141 BPM");
+        row
+    }
+
+    #[test]
+    fn every_panel_keeps_the_words_of_every_card_in_view() {
+        use crate::screens::workout::{Page, View};
+        let zone = |_| -3 * 3600;
+        let tuesday = (20_746 * 86_400 + 15 * 3600) * 1000;
+        let mut powered = week();
+        powered.add_stress(Some(tuesday), 1, Some(1), Some(87), &zone);
+        let count = 12;
+        for layout in crate::screens::panels::ALL {
+            let list = &layout.history.list;
+            let (at, body) = (&layout.scaled, layout.scaled.face(FaceRole::Body));
+            for weeks in [None, Some(powered)] {
+                for offset in -40..=list.reveal(count - 1, 0) {
+                    let rides = List {
+                        layout,
+                        count,
+                        cursor: 1,
+                        offset,
+                        row: short as fn(usize) -> Row,
+                        weeks,
+                        reading: false,
+                        pressed: Some(2),
+                    };
+                    let what = std::format!(
+                        "{count} rides at {offset} on {:?}, weeks {}",
+                        at.panel,
+                        weeks.is_some()
+                    );
+                    let mut view = View::new(Page::History, 0, None);
+                    view.layout = layout;
+                    view.scroll = offset;
+                    view.set_canvas(prepare(&rides));
+                    view.prepare().check_layout();
+                    // A word whose baseline row shows is on the canvas.
+                    let canvas = view.canvas();
+                    for index in list.visible(count, offset) {
+                        let rect = list.rect(index);
+                        let title = rect.top + at.unit(8) + body.cap as usize;
+                        let detail = rect.bottom - at.unit(10);
+                        for (base, text) in
+                            [(title, short(index).title), (detail, short(index).detail)]
+                        {
+                            if list.shows(base - 1..base, offset) {
+                                assert!(canvas.shows(text.as_str()), "{} at {what}", text.as_str());
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

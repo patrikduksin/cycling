@@ -216,8 +216,9 @@ fn bounds(width: usize, at: impl Iterator<Item = usize>) -> Option<[usize; 4]> {
 }
 
 fn panel(pixels: &[u16], width: usize) -> Option<[usize; 4]> {
-    let white =
-        (0..pixels.len()).filter(|&i| pixels[i] == 0xffff && phone::on_code(i % width, i / width));
+    let white = (0..pixels.len()).filter(|&i| {
+        pixels[i] == 0xffff && phone::on_code(&vana::screens::BASE, i % width, i / width)
+    });
     bounds(width, white)
 }
 

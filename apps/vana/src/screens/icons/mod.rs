@@ -290,14 +290,16 @@ mod tests {
         Sensor::Generic,
     ];
 
-    fn icons() -> impl Iterator<Item = &'static Icon> {
+    fn icons(art: &'static Art) -> impl Iterator<Item = &'static Icon> {
         ALL.into_iter()
-            .flat_map(|sensor| [Size::Small, Size::Row, Size::Large].map(|size| sensor.icon(size)))
-            .chain([&PLUS, &REFRESH, &ARROW, &PUCK])
+            .flat_map(|sensor| {
+                [Size::Small, Size::Row, Size::Large].map(|size| art.sensor(sensor, size))
+            })
+            .chain([art.plus, art.refresh, art.arrow, art.puck])
             .chain(
                 SIGN_GLYPHS
                     .into_iter()
-                    .flat_map(|glyph| FORMS.map(|form| &ART_1.sign(glyph, form).icon)),
+                    .flat_map(|glyph| FORMS.map(|form| &art.sign(glyph, form).icon)),
             )
     }
 
@@ -363,8 +365,8 @@ mod tests {
     }
 
     #[test]
-    fn each_icon_has_solid_ink_inside_its_square() {
-        for icon in icons() {
+    fn each_icon_has_solid_ink_inside_its_square_at_every_step() {
+        for icon in icons(&ART_1).chain(icons(&ART_0_75)) {
             let size = usize::from(icon.size);
             assert!(usize::from(icon.left + icon.width) <= size);
             assert!(usize::from(icon.top + icon.height) <= size);
@@ -375,20 +377,6 @@ mod tests {
         }
         assert_eq!(Sensor::Generic.icon(Size::Row).size, 26);
         assert_eq!(Sensor::Heart.icon(Size::Large).size, 34);
-    }
-
-    #[test]
-    fn the_ride_icons_have_solid_ink_at_three_quarters() {
-        let signs = SIGN_GLYPHS
-            .into_iter()
-            .flat_map(|glyph| FORMS.map(|form| &ART_0_75.sign(glyph, form).icon));
-        for icon in signs.chain([ART_0_75.puck]) {
-            let size = usize::from(icon.size);
-            assert!(usize::from(icon.left + icon.width) <= size);
-            assert!(usize::from(icon.top + icon.height) <= size);
-            let solid = (0..size).any(|y| (0..size).any(|x| icon.coverage(x, y) == 15));
-            assert!(solid, "an icon of {size} px has a solid pixel");
-        }
         assert_eq!((ART_1.puck.size, ART_0_75.puck.size), (20, 15));
     }
 
@@ -418,7 +406,7 @@ mod tests {
 
     #[test]
     fn painted_rows_blend_like_the_per_pixel_icon() {
-        for icon in icons() {
+        for icon in icons(&ART_1) {
             for background in [BLACK, CARD] {
                 for y in 0..usize::from(icon.size) + 2 {
                     let mut pixels = [background; 60];

@@ -137,34 +137,13 @@ const COLUMN_GAP: usize = 8;
 /// value above it by 7 rows.
 pub(super) const CELL_PITCH: usize = 48;
 const _: () = assert!(
-    CELL_PITCH + 12 - chrome::CAPTION.cap as usize > VALUE_BASELINE as usize + 6,
+    CELL_PITCH + 12 - super::scaled::BASE.face(FaceRole::Caption).cap as usize
+        > VALUE_BASELINE as usize + 6,
     "a caption needs 6 clear rows over the value above it"
 );
 /// Without a radar the body moves left by this much, to the centre.
 #[cfg(test)]
 pub(super) const CENTRE_SHIFT: usize = RADAR_WIDTH / 2;
-
-/// The pages laid out from the panel; the others still draw the 240 x 320
-/// canvas, which the shell fits to the panel.
-pub(super) const fn from_panel(page: RidePage) -> bool {
-    match page {
-        RidePage::Main => true,
-        RidePage::Stats => true,
-        RidePage::Lap => true,
-        RidePage::Climb => true,
-        RidePage::Workout => true,
-        RidePage::Map => true,
-    }
-}
-
-/// The layout `page` draws with on a panel laid out as `panel`.
-pub fn page_layout(page: RidePage, panel: &'static Layout) -> &'static Layout {
-    if from_panel(page) {
-        panel
-    } else {
-        &super::BASE
-    }
-}
 
 /// The regions a page drawn from a canvas lays out in, named, in its
 /// canvas's columns: the radar strip while a radar is paired, then the
@@ -504,7 +483,7 @@ pub(super) fn prepare(view: &mut View) {
         RidePage::Workout => super::workout::fill(view, workout::prepare),
         RidePage::Map => super::workout::fill(view, map::prepare),
     }
-    let layout = view.frame_layout();
+    let layout = view.layout;
     let banner = super::sign::on_page(view.ride_page, view.nav, view.radar_paired, layout)
         .filter(|sign| sign.form() == SignForm::Banner);
     if let (Some(banner), Body::Canvas(canvas)) = (banner, &mut view.body) {

@@ -13,21 +13,6 @@ pub const BASE_PANEL: Panel = Panel {
     height: 320,
 };
 
-/// Every panel this build can meet is the base panel. Then no frame is ever
-/// scaled, and a picture's size is known when it compiles, so the shell
-/// leaves its scaling path out.
-pub const ONLY_BASE: bool = {
-    let panels = super::limits::PANELS;
-    let mut i = 0;
-    while i < panels.len() {
-        if panels[i].0 != BASE_PANEL.width || panels[i].1 != BASE_PANEL.height {
-            break;
-        }
-        i += 1;
-    }
-    i == panels.len()
-};
-
 /// The largest `$size` over the `$panels` VANA can lay out, `$at` naming
 /// each one's `Scaled`: the bound of an array that holds a region of every
 /// panel the build meets. It bounds each panel's own layout, never a scale-1
@@ -100,8 +85,8 @@ pub struct Scaled {
     pub art: &'static Art,
 }
 
-/// The 240 × 320 canvas that screens not yet laid out from `Scaled` draw,
-/// fitted to other panels by the shell's scaler.
+/// The base panel at scale 1: the C606's, and the one tests lay out on
+/// unless they name another.
 pub const BASE: Scaled = Scaled::of(BASE_PANEL.width, BASE_PANEL.height);
 
 impl Scaled {

@@ -11,6 +11,7 @@ mod slot;
 #[cfg(test)]
 mod tests;
 
+pub use layout::{Detail, Forget, Mines, Nearby, Regions, Replace, Rows, regions};
 pub use menu::{Action, Diagnostics, GLANCES, Glance, Menu, Page, SETTLE_MS};
 pub use message::{CalibrationNote, MenuMessage};
 

@@ -1,7 +1,6 @@
 use super::*;
 use crate::app::navigation::To;
 use crate::ride::log::Status;
-use crate::screens::home::SENSORS_TILE;
 use crate::screens::ride::RidePage;
 use crate::screens::workout::Page;
 use device_api::input::Point;
@@ -31,7 +30,7 @@ fn tapping_a_home_tile_opens_it() {
     touch(&mut runtime, &mut radio, &[(120, 40)], 1000);
     assert!(runtime.navigation.page() == Page::Ready);
     runtime.navigation.go(To::Page(Page::Home));
-    let y = (SENSORS_TILE.top + 20) as u16;
+    let y = (crate::screens::BASE.home.sensors.top + 20) as u16;
     touch(&mut runtime, &mut radio, &[(120, y)], 2000);
     assert!(runtime.navigation.page() == Page::Sensors);
     assert_eq!(runtime.navigation.home_cursor(), 1);
@@ -144,7 +143,7 @@ fn a_contact_never_completes_on_another_screen() {
     let down = |runtime: &mut Runtime, radio: &mut Radio, (x, y), now| {
         runtime.input_received(Input::Touch(Point { x, y }), now, now, radio)
     };
-    let sensors = (120, (SENSORS_TILE.top + 20) as u16);
+    let sensors = (120, (crate::screens::BASE.home.sensors.top + 20) as u16);
 
     let mut screen = super::presentation::Screen::new();
     runtime.power(&mut screen.shell, &mut super::power::Switch::new(true), 0);
@@ -226,13 +225,12 @@ fn workouts() -> (Runtime, Radio) {
 
 /// Screen row of card `index`'s middle with the page at `offset`.
 fn card_y(index: usize, offset: i32) -> u16 {
-    let layout = workouts::LAYOUT;
+    let layout = crate::screens::BASE.workouts.list;
     let (top, bottom) = layout.span(index);
     (layout.top as i32 + (top + bottom) / 2 - offset) as u16
 }
 
 use crate::screens::touch::{Control, List};
-use crate::screens::workouts;
 
 #[test]
 fn scrolling_from_a_card_never_focuses_or_chooses_it() {
@@ -293,7 +291,7 @@ fn a_press_first_brings_a_focus_that_scrolled_away_back() {
     );
     runtime.list_frame(lift + 2000);
     let offset = runtime.list_offset(List::Workouts, lift + 2000);
-    let layout = workouts::LAYOUT;
+    let layout = crate::screens::BASE.workouts.list;
     assert!(!layout.whole(0, offset), "the focus scrolled away");
     // ACT scrolls the focus back into view and chooses nothing.
     runtime.input_received(press(Role::Act), lift + 2100, lift + 2100, &mut radio);
@@ -344,7 +342,7 @@ fn a_tap_chooses_its_card_but_a_tap_that_stops_a_coasting_list_does_not() {
     assert!(!runtime.kinetic(List::Workouts).moving());
     // On the list at rest, a tap chooses the card under it and focuses it.
     let offset = runtime.list_offset(List::Workouts, lift + 300);
-    let layout = workouts::LAYOUT;
+    let layout = crate::screens::BASE.workouts.list;
     let card = layout.first_whole(runtime.training.rows(), offset).unwrap();
     touch(
         &mut runtime,

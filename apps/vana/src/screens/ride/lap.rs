@@ -88,7 +88,7 @@ impl From<Lap> for LapBar {
 pub type LapBars = heapless::Vec<LapBar, HISTORY>;
 
 pub(super) fn prepare(view: &View) -> Canvas {
-    let layout = view.frame_layout();
+    let layout = view.layout;
     let (at, regions) = (&layout.scaled, &layout.lap);
     let text_box = layout.ride.text;
     let (left, right) = (text_box.left, text_box.right);

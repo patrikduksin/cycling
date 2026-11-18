@@ -41,8 +41,8 @@ use crate::screens::chrome::{
 };
 use crate::screens::cue::{Badge, Corner, Cue, Icon};
 use crate::screens::scaled::{Scaled, Track};
-use crate::screens::workout::{Page, Text, View};
-use firmware_shell::rendering::font::{Face, FaceRole, SPILL};
+use crate::screens::workout::{Text, View};
+use firmware_shell::rendering::font::{Face, FaceRole};
 
 pub const CUE: Cue = Cue::new(Corner::BottomRight, Icon::Check);
 /// A saved ride: ACT sends it to the phone. BACK keeps its fixed role,
@@ -144,59 +144,12 @@ pub fn question_shown(after: &After) -> bool {
 
 /// "5 S", "1 MIN", "5 MIN" or "20 MIN": the length of best effort `index`.
 pub fn effort_label(index: usize) -> Text<12> {
-    let (bytes, len) = effort_text(index);
     let mut label = Text::new();
-    let _ = label.push_str(core::str::from_utf8(&bytes[..len]).unwrap_or_default());
-    label
-}
-
-/// `effort_label`'s bytes and their length, in a const.
-const fn effort_text(index: usize) -> ([u8; 12], usize) {
-    let seconds = EFFORT_SECONDS[index];
-    let (mut n, unit): (u32, &[u8]) = if seconds < 60 {
-        (seconds, b" S")
-    } else {
-        (seconds / 60, b" MIN")
+    let _ = match EFFORT_SECONDS[index] {
+        s if s < 60 => core::fmt::Write::write_fmt(&mut label, format_args!("{s} S")),
+        s => core::fmt::Write::write_fmt(&mut label, format_args!("{} MIN", s / 60)),
     };
-    let mut digits = [0u8; 10];
-    let mut count = 0;
-    loop {
-        digits[count] = b'0' + (n % 10) as u8;
-        count += 1;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
-    }
-    let mut bytes = [0u8; 12];
-    let mut len = 0;
-    while count > 0 {
-        count -= 1;
-        bytes[len] = digits[count];
-        len += 1;
-    }
-    let mut i = 0;
-    while i < unit.len() {
-        bytes[len] = unit[i];
-        len += 1;
-        i += 1;
-    }
-    (bytes, len)
-}
-
-/// The widest effort label in `face`.
-const fn widest_effort(face: &Face) -> usize {
-    let mut widest = 0;
-    let mut index = 0;
-    while index < EFFORT_SECONDS.len() {
-        let (bytes, len) = effort_text(index);
-        let width = face.width(bytes.split_at(len).0);
-        if width > widest {
-            widest = width;
-        }
-        index += 1;
-    }
-    widest
+    label
 }
 
 /// The summary on one panel. A text row's bottom is its baseline. On a
@@ -332,6 +285,16 @@ pub const fn regions(at: &Scaled) -> Regions {
         at,
     );
     let chart = chart.with_columns(text);
+    // The baseline, the row under the fill, ends 2 px above the done cue's disc.
+    let clear = at.panel.height - 3 - crate::screens::cue::reach(at.panel.width - chart.right);
+    let chart = Rect {
+        bottom: if clear < chart.bottom {
+            clear
+        } else {
+            chart.bottom
+        },
+        ..chart
+    };
     assert!(
         chart.width() <= super::elevation::COLUMNS
             && chart.height() <= super::elevation::MAX_HEIGHT,
@@ -352,11 +315,7 @@ pub const fn regions(at: &Scaled) -> Regions {
         Unit(0),
         at,
     );
-    let [mut label, _] = text.cols([Unit(EFFORT_LABEL_WIDTH), Fr(1)], Unit(0), at);
-    let needed = widest_effort(at.face(FaceRole::Caption)) + SPILL;
-    if label.width() < needed {
-        label.right = label.left + needed;
-    }
+    let [label, _] = text.cols([Unit(EFFORT_LABEL_WIDTH), Fr(1)], Unit(0), at);
     let after_label = Rect {
         left: label.right,
         ..text
@@ -434,12 +393,6 @@ const EFFORT_LABEL_WIDTH: u16 = 56;
 const COLUMN_GAP: u16 = 8;
 const BAR_HEIGHT: u16 = 8;
 
-/// The summary lays out from the panel, but for DELETE RIDE?, which asks
-/// as END RIDE? does.
-pub fn from_panel(view: &View) -> bool {
-    matches!(view.page, Page::Summary | Page::PastRide) && !delete_shown(view.after())
-}
-
 /// A caption over its value in a column of the band whose caption top is
 /// `top`, as on the ride pages. A new personal best says `BEST` in its
 /// caption, in the reading's colour.
@@ -515,13 +468,13 @@ fn cells(canvas: &mut Canvas, layout: &Layout, rows: Rect, cells: &[Reading]) {
 }
 
 pub fn prepare(view: &View) -> Canvas {
-    let layout = view.frame_layout();
+    let layout = view.layout;
     let (at, regions) = (&layout.scaled, &layout.summary);
     let after = view.after();
     if delete_shown(after) {
         let mut canvas = super::end::question(view, b"DELETE RIDE?", b"IT GOES FROM YOUR RIDES");
         let title = view.past_title().as_bytes();
-        let row = regions.overview.saved;
+        let row = layout.end.name;
         let centre = (row.left + row.right) / 2;
         canvas.caption(at, title, row.width(), centre, row.bottom, Align::Center);
         return canvas;
@@ -582,7 +535,7 @@ pub fn prepare(view: &View) -> Canvas {
 pub fn badge(view: &View) -> Option<Badge> {
     let after = view.after();
     (after.saving == Saving::Saved && after.page == 0 && !after.past)
-        .then_some(view.frame_layout().summary.badge)
+        .then_some(view.layout.summary.badge)
 }
 
 fn overview(view: &View, layout: &Layout, canvas: &mut Canvas) {
@@ -911,6 +864,7 @@ mod tests {
     use crate::ride::log::Sample;
     use crate::screens::chrome::{CONTENT, HEIGHT, WIDTH};
     use crate::screens::cue::RADIUS;
+    use crate::screens::workout::Page;
 
     const REGIONS: Regions = crate::screens::BASE.summary;
 
@@ -1145,12 +1099,33 @@ mod tests {
             best_watts: 1999,
         };
         type Case = (usize, Saving, fn(&mut After), &'static [&'static str]);
-        let cases: [Case; 12] = [
+        let cases: [Case; 16] = [
             (
                 0,
                 Saving::Saved,
                 |_| {},
                 &["RIDE SAVED", "99:59:59", "1000.0", "220"],
+            ),
+            (
+                0,
+                Saving::Unsynced,
+                |_| {},
+                &["SYNC TO SAVE", "99:59:59", "1000.0", "220"],
+            ),
+            (
+                0,
+                Saving::Unsynced,
+                |after| {
+                    after.past = true;
+                    after.page = 0;
+                },
+                &["SYNC TO SAVE", "DEC 31  12:59", "99:59:59"],
+            ),
+            (
+                2,
+                Saving::Unsynced,
+                |after| after.elevation = true,
+                &["ASCENT M", "MAX M"],
             ),
             (0, Saving::Failed, |_| {}, &["NOT ALL SAVED", "TIME"]),
             (0, Saving::Writing, |_| {}, &["SAVING", "KEEP VANA ON"]),
@@ -1193,6 +1168,22 @@ mod tests {
                 Saving::Saved,
                 |_| {},
                 &["20 MIN BEST 1999 W", "FTP 1999 W?"],
+            ),
+            (
+                0,
+                Saving::Saved,
+                |after| {
+                    after.past = true;
+                    after.delete = true;
+                    after.page = pages(after.elevation);
+                },
+                &[
+                    "DELETE RIDE?",
+                    "DEC 31  12:59",
+                    "99:59:59",
+                    "1000.0 KM",
+                    "IT GOES FROM YOUR RIDES",
+                ],
             ),
         ];
         for layout in crate::screens::panels::ALL {

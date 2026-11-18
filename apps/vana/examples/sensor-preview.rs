@@ -77,11 +77,11 @@ fn main() {
         (CADENCE, 2345),
     ]);
 
-    let mut menu = Menu::new();
+    let mut menu = Menu::new(&vana::screens::BASE);
     menu.refresh(nearby, tiles(3), false);
     menu.open();
     render(&menu, &output, "sensors-three");
-    let mut ten = Menu::new();
+    let mut ten = Menu::new(&vana::screens::BASE);
     ten.refresh(nearby, tiles(10), false);
     ten.open();
     focus(&mut ten, Some(SPEED_CADENCE), &mut now);
@@ -95,7 +95,7 @@ fn main() {
     menu.refresh(nearby, tiles(1), true);
     menu.set_message(MenuMessage::Scanning);
     render(&menu, &output, "nearby-searching");
-    let mut eight = Menu::new();
+    let mut eight = Menu::new(&vana::screens::BASE);
     let many = [
         (HEART_RATE, 4321),
         (RADAR, 9021),
@@ -111,7 +111,7 @@ fn main() {
     eight.set_message(MenuMessage::ScanDone);
     focus(&mut eight, Some(SHIFTING), &mut now);
     render(&eight, &output, "nearby-eight-scrolled");
-    let mut first = Menu::new();
+    let mut first = Menu::new(&vana::screens::BASE);
     first.refresh(nearby, tiles(0), false);
     first.open();
     first.set_message(MenuMessage::ScanDone);
@@ -129,7 +129,7 @@ fn main() {
     first.set_message(MenuMessage::ScanCancelled);
     assert_eq!(first.diagnostics().page, Page::Nearby);
     render(&first, &output, "nearby-added");
-    let mut empty = Menu::new();
+    let mut empty = Menu::new(&vana::screens::BASE);
     empty.refresh([None; 8], tiles(0), false);
     empty.open();
     empty.refresh([None; 8], tiles(0), true);
@@ -146,7 +146,7 @@ fn main() {
     assert_eq!(menu.diagnostics().page, Page::Replace);
     render(&menu, &output, "replace");
 
-    let mut detail = Menu::new();
+    let mut detail = Menu::new(&vana::screens::BASE);
     detail.refresh(nearby, tiles(3), false);
     detail.open();
     focus(&mut detail, Some(POWER), &mut now);

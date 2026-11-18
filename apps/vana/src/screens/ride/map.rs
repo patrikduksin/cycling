@@ -121,7 +121,7 @@ pub const fn regions(at: &Scaled) -> Regions {
     let [_, inner, _] = foot.cols([Unit(12), Fr(1), Unit(12)], Unit(0), at);
     let [_, bar, _] = foot.rows([Unit(13), Unit(3), Fr(1)], Unit(0), at);
     let bar = Rect {
-        right: inner.left + bar_max(at),
+        right: inner.left + at.unit(BAR_MAX_PX as usize),
         ..bar.with_columns(inner)
     };
     let body = super::frame(at).body;
@@ -133,33 +133,14 @@ pub const fn regions(at: &Scaled) -> Regions {
             bar,
             gap: at.unit(6),
             baseline: foot.top + at.unit(19),
-            distance_right: inner.right - unit_room(at),
+            distance_right: inner.right - at.unit(KM_ROOM),
             unit_right: inner.right,
         },
     }
 }
 
-const fn bar_max(at: &Scaled) -> usize {
-    let need = foot_text(at);
-    let had = at.unit(foot_text(&crate::screens::scaled::BASE));
-    at.unit(BAR_MAX_PX as usize) - need.saturating_sub(had)
-}
-
-/// The C606's room for "KM" and the gap before it.
-const C606_KM_ROOM: usize = 25;
-
-const fn unit_room(at: &Scaled) -> usize {
-    km(at) + at.unit(C606_KM_ROOM - km(&crate::screens::scaled::BASE))
-}
-
-const fn km(at: &Scaled) -> usize {
-    at.face(FaceRole::Caption).width(b"KM")
-}
-
-const fn foot_text(at: &Scaled) -> usize {
-    let label = at.face(FaceRole::Caption).width(b"250 M");
-    label + at.face(FaceRole::Foot20).width(b"999.9") + km(at)
-}
+/// The room for "KM" and the gap before it.
+const KM_ROOM: usize = 25;
 
 const fn ground(at: &Scaled, drawn: Rect, shown: Rect) -> Ground {
     Ground {
@@ -1173,7 +1154,7 @@ pub(super) fn pixel(frame: &Frame, look: Look, x: usize, y: usize, under: Shown)
 }
 
 pub(super) fn prepare(view: &View) -> Canvas {
-    let layout = view.frame_layout();
+    let layout = view.layout;
     let (at, map) = (&layout.scaled, &layout.map);
     let shown = map.ground(view.radar_paired).shown;
     let (width, cx) = (shown.width(), (shown.left + shown.right) / 2);

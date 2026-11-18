@@ -79,19 +79,16 @@ fn digest_pairs(hash: u32, pixels: &[u16]) -> u32 {
     last.iter()
         .fold(hash, |hash, &pixel| step(hash, u32::from(pixel)))
 }
-/// A frame an application draws through `Shell::draw`: a logical canvas
+/// A frame an application draws through `Shell::draw`, at the panel's size,
 /// whose pixels follow from its `Hash` alone, so equal pictures paint alike.
 pub trait Picture: core::hash::Hash {
-    /// The canvas's width and height, fitted to the panel as `draw_canvas`
-    /// fits them unless they are the panel's. It is at most `MAX_HEIGHT` tall.
-    fn size(&self) -> (usize, usize);
     /// Paint every pixel of `row`'s clip.
     fn paint(&self, row: &mut Row);
     /// Name the picture's parts, so a frame sends only the bands whose
     /// parts changed. One part over every row, the default, sends the
     /// picture whole or not at all.
     fn parts(&self, parts: &mut Parts) {
-        parts.add(0..self.size().1, self);
+        parts.add(0..MAX_HEIGHT, self);
     }
 }
 
@@ -106,7 +103,6 @@ pub struct Parts {
 impl Parts {
     /// The parts `picture` names, keyed band by band.
     pub fn of<F: Picture>(picture: &F) -> Self {
-        debug_assert!(picture.size().1 <= MAX_HEIGHT);
         let mut parts = Self {
             keys: [FNV_OFFSET; BANDS],
         };
@@ -658,30 +654,21 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
         saved
     }
     /// Bring the panel to `picture`: send the bands whose parts changed
-    /// since the panel showed them. A panel that shows something else, a
-    /// scaled one, or a frame something waits for (`frame_wanted`) takes
-    /// the whole picture.
+    /// since the panel showed them. A panel that shows something else, or a
+    /// frame something waits for (`frame_wanted`), takes the whole picture.
     pub fn draw<F: Picture>(&mut self, picture: &F, now: u64) -> Drawn {
         let parts = Parts::of(picture);
-        let geometry = self.display.geometry();
-        let size = picture.size();
-        let unscaled = (geometry.width, geometry.height) == size;
+        let height = self.display.geometry().height;
         let changed = self.shown.map(|shown| shown.changed(&parts));
         let rows = match changed {
-            _ if self.frame_wanted(now) => Rows::all(geometry.height),
-            Some(changed) if changed.is_empty() => Rows::NONE,
-            Some(changed) if unscaled => changed,
-            _ => Rows::all(geometry.height),
+            _ if self.frame_wanted(now) => Rows::all(height),
+            Some(changed) => changed,
+            None => Rows::all(height),
         };
         let drawn = if rows.is_empty() {
             Drawn::Unchanged
         } else {
-            if unscaled {
-                self.send(rows, |y, pixels| picture.paint(&mut Row::new(y, pixels)));
-            } else {
-                let (width, height) = size;
-                self.draw_canvas(width, height, |row| picture.paint(row));
-            }
+            self.send(rows, |y, pixels| picture.paint(&mut Row::new(y, pixels)));
             if self.display_error {
                 self.shown = None;
                 return Drawn::Failed;
@@ -689,10 +676,8 @@ impl<D: Display, I: InputSource, P: Power, B: device_api::storage::OwnedFlash> S
             self.shown = Some(parts);
             Drawn::Sent
         };
-        if unscaled {
-            self.display
-                .check(|y, pixels| picture.paint(&mut Row::new(y, pixels)));
-        }
+        self.display
+            .check(|y, pixels| picture.paint(&mut Row::new(y, pixels)));
         drawn
     }
     /// The next `draw` sends its picture whole, whatever the panel showed.

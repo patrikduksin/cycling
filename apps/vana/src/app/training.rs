@@ -235,7 +235,13 @@ impl Runtime {
             .selected
             .and_then(|id| training.library.ids().position(|other| other == id))
             .map_or(0, |index| index + 1);
-        let mut picker = Picker::new(training.rows(), training.picker_cursor, chosen, offset);
+        let mut picker = Picker::new(
+            &self.layout.workouts.list,
+            training.rows(),
+            training.picker_cursor,
+            chosen,
+            offset,
+        );
         picker.pressed = pressed;
         let mut free = Text::new();
         let _ = free.push_str("NO TARGETS");

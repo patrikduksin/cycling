@@ -9,10 +9,9 @@ use super::Runtime;
 use super::navigation::To;
 use crate::screens::kinetic::Kinetic;
 use crate::screens::scroll::{Layout, Press};
-use crate::screens::settings::{self, Kind};
+use crate::screens::settings::Kind;
 use crate::screens::touch::{List, Pan};
 use crate::screens::workout::Page;
-use crate::screens::{history, workouts};
 
 impl Runtime {
     /// The list the page shows, if any.
@@ -30,11 +29,11 @@ impl Runtime {
         }
     }
 
-    pub(super) fn list_layout(list: List) -> &'static Layout {
+    pub(super) fn list_layout(&self, list: List) -> &'static Layout {
         match list {
-            List::Rides => &history::LAYOUT,
-            List::Workouts => &workouts::LAYOUT,
-            List::Settings => &settings::LAYOUT,
+            List::Rides => &self.layout.history.list,
+            List::Workouts => &self.layout.workouts.list,
+            List::Settings => &self.layout.settings.list,
         }
     }
 
@@ -105,7 +104,7 @@ impl Runtime {
         let Some(list) = self.page_list() else {
             return false;
         };
-        let layout = Self::list_layout(list);
+        let layout = self.list_layout(list);
         let content = layout.content(self.list_count(list));
         let scroll = self.kinetic_mut(list);
         scroll.fit(layout.viewport(), content, now);
@@ -141,7 +140,7 @@ impl Runtime {
     /// view; otherwise the next card (held, `page` on; past the last, the
     /// first) is focused and scrolled into view.
     pub(super) fn list_move(&mut self, list: List, page: usize, held: bool, now: u64) {
-        let layout = Self::list_layout(list);
+        let layout = self.list_layout(list);
         let (count, cursor, rest) = (
             self.list_count(list),
             self.list_cursor(list),
@@ -158,7 +157,7 @@ impl Runtime {
     /// ACT on a list: true when the focused card shows whole, for the caller
     /// to act on; otherwise the list scrolls it into view first.
     pub(super) fn list_act(&mut self, list: List, now: u64) -> bool {
-        let layout = Self::list_layout(list);
+        let layout = self.list_layout(list);
         match layout.act(self.list_cursor(list), self.list_rest(list)) {
             Press::Act => true,
             Press::Reveal(offset) => {
@@ -172,7 +171,7 @@ impl Runtime {
     /// Settings' MOVE: within the section as on any list, and past its last
     /// row into the next section, shown from its top.
     pub(super) fn settings_move(&mut self, now: u64) {
-        let layout = Self::list_layout(List::Settings);
+        let layout = self.list_layout(List::Settings);
         let (count, cursor, rest) = (
             self.list_count(List::Settings),
             self.list_cursor(List::Settings),
@@ -198,7 +197,7 @@ impl Runtime {
 
     /// A list opened afresh shows its focused card.
     pub(super) fn show_focus(&mut self, list: List, now: u64) {
-        let layout = Self::list_layout(list);
+        let layout = self.list_layout(list);
         let content = layout.content(self.list_count(list));
         let target = layout.reveal(self.list_cursor(list), 0);
         let scroll = self.kinetic_mut(list);

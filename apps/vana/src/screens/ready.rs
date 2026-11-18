@@ -8,13 +8,14 @@
 use super::Layout;
 use super::canvas::{Canvas, Shape};
 use super::chrome::{AMBER, Align, GREEN, RED, Rect, SECONDARY, TERTIARY, WHITE};
-use super::cue::{self, Corner, Cue, Icon};
+use super::cue::{self, Cue, Icon};
 use super::scaled::{Scaled, Track};
 use super::workout::Text;
+use device_api::input::Role;
 use firmware_shell::rendering::font::FaceRole;
 
 /// ACT starts the ride.
-pub const CUES: [Cue; 1] = [Cue::new(Corner::BottomRight, Icon::Play)];
+pub const CUES: [Cue; 1] = [Cue::new(Role::Act, Icon::Play)];
 
 /// How a check stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -127,7 +128,7 @@ pub struct CheckRegions {
     pub hint: Rect,
 }
 
-pub const fn regions(at: &Scaled) -> Regions {
+pub const fn regions(at: &Scaled, corners: &cue::Corners) -> Regions {
     use Track::{Cap, Fr, Unit};
     let content = super::chrome::regions(at).content;
     let [_, text, _] = content.cols([Unit(12), Fr(1), Unit(4)], Unit(0), at);
@@ -160,29 +161,31 @@ pub const fn regions(at: &Scaled) -> Regions {
         let tap = taps[i];
         let [_, title, hint, _] =
             tap.rows([Unit(6), Cap(FaceRole::Body), Unit(20), Fr(1)], Unit(0), at);
-        let clear_of_cue = at.panel.width - cue::reach(at.panel.height - hint.bottom);
-        let hint = hint.with_columns(line_text);
+        let dot = title.with_columns(dot);
+        // A cue beside the line's start moves the whole line, dot first.
+        let shift = corners.columns_clear_of(&CUES, dot, at.panel).left - dot.left;
+        let line = Rect {
+            left: line_text.left + shift,
+            ..line_text
+        };
         checks[i] = CheckRegions {
             tap,
-            dot: title.with_columns(dot),
-            title: title.with_columns(line_text),
-            hint: Rect {
-                right: if clear_of_cue < hint.right {
-                    clear_of_cue
-                } else {
-                    hint.right
-                },
-                ..hint
+            dot: Rect {
+                left: dot.left + shift,
+                right: dot.right + shift,
+                ..dot
             },
+            title: corners.columns_clear_of(&CUES, title.with_columns(line), at.panel),
+            hint: corners.columns_clear_of(&CUES, hint.with_columns(line), at.panel),
         };
         i += 1;
     }
     Regions {
-        headline: headline.with_columns(text),
-        riding: riding.with_columns(text),
+        headline: corners.columns_clear_of(&CUES, headline.with_columns(text), at.panel),
+        riding: corners.columns_clear_of(&CUES, riding.with_columns(text), at.panel),
         riding_tap: Rect {
             bottom: under.bottom,
-            ..riding
+            ..riding.with_columns(text)
         },
         checks,
     }
@@ -282,10 +285,7 @@ mod tests {
     }
 
     fn under_the_cue(rect: Rect, layout: &Layout) -> bool {
-        let panel = layout.scaled.panel;
-        let dx = panel.width.saturating_sub(rect.right);
-        let dy = panel.height.saturating_sub(rect.bottom);
-        dx * dx + dy * dy < cue::RADIUS * cue::RADIUS
+        CUES.iter().any(|cue| cue.covers(rect, layout))
     }
 
     #[test]

@@ -6,14 +6,15 @@
 //! paging past the last one comes back here.
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{AMBER, Align, Rect, SECONDARY, WHITE};
-use crate::screens::cue::{Corner, Cue, Icon};
+use crate::screens::cue::{Cue, Icon};
 use crate::screens::scaled::{Scaled, Track};
 use crate::screens::workout::{Text, View};
+use device_api::input::Role;
 use firmware_shell::rendering::font::{Face, FaceRole};
 
 pub const CUES: [Cue; 2] = [
-    Cue::new(Corner::TopLeft, Icon::Stop),
-    Cue::new(Corner::BottomRight, Icon::Play),
+    Cue::new(Role::Back, Icon::Stop),
+    Cue::new(Role::Act, Icon::Play),
 ];
 
 /// The paused screen on one panel: the pause bars, then rows of text
@@ -188,15 +189,15 @@ mod tests {
                 let (width, height) = (screen.right, screen.bottom);
                 let reach = layout.scaled.unit(cue::RADIUS + 2);
                 for run in &canvas.runs {
-                    let (left, right) = (run.columns().start, run.columns().end);
-                    let (top, bottom) = (run.top, run.bottom());
-                    let near = |x: usize, y: usize| x * x + y * y < reach.pow(2);
+                    let (left, right) = (run.columns().start, run.columns().end.min(width));
+                    let (top, bottom) = (run.top, run.bottom().min(height));
                     let text = core::str::from_utf8(run.line.text());
-                    assert!(!near(left, top), "{what}: {text:?}");
-                    assert!(
-                        !near(width - right.min(width), height - bottom.min(height)),
-                        "{what}: {text:?}"
-                    );
+                    for cue in CUES {
+                        let corner = cue.corner(layout);
+                        let dx = if corner.left() { left } else { width - right };
+                        let dy = if corner.top() { top } else { height - bottom };
+                        assert!(dx * dx + dy * dy >= reach.pow(2), "{what}: {text:?}");
+                    }
                 }
             }
         }

@@ -4,7 +4,7 @@ use device_api::bulk;
 use device_api::connectivity::{self, Text};
 use device_api::display;
 use device_api::gps;
-use device_api::input::{Controls, Fixture, Fixtures, MAX_BUTTONS, Role};
+use device_api::input::{Controls, Fixture, Fixtures, MAX_BUTTONS, Role, Side};
 use device_api::observation::Availability;
 use device_api::position_control;
 use device_api::power;
@@ -82,7 +82,7 @@ sensors::Motion: axes
 sensors::Identity: fields
 sensors::Snapshot: pressure motion identity reports invalid_reports losses
 sensors::SensorSet: barometer light
-Fixture: id role
+Fixture: id role edge at
 InputSnapshot: battery power button_counts touch_available touch_errors companion_valid companion_bad_crc uart_errors input_lost
 Reach: access_point station
 sound::Snapshot: state pattern requested_ms submitted_ms until_ms
@@ -119,13 +119,22 @@ Activity: simulated window_ms wakes awake_us main_us radio_us idle_us switches t
 
 #[test]
 fn input_controls_round_trip_with_their_fixtures() {
-    let fixture = |id, role| Fixture { id, role };
+    let fixture = |id, role| Fixture {
+        id,
+        role,
+        edge: Side::Bottom,
+        at: 1000,
+    };
     for buttons in [
         &[][..],
         &[fixture(4, None)],
         &[
             fixture(0, Some(Role::Back)),
-            fixture(1, Some(Role::Move)),
+            Fixture {
+                edge: Side::Top,
+                at: 0,
+                ..fixture(1, Some(Role::Move))
+            },
             fixture(2, Some(Role::Act)),
         ],
         &[fixture(7, Some(Role::Act)); MAX_BUTTONS],

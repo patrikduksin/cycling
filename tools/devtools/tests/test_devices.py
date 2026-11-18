@@ -64,14 +64,25 @@ def test_partitions_equal_the_table_and_layout_firmware_py_held(c606):
     assert c606.owned_tail == (0xD98000, 0x102000)
 
 
+B0 = '{ id = 0, role = "back", edge = "left", at = 250 }'
+B1 = '{ id = 1, role = "move", edge = "left", at = 750 }'
+B2 = '{ id = 2, role = "act", edge = "right", at = 750 }'
+
+
 def test_fitted_rs_holds_the_driver_literals_it_replaced(c606):
     text = devices.fitted_rs(c606)
     assert 'pub const PANEL_WIDTH: usize = 240;' in text
     assert 'pub const PANEL_HEIGHT: usize = 320;' in text
     assert 'pub const PRODUCT_NAME: &str = "VANA C606";' in text
     assert 'pub const FIT_PRODUCT: u16 = 606;' in text
-    fixtures = re.findall(r'Fixture \{\s*id: (\d+),\s*role: (Some\(Role::\w+\)|None),\s*\}', text)
-    assert fixtures == [('0', 'Some(Role::Back)'), ('1', 'Some(Role::Move)'), ('2', 'Some(Role::Act)')]
+    fixtures = re.findall(
+        r'Fixture \{\s*id: (\d+),\s*role: (Some\(Role::\w+\)|None),\s*edge: Side::(\w+),\s*at: (\d+),\s*\}', text
+    )
+    assert fixtures == [
+        ('0', 'Some(Role::Back)', 'Left', '250'),
+        ('1', 'Some(Role::Move)', 'Left', '750'),
+        ('2', 'Some(Role::Act)', 'Right', '750'),
+    ]
     for fact in ('GPS', 'ANT', 'BLE', 'WIFI', 'SOUND', 'SHUTDOWN', 'CARD'):
         assert f'pub const {fact}: bool = true;' in text
     assert re.search(r'pub const SENSORS: SensorSet = SensorSet \{\s*barometer: true,\s*light: true,\s*\};', text)
@@ -136,9 +147,11 @@ def test_a_memory_backed_range_skips_partition_containment_and_the_image_cap(tmp
 
 
 def test_a_role_less_button_generates_none_and_answers_its_bare_id(tmp_path):
-    extra = '  { id = 2, role = "act" },\n  { id = 9 },\n'
-    device = devices.parse(manifest_with(tmp_path, lambda t: t.replace('  { id = 2, role = "act" },\n', extra)))
-    assert re.search(r'Fixture \{\s*id: 9,\s*role: None,?\s*\}', devices.fitted_rs(device))
+    extra = f'  {B2},\n  {{ id = 9, edge = "bottom", at = 500 }},\n'
+    device = devices.parse(manifest_with(tmp_path, lambda t: t.replace(f'  {B2},\n', extra)))
+    assert re.search(
+        r'Fixture \{\s*id: 9,\s*role: None,\s*edge: Side::Bottom,\s*at: 500,\s*\}', devices.fitted_rs(device)
+    )
     assert devices.expected_fitted(device)['buttons'] == '0:back,1:move,2:act,9'
 
 
@@ -156,7 +169,7 @@ def model_with(tmp_path, change, name='bare'):
     [
         (lambda t: t, 'other', 'match its file name'),
         (lambda t: t.replace('[panel]', '[build]\nchip = "esp32s3"\n\n[panel]'), 'bare', 'unknown keys'),
-        (lambda t: t.replace('  { id = 2, role = "act" },\n', ''), 'bare', 'at least 3 buttons'),
+        (lambda t: t.replace(f'  {B2},\n', ''), 'bare', 'at least 3 buttons'),
         (lambda t: t.replace('width = 240', 'width = 170'), 'bare', '3/4 scale'),
         (lambda t: t.replace('name = "bare"', 'name = "Bare"'), 'Bare', 'must match'),
         (lambda t: t.replace('name = "bare"', 'name = "virtual"'), 'virtual', 'reserved'),
@@ -186,19 +199,57 @@ def test_a_test_model_may_not_take_a_device_name(tmp_path, monkeypatch):
 
 
 def more_buttons(count):
-    return ''.join(f'  {{ id = {10 + i} }},\n' for i in range(count))
+    return ''.join(f'  {{ id = {10 + i}, edge = "top", at = 500 }},\n' for i in range(count))
 
 
 def test_buttons_may_list_any_ids_in_any_order_up_to_eight(tmp_path):
-    listed = '  { id = 200, role = "act" },\n  { id = 7, role = "back" },\n  { id = 3, role = "move" },\n'
+    listed = ''.join(
+        f'  {{ id = {id}, role = "{role}", edge = "left", at = {at} }},\n'
+        for id, role, at in ((200, 'act', 900), (7, 'back', 0), (3, 'move', 333))
+    ).replace('"move", edge = "left"', '"move", edge = "right"')
     path = manifest_with(
         tmp_path,
         lambda t: t.replace(
-            '  { id = 0, role = "back" },\n  { id = 1, role = "move" },\n  { id = 2, role = "act" },\n',
+            f'  {B0},\n  {B1},\n  {B2},\n',
             listed + more_buttons(5),
         ),
     )
     assert [b.id for b in devices.parse(path).model.buttons] == [200, 7, 3, 10, 11, 12, 13, 14]
+
+
+@pytest.mark.parametrize('at', [334, 500, 666])
+def test_a_button_with_a_role_is_refused_in_the_middle_third_of_its_edge(tmp_path, at):
+    path = manifest_with(tmp_path, lambda t: t.replace(B0, B0.replace('at = 250', f'at = {at}')))
+    with pytest.raises(devices.ManifestError, match=f'button 0 .back. at {at} .*a mid-edge cue is not designed yet'):
+        devices.parse(path)
+
+
+@pytest.mark.parametrize('at', [0, 333, 667, 1000])
+def test_a_button_with_a_role_may_sit_in_either_outer_third(tmp_path, at):
+    path = manifest_with(tmp_path, lambda t: t.replace(B2, B2.replace('at = 750', f'at = {at}')))
+    assert devices.parse(path).model.buttons[2].at == at
+
+
+@pytest.mark.parametrize(
+    ('back', 'move', 'act', 'corner'),
+    [
+        ('left", at = 250', 'left", at = 300', 'right", at = 750', 'top-left'),
+        ('top", at = 100', 'left", at = 0', 'right", at = 750', 'top-left'),
+        ('left", at = 250', 'bottom", at = 900', 'right", at = 1000', 'bottom-right'),
+        ('top", at = 900', 'right", at = 100', 'left", at = 750', 'top-right'),
+        ('left", at = 250', 'bottom", at = 0', 'left", at = 750', 'bottom-left'),
+    ],
+)
+def test_two_roles_nearest_the_same_corner_are_refused(tmp_path, back, move, act, corner):
+    placed = {B0: back, B1: move, B2: act}
+
+    def change(text):
+        for button, at in placed.items():
+            text = text.replace(button, button.split('edge = "')[0] + f'edge = "{at} }}')
+        return text
+
+    with pytest.raises(devices.ManifestError, match=f'nearest the same corner, {corner}'):
+        devices.parse(manifest_with(tmp_path, change))
 
 
 def manifest_with(tmp_path, change):
@@ -212,14 +263,21 @@ def manifest_with(tmp_path, change):
 @pytest.mark.parametrize(
     ('change', 'rule'),
     [
-        (lambda t: t.replace('  { id = 2, role = "act" },\n', ''), 'at least 3 buttons'),
-        (lambda t: t.replace('{ id = 2, role = "act" }', '{ id = 1, role = "act" }'), 'share an id'),
+        (lambda t: t.replace(f'  {B2},\n', ''), 'at least 3 buttons'),
+        (lambda t: t.replace(B2, B2.replace('id = 2', 'id = 1')), 'share an id'),
         (lambda t: t.replace('role = "act"', 'role = "back"'), 'exactly one button'),
-        (lambda t: t.replace('{ id = 2, role = "act" }', '{ id = 2 }'), 'exactly one button'),
+        (lambda t: t.replace(B2, B2.replace(' role = "act",', '')), 'exactly one button'),
         (lambda t: t.replace('{ id = 2,', '{ id = 256,'), 'integers from 0 to 255'),
         (lambda t: t.replace('{ id = 2,', '{ id = -1,'), 'integers from 0 to 255'),
         (
-            lambda t: t.replace('  { id = 2, role = "act" },\n', '  { id = 2, role = "act" },\n' + more_buttons(6)),
+            lambda t: t.replace('edge = "right"', 'edge = "front"'),
+            'edge .front. must be one of left, right, top, bottom',
+        ),
+        (lambda t: t.replace('at = 250', 'at = 1001'), 'at 1001 must be an integer from 0 to 1000'),
+        (lambda t: t.replace('at = 250', 'at = 0.25'), 'at 0.25 must be an integer'),
+        (lambda t: t.replace(', at = 250', ''), r'button 0 is missing: at'),
+        (
+            lambda t: t.replace(f'  {B2},\n', f'  {B2},\n' + more_buttons(6)),
             'at most 8 buttons',
         ),
         (lambda t: t.replace('"VANA C606"', '"VANA C606 EXTRA L"'), '1 to 15 bytes'),

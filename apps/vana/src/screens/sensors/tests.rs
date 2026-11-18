@@ -4,7 +4,7 @@ use super::render::{AMBER, CYAN, GREEN};
 use super::*;
 use crate::screens::canvas::Shape;
 use crate::screens::chrome::{ACCENT, RED, Rect, SECONDARY, WHITE};
-use crate::screens::cue::{Corner, RADIUS};
+use crate::screens::cue::RADIUS;
 use crate::screens::{BASE, Layout, panels};
 use crate::sensors::ant::{Battery, BatteryStatus, device_type};
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
@@ -516,19 +516,14 @@ fn a_power_meter_detail_waits_a_moment_then_act_zeroes_and_move_asks_to_forget()
     let opened_at = 20_000;
     assert_eq!(menu.input(press(Role::Act), opened_at), None);
     assert_eq!(page(&menu), Page::Detail);
-    let cues: std::vec::Vec<_> = menu
-        .layout
-        .cues
-        .iter()
-        .map(|c| (c.corner, c.icon))
-        .collect();
+    let cues: std::vec::Vec<_> = menu.layout.cues.iter().map(|c| (c.role, c.icon)).collect();
     use crate::screens::cue::Icon;
     assert_eq!(
         cues,
         [
-            (Corner::TopLeft, Icon::Back),
-            (Corner::BottomLeft, Icon::Trash),
-            (Corner::BottomRight, Icon::Calibrate)
+            (Role::Back, Icon::Back),
+            (Role::Move, Icon::Trash),
+            (Role::Act, Icon::Calibrate)
         ]
     );
     assert_eq!(menu.input(press(Role::Act), opened_at + 400), None);
@@ -562,8 +557,8 @@ fn any_other_sensor_detail_forgets_on_act_and_ignores_move() {
     let mut rider = Rider::new();
     rider.press(&mut menu, Role::Act);
     assert_eq!(page(&menu), Page::Detail);
-    let corners: std::vec::Vec<_> = menu.cues().iter().map(|c| c.corner).collect();
-    assert_eq!(corners, [Corner::TopLeft, Corner::BottomRight]);
+    let roles: std::vec::Vec<_> = menu.cues().iter().map(|c| c.role).collect();
+    assert_eq!(roles, [Role::Back, Role::Act]);
     assert_eq!(menu.input(press(Role::Act), rider.now + 400), None);
     assert_eq!(page(&menu), Page::Detail);
     assert_eq!(rider.press(&mut menu, Role::Move), None);
@@ -820,11 +815,9 @@ fn assert_clear_of_cues(menu: &Menu, what: &str) {
         .collect();
     let panel = menu.layout.screens.scaled.panel;
     for cue in menu.cues() {
-        let (cx, cy) = match cue.corner {
-            Corner::TopLeft => (0, 0),
-            Corner::BottomLeft => (0, panel.height),
-            Corner::BottomRight => (panel.width, panel.height),
-        };
+        let corner = cue.corner(menu.layout.screens);
+        let cx = if corner.left() { 0 } else { panel.width };
+        let cy = if corner.top() { 0 } else { panel.height };
         for rect in &boxes {
             let dx = cx.clamp(rect.left, rect.right).abs_diff(cx);
             let dy = cy.clamp(rect.top, rect.bottom).abs_diff(cy);
@@ -836,7 +829,9 @@ fn assert_clear_of_cues(menu: &Menu, what: &str) {
     }
 }
 
-fn crowded(layout: &'static Layout) -> std::vec::Vec<(std::string::String, Menu)> {
+pub(in crate::screens) fn crowded(
+    layout: &'static Layout,
+) -> std::vec::Vec<(std::string::String, Menu)> {
     let kinds = [
         device_type::POWER,
         device_type::BIKE_LIGHTS,
@@ -970,7 +965,7 @@ fn crowded_sensor_pages_never_overlap_clip_or_drop_anything() {
         };
         canvas.assert_laid_out(menu.layout.screens.scaled.screen(), want, &what);
         menu.frame().prepare().check_layout();
-        if full_screen(menu.cues()) {
+        if crate::screens::cue::any_at_top(menu.cues(), menu.layout.screens) {
             assert_clear_of_cues(&menu, &what);
         } else {
             let rect = focused_rect(&menu);

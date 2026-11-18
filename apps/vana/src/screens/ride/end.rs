@@ -8,22 +8,23 @@
 //! returns to END RIDE?.
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::{Align, Rect, SECONDARY, WHITE};
-use crate::screens::cue::{Corner, Cue, Icon};
+use crate::screens::cue::{Cue, Icon};
 use crate::screens::scaled::{Scaled, Track};
 use crate::screens::workout::{Text, View};
+use device_api::input::Role;
 use firmware_shell::rendering::font::FaceRole;
 
-const BACK: Cue = Cue::new(Corner::TopLeft, Icon::Back);
+const BACK: Cue = Cue::new(Role::Back, Icon::Back);
 
-pub const CUES: [Cue; 2] = [BACK, Cue::new(Corner::BottomRight, Icon::Check)];
+pub const CUES: [Cue; 2] = [BACK, Cue::new(Role::Act, Icon::Check)];
 /// END RIDE? when the ride can be discarded.
 pub const DISCARD_CUES: [Cue; 3] = [
     BACK,
-    Cue::new(Corner::BottomRight, Icon::Check),
-    Cue::new(Corner::BottomLeft, Icon::Trash),
+    Cue::new(Role::Act, Icon::Check),
+    Cue::new(Role::Move, Icon::Trash),
 ];
 /// A question whose ACT throws a ride away: DISCARD RIDE?, DELETE RIDE?.
-pub const TRASH_CUES: [Cue; 2] = [BACK, Cue::new(Corner::BottomRight, Icon::Trash)];
+pub const TRASH_CUES: [Cue; 2] = [BACK, Cue::new(Role::Act, Icon::Trash)];
 
 /// A question about a ride on one panel, centred down it: rows of text whose
 /// capitals end on their bottoms, between the cues.

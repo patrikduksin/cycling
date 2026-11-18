@@ -9,7 +9,7 @@ mod message;
 mod render;
 mod slot;
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 pub use layout::{Detail, Forget, Mines, Nearby, Regions, Replace, Rows, regions};
 pub use menu::{Action, Diagnostics, GLANCES, Glance, Menu, Page, SETTLE_MS};
@@ -17,14 +17,7 @@ pub use message::{CalibrationNote, MenuMessage};
 
 pub use slot::{Connection, Selected};
 
-use crate::screens::cue::{Corner, Cue};
 use crate::sensors::ant::device_type;
-
-/// A sensor page with a back cue takes the whole panel: the status bar
-/// would cut the cue.
-pub fn full_screen(cues: &[Cue]) -> bool {
-    cues.iter().any(|cue| cue.corner == Corner::TopLeft)
-}
 
 fn kind(kind: u8) -> &'static [u8] {
     match kind {

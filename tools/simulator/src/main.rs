@@ -53,7 +53,12 @@ fn main() {
 
     for (width, height, id) in [(240, 320, 0), (128, 64, 3)] {
         let display = DisplayDevice::new(width, height);
-        let buttons = Fixtures::new(&[Fixture { id, role: None }]);
+        let buttons = Fixtures::new(&[Fixture {
+            id,
+            role: None,
+            edge: device_api::input::Side::Left,
+            at: 0,
+        }]);
         let input = InputDevice::new(buttons, Availability::Unsupported);
         let power = PowerDevice::new(Availability::Unsupported);
         let memory = Memory {

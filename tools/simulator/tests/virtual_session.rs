@@ -194,6 +194,8 @@ fn foreground_app_receives_only_forwarded_edges_and_transitions_clear_queue() {
         Fixtures::new(&[Fixture {
             id: 0,
             role: Some(Role::Back),
+            edge: device_api::input::Side::Left,
+            at: 0,
         }]),
         Availability::Ready,
     );
@@ -438,6 +440,8 @@ fn an_app_edge_keeps_the_time_the_device_received_it() {
         device_api::input::Fixtures::new(&[device_api::input::Fixture {
             id: 1,
             role: Some(device_api::input::Role::Move),
+            edge: device_api::input::Side::Left,
+            at: 0,
         }]),
         Availability::Ready,
     );

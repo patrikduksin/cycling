@@ -113,15 +113,14 @@ impl Pose {
         f32::from(self.ahead_px) / f32::from(self.reach.ahead_m)
     }
 
-    /// The scale bar: the longest round distance that fits `max_px`, its
-    /// length in pixels and its label.
-    pub fn bar(&self, max_px: usize) -> (usize, &'static [u8]) {
+    /// The scale bar: the longest round distance whose painted length in
+    /// pixels and label `fits`, that length and its label; none when even
+    /// the shortest does not.
+    pub fn bar(&self, fits: impl Fn(usize, &[u8]) -> bool) -> Option<(usize, &'static [u8])> {
         let s = self.px_per_m();
-        let (m, label) = BARS
-            .into_iter()
-            .find(|&(m, _)| m * s <= max_px as f32)
-            .unwrap_or(BARS[BARS.len() - 1]);
-        (roundf(m * s) as usize, label)
+        BARS.into_iter()
+            .map(|(m, label)| (roundf(m * s) as usize, label))
+            .find(|&(px, label)| fits(px, label))
     }
 
     pub fn projection(&self, here: Point) -> Projection {
@@ -272,12 +271,15 @@ mod tests {
 
     #[test]
     fn the_scale_bar_reads_a_round_distance_up_to_90_px() {
-        let bar =
-            |ahead_m| Pose::new(Reach::new(ahead_m, Detail::Streets), &BASE.map.free, 0).bar(90);
-        assert_eq!(bar(150), (67, &b"50 M"[..]));
-        assert_eq!(bar(278), (72, &b"100 M"[..]));
-        assert_eq!(bar(335), (60, &b"100 M"[..]));
-        assert_eq!(bar(444), (45, &b"100 M"[..]));
-        assert_eq!(bar(1_000), (50, &b"250 M"[..]));
+        let bar = |ahead_m| {
+            Pose::new(Reach::new(ahead_m, Detail::Streets), &BASE.map.free, 0).bar(|px, _| px <= 90)
+        };
+        assert_eq!(bar(150), Some((67, &b"50 M"[..])));
+        assert_eq!(bar(278), Some((72, &b"100 M"[..])));
+        assert_eq!(bar(335), Some((60, &b"100 M"[..])));
+        assert_eq!(bar(444), Some((45, &b"100 M"[..])));
+        assert_eq!(bar(1_000), Some((50, &b"250 M"[..])));
+        let closest = Pose::new(Reach::new(150, Detail::Streets), &BASE.map.free, 0);
+        assert_eq!(closest.bar(|px, _| px <= 66), None, "50 M is 67 px here");
     }
 }

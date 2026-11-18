@@ -73,20 +73,7 @@ impl device_api::input::InputSource for Keys {
     fn controls(&self) -> device_api::input::Controls {
         device_api::input::Controls {
             touch: Availability::Unsupported,
-            buttons: device_api::input::Fixtures::new(&[
-                device_api::input::Fixture {
-                    id: 0,
-                    role: Some(Role::Back),
-                },
-                device_api::input::Fixture {
-                    id: 1,
-                    role: Some(Role::Move),
-                },
-                device_api::input::Fixture {
-                    id: 2,
-                    role: Some(Role::Act),
-                },
-            ]),
+            buttons: crate::screens::BASE_BUTTONS,
         }
     }
     fn take_edge(&mut self) -> Option<device_api::input::Edge> {

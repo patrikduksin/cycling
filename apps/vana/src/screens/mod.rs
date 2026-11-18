@@ -5,6 +5,8 @@ pub mod canvas;
 pub mod check;
 pub mod chrome;
 pub mod cue;
+#[cfg(test)]
+mod cue_screens;
 pub mod form;
 pub mod format;
 pub mod history;
@@ -29,6 +31,8 @@ pub mod unsaved;
 pub mod workout;
 pub mod workouts;
 
+use device_api::input::{Fixture, Fixtures, Role, Side};
+
 const _: () = assert!(
     limits::HEIGHT <= firmware_shell::shell::MAX_HEIGHT,
     "the shell keys fewer bands than the tallest panel has"
@@ -41,6 +45,7 @@ const _: () = assert!(
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Layout {
     pub scaled: scaled::Scaled,
+    pub corners: cue::Corners,
     pub chrome: chrome::Regions,
     pub sign: sign::Regions,
     pub ride: ride::Frame,
@@ -70,9 +75,11 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub const fn of(scaled: scaled::Scaled) -> Self {
+    pub const fn of(scaled: scaled::Scaled, buttons: &Fixtures) -> Self {
+        let corners = cue::Corners::of(buttons);
         Self {
             scaled,
+            corners,
             chrome: chrome::regions(&scaled),
             sign: sign::regions(&scaled),
             ride: ride::frame(&scaled),
@@ -81,7 +88,7 @@ impl Layout {
             lap: ride::lap_regions(&scaled),
             map: ride::map_regions(&scaled),
             climb: ride::climb_regions(&scaled),
-            summary: ride::summary::regions(&scaled),
+            summary: ride::summary::regions(&scaled, &corners),
             workout: ride::workout_regions(&scaled),
             paused: ride::paused_regions(&scaled),
             end: ride::end_regions(&scaled),
@@ -95,7 +102,7 @@ impl Layout {
             brand: brand::regions(&scaled),
             power: power::regions(&scaled),
             format: format::regions(&scaled),
-            ready: ready::regions(&scaled),
+            ready: ready::regions(&scaled, &corners),
             setup: setup::regions(&scaled),
             phone: phone::regions(&scaled),
             unsaved: unsaved::regions(&scaled),
@@ -103,22 +110,45 @@ impl Layout {
     }
 }
 
+/// The buttons the base layout lays out for, the C606's: BACK high and
+/// MOVE low on the left side, ACT low on the right.
+pub const BASE_BUTTONS: Fixtures = Fixtures::new(&[
+    Fixture {
+        id: 0,
+        role: Some(Role::Back),
+        edge: Side::Left,
+        at: 250,
+    },
+    Fixture {
+        id: 1,
+        role: Some(Role::Move),
+        edge: Side::Left,
+        at: 750,
+    },
+    Fixture {
+        id: 2,
+        role: Some(Role::Act),
+        edge: Side::Right,
+        at: 750,
+    },
+]);
+
 /// The layout of the base 240 × 320 panel, the C606's.
-pub static BASE: Layout = Layout::of(scaled::BASE);
+pub static BASE: Layout = Layout::of(scaled::BASE, &BASE_BUTTONS);
 
 /// The simulator's test panels, for screens' own tests.
 #[cfg(test)]
 pub(crate) mod panels {
-    use super::{Layout, scaled::Scaled};
+    use super::{BASE_BUTTONS, Layout, scaled::Scaled};
 
-    pub(crate) static WIDE: Layout = Layout::of(Scaled::of(240, 400));
-    pub(crate) static SMALL: Layout = Layout::of(Scaled::of(180, 240));
+    pub(crate) static WIDE: Layout = Layout::of(Scaled::of(240, 400), &BASE_BUTTONS);
+    pub(crate) static SMALL: Layout = Layout::of(Scaled::of(180, 240), &BASE_BUTTONS);
     pub(crate) static ALL: [&Layout; 3] = [&super::BASE, &WIDE, &SMALL];
 
     /// The probe panel: 3/4, and taller than 3/4 of the C606.
     #[test]
     fn a_panel_taller_than_its_scale_lays_out() {
-        let probe = Layout::of(Scaled::of(180, 320));
+        let probe = Layout::of(Scaled::of(180, 320), &BASE_BUTTONS);
         assert_eq!(probe.map.free.drawn.height(), 280);
     }
 }

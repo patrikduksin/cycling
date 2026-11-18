@@ -20,7 +20,7 @@ use crate::screens::look;
 use crate::screens::scaled::{Scaled, Track as Split};
 use crate::screens::workout::{Text, View};
 use arrow::{ARROW_OUTLINE_PX, ARROW_SHAFT_HALF_PX, ARROW_STROKES, arrow_shape};
-use firmware_shell::rendering::font::FaceRole;
+use firmware_shell::rendering::font::{FaceRole, SPILL};
 use pose::{Pose, Projection};
 pub use pose::{Reach, Zoom};
 use raster::{Bar, Class, Cover, Layer, Stroke, Triangle};
@@ -1185,27 +1185,37 @@ pub(super) fn prepare(view: &View) -> Canvas {
         canvas.caption(at, words, width, cx, above, Align::Center);
     }
     let foot = &map.foot;
-    let (bar, label) = frame.last_pose.bar(foot.bar.width());
-    canvas.shape(Shape::Bar {
-        rect: Rect {
-            right: foot.bar.left + bar,
-            ..foot.bar
-        },
-        radius: at.unit(1),
-        color: SECONDARY,
-    });
-    let left = foot.bar.left + bar + foot.gap;
     let (baseline, right) = (foot.baseline, foot.distance_right);
-    canvas.caption(at, label, right - left, left, baseline, Align::Left);
     let mut distance = Text::<12>::new();
     let mm = frame
         .left_m
         .map_or(view.totals.distance_mm(), |m| u64::from(m) * 1000);
     kilometres(&mut distance, mm);
+    let figures = at.face(FaceRole::Foot20);
+    let across = right - foot.bar.left;
+    let distance_left = right - figures.width(distance.as_bytes()).min(across);
+    let caption = at.face(FaceRole::Caption);
+    let fits = |bar, label: &[u8]| {
+        let label_right = foot.bar.left + bar + foot.gap + caption.width(label) + SPILL;
+        bar <= foot.bar.width() && label_right + foot.gap <= distance_left
+    };
+    if let Some((bar, label)) = frame.last_pose.bar(fits) {
+        canvas.shape(Shape::Bar {
+            rect: Rect {
+                right: foot.bar.left + bar,
+                ..foot.bar
+            },
+            radius: at.unit(1),
+            color: SECONDARY,
+        });
+        let left = foot.bar.left + bar + foot.gap;
+        let width = distance_left - foot.gap - left;
+        canvas.caption(at, label, width, left, baseline, Align::Left);
+    }
     canvas.fit(
-        &[at.face(FaceRole::Foot20)],
+        &[figures],
         distance.as_bytes(),
-        right - left,
+        across,
         right,
         baseline,
         Align::Right,

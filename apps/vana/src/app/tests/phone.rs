@@ -1241,11 +1241,12 @@ fn a_failed_radio_keeps_the_phone_row() {
 
 #[test]
 fn without_wifi_a_saved_ride_has_no_send_cue_and_act_stays() {
-    use crate::screens::cue::{Corner, Cue, Icon};
+    use crate::screens::cue::{Cue, Icon};
     use crate::screens::workout::Page;
+    use device_api::input::Role;
     let mut journal = Journal::erased();
     let (mut runtime, mut radio, now) = saved_ride(&mut journal);
-    let send = [Cue::new(Corner::BottomRight, Icon::Send)];
+    let send = [Cue::new(Role::Act, Icon::Send)];
 
     learn_radio_in_a_phone_pass(&mut runtime, &mut journal, &mut FailedRadio, now);
     runtime.open_past_ride(0);

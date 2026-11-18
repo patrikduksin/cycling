@@ -792,6 +792,8 @@ mod tests {
         buttons: Fixtures::new(&[Fixture {
             id: 2,
             role: Some(Role::Act),
+            edge: device_api::input::Side::Left,
+            at: 0,
         }]),
     };
     const PANEL: Geometry = Geometry {

@@ -36,7 +36,7 @@ const HASHES: [(&str, u64); 37] = [
     ("boot", 0x3181_4f05_3737_c050),
     ("setup power step", 0x4176_3293_5a0d_f513),
     ("settings editing", 0x1375_b9da_f552_f2b3),
-    ("bests confirm", 0x40ab_8b32_d5ef_28e6),
+    ("bests confirm", 0xd401_c8ea_45ca_ac8a),
     ("form no power", 0x5ed1_0eab_524c_8dc5),
     ("phone from saved ride", 0xffb0_a2fb_7c21_fe75),
     ("main with workout band", 0x920d_1275_eed2_89fc),

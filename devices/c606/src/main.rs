@@ -432,6 +432,7 @@ const PRODUCT: vana::Product = vana::Product {
 
 static LAYOUT: vana::screens::Layout = vana::screens::Layout::of(
     vana::screens::scaled::Scaled::of(device::fitted::PANEL_WIDTH, device::fitted::PANEL_HEIGHT),
+    &device::fitted::BUTTONS,
 );
 
 #[embassy_executor::task]

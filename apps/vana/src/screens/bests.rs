@@ -9,7 +9,7 @@
 //! no day.
 use super::canvas::Canvas;
 use super::chrome::{AMBER, Align, GRADE, POWER, Rect, SECONDARY, SPEED, TERTIARY, WHITE};
-use super::cue::{Corner, Cue, Icon};
+use super::cue::{Cue, Icon};
 use super::history::date;
 use super::ride::summary::effort_label;
 use super::ride::{elapsed, kilometres};
@@ -17,6 +17,7 @@ use super::scaled::{Scaled, Track};
 use super::workout::{Text, View};
 use crate::kept::bests::Mark;
 use core::fmt::Write;
+use device_api::input::Role;
 use firmware_shell::rendering::font::{Face, FaceRole};
 
 /// BESTS on one panel: the title, then one band per best under it.
@@ -128,8 +129,8 @@ pub enum Mode {
 
 /// BACK keeps the bests, ACT clears them.
 pub const CONFIRM_CUES: [Cue; 2] = [
-    Cue::new(Corner::TopLeft, Icon::Back),
-    Cue::new(Corner::BottomRight, Icon::Check),
+    Cue::new(Role::Back, Icon::Back),
+    Cue::new(Role::Act, Icon::Check),
 ];
 
 pub(super) fn centred(
@@ -416,6 +417,17 @@ mod tests {
             "confirm",
         );
         assert_eq!(confirm.cues.len(), 2);
+        crate::screens::check::enable(true);
+        for layout in panels::ALL {
+            let mut confirm = shown(layout, Bests::default(), Mode::Confirm);
+            let scene = confirm.prepare();
+            assert!(
+                scene.bar.is_none(),
+                "{:?}: the bar would cut the back cue",
+                layout.scaled
+            );
+            scene.check_layout();
+        }
         let none = shown(&crate::screens::BASE, Bests::default(), Mode::Unavailable);
         none.canvas()
             .assert_laid_out(full, &["BESTS NOT KEPT", "NO PLACE TO KEEP THEM"], "none");

@@ -1373,10 +1373,15 @@ impl Session {
                 "geometry must be 16..320 wide and 16..512 tall",
             ));
         }
-        let layout = vana::screens::scaled::Scaled::fitting(width, height)
-            .map_or(&vana::screens::BASE, |scaled| {
-                Box::leak(Box::new(vana::screens::Layout::of(scaled)))
-            });
+        let layout = vana::screens::scaled::Scaled::fitting(width, height).map_or(
+            &vana::screens::BASE,
+            |scaled| {
+                Box::leak(Box::new(vana::screens::Layout::of(
+                    scaled,
+                    &crate::models::C606.buttons,
+                )))
+            },
+        );
         let model = Model {
             name: VIRTUAL,
             width,

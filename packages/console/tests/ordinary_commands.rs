@@ -47,6 +47,8 @@ impl device_api::input::InputSource for Keys {
             buttons: device_api::input::Fixtures::new(&[device_api::input::Fixture {
                 id: 0,
                 role: Some(device_api::input::Role::Back),
+                edge: device_api::input::Side::Left,
+                at: 0,
             }]),
         }
     }

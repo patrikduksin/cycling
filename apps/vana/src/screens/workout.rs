@@ -237,7 +237,7 @@ pub struct Scene<'v> {
     layout: &'static Layout,
     kind: Kind,
     look: Look,
-    bar: Option<&'v StatusBar>,
+    pub(super) bar: Option<&'v StatusBar>,
     body: &'v Body,
     painted: Painted<'v>,
     pub(super) gauges: [Option<ride::Mark>; 2],
@@ -410,7 +410,7 @@ impl<'v> Scene<'v> {
             badge.paint(row);
         }
         for cue in self.cues {
-            cue.paint(row, self.layout.scaled.panel);
+            cue.paint(row, self.layout);
         }
         if let Some(toast) = self.toast {
             toast.paint(row);
@@ -521,7 +521,7 @@ impl<'v> Scene<'v> {
             color = badge.pixel(look, x, y, color);
         }
         for cue in self.cues {
-            color = cue.pixel(look, x, y, color, self.layout.scaled.panel);
+            color = cue.pixel(look, x, y, color, self.layout);
         }
         color
     }
@@ -539,6 +539,16 @@ impl Scene<'_> {
         }
         if let Some(canvas) = self.body.canvas() {
             canvas.assert_kept(format_args!("{:?} on {:?}", self.kind, self.layout.scaled));
+        }
+        if self.bar.is_some() {
+            for cue in self.cues {
+                assert!(
+                    !cue.covers(self.layout.chrome.status_bar, self.layout),
+                    "the {:?} cue on {:?} is under the status bar",
+                    cue.icon,
+                    self.layout.scaled
+                );
+            }
         }
         let panel = self.layout.scaled.screen();
         if let Kind::Ride(page) = self.kind
@@ -596,7 +606,14 @@ impl Scene<'_> {
                 None => std::vec![("screen", panel)],
             };
             let page_first = regions.len() - 1;
-            let breaks = self.breaks_within(regions, page_first);
+            let mut breaks = self.breaks_within(regions, page_first);
+            let canvas = self.canvas();
+            let inks = canvas.runs.iter().filter_map(super::chrome::layout::text);
+            let shapes = canvas
+                .shapes
+                .iter()
+                .map(|shape| (std::format!("{shape:?}"), shape.bounds().clipped(panel)));
+            breaks.extend(self.under_cues(inks.chain(shapes)));
             assert!(
                 breaks.is_empty(),
                 "a canvas page on {:?} breaks its layout:\n{}",
@@ -840,15 +857,19 @@ impl Scene<'_> {
             .collect();
         let mut breaks = check::region_breaks(panel, &regions, &placed, &[]);
         breaks.extend(check::overlaps(&inks));
-        for cue in self.cues {
-            for item in placed
-                .iter()
-                .filter(|item| cue.covers(item.rect, self.layout.scaled.panel))
-            {
+        breaks.extend(self.under_cues(placed.into_iter().map(|item| (item.name, item.rect))));
+        breaks
+    }
+
+    fn under_cues(
+        &self,
+        items: impl Iterator<Item = (std::string::String, super::chrome::Rect)>,
+    ) -> std::vec::Vec<std::string::String> {
+        let mut breaks = std::vec::Vec::new();
+        for (name, rect) in items {
+            for cue in self.cues.iter().filter(|cue| cue.covers(rect, self.layout)) {
                 breaks.push(std::format!(
-                    "{:?} {:?} is under the {:?} cue",
-                    item.name,
-                    item.rect,
+                    "{name:?} {rect:?} is under the {:?} cue",
                     cue.icon
                 ));
             }
@@ -1279,15 +1300,15 @@ impl<'a> View<'a> {
         }
     }
 
-    /// The screen takes the whole panel, without the status bar: the brand,
-    /// the paused screen and the questions, whose back cue the bar would cut.
     fn full_screen(&self) -> bool {
-        match self.page {
-            Page::Boot | Page::Format | Page::EndRide | Page::DiscardRide | Page::LoseRides => true,
-            Page::Summary | Page::PastRide => summary::question_shown(self.after()),
-            Page::Sensors => super::sensors::full_screen(self.cues),
-            _ => self.paused_screen_shown(),
-        }
+        super::cue::any_at_top(self.cues, self.layout)
+            || match self.page {
+                Page::Boot | Page::Format | Page::EndRide | Page::DiscardRide | Page::LoseRides => {
+                    true
+                }
+                Page::Summary | Page::PastRide => summary::question_shown(self.after()),
+                _ => self.paused_screen_shown(),
+            }
     }
 
     /// The scrolling list this page shows, if any.

@@ -648,15 +648,17 @@ fn page<'a>(map: Option<Filled<'a>>) -> View<'a> {
     view
 }
 
-/// The longest scale bar whose label clears a five-figure distance: one
-/// column under `max`, where the label touches it, as on the C606, whose
-/// pixels stay.
-const fn longest_bar_clear_of_label(max: usize) -> usize {
-    max - 1
-}
+const EVERY_WIDTH_MM: [u64; 5] = [
+    9_990_000,
+    99_990_000,
+    999_900_000,
+    9_999_900_000,
+    99_999_900_000,
+];
 
 #[test]
-fn every_state_lays_out_on_every_panel_at_the_longest_clear_bar() {
+fn every_state_lays_out_on_every_panel_at_the_longest_bar_beside_every_distance() {
+    use crate::screens::chrome::layout::{assert_shown, text};
     let c = follower_course(&MOCKUP_COURSE);
     let start = track_crumbs(&[(0.0, 0.0)]);
     let ride = track_crumbs(&[(0.0, 0.0), (0.0, 800.0)]);
@@ -665,8 +667,8 @@ fn every_state_lays_out_on_every_panel_at_the_longest_clear_bar() {
         let mut longest: std::vec::Vec<(Reach, &[u8])> = std::vec::Vec::new();
         for ahead_m in 150..=1_000 {
             let reach = Reach::new(ahead_m, super::roads::Detail::Streets);
-            let (bar, label) = Pose::new(reach, &layout.map.free, 0).bar(max);
-            if bar == longest_bar_clear_of_label(max)
+            if let Some((bar, label)) = Pose::new(reach, &layout.map.free, 0).bar(|px, _| px <= max)
+                && bar == max
                 && longest.iter().all(|&(_, seen)| seen != label)
             {
                 longest.push((reach, label));
@@ -680,7 +682,10 @@ fn every_state_lays_out_on_every_panel_at_the_longest_clear_bar() {
                 ..free(&ride)
             }))
             .collect();
-        for radar in [false, true] {
+        for (radar, mm) in [false, true]
+            .into_iter()
+            .flat_map(|radar| EVERY_WIDTH_MM.map(|mm| (radar, mm)))
+        {
             let map = |track: Option<&Track>| {
                 let mut frame = std::boxed::Box::new(Frame::default());
                 let mut view = View::new(Page::Ride, 0, None);
@@ -692,21 +697,181 @@ fn every_state_lays_out_on_every_panel_at_the_longest_clear_bar() {
                     cache.update(&Track { radar, ..*track }, &layout.map);
                 }
                 view.show_map(cache.filled());
-                for _ in 0..36 {
-                    view.totals
-                        .add(9_999_000, 999_900_000 / 36, &Default::default(), None);
-                }
+                view.totals.add(9_999_000, mm, &Default::default(), None);
                 view.prepare().check_layout();
                 if track.is_some_and(|track| track.rider_or_last_crumb().is_some()) {
-                    let what = std::format!("{:?} radar {radar}", layout.scaled.panel);
-                    use crate::screens::chrome::layout::{assert_shown, text};
-                    let runs = &view.canvas().runs;
-                    let texts: std::vec::Vec<_> = runs.iter().filter_map(text).collect();
+                    let what = std::format!("{:?} radar {radar} {mm} mm", layout.scaled.panel);
+                    let foot = layout.map.foot;
+                    let texts: std::vec::Vec<_> = view
+                        .canvas()
+                        .runs
+                        .iter()
+                        .filter_map(text)
+                        .filter(|(_, rect)| rect.top >= foot.rect.top)
+                        .collect();
                     assert_shown(&texts, &["KM"], &what);
+                    let distance = texts
+                        .iter()
+                        .filter(|(name, _)| name != "KM")
+                        .max_by_key(|(_, rect)| rect.left)
+                        .unwrap_or_else(|| panic!("{what}: no distance in {texts:?}"));
+                    if track.is_some_and(|track| track.left_m.is_none()) {
+                        let mut want = Text::<12>::new();
+                        kilometres(&mut want, mm);
+                        assert_eq!(distance.0, want.as_str(), "{what}");
+                    }
+                    for (name, label) in &texts {
+                        if name != "KM" && label.right < distance.1.left {
+                            assert!(
+                                label.right + foot.gap <= distance.1.left,
+                                "{what}: {name} {label:?} meets the distance {distance:?}"
+                            );
+                        }
+                    }
+                    let labels = texts.iter().filter(|(name, _)| name.ends_with(" M"));
+                    assert!(labels.count() <= 1, "{what}: {texts:?}");
                 }
             };
             map(None);
             tracks.iter().for_each(|track| map(Some(track)));
+        }
+    }
+}
+
+#[test]
+fn a_distance_under_10_km_leaves_the_longest_bar_beside_it() {
+    let ride = track_crumbs(&[(0.0, 0.0), (0.0, 800.0)]);
+    for layout in crate::screens::panels::ALL {
+        let max = layout.map.foot.bar.width();
+        let reach = (150..=1_000)
+            .map(|ahead_m| Reach::new(ahead_m, super::roads::Detail::Streets))
+            .find(|&reach| {
+                Pose::new(reach, &layout.map.free, 0)
+                    .bar(|px, _| px <= max)
+                    .map(|bar| bar.0)
+                    == Some(max)
+            })
+            .unwrap();
+        let bar_width = |mm| {
+            let mut frame = std::boxed::Box::new(Frame::default());
+            let mut view = View::new(Page::Ride, 0, None);
+            view.layout = layout;
+            view.ride_page = RidePage::Map;
+            let mut cache = Cache::new(&mut frame);
+            cache.update(
+                &Track {
+                    reach,
+                    ..free(&ride)
+                },
+                &layout.map,
+            );
+            view.show_map(cache.filled());
+            view.totals.add(1000, mm, &Default::default(), None);
+            view.prepare();
+            let foot = layout.map.foot.bar;
+            view.canvas()
+                .shapes
+                .iter()
+                .map(crate::screens::canvas::Shape::bounds)
+                .find(|rect| rect.top == foot.top && rect.left == foot.left)
+                .map(|rect| rect.width())
+        };
+        assert_eq!(bar_width(9_990_000), Some(max), "{:?}", layout.scaled);
+        let shorter = bar_width(9_999_900_000).unwrap();
+        assert!(shorter < max, "{:?}: {shorter}", layout.scaled);
+    }
+}
+
+/// Distances of four to seven figures, each in its widest and narrowest
+/// digits, then the shortest of each width.
+fn distances_of_four_to_seven_figures() -> std::vec::Vec<u64> {
+    let mut mm = std::vec::Vec::new();
+    for figures in 4..=7u32 {
+        let first = 10u64.pow(figures - 1);
+        let same = |digit: u64| digit * (10u64.pow(figures) - 1) / 9;
+        let numbers = (1..=9).map(same).chain([first]);
+        for number in numbers {
+            mm.push(number * 100_000);
+            if figures == 4 {
+                mm.push(number * 10_000);
+            }
+        }
+    }
+    mm
+}
+
+#[test]
+fn the_scale_label_shows_whole_beside_every_distance_at_every_reach() {
+    use crate::screens::chrome::layout::text;
+    use firmware_shell::rendering::font::SPILL;
+    const ROUND: [(f32, &str); 3] = [(250.0, "250 M"), (100.0, "100 M"), (50.0, "50 M")];
+    let ride = track_crumbs(&[(0.0, 0.0), (0.0, 800.0)]);
+    let distances = distances_of_four_to_seven_figures();
+    for layout in crate::screens::panels::ALL {
+        let (foot, at) = (layout.map.foot, &layout.scaled);
+        let (caption, figures) = (at.face(FaceRole::Caption), at.face(FaceRole::Foot20));
+        for ahead_m in 150..=1_000 {
+            let reach = Reach::new(ahead_m, super::roads::Detail::Streets);
+            let per_m = Pose::new(reach, &layout.map.free, 0).px_per_m();
+            let mut frame = std::boxed::Box::new(Frame::default());
+            let mut cache = Cache::new(&mut frame);
+            cache.update(
+                &Track {
+                    reach,
+                    ..free(&ride)
+                },
+                &layout.map,
+            );
+            for &mm in &distances {
+                let mut view = View::new(Page::Ride, 0, None);
+                view.layout = layout;
+                view.ride_page = RidePage::Map;
+                view.show_map(cache.filled());
+                view.totals.add(1000, mm, &Default::default(), None);
+                view.prepare();
+                let mut shown = Text::<12>::new();
+                kilometres(&mut shown, mm);
+                let what = std::format!("{:?} {ahead_m} m ahead, {} km", at.panel, shown.as_str());
+                let distance_left = foot.distance_right - figures.width(shown.as_bytes());
+                let fits = |&(m, label): &(f32, &'static str)| {
+                    let bar = libm::roundf(m * per_m) as usize;
+                    let label_right =
+                        foot.bar.left + bar + foot.gap + caption.width(label.as_bytes());
+                    (bar <= foot.bar.width() && label_right + SPILL + foot.gap <= distance_left)
+                        .then_some((bar, label))
+                };
+                let canvas = view.canvas();
+                let texts: std::vec::Vec<_> = canvas
+                    .runs
+                    .iter()
+                    .filter_map(text)
+                    .filter(|(_, rect)| rect.top >= foot.rect.top)
+                    .collect();
+                let distance = texts.iter().find(|(name, _)| name == shown.as_str());
+                let distance = distance.unwrap_or_else(|| panic!("{what}: {texts:?}")).1;
+                let label = texts
+                    .iter()
+                    .find(|(name, rect)| name != "KM" && rect.right <= distance.left);
+                let bar = canvas
+                    .shapes
+                    .iter()
+                    .map(crate::screens::canvas::Shape::bounds)
+                    .find(|rect| rect.top == foot.bar.top && rect.left == foot.bar.left)
+                    .map(|rect| rect.width());
+                let drawn = label.map(|(name, rect)| (bar, name.as_str(), rect.right));
+                match ROUND.iter().find_map(fits) {
+                    Some((want, name)) => {
+                        let (bar, label, right) =
+                            drawn.unwrap_or_else(|| panic!("{what}: {name} fits, none drawn"));
+                        assert_eq!((bar, label), (Some(want), name), "{what}");
+                        assert!(
+                            right + foot.gap <= distance.left,
+                            "{what}: {label} meets it"
+                        );
+                    }
+                    None => assert_eq!((bar, drawn), (None, None), "{what}: none fits"),
+                }
+            }
         }
     }
 }

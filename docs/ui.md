@@ -236,9 +236,18 @@ painted one display row at a time. Never draw a 1 px outline as decoration.
 ### Button cues
 
 A screen that asks for a decision points at the buttons that answer it with a
-cue: a quarter disc of radius 42 in the screen corner beside the button, with
+cue: a quarter disc of radius 42 in the panel corner nearest the button, with
 an icon and no words. The disc's colour says what the button does, so the cue
 reads at a glance.
+
+Each button in a device's `device.toml` names the side of the panel it sits
+beside (`edge`: left, right, top or bottom) and how far along that side
+(`at`, in thousandths from the side's top or left end). A cue takes the
+corner at the nearer end of its button's side. A cue beside the middle of a
+side is not designed yet, so `cycling devices` refuses a button with a role
+in the middle third of its side (`at` 334 to 666). On the C606, BACK's cue
+sits top left, MOVE's bottom left and ACT's bottom right. A device on which
+two roles' buttons are nearest the same corner does not build.
 
 | Icon | Disc | Meaning |
 | --- | --- | --- |
@@ -254,14 +263,21 @@ The summary's FTP offer uses two of them at once: Check beside ACT takes the
 suggested FTP, Back beside BACK keeps the one in force. END RIDE? uses three:
 Back, Check and, with a FILES store to note it on, Trash beside MOVE, which
 asks DISCARD RIDE?. DISCARD RIDE?, a saved ride's DELETE RIDE? and a boot's
-FORMAT STORAGE? ([volumes](mmc-volumes.md#format)) put Trash beside ACT. A question with a back cue (END RIDE?, DISCARD RIDE?, the FTP
-offer, DELETE RIDE?, FORMAT STORAGE?) shows without the status bar, which would cut the cue.
+FORMAT STORAGE? ([volumes](mmc-volumes.md#format)) put Trash beside ACT.
+A screen with a cue in a top corner shows without the status bar, which
+would cut the cue. On the C606 that is every screen with a back cue: the
+paused screen, END RIDE?, DISCARD RIDE?, LOSE n UNSAVED RIDES?, the FTP offer,
+DELETE RIDE?, FORMAT STORAGE?, CLEAR BESTS? and a sensor's pages. The
+layout check fails any frame that draws a cue under the status bar.
 
-Only Ready, the paused screen, End ride, Discard ride, the summary, a
-saved ride and a sensor's pages (its detail, FORGET SENSOR? and REPLACE
-SENSOR) show cues. Ride pages
-never do: their buttons keep fixed roles. Content stays clear of the cue
-corners; each screen's layout test checks it.
+Only Ready, the paused screen, End ride, Discard ride, LOSE n UNSAVED RIDES?, the
+summary, a saved ride, FORMAT STORAGE?, CLEAR BESTS? and a sensor's pages
+(its detail, FORGET SENSOR? and REPLACE SENSOR) show cues. Ride pages
+never do: their buttons keep fixed roles. Content stays clear of the
+corners the screen's own cues take on that device, wherever the buttons put
+them. The layout check fails any frame that draws text or a shape under one
+of its cues, and a test lays every cue screen out for buttons mirrored from
+the C606's.
 
 ## Cells
 
@@ -553,10 +569,13 @@ draws them with this geometry:
 - **Own track.** The ride's own track, when the map draws it, is 5 px
   `#1f4a78`.
 - **Footer.** The black footer, rows 290 to 320, keeps the whole width. It
-  holds a 3 px `SECONDARY` scale bar from x 12, the longest of 250 m, 100 m
-  or 50 m that is at most 90 px (60 px for 100 m at 335 m ahead), its length
-  in `CAPTION`, and the distance in `FOOT_20`, `WHITE`, ending at x 203, with
-  `KM` in `CAPTION` ending at x 228.
+  holds a 3 px `SECONDARY` scale bar from x 12, its length in `CAPTION`,
+  and the distance in `FOOT_20`, `WHITE`, ending at x 203, with `KM` in
+  `CAPTION` ending at x 228. The bar is the longest of 250 m, 100 m or 50 m
+  that is at most 90 px (60 px for 100 m at 335 m ahead) and leaves its
+  label 6 px clear of the distance. Under 10 km the distance leaves the
+  whole 90 px; from 10 km the bar is at most 82 px, and from 1000 km at
+  most 70 px. A bar that cannot fit at all is not drawn, nor its label.
 
 The map paints its strokes as row spans: solid pixels are stored and only the
 edges are blended. It draws the roads once per fill into a layer of the

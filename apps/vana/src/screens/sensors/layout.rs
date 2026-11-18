@@ -6,13 +6,14 @@ use crate::screens::canvas::{Canvas, Run, Shape, on_baseline};
 use crate::screens::chrome::{
     ACCENT, AMBER, Align, CARD, GREEN, Line, RAISED, RED, Rect, SECONDARY, WHITE,
 };
-use crate::screens::cue::{Corner, Cue, Icon as CueIcon};
+use crate::screens::cue::{self, Corner, Cue, Icon as CueIcon};
 use crate::screens::icons::{Icon, Sensor, Size, StaticIcon};
 use crate::screens::scaled::{Scaled, Track};
 use crate::screens::workout::Text;
 use crate::sensors::ant::BatteryStatus;
 use core::fmt::Write;
 use device_api::ant::Identity;
+use device_api::input::Role;
 use firmware_shell::rendering::font::{Face, FaceRole, SPILL};
 use heapless::Vec;
 
@@ -368,16 +369,16 @@ const fn replace(at: &Scaled, text: Rect) -> Replace {
     }
 }
 
-const BACK: Cue = Cue::new(Corner::TopLeft, CueIcon::Back);
+const BACK: Cue = Cue::new(Role::Back, CueIcon::Back);
 /// A power meter's page: ACT zeroes it, MOVE forgets it.
 pub(super) const POWER_CUES: [Cue; 3] = [
     BACK,
-    Cue::new(Corner::BottomLeft, CueIcon::Trash),
-    Cue::new(Corner::BottomRight, CueIcon::Calibrate),
+    Cue::new(Role::Move, CueIcon::Trash),
+    Cue::new(Role::Act, CueIcon::Calibrate),
 ];
 /// Any other sensor's page, and FORGET SENSOR?: ACT forgets.
-pub(super) const FORGET_CUES: [Cue; 2] = [BACK, Cue::new(Corner::BottomRight, CueIcon::Trash)];
-pub(super) const REPLACE_CUES: [Cue; 2] = [BACK, Cue::new(Corner::BottomRight, CueIcon::Check)];
+pub(super) const FORGET_CUES: [Cue; 2] = [BACK, Cue::new(Role::Act, CueIcon::Trash)];
+pub(super) const REPLACE_CUES: [Cue; 2] = [BACK, Cue::new(Role::Act, CueIcon::Check)];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Target {
@@ -386,7 +387,7 @@ pub(super) enum Target {
     Nearby(usize),
     Refresh,
     /// A button cue: the tap acts as its button.
-    Cue(Corner),
+    Cue(Role),
 }
 
 /// Where the shown page's rows and cues are, worked out after every change:
@@ -419,7 +420,7 @@ impl Layout {
     /// The target under a point; rows and cues own their bounds. Rows under
     /// the status bar take no taps.
     pub(super) fn target(&self, x: usize, y: usize) -> Option<Target> {
-        if y < self.screens.chrome.content.top && !super::full_screen(self.cues) {
+        if y < self.screens.chrome.content.top && !cue::any_at_top(self.cues, self.screens) {
             return None;
         }
         self.targets
@@ -468,9 +469,10 @@ impl Layout {
         }
         let panel = self.screens.scaled.panel;
         for cue in self.cues {
+            let corner = cue.corner(self.screens);
             let _ = self
                 .targets
-                .push((cue_box(cue.corner, panel), Target::Cue(cue.corner)));
+                .push((cue_box(corner, panel), Target::Cue(cue.role)));
         }
     }
 
@@ -1008,11 +1010,8 @@ fn battery_warning(selected: Selected) -> Option<(&'static [u8], u16)> {
 const fn cue_box(corner: Corner, panel: crate::screens::scaled::Panel) -> Rect {
     use crate::screens::cue::RADIUS;
     let (right, bottom) = (panel.width, panel.height);
-    let (left, top) = match corner {
-        Corner::TopLeft => (0, 0),
-        Corner::BottomLeft => (0, bottom - RADIUS),
-        Corner::BottomRight => (right - RADIUS, bottom - RADIUS),
-    };
+    let left = if corner.left() { 0 } else { right - RADIUS };
+    let top = if corner.top() { 0 } else { bottom - RADIUS };
     Rect {
         left,
         top,

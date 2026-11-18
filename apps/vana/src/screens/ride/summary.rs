@@ -39,19 +39,21 @@ use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{
     AMBER, Align, GRADE, HEART, POWER, Rect, SECONDARY, SPEED, TERTIARY, WHITE,
 };
-use crate::screens::cue::{Badge, Corner, Cue, Icon};
+use crate::screens::cue::{Badge, Cue, Icon};
 use crate::screens::scaled::{Scaled, Track};
 use crate::screens::workout::{Text, View};
+use device_api::input::Role;
 use firmware_shell::rendering::font::{Face, FaceRole};
 
-pub const CUE: Cue = Cue::new(Corner::BottomRight, Icon::Check);
+pub const CUE: Cue = Cue::new(Role::Act, Icon::Check);
 /// A saved ride: ACT sends it to the phone. BACK keeps its fixed role,
 /// back to the list, without a cue, as on the ride pages.
-pub const PAST_CUES: [Cue; 1] = [Cue::new(Corner::BottomRight, Icon::Send)];
+pub const PAST_CUES: [Cue; 1] = [Cue::new(Role::Act, Icon::Send)];
+const PAGE_CUES: [Cue; 2] = [CUE, PAST_CUES[0]];
 /// The FTP offer: ACT takes it, BACK keeps the FTP in force.
 pub const OFFER_CUES: [Cue; 2] = [
-    Cue::new(Corner::TopLeft, Icon::Back),
-    Cue::new(Corner::BottomRight, Icon::Check),
+    Cue::new(Role::Back, Icon::Back),
+    Cue::new(Role::Act, Icon::Check),
 ];
 
 /// Where the saved ride stands.
@@ -234,7 +236,10 @@ pub(super) const fn text(at: &Scaled) -> Rect {
     text
 }
 
-pub const fn regions(at: &Scaled) -> Regions {
+const CHART_BASELINE_ROWS: usize = 1;
+const BASELINE_CLEAR_OF_CUE_PX: usize = 2;
+
+pub const fn regions(at: &Scaled, corners: &crate::screens::cue::Corners) -> Regions {
     use Track::{Fr, Unit};
     let content = crate::screens::chrome::regions(at).content;
     let text = text(at);
@@ -244,6 +249,13 @@ pub const fn regions(at: &Scaled) -> Regions {
         at,
     );
     let pitch = super::CELL_PITCH as u16;
+    // The pages that start at the top start below a cue in a top corner.
+    let below_cues = Rect {
+        top: corners
+            .rows_clear_of(&PAGE_CUES, content.with_columns(text), at.panel, 0)
+            .top,
+        ..content
+    };
     let [_, badge, _] = content.rows([Unit(14), Unit(40), Fr(1)], Unit(0), at);
     let [_, title, reason, note, _, _] = content.rows(
         [Fr(1), Unit(126), Unit(24), Unit(4), Unit(142), Fr(1)],
@@ -263,7 +275,7 @@ pub const fn regions(at: &Scaled) -> Regions {
         Unit(0),
         at,
     );
-    let [_, effort_cells, _, power_bar, _, heart_bar, _, recovery, _] = content.rows(
+    let [_, effort_cells, _, power_bar, _, heart_bar, _, recovery, _] = below_cues.rows(
         [
             Unit(8),
             Unit(3 * pitch),
@@ -279,28 +291,23 @@ pub const fn regions(at: &Scaled) -> Regions {
         at,
     );
     let [_, bars] = text.cols([Fr(1), Unit(148)], Unit(0), at);
-    let [_, elevation_cells, _, chart, _] = content.rows(
+    let [_, elevation_cells, _, chart, _] = below_cues.rows(
         [Unit(8), Unit(2 * pitch), Unit(16), Fr(1), Unit(48)],
         Unit(0),
         at,
     );
-    let chart = chart.with_columns(text);
-    // The baseline, the row under the fill, ends 2 px above the done cue's disc.
-    let clear = at.panel.height - 3 - crate::screens::cue::reach(at.panel.width - chart.right);
-    let chart = Rect {
-        bottom: if clear < chart.bottom {
-            clear
-        } else {
-            chart.bottom
-        },
-        ..chart
-    };
+    let chart = corners.rows_clear_of(
+        &PAGE_CUES,
+        chart.with_columns(text),
+        at.panel,
+        CHART_BASELINE_ROWS + BASELINE_CLEAR_OF_CUE_PX,
+    );
     assert!(
         chart.width() <= super::elevation::COLUMNS
             && chart.height() <= super::elevation::MAX_HEIGHT,
         "the elevation chart has more columns or rows than it keeps"
     );
-    let [_, header, first, second, third, fourth, _, best_cells, _] = content.rows(
+    let [_, header, first, second, third, fourth, _, best_cells, _] = below_cues.rows(
         [
             Unit(8),
             Unit(12),
@@ -361,7 +368,7 @@ pub const fn regions(at: &Scaled) -> Regions {
             cells: effort_cells.with_columns(text),
             power_bar: power_bar.with_columns(bars),
             heart_bar: heart_bar.with_columns(bars),
-            recovery: recovery.with_columns(text),
+            recovery: corners.columns_clear_of(&PAGE_CUES, recovery.with_columns(text), at.panel),
         },
         elevation: Elevation {
             cells: elevation_cells.with_columns(text),

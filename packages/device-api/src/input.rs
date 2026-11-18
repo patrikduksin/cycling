@@ -9,7 +9,7 @@ pub struct Point {
 }
 
 /// What a button does on every screen (see `docs/ui.md`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Role {
     Act,
     Back,
@@ -20,11 +20,29 @@ impl Role {
     pub const ALL: [Role; 3] = [Self::Act, Self::Back, Self::Move];
 }
 
-/// One physical button: the id its driver reports, and its role, if any.
+/// The side of the panel a button sits beside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// The largest [`Fixture::at`]: the far end of its side.
+pub const ALONG: u16 = 1000;
+
+/// One physical button: the id its driver reports, its role, if any, and
+/// where it sits beside the panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fixture {
     pub id: u8,
     pub role: Option<Role>,
+    pub edge: Side,
+    /// How far along `edge` the button sits, in thousandths of the side from
+    /// its top end (left and right sides) or its left end (top and bottom),
+    /// so it holds at any panel size. At most [`ALONG`].
+    pub at: u16,
 }
 
 pub const MAX_BUTTONS: usize = 8;
@@ -40,9 +58,18 @@ impl Fixtures {
 
     pub const fn new(list: &[Fixture]) -> Self {
         assert!(list.len() <= MAX_BUTTONS, "more buttons than MAX_BUTTONS");
-        let mut fixtures = [Fixture { id: 0, role: None }; MAX_BUTTONS];
+        let mut fixtures = [Fixture {
+            id: 0,
+            role: None,
+            edge: Side::Left,
+            at: 0,
+        }; MAX_BUTTONS];
         let mut index = 0;
         while index < list.len() {
+            assert!(
+                list[index].at <= ALONG,
+                "a button sits past the end of its side"
+            );
             fixtures[index] = list[index];
             index += 1;
         }
@@ -52,8 +79,8 @@ impl Fixtures {
         }
     }
 
-    pub fn as_slice(&self) -> &[Fixture] {
-        &self.fixtures[..usize::from(self.len)]
+    pub const fn as_slice(&self) -> &[Fixture] {
+        self.fixtures.split_at(self.len as usize).0
     }
 
     pub fn role(&self, id: u8) -> Option<Role> {

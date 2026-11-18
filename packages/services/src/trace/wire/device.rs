@@ -5,7 +5,9 @@ use device_api::bulk;
 use device_api::connectivity::{self, Text};
 use device_api::display;
 use device_api::gps;
-use device_api::input::{Controls, Edge, Fixture, Fixtures, Input, InputSnapshot, Point, Role};
+use device_api::input::{
+    Controls, Edge, Fixture, Fixtures, Input, InputSnapshot, Point, Role, Side,
+};
 use device_api::observation::{Availability, Observation};
 use device_api::position_control;
 use device_api::positioning;
@@ -54,6 +56,7 @@ impl<'a, T: Wire<'a>> Wire<'a> for Observation<T> {
 codes! {
     Availability { Unsupported = 0, Initializing = 1, Unconfigured = 2, Ready = 3, Failed = 4 }
     Role { Act = 0, Back = 1, Move = 2 }
+    Side { Left = 0, Right = 1, Top = 2, Bottom = 3 }
     ant::LinkState {
         Idle = 0, Connecting = 1, Connected = 2, Disconnecting = 3, Disconnected = 4,
         TimedOut = 5, TransportLost = 6,
@@ -140,7 +143,7 @@ record! {
     sensors::Identity { fields }
     sensors::Snapshot { pressure, motion, identity, reports, invalid_reports, losses }
     sensors::SensorSet { barometer, light }
-    Fixture { id, role }
+    Fixture { id, role, edge, at }
     InputSnapshot {
         battery, power, button_counts, touch_available, touch_errors, companion_valid,
         companion_bad_crc, uart_errors, input_lost,
@@ -497,7 +500,12 @@ impl Wire<'_> for Controls {
                 buttons: Fixtures::NONE,
             };
         }
-        let mut list = [Fixture { id: 0, role: None }; device_api::input::MAX_BUTTONS];
+        let mut list = [Fixture {
+            id: 0,
+            role: None,
+            edge: Side::Left,
+            at: 0,
+        }; device_api::input::MAX_BUTTONS];
         for fixture in &mut list[..len] {
             *fixture = Fixture::take(r);
         }

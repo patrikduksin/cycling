@@ -263,6 +263,38 @@ fn step_name(value: &mut Text<24>, played: Played, short: bool) {
     }
 }
 
+fn next_step(next: Option<Played>, fits: impl Fn(&[u8]) -> bool) -> Text<24> {
+    let mut text = Text::<24>::new();
+    let Some(played) = next else {
+        let _ = text.push_str("FINISH");
+        return text;
+    };
+    let mut time = Text::<12>::new();
+    length(&mut time, played.step.length);
+    let intensity = played.step.intensity;
+    for label in [intensity.label(), intensity.short_label()] {
+        text = Text::new();
+        let _ = write!(text, "{} {label}", time.as_str());
+        if fits(text.as_bytes()) {
+            return text;
+        }
+    }
+    text = Text::new();
+    let _ = text.push_str(time.as_str());
+    text
+}
+
+fn whole_words(text: &[u8], fits: impl Fn(&[u8]) -> bool) -> Option<&[u8]> {
+    if fits(text) {
+        return Some(text);
+    }
+    (1..text.len())
+        .rev()
+        .filter(|&end| text[end] == b' ' && text[end - 1] != b' ')
+        .map(|end| &text[..end])
+        .find(|words| fits(words))
+}
+
 pub(super) fn prepare(view: &View) -> Canvas {
     let layout = view.layout;
     let (at, regions) = (&layout.scaled, &layout.workout);
@@ -284,39 +316,38 @@ pub(super) fn prepare(view: &View) -> Canvas {
     };
     let now = &training.now;
 
-    // The workout and where in it the rider is.
-    let mut count = Text::<24>::new();
-    // Decided on the widest count, so the format holds all workout long.
     let mut widest = Text::<24>::new();
     let _ = write!(widest, "STEP {}/{}", now.steps, now.steps);
-    let word = caption.width(training.name.as_bytes())
+    let spelled_out_fits = caption.width(training.name.as_bytes())
         + caption.width(widest.as_bytes())
         + at.unit(8)
         + 2 * SPILL
         <= width;
-    let _ = if training.done {
-        count.push_str("DONE")
-    } else if word {
-        write!(count, "STEP {}/{}", now.position + 1, now.steps)
-    } else {
-        write!(count, "{}/{}", now.position + 1, now.steps)
+    let count = |step| {
+        let mut count = Text::<24>::new();
+        let _ = if training.done {
+            count.push_str("DONE")
+        } else if spelled_out_fits {
+            write!(count, "STEP {}/{}", step, now.steps)
+        } else {
+            write!(count, "{}/{}", step, now.steps)
+        };
+        count
     };
-    let count = canvas.caption(
+    canvas.caption(
         at,
-        count.as_bytes(),
+        count(now.position + 1).as_bytes(),
         width / 2,
         right_edge - SPILL,
         regions.name.bottom,
         Align::Right,
     );
-    canvas.caption(
-        at,
-        training.name.as_bytes(),
-        count.left.saturating_sub(left_edge + at.unit(8)),
-        left_edge,
-        regions.name.bottom,
-        Align::Left,
-    );
+    let widest_count_width = caption.width(count(now.steps).as_bytes());
+    let room = width.saturating_sub(SPILL + widest_count_width + at.unit(8));
+    let full_name = training.name.as_bytes();
+    let name =
+        whole_words(full_name, |text| caption.width(text) + SPILL <= room).unwrap_or(full_name);
+    canvas.caption(at, name, room, left_edge, regions.name.bottom, Align::Left);
 
     // The step and its target.
     let metric = now.band.map_or(Metric::Power, |band| band.metric);
@@ -504,18 +535,6 @@ pub(super) fn prepare(view: &View) -> Canvas {
             });
         }
 
-        // The next step.
-        let mut next = Text::<24>::new();
-        match now.next {
-            Some(played) => {
-                let mut time = Text::<12>::new();
-                length(&mut time, played.step.length);
-                let _ = write!(next, "{} {}", time.as_str(), played.step.intensity.label());
-            }
-            None => {
-                let _ = next.push_str("FINISH");
-            }
-        }
         let label = canvas.caption(
             at,
             b"NEXT",
@@ -524,10 +543,12 @@ pub(super) fn prepare(view: &View) -> Canvas {
             regions.next.bottom,
             Align::Left,
         );
+        let room = right_edge - label.right() - at.unit(14);
+        let next = next_step(now.next, |text| caption.width(text) + SPILL <= room);
         canvas.fit(
             &[body, caption],
             next.as_bytes(),
-            right_edge - label.right() - at.unit(14),
+            room,
             label.right() + at.unit(8),
             regions.next.bottom,
             Align::Left,
@@ -1043,9 +1064,105 @@ mod tests {
                         "{what}: {} cut",
                         full.as_str()
                     );
+                    assert_next_whole(canvas, training.now.next, &what);
                 }
                 ride(&mut player, 1, 1999);
                 player.skip();
+            }
+        }
+    }
+
+    fn assert_next_whole(canvas: &Canvas, next: Option<Played>, what: &str) {
+        let Some(played) = next else {
+            assert!(canvas.shows("FINISH"), "{what}");
+            return;
+        };
+        let mut time = Text::<12>::new();
+        length(&mut time, played.step.length);
+        let intensity = played.step.intensity;
+        let forms = [
+            std::format!("{} {}", time.as_str(), intensity.label()),
+            std::format!("{} {}", time.as_str(), intensity.short_label()),
+            std::string::String::from(time.as_str()),
+        ];
+        assert!(
+            forms.iter().any(|form| canvas.shows(form)),
+            "{what}: NEXT shows none of {forms:?}"
+        );
+    }
+
+    #[test]
+    fn the_next_step_shortens_its_intensity_then_drops_it_rather_than_cut() {
+        use crate::workout::model::Step;
+        for (next, want) in [
+            (Length::Time(60), "1:00 COOL DOWN"),
+            (Length::Distance(99_900), "99.9 KM COOL"),
+            (Length::Distance(u32::MAX), "4294967.2 KM"),
+        ] {
+            let steps = [
+                Step::new(Intensity::Work, Length::Time(60), Target::Free),
+                Step::new(Intensity::Cooldown, next, Target::Free),
+            ];
+            let workout = Workout::new("NEXT", &steps, &[], None);
+            let mut player = Player::new(workout);
+            ride(&mut player, 1, 200);
+            crate::screens::check::enable(true);
+            let mut view = page(&player, Some(200));
+            view.prepare().check_layout();
+            assert!(view.canvas().shows(want), "{want}");
+            assert_next_whole(view.canvas(), player.now(&view.profile).next, want);
+        }
+    }
+
+    #[test]
+    fn a_long_name_keeps_its_whole_words_beside_the_step_count_all_workout_long() {
+        use crate::workout::model::Step;
+        let steps = [Step::new(Intensity::Work, Length::Time(60), Target::Free); 12];
+        crate::screens::check::enable(true);
+        for name in [
+            "SWEET SPOT 2X20 WIDE",
+            "THRESHOLD OVER UNDER",
+            "VO2 MAX 5X4 BUILDING",
+            "WWWWWWWWWWWWWWWWWWWW",
+            "VO2",
+        ] {
+            for layout in crate::screens::panels::ALL {
+                let workout = Workout::new(name, &steps, &[], None);
+                let mut player = Player::new(workout);
+                let mut seen = std::vec::Vec::new();
+                while !player.done() {
+                    ride(&mut player, 1, 200);
+                    let mut view = page(&player, Some(200));
+                    view.layout = layout;
+                    view.show_workout(chart(&player, &view.profile, &layout.workout));
+                    view.prepare().check_layout();
+                    let top = layout.workout.name.bottom;
+                    let shown = view
+                        .canvas()
+                        .runs
+                        .iter()
+                        .filter(|run| {
+                            run.bottom() <= top + 2 && run.left == layout.workout.step.left
+                        })
+                        .map(|run| {
+                            std::string::String::from_utf8_lossy(run.line.text()).into_owned()
+                        })
+                        .next()
+                        .unwrap();
+                    let what = std::format!("{name} on {:?}", layout.scaled.panel);
+                    let whole = shown == name
+                        || name.as_bytes().get(shown.len()) == Some(&b' ')
+                        || !name.contains(' ');
+                    assert!(whole && name.starts_with(&*shown), "{what}: {shown:?}");
+                    seen.push(shown);
+                    player.skip();
+                }
+                seen.dedup();
+                assert_eq!(
+                    seen.len(),
+                    1,
+                    "{name}: the name holds all workout long: {seen:?}"
+                );
             }
         }
     }

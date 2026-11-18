@@ -14,7 +14,12 @@ mod tests {
     use shell_simulator::devices::*;
 
     fn plain(id: u8) -> Fixtures {
-        Fixtures::new(&[Fixture { id, role: None }])
+        Fixtures::new(&[Fixture {
+            id,
+            role: None,
+            edge: device_api::input::Side::Left,
+            at: 0,
+        }])
     }
     #[test]
     fn same_shell_renders_geometries_maps_controls_and_consumes_wake() {
@@ -219,6 +224,8 @@ mod tests {
             device_api::input::Fixtures::new(&[device_api::input::Fixture {
                 id: 0,
                 role: Some(device_api::input::Role::Back),
+                edge: device_api::input::Side::Left,
+                at: 0,
             }]),
             Availability::Ready,
         );
@@ -291,6 +298,8 @@ mod tests {
             device_api::input::Fixtures::new(&[device_api::input::Fixture {
                 id: 0,
                 role: Some(device_api::input::Role::Back),
+                edge: device_api::input::Side::Left,
+                at: 0,
             }]),
             Availability::Ready,
         );
@@ -368,6 +377,8 @@ mod tests {
                 device_api::input::Fixtures::new(&[device_api::input::Fixture {
                     id: 0,
                     role: Some(device_api::input::Role::Back),
+                    edge: device_api::input::Side::Left,
+                    at: 0,
                 }]),
                 Availability::Ready,
             );
@@ -429,6 +440,8 @@ mod tests {
             device_api::input::Fixtures::new(&[device_api::input::Fixture {
                 id: 0,
                 role: Some(device_api::input::Role::Back),
+                edge: device_api::input::Side::Left,
+                at: 0,
             }]),
             Availability::Ready,
         );
@@ -461,6 +474,8 @@ mod tests {
             device_api::input::Fixtures::new(&[device_api::input::Fixture {
                 id: 0,
                 role: Some(device_api::input::Role::Back),
+                edge: device_api::input::Side::Left,
+                at: 0,
             }]),
             Availability::Ready,
         );

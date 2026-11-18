@@ -3,7 +3,7 @@ use super::layout::{Layout, Target};
 use super::slot::{LinkStatus, Selected};
 use super::{CalibrationNote, MenuMessage};
 use crate::screens::canvas::Canvas;
-use crate::screens::cue::{Corner, Cue};
+use crate::screens::cue::Cue;
 use crate::sensors::ant::{BatteryStatus, device_type};
 use device_api::ant::{CHANNEL_CAPACITY, DISCOVERY_CAPACITY, Discovery, Identity};
 use device_api::input::Role;
@@ -413,9 +413,9 @@ impl State {
             Target::Mine(row) => self.view = View::Mine(row),
             Target::Nearby(index) => self.view = View::Nearby(Some(index)),
             Target::Refresh => return self.search_again(),
-            Target::Cue(Corner::TopLeft) => return self.press(Press::Back, now),
-            Target::Cue(Corner::BottomLeft) => return self.press(Press::Move, now),
-            Target::Cue(Corner::BottomRight) => {}
+            Target::Cue(Role::Back) => return self.press(Press::Back, now),
+            Target::Cue(Role::Move) => return self.press(Press::Move, now),
+            Target::Cue(Role::Act) => {}
         }
         self.press(Press::Act, now)
     }

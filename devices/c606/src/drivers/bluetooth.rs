@@ -3,6 +3,8 @@
 use bt_hci::cmd::le::LeSetAdvEnable;
 use bt_hci::cmd::le::LeSetScanEnable;
 use bt_hci::cmd::le::LeSetScanParams;
+use bt_hci::cmd::le::{LeConnUpdate, LeReadLocalSupportedFeatures, LeReadPhy, LeSetDataLength, LeSetPhy};
+use bt_hci::controller::ControllerCmdAsync;
 use bt_hci::controller::ControllerCmdSync;
 use core::cell::RefCell;
 use core::sync::atomic::AtomicI32;
@@ -772,7 +774,12 @@ async fn advertise_and_echo<'a, C>(
     server: &Server<'_>,
 ) -> Result<(), BleHostError<C::Error>>
 where
-    C: Controller,
+    C: Controller
+        + ControllerCmdAsync<LeSetPhy>
+        + ControllerCmdSync<LeSetDataLength>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>
+        + ControllerCmdAsync<LeConnUpdate>
+        + ControllerCmdSync<LeReadPhy>,
 {
     let mut scan_data = [0; 31];
     let scan_len =
@@ -803,6 +810,7 @@ where
     update_state(|state| state.connections = state.connections.saturating_add(1));
     set_link(Link::Connected);
     log::info!(target: "ble", "CYCLING_BLE connected heap_free={}", esp_alloc::HEAP.free());
+    fast_link(stack, connection.raw()).await;
     let listener = L2capChannel::listen(stack, connection.raw());
     let mut channel: Option<L2capChannel<'a, DefaultPacketPool>> = None;
     let mut echoed: u32 = 0;
@@ -868,6 +876,36 @@ where
     }
 }
 
+/// SPIKE: ask for the fastest link an iPhone grants: 2M PHY, 251-byte
+/// packets, a 15 ms interval (iOS's floor). Each is a request; log the outcome.
+async fn fast_link<C>(stack: &Stack<'_, C, DefaultPacketPool>, connection: &Connection<'_, DefaultPacketPool>)
+where
+    C: Controller
+        + ControllerCmdAsync<LeSetPhy>
+        + ControllerCmdSync<LeSetDataLength>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>
+        + ControllerCmdAsync<LeConnUpdate>
+        + ControllerCmdSync<LeReadPhy>,
+{
+    let phy = connection.set_phy(stack, PhyKind::Le2M).await.is_ok();
+    let length = connection.update_data_length(stack, 251, 2120).await.is_ok();
+    let params = RequestedConnParams {
+        min_connection_interval: Duration::from_millis(15),
+        max_connection_interval: Duration::from_millis(15),
+        max_latency: 0,
+        min_event_length: Duration::from_millis(0),
+        max_event_length: Duration::from_millis(15),
+        supervision_timeout: Duration::from_secs(4),
+    };
+    let interval = connection.update_connection_params(stack, &params).await.is_ok();
+    Timer::after_millis(500).await;
+    let now = connection.read_phy(stack).await.ok();
+    log::info!(target: "ble",
+        "CYCLING_BLE fast_link phy_req={} dle_req={} interval_req={} phy_now={:?}",
+        phy, length, interval, now
+    );
+}
+
 /// SPIKE: accept the phone's L2CAP channel, then echo each SDU back. One step
 /// per call so the GATT loop keeps serving between them.
 async fn sync_step<'a, C: Controller>(
@@ -902,6 +940,27 @@ async fn sync_step<'a, C: Controller>(
             return;
         }
     };
+    if len == 6 && buf[..2] == *b"DL" {
+        let total = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]) as usize;
+        let piece = usize::from(open.peer_mtu()).min(buf.len());
+        let mut sent = 0usize;
+        let started = embassy_time::Instant::now();
+        while sent < total {
+            let n = piece.min(total - sent);
+            for (i, b) in buf[..n].iter_mut().enumerate() {
+                *b = (sent + i).wrapping_mul(31).wrapping_add(7) as u8;
+            }
+            if open.send(stack, &buf[..n]).await.is_err() {
+                log::info!(target: "ble", "CYCLING_BLE sync_download_failed sent={}", sent);
+                *channel = None;
+                return;
+            }
+            sent += n;
+        }
+        log::info!(target: "ble", "CYCLING_BLE sync_download bytes={} ms={} piece={}",
+            sent, started.elapsed().as_millis(), piece);
+        return;
+    }
     let peer = usize::from(open.peer_mtu()).min(len);
     for piece in buf[..len].chunks(peer.max(1)) {
         if open.send(stack, piece).await.is_err() {

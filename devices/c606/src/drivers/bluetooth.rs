@@ -108,6 +108,22 @@ static STATE: Mutex<RefCell<Snapshot>> = Mutex::new(RefCell::new(Snapshot {
 #[gatt_server]
 struct Server {
     echo: EchoService,
+    sync: SyncService,
+}
+
+/// SPIKE (BLE companion): the phone opens an L2CAP channel on this PSM; it is
+/// published in `SyncService` so the phone needn't hard-code it.
+const SYNC_PSM: u16 = 0x0081;
+/// SPIKE: the sync service's UUID, little-endian as advertised.
+const SYNC_SERVICE_LE: [u8; 16] = [
+    0x06, 0xc6, 0x06, 0xc6, 0x06, 0xc6, 0x6b, 0x6e, 0x69, 0x4c, 0x01, 0x00, 0x41, 0x4e, 0x41, 0x56,
+];
+
+#[gatt_service(uuid = "56414e41-0001-4c69-6e6b-c606c606c606")]
+struct SyncService {
+    /// The L2CAP PSM the phone connects its byte stream to.
+    #[characteristic(uuid = "56414e41-0002-4c69-6e6b-c606c606c606", read, value = SYNC_PSM)]
+    psm: u16,
 }
 
 #[gatt_service(uuid = "7e570001-2a6f-4d75-9f6a-5afbf0f50c06")]
@@ -223,6 +239,7 @@ pub async fn start(bt: BT<'static>) {
         HostResources::new();
     let stack = trouble_host::new(controller, &mut resources)
         .set_random_address(Address::random([0x15, 0xc6, 0x06, 0x00, 0x00, 0xc0]))
+        .register_l2cap_spsm(SYNC_PSM)
         .build();
     let central = stack.central();
     let peripheral = stack.peripheral();
@@ -317,7 +334,7 @@ async fn application<'a>(
         if CONTROL.with(|c| c.suspended()) {
             continue;
         }
-        idle(&mut session, &mut peripheral, server).await;
+        idle(&mut session, stack, &mut peripheral, server).await;
     }
 }
 
@@ -447,9 +464,14 @@ async fn connect<'a>(
 
 /// Background activity between operations: echo advertising, a reconnect
 /// backoff, or simply waiting for the next command or power request.
-async fn idle(session: &mut Session, peripheral: &mut BlePeripheral<'_>, server: &Server<'_>) {
+async fn idle<'a>(
+    session: &mut Session,
+    stack: &'a BleStack<'_>,
+    peripheral: &mut BlePeripheral<'a>,
+    server: &Server<'_>,
+) {
     if session.echo {
-        if advertise_and_echo(peripheral, server).await.is_err() {
+        if advertise_and_echo(stack, peripheral, server).await.is_err() {
             // A GATT error can drop a live connection and only queue its
             // disconnect. Do not claim power quiescence without completion.
             CONTROL.with(|c| c.mark_uncertain());
@@ -744,8 +766,9 @@ where
     true
 }
 
-async fn advertise_and_echo<C>(
-    peripheral: &mut Peripheral<'_, C, DefaultPacketPool>,
+async fn advertise_and_echo<'a, C>(
+    stack: &'a Stack<'_, C, DefaultPacketPool>,
+    peripheral: &mut Peripheral<'a, C, DefaultPacketPool>,
     server: &Server<'_>,
 ) -> Result<(), BleHostError<C::Error>>
 where
@@ -756,9 +779,10 @@ where
         AdStructure::encode_slice(&[AdStructure::CompleteLocalName(ECHO_NAME)], &mut scan_data)?;
     let mut adv_data = [0; 31];
     let adv_len = AdStructure::encode_slice(
-        &[AdStructure::Flags(
-            LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED,
-        )],
+        &[
+            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+            AdStructure::IncompleteServiceUuids128(&[SYNC_SERVICE_LE]),
+        ],
         &mut adv_data,
     )?;
     set_link(Link::Advertising);
@@ -779,10 +803,20 @@ where
     update_state(|state| state.connections = state.connections.saturating_add(1));
     set_link(Link::Connected);
     log::info!(target: "ble", "CYCLING_BLE connected heap_free={}", esp_alloc::HEAP.free());
+    let listener = L2capChannel::listen(stack, connection.raw());
+    let mut channel: Option<L2capChannel<'a, DefaultPacketPool>> = None;
+    let mut echoed: u32 = 0;
     loop {
-        let event = match select(connection.next(), CONTROL.work_pending()).await {
-            Either::First(event) => event,
-            Either::Second(()) => {
+        let event = match select3(
+            connection.next(),
+            CONTROL.work_pending(),
+            sync_step(stack, &listener, &mut channel, &mut echoed),
+        )
+        .await
+        {
+            Either3::First(event) => event,
+            Either3::Third(()) => continue,
+            Either3::Second(()) => {
                 connection.raw().disconnect();
                 if wait_disconnected(connection.raw()).await {
                     disconnected();
@@ -832,6 +866,51 @@ where
             _ => {}
         }
     }
+}
+
+/// SPIKE: accept the phone's L2CAP channel, then echo each SDU back. One step
+/// per call so the GATT loop keeps serving between them.
+async fn sync_step<'a, C: Controller>(
+    stack: &'a Stack<'_, C, DefaultPacketPool>,
+    listener: &L2capChannelListener<'a, C, DefaultPacketPool>,
+    channel: &mut Option<L2capChannel<'a, DefaultPacketPool>>,
+    echoed: &mut u32,
+) {
+    let Some(open) = channel else {
+        match listener.accept(&L2capChannelConfig::default()).await {
+            Ok(accepted) => {
+                log::info!(target: "ble",
+                    "CYCLING_BLE sync_open psm={} mtu={} mps={} peer_mtu={} peer_mps={}",
+                    accepted.spsm(), accepted.mtu(), accepted.mps(), accepted.peer_mtu(), accepted.peer_mps()
+                );
+                *echoed = 0;
+                *channel = Some(accepted);
+            }
+            Err(_) => {
+                log::info!(target: "ble", "CYCLING_BLE sync_accept_failed");
+                Timer::after_secs(1).await;
+            }
+        }
+        return;
+    };
+    let mut buf = [0u8; 256];
+    let len = match open.receive(stack, &mut buf).await {
+        Ok(len) => len,
+        Err(_) => {
+            log::info!(target: "ble", "CYCLING_BLE sync_closed echoed={}", echoed);
+            *channel = None;
+            return;
+        }
+    };
+    let peer = usize::from(open.peer_mtu()).min(len);
+    for piece in buf[..len].chunks(peer.max(1)) {
+        if open.send(stack, piece).await.is_err() {
+            log::info!(target: "ble", "CYCLING_BLE sync_send_failed echoed={}", echoed);
+            *channel = None;
+            return;
+        }
+    }
+    *echoed = echoed.saturating_add(len as u32);
 }
 
 pub fn availability() -> Availability {

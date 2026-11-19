@@ -942,7 +942,8 @@ async fn sync_step<'a, C: Controller>(
     };
     if len == 6 && buf[..2] == *b"DL" {
         let total = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]) as usize;
-        let piece = usize::from(open.peer_mtu()).min(buf.len());
+        // An SDU must fit our own channel MTU too: `send` builds it in one pool packet.
+        let piece = usize::from(open.peer_mtu().min(open.mtu())).min(buf.len());
         let mut sent = 0usize;
         let started = embassy_time::Instant::now();
         while sent < total {
@@ -951,7 +952,8 @@ async fn sync_step<'a, C: Controller>(
                 *b = (sent + i).wrapping_mul(31).wrapping_add(7) as u8;
             }
             if open.send(stack, &buf[..n]).await.is_err() {
-                log::info!(target: "ble", "CYCLING_BLE sync_download_failed sent={}", sent);
+                log::info!(target: "ble", "CYCLING_BLE sync_download_failed sent={} piece={} mtu={} peer_mtu={}",
+                    sent, n, open.mtu(), open.peer_mtu());
                 *channel = None;
                 return;
             }

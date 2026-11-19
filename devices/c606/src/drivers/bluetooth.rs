@@ -812,18 +812,13 @@ where
     log::info!(target: "ble", "CYCLING_BLE connected heap_free={}", esp_alloc::HEAP.free());
     fast_link(stack, connection.raw()).await;
     let listener = L2capChannel::listen(stack, connection.raw());
-    let mut channel: Option<L2capChannel<'a, DefaultPacketPool>> = None;
-    let mut echoed: u32 = 0;
+    // One future for the channel's whole life, polled beside the GATT loop and
+    // never restarted: dropping it mid-send would cut a transfer short.
+    let mut sync = core::pin::pin!(serve_sync(stack, &listener));
     loop {
-        let event = match select3(
-            connection.next(),
-            CONTROL.work_pending(),
-            sync_step(stack, &listener, &mut channel, &mut echoed),
-        )
-        .await
-        {
+        let event = match select3(connection.next(), CONTROL.work_pending(), sync.as_mut()).await {
             Either3::First(event) => event,
-            Either3::Third(()) => continue,
+            Either3::Third(never) => match never {},
             Either3::Second(()) => {
                 connection.raw().disconnect();
                 if wait_disconnected(connection.raw()).await {
@@ -906,72 +901,63 @@ where
     );
 }
 
-/// SPIKE: accept the phone's L2CAP channel, then echo each SDU back. One step
-/// per call so the GATT loop keeps serving between them.
-async fn sync_step<'a, C: Controller>(
+/// SPIKE: accept the phone's L2CAP channel and answer each SDU: "DL" and a
+/// little-endian u32 streams that many pattern bytes (a download), anything
+/// else is echoed. Runs for the connection's life.
+async fn serve_sync<'a, C: Controller>(
     stack: &'a Stack<'_, C, DefaultPacketPool>,
     listener: &L2capChannelListener<'a, C, DefaultPacketPool>,
-    channel: &mut Option<L2capChannel<'a, DefaultPacketPool>>,
-    echoed: &mut u32,
-) {
-    let Some(open) = channel else {
-        match listener.accept(&L2capChannelConfig::default()).await {
-            Ok(accepted) => {
-                log::info!(target: "ble",
-                    "CYCLING_BLE sync_open psm={} mtu={} mps={} peer_mtu={} peer_mps={}",
-                    accepted.spsm(), accepted.mtu(), accepted.mps(), accepted.peer_mtu(), accepted.peer_mps()
-                );
-                *echoed = 0;
-                *channel = Some(accepted);
-            }
+) -> core::convert::Infallible {
+    let mut buf = [0u8; 256];
+    loop {
+        let mut open = match listener.accept(&L2capChannelConfig::default()).await {
+            Ok(accepted) => accepted,
             Err(_) => {
                 log::info!(target: "ble", "CYCLING_BLE sync_accept_failed");
                 Timer::after_secs(1).await;
+                continue;
             }
-        }
-        return;
-    };
-    let mut buf = [0u8; 256];
-    let len = match open.receive(stack, &mut buf).await {
-        Ok(len) => len,
-        Err(_) => {
-            log::info!(target: "ble", "CYCLING_BLE sync_closed echoed={}", echoed);
-            *channel = None;
-            return;
-        }
-    };
-    if len == 6 && buf[..2] == *b"DL" {
-        let total = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]) as usize;
+        };
+        log::info!(target: "ble",
+            "CYCLING_BLE sync_open psm={} mtu={} mps={} peer_mtu={} peer_mps={}",
+            open.spsm(), open.mtu(), open.mps(), open.peer_mtu(), open.peer_mps()
+        );
         // An SDU must fit our own channel MTU too: `send` builds it in one pool packet.
         let piece = usize::from(open.peer_mtu().min(open.mtu())).min(buf.len());
-        let mut sent = 0usize;
-        let started = embassy_time::Instant::now();
-        while sent < total {
-            let n = piece.min(total - sent);
-            for (i, b) in buf[..n].iter_mut().enumerate() {
-                *b = (sent + i).wrapping_mul(31).wrapping_add(7) as u8;
+        let mut echoed = 0usize;
+        'channel: loop {
+            let Ok(len) = open.receive(stack, &mut buf).await else {
+                log::info!(target: "ble", "CYCLING_BLE sync_closed echoed={}", echoed);
+                break 'channel;
+            };
+            if len == 6 && buf[..2] == *b"DL" {
+                let total = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]) as usize;
+                let started = embassy_time::Instant::now();
+                let mut sent = 0usize;
+                while sent < total {
+                    let n = piece.min(total - sent);
+                    for (i, b) in buf[..n].iter_mut().enumerate() {
+                        *b = (sent + i).wrapping_mul(31).wrapping_add(7) as u8;
+                    }
+                    if open.send(stack, &buf[..n]).await.is_err() {
+                        log::info!(target: "ble", "CYCLING_BLE sync_download_failed sent={} piece={}", sent, n);
+                        break 'channel;
+                    }
+                    sent += n;
+                }
+                log::info!(target: "ble", "CYCLING_BLE sync_download bytes={} ms={} piece={}",
+                    sent, started.elapsed().as_millis(), piece);
+                continue;
             }
-            if open.send(stack, &buf[..n]).await.is_err() {
-                log::info!(target: "ble", "CYCLING_BLE sync_download_failed sent={} piece={} mtu={} peer_mtu={}",
-                    sent, n, open.mtu(), open.peer_mtu());
-                *channel = None;
-                return;
+            for chunk in buf[..len].chunks(piece.max(1)) {
+                if open.send(stack, chunk).await.is_err() {
+                    log::info!(target: "ble", "CYCLING_BLE sync_send_failed echoed={}", echoed);
+                    break 'channel;
+                }
             }
-            sent += n;
-        }
-        log::info!(target: "ble", "CYCLING_BLE sync_download bytes={} ms={} piece={}",
-            sent, started.elapsed().as_millis(), piece);
-        return;
-    }
-    let peer = usize::from(open.peer_mtu()).min(len);
-    for piece in buf[..len].chunks(peer.max(1)) {
-        if open.send(stack, piece).await.is_err() {
-            log::info!(target: "ble", "CYCLING_BLE sync_send_failed echoed={}", echoed);
-            *channel = None;
-            return;
+            echoed += len;
         }
     }
-    *echoed = echoed.saturating_add(len as u32);
 }
 
 pub fn availability() -> Availability {

@@ -1,0 +1,32 @@
+{
+  "host": {
+    "ios": {
+      "minimumOS": "17.0",
+      "deviceFamily": [
+        "iphone"
+      ]
+    }
+  },
+  "deploy": {
+    "store": {
+      "ios": "0"
+    }
+  },
+  "$schema": ".exact/checkout/scripts/app.schema.json",
+  "name": "VANA",
+  "short_name": "VANA",
+  "id": "computer.cycling.companion",
+  "start_url": "/",
+  "display": "standalone",
+  "app": {
+    "id": "computer.cycling.companion",
+    "name": "VANA Companion"
+  },
+  "icons": [
+    {
+      "src": "assets/icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
+  ]
+}

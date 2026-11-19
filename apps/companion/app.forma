@@ -1,0 +1,18 @@
+forma vana
+
+theme
+  AccentColor = #0a84ff  scheme=fixed
+  vana.ground = #000000  scheme=fixed
+  vana.card = #1c1c1e  scheme=fixed
+  vana.raised = #2c2c2e  scheme=fixed
+  vana.unlit = #48484a  scheme=fixed
+  vana.white = #ffffff  scheme=fixed
+  vana.secondary = #8e8e93  scheme=fixed
+  vana.accent = #0a84ff  scheme=fixed
+  vana.green = #30d158  scheme=fixed
+  vana.amber = #ff9f0a  scheme=fixed
+  vana.red = #ff453a  scheme=fixed
+  vana.speed = #64d2ff  scheme=fixed
+  vana.power = #ffd60a  scheme=fixed
+  vana.heart = #ff375f  scheme=fixed
+  vana.z7 = #bf5af2  scheme=fixed

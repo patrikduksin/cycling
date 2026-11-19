@@ -1,0 +1,71 @@
+// VANA Companion. SPIKE: connect to VANA's sync service over Bluetooth LE,
+// open its L2CAP channel and measure an echo through it.
+shape Link
+  state: string
+  detail: string
+  name: string
+  psm: number
+
+shape Outcome
+  ok: bool
+  text: string
+
+routes nav
+  home "/"
+
+fn stateInk(s: string): string = s == "open" ? "vana.green" : s == "failed" ? "vana.red" : s == "idle" ? "vana.secondary" : "vana.amber"
+
+component Companion
+  resource link = link() as shape Link
+  mutation connected as shape Outcome
+  mutation echoed as shape Outcome
+  mutation downloaded as shape Outcome
+  mutation dropped as shape Outcome
+  derive open = link.state == "open" or link.state == "echo" or link.state == "download"
+  derive lastText = match downloaded { case some(o) => o.text, case none => lastEcho }
+  derive lastEcho = match echoed { case some(o) => o.text, case none => match connected { case some(o) => o.text, case none => "" } }
+
+  action connectNow
+    send connected = connect()
+  action echoNow(bytes: number)
+    send echoed = echo(bytes)
+  action downloadNow(bytes: number)
+    send downloaded = download(bytes)
+  action dropNow
+    send dropped = disconnect()
+
+  view
+    main testId="root" navigationKey=`${top(nav).id}` width="100%" height="100%"
+      color-scheme="dark" background-color="vana.ground" color="vana.white"
+      for e in stack(nav) key=e.id
+        column navigationKey=`${e.id}` navigationScroll="page" position="absolute" inset=0
+          display="flex" flex-direction="column" background-color="vana.ground"
+          scroll id="page" flex=1 min-height=0
+            column padding="12px 20px 24px" gap=14 max-width="26.25rem" margin="0 auto" width="100%" box-sizing="border-box"
+              text "VANA" font-weight=800 font-size=44 margin-top=12
+              column background-color="vana.card" border-radius=16 padding=16 gap=6
+                text "LINK" font-weight=800 font-size=15 color="vana.secondary"
+                text link.state.toUpperCase() font-weight=800 font-size=30 color=stateInk(link.state) testId="state"
+                if link.detail != ""
+                  text link.detail font-size=17 color="vana.secondary" testId="detail"
+              if failed(connected) or failed(echoed) or failed(downloaded)
+                text match failure(downloaded) { case some(f) => f.message, case none => match failure(echoed) { case some(f) => f.message, case none => match failure(connected) { case some(f) => f.message, case none => "" } } }
+                  font-size=17 color="vana.red" testId="error"
+              if lastText != ""
+                text lastText font-size=17 testId="result"
+              if not open
+                button press=connectNow height=64 border-radius=18 border="none" background-color="vana.accent"
+                  disabled=pending(connected) testId="connect"
+                  text (pending(connected) ? "CONNECTING…" : "CONNECT") font-weight=800 font-size=22 color="vana.white"
+              else
+                button press=downloadNow(512000) height=64 border-radius=18 border="none" background-color="vana.accent"
+                  disabled=(pending(echoed) or pending(downloaded)) testId="download-500"
+                  text (pending(downloaded) ? "DOWNLOADING…" : "DOWNLOAD 500 KB") font-weight=800 font-size=22 color="vana.white"
+                button press=echoNow(102400) height=64 border-radius=18 border="none" background-color="vana.green"
+                  disabled=pending(echoed) testId="echo-100"
+                  text (pending(echoed) ? "ECHOING…" : "ECHO 100 KB") font-weight=800 font-size=22 color="vana.white"
+                button press=echoNow(512000) height=56 border-radius=18 border="none" background-color="vana.raised"
+                  disabled=pending(echoed) testId="echo-500"
+                  text "ECHO 500 KB" font-weight=800 font-size=20 color="vana.white"
+                button press=dropNow height=56 border-radius=18 border="none" background-color="vana.card" testId="disconnect"
+                  text "DISCONNECT" font-weight=800 font-size=20 color="vana.red"

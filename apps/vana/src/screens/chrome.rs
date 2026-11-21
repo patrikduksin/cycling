@@ -30,6 +30,14 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// No box: what a page holds before its first layout.
+    pub const EMPTY: Self = Self {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+
     pub const fn contains(&self, x: usize, y: usize) -> bool {
         x >= self.left && x < self.right && y >= self.top && y < self.bottom
     }

@@ -296,13 +296,6 @@ impl Runtime {
             Page::Ride if paused_screen => None,
             Page::Ride if navigation.ride_page() == RidePage::Map => Some(Control::Map),
             Page::Ride if self.sign_at(x, y, now, radar) => Some(Control::Sign),
-            // Adding a minute to a step changes no ride state, so a tap may.
-            Page::Ride
-                if navigation.ride_page() == RidePage::Workout
-                    && self.layout.workout.extend.contains(x, y) =>
-            {
-                Some(Control::ExtendStep)
-            }
             _ => None,
         };
         let mut hit = Hit {
@@ -395,7 +388,6 @@ impl Runtime {
                 self.act_on_setting(now, ant);
             }
             Control::Setup(card) => self.setup_card(card, now, ant),
-            Control::ExtendStep => self.extend_step(now),
             Control::Menu(point) => {
                 self.refresh_sensor_menu(ant, now);
                 let (x, y) = (usize::from(point.x), usize::from(point.y));

@@ -1,6 +1,6 @@
 //! What tiles read: a frame's view, each number in its base unit, and the
 //! gliding graphics alone for asking where a glide lands.
-use super::ride::{GAUGE_WIDTH, Mark, gauges};
+use super::ride::{ClimbRoad, GAUGE_WIDTH, Mark, Training, gauges};
 use super::workout::{Graphics, View};
 use crate::compose::data::{Data, Effort, ListKind, Metric, OnGauge};
 use crate::ride::zones::TrainingProfile;
@@ -42,6 +42,18 @@ impl Data for View<'_> {
 
     fn list(&self, _: ListKind) -> u16 {
         0
+    }
+
+    fn road(&self) -> Option<ClimbRoad<'_>> {
+        super::ride::climb::road(self)
+    }
+
+    fn training(&self) -> Option<&Training> {
+        self.training.as_ref()
+    }
+
+    fn recording(&self) -> bool {
+        self.state == crate::ride::log::Status::Recording
     }
 
     fn gauge(&self, effort: Effort) -> Option<OnGauge> {

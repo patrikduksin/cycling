@@ -23,13 +23,14 @@ use super::icons::SignForm;
 use super::scaled::BASE;
 use super::scaled::{self, Scaled};
 use super::workout::{Body, Graphics, Scene, Text, View};
+use crate::compose::builtin::ScreenId;
 use crate::ride::laps::Lap;
 use crate::ride::zones::TrainingProfile;
 use crate::sensors::radar::{self, close};
 use core::fmt::Write;
 use firmware_shell::shell::Parts;
 
-mod climb;
+pub mod climb;
 pub mod elevation;
 pub(super) mod end;
 mod lap;
@@ -40,21 +41,18 @@ pub use paused::READINGS as PAUSED_READINGS;
 pub mod slots;
 mod stats;
 pub mod summary;
-mod workout;
+pub mod workout;
 mod zones;
 
 pub(super) use zones::{GAUGE_WIDTH, Mark, Marks, gauges, marks};
 
-pub use climb::{Frame as ClimbFrame, Lent as ClimbLent};
+pub use climb::{Frame as ClimbFrame, Lent as ClimbLent, Road as ClimbRoad};
 pub use elevation::Chart as ElevationChart;
 pub use lap::{LapBar, LapBars};
 pub use map::{
     Cache as MapCache, Fetched, Filled as FilledMap, Frame as MapFrame, Track, Zoom as MapZoom,
 };
-pub use workout::{
-    Chart as WorkoutChart, Regions as WorkoutRegions, Training, chart as workout_chart,
-    regions as workout_regions,
-};
+pub use workout::{Chart as WorkoutChart, Training, chart as workout_chart};
 
 use chrome::{ACCENT, AMBER, POWER, Row};
 pub(super) use chrome::{RED, WHITE};
@@ -127,7 +125,8 @@ pub const fn frame(at: &Scaled) -> Frame {
 /// What a page draws into on the 240 x 320 canvas, for tests.
 #[cfg(test)]
 pub(super) const BODY: Rect = frame(&BASE).body;
-/// The text's margin from the body's right edge.
+/// The text's margins from the body's left and right edges.
+pub(crate) const TEXT_LEFT: u16 = 10;
 pub(crate) const TEXT_RIGHT: u16 = 8;
 /// A cell value's baseline below its band's top.
 pub(super) const VALUE_BASELINE: u16 = 41;
@@ -159,7 +158,7 @@ pub(super) fn canvas_regions(
     let frame = scene.frame();
     let foot = scene.map_regions().foot.rect;
     let regions = match (page, &scene.radar) {
-        (RidePage::Map | RidePage::Main, None) => heapless::Vec::from_slice(&[(
+        (page, None) if page == RidePage::Map || page.tiled() => heapless::Vec::from_slice(&[(
             "page",
             Rect {
                 left: frame.radar.left,
@@ -242,17 +241,27 @@ impl RidePage {
     /// live, the main page's lower line from `slots`; none for the workout
     /// page, which draws the step's target metric.
     pub fn readings(self, slots: slots::Slots) -> Option<heapless::Vec<&'static str, 7>> {
+        match self {
+            Self::Climb => return tree_readings(ScreenId::RideClimb),
+            Self::Workout => return tree_readings(ScreenId::RideWorkout),
+            _ => {}
+        }
         let chosen = [slots.left, slots.right].map(crate::compose::data::Metric::shown);
         let drawn = |reading: &str| match self {
             Self::Main => {
                 matches!(reading, "time" | "speed" | "power" | "hr" | "grade")
                     || chosen.contains(&Some(reading))
             }
-            Self::Climb => matches!(reading, "power" | "hr" | "grade"),
             Self::Stats | Self::Map => reading == "dist",
-            Self::Lap | Self::Workout => false,
+            Self::Lap | Self::Climb | Self::Workout => false,
         };
-        (self != Self::Workout).then(|| READINGS.into_iter().filter(|r| drawn(r)).collect())
+        Some(READINGS.into_iter().filter(|r| drawn(r)).collect())
+    }
+
+    /// Drawn from its tree, which tiles the panel itself: it is painted
+    /// unshifted, beside the radar strip's room in the tree.
+    pub(crate) const fn tiled(self) -> bool {
+        matches!(self, Self::Main | Self::Climb | Self::Workout)
     }
 
     /// A number unique to the page, for touch ownership.
@@ -271,6 +280,31 @@ impl RidePage {
             Self::Map => Some(1 << 3),
         }
     }
+}
+
+/// The shown readings the tiles of `id`'s built-in read; none when a tile
+/// reads the workout step's target, whose metric the step picks.
+fn tree_readings(id: ScreenId) -> Option<heapless::Vec<&'static str, 7>> {
+    use crate::compose::data::Reads;
+    use crate::compose::node::What;
+    let builtin = id.builtin().expect("a ride page with a tree");
+    let nodes = (builtin.tree)(&crate::compose::builtin::Choices::default());
+    let mut read = heapless::Vec::<&str, 7>::new();
+    for node in &nodes {
+        let Some(What::Leaf { component, arg }) = node.what() else {
+            continue;
+        };
+        match crate::compose::registry::tile(component).reads(arg) {
+            Some(Reads::Target) => return None,
+            Some(Reads::Metric(metric)) => {
+                if let Some(name) = metric.shown().filter(|name| !read.contains(name)) {
+                    let _ = read.push(name);
+                }
+            }
+            None => {}
+        }
+    }
+    Some(READINGS.into_iter().filter(|r| read.contains(r)).collect())
 }
 
 /// Which optional pages the rider turned off. Everything is on by default,
@@ -398,18 +432,26 @@ impl Pages {
 /// chart.
 pub(super) fn prepare(view: &mut View) {
     match view.ride_page {
-        RidePage::Main => super::workout::fill(view, |_| Canvas::default()),
         RidePage::Stats => super::workout::fill(view, stats::prepare),
         RidePage::Lap => super::workout::fill(view, lap::prepare),
-        RidePage::Climb => {
-            climb_frame(view);
-            super::workout::fill(view, climb::prepare);
-        }
-        // The app lays out the chart from its player: the workout stays there.
-        RidePage::Workout => super::workout::fill(view, workout::prepare),
         RidePage::Map => super::workout::fill(view, map::prepare),
+        // Drawn from their trees once the composition lends them.
+        RidePage::Main | RidePage::Climb | RidePage::Workout => {
+            super::workout::fill(view, |_| Canvas::default())
+        }
     }
     hide_banner(view);
+}
+
+/// What a ride page drawn from its tiles prepares before they draw: the
+/// climb chart, in the profile tile's box. The app lays out the workout
+/// chart from its player.
+pub(super) fn prepare_tiles(view: &mut View, laid: &crate::compose::builtin::Laid) {
+    if view.ride_page == RidePage::Climb
+        && let Some(chart) = laid.box_of(crate::compose::registry::CLIMB_PROFILE)
+    {
+        climb_frame(view, chart);
+    }
 }
 
 /// Hide what the course banner partly covers on the ride page shown.
@@ -424,8 +466,8 @@ pub(super) fn hide_banner(view: &mut View) {
 
 /// The climb chart, prepared in its own frame (#167).
 #[inline(never)]
-fn climb_frame(view: &mut View) {
-    let climb = climb::frame(view);
+fn climb_frame(view: &mut View, chart: Rect) {
+    let climb = climb::frame(view, chart);
     view.set_climb_frame(climb);
 }
 
@@ -471,9 +513,14 @@ pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
         paint_map(scene, row);
         return;
     }
-    if page == RidePage::Main {
+    if page.tiled() {
         if let Some(radar) = &scene.radar {
             paint_radar(radar, &mut row.within(strip));
+        }
+        match page {
+            RidePage::Climb => climb::paint_chart(scene.climb(), row),
+            RidePage::Workout => workout::paint_chart(scene.chart(), row),
+            _ => {}
         }
         scene.canvas().paint(row);
         return;
@@ -503,8 +550,8 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
     }
     match page {
         RidePage::Main | RidePage::Stats | RidePage::Lap => {}
-        RidePage::Workout => workout::chart_parts(scene.chart(), &scene.layout().workout, parts),
-        RidePage::Climb => climb::chart_parts(scene.climb(), &scene.layout().climb, parts),
+        RidePage::Workout => workout::chart_parts(scene.chart(), parts),
+        RidePage::Climb => climb::chart_parts(scene.climb(), parts),
         RidePage::Map => {
             let drawn = scene.map_regions().free.drawn;
             parts.add(drawn.top..drawn.bottom, &scene.map());
@@ -515,16 +562,8 @@ pub(super) fn parts(scene: &Scene, page: RidePage, parts: &mut Parts) {
 
 fn paint_page(scene: &Scene, page: RidePage, row: &mut Row) {
     match page {
-        RidePage::Main | RidePage::Stats | RidePage::Lap => scene.canvas().paint(row),
-        RidePage::Workout => {
-            workout::paint_chart(scene.chart(), &scene.layout().workout, row);
-            scene.canvas().paint(row);
-        }
-        RidePage::Climb => {
-            climb::paint_chart(scene.climb(), &scene.layout().climb, row);
-            scene.canvas().paint(row);
-        }
         RidePage::Map => paint_map(scene, row),
+        _ => scene.canvas().paint(row),
     }
 }
 
@@ -575,7 +614,6 @@ pub fn pixels(
     }
 }
 
-pub use climb::{Regions as ClimbRegions, regions as climb_regions};
 pub use end::{Regions as EndRegions, regions as end_regions};
 pub use lap::{Regions as LapRegions, regions as lap_regions};
 pub use main::{
@@ -659,13 +697,18 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
             _ => reference_map_pixel(scene, x, y),
         };
     }
-    if page == RidePage::Main {
+    if page.tiled() {
         if let Some(radar) = &scene.radar
             && x < RADAR_WIDTH - 2
         {
             return look.ink(reference_radar_pixel(radar, x, y));
         }
-        return scene.canvas().pixel(look, x, y, black);
+        let under = match page {
+            RidePage::Climb => look.ink(climb::chart_pixel(scene.climb(), x, y)),
+            RidePage::Workout => look.ink(workout::chart_pixel(scene.chart(), x, y)),
+            _ => black,
+        };
+        return scene.canvas().pixel(look, x, y, under);
     }
     let x = if let Some(radar) = &scene.radar {
         if x < RADAR_WIDTH - 2 {
@@ -679,23 +722,8 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
         return black;
     }
     match page {
-        RidePage::Main => unreachable!("the main page is painted unshifted, above"),
-        RidePage::Stats | RidePage::Lap => scene.canvas().pixel(look, x, y, black),
-        RidePage::Workout => {
-            let chart = workout::chart_pixel(scene.chart(), &scene.layout().workout, x, y);
-            let under = look.ink(chart);
-            scene.canvas().pixel(look, x, y, under)
-        }
-        RidePage::Climb => {
-            let under = look.ink(climb::chart_pixel(
-                scene.climb(),
-                &scene.layout().climb,
-                x,
-                y,
-            ));
-            scene.canvas().pixel(look, x, y, under)
-        }
         RidePage::Map => reference_map_pixel(scene, x, y),
+        _ => scene.canvas().pixel(look, x, y, black),
     }
 }
 
@@ -836,6 +864,23 @@ pub(crate) fn whole(value: &mut Text<12>, reading: Option<impl core::fmt::Displa
     };
 }
 
+/// The largest box accept gives tile `component` on `layout`'s panel: the
+/// tile alone, grown over the whole screen.
+#[cfg(test)]
+pub(crate) fn largest_box(layout: &super::Layout, component: u8) -> Rect {
+    use crate::compose::input::Controls;
+    use crate::compose::node::{Flags, Node, Size};
+    use crate::compose::parse::Screen;
+    use crate::compose::solve::Solved;
+    let bytes = Node::leaf(component, 0, Size::grow(1)).bytes();
+    let screen = Screen::parse(0, &bytes, &layout.scaled, Controls::FREE).expect("accepted");
+    let mut solved = Solved::EMPTY;
+    screen.solve(Flags::NONE, &mut solved);
+    let rect = solved.leaves()[0].rect.rect();
+    assert_eq!(rect, layout.scaled.screen());
+    rect
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -900,10 +945,8 @@ mod tests {
                 .iter()
                 .map(|run| std::string::String::from_utf8_lossy(run.line.text()).into())
                 .collect(),
-            Some(page) => {
-                if page == RidePage::Main {
-                    view.compose(slots);
-                }
+            Some(_) => {
+                view.compose(slots);
                 view.prepare();
                 view.canvas()
                     .runs

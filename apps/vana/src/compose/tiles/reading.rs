@@ -1,7 +1,7 @@
 //! A metric's value with its unit beside it, as the ride pages show a
 //! number. Its looks run down a ladder of faces from the one its setting
 //! pins, so a built-in page keeps the hierarchy its design gave it.
-use crate::compose::data::{Data, Metric};
+use crate::compose::data::{Data, Metric, Reads};
 use crate::compose::solve::Placed;
 use crate::compose::tile::{Arg, Form, Forms, Tile};
 use crate::screens::canvas::Canvas;
@@ -201,6 +201,10 @@ pub(super) fn line(
 impl Tile for Reading {
     type Arg = Inline;
     const NAME: &'static str = "reading";
+
+    fn reads(Inline(shown): Inline) -> Option<Reads> {
+        Some(Reads::Metric(shown.metric))
+    }
 
     fn forms(Inline(shown): Inline, at: &Scaled) -> Forms {
         let unit = shown.metric.unit();

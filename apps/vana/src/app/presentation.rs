@@ -4,6 +4,8 @@ use super::cues::Cue;
 use super::ride_control::RideMessage;
 use super::view::{Presented, Shows};
 use crate::clock::Zone;
+use crate::compose::builtin::ScreenId;
+use crate::compose::registry::WORKOUT_CHART;
 use crate::ride::alerts::{Alert, Cue as AlertSound};
 use crate::ride::current::Request;
 use crate::ride::laps::AutoLap;
@@ -369,13 +371,13 @@ impl Runtime {
         if page == Page::Ride {
             view.training = readout.training;
             if view.ride_page == RidePage::Workout {
-                view.show_workout(match &self.training.player {
-                    Some(player) => crate::screens::ride::workout_chart(
-                        player,
-                        &view.profile,
-                        &self.layout.workout,
-                    ),
-                    None => Default::default(),
+                let laid = self.composition.laids().get(ScreenId::RideWorkout);
+                let rect = laid.and_then(|laid| laid.box_of(WORKOUT_CHART));
+                view.show_workout(match (&self.training.player, rect) {
+                    (Some(player), Some(rect)) => {
+                        crate::screens::ride::workout_chart(player, &view.profile, rect)
+                    }
+                    _ => Default::default(),
                 });
             }
         }

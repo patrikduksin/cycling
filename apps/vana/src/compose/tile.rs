@@ -1,4 +1,4 @@
-use super::data::Data;
+use super::data::{Data, Reads};
 use super::input::Action;
 use super::solve::{Placed, Rect16};
 use crate::screens::canvas::Canvas;
@@ -82,6 +82,9 @@ pub trait Tile: Sync + 'static {
     fn heavy() -> bool {
         false
     }
+    fn reads(_: Self::Arg) -> Option<Reads> {
+        None
+    }
 }
 
 pub trait Component: Sync {
@@ -94,6 +97,9 @@ pub trait Component: Sync {
     fn action(&self, arg: u8) -> Option<Action>;
     fn glide(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data) -> Option<Landed>;
     fn heavy(&self) -> bool;
+    fn reads(&self, _arg: u8) -> Option<Reads> {
+        None
+    }
 }
 
 pub struct Erased<T>(PhantomData<T>);
@@ -140,5 +146,9 @@ impl<T: Tile> Component for Erased<T> {
 
     fn heavy(&self) -> bool {
         T::heavy()
+    }
+
+    fn reads(&self, arg: u8) -> Option<Reads> {
+        T::reads(T::Arg::decode(arg)?)
     }
 }

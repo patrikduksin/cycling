@@ -59,7 +59,7 @@ pub enum Steepness {
 }
 
 impl Steepness {
-    const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Descent,
         Self::Easy,
         Self::Moderate,

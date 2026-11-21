@@ -800,10 +800,6 @@ impl Scene<'_> {
 }
 
 impl Scene<'_> {
-    pub(super) fn layout(&self) -> &'static Layout {
-        self.layout
-    }
-
     pub(super) fn frame(&self) -> &ride::Frame {
         &self.layout.ride
     }
@@ -982,9 +978,16 @@ impl<'a> View<'a> {
     /// Solve the built-ins for `slots` and what this view shows.
     #[cfg(test)]
     pub(crate) fn compose(&mut self, slots: ride::slots::Slots) {
-        let choices = crate::compose::builtin::Choices { main_slots: slots };
-        let laids =
-            crate::compose::builtin::Laids::new(self.layout, choices, ride::main_flags_of(self));
+        use crate::compose::builtin::{Choices, Laids, ScreenId};
+        let choices = Choices { main_slots: slots };
+        let mut laids = Laids::new(self.layout, choices, ride::main_flags_of(self));
+        let shown = ScreenId::of(
+            self.page,
+            self.ride_page,
+            self.pause_screen,
+            self.ftp_offer.is_some(),
+        );
+        laids.show(shown, self.layout);
         self.laids = Some(std::boxed::Box::leak(std::boxed::Box::new(laids)));
     }
 
@@ -1027,8 +1030,9 @@ impl<'a> View<'a> {
         self.shown(self.extra.climb_lent(), "climbs", ClimbLent::NONE)
     }
 
-    pub(super) fn climb(&self) -> &ClimbFrame {
-        self.shown(self.extra.climb_frame(), "climb chart", &NO_CLIMB_FRAME)
+    /// The climb chart, on the climb page.
+    pub(super) fn climb_frame(&self) -> Option<&ClimbFrame> {
+        self.extra.climb_frame()
     }
 
     #[cfg(test)]
@@ -1395,6 +1399,9 @@ impl<'a> View<'a> {
             self.bar
                 .set_pages(pages.position(self.ride_page), pages.count());
             self.marks = ride::marks(self);
+        }
+        if riding {
+            ride::prepare_tiles(self, laid);
         }
         fill(self, |view| {
             let mut canvas = Canvas::default();

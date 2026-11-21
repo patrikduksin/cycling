@@ -1,29 +1,12 @@
-//! The workout page: the step on now and its target, the reading checked
-//! against it as the hero, how much of the step is left, the next step,
-//! and the whole workout as a chart.
-//!
-//! Top to bottom: the workout's name and the step count; the step and its
-//! target band in the target's metric colour; the 3 s power (or heart rate,
-//! or cadence) in its metric colour; a gauge with the band at 73 % and a
-//! white disc for the reading, then UNDER / ON TARGET / OVER; the time or
-//! distance left over the step's progress bar, amber for the last seconds;
-//! the next step; then one bar per played step, its height the target's
-//! intensity and its colour the target's zone. Past and current steps are
-//! full colour, the rest 25 %.
+//! The workout page's words and its chart: one bar per played step, its
+//! height the target's intensity and its colour the target's zone. Past and
+//! current steps are full colour, the rest 25 %.
 use super::Text;
 use crate::ride::zones::TrainingProfile;
-use crate::screens::Layout;
-use crate::screens::canvas::{Canvas, Shape};
-use crate::screens::chrome::{
-    AMBER, Align, BLACK, CADENCE, GREEN, HEART, POWER, Rect, Row, SECONDARY, TERTIARY, WHITE, mix,
-    zone_color,
-};
-use crate::screens::scaled::{Scaled, Track};
-use crate::screens::workout::View;
-use crate::workout::model::{Intensity, Length, Metric, Name, Played, Ramp, Target, Test, Workout};
-use crate::workout::player::{COUNTDOWN_S, Compliance, Left, Now, Player, TestReadout};
+use crate::screens::chrome::{BLACK, CADENCE, HEART, POWER, Rect, Row, TERTIARY, mix, zone_color};
+use crate::workout::model::{Length, Metric, Name, Played, Ramp, Target, Test, Workout};
+use crate::workout::player::{Left, Now, Player};
 use core::fmt::Write;
-use firmware_shell::rendering::font::{FaceRole, SPILL};
 
 /// A workout on the ride screen: before it starts, while it runs and after.
 #[derive(Clone, Copy)]
@@ -47,85 +30,9 @@ impl Training {
     }
 }
 
-/// The workout page on one panel. A text row's capitals end on its bottom.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Regions {
-    /// The workout's name and the step count.
-    pub name: Rect,
-    /// The step and its target.
-    pub step: Rect,
-    /// The reading the band checks.
-    pub hero: Rect,
-    pub gauge: Rect,
-    /// UNDER / ON TARGET / OVER, and a test's running number.
-    pub verdict: Rect,
-    /// The time or distance left of the step.
-    pub remaining: Rect,
-    pub progress: Rect,
-    pub next: Rect,
-    /// The chart runs down to the body's edge, into the toast band, as the
-    /// other charts do.
-    pub chart: Rect,
-    /// Rows where a tap adds to the step, across the panel: the time left
-    /// and its progress.
-    pub extend: Rect,
-}
-
-pub const fn regions(at: &Scaled) -> Regions {
-    use Track::{Fr, Rise, Unit};
-    let text = super::frame(at).text;
-    let [name, step, _, hero] = text.rows(
-        [Unit(16), Unit(26), Unit(8), Rise(FaceRole::Hero)],
-        Unit(0),
-        at,
-    );
-    let below = Rect {
-        top: hero.bottom,
-        ..text
-    };
-    let [_, gauge, verdict, remaining, _, progress, next, _, chart] = below.rows(
-        [
-            Unit(8),
-            Unit(8),
-            Unit(16),
-            Unit(32),
-            Unit(7),
-            Unit(5),
-            Unit(22),
-            Unit(10),
-            Fr(1),
-        ],
-        Unit(0),
-        at,
-    );
-    assert!(
-        chart.height() >= at.unit(20),
-        "the workout chart needs some height"
-    );
-    Regions {
-        name,
-        step,
-        hero,
-        gauge,
-        verdict,
-        remaining,
-        progress,
-        next,
-        chart,
-        extend: Rect {
-            top: remaining.top + at.unit(4),
-            bottom: progress.bottom + at.unit(8),
-            ..at.screen()
-        },
-    }
-}
-
+/// The widest the chart may be: the whole panel, which a tree may give it.
 const CHART_COLUMNS: usize =
-    crate::screens::scaled::largest!(crate::screens::limits::PANELS, |at| {
-        let chart = regions(&at).chart;
-        assert!(chart.height() < EMPTY as usize, "the chart's rows fit a u8");
-        chart.width()
-    });
+    crate::screens::scaled::largest!(crate::screens::limits::PANELS, |at| at.panel.width);
 /// Untimed steps take this much chart width, as if they lasted this long.
 const OPEN_WEIGHT_S: u32 = 120;
 /// A target of this much intensity fills the chart's height.
@@ -136,19 +43,38 @@ const MAX_STAIRS: u32 = 40;
 /// The chart's columns, prepared once per frame.
 #[derive(Clone, Hash)]
 pub struct Chart {
-    tops: [u8; CHART_COLUMNS],
-    /// Each column's colour as an index into `palette`, to keep the view small.
-    colors: [u8; CHART_COLUMNS],
+    /// The chart tile's box.
+    pub rect: Rect,
+    /// Each column in 16 bits, to keep the view small: its top row, and
+    /// above it its colour as an index into `palette`.
+    columns: [u16; CHART_COLUMNS],
     palette: heapless::Vec<u16, PALETTE>,
 }
 
 /// Colours a chart can use: each zone, cadence and none, lit and at 25 %.
 const PALETTE: usize = 24;
 
+const TOP_BITS: u32 = 9;
+/// A column with no bar.
+const EMPTY: u16 = (1 << TOP_BITS) - 1;
+const _: () = assert!(PALETTE <= 1 << (16 - TOP_BITS));
+const _: () = assert!(
+    crate::screens::scaled::largest!(crate::screens::limits::PANELS, |at| at.panel.height)
+        < EMPTY as usize
+);
+
 impl Chart {
+    fn top(&self, column: usize) -> u16 {
+        self.columns[column] & EMPTY
+    }
+
+    fn index_of(&self, column: usize) -> u16 {
+        self.columns[column] >> TOP_BITS
+    }
+
     fn color(&self, column: usize) -> u16 {
         self.palette
-            .get(usize::from(self.colors[column]))
+            .get(usize::from(self.index_of(column)))
             .copied()
             .unwrap_or(BLACK)
     }
@@ -164,12 +90,10 @@ impl Chart {
     }
 }
 
-const EMPTY: u8 = u8::MAX;
-
 impl Chart {
     pub const EMPTY: Self = Self {
-        tops: [EMPTY; CHART_COLUMNS],
-        colors: [0; CHART_COLUMNS],
+        rect: Rect::EMPTY,
+        columns: [EMPTY; CHART_COLUMNS],
         palette: heapless::Vec::new(),
     };
 }
@@ -180,7 +104,7 @@ impl Default for Chart {
     }
 }
 
-fn metric_color(metric: Metric) -> u16 {
+pub fn metric_color(metric: Metric) -> u16 {
     match metric {
         Metric::Power => POWER,
         Metric::Heart => HEART,
@@ -188,7 +112,7 @@ fn metric_color(metric: Metric) -> u16 {
     }
 }
 
-const fn unit(metric: Metric) -> &'static [u8] {
+pub const fn unit(metric: Metric) -> &'static [u8] {
     match metric {
         Metric::Power => b"W",
         Metric::Heart => b"BPM",
@@ -197,7 +121,7 @@ const fn unit(metric: Metric) -> &'static [u8] {
 }
 
 /// M:SS, or H:MM:SS from an hour.
-fn clock(value: &mut Text<12>, secs: u32) {
+pub fn clock(value: &mut Text<12>, secs: u32) {
     let _ = if secs >= 3600 {
         write!(
             value,
@@ -211,7 +135,7 @@ fn clock(value: &mut Text<12>, secs: u32) {
     };
 }
 
-fn length(value: &mut Text<12>, length: Length) {
+pub fn length(value: &mut Text<12>, length: Length) {
     match length {
         Length::Time(secs) => clock(value, u32::from(secs)),
         Length::Distance(m) => {
@@ -224,7 +148,7 @@ fn length(value: &mut Text<12>, length: Length) {
 }
 
 /// What a target asks for, in words: "265-300 W", "ALL OUT", "HOLD 260 W".
-fn target_text(value: &mut Text<24>, played: Played, now: &Now, test: Option<Test>) {
+pub fn target_text(value: &mut Text<24>, played: Played, now: &Now, test: Option<Test>) {
     if let Some(watts) = now.ramp_watts {
         let _ = write!(value, "HOLD {watts} W");
         return;
@@ -246,13 +170,13 @@ fn target_text(value: &mut Text<24>, played: Played, now: &Now, test: Option<Tes
     };
 }
 
-fn unit_str(metric: Metric) -> &'static str {
+pub fn unit_str(metric: Metric) -> &'static str {
     core::str::from_utf8(unit(metric)).unwrap_or("")
 }
 
 /// The step's name: its intensity, the run of its block when repeated, and
 /// its note when there is room.
-fn step_name(value: &mut Text<24>, played: Played, short: bool) {
+pub fn step_name(value: &mut Text<24>, played: Played, short: bool) {
     let _ = value.push_str(if short {
         played.step.intensity.short_label()
     } else {
@@ -263,7 +187,7 @@ fn step_name(value: &mut Text<24>, played: Played, short: bool) {
     }
 }
 
-fn next_step(next: Option<Played>, fits: impl Fn(&[u8]) -> bool) -> Text<24> {
+pub fn next_step(next: Option<Played>, fits: impl Fn(&[u8]) -> bool) -> Text<24> {
     let mut text = Text::<24>::new();
     let Some(played) = next else {
         let _ = text.push_str("FINISH");
@@ -284,7 +208,7 @@ fn next_step(next: Option<Played>, fits: impl Fn(&[u8]) -> bool) -> Text<24> {
     text
 }
 
-fn whole_words(text: &[u8], fits: impl Fn(&[u8]) -> bool) -> Option<&[u8]> {
+pub fn whole_words(text: &[u8], fits: impl Fn(&[u8]) -> bool) -> Option<&[u8]> {
     if fits(text) {
         return Some(text);
     }
@@ -293,313 +217,6 @@ fn whole_words(text: &[u8], fits: impl Fn(&[u8]) -> bool) -> Option<&[u8]> {
         .filter(|&end| text[end] == b' ' && text[end - 1] != b' ')
         .map(|end| &text[..end])
         .find(|words| fits(words))
-}
-
-pub(super) fn prepare(view: &View) -> Canvas {
-    let layout = view.layout;
-    let (at, regions) = (&layout.scaled, &layout.workout);
-    let (caption, body) = (at.face(FaceRole::Caption), at.face(FaceRole::Body));
-    let (left_edge, right_edge) = (regions.step.left, regions.step.right);
-    let width = right_edge - left_edge;
-    let mut canvas = Canvas::default();
-    let Some(training) = &view.training else {
-        canvas.fit(
-            &[body],
-            b"NO WORKOUT",
-            width,
-            left_edge,
-            regions.step.bottom,
-            Align::Left,
-            SECONDARY,
-        );
-        return canvas;
-    };
-    let now = &training.now;
-
-    let mut widest = Text::<24>::new();
-    let _ = write!(widest, "STEP {}/{}", now.steps, now.steps);
-    let spelled_out_fits = caption.width(training.name.as_bytes())
-        + caption.width(widest.as_bytes())
-        + at.unit(8)
-        + 2 * SPILL
-        <= width;
-    let count = |step| {
-        let mut count = Text::<24>::new();
-        let _ = if training.done {
-            count.push_str("DONE")
-        } else if spelled_out_fits {
-            write!(count, "STEP {}/{}", step, now.steps)
-        } else {
-            write!(count, "{}/{}", step, now.steps)
-        };
-        count
-    };
-    canvas.caption(
-        at,
-        count(now.position + 1).as_bytes(),
-        width / 2,
-        right_edge - SPILL,
-        regions.name.bottom,
-        Align::Right,
-    );
-    let widest_count_width = caption.width(count(now.steps).as_bytes());
-    let room = width.saturating_sub(SPILL + widest_count_width + at.unit(8));
-    let full_name = training.name.as_bytes();
-    let name =
-        whole_words(full_name, |text| caption.width(text) + SPILL <= room).unwrap_or(full_name);
-    canvas.caption(at, name, room, left_edge, regions.name.bottom, Align::Left);
-
-    // The step and its target.
-    let metric = now.band.map_or(Metric::Power, |band| band.metric);
-    let color = metric_color(metric);
-    let mut target = Text::<24>::new();
-    let mut name = Text::<24>::new();
-    if training.done {
-        let _ = name.push_str("WORKOUT DONE");
-    } else {
-        step_name(&mut name, now.played, false);
-        target_text(&mut target, now.played, now, training.test);
-    }
-    let target_color = if now.band.is_some() { color } else { SECONDARY };
-    let name_room = caption.width(name.as_bytes()) + at.unit(8) + 2 * SPILL;
-    // The target is never cut: it keeps at least its smallest size.
-    let target_floor = caption.width(target.as_bytes()) + SPILL;
-    let name_right = if training.done {
-        width
-    } else {
-        let target = canvas.fit(
-            &[body, caption],
-            target.as_bytes(),
-            (width * 3 / 5)
-                .min(width.saturating_sub(name_room))
-                .max(target_floor),
-            right_edge - SPILL,
-            regions.step.bottom,
-            Align::Right,
-            target_color,
-        );
-        target.left.saturating_sub(left_edge + at.unit(8))
-    };
-    let name_color = if training.done { GREEN } else { WHITE };
-    if !training.done && caption.width(name.as_bytes()) + SPILL > name_right {
-        name = Text::new();
-        step_name(&mut name, now.played, true);
-    }
-    canvas.fit(
-        &[body, caption],
-        name.as_bytes(),
-        name_right,
-        left_edge,
-        regions.step.bottom,
-        Align::Left,
-        name_color,
-    );
-
-    // The reading the band checks, as the hero, its unit beside it.
-    let mut reading = Text::<12>::new();
-    let _ = match now.reading {
-        Some(value) => write!(reading, "{value}"),
-        None => reading.push_str("--"),
-    };
-    let unit_width = caption.width(unit(metric)) + SPILL;
-    let smoothing = caption.width(b"3 S") + SPILL + at.unit(8);
-    let hero = canvas.fit(
-        &[at.face(FaceRole::Hero), at.face(FaceRole::Large)],
-        reading.as_bytes(),
-        width - unit_width - at.unit(6) - smoothing,
-        left_edge,
-        regions.hero.bottom,
-        Align::Left,
-        color,
-    );
-    canvas.fit(
-        &[caption],
-        unit(metric),
-        unit_width,
-        hero.right() + at.unit(6),
-        regions.hero.bottom,
-        Align::Left,
-        SECONDARY,
-    );
-    if metric == Metric::Power && now.reading.is_some() {
-        canvas.caption(
-            at,
-            b"3 S",
-            at.unit(40),
-            right_edge - SPILL,
-            regions.hero.bottom,
-            Align::Right,
-        );
-    }
-
-    // The band gauge and the verdict under it.
-    gauge(&mut canvas, layout, now, color);
-    let mut free_from = left_edge;
-    if let Some(compliance) = now.compliance {
-        let (text, verdict): (&[u8], u16) = match compliance {
-            Compliance::Under => (b"UNDER", AMBER),
-            Compliance::In => (b"ON TARGET", GREEN),
-            Compliance::Over => (b"OVER", AMBER),
-        };
-        let run = canvas.fit(
-            &[caption],
-            text,
-            width / 2,
-            left_edge,
-            regions.verdict.bottom,
-            Align::Left,
-            verdict,
-        );
-        free_from = run.right() + at.unit(10);
-    }
-    if let Some(test) = now.test {
-        let mut text = Text::<24>::new();
-        let _ = match test {
-            TestReadout::Average(w) => write!(text, "AVG {w} W"),
-            TestReadout::BestMinute(w) => write!(text, "BEST {w} W"),
-        };
-        canvas.fit(
-            &[caption],
-            text.as_bytes(),
-            right_edge - SPILL - free_from,
-            right_edge - SPILL,
-            regions.verdict.bottom,
-            Align::Right,
-            POWER,
-        );
-    }
-
-    // What is left of the step, over its progress.
-    if !training.done {
-        let mut left = Text::<12>::new();
-        let (words, last): (&[u8], bool) = match now.left {
-            Left::Secs(secs) => {
-                clock(&mut left, secs);
-                (
-                    b"LEFT",
-                    secs <= COUNTDOWN_S + 2 && view.state == crate::ride::log::Status::Recording,
-                )
-            }
-            Left::Metres(m) => {
-                let _ = write!(left, "{}.{:02}", m / 1000, m % 1000 / 10);
-                (b"KM LEFT", false)
-            }
-            Left::Open(secs) => {
-                clock(&mut left, secs);
-                let starts_test = now
-                    .next
-                    .is_some_and(|next| next.step.intensity == Intensity::Test);
-                (
-                    if starts_test {
-                        b"LAP TO START"
-                    } else {
-                        b"LAP TO END"
-                    },
-                    false,
-                )
-            }
-        };
-        let value = canvas.fit(
-            &[at.face(FaceRole::Value), body],
-            left.as_bytes(),
-            width / 2,
-            left_edge,
-            regions.remaining.bottom,
-            Align::Left,
-            if last { AMBER } else { WHITE },
-        );
-        canvas.caption(
-            at,
-            words,
-            right_edge - value.right() - at.unit(12),
-            value.right() + at.unit(6),
-            regions.remaining.bottom,
-            Align::Left,
-        );
-        let progress = regions.progress;
-        let radius = at.unit(2);
-        canvas.shape(Shape::Bar {
-            rect: progress,
-            radius,
-            color: TERTIARY,
-        });
-        let lit = left_edge + width * usize::from(now.progress) / 1000;
-        if lit > left_edge + at.unit(4) {
-            canvas.shape(Shape::Bar {
-                rect: Rect {
-                    right: lit,
-                    ..progress
-                },
-                radius,
-                color: WHITE,
-            });
-        }
-
-        let label = canvas.caption(
-            at,
-            b"NEXT",
-            at.unit(50),
-            left_edge,
-            regions.next.bottom,
-            Align::Left,
-        );
-        let room = right_edge - label.right() - at.unit(14);
-        let next = next_step(now.next, |text| caption.width(text) + SPILL <= room);
-        canvas.fit(
-            &[body, caption],
-            next.as_bytes(),
-            room,
-            label.right() + at.unit(8),
-            regions.next.bottom,
-            Align::Left,
-            WHITE,
-        );
-    }
-    canvas
-}
-
-/// The track from 70 % of the band's low end to 130 % of its high end, the
-/// band on it at 73 % of the metric colour so it reads in sunlight, and the
-/// reading as a disc.
-fn gauge(canvas: &mut Canvas, layout: &Layout, now: &Now, color: u16) {
-    let Some(band) = now.band else {
-        return;
-    };
-    let (at, track) = (&layout.scaled, layout.workout.gauge);
-    let low = u32::from(band.low) * 7 / 10;
-    let high = (u32::from(band.high) * 13 / 10).max(low + 1);
-    let x = |value: u32| {
-        track.left + (value.clamp(low, high) - low) as usize * track.width() / (high - low) as usize
-    };
-    let radius = at.unit(4);
-    canvas.shape(Shape::Bar {
-        rect: track,
-        radius,
-        color: TERTIARY,
-    });
-    let (from, to) = (
-        x(band.low.into()),
-        x(band.high.into()).max(x(band.low.into()) + at.unit(6)),
-    );
-    canvas.shape(Shape::Bar {
-        rect: Rect {
-            left: from,
-            right: to.min(track.right),
-            ..track
-        },
-        radius,
-        color: mix(color, BLACK, 11),
-    });
-    if let Some(reading) = now.reading {
-        let disc = at.unit(5);
-        let cx = x(reading.into()).clamp(track.left + disc, track.right - disc);
-        canvas.shape(Shape::Disc {
-            cx: 4 * cx as i32,
-            cy: 4 * (track.top + track.height() / 2) as i32,
-            radius: 4 * disc as i32,
-            color: WHITE,
-        });
-    }
 }
 
 /// How hard a step is, in percent of threshold, for the chart's height.
@@ -638,12 +255,16 @@ fn stairs(ramp: Ramp, profile: &TrainingProfile, current: u32) -> u32 {
     reach.max(current) + 1
 }
 
-/// Lay out the chart across `regions.chart`: each played step takes width
-/// in proportion to its time, with a one-column gap before it. A ramp is a
-/// stair per stage.
-pub fn chart(player: &Player, profile: &TrainingProfile, regions: &Regions) -> Chart {
-    let (width, rows) = (regions.chart.width(), regions.chart.height());
-    let mut chart = Chart::default();
+/// Lay out the chart across `rect`, the chart tile's box: each played step
+/// takes width in proportion to its time, with a one-column gap before it.
+/// A ramp is a stair per stage.
+pub fn chart(player: &Player, profile: &TrainingProfile, rect: Rect) -> Chart {
+    let (width, rows) = (rect.width(), rect.height());
+    debug_assert!(width <= CHART_COLUMNS && rows < usize::from(EMPTY));
+    let mut chart = Chart {
+        rect,
+        ..Chart::default()
+    };
     let workout: &Workout = player.workout();
     let done = player.done();
     let now = player.now(profile);
@@ -699,38 +320,34 @@ pub fn chart(player: &Player, profile: &TrainingProfile, regions: &Regions) -> C
             };
             let color = if dim { mix(color, BLACK, 4) } else { color };
             let height = (pct.min(FULL_PCT) as usize * rows / FULL_PCT as usize).max(3);
-            chart.tops[column] = (rows - height) as u8;
-            chart.colors[column] = chart.index(color);
+            let index = u16::from(chart.index(color));
+            chart.columns[column] = (rows - height) as u16 | index << TOP_BITS;
         }
     }
     chart
 }
 
-pub(super) fn chart_parts(
-    chart: &Chart,
-    regions: &Regions,
-    parts: &mut firmware_shell::shell::Parts,
-) {
-    parts.add(regions.chart.top..regions.chart.bottom, chart);
+pub(super) fn chart_parts(chart: &Chart, parts: &mut firmware_shell::shell::Parts) {
+    parts.add(chart.rect.top..chart.rect.bottom, chart);
 }
 
-pub(super) fn paint_chart(chart: &Chart, regions: &Regions, row: &mut Row) {
-    let (y, area) = (row.y(), regions.chart);
+pub(super) fn paint_chart(chart: &Chart, row: &mut Row) {
+    let (y, area) = (row.y(), chart.rect);
     if !(area.top..area.bottom).contains(&y) {
         return;
     }
-    let line = (y - area.top) as u8;
+    let line = (y - area.top) as u16;
     let width = area.width();
     let mut column = 0;
     while column < width {
-        let filled = |c: usize| chart.tops[c] != EMPTY && line >= chart.tops[c];
+        let filled = |c: usize| chart.top(c) != EMPTY && line >= chart.top(c);
         if !filled(column) {
             column += 1;
             continue;
         }
-        let color = chart.colors[column];
+        let color = chart.index_of(column);
         let start = column;
-        while column < width && filled(column) && chart.colors[column] == color {
+        while column < width && filled(column) && chart.index_of(column) == color {
             column += 1;
         }
         row.span(area.left + start..area.left + column, chart.color(start));
@@ -739,15 +356,15 @@ pub(super) fn paint_chart(chart: &Chart, regions: &Regions, row: &mut Row) {
 
 /// The per-pixel original of `paint_chart`.
 #[cfg(test)]
-pub(super) fn chart_pixel(chart: &Chart, regions: &Regions, x: usize, y: usize) -> u16 {
-    let area = regions.chart;
+pub(super) fn chart_pixel(chart: &Chart, x: usize, y: usize) -> u16 {
+    let area = chart.rect;
     if !(area.left..area.right).contains(&x) {
         return BLACK;
     }
     let column = x - area.left;
     if (area.top..area.bottom).contains(&y)
-        && chart.tops[column] != EMPTY
-        && (y - area.top) as u8 >= chart.tops[column]
+        && chart.top(column) != EMPTY
+        && (y - area.top) as u16 >= chart.top(column)
     {
         return chart.color(column);
     }
@@ -757,12 +374,38 @@ pub(super) fn chart_pixel(chart: &Chart, regions: &Regions, x: usize, y: usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compose::builtin::{Choices, Laid, ScreenId};
+    use crate::compose::registry::{STEP_LEFT, WORKOUT_CHART, WORKOUT_LINE};
     use crate::ride::log::{Sample, Status};
-    use crate::screens::chrome::Rect;
+    use crate::screens::Layout;
+    use crate::screens::canvas::Canvas;
+    use crate::screens::chrome::{AMBER, GREEN, WHITE};
     use crate::screens::ride::RidePage;
-    use crate::screens::workout::Page;
+    use crate::screens::workout::{Page, View};
     use crate::workout::library::{BUILT_IN, FTP_RAMP, FTP_TWENTY, VO2_MAX};
+    use crate::workout::model::Intensity;
     use crate::workout::player::Player;
+
+    /// The page's tiles on `layout`.
+    fn laid(layout: &'static Layout, radar: bool) -> Laid {
+        let flags = crate::screens::ride::main_flags(false, radar, true, false);
+        Laid::new(ScreenId::RideWorkout, layout, Choices::default(), flags).unwrap()
+    }
+
+    /// The chart tile's box on the C606 without a radar.
+    fn chart_box() -> Rect {
+        laid(&crate::screens::BASE, false)
+            .box_of(WORKOUT_CHART)
+            .unwrap()
+    }
+
+    /// Show `player` on `view`'s workout page, as the app does.
+    fn show(view: &mut View, player: &Player) {
+        view.compose_main();
+        let laid = view.laids.unwrap().get(ScreenId::RideWorkout).unwrap();
+        let rect = laid.box_of(WORKOUT_CHART).unwrap();
+        view.show_workout(chart(player, &view.profile, rect));
+    }
 
     fn page(player: &Player, watts: Option<u16>) -> View<'static> {
         page_at(
@@ -774,12 +417,14 @@ mod tests {
 
     fn page_at(player: &Player, watts: Option<u16>, ftp: u16) -> View<'static> {
         let mut view = View::new(Page::Ride, 0, None);
+        // A radar keeps the text as narrow as it gets on the C606.
+        view.radar_paired = true;
         view.profile.ftp_watts = ftp;
         view.ride_page = RidePage::Workout;
         view.state = Status::Recording;
         view.sample.power_watts = watts;
         view.training = Some(Training::of(player, &view.profile));
-        view.show_workout(chart(player, &view.profile, &view.layout.workout));
+        show(&mut view, player);
         view.prepare();
         view
     }
@@ -799,8 +444,7 @@ mod tests {
         }
     }
 
-    const PAGE: Rect = crate::screens::BASE.ride.body;
-    const REGIONS: Regions = crate::screens::BASE.workout;
+    const PAGE: Rect = crate::screens::BASE.scaled.screen();
 
     #[test]
     fn a_chart_of_a_ramp_from_tens_of_kilowatts_still_lays_out() {
@@ -817,8 +461,12 @@ mod tests {
             None,
         );
         assert_eq!(workout.validate(), Ok(()));
-        let chart = chart(&Player::new(workout), &TrainingProfile::default(), &REGIONS);
-        assert!(chart.tops.iter().any(|&top| top != EMPTY));
+        let chart = chart(
+            &Player::new(workout),
+            &TrainingProfile::default(),
+            chart_box(),
+        );
+        assert!((0..CHART_COLUMNS).any(|c| chart.top(c) != EMPTY));
     }
 
     #[test]
@@ -828,8 +476,8 @@ mod tests {
         let workout = Workout::new("FAR", &[far; 12], &[], None);
         assert_eq!(workout.validate(), Ok(()));
         let player = Player::new(workout);
-        let chart = chart(&player, &TrainingProfile::default(), &REGIONS);
-        assert!(chart.tops.iter().any(|&top| top != EMPTY));
+        let chart = chart(&player, &TrainingProfile::default(), chart_box());
+        assert!((0..CHART_COLUMNS).any(|c| chart.top(c) != EMPTY));
     }
 
     #[test]
@@ -885,26 +533,23 @@ mod tests {
         let mut player = Player::new(FTP_RAMP);
         player.skip();
         ride(&mut player, 130, 140);
-        let chart = chart(&player, &profile, &REGIONS);
+        let chart = chart(&player, &profile, chart_box());
         let ahead = mix(zone_color(profile.power_zone(147)), BLACK, 4);
-        let to = (0..REGIONS.chart.width())
-            .position(|c| chart.tops[c] != EMPTY && chart.color(c) == ahead)
+        let to = (0..chart.rect.width())
+            .position(|c| chart.top(c) != EMPTY && chart.color(c) == ahead)
             .expect("a dim stair ahead");
         let from = (0..to)
             .rev()
-            .take_while(|&c| chart.tops[c] == chart.tops[to - 1])
+            .take_while(|&c| chart.top(c) == chart.top(to - 1))
             .last()
             .unwrap();
         assert!(to - from > 3, "a stair, not the whole ramp");
-        assert!((from..to).all(|c| chart.tops[c] == chart.tops[from]));
+        assert!((from..to).all(|c| chart.top(c) == chart.top(from)));
         assert!(
-            chart.tops[from - 1] > chart.tops[from],
+            chart.top(from - 1) > chart.top(from),
             "the stair before is lower"
         );
-        assert!(
-            chart.tops[to] < chart.tops[from],
-            "the next stair is higher"
-        );
+        assert!(chart.top(to) < chart.top(from), "the next stair is higher");
         assert_ne!(chart.color(from), chart.color(to));
     }
 
@@ -981,20 +626,22 @@ mod tests {
         ride(&mut player, 30, 240);
         let view = page(&player, Some(240));
         let chart = view.chart();
+        let area = chart.rect;
         let row = |y: usize| -> std::vec::Vec<u16> {
-            (REGIONS.chart.left..REGIONS.chart.right)
-                .map(|x| chart_pixel(chart, &REGIONS, x, y))
+            (area.left..area.right)
+                .map(|x| chart_pixel(chart, x, y))
                 .collect()
         };
-        let last = row(REGIONS.chart.bottom - 1);
+        let last = row(area.bottom - 1);
+        assert_eq!(area.bottom, view.layout.scaled.panel.height);
         assert!(
-            (0..REGIONS.chart.width())
-                .filter(|&c| chart.tops[c] != EMPTY)
+            (0..area.width())
+                .filter(|&c| chart.top(c) != EMPTY)
                 .all(|c| last[c] != BLACK),
             "every step's bar reaches the screen's last row"
         );
         assert!(
-            (REGIONS.chart.top..REGIONS.chart.bottom).all(|y| !row(y).contains(&WHITE)),
+            (area.top..area.bottom).all(|y| !row(y).contains(&WHITE)),
             "no white marker in the chart"
         );
     }
@@ -1036,12 +683,12 @@ mod tests {
                     view.state = Status::Recording;
                     view.sample.power_watts = Some(1999);
                     view.training = Some(Training::of(&player, &view.profile));
-                    view.show_workout(chart(&player, &view.profile, &layout.workout));
+                    show(&mut view, &player);
                     view.prepare().check_layout();
                     let what = std::format!("{:?} radar {radar}", layout.scaled.panel);
                     let canvas = view.canvas();
-                    canvas.assert_laid_out(layout.ride.body, &["1999"], &what);
-                    let chart = layout.workout.chart.top;
+                    canvas.assert_laid_out(layout.scaled.screen(), &["1999"], &what);
+                    let chart = view.chart().rect.top;
                     assert!(
                         canvas.runs.iter().all(|run| run.bottom() <= chart),
                         "{what}: text over the chart"
@@ -1134,16 +781,14 @@ mod tests {
                     ride(&mut player, 1, 200);
                     let mut view = page(&player, Some(200));
                     view.layout = layout;
-                    view.show_workout(chart(&player, &view.profile, &layout.workout));
+                    show(&mut view, &player);
                     view.prepare().check_layout();
-                    let top = layout.workout.name.bottom;
+                    let title = laid(layout, true).box_of(WORKOUT_LINE).unwrap();
                     let shown = view
                         .canvas()
                         .runs
                         .iter()
-                        .filter(|run| {
-                            run.bottom() <= top + 2 && run.left == layout.workout.step.left
-                        })
+                        .filter(|run| run.bottom() <= title.bottom + 2 && run.left == title.left)
                         .map(|run| {
                             std::string::String::from_utf8_lossy(run.line.text()).into_owned()
                         })
@@ -1167,18 +812,107 @@ mod tests {
         }
     }
 
+    /// A tree may grow the chart over the whole panel: on every panel, every
+    /// built-in workout fills that box and paints every row as its
+    /// per-pixel reference does.
+    #[test]
+    fn the_chart_at_the_largest_box_accept_allows_paints_on_every_panel() {
+        for layout in crate::screens::panels::ALL {
+            let rect = crate::screens::ride::largest_box(layout, WORKOUT_CHART);
+            for (index, &workout) in BUILT_IN.iter().enumerate() {
+                let mut player = Player::new(*workout);
+                ride(&mut player, 30, 240);
+                let chart = chart(&player, &TrainingProfile::default(), rect);
+                let what = std::format!("workout {index} on {:?}", layout.scaled.panel);
+                let tops: std::vec::Vec<u16> = (0..rect.width()).map(|c| chart.top(c)).collect();
+                assert!(tops.iter().any(|&top| top != EMPTY), "{what}");
+                assert!(
+                    tops.iter()
+                        .all(|&top| top == EMPTY || usize::from(top) < rect.height()),
+                    "{what}"
+                );
+                for y in rect.top..rect.bottom {
+                    let mut pixels = [BLACK; crate::screens::chrome::WIDTH];
+                    paint_chart(&chart, &mut Row::new(y, &mut pixels));
+                    for (x, &pixel) in pixels.iter().enumerate() {
+                        assert_eq!(pixel, chart_pixel(&chart, x, y), "{what}: {x},{y}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn painted_rows_match_the_reference() {
         let mut player = Player::new(VO2_MAX);
         player.skip();
         ride(&mut player, 30, 240);
         let view = page(&player, Some(240));
-        for y in REGIONS.chart.top - 2..REGIONS.chart.bottom {
+        let area = view.chart().rect;
+        for y in area.top - 2..area.bottom {
             let mut pixels = [BLACK; crate::screens::chrome::WIDTH];
-            paint_chart(view.chart(), &REGIONS, &mut Row::new(y, &mut pixels));
+            paint_chart(view.chart(), &mut Row::new(y, &mut pixels));
             for (x, &pixel) in pixels.iter().enumerate() {
-                assert_eq!(pixel, chart_pixel(view.chart(), &REGIONS, x, y), "{x},{y}");
+                assert_eq!(pixel, chart_pixel(view.chart(), x, y), "{x},{y}");
             }
         }
+    }
+
+    /// The balance rule: the rows the words leave over the chart are even
+    /// gaps, above the first and below the last as well as between them.
+    #[test]
+    fn the_words_gaps_are_even_on_every_panel() {
+        for layout in crate::screens::panels::ALL {
+            for radar in [false, true] {
+                let laid = laid(layout, radar);
+                let bar = crate::screens::ride::main_status_bar(&laid).unwrap();
+                let chart = laid.box_of(WORKOUT_CHART).unwrap();
+                let mut edges = std::vec![bar.bottom as i32];
+                for placed in &laid.leaves()[1..] {
+                    let rect = placed.rect;
+                    if rect.top as usize >= chart.top || rect.top as usize == bar.bottom {
+                        continue;
+                    }
+                    edges.extend([i32::from(rect.top), i32::from(rect.bottom)]);
+                }
+                edges.push(chart.top as i32);
+                let gaps: std::vec::Vec<i32> =
+                    edges.chunks(2).map(|pair| pair[1] - pair[0]).collect();
+                let (least, most) = (gaps.iter().min().unwrap(), gaps.iter().max().unwrap());
+                assert!(
+                    most - least <= 1 && *least > 0,
+                    "radar {radar} on {:?}: gaps {gaps:?}",
+                    layout.scaled.panel
+                );
+            }
+        }
+    }
+
+    /// A tap on the time left adds to the step; nothing else on the page
+    /// acts.
+    #[test]
+    fn only_the_time_left_answers_a_tap() {
+        let laid = laid(&crate::screens::BASE, false);
+        let solved = laid.solved();
+        let stops: std::vec::Vec<_> = solved
+            .focus_order()
+            .map(|placed| (placed.node, solved.action(placed)))
+            .collect();
+        let left = laid.box_of(STEP_LEFT).unwrap();
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0].1, Some(crate::compose::input::Action::ExtendStep));
+        let (x, y) = (left.left as u16 + 4, left.top as u16 + 4);
+        let hit = crate::compose::input::hit(laid.buttons(), &solved, x, y);
+        assert_eq!(hit.map(|(_, action)| action), stops[0].1);
+        assert_eq!(
+            laid.buttons().held,
+            Some(crate::compose::input::Action::ExtendStep)
+        );
+    }
+
+    #[test]
+    fn the_page_reads_the_steps_target() {
+        let slots = crate::screens::ride::slots::Slots::default();
+        assert_eq!(RidePage::Workout.readings(slots), None);
     }
 }

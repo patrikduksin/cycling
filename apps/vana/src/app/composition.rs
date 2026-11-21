@@ -156,7 +156,7 @@ impl Owners for Carried<'_> {
     }
 
     fn extend_step(&mut self) {
-        why!("compose.unowned.extend_step");
+        self.runtime.extend_step(self.now);
     }
 
     fn course_off(&mut self) {

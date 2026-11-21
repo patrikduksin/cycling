@@ -3,6 +3,7 @@ use super::climb_page::{Follow, press_undone};
 use super::cues::Cue;
 use super::input::HOLD_GAP_MS;
 use super::navigation::{Navigation, Pause, Restore, To};
+use crate::compose::input::Action;
 use crate::ride::log::Status;
 use crate::screens::chrome::Tone;
 use crate::screens::ride::RidePage;
@@ -52,7 +53,8 @@ pub(super) struct Mark {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MoveHold {
     Mark,
-    Extend,
+    /// What the screen shown holds MOVE for, as its buttons name it.
+    Screen(Action),
     StopFollowing,
 }
 
@@ -229,7 +231,7 @@ impl Runtime {
         }));
         match move_hold {
             MoveHold::Mark => self.mark(pressed_ms, page, now),
-            MoveHold::Extend => self.extend_step(now),
+            MoveHold::Screen(action) => self.carry(action, true, now, now),
             MoveHold::StopFollowing => self.stop_following_from_map(now),
         }
         self.display.redraw();
@@ -253,15 +255,19 @@ impl Runtime {
     fn move_hold(&self) -> MoveHold {
         let ride_shown = self.navigation.page() == Page::Ride
             && !(self.ride.active().status() == Status::Paused && !self.navigation.pause_hidden());
-        match self.navigation.ride_page() {
-            RidePage::Workout
+        let held = self
+            .screen_id()
+            .builtin()
+            .and_then(|builtin| builtin.buttons.held);
+        match (self.navigation.ride_page(), held) {
+            (_, Some(Action::ExtendStep))
                 if ride_shown
                     && self.ride.active().status() == Status::Recording
                     && self.step_extendable() =>
             {
-                MoveHold::Extend
+                MoveHold::Screen(Action::ExtendStep)
             }
-            RidePage::Map if ride_shown && self.following() => MoveHold::StopFollowing,
+            (RidePage::Map, _) if ride_shown && self.following() => MoveHold::StopFollowing,
             _ => MoveHold::Mark,
         }
     }
@@ -440,13 +446,13 @@ mod tests {
                 "a hold begun on a running step extends it in place of a mark",
                 Hold::Holding(Press {
                     last: 2_400,
-                    move_hold: MoveHold::Extend,
+                    move_hold: MoveHold::Screen(Action::ExtendStep),
                     ..started
                 }),
                 report(true, 2_500, NEXT),
                 Hold::Spent,
                 Effect::Held {
-                    move_hold: MoveHold::Extend,
+                    move_hold: MoveHold::Screen(Action::ExtendStep),
                     pressed_ms: 1_000,
                     page: "ride/main",
                     restore: NEXT,

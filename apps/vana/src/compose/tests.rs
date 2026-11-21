@@ -1157,8 +1157,28 @@ fn every_tile_offers_looks_that_shrink_and_fit_the_canvas() {
     assert_eq!(
         names,
         [
-            "space", "value", "caption", "unit", "gauge", "zone", "icon", "status", "tap",
-            "reading", "total", "effort", "chip", "script"
+            "space",
+            "value",
+            "caption",
+            "unit",
+            "gauge",
+            "zone",
+            "icon",
+            "status",
+            "tap",
+            "reading",
+            "total",
+            "effort",
+            "chip",
+            "road",
+            "climb effort",
+            "steepness",
+            "climb profile",
+            "workout line",
+            "target band",
+            "step left",
+            "workout chart",
+            "script"
         ]
     );
     for at in panels() {

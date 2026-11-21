@@ -1,5 +1,5 @@
 use crate::screens::chrome::{CADENCE, GRADE, HEART, POWER, SPEED, WHITE};
-use crate::screens::ride;
+use crate::screens::ride::{self, ClimbRoad as Road, Training};
 use crate::screens::workout::Text;
 use core::fmt::Write;
 
@@ -23,6 +23,26 @@ pub trait Data {
     fn sample(&self, _metric: Metric, _ago: u16) -> Option<i32> {
         None
     }
+    /// The road the climb page shows, and its chart for this frame.
+    fn road(&self) -> Option<Road<'_>> {
+        None
+    }
+    /// The workout chosen or running.
+    fn training(&self) -> Option<&Training> {
+        None
+    }
+    /// The ride is recording, not ready or paused.
+    fn recording(&self) -> bool {
+        false
+    }
+}
+
+/// What a tile reads, for a trace's shown line: a metric, or whatever the
+/// workout step targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reads {
+    Metric(Metric),
+    Target,
 }
 
 /// A point on an effort's zone gauge: the zone it falls in, from 1, and

@@ -348,9 +348,8 @@ fn the_workout_page_draws_on_both_test_panels() {
         assert!(lit(&twin.sim) > 2_000, "{} workout", model.name);
 
         let left: u64 = twin.sim.workout()["left_s"].parse().unwrap();
-        let extend = model.layout.workout.extend;
-        let y = extend.top + extend.height() / 2;
-        twin.sim.tap(model.width as u16 / 2, y as u16);
+        let words = twin.sim.screen().run("LEFT").expect("the time left");
+        twin.sim.tap(model.width as u16 / 2, words.y as u16);
         twin.sim.advance(seconds(1));
         let extended: u64 = twin.sim.workout()["left_s"].parse().unwrap();
         assert!(

@@ -3,6 +3,7 @@
 //! its family's file.
 use super::tile::Component;
 
+mod climb_workout;
 mod primitive;
 mod ride;
 mod script;
@@ -10,7 +11,7 @@ mod scroll;
 mod statics;
 
 #[allow(unused_imports)]
-pub use {primitive::*, ride::*, script::*, scroll::*, statics::*};
+pub use {climb_workout::*, primitive::*, ride::*, script::*, scroll::*, statics::*};
 
 /// A family's block of ids and its tiles, the first at the block's start.
 struct Family {
@@ -19,38 +20,24 @@ struct Family {
     tiles: &'static [&'static dyn Component],
 }
 
+const fn family(first: u8, end: u8, tiles: &'static [&'static dyn Component]) -> Family {
+    Family { first, end, tiles }
+}
+
+/// One line a family, in id order.
 const FAMILIES: &[Family] = &[
-    Family {
-        first: 0,
-        end: 15,
-        tiles: primitive::TILES,
-    },
+    family(0, 15, primitive::TILES),
     #[cfg(test)]
-    Family {
-        first: TAP,
-        end: TAP + 1,
-        tiles: &[&super::tile::Erased::<super::input::tests::Tap>::NEW],
-    },
-    Family {
-        first: 16,
-        end: 48,
-        tiles: ride::TILES,
-    },
-    Family {
-        first: 48,
-        end: 64,
-        tiles: statics::TILES,
-    },
-    Family {
-        first: 64,
-        end: 80,
-        tiles: scroll::TILES,
-    },
-    Family {
-        first: 80,
-        end: 96,
-        tiles: script::TILES,
-    },
+    family(
+        TAP,
+        TAP + 1,
+        &[&super::tile::Erased::<super::input::tests::Tap>::NEW],
+    ),
+    family(16, 32, ride::TILES),
+    family(32, 40, climb_workout::TILES),
+    family(48, 64, statics::TILES),
+    family(64, 80, scroll::TILES),
+    family(80, 96, script::TILES),
 ];
 
 const _: () = {
@@ -58,6 +45,7 @@ const _: () = {
     while at < FAMILIES.len() {
         let family = &FAMILIES[at];
         assert!(family.tiles.len() <= (family.end - family.first) as usize);
+        assert!(at == 0 || FAMILIES[at - 1].end <= family.first);
         at += 1;
     }
 };

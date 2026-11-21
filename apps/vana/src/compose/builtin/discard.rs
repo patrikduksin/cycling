@@ -9,7 +9,7 @@ use crate::compose::tiles::line::Say;
 use crate::screens::cue::Icon;
 use device_api::input::Role;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree,
     buttons: Buttons {
         act: button(Action::Ride(Role::Act), Icon::Trash),
@@ -17,12 +17,12 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         move_: None,
         held: None,
     },
-});
+};
 
-pub const SAVING: Option<&Builtin> = Some(&Builtin {
+pub const SAVING: &Builtin = &Builtin {
     tree,
     buttons: Buttons::FREE,
-});
+};
 
 fn tree(_: &Choices) -> Nodes {
     QUESTION.into_iter().collect()

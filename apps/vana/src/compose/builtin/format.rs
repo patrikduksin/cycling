@@ -8,7 +8,7 @@ use crate::compose::node::Node;
 use crate::compose::tiles::line::Say;
 use crate::screens::cue::Icon;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| QUESTION.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: answer(true, Icon::Trash),
@@ -16,16 +16,16 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         move_: None,
         held: None,
     },
-});
+};
 
-pub const WAIT: Option<&Builtin> = Some(&Builtin {
+pub const WAIT: &Builtin = &Builtin {
     tree: |_: &Choices| {
         [panel(1), say(Say::FormatWait)]
             .into_iter()
             .collect::<Nodes>()
     },
     buttons: Buttons::FREE,
-});
+};
 
 const QUESTION: [Node; 7] = [
     panel(1),

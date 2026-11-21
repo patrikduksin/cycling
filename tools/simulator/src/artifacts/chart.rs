@@ -174,8 +174,8 @@ fn parse_css_hex(css: &str) -> [u8; 3] {
 }
 
 pub fn chart_svg(series: &[Series], markers: &[(u64, String)], width: u32) -> String {
-    let layout = Layout::new(series, markers, f64::from(width));
-    let height = layout.height();
+    let device = Layout::new(series, markers, f64::from(width));
+    let height = device.height();
     let (grid, ink) = (hex(GRID), hex(INK));
     let mut svg = String::new();
     let _ = write!(
@@ -183,14 +183,14 @@ pub fn chart_svg(series: &[Series], markers: &[(u64, String)], width: u32) -> St
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\" font-family=\"monospace\" font-size=\"11\">\n<rect width=\"100%\" height=\"100%\" fill=\"{}\"/>\n",
         hex(BACKGROUND)
     );
-    let right = layout.width - RIGHT;
-    for tick in layout.ticks() {
-        let x = layout.x(tick);
+    let right = device.width - RIGHT;
+    for tick in device.ticks() {
+        let x = device.x(tick);
         let _ = writeln!(
             svg,
             "<line x1=\"{x:.1}\" y1=\"{TOP}\" x2=\"{x:.1}\" y2=\"{:.1}\" stroke=\"{grid}\"/><text x=\"{x:.1}\" y=\"{:.1}\" fill=\"{ink}\" text-anchor=\"middle\">{}</text>",
-            layout.axis_y(),
-            layout.axis_y() + 15.0,
+            device.axis_y(),
+            device.axis_y() + 15.0,
             mmss(tick)
         );
     }
@@ -200,10 +200,10 @@ pub fn chart_svg(series: &[Series], markers: &[(u64, String)], width: u32) -> St
         let _ = writeln!(
             svg,
             "<rect x=\"{LEFT}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" fill=\"none\" stroke=\"{grid}\"/>\n<text x=\"{LEFT}\" y=\"{:.1}\" fill=\"{}\">{}</text>",
-            layout.plot_top(i),
+            device.plot_top(i),
             right - LEFT,
-            layout.plot_bottom(i) - layout.plot_top(i),
-            layout.panel_top(i) + 14.0,
+            device.plot_bottom(i) - device.plot_top(i),
+            device.panel_top(i) + 14.0,
             escape(&s.color),
             escape(&legend(s))
         );
@@ -212,17 +212,17 @@ pub fn chart_svg(series: &[Series], markers: &[(u64, String)], width: u32) -> St
                 svg,
                 "<text x=\"{:.1}\" y=\"{:.1}\" fill=\"{ink}\" text-anchor=\"end\">{}</text><text x=\"{:.1}\" y=\"{:.1}\" fill=\"{ink}\" text-anchor=\"end\">{}</text>",
                 LEFT - 6.0,
-                layout.plot_top(i) + 4.0,
+                device.plot_top(i) + 4.0,
                 number(range.map_or(hi, |r| r.1)),
                 LEFT - 6.0,
-                layout.plot_bottom(i) + 4.0,
+                device.plot_bottom(i) + 4.0,
                 number(range.map_or(lo, |r| r.0)),
             );
         }
         for segment in segments(s) {
             let points: Vec<String> = segment
                 .iter()
-                .map(|&(t, v)| format!("{:.1},{:.1}", layout.x(t), layout.y(i, (lo, hi), v)))
+                .map(|&(t, v)| format!("{:.1},{:.1}", device.x(t), device.y(i, (lo, hi), v)))
                 .collect();
             if let [only] = points.as_slice() {
                 let (cx, cy) = only.split_once(',').unwrap_or(("0", "0"));
@@ -242,12 +242,12 @@ pub fn chart_svg(series: &[Series], markers: &[(u64, String)], width: u32) -> St
         }
     }
     let marker = hex(MARKER);
-    for ((t, label), row) in markers.iter().zip(label_rows(&layout, markers, 7.0)) {
-        let x = layout.x(*t);
+    for ((t, label), row) in markers.iter().zip(label_rows(&device, markers, 7.0)) {
+        let x = device.x(*t);
         let _ = writeln!(
             svg,
             "<line x1=\"{x:.1}\" y1=\"{TOP}\" x2=\"{x:.1}\" y2=\"{:.1}\" stroke=\"{marker}\" stroke-dasharray=\"4 3\"/>",
-            layout.axis_y(),
+            device.axis_y(),
         );
         if let Some(row) = row {
             let _ = writeln!(
@@ -264,21 +264,21 @@ pub fn chart_svg(series: &[Series], markers: &[(u64, String)], width: u32) -> St
 }
 
 pub fn chart_png(series: &[Series], markers: &[(u64, String)], width: usize) -> Canvas {
-    let layout = Layout::new(series, markers, width as f64);
-    let mut canvas = Canvas::new(width, layout.height() as usize, BACKGROUND);
-    let right = layout.width - RIGHT;
-    for tick in layout.ticks() {
-        let x = layout.x(tick) as usize;
-        canvas.fill_rect(x, TOP as usize, 1, (layout.axis_y() - TOP) as usize, GRID);
+    let device = Layout::new(series, markers, width as f64);
+    let mut canvas = Canvas::new(width, device.height() as usize, BACKGROUND);
+    let right = device.width - RIGHT;
+    for tick in device.ticks() {
+        let x = device.x(tick) as usize;
+        canvas.fill_rect(x, TOP as usize, 1, (device.axis_y() - TOP) as usize, GRID);
         let label = mmss(tick);
         let label_x = x.saturating_sub(label.len() * 3);
-        canvas.text(label_x, layout.axis_y() as usize + 8, 1, INK, &label);
+        canvas.text(label_x, device.axis_y() as usize + 8, 1, INK, &label);
     }
     for (i, s) in series.iter().enumerate() {
         let range = value_range(s);
         let (lo, hi) = plot_range(range);
         let color = parse_css_hex(&s.color);
-        let (top, bottom) = (layout.plot_top(i) as usize, layout.plot_bottom(i) as usize);
+        let (top, bottom) = (device.plot_top(i) as usize, device.plot_bottom(i) as usize);
         let frame = (LEFT as usize, top, (right - LEFT) as usize, bottom - top);
         canvas.fill_rect(frame.0, frame.1, frame.2, 1, GRID);
         canvas.fill_rect(frame.0, frame.1 + frame.3, frame.2, 1, GRID);
@@ -286,7 +286,7 @@ pub fn chart_png(series: &[Series], markers: &[(u64, String)], width: usize) -> 
         canvas.fill_rect(frame.0 + frame.2, frame.1, 1, frame.3 + 1, GRID);
         canvas.text(
             LEFT as usize,
-            layout.panel_top(i) as usize + 8,
+            device.panel_top(i) as usize + 8,
             1,
             color,
             &legend(s),
@@ -306,8 +306,8 @@ pub fn chart_png(series: &[Series], markers: &[(u64, String)], width: usize) -> 
                 .iter()
                 .map(|&(t, v)| {
                     (
-                        layout.x(t).round() as i64,
-                        layout.y(i, (lo, hi), v).round() as i64,
+                        device.x(t).round() as i64,
+                        device.y(i, (lo, hi), v).round() as i64,
                     )
                 })
                 .collect();
@@ -319,10 +319,10 @@ pub fn chart_png(series: &[Series], markers: &[(u64, String)], width: usize) -> 
             }
         }
     }
-    for ((t, label), row) in markers.iter().zip(label_rows(&layout, markers, 6.0)) {
-        let x = layout.x(*t) as usize;
+    for ((t, label), row) in markers.iter().zip(label_rows(&device, markers, 6.0)) {
+        let x = device.x(*t) as usize;
         let mut y = TOP as usize;
-        while y < layout.axis_y() as usize {
+        while y < device.axis_y() as usize {
             canvas.fill_rect(x, y, 1, 4, MARKER);
             y += 7;
         }
@@ -334,12 +334,12 @@ pub fn chart_png(series: &[Series], markers: &[(u64, String)], width: usize) -> 
 }
 
 /// The label row for each marker, or none when every row is taken there.
-fn label_rows(layout: &Layout, markers: &[(u64, String)], char_width: f64) -> Vec<Option<usize>> {
+fn label_rows(device: &Layout, markers: &[(u64, String)], char_width: f64) -> Vec<Option<usize>> {
     let mut ends = [f64::MIN; LABEL_ROWS];
     markers
         .iter()
         .map(|(t, label)| {
-            let x = layout.x(*t) + 3.0;
+            let x = device.x(*t) + 3.0;
             let row = ends.iter().position(|&end| x > end + 6.0)?;
             ends[row] = x + label.len() as f64 * char_width;
             Some(row)

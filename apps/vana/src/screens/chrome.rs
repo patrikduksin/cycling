@@ -1,11 +1,10 @@
 //! Shared chrome: canvas geometry, palette, shapes, the status bar and toasts.
 //!
-//! Every screen draws below the status bar inside its layout's
-//! `chrome.content` ([`regions`]); pages derive their own boxes from it
-//! rather than hard-coding coordinates, so the chrome can change without
-//! rewriting them. See `docs/ui.md`.
-use super::Layout;
-use super::scaled::{BASE, Scale, Scaled, Track};
+//! A screen's boxes come from its tree. The chrome floats over them: the
+//! status bar over the top [`status_bar`] rows where the tree places no
+//! status tile, and toasts over the bottom [`toast_band`]. See `docs/ui.md`.
+use super::Device;
+use super::scaled::{BASE, Scale, Scaled};
 use super::workout::Text;
 use core::num::NonZeroU8;
 use core::ops::Range;
@@ -77,37 +76,42 @@ impl Rect {
     }
 }
 
-/// Where the chrome sits on a panel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Regions {
-    /// The thin bar on top of every screen but the boot splash. It has no
-    /// divider: black space separates it from the content.
-    pub status_bar: Rect,
-    /// Everything below the status bar.
-    pub content: Rect,
-    /// Toasts float over the bottom of the content; pages keep their least
-    /// important readings, or nothing, here.
-    pub toast: Rect,
-}
-
-pub const fn regions(at: &Scaled) -> Regions {
-    use Track::{Fr, Unit};
-    let screen = at.screen();
-    let [status_bar, _, content] = screen.rows([Unit(22), Unit(2), Fr(1)], Unit(0), at);
-    let [_, toast] = screen.rows([Fr(1), Unit(40)], Unit(0), at);
-    Regions {
-        status_bar,
-        content,
-        toast,
+/// The thin bar on top of every screen but the boot splash. It has no
+/// divider: black space separates it from the content.
+pub const fn status_bar(at: &Scaled) -> Rect {
+    Rect {
+        bottom: at.unit(BAR_UNITS),
+        ..at.screen()
     }
 }
 
+/// Everything below the status bar and the black under it.
+pub const fn content(at: &Scaled) -> Rect {
+    Rect {
+        top: at.unit(BAR_UNITS + UNDER_BAR_UNITS),
+        ..at.screen()
+    }
+}
+
+/// Toasts float over the bottom of the content; pages keep their least
+/// important readings, or nothing, here.
+pub const fn toast_band(at: &Scaled) -> Rect {
+    Rect {
+        top: at.panel.height - at.unit(TOAST_UNITS),
+        ..at.screen()
+    }
+}
+
+const BAR_UNITS: usize = 22;
+const UNDER_BAR_UNITS: usize = 2;
+const TOAST_UNITS: usize = 40;
+
 #[cfg(test)]
-pub const STATUS_BAR: Rect = regions(&BASE).status_bar;
+pub const STATUS_BAR: Rect = status_bar(&BASE);
 #[cfg(test)]
-pub const CONTENT: Rect = regions(&BASE).content;
+pub const CONTENT: Rect = content(&BASE);
 #[cfg(test)]
-pub const TOAST: Rect = regions(&BASE).toast;
+pub const TOAST: Rect = toast_band(&BASE);
 
 /// RGB565 from 8-bit channels.
 pub const fn rgb(r: u8, g: u8, b: u8) -> u16 {
@@ -1179,16 +1183,16 @@ pub struct Toast {
 impl Toast {
     /// Text that does not fit the screen is cut.
     pub fn new(message: &str, tone: Tone) -> Self {
-        Self::placed(message.as_bytes(), tone, &super::BASE)
+        Self::placed(message.as_bytes(), tone, &super::C606)
     }
 
-    /// The same toast laid out on `layout`'s panel.
-    pub fn on(&self, layout: &Layout) -> Self {
-        Self::placed(self.text(), self.tone, layout)
+    /// The same toast laid out on `device`'s panel.
+    pub fn on(&self, device: &Device) -> Self {
+        Self::placed(self.text(), self.tone, device)
     }
 
-    fn placed(bytes: &[u8], tone: Tone, layout: &Layout) -> Self {
-        let at = &layout.scaled;
+    fn placed(bytes: &[u8], tone: Tone, device: &Device) -> Self {
+        let at = &device.scaled;
         let body = at.face(FaceRole::Body);
         let width = at.panel.width;
         let (inset, dot, padding) = (at.unit(12), at.unit(TOAST_DOT), at.unit(TOAST_PADDING));
@@ -1205,7 +1209,7 @@ impl Toast {
             None => line.width() + 2 * inset,
         };
         let height = at.unit(TOAST_HEIGHT);
-        let top = layout.chrome.toast.bottom - at.unit(8) - height;
+        let top = at.panel.height - at.unit(8) - height;
         let pill = Rect {
             left: (width - pill_width) / 2,
             top,
@@ -1623,8 +1627,8 @@ mod tests {
 
     #[test]
     fn the_longest_toasts_keep_every_letter_in_the_band_on_every_panel() {
-        for layout in crate::screens::panels::ALL {
-            let (band, width) = (layout.chrome.toast, layout.scaled.panel.width);
+        for device in crate::screens::panels::ALL {
+            let (band, width) = (toast_band(&device.scaled), device.scaled.panel.width);
             for (message, tone) in [
                 ("STORAGE NOT READY", Tone::Alert),
                 ("PRESS AGAIN TO SAVE", Tone::Warn),
@@ -1632,8 +1636,8 @@ mod tests {
                 ("NOT SAVED", Tone::Warn),
                 ("COURSE OFF", Tone::Info),
             ] {
-                let toast = Toast::new(message, tone).on(layout);
-                let what = std::format!("{message} on {:?}", layout.scaled.panel);
+                let toast = Toast::new(message, tone).on(device);
+                let what = std::format!("{message} on {:?}", device.scaled.panel);
                 assert_eq!(toast.text(), message.as_bytes(), "{what}");
                 let pill = toast.pill;
                 assert!(pill.left > 0 && pill.right < width, "{what}: {pill:?}");

@@ -173,38 +173,12 @@ impl Runtime {
         }
         self.navigation.pressed(received);
         self.display.redraw();
-        if let Some(pressed) = self.composed_press(button) {
-            if let super::composition::Pressed::Asks(action) = pressed {
-                self.act(action, held, received, now, ant);
-            }
-            return;
-        }
-        match self.navigation.page() {
-            Page::Ride if button == Role::Move => {
-                self.timing.press(received);
-                self.next_ride_page();
-            }
-            Page::Ride | Page::EndRide => {
-                self.timing.press(received);
-                self.ride_press(button, held, received, now);
-            }
-            Page::Settings => self.settings_input(button, now, held),
-            Page::Sensors => {}
-            // On the engine: `composed_press` took the press.
-            Page::Boot
-            | Page::Home
-            | Page::Phone
-            | Page::Setup
-            | Page::Ready
-            | Page::Bests
-            | Page::Form
-            | Page::Format
-            | Page::LoseRides
-            | Page::DiscardRide
-            | Page::Summary
-            | Page::PastRide
-            | Page::History
-            | Page::Workouts => {}
+        // The number editor's buttons step and repeat outside the tree.
+        if self.editing_number() {
+            self.settings_input(button, now, held);
+        } else if let Some(super::composition::Pressed::Asks(action)) = self.composed_press(button)
+        {
+            self.act(action, held, received, now, ant);
         }
     }
 
@@ -303,7 +277,7 @@ impl Runtime {
         let sign = super::course::sign_of(&self.track, now);
         let page = self.navigation.ride_page();
         let chip = crate::screens::ride::main_chip(self.composition.main());
-        crate::screens::sign::on_page(page, sign, radar, self.layout, chip)
+        crate::screens::sign::on_page(page, sign, radar, self.device, chip)
             .is_some_and(|placed| placed.rect().contains(x, y))
     }
 
@@ -346,7 +320,7 @@ impl Runtime {
                 let Some(laid) = laids.get(self.menu.screen()) else {
                     return;
                 };
-                let action = self.menu.tap_at(laid, self.layout, x, y, now);
+                let action = self.menu.tap_at(laid, self.device, x, y, now);
                 self.sensors_action(action, now, ant);
             }
             Control::Sign => self.navigation.go(To::RidePage(RidePage::Map)),

@@ -3,7 +3,7 @@ use crate::compose::bench::MAIN_BYTES;
 use crate::compose::builtin::ScreenId;
 use crate::compose::data::Metric;
 use crate::compose::parse::VERSION;
-use crate::screens::BASE;
+use crate::screens::C606;
 use crate::testing::{Cut, JournalFlash, Rng, main_with};
 use std::boxed::Box;
 use std::vec::Vec;
@@ -16,14 +16,14 @@ fn flash() -> JournalFlash {
 
 fn boot(flash: &mut JournalFlash) -> Box<Overrides> {
     let mut overrides = Box::new(Overrides::new());
-    overrides.serve(&mut *flash, &BASE);
+    overrides.serve(&mut *flash, &C606);
     overrides
 }
 
 fn change(overrides: &mut Overrides, flash: &mut JournalFlash, change: Change, base: u32) -> Saved {
-    overrides.propose(change, &BASE).unwrap();
+    overrides.propose(change, &C606).unwrap();
     overrides.save(base);
-    overrides.serve(&mut *flash, &BASE);
+    overrides.serve(&mut *flash, &C606);
     overrides
         .saved()
         .expect("a save answers in the pass it was asked")
@@ -160,14 +160,14 @@ fn a_refused_screen_leaves_the_proposal_empty_and_nothing_to_save() {
             key: MAIN,
             nodes: &unknown,
         },
-        &BASE,
+        &C606,
     );
     assert_eq!(
         std::format!("{}", refused.unwrap_err()),
         "screen 0: node 1 is of unknown kind 99"
     );
     overrides.save(0);
-    overrides.serve(&mut flash, &BASE);
+    overrides.serve(&mut flash, &C606);
     assert_eq!(overrides.saved(), Some(Saved::Failed));
     assert_eq!(flash.mutations, 0);
 }
@@ -386,7 +386,7 @@ fn a_change_whose_record_would_not_fit_is_refused_with_its_length() {
             key: MAIN,
             nodes: &MAIN_BYTES,
         },
-        &BASE,
+        &C606,
     );
     let long = record.len() + 2 + MAIN_BYTES.len();
     assert!(long > RECORD);
@@ -395,7 +395,7 @@ fn a_change_whose_record_would_not_fit_is_refused_with_its_length() {
         Err(std::format!("{long} bytes is longer than a record"))
     );
     overrides.save(1);
-    overrides.serve(&mut flash, &BASE);
+    overrides.serve(&mut flash, &C606);
     assert_eq!(overrides.saved(), Some(Saved::Failed));
 }
 
@@ -436,7 +436,7 @@ fn reset_after_saving_the_builtin_shows_the_row_chosen_since() {
     let mut flash = flash();
     let mut overrides = boot(&mut flash);
     let initial = Choices::default();
-    let mut laids = Laids::new(&BASE, initial, Flags::NONE, overrides.shown());
+    let mut laids = Laids::new(&C606, initial, Flags::NONE, overrides.shown());
     let identical: Vec<_> = main_tree(initial.main_slots)
         .into_iter()
         .flat_map(|node| node.bytes())

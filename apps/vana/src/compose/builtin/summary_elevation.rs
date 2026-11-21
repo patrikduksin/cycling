@@ -9,10 +9,10 @@ use crate::compose::node::{Node, Size};
 use crate::compose::registry::PROFILE;
 use crate::screens::ride::summary::Stat;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_| tree(),
     buttons: FINISH,
-});
+};
 
 /// The profile keeps clear of the done cue as a row of cells does.
 const KEEP: Keep = Keep {

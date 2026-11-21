@@ -1014,7 +1014,7 @@ fn play_and_back() -> Controls {
         move_: None,
         held: None,
     };
-    Controls::new(buttons, crate::screens::BASE.corners)
+    Controls::new(buttons, crate::screens::C606.corners)
 }
 
 #[test]
@@ -1065,10 +1065,10 @@ fn a_tile_is_accepted_clear_of_its_screens_cues_or_refused_at_accept() {
                         &mut seen,
                     );
                     assert!(solve.is_ok());
-                    let layout = seen.rects[node].unwrap();
-                    let clear = crate::screens::BASE.corners.columns_clear_of(
+                    let device = seen.rects[node].unwrap();
+                    let clear = crate::screens::C606.corners.columns_clear_of(
                         cues.shown(),
-                        layout.rect(),
+                        device.rect(),
                         at.panel,
                     );
                     let mut canvas = Canvas::default();
@@ -1092,7 +1092,7 @@ fn a_tile_is_accepted_clear_of_its_screens_cues_or_refused_at_accept() {
                         );
                         drawn += 1;
                     }
-                    if clear.right.saturating_sub(clear.left) < usize::from(layout.width()) {
+                    if clear.right.saturating_sub(clear.left) < usize::from(device.width()) {
                         cut += 1;
                     }
                 }

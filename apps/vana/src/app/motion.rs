@@ -332,7 +332,7 @@ mod tests {
         static MAIN: std::sync::LazyLock<crate::compose::builtin::Laid> =
             std::sync::LazyLock::new(|| {
                 crate::screens::ride::main_laid(
-                    &crate::screens::BASE,
+                    &crate::screens::C606,
                     crate::screens::ride::slots::Slots::default(),
                     crate::compose::Flags::NONE,
                 )
@@ -341,7 +341,7 @@ mod tests {
             graphics,
             &TrainingProfile::default(),
             Some(&MAIN),
-            &crate::screens::BASE,
+            &crate::screens::C606,
         )
     }
 

@@ -845,9 +845,9 @@ mod tests {
             FaceRole::Caption,
         ];
         let mut faces: Vec<&'static Face> = Vec::new();
-        for layout in ALL {
+        for device in ALL {
             for role in roles {
-                let face = layout.scaled.face(role);
+                let face = device.scaled.face(role);
                 if !faces.iter().any(|seen| core::ptr::eq(*seen, face)) {
                     faces.push(face);
                 }

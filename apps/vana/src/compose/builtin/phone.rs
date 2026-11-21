@@ -13,7 +13,7 @@ const SWITCH: Option<Button> = Some(Button {
     cue: None,
 });
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree,
     buttons: Buttons {
         act: SWITCH,
@@ -24,7 +24,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         move_: SWITCH,
         held: None,
     },
-});
+};
 
 const SIDE_UNITS: u8 = 12;
 /// Rows between a line and the one it goes with.

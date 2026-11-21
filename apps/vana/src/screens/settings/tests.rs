@@ -7,7 +7,7 @@ use crate::screens::workout::{Page, View};
 use firmware_shell::rendering::font::FaceRole;
 
 fn view_on(
-    layout: &'static crate::screens::Layout,
+    device: &'static crate::screens::Device,
     cursor: usize,
     editing: bool,
     values: &[(&str, &str)],
@@ -15,7 +15,7 @@ fn view_on(
     scroll: i32,
 ) -> View<'static> {
     let mut view = View::new(Page::Settings, cursor, None);
-    view.layout = layout;
+    view.device = device;
     view.editing = editing;
     view.scroll = scroll;
     view.compose_main();
@@ -30,7 +30,7 @@ fn view_on(
 }
 
 fn view(cursor: usize, editing: bool, values: &[(&str, &str)], status: &str) -> View<'static> {
-    view_on(&crate::screens::BASE, cursor, editing, values, status, 0)
+    view_on(&crate::screens::C606, cursor, editing, values, status, 0)
 }
 
 fn profile(cursor: usize, editing: bool) -> View<'static> {
@@ -46,9 +46,9 @@ fn profile(cursor: usize, editing: bool) -> View<'static> {
     view(cursor, editing, values, "SAVED")
 }
 
-/// The rows' page on `layout`'s panel.
-fn page(layout: &'static crate::screens::Layout) -> Layout {
-    *view_on(layout, 0, false, &[], "SAVED", 0)
+/// The rows' page on `device`'s panel.
+fn page(device: &'static crate::screens::Device) -> Layout {
+    *view_on(device, 0, false, &[], "SAVED", 0)
         .layout()
         .expect("Settings scrolls its rows")
 }
@@ -104,7 +104,7 @@ fn without_wifi_device_drops_only_the_phone_row() {
 
 #[test]
 fn rings_the_focused_row_and_fills_the_edited_number() {
-    let list = page(&crate::screens::BASE);
+    let list = page(&crate::screens::C606);
     let mut moving = profile(1, false);
     let colors: std::vec::Vec<_> = panels(&moving).iter().map(|(_, c)| *c).collect();
     assert_eq!(colors, [CARD, ACCENT, RAISED, CARD, CARD], "no pads");
@@ -126,7 +126,7 @@ fn rings_the_focused_row_and_fills_the_edited_number() {
     assert_eq!(value.color, WHITE);
     assert_eq!(
         value.line.face().cap,
-        crate::screens::BASE.scaled.face(FaceRole::Value).cap
+        crate::screens::C606.scaled.face(FaceRole::Value).cap
     );
     assert!(editing.canvas().shows("FTP WATTS") && !editing.canvas().shows("LTHR BPM"));
     assert!(editing.canvas().shows("-5") && editing.canvas().shows("+5"));
@@ -158,11 +158,11 @@ fn extreme_settings_never_overlap_or_clip() {
         ("99H LEFT", "120 RIDES"),
         ("OFF", "NO CLIMB POP-UP"),
     ];
-    for layout in crate::screens::panels::ALL {
-        let list = page(layout);
+    for device in crate::screens::panels::ALL {
+        let list = page(device);
         let screen = Rect {
             bottom: list.stretched_bottom(),
-            ..layout.scaled.screen()
+            ..device.scaled.screen()
         };
         for cursor in 0..Sections::All.fields() {
             let count = Sections::All.rows(cursor).0.len();
@@ -178,7 +178,7 @@ fn extreme_settings_never_overlap_or_clip() {
                 let statuses = ["SAVED", "SAVE FAILED, RETRYING", "NOT SAVED: DATA KEPT"];
                 for status in statuses {
                     for scroll in scrolls.clone() {
-                        let mut view = view_on(layout, cursor, editing, &long, status, scroll);
+                        let mut view = view_on(device, cursor, editing, &long, status, scroll);
                         view.prepare().check_layout();
                         let whole = (0..count).filter(|&index| list.whole(index, scroll));
                         let shown: std::vec::Vec<usize> = if editor {
@@ -195,7 +195,7 @@ fn extreme_settings_never_overlap_or_clip() {
                         }
                         let what = std::format!(
                             "{cursor} {editing} {status} at {scroll} on {:?}",
-                            layout.scaled.panel
+                            device.scaled.panel
                         );
                         view.canvas().assert_laid_out(screen, &texts, &what);
                     }
@@ -225,13 +225,13 @@ fn a_tap_on_a_pad_steps_the_number_only_while_editing() {
 
 #[test]
 fn a_long_section_scrolls_and_shows_where_it_is() {
-    let list = page(&crate::screens::BASE);
+    let list = page(&crate::screens::C606);
     let display = Sections::All.field(Row::Brightness).unwrap();
     let rows = Sections::All.rows(display).0.len();
     assert_eq!(rows, 5);
-    let x = list.column.right + crate::screens::BASE.scaled.unit(4) + 1;
+    let x = list.column.right + crate::screens::C606.scaled.unit(4) + 1;
     let bar = |view: &mut View, y| view.pixel(x, y);
-    let scrolled = |offset| view_on(&crate::screens::BASE, display, false, &[], "SAVED", offset);
+    let scrolled = |offset| view_on(&crate::screens::C606, display, false, &[], "SAVED", offset);
     // From the top: the thumb at the top of the track.
     let mut top = scrolled(0);
     assert!(top.canvas().shows("DISPLAY"));

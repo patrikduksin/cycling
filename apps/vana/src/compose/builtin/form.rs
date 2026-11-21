@@ -21,19 +21,19 @@ const BUTTONS: Buttons = Buttons {
     held: None,
 };
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| TREE.into_iter().collect::<Nodes>(),
     buttons: BUTTONS,
-});
+};
 
-pub const NOTE: Option<&Builtin> = Some(&Builtin {
+pub const NOTE: &Builtin = &Builtin {
     tree: |_: &Choices| {
         note(Say::FormNoteTitle, Say::FormNoteLine)
             .into_iter()
             .collect()
     },
     buttons: BUTTONS,
-});
+};
 
 const fn band(reads: Reads) -> Node {
     Node::leaf(FORM_BAND, reads as u8, Size::CONTENT)

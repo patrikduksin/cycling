@@ -56,10 +56,10 @@ impl Panel {
     }
     /// The whole frame is `sheet`, pixel for pixel.
     pub(super) fn shows_sheet(&self, sheet: crate::screens::power::Sheet) -> bool {
-        let layout = &crate::screens::BASE;
+        let device = &crate::screens::C606;
         let laid = crate::compose::builtin::Laid::new(
             sheet.screen(),
-            layout,
+            device,
             Default::default(),
             Default::default(),
             None,
@@ -75,7 +75,7 @@ impl Panel {
                 let under = canvas.pixel(look, x, y, Shown(0));
                 let shown = cues
                     .iter()
-                    .fold(under, |under, cue| cue.pixel(look, x, y, under, layout));
+                    .fold(under, |under, cue| cue.pixel(look, x, y, under, device));
                 self.pixel(x, y) == shown.0
             })
         })
@@ -87,7 +87,7 @@ impl device_api::input::InputSource for Keys {
     fn controls(&self) -> device_api::input::Controls {
         device_api::input::Controls {
             touch: Availability::Unsupported,
-            buttons: crate::screens::BASE_BUTTONS,
+            buttons: crate::screens::C606_BUTTONS,
         }
     }
     fn take_edge(&mut self) -> Option<device_api::input::Edge> {

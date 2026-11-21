@@ -7,7 +7,7 @@
 //! action that moves forward (start, resume, save, done), a `RAISED` disc for
 //! stepping back or ending, a `RED` one for throwing a ride away. See
 //! `docs/ui.md`, "Button cues".
-use super::Layout;
+use super::Device;
 use super::chrome::{
     BLACK, GREEN, Look, RAISED, RED, Rect, Row, Shown, WHITE, blend, disc, paint_disc_over,
 };
@@ -219,8 +219,8 @@ const ICON_REACH: i32 = 9;
 
 /// Whether any of `cues` sits in a top corner, where the status bar would
 /// cut it: such a screen shows without the bar.
-pub fn any_at_top(cues: &[Cue], layout: &Layout) -> bool {
-    cues.iter().any(|cue| cue.corner(layout).top())
+pub fn any_at_top(cues: &[Cue], device: &Device) -> bool {
+    cues.iter().any(|cue| cue.corner(device).top())
 }
 
 /// A cue beside the button of `role`, which answers the screen.
@@ -245,14 +245,14 @@ impl Cue {
         }
     }
 
-    /// The corner the cue sits in on `layout`'s device.
-    pub const fn corner(&self, layout: &Layout) -> Corner {
-        layout.corners.of_role(self.role)
+    /// The corner the cue sits in on `device`.
+    pub const fn corner(&self, device: &Device) -> Corner {
+        device.corners.of_role(self.role)
     }
 
     /// Whether the disc reaches into `rect`.
-    pub const fn covers(&self, rect: Rect, layout: &Layout) -> bool {
-        let (cx, cy) = self.corner(layout).inset(layout.scaled.panel, 0);
+    pub const fn covers(&self, rect: Rect, device: &Device) -> bool {
+        let (cx, cy) = self.corner(device).inset(device.scaled.panel, 0);
         let (cx, cy) = (cx as usize, cy as usize);
         let dx = if cx < rect.left {
             rect.left - cx
@@ -267,21 +267,21 @@ impl Cue {
         dx * dx + dy * dy < RADIUS * RADIUS
     }
 
-    pub const fn rows(&self, layout: &Layout) -> core::ops::Range<usize> {
-        let height = layout.scaled.panel.height;
-        if self.corner(layout).top() {
+    pub const fn rows(&self, device: &Device) -> core::ops::Range<usize> {
+        let height = device.scaled.panel.height;
+        if self.corner(device).top() {
             0..RADIUS + 1
         } else {
             height - RADIUS - 1..height
         }
     }
 
-    pub fn paint(&self, row: &mut Row, layout: &Layout) {
+    pub fn paint(&self, row: &mut Row, device: &Device) {
         let y = row.y();
-        if !self.rows(layout).contains(&y) {
+        if !self.rows(device).contains(&y) {
             return;
         }
-        let (corner, panel) = (self.corner(layout), layout.scaled.panel);
+        let (corner, panel) = (self.corner(device), device.scaled.panel);
         let (fill, ink) = self.colors();
         let (cx, cy) = corner.inset(panel, 0);
         let disc = (4 * cx, 4 * cy, 4 * RADIUS as i32);
@@ -300,8 +300,8 @@ impl Cue {
     }
 
     /// The per-pixel original of `paint`, over `under`, as `look` shows it.
-    pub fn pixel(&self, look: Look, x: usize, y: usize, under: Shown, layout: &Layout) -> Shown {
-        let (corner, panel) = (self.corner(layout), layout.scaled.panel);
+    pub fn pixel(&self, look: Look, x: usize, y: usize, under: Shown, device: &Device) -> Shown {
+        let (corner, panel) = (self.corner(device), device.scaled.panel);
         let (fill, ink) = self.colors();
         let (fill, ink) = (look.ink(fill), look.ink(ink));
         let (cx, cy) = corner.inset(panel, 0);
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn the_base_buttons_put_back_top_left_move_bottom_left_and_act_bottom_right() {
-        let corners = crate::screens::BASE.corners;
+        let corners = crate::screens::C606.corners;
         assert_eq!(corners.of_role(Role::Back), Corner::TopLeft);
         assert_eq!(corners.of_role(Role::Move), Corner::BottomLeft);
         assert_eq!(corners.of_role(Role::Act), Corner::BottomRight);
@@ -610,9 +610,9 @@ mod tests {
             Corner::BottomRight,
         ];
         for ((width, height), buttons) in panels.into_iter().flat_map(|panel| {
-            [crate::screens::BASE_BUTTONS, OFF_C606_CORNERS].map(|buttons| (panel, buttons))
+            [crate::screens::C606_BUTTONS, OFF_C606_CORNERS].map(|buttons| (panel, buttons))
         }) {
-            let layout = std::boxed::Box::leak(std::boxed::Box::new(Layout::of(
+            let device = std::boxed::Box::leak(std::boxed::Box::new(Device::of(
                 crate::screens::scaled::Scaled::of(width, height),
                 &buttons,
             )));
@@ -630,17 +630,17 @@ mod tests {
                 .flat_map(|role| icons.map(|icon| (role, icon)))
             {
                 let cue = Cue::new(role, icon);
-                let corner = cue.corner(layout);
+                let corner = cue.corner(device);
                 assert!(corners.contains(&corner));
                 let (fill, ink) = cue.colors();
                 let mut inked = 0;
                 for y in 0..height {
                     let mut pixels = std::vec![BLACK; width];
-                    cue.paint(&mut Row::new(y, &mut pixels), layout);
+                    cue.paint(&mut Row::new(y, &mut pixels), device);
                     for (x, &pixel) in pixels.iter().enumerate() {
                         assert_eq!(
                             pixel,
-                            cue.pixel(Look::PLAIN, x, y, Shown(BLACK), layout).0,
+                            cue.pixel(Look::PLAIN, x, y, Shown(BLACK), device).0,
                             "{cue:?} at {x},{y}"
                         );
                         inked += usize::from(pixel == ink);
@@ -651,13 +651,13 @@ mod tests {
                 let x = |(left, right)| if corner.left() { left } else { width - right };
                 let y = |(top, bottom)| if corner.top() { top } else { height - bottom };
                 assert_eq!(
-                    cue.pixel(Look::PLAIN, x(near), y(near), Shown(BLACK), layout)
+                    cue.pixel(Look::PLAIN, x(near), y(near), Shown(BLACK), device)
                         .0,
                     fill,
                     "{cue:?} fills its {corner:?} corner"
                 );
                 assert_eq!(
-                    cue.pixel(Look::PLAIN, x(far), y(near), Shown(BLACK), layout)
+                    cue.pixel(Look::PLAIN, x(far), y(near), Shown(BLACK), device)
                         .0,
                     BLACK,
                     "{cue:?} stays small"

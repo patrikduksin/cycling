@@ -125,7 +125,7 @@ impl Runtime {
             }
             Shows::Sheet(sheet) => self.composition.show(
                 sheet.screen(),
-                self.layout,
+                self.device,
                 super::overrides::shown(&self.overrides),
             ),
         }
@@ -150,7 +150,7 @@ impl Runtime {
             now,
             self.readings.live.speed_mm_s,
             radar,
-            map::ground(&self.layout.scaled, shown),
+            map::ground(&self.device.scaled, shown),
             light,
             self.micros_clock,
         );

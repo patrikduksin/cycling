@@ -167,10 +167,10 @@ mod tests {
     #[test]
     fn every_page_lays_out_whole_with_notes_and_taps_find_cards() {
         crate::screens::check::enable(true);
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             for step in STEPS {
                 let mut view = View::new(Page::Setup, 0, None);
-                view.layout = layout;
+                view.device = device;
                 view.compose_main();
                 let _ = view.show_setup(step)[0].push_str("1000 W");
                 view.prepare().check_layout();
@@ -180,10 +180,10 @@ mod tests {
                 }
                 texts.extend(step.text());
                 texts.extend(step.cards().iter().map(|(label, _)| *label));
-                let what = std::format!("{step:?} on {:?}", layout.scaled.panel);
+                let what = std::format!("{step:?} on {:?}", device.scaled.panel);
                 let page = Rect {
-                    bottom: layout.scaled.panel.height,
-                    ..layout.chrome.content
+                    bottom: device.scaled.panel.height,
+                    ..crate::screens::chrome::content(&device.scaled)
                 };
                 view.canvas().assert_laid_out(page, &texts, &what);
                 let laid = view

@@ -5,7 +5,7 @@ use super::slots::Slots;
 use crate::compose::builtin::{Choices, Laid, ScreenId};
 use crate::compose::node::Flags;
 use crate::compose::registry::{CHIP, STATUS};
-use crate::screens::Layout;
+use crate::screens::Device;
 use crate::screens::chrome::Rect;
 use crate::screens::workout::View;
 
@@ -39,13 +39,13 @@ pub fn flags_of(view: &View) -> Flags {
     flags(view.course, view.radar_paired, workout, arrived)
 }
 
-/// The main page on `layout` for the lower line `slots` and `flags`.
-pub fn laid(layout: &Layout, slots: Slots, flags: Flags) -> Laid {
+/// The main page on `device` for the lower line `slots` and `flags`.
+pub fn laid(device: &Device, slots: Slots, flags: Flags) -> Laid {
     let choices = Choices {
         main_slots: slots,
         ..Choices::default()
     };
-    Laid::new(ScreenId::RideMain, layout, choices, flags, None).expect("the main page has a tree")
+    Laid::new(ScreenId::RideMain, device, choices, flags, None).expect("the main page has a tree")
 }
 
 pub fn status_bar(main: &Laid) -> Option<Rect> {

@@ -119,7 +119,7 @@ mod tests {
         }
         view.zone_time = time;
         let view = prepared(view);
-        let at = &view.layout.scaled;
+        let at = &view.device.scaled;
         let power_row = bars(&view)[0].0;
         let segments: std::vec::Vec<_> = view
             .canvas()
@@ -171,10 +171,10 @@ mod tests {
         for (minutes, sample) in [(0, Sample::default()), (1, fast), (100, fast)] {
             stats(minutes, &sample).prepare().check_layout();
         }
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             for radar in [false, true] {
                 let mut view = View::new(Page::Ride, 0, None);
-                view.layout = layout;
+                view.device = device;
                 view.ride_page = RidePage::Stats;
                 view.radar_paired = radar;
                 for _ in 0..36 {

@@ -7,10 +7,10 @@ use crate::compose::registry::{BEST_EFFORT, WORDS};
 use crate::ride::totals::EFFORT_SECONDS;
 use crate::screens::ride::summary::{Stat, Words};
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_| tree(),
     buttons: FINISH,
-});
+};
 
 pub(super) fn tree() -> Nodes {
     let mut body = Nodes::new();

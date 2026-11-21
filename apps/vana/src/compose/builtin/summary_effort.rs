@@ -8,10 +8,10 @@ use crate::compose::node::{Node, Size};
 use crate::compose::registry::{CELL, ZONE_TIME};
 use crate::screens::ride::summary::Stat;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_| tree(),
     buttons: FINISH,
-});
+};
 
 /// Its last tile, the recovery, is wide enough to lose a bottom corner: the
 /// page keeps only the done cue's box clear.

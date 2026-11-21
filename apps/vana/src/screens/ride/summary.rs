@@ -163,10 +163,10 @@ impl Shown {
     }
 }
 
-/// Whether a saved ride's send cue hides: while it is read back, or with no
-/// phone to send it to. DELETE RIDE? keeps its own cue.
+/// Whether a saved ride's send cue hides: when ACT sends nothing. DELETE
+/// RIDE? keeps its own cue.
 pub fn send_hidden(after: &After) -> bool {
-    after.past && !delete_shown(after) && (after.saving == Saving::Reading || !after.send)
+    after.past && !delete_shown(after) && !after.send
 }
 
 /// Whether the page is a question with a back cue, shown without the bar.
@@ -759,13 +759,13 @@ pub const fn chart_rect(rect: Rect) -> Rect {
 
 const CHART_BASELINE_ROWS: usize = 1;
 
-/// Where the elevation page's tree places the chart on `layout`'s panel.
-pub fn chart_on(layout: &crate::screens::Layout) -> Rect {
+/// Where the elevation page's tree places the chart on `device`'s panel.
+pub fn chart_on(device: &crate::screens::Device) -> Rect {
     use crate::compose::Flags;
     use crate::compose::builtin::{Choices, Laid, ScreenId};
     let laid = Laid::new(
         ScreenId::SummaryElevation,
-        layout,
+        device,
         Choices::default(),
         Flags::NONE,
         None,
@@ -831,15 +831,15 @@ mod tests {
     use crate::screens::cue::RADIUS;
     use crate::screens::workout::Page;
 
-    use crate::screens::Layout;
+    use crate::screens::Device;
 
     fn extreme(page: usize, saving: Saving) -> View<'static> {
-        extreme_on(&crate::screens::BASE, page, saving)
+        extreme_on(&crate::screens::C606, page, saving)
     }
 
-    fn extreme_on(layout: &'static Layout, page: usize, saving: Saving) -> View<'static> {
+    fn extreme_on(device: &'static Device, page: usize, saving: Saving) -> View<'static> {
         let mut view = View::new(Page::Summary, 0, None);
-        view.layout = layout;
+        view.device = device;
         let sample = Sample {
             speed_mm_s: Some(33_333),
             power_watts: Some(1999),
@@ -938,7 +938,7 @@ mod tests {
             trace.add(metres * 1000, Some(-120 + (metres as i32 % 2000)));
         }
         let mut chart = Chart::default();
-        let rect = chart_on(&crate::screens::BASE);
+        let rect = chart_on(&crate::screens::C606);
         chart.refresh(&trace, rect);
         let with_altitude = |page| {
             let mut view = extreme(page, Saving::Saved);
@@ -1156,11 +1156,11 @@ mod tests {
                 ],
             ),
         ];
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             let mut chart = Chart::default();
-            chart.refresh(&trace, chart_on(layout));
+            chart.refresh(&trace, chart_on(device));
             for (page, saving, change, want) in cases {
-                let mut view = extreme_on(layout, page, saving);
+                let mut view = extreme_on(device, page, saving);
                 let after = view.after_mut();
                 if page == 3 && !after.past {
                     after.offer = Some(offer);
@@ -1176,7 +1176,7 @@ mod tests {
                 if view.after().elevation {
                     view.set_elevation_chart(&chart);
                 }
-                let what = std::format!("page {page} {saving:?} on {:?}", layout.scaled.panel);
+                let what = std::format!("page {page} {saving:?} on {:?}", device.scaled.panel);
                 view.compose_main();
                 view.prepare().check_layout();
                 let canvas = view.canvas();

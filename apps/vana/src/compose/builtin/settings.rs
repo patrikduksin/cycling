@@ -18,7 +18,7 @@ use crate::compose::tiles::entry::Line;
 use crate::compose::tiles::pad::Way;
 use crate::screens::workout::Page;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |choices: &Choices| if choices.editing { editor() } else { rows() },
     buttons: Buttons {
         act: None,
@@ -29,7 +29,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         move_: None,
         held: None,
     },
-});
+};
 
 /// A row: what it sets over its value.
 const ROW_UNITS: u8 = 46;

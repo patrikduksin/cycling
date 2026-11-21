@@ -11,7 +11,7 @@ pub struct StatusBar;
 /// The rows the bar paints, as chrome lays it out: the tile keeps exactly
 /// these, so a tile right under it loses none of its rows.
 pub const fn rows(at: &Scaled) -> usize {
-    crate::screens::chrome::regions(at).status_bar.bottom
+    crate::screens::chrome::status_bar(at).bottom
 }
 
 impl Tile for StatusBar {

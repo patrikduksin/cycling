@@ -13,7 +13,7 @@ use crate::compose::registry::GLANCE;
 use crate::compose::tiles::entry::Line;
 use crate::screens::workout::Page;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| tree(),
     buttons: Buttons {
         act: None,
@@ -24,7 +24,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         move_: None,
         held: None,
     },
-});
+};
 
 /// A ride's card: its start over its time and distance.
 const CARD_UNITS: u8 = 54;

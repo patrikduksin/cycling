@@ -151,7 +151,7 @@ mod tests {
     use super::*;
 
     fn rect() -> Rect {
-        super::super::summary::chart_on(&crate::screens::BASE)
+        super::super::summary::chart_on(&crate::screens::C606)
     }
 
     fn trace(metres: u64, altitude_dm: impl Fn(u64) -> i32) -> Trace {
@@ -179,8 +179,8 @@ mod tests {
             1000..2000 => 6000 + (m as i32 - 1000) * 8 / 10,
             _ => 6800 - (m as i32 - 2000) / 2,
         });
-        for layout in crate::screens::panels::ALL {
-            let rect = super::super::summary::chart_on(layout);
+        for device in crate::screens::panels::ALL {
+            let rect = super::super::summary::chart_on(device);
             let mut chart = Chart::default();
             chart.refresh(&trace, rect);
             assert_eq!(chart.range_m(), Some((600, 680)));
@@ -223,15 +223,15 @@ mod tests {
     fn the_chart_at_the_largest_box_accept_allows_paints_on_every_panel() {
         use crate::compose::registry::PROFILE;
         let trace = trace(1000, |m| 6000 + m as i32);
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             let rect = super::super::summary::chart_rect(crate::screens::ride::largest_box(
-                layout, PROFILE,
+                device, PROFILE,
             ));
             let mut chart = Chart::default();
             chart.refresh(&trace, rect);
             let (first, last) = (rect.left, rect.right - 1);
             let at = |x, y| pixel(&chart, x, y).is_some();
-            let what = std::format!("{:?}", layout.scaled.panel);
+            let what = std::format!("{:?}", device.scaled.panel);
             assert!(
                 !at(first, rect.bottom - 2) && at(first, rect.bottom - 1),
                 "{what}"

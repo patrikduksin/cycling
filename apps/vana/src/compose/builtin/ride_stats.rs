@@ -11,10 +11,10 @@ use crate::compose::registry::{RIDE_CELL, SPACE, STATUS, ZONES};
 use crate::compose::tiles::ride_cell::Celled;
 use device_api::input::Role;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| page(CELLS.len() as u8 + 2, body()),
     buttons: RIDE_PAGE,
-});
+};
 
 pub(super) const RIDE_PAGE: Buttons = Buttons {
     act: Some(Button {

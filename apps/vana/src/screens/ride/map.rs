@@ -84,11 +84,7 @@ pub const fn ground(at: &Scaled, shown: Rect) -> Ground {
         shown.height() <= GROUND_ROWS,
         "the map's ground has more rows than its frame holds"
     );
-    let drawn = Rect {
-        left: 0,
-        right: at.panel.width,
-        ..shown
-    };
+    let drawn = shown.with_columns(at.screen());
     Ground {
         drawn,
         shown,

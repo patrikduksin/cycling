@@ -2,7 +2,7 @@ use super::*;
 use crate::screens::chrome::{BLACK, Shown};
 use crate::screens::panels::ALL;
 use crate::screens::workout::{Page, View};
-use crate::screens::{BASE, Layout, ride::ClimbLent};
+use crate::screens::{C606, Device, ride::ClimbLent};
 use std::vec::Vec;
 
 fn turn(glyph: Glyph, metres: u32) -> Sign {
@@ -42,22 +42,22 @@ fn signs() -> [Sign; 10] {
 
 const FORMS: [SignForm; 3] = [SignForm::Banner, SignForm::Badge, SignForm::Chip];
 
-/// The chip's box on the main page of `layout`, on a course.
-fn main_chip(radar: bool, layout: &Layout) -> Rect {
+/// The chip's box on the main page of `device`, on a course.
+fn main_chip(radar: bool, device: &Device) -> Rect {
     let flags = crate::screens::ride::main_flags(true, radar, false, false);
-    let main = crate::screens::ride::main_laid(layout, Default::default(), flags);
+    let main = crate::screens::ride::main_laid(device, Default::default(), flags);
     crate::screens::ride::main_chip(&main).unwrap()
 }
 
-fn placed(sign: Sign, form: SignForm, radar: bool, layout: &Layout) -> Option<Placed> {
+fn placed(sign: Sign, form: SignForm, radar: bool, device: &Device) -> Option<Placed> {
     match form {
-        SignForm::Chip => place_chip(sign, main_chip(radar, layout), layout),
-        _ => place(sign, form, radar, layout),
+        SignForm::Chip => place_chip(sign, main_chip(radar, device), device),
+        _ => place(sign, form, radar, device),
     }
 }
 
 fn on_c606(sign: Sign, form: SignForm, radar: bool) -> Option<Placed> {
-    placed(sign, form, radar, &BASE)
+    placed(sign, form, radar, &C606)
 }
 
 fn width(sign: Sign, form: SignForm) -> usize {
@@ -98,33 +98,30 @@ fn each_form_sits_where_its_mockup_draws_it() {
 
 #[test]
 fn a_paired_radar_moves_the_content_by_half_its_strip() {
-    for layout in ALL {
-        let shift = layout.ride.centre_shift;
+    for device in ALL {
+        let strip = crate::screens::ride::radar_columns(&device.scaled);
+        let shift = strip.width() / 2;
         for sign in [turn(Glyph::Left, 120), off(140), Sign::Arrived] {
-            let alone = place(sign, SignForm::Banner, false, layout).unwrap();
-            let paired = place(sign, SignForm::Banner, true, layout).unwrap();
+            let alone = place(sign, SignForm::Banner, false, device).unwrap();
+            let paired = place(sign, SignForm::Banner, true, device).unwrap();
             assert_eq!(paired.glyph_at.0, alone.glyph_at.0 + shift);
             let lefts = |placed: &Placed| placed.lines.iter().map(|l| l.left).collect::<Vec<_>>();
             let shifted: Vec<_> = lefts(&alone).iter().map(|x| x + shift).collect();
-            assert_eq!(lefts(&paired), shifted, "{:?}", layout.scaled);
-            assert_eq!(
-                paired.rect().left,
-                layout.ride.body.left,
-                "beside the strip"
-            );
+            assert_eq!(lefts(&paired), shifted, "{:?}", device.scaled);
+            assert_eq!(paired.rect().left, strip.right, "beside the strip");
         }
     }
 }
 
 #[test]
 fn beside_a_radar_the_badge_keeps_8_units_from_the_map_s_edge() {
-    for layout in ALL {
-        let map = layout.ride.body.left;
-        let what = |sign| std::format!("{sign:?} on {:?}", layout.scaled);
+    for device in ALL {
+        let map = crate::screens::ride::radar_columns(&device.scaled).right;
+        let what = |sign| std::format!("{sign:?} on {:?}", device.scaled);
         for sign in [turn(Glyph::Right, 250), off(140), Sign::Arrived] {
-            let alone = place(sign, SignForm::Badge, false, layout).unwrap();
-            let paired = place(sign, SignForm::Badge, true, layout).unwrap();
-            let inset = layout.scaled.unit(8);
+            let alone = place(sign, SignForm::Badge, false, device).unwrap();
+            let paired = place(sign, SignForm::Badge, true, device).unwrap();
+            let inset = device.scaled.unit(8);
             assert_eq!(alone.rect().left, inset, "{}", what(sign));
             assert_eq!(paired.rect().left, map + inset, "{}", what(sign));
             assert_eq!(
@@ -140,15 +137,15 @@ fn beside_a_radar_the_badge_keeps_8_units_from_the_map_s_edge() {
 
 #[test]
 fn every_sign_s_ink_stays_inside_it_on_every_panel() {
-    for layout in ALL {
+    for device in ALL {
         for radar in [false, true] {
             for form in FORMS {
                 for sign in signs() {
-                    let Some(placed) = placed(sign, form, radar, layout) else {
+                    let Some(placed) = placed(sign, form, radar, device) else {
                         continue;
                     };
                     let what =
-                        std::format!("{sign:?} {form:?} radar {radar} on {:?}", layout.scaled);
+                        std::format!("{sign:?} {form:?} radar {radar} on {:?}", device.scaled);
                     let (bounds, spot) = (placed.rect(), placed.spot);
                     assert!(
                         contains(spot.fill, bounds),
@@ -219,12 +216,12 @@ fn the_data_pages_show_a_banner_and_only_main_the_chip() {
 #[test]
 fn painted_signs_match_the_per_pixel_reference() {
     let under = |x: usize, y: usize| if (x + y) % 7 < 3 { RAISED } else { BLACK };
-    for layout in ALL {
-        let panel = layout.scaled.panel;
+    for device in ALL {
+        let panel = device.scaled.panel;
         for sign in signs() {
             for form in FORMS {
                 for radar in [false, true] {
-                    let Some(placed) = placed(sign, form, radar, layout) else {
+                    let Some(placed) = placed(sign, form, radar, device) else {
                         continue;
                     };
                     for y in 0..panel.height {
@@ -236,7 +233,7 @@ fn painted_signs_match_the_per_pixel_reference() {
                             assert_eq!(
                                 painted, want,
                                 "{sign:?} {form:?} radar {radar} on {:?} at ({x}, {y})",
-                                layout.scaled
+                                device.scaled
                             );
                         }
                     }
@@ -283,7 +280,7 @@ fn turn_around_is_an_amber_u_turn_whose_words_stay_inside_it() {
 
 #[test]
 fn every_ride_page_keeps_its_layout_under_a_sign_on_every_panel() {
-    for layout in ALL {
+    for device in ALL {
         for radar in [false, true] {
             for page in [
                 RidePage::Main,
@@ -293,7 +290,7 @@ fn every_ride_page_keeps_its_layout_under_a_sign_on_every_panel() {
             ] {
                 for sign in signs() {
                     let mut view = View::new(Page::Ride, 0, None);
-                    view.layout = layout;
+                    view.device = device;
                     view.ride_page = page;
                     view.course = true;
                     view.nav = sign;
@@ -303,6 +300,7 @@ fn every_ride_page_keeps_its_layout_under_a_sign_on_every_panel() {
                         RidePage::Map => view.show_map(None),
                         _ => {}
                     }
+                    view.compose_main();
                     view.prepare().check_layout();
                 }
             }

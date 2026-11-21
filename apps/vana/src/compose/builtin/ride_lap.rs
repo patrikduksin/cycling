@@ -7,10 +7,10 @@ use crate::compose::data::Metric;
 use crate::compose::node::{Node, Size};
 use crate::compose::registry::{LAP_HEAD, LAPS};
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| page(2, body()),
     buttons: RIDE_PAGE,
-});
+};
 
 const PAIRS: [[Metric; 2]; 4] = [
     [Metric::LapDistance, Metric::LapPower],

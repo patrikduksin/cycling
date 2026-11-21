@@ -10,7 +10,7 @@ use crate::compose::registry::{ENTRY, HEADING, SPACE, STATUS};
 use crate::compose::tiles::entry::Line;
 use crate::screens::workout::Page;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| tree().into_iter().collect(),
     buttons: Buttons {
         act: None,
@@ -21,7 +21,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         move_: None,
         held: None,
     },
-});
+};
 
 /// The status bar and the black under it.
 pub(super) const BAR_UNITS: u8 = 24;

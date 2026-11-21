@@ -22,9 +22,9 @@ pub(super) struct Composition {
 }
 
 impl Composition {
-    pub(super) fn new(layout: &crate::screens::Layout) -> Self {
+    pub(super) fn new(device: &crate::screens::Device) -> Self {
         Self {
-            laids: Laids::new(layout, Choices::default(), Flags::NONE, &Screens::EMPTY),
+            laids: Laids::new(device, Choices::default(), Flags::NONE, &Screens::EMPTY),
         }
     }
 
@@ -39,10 +39,10 @@ impl Composition {
     pub(super) fn show(
         &mut self,
         id: ScreenId,
-        layout: &crate::screens::Layout,
+        device: &crate::screens::Device,
         changed: &Screens,
     ) {
-        self.laids.show(id, layout, changed);
+        self.laids.show(id, device, changed);
     }
 }
 
@@ -79,7 +79,7 @@ impl Runtime {
             let slots = choices.main_slots;
             why!("compose.solve", slots, flags);
         }
-        laids.show(shown, self.layout, changed);
+        laids.show(shown, self.device, changed);
     }
 
     /// Solve the screen shown for what the rider chose, keeping what the
@@ -95,13 +95,11 @@ impl Runtime {
         let changed = super::overrides::shown(&self.overrides);
         let laids = &mut self.composition.laids;
         laids.update(choices, flags, changed);
-        laids.show(shown, self.layout, changed);
+        laids.show(shown, self.device, changed);
     }
 
     /// A press of `role` on the built-in shown, if one is.
     pub(super) fn composed_press(&mut self, role: Role) -> Option<Pressed> {
-        // The number editor's MOVE lowers and ACT raises, holding repeats:
-        // its own owner takes them.
         if self.editing_number() {
             return None;
         }
@@ -169,14 +167,14 @@ impl Runtime {
         };
         let changed = super::overrides::shown(&self.overrides).screen(id.key());
         shown
-            .or_else(|| page(&Laid::new(id, self.layout, choices, main.flags(), changed)?))
+            .or_else(|| page(&Laid::new(id, self.device, choices, main.flags(), changed)?))
             .expect("a list screen's built-in has a scroll")
     }
 
     /// A tap on card `index` of the built-in shown, which focuses its list.
     pub(super) fn composed_item(&self, index: usize) -> Option<Control> {
         let id = self.screen_id();
-        let tree = (id.builtin()?.tree)(&self.composition.main().choices());
+        let tree = (id.builtin().tree)(&self.composition.main().choices());
         let node = tree
             .iter()
             .position(|node| matches!(node.what(), Some(What::Scroll { .. })))?;

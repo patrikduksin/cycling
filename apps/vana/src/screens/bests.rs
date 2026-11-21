@@ -73,12 +73,12 @@ mod tests {
     use crate::kept::bests::Bests;
     use crate::screens::chrome::Rect;
     use crate::screens::workout::{Page, View};
-    use crate::screens::{Layout, panels};
+    use crate::screens::{Device, panels};
     use firmware_shell::rendering::font::FaceRole;
 
-    fn shown(layout: &'static Layout, bests: Bests, mode: Mode) -> View<'static> {
+    fn shown(device: &'static Device, bests: Bests, mode: Mode) -> View<'static> {
         let mut view = View::new(Page::Bests, 0, None);
-        view.layout = layout;
+        view.device = device;
         view.show_bests(bests, mode);
         view.compose_main();
         view.prepare();
@@ -86,11 +86,11 @@ mod tests {
     }
 
     fn view(bests: Bests) -> View<'static> {
-        shown(&crate::screens::BASE, bests, Mode::List)
+        shown(&crate::screens::C606, bests, Mode::List)
     }
 
-    fn page(layout: &Layout) -> Rect {
-        layout.chrome.content
+    fn page(device: &Device) -> Rect {
+        crate::screens::chrome::content(&device.scaled)
     }
 
     fn mark(value: u32, day: u16) -> Mark {
@@ -124,7 +124,7 @@ mod tests {
             "OCT 4 2024",
             "OCT 28 2024",
         ];
-        let page = page(&crate::screens::BASE);
+        let page = page(&crate::screens::C606);
         view.canvas().assert_laid_out(page, &want, "bests");
     }
 
@@ -147,7 +147,7 @@ mod tests {
         view.rider = crate::ride::rider::Rider::default().step_weight(1, true);
         view.prepare();
         view.canvas().assert_laid_out(
-            page(&crate::screens::BASE),
+            page(&crate::screens::C606),
             &["28.6 W/KG", "6.4 W/KG", "4.5 W/KG", "1999 W", "312 W"],
             "bests with weight",
         );
@@ -155,8 +155,8 @@ mod tests {
 
     #[test]
     fn clearing_asks_first_and_missing_storage_says_so() {
-        let full = page(&crate::screens::BASE);
-        let confirm = shown(&crate::screens::BASE, Bests::default(), Mode::Confirm);
+        let full = page(&crate::screens::C606);
+        let confirm = shown(&crate::screens::C606, Bests::default(), Mode::Confirm);
         confirm.canvas().assert_laid_out(
             full,
             &["CLEAR BESTS?", "THEY CANNOT COME BACK"],
@@ -164,17 +164,17 @@ mod tests {
         );
         assert_eq!(confirm.cues.len(), 2);
         crate::screens::check::enable(true);
-        for layout in panels::ALL {
-            let mut confirm = shown(layout, Bests::default(), Mode::Confirm);
+        for device in panels::ALL {
+            let mut confirm = shown(device, Bests::default(), Mode::Confirm);
             let scene = confirm.prepare();
             assert!(
                 scene.bar.is_none(),
                 "{:?}: the bar would cut the back cue",
-                layout.scaled
+                device.scaled
             );
             scene.check_layout();
         }
-        let none = shown(&crate::screens::BASE, Bests::default(), Mode::Unavailable);
+        let none = shown(&crate::screens::C606, Bests::default(), Mode::Unavailable);
         none.canvas()
             .assert_laid_out(full, &["BESTS NOT KEPT", "NO PLACE TO KEEP THEM"], "none");
         assert!(none.cues.is_empty());
@@ -212,12 +212,12 @@ mod tests {
             (Mode::NotSaved, ["BESTS NOT SAVED", "STORAGE REFUSED THEM"]),
         ];
         crate::screens::check::enable(true);
-        for layout in panels::ALL {
-            let what = std::format!("{:?}", layout.scaled);
-            let mut view = shown(layout, widest, Mode::List);
+        for device in panels::ALL {
+            let what = std::format!("{:?}", device.scaled);
+            let mut view = shown(device, widest, Mode::List);
             view.prepare().check_layout();
             let want = ["BESTS", "9999.9 KM", "99:59:59", "MOST ASCENT", "99999 M"];
-            view.canvas().assert_laid_out(page(layout), &want, &what);
+            view.canvas().assert_laid_out(page(device), &want, &what);
             view.rider = crate::ride::rider::Rider::default().step_weight(1, true);
             view.prepare().check_layout();
             let canvas = view.canvas();
@@ -233,13 +233,13 @@ mod tests {
                 let run = canvas.find(text).unwrap();
                 crate::screens::chrome::layout::text(run).unwrap().1
             };
-            let word = layout.scaled.face(FaceRole::Caption).glyph(b' ').advance;
+            let word = device.scaled.face(FaceRole::Caption).glyph(b' ').advance;
             let gap = rect(&per_kg).left - rect("20 MIN").right;
             assert!(gap >= usize::from(word), "{what}: {per_kg} meets 20 MIN");
             for (mode, want) in messages {
-                let mut view = shown(layout, Bests::default(), mode);
+                let mut view = shown(device, Bests::default(), mode);
                 view.prepare().check_layout();
-                view.canvas().assert_laid_out(page(layout), &want, &what);
+                view.canvas().assert_laid_out(page(device), &want, &what);
             }
         }
     }

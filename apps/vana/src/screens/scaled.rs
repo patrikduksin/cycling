@@ -130,10 +130,9 @@ impl Scaled {
     /// The whole panel.
     pub const fn screen(&self) -> Rect {
         Rect {
-            left: 0,
-            top: 0,
             right: self.panel.width,
             bottom: self.panel.height,
+            ..Rect::EMPTY
         }
     }
 }

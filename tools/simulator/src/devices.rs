@@ -148,7 +148,7 @@ pub struct Model {
     pub touch: bool,
     pub buttons: Fixtures,
     /// The panel as VANA lays it out.
-    pub layout: &'static vana::screens::Layout,
+    pub device: &'static vana::screens::Device,
     pub fitted: Fitted,
     /// Owned regions backed by memory, with their sizes: they never survive
     /// power-off. Every other region is the simulator's durable flash.

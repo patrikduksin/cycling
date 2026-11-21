@@ -9,7 +9,7 @@ use crate::compose::registry::WORDS;
 use crate::screens::cue::Icon;
 use crate::screens::ride::summary::Words;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_| {
         let words = Node::leaf(WORDS, Words::Offer as u8, Size::CONTENT);
         page(MARGIN_UNITS, CENTRED, 1, &[words])
@@ -29,4 +29,4 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         }),
         held: None,
     },
-});
+};

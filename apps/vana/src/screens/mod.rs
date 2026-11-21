@@ -5,8 +5,6 @@ pub mod canvas;
 pub mod check;
 pub mod chrome;
 pub mod cue;
-#[cfg(test)]
-mod cue_screens;
 pub(crate) mod data;
 pub mod form;
 pub mod format;
@@ -38,35 +36,27 @@ const _: () = assert!(
     "the shell keys fewer bands than the tallest panel has"
 );
 
-/// Every screen that lays out from the panel, laid out once on one panel.
-/// Composition keeps it in a `static`, so a screen that does not fit the
-/// panel fails that device's build. A layout that depends on what a frame
-/// shows, a course or a radar, is a field of its own, chosen per frame.
+/// What a device's screens are laid out for: its panel, at the scale its
+/// faces and icons are generated for, and the corners its buttons' cues
+/// take. A screen's boxes come from its tree, solved for these.
 #[derive(Debug, PartialEq, Eq, Hash)]
-pub struct Layout {
+pub struct Device {
     pub scaled: scaled::Scaled,
     pub corners: cue::Corners,
-    pub chrome: chrome::Regions,
-    pub sign: sign::Regions,
-    pub ride: ride::Frame,
 }
 
-impl Layout {
+impl Device {
     pub const fn of(scaled: scaled::Scaled, buttons: &Fixtures) -> Self {
-        let corners = cue::Corners::of(buttons);
         Self {
             scaled,
-            corners,
-            chrome: chrome::regions(&scaled),
-            sign: sign::regions(&scaled),
-            ride: ride::frame(&scaled),
+            corners: cue::Corners::of(buttons),
         }
     }
 }
 
-/// The buttons the base layout lays out for, the C606's: BACK high and
-/// MOVE low on the left side, ACT low on the right.
-pub const BASE_BUTTONS: Fixtures = Fixtures::new(&[
+/// The C606's buttons: BACK high and MOVE low on the left side, ACT low on
+/// the right.
+pub const C606_BUTTONS: Fixtures = Fixtures::new(&[
     Fixture {
         id: 0,
         role: Some(Role::Back),
@@ -87,22 +77,22 @@ pub const BASE_BUTTONS: Fixtures = Fixtures::new(&[
     },
 ]);
 
-/// The layout of the base 240 × 320 panel, the C606's.
-pub static BASE: Layout = Layout::of(scaled::BASE, &BASE_BUTTONS);
+/// The C606: a 240 × 320 panel at scale 1.
+pub static C606: Device = Device::of(scaled::BASE, &C606_BUTTONS);
 
 /// The simulator's test panels, for screens' own tests.
 #[cfg(test)]
 pub(crate) mod panels {
-    use super::{BASE_BUTTONS, Layout, scaled::Scaled};
+    use super::{C606_BUTTONS, Device, scaled::Scaled};
 
-    pub(crate) static WIDE: Layout = Layout::of(Scaled::of(240, 400), &BASE_BUTTONS);
-    pub(crate) static SMALL: Layout = Layout::of(Scaled::of(180, 240), &BASE_BUTTONS);
-    pub(crate) static ALL: [&Layout; 3] = [&super::BASE, &WIDE, &SMALL];
+    pub(crate) static WIDE: Device = Device::of(Scaled::of(240, 400), &C606_BUTTONS);
+    pub(crate) static SMALL: Device = Device::of(Scaled::of(180, 240), &C606_BUTTONS);
+    pub(crate) static ALL: [&Device; 3] = [&super::C606, &WIDE, &SMALL];
 
     /// The probe panel: 3/4, and taller than 3/4 of the C606.
     #[test]
     fn a_panel_taller_than_its_scale_lays_out() {
-        let probe = Layout::of(Scaled::of(180, 320), &BASE_BUTTONS);
+        let probe = Device::of(Scaled::of(180, 320), &C606_BUTTONS);
         assert_eq!(super::ride::map::ground_rect(&probe.scaled).height(), 281);
     }
 }

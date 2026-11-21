@@ -5915,7 +5915,7 @@ fn heart_gauge_rows() -> std::ops::Range<usize> {
         }
     }
     let main = vana::screens::ride::main_laid(
-        &vana::screens::BASE,
+        &vana::screens::C606,
         vana::screens::ride::slots::Slots::default(),
         vana::compose::Flags::NONE,
     );

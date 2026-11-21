@@ -1373,10 +1373,10 @@ impl Session {
                 "geometry must be 16..320 wide and 16..512 tall",
             ));
         }
-        let layout = vana::screens::scaled::Scaled::fitting(width, height).map_or(
-            &vana::screens::BASE,
+        let device = vana::screens::scaled::Scaled::fitting(width, height).map_or(
+            &vana::screens::C606,
             |scaled| {
-                Box::leak(Box::new(vana::screens::Layout::of(
+                Box::leak(Box::new(vana::screens::Device::of(
                     scaled,
                     &crate::models::C606.buttons,
                 )))
@@ -1386,7 +1386,7 @@ impl Session {
             name: VIRTUAL,
             width,
             height,
-            layout,
+            device,
             ..crate::models::C606
         };
         Self::with_media(
@@ -1526,19 +1526,19 @@ impl Session {
         {
             use vana::compose::builtin::{Laids, ScreenId};
             let mut laids = Laids::new(
-                model.layout,
+                model.device,
                 Default::default(),
                 vana::compose::Flags::NONE,
                 &vana::compose::Screens::EMPTY,
             );
             laids.show(
                 ScreenId::Brand,
-                model.layout,
+                model.device,
                 &vana::compose::Screens::EMPTY,
             );
             let mut view =
                 vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
-            view.layout = model.layout;
+            view.device = model.device;
             view.laids = Some(&laids);
             let scene = view.prepare();
             shell.draw_rows(|y, pixels| {
@@ -1549,7 +1549,7 @@ impl Session {
             });
         }
         shell.forget_frame();
-        let mut sdk = vana::app::Runtime::new(profile, model.product, model.layout);
+        let mut sdk = vana::app::Runtime::new(profile, model.product, model.device);
         {
             use vana::ride::directory::{ENTRY, RIDES, RideIndex};
             let bytes = || Box::leak(vec![0u8; RIDES * ENTRY].into_boxed_slice());

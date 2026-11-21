@@ -45,18 +45,18 @@ const fn lists() -> Buttons {
     }
 }
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| list(ListKind::Sensors),
     buttons: lists(),
-});
+};
 
-pub const NEARBY: Option<&Builtin> = Some(&Builtin {
+pub const NEARBY: &Builtin = &Builtin {
     tree: |_: &Choices| list(ListKind::Nearby),
     buttons: lists(),
-});
+};
 
 /// A saved sensor's page, unless it is a power meter.
-pub const DETAIL: Option<&Builtin> = Some(&Builtin {
+pub const DETAIL: &Builtin = &Builtin {
     tree: |_: &Choices| page(&detail(false)),
     buttons: Buttons {
         act: Some(Button {
@@ -67,9 +67,9 @@ pub const DETAIL: Option<&Builtin> = Some(&Builtin {
         move_: None,
         held: None,
     },
-});
+};
 
-pub const POWER_METER: Option<&Builtin> = Some(&Builtin {
+pub const POWER_METER: &Builtin = &Builtin {
     tree: |_: &Choices| page(&detail(true)),
     buttons: Buttons {
         act: Some(Button {
@@ -83,9 +83,9 @@ pub const POWER_METER: Option<&Builtin> = Some(&Builtin {
         }),
         held: None,
     },
-});
+};
 
-pub const FORGET: Option<&Builtin> = Some(&Builtin {
+pub const FORGET: &Builtin = &Builtin {
     tree: |_: &Choices| {
         page(&[
             Node::leaf(SENSOR_ICON, 0, Size::CONTENT),
@@ -96,9 +96,9 @@ pub const FORGET: Option<&Builtin> = Some(&Builtin {
         ])
     },
     buttons: answer(Icon::Trash),
-});
+};
 
-pub const REPLACE: Option<&Builtin> = Some(&Builtin {
+pub const REPLACE: &Builtin = &Builtin {
     tree: |_: &Choices| {
         page(&[
             Node::leaf(SENSOR_ICON, 0, Size::CONTENT),
@@ -110,7 +110,7 @@ pub const REPLACE: Option<&Builtin> = Some(&Builtin {
         ])
     },
     buttons: answer(Icon::Check),
-});
+};
 
 const fn answer(icon: Icon) -> Buttons {
     Buttons {

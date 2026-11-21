@@ -330,7 +330,7 @@ impl Runtime {
                     self.delete_past_ride(medium, summary);
                     return;
                 }
-                if !self.navigation.sections().phone() {
+                if !self.sends() {
                     return;
                 }
                 self.history.phone = Some((medium, summary.ride_id));
@@ -338,6 +338,11 @@ impl Runtime {
             }
             _ => {}
         }
+    }
+
+    /// Whether ACT sends the open ride to the phone.
+    fn sends(&self) -> bool {
+        self.past_saving() != Saving::Reading && self.navigation.sections().phone()
     }
 
     /// Whether a saved ride's pages end with DELETE RIDE?.
@@ -579,7 +584,7 @@ impl Runtime {
                 .map(|climbing| climbing.count),
             laps: replay.laps(),
             past: true,
-            send: self.navigation.sections().phone(),
+            send: self.sends(),
             delete: self.deletable(),
             elevation: self.has_elevation(),
             recovery: facts

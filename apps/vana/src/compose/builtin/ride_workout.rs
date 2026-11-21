@@ -14,7 +14,7 @@ use crate::compose::registry::{
 use crate::compose::tiles::workout_line::Line;
 use device_api::input::Role;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| tree().into_iter().collect(),
     buttons: Buttons {
         act: Some(Button {
@@ -31,7 +31,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         }),
         held: Some(Action::ExtendStep),
     },
-});
+};
 
 const BAR_UNITS: u8 = 24;
 const RADAR_UNITS: u8 = crate::screens::ride::RADAR_WIDTH as u8;

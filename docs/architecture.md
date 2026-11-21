@@ -279,33 +279,29 @@ A screen takes its geometry from the panel it draws on, so one build of the
 screens serves every panel a device declares. [UI](ui.md#how-screens-scale)
 says what a rider sees at each scale step.
 
-- **A screen's regions are a function of the panel alone.** Each screen module
-  owns `pub const fn regions(at: &Scaled) -> Regions`, and a variant that
-  depends on what a frame shows (a radar, a course) is a field of its own.
-  Because nothing else feeds a layout, the composition can compute every
-  screen's regions once, in one `static` `screens::Layout`, and a layout that
-  does not fit a panel fails that device's build instead of a ride.
-- **Screens borrow the one layout.** `Scene` and `View` hold a single
-  `&'static Layout`, and screens borrow their regions from it without copying
-  them. Laying regions out per frame, or copying them, costs stack on
-  `Runtime::present`'s path for every screen, and that path has the least
-  headroom on the device.
-- **Cues come from the buttons.** `Layout::of` takes the device's button
-  fixtures as well as its panel, and `cue::Corners` gives each role the
+- **A screen's boxes come from its tree.** Each screen is a tree of tiles
+  (`compose/`), solved for the device's panel and accepted once, so a tree
+  that does not fit a panel is refused at accept, never at a ride. The only
+  geometry outside a tree is the chrome that floats over it: the status bar
+  over the top rows of a screen whose tree places no status tile, toasts over
+  the bottom band, the course sign and the radar strip. Each is a `const fn`
+  of the panel's `Scaled` beside the code that paints it (`chrome::status_bar`,
+  `chrome::toast_band`, `sign::forms`, `ride::radar_columns`).
+- **Cues come from the buttons.** `screens::Device::of` takes the device's
+  button fixtures as well as its panel, and `cue::Corners` gives each role the
   corner nearest its button. A screen names the role a cue answers, never a
-  corner, so a cue follows its button on any device. A region that keeps
-  clear of a cue clears the corners its screen's cues take
-  (`Corners::columns_clear_of`, `Corners::rows_clear_of`), so no layout
-  assumes the C606's corners.
-- **Bounds come from the manifests.** An array that holds a region takes its
+  corner, so a cue follows its button on any device. Accept refuses a tile
+  that cannot clear the corners its screen's cues take, and a test accepts
+  every built-in on every panel for every button arrangement.
+- **Bounds come from the manifests.** An array that holds a box takes its
   bound with `scaled::largest!` over `limits::PANELS`, measured on each panel's
-  own regions. Firmware sees only the devices' panels, so its arrays stay the
+  own boxes. Firmware sees only the devices' panels, so its arrays stay the
   size its own panel needs; tests also see the simulator models' panels.
-- **Pixel numbers stay in `regions`.** Screen code reads the 240 × 320 constants
-  only in tests, and `tools/check-boundaries.py` refuses a numeric `Rect` edge
-  in a screen file outside its `regions`, so no placement bypasses the scale.
+- **Pixel numbers stay in `compose/`.** `tools/check-boundaries.py` refuses a
+  numeric `Rect` edge anywhere in VANA outside `apps/vana/src/compose/` (inline
+  unit-test modules aside), so no placement bypasses the tree or the scale.
 - **Every frame is checked.** [`screens/check.rs`](../apps/vana/src/screens/check.rs)
-  runs on every frame in tests and the simulator: regions lie inside the
+  runs on every frame in tests and the simulator: boxes lie inside the
   panel, each run and shape stays inside the region it was laid out in, and
   runs do not overlap. `tools/simulator/tests/responsive.rs` walks every screen
   on the `wide` and `small` test models beside a C606.

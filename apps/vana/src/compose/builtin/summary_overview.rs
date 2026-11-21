@@ -10,10 +10,10 @@ use crate::screens::cue::Icon;
 use crate::screens::ride::summary::{Stat, Words};
 use device_api::input::Role;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_| tree(),
     buttons: FINISH,
-});
+};
 
 pub(super) fn tree() -> Nodes {
     let mut body = Nodes::new();

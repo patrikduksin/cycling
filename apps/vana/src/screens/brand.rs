@@ -1,15 +1,13 @@
-//! The VANA mark and its two moments: the reveal when VANA starts and the
-//! farewell before the device turns off. Both are the wordmark inside one
-//! `ACCENT` ring; the reveal (the Brand screen's tree, `tiles::mark`) draws
-//! the ring closed around it, the farewell unwinds it while the wordmark
-//! fades to black.
+//! The VANA mark: the wordmark inside one `ACCENT` ring. The Brand screen's
+//! tree (`tiles::mark`) draws the ring closing as VANA starts; the power
+//! sheet's ring tile (`tiles::power`) fades the mark with [`fade`] before the
+//! device turns off.
 //!
 //! Progress is in thousandths. Each frame is a canvas of one ring and two
 //! runs, so a frame costs about what a static sheet does.
-use super::Layout;
 use super::canvas::{Canvas, Shape};
 use super::chrome::{ACCENT, Align, BLACK, Rect, Ring, TURN, WHITE, mix};
-use super::scaled::{Scaled, Track};
+use super::scaled::Scaled;
 use firmware_shell::rendering::font::FaceRole;
 
 /// Whole progress.
@@ -22,29 +20,6 @@ pub const RING_UNITS: usize = 6;
 const VANA_UNITS: usize = 87;
 const LABS_UNITS: usize = 110;
 const WORDS_INSET_UNITS: usize = 12;
-
-/// Where the power sheet's farewell draws the mark, a little above the
-/// middle, and the row under it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Regions {
-    pub mark: Rect,
-    pub below: Rect,
-}
-
-pub const fn regions(at: &Scaled) -> Regions {
-    use Track::{Fr, Unit};
-    let screen = at.screen();
-    let [_, mark, below, _] = screen.rows(
-        [Fr(76), Unit(SQUARE_UNITS as u16), Unit(44), Fr(52)],
-        Unit(0),
-        at,
-    );
-    let [_, square, _] = screen.cols([Fr(1), Unit(SQUARE_UNITS as u16), Fr(1)], Unit(0), at);
-    Regions {
-        mark: mark.with_columns(square),
-        below,
-    }
-}
 
 pub(super) const fn ring(at: &Scaled, rect: Rect, width: usize, start: u16, sweep: u16) -> Ring {
     Ring {
@@ -111,55 +86,4 @@ fn mark(
 pub fn reveal(canvas: &mut Canvas, at: &Scaled, square: Rect, progress: u16) {
     let labs = fade(ACCENT, DONE - progress.min(DONE));
     mark(canvas, at, square, (0, turns(progress)), [WHITE, labs]);
-}
-
-/// The goodbye: the ring's tail chases its head round until nothing is
-/// left, and the wordmark fades with it. At `DONE` the frame is black.
-pub fn farewell(canvas: &mut Canvas, layout: &Layout, progress: u16) {
-    let at = &layout.scaled;
-    let gone = turns(progress);
-    let colors = [fade(WHITE, progress), fade(ACCENT, progress)];
-    mark(canvas, at, regions(at).mark, (gone, TURN - gone), colors);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::screens::chrome::{Look, Row, Shown};
-    use crate::screens::panels;
-
-    fn lit(layout: &Layout, canvas: &Canvas, color: u16) -> usize {
-        let panel = layout.scaled.panel;
-        (0..panel.height)
-            .map(|y| {
-                let mut pixels = std::vec![BLACK; panel.width];
-                canvas.paint(&mut Row::new(y, &mut pixels));
-                for (x, &pixel) in pixels.iter().enumerate() {
-                    assert_eq!(
-                        pixel,
-                        canvas.pixel(Look::PLAIN, x, y, Shown(BLACK)).0,
-                        "paint at {x},{y}"
-                    );
-                }
-                pixels.iter().filter(|&&p| p == color).count()
-            })
-            .sum()
-    }
-
-    #[test]
-    fn the_farewell_unwinds_to_black() {
-        for layout in panels::ALL {
-            let mut start = Canvas::default();
-            farewell(&mut start, layout, 0);
-            let mut end = Canvas::default();
-            farewell(&mut end, layout, DONE);
-            assert!(lit(layout, &start, ACCENT) > 500);
-            assert!(lit(layout, &start, WHITE) > 50);
-            let panel = layout.scaled.panel;
-            let dark = (0..panel.height).all(|y| {
-                (0..panel.width).all(|x| end.pixel(Look::PLAIN, x, y, Shown(BLACK)).0 == BLACK)
-            });
-            assert!(dark, "the last frame is black on {panel:?}");
-        }
-    }
 }

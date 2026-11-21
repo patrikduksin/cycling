@@ -9,7 +9,7 @@ use crate::compose::registry::FTP;
 use crate::compose::tiles::line::Say;
 use crate::screens::cue::Icon;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| TREE.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: answer(true, Icon::Check),
@@ -17,7 +17,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         move_: None,
         held: None,
     },
-});
+};
 
 const TREE: [Node; 9] = [
     panel(1),
@@ -38,15 +38,15 @@ mod tests {
     #[test]
     fn the_sheet_lays_out_whole_with_its_answers_on_every_panel() {
         crate::screens::check::enable(true);
-        for layout in crate::screens::panels::ALL {
-            let screen = layout.scaled.screen();
+        for device in crate::screens::panels::ALL {
+            let screen = device.scaled.screen();
             for (new, old) in [(247, 215), (600, 50), (50, 600), (999, 1000), (9999, 9999)] {
                 let mut view = View::new(Page::Workouts, 0, None);
-                view.layout = layout;
+                view.device = device;
                 view.ftp_offer = Some((new, old));
                 view.compose_main();
                 view.prepare().check_layout();
-                let what = std::format!("sheet on {:?}", layout.scaled.panel);
+                let what = std::format!("sheet on {:?}", device.scaled.panel);
                 let now = std::format!("NOW {old} W");
                 let want = ["NEW FTP", "W", now.as_str(), "SAVE?"];
                 view.canvas().assert_laid_out(screen, &want, &what);

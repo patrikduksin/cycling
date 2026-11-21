@@ -33,7 +33,7 @@ const RETURN: Option<Button> = Some(Button {
     cue: None,
 });
 
-pub const TURN_OFF: Option<&Builtin> = Some(&Builtin {
+pub const TURN_OFF: &Builtin = &Builtin {
     tree: |_: &Choices| question(Say::RidesSaved).into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: answer(true, Icon::Check),
@@ -41,9 +41,9 @@ pub const TURN_OFF: Option<&Builtin> = Some(&Builtin {
         move_: RETURN,
         held: None,
     },
-});
+};
 
-pub const SYNC_FIRST: Option<&Builtin> = Some(&Builtin {
+pub const SYNC_FIRST: &Builtin = &Builtin {
     tree: |_: &Choices| question(Say::SyncFirst).into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: RETURN,
@@ -51,9 +51,9 @@ pub const SYNC_FIRST: Option<&Builtin> = Some(&Builtin {
         move_: RETURN,
         held: None,
     },
-});
+};
 
-pub const AUTO_OFF: Option<&Builtin> = Some(&Builtin {
+pub const AUTO_OFF: &Builtin = &Builtin {
     tree: |_: &Choices| WARNING.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: RETURN,
@@ -61,21 +61,21 @@ pub const AUTO_OFF: Option<&Builtin> = Some(&Builtin {
         move_: RETURN,
         held: None,
     },
-});
+};
 
-pub const TURNING_OFF: Option<&Builtin> = Some(&Builtin {
+pub const TURNING_OFF: &Builtin = &Builtin {
     tree: |_: &Choices| {
         [panel(1), ring(Ring::Farewell)]
             .into_iter()
             .collect::<Nodes>()
     },
     buttons: Buttons::FREE,
-});
+};
 
-pub const CHARGING: Option<&Builtin> = Some(&Builtin {
+pub const CHARGING: &Builtin = &Builtin {
     tree: |_: &Choices| CHARGE.into_iter().collect::<Nodes>(),
     buttons: Buttons::FREE,
-});
+};
 
 const fn ring(ring: Ring) -> Node {
     Node::leaf(POWER_RING, ring as u8, Size::CONTENT)

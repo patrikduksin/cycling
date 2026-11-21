@@ -25,21 +25,21 @@ const LIST: Buttons = Buttons {
     held: None,
 };
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| LIST_TREE.into_iter().collect::<Nodes>(),
     buttons: LIST,
-});
+};
 
-pub const NOTE: Option<&Builtin> = Some(&Builtin {
+pub const NOTE: &Builtin = &Builtin {
     tree: |_: &Choices| {
         note(Say::BestsNoteTitle, Say::BestsNoteLine)
             .into_iter()
             .collect()
     },
     buttons: LIST,
-});
+};
 
-pub const CLEAR: Option<&Builtin> = Some(&Builtin {
+pub const CLEAR: &Builtin = &Builtin {
     tree: |_: &Choices| CLEAR_TREE.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: answer(true, Icon::Check),
@@ -47,7 +47,7 @@ pub const CLEAR: Option<&Builtin> = Some(&Builtin {
         move_: None,
         held: None,
     },
-});
+};
 
 /// Columns between the page's text and the panel's sides.
 pub const SIDE_UNITS: u8 = 16;

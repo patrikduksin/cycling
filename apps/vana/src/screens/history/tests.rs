@@ -1,6 +1,6 @@
 use super::*;
 use crate::ride::week::Weeks;
-use crate::screens::Layout as Screens;
+use crate::screens::Device;
 use crate::screens::canvas::{Canvas, Shape};
 use crate::screens::chrome::{ACCENT, PRESSED, RAISED, Rect, TERTIARY, WHITE};
 use crate::screens::workout::{Page, View};
@@ -61,14 +61,14 @@ const TOP: Shown = Shown {
     pressed: None,
 };
 
-/// Rides composed on `layout`, its cards made by `make`.
+/// Rides composed on `device`, its cards made by `make`.
 fn rides_on(
-    layout: &'static Screens,
+    device: &'static Device,
     shown: Shown,
     make: fn(usize) -> Row,
 ) -> (View<'static>, Layout) {
     let mut view = View::new(Page::History, 0, None);
-    view.layout = layout;
+    view.device = device;
     view.compose_main();
     let list = *view.layout().expect("Rides scrolls a list");
     view.scroll = shown.offset;
@@ -81,7 +81,7 @@ fn rides_on(
 }
 
 fn rides(shown: Shown) -> View<'static> {
-    rides_on(&crate::screens::BASE, shown, row).0
+    rides_on(&crate::screens::C606, shown, row).0
 }
 
 /// The screen's rows and the canvas rows its list's cards in view reach.
@@ -89,7 +89,7 @@ fn page(view: &View) -> Rect {
     let list = view.layout().expect("Rides scrolls a list");
     Rect {
         bottom: list.stretched_bottom(),
-        ..view.layout.scaled.screen()
+        ..view.device.scaled.screen()
     }
 }
 
@@ -218,7 +218,7 @@ fn training_stress_shows_only_for_a_week_with_power() {
 #[test]
 fn the_focused_card_is_raised_and_ringed_and_one_under_a_resting_finger_pressed() {
     let (mut view, list) = rides_on(
-        &crate::screens::BASE,
+        &crate::screens::C606,
         Shown {
             cursor: 1,
             pressed: Some(0),
@@ -252,8 +252,8 @@ fn long_rides_a_long_week_and_no_rides_lay_out_on_every_panel() {
         Some(u32::MAX),
         &zone,
     );
-    for layout in crate::screens::panels::ALL {
-        let (_, list) = rides_on(layout, TOP, row);
+    for device in crate::screens::panels::ALL {
+        let (_, list) = rides_on(device, TOP, row);
         let end = list.reveal(ROWS - 1, 0);
         for (count, offset) in [(ROWS, -40), (ROWS, 0), (ROWS, 60), (ROWS, end), (0, 0)] {
             let shown = Shown {
@@ -264,9 +264,9 @@ fn long_rides_a_long_week_and_no_rides_lay_out_on_every_panel() {
                 reading: false,
                 pressed: Some(2),
             };
-            let (mut view, _) = rides_on(layout, shown, row);
+            let (mut view, _) = rides_on(device, shown, row);
             view.prepare().check_layout();
-            let what = std::format!("{count} rides at {offset} on {:?}", layout.scaled.panel);
+            let what = std::format!("{count} rides at {offset} on {:?}", device.scaled.panel);
             let want: &[&str] = match (count, offset) {
                 (0, _) => &["THIS WEEK", "NO RIDES YET", "SAVED RIDES SHOW HERE"],
                 (_, 0) => &["THIS WEEK", "TSS 9999+", "DEC 31  12:59", "141 BPM"],
@@ -284,8 +284,8 @@ fn every_panel_keeps_the_words_of_every_card_in_view() {
     let mut powered = week();
     powered.add_stress(Some(tuesday), 1, Some(1), Some(87), &zone);
     let count = 12;
-    for layout in crate::screens::panels::ALL {
-        let (_, list) = rides_on(layout, TOP, short);
+    for device in crate::screens::panels::ALL {
+        let (_, list) = rides_on(device, TOP, short);
         for weeks in [None, Some(powered)] {
             for offset in -40..=list.reveal(count - 1, 0) {
                 let shown = Shown {
@@ -296,9 +296,9 @@ fn every_panel_keeps_the_words_of_every_card_in_view() {
                     reading: false,
                     pressed: Some(2),
                 };
-                let (mut view, _) = rides_on(layout, shown, short);
+                let (mut view, _) = rides_on(device, shown, short);
                 view.prepare().check_layout();
-                let what = std::format!("{offset} on {:?}", layout.scaled.panel);
+                let what = std::format!("{offset} on {:?}", device.scaled.panel);
                 // Every card that shows whole says all it has; check_layout
                 // has held the rest to the canvas.
                 let whole = list

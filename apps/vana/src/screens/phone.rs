@@ -83,7 +83,7 @@ mod tests {
     use crate::compose::registry::CODE;
     use crate::screens::chrome::AMBER;
     use crate::screens::workout::{Page, View};
-    use crate::screens::{BASE, Layout, panels};
+    use crate::screens::{C606, Device, panels};
 
     /// The box the Phone screen's tree gives the code.
     fn room(view: &View) -> Rect {
@@ -93,9 +93,9 @@ mod tests {
 
     const JOIN: &str = "WIFI:T:WPA;S:VANA-3F2A;P:ABCDEFGHJKMN;;";
 
-    fn view(layout: &'static Layout, qr: Option<&str>, problem: bool) -> View<'static> {
+    fn view(device: &'static Device, qr: Option<&str>, problem: bool) -> View<'static> {
         let mut view = View::new(Page::Phone, 0, None);
-        view.layout = layout;
+        view.device = device;
         view.compose_main();
         let room = room(&view);
         let (code, lines) = view.show_phone();
@@ -121,22 +121,22 @@ mod tests {
         crate::screens::check::enable(true);
         let largest = "http://192.168.4.1/?t=0123456789abcdef0123456789abcdef";
         assert_eq!(Qr::encode(largest).map(|qr| qr.size()), Some(33));
-        for layout in panels::ALL {
+        for device in panels::ALL {
             for text in [JOIN, largest] {
-                let mut view = view(layout, Some(text), false);
+                let mut view = view(device, Some(text), false);
                 let region = room(&view);
                 let scene = view.prepare();
                 scene.check_layout();
                 let code = scene.qr().unwrap();
                 let panel = code.panel();
-                let what = std::format!("{text} on {:?}", layout.scaled.panel);
+                let what = std::format!("{text} on {:?}", device.scaled.panel);
                 assert!(crate::screens::check::inside(panel, region), "{what}");
-                let radius = layout.scaled.unit(RADIUS);
+                let radius = device.scaled.unit(RADIUS);
                 assert_eq!(scene.pixel(panel.left + 2, panel.top + 2 + radius), PAPER);
                 assert_eq!(scene.pixel(code.left + 1, code.top + 1), INK);
                 let page = Rect {
-                    bottom: layout.scaled.panel.height,
-                    ..layout.chrome.content
+                    bottom: device.scaled.panel.height,
+                    ..crate::screens::chrome::content(&device.scaled)
                 };
                 let want = [
                     "STEP 1 OF 2",
@@ -153,9 +153,9 @@ mod tests {
     #[test]
     fn the_longest_ended_session_lays_out_whole() {
         crate::screens::check::enable(true);
-        for layout in panels::ALL {
+        for device in panels::ALL {
             let mut view = View::new(Page::Phone, 0, None);
-            view.layout = layout;
+            view.device = device;
             view.compose_main();
             let (_, lines) = view.show_phone();
             let _ = lines[STEP].push_str("PHONE DISCONNECTED");
@@ -170,15 +170,15 @@ mod tests {
                 "WAITING FOR WI-FI",
                 "TAP TO TRY AGAIN",
             ];
-            let what = std::format!("ended on {:?}", layout.scaled.panel);
+            let what = std::format!("ended on {:?}", device.scaled.panel);
             view.canvas()
-                .assert_laid_out(layout.scaled.screen(), &want, &what);
+                .assert_laid_out(device.scaled.screen(), &want, &what);
         }
     }
 
     #[test]
     fn the_light_look_keeps_dark_modules_on_a_light_panel() {
-        let mut view = view(&BASE, Some(JOIN), false);
+        let mut view = view(&C606, Some(JOIN), false);
         view.light = true;
         let scene = view.prepare();
         let code = scene.qr().unwrap();
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn a_problem_shows_in_amber_without_a_code() {
-        let view = view(&BASE, None, true);
+        let view = view(&C606, None, true);
         assert!(view.qr().is_none());
         assert_eq!(
             view.canvas()

@@ -3,7 +3,7 @@ use crate::ride::breadcrumb::{Breadcrumb, Reported};
 use crate::ride::course::nav::Distance;
 use crate::ride::course::route_leg::{self, RouteLeg};
 use crate::ride::geo::TURN;
-use crate::screens::BASE;
+use crate::screens::C606;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::{HEIGHT, WIDTH};
 use crate::screens::ride::RidePage;
@@ -39,13 +39,13 @@ impl Laid {
     }
 }
 
-fn laid(layout: &'static crate::screens::Layout) -> Laid {
+fn laid(device: &'static crate::screens::Device) -> Laid {
     use crate::compose::Flags;
     use crate::compose::builtin::{Choices, Laid as Solved, ScreenId};
     use crate::compose::registry::{MAP, SCALE};
     let solved =
-        |flags| Solved::new(ScreenId::RideMap, layout, Choices::default(), flags, None).unwrap();
-    let at = &layout.scaled;
+        |flags| Solved::new(ScreenId::RideMap, device, Choices::default(), flags, None).unwrap();
+    let at = &device.scaled;
     let (free, beside_radar) = (solved(Flags::NONE), solved(Flags::RADAR));
     let rect = free.box_of(SCALE).unwrap();
     let left = rect.left + at.unit(12);
@@ -68,24 +68,27 @@ fn laid(layout: &'static crate::screens::Layout) -> Laid {
 }
 
 impl Cache<'_> {
-    fn update_on(&mut self, track: &Track, layout: &'static crate::screens::Layout) -> bool {
-        self.update(track, laid(layout).ground(track.radar))
+    fn update_on(&mut self, track: &Track, device: &'static crate::screens::Device) -> bool {
+        self.update(track, laid(device).ground(track.radar))
     }
 }
 
 #[test]
 fn the_built_in_places_the_ground_between_the_bar_and_the_foot() {
-    for layout in crate::screens::panels::ALL {
-        let laid = laid(layout);
+    for device in crate::screens::panels::ALL {
+        let laid = laid(device);
         assert_eq!(
             laid.free.drawn,
-            ground_rect(&layout.scaled),
+            ground_rect(&device.scaled),
             "{:?}",
-            layout.scaled.panel
+            device.scaled.panel
         );
         assert_eq!(laid.free.shown, laid.free.drawn);
         assert_eq!(laid.beside_radar.drawn, laid.free.drawn);
-        assert_eq!(laid.beside_radar.shown.left, layout.ride.body.left);
+        assert_eq!(
+            laid.beside_radar.shown.left,
+            crate::screens::ride::radar_columns(&device.scaled).right
+        );
         assert_eq!(laid.foot.rect.top, laid.free.drawn.bottom);
         assert!(laid.free.drawn.height() <= GROUND_ROWS);
     }
@@ -247,7 +250,7 @@ fn stepped<'a>(leg: &mut RouteLeg, track: &Track<'a>) -> Track<'a> {
 
 fn fill(frame: &mut Frame, track: &Track) {
     let track = stepped(&mut RouteLeg::default(), track);
-    super::fill(frame, &track, laid(&BASE).ground(track.radar));
+    super::fill(frame, &track, laid(&C606).ground(track.radar));
 }
 
 #[derive(Default)]
@@ -259,7 +262,7 @@ struct Held {
 impl Held {
     fn fill(&mut self, track: &Track) {
         let track = stepped(&mut self.leg, track);
-        super::fill(&mut self.frame, &track, laid(&BASE).ground(track.radar));
+        super::fill(&mut self.frame, &track, laid(&C606).ground(track.radar));
     }
 }
 
@@ -357,7 +360,7 @@ fn far_off_course_in_every_direction_three_chevrons_lead_back_clear_of_the_badge
                     RidePage::Map,
                     sign,
                     radar,
-                    &crate::screens::BASE,
+                    &crate::screens::C606,
                     None,
                 )
                 .unwrap()
@@ -378,7 +381,7 @@ fn far_off_course_in_every_direction_three_chevrons_lead_back_clear_of_the_badge
                 };
                 let chevrons: std::vec::Vec<(usize, usize)> = GROUND
                     .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
-                    .filter(|&p| away(p, rider) > laid(&BASE).free.puck_clear() + 1.0)
+                    .filter(|&p| away(p, rider) > laid(&C606).free.puck_clear() + 1.0)
                     .filter(|&(x, y)| pixel(&frame, Look::PLAIN, x, y, BLACK) == AMBER)
                     .collect();
                 let along: std::vec::Vec<f32> = chevrons
@@ -396,7 +399,7 @@ fn far_off_course_in_every_direction_three_chevrons_lead_back_clear_of_the_badge
                 let hidden: std::vec::Vec<&(usize, usize)> = chevrons
                     .iter()
                     .filter(|&&(x, y)| {
-                        badge.contains(x, y) || x < laid(&BASE).ground(radar).shown.left
+                        badge.contains(x, y) || x < laid(&C606).ground(radar).shown.left
                     })
                     .collect();
                 assert!(
@@ -466,7 +469,7 @@ fn before_joining_marks_on_the_course_ahead_point_the_way_it_runs() {
             );
             let gap = distance(tip, (f32::from(rider.0), f32::from(rider.1)));
             assert!(
-                gap > laid(&BASE).free.puck_clear(),
+                gap > laid(&C606).free.puck_clear(),
                 "clear of the puck: {tip:?}"
             );
         }
@@ -674,7 +677,7 @@ fn a_long_course_keeps_to_its_budget_and_each_band_holds_what_reaches_it() {
         for band in 0..BAND_COUNT {
             for &i in frame.band(line, band) {
                 let (first, last) = bands(
-                    &laid(&BASE).free.drawn,
+                    &laid(&C606).free.drawn,
                     &frame.strokes[usize::from(i)],
                     line.reach(),
                 )
@@ -694,15 +697,15 @@ fn the_frame_is_refilled_only_when_the_track_changes() {
     let mut frame = Frame::default();
     let mut cache = Cache::new(&mut frame);
     let t = approach(&c);
-    cache.update_on(&t, &BASE);
+    cache.update_on(&t, &C606);
     let drawn = cache.frame.counts;
     assert!(drawn[Line::Route as usize] > 0);
     cache.frame.counts = [0; 2];
-    cache.update_on(&t, &BASE);
+    cache.update_on(&t, &C606);
     assert_eq!(cache.frame.counts, [0; 2], "the same track is left alone");
     let mut moved = t;
     moved.heading = Some(100);
-    cache.update_on(&moved, &BASE);
+    cache.update_on(&moved, &C606);
     assert!(cache.frame.counts[Line::Route as usize] > 0);
 }
 
@@ -743,20 +746,20 @@ fn every_state_lays_out_on_every_panel_at_the_longest_bar_beside_every_distance(
     let c = follower_course(&MOCKUP_COURSE);
     let start = track_crumbs(&[(0.0, 0.0)]);
     let ride = track_crumbs(&[(0.0, 0.0), (0.0, 800.0)]);
-    for layout in crate::screens::panels::ALL {
-        let max = laid(layout).foot.bar.width();
+    for device in crate::screens::panels::ALL {
+        let max = laid(device).foot.bar.width();
         let mut longest: std::vec::Vec<(Reach, &[u8])> = std::vec::Vec::new();
         for ahead_m in 150..=1_000 {
             let reach = Reach::new(ahead_m, super::roads::Detail::Streets);
             if let Some((bar, label)) =
-                Pose::new(reach, &laid(layout).free, 0).bar(|px, _| px <= max)
+                Pose::new(reach, &laid(device).free, 0).bar(|px, _| px <= max)
                 && bar == max
                 && longest.iter().all(|&(_, seen)| seen != label)
             {
                 longest.push((reach, label));
             }
         }
-        assert!(longest.len() >= 2, "{:?}: {longest:?}", layout.scaled);
+        assert!(longest.len() >= 2, "{:?}: {longest:?}", device.scaled);
         let tracks: std::vec::Vec<Track> = [Track::default(), free(&start), approach(&c)]
             .into_iter()
             .chain(longest.iter().map(|&(reach, _)| Track {
@@ -771,20 +774,20 @@ fn every_state_lays_out_on_every_panel_at_the_longest_bar_beside_every_distance(
             let map = |track: Option<&Track>| {
                 let mut frame = std::boxed::Box::new(Frame::default());
                 let mut view = View::new(Page::Ride, 0, None);
-                view.layout = layout;
+                view.device = device;
                 view.ride_page = RidePage::Map;
                 view.radar_paired = radar;
                 let mut cache = Cache::new(&mut frame);
                 if let Some(track) = track {
-                    cache.update_on(&Track { radar, ..*track }, layout);
+                    cache.update_on(&Track { radar, ..*track }, device);
                 }
                 view.show_map(cache.filled());
                 view.totals.add(9_999_000, mm, &Default::default(), None);
                 view.compose_main();
                 view.prepare().check_layout();
                 if track.is_some_and(|track| track.rider_or_last_crumb().is_some()) {
-                    let what = std::format!("{:?} radar {radar} {mm} mm", layout.scaled.panel);
-                    let foot = laid(layout).foot;
+                    let what = std::format!("{:?} radar {radar} {mm} mm", device.scaled.panel);
+                    let foot = laid(device).foot;
                     let texts: std::vec::Vec<_> = view
                         .canvas()
                         .runs
@@ -824,12 +827,12 @@ fn every_state_lays_out_on_every_panel_at_the_longest_bar_beside_every_distance(
 #[test]
 fn a_distance_under_10_km_leaves_the_longest_bar_beside_it() {
     let ride = track_crumbs(&[(0.0, 0.0), (0.0, 800.0)]);
-    for layout in crate::screens::panels::ALL {
-        let max = laid(layout).foot.bar.width();
+    for device in crate::screens::panels::ALL {
+        let max = laid(device).foot.bar.width();
         let reach = (150..=1_000)
             .map(|ahead_m| Reach::new(ahead_m, super::roads::Detail::Streets))
             .find(|&reach| {
-                Pose::new(reach, &laid(layout).free, 0)
+                Pose::new(reach, &laid(device).free, 0)
                     .bar(|px, _| px <= max)
                     .map(|bar| bar.0)
                     == Some(max)
@@ -838,7 +841,7 @@ fn a_distance_under_10_km_leaves_the_longest_bar_beside_it() {
         let bar_width = |mm| {
             let mut frame = std::boxed::Box::new(Frame::default());
             let mut view = View::new(Page::Ride, 0, None);
-            view.layout = layout;
+            view.device = device;
             view.ride_page = RidePage::Map;
             let mut cache = Cache::new(&mut frame);
             cache.update_on(
@@ -846,13 +849,13 @@ fn a_distance_under_10_km_leaves_the_longest_bar_beside_it() {
                     reach,
                     ..free(&ride)
                 },
-                layout,
+                device,
             );
             view.show_map(cache.filled());
             view.totals.add(1000, mm, &Default::default(), None);
             view.compose_main();
             view.prepare();
-            let foot = laid(layout).foot.bar;
+            let foot = laid(device).foot.bar;
             view.canvas()
                 .shapes
                 .iter()
@@ -860,9 +863,9 @@ fn a_distance_under_10_km_leaves_the_longest_bar_beside_it() {
                 .find(|rect| rect.top == foot.top && rect.left == foot.left)
                 .map(|rect| rect.width())
         };
-        assert_eq!(bar_width(9_990_000), Some(max), "{:?}", layout.scaled);
+        assert_eq!(bar_width(9_990_000), Some(max), "{:?}", device.scaled);
         let shorter = bar_width(9_999_900_000).unwrap();
-        assert!(shorter < max, "{:?}: {shorter}", layout.scaled);
+        assert!(shorter < max, "{:?}: {shorter}", device.scaled);
     }
 }
 
@@ -891,12 +894,12 @@ fn the_scale_label_shows_whole_beside_every_distance_at_every_reach() {
     const ROUND: [(f32, &str); 3] = [(250.0, "250 M"), (100.0, "100 M"), (50.0, "50 M")];
     let ride = track_crumbs(&[(0.0, 0.0), (0.0, 800.0)]);
     let distances = distances_of_four_to_seven_figures();
-    for layout in crate::screens::panels::ALL {
-        let (foot, at) = (laid(layout).foot, &layout.scaled);
+    for device in crate::screens::panels::ALL {
+        let (foot, at) = (laid(device).foot, &device.scaled);
         let (caption, figures) = (at.face(FaceRole::Caption), at.face(FaceRole::Foot20));
         for ahead_m in 150..=1_000 {
             let reach = Reach::new(ahead_m, super::roads::Detail::Streets);
-            let per_m = Pose::new(reach, &laid(layout).free, 0).px_per_m();
+            let per_m = Pose::new(reach, &laid(device).free, 0).px_per_m();
             let mut frame = std::boxed::Box::new(Frame::default());
             let mut cache = Cache::new(&mut frame);
             cache.update_on(
@@ -904,11 +907,11 @@ fn the_scale_label_shows_whole_beside_every_distance_at_every_reach() {
                     reach,
                     ..free(&ride)
                 },
-                layout,
+                device,
             );
             for &mm in &distances {
                 let mut view = View::new(Page::Ride, 0, None);
-                view.layout = layout;
+                view.device = device;
                 view.ride_page = RidePage::Map;
                 view.show_map(cache.filled());
                 view.totals.add(1000, mm, &Default::default(), None);
@@ -963,14 +966,14 @@ fn the_scale_label_shows_whole_beside_every_distance_at_every_reach() {
 
 #[test]
 fn beside_a_radar_the_strip_ends_above_the_foot() {
-    for layout in crate::screens::panels::ALL {
-        let strip = layout.ride.strip;
+    for device in crate::screens::panels::ALL {
+        let strip = crate::screens::ride::strip(&device.scaled);
         let last = strip.track_bottom + strip.radius;
         assert!(
-            last < laid(layout).foot.rect.top,
+            last < laid(device).foot.rect.top,
             "{:?}: the strip's last row {last}, the foot from {}",
-            layout.scaled,
-            laid(layout).foot.rect.top
+            device.scaled,
+            laid(device).foot.rect.top
         );
     }
 }
@@ -980,7 +983,7 @@ fn every_state_lays_out_its_text() {
     let check = |track: &Track, want: &[&str], what: &str| {
         let mut frame = Frame::default();
         let mut cache = Cache::new(&mut frame);
-        cache.update_on(track, &BASE);
+        cache.update_on(track, &C606);
         assert_shows(page(cache.filled()).canvas(), want, what);
     };
     assert_shows(page(None).canvas(), &["NO TRACK"], "no memory");
@@ -1421,7 +1424,7 @@ impl<'a> Rider<'a> {
         track.here_taken_ms = self.breadcrumb.position_taken_ms();
         track.heading = self.breadcrumb.heading();
         track.speed_mm_s = speed_mm_s;
-        self.map.update_on(&stepped(&mut self.leg, &track), &BASE);
+        self.map.update_on(&stepped(&mut self.leg, &track), &C606);
         here
     }
 
@@ -1897,10 +1900,10 @@ mod santiago {
         track: &Track,
     ) {
         for _ in 0..40 {
-            cache.update_on(track, &BASE);
+            cache.update_on(track, &C606);
             cache.fetch_roads(engine, frame);
         }
-        cache.update_on(track, &BASE);
+        cache.update_on(track, &C606);
     }
 
     fn painted(frame: &Frame) -> Vec<u16> {
@@ -2059,13 +2062,13 @@ mod santiago {
         track: &Track,
     ) {
         for _ in 0..400 {
-            cache.update_on(track, &BASE);
+            cache.update_on(track, &C606);
             if let Some(source) = pack.as_mut() {
                 engine.step(source);
             }
             cache.fetch_roads(engine, ride);
         }
-        cache.update_on(track, &BASE);
+        cache.update_on(track, &C606);
     }
 
     fn road_pixels(frame: &Frame) -> usize {
@@ -2170,9 +2173,9 @@ fn a_map_grown_over_the_whole_panel_paints_on_every_panel() {
     use crate::compose::registry::MAP;
     let c = follower_course(&MOCKUP_COURSE);
     let look = crate::screens::look::look(false);
-    for layout in crate::screens::panels::ALL {
-        let at = &layout.scaled;
-        let ground = ground(at, crate::screens::ride::largest_box(layout, MAP));
+    for device in crate::screens::panels::ALL {
+        let at = &device.scaled;
+        let ground = ground(at, crate::screens::ride::largest_box(device, MAP));
         let cases = [
             approach(&c),
             following(&c, (0.0, 210.0), 610.0, None),
@@ -2201,7 +2204,7 @@ fn a_map_grown_over_the_whole_panel_paints_on_every_panel() {
 #[test]
 fn a_map_whose_edge_moves_repaints_the_row_it_left() {
     use firmware_shell::shell::{Parts, Picture};
-    let at = &BASE.scaled;
+    let at = &C606.scaled;
     let crumbs = track_crumbs(&[(0.0, 0.0), (0.0, 100.0)]);
     let track = free(&crumbs);
     // An edge inside a band the panel sends, which leaves the pose where it

@@ -84,11 +84,11 @@ mod tests {
     use crate::screens::canvas::Shape;
     use crate::screens::chrome::{Rect, TERTIARY};
     use crate::screens::workout::{Page, View};
-    use crate::screens::{BASE, Layout, panels};
+    use crate::screens::{C606, Device, panels};
 
-    fn shown(layout: &'static Layout, mode: Mode) -> View<'static> {
+    fn shown(device: &'static Device, mode: Mode) -> View<'static> {
         let mut view = View::new(Page::Form, 0, None);
-        view.layout = layout;
+        view.device = device;
         view.show_form(mode);
         view.compose_main();
         view.prepare();
@@ -96,11 +96,11 @@ mod tests {
     }
 
     fn view(mode: Mode) -> View<'static> {
-        shown(&BASE, mode)
+        shown(&C606, mode)
     }
 
     fn full() -> Rect {
-        BASE.chrome.content
+        crate::screens::chrome::content(&C606.scaled)
     }
 
     #[test]
@@ -202,12 +202,12 @@ mod tests {
             (Mode::NoPower, ["NO POWER RIDES", "NEEDS A POWER METER"]),
         ];
         crate::screens::check::enable(true);
-        for layout in panels::ALL {
-            let what = std::format!("{:?}", layout.scaled);
-            let mut view = shown(layout, widest);
+        for device in panels::ALL {
+            let what = std::format!("{:?}", device.scaled);
+            let mut view = shown(device, widest);
             view.prepare().check_layout();
             view.canvas().assert_laid_out(
-                layout.chrome.content,
+                crate::screens::chrome::content(&device.scaled),
                 &[
                     "FITNESS",
                     "999",
@@ -219,10 +219,13 @@ mod tests {
                 &what,
             );
             for (mode, want) in waiting {
-                let mut view = shown(layout, mode);
+                let mut view = shown(device, mode);
                 view.prepare().check_layout();
-                view.canvas()
-                    .assert_laid_out(layout.chrome.content, &want, &what);
+                view.canvas().assert_laid_out(
+                    crate::screens::chrome::content(&device.scaled),
+                    &want,
+                    &what,
+                );
             }
         }
     }

@@ -61,7 +61,7 @@ rules at a scale step:
 - Shapes drawn at a fixed pixel size (the status bar's battery, bolt and dots,
   the gauges' rounded ends, a cue's disc and icon) keep that size at every
   step. Only where they sit scales.
-- Touch is hit-tested in panel pixels against the same regions the screen
+- Touch is hit-tested in panel pixels against the same boxes the screen
   drew.
 - A device names its panel in its `device.toml` under `devices/`, and
   `cycling devices` regenerates the list of panels a build lays out for,
@@ -338,15 +338,15 @@ cards as everywhere else.
   the voltage in the colour of its urgency) and, on a power meter, the
   calibration result with a grey hint under a failure.
 
-## Spacing and regions
+## Spacing and chrome
 
-The regions at scale 1:
+A screen's boxes come from its tree. The chrome over them, at scale 1:
 
-| Region | Rows | Notes |
+| Chrome | Rows | Notes |
 | --- | --- | --- |
-| `STATUS_BAR` | 0–21 | Ride mark (red dot and REC, or amber bars and PAUSED), page dots, then GPS, battery and clock on the right. No divider. |
-| `CONTENT` | 24–319 | Pages derive their boxes from it. They never hard-code the status bar height. |
-| `TOAST` | 280–319 | The toast pill sits at 282–311. Pages keep their least important reading, or nothing, here. |
+| `chrome::status_bar` | 0–21 | Ride mark (red dot and REC, or amber bars and PAUSED), page dots, then GPS, battery and clock on the right. No divider. A tree with a status tile places the bar itself. |
+| `chrome::content` | 24–319 | Below the bar and the black under it. |
+| `chrome::toast_band` | 280–319 | The toast pill sits at 282–311. Trees keep their least important reading, or nothing, here. |
 
 The screen margin is 10 px. Text inside a card is inset 16 px. Cards are 8 px
 apart.

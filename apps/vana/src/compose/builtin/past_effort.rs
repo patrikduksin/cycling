@@ -3,7 +3,7 @@
 use super::past_overview::SEND;
 use super::{Builtin, summary_effort};
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_| summary_effort::tree(),
     buttons: SEND,
-});
+};

@@ -5,7 +5,7 @@ use device_api::input::{Fixture, Fixtures, Role, Side};
 use device_api::sensors::SensorSet;
 use device_api::storage::Region;
 use vana::Product;
-use vana::screens::Layout;
+use vana::screens::Device;
 use vana::screens::scaled::Scaled;
 
 const C606_BUTTONS: Fixtures = Fixtures::new(&[
@@ -28,7 +28,7 @@ const C606_BUTTONS: Fixtures = Fixtures::new(&[
         at: 750,
     },
 ]);
-static C606_LAYOUT: Layout = Layout::of(Scaled::of(240, 320), &C606_BUTTONS);
+static C606_DEVICE: Device = Device::of(Scaled::of(240, 320), &C606_BUTTONS);
 pub const C606: Model = Model {
     name: "c606",
     product: Product {
@@ -39,7 +39,7 @@ pub const C606: Model = Model {
     height: 320,
     touch: true,
     buttons: C606_BUTTONS,
-    layout: &C606_LAYOUT,
+    device: &C606_DEVICE,
     fitted: Fitted {
         gps: true,
         ant: true,
@@ -75,7 +75,7 @@ const BARE_BUTTONS: Fixtures = Fixtures::new(&[
         at: 750,
     },
 ]);
-static BARE_LAYOUT: Layout = Layout::of(Scaled::of(240, 320), &BARE_BUTTONS);
+static BARE_DEVICE: Device = Device::of(Scaled::of(240, 320), &BARE_BUTTONS);
 pub const BARE: Model = Model {
     name: "bare",
     product: Product {
@@ -86,7 +86,7 @@ pub const BARE: Model = Model {
     height: 320,
     touch: false,
     buttons: BARE_BUTTONS,
-    layout: &BARE_LAYOUT,
+    device: &BARE_DEVICE,
     fitted: Fitted {
         gps: true,
         ant: true,
@@ -122,7 +122,7 @@ const SMALL_BUTTONS: Fixtures = Fixtures::new(&[
         at: 750,
     },
 ]);
-static SMALL_LAYOUT: Layout = Layout::of(Scaled::of(180, 240), &SMALL_BUTTONS);
+static SMALL_DEVICE: Device = Device::of(Scaled::of(180, 240), &SMALL_BUTTONS);
 pub const SMALL: Model = Model {
     name: "small",
     product: Product {
@@ -133,7 +133,7 @@ pub const SMALL: Model = Model {
     height: 240,
     touch: true,
     buttons: SMALL_BUTTONS,
-    layout: &SMALL_LAYOUT,
+    device: &SMALL_DEVICE,
     fitted: Fitted {
         gps: true,
         ant: true,
@@ -169,7 +169,7 @@ const VOLATILE_BUTTONS: Fixtures = Fixtures::new(&[
         at: 750,
     },
 ]);
-static VOLATILE_LAYOUT: Layout = Layout::of(Scaled::of(240, 320), &VOLATILE_BUTTONS);
+static VOLATILE_DEVICE: Device = Device::of(Scaled::of(240, 320), &VOLATILE_BUTTONS);
 pub const VOLATILE: Model = Model {
     name: "volatile",
     product: Product {
@@ -180,7 +180,7 @@ pub const VOLATILE: Model = Model {
     height: 320,
     touch: true,
     buttons: VOLATILE_BUTTONS,
-    layout: &VOLATILE_LAYOUT,
+    device: &VOLATILE_DEVICE,
     fitted: Fitted {
         gps: true,
         ant: true,
@@ -216,7 +216,7 @@ const WIDE_BUTTONS: Fixtures = Fixtures::new(&[
         at: 750,
     },
 ]);
-static WIDE_LAYOUT: Layout = Layout::of(Scaled::of(240, 400), &WIDE_BUTTONS);
+static WIDE_DEVICE: Device = Device::of(Scaled::of(240, 400), &WIDE_BUTTONS);
 pub const WIDE: Model = Model {
     name: "wide",
     product: Product {
@@ -227,7 +227,7 @@ pub const WIDE: Model = Model {
     height: 400,
     touch: true,
     buttons: WIDE_BUTTONS,
-    layout: &WIDE_LAYOUT,
+    device: &WIDE_DEVICE,
     fitted: Fitted {
         gps: true,
         ant: true,

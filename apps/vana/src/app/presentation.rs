@@ -141,7 +141,7 @@ impl Runtime {
     ) {
         self.compose_shown();
         let mut view = View::new(Page::Boot, 0, None);
-        view.layout = self.layout;
+        view.device = self.device;
         view.laids = Some(self.composition.laids());
         view.light = self.light();
         let scene = view.prepare();
@@ -309,11 +309,11 @@ impl Runtime {
                 };
                 let (canvas, cues) = (sheet.canvas(laid), PowerSheet::cues(laid));
                 #[cfg(any(test, feature = "invariants"))]
-                PowerSheet::check_layout(&canvas, self.layout);
+                PowerSheet::check_layout(&canvas, self.device);
                 let look = look::look(self.light());
                 system.draw_rows(|y, pixels| {
                     let mut row = Row::new(y, pixels);
-                    PowerSheet::paint(&canvas, &cues, self.layout, &mut row.looked(look));
+                    PowerSheet::paint(&canvas, &cues, self.device, &mut row.looked(look));
                 });
                 return Presented::Sheet {
                     ok: !system.display_error,
@@ -347,7 +347,7 @@ impl Runtime {
             }),
         };
         let mut view = navigation.view(local);
-        view.layout = self.layout;
+        view.device = self.device;
         view.now_ms = now;
         view.active_secs = self.ride.active_ms(now) / 1000;
         view.state = self.ride.active().status();
@@ -506,7 +506,7 @@ impl Runtime {
                 &view.graphics,
                 &view.profile,
                 self.motion_visible().main.then(|| self.composition.main()),
-                view.layout,
+                view.device,
             ),
         }
     }
@@ -1212,13 +1212,13 @@ impl Runtime {
     pub(super) fn motion_due(&self, shown: &crate::ride::log::Sample, now: u64) -> Option<u64> {
         let profile = self.preferences.profile;
         let visible = self.motion_visible();
-        let (main, layout) = (visible.main.then(|| self.composition.main()), self.layout);
+        let (main, device) = (visible.main.then(|| self.composition.main()), self.device);
         self.motion.due(
             visible,
             shown,
             self.policy().min_motion_frame_gap_ms,
             now,
-            |graphics| crate::screens::ride::pixels(graphics, &profile, main, layout),
+            |graphics| crate::screens::ride::pixels(graphics, &profile, main, device),
         )
     }
 }

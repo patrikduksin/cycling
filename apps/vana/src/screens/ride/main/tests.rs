@@ -8,7 +8,7 @@ use crate::compose::parse::Screen;
 use crate::compose::registry::{READING, SPACE};
 use crate::ride::course::nav::{Distance, Glyph, Sign};
 use crate::ride::log::{Sample, Status};
-use crate::screens::Layout;
+use crate::screens::Device;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::layout::{assert_shown, text};
 use crate::screens::icons::SignForm;
@@ -43,15 +43,15 @@ fn bytes(slots: Slots) -> Vec<u8> {
 /// a rider's config would be: so the runtime's solve of it cannot fail.
 #[test]
 fn the_built_in_is_accepted_on_every_panel_for_every_lower_line() {
-    for layout in ALL {
+    for device in ALL {
         for slots in every_slots() {
             if let Err(reject) = Screen::parse(
                 ScreenId::RideMain.key(),
                 &bytes(slots),
-                &layout.scaled,
+                &device.scaled,
                 Controls::FREE,
             ) {
-                panic!("{slots:?} on {:?}: {reject}", layout.scaled.panel);
+                panic!("{slots:?} on {:?}: {reject}", device.scaled.panel);
             }
         }
     }
@@ -90,23 +90,23 @@ fn rows(laid: &Laid) -> Vec<(u16, u16)> {
 /// on every panel, under every flag combination.
 #[test]
 fn the_main_page_s_gaps_are_even_on_every_panel_and_variant() {
-    for layout in ALL {
-        let bar = status_bar(&laid(layout, Slots::default(), Flags::NONE)).unwrap();
+    for device in ALL {
+        let bar = status_bar(&laid(device, Slots::default(), Flags::NONE)).unwrap();
         for flags in every_flags() {
-            let laid = laid(layout, Slots::default(), flags);
+            let laid = laid(device, Slots::default(), flags);
             let rows = rows(&laid);
             let mut edges = std::vec![bar.bottom as i32];
             for (top, bottom) in &rows {
                 edges.push(i32::from(*top));
                 edges.push(i32::from(*bottom));
             }
-            edges.push(layout.scaled.panel.height as i32);
+            edges.push(device.scaled.panel.height as i32);
             let gaps: Vec<i32> = edges.chunks(2).map(|pair| pair[1] - pair[0]).collect();
             let (least, most) = (gaps.iter().min().unwrap(), gaps.iter().max().unwrap());
             assert!(
                 most - least <= 1 && *least > 0,
                 "{flags} on {:?}: gaps {gaps:?}",
-                layout.scaled.panel
+                device.scaled.panel
             );
         }
     }
@@ -116,12 +116,12 @@ fn the_main_page_s_gaps_are_even_on_every_panel_and_variant() {
 /// and never a reading under them.
 #[test]
 fn the_banner_covers_the_time_and_chip_and_no_reading() {
-    for layout in ALL {
-        let banner = sign::place(turn(), SignForm::Banner, false, layout)
+    for device in ALL {
+        let banner = sign::place(turn(), SignForm::Banner, false, device)
             .unwrap()
             .rect();
         for flags in every_flags().filter(|flags| flags.contains(Flags::COURSE)) {
-            let laid = laid(layout, Slots::default(), flags);
+            let laid = laid(device, Slots::default(), flags);
             let nodes = laid.screen().tree().nodes();
             for placed in laid.leaves() {
                 let Some(What::Leaf { component, arg }) = nodes[usize::from(placed.node)].what()
@@ -140,7 +140,7 @@ fn the_banner_covers_the_time_and_chip_and_no_reading() {
                 assert_eq!(
                     under, top_line,
                     "{flags} on {:?}: node {} at {:?}, banner to {}",
-                    layout.scaled.panel, placed.node, placed.rect, banner.bottom
+                    device.scaled.panel, placed.node, placed.rect, banner.bottom
                 );
             }
         }
@@ -207,9 +207,9 @@ fn cases() -> Vec<Case> {
     cases
 }
 
-fn view(case: Case, layout: &'static Layout, flags: Flags) -> View<'static> {
+fn view(case: Case, device: &'static Device, flags: Flags) -> View<'static> {
     let mut view = View::new(Page::Ride, 0, Some(crate::clock::Local(86_399)));
-    view.layout = layout;
+    view.device = device;
     view.course = flags.contains(Flags::COURSE);
     view.radar_paired = flags.contains(Flags::RADAR);
     if flags.contains(Flags::ARRIVED) {
@@ -245,11 +245,11 @@ fn written(metric: Metric, value: Option<i32>) -> String {
 /// course or not, shows whole and apart from every other.
 #[test]
 fn extreme_readings_never_overlap_or_clip() {
-    for layout in ALL {
-        let at = &layout.scaled;
+    for device in ALL {
+        let at = &device.scaled;
         for flags in [Flags::NONE, Flags::RADAR, Flags::COURSE.with(Flags::RADAR)] {
             for case in cases() {
-                let view = view(case, layout, flags);
+                let view = view(case, device, flags);
                 let what = std::format!(
                     "{flags} on {:?}: {:?} km/h, {:?} W, {:?} bpm, {:?} rpm/10, {} mm, {} s, {:?}",
                     at.panel,
@@ -303,11 +303,11 @@ fn every_reading_fits_either_slot_at_its_widest() {
             0
         }
     }
-    for layout in ALL {
-        let at = &layout.scaled;
+    for device in ALL {
+        let at = &device.scaled;
         for flags in [Flags::NONE, Flags::RADAR] {
             for slots in every_slots() {
-                let laid = laid(layout, slots, flags);
+                let laid = laid(device, slots, flags);
                 let mut canvas = Canvas::default();
                 laid.prepare(&Widest, &mut canvas);
                 let what = std::format!("{slots:?} {flags} on {:?}", at.panel);
@@ -323,7 +323,7 @@ fn every_reading_fits_either_slot_at_its_widest() {
 #[test]
 fn units_follow_the_value_they_belong_to() {
     let gap = |case: Case, unit: &str| {
-        let view = view(case, &crate::screens::BASE, Flags::NONE);
+        let view = view(case, &crate::screens::C606, Flags::NONE);
         let items: Vec<(String, Rect)> = view.canvas().runs.iter().filter_map(text).collect();
         let unit = items.iter().find(|(name, _)| name == unit).unwrap().1;
         let value = items
@@ -365,7 +365,7 @@ fn the_default_slots_show_cadence_then_distance_and_chosen_ones_replace_them() {
             .map(|(name, _)| name)
             .collect()
     };
-    let mut view = view(WIDEST, &crate::screens::BASE, Flags::NONE);
+    let mut view = view(WIDEST, &crate::screens::C606, Flags::NONE);
     let shown = names(&view);
     assert!(shown.contains(&"RPM".into()) && shown.contains(&"KM".into()));
     view.main_slots = Slots {
@@ -389,7 +389,7 @@ fn the_banner_hides_the_time_and_grade_and_the_chip_does_not() {
         distance: Distance::from_mm(6_400_000),
     };
     for (nav, shown) in [(Sign::None, true), (chip, true), (turn(), false)] {
-        let mut view = view(WIDEST, &crate::screens::BASE, Flags::COURSE);
+        let mut view = view(WIDEST, &crate::screens::C606, Flags::COURSE);
         view.nav = nav;
         view.prepare();
         assert_eq!(view.canvas().shows("99:59:59"), shown, "{nav:?}");
@@ -401,7 +401,7 @@ fn the_banner_hides_the_time_and_grade_and_the_chip_does_not() {
 fn arrived_shows_the_ride_totals_without_gauges() {
     let view = view(
         WIDEST,
-        &crate::screens::BASE,
+        &crate::screens::C606,
         Flags::COURSE.with(Flags::ARRIVED),
     );
     let items: Vec<(String, Rect)> = view.canvas().runs.iter().filter_map(text).collect();
@@ -433,7 +433,7 @@ fn a_long_ride_shows_its_real_distance_up_to_the_end() {
                 distance_mm,
                 ..WIDEST
             };
-            let view = view(case, &crate::screens::BASE, flags);
+            let view = view(case, &crate::screens::C606, flags);
             assert!(
                 view.canvas().shows(shown),
                 "{distance_mm} mm under {flags} shows {:?}, not {shown}",
@@ -455,7 +455,7 @@ fn glides_land_where_the_gauges_light() {
     use crate::screens::data::Gliding;
     use crate::screens::workout::Graphics;
     let profile = crate::ride::zones::TrainingProfile::default();
-    let laid = laid(&crate::screens::BASE, Slots::default(), Flags::NONE);
+    let laid = laid(&crate::screens::C606, Slots::default(), Flags::NONE);
     let at = |watts| {
         let graphics = Graphics {
             power_3s: watts,
@@ -481,12 +481,12 @@ fn a_workout_target_spans_its_watts_under_the_power_gauge() {
     use crate::screens::ride::Training;
     use crate::workout::library::{ENDURANCE, VO2_MAX};
     use crate::workout::player::Player;
-    for layout in ALL {
-        let at = &layout.scaled;
+    for device in ALL {
+        let at = &device.scaled;
         for workout in [VO2_MAX, ENDURANCE] {
             let mut player = Player::new(workout);
             player.skip();
-            let mut view = view(WIDEST, layout, Flags::NONE);
+            let mut view = view(WIDEST, device, Flags::NONE);
             view.training = Some(Training::of(&player, &view.profile));
             view.compose_main();
             view.prepare();
@@ -526,8 +526,8 @@ fn a_status_bar_under_a_reading_paints_only_its_own_rows() {
     use crate::compose::tiles::reading::{Inline, Shown};
     use crate::screens::chrome::{BLACK, Row};
     use firmware_shell::shell::Picture;
-    let layout = &crate::screens::BASE;
-    let at = &layout.scaled;
+    let device = &crate::screens::C606;
+    let at = &device.scaled;
     let (above, bar) = (48, crate::compose::tiles::status::rows(at));
     let speed = Inline(Shown::left(Metric::Speed, 1)).byte();
     let frame = |view: &mut View| -> Vec<Vec<u16>> {
@@ -549,14 +549,14 @@ fn a_status_bar_under_a_reading_paints_only_its_own_rows() {
         ];
         let bytes: Vec<u8> = nodes.iter().flat_map(|node| node.bytes()).collect();
         let screen = Screen::parse(ScreenId::RideMain.key(), &bytes, at, Controls::FREE).unwrap();
-        let mut view = view(WIDEST, layout, Flags::NONE);
+        let mut view = view(WIDEST, device, Flags::NONE);
         view.laids = Some(std::boxed::Box::leak(std::boxed::Box::new(
             Laids::with_main(screen, Flags::NONE),
         )));
         frame(&mut view)
     };
     let (moved, without) = (shown(STATUS), shown(SPACE));
-    let at_top = frame(&mut view(WIDEST, layout, Flags::NONE));
+    let at_top = frame(&mut view(WIDEST, device, Flags::NONE));
     assert!(
         without[..above]
             .iter()
@@ -583,13 +583,13 @@ fn a_status_bar_under_a_reading_paints_only_its_own_rows() {
 #[test]
 fn speed_takes_the_hero_face_on_the_240_wide_panels() {
     use firmware_shell::rendering::font::FaceRole;
-    for layout in [&crate::screens::BASE, &crate::screens::panels::WIDE] {
+    for device in [&crate::screens::C606, &crate::screens::panels::WIDE] {
         for speed in [27_777, 40_000] {
             let case = Case {
                 speed_mm_s: Some(speed),
                 ..WIDEST
             };
-            let view = view(case, layout, Flags::NONE);
+            let view = view(case, device, Flags::NONE);
             let text = written(Metric::Speed, Some(speed as i32));
             let run = view
                 .canvas()
@@ -598,9 +598,9 @@ fn speed_takes_the_hero_face_on_the_240_wide_panels() {
                 .find(|run| run.line.text() == text.as_bytes())
                 .unwrap();
             assert!(
-                core::ptr::eq(run.line.face(), layout.scaled.face(FaceRole::Hero)),
+                core::ptr::eq(run.line.face(), device.scaled.face(FaceRole::Hero)),
                 "{text} on {:?}",
-                layout.scaled.panel
+                device.scaled.panel
             );
         }
     }

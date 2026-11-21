@@ -7,7 +7,7 @@ use crate::compose::builtin::{Laid, ScreenId};
 use crate::compose::data::ListKind;
 use crate::compose::node::What;
 use crate::compose::registry::SENSOR_SEARCH;
-use crate::screens::Layout;
+use crate::screens::Device;
 use crate::screens::chrome::{ACCENT, AMBER, GREEN, RED, Rect, SECONDARY, WHITE};
 use crate::screens::cue::{Corner, RADIUS};
 use crate::screens::scaled::Panel;
@@ -199,24 +199,24 @@ impl Menu {
         focus.map_or(0, |focus| page.reveal(usize::from(focus), 0))
     }
 
-    /// A tap at (`x`, `y`) on `laid`, the page shown on `layout`'s panel.
+    /// A tap at (`x`, `y`) on `laid`, the page shown on `device`'s panel.
     pub fn tap_at(
         &mut self,
         laid: &Laid,
-        layout: &Layout,
+        device: &Device,
         x: usize,
         y: usize,
         now: u64,
     ) -> Option<Action> {
-        let target = self.target(laid, layout, x, y)?;
+        let target = self.target(laid, device, x, y)?;
         self.state.tap(target, now)
     }
 
     /// The cue, card or search line under (`x`, `y`).
-    fn target(&self, laid: &Laid, layout: &Layout, x: usize, y: usize) -> Option<Target> {
-        let panel = layout.scaled.panel;
+    fn target(&self, laid: &Laid, device: &Device, x: usize, y: usize) -> Option<Target> {
+        let panel = device.scaled.panel;
         let mut cues = laid.controls().shown(laid.focus());
-        if let Some(cue) = cues.find(|cue| cue_box(cue.corner(layout), panel).contains(x, y)) {
+        if let Some(cue) = cues.find(|cue| cue_box(cue.corner(device), panel).contains(x, y)) {
             return Some(Target::Cue(cue.role));
         }
         if laid
@@ -288,12 +288,12 @@ const fn cue_box(corner: Corner, panel: Panel) -> Rect {
 
 #[cfg(test)]
 impl Menu {
-    /// The page shown in a frame of its own on `layout`'s panel, drawn
+    /// The page shown in a frame of its own on `device`'s panel, drawn
     /// from its tree as the runtime draws it.
-    pub fn frame(&self, layout: &'static Layout) -> crate::screens::workout::View<'_> {
+    pub fn frame(&self, device: &'static Device) -> crate::screens::workout::View<'_> {
         let page = crate::screens::workout::Page::Sensors;
         let mut view = crate::screens::workout::View::new(page, 0, None);
-        view.layout = layout;
+        view.device = device;
         view.show_sensors(self);
         view.compose_main();
         view

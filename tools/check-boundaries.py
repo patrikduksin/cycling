@@ -252,11 +252,13 @@ def console_reach(text, path):
     return sorted(findings)
 
 
-SCREENS = 'apps/vana/src/screens/'
-RECT_LITERAL = re.compile(r'(?<![\w:])Rect\s*\{')
-NUMERIC_FIELD = re.compile(r'\b(?:left|top|right|bottom)\s*:\s*\d[\d_]*(?:usize)?\s*[,}]')
-PIXEL_RULE = ('a numeric `Rect { … }` in a screen, which lays out from the panel: make it a `Track` in a `const fn` '
-              'of `&Scaled` (`regions`), or measure a lone offset with `at.unit(n)` from a region\'s edge')
+VANA = 'apps/vana/'
+COMPOSE = 'apps/vana/src/compose/'
+RECT_LITERAL = re.compile(r'(?<![\w:])(?:::\s*)?(?:\w+\s*::\s*)*Rect\s*\{')
+NUMERIC_FIELD = re.compile(r'\b(?:left|top|right|bottom)\s*:\s*\d\w*\s*[,}]')
+PIXEL_RULE = ('a numeric `Rect { … }` edge outside `apps/vana/src/compose/`: give the box to a tile of the '
+              'screen\'s tree and read it back (`Laid::box_of`, `Placed::rect`), or measure from a box the tree '
+              'or `at.screen()` gives with `at.unit(n)`')
 
 
 def brace_end(code, start):
@@ -269,19 +271,25 @@ def brace_end(code, start):
     return len(code)
 
 
+def is_test_file(path):
+    """A file that only builds for tests: under a `tests` directory, or a `tests.rs` beside its module."""
+    parts = path.split('/')
+    return 'tests' in parts[:-1] or parts[-1] == 'tests.rs'
+
+
 def pixel_rects(text, path):
-    """In a screen file, a `Rect` literal with an edge at a number, outside a `const fn` (where layouts
-    are built from tracks) and outside test modules, is a hand-placed pixel."""
-    if not path.startswith(SCREENS):
+    """In VANA outside `compose/`, a `Rect` literal with an edge at a number is a hand-placed pixel. Inline
+    `#[cfg(test)]` modules, test-only files and `-> Rect` return types are exempt."""
+    if not path.startswith(VANA) or path.startswith(COMPOSE) or is_test_file(path):
         return []
     code = STRING.sub(lambda match: blank(match.group()), without_comments(text))
     allowed = []
-    for match in re.finditer(r'\bconst\s+fn\b[^{;]*\{|#\[cfg\(test\)\]\s*mod\s+\w+\s*\{', code):
+    for match in re.finditer(r'#\[cfg\(test\)\]\s*mod\s+\w+\s*\{', code):
         allowed.append((match.start(), brace_end(code, match.end() - 1)))
     findings = []
     for match in RECT_LITERAL.finditer(code):
         before = code[:match.start()].split()
-        if before and before[-1] in ('struct', 'impl', 'for', 'enum'):
+        if before and (before[-1] in ('struct', 'impl', 'for', 'enum') or before[-1].endswith('->')):
             continue
         if any(start <= match.start() < end for start, end in allowed):
             continue
@@ -641,16 +649,20 @@ ui = { package = "firmware-shell", path = "../shell" }
                            'devices/c606/src/main.rs')
     assert not owner_reach('bind(&mut sim.ant)', 'tools/simulator/src/sim.rs')
     assert not owner_reach('bind(&mut world.ant)', 'devices/c606/src/drivers/world.rs')
-    page = SCREENS + 'ride/page.rs'
-    laid_out = 'pub const fn regions(at: &Scaled) -> Regions {\n    let r = Rect { left: 0, ..x };\n}\n'
-    assert not pixel_rects(laid_out, page)
-    assert [line for line, _ in pixel_rects(laid_out + 'fn paint() {\n    let r = Rect { top: 22, ..z };\n}\n', page)] == [5]
-    assert pixel_rects(laid_out + 'fn paint() { let r = Rect { left: 0, top, right: 240, bottom }; }', page)
-    assert not pixel_rects(laid_out + 'fn paint() { let r = Rect { top: y + at.unit(4), ..z }; }', page)
-    assert not pixel_rects(laid_out + '#[cfg(test)]\nmod tests {\n    const R: Rect = Rect { left: 1, top: 2, right: 3, bottom: 4 };\n}\n', page)
-    assert pixel_rects('fn paint() { let r = Rect { top: 4, ..y }; }', page), 'every screen lays out from the panel'
-    assert not pixel_rects('fn paint() { let r = Rect { top: 4, ..y }; }', 'apps/vana/src/app/page.rs')
-    assert not pixel_rects(laid_out + 'pub struct Rect {\n    pub left: usize,\n}\n// Rect { left: 3 }\n', page)
+    page = 'apps/vana/src/screens/ride/page.rs'
+    regions = 'pub const fn regions(at: &Scaled) -> Regions {\n    let r = Rect { left: 0, ..x };\n}\n'
+    assert [line for line, _ in pixel_rects(regions, page)] == [2], 'a `const fn` of `&Scaled` is no exemption'
+    from_tree = 'fn paint(placed: &Placed) {\n    let r = Rect { top: placed.top + at.unit(4), ..placed.rect() };\n}\n'
+    assert not pixel_rects(from_tree, page)
+    assert [line for line, _ in pixel_rects(from_tree + 'fn paint() {\n    let r = Rect { top: 22, ..z };\n}\n', page)] == [5]
+    assert pixel_rects('fn paint() { let r = Rect { left: 0, top, right: 240, bottom }; }', page)
+    assert pixel_rects('fn hit() { let r = Rect { top: 4, ..y }; }', 'apps/vana/src/app/input.rs'), 'the app lays out nothing'
+    assert pixel_rects('fn main() { let r = Rect { top: 4, ..y }; }', 'apps/vana/examples/preview.rs')
+    assert not pixel_rects('fn solve() { let r = Rect { top: 4, ..y }; }', COMPOSE + 'solve.rs'), 'compose lays out'
+    assert not pixel_rects('#[cfg(test)]\nmod tests {\n    const R: Rect = Rect { left: 1, top: 2, right: 3, bottom: 4 };\n}\n', page)
+    assert not pixel_rects('fn paint() { let r = Rect { top: 4, ..y }; }', 'devices/c606/src/page.rs')
+    assert not pixel_rects('pub struct Rect {\n    pub left: usize,\n}\n// Rect { left: 3 }\n', page)
+    assert [line for line, _ in pixel_rects('fn screen() -> Rect {\n    Rect { left: 0, ..x }\n}\n', page)] == [2]
     wifi = STACK_STATE_WAITER[0]
     publisher = 'async fn network(stack: Stack) {\n    loop {\n        stack.wait_config_up().await;\n' \
                 '        stack\n            .wait_config_down()\n            .await;\n    }\n}\n'

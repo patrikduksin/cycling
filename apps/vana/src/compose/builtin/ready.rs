@@ -12,7 +12,7 @@ use crate::screens::cue::Icon;
 use crate::screens::ready::Line;
 use device_api::input::Role;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree,
     buttons: Buttons {
         act: Some(Button {
@@ -26,7 +26,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         move_: None,
         held: None,
     },
-});
+};
 
 /// The lines keep their own inset inside these; the headline matches it.
 const SIDE_UNITS: u8 = 4;

@@ -13,7 +13,7 @@ use crate::compose::tiles::total::Captioned;
 use crate::screens::ride::slots::Slots;
 use device_api::input::Role;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |choices: &Choices| tree(choices.main_slots).into_iter().collect(),
     buttons: Buttons {
         act: Some(Button {
@@ -30,7 +30,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         }),
         held: None,
     },
-});
+};
 
 /// The status bar and the black under it.
 const BAR_UNITS: u8 = 24;

@@ -15,7 +15,7 @@ use crate::compose::builtin::{Choices, Nodes, ScreenId};
 use crate::compose::input::Controls;
 use crate::compose::parse::RECORD;
 use crate::compose::{self, Edit, Reject, Screen, Screens};
-use crate::screens::Layout;
+use crate::screens::Device;
 use device_api::storage::{OwnedFlash, Region};
 use firmware_services::storage::{Error, Journal, Record, SECTOR_COUNT, Tip};
 use firmware_services::why;
@@ -35,10 +35,7 @@ impl Named {
 
     /// The tree it shows unchanged, for the rider's `choices`.
     pub fn builtin(&self, choices: &Choices) -> Nodes {
-        match self.id.builtin() {
-            Some(builtin) => (builtin.tree)(choices),
-            None => unreachable!("a named screen has a built-in"),
-        }
+        (self.id.builtin().tree)(choices)
     }
 }
 
@@ -153,7 +150,7 @@ impl Overrides {
 
     /// Accept the screens shown with `change` made, as the proposal a save
     /// would write.
-    pub(crate) fn propose(&mut self, change: Change<'_>, layout: &Layout) -> Result<(), Reject> {
+    pub(crate) fn propose(&mut self, change: Change<'_>, device: &Device) -> Result<(), Reject> {
         self.proposed = 0;
         let set;
         let edit = match change {
@@ -161,8 +158,8 @@ impl Overrides {
                 set = Screen::parse(
                     key,
                     nodes,
-                    &layout.scaled,
-                    ScreenId::controls(key, layout.corners),
+                    &device.scaled,
+                    ScreenId::controls(key, device.corners),
                 )?;
                 Some(Edit::Set(&set))
             }
@@ -181,8 +178,8 @@ impl Overrides {
         }?;
         compose::parse(
             &self.record[..length],
-            &layout.scaled,
-            &controls(layout),
+            &device.scaled,
+            &controls(device),
             proposed,
         )?;
         self.proposed = length;
@@ -210,7 +207,7 @@ impl Overrides {
         }
     }
 
-    fn serve(&mut self, flash: impl OwnedFlash, layout: &Layout) {
+    fn serve(&mut self, flash: impl OwnedFlash, device: &Device) {
         let waiting = match self.save {
             Save::Waiting { base } => Some(base),
             Save::Idle | Save::Done(_) => None,
@@ -222,7 +219,7 @@ impl Overrides {
         };
         let mut journal = Journal::new(flash, Region::Screens);
         if read {
-            self.load(&mut journal, layout);
+            self.load(&mut journal, device);
         }
         let Some(base) = waiting else {
             return;
@@ -230,7 +227,7 @@ impl Overrides {
         // A read replaces the proposal, which was made over screens the
         // journal had not given.
         let saved = match (read, self.revision()) {
-            (false, _) => self.commit(&mut journal, base, layout),
+            (false, _) => self.commit(&mut journal, base, device),
             (true, Some(revision)) => Saved::Stale(revision),
             (true, None) => Saved::Failed,
         };
@@ -240,7 +237,7 @@ impl Overrides {
 
     /// Read the journal's newest record into the screens shown.
     #[inline(never)]
-    fn load<F: OwnedFlash>(&mut self, journal: &mut Journal<F>, layout: &Layout) {
+    fn load<F: OwnedFlash>(&mut self, journal: &mut Journal<F>, device: &Device) {
         let shown = &mut self.screens[self.shown];
         self.proposed = 0;
         let loaded = match read(journal, &mut self.record) {
@@ -261,7 +258,7 @@ impl Overrides {
             }
             Ok((tip, Some(record))) => {
                 let bytes = &self.record[..record.length];
-                let accepted = compose::parse(bytes, &layout.scaled, &controls(layout), shown);
+                let accepted = compose::parse(bytes, &device.scaled, &controls(device), shown);
                 if let Err(reject) = accepted {
                     why!("screens.refused", reject, revision = record.sequence);
                 }
@@ -288,7 +285,7 @@ impl Overrides {
         &mut self,
         journal: &mut Journal<F>,
         base: u32,
-        layout: &Layout,
+        device: &Device,
     ) -> Saved {
         let Some(revision) = self.revision() else {
             return Saved::Failed;
@@ -315,7 +312,7 @@ impl Overrides {
         // A failed write may still have committed: read back what the
         // journal holds and answer from that.
         let proposed = 1 - self.shown;
-        self.load(journal, layout);
+        self.load(journal, device);
         match self.revision() {
             Some(now) if now != revision && self.screens[self.shown] == self.screens[proposed] => {
                 Saved::Revision(now)
@@ -342,9 +339,9 @@ impl Default for Overrides {
 }
 
 /// What each stored screen's buttons do and the cues they show on
-/// `layout`'s device: its built-in's, as what a button does stays in code.
-fn controls(layout: &Layout) -> impl Fn(u8) -> Controls {
-    let corners = layout.corners;
+/// `device`: its built-in's, as what a button does stays in code.
+fn controls(device: &Device) -> impl Fn(u8) -> Controls {
+    let corners = device.corners;
     move |key| ScreenId::controls(key, corners)
 }
 
@@ -369,7 +366,7 @@ impl Runtime {
             return;
         }
         if let Some(overrides) = self.overrides.as_deref_mut() {
-            overrides.serve(flash, self.layout);
+            overrides.serve(flash, self.device);
         }
     }
 

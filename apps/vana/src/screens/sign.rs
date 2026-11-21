@@ -1,6 +1,6 @@
 //! The course sign in three forms: a banner across a data page, a badge on
 //! the map and a chip on the main page.
-use super::Layout;
+use super::Device;
 use super::chrome::{self, MUTED, RAISED, Rect, Row, WHITE, blend, paint_rounded_over, rounded};
 use super::icons::{SignForm, SignGlyph, StaticIcon};
 use super::ride::RidePage;
@@ -20,15 +20,8 @@ pub(crate) const fn baseline_under_mockup(mockup: usize) -> usize {
     mockup + 1
 }
 
-/// Where the sign's banner and badge sit on one panel: `plain` without a
-/// radar, `radar` beside one. The chip sits where the main page's tree
-/// places it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Regions {
-    pub plain: Forms,
-    pub radar: Forms,
-}
-
+/// Where the sign's banner and badge sit on one panel. The chip sits where
+/// the main page's tree places it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Forms {
     pub banner: Spot,
@@ -54,41 +47,39 @@ pub const BANNER_UNITS: usize = 80;
 /// The banner spans the content from the status bar down `BANNER_UNITS`,
 /// over the main page's time, grade and chip; the badge floats on the map
 /// 8 units in from its corner.
-pub const fn regions(at: &Scaled) -> Regions {
+pub const fn forms(at: &Scaled, radar: bool) -> Forms {
     use Track::{Fr, Unit};
-    let chrome = chrome::regions(at);
-    let frame = super::ride::frame(at);
     let under_bar = Rect {
-        top: chrome.status_bar.bottom,
-        ..chrome.content
+        top: chrome::status_bar(at).bottom,
+        ..at.screen()
     };
     let banner = Rect {
-        bottom: chrome.content.top + at.unit(BANNER_UNITS),
+        bottom: chrome::content(at).top + at.unit(BANNER_UNITS),
         ..under_bar
     };
     let [_, badge, _] = under_bar.rows([Unit(8), Unit(60), Fr(1)], Unit(0), at);
-    let shift = frame.centre_shift;
-    let beside_strip = Rect {
-        left: frame.body.left,
-        ..banner
-    };
-    Regions {
-        plain: Forms {
+    if !radar {
+        return Forms {
             banner: Spot {
                 fill: banner,
                 origin: banner.left,
                 radius: 0,
             },
             badge: badge_on(badge, at),
+        };
+    }
+    let strip = super::ride::radar_columns(at);
+    let beside_strip = Rect {
+        left: strip.right,
+        ..banner
+    };
+    Forms {
+        banner: Spot {
+            fill: beside_strip,
+            origin: banner.left + strip.width() / 2,
+            radius: 0,
         },
-        radar: Forms {
-            banner: Spot {
-                fill: beside_strip,
-                origin: banner.left + shift,
-                radius: 0,
-            },
-            badge: badge_on(badge.with_columns(beside_strip), at),
-        },
+        badge: badge_on(badge.with_columns(beside_strip), at),
     }
 }
 
@@ -220,18 +211,18 @@ pub fn form(page: RidePage, sign: Sign) -> Option<SignForm> {
     }
 }
 
-/// `sign` laid out as `page` shows it on `layout`, if it does: a chip in
+/// `sign` laid out as `page` shows it on `device`, if it does: a chip in
 /// `chip`, the box the main page's tree gives it.
 pub fn on_page(
     page: RidePage,
     sign: Sign,
     radar: bool,
-    layout: &'static Layout,
+    device: &'static Device,
     chip: Option<Rect>,
 ) -> Option<Placed> {
     match form(page, sign)? {
-        SignForm::Chip => place_chip(sign, chip?, layout),
-        form => place(sign, form, radar, layout),
+        SignForm::Chip => place_chip(sign, chip?, device),
+        form => place(sign, form, radar, device),
     }
 }
 
@@ -268,24 +259,20 @@ impl Pen<'_> {
     }
 }
 
-/// Lay `sign` out as a banner or a badge on `layout`; none for a sign that
+/// Lay `sign` out as a banner or a badge on `device`; none for a sign that
 /// form does not draw, or for the chip, which `place_chip` lays out.
-pub fn place(sign: Sign, form: SignForm, radar: bool, layout: &Layout) -> Option<Placed> {
-    let forms = if radar {
-        &layout.sign.radar
-    } else {
-        &layout.sign.plain
-    };
+pub fn place(sign: Sign, form: SignForm, radar: bool, device: &Device) -> Option<Placed> {
+    let forms = forms(&device.scaled, radar);
     match form {
-        SignForm::Banner => lay(sign, form, forms.banner, &layout.scaled),
-        SignForm::Badge => lay(sign, form, forms.badge, &layout.scaled),
+        SignForm::Banner => lay(sign, form, forms.banner, &device.scaled),
+        SignForm::Badge => lay(sign, form, forms.badge, &device.scaled),
         SignForm::Chip => None,
     }
 }
 
 /// Lay `sign` out as a chip in `chip`.
-pub fn place_chip(sign: Sign, chip: Rect, layout: &Layout) -> Option<Placed> {
-    let at = &layout.scaled;
+pub fn place_chip(sign: Sign, chip: Rect, device: &Device) -> Option<Placed> {
+    let at = &device.scaled;
     lay(sign, SignForm::Chip, chip_at(chip, at), at)
 }
 

@@ -701,7 +701,7 @@ pub(super) mod tests {
         ];
         let bytes: Vec<u8> = nodes.iter().flat_map(|node| node.bytes()).collect();
         let accept = |buttons| {
-            let controls = Controls::new(buttons, crate::screens::BASE.corners);
+            let controls = Controls::new(buttons, crate::screens::C606.corners);
             Screen::parse(0, &bytes, &BASE, controls)
         };
         for buttons in [Buttons::FREE, ACT] {
@@ -788,7 +788,7 @@ pub(super) mod tests {
 
     #[test]
     fn cues_show_beside_the_buttons_that_set_an_icon() {
-        let corners = crate::screens::BASE.corners;
+        let corners = crate::screens::C606.corners;
         assert!(cues(&Buttons::FREE, corners).shown().is_empty());
         let quiet = Buttons {
             back: Some(HOME),
@@ -815,7 +815,7 @@ pub(super) mod tests {
 
     #[test]
     fn the_act_cue_shows_only_while_focus_is_on_the_screen_stop() {
-        let controls = Controls::new(ACT, crate::screens::BASE.corners);
+        let controls = Controls::new(ACT, crate::screens::C606.corners);
         let play = Cue::new(Role::Act, Icon::Play);
         assert_eq!(controls.shown(Focus::Screen).collect::<Vec<_>>(), [play]);
         assert_eq!(controls.shown(Focus::Tile(2)).count(), 0);
@@ -833,7 +833,7 @@ pub(super) mod tests {
                 .iter()
                 .flat_map(|node| node.bytes())
                 .collect();
-            let controls = Controls::new(buttons, crate::screens::BASE.corners);
+            let controls = Controls::new(buttons, crate::screens::C606.corners);
             Screen::parse(0, &bytes, &BASE, controls)
                 .err()
                 .map(|reject| reject.why)
@@ -857,8 +857,8 @@ pub(super) mod tests {
 
     #[test]
     fn a_screen_accepted_with_cues_keeps_its_tiles_clear_of_them() {
-        let layout = &crate::screens::BASE;
-        let controls = Controls::new(ACT, layout.corners);
+        let device = &crate::screens::C606;
+        let controls = Controls::new(ACT, device.corners);
         let nodes = [
             Node::col(2, Size::grow(1)),
             Node::leaf(SPACE, 0, Size::grow(1)),
@@ -877,10 +877,10 @@ pub(super) mod tests {
             placed.unwrap().rect.rect()
         };
         assert!(
-            cue.covers(tap(&under), layout),
+            cue.covers(tap(&under), device),
             "the tile sits in the cue's corner"
         );
-        assert!(!cue.covers(tap(&clear), layout));
+        assert!(!cue.covers(tap(&clear), device));
     }
 
     #[derive(Default)]

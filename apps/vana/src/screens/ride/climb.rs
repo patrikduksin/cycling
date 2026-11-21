@@ -329,7 +329,7 @@ fn spread_profile(columns: &mut [Column; COLUMNS], len: usize, count: usize) -> 
 /// Precompute every chart column for the road the page shows, in `chart`,
 /// the profile tile's box.
 pub(super) fn frame(view: &View, chart: Rect) -> Frame {
-    let at = &view.layout.scaled;
+    let at = &view.device.scaled;
     let count = chart.width();
     let mut frame = Frame {
         chart,
@@ -580,8 +580,8 @@ mod tests {
     }
 
     /// The per-pixel reference models only the 240 × 320 ride page.
-    fn has_reference(layout: &crate::screens::Layout) -> bool {
-        layout.scaled.panel == BASE_PANEL
+    fn has_reference(device: &crate::screens::Device) -> bool {
+        device.scaled.panel == BASE_PANEL
     }
 
     /// Every painted row equals the per-pixel reference.
@@ -731,7 +731,7 @@ mod tests {
         let frame = chart(&view);
         assert_eq!(frame.rider, 0);
         assert_eq!(frame.done, Some(0));
-        let at = &view.layout.scaled;
+        let at = &view.device.scaled;
         assert_eq!(frame.bottom, barred(frame.chart, at).chart_bottom);
         // The road to the foot is dim, the climb in full colour.
         let foot = 300 * (PROFILE_LEN - 1) / 1500;
@@ -827,31 +827,31 @@ mod tests {
                 (Some(255), Some(85), Some(60)),
                 (Some(999), Some(999), Some(199)),
             ] {
-                for layout in crate::screens::panels::ALL {
+                for device in crate::screens::panels::ALL {
                     for radar in [false, true] {
                         let mut view = ride().view();
-                        view.layout = layout;
+                        view.device = device;
                         view.radar_paired = radar;
                         view.sample.gradient_tenths = tenths;
                         view.power_3s = watts;
                         view.sample.heart_bpm = bpm;
                         view.compose_main();
                         view.prepare().check_layout();
-                        let panel = layout.scaled.panel;
+                        let panel = device.scaled.panel;
                         let what = std::format!("{what} {tenths:?} on {panel:?}");
                         let canvas = view.canvas();
                         assert!(canvas.shows("POWER 3S") && canvas.shows("HEART"), "{what}");
                         let frame = chart(&view);
                         let columns = frame.chart.width();
-                        assert_eq!(columns, chart_width(&layout.scaled), "{what}");
+                        assert_eq!(columns, chart_width(&device.scaled), "{what}");
                         assert!(frame.tops()[columns..].iter().all(|&top| top == EMPTY));
                         if frame.rider != NO_RIDER {
                             assert!(usize::from(frame.rider) < columns, "{what}");
                         }
                         let want = ["POWER 3S", "HEART"];
-                        let page = layout.scaled.screen();
-                        canvas.assert_laid_out_at(&layout.scaled, page, &want, &what);
-                        if has_reference(layout) {
+                        let page = device.scaled.screen();
+                        canvas.assert_laid_out_at(&device.scaled, page, &want, &what);
+                        if has_reference(device) {
                             assert_paints_reference(&mut view);
                         }
                     }
@@ -896,12 +896,12 @@ mod tests {
             }),
         ];
         for (what, ride) in cases {
-            for layout in crate::screens::panels::ALL {
-                let rect = crate::screens::ride::largest_box(layout, CLIMB_PROFILE);
+            for device in crate::screens::panels::ALL {
+                let rect = crate::screens::ride::largest_box(device, CLIMB_PROFILE);
                 let mut view = ride().view();
-                view.layout = layout;
+                view.device = device;
                 let frame = frame(&view, rect);
-                let what = std::format!("{what} on {:?}", layout.scaled.panel);
+                let what = std::format!("{what} on {:?}", device.scaled.panel);
                 let rows = frame.bottom - rect.top;
                 let columns = &frame.tops()[..rect.width()];
                 assert!(
@@ -943,11 +943,11 @@ mod tests {
         );
     }
 
-    /// The page's tiles on `layout`, with and without a radar.
-    fn laid(layout: &'static crate::screens::Layout, radar: bool) -> crate::compose::builtin::Laid {
+    /// The page's tiles on `device`, with and without a radar.
+    fn laid(device: &'static crate::screens::Device, radar: bool) -> crate::compose::builtin::Laid {
         let flags = crate::screens::ride::main_flags(false, radar, false, false);
         let choices = crate::compose::builtin::Choices::default();
-        crate::compose::builtin::Laid::new(ScreenId::RideClimb, layout, choices, flags, None)
+        crate::compose::builtin::Laid::new(ScreenId::RideClimb, device, choices, flags, None)
             .unwrap()
     }
 
@@ -956,9 +956,9 @@ mod tests {
     /// well as between them, on every panel, with and without a radar.
     #[test]
     fn the_words_gaps_are_even_on_every_panel() {
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             for radar in [false, true] {
-                let laid = laid(layout, radar);
+                let laid = laid(device, radar);
                 let bar = laid.box_of(STATUS).unwrap().bottom as u16;
                 let profile = laid.box_of(CLIMB_PROFILE).unwrap().top as u16;
                 // Tiles side by side share a row; the margins beside the
@@ -994,7 +994,7 @@ mod tests {
                 assert!(
                     rows.len() == 5 && most - least <= 1 && *least > 0,
                     "radar {radar} on {:?}: gaps {gaps:?}",
-                    layout.scaled.panel
+                    device.scaled.panel
                 );
             }
         }
@@ -1004,11 +1004,11 @@ mod tests {
     /// reaches the panel's foot.
     #[test]
     fn the_profile_is_centred_and_reaches_the_foot() {
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             for radar in [false, true] {
-                let laid = laid(layout, radar);
+                let laid = laid(device, radar);
                 let profile = laid.box_of(CLIMB_PROFILE).unwrap();
-                let at = &layout.scaled;
+                let at = &device.scaled;
                 let left = if radar {
                     at.unit(crate::screens::ride::RADAR_WIDTH)
                 } else {

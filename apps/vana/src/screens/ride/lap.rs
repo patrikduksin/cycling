@@ -45,11 +45,11 @@ mod tests {
 
     /// `laps` finished laps of `seconds` each, then the open lap's.
     fn ridden(laps: &[(u64, Sample)], open: (u64, Sample)) -> View<'static> {
-        ridden_on(&crate::screens::BASE, true, laps, open)
+        ridden_on(&crate::screens::C606, true, laps, open)
     }
 
     fn ridden_on(
-        layout: &'static crate::screens::Layout,
+        device: &'static crate::screens::Device,
         radar: bool,
         laps: &[(u64, Sample)],
         open: (u64, Sample),
@@ -67,7 +67,7 @@ mod tests {
             }
         }
         let mut view = View::new(Page::Ride, 0, None);
-        view.layout = layout;
+        view.device = device;
         view.ride_page = RidePage::Lap;
         view.radar_paired = radar;
         let kept = (0..HISTORY).rev().filter_map(|back| ride.finished(back));
@@ -83,7 +83,7 @@ mod tests {
 
     /// Each bar's left, height and colour.
     fn bars(view: &View) -> std::vec::Vec<(usize, usize, u16)> {
-        let bottom = view.layout.scaled.panel.height;
+        let bottom = view.device.scaled.panel.height;
         view.canvas()
             .shapes
             .iter()
@@ -105,9 +105,9 @@ mod tests {
         let slow = steady(Some(1), 300, 40);
         let mut laps = std::vec![(35_999, fast); HISTORY];
         laps[0] = (60, slow);
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             for radar in [false, true] {
-                let view = ridden_on(layout, radar, &laps, (359_999, fast));
+                let view = ridden_on(device, radar, &laps, (359_999, fast));
                 assert!(view.canvas().shows("LAP TIME"));
                 assert!(view.canvas().shows("99:59:59"));
             }

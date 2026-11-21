@@ -99,16 +99,16 @@ impl Picker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::Layout as Screens;
+    use crate::screens::Device;
     use crate::screens::chrome::{ACCENT, Rect};
     use crate::screens::chrome::{PRESSED, RAISED};
     use crate::screens::workout::{Page, View};
     use core::fmt::Write;
 
-    /// Workouts on `layout` composed, with `rows` cards focused on `cursor`
+    /// Workouts on `device` composed, with `rows` cards focused on `cursor`
     /// and the page scrolled to `offset`, or to show the focus.
     fn picker_on(
-        layout: &'static Screens,
+        device: &'static Device,
         rows: usize,
         cursor: usize,
         offset: Option<i32>,
@@ -116,7 +116,7 @@ mod tests {
         detail: impl Fn(usize) -> Text<24>,
     ) -> (View<'static>, Layout) {
         let mut view = View::new(Page::Workouts, 0, None);
-        view.layout = layout;
+        view.device = device;
         view.compose_main();
         let list = *view.layout().expect("Workouts scrolls a list");
         let offset = offset.unwrap_or_else(|| list.reveal(cursor, 0));
@@ -148,7 +148,7 @@ mod tests {
     }
 
     fn picker(rows: usize, cursor: usize) -> (View<'static>, Layout) {
-        picker_on(&crate::screens::BASE, rows, cursor, None, wide, steps)
+        picker_on(&crate::screens::C606, rows, cursor, None, wide, steps)
     }
 
     #[test]
@@ -186,11 +186,11 @@ mod tests {
 
     #[test]
     fn rows_lay_out_whole_on_every_panel() {
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             for cursor in 0..12 {
-                let (mut view, _) = picker_on(layout, 12, cursor, None, wide, steps);
+                let (mut view, _) = picker_on(device, 12, cursor, None, wide, steps);
                 view.prepare().check_layout();
-                let what = std::format!("{cursor} on {:?}", layout.scaled.panel);
+                let what = std::format!("{cursor} on {:?}", device.scaled.panel);
                 let want: &[&str] = match cursor {
                     0 => &["WORKOUTS", "SWEET SPOT 2X20 WIDE", "100 MIN  96 STEPS"],
                     _ => &["WORKOUTS"],
@@ -198,7 +198,7 @@ mod tests {
                 let page = Rect {
                     top: 0,
                     bottom: 100_000,
-                    ..layout.scaled.screen()
+                    ..device.scaled.screen()
                 };
                 view.canvas().assert_laid_out(page, want, &what);
             }
@@ -208,13 +208,13 @@ mod tests {
     #[test]
     fn every_scroll_keeps_the_words_of_every_card_in_view_on_every_panel() {
         let count = 12;
-        for layout in crate::screens::panels::ALL {
-            let (_, list) = picker_on(layout, count, 1, Some(0), wide, steps);
+        for device in crate::screens::panels::ALL {
+            let (_, list) = picker_on(device, count, 1, Some(0), wide, steps);
             for offset in -40..=list.reveal(count - 1, 0) {
                 let vo2 = |_| Name::new("VO2");
-                let (mut view, _) = picker_on(layout, count, 1, Some(offset), vo2, steps);
+                let (mut view, _) = picker_on(device, count, 1, Some(offset), vo2, steps);
                 view.prepare().check_layout();
-                let what = std::format!("{offset} on {:?}", layout.scaled.panel);
+                let what = std::format!("{offset} on {:?}", device.scaled.panel);
                 let whole = list
                     .visible(count, offset)
                     .filter(|&index| list.whole(index, offset));

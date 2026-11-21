@@ -377,7 +377,7 @@ mod tests {
     use crate::compose::builtin::{Choices, Laid, ScreenId};
     use crate::compose::registry::{STEP_LEFT, WORKOUT_CHART, WORKOUT_LINE};
     use crate::ride::log::{Sample, Status};
-    use crate::screens::Layout;
+    use crate::screens::Device;
     use crate::screens::canvas::Canvas;
     use crate::screens::chrome::{AMBER, GREEN, WHITE};
     use crate::screens::ride::RidePage;
@@ -386,12 +386,12 @@ mod tests {
     use crate::workout::model::Intensity;
     use crate::workout::player::Player;
 
-    /// The page's tiles on `layout`.
-    fn laid(layout: &'static Layout, radar: bool) -> Laid {
+    /// The page's tiles on `device`.
+    fn laid(device: &'static Device, radar: bool) -> Laid {
         let flags = crate::screens::ride::main_flags(false, radar, true, false);
         Laid::new(
             ScreenId::RideWorkout,
-            layout,
+            device,
             Choices::default(),
             flags,
             None,
@@ -401,7 +401,7 @@ mod tests {
 
     /// The chart tile's box on the C606 without a radar.
     fn chart_box() -> Rect {
-        laid(&crate::screens::BASE, false)
+        laid(&crate::screens::C606, false)
             .box_of(WORKOUT_CHART)
             .unwrap()
     }
@@ -451,7 +451,7 @@ mod tests {
         }
     }
 
-    const PAGE: Rect = crate::screens::BASE.scaled.screen();
+    const PAGE: Rect = crate::screens::C606.scaled.screen();
 
     #[test]
     fn a_chart_of_a_ramp_from_tens_of_kilowatts_still_lays_out() {
@@ -640,7 +640,7 @@ mod tests {
                 .collect()
         };
         let last = row(area.bottom - 1);
-        assert_eq!(area.bottom, view.layout.scaled.panel.height);
+        assert_eq!(area.bottom, view.device.scaled.panel.height);
         assert!(
             (0..area.width())
                 .filter(|&c| chart.top(c) != EMPTY)
@@ -678,13 +678,13 @@ mod tests {
         };
         let workout = Workout::new("WWWWWWWWWWWWWWWWWWWW", &steps, &[block], None);
         assert_eq!(workout.validate(), Ok(()));
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             let mut player = Player::new(workout);
             ride(&mut player, 1, 1999);
             while !player.done() {
                 for radar in [false, true] {
                     let mut view = View::new(Page::Ride, 0, None);
-                    view.layout = layout;
+                    view.device = device;
                     view.radar_paired = radar;
                     view.ride_page = RidePage::Workout;
                     view.state = Status::Recording;
@@ -692,9 +692,9 @@ mod tests {
                     view.training = Some(Training::of(&player, &view.profile));
                     show(&mut view, &player);
                     view.prepare().check_layout();
-                    let what = std::format!("{:?} radar {radar}", layout.scaled.panel);
+                    let what = std::format!("{:?} radar {radar}", device.scaled.panel);
                     let canvas = view.canvas();
-                    canvas.assert_laid_out(layout.scaled.screen(), &["1999"], &what);
+                    canvas.assert_laid_out(device.scaled.screen(), &["1999"], &what);
                     let chart = view.chart().rect.top;
                     assert!(
                         canvas.runs.iter().all(|run| run.bottom() <= chart),
@@ -780,17 +780,17 @@ mod tests {
             "WWWWWWWWWWWWWWWWWWWW",
             "VO2",
         ] {
-            for layout in crate::screens::panels::ALL {
+            for device in crate::screens::panels::ALL {
                 let workout = Workout::new(name, &steps, &[], None);
                 let mut player = Player::new(workout);
                 let mut seen = std::vec::Vec::new();
                 while !player.done() {
                     ride(&mut player, 1, 200);
                     let mut view = page(&player, Some(200));
-                    view.layout = layout;
+                    view.device = device;
                     show(&mut view, &player);
                     view.prepare().check_layout();
-                    let title = laid(layout, true).box_of(WORKOUT_LINE).unwrap();
+                    let title = laid(device, true).box_of(WORKOUT_LINE).unwrap();
                     let shown = view
                         .canvas()
                         .runs
@@ -801,7 +801,7 @@ mod tests {
                         })
                         .next()
                         .unwrap();
-                    let what = std::format!("{name} on {:?}", layout.scaled.panel);
+                    let what = std::format!("{name} on {:?}", device.scaled.panel);
                     let whole = shown == name
                         || name.as_bytes().get(shown.len()) == Some(&b' ')
                         || !name.contains(' ');
@@ -824,13 +824,13 @@ mod tests {
     /// per-pixel reference does.
     #[test]
     fn the_chart_at_the_largest_box_accept_allows_paints_on_every_panel() {
-        for layout in crate::screens::panels::ALL {
-            let rect = crate::screens::ride::largest_box(layout, WORKOUT_CHART);
+        for device in crate::screens::panels::ALL {
+            let rect = crate::screens::ride::largest_box(device, WORKOUT_CHART);
             for (index, &workout) in BUILT_IN.iter().enumerate() {
                 let mut player = Player::new(*workout);
                 ride(&mut player, 30, 240);
                 let chart = chart(&player, &TrainingProfile::default(), rect);
-                let what = std::format!("workout {index} on {:?}", layout.scaled.panel);
+                let what = std::format!("workout {index} on {:?}", device.scaled.panel);
                 let tops: std::vec::Vec<u16> = (0..rect.width()).map(|c| chart.top(c)).collect();
                 assert!(tops.iter().any(|&top| top != EMPTY), "{what}");
                 assert!(
@@ -869,9 +869,9 @@ mod tests {
     /// gaps, above the first and below the last as well as between them.
     #[test]
     fn the_words_gaps_are_even_on_every_panel() {
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             for radar in [false, true] {
-                let laid = laid(layout, radar);
+                let laid = laid(device, radar);
                 let bar = crate::screens::ride::main_status_bar(&laid).unwrap();
                 let chart = laid.box_of(WORKOUT_CHART).unwrap();
                 let mut edges = std::vec![bar.bottom as i32];
@@ -889,7 +889,7 @@ mod tests {
                 assert!(
                     most - least <= 1 && *least > 0,
                     "radar {radar} on {:?}: gaps {gaps:?}",
-                    layout.scaled.panel
+                    device.scaled.panel
                 );
             }
         }
@@ -899,7 +899,7 @@ mod tests {
     /// acts.
     #[test]
     fn only_the_time_left_answers_a_tap() {
-        let laid = laid(&crate::screens::BASE, false);
+        let laid = laid(&crate::screens::C606, false);
         let solved = laid.solved();
         let stops: std::vec::Vec<_> = solved
             .focus_order()

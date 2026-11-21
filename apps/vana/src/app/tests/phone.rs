@@ -1364,3 +1364,21 @@ fn a_tap_on_the_scan_instruction_keeps_the_join_code() {
     let (lines, _) = phone_lines(phone.runtime);
     assert_eq!(lines[STEP], "STEP 1 OF 2", "the join code stays");
 }
+
+#[test]
+fn a_saved_ride_still_reading_has_no_send_cue_and_act_stays() {
+    use crate::screens::workout::Page;
+    use device_api::input::Role;
+    let mut journal = Journal::erased();
+    let (mut runtime, mut radio, now) = saved_ride(&mut journal);
+    learn_radio_in_a_phone_pass(&mut runtime, &mut journal, &mut FailedRadio, now);
+    runtime.open_past_ride(0);
+    assert_eq!(
+        runtime.past_saving(),
+        crate::screens::ride::summary::Saving::Reading
+    );
+    assert_eq!(past_ride_cues(&runtime), []);
+    runtime.input_received(press(Role::Act), now + 500, now + 500, &mut radio);
+    assert_eq!(runtime.navigation.page(), Page::PastRide);
+    assert!(runtime.phone_status().is_none());
+}

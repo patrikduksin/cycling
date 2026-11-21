@@ -13,7 +13,7 @@ use crate::compose::tiles::ride_line::Says;
 use crate::screens::cue::Icon;
 use device_api::input::Role;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| TREE.into_iter().collect(),
     buttons: Buttons {
         act: Some(Button {
@@ -30,7 +30,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         }),
         held: None,
     },
-});
+};
 
 const fn line(says: Says) -> Node {
     Node::leaf(RIDE_LINE, says.byte(), Size::CONTENT)

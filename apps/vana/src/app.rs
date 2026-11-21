@@ -143,7 +143,7 @@ pub struct Runtime {
     micros_clock: Option<fn() -> u64>,
     latency_clock: Option<fn() -> u64>,
     composition: composition::Composition,
-    layout: &'static crate::screens::Layout,
+    device: &'static crate::screens::Device,
 }
 
 #[cfg(not(target_os = "none"))]
@@ -204,7 +204,7 @@ impl Runtime {
     pub fn new(
         profile: Profile,
         product: crate::Product,
-        layout: &'static crate::screens::Layout,
+        device: &'static crate::screens::Device,
     ) -> Self {
         Self {
             product,
@@ -247,8 +247,8 @@ impl Runtime {
             storage_worked: false,
             micros_clock: None,
             latency_clock: None,
-            composition: composition::Composition::new(layout),
-            layout,
+            composition: composition::Composition::new(device),
+            device,
         }
     }
 

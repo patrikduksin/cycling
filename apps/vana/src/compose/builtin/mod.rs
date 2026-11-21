@@ -1,14 +1,13 @@
 //! The screens the firmware ships: one file per screen, each naming its
 //! tree and buttons in `BUILTIN`, and the table that finds them by
-//! [`ScreenId`]. A screen whose file says `None` still draws from its legacy
-//! arm in `View::prepare`.
+//! [`ScreenId`].
 use super::data::Data;
 use super::input::{self, Buttons, Controls, Focus, Stop};
 use super::node::{Flags, MAX_NODES, Node, What};
 use super::parse::{Screen, Screens};
 use super::registry;
 use super::solve::{MAX_LEAVES, Placed, Rect16, Scroll, Solved};
-use crate::screens::Layout;
+use crate::screens::Device;
 use crate::screens::canvas::Canvas;
 use crate::screens::chrome::Rect;
 use crate::screens::cue::Corners;
@@ -253,10 +252,10 @@ impl ScreenId {
     }
 
     /// The buttons a changed screen `key` keeps, its built-in's, and the
-    /// cues they show in `corners`; none for a screen with no tree.
+    /// cues they show in `corners`; none for a key that names no screen.
     pub fn controls(key: u8, corners: Corners) -> Controls {
-        match Self::of_key(key).and_then(Self::builtin) {
-            Some(builtin) => Controls::new(builtin.buttons, corners),
+        match Self::of_key(key) {
+            Some(id) => Controls::new(id.builtin().buttons, corners),
             None => Controls::FREE,
         }
     }
@@ -286,7 +285,7 @@ impl ScreenId {
         )
     }
 
-    pub const fn builtin(self) -> Option<&'static Builtin> {
+    pub const fn builtin(self) -> &'static Builtin {
         match self {
             Self::RideMain => ride_main::BUILTIN,
 
@@ -433,22 +432,22 @@ pub struct Laid {
 }
 
 impl Laid {
-    /// `id` on `layout`'s device, if it has a built-in, showing `changed`
+    /// `id` on `device`, if it has a built-in, showing `changed`
     /// when the rider changed it.
     #[inline(never)]
     pub fn new(
         id: ScreenId,
-        layout: &Layout,
+        device: &Device,
         choices: Choices,
         flags: Flags,
         changed: Option<&Screen>,
     ) -> Option<Self> {
-        let builtin = id.builtin()?;
+        let builtin = id.builtin();
         let screen = match changed {
             Some(screen) => screen.clone(),
             None => {
-                let controls = Controls::new(builtin.buttons, layout.corners);
-                Screen::builtin(id.key(), &(builtin.tree)(&choices), layout.scaled, controls)
+                let controls = Controls::new(builtin.buttons, device.corners);
+                Screen::builtin(id.key(), &(builtin.tree)(&choices), device.scaled, controls)
             }
         };
         let mut laid = Self {
@@ -481,7 +480,7 @@ impl Laid {
             self.screen = match changed {
                 Some(screen) => screen.clone(),
                 None => {
-                    let builtin = self.id.builtin().expect("a laid screen has a built-in");
+                    let builtin = self.id.builtin();
                     let controls = self.screen.controls().clone();
                     let at = *self.screen.tree().at();
                     Screen::builtin(self.id.key(), &(builtin.tree)(&choices), at, controls)
@@ -624,10 +623,10 @@ pub struct Laids {
 
 impl Laids {
     #[inline(never)]
-    pub fn new(layout: &Layout, choices: Choices, flags: Flags, changed: &Screens) -> Self {
+    pub fn new(device: &Device, choices: Choices, flags: Flags, changed: &Screens) -> Self {
         let main = ScreenId::RideMain;
         Self {
-            main: Laid::new(main, layout, choices, flags, changed.screen(main.key()))
+            main: Laid::new(main, device, choices, flags, changed.screen(main.key()))
                 .expect("the main page has a tree"),
             shown: None,
             open: None,
@@ -692,7 +691,7 @@ impl Laids {
     /// with an ACT of its own starts on it; one that leaves ACT free starts
     /// where its focus was when it last closed, its first stop at first.
     #[inline(never)]
-    pub fn show(&mut self, id: ScreenId, layout: &Layout, changed: &Screens) {
+    pub fn show(&mut self, id: ScreenId, device: &Device, changed: &Screens) {
         if self.open == Some(id) {
             return;
         }
@@ -705,7 +704,7 @@ impl Laids {
             ScreenId::RideMain => None,
             _ => {
                 let screen = changed.screen(id.key());
-                Laid::new(id, layout, self.main.choices, self.main.flags, screen)
+                Laid::new(id, device, self.main.choices, self.main.flags, screen)
             }
         };
         if let Some(laid) = self

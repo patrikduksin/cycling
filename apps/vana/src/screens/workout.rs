@@ -1,5 +1,5 @@
 //! VANA workout rendering: the chrome around whichever screen is shown.
-use super::Layout;
+use super::Device;
 use super::canvas::Canvas;
 use super::chrome::{BLACK, Battery, Gps, Look, Mark, Row, StatusBar, Toast};
 #[cfg(test)]
@@ -224,7 +224,7 @@ impl<'a> Extra<'a> {
 
 #[derive(Hash)]
 pub struct Scene<'v> {
-    layout: &'static Layout,
+    device: &'static Device,
     kind: Kind<'v>,
     look: Look,
     pub(super) bar: Option<&'v StatusBar>,
@@ -333,7 +333,7 @@ impl firmware_shell::shell::Picture for Scene<'_> {
     }
 
     fn parts(&self, parts: &mut firmware_shell::shell::Parts) {
-        let height = self.layout.scaled.panel.height;
+        let height = self.device.scaled.panel.height;
         let Kind::Ride(page) = self.kind else {
             parts.add(0..height, self);
             return;
@@ -348,9 +348,9 @@ impl firmware_shell::shell::Picture for Scene<'_> {
                 badge: self.badge,
             },
         );
-        let chrome = &self.layout.chrome;
+        let toast = super::chrome::toast_band(&self.device.scaled);
         parts.add(self.bar_rows(), &self.bar);
-        parts.add(chrome.toast.top..chrome.toast.bottom, &self.toast);
+        parts.add(toast.top..toast.bottom, &self.toast);
         if let Some(sign) = &self.sign {
             let rect = sign.rect();
             parts.add(rect.top..rect.bottom, sign);
@@ -397,7 +397,7 @@ impl<'v> Scene<'v> {
             badge.paint(row);
         }
         for cue in self.cues {
-            cue.paint(row, self.layout);
+            cue.paint(row, self.device);
         }
         if let Some(toast) = self.toast {
             toast.paint(row);
@@ -412,14 +412,14 @@ impl<'v> Scene<'v> {
     fn bar_rows(&self) -> Range<usize> {
         match self.kind {
             Kind::Ride(RidePage::Main) => self.main_bar.clone(),
-            _ => 0..crate::compose::tiles::status::rows(&self.layout.scaled),
+            _ => 0..crate::compose::tiles::status::rows(&self.device.scaled),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn pixel(&self, x: usize, y: usize) -> u16 {
         use firmware_shell::shell::Picture;
-        let mut pixels = std::vec![0u16; self.layout.scaled.panel.width];
+        let mut pixels = std::vec![0u16; self.device.scaled.panel.width];
         self.paint(&mut Row::new(y, &mut pixels));
         pixels.get(x).copied().unwrap_or(0)
     }
@@ -496,7 +496,7 @@ impl<'v> Scene<'v> {
             color = badge.pixel(look, x, y, color);
         }
         for cue in self.cues {
-            color = cue.pixel(look, x, y, color, self.layout);
+            color = cue.pixel(look, x, y, color, self.device);
         }
         color
     }
@@ -511,26 +511,29 @@ impl Scene<'_> {
             return;
         }
         if let Some(canvas) = self.body.canvas() {
-            canvas.assert_kept(format_args!("{:?} on {:?}", self.kind, self.layout.scaled));
+            canvas.assert_kept(format_args!("{:?} on {:?}", self.kind, self.device.scaled));
         }
         if self.bar.is_some() {
             for cue in self.cues {
                 assert!(
-                    !cue.covers(self.layout.chrome.status_bar, self.layout),
+                    !cue.covers(
+                        crate::screens::chrome::status_bar(&self.device.scaled),
+                        self.device
+                    ),
                     "the {:?} cue on {:?} is under the status bar",
                     cue.icon,
-                    self.layout.scaled
+                    self.device.scaled
                 );
             }
         }
-        let panel = self.layout.scaled.screen();
+        let panel = self.device.scaled.screen();
         if let Kind::Ride(page) = self.kind {
             let breaks = self.canvas_breaks(page);
             assert!(
                 breaks.is_empty(),
                 "{} on {:?} breaks its layout:\n{}",
                 page.name(),
-                self.layout.scaled,
+                self.device.scaled,
                 breaks.join("\n")
             );
             return;
@@ -540,7 +543,7 @@ impl Scene<'_> {
             assert!(
                 breaks.is_empty(),
                 "the summary on {:?} breaks its layout:\n{}",
-                self.layout.scaled,
+                self.device.scaled,
                 breaks.join("\n")
             );
             return;
@@ -550,7 +553,7 @@ impl Scene<'_> {
             assert!(
                 breaks.is_empty(),
                 "a list on {:?} breaks its layout:\n{}",
-                self.layout.scaled,
+                self.device.scaled,
                 breaks.join("\n")
             );
             return;
@@ -558,8 +561,11 @@ impl Scene<'_> {
         if let Kind::PageUnderBar | Kind::Phone = self.kind {
             let regions = match self.bar {
                 Some(_) => std::vec![
-                    ("status bar", self.layout.chrome.status_bar),
-                    ("page", self.layout.chrome.content),
+                    (
+                        "status bar",
+                        crate::screens::chrome::status_bar(&self.device.scaled)
+                    ),
+                    ("page", crate::screens::chrome::content(&self.device.scaled)),
                 ],
                 None => std::vec![("screen", panel)],
             };
@@ -575,7 +581,7 @@ impl Scene<'_> {
             assert!(
                 breaks.is_empty(),
                 "a canvas page on {:?} breaks its layout:\n{}",
-                self.layout.scaled,
+                self.device.scaled,
                 breaks.join("\n")
             );
         }
@@ -586,7 +592,10 @@ impl Scene<'_> {
 impl Scene<'_> {
     fn canvas_breaks(&self, page: RidePage) -> std::vec::Vec<std::string::String> {
         let mut regions = std::vec::Vec::new();
-        regions.push(("status bar", self.layout.chrome.status_bar));
+        regions.push((
+            "status bar",
+            crate::screens::chrome::status_bar(&self.device.scaled),
+        ));
         let page_first = regions.len() + usize::from(self.radar.is_some());
         regions.extend(ride::canvas_regions(self, page));
         self.breaks_within(regions, page_first)
@@ -597,7 +606,7 @@ impl Scene<'_> {
         regions: std::vec::Vec<(&str, super::chrome::Rect)>,
         page_first: usize,
     ) -> std::vec::Vec<std::string::String> {
-        self.breaks_in(regions, page_first, self.layout.scaled.screen())
+        self.breaks_in(regions, page_first, self.device.scaled.screen())
     }
 
     fn breaks_in(
@@ -618,11 +627,14 @@ impl Scene<'_> {
     ) -> std::vec::Vec<std::string::String> {
         use super::check;
         use super::chrome::Rect;
-        let panel = self.layout.scaled.screen();
+        let panel = self.device.scaled.screen();
         let mut regions = std::vec::Vec::new();
         let page = if self.bar.is_some() {
-            regions.push(("status bar", self.layout.chrome.status_bar));
-            self.layout.chrome.content
+            regions.push((
+                "status bar",
+                crate::screens::chrome::status_bar(&self.device.scaled),
+            ));
+            crate::screens::chrome::content(&self.device.scaled)
         } else {
             panel
         };
@@ -673,11 +685,14 @@ impl Scene<'_> {
         use super::chrome::Rect;
         use std::string::String;
         use std::vec::Vec;
-        let panel = self.layout.scaled.screen();
+        let panel = self.device.scaled.screen();
         let mut regions = Vec::new();
         let page = if self.bar.is_some() {
-            regions.push(("status bar", self.layout.chrome.status_bar));
-            self.layout.chrome.content
+            regions.push((
+                "status bar",
+                crate::screens::chrome::status_bar(&self.device.scaled),
+            ));
+            crate::screens::chrome::content(&self.device.scaled)
         } else {
             panel
         };
@@ -736,7 +751,7 @@ impl Scene<'_> {
     ) -> std::vec::Vec<std::string::String> {
         let mut breaks = std::vec::Vec::new();
         for (name, rect) in items {
-            for cue in self.cues.iter().filter(|cue| cue.covers(rect, self.layout)) {
+            for cue in self.cues.iter().filter(|cue| cue.covers(rect, self.device)) {
                 breaks.push(std::format!(
                     "{name:?} {rect:?} is under the {:?} cue",
                     cue.icon
@@ -749,12 +764,8 @@ impl Scene<'_> {
 
 impl Scene<'_> {
     #[cfg(any(test, feature = "invariants"))]
-    pub(super) fn layout(&self) -> &'static Layout {
-        self.layout
-    }
-
-    pub(super) fn frame(&self) -> &ride::Frame {
-        &self.layout.ride
+    pub(super) fn device(&self) -> &'static Device {
+        self.device
     }
 }
 
@@ -784,7 +795,7 @@ pub struct Graphics {
 
 pub struct View<'a> {
     /// The panel's layout, for the pages that lay out from it.
-    pub layout: &'static Layout,
+    pub device: &'static Device,
     pub now_ms: u64,
     pub sample: Sample,
     /// Power over the last 3 s, which the ride page shows instead of the
@@ -874,7 +885,7 @@ impl<'a> View<'a> {
             let _ = time.push_str("--:--");
         }
         Self {
-            layout: &super::BASE,
+            device: &super::C606,
             now_ms: 0,
             sample: Sample::default(),
             power_3s: None,
@@ -948,9 +959,9 @@ impl<'a> View<'a> {
             editing,
         };
         let built_in = crate::compose::Screens::EMPTY;
-        let mut laids = Laids::new(self.layout, choices, ride::main_flags_of(self), &built_in);
+        let mut laids = Laids::new(self.device, choices, ride::main_flags_of(self), &built_in);
         let shown = self.screen_id();
-        laids.show(shown, self.layout, &built_in);
+        laids.show(shown, self.device, &built_in);
         if let Some(laid) = laids.get_mut(shown) {
             let node = stop.and_then(|stop| laid.solved().focus_order().nth(stop).map(|p| p.node));
             if let Some(node) = node {
@@ -984,7 +995,7 @@ impl<'a> View<'a> {
     /// Whether the tree shown keeps the status bar's band for the bar, so
     /// the bar covers none of its tiles.
     fn bar_has_room(&self) -> bool {
-        let bar = self.layout.chrome.status_bar;
+        let bar = crate::screens::chrome::status_bar(&self.device.scaled);
         let status = self
             .composed()
             .and_then(|laid| laid.box_of(crate::compose::registry::STATUS));
@@ -1228,7 +1239,7 @@ impl<'a> View<'a> {
     }
 
     fn full_screen(&self) -> bool {
-        super::cue::any_at_top(&self.cues, self.layout)
+        super::cue::any_at_top(&self.cues, self.device)
             || match self.page {
                 Page::Boot | Page::Format | Page::EndRide | Page::DiscardRide | Page::LoseRides => {
                     true
@@ -1281,16 +1292,15 @@ impl<'a> View<'a> {
                 None => Kind::PageUnderBar,
             },
         };
-        let layout = self.layout;
-        let frame = &layout.ride;
+        let device = self.device;
         let radar = match kind {
             Kind::Ride(_) => self
                 .radar_paired
-                .then(|| ride::radar(&self.graphics.radar, &frame.strip)),
+                .then(|| ride::radar(&self.graphics.radar, &device.scaled)),
             _ => None,
         };
         Scene {
-            layout,
+            device,
             kind,
             look: super::look::look(self.light),
             bar: (!sheet && !self.full_screen()).then_some(&self.bar),
@@ -1309,7 +1319,7 @@ impl<'a> View<'a> {
                     page,
                     self.nav,
                     self.radar_paired,
-                    layout,
+                    device,
                     self.main().and_then(ride::main_chip),
                 ),
                 _ => None,
@@ -1324,15 +1334,15 @@ impl<'a> View<'a> {
             Status::Paused => Mark::Paused,
             _ => Mark::None,
         };
-        let layout = self.layout;
-        self.bar = StatusBar::placed(&self.time, self.gps, self.battery, mark, &layout.scaled);
-        if layout.scaled != super::scaled::BASE {
-            self.toast = self.toast.map(|toast| toast.on(layout));
+        let device = self.device;
+        self.bar = StatusBar::placed(&self.time, self.gps, self.battery, mark, &device.scaled);
+        if device.scaled != super::scaled::BASE {
+            self.toast = self.toast.map(|toast| toast.on(device));
         }
         self.badge = None;
         self.cues = match self.composed() {
             Some(laid) => self.prepare_composed(laid),
-            None => cue_set(self.prepare_legacy()),
+            None => Cues::new(),
         };
         self.scene()
     }
@@ -1411,7 +1421,7 @@ impl<'a> View<'a> {
         if let (Some(after), Some(heading)) = (after, heading)
             && laid.id() == crate::compose::builtin::ScreenId::SummaryOverview
         {
-            self.badge = summary::badge(&after, heading, &self.layout.scaled);
+            self.badge = summary::badge(&after, heading, &self.device.scaled);
         }
         let send_hidden = after.is_some_and(|after| summary::send_hidden(&after));
         laid.controls()
@@ -1429,47 +1439,10 @@ impl<'a> View<'a> {
             _ => true,
         }
     }
-
-    /// The screens not yet on the engine: each page's own drawing and cues.
-    fn prepare_legacy(&mut self) -> &'static [Cue] {
-        match self.page {
-            // Drawn from their trees.
-            Page::Summary | Page::PastRide => &[],
-            Page::Ride => {
-                let training = self.training.is_some();
-                let pages = self.deck.shown(training);
-                self.bar
-                    .set_pages(pages.position(self.ride_page), pages.count());
-                self.marks = ride::marks(self);
-                ride::prepare(self);
-                &[]
-            }
-            // On the engine: `composed` drew them.
-            Page::Sensors
-            | Page::Format
-            | Page::LoseRides
-            | Page::DiscardRide
-            | Page::Bests
-            | Page::Form
-            | Page::Settings
-            | Page::Workouts
-            | Page::History
-            | Page::Boot
-            | Page::Home
-            | Page::Phone
-            | Page::Setup
-            | Page::Ready
-            | Page::EndRide => &[],
-        }
-    }
 }
 
 /// The button cues a frame shows.
 pub type Cues = heapless::Vec<Cue, 3, u8>;
-
-fn cue_set(cues: &[Cue]) -> Cues {
-    cues.iter().copied().take(3).collect()
-}
 
 /// Discarding the ride END RIDE? asks about.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1749,6 +1722,7 @@ mod tests {
             if page == RidePage::Climb {
                 view.show_climb(ClimbLent::NONE);
             }
+            view.compose_main();
             view.prepare();
             view
         };
@@ -1811,7 +1785,7 @@ mod tests {
                 let what = std::format!("{page:?} radar {radar_paired}");
                 let bare = view(page, Sign::None, radar_paired);
                 let under = view(page, turn, radar_paired);
-                let banner = sign::on_page(page, turn, radar_paired, under.layout, None)
+                let banner = sign::on_page(page, turn, radar_paired, under.device, None)
                     .unwrap()
                     .rect();
                 let canvas = bare.canvas();
@@ -1875,11 +1849,12 @@ mod tests {
             view.course = true;
             view.nav = turn;
             view.light = light;
+            view.compose_main();
             view.prepare();
             rows(&view)
         };
         let (dark, light) = (page(false), page(true));
-        let rect = sign::on_page(RidePage::Stats, turn, false, &crate::screens::BASE, None)
+        let rect = sign::on_page(RidePage::Stats, turn, false, &crate::screens::C606, None)
             .unwrap()
             .rect();
         let banner = rect.top..rect.bottom;
@@ -1948,10 +1923,12 @@ mod tests {
             }),
             ("the workout target band", &band),
             ("button cues", &|view| {
-                view.cues = cue_set(&[
+                view.cues = [
                     Cue::new(device_api::input::Role::Back, super::super::cue::Icon::Stop),
                     Cue::new(device_api::input::Role::Act, super::super::cue::Icon::Play),
-                ])
+                ]
+                .into_iter()
+                .collect()
             }),
             ("a badge", &|view| {
                 view.badge = Some(Badge {
@@ -2140,6 +2117,7 @@ mod tests {
                     RidePage::Map => view.show_map(None),
                     RidePage::Main | RidePage::Stats => {}
                 }
+                view.compose_main();
                 view.prepare();
                 assert_paints_reference(
                     &view,
@@ -2268,7 +2246,7 @@ mod tests {
             trace.add(metres * 1000, Some(6000 + (metres as i32 % 1500) / 2));
         }
         let mut chart = ride::ElevationChart::default();
-        chart.refresh(&trace, ride::summary::chart_on(&crate::screens::BASE));
+        chart.refresh(&trace, ride::summary::chart_on(&crate::screens::C606));
         for elevation in [false, true] {
             for saving in [Saving::Writing, Saving::Saved, Saving::Failed] {
                 for page in 0..crate::screens::ride::summary::pages(elevation) {

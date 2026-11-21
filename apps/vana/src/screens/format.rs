@@ -88,8 +88,8 @@ mod tests {
     #[test]
     fn every_question_and_the_wait_lay_out_whole() {
         crate::screens::check::enable(true);
-        for layout in crate::screens::panels::ALL {
-            let at = &layout.scaled;
+        for device in crate::screens::panels::ALL {
+            let at = &device.scaled;
             let screen = at.screen();
             let clear = Rect {
                 top: at.unit(50),
@@ -99,7 +99,7 @@ mod tests {
             let shows = Goes::ALL.map(Shows::Question);
             for shows in shows.into_iter().chain([Shows::Wait]) {
                 let mut view = View::new(Page::Format, 0, None);
-                view.layout = layout;
+                view.device = device;
                 view.format = shows;
                 view.compose_main();
                 view.prepare().check_layout();

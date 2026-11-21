@@ -430,7 +430,7 @@ const PRODUCT: vana::Product = vana::Product {
     fit_id: device::fitted::FIT_PRODUCT,
 };
 
-static LAYOUT: vana::screens::Layout = vana::screens::Layout::of(
+static DEVICE: vana::screens::Device = vana::screens::Device::of(
     vana::screens::scaled::Scaled::of(device::fitted::PANEL_WIDTH, device::fitted::PANEL_HEIGHT),
     &device::fitted::BUTTONS,
 );
@@ -446,7 +446,7 @@ async fn console(
 ) {
     let mut terminal = firmware_console::session::Terminal::new(usb);
     let mut next_health = 0;
-    let sdk = external(|| vana::app::Runtime::new(profile, PRODUCT, &LAYOUT));
+    let sdk = external(|| vana::app::Runtime::new(profile, PRODUCT, &DEVICE));
     device::capabilities::ant::wake_on(vana::app::WAKING_ANT_TYPE);
     working.attach(sdk);
     // The rider's screens are optional, so they take PSRAM only after the

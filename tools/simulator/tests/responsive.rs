@@ -525,7 +525,7 @@ fn home_lays_out_and_takes_taps_on_both_test_panels() {
         twin.sim.checkpoint(&format!("home on {name}"));
         let laid = Laid::new(
             ScreenId::Home,
-            model.layout,
+            model.device,
             Default::default(),
             Flags::NONE,
             None,
@@ -582,7 +582,7 @@ fn raise_pad(model: Model) -> vana::screens::chrome::Rect {
         ..Choices::default()
     };
     let laid =
-        Laid::new(ScreenId::Settings, model.layout, choices, Flags::NONE, None).expect("Settings");
+        Laid::new(ScreenId::Settings, model.device, choices, Flags::NONE, None).expect("Settings");
     let nodes = laid.screen().tree().nodes();
     let pads = laid.leaves().iter().filter(|placed| {
         let what = nodes[usize::from(placed.node)].what();
@@ -598,7 +598,7 @@ fn raise_pad(model: Model) -> vana::screens::chrome::Rect {
 
 /// The page of cards built-in `id` scrolls on `model`'s panel.
 fn composed_list(model: Model, id: ScreenId) -> vana::screens::scroll::Layout {
-    let laid = Laid::new(id, model.layout, Choices::default(), Flags::NONE, None);
+    let laid = Laid::new(id, model.device, Choices::default(), Flags::NONE, None);
     *laid.expect("a built-in").page().expect("a list screen")
 }
 

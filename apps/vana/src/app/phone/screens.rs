@@ -138,7 +138,7 @@ impl Runtime {
             key: named.key(),
             nodes: &work.text,
         };
-        let proposed = overrides.propose(change, self.layout);
+        let proposed = overrides.propose(change, self.device);
         if self.accepted(id, proposed) {
             match asked {
                 Asked::Check(named) => self.list(id, Doc::Solves(named)),
@@ -154,7 +154,7 @@ impl Runtime {
         let Some(overrides) = self.overrides.as_deref_mut() else {
             return;
         };
-        let proposed = overrides.propose(change, self.layout);
+        let proposed = overrides.propose(change, self.device);
         if self.accepted(id, proposed) {
             self.save_screens(id, base);
         }
@@ -281,7 +281,7 @@ impl Runtime {
                 );
             }
             Doc::Catalogue => {
-                let at = &self.layout.scaled;
+                let at = &self.device.scaled;
                 let kind = |node: Node| node.bytes()[0];
                 let leaf = Node::leaf(0, 0, Size::CONTENT);
                 let _ = write!(
@@ -346,7 +346,7 @@ impl Runtime {
                 if !tile.accepts(arg) {
                     return Step::Skip;
                 }
-                let forms = tile.forms(arg, &self.layout.scaled);
+                let forms = tile.forms(arg, &self.device.scaled);
                 if forms.is_empty() {
                     return Step::Skip;
                 }

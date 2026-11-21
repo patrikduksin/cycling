@@ -10,7 +10,7 @@ use crate::screens::ride::RADAR_WIDTH;
 use crate::screens::ride::map::{BAR_UNITS, FOOT_UNITS};
 use device_api::input::Role;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_| TREE.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: Some(Button {
@@ -27,7 +27,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         }),
         held: Some(Action::CourseOff),
     },
-});
+};
 
 const TREE: [Node; 6] = [
     Node::col(3, Size::grow(1)),

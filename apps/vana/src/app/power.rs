@@ -523,7 +523,7 @@ impl Runtime {
         };
         self.composition.show(
             sheet.screen(),
-            self.layout,
+            self.device,
             super::overrides::shown(&self.overrides),
         );
         let Some(laid) = self.composition.laids().get(sheet.screen()) else {
@@ -531,11 +531,11 @@ impl Runtime {
         };
         let canvas = sheet.canvas(laid);
         #[cfg(any(test, feature = "invariants"))]
-        View::check_layout(&canvas, self.layout);
+        View::check_layout(&canvas, self.device);
         let look = crate::screens::look::look(self.light());
         system.draw_rows(|y, pixels| {
             let row = &mut crate::screens::chrome::Row::new(y, pixels);
-            View::paint(&canvas, &[], self.layout, &mut row.looked(look));
+            View::paint(&canvas, &[], self.device, &mut row.looked(look));
         });
         true
     }

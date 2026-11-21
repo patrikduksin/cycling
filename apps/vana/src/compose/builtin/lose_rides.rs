@@ -7,7 +7,7 @@ use crate::compose::input::Buttons;
 use crate::compose::tiles::line::Say;
 use crate::screens::cue::Icon;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_: &Choices| TREE.into_iter().collect::<Nodes>(),
     buttons: Buttons {
         act: answer(true, Icon::Trash),
@@ -15,7 +15,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         move_: None,
         held: None,
     },
-});
+};
 
 const TREE: [crate::compose::node::Node; 7] = [
     panel(1),
@@ -34,7 +34,7 @@ mod tests {
 
     #[test]
     fn the_question_counts_the_rides_it_would_lose_on_every_panel() {
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             for (unsaved, question, line) in [
                 (1, ["LOSE 1 UNSAVED", "RIDE?"], "IT CANNOT COME BACK"),
                 (2, ["LOSE 2 UNSAVED", "RIDES?"], "THEY CANNOT COME BACK"),
@@ -42,11 +42,11 @@ mod tests {
                 (255, ["LOSE 255 UNSAVED", "RIDES?"], "THEY CANNOT COME BACK"),
             ] {
                 let mut view = View::new(Page::LoseRides, 0, None);
-                view.layout = layout;
+                view.device = device;
                 view.unsaved = unsaved;
                 view.compose_main();
                 view.prepare().check_layout();
-                let at = &layout.scaled;
+                let at = &device.scaled;
                 let screen = at.screen();
                 let clear = Rect {
                     top: at.unit(50),

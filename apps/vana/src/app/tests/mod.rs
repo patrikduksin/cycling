@@ -276,7 +276,7 @@ impl Runtime {
 }
 
 fn booted(profile: Profile) -> Runtime {
-    let mut runtime = Runtime::new(profile, crate::testing::PRODUCT, &crate::screens::BASE);
+    let mut runtime = Runtime::new(profile, crate::testing::PRODUCT, &crate::screens::C606);
     runtime.format_event(super::format::Event::IntentAtBoot(
         super::intent::Found::Idle,
     ));

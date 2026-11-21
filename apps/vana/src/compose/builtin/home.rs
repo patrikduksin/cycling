@@ -7,7 +7,7 @@ use crate::compose::node::{Node, Size};
 use crate::compose::registry::{HOME_CARD, SPACE};
 use crate::compose::tiles::home::Card;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree,
     buttons: Buttons {
         act: None,
@@ -18,7 +18,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         move_: None,
         held: None,
     },
-});
+};
 
 const SIDE_UNITS: u8 = 10;
 const GAP_UNITS: u8 = 8;

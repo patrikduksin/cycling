@@ -1,25 +1,21 @@
 //! The ride screen: pages that MOVE or a swipe steps through.
 //!
 //! The shared chrome draws the status bar (ride state, clock, page dots) and
-//! toasts. This frame adds the radar strip on the left while a radar is
-//! paired. A page owns [`Frame::body`] and lays out its text and shapes once per
-//! frame; without a radar the frame centres the body, so pages never move
-//! their own coordinates. Keep the least important readings at the bottom:
-//! toasts cover `chrome::TOAST` for a moment.
+//! toasts. While a radar is paired its strip paints the [`radar_columns`]
+//! every ride tree keeps clear. Keep the least important readings at the
+//! bottom: toasts cover `chrome::toast_band` for a moment.
 //!
-//!
-//! To add a page: add a variant to `RidePage` and `RidePage::ALL`, then a
-//! module beside `main` whose `prepare` returns its canvas, dispatched below.
+//! To add a page: add a variant to `RidePage` and `RidePage::ALL` and its
+//! tree in `compose::builtin`.
 //!
 //! The climb page also follows the road: it comes up before a climb or once
 //! one is under way, and when the road is clear it returns to the page the
 //! rider was on, unless they changed page during the climb (see
 //! `app::climb_page`).
-use super::Layout;
-use super::canvas::Canvas;
+use super::Device;
 use super::chrome::{self, Rect};
 use super::icons::SignForm;
-use super::scaled::{self, Scaled};
+use super::scaled::Scaled;
 use super::workout::{Body, Graphics, Scene, Text, View};
 use crate::compose::builtin::ScreenId;
 use crate::ride::laps::Lap;
@@ -51,101 +47,59 @@ pub use workout::{Chart as WorkoutChart, Training, chart as workout_chart};
 
 use chrome::{ACCENT, AMBER, POWER, Row};
 pub(super) use chrome::{RED, WHITE};
-use firmware_shell::rendering::font::FaceRole;
 
 pub(super) const GRID: u16 = chrome::TERTIARY;
 
 /// The radar strip and its divider.
 pub(crate) const RADAR_WIDTH: usize = 28;
 
-/// The ride screen's frame on a panel: the radar strip, the body a page
-/// draws into beside it, and where the strip's track and targets run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Frame {
-    pub radar: Rect,
-    pub body: Rect,
-    pub strip: Strip,
-    /// Without a radar the body moves left by this much, to the centre.
-    pub centre_shift: usize,
-    /// Text margins inside the body, as on the main page.
-    pub text: Rect,
-    pub cells: Cells,
+/// The columns the radar strip paints under the status bar while a radar
+/// is paired: the first `RADAR_WIDTH` units, which every ride tree keeps
+/// clear then, the strip's divider in their last columns.
+pub const fn radar_columns(at: &Scaled) -> Rect {
+    Rect {
+        right: at.unit(RADAR_WIDTH),
+        ..chrome::content(at)
+    }
 }
 
-/// A page's two columns of cells: a caption over its value, one band per
-/// `pitch` rows. The next caption clears the value above it by 7 rows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Cells {
-    /// Each column's left and right edge.
-    pub columns: [(usize, usize); 2],
-    /// The caption's and the value's baselines below the band's top.
-    pub caption: usize,
-    pub value: usize,
-    pub pitch: usize,
-}
-
-pub const fn frame(at: &Scaled) -> Frame {
-    use scaled::Track::{Fr, Unit};
-    let chrome = chrome::regions(at);
-    let content = chrome.content;
-    let [radar, body] = content.cols([Unit(RADAR_WIDTH as u16), Fr(1)], Unit(0), at);
+/// Where the radar strip's arrow, track and targets run on `at`.
+pub const fn strip(at: &Scaled) -> Strip {
+    let (content, radar) = (chrome::content(at), radar_columns(at));
     let radius = at.unit(5);
-    let [_, text, _] = body.cols([Unit(10), Fr(1), Unit(TEXT_RIGHT)], Unit(0), at);
-    let middle = (text.left + text.right) / 2 + at.unit(4);
-    Frame {
-        radar,
-        body,
-        text,
-        cells: Cells {
-            columns: [
-                (text.left, middle - at.unit(COLUMN_GAP)),
-                (middle, text.right),
-            ],
-            caption: at.unit(12),
-            value: at.unit(VALUE_BASELINE as usize),
-            pitch: at.unit(CELL_PITCH),
-        },
-        strip: Strip {
-            arrow_top: content.top + at.unit(8),
-            track_top: content.top + at.unit(22),
-            track_bottom: chrome.toast.top - 1 - radius,
-            radius,
-            centre: radar.left + at.unit(12),
-            divider: at.unit(2),
-        },
-        centre_shift: radar.width() / 2,
+    Strip {
+        arrow_top: content.top + at.unit(8),
+        track_top: content.top + at.unit(22),
+        track_bottom: chrome::toast_band(at).top - 1 - radius,
+        radius,
+        centre: radar.left + at.unit(12),
+        left: radar.left,
+        right: radar.right - at.unit(2),
+        body: radar.right,
     }
 }
 
 /// The text's margins from the body's left and right edges.
 pub(crate) const TEXT_LEFT: u16 = 10;
 pub(crate) const TEXT_RIGHT: u16 = 8;
-/// A cell value's baseline below its band's top.
-pub(super) const VALUE_BASELINE: u16 = 41;
-/// Clear columns between a left cell's ink and the right column.
-const COLUMN_GAP: usize = 8;
-/// A caption over its value: one band of cells. The next caption clears the
-/// value above it by 7 rows.
-pub(super) const CELL_PITCH: usize = 48;
-const _: () = assert!(
-    CELL_PITCH + 12 - super::scaled::BASE.face(FaceRole::Caption).cap as usize
-        > VALUE_BASELINE as usize + 6,
-    "a caption needs 6 clear rows over the value above it"
-);
 
 /// The regions a page drawn from a canvas lays out in, named, in its
 /// canvas's columns: the radar strip while a radar is paired, then the
-/// page's own. A page lays out in the body, which the frame centres without
-/// a radar. The map and the main page, which tile the panel themselves,
-/// span the strip's columns without a radar. Beside one, the map's foot
+/// page's own. Without a radar a page lays out across the whole content.
+/// The map and the main page, which tile the panel themselves, span the
+/// strip's columns without a radar. Beside one, the map's foot
 /// still spans them, under the strip, which ends above it.
 #[cfg(any(test, feature = "invariants"))]
 pub(super) fn canvas_regions(
     scene: &Scene,
     page: RidePage,
 ) -> heapless::Vec<(&'static str, Rect), 3> {
-    let frame = scene.frame();
-    let at = &scene.layout().scaled;
+    let at = &scene.device().scaled;
+    let radar = radar_columns(at);
+    let body = Rect {
+        left: radar.right,
+        ..chrome::content(at)
+    };
     let foot = Rect {
         top: map::ground_rect(at).bottom,
         ..at.screen()
@@ -154,8 +108,8 @@ pub(super) fn canvas_regions(
         (_, None) => heapless::Vec::from_slice(&[(
             "page",
             Rect {
-                left: frame.radar.left,
-                ..frame.body
+                left: radar.left,
+                ..body
             },
         )]),
         (RidePage::Map, Some(_)) => heapless::Vec::from_slice(&[
@@ -163,19 +117,19 @@ pub(super) fn canvas_regions(
                 "radar",
                 Rect {
                     bottom: foot.top,
-                    ..frame.radar
+                    ..radar
                 },
             ),
             (
                 "page",
                 Rect {
                     bottom: foot.top,
-                    ..frame.body
+                    ..body
                 },
             ),
             ("foot", foot),
         ]),
-        (_, Some(_)) => heapless::Vec::from_slice(&[("radar", frame.radar), ("page", frame.body)]),
+        (_, Some(_)) => heapless::Vec::from_slice(&[("radar", radar), ("page", body)]),
     };
     regions.unwrap_or_default()
 }
@@ -284,7 +238,7 @@ impl Default for Deck {
 fn tree_readings(id: ScreenId) -> Option<heapless::Vec<&'static str, 7>> {
     use crate::compose::data::Reads;
     use crate::compose::node::What;
-    let builtin = id.builtin().expect("a ride page with a tree");
+    let builtin = id.builtin();
     let nodes = (builtin.tree)(&crate::compose::builtin::Choices::default());
     let mut read = heapless::Vec::<&str, 7>::new();
     for node in &nodes {
@@ -478,13 +432,6 @@ const _: () = {
     }
 };
 
-/// Prepare the shown page until the composition lends its tree: an empty
-/// canvas.
-pub(super) fn prepare(view: &mut View) {
-    super::workout::fill(view, |_| Canvas::default());
-    hide_banner(view, None);
-}
-
 /// What a ride page drawn from its tiles prepares before they draw: the
 /// climb chart, in the profile tile's box. The app lays out the workout
 /// chart from its player.
@@ -502,8 +449,8 @@ pub(super) fn prepare_tiles(view: &mut View, laid: &crate::compose::builtin::Lai
 pub(super) fn hide_banner(view: &mut View, laid: Option<&crate::compose::builtin::Laid>) {
     use crate::compose::node::What;
     use crate::compose::registry::{SPACE, STATUS};
-    let layout = view.layout;
-    let banner = super::sign::on_page(view.ride_page, view.nav, view.radar_paired, layout, None)
+    let device = view.device;
+    let banner = super::sign::on_page(view.ride_page, view.nav, view.radar_paired, device, None)
         .filter(|sign| sign.form() == SignForm::Banner);
     let (Some(banner), Body::Canvas(canvas)) = (banner, &mut view.body) else {
         return;
@@ -538,17 +485,12 @@ fn climb_frame(view: &mut View, chart: Rect) {
 /// Paint a content row over the black the scene laid: the radar strip
 /// while a radar is paired, then the page's tiles over its chart.
 pub(super) fn paint(scene: &Scene, page: RidePage, row: &mut Row) {
-    let frame = scene.frame();
-    let strip = frame.radar.left..frame.radar.right - frame.strip.divider;
+    if let Some(radar) = &scene.radar {
+        paint_radar(radar, &mut row.within(radar.columns()));
+    }
     if page == RidePage::Map {
-        if let Some(radar) = &scene.radar {
-            paint_radar(radar, &mut row.within(strip));
-        }
         paint_map(scene, row);
         return;
-    }
-    if let Some(radar) = &scene.radar {
-        paint_radar(radar, &mut row.within(strip));
     }
     match page {
         RidePage::Climb => climb::paint_chart(scene.climb(), row),
@@ -594,7 +536,8 @@ fn paint_map(scene: &Scene, row: &mut Row) {
 /// Where the radar strip draws: the arrow, then the track from the rider at
 /// the top to 200 m at the bottom. The track ends above the toast band, so a
 /// toast never hides a target, a disc `radius` rows above and below its
-/// range, centred on column `centre`. `divider` columns part it from the body.
+/// range, centred on column `centre`. It paints columns `left..right`, and
+/// black divides it from the body, which starts at column `body`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Strip {
     arrow_top: usize,
@@ -602,7 +545,9 @@ pub struct Strip {
     track_bottom: usize,
     radius: usize,
     centre: usize,
-    divider: usize,
+    left: usize,
+    right: usize,
+    body: usize,
 }
 
 const RANGE_MM: u32 = 200_000;
@@ -621,12 +566,12 @@ pub fn pixels(
     graphics: &Graphics,
     profile: &TrainingProfile,
     main: Option<&crate::compose::builtin::Laid>,
-    layout: &'static Layout,
+    device: &'static Device,
 ) -> Pixels {
     let gliding = super::data::Gliding { graphics, profile };
     Pixels {
         glides: main.map_or([None; main::GLIDES], |main| main.glides(&gliding)),
-        markers: radar(&graphics.radar, &layout.ride.strip).markers,
+        markers: radar(&graphics.radar, &device.scaled).markers,
     }
 }
 
@@ -639,15 +584,23 @@ pub use main::{
 pub struct Radar {
     track: u16,
     markers: [Option<(u16, bool)>; 8],
-    strip: &'static Strip,
+    strip: Strip,
 }
 
-pub(super) fn radar(snapshot: &radar::Snapshot, strip: &'static Strip) -> Radar {
+impl Radar {
+    /// The columns the strip paints.
+    fn columns(&self) -> core::ops::Range<usize> {
+        self.strip.left..self.strip.right
+    }
+}
+
+pub(super) fn radar(snapshot: &radar::Snapshot, at: &Scaled) -> Radar {
+    let strip = strip(at);
     Radar {
         track: track_color(snapshot.status),
         markers: snapshot
             .targets
-            .map(|target| target.map(|target| (target_y(target, strip), close(target)))),
+            .map(|target| target.map(|target| (target_y(target, &strip), close(target)))),
         strip,
     }
 }
@@ -698,13 +651,12 @@ pub(super) fn reference_pixel(scene: &Scene, page: RidePage, x: usize, y: usize)
     let look = scene.look();
     let black = look.ink(chrome::BLACK);
     if page == RidePage::Map {
-        let frame = scene.frame();
         return match &scene.radar {
-            Some(radar) if x < frame.radar.right - frame.strip.divider => {
+            Some(radar) if radar.columns().contains(&x) => {
                 let under = look.ink(reference_radar_pixel(radar, x, y));
                 scene.canvas().pixel(look, x, y, under)
             }
-            Some(_) if x < frame.body.left => scene.canvas().pixel(look, x, y, black),
+            Some(radar) if x < radar.strip.body => scene.canvas().pixel(look, x, y, black),
             _ => reference_map_pixel(scene, x, y),
         };
     }
@@ -863,20 +815,20 @@ pub(crate) fn whole(value: &mut Text<12>, reading: Option<impl core::fmt::Displa
     };
 }
 
-/// The largest box accept gives tile `component` on `layout`'s panel: the
+/// The largest box accept gives tile `component` on `device`'s panel: the
 /// tile alone, grown over the whole screen.
 #[cfg(test)]
-pub(crate) fn largest_box(layout: &super::Layout, component: u8) -> Rect {
+pub(crate) fn largest_box(device: &super::Device, component: u8) -> Rect {
     use crate::compose::input::Controls;
     use crate::compose::node::{Flags, Node, Size};
     use crate::compose::parse::Screen;
     use crate::compose::solve::Solved;
     let bytes = Node::leaf(component, 0, Size::grow(1)).bytes();
-    let screen = Screen::parse(0, &bytes, &layout.scaled, Controls::FREE).expect("accepted");
+    let screen = Screen::parse(0, &bytes, &device.scaled, Controls::FREE).expect("accepted");
     let mut solved = Solved::EMPTY;
     screen.solve(Flags::NONE, &mut solved);
     let rect = solved.leaves()[0].rect.rect();
-    assert_eq!(rect, layout.scaled.screen());
+    assert_eq!(rect, device.scaled.screen());
     rect
 }
 
@@ -900,11 +852,11 @@ mod tests {
     /// between them, on every panel, with and without a radar. A chart
     /// ends the column above it.
     pub(super) fn balanced(id: ScreenId) {
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             for flags in [Flags::NONE, Flags::RADAR] {
-                let laid = Laid::new(id, layout, Choices::default(), flags, None).unwrap();
+                let laid = Laid::new(id, device, Choices::default(), flags, None).unwrap();
                 let nodes = laid.screen().tree().nodes();
-                let (mut start, mut end) = (0, layout.scaled.panel.height as i32);
+                let (mut start, mut end) = (0, device.scaled.panel.height as i32);
                 let mut rows: std::vec::Vec<(i32, i32)> = std::vec::Vec::new();
                 for placed in laid.leaves() {
                     let Some(What::Leaf { component, .. }) = nodes[usize::from(placed.node)].what()
@@ -934,7 +886,7 @@ mod tests {
                 assert!(
                     most - least <= 1 && *least > 0,
                     "{id:?} {flags} on {:?}: gaps {gaps:?}",
-                    layout.scaled.panel
+                    device.scaled.panel
                 );
             }
         }
@@ -943,12 +895,12 @@ mod tests {
     #[test]
     fn the_paused_screen_and_end_ride_are_centred() {
         for id in [ScreenId::RidePaused, ScreenId::RideEnd] {
-            for layout in crate::screens::panels::ALL {
-                let laid = Laid::new(id, layout, Choices::default(), Flags::NONE, None).unwrap();
+            for device in crate::screens::panels::ALL {
+                let laid = Laid::new(id, device, Choices::default(), Flags::NONE, None).unwrap();
                 let leaves = laid.leaves();
                 let above = i32::from(leaves[0].rect.top);
                 let bottom = i32::from(leaves[leaves.len() - 1].rect.bottom);
-                let below = layout.scaled.panel.height as i32 - bottom;
+                let below = device.scaled.panel.height as i32 - bottom;
                 assert!(
                     (above - below).abs() <= 1,
                     "{id:?}: {above} above, {below} below"
@@ -960,10 +912,10 @@ mod tests {
     #[test]
     fn longest_pause_lays_out_whole_between_the_cues() {
         use crate::screens::cue;
-        for layout in crate::screens::panels::ALL {
+        for device in crate::screens::panels::ALL {
             for auto in [false, true] {
                 let mut view = View::new(Page::Ride, 0, None);
-                view.layout = layout;
+                view.device = device;
                 view.pause_screen = true;
                 view.auto_paused = auto;
                 view.paused_secs = 359_999;
@@ -976,21 +928,21 @@ mod tests {
                 let cues = scene.cues().to_vec();
                 assert_eq!(cues.len(), 2, "resume and end");
                 let canvas = view.canvas();
-                let what = std::format!("paused on {:?}", layout.scaled.panel);
+                let what = std::format!("paused on {:?}", device.scaled.panel);
                 for shown in ["FOR 99:59:59", "99:59:59", "1000.0 KM", "RIDE TIME"] {
                     assert!(canvas.shows(shown), "{what}: {shown}");
                 }
                 assert_eq!(canvas.shows("RIDE ON TO RESUME"), auto, "{what}");
                 assert_eq!(canvas.shows("AUTO PAUSED"), auto, "{what}");
-                let screen = layout.scaled.screen();
+                let screen = device.scaled.screen();
                 let (width, height) = (screen.right, screen.bottom);
-                let reach = layout.scaled.unit(cue::RADIUS + 2);
+                let reach = device.scaled.unit(cue::RADIUS + 2);
                 for run in &canvas.runs {
                     let (left, right) = (run.columns().start, run.columns().end.min(width));
                     let (top, bottom) = (run.top, run.bottom().min(height));
                     let text = core::str::from_utf8(run.line.text());
                     for cue in &cues {
-                        let corner = cue.corner(layout);
+                        let corner = cue.corner(device);
                         let dx = if corner.left() { left } else { width - right };
                         let dy = if corner.top() { top } else { height - bottom };
                         assert!(dx * dx + dy * dy >= reach.pow(2), "{what}: {text:?}");
@@ -1274,7 +1226,8 @@ mod tests {
                 range_mm,
                 closing_speed_cm_s: 0,
             };
-            let strip = &crate::screens::BASE.ride.strip;
+            let at = &crate::screens::scaled::BASE;
+            let strip = &strip(at);
             let bottom = usize::from(target_y(target, strip)) + strip.radius;
             assert!(bottom < chrome::TOAST.top, "{range_mm} mm");
             let mut snapshot = radar::Snapshot::default();
@@ -1282,7 +1235,7 @@ mod tests {
             for y in chrome::TOAST.top..chrome::HEIGHT {
                 for x in 0..RADAR_WIDTH {
                     assert_eq!(
-                        reference_radar_pixel(&radar(&snapshot, strip), x, y),
+                        reference_radar_pixel(&radar(&snapshot, at), x, y),
                         chrome::BLACK,
                         "({x}, {y})"
                     );

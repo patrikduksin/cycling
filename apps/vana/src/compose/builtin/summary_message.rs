@@ -8,7 +8,7 @@ use crate::compose::registry::WORDS;
 use crate::screens::ride::summary::Words;
 use device_api::input::Role;
 
-pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
+pub const BUILTIN: &Builtin = &Builtin {
     tree: |_| tree(),
     buttons: Buttons {
         act: Some(Button {
@@ -25,7 +25,7 @@ pub const BUILTIN: Option<&Builtin> = Some(&Builtin {
         }),
         held: None,
     },
-});
+};
 
 pub(super) fn tree() -> Nodes {
     let words = Node::leaf(WORDS, Words::Message as u8, Size::CONTENT);

@@ -353,7 +353,7 @@ fn a_tap_chooses_its_card_but_a_tap_that_stops_a_coasting_list_does_not() {
 #[test]
 fn a_tap_off_every_tile_of_a_static_screen_does_nothing() {
     let mut runtime = booted(Profile::HeartRate);
-    let panel = runtime.layout.scaled.panel;
+    let panel = runtime.device.scaled.panel;
     for page in [
         Page::Boot,
         Page::Home,

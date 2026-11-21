@@ -225,8 +225,8 @@ mod tests {
             values.push(Some((seed >> 33) as i32 - (1 << 29)));
             values.push(Some((seed >> 45) as i32 - 2_000));
         }
-        for layout in ALL {
-            let at = &layout.scaled;
+        for device in ALL {
+            let at = &device.scaled;
             for metric in Metric::ALL {
                 for large in [false, true] {
                     let celled = Celled {

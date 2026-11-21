@@ -615,7 +615,7 @@ def models_rs(found):
         facts = ', '.join(f'{fact}: {rust_bool(model.fitted[fact])}' for fact in FITTED if fact not in SENSORS)
         memory = ', '.join(f'(Region::{r.region.capitalize()}, {r.size:#x})' for r in model.memory)
         return f"""const {name}_BUTTONS: Fixtures = {rust_fixtures(model)};
-static {name}_LAYOUT: Layout = Layout::of(Scaled::of({model.width}, {model.height}), &{name}_BUTTONS);
+static {name}_DEVICE: Device = Device::of(Scaled::of({model.width}, {model.height}), &{name}_BUTTONS);
 pub const {name}: Model = Model {{
     name: "{model.name}",
     product: {rust_product(model)},
@@ -623,7 +623,7 @@ pub const {name}: Model = Model {{
     height: {model.height},
     touch: {rust_bool(model.touch)},
     buttons: {name}_BUTTONS,
-    layout: &{name}_LAYOUT,
+    device: &{name}_DEVICE,
     fitted: Fitted {{ {facts}, sensors: {rust_sensors(model)} }},
     memory: &[{memory}],
 }};
@@ -637,7 +637,7 @@ use device_api::input::{{Fixture, Fixtures, Role, Side}};
 use device_api::sensors::SensorSet;
 use device_api::storage::Region;
 use vana::Product;
-use vana::screens::Layout;
+use vana::screens::Device;
 use vana::screens::scaled::Scaled;
 
 {''.join(constant(model) for model in found)}

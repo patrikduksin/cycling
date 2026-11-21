@@ -219,7 +219,7 @@ fn panel(pixels: &[u16], width: usize) -> Option<[usize; 4]> {
     use vana::compose::builtin::{Laid, ScreenId};
     let laid = Laid::new(
         ScreenId::Phone,
-        &vana::screens::BASE,
+        &vana::screens::C606,
         Default::default(),
         vana::compose::Flags::NONE,
         None,

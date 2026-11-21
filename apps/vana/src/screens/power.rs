@@ -48,11 +48,11 @@ impl Sheet {
 
     /// Paint one row of the sheet from its `canvas`, and the cues of the
     /// buttons that answer it.
-    pub fn paint(canvas: &Canvas, cues: &[Cue], layout: &super::Layout, row: &mut Row) {
+    pub fn paint(canvas: &Canvas, cues: &[Cue], device: &super::Device, row: &mut Row) {
         row.fill(BLACK);
         canvas.paint(row);
         for cue in cues {
-            cue.paint(row, layout);
+            cue.paint(row, device);
         }
     }
 
@@ -93,17 +93,17 @@ impl Data for Sheet {
 impl Sheet {
     /// Fail a sheet whose runs or shapes leave the panel, or whose runs
     /// overlap.
-    pub fn check_layout(canvas: &Canvas, layout: &super::Layout) {
+    pub fn check_layout(canvas: &Canvas, device: &super::Device) {
         if !super::check::enabled() {
             return;
         }
-        canvas.assert_kept(format_args!("a power sheet on {:?}", layout.scaled));
-        let panel = layout.scaled.screen();
+        canvas.assert_kept(format_args!("a power sheet on {:?}", device.scaled));
+        let panel = device.scaled.screen();
         let breaks = super::check::canvas_breaks(canvas, panel, &[("screen", panel)], 0, &[]);
         assert!(
             breaks.is_empty(),
             "a power sheet on {:?} breaks its layout:\n{}",
-            layout.scaled,
+            device.scaled,
             breaks.join("\n")
         );
     }
@@ -112,17 +112,17 @@ impl Sheet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::Layout;
+    use crate::screens::Device;
     use crate::screens::brand;
     use crate::screens::canvas::Shape;
     use crate::screens::chrome::{AMBER, GREEN, Look, Shown, WHITE, mix};
     use crate::screens::cue::Icon;
-    use crate::screens::{BASE, panels};
+    use crate::screens::{C606, panels};
 
-    fn laid(sheet: Sheet, layout: &Layout) -> Laid {
+    fn laid(sheet: Sheet, device: &Device) -> Laid {
         Laid::new(
             sheet.screen(),
-            layout,
+            device,
             Default::default(),
             Default::default(),
             None,
@@ -130,20 +130,20 @@ mod tests {
         .expect("every sheet has a tree")
     }
 
-    fn canvas(sheet: Sheet, layout: &Layout) -> Canvas {
-        sheet.canvas(&laid(sheet, layout))
+    fn canvas(sheet: Sheet, device: &Device) -> Canvas {
+        sheet.canvas(&laid(sheet, device))
     }
 
-    fn assert_paints_reference(sheet: Sheet, layout: &Layout) {
-        let canvas = canvas(sheet, layout);
-        let panel = layout.scaled.panel;
+    fn assert_paints_reference(sheet: Sheet, device: &Device) {
+        let canvas = canvas(sheet, device);
+        let panel = device.scaled.panel;
         for look in [false, true].map(crate::screens::look::look) {
             for y in 0..panel.height {
                 let mut pixels = std::vec![0x5555; panel.width];
                 Sheet::paint(
                     &canvas,
                     &[],
-                    layout,
+                    device,
                     &mut Row::new(y, &mut pixels).looked(look),
                 );
                 for (x, &pixel) in pixels.iter().enumerate() {
@@ -173,7 +173,7 @@ mod tests {
     }
 
     fn count(sheet: Sheet, color: u16) -> usize {
-        lit(&canvas(sheet, &BASE), color, 0..240)
+        lit(&canvas(sheet, &C606), color, 0..240)
     }
 
     #[test]
@@ -217,13 +217,13 @@ mod tests {
             ),
         ];
         crate::screens::check::enable(true);
-        for layout in panels::ALL {
+        for device in panels::ALL {
             for (sheet, want) in sheets {
-                let canvas = canvas(sheet, layout);
-                let what = std::format!("{sheet:?} on {:?}", layout.scaled.panel);
-                canvas.assert_laid_out(layout.scaled.screen(), want, &what);
-                Sheet::check_layout(&canvas, layout);
-                assert_paints_reference(sheet, layout);
+                let canvas = canvas(sheet, device);
+                let what = std::format!("{sheet:?} on {:?}", device.scaled.panel);
+                canvas.assert_laid_out(device.scaled.screen(), want, &what);
+                Sheet::check_layout(&canvas, device);
+                assert_paints_reference(sheet, device);
             }
         }
     }
@@ -231,14 +231,14 @@ mod tests {
     /// Shutdown follows the last farewell frame, so it must be black.
     #[test]
     fn the_last_farewell_frame_is_black() {
-        for layout in panels::ALL {
+        for device in panels::ALL {
             let canvas = canvas(
                 Sheet::TurningOff {
                     progress: brand::DONE,
                 },
-                layout,
+                device,
             );
-            let panel = layout.scaled.panel;
+            let panel = device.scaled.panel;
             let dark = (0..panel.height).all(|y| {
                 (0..panel.width).all(|x| canvas.pixel(Look::PLAIN, x, y, Shown(BLACK)).0 == BLACK)
             });
@@ -248,9 +248,9 @@ mod tests {
 
     #[test]
     fn turn_off_answers_with_corner_cues_and_draws_the_power_symbol() {
-        for layout in panels::ALL {
+        for device in panels::ALL {
             let cues = |sheet| {
-                let laid = laid(sheet, layout);
+                let laid = laid(sheet, device);
                 let focus = laid.focus();
                 let shown = laid.controls().shown(focus).map(|cue| cue.icon);
                 shown.collect::<std::vec::Vec<_>>()
@@ -263,7 +263,7 @@ mod tests {
                 [Icon::Back],
                 "unsaved rides take away the way to turn off"
             );
-            let confirm = canvas(Sheet::Confirm { unsaved: 0 }, layout);
+            let confirm = canvas(Sheet::Confirm { unsaved: 0 }, device);
             assert_eq!(confirm.find("TURN OFF").map(|run| run.color), Some(WHITE));
             let ring = confirm.shapes.iter().any(|shape| {
                 matches!(shape, Shape::Ring { ring, color: WHITE, .. } if ring.sweep < crate::screens::chrome::TURN)
@@ -302,7 +302,7 @@ mod tests {
         assert!(!charge(40, false, 1).animated());
         // A quarter's charge lights the ring from 12 o'clock to 3: the right
         // half only.
-        let canvas = canvas(charge(25, false, 0), &BASE);
+        let canvas = canvas(charge(25, false, 0), &C606);
         assert!(lit(&canvas, GREEN, 120..240) > 500);
         assert!(
             lit(&canvas, GREEN, 0..120) < 100,

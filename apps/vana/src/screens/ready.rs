@@ -105,7 +105,7 @@ mod tests {
     use crate::compose::input::{Action, Go, hit};
     use crate::screens::cue::{Cue, Icon};
     use crate::screens::workout::{Page, View};
-    use crate::screens::{Layout, panels};
+    use crate::screens::{Device, panels};
     use device_api::input::Role;
 
     fn readiness(level: Level, title: &str, hint: &str) -> Readiness {
@@ -115,9 +115,9 @@ mod tests {
         }
     }
 
-    fn shown(layout: &'static Layout, ready: Readiness) -> View<'static> {
+    fn shown(device: &'static Device, ready: Readiness) -> View<'static> {
         let mut view = View::new(Page::Ready, 0, None);
-        view.layout = layout;
+        view.device = device;
         view.compose_main();
         view.show_ready(ready);
         view.prepare().check_layout();
@@ -142,14 +142,14 @@ mod tests {
             "LAST RIDE RECOVERED",
         ];
         let play = [Cue::new(Role::Act, Icon::Play)];
-        for layout in panels::ALL {
+        for device in panels::ALL {
             for (hint, stored) in hints.iter().zip(storage.iter().cycle()) {
                 let mut ready = readiness(Level::Wait, "SENSORS WAKING UP", hint);
                 ready.checks[Line::Storage as usize] =
                     Check::new(Level::Wait, "UNDER 1 MIN OF ROOM", stored);
                 let _ = ready.riding.push_str("RECOVERY SPIN 30");
-                let view = shown(layout, ready);
-                let what = std::format!("{hint} on {:?}", layout.scaled.panel);
+                let view = shown(device, ready);
+                let what = std::format!("{hint} on {:?}", device.scaled.panel);
                 let canvas = view.canvas();
                 assert_eq!(canvas.runs.len(), 10, "{what}");
                 let want = [
@@ -160,10 +160,14 @@ mod tests {
                     stored,
                     hint,
                 ];
-                canvas.assert_laid_out(layout.chrome.content, &want, &what);
+                canvas.assert_laid_out(
+                    crate::screens::chrome::content(&device.scaled),
+                    &want,
+                    &what,
+                );
                 for run in &canvas.runs {
                     let (name, rect) = crate::screens::chrome::layout::text(run).unwrap();
-                    let under = play.iter().any(|cue| cue.covers(rect, layout));
+                    let under = play.iter().any(|cue| cue.covers(rect, device));
                     assert!(!under, "{what}: {name} under the cue");
                 }
             }
@@ -173,13 +177,13 @@ mod tests {
     #[test]
     fn the_headline_follows_the_checks_and_taps_open_the_workout_and_sensors_lines() {
         let good = readiness(Level::Good, "GPS LOCKED", "");
-        for layout in panels::ALL {
-            assert!(shown(layout, good.clone()).canvas().shows("READY"));
+        for device in panels::ALL {
+            assert!(shown(device, good.clone()).canvas().shows("READY"));
             let mut blocked = good.clone();
             blocked.checks[Line::Storage as usize] =
                 Check::new(Level::Problem, "SYNC RIDES FIRST", "ON THE PHONE PAGE");
             assert!(!blocked.can_start());
-            let view = shown(layout, blocked);
+            let view = shown(device, blocked);
             assert!(view.canvas().shows("NOT READY"));
             let laid = view
                 .laids

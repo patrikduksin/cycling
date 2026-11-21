@@ -374,7 +374,7 @@ impl Canvas {
 /// A run whose capitals end on `base`.
 pub fn on_baseline(line: Line<24>, x: usize, base: usize, align: Align, color: u16) -> Run {
     let face = line.face();
-    let top = base - face.top as usize - face.cap as usize;
+    let top = base - face.fit_height();
     Label::new(line, x, top, align, color)
 }
 

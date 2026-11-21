@@ -38,7 +38,7 @@ const MIN_BASELINE_MS: u32 = 1_800;
 /// (the newest epoch's position can arrive a few ms before its speed).
 const DOPPLER_CARRY_MS: u32 = 1_500;
 /// Faster than this (144 km/h) is a receiver fault, not a bicycle.
-const MAX_SPEED_MM_S: u32 = 40_000;
+pub(crate) const MAX_SPEED_MM_S: u32 = 40_000;
 const DAY_MS: u32 = 86_400_000;
 
 /// What GPS says about the rider's speed right now.

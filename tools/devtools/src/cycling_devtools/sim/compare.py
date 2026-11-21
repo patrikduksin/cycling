@@ -302,6 +302,8 @@ class Run:
     artifacts: Path
     target: Path
     tests: tuple[str, ...] = ()
+    command: tuple[str, ...] | None = None
+    artifacts_env: str = 'SIM_ARTIFACTS'
 
 
 def selection(name_filter):
@@ -345,9 +347,9 @@ def run_scenarios(run):
     # absolute path there would keep each worktree's dependency builds apart.
     env = {k: v for k, v in os.environ.items() if k not in ('CARGO_TARGET_DIR', 'SIM_VIDEO')}
     process = CARGO.start(
-        [*COMMAND, '--target-dir', str(run.target), *run.tests],
+        [*(run.command or COMMAND), '--target-dir', str(run.target), *run.tests],
         cwd=run.source,
-        env=env | COMPARISON | {'SIM_ARTIFACTS': str(run.artifacts)},
+        env=env | COMPARISON | {run.artifacts_env: str(run.artifacts)},
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

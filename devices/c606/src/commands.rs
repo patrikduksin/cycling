@@ -10,6 +10,7 @@ use firmware_console::session::{Reboot, Terminal};
 
 const TEST_REBOOT: u8 = 11;
 const TEST_REBOOT_UNSYNCED: u8 = 12;
+const TEST_COMPOSE: u8 = 31;
 
 struct Text {
     bytes: [u8; 1280],
@@ -302,6 +303,15 @@ impl<C: device_api::console::Console, G: Diagnostics> Board<crate::FirmwareShell
                         log::warn!(target:"diagnostic","controlled log saturation");
                     }
                     "ACCEPTED"
+                }
+                TEST_COMPOSE => {
+                    const AT: vana::screens::scaled::Scaled = vana::screens::scaled::Scaled::of(
+                        device::fitted::PANEL_WIDTH,
+                        device::fitted::PANEL_HEIGHT,
+                    );
+                    let now = || embassy_time::Instant::now().as_micros();
+                    vana::compose::bench::report(&AT, &now, out);
+                    "OK"
                 }
                 _ => "UNSUPPORTED",
             },

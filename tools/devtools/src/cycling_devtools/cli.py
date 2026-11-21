@@ -389,6 +389,12 @@ TASKS = [
         f'{DEV}sim.compare',
     ),
     task(
+        'screens',
+        'Render every screen x variant x panel here and on the merge-base with main into before | after contact '
+        'sheets, changed cells first (--base REF, --out DIR); .local/sim/screens/index.md',
+        f'{DEV}sim.screens',
+    ),
+    task(
         'mockup-compare',
         'Check sim checkpoints named after the course navigation mockups (.local/sim/latest/*/NN-<screen>.png) '
         'against docs/design/course-navigation; sheets in .local/mockup ([SCREEN ...] [--checkpoint PNG|SVG])',

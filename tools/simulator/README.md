@@ -58,6 +58,18 @@ any worktree, runs only the current checkout. `cycling sim-compare --fill <commi
 caches a commit's run ahead of time, for a merge to call on each new main;
 concurrent misses on one base build it once.
 
+`cycling screens [--base <ref>] [--out <dir>]` shows every screen, not only
+those a scenario happens to check. `tests/screens.rs` walks the C606 through
+each screen under the variants that change its layout, such as a course, the
+radar, a workout or SAVER mode. SMALL and WIDE take the same presses. With
+`SIM_SCREENS=<dir>`, each cell is written as
+`<dir>/<screen>/<variant>@<w>x<h>.png`, and `UNREACHABLE` lists the screens
+it does not reach. The command runs this checkout's walk here and on the
+merge-base, and caches the base beside sim-compare's, keyed by the walk too.
+`shell-simulator --sheet` draws one before | after sheet per screen into
+`.local/sim/screens/sheets`. `index.md` lists changed cells first. The command
+prints the number of changed cells and exits 0 whether or not cells changed.
+
 Comparison mode (`src/compare.rs`) proves that a refactor changed nothing the
 screens cannot show. It is a switch at run time: a `Sim` made while
 `SIM_COMPARE=1` is set compares, and so does one made with `Sim::comparing`.

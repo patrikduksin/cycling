@@ -20,6 +20,18 @@ fn main() {
         }
         std::process::exit(i32::from(failed));
     }
+    if let [_, flag, spec, out] = &args[..]
+        && flag == "--sheet"
+    {
+        if let Err(error) = shell_simulator::artifacts::write_contact_sheet(
+            std::path::Path::new(spec),
+            std::path::Path::new(out),
+        ) {
+            eprintln!("--sheet: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.iter().any(|a| a == "--terminal") {
         let value = |name: &str| {
             args.iter()

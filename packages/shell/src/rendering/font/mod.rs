@@ -133,6 +133,19 @@ impl Face {
         width
     }
 
+    /// The columns `text` may cover: its advance and the anti-aliased spill
+    /// past it. A line fits a box at least this wide.
+    pub const fn fit_width(&self, text: &[u8]) -> usize {
+        self.width(text) + SPILL
+    }
+
+    /// The rows a line covers above its baseline: the capitals and what
+    /// rises over them. A line whose baseline sits at least this far below
+    /// a box's top draws inside it.
+    pub const fn fit_height(&self) -> usize {
+        self.top as usize + self.cap as usize
+    }
+
     /// Where the ink of `text` ends, from its pen start: the advance less
     /// the last glyph's right bearing. Neighbours placed after it sit at the
     /// same distance from short glyphs such as "-" as from digits.
@@ -224,14 +237,14 @@ impl<const N: usize> Line<N> {
         let Some((&smallest, larger)) = faces.split_last() else {
             return Self::new(&faces::BODY, b"");
         };
+        let text = &text[..text.len().min(N)];
         for &face in larger {
-            let line = Self::new(face, text);
-            if line.width() + SPILL <= width {
-                return line;
+            if face.fit_width(text) <= width {
+                return Self::new(face, text);
             }
         }
-        let mut len = text.len().min(N);
-        while len > 0 && smallest.width(&text[..len]) + SPILL > width {
+        let mut len = text.len();
+        while len > 0 && smallest.fit_width(&text[..len]) > width {
             len -= 1;
         }
         Self::new(smallest, &text[..len])

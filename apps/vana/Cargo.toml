@@ -23,6 +23,7 @@ device-api = { path = "../../packages/device-api" }
 firmware-shell = { path = "../../packages/shell" }
 firmware-services = { path = "../../packages/services" }
 terrain = { path = "../../packages/terrain" }
+wamr = { path = "../../packages/wamr" }
 heapless.workspace = true
 libm = "0.2.16"
 qrcodegen-no-heap = "=1.8.1"

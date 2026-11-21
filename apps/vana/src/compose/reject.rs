@@ -1,5 +1,6 @@
 use super::node::{Flags, Node, What};
 use super::registry;
+use super::script::{Fault, INSTANCES, TILES_A_TREE};
 use core::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +100,14 @@ pub enum Why {
     ItemAction {
         node: u8,
     },
+    /// The record names more scripts than can run at once.
+    Scripts(u8),
+    /// A tree shows more script tiles than a frame has time for.
+    ScriptTiles(u8),
+    Script {
+        slot: u8,
+        fault: Fault,
+    },
     /// The screen and a layer over it overflow the canvas they share.
     Beneath {
         layer: u8,
@@ -163,6 +172,16 @@ impl fmt::Display for Why {
             Self::Push => f.write_str("only a top or bottom band can push the tiles"),
             Self::Header(byte) => write!(f, "layer byte {byte} names nothing"),
             Self::Misfit(misfit) => fmt::Display::fmt(&misfit, f),
+            Self::Scripts(count) => {
+                write!(f, "{count} scripts is more than {INSTANCES} run at once")
+            }
+            Self::ScriptTiles(count) => {
+                write!(
+                    f,
+                    "{count} script tiles in one tree is more than {TILES_A_TREE}"
+                )
+            }
+            Self::Script { slot, fault } => write!(f, "script {slot}: {fault}"),
             Self::Leaves { count, flags } => {
                 write!(f, "{count} tiles show")?;
                 with(f, flags)

@@ -12,6 +12,15 @@ let
       "clippy"
       "rustfmt"
     ];
+    # Script tiles: VANA's build compiles its WebAssembly guests.
+    targets = [ "wasm32-unknown-unknown" ];
+  };
+  # The WebAssembly runtime script tiles run under (packages/wamr builds its C).
+  wamr = pkgs.fetchFromGitHub {
+    owner = "bytecodealliance";
+    repo = "wasm-micro-runtime";
+    rev = "WAMR-2.4.6";
+    hash = "sha256-Lsa7P8QQVWB08UFIidPIsmaXZOtnDxE3C2MzW73Rwtg=";
   };
   python = pkgs.python314;
   # Libraries that manylinux wheels (numpy, osmium) and the live simulator
@@ -68,6 +77,10 @@ pkgs.mkShell {
     # build.sh puts this toolchain first only for the firmware build, so host
     # cargo stays the rust-overlay toolchain above.
     CYCLING_ESP_TOOLCHAIN = "${esp-rust}";
+    CYCLING_WAMR = "${wamr}";
+    # The firmware build puts the Xtensa rustc first on PATH; guests compile
+    # for wasm32 with this one.
+    CYCLING_WASM_RUSTC = "${rust}/bin/rustc";
     UV_PYTHON = "${python}/bin/python3";
     UV_PYTHON_DOWNLOADS = "never";
     # This Python, even where the machine prefers uv-managed ones (fleet-hub

@@ -34,6 +34,9 @@ manifest="$(uv run --project tools/devtools --locked python -m cycling_devtools.
 eval "$manifest"
 firmware_target="$target_root/firmware${variant:+-$variant}"
 export PATH="$CYCLING_ESP_TOOLCHAIN/bin:$CYCLING_ESP_TOOLCHAIN/xtensa-esp-elf/bin:$PATH"
+# Script tiles' runtime (packages/wamr) is C, built with the chip's GCC.
+cc_target="${target//-/_}"
+export "CC_$cc_target=${nm%-nm}-gcc" "AR_$cc_target=${nm%-nm}-ar"
 CYCLING_BUILD_COMMIT="$(git rev-parse --short=12 HEAD)"
 placeholder_source="zcyclingzcommitzplaceholderzzzzzzzzzzzzzzzzzzzzzzzzz"
 commit_placeholder="${placeholder_source:0:${#CYCLING_BUILD_COMMIT}}"

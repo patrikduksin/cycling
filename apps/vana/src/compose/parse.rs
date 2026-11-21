@@ -1,15 +1,18 @@
 //! Accept: the only way to a valid [`Screen`], [`Layer`] or [`Screens`].
 //! A config is accepted only if every tree solves on this panel, clear of
 //! the corner cues its screen shows, under every combination of the flags
-//! it mentions; then solving and drawing trust it.
+//! it mentions; then solving and drawing trust it. Before any tree solves,
+//! the script tiles the record names get their instances (see
+//! [`script::ready`]), so their looks are known.
 //!
 //! The record: the catalogue version, the screens the rider changed, each
 //! `[key][count][count × node]`, then the layers, each
 //! `[anchor << 4 | mode][event][hold][count][count × node]`.
 use super::input::{Buttons, Controls, Cues};
 use super::node::{Flags, MAX_DEPTH, MAX_NODES, Node, What, When};
-use super::registry;
+use super::registry::{self, SCRIPT};
 use super::reject::{Place, Reject, Why};
+use super::script::{self, INSTANCES, SLOTS, TILES_A_TREE};
 use super::solve::{self, Balance, Placed, Rect16, Scroll, Sink, Solved};
 use crate::screens::scaled::Scaled;
 use core::num::NonZeroU8;
@@ -349,6 +352,7 @@ pub fn parse(
     let result = parse_into(bytes, at, controls_of, out);
     if result.is_err() {
         *out = Screens::EMPTY;
+        script::clear();
     }
     result
 }
@@ -371,6 +375,7 @@ fn parse_into(
     if version != VERSION {
         return Err(record(Why::Version(version)));
     }
+    script::ready(&scripts(bytes).map_err(record)?, at).map_err(record)?;
     for _ in 0..count {
         let [key, nodes] = reader.take().ok_or(record(Why::Truncated))?;
         let nodes = reader.nodes(nodes).ok_or(record(Why::Truncated))?;
@@ -432,6 +437,63 @@ fn beneath(screen: &Screen, (index, layer): (u8, &Layer), at: &Scaled) -> Result
         }
     }
     Ok(())
+}
+
+/// The script slots the record's trees name, read ahead of accept. A
+/// record that ends early is left for accept to refuse.
+fn scripts(bytes: &[u8]) -> Result<heapless::Vec<u8, INSTANCES>, Why> {
+    let mut slots = heapless::Vec::new();
+    let mut named = 0u8;
+    let mut tree = |nodes: &[u8]| {
+        let mut tiles = 0;
+        for node in nodes.as_chunks::<4>().0 {
+            if let Some(What::Leaf {
+                component: SCRIPT,
+                arg,
+            }) = Node::from_bytes(*node).what()
+            {
+                tiles += 1;
+                // A slot past the last is accept's to refuse, as a setting.
+                if usize::from(arg) < SLOTS && !slots.contains(&arg) {
+                    named += 1;
+                    let _ = slots.push(arg);
+                }
+            }
+        }
+        if tiles > TILES_A_TREE {
+            return Err(Why::ScriptTiles(tiles as u8));
+        }
+        if usize::from(named) > INSTANCES {
+            return Err(Why::Scripts(named));
+        }
+        Ok(())
+    };
+    let mut reader = Reader { bytes, at: 1 };
+    let Some([screens]) = reader.take() else {
+        return Ok(slots);
+    };
+    for _ in 0..screens {
+        let Some(nodes) = reader
+            .take()
+            .and_then(|[_, count]: [u8; 2]| reader.nodes(count))
+        else {
+            return Ok(slots);
+        };
+        tree(nodes)?;
+    }
+    let Some([layers]) = reader.take() else {
+        return Ok(slots);
+    };
+    for _ in 0..layers {
+        let Some(nodes) = reader
+            .take()
+            .and_then(|[.., count]: [u8; 4]| reader.nodes(count))
+        else {
+            return Ok(slots);
+        };
+        tree(nodes)?;
+    }
+    Ok(slots)
 }
 
 fn under(at: &Scaled, band: Rect16) -> Rect16 {

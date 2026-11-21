@@ -4,6 +4,7 @@ pub mod effort;
 pub mod gauge;
 pub mod icon;
 pub mod reading;
+pub mod script;
 pub mod space;
 pub mod status;
 pub mod total;

@@ -555,9 +555,15 @@ impl Ring {
         self.radius - self.width / 2
     }
 
-    /// The box the ring can cover.
+    /// How far past its centre the ring can cover, in quarter pixels.
+    pub const fn reach(&self) -> i32 {
+        self.outer() + 2
+    }
+
+    /// The box the ring can cover, if `reach` stays clear of the panel's
+    /// left and top.
     pub const fn bounds(&self) -> Rect {
-        let reach = self.outer() + 2;
+        let reach = self.reach();
         Rect {
             left: ((self.cx - reach) / 4) as usize,
             top: ((self.cy - reach) / 4) as usize,

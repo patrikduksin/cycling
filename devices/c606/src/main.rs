@@ -453,6 +453,8 @@ async fn console(
     sdk.set_latency_clock(|| embassy_time::Instant::now().as_millis());
     sdk.set_micros_clock(|| embassy_time::Instant::now().as_micros());
     sdk.draw_boot(system);
+    // Last, so scripts take only PSRAM nothing else at boot needs.
+    start_scripts().await;
     let mut terrain_step_max_us = 0u64;
     let ble_selection = system.settings.ble.and_then(|saved| {
         vana::sensors::ble::selection(
@@ -710,6 +712,36 @@ fn traced_pass(
     );
     stage_ended(Stage::Drain);
     quiet
+}
+
+/// What a host call may take of the main stack below WAMR's last check of
+/// it: a script call stops rather than go nearer the stack's end.
+const SCRIPT_STACK_GUARD: usize = 4096;
+
+/// Script tiles' runtime (#496): WAMR's pool and a 64 KB page for each
+/// instance, in PSRAM. Without them no script tile is accepted, and the
+/// rest of the firmware runs on.
+async fn start_scripts() {
+    use vana::compose::script::{INSTANCES, Memory, POOL, start};
+    let pool = zeroed_external(core::alloc::Layout::from_size_align(POOL, 16).unwrap()).await;
+    let memories = zeroed_external(core::alloc::Layout::new::<[Memory; INSTANCES]>()).await;
+    if pool.is_null() || memories.is_null() {
+        log::warn!("scripts: no PSRAM for the runtime");
+        return;
+    }
+    let floor = core::ptr::NonNull::new(device::stack::floor(SCRIPT_STACK_GUARD) as *mut u8);
+    // SAFETY: both blocks are zeroed, aligned for what they hold, never
+    // freed, and referenced nowhere else; this is the only start.
+    let started = unsafe {
+        start(
+            core::slice::from_raw_parts_mut(pool, POOL),
+            &mut *memories.cast::<[Memory; INSTANCES]>(),
+            floor,
+        )
+    };
+    if !started {
+        log::warn!("scripts: the runtime did not start");
+    }
 }
 
 /// Moves long-lived state into PSRAM so it stays out of the console task

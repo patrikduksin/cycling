@@ -22,10 +22,11 @@ ROOT = Path(__file__).resolve().parents[1]
 OWNERS = {
     "device-api": ("packages/device-api", set()),
     "terrain": ("packages/terrain", set()),
+    "wamr": ("packages/wamr", set()),
     "firmware-services": ("packages/services", {"device-api"}),
     "firmware-shell": ("packages/shell", {"device-api", "firmware-services"}),
     "firmware-console": ("packages/console", {"device-api", "firmware-services", "firmware-shell", "vana"}),
-    "vana": ("apps/vana", {"device-api", "firmware-services", "firmware-shell", "terrain"}),
+    "vana": ("apps/vana", {"device-api", "firmware-services", "firmware-shell", "terrain", "wamr"}),
     "c606-firmware": ("devices/c606", {"device-api", "firmware-services", "firmware-shell", "firmware-console", "vana", "terrain"}),
     "shell-simulator": ("tools/simulator", {"device-api", "firmware-services", "firmware-shell", "firmware-console", "vana", "terrain"}),
 }

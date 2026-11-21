@@ -1158,11 +1158,12 @@ fn every_tile_offers_looks_that_shrink_and_fit_the_canvas() {
         names,
         [
             "space", "value", "caption", "unit", "gauge", "zone", "icon", "status", "tap",
-            "reading", "total", "effort", "chip"
+            "reading", "total", "effort", "chip", "script"
         ]
     );
     for at in panels() {
-        for (_, tile) in registry::every() {
+        // A script's looks are its module's, checked at accept (script/tests.rs).
+        for (_, tile) in registry::every().filter(|(_, tile)| tile.name() != "script") {
             for arg in (0..=255).filter(|&arg| tile.accepts(arg)) {
                 let forms = tile.forms(arg, &at);
                 assert!(!forms.is_empty(), "{}({arg})", tile.name());
@@ -1576,7 +1577,9 @@ impl Data for Reach {
 fn every_tile_draws_inside_each_look_at_every_reading_s_reach() {
     let mut checked = 0;
     for at in panels() {
-        for (_, tile) in registry::every() {
+        // A script's looks are its module's; accept's trial run refuses one
+        // that draws past its box (script/tests.rs).
+        for (_, tile) in registry::every().filter(|(_, tile)| tile.name() != "script") {
             for arg in (0..=255).filter(|&arg| tile.accepts(arg)) {
                 for (form, look) in tile.forms(arg, &at).iter().enumerate() {
                     for reach in [Reach::Nothing, Reach::Low, Reach::Turn, Reach::High] {

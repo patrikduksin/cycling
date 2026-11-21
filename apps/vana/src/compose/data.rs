@@ -18,6 +18,11 @@ pub trait Data {
     fn target(&self, _: Effort) -> Option<[OnGauge; 2]> {
         None
     }
+    /// The metric's reading `ago` seconds before this one, in its base
+    /// unit; none where the ride has none.
+    fn sample(&self, _metric: Metric, _ago: u16) -> Option<i32> {
+        None
+    }
 }
 
 /// A point on an effort's zone gauge: the zone it falls in, from 1, and

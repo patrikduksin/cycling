@@ -6,6 +6,7 @@ pub mod node;
 pub mod parse;
 pub mod registry;
 pub mod reject;
+pub mod script;
 pub mod solve;
 #[cfg(test)]
 mod tests;

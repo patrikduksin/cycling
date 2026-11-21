@@ -45,3 +45,29 @@ pub fn untouched() -> usize {
     }
     word - low()
 }
+
+/// The lowest address a script call may reach: `guard` bytes above the
+/// stack's end, room for what a host call takes below WAMR's last check.
+pub fn floor(guard: usize) -> usize {
+    low() + guard
+}
+
+/// The bytes of main stack `run` takes below this frame. The free stack is
+/// painted and `run` runs with interrupts off, so nothing else writes it;
+/// STATUS's `stack_untouched` counts from this repaint on.
+#[inline(never)]
+pub fn depth(run: &mut dyn FnMut()) -> usize {
+    let here = 0u32;
+    let here = addr_of!(here) as usize;
+    let high = here.saturating_sub(MARGIN) & !3;
+    critical_section::with(|_| {
+        let mut word = low();
+        while word < high {
+            // SAFETY: as in `paint`: these words lie below every live frame.
+            unsafe { write_volatile(word as *mut u32, PAINT) };
+            word += 4;
+        }
+        run();
+    });
+    here - (low() + untouched())
+}

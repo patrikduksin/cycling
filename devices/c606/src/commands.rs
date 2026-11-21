@@ -11,6 +11,9 @@ use firmware_console::session::{Reboot, Terminal};
 const TEST_REBOOT: u8 = 11;
 const TEST_REBOOT_UNSYNCED: u8 = 12;
 const TEST_COMPOSE: u8 = 31;
+const TEST_SCRIPTS: u8 = 32;
+const PANEL: vana::screens::scaled::Scaled =
+    vana::screens::scaled::Scaled::of(device::fitted::PANEL_WIDTH, device::fitted::PANEL_HEIGHT);
 
 struct Text {
     bytes: [u8; 1280],
@@ -305,12 +308,20 @@ impl<C: device_api::console::Console, G: Diagnostics> Board<crate::FirmwareShell
                     "ACCEPTED"
                 }
                 TEST_COMPOSE => {
-                    const AT: vana::screens::scaled::Scaled = vana::screens::scaled::Scaled::of(
-                        device::fitted::PANEL_WIDTH,
-                        device::fitted::PANEL_HEIGHT,
-                    );
                     let now = || embassy_time::Instant::now().as_micros();
-                    vana::compose::bench::report(&AT, &now, out);
+                    vana::compose::bench::report(&PANEL, &now, out);
+                    "OK"
+                }
+                TEST_SCRIPTS => {
+                    let now = || embassy_time::Instant::now().as_micros();
+                    let data = vana::compose::data::Nothing;
+                    vana::compose::script::bench::report(
+                        &PANEL,
+                        &data,
+                        &now,
+                        &device::stack::depth,
+                        out,
+                    );
                     "OK"
                 }
                 _ => "UNSUPPORTED",

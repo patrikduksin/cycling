@@ -1,7 +1,8 @@
 //! The VANA mark and its two moments: the reveal when VANA starts and the
 //! farewell before the device turns off. Both are the wordmark inside one
-//! `ACCENT` ring; the reveal draws the ring closed around it, the farewell
-//! unwinds it while the wordmark fades to black.
+//! `ACCENT` ring; the reveal (the Brand screen's tree, `tiles::mark`) draws
+//! the ring closed around it, the farewell unwinds it while the wordmark
+//! fades to black.
 //!
 //! Progress is in thousandths. Each frame is a canvas of one ring and two
 //! runs, so a frame costs about what a static sheet does.
@@ -13,32 +14,34 @@ use firmware_shell::rendering::font::FaceRole;
 
 /// Whole progress.
 pub const DONE: u16 = 1000;
-const RING_WIDTH: usize = 6;
+/// The square the ring's centre line runs round, and the ring's width.
+pub const SQUARE_UNITS: usize = 148;
+pub const RING_UNITS: usize = 6;
+/// VANA's and LABS's baselines below the square's top, and the columns the
+/// words keep from its sides.
+const VANA_UNITS: usize = 87;
+const LABS_UNITS: usize = 110;
+const WORDS_INSET_UNITS: usize = 12;
 
-/// The mark on one panel, a little above the middle.
+/// Where the power sheet's farewell draws the mark, a little above the
+/// middle, and the row under it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Regions {
-    /// The square the ring's centre line runs round.
     pub mark: Rect,
-    /// VANA and LABS, their capitals ending on the rows' bottoms.
-    pub vana: Rect,
-    pub labs: Rect,
-    /// The row under the ring, a line's capitals ending on its bottom.
     pub below: Rect,
 }
 
 pub const fn regions(at: &Scaled) -> Regions {
     use Track::{Fr, Unit};
     let screen = at.screen();
-    let [_, mark, below, _] = screen.rows([Fr(76), Unit(148), Unit(44), Fr(52)], Unit(0), at);
-    let [_, square, _] = screen.cols([Fr(1), Unit(148), Fr(1)], Unit(0), at);
-    let mark = mark.with_columns(square);
-    let [_, words, _] = mark.cols([Unit(12), Fr(1), Unit(12)], Unit(0), at);
-    let [vana, labs, _] = mark.rows([Unit(87), Unit(23), Fr(1)], Unit(0), at);
+    let [_, mark, below, _] = screen.rows(
+        [Fr(76), Unit(SQUARE_UNITS as u16), Unit(44), Fr(52)],
+        Unit(0),
+        at,
+    );
+    let [_, square, _] = screen.cols([Fr(1), Unit(SQUARE_UNITS as u16), Fr(1)], Unit(0), at);
     Regions {
-        mark,
-        vana: vana.with_columns(words),
-        labs: labs.with_columns(words),
+        mark: mark.with_columns(square),
         below,
     }
 }
@@ -70,52 +73,53 @@ pub fn fade(color: u16, progress: u16) -> u16 {
     )
 }
 
-fn wordmark(canvas: &mut Canvas, layout: &Layout, vana: u16, labs: u16) {
-    let (at, regions) = (&layout.scaled, &layout.brand);
+/// The ring from `start` round `sweep`, both in turns, and the wordmark in
+/// `square`.
+fn mark(
+    canvas: &mut Canvas,
+    at: &Scaled,
+    square: Rect,
+    (start, sweep): (u16, u16),
+    [vana, labs]: [u16; 2],
+) {
+    canvas.shape(Shape::ring(
+        ring(at, square, RING_UNITS, start, sweep),
+        ACCENT,
+    ));
+    let width = square.width() - 2 * at.unit(WORDS_INSET_UNITS);
     let words: [(_, &[u8], _, _); 2] = [
-        (FaceRole::Title, b"VANA", regions.vana, vana),
-        (FaceRole::Caption, b"LABS", regions.labs, labs),
+        (FaceRole::Title, b"VANA", VANA_UNITS, vana),
+        (FaceRole::Caption, b"LABS", LABS_UNITS, labs),
     ];
-    for (role, text, row, color) in words {
+    for (role, text, base, color) in words {
+        let base = square.top + at.unit(base);
         let faces = [at.face(role)];
-        let (width, x) = (row.width(), row.center_x());
-        canvas.fit(&faces, text, width, x, row.bottom, Align::Center, color);
+        canvas.fit(
+            &faces,
+            text,
+            width,
+            square.center_x(),
+            base,
+            Align::Center,
+            color,
+        );
     }
 }
 
 /// The start: VANA shows at once, so the first lit frame is never empty;
 /// the ring then closes clockwise from 12 o'clock and LABS fades in.
-pub fn reveal(canvas: &mut Canvas, layout: &Layout, progress: u16) {
-    let ring = ring(
-        &layout.scaled,
-        layout.brand.mark,
-        RING_WIDTH,
-        0,
-        turns(progress),
-    );
-    canvas.shape(Shape::ring(ring, ACCENT));
+pub fn reveal(canvas: &mut Canvas, at: &Scaled, square: Rect, progress: u16) {
     let labs = fade(ACCENT, DONE - progress.min(DONE));
-    wordmark(canvas, layout, WHITE, labs);
+    mark(canvas, at, square, (0, turns(progress)), [WHITE, labs]);
 }
 
 /// The goodbye: the ring's tail chases its head round until nothing is
 /// left, and the wordmark fades with it. At `DONE` the frame is black.
 pub fn farewell(canvas: &mut Canvas, layout: &Layout, progress: u16) {
+    let at = &layout.scaled;
     let gone = turns(progress);
-    let ring = ring(
-        &layout.scaled,
-        layout.brand.mark,
-        RING_WIDTH,
-        gone,
-        TURN - gone,
-    );
-    canvas.shape(Shape::ring(ring, ACCENT));
-    wordmark(
-        canvas,
-        layout,
-        fade(WHITE, progress),
-        fade(ACCENT, progress),
-    );
+    let colors = [fade(WHITE, progress), fade(ACCENT, progress)];
+    mark(canvas, at, regions(at).mark, (gone, TURN - gone), colors);
 }
 
 #[cfg(test)]
@@ -140,27 +144,6 @@ mod tests {
                 pixels.iter().filter(|&&p| p == color).count()
             })
             .sum()
-    }
-
-    #[test]
-    fn the_reveal_closes_the_ring_round_the_wordmark() {
-        for layout in panels::ALL {
-            let mut first = Canvas::default();
-            reveal(&mut first, layout, 0);
-            assert_eq!(lit(layout, &first, ACCENT), 0, "no ring yet");
-            assert!(
-                lit(layout, &first, WHITE) > 50,
-                "VANA shows on the first frame"
-            );
-            let mut half = Canvas::default();
-            reveal(&mut half, layout, DONE / 2);
-            let mut whole = Canvas::default();
-            reveal(&mut whole, layout, DONE);
-            let (halfway, closed) = (lit(layout, &half, ACCENT), lit(layout, &whole, ACCENT));
-            assert!(halfway * 2 > closed * 9 / 10 && halfway * 2 < closed * 11 / 10);
-            let what = std::format!("reveal on {:?}", layout.scaled.panel);
-            whole.assert_laid_out(layout.scaled.screen(), &["VANA", "LABS"], &what);
-        }
     }
 
     #[test]

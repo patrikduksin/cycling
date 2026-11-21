@@ -8,9 +8,7 @@ use super::navigation::To;
 use crate::screens::settings::Row;
 use crate::screens::setup::{Choice, Step};
 use crate::screens::workout::{Page, View};
-use core::fmt::Write;
 use device_api::ant::Ant;
-use device_api::input::Role;
 
 impl Runtime {
     /// The setup page due, if setup is not done.
@@ -48,7 +46,7 @@ impl Runtime {
         if step.is_none() {
             self.preferences.settle_now(now);
         }
-        self.navigation.go(To::SetupCursor(0));
+        self.composed_focus(crate::compose::input::Focus::default());
     }
 
     /// Show `step`, or Home once setup is done.
@@ -61,37 +59,16 @@ impl Runtime {
         }));
     }
 
-    /// MOVE focuses the next card, ACT takes it and BACK leaves for Home;
-    /// setup resumes there on the next start.
-    pub(super) fn setup_input(&mut self, button: Role, now: u64, ant: &mut impl Ant) {
-        let Some(step) = self.setup_step() else {
-            self.navigation.go(To::Page(Page::Home));
-            return;
-        };
-        match button {
-            Role::Move => {
-                let cards = step.cards().len();
-                self.navigation.go(To::SetupCursor(
-                    (self.navigation.setup_cursor() + 1) % cards,
-                ));
-            }
-            Role::Act => self.setup_choice(step, now, ant),
-            Role::Back => self.navigation.go(To::Page(Page::Home)),
-        }
-    }
-
-    /// A tap on a card takes it.
-    /// A tap on setup card `card` takes it.
+    /// Setup card `card` of the step due was taken, by ACT or a tap.
     pub(super) fn setup_card(&mut self, card: usize, now: u64, ant: &mut impl Ant) {
         let Some(step) = self.setup_step() else {
             return;
         };
-        self.navigation.go(To::SetupCursor(card));
-        self.setup_choice(step, now, ant);
+        self.setup_choice(step, card, now, ant);
     }
 
-    fn setup_choice(&mut self, step: Step, now: u64, ant: &mut impl Ant) {
-        let Some(&(_, choice)) = step.cards().get(self.navigation.setup_cursor()) else {
+    fn setup_choice(&mut self, step: Step, card: usize, now: u64, ant: &mut impl Ant) {
+        let Some(&(_, choice)) = step.cards().get(card) else {
             return;
         };
         match choice {
@@ -152,16 +129,7 @@ impl Runtime {
         let Some(step) = step else {
             return;
         };
-        let profile = self.preferences.profile;
-        let note = &mut lines[0];
-        let _ = match step {
-            Step::Power => write!(note, "{} W", profile.ftp_watts),
-            Step::Heart => write!(note, "{} BPM", profile.lthr_bpm),
-            Step::Sensors => match self.preferences.sensors.peers().count() {
-                0 => Ok(()),
-                count => write!(note, "{count} SAVED"),
-            },
-            Step::Welcome | Step::Done => Ok(()),
-        };
+        let sensors = self.preferences.sensors.peers().count();
+        lines[0] = crate::screens::setup::note(step, self.preferences.profile, sensors);
     }
 }

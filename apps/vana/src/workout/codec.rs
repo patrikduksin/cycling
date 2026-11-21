@@ -203,6 +203,15 @@ pub fn decode(bytes: &[u8]) -> Result<Workout, DecodeError> {
     Ok(workout)
 }
 
+/// The name field of `bytes` as the upload wrote it, before decoding cut
+/// it to the width a name shows: what its stored file is named by. It
+/// follows the magic, the version and the test byte.
+pub fn written_name(bytes: &[u8]) -> Result<&[u8], DecodeError> {
+    let mut reader = Reader { bytes, at: 4 };
+    let len = usize::from(reader.byte()?);
+    reader.take(len)
+}
+
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -222,18 +231,21 @@ impl<'a> Reader<'a> {
         Ok(self.take(1)?[0])
     }
 
-    /// A length-prefixed name, upper case printable ASCII only.
+    /// A length-prefixed name, upper case printable ASCII only, cut to the
+    /// width a name shows.
     fn name(&mut self) -> Result<Name, DecodeError> {
         let len = usize::from(self.byte()?);
         if len > NAME_BYTES {
             return Err(DecodeError::Field);
         }
         let text = self.take(len)?;
-        let name = Name::from_bytes(text);
-        if name.as_bytes() != text {
+        if text
+            .iter()
+            .any(|&byte| !(b' '..=b'~').contains(&byte) || byte.is_ascii_lowercase())
+        {
             return Err(DecodeError::Field);
         }
-        Ok(name)
+        Ok(Name::from_bytes(text))
     }
 }
 
@@ -336,6 +348,22 @@ mod tests {
         let crc = crc32(&lower);
         let _ = lower.extend_from_slice(&crc.to_le_bytes());
         assert_eq!(decode(&lower), Err(DecodeError::Field));
+    }
+
+    #[test]
+    fn a_name_wider_than_a_screen_shows_loads_cut_to_fit() {
+        let bytes = encode(&crate::workout::library::VO2_MAX);
+        let (len, body) = (usize::from(bytes[4]), bytes.len() - 4);
+        let mut wide = heapless::Vec::<u8, ENCODED_MAX>::new();
+        let _ = wide.extend_from_slice(&bytes[..4]);
+        let _ = wide.extend_from_slice(&[20; 1]);
+        let _ = wide.extend_from_slice(&[b'W'; 20]);
+        let _ = wide.extend_from_slice(&bytes[5 + len..body]);
+        let crc = crc32(&wide);
+        let _ = wide.extend_from_slice(&crc.to_le_bytes());
+        let name = decode(&wide).expect("a workout").name;
+        assert_eq!(name, Name::new("WWWWWWWWWWWWWWWWWWWW"));
+        assert!(name.as_bytes().len() < 20);
     }
 
     #[test]

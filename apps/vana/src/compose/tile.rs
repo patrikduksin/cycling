@@ -70,6 +70,11 @@ pub trait Tile: Sync + 'static {
     fn forms(arg: Self::Arg, at: &Scaled) -> Forms;
     /// Draw the look `placed.form` inside `placed.rect`.
     fn prepare(arg: Self::Arg, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas);
+    /// Draw it with the focus on it: a tile that acts shows focus by its
+    /// own look.
+    fn focused(arg: Self::Arg, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas) {
+        Self::prepare(arg, placed, at, data, out);
+    }
     fn action(_: Self::Arg) -> Option<Action> {
         None
     }
@@ -78,7 +83,7 @@ pub trait Tile: Sync + 'static {
     fn glide(_: Self::Arg, _: &Placed, _: &Scaled, _: &dyn Data) -> Option<Landed> {
         None
     }
-    /// A map or a chart: one a screen.
+    /// A map, a chart or a code: one a screen.
     fn heavy() -> bool {
         false
     }
@@ -94,6 +99,7 @@ pub trait Component: Sync {
     fn accepts(&self, arg: u8) -> bool;
     fn forms(&self, arg: u8, at: &Scaled) -> Forms;
     fn prepare(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas);
+    fn focused(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas);
     fn action(&self, arg: u8) -> Option<Action>;
     fn glide(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data) -> Option<Landed>;
     fn heavy(&self) -> bool;
@@ -133,6 +139,13 @@ impl<T: Tile> Component for Erased<T> {
     fn prepare(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas) {
         if let Some(arg) = T::Arg::decode(arg) {
             T::prepare(arg, placed, at, data, out);
+        }
+    }
+
+    #[inline(never)]
+    fn focused(&self, arg: u8, placed: &Placed, at: &Scaled, data: &dyn Data, out: &mut Canvas) {
+        if let Some(arg) = T::Arg::decode(arg) {
+            T::focused(arg, placed, at, data, out);
         }
     }
 

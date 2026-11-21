@@ -85,9 +85,6 @@ impl Page {
     }
 }
 
-/// Home cards, in MOVE order.
-pub const HOME: [&[u8]; 5] = [b"RIDE", b"SENSORS", b"TRAIN", b"SETTINGS", b"RIDES"];
-
 /// The one page body a frame paints. Only the variant for the shown page is
 /// ever filled; asking for another paints blank, and trips a debug assertion.
 // Exactly one body lives in View and its variants share one slot on purpose;
@@ -99,20 +96,12 @@ pub(super) enum Body {
     Blank,
     /// Every page that prepares a Canvas, and the sheet over any page.
     Canvas(Canvas),
-    Home(Home),
 }
 
 impl Body {
     fn canvas(&self) -> Option<&Canvas> {
         match self {
             Self::Canvas(canvas) => Some(canvas),
-            _ => None,
-        }
-    }
-
-    fn home(&self) -> Option<&Home> {
-        match self {
-            Self::Home(home) => Some(home),
             _ => None,
         }
     }
@@ -161,6 +150,8 @@ pub(super) enum Extra<'a> {
     },
     /// Ready: the checks before a ride.
     Ready(Readiness),
+    /// What Home's cards show.
+    Home(Home),
     /// The workout picker's rows.
     Workouts(super::workouts::Picker),
     /// The saved rides in view and the week.
@@ -216,6 +207,7 @@ impl<'a> Extra<'a> {
         qr -> Option<&super::qr::Placed> = Self::Phone { qr, .. } => qr.as_ref();
         setup_step -> super::setup::Step = Self::Setup { step, .. } => *step;
         readiness -> &Readiness = Self::Ready(readiness) => readiness;
+        home -> &Home = Self::Home(home) => home;
         picker -> &super::workouts::Picker = Self::Workouts(picker) => picker;
         rides -> &super::history::Rides = Self::History(rides) => rides;
         bests -> &Bests = Self::Bests { bests, .. } => bests;
@@ -248,7 +240,6 @@ pub struct Scene<'v> {
 enum Kind<'v> {
     PageUnderBar,
     Scrolled,
-    Home,
     Ride(RidePage),
     Phone,
     Summary {
@@ -306,6 +297,7 @@ impl Extra<'_> {
             Self::Phone { qr, lines: _ } => Painted::Phone(qr.as_ref()),
             Self::Setup { step: _, lines: _ } => Painted::Setup,
             Self::Ready(_) => Painted::Ready,
+            Self::Home(_) => Painted::None,
             Self::Workouts(_) => Painted::Workouts,
             Self::History(_) => Painted::None,
             Self::Bests { bests: _, mode: _ } => Painted::Bests,
@@ -382,11 +374,6 @@ impl<'v> Scene<'v> {
         }
         match self.kind {
             Kind::PageUnderBar | Kind::Scrolled => self.canvas().paint(row),
-            Kind::Home => {
-                if let Some(home) = self.home() {
-                    home.paint(row);
-                }
-            }
             Kind::Ride(page) => ride::paint(self, page, row),
             Kind::Phone => {
                 self.canvas().paint(row);
@@ -445,12 +432,6 @@ impl<'v> Scene<'v> {
         self.shown(self.body.canvas(), "canvas", &NO_CANVAS)
     }
 
-    fn home(&self) -> Option<&'v Home> {
-        let home = self.body.home();
-        debug_assert!(home.is_some(), "{:?} has no home body", self.kind);
-        home
-    }
-
     pub(super) fn climb(&self) -> &'v ClimbFrame {
         self.shown(self.painted.climb(), "climb chart", &NO_CLIMB_FRAME)
     }
@@ -495,7 +476,6 @@ impl<'v> Scene<'v> {
         }
         let mut color = match self.kind {
             Kind::PageUnderBar | Kind::Scrolled => self.canvas().pixel(look, x, y, black),
-            Kind::Home => self.home().map_or(black, |home| home.pixel(look, x, y)),
             Kind::Ride(page) => ride::reference_pixel(self, page, x, y),
             Kind::Phone => super::phone::pixel(self, x, y)
                 .unwrap_or_else(|| self.canvas().pixel(look, x, y, black)),
@@ -564,18 +544,6 @@ impl Scene<'_> {
             );
             return;
         }
-        if let Kind::Home = self.kind
-            && let Some(home) = self.body.home()
-        {
-            let breaks = self.home_breaks(home);
-            assert!(
-                breaks.is_empty(),
-                "Home on {:?} breaks its layout:\n{}",
-                self.layout.scaled,
-                breaks.join("\n")
-            );
-            return;
-        }
         if let Kind::List { layout, scroll } = self.kind {
             let breaks = self.list_breaks(layout, scroll);
             assert!(
@@ -622,29 +590,6 @@ impl Scene<'_> {
         let page_first = regions.len() + usize::from(self.radar.is_some());
         regions.extend(ride::canvas_regions(self, page));
         self.breaks_within(regions, page_first)
-    }
-
-    fn home_breaks(&self, home: &Home) -> std::vec::Vec<std::string::String> {
-        use super::check::{self, Placed};
-        use std::vec::Vec;
-        let mut regions = std::vec![("status bar", self.layout.chrome.status_bar)];
-        let mut placed = Vec::new();
-        let mut inks = Vec::new();
-        for (name, card, items) in home.cards() {
-            regions.push((name, card));
-            for (item, rect) in items {
-                placed.push(Placed {
-                    name: item.clone(),
-                    rect,
-                    region: regions.len() - 1,
-                });
-                inks.push((item, rect));
-            }
-        }
-        let panel = self.layout.scaled.screen();
-        let mut breaks = check::region_breaks(panel, &regions, &placed, &[]);
-        breaks.extend(check::overlaps(&inks));
-        breaks
     }
 
     fn breaks_within(
@@ -983,6 +928,18 @@ impl<'a> View<'a> {
     /// Solve the built-ins for `slots` and what this view shows.
     #[cfg(test)]
     pub(crate) fn compose(&mut self, slots: ride::slots::Slots) {
+        self.compose_focused(slots, None);
+    }
+
+    /// Solve the built-ins, with the focus on stop `stop` of the screen
+    /// shown.
+    #[cfg(test)]
+    pub(crate) fn compose_focus(&mut self, stop: usize) {
+        self.compose_focused(self.main_slots, Some(stop));
+    }
+
+    #[cfg(test)]
+    fn compose_focused(&mut self, slots: ride::slots::Slots, stop: Option<usize>) {
         use crate::compose::builtin::{Choices, Laids};
         let editing =
             self.editing && self.sections.row(self.cursor).kind() == super::settings::Kind::Number;
@@ -992,7 +949,14 @@ impl<'a> View<'a> {
         };
         let built_in = crate::compose::Screens::EMPTY;
         let mut laids = Laids::new(self.layout, choices, ride::main_flags_of(self), &built_in);
-        laids.show(self.screen_id(), self.layout, &built_in);
+        let shown = self.screen_id();
+        laids.show(shown, self.layout, &built_in);
+        if let Some(laid) = laids.get_mut(shown) {
+            let node = stop.and_then(|stop| laid.solved().focus_order().nth(stop).map(|p| p.node));
+            if let Some(node) = node {
+                *laid.focus_mut() = crate::compose::input::Focus::Tile(node);
+            }
+        }
         self.laids = Some(std::boxed::Box::leak(std::boxed::Box::new(laids)));
     }
 
@@ -1013,9 +977,9 @@ impl<'a> View<'a> {
         self.cues = cue_set(cues);
     }
 
-    /// Show a prepared Home.
+    /// Show what Home's cards say.
     pub fn set_home(&mut self, home: Home) {
-        self.body = Body::Home(home);
+        self.extra = Extra::Home(home);
     }
 
     /// What a page finds in its body or extra: the value, or for a wrong
@@ -1067,6 +1031,11 @@ impl<'a> View<'a> {
             "setup step",
             super::setup::Step::Welcome,
         )
+    }
+
+    /// What Home's cards show, once the runtime set it.
+    pub(super) fn home(&self) -> Option<&Home> {
+        self.extra.home()
     }
 
     pub(super) fn readiness(&self) -> &Readiness {
@@ -1284,7 +1253,6 @@ impl<'a> View<'a> {
         let sheet = self.page == Page::Boot || self.ftp_offer.is_some();
         let kind = match self.page {
             _ if sheet => self.canvas_kind(),
-            Page::Home => Kind::Home,
             Page::Ride if !self.pause_screen => Kind::Ride(self.ride_page),
             Page::Phone => Kind::Phone,
             Page::Summary | Page::PastRide => Kind::Summary {
@@ -1332,15 +1300,6 @@ impl<'a> View<'a> {
                 _ => None,
             },
         }
-    }
-
-    /// The brand reveal: VANA, then the ring closing round it
-    /// (`brand::reveal`). Nothing technical shows here; Home says what is
-    /// still starting.
-    fn boot_canvas(&self) -> Canvas {
-        let mut canvas = Canvas::default();
-        super::brand::reveal(&mut canvas, self.layout, self.reveal);
-        canvas
     }
 
     fn canvas_kind(&self) -> Kind<'a> {
@@ -1424,6 +1383,10 @@ impl<'a> View<'a> {
             let (section, _) = self.sections.section(self.cursor);
             self.bar.set_pages(section, self.sections.count());
         }
+        if self.page == Page::Setup {
+            let step = usize::from(self.setup_step().byte()) - 1;
+            self.bar.set_pages(step, super::setup::STEPS.len());
+        }
         fill(self, |view| {
             let mut canvas = Canvas::default();
             laid.prepare(view, &mut canvas);
@@ -1458,31 +1421,6 @@ impl<'a> View<'a> {
     /// The screens not yet on the engine: each page's own drawing and cues.
     fn prepare_legacy(&mut self) -> &'static [Cue] {
         match self.page {
-            Page::Boot => {
-                fill(self, |view| view.boot_canvas());
-                &[]
-            }
-            Page::Ready => {
-                fill(self, |view| {
-                    super::ready::prepare(view.layout, view.readiness())
-                });
-                if self.readiness().can_start() {
-                    &super::ready::CUES
-                } else {
-                    &[]
-                }
-            }
-            Page::Setup => {
-                fill(self, |view| super::setup::prepare(view, view.setup_step()));
-                let steps = super::setup::STEPS.len();
-                self.bar
-                    .set_pages(usize::from(self.setup_step().byte()) - 1, steps);
-                &[]
-            }
-            Page::Phone => {
-                fill(self, super::phone::prepare);
-                &[]
-            }
             // Drawn from their trees.
             Page::Summary | Page::PastRide => &[],
             Page::Ride => {
@@ -1504,9 +1442,13 @@ impl<'a> View<'a> {
             | Page::Form
             | Page::Settings
             | Page::Workouts
-            | Page::History => &[],
-            Page::Home => &[],
-            Page::EndRide => &[],
+            | Page::History
+            | Page::Boot
+            | Page::Home
+            | Page::Phone
+            | Page::Setup
+            | Page::Ready
+            | Page::EndRide => &[],
         }
     }
 }
@@ -1602,7 +1544,7 @@ mod tests {
     #[test]
     fn a_wrong_variant_has_nothing_and_the_blanks_are_empty() {
         assert!(Body::Blank.canvas().is_none());
-        assert!(Body::Blank.home().is_none());
+        assert!(Extra::None.home().is_none());
         let none = Extra::None;
         assert!(none.climb_lent().is_none());
         assert!(none.climb_frame().is_none() && none.chart().is_none());
@@ -2018,6 +1960,7 @@ mod tests {
     fn the_phone_code_alone_keys_the_page() {
         let phone = |text: &str| {
             let mut view = View::new(Page::Phone, 0, None);
+            view.compose_main();
             let (qr, _) = view.show_phone();
             *qr = super::super::qr::Qr::encode(text)
                 .map(|code| super::super::qr::Placed::centred(code, 120, 100, 160));
@@ -2029,11 +1972,23 @@ mod tests {
 
     #[test]
     fn home_highlights_the_selected_tile() {
-        let mut view = View::new(Page::Home, 1, None);
-        view.set_home(Home::new(&crate::screens::BASE, 1, false, &[], Text::new()));
+        let mut view = View::new(Page::Home, 0, None);
+        view.compose_focus(1);
+        view.set_home(Home::new(false, &[], Text::new()));
         view.prepare();
-        assert_eq!(view.pixel(200, 215), RAISED, "Sensors is raised");
-        assert_ne!(view.pixel(200, 120), RAISED, "Ride is not");
+        let laid = view
+            .laids
+            .and_then(|laids| laids.get(crate::compose::builtin::ScreenId::Home));
+        let solved = laid.unwrap().solved();
+        let mut cards = solved.focus_order().map(|placed| placed.rect);
+        let (ride, sensors) = (cards.next().unwrap(), cards.next().unwrap());
+        let inside = |rect: crate::compose::Rect16| {
+            (usize::from(rect.right) - 20, usize::from(rect.bottom) - 8)
+        };
+        let (x, y) = inside(sensors);
+        assert_eq!(view.pixel(x, y), RAISED, "Sensors is raised");
+        let (x, y) = inside(ride);
+        assert_ne!(view.pixel(x, y), RAISED, "Ride is not");
     }
 
     /// Every row the view paints equals the per-pixel reference.
@@ -2082,16 +2037,11 @@ mod tests {
         ];
         for cursor in 0..5 {
             let mut view = View::new(Page::Home, cursor, Some(Local(1_000_000)));
+            view.compose_focus(cursor);
             view.battery = Some(Battery::level(14));
             view.gps = Gps::Fixed;
             let last = last_ride(4_999_800);
-            view.set_home(Home::new(
-                &crate::screens::BASE,
-                cursor,
-                cursor == 1,
-                &glance[..cursor.min(2)],
-                last,
-            ));
+            view.set_home(Home::new(cursor == 1, &glance[..cursor.min(2)], last));
             view.toast = (cursor == 2).then(|| Toast::new("RIDE SAVED", Tone::Good));
             view.prepare();
             assert_paints_reference(&view, "home");
@@ -2234,6 +2184,7 @@ mod tests {
         for light in [false, true] {
             let mut view = View::new(Page::Boot, 0, None);
             view.light = light;
+            view.compose_main();
             view.prepare();
             assert_paints_reference(&view, "boot");
         }
@@ -2267,6 +2218,7 @@ mod tests {
             view
         };
         let mut ready = ride(Page::Ready);
+        ready.compose_main();
         let mut readiness = Readiness::default();
         for (index, level) in [Level::Good, Level::Wait, Level::Off, Level::Problem]
             .into_iter()
@@ -2276,10 +2228,7 @@ mod tests {
         }
         ready.show_ready(readiness.clone());
         ready.prepare();
-        assert!(
-            ready.cues.is_empty(),
-            "no start cue while storage is a problem"
-        );
+        assert_eq!(ready.cues.len(), 1, "the start cue on a blocked Ready");
         assert_paints_reference(&ready, "ready, blocked");
         readiness.checks[3] = Check::new(Level::Good, "ROOM FOR 99 H", "");
         ready.show_ready(readiness);
@@ -2336,6 +2285,7 @@ mod tests {
     #[test]
     fn a_boot_view_paints_the_brand() {
         let mut view = View::new(Page::Boot, 0, None);
+        view.compose_main();
         let scene = view.prepare();
         assert!(scene.canvas().shows("VANA") && scene.canvas().shows("LABS"));
         let lit = (0..320)
@@ -2355,6 +2305,7 @@ mod tests {
             bottom: 320,
         };
         let mut view = View::new(Page::Boot, 0, None);
+        view.compose_main();
         view.prepare();
         let screen = Rect { top: 0, ..content };
         view.canvas()

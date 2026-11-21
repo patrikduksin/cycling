@@ -6,7 +6,7 @@ use super::settings::{NOTES, STATUS, VALUES};
 use super::workout::Page;
 use super::workout::{Graphics, View};
 use crate::compose::data::{
-    Count, Data, Edited, Effort, Entry, Glance, ListKind, Listed, Metric, OnGauge, Shares,
+    Count, Data, Edited, Effort, Entry, Glance, ListKind, Listed, Metric, OnGauge, PageData, Shares,
 };
 use crate::ride::zones::TrainingProfile;
 
@@ -169,6 +169,25 @@ impl Data for View<'_> {
 
     fn recording(&self) -> bool {
         self.state == crate::ride::log::Status::Recording
+    }
+
+    fn page(&self) -> PageData<'_> {
+        use super::workout::Page;
+        match self.page {
+            Page::Boot => PageData::Brand(self.reveal),
+            Page::Home => self.home().map_or(PageData::None, PageData::Home),
+            Page::Ready => PageData::Ready(self.readiness()),
+            Page::Setup => PageData::Setup {
+                step: self.setup_step(),
+                notes: self.lines(),
+            },
+            Page::Phone => PageData::Phone {
+                lines: self.lines(),
+                qr: self.qr(),
+                light: self.light,
+            },
+            _ => PageData::None,
+        }
     }
 
     fn count(&self, count: Count) -> Option<i32> {

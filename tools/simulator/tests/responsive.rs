@@ -524,16 +524,26 @@ fn home_lays_out_and_takes_taps_on_both_test_panels() {
             &["RIDE", "SENSORS", "LIVE", "TRAIN", "SETTINGS", "RIDES"],
         );
         twin.sim.checkpoint(&format!("home on {name}"));
-        let home = model.layout.home;
-        for (card, page) in [
-            (home.ride, Page::Ready),
-            (home.sensors, Page::Sensors),
-            (home.workouts, Page::Workouts),
-            (home.settings, Page::Settings),
-            (home.rides, Page::History),
-        ] {
-            let (x, y) = (card.center_x(), card.top + card.height() / 2);
-            twin.sim.tap(x as u16, y as u16);
+        let laid = Laid::new(
+            ScreenId::Home,
+            model.layout,
+            Default::default(),
+            Flags::NONE,
+            None,
+        )
+        .expect("Home has a tree");
+        let solved = laid.solved();
+        let cards = solved.focus_order().map(|placed| placed.rect);
+        let pages = [
+            Page::Ready,
+            Page::Sensors,
+            Page::Workouts,
+            Page::Settings,
+            Page::History,
+        ];
+        for (card, page) in cards.zip(pages) {
+            let (x, y) = (card.left + card.width() / 2, card.top + card.height() / 2);
+            twin.sim.tap(x, y);
             twin.sim.advance(seconds(1));
             assert_eq!(twin.sim.device.sdk.page(), page, "{name}: a tap at {x},{y}");
             twin.sim.press(Role::Back);

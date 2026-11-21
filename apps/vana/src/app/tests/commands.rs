@@ -180,7 +180,7 @@ fn ride_status_reports_the_page_and_home_selection() {
     runtime
         .navigation
         .go(To::Page(crate::screens::workout::Page::Home));
-    runtime.navigation.go(To::HomeCursor(2));
+    runtime.focus_stop(2);
     let mut out = std::string::String::new();
     assert_eq!(
         runtime.command("RIDE STATUS", &mut journal, &mut MustNotWrite, 0, &mut out),

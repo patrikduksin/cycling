@@ -2,18 +2,14 @@
 //!
 //! Step 1 joins the device's Wi-Fi (the camera offers to join), step 2
 //! opens the page that lists rides and downloads FIT files. The screen moves
-//! to step 2 by itself once a phone joins. MOVE (BottomLeft), ACT
-//! (BottomRight) or a tap on the code switch steps; BACK (TopLeft) ends the
-//! session and returns Home. The runtime prepares the lines and the code;
-//! this lays them out.
-use super::Layout;
-use super::canvas::{Canvas, Shape};
-use super::chrome::{AMBER, Align, BLACK, Rect, WHITE};
+//! to step 2 by itself once a phone joins. MOVE, ACT or a tap on the code
+//! switch steps; BACK ends the session and returns Home. The runtime
+//! prepares the lines and the code; the Phone screen's tree
+//! (`compose::builtin::phone`) lays them out.
+use super::chrome::{BLACK, Rect, WHITE};
 use super::look::light;
 use super::qr::{Placed, Qr};
-use super::scaled::{Scaled, Track};
-use super::workout::{Scene, View};
-use firmware_shell::rendering::font::FaceRole;
+use super::workout::Scene;
 
 /// Lines the runtime prepares for this page.
 /// What to do now: JOIN VANA WI-FI, OPEN VANA, or why it cannot.
@@ -29,30 +25,16 @@ pub const NOTE: usize = 4;
 /// The title is a problem (amber), not an instruction.
 pub const PROBLEM: usize = 5;
 
-/// Connect phone on one panel, under the status bar: the step and the title,
-/// their capitals ending on their rows' bottoms, then the code. The lines
-/// under the code follow its light panel, whose size the code sets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Regions {
-    pub step: Rect,
-    pub title: Rect,
-    /// The most the code's light panel takes, and where a tap switches steps.
-    pub code: Rect,
-}
-
-pub const fn regions(at: &Scaled) -> Regions {
-    use Track::{Fr, Unit};
-    let content = super::chrome::regions(at).content;
-    let [_, text, _] = content.cols([Unit(12), Fr(1), Unit(12)], Unit(0), at);
-    let [_, square, _] = content.cols([Fr(1), Unit(168), Fr(1)], Unit(0), at);
-    let [step, title, _, code, _] =
-        content.rows([Unit(16), Unit(24), Unit(8), Unit(168), Fr(1)], Unit(0), at);
-    Regions {
-        step: step.with_columns(text),
-        title: title.with_columns(text),
-        code: code.with_columns(square),
-    }
-}
+/// Readable characters for the access point's password, upper case as
+/// the screen shows them: no 0/O or 1/I. It shows in groups of four.
+pub const PASSWORD_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+pub const PASSWORD_GROUPS: usize = 3;
+pub const GROUP: usize = 4;
+/// The access point's name: this, then a group of hex digits.
+pub const SSID_PREFIX: &str = "VANA-";
+pub const SSID_ALPHABET: &[u8] = b"0123456789ABCDEF";
+/// The code's room, square: the most its light panel takes.
+pub const CODE_UNITS: usize = 168;
 
 /// The code's light panel's corners, in units.
 pub const RADIUS: usize = 10;
@@ -61,84 +43,17 @@ const PAPER: u16 = WHITE;
 const INK: u16 = BLACK;
 
 /// The palette colour a look shows as `PAPER`.
-fn paper(light_look: bool) -> u16 {
+pub(crate) fn paper(light_look: bool) -> u16 {
     if light_look { light(PAPER) } else { PAPER }
 }
 
-/// Where the code sits for `qr` on `layout`'s panel: centred in the code's
-/// region, its modules as large as the region's width allows.
-pub fn place(layout: &Layout, qr: Qr) -> Placed {
-    let code = layout.phone.code;
-    Placed::centred(qr, code.center_x(), code.top, code.width())
-}
-
-/// A tap at panel point (`x`, `y`) on the code switches steps.
-pub fn on_code(layout: &Layout, x: usize, y: usize) -> bool {
-    layout.phone.code.contains(x, y)
-}
-
-pub(super) fn prepare(view: &View) -> Canvas {
-    let layout = view.layout;
-    let (at, regions) = (&layout.scaled, &layout.phone);
-    let [title, body, caption] =
-        [FaceRole::Title, FaceRole::Body, FaceRole::Caption].map(|role| at.face(role));
-    let lines = &view.lines();
-    let mut canvas = Canvas::default();
-    let (width, centre) = (regions.title.width(), regions.title.center_x());
-    let step = regions.step;
-    canvas.caption(
-        at,
-        lines[STEP].as_bytes(),
-        width,
-        centre,
-        step.bottom,
-        Align::Center,
-    );
-    let problem = !lines[PROBLEM].as_bytes().is_empty();
-    canvas.fit(
-        &[title, body],
-        lines[TITLE_LINE].as_bytes(),
-        width,
-        centre,
-        regions.title.bottom,
-        Align::Center,
-        if problem { AMBER } else { WHITE },
-    );
-    let below = match view.qr() {
-        Some(code) => {
-            canvas.shape(Shape::Bar {
-                rect: code.panel(),
-                radius: at.unit(RADIUS),
-                color: paper(view.light),
-            });
-            code.panel().bottom
-        }
-        None => regions.title.bottom + at.unit(20),
-    };
-    let mut line = |text: &[u8], offset| {
-        let base = below + at.unit(offset);
-        canvas.fit(
-            &[body, caption],
-            text,
-            width,
-            centre,
-            base,
-            Align::Center,
-            WHITE,
-        );
-    };
-    line(lines[NAME].as_bytes(), 22);
-    line(lines[SECRET].as_bytes(), 44);
-    let base = below + at.unit(64);
-    canvas.caption(
-        at,
-        lines[NOTE].as_bytes(),
-        width,
-        centre,
-        base,
-        Align::Center,
-    );
-    canvas
+/// Where the code sits for `qr` in `room`, the box the Phone screen's tree
+/// gives it: centred both ways, its modules as large as the room allows.
+pub fn place(room: Rect, qr: Qr) -> Placed {
+    let side = room.width().min(room.height());
+    let mut placed = Placed::centred(qr, room.center_x(), room.top, side);
+    placed.top += (room.height() - placed.panel().height()) / 2;
+    placed
 }
 
 /// The code's modules over the panel the canvas painted, shown as `INK` in
@@ -164,14 +79,25 @@ pub(super) fn pixel(scene: &Scene, x: usize, y: usize) -> Option<super::chrome::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::workout::Page;
-    use crate::screens::{BASE, panels};
+    use crate::compose::builtin::ScreenId;
+    use crate::compose::registry::CODE;
+    use crate::screens::chrome::AMBER;
+    use crate::screens::workout::{Page, View};
+    use crate::screens::{BASE, Layout, panels};
+
+    /// The box the Phone screen's tree gives the code.
+    fn room(view: &View) -> Rect {
+        let laid = view.laids.and_then(|laids| laids.get(ScreenId::Phone));
+        laid.and_then(|laid| laid.box_of(CODE)).unwrap()
+    }
 
     const JOIN: &str = "WIFI:T:WPA;S:VANA-3F2A;P:ABCDEFGHJKMN;;";
 
     fn view(layout: &'static Layout, qr: Option<&str>, problem: bool) -> View<'static> {
         let mut view = View::new(Page::Phone, 0, None);
         view.layout = layout;
+        view.compose_main();
+        let room = room(&view);
         let (code, lines) = view.show_phone();
         let _ = lines[STEP].push_str("STEP 1 OF 2");
         let _ = lines[TITLE_LINE].push_str(if problem {
@@ -185,7 +111,7 @@ mod tests {
         if problem {
             let _ = lines[PROBLEM].push_str("1");
         }
-        *code = qr.and_then(Qr::encode).map(|qr| place(layout, qr));
+        *code = qr.and_then(Qr::encode).map(|qr| place(room, qr));
         view.prepare();
         view
     }
@@ -198,11 +124,11 @@ mod tests {
         for layout in panels::ALL {
             for text in [JOIN, largest] {
                 let mut view = view(layout, Some(text), false);
+                let region = room(&view);
                 let scene = view.prepare();
                 scene.check_layout();
                 let code = scene.qr().unwrap();
                 let panel = code.panel();
-                let region = layout.phone.code;
                 let what = std::format!("{text} on {:?}", layout.scaled.panel);
                 assert!(crate::screens::check::inside(panel, region), "{what}");
                 let radius = layout.scaled.unit(RADIUS);
@@ -220,8 +146,6 @@ mod tests {
                     "ENDS AFTER 10 MIN IDLE",
                 ];
                 scene.canvas().assert_laid_out(page, &want, &what);
-                assert!(on_code(layout, region.center_x(), region.top + 4));
-                assert!(!on_code(layout, region.center_x(), region.bottom + 1));
             }
         }
     }
@@ -232,6 +156,7 @@ mod tests {
         for layout in panels::ALL {
             let mut view = View::new(Page::Phone, 0, None);
             view.layout = layout;
+            view.compose_main();
             let (_, lines) = view.show_phone();
             let _ = lines[STEP].push_str("PHONE DISCONNECTED");
             let _ = lines[TITLE_LINE].push_str("ENDED AFTER 10 MIN IDLE");
@@ -241,6 +166,7 @@ mod tests {
             view.prepare().check_layout();
             let want = [
                 "PHONE DISCONNECTED",
+                "ENDED AFTER 10 MIN IDLE",
                 "WAITING FOR WI-FI",
                 "TAP TO TRY AGAIN",
             ];

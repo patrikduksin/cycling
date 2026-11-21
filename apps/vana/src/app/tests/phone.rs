@@ -424,6 +424,7 @@ fn phone_lines(runtime: &mut Runtime) -> (Vec<String>, Option<usize>) {
     let mut view =
         crate::screens::workout::View::new(crate::screens::workout::Page::Phone, 0, None);
     runtime.phone_joined();
+    runtime.compose(false, 0);
     runtime.phone_view(&mut view);
     let lines = view
         .lines()
@@ -501,10 +502,13 @@ fn connect_phone_opens_from_settings_and_moves_to_the_page_code_once_a_phone_joi
 }
 
 #[test]
-fn connect_phone_says_why_a_session_ended_and_a_tap_tries_again() {
+fn connect_phone_says_why_a_session_ended_and_a_tap_on_the_prompt_tries_again() {
+    use crate::compose::builtin::ScreenId;
+    use crate::compose::registry::SAYS;
+    use crate::compose::tiles::says::Says;
     use crate::screens::phone::{NOTE, PROBLEM, TITLE_LINE};
     let mut journal = Journal::erased();
-    let (mut runtime, _, now) = saved_ride(&mut journal);
+    let (mut runtime, mut radio, now) = saved_ride(&mut journal);
     attach(&mut runtime);
     runtime.enter_phone();
     let mut phone = Phone {
@@ -521,7 +525,22 @@ fn connect_phone_says_why_a_session_ended_and_a_tap_tries_again() {
     assert_eq!(lines[TITLE_LINE], "ENDED AFTER 10 MIN IDLE");
     assert_eq!(lines[NOTE], "TAP TO TRY AGAIN");
     assert!(!lines[PROBLEM].is_empty() && code.is_none());
-    phone.runtime.phone_touch();
+    let laid = phone
+        .runtime
+        .composition
+        .laids()
+        .get(ScreenId::Phone)
+        .unwrap();
+    let (_, _, prompt) = laid
+        .tiles()
+        .find(|&(kind, arg, _)| kind == SAYS && arg == Says::PhoneNote as u8)
+        .expect("the prompt's tile");
+    let prompt = prompt.rect.rect();
+    let middle = (
+        prompt.center_x() as u16,
+        ((prompt.top + prompt.bottom) / 2) as u16,
+    );
+    super::touch::touch(phone.runtime, &mut radio, &[middle], phone.now + 100);
     phone.step();
     assert!(phone.runtime.phone_status().is_some(), "a new session");
 }
@@ -1302,4 +1321,46 @@ fn holding_move_on_a_map_just_opened_stops_following() {
         assert_eq!(runtime.navigation.ride_page(), RidePage::Map);
         assert!(!runtime.following(), "still following, map drawn: {drawn}");
     }
+}
+
+#[test]
+fn a_tap_on_the_scan_instruction_keeps_the_join_code() {
+    use crate::compose::builtin::ScreenId;
+    use crate::compose::registry::SAYS;
+    use crate::compose::tiles::says::Says;
+    use crate::screens::phone::{NOTE, STEP};
+    let mut journal = Journal::erased();
+    let (mut runtime, mut radio, now) = saved_ride(&mut journal);
+    attach(&mut runtime);
+    runtime.enter_phone();
+    let mut phone = Phone {
+        runtime: &mut runtime,
+        journal: &mut journal,
+        transport: Transport::default(),
+        radio: Radio2::default(),
+        now,
+    };
+    phone.step();
+    phone.step();
+    let (lines, code) = phone_lines(phone.runtime);
+    assert_eq!(lines[NOTE], "SCAN WITH THE CAMERA");
+    assert!(code.is_some());
+    let laid = phone
+        .runtime
+        .composition
+        .laids()
+        .get(ScreenId::Phone)
+        .unwrap();
+    let (_, _, note) = laid
+        .tiles()
+        .find(|&(kind, arg, _)| kind == SAYS && arg == Says::PhoneNote as u8)
+        .expect("the note's tile");
+    let note = note.rect.rect();
+    let middle = (
+        note.center_x() as u16,
+        ((note.top + note.bottom) / 2) as u16,
+    );
+    super::touch::touch(phone.runtime, &mut radio, &[middle], phone.now + 100);
+    let (lines, _) = phone_lines(phone.runtime);
+    assert_eq!(lines[STEP], "STEP 1 OF 2", "the join code stays");
 }

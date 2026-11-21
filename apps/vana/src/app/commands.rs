@@ -402,7 +402,7 @@ impl Runtime {
             } else {
                 self.navigation.page().name()
             },
-            self.navigation.home_cursor(),
+            self.focus_index(),
             pending
         )
         .is_err()

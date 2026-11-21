@@ -60,6 +60,8 @@ pub enum Shape {
         ends: [(i32, i32); 2],
         color: u16,
     },
+    /// A play triangle filling `rect`, its flat side on the left.
+    Play { rect: Rect, color: u16 },
     /// An icon in one colour with its square's top-left corner at
     /// (`left`, `top`): a mark of its own, like a bar.
     Icon {
@@ -74,7 +76,10 @@ impl Shape {
     /// The box the shape can cover.
     pub fn bounds(&self) -> Rect {
         match *self {
-            Self::Panel { rect, .. } | Self::Bar { rect, .. } | Self::Split { rect, .. } => rect,
+            Self::Panel { rect, .. }
+            | Self::Bar { rect, .. }
+            | Self::Split { rect, .. }
+            | Self::Play { rect, .. } => rect,
             Self::Disc { cx, cy, radius, .. } => Rect {
                 left: ((cx - radius - 2) / 4).max(0) as usize,
                 top: ((cy - radius - 2) / 4).max(0) as usize,
@@ -125,6 +130,11 @@ impl Shape {
                 color,
             } => paint_disc_over(row, (cx, cy, radius), color),
             Self::Ring { ring, ends, color } => ring.paint(row, &ends, color),
+            Self::Play { rect, color } => {
+                if let Some(width) = play_width(rect, row.y()) {
+                    row.span(rect.left..rect.left + width, color);
+                }
+            }
             Self::Icon {
                 icon,
                 left,
@@ -163,6 +173,11 @@ impl Shape {
                 color,
             } => (disc(x, y, cx, cy, radius), color),
             Self::Ring { ring, ends, color } => (ring.coverage(x, y, &ends), color),
+            Self::Play { rect, color } => {
+                let inside = x >= rect.left
+                    && play_width(rect, y).is_some_and(|width| x - rect.left < width);
+                (if inside { 15 } else { 0 }, color)
+            }
             Self::Icon {
                 icon,
                 left,
@@ -172,6 +187,14 @@ impl Shape {
         };
         (coverage > 0).then(|| blend(look.ink(color), under, coverage))
     }
+}
+
+/// The columns a play triangle covers on row `y`: none outside it, at
+/// least one inside.
+fn play_width(rect: Rect, y: usize) -> Option<usize> {
+    let (rows, wide) = (rect.height() as i32, rect.width() as i32);
+    let gy = y.checked_sub(rect.top)? as i32;
+    (gy < rows).then(|| ((wide * (rows - (2 * gy - (rows - 1)).abs()) / rows) as usize).max(1))
 }
 
 fn paint_bar(row: &mut Row, rect: Rect, radius: usize, color: u16) {
@@ -464,6 +487,7 @@ mod tests {
                             rounded(rect, fitted(rect, radius), x, y)
                         }
                         Shape::Panel { .. }
+                        | Shape::Play { .. }
                         | Shape::Split { .. }
                         | Shape::Ring { .. }
                         | Shape::Icon { .. } => 0,

@@ -4,10 +4,12 @@ use super::cues::Cue;
 use super::input::HOLD_GAP_MS;
 use super::navigation::{Navigation, Pause, Restore, To};
 use crate::compose::input::Action;
+use crate::compose::input::Focus;
 use crate::screens::chrome::Tone;
 use crate::screens::ride::RidePage;
 use crate::screens::workout::{Page, Text};
 use core::fmt::Write;
+use device_api::ant::Ant;
 
 const HOLD_MS: u64 = 1_500;
 
@@ -19,26 +21,29 @@ impl Runtime {
         held: bool,
         received: u64,
         now: u64,
+        ant: &mut impl Ant,
     ) -> MoveReport {
+        let focus = self.shown_focus();
         let event = Event::Move {
             held,
             received,
-            view: View::of(&self.navigation),
+            view: View::of(&self.navigation, focus),
             page: self.seen_page(),
             move_hold: self.move_hold(),
         };
-        self.mark_apply(step(self.marks.hold, event), now)
+        self.mark_apply(step(self.marks.hold, event), now, ant)
     }
 
     /// The hold's first report was handled as a press: what it left shown is
     /// what the mark undoes.
-    pub(super) fn mark_after_press(&mut self, now: u64) {
-        let event = Event::Pressed(View::of(&self.navigation));
-        self.mark_apply(step(self.marks.hold, event), now);
+    pub(super) fn mark_after_press(&mut self, now: u64, ant: &mut impl Ant) {
+        let focus = self.shown_focus();
+        let event = Event::Pressed(View::of(&self.navigation, focus));
+        self.mark_apply(step(self.marks.hold, event), now, ant);
     }
 
-    pub(super) fn mark_input_lost(&mut self, now: u64) {
-        self.mark_apply(step(self.marks.hold, Event::Cancel), now);
+    pub(super) fn mark_input_lost(&mut self, now: u64, ant: &mut impl Ant) {
+        self.mark_apply(step(self.marks.hold, Event::Cancel), now, ant);
     }
 }
 
@@ -125,7 +130,8 @@ struct View {
     ride: (RidePage, Follow),
     pause: Pause,
     summary_page: usize,
-    home_cursor: usize,
+    /// The focus on the screen shown, such as Home's card.
+    focus: Focus,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,7 +215,7 @@ fn step(hold: Hold, event: Event) -> Step {
 
 impl Runtime {
     /// The only writer of `Marks`.
-    fn mark_apply(&mut self, step: Step, now: u64) -> MoveReport {
+    fn mark_apply(&mut self, step: Step, now: u64, ant: &mut impl Ant) -> MoveReport {
         self.marks.hold = step.hold;
         let (move_hold, pressed_ms, page, restore) = match step.effect {
             Effect::None => return MoveReport::Held,
@@ -225,11 +231,11 @@ impl Runtime {
             ride: restore.ride,
             pause: restore.pause,
             summary_page: restore.summary_page,
-            home_cursor: restore.home_cursor,
         }));
+        self.composed_focus(restore.focus);
         match move_hold {
             MoveHold::Mark => self.mark(pressed_ms, page, now),
-            MoveHold::Screen(action) => self.carry(action, true, pressed_ms, now),
+            MoveHold::Screen(action) => self.carry(action, true, (pressed_ms, now), ant),
         }
         self.display.redraw();
         MoveReport::Held
@@ -256,7 +262,7 @@ impl Runtime {
 }
 
 impl View {
-    fn of(navigation: &Navigation) -> Self {
+    fn of(navigation: &Navigation, focus: Focus) -> Self {
         Self {
             page: navigation.page(),
             ride: (navigation.ride_page(), navigation.climb()),
@@ -265,7 +271,7 @@ impl View {
                 wrapped: navigation.pause_wrapped(),
             },
             summary_page: navigation.summary_page(),
-            home_cursor: navigation.home_cursor(),
+            focus,
         }
     }
 
@@ -290,7 +296,7 @@ fn undone(press: Press, now: View) -> View {
         ride: press_undone(before.ride, after.ride, now.ride),
         pause: put_back(now.pause, before.pause, after.pause),
         summary_page: put_back(now.summary_page, before.summary_page, after.summary_page),
-        home_cursor: put_back(now.home_cursor, before.home_cursor, after.home_cursor),
+        focus: put_back(now.focus, before.focus, after.focus),
     }
 }
 
@@ -310,7 +316,7 @@ mod tests {
             wrapped: false,
         },
         summary_page: 0,
-        home_cursor: 0,
+        focus: Focus::Screen,
     };
     const NEXT: View = View {
         ride: (RidePage::Stats, Follow::Idle),
@@ -495,9 +501,9 @@ mod tests {
             },
             ..view
         };
-        let home = |home_cursor| View {
+        let home = |card| View {
             page: Page::Home,
-            home_cursor,
+            focus: Focus::Tile(card),
             ..RIDE
         };
         let cases = [

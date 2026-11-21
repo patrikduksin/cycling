@@ -34,7 +34,6 @@ pub(super) struct Restore {
     pub(super) ride: (RidePage, Follow),
     pub(super) pause: Pause,
     pub(super) summary_page: usize,
-    pub(super) home_cursor: usize,
 }
 
 pub(super) enum To {
@@ -74,8 +73,6 @@ pub(super) enum To {
     WorkoutDone,
     RideStarted,
     Restore(Restore),
-    HomeCursor(usize),
-    SetupCursor(usize),
     SummaryPage(usize),
 }
 
@@ -83,14 +80,10 @@ pub(super) struct Navigation {
     page: Page,
     /// The ride page shown while `page` is the ride screen.
     ride_page: RidePage,
-    /// The highlighted Home choice, an index into `workout::HOME`.
-    home_cursor: usize,
     settings_field: usize,
     sections: settings::Sections,
     /// Set only on Settings.
     edit: Option<Edit>,
-    /// The focused card on a first-run setup page.
-    setup_cursor: usize,
     /// The Settings editor was opened from setup and returns there.
     setup_return: bool,
     /// The sensor menu was opened from setup and returns there.
@@ -139,11 +132,9 @@ pub(super) struct Navigation {
 state!(Navigation {
     page,
     ride_page,
-    home_cursor,
     settings_field,
     sections,
     edit,
-    setup_cursor,
     setup_return,
     sensors_return,
     phone_step,
@@ -172,11 +163,9 @@ impl Default for Navigation {
         Self {
             page: Page::Boot,
             ride_page: RidePage::Main,
-            home_cursor: 0,
             settings_field: 0,
             sections: settings::Sections::All,
             edit: None,
-            setup_cursor: 0,
             setup_return: false,
             sensors_return: false,
             phone_step: 0,
@@ -313,10 +302,7 @@ impl Navigation {
                     wrapped: self.pause_wrapped,
                 } = restore.pause;
                 self.summary_page = restore.summary_page;
-                self.home_cursor = restore.home_cursor;
             }
-            To::HomeCursor(cursor) => self.home_cursor = cursor,
-            To::SetupCursor(cursor) => self.setup_cursor = cursor,
             To::SummaryPage(page) => self.summary_page = page,
         }
         if self.page != Page::Settings {
@@ -350,10 +336,6 @@ impl Navigation {
         self.ride_page
     }
 
-    pub(super) fn home_cursor(&self) -> usize {
-        self.home_cursor
-    }
-
     pub(super) fn settings_field(&self) -> usize {
         self.settings_field
     }
@@ -361,8 +343,7 @@ impl Navigation {
     pub(super) fn view<'a>(&self, local: Option<crate::clock::Local>) -> View<'a> {
         let cursor = match self.page {
             Page::Settings => self.settings_field,
-            Page::Setup => self.setup_cursor,
-            _ => self.home_cursor,
+            _ => 0,
         };
         let mut view = View::new(self.page, cursor, local);
         view.sections = self.sections;
@@ -388,10 +369,6 @@ impl Navigation {
 
     pub(super) fn editing(&self) -> bool {
         self.edit.is_some()
-    }
-
-    pub(super) fn setup_cursor(&self) -> usize {
-        self.setup_cursor
     }
 
     pub(super) fn setup_return(&self) -> bool {

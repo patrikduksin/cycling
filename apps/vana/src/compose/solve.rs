@@ -157,7 +157,7 @@ impl Solved<'_> {
     /// Draw each tile onto `out`, a scroll's template once a card.
     pub fn prepare(&self, data: &dyn Data, out: &mut Canvas) {
         if let Some(tree) = self.tree {
-            prepare(tree, &self.leaves, self.scroll.as_ref(), data, out);
+            prepare(tree, &self.leaves, self.scroll.as_ref(), None, data, out);
         }
     }
 
@@ -240,10 +240,12 @@ pub(crate) fn solve<'a>(
 
 /// Draw `leaves`, solved from `tree`, onto `out`: each tile once, but the
 /// template of `scroll` once on each card in view.
+/// Draw `leaves`; the tile at node `focused` shows its focus.
 pub fn prepare(
     tree: &Tree,
     leaves: &[Placed],
     scroll: Option<&Scroll>,
+    focused: Option<u8>,
     data: &dyn Data,
     out: &mut Canvas,
 ) {
@@ -253,7 +255,11 @@ pub fn prepare(
             continue;
         }
         if let Some((tile, arg)) = component(tree.nodes()[usize::from(placed.node)]) {
-            tile.prepare(arg, placed, tree.at(), data, out);
+            if Some(placed.node) == focused {
+                tile.focused(arg, placed, tree.at(), data, out);
+            } else {
+                tile.prepare(arg, placed, tree.at(), data, out);
+            }
         }
     }
     if let Some(scroll) = scroll {

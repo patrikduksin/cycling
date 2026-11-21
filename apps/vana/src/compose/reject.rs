@@ -179,7 +179,7 @@ impl fmt::Display for Why {
                 )
             }
             Self::Hero { node } => write!(f, "node {node} cannot be the hero"),
-            Self::Heavy { node } => write!(f, "node {node} is a second map or chart"),
+            Self::Heavy { node } => write!(f, "node {node} is a second map, chart or code"),
             Self::Scroll { node } => write!(f, "node {node} is a second scroll"),
             Self::Across { node } => write!(f, "node {node} scrolls across; lists scroll down"),
             Self::Template { node } => write!(f, "node {node}'s item holds too many tiles"),

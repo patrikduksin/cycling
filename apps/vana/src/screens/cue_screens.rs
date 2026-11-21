@@ -75,6 +75,7 @@ fn ready(layout: &'static Layout) -> Vec<(String, View<'static>)> {
             };
             let _ = readiness.riding.push_str("RECOVERY SPIN 30");
             let mut view = ridden(layout, Page::Ready);
+            view.compose_main();
             view.show_ready(readiness);
             (std::format!("ready, {hint}"), view)
         })

@@ -50,11 +50,6 @@ pub struct Layout {
     pub sign: sign::Regions,
     pub ride: ride::Frame,
     pub sensors: sensors::Regions,
-    pub home: home::Regions,
-    pub brand: brand::Regions,
-    pub ready: ready::Regions,
-    pub setup: setup::Regions,
-    pub phone: phone::Regions,
 }
 
 impl Layout {
@@ -67,11 +62,6 @@ impl Layout {
             sign: sign::regions(&scaled),
             ride: ride::frame(&scaled),
             sensors: sensors::regions(&scaled),
-            home: home::regions(&scaled),
-            brand: brand::regions(&scaled),
-            ready: ready::regions(&scaled, &corners),
-            setup: setup::regions(&scaled),
-            phone: phone::regions(&scaled),
         }
     }
 }

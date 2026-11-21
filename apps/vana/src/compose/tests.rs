@@ -1,5 +1,5 @@
 use super::bench::{MAIN, MAIN_BYTES};
-use super::data::{Data, Effort, ListKind, Metric, Nothing, OnGauge};
+use super::data::{Data, Effort, ListKind, Metric, Nothing, OnGauge, PageData};
 use super::input::{Action, Button, Buttons, Controls, OnPage};
 use super::list;
 use super::node::{Flags, MAX_NODES, Node, Size, Sizing, What, When};
@@ -1159,59 +1159,13 @@ fn every_tile_offers_looks_that_shrink_and_fit_the_canvas() {
     assert_eq!(Canvas::default().shapes.capacity(), usize::from(MAX_SHAPES));
     assert_eq!(Canvas::default().runs.capacity(), usize::from(MAX_RUNS));
     let names: Vec<&str> = registry::every().map(|(_, tile)| tile.name()).collect();
+    let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
     assert_eq!(
-        names,
-        [
-            "space",
-            "value",
-            "caption",
-            "unit",
-            "gauge",
-            "zone",
-            "icon",
-            "status",
-            "tap",
-            "reading",
-            "total",
-            "effort",
-            "chip",
-            "ride cell",
-            "zones",
-            "laps",
-            "lap head",
-            "pause",
-            "ride line",
-            "road",
-            "climb effort",
-            "steepness",
-            "climb profile",
-            "workout line",
-            "target band",
-            "step left",
-            "workout chart",
-            "map",
-            "scale",
-            "words",
-            "cell",
-            "zone time",
-            "best effort",
-            "profile",
-            "line",
-            "ftp",
-            "best",
-            "form band",
-            "form trend",
-            "power ring",
-            "heading",
-            "entry",
-            "glance",
-            "saving",
-            "edited",
-            "pad",
-            "section",
-            "script",
-        ]
+        unique.len(),
+        names.len(),
+        "a catalogue names each tile once: {names:?}"
     );
+    assert_eq!(names[..3], ["space", "value", "caption"]);
     assert_eq!(registry::tile(registry::MAP).name(), "map");
     assert_eq!(registry::tile(registry::SCALE).name(), "scale");
     for at in panels() {
@@ -1768,9 +1722,89 @@ const EVERYWHERE: [i32; 20] = [
     i32::MAX,
 ];
 
+/// What `exact` draws in `rect` against the same tile drawn roomy: every
+/// letter of the roomy drawing (a line may wrap), ink only inside `rect`,
+/// and no two lines on each other's ink.
+fn drawn_whole_inside(
+    what: &str,
+    rect: Rect,
+    exact: &Canvas,
+    roomy: &Canvas,
+    faults: &mut Vec<std::string::String>,
+) {
+    use crate::screens::chrome::{Look, Shown};
+    let letters = |canvas: &Canvas| -> Vec<u8> {
+        canvas
+            .runs
+            .iter()
+            .flat_map(|run| run.line.text().iter().copied())
+            .filter(|&byte| byte != b' ')
+            .collect()
+    };
+    if letters(exact) != letters(roomy) {
+        faults.push(format!(
+            "{what}: a text is cut: {:?}",
+            exact
+                .runs
+                .iter()
+                .map(|run| core::str::from_utf8(run.line.text()).unwrap_or("?"))
+                .collect::<Vec<_>>()
+        ));
+    }
+    for run in &exact.runs {
+        for y in run.top..run.bottom() {
+            for x in run.columns() {
+                let inside = rect.left <= x && x < rect.right && rect.top <= y && y < rect.bottom;
+                if !inside && run.pixel(Look::PLAIN, x, y, Shown(0)).is_some() {
+                    faults.push(format!(
+                        "{what}: {:?} inks ({x}, {y}) outside {rect:?}",
+                        core::str::from_utf8(run.line.text()),
+                    ));
+                }
+            }
+        }
+    }
+    for (index, one) in exact.runs.iter().enumerate() {
+        for other in &exact.runs[index + 1..] {
+            let rows = one.top.max(other.top)..one.bottom().min(other.bottom());
+            let columns = one.columns().start.max(other.columns().start)
+                ..one.columns().end.min(other.columns().end);
+            let shared = rows.flat_map(|y| columns.clone().map(move |x| (x, y)));
+            let both = shared
+                .filter(|&(x, y)| {
+                    one.pixel(Look::PLAIN, x, y, Shown(0)).is_some()
+                        && other.pixel(Look::PLAIN, x, y, Shown(0)).is_some()
+                })
+                .count();
+            if both > 0 {
+                faults.push(format!(
+                    "{what}: {:?} and {:?} share ink",
+                    core::str::from_utf8(one.line.text()),
+                    core::str::from_utf8(other.line.text()),
+                ));
+            }
+        }
+    }
+    for &shape in &exact.shapes {
+        let bounds = shape.bounds();
+        let mut alone = Canvas::default();
+        alone.shape(shape);
+        for y in bounds.top..bounds.bottom {
+            for x in bounds.left..bounds.right {
+                let inside = rect.left <= x && x < rect.right && rect.top <= y && y < rect.bottom;
+                let inked = [Shown(0), Shown(0xffff)]
+                    .into_iter()
+                    .any(|under| alone.pixel(Look::PLAIN, x, y, under) != under);
+                if !inside && inked {
+                    faults.push(format!("{what}: a shape inks ({x}, {y}) outside {rect:?}"));
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn a_static_tile_at_its_smallest_box_shows_every_reading_whole_and_apart() {
-    use crate::screens::chrome::{Look, Shown};
     let (mut checked, mut faults) = (0, Vec::new());
     for at in panels() {
         for component in [
@@ -1811,83 +1845,7 @@ fn a_static_tile_at_its_smallest_box_shows_every_reading_whole_and_apart() {
                         );
                         let (rect, exact) = draw(look.width, data);
                         let (_, roomy) = draw(look.width * 2 + 8, data);
-                        let texts = |canvas: &Canvas| -> Vec<Vec<u8>> {
-                            canvas
-                                .runs
-                                .iter()
-                                .map(|run| run.line.text().to_vec())
-                                .collect()
-                        };
-                        if texts(&exact) != texts(&roomy) {
-                            faults.push(format!(
-                                "{what}: a text is cut: {:?}",
-                                exact
-                                    .runs
-                                    .iter()
-                                    .map(|run| core::str::from_utf8(run.line.text()).unwrap_or("?"))
-                                    .collect::<Vec<_>>()
-                            ));
-                        }
-                        for run in &exact.runs {
-                            for y in run.top..run.bottom() {
-                                for x in run.columns() {
-                                    let inside = rect.left <= x
-                                        && x < rect.right
-                                        && rect.top <= y
-                                        && y < rect.bottom;
-                                    if !inside && run.pixel(Look::PLAIN, x, y, Shown(0)).is_some() {
-                                        faults.push(format!(
-                                            "{what}: {:?} inks ({x}, {y}) outside {rect:?}",
-                                            core::str::from_utf8(run.line.text()),
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                        for (index, one) in exact.runs.iter().enumerate() {
-                            for other in &exact.runs[index + 1..] {
-                                let rows = one.top.max(other.top)..one.bottom().min(other.bottom());
-                                let columns = one.columns().start.max(other.columns().start)
-                                    ..one.columns().end.min(other.columns().end);
-                                let shared =
-                                    rows.flat_map(|y| columns.clone().map(move |x| (x, y)));
-                                let both = shared
-                                    .filter(|&(x, y)| {
-                                        one.pixel(Look::PLAIN, x, y, Shown(0)).is_some()
-                                            && other.pixel(Look::PLAIN, x, y, Shown(0)).is_some()
-                                    })
-                                    .count();
-                                if both > 0 {
-                                    faults.push(format!(
-                                        "{what}: {:?} and {:?} share ink",
-                                        core::str::from_utf8(one.line.text()),
-                                        core::str::from_utf8(other.line.text()),
-                                    ));
-                                }
-                            }
-                        }
-                        for &shape in &exact.shapes {
-                            let bounds = shape.bounds();
-                            let mut alone = Canvas::default();
-                            alone.shape(shape);
-                            for y in bounds.top..bounds.bottom {
-                                for x in bounds.left..bounds.right {
-                                    let inside = rect.left <= x
-                                        && x < rect.right
-                                        && rect.top <= y
-                                        && y < rect.bottom;
-                                    let inked =
-                                        [Shown(0), Shown(0xffff)].into_iter().any(|under| {
-                                            alone.pixel(Look::PLAIN, x, y, under) != under
-                                        });
-                                    if !inside && inked {
-                                        faults.push(format!(
-                                            "{what}: a shape inks ({x}, {y}) outside {rect:?}"
-                                        ));
-                                    }
-                                }
-                            }
-                        }
+                        drawn_whole_inside(&what, rect, &exact, &roomy, &mut faults);
                         checked += 1;
                     }
                 }
@@ -1917,4 +1875,269 @@ fn a_best_narrower_than_its_watts_a_kilo_is_refused() {
         matches!(reject.why, Why::Misfit(Misfit { node: 2, .. })),
         "{reject:?}"
     );
+}
+
+#[test]
+fn a_second_code_is_refused_as_a_map_or_chart_is() {
+    let nodes = [
+        Node::col(2, Size::grow(1)),
+        tile(registry::CODE, 0, Size::CONTENT),
+        tile(registry::CODE, 0, Size::CONTENT),
+    ];
+    let tall = Scaled::fitting(240, 400).unwrap();
+    let reject = Screen::parse(1, &bytes(&nodes), &tall, Controls::FREE).unwrap_err();
+    assert_eq!(reject.why, Why::Heavy { node: 2 }, "{reject}");
+}
+
+/// A static page's words and numbers, for the page tiles.
+struct Page<'a>(PageData<'a>);
+
+impl Data for Page<'_> {
+    fn metric(&self, _: Metric) -> Option<i32> {
+        None
+    }
+    fn zone(&self, _: Effort) -> Option<u8> {
+        None
+    }
+    fn list(&self, _: ListKind) -> u16 {
+        0
+    }
+    fn page(&self) -> PageData<'_> {
+        self.0
+    }
+}
+
+/// Every page tile, for every arg and look, drawn at exactly that look on
+/// every panel, plain and focused, with the widest words and numbers its
+/// page can hand it: the longest name a workout keeps, numbers at the ends
+/// they are held to (with the words a narrow card sheds shed), every fixed
+/// line. It draws all of it, inside its box.
+#[test]
+fn a_page_tile_at_its_smallest_box_shows_its_widest_content_whole() {
+    use crate::screens::home::{Home, NONE_SAVED, last_ride, saved, this_week};
+    use crate::screens::phone::{self, NAME, NOTE, PROBLEM, SECRET, STEP, TITLE_LINE};
+    use crate::screens::qr::Qr;
+    use crate::screens::ready::{Check, Level, Readiness};
+    use crate::screens::sensors::Glance;
+    use crate::screens::setup::{STEPS, narrow, widest_note};
+    use crate::sensors::ant::device_type as ant;
+    use crate::workout::model::{Name, WIDEST_NAME};
+    let names = [
+        "WWWWWWWWWWWWWWWWWWWW",
+        "MMMMMMMMMM MMMMMMMMMM",
+        WIDEST_NAME,
+        "",
+    ]
+    .map(Name::new);
+    let text = |line: &str| -> Text<38> {
+        let mut text = Text::new();
+        text.push_str(line).unwrap();
+        text
+    };
+    let sensors = [
+        ant::SPEED_CADENCE,
+        ant::BIKE_LIGHTS,
+        ant::SHIFTING,
+        ant::SPEED_CADENCE,
+    ]
+    .map(|kind| Glance::ble(kind, true, None));
+    let statuses = [
+        names[0].as_str(),
+        names[1].as_str(),
+        "SENSORS UNAVAILABLE",
+        "LIGHT CRITICAL BATTERY",
+        "10 BATTERIES TO CHANGE",
+    ];
+    let lasts = [this_week(u64::MAX), last_ride(u64::MAX), saved(usize::MAX)];
+    let mut homes = Vec::new();
+    for (index, status) in statuses.iter().enumerate() {
+        let last = lasts[index % lasts.len()].clone();
+        let mut home = Home::new(index % 2 == 0, &sensors[..index % 5], last);
+        home.set_status(status.as_bytes(), index % 2 == 1);
+        homes.push(home);
+    }
+    let mut none = Home::new(false, &[], Text::new());
+    none.last.push_str(NONE_SAVED).unwrap();
+    homes.push(none);
+    let checks = [
+        ("STORAGE NOT FORMATTED", "OFF AND ON TO FORMAT"),
+        ("UNDER 1 MIN OF ROOM", "LAST RIDE RECOVERED"),
+        ("SENSORS UNAVAILABLE", "TURN VANA OFF AND ON"),
+        ("SENSORS WAKING UP", "HR  PWR  SPD/C  RDR"),
+        ("CLEAR RIDES FIRST", "CHARGE AFTER THE RIDE"),
+    ];
+    let readies: Vec<Readiness> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let check = |at: usize| {
+                let (title, hint) = checks[(index + at) % checks.len()];
+                Check::new(Level::Wait, title, hint)
+            };
+            let mut ready = Readiness {
+                riding: Text::new(),
+                checks: [check(0), check(1), check(2), check(3)],
+            };
+            ready.riding.push_str(name.as_str()).unwrap();
+            ready
+        })
+        .collect();
+    // A card's smallest box holds its note with words shed, as it shows there.
+    let notes: Vec<[Text<38>; 1]> = STEPS
+        .iter()
+        .map(|&step| {
+            let note = widest_note(step);
+            [text(
+                core::str::from_utf8(narrow(step, note.as_bytes())).unwrap(),
+            )]
+        })
+        .collect();
+    let phones: Vec<[Text<38>; 6]> = [
+        [
+            "PHONE DISCONNECTED",
+            "ENDED AFTER 10 MIN IDLE",
+            "",
+            "",
+            "TAP TO TRY AGAIN",
+            "1",
+        ],
+        [
+            "STEP 1 OF 2",
+            "JOIN VANA WI-FI",
+            "WAITING FOR WI-FI",
+            "ABCD EFGH JKMN",
+            "ENDS AFTER 10 MIN IDLE",
+            "",
+        ],
+        [
+            "STEP 2 OF 2",
+            "OPEN IN A BROWSER",
+            "255.255.255.255",
+            "",
+            "ENDS AFTER 10 MIN IDLE",
+            "",
+        ],
+        // Passwords and networks at their widest and lowest glyphs.
+        [
+            "STEP 1 OF 2",
+            "JOIN VANA WI-FI",
+            "VANA-DDDD",
+            "WWWW WWWW WWWW",
+            "SCAN WITH THE CAMERA",
+            "",
+        ],
+        [
+            "STEP 1 OF 2",
+            "JOIN VANA WI-FI",
+            "VANA-0000",
+            "WMWM WMNW MWWW",
+            "9 JOINED",
+            "",
+        ],
+        [
+            "STEP 1 OF 2",
+            "JOIN VANA WI-FI",
+            "VANA-BBBB",
+            "QQQQ QQQQ QQQQ",
+            "",
+            "",
+        ],
+    ]
+    .iter()
+    .map(|lines| {
+        let mut out: [Text<38>; 6] = Default::default();
+        for (at, line) in [STEP, TITLE_LINE, NAME, SECRET, NOTE, PROBLEM]
+            .into_iter()
+            .zip(lines)
+        {
+            out[at] = text(line);
+        }
+        out
+    })
+    .collect();
+    let code = Qr::encode("WIFI:T:WPA;S:VANA-ABCD;P:ABCDEFGHJKMN;;").unwrap();
+    let (mut checked, mut faults) = (0, Vec::new());
+    for at in panels() {
+        for component in [
+            registry::MARK,
+            registry::SAYS,
+            registry::CODE,
+            registry::CHOICE,
+            registry::CHECK,
+            registry::RIDING,
+            registry::HOME_CARD,
+        ] {
+            let tile = registry::tile(component);
+            for arg in (0..=255).filter(|&arg| tile.accepts(arg)) {
+                for (form, look) in tile.forms(arg, &at).iter().enumerate() {
+                    let draw = |width: u16, focused: bool, world: usize| {
+                        let rect = Rect16 {
+                            left: 4,
+                            top: 4,
+                            right: 4 + width,
+                            bottom: 4 + look.height,
+                        };
+                        let placed = Placed {
+                            rect,
+                            node: 0,
+                            form: form as u8,
+                        };
+                        let qr =
+                            (component == registry::CODE).then(|| phone::place(rect.rect(), code));
+                        let pages = homes
+                            .iter()
+                            .map(PageData::Home)
+                            .chain(readies.iter().map(PageData::Ready))
+                            .chain(STEPS.iter().zip(&notes).flat_map(|(&step, notes)| {
+                                [
+                                    PageData::Setup { step, notes },
+                                    PageData::Setup { step, notes: &[] },
+                                ]
+                            }))
+                            .chain(phones.iter().flat_map(|lines| {
+                                [false, true].map(|light| PageData::Phone {
+                                    lines,
+                                    qr: qr.as_ref(),
+                                    light,
+                                })
+                            }))
+                            .chain([0, 500, 1000].map(PageData::Brand));
+                        let page = pages.clone().nth(world)?;
+                        let mut canvas = Canvas::default();
+                        if focused {
+                            tile.focused(arg, &placed, &at, &Page(page), &mut canvas);
+                        } else {
+                            tile.prepare(arg, &placed, &at, &Page(page), &mut canvas);
+                        }
+                        Some((rect.rect(), canvas))
+                    };
+                    for world in 0.. {
+                        let Some((rect, _)) = draw(look.width, false, world) else {
+                            break;
+                        };
+                        for focused in [false, true] {
+                            let what = format!(
+                                "{}({arg}) look {form} on {:?}, world {world}{}",
+                                tile.name(),
+                                at.panel,
+                                if focused { " focused" } else { "" }
+                            );
+                            let (_, exact) = draw(look.width, focused, world).unwrap();
+                            let (_, roomy) = draw(look.width * 2 + 8, focused, world).unwrap();
+                            drawn_whole_inside(&what, rect, &exact, &roomy, &mut faults);
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    faults.dedup();
+    assert!(
+        faults.is_empty(),
+        "{} faults:\n{}",
+        faults.len(),
+        faults[..faults.len().min(40)].join("\n")
+    );
+    assert!(checked > 1000, "{checked} draws");
 }

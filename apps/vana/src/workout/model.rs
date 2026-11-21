@@ -7,6 +7,7 @@
 //! down. Targets stay relative (% FTP, heart rate zone, % LTHR) until they
 //! are drawn or checked, so a new FTP changes every workout at once.
 use crate::ride::zones::TrainingProfile;
+use firmware_shell::rendering::font::{self, FaceRole, Faces};
 
 /// Distinct steps in one workout, before repeats.
 pub const MAX_STEPS: usize = 12;
@@ -17,7 +18,28 @@ pub const MAX_PLAYED: usize = 96;
 /// Bytes in a workout or step name.
 pub const NAME_BYTES: usize = 20;
 
-/// Upper-case ASCII text of up to `NAME_BYTES`, buildable in `const`.
+/// The widest a name shows: every screen that names a workout holds this
+/// whole in the caption face, at each scale.
+pub const WIDEST_NAME: &str = "WARMUP TEMPO WORKOUT";
+
+/// Whether `text` is no wider than `WIDEST_NAME` in the caption face of
+/// every scale.
+const fn fits(text: &[u8]) -> bool {
+    let mut at = 0;
+    while at < SCALES.len() {
+        let caption = SCALES[at].get(FaceRole::Caption);
+        if caption.width(text) > caption.width(WIDEST_NAME.as_bytes()) {
+            return false;
+        }
+        at += 1;
+    }
+    true
+}
+
+const SCALES: [&Faces; 2] = [&font::SCALE_1, &font::SCALE_0_75];
+
+/// Upper-case ASCII text of up to `NAME_BYTES` and no wider than
+/// `WIDEST_NAME`, buildable in `const`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Name {
     bytes: [u8; NAME_BYTES],
@@ -42,6 +64,8 @@ impl Name {
         Self::from_bytes(text.as_bytes())
     }
 
+    /// As `new`, then cut on a whole character to the width of
+    /// `WIDEST_NAME`, without a trailing space.
     pub const fn from_bytes(text: &[u8]) -> Self {
         let mut bytes = [0; NAME_BYTES];
         let mut i = 0;
@@ -53,6 +77,9 @@ impl Name {
                 b' '
             };
             i += 1;
+        }
+        while i > 0 && (!fits(bytes.split_at(i).0) || bytes[i - 1] == b' ') {
+            i -= 1;
         }
         Self {
             bytes,
@@ -679,9 +706,29 @@ mod tests {
     }
 
     #[test]
-    fn names_are_upper_case_and_bounded() {
-        let name = Name::new("Sweet spot 2x20 with a very long name");
-        assert_eq!(name.as_str(), "SWEET SPOT 2X20 WITH");
+    fn names_are_upper_case_and_cut_to_the_widest_name() {
         assert_eq!(Name::new("tab\there").as_str(), "TAB HERE");
+        assert_eq!(Name::new(WIDEST_NAME).as_str(), WIDEST_NAME);
+        let long = Name::new("Sweet spot 2x20 with a very long name");
+        assert_eq!(long.as_str(), "SWEET SPOT 2X20 WITH");
+        for text in [
+            "WWWWWWWWWWWWWWWWWWWW",
+            "WWWWWWWWWWWW WWWWWWW",
+            "MMMMMMMMMMMMMMMMMMMM",
+        ] {
+            let name = Name::new(text);
+            let kept = name.as_str();
+            assert!(kept.len() < text.len().min(NAME_BYTES), "{text}: {kept}");
+            assert!(
+                text.to_ascii_uppercase().starts_with(kept),
+                "{text}: {kept}"
+            );
+            assert!(!kept.ends_with(' '), "{text}: {kept:?}");
+            for faces in SCALES {
+                let caption = faces.get(FaceRole::Caption);
+                let widest = caption.width(WIDEST_NAME.as_bytes());
+                assert!(caption.width(name.as_bytes()) <= widest, "{text}: {kept}");
+            }
+        }
     }
 }

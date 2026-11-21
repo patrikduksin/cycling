@@ -216,9 +216,17 @@ fn bounds(width: usize, at: impl Iterator<Item = usize>) -> Option<[usize; 4]> {
 }
 
 fn panel(pixels: &[u16], width: usize) -> Option<[usize; 4]> {
-    let white = (0..pixels.len()).filter(|&i| {
-        pixels[i] == 0xffff && phone::on_code(&vana::screens::BASE, i % width, i / width)
-    });
+    use vana::compose::builtin::{Laid, ScreenId};
+    let laid = Laid::new(
+        ScreenId::Phone,
+        &vana::screens::BASE,
+        Default::default(),
+        vana::compose::Flags::NONE,
+        None,
+    );
+    let room = laid.and_then(|laid| laid.box_of(vana::compose::registry::CODE))?;
+    let white =
+        (0..pixels.len()).filter(|&i| pixels[i] == 0xffff && room.contains(i % width, i / width));
     bounds(width, white)
 }
 

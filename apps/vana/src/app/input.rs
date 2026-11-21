@@ -12,14 +12,12 @@ use crate::ride::laps::AutoLap;
 use crate::ride::log::Status;
 use crate::ride::wheel_size::PLAUSIBLE_MM;
 use crate::ride::zones::TrainingProfile;
-use crate::screens::home::Tile;
-use crate::screens::ready;
 use crate::screens::ride::RidePage;
 use crate::screens::ride::summary;
 use crate::screens::sensors::Action;
 use crate::screens::settings;
-use crate::screens::touch::{Control, Hit, List, Owner, Swipe, TouchEvent};
-use crate::screens::workout::{HOME, Page};
+use crate::screens::touch::{Control, Hit, Owner, Swipe, TouchEvent};
+use crate::screens::workout::Page;
 use crate::sensors::ant::device_type;
 use device_api::ant::Ant;
 use device_api::input::Role;
@@ -59,6 +57,7 @@ impl Runtime {
         // contact only completes on the screen it began on.
         let hit = match input {
             Input::Touch(point) => {
+                self.compose_shown();
                 let radar = ant.channel(device_type::RADAR, now).is_some();
                 self.compose_shown();
                 self.hit_test(point, now, radar)
@@ -78,7 +77,7 @@ impl Runtime {
             }
         }
         if input == Input::Cancel {
-            self.mark_input_lost(now);
+            self.mark_input_lost(now, ant);
         }
         if !self.display.is_active() {
             return;
@@ -106,7 +105,7 @@ impl Runtime {
             {
                 self.navigation.pressed(received);
                 self.display.redraw();
-                self.carry(action, held, received, now);
+                self.carry(action, held, (received, now), ant);
             }
             return;
         }
@@ -123,7 +122,7 @@ impl Runtime {
             {
                 self.navigation.pressed(received);
                 self.display.redraw();
-                self.carry(action, held, received, now);
+                self.carry(action, held, (received, now), ant);
             }
             return;
         }
@@ -152,11 +151,11 @@ impl Runtime {
             self.button_press(button, held, received, now, ant);
             return;
         }
-        match self.mark_sees_every_move_report(held, received, now) {
+        match self.mark_sees_every_move_report(held, received, now, ant) {
             MoveReport::Held => {}
             MoveReport::Press => {
                 self.button_press(button, held, received, now, ant);
-                self.mark_after_press(now);
+                self.mark_after_press(now, ant);
             }
         }
     }
@@ -181,23 +180,23 @@ impl Runtime {
             return;
         }
         match self.navigation.page() {
-            Page::Home => self.home_input(button, received, now, ant, held),
             Page::Ride if button == Role::Move => {
                 self.timing.press(received);
                 self.next_ride_page();
             }
-            Page::Ready | Page::Ride | Page::EndRide => {
+            Page::Ride | Page::EndRide => {
                 self.timing.press(received);
                 self.ride_press(button, held, received, now);
             }
-            Page::Phone => self.phone_input(button, held),
             Page::Settings => self.settings_input(button, now, held),
-            Page::Setup => self.setup_input(button, now, ant),
-            // A press during the brand flash opens Home straight away.
-            Page::Boot => self.navigation.go(To::Page(self.first_page())),
             Page::Sensors => {}
             // On the engine: `composed_press` took the press.
-            Page::Bests
+            Page::Boot
+            | Page::Home
+            | Page::Phone
+            | Page::Setup
+            | Page::Ready
+            | Page::Bests
             | Page::Form
             | Page::Format
             | Page::LoseRides
@@ -255,30 +254,27 @@ impl Runtime {
 
     /// What lies under a finger landing at `point`: the control a tap
     /// would act on, the list it would scroll and whether the page swipes.
-    fn hit_test(&self, point: device_api::input::Point, now: u64, radar: bool) -> Hit {
+    pub(super) fn hit_test(&self, point: device_api::input::Point, now: u64, radar: bool) -> Hit {
         let (x, y) = (usize::from(point.x), usize::from(point.y));
         let navigation = &self.navigation;
         let paused_screen = self.paused_screen_shown();
         let composed = self.composed_hit(point);
+        let tree = self.composition.laids().get(self.screen_id()).is_some();
         let control = match navigation.page() {
             _ if composed.is_some() => composed,
-            Page::Home => self.layout.home.tile_at(x, y).map(Control::Tile),
-            Page::Ready if self.layout.ready.riding_at(x, y) => Some(Control::ReadyWorkout),
-            Page::Ready => (self.layout.ready.line_at(x, y) == Some(ready::Line::Sensors))
-                .then_some(Control::ReadySensors),
-            // A tap on the code switches codes; after a session ended, any
-            // tap tries again.
-            Page::Phone => (crate::screens::phone::on_code(self.layout, x, y)
-                || self.phone_status().is_none())
-            .then_some(Control::Phone),
-            Page::Sensors => Some(Control::Menu(point)),
-            Page::Setup => self
-                .setup_step()
-                .and_then(|step| crate::screens::setup::target(&self.layout.setup, x, y, step))
-                .map(Control::Setup),
             Page::Ride if paused_screen => None,
+            // The course sign floats over every ride page, a region of the
+            // screen rather than a tile of its tree.
+            Page::Ride
+                if navigation.ride_page() != RidePage::Map && self.sign_at(x, y, now, radar) =>
+            {
+                Some(Control::Sign)
+            }
+            // A hold anywhere on the map stops following the course.
             Page::Ride if navigation.ride_page() == RidePage::Map => Some(Control::Map),
-            Page::Ride if self.sign_at(x, y, now, radar) => Some(Control::Sign),
+            // A screen with a tree acts only through its tiles.
+            _ if tree => None,
+            Page::Sensors => Some(Control::Menu(point)),
             _ => None,
         };
         let mut hit = Hit {
@@ -327,7 +323,7 @@ impl Runtime {
             TouchEvent::Contact(_) => {}
             TouchEvent::Hold(Control::Map) => {
                 if let Some(action) = self.composed_hold() {
-                    self.carry(action, true, now, now);
+                    self.carry(action, true, (now, now), ant);
                 }
             }
             TouchEvent::Hold(_) => {}
@@ -343,23 +339,6 @@ impl Runtime {
                 self.composed_focus(focus);
                 self.act(action, false, now, now, ant);
             }
-            Control::Tile(tile) => {
-                self.navigation.go(To::HomeCursor(match tile {
-                    Tile::Ride => 0,
-                    Tile::Sensors => 1,
-                    Tile::Workouts => 2,
-                    Tile::Settings => 3,
-                    Tile::Rides => 4,
-                }));
-                self.open_home_tile(now, ant);
-            }
-            Control::ReadyWorkout => {
-                self.navigation.go(To::Page(Page::Workouts));
-                self.show_focus(List::Workouts, now);
-            }
-            Control::ReadySensors => self.open_sensors(false, ant, now),
-            Control::Phone => self.phone_touch(),
-            Control::Setup(card) => self.setup_card(card, now, ant),
             Control::Menu(point) => {
                 self.refresh_sensor_menu(ant, now);
                 let (x, y) = (usize::from(point.x), usize::from(point.y));
@@ -430,40 +409,6 @@ impl Runtime {
             self.menu.added(peer);
         }
         self.display.redraw();
-    }
-
-    /// MOVE steps the focused card, ACT opens it and BACK asks to turn off.
-    fn home_input(
-        &mut self,
-        button: Role,
-        received: u64,
-        now: u64,
-        ant: &mut impl Ant,
-        held: bool,
-    ) {
-        match button {
-            Role::Move => {
-                let cursor = (self.navigation.home_cursor() + 1) % HOME.len();
-                self.navigation.go(To::HomeCursor(cursor));
-            }
-            Role::Act => self.open_home_tile(now, ant),
-            // BACK on Home asks to turn off; Home is never reachable mid-ride.
-            Role::Back if !held => self.open_power_sheet(received),
-            _ => {}
-        }
-    }
-
-    fn open_home_tile(&mut self, now: u64, ant: &mut impl Ant) {
-        match self.navigation.home_cursor() {
-            0 => self.navigation.go(To::Page(Page::Ready)),
-            1 => self.open_sensors(false, ant, now),
-            2 => {
-                self.navigation.go(To::Page(Page::Workouts));
-                self.show_focus(List::Workouts, now);
-            }
-            4 => self.open_history(),
-            _ => self.navigation.go(To::Settings),
-        }
     }
 
     /// The number editor's buttons: MOVE lowers, ACT raises, holding

@@ -1295,7 +1295,7 @@ impl Toast {
 #[cfg(any(test, feature = "invariants"))]
 pub(crate) mod layout {
     #[cfg(test)]
-    use super::{BASE, Scaled};
+    use super::Scaled;
     use super::{Label, Rect};
     use std::string::String;
     #[cfg(test)]
@@ -1324,7 +1324,7 @@ pub(crate) mod layout {
         ink
     }
 
-    /// A named item for `assert_apart`: a label's ink, or nothing if blank.
+    /// A named item for `assert_apart_at`: a label's ink, or nothing if blank.
     pub(crate) fn text<const N: usize>(label: &Label<N>) -> Option<(String, Rect)> {
         let name = String::from_utf8_lossy(label.line.text()).into_owned();
         ink(label).map(|rect| (name, rect))
@@ -1339,13 +1339,6 @@ pub(crate) mod layout {
     #[cfg(test)]
     const fn meet(a: Rect, b: Rect, gap: usize) -> bool {
         a.left < b.right + gap && b.left < a.right + gap && a.top < b.bottom && b.top < a.bottom
-    }
-
-    /// `assert_apart_at` on the 240 × 320 canvas.
-    #[cfg(test)]
-    #[track_caller]
-    pub(crate) fn assert_apart(items: &[(String, Rect)], bounds: Rect, what: &str) {
-        assert_apart_at(&BASE, items, bounds, what);
     }
 
     /// No two items overlap or run together on a line, `WORD_GAP` at `at`'s

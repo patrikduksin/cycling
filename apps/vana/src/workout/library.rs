@@ -295,11 +295,12 @@ pub enum StoreError {
 }
 
 /// Where a workout is stored: `workouts/<name in lower case>-<CRC of the
-/// name>.vw`. The same name always lands in the same file, so uploading a
-/// workout again replaces it, and two names never share one.
-pub fn file_name(name: &Name) -> Result<files::Name, files::Error> {
+/// name>.vw`, by the name as uploaded, whole. The same name always lands
+/// in the same file, so uploading a workout again replaces it, and two
+/// names never share one, even where the screen shows both cut alike.
+pub fn file_name(name: &[u8]) -> Result<files::Name, files::Error> {
     let mut stem = heapless::String::<STEM_BYTES>::new();
-    for byte in name.as_bytes() {
+    for byte in name {
         let letter = byte.to_ascii_lowercase();
         let keep = if letter.is_ascii_alphanumeric() {
             letter
@@ -318,7 +319,7 @@ pub fn file_name(name: &Name) -> Result<files::Name, files::Error> {
         "{FOLDER}{}{}{:08x}.vw",
         stem.as_str().trim_end_matches('-'),
         if stem.is_empty() { "" } else { "-" },
-        crc32(name.as_bytes())
+        crc32(name)
     );
     files::Name::new(&text)
 }
@@ -499,7 +500,8 @@ impl Library {
             return Err(StoreError::Unnamed);
         }
         let load = |error| StoreError::Load(LoadError::Files(error));
-        let target = file_name(&workout.name).map_err(load)?;
+        let written = codec::written_name(bytes).map_err(StoreError::Decode)?;
+        let target = file_name(written).map_err(load)?;
         let mut sector = [0; SECTOR_SIZE];
         let mut store = volume::open(media, &volume::FILES, &mut sector)
             .map_err(|error| StoreError::Load(LoadError::Volume(error)))?;
@@ -863,7 +865,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_stored_name_is_stable_unique_and_fits_a_file_name() {
-        let named = |text: &str| file_name(&Name::new(text)).unwrap();
+        let named = |text: &str| file_name(Name::new(text).as_bytes()).unwrap();
         assert_eq!(named("OVER UNDERS"), named("over unders"));
         assert_ne!(named("A B"), named("A-B"));
         let longest = named("!!X-Y_Z (A+B) 12345!!");
@@ -919,5 +921,27 @@ pub(crate) mod tests {
         let workout = library.load(Id::Uploaded(0), &mut region).unwrap();
         assert_eq!(workout.steps().len(), 8);
         assert_eq!(&codec::encode(&workout)[..], &bytes[..]);
+    }
+
+    #[test]
+    fn two_uploads_whose_names_cut_alike_are_both_kept() {
+        let named = |workout: &Workout, name: &[u8]| {
+            let source = codec::encode(workout);
+            let mut bytes = source[..4].to_vec();
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name);
+            bytes.extend_from_slice(&source[5 + usize::from(source[4])..source.len() - 4]);
+            let crc = crc32(&bytes);
+            bytes.extend_from_slice(&crc.to_le_bytes());
+            bytes
+        };
+        let mut media = formatted();
+        let first = named(&THRESHOLD, b"WWWWWWWWWWWWWWWWWW A");
+        let second = named(&VO2_MAX, b"WWWWWWWWWWWWWWWWWW B");
+        Library::store(&mut media, &first).unwrap();
+        Library::store(&mut media, &second).unwrap();
+        let mut library = Library::default();
+        library.refresh(&mut media).unwrap();
+        assert_eq!(library.uploads().len(), 2);
     }
 }

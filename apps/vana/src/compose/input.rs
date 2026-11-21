@@ -77,6 +77,8 @@ pub enum OnPage {
     Delete,
     /// Show the next phone code, or start a session again once one ended.
     PhoneCode,
+    /// Start a session again once one ended; nothing while one runs.
+    PhoneRetry,
 }
 
 /// The owners an action reaches.
@@ -144,10 +146,14 @@ impl Buttons {
         let next = self
             .move_
             .is_some_and(|button| button.action == Action::Go(Go::Next));
+        // A button that switches codes also tries again once a session ended.
+        let retry = |own: Action| {
+            own == Action::Page(OnPage::PhoneCode) && action == Action::Page(OnPage::PhoneRetry)
+        };
         pressed
             .map(|button| button.action)
             .chain(self.held)
-            .any(|own| own == action)
+            .any(|own| own == action || retry(own))
             || (next && action == Action::Go(Go::Map))
     }
 }
@@ -922,6 +928,7 @@ pub(super) mod tests {
             ("page", Action::Page(OnPage::Send)),
             ("page", Action::Page(OnPage::Delete)),
             ("page", Action::Page(OnPage::PhoneCode)),
+            ("page", Action::Page(OnPage::PhoneRetry)),
         ];
         let mut reached = Reached::default();
         for (_, action) in every {

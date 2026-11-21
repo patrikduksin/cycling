@@ -1524,9 +1524,22 @@ impl Session {
             vana::sensors::ble_profile::Profile::HeartRate
         };
         {
+            use vana::compose::builtin::{Laids, ScreenId};
+            let mut laids = Laids::new(
+                model.layout,
+                Default::default(),
+                vana::compose::Flags::NONE,
+                &vana::compose::Screens::EMPTY,
+            );
+            laids.show(
+                ScreenId::Brand,
+                model.layout,
+                &vana::compose::Screens::EMPTY,
+            );
             let mut view =
                 vana::screens::workout::View::new(vana::screens::workout::Page::Boot, 0, None);
             view.layout = model.layout;
+            view.laids = Some(&laids);
             let scene = view.prepare();
             shell.draw_rows(|y, pixels| {
                 firmware_shell::shell::Picture::paint(

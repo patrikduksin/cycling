@@ -40,6 +40,9 @@ use crate::ride::log::Slot;
 use crate::ride::medium::Medium;
 use crate::ride::rider::Rider;
 use crate::ride::storage::RideStorage;
+use crate::screens::phone::{
+    GROUP, PASSWORD_ALPHABET, PASSWORD_GROUPS, SSID_ALPHABET, SSID_PREFIX,
+};
 use crate::screens::settings::Sections;
 use crate::workout::codec::{DecodeError, ENCODED_MAX};
 use crate::workout::library::{self, Library, LoadError, StoreError};
@@ -70,9 +73,6 @@ const TEXT: usize = 1280;
 const HEAD_GAP: usize = 160;
 /// The web client, built by `apps/vana/web/build.py`.
 const INDEX_HTML_GZ: &[u8] = include_bytes!("../../web/dist/index.html.gz");
-/// Readable characters for passwords, upper case as the screen shows
-/// them: no 0/O or 1/I.
-const ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
 /// Where the phone reaches the device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -450,12 +450,12 @@ impl Runtime {
             return;
         }
         let mut ssid = heapless::String::<32>::new();
-        let suffix: Text<4> = random_text(ap, 4, b"0123456789ABCDEF");
-        let _ = write!(ssid, "VANA-{}", suffix.text());
+        let suffix: Text<4> = random_text(ap, GROUP, SSID_ALPHABET);
+        let _ = write!(ssid, "{SSID_PREFIX}{}", suffix.text());
         let status = Status {
             mode,
             ssid: Text::new(ssid.as_bytes()).unwrap_or(Text::empty()),
-            password: random_text(ap, 12, ALPHABET),
+            password: random_text(ap, PASSWORD_GROUPS * GROUP, PASSWORD_ALPHABET),
             token: random_text(ap, 16, b"0123456789abcdef"),
             address: None,
             access_point: AccessPointState::Off,
@@ -1677,28 +1677,24 @@ impl Runtime {
         self.open_phone(Mode::AccessPoint);
     }
 
-    /// BACK ends the session and returns where it was opened from; any
-    /// other press or a tap on the code switches codes, or tries again after
-    /// a session ended.
-    pub(super) fn phone_input(&mut self, button: device_api::input::Role, held: bool) {
-        use device_api::input::Role;
-        match button {
-            Role::Back if !held => {
-                self.close_phone();
-                self.navigation
-                    .go(To::Page(if self.history.phone.take().is_some() {
-                        crate::screens::workout::Page::PastRide
-                    } else {
-                        crate::screens::workout::Page::Home
-                    }));
-            }
-            Role::Back => {}
-            _ => self.phone_touch(),
-        }
+    /// No session runs or is starting: the page says why it ended.
+    pub(super) fn phone_ended(&self) -> bool {
+        self.phone.session.is_none() && self.phone.wanted.is_none()
+    }
+
+    /// End the session and return where the page was opened from.
+    pub(super) fn close_phone_page(&mut self) {
+        self.close_phone();
+        self.navigation
+            .go(To::Page(if self.history.phone.take().is_some() {
+                crate::screens::workout::Page::PastRide
+            } else {
+                crate::screens::workout::Page::Home
+            }));
     }
 
     pub(super) fn phone_touch(&mut self) {
-        if self.phone.session.is_none() && self.phone.wanted.is_none() {
+        if self.phone_ended() {
             self.enter_phone();
         } else {
             self.navigation.go(To::PhoneCode);
@@ -1720,6 +1716,12 @@ impl Runtime {
     pub(super) fn phone_view(&self, view: &mut crate::screens::workout::View) {
         use crate::screens::phone::{NAME, NOTE, PROBLEM, SECRET, STEP, TITLE_LINE, place};
         use crate::screens::qr::Qr;
+        let room = self
+            .composition
+            .laids()
+            .get(crate::compose::builtin::ScreenId::Phone)
+            .and_then(|laid| laid.box_of(crate::compose::registry::CODE));
+        let place = |qr| room.map(|room| place(room, qr));
         let (qr, lines) = view.show_phone();
         let Some(status) = self.phone_status() else {
             let reason = match (self.phone.wanted, self.phone.closed) {
@@ -1756,7 +1758,7 @@ impl Runtime {
             let _ = lines[STEP].push_str("STEP 1 OF 2");
             let _ = lines[TITLE_LINE].push_str("JOIN VANA WI-FI");
             let _ = lines[NAME].push_str(status.ssid.text());
-            for (index, chunk) in status.password.bytes().chunks(4).enumerate() {
+            for (index, chunk) in status.password.bytes().chunks(GROUP).enumerate() {
                 if index > 0 {
                     let _ = lines[SECRET].push_str(" ");
                 }
@@ -1767,7 +1769,7 @@ impl Runtime {
             } else {
                 let _ = lines[NOTE].push_str("SCAN WITH THE CAMERA");
             }
-            *qr = Qr::encode(status.join_text().as_str()).map(|qr| place(self.layout, qr));
+            *qr = Qr::encode(status.join_text().as_str()).and_then(place);
             return;
         }
         let _ = lines[STEP].push_str(match status.mode {
@@ -1783,7 +1785,7 @@ impl Runtime {
                 } else {
                     let _ = lines[NOTE].push_str("ENDS AFTER 10 MIN IDLE");
                 }
-                *qr = Qr::encode(url.as_str()).map(|qr| place(self.layout, qr));
+                *qr = Qr::encode(url.as_str()).and_then(place);
             }
             _ => {
                 let _ = lines[NAME].push_str("WAITING FOR WI-FI");

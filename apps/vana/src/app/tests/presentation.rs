@@ -158,11 +158,7 @@ fn frames_follow_page_cadence_and_stop_once_suspended() {
     runtime.suspend_display();
     assert!(!runtime.input_active());
     runtime.input_received(press(Role::Move), 9000, 9000, &mut radio);
-    assert_eq!(
-        runtime.navigation.home_cursor(),
-        1,
-        "input is ignored while suspended"
-    );
+    assert_eq!(runtime.focus_index(), 1, "input is ignored while suspended");
     assert!(!screen.present(&mut runtime, &radio, 9000));
     assert!(!screen.present(&mut runtime, &radio, 20_000));
 }
@@ -220,6 +216,7 @@ fn ride_opens_ready_which_waits_for_act_to_start() {
     assert_eq!(readiness.checks[Line::Sensors as usize].hint.as_str(), "HR");
     // The panel shows the Ready screen as the view lays it out.
     let mut view = crate::screens::workout::View::new(Page::Ready, 0, None);
+    view.compose_main();
     view.show_ready(runtime.readiness(crate::screens::chrome::Gps::Off, None, 7000));
     view.prepare();
     let content = crate::screens::chrome::CONTENT.top..crate::screens::chrome::TOAST.top;

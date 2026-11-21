@@ -33,7 +33,6 @@
 //! loses only that contact: a `Touch` at least `STALE_CONTACT_MS` after the
 //! last touch edge starts a new one, while a finger that keeps reporting
 //! stays blocked.
-use super::home::Tile;
 use device_api::input::{Point, STALE_CONTACT_MS};
 use firmware_shell::input::Input;
 use heapless::Vec;
@@ -62,18 +61,9 @@ pub struct Owner(pub u32);
 /// Something a tap acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
-    Tile(Tile),
-    /// Ready's workout line, which changes the workout.
-    ReadyWorkout,
-    /// Ready's sensors line, which pairs sensors.
-    ReadySensors,
-    /// The phone code, or anywhere once a session ended.
-    Phone,
     /// The number editor's minus and plus pads, which act on contact.
     Lower,
     Raise,
-    /// A setup card.
-    Setup(usize),
     /// The map, which a long press stops following the course.
     Map,
     /// The course sign on a data page, which opens the map.

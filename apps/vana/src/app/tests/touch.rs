@@ -30,10 +30,9 @@ fn tapping_a_home_tile_opens_it() {
     touch(&mut runtime, &mut radio, &[(120, 40)], 1000);
     assert!(runtime.navigation.page() == Page::Ready);
     runtime.navigation.go(To::Page(Page::Home));
-    let y = (crate::screens::BASE.home.sensors.top + 20) as u16;
+    let y = (runtime.stop_rect(1).top + 20) as u16;
     touch(&mut runtime, &mut radio, &[(120, y)], 2000);
     assert!(runtime.navigation.page() == Page::Sensors);
-    assert_eq!(runtime.navigation.home_cursor(), 1);
 }
 
 #[test]
@@ -143,7 +142,8 @@ fn a_contact_never_completes_on_another_screen() {
     let down = |runtime: &mut Runtime, radio: &mut Radio, (x, y), now| {
         runtime.input_received(Input::Touch(Point { x, y }), now, now, radio)
     };
-    let sensors = (120, (crate::screens::BASE.home.sensors.top + 20) as u16);
+    runtime.navigation.go(To::Page(Page::Home));
+    let sensors = (120, (runtime.stop_rect(1).top + 20) as u16);
 
     let mut screen = super::presentation::Screen::new();
     runtime.power(&mut screen.shell, &mut super::power::Switch::new(true), 0);
@@ -348,4 +348,55 @@ fn a_tap_chooses_its_card_but_a_tap_that_stops_a_coasting_list_does_not() {
     touch(&mut runtime, &mut radio, &[(120, y)], lift + 400);
     assert!(runtime.navigation.page() == Page::Ready);
     assert_eq!(runtime.training.picker_cursor, card);
+}
+
+#[test]
+fn a_tap_off_every_tile_of_a_static_screen_does_nothing() {
+    let mut runtime = booted(Profile::HeartRate);
+    let panel = runtime.layout.scaled.panel;
+    for page in [
+        Page::Boot,
+        Page::Home,
+        Page::Ready,
+        Page::Setup,
+        Page::Phone,
+    ] {
+        runtime.navigation.go(To::Page(page));
+        runtime.compose_shown();
+        let laid = runtime.composition.laids().get(runtime.screen_id());
+        let solved = laid.expect("the screen has a tree").solved();
+        let tiles: std::vec::Vec<_> = solved
+            .focus_order()
+            .map(|placed| placed.rect.rect())
+            .collect();
+        for y in 0..panel.height {
+            for x in (0..panel.width).filter(|&x| !tiles.iter().any(|tile| tile.contains(x, y))) {
+                let point = Point {
+                    x: x as u16,
+                    y: y as u16,
+                };
+                let hit = runtime.hit_test(point, 0, false);
+                assert_eq!(hit.control, None, "{page:?}: a tap at {x},{y}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_move_hold_before_home_s_first_frame_back_keeps_its_remembered_card() {
+    let mut radio = Radio::new();
+    let mut runtime = booted(Profile::HeartRate);
+    runtime.navigation.go(To::Page(Page::Home));
+    runtime.focus_stop(4);
+    runtime.input_received(press(Role::Act), 1000, 1000, &mut radio);
+    assert_eq!(runtime.navigation.page(), Page::History);
+    runtime.compose_shown();
+    runtime.input_received(press(Role::Back), 2000, 2400, &mut radio);
+    assert_eq!(runtime.navigation.page(), Page::Home);
+    // The hold starts before any frame shows Home again.
+    for now in (2400..=3900).step_by(100) {
+        runtime.input_received(press(Role::Move), now, now, &mut radio);
+    }
+    assert_eq!(runtime.toast_at(3900).unwrap().text(), b"MARK 1");
+    assert_eq!(runtime.focus_index(), 4, "RIDES keeps the focus");
 }

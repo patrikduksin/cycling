@@ -136,11 +136,13 @@ impl Runtime {
     /// poll frame it would sit under every later frame's preparation (#167).
     #[inline(never)]
     pub fn draw_boot<D: Panel, I: InputSource, P: Power, B: OwnedFlash>(
-        &self,
+        &mut self,
         system: &mut Shell<D, I, P, B>,
     ) {
+        self.compose_shown();
         let mut view = View::new(Page::Boot, 0, None);
         view.layout = self.layout;
+        view.laids = Some(self.composition.laids());
         view.light = self.light();
         let scene = view.prepare();
         #[cfg(any(test, feature = "invariants"))]
@@ -578,13 +580,7 @@ impl Runtime {
     fn home(&self, gps_fix: bool, now: u64) -> Home {
         let last = self.rides_line();
         let glance = self.glance(now);
-        let mut home = Home::new(
-            self.layout,
-            self.navigation.home_cursor(),
-            gps_fix,
-            &glance,
-            last,
-        );
+        let mut home = Home::new(gps_fix, &glance, last);
         let (status, problem) = self.home_status(now);
         let warning = BatteryWarning::of(&glance).filter(|_| !problem && status == "READY TO RIDE");
         match (self.chosen_name(), warning) {

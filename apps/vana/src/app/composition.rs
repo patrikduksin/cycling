@@ -3,6 +3,7 @@
 //! radar, a workout, the arrival). It lives in the runtime, which the
 //! device keeps in PSRAM, so a frame only reads where the tiles go.
 use super::Runtime;
+use super::navigation::To;
 use crate::compose::builtin::{Asks, Choices, Laid, Laids, ScreenId};
 use crate::compose::input::{self, Action, Focus, Go, ListAct, OnPage, Owners};
 use crate::compose::node::What;
@@ -12,6 +13,7 @@ use crate::screens::ride::main_flags;
 use crate::screens::ride::summary::{self, After};
 use crate::screens::touch::Control;
 use crate::screens::workout::Page;
+use device_api::ant::Ant;
 use device_api::input::Role;
 use firmware_services::why;
 
@@ -149,7 +151,7 @@ impl Runtime {
     ) {
         match (action, self.page_list()) {
             (Action::List(act), Some(list)) => self.list_input(list, act, held, now, ant),
-            _ => self.carry(action, held, received, now),
+            _ => self.carry(action, held, (received, now), ant),
         }
     }
 
@@ -185,11 +187,8 @@ impl Runtime {
     /// What holding MOVE does on the built-in shown, when its owner would
     /// take it now: a hold that does nothing marks instead.
     pub(super) fn composed_hold(&mut self) -> Option<Action> {
-        let id = self.screen_id();
-        // A hold may come before the frame that shows a screen just opened.
-        let changed = super::overrides::shown(&self.overrides);
-        self.composition.laids.show(id, self.layout, changed);
-        let laid = self.composition.laids.get(id)?;
+        self.compose_shown();
+        let laid = self.composition.laids.get(self.screen_id())?;
         let action = laid.buttons().held?;
         let takes = match action {
             Action::CourseOff => self.following(),
@@ -202,6 +201,58 @@ impl Runtime {
         takes.then_some(action)
     }
 
+    /// The focus on the built-in shown, if one is: a screen just opened
+    /// has its kept focus back before anything reads it.
+    pub(super) fn shown_focus(&mut self) -> Focus {
+        self.compose_shown();
+        let laid = self.composition.laids.get(self.screen_id());
+        laid.map_or(Focus::default(), Laid::focus)
+    }
+
+    /// Which stop of the built-in shown has the focus, from 0 at the first,
+    /// as `RIDE STATUS` reports Home's card.
+    pub(super) fn focus_index(&self) -> usize {
+        let Some(laid) = self.composition.laids.get(self.screen_id()) else {
+            return 0;
+        };
+        let solved = laid.solved();
+        let stops: heapless::Vec<u8, { crate::compose::solve::MAX_LEAVES }> =
+            solved.focus_order().map(|placed| placed.node).collect();
+        match input::focused(laid.buttons(), &solved, laid.focus()) {
+            Some(input::Stop::Tile(placed)) => {
+                let index = stops.iter().position(|&node| node == placed.node);
+                index.map_or(0, |index| index + usize::from(laid.buttons().act.is_some()))
+            }
+            _ => 0,
+        }
+    }
+
+    /// Put the focus on stop `index` of the built-in shown, past the screen's
+    /// own stop; nothing on a screen without a tree.
+    #[cfg(test)]
+    pub(super) fn focus_stop(&mut self, index: usize) {
+        self.compose_shown();
+        let id = self.screen_id();
+        if let Some(laid) = self.composition.laids.get_mut(id) {
+            let node = laid.solved().focus_order().nth(index).expect("a stop").node;
+            *laid.focus_mut() = Focus::Tile(node);
+        }
+    }
+
+    /// The box of stop `index` of the built-in shown.
+    #[cfg(test)]
+    pub(super) fn stop_rect(&mut self, index: usize) -> crate::screens::chrome::Rect {
+        self.compose_shown();
+        let id = self.screen_id();
+        let laid = self.composition.laids.get(id).expect("a built-in shows");
+        laid.solved()
+            .focus_order()
+            .nth(index)
+            .expect("a stop")
+            .rect
+            .rect()
+    }
+
     pub(super) fn composed_focus(&mut self, focus: Focus) {
         let id = self.screen_id();
         if let Some(laid) = self.composition.laids.get_mut(id) {
@@ -209,7 +260,13 @@ impl Runtime {
         }
     }
 
-    pub(super) fn carry(&mut self, action: Action, held: bool, received: u64, now: u64) {
+    pub(super) fn carry(
+        &mut self,
+        action: Action,
+        held: bool,
+        (received, now): (u64, u64),
+        ant: &mut impl Ant,
+    ) {
         input::apply(
             action,
             &mut Carried {
@@ -217,8 +274,24 @@ impl Runtime {
                 held,
                 received,
                 now,
+                ant,
             },
         );
+    }
+
+    /// Open `page` the way its own opener does: a list shows its focused
+    /// card, the sensor menu refreshes.
+    fn open(&mut self, page: Page, ant: &mut impl Ant, now: u64) {
+        match page {
+            Page::Sensors => self.open_sensors(false, ant, now),
+            Page::Workouts => {
+                self.navigation.go(To::Page(Page::Workouts));
+                self.show_focus(crate::screens::touch::List::Workouts, now);
+            }
+            Page::Settings => self.navigation.go(To::Settings),
+            Page::History => self.open_history(),
+            page => self.navigation.go(To::Page(page)),
+        }
     }
 
     pub(super) fn paused_screen_shown(&self) -> bool {
@@ -285,14 +358,15 @@ pub(super) enum Pressed {
 }
 
 /// The runtime as the owners an action reaches, for one press.
-struct Carried<'r> {
+struct Carried<'r, A> {
     runtime: &'r mut Runtime,
     held: bool,
     received: u64,
     now: u64,
+    ant: &'r mut A,
 }
 
-impl Owners for Carried<'_> {
+impl<A: Ant> Owners for Carried<'_, A> {
     fn go(&mut self, go: Go) {
         let runtime = &mut *self.runtime;
         match (go, runtime.navigation.page()) {
@@ -301,7 +375,9 @@ impl Owners for Carried<'_> {
                 runtime.next_ride_page();
             }
             (Go::Next, Page::Summary | Page::PastRide) => runtime.next_summary_page(1),
-            (Go::Open(page), _) => runtime.navigation.go(super::navigation::To::Page(page)),
+            (Go::Open(page), _) => runtime.open(page, self.ant, self.now),
+            // A held BACK is the power-on hold still going.
+            (Go::TurnOff, _) if !self.held => runtime.open_power_sheet(self.received),
             (Go::Next | Go::Map | Go::TurnOff, _) => why!("compose.unowned", go),
         }
     }
@@ -352,6 +428,14 @@ impl Owners for Carried<'_> {
                 runtime.past_ride_input(Role::Act, held);
             }
             (Page::PastRide, OnPage::Back) => runtime.past_ride_input(Role::Back, held),
+            (Page::Boot, OnPage::Back) => runtime.navigation.go(To::Page(runtime.first_page())),
+            (Page::Setup, OnPage::Item(card)) => {
+                runtime.setup_card(usize::from(card), self.now, self.ant)
+            }
+            (Page::Setup, OnPage::Back) => runtime.navigation.go(To::Page(Page::Home)),
+            (Page::Phone, OnPage::PhoneCode) => runtime.phone_touch(),
+            (Page::Phone, OnPage::PhoneRetry) if runtime.phone_ended() => runtime.enter_phone(),
+            (Page::Phone, OnPage::Back) if !held => runtime.close_phone_page(),
             _ => why!("compose.unowned", act),
         }
     }

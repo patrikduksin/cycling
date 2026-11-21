@@ -608,17 +608,19 @@ impl Runtime {
         if !self.recorder_busy() && distance > 0 {
             return crate::screens::home::last_ride(distance);
         }
+        use crate::screens::home::{NONE_SAVED, UNCOUNTED, saved};
         let mut line = Text::new();
         if !self.counted() {
-            let _ = line.push_str("...");
+            let _ = line.push_str(UNCOUNTED);
             return line;
         }
-        let saved = self.history_count();
-        let _ = match saved {
-            0 => line.push_str("NONE YET"),
-            n => write!(line, "{n} SAVED"),
-        };
-        line
+        match self.history_count() {
+            0 => {
+                let _ = line.push_str(NONE_SAVED);
+                line
+            }
+            rides => saved(rides),
+        }
     }
 }
 

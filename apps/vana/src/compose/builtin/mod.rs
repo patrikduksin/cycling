@@ -3,7 +3,7 @@
 //! [`ScreenId`]. A screen whose file says `None` still draws from its legacy
 //! arm in `View::prepare`.
 use super::data::Data;
-use super::input::{Buttons, Controls, Focus};
+use super::input::{self, Buttons, Controls, Focus, Stop};
 use super::node::{Flags, MAX_NODES, Node, What};
 use super::parse::{Screen, Screens};
 use super::registry;
@@ -371,6 +371,11 @@ impl ScreenId {
     }
 }
 
+/// The rows a static screen keeps for the status bar and the black under
+/// it. The scene paints the bar, or leaves it out when a cue sits at the
+/// top, so the band holds no tile a cue could crowd.
+const BAR_UNITS: u8 = 24;
+
 /// A screen's nodes, preorder.
 pub type Nodes = heapless::Vec<Node, MAX_NODES>;
 
@@ -535,7 +540,7 @@ impl Laid {
 
     /// The tiles placed once each, leaving out a scroll's template, which
     /// draws once a card.
-    fn tiles(&self) -> impl Iterator<Item = (u8, u8, &Placed)> {
+    pub fn tiles(&self) -> impl Iterator<Item = (u8, u8, &Placed)> {
         let nodes = self.screen.tree().nodes();
         let template = self.scroll().map_or(0..0, Scroll::tiles);
         let leaves = self.leaves.iter().enumerate();
@@ -549,10 +554,20 @@ impl Laid {
             )
     }
 
-    /// Draw every tile onto `out`.
+    /// Draw every tile onto `out`, the focused one by its focused look.
     pub fn prepare(&self, data: &dyn Data, out: &mut Canvas) {
         let tree = self.screen.tree();
-        super::solve::prepare(tree, &self.leaves, self.scroll(), data, out);
+        let focused = self.focused();
+        super::solve::prepare(tree, &self.leaves, self.scroll(), focused, data, out);
+    }
+
+    /// The node of the tile ACT runs, if the focus is on a tile.
+    #[inline(never)]
+    fn focused(&self) -> Option<u8> {
+        match input::focused(self.buttons(), &self.solved(), self.focus)? {
+            Stop::Tile(placed) => Some(placed.node),
+            Stop::Screen(_) | Stop::List(_) => None,
+        }
     }
 
     /// Where each gliding tile lands for `data`, in the tree's order.
@@ -578,12 +593,14 @@ impl Laid {
 
 /// The main ride page, which every ride page's sign and bar read, and the
 /// built-in shown, solved when it opens: two screens' room in the runtime
-/// however many screens have trees.
+/// however many screens have trees. A screen that leaves ACT free keeps its
+/// focus for the next time it opens, as Home keeps its card.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Laids {
     main: Laid,
     shown: Option<Laid>,
     open: Option<ScreenId>,
+    kept: [Focus; ScreenId::COUNT],
 }
 
 impl Laids {
@@ -595,6 +612,7 @@ impl Laids {
                 .expect("the main page has a tree"),
             shown: None,
             open: None,
+            kept: [Focus::default(); ScreenId::COUNT],
         }
     }
 
@@ -617,6 +635,7 @@ impl Laids {
             main,
             shown: None,
             open: None,
+            kept: [Focus::default(); ScreenId::COUNT],
         }
     }
 
@@ -650,8 +669,9 @@ impl Laids {
         main || shown
     }
 
-    /// Show `id`: a screen opened afresh is solved, if it has a tree, and
-    /// starts on its first stop.
+    /// Show `id`: a screen opened afresh is solved, if it has a tree. One
+    /// with an ACT of its own starts on it; one that leaves ACT free starts
+    /// where its focus was when it last closed, its first stop at first.
     #[inline(never)]
     pub fn show(&mut self, id: ScreenId, layout: &Layout, changed: &Screens) {
         if self.open == Some(id) {
@@ -659,6 +679,9 @@ impl Laids {
         }
         self.open = Some(id);
         self.main.focus = Focus::default();
+        if let Some(closed) = &self.shown {
+            self.kept[closed.id as usize] = closed.focus;
+        }
         self.shown = match id {
             ScreenId::RideMain => None,
             _ => {
@@ -666,5 +689,12 @@ impl Laids {
                 Laid::new(id, layout, self.main.choices, self.main.flags, screen)
             }
         };
+        if let Some(laid) = self
+            .shown
+            .as_mut()
+            .filter(|laid| laid.buttons().act.is_none())
+        {
+            laid.focus = self.kept[id as usize];
+        }
     }
 }

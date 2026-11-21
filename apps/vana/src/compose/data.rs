@@ -91,6 +91,10 @@ pub trait Data {
     fn summary(&self) -> Option<ride::summary::Facts<'_>> {
         None
     }
+    /// What a static page shows besides numbers.
+    fn page(&self) -> PageData<'_> {
+        PageData::None
+    }
 }
 
 /// What a tile reads, for a trace's shown line: a metric, or whatever the
@@ -861,4 +865,27 @@ mod tests {
             }
         }
     }
+}
+
+/// A static page's words and state, as the runtime prepared them for the
+/// frame.
+#[derive(Clone, Copy)]
+pub enum PageData<'a> {
+    None,
+    Home(&'a crate::screens::home::Home),
+    Ready(&'a crate::screens::ready::Readiness),
+    /// The step shown and the note beside each card.
+    Setup {
+        step: crate::screens::setup::Step,
+        notes: &'a [Text<38>],
+    },
+    /// The lines, by `screens::phone`'s indices, and the code.
+    Phone {
+        lines: &'a [Text<38>],
+        qr: Option<&'a crate::screens::qr::Placed>,
+        /// The light look, whose palette the code's panel must undo.
+        light: bool,
+    },
+    /// The reveal's progress, in thousandths.
+    Brand(u16),
 }
